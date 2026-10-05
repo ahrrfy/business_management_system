@@ -82,6 +82,7 @@ import { CuratedRow, type RowProduct } from "@/components/storefront/StorefrontC
 import { StorefrontMilestoneBar } from "@/components/storefront/StorefrontMilestoneBar";
 import { StorefrontStickyFilter } from "@/components/storefront/StorefrontStickyFilter";
 import { StorefrontCategories } from "@/components/storefront/StorefrontCategories";
+import { CategoryChipStrip } from "@/components/storefront/CategoryChipStrip";
 import { StorefrontColorSwatches } from "@/components/storefront/StorefrontColorSwatches";
 import { StorefrontPanelShell } from "@/components/storefront/StorefrontPanelShell";
 import { StorefrontLocationPicker } from "@/components/storefront/StorefrontLocationPicker";
@@ -871,142 +872,7 @@ export function BundleMedia({
   );
 }
 
-export function CategoryChipStrip({
-  cats,
-  selectedId,
-  onPick,
-}: {
-  cats: { id: number; name: string }[];
-  selectedId: number | null;
-  onPick: (id: number | null) => void;
-}) {
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const isDraggingRef = useRef(false);
-  const dragStartXRef = useRef(0);
-  const dragScrollLeftRef = useRef(0);
-  const hasMovedRef = useRef(false);
-
-  const allChips = useMemo(
-    () => [{ id: null, name: "كل الأقسام" }, ...cats.map((c) => ({ id: c.id, name: c.name }))],
-    [cats],
-  );
-
-  const scroll = (direction: "left" | "right") => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const amount = direction === "left" ? -280 : 280;
-    el.scrollBy({ left: amount, behavior: "smooth" });
-  };
-
-  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    const el = scrollRef.current;
-    if (!el) return;
-    isDraggingRef.current = true;
-    dragStartXRef.current = e.clientX;
-    dragScrollLeftRef.current = el.scrollLeft;
-    hasMovedRef.current = false;
-  };
-
-  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDraggingRef.current) return;
-    const deltaX = e.clientX - dragStartXRef.current;
-    if (Math.abs(deltaX) > 6) {
-      hasMovedRef.current = true;
-      const el = scrollRef.current;
-      if (el) {
-        el.scrollLeft = dragScrollLeftRef.current - deltaX;
-      }
-    }
-  };
-
-  const onPointerUp = () => {
-    if (!isDraggingRef.current) return;
-    isDraggingRef.current = false;
-    window.setTimeout(() => {
-      hasMovedRef.current = false;
-    }, 60);
-  };
-
-  useEffect(() => {
-    if (scrollRef.current) {
-      const activeEl = scrollRef.current.querySelector<HTMLElement>('[data-selected="true"]');
-      if (activeEl) {
-        activeEl.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
-      }
-    }
-  }, [selectedId]);
-
-  return (
-    <div className="mx-auto flex max-w-[1500px] items-center gap-1.5 sm:gap-2 px-2 sm:px-3 lg:px-6">
-      <button
-        type="button"
-        onClick={() => scroll("right")}
-        aria-label="مرر الأقسام إلى اليمين"
-        className="hidden sm:flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-[#0E806A] hover:text-[#0E806A] active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
-      >
-        <ChevronRight aria-hidden className="size-4" />
-      </button>
-
-      <div
-        ref={scrollRef}
-        dir="rtl"
-        className="relative flex min-w-0 flex-1 cursor-grab items-center gap-1.5 sm:gap-2 overflow-x-auto scroll-smooth py-2 sm:py-2.5 active:cursor-grabbing select-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden touch-pan-x [mask-image:linear-gradient(to_right,transparent,black_16px,black_calc(100%-16px),transparent)] sm:[mask-image:linear-gradient(to_right,transparent,black_28px,black_calc(100%-28px),transparent)]"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onWheel={(e) => {
-          if (e.deltaY !== 0 && Math.abs(e.deltaX) < Math.abs(e.deltaY)) {
-            const el = scrollRef.current;
-            if (el) el.scrollLeft += e.deltaY;
-          }
-        }}
-        aria-label="شريط أقسام المنتجات"
-      >
-        {allChips.map((chip) => {
-          const isSelected = chip.id == null ? selectedId == null : selectedId === chip.id;
-          const activeClass =
-            chip.id == null
-              ? "border-[#183D36] bg-[#183D36] text-white shadow-xs dark:border-white dark:bg-white dark:text-slate-900"
-              : "border-[#0E806A] bg-[#0E806A] text-white shadow-xs";
-          const inactiveClass =
-            "border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300";
-
-          return (
-            <button
-              type="button"
-              key={chip.id ?? "all"}
-              data-selected={isSelected}
-              aria-pressed={isSelected}
-              onClick={(e) => {
-                if (hasMovedRef.current) {
-                  e.preventDefault();
-                  return;
-                }
-                onPick(chip.id);
-              }}
-              className={`shrink-0 rounded-full border px-3 sm:px-3.5 py-1 sm:py-1.5 text-xs font-black transition-all duration-200 hover:-translate-y-0.5 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0E806A] ${
-                isSelected ? activeClass : inactiveClass
-              }`}
-            >
-              {chip.name}
-            </button>
-          );
-        })}
-      </div>
-
-      <button
-        type="button"
-        onClick={() => scroll("left")}
-        aria-label="مرر الأقسام إلى اليسار"
-        className="hidden sm:flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-[#0E806A] hover:text-[#0E806A] active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
-      >
-        <ChevronLeft aria-hidden className="size-4" />
-      </button>
-    </div>
-  );
-}
+export { CategoryChipStrip };
 
 
 type StorefrontUnitForCartAction = {
