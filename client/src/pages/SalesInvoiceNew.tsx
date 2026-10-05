@@ -1109,7 +1109,7 @@ export default function SalesInvoice() {
             items={state.items}
             dispatch={dispatch}
             branchId={state.branchId}
-            tier={state.tier} customerId={state.entityId} pricingIntentEpoch={pricingIntentEpochRef.current}
+            tier={state.tier} customerId={state.entityId} excludeInvoiceId={isCorrection ? correctInvoiceId : null} pricingIntentEpoch={pricingIntentEpochRef.current}
             invoiceType={INVOICE_TYPE}
             showCost={showCost}
             /* هدايا الفاتورة (0149): مفتاح «هدية» لكلّ سطر — يُصفّر قيمته في الفاتورة وتُرحَّل
