@@ -17,9 +17,10 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { normalizeSearchText } from "@shared/searchNormalize";
-import { Check, Printer, X } from "lucide-react";
+import { Boxes, Check, Printer, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
+import { BundleKitProductionDialog } from "@/components/production/bundle-kit/BundleKitProductionDialog";
 
 /** حالات أمر الشغل النشطة — مرآة WO_ACTIVE_STATUSES في workOrderRouter.ts (خادميّ، لا يُستورَد
  *  للعميل). يُستعمَل لمنتقي «ربط بطلب خدمة» — لا معنى لربط إنتاجٍ بأمرٍ مُسلَّم/ملغى. */
@@ -79,6 +80,7 @@ export default function ProductionNew() {
   // مُسنَد (بابُ IDOR الذي يحرسه `check:branch`)؛ الآن الأدمن/المالك يختار من قائمةٍ خادميّة قبل
   // الترحيل، وغيرُه يرى فرعَه قراءةً — والخادم يُلزمه به على كلّ حال.
   const [branchId, setBranchId] = useState<number | null>(null);
+  const [isKitOpen, setIsKitOpen] = useState(false);
   const branchInference = useSessionBranchInference();
   const needsBranchChoice = branchInference.status === "unassigned" && branchId == null;
   const branchName = (branches.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? "";
@@ -310,6 +312,16 @@ export default function ProductionNew() {
         title="الإنتاج / تحويل المخزون"
         description="يُخصَم الورق المُدخَل ويُنتَج المنتج بكلفته الحقيقية. الورق مصدر حقيقة واحد ⇒ لا سالب."
         backHref="/production"
+        actions={
+          <Button
+            variant="outline"
+            className="gap-2"
+            onClick={() => setIsKitOpen(true)}
+          >
+            <Boxes aria-hidden className="size-4" />
+            إنتاج مكونات بكج
+          </Button>
+        }
       />
 
       {/* محدّد الوضع */}
@@ -630,6 +642,12 @@ export default function ProductionNew() {
           </div>
         </div>
       )}
+
+      {/* نافذة توليد إنتاج مكونات البكج */}
+      <BundleKitProductionDialog
+        open={isKitOpen}
+        onOpenChange={setIsKitOpen}
+      />
     </div>
   );
 }

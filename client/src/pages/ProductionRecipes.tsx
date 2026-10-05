@@ -12,11 +12,13 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { coefficientBatchMultiple, requiredBatchMultiple } from "@shared/batchDivisibility";
 import { normalizeSearchText } from "@shared/searchNormalize";
-import { Search } from "lucide-react";
+import { ArrowLeft, Boxes, Layers, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { selectClsFull } from "@/lib/ui/formStyles";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { BundleKitProductionDialog } from "@/components/production/bundle-kit/BundleKitProductionDialog";
+import { MultiRecipeProductionDialog } from "@/components/production/multi-recipe/MultiRecipeProductionDialog";
 
 
 let _k = 1;
@@ -70,6 +72,18 @@ export default function ProductionRecipes() {
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [q, setQ] = useState("");
+  const [isBundleKitOpen, setIsBundleKitOpen] = useState(false);
+  const [selectedRecipeIds, setSelectedRecipeIds] = useState<Set<number>>(new Set());
+  const [isMultiRecipeOpen, setIsMultiRecipeOpen] = useState(false);
+
+  function toggleSelectRecipe(id: number) {
+    setSelectedRecipeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   function resetForm() {
     setEditId(null); setCreateAsInactive(false); setName(""); setOut(null); setLabor("0"); setWastePct("0"); setComps([]); setError(""); setShowForm(false);
@@ -211,12 +225,50 @@ export default function ProductionRecipes() {
   const normQ = normalizeSearchText(q.trim());
   const filtered = rows.filter((r) => !normQ || normalizeSearchText(String(r.name)).includes(normQ));
 
+  // تصفية الوصفات المحددة الصالحة فقط واستبعاد أي وصفة معطلة أو غير مؤهلة
+  const validSelectedRecipeIds = useMemo(() => {
+    const validSet = new Set(
+      rows
+        .filter((r) => r.isActive && r.canRunProduction && !r.outputIsService && !r.outputIsBundle)
+        .map((r) => Number(r.id))
+    );
+    const result = new Set<number>();
+    selectedRecipeIds.forEach((id) => {
+      if (validSet.has(id)) result.add(id);
+    });
+    return result;
+  }, [rows, selectedRecipeIds]);
+
+  const selectedCount = validSelectedRecipeIds.size;
+  const countLabel =
+    selectedCount === 1
+      ? "وصفة واحدة"
+      : selectedCount === 2
+        ? "وصفتان"
+        : selectedCount <= 10
+          ? `${selectedCount} وصفات`
+          : `${selectedCount} وصفة`;
+
   return (
-    <div className="space-y-4" dir="rtl">
+    <div className={`space-y-4 ${selectedCount > 0 ? "pb-20" : ""}`} dir="rtl">
       <PageHeader
         title="وصفات الإنتاج"
         description="إدارة وصفات الإنتاج المخزني ووصفات استهلاك الخدمة. الإنتاج المخزني يُشغَّل من شاشة الإنتاج، ووصفة الخدمة تُستهلك تلقائياً عند البيع."
-        actions={!showForm ? <Button onClick={() => { resetForm(); setShowForm(true); }}>＋ وصفة جديدة</Button> : undefined}
+        actions={
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              className="gap-2"
+              onClick={() => setIsBundleKitOpen(true)}
+            >
+              <Boxes aria-hidden className="size-4" />
+              إنتاج مكونات بكج
+            </Button>
+            {!showForm && (
+              <Button onClick={() => { resetForm(); setShowForm(true); }}>＋ وصفة جديدة</Button>
+            )}
+          </div>
+        }
       />
 
       {showForm && (
@@ -394,11 +446,40 @@ export default function ProductionRecipes() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {filtered.map((r) => {
               const kind = recipeKindMeta(r);
-              return <Card key={Number(r.id)} className={r.isActive ? "" : "opacity-60"}>
+              const isSelected = selectedRecipeIds.has(Number(r.id));
+              const canSelect = r.isActive && r.canRunProduction && !r.outputIsService && !r.outputIsBundle;
+
+              return <Card
+                key={Number(r.id)}
+                className={`transition-all ${
+                  isSelected
+                    ? "border-primary ring-2 ring-primary/30 bg-primary/5"
+                    : r.isActive
+                      ? ""
+                      : "opacity-60"
+                }`}
+              >
                 <CardContent className="pt-4 space-y-3">
                   <div className="flex items-start justify-between gap-2">
-                    <div className="font-semibold leading-snug">{r.name}</div>
-                    <div className="flex flex-wrap justify-end gap-1">
+                    <div
+                      className={`flex items-center gap-2 min-w-0 ${canSelect ? "cursor-pointer select-none" : ""}`}
+                      onClick={canSelect ? () => toggleSelectRecipe(Number(r.id)) : undefined}
+                    >
+                      {canSelect && (
+                        <input
+                          type="checkbox"
+                          className="size-4 rounded border-gray-300 text-primary focus:ring-primary shrink-0 cursor-pointer"
+                          checked={isSelected}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            toggleSelectRecipe(Number(r.id));
+                          }}
+                          aria-label={`تحديد وصفة ${r.name}`}
+                        />
+                      )}
+                      <div className="font-semibold leading-snug truncate">{r.name}</div>
+                    </div>
+                    <div className="flex flex-wrap justify-end gap-1 shrink-0">
                       <span className={`shrink-0 inline-block rounded-full px-2 py-0.5 text-xs ${kind.className}`}>{kind.label}</span>
                       <span className={`shrink-0 inline-block rounded-full px-2 py-0.5 text-xs ${r.isActive ? "badge-status-active" : "bg-muted text-muted-foreground"}`}>{r.isActive ? "مفعّلة" : "معطّلة"}</span>
                     </div>
@@ -435,8 +516,58 @@ export default function ProductionRecipes() {
           {!list.isLoading && filtered.length === 0 && (
             <Card><CardContent className="p-6 text-center text-muted-foreground">{q.trim() ? "لا نتائج." : "لا وصفات بعد."}</CardContent></Card>
           )}
+
+          {/* شريط عائم عند تحديد وصفات متعددة */}
+          {selectedCount > 0 && (
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 max-w-[calc(100vw-2rem)] bg-card/95 backdrop-blur-md border border-border/80 shadow-2xl rounded-2xl px-4 sm:px-5 py-3 flex items-center justify-between sm:justify-start gap-3 sm:gap-4 animate-in fade-in slide-in-from-bottom-4">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Layers aria-hidden className="size-4 text-primary shrink-0" />
+                <span className="whitespace-nowrap">تم تحديد {countLabel}</span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs text-muted-foreground hover:text-foreground h-8"
+                  onClick={() => setSelectedRecipeIds(new Set())}
+                >
+                  إلغاء التحديد
+                </Button>
+
+                <Button
+                  size="sm"
+                  className="gap-2 h-8"
+                  onClick={() => setIsMultiRecipeOpen(true)}
+                >
+                  <span>إنتاج الوصفات المحددة ({countLabel})</span>
+                  <ArrowLeft aria-hidden className="size-3.5" />
+                </Button>
+              </div>
+            </div>
+          )}
         </>
       )}
+
+      <BundleKitProductionDialog
+        open={isBundleKitOpen}
+        onOpenChange={setIsBundleKitOpen}
+      />
+
+      <MultiRecipeProductionDialog
+        open={isMultiRecipeOpen}
+        onOpenChange={setIsMultiRecipeOpen}
+        recipeIds={Array.from(validSelectedRecipeIds)}
+        onRemoveRecipeId={(id) => {
+          setSelectedRecipeIds((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+        }}
+        onClearSelection={() => setSelectedRecipeIds(new Set())}
+        branchId={branchId}
+      />
     </div>
   );
 }

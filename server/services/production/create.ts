@@ -29,9 +29,20 @@ import { spoilageSplit } from "./calc";
 import { nextProductionNumber, resolveLine, resolveRunPlan } from "./helpers";
 import type { CreateProductionInput, CreateProductionResult, ResolvedLine, SpoilageParams } from "./types";
 
-/** إنشاء مستند إنتاج: يستهلك المدخلات ويُنتج المخرجات ذرّياً + يُحدّث كلفة المخرجات (بلا قيد محاسبي). */
-export async function createProduction(input: CreateProductionInput, actor: Actor): Promise<CreateProductionResult> {
-  return withTx(async (tx) => {
+export interface CreateProductionOptions {
+  skipBundleSync?: boolean;
+}
+
+/**
+ * إنشاء مستند إنتاج داخل معاملة قاعدة بيانات مفتوحة سلفاً (tx).
+ * يدعم التجميع الذري لعدة أوامر إنتاج في معاملة واحدة مع خيار تأجيل مزامنة البكجات.
+ */
+export async function createProductionInTx(
+  tx: Tx,
+  input: CreateProductionInput,
+  actor: Actor,
+  options?: CreateProductionOptions,
+): Promise<CreateProductionResult> {
     // ① إعادة idempotent.
     const replayId = await checkIdempotency(tx, "production.create", input.clientRequestId, idempotencyHash(input));
     if (replayId) {
@@ -121,6 +132,7 @@ export async function createProduction(input: CreateProductionInput, actor: Acto
       allocPool,
       lockedVariantCosts,
       actor,
+      options,
     );
 
     // ⑤.5 (المرحلة ٦ — ١٩/٦/٢٦): تأكيد حفظ القيمة (WAVG verification).
@@ -137,7 +149,11 @@ export async function createProduction(input: CreateProductionInput, actor: Acto
     if (drift.gt("0.01")) {
       throw new TRPCError({
         code: "INTERNAL_SERVER_ERROR",
-        message: `انتهاك حفظ قيمة الإنتاج: مجموع تكاليف المخرجات ${allocatedTotal.toFixed(2)} ≠ allocPool ${allocPool.toFixed(2)} (فرق ${drift.toFixed(2)})`,
+        message: appErrorMessage({
+          what: "انتهاك حفظ قيمة الإنتاج",
+          why: `مجموع تكاليف المخرجات ${allocatedTotal.toFixed(2)} لا يطابق حوض التكلفة ${allocPool.toFixed(2)} (فرق ${drift.toFixed(2)})`,
+          doThis: "أبلغ الإدارة التقنية للتحقق من نسب توزيع تكاليف المخرجات",
+        }),
       });
     }
 
@@ -162,7 +178,11 @@ export async function createProduction(input: CreateProductionInput, actor: Acto
       });
     }
     return { productionOrderId, docNumber, totalCost: totalCost.toFixed(2) };
-  });
+}
+
+/** إنشاء مستند إنتاج: يستهلك المدخلات ويُنتج المخرجات ذرّياً + يُحدّث كلفة المخرجات (بلا قيد محاسبي). */
+export async function createProduction(input: CreateProductionInput, actor: Actor): Promise<CreateProductionResult> {
+  return withTx(async (tx) => createProductionInTx(tx, input, actor));
 }
 
 function throwConcurrentUnitChange(): never {
@@ -685,6 +705,7 @@ async function produceOutputs(
   allocPool: Decimal,
   lockedVariantCosts: ReadonlyMap<number, string>,
   actor: Actor,
+  options?: CreateProductionOptions,
 ): Promise<void> {
   outLines.sort((a, b) => a.variantId - b.variantId);
   const totalOutBase = outLines.reduce((s, l) => s + l.baseQuantity, 0);
@@ -819,9 +840,11 @@ async function produceOutputs(
     stockMap.set(l.variantId, denom);
     costMap.set(l.variantId, newCost.toFixed(2));
   }
-  // مزامنة تكلفة أيّ بكجات تحتوي على هذه المخرجات
-  await syncBundlesContainingComponents(
-    tx,
-    outLines.map((l) => l.variantId),
-  );
+  // مزامنة تكلفة أيّ بكجات تحتوي على هذه المخرجات (تُتخطى في التشغيل التجميعي)
+  if (!options?.skipBundleSync) {
+    await syncBundlesContainingComponents(
+      tx,
+      outLines.map((l) => l.variantId),
+    );
+  }
 }
