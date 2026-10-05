@@ -14,6 +14,7 @@
  * قراءةٌ فقط: لا كتابة ولا قفل ولا أثر على الدفتر/المخزون. الخدمة لا تقرأ `ctx` (قاعدة الطبقات) —
  * تستقبل مقبض القاعدة والمدخلات صريحةً.
  */
+import Decimal from "decimal.js";
 import { and, desc, eq, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import { VOIDED_INVOICE_STATUSES } from "@shared/invoiceStatus";
 import type { SaleLineInsight, SaleRef } from "@shared/priceAlerts";
@@ -23,6 +24,25 @@ import type { DB } from "../../db";
 /** أقصى مراجعَ لكل (صنف × وحدة): يكفي لتجاوز مرجعٍ شاذّ واحد ولعرض آخر بيعتين للتحليل لاحقاً. */
 export const MAX_SALE_REFS_PER_LINE = 3;
 
+
+/**
+ * خصم السطر الفعليّ كنسبة: السطر المخصوم بمبلغٍ يحمل `discountPercent = 0` و`discountAmount` = إجمالي
+ * خصم السطر (كمّيّته × خصم الوحدة) — فيُشتقّ منه كنسبةٍ من إجمالي السطر الإجماليّ. بلا هذا يبدو بيعٌ مخصومٌ
+ * «بلا خصم» فتُقارَن به أسعارٌ مختلفة جوهريّاً.
+ */
+function effectiveDiscountPercent(row: {
+  unitPrice: string | number;
+  quantity: string | number;
+  discountPercent: string | number | null;
+  discountAmount: string | number | null;
+}): string {
+  const pct = new Decimal(String(row.discountPercent ?? "0"));
+  if (pct.gt(0)) return String(row.discountPercent);
+  const amount = new Decimal(String(row.discountAmount ?? "0"));
+  const gross = new Decimal(String(row.unitPrice)).times(new Decimal(String(row.quantity)));
+  if (amount.lte(0) || gross.lte(0)) return "0";
+  return Decimal.min(amount.dividedBy(gross).times(100), 100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toString();
+}
 
 /** مفتاح الصفّ في الواجهة والخادم: `${variantId}:${productUnitId}` (نفس مفتاح `purchases.priceInsights`). */
 export const lineInsightKey = (variantId: number, productUnitId: number) => `${variantId}:${productUnitId}`;
@@ -78,6 +98,8 @@ export async function getSaleLineInsights(
       productUnitId: invoiceItems.productUnitId,
       unitPrice: invoiceItems.unitPrice,
       discountPercent: invoiceItems.discountPercent,
+      discountAmount: invoiceItems.discountAmount,
+      quantity: invoiceItems.quantity,
       invoiceId: invoices.id,
       invoiceNumber: invoices.invoiceNumber,
       invoiceDate: invoices.invoiceDate,
@@ -96,7 +118,7 @@ export async function getSaleLineInsights(
       invoiceId: Number(row.invoiceId),
       invoiceNumber: row.invoiceNumber,
       price: String(row.unitPrice),
-      discountPercent: String(row.discountPercent ?? "0"),
+      discountPercent: effectiveDiscountPercent(row),
       at: row.invoiceDate.toISOString(),
     });
   }

@@ -30,7 +30,7 @@ describe("SaleLastPriceHints", () => {
 
   it("عميلٌ لم يشترِ الصنف ⇒ «أول بيع» ولا زرّ", () => {
     const out = html({ lastSales: [] }, "1000", () => {});
-    expect(out).toContain("أول بيع لهذا الصنف لهذا العميل");
+    expect(out).toContain("لا بيع سابق ظاهر لك لهذا الصنف مع هذا العميل");
     expect(out).not.toContain("استخدم");
   });
 
@@ -80,6 +80,17 @@ describe("ageLabel", () => {
     expect(ageLabel(7)).toBe("قبل 7 أيام");
     expect(ageLabel(30)).toBe("قبل 30 يوماً");
     expect(ageLabel(null)).toBe("");
+  });
+});
+
+describe("SaleLastPriceHints — سعرٌ فارغ", () => {
+  it("السعر فارغ/صفر ⇒ يبقى «آخر بيع» وزرّ «استخدم» بلا تنبيه مقارنة", () => {
+    for (const entered of ["", "0", "  "]) {
+      const out = html({ lastSales: [sale("1000")] }, entered, () => {});
+      expect(out).toContain("آخر بيع لهذا العميل");
+      expect(out).toContain("استخدم");
+      expect(out).not.toContain("أقل من آخر سعر");
+    }
   });
 });
 

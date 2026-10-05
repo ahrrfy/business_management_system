@@ -10,7 +10,7 @@
  */
 import React from "react";
 import { AlertTriangle, Check, FileText, Info, TrendingUp } from "lucide-react";
-import { daysSince, evaluateSalePriceAlerts, type PriceAlert, type SaleLineInsight } from "@shared/priceAlerts";
+import { daysSince, evaluateSalePriceAlerts, pickReferenceSale, type PriceAlert, type SaleLineInsight } from "@shared/priceAlerts";
 import { cn } from "@/lib/utils";
 import { D } from "@/lib/money";
 import { fmtNum } from "./totals";
@@ -83,7 +83,8 @@ function alertText(alert: PriceAlert): string {
   const pct = (alert.deltaPercent ?? "0").replace("-", "");
   switch (alert.code) {
     case "FIRST_TIME":
-      return "أول بيع لهذا الصنف لهذا العميل";
+      // «ظاهر لك» لا «لم يحدث»: المحصور بفرعٍ/موظّفٍ يرى ضمن نطاقه فقط، فالغياب ليس دليلَ أول بيع مطلقاً.
+      return "لا بيع سابق ظاهر لك لهذا الصنف مع هذا العميل";
     case "SAME_AS_LAST":
       return "نفس آخر سعر بيع";
     case "BELOW_LAST_SALE":
@@ -117,9 +118,17 @@ export function SaleLastPriceHints({
 }) {
   if (!insight) return null;
   const alerts = evaluateSalePriceAlerts({ enteredPrice, lastSales: insight.lastSales });
-  const reference = alerts.find((a) => a.reference)?.reference;
+  // المرجع من السجلّ مباشرةً لا من التنبيهات: السعر الفارغ/الصفر لا ينتج تنبيهاً، ويبقى «آخر بيع» وزرّ «استخدم» ظاهرَين.
+  const reference = pickReferenceSale(insight.lastSales) ?? undefined;
   const hasDiscount = reference != null && Number(reference.discountPercent) > 0;
-  const differs = reference != null && !D(reference.price).eq(D(enteredPrice));
+  let differs = reference != null;
+  if (reference != null && enteredPrice.trim() !== "") {
+    try {
+      differs = !D(reference.price).eq(D(enteredPrice));
+    } catch {
+      differs = true;
+    }
+  }
   return (
     <div className="mt-1 space-y-0.5 text-[10px] leading-4" dir="rtl" aria-live="polite" data-testid="sale-last-price-hints">
       {reference && (

@@ -28,6 +28,7 @@ async function addSale(opts: {
   status?: (typeof s.invoices.$inferInsert)["status"];
   isGift?: boolean;
   discountPercent?: string;
+  discountAmount?: string;
   variantId?: number;
   branchId?: number;
   createdBy?: number;
@@ -42,7 +43,7 @@ async function addSale(opts: {
   await db().insert(s.invoiceItems).values({
     invoiceId: id, variantId: opts.variantId ?? 1, productUnitId: opts.unitId, quantity: "1", baseQuantity: 1,
     unitPrice: opts.price, unitCost: "50.00", total: opts.price, isGift: opts.isGift ?? false,
-    discountPercent: opts.discountPercent ?? "0",
+    discountPercent: opts.discountPercent ?? "0", discountAmount: opts.discountAmount ?? "0",
   });
   return id;
 }
@@ -108,6 +109,12 @@ describe.sequential("getSaleLineInsights", () => {
     const out = await getSaleLineInsights(db(), { ...base, excludeInvoiceId: editing });
     expect(out["1:1"]!.lastSales.map((r) => r.invoiceId)).toEqual([older]);
     expect(await getSaleLineInsights(db(), { ...base, excludeInvoiceId: older }).then((o) => o["1:1"]!.lastSales.length)).toBe(1);
+  });
+
+  it("خصم بمبلغٍ (discountPercent=0) يُشتقّ نسبةً فعليّة من إجمالي السطر ولا يظهر «بلا خصم»", async () => {
+    await addSale({ customerId: 1, unitId: 1, price: "100.00", at: "2026-09-01T10:00:00Z", discountAmount: "20.00" });
+    const out = await getSaleLineInsights(db(), { customerId: 1, items: [{ variantId: 1, productUnitId: 1 }] });
+    expect(out["1:1"]!.lastSales[0]!.discountPercent).toBe("20");
   });
 
   it("scope: المحصور بفرعٍ/بموظّفٍ لا يرى سعر فرعٍ/موظّفٍ آخر، وغير المحصور يرى الكل", async () => {

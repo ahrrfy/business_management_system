@@ -25,7 +25,7 @@ export function useSaleLineInsights(args: {
   items: readonly InvoiceLine[];
   /** فاتورةٌ قيد التصحيح — تُستثنى من «آخر بيع» كي لا تُقارَن بنفسها. */
   excludeInvoiceId?: number | null;
-}): { insights: Record<string, SaleLineInsight> | null; settled: boolean } {
+}): { insights: Record<string, SaleLineInsight> | null; settled: boolean; covered: ReadonlySet<string> } {
   const { enabled, customerId, items, excludeInvoiceId } = args;
   const customer = customerId != null && customerId > 0 ? customerId : null;
 
@@ -49,6 +49,9 @@ export function useSaleLineInsights(args: {
     [signature],
   );
 
+  // المفاتيح التي طُلبت فعلاً (بعد القصّ عند السقف): غياب مفتاحٍ خارجها ليس «أول بيع» بل «لم يُسأل عنه».
+  const covered = useMemo<ReadonlySet<string>>(() => new Set(signature === "" ? [] : signature.split("|")), [signature]);
+
   const query = trpc.sales.lineInsights.useQuery(
     {
       customerId: customer ?? 1,
@@ -57,7 +60,8 @@ export function useSaleLineInsights(args: {
     },
     {
       enabled: enabled && customer != null && pairs.length > 0,
-      staleTime: 60_000,
+      // 0: بيعٌ حُفظ للتوّ لا يجوز أن يغيب عن فاتورةٍ تالية لنفس العميل خلال دقيقة (جوابٌ «طازج» قديم).
+      staleTime: 0,
       retry: false,
       refetchOnWindowFocus: false,
       placeholderData: keepPreviousData,
@@ -70,10 +74,11 @@ export function useSaleLineInsights(args: {
   const excludeId = excludeInvoiceId != null && excludeInvoiceId > 0 ? excludeInvoiceId : null;
   if (fresh && customer != null) lastFresh.current = { customerId: customer, excludeId, data: fresh };
 
-  if (!enabled || customer == null) return { insights: null, settled: false };
-  if (fresh) return { insights: fresh, settled: true };
+  if (!enabled || customer == null) return { insights: null, settled: false, covered };
+  // settled = جوابٌ وصل ولا جلبَ جارٍ؛ أثناء إعادة الجلب يبقى الجواب ظاهراً لكن بلا ادّعاء «أول بيع».
+  if (fresh) return { insights: fresh, settled: !query.isFetching, covered };
   const stash = lastFresh.current;
   return stash && stash.customerId === customer && stash.excludeId === excludeId
-    ? { insights: stash.data, settled: false }
-    : { insights: null, settled: false };
+    ? { insights: stash.data, settled: false, covered }
+    : { insights: null, settled: false, covered };
 }

@@ -401,7 +401,7 @@ export function ProductTable({
               // جوابٌ طازجٌ يخصّ الصنف (`settled`) — وإلا ادّعينا بلا دليل أثناء الجلب.
               const saleInsight = saleHintsActive && !item.isGift && !item.digital
                 ? (saleInsights.insights?.[saleInsightKey(item.variantId, item.productUnitId)]
-                  ?? (saleInsights.settled ? { lastSales: [] } : undefined))
+                  ?? (saleInsights.settled && saleInsights.covered.has(saleInsightKey(item.variantId, item.productUnitId)) ? { lastSales: [] } : undefined))
                 : undefined;
               return (
                 <tr
