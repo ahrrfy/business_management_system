@@ -12,6 +12,8 @@ import {
   purchaseReturnReversals,
   purchaseReturns,
   receipts,
+  roles,
+  shifts,
   supplierInvoiceLines,
   supplierInvoiceMatchRuns,
   supplierInvoiceMatchAllocations,
@@ -25,6 +27,7 @@ import {
   supplierPaymentRequests,
   supplierPayments,
   suppliers,
+  users,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
@@ -39,7 +42,6 @@ import {
   assertCashOutAvailable,
   assertNonPhysicalOutReceipt,
   authorizeExternalTreasuryDisbursement,
-  type ExternalTreasuryDisbursementApproval,
   lockCashSourceForUpdate,
 } from "../cash/cashAvailability";
 import {
@@ -49,7 +51,16 @@ import {
 } from "../ledgerService";
 import { money, round2, sumMoney, toDbMoney } from "../money";
 import { paymentAssetRole } from "../sale/paymentPosting";
-import { shiftIdForCashTx } from "../shiftService";
+import { openShiftIdTx } from "../shiftService";
+import { appErrorMessage } from "@shared/errors";
+import {
+  applyPermissionOverrides,
+  diffFromTemplate,
+  moduleAccessAllowed,
+  resolvePermissions,
+  type PermissionMap,
+  type RoleKey,
+} from "@shared/permissions";
 import { withTx, type Actor } from "../tx";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
@@ -57,11 +68,37 @@ import {
   assertExpectedVersion,
   assertIndependentPurchaseReviewer,
 } from "./returnGovernance";
-import { supplierPaymentRefundTrigger, supplierPaymentTrigger } from "@shared/approvalTriggers";
+import {
+  supplierPaymentRefundTrigger,
+  supplierPaymentTrigger,
+} from "@shared/approvalTriggers";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import { payloadHashMatches } from "../idempotency";
 
 type Method = "CASH" | "CARD" | "TRANSFER" | "WALLET";
+type CashSourceInput = { mode: "DRAWER" | "TREASURY"; shiftId?: number | null };
+type CashSource = {
+  mode: "DRAWER" | "TREASURY";
+  shiftId: number | null;
+  payerUserId: number;
+};
+type StoredCashRequest = Pick<
+  typeof supplierPaymentRequests.$inferSelect,
+  "payloadCanonical" | "payloadHash" | "requestedBy" | "branchId" | "paymentMethod"
+>;
+type RefundCashSource = Omit<CashSource, "payerUserId"> & { receiverUserId: number };
+
+function refundCashSource(
+  source: CashSource | null | undefined,
+): RefundCashSource | null | undefined {
+  return source == null
+    ? source
+    : {
+        mode: source.mode,
+        shiftId: source.shiftId,
+        receiverUserId: source.payerUserId,
+      };
+}
 export const SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY = Symbol(
   "supplier-payment-treasury-decision",
 );
@@ -104,6 +141,7 @@ export interface RequestSupplierPaymentInput {
   amount: string;
   currencyAmount: string;
   paymentMethod: Method;
+  cashSource?: CashSourceInput | null;
   externalReference?: string | null;
   evidenceType: Evidence;
   evidenceReference: string;
@@ -128,6 +166,7 @@ export interface RequestSupplierPaymentRefundInput {
   expectedPaymentVersion: number;
   requestKey: string;
   refundMethod: Method;
+  cashSource?: CashSourceInput | null;
   externalReference?: string | null;
   evidenceType:
     | "SUPPLIER_ACKNOWLEDGEMENT"
@@ -370,42 +409,241 @@ async function accountingEntryId(tx: Tx, dedupeKey: string): Promise<number> {
   return Number(row.id);
 }
 
-async function lockPaymentInstrument(
-  tx: Tx,
-  branchId: number,
-  method: Method,
-  actor: Actor,
-  label: string,
-  direction: "IN" | "OUT",
-  makerUserIds: Array<number | null | undefined>,
-): Promise<{
-  shiftId: number | null;
-  cashBucket: "DRAWER" | "TREASURY" | null;
-  treasuryApproval: ExternalTreasuryDisbursementApproval | null;
-}> {
-  if (method !== "CASH")
-    return { shiftId: null, cashBucket: null, treasuryApproval: null };
-  const result = await shiftIdForCashTx(
-    tx,
-    { ...actor, branchId },
-    branchId,
-    label,
-  );
-  if (direction === "OUT" && result.cashBucket === "TREASURY") {
-    const treasuryApproval = await authorizeExternalTreasuryDisbursement(tx, {
-      actor,
-      makerUserIds,
-      branchIds: [branchId],
-      operation: label,
-    });
-    return { ...result, treasuryApproval };
+function cashSourceError(
+  why: string,
+  code:
+    | "BAD_REQUEST"
+    | "FORBIDDEN"
+    | "PRECONDITION_FAILED"
+    | "CONFLICT" = "PRECONDITION_FAILED",
+) {
+  return new TRPCError({
+    code,
+    message: appErrorMessage({
+      what: "تعذّر استخدام مصدر نقد المورد",
+      why,
+      doThis: "أعد تقديمه بمصدر نقد صريح وصحيح؛ وارفض الطلب المعلّق السابق إن وجد",
+    }),
+  });
+}
+
+async function treasurySourceAllowed(tx: Tx, actor: Actor): Promise<boolean> {
+  const [user] = await tx
+    .select()
+    .from(users)
+    .where(eq(users.id, actor.userId))
+    .for("share")
+    .limit(1);
+  if (!user?.isActive) return false;
+  if (user.isOwner) return true;
+  let role = user.role as RoleKey;
+  let override = user.permissionsOverride as PermissionMap | null;
+  if (user.customRoleId != null) {
+    const [custom] = await tx
+      .select()
+      .from(roles)
+      .where(eq(roles.id, user.customRoleId))
+      .for("share")
+      .limit(1);
+    if (!custom?.isActive) return false;
+    role = custom.baseRole as RoleKey;
+    const effective = applyPermissionOverrides(
+      resolvePermissions(
+        role,
+        diffFromTemplate(role, custom.permissions as PermissionMap),
+      ),
+      override,
+    );
+    override = diffFromTemplate(role, effective);
   }
+  return moduleAccessAllowed(role, override, "treasury", "FULL", [
+    "manager",
+    "accountant",
+  ]);
+}
+
+async function validateDrawerSource(
+  tx: Tx,
+  source: CashSource,
+  branchId: number,
+) {
+  const [shift] = await tx
+    .select({
+      id: shifts.id,
+      branchId: shifts.branchId,
+      userId: shifts.userId,
+      status: shifts.status,
+    })
+    .from(shifts)
+    .where(eq(shifts.id, source.shiftId!))
+    .for("update")
+    .limit(1);
+  if (!shift || shift.status !== "OPEN")
+    throw cashSourceError(
+      "درج مقدم الطلب المسجّل غير موجود أو ورديته مغلقة؛ لا يُستبدل بدرج جديد",
+    );
+  if (Number(shift.branchId) !== branchId)
+    throw cashSourceError("الدرج المسجّل يعود إلى فرع مختلف", "BAD_REQUEST");
+  if (Number(shift.userId) !== source.payerUserId)
+    throw cashSourceError("الدرج المسجّل يعود إلى مستخدم آخر", "FORBIDDEN");
+}
+
+async function captureCashSource(
+  tx: Tx,
+  method: Method,
+  input: CashSourceInput | null | undefined,
+  branchId: number,
+  actor: Actor,
+): Promise<CashSource | null> {
+  if (method !== "CASH") {
+    if (input != null)
+      throw cashSourceError(
+        "الحركة غير النقدية لا تقبل مصدر درج أو خزينة",
+        "BAD_REQUEST",
+      );
+    return null;
+  }
+  const mode = input?.mode ?? "DRAWER";
+  if (mode === "TREASURY") {
+    if (input?.shiftId != null)
+      throw cashSourceError("مصدر الخزينة لا يقبل رقم وردية", "BAD_REQUEST");
+    if (!(await treasurySourceAllowed(tx, actor)))
+      throw cashSourceError(
+        "اختيار الخزينة يتطلب صلاحية الخزينة الكاملة",
+        "FORBIDDEN",
+      );
+    return { mode, shiftId: null, payerUserId: actor.userId };
+  }
+  if (mode !== "DRAWER")
+    throw cashSourceError("نوع مصدر النقد غير صالح", "BAD_REQUEST");
+  const shiftId =
+    input?.shiftId ?? (await openShiftIdTx(tx, actor.userId, branchId));
+  if (!Number.isSafeInteger(shiftId) || Number(shiftId) <= 0)
+    throw cashSourceError(
+      "لا توجد وردية مفتوحة لمقدم الطلب؛ اختيار الخزينة يجب أن يكون صريحاً",
+    );
+  const source: CashSource = {
+    mode,
+    shiftId: Number(shiftId),
+    payerUserId: actor.userId,
+  };
+  await validateDrawerSource(tx, source, branchId);
+  return source;
+}
+
+function storedCashSource(
+  request: StoredCashRequest,
+  allowLegacy = false,
+  methodField: "paymentMethod" | "refundMethod" = "paymentMethod",
+): CashSource | null | undefined {
+  let payload: {
+    cashSource?: (Omit<CashSource, "payerUserId"> & {
+      payerUserId?: number;
+      receiverUserId?: number;
+    }) | null;
+    branchId?: number;
+    paymentMethod?: Method;
+    refundMethod?: Method;
+  };
+  try {
+    payload = JSON.parse(request.payloadCanonical);
+  } catch {
+    throw cashSourceError("دليل مصدر النقد غير قابل للقراءة", "CONFLICT");
+  }
+  if (
+    !payload ||
+    !payloadHashMatches(
+      sha256(request.payloadCanonical),
+      request.payloadHash,
+    ) ||
+    ((methodField === "paymentMethod" || payload.cashSource !== undefined) &&
+      Number(payload.branchId) !== Number(request.branchId)) ||
+    payload[methodField] !== request.paymentMethod
+  )
+    throw cashSourceError(
+      "بصمة الطلب أو بيانات مصدر النقد لا تطابق الطلب المحفوظ",
+      "CONFLICT",
+    );
+  const source = payload.cashSource;
+  if (source === undefined && (allowLegacy || request.paymentMethod !== "CASH"))
+    return undefined;
+  if (request.paymentMethod !== "CASH") {
+    if (source != null)
+      throw cashSourceError("طلب غير نقدي يحمل مصدر نقد", "CONFLICT");
+    return null;
+  }
+  if (!source) throw cashSourceError("طلب نقدي قديم بلا مصدر نقد محدّد");
+  const userId =
+    methodField === "refundMethod" ? source.receiverUserId : source.payerUserId;
+  if (
+    userId !== Number(request.requestedBy) ||
+    !["DRAWER", "TREASURY"].includes(source.mode) ||
+    (source.mode === "DRAWER"
+      ? !Number.isSafeInteger(source.shiftId) || Number(source.shiftId) <= 0
+      : source.shiftId !== null)
+  )
+    throw cashSourceError(
+      "مصدر النقد المحفوظ لا يطابق هوية مقدم الطلب أو نوع المصدر",
+      "CONFLICT",
+    );
+  return { mode: source.mode, shiftId: source.shiftId, payerUserId: userId! };
+}
+
+async function lockRequestedPaymentInstrument(
+  tx: Tx,
+  request: StoredCashRequest,
+  reviewer: Actor,
+  direction: "IN" | "OUT" = "OUT",
+  methodField: "paymentMethod" | "refundMethod" = "paymentMethod",
+) {
+  const source = storedCashSource(request, false, methodField);
+  if (!source)
+    return { shiftId: null, cashBucket: null, treasuryApproval: null };
+  const branchId = Number(request.branchId);
+  if (source.mode === "TREASURY" && direction === "OUT") {
+    const treasuryApproval = await authorizeExternalTreasuryDisbursement(tx, {
+      actor: reviewer,
+      makerUserIds: [request.requestedBy],
+      branchIds: [branchId],
+      operation: "دفع مورد",
+    });
+    return { shiftId: null, cashBucket: "TREASURY" as const, treasuryApproval };
+  }
+  if (source.mode === "DRAWER") await validateDrawerSource(tx, source, branchId);
   await lockCashSourceForUpdate(tx, {
     branchId,
-    shiftId: result.shiftId,
-    cashBucket: result.cashBucket,
+    shiftId: source.shiftId,
+    cashBucket: source.mode,
   });
-  return { ...result, treasuryApproval: null };
+  return {
+    shiftId: source.shiftId,
+    cashBucket: source.mode,
+    treasuryApproval: null,
+  };
+}
+
+export async function listSupplierPaymentCashSources(
+  branchId: number,
+  actor: Actor,
+) {
+  assertPurchaseBranch({ branchId }, actor);
+  return withTx(
+    async (tx) => ({
+      drawers: await tx
+        .select({ id: shifts.id, shiftType: shifts.shiftType })
+        .from(shifts)
+        .where(
+          and(
+            eq(shifts.branchId, branchId),
+            eq(shifts.userId, actor.userId),
+            eq(shifts.status, "OPEN"),
+          ),
+        )
+        .orderBy(asc(shifts.id)),
+      canUseTreasury: await treasurySourceAllowed(tx, actor),
+    }),
+    { gate: "NONE" },
+  );
 }
 
 async function invoiceReservations(tx: Tx, invoiceIds: number[]) {
@@ -604,6 +842,39 @@ export async function requestSupplierPaymentInTx(
       code: "BAD_REQUEST",
       message: "دفعة IQD لا تقبل سعر صرف ويجب تطابق مبلغيها",
     });
+  assertPurchaseBranch({ branchId: input.branchId }, actor);
+  const replay = (
+    await tx
+      .select()
+      .from(supplierPaymentRequests)
+      .where(eq(supplierPaymentRequests.requestKey, requestKey))
+      .limit(1)
+  )[0];
+  if (replay) {
+    assertPurchaseBranch(replay, actor);
+    if (Number(replay.requestedBy) !== actor.userId)
+      throw cashSourceError("مفتاح الطلب يعود إلى دافع آخر", "FORBIDDEN");
+  }
+  const cashSource = replay
+    ? storedCashSource(replay, true)
+    : await captureCashSource(
+        tx,
+        input.paymentMethod,
+        input.cashSource,
+        input.branchId,
+        actor,
+      );
+  if (input.paymentMethod !== "CASH" && input.cashSource != null)
+    throw cashSourceError("الدفع غير النقدي لا يقبل مصدر نقد", "BAD_REQUEST");
+  if (
+    replay &&
+    input.cashSource != null &&
+    (!cashSource ||
+      input.cashSource.mode !== cashSource.mode ||
+      (input.cashSource.shiftId != null &&
+        input.cashSource.shiftId !== cashSource.shiftId))
+  )
+    throw cashSourceError("مفتاح الطلب مستعمل بمصدر نقد مختلف", "CONFLICT");
   const canonical = stableCanonical({
     supplierId: input.supplierId,
     branchId: input.branchId,
@@ -612,6 +883,7 @@ export async function requestSupplierPaymentInTx(
     amount,
     currencyAmount,
     paymentMethod: input.paymentMethod,
+    ...(cashSource === undefined ? {} : { cashSource }),
     externalReference,
     evidenceType: input.evidenceType,
     evidenceReference,
@@ -622,13 +894,6 @@ export async function requestSupplierPaymentInTx(
   const evidenceHash = sha256(
     stableCanonical({ type: input.evidenceType, reference: evidenceReference }),
   );
-  const replay = (
-    await tx
-      .select()
-      .from(supplierPaymentRequests)
-      .where(eq(supplierPaymentRequests.requestKey, requestKey))
-      .limit(1)
-  )[0];
   if (replay) {
     assertPurchaseBranch(replay, actor);
     if (!payloadHashMatches(payloadHash, replay.payloadHash))
@@ -700,12 +965,12 @@ export async function requestSupplierPaymentInTx(
       amount: money(0),
       currencyAmount: money(0),
     };
-    const pending = reservations.pending.get(
-      allocation.supplierInvoiceId,
-    ) ?? { amount: money(0), currencyAmount: money(0) };
+    const pending = reservations.pending.get(allocation.supplierInvoiceId) ?? {
+      amount: money(0),
+      currencyAmount: money(0),
+    };
     const creditReturns =
-      reservations.creditReturns.get(allocation.supplierInvoiceId) ??
-      money(0);
+      reservations.creditReturns.get(allocation.supplierInvoiceId) ?? money(0);
     assertAllocationAvailable(
       invoice,
       allocation,
@@ -729,41 +994,37 @@ export async function requestSupplierPaymentInTx(
     });
     return { allocation, snapshot, hash: sha256(snapshot) };
   });
-  const inserted = await tx
-    .insert(supplierPaymentRequests)
-    .values({
-      requestKey,
-      supplierId: input.supplierId,
-      branchId: input.branchId,
-      currency: input.currency,
-      exchangeRate: rate,
-      requestedAmount: amount,
-      requestedCurrencyAmount: currencyAmount,
-      paymentMethod: input.paymentMethod,
-      externalReference,
-      payloadCanonical: canonical,
-      payloadHash,
-      evidenceType: input.evidenceType,
-      evidenceReference,
-      evidenceHash,
-      reason,
-      pendingGuard: `SUPPLIER-PAY:${input.supplierId}:${input.branchId}:${input.currency}`,
-      requestedBy: actor.userId,
-    });
+  const inserted = await tx.insert(supplierPaymentRequests).values({
+    requestKey,
+    supplierId: input.supplierId,
+    branchId: input.branchId,
+    currency: input.currency,
+    exchangeRate: rate,
+    requestedAmount: amount,
+    requestedCurrencyAmount: currencyAmount,
+    paymentMethod: input.paymentMethod,
+    externalReference,
+    payloadCanonical: canonical,
+    payloadHash,
+    evidenceType: input.evidenceType,
+    evidenceReference,
+    evidenceHash,
+    reason,
+    pendingGuard: `SUPPLIER-PAY:${input.supplierId}:${input.branchId}:${input.currency}`,
+    requestedBy: actor.userId,
+  });
   const requestId = extractInsertId(inserted);
-  await tx
-    .insert(supplierPaymentRequestAllocations)
-    .values(
-      rows.map(({ allocation, snapshot, hash }) => ({
-        requestId,
-        supplierInvoiceId: allocation.supplierInvoiceId,
-        invoiceVersion: allocation.invoiceVersion,
-        requestedAmount: allocation.amount,
-        requestedCurrencyAmount: allocation.currencyAmount,
-        invoiceSnapshot: snapshot,
-        invoiceHash: hash,
-      })),
-    );
+  await tx.insert(supplierPaymentRequestAllocations).values(
+    rows.map(({ allocation, snapshot, hash }) => ({
+      requestId,
+      supplierInvoiceId: allocation.supplierInvoiceId,
+      invoiceVersion: allocation.invoiceVersion,
+      requestedAmount: allocation.amount,
+      requestedCurrencyAmount: allocation.currencyAmount,
+      invoiceSnapshot: snapshot,
+      invoiceHash: hash,
+    })),
+  );
   return {
     requestId,
     status: "PENDING" as const,
@@ -817,15 +1078,7 @@ export async function decideSupplierPaymentInTx(
   assertPurchaseBranch(preview, actor);
   const instrument =
     input.action === "APPROVE" && preview.status === "PENDING"
-      ? await lockPaymentInstrument(
-          tx,
-          Number(preview.branchId),
-          preview.paymentMethod,
-          actor,
-          "دفع مورد",
-          "OUT",
-          [preview.requestedBy],
-        )
+      ? await lockRequestedPaymentInstrument(tx, preview, actor)
       : { shiftId: null, cashBucket: null, treasuryApproval: null };
   const previewAllocations =
     input.action === "APPROVE"
@@ -869,7 +1122,10 @@ export async function decideSupplierPaymentInTx(
     subject: `سداد مورّد (طلب ${input.requestId})`,
     legacy: () => {
       if (supplierPaymentApprover.isOwner) return;
-      assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId);
+      assertIndependentPurchaseReviewer(
+        Number(request.requestedBy),
+        actor.userId,
+      );
     },
   });
   if (request.status !== "PENDING") {
@@ -889,9 +1145,7 @@ export async function decideSupplierPaymentInTx(
     await tx
       .update(supplierPaymentRequestAllocations)
       .set({ activeInvoiceGuard: null })
-      .where(
-        eq(supplierPaymentRequestAllocations.requestId, input.requestId),
-      );
+      .where(eq(supplierPaymentRequestAllocations.requestId, input.requestId));
     await tx
       .update(supplierPaymentRequests)
       .set({
@@ -911,6 +1165,14 @@ export async function decideSupplierPaymentInTx(
       idempotent: false as const,
     };
   }
+  if (
+    request.payloadCanonical !== preview.payloadCanonical ||
+    request.payloadHash !== preview.payloadHash ||
+    request.requestedBy !== preview.requestedBy ||
+    request.branchId !== preview.branchId ||
+    request.paymentMethod !== preview.paymentMethod
+  )
+    throw cashSourceError("تغيّر دليل مصدر النقد أثناء الاعتماد", "CONFLICT");
   const supplier = aggregate.supplier;
   if (!supplier || !supplier.isActive)
     throw new TRPCError({
@@ -940,9 +1202,7 @@ export async function decideSupplierPaymentInTx(
     await tx
       .update(supplierPaymentRequestAllocations)
       .set({ activeInvoiceGuard: null })
-      .where(
-        eq(supplierPaymentRequestAllocations.requestId, input.requestId),
-      );
+      .where(eq(supplierPaymentRequestAllocations.requestId, input.requestId));
     await tx
       .update(supplierPaymentRequests)
       .set({
@@ -1014,9 +1274,7 @@ export async function decideSupplierPaymentInTx(
       },
       {
         amount: posted.amount.plus(pendingOther.amount),
-        currencyAmount: posted.currencyAmount.plus(
-          pendingOther.currencyAmount,
-        ),
+        currencyAmount: posted.currencyAmount.plus(pendingOther.currencyAmount),
       },
       creditReturns,
     );
@@ -1064,26 +1322,24 @@ export async function decideSupplierPaymentInTx(
       operation: "دفع مورد",
     });
   }
-  const receipt = await tx
-    .insert(receipts)
-    .values({
-      branchId: Number(request.branchId),
-      shiftId: instrument.shiftId,
-      cashBucket: instrument.cashBucket,
-      direction: "OUT",
-      amount: toDbMoney(amount),
-      paymentMethod: request.paymentMethod,
-      referenceNumber:
-        request.externalReference ?? `SUPPLIER-PAY-REQ:${input.requestId}`,
-      partyType: "SUPPLIER",
-      partyId: Number(request.supplierId),
-      description: request.reason,
-      status: "COMPLETED",
-      approvalStatus: "APPROVED",
-      approvedBy: actor.userId,
-      approvedAt: new Date(),
-      createdBy: actor.userId,
-    });
+  const receipt = await tx.insert(receipts).values({
+    branchId: Number(request.branchId),
+    shiftId: instrument.shiftId,
+    cashBucket: instrument.cashBucket,
+    direction: "OUT",
+    amount: toDbMoney(amount),
+    paymentMethod: request.paymentMethod,
+    referenceNumber:
+      request.externalReference ?? `SUPPLIER-PAY-REQ:${input.requestId}`,
+    partyType: "SUPPLIER",
+    partyId: Number(request.supplierId),
+    description: request.reason,
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    approvedBy: actor.userId,
+    approvedAt: new Date(),
+    createdBy: Number(request.requestedBy),
+  });
   const receiptId = extractInsertId(receipt);
   const asset = paymentAssetRole(
     request.paymentMethod,
@@ -1110,7 +1366,7 @@ export async function decideSupplierPaymentInTx(
     receiptId,
     amount,
     paymentMethod: request.paymentMethod,
-    createdBy: actor.userId,
+    createdBy: Number(request.requestedBy),
     dedupeKey,
     notes: request.reason,
     postingIntent: createPostingIntent(
@@ -1123,38 +1379,34 @@ export async function decideSupplierPaymentInTx(
   });
   const entryId = await accountingEntryId(tx, dedupeKey);
   const paymentNumber = `SP-${request.branchId}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${createHash("sha256").update(request.requestKey).digest("hex").slice(0, 16).toUpperCase()}`;
-  const inserted = await tx
-    .insert(supplierPayments)
-    .values({
-      paymentNumber,
-      requestId: input.requestId,
-      supplierId: Number(request.supplierId),
-      branchId: Number(request.branchId),
-      currency: request.currency,
-      exchangeRate: request.exchangeRate,
-      amount: request.requestedAmount,
-      currencyAmount: request.requestedCurrencyAmount,
-      paymentMethod: request.paymentMethod,
-      externalReference: request.externalReference,
-      receiptId,
-      accountingEntryId: entryId,
-      payloadCanonical: request.payloadCanonical,
-      payloadHash: request.payloadHash,
-      postedBy: actor.userId,
-    });
+  const inserted = await tx.insert(supplierPayments).values({
+    paymentNumber,
+    requestId: input.requestId,
+    supplierId: Number(request.supplierId),
+    branchId: Number(request.branchId),
+    currency: request.currency,
+    exchangeRate: request.exchangeRate,
+    amount: request.requestedAmount,
+    currencyAmount: request.requestedCurrencyAmount,
+    paymentMethod: request.paymentMethod,
+    externalReference: request.externalReference,
+    receiptId,
+    accountingEntryId: entryId,
+    payloadCanonical: request.payloadCanonical,
+    payloadHash: request.payloadHash,
+    postedBy: actor.userId,
+  });
   const supplierPaymentId = extractInsertId(inserted);
-  await tx
-    .insert(supplierPaymentAllocations)
-    .values(
-      requested.map((row) => ({
-        supplierPaymentId,
-        requestAllocationId: Number(row.id),
-        supplierInvoiceId: Number(row.supplierInvoiceId),
-        allocatedAmount: row.requestedAmount,
-        allocatedCurrencyAmount: row.requestedCurrencyAmount,
-        invoiceHash: row.invoiceHash,
-      })),
-    );
+  await tx.insert(supplierPaymentAllocations).values(
+    requested.map((row) => ({
+      supplierPaymentId,
+      requestAllocationId: Number(row.id),
+      supplierInvoiceId: Number(row.supplierInvoiceId),
+      allocatedAmount: row.requestedAmount,
+      allocatedCurrencyAmount: row.requestedCurrencyAmount,
+      invoiceHash: row.invoiceHash,
+    })),
+  );
   await tx
     .update(supplierPaymentRequestAllocations)
     .set({ activeInvoiceGuard: null })
@@ -1283,7 +1535,7 @@ export async function requestSupplierPaymentRefund(
     sumMoney(normalized.map((row) => row.currencyAmount)),
   );
   assertPaymentTotals(amount, currencyAmount, normalized);
-  const canonical = stableCanonical({
+  const payload = {
     supplierPaymentId: input.supplierPaymentId,
     expectedPaymentVersion: input.expectedPaymentVersion,
     refundMethod: input.refundMethod,
@@ -1292,8 +1544,17 @@ export async function requestSupplierPaymentRefund(
     evidenceReference,
     reason,
     allocations: normalized,
-  });
-  const payloadHash = sha256(canonical);
+  };
+  const refundCanonical = (
+    source: CashSource | null | undefined,
+    branchId: number,
+  ) =>
+    stableCanonical({
+      ...payload,
+      ...(source === undefined
+        ? {}
+        : { branchId, cashSource: refundCashSource(source) }),
+    });
   const result = await withTx(async (tx) => {
     const replay = (
       await tx
@@ -1304,7 +1565,32 @@ export async function requestSupplierPaymentRefund(
     )[0];
     if (replay) {
       assertPurchaseBranch(replay, actor);
-      if (!payloadHashMatches(payloadHash, replay.payloadHash))
+      if (Number(replay.requestedBy) !== actor.userId)
+        throw cashSourceError("مفتاح الطلب يعود إلى مستلم آخر", "FORBIDDEN");
+      const source = storedCashSource(
+        { ...replay, paymentMethod: replay.refundMethod },
+        true,
+        "refundMethod",
+      );
+      if (input.refundMethod !== "CASH" && input.cashSource != null)
+        throw cashSourceError(
+          "الاسترداد غير النقدي لا يقبل مصدر نقد",
+          "BAD_REQUEST",
+        );
+      if (
+        input.cashSource != null &&
+        (!source ||
+          input.cashSource.mode !== source.mode ||
+          (input.cashSource.shiftId != null &&
+            input.cashSource.shiftId !== source.shiftId))
+      )
+        throw cashSourceError("مفتاح الطلب مستعمل بمصدر نقد مختلف", "CONFLICT");
+      if (
+        !payloadHashMatches(
+          sha256(refundCanonical(source, Number(replay.branchId))),
+          replay.payloadHash,
+        )
+      )
         throw new TRPCError({
           code: "CONFLICT",
           message: "مفتاح الطلب مستعمل باسترداد مختلف",
@@ -1315,6 +1601,26 @@ export async function requestSupplierPaymentRefund(
         idempotent: true as const,
       };
     }
+    const previewPayment = (
+      await tx
+        .select()
+        .from(supplierPayments)
+        .where(eq(supplierPayments.id, input.supplierPaymentId))
+        .limit(1)
+    )[0];
+    if (!previewPayment)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "دفعة المورد غير موجودة",
+      });
+    assertPurchaseBranch(previewPayment, actor);
+    const source = await captureCashSource(
+      tx,
+      input.refundMethod,
+      input.cashSource,
+      Number(previewPayment.branchId),
+      actor,
+    );
     const payment = (
       await tx
         .select()
@@ -1323,12 +1629,17 @@ export async function requestSupplierPaymentRefund(
         .for("update")
         .limit(1)
     )[0];
-    if (!payment)
-      throw new TRPCError({
-        code: "NOT_FOUND",
-        message: "دفعة المورد غير موجودة",
-      });
+    if (
+      !payment ||
+      Number(payment.branchId) !== Number(previewPayment.branchId)
+    )
+      throw cashSourceError(
+        "تغيّرت دفعة المورد أثناء تحديد مصدر النقد",
+        "CONFLICT",
+      );
     assertPurchaseBranch(payment, actor);
+    const canonical = refundCanonical(source, Number(payment.branchId));
+    const payloadHash = sha256(canonical);
     assertExpectedVersion(
       Number(payment.version),
       input.expectedPaymentVersion,
@@ -1465,14 +1776,12 @@ export async function decideSupplierPaymentRefund(
         : null;
     const instrument =
       input.action === "APPROVE" && preview.status === "PENDING"
-        ? await lockPaymentInstrument(
+        ? await lockRequestedPaymentInstrument(
             tx,
-            Number(preview.branchId),
-            preview.refundMethod,
+            { ...preview, paymentMethod: preview.refundMethod },
             actor,
-            "استرداد دفعة مورد",
             "IN",
-            [],
+            "refundMethod",
           )
         : { shiftId: null, cashBucket: null, treasuryApproval: null };
     const previewItems =
@@ -1561,6 +1870,14 @@ export async function decideSupplierPaymentRefund(
         idempotent: false as const,
       };
     }
+    if (
+      request.payloadHash !== preview.payloadHash ||
+      request.payloadCanonical !== preview.payloadCanonical ||
+      Number(request.requestedBy) !== Number(preview.requestedBy) ||
+      Number(request.branchId) !== Number(preview.branchId) ||
+      request.refundMethod !== preview.refundMethod
+    )
+      throw cashSourceError("تغيّر دليل مصدر النقد أثناء الاعتماد", "CONFLICT");
     const payment = (
       await tx
         .select()
@@ -1665,7 +1982,7 @@ export async function decideSupplierPaymentRefund(
         approvalStatus: "APPROVED",
         approvedBy: actor.userId,
         approvedAt: new Date(),
-        createdBy: actor.userId,
+        createdBy: Number(request.requestedBy),
       });
     const receiptId = extractInsertId(receipt);
     const asset = paymentAssetRole(
@@ -1686,7 +2003,7 @@ export async function decideSupplierPaymentRefund(
       receiptId,
       amount,
       paymentMethod: request.refundMethod,
-      createdBy: actor.userId,
+      createdBy: Number(request.requestedBy),
       dedupeKey,
       notes: request.reason,
       postingIntent: createPostingIntent(
@@ -1852,8 +2169,8 @@ export async function listPendingSupplierPaymentRequests(
 ) {
   assertPurchaseBranch({ branchId }, actor);
   return withTx(
-    (tx) =>
-      tx
+    async (tx) => {
+      const rows = await tx
         .select()
         .from(supplierPaymentRequests)
         .where(
@@ -1862,7 +2179,17 @@ export async function listPendingSupplierPaymentRequests(
             eq(supplierPaymentRequests.status, "PENDING"),
           ),
         )
-        .orderBy(asc(supplierPaymentRequests.requestedAt)),
+        .orderBy(asc(supplierPaymentRequests.requestedAt));
+      return rows.map((row) => {
+        let cashSource: CashSource | null = null;
+        try {
+          cashSource = storedCashSource(row) ?? null;
+        } catch {
+          /* قديم أو دليل تالف: يُعرض لإعادة تقديمه. */
+        }
+        return { ...row, cashSource };
+      });
+    },
     { gate: "NONE" },
   );
 }
@@ -1912,7 +2239,22 @@ export async function listPendingSupplierPaymentRefundRequests(
       const page = hasMore ? rows.slice(0, input.limit) : rows;
       const last = page.at(-1);
       return {
-        rows: page,
+        rows: page.map((row) => {
+          let cashSource: RefundCashSource | null = null;
+          try {
+            cashSource =
+              refundCashSource(
+                storedCashSource(
+                  { ...row, paymentMethod: row.refundMethod },
+                  false,
+                  "refundMethod",
+                ),
+              ) ?? null;
+          } catch {
+            // Approval rejects legacy or corrupt cash evidence; the queue remains rejectable.
+          }
+          return { ...row, cashSource };
+        }),
         hasMore,
         nextCursor:
           hasMore && last

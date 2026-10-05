@@ -5159,6 +5159,9 @@ export const purchaseOrders = mysqlTable(
     shippingCost: decimal("shippingCost", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
+    /** Explicit creator declaration; invoice approval never chooses the reviewer's cash source. */
+    shippingFundingSource: mysqlEnum("shippingFundingSource", ["ACCRUAL", "DRAWER"]).default("ACCRUAL").notNull(),
+    shippingFundingShiftId: bigint("shippingFundingShiftId", { mode: "number" }).references(() => shifts.id),
     customsCost: decimal("customsCost", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
@@ -5312,6 +5315,8 @@ export const purchaseOrderRevisions = mysqlTable(
     subtotal: decimal("subtotal", { precision: 15, scale: 2 }).notNull(),
     taxAmount: decimal("taxAmount", { precision: 15, scale: 2 }).notNull(),
     shippingCost: decimal("shippingCost", { precision: 15, scale: 2 }).notNull(),
+    shippingFundingSource: mysqlEnum("shippingFundingSource", ["ACCRUAL", "DRAWER"]).default("ACCRUAL").notNull(),
+    shippingFundingShiftId: bigint("shippingFundingShiftId", { mode: "number" }).references(() => shifts.id),
     customsCost: decimal("customsCost", { precision: 15, scale: 2 }).notNull(),
     invoiceDiscount: decimal("invoiceDiscount", { precision: 15, scale: 2 }).notNull(),
     total: decimal("total", { precision: 15, scale: 2 }).notNull(),

@@ -29,7 +29,8 @@ import {
   releasePurchaseOrderRevisionAllocationsTx,
 } from "./requisitions";
 import { appendPurchaseOrderEventTx } from "./revisions";
-import { postApprovedPurchaseInvoiceInTx } from "./automaticInvoicePosting";
+import { postApprovedPurchaseInvoiceInTx, recognizeShippingAndCustomsInTx } from "./automaticInvoicePosting";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 
 export type PurchaseOrderControlKind =
   | "APPROVE_REVISION"
@@ -446,6 +447,9 @@ export async function decidePurchaseOrderControl(
         purchaseOrderId: purchaseOrderControlRequests.purchaseOrderId,
         branchId: purchaseOrderControlRequests.branchId,
         kind: purchaseOrderControlRequests.kind,
+        status: purchaseOrderControlRequests.status,
+        revisionId: purchaseOrderControlRequests.revisionId,
+        baseOrderVersion: purchaseOrderControlRequests.baseOrderVersion,
       })
       .from(purchaseOrderControlRequests)
       .where(eq(purchaseOrderControlRequests.id, input.requestId))
@@ -463,6 +467,16 @@ export async function decidePurchaseOrderControl(
     legacyConfirmOnly: options.legacyConfirmOnly ?? false,
   });
   return withTx(async (tx) => {
+    // Documented shipping uses the creator's frozen source, never the reviewer.
+    // Acquire it before the PO, in the same source -> document order as cash writers.
+    if (input.approve && preview.status === "PENDING" && (preview.kind === "CANCEL_ORDER" || (preview.kind === "APPROVE_REVISION" && !options.legacyConfirmOnly))) {
+      const [sourcePo] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, preview.purchaseOrderId)).limit(1);
+      if (sourcePo?.shippingFundingSource === "DRAWER" && sourcePo.shippingFundingShiftId != null && Number(sourcePo.currentRevisionId) === Number(preview.revisionId) && Number(sourcePo.version) === Number(preview.baseOrderVersion)) {
+        await lockCashSourceForUpdate(tx, {
+          branchId: Number(sourcePo.branchId), cashBucket: "DRAWER", shiftId: Number(sourcePo.shippingFundingShiftId),
+        });
+      }
+    }
     // استعادة أهلية الصنف للجرد الافتتاحي تعتمد على رؤية كل أوامر الشراء غير الملغاة.
     // لذلك يتشارك الإلغاء المحكوم ترتيب الأقفال نفسه مع إنشاء/تعديل الأمر والجرد:
     // الفرع أولاً ثم أمر الشراء. القفل هو أول قراءة داخل المعاملة كي لا تسبق الانتظارَ
@@ -519,7 +533,7 @@ export async function decidePurchaseOrderControl(
       "purchase.order.control.decide",
       decisionKey,
       decisionHash,
-      { requireStoredHash: true },
+      { requireStoredHash: true, forUpdate: true },
     );
     if (replay != null) {
       if (replay !== input.requestId)
@@ -735,6 +749,16 @@ export async function decidePurchaseOrderControl(
         });
       }
       const items = await assertCancellationSafeTx(tx, Number(po.id));
+      // Cancellation reverses the goods plan, not cash that already left the
+      // creator's drawer. Post only the explicitly declared freight; no GRN/AP.
+      const shippingPaymentRequestReceiptId = po.shippingFundingSource === "DRAWER"
+        ? await recognizeShippingAndCustomsInTx(tx, {
+          purchaseOrderId: Number(po.id), poNumber: po.poNumber, branchId: Number(po.branchId),
+          shippingCost: String(po.shippingCost ?? "0"), customsCost: String(po.customsCost ?? "0"),
+          actor: resolvedActor, creatorId: Number(po.createdBy), deterministicKey: `cancel-shipping:${decisionKey}`,
+          recognizedAt: new Date(), evidencePrefix: "PO-CANCELLATION-SHIPPING",
+          shippingFundingSource: { mode: "DRAWER", shiftId: po.shippingFundingShiftId },
+        }) : null;
       const releasedAllocations =
         po.currentRevisionId == null
           ? []
@@ -753,6 +777,7 @@ export async function decidePurchaseOrderControl(
       );
       applicationEvidence = {
         releasedRequisitionAllocations: releasedAllocations,
+        shippingPaymentRequestReceiptId,
       };
     } else {
       const settings = await getPurchaseControlSettingsTx(
@@ -860,6 +885,8 @@ export async function listPendingPurchaseOrderControls(
       orderVersion: purchaseOrders.version,
       orderStatus: purchaseOrders.status,
       shippingCost: purchaseOrders.shippingCost,
+      shippingFundingSource: purchaseOrders.shippingFundingSource,
+      shippingFundingShiftId: purchaseOrders.shippingFundingShiftId,
       customsCost: purchaseOrders.customsCost,
     })
     .from(purchaseOrderControlRequests)

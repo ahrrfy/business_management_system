@@ -33,11 +33,7 @@ import { money, round2, toDateStr, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { openShiftIdTx } from "../shiftService";
 import { PETTY_CASH_LIMIT_IQD } from "../expenseService";
-import { settlePurchaseShippingFromShiftTx } from "./pay";
-import {
-  createSystemPaymentRequestTx,
-  finalizeOwnerSystemVoucherTx,
-} from "../voucher/create";
+import { createSystemPaymentRequestTx } from "../voucher/create";
 import { createGoodsReceiptInTx } from "./goodsReceipts";
 import { postSupplierInvoiceGrniTx } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
@@ -72,7 +68,8 @@ function originalReceiptOrderVersion(payloadCanonical: string): number {
   });
 }
 
-async function recognizeShippingAndCustomsInTx(
+/** Internal shipping-only writer, also used for paid freight on cancelled goods. */
+export async function recognizeShippingAndCustomsInTx(
   tx: Tx,
   input: {
     purchaseOrderId: number;
@@ -84,6 +81,7 @@ async function recognizeShippingAndCustomsInTx(
     creatorId?: number;
     deterministicKey: string;
     recognizedAt: Date;
+    evidencePrefix?: "AUTO-PO-APPROVAL" | "PO-CANCELLATION-SHIPPING";
     shippingFundingSource?: {
       mode: "DRAWER" | "TREASURY" | "ACCRUAL";
       shiftId?: number | null;
@@ -121,7 +119,7 @@ async function recognizeShippingAndCustomsInTx(
       };
 
   let openShiftId: number | null = null;
-  if (input.shippingFundingSource?.shiftId != null) {
+  if (input.shippingFundingSource?.mode === "DRAWER" && input.shippingFundingSource.shiftId != null) {
     const [explicitShift] = await tx
       .select({
         id: shifts.id,
@@ -141,7 +139,7 @@ async function recognizeShippingAndCustomsInTx(
     ) {
       openShiftId = Number(explicitShift.id);
     }
-  } else {
+  } else if (input.shippingFundingSource?.mode === "DRAWER") {
     openShiftId = await openShiftIdTx(
       tx,
       creatorActor.userId,
@@ -192,20 +190,20 @@ async function recognizeShippingAndCustomsInTx(
     .digest("hex")
     .slice(0, 16);
   const reference = `SHIP-${input.poNumber}-${token}`;
-  const evidenceReference = `AUTO-PO-APPROVAL:${input.deterministicKey}`;
+  const evidenceReference = `${input.evidencePrefix ?? "AUTO-PO-APPROVAL"}:${input.deterministicKey}`;
   const beneficiaryName = "ناقل غير محدَّد";
   const recognitionDedupe = `PURCHASE_SHIPPING_ACCRUAL:${input.purchaseOrderId}:${token}`;
   const treasuryFallbackReason = fallbackReason;
 
   const expenseResult = await tx.insert(expenses).values({
     branchId: input.branchId,
-    shiftId: fundingShiftId,
-    cashBucket: fundingMode === "DRAWER" ? "DRAWER" : null,
+    shiftId: null,
+    cashBucket: null,
     expenseDate: input.recognizedAt,
     category: "TRANSPORT",
     amount: toDbMoney(amount),
-    paymentMethod: fundingMode === "DRAWER" ? "CASH" : "ACCRUAL",
-    source: fundingMode === "DRAWER" ? "CASH" : "ACCRUAL",
+    paymentMethod: "ACCRUAL",
+    source: "ACCRUAL",
     description: `شحن/كمرك أمر الشراء ${input.poNumber}${treasuryFallbackReason}`,
     referenceNumber: reference,
     payee: beneficiaryName,
@@ -299,22 +297,8 @@ async function recognizeShippingAndCustomsInTx(
     evidenceReference,
     dedupeKey: `ACCRUAL:PAYMENT_REQUESTED:${obligation.id}:${request.receiptId}`,
   });
-  if (fundingMode === "DRAWER") {
-    await settlePurchaseShippingFromShiftTx(
-      tx,
-      {
-        purchaseOrderId: Number(input.purchaseOrderId),
-        shiftId: fundingShiftId,
-      },
-      input.actor,
-    );
-  } else if (fundingMode === "TREASURY") {
-    await finalizeOwnerSystemVoucherTx(tx, request.receiptId, input.actor, {
-      cashSource: {
-        mode: "TREASURY",
-      },
-    });
-  }
+  // Inventory approval/cancellation is not payment authorization. The separate
+  // voucher decision retains the creator's frozen cash source in this request.
   return request.receiptId;
 }
 
@@ -411,6 +395,12 @@ export async function postApprovedPurchaseInvoiceInTx(
       code: "CONFLICT",
       message: "نسخة أمر الشراء المعتمدة مفقودة أو لا تخص الأمر",
     });
+  }
+  if (revision.shippingFundingSource !== po.shippingFundingSource || revision.shippingFundingShiftId !== po.shippingFundingShiftId) {
+    throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تعذر ترحيل تصريح دفع الشحن", why: "مصدر الدفع الحالي لا يطابق النسخة المعتمدة",
+      doThis: "راجع نسخة الفاتورة ومصدر درج المنشئ قبل اعتمادها",
+    }) });
   }
   const poItems = await tx
     .select()
@@ -751,7 +741,10 @@ export async function postApprovedPurchaseInvoiceInTx(
       creatorId: po.createdBy != null ? Number(po.createdBy) : actor.userId,
       deterministicKey,
       recognizedAt: postedAt,
-      shippingFundingSource: options?.shippingFundingSource,
+      shippingFundingSource: options?.shippingFundingSource ?? {
+        mode: revision.shippingFundingSource,
+        shiftId: revision.shippingFundingShiftId,
+      },
     },
   );
 

@@ -315,6 +315,13 @@ export function PurchaseApprovalQueue({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
+              {decision?.approve && decision.row.documentType === "PURCHASE_ORDER" && ["APPROVE_REVISION", "CANCEL_ORDER"].includes(decision.row.kind) && (
+              <p className="rounded-md border p-3 text-sm">
+                {decision.row.shippingFundingSource === "DRAWER"
+                    ? `المنشئ صرح بدفع الشحن من ورديته #${decision.row.shippingFundingShiftId}. هذا القرار ينشئ طلب صرف معلّقاً فقط؛ اعتماد سند الشحن المستقل يوثق المصروف على وردية المنشئ، لا ورديتك. إلغاء البضاعة لا يلغي الشحن المدفوع فعلياً.`
+                    : decision.row.kind === "CANCEL_ORDER" ? "الشحن غير مدفوع: إلغاء الأمر لا ينشئ صرفاً نقدياً." : "الشحن غير مدفوع: الاعتماد يسجل الاستحقاق فقط، دون خصم نقد من درج أو خزينة."}
+              </p>
+            )}
             <Label htmlFor="purchase-control-decision-reason">سبب القرار</Label>
             <Textarea
               id="purchase-control-decision-reason"

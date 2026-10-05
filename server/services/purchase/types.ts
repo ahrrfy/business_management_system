@@ -47,12 +47,15 @@ export interface PurchaseDocumentInput {
   shippingCost?: string | null;
   /** landed-cost: تكلفة الكمرك الكلّية على أمر الشراء (تُعامَل مثل الشحن تماماً). */
   customsCost?: string | null;
+  /** Explicit shipping payment declaration; absence records an unpaid accrual, not cash. */
+  shippingFundingSource?: "ACCRUAL" | "DRAWER";
+  shippingShiftId?: number | null;
 }
 
 export interface CreatePurchaseOrderInput extends PurchaseDocumentInput {
   supplierId: number;
   branchId: number;
-  /** CASH = طلب صرف تلقائي لقيمة كل استلام؛ CREDIT = تبقى ذمة حتى دفع صريح. */
+  /** Planned terms only; neither CASH nor CREDIT proves physical supplier payment. */
   settlementType?: PurchaseSettlementType;
   /** الإنشاء يحفظ مسودة فقط؛ الاعتماد انتقال مستقل بفصل مهام. */
   status?: "DRAFT";

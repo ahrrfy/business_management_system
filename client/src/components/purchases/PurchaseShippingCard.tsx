@@ -1,6 +1,7 @@
 import React from "react";
 import { Landmark, Truck } from "lucide-react";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { D, fmtAr, round2 } from "@/lib/money";
 import type { InvoiceLine } from "@/components/invoice";
 import type { Decimal } from "decimal.js";
@@ -101,6 +102,8 @@ export interface PurchaseShippingCardProps {
   currency?: string;
   showOptionalBadge?: boolean;
   showDetailedDistribution?: boolean;
+  shippingFundingSource?: "ACCRUAL" | "DRAWER";
+  onShippingFundingSourceChange?: (v: "ACCRUAL" | "DRAWER") => void;
 }
 
 export function PurchaseShippingCard({
@@ -114,6 +117,8 @@ export function PurchaseShippingCard({
   currency = "IQD",
   showOptionalBadge = false,
   showDetailedDistribution = false,
+  shippingFundingSource = "ACCRUAL",
+  onShippingFundingSourceChange,
 }: PurchaseShippingCardProps) {
   return (
     <section className="overflow-hidden rounded-xl border bg-card">
@@ -150,6 +155,24 @@ export function PurchaseShippingCard({
           />
         </label>
 
+        {landed.hasLanded && onShippingFundingSourceChange && (
+          <div className="space-y-1 border-t pt-2">
+            <label className="text-sm font-semibold" htmlFor="shipping-funding-source">حالة سداد الشحن والكمرك</label>
+            <AppSelect
+              id="shipping-funding-source"
+              value={shippingFundingSource}
+              onValueChange={v => onShippingFundingSourceChange(v as "ACCRUAL" | "DRAWER")}
+            >
+              <option value="ACCRUAL">غير مدفوع — استحقاق فقط</option>
+              <option value="DRAWER">أؤكد دفعه نقداً من درجي</option>
+            </AppSelect>
+            <p className="text-xs text-muted-foreground">
+              {shippingFundingSource === "DRAWER"
+                ? "تصريح دفع صريح: تثبت ورديتك عند الحفظ. اعتماد الفاتورة أو إلغاؤها ينشئ طلب صرف معلّقاً؛ يوثق المصروف في درجك عند اعتماد سند الشحن مستقلاً. لا يخصم من وردية المعتمد ولا من الخزينة. لا تغلق الوردية قبل توثيق المصروف."
+                : "إدخال تكلفة الشحن لا يعني دفعها. لا يخصم أي نقد حتى توثيق سداد فعلي."}
+            </p>
+          </div>
+        )}
         {landed.hasLanded && landed.hasBase && (
           <div className="mt-1 rounded-lg border border-dashed bg-muted/40 p-2.5 text-xs">
             {showDetailedDistribution && items.length > 0 && (

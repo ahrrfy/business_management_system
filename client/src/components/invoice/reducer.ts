@@ -40,6 +40,7 @@ export function createInitialState(type: InvoiceType, branchId = 1): InvoiceStat
     globalDiscountType: "percent",
     shipping: "",
     shippingFree: false,
+    shippingFundingSource: "ACCRUAL",
     otherExpenses: "",
     paidAmount: "",
     taxEnabled: false,
