@@ -33,11 +33,7 @@ import { money, round2, toDateStr, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { openShiftIdTx } from "../shiftService";
 import { PETTY_CASH_LIMIT_IQD } from "../expenseService";
-import { settlePurchaseShippingFromShiftTx } from "./pay";
-import {
-  createSystemPaymentRequestTx,
-  finalizeOwnerSystemVoucherTx,
-} from "../voucher/create";
+import { createSystemPaymentRequestTx } from "../voucher/create";
 import { createGoodsReceiptInTx } from "./goodsReceipts";
 import { postSupplierInvoiceGrniTx } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
@@ -201,13 +197,13 @@ export async function recognizeShippingAndCustomsInTx(
 
   const expenseResult = await tx.insert(expenses).values({
     branchId: input.branchId,
-    shiftId: fundingShiftId,
-    cashBucket: fundingMode === "DRAWER" ? "DRAWER" : null,
+    shiftId: null,
+    cashBucket: null,
     expenseDate: input.recognizedAt,
     category: "TRANSPORT",
     amount: toDbMoney(amount),
-    paymentMethod: fundingMode === "DRAWER" ? "CASH" : "ACCRUAL",
-    source: fundingMode === "DRAWER" ? "CASH" : "ACCRUAL",
+    paymentMethod: "ACCRUAL",
+    source: "ACCRUAL",
     description: `شحن/كمرك أمر الشراء ${input.poNumber}${treasuryFallbackReason}`,
     referenceNumber: reference,
     payee: beneficiaryName,
@@ -301,22 +297,8 @@ export async function recognizeShippingAndCustomsInTx(
     evidenceReference,
     dedupeKey: `ACCRUAL:PAYMENT_REQUESTED:${obligation.id}:${request.receiptId}`,
   });
-  if (fundingMode === "DRAWER") {
-    await settlePurchaseShippingFromShiftTx(
-      tx,
-      {
-        purchaseOrderId: Number(input.purchaseOrderId),
-        shiftId: fundingShiftId,
-      },
-      input.actor,
-    );
-  } else if (fundingMode === "TREASURY") {
-    await finalizeOwnerSystemVoucherTx(tx, request.receiptId, input.actor, {
-      cashSource: {
-        mode: "TREASURY",
-      },
-    });
-  }
+  // Inventory approval/cancellation is not payment authorization. The separate
+  // voucher decision retains the creator's frozen cash source in this request.
   return request.receiptId;
 }
 

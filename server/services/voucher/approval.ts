@@ -1,5 +1,6 @@
 // اعتماد/رفض سند مُعلَّق (Maker-Checker، SOD-04: مالك نشط والمُعتمِد ≠ المُنشئ بلا استثناء).
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { logAuditTx } from "../auditService";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import {
@@ -23,6 +24,7 @@ import {
   idempotencyKeys,
   purchaseOrders,
   receipts,
+  shifts,
   suppliers,
   users,
 } from "../../../drizzle/schema";
@@ -649,11 +651,18 @@ export async function approveVoucherTx(
               ? Number(cancellationOriginalPreview.shiftId)
               : null,
         }
-      : {
-          branchId: Number(preview.branchId),
-          cashBucket: "TREASURY" as const,
-          shiftId: null,
-        };
+      : systemRequestPreview?.kind === "PURCHASE_SHIPPING" &&
+          systemRequestPreview.fundingSource === "DRAWER"
+        ? {
+            branchId: Number(preview.branchId),
+            cashBucket: "DRAWER" as const,
+            shiftId: systemRequestPreview.shiftId,
+          }
+        : {
+            branchId: Number(preview.branchId),
+            cashBucket: "TREASURY" as const,
+            shiftId: null,
+          };
     if (source.cashBucket === "TREASURY") {
       // إعادة اقتناء أصل قد تعكس CASH في فرع المصدر ثم تصرف من فرع الهدف.
       // كلا الحسابين يجب أن يُقفلا قبل asset/receipt وبترتيب هوية ثابت؛ قفل الهدف
@@ -701,6 +710,29 @@ export async function approveVoucherTx(
           });
         }
       }
+    } else if (
+      systemRequestPreview?.kind === "PURCHASE_SHIPPING" &&
+      systemRequestPreview.fundingSource === "DRAWER" &&
+      !cancellationOriginalPreview
+    ) {
+      // Source -> user -> receipt -> PO. Lock even a closed source for completed
+      // replay; pending approval validates OPEN/owner below before any cash write.
+      if (source.shiftId == null) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "مصدر نقد الشحن غير مكتمل",
+            why: "تصريح الدرج بلا وردية مثبتة",
+            doThis: "راجع تصريح المنشئ قبل اعتماد الصرف",
+          }),
+        });
+      }
+      await tx
+        .select({ id: shifts.id })
+        .from(shifts)
+        .where(eq(shifts.id, source.shiftId))
+        .for("update")
+        .limit(1);
     } else {
       await lockCashSourceForUpdate(tx, source);
     }
@@ -1521,16 +1553,38 @@ export async function approveVoucherTx(
         systemRequest.fundingSource === "DRAWER") ||
       options?.cashSource?.mode === "DRAWER"
     ) {
-      const explicitShift =
-        options?.cashSource?.shiftId ??
-        (systemRequest?.kind === "PURCHASE_SHIPPING"
-          ? systemRequest.shiftId
-          : null);
+      const frozenShipping =
+        systemRequest?.kind === "PURCHASE_SHIPPING" &&
+        systemRequest.fundingSource === "DRAWER";
+      if (
+        frozenShipping &&
+        (systemRequest.shiftId == null || r.createdBy == null ||
+          (options?.cashSource &&
+            (options.cashSource.mode !== "DRAWER" ||
+              (options.cashSource.shiftId != null &&
+                options.cashSource.shiftId !== systemRequest.shiftId))))
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "مصدر نقد الشحن لا يطابق تصريح المنشئ",
+            why: "لا يجوز تبديل الدرج المثبت عند اعتماد الصرف",
+            doThis: "اعتمد المصدر الأصلي الصحيح أو ارفض الطلب وراجع التصريح",
+          }),
+        });
+      }
+      const explicitShift = frozenShipping
+        ? systemRequest.shiftId
+        : options?.cashSource?.shiftId;
       const g = await shiftIdForCashTx(
         tx,
-        approverActor,
+        frozenShipping
+          ? { userId: Number(r.createdBy), branchId, role: "cashier" }
+          : approverActor,
         branchId,
-        "اعتماد سند صرف شحن من درج الوردية",
+        frozenShipping
+          ? "صرف الشحن من درج المنشئ المثبت"
+          : "اعتماد سند صرف شحن من درج الوردية",
         "RETAIL",
         explicitShift,
       );

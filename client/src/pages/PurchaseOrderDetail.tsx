@@ -506,7 +506,12 @@ export default function PurchaseOrderDetail() {
                       </div>
                     ) : null}
 
-                    {canEdit && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
+                    {d.shippingFundingSource === "DRAWER" && d.shippingPayment?.obligationStatus === "PAYMENT_PENDING" ? (
+                      <p className="text-xs text-muted-foreground border-t pt-2">
+                        تصريح الدفع من درج المنشئ ينتظر اعتماد سند الشحن المرتبط أعلاه، مستقلاً عن اعتماد الفاتورة. لا تغلق الوردية قبل توثيقه.
+                      </p>
+                    ) : null}
+                    {canEdit && d.shippingFundingSource !== "DRAWER" && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
                       <div className="pt-2 flex items-center justify-between border-t gap-2 flex-wrap">
                         <p className="text-xs text-muted-foreground">
                           يمكن صرف أجور الشحن مباشرةً من درج الوردية النقدية النشطة لتُسجل كنفقات وردية وتُخصم من رصيد الكاشير.

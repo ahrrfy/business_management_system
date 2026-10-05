@@ -115,6 +115,8 @@ export interface InvoiceState {
    * (كلاهما كان صفراً). لا يدخل الإجمالي ولا الإيراد — إفصاحٌ للزبون وللتقارير.
    */
   shippingFree: boolean;
+  /** Explicit purchase-shipping payment declaration; RESET must discard it. */
+  shippingFundingSource: "ACCRUAL" | "DRAWER";
   otherExpenses: string;
   paidAmount: string;
   /** تفعيل ضريبة على مستوى الفاتورة (اختياري — العراق VAT=0% افتراضياً). */

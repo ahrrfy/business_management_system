@@ -217,8 +217,16 @@ async function itemsOf(poId: number) {
     .orderBy(s.purchaseOrderItems.id);
 }
 
+async function approveDeclaredShipping(purchaseOrderId: number) {
+  const [obligation] = await db().select().from(s.accrualObligations)
+    .where(eq(s.accrualObligations.purchaseOrderId, purchaseOrderId));
+  const [request] = await db().select().from(s.accrualObligationEvents)
+    .where(and(eq(s.accrualObligationEvents.obligationId, obligation.id), eq(s.accrualObligationEvents.eventType, "PAYMENT_REQUESTED")));
+  return approveVoucher(Number(request.receiptId), ownerActor);
+}
+
 describe("حوكمة صرف مصاريف الشحن من درج نقدية الوردية (DRAWER Cash)", () => {
-  it("explicit invoice shipping payment belongs to its creator, never the reviewer drawer", async () => {
+  it("invoice approval only requests shipping payment; independent cash approval debits the frozen creator drawer", async () => {
     const creatorShift = await openShift(
       { branchId: 1, openingBalance: "100000.00" },
       cashierActor,
@@ -282,6 +290,14 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       },
       ownerActor,
     );
+    expect((await getShiftReport(creatorShift.shiftId)).expectedCash).toBe("100000.00");
+    const pendingShipping = (await db().select().from(s.receipts))
+      .find((receipt) => receipt.referenceNumber?.startsWith("SHIP-"))!;
+    expect(pendingShipping).toMatchObject({ status: "PENDING", approvalStatus: "PENDING_APPROVAL", cashBucket: null, shiftId: null });
+    await expect(approveVoucher(Number(pendingShipping.id), ownerActor, { cashSource: { mode: "DRAWER", shiftId: reviewerShift.shiftId } })).rejects.toThrow(/لا يطابق تصريح المنشئ/);
+    await expect(approveVoucher(Number(pendingShipping.id), ownerActor, { cashSource: { mode: "TREASURY" } })).rejects.toThrow(/لا يطابق تصريح المنشئ/);
+    await expect(settlePurchaseShippingFromShift({ purchaseOrderId: draft.purchaseOrderId }, ownerActor)).rejects.toThrow(/اعتماد سند الصرف المستقل/);
+    await approveVoucher(Number(pendingShipping.id), ownerActor);
     const creatorReport = await getShiftReport(creatorShift.shiftId);
     expect(creatorReport.expectedCash).toBe("98000.00");
     expect((await getShiftReport(reviewerShift.shiftId)).expectedCash).toBe(
@@ -349,6 +365,28 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     expect((await getShiftReport(reviewerShift.shiftId)).expectedCash).toBe(
       "80000.00",
     );
+  });
+  it("independent shipping approval refuses a closed frozen drawer even after the creator opens a newer one", async () => {
+    const original = await openShift({ branchId: 1, openingBalance: "100000.00" }, cashierActor);
+    const draft = await createPurchaseOrder({
+      supplierId: 1, branchId: 1, shippingCost: "2000.00",
+      shippingFundingSource: "DRAWER", shippingShiftId: original.shiftId,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+    }, cashierActor);
+    const submitted = await submitPurchaseOrderForApproval({
+      purchaseOrderId: draft.purchaseOrderId, expectedVersion: draft.version,
+      reason: "Creator drawer declaration", requestKey: randomUUID(),
+    }, cashierActor);
+    await decidePurchaseOrderControl({
+      requestId: submitted.requestId, decisionKey: randomUUID(), approve: true,
+      reason: "Full goods receipt review only", confirmedFullReceipt: true,
+    }, ownerActor);
+    // Historical/race fixture only: normal closure is blocked until payment.
+    await db().update(s.shifts).set({ status: "CLOSED", openGuard: null, closedAt: new Date() })
+      .where(eq(s.shifts.id, original.shiftId));
+    const newer = await openShift({ branchId: 1, openingBalance: "70000.00" }, cashierActor);
+    await expect(approveDeclaredShipping(draft.purchaseOrderId)).rejects.toThrow(/مغلقة/);
+    expect((await getShiftReport(newer.shiftId)).expectedCash).toBe("70000.00");
   });
   it("refuses a shipping payment declaration from another user's drawer and a reused key with changed payment source", async () => {
     const reviewerShift = await openShift(
@@ -437,6 +475,8 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       },
       ownerActor,
     );
+    await expect(closeShift({ shiftId: creatorShift.shiftId, countedCash: "98000.00", enforceCashGovernance: true }, cashierActor)).rejects.toThrow(/شحن.*لم يسجل/);
+    await approveDeclaredShipping(draft.purchaseOrderId);
     const closed = await closeShift(
       {
         shiftId: creatorShift.shiftId,
@@ -545,6 +585,8 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       reason: "Cancel goods and retain actual freight expense",
     };
     await decidePurchaseOrderControl(decision, ownerActor);
+    expect((await getShiftReport(creatorShift.shiftId)).expectedCash).toBe("100000.00");
+    await approveDeclaredShipping(draft.purchaseOrderId);
     expect((await getShiftReport(creatorShift.shiftId)).expectedCash).toBe(
       "98000.00",
     );
@@ -576,6 +618,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     expect(
       (await decidePurchaseOrderControl(decision, ownerActor)).idempotent,
     ).toBe(true);
+    expect((await approveDeclaredShipping(draft.purchaseOrderId)).replayed).toBe(true);
   });
   it("refuses generic cancellation of governed paid shipping without inventing a refund", async () => {
     const creatorShift = await openShift(
@@ -619,6 +662,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       },
       ownerActor,
     );
+    await approveDeclaredShipping(draft.purchaseOrderId);
     const [obligation] = await db()
       .select()
       .from(s.accrualObligations)
@@ -686,6 +730,9 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       decidePurchaseOrderControl(decision, ownerActor),
     ]);
     expect(results.filter((result) => result.idempotent)).toHaveLength(1);
+    expect((await getShiftReport(creatorShift.shiftId)).expectedCash).toBe("100000.00");
+    const paymentResults = await Promise.all([approveDeclaredShipping(draft.purchaseOrderId), approveDeclaredShipping(draft.purchaseOrderId)]);
+    expect(paymentResults.filter((result) => result.replayed)).toHaveLength(1);
     expect((await getShiftReport(creatorShift.shiftId)).expectedCash).toBe(
       "98000.00",
     );
@@ -732,6 +779,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       },
       ownerActor,
     );
+    await approveDeclaredShipping(draft.purchaseOrderId);
     const [obligation] = await db()
       .select()
       .from(s.accrualObligations)

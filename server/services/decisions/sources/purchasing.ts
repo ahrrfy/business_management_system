@@ -202,7 +202,7 @@ export const purchaseOrderControlSource: DecisionSource = {
         const shippingAmount = round2(money(shipping?.shippingCost ?? "0").plus(money(shipping?.customsCost ?? "0")));
         if (shippingAmount.gt(0)) summaryItems.push({
           label: shipping?.shippingFundingSource === "DRAWER"
-            ? `شحن/كمرك ${shippingAmount.toFixed(2)} د.ع — دفعه المنشئ #${po?.createdBy} من ورديته #${shipping.shippingFundingShiftId}؛ ليس من درج المعتمد. ${r.kind === "CANCEL_ORDER" ? "إلغاء البضاعة يبقي المصروف المدفوع ويسجل صرفه وحده." : "يسجل صرف الشحن في درج المنشئ عند الترحيل."}`
+            ? `شحن/كمرك ${shippingAmount.toFixed(2)} د.ع — دفعه المنشئ #${po?.createdBy} من ورديته #${shipping.shippingFundingShiftId}؛ ليس من درج المعتمد. هذا القرار ينشئ طلب صرف معلّقاً فقط؛ يوثق الدفع عند اعتماد سند الشحن مستقلاً. ${r.kind === "CANCEL_ORDER" ? "إلغاء البضاعة يبقي الشحن المدفوع دون استلام بضاعة." : ""}`
             : `شحن/كمرك ${shippingAmount.toFixed(2)} د.ع — غير مدفوع؛ لا خصم من درج أو خزينة`,
         });
         return buildRow(

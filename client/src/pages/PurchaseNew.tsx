@@ -358,7 +358,12 @@ export default function PurchaseNew() {
   // على الأصناف بنسبة القيمة للعرض فقط؛ المعاينة هنا بـdecimal.js والخادم يعيد الحساب مرجعياً.
   const [shippingCost, setShippingCost] = useState("");
   const [customsCost, setCustomsCost] = useState("");
-  const [shippingFundingSource, setShippingFundingSource] = useState<"ACCRUAL" | "DRAWER">("ACCRUAL");
+  // Keep the declaration in the invoice state so F12/RESET cannot carry a
+  // previous cash payment claim into the next purchase.
+  const shippingFundingSource = state.shippingFundingSource;
+  function setShippingFundingSource(value: "ACCRUAL" | "DRAWER") {
+    dispatch({ type: "SET_FIELD", field: "shippingFundingSource", value });
+  }
 
   /* ─── bulk picker overlay ──────────────────────────────────────── */
   const [bulkOpen, setBulkOpen] = useState(false);
