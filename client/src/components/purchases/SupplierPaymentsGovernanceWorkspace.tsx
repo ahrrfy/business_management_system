@@ -144,6 +144,10 @@ export function SupplierPaymentsGovernanceWorkspace({
     expectedPaymentVersion: number;
     requestKey: string;
     refundMethod: Method;
+    cashSource?: {
+      mode: "DRAWER" | "TREASURY";
+      shiftId?: number | null;
+    } | null;
     externalReference?: string | null;
     evidenceType:
       | "SUPPLIER_ACKNOWLEDGEMENT"
@@ -181,12 +185,20 @@ export function SupplierPaymentsGovernanceWorkspace({
   const [cashShiftId, setCashShiftId] = useState("");
   const cashSourcesQuery = trpc.supplierPayments.cashSources.useQuery(
     { branchId },
-    { enabled: branchId > 0 && mode === "PAYMENT" && method === "CASH" },
+    { enabled: branchId > 0 && mode != null && method === "CASH" },
   );
   const sourceRequests = trpc.supplierPayments.pendingPayments.useQuery(
     { branchId },
     { enabled: branchId > 0 },
   );
+  const refundSourceRequests =
+    trpc.supplierPayments.pendingRefunds.useInfiniteQuery(
+      { branchId, limit: 100 },
+      {
+        enabled: branchId > 0,
+        getNextPageParam: (last) => last.nextCursor ?? undefined,
+      },
+    );
   useEffect(() => {
     const drawers = cashSourcesQuery.data?.drawers ?? [];
     if (!cashShiftId && drawers.length === 1)
@@ -208,6 +220,27 @@ export function SupplierPaymentsGovernanceWorkspace({
             ? source.mode === "DRAWER"
               ? `درج ${source.shiftId} — المستخدم ${source.payerUserId}`
               : `خزينة الفرع ${branchId} — المستخدم ${source.payerUserId}`
+            : "مصدر غير محدّد: ارفض الطلب وأعد تقديمه بمصدر صريح",
+        },
+      ],
+    };
+  });
+  const refundQueueRows = pendingRefunds.map((row) => {
+    const request = refundSourceRequests.data?.pages
+      .flatMap((page) => page.rows)
+      .find((request) => Number(request.id) === row.id);
+    if (request?.refundMethod !== "CASH") return row;
+    const source = request.cashSource;
+    return {
+      ...row,
+      details: [
+        ...(row.details ?? []),
+        {
+          label: "وجهة النقد والمستلم",
+          value: source
+            ? source.mode === "DRAWER"
+              ? `درج ${source.shiftId} — المستخدم ${source.receiverUserId}`
+              : `خزينة الفرع ${branchId} — المستخدم ${source.receiverUserId}`
             : "مصدر غير محدّد: ارفض الطلب وأعد تقديمه بمصدر صريح",
         },
       ],
@@ -256,8 +289,7 @@ export function SupplierPaymentsGovernanceWorkspace({
     selectedEntries.map((row) => row.currencyAmount),
   );
   const valid =
-    (mode !== "PAYMENT" ||
-      method !== "CASH" ||
+    (method !== "CASH" ||
       (cashMode === "TREASURY"
         ? cashSourcesQuery.data?.canUseTreasury === true
         : cashSourcesQuery.data?.drawers.some(
@@ -290,7 +322,6 @@ export function SupplierPaymentsGovernanceWorkspace({
   async function submitRequest() {
     if (!valid) return;
     if (
-      mode === "PAYMENT" &&
       method === "CASH" &&
       !(cashMode === "TREASURY"
         ? cashSourcesQuery.data?.canUseTreasury
@@ -348,6 +379,13 @@ export function SupplierPaymentsGovernanceWorkspace({
             `supplier-payment-refund-${selectedRefund.supplierPaymentId}`,
           ),
           refundMethod: method,
+          cashSource:
+            method === "CASH"
+              ? {
+                  mode: cashMode,
+                  shiftId: cashMode === "DRAWER" ? Number(cashShiftId) : null,
+                }
+              : null,
           externalReference: externalReference.trim() || null,
           evidenceType:
             evidenceType === "PAYMENT_ORDER" ||
@@ -472,7 +510,7 @@ export function SupplierPaymentsGovernanceWorkspace({
       <GovernanceApprovalQueue
         title="طلبات استرداد الدفعات بانتظار اعتماد"
         scope="supplier-payment-refund"
-        rows={pendingRefunds}
+        rows={refundQueueRows}
         currentUserId={currentUserId}
         isOwner={isOwner}
         loading={pendingRefundLoading}
@@ -669,10 +707,10 @@ export function SupplierPaymentsGovernanceWorkspace({
                   <option value="WALLET">محفظة</option>
                 </AppSelect>
               </div>
-              {mode === "PAYMENT" && method === "CASH" ? (
+              {method === "CASH" ? (
                 <div className="space-y-2">
                   <Label htmlFor="supplier-payment-cash-source">
-                    مصدر النقد
+                    {mode === "PAYMENT" ? "مصدر النقد" : "وجهة استلام النقد"}
                   </Label>
                   <AppSelect
                     id="supplier-payment-cash-source"
@@ -688,7 +726,9 @@ export function SupplierPaymentsGovernanceWorkspace({
                   </AppSelect>
                   {cashMode === "DRAWER" ? (
                     <AppSelect
-                      aria-label="درج الدافع"
+                      aria-label={
+                        mode === "PAYMENT" ? "درج الدافع" : "درج المستلم"
+                      }
                       value={cashShiftId}
                       onValueChange={setCashShiftId}
                     >
@@ -701,8 +741,10 @@ export function SupplierPaymentsGovernanceWorkspace({
                     </AppSelect>
                   ) : null}
                   <p className="text-xs text-muted-foreground">
-                    يُحفظ المصدر مع الطلب ويُصرف منه عند الاعتماد. إغلاق الدرج
-                    يتطلب طلباً جديداً.
+                    {mode === "PAYMENT"
+                      ? "يُحفظ المصدر مع الطلب ويُصرف منه عند الاعتماد."
+                      : "تُحفظ وجهة الاستلام مع الطلب ويُضاف إليها النقد عند الاعتماد."}{" "}
+                    إغلاق الدرج يتطلب طلباً جديداً.
                   </p>
                   {cashSourcesQuery.error ? (
                     <p role="alert" className="text-sm text-destructive">

@@ -42,7 +42,6 @@ import {
   assertCashOutAvailable,
   assertNonPhysicalOutReceipt,
   authorizeExternalTreasuryDisbursement,
-  type ExternalTreasuryDisbursementApproval,
   lockCashSourceForUpdate,
 } from "../cash/cashAvailability";
 import {
@@ -52,7 +51,7 @@ import {
 } from "../ledgerService";
 import { money, round2, sumMoney, toDbMoney } from "../money";
 import { paymentAssetRole } from "../sale/paymentPosting";
-import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
+import { openShiftIdTx } from "../shiftService";
 import { appErrorMessage } from "@shared/errors";
 import {
   applyPermissionOverrides,
@@ -83,6 +82,23 @@ type CashSource = {
   shiftId: number | null;
   payerUserId: number;
 };
+type StoredCashRequest = Pick<
+  typeof supplierPaymentRequests.$inferSelect,
+  "payloadCanonical" | "payloadHash" | "requestedBy" | "branchId" | "paymentMethod"
+>;
+type RefundCashSource = Omit<CashSource, "payerUserId"> & { receiverUserId: number };
+
+function refundCashSource(
+  source: CashSource | null | undefined,
+): RefundCashSource | null | undefined {
+  return source == null
+    ? source
+    : {
+        mode: source.mode,
+        shiftId: source.shiftId,
+        receiverUserId: source.payerUserId,
+      };
+}
 export const SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY = Symbol(
   "supplier-payment-treasury-decision",
 );
@@ -150,6 +166,7 @@ export interface RequestSupplierPaymentRefundInput {
   expectedPaymentVersion: number;
   requestKey: string;
   refundMethod: Method;
+  cashSource?: CashSourceInput | null;
   externalReference?: string | null;
   evidenceType:
     | "SUPPLIER_ACKNOWLEDGEMENT"
@@ -392,44 +409,6 @@ async function accountingEntryId(tx: Tx, dedupeKey: string): Promise<number> {
   return Number(row.id);
 }
 
-async function lockPaymentInstrument(
-  tx: Tx,
-  branchId: number,
-  method: Method,
-  actor: Actor,
-  label: string,
-  direction: "IN" | "OUT",
-  makerUserIds: Array<number | null | undefined>,
-): Promise<{
-  shiftId: number | null;
-  cashBucket: "DRAWER" | "TREASURY" | null;
-  treasuryApproval: ExternalTreasuryDisbursementApproval | null;
-}> {
-  if (method !== "CASH")
-    return { shiftId: null, cashBucket: null, treasuryApproval: null };
-  const result = await shiftIdForCashTx(
-    tx,
-    { ...actor, branchId },
-    branchId,
-    label,
-  );
-  if (direction === "OUT" && result.cashBucket === "TREASURY") {
-    const treasuryApproval = await authorizeExternalTreasuryDisbursement(tx, {
-      actor,
-      makerUserIds,
-      branchIds: [branchId],
-      operation: label,
-    });
-    return { ...result, treasuryApproval };
-  }
-  await lockCashSourceForUpdate(tx, {
-    branchId,
-    shiftId: result.shiftId,
-    cashBucket: result.cashBucket,
-  });
-  return { ...result, treasuryApproval: null };
-}
-
 function cashSourceError(
   why: string,
   code:
@@ -441,7 +420,7 @@ function cashSourceError(
   return new TRPCError({
     code,
     message: appErrorMessage({
-      what: "تعذّر استخدام مصدر نقد سداد المورد",
+      what: "تعذّر استخدام مصدر نقد المورد",
       why,
       doThis: "أعد تقديمه بمصدر نقد صريح وصحيح؛ وارفض الطلب المعلّق السابق إن وجد",
     }),
@@ -501,7 +480,7 @@ async function validateDrawerSource(
     .limit(1);
   if (!shift || shift.status !== "OPEN")
     throw cashSourceError(
-      "درج الدافع المسجّل غير موجود أو ورديته مغلقة؛ لا يُستبدل بدرج جديد",
+      "درج مقدم الطلب المسجّل غير موجود أو ورديته مغلقة؛ لا يُستبدل بدرج جديد",
     );
   if (Number(shift.branchId) !== branchId)
     throw cashSourceError("الدرج المسجّل يعود إلى فرع مختلف", "BAD_REQUEST");
@@ -519,7 +498,7 @@ async function captureCashSource(
   if (method !== "CASH") {
     if (input != null)
       throw cashSourceError(
-        "الدفع غير النقدي لا يقبل مصدر درج أو خزينة",
+        "الحركة غير النقدية لا تقبل مصدر درج أو خزينة",
         "BAD_REQUEST",
       );
     return null;
@@ -541,7 +520,7 @@ async function captureCashSource(
     input?.shiftId ?? (await openShiftIdTx(tx, actor.userId, branchId));
   if (!Number.isSafeInteger(shiftId) || Number(shiftId) <= 0)
     throw cashSourceError(
-      "لا توجد وردية مفتوحة للدافع؛ اختيار الخزينة يجب أن يكون صريحاً",
+      "لا توجد وردية مفتوحة لمقدم الطلب؛ اختيار الخزينة يجب أن يكون صريحاً",
     );
   const source: CashSource = {
     mode,
@@ -553,20 +532,18 @@ async function captureCashSource(
 }
 
 function storedCashSource(
-  request: Pick<
-    typeof supplierPaymentRequests.$inferSelect,
-    | "payloadCanonical"
-    | "payloadHash"
-    | "requestedBy"
-    | "branchId"
-    | "paymentMethod"
-  >,
+  request: StoredCashRequest,
   allowLegacy = false,
+  methodField: "paymentMethod" | "refundMethod" = "paymentMethod",
 ): CashSource | null | undefined {
   let payload: {
-    cashSource?: CashSource | null;
+    cashSource?: (Omit<CashSource, "payerUserId"> & {
+      payerUserId?: number;
+      receiverUserId?: number;
+    }) | null;
     branchId?: number;
     paymentMethod?: Method;
+    refundMethod?: Method;
   };
   try {
     payload = JSON.parse(request.payloadCanonical);
@@ -579,8 +556,9 @@ function storedCashSource(
       sha256(request.payloadCanonical),
       request.payloadHash,
     ) ||
-    Number(payload.branchId) !== Number(request.branchId) ||
-    payload.paymentMethod !== request.paymentMethod
+    ((methodField === "paymentMethod" || payload.cashSource !== undefined) &&
+      Number(payload.branchId) !== Number(request.branchId)) ||
+    payload[methodField] !== request.paymentMethod
   )
     throw cashSourceError(
       "بصمة الطلب أو بيانات مصدر النقد لا تطابق الطلب المحفوظ",
@@ -595,30 +573,34 @@ function storedCashSource(
     return null;
   }
   if (!source) throw cashSourceError("طلب نقدي قديم بلا مصدر نقد محدّد");
+  const userId =
+    methodField === "refundMethod" ? source.receiverUserId : source.payerUserId;
   if (
-    source.payerUserId !== Number(request.requestedBy) ||
+    userId !== Number(request.requestedBy) ||
     !["DRAWER", "TREASURY"].includes(source.mode) ||
     (source.mode === "DRAWER"
       ? !Number.isSafeInteger(source.shiftId) || Number(source.shiftId) <= 0
       : source.shiftId !== null)
   )
     throw cashSourceError(
-      "مصدر النقد المحفوظ لا يطابق هوية الدافع أو نوع المصدر",
+      "مصدر النقد المحفوظ لا يطابق هوية مقدم الطلب أو نوع المصدر",
       "CONFLICT",
     );
-  return source;
+  return { mode: source.mode, shiftId: source.shiftId, payerUserId: userId! };
 }
 
 async function lockRequestedPaymentInstrument(
   tx: Tx,
-  request: typeof supplierPaymentRequests.$inferSelect,
+  request: StoredCashRequest,
   reviewer: Actor,
+  direction: "IN" | "OUT" = "OUT",
+  methodField: "paymentMethod" | "refundMethod" = "paymentMethod",
 ) {
-  const source = storedCashSource(request);
+  const source = storedCashSource(request, false, methodField);
   if (!source)
     return { shiftId: null, cashBucket: null, treasuryApproval: null };
   const branchId = Number(request.branchId);
-  if (source.mode === "TREASURY") {
+  if (source.mode === "TREASURY" && direction === "OUT") {
     const treasuryApproval = await authorizeExternalTreasuryDisbursement(tx, {
       actor: reviewer,
       makerUserIds: [request.requestedBy],
@@ -627,15 +609,15 @@ async function lockRequestedPaymentInstrument(
     });
     return { shiftId: null, cashBucket: "TREASURY" as const, treasuryApproval };
   }
-  await validateDrawerSource(tx, source, branchId);
+  if (source.mode === "DRAWER") await validateDrawerSource(tx, source, branchId);
   await lockCashSourceForUpdate(tx, {
     branchId,
     shiftId: source.shiftId,
-    cashBucket: "DRAWER",
+    cashBucket: source.mode,
   });
   return {
     shiftId: source.shiftId,
-    cashBucket: "DRAWER" as const,
+    cashBucket: source.mode,
     treasuryApproval: null,
   };
 }
@@ -1553,7 +1535,7 @@ export async function requestSupplierPaymentRefund(
     sumMoney(normalized.map((row) => row.currencyAmount)),
   );
   assertPaymentTotals(amount, currencyAmount, normalized);
-  const canonical = stableCanonical({
+  const payload = {
     supplierPaymentId: input.supplierPaymentId,
     expectedPaymentVersion: input.expectedPaymentVersion,
     refundMethod: input.refundMethod,
@@ -1562,8 +1544,17 @@ export async function requestSupplierPaymentRefund(
     evidenceReference,
     reason,
     allocations: normalized,
-  });
-  const payloadHash = sha256(canonical);
+  };
+  const refundCanonical = (
+    source: CashSource | null | undefined,
+    branchId: number,
+  ) =>
+    stableCanonical({
+      ...payload,
+      ...(source === undefined
+        ? {}
+        : { branchId, cashSource: refundCashSource(source) }),
+    });
   const result = await withTx(async (tx) => {
     const replay = (
       await tx
@@ -1574,7 +1565,32 @@ export async function requestSupplierPaymentRefund(
     )[0];
     if (replay) {
       assertPurchaseBranch(replay, actor);
-      if (!payloadHashMatches(payloadHash, replay.payloadHash))
+      if (Number(replay.requestedBy) !== actor.userId)
+        throw cashSourceError("مفتاح الطلب يعود إلى مستلم آخر", "FORBIDDEN");
+      const source = storedCashSource(
+        { ...replay, paymentMethod: replay.refundMethod },
+        true,
+        "refundMethod",
+      );
+      if (input.refundMethod !== "CASH" && input.cashSource != null)
+        throw cashSourceError(
+          "الاسترداد غير النقدي لا يقبل مصدر نقد",
+          "BAD_REQUEST",
+        );
+      if (
+        input.cashSource != null &&
+        (!source ||
+          input.cashSource.mode !== source.mode ||
+          (input.cashSource.shiftId != null &&
+            input.cashSource.shiftId !== source.shiftId))
+      )
+        throw cashSourceError("مفتاح الطلب مستعمل بمصدر نقد مختلف", "CONFLICT");
+      if (
+        !payloadHashMatches(
+          sha256(refundCanonical(source, Number(replay.branchId))),
+          replay.payloadHash,
+        )
+      )
         throw new TRPCError({
           code: "CONFLICT",
           message: "مفتاح الطلب مستعمل باسترداد مختلف",
@@ -1585,6 +1601,26 @@ export async function requestSupplierPaymentRefund(
         idempotent: true as const,
       };
     }
+    const previewPayment = (
+      await tx
+        .select()
+        .from(supplierPayments)
+        .where(eq(supplierPayments.id, input.supplierPaymentId))
+        .limit(1)
+    )[0];
+    if (!previewPayment)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "دفعة المورد غير موجودة",
+      });
+    assertPurchaseBranch(previewPayment, actor);
+    const source = await captureCashSource(
+      tx,
+      input.refundMethod,
+      input.cashSource,
+      Number(previewPayment.branchId),
+      actor,
+    );
     const payment = (
       await tx
         .select()
@@ -1593,12 +1629,17 @@ export async function requestSupplierPaymentRefund(
         .for("update")
         .limit(1)
     )[0];
-    if (!payment)
-      throw new TRPCError({
-        code: "NOT_FOUND",
-        message: "دفعة المورد غير موجودة",
-      });
+    if (
+      !payment ||
+      Number(payment.branchId) !== Number(previewPayment.branchId)
+    )
+      throw cashSourceError(
+        "تغيّرت دفعة المورد أثناء تحديد مصدر النقد",
+        "CONFLICT",
+      );
     assertPurchaseBranch(payment, actor);
+    const canonical = refundCanonical(source, Number(payment.branchId));
+    const payloadHash = sha256(canonical);
     assertExpectedVersion(
       Number(payment.version),
       input.expectedPaymentVersion,
@@ -1735,14 +1776,12 @@ export async function decideSupplierPaymentRefund(
         : null;
     const instrument =
       input.action === "APPROVE" && preview.status === "PENDING"
-        ? await lockPaymentInstrument(
+        ? await lockRequestedPaymentInstrument(
             tx,
-            Number(preview.branchId),
-            preview.refundMethod,
+            { ...preview, paymentMethod: preview.refundMethod },
             actor,
-            "استرداد دفعة مورد",
             "IN",
-            [],
+            "refundMethod",
           )
         : { shiftId: null, cashBucket: null, treasuryApproval: null };
     const previewItems =
@@ -1831,6 +1870,14 @@ export async function decideSupplierPaymentRefund(
         idempotent: false as const,
       };
     }
+    if (
+      request.payloadHash !== preview.payloadHash ||
+      request.payloadCanonical !== preview.payloadCanonical ||
+      Number(request.requestedBy) !== Number(preview.requestedBy) ||
+      Number(request.branchId) !== Number(preview.branchId) ||
+      request.refundMethod !== preview.refundMethod
+    )
+      throw cashSourceError("تغيّر دليل مصدر النقد أثناء الاعتماد", "CONFLICT");
     const payment = (
       await tx
         .select()
@@ -1935,7 +1982,7 @@ export async function decideSupplierPaymentRefund(
         approvalStatus: "APPROVED",
         approvedBy: actor.userId,
         approvedAt: new Date(),
-        createdBy: actor.userId,
+        createdBy: Number(request.requestedBy),
       });
     const receiptId = extractInsertId(receipt);
     const asset = paymentAssetRole(
@@ -1956,7 +2003,7 @@ export async function decideSupplierPaymentRefund(
       receiptId,
       amount,
       paymentMethod: request.refundMethod,
-      createdBy: actor.userId,
+      createdBy: Number(request.requestedBy),
       dedupeKey,
       notes: request.reason,
       postingIntent: createPostingIntent(
@@ -2192,7 +2239,22 @@ export async function listPendingSupplierPaymentRefundRequests(
       const page = hasMore ? rows.slice(0, input.limit) : rows;
       const last = page.at(-1);
       return {
-        rows: page,
+        rows: page.map((row) => {
+          let cashSource: RefundCashSource | null = null;
+          try {
+            cashSource =
+              refundCashSource(
+                storedCashSource(
+                  { ...row, paymentMethod: row.refundMethod },
+                  false,
+                  "refundMethod",
+                ),
+              ) ?? null;
+          } catch {
+            // Approval rejects legacy or corrupt cash evidence; the queue remains rejectable.
+          }
+          return { ...row, cashSource };
+        }),
         hasMore,
         nextCursor:
           hasMore && last

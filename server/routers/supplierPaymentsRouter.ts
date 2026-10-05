@@ -109,6 +109,7 @@ export const supplierPaymentsRouter = router({
         expectedPaymentVersion: z.number().int().positive(),
         requestKey: key,
         refundMethod: method,
+        cashSource,
         externalReference: z.string().trim().max(160).nullish(),
         evidenceType: z.enum([
           "SUPPLIER_ACKNOWLEDGEMENT",
