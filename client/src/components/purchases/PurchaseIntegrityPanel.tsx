@@ -25,7 +25,6 @@ const SEVERITY_CLASS: Record<Finding["severity"], string> = {
 };
 
 const CODE_LABEL: Record<Finding["code"], string> = {
-  CASH_RECEIVED_PAYMENT_COVERAGE_GAP: "شراء نقدي مستلم بلا تغطية دفع",
   PAID_AMOUNT_GL_DRIFT: "اختلاف المدفوع المخزن عن القيود",
   NEGATIVE_PO_LEDGER_BALANCE: "رصيد دفتري سالب للأمر",
   PO_PAYMENT_OVER_ALLOCATION: "تخصيص دفع زائد للأمر",

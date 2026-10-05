@@ -772,10 +772,9 @@ export async function requestSupplierPaymentInTx(
 }
 
 /**
- * قرار المالك (٦/٩/٢٦): أمر الشراء النقديّ يُسدَّد فوراً ضمن معاملة اعتماده نفسها —
- * لا يمكن استدعاء `requestSupplierPayment` (تفتح `withTx` خاصّتها) من داخل معاملةٍ
- * جارية بلا فتح اتصالٍ ثانٍ فوق الأول غير المُلتزَم. هذا الغلاف الرقيق يحتفظ بالمسار
- * العام كما هو، وسدادُ أمر الشراء يمرّ عبر `requestSupplierPaymentInTx` مباشرةً.
+ * الغلاف العام لطلب سدادٍ صريح من المستخدم. القرار المالي الصادر في ٥/١٠/٢٦
+ * يفصل اعتماد أمر الشراء عن وقوع الدفع؛ لذلك لا يستدعيه مسار اعتماد الأمر تلقائياً.
+ * يبقى `requestSupplierPaymentInTx` متاحاً للمسارات التي تملك معاملةً قائمة فعلاً.
  */
 export async function requestSupplierPayment(
   input: RequestSupplierPaymentInput,
@@ -1642,6 +1641,12 @@ export async function decideSupplierPaymentRefund(
         });
     }
     const amount = money(request.requestedAmount);
+    const refundPurchaseOrderIds = await resolveInvoicePurchaseOrderIds(
+      tx,
+      allocations.map((row) => Number(row.supplierInvoiceId)),
+    );
+    const refundPurchaseOrderId =
+      refundPurchaseOrderIds.length === 1 ? refundPurchaseOrderIds[0] : null;
     const receipt = await tx
       .insert(receipts)
       .values({
@@ -1676,6 +1681,7 @@ export async function decideSupplierPaymentRefund(
     await postEntry(tx, {
       entryType: "PAYMENT_IN",
       branchId: Number(request.branchId),
+      purchaseOrderId: refundPurchaseOrderId,
       supplierId: Number(payment.supplierId),
       receiptId,
       amount,

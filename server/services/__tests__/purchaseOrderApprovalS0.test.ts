@@ -34,6 +34,10 @@ async function reset() {
     "supplierInvoiceMatchAllocations",
     "supplierInvoiceMatchRuns",
     "supplierInvoiceLines",
+    "supplierPaymentAllocations",
+    "supplierPayments",
+    "supplierPaymentRequestAllocations",
+    "supplierPaymentRequests",
     "supplierInvoices",
     "goodsReceiptAccountingLinks",
     "goodsReceiptItems",
@@ -42,6 +46,7 @@ async function reset() {
     "journalEntries",
     "doubleEntrySettings",
     "accountingEntries",
+    "receipts",
     "financialPeriods",
     "inventoryMovements",
     "purchaseOrderItems",
@@ -280,10 +285,28 @@ describe("S0 — دورة اعتماد أمر الشراء", () => {
     await expect(
       decide(request.requestId, "receipt-confirmation-approved"),
     ).resolves.toMatchObject({ orderStatus: "RECEIVED", idempotent: false });
+    expect(await db().select().from(s.supplierPaymentRequests)).toHaveLength(0);
+    expect(await db().select().from(s.supplierPayments)).toHaveLength(0);
+    expect(
+      (await db().select().from(s.accountingEntries)).filter(
+        (row) => row.entryType === "PAYMENT_OUT",
+      ),
+    ).toHaveLength(0);
+    expect(
+      (
+        await db()
+          .select({ paidAmount: s.purchaseOrders.paidAmount })
+          .from(s.purchaseOrders)
+          .where(eq(s.purchaseOrders.id, po.purchaseOrderId))
+      )[0]?.paidAmount,
+    ).toBe("0.00");
   });
 
   it("إرسال المالك لا يختلق إقرار الاستلام الكامل", async () => {
-    await db().update(s.users).set({ isOwner: true }).where(eq(s.users.id, creator.userId));
+    await db()
+      .update(s.users)
+      .set({ isOwner: true })
+      .where(eq(s.users.id, creator.userId));
     const po = await createDraft("owner-receipt-create");
     const request = await confirmPurchaseOrder(
       approval(po.purchaseOrderId, po.version, "owner-receipt-submit"),

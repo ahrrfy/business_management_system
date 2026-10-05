@@ -21,7 +21,6 @@ const MAX_AGE_THRESHOLD_DAYS = 3_650;
 const DAY_MS = 86_400_000;
 
 export const PURCHASE_INTEGRITY_CODES = [
-  "CASH_RECEIVED_PAYMENT_COVERAGE_GAP",
   "PAID_AMOUNT_GL_DRIFT",
   "NEGATIVE_PO_LEDGER_BALANCE",
   "PO_PAYMENT_OVER_ALLOCATION",
@@ -146,6 +145,7 @@ type EntryRow = {
   supplierId: number | null;
   receiptId: number | null;
   amount: string;
+  dedupeKey: string | null;
   postingProfile: string | null;
   notes: string | null;
   receiptBranchId: number | null;
@@ -416,6 +416,7 @@ export async function getPurchaseIntegrityReport(
           supplierId: accountingEntries.supplierId,
           receiptId: accountingEntries.receiptId,
           amount: accountingEntries.amount,
+          dedupeKey: accountingEntries.dedupeKey,
           postingProfile: accountingEntries.postingProfile,
           notes: accountingEntries.notes,
           receiptBranchId: receipts.branchId,
@@ -661,18 +662,41 @@ export async function getPurchaseIntegrityReport(
         const duplicateOutByReceipt = new Map<number, EntryRow[]>();
         for (const entry of poEntries) {
           const amount = money(entry.amount);
-          if (entry.entryType === "PURCHASE" || entry.entryType === "RETURN")
+          const supplierScoped =
+            Number(entry.supplierId ?? 0) === Number(order.supplierId);
+          const supplierInvoiceRecognition =
+            supplierScoped &&
+            entry.entryType === "ADJUST" &&
+            entry.dedupeKey?.startsWith("GRNI:SUPPLIER_INVOICE:");
+          const supplierInvoiceReversal =
+            supplierScoped &&
+            entry.entryType === "ADJUST" &&
+            entry.dedupeKey?.startsWith("GRNI:SUPPLIER_INVOICE_REVERSAL:");
+          if (
+            (supplierScoped &&
+              (entry.entryType === "PURCHASE" ||
+                entry.entryType === "RETURN")) ||
+            supplierInvoiceRecognition
+          )
             amounts.recognizedPurchase =
               amounts.recognizedPurchase.plus(amount);
+          else if (supplierInvoiceReversal)
+            amounts.recognizedPurchase =
+              amounts.recognizedPurchase.minus(amount);
           if (
-            entry.entryType === "PURCHASE" ||
-            entry.entryType === "RETURN" ||
-            entry.entryType === "PAYMENT_IN"
+            supplierInvoiceRecognition ||
+            (supplierScoped &&
+              (entry.entryType === "PURCHASE" ||
+                entry.entryType === "RETURN" ||
+                entry.entryType === "PAYMENT_IN"))
           )
             amounts.bookBalance = amounts.bookBalance.plus(amount);
+          else if (supplierInvoiceReversal)
+            amounts.bookBalance = amounts.bookBalance.minus(amount);
           else if (
-            entry.entryType === "PAYMENT_OUT" ||
-            entry.entryType === "EXCHANGE_SETTLE"
+            supplierScoped &&
+            (entry.entryType === "PAYMENT_OUT" ||
+              entry.entryType === "EXCHANGE_SETTLE")
           )
             amounts.bookBalance = amounts.bookBalance.minus(amount);
 
@@ -682,7 +706,7 @@ export async function getPurchaseIntegrityReport(
             entry.receiptBranchId === Number(order.branchId) &&
             entry.receiptPartyType === "SUPPLIER" &&
             entry.receiptPartyId === Number(order.supplierId);
-          if (entry.entryType === "PAYMENT_OUT") {
+          if (entry.entryType === "PAYMENT_OUT" && supplierScoped) {
             if (entry.receiptId != null) {
               const receiptId = Number(entry.receiptId);
               const linked = duplicateOutByReceipt.get(receiptId) ?? [];
@@ -719,6 +743,7 @@ export async function getPurchaseIntegrityReport(
           }
           if (
             entry.entryType === "PAYMENT_IN" &&
+            supplierScoped &&
             receiptApproved &&
             entry.receiptDirection === "IN" &&
             safeMoney(entry.receiptAmount)?.eq(amount)
@@ -745,11 +770,16 @@ export async function getPurchaseIntegrityReport(
                 amounts.paymentCancellationIn =
                   amounts.paymentCancellationIn.plus(amount);
               }
+            } else if (
+              entry.dedupeKey?.startsWith("SUPPLIER_PAYMENT_REFUND_REQUEST:")
+            ) {
+              amounts.paymentCancellationIn =
+                amounts.paymentCancellationIn.plus(amount);
             }
           }
           if (
             entry.branchId !== Number(order.branchId) ||
-            entry.supplierId !== Number(order.supplierId)
+            (entry.supplierId != null && !supplierScoped)
           ) {
             addFinding(order, {
               severity: "CRITICAL",
@@ -915,32 +945,9 @@ export async function getPurchaseIntegrityReport(
         const paidDifference = storedPaid.minus(linkedPaidAmount);
         const orderAge = ageDays(order.createdAt, asOf);
 
-        if (
-          order.settlementType === "CASH" &&
-          amounts.recognizedPurchase.gt(0) &&
-          !coverageDifference.isZero()
-        ) {
-          addFinding(order, {
-            severity: coverageDifference.lt(0) ? "CRITICAL" : "HIGH",
-            code: "CASH_RECEIVED_PAYMENT_COVERAGE_GAP",
-            subjectType: "PURCHASE_ORDER",
-            subjectId: poId,
-            ageDays: orderAge,
-            summaryAr: coverageDifference.lt(0)
-              ? "شراء CASH معترف به في GL بلا تغطية مساوية من الصرف المعتمد والطلبات المعلقة الصالحة."
-              : "تغطية شراء CASH تتجاوز الاعتراف الدفتري المرتبط؛ يلزم منع صرف مكرر قبل أي اعتماد جديد.",
-            evidence: {
-              recognizedPurchaseGl: toDbMoney(amounts.recognizedPurchase),
-              approvedPaymentOutGl: toDbMoney(amounts.approvedPaymentOut),
-              approvedPaymentInGl: toDbMoney(amounts.approvedPaymentIn),
-              validPendingPoPay: toDbMoney(amounts.validPending),
-              netCoveredAmount: toDbMoney(netCovered),
-              difference: toDbMoney(coverageDifference),
-              formula:
-                "PAYMENT_OUT approved - PAYMENT_IN approved + valid pending PO-PAY - (PURCHASE + RETURN)",
-            },
-          });
-        }
+        // CASH يصف طريقة السداد المقصودة، لا وقوع السداد عند اعتماد الأمر. لذلك لا
+        // تُعدّ الفاتورة المفتوحة غير المدفوعة فجوة نزاهة. تبقى زيادة التخصيص وانحراف
+        // paidAmount محروستين أدناه بالقيود الفعلية، بصرف النظر عن طريقة التسوية.
         if (!paidDifference.isZero()) {
           addFinding(order, {
             severity: "HIGH",

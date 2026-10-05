@@ -13,11 +13,7 @@ import {
 } from "../purchase/controls";
 import { postApprovedPurchaseInvoiceInTx } from "../purchase/automaticInvoicePosting";
 import { settlePurchaseShippingFromShift } from "../purchase/pay";
-import {
-  closeShift,
-  getShiftReport,
-  openShift,
-} from "../shiftService";
+import { closeShift, getShiftReport, openShift } from "../shiftService";
 import { computeDrawerCashBalance } from "../cash/cashAvailability";
 import { withTx } from "../tx";
 import { truncateTables } from "./__testUtils__";
@@ -93,14 +89,19 @@ async function receivePurchase(
 
 async function seed() {
   const d = db();
-  await d
-    .insert(s.branches)
-    .values([
-      { id: 1, name: "MAIN", code: "MAIN", type: "MAIN" },
-      { id: 2, name: "SALES", code: "SALES", type: "SALES" },
-    ]);
+  await d.insert(s.branches).values([
+    { id: 1, name: "MAIN", code: "MAIN", type: "MAIN" },
+    { id: 2, name: "SALES", code: "SALES", type: "SALES" },
+  ]);
   await d.insert(s.users).values([
-    { id: 1, openId: "admin-1", name: "المدير العام", role: "admin", loginMethod: "local", branchId: 1 },
+    {
+      id: 1,
+      openId: "admin-1",
+      name: "المدير العام",
+      role: "admin",
+      loginMethod: "local",
+      branchId: 1,
+    },
     {
       id: 2,
       openId: "owner-2",
@@ -379,7 +380,9 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       .select()
       .from(s.purchaseOrderEvents)
       .where(eq(s.purchaseOrderEvents.purchaseOrderId, po.purchaseOrderId));
-    const settleEvent = poEvents.find((e) => e.eventType === "SHIPPING_SETTLED_FROM_DRAWER");
+    const settleEvent = poEvents.find(
+      (e) => e.eventType === "SHIPPING_SETTLED_FROM_DRAWER",
+    );
     expect(settleEvent).toBeTruthy();
     expect(settleEvent?.reason).toContain("صرف أجور الشحن");
 
@@ -477,7 +480,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     ).rejects.toThrow(/فتح وردية/);
   });
 
-  it("(٥) أمر شراء أنشأه الكاشير مع وردية مفتوحة: يعتمده المالك فيُصرف الشحن من درج الكاشير مع فصل المنشئ والمعتمد", async () => {
+  it("(٥) اعتماد أمر أنشأه الكاشير مع وردية مفتوحة يثبت الشحن استحقاقاً ولا يصرف من الدرج", async () => {
     // 1. فتح وردية للكاشير
     const shift = await openShift(
       { branchId: 1, openingBalance: "50000.00", shiftType: "RETAIL" },
@@ -491,7 +494,12 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
         branchId: 1,
         taxRatePercent: "0",
         items: [
-          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "10",
+            unitPrice: "100.00",
+          },
         ],
         shippingCost: "3000.00",
         customsCost: "2000.00",
@@ -529,11 +537,11 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       .from(s.accrualObligations)
       .where(eq(s.accrualObligations.purchaseOrderId, draft.purchaseOrderId));
     expect(obligation).toBeDefined();
-    expect(obligation.status).toBe("PAID");
+    expect(obligation.status).toBe("PAYMENT_PENDING");
     expect(obligation.recognizedAmount).toBe("5000.00");
     expect(obligation.recognizedBy).toBe(cashierActor.userId);
 
-    // 6. التحقق من المصروف: منسوب للكاشير، من الدرج
+    // 6. المصروف مستحق ومنسوب للكاشير، بلا اختيار مصدر نقدي
     const [exp] = await db()
       .select()
       .from(s.expenses)
@@ -541,24 +549,27 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     expect(exp).toBeDefined();
     expect(exp.createdBy).toBe(cashierActor.userId);
     expect(exp.amount).toBe("5000.00");
-    expect(exp.cashBucket).toBe("DRAWER");
-    expect(exp.shiftId).toBe(shift.shiftId);
+    expect(exp.paymentMethod).toBe("ACCRUAL");
+    expect(exp.cashBucket).toBeNull();
+    expect(exp.shiftId).toBeNull();
 
-    // 7. التحقق من إيصال الصرف: المنشئ هو الكاشير، والمعتمد هو المالك
+    // 7. طلب الصرف يبقى معلقاً حتى قرار دفع مستقل
     const outReceipts = await db()
       .select()
       .from(s.receipts)
       .where(eq(s.receipts.direction, "OUT"));
     const shippingReceipt = outReceipts.find(
-      (r) => r.referenceNumber?.includes(`SHIP-PO-`) || r.description?.includes("شحن"),
+      (r) =>
+        r.referenceNumber?.includes(`SHIP-PO-`) ||
+        r.description?.includes("شحن"),
     );
     expect(shippingReceipt).toBeDefined();
     expect(shippingReceipt?.createdBy).toBe(cashierActor.userId);
-    expect(shippingReceipt?.approvedBy).toBe(ownerActor.userId);
-    expect(shippingReceipt?.cashBucket).toBe("DRAWER");
-    expect(shippingReceipt?.shiftId).toBe(shift.shiftId);
-    expect(shippingReceipt?.status).toBe("COMPLETED");
-    expect(shippingReceipt?.approvalStatus).toBe("APPROVED");
+    expect(shippingReceipt?.approvedBy).toBeNull();
+    expect(shippingReceipt?.cashBucket).toBeNull();
+    expect(shippingReceipt?.shiftId).toBeNull();
+    expect(shippingReceipt?.status).toBe("PENDING");
+    expect(shippingReceipt?.approvalStatus).toBe("PENDING_APPROVAL");
 
     // 8. التحقق من القيود المحاسبية: قيد التسوية منسوب للكاشير
     const poEntries = await db()
@@ -566,20 +577,19 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       .from(s.accountingEntries)
       .where(eq(s.accountingEntries.purchaseOrderId, draft.purchaseOrderId));
     const settleEntry = poEntries.find((e) => e.entryType === "PAYMENT_OUT");
-    expect(settleEntry).toBeDefined();
-    expect(settleEntry?.createdBy).toBe(cashierActor.userId);
+    expect(settleEntry).toBeUndefined();
 
-    // 9. إغلاق الوردية: خصم 5,000 د.ع من نقدية الدرج
+    // 9. اعتماد الأمر لم يخصم 5,000 د.ع من نقدية الدرج
     const closed = await closeShift(
-      { shiftId: shift.shiftId, countedCash: "45000.00" },
+      { shiftId: shift.shiftId, countedCash: "50000.00" },
       cashierActor,
     );
-    expect(closed.expectedCash).toBe("45000.00");
+    expect(closed.expectedCash).toBe("50000.00");
     expect(closed.variance).toBe("0.00");
     expect(closed.reconciliationStatus).toBe("MATCHED");
   });
 
-  it("(٦) أمر شراء أنشأه الكاشير بلا وردية مفتوحة: يعتمده المالك فيُصرف من الخزينة بسند باسم الكاشير وتوثيق سبب السقوط للخزينة", async () => {
+  it("(٦) اعتماد أمر بلا وردية مفتوحة لا يختار الخزينة تلقائياً ويبقي طلب الشحن معلقاً", async () => {
     // لا توجد وردية مفتوحة لأي مستخدم
     // 1. الكاشير ينشئ أمر الشراء
     const draft = await createPurchaseOrder(
@@ -588,7 +598,12 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
         branchId: 1,
         taxRatePercent: "0",
         items: [
-          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "10",
+            unitPrice: "100.00",
+          },
         ],
         shippingCost: "4000.00",
         customsCost: "0.00",
@@ -626,10 +641,10 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       .from(s.accrualObligations)
       .where(eq(s.accrualObligations.purchaseOrderId, draft.purchaseOrderId));
     expect(obligation).toBeDefined();
-    expect(obligation.status).toBe("PAID");
+    expect(obligation.status).toBe("PAYMENT_PENDING");
     expect(obligation.recognizedBy).toBe(cashierActor.userId);
 
-    // 5. التحقق من المصروف: منسوب للكاشير مع توثيق السبب
+    // 5. التحقق من المصروف المستحق: منسوب للكاشير بلا ادعاء صرف
     const [exp] = await db()
       .select()
       .from(s.expenses)
@@ -637,24 +652,21 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     expect(exp).toBeDefined();
     expect(exp.createdBy).toBe(cashierActor.userId);
     expect(exp.amount).toBe("4000.00");
-    expect(exp.description).toContain("صرف من الخزينة لعدم وجود وردية مفتوحة لمنشئ الفاتورة");
+    expect(exp.paymentMethod).toBe("ACCRUAL");
 
-    // 6. التحقق من سند الصرف في الخزينة: منشأ باسم الكاشير، معتمد من المالك، وموثق بالسبب
+    // 6. طلب الصرف معلق وبلا مصدر نقدي
     const outReceipts = await db()
       .select()
       .from(s.receipts)
       .where(eq(s.receipts.direction, "OUT"));
-    const treasuryReceipt = outReceipts.find(
-      (r) => r.cashBucket === "TREASURY" && r.amount === "4000.00",
-    );
-    expect(treasuryReceipt).toBeDefined();
-    expect(treasuryReceipt?.createdBy).toBe(cashierActor.userId);
-    expect(treasuryReceipt?.approvedBy).toBe(ownerActor.userId);
-    expect(treasuryReceipt?.cashBucket).toBe("TREASURY");
-    expect(treasuryReceipt?.shiftId).toBeNull();
-    expect(treasuryReceipt?.status).toBe("COMPLETED");
-    expect(treasuryReceipt?.approvalStatus).toBe("APPROVED");
-    expect(treasuryReceipt?.description).toContain("صرف من الخزينة لعدم وجود وردية مفتوحة لمنشئ الفاتورة");
+    const shippingReceipt = outReceipts.find((r) => r.amount === "4000.00");
+    expect(shippingReceipt).toBeDefined();
+    expect(shippingReceipt?.createdBy).toBe(cashierActor.userId);
+    expect(shippingReceipt?.approvedBy).toBeNull();
+    expect(shippingReceipt?.cashBucket).toBeNull();
+    expect(shippingReceipt?.shiftId).toBeNull();
+    expect(shippingReceipt?.status).toBe("PENDING");
+    expect(shippingReceipt?.approvalStatus).toBe("PENDING_APPROVAL");
 
     // التحقق من طبيعة مصروف الاستحقاق في سقوط الخزينة: منسوب للكاشير وبلا حجز درج
     expect(exp.cashBucket).toBeNull();
@@ -666,12 +678,10 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       .from(s.accountingEntries)
       .where(eq(s.accountingEntries.purchaseOrderId, draft.purchaseOrderId));
     const settleEntry = poEntries.find((e) => e.entryType === "PAYMENT_OUT");
-    expect(settleEntry).toBeDefined();
-    expect(settleEntry?.createdBy).toBe(cashierActor.userId);
-    expect(settleEntry?.notes).toContain("صرف من الخزينة لعدم وجود وردية مفتوحة لمنشئ الفاتورة");
+    expect(settleEntry).toBeUndefined();
   });
 
-  it("(٧) كاشير أنشأ أمر الشراء وهو خارج الوردية، ثم فتح وردية قبل اعتماد الأمر: الاعتماد يرصد الوردية المفتوحة ويصرف من الدرج", async () => {
+  it("(٧) فتح وردية بعد إنشاء الأمر لا يجعل الاعتماد يصرف الشحن من الدرج", async () => {
     // 1. الكاشير ينشئ أمر الشراء قبل فتح الوردية
     const draft = await createPurchaseOrder(
       {
@@ -679,7 +689,12 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
         branchId: 1,
         taxRatePercent: "0",
         items: [
-          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "10",
+            unitPrice: "100.00",
+          },
         ],
         shippingCost: "2500.00",
         customsCost: "0.00",
@@ -716,30 +731,30 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     );
     expect(approved.status).toBe("APPROVED");
 
-    // 4. التحقق أن الصرف تم تلقائياً من درج الوردية المفتوحة للكاشير
+    // 4. يبقى الشحن استحقاقاً معلقاً رغم وجود وردية مفتوحة
     const [obligation] = await db()
       .select()
       .from(s.accrualObligations)
       .where(eq(s.accrualObligations.purchaseOrderId, draft.purchaseOrderId));
-    expect(obligation.status).toBe("PAID");
+    expect(obligation.status).toBe("PAYMENT_PENDING");
 
     const [exp] = await db()
       .select()
       .from(s.expenses)
       .where(eq(s.expenses.id, Number(obligation.expenseId)));
-    expect(exp.cashBucket).toBe("DRAWER");
-    expect(exp.shiftId).toBe(shift.shiftId);
+    expect(exp.cashBucket).toBeNull();
+    expect(exp.shiftId).toBeNull();
     expect(exp.createdBy).toBe(cashierActor.userId);
 
     const closed = await closeShift(
-      { shiftId: shift.shiftId, countedCash: "27500.00" },
+      { shiftId: shift.shiftId, countedCash: "30000.00" },
       cashierActor,
     );
-    expect(closed.expectedCash).toBe("27500.00");
+    expect(closed.expectedCash).toBe("30000.00");
     expect(closed.variance).toBe("0.00");
   });
 
-  it("(٨) أمر شراء بشحن يبلغ أو يتجاوز سقف النثرية (≥ ٥٠٠٬٠٠٠ د.ع) مع وردية مفتوحة: يسقط تلقائياً للخزينة لعدم إمكانية الصرف من الدرج", async () => {
+  it("(٨) بلوغ الشحن سقف النثرية لا يجعل اعتماد الأمر يصرفه من الخزينة", async () => {
     // 1. الكاشير يفتح وردية برصيد 600,000 د.ع
     const shift = await openShift(
       { branchId: 1, openingBalance: "600000.00", shiftType: "RETAIL" },
@@ -753,7 +768,12 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
         branchId: 1,
         taxRatePercent: "0",
         items: [
-          { variantId: 1, productUnitId: 1, quantity: "5", unitPrice: "200.00" },
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "5",
+            unitPrice: "200.00",
+          },
         ],
         shippingCost: "500000.00",
         customsCost: "0.00",
@@ -784,24 +804,26 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     );
     expect(approved.status).toBe("APPROVED");
 
-    // 4. التحقق من السقوط للخزينة وتوثيق السبب
+    // 4. التحقق من بقاء طلب السداد معلقاً بلا اختيار مصدر نقدي
     const [obligation] = await db()
       .select()
       .from(s.accrualObligations)
       .where(eq(s.accrualObligations.purchaseOrderId, draft.purchaseOrderId));
-    expect(obligation.status).toBe("PAID");
+    expect(obligation.status).toBe("PAYMENT_PENDING");
     expect(obligation.recognizedBy).toBe(cashierActor.userId);
 
     const outReceipts = await db()
       .select()
       .from(s.receipts)
       .where(eq(s.receipts.direction, "OUT"));
-    const treasuryReceipt = outReceipts.find(
-      (r) => r.cashBucket === "TREASURY" && r.amount === "500000.00",
-    );
-    expect(treasuryReceipt).toBeDefined();
-    expect(treasuryReceipt?.createdBy).toBe(cashierActor.userId);
-    expect(treasuryReceipt?.approvedBy).toBe(ownerActor.userId);
+    const shippingReceipt = outReceipts.find((r) => r.amount === "500000.00");
+    expect(shippingReceipt).toMatchObject({
+      createdBy: cashierActor.userId,
+      approvedBy: null,
+      cashBucket: null,
+      status: "PENDING",
+      approvalStatus: "PENDING_APPROVAL",
+    });
 
     const [exp] = await db()
       .select()
@@ -809,7 +831,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       .where(eq(s.expenses.id, Number(obligation.expenseId)));
     expect(exp.cashBucket).toBeNull();
     expect(exp.shiftId).toBeNull();
-    expect(exp.description).toContain("سقف النثرية");
+    expect(exp.paymentMethod).toBe("ACCRUAL");
     expect(exp.createdBy).toBe(cashierActor.userId);
 
     // 5. التحقق أن نقد الدرج لم يُمسّ وظل 600,000 د.ع كاملاً
@@ -821,7 +843,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     expect(closed.variance).toBe("0.00");
   });
 
-  it("(٩) كاشير لديه وردية مفتوحة في فرع آخر (فرع 2) وأنشأ أمر شراء للفرع 1: الصرف يسقط تلقائياً لخزينة الفرع 1 دون مسّ وردية الفرع 2", async () => {
+  it("(٩) وردية منشئ الأمر في فرع آخر لا تجعل الاعتماد يصرف من أي درج أو خزينة", async () => {
     // 1. الكاشير يفتح وردية في فرع 2
     const shiftBranch2 = await openShift(
       { branchId: 2, openingBalance: "70000.00", shiftType: "RETAIL" },
@@ -835,7 +857,12 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
         branchId: 1,
         taxRatePercent: "0",
         items: [
-          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "50.00" },
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "10",
+            unitPrice: "50.00",
+          },
         ],
         shippingCost: "3500.00",
         customsCost: "0.00",
@@ -866,19 +893,20 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     );
     expect(approved.status).toBe("APPROVED");
 
-    // 4. التحقق أن الصرف تم من خزينة فرع 1 وليس من درج فرع 2
+    // 4. طلب الشحن في فرع 1 يبقى معلقاً بلا مسّ وردية فرع 2
     const outReceipts = await db()
       .select()
       .from(s.receipts)
       .where(eq(s.receipts.direction, "OUT"));
-    const treasuryReceipt = outReceipts.find(
-      (r) => r.cashBucket === "TREASURY" && r.amount === "3500.00",
-    );
-    expect(treasuryReceipt).toBeDefined();
-    expect(treasuryReceipt?.branchId).toBe(1);
-    expect(treasuryReceipt?.createdBy).toBe(cashierActor.userId);
-    expect(treasuryReceipt?.approvedBy).toBe(ownerActor.userId);
-    expect(treasuryReceipt?.description).toContain("لعدم وجود وردية مفتوحة لمنشئ الفاتورة");
+    const shippingReceipt = outReceipts.find((r) => r.amount === "3500.00");
+    expect(shippingReceipt).toMatchObject({
+      branchId: 1,
+      createdBy: cashierActor.userId,
+      approvedBy: null,
+      cashBucket: null,
+      status: "PENDING",
+      approvalStatus: "PENDING_APPROVAL",
+    });
 
     const [obligation] = await db()
       .select()
@@ -889,6 +917,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       .from(s.expenses)
       .where(eq(s.expenses.id, Number(obligation.expenseId)));
     expect(exp.cashBucket).toBeNull();
+    expect(obligation.status).toBe("PAYMENT_PENDING");
 
     // 5. التحقق أن وردية الفرع 2 لم تتأثر برصيدها المتوقع إطلاقاً
     const closed = await closeShift(
@@ -907,7 +936,12 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
         branchId: 1,
         taxRatePercent: "0",
         items: [
-          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "80.00" },
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "10",
+            unitPrice: "80.00",
+          },
         ],
         shippingCost: "2000.00",
         customsCost: "0.00",
@@ -987,7 +1021,12 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
         branchId: 1,
         taxRatePercent: "0",
         items: [
-          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "10",
+            unitPrice: "100.00",
+          },
         ],
         shippingCost: "5000.00",
         customsCost: "0.00",
@@ -1085,7 +1124,12 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
         branchId: 1,
         taxRatePercent: "0",
         items: [
-          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "10",
+            unitPrice: "100.00",
+          },
         ],
         shippingCost: "7000.00",
         customsCost: "0.00",
@@ -1154,7 +1198,9 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     expect(exp.createdBy).toBe(cashierActor.userId);
     expect(exp.cashBucket).toBeNull();
     expect(exp.shiftId).toBeNull();
-    expect(exp.description).toContain("صرف من الخزينة لعدم وجود وردية مفتوحة لمنشئ الفاتورة");
+    expect(exp.description).toContain(
+      "صرف من الخزينة لعدم وجود وردية مفتوحة لمنشئ الفاتورة",
+    );
 
     const poEntries = await db()
       .select()
@@ -1162,7 +1208,9 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       .where(eq(s.accountingEntries.purchaseOrderId, draft.purchaseOrderId));
     const settleEntry = poEntries.find((e) => e.entryType === "PAYMENT_OUT");
     expect(settleEntry?.createdBy).toBe(cashierActor.userId);
-    expect(settleEntry?.notes).toContain("صرف من الخزينة لعدم وجود وردية مفتوحة لمنشئ الفاتورة");
+    expect(settleEntry?.notes).toContain(
+      "صرف من الخزينة لعدم وجود وردية مفتوحة لمنشئ الفاتورة",
+    );
   });
 
   it("(١٣) كاشير أنشأ أمر شراء خارج الوردية، بينما المالك لديه وردية مفتوحة: محاولة الصرف من الدرج (settlePurchaseShippingFromShift) تفشل قطعياً ولا تستنزف درج المالك", async () => {
@@ -1272,7 +1320,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     }
   });
 
-  it("(١٥) أمر شراء أنشأه الكاشير خارج الوردية بينما المالك لديه وردية مفتوحة أثناء الاعتماد: يسقط تلقائياً للخزينة دون المساس بدرج المالك", async () => {
+  it("(١٥) وردية المالك المفتوحة لا تجعل اعتماد أمر الكاشير يصرف الشحن تلقائياً", async () => {
     // 1. المالك لديه وردية مفتوحة
     const ownerShift = await openShift(
       { branchId: 1, openingBalance: "80000.00", shiftType: "RETAIL" },
@@ -1287,7 +1335,12 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
           branchId: 1,
           taxRatePercent: "0",
           items: [
-            { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
+            {
+              variantId: 1,
+              productUnitId: 1,
+              quantity: "10",
+              unitPrice: "100.00",
+            },
           ],
           shippingCost: "5000.00",
           customsCost: "0.00",
@@ -1318,20 +1371,20 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       );
       expect(approved.status).toBe("APPROVED");
 
-      // 4. التحقق من السقوط للخزينة لأن المنشئ ليس لديه وردية (رغم وجود وردية للمالك)
+      // 4. طلب الشحن يبقى معلقاً بلا اختيار خزينة أو درج المالك
       const outReceipts = await db()
         .select()
         .from(s.receipts)
         .where(eq(s.receipts.direction, "OUT"));
-      const treasuryReceipt = outReceipts.find(
-        (r) => r.cashBucket === "TREASURY" && r.amount === "5000.00",
-      );
-      expect(treasuryReceipt).toBeDefined();
-      expect(treasuryReceipt?.createdBy).toBe(cashierActor.userId);
-      expect(treasuryReceipt?.approvedBy).toBe(ownerActor.userId);
-      expect(treasuryReceipt?.cashBucket).toBe("TREASURY");
-      expect(treasuryReceipt?.shiftId).toBeNull();
-      expect(treasuryReceipt?.description).toContain("صرف من الخزينة لعدم وجود وردية مفتوحة لمنشئ الفاتورة");
+      const shippingReceipt = outReceipts.find((r) => r.amount === "5000.00");
+      expect(shippingReceipt).toMatchObject({
+        createdBy: cashierActor.userId,
+        approvedBy: null,
+        cashBucket: null,
+        shiftId: null,
+        status: "PENDING",
+        approvalStatus: "PENDING_APPROVAL",
+      });
 
       // 5. التحقق من عدم المساس بدرج المالك المفتوح
       const ownerBalance = await withTx((tx) =>
