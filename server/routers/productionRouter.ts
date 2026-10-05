@@ -8,7 +8,7 @@ import { TRPCError } from "@trpc/server";
 import { failOpaque } from "../lib/opaqueFailure";
 import { z } from "zod";
 import { appErrorMessage } from "@shared/errors";
-import { and, desc, eq, exists, gte, inArray, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, exists, gte, inArray, lt, or, sql } from "drizzle-orm";
 import { branches, productVariants, productionLines, productionOrders, products } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
@@ -19,7 +19,19 @@ import {
   getProduction,
   recipeCapacity,
   runPreview,
+  analyzeBundleRequirements,
+  produceBundleComponents,
+  analyzeMultiRecipeRequirements,
+  produceMultiRecipeBatches,
 } from "../services/productionService";
+import {
+  analyzeBundleRequirementsInputSchema,
+  produceBundleComponentsInputSchema,
+} from "@shared/bundleProductionTypes";
+import {
+  analyzeMultiRecipeRequirementsInputSchema,
+  produceMultiRecipeInputSchema,
+} from "@shared/multiRecipeProductionTypes";
 import {
   createRecipe,
   deleteRecipe,
@@ -227,7 +239,14 @@ export const productionRouter = router({
         ? Number(input.branchId ?? ctx.user.branchId ?? 0)
         : Number(ctx.user.branchId ?? 0);
       if (!branchId) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "لا فرع مُسنَد لحسابك — اختر الفرع أولاً." });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "لا فرع مُسنَد لحسابك",
+            why: "المستخدم الحالي لا يملك فرعاً مسنداً ولم يتم تمرير معرّف الفرع",
+            doThis: "اختر الفرع أولاً من شاشة العمل ثم أعد المحاولة",
+          }),
+        });
       }
       return recipeCapacity({ recipeId: input.recipeId, branchId });
     }),
@@ -255,7 +274,14 @@ export const productionRouter = router({
       const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
       const assignedBranchId = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
       if (!elevated && assignedBranchId == null) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "لا فرع مُسنَد لهذا المستخدم",
+            why: "المستخدم الحالي لا يملك صلاحية عابرة للفروع ولا يملك فرعاً مسنداً لحسابه",
+            doThis: "اطلب من مدير النظام إسناد فرع لحسابك قبل تشغيل أمر الإنتاج",
+          }),
+        });
       }
       const effectiveBranchId = elevated ? (input.branchId ?? assignedBranchId) : assignedBranchId;
       if (effectiveBranchId == null) {
@@ -301,7 +327,14 @@ export const productionRouter = router({
           });
         }
       }
-      throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء مستند الإنتاج" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء مستند الإنتاج",
+          why: "حدث تعارض متكرر في قيد المعاملة أو تضارب في معالجة الطلب",
+          doThis: "حدّث الصفحة وتحقق من قائمة مستندات الإنتاج قبل إعادة الإرسال",
+        }),
+      });
     }),
 
   cancel: inventoryManagerProcedure
@@ -334,7 +367,16 @@ export const productionRouter = router({
         await logAudit(ctx, { action: "production.recipe.create", entityType: "productionRecipe", entityId: res.recipeId, newValue: { name: input.name } });
         return res;
       } catch (e: any) {
-        if (isDupEntry(e)) throw new TRPCError({ code: "CONFLICT", message: "اسم الوصفة مستعمل سلفاً" });
+        if (isDupEntry(e)) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "اسم الوصفة مستعمل سلفاً",
+              why: "توجد وصفة إنتاج مسجلة مسبقاً بنفس هذا الاسم",
+              doThis: "اختر اسماً مميزاً للوصفة ثم أعد الحفظ",
+            }),
+          });
+        }
         throw e;
       }
     }),
@@ -346,7 +388,16 @@ export const productionRouter = router({
         await logAudit(ctx, { action: "production.recipe.update", entityType: "productionRecipe", entityId: id, newValue: { name: input.name } });
         return res;
       } catch (e: any) {
-        if (isDupEntry(e)) throw new TRPCError({ code: "CONFLICT", message: "اسم الوصفة مستعمل سلفاً" });
+        if (isDupEntry(e)) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "اسم الوصفة مستعمل سلفاً",
+              why: "توجد وصفة إنتاج مسجلة مسبقاً بنفس هذا الاسم",
+              doThis: "اختر اسماً مميزاً للوصفة ثم أعد الحفظ",
+            }),
+          });
+        }
         throw e;
       }
     }),
@@ -374,6 +425,188 @@ export const productionRouter = router({
           ? Number(input.branchId ?? ctx.user.branchId ?? 0) || null
           : Number(ctx.user.branchId ?? 0) || null;
         return recipePreview({ recipeId: input.recipeId, outputQuantity: input.outputQuantity, branchId });
+      }),
+
+    analyzeMultiRecipe: inventoryManagerProcedure
+      .input(analyzeMultiRecipeRequirementsInputSchema)
+      .query(async ({ input, ctx }) => {
+        const elevated = ctx.user.role === "admin";
+        const assignedBranchId = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
+        if (!elevated && assignedBranchId == null) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "لا فرع مُسنَد لهذا المستخدم",
+              why: "المستخدم الحالي لا يملك صلاحية عابرة للفروع ولا يملك فرعاً مسنداً لحسابه",
+              doThis: "اطلب من مدير النظام إسناد فرع لحسابك قبل تشغيل أمر التحليل",
+            }),
+          });
+        }
+        const effectiveBranchId = elevated ? (input.branchId ?? assignedBranchId) : assignedBranchId;
+        if (effectiveBranchId == null) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر تحديد فرع الإنتاج",
+              why: "حسابك بلا فرعٍ مُسنَد ولم تُرسل الشاشة فرعاً",
+              doThis: "اختر الفرع من القائمة في شاشة الإنتاج ثم أعِد المحاولة",
+            }),
+          });
+        }
+        return analyzeMultiRecipeRequirements({
+          ...input,
+          branchId: effectiveBranchId,
+        });
+      }),
+
+    produceMultiRecipe: inventoryManagerProcedure
+      .input(produceMultiRecipeInputSchema)
+      .mutation(async ({ input, ctx }) => {
+        const elevated = ctx.user.role === "admin";
+        const assignedBranchId = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
+        if (!elevated && assignedBranchId == null) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "لا فرع مُسنَد لهذا المستخدم",
+              why: "المستخدم الحالي لا يملك صلاحية عابرة للفروع ولا يملك فرعاً مسنداً لحسابه",
+              doThis: "اطلب من مدير النظام إسناد فرع لحسابك قبل تشغيل أمر الإنتاج",
+            }),
+          });
+        }
+        const effectiveBranchId = elevated ? (input.branchId ?? assignedBranchId) : assignedBranchId;
+        if (effectiveBranchId == null) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر تحديد فرع الإنتاج",
+              why: "حسابك بلا فرعٍ مُسنَد ولم تُرسل الشاشة فرعاً",
+              doThis: "اختر الفرع من القائمة في شاشة الإنتاج ثم أعِد الترحيل",
+            }),
+          });
+        }
+        const res = await produceMultiRecipeBatches(
+          {
+            ...input,
+            branchId: effectiveBranchId,
+          },
+          { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role }
+        );
+        await logAudit(ctx, {
+          action: "production.multi_recipe.produce",
+          entityType: "productionOrder",
+          entityId: res.orders[0]?.productionOrderId ?? 0,
+          newValue: {
+            multiRecipeDocGroupRef: res.multiRecipeDocGroupRef,
+            orderCount: res.orders.length,
+            totalCost: res.totalCostAllOrders,
+          },
+        });
+        return res;
+      }),
+  }),
+
+  // ───────────────────────── إنتاج مكونات البكج ─────────────────────────
+  bundles: router({
+    list: inventoryManagerProcedure.query(async () => {
+      const db = getDb();
+      if (!db) return [];
+      return db
+        .select({
+          bundleVariantId: productVariants.id,
+          productId: products.id,
+          name: products.name,
+          sku: productVariants.sku,
+          costPrice: productVariants.costPrice,
+        })
+        .from(productVariants)
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(
+          and(
+            eq(products.isBundle, true),
+            eq(products.isActive, true),
+            eq(productVariants.isActive, true),
+          ),
+        )
+        .orderBy(asc(products.name));
+    }),
+
+    analyzeRequirements: inventoryManagerProcedure
+      .input(analyzeBundleRequirementsInputSchema)
+      .query(async ({ input, ctx }) => {
+        const elevated = ctx.user.role === "admin";
+        const assignedBranchId = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
+        if (!elevated && assignedBranchId == null) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "لا فرع مُسنَد لهذا المستخدم",
+              why: "المستخدم الحالي لا يملك صلاحية عابرة للفروع ولا يملك فرعاً مسنداً لحسابه",
+              doThis: "اطلب من مدير النظام إسناد فرع لحسابك قبل تشغيل أمر التحليل",
+            }),
+          });
+        }
+        const effectiveBranchId = elevated ? (input.branchId ?? assignedBranchId) : assignedBranchId;
+        if (effectiveBranchId == null) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر تحديد فرع الإنتاج",
+              why: "حسابك بلا فرعٍ مُسنَد ولم تُرسل الشاشة فرعاً",
+              doThis: "اختر الفرع من القائمة في شاشة الإنتاج ثم أعِد المحاولة",
+            }),
+          });
+        }
+        return analyzeBundleRequirements({
+          ...input,
+          branchId: effectiveBranchId,
+        });
+      }),
+
+    produceComponents: inventoryManagerProcedure
+      .input(produceBundleComponentsInputSchema)
+      .mutation(async ({ input, ctx }) => {
+        const elevated = ctx.user.role === "admin";
+        const assignedBranchId = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
+        if (!elevated && assignedBranchId == null) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "لا فرع مُسنَد لهذا المستخدم",
+              why: "المستخدم الحالي لا يملك صلاحية عابرة للفروع ولا يملك فرعاً مسنداً لحسابه",
+              doThis: "اطلب من مدير النظام إسناد فرع لحسابك قبل تشغيل أمر الإنتاج",
+            }),
+          });
+        }
+        const effectiveBranchId = elevated ? (input.branchId ?? assignedBranchId) : assignedBranchId;
+        if (effectiveBranchId == null) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر تحديد فرع الإنتاج",
+              why: "حسابك بلا فرعٍ مُسنَد ولم تُرسل الشاشة فرعاً",
+              doThis: "اختر الفرع من القائمة في شاشة الإنتاج ثم أعِد الترحيل",
+            }),
+          });
+        }
+        const res = await produceBundleComponents(
+          {
+            ...input,
+            branchId: effectiveBranchId,
+          },
+          { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role }
+        );
+        await logAudit(ctx, {
+          action: "production.bundle.produce",
+          entityType: "bundle",
+          entityId: input.bundleVariantId,
+          newValue: {
+            bundleDocGroupRef: res.bundleDocGroupRef,
+            orderCount: res.orders.length,
+            totalCost: res.totalCostAllOrders,
+          },
+        });
+        return res;
       }),
   }),
 });

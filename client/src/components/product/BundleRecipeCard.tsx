@@ -1,7 +1,7 @@
 // gstack B12 (٧/٧/٢٦): تبويب/قسم تعديل وصفة البكج داخل ProductEdit — كان endpoints
 // `bundles.setComponents/getComponents/previewImpact/searchComponents` موجودة بلا مستهلك.
 // يعرض المكوّنات الحاليّة + زر حذف + منتقي بحث لإضافة مكوّن + تنبيه أثر التعديل.
-import { AlertTriangle, Plus, Save, X } from "lucide-react";
+import { AlertTriangle, Boxes, Plus, Save, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { trpc } from "@/lib/trpc";
 import { D, formatIqd, formatQuantity, round2 } from "@/lib/money";
+import { BundleKitProductionDialog } from "@/components/production/bundle-kit/BundleKitProductionDialog";
 
 type Component = {
   componentVariantId: number;
@@ -27,6 +28,7 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
   const [editing, setEditing] = useState<Component[] | null>(null);
   const [picker, setPicker] = useState("");
   const [error, setError] = useState("");
+  const [isKitOpen, setIsKitOpen] = useState(false);
 
   const rows = useMemo<Component[]>(() => {
     if (editing) return editing;
@@ -104,7 +106,18 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle className="text-base">وصفة البكج ({rows.length} مكوّن)</CardTitle>
         {!editing ? (
-          <Button size="sm" variant="outline" onClick={startEdit}>تعديل الوصفة</Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              onClick={() => setIsKitOpen(true)}
+            >
+              <Boxes aria-hidden className="size-4" />
+              إنتاج مكونات البكج
+            </Button>
+            <Button size="sm" variant="outline" onClick={startEdit}>تعديل الوصفة</Button>
+          </div>
         ) : (
           <div className="flex gap-2">
             <Button size="sm" variant="ghost" onClick={cancelEdit}>إلغاء</Button>
@@ -218,6 +231,12 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
           </div>
         )}
       </CardContent>
+
+      <BundleKitProductionDialog
+        open={isKitOpen}
+        onOpenChange={setIsKitOpen}
+        initialBundleVariantId={bundleVariantId}
+      />
     </Card>
   );
 }

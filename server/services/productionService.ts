@@ -25,9 +25,13 @@
 
 export type { ProductionLineInput, CreateProductionInput, CreateProductionResult, ListProductionFilters, RunPreviewResult } from "./production/types";
 export { spoilageSplit, computeRunCosts } from "./production/calc";
-export { createProduction } from "./production/create";
+export { createProduction, createProductionInTx } from "./production/create";
+export type { CreateProductionOptions } from "./production/create";
 export { cancelProduction } from "./production/cancel";
 export { listProductions, getProduction } from "./production/queries";
 export { runPreview } from "./production/preview";
 export { recipeCapacity } from "./production/capacity";
 export type { RecipeCapacityResult, RecipeCapacityComponent } from "./production/capacity";
+export { analyzeBundleRequirements, produceBundleComponents } from "./production/bundleProduction";
+export { analyzeMultiRecipeRequirements, produceMultiRecipeBatches } from "./production/multiRecipeProduction";
+

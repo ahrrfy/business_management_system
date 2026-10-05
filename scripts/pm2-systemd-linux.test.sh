@@ -113,11 +113,16 @@ assert_active_contract() {
   /usr/bin/setpriv --reuid="$(id -u deploy)" --regid="$(id -g deploy)" --init-groups -- \
     /usr/bin/env HOME=/home/deploy USER=deploy LOGNAME=deploy PM2_HOME=/home/deploy/.pm2 \
     /usr/bin/node "${PM2_BIN}" start /home/deploy/backup-permission-probe.cjs \
-    --name erp-backup-permission-probe --no-autorestart >/dev/null
-  for attempt in {1..20}; do
-    [[ -f /home/deploy/backup-permission-result ]] && break
+    --name erp-backup-permission-probe --cwd /home/deploy \
+    --interpreter /usr/bin/node --no-autorestart >/dev/null
+  for attempt in {1..40}; do
+    cmp -s /run/erp-pm2/backup-permission-probe /home/deploy/backup-permission-result && break
     sleep 0.25
   done
+  if ! cmp -s /run/erp-pm2/backup-permission-probe /home/deploy/backup-permission-result; then
+    cat /home/deploy/.pm2/logs/erp-backup-permission-probe-error.log >&2 || true
+    return 1
+  fi
   cmp /run/erp-pm2/backup-permission-probe /home/deploy/backup-permission-result
   if journalctl -u "${UNIT}" --since=-1min --no-pager | grep -q 'does not belong to service'; then
     echo "pm2 systemd linux test: systemd rejected the reconciled main PID" >&2
