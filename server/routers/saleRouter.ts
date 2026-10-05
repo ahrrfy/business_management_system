@@ -64,6 +64,7 @@ import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled,
 } from "@shared/posPaymentPolicy";
 import { managerApprovalSchema, type ManagerApprovalInput } from "@shared/managerApproval";
 import { lookupInvoiceForCorrection } from "../services/sale/correctionLookup";
+import { getSaleLineInsights } from "../services/pricing/lineInsights";
 import { phoneSuffix10 } from "../lib/phone";
 
 // فاتورة أمر الشغل تُنشأ عند التسليم/الإرسال، وقد ينفّذها كاشير آخر عن الذي استقبل
@@ -807,6 +808,26 @@ export const saleRouter = router({
       scopedOwnerId: ctx.scopedOwnerId,
       invoiceScope: ctx.invoiceCorrectionScope,
     })),
+
+  /**
+   * رؤى أسعار سطور البيع: آخر المبيعات الفعليّة لهذا العميل لكل (صنف × وحدة) — حقائق فقط؛ التقييم
+   * (أقل/أعلى/نفس السعر) محلّيّ في الواجهة عبر `@shared/priceAlerts`. قراءةٌ بحتة، ونفس بوّابة
+   * محرّر البيع/التصحيح (`salesCorrectionProcedure`). المنطق في الخدمة، ولا فحص صلاحية جديداً هنا.
+   */
+  lineInsights: salesCorrectionProcedure
+    .input(z.object({
+      customerId: z.number().int().positive(),
+      items: z.array(z.object({
+        variantId: z.number().int().positive(),
+        productUnitId: z.number().int().positive(),
+      })).min(1).max(200),
+    }))
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return {};
+      return getSaleLineInsights(db, input);
+    }),
+
 
   /** محاولة دفع خارجية مستقلة: INITIATED أولاً، بلا أثر على الفاتورة/الذمّة. */
   initiateExternalPayment: salesCorrectionProcedure

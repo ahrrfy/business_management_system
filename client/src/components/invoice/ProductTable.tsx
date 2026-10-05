@@ -10,7 +10,7 @@
  */
 import type { Dispatch } from "react";
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Gift, Package, ShoppingCart, X, CreditCard } from "lucide-react";
+import { Gift, Package, ShoppingCart, X, CreditCard } from "lucide-react";
 import { priceDecimalsFor } from "@shared/moneyPrecision";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,8 @@ import { trpc } from "@/lib/trpc";
 import { calcLineTotal, calcMargin, calcUnitCost, fmtNum } from "./totals";
 import { formatQuantity } from "@shared/quantityFormat";
 import { ProductSearchBar } from "./ProductSearchBar";
+import { PurchaseInsightHints, SaleLastPriceHints } from "./LinePriceHints";
+import { saleInsightKey, useSaleLineInsights } from "./useSaleLineInsights";
 import type { PricingIntentEpoch } from "./productSearchResolution";
 import { getLineStockState } from "./stockAvailability";
 import type { Currency, InvoiceAction, InvoiceLine, InvoiceType, PriceTier } from "./types";
@@ -210,6 +212,10 @@ export function ProductTable({
     allocationsByVariant.set(allocation.variantId, list);
   }
 
+  // تلميحات «آخر سعر بيع لهذا العميل» — جلبٌ واحد مُجمَّع للسلة كلّها (فاتورة البيع بعميلٍ مُسمّى).
+  const saleHintsActive = invoiceType === "SALE" && customerId != null;
+  const saleInsights = useSaleLineInsights({ enabled: saleHintsActive, customerId, items })
+
   const priceAsIqd = (price: string) => {
     const numeric = Number(price);
     if (!Number.isFinite(numeric)) return null;
@@ -388,12 +394,12 @@ export function ProductTable({
               // `purchaseOrderItems.unitPrice` وهو بوحدة الصفّ في الأمر التاريخيّ. المقارنة
               // بالأساس (١٥٠) مع تاريخٍ بالدرزن (١٨٠٠) تُشعل «أرخص سابقاً» كاذباً.
               const enteredPriceIqd = priceAsIqd(item.price);
-              const lowestPriceIqd = purchaseInsight ? Number(purchaseInsight.lowestPurchase.price) : null;
-              const supplierLastPriceIqd = purchaseInsight?.selectedSupplierLastPurchase
-                ? Number(purchaseInsight.selectedSupplierLastPurchase.price)
-                : null;
-              const isAboveHistoricalLow = enteredPriceIqd != null && lowestPriceIqd != null && enteredPriceIqd > lowestPriceIqd;
-              const isBelowHistoricalLow = enteredPriceIqd != null && lowestPriceIqd != null && enteredPriceIqd > 0 && enteredPriceIqd < lowestPriceIqd;
+              // رؤى بيعٍ سابقٍ لهذا العميل (فاتورة البيع فقط). الغياب لا يُقرأ «أول بيع» قبل أن يصل
+              // جوابٌ طازجٌ يخصّ الصنف (`settled`) — وإلا ادّعينا بلا دليل أثناء الجلب.
+              const saleInsight = saleHintsActive && !item.isGift && !item.digital
+                ? (saleInsights.insights?.[saleInsightKey(item.variantId, item.productUnitId)]
+                  ?? (saleInsights.settled ? { lastSales: [] } : undefined))
+                : undefined;
               return (
                 <tr
                   key={`${item.productUnitId}-${idx}`}
@@ -470,34 +476,14 @@ export function ProductTable({
                       </div>
                     )}
                     {purchaseInsight && (
-                      <div className="mt-1 space-y-0.5 text-[10px] leading-4" dir="rtl">
-                        <div className="text-muted-foreground">
-                          آخر شراء: <span dir="ltr" className="font-bold tabular-nums">{fmtNum(purchaseInsight.lastPurchase.price)}</span> د.ع
-                          <span> من {purchaseInsight.lastPurchase.supplierName}</span>
-                        </div>
-                        {purchaseInsight.selectedSupplierLastPurchase && (
-                          <div className="text-muted-foreground">
-                            آخر سعر من المورد الحالي: <span dir="ltr" className="font-bold tabular-nums">{fmtNum(purchaseInsight.selectedSupplierLastPurchase.price)}</span> د.ع
-                          </div>
-                        )}
-                        {isAboveHistoricalLow && (
-                          <div className="flex items-center gap-1 font-semibold text-[var(--sem-warn)]">
-                            <AlertTriangle aria-hidden className="size-3 shrink-0" />
-                            الأرخص سابقاً: {purchaseInsight.lowestPurchase.supplierName} بـ <span dir="ltr">{fmtNum(purchaseInsight.lowestPurchase.price)}</span> د.ع
-                            <span>(فرق {fmtNum(enteredPriceIqd! - lowestPriceIqd!)} د.ع)</span>
-                          </div>
-                        )}
-                        {isBelowHistoricalLow && (
-                          <div className="font-semibold text-[var(--sem-pos)]">
-                            سعر ممتاز: أقل من أدنى شراء سابق بـ <span dir="ltr">{fmtNum(lowestPriceIqd! - enteredPriceIqd!)}</span> د.ع
-                          </div>
-                        )}
-                        {!isAboveHistoricalLow && supplierLastPriceIqd != null && enteredPriceIqd != null && enteredPriceIqd > supplierLastPriceIqd && (
-                          <div className="font-semibold text-[var(--sem-warn)]">
-                            أعلى من آخر سعر لهذا المورد بـ <span dir="ltr">{fmtNum(enteredPriceIqd - supplierLastPriceIqd)}</span> د.ع
-                          </div>
-                        )}
-                      </div>
+                      <PurchaseInsightHints insight={purchaseInsight} enteredPriceIqd={enteredPriceIqd} />
+                    )}
+                    {saleInsight && (
+                      <SaleLastPriceHints
+                        insight={saleInsight}
+                        enteredPrice={item.price}
+                        onUsePrice={readOnlyPricing ? undefined : (price) => dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: price })}
+                      />
                     )}
                   </td>
                   <td className={cn(td, "text-xs text-muted-foreground")}>{item.unit}</td>
