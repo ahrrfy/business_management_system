@@ -1,5 +1,5 @@
-import React from "react";
-import { Store, BookOpen, Gift, Layers, PenTool } from "lucide-react";
+import React, { useState } from "react";
+import { BookOpen, Gift, Layers, PenTool, ChevronDown } from "lucide-react";
 
 interface CategoryItem {
   id: number;
@@ -12,7 +12,7 @@ interface CategoryItem {
 interface StorefrontCategoriesProps {
   categories: any[];
   selectedId: number | null;
-  onSelectCategory: (id: number) => void;
+  onSelectCategory: (id: number | null) => void;
   categoryCountFn: (cat: any) => number;
   className?: string;
   id?: string;
@@ -57,7 +57,13 @@ export function StorefrontCategories({
   className = "",
   id = "store-categories",
 }: StorefrontCategoriesProps) {
+  const [showAll, setShowAll] = useState(false);
   if (categories.length === 0) return null;
+
+  const isSelectedOutsideTop12 =
+    selectedId != null && categories.findIndex((c) => c.id === selectedId) >= 12;
+  const displayedCategories =
+    showAll || isSelectedOutsideTop12 ? categories : categories.slice(0, 12);
 
   return (
     <section
@@ -65,7 +71,7 @@ export function StorefrontCategories({
       aria-labelledby="store-category-title"
       className={`rounded-3xl border border-slate-200/80 bg-white p-3.5 shadow-sm sm:p-7 dark:border-slate-800 dark:bg-slate-900 ${className}`}
     >
-      <div className="mb-4 sm:mb-5 flex items-end justify-between">
+      <div className="mb-4 sm:mb-5 flex flex-wrap items-end justify-between gap-2">
         <div>
           <span className="text-[10px] sm:text-[11px] font-black uppercase tracking-wider text-orange-600 dark:text-orange-400">
             تصفح حسب اهتمامك
@@ -77,13 +83,24 @@ export function StorefrontCategories({
             الأقسام الرئيسية
           </h2>
         </div>
-        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-bold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
-          {categories.length} أقسام متاحة
-        </span>
+        <div className="flex items-center gap-2">
+          {selectedId != null && (
+            <button
+              type="button"
+              onClick={() => onSelectCategory(null)}
+              className="rounded-full border border-slate-200 bg-white px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-bold text-slate-600 transition hover:border-[#0E806A] hover:text-[#0E806A] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+            >
+              عرض كل الأقسام
+            </button>
+          )}
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-bold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+            {categories.length} أقسام متاحة
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-2.5 sm:gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-        {categories.slice(0, 12).map((cat, index) => {
+        {displayedCategories.map((cat, index) => {
           const theme = CATEGORY_THEMES[index % CATEGORY_THEMES.length];
           const isSelected = selectedId === cat.id;
           const count = categoryCountFn(cat);
@@ -130,6 +147,19 @@ export function StorefrontCategories({
           );
         })}
       </div>
+
+      {categories.length > 12 && (
+        <div className="mt-5 text-center">
+          <button
+            type="button"
+            onClick={() => setShowAll((prev) => !prev)}
+            className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-bold text-slate-700 transition hover:border-[#0E806A] hover:bg-white hover:text-[#0E806A] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+          >
+            <span>{showAll ? "عرض أقسام أقل" : `عرض جميع الأقسام (${categories.length})`}</span>
+            <ChevronDown aria-hidden className={`size-3.5 transition-transform duration-200 ${showAll ? "rotate-180" : ""}`} />
+          </button>
+        </div>
+      )}
     </section>
   );
 }

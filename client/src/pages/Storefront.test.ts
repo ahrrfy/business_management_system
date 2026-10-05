@@ -50,11 +50,13 @@ import {
   shouldAutoLoadStorefrontNextPage,
   storefrontTurnstileSubmissionReady,
   storefrontProductCanBeOrdered,
+  CategoryChipStrip,
   validateStorefrontCheckout,
   type CartLine,
   type CheckoutForm,
 } from "./Storefront";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+import { StorefrontCategories } from "@/components/storefront/StorefrontCategories";
 import { DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH, storefrontVisibleCustomizationFieldKeys } from "./store/storefrontCustomization";
 
 describe("storefront related product actions", () => {
@@ -656,3 +658,80 @@ describe("storefront wholesale guidance", () => {
     expect(source).toContain('setPanel("cart")');
   });
 });
+
+describe("storefront category strip and categories navigation", () => {
+  it("renders category chip strip with accessible navigation and proper chips", () => {
+    const cats = [
+      { id: 1, name: "دفاتر وقرطاسية" },
+      { id: 2, name: "أقلام حبر وجاف" },
+      { id: 3, name: "إطارات وبوسترات" },
+    ];
+    const onPick = vi.fn();
+    const html = renderToStaticMarkup(
+      createElement(CategoryChipStrip, {
+        cats,
+        selectedId: 2,
+        onPick,
+      }),
+    );
+
+    expect(html).toContain("كل الأقسام");
+    expect(html).toContain("دفاتر وقرطاسية");
+    expect(html).toContain("أقلام حبر وجاف");
+    expect(html).toContain("إطارات وبوسترات");
+    expect(html).toContain('aria-label="مرر الأقسام إلى اليمين"');
+    expect(html).toContain('aria-label="مرر الأقسام إلى اليسار"');
+    expect(html).toContain('aria-label="شريط أقسام المنتجات"');
+    expect(html).toContain('data-selected="true"');
+  });
+
+  it("renders StorefrontCategories section with id store-categories and themed cards", () => {
+    const cats = [
+      { id: 1, name: "قرطاسية عامة", productCount: 25, availableCount: 20 },
+      { id: 2, name: "أدوات هندسية", productCount: 10, availableCount: 8 },
+    ];
+    const onSelect = vi.fn();
+    const html = renderToStaticMarkup(
+      createElement(StorefrontCategories, {
+        id: "store-categories",
+        categories: cats,
+        selectedId: null,
+        onSelectCategory: onSelect,
+        categoryCountFn: (c: any) => c.availableCount ?? c.productCount,
+      }),
+    );
+
+    expect(html).toContain('id="store-categories"');
+    expect(html).toContain("الأقسام الرئيسية");
+    expect(html).toContain("تصفح حسب اهتمامك");
+    expect(html).toContain("قرطاسية عامة");
+    expect(html).toContain("أدوات هندسية");
+    expect(html).toContain("20 منتج");
+    expect(html).toContain("8 منتج");
+  });
+
+  it("shows clear filter button when a category is selected in StorefrontCategories", () => {
+    const cats = [{ id: 1, name: "قرطاسية عامة", productCount: 5 }];
+    const html = renderToStaticMarkup(
+      createElement(StorefrontCategories, {
+        id: "store-categories",
+        categories: cats,
+        selectedId: 1,
+        onSelectCategory: vi.fn(),
+        categoryCountFn: () => 5,
+      }),
+    );
+
+    expect(html).toContain("عرض كل الأقسام");
+  });
+
+  it("verifies navbar contains anchor link to #store-categories", () => {
+    const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
+    expect(source).toContain('href="#store-categories"');
+    expect(source).toContain('id="store-categories"');
+    expect(source).toContain('id="store-categories-strip"');
+    expect(source).toContain("<StorefrontCategories");
+    expect(source).toContain("<CategoryChipStrip");
+  });
+});
+

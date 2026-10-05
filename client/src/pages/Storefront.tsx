@@ -19,6 +19,8 @@ import {
   Briefcase,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Flame,
   ImageOff,
   Heart,
@@ -79,6 +81,7 @@ import { StoreTrustAndHelp } from "@/components/storefront/StoreTrustAndHelp";
 import { CuratedRow, type RowProduct } from "@/components/storefront/StorefrontCuratedRows";
 import { StorefrontMilestoneBar } from "@/components/storefront/StorefrontMilestoneBar";
 import { StorefrontStickyFilter } from "@/components/storefront/StorefrontStickyFilter";
+import { StorefrontCategories } from "@/components/storefront/StorefrontCategories";
 import { StorefrontColorSwatches } from "@/components/storefront/StorefrontColorSwatches";
 import { StorefrontPanelShell } from "@/components/storefront/StorefrontPanelShell";
 import { StorefrontLocationPicker } from "@/components/storefront/StorefrontLocationPicker";
@@ -868,7 +871,7 @@ export function BundleMedia({
   );
 }
 
-function CategoryChipStrip({
+export function CategoryChipStrip({
   cats,
   selectedId,
   onPick,
@@ -877,234 +880,129 @@ function CategoryChipStrip({
   selectedId: number | null;
   onPick: (id: number | null) => void;
 }) {
-  const trackRef = useRef<HTMLDivElement | null>(null);
-  const set0Ref = useRef<HTMLDivElement | null>(null);
-  const set1Ref = useRef<HTMLDivElement | null>(null);
-  const offsetRef = useRef(0);
-  const targetNudgeRef = useRef(0);
-  const isHoveredRef = useRef(false);
-  const isFocusedRef = useRef(false);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const isDraggingRef = useRef(false);
-  const isPausedTemporarilyRef = useRef(false);
-  const pauseTimerRef = useRef<number | null>(null);
-  const dragStartRef = useRef({ x: 0, startOffset: 0, moved: false });
+  const dragStartXRef = useRef(0);
+  const dragScrollLeftRef = useRef(0);
+  const hasMovedRef = useRef(false);
 
   const allChips = useMemo(
     () => [{ id: null, name: "كل الأقسام" }, ...cats.map((c) => ({ id: c.id, name: c.name }))],
     [cats],
   );
 
-  const repeatCount = useMemo(() => {
-    if (allChips.length === 0) return 1;
-    if (allChips.length < 6) return 5;
-    if (allChips.length < 12) return 4;
-    return 3;
-  }, [allChips.length]);
+  const scroll = (direction: "left" | "right") => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const amount = direction === "left" ? -280 : 280;
+    el.scrollBy({ left: amount, behavior: "smooth" });
+  };
 
-  const pauseAutoSlideTemporarily = useCallback((ms = 1800) => {
-    isPausedTemporarilyRef.current = true;
-    if (pauseTimerRef.current != null) {
-      window.clearTimeout(pauseTimerRef.current);
-    }
-    pauseTimerRef.current = window.setTimeout(() => {
-      isPausedTemporarilyRef.current = false;
-      pauseTimerRef.current = null;
-    }, ms);
-  }, []);
-
-  const move = useCallback(
-    (direction: -1 | 1) => {
-      targetNudgeRef.current += direction * 240;
-      pauseAutoSlideTemporarily(2000);
-    },
-    [pauseAutoSlideTemporarily],
-  );
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-    if (mediaQuery.matches) return;
-
-    let animId: number;
-    let lastTime = performance.now();
-
-    const tick = (now: number) => {
-      const dt = Math.min((now - lastTime) / 1000, 0.1);
-      lastTime = now;
-
-      let unitWidth = 0;
-      if (set0Ref.current && set1Ref.current) {
-        unitWidth = Math.abs(set1Ref.current.offsetLeft - set0Ref.current.offsetLeft);
-      } else if (set0Ref.current) {
-        unitWidth = set0Ref.current.offsetWidth + 8;
-      }
-
-      if (unitWidth > 0 && trackRef.current) {
-        if (!isDraggingRef.current) {
-          if (Math.abs(targetNudgeRef.current) > 0.5) {
-            const step = targetNudgeRef.current * Math.min(1, 12 * dt);
-            offsetRef.current += step;
-            targetNudgeRef.current -= step;
-          } else {
-            targetNudgeRef.current = 0;
-            const isPaused = isHoveredRef.current || isFocusedRef.current || isPausedTemporarilyRef.current;
-            if (!isPaused) {
-              offsetRef.current += 38 * dt;
-            }
-          }
-
-          if (offsetRef.current >= unitWidth) {
-            offsetRef.current -= unitWidth;
-          } else if (offsetRef.current < 0) {
-            offsetRef.current += unitWidth;
-          }
-
-          trackRef.current.style.transform = `translate3d(${offsetRef.current}px, 0, 0)`;
-        }
-      }
-
-      animId = requestAnimationFrame(tick);
-    };
-
-    const onVisibilityChange = () => {
-      if (document.hidden) {
-        isPausedTemporarilyRef.current = true;
-      } else {
-        lastTime = performance.now();
-        isPausedTemporarilyRef.current = false;
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    animId = requestAnimationFrame(tick);
-    return () => {
-      cancelAnimationFrame(animId);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      if (pauseTimerRef.current != null) {
-        window.clearTimeout(pauseTimerRef.current);
-      }
-    };
-  }, []);
-
-  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    dragStartRef.current = {
-      x: event.clientX,
-      startOffset: offsetRef.current,
-      moved: false,
-    };
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const el = scrollRef.current;
+    if (!el) return;
     isDraggingRef.current = true;
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    dragStartXRef.current = e.clientX;
+    dragScrollLeftRef.current = el.scrollLeft;
+    hasMovedRef.current = false;
   };
 
-  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDraggingRef.current || !trackRef.current) return;
-    const deltaX = event.clientX - dragStartRef.current.x;
-    if (Math.abs(deltaX) > 5) {
-      dragStartRef.current.moved = true;
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingRef.current) return;
+    const deltaX = e.clientX - dragStartXRef.current;
+    if (Math.abs(deltaX) > 6) {
+      hasMovedRef.current = true;
+      const el = scrollRef.current;
+      if (el) {
+        el.scrollLeft = dragScrollLeftRef.current - deltaX;
+      }
     }
-    let newOffset = dragStartRef.current.startOffset + deltaX;
-
-    let unitWidth = 0;
-    if (set0Ref.current && set1Ref.current) {
-      unitWidth = Math.abs(set1Ref.current.offsetLeft - set0Ref.current.offsetLeft);
-    } else if (set0Ref.current) {
-      unitWidth = set0Ref.current.offsetWidth + 8;
-    }
-
-    if (unitWidth > 0) {
-      newOffset = ((newOffset % unitWidth) + unitWidth) % unitWidth;
-    }
-    offsetRef.current = newOffset;
-    trackRef.current.style.transform = `translate3d(${offsetRef.current}px, 0, 0)`;
   };
 
-  const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+  const onPointerUp = () => {
     if (!isDraggingRef.current) return;
     isDraggingRef.current = false;
-    try {
-      if ((event.currentTarget as HTMLElement).hasPointerCapture(event.pointerId)) {
-        (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
-      }
-    } catch {
-      // Ignore
-    }
-    pauseAutoSlideTemporarily(1500);
-    window.setTimeout(() => { dragStartRef.current.moved = false; }, 60);
+    window.setTimeout(() => {
+      hasMovedRef.current = false;
+    }, 60);
   };
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      const activeEl = scrollRef.current.querySelector<HTMLElement>('[data-selected="true"]');
+      if (activeEl) {
+        activeEl.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+      }
+    }
+  }, [selectedId]);
 
   return (
     <div className="mx-auto flex max-w-[1500px] items-center gap-1.5 sm:gap-2 px-2 sm:px-3 lg:px-6">
       <button
         type="button"
-        onClick={() => move(1)}
-        aria-label="مرر الأقسام إلى اليسار"
-        className="hidden sm:flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-blue-400 hover:text-blue-700 active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
+        onClick={() => scroll("right")}
+        aria-label="مرر الأقسام إلى اليمين"
+        className="hidden sm:flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-[#0E806A] hover:text-[#0E806A] active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
       >
-        <ArrowRight aria-hidden className="size-3.5 rotate-180" />
+        <ChevronRight aria-hidden className="size-4" />
       </button>
 
       <div
+        ref={scrollRef}
         dir="rtl"
-        className="relative flex min-w-0 flex-1 cursor-grab touch-pan-x overflow-hidden py-2 sm:py-2.5 active:cursor-grabbing select-none [mask-image:linear-gradient(to_right,transparent,black_16px,black_calc(100%-16px),transparent)] sm:[mask-image:linear-gradient(to_right,transparent,black_28px,black_calc(100%-28px),transparent)]"
+        className="relative flex min-w-0 flex-1 cursor-grab items-center gap-1.5 sm:gap-2 overflow-x-auto scroll-smooth py-2 sm:py-2.5 active:cursor-grabbing select-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden touch-pan-x [mask-image:linear-gradient(to_right,transparent,black_16px,black_calc(100%-16px),transparent)] sm:[mask-image:linear-gradient(to_right,transparent,black_28px,black_calc(100%-28px),transparent)]"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onMouseEnter={() => { isHoveredRef.current = true; }}
-        onMouseLeave={() => { if (!isDraggingRef.current) isHoveredRef.current = false; }}
-        onFocusCapture={() => { isFocusedRef.current = true; }}
-        onBlurCapture={() => { isFocusedRef.current = false; }}
-        aria-label="أقسام المنتجات — حركة سلايد مستمرة"
+        onWheel={(e) => {
+          if (e.deltaY !== 0 && Math.abs(e.deltaX) < Math.abs(e.deltaY)) {
+            const el = scrollRef.current;
+            if (el) el.scrollLeft += e.deltaY;
+          }
+        }}
+        aria-label="شريط أقسام المنتجات"
       >
-        <div
-          ref={trackRef}
-          className="flex shrink-0 items-center gap-1.5 sm:gap-2 will-change-transform"
-          style={{ transform: "translate3d(0, 0, 0)" }}
-        >
-          {Array.from({ length: repeatCount }).map((_, setIndex) => (
-            <div
-              key={setIndex}
-              ref={setIndex === 0 ? set0Ref : setIndex === 1 ? set1Ref : undefined}
-              className="flex shrink-0 items-center gap-1.5 sm:gap-2"
-              aria-hidden={setIndex > 0 ? "true" : undefined}
-            >
-              {allChips.map((chip) => {
-                const isSelected = chip.id == null ? selectedId == null : selectedId === chip.id;
-                const activeClass = chip.id == null
-                  ? "border-[#183D36] bg-[#183D36] text-white shadow-xs dark:border-white dark:bg-white dark:text-slate-900"
-                  : "border-[#0E806A] bg-[#0E806A] text-white shadow-xs";
-                const inactiveClass = "border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300";
+        {allChips.map((chip) => {
+          const isSelected = chip.id == null ? selectedId == null : selectedId === chip.id;
+          const activeClass =
+            chip.id == null
+              ? "border-[#183D36] bg-[#183D36] text-white shadow-xs dark:border-white dark:bg-white dark:text-slate-900"
+              : "border-[#0E806A] bg-[#0E806A] text-white shadow-xs";
+          const inactiveClass =
+            "border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300";
 
-                return (
-                  <button
-                    type="button"
-                    key={`${setIndex}-${chip.id ?? "all"}`}
-                    tabIndex={setIndex > 0 ? -1 : 0}
-                    onClick={() => {
-                      if (dragStartRef.current.moved) return;
-                      onPick(chip.id);
-                    }}
-                    className={`shrink-0 rounded-full border px-3 sm:px-3.5 py-1 sm:py-1.5 text-xs font-black transition-colors duration-200 hover:-translate-y-0.5 active:scale-95 ${
-                      isSelected ? activeClass : inactiveClass
-                    }`}
-                  >
-                    {chip.name}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-        </div>
+          return (
+            <button
+              type="button"
+              key={chip.id ?? "all"}
+              data-selected={isSelected}
+              aria-pressed={isSelected}
+              onClick={(e) => {
+                if (hasMovedRef.current) {
+                  e.preventDefault();
+                  return;
+                }
+                onPick(chip.id);
+              }}
+              className={`shrink-0 rounded-full border px-3 sm:px-3.5 py-1 sm:py-1.5 text-xs font-black transition-all duration-200 hover:-translate-y-0.5 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0E806A] ${
+                isSelected ? activeClass : inactiveClass
+              }`}
+            >
+              {chip.name}
+            </button>
+          );
+        })}
       </div>
 
       <button
         type="button"
-        onClick={() => move(-1)}
-        aria-label="مرر الأقسام إلى اليمين"
-        className="hidden sm:flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-blue-400 hover:text-blue-700 active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
+        onClick={() => scroll("left")}
+        aria-label="مرر الأقسام إلى اليسار"
+        className="hidden sm:flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-[#0E806A] hover:text-[#0E806A] active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
       >
-        <ArrowRight aria-hidden className="size-3.5" />
+        <ChevronLeft aria-hidden className="size-4" />
       </button>
     </div>
   );
@@ -2458,7 +2356,22 @@ function StorefrontContent() {
             </span>
           </a>
           <nav className="hidden items-center gap-5 text-xs font-black text-slate-600 lg:flex dark:text-slate-300" aria-label="التنقل الرئيسي">
-            <a href="#store-categories" className="transition hover:text-emerald-700 dark:hover:text-emerald-400">الأقسام</a>
+            <a
+              href="#store-categories"
+              onClick={(e) => {
+                e.preventDefault();
+                if (categoryId != null || search) {
+                  setCategoryId(null);
+                  setSearch("");
+                  setRawSearch("");
+                }
+                const target = document.getElementById("store-categories") || document.getElementById("store-categories-strip");
+                target?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}
+              className="transition hover:text-emerald-700 dark:hover:text-emerald-400"
+            >
+              الأقسام
+            </a>
             <a href="#store-results" className="transition hover:text-emerald-700 dark:hover:text-emerald-400">المنتجات</a>
             <a href="#store-deals" className="transition hover:text-orange-600 dark:hover:text-orange-400">العروض</a>
           </nav>
@@ -2546,7 +2459,7 @@ function StorefrontContent() {
           )}
         </div>
         {cats.length > 0 && (
-          <div className="border-t border-slate-100 bg-slate-50/50 dark:border-slate-800 dark:bg-slate-900">
+          <div id="store-categories-strip" className="border-t border-slate-100 bg-slate-50/50 dark:border-slate-800 dark:bg-slate-900">
             <CategoryChipStrip cats={cats} selectedId={categoryId} onPick={selectCategory} />
           </div>
         )}
@@ -2583,6 +2496,18 @@ function StorefrontContent() {
           <div className="mb-8 w-[100vw] relative left-[50%] right-[50%] -ml-[50vw] -mr-[50vw] overflow-hidden">
             <BannerCarousel banners={feedStrips} slot="HERO" />
           </div>
+        )}
+
+        {/* قسم الأقسام الرئيسية */}
+        {cats.length > 0 && (
+          <StorefrontCategories
+            id="store-categories"
+            categories={cats}
+            selectedId={categoryId}
+            onSelectCategory={selectCategory}
+            categoryCountFn={(c) => storefrontCategoryCount(c, availability)}
+            className="mb-8 scroll-mt-28"
+          />
         )}
 
         <section id="store-results" className="mt-4 sm:mt-6 scroll-mt-36 rounded-2xl sm:rounded-3xl bg-white p-3 sm:p-5 lg:p-7 shadow-xs ring-1 ring-slate-200/70 dark:bg-slate-900 dark:ring-slate-800">
