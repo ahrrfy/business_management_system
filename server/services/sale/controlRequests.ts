@@ -301,6 +301,37 @@ export async function requestSalesControl(
     if (isDeadInvoice(invoice)) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الفاتورة نهائية ولا تقبل طلب تحكم جديداً" });
     }
+    if (input.requestType === "SALES_CANCEL") {
+      const returnedTotalDec = money(invoice.returnedTotal ?? "0");
+      const totalDec = money(invoice.total);
+      if (totalDec.gt(0) && returnedTotalDec.gte(totalDec)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: `تعذّر إلغاء الفاتورة ${invoice.invoiceNumber}`,
+            why: "الفاتورة مُرتجَعة بالكامل — لا حاجة للإلغاء (المخزون والذمة مُصفَّران)",
+            doThis: "راجع سجلّ المرتجعات للتأكّد ممّا استُرِدّ للزبون وتصفير بنود الفاتورة",
+            action: { label: "سجل المرتجعات", href: "/sales-returns" },
+          }),
+        });
+      }
+    }
+    if (input.requestType === "SALES_RETURN") {
+      const returnedTotalDec = money(invoice.returnedTotal ?? "0");
+      const totalDec = money(invoice.total);
+      const remaining = money(invoiceRemaining(invoice));
+      if (invoice.status === "RETURNED" || (totalDec.gt(0) && returnedTotalDec.gte(totalDec)) || remaining.lte(0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: `تعذّر إنشاء طلب إرجاع للفاتورة ${invoice.invoiceNumber}`,
+            why: "الفاتورة مُرتجَعة بالكامل مسبقاً — لا يوجد رصيد متبقٍ للإرجاع",
+            doThis: "تحقق من سجل المرتجعات السابقة لهذه الفاتورة",
+            action: { label: "سجل المرتجعات", href: "/sales-returns" },
+          }),
+        });
+      }
+    }
     if (["SALES_REISSUE", "SALES_EXCHANGE"].includes(input.requestType)) {
       const correctionPayload = input.payload as SalesReissueControlPayload;
       // قرار المالك (٣/١٠/٢٦): تغيير العميل على فاتورةٍ مقبوضة مسموح؛ المقبوض يُسوّى عند التنفيذ

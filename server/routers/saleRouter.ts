@@ -49,10 +49,11 @@ import { logAudit, logAuditTx } from "../services/auditService";
 import { processPayment,
 } from "../services/saleService";
 import { requestSalesControl } from "../services/sale/controlRequests";
+import { RETURN_EXECUTED_AUDIT_ACTION } from "../services/returns/auditActions";
 import { assertNoInTransitConsignment } from "../services/delivery/guards";
 import { registerCounterCollectionTx } from "../services/delivery/counterCollection";
 import { randomUUID } from "node:crypto";
-import { canSeeCostForUser, invoiceListProcedure, invoiceViewProcedure, invoiceViewScopeForUser, router, salesCashierProcedure, salesCorrectionProcedure, salesManagerProcedure, salesReadProcedure, type InvoiceScope,
+import { canSeeCostForUser, invoiceListProcedure, invoiceViewProcedure, invoiceViewScopeForUser, returnsProcedure, router, salesCashierProcedure, salesCorrectionProcedure, salesManagerProcedure, salesReadProcedure, type InvoiceScope,
 } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, percentString, positiveMoneyString } from "../lib/schemas";
@@ -1812,19 +1813,105 @@ export const saleRouter = router({
       .from(receipts)
       .where(eq(receipts.invoiceId, input.invoiceId))
       .orderBy(asc(receipts.id));
-    const returns = await db
+    const returnEntries = await db
       .select({
         id: accountingEntries.id,
         amount: accountingEntries.amount,
+        receiptId: accountingEntries.receiptId,
+        notes: accountingEntries.notes,
         performedBy: accountingEntries.createdBy,
         performedByName: accountingEntries.createdByNameSnapshot,
         createdAt: accountingEntries.createdAt,
+        receiptPaymentMethod: receipts.paymentMethod,
+        receiptReference: receipts.referenceNumber,
+        receiptDescription: receipts.description,
       })
       .from(accountingEntries)
-      .where(and(eq(accountingEntries.invoiceId, input.invoiceId), eq(accountingEntries.entryType, "RETURN"),
-          ),
-        )
+      .leftJoin(receipts, eq(accountingEntries.receiptId, receipts.id))
+      .where(
+        and(
+          eq(accountingEntries.invoiceId, input.invoiceId),
+          eq(accountingEntries.entryType, "RETURN"),
+          isNull(accountingEntries.supplierId),
+        ),
+      )
       .orderBy(asc(accountingEntries.id));
+
+    const returnAuditLogs = await db
+      .select({
+        action: auditLogs.action,
+        newValue: auditLogs.newValue,
+      })
+      .from(auditLogs)
+      .where(
+        and(
+          or(
+            and(eq(auditLogs.action, "sale.return_cart"), eq(auditLogs.entityType, "sale")),
+            and(eq(auditLogs.action, RETURN_EXECUTED_AUDIT_ACTION), eq(auditLogs.entityType, "invoice")),
+          ),
+          eq(auditLogs.entityId, String(input.invoiceId)),
+        ),
+      );
+
+    const returns = returnEntries.map((entry) => {
+      const match = entry.notes?.match(/\[(SR-[^\]]+)\]/);
+      const audit = returnAuditLogs.find(
+        (a) =>
+          ((a.newValue as any)?.returnNumber && (a.newValue as any)?.returnNumber === match?.[1]) ||
+          ((a.newValue as any)?.receiptId && (a.newValue as any)?.receiptId === entry.receiptId),
+      );
+      const returnNumber = match?.[1] || (audit?.newValue as any)?.returnNumber || `SR-${entry.id}`;
+
+      let method = entry.receiptPaymentMethod || (audit?.newValue as any)?.method;
+      if (!method) {
+        if (entry.notes?.includes("رصيد متجر")) method = "STORE_CREDIT";
+        else if (entry.notes?.includes("بطاقة")) method = "CARD";
+        else if (entry.notes?.includes("نقدي")) method = "CASH";
+        else method = "CASH";
+      }
+
+      let disposition: "RESTOCK" | "DAMAGED" = "RESTOCK";
+      if ((audit?.newValue as any)?.disposition === "DAMAGED" || entry.notes?.includes("تالف")) {
+        disposition = "DAMAGED";
+      }
+
+      const auditItems = (audit?.newValue as any)?.items;
+      let returnedLineItems: Array<{
+        name: string;
+        quantity: number;
+        unitPrice: string;
+      }> = [];
+      if (Array.isArray(auditItems) && auditItems.length > 0) {
+        returnedLineItems = auditItems.map((ai: any) => ({
+          name: String(ai.name || ai.productName || "صنف"),
+          quantity: Number(ai.quantity || 1),
+          unitPrice: String(ai.unitPrice || "0"),
+        }));
+      } else {
+        returnedLineItems = items
+          .filter((i) => Number(i.returnedBaseQuantity ?? 0) > 0)
+          .map((i) => ({
+            name: i.productName ?? "صنف",
+            quantity: Number(i.returnedBaseQuantity ?? 0),
+            unitPrice: String(i.unitPrice),
+          }));
+      }
+
+      return {
+        id: entry.id,
+        returnNumber,
+        amount: Math.abs(Number(entry.amount)).toFixed(2),
+        method: String(method),
+        disposition,
+        performedBy: entry.performedBy,
+        performedByName: entry.performedByName,
+        createdAt: entry.createdAt,
+        receiptId: entry.receiptId ? Number(entry.receiptId) : null,
+        referenceNumber: entry.receiptReference ?? null,
+        notes: entry.notes,
+        items: returnedLineItems,
+      };
+    });
 
     // أثر التعديل المنشور: المعرّفات ثابتة للتدقيق، والأسماء الحالية للعرض، مع الزمن ورقم الأصل.
     const correctionAudit = inv.correctionOfInvoiceId == null ? null : (
@@ -1889,9 +1976,9 @@ export const saleRouter = router({
   }),
 
   // إلغاء فاتورة بيع كاملاً (قرار مالك ١٢/٨) — عكسٌ كامل + إرجاع مخزون + استرداد بجهة صرفٍ مُصرَّحة.
-  // salesManagerProcedure ⇒ مديريّ حصراً (SOD مع بائع الفاتورة الأصليّ). الحراس البقية (الفترة/الحالة/
+  // returnsProcedure ⇒ كاشير تجزئة أو استقبال أو طباعة بفرع مُسنَد. الحراس البقية (الفترة/الحالة/
   // ملكية الفرع/الكروت الرقمية/أمر الشغل) داخل cancelSale، بمعاملة ذرّية واحدة.
-  cancel: salesCashierProcedure
+  cancel: returnsProcedure
     .input(
       z.object({
         invoiceId: z.number().int().positive(),
@@ -1907,7 +1994,13 @@ export const saleRouter = router({
     .mutation(async ({ input, ctx }) => {
       // ملكية الفرع تُفحص داخل الخدمة (admin يعبُر) — لكن نُلزم أدوار غير-admin بفرعٍ مُسنَد.
       if (ctx.user.role !== "admin" && ctx.user.branchId == null) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إلغاء فاتورة",
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر طلب إلغاء الفاتورة",
+            why: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إلغاء فاتورة",
+            doThis: "سجّل الدخول بحسابٍ مُسنَد لفرعٍ تشغيلي لإلغاء الفاتورة",
+          }),
         });
       }
       const res = await requestSalesControl({

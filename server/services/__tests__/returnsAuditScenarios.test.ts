@@ -23,7 +23,7 @@ describe("١. تدقيق الأثر المالي والمخزني والتسجي
 
   it("يحتوي على مسار مرتجع المبيعات الذري executeSalesReturnCart بضوابط مالية ومخزنية", () => {
     expect(routerSrc).toContain(
-      "executeSalesReturnCart: salesCashierProcedure",
+      "executeSalesReturnCart: returnsProcedure",
     );
     expect(routerSrc).toContain(
       'min(1, "يجب تحديد صنف واحد على الأقل للإرجاع")',
@@ -145,7 +145,7 @@ describe("٥. تدقيق ربط الأدراج النقدية والمطابقة
   );
 
   it("يوفّر إجراء getOpenRefundDrawers بصلاحية كاشير لجلب الأدراج المفتوحة بالفرع مع مؤشر الملكية", () => {
-    expect(routerSrc).toContain("getOpenRefundDrawers: salesCashierProcedure");
+    expect(routerSrc).toContain("getOpenRefundDrawers: returnsProcedure");
     expect(routerSrc).toContain("expectedCash: s.expectedCash");
     expect(routerSrc).toContain(
       "isMine: Number(s.userId) === Number(ctx.user.id)",

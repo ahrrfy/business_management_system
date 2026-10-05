@@ -25,6 +25,7 @@
 
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { isDeadInvoice } from "@shared/predicates";
 import Decimal from "decimal.js";
 import { and, eq, sql } from "drizzle-orm";
 import {
@@ -102,11 +103,24 @@ export async function cancelSaleInTx(
         if (Number(existingRefId) !== Number(input.invoiceId)) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "تعارض idempotency: المفتاح مستعمَل لإلغاءٍ على فاتورة مختلفة",
+            message: appErrorMessage({
+              what: "تعذر إتمام طلب الإلغاء",
+              why: "تعارض idempotency: المفتاح مستعمَل لإلغاءٍ على فاتورة مختلفة",
+              doThis: "استخدم مفتاح طلب فريداً لكل عملية إلغاء",
+            }),
           });
         }
         const rInv = (await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1))[0];
-        if (!rInv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+        if (!rInv) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "تعذر العثور على الفاتورة",
+              why: "الفاتورة غير موجودة",
+              doThis: "تحقق من صحة معرّف الفاتورة",
+            }),
+          });
+        }
         // أحدث خروج قد يكون نقداً منفذاً أو طلب سند غير نقدي ما زال معلقاً.
         const priorRefund = (
           await tx
@@ -148,9 +162,25 @@ export async function cancelSaleInTx(
     const invPreview = (
       await tx.select({ branchId: invoices.branchId }).from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1)
     )[0];
-    if (!invPreview) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    if (!invPreview) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذر العثور على الفاتورة",
+          why: "الفاتورة غير موجودة",
+          doThis: "تحقق من صحة معرّف الفاتورة",
+        }),
+      });
+    }
     if (actor.role !== "admin" && Number(invPreview.branchId) !== Number(actor.branchId)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذر إلغاء الفاتورة",
+          why: "الفاتورة لا تخصّ فرعك",
+          doThis: "سجّل الدخول بحساب الفرع المالك للفاتورة لإلغائها",
+        }),
+      });
     }
     let prelockedCashSource: Awaited<ReturnType<typeof shiftIdForCashTx>> | null = null;
     if (input.refundPaymentMethod === "CASH") {
@@ -177,19 +207,69 @@ export async function cancelSaleInTx(
     // ═══ ١) قراءة الفاتورة تحت FOR UPDATE + الحراس ═══
     const invRows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
     const inv = invRows[0];
-    if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    if (!inv) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذر العثور على الفاتورة المطلوبة للإلغاء",
+          why: "الفاتورة غير موجودة",
+          doThis: "تحقق من رقم الفاتورة أو ابحث عنها في قائمة المبيعات",
+        }),
+      });
+    }
     if (Number(inv.branchId) !== Number(invPreview.branchId)) {
-      throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع الفاتورة أثناء الإلغاء؛ أعد المحاولة" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذر إتمام إلغاء الفاتورة",
+          why: "تغيّر فرع الفاتورة أثناء الإلغاء؛ أعد المحاولة",
+          doThis: "أعد فتح تفاصيل الفاتورة وتأكد من الفرع التشغيلي ثم كرر المحاولة",
+        }),
+      });
     }
     await assertLockedInvoiceControlSnapshotTx(tx, inv, input.controlExpectedSnapshot);
 
-    if (inv.status === "CANCELLED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة ملغاة مسبقاً" });
-    }
-    if (inv.status === "RETURNED") {
+    // ═══ حارس حالة الفاتورة والتعشيق الذري المالي (F6: Atomic Cancellation Interlock) ═══
+    // ١) فحص المستند الميت (CANCELLED / RETURNED / SUPERSEDED) وفق عقد رسائل الخطأ الموحد
+    if (isDeadInvoice(inv)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "الفاتورة مُرتجَعة بالكامل — لا حاجة للإلغاء (المخزون والذمة مُصفَّران)",
+        message:
+          inv.status === "CANCELLED"
+            ? appErrorMessage({
+                what: `تعذّر إلغاء الفاتورة ${inv.invoiceNumber}`,
+                why: "الفاتورة ملغاة مسبقاً",
+                doThis: "تحقّق من سجلّ الفاتورة في قائمة المبيعات للتأكّد من تفاصيل الإلغاء السابقة",
+                action: { label: "سجل المبيعات", href: "/invoices" },
+              })
+            : inv.status === "SUPERSEDED"
+              ? appErrorMessage({
+                  what: `تعذّر إلغاء الفاتورة ${inv.invoiceNumber}`,
+                  why: "الفاتورة مستبدلة بفاتورة مصححة ولا يجوز إلغاؤها",
+                  doThis: "افتح الفاتورة المصحّحة البديلة من سجلّ الفاتورة تحت «استُبدلت بـ» إن كنت بحاجة لتعديلها أو إلغائها",
+                  action: { label: "تفاصيل الفاتورة", href: `/invoices/${inv.id}` },
+                })
+              : appErrorMessage({
+                  what: `تعذّر إلغاء الفاتورة ${inv.invoiceNumber}`,
+                  why: "الفاتورة مُرتجَعة بالكامل — لا حاجة للإلغاء (المخزون والذمة مُصفَّران)",
+                  doThis: "راجع سجلّ المرتجعات للتأكّد ممّا استُرِدّ للزبون وتصفير بنود الفاتورة",
+                  action: { label: "سجل المرتجعات", href: "/sales-returns" },
+                }),
+      });
+    }
+
+    // ٢) التحقق المالي الحاسم: منع إلغاء فاتورة استُنفدت كامل قيمتها عبر المرتجعات التراكمية
+    const returnedTotalDec = money(inv.returnedTotal ?? "0");
+    const totalDec = money(inv.total);
+    if (totalDec.gt(0) && returnedTotalDec.gte(totalDec)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: `تعذّر إلغاء الفاتورة ${inv.invoiceNumber}`,
+          why: `الفاتورة مُرتجَعة بالكامل مالياً: إجمالي المرتجع (${returnedTotalDec.toFixed(2)} د.ع) استنفد كامل قيمة الفاتورة (${totalDec.toFixed(2)} د.ع)`,
+          doThis: "راجع سجلّ المرتجعات للتأكّد من المبالغ المستردة قبل اتخاذ أي إجراء إداري",
+          action: { label: "سجل المرتجعات", href: "/sales-returns" },
+        }),
       });
     }
     // Codex P1 (١٢/٨) — حارس الفترة على تاريخ الفاتورة الأصليّ: فاتورة داخل شهرٍ مُقفَلٍ لا تُلغى بيومٍ لاحق
@@ -198,14 +278,31 @@ export async function cancelSaleInTx(
     await assertPeriodOpen(tx, inv.invoiceDate);
     // ملكية الفرع: مدير فرع لا يُلغي فاتورة فرع آخر (تُخرج نقداً من صندوقه/خزينته لفاتورة لا تخصّه).
     if (actor.role !== "admin" && Number(inv.branchId) !== Number(actor.branchId)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك" });
-    }
-    // المسار العام القديم لا يُستدعى من الراوتر بعد 0313. طلب التحكم يفرض SOD بلا استثناء
-    // قبل بلوغ الخدمة؛ نبقي توافق الاستدعاءات الداخلية التاريخية للأدمن/المالك.
-    if (actor.role !== "admin" && !actor.isOwner && Number(actor.userId) === Number(inv.createdBy)) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "لا يجوز إلغاء فاتورةٍ أصدرتها بنفسك — يلزم مدير آخر (فصل المهام)",
+        message: appErrorMessage({
+          what: "تعذر إلغاء الفاتورة",
+          why: "الفاتورة لا تخصّ فرعك",
+          doThis: "سجّل الدخول بحساب الفرع المالك للفاتورة أو راجع الإدارة المركزية",
+        }),
+      });
+    }
+    // فصل المهام (SOD): فاتورة بيع نهائية مكتملة أو أمر بيع مكتبي لا يُلغيه منشئه بنفسه؛
+    // بينما الطلبات المحجوزة أو المعلقة بعربون جزئي في نقاط البيع (POS + PENDING / PARTIALLY_PAID)
+    // يحق للكاشير إلغاؤها واسترداد العربون للعميل من ورديته المفتوحة مباشرة عند شباك الخدمة.
+    if (
+      actor.role !== "admin" &&
+      !actor.isOwner &&
+      !(inv.sourceType === "POS" && (inv.status === "PENDING" || inv.status === "PARTIALLY_PAID")) &&
+      Number(actor.userId) === Number(inv.createdBy)
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "مرفوض وفق سياسة فصل المهام",
+          why: "لا يجوز إلغاء فاتورةٍ أصدرتها بنفسك — يلزم مدير آخر (فصل المهام)",
+          doThis: "اطلب من مدير فرع آخر أو مشرف معتمد مراجعة واعتماد طلب الإلغاء",
+        }),
       });
     }
     // Codex P1 (١٢/٨) — خطة الأقساط ACTIVE مرتبطة بالفاتورة تبقى صالحة للتحصيل بعد الإلغاء
@@ -222,7 +319,11 @@ export async function cancelSaleInTx(
       if (activePlan) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "الفاتورة مرتبطة بخطة أقساطٍ نشطة — ألغِ الخطة أولاً ثم أعِد المحاولة",
+          message: appErrorMessage({
+            what: "تعذر إلغاء الفاتورة",
+            why: "الفاتورة مرتبطة بخطة أقساطٍ نشطة — ألغِ الخطة أولاً ثم أعِد المحاولة",
+            doThis: "توجّه إلى شاشة إدارة الأقساط وألغِ الخطة أولاً ثم أعِد محاولة إلغاء الفاتورة",
+          }),
         });
       }
     }
@@ -231,7 +332,11 @@ export async function cancelSaleInTx(
     if (inv.sourceType === "WORKORDER") {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا تُلغى فواتير أوامر الشغل من هنا — استعمل مسار إلغاء أمر الشغل نفسه",
+        message: appErrorMessage({
+          what: "مسار الإلغاء غير صحيح",
+          why: "لا تُلغى فواتير أوامر الشغل من هنا — استعمل مسار إلغاء أمر الشغل نفسه",
+          doThis: "انتقل إلى صفحة أمر الشغل المرتبط ونفّذ إجراء عكس التسليم أو إلغاء الأمر",
+        }),
       });
     }
     // كروت رقميّة: الكرت صدر من جهاز المزوّد وقد يكون استُهلك ⇒ إلغاء الفاتورة لا يستعيده.
@@ -243,8 +348,11 @@ export async function cancelSaleInTx(
     if (digitalRows.length) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message:
-          "الفاتورة تحوي كروتاً رقميّة — استعمل «عكس بيع الكروت» في مسار الكروت الرقمية لا الإلغاء العام",
+        message: appErrorMessage({
+          what: "تعذر إلغاء فاتورة الكروت الرقمية",
+          why: "الفاتورة تحوي كروتاً رقميّة — استعمل «عكس بيع الكروت» في مسار الكروت الرقمية لا الإلغاء العام",
+          doThis: "استخدم إجراء «عكس بيع الكروت» المخصص في وحدة البطاقات الرقمية",
+        }),
       });
     }
 
@@ -253,7 +361,14 @@ export async function cancelSaleInTx(
       await tx.select({ n: sql<number>`COUNT(*)` }).from(invoiceItems).where(eq(invoiceItems.invoiceId, input.invoiceId))
     )[0];
     if (!Number(itemCount?.n ?? 0)) {
-      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الفاتورة بلا بنود — تعذّر الإلغاء" });
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذر إلغاء الفاتورة",
+          why: "الفاتورة بلا بنود — تعذّر الإلغاء",
+          doThis: "تحقق من بنود الفاتورة في سجل المبيعات قبل محاولة الإلغاء",
+        }),
+      });
     }
 
     // ═══ ٢-ب) البطاقةُ بلا مرجع جهازٍ تُرفض **قبل أيّ أثر** حين يوجد مقبوضٌ يُردّ ═══
