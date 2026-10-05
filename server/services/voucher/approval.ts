@@ -2739,7 +2739,66 @@ export async function resubmitRejectedExpensePayment(
           message: "طلب الدفع يخص فرعاً آخر",
         });
       }
-      if (preview.paymentMethod === "CASH") {
+      const frozenShippingDrawer =
+        previewRequest?.kind === "PURCHASE_SHIPPING" &&
+        previewRequest.fundingSource === "DRAWER";
+      let shippingMaker: Actor = actor;
+      let frozenShippingShift: typeof shifts.$inferSelect | undefined;
+      if (frozenShippingDrawer) {
+        // Same source -> maker -> receipt lock order as independent approval.
+        // Closed sources may replay an already-paid replacement, never fund a new one.
+        if (
+          previewRequest.shiftId == null ||
+          preview.createdBy == null ||
+          preview.paymentMethod !== "CASH"
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "تعذر إعادة إصدار طلب دفع الشحن",
+              why: "طلب إعادة إصدار الشحن بلا دافع ودرج نقدي مثبتين",
+              doThis: "راجع تصريح المنشئ ودليل الدفع في الفاتورة الأصلية قبل إعادة الإصدار",
+            }),
+          });
+        }
+        [frozenShippingShift] = await tx
+          .select()
+          .from(shifts)
+          .where(eq(shifts.id, previewRequest.shiftId))
+          .for("update")
+          .limit(1);
+        if (
+          !frozenShippingShift ||
+          Number(frozenShippingShift.branchId) !== branchId ||
+          Number(frozenShippingShift.userId) !== Number(preview.createdBy)
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "تعذر إعادة إصدار طلب دفع الشحن",
+              why: "درج الشحن المثبت لا يخص دافع السند الأصلي أو فرعه",
+              doThis: "راجع هوية الدافع وتصريح الوردية في المصدر الأصلي ولا تستبدلهما بدرج المدير",
+            }),
+          });
+        }
+        const [maker] = await tx
+          .select({ id: users.id, role: users.role })
+          .from(users)
+          .where(eq(users.id, Number(preview.createdBy)))
+          .for("share")
+          .limit(1);
+        if (!maker) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "تعذر إعادة إصدار طلب دفع الشحن",
+              why: "حساب دافع الشحن الأصلي غير موجود",
+              doThis: "راجع مسؤول النظام للتحقق من هوية الدافع في دليل المصدر دون نسبتها للمعتمد",
+            }),
+          });
+        }
+        shippingMaker = { userId: Number(maker.id), branchId, role: maker.role };
+      } else if (preview.paymentMethod === "CASH") {
         await lockCashSourceForUpdate(tx, {
           branchId,
           cashBucket: "TREASURY",
@@ -2766,6 +2825,7 @@ export async function resubmitRejectedExpensePayment(
         rejected.status !== "FAILED" ||
         JSON.stringify(request) !== JSON.stringify(previewRequest) ||
         rejected.paymentMethod !== preview.paymentMethod ||
+        (frozenShippingDrawer && rejected.createdBy !== preview.createdBy) ||
         !rejected.referenceNumber
       ) {
         throw new TRPCError({
@@ -3147,15 +3207,19 @@ export async function resubmitRejectedExpensePayment(
         }
         const fundingStateMatches =
           expectedObligationStatus === "PAID"
-            ? replacement.shiftId == null &&
-              (replacement.paymentMethod === "CASH"
-                ? replacement.cashBucket === "TREASURY"
-                : replacement.cashBucket == null)
+            ? frozenShippingDrawer
+              ? replacement.cashBucket === "DRAWER" &&
+                Number(replacement.shiftId) === Number(frozenShippingShift?.id)
+              : replacement.shiftId == null &&
+                (replacement.paymentMethod === "CASH"
+                  ? replacement.cashBucket === "TREASURY"
+                  : replacement.cashBucket == null)
             : replacement.shiftId == null && replacement.cashBucket == null;
         if (
           Number(replacement.branchId) !== branchId ||
           replacement.direction !== "OUT" ||
           replacement.paymentMethod !== rejected.paymentMethod ||
+          (frozenShippingDrawer && replacement.createdBy !== shippingMaker.userId) ||
           !fundingStateMatches ||
           (replacement.checkNumber ?? null) !==
             (rejected.checkNumber ?? null) ||
@@ -3360,6 +3424,16 @@ export async function resubmitRejectedExpensePayment(
         replacementAttachmentUrl,
       );
       if (replay) return replay;
+      if (frozenShippingDrawer && frozenShippingShift?.status !== "OPEN") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذر إنشاء محاولة دفع شحن بديلة",
+            why: "الوردية المثبتة مغلقة ولا يمكن إنشاء صرف جديد منها",
+            doThis: "راجع مسؤول الخزينة لتوثيق تسوية المصدر الأصلي قبل إصدار طلب بديل",
+          }),
+        });
+      }
       const latestAttempt = lineage.at(-1)?.parsed?.attempt ?? 0;
       if (latestAttempt !== priorAttempt) {
         throw new TRPCError({
@@ -3392,15 +3466,33 @@ export async function resubmitRejectedExpensePayment(
           voucherDate: toDateStr(),
           clientRequestId,
         },
-        actor,
+        shippingMaker,
         request,
       );
+      if (frozenShippingDrawer) {
+        await logAuditTx(tx, { userId: actor.userId, branchId }, {
+          action: "voucher.systemPayment.preserveDrawerMaker",
+          entityType: "receipt",
+          entityId: replacement.receiptId,
+          branchId,
+          newValue: {
+            payerUserId: shippingMaker.userId,
+            shiftId: frozenShippingShift?.id,
+            priorReceiptId: receiptId,
+            rootReceiptId,
+            attempt,
+            reissueReason,
+          },
+        });
+      }
+      // The settlement binding retains the actual payer; the separate atomic
+      // audit above records the manager who initiated this reissue.
       await transitionAccrualObligationTx(tx, {
         obligationId: Number(rejectedAccrualObligation.id),
         expectedStatus: "ACCRUED_UNPAID",
         nextStatus: "PAYMENT_PENDING",
         eventType: "PAYMENT_REQUESTED",
-        actorId: actor.userId,
+        actorId: shippingMaker.userId,
         receiptId: replacement.receiptId,
         evidenceReference: request.sourceEvidenceReference,
         dedupeKey: `ACCRUAL:PAYMENT_RESUBMITTED:${rejectedAccrualObligation.id}:${replacement.receiptId}`,

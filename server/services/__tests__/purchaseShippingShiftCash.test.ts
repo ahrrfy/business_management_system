@@ -21,7 +21,8 @@ import { withTx } from "../tx";
 import { cancelExpense } from "../expenseService";
 import { purchaseOrderControlSource } from "../decisions/sources/purchasing";
 import { requestAccrualCorrection } from "../accounting/accrualCorrection";
-import { approveVoucher } from "../voucherService";
+import { approveVoucher, rejectVoucher } from "../voucherService";
+import { resubmitRejectedExpensePayment } from "../voucher/approval";
 import { truncateTables } from "./__testUtils__";
 
 const adminActor = { userId: 1, branchId: 1, role: "admin" as const };
@@ -308,6 +309,57 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
         (item) => item.amount === "2000.00",
       ),
     ).toBe(true);
+  });
+  it("manager reissue preserves the shipping payer, separate audit actor, and drawer replay after closure", async () => {
+    const creatorShift = await openShift({ branchId: 1, openingBalance: "100000.00" }, cashierActor);
+    const reviewerShift = await openShift({ branchId: 1, openingBalance: "80000.00" }, ownerActor);
+    const draft = await createPurchaseOrder({
+      supplierId: 1, branchId: 1, shippingCost: "2000.00",
+      shippingFundingSource: "DRAWER", shippingShiftId: creatorShift.shiftId,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+    }, cashierActor);
+    const submitted = await submitPurchaseOrderForApproval({
+      purchaseOrderId: draft.purchaseOrderId, expectedVersion: draft.version,
+      reason: "Creator drawer declaration", requestKey: randomUUID(),
+    }, cashierActor);
+    await decidePurchaseOrderControl({
+      requestId: submitted.requestId, decisionKey: randomUUID(), approve: true,
+      reason: "Full goods receipt review only", confirmedFullReceipt: true,
+    }, ownerActor);
+    const original = (await db().select().from(s.receipts))
+      .find((receipt) => receipt.referenceNumber?.startsWith("SHIP-"))!;
+    await rejectVoucher(Number(original.id), ownerActor, "صحح مرفق دليل الشحن");
+    const correction = {
+      priorReceiptId: Number(original.id), reissueReason: "تم تصحيح مرفق دليل الشحن",
+      attachmentUrl: "https://example.test/corrected-shipping-proof.pdf",
+    };
+    const replacement = await resubmitRejectedExpensePayment(Number(original.id), adminActor, correction);
+    const [pending] = await db().select().from(s.receipts).where(eq(s.receipts.id, replacement.receiptId));
+    expect(pending).toMatchObject({ createdBy: cashierActor.userId, cashBucket: null, shiftId: null, approvalStatus: "PENDING_APPROVAL" });
+    const [reissueEvent] = await db().select().from(s.accrualObligationEvents)
+      .where(and(eq(s.accrualObligationEvents.receiptId, replacement.receiptId), eq(s.accrualObligationEvents.eventType, "PAYMENT_REQUESTED")));
+    expect(reissueEvent.actorId).toBe(cashierActor.userId);
+    const [reissueAudit] = await db().select().from(s.auditLogs)
+      .where(and(eq(s.auditLogs.entityId, String(replacement.receiptId)), eq(s.auditLogs.action, "voucher.systemPayment.preserveDrawerMaker")));
+    expect(reissueAudit.userId).toBe(adminActor.userId);
+    expect(await resubmitRejectedExpensePayment(Number(original.id), adminActor, correction))
+      .toMatchObject({ receiptId: replacement.receiptId, replayed: true });
+    await approveVoucher(replacement.receiptId, ownerActor);
+    expect((await getShiftReport(creatorShift.shiftId)).expectedCash).toBe("98000.00");
+    expect((await getShiftReport(reviewerShift.shiftId)).expectedCash).toBe("80000.00");
+    const [paid] = await db().select().from(s.receipts).where(eq(s.receipts.id, replacement.receiptId));
+    expect(paid).toMatchObject({ createdBy: cashierActor.userId, approvedBy: ownerActor.userId, cashBucket: "DRAWER", shiftId: creatorShift.shiftId });
+    expect(await resubmitRejectedExpensePayment(Number(original.id), adminActor, correction))
+      .toMatchObject({ receiptId: replacement.receiptId, approvalStatus: "APPROVED", replayed: true });
+    await closeShift({ shiftId: creatorShift.shiftId, countedCash: "98000.00", enforceCashGovernance: true }, cashierActor);
+    expect(await resubmitRejectedExpensePayment(Number(original.id), adminActor, correction))
+      .toMatchObject({ receiptId: replacement.receiptId, approvalStatus: "APPROVED", replayed: true });
+    const payments = await db().select().from(s.accountingEntries)
+      .where(and(eq(s.accountingEntries.receiptId, replacement.receiptId), eq(s.accountingEntries.entryType, "PAYMENT_OUT")));
+    expect(payments).toHaveLength(1);
+    expect(payments[0]).toMatchObject({ createdBy: cashierActor.userId, amount: "2000.00" });
+    const [preserved] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(original.id)));
+    expect(preserved).toMatchObject({ status: "FAILED", approvalStatus: "REJECTED", createdBy: cashierActor.userId, cashBucket: null, shiftId: null });
   });
   it("keeps the frozen shipping drawer and rejects approval after it closes, without using the reviewer's drawer", async () => {
     const creatorShift = await openShift(
