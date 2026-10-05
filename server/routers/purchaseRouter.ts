@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import { z } from "zod";
 import {
@@ -70,6 +71,11 @@ import {
   purchasesReadProcedure,
   router,
 } from "../trpc";
+
+const supplierPaymentRefundEntries = alias(
+  accountingEntries,
+  "supplierPaymentRefundEntries",
+);
 
 /**
  * دفعةُ المورّد **لحظة الاستلام**: نقديّة فقط — العقد الخادميّ يرفض غيرها منذ أوّل سطر في
@@ -1067,10 +1073,18 @@ export const purchaseRouter = router({
               accountingEntries,
               eq(accountingEntries.id, supplierPayments.accountingEntryId),
             )
+            .innerJoin(
+              supplierPaymentRefundEntries,
+              eq(
+                supplierPaymentRefundEntries.id,
+                supplierPaymentRefunds.accountingEntryId,
+              ),
+            )
             .where(
               and(
                 inArray(accountingEntries.purchaseOrderId, cashOrderIds),
                 sql`${accountingEntries.purchaseOrderId} IS NOT NULL`,
+                isNull(supplierPaymentRefundEntries.purchaseOrderId),
               ),
             )
             .groupBy(accountingEntries.purchaseOrderId),
@@ -1317,7 +1331,19 @@ export const purchaseRouter = router({
               accountingEntries,
               eq(accountingEntries.id, supplierPayments.accountingEntryId),
             )
-            .where(eq(accountingEntries.purchaseOrderId, po.id)),
+            .innerJoin(
+              supplierPaymentRefundEntries,
+              eq(
+                supplierPaymentRefundEntries.id,
+                supplierPaymentRefunds.accountingEntryId,
+              ),
+            )
+            .where(
+              and(
+                eq(accountingEntries.purchaseOrderId, po.id),
+                isNull(supplierPaymentRefundEntries.purchaseOrderId),
+              ),
+            ),
         ]);
         const rawPaid = money(paidRows[0]?.paid ?? 0);
         const refundAmount = money(refundRows[0]?.refunded ?? 0);

@@ -23,10 +23,10 @@
 مصدر الحقيقة المالي هو GL:
 
 ```text
-recognizedPurchaseGl = SUM(PURCHASE + RETURN)
-bookBalance = SUM(PURCHASE + RETURN + PAYMENT_IN - PAYMENT_OUT - EXCHANGE_SETTLE)
-linkedPaidAmountGl = approved PAYMENT_OUT - approved cancellation PAYMENT_IN
-cashCoverage = approved PAYMENT_OUT - approved PAYMENT_IN + valid pending PO-PAY
+recognizedPurchaseGl = SUM(PURCHASE + RETURN + supplier-invoice GRNI ADJUST - its reversal)
+bookBalance = recognizedPurchaseGl + supplier PAYMENT_IN - supplier PAYMENT_OUT - EXCHANGE_SETTLE
+linkedPaidAmountGl = approved PAYMENT_OUT - approved cancellation/refund PAYMENT_IN
+paymentCoverage = approved PAYMENT_OUT - approved PAYMENT_IN + valid pending PO-PAY
 ```
 
 قيد الدفع لا يعد «معتمداً» إلا إذا كان `PAYMENT_OUT` مرتبطاً بسند `COMPLETED/APPROVED`، اتجاهه `OUT`، وفرعه ومورده ومبلغه تطابق القيد والأمر. وجود قيمة في `paidAmount` وحده ليس إثبات دفع.
@@ -47,8 +47,7 @@ cashCoverage = approved PAYMENT_OUT - approved PAYMENT_IN + valid pending PO-PAY
 
 | الرمز                                      | المعنى التشغيلي                                                                               |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| `CASH_RECEIVED_PAYMENT_COVERAGE_GAP`       | شراء `CASH` معترف به في GL وتغطيته الصافية لا تساويه. الفرق السالب نقص، والموجب زيادة محتملة. |
-| `PAID_AMOUNT_GL_DRIFT`                     | `purchaseOrders.paidAmount` لا يساوي الدفعات المرتبطة المثبتة في GL بعد عكس إلغاءات الدفع.    |
+| `PAID_AMOUNT_GL_DRIFT`                     | `purchaseOrders.paidAmount` لا يساوي الدفعات المرتبطة المثبتة في GL بعد عكس الإلغاءات واستردادات المورد. |
 | `NEGATIVE_PO_LEDGER_BALANCE`               | رصيد الأمر الدفتري سالب؛ الصرف/التخصيص تجاوز الاعتراف المرتبط.                                |
 | `PO_PAYMENT_OVER_ALLOCATION`               | المدفوع المعتمد والطلبات الصالحة، بعد المقبوض المعتمد، يتجاوز الاعتراف.                       |
 | `HISTORICAL_CREDIT_REVIEW_CANDIDATE`       | أمر `CREDIT` قديم ذو أثر GL؛ مرشح مراجعة وثائق فقط. **لا يعني ولا يدعي أنه CASH**.            |
@@ -64,7 +63,7 @@ cashCoverage = approved PAYMENT_OUT - approved PAYMENT_IN + valid pending PO-PAY
 ## دورة التشغيل الوقائية
 
 1. شغّل التقرير لكل فرع على صفحات ثابتة، واحفظ `generatedAt` و`branchId` و`offset` و`limit` مع ملف التصدير.
-2. ابدأ بـ`CRITICAL` ثم `HIGH`. لا تعتمد دفعة جديدة لأمر يظهر عليه نقص/زيادة تغطية أو رصيد دفتري سالب حتى تنتهي المراجعة.
+2. ابدأ بـ`CRITICAL` ثم `HIGH`. لا تعتمد دفعة جديدة لأمر يظهر عليه زيادة تخصيص أو رصيد دفتري سالب حتى تنتهي المراجعة؛ بقاء فاتورة `CASH` مفتوحة غير مدفوعة ليس خللاً بذاته.
 3. تابع `STALE_PENDING_PO_PAYMENT` يومياً، و`STALE_REJECTED_PO_PAYMENT` أسبوعياً. العمر يقاس من `receipts.createdAt` إلى وقت اللقطة.
 4. قارن آخر صفحة بـ`hasMore/nextOffset`. اكتمال التصدير يعني الوصول إلى `hasMore=false`، لا مجرد نجاح أول طلب.
 5. احتفظ بالتصدير الأصلي ونسخة قرار المراجع؛ لا تستبدل الدليل بجدول يدوي بلا معرّفات.

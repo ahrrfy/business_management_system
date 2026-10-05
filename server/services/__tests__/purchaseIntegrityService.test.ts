@@ -93,8 +93,9 @@ async function insertEntry(args: {
   branchId?: number;
   supplierId?: number;
   receiptId?: number;
-  type: "PURCHASE" | "RETURN" | "PAYMENT_IN" | "PAYMENT_OUT";
+  type: "PURCHASE" | "RETURN" | "PAYMENT_IN" | "PAYMENT_OUT" | "ADJUST";
   amount: string;
+  dedupeKey?: string;
 }) {
   await db()
     .insert(s.accountingEntries)
@@ -106,6 +107,7 @@ async function insertEntry(args: {
       supplierId: args.supplierId ?? 1,
       receiptId: args.receiptId,
       amount: args.amount,
+      dedupeKey: args.dedupeKey,
       entryDate: "2026-08-20",
     });
 }
@@ -196,14 +198,14 @@ describe("getPurchaseIntegrityReport — GL forensic read model", () => {
     expect(summary).toMatchObject({
       branchCount: 2,
       scannedOrderCount: 1,
-      findingCount: 2,
-      severityCounts: { CRITICAL: 1, HIGH: 1, MEDIUM: 0, INFO: 0 },
+      findingCount: 1,
+      severityCounts: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, INFO: 0 },
       truncatedBranchIds: [],
     });
     expect(await relevantCounts()).toEqual(before);
   });
 
-  it("يكشف فجوة CASH وانحراف paidAmount والرصيد الدفتري السالب، بلا كتابة أو تسريب فرع", async () => {
+  it("لا يعدّ CASH غير المدفوع خللاً، ويكشف انحراف paidAmount والرصيد الدفتري السالب بلا كتابة أو تسريب فرع", async () => {
     await insertPo({ id: 1, total: "100.00", paidAmount: "35.00" });
     await insertEntry({
       id: 11,
@@ -287,18 +289,11 @@ describe("getPurchaseIntegrityReport — GL forensic read model", () => {
       report.findings.some((finding) => finding.purchaseOrderId === 90),
     ).toBe(false);
 
-    const gap = report.findings.find(
-      (finding) =>
-        finding.purchaseOrderId === 1 &&
-        finding.code === "CASH_RECEIVED_PAYMENT_COVERAGE_GAP",
-    );
-    expect(gap?.evidence).toMatchObject({
-      recognizedPurchaseGl: "100.00",
-      approvedPaymentOutGl: "40.00",
-      validPendingPoPay: "20.00",
-      netCoveredAmount: "60.00",
-      difference: "-40.00",
-    });
+    expect(
+      report.findings
+        .filter((finding) => finding.purchaseOrderId === 1)
+        .map((finding) => finding.code),
+    ).toEqual(["PAID_AMOUNT_GL_DRIFT"]);
 
     expect(
       report.findings.find(
@@ -370,16 +365,6 @@ describe("getPurchaseIntegrityReport — GL forensic read model", () => {
       staleAfterDays: 7,
       historicalCreditAgeDays: 90,
       asOf: AS_OF,
-    });
-
-    const gap = report.findings.find(
-      (finding) =>
-        finding.purchaseOrderId === 3 &&
-        finding.code === "CASH_RECEIVED_PAYMENT_COVERAGE_GAP",
-    );
-    expect(gap?.evidence).toMatchObject({
-      validPendingPoPay: "0.00",
-      difference: "-100.00",
     });
 
     const stalePending = report.findings.find(
@@ -616,6 +601,81 @@ describe("getPurchaseIntegrityReport — GL forensic read model", () => {
       linkedPaidAmountGl: "60.00",
       storedPaidAmount: "60.00",
       bookBalance: "40.00",
+    });
+  });
+
+  it("يفهم ترحيل GRNI الحديث واسترداد دفعة المورد المرتبط بالأمر بلا إنذارات كاذبة", async () => {
+    await insertPo({ id: 9, total: "100.00", paidAmount: "0.00" });
+    await insertEntry({
+      id: 91,
+      purchaseOrderId: 9,
+      type: "ADJUST",
+      amount: "100.00",
+      dedupeKey: "GRNI:SUPPLIER_INVOICE:901",
+    });
+    await db()
+      .insert(s.receipts)
+      .values([
+        {
+          id: 92,
+          branchId: 1,
+          direction: "OUT",
+          amount: "100.00",
+          paymentMethod: "CASH",
+          partyType: "SUPPLIER",
+          partyId: 1,
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+          referenceNumber: "SUPPLIER-PAY-REQ:901",
+        },
+        {
+          id: 93,
+          branchId: 1,
+          direction: "IN",
+          amount: "100.00",
+          paymentMethod: "CASH",
+          partyType: "SUPPLIER",
+          partyId: 1,
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+          referenceNumber: "SUPPLIER-REFUND-REQ:901",
+        },
+      ]);
+    await insertEntry({
+      id: 92,
+      purchaseOrderId: 9,
+      receiptId: 92,
+      type: "PAYMENT_OUT",
+      amount: "100.00",
+      dedupeKey: "SUPPLIER_PAYMENT_REQUEST:901",
+    });
+    await insertEntry({
+      id: 93,
+      purchaseOrderId: 9,
+      receiptId: 93,
+      type: "PAYMENT_IN",
+      amount: "100.00",
+      dedupeKey: "SUPPLIER_PAYMENT_REFUND_REQUEST:901",
+    });
+
+    const report = await getPurchaseIntegrityReport({
+      branchId: 1,
+      limit: 20,
+      asOf: AS_OF,
+    });
+
+    expect(
+      report.findings.filter((finding) => finding.purchaseOrderId === 9),
+    ).toHaveLength(0);
+    expect(
+      report.orders.find((order) => order.purchaseOrderId === 9),
+    ).toMatchObject({
+      recognizedPurchaseGl: "100.00",
+      approvedPaymentOutGl: "100.00",
+      approvedPaymentInGl: "100.00",
+      linkedPaidAmountGl: "0.00",
+      storedPaidAmount: "0.00",
+      bookBalance: "100.00",
     });
   });
 

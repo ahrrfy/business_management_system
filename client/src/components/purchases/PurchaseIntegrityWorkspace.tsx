@@ -72,7 +72,6 @@ const LIVE_SEVERITY_CLASS: Record<LiveSeverity, string> = {
 // قائمةٌ مختلفة تماماً عن CODE_LABEL أعلاه (قضايا مطابقة GRN/فاتورة اليدوية)؛ هذه أكواد
 // تشخيصٍ آليّ من GL مباشرة، صفر تدخّلٍ بشريّ في اكتشافها.
 const LIVE_CODE_LABEL: Record<string, string> = {
-  CASH_RECEIVED_PAYMENT_COVERAGE_GAP: "شراء نقدي بلا تغطية دفع مساوية",
   PAID_AMOUNT_GL_DRIFT: "انحراف المدفوع المسجَّل عن الدفتر",
   NEGATIVE_PO_LEDGER_BALANCE: "رصيد دفتري سالب لأمر الشراء",
   PO_PAYMENT_OVER_ALLOCATION: "تخصيص دفعٍ يتجاوز الاعتراف الدفتري",
