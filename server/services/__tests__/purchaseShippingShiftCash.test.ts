@@ -21,7 +21,7 @@ import { withTx } from "../tx";
 import { cancelExpense } from "../expenseService";
 import { purchaseOrderControlSource } from "../decisions/sources/purchasing";
 import { requestAccrualCorrection } from "../accounting/accrualCorrection";
-import { approveVoucher, rejectVoucher } from "../voucherService";
+import { approveVoucher, cancelVoucher, getVoucher, rejectVoucher } from "../voucherService";
 import { resubmitRejectedExpensePayment } from "../voucher/approval";
 import { truncateTables } from "./__testUtils__";
 
@@ -789,7 +789,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       "98000.00",
     );
   });
-  it("recognizes recorded shipping after a governed real refund without blocking drawer closure", async () => {
+  it("rejects generic shipping cancellation and allows a governed real refund without blocking drawer closure", async () => {
     const creatorShift = await openShift(
       { branchId: 1, openingBalance: "100000.00" },
       cashierActor,
@@ -831,7 +831,10 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       },
       ownerActor,
     );
-    await approveDeclaredShipping(draft.purchaseOrderId);
+    const shippingPayment = await approveDeclaredShipping(draft.purchaseOrderId);
+    await expect(cancelVoucher(shippingPayment.receiptId, ownerActor)).rejects.toThrow(/الوحدة المصدر/);
+    expect(await getVoucher(shippingPayment.receiptId)).toMatchObject({ status: "COMPLETED", approvalStatus: "APPROVED", cashBucket: "DRAWER", shiftId: creatorShift.shiftId });
+    expect((await getShiftReport(creatorShift.shiftId)).expectedCash).toBe("98000.00");
     const [obligation] = await db()
       .select()
       .from(s.accrualObligations)
@@ -852,6 +855,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       ...ownerActor,
       isOwner: true,
     });
+    expect(await getVoucher(shippingPayment.receiptId)).toMatchObject({ status: "COMPLETED", approvalStatus: "APPROVED" });
     expect((await getShiftReport(creatorShift.shiftId)).expectedCash).toBe(
       "100000.00",
     );
