@@ -2437,6 +2437,13 @@
 			"when": 1788148840000,
 			"tag": "0382_cost_revaluation_waves",
 			"breakpoints": true
+		},
+		{
+			"idx": 383,
+			"version": "5",
+			"when": 1788148841000,
+			"tag": "0383_historical_cash_correction",
+			"breakpoints": true
 		}
 	]
 }

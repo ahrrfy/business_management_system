@@ -166,6 +166,7 @@ function editorFingerprint(
   shippingCost: string,
   customsCost: string,
   revisionReason: string,
+  shippingFundingSource: "ACCRUAL" | "DRAWER" = "ACCRUAL",
 ): string {
   return JSON.stringify({
     entityId: state.entityId,
@@ -180,6 +181,7 @@ function editorFingerprint(
     shippingCost,
     customsCost,
     revisionReason,
+    shippingFundingSource,
     items: state.items.map((l) => [
       l.variantId,
       l.productUnitId,
@@ -207,6 +209,7 @@ export default function PurchaseEdit() {
   );
   const [shippingCost, setShippingCost] = useState("");
   const [customsCost, setCustomsCost] = useState("");
+  const [shippingFundingSource, setShippingFundingSource] = useState<"ACCRUAL" | "DRAWER">("ACCRUAL");
   const [revisionReason, setRevisionReason] = useState("");
   const [bulkOpen, setBulkOpen] = useState(false);
   /** بصمة اللقطة المحفوظة — مقارنتها بالبصمة الحالية تُعطي «هل تغيّر شيء؟» بلا أعلامٍ متسلسلة. */
@@ -228,13 +231,15 @@ export default function PurchaseEdit() {
     dispatch({ type: "REPLACE_STATE", state: next });
     setShippingCost(ship);
     setCustomsCost(customs);
-    setBaseline(editorFingerprint(next, ship, customs, ""));
+    const fundingSource = po.data.shippingFundingSource ?? "ACCRUAL";
+    setShippingFundingSource(fundingSource);
+    setBaseline(editorFingerprint(next, ship, customs, "", fundingSource));
   }, [po.data]);
 
   // حارس فقدان البيانات: نشِطٌ فقط بعد الحقن وعند اختلافٍ فعليّ عن اللقطة المحفوظة.
   const fingerprint = useMemo(
-    () => editorFingerprint(state, shippingCost, customsCost, revisionReason),
-    [state, shippingCost, customsCost, revisionReason],
+    () => editorFingerprint(state, shippingCost, customsCost, revisionReason, shippingFundingSource),
+    [state, shippingCost, customsCost, revisionReason, shippingFundingSource],
   );
   useUnsavedGuard(baseline != null && baseline !== fingerprint);
   // البصمة لحظة نجاح الحفظ تُقرأ من ref لا من إغلاق الطفرة (قد يكون من رسمٍ أقدم).
@@ -481,6 +486,9 @@ export default function PurchaseEdit() {
       customsCost: safeMoney(customsCost).gt(0)
         ? round2(safeMoney(customsCost)).toFixed(2)
         : undefined,
+      shippingFundingSource: landed.hasLanded ? shippingFundingSource : "ACCRUAL",
+      shippingShiftId: landed.hasLanded && shippingFundingSource === "DRAWER"
+        ? po.data?.shippingFundingShiftId ?? undefined : undefined,
       items: state.items.map((l) => ({
         variantId: l.variantId,
         productUnitId: l.productUnitId,
@@ -592,7 +600,7 @@ export default function PurchaseEdit() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bulkOpen, update.isPending, state, shippingCost, customsCost]);
+  }, [bulkOpen, update.isPending, state, shippingCost, customsCost, shippingFundingSource]);
 
   /* ─── حالات ما قبل المحرّر ──────────────────────────────────────── */
   if (!Number.isFinite(purchaseOrderId) || purchaseOrderId <= 0) {
@@ -738,6 +746,8 @@ export default function PurchaseEdit() {
             onShippingCostChange={setShippingCost}
             customsCost={customsCost}
             onCustomsCostChange={setCustomsCost}
+            shippingFundingSource={shippingFundingSource}
+            onShippingFundingSourceChange={setShippingFundingSource}
             landed={landed}
             showOptionalBadge
           />

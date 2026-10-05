@@ -20,6 +20,7 @@ import { D, fmt, moneyInput, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { paymentMethodCompact } from "@shared/terms";
+import { shiftTypeLabel } from "@/lib/labels";
 
 type Method = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 type PaymentEvidence =
@@ -72,10 +73,13 @@ export function QuickSupplierPaymentDialog({
 }: QuickSupplierPaymentDialogProps) {
   const utils = trpc.useUtils();
   const [method, setMethod] = useState<Method>("CASH");
+  const [cashMode, setCashMode] = useState<"DRAWER" | "TREASURY">("DRAWER");
+  const [cashShiftId, setCashShiftId] = useState("");
   const [amount, setAmount] = useState("");
   const [externalReference, setExternalReference] = useState("");
-  const [evidenceType, setEvidenceType] =
-    useState<PaymentEvidence>("CASH_ACKNOWLEDGEMENT");
+  const [evidenceType, setEvidenceType] = useState<PaymentEvidence>(
+    "CASH_ACKNOWLEDGEMENT",
+  );
   const [evidenceReference, setEvidenceReference] = useState("");
   const [reason, setReason] = useState("");
   const [requestKey, setRequestKey] = useState(
@@ -87,15 +91,27 @@ export function QuickSupplierPaymentDialog({
     { branchId, supplierId, purchaseOrderId, limit: 100 },
     { enabled: open && supplierId > 0 && branchId > 0 },
   );
+  const cashSourcesQuery = trpc.supplierPayments.cashSources.useQuery(
+    { branchId },
+    { enabled: open && method === "CASH" && branchId > 0 },
+  );
+  useEffect(() => {
+    const drawers = cashSourcesQuery.data?.drawers ?? [];
+    if (!cashShiftId && drawers.length === 1)
+      setCashShiftId(String(drawers[0].id));
+  }, [cashSourcesQuery.data, cashShiftId]);
 
   const matchedInvoice = useMemo(() => {
     const rows = paymentSourcesQuery.data?.rows ?? [];
     // مطابقة حتمية وحصرية بمعرّف أمر الشراء — رفض الفواتير المجمّعة لأكثر من أمر شراء
     return rows.find(
       (r) =>
-        Array.isArray((r as { purchaseOrderIds?: number[] }).purchaseOrderIds) &&
+        Array.isArray(
+          (r as { purchaseOrderIds?: number[] }).purchaseOrderIds,
+        ) &&
         (r as { purchaseOrderIds?: number[] }).purchaseOrderIds?.length === 1 &&
-        (r as { purchaseOrderIds?: number[] }).purchaseOrderIds?.[0] === purchaseOrderId,
+        (r as { purchaseOrderIds?: number[] }).purchaseOrderIds?.[0] ===
+          purchaseOrderId,
     );
   }, [paymentSourcesQuery.data?.rows, purchaseOrderId]);
 
@@ -112,9 +128,18 @@ export function QuickSupplierPaymentDialog({
       setEvidenceReference("");
       setExternalReference("");
       setMethod("CASH");
+      setCashMode("DRAWER");
+      setCashShiftId("");
       setEvidenceType("CASH_ACKNOWLEDGEMENT");
     }
-  }, [open, matchedInvoice, poNumber, remainingAmount, currency, purchaseOrderId]);
+  }, [
+    open,
+    matchedInvoice,
+    poNumber,
+    remainingAmount,
+    currency,
+    purchaseOrderId,
+  ]);
 
   const requestPaymentMut = trpc.supplierPayments.requestPayment.useMutation({
     onSuccess: async () => {
@@ -150,6 +175,12 @@ export function QuickSupplierPaymentDialog({
   const isEvidenceRefValid = evidenceReference.trim().length > 0;
   const isReasonValid = reason.trim().length >= 3;
   const canSubmit =
+    (method !== "CASH" ||
+      (cashMode === "TREASURY"
+        ? cashSourcesQuery.data?.canUseTreasury === true
+        : cashSourcesQuery.data?.drawers.some(
+            (row) => String(row.id) === cashShiftId,
+          ) === true)) &&
     isAmountValid &&
     isExternalRefValid &&
     isEvidenceRefValid &&
@@ -174,9 +205,19 @@ export function QuickSupplierPaymentDialog({
       requestKey,
       currency,
       exchangeRate: rate,
-      amount: currency === "USD" && rate ? round2(parsedAmount.times(rate)).toFixed(2) : finalAmount,
+      amount:
+        currency === "USD" && rate
+          ? round2(parsedAmount.times(rate)).toFixed(2)
+          : finalAmount,
       currencyAmount: finalAmount,
       paymentMethod: method,
+      cashSource:
+        method === "CASH"
+          ? {
+              mode: cashMode,
+              shiftId: cashMode === "DRAWER" ? Number(cashShiftId) : null,
+            }
+          : null,
       externalReference: externalReference.trim() || null,
       evidenceType,
       evidenceReference: evidenceReference.trim(),
@@ -185,7 +226,10 @@ export function QuickSupplierPaymentDialog({
         {
           supplierInvoiceId: matchedInvoice.id,
           invoiceVersion: matchedInvoice.version,
-          amount: currency === "USD" && rate ? round2(parsedAmount.times(rate)).toFixed(2) : finalAmount,
+          amount:
+            currency === "USD" && rate
+              ? round2(parsedAmount.times(rate)).toFixed(2)
+              : finalAmount,
           currencyAmount: finalAmount,
         },
       ],
@@ -216,7 +260,9 @@ export function QuickSupplierPaymentDialog({
           />
         ) : null}
 
-        {!paymentSourcesQuery.isLoading && !paymentSourcesQuery.error && !matchedInvoice ? (
+        {!paymentSourcesQuery.isLoading &&
+        !paymentSourcesQuery.error &&
+        !matchedInvoice ? (
           <div className="rounded-md border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] p-3 text-xs text-[var(--sem-warn)]">
             لم يتم العثور على فاتورة مورد مرحّلة لهذا الأمر بعد. تأكد من اعتماد
             واستلام أمر الشراء بالكامل أولاً لتسجيل سداد مالي عليه.
@@ -227,11 +273,17 @@ export function QuickSupplierPaymentDialog({
           <form onSubmit={handleSubmit} className="space-y-3 py-1">
             <div className="grid grid-cols-2 gap-2 rounded-md border bg-muted/20 p-2.5 text-xs">
               <div>
-                <span className="text-muted-foreground block">الفاتورة المعتمدة:</span>
-                <span className="font-semibold">{matchedInvoice.invoiceNumber}</span>
+                <span className="text-muted-foreground block">
+                  الفاتورة المعتمدة:
+                </span>
+                <span className="font-semibold">
+                  {matchedInvoice.invoiceNumber}
+                </span>
               </div>
               <div>
-                <span className="text-muted-foreground block">الرصيد المستحق:</span>
+                <span className="text-muted-foreground block">
+                  الرصيد المستحق:
+                </span>
                 <span className="font-bold text-money-negative tabular-nums">
                   {fmt(
                     currency === "USD"
@@ -245,7 +297,9 @@ export function QuickSupplierPaymentDialog({
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label htmlFor="pay-method" className="text-xs">طريقة السداد</Label>
+                <Label htmlFor="pay-method" className="text-xs">
+                  طريقة السداد
+                </Label>
                 <AppSelect
                   value={method}
                   onValueChange={(v) => setMethod(v as Method)}
@@ -259,7 +313,9 @@ export function QuickSupplierPaymentDialog({
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="pay-amount" className="text-xs">المبلغ المدفوع</Label>
+                <Label htmlFor="pay-amount" className="text-xs">
+                  المبلغ المدفوع
+                </Label>
                 <MoneyInput
                   id="pay-amount"
                   value={amount}
@@ -286,9 +342,61 @@ export function QuickSupplierPaymentDialog({
               </div>
             ) : null}
 
+            {method === "CASH" ? (
+              <div className="space-y-2 rounded-md border p-3 text-xs">
+                <Label htmlFor="pay-cash-source">مصدر النقد</Label>
+                <AppSelect
+                  id="pay-cash-source"
+                  value={cashMode}
+                  onValueChange={(value) =>
+                    setCashMode(value as "DRAWER" | "TREASURY")
+                  }
+                >
+                  <option value="DRAWER">درجي المفتوح</option>
+                  {cashSourcesQuery.data?.canUseTreasury ? (
+                    <option value="TREASURY">خزينة الفرع</option>
+                  ) : null}
+                </AppSelect>
+                {cashMode === "DRAWER" ? (
+                  <AppSelect
+                    aria-label="درج الدافع"
+                    value={cashShiftId}
+                    onValueChange={setCashShiftId}
+                  >
+                    <option value="">اختر درجك المفتوح</option>
+                    {(cashSourcesQuery.data?.drawers ?? []).map((row) => (
+                      <option key={row.id} value={row.id}>
+                        {shiftTypeLabel(row.shiftType)} — درج {row.id}
+                      </option>
+                    ))}
+                  </AppSelect>
+                ) : null}
+                <p className="text-muted-foreground">
+                  يُحفظ هذا المصدر مع الطلب ويُصرف منه عند الاعتماد. إغلاق الدرج
+                  يتطلب طلباً جديداً.
+                </p>
+                {cashSourcesQuery.error ? (
+                  <ErrorState
+                    message={cashSourcesQuery.error.message}
+                    onRetry={() => void cashSourcesQuery.refetch()}
+                  />
+                ) : null}
+                {!cashSourcesQuery.isLoading &&
+                cashMode === "DRAWER" &&
+                !cashSourcesQuery.data?.drawers.length ? (
+                  <p role="alert">
+                    لا يوجد درج مفتوح لك في هذا الفرع. افتح وردية أو اختر
+                    الخزينة إن كانت لديك صلاحيتها.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label htmlFor="pay-ev-type" className="text-xs">نوع المستند الثبوتي</Label>
+                <Label htmlFor="pay-ev-type" className="text-xs">
+                  نوع المستند الثبوتي
+                </Label>
                 <AppSelect
                   value={evidenceType}
                   onValueChange={(v) => setEvidenceType(v as PaymentEvidence)}
@@ -302,7 +410,9 @@ export function QuickSupplierPaymentDialog({
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="pay-ev-ref" className="text-xs">مرجع المستند / الوصل</Label>
+                <Label htmlFor="pay-ev-ref" className="text-xs">
+                  مرجع المستند / الوصل
+                </Label>
                 <Input
                   id="pay-ev-ref"
                   value={evidenceReference}
@@ -314,7 +424,9 @@ export function QuickSupplierPaymentDialog({
             </div>
 
             <div className="space-y-1">
-              <Label htmlFor="pay-reason" className="text-xs">البيان / الملاحظات</Label>
+              <Label htmlFor="pay-reason" className="text-xs">
+                البيان / الملاحظات
+              </Label>
               <Textarea
                 id="pay-reason"
                 rows={2}

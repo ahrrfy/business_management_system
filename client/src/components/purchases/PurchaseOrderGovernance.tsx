@@ -21,6 +21,8 @@ const HEAD_LABEL: Record<string, string> = {
   subtotal: "المجموع",
   taxAmount: "الضريبة",
   shippingCost: "الشحن",
+  shippingFundingSource: "حالة سداد الشحن",
+  shippingFundingShiftId: "وردية منشئ الفاتورة الدافعة للشحن",
   customsCost: "الكمرك",
   invoiceDiscount: "خصم فاتورة المورّد",
   total: "الإجمالي",

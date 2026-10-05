@@ -488,7 +488,7 @@ describe("اعتماد أمر الشراء النقدي لا يعني دفعه �
   it("اعتماد المالك أيضاً يترك الفاتورة مفتوحة والمتبقي ظاهراً حتى تنفيذ السداد صراحةً", async () => {
     const shift = await openShift(
       { branchId: 1, openingBalance: "100.00" },
-      treasurer,
+      creator,
     );
     const { purchaseOrderId, requestId } = await submitCashOrder("cash-owner");
     const approvalInput = {
@@ -581,6 +581,7 @@ describe("اعتماد أمر الشراء النقدي لا يعني دفعه �
       amount: "60.00",
       currencyAmount: "60.00",
       paymentMethod: "CASH" as const,
+      cashSource: { mode: "DRAWER" as const, shiftId: shift.shiftId },
       evidenceType: "CASH_ACKNOWLEDGEMENT" as const,
       evidenceReference: "CASH-HANDOVER-TEST-1",
       reason: "سداد صريح بعد تسليم النقد للمورد",
@@ -686,6 +687,7 @@ describe("اعتماد أمر الشراء النقدي لا يعني دفعه �
       expectedPaymentVersion: Number(payment.version),
       requestKey: "cash-owner-explicit-refund",
       refundMethod: "CASH" as const,
+      cashSource: { mode: "DRAWER" as const, shiftId: shift.shiftId },
       evidenceType: "CASH_RECEIPT" as const,
       evidenceReference: "CASH-REFUND-TEST-1",
       reason: "استرداد صريح بعد إعادة المورد للنقد فعلياً",

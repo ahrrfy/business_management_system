@@ -273,6 +273,17 @@ export async function settlePurchaseShippingFromShiftTx(
   }
   assertPurchaseBranch(po, actor);
 
+  if (po.shippingFundingSource === "DRAWER") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "يتطلب الشحن المصرح به اعتماد سند الصرف المستقل",
+        why: "مصدر الدرج مثبت في طلب الصرف ولا يجوز تجاوز مراجعته بمسار التسوية المباشرة",
+        doThis: "افتح سند الشحن المرتبط واعتمده من شاشة السندات قبل إغلاق الوردية",
+      }),
+    });
+  }
+
   const totalShippingMoney = round2(
     money(po.shippingCost ?? 0).plus(money(po.customsCost ?? 0)),
   );

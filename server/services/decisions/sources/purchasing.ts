@@ -11,6 +11,7 @@
  * واسترداده (`treasuryManagerProcedure` = `["manager","accountant"]` على `treasury`).
  */
 import { eq, inArray } from "drizzle-orm";
+import { money, round2 } from "../../money";
 import {
   goodsReceiptReversalTrigger,
   purchaseChargeControlTrigger,
@@ -197,6 +198,13 @@ export const purchaseOrderControlSource: DecisionSource = {
                 };
               });
         const amount = usd ? (revision?.usdTotal ?? po?.usdTotal ?? null) : (revision?.total ?? po?.total ?? null);
+        const shipping = revision ?? po;
+        const shippingAmount = round2(money(shipping?.shippingCost ?? "0").plus(money(shipping?.customsCost ?? "0")));
+        if (shippingAmount.gt(0)) summaryItems.push({
+          label: shipping?.shippingFundingSource === "DRAWER"
+            ? `شحن/كمرك ${shippingAmount.toFixed(2)} د.ع — دفعه المنشئ #${po?.createdBy} من ورديته #${shipping.shippingFundingShiftId}؛ ليس من درج المعتمد. هذا القرار ينشئ طلب صرف معلّقاً فقط؛ يوثق الدفع عند اعتماد سند الشحن مستقلاً. ${r.kind === "CANCEL_ORDER" ? "إلغاء البضاعة يبقي الشحن المدفوع دون استلام بضاعة." : ""}`
+            : `شحن/كمرك ${shippingAmount.toFixed(2)} د.ع — غير مدفوع؛ لا خصم من درج أو خزينة`,
+        });
         return buildRow(
           {
             ...GOVERNANCE_DEFAULTS,
@@ -617,6 +625,7 @@ export const supplierPaymentSource: DecisionSource = {
                   return { label: `فاتورة ${inv?.externalInvoiceNumber ?? inv?.invoiceNumber ?? `#${a.supplierInvoiceId}`}`, unitPrice: usd ? a.requestedCurrencyAmount : a.requestedAmount };
                 }),
               { label: `الدليل: ${r.evidenceType} — ${r.evidenceReference}` },
+              ...(r.paymentMethod === "CASH" ? [{ label: r.cashSource ? r.cashSource.mode === "DRAWER" ? `مصدر السداد: درج الدافع #${r.cashSource.payerUserId}، وردية #${r.cashSource.shiftId}؛ ليس درج المعتمد` : "مصدر السداد: الخزينة المحددة صراحة في الطلب" : "طلب نقدي بلا مصدر موثق: يلزم رفضه وإعادة تقديمه" }] : []),
             ],
             reason: r.reason,
             trigger: supplierPaymentTrigger("APPROVE"),
@@ -677,6 +686,7 @@ export const supplierPaymentRefundSource: DecisionSource = {
             summaryItems: [
               { label: `الدفعة الاصلية ${p?.paymentNumber ?? ""}`, unitPrice: p ? (usd ? p.currencyAmount : p.amount) : null },
               { label: `الدليل: ${r.evidenceType} — ${r.evidenceReference}` },
+              ...(r.refundMethod === "CASH" ? [{ label: r.cashSource ? r.cashSource.mode === "DRAWER" ? `وجهة القبض: درج المستلم #${r.cashSource.receiverUserId}، وردية #${r.cashSource.shiftId}؛ ليس درج المعتمد` : "وجهة القبض: الخزينة المحددة صراحة في الطلب" : "طلب استرداد نقدي بلا وجهة موثقة: يلزم رفضه وإعادة تقديمه" }] : []),
             ],
             reason: r.reason,
             expectedVersion: Number(r.basePaymentVersion),
