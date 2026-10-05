@@ -80,7 +80,7 @@ function fixture() {
     "--ambient-caps=-all",
     `--reuid=${UID}`,
     `--regid=${GID}`,
-    "--clear-groups",
+    "--init-groups",
     "--",
     "/usr/bin/node",
     "/usr/lib/node_modules/pm2/bin/pm2",

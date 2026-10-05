@@ -68,7 +68,9 @@ export function buildResurrectCommand(account) {
       "--ambient-caps=-all",
       `--reuid=${account.uid}`,
       `--regid=${account.gid}`,
-      "--clear-groups",
+      // Resolve deploy's own groups (including Docker), never inherit root's.
+      // Clearing them breaks backups in workers spawned by a fresh PM2 daemon.
+      "--init-groups",
       "--",
       NODE_BIN,
       PM2_BIN,

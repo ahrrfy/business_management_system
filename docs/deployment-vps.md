@@ -125,7 +125,7 @@ systemctl show pm2-deploy.service -p ExecStart --value | grep pm2-systemd-start.
 > `protocol`/وحدة `failed` مع بقاء التطبيقات سليمة لكن خارج إشراف systemd. كما يرفض systemd تبنّي
 > PID خارج cgroup إذا كان PIDFile تحت ملكية `deploy`. الـdrop-in يشغّل بعلامة `+` **النسخة المثبّتة
 > root:root فقط** من helper ذاتي الاكتفاء؛ فتتحقق من مساراتها وهوية deploy، ثم تُسقط PM2 إلى UID/GID
-> الصحيحين عبر `setpriv --clear-groups` وبيئة ثابتة. وبعد resurrect تثبت daemon الوحيد بدلالة
+> الصحيحين عبر `setpriv --init-groups` وبيئة ثابتة. وبعد resurrect تثبت daemon الوحيد بدلالة
 > UID+PPID+عنوان العملية+وقت البدء، وتكتب `/run/erp-pm2/pm2-deploy.pid` ذرياً `root:root 0644`.
 > لا يُنفّذ root أي كود من الشجرة القابلة للكتابة لـdeploy، ولا يحدث kill/restart. وعلى إقلاع نظيف
 > ينشئ PM2 الـdaemon داخل cgroup الخدمة؛ وعند وجوده تتبناه الوحدة دون تغيير PID. الغموض = فشل مغلق.
@@ -451,9 +451,26 @@ sudo -iu deploy pm2 status
 `systemctl daemon-reload` و`systemd-analyze verify` مجدداً. لا تنفّذ rollback بعد نجاح
 `start` وثبات PID إلا إذا ثبت انحراف العقد؛ فالعملية الحية لم تُقتل أو تُستبدل أصلاً.
 
-⛔ لا تستعمل `systemctl restart/stop` ولا `pm2 kill/update` لهذا الإصلاح؛ تلك الأوامر تغيّر
+⛔ لا تستعمل `systemctl restart/stop` ولا `pm2 kill/update` لإصلاح تبنّي PID وحده؛ تلك الأوامر تغيّر
 العمليات الحيّة بينما المطلوب تبنّي الـdaemon القائم فقط. عند الإقلاع النظيف لا يوجد `before`
 وتبدأ الوحدة تلقائياً بالمسار نفسه من `WantedBy=multi-user.target`.
+
+**تصحيح صلاحيات النسخ بعد إقلاع PM2 بلا مجموعات:** يستعمل helper الآن
+`setpriv --init-groups` لتحميل مجموعات `deploy` من حسابه، ومنها `docker`؛ تبقى
+قدرات Linux كلها مسقطة والبيئة ثابتة، ولا تُورَّث مجموعات root. كان `--clear-groups`
+يجعل النسخ اليدوي يفشل برسالة رفض `/var/run/docker.sock` رغم عضوية الحساب في Docker.
+يحرس CI مجموعات daemon ووصول عامل PM2 فعلي إلى ملف `root:docker 0640`.
+
+تثبيت helper بالبصمات أعلاه يصحح الإقلاع القادم، لكنه **لا يغير مجموعات daemon قائم**،
+ولا يغيرها `pm2 reload`. إن أظهر `/proc/<MainPID>/status` غياب مجموعة Docker:
+تحقق أولاً من `id deploy`، وسلامة `pm2 list` وحفظ العمليات عبر `sudo -iu deploy pm2 save`،
+وأن النسخة الحالية محفوظة بأمر `sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm db:backup'`.
+بعد CI أخضر وتثبيت helper الموثوق، أعد إنشاء daemon عبر
+`sudo systemctl restart pm2-deploy.service` في نافذة صيانة قصيرة **لـERP وحده**.
+لا تستدعِ PM2 الخاص بـroot ولا تعد تشغيل Docker أو الخادم. تحقق بعدها من الوحدة وPIDFile،
+ومجموعة Docker في daemon وعماله، و`/healthz` عبر النطاق العام، ثم نفذ «نسخة الآن» من
+الإعدادات وتحقق من ملف SQL الجديد وقرينه المشفر إن كان التشفير مفعلاً.
+لا توسع صلاحيات المقبس إلى `666`؛ الإصلاح في هوية العملية التي تصل إليه.
 
 قبل أي خطوة متحوّلة، يرفض السكربت الفرع غير `main` أو الشجرة غير النظيفة، يجلب `origin/main` بـfast-forward، ثم **يعيد تشغيل نفسه من الكود المسحوب** إن تغيّر SHA. كما يثبت أن CLI وحزمة وdaemon ‏PM2 كلها `7.0.3`؛ تثبيت npm وحده لا يكفي من دون `pm2 update`.
 
