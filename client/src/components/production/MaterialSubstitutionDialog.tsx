@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import Decimal from "decimal.js";
 import {
   Dialog,
   DialogContent,
@@ -16,6 +17,7 @@ import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { fmt, formatQuantity } from "@/lib/money";
 import { ArrowLeftRight, AlertTriangle, Check, Lock, Info, Trash2 } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import type { MaterialSubstitutionItem, SubstituteRecipeMaterialResult } from "@shared/recipeSubstitutionTypes";
 
 export interface MaterialSubstitutionDialogProps {
@@ -32,6 +34,7 @@ export interface MaterialSubstitutionDialogProps {
   availableStock?: number | null;
   consumedQty?: number | null;
   branchId: number | null;
+  defaultScope?: "adhoc" | "permanent";
   onApplyAdHoc?: (substitution: MaterialSubstitutionItem) => void;
   onPermanentSuccess?: (result: SubstituteRecipeMaterialResult) => void;
   currentSubstitution?: MaterialSubstitutionItem | null;
@@ -52,6 +55,7 @@ export function MaterialSubstitutionDialog({
   availableStock,
   consumedQty,
   branchId,
+  defaultScope,
   onApplyAdHoc,
   onPermanentSuccess,
   currentSubstitution,
@@ -62,6 +66,7 @@ export function MaterialSubstitutionDialog({
   const userRole = String(me.data?.role ?? "").toUpperCase();
   const canUpdatePermanently = ["ADMIN", "MANAGER"].includes(userRole) && Boolean(recipeId);
   const activeBranchId = branchId != null ? branchId : (me.data?.branchId ?? null);
+  const canAdHoc = Boolean(onApplyAdHoc);
 
   const [scope, setScope] = useState<"adhoc" | "permanent">("adhoc");
   const [substituteVariant, setSubstituteVariant] = useState<PurchaseRow | null>(null);
@@ -77,12 +82,13 @@ export function MaterialSubstitutionDialog({
       setError("");
       return;
     }
-    setScope("adhoc");
+    const initialScope = defaultScope ?? (!canAdHoc && recipeId ? "permanent" : "adhoc");
+    setScope(initialScope);
     setQty(currentSubstitution?.qtyPerOutputBase ?? originalQtyPerOutputBase ?? "1");
     setReason("نفاد المادة الأصلية من المخزون");
     setNotes("");
     setError("");
-  }, [open, currentSubstitution, originalQtyPerOutputBase]);
+  }, [open, currentSubstitution, originalQtyPerOutputBase, defaultScope, canAdHoc, recipeId]);
 
   const selectedUnit = useMemo(
     () => substituteUnits.find((u) => String(u.productUnitId) === selectedUnitId) ?? null,
@@ -128,6 +134,9 @@ export function MaterialSubstitutionDialog({
       setError("الكمية يجب أن تكون رقماً موجباً بأربع منازل عشرية كحد أقصى.");
       return;
     }
+    const factor = selectedUnit && Number(selectedUnit.conversionFactor) > 0 ? Number(selectedUnit.conversionFactor) : 1;
+    const baseQty = new Decimal(cleanQty).times(factor).toDecimalPlaces(4).toFixed(4);
+
     if (scope === "permanent") {
       if (!recipeId) return setError("لا يمكن التعديل الدائم لعدم تحديد معرف الوصفة.");
       if (!canUpdatePermanently) return setError("غير مصرح: تحديث الوصفة الدائم مقصور على دور مدير فأعلى.");
@@ -136,7 +145,7 @@ export function MaterialSubstitutionDialog({
         originalVariantId,
         substituteVariantId: activeSubVariantId,
         substituteProductUnitId: selectedUnitId ? Number(selectedUnitId) : null,
-        qtyPerOutputBase: cleanQty,
+        qtyPerOutputBase: baseQty,
         reason: reason.trim() || undefined,
         notes: notes.trim() || undefined,
         branchId: activeBranchId ?? undefined,
@@ -147,7 +156,7 @@ export function MaterialSubstitutionDialog({
       originalVariantId,
       substituteVariantId: activeSubVariantId,
       substituteProductUnitId: selectedUnitId ? Number(selectedUnitId) : null,
-      qtyPerOutputBase: cleanQty,
+      qtyPerOutputBase: baseQty,
     });
     notify.ok("تم تطبيق الاستبدال المؤقت", "تم إدراج المادة البديلة على أمر التشغيل الحالي فقط.");
     onOpenChange(false);
@@ -193,27 +202,39 @@ export function MaterialSubstitutionDialog({
           {/* نطاق الاستبدال */}
           <div className="space-y-1.5">
             <Label className="text-xs font-semibold">نطاق تطبيق الاستبدال</Label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <label className={`flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer text-xs ${scope === "adhoc" ? "border-primary bg-primary/5 ring-1 ring-primary/30" : "border-border hover:bg-accent/40"}`}>
-                <input type="radio" name="substitutionScope" value="adhoc" checked={scope === "adhoc"} onChange={() => setScope("adhoc")} className="mt-0.5" />
-                <div>
-                  <div className="font-semibold text-foreground">تطبيق على أمر التشغيل الحالي فقط</div>
-                  <div className="text-[11px] text-muted-foreground">دفعة إسعافية مؤقتة دون تغيير بطاقة الوصفة</div>
-                </div>
-              </label>
-
-              <label className={`flex items-start gap-2 p-2.5 rounded-lg border text-xs ${!canUpdatePermanently ? "opacity-50 cursor-not-allowed bg-muted/20" : scope === "permanent" ? "border-primary bg-primary/5 ring-1 ring-primary/30 cursor-pointer" : "border-border hover:bg-accent/40 cursor-pointer"}`}>
-                <input type="radio" name="substitutionScope" value="permanent" disabled={!canUpdatePermanently} checked={scope === "permanent"} onChange={() => setScope("permanent")} className="mt-0.5" />
-                <div>
-                  <div className="font-semibold flex items-center gap-1 text-foreground">
-                    <span>اعتماد دائم وتحديث الوصفة</span>
-                    {!canUpdatePermanently && <Lock aria-hidden className="size-3 text-muted-foreground" />}
+            {canAdHoc ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <label className={`flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer text-xs ${scope === "adhoc" ? "border-primary bg-primary/5 ring-1 ring-primary/30" : "border-border hover:bg-accent/40"}`}>
+                  <input type="radio" name="substitutionScope" value="adhoc" checked={scope === "adhoc"} onChange={() => setScope("adhoc")} className="mt-0.5" />
+                  <div>
+                    <div className="font-semibold text-foreground">تطبيق على أمر التشغيل الحالي فقط</div>
+                    <div className="text-[11px] text-muted-foreground">دفعة إسعافية مؤقتة دون تغيير بطاقة الوصفة</div>
                   </div>
-                  <div className="text-[11px] text-muted-foreground">حفظ ذري وتحديث شجرة المواد ومزامنة البكجات</div>
+                </label>
+
+                <label className={`flex items-start gap-2 p-2.5 rounded-lg border text-xs ${!canUpdatePermanently ? "opacity-50 cursor-not-allowed bg-muted/20" : scope === "permanent" ? "border-primary bg-primary/5 ring-1 ring-primary/30 cursor-pointer" : "border-border hover:bg-accent/40 cursor-pointer"}`}>
+                  <input type="radio" name="substitutionScope" value="permanent" disabled={!canUpdatePermanently} checked={scope === "permanent"} onChange={() => setScope("permanent")} className="mt-0.5" />
+                  <div>
+                    <div className="font-semibold flex items-center gap-1 text-foreground">
+                      <span>اعتماد دائم وتحديث الوصفة</span>
+                      {!canUpdatePermanently && <Lock aria-hidden className="size-3 text-muted-foreground" />}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground">حفظ ذري وتحديث شجرة المواد ومزامنة البكجات</div>
+                  </div>
+                </label>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-primary/40 bg-primary/5 p-2.5 text-xs space-y-0.5">
+                <div className="font-semibold text-foreground flex items-center gap-1">
+                  <Check aria-hidden className="size-3.5 text-primary" />
+                  <span>اعتماد دائم وتحديث بطاقة الوصفة الرسمية</span>
                 </div>
-              </label>
-            </div>
-            {!canUpdatePermanently && (
+                <p className="text-[11px] text-muted-foreground">
+                  سيتم استبدال المادة بشكل دائم في بنية الوصفة مع أقفال 2PL ومزامنة تكاليف البكجات.
+                </p>
+              </div>
+            )}
+            {canAdHoc && !canUpdatePermanently && (
               <p className="text-[11px] text-muted-foreground flex items-center gap-1">
                 <Info aria-hidden className="size-3 text-muted-foreground shrink-0" />
                 <span>التحديث الدائم للوصفة مقصور على دور مدير فأعلى لحماية التكاليف والتسعير.</span>
@@ -276,7 +297,16 @@ export function MaterialSubstitutionDialog({
                     </option>
                   ))}
                 </AppSelect>
-                {selectedUnit && <p className="text-[10px] text-muted-foreground">معامل التحويل: {selectedUnit.conversionFactor}</p>}
+                {selectedUnit && (
+                  <p className="text-[10px] text-muted-foreground">
+                    معامل التحويل: {selectedUnit.conversionFactor}
+                    {Number(selectedUnit.conversionFactor) > 1 && (
+                      <span className="text-primary font-semibold ms-1">
+                        (المعادل بالأساس: {formatQuantity(new Decimal(Number(qty) || 0).times(selectedUnit.conversionFactor).toDecimalPlaces(4).toFixed(4))})
+                      </span>
+                    )}
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -332,7 +362,7 @@ export function MaterialSubstitutionDialog({
               className="gap-1.5"
             >
               <ArrowLeftRight aria-hidden className="size-3.5" />
-              {substituteMutation.isPending ? "جارٍ الحفظ…" : scope === "permanent" ? "حفظ واعتماد دائم للوصفة" : "تطبيق الاستبدال للدفعة"}
+              {substituteMutation.isPending ? ACTION_LABELS.saving : scope === "permanent" ? "حفظ واعتماد دائم للوصفة" : "تطبيق الاستبدال للدفعة"}
             </Button>
           </div>
         </DialogFooter>

@@ -118,6 +118,43 @@ export async function runPreview(args: {
     if (!recLines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "الوصفة بلا مكوّنات" });
 
     const substitutions = args.materialSubstitutions ?? [];
+    const recInputIds = new Set(recLines.map((l: any) => Number(l.inputVariantId)));
+    const seenOriginals = new Set<number>();
+    for (const s of substitutions) {
+      const origId = Number(s.originalVariantId);
+      if (!recInputIds.has(origId)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر استبدال مادة الوصفة",
+            why: `الصنف الأصلي #${origId} ليس مكوّناً مسجلاً في الوصفة`,
+            doThis: "حدّث بيانات التشغيل وتأكد من اختيار مكوّن موجود في الوصفة",
+          }),
+        });
+      }
+      if (seenOriginals.has(origId)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تكرار استبدال المادة",
+            why: `تم إرسال أكثر من بديل لنفس المادة الأصلية #${origId}`,
+            doThis: "حدد بديلاً واحداً لكل مادة أصلية",
+          }),
+        });
+      }
+      seenOriginals.add(origId);
+      if (Number(s.substituteVariantId) === Number(head.outputVariantId)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر استبدال مادة الوصفة",
+            why: "المنتج الناتج لا يمكن أن يكون مادة بديلة لنفسه",
+            doThis: "اختر صنفاً خاماً مختلفاً عن ناتج الوصفة",
+          }),
+        });
+      }
+    }
+
     const subMap = new Map(substitutions.map((s) => [Number(s.originalVariantId), s]));
 
     let subDetailMap = new Map<number, any>();
@@ -128,11 +165,54 @@ export async function runPreview(args: {
           id: productVariants.id,
           sku: productVariants.sku,
           costPrice: productVariants.costPrice,
+          variantActive: productVariants.isActive,
+          productId: products.id,
           productName: products.name,
+          productActive: products.isActive,
+          isService: products.isService,
+          isBundle: products.isBundle,
+          isConsignment: products.isConsignment,
         })
         .from(productVariants)
         .leftJoin(products, eq(productVariants.productId, products.id))
         .where(inArray(productVariants.id, subVarIds));
+
+      if (subRows.length !== subVarIds.length) {
+        const found = new Set(subRows.map((r: any) => Number(r.id)));
+        const missing = subVarIds.find((id) => !found.has(id));
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "المادة البديلة غير موجودة",
+            why: `تعذّر العثور على الصنف البديل #${missing}`,
+            doThis: "اختر صنفاً معرفاً ونشطاً في كتالوج المنتجات",
+          }),
+        });
+      }
+
+      for (const r of subRows as any[]) {
+        if (!r.productActive || !r.variantActive) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: `المادة البديلة «${r.productName ?? r.id}» معطّلة`,
+              why: "الصنف البديل أو منتجه ليس نشطاً",
+              doThis: "فعّل المنتج ومتغيّره أو اختر مادة بديلة نشطة",
+            }),
+          });
+        }
+        if (r.isService || r.isBundle || r.isConsignment) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: `المادة البديلة «${r.productName ?? r.id}» غير صالحة للإنتاج`,
+              why: "المادة البديلة يجب أن تكون مخزوناً خاماً مملوكاً (ليست خدمة ولا بكج ولا أمانة)",
+              doThis: "اختر صنفاً مخزنياً عادياً مملوكاً",
+            }),
+          });
+        }
+      }
+
       subDetailMap = new Map(subRows.map((r: any) => [Number(r.id), r]));
     }
 
@@ -145,6 +225,8 @@ export async function runPreview(args: {
           inputVariantId: origId,
           isSubstituted: false,
           originalVariantId: null,
+          originalProductName: null,
+          originalSku: null,
         };
       }
       const detail = subDetailMap.get(Number(sub.substituteVariantId));
@@ -156,6 +238,8 @@ export async function runPreview(args: {
         costPrice: detail?.costPrice ?? "0",
         isSubstituted: true,
         originalVariantId: origId,
+        originalProductName: l.productName ?? null,
+        originalSku: l.sku ?? null,
       };
     });
 
@@ -231,6 +315,8 @@ export async function runPreview(args: {
         lineCost: round2(unitCost.times(consumed)).toFixed(2),
         isSubstituted: l.isSubstituted ?? false,
         originalVariantId: l.originalVariantId ?? null,
+        originalProductName: l.originalProductName ?? null,
+        originalSku: l.originalSku ?? null,
       };
     });
     const anyShort = inputs.some((i) => i.short);

@@ -157,6 +157,10 @@ export default function ProductionNew() {
     if (selectedRecipe) setLabor(String(selectedRecipe.laborPerOutputBase ?? "0"));
   }, [recipeId, selectedRecipe?.laborPerOutputBase]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    setMaterialSubstitutions([]);
+  }, [recipeId]);
+
   // معاينة حيّة (مُهلَّة) — نفس حساب الترحيل خادمياً.
   const dBatch = useDebouncedValue(batch, 300);
   const dScrap = useDebouncedValue(scrap, 300);
@@ -478,7 +482,7 @@ export default function ProductionNew() {
                       const currentSub = materialSubstitutions.find((s) => s.originalVariantId === origId);
                       const isSubstituted = Boolean(i.isSubstituted || currentSub);
                       return (
-                        <div key={i.variantId} className="grid grid-cols-1 md:grid-cols-[1fr_1.4fr] gap-3 items-center border rounded-md p-3">
+                        <div key={`${origId}-${i.variantId}`} className="grid grid-cols-1 md:grid-cols-[1fr_1.4fr] gap-3 items-center border rounded-md p-3">
                           <div>
                             <div className="flex items-center gap-2">
                               <span className="font-medium text-sm">{i.productName}</span>
@@ -515,8 +519,8 @@ export default function ProductionNew() {
                                   onClick={() => {
                                     setSubstitutingInput({
                                       variantId: origId,
-                                      productName: i.productName ?? "",
-                                      sku: i.sku,
+                                      productName: i.originalProductName ?? i.productName ?? "",
+                                      sku: i.originalSku ?? i.sku,
                                       qtyPerOutputBase: String(i.perOutputBase ?? "1"),
                                       consumed: i.consumed,
                                       available: i.available,

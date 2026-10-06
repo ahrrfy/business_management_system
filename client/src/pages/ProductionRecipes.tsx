@@ -610,6 +610,7 @@ export default function ProductionRecipes() {
           originalQtyPerOutputBase={substitutingComp.qty}
           originalCostPrice={substitutingComp.costPrice}
           branchId={branchId}
+          defaultScope="permanent"
           onPermanentSuccess={() => {
             setSubstitutingComp(null);
             if (editId) startEdit(editId);

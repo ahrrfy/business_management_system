@@ -1,7 +1,7 @@
-// أدوات إنشاء داخلية: تحليل الأسطر، ترقيم المستند، عزل الفرع، وتوسيع تشغيل بوصفة — غير مُصدَّرة.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, inArray, like } from "drizzle-orm";
+import { appErrorMessage } from "../../../shared/errors";
 import {
   productUnits,
   productVariants,
@@ -119,6 +119,43 @@ async function resolveRunPlan(tx: any, run: NonNullable<CreateProductionInput["r
   if (!recLines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "الوصفة بلا مكوّنات" });
 
   const substitutions = run.materialSubstitutions ?? [];
+  const recInputIds = new Set(recLines.map((l: any) => Number(l.inputVariantId)));
+  const seenOriginals = new Set<number>();
+  for (const s of substitutions) {
+    const origId = Number(s.originalVariantId);
+    if (!recInputIds.has(origId)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: `الصنف الأصلي #${origId} ليس مكوّناً مسجلاً في الوصفة`,
+          doThis: "حدّث بيانات التشغيل وتأكد من اختيار مكوّن موجود في الوصفة",
+        }),
+      });
+    }
+    if (seenOriginals.has(origId)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تكرار استبدال المادة",
+          why: `تم إرسال أكثر من بديل لنفس المادة الأصلية #${origId}`,
+          doThis: "حدد بديلاً واحداً لكل مادة أصلية",
+        }),
+      });
+    }
+    seenOriginals.add(origId);
+    if (Number(s.substituteVariantId) === Number(head.outputVariantId)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: "المنتج الناتج لا يمكن أن يكون مادة بديلة لنفسه",
+          doThis: "اختر صنفاً خاماً مختلفاً عن ناتج الوصفة",
+        }),
+      });
+    }
+  }
+
   const subMap = new Map(substitutions.map((s) => [Number(s.originalVariantId), s]));
 
   let subNameMap = new Map<number, string>();

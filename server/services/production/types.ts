@@ -114,6 +114,8 @@ export interface RunPreviewResult {
     lineCost: string;
     isSubstituted?: boolean;
     originalVariantId?: number | null;
+    originalProductName?: string | null;
+    originalSku?: string | null;
   }>;
   wavg: { oldQty: number; oldCost: string; addQty: number; newQty: number; newCost: string };
 }
