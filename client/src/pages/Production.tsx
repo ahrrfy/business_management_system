@@ -73,7 +73,14 @@ export default function Production() {
     {
       key: "productName",
       header: "المنتج الناتج",
-      map: (r: any) => r.primaryProductName ?? (r.outputs?.map((o: any) => o.productName).join(" + ") || ""),
+      map: (r: any) => {
+        if (r.primaryProductName) {
+          const variant = r.primaryVariantName ? ` (${r.primaryVariantName})` : "";
+          const more = (r.outputCount ?? r.outputs?.length ?? 0) > 1 ? ` (+${(r.outputCount ?? r.outputs?.length) - 1} أصناف)` : "";
+          return `${r.primaryProductName}${variant}${more}`;
+        }
+        return r.outputs?.map((o: any) => `${o.productName}${o.variantName ? ` (${o.variantName})` : ""}`).join(" + ") || "";
+      },
     },
     { key: "recipeName", header: "الوصفة", map: (r: any) => r.recipeName ?? "إنتاج يدوي" },
     {
@@ -128,7 +135,9 @@ export default function Production() {
         { key: "createdAt", label: "التاريخ" },
       ],
       rows: all.map((r: any) => {
-        const prod = r.primaryProductName || (r.outputs?.[0]?.productName ?? "—");
+        const prod = r.primaryProductName
+          ? `${r.primaryProductName}${r.primaryVariantName ? ` (${r.primaryVariantName})` : ""}${(r.outputCount ?? r.outputs?.length ?? 0) > 1 ? ` (+${(r.outputCount ?? r.outputs?.length) - 1})` : ""}`
+          : (r.outputs?.[0]?.productName ?? "—");
         const recipe = r.recipeName ? ` (${r.recipeName})` : "";
         const bundle = r.bundleInfo?.bundleName ? ` [بكج: ${r.bundleInfo.bundleName}]` : "";
         return {
@@ -152,6 +161,7 @@ export default function Production() {
       id: "productAndRecipe",
       header: "المنتج / الوصفة",
       accessorFn: (r: any) => r.primaryProductName ?? r.recipeName ?? "",
+      meta: { kind: "text" },
       cell: ({ row }) => {
         const r = row.original as any;
         const outputs = r.outputs ?? [];
@@ -161,7 +171,7 @@ export default function Production() {
         const moreCount = (r.outputCount ?? outputs.length) - 1;
 
         return (
-          <div className="flex flex-col gap-1 py-1 max-w-[280px]">
+          <div className="flex flex-col gap-1 py-1 min-w-[200px] max-w-[340px]">
             {/* سطر المنتج الناتج */}
             <div className="flex items-center gap-1.5 flex-wrap">
               <Package aria-hidden className="size-3.5 text-primary shrink-0" />
@@ -186,7 +196,12 @@ export default function Production() {
               {moreCount > 0 && (
                 <span
                   className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium bg-secondary text-secondary-foreground"
-                  title={outputs.map((o: any) => o.productName).filter(Boolean).join("، ")}
+                  title={outputs
+                    .map((o: any) =>
+                      `${o.productName}${o.variantName ? ` (${o.variantName})` : ""}: ${formatQuantity(o.quantity)}${o.unitName ? ` ${o.unitName}` : ""}`
+                    )
+                    .filter(Boolean)
+                    .join(" | ")}
                 >
                   <Boxes aria-hidden className="size-3" />
                   +{moreCount}
