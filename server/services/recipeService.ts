@@ -1013,6 +1013,17 @@ export async function substituteRecipeMaterial(
       });
     }
 
+    if (input.substituteVariantId === input.originalVariantId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: "المادة البديلة مطابقة للمادة الأصلية — لا يمكن استبدال المادة بنفسها",
+          doThis: "اختر صنفاً بديلاً مختلفاً عن المادة الأصلية",
+        }),
+      });
+    }
+
     if (input.substituteVariantId === initial.head.outputVariantId) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -1102,6 +1113,7 @@ export async function substituteRecipeMaterial(
         })
         .from(productUnits)
         .where(eq(productUnits.id, input.substituteProductUnitId))
+        .for("update")
         .limit(1);
       if (
         !unit ||

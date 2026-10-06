@@ -748,5 +748,249 @@ describe("الاستبدال بوحدات قياس غير أساسية والح�
     expect(newVal?.qtyPerOutputBase).toBe("50.0000");
     expect(newVal?.reason).toBe("نفاد ورق أبيض واعتماد ورق كريمي");
   });
+
+  it("يرفض استبدال المادة بنفسها في الاستبدال الدائم والمؤقت ومخطط التحقق", async () => {
+    const recipeId = await createTestRecipe();
+
+    // 1. الاستبدال الدائم: يرفض الصنف البديل المطابق للأصل
+    await expect(
+      substituteRecipeMaterial(
+        {
+          recipeId,
+          originalVariantId: 1,
+          substituteVariantId: 1,
+        },
+        adminActor,
+      ),
+    ).rejects.toThrow(/لا يمكن استبدال المادة بنفسها/);
+
+    // 2. الاستبدال المؤقت في runPreview: يرفض استبدال المادة بنفسها
+    await expect(
+      runPreview({
+        recipeId,
+        batchQty: 10,
+        branchId: 1,
+        materialSubstitutions: [
+          { originalVariantId: 1, substituteVariantId: 1, qtyPerOutputBase: "50.0000" },
+        ],
+      }),
+    ).rejects.toThrow(/لا يمكن استبدال المادة بنفسها/);
+
+    // 3. مسار TRPC: يرفض عبر zod refine
+    const adminCaller = appRouter.createCaller(
+      makeCtx({ id: 1, role: "admin", branchId: 1 }),
+    );
+    await expect(
+      adminCaller.production.recipes.substituteMaterial({
+        recipeId,
+        originalVariantId: 1,
+        substituteVariantId: 1,
+        qtyPerOutputBase: "50.0000",
+      }),
+    ).rejects.toThrow(/المادة البديلة لا يمكن أن تكون نفس المادة الأصلية/);
+  });
+
+  it("يرفض وحدة قياس غير صالحة أو تخص صنفاً آخر في الاستبدال المؤقت (runPreview و createProduction)", async () => {
+    const recipeId = await createTestRecipe();
+
+    // الوحدة 3 تخص الصنف 3 (غلاف) وليست للصنف 2 (ورق كريمي)
+    await expect(
+      runPreview({
+        recipeId,
+        batchQty: 10,
+        branchId: 1,
+        materialSubstitutions: [
+          {
+            originalVariantId: 1,
+            substituteVariantId: 2,
+            substituteProductUnitId: 3,
+            qtyPerOutputBase: "50.0000",
+          },
+        ],
+      }),
+    ).rejects.toThrow(/وحدة القياس المحددة للمادة البديلة/);
+
+    // عند createProduction أيضاً
+    await expect(
+      createProduction(
+        {
+          branchId: 1,
+          run: {
+            recipeId,
+            batchQty: 10,
+            scrapQty: 0,
+            materialSubstitutions: [
+              {
+                originalVariantId: 1,
+                substituteVariantId: 2,
+                substituteProductUnitId: 3,
+                qtyPerOutputBase: "50.0000",
+              },
+            ],
+          },
+        },
+        adminActor,
+      ),
+    ).rejects.toThrow(/وحدة القياس المحددة للمادة البديلة/);
+  });
+
+  it("استبدال مادتين بنفس البديل مع عجز الرصيد التراكمي يكتشف النقص ويرفض الترحيل ذرّياً (Rollback)", async () => {
+    const recipeId = await createTestRecipe();
+    // رصيد الصنف 2 (ورق كريمي) في الفرع هو 5000 ورقة
+    // سطر 1: يستبدل المادة 1 (ورق أبيض) بالورق الكريمي 2 بكمية 400 لكل وحدة ناتج
+    // سطر 2: يستبدل المادة 3 (غلاف) بالورق الكريمي 2 بكمية 200 لكل وحدة ناتج
+    // الدفعة = 10
+    // إجمالي استهلاك الصنف 2 = 10 × 400 + 10 × 200 = 6000 ورقة (المتاح فقط 5000!)
+    const preview = await runPreview({
+      recipeId,
+      batchQty: 10,
+      branchId: 1,
+      materialSubstitutions: [
+        { originalVariantId: 1, substituteVariantId: 2, qtyPerOutputBase: "400.0000" },
+        { originalVariantId: 3, substituteVariantId: 2, qtyPerOutputBase: "200.0000" },
+      ],
+    });
+    expect(preview.anyShort).toBe(true);
+    const line1 = preview.inputs.find((i) => i.originalVariantId === 1);
+    const line2 = preview.inputs.find((i) => i.originalVariantId === 3);
+    expect(line1?.short).toBe(true);
+    expect(line2?.short).toBe(true);
+
+    // محاولة ترحيل الإنتاج يجب أن تفشل ذرّياً بالكامل
+    await expect(
+      createProduction(
+        {
+          branchId: 1,
+          run: {
+            recipeId,
+            batchQty: 10,
+            scrapQty: 0,
+            materialSubstitutions: [
+              { originalVariantId: 1, substituteVariantId: 2, qtyPerOutputBase: "400.0000" },
+              { originalVariantId: 3, substituteVariantId: 2, qtyPerOutputBase: "200.0000" },
+            ],
+          },
+        },
+        adminActor,
+      ),
+    ).rejects.toThrow();
+
+    // التحقق من عدم تسجيل أي حركة مخزون أو مستند
+    const orders = await db().select().from(s.productionOrders);
+    expect(orders.length).toBe(0);
+    const movements = await db().select().from(s.inventoryMovements);
+    expect(movements.length).toBe(0);
+    // رصيد الصنف 2 لم يتغير (5000)
+    const [stock] = await db()
+      .select()
+      .from(s.branchStock)
+      .where(sql`${s.branchStock.variantId} = 2 AND ${s.branchStock.branchId} = 1`);
+    expect(Number(stock.quantity)).toBe(5000);
+  });
+
+  it("يدعم استبدال تبادلي للمواد (Cross-referencing) في الاستبدال المؤقت بنجاح", async () => {
+    const recipeId = await createTestRecipe();
+    // الوصفة الأصلية: سطر 1 = ورق أبيض 1 (50 ورقة)، سطر 2 = غلاف 3 (1 قطعة)
+    // نبدل سطر 1 بالورق الكريمي 2 (50 ورقة) ونبدل سطر 2 بالورق الأبيض 1 (2 ورقة)
+    // نمنح رصيداً كافياً للورق الأبيض للتحقق من سلامة الحساب
+    await db()
+      .update(s.branchStock)
+      .set({ quantity: 100 })
+      .where(sql`${s.branchStock.variantId} = 1 AND ${s.branchStock.branchId} = 1`);
+
+    const preview = await runPreview({
+      recipeId,
+      batchQty: 10,
+      branchId: 1,
+      materialSubstitutions: [
+        { originalVariantId: 1, substituteVariantId: 2, qtyPerOutputBase: "50.0000" },
+        { originalVariantId: 3, substituteVariantId: 1, qtyPerOutputBase: "2.0000" },
+      ],
+    });
+
+    expect(preview.anyShort).toBe(false);
+    expect(preview.inputs.length).toBe(2);
+    const in1 = preview.inputs.find((i) => i.variantId === 2);
+    const in2 = preview.inputs.find((i) => i.variantId === 1);
+    expect(in1?.consumed).toBe(500); // 50 * 10
+    expect(in2?.consumed).toBe(20);  // 2 * 10
+
+    // الترحيل الفعلي
+    const result = await createProduction(
+      {
+        branchId: 1,
+        run: {
+          recipeId,
+          batchQty: 10,
+          scrapQty: 0,
+          materialSubstitutions: [
+            { originalVariantId: 1, substituteVariantId: 2, qtyPerOutputBase: "50.0000" },
+            { originalVariantId: 3, substituteVariantId: 1, qtyPerOutputBase: "2.0000" },
+          ],
+        },
+      },
+      adminActor,
+    );
+    expect(result.productionOrderId).toBeGreaterThan(0);
+
+    // فحص حركة المخزون للصنفين
+    const [stock1] = await db()
+      .select()
+      .from(s.branchStock)
+      .where(sql`${s.branchStock.variantId} = 1 AND ${s.branchStock.branchId} = 1`);
+    const [stock2] = await db()
+      .select()
+      .from(s.branchStock)
+      .where(sql`${s.branchStock.variantId} = 2 AND ${s.branchStock.branchId} = 1`);
+    expect(Number(stock1.quantity)).toBe(80); // 100 - 20
+    expect(Number(stock2.quantity)).toBe(4500); // 5000 - 500
+  });
+
+  it("قفل التزامن 2PL وتفادي Deadlocks عند طلبات استبدال متزامنة على نفس الوصفة", async () => {
+    const recipeId = await createTestRecipe();
+
+    // محاولة استبدالين متزامنين على نفس الوصفة
+    const p1 = substituteRecipeMaterial(
+      {
+        recipeId,
+        originalVariantId: 1,
+        substituteVariantId: 2,
+        qtyPerOutputBase: "45.0000",
+        reason: "تعديل 1",
+      },
+      adminActor,
+    );
+    const p2 = substituteRecipeMaterial(
+      {
+        recipeId,
+        originalVariantId: 1,
+        substituteVariantId: 2,
+        qtyPerOutputBase: "40.0000",
+        reason: "تعديل 2",
+      },
+      managerActor,
+    );
+
+    const outcomes = await Promise.allSettled([p1, p2]);
+    const fulfilled = outcomes.filter((o) => o.status === "fulfilled");
+    const rejected = outcomes.filter((o) => o.status === "rejected");
+
+    // يجب أن ينجح أحدهما على الأقل وتفشل المحاولة المتضاربة دون أي deadlock
+    expect(fulfilled.length).toBeGreaterThanOrEqual(1);
+    if (rejected.length > 0) {
+      const err = (rejected[0] as PromiseRejectedResult).reason;
+      expect(err.message).toMatch(/(تعارض|تغيّرت الوصفة|Conflict)/i);
+    }
+
+    // فحص سلامة أسطر الوصفة
+    const lines = await db()
+      .select()
+      .from(s.productionRecipeLines)
+      .where(eq(s.productionRecipeLines.recipeId, recipeId));
+    expect(lines.length).toBe(2);
+    const subLine = lines.find((l) => l.inputVariantId === 2);
+    expect(subLine).toBeDefined();
+    expect(["45.0000", "40.0000"]).toContain(subLine?.qtyPerOutputBase);
+  });
 });
 

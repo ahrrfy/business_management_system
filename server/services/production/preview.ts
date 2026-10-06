@@ -143,6 +143,16 @@ export async function runPreview(args: {
         });
       }
       seenOriginals.add(origId);
+      if (Number(s.substituteVariantId) === origId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر استبدال مادة الوصفة",
+            why: `المادة البديلة للصنف #${origId} مطابقة للمادة الأصلية — لا يمكن استبدال المادة بنفسها`,
+            doThis: "اختر صنفاً بديلاً مختلفاً عن المادة الأصلية",
+          }),
+        });
+      }
       if (Number(s.substituteVariantId) === Number(head.outputVariantId)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -152,6 +162,37 @@ export async function runPreview(args: {
             doThis: "اختر صنفاً خاماً مختلفاً عن ناتج الوصفة",
           }),
         });
+      }
+    }
+
+    const subUnitsToValidate = substitutions
+      .filter((s) => s.substituteProductUnitId != null)
+      .map((s) => ({
+        unitId: Number(s.substituteProductUnitId),
+        variantId: Number(s.substituteVariantId),
+      }));
+    if (subUnitsToValidate.length > 0) {
+      const unitRows = await tx
+        .select({
+          id: productUnits.id,
+          variantId: productUnits.variantId,
+          isActive: productUnits.isActive,
+        })
+        .from(productUnits)
+        .where(inArray(productUnits.id, subUnitsToValidate.map((u) => u.unitId)));
+      const unitMap = new Map<number, any>(unitRows.map((r: any) => [Number(r.id), r]));
+      for (const u of subUnitsToValidate) {
+        const row = unitMap.get(u.unitId);
+        if (!row || Number(row.variantId) !== u.variantId || !row.isActive) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذّر استبدال مادة الوصفة",
+              why: `وحدة القياس المحددة للمادة البديلة #${u.variantId} لا تخص الصنف أو معطّلة`,
+              doThis: "اختر وحدة قياس صحيحة ونشطة تابعة للمادة البديلة",
+            }),
+          });
+        }
       }
     }
 
@@ -230,6 +271,19 @@ export async function runPreview(args: {
         };
       }
       const detail = subDetailMap.get(Number(sub.substituteVariantId));
+      if (sub.qtyPerOutputBase) {
+        const qtyDec = new Decimal(sub.qtyPerOutputBase);
+        if (qtyDec.decimalPlaces() > 4 || qtyDec.lte(0)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذّر استبدال مادة الوصفة",
+              why: `كمية المادة البديلة «${detail?.productName ?? sub.substituteVariantId}» غير صالحة (يجب أن تكون رقماً موجباً بأربع منازل عشرية كحد أقصى)`,
+              doThis: "عدّل كمية المادة البديلة بحيث لا تتجاوز 4 منازل عشرية وتكون أكبر من صفر",
+            }),
+          });
+        }
+      }
       return {
         inputVariantId: Number(sub.substituteVariantId),
         qtyPerOutputBase: sub.qtyPerOutputBase ? String(sub.qtyPerOutputBase) : String(l.qtyPerOutputBase),

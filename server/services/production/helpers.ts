@@ -110,7 +110,12 @@ async function resolveRunPlan(tx: any, run: NonNullable<CreateProductionInput["r
   if (good <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "السليم الناتج يجب أن يكون موجباً (التالف لا يساوي الدفعة كلّها)" });
 
   const recLines = await tx
-    .select({ inputVariantId: productionRecipeLines.inputVariantId, qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase, productName: products.name })
+    .select({
+      inputVariantId: productionRecipeLines.inputVariantId,
+      inputProductUnitId: productionRecipeLines.inputProductUnitId,
+      qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
+      productName: products.name,
+    })
     .from(productionRecipeLines)
     .leftJoin(productVariants, eq(productionRecipeLines.inputVariantId, productVariants.id))
     .leftJoin(products, eq(productVariants.productId, products.id))
@@ -144,6 +149,16 @@ async function resolveRunPlan(tx: any, run: NonNullable<CreateProductionInput["r
       });
     }
     seenOriginals.add(origId);
+    if (Number(s.substituteVariantId) === origId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: `المادة البديلة للصنف #${origId} مطابقة للمادة الأصلية — لا يمكن استبدال المادة بنفسها`,
+          doThis: "اختر صنفاً بديلاً مختلفاً عن المادة الأصلية",
+        }),
+      });
+    }
     if (Number(s.substituteVariantId) === Number(head.outputVariantId)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -153,6 +168,37 @@ async function resolveRunPlan(tx: any, run: NonNullable<CreateProductionInput["r
           doThis: "اختر صنفاً خاماً مختلفاً عن ناتج الوصفة",
         }),
       });
+    }
+  }
+
+  const subUnitsToValidate = substitutions
+    .filter((s) => s.substituteProductUnitId != null)
+    .map((s) => ({
+      unitId: Number(s.substituteProductUnitId),
+      variantId: Number(s.substituteVariantId),
+    }));
+  if (subUnitsToValidate.length > 0) {
+    const unitRows = await tx
+      .select({
+        id: productUnits.id,
+        variantId: productUnits.variantId,
+        isActive: productUnits.isActive,
+      })
+      .from(productUnits)
+      .where(inArray(productUnits.id, subUnitsToValidate.map((u) => u.unitId)));
+    const unitMap = new Map<number, any>(unitRows.map((r: any) => [Number(r.id), r]));
+    for (const u of subUnitsToValidate) {
+      const row = unitMap.get(u.unitId);
+      if (!row || Number(row.variantId) !== u.variantId || !row.isActive) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر استبدال مادة الوصفة",
+            why: `وحدة القياس المحددة للمادة البديلة #${u.variantId} لا تخص الصنف أو معطّلة`,
+            doThis: "اختر وحدة قياس صحيحة ونشطة تابعة للمادة البديلة",
+          }),
+        });
+      }
     }
   }
 
@@ -173,14 +219,35 @@ async function resolveRunPlan(tx: any, run: NonNullable<CreateProductionInput["r
     const origId = Number(l.inputVariantId);
     const sub = subMap.get(origId);
     const effectiveVariantId = sub ? Number(sub.substituteVariantId) : origId;
+    const effectiveProductUnitId = sub
+      ? (sub.substituteProductUnitId ?? null)
+      : (l.inputProductUnitId != null ? Number(l.inputProductUnitId) : null);
     const effectiveQtyPerOutputBase = sub?.qtyPerOutputBase ? String(sub.qtyPerOutputBase) : String(l.qtyPerOutputBase);
     const displayName = sub ? subNameMap.get(effectiveVariantId) ?? `بديل #${effectiveVariantId}` : l.productName ?? origId;
 
-    const consumed = new Decimal(effectiveQtyPerOutputBase).times(batch);
+    const qtyDec = new Decimal(effectiveQtyPerOutputBase);
+    if (qtyDec.decimalPlaces() > 4 || qtyDec.lte(0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: `كمية المادة البديلة «${displayName}» غير صالحة (يجب أن تكون رقماً موجباً بأربع منازل عشرية كحد أقصى)`,
+          doThis: "عدّل كمية المادة البديلة بحيث لا تتجاوز 4 منازل عشرية وتكون أكبر من صفر",
+        }),
+      });
+    }
+
+    const consumed = qtyDec.times(batch);
     if (!consumed.isInteger()) {
       throw new TRPCError({ code: "BAD_REQUEST", message: `استهلاك «${displayName}» (${consumed.toString()}) ليس عدداً صحيحاً — عدّل الدفعة أو الوصفة` });
     }
-    return { variantId: effectiveVariantId, productUnitId: sub?.substituteProductUnitId ?? null, quantity: consumed.toFixed(4), baseQuantity: consumed.toNumber(), manualSharePct: null };
+    return {
+      variantId: effectiveVariantId,
+      productUnitId: effectiveProductUnitId,
+      quantity: consumed.toFixed(4),
+      baseQuantity: consumed.toNumber(),
+      manualSharePct: null,
+    };
   });
 
   const outLines: ResolvedLine[] = [

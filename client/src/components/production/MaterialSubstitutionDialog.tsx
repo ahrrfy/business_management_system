@@ -99,6 +99,8 @@ export function MaterialSubstitutionDialog({
     onSuccess: (res) => {
       notify.ok("تم استبدال المادة واعتماد الوصفة بشكل دائم", `تم تحديث بطاقة الوصفة «${res.recipeName}».`);
       utils.production.recipes.list.invalidate();
+      utils.production.recipes.listRunnable.invalidate();
+      utils.production.recipes.forProduct.invalidate();
       utils.production.recipes.get.invalidate();
       utils.production.runPreview.invalidate();
       utils.production.recipeCapacity.invalidate();
@@ -163,7 +165,13 @@ export function MaterialSubstitutionDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (substituteMutation.isPending) return;
+        onOpenChange(next);
+      }}
+    >
       <DialogContent className="sm:max-w-xl text-start" dir="rtl">
         <DialogHeader>
           <div className="flex items-center gap-2">
@@ -339,6 +347,7 @@ export function MaterialSubstitutionDialog({
               type="button"
               variant="outline"
               size="sm"
+              disabled={substituteMutation.isPending}
               className="text-destructive hover:bg-destructive/10 gap-1.5"
               onClick={() => {
                 onRemoveSubstitution();
@@ -351,7 +360,13 @@ export function MaterialSubstitutionDialog({
           )}
 
           <div className="flex items-center gap-2 ms-auto">
-            <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={substituteMutation.isPending}
+              onClick={() => onOpenChange(false)}
+            >
               إلغاء
             </Button>
             <Button
