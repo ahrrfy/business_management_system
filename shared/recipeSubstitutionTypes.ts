@@ -5,6 +5,7 @@ import { z } from "zod";
  */
 export const materialSubstitutionItemSchema = z
   .object({
+    recipeId: z.number().int().positive().nullish(),
     originalVariantId: z.number().int().positive("معرف المادة الأصلية غير صالح"),
     substituteVariantId: z.number().int().positive("معرف المادة البديلة غير صالح"),
     substituteProductUnitId: z.number().int().positive().nullish(),

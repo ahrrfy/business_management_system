@@ -251,9 +251,73 @@ export async function analyzeMultiRecipeRequirements(
         : [];
     const inputUnitNameMap = new Map<number, string>(inputUnitRows.map((u) => [u.id, u.unitName]));
 
+    const allSubs = [
+      ...(input.materialSubstitutions ?? []),
+      ...input.items.flatMap((it) => it.materialSubstitutions ?? []),
+    ];
+
+    const subDetailsMap = new Map<
+      number,
+      { name: string; sku: string; unitName: string; costPrice: string }
+    >();
+    const extraUnitNameMap = new Map<number, string>();
+
+    if (allSubs.length > 0) {
+      const subVarIds = Array.from(new Set(allSubs.map((s) => Number(s.substituteVariantId))));
+      const subUnitIds = allSubs
+        .map((s) => s.substituteProductUnitId)
+        .filter((id): id is number => id != null);
+
+      const [subVarRows, subUnitRows] = await Promise.all([
+        tx
+          .select({
+            variantId: productVariants.id,
+            productName: products.name,
+            sku: productVariants.sku,
+            costPrice: productVariants.costPrice,
+            baseUnitName: productUnits.unitName,
+          })
+          .from(productVariants)
+          .innerJoin(products, eq(productVariants.productId, products.id))
+          .leftJoin(
+            productUnits,
+            and(
+              eq(productUnits.variantId, productVariants.id),
+              eq(productUnits.isBaseUnit, true)
+            )
+          )
+          .where(inArray(productVariants.id, subVarIds)),
+        subUnitIds.length > 0
+          ? tx
+              .select({
+                id: productUnits.id,
+                unitName: productUnits.unitName,
+              })
+              .from(productUnits)
+              .where(inArray(productUnits.id, subUnitIds))
+          : Promise.resolve([]),
+      ]);
+
+      for (const u of subUnitRows) {
+        extraUnitNameMap.set(Number(u.id), u.unitName);
+      }
+
+      for (const row of subVarRows) {
+        subDetailsMap.set(Number(row.variantId), {
+          name: row.productName,
+          sku: row.sku,
+          unitName: row.baseUnitName ?? "وحدة",
+          costPrice: row.costPrice ?? "0",
+        });
+      }
+    }
+
     // ⑤ جلب الأرصدة المتاحة للفرع (ATP) لجميع المواد الخام
     const allInputVariantIds = Array.from(
-      new Set(lineRows.map((l) => l.inputVariantId))
+      new Set([
+        ...lineRows.map((l) => l.inputVariantId),
+        ...allSubs.map((s) => Number(s.substituteVariantId)),
+      ])
     ).sort((a, b) => a - b);
     const availabilityMap = await loadVariantAvailability(
       tx,
@@ -269,6 +333,13 @@ export async function analyzeMultiRecipeRequirements(
       unitName: string;
       totalRequiredBase: Decimal;
       costPrice: string;
+      recipeId?: number | null;
+      recipeName?: string | null;
+      qtyPerOutputBase?: string | null;
+      isSubstituted?: boolean;
+      originalVariantId?: number | null;
+      originalMaterialName?: string | null;
+      originalSku?: string | null;
     }
     const aggregatedMap = new Map<number, AggMaterialAccumulator>();
 
@@ -281,7 +352,16 @@ export async function analyzeMultiRecipeRequirements(
       const r = recipeMap.get(it.recipeId)!;
       const lines = linesByRecipe.get(it.recipeId)!;
 
-      const compCoeffs = lines.map((l) => l.qtyPerOutputBase);
+      const itemSubs = [
+        ...(input.materialSubstitutions ?? []),
+        ...(it.materialSubstitutions ?? []),
+      ].filter((s) => s.recipeId == null || Number(s.recipeId) === it.recipeId);
+      const itemSubMap = new Map(itemSubs.map((s) => [Number(s.originalVariantId), s]));
+
+      const compCoeffs = lines.map((l) => {
+        const sub = itemSubMap.get(l.inputVariantId);
+        return sub ? String(sub.qtyPerOutputBase) : l.qtyPerOutputBase;
+      });
       const reqMultiple = requiredBatchMultiple(compCoeffs);
       const isMultipleValid = it.batchQty % reqMultiple === 0;
 
@@ -295,40 +375,73 @@ export async function analyzeMultiRecipeRequirements(
       const recipeMaterials: RecipeRequirementMaterialLineDto[] = [];
 
       for (const l of lines) {
-        const lineRequired = new Decimal(l.qtyPerOutputBase).times(it.batchQty);
-        const lineCost = round2(lineRequired.times(new Decimal(l.costPrice || "0")));
+        const sub = itemSubMap.get(l.inputVariantId);
+        const effectiveVarId = sub ? Number(sub.substituteVariantId) : l.inputVariantId;
+        const subDetails = sub ? subDetailsMap.get(effectiveVarId) : null;
+        const effectiveQtyPerOutput = sub ? String(sub.qtyPerOutputBase) : l.qtyPerOutputBase;
+        const effectiveCostPrice = sub
+          ? (subDetails?.costPrice ?? "0.00")
+          : (l.costPrice || "0.00");
+        const effectiveName = sub
+          ? (subDetails?.name ?? `بديل #${effectiveVarId}`)
+          : l.productName;
+        const effectiveSku = sub ? (subDetails?.sku ?? "") : l.sku;
+        const effectiveUnitName = sub
+          ? ((sub.substituteProductUnitId
+              ? extraUnitNameMap.get(Number(sub.substituteProductUnitId))
+              : null) ??
+            subDetails?.unitName ??
+            "أساس")
+          : ((l.inputProductUnitId ? inputUnitNameMap.get(l.inputProductUnitId) : null) || "أساس");
+
+        const lineRequired = new Decimal(effectiveQtyPerOutput).times(it.batchQty);
+        const lineCost = round2(lineRequired.times(new Decimal(effectiveCostPrice)));
         recipeMaterialsCost = recipeMaterialsCost.plus(lineCost);
 
         const available = Math.max(
           0,
-          availabilityMap.get(l.inputVariantId)?.availableBase ?? 0
+          availabilityMap.get(effectiveVarId)?.availableBase ?? 0
         );
-        const uName =
-          (l.inputProductUnitId ? inputUnitNameMap.get(l.inputProductUnitId) : null) || "أساس";
 
         recipeMaterials.push({
-          variantId: l.inputVariantId,
-          productName: l.productName,
-          sku: l.sku,
-          unitName: uName,
-          qtyPerOutputBase: l.qtyPerOutputBase,
+          variantId: effectiveVarId,
+          productName: effectiveName,
+          sku: effectiveSku,
+          unitName: effectiveUnitName,
+          qtyPerOutputBase: effectiveQtyPerOutput,
           totalRequiredBase: lineRequired.toFixed(4),
           availableInBranch: available,
           isSufficient: new Decimal(available).gte(lineRequired),
+          isSubstituted: Boolean(sub),
+          originalVariantId: sub ? l.inputVariantId : null,
+          originalProductName: sub ? l.productName : null,
         });
 
         // تراكم المواد الشاملة
-        const existing = aggregatedMap.get(l.inputVariantId);
+        const existing = aggregatedMap.get(effectiveVarId);
         if (existing) {
           existing.totalRequiredBase = existing.totalRequiredBase.plus(lineRequired);
+          if (sub) {
+            existing.isSubstituted = true;
+            existing.originalVariantId = l.inputVariantId;
+            existing.originalMaterialName = l.productName;
+            existing.originalSku = l.sku;
+          }
         } else {
-          aggregatedMap.set(l.inputVariantId, {
-            materialVariantId: l.inputVariantId,
-            materialName: l.productName,
-            sku: l.sku,
-            unitName: uName,
+          aggregatedMap.set(effectiveVarId, {
+            materialVariantId: effectiveVarId,
+            materialName: effectiveName,
+            sku: effectiveSku,
+            unitName: effectiveUnitName,
             totalRequiredBase: lineRequired,
-            costPrice: l.costPrice || "0.00",
+            costPrice: effectiveCostPrice,
+            recipeId: it.recipeId,
+            recipeName: r.recipeName,
+            qtyPerOutputBase: effectiveQtyPerOutput,
+            isSubstituted: Boolean(sub),
+            originalVariantId: sub ? l.inputVariantId : null,
+            originalMaterialName: sub ? l.productName : null,
+            originalSku: sub ? l.sku : null,
           });
         }
       }
@@ -396,6 +509,14 @@ export async function analyzeMultiRecipeRequirements(
         availableInBranch: available,
         isSufficient,
         deficitBase,
+        recipeId: agg.recipeId,
+        recipeName: agg.recipeName,
+        qtyPerOutputBase: agg.qtyPerOutputBase,
+        costPrice: agg.costPrice,
+        isSubstituted: agg.isSubstituted,
+        originalVariantId: agg.originalVariantId,
+        originalMaterialName: agg.originalMaterialName,
+        originalSku: agg.originalSku,
       });
     }
 
@@ -583,7 +704,20 @@ export async function produceMultiRecipeBatches(
           }),
         });
       }
-      const compCoeffs = lines.map((l) => l.qtyPerOutputBase);
+      const batchInputIds = new Set(lines.map((l) => Number(l.inputVariantId)));
+      const relevantSubs = [
+        ...(input.materialSubstitutions ?? []),
+        ...(b.materialSubstitutions ?? []),
+      ].filter(
+        (s) =>
+          batchInputIds.has(Number(s.originalVariantId)) &&
+          (s.recipeId == null || Number(s.recipeId) === b.recipeId)
+      );
+      const subMap = new Map(relevantSubs.map((s) => [Number(s.originalVariantId), s]));
+      const compCoeffs = lines.map((l) => {
+        const sub = subMap.get(Number(l.inputVariantId));
+        return sub ? String(sub.qtyPerOutputBase) : l.qtyPerOutputBase;
+      });
       const reqMultiple = requiredBatchMultiple(compCoeffs);
       if (b.batchQty % reqMultiple !== 0) {
         throw new TRPCError({
@@ -610,11 +744,17 @@ export async function produceMultiRecipeBatches(
       return a.recipeId - b.recipeId;
     });
 
+    const subVariantIds = [
+      ...(input.materialSubstitutions ?? []).map((s) => Number(s.substituteVariantId)),
+      ...input.batches.flatMap((b) => (b.materialSubstitutions ?? []).map((s) => Number(s.substituteVariantId))),
+    ];
+
     // جمع كافة المتغيرات المشتركة في العملية وقفلها حتمياً بالترتيب الحاكم لمنع الـ Deadlock
     const allVariantIdsToLock = Array.from(
       new Set([
         ...sortedBatches.map((b) => recipeMap.get(b.recipeId)!.outputVariantId),
         ...prodLines.map((l) => Number(l.inputVariantId)),
+        ...subVariantIds,
       ])
     ).sort((a, b) => a - b);
 
@@ -677,6 +817,17 @@ export async function produceMultiRecipeBatches(
       const rawLabor = batch.laborPerUnit != null ? String(batch.laborPerUnit).trim() : undefined;
       const cleanLabor = rawLabor && rawLabor !== "" ? rawLabor : undefined;
 
+      const batchLines = linesByRecipe.get(batch.recipeId) ?? [];
+      const batchInputIds = new Set(batchLines.map((l) => Number(l.inputVariantId)));
+      const relevantSubs = [
+        ...(input.materialSubstitutions ?? []),
+        ...(batch.materialSubstitutions ?? []),
+      ].filter(
+        (s) =>
+          batchInputIds.has(Number(s.originalVariantId)) &&
+          (s.recipeId == null || Number(s.recipeId) === batch.recipeId)
+      );
+
       const prodResult = await createProductionInTx(
         tx,
         {
@@ -689,6 +840,7 @@ export async function produceMultiRecipeBatches(
             batchQty: batch.batchQty,
             scrapQty: batch.scrapQty ?? 0,
             laborPerUnit: cleanLabor,
+            materialSubstitutions: relevantSubs.length > 0 ? relevantSubs : undefined,
           },
         },
         actor,

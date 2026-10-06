@@ -191,8 +191,112 @@ export async function analyzeBundleRequirements(
         .orderBy(asc(productionRecipeLines.recipeId), asc(productionRecipeLines.id));
     }
 
-    const linesByRecipeId = new Map<number, typeof recipeLines>();
-    for (const l of recipeLines) {
+    const substitutions = input.materialSubstitutions ?? [];
+    const subMap = new Map(substitutions.map((s) => [Number(s.originalVariantId), s]));
+
+    const subDetailsMap = new Map<
+      number,
+      { name: string; sku: string; unitName: string; costPrice: string }
+    >();
+    const unitNameById = new Map<number, string>();
+
+    if (substitutions.length > 0) {
+      const subVarIds = Array.from(new Set(substitutions.map((s) => Number(s.substituteVariantId))));
+      const subUnitIds = substitutions
+        .map((s) => s.substituteProductUnitId)
+        .filter((id): id is number => id != null);
+
+      const [subVarRows, subUnitRows] = await Promise.all([
+        tx
+          .select({
+            variantId: productVariants.id,
+            productName: products.name,
+            sku: productVariants.sku,
+            costPrice: productVariants.costPrice,
+            baseUnitName: productUnits.unitName,
+          })
+          .from(productVariants)
+          .innerJoin(products, eq(productVariants.productId, products.id))
+          .leftJoin(
+            productUnits,
+            and(
+              eq(productUnits.variantId, productVariants.id),
+              eq(productUnits.isBaseUnit, true)
+            )
+          )
+          .where(inArray(productVariants.id, subVarIds)),
+        subUnitIds.length > 0
+          ? tx
+              .select({
+                id: productUnits.id,
+                unitName: productUnits.unitName,
+              })
+              .from(productUnits)
+              .where(inArray(productUnits.id, subUnitIds))
+          : Promise.resolve([]),
+      ]);
+
+      for (const u of subUnitRows) {
+        unitNameById.set(Number(u.id), u.unitName);
+      }
+
+      for (const row of subVarRows) {
+        subDetailsMap.set(Number(row.variantId), {
+          name: row.productName,
+          sku: row.sku,
+          unitName: row.baseUnitName ?? "وحدة",
+          costPrice: row.costPrice ?? "0",
+        });
+      }
+    }
+
+    const effectiveRecipeLines = recipeLines.map((l) => {
+      const origId = Number(l.inputVariantId);
+      const sub =
+        substitutions.find(
+          (s) =>
+            Number(s.originalVariantId) === origId &&
+            s.recipeId != null &&
+            Number(s.recipeId) === Number(l.recipeId)
+        ) ??
+        substitutions.find(
+          (s) => Number(s.originalVariantId) === origId && s.recipeId == null
+        );
+      if (!sub) {
+        return {
+          ...l,
+          isSubstituted: false,
+          originalVariantId: null as number | null,
+          originalMaterialName: null as string | null,
+          originalSku: null as string | null,
+        };
+      }
+      const subDetails = subDetailsMap.get(Number(sub.substituteVariantId));
+      const effectiveUnitName =
+        (sub.substituteProductUnitId != null
+          ? unitNameById.get(Number(sub.substituteProductUnitId))
+          : null) ??
+        subDetails?.unitName ??
+        l.unitName ??
+        "وحدة";
+
+      return {
+        recipeId: l.recipeId,
+        inputVariantId: Number(sub.substituteVariantId),
+        qtyPerOutputBase: String(sub.qtyPerOutputBase),
+        materialName: subDetails?.name ?? `بديل #${sub.substituteVariantId}`,
+        sku: subDetails?.sku ?? "",
+        unitName: effectiveUnitName,
+        materialCostPrice: subDetails?.costPrice ?? "0",
+        isSubstituted: true,
+        originalVariantId: origId,
+        originalMaterialName: l.materialName,
+        originalSku: l.sku,
+      };
+    });
+
+    const linesByRecipeId = new Map<number, typeof effectiveRecipeLines>();
+    for (const l of effectiveRecipeLines) {
       const rid = Number(l.recipeId);
       const arr = linesByRecipeId.get(rid) ?? [];
       arr.push(l);
@@ -214,11 +318,12 @@ export async function analyzeBundleRequirements(
       }
     }
 
-    // ④ استعلام الأرصدة المتاحة للفرع (للمكونات والمواد الخام معاً)
+    // ④ استعلام الأرصدة المتاحة للفرع (للمكونات والمواد الخام الأصلية والبديلة)
     const allVariantIdsToProbe = Array.from(
       new Set([
         ...compVariantIds,
         ...recipeLines.map((l) => Number(l.inputVariantId)),
+        ...effectiveRecipeLines.map((l) => Number(l.inputVariantId)),
       ])
     ).sort((a, b) => a - b);
 
@@ -289,6 +394,14 @@ export async function analyzeBundleRequirements(
       sku: string;
       unitName: string;
       totalRequiredBase: Decimal;
+      recipeId?: number | null;
+      recipeName?: string | null;
+      qtyPerOutputBase?: string | null;
+      costPrice?: string | null;
+      isSubstituted?: boolean;
+      originalVariantId?: number | null;
+      originalMaterialName?: string | null;
+      originalSku?: string | null;
     }
 
     const materialMap = new Map<number, MaterialAccumulator>();
@@ -303,6 +416,12 @@ export async function analyzeBundleRequirements(
         const existing = materialMap.get(matVarId);
         if (existing) {
           existing.totalRequiredBase = existing.totalRequiredBase.plus(needed);
+          if (l.isSubstituted) {
+            existing.isSubstituted = true;
+            existing.originalVariantId = l.originalVariantId;
+            existing.originalMaterialName = l.originalMaterialName;
+            existing.originalSku = l.originalSku;
+          }
         } else {
           materialMap.set(matVarId, {
             materialVariantId: matVarId,
@@ -310,6 +429,14 @@ export async function analyzeBundleRequirements(
             sku: l.sku ?? "",
             unitName: l.unitName ?? "وحدة",
             totalRequiredBase: needed,
+            recipeId: comp.recipeId,
+            recipeName: comp.recipeName,
+            qtyPerOutputBase: l.qtyPerOutputBase,
+            costPrice: l.materialCostPrice,
+            isSubstituted: l.isSubstituted,
+            originalVariantId: l.originalVariantId,
+            originalMaterialName: l.originalMaterialName,
+            originalSku: l.originalSku,
           });
         }
       }
@@ -333,6 +460,14 @@ export async function analyzeBundleRequirements(
         availableInBranch: avail,
         isSufficient,
         deficitBase,
+        recipeId: item.recipeId,
+        recipeName: item.recipeName,
+        qtyPerOutputBase: item.qtyPerOutputBase,
+        costPrice: item.costPrice,
+        isSubstituted: item.isSubstituted,
+        originalVariantId: item.originalVariantId,
+        originalMaterialName: item.originalMaterialName,
+        originalSku: item.originalSku,
       });
     }
 
@@ -417,6 +552,7 @@ export async function analyzeBundleRequirements(
       bundleVariantId: input.bundleVariantId,
       bundleName: bundleRow.productName,
       bundleSku: bundleRow.sku,
+      branchId: input.branchId,
       requestedBundleQty: input.bundleQuantity,
       mode: input.mode,
       components,
@@ -588,7 +724,20 @@ export async function produceBundleComponents(
           }),
         });
       }
-      const compCoeffs = lines.map((l) => l.qtyPerOutputBase);
+      const batchInputIds = new Set(lines.map((l) => Number(l.inputVariantId)));
+      const relevantSubs = [
+        ...(input.materialSubstitutions ?? []),
+        ...(b.materialSubstitutions ?? []),
+      ].filter(
+        (s) =>
+          batchInputIds.has(Number(s.originalVariantId)) &&
+          (s.recipeId == null || Number(s.recipeId) === b.recipeId)
+      );
+      const subMap = new Map(relevantSubs.map((s) => [Number(s.originalVariantId), s]));
+      const compCoeffs = lines.map((l) => {
+        const sub = subMap.get(Number(l.inputVariantId));
+        return sub ? String(sub.qtyPerOutputBase) : String(l.qtyPerOutputBase);
+      });
       const reqMultiple = requiredBatchMultiple(compCoeffs);
       if (b.batchQty % reqMultiple !== 0) {
         throw new TRPCError({
@@ -609,12 +758,18 @@ export async function produceBundleComponents(
     // ② ترتيب الدفعات تصاعدياً بـ variantId لضمان ترتيب قفل متطابق ومنع الـ Deadlock
     const sortedBatches = [...input.batches].sort((a, b) => a.variantId - b.variantId);
 
+    const subVariantIds = [
+      ...(input.materialSubstitutions ?? []).map((s) => Number(s.substituteVariantId)),
+      ...input.batches.flatMap((b) => (b.materialSubstitutions ?? []).map((s) => Number(s.substituteVariantId))),
+    ];
+
     // جمع كافة المتغيرات المشتركة في العملية وقفلها حتمياً بالترتيب الحاكم لمنع الـ Deadlock
     const allVariantIdsToLock = Array.from(
       new Set([
         input.bundleVariantId,
         ...sortedBatches.map((b) => b.variantId),
         ...batchRecipeLines.map((l) => Number(l.inputVariantId)),
+        ...subVariantIds,
       ])
     ).sort((a, b) => a - b);
 
@@ -692,6 +847,17 @@ export async function produceBundleComponents(
       const rawLabor = batch.laborPerUnit != null ? String(batch.laborPerUnit).trim() : undefined;
       const cleanLabor = rawLabor && rawLabor !== "" ? rawLabor : undefined;
 
+      const batchLines = linesByRecipeId.get(batch.recipeId) ?? [];
+      const batchInputIds = new Set(batchLines.map((l) => Number(l.inputVariantId)));
+      const relevantSubs = [
+        ...(input.materialSubstitutions ?? []),
+        ...(batch.materialSubstitutions ?? []),
+      ].filter(
+        (s) =>
+          batchInputIds.has(Number(s.originalVariantId)) &&
+          (s.recipeId == null || Number(s.recipeId) === batch.recipeId)
+      );
+
       const prodResult = await createProductionInTx(
         tx,
         {
@@ -704,6 +870,7 @@ export async function produceBundleComponents(
             batchQty: batch.batchQty,
             scrapQty: batch.scrapQty ?? 0,
             laborPerUnit: cleanLabor,
+            materialSubstitutions: relevantSubs.length > 0 ? relevantSubs : undefined,
           },
         },
         actor,
