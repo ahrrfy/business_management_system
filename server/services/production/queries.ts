@@ -36,10 +36,14 @@ export async function listProductions(filters: ListProductionFilters = {}) {
         laborCost: productionOrders.laborCost,
         totalCost: productionOrders.totalCost,
         notes: productionOrders.notes,
+        linkedWorkOrderId: productionOrders.linkedWorkOrderId,
+        linkedRecipeId: productionOrders.linkedRecipeId,
+        recipeName: productionRecipes.name,
         createdAt: productionOrders.createdAt,
       })
       .from(productionOrders)
       .leftJoin(branches, eq(productionOrders.branchId, branches.id))
+      .leftJoin(productionRecipes, eq(productionOrders.linkedRecipeId, productionRecipes.id))
       .where(where as any)
       .orderBy(desc(productionOrders.id))
       .limit(limit);

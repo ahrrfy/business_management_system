@@ -848,8 +848,8 @@ export async function produceBundleComponents(
       const subRequestId = `${input.clientRequestId}:comp:${batch.variantId}`;
       const prodName = variantNameMap.get(batch.variantId) ?? `#${batch.variantId}`;
       const batchNotes = input.notes?.trim()
-        ? `${input.notes.trim()} [حزمة ${bundleDocGroupRef} - بكج #${input.bundleVariantId}]`
-        : `إنتاج مكوّن ${prodName} لحزمة بكج ${bundleDocGroupRef}`;
+        ? `${input.notes.trim()} [حزمة ${bundleDocGroupRef} - بكج: ${bundle.name} (#${input.bundleVariantId})]`
+        : `إنتاج مكوّن ${prodName} لحزمة بكج: ${bundle.name} [حزمة ${bundleDocGroupRef} - بكج #${input.bundleVariantId}]`;
 
       const rawLabor = batch.laborPerUnit != null ? String(batch.laborPerUnit).trim() : undefined;
       const cleanLabor = rawLabor && rawLabor !== "" ? rawLabor : undefined;
