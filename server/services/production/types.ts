@@ -1,6 +1,8 @@
 // أنواع عقد الإنتاج المشترك (عامة + داخلية للحزمة).
 import type Decimal from "decimal.js";
 
+import type { MaterialSubstitutionItem } from "../../../shared/recipeSubstitutionTypes";
+
 export interface ProductionLineInput {
   variantId: number;
   /** إن وُجد مع quantity ⇒ يُحوّل لكمية أساس عبر convertToBaseQuantity (يفرض الصحّة). */
@@ -37,6 +39,8 @@ export interface CreateProductionInput {
     scrapQty?: number;
     /** عمالة لكل وحدة (تجاوز اختياري لعمالة الوصفة). */
     laborPerUnit?: string | null;
+    /** استبدال مؤقت لمواد خام في الدفعة الحالية فقط. */
+    materialSubstitutions?: MaterialSubstitutionItem[] | null;
   } | null;
 }
 
@@ -108,6 +112,10 @@ export interface RunPreviewResult {
     short: boolean;
     unitCost: string;
     lineCost: string;
+    isSubstituted?: boolean;
+    originalVariantId?: number | null;
+    originalProductName?: string | null;
+    originalSku?: string | null;
   }>;
   wavg: { oldQty: number; oldCost: string; addQty: number; newQty: number; newCost: string };
 }

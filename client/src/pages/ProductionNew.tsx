@@ -17,10 +17,12 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { normalizeSearchText } from "@shared/searchNormalize";
-import { Boxes, Check, Printer, X } from "lucide-react";
+import { ArrowLeftRight, Boxes, Check, Printer, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import { BundleKitProductionDialog } from "@/components/production/bundle-kit/BundleKitProductionDialog";
+import { MaterialSubstitutionDialog } from "@/components/production/MaterialSubstitutionDialog";
+import type { MaterialSubstitutionItem } from "@shared/recipeSubstitutionTypes";
 
 /** حالات أمر الشغل النشطة — مرآة WO_ACTIVE_STATUSES في workOrderRouter.ts (خادميّ، لا يُستورَد
  *  للعميل). يُستعمَل لمنتقي «ربط بطلب خدمة» — لا معنى لربط إنتاجٍ بأمرٍ مُسلَّم/ملغى. */
@@ -97,6 +99,20 @@ export default function ProductionNew() {
   const [batch, setBatch] = useState("100");
   const [scrap, setScrap] = useState("0");
   const [labor, setLabor] = useState("0");
+  const [materialSubstitutions, setMaterialSubstitutions] = useState<MaterialSubstitutionItem[]>([]);
+  const [substitutingInput, setSubstitutingInput] = useState<{
+    variantId: number;
+    productName: string;
+    sku: string | null;
+    qtyPerOutputBase: string;
+    consumed: number;
+    available: number | null;
+    costPrice?: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    setMaterialSubstitutions([]);
+  }, [recipeId]);
 
   // ربط بطلب شغل مفتوح — منتقي بحث حقيقي (يُرسَل linkedWorkOrderId فعلياً للخادم) بدل حقل نصّ
   // حرّ سابق كان يُكتب في الملاحظة فقط بلا ربط فعليّ بالسجل.
@@ -141,13 +157,24 @@ export default function ProductionNew() {
     if (selectedRecipe) setLabor(String(selectedRecipe.laborPerOutputBase ?? "0"));
   }, [recipeId, selectedRecipe?.laborPerOutputBase]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    setMaterialSubstitutions([]);
+  }, [recipeId]);
+
   // معاينة حيّة (مُهلَّة) — نفس حساب الترحيل خادمياً.
   const dBatch = useDebouncedValue(batch, 300);
   const dScrap = useDebouncedValue(scrap, 300);
   const dLabor = useDebouncedValue(labor, 300);
   const previewEnabled = mode === "recipe" && !!selectedRecipe && Number(dBatch) > 0;
   const preview = trpc.production.runPreview.useQuery(
-    { recipeId: Number(recipeId), batchQty: Math.trunc(Number(dBatch) || 0), scrapQty: Math.trunc(Number(dScrap) || 0), laborPerUnit: D(dLabor || "0").toFixed(2), branchId },
+    {
+      recipeId: Number(recipeId),
+      batchQty: Math.trunc(Number(dBatch) || 0),
+      scrapQty: Math.trunc(Number(dScrap) || 0),
+      laborPerUnit: D(dLabor || "0").toFixed(2),
+      branchId,
+      materialSubstitutions: materialSubstitutions.length > 0 ? materialSubstitutions : undefined,
+    },
     { enabled: previewEnabled && branchId != null }
   );
   const pv = preview.data;
@@ -230,7 +257,13 @@ export default function ProductionNew() {
     if (!ok) return;
     create.mutate({
       branchId,
-      run: { recipeId: Number(recipeId), batchQty: Math.trunc(Number(batch)), scrapQty: Math.trunc(Number(scrap) || 0), laborPerUnit: D(labor || "0").toFixed(2) },
+      run: {
+        recipeId: Number(recipeId),
+        batchQty: Math.trunc(Number(batch)),
+        scrapQty: Math.trunc(Number(scrap) || 0),
+        laborPerUnit: D(labor || "0").toFixed(2),
+        materialSubstitutions: materialSubstitutions.length > 0 ? materialSubstitutions : undefined,
+      },
       notes: noteParts.join(" · ") || null,
       linkedWorkOrderId: workOrderId ?? undefined,
       clientRequestId,
@@ -445,17 +478,75 @@ export default function ProductionNew() {
                     {preview.isLoading && <p className="text-xs text-muted-foreground">جارٍ الحساب…</p>}
                     {pv?.inputs.map((i) => {
                       const tone = i.short ? "bad" : i.available != null && i.consumed > i.available * 0.85 ? "warn" : "ok";
+                      const origId = i.originalVariantId ?? i.variantId;
+                      const currentSub = materialSubstitutions.find((s) => s.originalVariantId === origId);
+                      const isSubstituted = Boolean(i.isSubstituted || currentSub);
                       return (
-                        <div key={i.variantId} className="grid grid-cols-1 md:grid-cols-[1fr_1.4fr] gap-3 items-center border rounded-md p-3">
+                        <div key={`${origId}-${i.variantId}`} className="grid grid-cols-1 md:grid-cols-[1fr_1.4fr] gap-3 items-center border rounded-md p-3">
                           <div>
-                            <div className="font-medium text-sm">{i.productName}</div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-sm">{i.productName}</span>
+                              {isSubstituted && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-bold">
+                                  مادة بديلة
+                                </span>
+                              )}
+                            </div>
                             <div className="text-xs text-muted-foreground" dir="ltr">يُستهلك {formatQuantity(i.consumed)} · كلفة {fmt(i.lineCost)} د.ع</div>
                           </div>
                           <div>
                             <Meter value={i.consumed} max={i.available ?? i.consumed} tone={tone} right={`${formatQuantity(i.consumed)} / ${i.available != null ? formatQuantity(i.available) : "—"}`} />
-                            {i.short
-                              ? <div className="text-xs font-semibold text-destructive mt-1.5">المتاح أقل بـ {formatQuantity(i.consumed - (i.available ?? 0))} — سيُرفض الترحيل</div>
-                              : i.available != null && <div className="text-xs font-semibold text-money-positive mt-1.5 flex items-center gap-1"><Check aria-hidden className="size-3.5" /><span>يكفي — يتبقّى {formatQuantity(i.available - i.consumed)}</span></div>}
+                            <div className="flex items-center justify-between gap-2 mt-2 flex-wrap">
+                              {i.short ? (
+                                <div className="text-xs font-semibold text-destructive">
+                                  المتاح أقل بـ {formatQuantity(i.consumed - (i.available ?? 0))} — سيُرفض الترحيل
+                                </div>
+                              ) : (
+                                i.available != null && (
+                                  <div className="text-xs font-semibold text-money-positive flex items-center gap-1">
+                                    <Check aria-hidden className="size-3.5" />
+                                    <span>يكفي — يتبقّى {formatQuantity(i.available - i.consumed)}</span>
+                                  </div>
+                                )
+                              )}
+
+                              <div className="flex items-center gap-1.5 ms-auto">
+                                <Button
+                                  type="button"
+                                  variant={i.short ? "default" : "outline"}
+                                  size="sm"
+                                  className="h-7 text-xs gap-1"
+                                  onClick={() => {
+                                    setSubstitutingInput({
+                                      variantId: origId,
+                                      productName: i.originalProductName ?? i.productName ?? "",
+                                      sku: i.originalSku ?? i.sku,
+                                      qtyPerOutputBase: String(i.perOutputBase ?? "1"),
+                                      consumed: i.consumed,
+                                      available: i.available,
+                                      costPrice: i.unitCost,
+                                    });
+                                  }}
+                                >
+                                  <ArrowLeftRight aria-hidden className="size-3" />
+                                  <span>{isSubstituted ? "تعديل البديل" : "استبدال ببديل"}</span>
+                                </Button>
+
+                                {isSubstituted && (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 text-xs text-destructive hover:bg-destructive/10"
+                                    onClick={() => {
+                                      setMaterialSubstitutions((prev) => prev.filter((s) => s.originalVariantId !== origId));
+                                    }}
+                                  >
+                                    إلغاء البديل
+                                  </Button>
+                                )}
+                              </div>
+                            </div>
                           </div>
                         </div>
                       );
@@ -648,6 +739,41 @@ export default function ProductionNew() {
         open={isKitOpen}
         onOpenChange={setIsKitOpen}
       />
+
+      {/* نافذة استبدال المادة ببديل (إسعافي أو دائم) */}
+      {substitutingInput && (
+        <MaterialSubstitutionDialog
+          open={Boolean(substitutingInput)}
+          onOpenChange={(open) => {
+            if (!open) setSubstitutingInput(null);
+          }}
+          recipeId={Number(recipeId) || null}
+          recipeName={selectedRecipe?.name}
+          originalVariantId={substitutingInput.variantId}
+          originalProductName={substitutingInput.productName}
+          originalSku={substitutingInput.sku}
+          originalQtyPerOutputBase={substitutingInput.qtyPerOutputBase}
+          consumedQty={substitutingInput.consumed}
+          availableStock={substitutingInput.available}
+          branchId={branchId}
+          currentSubstitution={materialSubstitutions.find((s) => s.originalVariantId === substitutingInput.variantId)}
+          onApplyAdHoc={(item) => {
+            setMaterialSubstitutions((prev) => [
+              ...prev.filter((s) => s.originalVariantId !== item.originalVariantId),
+              item,
+            ]);
+            setSubstitutingInput(null);
+          }}
+          onPermanentSuccess={() => {
+            setMaterialSubstitutions((prev) => prev.filter((s) => s.originalVariantId !== substitutingInput.variantId));
+            setSubstitutingInput(null);
+          }}
+          onRemoveSubstitution={() => {
+            setMaterialSubstitutions((prev) => prev.filter((s) => s.originalVariantId !== substitutingInput.variantId));
+            setSubstitutingInput(null);
+          }}
+        />
+      )}
     </div>
   );
 }

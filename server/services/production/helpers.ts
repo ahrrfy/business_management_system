@@ -1,7 +1,7 @@
-// أدوات إنشاء داخلية: تحليل الأسطر، ترقيم المستند، عزل الفرع، وتوسيع تشغيل بوصفة — غير مُصدَّرة.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { desc, eq, like } from "drizzle-orm";
+import { desc, eq, inArray, like } from "drizzle-orm";
+import { appErrorMessage } from "../../../shared/errors";
 import {
   productUnits,
   productVariants,
@@ -110,7 +110,12 @@ async function resolveRunPlan(tx: any, run: NonNullable<CreateProductionInput["r
   if (good <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "السليم الناتج يجب أن يكون موجباً (التالف لا يساوي الدفعة كلّها)" });
 
   const recLines = await tx
-    .select({ inputVariantId: productionRecipeLines.inputVariantId, qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase, productName: products.name })
+    .select({
+      inputVariantId: productionRecipeLines.inputVariantId,
+      inputProductUnitId: productionRecipeLines.inputProductUnitId,
+      qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
+      productName: products.name,
+    })
     .from(productionRecipeLines)
     .leftJoin(productVariants, eq(productionRecipeLines.inputVariantId, productVariants.id))
     .leftJoin(products, eq(productVariants.productId, products.id))
@@ -118,12 +123,138 @@ async function resolveRunPlan(tx: any, run: NonNullable<CreateProductionInput["r
     .orderBy(productionRecipeLines.id);
   if (!recLines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "الوصفة بلا مكوّنات" });
 
-  const inLines: ResolvedLine[] = recLines.map((l: any) => {
-    const consumed = new Decimal(l.qtyPerOutputBase).times(batch);
-    if (!consumed.isInteger()) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: `استهلاك «${l.productName ?? l.inputVariantId}» (${consumed.toString()}) ليس عدداً صحيحاً — عدّل الدفعة أو الوصفة` });
+  const substitutions = run.materialSubstitutions ?? [];
+  const recInputIds = new Set(recLines.map((l: any) => Number(l.inputVariantId)));
+  const seenOriginals = new Set<number>();
+  for (const s of substitutions) {
+    const origId = Number(s.originalVariantId);
+    if (!recInputIds.has(origId)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: `الصنف الأصلي #${origId} ليس مكوّناً مسجلاً في الوصفة`,
+          doThis: "حدّث بيانات التشغيل وتأكد من اختيار مكوّن موجود في الوصفة",
+        }),
+      });
     }
-    return { variantId: Number(l.inputVariantId), productUnitId: null, quantity: consumed.toFixed(4), baseQuantity: consumed.toNumber(), manualSharePct: null };
+    if (seenOriginals.has(origId)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تكرار استبدال المادة",
+          why: `تم إرسال أكثر من بديل لنفس المادة الأصلية #${origId}`,
+          doThis: "حدد بديلاً واحداً لكل مادة أصلية",
+        }),
+      });
+    }
+    seenOriginals.add(origId);
+    if (Number(s.substituteVariantId) === origId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: `المادة البديلة للصنف #${origId} مطابقة للمادة الأصلية — لا يمكن استبدال المادة بنفسها`,
+          doThis: "اختر صنفاً بديلاً مختلفاً عن المادة الأصلية",
+        }),
+      });
+    }
+    if (Number(s.substituteVariantId) === Number(head.outputVariantId)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: "المنتج الناتج لا يمكن أن يكون مادة بديلة لنفسه",
+          doThis: "اختر صنفاً خاماً مختلفاً عن ناتج الوصفة",
+        }),
+      });
+    }
+  }
+
+  const subUnitsToValidate = substitutions
+    .filter((s) => s.substituteProductUnitId != null)
+    .map((s) => ({
+      unitId: Number(s.substituteProductUnitId),
+      variantId: Number(s.substituteVariantId),
+    }));
+  if (subUnitsToValidate.length > 0) {
+    const unitRows = await tx
+      .select({
+        id: productUnits.id,
+        variantId: productUnits.variantId,
+        isActive: productUnits.isActive,
+      })
+      .from(productUnits)
+      .where(inArray(productUnits.id, subUnitsToValidate.map((u) => u.unitId)));
+    const unitMap = new Map<number, any>(unitRows.map((r: any) => [Number(r.id), r]));
+    for (const u of subUnitsToValidate) {
+      const row = unitMap.get(u.unitId);
+      if (!row || Number(row.variantId) !== u.variantId || !row.isActive) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر استبدال مادة الوصفة",
+            why: `وحدة القياس المحددة للمادة البديلة #${u.variantId} لا تخص الصنف أو معطّلة`,
+            doThis: "اختر وحدة قياس صحيحة ونشطة تابعة للمادة البديلة",
+          }),
+        });
+      }
+    }
+  }
+
+  const subMap = new Map(substitutions.map((s) => [Number(s.originalVariantId), s]));
+
+  let subNameMap = new Map<number, string>();
+  if (substitutions.length > 0) {
+    const subVarIds = Array.from(new Set(substitutions.map((s) => Number(s.substituteVariantId))));
+    const subVarRows = await tx
+      .select({ variantId: productVariants.id, productName: products.name })
+      .from(productVariants)
+      .leftJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(productVariants.id, subVarIds));
+    subNameMap = new Map(subVarRows.map((r: any) => [Number(r.variantId), String(r.productName ?? `#${r.variantId}`)]));
+  }
+
+  const inLines: ResolvedLine[] = recLines.map((l: any) => {
+    const origId = Number(l.inputVariantId);
+    const sub = subMap.get(origId);
+    const effectiveVariantId = sub ? Number(sub.substituteVariantId) : origId;
+    const effectiveProductUnitId = sub
+      ? (sub.substituteProductUnitId ?? null)
+      : (l.inputProductUnitId != null ? Number(l.inputProductUnitId) : null);
+    const effectiveQtyPerOutputBase = sub?.qtyPerOutputBase ? String(sub.qtyPerOutputBase) : String(l.qtyPerOutputBase);
+    const displayName = sub ? subNameMap.get(effectiveVariantId) ?? `بديل #${effectiveVariantId}` : l.productName ?? origId;
+
+    const qtyDec = new Decimal(effectiveQtyPerOutputBase);
+    if (qtyDec.decimalPlaces() > 4 || qtyDec.lte(0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: `كمية المادة البديلة «${displayName}» غير صالحة (يجب أن تكون رقماً موجباً بأربع منازل عشرية كحد أقصى)`,
+          doThis: "عدّل كمية المادة البديلة بحيث لا تتجاوز 4 منازل عشرية وتكون أكبر من صفر",
+        }),
+      });
+    }
+
+    const consumed = qtyDec.times(batch);
+    if (!consumed.isInteger()) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "استهلاك مادة الإنتاج ليس عدداً صحيحاً",
+          why: `استهلاك «${displayName}» (${consumed.toString()}) ليس عدداً صحيحاً — المخزون يُخصم بوحدات أساس صحيحة فقط`,
+          doThis: "عدّل حجم الدفعة أو معيار المادة في الوصفة ليكون الناتج عدداً صحيحاً",
+        }),
+      });
+    }
+    return {
+      variantId: effectiveVariantId,
+      productUnitId: effectiveProductUnitId,
+      quantity: consumed.toFixed(4),
+      baseQuantity: consumed.toNumber(),
+      manualSharePct: null,
+    };
   });
 
   const outLines: ResolvedLine[] = [

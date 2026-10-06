@@ -41,8 +41,13 @@ import {
   listRunnableRecipes,
   recipePreview,
   setRecipeActive,
+  substituteRecipeMaterial,
   updateRecipe,
 } from "../services/recipeService";
+import {
+  materialSubstitutionItemSchema,
+  substituteRecipeMaterialInputSchema,
+} from "@shared/recipeSubstitutionTypes";
 import { logAudit } from "../services/auditService";
 import { inventoryManagerProcedure, productsReadProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -78,6 +83,7 @@ const runInput = z.object({
   batchQty: z.number().int().positive(),
   scrapQty: z.number().int().min(0).default(0),
   laborPerUnit: z.string().nullish(),
+  materialSubstitutions: z.array(materialSubstitutionItemSchema).nullish(),
 });
 
 /**
@@ -207,6 +213,7 @@ export const productionRouter = router({
         scrapQty: z.union([z.number(), z.string()]).nullish(),
         laborPerUnit: z.string().nullish(),
         branchId: z.number().int().positive().nullish(),
+        materialSubstitutions: z.array(materialSubstitutionItemSchema).nullish(),
       })
     )
     .query(({ input, ctx }) => {
@@ -415,6 +422,40 @@ export const productionRouter = router({
       await logAudit(ctx, { action: "production.recipe.delete", entityType: "productionRecipe", entityId: input.id });
       return res;
     }),
+
+    /** استبدال مادة خام ببديل مع الحفظ الذري للوصفة وإعادة حساب تكاليف البكجات (مقصور على دور مدير فأعلى). */
+    substituteMaterial: inventoryManagerProcedure
+      .input(substituteRecipeMaterialInputSchema)
+      .mutation(async ({ input, ctx }) => {
+        const userRole = String(ctx.user.role ?? "").toUpperCase();
+        if (!["ADMIN", "MANAGER"].includes(userRole)) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "غير مصرح باعتماد تعديل الوصفة الدائم",
+              why: "تحديث شجرة المواد الدائمة في الوصفة مقصور على دور مدير فأعلى لحماية التكاليف والتسعير",
+              doThis: "استخدم الاستبدال المؤقت للدفعة الحالية فقط، أو اطلب من مدير النظام اعتماد التعديل",
+            }),
+          });
+        }
+        const res = await substituteRecipeMaterial(input, {
+          userId: ctx.user.id,
+          role: ctx.user.role,
+          branchId: ctx.user.branchId ?? null,
+        });
+        await logAudit(ctx, {
+          action: "production.recipe.substitute_material",
+          entityType: "productionRecipe",
+          entityId: res.recipeId,
+          newValue: {
+            originalVariantId: input.originalVariantId,
+            substituteVariantId: input.substituteVariantId,
+            qtyPerOutputBase: res.qtyPerOutputBase,
+            reason: input.reason ?? "استبدال مادة نافذة",
+          },
+        });
+        return res;
+      }),
 
     /** معاينة وصفة لكمية ناتج ⇒ أسطر جاهزة للنموذج (بلا حركة مخزون). */
     preview: inventoryManagerProcedure
