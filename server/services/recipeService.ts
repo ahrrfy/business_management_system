@@ -25,9 +25,14 @@ import type { Tx } from "../db";
 import { convertToBaseQuantity } from "./inventoryService";
 import { assertStockedOwnedMaterials } from "./inventory/materialEligibility";
 import { money, round2 } from "./money";
-import { withTx, type Actor } from "./tx";
+import { withTx, type Actor, type MaybeScopedActor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { assertNoActiveDigitalInventoryBinding } from "./digitalCards/inventoryBindingGuard";
+import { syncBundlesContainingComponents } from "./bundleService";
+import type {
+  SubstituteRecipeMaterialInput,
+  SubstituteRecipeMaterialResult,
+} from "../../shared/recipeSubstitutionTypes";
 
 export interface RecipeLineInput {
   inputVariantId: number;
@@ -950,6 +955,236 @@ export async function updateRecipe(id: number, input: CreateRecipeInput) {
         );
       }
       return { recipeId: id };
+    } catch (error) {
+      rethrowRecipeWriteError(error);
+    }
+  });
+}
+
+/**
+ * استبدال مادة خام ببديل مع الحفظ الذري للوصفة وإعادة حساب تكاليف البكجات التابعة.
+ *
+ * الحوكمة: مقصور على دور مدير فأعلى (ADMIN / MANAGER).
+ * التزامن: قفل هرمي كلي تصاعدي 2PL + فحص بصمة اللقطة التفاؤلي + فحص أهلية المخزون المملوك النشط.
+ * التكافؤ: اعتماد كمية المادة السابقة تلقائياً إن لم تُحدد كمية جديدة صريحة.
+ * الأثر المحاسبي: مزامنة تكاليف البكجات التابعة تلقائياً عبر syncBundlesContainingComponents لمنع أي Drift.
+ * الأثر التدقيقي: توثيق الاستبدال في ملاحظات الوصفة ووسمها بالتاريخ وهوية المنفذ.
+ */
+export async function substituteRecipeMaterial(
+  input: SubstituteRecipeMaterialInput,
+  actor: MaybeScopedActor,
+): Promise<SubstituteRecipeMaterialResult> {
+  const role = String(actor.role ?? "").toUpperCase();
+  if (!["ADMIN", "MANAGER"].includes(role)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "غير مصرح باعتماد تعديل الوصفة الدائم",
+        why: "تحديث شجرة المواد الدائمة في الوصفة مقصور على دور مدير فأعلى لحماية التكاليف والتسعير",
+        doThis: "استخدم الاستبدال المؤقت للدفعة، أو اطلب من مدير النظام اعتماد التعديل الدائم",
+      }),
+    });
+  }
+
+  return withTx(async (tx) => {
+    const initial = await readRecipeMutationSnapshot(tx, input.recipeId, false);
+    if (!initial) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: `الوصفة رقم #${input.recipeId} غير موجودة`,
+          doThis: "تحقق من صحة رقم الوصفة أو حدّث الصفحة",
+        }),
+      });
+    }
+
+    const targetLine = initial.lines.find(
+      (line) => line.inputVariantId === input.originalVariantId,
+    );
+    if (!targetLine) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: `الصنف الأصلي #${input.originalVariantId} ليس مكوّناً مسجلاً في وصفة «${initial.head.name}»`,
+          doThis: "حدّث الصفحة وتحقق من مكوّنات الوصفة الحالية",
+        }),
+      });
+    }
+
+    if (input.substituteVariantId === initial.head.outputVariantId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: "المنتج الناتج لا يكون مكوّناً من نفسه",
+          doThis: "اختر مادة خام أو صنفاً مختلفاً عن المنتج المراد إنتاجه",
+        }),
+      });
+    }
+
+    const otherLines = initial.lines.filter(
+      (line) => line.inputVariantId !== input.originalVariantId,
+    );
+    if (otherLines.some((line) => line.inputVariantId === input.substituteVariantId)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: "المادة البديلة موجودة بالفعل كمكوّن آخر داخل الوصفة",
+          doThis: "اجمع كمية المادتين في سطر واحد عبر تعديل الوصفة",
+        }),
+      });
+    }
+
+    const allVariantIds = [
+      initial.head.outputVariantId,
+      ...initial.lines.map((line) => line.inputVariantId),
+      input.substituteVariantId,
+    ];
+    const lockedVariants = await lockRecipeVariantScope(tx, allVariantIds);
+    await assertNoActiveDigitalInventoryBinding(
+      tx,
+      Array.from(lockedVariants.keys()),
+      "استبدال مادة الوصفة أثناء إصدار سلة رقمية",
+    );
+
+    const current = await readRecipeMutationSnapshot(tx, input.recipeId, true);
+    if (!current) throwConcurrentRecipeChange();
+    if (
+      recipeSnapshotFingerprint(initial) !== recipeSnapshotFingerprint(current)
+    ) {
+      throwConcurrentRecipeChange();
+    }
+
+    const substituteVariant = lockedVariants.get(input.substituteVariantId);
+    if (!substituteVariant) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: "المادة البديلة غير موجودة في النظام",
+          doThis: "اختر صنفاً معرفاً ونشطاً في كتالوج المنتجات",
+        }),
+      });
+    }
+    if (!substituteVariant.productActive || !substituteVariant.variantActive) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: "المادة البديلة أو منتجها معطّل",
+          doThis: "فعّل المنتج ومتغيّره أولاً، أو اختر مادة بديلة نشطة",
+        }),
+      });
+    }
+    if (substituteVariant.isService || substituteVariant.isBundle || substituteVariant.isConsignment) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: "المادة البديلة يجب أن تكون مخزوناً خاماً مملوكاً (ليست خدمة ولا بكج ولا أمانة)",
+          doThis: "اختر صنفاً مخزنياً عادياً مملوكاً",
+        }),
+      });
+    }
+
+    // فحص أهلية المواد المخزنية المملوكة
+    await assertStockedOwnedMaterials(tx, [input.substituteVariantId], "المادة البديلة للوصفة");
+
+    if (input.substituteProductUnitId != null) {
+      const [unit] = await tx
+        .select({
+          id: productUnits.id,
+          variantId: productUnits.variantId,
+          isActive: productUnits.isActive,
+        })
+        .from(productUnits)
+        .where(eq(productUnits.id, input.substituteProductUnitId))
+        .limit(1);
+      if (
+        !unit ||
+        Number(unit.variantId) !== input.substituteVariantId ||
+        !unit.isActive
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر استبدال مادة الوصفة",
+            why: "وحدة القياس المحددة لا تخص الصنف البديل أو معطلة",
+            doThis: "اختر وحدة قياس صحيحة ونشطة تابعة للصنف البديل",
+          }),
+        });
+      }
+    }
+
+    // اعتماد نفس كمية المادة السابقة تلقائياً إن لم يمرر المستخدم كمية جديدة صريحة
+    const effectiveQty =
+      input.qtyPerOutputBase != null && String(input.qtyPerOutputBase).trim() !== ""
+        ? input.qtyPerOutputBase
+        : targetLine.qtyPerOutputBase;
+    const quantity = money(effectiveQty);
+    if (quantity.decimalPlaces() > 4) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: "كمية المكوّن البديل تتجاوز دقة التخزين (4 منازل عشرية كحد أقصى)",
+          doThis: "قرّب كمية المكوّن إلى 4 منازل عشرية على الأكثر",
+        }),
+      });
+    }
+    if (quantity.lte(0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استبدال مادة الوصفة",
+          why: "كمية المكوّن البديل لكل وحدة ناتج يجب أن تكون موجبة",
+          doThis: "أدخل كمية أكبر من صفر لكل وحدة ناتج أساس",
+        }),
+      });
+    }
+    const formattedQty = quantity.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toFixed(4);
+
+    try {
+      await tx
+        .update(productionRecipeLines)
+        .set({
+          inputVariantId: input.substituteVariantId,
+          inputProductUnitId: input.substituteProductUnitId ?? null,
+          qtyPerOutputBase: formattedQty,
+          notes: input.notes?.trim() || `استبدال بديل للصنف #${input.originalVariantId}`,
+        })
+        .where(eq(productionRecipeLines.id, targetLine.id));
+
+      const dateStr = new Date().toISOString().split("T")[0];
+      const auditNote = `[استبدال مادة بتاريخ ${dateStr} بواسطة مستخدم #${actor.userId}: استبدال المادة #${input.originalVariantId} بالبديل #${input.substituteVariantId} (كمية: ${formattedQty})${input.reason ? ` — سبب: ${input.reason}` : ""}]`;
+      const currentNotes = initial.head.notes?.trim() || "";
+      const updatedNotes = currentNotes ? `${currentNotes}\n${auditNote}` : auditNote;
+
+      await tx
+        .update(productionRecipes)
+        .set({
+          notes: updatedNotes.slice(0, 2000),
+          updatedAt: new Date(),
+        })
+        .where(eq(productionRecipes.id, input.recipeId));
+
+      // مزامنة تكاليف البكجات التي تستخدم ناتج هذه الوصفة فوراً
+      await syncBundlesContainingComponents(tx, [initial.head.outputVariantId]);
+
+      return {
+        success: true,
+        recipeId: input.recipeId,
+        originalVariantId: input.originalVariantId,
+        substituteVariantId: input.substituteVariantId,
+        qtyPerOutputBase: formattedQty,
+        recipeName: initial.head.name,
+        outputVariantId: initial.head.outputVariantId,
+        auditLogged: true,
+        noteRecorded: true,
+      };
     } catch (error) {
       rethrowRecipeWriteError(error);
     }

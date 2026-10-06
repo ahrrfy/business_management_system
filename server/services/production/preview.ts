@@ -1,7 +1,7 @@
 // معاينة «التشغيل بوصفة» حيّةً (بلا أي حركة) — نفس صيغة الحساب وWAVG التي يطبّقها createProduction.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import {
   branchStock,
   productUnits,
@@ -12,6 +12,7 @@ import {
 } from "../../../drizzle/schema";
 import { batchMultipleNote, requiredBatchMultiple } from "../../../shared/batchDivisibility";
 import { appErrorMessage } from "../../../shared/errors";
+import type { MaterialSubstitutionItem } from "../../../shared/recipeSubstitutionTypes";
 import { loadVariantAvailability } from "../catalog/variantAvailability";
 import { money, round2 } from "../money";
 import { withTx } from "../tx";
@@ -28,6 +29,7 @@ export async function runPreview(args: {
   scrapQty?: string | number | null;
   laborPerUnit?: string | null;
   branchId?: number | null;
+  materialSubstitutions?: MaterialSubstitutionItem[] | null;
 }): Promise<RunPreviewResult> {
   return withTx(async (tx) => {
     const head = (
@@ -115,9 +117,51 @@ export async function runPreview(args: {
       .orderBy(productionRecipeLines.id);
     if (!recLines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "الوصفة بلا مكوّنات" });
 
-    const coefficients = recLines.map((l: any) => String(l.qtyPerOutputBase));
-    const inVarIds = Array.from(new Set(recLines.map((l: any) => Number(l.inputVariantId))));
-    const costMap = new Map(recLines.map((l: any) => [Number(l.inputVariantId), l.costPrice]));
+    const substitutions = args.materialSubstitutions ?? [];
+    const subMap = new Map(substitutions.map((s) => [Number(s.originalVariantId), s]));
+
+    let subDetailMap = new Map<number, any>();
+    if (substitutions.length > 0) {
+      const subVarIds = Array.from(new Set(substitutions.map((s) => Number(s.substituteVariantId))));
+      const subRows = await tx
+        .select({
+          id: productVariants.id,
+          sku: productVariants.sku,
+          costPrice: productVariants.costPrice,
+          productName: products.name,
+        })
+        .from(productVariants)
+        .leftJoin(products, eq(productVariants.productId, products.id))
+        .where(inArray(productVariants.id, subVarIds));
+      subDetailMap = new Map(subRows.map((r: any) => [Number(r.id), r]));
+    }
+
+    const effectiveLines = recLines.map((l: any) => {
+      const origId = Number(l.inputVariantId);
+      const sub = subMap.get(origId);
+      if (!sub) {
+        return {
+          ...l,
+          inputVariantId: origId,
+          isSubstituted: false,
+          originalVariantId: null,
+        };
+      }
+      const detail = subDetailMap.get(Number(sub.substituteVariantId));
+      return {
+        inputVariantId: Number(sub.substituteVariantId),
+        qtyPerOutputBase: sub.qtyPerOutputBase ? String(sub.qtyPerOutputBase) : String(l.qtyPerOutputBase),
+        productName: detail?.productName ?? `بديل #${sub.substituteVariantId}`,
+        sku: detail?.sku ?? null,
+        costPrice: detail?.costPrice ?? "0",
+        isSubstituted: true,
+        originalVariantId: origId,
+      };
+    });
+
+    const coefficients = effectiveLines.map((l: any) => String(l.qtyPerOutputBase));
+    const inVarIds = Array.from(new Set(effectiveLines.map((l: any) => Number(l.inputVariantId))));
+    const costMap = new Map(effectiveLines.map((l: any) => [Number(l.inputVariantId), l.costPrice]));
 
     // المتاح بالفرع (للأشرطة وحارس النقص اللّيّن في الواجهة).
     const availMap = new Map<number, number>();
@@ -138,7 +182,7 @@ export async function runPreview(args: {
     // الحساب النقي (نفس منطق الترحيل).
     const perUnit = args.laborPerUnit != null && String(args.laborPerUnit).trim() !== "" ? money(args.laborPerUnit) : money(head.laborPerOutputBase ?? "0");
     const calc = computeRunCosts({
-      recipeLines: recLines.map((l: any) => ({ unitCost: round2(money(costMap.get(Number(l.inputVariantId)) ?? "0")), qtyPerOutputBase: new Decimal(l.qtyPerOutputBase) })),
+      recipeLines: effectiveLines.map((l: any) => ({ unitCost: round2(money(costMap.get(Number(l.inputVariantId)) ?? "0")), qtyPerOutputBase: new Decimal(l.qtyPerOutputBase) })),
       laborPerUnit: perUnit,
       wasteStdPct: money(head.wasteStdPct ?? "0"),
       batch,
@@ -153,7 +197,7 @@ export async function runPreview(args: {
     const multipleNote = batchMultipleNote(batchMultiple);
 
     const consumedByVariant = new Map<number, number>();
-    for (const line of recLines as any[]) {
+    for (const line of effectiveLines as any[]) {
       const variantId = Number(line.inputVariantId);
       const consumed = new Decimal(line.qtyPerOutputBase).times(calc.started);
       if (consumed.isInteger()) {
@@ -163,7 +207,7 @@ export async function runPreview(args: {
         );
       }
     }
-    const inputs = recLines.map((l: any) => {
+    const inputs = effectiveLines.map((l: any) => {
       const perOut = new Decimal(l.qtyPerOutputBase);
       const consumedDec = perOut.times(calc.started);
       if (!consumedDec.isInteger()) {
@@ -185,6 +229,8 @@ export async function runPreview(args: {
             available,
         unitCost: unitCost.toFixed(2),
         lineCost: round2(unitCost.times(consumed)).toFixed(2),
+        isSubstituted: l.isSubstituted ?? false,
+        originalVariantId: l.originalVariantId ?? null,
       };
     });
     const anyShort = inputs.some((i) => i.short);

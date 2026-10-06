@@ -12,13 +12,14 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { coefficientBatchMultiple, requiredBatchMultiple } from "@shared/batchDivisibility";
 import { normalizeSearchText } from "@shared/searchNormalize";
-import { ArrowLeft, Boxes, Layers, Search } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, Boxes, Layers, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { selectClsFull } from "@/lib/ui/formStyles";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { BundleKitProductionDialog } from "@/components/production/bundle-kit/BundleKitProductionDialog";
 import { MultiRecipeProductionDialog } from "@/components/production/multi-recipe/MultiRecipeProductionDialog";
+import { MaterialSubstitutionDialog } from "@/components/production/MaterialSubstitutionDialog";
 
 
 let _k = 1;
@@ -75,6 +76,13 @@ export default function ProductionRecipes() {
   const [isBundleKitOpen, setIsBundleKitOpen] = useState(false);
   const [selectedRecipeIds, setSelectedRecipeIds] = useState<Set<number>>(new Set());
   const [isMultiRecipeOpen, setIsMultiRecipeOpen] = useState(false);
+  const [substitutingComp, setSubstitutingComp] = useState<{
+    variantId: number;
+    productName: string;
+    sku: string | null;
+    qty: string;
+    costPrice?: string | null;
+  } | null>(null);
 
   function toggleSelectRecipe(id: number) {
     setSelectedRecipeIds((prev) => {
@@ -337,7 +345,7 @@ export default function ProductionRecipes() {
                     <div className="col-span-4 md:col-span-2">
                       <Input dir="ltr" value={c.qty} onChange={(e) => setComps((p) => p.map((x) => x.key === c.key ? { ...x, qty: e.target.value } : x))} placeholder="كمية" />
                     </div>
-                    <div className="col-span-5 md:col-span-3">
+                    <div className="col-span-4 md:col-span-3">
                       <AppSelect className="h-9" value={String(c.productUnitId ?? "")} onValueChange={(next) => {
                         const u = c.units.find((x) => x.productUnitId === Number(next));
                         setComps((p) => p.map((x) => x.key === c.key ? { ...x, productUnitId: Number(next), conversionFactor: u?.conversionFactor ?? "1" } : x));
@@ -345,8 +353,27 @@ export default function ProductionRecipes() {
                         {c.units.map((u) => <option key={u.productUnitId} value={u.productUnitId}>{u.unitName}{Number(u.conversionFactor) !== 1 ? ` ×${u.conversionFactor}` : ""}</option>)}
                       </AppSelect>
                     </div>
-                    <div className="col-span-2 md:col-span-2 text-left text-sm font-semibold tabular-nums" dir="ltr">{fmt(compLineCost(c).toString())}</div>
-                    <div className="col-span-1 text-start">
+                    <div className="col-span-2 md:col-span-1 text-left text-sm font-semibold tabular-nums" dir="ltr">{fmt(compLineCost(c).toString())}</div>
+                    <div className="col-span-2 md:col-span-2 text-start flex items-center gap-2">
+                      {editId != null && (
+                        <button
+                          type="button"
+                          className="text-primary hover:text-primary/80 text-xs font-semibold flex items-center gap-1"
+                          title="استبدال المادة ببديل مع الحفظ الدائم للوصفة"
+                          onClick={() => {
+                            setSubstitutingComp({
+                              variantId: c.inputVariantId,
+                              productName: c.productName,
+                              sku: c.sku,
+                              qty: c.qty,
+                              costPrice: c.costPriceBase,
+                            });
+                          }}
+                        >
+                          <ArrowLeftRight aria-hidden className="size-3" />
+                          <span>استبدال</span>
+                        </button>
+                      )}
                       <button type="button" className="text-[var(--sem-neg)] text-sm" onClick={() => setComps((p) => p.filter((x) => x.key !== c.key))}>حذف</button>
                     </div>
                   </div>
@@ -568,6 +595,27 @@ export default function ProductionRecipes() {
         onClearSelection={() => setSelectedRecipeIds(new Set())}
         branchId={branchId}
       />
+
+      {substitutingComp && editId != null && (
+        <MaterialSubstitutionDialog
+          open={Boolean(substitutingComp)}
+          onOpenChange={(open) => {
+            if (!open) setSubstitutingComp(null);
+          }}
+          recipeId={editId}
+          recipeName={name}
+          originalVariantId={substitutingComp.variantId}
+          originalProductName={substitutingComp.productName}
+          originalSku={substitutingComp.sku}
+          originalQtyPerOutputBase={substitutingComp.qty}
+          originalCostPrice={substitutingComp.costPrice}
+          branchId={branchId}
+          onPermanentSuccess={() => {
+            setSubstitutingComp(null);
+            if (editId) startEdit(editId);
+          }}
+        />
+      )}
     </div>
   );
 }

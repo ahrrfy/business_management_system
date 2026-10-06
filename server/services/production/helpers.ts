@@ -1,7 +1,7 @@
 // أدوات إنشاء داخلية: تحليل الأسطر، ترقيم المستند، عزل الفرع، وتوسيع تشغيل بوصفة — غير مُصدَّرة.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { desc, eq, like } from "drizzle-orm";
+import { desc, eq, inArray, like } from "drizzle-orm";
 import {
   productUnits,
   productVariants,
@@ -118,12 +118,32 @@ async function resolveRunPlan(tx: any, run: NonNullable<CreateProductionInput["r
     .orderBy(productionRecipeLines.id);
   if (!recLines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "الوصفة بلا مكوّنات" });
 
+  const substitutions = run.materialSubstitutions ?? [];
+  const subMap = new Map(substitutions.map((s) => [Number(s.originalVariantId), s]));
+
+  let subNameMap = new Map<number, string>();
+  if (substitutions.length > 0) {
+    const subVarIds = Array.from(new Set(substitutions.map((s) => Number(s.substituteVariantId))));
+    const subVarRows = await tx
+      .select({ variantId: productVariants.id, productName: products.name })
+      .from(productVariants)
+      .leftJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(productVariants.id, subVarIds));
+    subNameMap = new Map(subVarRows.map((r: any) => [Number(r.variantId), String(r.productName ?? `#${r.variantId}`)]));
+  }
+
   const inLines: ResolvedLine[] = recLines.map((l: any) => {
-    const consumed = new Decimal(l.qtyPerOutputBase).times(batch);
+    const origId = Number(l.inputVariantId);
+    const sub = subMap.get(origId);
+    const effectiveVariantId = sub ? Number(sub.substituteVariantId) : origId;
+    const effectiveQtyPerOutputBase = sub?.qtyPerOutputBase ? String(sub.qtyPerOutputBase) : String(l.qtyPerOutputBase);
+    const displayName = sub ? subNameMap.get(effectiveVariantId) ?? `بديل #${effectiveVariantId}` : l.productName ?? origId;
+
+    const consumed = new Decimal(effectiveQtyPerOutputBase).times(batch);
     if (!consumed.isInteger()) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: `استهلاك «${l.productName ?? l.inputVariantId}» (${consumed.toString()}) ليس عدداً صحيحاً — عدّل الدفعة أو الوصفة` });
+      throw new TRPCError({ code: "BAD_REQUEST", message: `استهلاك «${displayName}» (${consumed.toString()}) ليس عدداً صحيحاً — عدّل الدفعة أو الوصفة` });
     }
-    return { variantId: Number(l.inputVariantId), productUnitId: null, quantity: consumed.toFixed(4), baseQuantity: consumed.toNumber(), manualSharePct: null };
+    return { variantId: effectiveVariantId, productUnitId: sub?.substituteProductUnitId ?? null, quantity: consumed.toFixed(4), baseQuantity: consumed.toNumber(), manualSharePct: null };
   });
 
   const outLines: ResolvedLine[] = [

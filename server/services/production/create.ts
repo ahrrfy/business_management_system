@@ -77,6 +77,14 @@ export async function createProductionInTx(
 
     // ③ رأس المستند (تكاليف مؤقّتة + حقول الإنتاجية إن كان تشغيلاً بوصفة).
     const docNumber = await nextProductionNumber(tx, input.branchId);
+    let finalNotes = input.notes?.trim() || null;
+    if (input.run?.materialSubstitutions && input.run.materialSubstitutions.length > 0) {
+      const subsDesc = input.run.materialSubstitutions
+        .map((s) => `استبدال مؤقت: #${s.originalVariantId} ← #${s.substituteVariantId}`)
+        .join(" · ");
+      finalNotes = finalNotes ? `${finalNotes} · [${subsDesc}]` : `[${subsDesc}]`;
+    }
+
     const insRes = await tx.insert(productionOrders).values({
       docNumber,
       branchId: input.branchId,
@@ -89,7 +97,7 @@ export async function createProductionInTx(
       scrapQty: spoilage ? spoilage.scrap : 0,
       abnormalLoss: "0",
       wasteStdPct: spoilage ? round2(spoilage.wasteStdPct).toFixed(2) : "0",
-      notes: input.notes?.trim() || null,
+      notes: finalNotes,
       linkedWorkOrderId: input.linkedWorkOrderId ?? null,
       linkedRecipeId,
       createdBy: actor.userId,
@@ -336,17 +344,25 @@ async function assertRunPlanStillCurrent(
     throwConcurrentRecipeChange();
   }
 
+  const substitutions = run.materialSubstitutions ?? [];
+  const subMap = new Map(substitutions.map((s) => [Number(s.originalVariantId), s]));
+
   for (let index = 0; index < currentLines.length; index++) {
     const current = currentLines[index];
     const planned = inLines[index];
-    const currentBaseQuantity = money(current.qtyPerOutputBase).times(
+    const origId = Number(current.inputVariantId);
+    const sub = subMap.get(origId);
+    const expectedVariantId = sub ? Number(sub.substituteVariantId) : origId;
+    const expectedQtyPerOutputBase = sub?.qtyPerOutputBase ? String(sub.qtyPerOutputBase) : String(current.qtyPerOutputBase);
+
+    const currentBaseQuantity = money(expectedQtyPerOutputBase).times(
       spoilage.batch,
     );
     if (
       !currentBaseQuantity.isInteger() ||
       currentBaseQuantity.lte(0) ||
       currentBaseQuantity.gt(Number.MAX_SAFE_INTEGER) ||
-      Number(current.inputVariantId) !== planned.variantId ||
+      expectedVariantId !== planned.variantId ||
       currentBaseQuantity.toNumber() !== planned.baseQuantity
     ) {
       throwConcurrentRecipeChange();
