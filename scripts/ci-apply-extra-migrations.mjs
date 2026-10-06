@@ -238,6 +238,8 @@ const EXTRA_MIGRATIONS = [
   // ٤/١٠/٢٦: يوسّع enum دفتر التوصيل بأحداث عكس عهدة المرتجع وتسوية العجز.
   // db:push لا يوسّع enum قائماً بموثوقية، لذا نعيد الهجرة idempotently بعد بناء قاعدة CI.
   "drizzle/migrations/0380_delivery_shortfall_settlement.sql",
+  // 07/10/26: Heal old unassigned ghost deliveries
+  "drizzle/migrations/0383_heal_ghost_assignments.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without
