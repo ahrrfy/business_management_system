@@ -353,7 +353,7 @@ export async function runPreview(args: {
           code: "BAD_REQUEST",
           message: appErrorMessage({
             what: "استهلاك مادة الإنتاج ليس عدداً صحيحاً",
-            why: `استهلاك «${l.productName ?? l.inputVariantId}» (${consumedDec.toString()}) ليس عدداً صحيحاً — المخزون يُخصم بوحدات أساس صحيحة فقط.${multipleNote ? ` ${multipleNote}` : ""}`,
+            why: `استهلاك «${l.productName ?? l.inputVariantId}» (${consumedDec.toString()}) ليس عدداً صحيحاً — عدّل الدفعة أو الوصفة.${multipleNote ? ` ${multipleNote}` : ""}`,
             doThis: "عدّل حجم الدفعة أو معيار المادة في الوصفة ليكون الناتج عدداً صحيحاً",
           }),
         });
