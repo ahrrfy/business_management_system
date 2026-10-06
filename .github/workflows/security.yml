@@ -41,10 +41,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for lockfile in \
-            pnpm-lock.yaml \
-            expo/customer-store-mobile/pnpm-lock.yaml \
-            expo/superapp-mobile/pnpm-lock.yaml
-          do
-            ./osv-scanner scan --config=osv-scanner.toml --lockfile="$lockfile"
-          done
+          ./osv-scanner scan --config=osv-scanner.toml \
+            --lockfile=pnpm-lock.yaml \
+            --lockfile=expo/customer-store-mobile/pnpm-lock.yaml \
+            --lockfile=expo/superapp-mobile/pnpm-lock.yaml

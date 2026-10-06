@@ -32,6 +32,11 @@ describe("dependency security coverage", () => {
     expect(rootOverrides["fast-uri@<3.1.8"]).toBe("3.1.8");
     expect(rootOverrides["ip-address@<10.7.1"]).toBe("10.7.1");
     expect(rootOverrides["serialize-javascript@<7.1.2"]).toBe("7.1.2");
+    expect(rootOverrides["compression@<1.8.2"]).toBe("1.8.2");
+    expect(rootOverrides["fast-copy@<4.1.0"]).toBe("4.1.0");
+    expect(rootOverrides["postcss-selector-parser@<7.1.6"]).toBe("7.1.6");
+    expect(rootOverrides["proxy-addr@<2.0.8"]).toBe("2.0.8");
+    expect(rootOverrides["source-map-js@<1.2.2"]).toBe("1.2.2");
 
     const packageJson = JSON.parse(
       read("expo/customer-store-mobile/package.json"),
@@ -48,6 +53,10 @@ describe("dependency security coverage", () => {
     expect(overrides["brace-expansion@1.1.18"]).toBe("1.1.21");
     expect(overrides["brace-expansion@2.1.4"]).toBe("2.1.7");
     expect(overrides["brace-expansion@5.0.9"]).toBe("5.0.12");
+    expect(overrides["compression"]).toBe("1.8.2");
+    expect(overrides["postcss-selector-parser"]).toBe("7.1.6");
+    expect(overrides["source-map-js"]).toBe("1.2.2");
+    expect(overrides["shell-quote"]).toBe("^1.12.0");
 
     const superappPackageJson = JSON.parse(
       read("expo/superapp-mobile/package.json"),
@@ -61,9 +70,13 @@ describe("dependency security coverage", () => {
     expect(superappOverrides["brace-expansion@1.1.18"]).toBe("1.1.21");
     expect(superappOverrides["brace-expansion@2.1.4"]).toBe("2.1.7");
     expect(superappOverrides["brace-expansion@5.0.9"]).toBe("5.0.12");
+    expect(superappOverrides["compression"]).toBe("1.8.2");
+    expect(superappOverrides["source-map-js"]).toBe("1.2.2");
+    expect(superappOverrides["shell-quote"]).toBe("^1.12.0");
 
     const osvConfig = read("osv-scanner.toml");
     expect(osvConfig).toContain('id = "GHSA-86w9-cpqp-85rv"');
+    expect(osvConfig).toContain('id = "GHSA-hp3w-g68c-fv3c"');
     expect(osvConfig).toContain('reason = "');
   });
 });
