@@ -84,6 +84,7 @@ async function seed() {
     { id: 3, name: "دفتر B", isBundle: false, isService: false, isActive: true },
     { id: 5, name: "خدمة طباعة", isBundle: false, isService: true, isActive: true },
     { id: 6, name: "خام تجليد R2", isBundle: false, isService: false, isActive: true },
+    { id: 7, name: "خام ورق بديل فاخر", isBundle: false, isService: false, isActive: true },
     { id: 10, name: "بكج مدرسي", isBundle: true, isService: false, isActive: true },
   ]);
 
@@ -93,6 +94,7 @@ async function seed() {
     { id: 3, productId: 3, sku: "NOTEBOOK-B", costPrice: "7.00", isActive: true },
     { id: 5, productId: 5, sku: "SRV-PRINT", costPrice: "0.00", isActive: true },
     { id: 6, productId: 6, sku: "RAW-COVER", costPrice: "2.00", isActive: true },
+    { id: 7, productId: 7, sku: "RAW-PAPER-ALT", costPrice: "1.50", isActive: true },
     { id: 100, productId: 10, sku: "BND-SCHOOL", costPrice: "9.50", isActive: true },
   ]);
 
@@ -102,6 +104,7 @@ async function seed() {
     { id: 3, variantId: 3, unitName: "دفتر", conversionFactor: "1", isBaseUnit: true },
     { id: 5, variantId: 5, unitName: "خدمة", conversionFactor: "1", isBaseUnit: true },
     { id: 6, variantId: 6, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    { id: 7, variantId: 7, unitName: "ورقة", conversionFactor: "1", isBaseUnit: true },
     { id: 100, variantId: 100, unitName: "طقم", conversionFactor: "1", isBaseUnit: true },
   ]);
 
@@ -627,6 +630,99 @@ describe("الإنتاج المتعدد: produceMultiRecipeBatches", () => {
     expect(mat2!.isSufficient).toBe(false);
     expect(mat2!.deficitBase).toBe("10.0000");
     expect(res2.canProduceAll).toBe(false);
+  });
+
+  it("يدعم استبدال مادة خام عاجزة ببديل متوفر في تحليل الإنتاج المتعدد", async () => {
+    const d = db();
+    // تصفير رصيد الخام الأصلي 1 وإضافة رصيد وفير للخام البديل 7
+    await d
+      .update(s.branchStock)
+      .set({ quantity: 0 })
+      .where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)));
+
+    await d.insert(s.branchStock).values({
+      variantId: 7,
+      branchId: 1,
+      quantity: 100,
+    });
+
+    // بدون استبدال: غير كافٍ
+    const withoutSub = await analyzeMultiRecipeRequirements(
+      {
+        branchId: 1,
+        items: [{ recipeId: 1, batchQty: 4 }],
+      },
+      actor
+    );
+    expect(withoutSub.canProduceAll).toBe(false);
+
+    // مع الاستبدال: استبدال 1 بالبديل 7
+    const withSub = await analyzeMultiRecipeRequirements(
+      {
+        branchId: 1,
+        items: [{ recipeId: 1, batchQty: 4 }],
+        materialSubstitutions: [
+          { recipeId: 1, originalVariantId: 1, substituteVariantId: 7, qtyPerOutputBase: "2.5000" },
+        ],
+      },
+      actor
+    );
+
+    expect(withSub.canProduceAll).toBe(true);
+    const subMat = withSub.aggregatedMaterials.find((m) => m.materialVariantId === 7);
+    expect(subMat).toBeDefined();
+    expect(subMat!.isSubstituted).toBe(true);
+    expect(subMat!.originalVariantId).toBe(1);
+    expect(subMat!.isSufficient).toBe(true);
+  });
+
+  it("ينفّذ إنتاج متعدد بنجاح مع استبدال المادة ويخصم من رصيد البديل", async () => {
+    const d = db();
+    // إضافة رصيد للخام البديل 7
+    await d.insert(s.branchStock).values({
+      variantId: 7,
+      branchId: 1,
+      quantity: 50,
+    });
+
+    const initialStockOrig = (
+      await d
+        .select({ q: s.branchStock.quantity })
+        .from(s.branchStock)
+        .where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)))
+    )[0]?.q ?? 0;
+
+    const res = await produceMultiRecipeBatches(
+      {
+        branchId: 1,
+        clientRequestId: "req-multi-sub-exec-01",
+        batches: [{ recipeId: 1, batchQty: 4 }],
+        materialSubstitutions: [
+          { recipeId: 1, originalVariantId: 1, substituteVariantId: 7, qtyPerOutputBase: "2.5000" },
+        ],
+      },
+      actor
+    );
+
+    expect(res.orders).toHaveLength(1);
+
+    // رصيد البديل نقص 10 (50 -> 40)
+    const subStock = (
+      await d
+        .select({ q: s.branchStock.quantity })
+        .from(s.branchStock)
+        .where(and(eq(s.branchStock.variantId, 7), eq(s.branchStock.branchId, 1)))
+    )[0]?.q;
+    expect(Number(subStock)).toBe(40);
+
+    // رصيد الأصلي لم يتغير
+    const origStock = (
+      await d
+        .select({ q: s.branchStock.quantity })
+        .from(s.branchStock)
+        .where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)))
+    )[0]?.q;
+    expect(Number(origStock)).toBe(Number(initialStockOrig));
   });
 });
 

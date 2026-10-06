@@ -84,6 +84,7 @@ async function seed() {
     { id: 3, name: "دفتر مصنع B", isBundle: false, isActive: true },
     { id: 4, name: "قلم تجاري C", isBundle: false, isActive: true },
     { id: 6, name: "خام تجليد", isBundle: false, isActive: true },
+    { id: 7, name: "خام ورق بديل فاخر", isBundle: false, isActive: true },
     { id: 10, name: "بكج مدرسي متكامل", isBundle: true, isActive: true },
   ]);
 
@@ -93,6 +94,7 @@ async function seed() {
     { id: 3, productId: 3, sku: "BOOK-B", costPrice: "7.00", isActive: true },
     { id: 4, productId: 4, sku: "PEN-C", costPrice: "0.50", isActive: true },
     { id: 6, productId: 6, sku: "RAW-COVER", costPrice: "2.00", isActive: true },
+    { id: 7, productId: 7, sku: "RAW-PAPER-ALT", costPrice: "1.50", isActive: true },
     { id: 100, productId: 10, sku: "BND-SCHOOL", costPrice: "12.50", isActive: true },
   ]);
 
@@ -102,6 +104,7 @@ async function seed() {
     { id: 3, variantId: 3, unitName: "دفتر", conversionFactor: "1", isBaseUnit: true },
     { id: 4, variantId: 4, unitName: "قلم", conversionFactor: "1", isBaseUnit: true },
     { id: 6, variantId: 6, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    { id: 7, variantId: 7, unitName: "ورقة", conversionFactor: "1", isBaseUnit: true },
     { id: 100, variantId: 100, unitName: "بكج", conversionFactor: "1", isBaseUnit: true },
   ]);
 
@@ -265,6 +268,57 @@ describe("مولّد إنتاج مكوّنات البكج: analyzeBundleRequirem
     expect(res.limitingFactorName).toBe("خام ورق");
   });
 
+  it("يدعم استبدال مادة خام عاجزة بمادة بديلة كافية ويعيد احتساب الرصيد وعنق الزجاجة", async () => {
+    // إضافة رصيد وفير من الخام البديل (variantId 7)
+    await db().insert(s.branchStock).values({
+      variantId: 7,
+      branchId: 1,
+      quantity: 100,
+    });
+
+    // قبل الاستبدال: R1 (variantId 1) عاجز (المطلوب 48 والمتوفر 40)
+    const beforeSub = await analyzeBundleRequirements({
+      bundleVariantId: 100,
+      bundleQuantity: 10,
+      branchId: 1,
+      mode: "NET_SHORTAGE",
+    });
+    const matR1Before = beforeSub.aggregatedMaterials.find((m) => m.materialVariantId === 1);
+    expect(matR1Before?.isSufficient).toBe(false);
+    expect(beforeSub.maxBundlesPossible).toBe(6);
+    expect(beforeSub.limitingFactorType).toBe("RAW_MATERIAL");
+
+    // بعد الاستبدال: استبدال R1 بالبديل R7 للوصفتين
+    const afterSub = await analyzeBundleRequirements({
+      bundleVariantId: 100,
+      bundleQuantity: 10,
+      branchId: 1,
+      mode: "NET_SHORTAGE",
+      materialSubstitutions: [
+        { recipeId: 1, originalVariantId: 1, substituteVariantId: 7, qtyPerOutputBase: "2.5000" },
+        { recipeId: 2, originalVariantId: 1, substituteVariantId: 7, qtyPerOutputBase: "1.0000" },
+      ],
+    });
+
+    // الخام الأصلي 1 لم يعد موجوداً في مصفوفة المواد المجمعة، وحل محله البديل 7
+    const matR1After = afterSub.aggregatedMaterials.find((m) => m.materialVariantId === 1);
+    expect(matR1After).toBeUndefined();
+
+    const matSubAfter = afterSub.aggregatedMaterials.find((m) => m.materialVariantId === 7);
+    expect(matSubAfter).toBeDefined();
+    expect(matSubAfter?.totalRequiredBase).toBe("48.0000");
+    expect(matSubAfter?.availableInBranch).toBe(100);
+    expect(matSubAfter?.isSufficient).toBe(true);
+    expect(matSubAfter?.isSubstituted).toBe(true);
+    expect(matSubAfter?.originalVariantId).toBe(1);
+    expect(matSubAfter?.originalMaterialName).toBe("خام ورق");
+    expect(matSubAfter?.originalSku).toBe("RAW-PAPER");
+
+    // سقف البكجات ارتفع إلى 15 (محدود بالقلم التجاري C المتوفر منه 15)
+    expect(afterSub.maxBundlesPossible).toBe(15);
+    expect(afterSub.limitingFactorType).toBe("COMMERCIAL_COMPONENT");
+  });
+
   it("يحترم وضع FULL_QUANTITY ويتجاهل أرصدة المكونات الجاهزة في حساب الدفعة", async () => {
     const res = await analyzeBundleRequirements({
       bundleVariantId: 100,
@@ -378,6 +432,55 @@ describe("مولّد إنتاج مكوّنات البكج: produceBundleComponen
     for (const po of poList) {
       expect(po.notes).toContain(result.bundleDocGroupRef);
     }
+  });
+
+  it("ينفّذ الإنتاج بنجاح مع استبدال المادة الخام ويخصم من رصيد البديل ويسجل ذلك في سطور الإنتاج", async () => {
+    // إضافة رصيد للخام البديل 7 في الفرع 1
+    await db().insert(s.branchStock).values({
+      variantId: 7,
+      branchId: 1,
+      quantity: 100,
+    });
+
+    const initialStockOrig = await stock(1); // 40
+    const initialStockSub = await stock(7); // 100
+    const initialStockCompA = await stock(2); // 5
+
+    // ننتج دفعة لدفتر A (حجم 4) مع استبدال الخام 1 بالبديل 7
+    // استهلاك البديل = 4 * 2.5 = 10
+    const result = await produceBundleComponents(
+      {
+        bundleVariantId: 100,
+        bundleQuantity: 2,
+        branchId: 1,
+        clientRequestId: "req-bundle-sub-exec-01",
+        materialSubstitutions: [
+          { recipeId: 1, originalVariantId: 1, substituteVariantId: 7, qtyPerOutputBase: "2.5000" },
+        ],
+        batches: [{ variantId: 2, recipeId: 1, batchQty: 4 }],
+      },
+      actor
+    );
+
+    expect(result.orders).toHaveLength(1);
+
+    // التحقق من الأرصدة بعد الإنتاج:
+    // الخام البديل 7 نزل بمقدار 10 (100 -> 90)
+    expect(await stock(7)).toBe(initialStockSub - 10);
+    // الخام الأصلي 1 لم يمس قط (40 -> 40)
+    expect(await stock(1)).toBe(initialStockOrig);
+    // المكون المصنّع 2 زاد بمقدار 4 (5 -> 9)
+    expect(await stock(2)).toBe(initialStockCompA + 4);
+
+    // التحقق من أن سطر استهلاك المواد الخام يشير للمادة البديلة 7
+    const lines = await db()
+      .select()
+      .from(s.productionLines)
+      .where(eq(s.productionLines.productionOrderId, result.orders[0].productionOrderId));
+
+    const inputLine = lines.find((l) => l.direction === "INPUT");
+    expect(inputLine).toBeDefined();
+    expect(inputLine?.variantId).toBe(7);
   });
 
   it("ذرّية تامة (Rollback): نقص رصيد لأحد المكونات يلغي المعاملة كاملة دون أي أثر جانبي", async () => {

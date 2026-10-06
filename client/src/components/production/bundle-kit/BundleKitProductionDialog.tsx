@@ -16,6 +16,7 @@ import type {
   BundleRequirementMode,
   ProduceBundleComponentsResult,
 } from "@shared/bundleProductionTypes";
+import type { MaterialSubstitutionItem } from "@shared/recipeSubstitutionTypes";
 import {
   BundleKitComponentsStep,
   type BundleKitComponentBatch,
@@ -35,6 +36,7 @@ interface BundleKitProductionDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initialBundleVariantId?: number;
+  branchId?: number | null;
   onSuccess?: (res: ProduceBundleComponentsResult) => void;
 }
 
@@ -42,9 +44,12 @@ export function BundleKitProductionDialog({
   open,
   onOpenChange,
   initialBundleVariantId,
+  branchId,
   onSuccess,
 }: BundleKitProductionDialogProps) {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const effectiveBranchId = branchId ?? me.data?.branchId ?? null;
 
   const [selectedBundleId, setSelectedBundleId] = useState<number | null>(initialBundleVariantId ?? null);
   const [bundleQuantity, setBundleQuantity] = useState<number>(10);
@@ -56,6 +61,7 @@ export function BundleKitProductionDialog({
   const [linkedWorkOrderId, setLinkedWorkOrderId] = useState<number | null>(null);
   const [successResult, setSuccessResult] = useState<ProduceBundleComponentsResult | null>(null);
   const [clientRequestId, setClientRequestId] = useState<string>("");
+  const [materialSubstitutions, setMaterialSubstitutions] = useState<MaterialSubstitutionItem[]>([]);
 
   const bundlesListQ = trpc.production.bundles.list.useQuery(undefined, {
     enabled: open && !initialBundleVariantId,
@@ -65,6 +71,7 @@ export function BundleKitProductionDialog({
     if (!open) {
       setSuccessResult(null);
       setClientRequestId("");
+      setMaterialSubstitutions([]);
       return;
     }
     setClientRequestId((prev) => prev || `bnd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
@@ -76,7 +83,13 @@ export function BundleKitProductionDialog({
   }, [open, initialBundleVariantId, bundlesListQ.data]);
 
   const analysisQ = trpc.production.bundles.analyzeRequirements.useQuery(
-    { bundleVariantId: selectedBundleId ?? 0, bundleQuantity, mode },
+    {
+      bundleVariantId: selectedBundleId ?? 0,
+      bundleQuantity,
+      branchId: effectiveBranchId ?? undefined,
+      mode,
+      materialSubstitutions: materialSubstitutions.length > 0 ? materialSubstitutions : undefined,
+    },
     { enabled: open && selectedBundleId != null && bundleQuantity > 0, staleTime: 5_000 }
   );
 
@@ -160,9 +173,11 @@ export function BundleKitProductionDialog({
     produceMut.mutate({
       bundleVariantId: selectedBundleId,
       bundleQuantity,
+      branchId: effectiveBranchId ?? undefined,
       clientRequestId: clientRequestId || `bnd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
       notes: notes.trim() || null,
       linkedWorkOrderId,
+      materialSubstitutions: materialSubstitutions.length > 0 ? materialSubstitutions : undefined,
       batches: activeBatches.map((b) => ({
         recipeId: b.recipeId!,
         variantId: b.variantId,
@@ -178,8 +193,21 @@ export function BundleKitProductionDialog({
     setSuccessResult(null);
     setNotes("");
     setLinkedWorkOrderId(null);
+    setMaterialSubstitutions([]);
     setClientRequestId(`bnd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
   }
+
+  const handleApplySubstitution = (sub: MaterialSubstitutionItem) => {
+    setMaterialSubstitutions((p) => [...p.filter((s) => s.originalVariantId !== sub.originalVariantId), sub]);
+  };
+  const handleRemoveSubstitution = (mat: any) => {
+    const oId = mat.isSubstituted ? (mat.originalVariantId ?? mat.materialVariantId) : mat.materialVariantId;
+    setMaterialSubstitutions((p) => p.filter((s) => s.originalVariantId !== oId && s.substituteVariantId !== mat.materialVariantId));
+  };
+  const handlePermanentSuccess = (res: any) => {
+    setMaterialSubstitutions((p) => p.filter((s) => s.originalVariantId !== res.originalVariantId));
+    utils.production.bundles.analyzeRequirements.invalidate();
+  };
 
   const analysis = analysisQ.data;
   const isReady = !analysisQ.isLoading && analysis != null;
@@ -258,6 +286,11 @@ export function BundleKitProductionDialog({
               limitingFactorName={analysis.limitingFactorName}
               limitingFactorType={analysis.limitingFactorType}
               requestedBundleQty={bundleQuantity}
+              branchId={effectiveBranchId}
+              materialSubstitutions={materialSubstitutions}
+              onApplySubstitution={handleApplySubstitution}
+              onRemoveSubstitution={handleRemoveSubstitution}
+              onPermanentSuccess={handlePermanentSuccess}
             />
           )}
 

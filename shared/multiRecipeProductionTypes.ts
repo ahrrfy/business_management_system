@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  materialSubstitutionItemSchema,
+  type MaterialSubstitutionItem,
+} from "./recipeSubstitutionTypes";
 
 export const multiRecipeBatchItemInputSchema = z.object({
   recipeId: z.number().int().positive(),
@@ -8,12 +12,14 @@ export const multiRecipeBatchItemInputSchema = z.object({
     .string()
     .regex(/^\d+(\.\d{1,2})?$/)
     .nullish(),
+  materialSubstitutions: z.array(materialSubstitutionItemSchema).nullish(),
 });
 export type MultiRecipeBatchItemInput = z.infer<typeof multiRecipeBatchItemInputSchema>;
 
 export const analyzeMultiRecipeRequirementsInputSchema = z.object({
   branchId: z.number().int().positive().optional(),
   items: z.array(multiRecipeBatchItemInputSchema).min(1),
+  materialSubstitutions: z.array(materialSubstitutionItemSchema).nullish(),
 });
 export type AnalyzeMultiRecipeRequirementsInput = z.infer<
   typeof analyzeMultiRecipeRequirementsInputSchema
@@ -28,6 +34,9 @@ export interface RecipeRequirementMaterialLineDto {
   totalRequiredBase: string;
   availableInBranch: number;
   isSufficient: boolean;
+  isSubstituted?: boolean;
+  originalVariantId?: number | null;
+  originalProductName?: string | null;
 }
 
 export interface RecipeRequirementItemDto {
@@ -59,6 +68,14 @@ export interface AggregatedMultiRecipeMaterialDto {
   availableInBranch: number;
   isSufficient: boolean;
   deficitBase: string;
+  recipeId?: number | null;
+  recipeName?: string | null;
+  qtyPerOutputBase?: string | null;
+  costPrice?: string | null;
+  isSubstituted?: boolean;
+  originalVariantId?: number | null;
+  originalMaterialName?: string | null;
+  originalSku?: string | null;
 }
 
 export interface MultiRecipeRequirementsAnalysisResult {
@@ -82,6 +99,7 @@ export const produceMultiRecipeInputSchema = z.object({
   clientRequestId: z.string().min(1).max(80),
   linkedWorkOrderId: z.number().int().positive().nullish(),
   notes: z.string().max(500).nullish(),
+  materialSubstitutions: z.array(materialSubstitutionItemSchema).nullish(),
   batches: z.array(multiRecipeBatchItemInputSchema).min(1),
 });
 export type ProduceMultiRecipeInput = z.infer<typeof produceMultiRecipeInputSchema>;
