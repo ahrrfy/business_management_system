@@ -11,8 +11,8 @@
  * createSale ثم فشل تحديث الطلب، order.invoiceId مربوطٌ فوراً ⇒ إعادة المحاولة تتخطّى createSale.
  */
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
-import { customers, deliveryParties, invoiceItems, invoices, onlineOrderItems, onlineOrders } from "../../../drizzle/schema";
+import { eq, and, sql } from "drizzle-orm";
+import { customers, deliveryParties, invoiceItems, invoices, onlineOrderItems, onlineOrders, deliveryConsignments } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { dispatchInvoiceInTx } from "../delivery/dispatchInvoice";
 import { createSaleInTx, notifySaleCustomerAfterCommit } from "../sale/create";
@@ -226,6 +226,7 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       notifyResult = sale;
     }
 
+        const historicalDispatches = (await tx.select({ count: sql<number>`count(*)` }).from(deliveryConsignments).where(and(eq(deliveryConsignments.sourceType, "ONLINE_ORDER"), eq(deliveryConsignments.sourceId, cur.id))))[0]?.count ?? 0;
     const dispatchRes = await dispatchInvoiceInTx(tx, {
       invoiceId,
       partyId: input.partyId,
@@ -241,7 +242,7 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       latitude: cur.latitude ?? null,
       longitude: cur.longitude ?? null,
       onlineOrderId: Number(cur.id),
-      clientRequestId: `online-parcel:${cur.id}`,
+      clientRequestId: `online-parcel:${cur.id}-v${historicalDispatches + 1}`,
       externalTrackingRef: input.externalTrackingRef ?? null,
     }, actor);
     await tx.update(onlineOrders).set({
