@@ -179,7 +179,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
-    "compression": "^1.8.1",
+    "compression": "^1.8.2",
     "cookie": "^1.0.2",
     "cors": "^2.8.6",
     "date-fns": "^4.1.0",
@@ -279,6 +279,11 @@
       "browserslist@<4.28.7": ">=4.28.7",
       "baseline-browser-mapping@<2.11.0": "2.11.0",
       "serialize-javascript@<7.1.2": "7.1.2",
+      "compression@<1.8.2": "1.8.2",
+      "fast-copy@<4.1.0": "4.1.0",
+      "postcss-selector-parser@<7.1.6": "7.1.6",
+      "proxy-addr@<2.0.8": "2.0.8",
+      "source-map-js@<1.2.2": "1.2.2",
       "@eslint/config-array>minimatch": "^10.2.6"
     }
   }
