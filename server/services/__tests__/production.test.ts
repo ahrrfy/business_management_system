@@ -9,6 +9,7 @@ import { createProduct } from "../catalogService";
 import { money, sumMoney } from "../money";
 import { cancelProduction, computeRunCosts, createProduction, getProduction, runPreview, spoilageSplit } from "../productionService";
 import { createRecipe, getRecipe, recipePreview } from "../recipeService";
+import { productionRouter } from "../../routers/productionRouter";
 
 const actor = { userId: 1, branchId: 1 };
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
@@ -647,5 +648,81 @@ describe("الإنتاج: runPreview = الترحيل بالضبط", () => {
     expect(await db().select().from(s.productionOrders)).toHaveLength(0);
     expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
     expect(await stock(1)).toBe(100000);
+  });
+
+  describe("قائمة الإنتاج المثرية: productionRouter.list والبحث والبيانات التشغيلية", () => {
+    it("تُرجع اسم المنتج الناتج واسم الوصفة وكمية المخرجات ومعلومات البكج وتدعم البحث الدقيق", async () => {
+      // إنشاء وصفة
+      await db().insert(s.productionRecipes).values({
+        id: 201,
+        name: "وصفة دفاتر أ المدرسية",
+        outputVariantId: 2,
+        outputProductUnitId: 3,
+        laborPerOutputBase: "0",
+        wasteStdPct: "0",
+        isActive: true,
+      });
+      await db().insert(s.productionRecipeLines).values({ recipeId: 201, inputVariantId: 1, qtyPerOutputBase: "2" });
+
+      // تشغيل أمر إنتاج عبر الوصفة
+      await createProduction({
+        branchId: 1,
+        run: { recipeId: 201, batchQty: 10 },
+        clientRequestId: "req-list-test-1",
+      }, actor);
+
+      // تشغيل أمر إنتاج يدوي بملاحظات بكج
+      await createProduction({
+        branchId: 1,
+        inputs: [{ variantId: 1, baseQuantity: 5 }],
+        outputs: [{ variantId: 3, baseQuantity: 5 }],
+        notes: "إنتاج مكوّن دفتر ب [حزمة BND-1-20261006-abc123 - بكج: بكج القرطاسية المتكامل (#10)]",
+        clientRequestId: "req-list-test-2",
+      }, actor);
+
+      const caller = productionRouter.createCaller({
+        user: { id: 1, role: "admin", branchId: 1 } as any,
+        req: {} as any,
+        res: {} as any,
+      });
+
+      const listRes = await caller.list({});
+      expect(listRes.rows).toHaveLength(2);
+
+      const recipeOrder = listRes.rows.find((r) => r.recipeName === "وصفة دفاتر أ المدرسية");
+      expect(recipeOrder).toBeDefined();
+      expect(recipeOrder!.primaryProductName).toBe("دفتر أ");
+      expect(recipeOrder!.primarySku).toBe("BOOK-A");
+      expect(recipeOrder!.outputQty).toBe(10);
+      expect(recipeOrder!.outputs).toHaveLength(1);
+      expect(recipeOrder!.outputs[0].productName).toBe("دفتر أ");
+
+      const bundleOrder = listRes.rows.find((r) => r.bundleInfo?.isBundlePart);
+      expect(bundleOrder).toBeDefined();
+      expect(bundleOrder!.bundleInfo!.isBundlePart).toBe(true);
+      expect(bundleOrder!.bundleInfo!.groupRef).toBe("BND-1-20261006-abc123");
+      expect(bundleOrder!.bundleInfo!.bundleName).toBe("بكج القرطاسية المتكامل");
+      expect(bundleOrder!.primaryProductName).toBe("دفتر ب");
+
+      // اختبار البحث باسم الوصفة
+      const searchRecipe = await caller.list({ q: "المدرسية" });
+      expect(searchRecipe.rows).toHaveLength(1);
+      expect(searchRecipe.rows[0].id).toBe(recipeOrder!.id);
+
+      // اختبار البحث باسم المنتج الناتج
+      const searchProduct = await caller.list({ q: "دفتر أ" });
+      expect(searchProduct.rows).toHaveLength(1);
+      expect(searchProduct.rows[0].id).toBe(recipeOrder!.id);
+
+      // اختبار البحث برقم المستند
+      const searchDoc = await caller.list({ q: recipeOrder!.docNumber });
+      expect(searchDoc.rows).toHaveLength(1);
+      expect(searchDoc.rows[0].id).toBe(recipeOrder!.id);
+
+      // اختبار البحث بمرجع البكج
+      const searchBundle = await caller.list({ q: "BND-1-20261006-abc123" });
+      expect(searchBundle.rows).toHaveLength(1);
+      expect(searchBundle.rows[0].id).toBe(bundleOrder!.id);
+    });
   });
 });

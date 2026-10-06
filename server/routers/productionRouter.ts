@@ -9,7 +9,7 @@ import { failOpaque } from "../lib/opaqueFailure";
 import { z } from "zod";
 import { appErrorMessage } from "@shared/errors";
 import { and, asc, desc, eq, exists, gte, inArray, lt, or, sql } from "drizzle-orm";
-import { branches, productVariants, productionLines, productionOrders, products } from "../../drizzle/schema";
+import { branches, productUnits, productVariants, productionLines, productionOrders, productionRecipes, products } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
@@ -109,10 +109,22 @@ async function listProductionsFiltered(f: {
   const term = f.q?.trim();
   if (term) {
     const likePat = `%${escLike(term)}%`;
-    // البحث برقم المستند أو باسم المنتج الناتج — EXISTS على أسطر OUTPUT كي لا تتكرّر رؤوس المستندات.
+    // البحث برقم المستند، ملاحظات، اسم الوصفة، أو اسم المنتج/الرمز الناتج — EXISTS على أسطر OUTPUT كي لا تتكرّر رؤوس المستندات.
     conds.push(
       or(
         sql`${productionOrders.docNumber} LIKE ${likePat} ESCAPE '!'`,
+        sql`${productionOrders.notes} LIKE ${likePat} ESCAPE '!'`,
+        exists(
+          db
+            .select({ one: sql`1` })
+            .from(productionRecipes)
+            .where(
+              and(
+                eq(productionRecipes.id, productionOrders.linkedRecipeId),
+                sql`${productionRecipes.name} LIKE ${likePat} ESCAPE '!'`,
+              ),
+            ),
+        ),
         exists(
           db
             .select({ one: sql`1` })
@@ -123,7 +135,11 @@ async function listProductionsFiltered(f: {
               and(
                 eq(productionLines.productionOrderId, productionOrders.id),
                 eq(productionLines.direction, "OUTPUT"),
-                sql`${products.name} LIKE ${likePat} ESCAPE '!'`,
+                or(
+                  sql`${products.name} LIKE ${likePat} ESCAPE '!'`,
+                  sql`${productVariants.sku} LIKE ${likePat} ESCAPE '!'`,
+                  sql`${productVariants.variantName} LIKE ${likePat} ESCAPE '!'`,
+                ),
               ),
             ),
         ),
@@ -143,11 +159,18 @@ async function listProductionsFiltered(f: {
       materialsCost: productionOrders.materialsCost,
       laborCost: productionOrders.laborCost,
       totalCost: productionOrders.totalCost,
+      batchQty: productionOrders.batchQty,
+      goodQty: productionOrders.goodQty,
+      scrapQty: productionOrders.scrapQty,
       notes: productionOrders.notes,
+      linkedWorkOrderId: productionOrders.linkedWorkOrderId,
+      linkedRecipeId: productionOrders.linkedRecipeId,
+      recipeName: productionRecipes.name,
       createdAt: productionOrders.createdAt,
     })
     .from(productionOrders)
     .leftJoin(branches, eq(productionOrders.branchId, branches.id))
+    .leftJoin(productionRecipes, eq(productionOrders.linkedRecipeId, productionRecipes.id))
     .where(where as any)
     .orderBy(desc(productionOrders.id))
     .limit(f.limit + 1)
@@ -156,15 +179,146 @@ async function listProductionsFiltered(f: {
   const rows = hasMore ? heads.slice(0, f.limit) : heads;
   if (!rows.length) return { rows: [] as any[], hasMore };
 
-  // كمية المخرجات الإجمالية لكل مستند (نفس تجميع الخدمة الأصلية).
+  // جلب كافة أسطر المخرجات لهذه الأوامر
   const ids = rows.map((r: any) => Number(r.id));
-  const outAgg = await db
-    .select({ orderId: productionLines.productionOrderId, qty: sql<string>`COALESCE(SUM(${productionLines.baseQuantity}), 0)` })
+  const outLines = await db
+    .select({
+      orderId: productionLines.productionOrderId,
+      variantId: productionLines.variantId,
+      productName: products.name,
+      variantName: productVariants.variantName,
+      sku: productVariants.sku,
+      unitName: productUnits.unitName,
+      quantity: productionLines.quantity,
+      baseQuantity: productionLines.baseQuantity,
+    })
     .from(productionLines)
-    .where(and(inArray(productionLines.productionOrderId, ids), eq(productionLines.direction, "OUTPUT")))
-    .groupBy(productionLines.productionOrderId);
-  const outMap = new Map(outAgg.map((a: any) => [Number(a.orderId), Number(a.qty)]));
-  return { rows: rows.map((r: any) => ({ ...r, outputQty: outMap.get(Number(r.id)) ?? 0 })), hasMore };
+    .innerJoin(productVariants, eq(productionLines.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .leftJoin(productUnits, eq(productionLines.productUnitId, productUnits.id))
+    .where(
+      and(
+        inArray(productionLines.productionOrderId, ids),
+        eq(productionLines.direction, "OUTPUT"),
+      ),
+    )
+    .orderBy(asc(productionLines.id));
+
+  // تجميع المخرجات لكل مستند
+  const outputsByOrder = new Map<number, Array<{
+    variantId: number;
+    productName: string;
+    variantName: string | null;
+    sku: string | null;
+    unitName: string | null;
+    quantity: string;
+    baseQuantity: number;
+  }>>();
+
+  for (const l of outLines) {
+    const orderId = Number(l.orderId);
+    let list = outputsByOrder.get(orderId);
+    if (!list) {
+      list = [];
+      outputsByOrder.set(orderId, list);
+    }
+    list.push({
+      variantId: Number(l.variantId),
+      productName: l.productName ?? "",
+      variantName: l.variantName ?? null,
+      sku: l.sku ?? null,
+      unitName: l.unitName ?? null,
+      quantity: String(l.quantity),
+      baseQuantity: Number(l.baseQuantity),
+    });
+  }
+
+  // استخراج معرّفات البكج من الملاحظات إن وُجدت للبحث عن أسماء البكجات في قاعدة البيانات
+  const bundleVariantIdsToFetch = new Set<number>();
+  for (const r of rows) {
+    if (r.notes) {
+      const match = r.notes.match(/بكج\s*#(\d+)/);
+      if (match && match[1]) {
+        bundleVariantIdsToFetch.add(Number(match[1]));
+      }
+    }
+  }
+
+  const bundleNamesMap = new Map<number, string>();
+  if (bundleVariantIdsToFetch.size > 0) {
+    const bundleRows = await db
+      .select({
+        variantId: productVariants.id,
+        productName: products.name,
+      })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(productVariants.id, Array.from(bundleVariantIdsToFetch)));
+    for (const b of bundleRows) {
+      bundleNamesMap.set(Number(b.variantId), b.productName);
+    }
+  }
+
+  const enrichedRows = rows.map((r: any) => {
+    const outs = outputsByOrder.get(Number(r.id)) ?? [];
+    const totalOutQty = outs.reduce((sum, o) => sum + o.baseQuantity, 0);
+    const primaryOut = outs[0] ?? null;
+
+    let bundleInfo: {
+      isBundlePart: boolean;
+      bundleVariantId?: number;
+      bundleName?: string;
+      groupRef?: string;
+    } | null = null;
+
+    let multiRecipeInfo: {
+      isMultiRecipe: boolean;
+      groupRef?: string;
+    } | null = null;
+
+    const notes = r.notes as string | null | undefined;
+    if (notes) {
+      const bndRefMatch = notes.match(/BND-\d+-\d+-[a-f0-9]+/i);
+      const bndVarMatch = notes.match(/بكج\s*#(\d+)/);
+      const bndNameInlineMatch = notes.match(/بكج:\s*([^\(\]\[\n\r]+)/);
+
+      if (bndRefMatch || bndVarMatch || notes.includes("لحزمة بكج")) {
+        const vId = bndVarMatch ? Number(bndVarMatch[1]) : undefined;
+        const nameFromMap = vId ? bundleNamesMap.get(vId) : undefined;
+        const nameFromInline = bndNameInlineMatch ? bndNameInlineMatch[1].trim() : undefined;
+        bundleInfo = {
+          isBundlePart: true,
+          bundleVariantId: vId,
+          bundleName: nameFromMap || nameFromInline || undefined,
+          groupRef: bndRefMatch ? bndRefMatch[0] : undefined,
+        };
+      }
+
+      const mltRefMatch = notes.match(/MLT-\d+-\d+-[a-f0-9]+/i);
+      if (mltRefMatch || notes.includes("إنتاج متعدد")) {
+        multiRecipeInfo = {
+          isMultiRecipe: true,
+          groupRef: mltRefMatch ? mltRefMatch[0] : undefined,
+        };
+      }
+    }
+
+    return {
+      ...r,
+      outputQty: totalOutQty,
+      outputs: outs,
+      outputCount: outs.length,
+      primaryProductName: primaryOut?.productName ?? null,
+      primaryVariantName: primaryOut?.variantName ?? null,
+      primarySku: primaryOut?.sku ?? null,
+      primaryUnitName: primaryOut?.unitName ?? null,
+      recipeName: r.recipeName ?? null,
+      bundleInfo,
+      multiRecipeInfo,
+    };
+  });
+
+  return { rows: enrichedRows, hasMore };
 }
 
 export const productionRouter = router({

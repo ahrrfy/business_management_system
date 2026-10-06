@@ -22,7 +22,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
-import { Plus } from "lucide-react";
+import { Plus, Package, ChefHat, Boxes, Layers, FileText } from "lucide-react";
 
 const dateCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -70,6 +70,24 @@ export default function Production() {
 
   const exportColumns: ExportColumn<Row>[] = [
     { key: "docNumber", header: "رقم المستند" },
+    {
+      key: "productName",
+      header: "المنتج الناتج",
+      map: (r: any) => r.primaryProductName ?? (r.outputs?.map((o: any) => o.productName).join(" + ") || ""),
+    },
+    { key: "recipeName", header: "الوصفة", map: (r: any) => r.recipeName ?? "إنتاج يدوي" },
+    {
+      key: "bundleInfo",
+      header: "البكج / المجموعة",
+      map: (r: any) =>
+        r.bundleInfo?.bundleName
+          ? `بكج: ${r.bundleInfo.bundleName}`
+          : r.bundleInfo?.isBundlePart
+          ? "مكوّن بكج"
+          : r.multiRecipeInfo?.isMultiRecipe
+          ? "إنتاج مجمّع"
+          : "",
+    },
     { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
     { key: "outputQty", header: "كمية المخرجات", map: (r) => r.outputQty },
     { key: "materialsCost", header: "تكلفة المواد", map: (r) => r.materialsCost },
@@ -102,20 +120,27 @@ export default function Production() {
       ],
       columns: [
         { key: "docNumber", label: "رقم المستند" },
+        { key: "productRecipe", label: "المنتج / الوصفة" },
         { key: "branchName", label: "الفرع" },
         { key: "outputQty", label: "كمية المخرجات", align: "center" },
         { key: "totalCost", label: "الكلفة الكلية", align: "left" },
         { key: "status", label: "الحالة", align: "center" },
         { key: "createdAt", label: "التاريخ" },
       ],
-      rows: all.map((r) => ({
-        docNumber: String(r.docNumber ?? ""),
-        branchName: String(r.branchName ?? ""),
-        outputQty: formatQuantity(r.outputQty),
-        totalCost: fmt(r.totalCost),
-        status: statusLabel(r.status),
-        createdAt: fmtDateTime(r.createdAt),
-      })),
+      rows: all.map((r: any) => {
+        const prod = r.primaryProductName || (r.outputs?.[0]?.productName ?? "—");
+        const recipe = r.recipeName ? ` (${r.recipeName})` : "";
+        const bundle = r.bundleInfo?.bundleName ? ` [بكج: ${r.bundleInfo.bundleName}]` : "";
+        return {
+          docNumber: String(r.docNumber ?? ""),
+          productRecipe: `${prod}${recipe}${bundle}`,
+          branchName: String(r.branchName ?? ""),
+          outputQty: formatQuantity(r.outputQty),
+          totalCost: fmt(r.totalCost),
+          status: statusLabel(r.status),
+          createdAt: fmtDateTime(r.createdAt),
+        };
+      }),
       emptyText: "لا مستندات إنتاج في هذا النطاق.",
     });
     if (!ok) notify.err("اسمح بالنوافذ المنبثقة لإتمام الطباعة");
@@ -123,6 +148,99 @@ export default function Production() {
   /** أعمدة مستندات الإنتاج. */
   const productionColumns = useMemo<ColumnDef<Row, unknown>[]>(() => [
     { id: "docNumber", header: "رقم المستند", accessorFn: (r) => r.docNumber, meta: { kind: "code" } },
+    {
+      id: "productAndRecipe",
+      header: "المنتج / الوصفة",
+      accessorFn: (r: any) => r.primaryProductName ?? r.recipeName ?? "",
+      cell: ({ row }) => {
+        const r = row.original as any;
+        const outputs = r.outputs ?? [];
+        const mainProdName = r.primaryProductName || (outputs.length > 0 ? outputs[0]?.productName : null);
+        const mainVariant = r.primaryVariantName;
+        const mainSku = r.primarySku;
+        const moreCount = (r.outputCount ?? outputs.length) - 1;
+
+        return (
+          <div className="flex flex-col gap-1 py-1 max-w-[280px]">
+            {/* سطر المنتج الناتج */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <Package aria-hidden className="size-3.5 text-primary shrink-0" />
+              {mainProdName ? (
+                <span className="font-semibold text-sm text-foreground leading-tight truncate" title={mainProdName}>
+                  {mainProdName}
+                </span>
+              ) : (
+                <span className="text-xs text-muted-foreground italic">غير محدد</span>
+              )}
+
+              {mainVariant && (
+                <span className="text-xs text-muted-foreground">({mainVariant})</span>
+              )}
+
+              {mainSku && (
+                <span className="text-[10px] font-mono bg-muted/60 text-muted-foreground px-1 rounded border border-border/40">
+                  {mainSku}
+                </span>
+              )}
+
+              {moreCount > 0 && (
+                <span
+                  className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium bg-secondary text-secondary-foreground"
+                  title={outputs.map((o: any) => o.productName).filter(Boolean).join("، ")}
+                >
+                  <Boxes aria-hidden className="size-3" />
+                  +{moreCount}
+                </span>
+              )}
+            </div>
+
+            {/* سطر الوصفة والبكج إن وُجدا */}
+            <div className="flex items-center gap-1.5 flex-wrap text-xs">
+              {r.recipeName ? (
+                <span className="inline-flex items-center gap-1 text-muted-foreground" title={`وصفة: ${r.recipeName}`}>
+                  <ChefHat aria-hidden className="size-3 text-muted-foreground/70 shrink-0" />
+                  <span className="truncate max-w-[150px]">{r.recipeName}</span>
+                </span>
+              ) : (
+                <span className="text-[11px] text-muted-foreground/70 italic">إنتاج يدوي</span>
+              )}
+
+              {/* وسام البكج */}
+              {r.bundleInfo?.isBundlePart && (
+                <span
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-[var(--stock-low)]/10 text-[var(--stock-low)] border border-[var(--stock-low)]/30"
+                  title={r.bundleInfo.groupRef ? `مرجع الحزمة: ${r.bundleInfo.groupRef}` : undefined}
+                >
+                  <Boxes aria-hidden className="size-3 shrink-0" />
+                  {r.bundleInfo.bundleName ? `بكج: ${r.bundleInfo.bundleName}` : "مكوّن بكج"}
+                </span>
+              )}
+
+              {/* وسام الإنتاج المتعدد */}
+              {r.multiRecipeInfo?.isMultiRecipe && (
+                <span
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-[var(--status-pending)]/10 text-[var(--status-pending)] border border-[var(--status-pending)]/30"
+                  title={r.multiRecipeInfo.groupRef ? `مرجع الدفعة: ${r.multiRecipeInfo.groupRef}` : undefined}
+                >
+                  <Layers aria-hidden className="size-3 shrink-0" />
+                  إنتاج مجمّع
+                </span>
+              )}
+
+              {/* وسام أمر الشغل إن وجد */}
+              {r.linkedWorkOrderId && (
+                <span
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-primary/10 text-primary border border-primary/25"
+                >
+                  <FileText aria-hidden className="size-3 shrink-0" />
+                  أمر شغل #{r.linkedWorkOrderId}
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      },
+    },
     {
       id: "branchName", header: "الفرع",
       accessorFn: (r) => r.branchName,
@@ -198,7 +316,7 @@ export default function Production() {
             search={{
               value: f.q,
               onChange: (v) => patchFilters({ q: v }),
-              placeholder: "رقم المستند أو اسم المنتج الناتج…",
+              placeholder: "رقم المستند، اسم المنتج، الوصفة أو البكج…",
               ariaLabel: "بحث في مستندات الإنتاج",
             }}
             activeFilterCount={activeFilterCount}
