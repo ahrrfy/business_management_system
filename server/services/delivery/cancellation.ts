@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { assertNotReturnDeclared } from "./declaredReturn";
 import { eq } from "drizzle-orm";
-import { deliveryConsignments } from "../../../drizzle/schema";
+import { deliveryConsignments, onlineOrders } from "../../../drizzle/schema";
 import {
   checkIdempotency,
   idempotencyHash,
@@ -187,6 +187,18 @@ export async function cancelDeliveryAssignment(
         settledAt: cancelledAt,
       })
       .where(eq(deliveryConsignments.id, Number(cn.id)));
+
+    if (cn.sourceType === "ONLINE_ORDER" && cn.sourceId != null) {
+      await tx
+        .update(onlineOrders)
+        .set({ deliveryPartyId: null, status: "PROCESSING" })
+        .where(eq(onlineOrders.id, Number(cn.sourceId)));
+    } else if (cn.invoiceId != null) {
+      await tx
+        .update(onlineOrders)
+        .set({ deliveryPartyId: null, status: "PROCESSING" })
+        .where(eq(onlineOrders.invoiceId, Number(cn.invoiceId)));
+    }
 
     await appendDeliveryEvent(tx, {
       eventKey: `CN:${cn.id}:ASSIGNMENT_CANCELLED:${input.clientRequestId}`,
