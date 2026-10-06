@@ -8,7 +8,7 @@
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
-import { getDb } from "../../db";
+import { getDb, closeDb } from "../../db";
 import { cancelSale } from "../sale/cancel";
 import { correctSale } from "../sale/correct";
 import { cancelDeliveryAssignment } from "../delivery/cancellation";
@@ -66,7 +66,9 @@ function db() {
 async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
+  for (const t of TABLES) {
+    await d.execute(sql.raw(`DELETE FROM \`${t}\``));
+  }
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
 }
 
@@ -167,7 +169,7 @@ beforeEach(async () => {
   await seedBase();
 });
 
-describe("cancelSale — ثابت ١ + ٢: صافي الدفتر صفر + رصيد المخزون يعود كاملاً", () => {
+describe.sequential("cancelSale — ثابت ١ + ٢: صافي الدفتر صفر + رصيد المخزون يعود كاملاً", () => {
   it("بيعٌ آجل (٥ قطع) ⇒ إلغاء ⇒ Σ(revenue)=Σ(cost)=Σ(profit)=٠ ورصيد المخزون يعود ١٠", async () => {
     await setStock(1, 1, 10);
     const sale = await createSale(
@@ -477,7 +479,7 @@ describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار
   });
 });
 
-describe("cancelSale — ثابت ٤: الحراس (رفض خارج الفترة/عبر الفرع/فاتورة ملغاة أو مرتجعة)", () => {
+describe.sequential("cancelSale — ثابت ٤: الحراس (رفض خارج الفترة/عبر الفرع/فاتورة ملغاة أو مرتجعة)", () => {
   it("خارج الفترة المفتوحة (assertPeriodOpen) ⇒ FORBIDDEN من postEntry، لا كتابات جانبية", async () => {
     await setStock(1, 1, 10);
     const sale = await createSale(
@@ -612,7 +614,7 @@ describe("cancelSale — ثابت ٤: الحراس (رفض خارج الفترة
   });
 });
 
-describe("cancelSale — إصلاحات مراجعة Codex (١٢/٨)", () => {
+describe.sequential("cancelSale — إصلاحات مراجعة Codex (١٢/٨)", () => {
   it("P1: SOD — مدير أنشأ البيع لا يستطيع إلغاءه بنفسه (admin يعبُر)", async () => {
     await setStock(1, 1, 10);
     const sale = await createSale(
@@ -833,7 +835,7 @@ describe("cancelSale — إصلاحات مراجعة Codex (١٢/٨)", () => {
   });
 });
 
-describe("cancelSale — حارس التوصيل الموحّد", () => {
+describe.sequential("cancelSale — حارس التوصيل الموحّد", () => {
   it("يرفض إلغاء فاتورة ذات إرسالية حيّة بلا أي أثر جانبي", async () => {
     await setStock(1, 1, 10);
     await seedDeliveryParty();
@@ -1262,5 +1264,136 @@ describe("cancelSale — حارس التوصيل الموحّد", () => {
       || consignment.moneyStatus !== "CANCELLED"
     );
     expect(invoice.status === "SUPERSEDED" && liveConsignment).toBe(false);
+  });
+
+  it("F6: فاتورة SUPERSEDED (مستبدلة بتصحيح) ⇒ رفض صريح يمنع الإلغاء المكرر", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+      },
+      admin,
+    );
+
+    // تصحيح الفاتورة عبر correctSale يجعل الأصلية SUPERSEDED
+    await correctSale(
+      {
+        originalInvoiceId: sale.invoiceId,
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+        clientRequestId: "correct-superseded-test",
+      },
+      admin,
+    );
+
+    const supersededInv = (
+      await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId))
+    )[0];
+    expect(supersededInv.status).toBe("SUPERSEDED");
+
+    // محاولة إلغاء الفاتورة المستبدلة يجب أن تُرفض قطعياً
+    await expect(
+      cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "CASH" }, admin),
+    ).rejects.toThrow(/مستبدلة بفاتورة مصححة|لا يجوز إلغاؤها/);
+
+    // التأكد من عدم المساس بالمخزون أو إضافة قيود عكسية مكررة
+    const reversalEntries = await db()
+      .select({ n: sql<number>`COUNT(*)` })
+      .from(s.accountingEntries)
+      .where(
+        sql`${s.accountingEntries.invoiceId} = ${sale.invoiceId} AND ${s.accountingEntries.notes} LIKE '%إلغاء فاتورة%'`,
+      );
+    expect(Number(reversalEntries[0]?.n ?? 0)).toBe(0);
+  });
+
+  it("F6: فاتورة استنفدت قيمتها المالية بالكامل (returnedTotal >= total) ⇒ رفض «مُرتجَعة بالكامل مالياً»", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      admin,
+    );
+
+    // محاكاة فاتورة حالتها ما زالت CONFIRMED لكن returnedTotal استنفد قيمتها
+    await db()
+      .update(s.invoices)
+      .set({ returnedTotal: "1000.00", status: "CONFIRMED" })
+      .where(eq(s.invoices.id, sale.invoiceId));
+
+    await expect(
+      cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "CASH" }, admin),
+    ).rejects.toThrow(/مُرتجَعة بالكامل مالياً|استنفد كامل قيمة الفاتورة/);
+
+    // التأكد من بقاء الحالة CONFIRMED وعدم تحولها إلى CANCELLED
+    const invAfter = (
+      await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId))
+    )[0];
+    expect(invAfter.status).toBe("CONFIRMED");
+  });
+
+  it("F6: رسائل رفض الإلغاء تطابق بدقة هيكل appErrorMessage (ماذا — لماذا. ماذا تفعل)", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      admin,
+    );
+    await cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "CASH" }, admin);
+
+    // فحص الهيكل الثلاثي للرسالة: الشرطة المعترضة « — » والنقطة وتوجيه المخرج
+    try {
+      await cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "CASH" }, admin);
+      expect.unreachable("كان يجب أن يفشل الطلب");
+    } catch (err: any) {
+      expect(err.message).toContain(" — ");
+      expect(err.message).toMatch(/تعذّر إلغاء الفاتورة.* — الفاتورة ملغاة مسبقاً\. تحقّق من سجلّ الفاتورة/);
+    }
+  });
+
+  it("F6: الفاتورة المرتجعة جزئياً يسمح بإلغاء ما تبقى منها بصورة طبيعية", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "4" }],
+      },
+      admin,
+    );
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
+
+    // إرجاع وحدة واحدة فقط من أصل ٤
+    await returnSale(
+      {
+        invoiceId: sale.invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+        refund: null,
+        restock: true,
+      },
+      admin,
+    );
+
+    // إلغاء الفاتورة يجب أن ينجح ويعيد الوحدات الـ ٣ المتبقية
+    const cancelRes = await cancelSale(
+      { invoiceId: sale.invoiceId, refundPaymentMethod: "CASH" },
+      admin,
+    );
+    expect(cancelRes.invoiceId).toBe(sale.invoiceId);
+
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
+    expect(inv.status).toBe("CANCELLED");
+    // المخزون: 10 - 4 (بيع) + 1 (مرتجع) + 3 (إلغاء المتبقي) = 10
+    expect(await stockOf(1, 1)).toBe(10);
   });
 });

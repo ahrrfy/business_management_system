@@ -562,8 +562,8 @@ export const salesCashierProcedure = moduleProcedure(["cashier", "manager"], "sa
 export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL");
 
 /**
- * التحقق من صلاحية كاشير الاستقبال أو المبيعات لتنفيذ المرتجعات:
- * تقبل كاشير المبيعات (sales: FULL) أو كاشير/مشغّل محطة الاستقبال (workorders: FULL).
+ * التحقق من صلاحية كاشير الاستقبال أو التجزئة أو الطباعة لتنفيذ المرتجعات والإلغاء:
+ * تقبل كاشير المبيعات (sales: FULL) أو كاشير/مشغّل محطة الاستقبال (workorders: FULL) أو كاشير خدمات الطباعة (pos: FULL).
  */
 export function returnOperationsAllowed(user: {
   role: string;
@@ -573,12 +573,13 @@ export function returnOperationsAllowed(user: {
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
   const salesAllowed = moduleAccessAllowed(user.role, override, "sales", "FULL", ["cashier", "manager"]);
   const receptionAllowed = moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
-  return salesAllowed || receptionAllowed;
+  const printPosAllowed = moduleAccessAllowed(user.role, override, "pos", "FULL", ["cashier", "manager", "print_operator"]);
+  return salesAllowed || receptionAllowed || printPosAllowed;
 }
 
 /**
- * إجراء المرتجعات الموحّد (كاشير مبيعات أو مشغّل استقبال بفرع مُسنَد).
- * يمنح الوصول لمسارات returns.getInvoice و returns.create لفواتير الفرع.
+ * إجراء المرتجعات الموحّد (كاشير مبيعات أو مشغّل استقبال أو كاشير طباعة بفرع مُسنَد).
+ * يمنح الوصول لمسارات المرتجعات والإلغاء لفواتير الفرع.
  */
 export const returnsProcedure = auditedProcedure
   .use(
@@ -589,8 +590,8 @@ export const returnsProcedure = auditedProcedure
           code: "FORBIDDEN",
           message: appErrorMessage({
             what: "تعذّر الوصول لعمليات المرتجعات",
-            why: "صلاحيات غير كافية لهذا الإجراء — يتطلب صلاحية كاشير المبيعات أو مشغّل الاستقبال",
-            doThis: "تأكد من تسجيل الدخول بحساب كاشير مبيعات أو استقبال أو راجع مدير الفرع",
+            why: "صلاحيات غير كافية لهذا الإجراء — يتطلب صلاحية كاشير المبيعات أو مشغّل الاستقبال أو كاشير الطباعة",
+            doThis: "تأكد من تسجيل الدخول بحساب كاشير (تجزئة، استقبال، أو طباعة) أو راجع مدير الفرع",
           }),
         });
       }

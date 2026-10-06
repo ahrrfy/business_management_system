@@ -94,6 +94,12 @@ export function HeldOrdersDrawer({
     confirmed: boolean;
   } | null>(null);
 
+  // حالة حوار الإلغاء والاسترداد المالي للطلب المحجوز
+  const [selectedForCancel, setSelectedForCancel] = useState<HeldSaleOrder | null>(null);
+  const [cancelRefundMethod, setCancelRefundMethod] = useState<"CASH" | "CARD" | "TRANSFER">("CASH");
+  const [cancelRef, setCancelRef] = useState("");
+  const [cancelReason, setCancelReason] = useState("");
+
   const utils = trpc.useUtils();
   const heldQ = trpc.printPos.listHeldSales.useQuery(
     { branchId },
@@ -106,6 +112,7 @@ export function HeldOrdersDrawer({
         "تم إلغاء الطلب بنجاح",
         Number(res.refundAmount) > 0 ? `تم استرداد عربون بقيمة ${fmt(res.refundAmount)} د.ع` : undefined,
       );
+      setSelectedForCancel(null);
       void utils.printPos.listHeldSales.invalidate();
     },
     onError: (e) => notify.err(e.message, "تعذّر إلغاء الطلب"),
@@ -173,20 +180,26 @@ export function HeldOrdersDrawer({
     );
   }, [heldQ.data, search]);
 
-  async function handleCancelOrder(order: HeldSaleOrder) {
-    const ok = await confirm({
-      title: `إلغاء الطلب المحجوز #${order.invoiceNumber}`,
-      description: `هل أنت متأكد من إلغاء هذا الطلب؟\nالزبون: ${order.customerDisplayName}\nالإجمالي: ${fmt(order.total)} د.ع\nالمدفوع: ${fmt(order.paidAmount)} د.ع\nسيتم إرجاع المواد للمخزون واسترداد أي عربون نقدي من الدرج.`,
-      variant: "danger",
-      confirmText: "إلغاء الطلب واسترداد العربون",
-      cancelText: "تراجع",
-    });
-    if (!ok) return;
+  function handleCancelOrder(order: HeldSaleOrder) {
+    setSelectedForCancel(order);
+    setCancelRefundMethod("CASH");
+    setCancelRef("");
+    setCancelReason("إلغاء بطلب من الزبون في كاشير الطباعة");
+  }
+
+  function handleExecuteCancel() {
+    if (!selectedForCancel) return;
+    const paid = Number(selectedForCancel.paidAmount);
+    if (paid > 0 && cancelRefundMethod !== "CASH" && !cancelRef.trim()) {
+      notify.err("يرجى إدخال رقم المرجع / إيصال العملية للاسترداد غير النقدي");
+      return;
+    }
 
     cancelMut.mutate({
-      invoiceId: order.id,
-      reason: "إلغاء بطلب من الزبون في كاشير الطباعة",
-      refundPaymentMethod: "CASH",
+      invoiceId: selectedForCancel.id,
+      reason: cancelReason.trim() || "إلغاء بطلب من الزبون في كاشير الطباعة",
+      refundPaymentMethod: cancelRefundMethod,
+      reference: cancelRefundMethod !== "CASH" ? cancelRef.trim() : undefined,
     });
   }
 
@@ -554,6 +567,144 @@ export function HeldOrdersDrawer({
           setSelectedForDispatch(null);
         }}
       />
+
+      {/* حوار إلغاء الطلب والاسترداد المالي للزبون */}
+      <Dialog
+        open={!!selectedForCancel}
+        onOpenChange={(open) => {
+          if (!open && !cancelMut.isPending) {
+            setSelectedForCancel(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md" dir="rtl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <AlertCircle className="size-5" />
+              إلغاء الطلب المحجوز #{selectedForCancel?.invoiceNumber}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2 text-sm">
+            {/* بطاقة معلومات الفاتورة والعميل */}
+            <div className="rounded-lg bg-muted/40 p-3 space-y-1.5 border border-border">
+              <div className="flex justify-between items-center text-xs text-muted-foreground">
+                <span>الزبون:</span>
+                <span className="font-bold text-foreground">{selectedForCancel?.customerDisplayName}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs text-muted-foreground">
+                <span>إجمالي الفاتورة:</span>
+                <span className="font-mono font-semibold text-foreground">{fmt(selectedForCancel?.total ?? "0")} د.ع</span>
+              </div>
+              <div className="flex justify-between items-center text-xs border-t border-border/50 pt-1.5">
+                <span className="font-bold text-foreground">العربون المقبوض (المدفوع):</span>
+                <span className="font-mono font-black text-amber-600 dark:text-amber-400 text-sm">
+                  {fmt(selectedForCancel?.paidAmount ?? "0")} د.ع
+                </span>
+              </div>
+            </div>
+
+            {/* تنبيه الاسترداد واختيار الطريقة إن وجد عربون */}
+            {Number(selectedForCancel?.paidAmount ?? 0) > 0 ? (
+              <div className="space-y-3">
+                <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 p-2.5 text-xs text-amber-800 dark:text-amber-300">
+                  يوجد عربون مستحق الاسترداد للعميل. حدّد طريقة الاسترداد المالي:
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold mb-1.5 block">طريقة الاسترداد المالي</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCancelRefundMethod("CASH")}
+                      className={`flex h-10 items-center justify-center gap-1.5 rounded-lg border-2 text-xs font-bold transition-all ${
+                        cancelRefundMethod === "CASH"
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-border bg-card text-foreground"
+                      }`}
+                    >
+                      <Banknote className="size-4" />
+                      نقدي (الدرج)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCancelRefundMethod("CARD")}
+                      className={`flex h-10 items-center justify-center gap-1.5 rounded-lg border-2 text-xs font-bold transition-all ${
+                        cancelRefundMethod === "CARD"
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-border bg-card text-foreground"
+                      }`}
+                    >
+                      <CreditCard className="size-4" />
+                      بطاقة
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCancelRefundMethod("TRANSFER")}
+                      className={`flex h-10 items-center justify-center gap-1.5 rounded-lg border-2 text-xs font-bold transition-all ${
+                        cancelRefundMethod === "TRANSFER"
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-border bg-card text-foreground"
+                      }`}
+                    >
+                      <ArrowLeftRight className="size-4" />
+                      تحويل
+                    </button>
+                  </div>
+                </div>
+
+                {cancelRefundMethod !== "CASH" && (
+                  <div>
+                    <label className="text-xs font-bold mb-1 block">رقم المرجع / إيصال الاسترداد</label>
+                    <Input
+                      placeholder={cancelRefundMethod === "CARD" ? "رقم إيصال جهاز الدفع (POS Reference)…" : "رقم الحوالة البنكية…"}
+                      value={cancelRef}
+                      onChange={(e) => setCancelRef(e.target.value)}
+                      className="h-9 text-xs font-mono"
+                    />
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-lg bg-muted/50 p-2.5 text-xs text-muted-foreground">
+                لا يوجد عربون مدفوع على هذا الطلب. سيتم إرجاع المواد المحجوزة للمخزون وإلغاء الفاتورة دون حركة نقدية.
+              </div>
+            )}
+
+            {/* سبب الإلغاء */}
+            <div>
+              <label className="text-xs font-bold mb-1 block">سبب الإلغاء</label>
+              <Input
+                placeholder="سبب الإلغاء…"
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                className="h-9 text-xs"
+              />
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              disabled={cancelMut.isPending}
+              onClick={() => setSelectedForCancel(null)}
+            >
+              تراجع
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={cancelMut.isPending}
+              onClick={handleExecuteCancel}
+              className="font-bold"
+            >
+              {cancelMut.isPending
+                ? "جارٍ تنفيذ الإلغاء…"
+                : Number(selectedForCancel?.paidAmount ?? 0) > 0
+                  ? `إلغاء واسترداد ${fmt(selectedForCancel?.paidAmount ?? "0")} د.ع`
+                  : "تأكيد إلغاء الطلب"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

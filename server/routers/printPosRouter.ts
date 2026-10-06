@@ -10,10 +10,11 @@ import { listPrintServices } from "../services/catalogService";
 import { createPrintSale } from "../services/printSaleService";
 import { cancelSale } from "../services/sale/cancel";
 import { correctSale } from "../services/sale/correct";
+import { isDeadInvoice } from "@shared/predicates";
 import { money, round2 } from "../services/money";
 import { verifyManagerApproval } from "./saleRouter";
 import { managerApprovalSchema } from "@shared/managerApproval";
-import { posCashierProcedure, router } from "../trpc";
+import { posCashierProcedure, returnsProcedure, router } from "../trpc";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { pauseIfRetryableDbError } from "../lib/retryDup";
 import { confirmExternalPaymentAttempt, initiateExternalPaymentAttempt, type PosExternalPaymentMethod } from "../services/posExternalPayment";
@@ -307,11 +308,12 @@ export const printPosRouter = router({
     }),
 
   /** إلغاء فاتورة محجوزة/معلقة: إرجاع المخزون ورد العربون إن وُجد بسند صرف رسمي من الدرج. */
-  cancelHeldSale: posCashierProcedure
+  cancelHeldSale: returnsProcedure
     .input(z.object({
       invoiceId: z.number().int().positive(),
       reason: z.string().trim().min(3, "اكتب سبب الإلغاء").max(500),
       refundPaymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]).default("CASH"),
+      reference: z.string().trim().min(1).max(100).optional(),
       clientRequestId: z.string().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -350,6 +352,29 @@ export const printPosRouter = router({
           }),
         });
       }
+      if (isDeadInvoice(inv.status) || inv.status === "RETURNED") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: `تعذّر إلغاء الفاتورة ${inv.invoiceNumber}`,
+            why:
+              inv.status === "RETURNED"
+                ? "الفاتورة مُرتجَعة بالكامل — لا يمكن إلغاؤها"
+                : `الفاتورة بحالة (${inv.status}) ولا يمكن إلغاؤها`,
+            doThis: "راجع سجل المبيعات أو المرتجعات للتحقق من حالة الفاتورة",
+          }),
+        });
+      }
+      if (money(inv.returnedTotal ?? "0").gt(0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: `تعذّر إلغاء الفاتورة ${inv.invoiceNumber}`,
+            why: `الفاتورة لها حركات مرتجعات سابقة بقيمة (${money(inv.returnedTotal ?? "0").toFixed(2)} د.ع)`,
+            doThis: "لا يمكن إلغاء فاتورة لها مرتجعات سابقة من شاشة الكاشير؛ راجع الإدارة المالية",
+          }),
+        });
+      }
       if (inv.status !== "PENDING" && inv.status !== "PARTIALLY_PAID") {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -367,6 +392,7 @@ export const printPosRouter = router({
       const res = await cancelSale({
         invoiceId: input.invoiceId,
         refundPaymentMethod: input.refundPaymentMethod,
+        reference: input.reference ?? null,
         reason: input.reason,
         clientRequestId: input.clientRequestId,
       }, actor);

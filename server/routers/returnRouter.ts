@@ -1,7 +1,7 @@
 import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import {
   moduleAccessAllowed,
   type PermissionMap,
@@ -11,6 +11,7 @@ import { variantDescriptor } from "@shared/variantDisplay";
 import { z } from "zod";
 import {
   accountingEntries,
+  auditLogs,
   branchStock,
   customers,
   invoiceItemBundleComponents,
@@ -20,6 +21,7 @@ import {
   productUnits,
   productVariants,
   products,
+  receipts,
   returnRequests,
   salesControlRequests,
   shifts,
@@ -27,6 +29,12 @@ import {
   users,
   workOrders,
 } from "../../drizzle/schema";
+import {
+  checkIdempotency,
+  idempotencyHash,
+  recordIdempotencyKey,
+} from "../services/idempotency";
+import { retryOnDup } from "../lib/retryDup";
 import { isDeadInvoice } from "@shared/predicates/isDeadInvoice";
 import { classifyVariants, getBundleDefinitions } from "../services/bundleService";
 import { canCrossBranches } from "../lib/branchAuthority";
@@ -65,6 +73,7 @@ import {
   SURFACED_REFUND_METHODS,
 } from "../services/returns/refundCaps";
 import { getOpenShifts } from "../services/treasury/openShifts";
+import { openShiftIdTx } from "../services/shiftService";
 import {
   returnsProcedure,
   router,
@@ -200,6 +209,119 @@ async function resolveReturnBaseQuantity(
     conversionFactor: 1,
   };
 }
+
+async function replaySalesReturnCartResult(
+  tx: Tx,
+  refId: number,
+  input: {
+    invoiceNumber?: string | null;
+    customer?: { name?: string | null; phone?: string | null } | null;
+    disposition: "RESTOCK" | "DAMAGED";
+    items: Array<{
+      productName: string;
+      quantity: number;
+      unitPrice: string;
+      barcode?: string | null;
+    }>;
+    settlement: {
+      method: "CASH" | "CARD" | "STORE_CREDIT";
+      totalAmount: string;
+      reference?: string | null;
+    };
+  },
+  actorBranchId: number,
+): Promise<{
+  ok: true;
+  returnNumber: string;
+  customerName: string;
+  customerPhone: string | null;
+  originalInvoiceNumber: string | null | undefined;
+  disposition: "RESTOCK" | "DAMAGED";
+  totalAmount: string;
+  method: "CASH" | "CARD" | "STORE_CREDIT";
+  reference: string | null | undefined;
+  itemsCount: number;
+  items: Array<{
+    name: string;
+    quantity: number;
+    unitPrice: string;
+    barcode: string | null | undefined;
+  }>;
+  dateStr: string;
+  timeStr: string;
+  idempotentReplay: true;
+}> {
+  // جلب سجل القيد المحاسبي المرتبط بالمرتجع الأصلي
+  const [entry] = await tx
+    .select({
+      id: accountingEntries.id,
+      branchId: accountingEntries.branchId,
+      invoiceId: accountingEntries.invoiceId,
+      notes: accountingEntries.notes,
+      createdAt: accountingEntries.createdAt,
+    })
+    .from(accountingEntries)
+    .where(eq(accountingEntries.id, refId))
+    .limit(1);
+
+  if (!entry) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذر استرجاع نتيجة المرتجع السابقة",
+        why: `سجل المرتجع المرجعي #${refId} المرتبط بهذا الطلب غير موجود في القيود المحاسبية`,
+        doThis: "تحقق من سجل المبيعات والمرتجعات في الفرع قبل تكرار العملية",
+      }),
+    });
+  }
+
+  // التحقق الصارم من عزل الفرع
+  if (Number(entry.branchId) !== actorBranchId) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذر إعادة عرض المرتجع",
+        why: "مفتاح هذا الطلب مسجل لعملية نُفذت في فرع تشغيلي آخر",
+        doThis: "سجل الدخول إلى الفرع الذي نُفذت فيه العملية لمراجعتها",
+      }),
+    });
+  }
+
+  // استخراج رقم المرتجع التاريخي من الملاحظات
+  const match = entry.notes?.match(/\[(SR-[^\]]+)\]/);
+  const returnNumber = match ? match[1] : `SR-REPLAY-${refId}`;
+  const recordDate = entry.createdAt;
+
+  return {
+    ok: true as const,
+    returnNumber,
+    customerName: input.customer?.name?.trim() || "زبون عابر",
+    customerPhone: input.customer?.phone?.trim() || null,
+    originalInvoiceNumber: input.invoiceNumber,
+    disposition: input.disposition,
+    totalAmount: input.settlement.totalAmount,
+    method: input.settlement.method,
+    reference: input.settlement.reference,
+    itemsCount: input.items.length,
+    items: input.items.map((i) => ({
+      name: i.productName,
+      quantity: i.quantity,
+      unitPrice: i.unitPrice,
+      barcode: i.barcode,
+    })),
+    dateStr: recordDate.toLocaleDateString("ar-IQ-u-nu-latn", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    }),
+    timeStr: recordDate.toLocaleTimeString("ar-IQ-u-nu-latn", {
+      hour: "2-digit",
+      minute: "2-digit",
+    }),
+    idempotentReplay: true as const,
+  };
+}
+
 // المرتجعات تعكس مخزوناً ونقداً ⇒ كاشير بوردية مفتوحة أو مدير فأعلى.
 export const returnRouter = router({
   create: returnsProcedure
@@ -696,7 +818,11 @@ export const returnRouter = router({
       } else {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: "لا فرع مُسنَد لهذا المستخدم",
+          message: appErrorMessage({
+            what: "تعذر عرض سجل المرتجعات",
+            why: "لا فرع مُسنَد لهذا المستخدم",
+            doThis: "سجّل الدخول بحسابٍ مُسنَد لفرعٍ لعرض المرتجعات الخاصة به",
+          }),
         });
       }
 
@@ -1143,7 +1269,7 @@ export const returnRouter = router({
    * فحص فاتورة المبيعات للمرتجع الفوري الذكي
    * يجلب بيانات الفاتورة والسقف المالي الأقصى للاسترداد وبنود الفاتورة مع المتبقي لكل بند
    */
-  inspectInvoiceForReturn: salesCashierProcedure
+  inspectInvoiceForReturn: returnsProcedure
     .input(z.object({ invoiceNumber: z.string().trim().min(1) }))
     .query(async ({ input, ctx }) => {
       const db = getDb();
@@ -1152,6 +1278,10 @@ export const returnRouter = router({
       const actorBranchId =
         ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
       const isAdmin = ctx.user.role === "admin";
+
+      const rawNo = input.invoiceNumber.trim();
+      const strippedNo = rawNo.replace(/^INV-/i, "");
+      const prefixedNo = `INV-${strippedNo}`;
 
       const [inv] = await db
         .select({
@@ -1174,16 +1304,21 @@ export const returnRouter = router({
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))
         .where(
-          and(
-            eq(invoices.invoiceNumber, input.invoiceNumber.trim()),
-            isAdmin || actorBranchId == null
-              ? undefined
-              : eq(invoices.branchId, actorBranchId),
+          or(
+            eq(invoices.invoiceNumber, rawNo),
+            eq(invoices.invoiceNumber, strippedNo),
+            eq(invoices.invoiceNumber, prefixedNo),
           ),
         )
         .limit(1);
 
       if (!inv) return null;
+
+      const isOtherBranch =
+        !isAdmin &&
+        actorBranchId != null &&
+        inv.branchId != null &&
+        Number(inv.branchId) !== Number(actorBranchId);
 
       const isDead = isDeadInvoice(inv.status);
       const remainingInvoiceTotal = Decimal.max(
@@ -1248,12 +1383,132 @@ export const returnRouter = router({
         };
       });
 
+      // جلب سجلات المرتجعات السابقة المرتبطة بهذه الفاتورة
+      const previousReturnEntries = await db
+        .select({
+          id: accountingEntries.id,
+          amount: accountingEntries.amount,
+          receiptId: accountingEntries.receiptId,
+          notes: accountingEntries.notes,
+          performedBy: accountingEntries.createdBy,
+          performedByName: accountingEntries.createdByNameSnapshot,
+          createdAt: accountingEntries.createdAt,
+          receiptPaymentMethod: receipts.paymentMethod,
+          receiptReference: receipts.referenceNumber,
+          receiptDescription: receipts.description,
+          receiptAmount: receipts.amount,
+        })
+        .from(accountingEntries)
+        .leftJoin(receipts, eq(accountingEntries.receiptId, receipts.id))
+        .where(
+          and(
+            eq(accountingEntries.invoiceId, inv.id),
+            eq(accountingEntries.entryType, "RETURN"),
+            isNull(accountingEntries.supplierId),
+          ),
+        )
+        .orderBy(desc(accountingEntries.id));
+
+      const returnAudits = await db
+        .select({
+          id: auditLogs.id,
+          action: auditLogs.action,
+          newValue: auditLogs.newValue,
+          createdAt: auditLogs.createdAt,
+        })
+        .from(auditLogs)
+        .where(
+          and(
+            or(
+              and(eq(auditLogs.action, "sale.return_cart"), eq(auditLogs.entityType, "sale")),
+              and(eq(auditLogs.action, RETURN_EXECUTED_AUDIT_ACTION), eq(auditLogs.entityType, "invoice")),
+            ),
+            eq(auditLogs.entityId, String(inv.id)),
+          ),
+        )
+        .orderBy(desc(auditLogs.id));
+
+      const previousReturns = previousReturnEntries.map((entry) => {
+        const notesNumberMatch = entry.notes?.match(/\[(SR-[^\]]+)\]/);
+        const receiptNumberMatch = entry.receiptDescription?.match(/\[(SR-[^\]]+)\]/);
+        const auditMatch = returnAudits.find(
+          (a) => (a.newValue as any)?.returnNumber && (a.newValue as any)?.receiptId === entry.receiptId,
+        );
+        const returnNumber =
+          notesNumberMatch?.[1] ||
+          receiptNumberMatch?.[1] ||
+          (auditMatch?.newValue as any)?.returnNumber ||
+          `SR-${entry.id}`;
+
+        let method = entry.receiptPaymentMethod || (auditMatch?.newValue as any)?.method;
+        if (!method) {
+          if (entry.notes?.includes("رصيد متجر")) method = "STORE_CREDIT";
+          else if (entry.notes?.includes("بطاقة")) method = "CARD";
+          else if (entry.notes?.includes("نقدي")) method = "CASH";
+          else method = inv.paymentMethod || "CASH";
+        }
+
+        let disposition: "RESTOCK" | "DAMAGED" = "RESTOCK";
+        const auditDisposition = (auditMatch?.newValue as any)?.disposition;
+        if (auditDisposition === "DAMAGED" || entry.notes?.includes("إتلاف") || entry.notes?.includes("تالف")) {
+          disposition = "DAMAGED";
+        }
+
+        const auditItems = (auditMatch?.newValue as any)?.items;
+        let returnItems: Array<{
+          name: string;
+          quantity: number;
+          unitPrice: string;
+          barcode?: string | null;
+        }> = [];
+        if (Array.isArray(auditItems) && auditItems.length > 0) {
+          returnItems = auditItems.map((ai: any) => ({
+            name: String(ai.name || ai.productName || "صنف"),
+            quantity: Number(ai.quantity || 1),
+            unitPrice: String(ai.unitPrice || "0"),
+            barcode: ai.barcode ?? null,
+          }));
+        } else {
+          returnItems = items
+            .filter((i) => i.returnedBaseQuantity > 0)
+            .map((i) => ({
+              name: i.productName,
+              quantity: i.returnedBaseQuantity,
+              unitPrice: i.unitPrice,
+              barcode: i.barcode,
+            }));
+        }
+
+        const rawAmount = entry.receiptAmount ?? entry.amount;
+        const absAmount = Math.abs(Number(rawAmount ?? 0)).toFixed(2);
+
+        return {
+          id: Number(entry.id),
+          returnNumber,
+          createdAt: entry.createdAt,
+          performedByName: entry.performedByName || "كاشير",
+          amount: absAmount,
+          method: String(method),
+          referenceNumber: entry.receiptReference ?? null,
+          disposition,
+          reason: (auditMatch?.newValue as any)?.reason ?? null,
+          receiptId: entry.receiptId ? Number(entry.receiptId) : null,
+          items: returnItems,
+        };
+      });
+
+      const isFullyReturned =
+        inv.status === "RETURNED" || isDead || remainingInvoiceTotal.lte(0);
+
       return {
         id: Number(inv.id),
         invoiceNumber: inv.invoiceNumber,
         status: inv.status,
         isDead,
+        isFullyReturned,
         branchId: Number(inv.branchId),
+        originBranchId: Number(inv.branchId),
+        isOtherBranch,
         customerId: inv.customerId != null ? Number(inv.customerId) : null,
         customerName: inv.customerName ?? "عميل نقدي",
         customerPhone: inv.customerPhone ?? null,
@@ -1265,6 +1520,7 @@ export const returnRouter = router({
         paymentMethod: inv.paymentMethod,
         createdAt: inv.createdAt,
         items,
+        previousReturns,
       };
     }),
 
@@ -1703,7 +1959,7 @@ export const returnRouter = router({
    * جلب أدراج النقدية / الورديات المفتوحة في فرع الكاشير لصرف المرتجع منها
    * متاحة للكاشير والمدير ضمن صلاحيات المبيعات، وتفرّق بين وردية المستخدم الحالي والورديات الأخرى
    */
-  getOpenRefundDrawers: salesCashierProcedure
+  getOpenRefundDrawers: returnsProcedure
     .input(
       z
         .object({
@@ -1755,7 +2011,7 @@ export const returnRouter = router({
    * يدعم: إدخال رقم فاتورة اختياري، ربط عميل CRM أو زبون عابر، تحديد مسار الصنف (رجوع للرف أو تالف مسجل خسارة)
    * طرق الاسترداد: نقدي، بطاقة، رصيد متجر
    */
-  executeSalesReturnCart: salesCashierProcedure
+  executeSalesReturnCart: returnsProcedure
     .input(
       z.object({
         invoiceNumber: z.string().trim().max(64).nullish(),
@@ -1807,10 +2063,31 @@ export const returnRouter = router({
         });
       }
       const actorBranchId = Number(ctx.user.branchId);
+      const clientRequestId = input.clientRequestId?.trim() || null;
+      const requestFingerprint = clientRequestId ? idempotencyHash(input) : null;
 
-      return withTx(
-        async (tx) => {
-          await assertPeriodOpen(tx, new Date());
+      return retryOnDup(async () => {
+        return withTx(
+          async (tx) => {
+            // ١. الفحص الأولي للـ Idempotency قبل أخذ أي أقفال
+            if (clientRequestId) {
+              const existingRefId = await checkIdempotency(
+                tx,
+                "sale.return_cart",
+                clientRequestId,
+                requestFingerprint,
+              );
+              if (existingRefId != null) {
+                return replaySalesReturnCartResult(
+                  tx,
+                  existingRefId,
+                  input,
+                  actorBranchId,
+                );
+              }
+            }
+
+            await assertPeriodOpen(tx, new Date());
 
           const now = new Date();
           const randSuffix = Math.floor(1000 + Math.random() * 9000);
@@ -1840,13 +2117,18 @@ export const returnRouter = router({
           let invoiceItemRows: Array<typeof invoiceItems.$inferSelect> = [];
           const resolvedBaseQtyByItem = new Map<any, number>();
           if (input.invoiceNumber?.trim()) {
+            const rawNo = input.invoiceNumber.trim();
+            const strippedNo = rawNo.replace(/^INV-/i, "");
+            const prefixedNo = `INV-${strippedNo}`;
+
             const [found] = await tx
               .select()
               .from(invoices)
               .where(
-                and(
-                  eq(invoices.invoiceNumber, input.invoiceNumber.trim()),
-                  eq(invoices.branchId, actorBranchId),
+                or(
+                  eq(invoices.invoiceNumber, rawNo),
+                  eq(invoices.invoiceNumber, strippedNo),
+                  eq(invoices.invoiceNumber, prefixedNo),
                 ),
               )
               .for("update")
@@ -1856,12 +2138,47 @@ export const returnRouter = router({
               throw new TRPCError({
                 code: "NOT_FOUND",
                 message: appErrorMessage({
-                  what: "تعذر العثور على الفاتورة المحددة في هذا الفرع",
-                  why: `لا توجد فاتورة بالرقم «${input.invoiceNumber.trim()}» مسجلة ضمن الفرع الحالي`,
-                  doThis:
-                    "تأكد من رقم الفاتورة أو الفرع المسند لحسابك، أو نفذ المرتجع بدون رقم فاتورة كمرتجع عابر",
+                  what: "تعذر العثور على الفاتورة المحددة",
+                  why: `لا توجد فاتورة بالرقم «${input.invoiceNumber.trim()}» مسجلة في النظام`,
+                  doThis: "تأكد من صحة رقم الفاتورة أو رمز الباركود المدخل",
                 }),
               });
+            }
+
+            if (
+              ctx.user.role !== "admin" &&
+              found.branchId != null &&
+              Number(found.branchId) !== actorBranchId
+            ) {
+              throw new TRPCError({
+                code: "FORBIDDEN",
+                message: appErrorMessage({
+                  what: "تعذر إرجاع الفاتورة من هذا الفرع",
+                  why: `الفاتورة صادرة من الفرع رقم (${Number(found.branchId)}) وأنت تعمل على الفرع (${actorBranchId}). يُحظر إرجاع فواتير الفروع الأخرى بدون صلاحية إدارية لمنع تكرار الصرف واختلال صناديق الفروع`,
+                  doThis:
+                    "وجّه العميل إلى الفرع المصدِر للفاتورة أو اطلب من المدير العام تنفيذ المرتجع بصلاحيته العابرة للفروع. يُحظر صرف مرتجع عابر لفاتورة مسجلة بفرع آخر منعاً لازدواجية الصرف",
+                }),
+              });
+            }
+
+            // ٢. إعادة الفحص بعد قفل الفاتورة (Post-Lock Check)
+            // يمنع سباق نقرتين متزامنتين انتظر أحدهما قفل الفاتورة
+            if (clientRequestId) {
+              const existingAfterLock = await checkIdempotency(
+                tx,
+                "sale.return_cart",
+                clientRequestId,
+                requestFingerprint,
+                { forUpdate: true },
+              );
+              if (existingAfterLock != null) {
+                return replaySalesReturnCartResult(
+                  tx,
+                  existingAfterLock,
+                  input,
+                  actorBranchId,
+                );
+              }
             }
 
             if (isDeadInvoice(found.status)) {
@@ -1885,6 +2202,16 @@ export const returnRouter = router({
                 money(matchedInvoice.returnedTotal ?? "0"),
               ),
             );
+            if (remainingInvoiceTotal.lte(0)) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "الفاتورة مُرتجَعة بالكامل مسبقاً",
+                  why: `تم استرداد كامل قيمة الفاتورة (${money(matchedInvoice.total).toFixed(2)} د.ع)، ولا يوجد أي رصيد متبقٍ للإرجاع`,
+                  doThis: "تحقق من سجل المرتجعات السابقة لهذه الفاتورة",
+                }),
+              });
+            }
             if (returnTotalDec.gt(remainingInvoiceTotal)) {
               throw new TRPCError({
                 code: "BAD_REQUEST",
@@ -1942,7 +2269,7 @@ export const returnRouter = router({
                     what: "العنصر غير موجود في الفاتورة المرجعية",
                     why: `الصنف «${itm.productName}» (معرّف ${itm.variantId}) غير مدرج ضمن بنود الفاتورة المرجعية «${matchedInvoice.invoiceNumber}»`,
                     doThis:
-                      "تأكد من بنود الفاتورة المحددة أو نفذ المرتجع بدون رقم فاتورة كمرتجع عابر",
+                      "تحقق من الصنف الممسوح وتطابقه مع بنود الفاتورة المرجعية",
                   }),
                 });
               }
@@ -2134,17 +2461,22 @@ export const returnRouter = router({
           let generatedReceiptId: number | null = null;
 
           if (input.settlement.method === "CASH") {
-            const targetShiftId = input.settlement.shiftId;
+            let targetShiftId = input.settlement.shiftId;
             if (!targetShiftId) {
-              throw new TRPCError({
-                code: "BAD_REQUEST",
-                message: appErrorMessage({
-                  what: "تعذر الصرف النقدي للمرتجع",
-                  why: "لم يتم تحديد درج النقدية / الوردية التي سيتم صرف المبلغ منها",
-                  doThis:
-                    "اختر درج النقدية / الوردية المفتوحة من القائمة قبل التأكيد",
-                }),
-              });
+              const myShift = await openShiftIdTx(tx, ctx.user.id, actorBranchId);
+              if (myShift) {
+                targetShiftId = myShift;
+              } else {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: "تعذر الصرف النقدي للمرتجع",
+                    why: "لم يتم تحديد درج النقدية / الوردية التي سيتم صرف المبلغ منها ولا توجد وردية مفتوحة للمستخدم",
+                    doThis:
+                      "اختر درج النقدية / الوردية المفتوحة من القائمة قبل التأكيد أو افتح وردية في الفرع",
+                  }),
+                });
+              }
             }
 
             const [targetShift] = await tx
@@ -2188,6 +2520,7 @@ export const returnRouter = router({
               returnNumber,
               customerName,
               customerId: input.customer?.customerId,
+              invoiceId: matchedInvoice?.id ?? null,
               userId: ctx.user.id,
             });
 
@@ -2224,6 +2557,7 @@ export const returnRouter = router({
               returnNumber,
               customerName,
               customerId: input.customer?.customerId,
+              invoiceId: matchedInvoice?.id ?? null,
               reference: input.settlement.reference,
               userId: ctx.user.id,
             });
@@ -2311,7 +2645,7 @@ export const returnRouter = router({
             salesReturnSource,
           );
 
-          await postEntry(tx, {
+          const returnLedgerEntryId = await postEntry(tx, {
             entryType: "RETURN",
             branchId: actorBranchId,
             invoiceId: matchedInvoice?.id ?? null,
@@ -2435,6 +2769,17 @@ export const returnRouter = router({
               .where(eq(invoices.id, matchedInvoice.id));
           }
 
+          // تسجيل مفتاح الـ Idempotency ذرياً داخل المعاملة نفسها
+          if (clientRequestId) {
+            await recordIdempotencyKey(
+              tx,
+              "sale.return_cart",
+              clientRequestId,
+              returnLedgerEntryId,
+              requestFingerprint,
+            );
+          }
+
           // ٥) توثيق التدقيق الرقابي
           await logAudit(ctx, {
             action: "sale.return_cart",
@@ -2452,6 +2797,12 @@ export const returnRouter = router({
               receiptId: generatedReceiptId,
               itemsCount: input.items.length,
               reason: returnReason,
+              items: input.items.map((i) => ({
+                name: i.productName,
+                quantity: i.quantity,
+                unitPrice: i.unitPrice,
+                barcode: i.barcode,
+              })),
             },
           });
 
@@ -2485,6 +2836,7 @@ export const returnRouter = router({
         },
         { gate: "NONE" },
       );
+    });
     }),
 
   /**

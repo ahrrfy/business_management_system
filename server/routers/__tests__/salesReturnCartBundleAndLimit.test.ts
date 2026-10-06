@@ -528,4 +528,84 @@ describe("returns.executeSalesReturnCart — حوكمة البكجات وسقف 
     expect(inspected?.items[0].baseQuantity).toBe(2);
     expect(inspected?.items[0].remainingQuantity).toBe(2);
   });
+
+  it("⭐ حارس منع الإرجاع عبر الفروع للكاشير: inspect يوضح الفرع الأصلي، وexecute يرفض التنفيذ ويمنع الازدواجية", async () => {
+    // إنشاء فرع ثانٍ
+    await db().insert(s.branches).values({
+      id: 2,
+      name: "فرع الكرخ",
+      code: "KARKH",
+      type: "SALES",
+    });
+
+    // إنشاء فاتورة بيع في الفرع 2
+    const [invBranch2] = await db()
+      .insert(s.invoices)
+      .values({
+        id: 200,
+        invoiceNumber: "INV-BRANCH2-001",
+        branchId: 2,
+        customerId: 1,
+        sourceType: "POS",
+        status: "PAID",
+        subtotal: "100.00",
+        discountAmount: "0.00",
+        taxAmount: "0.00",
+        total: "100.00",
+        paidAmount: "100.00",
+        returnedTotal: "0.00",
+        paymentMethod: "CASH",
+      })
+      .$returningId();
+
+    await db().insert(s.invoiceItems).values({
+      id: 201,
+      invoiceId: invBranch2.id,
+      variantId: 1,
+      productUnitId: 1,
+      quantity: "10",
+      baseQuantity: 10,
+      returnedBaseQuantity: 0,
+      unitPrice: "10.00",
+      total: "100.00",
+    });
+
+    const shiftId = await openShift();
+    const callerBranch1 = returnRouter.createCaller(context()); // user is cashier at branch 1
+
+    // 1) inspectInvoiceForReturn: يجلب الفاتورة ويكشف أنها لفرع آخر
+    const inspected = await callerBranch1.inspectInvoiceForReturn({
+      invoiceNumber: "INV-BRANCH2-001",
+    });
+
+    expect(inspected).not.toBeNull();
+    expect(inspected?.invoiceNumber).toBe("INV-BRANCH2-001");
+    expect(inspected?.isOtherBranch).toBe(true);
+    expect(inspected?.originBranchId).toBe(2);
+
+    // 2) executeSalesReturnCart: يرفض تنفيذ المرتجع من الكاشير في الفرع 1 ويمنع تكرار الصرف
+    await expect(
+      callerBranch1.executeSalesReturnCart({
+        invoiceNumber: "INV-BRANCH2-001",
+        disposition: "RESTOCK",
+        customer: { customerId: 1, name: "عميل تجربة" },
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            invoiceItemId: 201,
+            productName: "قلم",
+            quantity: 2,
+            unitPrice: "10.00",
+            total: "20.00",
+          },
+        ],
+        settlement: {
+          method: "CASH",
+          shiftId,
+          totalAmount: "20.00",
+        },
+      }),
+    ).rejects.toThrow(/الفاتورة صادرة من الفرع رقم \(2\) وأنت تعمل على الفرع \(1\)/);
+  });
 });

@@ -33,6 +33,16 @@ export const cmpTime = (a: DateInput, b: DateInput) => {
 
 export const invoiceReturnColumns: ColumnDef<InvoiceReturnRow, unknown>[] = [
   {
+    id: "returnNumber",
+    header: "رقم المرتجع",
+    accessorFn: (r) => (r as any).returnNumber ?? `#${r.id}`,
+    cell: ({ row }) => (
+      <span className="font-mono font-bold text-foreground">
+        {(row.original as any).returnNumber ?? `#${row.original.id}`}
+      </span>
+    ),
+  },
+  {
     id: "createdAt",
     header: "التاريخ",
     accessorFn: (r) => fmtDateTime(r.createdAt),
@@ -48,12 +58,39 @@ export const invoiceReturnColumns: ColumnDef<InvoiceReturnRow, unknown>[] = [
     cell: ({ row }) => row.original.performedByName ?? "غير موثّق",
   },
   {
+    id: "method",
+    header: "طريقة الاسترداد",
+    accessorFn: (r) => ((r as any).method ? paymentMethodLabel((r as any).method) : "—"),
+    cell: ({ row }) => (
+      <span className="text-xs">
+        {(row.original as any).method ? paymentMethodLabel((row.original as any).method) : "—"}
+      </span>
+    ),
+  },
+  {
     id: "amount",
-    header: "القيمة",
+    header: "المبلغ المسترد",
     accessorFn: (r) => fmt(D(r.amount).abs().toString()),
     meta: { kind: "money" },
     sortingFn: (a, b) => D(a.original.amount).abs().cmp(D(b.original.amount).abs()),
-    cell: ({ row }) => fmt(D(row.original.amount).abs().toString()),
+    cell: ({ row }) => (
+      <span className="font-bold text-destructive font-mono">
+        {fmt(D(row.original.amount).abs().toString())} د.ع
+      </span>
+    ),
+  },
+  {
+    id: "items",
+    header: "الأصناف المسترجعة",
+    cell: ({ row }) => {
+      const items = (row.original as any).items;
+      if (!items || items.length === 0) return <span className="text-muted-foreground">—</span>;
+      return (
+        <span className="text-xs text-muted-foreground">
+          {items.map((i: any) => `${i.name || "صنف"} (${formatQuantity(i.quantity)})`).join("، ")}
+        </span>
+      );
+    },
   },
 ];
 
