@@ -700,19 +700,49 @@ describe("الإنتاج: runPreview = الترحيل بالضبط", () => {
       const bundleOrder = listRes.rows.find((r) => r.bundleInfo?.isBundlePart);
       expect(bundleOrder).toBeDefined();
       expect(bundleOrder!.bundleInfo!.isBundlePart).toBe(true);
+      expect(bundleOrder!.bundleInfo!.bundleVariantId).toBe(10);
       expect(bundleOrder!.bundleInfo!.groupRef).toBe("BND-1-20261006-abc123");
       expect(bundleOrder!.bundleInfo!.bundleName).toBe("بكج القرطاسية المتكامل");
       expect(bundleOrder!.primaryProductName).toBe("دفتر ب");
 
+      // أمر إنتاج مرتبط بوصفة لكن بدون أسطر مخرجات مسجلة بعد (fallback للناتج من الوصفة)
+      await db().insert(s.productionOrders).values({
+        id: 999,
+        docNumber: "PRD-TEST-NO-LINES",
+        branchId: 1,
+        status: "CONFIRMED",
+        materialsCost: "0.00",
+        laborCost: "0.00",
+        totalCost: "0.00",
+        batchQty: 5,
+        goodQty: 5,
+        scrapQty: 0,
+        wasteStdPct: "0.00",
+        abnormalLoss: "0.00",
+        linkedRecipeId: 201,
+        createdBy: 1,
+      });
+
+      const listWithEmptyLines = await caller.list({});
+      const noLinesOrder = listWithEmptyLines.rows.find((r) => r.id === 999);
+      expect(noLinesOrder).toBeDefined();
+      expect(noLinesOrder!.primaryProductName).toBe("دفتر أ");
+      expect(noLinesOrder!.primarySku).toBe("BOOK-A");
+      expect(noLinesOrder!.outputs).toHaveLength(0);
+
+      // اختبار البحث بالرمز التابع لناتج الوصفة للأمر الذي لا يحمل أسطر مخرجات
+      const searchFallback = await caller.list({ q: "BOOK-A" });
+      expect(searchFallback.rows.some((r) => r.id === 999)).toBe(true);
+
       // اختبار البحث باسم الوصفة
       const searchRecipe = await caller.list({ q: "المدرسية" });
-      expect(searchRecipe.rows).toHaveLength(1);
-      expect(searchRecipe.rows[0].id).toBe(recipeOrder!.id);
+      expect(searchRecipe.rows.length).toBeGreaterThanOrEqual(1);
+      expect(searchRecipe.rows.some((r) => r.id === recipeOrder!.id)).toBe(true);
 
       // اختبار البحث باسم المنتج الناتج
       const searchProduct = await caller.list({ q: "دفتر أ" });
-      expect(searchProduct.rows).toHaveLength(1);
-      expect(searchProduct.rows[0].id).toBe(recipeOrder!.id);
+      expect(searchProduct.rows.length).toBeGreaterThanOrEqual(1);
+      expect(searchProduct.rows.some((r) => r.id === recipeOrder!.id)).toBe(true);
 
       // اختبار البحث برقم المستند
       const searchDoc = await caller.list({ q: recipeOrder!.docNumber });

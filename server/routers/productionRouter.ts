@@ -9,6 +9,7 @@ import { failOpaque } from "../lib/opaqueFailure";
 import { z } from "zod";
 import { appErrorMessage } from "@shared/errors";
 import { and, asc, desc, eq, exists, gte, inArray, lt, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import { branches, productUnits, productVariants, productionLines, productionOrders, productionRecipes, products } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
@@ -101,6 +102,9 @@ async function listProductionsFiltered(f: {
 }) {
   const db = getDb();
   if (!db) return { rows: [] as any[], hasMore: false };
+  const recipeOutputVariant = alias(productVariants, "recipeOutputVariant");
+  const recipeOutputProduct = alias(products, "recipeOutputProduct");
+
   const conds = [] as any[];
   if (f.branchId) conds.push(eq(productionOrders.branchId, f.branchId));
   if (f.status) conds.push(eq(productionOrders.status, f.status));
@@ -109,7 +113,7 @@ async function listProductionsFiltered(f: {
   const term = f.q?.trim();
   if (term) {
     const likePat = `%${escLike(term)}%`;
-    // البحث برقم المستند، ملاحظات، اسم الوصفة، أو اسم المنتج/الرمز الناتج — EXISTS على أسطر OUTPUT كي لا تتكرّر رؤوس المستندات.
+    // البحث برقم المستند، ملاحظات، اسم الوصفة، أو اسم المنتج/الرمز الناتج — EXISTS على أسطر OUTPUT أو ناتج الوصفة.
     conds.push(
       or(
         sql`${productionOrders.docNumber} LIKE ${likePat} ESCAPE '!'`,
@@ -118,10 +122,17 @@ async function listProductionsFiltered(f: {
           db
             .select({ one: sql`1` })
             .from(productionRecipes)
+            .leftJoin(recipeOutputVariant, eq(recipeOutputVariant.id, productionRecipes.outputVariantId))
+            .leftJoin(recipeOutputProduct, eq(recipeOutputProduct.id, recipeOutputVariant.productId))
             .where(
               and(
                 eq(productionRecipes.id, productionOrders.linkedRecipeId),
-                sql`${productionRecipes.name} LIKE ${likePat} ESCAPE '!'`,
+                or(
+                  sql`${productionRecipes.name} LIKE ${likePat} ESCAPE '!'`,
+                  sql`${recipeOutputProduct.name} LIKE ${likePat} ESCAPE '!'`,
+                  sql`${recipeOutputVariant.sku} LIKE ${likePat} ESCAPE '!'`,
+                  sql`${recipeOutputVariant.variantName} LIKE ${likePat} ESCAPE '!'`,
+                ),
               ),
             ),
         ),
@@ -166,11 +177,16 @@ async function listProductionsFiltered(f: {
       linkedWorkOrderId: productionOrders.linkedWorkOrderId,
       linkedRecipeId: productionOrders.linkedRecipeId,
       recipeName: productionRecipes.name,
+      recipeOutputProductName: recipeOutputProduct.name,
+      recipeOutputVariantName: recipeOutputVariant.variantName,
+      recipeOutputSku: recipeOutputVariant.sku,
       createdAt: productionOrders.createdAt,
     })
     .from(productionOrders)
     .leftJoin(branches, eq(productionOrders.branchId, branches.id))
     .leftJoin(productionRecipes, eq(productionOrders.linkedRecipeId, productionRecipes.id))
+    .leftJoin(recipeOutputVariant, eq(productionRecipes.outputVariantId, recipeOutputVariant.id))
+    .leftJoin(recipeOutputProduct, eq(recipeOutputVariant.productId, recipeOutputProduct.id))
     .where(where as any)
     .orderBy(desc(productionOrders.id))
     .limit(f.limit + 1)
@@ -236,8 +252,8 @@ async function listProductionsFiltered(f: {
   // استخراج معرّفات البكج من الملاحظات إن وُجدت للبحث عن أسماء البكجات في قاعدة البيانات
   const bundleVariantIdsToFetch = new Set<number>();
   for (const r of rows) {
-    if (r.notes) {
-      const match = r.notes.match(/بكج\s*#(\d+)/);
+    if (r.notes && (r.notes.includes("حزمة") || r.notes.includes("بكج") || /BND-/i.test(r.notes))) {
+      const match = r.notes.match(/(?:بكج\s*(?:#|رقم\s*)|\(#)(\d+)/);
       if (match && match[1]) {
         bundleVariantIdsToFetch.add(Number(match[1]));
       }
@@ -279,7 +295,9 @@ async function listProductionsFiltered(f: {
     const notes = r.notes as string | null | undefined;
     if (notes) {
       const bndRefMatch = notes.match(/BND-\d+-\d+-[a-f0-9]+/i);
-      const bndVarMatch = notes.match(/بكج\s*#(\d+)/);
+      const bndVarMatch = (notes.includes("حزمة") || notes.includes("بكج") || bndRefMatch)
+        ? notes.match(/(?:بكج\s*(?:#|رقم\s*)|\(#)(\d+)/)
+        : null;
       const bndNameInlineMatch = notes.match(/بكج:\s*([^\(\]\[\n\r]+)/);
 
       if (bndRefMatch || bndVarMatch || notes.includes("لحزمة بكج")) {
@@ -308,9 +326,9 @@ async function listProductionsFiltered(f: {
       outputQty: totalOutQty,
       outputs: outs,
       outputCount: outs.length,
-      primaryProductName: primaryOut?.productName ?? null,
-      primaryVariantName: primaryOut?.variantName ?? null,
-      primarySku: primaryOut?.sku ?? null,
+      primaryProductName: primaryOut?.productName ?? r.recipeOutputProductName ?? null,
+      primaryVariantName: primaryOut?.variantName ?? r.recipeOutputVariantName ?? null,
+      primarySku: primaryOut?.sku ?? r.recipeOutputSku ?? null,
       primaryUnitName: primaryOut?.unitName ?? null,
       recipeName: r.recipeName ?? null,
       bundleInfo,
