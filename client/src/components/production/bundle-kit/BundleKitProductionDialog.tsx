@@ -13,10 +13,14 @@ import {
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import type {
+  AggregatedMaterialDto,
   BundleRequirementMode,
   ProduceBundleComponentsResult,
 } from "@shared/bundleProductionTypes";
-import type { MaterialSubstitutionItem } from "@shared/recipeSubstitutionTypes";
+import type {
+  MaterialSubstitutionItem,
+  SubstituteRecipeMaterialResult,
+} from "@shared/recipeSubstitutionTypes";
 import {
   BundleKitComponentsStep,
   type BundleKitComponentBatch,
@@ -95,18 +99,17 @@ export function BundleKitProductionDialog({
 
   useEffect(() => {
     if (!analysisQ.data?.components) return;
-    setBatches(
-      analysisQ.data.components
+    setBatches((prev) => {
+      const prevMap = new Map(prev.map((b) => [b.variantId, b]));
+      return analysisQ.data.components
         .filter((c) => c.isManufactured)
-        .map((c) => ({
-          variantId: c.variantId,
-          recipeId: c.recipeId,
-          batchQty: c.suggestedBatchQty,
-          scrapQty: 0,
-          laborPerUnit: c.laborPerUnit || "0.00",
-          selected: c.suggestedBatchQty > 0,
-        }))
-    );
+        .map((c) => {
+          const ex = prevMap.get(c.variantId);
+          return ex
+            ? { ...ex, recipeId: c.recipeId, batchQty: ex.batchQty > 0 ? ex.batchQty : c.suggestedBatchQty }
+            : { variantId: c.variantId, recipeId: c.recipeId, batchQty: c.suggestedBatchQty, scrapQty: 0, laborPerUnit: c.laborPerUnit || "0.00", selected: c.suggestedBatchQty > 0 };
+        });
+    });
   }, [analysisQ.data]);
 
   const produceMut = trpc.production.bundles.produceComponents.useMutation({
@@ -200,11 +203,11 @@ export function BundleKitProductionDialog({
   const handleApplySubstitution = (sub: MaterialSubstitutionItem) => {
     setMaterialSubstitutions((p) => [...p.filter((s) => s.originalVariantId !== sub.originalVariantId), sub]);
   };
-  const handleRemoveSubstitution = (mat: any) => {
+  const handleRemoveSubstitution = (mat: AggregatedMaterialDto) => {
     const oId = mat.isSubstituted ? (mat.originalVariantId ?? mat.materialVariantId) : mat.materialVariantId;
     setMaterialSubstitutions((p) => p.filter((s) => s.originalVariantId !== oId && s.substituteVariantId !== mat.materialVariantId));
   };
-  const handlePermanentSuccess = (res: any) => {
+  const handlePermanentSuccess = (res: SubstituteRecipeMaterialResult) => {
     setMaterialSubstitutions((p) => p.filter((s) => s.originalVariantId !== res.originalVariantId));
     utils.production.bundles.analyzeRequirements.invalidate();
   };
@@ -310,6 +313,8 @@ export function BundleKitProductionDialog({
               estimatedTotalCost={analysis.estimatedTotalCost}
               isSubmitting={produceMut.isPending}
               onSubmit={handleConfirmProduce}
+              maxBundlesPossible={analysis.maxBundlesPossible}
+              limitingFactorName={analysis.limitingFactorName}
             />
           )}
 

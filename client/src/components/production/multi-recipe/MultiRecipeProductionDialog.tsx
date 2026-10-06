@@ -13,7 +13,14 @@ import { InferredBranchField } from "@/components/form/InferredField";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import type { ProduceMultiRecipeResult } from "@shared/multiRecipeProductionTypes";
+import type {
+  AggregatedMultiRecipeMaterialDto,
+  ProduceMultiRecipeResult,
+} from "@shared/multiRecipeProductionTypes";
+import type {
+  MaterialSubstitutionItem,
+  SubstituteRecipeMaterialResult,
+} from "@shared/recipeSubstitutionTypes";
 import { AlertCircle, Layers, Loader2, Sparkles } from "lucide-react";
 import { MultiRecipeItemsStep, type MultiRecipeBatchDraft } from "./MultiRecipeItemsStep";
 import { MultiRecipeMaterialsSummary } from "./MultiRecipeMaterialsSummary";
@@ -42,6 +49,7 @@ export function MultiRecipeProductionDialog({
   const [batches, setBatches] = useState<MultiRecipeBatchDraft[]>([]);
   const [successResult, setSuccessResult] = useState<ProduceMultiRecipeResult | null>(null);
   const [clientRequestId, setClientRequestId] = useState<string>("");
+  const [materialSubstitutions, setMaterialSubstitutions] = useState<MaterialSubstitutionItem[]>([]);
 
   useEffect(() => {
     if (branchId != null) {
@@ -56,6 +64,7 @@ export function MultiRecipeProductionDialog({
     if (!open) {
       setSuccessResult(null);
       setClientRequestId("");
+      setMaterialSubstitutions([]);
       return;
     }
     // توليد مفتاح طلب حتمي واحد لكل جلسة حوار وتدويره فقط عند النجاح
@@ -89,6 +98,7 @@ export function MultiRecipeProductionDialog({
     {
       branchId: selectedBranchId ?? undefined,
       items: validItems,
+      materialSubstitutions: materialSubstitutions.length > 0 ? materialSubstitutions : undefined,
     },
     {
       enabled: canQueryAnalysis,
@@ -138,6 +148,7 @@ export function MultiRecipeProductionDialog({
     produceMut.mutate({
       branchId: selectedBranchId,
       clientRequestId: clientRequestId || `MULTI-REC-${Date.now().toString(36)}`,
+      materialSubstitutions: materialSubstitutions.length > 0 ? materialSubstitutions : undefined,
       batches: batches.map((b) => ({
         recipeId: b.recipeId,
         batchQty: b.batchQty,
@@ -145,6 +156,39 @@ export function MultiRecipeProductionDialog({
         laborPerUnit: b.laborPerUnit,
       })),
     });
+  };
+
+  const handleApplySubstitution = (sub: MaterialSubstitutionItem) => {
+    setMaterialSubstitutions((prev) => [
+      ...prev.filter(
+        (s) =>
+          !(
+            s.originalVariantId === sub.originalVariantId &&
+            ((s.recipeId == null && sub.recipeId == null) || s.recipeId === sub.recipeId)
+          )
+      ),
+      sub,
+    ]);
+  };
+
+  const handleRemoveSubstitution = (material: AggregatedMultiRecipeMaterialDto) => {
+    const oId = material.isSubstituted
+      ? (material.originalVariantId ?? material.materialVariantId)
+      : material.materialVariantId;
+    setMaterialSubstitutions((prev) =>
+      prev.filter(
+        (s) =>
+          s.originalVariantId !== oId &&
+          s.substituteVariantId !== material.materialVariantId
+      )
+    );
+  };
+
+  const handlePermanentSuccess = (res: SubstituteRecipeMaterialResult) => {
+    setMaterialSubstitutions((prev) =>
+      prev.filter((s) => s.originalVariantId !== res.originalVariantId)
+    );
+    utils.production.recipes.analyzeMultiRecipe.invalidate();
   };
 
   const hasInvalidQty = batches.some((b) => b.batchQty <= 0 || (b.scrapQty ?? 0) >= b.batchQty);
@@ -213,6 +257,11 @@ export function MultiRecipeProductionDialog({
             <MultiRecipeMaterialsSummary
               analysis={analysisQ.data}
               isLoading={analysisQ.isLoading}
+              branchId={selectedBranchId}
+              materialSubstitutions={materialSubstitutions}
+              onApplySubstitution={handleApplySubstitution}
+              onRemoveSubstitution={handleRemoveSubstitution}
+              onPermanentSuccess={handlePermanentSuccess}
             />
 
             <DialogFooter className="gap-2 sm:justify-start pt-2 border-t">

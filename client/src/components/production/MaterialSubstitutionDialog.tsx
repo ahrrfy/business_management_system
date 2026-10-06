@@ -163,6 +163,7 @@ export function MaterialSubstitutionDialog({
       return;
     }
     onApplyAdHoc?.({
+      recipeId: recipeId ?? undefined,
       originalVariantId,
       substituteVariantId: activeSubVariantId,
       substituteProductUnitId: selectedUnitId ? Number(selectedUnitId) : null,

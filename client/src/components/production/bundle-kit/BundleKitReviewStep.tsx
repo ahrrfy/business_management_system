@@ -1,4 +1,4 @@
-import { Coins, FileText, Layers, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Coins, FileText, Layers, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,6 +22,8 @@ interface BundleKitReviewStepProps {
   estimatedTotalCost: string;
   isSubmitting: boolean;
   onSubmit: () => void;
+  maxBundlesPossible?: number;
+  limitingFactorName?: string | null;
 }
 
 export function BundleKitReviewStep({
@@ -39,14 +41,32 @@ export function BundleKitReviewStep({
   estimatedTotalCost,
   isSubmitting,
   onSubmit,
+  maxBundlesPossible,
+  limitingFactorName,
 }: BundleKitReviewStepProps) {
   const compMap = new Map<number, ComponentRequirementDto>(
     components.map((c) => [c.variantId, c]),
   );
   const selectedBatches = batches.filter((b) => b.selected && b.batchQty > 0);
+  const isConstrained = maxBundlesPossible != null && maxBundlesPossible < requestedBundleQty;
 
   return (
     <div className="space-y-4" dir="rtl">
+      {/* تحذير عنق الزجاجة ونقص المواد إن وجد */}
+      {isConstrained && (
+        <div className="rounded-lg border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] p-3 text-xs text-[var(--sem-neg)] flex items-start gap-2.5">
+          <AlertTriangle aria-hidden className="size-5 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <div className="font-bold">تحذير: نقص في رصيد المواد الخام بالفرع</div>
+            <p className="text-foreground/80 leading-relaxed">
+              السقف الممكن حالياً هو <strong>{maxBundlesPossible} طقم</strong> فقط بسبب نقص «{limitingFactorName ?? "مادة مقيدة"}».
+              تأكيد أمر الإنتاج بالكمية الحالية سيؤدي لفشل العملية لعدم كفاية الرصيد.
+              يرجى الرجوع للخطوة السابقة واستبدال المادة النافذة ببديل متوفر.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* ملخص البكج والتكاليف التقديرية */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="rounded-lg border bg-card p-3 space-y-1">
