@@ -131,6 +131,10 @@ export function MaterialSubstitutionDialog({
       setError("يرجى اختيار المادة البديلة أولاً.");
       return;
     }
+    if (activeSubVariantId === originalVariantId) {
+      setError("المادة البديلة لا يمكن أن تكون نفس المادة الأصلية.");
+      return;
+    }
     const cleanQty = qty.trim();
     if (!cleanQty || !/^\d+(\.\d{1,4})?$/.test(cleanQty) || Number(cleanQty) <= 0) {
       setError("الكمية يجب أن تكون رقماً موجباً بأربع منازل عشرية كحد أقصى.");
@@ -138,6 +142,10 @@ export function MaterialSubstitutionDialog({
     }
     const factor = selectedUnit && Number(selectedUnit.conversionFactor) > 0 ? Number(selectedUnit.conversionFactor) : 1;
     const baseQty = new Decimal(cleanQty).times(factor).toDecimalPlaces(4).toFixed(4);
+    if (new Decimal(baseQty).lte(0)) {
+      setError("الكمية الناتجة بعد التحويل بالوحدة الأساس يجب أن تكون أكبر من صفر.");
+      return;
+    }
 
     if (scope === "permanent") {
       if (!recipeId) return setError("لا يمكن التعديل الدائم لعدم تحديد معرف الوصفة.");

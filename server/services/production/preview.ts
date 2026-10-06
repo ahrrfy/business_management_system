@@ -349,7 +349,14 @@ export async function runPreview(args: {
       const perOut = new Decimal(l.qtyPerOutputBase);
       const consumedDec = perOut.times(calc.started);
       if (!consumedDec.isInteger()) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `استهلاك «${l.productName ?? l.inputVariantId}» (${consumedDec.toString()}) ليس عدداً صحيحاً — عدّل الدفعة أو الوصفة.${multipleNote ? ` ${multipleNote}` : ""}` });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "استهلاك مادة الإنتاج ليس عدداً صحيحاً",
+            why: `استهلاك «${l.productName ?? l.inputVariantId}» (${consumedDec.toString()}) ليس عدداً صحيحاً — المخزون يُخصم بوحدات أساس صحيحة فقط.${multipleNote ? ` ${multipleNote}` : ""}`,
+            doThis: "عدّل حجم الدفعة أو معيار المادة في الوصفة ليكون الناتج عدداً صحيحاً",
+          }),
+        });
       }
       const consumed = consumedDec.toNumber();
       const unitCost = round2(money(costMap.get(Number(l.inputVariantId)) ?? "0"));

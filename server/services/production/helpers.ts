@@ -239,7 +239,14 @@ async function resolveRunPlan(tx: any, run: NonNullable<CreateProductionInput["r
 
     const consumed = qtyDec.times(batch);
     if (!consumed.isInteger()) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: `استهلاك «${displayName}» (${consumed.toString()}) ليس عدداً صحيحاً — عدّل الدفعة أو الوصفة` });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "استهلاك مادة الإنتاج ليس عدداً صحيحاً",
+          why: `استهلاك «${displayName}» (${consumed.toString()}) ليس عدداً صحيحاً — المخزون يُخصم بوحدات أساس صحيحة فقط`,
+          doThis: "عدّل حجم الدفعة أو معيار المادة في الوصفة ليكون الناتج عدداً صحيحاً",
+        }),
+      });
     }
     return {
       variantId: effectiveVariantId,

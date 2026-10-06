@@ -10,6 +10,7 @@ export const materialSubstitutionItemSchema = z
     substituteProductUnitId: z.number().int().positive().nullish(),
     qtyPerOutputBase: z
       .string()
+      .trim()
       .regex(/^\d+(\.\d{1,4})?$/, "الكمية يجب أن تكون رقماً موجباً بأربع منازل عشرية كحد أقصى")
       .refine((v) => Number(v) > 0, "الكمية يجب أن تكون أكبر من صفر"),
   })
@@ -29,10 +30,14 @@ export const substituteRecipeMaterialInputSchema = z
     substituteVariantId: z.number().int().positive("معرف المادة البديلة غير صالح"),
     substituteProductUnitId: z.number().int().positive().nullish(),
     qtyPerOutputBase: z
-      .string()
-      .regex(/^\d+(\.\d{1,4})?$/, "الكمية يجب أن تكون رقماً موجباً بأربع منازل عشرية كحد أقصى")
-      .refine((v) => Number(v) > 0, "الكمية يجب أن تكون أكبر من صفر")
-      .nullish(),
+      .preprocess(
+        (v) => (typeof v === "string" && v.trim() === "" ? null : typeof v === "string" ? v.trim() : v),
+        z
+          .string()
+          .regex(/^\d+(\.\d{1,4})?$/, "الكمية يجب أن تكون رقماً موجباً بأربع منازل عشرية كحد أقصى")
+          .refine((v) => Number(v) > 0, "الكمية يجب أن تكون أكبر من صفر")
+          .nullish(),
+      ),
     notes: z.string().max(500, "الملاحظة لا تتجاوز 500 حرف").nullish(),
     reason: z.string().max(255, "سبب الاستبدال لا يتجاوز 255 حرفاً").nullish(),
     branchId: z.number().int().positive().nullish(),

@@ -6,6 +6,7 @@ import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import { createProduction, runPreview } from "../productionService";
 import { createRecipe, substituteRecipeMaterial } from "../recipeService";
+import { materialSubstitutionItemSchema } from "../../../shared/recipeSubstitutionTypes";
 
 const adminActor = { userId: 1, branchId: 1, role: "ADMIN" };
 const managerActor = { userId: 2, branchId: 1, role: "MANAGER" };
@@ -992,5 +993,43 @@ describe("الاستبدال بوحدات قياس غير أساسية والح�
     expect(subLine).toBeDefined();
     expect(["45.0000", "40.0000"]).toContain(subLine?.qtyPerOutputBase);
   });
+
+  it("يقبل الكميات ذات المسافات البيضاء الزائدة ويعالج النص الفارغ كـ nullish", async () => {
+    const recipeId = await createTestRecipe();
+
+    // 1. تمرير كمية محاطة بمسافات بيضاء عبر الـ schema
+    const parsedItem = materialSubstitutionItemSchema.parse({
+      originalVariantId: 1,
+      substituteVariantId: 2,
+      qtyPerOutputBase: "   35.5000   ",
+    });
+    expect(parsedItem.qtyPerOutputBase).toBe("35.5000");
+
+    // 2. تمرير نص فارغ في الاستبدال الدائم: يُعامل كـ nullish ويعتمد كمية المادة السابقة
+    const res = await substituteRecipeMaterial(
+      {
+        recipeId,
+        originalVariantId: 1,
+        substituteVariantId: 2,
+        qtyPerOutputBase: "    ",
+      },
+      adminActor,
+    );
+    expect(res.success).toBe(true);
+    expect(res.qtyPerOutputBase).toBe("50.0000"); // اعتمد كمية المادة 1 السابقة تلقائياً
+
+    // 3. التحقق من رسالة الخطأ الهيكلية appErrorMessage عند استهلاك غير صحيح
+    await expect(
+      runPreview({
+        recipeId,
+        batchQty: 3,
+        branchId: 1,
+        materialSubstitutions: [
+          { originalVariantId: 2, substituteVariantId: 1, qtyPerOutputBase: "1.2500" }, // 3 * 1.25 = 3.75
+        ],
+      }),
+    ).rejects.toThrow(/استهلاك مادة الإنتاج ليس عدداً صحيحاً/);
+  });
 });
+
 
