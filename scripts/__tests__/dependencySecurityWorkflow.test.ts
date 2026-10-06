@@ -57,6 +57,7 @@ describe("dependency security coverage", () => {
     expect(overrides["postcss-selector-parser"]).toBe("7.1.6");
     expect(overrides["source-map-js"]).toBe("1.2.2");
     expect(overrides["shell-quote"]).toBe("^1.12.0");
+    expect(overrides["http-cache-semantics"]).toBe("4.3.0");
 
     const superappPackageJson = JSON.parse(
       read("expo/superapp-mobile/package.json"),
@@ -76,6 +77,7 @@ describe("dependency security coverage", () => {
 
     const osvConfig = read("osv-scanner.toml");
     expect(osvConfig).toContain('id = "GHSA-86w9-cpqp-85rv"');
+    expect(osvConfig).toContain('id = "GHSA-vfj7-8cjw-p6xm"');
     expect(osvConfig).toContain('id = "GHSA-hp3w-g68c-fv3c"');
     expect(osvConfig).toContain('reason = "');
   });

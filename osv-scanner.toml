@@ -7,9 +7,5 @@ id = "GHSA-vfj7-8cjw-p6xm"
 reason = "braces is pulled only by Tailwind, Metro, and Jest build/test tooling, does not process user-controlled patterns in the native runtime, and has no patched release yet"
 
 [[IgnoredVulns]]
-id = "GHSA-ch52-4w7c-c8xp"
-reason = "http-cache-semantics is pulled only by the @expo/ngrok development dependency, is not bundled in the native app runtime or used as a shared cache, and has no patched release yet"
-
-[[IgnoredVulns]]
 id = "GHSA-hp3w-g68c-fv3c"
 reason = "sprintf-js is pulled only through js-yaml in Expo development tooling, does not evaluate untrusted format strings in the native app runtime, and has no patched release yet"
