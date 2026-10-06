@@ -319,8 +319,7 @@ export async function requestSalesControl(
     if (input.requestType === "SALES_RETURN") {
       const returnedTotalDec = money(invoice.returnedTotal ?? "0");
       const totalDec = money(invoice.total);
-      const remaining = money(invoiceRemaining(invoice));
-      if (invoice.status === "RETURNED" || (totalDec.gt(0) && returnedTotalDec.gte(totalDec)) || remaining.lte(0)) {
+      if (invoice.status === "RETURNED" || (totalDec.gt(0) && returnedTotalDec.gte(totalDec))) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
