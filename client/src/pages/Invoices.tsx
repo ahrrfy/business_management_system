@@ -763,7 +763,7 @@ export default function Invoices() {
                     r.sourceType === "ONLINE" ||
                     r.sourceType === "WORKORDER",
                   gate: {
-                    roles: ["manager", "cashier", "sales_rep"],
+                    roles: ["manager", "cashier"],
                     module: "store",
                     level: "FULL",
                   },
@@ -775,7 +775,7 @@ export default function Invoices() {
                   onSelect: () => setCancelDeliveryTarget(r),
                   variant: "destructive",
                   hidden: r.consignmentId == null || (r.consignmentParcelStatus !== "ASSIGNED" && r.consignmentParcelStatus !== "OUT_FOR_DELIVERY" && r.consignmentParcelStatus !== "FAILED"),
-                  gate: { roles: ["manager"], module: "store", level: "FULL" },
+                  gate: { roles: ["manager", "cashier"], module: "store", level: "FULL" },
                 },
                 {
                   key: "duplicate",

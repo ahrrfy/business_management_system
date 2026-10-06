@@ -309,7 +309,7 @@ export default function InvoiceDetail() {
       (me.data.permissionsOverride ?? null) as PermissionMap | null,
       "store",
       "FULL",
-      ["manager", "cashier", "sales_rep"],
+      ["manager", "cashier"],
     ) &&
     (!data.consignmentNumber || data.consignmentStatus === "CANCELLED") &&
     data.status !== "CANCELLED" &&
@@ -324,7 +324,7 @@ export default function InvoiceDetail() {
       (me.data.permissionsOverride ?? null) as PermissionMap | null,
       "store",
       "FULL",
-      ["manager"],
+      ["manager", "cashier"],
     ) &&
     data.consignmentId != null &&
     (data.consignmentParcelStatus === "ASSIGNED" || data.consignmentParcelStatus === "OUT_FOR_DELIVERY" || data.consignmentParcelStatus === "FAILED");

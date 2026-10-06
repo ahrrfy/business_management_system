@@ -6,6 +6,7 @@ import { appRouter } from "../../routers";
 import { cancelDeliveryAssignment } from "../delivery/cancellation";
 import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
 import { listConsignmentsForParty } from "../delivery/queries";
+import { moduleAccessAllowed } from "@shared/permissions";
 
 const TABLES = [
   "deliveryOutbox",
@@ -106,6 +107,15 @@ async function seed() {
       name: "كاشير ١",
       email: "cashier1@test.local",
       role: "cashier",
+      loginMethod: "local",
+      branchId: 1,
+    },
+    {
+      id: 7,
+      openId: "accountant-1",
+      name: "محاسب ١",
+      email: "acc1@test.local",
+      role: "accountant",
       loginMethod: "local",
       branchId: 1,
     },
@@ -582,29 +592,78 @@ describe("dispatchInvoiceToDelivery — إعادة تنشيط السجل الم�
     ).toHaveLength(0);
   });
 
-  it("بوابة الراوتر تسمح sales_rep ذي store=FULL وتحترم السحب الصريح", async () => {
+  it("بوابة الراوتر تمنع sales_rep من إسناد الفاتورة وتقصر الإسناد على الكاشير والمدير", async () => {
     await seedInvoice(102);
-    const allowed = await caller("sales_rep", null).delivery.dispatchInvoice({
+    // 1. مبيعات (sales_rep) مرفوض
+    await expect(
+      caller("sales_rep", null).delivery.dispatchInvoice({
+        invoiceId: 102,
+        partyId: 1,
+        clientRequestId: "router-sales-denied-dispatch-102",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // 2. كاشير (cashier) مسموح
+    const cashierAllowed = await caller("cashier", null, 6).delivery.dispatchInvoice({
       invoiceId: 102,
       partyId: 1,
-      clientRequestId: "router-sales-dispatch-102",
+      clientRequestId: "router-cashier-dispatch-102",
     });
-    expect(allowed.invoiceId).toBe(102);
+    expect(cashierAllowed.invoiceId).toBe(102);
 
+    // 3. كاشير مسحوب الصلاحية مرفوض
     await seedInvoice(103);
     await expect(
-      caller("sales_rep", { store: "NONE" }).delivery.dispatchInvoice({
+      caller("cashier", { store: "NONE", sales: "NONE" }, 6).delivery.dispatchInvoice({
         invoiceId: 103,
         partyId: 1,
         clientRequestId: "router-denied-dispatch-103",
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // 4. مدير (manager) مسموح
+    const managerAllowed = await caller("manager", null, 1).delivery.dispatchInvoice({
+      invoiceId: 103,
+      partyId: 1,
+      clientRequestId: "router-manager-dispatch-103",
+    });
+    expect(managerAllowed.invoiceId).toBe(103);
   });
 
-  it("بوابة الراوتر تسمح للكاشير بإلغاء الإسناد وتحترم السحب الصريح", async () => {
+  it("بوابة الراوتر تمنع sales_rep من الإسناد بالباركود وتسمح للكاشير والمدير", async () => {
+    await seedInvoice(104);
+    // sales_rep مرفوض
+    await expect(
+      caller("sales_rep", null).delivery.dispatchByBarcode({
+        barcode: "INV-CANCEL-104",
+        partyId: 1,
+        clientRequestId: "router-sales-barcode-denied-104",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // cashier مسموح
+    const cashierBarcode = await caller("cashier", null, 6).delivery.dispatchByBarcode({
+      barcode: "INV-CANCEL-104",
+      partyId: 1,
+      clientRequestId: "router-cashier-barcode-104",
+    });
+    expect(cashierBarcode.sourceType).toBe("INVOICE");
+  });
+
+  it("بوابة الراوتر تسمح للكاشير بإلغاء الإسناد وتحترم السحب الصريح وتمنع sales_rep", async () => {
     await seedInvoice(105);
     const dispatched = await dispatch(105, 1, "dispatch-router-105");
-    const cancelled = await caller("cashier", null).delivery.cancelAssignment({
+
+    // sales_rep مرفوض
+    await expect(
+      caller("sales_rep", null).delivery.cancelAssignment({
+        consignmentId: dispatched.consignmentId,
+        reason: "محاولة إلغاء من مبيعات",
+        clientRequestId: "router-sales-cancel-denied-105",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const cancelled = await caller("cashier", null, 6).delivery.cancelAssignment({
       consignmentId: dispatched.consignmentId,
       reason: "إلغاء كاشير عبر الراوتر",
       clientRequestId: "router-cashier-cancel-105",
@@ -614,10 +673,123 @@ describe("dispatchInvoiceToDelivery — إعادة تنشيط السجل الم�
     await seedInvoice(106);
     const dispatched2 = await dispatch(106, 1, "dispatch-router-106");
     await expect(
-      caller("cashier", { store: "NONE" }).delivery.cancelAssignment({
+      caller("cashier", { store: "NONE", sales: "NONE" }, 6).delivery.cancelAssignment({
         consignmentId: dispatched2.consignmentId,
         reason: "محاولة كاشير مسحوبة صلاحيته",
         clientRequestId: "router-denied-cashier-cancel-106",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("بوابات الراوتر ترفض الصلاحيات الجزئية (store=READ) والأدوار غير المصرح بها لمسارات الإسناد والإلغاء", async () => {
+    await seedInvoice(107);
+    const dispatched = await dispatch(107, 1, "dispatch-router-107");
+
+    // 1. كاشير بصلاحية جزئية store=READ مرفوض في الإسناد والإلغاء وإعادة الإسناد
+    await expect(
+      caller("cashier", { store: "READ" }, 6).delivery.dispatchInvoice({
+        invoiceId: 107,
+        partyId: 1,
+        clientRequestId: "router-partial-cashier-dispatch-107",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    await expect(
+      caller("cashier", { store: "READ" }, 6).delivery.dispatchByBarcode({
+        barcode: "INV-CANCEL-107",
+        partyId: 1,
+        clientRequestId: "router-partial-cashier-barcode-107",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    await expect(
+      caller("cashier", { store: "READ" }, 6).delivery.cancelAssignment({
+        consignmentId: dispatched.consignmentId,
+        reason: "إلغاء بكاشير صلاحيته جزئية",
+        clientRequestId: "router-partial-cashier-cancel-107",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    await expect(
+      caller("cashier", { store: "READ" }, 6).delivery.reassignConsignment({
+        partyId: 2,
+        consignmentId: dispatched.consignmentId,
+        clientRequestId: "router-partial-cashier-reassign-107",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // 2. محاسب (accountant - قالبه store=READ) مرفوض في الإسناد والإلغاء
+    await expect(
+      caller("accountant", null, 7).delivery.dispatchInvoice({
+        invoiceId: 107,
+        partyId: 1,
+        clientRequestId: "router-accountant-dispatch-107",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    await expect(
+      caller("accountant", null, 7).delivery.cancelAssignment({
+        consignmentId: dispatched.consignmentId,
+        reason: "محاولة إلغاء من محاسب",
+        clientRequestId: "router-accountant-cancel-107",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // 3. موظف مبيعات باستثناء جزئي store=READ مرفوض أيضاً
+    await expect(
+      caller("sales_rep", { store: "READ" }, 2).delivery.dispatchInvoice({
+        invoiceId: 107,
+        partyId: 1,
+        clientRequestId: "router-sales-partial-dispatch-107",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    await expect(
+      caller("sales_rep", { store: "READ" }, 2).delivery.cancelAssignment({
+        consignmentId: dispatched.consignmentId,
+        reason: "محاولة إلغاء من مبيعات بـ store=READ",
+        clientRequestId: "router-sales-partial-cancel-107",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // 4. موظف استقبال مخصص (reception_clerk: baseRole=cashier مع تقييد sales=READ, pos=NONE و store=FULL) مسموح
+    const clerkCancel = await caller("cashier", { sales: "READ", pos: "NONE" }, 6).delivery.cancelAssignment({
+      consignmentId: dispatched.consignmentId,
+      reason: "إلغاء بواسطة موظف استقبال مصرح",
+      clientRequestId: "router-clerk-cancel-107",
+    });
+    expect(clerkCancel.consignmentId).toBe(dispatched.consignmentId);
+  });
+
+  it("بوابات الراوتر تمنع sales_rep من إعادة الإسناد ومن إنشاء بيع بتوصيل في sales.create", async () => {
+    await seedInvoice(108);
+    const dispatched = await dispatch(108, 1, "dispatch-router-108");
+
+    // 1. reassignConsignment تمنع sales_rep
+    await expect(
+      caller("sales_rep", null).delivery.reassignConsignment({
+        partyId: 2,
+        consignmentId: dispatched.consignmentId,
+        clientRequestId: "router-sales-reassign-denied-108",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // وتسمح للكاشير
+    const reassigned = await caller("cashier", null, 6).delivery.reassignConsignment({
+      partyId: 1,
+      consignmentId: dispatched.consignmentId,
+      clientRequestId: "router-cashier-reassign-108",
+    });
+    expect(reassigned.consignmentId).toBe(dispatched.consignmentId);
+
+    // 2. sales.create مع حمولة delivery ترفض sales_rep فورياً
+    await expect(
+      caller("sales_rep", null).sales.create({
+        branchId: 1,
+        customerId: 1,
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+        delivery: { partyId: 1, fee: "1500", recipientPhone: "07701234567" },
+        clientRequestId: "sales-create-denied-rep-108",
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
@@ -719,3 +891,30 @@ describe("ذرية إسناد وإلغاء التوصيل في استعلاما�
     expect(getAfterReactivate.deliveryPartyId).toBe(2);
   });
 });
+
+describe("توافق بوابات الواجهة مع صلاحيات كاشير الاستقبال والإدارة للإسناد والإلغاء", () => {
+  it("بوّابة الواجهة (moduleAccessAllowed مع store=FULL و [manager, cashier]) تعزل الأدوار غير المصرح بها وتسمح للكاشير والإدارة فقط", () => {
+    // الأدوار المسموحة افتراضياً
+    expect(moduleAccessAllowed("admin", null, "store", "FULL", ["manager", "cashier"])).toBe(true);
+    expect(moduleAccessAllowed("manager", null, "store", "FULL", ["manager", "cashier"])).toBe(true);
+    expect(moduleAccessAllowed("cashier", null, "store", "FULL", ["manager", "cashier"])).toBe(true);
+
+    // مندوب المبيعات وسائر الأدوار غير الإدارية وغير كاشير مرفوضون افتراضياً
+    expect(moduleAccessAllowed("sales_rep", null, "store", "FULL", ["manager", "cashier"])).toBe(false);
+    expect(moduleAccessAllowed("accountant", null, "store", "FULL", ["manager", "cashier"])).toBe(false);
+    expect(moduleAccessAllowed("warehouse", null, "store", "FULL", ["manager", "cashier"])).toBe(false);
+    expect(moduleAccessAllowed("purchasing", null, "store", "FULL", ["manager", "cashier"])).toBe(false);
+    expect(moduleAccessAllowed("print_operator", null, "store", "FULL", ["manager", "cashier"])).toBe(false);
+    expect(moduleAccessAllowed("courier", null, "store", "FULL", ["manager", "cashier"])).toBe(false);
+    expect(moduleAccessAllowed("user", null, "store", "FULL", ["manager", "cashier"])).toBe(false);
+
+    // سحب صلاحية المتجر من الكاشير أو المدير يرفضهما
+    expect(moduleAccessAllowed("cashier", { store: "NONE" }, "store", "FULL", ["manager", "cashier"])).toBe(false);
+    expect(moduleAccessAllowed("cashier", { store: "READ" }, "store", "FULL", ["manager", "cashier"])).toBe(false);
+    expect(moduleAccessAllowed("manager", { store: "NONE" }, "store", "FULL", ["manager", "cashier"])).toBe(false);
+
+    // منح صريح صادر من الإدارة لـ store=FULL يفتح البوابة
+    expect(moduleAccessAllowed("sales_rep", { store: "FULL" }, "store", "FULL", ["manager", "cashier"])).toBe(true);
+  });
+});
+

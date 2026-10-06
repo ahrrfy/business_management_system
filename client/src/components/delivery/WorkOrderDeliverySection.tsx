@@ -124,7 +124,7 @@ export function WorkOrderDeliverySection({
             {/* إلغاء الإسناد إذا أُسند بالخطأ ولم يُحصّل */}
             {data.consignmentId != null &&
               (data.parcelStatus === "ASSIGNED" || data.parcelStatus === "OUT_FOR_DELIVERY" || data.parcelStatus === "FAILED") &&
-              (role === "admin" || role === "manager") && (
+              (role === "admin" || role === "manager" || role === "cashier") && (
                 <Button
                   size="sm"
                   variant="destructive"

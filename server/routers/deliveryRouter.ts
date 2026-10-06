@@ -572,9 +572,8 @@ export const deliveryRouter = router({
   // keyset وفلاتر — حُذف هنا في نفس الـPR (حارس check:orphans: نقلٌ = حذفُ القديم معاً).
 
   // 5/8: isnad fatura qa'ima lil-tawseel (bay' mubashir bila amr shughl).
-  // Nafs bawwabat receptionQueue (workorders=FULL) — a'la min delivery.dispatch al-qadim
-  // (بوابة وحدة لا دور خام) wa-la tuda''if shay'an qa'iman.
-  dispatchInvoice: storeFulfillProcedure
+  // بوابة كاشير الاستقبال والإدارة (deliveryCashierProcedure) لإسناد الفواتير لجهات التوصيل.
+  dispatchInvoice: deliveryCashierProcedure
     .input(
       z.object({
         invoiceId: z.number().int().positive(),
@@ -610,7 +609,7 @@ export const deliveryRouter = router({
     }),
 
   /** إسناد سريع بالباركود (طلب متجر ORD-، أمر شغل WO-، فاتورة INV-) مع إرجاع بيانات الطباعة المباشرة */
-  dispatchByBarcode: storeFulfillProcedure
+  dispatchByBarcode: deliveryCashierProcedure
     .input(
       z.object({
         barcode: z.string().trim().min(1).max(200),
