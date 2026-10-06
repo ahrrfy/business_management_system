@@ -2969,12 +2969,14 @@ export async function recordSalesReturnCartReceipt(
     returnNumber: string;
     customerName: string;
     customerId?: number | null;
+    invoiceId?: number | null;
     userId: number;
   },
 ): Promise<number> {
   const [insReceipt] = await tx.insert(receipts).values({
     branchId: params.branchId,
     shiftId: params.shiftId,
+    invoiceId: params.invoiceId ?? null,
     direction: "OUT",
     amount: toDbMoney(params.amount),
     paymentMethod: "CASH",
@@ -3000,6 +3002,7 @@ export async function recordSalesReturnCartCardReceipt(
     returnNumber: string;
     customerName: string;
     customerId?: number | null;
+    invoiceId?: number | null;
     reference?: string | null;
     userId: number;
   },
@@ -3014,6 +3017,7 @@ export async function recordSalesReturnCartCardReceipt(
   const [insReceipt] = await tx.insert(receipts).values({
     branchId: params.branchId,
     shiftId: null,
+    invoiceId: params.invoiceId ?? null,
     direction: "OUT",
     amount: toDbMoney(params.amount),
     paymentMethod: "CARD",

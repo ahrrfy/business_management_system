@@ -11,7 +11,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { DataTable } from "@/components/data-table/DataTable";
 import { Link } from "wouter";
-import { invoiceItemColumns, type InvoiceItemRow } from "./InvoiceDetailComponents";
+import {
+  invoiceItemColumns,
+  invoiceReturnColumns,
+  type InvoiceItemRow,
+  type InvoiceReturnRow,
+} from "./InvoiceDetailComponents";
 import { invoiceStatusBadgeVariant, invoiceStatusLabel } from "@shared/invoiceStatus";
 import { sourceTypeLabel } from "@/lib/labels";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
@@ -53,12 +58,19 @@ export function InvoiceDetailDrawer({
     "FULL",
   );
 
+  const isInvoiceFullyReturned = Boolean(
+    inv &&
+      (inv.status === "RETURNED" ||
+        (D(inv.returnedTotal ?? "0").gte(D(inv.total)) && D(inv.total).gt(0))),
+  );
+
   const canReturn =
     canWriteSales &&
     inv &&
     inv.status !== "CANCELLED" &&
     inv.status !== "RETURNED" &&
-    inv.status !== "SUPERSEDED";
+    inv.status !== "SUPERSEDED" &&
+    !isInvoiceFullyReturned;
 
   const canPay =
     canWriteSales &&
@@ -66,6 +78,7 @@ export function InvoiceDetailDrawer({
     inv.status !== "CANCELLED" &&
     inv.status !== "RETURNED" &&
     inv.status !== "SUPERSEDED" &&
+    !isInvoiceFullyReturned &&
     remaining.gt(0);
 
   const [payOpen, setPayOpen] = useState(false);
@@ -86,11 +99,18 @@ export function InvoiceDetailDrawer({
                 {inv?.invoiceNumber ?? `#${invoiceId ?? ""}`}
               </span>
             </SheetTitle>
-            {inv?.status ? (
-              <Badge variant={invoiceStatusBadgeVariant(inv.status)}>
-                {invoiceStatusLabel(inv.status)}
-              </Badge>
-            ) : null}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {isInvoiceFullyReturned && (
+                <Badge variant="destructive" className="font-bold bg-destructive text-destructive-foreground">
+                  تم إرجاع هذه الفاتورة
+                </Badge>
+              )}
+              {inv?.status ? (
+                <Badge variant={invoiceStatusBadgeVariant(inv.status)}>
+                  {invoiceStatusLabel(inv.status)}
+                </Badge>
+              ) : null}
+            </div>
           </div>
         </SheetHeader>
 
@@ -186,6 +206,29 @@ export function InvoiceDetailDrawer({
                 />
               </div>
             </div>
+
+            {/* سجل المرتجعات إن وجدت */}
+            {inv.returns && inv.returns.length > 0 && (
+              <div>
+                <div className="text-xs font-semibold mb-1.5 flex items-center justify-between text-destructive">
+                  <span>سجل المرتجعات ({inv.returns.length})</span>
+                  <span className="font-mono text-xs">
+                    إجمالي المسترد: {fmt(inv.returnedTotal ?? "0")} د.ع
+                  </span>
+                </div>
+                <div className="rounded-md border border-destructive/20 overflow-hidden bg-destructive/5">
+                  <DataTable<InvoiceReturnRow>
+                    embedded
+                    searchable={false}
+                    bounded={false}
+                    pageSize={Infinity}
+                    data={inv.returns}
+                    columns={invoiceReturnColumns}
+                    emptyText="لا توجد مرتجعات مسجلة."
+                  />
+                </div>
+              </div>
+            )}
 
             {/* الإجراءات الموضعية المباشرة */}
             <div className="pt-2 border-t flex flex-wrap items-center justify-between gap-2">

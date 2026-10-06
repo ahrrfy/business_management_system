@@ -63,6 +63,11 @@ export function InvoiceHeaderCard({
                 مُعدَّلة
               </Link>
             )}
+            {(data.status === "RETURNED" || (D(data.returnedTotal ?? "0").gte(D(data.total)) && D(data.total).gt(0))) && (
+              <Badge variant="destructive" className="text-xs font-bold gap-1 bg-red-600 text-white hover:bg-red-700">
+                تم إرجاع هذه الفاتورة
+              </Badge>
+            )}
             <Badge variant={invoiceStatusBadgeVariant(data.status)} className="text-xs">
               {invoiceStatusLabel(data.status)}
             </Badge>
@@ -247,6 +252,16 @@ export function InvoiceHeaderCard({
             ألغيت بواسطة:{" "}
             <strong>{data.cancelledByName ?? "غير موثّق"}</strong>
             {data.cancelledAt ? ` — ${fmtDateTime(data.cancelledAt)}` : ""}
+          </div>
+        )}
+        {(data.status === "RETURNED" || (D(data.returnedTotal ?? "0").gte(D(data.total)) && D(data.total).gt(0))) && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive flex items-center justify-between flex-wrap gap-2">
+            <span className="font-bold flex items-center gap-1.5">
+              تم إرجاع هذه الفاتورة بالكامل (إجمالي المسترد: {fmt(data.returnedTotal ?? "0")} د.ع من أصل {fmt(data.total)} د.ع)
+            </span>
+            <span className="text-xs text-muted-foreground font-mono">
+              {(data.returns ?? []).length} حركة مرتجع مسجلة
+            </span>
           </div>
         )}
       </CardContent>

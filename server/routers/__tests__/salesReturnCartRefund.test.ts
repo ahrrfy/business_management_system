@@ -55,7 +55,7 @@ function db() {
 async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const table of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${table}\``));
+  for (const table of TABLES) await d.execute(sql.raw(`DELETE FROM \`${table}\``));
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
 }
 
@@ -167,12 +167,13 @@ async function entriesOfType(entryType: "RETURN" | "PAYMENT_OUT") {
 
 const cartItems = [{ variantId: 1, productName: "قلم", quantity: 3, unitPrice: "10.00" }];
 
-beforeEach(async () => {
-  await reset();
-  await seed();
-});
+describe.sequential("returns.executeSalesReturnCart — suite", () => {
+  beforeEach(async () => {
+    await reset();
+    await seed();
+  });
 
-describe("returns.executeSalesReturnCart — سلامة المسار الماليّ (فاتورةٌ مطابقة)", () => {
+  describe.sequential("returns.executeSalesReturnCart — سلامة المسار الماليّ (فاتورةٌ مطابقة)", () => {
   it("⭐ CASH: إيصالُ صرفٍ (OUT/DRAWER) + قيد PAYMENT_OUT + reconcile نظيف + رصيد العميل صفر", async () => {
     const shiftId = await openShift();
     const sale = await sellCashToCustomer(shiftId, 1, 3); // ٣٠.٠٠ نقداً في الدرج
@@ -287,7 +288,7 @@ describe("returns.executeSalesReturnCart — سلامة المسار المال�
   });
 });
 
-describe("returns.executeSalesReturnCart — عميلٌ مسجّلٌ بلا فاتورةٍ مطابقة (فجوة reconcile)", () => {
+describe.sequential("returns.executeSalesReturnCart — عميلٌ مسجّلٌ بلا فاتورةٍ مطابقة (فجوة reconcile)", () => {
   it("⭐ CASH + عميلٌ + بلا فاتورة: reconcile نظيف ولا انحراف يُنسَب للعميل", async () => {
     const shiftId = await openShift();
     // تمويلُ الدرج مباشرةً (بلا بيع) كي يتّسع للصرف — إيصالٌ بلا قيدٍ فلا يمسّ reconcile.
@@ -351,7 +352,7 @@ describe("returns.executeSalesReturnCart — عميلٌ مسجّلٌ بلا فا
   });
 });
 
-describe("returns.executeSalesReturnCart — عزلُ الفرع (لا افتراضُ فرعٍ صامت)", () => {
+describe.sequential("returns.executeSalesReturnCart — عزلُ الفرع (لا افتراضُ فرعٍ صامت)", () => {
   it("⭐ مشرفٌ بلا فرعٍ مُسنَد ⇒ FORBIDDEN، ولا يسقط صامتاً إلى الفرع 1", async () => {
     await openShift(); // وردية على الفرع 1 — لو سقط `?? 1` صامتاً لَصرَف منها.
     const adminNoBranch: TrpcContext = {
@@ -385,3 +386,5 @@ describe("returns.executeSalesReturnCart — عزلُ الفرع (لا افتر�
     ).toHaveLength(0);
   });
 });
+});
+
