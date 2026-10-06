@@ -111,7 +111,7 @@ const INVOICE_EXPORT_COLUMNS: ExportColumn<Row>[] = [
   { key: "customerName", header: "العميل", map: (r) => custName(r.customerName) },
   { key: "sourceType", header: "المصدر", map: (r) => sourceTypeLabel(r.sourceType) },
   { key: "channel", header: "القناة", map: (r) => invoiceChannelLabel(deriveInvoiceChannel(r)) },
-  { key: "workOrderNumber", header: "رقم أمر الشغل", map: (r) => r.workOrderNumber ?? "" },
+  { key: "workOrderNumber", header: "رقم أمر الشغل", map: (r) => r.workOrderNumber ?? r.onlineOrderNumber ?? "" },
   { key: "consignmentStatus", header: "التوصيل", map: (r) => deliveryCell(r) },
   { key: "salespersonName", header: "موظف المبيعات", map: (r) => r.salespersonName ?? "" },
   { key: "shiftId", header: "رقم الوردية", map: (r) => r.shiftId ?? "" },
@@ -561,6 +561,10 @@ export default function Invoices() {
                 <button type="button" onClick={() => navigate(`/work-orders/${r.workOrderId}`)} className="font-mono text-[10px] text-muted-foreground underline-offset-2 hover:underline" dir="ltr" title="فتح أمر الشغل">
                   {r.workOrderNumber}
                 </button>
+              ) : r.onlineOrderNumber ? (
+                <button type="button" onClick={() => navigate(`/store-admin?tab=orders&search=${encodeURIComponent(r.onlineOrderNumber!)}`)} className="font-mono text-[10px] text-muted-foreground underline-offset-2 hover:underline" dir="ltr" title="فتح طلب المتجر">
+                  {r.onlineOrderNumber}
+                </button>
               ) : null}
             </div>
           );
@@ -842,7 +846,7 @@ export default function Invoices() {
       العميل: custName(r.customerName),
       المصدر: sourceTypeLabel(r.sourceType),
       القناة: invoiceChannelLabel(deriveInvoiceChannel(r)),
-      "رقم أمر الشغل": r.workOrderNumber ?? "",
+      "رقم أمر الشغل": r.workOrderNumber ?? r.onlineOrderNumber ?? "",
       التوصيل: deliveryCell(r),
       "موظف المبيعات": r.salespersonName ?? "",
       الوردية: r.shiftId ?? "",

@@ -36,7 +36,8 @@ import { Input } from "@/components/ui/input";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
-import { printOnlineOrderPreparationA4, printOnlineOrderThermal } from "@/lib/printing/onlineOrder";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
+import { printOnlineOrderPreparationA4, printOnlineOrderThermal, printOnlineOrderInvoiceA4 } from "@/lib/printing/onlineOrder";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { storefrontUrl } from "@/lib/siteHosts";
 
@@ -219,6 +220,7 @@ export default function OrderFulfillment() {
         const courierShipped = st === "SHIPPED" && o.deliveryPartyId != null;
         const next = courierShipped ? undefined : ORDER_NEXT_STEP[st];
         const canPrintPreparation = st === "CONFIRMED" || st === "PROCESSING";
+        const canPrintInvoice = st !== "PENDING" && st !== "CANCELLED";
         const isBusy = setStatusM.isPending || printingId === o.id;
         return (
           <RowActions
@@ -266,6 +268,20 @@ export default function OrderFulfillment() {
                   ? "ثبّت الطلب أولاً قبل طباعة ورقة التجهيز"
                   : "هناك عملية جارية على الطلب",
                 onSelect: () => printPreparationA4(o.id),
+              },
+              {
+                key: "print-unified-invoice-a4",
+                kind: "print",
+                label: "طباعة الفاتورة الموحدة A4",
+                icon: FileText,
+                gate: { module: "store", level: "READ" },
+                disabled: isBusy || !canPrintInvoice,
+                disabledReason: isBusy
+                  ? "هناك عملية جارية على الطلب"
+                  : st === "CANCELLED"
+                    ? "لا يمكن طباعة فاتورة لطلب ملغى"
+                    : "ثبّت الطلب أولاً قبل طباعة الفاتورة الموحدة",
+                onSelect: () => printInvoiceA4Action(o.id),
               },
               {
                 key: "dispatch",
@@ -396,12 +412,39 @@ export default function OrderFulfillment() {
   }
 
   async function printPreparationA4(id: number) {
+    if (!reservePrintWindow()) return notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
     setPrintingId(id);
     try {
       const d = await utils.storeAdmin.orders.detail.fetch({ id });
-      if (!d) { notify.err("تعذر جلب تفاصيل الطلب"); return; }
+      if (!d) {
+        releaseReservedPrintWindow();
+        notify.err("تعذر جلب تفاصيل الطلب");
+        return;
+      }
       printOnlineOrderPreparationA4(d);
-    } catch (e) { notify.err(e); }
+    } catch (e) {
+      releaseReservedPrintWindow();
+      notify.err(e);
+    }
+    finally { setPrintingId(null); }
+  }
+
+  async function printInvoiceA4Action(id: number) {
+    if (!reservePrintWindow()) return notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
+    setPrintingId(id);
+    try {
+      const d = await utils.storeAdmin.orders.detail.fetch({ id });
+      if (!d) {
+        releaseReservedPrintWindow();
+        notify.err("تعذر جلب تفاصيل الطلب");
+        return;
+      }
+      await printOnlineOrderInvoiceA4(d);
+      notify.ok("فُتحت نافذة طباعة الفاتورة الموحدة A4");
+    } catch (e) {
+      releaseReservedPrintWindow();
+      notify.err(e);
+    }
     finally { setPrintingId(null); }
   }
 

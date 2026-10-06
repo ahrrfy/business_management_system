@@ -776,6 +776,8 @@ export function buildSalesListConds(
         sql`coalesce(${deliveryConsignments.recipientPhone}, '') LIKE ${suffixRaw} ESCAPE '!'`,
       );
     }
+    const numId = /^\d+$/.test(term) && term.length <= 9 ? Number(term) : null;
+    const numConds = numId != null && numId > 0 ? [eq(onlineOrders.id, numId)] : [];
     conds.push(
       or(
         sql`${invoices.invoiceNumber} LIKE ${raw} ESCAPE '!'`,
@@ -786,9 +788,12 @@ export function buildSalesListConds(
         // يعيد «لا فواتير مطابقة» حتماً. الـleftJoin على workOrders قائمٌ في كل مستهلكي
         // هذه الشروط (يفرضه عزل الموظف) فالتوسعة بلا كلفة بنيوية.
         sql`coalesce(${workOrders.orderNumber}, '') LIKE ${raw} ESCAPE '!'`,
+        sql`coalesce(${onlineOrders.orderNumber}, '') LIKE ${raw} ESCAPE '!'`,
+        sql`coalesce(${deliveryConsignments.consignmentNumber}, '') LIKE ${raw} ESCAPE '!'`,
         // مطابقةٌ تامّة لا LIKE: `sourceId` يحمل أيضاً clientRequestId (uuid) لفواتير POS،
         // فـLIKE على جزءٍ قصير يلوّث النتائج.
         eq(invoices.sourceId, term),
+        ...numConds,
         ...phoneConds,
       )!,
     );
@@ -1425,6 +1430,8 @@ export const saleRouter = router({
             // ⤇ الموظّف يبحث بالرقم فيجد الفاتورة ولا يرى في الصفّ ما يربطها بأمره.
             workOrderId: workOrders.id,
             workOrderNumber: workOrders.orderNumber,
+            onlineOrderId: onlineOrders.id,
+            onlineOrderNumber: onlineOrders.orderNumber,
             // شارة التصحيح في القائمة (طلب المالك ١٧/٨): كانت تُعاد في `get` وحدها
             // ⤇ فاتورةٌ مُستبدَلة تبدو في القائمة كأيّ غيرها.
             correctionOfInvoiceId: invoices.correctionOfInvoiceId,
@@ -1511,6 +1518,8 @@ export const saleRouter = router({
             // ⤇ الموظّف يبحث بالرقم فيجد الفاتورة ولا يرى في الصفّ ما يربطها بأمره.
             workOrderId: workOrders.id,
             workOrderNumber: workOrders.orderNumber,
+            onlineOrderId: onlineOrders.id,
+            onlineOrderNumber: onlineOrders.orderNumber,
             // شارة التصحيح في القائمة (طلب المالك ١٧/٨): كانت تُعاد في `get` وحدها
             // ⤇ فاتورةٌ مُستبدَلة تبدو في القائمة كأيّ غيرها.
             correctionOfInvoiceId: invoices.correctionOfInvoiceId,
@@ -1709,6 +1718,10 @@ export const saleRouter = router({
           consignmentDispatchedAt: deliveryConsignments.dispatchedAt,
           consignmentSettledAt: deliveryConsignments.settledAt,
           onlineOrderStatus: onlineOrders.status,
+          workOrderId: workOrders.id,
+          workOrderNumber: workOrders.orderNumber,
+          onlineOrderId: onlineOrders.id,
+          onlineOrderNumber: onlineOrders.orderNumber,
           deliveryAddress: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${onlineOrders.shippingAddress}, ''))`,
           deliveryGovernorate: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.governorate}, ''), NULLIF(${onlineOrders.governorate}, ''))`,
           externalTrackingRef: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.externalTrackingRef}, ''), NULLIF(${onlineOrders.trackingNumber}, ''))`,

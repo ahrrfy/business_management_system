@@ -5,6 +5,9 @@ import { fmtDateTime } from "../date";
 import { formatArabicMoneyWords } from "./tafqit";
 import { code128Svg } from "./barcode";
 import { docBarcode } from "@shared/documentNumber";
+import { governorateById } from "@shared/governorates";
+import { storefrontUrl } from "../siteHosts";
+import { printInvoiceA4, type InvoicePrintData } from "./printTemplates";
 
 export interface OnlineOrderPrintData {
   orderNumber: string;
@@ -27,6 +30,11 @@ export interface OnlineOrderPrintData {
   reprintedAt?: Date | string;
   reprintedBy?: string;
   barcode?: boolean;
+  couponCode?: string | null;
+  couponDiscount?: string | null;
+  discountAmount?: string | null;
+  labelToken?: string | null;
+  qrUrl?: string | null;
 }
 
 const absoluteImage = (src: string | null): string | null => {
@@ -125,3 +133,56 @@ export function printOnlineOrderPreparationA4(d: OnlineOrderPrintData): void {
   <script>window.addEventListener('load',()=>{(document.fonts?.ready||Promise.resolve()).then(()=>setTimeout(()=>window.print(),80))});window.addEventListener('afterprint',()=>window.close())</script></body></html>`;
   openPrintWindow(html, "width=900,height=1100");
 }
+
+/** تجهيز بيانات فاتورة المتجر بالتصميم الموحد (A4) — لفواتير الاستقبال. */
+export function buildOnlineOrderInvoicePrintData(d: OnlineOrderPrintData): InvoicePrintData {
+  const govName = d.governorate ? (governorateById(d.governorate)?.name ?? d.governorate) : null;
+  const cleanAddress = d.addressText?.trim() || null;
+  const address = [govName, cleanAddress].filter(Boolean).join(" — ") || null;
+  const discountVal = d.discountAmount ?? d.couponDiscount ?? undefined;
+  const couponNote = d.couponCode ? `كوبون خصم: ${d.couponCode}` : null;
+  const cleanNotes = d.notes?.trim() || null;
+  const notes = [cleanNotes, couponNote].filter(Boolean).join(" | ") || null;
+  const qrTarget = d.qrUrl?.trim()
+    || (d.labelToken
+      ? `${storefrontUrl()}?order=${encodeURIComponent(d.orderNumber)}&token=${encodeURIComponent(d.labelToken)}`
+      : undefined);
+
+  return {
+    invoiceNumber: d.orderNumber,
+    invoiceDate: d.createdAt,
+    customerName: d.customerName?.trim() ? d.customerName.trim() : "عميل نقدي",
+    customerPhone: d.customerPhone?.trim() || null,
+    customerAddress: address,
+    notes,
+    paymentMethod: "الدفع عند الاستلام (COD)",
+    barcode: d.barcode !== false ? docBarcode("ORD", d.orderNumber) : null,
+    items: d.items.map((item) => {
+      const variantPart = item.variantLabel?.trim() ? ` — ${item.variantLabel.trim()}` : "";
+      const customPart = item.customizationSummary?.trim() ? ` (تخصيص: ${item.customizationSummary.trim()})` : "";
+      return {
+        productName: `${item.productName.trim()}${variantPart}${customPart}`,
+        unitName: item.unitName?.trim() || undefined,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        total: item.total,
+      };
+    }),
+    subtotal: d.subtotal,
+    discountAmount: discountVal && Number(discountVal) > 0 ? String(discountVal) : undefined,
+    deliveryFee: d.deliveryFee,
+    deliveryFree: d.deliveryFree,
+    deliveryWaivedAmount: d.deliveryWaivedAmount,
+    total: d.total,
+    paidAmount: d.status === "DELIVERED" ? d.total : "0",
+    customerBalance: undefined,
+    qrUrl: qrTarget,
+    qrPayload: d.orderNumber,
+  };
+}
+
+/** طباعة فاتورة المتجر بالتصميم الموحد (A4) — لفواتير الاستقبال. */
+export async function printOnlineOrderInvoiceA4(d: OnlineOrderPrintData): Promise<void> {
+  await printInvoiceA4(buildOnlineOrderInvoicePrintData(d));
+}
+

@@ -32,6 +32,7 @@ function adminCtx(): TrpcContext {
 const caller = () => appRouter.createCaller(adminCtx());
 
 const TABLES = [
+  "deliveryConsignments", "deliveryParties", "onlineOrders",
   "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
   "purchaseOrderItems", "purchaseOrders",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
@@ -204,5 +205,78 @@ describe("sales.listSummary — مجاميع الفلترة", () => {
     expect(round2s(sum.totalAmount)).toBe("30.00"); // 10 + 20، والثلاثون خارج الحدّ
     const expTotal = rows.reduce((x, r) => x.plus(r.total), new Decimal(0));
     expect(round2s(sum.totalAmount)).toBe(round2s(expTotal));
+  });
+
+  it("يطابق رقم طلب المتجر ORD-... ورقم الإرسالية CNS-... في البحث q لقائمة الفواتير ومجاميعها", async () => {
+    const inv1 = await sale("1");
+    const inv2 = await sale("2");
+
+    // ربط الفاتورة 1 بطلب متجر ORD-2026-8888
+    await db().insert(s.onlineOrders).values({
+      id: 801,
+      orderNumber: "ORD-2026-8888",
+      customerId: 1,
+      branchId: 1,
+      invoiceId: inv1.invoiceId,
+      subtotal: "10.00",
+      total: "10.00",
+      status: "SHIPPED",
+    });
+
+    // ربط الفاتورة 2 بإرسالية توصيل CNS-2026-0077
+    await db().insert(s.deliveryParties).values({
+      id: 1,
+      branchId: 1,
+      name: "شركة توصيل",
+      partyType: "COMPANY",
+      status: "ACTIVE",
+    });
+    await db().insert(s.deliveryConsignments).values({
+      id: 77,
+      consignmentNumber: "CNS-2026-0077",
+      branchId: 1,
+      partyId: 1,
+      invoiceId: inv2.invoiceId,
+      sourceType: "INVOICE",
+      sourceId: inv2.invoiceId,
+      codAmount: "20.00",
+      status: "DISPATCHED",
+      parcelStatus: "OUT_FOR_DELIVERY",
+      moneyStatus: "UNSETTLED",
+    });
+
+    const c = caller();
+
+    // 1. بحث بالرقم الكامل لطلب المتجر
+    const resOrdFull = await c.sales.list({ q: "ORD-2026-8888" });
+    expect(resOrdFull.length).toBe(1);
+    expect(resOrdFull[0].id).toBe(inv1.invoiceId);
+    expect(resOrdFull[0].onlineOrderNumber).toBe("ORD-2026-8888");
+    expect(resOrdFull[0].onlineOrderId).toBe(801);
+
+    // 2. بحث بأرقام طلب المتجر فقط (8888)
+    const resOrdDigits = await c.sales.list({ q: "8888" });
+    expect(resOrdDigits.length).toBe(1);
+    expect(resOrdDigits[0].id).toBe(inv1.invoiceId);
+
+    // 3. بحث برقم الإرسالية CNS-...
+    const resCns = await c.sales.list({ q: "CNS-2026-0077" });
+    expect(resCns.length).toBe(1);
+    expect(resCns[0].id).toBe(inv2.invoiceId);
+
+    // 4. المجاميع تتطابق مع البحث
+    const sumOrd = await c.sales.listSummary({ q: "ORD-2026-8888" });
+    expect(sumOrd.count).toBe(1);
+    expect(round2s(sumOrd.totalAmount)).toBe("10.00");
+
+    // 5. بحث بالمعرف الرقمي لطلب المتجر (801)
+    const resOrdId = await c.sales.list({ q: "801" });
+    expect(resOrdId.length).toBe(1);
+    expect(resOrdId[0].id).toBe(inv1.invoiceId);
+
+    // 6. التحقق من أن sales.get يُسقط أيضاً onlineOrderNumber وonlineOrderId
+    const getInv = await c.sales.get({ invoiceId: inv1.invoiceId });
+    expect(getInv?.onlineOrderNumber).toBe("ORD-2026-8888");
+    expect(getInv?.onlineOrderId).toBe(801);
   });
 });

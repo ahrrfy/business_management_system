@@ -25,6 +25,7 @@ const TABLES = [
   "deliveryConsignments",
   "deliveryPartyMembers",
   "deliveryParties",
+  "onlineOrders",
   "workOrders",
   "invoices",
   "customers",
@@ -128,6 +129,30 @@ async function seed() {
       returnedTotal: "0.00",
       createdBy: 1,
     },
+    {
+      id: 106,
+      invoiceNumber: "INV-2026-0106",
+      sourceType: "ONLINE",
+      branchId: 1,
+      customerId: 1,
+      subtotal: "15000.00",
+      total: "15000.00",
+      paidAmount: "0.00",
+      returnedTotal: "0.00",
+      createdBy: 1,
+    },
+    {
+      id: 107,
+      invoiceNumber: "INV-2026-0107",
+      sourceType: "ONLINE",
+      branchId: 1,
+      customerId: 1,
+      subtotal: "20000.00",
+      total: "20000.00",
+      paidAmount: "0.00",
+      returnedTotal: "0.00",
+      createdBy: 1,
+    },
   ]);
 
   // 5. أوامر شغل
@@ -164,8 +189,74 @@ async function seed() {
     },
   ]);
 
+  // 5.5 طلبات متجر إلكتروني
+  await d.insert(s.onlineOrders).values([
+    {
+      id: 701,
+      orderNumber: "ORD-2026-9999",
+      customerId: 1,
+      branchId: 1,
+      invoiceId: 106,
+      subtotal: "15000.00",
+      total: "15000.00",
+      status: "SHIPPED",
+    },
+    {
+      id: 702,
+      orderNumber: "ORD-2026-7777",
+      customerId: 1,
+      branchId: 1,
+      invoiceId: 107,
+      subtotal: "20000.00",
+      total: "20000.00",
+      status: "SHIPPED",
+    },
+  ]);
+
   // 6. إرساليات التوصيل
   await d.insert(s.deliveryConsignments).values([
+    {
+      id: 55,
+      consignmentNumber: "CNS-2026-0055",
+      partyId: 1,
+      branchId: 1,
+      invoiceId: 106,
+      sourceType: "ONLINE_ORDER",
+      sourceId: 701,
+      endCustomerId: 1,
+      recipientName: "زبون متجر الكتروني",
+      recipientPhone: "07801239999",
+      deliveryAddress: "بغداد - المنصور",
+      parcelStatus: "OUT_FOR_DELIVERY",
+      moneyStatus: "UNSETTLED",
+      status: "DISPATCHED",
+      codAmount: "15000.00",
+      collectedAmount: "0.00",
+      counterSettledAmount: "0.00",
+      deliveryFee: "5000.00",
+      dispatchedBy: 1,
+    },
+    {
+      id: 56,
+      consignmentNumber: "CNS-2026-0056",
+      partyId: 1,
+      branchId: 1,
+      invoiceId: 107,
+      sourceType: "INVOICE",
+      sourceId: 107,
+      endCustomerId: 1,
+      recipientName: "زبون إرسالية فاتورة متجر",
+      recipientPhone: "07801237777",
+      deliveryAddress: "بغداد - الكرادة",
+      parcelStatus: "OUT_FOR_DELIVERY",
+      moneyStatus: "UNSETTLED",
+      status: "DISPATCHED",
+      codAmount: "20000.00",
+      collectedAmount: "0.00",
+      counterSettledAmount: "0.00",
+      deliveryFee: "5000.00",
+      dispatchedBy: 1,
+    },
     {
       id: 88,
       consignmentNumber: "CNS-2026-0088",
@@ -391,4 +482,59 @@ describe("predictiveSearchConsignments — محرك البحث التنبؤي ا
     const singleDigit = await predictiveSearchConsignments("8", { branchId: 1 });
     expect(singleDigit).toEqual([]);
   });
+
+  it("يطابق جزئياً برقم طلب المتجر ORD-... ويصنف ORDER_NUMBER", async () => {
+    const results = await predictiveSearchConsignments("ORD-2026-9999", { branchId: 1 });
+    expect(results.length).toBeGreaterThan(0);
+    const found = results.find((r) => r.id === 55);
+    expect(found).toBeDefined();
+    expect(found?.matchedOn).toContain("ORDER_NUMBER");
+    expect(found?.orderNumber).toBe("ORD-2026-9999");
+  });
+
+  it("يطابق جزئياً بأرقام طلب المتجر 9999", async () => {
+    const results = await predictiveSearchConsignments("9999", { branchId: 1 });
+    expect(results.length).toBeGreaterThan(0);
+    const found = results.find((r) => r.id === 55);
+    expect(found).toBeDefined();
+    expect(found?.matchedOn).toContain("ORDER_NUMBER");
+    expect(found?.orderNumber).toBe("ORD-2026-9999");
+  });
+
+  it("يطابق بمعرف الطلب الرقمي 701 ويصنف ORDER_NUMBER مع أعلى أولوية", async () => {
+    const results = await predictiveSearchConsignments("701", { branchId: 1 });
+    expect(results.length).toBeGreaterThan(0);
+    const found = results.find((r) => r.id === 55);
+    expect(found).toBeDefined();
+    expect(found?.matchedOn).toContain("ORDER_NUMBER");
+    expect(found?.score).toBe(0);
+    expect(found?.onlineOrderId).toBe(701);
+  });
+
+  it("يطابق إرسالية منشأة بنوع INVOICE مرتبطة بطلب متجر عبر invoiceId برقم الطلب ORD-...", async () => {
+    const results = await predictiveSearchConsignments("ORD-2026-7777", { branchId: 1 });
+    expect(results.length).toBeGreaterThan(0);
+    const found = results.find((r) => r.id === 56);
+    expect(found).toBeDefined();
+    expect(found?.matchedOn).toContain("ORDER_NUMBER");
+    expect(found?.orderNumber).toBe("ORD-2026-7777");
+  });
+
+  it("يطابق إرسالية منشأة بنوع INVOICE بأرقام طلب المتجر 7777", async () => {
+    const results = await predictiveSearchConsignments("7777", { branchId: 1 });
+    expect(results.length).toBeGreaterThan(0);
+    const found = results.find((r) => r.id === 56);
+    expect(found).toBeDefined();
+    expect(found?.matchedOn).toContain("ORDER_NUMBER");
+    expect(found?.orderNumber).toBe("ORD-2026-7777");
+  });
+
+  it("يطابق عنوان الشحن الخاص بطلب المتجر ويصنف ADDRESS", async () => {
+    const results = await predictiveSearchConsignments("المنصور", { branchId: 1 });
+    expect(results.length).toBeGreaterThan(0);
+    const found = results.find((r) => r.id === 55);
+    expect(found).toBeDefined();
+    expect(found?.matchedOn).toContain("ADDRESS");
+  });
 });
+

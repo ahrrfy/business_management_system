@@ -3,7 +3,7 @@
 // عزل الفرع: الجهة المشتركة مرئية للفروع، لكن سند التوريد ونقد الدرج يخصان فرعاً واحداً حتماً؛
 // لذلك قائمة «المفتوح للتوريد» تقبل branchId وتعرض فقط طرود ذلك الفرع. أما السجل الإداري العام
 // للجهة فيبقى عابراً للفروع لمن يملك صلاحية رؤيتها، وتبقى كل حركة موسومة بفرعها.
-import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, round2 } from "../money";
@@ -964,6 +964,7 @@ export interface PredictiveConsignmentItem {
   invoiceId: number | null;
   invoiceNumber: string | null;
   workOrderId: number | null;
+  onlineOrderId: number | null;
   orderNumber: string | null;
   partyId: number;
   partyName: string;
@@ -1036,18 +1037,21 @@ export async function predictiveSearchConsignments(
     sql`${deliveryConsignments.externalTrackingRef} LIKE ${likeQuery} ESCAPE '!'`,
     sql`${invoices.invoiceNumber} LIKE ${likeQuery} ESCAPE '!'`,
     sql`${workOrders.orderNumber} LIKE ${likeQuery} ESCAPE '!'`,
+    sql`${onlineOrders.orderNumber} LIKE ${likeQuery} ESCAPE '!'`,
     sql`${customers.name} LIKE ${likeQuery} ESCAPE '!'`,
     sql`${deliveryConsignments.recipientName} LIKE ${likeQuery} ESCAPE '!'`,
     sql`${workOrders.contactName} LIKE ${likeQuery} ESCAPE '!'`,
     sql`${deliveryConsignments.deliveryAddress} LIKE ${likeQuery} ESCAPE '!'`,
     sql`${customers.address} LIKE ${likeQuery} ESCAPE '!'`,
     sql`${workOrders.deliveryAddress} LIKE ${likeQuery} ESCAPE '!'`,
+    sql`${onlineOrders.shippingAddress} LIKE ${likeQuery} ESCAPE '!'`,
     arabicLike(customers.name, normPattern),
     arabicLike(deliveryConsignments.recipientName, normPattern),
     arabicLike(workOrders.contactName, normPattern),
     arabicLike(deliveryConsignments.deliveryAddress, normPattern),
     arabicLike(customers.address, normPattern),
     arabicLike(workOrders.deliveryAddress, normPattern),
+    arabicLike(onlineOrders.shippingAddress, normPattern),
   ];
 
   if (digits.length >= 2) {
@@ -1063,6 +1067,7 @@ export async function predictiveSearchConsignments(
       sql`${deliveryConsignments.consignmentNumber} LIKE ${likeDigits} ESCAPE '!'`,
       sql`${invoices.invoiceNumber} LIKE ${likeDigits} ESCAPE '!'`,
       sql`${workOrders.orderNumber} LIKE ${likeDigits} ESCAPE '!'`,
+      sql`${onlineOrders.orderNumber} LIKE ${likeDigits} ESCAPE '!'`,
     );
 
     if (digits.length <= 9) {
@@ -1072,6 +1077,7 @@ export async function predictiveSearchConsignments(
           eq(deliveryConsignments.id, numId),
           eq(invoices.id, numId),
           eq(workOrders.id, numId),
+          eq(onlineOrders.id, numId),
         );
       }
     }
@@ -1123,7 +1129,8 @@ export async function predictiveSearchConsignments(
       invoiceId: deliveryConsignments.invoiceId,
       invoiceNumber: invoices.invoiceNumber,
       workOrderId: deliveryConsignments.workOrderId,
-      orderNumber: workOrders.orderNumber,
+      onlineOrderId: onlineOrders.id,
+      orderNumber: sql<string | null>`COALESCE(${workOrders.orderNumber}, ${onlineOrders.orderNumber})`,
       partyId: deliveryConsignments.partyId,
       partyName: deliveryParties.name,
       partyType: deliveryParties.partyType,
@@ -1136,11 +1143,24 @@ export async function predictiveSearchConsignments(
       shortfallAssigned: consignmentShortfallAssignedSql,
       customerName: sql<string>`COALESCE(NULLIF(${deliveryConsignments.recipientName}, ''), NULLIF(${customers.name}, ''), NULLIF(${workOrders.contactName}, ''), 'عميل نقدي')`,
       customerPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
-      deliveryAddress: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${workOrders.deliveryAddress}, ''), NULLIF(${customers.address}, ''))`,
+      deliveryAddress: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${workOrders.deliveryAddress}, ''), NULLIF(${onlineOrders.shippingAddress}, ''), NULLIF(${customers.address}, ''))`,
     })
     .from(deliveryConsignments)
     .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
     .leftJoin(workOrders, eq(deliveryConsignments.workOrderId, workOrders.id))
+    .leftJoin(
+      onlineOrders,
+      or(
+        and(
+          eq(deliveryConsignments.sourceId, onlineOrders.id),
+          eq(deliveryConsignments.sourceType, "ONLINE_ORDER"),
+        ),
+        and(
+          isNotNull(deliveryConsignments.invoiceId),
+          eq(deliveryConsignments.invoiceId, onlineOrders.invoiceId),
+        ),
+      ),
+    )
     .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
     .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
     .where(and(...baseConds))
@@ -1163,6 +1183,28 @@ export async function predictiveSearchConsignments(
     const normAddr = addr.toLowerCase().replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/ى/g, "ي");
 
     let score = 3;
+
+    // مطابقة المعرفات الرقمية المباشرة (ID)
+    if (digits.length >= 2 && digits.length <= 9) {
+      const numId = Number(digits);
+      if (!isNaN(numId) && numId > 0) {
+        if (Number(r.id) === numId) {
+          if (!matchedOn.includes("CONSIGNMENT_NUMBER")) matchedOn.push("CONSIGNMENT_NUMBER");
+          score = Math.min(score, 0);
+        }
+        if (r.invoiceId != null && Number(r.invoiceId) === numId) {
+          if (!matchedOn.includes("INVOICE_NUMBER")) matchedOn.push("INVOICE_NUMBER");
+          score = Math.min(score, 0);
+        }
+        if (
+          (r.workOrderId != null && Number(r.workOrderId) === numId) ||
+          (r.onlineOrderId != null && Number(r.onlineOrderId) === numId)
+        ) {
+          if (!matchedOn.includes("ORDER_NUMBER")) matchedOn.push("ORDER_NUMBER");
+          score = Math.min(score, 0);
+        }
+      }
+    }
 
     // مطابقة الهاتف
     const sfxDigits = phoneSuffix10(digits);
@@ -1219,6 +1261,7 @@ export async function predictiveSearchConsignments(
     if (ordNum && (ordNum.toLowerCase().includes(normQ) || (digits.length >= 2 && ordNum.includes(digits)))) {
       matchedOn.push("ORDER_NUMBER");
       if (ordNum.toLowerCase() === normQ) score = Math.min(score, 0);
+      else if (ordNum.toLowerCase().startsWith(normQ)) score = Math.min(score, 1);
       else score = Math.min(score, 2);
     }
 
@@ -1249,6 +1292,7 @@ export async function predictiveSearchConsignments(
       invoiceId: r.invoiceId ? Number(r.invoiceId) : null,
       invoiceNumber: r.invoiceNumber,
       workOrderId: r.workOrderId ? Number(r.workOrderId) : null,
+      onlineOrderId: r.onlineOrderId ? Number(r.onlineOrderId) : null,
       orderNumber: r.orderNumber,
       partyId: Number(r.partyId),
       partyName: r.partyName ?? "جهة غير محددة",
@@ -1268,7 +1312,14 @@ export async function predictiveSearchConsignments(
     };
   });
 
-  return scored
+  const seenIds = new Set<number>();
+  const deduplicated = scored.filter((r) => {
+    if (seenIds.has(r.id)) return false;
+    seenIds.add(r.id);
+    return true;
+  });
+
+  return deduplicated
     .sort((a, b) => a.score - b.score || b.id - a.id)
     .slice(0, effLimit);
 }
