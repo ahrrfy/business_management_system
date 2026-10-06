@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { failOpaque } from "../lib/opaqueFailure";
-import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
 import { workOrderRefundPreflight } from "../services/workOrder/refundPreflight";
@@ -728,7 +728,13 @@ export const workOrderRouter = router({
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
         .leftJoin(workOrderCreatorUser, eq(workOrders.createdBy, workOrderCreatorUser.id))
         .leftJoin(users, eq(workOrders.assignedTo, users.id))
-        .leftJoin(deliveryConsignments, eq(deliveryConsignments.workOrderId, workOrders.id))
+        .leftJoin(
+          deliveryConsignments,
+          and(
+            eq(deliveryConsignments.workOrderId, workOrders.id),
+            ne(deliveryConsignments.status, "CANCELLED"),
+          )
+        )
         .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
         .where(whereCond)
         .orderBy(desc(workOrders.id))
@@ -954,7 +960,13 @@ export const workOrderRouter = router({
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
         .leftJoin(workOrderCreatorUser, eq(workOrders.createdBy, workOrderCreatorUser.id))
         .leftJoin(users, eq(workOrders.assignedTo, users.id))
-        .leftJoin(deliveryConsignments, eq(deliveryConsignments.workOrderId, workOrders.id))
+        .leftJoin(
+          deliveryConsignments,
+          and(
+            eq(deliveryConsignments.workOrderId, workOrders.id),
+            ne(deliveryConsignments.status, "CANCELLED"),
+          )
+        )
         .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
         .leftJoin(materialsEditorUser, eq(workOrders.materialsEditedBy, materialsEditorUser.id))
         .leftJoin(invoices, eq(workOrders.invoiceId, invoices.id))
