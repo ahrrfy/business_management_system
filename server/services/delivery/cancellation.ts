@@ -188,16 +188,16 @@ export async function cancelDeliveryAssignment(
       })
       .where(eq(deliveryConsignments.id, Number(cn.id)));
 
-    if (cn.sourceType === "ONLINE_ORDER" && cn.sourceId != null) {
-      await tx
-        .update(onlineOrders)
-        .set({ deliveryPartyId: null, status: "PROCESSING" })
-        .where(eq(onlineOrders.id, Number(cn.sourceId)));
-    } else if (cn.invoiceId != null) {
-      await tx
-        .update(onlineOrders)
-        .set({ deliveryPartyId: null, status: "PROCESSING" })
-        .where(eq(onlineOrders.invoiceId, Number(cn.invoiceId)));
+      if (cn.sourceType === "ONLINE_ORDER" && cn.sourceId != null) {
+        await tx
+          .update(onlineOrders)
+          .set({ deliveryPartyId: null, status: "PROCESSING" })
+          .where(eq(onlineOrders.id, Number(cn.sourceId)));
+      } else if (cn.invoiceId != null) {
+        await tx
+          .update(onlineOrders)
+          .set({ deliveryPartyId: null, status: "PROCESSING" })
+          .where(eq(onlineOrders.invoiceId, Number(cn.invoiceId)));
     }
 
     await appendDeliveryEvent(tx, {

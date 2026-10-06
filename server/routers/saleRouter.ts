@@ -1004,11 +1004,11 @@ export const saleRouter = router({
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role,
       };
       // ⚠️ Codex #1006 P1 — حمولةُ `delivery` تُنشئ إرساليّةً وقيودَ عهدةٍ عبر `dispatchInvoiceInTx`،
-      // متجاوزةً بوّابةَ وحدة المتجر (`storeFulfillProcedure`) التي يمرّ بها `deliveryRouter.dispatchInvoice`.
+      // متجاوزةً بوّابةَ كاشير الاستقبال (`deliveryCashierProcedure`) التي يمرّ بها `deliveryRouter.dispatchInvoice`.
       // نفرض نفسَ القدرة خادمياً حين تكون `delivery` حاضرة: مَن مُنِع store:FULL لا يُنشئ إرساليّاتٍ من هذا الباب.
       if (input.delivery != null) {
         const override = (ctx.user as { permissionsOverride?: PermissionMap | null }).permissionsOverride ?? null;
-        if (!moduleAccessAllowed(ctx.user.role, override, "store", "FULL", ["manager", "cashier", "sales_rep"])) {
+        if (!moduleAccessAllowed(ctx.user.role, override, "store", "FULL", ["manager", "cashier"])) {
           throw new TRPCError({
             code: "FORBIDDEN",
             message: appErrorMessage({
