@@ -21,6 +21,7 @@ import type {
   RecipeRequirementItemDto,
   RecipeRequirementMaterialLineDto,
 } from "../../../shared/multiRecipeProductionTypes";
+import type { MaterialSubstitutionItem } from "../../../shared/recipeSubstitutionTypes";
 import { syncBundlesContainingComponents } from "../bundleService";
 import { loadVariantAvailability } from "../catalog/variantAvailability";
 import { ensureBranchStockRows } from "../inventoryService";
@@ -360,7 +361,11 @@ export async function analyzeMultiRecipeRequirements(
 
       const compCoeffs = lines.map((l) => {
         const sub = itemSubMap.get(l.inputVariantId);
-        return sub ? String(sub.qtyPerOutputBase) : l.qtyPerOutputBase;
+        return sub
+          ? sub.recipeId != null
+            ? String(sub.qtyPerOutputBase)
+            : l.qtyPerOutputBase
+          : l.qtyPerOutputBase;
       });
       const reqMultiple = requiredBatchMultiple(compCoeffs);
       const isMultipleValid = it.batchQty % reqMultiple === 0;
@@ -378,7 +383,11 @@ export async function analyzeMultiRecipeRequirements(
         const sub = itemSubMap.get(l.inputVariantId);
         const effectiveVarId = sub ? Number(sub.substituteVariantId) : l.inputVariantId;
         const subDetails = sub ? subDetailsMap.get(effectiveVarId) : null;
-        const effectiveQtyPerOutput = sub ? String(sub.qtyPerOutputBase) : l.qtyPerOutputBase;
+        const effectiveQtyPerOutput = sub
+          ? sub.recipeId != null
+            ? String(sub.qtyPerOutputBase)
+            : l.qtyPerOutputBase
+          : l.qtyPerOutputBase;
         const effectiveCostPrice = sub
           ? (subDetails?.costPrice ?? "0.00")
           : (l.costPrice || "0.00");
@@ -716,7 +725,11 @@ export async function produceMultiRecipeBatches(
       const subMap = new Map(relevantSubs.map((s) => [Number(s.originalVariantId), s]));
       const compCoeffs = lines.map((l) => {
         const sub = subMap.get(Number(l.inputVariantId));
-        return sub ? String(sub.qtyPerOutputBase) : l.qtyPerOutputBase;
+        return sub
+          ? sub.recipeId != null
+            ? String(sub.qtyPerOutputBase)
+            : l.qtyPerOutputBase
+          : l.qtyPerOutputBase;
       });
       const reqMultiple = requiredBatchMultiple(compCoeffs);
       if (b.batchQty % reqMultiple !== 0) {
@@ -819,7 +832,7 @@ export async function produceMultiRecipeBatches(
 
       const batchLines = linesByRecipe.get(batch.recipeId) ?? [];
       const batchInputIds = new Set(batchLines.map((l) => Number(l.inputVariantId)));
-      const relevantSubs = [
+      const rawSubs = [
         ...(input.materialSubstitutions ?? []),
         ...(batch.materialSubstitutions ?? []),
       ].filter(
@@ -827,6 +840,22 @@ export async function produceMultiRecipeBatches(
           batchInputIds.has(Number(s.originalVariantId)) &&
           (s.recipeId == null || Number(s.recipeId) === batch.recipeId)
       );
+
+      const relevantSubs: MaterialSubstitutionItem[] = rawSubs.map((s) => {
+        const line = batchLines.find((l) => Number(l.inputVariantId) === Number(s.originalVariantId));
+        return {
+          recipeId: batch.recipeId,
+          originalVariantId: Number(s.originalVariantId),
+          substituteVariantId: Number(s.substituteVariantId),
+          substituteProductUnitId: s.substituteProductUnitId ?? null,
+          qtyPerOutputBase:
+            s.recipeId != null
+              ? String(s.qtyPerOutputBase)
+              : line
+              ? String(line.qtyPerOutputBase)
+              : String(s.qtyPerOutputBase),
+        };
+      });
 
       const prodResult = await createProductionInTx(
         tx,

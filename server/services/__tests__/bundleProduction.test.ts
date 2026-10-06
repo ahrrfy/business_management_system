@@ -708,5 +708,108 @@ describe("مولّد إنتاج مكوّنات البكج: produceBundleComponen
     expect(res1.bundleDocGroupRef).toBe(res2.bundleDocGroupRef);
     expect(res1.orders[0].productionOrderId).toBe(res2.orders[0].productionOrderId);
   });
+
+  it("يدعم استبدال مادة خام مشتركة بين مكونين في البكج وينفذ الإنتاج ويخصم التراكمي من رصيد البديل", async () => {
+    // إضافة رصيد للخام البديل 7 بمقدار 50 في الفرع 1
+    await db().insert(s.branchStock).values({
+      variantId: 7,
+      branchId: 1,
+      quantity: 50,
+    });
+
+    const initStockOrig = await stock(1); // 40
+    const initStockSub = await stock(7); // 50
+    const initStockBookA = await stock(2); // 5
+    const initStockBookB = await stock(3); // 2
+
+    // استبدال الخام 1 بالبديل 7 على مستوى البكج لكلا المكونين A و B:
+    // دفتر A (دفعة 4): 4 * 2.5 = 10 ورقات
+    // دفتر B (دفعة 2): 2 * 1 = 2 ورقة
+    // الإجمالي المستهلك من البديل 7 = 12 ورقة
+    const result = await produceBundleComponents(
+      {
+        bundleVariantId: 100,
+        bundleQuantity: 2,
+        branchId: 1,
+        clientRequestId: "req-bundle-shared-sub-01",
+        materialSubstitutions: [
+          { originalVariantId: 1, substituteVariantId: 7, qtyPerOutputBase: "2.5000" },
+        ],
+        batches: [
+          { variantId: 2, recipeId: 1, batchQty: 4 },
+          { variantId: 3, recipeId: 2, batchQty: 2 },
+        ],
+      },
+      actor
+    );
+
+    expect(result.orders).toHaveLength(2);
+    // رصيد البديل 7 نزل بمقدار 12 (50 -> 38)
+    expect(await stock(7)).toBe(initStockSub - 12);
+    // الخام الأصلي 1 لم يمس قط
+    expect(await stock(1)).toBe(initStockOrig);
+    // المكونات المنتجة زادت
+    expect(await stock(2)).toBe(initStockBookA + 4);
+    expect(await stock(3)).toBe(initStockBookB + 2);
+  });
+
+  it("يكتشف النقص التراكمي للمادة البديلة المشتركة ويرفض الترحيل ذرّياً (Rollback) دون أي أثر جانبي", async () => {
+    // إضافة رصيد للخام البديل 7 بمقدار 10 فقط (المطلوب 12: 10 لـ A + 2 لـ B)
+    await db().insert(s.branchStock).values({
+      variantId: 7,
+      branchId: 1,
+      quantity: 10,
+    });
+
+    const initStockSub = await stock(7);
+    const initStockBookA = await stock(2);
+    const initStockBookB = await stock(3);
+
+    // التحليل يكشف النقص التراكمي للبديل 7
+    const analysis = await analyzeBundleRequirements(
+      {
+        bundleVariantId: 100,
+        bundleQuantity: 2,
+        branchId: 1,
+        mode: "FULL_QUANTITY",
+        materialSubstitutions: [
+          { originalVariantId: 1, substituteVariantId: 7, qtyPerOutputBase: "2.5000" },
+        ],
+      },
+      actor
+    );
+
+    const subMat = analysis.aggregatedMaterials.find((m) => m.materialVariantId === 7);
+    expect(subMat).toBeDefined();
+    expect(Number(subMat?.totalRequiredBase)).toBe(12);
+    expect(subMat?.isSufficient).toBe(false);
+    expect(Number(subMat?.deficitBase)).toBe(2);
+
+    // الترحيل يرفض ذرّياً عند العجز
+    await expect(
+      produceBundleComponents(
+        {
+          bundleVariantId: 100,
+          bundleQuantity: 2,
+          branchId: 1,
+          clientRequestId: "req-bundle-shared-sub-fail",
+          materialSubstitutions: [
+            { originalVariantId: 1, substituteVariantId: 7, qtyPerOutputBase: "2.5000" },
+          ],
+          batches: [
+            { variantId: 2, recipeId: 1, batchQty: 4 },
+            { variantId: 3, recipeId: 2, batchQty: 2 },
+          ],
+        },
+        actor
+      )
+    ).rejects.toThrow();
+
+    // التحقق الصارم من التراجع الكامل:
+    expect(await stock(7)).toBe(initStockSub);
+    expect(await stock(2)).toBe(initStockBookA);
+    expect(await stock(3)).toBe(initStockBookB);
+  });
 });
+
 

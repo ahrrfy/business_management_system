@@ -259,8 +259,8 @@ export function BundleKitMaterialsStep({
                         <Button
                           type="button"
                           size="sm"
-                          variant="outline"
-                          className="h-7 text-xs border-[var(--sem-neg)] text-[var(--sem-neg)] hover:bg-[var(--sem-neg-bg)] hover:text-[var(--sem-neg)] font-bold gap-1 px-2.5 shadow-xs"
+                          variant="secondary"
+                          className="h-7 text-xs border border-[var(--sem-neg)]/50 bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] hover:bg-[var(--sem-neg)]/20 font-bold gap-1 px-2.5 shadow-xs transition-colors"
                           onClick={() => {
                             setSelectedMaterialForSub(m);
                             setIsSubDialogOpen(true);
@@ -321,13 +321,13 @@ export function BundleKitMaterialsStep({
           originalQtyPerOutputBase={selectedMaterialForSub.qtyPerOutputBase ?? "1"}
           originalUnitName={selectedMaterialForSub.unitName}
           originalCostPrice={selectedMaterialForSub.costPrice ?? null}
-          availableStock={selectedMaterialForSub.availableInBranch}
+          availableStock={selectedMaterialForSub.isSubstituted ? null : selectedMaterialForSub.availableInBranch}
           consumedQty={Number(selectedMaterialForSub.totalRequiredBase)}
           branchId={branchId}
           defaultScope="adhoc"
           currentSubstitution={currentSub}
           onApplyAdHoc={(sub) => {
-            onApplySubstitution(sub);
+            onApplySubstitution({ ...sub, recipeId: undefined });
             setIsSubDialogOpen(false);
             setSelectedMaterialForSub(null);
           }}

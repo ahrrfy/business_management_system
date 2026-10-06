@@ -21,6 +21,7 @@ import type {
   ProduceBundleComponentsInput,
   ProduceBundleComponentsResult,
 } from "../../../shared/bundleProductionTypes";
+import type { MaterialSubstitutionItem } from "../../../shared/recipeSubstitutionTypes";
 import { loadBundleUnitCosts, syncBundlesContainingComponents } from "../bundleService";
 import { loadVariantAvailability } from "../catalog/variantAvailability";
 import { ensureBranchStockRows } from "../inventoryService";
@@ -192,7 +193,6 @@ export async function analyzeBundleRequirements(
     }
 
     const substitutions = input.materialSubstitutions ?? [];
-    const subMap = new Map(substitutions.map((s) => [Number(s.originalVariantId), s]));
 
     const subDetailsMap = new Map<
       number,
@@ -283,7 +283,10 @@ export async function analyzeBundleRequirements(
       return {
         recipeId: l.recipeId,
         inputVariantId: Number(sub.substituteVariantId),
-        qtyPerOutputBase: String(sub.qtyPerOutputBase),
+        qtyPerOutputBase:
+          sub.recipeId != null
+            ? String(sub.qtyPerOutputBase)
+            : String(l.qtyPerOutputBase),
         materialName: subDetails?.name ?? `بديل #${sub.substituteVariantId}`,
         sku: subDetails?.sku ?? "",
         unitName: effectiveUnitName,
@@ -736,7 +739,11 @@ export async function produceBundleComponents(
       const subMap = new Map(relevantSubs.map((s) => [Number(s.originalVariantId), s]));
       const compCoeffs = lines.map((l) => {
         const sub = subMap.get(Number(l.inputVariantId));
-        return sub ? String(sub.qtyPerOutputBase) : String(l.qtyPerOutputBase);
+        return sub
+          ? sub.recipeId != null
+            ? String(sub.qtyPerOutputBase)
+            : String(l.qtyPerOutputBase)
+          : String(l.qtyPerOutputBase);
       });
       const reqMultiple = requiredBatchMultiple(compCoeffs);
       if (b.batchQty % reqMultiple !== 0) {
@@ -849,7 +856,7 @@ export async function produceBundleComponents(
 
       const batchLines = linesByRecipeId.get(batch.recipeId) ?? [];
       const batchInputIds = new Set(batchLines.map((l) => Number(l.inputVariantId)));
-      const relevantSubs = [
+      const rawSubs = [
         ...(input.materialSubstitutions ?? []),
         ...(batch.materialSubstitutions ?? []),
       ].filter(
@@ -857,6 +864,22 @@ export async function produceBundleComponents(
           batchInputIds.has(Number(s.originalVariantId)) &&
           (s.recipeId == null || Number(s.recipeId) === batch.recipeId)
       );
+
+      const relevantSubs: MaterialSubstitutionItem[] = rawSubs.map((s) => {
+        const line = batchLines.find((l) => Number(l.inputVariantId) === Number(s.originalVariantId));
+        return {
+          recipeId: batch.recipeId,
+          originalVariantId: Number(s.originalVariantId),
+          substituteVariantId: Number(s.substituteVariantId),
+          substituteProductUnitId: s.substituteProductUnitId ?? null,
+          qtyPerOutputBase:
+            s.recipeId != null
+              ? String(s.qtyPerOutputBase)
+              : line
+              ? String(line.qtyPerOutputBase)
+              : String(s.qtyPerOutputBase),
+        };
+      });
 
       const prodResult = await createProductionInTx(
         tx,
