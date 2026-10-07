@@ -30,6 +30,7 @@ import { loadVariantAvailability } from "./catalog/variantAvailability";
 import { money, round2 } from "./money";
 import { withTx, type Actor, type MaybeScopedActor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { escLike } from "../lib/sqlLike";
 import { assertNoActiveDigitalInventoryBinding } from "./digitalCards/inventoryBindingGuard";
 import { syncBundlesContainingComponents } from "./bundleService";
 import type {
@@ -2065,10 +2066,10 @@ export async function listRecipesForImport(options: {
     );
 
     if (search) {
-      const likePat = `%${search.replace(/[%_\\]/g, "\\$&")}%`;
+      const escaped = `%${escLike(search)}%`;
       queryCond = and(
         queryCond,
-        sql`(${productionRecipes.name} LIKE ${likePat} OR ${products.name} LIKE ${likePat} OR ${productVariants.sku} LIKE ${likePat})`,
+        sql`(${productionRecipes.name} LIKE ${escaped} ESCAPE '!' OR ${products.name} LIKE ${escaped} ESCAPE '!' OR ${productVariants.sku} LIKE ${escaped} ESCAPE '!')`,
       );
     }
 
