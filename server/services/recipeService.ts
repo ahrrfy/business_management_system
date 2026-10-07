@@ -1947,12 +1947,16 @@ export async function suggestSimilarRecipes(
         variantName: productVariants.variantName,
         sku: productVariants.sku,
         costPrice: productVariants.costPrice,
+        baseUnitId: productUnits.id,
         unitName: productUnits.unitName,
       })
       .from(productionRecipeLines)
       .innerJoin(productVariants, eq(productionRecipeLines.inputVariantId, productVariants.id))
       .innerJoin(products, eq(productVariants.productId, products.id))
-      .leftJoin(productUnits, eq(productionRecipeLines.inputProductUnitId, productUnits.id))
+      .leftJoin(
+        productUnits,
+        and(eq(productUnits.variantId, productVariants.id), eq(productUnits.isBaseUnit, true)),
+      )
       .where(inArray(productionRecipeLines.recipeId, recipeIds))
       .orderBy(productionRecipeLines.id);
 
@@ -1974,7 +1978,9 @@ export async function suggestSimilarRecipes(
         const displayName = l.variantName ? `${l.productName} (${l.variantName})` : l.productName;
         return {
           inputVariantId: Number(l.inputVariantId),
-          inputProductUnitId: l.inputProductUnitId ? Number(l.inputProductUnitId) : null,
+          inputProductUnitId: l.baseUnitId
+            ? Number(l.baseUnitId)
+            : (l.inputProductUnitId ? Number(l.inputProductUnitId) : null),
           inputProductName: displayName,
           inputSku: l.sku,
           inputCostPrice: String(l.costPrice || "0"),
@@ -2094,12 +2100,16 @@ export async function listRecipesForImport(options: {
         variantName: productVariants.variantName,
         sku: productVariants.sku,
         costPrice: productVariants.costPrice,
+        baseUnitId: productUnits.id,
         unitName: productUnits.unitName,
       })
       .from(productionRecipeLines)
       .innerJoin(productVariants, eq(productionRecipeLines.inputVariantId, productVariants.id))
       .innerJoin(products, eq(productVariants.productId, products.id))
-      .leftJoin(productUnits, eq(productionRecipeLines.inputProductUnitId, productUnits.id))
+      .leftJoin(
+        productUnits,
+        and(eq(productUnits.variantId, productVariants.id), eq(productUnits.isBaseUnit, true)),
+      )
       .where(inArray(productionRecipeLines.recipeId, recipeIds))
       .orderBy(productionRecipeLines.id);
 
@@ -2121,7 +2131,9 @@ export async function listRecipesForImport(options: {
         const displayName = l.variantName ? `${l.productName} (${l.variantName})` : l.productName;
         return {
           inputVariantId: Number(l.inputVariantId),
-          inputProductUnitId: l.inputProductUnitId ? Number(l.inputProductUnitId) : null,
+          inputProductUnitId: l.baseUnitId
+            ? Number(l.baseUnitId)
+            : (l.inputProductUnitId ? Number(l.inputProductUnitId) : null),
           inputProductName: displayName,
           inputSku: l.sku,
           inputCostPrice: String(l.costPrice || "0"),
