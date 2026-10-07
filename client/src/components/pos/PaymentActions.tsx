@@ -30,6 +30,8 @@ export interface PaymentActionsProps {
 
 /** منطقة الفعل — خارج التمرير ولا تنكمش: الباقي/المتبقي + زرّا الدفع + تلميح الاختصارات. */
 export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInput, isChange, isOwing, change, credit, showQuickPay, canPay, isPending, hasCustomer, method, externalPaymentConfirmed, onPay, onQuickPay, codMode = false }: PaymentActionsProps) {
+  const isZeroPay = payInput.trim() !== "" && Number(payInput) === 0;
+
   return (
     <div style={{ flexShrink: 0, background: C.card }}>
 
@@ -48,7 +50,7 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
       )}
       {cartLen > 0 && !!payInput && isOwing && (
         <>
-          <span style={{ fontSize: 13.5, color: C.amber, fontWeight: 600 }}>{codMode ? "المتبقّي يُحصَّل عند التسليم" : "المتبقي للدفع"}</span>
+          <span style={{ fontSize: 13.5, color: C.amber, fontWeight: 600 }}>{codMode ? "المتبقّي يُحصَّل عند التسليم" : (isZeroPay ? "كامل الفاتورة ذمة على العميل" : "المتبقي للدفع")}</span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
             <span style={{ fontSize: 22, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12.5, fontWeight: 500 }}>د.ع</span></span>
             <CopyButton value={credit} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" />
@@ -103,7 +105,7 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
           isOwing && !hasCustomer ? "الدفعة الجزئيّة (الآجل) تحتاج عميلاً مرتبطاً — أو حصّل المبلغ كاملاً" :
           method !== "CASH" && !externalPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
           !canPay ? "أكمل بيانات الدفع" :
-          codMode ? `تثبيت الطلب وإسناده للتوصيل — ${fmt(total)} د.ع تُحصَّل عند التسليم` : `إتمام الدفع — ${fmt(total)} د.ع`
+          codMode ? `تثبيت الطلب وإسناده للتوصيل — ${fmt(total)} د.ع تُحصَّل عند التسليم` : (isOwing && isZeroPay ? `إتمام البيع الآجل بالكامل — ${fmt(total)} د.ع ذمة على العميل` : `إتمام الدفع — ${fmt(total)} د.ع`)
         }
         style={{
           flex: 1, minWidth: 0,
@@ -120,7 +122,7 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
           ? "جارٍ…"
           : !cartLen
             ? "السلة فارغة"
-            : <><Check aria-hidden size={18} strokeWidth={3} /> {codMode ? "تثبيت الطلب وإسناده" : "إتمام الدفع"} — {fmt(total)} د.ع</>}
+            : <><Check aria-hidden size={18} strokeWidth={3} /> {codMode ? "تثبيت الطلب وإسناده" : (isOwing && isZeroPay ? "إتمام البيع الآجل" : "إتمام الدفع")} — {fmt(total)} د.ع</>}
       </button>
     </div>
 

@@ -416,6 +416,8 @@ export default defineConfig({
       "server/services/__tests__/storefrontSeoMeta.test.ts",
       // محرك المطابقة الرمزية والتراكيب الذكية للتشكيلات التحريرية بالمتجر (منطق نقي بلا قاعدة)
       "server/services/__tests__/storefrontThematicService.test.ts",
+      "server/services/__tests__/customerReadAccess.test.ts",
+      "client/src/components/pos/__tests__/posTotalsCredit.test.ts",
     ],
   },
 });

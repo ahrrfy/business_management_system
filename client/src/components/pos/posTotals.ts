@@ -72,7 +72,8 @@ export function computePOSTotals({ cart, activeTab }: ComputePOSTotalsParams) {
   const cashRoundedTotal = cashRoundedTotalD.toNumber();
   const cashRoundedPaid = cashRoundedPaidD.toNumber();
 
-  const isCredit = paidD.gt(0) && paidD.lt(cashRoundedTotalD);
+  const isZeroPayCredit = activeTab.customerId != null && activeTab.payInput.trim() !== "" && paidD.eq(0) && cashRoundedTotalD.gt(0);
+  const isCredit = isZeroPayCredit || (paidD.gt(0) && paidD.lt(cashRoundedTotalD));
   const isChange = paidD.gt(0) && paidD.gte(cashRoundedTotalD);
 
   const effectiveTotalD = (activeTab.method === "CASH" && !isCredit) ? cashRoundedTotalD : netAfterHeaderD;

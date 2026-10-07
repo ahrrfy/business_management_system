@@ -987,10 +987,9 @@ export default function POS() {
       startDigitalFulfillment();
       return;
     }
-    // تدقيق ١٧/٧: «0» صريح في حقل المقبوض كان يُسجّل البيع مدفوعاً نقداً بالكامل (isCredit=false ⇒
-    // payAmount=total) بلا قبض فعليّ ⇒ عجز درج عند Z-report. ارفضه صراحةً بدل الإسقاط الصامت.
-    if (!codMode && activeTab.payInput.trim() !== "" && D(activeTab.payInput).eq(0)) {
-      notify.err("أدخل المبلغ المقبوض، أو امسح الحقل للدفع النقدي الكامل. للبيع الآجل اختر عميلاً وأدخل المقدَّم.");
+    // تدقيق ١٧/٧: «0» صريح بلا عميل يُرفض — للبيع الآجل الكامل (مقبوض = 0) يجب اختيار عميل أولاً.
+    if (!codMode && activeTab.payInput.trim() !== "" && D(activeTab.payInput).eq(0) && activeTab.customerId == null) {
+      notify.err("أدخل المبلغ المقبوض، أو امسح الحقل للدفع النقدي الكامل. للبيع الآجل اختر عميلاً أولاً.");
       return;
     }
     // المبلغ المقبوض السالب (مفتاح +/- بلوحة الأرقام): رفضٌ صريح — كان يُعامَل صامتاً كدفعٍ
@@ -1038,9 +1037,9 @@ export default function POS() {
       priceTier: effectiveTier,
       lines: cart.map(buildSaleLine),
       ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
-      // م١ PR-B (تدقيق Codex P1): يُحجَب `payment` فقط لبيعٍ نقديٍّ بلا قبضٍ الآن (COD كامل)؛ غيرُ النقد
-      // مؤكَّدٌ سلفاً بمحاولةٍ خارجيّة ناجحة فيُرسَل دائماً — حجبُه كان يُهمِل قبضاً وقع ويُسنِد الطلبَ COD خطأً.
-      ...(codMode && !deliverySendsPayment(activeTab.method, paidD) ? {} : {
+      // م١ PR-B (تدقيق Codex P1): يُحجَب `payment` لبيعٍ نقديٍّ بلا قبضٍ الآن (COD كامل) أو بيع آجل كامل بلا مقدَّم (paid=0)؛
+      // غيرُ ذلك يُرسَل payment بالدفعة المقبوضة فعلياً.
+      ...((codMode && !deliverySendsPayment(activeTab.method, paidD)) || (isCredit && paidD.eq(0)) ? {} : {
         payment: {
           amount: payAmount,
           method: activeTab.method,

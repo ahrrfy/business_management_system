@@ -271,6 +271,13 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
               = الكل
             </button>
           )}
+          {cartLen > 0 && hasCustomer && (
+            <button type="button" onClick={() => setPayInput("0")}
+              title="بيع آجل بالكامل (المقبوض = صفر)"
+              style={{ height: fluid(24, 3.8, 30), padding: "0 8px", background: C.card, border: `1px solid ${C.amber}`, borderRadius: 6, cursor: "pointer", fontSize: 11.5, fontWeight: 700, color: C.amber, fontFamily: "inherit" }}>
+              = آجل كامل
+            </button>
+          )}
         </div>
       )}
 

@@ -47,7 +47,7 @@ export function maskBankFields<T extends Partial<Supplier> & Record<string, unkn
   } as unknown as T;
 }
 
-/** يحجب الحقول الحسّاسة من قائمة عملاء (الرصيد + سقف الائتمان) لغير المدير/الإدمن. */
+/** يحجب الحقول الحسّاسة من بطاقة العميل (الرصيد الافتتاحي فقط) لغير المدير/الإدمن مع صون سقف الائتمان والرصيد الجاري لنقاط البيع. */
 export function maskCustomerSensitive<T extends Partial<Customer> & Record<string, unknown>>(row: T, role: string | null | undefined): T;
 export function maskCustomerSensitive<T extends Partial<Customer> & Record<string, unknown>>(row: T | null, role: string | null | undefined): T | null;
 export function maskCustomerSensitive<T extends Partial<Customer> & Record<string, unknown>>(row: T | undefined, role: string | null | undefined): T | undefined;
@@ -59,9 +59,9 @@ export function maskCustomerSensitive<T extends Partial<Customer> & Record<strin
   if (isElevated(role)) return { ...row };
   return {
     ...row,
-    creditLimit: null,
-    currentBalance: "0",
-    // getCustomer يُرفق الرصيد الافتتاحيّ (قيد OPENING) لشاشة التعديل — يُحجب كـcurrentBalance تماماً.
+    creditLimit: row.creditLimit ?? null,
+    currentBalance: row.currentBalance ?? "0",
+    // getCustomer يُرفق الرصيد الافتتاحيّ (قيد OPENING) لشاشة التعديل — يُحجب لغير المدير/الإدمن.
     openingBalance: "0",
   } as unknown as T;
 }

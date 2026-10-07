@@ -131,9 +131,21 @@ export default function CustomerPicker({ customerId, onCustomerChange, balance }
         // الحالة: عميل مختار ⇒ بطاقة مَختصرة + زرّ مسح + زرّ +.
         <div className="flex gap-2">
           <div className="flex-1 flex items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 h-9 text-sm">
-            <span className="truncate">
-              {selectedName ?? `#${customerId}`} <span className="text-muted-foreground">({TIER_LABEL[selectedTier]})</span>
-            </span>
+            <div className="flex items-center gap-1.5 truncate">
+              <span className="truncate font-medium">
+                {selectedName ?? `#${customerId}`}
+              </span>
+              <span className="text-xs text-muted-foreground shrink-0">({TIER_LABEL[selectedTier]})</span>
+              {fetchedCustomer.data?.creditLimit != null && Number(fetchedCustomer.data.creditLimit) === 0 ? (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-destructive/15 text-destructive font-bold shrink-0">
+                  نقدي فقط
+                </span>
+              ) : (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-bold shrink-0">
+                  يقبل الآجل
+                </span>
+              )}
+            </div>
             <button
               type="button"
               onClick={clearPick}
@@ -178,6 +190,7 @@ export default function CustomerPicker({ customerId, onCustomerChange, balance }
                 <ul className="py-1">
                   {suggestions.map((s) => {
                     const tierKey = (s.defaultPriceTier ?? "RETAIL") as Tier;
+                    const isCashOnly = s.creditLimit != null && Number(s.creditLimit) === 0;
                     return (
                       <li key={s.id}>
                         <button
@@ -185,10 +198,20 @@ export default function CustomerPicker({ customerId, onCustomerChange, balance }
                           onClick={() => pickSuggestion(s.id)}
                           className="w-full text-right px-3 py-2 hover:bg-accent flex items-center justify-between gap-2"
                         >
-                          <span className="truncate">
-                            {s.name} ({TIER_LABEL[tierKey]})
+                          <div className="flex items-center gap-1.5 truncate">
+                            <span className="truncate">{s.name}</span>
+                            <span className="text-xs text-muted-foreground shrink-0">({TIER_LABEL[tierKey]})</span>
+                            {isCashOnly ? (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-destructive/15 text-destructive font-medium shrink-0">
+                                نقدي فقط
+                              </span>
+                            ) : (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-medium shrink-0">
+                                يقبل الآجل
+                              </span>
+                            )}
                             {balanceOptionText(s.currentBalance, "customer")}
-                          </span>
+                          </div>
                           {s.phone && <span className="text-[11px] text-muted-foreground shrink-0" dir="ltr">{s.phone}</span>}
                         </button>
                       </li>
