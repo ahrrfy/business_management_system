@@ -34,15 +34,18 @@ import {
   produceMultiRecipeInputSchema,
 } from "@shared/multiRecipeProductionTypes";
 import {
+  checkRecipeMaterialsAvailability,
   createRecipe,
   deleteRecipe,
   getRecipe,
   getRecipeForProduct,
   listRecipes,
+  listRecipesForImport,
   listRunnableRecipes,
   recipePreview,
   setRecipeActive,
   substituteRecipeMaterial,
+  suggestSimilarRecipes,
   updateRecipe,
 } from "../services/recipeService";
 import {
@@ -539,6 +542,48 @@ export const productionRouter = router({
     forProduct: productsReadProcedure
       .input(z.object({ productId: z.number().int().positive() }))
       .query(({ input }) => getRecipeForProduct(input.productId)),
+
+    /** اقتراحات تنبؤية للوصفات المشابهة بناءً على الصنف والاسم وتطابق الكلمات الدلالية */
+    suggestSimilar: productsReadProcedure
+      .input(
+        z.object({
+          productId: z.number().int().positive(),
+          limit: z.number().int().min(1).max(20).optional(),
+        }),
+      )
+      .query(({ input }) => suggestSimilarRecipes(input.productId, input.limit)),
+
+    /** قائمة وبحث الوصفات المتاحة للاستيراد كقالب تشغيلي */
+    listForImport: productsReadProcedure
+      .input(
+        z.object({
+          query: z.string().optional(),
+          excludeProductId: z.number().int().positive().optional(),
+          limit: z.number().int().min(1).max(50).optional(),
+        }),
+      )
+      .query(({ input }) => listRecipesForImport(input)),
+
+    /** فحص فوري لتوفر مواد الوصفة في مخزن الفرع وحساب الطاقة الإنتاجية الفورية */
+    checkStockAvailability: productsReadProcedure
+      .input(
+        z.object({
+          branchId: z.number().int().positive().nullish(),
+          lines: z.array(
+            z.object({
+              inputVariantId: z.number().int().positive(),
+              qtyPerOutputBase: z.string(),
+            }),
+          ),
+        }),
+      )
+      .query(({ input, ctx }) => {
+        const elevated = ctx.user.role === "admin";
+        const effectiveBranchId = elevated
+          ? Number(input.branchId ?? ctx.user.branchId ?? 0) || null
+          : Number(ctx.user.branchId ?? 0) || null;
+        return checkRecipeMaterialsAvailability({ branchId: effectiveBranchId ?? 0, lines: input.lines });
+      }),
 
     create: inventoryManagerProcedure.input(recipeInput).mutation(async ({ input, ctx }) => {
       try {
