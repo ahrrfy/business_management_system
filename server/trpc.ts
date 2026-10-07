@@ -797,12 +797,32 @@ export function customerReadAllowed(user: {
 }): boolean {
   if (user.role === "admin") return true;
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
-  if (override?.["customers"] === "NONE") return false;
+
+  // 1. إذا حُجب العميل صراحةً في كلتا الوحدتين (crm: "NONE" و customers: "NONE")، فالوصول محجوب قطعاً
+  if (override?.["crm"] === "NONE" && override?.["customers"] === "NONE") {
+    return false;
+  }
+
+  // 2. معالجة مفتاح العملاء الموروث (customers: "NONE"):
+  // في أدوار الكاشير المخصصة، كان عدم إرسال مفتاح customers من شاشة تعديل الأدوار يورّث customers: "NONE" تلقائياً
+  // في الـ override رغم امتلاك الكاشير crm >= READ أو عدم حجب CRM صراحةً.
+  // لا نحجب بمفتاح customers: "NONE" إلا إذا كان الدور إدارياً (كالمدير) أو حُجب CRM صراحةً بـ NONE.
+  if (override?.["customers"] === "NONE") {
+    const isStationCashierWithCrm =
+      (user.role === "cashier" || user.role === "print_operator") &&
+      override?.["crm"] !== "NONE";
+
+    if (!isStationCashierWithCrm) {
+      return false;
+    }
+  }
+
   if (levelSatisfies(override?.["customers"], "READ")) return true;
   if (moduleAccessAllowed(user.role, override, "crm", "READ", ["cashier", "manager", "sales_rep", "accountant"])) return true;
   if (moduleAccessAllowed(user.role, override, "sales", "READ", ["cashier", "manager", "sales_rep"])) return true;
   if (moduleAccessAllowed(user.role, override, "pos", "READ", ["cashier", "manager", "print_operator"])) return true;
   if (moduleAccessAllowed(user.role, override, "workorders", "READ", ["cashier", "manager", "print_operator"])) return true;
+
   return false;
 }
 

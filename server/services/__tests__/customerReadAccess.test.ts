@@ -78,6 +78,69 @@ describe("customerReadAllowed access check", () => {
     ).toBe(true);
   });
 
+  it("allows station cashiers (Reception / Print / Retail) even when customers=NONE legacy key is present as long as CRM is not revoked", () => {
+    // كاشير استقبال أوامر شغل — السيناريو الواقعي للبلاغ: customers=NONE تم توريثها بالخطأ في override بينما crm غير محجوب
+    expect(
+      customerReadAllowed({
+        role: "cashier",
+        permissionsOverride: {
+          customers: "NONE",
+          pos: "NONE",
+          sales: "NONE",
+          workorders: "FULL",
+        },
+      }),
+    ).toBe(true);
+
+    // كاشير طباعة مع customers=NONE
+    expect(
+      customerReadAllowed({
+        role: "cashier",
+        permissionsOverride: {
+          customers: "NONE",
+          sales: "NONE",
+          workorders: "NONE",
+          pos: "FULL",
+        },
+      }),
+    ).toBe(true);
+
+    // كاشير تجزئة مع customers=NONE
+    expect(
+      customerReadAllowed({
+        role: "cashier",
+        permissionsOverride: {
+          customers: "NONE",
+          pos: "NONE",
+          workorders: "NONE",
+          sales: "FULL",
+        },
+      }),
+    ).toBe(true);
+
+    // فني مطبعة ومشغل محطة الاستقبال
+    expect(
+      customerReadAllowed({
+        role: "print_operator",
+        permissionsOverride: {
+          customers: "NONE",
+        },
+      }),
+    ).toBe(true);
+
+    // عزل صارم: إذا حُجب CRM صراحةً بـ NONE مع customers=NONE، فيُمنع تصفح قائمة العملاء العامة
+    expect(
+      customerReadAllowed({
+        role: "cashier",
+        permissionsOverride: {
+          crm: "NONE",
+          customers: "NONE",
+          workorders: "FULL",
+        },
+      }),
+    ).toBe(false);
+  });
+
   it("denies unprivileged user without relevant permissions or override", () => {
     expect(customerReadAllowed({ role: "warehouse" })).toBe(false);
     expect(customerReadAllowed({ role: "delivery" })).toBe(false);

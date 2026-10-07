@@ -421,6 +421,7 @@ export default defineConfig({
       // محرك المطابقة الرمزية والتراكيب الذكية للتشكيلات التحريرية بالمتجر (منطق نقي بلا قاعدة)
       "server/services/__tests__/storefrontThematicService.test.ts",
       "server/services/__tests__/customerReadAccess.test.ts",
+      "server/services/__tests__/customerReceptionCreateAccess.test.ts",
       "client/src/components/pos/__tests__/posTotalsCredit.test.ts",
       "client/src/lib/posStockRefresh.test.ts",
       "server/services/__tests__/productChannelSyncSelfHeal.test.ts",
