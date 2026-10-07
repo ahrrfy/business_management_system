@@ -33,7 +33,7 @@ export function BannerCarousel({ banners, slot = "HERO", className = "" }: Banne
 
   const active = cur % banners.length;
   const isHero = slot === "HERO";
-  const aspect = isHero ? "aspect-[2/1]" : "aspect-[3.2/1]";
+  const aspect = isHero ? "aspect-[2/1]" : "aspect-[3/1]";
 
   return (
     <section

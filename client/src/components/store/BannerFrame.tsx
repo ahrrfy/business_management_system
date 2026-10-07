@@ -53,7 +53,7 @@ export function BannerFrame({ banner, slot, active = true, preview = false }: { 
   const source = banner.imageUrl;
   const media = source ? (
       mode === "PRESERVE_FULL" ? (
-      <picture className={`absolute inset-0 flex items-center justify-center ${slot === "HERO" ? "bg-black/40" : "bg-[#f2eee7]"}`}>
+      <picture className="absolute inset-0 flex items-center justify-center bg-white">
         {banner.mobileImageUrl && <source media="(max-width: 639px)" srcSet={banner.mobileImageUrl} />}
         <img src={source} alt={banner.title} className="size-full object-contain" style={{ objectPosition: focus }} />
       </picture>
@@ -90,7 +90,7 @@ export function BannerMedia({ banner }: { banner: StoreBannerCreative }) {
   const mode = banner.renderMode ?? "PRESERVE_FULL";
   const focus = `${Math.min(100, Math.max(0, banner.focusX ?? 50))}% ${Math.min(100, Math.max(0, banner.focusY ?? 50))}%`;
   if (!source) return <div className="absolute inset-0 bg-[#e9f7f2]" />;
-  if (mode === "PRESERVE_FULL") return <picture className="absolute inset-0 flex items-center justify-center bg-[#f2eee7]">
+  if (mode === "PRESERVE_FULL") return <picture className="absolute inset-0 flex items-center justify-center bg-white">
     {banner.mobileImageUrl && <source media="(max-width: 639px)" srcSet={banner.mobileImageUrl} />}
     <img src={source} alt={banner.title} className="size-full object-contain" style={{ objectPosition: focus }} />
   </picture>;
