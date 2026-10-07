@@ -31,7 +31,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { isValidIqMobile, toLocalIqMobileDigits } from "@/components/form/PhoneDigitsInput";
-import { CustomerByPhone } from "@/components/customer/CustomerByPhone";
+import { ReceptionCustomerSection } from "@/components/reception/ReceptionCustomerSection";
 import { useCustomerByPhone } from "@/components/customer/useCustomerByPhone";
 import { CustomizationDialog, type CustomizationData, composeCustomizationText, emptyCustomization } from "@/components/CustomizationDialog";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
@@ -2384,28 +2384,18 @@ export default function Reception() {
             )}
           </section>
 
-          {/* ٢+٣ — الهاتف مفتاح الهوية + هوية العميل: المكوّن المشترك مع كاشير التجزئة (م١ PR-B). */}
-          <CustomerByPhone
-            api={phoneCustomer}
-            canCreate={canCreateCustomer}
-            steps={{ phone: "٢", identity: "٣" }}
-            idPrefix="reception"
-            onOpenProfile={canReadCustomerContext ? (id) => setCustomerContextId(id) : undefined}
-            identityHeaderExtra={
-              <div className="flex items-center gap-1">
-                <span className="text-[9px] font-semibold text-muted-foreground">فئة السعر</span>
-                <AppSelect
-                  value={effectiveTier}
-                  onValueChange={(value) => { setTierOverride(value as Tier); clearCouponIfApplied(); }}
-                  aria-label="فئة السعر"
-                  className="h-7 w-20 text-[10px] font-bold"
-                >
-                  <option value="RETAIL">مفرد</option>
-                  <option value="WHOLESALE">جملة</option>
-                  <option value="GOVERNMENT">حكومي</option>
-                </AppSelect>
-              </div>
-            }
+          {/* ٢+٣ — الهاتف مفتاح الهوية + هوية العميل ومنتقي العملاء الموحد. */}
+          <ReceptionCustomerSection
+            phoneCustomer={phoneCustomer}
+            canCreateCustomer={canCreateCustomer}
+            canReadCustomerContext={canReadCustomerContext}
+            effectiveTier={effectiveTier}
+            tierOverride={tierOverride}
+            setTierOverride={setTierOverride}
+            setHydratedAutomaticTier={setHydratedAutomaticTier}
+            setDeferred={setDeferred}
+            clearCouponIfApplied={clearCouponIfApplied}
+            setCustomerContextId={setCustomerContextId}
           />
         </div>
 

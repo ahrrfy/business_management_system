@@ -4,6 +4,8 @@ import {
   creditLimitAfterPhoneChange,
   creditLimitPayload,
   initialCustomerByPhoneState,
+  onCustomerLinked,
+  onCustomerReset,
   onNameTyped,
   onPhoneChanged,
   onResolveError,
@@ -113,5 +115,65 @@ describe("آلة «العميل بالهاتف» — الهاتف مفتاح ا�
     expect(creditLimitAfterPhoneChange("07701234567", "07701234567", "250000")).toBe("250000");
     // بلا حدٍّ سابق يبقى فارغاً.
     expect(creditLimitAfterPhoneChange("0770", "07701234567", "")).toBe("");
+  });
+
+  it("ربط العميل مباشرة (منتقي العملاء): يضبط الهوية كـ RESOLVED مع هاتفه وفئته وأهليته للآجل", () => {
+    const s0 = initialCustomerByPhoneState();
+    const linked = onCustomerLinked(s0, {
+      customerId: 101,
+      name: "شركة الرافدين",
+      phone: "07701234567",
+      tier: "WHOLESALE",
+      deferredEligible: true,
+    });
+    expect(linked.resolution).toBe("RESOLVED");
+    expect(linked.customer).toEqual({
+      customerId: 101,
+      name: "شركة الرافدين",
+      phone: "07701234567",
+      isNew: false,
+    });
+    expect(linked.phone).toBe("07701234567");
+    expect(linked.tier).toBe("WHOLESALE");
+    expect(linked.deferredEligible).toBe(true);
+    expect(linked.error).toBeNull();
+  });
+
+  it("ربط عميل بدون هاتف يضبط الهوية كـ RESOLVED بهاتف فارغ ولا يسقط إلى INCOMPLETE", () => {
+    const s0 = initialCustomerByPhoneState();
+    const linked = onCustomerLinked(s0, {
+      customerId: 102,
+      name: "دائرة الصحة",
+      phone: null,
+      tier: "GOVERNMENT",
+      deferredEligible: false,
+    });
+    expect(linked.resolution).toBe("RESOLVED");
+    expect(linked.customer.customerId).toBe(102);
+    expect(linked.customer.name).toBe("دائرة الصحة");
+    expect(linked.customer.phone).toBeNull();
+    expect(linked.phone).toBe("");
+    expect(linked.tier).toBe("GOVERNMENT");
+    expect(linked.deferredEligible).toBe(false);
+  });
+
+  it("إعادة تعيين للعميل النقدي تفرغ الهاتف والهوية وترجع الحالة إلى EMPTY", () => {
+    const s0 = initialCustomerByPhoneState();
+    const linked = onCustomerLinked(s0, {
+      customerId: 101,
+      name: "علي كريم",
+      phone: "07701234567",
+      tier: "RETAIL",
+      deferredEligible: true,
+    });
+    expect(linked.customer.customerId).toBe(101);
+    const reset = onCustomerReset();
+    expect(reset.resolution).toBe("EMPTY");
+    expect(reset.customer.customerId).toBeNull();
+    expect(reset.customer.name).toBe("");
+    expect(reset.customer.phone).toBeNull();
+    expect(reset.phone).toBe("");
+    expect(reset.tier).toBeNull();
+    expect(reset.deferredEligible).toBe(false);
   });
 });

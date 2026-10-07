@@ -13,7 +13,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { D, fmt } from "@/lib/money";
 import { priceTierLabel } from "@/lib/labels";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { type Tier, type PosColors as C } from "./posShared";
+import { type Tier, type PosColors as C, POS_COLORS } from "./posShared";
 import { QuickCustomerCreateForm } from "./QuickCustomerCreateForm";
 import {
   User,
@@ -28,7 +28,7 @@ import {
 export interface CustomerSelectionDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  C: C;
+  C?: C;
   customerId: number | null;
   selectedCustomer:
     | RouterOutputs["customers"]["list"][number]
@@ -36,14 +36,17 @@ export interface CustomerSelectionDialogProps {
     | null;
   effectiveTier: Tier;
   tierOverride: Tier | null;
-  onSelectCustomer: (id: number | null) => void;
+  onSelectCustomer: (
+    id: number | null,
+    customer?: RouterOutputs["customers"]["smartSearch"][number] | RouterOutputs["customers"]["list"][number] | null,
+  ) => void;
   onSelectTier: (tier: Tier | null) => void;
 }
 
 export function CustomerSelectionDialog({
   open,
   onOpenChange,
-  C,
+  C = POS_COLORS,
   customerId,
   selectedCustomer,
   effectiveTier,
@@ -73,13 +76,14 @@ export function CustomerSelectionDialog({
 
   const isSearching = searchEnabled && searchResults.isLoading;
 
-  const handlePick = (id: number) => {
-    onSelectCustomer(id);
+  const handlePick = (id: number, cust?: (typeof displayList)[number]) => {
+    const picked = cust ?? displayList.find((c) => c.id === id);
+    onSelectCustomer(id, picked);
     onOpenChange(false);
   };
 
   const handleResetToCash = () => {
-    onSelectCustomer(null);
+    onSelectCustomer(null, null);
     onOpenChange(false);
   };
 
@@ -317,7 +321,7 @@ export function CustomerSelectionDialog({
                   return (
                     <div
                       key={c.id}
-                      onClick={() => handlePick(c.id)}
+                      onClick={() => handlePick(c.id, c)}
                       className={`p-2.5 flex items-center justify-between gap-2 hover:bg-accent/50 transition-colors cursor-pointer ${
                         isSelected ? "bg-accent/40" : ""
                       }`}
@@ -354,7 +358,7 @@ export function CustomerSelectionDialog({
                         type="button"
                         size="sm"
                         variant={isSelected ? "secondary" : "default"}
-                        onClick={() => handlePick(c.id)}
+                        onClick={() => handlePick(c.id, c)}
                         className="text-xs h-7 px-3 shrink-0"
                       >
                         {isSelected ? "محدد" : "اختيار"}

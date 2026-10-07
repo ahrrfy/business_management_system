@@ -176,3 +176,40 @@ export function resolutionNotice(state: CustomerByPhoneState): { tone: "muted" |
     case "ERROR": return { tone: "destructive", text: state.error ?? LINK_ANNOUNCE_AR.failed };
   }
 }
+
+/**
+ * ربط عميل كامل (من منتقي العملاء أو البحث المتقدم).
+ * يضبط الهوية مباشرة كعميل مؤكد (RESOLVED) مع هاتفه وفئته وأهليته للآجل.
+ */
+export function onCustomerLinked(
+  prev: CustomerByPhoneState,
+  data: {
+    customerId: number;
+    name: string;
+    phone?: string | null;
+    tier?: PhoneCustomerTier | null;
+    deferredEligible?: boolean;
+  },
+): CustomerByPhoneState {
+  const phone = data.phone ?? "";
+  return {
+    ...prev,
+    phone,
+    resolution: "RESOLVED",
+    error: null,
+    customer: {
+      customerId: data.customerId,
+      name: data.name,
+      phone: data.phone ?? null,
+      isNew: false,
+    },
+    tier: data.tier ?? "RETAIL",
+    deferredEligible: !!data.deferredEligible,
+  };
+}
+
+/** إعادة تعيين الحالة للعميل النقدي الافتراضي (فارغ). */
+export function onCustomerReset(): CustomerByPhoneState {
+  return initialCustomerByPhoneState("");
+}
+

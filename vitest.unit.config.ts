@@ -204,6 +204,7 @@ export default defineConfig({
       // م١-عميل PR-B (٥/٩/٢٦) — آلتا حالة وضع «توصيل» و«العميل بالهاتف» (منطقٌ نقيٌّ بلا قاعدة).
       "client/src/components/pos/deliveryMode.test.ts",
       "client/src/components/customer/customerByPhoneMachine.test.ts",
+      "client/src/components/reception/receptionCustomerSelection.test.ts",
       "client/src/pages/__tests__/workOrderReverseDeliveryUi.test.tsx",
       "client/src/pages/__tests__/invoiceReverseDeliveryUi.test.tsx",
       "client/src/pages/__tests__/invoiceExternalPaymentUi.test.tsx",
