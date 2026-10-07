@@ -53,9 +53,10 @@ export interface PaymentPanelProps {
   couponPending: boolean;
   /** م١ PR-B — وضع «توصيل» (COD): يُمرَّر إلى منطقة الفعل لتبديل نصوص الزرّ/المؤشّر. */
   codMode?: boolean;
+  isCreditBlocked?: boolean;
 }
 
-export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscountPct, setInvoiceDiscountPct, invoiceDiscountAllowed, effectiveHeaderCapPct, cashRoundingDelta, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending, codMode = false, invoiceDiscountType, invoiceDiscountValue, onInvoiceDiscountChange, maxDiscountAmount }: PaymentPanelProps) {
+export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscountPct, setInvoiceDiscountPct, invoiceDiscountAllowed, effectiveHeaderCapPct, cashRoundingDelta, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, isCreditBlocked = false, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending, codMode = false, invoiceDiscountType, invoiceDiscountValue, onInvoiceDiscountChange, maxDiscountAmount }: PaymentPanelProps) {
 
   // ── الاحتواء الديناميكي: تركيبٌ متكيّف قبل المقياس ───────────────────────────
   // شاشات الكاشير الفيزيائية صغيرة، والمطلوب وضوحٌ وكِبَرٌ لا انكماش. لذلك عند ضيق
@@ -272,9 +273,9 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
             </button>
           )}
           {cartLen > 0 && hasCustomer && (
-            <button type="button" onClick={() => setPayInput("0")}
-              title="بيع آجل بالكامل (المقبوض = صفر)"
-              style={{ height: fluid(24, 3.8, 30), padding: "0 8px", background: C.card, border: `1px solid ${C.amber}`, borderRadius: 6, cursor: "pointer", fontSize: 11.5, fontWeight: 700, color: C.amber, fontFamily: "inherit" }}>
+            <button type="button" disabled={isCreditBlocked} onClick={() => { if (!isCreditBlocked) setPayInput("0"); }}
+              title={isCreditBlocked ? "هذا العميل نقديّ فقط (لا يقبل الآجل وفق بطاقته)" : "بيع آجل بالكامل (المقبوض = صفر)"}
+              style={{ height: fluid(24, 3.8, 30), padding: "0 8px", background: isCreditBlocked ? C.muted : C.card, border: `1px solid ${isCreditBlocked ? C.border : C.amber}`, borderRadius: 6, cursor: isCreditBlocked ? "not-allowed" : "pointer", fontSize: 11.5, fontWeight: 700, color: isCreditBlocked ? C.mutedFg : C.amber, fontFamily: "inherit", opacity: isCreditBlocked ? 0.65 : 1 }}>
               = آجل كامل
             </button>
           )}
@@ -372,6 +373,7 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
         isChange={isChange} isOwing={isOwing} change={change} credit={credit}
         showQuickPay={showQuickPay}
         codMode={codMode}
+        isCreditBlocked={isCreditBlocked}
         canPay={canPay} isPending={isPending} hasCustomer={hasCustomer}
         method={method} externalPaymentConfirmed={externalPaymentConfirmed}
         onPay={onPay} onQuickPay={onQuickPay}

@@ -7,14 +7,12 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
-import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { D, fmt } from "@/lib/money";
 import { priceTierLabel } from "@/lib/labels";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { type Tier, type PosColors as C } from "./posShared";
 import { QuickCustomerCreateForm } from "./QuickCustomerCreateForm";
 import {
@@ -57,21 +55,21 @@ export function CustomerSelectionDialog({
   const [showNewForm, setShowNewForm] = useState(false);
 
   const trimmedQuery = searchQuery.trim();
-  const searchEnabled = open && trimmedQuery.length >= 2;
+  const searchEnabled = open && trimmedQuery.length >= 1;
   const searchResults = trpc.customers.smartSearch.useQuery(
-    { q: trimmedQuery, limit: 12 },
+    { q: trimmedQuery, limit: 16 },
     { enabled: searchEnabled, staleTime: 30_000 },
   );
 
   // Fallback initial list from loaded customers when search is empty
   const customersList = trpc.customers.list.useQuery(undefined, {
-    enabled: open && trimmedQuery.length < 2,
+    enabled: open && trimmedQuery.length === 0,
     staleTime: 60_000,
   });
 
-  const displayList = trimmedQuery.length >= 2
+  const displayList = trimmedQuery.length >= 1
     ? (searchResults.data ?? [])
-    : (customersList.data ?? []).slice(0, 10);
+    : (customersList.data ?? []).slice(0, 20);
 
   const isSearching = searchEnabled && searchResults.isLoading;
 
@@ -101,10 +99,11 @@ export function CustomerSelectionDialog({
         <div className="space-y-4 pt-2">
           {/* 1. One-Click Cash Customer (Default) Option */}
           <div
+            onClick={customerId != null ? handleResetToCash : undefined}
             className={`p-3 rounded-lg border transition-colors flex items-center justify-between gap-3 ${
               customerId == null
                 ? "bg-primary/5 border-primary/40 ring-1 ring-primary/20"
-                : "bg-muted/30 border-border"
+                : "bg-muted/30 border-border cursor-pointer hover:bg-accent/40"
             }`}
           >
             <div className="flex items-center gap-2.5">
@@ -283,8 +282,11 @@ export function CustomerSelectionDialog({
             <UnifiedSearchInput
               value={searchQuery}
               onChange={setSearchQuery}
+              onSubmit={() => {
+                if (displayList.length > 0) handlePick(displayList[0].id);
+              }}
               placeholder="اكتب اسم العميل أو جزءاً من رقم الهاتف…"
-              debounceMs={200}
+              debounceMs={180}
               barcode={false}
               size="default"
               autoFocus
@@ -294,10 +296,15 @@ export function CustomerSelectionDialog({
             <div className="border rounded-md divide-y max-h-56 overflow-y-auto bg-card">
               {isSearching && (
                 <div className="p-3 text-center text-xs text-muted-foreground">
-                  جارٍ البحث عن العملاء…
+                  {ACTION_LABELS.loading}
                 </div>
               )}
-              {!isSearching && displayList.length === 0 && (
+              {searchResults.isError && (
+                <div className="p-3 text-center text-xs text-destructive">
+                  تعذّر البحث: {searchResults.error.message}
+                </div>
+              )}
+              {!isSearching && !searchResults.isError && displayList.length === 0 && (
                 <div className="p-4 text-center text-xs text-muted-foreground">
                   لا توجد نتائج مطابقة — يمكنك تسجيل عميل جديد بالضغط على «عميل جديد» أعلاه
                 </div>
@@ -310,7 +317,8 @@ export function CustomerSelectionDialog({
                   return (
                     <div
                       key={c.id}
-                      className={`p-2.5 flex items-center justify-between gap-2 hover:bg-accent/50 transition-colors ${
+                      onClick={() => handlePick(c.id)}
+                      className={`p-2.5 flex items-center justify-between gap-2 hover:bg-accent/50 transition-colors cursor-pointer ${
                         isSelected ? "bg-accent/40" : ""
                       }`}
                     >

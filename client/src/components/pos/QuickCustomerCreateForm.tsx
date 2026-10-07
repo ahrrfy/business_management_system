@@ -6,6 +6,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { trpc } from "@/lib/trpc";
 import { Plus, AlertCircle } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import type { Tier } from "./posShared";
 
 export interface QuickCustomerCreateFormProps {
@@ -25,8 +26,11 @@ export function QuickCustomerCreateForm({ onCustomerCreated }: QuickCustomerCrea
     onSuccess: async (created) => {
       await utils.customers.list.invalidate();
       await utils.customers.smartSearch.invalidate();
-      await utils.customers.get.invalidate({ customerId: created.id });
-      onCustomerCreated(created.id);
+      const newCustId = created.customerId ?? created.id;
+      if (newCustId != null) {
+        await utils.customers.get.invalidate({ customerId: newCustId });
+        onCustomerCreated(newCustId);
+      }
     },
     onError: (err) => {
       setFormError(err.message);
@@ -111,7 +115,7 @@ export function QuickCustomerCreateForm({ onCustomerCreated }: QuickCustomerCrea
           })
         }
       >
-        {createCustomer.isPending ? "جارٍ الحفظ…" : "حفظ واختيار العميل"}
+        {createCustomer.isPending ? ACTION_LABELS.saving : "حفظ واختيار العميل"}
       </Button>
     </div>
   );

@@ -5,7 +5,7 @@ import {
   AI_PROVIDER_ERROR_CATEGORIES,
   type AiProviderErrorCategory,
 } from "@shared/productContentAi";
-import { canSeeCost as _canSeeCost, canUseDigitalCardsSellingStation, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
+import { canSeeCost as _canSeeCost, canUseDigitalCardsSellingStation, levelSatisfies, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import {
   capabilityModuleDecision,
   capabilityShadowEnabled,
@@ -797,6 +797,7 @@ export function customerReadAllowed(user: {
 }): boolean {
   if (user.role === "admin") return true;
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  if (levelSatisfies(override?.["customers"], "READ")) return true;
   if (moduleAccessAllowed(user.role, override, "crm", "READ", ["cashier", "manager", "sales_rep", "accountant"])) return true;
   if (moduleAccessAllowed(user.role, override, "sales", "READ", ["cashier", "manager", "sales_rep"])) return true;
   if (moduleAccessAllowed(user.role, override, "pos", "READ", ["cashier", "manager", "print_operator"])) return true;
@@ -848,6 +849,7 @@ export function userHasCrmWriteAccess(user: {
 }): boolean {
   if (user.role === "admin") return true;
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  if (levelSatisfies(override?.["customers"], "FULL")) return true;
   return moduleAccessAllowed(user.role, override, "crm", "FULL", ["cashier", "manager", "sales_rep", "print_operator"]);
 }
 
@@ -858,12 +860,11 @@ export function customerReceptionCreateAllowed(user: {
   if (user.role === "admin") return true;
   if (userHasCrmWriteAccess(user)) return true;
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
-  // (١٢/٨، قرار المالك العاجل — يُلغي حاجز crm≥READ من مراجعة Codex P1): كاشير الاستقبال بدور
-  // مخصّص crm=NONE + workorders=FULL يمرّ أيضاً. سبب: قرار المالك «كاشير الاستقبال يحفظ العميل
-  // ويبيع بلا عربون» صريحٌ ومطلق. حالة CONFLICT الهاتف (Codex P1-٢) نظرية: تحدث فقط عند تكرار
-  // هاتفٍ حرفياً، ورسالة الخادم «العميل موجود بنفس الرقم» تُعلم الموظّف صراحةً فيُصعّد للمدير.
-  // POS_STATION_GATES.RECEPTION.allowedRoles = ["cashier", "manager", "print_operator"]
-  return moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
+  // POS_STATION_GATES: RECEPTION=workorders, RETAIL=sales, PRINT_SERVICES=pos
+  if (moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"])) return true;
+  if (moduleAccessAllowed(user.role, override, "sales", "FULL", ["cashier", "manager", "sales_rep"])) return true;
+  if (moduleAccessAllowed(user.role, override, "pos", "FULL", ["cashier", "manager", "print_operator"])) return true;
+  return false;
 }
 
 export const customersReceptionCreateProcedure = branchScopedProcedure.use(

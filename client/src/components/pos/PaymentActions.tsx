@@ -21,6 +21,7 @@ export interface PaymentActionsProps {
   change: number; credit: number;
   showQuickPay: boolean;
   canPay: boolean; isPending: boolean; hasCustomer: boolean;
+  isCreditBlocked?: boolean;
   method: PaymentMethod;
   externalPaymentConfirmed: boolean;
   onPay: () => void; onQuickPay: () => void;
@@ -29,7 +30,7 @@ export interface PaymentActionsProps {
 }
 
 /** منطقة الفعل — خارج التمرير ولا تنكمش: الباقي/المتبقي + زرّا الدفع + تلميح الاختصارات. */
-export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInput, isChange, isOwing, change, credit, showQuickPay, canPay, isPending, hasCustomer, method, externalPaymentConfirmed, onPay, onQuickPay, codMode = false }: PaymentActionsProps) {
+export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInput, isChange, isOwing, change, credit, showQuickPay, canPay, isPending, hasCustomer, isCreditBlocked = false, method, externalPaymentConfirmed, onPay, onQuickPay, codMode = false }: PaymentActionsProps) {
   const isZeroPay = payInput.trim() !== "" && Number(payInput) === 0;
 
   return (
@@ -50,9 +51,11 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
       )}
       {cartLen > 0 && !!payInput && isOwing && (
         <>
-          <span style={{ fontSize: 13.5, color: C.amber, fontWeight: 600 }}>{codMode ? "المتبقّي يُحصَّل عند التسليم" : (isZeroPay ? "كامل الفاتورة ذمة على العميل" : "المتبقي للدفع")}</span>
+          <span style={{ fontSize: 13.5, color: isCreditBlocked && !codMode ? C.danger : C.amber, fontWeight: 600 }}>
+            {codMode ? "المتبقّي يُحصَّل عند التسليم" : (isCreditBlocked ? "العميل نقديّ فقط (لا يقبل الآجل وفق بطاقته)" : (isZeroPay ? "كامل الفاتورة ذمة على العميل" : "المتبقي للدفع"))}
+          </span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <span style={{ fontSize: 22, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12.5, fontWeight: 500 }}>د.ع</span></span>
+            <span style={{ fontSize: 22, fontWeight: 900, color: isCreditBlocked && !codMode ? C.danger : C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12.5, fontWeight: 500 }}>د.ع</span></span>
             <CopyButton value={credit} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" />
           </span>
         </>

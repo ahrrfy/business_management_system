@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { customerReadAllowed } from "../../trpc";
+import { customerReadAllowed, customerReceptionCreateAllowed, userHasCrmWriteAccess } from "../../trpc";
 
 describe("customerReadAllowed access check", () => {
   it("allows admin unconditionally", () => {
@@ -83,6 +83,53 @@ describe("customerReadAllowed access check", () => {
     expect(customerReadAllowed({ role: "unknown_role" })).toBe(false);
     expect(
       customerReadAllowed({
+        role: "cashier",
+        permissionsOverride: {
+          crm: "NONE",
+          sales: "NONE",
+          pos: "NONE",
+          workorders: "NONE",
+        },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("customerReceptionCreateAllowed access check", () => {
+  it("allows admin unconditionally", () => {
+    expect(customerReceptionCreateAllowed({ role: "admin" })).toBe(true);
+  });
+
+  it("allows cashier with default permissions (sales=FULL)", () => {
+    expect(customerReceptionCreateAllowed({ role: "cashier" })).toBe(true);
+  });
+
+  it("allows cashier to create customer even when crm=NONE if sales=FULL", () => {
+    expect(
+      customerReceptionCreateAllowed({
+        role: "cashier",
+        permissionsOverride: { crm: "NONE" },
+      }),
+    ).toBe(true);
+  });
+
+  it("allows print_operator with pos=FULL or workorders=FULL", () => {
+    expect(customerReceptionCreateAllowed({ role: "print_operator" })).toBe(true);
+  });
+
+  it("allows user with legacy override customers=FULL", () => {
+    expect(
+      customerReceptionCreateAllowed({
+        role: "warehouse",
+        permissionsOverride: { customers: "FULL" },
+      }),
+    ).toBe(true);
+  });
+
+  it("denies unprivileged user without FULL permission in crm/sales/pos/workorders", () => {
+    expect(customerReceptionCreateAllowed({ role: "warehouse" })).toBe(false);
+    expect(
+      customerReceptionCreateAllowed({
         role: "cashier",
         permissionsOverride: {
           crm: "NONE",

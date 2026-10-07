@@ -237,6 +237,7 @@ export default function POS() {
     { enabled: needFetch, staleTime: 60_000 },
   );
   const selectedCustomer = fromList ?? fetchedCustomer.data ?? null;
+  const isCashOnlyCustomer = selectedCustomer != null && selectedCustomer.creditLimit != null && Number(selectedCustomer.creditLimit) === 0;
   const effectiveTier: Tier =
     activeTab.tierOverride ??
     (selectedCustomer?.defaultPriceTier as Tier | undefined) ??
@@ -1005,12 +1006,12 @@ export default function POS() {
     // الحدّ قبل الوعد (١٩/٨): الشاشة كانت تفحص **وجود** العميل وحده ثمّ ترسل،
     // فيردّ الخادم بـFORBIDDEN بعد أن أتمّ الموظّف السلة والزبون واقفٌ أمامه. وحدُّ
     // صفرٍ هو **الافتراضي** لكلّ عميلٍ يُنشأ من الكاشير ⤇ الحالة الغالبة لا النادرة.
-    if (!codMode && isCredit && selectedCustomer != null && Number(selectedCustomer.creditLimit ?? 0) === 0
+    if (!approval && !codMode && isCredit && selectedCustomer != null && Number(selectedCustomer.creditLimit ?? 0) === 0
         && selectedCustomer.creditLimit != null) {
-      notify.errBig(
+      setCreditPrompt(
         Number(selectedCustomer.currentBalance ?? 0) > 0
-          ? `هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) وعليه رصيد سابق (${Number(selectedCustomer.currentBalance).toFixed(2)}) — حصّل كامل المبلغ، أو اطلب من المدير رفع حدّه من ملف العميل`
-          : "هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) — حصّل كامل المبلغ، أو اطلب من المدير رفع حدّه من ملف العميل",
+          ? `هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) وعليه رصيد سابق (${Number(selectedCustomer.currentBalance).toFixed(2)}) — لا يمكن البيع بالآجل دون موافقة مدير`
+          : "هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) — لا يمكن البيع بالآجل دون موافقة مدير",
       );
       return;
     }
@@ -1303,6 +1304,7 @@ export default function POS() {
           C={C}
           stacked={stacked}
           codMode={codMode}
+          isCreditBlocked={isCashOnlyCustomer}
           total={total}
           subtotal={subtotal}
           invoiceDiscountAmount={invoiceDiscountAmount}
