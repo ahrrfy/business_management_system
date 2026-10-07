@@ -5,6 +5,7 @@
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
 import { barcodeComparisonKey, barcodeIdentityCandidates, canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "@shared/barcodeNormalize";
+import { resolveChannelLabelsOnUpdate } from "@shared/productChannelTitles";
 import { appErrorMessage } from "@shared/errors";
 import { findBarcodeClashes } from "./barcodeAliases";
 import { productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
@@ -108,31 +109,24 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
     // م٦ ق٨: «لا لقطة ⇒ لا تعديل» — تُقرأ الحالة بعد الأقفال وقبل أوّل كتابة، في نفس المعاملة.
     await snapshotProductBeforeUpdate(tx, input.productId, input.updateReason, actor);
 
-    const name = input.name.trim();
-    const isNameUpdated = name !== p.name;
-    const posLabel = input.posLabel !== undefined
-      ? (input.posLabel?.trim() || null)
-      : (isNameUpdated ? name.slice(0, 120) : undefined);
-    const invoiceLabel = input.invoiceLabel !== undefined
-      ? (input.invoiceLabel?.trim() || null)
-      : (isNameUpdated ? name : undefined);
-    const storeTitle = input.storeTitle !== undefined
-      ? (input.storeTitle?.trim() || null)
-      : (isNameUpdated ? name : undefined);
-    const shortTitle = input.shortTitle !== undefined
-      ? (input.shortTitle?.trim() || null)
-      : (isNameUpdated ? name.slice(0, 160) : undefined);
+    const channelLabels = resolveChannelLabelsOnUpdate(
+      {
+        name: input.name,
+        posLabel: input.posLabel,
+        invoiceLabel: input.invoiceLabel,
+        storeTitle: input.storeTitle,
+        shortTitle: input.shortTitle,
+      },
+      p,
+    );
 
     await tx
       .update(products)
       .set({
-        name,
+        name: channelLabels.name,
         ...(input.internalName !== undefined ? { internalName: input.internalName?.trim() || null } : {}),
-        ...(storeTitle !== undefined ? { storeTitle } : {}),
+        ...channelLabels.patch,
         ...(input.seoTitle !== undefined ? { seoTitle: input.seoTitle?.trim() || null } : {}),
-        ...(shortTitle !== undefined ? { shortTitle } : {}),
-        ...(posLabel !== undefined ? { posLabel } : {}),
-        ...(invoiceLabel !== undefined ? { invoiceLabel } : {}),
         ...(input.marketingCopy !== undefined ? { marketingCopy: input.marketingCopy?.trim() || null } : {}),
         categoryId: input.categoryId ?? null,
         isCustomizable: input.isCustomizable ?? !!p.isCustomizable,

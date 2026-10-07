@@ -1,66 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { titleForChannel, type ProductTitleSource } from "./productChannelTitles";
+import {
+  resolveChannelLabelsOnUpdate,
+  titleForChannel,
+  type ProductTitleSource,
+} from "./productChannelTitles";
 import { normalizeSearchText } from "./searchNormalize";
-
-/**
- * منطق اشتقاق عناوين القنوات عند تعديل المنتج
- * يطابق تماماً ما ينفذه productEditService وproductUpdate.
- */
-function resolveChannelLabelsOnUpdate(
-  input: {
-    name?: string | null;
-    posLabel?: string | null;
-    invoiceLabel?: string | null;
-    storeTitle?: string | null;
-    shortTitle?: string | null;
-  },
-  existing: {
-    name: string;
-    posLabel?: string | null;
-    invoiceLabel?: string | null;
-    storeTitle?: string | null;
-    shortTitle?: string | null;
-  },
-) {
-  const newName = (input.name ?? "").trim() || existing.name;
-  const isNameUpdated = newName !== existing.name;
-
-  const posLabel =
-    input.posLabel !== undefined
-      ? input.posLabel?.trim() || null
-      : isNameUpdated
-        ? newName.slice(0, 120)
-        : undefined;
-
-  const invoiceLabel =
-    input.invoiceLabel !== undefined
-      ? input.invoiceLabel?.trim() || null
-      : isNameUpdated
-        ? newName
-        : undefined;
-
-  const storeTitle =
-    input.storeTitle !== undefined
-      ? input.storeTitle?.trim() || null
-      : isNameUpdated
-        ? newName
-        : undefined;
-
-  const shortTitle =
-    input.shortTitle !== undefined
-      ? input.shortTitle?.trim() || null
-      : isNameUpdated
-        ? newName.slice(0, 160)
-        : undefined;
-
-  return {
-    name: newName,
-    posLabel: posLabel !== undefined ? posLabel : existing.posLabel,
-    invoiceLabel: invoiceLabel !== undefined ? invoiceLabel : existing.invoiceLabel,
-    storeTitle: storeTitle !== undefined ? storeTitle : existing.storeTitle,
-    shortTitle: shortTitle !== undefined ? shortTitle : existing.shortTitle,
-  };
-}
 
 describe("productChannelSync — اختبارات انضباط وتزامن عناوين القنوات", () => {
   it("⭐ معالجة حالة التكرار المبلّغ عنها: تعديل اسم المنتج الثاني دون إرسال posLabel يحدّث posLabel فوراً", () => {
@@ -107,20 +51,29 @@ describe("productChannelSync — اختبارات انضباط وتزامن عن
     expect(posTitle1).not.toBe(posTitle2);
   });
 
-  it("يقتطع posLabel إلى 120 محرفاً وshortTitle إلى 160 محرفاً عند التزامن التلقائي للأسماء الطويلة", () => {
-    const longName = "أ".repeat(200);
+  it("يقتطع posLabel (120) وshortTitle (160) وinvoiceLabel/storeTitle (255) عند التزامن التلقائي للأسماء الطويلة", () => {
+    const longName = "أ".repeat(300);
     const existing = {
       name: "اسم قديم",
       posLabel: "اسم قديم",
       shortTitle: "اسم قديم",
+      invoiceLabel: "اسم قديم",
+      storeTitle: "اسم قديم",
     };
 
     const result = resolveChannelLabelsOnUpdate({ name: longName }, existing);
 
     expect(result.posLabel).toBe("أ".repeat(120));
     expect(result.shortTitle).toBe("أ".repeat(160));
-    expect(result.invoiceLabel).toBe(longName);
-    expect(result.storeTitle).toBe(longName);
+    expect(result.invoiceLabel).toBe("أ".repeat(255));
+    expect(result.storeTitle).toBe("أ".repeat(255));
+    expect(result.isNameUpdated).toBe(true);
+    expect(result.patch).toEqual({
+      posLabel: "أ".repeat(120),
+      shortTitle: "أ".repeat(160),
+      invoiceLabel: "أ".repeat(255),
+      storeTitle: "أ".repeat(255),
+    });
   });
 
   it("يحترم القيم المحدّدة صراحةً ولا يستبدلها بالاسم الجديد", () => {
@@ -168,6 +121,8 @@ describe("productChannelSync — اختبارات انضباط وتزامن عن
     expect(result.invoiceLabel).toBe("دفتر فاتورة");
     expect(result.storeTitle).toBe("دفتر متجر");
     expect(result.shortTitle).toBe("دفتر");
+    expect(result.isNameUpdated).toBe(false);
+    expect(result.patch).toEqual({});
   });
 
   it("⭐ تكافؤ أوفلاين/أونلاين: لقطة الكتالوج الأوفلايني تطابق titleForChannel للكاشير", () => {

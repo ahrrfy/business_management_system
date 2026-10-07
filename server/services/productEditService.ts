@@ -16,6 +16,7 @@ import { getDb } from "../db";
 import type { Tx } from "../db";
 import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
 import { barcodeComparisonKey, barcodeIdentityCandidates, barcodesEquivalent, canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "@shared/barcodeNormalize";
+import { resolveChannelLabelsOnUpdate } from "@shared/productChannelTitles";
 import type { VariantKind } from "../../shared/variantDisplay";
 import { assertConsignmentValid } from "./catalog/productCreate";
 import { assertValidUnitFactors } from "./catalog/unitFactors";
@@ -604,19 +605,16 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
     // م٦ ق٨: «لا لقطة ⇒ لا تعديل» — تُقرأ الحالة بعد الأقفال وقبل أوّل كتابة، في نفس المعاملة.
     await snapshotProductBeforeUpdate(tx, input.productId, input.updateReason, actor);
 
-    const isNameUpdated = name !== p.name;
-    const posLabel = input.posLabel !== undefined
-      ? (input.posLabel?.trim() || null)
-      : (isNameUpdated ? name.slice(0, 120) : undefined);
-    const invoiceLabel = input.invoiceLabel !== undefined
-      ? (input.invoiceLabel?.trim() || null)
-      : (isNameUpdated ? name : undefined);
-    const storeTitle = input.storeTitle !== undefined
-      ? (input.storeTitle?.trim() || null)
-      : (isNameUpdated ? name : undefined);
-    const shortTitle = input.shortTitle !== undefined
-      ? (input.shortTitle?.trim() || null)
-      : (isNameUpdated ? name.slice(0, 160) : undefined);
+    const channelLabels = resolveChannelLabelsOnUpdate(
+      {
+        name,
+        posLabel: input.posLabel,
+        invoiceLabel: input.invoiceLabel,
+        storeTitle: input.storeTitle,
+        shortTitle: input.shortTitle,
+      },
+      p,
+    );
 
     await tx
       .update(products)
@@ -627,11 +625,8 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
         modelName: input.modelName?.trim() || null,
         description: input.description?.trim() || null,
         ...(input.internalName !== undefined ? { internalName: input.internalName?.trim() || null } : {}),
-        ...(storeTitle !== undefined ? { storeTitle } : {}),
+        ...channelLabels.patch,
         ...(input.seoTitle !== undefined ? { seoTitle: input.seoTitle?.trim() || null } : {}),
-        ...(shortTitle !== undefined ? { shortTitle } : {}),
-        ...(posLabel !== undefined ? { posLabel } : {}),
-        ...(invoiceLabel !== undefined ? { invoiceLabel } : {}),
         ...(input.marketingCopy !== undefined ? { marketingCopy: input.marketingCopy?.trim() || null } : {}),
         categoryId: input.categoryId ?? null,
         isCustomizable: input.isCustomizable ?? !!p.isCustomizable,
