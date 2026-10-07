@@ -14,6 +14,7 @@ import { CustomerSelectionDialog } from "@/components/pos/CustomerSelectionDialo
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { Tier } from "@/components/pos/posShared";
 import type { PhoneCustomerTier } from "@/components/customer/customerByPhoneMachine";
+import { isValidIqMobile, toLocalIqMobileDigits } from "@/components/form/PhoneDigitsInput";
 
 export interface ReceptionCustomerSectionProps {
   phoneCustomer: CustomerByPhoneApi;
@@ -103,7 +104,9 @@ export function ReceptionCustomerSection({
     }
 
     const name = target?.name ?? "";
-    const phone = target?.phone ?? "";
+    const rawPhone = target?.phone ?? "";
+    const localDigits = toLocalIqMobileDigits(rawPhone);
+    const phone = isValidIqMobile(localDigits) ? localDigits : "";
     const tier = (target?.defaultPriceTier as PhoneCustomerTier | undefined) ?? "RETAIL";
     const creditLimit = target?.creditLimit != null ? String(target.creditLimit) : "";
     const isCashOnly = creditLimit !== "" && Number(creditLimit) === 0;
@@ -169,6 +172,7 @@ export function ReceptionCustomerSection({
       <CustomerSelectionDialog
         open={showPicker}
         onOpenChange={setShowPicker}
+        canCreate={canCreateCustomer}
         customerId={customerId}
         selectedCustomer={selectedCustomer}
         effectiveTier={effectiveTier}

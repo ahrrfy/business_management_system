@@ -112,7 +112,7 @@ export function CustomerByPhone({
                 <span className="truncate text-xs font-black">{api.customer.name}</span>
                 <BadgeCheck aria-label="عميل موثوق" className="size-3.5 shrink-0 text-money-positive" />
               </div>
-              <div className="text-[10px] font-semibold text-muted-foreground" dir="ltr">{api.phone}</div>
+              <div className="text-[10px] font-semibold text-muted-foreground" dir="ltr">{api.phone || api.customer.phone || "—"}</div>
               <div className="text-[9px] font-bold text-money-positive">
                 مرتبط · جاهز للربط والبيع
               </div>

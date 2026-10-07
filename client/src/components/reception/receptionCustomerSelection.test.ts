@@ -66,12 +66,24 @@ describe("تكامل اختيار العميل في كاشير الاستقبا�
     expect(cbp).toContain("تغيير");
   });
 
-  it("CustomerSelectionDialog يجعل معامل الألوان C اختيارياً ويمرر كائن العميل عند الاختيار", () => {
+  it("CustomerSelectionDialog يجعل معامل الألوان C اختيارياً ويمرر كائن العميل عند الاختيار ويدعم canCreate", () => {
     const dialog = readSelectionDialog();
 
     expect(dialog).toContain("C?: C;");
     expect(dialog).toContain("C = POS_COLORS");
+    expect(dialog).toContain("canCreate?: boolean;");
+    expect(dialog).toContain("canCreate = true");
+    expect(dialog).toContain("{canCreate && (");
     expect(dialog).toContain("handlePick(c.id, c)");
+    expect(dialog).toContain("handlePick(id, data as any)");
+  });
+
+  it("قسم عميل الاستقبال يمرر صلاحية canCreate إلى CustomerSelectionDialog ويطبّع رقم الهاتف", () => {
+    const section = readCustomerSection();
+
+    expect(section).toContain("canCreate={canCreateCustomer}");
+    expect(section).toContain("toLocalIqMobileDigits");
+    expect(section).toContain("isValidIqMobile");
   });
 
   it("آلة الحالة: ربط عميل بالكامل يثبت الهوية كـ RESOLVED ويحدث الفئة والآجل", () => {

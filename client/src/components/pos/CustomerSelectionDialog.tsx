@@ -41,6 +41,7 @@ export interface CustomerSelectionDialogProps {
     customer?: RouterOutputs["customers"]["smartSearch"][number] | RouterOutputs["customers"]["list"][number] | null,
   ) => void;
   onSelectTier: (tier: Tier | null) => void;
+  canCreate?: boolean;
 }
 
 export function CustomerSelectionDialog({
@@ -53,6 +54,7 @@ export function CustomerSelectionDialog({
   tierOverride,
   onSelectCustomer,
   onSelectTier,
+  canCreate = true,
 }: CustomerSelectionDialogProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [showNewForm, setShowNewForm] = useState(false);
@@ -271,23 +273,25 @@ export function CustomerSelectionDialog({
               <label className="text-xs font-bold text-foreground">
                 البحث عن عميل (الاسم أو رقم الهاتف)
               </label>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setShowNewForm(!showNewForm)}
-                className="text-xs h-7 gap-1"
-              >
-                <Plus className="size-3.5" aria-hidden />
-                {showNewForm ? "إلغاء الإضافة" : "عميل جديد"}
-              </Button>
+              {canCreate && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowNewForm(!showNewForm)}
+                  className="text-xs h-7 gap-1"
+                >
+                  <Plus className="size-3.5" aria-hidden />
+                  {showNewForm ? "إلغاء الإضافة" : "عميل جديد"}
+                </Button>
+              )}
             </div>
 
             <UnifiedSearchInput
               value={searchQuery}
               onChange={setSearchQuery}
               onSubmit={() => {
-                if (displayList.length > 0) handlePick(displayList[0].id);
+                if (displayList.length > 0) handlePick(displayList[0].id, displayList[0]);
               }}
               placeholder="اكتب اسم العميل أو جزءاً من رقم الهاتف…"
               debounceMs={180}
@@ -372,10 +376,10 @@ export function CustomerSelectionDialog({
           {/* 4. Add New Customer Section */}
           {showNewForm && (
             <QuickCustomerCreateForm
-              onCustomerCreated={(id) => {
+              onCustomerCreated={(id, data) => {
                 setShowNewForm(false);
                 setSearchQuery("");
-                handlePick(id);
+                handlePick(id, data as any);
               }}
             />
           )}

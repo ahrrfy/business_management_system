@@ -9,8 +9,16 @@ import { Plus, AlertCircle } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import type { Tier } from "./posShared";
 
+export interface QuickCustomerCreatedData {
+  id: number;
+  name: string;
+  phone?: string | null;
+  customerType?: string;
+  defaultPriceTier?: Tier;
+}
+
 export interface QuickCustomerCreateFormProps {
-  onCustomerCreated: (customerId: number) => void;
+  onCustomerCreated: (customerId: number, data?: QuickCustomerCreatedData) => void;
 }
 
 export function QuickCustomerCreateForm({ onCustomerCreated }: QuickCustomerCreateFormProps) {
@@ -29,7 +37,13 @@ export function QuickCustomerCreateForm({ onCustomerCreated }: QuickCustomerCrea
       const newCustId = created.customerId ?? created.id;
       if (newCustId != null) {
         await utils.customers.get.invalidate({ customerId: newCustId });
-        onCustomerCreated(newCustId);
+        onCustomerCreated(newCustId, {
+          id: newCustId,
+          name: newName.trim(),
+          phone: newPhone.trim() || null,
+          customerType: newType,
+          defaultPriceTier: newTier,
+        });
       }
     },
     onError: (err) => {

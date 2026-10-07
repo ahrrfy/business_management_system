@@ -157,6 +157,39 @@ describe("آلة «العميل بالهاتف» — الهاتف مفتاح ا�
     expect(linked.deferredEligible).toBe(false);
   });
 
+  it("ربط عميل بهاتف بصيغة E.164 أو مسافات يطبعه تلقائياً إلى 07xxxxxxxxx عراقي صالح", () => {
+    const s0 = initialCustomerByPhoneState();
+    const linkedE164 = onCustomerLinked(s0, {
+      customerId: 103,
+      name: "مكتبة النجاح",
+      phone: "+9647701234567",
+      tier: "WHOLESALE",
+      deferredEligible: true,
+    });
+    expect(linkedE164.phone).toBe("07701234567");
+    expect(linkedE164.customer.phone).toBe("+9647701234567");
+
+    const linkedSpaces = onCustomerLinked(s0, {
+      customerId: 104,
+      name: "مطبخ السلام",
+      phone: "0770 987 6543",
+      tier: "RETAIL",
+      deferredEligible: true,
+    });
+    expect(linkedSpaces.phone).toBe("07709876543");
+
+    // هاتف أرضي غير عراقي موبايل (مثل 017778899): الهاتف التفاعلي يفرغ كي لا يعطل إرسال الاستقبال، ويحفظ في بطاقة العميل
+    const linkedLandline = onCustomerLinked(s0, {
+      customerId: 105,
+      name: "دائرة الكهرباء",
+      phone: "017778899",
+      tier: "GOVERNMENT",
+      deferredEligible: false,
+    });
+    expect(linkedLandline.phone).toBe("");
+    expect(linkedLandline.customer.phone).toBe("017778899");
+  });
+
   it("إعادة تعيين للعميل النقدي تفرغ الهاتف والهوية وترجع الحالة إلى EMPTY", () => {
     const s0 = initialCustomerByPhoneState();
     const linked = onCustomerLinked(s0, {
