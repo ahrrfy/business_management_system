@@ -195,11 +195,7 @@ export const customerRouter = router({
       return {
         status: "RESOLVED" as const,
         customerId: Number(customer.id),
-        name: customer.name,
-        phone: customer.phone,
         defaultPriceTier: customer.defaultPriceTier,
-        creditLimit: customer.creditLimit,
-        deferredEligible: customer.creditLimit == null || Number(customer.creditLimit) !== 0,
       };
     }),
 
