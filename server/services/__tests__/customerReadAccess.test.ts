@@ -78,6 +78,73 @@ describe("customerReadAllowed access check", () => {
     ).toBe(true);
   });
 
+  it("allows station cashiers (Reception / Print / Retail) even when customers=NONE legacy key is present", () => {
+    // كاشير استقبال أوامر شغل — السيناريو الواقعي للبلاغ: crm=NONE + customers=NONE + workorders=FULL
+    expect(
+      customerReadAllowed({
+        role: "cashier",
+        permissionsOverride: {
+          crm: "NONE",
+          customers: "NONE",
+          pos: "NONE",
+          sales: "NONE",
+          workorders: "FULL",
+        },
+      }),
+    ).toBe(true);
+
+    // كاشير طباعة مع customers=NONE
+    expect(
+      customerReadAllowed({
+        role: "cashier",
+        permissionsOverride: {
+          crm: "NONE",
+          customers: "NONE",
+          sales: "NONE",
+          workorders: "NONE",
+          pos: "FULL",
+        },
+      }),
+    ).toBe(true);
+
+    // كاشير تجزئة مع customers=NONE
+    expect(
+      customerReadAllowed({
+        role: "cashier",
+        permissionsOverride: {
+          crm: "NONE",
+          customers: "NONE",
+          pos: "NONE",
+          workorders: "NONE",
+          sales: "FULL",
+        },
+      }),
+    ).toBe(true);
+
+    // فني مطبعة ومشغل محطة الاستقبال
+    expect(
+      customerReadAllowed({
+        role: "print_operator",
+        permissionsOverride: {
+          crm: "NONE",
+          customers: "NONE",
+        },
+      }),
+    ).toBe(true);
+
+    // دور مخصص مبني على user مع منح محطة الاستقبال صراحةً
+    expect(
+      customerReadAllowed({
+        role: "user",
+        permissionsOverride: {
+          customers: "NONE",
+          crm: "NONE",
+          workorders: "FULL",
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("denies unprivileged user without relevant permissions or override", () => {
     expect(customerReadAllowed({ role: "warehouse" })).toBe(false);
     expect(customerReadAllowed({ role: "delivery" })).toBe(false);
@@ -129,6 +196,43 @@ describe("customerReceptionCreateAllowed access check", () => {
       customerReceptionCreateAllowed({
         role: "warehouse",
         permissionsOverride: { customers: "FULL" },
+      }),
+    ).toBe(true);
+  });
+
+  it("allows station cashiers with sales=FULL or pos=FULL even when crm=NONE", () => {
+    expect(
+      customerReceptionCreateAllowed({
+        role: "cashier",
+        permissionsOverride: { crm: "NONE", sales: "FULL", workorders: "NONE", pos: "NONE" },
+      }),
+    ).toBe(true);
+
+    expect(
+      customerReceptionCreateAllowed({
+        role: "cashier",
+        permissionsOverride: { crm: "NONE", pos: "FULL", sales: "NONE", workorders: "NONE" },
+      }),
+    ).toBe(true);
+
+    expect(
+      customerReceptionCreateAllowed({
+        role: "user",
+        permissionsOverride: { sales: "FULL" },
+      }),
+    ).toBe(true);
+
+    expect(
+      customerReceptionCreateAllowed({
+        role: "user",
+        permissionsOverride: { pos: "FULL" },
+      }),
+    ).toBe(true);
+
+    expect(
+      customerReceptionCreateAllowed({
+        role: "user",
+        permissionsOverride: { workorders: "FULL" },
       }),
     ).toBe(true);
   });

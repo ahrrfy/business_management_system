@@ -797,12 +797,44 @@ export function customerReadAllowed(user: {
 }): boolean {
   if (user.role === "admin") return true;
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+
+  // 1. صلاحيات المحطات التشغيلية ونقاط البيع (استقبال أوامر شغل، خدمات طباعة، تجزئة، مبيعات):
+  // كاشير المحطة (سواء استقبال أوامر شغل أو طباعة أو تجزئة) يحتاج حتماً للبحث عن العميل واستعراض بياناته لربط الفاتورة أو أمر الشغل به.
+  const hasStationAuthority =
+    moduleAccessAllowed(user.role, override, "workorders", "READ", ["cashier", "manager", "print_operator"]) ||
+    moduleAccessAllowed(user.role, override, "sales", "READ", ["cashier", "manager", "sales_rep"]) ||
+    moduleAccessAllowed(user.role, override, "pos", "READ", ["cashier", "manager", "print_operator"]) ||
+    levelSatisfies(override?.["workorders"], "READ") ||
+    levelSatisfies(override?.["sales"], "READ") ||
+    levelSatisfies(override?.["pos"], "READ");
+
+  if (hasStationAuthority) {
+    // التحقق من الحجب الكامل: إذا سُحبت جميع وحدات المحطات ونقاط البيع صراحةً بـ NONE
+    const isExplicitlyRevoked =
+      override?.["workorders"] === "NONE" &&
+      override?.["sales"] === "NONE" &&
+      override?.["pos"] === "NONE" &&
+      (override?.["crm"] === "NONE" || override?.["customers"] === "NONE");
+
+    if (!isExplicitlyRevoked) {
+      // للمدير الإداري فقط: إذا قُيدت صراحةً صلاحية العملاء customers: "NONE" دون تكليف كاشيري مخصص
+      if (user.role === "manager" && override?.["customers"] === "NONE") {
+        return false;
+      }
+      return true;
+    }
+  }
+
+  // 2. فحص تقييد مفتاح العملاء الموروث (customers) لغير موظفي المحطات:
   if (override?.["customers"] === "NONE") return false;
   if (levelSatisfies(override?.["customers"], "READ")) return true;
+
+  // 3. صلاحية إدارة علاقات العملاء (CRM):
   if (moduleAccessAllowed(user.role, override, "crm", "READ", ["cashier", "manager", "sales_rep", "accountant"])) return true;
   if (moduleAccessAllowed(user.role, override, "sales", "READ", ["cashier", "manager", "sales_rep"])) return true;
   if (moduleAccessAllowed(user.role, override, "pos", "READ", ["cashier", "manager", "print_operator"])) return true;
   if (moduleAccessAllowed(user.role, override, "workorders", "READ", ["cashier", "manager", "print_operator"])) return true;
+
   return false;
 }
 
@@ -861,7 +893,13 @@ export function customerReceptionCreateAllowed(user: {
   if (user.role === "admin") return true;
   if (userHasCrmWriteAccess(user)) return true;
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
-  return moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
+  if (moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"])) return true;
+  if (moduleAccessAllowed(user.role, override, "sales", "FULL", ["cashier", "manager"])) return true;
+  if (moduleAccessAllowed(user.role, override, "pos", "FULL", ["cashier", "manager"])) return true;
+  if (levelSatisfies(override?.["workorders"], "FULL")) return true;
+  if (levelSatisfies(override?.["sales"], "FULL")) return true;
+  if (levelSatisfies(override?.["pos"], "FULL")) return true;
+  return false;
 }
 
 export const customersReceptionCreateProcedure = branchScopedProcedure.use(
