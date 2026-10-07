@@ -166,6 +166,7 @@ export function PredictiveConsignmentSearchInput({
             invoiceId: row.invoiceId ? Number(row.invoiceId) : null,
             invoiceNumber: inv || null,
             workOrderId: row.workOrderId ? Number(row.workOrderId) : null,
+            onlineOrderId: row.onlineOrderId ? Number(row.onlineOrderId) : null,
             orderNumber: ord || null,
             partyId: Number(row.partyId ?? partyId ?? 0),
             partyName: String(row.partyName ?? "الجهة الحالية"),

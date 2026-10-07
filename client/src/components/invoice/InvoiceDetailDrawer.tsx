@@ -147,7 +147,14 @@ export function InvoiceDetailDrawer({
                 </div>
                 <div>
                   <div className="text-xs text-muted-foreground">المصدر / القناة</div>
-                  <div>{sourceTypeLabel(inv.sourceType)}</div>
+                  <div>
+                    {sourceTypeLabel(inv.sourceType)}
+                    {(inv.onlineOrderNumber || inv.workOrderNumber) && (
+                      <span className="block font-mono text-[11px] text-muted-foreground" dir="ltr">
+                        {inv.onlineOrderNumber ?? inv.workOrderNumber}
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div>
                   <div className="text-xs text-muted-foreground">طريقة الدفع</div>
