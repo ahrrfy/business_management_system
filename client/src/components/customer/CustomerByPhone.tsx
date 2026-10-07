@@ -30,8 +30,12 @@ export interface CustomerByPhoneProps {
   canCreate: boolean;
   /** أرقام الخطوات في رأسَي القسمين (الاستقبال: «٢» و«٣»)؛ يُهمَل حين يغيب. */
   steps?: { phone: string; identity: string } | null;
+  /** عنصرٌ إضافيّ في رأس قسم الهاتف (مثل زرّ اختيار عميل / بحث في السجل). */
+  phoneHeaderExtra?: ReactNode;
   /** عنصرٌ إضافيّ في رأس قسم الهوية (الاستقبال: منتقي فئة السعر). */
   identityHeaderExtra?: ReactNode;
+  /** يفتح نافذة منتقي العملاء عند الرغبة في التغيير. */
+  onOpenPicker?: () => void;
   /** يظهر زرّ «الملف» حين يملك القارئ سياق العميل. */
   onOpenProfile?: (customerId: number) => void;
   /** رصيد العميل المربوط إن كان متاحاً للقارئ (الكاشير يعرضه؛ الاستقبال لا يكشف الأرصدة). */
@@ -40,7 +44,17 @@ export interface CustomerByPhoneProps {
   idPrefix?: string;
 }
 
-export function CustomerByPhone({ api, canCreate, steps, identityHeaderExtra, onOpenProfile, balance, idPrefix = "customer-by-phone" }: CustomerByPhoneProps) {
+export function CustomerByPhone({
+  api,
+  canCreate,
+  steps,
+  phoneHeaderExtra,
+  identityHeaderExtra,
+  onOpenPicker,
+  onOpenProfile,
+  balance,
+  idPrefix = "customer-by-phone",
+}: CustomerByPhoneProps) {
   const notice = resolutionNotice(api);
   const canSubmit = canSubmitNewCustomer(api, { canCreate, pending: api.isPending });
   const submitNewCustomer = () => { void api.resolve(api.customer.name, true); };
@@ -58,11 +72,14 @@ export function CustomerByPhone({ api, canCreate, steps, identityHeaderExtra, on
             <h2 id={`${idPrefix}-phone-title`} className="text-xs font-black">رقم هاتف العميل</h2>
             <span className="rounded bg-muted px-1.5 py-0.5 text-[9px] font-bold text-muted-foreground">اختياري للنقدي</span>
           </div>
-          {api.resolution === "CHECKING" && (
-            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-muted-foreground">
-              <LoaderCircle aria-hidden className="size-3 animate-spin" /> {ACTION_LABELS.verifying}
-            </span>
-          )}
+          <div className="flex items-center gap-1.5">
+            {phoneHeaderExtra}
+            {api.resolution === "CHECKING" && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold text-muted-foreground">
+                <LoaderCircle aria-hidden className="size-3 animate-spin" /> {ACTION_LABELS.verifying}
+              </span>
+            )}
+          </div>
         </div>
         <PhoneDigitsInput
           value={api.phone}
@@ -95,7 +112,7 @@ export function CustomerByPhone({ api, canCreate, steps, identityHeaderExtra, on
                 <span className="truncate text-xs font-black">{api.customer.name}</span>
                 <BadgeCheck aria-label="عميل موثوق" className="size-3.5 shrink-0 text-money-positive" />
               </div>
-              <div className="text-[10px] font-semibold text-muted-foreground" dir="ltr">{api.phone}</div>
+              <div className="text-[10px] font-semibold text-muted-foreground" dir="ltr">{api.phone || api.customer.phone || "—"}</div>
               <div className="text-[9px] font-bold text-money-positive">
                 مرتبط · جاهز للربط والبيع
               </div>
@@ -105,11 +122,18 @@ export function CustomerByPhone({ api, canCreate, steps, identityHeaderExtra, on
                 </div>
               )}
             </div>
-            {onOpenProfile && (
-              <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" onClick={() => onOpenProfile(api.customer.customerId!)}>
-                الملف
-              </Button>
-            )}
+            <div className="flex items-center gap-1 shrink-0">
+              {onOpenPicker && (
+                <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" onClick={onOpenPicker} title="اختيار عميل آخر أو تعديل الربط">
+                  تغيير
+                </Button>
+              )}
+              {onOpenProfile && (
+                <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" onClick={() => onOpenProfile(api.customer.customerId!)}>
+                  الملف
+                </Button>
+              )}
+            </div>
           </div>
         ) : (
           <div className="space-y-1.5">

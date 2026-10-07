@@ -846,15 +846,17 @@ export async function smartSearchCustomers(input: { q: string; limit?: number })
       sql`${customers.whatsapp} LIKE ${sufPat} ESCAPE '!'`,
     );
   }
-  // S5 (٣٠/٦): إضافة defaultPriceTier + currentBalance — حقلان رخيصان من نفس صفّ العملاء
-  // يُمكّنان CustomerPicker الكاشير من البحث الخادمي بدل تحميل ٥٠٠ عميل عند الإقلاع.
+  // S5 (٣٠/٦): إضافة defaultPriceTier + currentBalance + creditLimit — حقول
+  // يُمكّنان CustomerPicker الكاشير من البحث الخادمي والتحقق من أهلية الآجل.
   const matched = await db
     .select({
       id: customers.id,
       name: customers.name,
       phone: customers.phone,
+      customerType: customers.customerType,
       defaultPriceTier: customers.defaultPriceTier,
       currentBalance: customers.currentBalance,
+      creditLimit: customers.creditLimit,
     })
     .from(customers)
     .where(and(eq(customers.isActive, true), or(...smartOrConds)))
@@ -910,9 +912,11 @@ export async function smartSearchCustomers(input: { q: string; limit?: number })
       id: m.id,
       name: m.name,
       phone: m.phone,
-      // S5 (٣٠/٦): فئة السعر + الذمة الجارية لاستهلاك CustomerPicker الكاشير.
+      customerType: m.customerType,
+      // S5 (٣٠/٦): فئة السعر + الذمة الجارية وسقف الائتمان لاستهلاك كاشير نقاط البيع.
       defaultPriceTier: m.defaultPriceTier,
       currentBalance: m.currentBalance,
+      creditLimit: m.creditLimit,
       orderCount,
       lastOrderAt,
       totalSpent: inv?.total ?? "0",

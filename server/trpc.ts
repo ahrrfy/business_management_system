@@ -5,7 +5,7 @@ import {
   AI_PROVIDER_ERROR_CATEGORIES,
   type AiProviderErrorCategory,
 } from "@shared/productContentAi";
-import { canSeeCost as _canSeeCost, canUseDigitalCardsSellingStation, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
+import { canSeeCost as _canSeeCost, canUseDigitalCardsSellingStation, levelSatisfies, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import {
   capabilityModuleDecision,
   capabilityShadowEnabled,
@@ -780,8 +780,57 @@ export const journalWriteProcedure = protectedProcedure
     }
     return next({ ctx });
   });
-// أسماء توافقية للراوترات القائمة؛ سلطة ملف العميل انتقلت فعلياً إلى وحدة CRM.
-export const customersReadProcedure = protectedProcedure.use(requireModule("crm", "READ"));
+// أسماء توافقية للراوترات القائمة؛ قراءة ملفات وبحث العملاء متاحة لـ CRM ومحطات نقاط البيع والمبيعات.
+/**
+ * هل يُسمح لهذا المستخدم بقراءة والبحث عن العملاء في نقاط البيع والعمليات؟
+ * يقبل:
+ *  - مدير النظام (admin)
+ *  - من يملك crm >= READ (البوّابة القياسية لإدارة العملاء)
+ *  - من يملك sales >= READ (كاشير ومبيعات التجزئة)
+ *  - من يملك pos >= READ (كاشير خدمات الطباعة)
+ *  - من يملك workorders >= READ (كاشير واستقبال أوامر الشغل)
+ *  - الأدوار التشغيلية التي تحتاج اختيار عميل: cashier, manager, sales_rep, print_operator, accountant
+ */
+export function customerReadAllowed(user: {
+  role: string;
+  permissionsOverride?: unknown;
+}): boolean {
+  if (user.role === "admin") return true;
+  const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  if (override?.["customers"] === "NONE") return false;
+  if (levelSatisfies(override?.["customers"], "READ")) return true;
+  if (moduleAccessAllowed(user.role, override, "crm", "READ", ["cashier", "manager", "sales_rep", "accountant"])) return true;
+  if (moduleAccessAllowed(user.role, override, "sales", "READ", ["cashier", "manager", "sales_rep"])) return true;
+  if (moduleAccessAllowed(user.role, override, "pos", "READ", ["cashier", "manager", "print_operator"])) return true;
+  if (moduleAccessAllowed(user.role, override, "workorders", "READ", ["cashier", "manager", "print_operator"])) return true;
+  return false;
+}
+
+export const customersReadProcedure = protectedProcedure.use(
+  t.middleware(async ({ ctx, next }) => {
+    if (!ctx.user) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: appErrorMessage({
+          what: "يجب تسجيل الدخول أولاً",
+          why: UNAUTHED_ERR_MSG,
+          doThis: "سجّل الدخول ثم أعد المحاولة",
+        }),
+      });
+    }
+    if (!customerReadAllowed(ctx.user)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر استعراض بيانات العملاء",
+          why: FORBIDDEN_MSG,
+          doThis: "تأكد من امتلاك صلاحية نقاط البيع أو المبيعات أو إدارة العملاء",
+        }),
+      });
+    }
+    return next({ ctx: { ...ctx, user: ctx.user } });
+  }),
+);
 // print_operator (٧/٨): مرآة POS_STATION_GATES.RECEPTION بالضبط (shared/permissions.ts) — نفس
 // الدور الذي يفتح محطة الاستقبال فعلياً (كاشير/مدير/فنّي المطبعة) يحتاج إنشاء عميلٍ من طلب قناة
 // (واتساب/انستغرام/تيك توك/اتصال) دون رفض FORBIDDEN — كان مفقوداً هنا رغم وجوده في CHANNEL_READ_ROLES
@@ -801,6 +850,7 @@ export function userHasCrmWriteAccess(user: {
 }): boolean {
   if (user.role === "admin") return true;
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  if (levelSatisfies(override?.["customers"], "FULL")) return true;
   return moduleAccessAllowed(user.role, override, "crm", "FULL", ["cashier", "manager", "sales_rep", "print_operator"]);
 }
 
@@ -811,11 +861,6 @@ export function customerReceptionCreateAllowed(user: {
   if (user.role === "admin") return true;
   if (userHasCrmWriteAccess(user)) return true;
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
-  // (١٢/٨، قرار المالك العاجل — يُلغي حاجز crm≥READ من مراجعة Codex P1): كاشير الاستقبال بدور
-  // مخصّص crm=NONE + workorders=FULL يمرّ أيضاً. سبب: قرار المالك «كاشير الاستقبال يحفظ العميل
-  // ويبيع بلا عربون» صريحٌ ومطلق. حالة CONFLICT الهاتف (Codex P1-٢) نظرية: تحدث فقط عند تكرار
-  // هاتفٍ حرفياً، ورسالة الخادم «العميل موجود بنفس الرقم» تُعلم الموظّف صراحةً فيُصعّد للمدير.
-  // POS_STATION_GATES.RECEPTION.allowedRoles = ["cashier", "manager", "print_operator"]
   return moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
 }
 

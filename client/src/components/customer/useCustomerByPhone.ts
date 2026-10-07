@@ -19,6 +19,8 @@ import {
   creditLimitAfterPhoneChange,
   creditLimitPayload,
   initialCustomerByPhoneState,
+  onCustomerLinked,
+  onCustomerReset,
   onNameTyped,
   onPhoneChanged,
   onResolveError,
@@ -28,6 +30,7 @@ import {
   sanitizeCreditLimitInput,
   type CustomerByPhoneState,
   type PhoneCustomer,
+  type PhoneCustomerTier,
   type PhoneResolveResult,
 } from "./customerByPhoneMachine";
 
@@ -48,6 +51,17 @@ export interface CustomerByPhoneApi extends CustomerByPhoneState {
   setCreditLimit: (raw: string) => void;
   /** بحثٌ (بلا اسم) أو إنشاءٌ (بالاسم). `announce` يُظهر توست الربط/الخطأ. */
   resolve: (name?: string, announce?: boolean) => Promise<PhoneResolveResult | null>;
+  /** ربط عميل مباشرة مع كامل تفاصيله (من منتقي العملاء أو البحث المتقدم). */
+  linkCustomer: (customerData: {
+    customerId: number;
+    name: string;
+    phone?: string | null;
+    tier?: PhoneCustomerTier | null;
+    creditLimit?: string | null;
+    deferredEligible?: boolean;
+  }) => void;
+  /** إعادة تعيين إلى العميل النقدي الافتراضي (تفريغ الهاتف وهوية العميل). */
+  resetCustomer: () => void;
 }
 
 export function useCustomerByPhone(opts: UseCustomerByPhoneOptions = {}): CustomerByPhoneApi {
@@ -98,6 +112,10 @@ export function useCustomerByPhone(opts: UseCustomerByPhoneOptions = {}): Custom
     sequence.current += 1;
     onPhoneChangeRef.current?.();
     if (phaseForPhone(state.phone) !== "READY") return;
+    // إذا كان العميل مربوطاً أصلاً بنفس الهاتف، لا داعي لإعادة نداء الخادم
+    if (state.resolution === "RESOLVED" && state.customer.customerId && state.customer.phone === state.phone) {
+      return;
+    }
     const timer = window.setTimeout(() => { void resolve(); }, PHONE_LOOKUP_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [state.phone, resolve]);
@@ -113,6 +131,26 @@ export function useCustomerByPhone(opts: UseCustomerByPhoneOptions = {}): Custom
   const setCustomerName = useCallback((name: string) => setState((prev) => onNameTyped(prev, name)), []);
   const setCreditLimit = useCallback((raw: string) => setCreditLimitRaw(sanitizeCreditLimitInput(raw)), []);
 
+  const linkCustomer = useCallback((customerData: {
+    customerId: number;
+    name: string;
+    phone?: string | null;
+    tier?: PhoneCustomerTier | null;
+    creditLimit?: string | null;
+    deferredEligible?: boolean;
+  }) => {
+    sequence.current += 1;
+    const limit = customerData.creditLimit ? sanitizeCreditLimitInput(String(customerData.creditLimit)) : "";
+    setCreditLimitRaw(limit);
+    setState((prev) => onCustomerLinked(prev, customerData));
+  }, []);
+
+  const resetCustomer = useCallback(() => {
+    sequence.current += 1;
+    setCreditLimitRaw("");
+    setState(onCustomerReset());
+  }, []);
+
   return {
     ...state,
     isValidPhone: isValidIqMobile(state.phone),
@@ -123,5 +161,7 @@ export function useCustomerByPhone(opts: UseCustomerByPhoneOptions = {}): Custom
     creditLimit,
     setCreditLimit,
     resolve,
+    linkCustomer,
+    resetCustomer,
   };
 }

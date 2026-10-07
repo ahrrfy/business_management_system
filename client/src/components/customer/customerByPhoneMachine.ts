@@ -13,7 +13,7 @@
  * كلّ دالّةٍ هنا تأخذ الحالة السابقة وتُعيد الجديدة — لا أثر جانبيّ — فتُختبَر بلا DOM.
  * الجزء الذي يلمس الشبكة (`receptionResolveByPhone`) في الخطّاف `useCustomerByPhone`.
  */
-import { isValidIqMobile } from "@/components/form/PhoneDigitsInput";
+import { isValidIqMobile, toLocalIqMobileDigits } from "@/components/form/PhoneDigitsInput";
 
 export type PhoneResolution = "EMPTY" | "INCOMPLETE" | "CHECKING" | "NEEDS_NAME" | "RESOLVED" | "ERROR";
 export type PhoneCustomerTier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
@@ -176,3 +176,44 @@ export function resolutionNotice(state: CustomerByPhoneState): { tone: "muted" |
     case "ERROR": return { tone: "destructive", text: state.error ?? LINK_ANNOUNCE_AR.failed };
   }
 }
+
+/**
+ * ربط عميل كامل (من منتقي العملاء أو البحث المتقدم).
+ * يضبط الهوية مباشرة كعميل مؤكد (RESOLVED) مع هاتفه وفئته وأهليته للآجل.
+ * يطبّع الهاتف العراقي (E.164 أو المسافات) إلى صيغة 07xxxxxxxxx الصالحة للاستقبال.
+ */
+export function onCustomerLinked(
+  prev: CustomerByPhoneState,
+  data: {
+    customerId: number;
+    name: string;
+    phone?: string | null;
+    rawPhone?: string | null;
+    tier?: PhoneCustomerTier | null;
+    deferredEligible?: boolean;
+  },
+): CustomerByPhoneState {
+  const raw = data.phone ?? "";
+  const localDigits = toLocalIqMobileDigits(raw);
+  const phone = isValidIqMobile(localDigits) ? localDigits : "";
+  return {
+    ...prev,
+    phone,
+    resolution: "RESOLVED",
+    error: null,
+    customer: {
+      customerId: data.customerId,
+      name: data.name,
+      phone: data.rawPhone ?? data.phone ?? null,
+      isNew: false,
+    },
+    tier: data.tier ?? "RETAIL",
+    deferredEligible: !!data.deferredEligible,
+  };
+}
+
+/** إعادة تعيين الحالة للعميل النقدي الافتراضي (فارغ). */
+export function onCustomerReset(): CustomerByPhoneState {
+  return initialCustomerByPhoneState("");
+}
+
