@@ -145,7 +145,22 @@ export function RecipeImportDialog({
               </div>
             )}
 
-            {!importListQ.isLoading && recipes.length === 0 && (
+            {!importListQ.isLoading && importListQ.isError && (
+              <div className="py-12 text-center text-xs text-muted-foreground space-y-2.5 px-4">
+                <p className="text-destructive font-medium">فشل جلب قائمة الوصفات من الخادم</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void importListQ.refetch()}
+                  className="h-7 text-xs"
+                >
+                  إعادة المحاولة
+                </Button>
+              </div>
+            )}
+
+            {!importListQ.isLoading && !importListQ.isError && recipes.length === 0 && (
               <div className="py-12 text-center text-xs text-muted-foreground space-y-2">
                 <FileSpreadsheet className="size-8 mx-auto text-muted-foreground/40" />
                 <p>لم يتم العثور على وصفات مطابقة للبحث</p>
