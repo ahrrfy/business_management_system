@@ -12,6 +12,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "shared/productChannelSync.test.ts",
       "client/src/pages/__tests__/purchaseShippingFundingUi.test.tsx",
       "client/src/lib/moneyInput.test.ts",
       "client/src/lib/audioFeedback.test.ts",

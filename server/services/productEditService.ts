@@ -603,6 +603,21 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
     await lockVariantsForUpdate(tx, existingVariantIds);
     // م٦ ق٨: «لا لقطة ⇒ لا تعديل» — تُقرأ الحالة بعد الأقفال وقبل أوّل كتابة، في نفس المعاملة.
     await snapshotProductBeforeUpdate(tx, input.productId, input.updateReason, actor);
+
+    const isNameUpdated = name !== p.name;
+    const posLabel = input.posLabel !== undefined
+      ? (input.posLabel?.trim() || null)
+      : (isNameUpdated ? name.slice(0, 120) : undefined);
+    const invoiceLabel = input.invoiceLabel !== undefined
+      ? (input.invoiceLabel?.trim() || null)
+      : (isNameUpdated ? name : undefined);
+    const storeTitle = input.storeTitle !== undefined
+      ? (input.storeTitle?.trim() || null)
+      : (isNameUpdated ? name : undefined);
+    const shortTitle = input.shortTitle !== undefined
+      ? (input.shortTitle?.trim() || null)
+      : (isNameUpdated ? name.slice(0, 160) : undefined);
+
     await tx
       .update(products)
       .set({
@@ -612,11 +627,11 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
         modelName: input.modelName?.trim() || null,
         description: input.description?.trim() || null,
         ...(input.internalName !== undefined ? { internalName: input.internalName?.trim() || null } : {}),
-        ...(input.storeTitle !== undefined ? { storeTitle: input.storeTitle?.trim() || null } : {}),
+        ...(storeTitle !== undefined ? { storeTitle } : {}),
         ...(input.seoTitle !== undefined ? { seoTitle: input.seoTitle?.trim() || null } : {}),
-        ...(input.shortTitle !== undefined ? { shortTitle: input.shortTitle?.trim() || null } : {}),
-        ...(input.posLabel !== undefined ? { posLabel: input.posLabel?.trim() || null } : {}),
-        ...(input.invoiceLabel !== undefined ? { invoiceLabel: input.invoiceLabel?.trim() || null } : {}),
+        ...(shortTitle !== undefined ? { shortTitle } : {}),
+        ...(posLabel !== undefined ? { posLabel } : {}),
+        ...(invoiceLabel !== undefined ? { invoiceLabel } : {}),
         ...(input.marketingCopy !== undefined ? { marketingCopy: input.marketingCopy?.trim() || null } : {}),
         categoryId: input.categoryId ?? null,
         isCustomizable: input.isCustomizable ?? !!p.isCustomizable,
