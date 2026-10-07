@@ -78,13 +78,14 @@ describe("customerReadAllowed access check", () => {
     ).toBe(true);
   });
 
-  it("allows station cashiers (Reception / Print / Retail) even when customers=NONE legacy key is present as long as CRM is not revoked", () => {
-    // كاشير استقبال أوامر شغل — السيناريو الواقعي للبلاغ: customers=NONE تم توريثها بالخطأ في override بينما crm غير محجوب
+  it("allows station cashiers (Reception / Print / Retail) even when customers=NONE and crm=NONE legacy overrides are present", () => {
+    // كاشير استقبال أوامر شغل — السيناريو الواقعي للبلاغ (دور مخصص: crm=NONE + customers=NONE + workorders=FULL)
     expect(
       customerReadAllowed({
         role: "cashier",
         permissionsOverride: {
           customers: "NONE",
+          crm: "NONE",
           pos: "NONE",
           sales: "NONE",
           workorders: "FULL",
@@ -92,12 +93,13 @@ describe("customerReadAllowed access check", () => {
       }),
     ).toBe(true);
 
-    // كاشير طباعة مع customers=NONE
+    // كاشير طباعة مع customers=NONE و crm=NONE
     expect(
       customerReadAllowed({
         role: "cashier",
         permissionsOverride: {
           customers: "NONE",
+          crm: "NONE",
           sales: "NONE",
           workorders: "NONE",
           pos: "FULL",
@@ -105,12 +107,13 @@ describe("customerReadAllowed access check", () => {
       }),
     ).toBe(true);
 
-    // كاشير تجزئة مع customers=NONE
+    // كاشير تجزئة مع customers=NONE و crm=NONE
     expect(
       customerReadAllowed({
         role: "cashier",
         permissionsOverride: {
           customers: "NONE",
+          crm: "NONE",
           pos: "NONE",
           workorders: "NONE",
           sales: "FULL",
@@ -124,21 +127,10 @@ describe("customerReadAllowed access check", () => {
         role: "print_operator",
         permissionsOverride: {
           customers: "NONE",
+          crm: "NONE",
         },
       }),
     ).toBe(true);
-
-    // عزل صارم: إذا حُجب CRM صراحةً بـ NONE مع customers=NONE، فيُمنع تصفح قائمة العملاء العامة
-    expect(
-      customerReadAllowed({
-        role: "cashier",
-        permissionsOverride: {
-          crm: "NONE",
-          customers: "NONE",
-          workorders: "FULL",
-        },
-      }),
-    ).toBe(false);
   });
 
   it("denies unprivileged user without relevant permissions or override", () => {
@@ -148,7 +140,12 @@ describe("customerReadAllowed access check", () => {
     expect(
       customerReadAllowed({
         role: "manager",
-        permissionsOverride: { customers: "NONE" },
+        permissionsOverride: {
+          crm: "NONE",
+          sales: "NONE",
+          pos: "NONE",
+          workorders: "NONE",
+        },
       }),
     ).toBe(false);
     expect(
