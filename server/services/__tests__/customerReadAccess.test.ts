@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { customerReadAllowed, customerReceptionCreateAllowed, userHasCrmWriteAccess } from "../../trpc";
+import { maskCustomerSensitive } from "../../lib/redact";
 
 describe("customerReadAllowed access check", () => {
   it("allows admin unconditionally", () => {
@@ -110,7 +111,7 @@ describe("customerReceptionCreateAllowed access check", () => {
     expect(customerReceptionCreateAllowed({ role: "cashier" })).toBe(true);
   });
 
-  it("allows cashier to create customer even when crm=NONE if sales=FULL", () => {
+  it("allows cashier to create customer even when crm=NONE if workorders=FULL", () => {
     expect(
       customerReceptionCreateAllowed({
         role: "cashier",
@@ -147,3 +148,98 @@ describe("customerReceptionCreateAllowed access check", () => {
     ).toBe(false);
   });
 });
+
+describe("maskCustomerSensitive masking contracts and options", () => {
+  const sampleCustomer = {
+    id: 42,
+    name: "مكتبة النجاح",
+    phone: "07701234567",
+    creditLimit: "500000.00",
+    currentBalance: "120000.00",
+    openingBalance: "50000.00",
+    notes: "عميل قديم",
+  };
+
+  it("returns null or undefined as-is", () => {
+    expect(maskCustomerSensitive(null, "cashier")).toBeNull();
+    expect(maskCustomerSensitive(undefined, "cashier")).toBeUndefined();
+    expect(maskCustomerSensitive(null, "admin")).toBeNull();
+  });
+
+  it("preserves all sensitive fields for elevated roles (admin and manager)", () => {
+    const forAdmin = maskCustomerSensitive({ ...sampleCustomer }, "admin");
+    expect(forAdmin.creditLimit).toBe("500000.00");
+    expect(forAdmin.currentBalance).toBe("120000.00");
+    expect(forAdmin.openingBalance).toBe("50000.00");
+
+    const forManager = maskCustomerSensitive({ ...sampleCustomer }, "manager");
+    expect(forManager.creditLimit).toBe("500000.00");
+    expect(forManager.currentBalance).toBe("120000.00");
+    expect(forManager.openingBalance).toBe("50000.00");
+  });
+
+  it("masks creditLimit, currentBalance, and openingBalance for non-elevated roles without options", () => {
+    const masked = maskCustomerSensitive({ ...sampleCustomer }, "cashier");
+    expect(masked.id).toBe(42);
+    expect(masked.name).toBe("مكتبة النجاح");
+    expect(masked.phone).toBe("07701234567");
+    expect(masked.creditLimit).toBeNull();
+    expect(masked.currentBalance).toBe("0");
+    expect(masked.openingBalance).toBe("0");
+  });
+
+  it("masks fields when role is null or undefined without options", () => {
+    const masked = maskCustomerSensitive({ ...sampleCustomer }, null);
+    expect(masked.creditLimit).toBeNull();
+    expect(masked.currentBalance).toBe("0");
+    expect(masked.openingBalance).toBe("0");
+  });
+
+  it("preserves creditLimit when preserveCreditLimit: true is specified", () => {
+    const withPositiveLimit = maskCustomerSensitive(
+      { ...sampleCustomer, creditLimit: "750000.00" },
+      "cashier",
+      { preserveCreditLimit: true },
+    );
+    expect(withPositiveLimit.creditLimit).toBe("750000.00");
+    expect(withPositiveLimit.currentBalance).toBe("0");
+    expect(withPositiveLimit.openingBalance).toBe("0");
+
+    const withZeroLimit = maskCustomerSensitive(
+      { ...sampleCustomer, creditLimit: "0" },
+      "cashier",
+      { preserveCreditLimit: true },
+    );
+    expect(withZeroLimit.creditLimit).toBe("0");
+    expect(withZeroLimit.currentBalance).toBe("0");
+
+    const withNullLimit = maskCustomerSensitive(
+      { ...sampleCustomer, creditLimit: null },
+      "cashier",
+      { preserveCreditLimit: true },
+    );
+    expect(withNullLimit.creditLimit).toBeNull();
+  });
+
+  it("preserves both creditLimit and currentBalance when requested for cashiering", () => {
+    const cashierResult = maskCustomerSensitive(
+      { ...sampleCustomer, creditLimit: "0", currentBalance: "35000.00" },
+      "cashier",
+      { preserveCreditLimit: true, preserveCurrentBalance: true },
+    );
+    expect(cashierResult.creditLimit).toBe("0");
+    expect(cashierResult.currentBalance).toBe("35000.00");
+    // openingBalance must still be masked to 0
+    expect(cashierResult.openingBalance).toBe("0");
+  });
+
+  it("correctly preserves negative balance (advance credit owed to customer) when preserveCurrentBalance: true", () => {
+    const cashierResult = maskCustomerSensitive(
+      { ...sampleCustomer, currentBalance: "-15000.00" },
+      "cashier",
+      { preserveCreditLimit: true, preserveCurrentBalance: true },
+    );
+    expect(cashierResult.currentBalance).toBe("-15000.00");
+  });
+});
+

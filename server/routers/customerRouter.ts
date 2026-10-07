@@ -69,7 +69,7 @@ export const customerRouter = router({
   /** قائمة بسيطة سريعة — يحتاجها الكاشير وأوامر الشغل والبيع الآجل. */
   list: customersReadProcedure.query(async ({ ctx }) => {
     const { rows } = await listCustomers({ includeInactive: false, limit: 500, skipTotal: true });
-    return rows.map((r) => maskCustomerSensitive(r, ctx.user.role));
+    return rows.map((r) => maskCustomerSensitive(r, ctx.user.role, { preserveCreditLimit: true, preserveCurrentBalance: true }));
   }),
 
   /** قائمة كاملة مع بحث وفلاتر وتقسيم صفحات — لشاشة الإدارة. */
@@ -109,17 +109,15 @@ export const customerRouter = router({
       return { rows: page.map((r) => maskCustomerSensitive(r, ctx.user.role)), total: filtered.length };
     }),
 
-  /** بحث ذكي بإحصاءات — لإدخال أمر شغل سريع. */
+  /** بحث ذكي بإحصاءات — لإدخال أمر شغل سريع واختيار العميل في الكاشير. */
   smartSearch: customersReadProcedure
     .input(z.object({
       q: z.string().min(1).max(120),
       limit: z.number().int().min(1).max(20).optional(),
     }))
-    // IDOR-REDACT (تدقيق ٢/٧): smartSearch كان يُعيد currentBalance خاماً لكل الأدوار متجاوزاً
-    // maskCustomerSensitive المطبَّق في list/get ⇒ تسريب رصيد العميل للكاشير. نطبّق نفس الحجب.
     .query(async ({ input, ctx }) => {
       const rows = await smartSearchCustomers(input);
-      return rows.map((r) => maskCustomerSensitive(r, ctx.user.role));
+      return rows.map((r) => maskCustomerSensitive(r, ctx.user.role, { preserveCreditLimit: true, preserveCurrentBalance: true }));
     }),
 
   /** dup-detect (٦/٧): مرشّحو تكرار محتمَل لشاشة الإضافة — تحذير حيّ قبل الحفظ (لا حجب).
@@ -142,7 +140,7 @@ export const customerRouter = router({
       const c = await getCustomer(input.customerId);
       if (!c) return null;
       const qrPayload = customerBarcodeSet({ id: c.id, name: c.name }).qrPayload;
-      const masked = maskCustomerSensitive(c, ctx.user.role);
+      const masked = maskCustomerSensitive(c, ctx.user.role, { preserveCreditLimit: true, preserveCurrentBalance: true });
       return { ...masked, qrPayload };
     }),
 
@@ -197,7 +195,11 @@ export const customerRouter = router({
       return {
         status: "RESOLVED" as const,
         customerId: Number(customer.id),
+        name: customer.name,
+        phone: customer.phone,
         defaultPriceTier: customer.defaultPriceTier,
+        creditLimit: customer.creditLimit,
+        deferredEligible: customer.creditLimit == null || Number(customer.creditLimit) !== 0,
       };
     }),
 
