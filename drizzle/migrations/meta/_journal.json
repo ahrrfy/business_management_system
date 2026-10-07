@@ -2444,6 +2444,13 @@
 			"when": 1788148841000,
 			"tag": "0383_historical_cash_correction",
 			"breakpoints": true
+		},
+		{
+			"idx": 384,
+			"version": "5",
+			"when": 1788148842000,
+			"tag": "0384_sync_product_channel_labels",
+			"breakpoints": true
 		}
 	]
 }
