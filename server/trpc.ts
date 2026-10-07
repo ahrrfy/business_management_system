@@ -860,11 +860,7 @@ export function customerReceptionCreateAllowed(user: {
   if (user.role === "admin") return true;
   if (userHasCrmWriteAccess(user)) return true;
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
-  // POS_STATION_GATES: RECEPTION=workorders, RETAIL=sales, PRINT_SERVICES=pos
-  if (moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"])) return true;
-  if (moduleAccessAllowed(user.role, override, "sales", "FULL", ["cashier", "manager", "sales_rep"])) return true;
-  if (moduleAccessAllowed(user.role, override, "pos", "FULL", ["cashier", "manager", "print_operator"])) return true;
-  return false;
+  return moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
 }
 
 export const customersReceptionCreateProcedure = branchScopedProcedure.use(
