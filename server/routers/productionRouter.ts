@@ -582,16 +582,7 @@ export const productionRouter = router({
         const effectiveBranchId = elevated
           ? Number(input.branchId ?? ctx.user.branchId ?? 0) || null
           : Number(ctx.user.branchId ?? 0) || null;
-        if (!effectiveBranchId) {
-          return {
-            branchId: 0,
-            maxCapacity: 0,
-            limitingComponent: null,
-            allAvailable: false,
-            components: [],
-          };
-        }
-        return checkRecipeMaterialsAvailability({ branchId: effectiveBranchId, lines: input.lines });
+        return checkRecipeMaterialsAvailability({ branchId: effectiveBranchId ?? 0, lines: input.lines });
       }),
 
     create: inventoryManagerProcedure.input(recipeInput).mutation(async ({ input, ctx }) => {

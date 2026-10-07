@@ -85,15 +85,12 @@ export function sanitizeRecipeClipboard(raw: unknown): CopiedRecipePayload | nul
   if (!rawLines || rawLines.length === 0) return null;
 
   const validLines: CopiedRecipeLine[] = [];
-  const seenVariants = new Set<number>();
 
   for (const item of rawLines) {
     if (!item || typeof item !== "object") continue;
     const it = item as Record<string, unknown>;
     const variantId = Number(it.inputVariantId ?? it.variantId);
     if (!Number.isFinite(variantId) || variantId <= 0) continue;
-    if (seenVariants.has(variantId)) continue;
-    seenVariants.add(variantId);
 
     const unitId = it.inputProductUnitId != null ? Number(it.inputProductUnitId) : null;
     const qty =
@@ -122,6 +119,17 @@ export function sanitizeRecipeClipboard(raw: unknown): CopiedRecipePayload | nul
           : "";
     const uName = typeof it.unitName === "string" ? it.unitName : "وحدة";
     const notes = typeof it.notes === "string" ? it.notes : null;
+
+    const existingIndex = validLines.findIndex((l) => l.inputVariantId === variantId);
+    if (existingIndex >= 0) {
+      const existing = validLines[existingIndex];
+      const sumQty = round2(D(existing.qtyPerOutputBase || "0").plus(D(qty || "0"))).toString();
+      validLines[existingIndex] = {
+        ...existing,
+        qtyPerOutputBase: sumQty,
+      };
+      continue;
+    }
 
     validLines.push({
       inputVariantId: variantId,
@@ -194,15 +202,24 @@ export function setStoredRecipeClipboard(payload: CopiedRecipePayload) {
 interface ProductRecipeSectionProps {
   productId: number;
   isService?: boolean;
+  branchId?: number | null;
+  sellingPrice?: string | null;
+  wholesalePrice?: string | null;
 }
 
 export function ProductRecipeSection({
   productId,
   isService = false,
+  branchId: propBranchId,
+  sellingPrice: propSellingPrice,
+  wholesalePrice: propWholesalePrice,
 }: ProductRecipeSectionProps) {
   const utils = trpc.useUtils();
   const { context } = useSessionContext();
-  const currentBranchId = context?.branch?.id ? Number(context.branch.id) : undefined;
+  const currentBranchId =
+    propBranchId !== undefined
+      ? (propBranchId != null ? Number(propBranchId) : undefined)
+      : (context?.branch?.id ? Number(context.branch.id) : undefined);
 
   // استعلام قراءة وصفة المنتج مع تفاصيل الصنف وأسعار البيع
   const recipeQ = trpc.production.recipes.forProduct.useQuery(
@@ -248,6 +265,10 @@ export function ProductRecipeSection({
     setSearchQuery("");
     setShowSearchDropdown(false);
     setFormLines([]);
+    setFormName("");
+    setFormLabor("0");
+    setFormWaste("0");
+    setFormNotes("");
     setClipboardData(getStoredRecipeClipboard());
   }, [productId]);
 
@@ -339,7 +360,7 @@ export function ProductRecipeSection({
       lines: activeLinesForCheck,
     },
     {
-      enabled: Boolean(currentBranchId && activeLinesForCheck.length > 0),
+      enabled: Boolean(activeLinesForCheck.length > 0),
       staleTime: 15_000,
     },
   );
@@ -416,7 +437,8 @@ export function ProductRecipeSection({
     unitName: string;
     costPrice: string;
   }) {
-    if (data?.primaryVariantId && mat.variantId === data.primaryVariantId) {
+    const targetOutputVariantId = currentRecipe?.outputVariantId ?? data?.primaryVariantId;
+    if (targetOutputVariantId && mat.variantId === targetOutputVariantId) {
       notify.warn("لا يمكن إضافة المنتج الحالي كمادة خام لنفسه");
       return;
     }
@@ -525,10 +547,11 @@ export function ProductRecipeSection({
 
     // استبعاد المادة إذا كانت تمثل نفس المنتج الحالي ودمج المواد المكررة
     const consolidatedMap = new Map<number, EditableLine>();
+    const targetOutputVariantId = currentRecipe?.outputVariantId ?? data?.primaryVariantId;
     for (const l of clip.lines) {
       const vid = Number(l.inputVariantId);
       if (!Number.isFinite(vid) || vid <= 0) continue;
-      if (data?.primaryVariantId && vid === data.primaryVariantId) continue;
+      if (targetOutputVariantId && vid === targetOutputVariantId) continue;
 
       const existing = consolidatedMap.get(vid);
       if (existing) {
@@ -594,10 +617,11 @@ export function ProductRecipeSection({
 
     // استبعاد المادة إذا كانت تمثل نفس المنتج الحالي ودمج المواد المكررة
     const consolidatedMap = new Map<number, EditableLine>();
+    const targetOutputVariantId = currentRecipe?.outputVariantId ?? data?.primaryVariantId;
     for (const l of template.lines) {
       const vid = Number(l.inputVariantId);
       if (!Number.isFinite(vid) || vid <= 0) continue;
-      if (data?.primaryVariantId && vid === data.primaryVariantId) continue;
+      if (targetOutputVariantId && vid === targetOutputVariantId) continue;
 
       const existing = consolidatedMap.get(vid);
       if (existing) {
@@ -640,14 +664,46 @@ export function ProductRecipeSection({
     notify.ok(`تم تطبيق قالب «${template.recipeName}» بنجاح، يمكنك تعديل الكميات وحفظ الوصفة`);
   }
 
+  // إعادة ترطيب أسعار التكلفة الحية للمواد المدخلة في النموذج فور وصولها من الخادم
+  useEffect(() => {
+    if (!isEditing || !stockData?.components || stockData.components.length === 0) return;
+    const costMap = new Map<number, string>();
+    for (const c of stockData.components) {
+      if (c.costPrice) costMap.set(c.variantId, c.costPrice);
+    }
+    setFormLines((prev) => {
+      let changed = false;
+      const updated = prev.map((line) => {
+        const liveCost = costMap.get(line.inputVariantId);
+        if (liveCost && liveCost !== line.inputCostPrice) {
+          changed = true;
+          return { ...line, inputCostPrice: liveCost };
+        }
+        return line;
+      });
+      return changed ? updated : prev;
+    });
+  }, [isEditing, stockData?.components]);
+
   // حساب التكاليف الحية بأمان ضد المُدخلات الجزئية
   const calculatedCosts = useMemo(() => {
     const linesToCompute = isEditing ? formLines : currentRecipe?.lines || [];
 
+    // استخراج أسعار التكلفة الحية من الخادم في حال توفرها لإعادة ترطيب التكاليف عند اللصق
+    const liveCostMap = new Map<number, string>();
+    if (stockData?.components) {
+      for (const comp of stockData.components) {
+        if (comp.costPrice) {
+          liveCostMap.set(comp.variantId, comp.costPrice);
+        }
+      }
+    }
+
     let materialsTotal = D(0);
     for (const l of linesToCompute) {
       const qty = moneyInput(l.qtyPerOutputBase);
-      const unitCost = moneyInput(l.inputCostPrice);
+      const rawCost = liveCostMap.get(l.inputVariantId) ?? l.inputCostPrice;
+      const unitCost = moneyInput(rawCost);
       materialsTotal = materialsTotal.plus(qty.mul(unitCost));
     }
     materialsTotal = round2(materialsTotal);
@@ -669,19 +725,24 @@ export function ProductRecipeSection({
       wastePct,
       totalUnitCost,
     };
-  }, [isEditing, formLines, formLabor, formWaste, currentRecipe]);
+  }, [isEditing, formLines, formLabor, formWaste, currentRecipe, stockData?.components]);
+
+  const effectiveRetail =
+    propSellingPrice !== undefined ? (propSellingPrice || null) : (data?.sellingPrice || null);
+  const effectiveWholesale =
+    propWholesalePrice !== undefined ? (propWholesalePrice || null) : (data?.wholesalePrice || null);
 
   // حساب مؤشرات الربحية وهامش الربح مع دعم فئات الأسعار (مفرق / جملة)
   const profitability = useMemo(() => {
-    const hasRetail = Boolean(data?.sellingPrice && moneyInput(data.sellingPrice).gt(0));
-    const hasWholesale = Boolean(data?.wholesalePrice && moneyInput(data.wholesalePrice).gt(0));
+    const hasRetail = Boolean(effectiveRetail && moneyInput(effectiveRetail).gt(0));
+    const hasWholesale = Boolean(effectiveWholesale && moneyInput(effectiveWholesale).gt(0));
 
     const effectiveTier =
       (priceTierMode === "WHOLESALE" && hasWholesale) || !hasRetail
         ? "WHOLESALE"
         : "RETAIL";
 
-    const rawPrice = effectiveTier === "WHOLESALE" ? data?.wholesalePrice : data?.sellingPrice;
+    const rawPrice = effectiveTier === "WHOLESALE" ? effectiveWholesale : effectiveRetail;
     if (!rawPrice) return null;
     const sellP = moneyInput(rawPrice);
     if (sellP.lte(0)) return null;
@@ -701,7 +762,7 @@ export function ProductRecipeSection({
       isLoss,
       isLowMargin,
     };
-  }, [data?.sellingPrice, data?.wholesalePrice, priceTierMode, calculatedCosts.totalUnitCost]);
+  }, [effectiveRetail, effectiveWholesale, priceTierMode, calculatedCosts.totalUnitCost]);
 
   async function handleSave() {
     if (!formName.trim()) {

@@ -1879,7 +1879,8 @@ export async function suggestSimilarRecipes(
           ne(products.id, productId),
         ),
       )
-      .orderBy(desc(productionRecipes.id));
+      .orderBy(desc(productionRecipes.id))
+      .limit(150);
 
     const seenProducts = new Set<number>();
     const scoredCandidates: Array<{
@@ -1915,6 +1916,11 @@ export async function suggestSimilarRecipes(
       if (matchedTokens.length > 0) {
         score += matchedTokens.length * 20;
         reasons.push(`تطابق في الكلمات: ${matchedTokens.slice(0, 3).join("، ")}`);
+      }
+
+      // إشعار كودكس P2: اشتراط وجود تقاطع دلالي فعلي (تصنيف أو كلمات مشتركة) قبل قبول الاقتراح
+      if (reasons.length === 0) {
+        continue;
       }
 
       if (Boolean(target.isService) === Boolean(cand.isService)) {
@@ -2180,6 +2186,7 @@ export interface RecipeStockAvailabilityComponent {
   maxUnitsFromThis: number;
   isLimiting: boolean;
   unitName: string;
+  costPrice: string;
 }
 
 export interface RecipeStockAvailabilityResult {
@@ -2202,9 +2209,9 @@ export async function checkRecipeMaterialsAvailability(args: {
           .map((l) => Number(l.inputVariantId))
           .filter((id) => Number.isFinite(id) && id > 0),
       ),
-    ).slice(0, 200);
+    );
 
-    if (!args.branchId || inVarIds.length === 0) {
+    if (inVarIds.length === 0) {
       return {
         branchId: args.branchId || 0,
         maxCapacity: 0,
@@ -2214,7 +2221,10 @@ export async function checkRecipeMaterialsAvailability(args: {
       };
     }
 
-    const availability = await loadVariantAvailability(tx, args.branchId, inVarIds);
+    const availability =
+      args.branchId && args.branchId > 0
+        ? await loadVariantAvailability(tx, args.branchId, inVarIds)
+        : new Map();
 
     const varRows = await tx
       .select({
@@ -2222,6 +2232,7 @@ export async function checkRecipeMaterialsAvailability(args: {
         sku: productVariants.sku,
         productName: products.name,
         variantName: productVariants.variantName,
+        costPrice: productVariants.costPrice,
       })
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
@@ -2273,6 +2284,7 @@ export async function checkRecipeMaterialsAvailability(args: {
         maxUnitsFromThis: maxUnits !== null ? maxUnits : Math.max(0, available),
         unitName: "وحدة",
         isRequired,
+        costPrice: vInfo?.costPrice ? String(vInfo.costPrice) : "0",
       };
     });
 
@@ -2287,6 +2299,7 @@ export async function checkRecipeMaterialsAvailability(args: {
       maxUnitsFromThis: c.maxUnitsFromThis,
       unitName: c.unitName,
       isLimiting: c.isRequired && c.maxUnitsFromThis === finalCapacity,
+      costPrice: c.costPrice,
     }));
     const limiting = components.find((c) => c.isLimiting && c.maxUnitsFromThis === finalCapacity);
 

@@ -196,6 +196,7 @@ describe("وحدة اختبار منطق نسخ ولصق الوصفات والذ
     expect(sanitized).not.toBeNull();
     expect(sanitized?.lines).toHaveLength(2);
     expect(sanitized?.lines.map((l) => l.inputVariantId)).toEqual([15, 20]);
+    expect(sanitized?.lines[0].qtyPerOutputBase).toBe("3");
   });
 
   it("يحسب التكلفة المعيارية الحيّة بامتصاص الهدر والعمالة بدقة decimal.js", () => {

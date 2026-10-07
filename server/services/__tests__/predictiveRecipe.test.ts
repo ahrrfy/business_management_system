@@ -71,6 +71,11 @@ function scoreRecipeSimilarity(
     reasons.push(`تطابق في الكلمات: ${matchedTokens.join("، ")}`);
   }
 
+  // اشتراط وجود تقاطع دلالي فعلي (تصنيف أو كلمات مشتركة) قبل قبول الاقتراح
+  if (reasons.length === 0) {
+    return { score: 0, reasons: [] };
+  }
+
   // 3. فحص تطابق النوع (خدمة أو مادي)
   if (target.isService === candidate.isService) {
     score += 10;
@@ -132,8 +137,26 @@ describe("محرك الاقتراحات التنبؤية للوصفات (Predict
 
     expect(bestScore.score).toBeGreaterThan(catScore.score);
     expect(catScore.score).toBeGreaterThan(unScore.score);
+    expect(unScore.score).toBe(0);
     expect(bestScore.reasons).toContain("نفس التصنيف");
     expect(bestScore.reasons[1]).toContain("تطابق في الكلمات");
+  });
+
+  it("يشترط تقاطعاً دلالياً (تصنيف أو كلمات) ويمنع اقتراح منتجات غير مرتبطة بمجرد تشابه نوع السلعة", () => {
+    const target = {
+      name: "دفتر حسابات جلد فاخر",
+      categoryId: 10,
+      isService: false,
+    };
+    const unrelatedSameType = {
+      name: "علم العراق ستان كبير",
+      categoryId: 88,
+      isService: false,
+    };
+
+    const res = scoreRecipeSimilarity(target, unrelatedSameType);
+    expect(res.score).toBe(0);
+    expect(res.reasons).toHaveLength(0);
   });
 
   it("يكتشف تطابق الكلمات حتى مع اختلاف الصنف", () => {
