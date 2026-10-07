@@ -798,25 +798,16 @@ export function customerReadAllowed(user: {
   if (user.role === "admin") return true;
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
 
-  // 1. إذا حُجب العميل صراحةً في كلتا الوحدتين (crm: "NONE" و customers: "NONE")، فالوصول محجوب قطعاً
-  if (override?.["crm"] === "NONE" && override?.["customers"] === "NONE") {
+  // 1. حظر صريح للأدوار الإدارية وغير المحطية عند حجب العملاء:
+  // إذا تم حجب وحدة العملاء صراحةً (customers: "NONE") لدور غير كاشير المحطات (كالمدير والمحاسب ومندوب المبيعات)،
+  // فيُحجب الوصول منعاً للالتفاف عبر صلاحيات القالب الأصلية (F2 Module Enforce).
+  if (override?.["customers"] === "NONE" && user.role !== "cashier" && user.role !== "print_operator") {
     return false;
   }
 
-  // 2. معالجة مفتاح العملاء الموروث (customers: "NONE"):
-  // في أدوار الكاشير المخصصة، كان عدم إرسال مفتاح customers من شاشة تعديل الأدوار يورّث customers: "NONE" تلقائياً
-  // في الـ override رغم امتلاك الكاشير crm >= READ أو عدم حجب CRM صراحةً.
-  // لا نحجب بمفتاح customers: "NONE" إلا إذا كان الدور إدارياً (كالمدير) أو حُجب CRM صراحةً بـ NONE.
-  if (override?.["customers"] === "NONE") {
-    const isStationCashierWithCrm =
-      (user.role === "cashier" || user.role === "print_operator") &&
-      override?.["crm"] !== "NONE";
-
-    if (!isStationCashierWithCrm) {
-      return false;
-    }
-  }
-
+  // 2. فحص صلاحيات استعراض وبحث بيانات العملاء:
+  // يمرّ أي مستخدم يملك صلاحية صريحة بقراءة العملاء أو ينتمي لأي من بوابات ومحطات نقاط البيع
+  // (التجزئة، خدمات الطباعة، استقبال أوامر الشغل) أو إدارة علاقات العملاء (CRM).
   if (levelSatisfies(override?.["customers"], "READ")) return true;
   if (moduleAccessAllowed(user.role, override, "crm", "READ", ["cashier", "manager", "sales_rep", "accountant"])) return true;
   if (moduleAccessAllowed(user.role, override, "sales", "READ", ["cashier", "manager", "sales_rep"])) return true;
