@@ -690,7 +690,7 @@ export function ProductRecipeSection({
   }
 
   // تطبيق قالب مستورد أو مقترح
-  async function handleApplyTemplate(template: ImportedRecipeData) {
+  async function handleApplyTemplate(template: ImportedRecipeData): Promise<boolean> {
     if ((isEditing && formLines.length > 0) || (!isEditing && currentRecipe)) {
       const currentCount = isEditing ? formLines.length : (currentRecipe?.lines.length ?? 0);
       const currentLabel = isEditing ? "النموذج الحالي" : `الوصفة الحالية «${currentRecipe?.name}»`;
@@ -700,7 +700,7 @@ export function ProductRecipeSection({
         confirmText: "نعم، طبق القالب",
         variant: "warning",
       });
-      if (!ok) return;
+      if (!ok) return false;
     }
 
     // استبعاد المادة إذا كانت تمثل نفس المنتج الحالي ودمج المواد المكررة
@@ -732,7 +732,7 @@ export function ProductRecipeSection({
     const safeLines = Array.from(consolidatedMap.values());
     if (safeLines.length === 0) {
       notify.warn("لم يتم العثور على مواد صالحة في القالب لتطبيقها");
-      return;
+      return false;
     }
 
     if (safeLines.length < template.lines.length) {
@@ -750,11 +750,12 @@ export function ProductRecipeSection({
 
     setIsEditing(true);
     notify.ok(`تم تطبيق قالب «${template.recipeName}» بنجاح، يمكنك تعديل الكميات وحفظ الوصفة`);
+    return true;
   }
 
   // إعادة ترطيب أسعار التكلفة الحية للمواد المدخلة في النموذج فور وصولها من الخادم
   useEffect(() => {
-    if (!isEditing || !stockData?.components || stockData.components.length === 0) return;
+    if (!isEditing || stockCheckQ.isError || !stockData?.components || stockData.components.length === 0) return;
     const costMap = new Map<number, string>();
     for (const c of stockData.components) {
       if (c.costPrice) costMap.set(c.variantId, c.costPrice);
@@ -771,7 +772,7 @@ export function ProductRecipeSection({
       });
       return changed ? updated : prev;
     });
-  }, [isEditing, stockData?.components]);
+  }, [isEditing, stockCheckQ.isError, stockData?.components]);
 
   // حساب التكاليف الحية بأمان ضد المُدخلات الجزئية
   const calculatedCosts = useMemo(() => {
@@ -779,7 +780,7 @@ export function ProductRecipeSection({
 
     // استخراج أسعار التكلفة الحية من الخادم في حال توفرها لإعادة ترطيب التكاليف عند اللصق
     const liveCostMap = new Map<number, string>();
-    if (stockData?.components) {
+    if (!stockCheckQ.isError && stockData?.components) {
       for (const comp of stockData.components) {
         if (comp.costPrice) {
           liveCostMap.set(comp.variantId, comp.costPrice);
@@ -813,7 +814,7 @@ export function ProductRecipeSection({
       wastePct,
       totalUnitCost,
     };
-  }, [isEditing, formLines, formLabor, formWaste, currentRecipe, stockData?.components]);
+  }, [isEditing, formLines, formLabor, formWaste, currentRecipe, stockCheckQ.isError, stockData?.components]);
 
   const effectiveRetail =
     propSellingPrice !== undefined ? (propSellingPrice || null) : (data?.sellingPrice || null);
@@ -1240,9 +1241,11 @@ export function ProductRecipeSection({
               <div
                 className={cn(
                   "p-3 rounded-lg border",
-                  stockData && stockData.maxCapacity > 0
-                    ? "bg-emerald-50/60 border-emerald-500/30 text-emerald-950 dark:bg-emerald-950/20 dark:text-emerald-300"
-                    : "bg-muted/30 border-border text-foreground",
+                  stockCheckQ.isError
+                    ? "bg-amber-50/60 border-amber-500/30 text-amber-950 dark:bg-amber-950/20 dark:text-amber-300"
+                    : !stockCheckQ.isError && stockData && stockData.maxCapacity > 0
+                      ? "bg-emerald-50/60 border-emerald-500/30 text-emerald-950 dark:bg-emerald-950/20 dark:text-emerald-300"
+                      : "bg-muted/30 border-border text-foreground",
                 )}
               >
                 <div className="flex items-center justify-between">
@@ -1254,24 +1257,34 @@ export function ProductRecipeSection({
                 <span className="text-sm sm:text-base font-bold mt-0.5 block" dir="ltr">
                   {activeLinesForCheck.length === 0
                     ? "لا توجد مواد"
-                    : stockData
-                      ? `${stockData.maxCapacity} وحدة`
-                      : currentBranchId
-                        ? "جارٍ الفحص..."
-                        : "حدد الفرع"}
+                    : stockCheckQ.isError
+                      ? "تعذر الفحص"
+                      : stockData
+                        ? `${stockData.maxCapacity} وحدة`
+                        : currentBranchId
+                          ? "جارٍ الفحص..."
+                          : "حدد الفرع"}
                 </span>
                 <span className="text-[10px] text-muted-foreground block truncate">
-                  {activeLinesForCheck.length === 0
-                    ? "أضف مواداً أولية للوصفة"
-                    : !stockData
-                      ? currentBranchId
-                        ? "فحص أرصدة المستودع..."
-                        : "اختر فرعاً لمعاينة الرصيد"
-                      : stockData.limitingComponent
-                        ? `العائق: ${stockData.limitingComponent}`
-                        : stockData.maxCapacity > 0
-                          ? "المواد متوفرة بالكامل"
-                          : "لا يوجد رصيد كافٍ"}
+                  {activeLinesForCheck.length === 0 ? (
+                    "أضف مواداً أولية للوصفة"
+                  ) : stockCheckQ.isError ? (
+                    <button
+                      type="button"
+                      onClick={() => void stockCheckQ.refetch()}
+                      className="text-amber-700 dark:text-amber-400 font-medium underline cursor-pointer"
+                    >
+                      فشل فحص الرصيد — انقر للإعادة
+                    </button>
+                  ) : !stockData ? (
+                    currentBranchId ? "فحص أرصدة المستودع..." : "اختر فرعاً لمعاينة الرصيد"
+                  ) : stockData.limitingComponent ? (
+                    `العائق: ${stockData.limitingComponent}`
+                  ) : stockData.maxCapacity > 0 ? (
+                    "المواد متوفرة بالكامل"
+                  ) : (
+                    "لا يوجد رصيد كافٍ"
+                  )}
                 </span>
               </div>
 
@@ -1353,7 +1366,7 @@ export function ProductRecipeSection({
               </div>
             )}
 
-            {stockData && stockData.maxCapacity === 0 && activeLinesForCheck.length > 0 && (
+            {!stockCheckQ.isError && stockData && stockData.maxCapacity === 0 && activeLinesForCheck.length > 0 && (
               <div className="p-3 rounded-lg border border-amber-500/30 bg-amber-50/50 text-amber-800 dark:bg-amber-950/20 dark:text-amber-300 flex items-start gap-2.5 text-xs">
                 <AlertTriangle className="size-4 shrink-0 mt-0.5" />
                 <div className="space-y-0.5">

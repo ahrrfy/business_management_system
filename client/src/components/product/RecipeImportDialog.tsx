@@ -47,7 +47,7 @@ interface RecipeImportDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   currentProductId: number;
-  onApplyRecipe: (data: ImportedRecipeData) => void;
+  onApplyRecipe: (data: ImportedRecipeData) => Promise<boolean | void> | boolean | void;
 }
 
 export function RecipeImportDialog({
@@ -58,6 +58,7 @@ export function RecipeImportDialog({
 }: RecipeImportDialogProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedRecipeId, setSelectedRecipeId] = useState<number | null>(null);
+  const [isApplying, setIsApplying] = useState(false);
 
   const importListQ = trpc.production.recipes.listForImport.useQuery(
     {
@@ -71,28 +72,35 @@ export function RecipeImportDialog({
   const recipes = importListQ.data ?? [];
   const selectedRecipe = recipes.find((r) => r.recipeId === selectedRecipeId) ?? recipes[0] ?? null;
 
-  function handleConfirmApply() {
-    if (!selectedRecipe) return;
-    onApplyRecipe({
-      recipeId: selectedRecipe.recipeId,
-      recipeName: selectedRecipe.recipeName,
-      productId: selectedRecipe.productId,
-      productName: selectedRecipe.productName,
-      laborPerOutputBase: selectedRecipe.laborPerOutputBase,
-      wasteStdPct: selectedRecipe.wasteStdPct,
-      notes: selectedRecipe.notes,
-      lines: selectedRecipe.lines.map((l) => ({
-        inputVariantId: l.inputVariantId,
-        inputProductUnitId: l.inputProductUnitId,
-        inputProductName: l.inputProductName,
-        inputSku: l.inputSku,
-        inputCostPrice: l.inputCostPrice,
-        qtyPerOutputBase: l.qtyPerOutputBase,
-        unitName: l.unitName,
-        notes: l.notes,
-      })),
-    });
-    onOpenChange(false);
+  async function handleConfirmApply() {
+    if (!selectedRecipe || isApplying) return;
+    try {
+      setIsApplying(true);
+      const res = await onApplyRecipe({
+        recipeId: selectedRecipe.recipeId,
+        recipeName: selectedRecipe.recipeName,
+        productId: selectedRecipe.productId,
+        productName: selectedRecipe.productName,
+        laborPerOutputBase: selectedRecipe.laborPerOutputBase,
+        wasteStdPct: selectedRecipe.wasteStdPct,
+        notes: selectedRecipe.notes,
+        lines: selectedRecipe.lines.map((l) => ({
+          inputVariantId: l.inputVariantId,
+          inputProductUnitId: l.inputProductUnitId,
+          inputProductName: l.inputProductName,
+          inputSku: l.inputSku,
+          inputCostPrice: l.inputCostPrice,
+          qtyPerOutputBase: l.qtyPerOutputBase,
+          unitName: l.unitName,
+          notes: l.notes,
+        })),
+      });
+      if (res !== false) {
+        onOpenChange(false);
+      }
+    } finally {
+      setIsApplying(false);
+    }
   }
 
   return (
@@ -275,12 +283,12 @@ export function RecipeImportDialog({
           <Button
             type="button"
             size="sm"
-            disabled={!selectedRecipe}
+            disabled={!selectedRecipe || isApplying}
             onClick={handleConfirmApply}
             className="h-8 text-xs gap-1.5 bg-primary hover:bg-primary/90"
           >
             <Check className="size-3.5" />
-            تطبيق هذه الوصفة كقالب
+            {isApplying ? "جارٍ التطبيق..." : "تطبيق هذه الوصفة كقالب"}
           </Button>
         </div>
       </DialogContent>
