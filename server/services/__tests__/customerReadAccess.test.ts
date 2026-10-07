@@ -83,6 +83,12 @@ describe("customerReadAllowed access check", () => {
     expect(customerReadAllowed({ role: "unknown_role" })).toBe(false);
     expect(
       customerReadAllowed({
+        role: "manager",
+        permissionsOverride: { customers: "NONE" },
+      }),
+    ).toBe(false);
+    expect(
+      customerReadAllowed({
         role: "cashier",
         permissionsOverride: {
           crm: "NONE",
