@@ -798,7 +798,14 @@ export function customerReadAllowed(user: {
   if (user.role === "admin") return true;
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
 
-  // فحص صلاحيات استعراض وبحث بيانات العملاء:
+  // 1. حظر صريح للأدوار الإدارية وغير المحطية عند حجب العملاء:
+  // إذا تم حجب وحدة العملاء صراحةً (customers: "NONE") لدور غير كاشير المحطات (كالمدير والمحاسب ومندوب المبيعات)،
+  // فيُحجب الوصول منعاً للالتفاف عبر صلاحيات القالب الأصلية (F2 Module Enforce).
+  if (override?.["customers"] === "NONE" && user.role !== "cashier" && user.role !== "print_operator") {
+    return false;
+  }
+
+  // 2. فحص صلاحيات استعراض وبحث بيانات العملاء:
   // يمرّ أي مستخدم يملك صلاحية صريحة بقراءة العملاء أو ينتمي لأي من بوابات ومحطات نقاط البيع
   // (التجزئة، خدمات الطباعة، استقبال أوامر الشغل) أو إدارة علاقات العملاء (CRM).
   if (levelSatisfies(override?.["customers"], "READ")) return true;

@@ -137,6 +137,7 @@ describe("customerReadAllowed access check", () => {
     expect(customerReadAllowed({ role: "warehouse" })).toBe(false);
     expect(customerReadAllowed({ role: "delivery" })).toBe(false);
     expect(customerReadAllowed({ role: "unknown_role" })).toBe(false);
+    expect(customerReadAllowed({ role: "manager", permissionsOverride: { customers: "NONE" } })).toBe(false);
     expect(
       customerReadAllowed({
         role: "manager",
