@@ -33,6 +33,7 @@ export interface ScannedOrderForCancellation {
   version: number;
   invoiceId?: number | null;
   qrUrl?: string | null;
+  notes?: string | null;
   activeConsignment?: {
     id: number;
     consignmentNumber: string;
@@ -51,6 +52,7 @@ export interface CancelDeliveryAssignmentSectionProps {
   scannedBarcode?: string | null;
   onBarcodeConsumed?: () => void;
   onNavigateToDispatch?: (order: ScannedOrderForCancellation) => void;
+  onAssignmentCancelled?: (orderNumber: string, consignmentNumber: string) => void;
 }
 
 export function CancelDeliveryAssignmentSection({
@@ -58,17 +60,47 @@ export function CancelDeliveryAssignmentSection({
   scannedBarcode,
   onBarcodeConsumed,
   onNavigateToDispatch,
+  onAssignmentCancelled,
 }: CancelDeliveryAssignmentSectionProps) {
   const [barcodeInput, setBarcodeInput] = useState("");
   const [scannedOrder, setScannedOrder] = useState<ScannedOrderForCancellation | null>(null);
   const [reason, setReason] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const pendingCancelRef = useRef<{ consignmentNumber: string; orderNumber: string } | null>(null);
 
   const utils = trpc.useUtils();
 
+  const cancelAssignmentMut = trpc.delivery.cancelAssignment.useMutation({
+    onSuccess: async () => {
+      const { consignmentNumber = "", orderNumber = "" } = pendingCancelRef.current ?? {};
+      notify.ok(
+        `تم إلغاء إسناد الإرسالية ${consignmentNumber} (طلب #${orderNumber}) بنجاح`,
+        "حُررت عهدة المندوب المالية في دفتر التوصيل وعاد الطلب متاحاً للإسناد الجديد.",
+      );
+      if (orderNumber && consignmentNumber) {
+        onAssignmentCancelled?.(orderNumber, consignmentNumber);
+      }
+      pendingCancelRef.current = null;
+      await Promise.all([
+        utils.delivery.invalidate(),
+        utils.workOrders.invalidate(),
+        utils.sales.invalidate(),
+        utils.storeAdmin.orders.invalidate(),
+      ]);
+      setScannedOrder(null);
+      setBarcodeInput("");
+      setReason("");
+    },
+    onError: (e) => {
+      pendingCancelRef.current = null;
+      notify.err(e, "تعذّر إلغاء إسناد الإرسالية");
+    },
+  });
+
   const lookupOrder = useCallback(
     async (raw: string) => {
+      if (cancelAssignmentMut.isPending) return;
       const r = parseScan(raw);
       const orderNumber =
         r.type === "workOrder" || r.type === "invoice" || r.type === "consignment"
@@ -109,6 +141,7 @@ export function CancelDeliveryAssignmentSection({
           deliveryAddress: wo.deliveryAddress,
           deliveryPhone: wo.deliveryPhone,
           deliveryCost: wo.deliveryCost,
+          notes: (wo as { notes?: string | null }).notes ?? null,
           version: (wo as { version?: number }).version ?? 1,
           qrUrl,
           invoiceId: (wo as { invoiceId?: number | null }).invoiceId ?? null,
@@ -136,16 +169,16 @@ export function CancelDeliveryAssignmentSection({
         setIsSearching(false);
       }
     },
-    [utils],
+    [cancelAssignmentMut.isPending, utils],
   );
 
   // استهلاك الباركود الخارجي الممرر من شاشة سير العمل
   useEffect(() => {
-    if (scannedBarcode) {
+    if (scannedBarcode && !cancelAssignmentMut.isPending) {
       void lookupOrder(scannedBarcode);
       onBarcodeConsumed?.();
     }
-  }, [scannedBarcode, lookupOrder, onBarcodeConsumed]);
+  }, [scannedBarcode, cancelAssignmentMut.isPending, lookupOrder, onBarcodeConsumed]);
 
   // التركيز التلقائي على حقل البحث عند تفريغ النتيجة
   useEffect(() => {
@@ -154,36 +187,15 @@ export function CancelDeliveryAssignmentSection({
     }
   }, [scannedOrder]);
 
-  const cancelAssignmentMut = trpc.delivery.cancelAssignment.useMutation({
-    onSuccess: async () => {
-      const cnNumber = scannedOrder?.activeConsignment?.consignmentNumber ?? "";
-      notify.ok(
-        `تم إلغاء إسناد الإرسالية ${cnNumber} بنجاح`,
-        "حُررت عهدة المندوب المالية في دفتر التوصيل وعاد الطلب متاحاً للإسناد الجديد.",
-      );
-      await Promise.all([
-        utils.delivery.invalidate(),
-        utils.workOrders.invalidate(),
-        utils.sales.invalidate(),
-        utils.storeAdmin.orders.invalidate(),
-      ]);
-      setScannedOrder(null);
-      setBarcodeInput("");
-      setReason("");
-    },
-    onError: (e) => {
-      notify.err(e, "تعذّر إلغاء إسناد الإرسالية");
-    },
-  });
-
   async function handleConfirmCancel() {
-    if (!scannedOrder?.activeConsignment) return;
+    if (!scannedOrder?.activeConsignment || cancelAssignmentMut.isPending) return;
     if (reason.trim().length < 3) {
       notify.err("يرجى كتابة سبب الإلغاء (٣ أحرف على الأقل)");
       return;
     }
 
     const cn = scannedOrder.activeConsignment;
+    const orderNumber = scannedOrder.orderNumber;
     const ok = await confirm({
       variant: "danger",
       title: "تأكيد إلغاء إسناد التوصيل",
@@ -192,6 +204,7 @@ export function CancelDeliveryAssignmentSection({
     });
     if (!ok) return;
 
+    pendingCancelRef.current = { consignmentNumber: cn.consignmentNumber, orderNumber };
     cancelAssignmentMut.mutate({
       consignmentId: cn.id,
       reason: reason.trim(),
@@ -200,6 +213,7 @@ export function CancelDeliveryAssignmentSection({
   }
 
   function handleReset() {
+    if (cancelAssignmentMut.isPending) return;
     setScannedOrder(null);
     setBarcodeInput("");
     setReason("");

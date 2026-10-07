@@ -612,6 +612,17 @@ export default function DeliveryWorkflowPage() {
             branchId={branchId}
             scannedBarcode={cancelScannedCode}
             onBarcodeConsumed={() => setCancelScannedCode(null)}
+            onAssignmentCancelled={(orderNumber, consignmentNumber) => {
+              if (
+                lastDispatchedSlip?.consignmentNumber === consignmentNumber ||
+                lastDispatchedSlip?.orderNumber === orderNumber
+              ) {
+                setLastDispatchedSlip(null);
+              }
+              if (dispatchScanned?.orderNumber === orderNumber) {
+                setDispatchScanned(null);
+              }
+            }}
             onNavigateToDispatch={(order) => {
               setActiveSection("dispatch");
               setDispatchScanned(order);
@@ -620,6 +631,8 @@ export default function DeliveryWorkflowPage() {
               setRecipientName(order.customerName ?? "");
               setDispatchFee(order.deliveryCost ?? "");
               setDeliveryAddress(order.deliveryAddress ?? "");
+              setDeliveryNotes(order.notes ?? "");
+              setExternalTrackingRef("");
             }}
           />
         )}

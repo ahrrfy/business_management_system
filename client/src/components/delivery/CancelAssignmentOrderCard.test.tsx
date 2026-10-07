@@ -187,4 +187,80 @@ describe("CancelAssignmentOrderCard", () => {
     );
     expect(cancelBtn).toBeFalsy();
   });
+
+  it("يعرض تفاصيل المبالغ المالية الأربعة كاملة (قيمة الطلب، المسدد، المطلوب تحصيله، المحصل)", () => {
+    act(() => {
+      root.render(
+        <CancelAssignmentOrderCard
+          scannedOrder={sampleAssignedOrder}
+          reason=""
+          onReasonChange={() => undefined}
+          onConfirmCancel={() => undefined}
+          onReset={() => undefined}
+          isPending={false}
+        />,
+      );
+    });
+
+    expect(host.textContent).toContain("قيمة الطلب:");
+    expect(host.textContent).toContain("المسدد / العربون:");
+    expect(host.textContent).toContain("المطلوب تحصيله (COD):");
+    expect(host.textContent).toContain("المبلغ المحصّل:");
+    expect(host.textContent).toContain("120,000 د.ع");
+  });
+
+  it("يمنع الإلغاء المباشر عندما تكون حالة الذمة المالية COLLECTED أو REMITTED حتى مع صفرية المبلغ المحصل", () => {
+    const collectedStatusOrder: ScannedOrderForCancellation = {
+      ...sampleAssignedOrder,
+      activeConsignment: {
+        ...sampleAssignedOrder.activeConsignment!,
+        parcelStatus: "OUT_FOR_DELIVERY",
+        moneyStatus: "COLLECTED",
+        collectedAmount: "0.00",
+      },
+    };
+
+    act(() => {
+      root.render(
+        <CancelAssignmentOrderCard
+          scannedOrder={collectedStatusOrder}
+          reason="سبب تجريبي"
+          onReasonChange={() => undefined}
+          onConfirmCancel={() => undefined}
+          onReset={() => undefined}
+          isPending={false}
+        />,
+      );
+    });
+
+    expect(host.textContent).toContain("لا يمكن إلغاء الإسناد المباشر لهذا الطرد");
+    const cancelBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("تأكيد إلغاء الإسناد والتوصيل"),
+    );
+    expect(cancelBtn).toBeFalsy();
+  });
+
+  it("يتيح تأكيد الإلغاء بالضغط على زر Enter داخل حقل السبب عندما يكون السبب مستوفياً للشروط", () => {
+    const onConfirm = vi.fn();
+    act(() => {
+      root.render(
+        <CancelAssignmentOrderCard
+          scannedOrder={sampleAssignedOrder}
+          reason="العميل حضر للاستلام الشخصي"
+          onReasonChange={() => undefined}
+          onConfirmCancel={onConfirm}
+          onReset={() => undefined}
+          isPending={false}
+        />,
+      );
+    });
+
+    const input = host.querySelector("input#cancel-delivery-reason") as HTMLInputElement;
+    expect(input).toBeTruthy();
+
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
 });

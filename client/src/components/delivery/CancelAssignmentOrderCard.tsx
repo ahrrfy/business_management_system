@@ -57,7 +57,11 @@ export function CancelAssignmentOrderCard({
     activeCn?.parcelStatus === "OUT_FOR_DELIVERY" ||
     activeCn?.parcelStatus === "FAILED";
   const hasCollections = Number(activeCn?.collectedAmount ?? "0") > 0;
-  const canCancel = isCancellableParcelStatus && !hasCollections;
+  const isMoneySettled =
+    activeCn?.moneyStatus === "COLLECTED" ||
+    activeCn?.moneyStatus === "REMITTED" ||
+    activeCn?.moneyStatus === "SETTLED";
+  const canCancel = isCancellableParcelStatus && !hasCollections && !isMoneySettled;
 
   return (
     <Card className="overflow-hidden gap-0 py-0 shadow-sm border-destructive/30">
@@ -142,7 +146,19 @@ export function CancelAssignmentOrderCard({
                 </span>
               </div>
 
-              <div className="grid gap-2 sm:grid-cols-2 pt-1 text-xs">
+              <div className="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 pt-1 text-xs">
+                <div className="rounded-lg bg-background p-2.5 border">
+                  <span className="text-muted-foreground block">قيمة الطلب:</span>
+                  <strong className="text-sm font-bold text-foreground">
+                    {fmt(scannedOrder.salePrice)} د.ع
+                  </strong>
+                </div>
+                <div className="rounded-lg bg-background p-2.5 border">
+                  <span className="text-muted-foreground block">المسدد / العربون:</span>
+                  <strong className="text-sm font-bold text-foreground">
+                    {fmt(scannedOrder.deposit ?? "0")} د.ع
+                  </strong>
+                </div>
                 <div className="rounded-lg bg-background p-2.5 border">
                   <span className="text-muted-foreground block">المطلوب تحصيله (COD):</span>
                   <strong className="text-sm font-bold text-foreground">
@@ -195,9 +211,16 @@ export function CancelAssignmentOrderCard({
                     id="cancel-delivery-reason"
                     value={reason}
                     onChange={(e) => onReasonChange(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && canCancel && reason.trim().length >= 3 && !isPending) {
+                        e.preventDefault();
+                        onConfirmCancel();
+                      }
+                    }}
                     placeholder="مثال: طلب العميل الاستلام من الفرع / تغيير المندوب / تعذر التواصل…"
                     className="h-10"
                     maxLength={500}
+                    autoFocus
                   />
                 </div>
 
