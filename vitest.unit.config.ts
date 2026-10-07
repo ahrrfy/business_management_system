@@ -402,6 +402,7 @@ export default defineConfig({
       "client/src/components/delivery/companyStatementQueue.test.ts",
       "client/src/components/delivery/statementDraft.test.ts",
       "client/src/components/delivery/CompanyStatementScanQueue.test.tsx",
+      "client/src/components/delivery/CancelAssignmentOrderCard.test.tsx",
       // تصليب قراءة القارئ (١٢/٩/٢٦): فكّ المفتاح الفيزيائيّ (مستقلّ عن التخطيط) + كشف ومضةٍ متسامحٍ مع التذبذب
       "shared/barcodeKeyDecode.test.ts",
       "client/src/lib/barcodeScanTiming.test.ts",

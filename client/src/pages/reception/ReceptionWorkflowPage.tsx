@@ -31,12 +31,13 @@ import { storefrontUrl } from "@/lib/siteHosts";
 import { ReceptionCollectSection } from "@/components/reception/ReceptionCollectSection";
 import { DispatchPreviewCard } from "@/components/delivery/DispatchPreviewCard";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
+import { CancelDeliveryAssignmentSection } from "@/components/delivery/CancelDeliveryAssignmentSection";
 import { invoiceStatusBadgeVariant, invoiceStatusLabel } from "@shared/invoiceStatus";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { fmtDateTime } from "@/lib/date";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 
-type Section = "dispatch" | "collect" | "edit" | "return";
+type Section = "dispatch" | "collect" | "edit" | "return" | "cancelAssignment";
 type CorrectionLookup = NonNullable<RouterOutputs["sales"]["lookupForCorrection"]>;
 
 interface ScannedOrder {
@@ -65,10 +66,11 @@ export default function DeliveryWorkflowPage() {
   const isDeliveryModule = location.startsWith("/delivery");
   const [activeSection, setActiveSection] = useState<Section>(() => {
     const requested = new URLSearchParams(pageSearch).get("section");
-    return requested === "collect" || requested === "edit" || requested === "return"
-      ? requested
+    return requested === "collect" || requested === "edit" || requested === "return" || requested === "cancelAssignment" || requested === "cancel_assignment" || requested === "cancel-assignment"
+      ? (requested === "cancel_assignment" || requested === "cancel-assignment" ? "cancelAssignment" : requested as Section)
       : "dispatch";
   });
+  const [cancelScannedCode, setCancelScannedCode] = useState<string | null>(null);
   const [selectedPartyId, setSelectedPartyId] = useState<number | null>(null);
   const [lastDispatchedSlip, setLastDispatchedSlip] = useState<DispatchSlipData | null>(null);
   const [dispatchScanned, setDispatchScanned] = useState<ScannedOrder | null>(null);
@@ -190,6 +192,7 @@ export default function DeliveryWorkflowPage() {
   }, [activeSection, lookupInvoiceForEdit, pageSearch]);
 
   const dispatchEnabled = activeSection === "dispatch" && !dispatchScanned;
+  const cancelAssignmentEnabled = activeSection === "cancelAssignment";
   const returnEnabled = activeSection === "return" && !returnScanned;
   const collectEnabled = activeSection === "collect";
   const editEnabled = activeSection === "edit" && !editScanned;
@@ -197,12 +200,13 @@ export default function DeliveryWorkflowPage() {
   useBarcodeScanner(
     useCallback(async (raw: string) => {
       if (dispatchEnabled) await lookupWorkOrder(raw, "dispatch");
+      else if (cancelAssignmentEnabled) setCancelScannedCode(raw.trim());
       else if (returnEnabled) await lookupWorkOrder(raw, "return");
       else if (collectEnabled) setCollectScannedCode(raw.trim());
       else if (editEnabled) await lookupInvoiceForEdit(raw);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [dispatchEnabled, returnEnabled, collectEnabled, editEnabled, lookupWorkOrder, lookupInvoiceForEdit]),
-    { enabled: dispatchEnabled || returnEnabled || collectEnabled || editEnabled },
+    }, [dispatchEnabled, cancelAssignmentEnabled, returnEnabled, collectEnabled, editEnabled, lookupWorkOrder, lookupInvoiceForEdit]),
+    { enabled: dispatchEnabled || cancelAssignmentEnabled || returnEnabled || collectEnabled || editEnabled },
   );
 
 
@@ -461,9 +465,10 @@ export default function DeliveryWorkflowPage() {
         />
       </div>
 
-      <div className="grid shrink-0 grid-cols-2 border-b bg-card md:grid-cols-4" role="tablist" aria-label="أقسام التوصيل والفواتير">
+      <div className="grid shrink-0 grid-cols-2 border-b bg-card sm:grid-cols-3 lg:grid-cols-5" role="tablist" aria-label="أقسام التوصيل والفواتير">
         {([
           { key: "dispatch" as const, icon: <Truck aria-hidden className="size-4" />, label: "إسناد للمندوب" },
+          { key: "cancelAssignment" as const, icon: <Ban aria-hidden className="size-4" />, label: "إلغاء الإسناد والتوصيل" },
           { key: "collect" as const, icon: <Wallet aria-hidden className="size-4" />, label: "تحصيل وذمم" },
           { key: "edit" as const, icon: <FilePenLine aria-hidden className="size-4" />, label: "تعديل فاتورة" },
           { key: "return" as const, icon: <RefreshCcw aria-hidden className="size-4" />, label: "إلغاء / مرتجع" },
@@ -600,6 +605,36 @@ export default function DeliveryWorkflowPage() {
               />
             )}
           </div>
+        )}
+
+        {activeSection === "cancelAssignment" && (
+          <CancelDeliveryAssignmentSection
+            branchId={branchId}
+            scannedBarcode={cancelScannedCode}
+            onBarcodeConsumed={() => setCancelScannedCode(null)}
+            onAssignmentCancelled={(orderNumber, consignmentNumber) => {
+              if (
+                lastDispatchedSlip?.consignmentNumber === consignmentNumber ||
+                lastDispatchedSlip?.orderNumber === orderNumber
+              ) {
+                setLastDispatchedSlip(null);
+              }
+              if (dispatchScanned?.orderNumber === orderNumber) {
+                setDispatchScanned(null);
+              }
+            }}
+            onNavigateToDispatch={(order) => {
+              setActiveSection("dispatch");
+              setDispatchScanned(order);
+              setDispatchBarcodeInput("");
+              setRecipientPhone(order.deliveryPhone ?? order.customerPhone ?? "");
+              setRecipientName(order.customerName ?? "");
+              setDispatchFee(order.deliveryCost ?? "");
+              setDeliveryAddress(order.deliveryAddress ?? "");
+              setDeliveryNotes(order.notes ?? "");
+              setExternalTrackingRef("");
+            }}
+          />
         )}
 
         {activeSection === "collect" && !!branchId && (
