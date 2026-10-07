@@ -13,6 +13,8 @@ export default defineConfig({
     environment: "node",
     include: [
       "shared/productChannelSync.test.ts",
+      "server/services/__tests__/predictiveRecipe.test.ts",
+      "client/src/components/product/__tests__/recipeClipboard.test.ts",
       "client/src/pages/__tests__/purchaseShippingFundingUi.test.tsx",
       "client/src/lib/moneyInput.test.ts",
       "client/src/lib/audioFeedback.test.ts",
