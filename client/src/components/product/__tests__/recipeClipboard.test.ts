@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { D, moneyInput, round2 } from "@/lib/money";
-import { sanitizeRecipeClipboard } from "../ProductRecipeSection";
+import {
+  sanitizeRecipeClipboard,
+  getStoredRecipeClipboard,
+  setStoredRecipeClipboard,
+  getRecipeClipboardKey,
+} from "../ProductRecipeSection";
 
 // دالة محاكاة لحساب التكاليف المعيارية الحيّة بأمان ضد المُدخلات الجزئية
 function calculateRecipeCost(lines: Array<{ qty: string; cost: string }>, labor: string, wastePct: string) {
@@ -394,5 +399,55 @@ describe("وحدة اختبار منطق نسخ ولصق الوصفات والذ
     const keys = rawLines.map((l, idx) => `${l.inputVariantId}-${idx}`);
     expect(keys).toEqual(["44-0", "44-1"]);
     expect(new Set(keys).size).toBe(2);
+  });
+
+  it("يعزل الحافظة حسب معرف المنشأة (Tenant Scoping) ويمنع قراءة بيانات وصفات شركة أخرى", () => {
+    expect(getRecipeClipboardKey(undefined)).toBe("alroya_recipe_clipboard_v1");
+    expect(getRecipeClipboardKey(null)).toBe("alroya_recipe_clipboard_v1");
+    expect(getRecipeClipboardKey(5)).toBe("alroya_recipe_clipboard_v1_c5");
+
+    const payloadCompany1 = {
+      companyId: 1,
+      recipeName: "وصفة شركة 1",
+      productName: "منتج شركة 1",
+      laborPerOutputBase: "1000",
+      wasteStdPct: "0.02",
+      lines: [{ inputVariantId: 10, inputProductName: "مادة 1", qtyPerOutputBase: "2" }],
+      copiedAt: new Date().toISOString(),
+    };
+
+    // حفظ في نطاق شركة 1
+    const res = setStoredRecipeClipboard(payloadCompany1, 1);
+    expect(res.success).toBe(true);
+
+    // القراءة من نطاق شركة 1 يجب أن تنجح
+    const loadedCompany1 = getStoredRecipeClipboard(1);
+    expect(loadedCompany1).not.toBeNull();
+    expect(loadedCompany1?.recipeName).toBe("وصفة شركة 1");
+
+    // القراءة من نطاق شركة 2 يجب أن تفشل (لا تسرب بيانات شركة 1 لشركة 2)
+    const loadedCompany2 = getStoredRecipeClipboard(2);
+    expect(loadedCompany2).toBeNull();
+  });
+
+  it("يصمد في الذاكرة (In-Memory Fallback) ويعيد النتيجة بدقة عند فشل localStorage", () => {
+    const payload = {
+      companyId: 99,
+      recipeName: "وصفة ذاكرة الطوارئ",
+      productName: "منتج طارئ",
+      laborPerOutputBase: "500",
+      wasteStdPct: "0.01",
+      lines: [{ inputVariantId: 88, inputProductName: "مادة طارئة", qtyPerOutputBase: "1" }],
+      copiedAt: new Date().toISOString(),
+    };
+
+    // حتى لو فشل localStorage، يوفر المخزن نسخة الذاكرة ويعلن النجاح
+    const res = setStoredRecipeClipboard(payload, 99);
+    expect(res.success).toBe(true);
+    expect(res.sanitized?.recipeName).toBe("وصفة ذاكرة الطوارئ");
+
+    const fromMem = getStoredRecipeClipboard(99);
+    expect(fromMem).not.toBeNull();
+    expect(fromMem?.recipeName).toBe("وصفة ذاكرة الطوارئ");
   });
 });

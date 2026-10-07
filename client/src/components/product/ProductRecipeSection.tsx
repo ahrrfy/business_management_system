@@ -35,9 +35,19 @@ import { useSessionContext } from "@/hooks/useSessionContext";
 import { RecipeImportDialog, type ImportedRecipeData } from "./RecipeImportDialog";
 import { PredictiveRecipeSuggestions } from "./PredictiveRecipeSuggestions";
 
+export const RECIPE_CLIPBOARD_BASE_KEY = "alroya_recipe_clipboard_v1";
 export const RECIPE_CLIPBOARD_KEY = "alroya_recipe_clipboard_v1";
 export const RECIPE_CLIPBOARD_LEGACY_KEY = "alroya_recipe_clipboard";
 export const RECIPE_CLIPBOARD_EVENT = "alroya_recipe_clipboard_updated";
+
+export function getRecipeClipboardKey(companyId?: number | null): string {
+  if (companyId != null && Number.isFinite(companyId) && companyId > 0) {
+    return `${RECIPE_CLIPBOARD_BASE_KEY}_c${companyId}`;
+  }
+  return RECIPE_CLIPBOARD_BASE_KEY;
+}
+
+let memoryClipboardFallback: CopiedRecipePayload | null = null;
 
 export interface EditableLine {
   id?: number;
@@ -64,6 +74,7 @@ export interface CopiedRecipeLine {
 
 export interface CopiedRecipePayload {
   version?: number;
+  companyId?: number | null;
   recipeName: string;
   productName: string;
   laborPerOutputBase: string;
@@ -73,9 +84,27 @@ export interface CopiedRecipePayload {
   copiedAt: string;
 }
 
-export function sanitizeRecipeClipboard(raw: unknown): CopiedRecipePayload | null {
+export function sanitizeRecipeClipboard(
+  raw: unknown,
+  expectedCompanyId?: number | null,
+): CopiedRecipePayload | null {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
+
+  const rawCompanyId = obj.companyId != null ? Number(obj.companyId) : null;
+  const companyId =
+    Number.isFinite(rawCompanyId) && (rawCompanyId as number) > 0 ? (rawCompanyId as number) : null;
+
+  // إذا تم تحديد شركة متوقعة، رفض الحمولة إذا كانت تخص شركة أخرى لتفادي تسرب بيانات الوصفات بين الشركات
+  if (expectedCompanyId !== undefined) {
+    const expected =
+      expectedCompanyId != null && Number.isFinite(expectedCompanyId) && expectedCompanyId > 0
+        ? expectedCompanyId
+        : null;
+    if (companyId !== expected) {
+      return null;
+    }
+  }
 
   const rawLines = Array.isArray(obj.lines)
     ? obj.lines
@@ -147,6 +176,7 @@ export function sanitizeRecipeClipboard(raw: unknown): CopiedRecipePayload | nul
 
   return {
     version: 1,
+    companyId,
     recipeName:
       typeof obj.recipeName === "string" && obj.recipeName.trim()
         ? obj.recipeName.trim()
@@ -163,40 +193,77 @@ export function sanitizeRecipeClipboard(raw: unknown): CopiedRecipePayload | nul
   };
 }
 
-export function getStoredRecipeClipboard(): CopiedRecipePayload | null {
+export function getStoredRecipeClipboard(companyId?: number | null): CopiedRecipePayload | null {
+  const scopedKey = getRecipeClipboardKey(companyId);
   try {
-    if (typeof localStorage === "undefined") return null;
-    let raw = localStorage.getItem(RECIPE_CLIPBOARD_KEY);
-    if (!raw) {
-      raw = localStorage.getItem(RECIPE_CLIPBOARD_LEGACY_KEY);
+    if (typeof localStorage !== "undefined") {
+      let raw = localStorage.getItem(scopedKey);
+      if (!raw && !companyId) {
+        raw = localStorage.getItem(RECIPE_CLIPBOARD_LEGACY_KEY);
+      }
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const sanitized = sanitizeRecipeClipboard(parsed, companyId);
+        if (sanitized) return sanitized;
+      }
     }
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    const sanitized = sanitizeRecipeClipboard(parsed);
-    if (sanitized && !localStorage.getItem(RECIPE_CLIPBOARD_KEY)) {
-      try {
-        localStorage.setItem(RECIPE_CLIPBOARD_KEY, JSON.stringify(sanitized));
-      } catch {}
-    }
-    return sanitized;
   } catch {
-    return null;
+    // fallback to in-memory store below
   }
+
+  if (memoryClipboardFallback) {
+    const sanitized = sanitizeRecipeClipboard(memoryClipboardFallback, companyId);
+    if (sanitized) return sanitized;
+  }
+
+  return null;
 }
 
-export function setStoredRecipeClipboard(payload: CopiedRecipePayload) {
-  try {
-    const sanitized = sanitizeRecipeClipboard(payload);
-    if (!sanitized) return;
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(RECIPE_CLIPBOARD_KEY, JSON.stringify(sanitized));
-    }
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent(RECIPE_CLIPBOARD_EVENT, { detail: sanitized }));
-    }
-  } catch {
-    // ignore localStorage quota errors
+export interface StoreClipboardResult {
+  success: boolean;
+  persistedLocally: boolean;
+  sanitized: CopiedRecipePayload | null;
+}
+
+export function setStoredRecipeClipboard(
+  payload: CopiedRecipePayload,
+  companyId?: number | null,
+): StoreClipboardResult {
+  const targetCompanyId =
+    companyId !== undefined
+      ? (companyId != null && Number.isFinite(companyId) && companyId > 0 ? companyId : null)
+      : (payload.companyId ?? null);
+
+  const payloadWithCompany: CopiedRecipePayload = {
+    ...payload,
+    companyId: targetCompanyId,
+  };
+
+  const sanitized = sanitizeRecipeClipboard(payloadWithCompany, targetCompanyId);
+  if (!sanitized) {
+    return { success: false, persistedLocally: false, sanitized: null };
   }
+
+  memoryClipboardFallback = sanitized;
+
+  let persistedLocally = false;
+  if (typeof localStorage !== "undefined") {
+    try {
+      const scopedKey = getRecipeClipboardKey(targetCompanyId);
+      localStorage.setItem(scopedKey, JSON.stringify(sanitized));
+      persistedLocally = true;
+    } catch {
+      persistedLocally = false;
+    }
+  }
+
+  if (typeof window !== "undefined") {
+    try {
+      window.dispatchEvent(new CustomEvent(RECIPE_CLIPBOARD_EVENT, { detail: sanitized }));
+    } catch {}
+  }
+
+  return { success: true, persistedLocally, sanitized };
 }
 
 interface ProductRecipeSectionProps {
@@ -216,6 +283,12 @@ export function ProductRecipeSection({
 }: ProductRecipeSectionProps) {
   const utils = trpc.useUtils();
   const { context } = useSessionContext();
+  const me = trpc.auth.me.useQuery(undefined, { staleTime: 60_000 });
+  const currentCompanyId =
+    me.data?.companyId != null && Number.isFinite(me.data.companyId) && me.data.companyId > 0
+      ? me.data.companyId
+      : null;
+
   const currentBranchId =
     propBranchId !== undefined
       ? (propBranchId != null ? Number(propBranchId) : undefined)
@@ -232,23 +305,34 @@ export function ProductRecipeSection({
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
   const [priceTierMode, setPriceTierMode] = useState<"RETAIL" | "WHOLESALE">("RETAIL");
 
-  // حالة الحافظة المشتركة عبر التخزين المحلي
+  // حالة الحافظة المشتركة عبر التخزين المحلي والذاكرة
   const [clipboardData, setClipboardData] = useState<CopiedRecipePayload | null>(() =>
-    getStoredRecipeClipboard(),
+    getStoredRecipeClipboard(currentCompanyId),
   );
 
   useEffect(() => {
+    setClipboardData(getStoredRecipeClipboard(currentCompanyId));
+  }, [currentCompanyId]);
+
+  useEffect(() => {
+    const scopedKey = getRecipeClipboardKey(currentCompanyId);
     const handleStorage = (e: StorageEvent) => {
       if (
-        e.key === RECIPE_CLIPBOARD_KEY ||
+        e.key === scopedKey ||
+        e.key === RECIPE_CLIPBOARD_BASE_KEY ||
         e.key === RECIPE_CLIPBOARD_LEGACY_KEY ||
         e.key === null
       ) {
-        setClipboardData(getStoredRecipeClipboard());
+        setClipboardData(getStoredRecipeClipboard(currentCompanyId));
       }
     };
-    const handleCustom = () => {
-      setClipboardData(getStoredRecipeClipboard());
+    const handleCustom = (e: Event) => {
+      const detail = (e as CustomEvent<CopiedRecipePayload>).detail;
+      if (detail && detail.companyId !== currentCompanyId) {
+        setClipboardData(null);
+      } else {
+        setClipboardData(getStoredRecipeClipboard(currentCompanyId));
+      }
     };
     window.addEventListener("storage", handleStorage);
     window.addEventListener(RECIPE_CLIPBOARD_EVENT, handleCustom);
@@ -256,7 +340,7 @@ export function ProductRecipeSection({
       window.removeEventListener("storage", handleStorage);
       window.removeEventListener(RECIPE_CLIPBOARD_EVENT, handleCustom);
     };
-  }, []);
+  }, [currentCompanyId]);
 
   // إعادة ضبط حالة التحرير ونموذج الإدخال عند التبديل لمنتج آخر
   useEffect(() => {
@@ -269,8 +353,8 @@ export function ProductRecipeSection({
     setFormLabor("0");
     setFormWaste("0");
     setFormNotes("");
-    setClipboardData(getStoredRecipeClipboard());
-  }, [productId]);
+    setClipboardData(getStoredRecipeClipboard(currentCompanyId));
+  }, [productId, currentCompanyId]);
 
   // حقول نموذج التعديل/الإنشاء
   const [formName, setFormName] = useState("");
@@ -505,6 +589,7 @@ export function ProductRecipeSection({
     }
 
     const payload: CopiedRecipePayload = {
+      companyId: currentCompanyId,
       recipeName: isEditing ? formName : currentRecipe?.name || "وصفة منتج",
       productName: data?.product.name || "المنتج",
       laborPerOutputBase: isEditing ? formLabor : currentRecipe?.laborPerOutputBase || "0",
@@ -514,20 +599,23 @@ export function ProductRecipeSection({
       copiedAt: new Date().toISOString(),
     };
 
-    const sanitized = sanitizeRecipeClipboard(payload);
-    if (!sanitized) {
+    const res = setStoredRecipeClipboard(payload, currentCompanyId);
+    if (!res.success || !res.sanitized) {
       notify.warn("تعذّر تجهيز بنود الوصفة للنسخ");
       return;
     }
 
-    setStoredRecipeClipboard(sanitized);
-    setClipboardData(sanitized);
-    notify.ok(`تم نسخ بنود الوصفة (${sanitized.lines.length} مواد) إلى الحافظة بنجاح`);
+    setClipboardData(res.sanitized);
+    if (res.persistedLocally) {
+      notify.ok(`تم نسخ بنود الوصفة (${res.sanitized.lines.length} مواد) إلى الحافظة بنجاح`);
+    } else {
+      notify.ok(`تم نسخ بنود الوصفة (${res.sanitized.lines.length} مواد) في ذاكرة الجلسة الحالية`);
+    }
   }
 
   // ميزة لصق الوصفة
   async function handlePasteRecipe() {
-    const clip = getStoredRecipeClipboard();
+    const clip = getStoredRecipeClipboard(currentCompanyId) ?? clipboardData;
     if (!clip || clip.lines.length === 0) {
       notify.warn("الحافظة فارغة حالياً، انسخ وصفة من أي منتج أولاً");
       return;
