@@ -141,3 +141,52 @@ for (const includeHero of [true, false]) {
     await expectNoHorizontalOverflow(page);
   });
 }
+
+test("fallback marketing creative keeps its managed placement for metrics", async ({ page }) => {
+  const metrics: Array<{ bannerId: number; placement: string; event: string }> = [];
+  const imageUrl = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="800"><rect width="100%" height="100%" fill="white"/></svg>')}`;
+  const banners = [
+    { id: 90000011, title: "Metrics fixture primary", placement: "HERO", imageUrl, renderMode: "PRESERVE_FULL" },
+    { id: 90000012, title: "Metrics fixture fallback", placement: "HERO", imageUrl, renderMode: "PRESERVE_FULL", ctaUrl: "#store-main" },
+  ];
+  await page.route("**/api/trpc/**", async (route) => {
+    const request = route.request();
+    const procedures = new URL(request.url()).pathname.split("/").at(-1)!.split(",");
+    const metricIndex = procedures.indexOf("storefront.trackBanner");
+    if (metricIndex >= 0) {
+      const body = request.postDataJSON();
+      metrics.push((body[metricIndex] ?? body).json);
+      await route.fulfill({ json: procedures.length > 1 || new URL(request.url()).searchParams.has("batch")
+        ? procedures.map(() => ({ result: { data: { json: { ok: true } } } }))
+        : { result: { data: { json: { ok: true } } } } });
+      return;
+    }
+    if (procedures.some((name) => /^storefront\.(track|create|subscribe|unsubscribe|submit)/.test(name))) {
+      await route.abort("blockedbyclient");
+      return;
+    }
+    if (!procedures.some((name) => name === "storefront.banners" || name === "storefront.offers")) {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    const body = await response.json();
+    const results = Array.isArray(body) ? body : [body];
+    procedures.forEach((name, index) => {
+      if (name === "storefront.banners" || name === "storefront.offers") {
+        results[index] = { result: { data: { json: name === "storefront.banners" ? banners : [] } } };
+      }
+    });
+    await route.fulfill({ response, json: Array.isArray(body) ? results : results[0] });
+  });
+  await page.goto("/store", { waitUntil: "domcontentloaded" });
+  const fallback = page.getByRole("img", { name: "Metrics fixture fallback", exact: true }).last();
+  await fallback.scrollIntoViewIfNeeded();
+  expect(await fallback.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.width / rect.height;
+  })).toBeCloseTo(3, 2);
+  await expect.poll(() => metrics).toContainEqual({ bannerId: 90000012, placement: "HERO", event: "IMPRESSION" });
+  await fallback.click();
+  await expect.poll(() => metrics).toContainEqual({ bannerId: 90000012, placement: "HERO", event: "CLICK" });
+});
