@@ -53,6 +53,7 @@ import {
   substituteRecipeMaterialInputSchema,
 } from "@shared/recipeSubstitutionTypes";
 import { logAudit } from "../services/auditService";
+import { listMaterialsForRecipe } from "../services/catalog/productExtras";
 import { inventoryManagerProcedure, productsReadProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
@@ -537,6 +538,16 @@ export const productionRouter = router({
     listRunnable: inventoryManagerProcedure.query(() => listRunnableRecipes()),
 
     get: inventoryManagerProcedure.input(z.object({ id: z.number().int().positive() })).query(({ input }) => getRecipe(input.id)),
+
+    /** بحث المواد الخام المتاحة للاستخدام في الوصفة لمنشئي ومعدلي الوصفات والمخزون */
+    materials: inventoryManagerProcedure
+      .input(
+        z.object({
+          query: z.string().optional(),
+          limit: z.number().int().positive().max(200).default(100),
+        }),
+      )
+      .query(({ input }) => listMaterialsForRecipe(input.query, input.limit)),
 
     /** وصفة منتج محدد (خدمة أو مادي) مع متغيّره الأساس ووحدته للعرض المباشر في بطاقة المنتج */
     forProduct: productsReadProcedure

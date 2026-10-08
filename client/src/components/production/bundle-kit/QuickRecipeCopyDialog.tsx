@@ -127,7 +127,7 @@ export function QuickRecipeCopyDialog({
   );
 
   // استعلام المواد الخام للإضافة الحية مع تأجيل ذكي 200ms
-  const materialsQ = trpc.catalog.materialsForRecipe.useQuery(
+  const materialsQ = trpc.production.recipes.materials.useQuery(
     { query: trimmedSearchMaterial, limit: 12 },
     { enabled: open && trimmedSearchMaterial.length >= 1, staleTime: 20_000 },
   );
@@ -720,6 +720,10 @@ export function QuickRecipeCopyDialog({
                     <div className="p-3 text-center text-xs text-muted-foreground">
                       <Loader2 aria-hidden="true" className="size-4 animate-spin inline me-1.5" />
                       جارٍ البحث عن المواد الخام...
+                    </div>
+                  ) : materialsQ.isError ? (
+                    <div className="p-3 text-center text-xs text-destructive">
+                      {materialsQ.error?.message || "تعذر تحميل المواد الخام، يرجى التحقق من الصلاحيات والمحاولة لاحقاً"}
                     </div>
                   ) : (materialsQ.data ?? []).length === 0 ? (
                     <div className="p-3 text-center text-xs text-muted-foreground">

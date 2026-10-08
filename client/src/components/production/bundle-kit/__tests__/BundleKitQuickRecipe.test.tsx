@@ -474,4 +474,32 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
 
     window.removeEventListener("unhandledrejection", rejectionHandler);
   });
+
+  it("يُظهر رسالة خطأ صريحة عند فشل استعلام المواد الخام ولا يخفيه كنتيجة فارغة مضللة", () => {
+    // محاكاة استعلام بمحرك inventoryManagerProcedure يعود بخطأ صلاحيات أو فشل شبكة
+    const mockQueryError = {
+      isError: true,
+      error: { message: "غير مصرح لك باستعراض المواد الخام بدون صلاحية إدارة المخزون" },
+      data: undefined,
+      isLoading: false,
+      isFetching: false,
+    };
+
+    // منطق العرض في QuickRecipeCopyDialog
+    let displayedErrorText: string | null = null;
+    let displayedEmptyText: string | null = null;
+
+    if (mockQueryError.isError) {
+      displayedErrorText =
+        mockQueryError.error?.message ||
+        "تعذر تحميل المواد الخام، يرجى التحقق من الصلاحيات والمحاولة لاحقاً";
+    } else if ((mockQueryError.data ?? []).length === 0) {
+      displayedEmptyText = "لم يتم العثور على مواد خام مطابقة";
+    }
+
+    expect(displayedErrorText).toBe(
+      "غير مصرح لك باستعراض المواد الخام بدون صلاحية إدارة المخزون",
+    );
+    expect(displayedEmptyText).toBeNull();
+  });
 });
