@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
   Calculator,
   CheckCircle2,
   Copy,
@@ -481,6 +482,25 @@ export function QuickRecipeCopyDialog({
 
         {/* محتوى النموذج القابل للتمرير */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* تنبيه غياب الوحدة الأساسية النشطة */}
+          {!effectiveBaseUnitId && (
+            <div
+              role="alert"
+              className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200 flex items-start gap-2.5"
+            >
+              <AlertTriangle
+                aria-hidden="true"
+                className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400"
+              />
+              <div className="space-y-0.5">
+                <p className="font-bold">تنبيه: لا توجد وحدة أساسية نشطة مسجلة لهذا الصنف</p>
+                <p className="text-muted-foreground leading-relaxed text-[11px]">
+                  تشترط وصفات الإنتاج أن تكون وحدة الناتج مطابقة للوحدة الأساسية النشطة للمنتج في الكتالوج. يرجى مراجعة وتعيين الوحدة الأساسية في بطاقة المنتج أولاً لتمكين حفظ الوصفة.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* قسم القوالب الذكية والنسخ */}
           <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-3">
             <div className="flex items-center justify-between">
@@ -883,7 +903,8 @@ export function QuickRecipeCopyDialog({
             disabled={
               createRecipeMut.isPending ||
               lines.length === 0 ||
-              !recipeName.trim()
+              !recipeName.trim() ||
+              !effectiveBaseUnitId
             }
             className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
           >

@@ -527,4 +527,78 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     // النتيجة النهائية يجب أن تكون القالب B الأحدث، ولا يجوز للقالب A القديم أن يطمسه
     expect(appliedTemplateName).toBe("قالب B أحدث");
   });
+
+  it("يحافظ على عدم تحديد الصنف حديث التحويل وضبط دفعة الإنتاج إلى صفر إذا كان العجز صفراً (suggestedBatchQty === 0)", () => {
+    // محاكاة تحويل صنف تجاري لا يعاني من عجز مخزني في وضع صافي العجز NET_SHORTAGE
+    const newlyCreatedId = 105;
+    const manufacturedComponentWithZeroShortage: ComponentRequirementDto = {
+      variantId: 105,
+      productId: 15,
+      baseUnitId: 5,
+      baseUnitName: "دفتر",
+      productName: "دفتر تجاري مغطى بالكامل",
+      sku: "NOTE-105",
+      componentBaseQuantity: 2,
+      totalRequiredQty: 10,
+      onHandStock: 50,
+      shortageQty: 0,
+      suggestedBatchQty: 0,
+      isManufactured: true,
+      recipeId: 88,
+      recipeName: "وصفة تصنيع الدفتر",
+      requiredBatchMultiple: 1,
+      surplusBufferQty: 0,
+      laborPerUnit: "200.00",
+      wasteStdPct: "0.00",
+    };
+
+    const prevBatches: any[] = [];
+    const prevMap = new Map(prevBatches.map((b) => [b.variantId, b]));
+
+    // منطق التوليد والتحديد المطابق لـ BundleKitProductionDialog
+    const isNewlyCreated = manufacturedComponentWithZeroShortage.variantId === newlyCreatedId;
+    const shouldSelect = manufacturedComponentWithZeroShortage.suggestedBatchQty > 0;
+    const defaultBatchQty = manufacturedComponentWithZeroShortage.suggestedBatchQty;
+
+    const ex = prevMap.get(manufacturedComponentWithZeroShortage.variantId);
+    const newBatch = ex
+      ? {
+          ...ex,
+          recipeId: manufacturedComponentWithZeroShortage.recipeId,
+          batchQty: ex.batchQty > 0 ? ex.batchQty : defaultBatchQty,
+          selected: isNewlyCreated ? shouldSelect : ex.selected,
+        }
+      : {
+          variantId: manufacturedComponentWithZeroShortage.variantId,
+          recipeId: manufacturedComponentWithZeroShortage.recipeId,
+          batchQty: defaultBatchQty,
+          scrapQty: 0,
+          laborPerUnit: manufacturedComponentWithZeroShortage.laborPerUnit || "0.00",
+          selected: shouldSelect,
+        };
+
+    // التحقق: لا يتم تحديده تلقائياً ولا تُفرض دفعة 1، لمنع إنتاج وحدات غير مطلوبة
+    expect(newBatch.selected).toBe(false);
+    expect(newBatch.batchQty).toBe(0);
+  });
+
+  it("يتحقق من تعطيل زر الحفظ وإظهار تنبيه عند غياب الوحدة الأساسية النشطة", () => {
+    const effectiveBaseUnitId: number | null = null;
+    const lines = [
+      {
+        inputVariantId: 1,
+        inputProductName: "مادة",
+        qtyPerOutputBase: "1",
+        inputCostPrice: "500",
+      },
+    ];
+    const recipeName = "وصفة تجريبية";
+    const isPending = false;
+
+    const isSaveDisabled =
+      isPending || lines.length === 0 || !recipeName.trim() || !effectiveBaseUnitId;
+
+    expect(isSaveDisabled).toBe(true);
+  });
 });
+

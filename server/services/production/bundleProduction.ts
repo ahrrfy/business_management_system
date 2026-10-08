@@ -164,29 +164,6 @@ export async function analyzeBundleRequirements(
       }
     }
 
-    const missingBaseUnitVariants = compVariantIds.filter((vid) => !baseUnitByVariant.has(vid));
-    if (missingBaseUnitVariants.length > 0) {
-      const anyActiveUnits = await tx
-        .select({
-          id: productUnits.id,
-          variantId: productUnits.variantId,
-          unitName: productUnits.unitName,
-        })
-        .from(productUnits)
-        .where(
-          and(
-            inArray(productUnits.variantId, missingBaseUnitVariants),
-            eq(productUnits.isActive, true),
-          ),
-        );
-      for (const u of anyActiveUnits) {
-        const vid = Number(u.variantId);
-        if (!baseUnitByVariant.has(vid)) {
-          baseUnitByVariant.set(vid, { id: Number(u.id), unitName: u.unitName });
-        }
-      }
-    }
-
     // ③ استعلام الوصفات النشطة للمكونات
     const activeRecipes = await tx
       .select({

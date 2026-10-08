@@ -186,10 +186,8 @@ export function BundleKitProductionDialog({
         return mfgComps.map((c) => {
           const ex = prevMap.get(c.variantId);
           const isNewlyCreated = c.variantId === newlyCreatedId;
-          const defaultBatchQty =
-            c.suggestedBatchQty > 0
-              ? c.suggestedBatchQty
-              : (c.requiredBatchMultiple || 1);
+          const shouldSelect = c.suggestedBatchQty > 0;
+          const defaultBatchQty = c.suggestedBatchQty;
 
           return ex
             ? {
@@ -198,10 +196,8 @@ export function BundleKitProductionDialog({
                 batchQty:
                   ex.batchQty > 0
                     ? ex.batchQty
-                    : isNewlyCreated
-                      ? defaultBatchQty
-                      : c.suggestedBatchQty,
-                selected: isNewlyCreated ? true : ex.selected,
+                    : defaultBatchQty,
+                selected: isNewlyCreated ? shouldSelect : ex.selected,
               }
             : {
                 variantId: c.variantId,
@@ -209,7 +205,7 @@ export function BundleKitProductionDialog({
                 batchQty: defaultBatchQty,
                 scrapQty: 0,
                 laborPerUnit: c.laborPerUnit || "0.00",
-                selected: isNewlyCreated || c.suggestedBatchQty > 0,
+                selected: shouldSelect,
               };
         });
       });
