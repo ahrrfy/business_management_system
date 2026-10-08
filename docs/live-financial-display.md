@@ -22,6 +22,14 @@ background posting changes their data. There is no page reload and no new pollin
   replay. Changes during a slow read are retained for a subsequent refresh.
   A read already in flight gets at most one repair per event batch, so overlapping
   external requests cannot turn a single event into an endless refresh loop.
+- Financial server caches include company and a bridge-driven revision in their
+  keys. Dashboard, account and category reads retain TTL and
+  single-flight sharing, while committed changes and bridge recovery select fresh
+  snapshots on every worker, including when an old loader finishes later.
+- Management alerts aggregate about 30–40 SQL reads. They use one shared snapshot
+  per 30-second window instead of recomputing on every sales burst. An event queues
+  one trailing refresh after that window, including for executive decisions;
+  cash/sales KPIs refresh promptly. No timer repeats after pending changes settle.
 - Treasury, return approval portals, reception collections, print POS shift reads
   and offline financial reports no longer poll every 15–60 seconds.
 

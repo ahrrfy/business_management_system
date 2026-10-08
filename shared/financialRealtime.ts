@@ -1,10 +1,12 @@
 /** Cache dependencies only: events never carry balances, receipts or customer data. */
+export const FINANCIAL_ALERTS_REFRESH_MS = 30_000;
+
 export const FINANCIAL_QUERY_ROOTS = [
   "treasury", "shifts", "cashTransfers", "cashRemediation", "accounts", "reports",
   "statutoryAccounting", "executive", "decisions", "sales", "salesControl",
   "purchases", "purchaseReturns", "purchaseReturnGovernance", "purchaseIntegrity",
   "supplierPayments", "purchaseCharges", "goodsReceiptReversal", "supplierInvoiceApproval",
-  "returns", "customers", "suppliers", "vouchers", "expenses", "installments",
+  "returns", "customers", "suppliers", "vouchers", "voucherCategories", "expenses", "expenseCategories", "installments",
   "commissions", "payroll", "employees", "hrEnterprise", "attendance", "assets", "exchange", "cardAccount",
   "digitalCards", "delivery", "courier", "consignments", "reception", "workOrders",
   "printPos", "printAudit", "reservations", "yearEnd", "periodLock", "offline",

@@ -18,8 +18,8 @@ let stop: () => void;
 let subscriptions: Array<() => void>;
 let hidden = false;
 const emit = (branchIds: number[] | null = null) => bus.get(E.FINANCIAL_DATA_CHANGED)?.(createRealtimeEvent(E.FINANCIAL_DATA_CHANGED, { branchIds }));
-function read(root: string, branchId?: number, active = true) {
-  const queryKey = [[root, "list"], { input: branchId == null ? {} : { branchId }, type: "query" }];
+function read(root: string, branchId?: number, active = true, procedure = "list") {
+  const queryKey = [[root, procedure], { input: branchId == null ? {} : { branchId }, type: "query" }];
   const queryFn = vi.fn(async () => ({ balance: "2000.25" }));
   client.setQueryData(queryKey, { balance: "1000.25" });
   const observer = new QueryObserver(client, { queryKey, queryFn, staleTime: Infinity });
@@ -38,6 +38,30 @@ beforeEach(() => {
 afterEach(() => { stop(); subscriptions.forEach((off) => off()); client.clear(); bus.clear(); vi.useRealTimers(); });
 
 describe("event-driven financial queries", () => {
+  it("refreshes heavy alerts automatically after one snapshot window and keeps money KPIs immediate", async () => {
+    const heavy = read("reports", undefined, true, "managementAlerts");
+    const executive = read("executive", undefined, true, "commandCenter");
+    emit();
+    expect(client.getQueryState(heavy.queryKey)?.isInvalidated).toBe(true);
+    await vi.advanceTimersByTimeAsync(750);
+    expect(heavy.queryFn).not.toHaveBeenCalled();
+    expect(executive.queryFn).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(29_300);
+    expect(heavy.queryFn).toHaveBeenCalledOnce();
+    expect(executive.queryFn).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(heavy.queryFn).toHaveBeenCalledOnce();
+    expect(executive.queryFn).toHaveBeenCalledTimes(2);
+  });
+  it("does not turn continuous financial events into expensive alert queries every two seconds", async () => {
+    const heavy = read("reports", undefined, true, "managementAlerts");
+    for (let i = 0; i < 900; i++) { emit(); await vi.advanceTimersByTimeAsync(100); }
+    expect(heavy.queryFn).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(30_100);
+    expect(heavy.queryFn).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(heavy.queryFn).toHaveBeenCalledTimes(3);
+  });
   it("updates a mounted financial view after another device's event without reloading or polling", async () => {
     const { queryFn, observer } = read("treasury");
     await vi.advanceTimersByTimeAsync(60_000);
