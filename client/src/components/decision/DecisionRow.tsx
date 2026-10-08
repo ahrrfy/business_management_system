@@ -21,6 +21,7 @@ import { fmtDateTime } from "@/lib/date";
 import { fmtAr, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { DecisionOperationalPanel } from "./DecisionOperationalPanel";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { APPROVAL_TRIGGER_LABEL_AR } from "@shared/approvalPolicy";
 import {
@@ -185,35 +186,45 @@ export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }:
           )}
         </div>
 
-        {/* ─── ما يُقرَّر عليه ─── */}
+        {/* ─── لوحة الذكاء والبيان التشغيلي والوظيفي ─── */}
+        {row.operationalContext && (
+          <DecisionOperationalPanel context={row.operationalContext} />
+        )}
+
+        {/* ─── ما يُقرَّر عليه وبيان الأصناف المستلمة ─── */}
         {row.summaryItems.length > 0 && (
-          <ul className="divide-y rounded-md border text-xs">
-            {row.summaryItems.map((it, i) => (
-              <li key={i} className="flex flex-wrap items-center justify-between gap-2 px-2 py-1">
-                <span className="min-w-0 flex-1 truncate" title={it.label}>{it.label}</span>
-                {it.qty != null && it.qty !== "" && (
-                  <span className="tabular-nums text-muted-foreground" dir="ltr">
-                    {formatQuantity(it.qty)}{it.unit ? ` ${it.unit}` : ""}
-                  </span>
-                )}
-                {it.unitPrice != null && it.unitPrice !== "" && (
-                  <span className="font-bold tabular-nums" dir="ltr">{fmtAr(it.unitPrice)}</span>
-                )}
-                {it.timestamp && (
-                  <span className="text-muted-foreground tabular-nums" dir="ltr">
-                    {it.timestamp ? fmtDateTime(it.timestamp) : ""}
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
+          <div className="space-y-1">
+            <p className="text-2xs font-extrabold text-muted-foreground px-1">
+              بيان البنود والمستندات ({row.summaryItems.length})
+            </p>
+            <ul className="divide-y rounded-md border text-xs bg-muted/10">
+              {row.summaryItems.map((it, i) => (
+                <li key={i} className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5">
+                  <span className="min-w-0 flex-1 truncate font-medium" title={it.label}>{it.label}</span>
+                  {it.qty != null && it.qty !== "" && (
+                    <span className="tabular-nums text-muted-foreground bg-muted px-1.5 py-0.5 rounded text-2xs" dir="ltr">
+                      {formatQuantity(it.qty)}{it.unit ? ` ${it.unit}` : ""}
+                    </span>
+                  )}
+                  {it.unitPrice != null && it.unitPrice !== "" && (
+                    <span className="font-bold tabular-nums" dir="ltr">{fmtAr(it.unitPrice)}</span>
+                  )}
+                  {it.timestamp && (
+                    <span className="text-muted-foreground tabular-nums text-2xs" dir="ltr">
+                      {it.timestamp ? fmtDateTime(it.timestamp) : ""}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
 
         {row.reason && (
-          <p className="rounded-md bg-muted/50 p-2 text-2xs leading-relaxed">
-            <span className="font-bold">السبب: </span>
-            {row.reason}
-          </p>
+          <div className="rounded-md bg-muted/40 border border-muted/80 p-2.5 text-2xs leading-relaxed">
+            <span className="font-extrabold text-foreground">السبب والمبرر: </span>
+            <span className="text-muted-foreground">{row.reason}</span>
+          </div>
         )}
 
         {/* ─── النتيجة المُهيكَلة ─── */}

@@ -449,6 +449,8 @@ export default defineConfig({
       "server/realtime/__tests__/wave5RealtimeEvents.test.ts",
       "client/src/lib/posStockRefresh.test.ts",
       "server/services/__tests__/productChannelSyncSelfHeal.test.ts",
+      "client/src/components/decision/DecisionRow.test.ts",
+      "server/services/decisions/__tests__/rows.test.ts",
     ],
   },
 });
