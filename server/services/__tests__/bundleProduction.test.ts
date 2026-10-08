@@ -937,7 +937,7 @@ describe("مولّد إنتاج مكوّنات البكج: produceBundleComponen
     expect(produceRes.orders).toHaveLength(3);
     const penOrder = produceRes.orders.find((o) => o.variantId === 4);
     expect(penOrder).toBeDefined();
-    expect(penOrder?.batchQty).toBe(5);
+    expect(penOrder?.goodQty).toBe(5);
 
     // رصيد قلم C ارتفع من 15 إلى 20
     expect(await stock(4)).toBe(20);
