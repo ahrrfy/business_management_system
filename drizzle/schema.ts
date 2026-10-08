@@ -13774,6 +13774,30 @@ export const taxSettings = mysqlTable("taxSettings", {
 export type TaxSettings = typeof taxSettings.$inferSelect;
 export type InsertTaxSettings = typeof taxSettings.$inferInsert;
 
+/** بيانات المنشأة وهويتها المؤسسية (صفّ مفرد singleton id=1، نمط taxSettings):
+ *  الاسم الرسمي، اسم الشهرة/العلامة التجارية، الاسم المختصر، الأرقام القانونية
+ *  (السجل التجاري، الرقم الضريبي، إجازة الغرفة)، المقر والعنوان، أرقام أقسام التواصل، ورابط الشعار.
+ *  يُنشأ الصف كسولاً (get-or-create) بالقيم الافتراضية من shared/companyIdentity.ts إن لم يكن موجوداً بعد. */
+export const companyProfile = mysqlTable("companyProfile", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 255 }).notNull(),
+  tradeName: varchar("tradeName", { length: 255 }),
+  shortName: varchar("shortName", { length: 100 }),
+  legalSubtitle: varchar("legalSubtitle", { length: 255 }),
+  commercialRegistry: varchar("commercialRegistry", { length: 100 }),
+  taxNumber: varchar("taxNumber", { length: 100 }),
+  chamberLicense: varchar("chamberLicense", { length: 100 }),
+  address: text("address"),
+  phones: json("phones").$type<{ label: string; number: string }[]>(),
+  logoUrl: text("logoUrl"),
+  footerText: text("footerText"),
+  updatedBy: int("updatedBy").references(() => users.id),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type CompanyProfile = typeof companyProfile.$inferSelect;
+export type InsertCompanyProfile = typeof companyProfile.$inferInsert;
+
 /** «وضع الافتتاح» المؤقّت (صفّ singleton واحد id=1، نمط taxSettings): أثناء إدخال النظام للخدمة يُسمح
  *  ببيع الصنف **غير المُفتتَح** (branchStock.openedAt IS NULL) بالسالب نقدياً حتى يُجرَد جرداً افتتاحياً.
  *  حوكمة صلبة (مراجعة عدائية ١٨/٧): التفعيل يشترط endsAt (إلزامي، ≤ ٦٠ يوماً من لحظة التفعيل)، الكتابة

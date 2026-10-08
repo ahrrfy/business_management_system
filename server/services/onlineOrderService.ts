@@ -61,6 +61,8 @@ import {
   lockProductUnitsForOnlineAllocation,
 } from "./catalog/variantAvailability";
 import { retryOnDup } from "../lib/retryDup";
+import { publishRealtimeEvent } from "../realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 
 const RETAIL = "RETAIL" as const;
 const WHOLESALE = "WHOLESALE" as const;
@@ -1492,7 +1494,20 @@ export async function quoteOnlineOrder(
 export async function createOnlineOrder(
   input: CreateOnlineOrderInput,
 ): Promise<CreateOnlineOrderResult> {
-  return retryOnDup(() => createOnlineOrderAttempt(input));
+  const result = await retryOnDup(() => createOnlineOrderAttempt(input));
+  publishRealtimeEvent(
+    REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED,
+    {
+      orderId: result.orderId,
+      orderNumber: result.orderNumber,
+      branchId: result.branchId,
+      totalAmount: result.total,
+      customerName: input.customerName,
+      itemsCount: result.itemCount,
+    },
+    { branchId: result.branchId },
+  );
+  return result;
 }
 
 function normalizeOwnedReplayIdentity(input: CreateOnlineOrderInput) {

@@ -125,8 +125,8 @@ export async function workOrderToCanvas(
   const logo = await loadImage(logoUrl());
   if (logo) { ctx.drawImage(logo, (W - 140) / 2, y, 140, 140); y += 140; }
   ctx.textAlign = "center";
-  ctx.font = "900 38px Cairo, sans-serif"; y += 44; ctx.fillText("مكتبة العربية", W / 2, y);
-  ctx.font = "800 25px Cairo, sans-serif"; y += 34; ctx.fillText("للطباعة والقرطاسية", W / 2, y);
+  ctx.font = "900 38px Cairo, sans-serif"; y += 44; ctx.fillText(CO.short || CO.sub || "مكتبة العربية", W / 2, y);
+  ctx.font = "800 25px Cairo, sans-serif"; y += 34; ctx.fillText(CO.subtitle || "للطباعة والقرطاسية", W / 2, y);
   ctx.font = "600 16px Cairo, sans-serif"; y += 24; ctx.fillText(CO.name, W / 2, y);
   y += 14; solidLine(ctx, y, 4); y += 4;
 
@@ -242,7 +242,7 @@ export async function workOrderToCanvas(
   // ──── ٩) تذييل ────
   dashedLine(ctx, y); y += 34;
   ctx.font = "700 20px Cairo, sans-serif"; ctx.textAlign = "center";
-  ctx.fillText("شكراً لتعاملكم مع مكتبة العربية", W / 2, y); y += 28;
+  ctx.fillText(CO.footer || "شكراً لتعاملكم معنا", W / 2, y); y += 28;
   ctx.font = "600 18px Cairo, sans-serif";
   for (const p of RECEIPT_PHONES.slice(0, 2)) {
     ctx.textAlign = "right"; ctx.font = "600 18px Cairo, sans-serif";

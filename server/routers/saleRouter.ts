@@ -67,6 +67,8 @@ import { managerApprovalSchema, type ManagerApprovalInput } from "@shared/manage
 import { lookupInvoiceForCorrection } from "../services/sale/correctionLookup";
 import { getSaleLineInsights } from "../services/pricing/lineInsights";
 import { phoneSuffix10 } from "../lib/phone";
+import { publishRealtimeEvent } from "../realtime";
+import { REALTIME_EVENT_TYPES, type ApprovalResolvedPayload } from "@shared/realtimeEvents";
 
 // فاتورة أمر الشغل تُنشأ عند التسليم/الإرسال، وقد ينفّذها كاشير آخر عن الذي استقبل
 // الطلب. نصل الفاتورة بأمرها عبر invoiceId (علاقة 1:1) كي تبقى مرئية لصاحب الطلب
@@ -917,6 +919,26 @@ export const saleRouter = router({
       const mgr = db
         ? (await db.select({ id: users.id, name: users.name, role: users.role }).from(users).where(eq(users.id, managerId)).limit(1))[0]
         : null;
+      try {
+        publishRealtimeEvent<ApprovalResolvedPayload>(
+          REALTIME_EVENT_TYPES.APPROVAL_RESOLVED,
+          {
+            entityType: "pos_manager_verification",
+            decision: "APPROVED",
+            outcome: "APPROVED",
+            action: "APPROVE",
+            managerId,
+            managerName: mgr?.name ?? "المدير",
+            branchId: effectiveBranchId ?? null,
+            actorUserId: ctx.user.id,
+          },
+          {
+            branchId: effectiveBranchId ?? null,
+          },
+        );
+      } catch {
+        // fail-safe
+      }
       return {
         success: true,
         managerId,

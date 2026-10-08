@@ -27,6 +27,12 @@ import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { computeStateAgeMinutes, formatAgeShort, slaLevel, slaLevelChipClass } from "@shared/orderSla";
 import { cn } from "@/lib/utils";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { useRealtimeEvent } from "@/lib/realtime";
+import {
+  REALTIME_EVENT_TYPES,
+  type ReceptionQueueUpdatedPayload,
+  type WorkOrderStatusChangedPayload,
+} from "@shared/realtimeEvents";
 
 type QueueRow = RouterOutputs["workOrders"]["list"][number];
 type PickupPayment = NonNullable<RouterInputs["workOrders"]["deliver"]["payment"]>;
@@ -65,22 +71,55 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
     && hasModuleAccess(role ?? "", permissions, "store", "READ");
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
-  // Polling كل ١٥ث + على استعادة التركيز: بلاغ المالك ٢٨/٨/٢٦ («الطلب يتيه — الاستقبال لا يرى»).
-  // كان `useQuery` بلا refetchInterval إطلاقاً — لا يحدَّث الطابور إلا بإعادة تحميلٍ يدويٍّ أو
-  // بـinvalidate من إجراءِ هذه الشاشة نفسها. إشعارُ «طلبك جاهز» يذهب للعميل بواتساب، والموظّف
-  // لا يعلم حتى يفتح الشاشة (T4 من تدقيق ٢٨/٨). refetchInterval ثابتٌ لا يتغيّر بتغيّر البيانات
-  // (كي لا تُتَخذ الشاشة نفسها ذريعةً لتوقّف polling حين تصفر النتائج).
+  // تم استبدال الـpolling ببث الأحداث اللحظية عبر SSE (الموجة 2).
   const active = trpc.workOrders.list.useQuery(
     { branchId, statuses: ["RECEIVED", "IN_PROGRESS", "READY"], limit: 200 },
-    { refetchInterval: 15_000, refetchOnWindowFocus: true },
+    { refetchOnWindowFocus: true },
   );
   // مُتَسلَّم اليوم بصرف النظر عن تاريخ إنشاء الأمر (قد يكون أمس) — deliveredFrom/deliveredTo
   // يفلتران على workOrders.deliveredAt، لا from/to (تاريخ الإنشاء، يُخفي أوامر أُنشئت أمس وسُلِّمت اليوم).
   const deliveredToday = trpc.workOrders.list.useQuery(
     { branchId, statuses: ["DELIVERED"], deliveredFrom: todayStr, deliveredTo: todayStr, limit: 100 },
-    { refetchInterval: 30_000, refetchOnWindowFocus: true },
+    { refetchOnWindowFocus: true },
   );
   const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: canDispatch });
+
+  useRealtimeEvent<ReceptionQueueUpdatedPayload>(
+    REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+    (ev) => {
+      void active.refetch();
+      if (ev.payload.status === "DELIVERED") {
+        void deliveredToday.refetch();
+      }
+      if (ev.payload.readyForPickup || ev.payload.status === "READY") {
+        playReadyBeep();
+        notify.info(
+          `طلب جاهز للتسليم: ${ev.payload.orderNumber ?? `#${ev.payload.orderId}`}`,
+          ev.payload.customerName ? `العميل: ${ev.payload.customerName}` : undefined,
+        );
+      }
+    },
+  );
+
+  useRealtimeEvent<WorkOrderStatusChangedPayload>(
+    REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+    (ev) => {
+      void active.refetch();
+      if (ev.payload.newStatus === "DELIVERED") {
+        void deliveredToday.refetch();
+      }
+      if (ev.payload.newStatus === "READY") {
+        playReadyBeep();
+        notify.info(
+          `طلب جاهز للتسليم: ${ev.payload.orderNumber ?? `#${ev.payload.workOrderId}`}`,
+        );
+      }
+    },
+  );
+
+  useRealtimeEvent(REALTIME_EVENT_TYPES.WORK_ORDER_CREATED, () => {
+    void active.refetch();
+  });
 
   // كشف READY الجدد بين استعلامَين متتاليَين — يُشعِر الموظّف بجاهزيّة أمر شغل خرج من المطبعة
   // للتوّ (بلاغ ٢٨/٨/٢٦). يقارن Set<workOrderId> بالسابق: النقلة تفلترها ورشة الطلب لا الاستعلام

@@ -1102,8 +1102,8 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
   const body = `
   <div style="text-align:center;margin-bottom:2mm;">
     <img src="${logo}" style="width:18mm;height:18mm;object-fit:contain;filter:grayscale(100%) contrast(1000%);" alt="" onerror="this.style.display='none'">
-    <div style="font-size:18px;font-weight:900;margin-top:1mm;color:#000;">مكتبة العربية</div>
-    <div style="font-size:12.5px;font-weight:900;margin-top:0.3mm;color:#000;">للطباعة والقرطاسية</div>
+    <div style="font-size:18px;font-weight:900;margin-top:1mm;color:#000;">${esc(CO.short || CO.sub)}</div>
+    <div style="font-size:12.5px;font-weight:900;margin-top:0.3mm;color:#000;">${esc(CO.subtitle)}</div>
     <div style="font-size:9.5px;font-weight:800;color:#000;margin-top:0.3mm;">${esc(CO.name)}</div>
   </div>
 
@@ -1257,8 +1257,8 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
 
   <div style="text-align:center;margin-bottom:3mm;">
     ${logo ? `<img src="${logo}" style="height:40px;margin-bottom:1.5mm;" onerror="this.style.display='none'">` : ''}
-    <div style="font-size:14px;font-weight:900;">مكتبة العربية</div>
-    <div style="font-size:11px;font-weight:800;">للطباعة والقرطاسية</div>
+    <div style="font-size:14px;font-weight:900;">${esc(CO.short || CO.sub)}</div>
+    <div style="font-size:11px;font-weight:800;">${esc(CO.subtitle)}</div>
   </div>
 
   ${barSvg ? `<div style="text-align:center;margin:2mm 0;">${barSvg}</div>` : ''}
@@ -1325,7 +1325,7 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
   </div>
 
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
-  <div style="text-align:center;font-size:10px;font-weight:700;margin:1.5mm 0;">شكراً لتعاملكم مع مكتبة العربية</div>
+  <div style="text-align:center;font-size:10px;font-weight:700;margin:1.5mm 0;">${esc(CO.footer)}</div>
   <table style="width:100%;font-size:9px;border-collapse:collapse;margin:1mm 0;">
     <tbody>${contactRows}</tbody>
   </table>
@@ -1453,8 +1453,8 @@ export function buildShiftOpenHtml(d: ShiftOpenData): string {
   <div style="text-align:center;padding:2mm 0;">
     <img src="${logo}" style="width:40px;height:40px;object-fit:contain;margin-bottom:2px;filter:grayscale(100%) contrast(1000%);"
          alt="" onerror="this.style.display='none'">
-    <div style="font-size:17px;font-weight:900;color:#000;">مكتبة العربية</div>
-    <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">للطباعة والقرطاسية</div>
+    <div style="font-size:17px;font-weight:900;color:#000;">${esc(CO.short || CO.sub)}</div>
+    <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">${esc(CO.subtitle)}</div>
     <div style="font-size:9.5px;font-weight:800;margin-top:2px;line-height:1.3;color:#000;">
       ${esc(CO.name)}<br>${esc(CO.address)}
     </div>
@@ -1616,8 +1616,8 @@ export function buildShiftCloseHtml(d: ShiftCloseData): string {
   <div style="text-align:center;padding:2mm 0;">
     <img src="${logo}" style="width:40px;height:40px;object-fit:contain;margin-bottom:2px;filter:grayscale(100%) contrast(1000%);"
          alt="" onerror="this.style.display='none'">
-    <div style="font-size:17px;font-weight:900;color:#000;">مكتبة العربية</div>
-    <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">للطباعة والقرطاسية</div>
+    <div style="font-size:17px;font-weight:900;color:#000;">${esc(CO.short || CO.sub)}</div>
+    <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">${esc(CO.subtitle)}</div>
     <div style="font-size:9.5px;font-weight:800;margin-top:2px;line-height:1.3;color:#000;">
       ${esc(CO.name)}<br>${esc(CO.address)}
     </div>

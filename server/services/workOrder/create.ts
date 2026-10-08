@@ -42,6 +42,12 @@ import {
   createWorkOrderDesignRevisionTx,
   normalizeDesignContentImages,
 } from "./designApproval";
+import { publishRealtimeEvent } from "../../realtime";
+import {
+  REALTIME_EVENT_TYPES,
+  type WorkOrderCreatedPayload,
+  type ReceptionQueueUpdatedPayload,
+} from "@shared/realtimeEvents";
 
 async function recipeMaterialScopeIds(
   tx: Tx,
@@ -809,5 +815,34 @@ export async function createWorkOrder(
   input: CreateWorkOrderInput,
   actor: Actor,
 ) {
-  return withTx((tx) => createWorkOrderInTx(tx, input, actor));
+  const result = await withTx((tx) => createWorkOrderInTx(tx, input, actor));
+  try {
+    publishRealtimeEvent<WorkOrderCreatedPayload>(
+      REALTIME_EVENT_TYPES.WORK_ORDER_CREATED,
+      {
+        workOrderId: result.workOrderId,
+        orderNumber: result.orderNumber,
+        branchId: input.branchId,
+        title: input.customizationText?.slice(0, 100) || `أمر شغل #${result.orderNumber}`,
+        status: "RECEIVED",
+        customerName: input.contactName ?? undefined,
+      },
+      { branchId: input.branchId },
+    );
+    publishRealtimeEvent<ReceptionQueueUpdatedPayload>(
+      REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+      {
+        orderId: result.workOrderId,
+        orderNumber: result.orderNumber,
+        branchId: input.branchId,
+        status: "RECEIVED",
+        customerName: input.contactName ?? undefined,
+        readyForPickup: false,
+      },
+      { branchId: input.branchId },
+    );
+  } catch {
+    // fail-safe
+  }
+  return result;
 }
