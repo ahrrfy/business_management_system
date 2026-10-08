@@ -18,6 +18,8 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { useRealtimeEvent, broadcastRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES, type HeldOrderUpdatedPayload } from "@shared/realtimeEvents";
 import { fmt, formatQuantity, round2, D } from "@/lib/money";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -101,9 +103,37 @@ export function HeldOrdersDrawer({
   const [cancelReason, setCancelReason] = useState("");
 
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const [lockedOrders, setLockedOrders] = useState<Record<number, number>>({});
   const heldQ = trpc.printPos.listHeldSales.useQuery(
     { branchId },
-    { enabled: open, refetchInterval: open ? 10_000 : false },
+    { enabled: open },
+  );
+
+  useRealtimeEvent(
+    REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+    (event) => {
+      const payload = event.payload as HeldOrderUpdatedPayload;
+      if (payload.branchId === branchId) {
+        if (payload.action === "LOCKED") {
+          setLockedOrders((prev) => ({
+            ...prev,
+            [payload.heldOrderId]: payload.lockedByUserId ?? 1,
+          }));
+        } else if (
+          payload.action === "RELEASED" ||
+          payload.action === "RESUMED" ||
+          payload.action === "DISCARDED"
+        ) {
+          setLockedOrders((prev) => {
+            const next = { ...prev };
+            delete next[payload.heldOrderId];
+            return next;
+          });
+        }
+        void utils.printPos.listHeldSales.invalidate();
+      }
+    },
   );
 
   const cancelMut = trpc.printPos.cancelHeldSale.useMutation({
@@ -393,18 +423,35 @@ export function HeldOrdersDrawer({
                         <CheckCircle2 className="size-3.5 ml-1" />
                         تحصيل
                       </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          onEditOrder(o);
-                          onClose();
-                        }}
-                        className="text-xs font-semibold h-8 border-border hover:bg-muted col-span-1"
-                      >
-                        <Pencil className="size-3.5 ml-1" />
-                        تعديل
-                      </Button>
+                      {(() => {
+                        const isLocked = lockedOrders[o.id] != null;
+                        return (
+                          <Button
+                            size="sm"
+                            variant={isLocked ? "secondary" : "outline"}
+                            disabled={isLocked}
+                            onClick={() => {
+                              broadcastRealtimeEvent(
+                                REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+                                {
+                                  heldOrderId: o.id,
+                                  branchId,
+                                  action: "LOCKED",
+                                  lockedByUserId: me.data?.id ?? 1,
+                                },
+                                { branchId },
+                              );
+                              onEditOrder(o);
+                              onClose();
+                            }}
+                            className="text-xs font-semibold h-8 border-border hover:bg-muted col-span-1"
+                            title={isLocked ? "قيد التعديل في نقطة بيع أخرى" : undefined}
+                          >
+                            <Pencil className="size-3.5 ml-1" />
+                            {isLocked ? "مقفول" : "تعديل"}
+                          </Button>
+                        );
+                      })()}
                       <Button
                         size="sm"
                         variant="outline"

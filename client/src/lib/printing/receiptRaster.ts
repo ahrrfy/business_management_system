@@ -169,10 +169,10 @@ export async function receiptToCanvas(
   ctx.textAlign = "center";
   ctx.font = "900 38px Cairo, sans-serif";
   y += 44;
-  ctx.fillText("مكتبة العربية", W / 2, y);
+  ctx.fillText(CO.short || CO.sub || "مكتبة العربية", W / 2, y);
   ctx.font = "800 25px Cairo, sans-serif";
   y += 34;
-  ctx.fillText("للطباعة والقرطاسية", W / 2, y);
+  ctx.fillText(CO.subtitle || "للطباعة والقرطاسية", W / 2, y);
   ctx.font = "600 16px Cairo, sans-serif";
   y += 24;
   ctx.fillText(CO.name, W / 2, y);
@@ -465,24 +465,26 @@ export async function receiptToCanvas(
   y += 34;
 
   // ───── ٧) أرقام التواصل ─────
-  ctx.font = "900 21px Cairo, sans-serif";
-  ctx.textAlign = "right";
-  ctx.fillText("القسم", W - PAD, y);
-  ctx.textAlign = "left";
-  ctx.fillText("رقم التواصل", PAD, y);
-  y += 9;
-  solidLine(ctx, y, 2);
-  y += 30;
-  for (const p of RECEIPT_PHONES) {
-    ctx.font = "800 20px Cairo, sans-serif";
-    ctx.textAlign = "right";
-    ctx.fillText(p.l, W - PAD, y);
+  if (RECEIPT_PHONES && RECEIPT_PHONES.length > 0) {
     ctx.font = "900 21px Cairo, sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText("القسم", W - PAD, y);
     ctx.textAlign = "left";
-    ctx.fillText(p.n, PAD, y);
+    ctx.fillText("رقم التواصل", PAD, y);
     y += 9;
-    dashedLine(ctx, y);
-    y += 28;
+    solidLine(ctx, y, 2);
+    y += 30;
+    for (const p of RECEIPT_PHONES) {
+      ctx.font = "800 20px Cairo, sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillText(p.l, W - PAD, y);
+      ctx.font = "900 21px Cairo, sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText(p.n, PAD, y);
+      y += 9;
+      dashedLine(ctx, y);
+      y += 28;
+    }
   }
 
   // ───── ٨) العنوان ─────

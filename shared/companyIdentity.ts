@@ -30,3 +30,65 @@ export const COMPANY_IDENTITY = {
   /** خطّ الفوتر المدموج للمستندات الرسمية (عنوان · هاتفان مختصران). */
   footerLine: 'بغداد — العامرية / شارع العمل الشعبي · 07883000017 · 07838666999',
 } as const;
+
+export interface CompanyIdentityPhone {
+  l: string;
+  n: string;
+}
+
+export interface CompanyIdentityData {
+  name: string;
+  sub: string;
+  short: string;
+  subtitle: string;
+  footer: string;
+  address: string;
+  taxId: string;
+  commercialRegistry: string;
+  chamberLicense: string;
+  phones: readonly CompanyIdentityPhone[];
+  footerLine: string;
+  logoUrl?: string | null;
+}
+
+/**
+ * يدمج بيانات الشركة الديناميكية مع القيم الافتراضية المرجعية.
+ * تمنح الأولوية للبيانات المخصصة المحفوظة، مع الحفاظ على قيم الطوارئ الافتراضية.
+ */
+export function resolveCompanyIdentity(override?: Partial<CompanyIdentityData> | null): CompanyIdentityData {
+  if (!override) return COMPANY_IDENTITY;
+
+  const name = override.name?.trim() || COMPANY_IDENTITY.name;
+  const sub = override.sub?.trim() || COMPANY_IDENTITY.sub;
+  const short = override.short?.trim() || COMPANY_IDENTITY.short;
+  const subtitle = override.subtitle?.trim() || COMPANY_IDENTITY.subtitle;
+  const footer = override.footer?.trim() || COMPANY_IDENTITY.footer;
+  const address = override.address?.trim() || COMPANY_IDENTITY.address;
+  const taxId = override.taxId?.trim() || COMPANY_IDENTITY.taxId;
+  const commercialRegistry = override.commercialRegistry?.trim() || COMPANY_IDENTITY.commercialRegistry;
+  const chamberLicense = override.chamberLicense?.trim() || COMPANY_IDENTITY.chamberLicense;
+  const phones = override.phones !== undefined ? override.phones : COMPANY_IDENTITY.phones;
+  const defaultFirstTwoPhones = phones.slice(0, 2).map((p) => p.n).filter(Boolean).join(' · ');
+  const footerLine =
+    override.footerLine?.trim() ||
+    (address && defaultFirstTwoPhones
+      ? `${address} · ${defaultFirstTwoPhones}`
+      : (address ? address : COMPANY_IDENTITY.footerLine));
+  const logoUrl = override.logoUrl?.trim() || null;
+
+  return {
+    name,
+    sub,
+    short,
+    subtitle,
+    footer,
+    address,
+    taxId,
+    commercialRegistry,
+    chamberLicense,
+    phones,
+    footerLine,
+    logoUrl,
+  };
+}
+

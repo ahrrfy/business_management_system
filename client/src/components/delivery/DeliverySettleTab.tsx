@@ -22,6 +22,8 @@ import { fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 
 type OpenConsignment = RouterOutputs["delivery"]["openConsignments"]["rows"][number];
 
@@ -55,8 +57,24 @@ export function DeliverySettleTab() {
   const settleSearch = useSearch();
   const [partyId, setPartyId] = useState<string>(() => new URLSearchParams(settleSearch).get("party") ?? "");
   const [returnTarget, setReturnTarget] = useState<ReturnConsignmentTarget | null>(null);
-  const obligations = trpc.delivery.obligations.useQuery(undefined, { refetchInterval: 30_000 });
-  const staleParties = trpc.delivery.staleParties.useQuery(undefined, { refetchInterval: 60_000 });
+  const obligations = trpc.delivery.obligations.useQuery(undefined);
+  const staleParties = trpc.delivery.staleParties.useQuery(undefined);
+
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+      REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
+      REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED,
+    ],
+    () => {
+      void utils.delivery.obligations.invalidate();
+      void utils.delivery.staleParties.invalidate();
+      if (partyId) {
+        void utils.delivery.openConsignments.invalidate();
+        void utils.delivery.remittances.invalidate();
+      }
+    },
+  );
 
   const cons = trpc.delivery.openConsignments.useInfiniteQuery(
     { partyId: Number(partyId), limit: 500 },

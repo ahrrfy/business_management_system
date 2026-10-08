@@ -10,6 +10,10 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { clearNotificationBadge, setNotificationBadge } from "@/lib/push";
 
+import { useRealtimeEvent } from "@/lib/realtime";
+import { playAnnouncementChime } from "@/lib/notifyBeep";
+import { REALTIME_EVENT_TYPES, type RealtimeEvent } from "@shared/realtimeEvents";
+
 const FAMILY_LABELS = {
   OPERATIONS: "تشغيلية",
   ADMIN: "إدارية",
@@ -67,12 +71,33 @@ export function NotificationBell({ enabled, identity }: { enabled: boolean; iden
     { limit: 12 },
     {
       enabled,
-      refetchInterval: 20_000,
       refetchOnWindowFocus: true,
       staleTime: 10_000,
     },
   );
   const refresh = () => utils.superApp.notifications.invalidate();
+
+  // الاستماع اللحظي لإدراج الإشعارات والاعتمادات لتحديث الشارة وإطلاق نغمة التنبيه فوراً
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.NOTIFICATION_INSERTED,
+      REALTIME_EVENT_TYPES.PENDING_APPROVAL_CREATED,
+      REALTIME_EVENT_TYPES.APPROVAL_RESOLVED,
+    ],
+    (event: RealtimeEvent<any>) => {
+      if (!enabled) return;
+      if (event.type === REALTIME_EVENT_TYPES.NOTIFICATION_INSERTED) {
+        const targetUserId =
+          event.scope?.userId ?? (event.payload as { userId?: number })?.userId;
+        if (targetUserId != null && identity && String(targetUserId) !== identity) {
+          return;
+        }
+        playAnnouncementChime("NORMAL");
+      }
+      void refresh();
+    },
+  );
+
   const markRead = trpc.superApp.markNotificationRead.useMutation({ onSuccess: refresh });
   const markAllRead = trpc.superApp.markAllNotificationsRead.useMutation({ onSuccess: refresh });
   const rows = notifications.data?.rows ?? [];
