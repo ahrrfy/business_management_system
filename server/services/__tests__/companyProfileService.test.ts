@@ -14,10 +14,17 @@ import { companyProfile, taxSettings } from "../../../drizzle/schema";
 // مخزن ذاكرة لمحاكاة Drizzle ORM دون الحاجة لخادم MySQL خارجي
 let companyProfileRows: any[] = [];
 let taxSettingsRows: any[] = [];
+let simulateTableMissing = false;
 
 const mockDb: any = {
   select: () => ({
     from: (table: any) => {
+      if (simulateTableMissing && table === companyProfile) {
+        const err: any = new Error("Table 'erp.companyProfile' doesn't exist");
+        err.code = "ER_NO_SUCH_TABLE";
+        err.errno = 1146;
+        throw err;
+      }
       const isTax = table === taxSettings;
       const getRows = () => (isTax ? taxSettingsRows : companyProfileRows);
       return {
@@ -74,12 +81,14 @@ vi.mock("../tx", () => ({
 import {
   getCompanyProfile,
   updateCompanyProfile,
+  defaultCompanyProfileView,
 } from "../companyProfileService";
 
 describe("companyProfileService — خدمة هوية المنشأة", () => {
   beforeEach(() => {
     companyProfileRows = [];
     taxSettingsRows = [];
+    simulateTableMissing = false;
   });
 
   it("ينشئ الصفّ الافتراضي عند أول قراءة (get-or-create كسول)", async () => {
@@ -186,5 +195,22 @@ describe("companyProfileService — خدمة هوية المنشأة", () => {
     );
 
     expect(updated.phones).toHaveLength(0);
+  });
+
+  it("يعيد الهوية المؤسسية الافتراضية بأمان عند تعذر وجود جدول companyProfile (ER_NO_SUCH_TABLE)", async () => {
+    simulateTableMissing = true;
+    const profile = await getCompanyProfile();
+    expect(profile.id).toBe(1);
+    expect(profile.name).toBe(COMPANY_IDENTITY.name);
+    expect(profile.tradeName).toBe(COMPANY_IDENTITY.sub);
+    expect(profile.taxNumber).toBe(COMPANY_IDENTITY.taxId);
+    expect(profile.phones.length).toBeGreaterThan(0);
+  });
+
+  it("يعيد defaultCompanyProfileView كائناً متوافقاً مع مواصفات الهوية المؤسسية", () => {
+    const fallback = defaultCompanyProfileView();
+    expect(fallback.name).toBe(COMPANY_IDENTITY.name);
+    expect(fallback.phones.length).toBeGreaterThan(0);
+    expect(fallback.id).toBe(1);
   });
 });

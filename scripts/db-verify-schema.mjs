@@ -980,8 +980,12 @@ try {
     "expenseCategories",
     "invoiceItemServiceMaterials", // 0360: لقطة مواد الخدمة وقت البيع
     "digitalIntentInventoryReservations", // 0362: حجز مخزون السلة الرقمية خلال الإصدار الخارجي
+    "companyProfile", // 0385: بيانات المنشأة والهوية المؤسسية
   ];
   const CRITICAL_COLUMNS = [
+    ["companyProfile", "name"],
+    ["companyProfile", "taxNumber"],
+    ["companyProfile", "updatedAt"],
     ["externalPaymentAttempts", "externalPaymentChannel"],
     ["externalPaymentAttempts", "externalPaymentMethod"],
     ["externalPaymentAttempts", "externalReference"],
