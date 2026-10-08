@@ -911,7 +911,14 @@ describe("مولّد إنتاج مكوّنات البكج: produceBundleComponen
     // دفتر B يستهلك: 18 دفعة * 3 = 54 قطعة. قلم C يستهلك: 5 دفعة * 1 = 5 قطع. الإجمالي = 59 قطعة.
     expect(Number(matCover?.totalRequiredBase)).toBe(59);
 
-    // 5. يمكن الآن إنتاج الأقلام المصنعة ضمن نفس أمر الإنتاج الذري
+    // 5. رفع رصيد خام الورق (variant 1) لتغطية إنتاج كافة دفعات البكج المتزامنة مع الصنف المحوّل
+    await db()
+      .update(s.branchStock)
+      .set({ quantity: 200 })
+      .where(
+        sql`${s.branchStock.variantId} = 1 AND ${s.branchStock.branchId} = 1`
+      );
+
     const produceRes = await produceBundleComponents(
       {
         bundleVariantId: 100,
