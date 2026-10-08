@@ -88,6 +88,7 @@ export function QuickRecipeCopyDialog({
   const [selectedCatalogRecipeId, setSelectedCatalogRecipeId] = useState<string>("");
   const [isLoadingRecipe, setIsLoadingRecipe] = useState(false);
   const searchContainerRef = React.useRef<HTMLDivElement>(null);
+  const activeTemplateRequestIdRef = React.useRef<number>(0);
 
   const isDebouncing = searchMaterial.trim() !== trimmedSearchMaterial;
 
@@ -146,6 +147,7 @@ export function QuickRecipeCopyDialog({
 
   // تهيئة الحالة عند فتح النافذة أو تغيير الصنف الهدف
   useEffect(() => {
+    activeTemplateRequestIdRef.current++;
     if (open && targetComponent) {
       setRecipeName(`وصفة ${targetComponent.productName}`);
       setLaborPerOutputBase("0");
@@ -172,11 +174,23 @@ export function QuickRecipeCopyDialog({
 
   // جلب وتطبيق محتويات وصفة المصدر
   async function applySourceRecipe(recipeId: number, sourceLabel?: string) {
+    const currentRequestId = ++activeTemplateRequestIdRef.current;
+    const currentTargetVariantId = targetComponent?.variantId;
     try {
       setIsLoadingRecipe(true);
       const recipeData: any = await utils.production.recipes.get.fetch({
         id: recipeId,
       });
+
+      // التحقق الصارم من أن هذا الطلب هو الأحدث ولم يتم تجاوزه بطلب آخر أو إغلاق النافذة أو تبديل الصنف
+      if (
+        !open ||
+        activeTemplateRequestIdRef.current !== currentRequestId ||
+        targetComponent?.variantId !== currentTargetVariantId
+      ) {
+        return;
+      }
+
       if (!recipeData) {
         notify.err("تعذّر جلب تفاصيل الوصفة المختارة");
         return;
@@ -528,6 +542,7 @@ export function QuickRecipeCopyDialog({
                 <AppSelect
                   aria-label="اختر وصفة من الكتالوج العام للنسخ منها"
                   value={selectedCatalogRecipeId}
+                  disabled={isLoadingRecipe}
                   onValueChange={(val: string) => {
                     setSelectedCatalogRecipeId(val);
                     if (val) {

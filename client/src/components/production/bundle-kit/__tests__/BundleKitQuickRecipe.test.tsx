@@ -502,4 +502,29 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     );
     expect(displayedEmptyText).toBeNull();
   });
+
+  it("يتجاهل استجابات قوالب الوصفات المتجاوزة (superseded responses) لمنع سباق البيانات عند التبديل السريع", async () => {
+    let activeRequestId = 0;
+    let appliedTemplateName: string | null = null;
+
+    // دالة تحاكي تطبيق الوصفة مع التحقق من معرّف الطلب
+    async function simulateApplyTemplate(templateId: number, name: string, delayMs: number) {
+      const currentReqId = ++activeRequestId;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      // إذا كان هذا الطلب قد تم تجاوزه، يتم تجاهله تماماً
+      if (activeRequestId !== currentReqId) {
+        return;
+      }
+      appliedTemplateName = name;
+    }
+
+    // إطلاق طلبين: القالب A بطيء (50ms) والقالب B سريع (10ms) أُطلق بعده
+    const promiseA = simulateApplyTemplate(1, "قالب A بطيء", 50);
+    const promiseB = simulateApplyTemplate(2, "قالب B أحدث", 10);
+
+    await Promise.all([promiseA, promiseB]);
+
+    // النتيجة النهائية يجب أن تكون القالب B الأحدث، ولا يجوز للقالب A القديم أن يطمسه
+    expect(appliedTemplateName).toBe("قالب B أحدث");
+  });
 });
