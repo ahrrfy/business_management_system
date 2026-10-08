@@ -15,6 +15,7 @@ export default defineConfig({
       "shared/productChannelSync.test.ts",
       "server/services/__tests__/predictiveRecipe.test.ts",
       "client/src/components/product/__tests__/recipeClipboard.test.ts",
+      "client/src/components/production/bundle-kit/__tests__/BundleKitQuickRecipe.test.tsx",
       "client/src/pages/__tests__/purchaseShippingFundingUi.test.tsx",
       "client/src/lib/moneyInput.test.ts",
       "client/src/lib/audioFeedback.test.ts",

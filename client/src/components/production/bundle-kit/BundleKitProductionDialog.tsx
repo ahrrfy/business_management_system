@@ -16,6 +16,7 @@ import { trpc } from "@/lib/trpc";
 import type {
   AggregatedMaterialDto,
   BundleRequirementMode,
+  ComponentRequirementDto,
   ProduceBundleComponentsResult,
 } from "@shared/bundleProductionTypes";
 import type {
@@ -30,6 +31,7 @@ import { BundleKitMaterialsStep } from "./BundleKitMaterialsStep";
 import { BundleKitParametersBar } from "./BundleKitParametersBar";
 import { BundleKitReviewStep } from "./BundleKitReviewStep";
 import { BundleKitSuccessStep } from "./BundleKitSuccessStep";
+import { QuickRecipeCopyDialog } from "./QuickRecipeCopyDialog";
 
 const STEP_ITEMS = [
   { id: 1, label: "1. المكونات والعجز" },
@@ -67,6 +69,8 @@ export function BundleKitProductionDialog({
   const [successResult, setSuccessResult] = useState<ProduceBundleComponentsResult | null>(null);
   const [clientRequestId, setClientRequestId] = useState<string>("");
   const [materialSubstitutions, setMaterialSubstitutions] = useState<MaterialSubstitutionItem[]>([]);
+  const [quickRecipeTarget, setQuickRecipeTarget] = useState<ComponentRequirementDto | null>(null);
+  const newlyCreatedRecipeVariantIdRef = useRef<number | null>(null);
 
   const lastSyncedParamsRef = useRef<{
     bundleVariantId: number | null;
@@ -110,6 +114,8 @@ export function BundleKitProductionDialog({
       setClientRequestId("");
       setMaterialSubstitutions([]);
       lastSyncedParamsRef.current = null;
+      setQuickRecipeTarget(null);
+      newlyCreatedRecipeVariantIdRef.current = null;
       return;
     }
     setClientRequestId((prev) => prev || `bnd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
@@ -134,6 +140,13 @@ export function BundleKitProductionDialog({
 
   useEffect(() => {
     if (!analysisQ.data?.components) return;
+
+    const newlyCreatedId = newlyCreatedRecipeVariantIdRef.current;
+    const hasNewlyCreatedMfg =
+      newlyCreatedId != null &&
+      analysisQ.data.components.some(
+        (c) => c.variantId === newlyCreatedId && c.isManufactured,
+      );
 
     const paramsChanged =
       !lastSyncedParamsRef.current ||
@@ -163,7 +176,7 @@ export function BundleKitProductionDialog({
       setBatches((prev) => {
         const prevMap = new Map(prev.map((b) => [b.variantId, b]));
         const mfgComps = analysisQ.data.components.filter((c) => c.isManufactured);
-        if (prev.length === mfgComps.length) {
+        if (prev.length === mfgComps.length && !hasNewlyCreatedMfg) {
           const isIdentical = mfgComps.every((c) => {
             const ex = prevMap.get(c.variantId);
             return ex && ex.recipeId === c.recipeId;
@@ -172,18 +185,38 @@ export function BundleKitProductionDialog({
         }
         return mfgComps.map((c) => {
           const ex = prevMap.get(c.variantId);
+          const isNewlyCreated = c.variantId === newlyCreatedId;
+          const defaultBatchQty =
+            c.suggestedBatchQty > 0
+              ? c.suggestedBatchQty
+              : (c.requiredBatchMultiple || 1);
+
           return ex
-            ? { ...ex, recipeId: c.recipeId }
+            ? {
+                ...ex,
+                recipeId: c.recipeId,
+                batchQty:
+                  ex.batchQty > 0
+                    ? ex.batchQty
+                    : isNewlyCreated
+                      ? defaultBatchQty
+                      : c.suggestedBatchQty,
+                selected: isNewlyCreated ? true : ex.selected,
+              }
             : {
                 variantId: c.variantId,
                 recipeId: c.recipeId,
-                batchQty: c.suggestedBatchQty,
+                batchQty: defaultBatchQty,
                 scrapQty: 0,
                 laborPerUnit: c.laborPerUnit || "0.00",
-                selected: c.suggestedBatchQty > 0,
+                selected: isNewlyCreated || c.suggestedBatchQty > 0,
               };
         });
       });
+    }
+
+    if (hasNewlyCreatedMfg) {
+      newlyCreatedRecipeVariantIdRef.current = null;
     }
   }, [analysisQ.data, selectedBundleId, bundleQuantity, mode]);
 
@@ -388,6 +421,7 @@ export function BundleKitProductionDialog({
               onBatchChange={handleBatchChange}
               onToggleAll={handleToggleAll}
               onResetToSuggested={handleResetToSuggested}
+              onAddRecipe={(comp) => setQuickRecipeTarget(comp)}
             />
           )}
 
@@ -494,6 +528,20 @@ export function BundleKitProductionDialog({
           </DialogFooter>
         )}
       </DialogContent>
+
+      <QuickRecipeCopyDialog
+        open={quickRecipeTarget != null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) setQuickRecipeTarget(null);
+        }}
+        targetComponent={quickRecipeTarget}
+        otherBundleComponents={analysis?.components ?? []}
+        onRecipeCreated={async (newRecipeId, variantId) => {
+          newlyCreatedRecipeVariantIdRef.current = variantId;
+          await analysisQ.refetch();
+          await utils.production.recipes.list.invalidate();
+        }}
+      />
     </Dialog>
   );
 }

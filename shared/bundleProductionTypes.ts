@@ -33,6 +33,9 @@ export type AnalyzeBundleRequirementsInput = z.infer<typeof analyzeBundleRequire
 
 export interface ComponentRequirementDto {
   variantId: number;
+  productId?: number;
+  baseUnitId?: number | null;
+  baseUnitName?: string | null;
   productName: string;
   sku: string;
   componentBaseQuantity: number;
