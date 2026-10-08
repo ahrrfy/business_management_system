@@ -213,8 +213,12 @@ export function QuickRecipeCopyDialog({
       setCopiedSourceName(sourceName);
       setLaborPerOutputBase(String(recipeData.laborPerOutputBase ?? "0"));
       const rawWaste = Number(recipeData.wasteStdPct ?? 0);
-      setWasteStdPct(String(Math.round(rawWaste * 100 * 100) / 100));
-      setNotes(`منسوخة من: ${sourceName}`);
+      const sourceNotes = (recipeData.notes || "").trim();
+      const provenanceNote = `منسوخة من: ${sourceName}`;
+      const combinedNotes = sourceNotes
+        ? `${sourceNotes}\n(${provenanceNote})`
+        : provenanceNote;
+      setNotes(combinedNotes);
 
       const rawLines = recipeData.lines ?? [];
       const nonSelfLines = rawLines.filter(

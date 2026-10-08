@@ -717,7 +717,29 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     expect(validateWasteSyntax("1.2.3")).toBe(false);
     expect(validateWasteSyntax("abc")).toBe(false);
   });
+
+  it("يحافظ على ملاحظات الوصفة المصدر التشغيلية والأمنية ويضيف نص المصدر عند تطبيق القالب", () => {
+    function computeCombinedNotes(recipeNotes: string | null | undefined, sourceName: string): string {
+      const sourceNotes = (recipeNotes || "").trim();
+      const provenanceNote = `منسوخة من: ${sourceName}`;
+      return sourceNotes ? `${sourceNotes}\n(${provenanceNote})` : provenanceNote;
+    }
+
+    // 1. قالب يحتوي على تعليمات تشغيلية
+    const withNotes = computeCombinedNotes(
+      "تعليمات الجودة: تجفيف المادة 24 ساعة قبل التجميع",
+      "وصفة قلم فاخر",
+    );
+    expect(withNotes).toBe(
+      "تعليمات الجودة: تجفيف المادة 24 ساعة قبل التجميع\n(منسوخة من: وصفة قلم فاخر)",
+    );
+
+    // 2. قالب لا يحتوي على ملاحظات مسبقة
+    const withoutNotes = computeCombinedNotes(null, "وصفة قلم قياسي");
+    expect(withoutNotes).toBe("منسوخة من: وصفة قلم قياسي");
+  });
 });
+
 
 
 
