@@ -420,6 +420,8 @@ export default defineConfig({
       "server/services/__tests__/storefrontThematicService.test.ts",
       "server/services/__tests__/customerReadAccess.test.ts",
       "client/src/components/pos/__tests__/posTotalsCredit.test.ts",
+      "client/src/components/decision/DecisionRow.test.ts",
+      "server/services/decisions/__tests__/rows.test.ts",
     ],
   },
 });
