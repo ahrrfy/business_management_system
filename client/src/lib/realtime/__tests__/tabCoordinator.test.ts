@@ -35,6 +35,64 @@ describe("RealtimeManager & TabCoordinator — تنسيق التبويبات ا�
         removeEventListener: vi.fn(),
       };
     }
+
+    const heldLocks = new Set<string>();
+    const lockWaiters = new Map<
+      string,
+      Array<{ resolve: () => void; reject: (err: any) => void; signal?: AbortSignal }>
+    >();
+
+    const mockLocks = {
+      request: vi.fn(async (name: string, optionsOrCallback: any, maybeCallback?: any) => {
+        const callback = typeof optionsOrCallback === "function" ? optionsOrCallback : maybeCallback;
+        const options = typeof optionsOrCallback === "object" ? optionsOrCallback : {};
+        const signal = options?.signal as AbortSignal | undefined;
+
+        if (signal?.aborted) {
+          throw new DOMException("The request was aborted", "AbortError");
+        }
+
+        if (heldLocks.has(name)) {
+          await new Promise<void>((resolve, reject) => {
+            if (signal) {
+              signal.addEventListener(
+                "abort",
+                () => reject(new DOMException("The request was aborted", "AbortError")),
+                { once: true },
+              );
+            }
+            const waiters = lockWaiters.get(name) || [];
+            waiters.push({ resolve, reject, signal });
+            lockWaiters.set(name, waiters);
+          });
+        }
+
+        heldLocks.add(name);
+        try {
+          return await callback();
+        } finally {
+          heldLocks.delete(name);
+          const waiters = lockWaiters.get(name);
+          while (waiters && waiters.length > 0) {
+            const next = waiters.shift()!;
+            if (!next.signal?.aborted) {
+              next.resolve();
+              break;
+            }
+          }
+        }
+      }),
+    };
+
+    if (typeof globalThis.navigator === "undefined") {
+      (globalThis as any).navigator = { locks: mockLocks };
+    } else {
+      Object.defineProperty(globalThis.navigator, "locks", {
+        value: mockLocks,
+        configurable: true,
+        writable: true,
+      });
+    }
   });
 
   afterEach(() => {

@@ -542,30 +542,32 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     };
   });
 
-  try {
-    publishRealtimeEvent<WorkOrderStatusChangedPayload>(
-      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
-      {
-        workOrderId: result.workOrderId,
-        branchId: result.branchId,
-        previousStatus: "READY",
-        newStatus: "DELIVERED",
-        updatedBy: actor.userId,
-      },
-      { branchId: result.branchId },
-    );
-    publishRealtimeEvent<ReceptionQueueUpdatedPayload>(
-      REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
-      {
-        orderId: result.workOrderId,
-        branchId: result.branchId,
-        status: "DELIVERED",
-        readyForPickup: false,
-      },
-      { branchId: result.branchId },
-    );
-  } catch {
-    // fail-safe
+  if (!result.idempotentReplay) {
+    try {
+      publishRealtimeEvent<WorkOrderStatusChangedPayload>(
+        REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+        {
+          workOrderId: result.workOrderId,
+          branchId: result.branchId,
+          previousStatus: "READY",
+          newStatus: "DELIVERED",
+          updatedBy: actor.userId,
+        },
+        { branchId: result.branchId },
+      );
+      publishRealtimeEvent<ReceptionQueueUpdatedPayload>(
+        REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+        {
+          orderId: result.workOrderId,
+          branchId: result.branchId,
+          status: "DELIVERED",
+          readyForPickup: false,
+        },
+        { branchId: result.branchId },
+      );
+    } catch {
+      // fail-safe
+    }
   }
 
   return {
@@ -573,5 +575,6 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     invoiceId: result.invoiceId,
     invoiceNumber: result.invoiceNumber,
     status: result.status,
+    ...(result.idempotentReplay ? { idempotentReplay: true as const } : {}),
   };
 }
