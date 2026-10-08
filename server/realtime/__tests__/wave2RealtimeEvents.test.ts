@@ -237,5 +237,32 @@ describe("Wave 2 Real-Time Events — خط إنتاج المطبعة والاس�
 
       unsub();
     });
+
+    it("يبث حدث WORK_ORDER_CLAIMED مع claimedByUserId: null عند تحرير الأمر لفك القفل عن باقي الأجهزة", async () => {
+      const receivedEvents: RealtimeEvent[] = [];
+      const unsub = onBridgeEvent((event) => {
+        if (event.type === REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED) {
+          receivedEvents.push(event);
+        }
+      });
+
+      publishRealtimeEvent<WorkOrderClaimedPayload>(
+        REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED,
+        {
+          workOrderId: 555,
+          branchId: 1,
+          claimedByUserId: null,
+        },
+        { branchId: 1 },
+      );
+
+      expect(receivedEvents.length).toBe(1);
+      const ev = receivedEvents[0];
+      expect(ev.type).toBe(REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED);
+      expect((ev.payload as WorkOrderClaimedPayload).claimedByUserId).toBeNull();
+
+      unsub();
+    });
   });
 });
+

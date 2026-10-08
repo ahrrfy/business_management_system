@@ -422,6 +422,9 @@ export const settingsAdminProcedure = auditedProcedure
   .use(requireAdmin)
   .use(requireModuleGate(["admin"], "settings", "FULL"));
 
+/** قراءة الهوية المؤسسية للمنشأة: متاحة لجميع مستخدمي المنشأة المصادق عليهم (تُستعمل في ترويسات الطباعة والمستندات وواجهة التطبيق). */
+export const companyProfileReadProcedure = protectedProcedure;
+
 /** عمليات إدارية/مالية: المدير فأعلى (توافق خلفي كامل). */
 export const managerProcedure = auditedProcedure.use(requireRole("manager"));
 

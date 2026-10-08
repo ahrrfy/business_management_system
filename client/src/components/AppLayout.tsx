@@ -27,6 +27,7 @@ import {
   shouldSkipColdStudioAuth,
 } from "@/lib/productStudio/coldOfflinePolicy";
 import { usePrinterConnection } from "@/hooks/usePrinterConnection";
+import { setDynamicCompanyProfile } from "@/lib/printing/brand";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Menu, Search, Printer, UserCircle2, ChevronLeft, LogOut, Check,
@@ -133,6 +134,30 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   const shellCapabilities = coldStudioShellCapabilities(coldStudio);
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery(undefined, { enabled: !coldStudio });
+  const companyProfileQuery = trpc.system.getCompanyProfile.useQuery(undefined, {
+    enabled: !coldStudio && Boolean(me.data),
+    staleTime: 5 * 60_000,
+  });
+
+  useEffect(() => {
+    if (companyProfileQuery.data) {
+      const d = companyProfileQuery.data;
+      setDynamicCompanyProfile({
+        name: d.name,
+        sub: d.tradeName || d.name,
+        short: d.shortName || d.name,
+        subtitle: d.legalSubtitle || "",
+        footer: d.footerText || "",
+        address: d.address || "",
+        taxId: d.taxNumber || "",
+        commercialRegistry: d.commercialRegistry || "",
+        chamberLicense: d.chamberLicense || "",
+        phones: d.phones.map((p) => ({ l: p.label, n: p.number })),
+        logoUrl: d.logoUrl || null,
+      });
+    }
+  }, [companyProfileQuery.data]);
+
   const myStocktakes = trpc.count.mine.useQuery(undefined, {
     enabled: !coldStudio && Boolean(me.data),
   });

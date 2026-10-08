@@ -497,7 +497,7 @@ export async function reassignWorkOrder(
   input: ReassignWorkOrderInput,
   actor: Actor & { role?: string; isOwner?: boolean },
 ) {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, input.workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.status === "DELIVERED" || wo.status === "CANCELLED") {
@@ -592,8 +592,25 @@ export async function reassignWorkOrder(
       workOrderId: Number(wo.id),
       assignedTo: input.assignedTo,
       previous,
+      branchId: Number(wo.branchId),
     };
   });
+
+  try {
+    publishRealtimeEvent<WorkOrderClaimedPayload>(
+      REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED,
+      {
+        workOrderId: result.workOrderId,
+        branchId: result.branchId,
+        claimedByUserId: result.assignedTo,
+      },
+      { branchId: result.branchId },
+    );
+  } catch {
+    // fail-safe
+  }
+
+  return result;
 }
 
 /**
@@ -605,11 +622,11 @@ export async function releaseWorkOrder(
   workOrderId: number,
   actor: Actor & { role?: string },
 ) {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.assignedTo == null)
-      return { ok: true as const, workOrderId, alreadyFree: true as const };
+      return { ok: true as const, workOrderId, alreadyFree: true as const, branchId: Number(wo.branchId) };
     if (Number(wo.assignedTo) !== Number(actor.userId)) {
       throw new TRPCError({
         code: "FORBIDDEN",
@@ -642,8 +659,26 @@ export async function releaseWorkOrder(
         newValue: { assignedTo: null },
       },
     );
-    return { ok: true as const, workOrderId, alreadyFree: false as const };
+    return { ok: true as const, workOrderId, alreadyFree: false as const, branchId: Number(wo.branchId) };
   });
+
+  if (!result.alreadyFree) {
+    try {
+      publishRealtimeEvent<WorkOrderClaimedPayload>(
+        REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED,
+        {
+          workOrderId: result.workOrderId,
+          branchId: result.branchId,
+          claimedByUserId: null,
+        },
+        { branchId: result.branchId },
+      );
+    } catch {
+      // fail-safe
+    }
+  }
+
+  return result;
 }
 
 /** IN_PROGRESS → READY (no stock change).

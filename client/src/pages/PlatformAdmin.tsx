@@ -15,7 +15,26 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { DataTable } from "@/components/data-table/DataTable";
 import { PageHeader } from "@/components/PageHeader";
-import { AlertTriangle, CheckCircle2, CopyIcon, XCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  Building2,
+  CheckCircle2,
+  Clock,
+  CopyIcon,
+  Database,
+  Eye,
+  RefreshCw,
+  Server,
+  ShieldCheck,
+  XCircle,
+} from "lucide-react";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { fmtDate, fmtDateTime, toDate, type DateInput } from "@/lib/date";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -164,7 +183,7 @@ function TempPasswordReveal({
           } catch { /* تجاهل */ }
         }}
       >
-        <CopyIcon className="h-4 w-4" /> {copied ? "تمّ النسخ!" : "نسخ الكل"}
+        <CopyIcon aria-hidden className="h-4 w-4" /> {copied ? "تمّ النسخ!" : "نسخ الكل"}
       </Button>
     </div>
   );
@@ -353,8 +372,217 @@ function PlatformAuditTable() {
   );
 }
 
+function CompanyInspectionDrawer({
+  companyId,
+  onClose,
+}: {
+  companyId: number | null;
+  onClose: () => void;
+}) {
+  const utils = trpc.useUtils();
+  const query = trpc.platformAdmin.companies.inspect.useQuery(
+    { id: companyId ?? 0 },
+    { enabled: companyId !== null }
+  );
+
+  const setActive = trpc.platformAdmin.companies.setActive.useMutation({
+    onSuccess: () => {
+      void utils.platformAdmin.companies.list.invalidate();
+      if (companyId) {
+        void utils.platformAdmin.companies.inspect.invalidate({ id: companyId });
+      }
+    },
+  });
+
+  const rawData = query.data;
+  const company = rawData?.company ?? rawData;
+  const metrics = rawData?.metrics;
+  const isHealthy = metrics?.status === "healthy" || (rawData as any)?.databaseStatus === "CONNECTED";
+  const errorMessage = metrics?.error || (rawData as any)?.databaseError;
+
+  return (
+    <Sheet open={companyId !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <SheetContent side="right" className="w-full sm:max-w-lg overflow-y-auto">
+        <SheetHeader>
+          <SheetTitle className="flex items-center justify-between gap-2">
+            <span>معاينة وفحص بيانات الشركة</span>
+            {company && (
+              <span className={`text-xs rounded-full px-2 py-0.5 ${company.isActive ? "badge-status-active" : "bg-muted text-muted-foreground"}`}>
+                {company.isActive ? "نشطة" : "معطّلة"}
+              </span>
+            )}
+          </SheetTitle>
+          <SheetDescription>
+            فحص هوية المنشأة، تخصيص قاعدة البيانات المعزولة، ومؤشرات الاتصال والنشاط الحية.
+          </SheetDescription>
+        </SheetHeader>
+
+        {query.isLoading && (
+          <div className="py-12 text-center text-sm text-muted-foreground flex items-center justify-center gap-2">
+            <RefreshCw aria-hidden className="size-4 animate-spin" />
+            <span>{ACTION_LABELS.loading}</span>
+          </div>
+        )}
+
+        {query.isError && (
+          <div className="rounded-md bg-destructive/15 p-4 text-sm text-destructive flex items-center gap-2 mt-4">
+            <XCircle aria-hidden className="size-4 shrink-0" />
+            <span>{query.error.message || "تعذّر فحص بيانات الشركة"}</span>
+          </div>
+        )}
+
+        {company && (
+          <div className="space-y-6 pt-4">
+            {/* التبديل الفوري لحالة التفعيل من داخل الدرج */}
+            <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/20">
+              <div className="space-y-0.5">
+                <Label htmlFor="drawer-active-toggle" className="text-sm font-semibold">حالة تفعيل الشركة</Label>
+                <p className="text-xs text-muted-foreground">
+                  {company.isActive ? "الشركة نشطة ومتاحة لدخول المستخدمين" : "الشركة معطّلة ومحجوبة عن الدخول"}
+                </p>
+              </div>
+              <Switch
+                id="drawer-active-toggle"
+                checked={company.isActive}
+                onCheckedChange={(checked) => {
+                  setActive.mutate({ id: company.id, isActive: checked });
+                }}
+                disabled={setActive.isPending}
+                aria-label={`تفعيل أو تعطيل ${company.name}`}
+              />
+            </div>
+
+            {/* بيانات الهوية */}
+            <div className="space-y-2 rounded-lg border p-3">
+              <h4 className="text-sm font-semibold flex items-center gap-1.5">
+                <Building2 aria-hidden className="size-4 text-primary" />
+                <span>بيانات التعريف والهوية</span>
+              </h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                <div>
+                  <span className="text-muted-foreground">اسم الشركة: </span>
+                  <span className="font-medium">{company.name}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">الرمز (Code): </span>
+                  <code className="font-mono bg-muted px-1 rounded">{company.code}</code>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">معرّف المنصة (ID): </span>
+                  <span className="font-mono">{company.id}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">تاريخ الإنشاء: </span>
+                  <span>{fmtDateTime(company.createdAt)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* تخصيص قاعدة البيانات والعزل الفيزيائي */}
+            <div className="space-y-2 rounded-lg border p-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold flex items-center gap-1.5">
+                  <Database aria-hidden className="size-4 text-primary" />
+                  <span>تخصيص قاعدة البيانات</span>
+                </h4>
+                <span className={`text-xs px-2 py-0.5 rounded font-medium inline-flex items-center gap-1 ${
+                  isHealthy
+                    ? "text-[var(--sem-pos)] bg-[var(--sem-pos-bg)]"
+                    : "text-destructive bg-destructive/10"
+                }`}>
+                  {isHealthy ? (
+                    <>
+                      <CheckCircle2 aria-hidden className="size-3.5" />
+                      <span>متصلة وسليمة (healthy)</span>
+                    </>
+                  ) : (
+                    <>
+                      <AlertTriangle aria-hidden className="size-3.5" />
+                      <span>غير متصلة (unreachable)</span>
+                    </>
+                  )}
+                </span>
+              </div>
+
+              {/* شارة تأكيد العزل الفيزيائي */}
+              <div className="flex items-center gap-2 p-2 rounded-md bg-[var(--sem-pos-bg)] border border-[var(--sem-pos)]/30 text-[var(--sem-pos)] text-xs font-medium">
+                <ShieldCheck aria-hidden className="size-4 shrink-0" />
+                <span>عزل فيزيائي لقاعدة البيانات (Database-per-Tenant Isolated Schema)</span>
+              </div>
+
+              <div className="space-y-1.5 text-xs font-mono bg-muted/50 p-2.5 rounded border" dir="ltr">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Host:</span>
+                  <span>{company.dbHost}:{company.dbPort}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Database:</span>
+                  <span className="font-bold">{company.dbName}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">User:</span>
+                  <span>{company.dbUser}</span>
+                </div>
+              </div>
+
+              {errorMessage && (
+                <div className="text-xs text-destructive bg-destructive/10 p-2.5 rounded border border-destructive/20 flex items-start gap-1.5">
+                  <AlertTriangle aria-hidden className="size-4 shrink-0 mt-0.5" />
+                  <span>{errorMessage}</span>
+                </div>
+              )}
+            </div>
+
+            {/* مؤشرات الحجم والنشاط الحية */}
+            <div className="space-y-2 rounded-lg border p-3">
+              <h4 className="text-sm font-semibold flex items-center gap-1.5">
+                <Server aria-hidden className="size-4 text-primary" />
+                <span>المؤشرات التشغيلية الحية للشركة</span>
+              </h4>
+
+              {metrics ? (
+                <div className="grid grid-cols-2 gap-2 text-center">
+                  <div className="p-3 rounded bg-muted/30 border">
+                    <div className="text-xs text-muted-foreground">إجمالي المستخدمين</div>
+                    <div className="text-xl font-bold mt-1">
+                      {metrics.userCount ?? (metrics as any).usersCount ?? 0}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded bg-muted/30 border">
+                    <div className="text-xs text-muted-foreground">إجمالي الفروع</div>
+                    <div className="text-xl font-bold mt-1">
+                      {metrics.branchCount ?? (metrics as any).branchesCount ?? 0}
+                    </div>
+                  </div>
+                  {(metrics as any).invoicesCount !== undefined && (
+                    <div className="p-2.5 rounded bg-muted/30 border">
+                      <div className="text-xs text-muted-foreground">الفواتير</div>
+                      <div className="text-base font-bold">{(metrics as any).invoicesCount}</div>
+                    </div>
+                  )}
+                  {(metrics as any).productsCount !== undefined && (
+                    <div className="p-2.5 rounded bg-muted/30 border">
+                      <div className="text-xs text-muted-foreground">المنتجات</div>
+                      <div className="text-base font-bold">{(metrics as any).productsCount}</div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground text-center py-2">
+                  المؤشرات غير متاحة (تعذّر الاستعلام من قاعدة الشركة).
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </SheetContent>
+    </Sheet>
+  );
+}
+
 function CompaniesDashboard() {
   const utils = trpc.useUtils();
+  const [inspectCompanyId, setInspectCompanyId] = useState<number | null>(null);
   const companies = trpc.platformAdmin.companies.list.useQuery();
   const provisionRequests = trpc.platformAdmin.companies.provisionRequests.useQuery();
   const logout = trpc.platformAdmin.logout.useMutation({
@@ -363,6 +591,13 @@ function CompaniesDashboard() {
   const setActive = trpc.platformAdmin.companies.setActive.useMutation({
     onSuccess: () => companies.refetch(),
   });
+
+  const totalCompanies = companies.data?.length ?? 0;
+  const activeCompanies = companies.data?.filter((c) => c.isActive).length ?? 0;
+  const inactiveCompanies = totalCompanies - activeCompanies;
+  const pendingRequests = provisionRequests.data?.filter(
+    (r) => r.status === "PENDING" || r.status === "PROCESSING"
+  ).length ?? 0;
 
   // أعمدة الشركات — داخل المكوّن لأنّ مفتاح التفعيل يستدعي الطفرة `setActive`.
   const companyColumns = useMemo<ColumnDef<CompanyRow, unknown>[]>(() => [
@@ -383,6 +618,25 @@ function CompaniesDashboard() {
           disabled={setActive.isPending}
           aria-label={`تفعيل/تعطيل ${row.original.name}`}
         />
+      ),
+    },
+    {
+      id: "actions",
+      header: "معاينة وفحص",
+      enableSorting: false,
+      meta: { kind: "actions", align: "center", width: "actions" },
+      cell: ({ row }) => (
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1.5 text-xs h-8"
+          onClick={() => setInspectCompanyId(row.original.id)}
+          title={`معاينة وفحص تفاصيل ${row.original.name}`}
+          aria-label={`معاينة وفحص تفاصيل ${row.original.name}`}
+        >
+          <Eye aria-hidden className="size-3.5" />
+          <span>معاينة وفحص</span>
+        </Button>
       ),
     },
   ], [setActive]);
@@ -426,6 +680,54 @@ function CompaniesDashboard() {
             </Button>
           }
         />
+
+        {/* بطاقات مؤشرات الأداء السريعة للشركات */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <Card>
+            <CardContent className="p-4 flex items-center justify-between">
+              <div>
+                <p className="text-xs text-muted-foreground font-medium">إجمالي الشركات</p>
+                <h3 className="text-2xl font-bold mt-1">{totalCompanies}</h3>
+              </div>
+              <div className="p-2.5 rounded-full bg-primary/10 text-primary">
+                <Building2 aria-hidden className="size-5" />
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4 flex items-center justify-between">
+              <div>
+                <p className="text-xs text-muted-foreground font-medium">الشركات النشطة</p>
+                <h3 className="text-2xl font-bold mt-1 text-[var(--sem-pos)]">{activeCompanies}</h3>
+              </div>
+              <div className="p-2.5 rounded-full bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]">
+                <CheckCircle2 aria-hidden className="size-5" />
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4 flex items-center justify-between">
+              <div>
+                <p className="text-xs text-muted-foreground font-medium">الشركات المعطّلة</p>
+                <h3 className="text-2xl font-bold mt-1 text-muted-foreground">{inactiveCompanies}</h3>
+              </div>
+              <div className="p-2.5 rounded-full bg-muted text-muted-foreground">
+                <XCircle aria-hidden className="size-5" />
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4 flex items-center justify-between">
+              <div>
+                <p className="text-xs text-muted-foreground font-medium">طلبات التوفير المعلقة/الجارية</p>
+                <h3 className="text-2xl font-bold mt-1 text-[var(--sem-warn)]">{pendingRequests}</h3>
+              </div>
+              <div className="p-2.5 rounded-full bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]">
+                <Clock aria-hidden className="size-5" />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
 
         <Card>
           <CardHeader>
@@ -474,6 +776,11 @@ function CompaniesDashboard() {
         </Card>
 
         <PlatformAuditTable />
+
+        <CompanyInspectionDrawer
+          companyId={inspectCompanyId}
+          onClose={() => setInspectCompanyId(null)}
+        />
       </div>
     </div>
   );

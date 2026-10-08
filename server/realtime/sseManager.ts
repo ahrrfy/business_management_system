@@ -132,12 +132,11 @@ export class SseManager {
     }
 
     // عزل الشركة الصارم (Multi-tenancy Company Isolation):
-    if (
-      event.scope?.companyId != null &&
-      client.companyId != null &&
-      client.companyId !== event.scope.companyId
-    ) {
-      return false;
+    // الحدث الموجه لشركة لا يُسلَّم إطلاقاً إلا لعميلٍ ينتمي لنفس الشركة حتماً (Fail-closed).
+    if (event.scope?.companyId != null) {
+      if (client.companyId == null || client.companyId !== event.scope.companyId) {
+        return false;
+      }
     }
 
     // عزل الفرع الصارم (Branch Isolation):

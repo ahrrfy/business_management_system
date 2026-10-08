@@ -2,10 +2,13 @@ import {
   REALTIME_BROADCAST_CHANNEL,
   REALTIME_IDLE_TIMEOUT_MS,
   REALTIME_EVENT_TYPES,
+  createRealtimeEvent,
   type RealtimeEvent,
   type RealtimeEventType,
+  type RealtimeEventScope,
   type BatchSalesSyncedPayload,
 } from "@shared/realtimeEvents";
+import { D } from "@/lib/money";
 import { connectivity, type ConnState } from "../offline/connectivity";
 
 export type RealtimeConnectionStatus =
@@ -402,9 +405,9 @@ export class RealtimeManager {
       this.pendingBatchScope = event.scope;
     } else {
       this.pendingBatchSales.syncedCount += p.syncedCount;
-      const curTotal = parseFloat(this.pendingBatchSales.totalAmount || "0");
-      const addTotal = parseFloat(p.totalAmount || "0");
-      this.pendingBatchSales.totalAmount = (curTotal + addTotal).toFixed(2);
+      const curTotal = D(this.pendingBatchSales.totalAmount || "0");
+      const addTotal = D(p.totalAmount || "0");
+      this.pendingBatchSales.totalAmount = curTotal.plus(addTotal).toFixed(2);
       this.pendingBatchSales.timestamp = Math.max(this.pendingBatchSales.timestamp, p.timestamp);
     }
 
@@ -584,6 +587,26 @@ export class RealtimeManager {
 
   getTabId(): string {
     return this.tabId;
+  }
+
+  /**
+   * بث حدث محلي عبر BroadcastChannel لكافة التبويبات المفتوحة على هذا الجهاز (مثل شاشة العميل CFD أو قفل السلال)
+   * وتوزيعه محلياً لمستمعي هذا التبويب فوراً.
+   */
+  broadcastLocalEvent<T = unknown>(
+    type: RealtimeEventType,
+    payload: T,
+    scope?: RealtimeEventScope,
+  ): RealtimeEvent<T> {
+    const event = createRealtimeEvent(type, payload, scope);
+    this.dispatchLocalEvent(event as RealtimeEvent);
+    this.postBusMessage({
+      type: "REALTIME_EVENT",
+      tabId: this.tabId,
+      timestamp: Date.now(),
+      event: event as RealtimeEvent,
+    });
+    return event;
   }
 
   /**

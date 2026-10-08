@@ -169,4 +169,41 @@ describe("RealtimeManager & TabCoordinator — تنسيق التبويبات ا�
     connectivity.noteSuccess();
     expect(tab1.getStatus()).not.toBe("offline");
   });
+
+  it("يبث أحداث شاشة العميل CFD وقفل السلال عبر BroadcastChannel لكافة التبويبات بنجاح", async () => {
+    tab1 = new RealtimeManager("tab_cashier_pos");
+    tab2 = new RealtimeManager("tab_cfd_screen");
+
+    tab1.start();
+    tab2.start();
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const cfdReceivedByTab2: any[] = [];
+    tab2.subscribe(REALTIME_EVENT_TYPES.CUSTOMER_FACING_DISPLAY_UPDATED, (event) => {
+      cfdReceivedByTab2.push(event);
+    });
+
+    const cfdPayload = {
+      terminalId: "POS-MAIN-01",
+      branchId: 1,
+      lines: [{ name: "دفتر تجارب مدرسي", quantity: 3, price: "1500.00" }],
+      total: "4500.00",
+      changeDue: "500.00",
+    };
+
+    // بث الحدث محلياً من شاشة الكاشير
+    tab1.broadcastLocalEvent(
+      REALTIME_EVENT_TYPES.CUSTOMER_FACING_DISPLAY_UPDATED,
+      cfdPayload,
+      { branchId: 1 },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(cfdReceivedByTab2.length).toBe(1);
+    expect(cfdReceivedByTab2[0].type).toBe(REALTIME_EVENT_TYPES.CUSTOMER_FACING_DISPLAY_UPDATED);
+    expect(cfdReceivedByTab2[0].payload.total).toBe("4500.00");
+    expect(cfdReceivedByTab2[0].payload.lines[0].name).toBe("دفتر تجارب مدرسي");
+  });
 });

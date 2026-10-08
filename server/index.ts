@@ -428,7 +428,19 @@ async function startServer() {
       const db = isMultiTenantModeActive() ? getControlDb() : getDb();
       if (!db) return res.status(503).json({ ok: false, db: "unconfigured" });
       await db.execute(sql`SELECT 1`);
-      res.json({ ok: true, time: new Date().toISOString() });
+      const mem = process.memoryUsage();
+      const sseStats = sseManager.getStats();
+      res.json({
+        ok: true,
+        time: new Date().toISOString(),
+        metrics: {
+          activeSubscribers: sseStats.activeConnections,
+          memoryRssBytes: mem.rss,
+          heapUsedBytes: mem.heapUsed,
+          heapTotalBytes: mem.heapTotal,
+          uptimeSeconds: Math.floor(process.uptime()),
+        },
+      });
     } catch (e) {
       logger.error({ err: e }, "healthz failed");
       res.status(503).json({ ok: false, db: "down" });

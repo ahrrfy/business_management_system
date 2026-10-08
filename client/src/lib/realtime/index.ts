@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { RealtimeEvent, RealtimeEventType } from "@shared/realtimeEvents";
+import {
+  REALTIME_EVENT_TYPES,
+  type RealtimeEvent,
+  type RealtimeEventType,
+  type RealtimeEventScope,
+  type CustomerFacingDisplayUpdatedPayload,
+} from "@shared/realtimeEvents";
 import {
   realtimeManager,
   type RealtimeConnectionStatus,
@@ -66,3 +72,40 @@ export function useRealtimeStatus(): RealtimeConnectionStatus {
 export function setRealtimeAppState(state: "active" | "background" | "inactive"): void {
   realtimeManager.setAppState(state);
 }
+
+/**
+ * بث حدث محلي عبر BroadcastChannel لكافة التبويبات المفتوحة على هذا الجهاز
+ */
+export function broadcastRealtimeEvent<T = unknown>(
+  type: RealtimeEventType,
+  payload: T,
+  scope?: RealtimeEventScope,
+): RealtimeEvent<T> {
+  return realtimeManager.broadcastLocalEvent(type, payload, scope);
+}
+
+/**
+ * بث تحديثات شاشة العميل المقابلة (Customer Facing Display - CFD) عبر BroadcastChannel
+ */
+export function broadcastCustomerFacingDisplay(payload: CustomerFacingDisplayUpdatedPayload): void {
+  broadcastRealtimeEvent(
+    REALTIME_EVENT_TYPES.CUSTOMER_FACING_DISPLAY_UPDATED,
+    payload,
+    { branchId: payload.branchId },
+  );
+}
+
+/**
+ * خطاف للاستماع لتحديثات شاشة العميل المقابلة (CFD) في شاشة العرض
+ */
+export function useCustomerFacingDisplay(
+  onUpdate: (payload: CustomerFacingDisplayUpdatedPayload) => void,
+): void {
+  useRealtimeEvent<CustomerFacingDisplayUpdatedPayload>(
+    REALTIME_EVENT_TYPES.CUSTOMER_FACING_DISPLAY_UPDATED,
+    (event) => {
+      onUpdate(event.payload);
+    },
+  );
+}
+

@@ -675,7 +675,13 @@ export default function WorkOrderStation() {
     REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED,
     (ev) => {
       const { workOrderId, claimedByUserId } = ev.payload;
-      if (claimedByUserId !== me.data?.id) {
+      if (claimedByUserId == null) {
+        setClaimedLocks((prev) => {
+          const next = { ...prev };
+          delete next[workOrderId];
+          return next;
+        });
+      } else if (claimedByUserId !== me.data?.id) {
         setClaimedLocks((prev) => ({ ...prev, [workOrderId]: claimedByUserId }));
       }
       void Promise.all([mineQ.refetch(), queueQ.refetch()]);

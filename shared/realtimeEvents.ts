@@ -200,7 +200,7 @@ export interface WorkOrderStatusChangedPayload {
 export interface WorkOrderClaimedPayload {
   workOrderId: number;
   branchId: number;
-  claimedByUserId: number;
+  claimedByUserId: number | null;
   claimedByUserName?: string;
 }
 
