@@ -96,6 +96,7 @@ export async function analyzeBundleRequirements(
         id: bundleComponents.id,
         componentVariantId: bundleComponents.componentVariantId,
         componentBaseQuantity: bundleComponents.componentBaseQuantity,
+        productId: products.id,
         productName: products.name,
         sku: productVariants.sku,
         costPrice: productVariants.costPrice,
@@ -135,6 +136,33 @@ export async function analyzeBundleRequirements(
     }
 
     const compVariantIds = compRows.map((c) => c.componentVariantId);
+
+    // استعلام الوحدات الأساسية النشطة للمكونات لعرضها واستخدامها في بناء/نسخ الوصفات
+    const baseUnits = compVariantIds.length > 0
+      ? await tx
+          .select({
+            id: productUnits.id,
+            variantId: productUnits.variantId,
+            unitName: productUnits.unitName,
+            isBaseUnit: productUnits.isBaseUnit,
+            isActive: productUnits.isActive,
+          })
+          .from(productUnits)
+          .where(
+            and(
+              inArray(productUnits.variantId, compVariantIds),
+              eq(productUnits.isBaseUnit, true),
+              eq(productUnits.isActive, true),
+            ),
+          )
+      : [];
+    const baseUnitByVariant = new Map<number, { id: number; unitName: string }>();
+    for (const u of baseUnits) {
+      const vid = Number(u.variantId);
+      if (!baseUnitByVariant.has(vid)) {
+        baseUnitByVariant.set(vid, { id: Number(u.id), unitName: u.unitName });
+      }
+    }
 
     // ③ استعلام الوصفات النشطة للمكونات
     const activeRecipes = await tx
@@ -371,8 +399,13 @@ export async function analyzeBundleRequirements(
       const laborPerUnit = recipe ? String(recipe.laborPerOutputBase ?? "0.00") : "0.00";
       const wasteStdPct = recipe ? String(recipe.wasteStdPct ?? "0.00") : "0.00";
 
+      const baseUnit = baseUnitByVariant.get(variantId);
+
       components.push({
         variantId,
+        productId: Number(c.productId),
+        baseUnitId: baseUnit ? Number(baseUnit.id) : null,
+        baseUnitName: baseUnit?.unitName ?? null,
         productName: c.productName,
         sku: c.sku,
         componentBaseQuantity: c.componentBaseQuantity,

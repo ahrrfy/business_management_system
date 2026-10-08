@@ -854,6 +854,94 @@ describe("مولّد إنتاج مكوّنات البكج: produceBundleComponen
     expect(await stock(2)).toBe(initStockBookA);
     expect(await stock(3)).toBe(initStockBookB);
   });
+
+  it("يحوّل السلعة التجارية إلى مكوّن مصنّع بعد إضافة وصفة لها ويدمج خاماتها في عنق الزجاجة", async () => {
+    // 1. قبل إضافة الوصفة: قلم C (variant 4) سلعة تجارية غير مصنعة
+    const initialAnalysis = await analyzeBundleRequirements({
+      bundleVariantId: 100,
+      bundleQuantity: 20, // يتطلب 20 قلم، الرصيد 15 => عجز 5
+      branchId: 1,
+      mode: "NET_SHORTAGE",
+    });
+
+    const penBefore = initialAnalysis.components.find((c) => c.variantId === 4);
+    expect(penBefore).toBeDefined();
+    expect(penBefore?.isManufactured).toBe(false);
+    expect(penBefore?.recipeId).toBeNull();
+    expect(penBefore?.productId).toBe(4);
+    expect(penBefore?.baseUnitId).toBe(4);
+    expect(penBefore?.baseUnitName).toBe("قلم");
+    expect(penBefore?.shortageQty).toBe(5);
+
+    // 2. محاكاة إضافة وصفة للمنتج التجاري (استنساخ مواد من صنف شبيه)
+    const newRecipe = await createRecipe(
+      {
+        name: "وصفة قلم C المصنّع",
+        outputVariantId: 4,
+        outputProductUnitId: 4,
+        laborPerOutputBase: "0.25",
+        wasteStdPct: "0.00",
+        lines: [
+          { inputVariantId: 6, qtyPerOutputBase: "1.0000" }, // يستهلك قطعة واحدة من خام التجليد
+        ],
+      },
+      actor
+    );
+    expect(newRecipe.recipeId).toBeGreaterThan(0);
+
+    // 3. إعادة استعلام التحليل: يتحول الصنف فورياً لمصنّع مع تحديث العجز ومضاعف الدفعة
+    const refreshedAnalysis = await analyzeBundleRequirements({
+      bundleVariantId: 100,
+      bundleQuantity: 20,
+      branchId: 1,
+      mode: "NET_SHORTAGE",
+    });
+
+    const penAfter = refreshedAnalysis.components.find((c) => c.variantId === 4);
+    expect(penAfter).toBeDefined();
+    expect(penAfter?.isManufactured).toBe(true);
+    expect(penAfter?.recipeId).toBe(newRecipe.recipeId);
+    expect(penAfter?.recipeName).toBe("وصفة قلم C المصنّع");
+    expect(penAfter?.shortageQty).toBe(5);
+    expect(penAfter?.suggestedBatchQty).toBe(5);
+
+    // 4. خامات قلم C (variant 6) أصبحت مدمجة في تجميع المواد وعنق الزجاجة
+    const matCover = refreshedAnalysis.aggregatedMaterials.find((m) => m.materialVariantId === 6);
+    expect(matCover).toBeDefined();
+    // دفتر B يستهلك: 18 دفعة * 3 = 54 قطعة. قلم C يستهلك: 5 دفعة * 1 = 5 قطع. الإجمالي = 59 قطعة.
+    expect(Number(matCover?.totalRequiredBase)).toBe(59);
+
+    // 5. رفع رصيد خام الورق (variant 1) لتغطية إنتاج كافة دفعات البكج المتزامنة مع الصنف المحوّل
+    await db()
+      .update(s.branchStock)
+      .set({ quantity: 200 })
+      .where(
+        sql`${s.branchStock.variantId} = 1 AND ${s.branchStock.branchId} = 1`
+      );
+
+    const produceRes = await produceBundleComponents(
+      {
+        bundleVariantId: 100,
+        bundleQuantity: 20,
+        branchId: 1,
+        clientRequestId: "req-bundle-with-converted-commercial-good",
+        batches: [
+          { variantId: 2, recipeId: 1, batchQty: 36 },
+          { variantId: 3, recipeId: 2, batchQty: 18 },
+          { variantId: 4, recipeId: newRecipe.recipeId, batchQty: 5 },
+        ],
+      },
+      actor
+    );
+
+    expect(produceRes.orders).toHaveLength(3);
+    const penOrder = produceRes.orders.find((o) => o.variantId === 4);
+    expect(penOrder).toBeDefined();
+    expect(penOrder?.goodQty).toBe(5);
+
+    // رصيد قلم C ارتفع من 15 إلى 20
+    expect(await stock(4)).toBe(20);
+  });
 });
 
 
