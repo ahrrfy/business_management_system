@@ -36,6 +36,13 @@ import {
   assertWorkOrderBranch,
   loadWorkOrder,
 } from "./helpers";
+import { publishRealtimeEvent } from "../../realtime";
+import {
+  REALTIME_EVENT_TYPES,
+  type WorkOrderClaimedPayload,
+  type WorkOrderStatusChangedPayload,
+  type ReceptionQueueUpdatedPayload,
+} from "@shared/realtimeEvents";
 
 /**
  * السحب الذاتي (Pull/Claim): يضبط assignedTo = المستخدم الحالي على أمرٍ **في الطابور الوارد**
@@ -46,7 +53,7 @@ export async function claimWorkOrder(
   workOrderId: number,
   actor: Actor & { role?: string },
 ) {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.status !== "RECEIVED")
@@ -97,8 +104,22 @@ export async function claimWorkOrder(
         payload: { assignedTo: actor.userId },
       });
     }
-    return { workOrderId, assignedTo: actor.userId };
+    return { workOrderId, assignedTo: actor.userId, branchId: Number(wo.branchId) };
   });
+  try {
+    publishRealtimeEvent<WorkOrderClaimedPayload>(
+      REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED,
+      {
+        workOrderId: result.workOrderId,
+        branchId: result.branchId,
+        claimedByUserId: actor.userId,
+      },
+      { branchId: result.branchId },
+    );
+  } catch {
+    // fail-safe
+  }
+  return { workOrderId: result.workOrderId, assignedTo: result.assignedTo };
 }
 
 /** Move RECEIVED → IN_PROGRESS: consume materials from stock (OUT movements) + snapshot unitCost. */
@@ -106,7 +127,7 @@ export async function startWorkOrder(
   workOrderId: number,
   actor: Actor & { role?: string },
 ) {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
     assertOperatorOwns(wo, actor);
@@ -418,8 +439,39 @@ export async function startWorkOrder(
       workOrderId,
       status: "IN_PROGRESS",
       materialsCost: materialsCost.toFixed(2),
+      branchId: Number(wo.branchId),
     };
   });
+  try {
+    publishRealtimeEvent<WorkOrderStatusChangedPayload>(
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+      {
+        workOrderId: result.workOrderId,
+        branchId: result.branchId,
+        previousStatus: "RECEIVED",
+        newStatus: "IN_PROGRESS",
+        updatedBy: actor.userId,
+      },
+      { branchId: result.branchId },
+    );
+    publishRealtimeEvent<ReceptionQueueUpdatedPayload>(
+      REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+      {
+        orderId: result.workOrderId,
+        branchId: result.branchId,
+        status: "IN_PROGRESS",
+        readyForPickup: false,
+      },
+      { branchId: result.branchId },
+    );
+  } catch {
+    // fail-safe
+  }
+  return {
+    workOrderId: result.workOrderId,
+    status: result.status,
+    materialsCost: result.materialsCost,
+  };
 }
 
 export interface ReassignWorkOrderInput {
@@ -682,6 +734,34 @@ export async function markWorkOrderReady(
       },
       "workOrder: تعذّر إرسال إشعار طلبك جاهز — تُجوهل",
     );
+  }
+
+  try {
+    publishRealtimeEvent<WorkOrderStatusChangedPayload>(
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+      {
+        workOrderId: result.workOrderId,
+        orderNumber: result.orderNumber,
+        branchId: result.branchId,
+        previousStatus: "IN_PROGRESS",
+        newStatus: "READY",
+        updatedBy: actor?.userId,
+      },
+      { branchId: result.branchId },
+    );
+    publishRealtimeEvent<ReceptionQueueUpdatedPayload>(
+      REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+      {
+        orderId: result.workOrderId,
+        orderNumber: result.orderNumber,
+        branchId: result.branchId,
+        status: "READY",
+        readyForPickup: true,
+      },
+      { branchId: result.branchId },
+    );
+  } catch {
+    // fail-safe
   }
 
   return { workOrderId: result.workOrderId, status: result.status };

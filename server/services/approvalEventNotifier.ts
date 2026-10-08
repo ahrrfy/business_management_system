@@ -6,6 +6,12 @@ import { actorSuffix } from "@shared/notificationActorLabel";
 import { createAppNotification } from "./appNotificationService";
 import { requireDb } from "./tx";
 import { parseSystemPaymentRequest } from "./voucher/create";
+import { publishRealtimeEvent } from "../realtime";
+import {
+  REALTIME_EVENT_TYPES,
+  type ApprovalResolvedPayload,
+  type PendingApprovalCreatedPayload,
+} from "@shared/realtimeEvents";
 
 /**
  * ن-٢-هـ (٢٨/٨) — إشعارات دورة اعتماد السندات (Maker-Checker).
@@ -167,6 +173,20 @@ export async function notifyApprovalPendingByReceipt(
         }),
       ),
     );
+    try {
+      publishRealtimeEvent<PendingApprovalCreatedPayload>(
+        REALTIME_EVENT_TYPES.PENDING_APPROVAL_CREATED,
+        {
+          entityType: "receipt",
+          entityId: receiptId,
+          direction: projection.direction,
+          amount: projection.amount,
+          voucherNumber: projection.voucherNumber,
+        },
+      );
+    } catch {
+      // fail-safe
+    }
   } catch {
     // fail-open: قناة إفصاحٍ لا تُعطّل مسار الإنشاء.
   }
@@ -225,6 +245,27 @@ export async function notifyApprovalDecisionByReceipt(
       requiresAction: false,
       lockScreenSafe: false,
     });
+    try {
+      publishRealtimeEvent<ApprovalResolvedPayload>(
+        REALTIME_EVENT_TYPES.APPROVAL_RESOLVED,
+        {
+          entityType: "receipt",
+          entityId: receiptId,
+          decision,
+          outcome: decision,
+          action: decision === "APPROVED" ? "APPROVE" : "REJECT",
+          direction: projection.direction,
+          amount: projection.amount,
+          voucherNumber: projection.voucherNumber,
+          actorUserId,
+          managerId: actorUserId,
+          managerName: actorName ?? undefined,
+          reason: reason ?? null,
+        },
+      );
+    } catch {
+      // fail-safe
+    }
   } catch {
     // fail-open.
   }

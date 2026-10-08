@@ -18,6 +18,8 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES, type HeldOrderUpdatedPayload } from "@shared/realtimeEvents";
 import { fmt, formatQuantity, round2, D } from "@/lib/money";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -103,7 +105,17 @@ export function HeldOrdersDrawer({
   const utils = trpc.useUtils();
   const heldQ = trpc.printPos.listHeldSales.useQuery(
     { branchId },
-    { enabled: open, refetchInterval: open ? 10_000 : false },
+    { enabled: open },
+  );
+
+  useRealtimeEvent(
+    REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+    (event) => {
+      const payload = event.payload as HeldOrderUpdatedPayload;
+      if (payload.branchId === branchId) {
+        void utils.printPos.listHeldSales.invalidate();
+      }
+    },
   );
 
   const cancelMut = trpc.printPos.cancelHeldSale.useMutation({

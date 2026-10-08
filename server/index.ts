@@ -55,6 +55,12 @@ import {
 import { publicStorefrontHostBoundary } from "./middleware/publicStorefrontHost";
 import { isBackgroundJobRunner, isClustered } from "./lib/clusterRole";
 import {
+  realtimeRouter,
+  initRealtimeBridge,
+  stopRealtimeBridge,
+  sseManager,
+} from "./realtime";
+import {
   createOverloadGuard,
   startLagMonitor,
 } from "./middleware/overloadGuard";
@@ -713,6 +719,7 @@ async function startServer() {
 
   app.use("/api/webhooks", channelWebhooksRouter());
   app.use("/api/webhooks/company/:companyCode", companyChannelWebhooksRouter());
+  app.use("/api/realtime", tenancy, realtimeRouter);
 
   const preferredPort = parseInt(process.env.PORT || "3000", 10);
   // HOST حُسم وفُحص قبل إنشاء التطبيق؛ في الإنتاج لا يمرّ غيابه أو ربط غير loopback بلا opt-in.
@@ -744,6 +751,10 @@ async function startServer() {
   logger.info(
     `Server running on http://${host ?? "localhost"}:${port}/ ${sentryEnabled ? "(Sentry on)" : ""}`,
   );
+
+  // تهيئة الناقل الحلقي للعمليات اللحظية (Wave 0):
+  // عامل 0 يشغّل Hub على 127.0.0.1:3009، وبقية العمال يتصلون كـ Client، مع fallback للذاكرة.
+  await initRealtimeBridge();
 
   // ── طبقة العمّال: الوظائف الخلفيّة تعمل في عاملٍ واحدٍ فقط ─────────────────────────────────
   // في العنقود تعمل عدّة نسخ من الخادم على النوى؛ لو بدأت كلٌّ منها الكنّاسات والكرون لتكرّر
@@ -914,6 +925,8 @@ async function startServer() {
       stopOnlineOrderExpirySweeper?.();
       stopPurchaseIntegrityMonitor?.();
       stopReconcileScheduler?.();
+      sseManager.closeAll();
+      await stopRealtimeBridge();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await closeDb();
       await closeControlDb();

@@ -420,6 +420,21 @@ export default defineConfig({
       "server/services/__tests__/storefrontThematicService.test.ts",
       "server/services/__tests__/customerReadAccess.test.ts",
       "client/src/components/pos/__tests__/posTotalsCredit.test.ts",
+      // الموجة ٠ (Wave 0): البنية التحتية اللحظية وناقل الحلقات الداخلي وتنسيق التبويبات المتعددة
+      "server/realtime/__tests__/bridge.test.ts",
+      "server/realtime/__tests__/sseStream.test.ts",
+      "client/src/lib/realtime/__tests__/tabCoordinator.test.ts",
+      // الموجة ١ (Wave 1): دورة الأحداث اللحظية للإشعارات والاعتمادات والإعلانات
+      "server/realtime/__tests__/wave1RealtimeEvents.test.ts",
+      "client/src/components/NotificationBell.test.ts",
+      // الموجة ٢ (Wave 2): خط إنتاج المطبعة والاستقبال
+      "server/realtime/__tests__/wave2RealtimeEvents.test.ts",
+      // الموجة ٣ (Wave 3): أسطول التوصيل وتنفيذ طلبات المتجر
+      "server/realtime/__tests__/wave3RealtimeEvents.test.ts",
+      // الموجة ٤ (Wave 4): العمليات الميدانية والجرد والسلال وشاشة العميل
+      "server/realtime/__tests__/wave4RealtimeEvents.test.ts",
+      // الموجة ٥ (Wave 5): تكامل تطبيقات الهاتف والمرونة وحصانة العمل دون اتصال
+      "server/realtime/__tests__/wave5RealtimeEvents.test.ts",
     ],
   },
 });

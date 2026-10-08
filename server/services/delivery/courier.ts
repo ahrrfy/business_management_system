@@ -68,6 +68,8 @@ import {
   SHORTFALL_REASON_LABEL_AR,
 } from "@shared/shortfallReason";
 import { enqueueStorefrontOrderStatusPush } from "../storeAdmin/storefrontPushCampaignService";
+import { publishRealtimeEvent } from "../../realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 
 /** يحلّ جهة التوصيل المرتبطة بحساب المستخدم (المندوب). null إن لم يُربط الحساب بجهة نشطة. */
 export async function resolveCourierPartyId(
@@ -627,13 +629,25 @@ export async function confirmCourierDelivery(
       status: "DELIVERED",
     });
 
-    return {
+    const ret = {
       orderId: order.id,
       orderNumber: order.orderNumber,
       collected: toDbMoney(collected),
       custodyAfter: toDbMoney(custodyAfter),
       alreadyDelivered: wasDelivered && collected.isZero(),
     };
+    publishRealtimeEvent(
+      REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
+      {
+        deliveryId: order.id,
+        invoiceId: Number(inv.id),
+        driverId: Number(partyId),
+        branchId: Number(inv.branchId),
+        collectedAmount: toDbMoney(collected),
+      },
+      { branchId: Number(inv.branchId) },
+    );
+    return ret;
   });
 }
 
@@ -856,6 +870,8 @@ export async function confirmConsignmentDelivery(
     }
 
     const deliveredAt = new Date();
+    let recordedShortfallReason: string | null = null;
+    let recordedShortageAmount: string | null = null;
     const codRemaining = round2(
       money(cn.codAmount).minus(money(cn.collectedAmount ?? "0")),
     );
@@ -1032,6 +1048,10 @@ export async function confirmConsignmentDelivery(
         }
       }
       const shortfallReason = booksShortfall ? declaredReason! : null;
+      if (shortfallReason) {
+        recordedShortfallReason = shortfallReason;
+        recordedShortageAmount = toDbMoney(shortage);
+      }
 
       if (cn.custodyRecognizedAt == null) {
         // نُصعِّد عهدةَ المندوب بـ**مجموع** ما يتحمّله (نقدٌ قبضه + عجزٌ يتحمّله):
@@ -1178,6 +1198,31 @@ export async function confirmConsignmentDelivery(
       clientRequestId,
       Number(cn.id),
       payloadHash,
+    );
+
+    if (recordedShortfallReason && recordedShortageAmount) {
+      publishRealtimeEvent(
+        REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED,
+        {
+          deliveryId: Number(cn.id),
+          driverId: Number(cn.assignedUserId ?? membership.partyId),
+          amount: recordedShortageAmount,
+          reason: recordedShortfallReason,
+          branchId: Number(cn.branchId),
+        },
+        { branchId: Number(cn.branchId) },
+      );
+    }
+    publishRealtimeEvent(
+      REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
+      {
+        deliveryId: Number(cn.id),
+        invoiceId: Number(cn.invoiceId),
+        driverId: Number(cn.assignedUserId ?? membership.partyId),
+        branchId: Number(cn.branchId),
+        collectedAmount: toDbMoney(cod),
+      },
+      { branchId: Number(cn.branchId) },
     );
 
     return {
