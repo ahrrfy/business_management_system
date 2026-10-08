@@ -407,12 +407,33 @@ export async function analyzeBundleRequirements(
       originalSku?: string | null;
     }
 
+    const userBatchMap = input.batches
+      ? new Map(input.batches.map((b) => [Number(b.variantId), b]))
+      : null;
+
+    const getEffectiveBatchQty = (comp: (typeof components)[number]): number => {
+      if (!userBatchMap) return comp.suggestedBatchQty;
+      const userBatch = userBatchMap.get(comp.variantId);
+      if (!userBatch || userBatch.selected === false || userBatch.batchQty <= 0) return 0;
+      return userBatch.batchQty;
+    };
+
+    const getEffectiveLaborPerUnit = (comp: (typeof components)[number]): string => {
+      if (!userBatchMap) return comp.laborPerUnit;
+      const userBatch = userBatchMap.get(comp.variantId);
+      if (userBatch?.laborPerUnit && userBatch.laborPerUnit.trim() !== "") {
+        return userBatch.laborPerUnit.trim();
+      }
+      return comp.laborPerUnit;
+    };
+
     const materialMap = new Map<number, MaterialAccumulator>();
 
     for (const comp of components) {
       if (!comp.isManufactured || !comp.recipeId) continue;
+      const batchQty = getEffectiveBatchQty(comp);
+      if (batchQty <= 0) continue;
       const lines = linesByRecipeId.get(comp.recipeId) ?? [];
-      const batchQty = comp.suggestedBatchQty;
       for (const l of lines) {
         const matVarId = Number(l.inputVariantId);
         const needed = new Decimal(l.qtyPerOutputBase).times(batchQty);
@@ -530,18 +551,20 @@ export async function analyzeBundleRequirements(
       maxBundlesPossible = Math.max(0, maxBundlesPossible);
     }
 
-    // ⑧ تقدير التكاليف الإجمالية للدفعة المقترحة
+    // ⑧ تقدير التكاليف الإجمالية للدفعة
     let estLabor = new Decimal(0);
     let estMaterials = new Decimal(0);
 
     for (const comp of components) {
-      if (!comp.isManufactured || !comp.recipeId || comp.suggestedBatchQty <= 0) continue;
-      const lab = money(comp.laborPerUnit).times(comp.suggestedBatchQty);
+      if (!comp.isManufactured || !comp.recipeId) continue;
+      const batchQty = getEffectiveBatchQty(comp);
+      if (batchQty <= 0) continue;
+      const lab = money(getEffectiveLaborPerUnit(comp)).times(batchQty);
       estLabor = estLabor.plus(lab);
 
       const lines = linesByRecipeId.get(comp.recipeId) ?? [];
       for (const l of lines) {
-        const needed = new Decimal(l.qtyPerOutputBase).times(comp.suggestedBatchQty);
+        const needed = new Decimal(l.qtyPerOutputBase).times(batchQty);
         const cost = needed.times(money(l.materialCostPrice ?? "0"));
         estMaterials = estMaterials.plus(cost);
       }

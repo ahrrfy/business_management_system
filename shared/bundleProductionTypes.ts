@@ -13,6 +13,21 @@ export const analyzeBundleRequirementsInputSchema = z.object({
   branchId: z.number().int().positive().optional(),
   mode: bundleRequirementModeSchema.default("NET_SHORTAGE"),
   materialSubstitutions: z.array(materialSubstitutionItemSchema).nullish(),
+  batches: z
+    .array(
+      z.object({
+        variantId: z.number().int().positive(),
+        recipeId: z.number().int().positive().nullish(),
+        batchQty: z.number().int().min(0),
+        scrapQty: z.number().int().min(0).optional(),
+        laborPerUnit: z
+          .string()
+          .regex(/^\d+(\.\d{1,2})?$/)
+          .nullish(),
+        selected: z.boolean().default(true),
+      })
+    )
+    .nullish(),
 });
 export type AnalyzeBundleRequirementsInput = z.infer<typeof analyzeBundleRequirementsInputSchema>;
 

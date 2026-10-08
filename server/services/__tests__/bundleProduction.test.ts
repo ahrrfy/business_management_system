@@ -336,6 +336,50 @@ describe("مولّد إنتاج مكوّنات البكج: analyzeBundleRequirem
     expect(compB?.suggestedBatchQty).toBe(10);
   });
 
+  it("يحسب المواد الخام المجمعة والتكاليف التقديرية بدقة استناداً إلى دفعات مخصصة (custom batches) وإلغاء تحديد مكونات", async () => {
+    // نطلب 10 بكجات، وضع FULL_QUANTITY:
+    // اقتراح النظام الافتراضي: A = 20، B = 10
+    // لكن المستخدم خصص الدفعات:
+    // - دفتر A: batchQty = 10 (بدلاً من 20)، laborPerUnit = "1.50" (بدلاً من "0.50")
+    // - دفتر B: selected = false (مستبعد من أمر الإنتاج)
+    const res = await analyzeBundleRequirements({
+      bundleVariantId: 100,
+      bundleQuantity: 10,
+      branchId: 1,
+      mode: "FULL_QUANTITY",
+      batches: [
+        { variantId: 2, recipeId: 1, batchQty: 10, laborPerUnit: "1.50", selected: true },
+        { variantId: 3, recipeId: 2, batchQty: 10, selected: false },
+      ],
+    });
+
+    // مصفوفة المكونات components تحتفظ دائماً بالتحليل الشامل للبثكج:
+    const compA = res.components.find((c) => c.variantId === 2);
+    expect(compA?.suggestedBatchQty).toBe(20);
+    const compB = res.components.find((c) => c.variantId === 3);
+    expect(compB?.suggestedBatchQty).toBe(10);
+
+    // المواد الخام المجمعة:
+    // دفتر A فقط تم إنتاجه (دفعة 10):
+    // يستهلك 10 * 2.5 = 25 ورقة من R1 (variantId 1)
+    // دفتر B مستبعد => R2 (variantId 6) غير مستهلك إطلاقاً (استهلاك 0)
+    expect(res.aggregatedMaterials).toHaveLength(1);
+    const matR1 = res.aggregatedMaterials.find((m) => m.materialVariantId === 1);
+    expect(matR1).toBeDefined();
+    expect(matR1?.totalRequiredBase).toBe("25.0000");
+
+    const matR2 = res.aggregatedMaterials.find((m) => m.materialVariantId === 6);
+    expect(matR2).toBeUndefined();
+
+    // التكاليف التقديرية:
+    // عمالة: 10 * 1.50 = 15.00
+    // خامات: 25 ورقة * 1.00 = 25.00
+    // الإجمالي: 40.00
+    expect(res.estimatedTotalLaborCost).toBe("15.00");
+    expect(res.estimatedTotalMaterialsCost).toBe("25.00");
+    expect(res.estimatedTotalCost).toBe("40.00");
+  });
+
   it("يرفض تحليل صنف غير موجود أو صنف ليس بكجاً", async () => {
     await expect(
       analyzeBundleRequirements({
