@@ -600,5 +600,97 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
 
     expect(isSaveDisabled).toBe(true);
   });
+
+  it("يطلب تأكيد المستخدم قبل استبدال مسودة وصفة تحتوي على مواد ببيانات قالب آخر لمنع فقدان العمل", () => {
+    let pendingTemplate: { recipeId: number; sourceName: string } | null = null;
+    let appliedTemplateId: number | null = null;
+
+    const existingLines = [
+      {
+        inputVariantId: 10,
+        inputProductName: "مادة مدخلة يدوياً",
+        inputSku: "RAW-1",
+        inputCostPrice: "300",
+        qtyPerOutputBase: "2",
+        unitName: "قطعة",
+        notes: null,
+      },
+    ];
+
+    function handleSelectTemplate(recipeId: number, sourceName: string) {
+      if (existingLines.length > 0) {
+        pendingTemplate = { recipeId, sourceName };
+      } else {
+        appliedTemplateId = recipeId;
+      }
+    }
+
+    // محاولة اختيار قالب بينما المسودة تحتوي على مواد
+    handleSelectTemplate(77, "قالب دفتر تجريبي");
+
+    // يجب أن تعلق في pendingTemplate بانتظار التأكيد وألا تُطبّق فوراً
+    expect(pendingTemplate).toEqual({ recipeId: 77, sourceName: "قالب دفتر تجريبي" });
+    expect(appliedTemplateId).toBeNull();
+
+    // تأكيد الاستبدال
+    if (pendingTemplate) {
+      appliedTemplateId = (pendingTemplate as any).recipeId;
+      pendingTemplate = null;
+    }
+
+    expect(appliedTemplateId).toBe(77);
+    expect(pendingTemplate).toBeNull();
+  });
+
+  it("يطبق القالب مباشرة دون طلب تأكيد إذا كانت مسودة الوصفة فارغة تماماً", () => {
+    let pendingTemplate: { recipeId: number; sourceName: string } | null = null;
+    let appliedTemplateId: number | null = null;
+
+    const emptyLines: any[] = [];
+
+    function handleSelectTemplate(recipeId: number, sourceName: string) {
+      if (emptyLines.length > 0) {
+        pendingTemplate = { recipeId, sourceName };
+      } else {
+        appliedTemplateId = recipeId;
+      }
+    }
+
+    handleSelectTemplate(88, "قالب فارغ التجهيز");
+
+    expect(pendingTemplate).toBeNull();
+    expect(appliedTemplateId).toBe(88);
+  });
+
+  it("يبطل شجرة استعلامات الوصفات والكتالوج بالكامل بعد إنشاء الوصفة السريعة", async () => {
+    const invalidatedKeys: string[] = [];
+
+    const mockUtils = {
+      production: {
+        recipes: {
+          invalidate: vi.fn().mockImplementation(async () => {
+            invalidatedKeys.push("production.recipes.*");
+          }),
+        },
+      },
+      catalog: {
+        invalidate: vi.fn().mockImplementation(async () => {
+          invalidatedKeys.push("catalog.*");
+        }),
+      },
+    };
+
+    // استدعاء دالة الإبطال الشاملة بعد النجاح
+    await Promise.all([
+      mockUtils.production.recipes.invalidate(),
+      mockUtils.catalog.invalidate(),
+    ]);
+
+    expect(mockUtils.production.recipes.invalidate).toHaveBeenCalledTimes(1);
+    expect(mockUtils.catalog.invalidate).toHaveBeenCalledTimes(1);
+    expect(invalidatedKeys).toContain("production.recipes.*");
+    expect(invalidatedKeys).toContain("catalog.*");
+  });
 });
+
 

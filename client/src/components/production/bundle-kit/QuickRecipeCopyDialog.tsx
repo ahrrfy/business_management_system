@@ -88,6 +88,10 @@ export function QuickRecipeCopyDialog({
   const [showSearchDropdown, setShowSearchDropdown] = useState(false);
   const [selectedCatalogRecipeId, setSelectedCatalogRecipeId] = useState<string>("");
   const [isLoadingRecipe, setIsLoadingRecipe] = useState(false);
+  const [pendingTemplate, setPendingTemplate] = useState<{
+    recipeId: number;
+    sourceName: string;
+  } | null>(null);
   const searchContainerRef = React.useRef<HTMLDivElement>(null);
   const activeTemplateRequestIdRef = React.useRef<number>(0);
 
@@ -252,6 +256,27 @@ export function QuickRecipeCopyDialog({
     } finally {
       setIsLoadingRecipe(false);
     }
+  }
+
+  // التحقق والتأكيد قبل استبدال مسودة وصفة تحتوي على مواد ببيانات قالب آخر
+  function handleSelectTemplate(recipeId: number, sourceName: string) {
+    if (lines.length > 0) {
+      setPendingTemplate({ recipeId, sourceName });
+    } else {
+      applySourceRecipe(recipeId, sourceName);
+    }
+  }
+
+  function handleConfirmReplaceTemplate() {
+    if (pendingTemplate) {
+      applySourceRecipe(pendingTemplate.recipeId, pendingTemplate.sourceName);
+      setPendingTemplate(null);
+    }
+  }
+
+  function handleCancelReplaceTemplate() {
+    setPendingTemplate(null);
+    setSelectedCatalogRecipeId("");
   }
 
   // إعادة التعيين لوصفة فارغة
@@ -442,7 +467,8 @@ export function QuickRecipeCopyDialog({
   if (!targetComponent) return null;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="sm:max-w-3xl max-w-full max-h-[92vh] flex flex-col p-0 overflow-hidden"
         dir="rtl"
@@ -537,7 +563,7 @@ export function QuickRecipeCopyDialog({
                       size="sm"
                       disabled={isLoadingRecipe}
                       onClick={() =>
-                        applySourceRecipe(
+                        handleSelectTemplate(
                           comp.recipeId!,
                           `${comp.productName} (${comp.recipeName || "وصفة"})`,
                         )
@@ -569,7 +595,7 @@ export function QuickRecipeCopyDialog({
                       const found = (allRecipesQ.data ?? []).find(
                         (r) => String(r.id) === val,
                       );
-                      applySourceRecipe(Number(val), found?.name);
+                      handleSelectTemplate(Number(val), found?.name || `وصفة #${val}`);
                     }
                   }}
                   className="h-8 text-xs"
@@ -923,5 +949,45 @@ export function QuickRecipeCopyDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    {/* نافذة تأكيد استبدال المواد بقالب جديد */}
+    <Dialog
+      open={pendingTemplate != null}
+      onOpenChange={(isOpen) => {
+        if (!isOpen) handleCancelReplaceTemplate();
+      }}
+    >
+      <DialogContent className="sm:max-w-md" dir="rtl">
+        <DialogHeader>
+          <DialogTitle className="text-base font-bold flex items-center gap-2">
+            <AlertTriangle className="size-5 text-amber-500 shrink-0" aria-hidden="true" />
+            <span>تأكيد استبدال مواد الوصفة</span>
+          </DialogTitle>
+          <DialogDescription className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
+            تحتوي مسودة الوصفة الحالية على {lines.length} من المواد المدخلة. سيؤدي تطبيق القالب «{pendingTemplate?.sourceName}» إلى استبدال كافة المواد المدخلة وإعادة ضبط نسب الهدر وأجور العمالة. هل تريد المتابعة؟
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter className="gap-2 sm:gap-0 mt-3 flex-col-reverse sm:flex-row">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleCancelReplaceTemplate}
+          >
+            إلغاء والاحتفاظ بالمواد الحالية
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            onClick={handleConfirmReplaceTemplate}
+            className="gap-1.5"
+          >
+            استبدال وتطبيق القالب
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  </>
   );
 }

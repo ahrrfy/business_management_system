@@ -535,7 +535,10 @@ export function BundleKitProductionDialog({
         onRecipeCreated={async (newRecipeId, variantId) => {
           newlyCreatedRecipeVariantIdRef.current = variantId;
           await analysisQ.refetch();
-          await utils.production.recipes.list.invalidate();
+          await Promise.all([
+            utils.production.recipes.invalidate(),
+            utils.catalog.invalidate(),
+          ]);
         }}
       />
     </Dialog>
