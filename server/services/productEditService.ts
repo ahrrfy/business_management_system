@@ -16,6 +16,7 @@ import { getDb } from "../db";
 import type { Tx } from "../db";
 import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
 import { barcodeComparisonKey, barcodeIdentityCandidates, barcodesEquivalent, canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "@shared/barcodeNormalize";
+import { resolveChannelLabelsOnUpdate } from "@shared/productChannelTitles";
 import type { VariantKind } from "../../shared/variantDisplay";
 import { assertConsignmentValid } from "./catalog/productCreate";
 import { assertValidUnitFactors } from "./catalog/unitFactors";
@@ -603,6 +604,18 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
     await lockVariantsForUpdate(tx, existingVariantIds);
     // م٦ ق٨: «لا لقطة ⇒ لا تعديل» — تُقرأ الحالة بعد الأقفال وقبل أوّل كتابة، في نفس المعاملة.
     await snapshotProductBeforeUpdate(tx, input.productId, input.updateReason, actor);
+
+    const channelLabels = resolveChannelLabelsOnUpdate(
+      {
+        name,
+        posLabel: input.posLabel,
+        invoiceLabel: input.invoiceLabel,
+        storeTitle: input.storeTitle,
+        shortTitle: input.shortTitle,
+      },
+      p,
+    );
+
     await tx
       .update(products)
       .set({
@@ -612,11 +625,8 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
         modelName: input.modelName?.trim() || null,
         description: input.description?.trim() || null,
         ...(input.internalName !== undefined ? { internalName: input.internalName?.trim() || null } : {}),
-        ...(input.storeTitle !== undefined ? { storeTitle: input.storeTitle?.trim() || null } : {}),
+        ...channelLabels.patch,
         ...(input.seoTitle !== undefined ? { seoTitle: input.seoTitle?.trim() || null } : {}),
-        ...(input.shortTitle !== undefined ? { shortTitle: input.shortTitle?.trim() || null } : {}),
-        ...(input.posLabel !== undefined ? { posLabel: input.posLabel?.trim() || null } : {}),
-        ...(input.invoiceLabel !== undefined ? { invoiceLabel: input.invoiceLabel?.trim() || null } : {}),
         ...(input.marketingCopy !== undefined ? { marketingCopy: input.marketingCopy?.trim() || null } : {}),
         categoryId: input.categoryId ?? null,
         isCustomizable: input.isCustomizable ?? !!p.isCustomizable,

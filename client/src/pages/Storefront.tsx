@@ -1059,7 +1059,7 @@ type BannerItem = StoreBannerCreative;
 function InlineStrip({ banner }: { banner: BannerItem; tone?: "emerald" | "amber" }) {
   return (
     <div className="relative col-span-full aspect-[3/1] overflow-hidden rounded-xl shadow-sm">
-      <BannerFrame banner={banner} slot="HERO" />
+      <BannerFrame banner={banner} slot="INLINE" />
     </div>
   );
 }
@@ -1863,6 +1863,8 @@ function StorefrontContent() {
     // في الفواصل البينية حتى لا يبقى مسار الشراء بلا محفّز ترويجي.
     return heroBanners.slice(1, 4);
   }, [heroBanners, inlineBanners, offers]);
+  const topBanners = heroBanners.length ? heroBanners : feedStrips;
+  const topBannerSlot = heroBanners.length || !inlineBanners.length ? "HERO" : "INLINE";
 
   const dealProducts = useMemo(
     () => items.filter((p) => p.inStock && p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price)).slice(0, 12),
@@ -2358,9 +2360,9 @@ function StorefrontContent() {
 
         <StorefrontMilestoneBar cartSubtotal={cartSubtotal} freeShippingThresholdBaghdad={settingsQ.data?.freeShippingThreshold} freeShippingThresholdGovernorates={settingsQ.data?.freeShippingThresholdGovernorates} className="mb-6" />
 
-        {!search && categoryId == null && !showWishlist && feedStrips.length > 0 && (
-          <div className="mb-8 w-[100vw] relative left-[50%] right-[50%] -ml-[50vw] -mr-[50vw] overflow-hidden">
-            <BannerCarousel banners={feedStrips} slot="HERO" />
+        {!search && categoryId == null && !showWishlist && topBanners.length > 0 && (
+          <div className="mb-8 w-full min-w-0">
+            <BannerCarousel banners={topBanners} slot={topBannerSlot} />
           </div>
         )}
 

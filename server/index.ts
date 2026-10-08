@@ -82,6 +82,7 @@ import { closeControlDb, getControlDb } from "./tenancy/controlDb";
 import { assertMobileProductionReadiness } from "./services/mobileProductionReadiness";
 import { runWithLegacyHashScope } from "./services/idempotency";
 import { sweepStaleRestoreArtifacts } from "./services/maintenanceService";
+import { selfHealDivergedProductChannelLabels } from "./services/catalog/productChannelSyncSelfHeal";
 import { assertImageStoreStartupConfiguration } from "./lib/imageStore";
 import { assertStorefrontOrderingReadiness } from "./services/storefrontTurnstile";
 import { STOREFRONT_TURNSTILE_SCRIPT_ORIGIN } from "@shared/storefrontTurnstile";
@@ -148,6 +149,9 @@ async function startServer() {
     .catch((err) =>
       logger.warn({ err }, "restore.stale_artifacts.sweep_failed"),
     );
+  void selfHealDivergedProductChannelLabels().catch((err) =>
+    logger.warn({ err }, "catalog.channel_labels.self_heal_failed"),
+  );
 
   // نشر التطبيق الأصلي يعلن اعتماده على FCM و2FA وجسر جهاز الحضور. عند تفعيل العلم
   // الصريح في الإنتاج نفشل قبل فتح المنفذ إذا كانت أي حلقة ناقصة، لا بعد دخول الموظفين.

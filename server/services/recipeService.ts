@@ -13,6 +13,8 @@ import Decimal from "decimal.js";
 import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import {
   branchStock,
+  categories,
+  productPrices,
   productUnits,
   productVariants,
   products,
@@ -24,9 +26,11 @@ import {
 import type { Tx } from "../db";
 import { convertToBaseQuantity } from "./inventoryService";
 import { assertStockedOwnedMaterials } from "./inventory/materialEligibility";
+import { loadVariantAvailability } from "./catalog/variantAvailability";
 import { money, round2 } from "./money";
 import { withTx, type Actor, type MaybeScopedActor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { escLike } from "../lib/sqlLike";
 import { assertNoActiveDigitalInventoryBinding } from "./digitalCards/inventoryBindingGuard";
 import { syncBundlesContainingComponents } from "./bundleService";
 import type {
@@ -1512,6 +1516,8 @@ export interface ProductRecipeResult {
   product: {
     id: number;
     name: string;
+    categoryId: number | null;
+    categoryName: string | null;
     isService: boolean;
     isBundle: boolean;
     isActive: boolean;
@@ -1519,6 +1525,8 @@ export interface ProductRecipeResult {
   primaryVariantId: number | null;
   primaryProductUnitId: number | null;
   baseUnitName: string | null;
+  sellingPrice: string | null;
+  wholesalePrice: string | null;
   recipe: ProductRecipeDetail | null;
   allRecipes: ProductRecipeSummary[];
 }
@@ -1528,19 +1536,22 @@ export async function getRecipeForProduct(
   productId: number,
 ): Promise<ProductRecipeResult> {
   return withTx(async (tx) => {
-    const product = (
-      await tx
-        .select({
-          id: products.id,
-          name: products.name,
-          isService: products.isService,
-          isBundle: products.isBundle,
-          isActive: products.isActive,
-        })
-        .from(products)
-        .where(eq(products.id, productId))
-        .limit(1)
-    )[0];
+    const productRows = await tx
+      .select({
+        id: products.id,
+        name: products.name,
+        categoryId: products.categoryId,
+        categoryName: categories.name,
+        isService: products.isService,
+        isBundle: products.isBundle,
+        isActive: products.isActive,
+      })
+      .from(products)
+      .leftJoin(categories, eq(products.categoryId, categories.id))
+      .where(eq(products.id, productId))
+      .limit(1);
+
+    const product = productRows[0];
     if (!product) {
       throw new TRPCError({
         code: "NOT_FOUND",
@@ -1569,6 +1580,8 @@ export async function getRecipeForProduct(
         product: {
           id: Number(product.id),
           name: product.name,
+          categoryId: product.categoryId ? Number(product.categoryId) : null,
+          categoryName: product.categoryName ?? null,
           isService: Boolean(product.isService),
           isBundle: Boolean(product.isBundle),
           isActive: Boolean(product.isActive),
@@ -1576,6 +1589,8 @@ export async function getRecipeForProduct(
         primaryVariantId: null,
         primaryProductUnitId: null,
         baseUnitName: null,
+        sellingPrice: null,
+        wholesalePrice: null,
         recipe: null,
         allRecipes: [],
       };
@@ -1728,10 +1743,31 @@ export async function getRecipeForProduct(
       };
     }
 
+    let sellingPrice: string | null = null;
+    let wholesalePrice: string | null = null;
+    if (primaryProductUnitId) {
+      const priceRows = await tx
+        .select({
+          priceTier: productPrices.priceTier,
+          price: productPrices.price,
+        })
+        .from(productPrices)
+        .where(eq(productPrices.productUnitId, primaryProductUnitId));
+      for (const pr of priceRows) {
+        if (pr.priceTier === "RETAIL") sellingPrice = String(pr.price);
+        if (pr.priceTier === "WHOLESALE") wholesalePrice = String(pr.price);
+      }
+      if (!sellingPrice && priceRows.length > 0) {
+        sellingPrice = String(priceRows[0].price);
+      }
+    }
+
     return {
       product: {
         id: Number(product.id),
         name: product.name,
+        categoryId: product.categoryId ? Number(product.categoryId) : null,
+        categoryName: product.categoryName ?? null,
         isService: Boolean(product.isService),
         isBundle: Boolean(product.isBundle),
         isActive: Boolean(product.isActive),
@@ -1739,9 +1775,543 @@ export async function getRecipeForProduct(
       primaryVariantId,
       primaryProductUnitId,
       baseUnitName,
+      sellingPrice,
+      wholesalePrice,
       recipe: fullRecipe,
       allRecipes,
     };
   });
 }
+
+export interface RecipeSuggestion {
+  recipeId: number;
+  recipeName: string;
+  productId: number;
+  productName: string;
+  categoryName: string | null;
+  matchReason: string;
+  matchScore: number;
+  laborPerOutputBase: string;
+  wasteStdPct: string;
+  notes: string | null;
+  lineCount: number;
+  estimatedUnitCost: string;
+  lines: Array<{
+    inputVariantId: number;
+    inputProductUnitId: number | null;
+    inputProductName: string;
+    inputSku: string;
+    inputCostPrice: string;
+    qtyPerOutputBase: string;
+    unitName: string;
+    notes: string | null;
+  }>;
+}
+
+const ARABIC_STOP_WORDS = new Set([
+  "مع", "في", "من", "عن", "على", "الى", "او", "ثم", "كل", "هو", "هي", "تم", "غير", "بين", "ذو", "ذات",
+]);
+
+function tokenizeArabic(str: string): string[] {
+  return (str || "")
+    .toLowerCase()
+    .replace(/[أإآ]/g, "ا")
+    .replace(/ة/g, "ه")
+    .replace(/ى/g, "ي")
+    .replace(/[^\w\u0600-\u06FF\s]/g, " ")
+    .split(/\s+/)
+    .map((w) => w.replace(/^(ال|وال|فال|بال|كال)/, "").trim())
+    .filter((w) => w.length >= 2 && !ARABIC_STOP_WORDS.has(w));
+}
+
+function safeDecimal(v: string | number | null | undefined, def = 0): Decimal {
+  if (v == null || v === "") return new Decimal(def);
+  try {
+    const d = new Decimal(v);
+    return d.isNaN() ? new Decimal(def) : d;
+  } catch {
+    return new Decimal(def);
+  }
+}
+
+/** محرك الاقتراحات التنبؤية للوصفات بناءً على الصنف والاسم وتطابق الكلمات الدلالية */
+export async function suggestSimilarRecipes(
+  productId: number,
+  limit: number = 5,
+): Promise<RecipeSuggestion[]> {
+  return withTx(async (tx) => {
+    const target = (
+      await tx
+        .select({
+          id: products.id,
+          name: products.name,
+          categoryId: products.categoryId,
+          isService: products.isService,
+        })
+        .from(products)
+        .where(eq(products.id, productId))
+        .limit(1)
+    )[0];
+    if (!target) return [];
+
+    const targetTokens = new Set(tokenizeArabic(target.name));
+
+    const candidateRecipes = await tx
+      .select({
+        recipeId: productionRecipes.id,
+        recipeName: productionRecipes.name,
+        laborPerOutputBase: productionRecipes.laborPerOutputBase,
+        wasteStdPct: productionRecipes.wasteStdPct,
+        notes: productionRecipes.notes,
+        productId: products.id,
+        productName: products.name,
+        categoryId: products.categoryId,
+        categoryName: categories.name,
+        isService: products.isService,
+      })
+      .from(productionRecipes)
+      .innerJoin(productVariants, eq(productionRecipes.outputVariantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .leftJoin(categories, eq(products.categoryId, categories.id))
+      .where(
+        and(
+          eq(productionRecipes.isActive, true),
+          eq(products.isActive, true),
+          ne(products.id, productId),
+        ),
+      )
+      .orderBy(desc(productionRecipes.id))
+      .limit(150);
+
+    const seenProducts = new Set<number>();
+    const scoredCandidates: Array<{
+      recipe: (typeof candidateRecipes)[0];
+      score: number;
+      reasons: string[];
+    }> = [];
+
+    for (const cand of candidateRecipes) {
+      const pid = Number(cand.productId);
+      if (seenProducts.has(pid)) continue;
+      seenProducts.add(pid);
+
+      let score = 0;
+      const reasons: string[] = [];
+
+      if (
+        target.categoryId != null &&
+        cand.categoryId != null &&
+        Number(target.categoryId) === Number(cand.categoryId)
+      ) {
+        score += 50;
+        reasons.push(cand.categoryName ? `نفس التصنيف (${cand.categoryName})` : "نفس التصنيف");
+      }
+
+      const candTokens = tokenizeArabic(cand.productName);
+      const matchedTokens: string[] = [];
+      for (const token of candTokens) {
+        if (targetTokens.has(token)) {
+          matchedTokens.push(token);
+        }
+      }
+      if (matchedTokens.length > 0) {
+        score += matchedTokens.length * 20;
+        reasons.push(`تطابق في الكلمات: ${matchedTokens.slice(0, 3).join("، ")}`);
+      }
+
+      // إشعار كودكس P2: اشتراط وجود تقاطع دلالي فعلي (تصنيف أو كلمات مشتركة) قبل قبول الاقتراح
+      if (reasons.length === 0) {
+        continue;
+      }
+
+      if (Boolean(target.isService) === Boolean(cand.isService)) {
+        score += 10;
+      }
+
+      if (score > 0) {
+        scoredCandidates.push({
+          recipe: cand,
+          score,
+          reasons,
+        });
+      }
+    }
+
+    scoredCandidates.sort((a, b) => b.score - a.score);
+    const topCandidates = scoredCandidates.slice(0, limit);
+    if (topCandidates.length === 0) return [];
+
+    const recipeIds = topCandidates.map((c) => Number(c.recipe.recipeId));
+
+    const lineRows = await tx
+      .select({
+        recipeId: productionRecipeLines.recipeId,
+        inputVariantId: productionRecipeLines.inputVariantId,
+        inputProductUnitId: productionRecipeLines.inputProductUnitId,
+        qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
+        notes: productionRecipeLines.notes,
+        productName: products.name,
+        variantName: productVariants.variantName,
+        sku: productVariants.sku,
+        costPrice: productVariants.costPrice,
+        baseUnitId: productUnits.id,
+        unitName: productUnits.unitName,
+      })
+      .from(productionRecipeLines)
+      .innerJoin(productVariants, eq(productionRecipeLines.inputVariantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .leftJoin(
+        productUnits,
+        and(eq(productUnits.variantId, productVariants.id), eq(productUnits.isBaseUnit, true)),
+      )
+      .where(inArray(productionRecipeLines.recipeId, recipeIds))
+      .orderBy(productionRecipeLines.id);
+
+    const linesByRecipe = new Map<number, typeof lineRows>();
+    for (const row of lineRows) {
+      const rId = Number(row.recipeId);
+      if (!linesByRecipe.has(rId)) linesByRecipe.set(rId, []);
+      linesByRecipe.get(rId)!.push(row);
+    }
+
+    return topCandidates.map(({ recipe, score, reasons }) => {
+      const rLines = linesByRecipe.get(Number(recipe.recipeId)) ?? [];
+
+      let materialsTotal = new Decimal(0);
+      const mappedLines = rLines.map((l) => {
+        const qty = safeDecimal(l.qtyPerOutputBase, 0);
+        const cost = safeDecimal(l.costPrice, 0);
+        materialsTotal = materialsTotal.plus(qty.mul(cost));
+        const displayName = l.variantName ? `${l.productName} (${l.variantName})` : l.productName;
+        return {
+          inputVariantId: Number(l.inputVariantId),
+          inputProductUnitId: l.baseUnitId
+            ? Number(l.baseUnitId)
+            : (l.inputProductUnitId ? Number(l.inputProductUnitId) : null),
+          inputProductName: displayName,
+          inputSku: l.sku,
+          inputCostPrice: String(l.costPrice || "0"),
+          qtyPerOutputBase: String(l.qtyPerOutputBase),
+          unitName: l.unitName || "وحدة",
+          notes: l.notes,
+        };
+      });
+
+      const labor = Decimal.max(0, safeDecimal(recipe.laborPerOutputBase, 0));
+      const rawWaste = safeDecimal(recipe.wasteStdPct, 0);
+      const wastePct = rawWaste.gt(0) && rawWaste.lt(1) ? rawWaste : new Decimal(0);
+      const totalBeforeWaste = materialsTotal.plus(labor);
+      const wasteFactor =
+        wastePct.gt(0) && wastePct.lt(1) ? new Decimal(1).minus(wastePct) : new Decimal(1);
+      const estimatedUnitCost = wasteFactor.gt(0)
+        ? round2(totalBeforeWaste.div(wasteFactor)).toString()
+        : totalBeforeWaste.toString();
+
+      return {
+        recipeId: Number(recipe.recipeId),
+        recipeName: recipe.recipeName,
+        productId: Number(recipe.productId),
+        productName: recipe.productName,
+        categoryName: recipe.categoryName,
+        matchReason: reasons.join(" · ") || "منتج مشابه",
+        matchScore: score,
+        laborPerOutputBase: labor.toString(),
+        wasteStdPct: wastePct.toString(),
+        notes: recipe.notes,
+        lineCount: mappedLines.length,
+        estimatedUnitCost,
+        lines: mappedLines,
+      };
+    }).filter((r) => r.lineCount > 0);
+  });
+}
+
+export interface RecipeImportItem {
+  recipeId: number;
+  recipeName: string;
+  productId: number;
+  productName: string;
+  categoryName: string | null;
+  laborPerOutputBase: string;
+  wasteStdPct: string;
+  notes: string | null;
+  lineCount: number;
+  estimatedUnitCost: string;
+  lines: Array<{
+    inputVariantId: number;
+    inputProductUnitId: number | null;
+    inputProductName: string;
+    inputSku: string;
+    inputCostPrice: string;
+    qtyPerOutputBase: string;
+    unitName: string;
+    notes: string | null;
+  }>;
+}
+
+/** استعراض وبحث الوصفات المسجلة في النظام لاستيرادها كقالب تشغيلي */
+export async function listRecipesForImport(options: {
+  query?: string;
+  excludeProductId?: number;
+  limit?: number;
+}): Promise<RecipeImportItem[]> {
+  return withTx(async (tx) => {
+    const lim = Math.min(Math.max(1, options.limit ?? 20), 50);
+    const search = options.query?.trim();
+
+    let queryCond = and(
+      eq(productionRecipes.isActive, true),
+      eq(products.isActive, true),
+      options.excludeProductId ? ne(products.id, options.excludeProductId) : sql`1=1`,
+    );
+
+    if (search) {
+      const escaped = `%${escLike(search)}%`;
+      queryCond = and(
+        queryCond,
+        sql`(${productionRecipes.name} LIKE ${escaped} ESCAPE '!' OR ${products.name} LIKE ${escaped} ESCAPE '!' OR ${productVariants.sku} LIKE ${escaped} ESCAPE '!')`,
+      );
+    }
+
+    const candidateRecipes = await tx
+      .select({
+        recipeId: productionRecipes.id,
+        recipeName: productionRecipes.name,
+        laborPerOutputBase: productionRecipes.laborPerOutputBase,
+        wasteStdPct: productionRecipes.wasteStdPct,
+        notes: productionRecipes.notes,
+        productId: products.id,
+        productName: products.name,
+        categoryName: categories.name,
+      })
+      .from(productionRecipes)
+      .innerJoin(productVariants, eq(productionRecipes.outputVariantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .leftJoin(categories, eq(products.categoryId, categories.id))
+      .where(queryCond)
+      .orderBy(desc(productionRecipes.id))
+      .limit(lim);
+
+    if (candidateRecipes.length === 0) return [];
+
+    const recipeIds = candidateRecipes.map((c) => Number(c.recipeId));
+
+    const lineRows = await tx
+      .select({
+        recipeId: productionRecipeLines.recipeId,
+        inputVariantId: productionRecipeLines.inputVariantId,
+        inputProductUnitId: productionRecipeLines.inputProductUnitId,
+        qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
+        notes: productionRecipeLines.notes,
+        productName: products.name,
+        variantName: productVariants.variantName,
+        sku: productVariants.sku,
+        costPrice: productVariants.costPrice,
+        baseUnitId: productUnits.id,
+        unitName: productUnits.unitName,
+      })
+      .from(productionRecipeLines)
+      .innerJoin(productVariants, eq(productionRecipeLines.inputVariantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .leftJoin(
+        productUnits,
+        and(eq(productUnits.variantId, productVariants.id), eq(productUnits.isBaseUnit, true)),
+      )
+      .where(inArray(productionRecipeLines.recipeId, recipeIds))
+      .orderBy(productionRecipeLines.id);
+
+    const linesByRecipe = new Map<number, typeof lineRows>();
+    for (const row of lineRows) {
+      const rId = Number(row.recipeId);
+      if (!linesByRecipe.has(rId)) linesByRecipe.set(rId, []);
+      linesByRecipe.get(rId)!.push(row);
+    }
+
+    return candidateRecipes.map((recipe) => {
+      const rLines = linesByRecipe.get(Number(recipe.recipeId)) ?? [];
+
+      let materialsTotal = new Decimal(0);
+      const mappedLines = rLines.map((l) => {
+        const qty = safeDecimal(l.qtyPerOutputBase, 0);
+        const cost = safeDecimal(l.costPrice, 0);
+        materialsTotal = materialsTotal.plus(qty.mul(cost));
+        const displayName = l.variantName ? `${l.productName} (${l.variantName})` : l.productName;
+        return {
+          inputVariantId: Number(l.inputVariantId),
+          inputProductUnitId: l.baseUnitId
+            ? Number(l.baseUnitId)
+            : (l.inputProductUnitId ? Number(l.inputProductUnitId) : null),
+          inputProductName: displayName,
+          inputSku: l.sku,
+          inputCostPrice: String(l.costPrice || "0"),
+          qtyPerOutputBase: String(l.qtyPerOutputBase),
+          unitName: l.unitName || "وحدة",
+          notes: l.notes,
+        };
+      });
+
+      const labor = Decimal.max(0, safeDecimal(recipe.laborPerOutputBase, 0));
+      const rawWaste = safeDecimal(recipe.wasteStdPct, 0);
+      const wastePct = rawWaste.gt(0) && rawWaste.lt(1) ? rawWaste : new Decimal(0);
+      const totalBeforeWaste = materialsTotal.plus(labor);
+      const wasteFactor =
+        wastePct.gt(0) && wastePct.lt(1) ? new Decimal(1).minus(wastePct) : new Decimal(1);
+      const estimatedUnitCost = wasteFactor.gt(0)
+        ? round2(totalBeforeWaste.div(wasteFactor)).toString()
+        : totalBeforeWaste.toString();
+
+      return {
+        recipeId: Number(recipe.recipeId),
+        recipeName: recipe.recipeName,
+        productId: Number(recipe.productId),
+        productName: recipe.productName,
+        categoryName: recipe.categoryName,
+        laborPerOutputBase: labor.toString(),
+        wasteStdPct: wastePct.toString(),
+        notes: recipe.notes,
+        lineCount: mappedLines.length,
+        estimatedUnitCost,
+        lines: mappedLines,
+      };
+    }).filter((r) => r.lineCount > 0);
+  });
+}
+
+export interface RecipeStockAvailabilityComponent {
+  variantId: number;
+  productName: string | null;
+  sku: string | null;
+  available: number;
+  onHand: number;
+  requiredPerUnit: string;
+  maxUnitsFromThis: number;
+  isLimiting: boolean;
+  unitName: string;
+  costPrice: string;
+}
+
+export interface RecipeStockAvailabilityResult {
+  branchId: number;
+  maxCapacity: number;
+  limitingComponent: string | null;
+  allAvailable: boolean;
+  components: RecipeStockAvailabilityComponent[];
+}
+
+/** فحص فوري لتوفر المواد الخام في مخزون الفرع وحساب الطاقة الإنتاجية الفورية */
+export async function checkRecipeMaterialsAvailability(args: {
+  branchId: number;
+  lines: Array<{ inputVariantId: number; qtyPerOutputBase: string }>;
+}): Promise<RecipeStockAvailabilityResult> {
+  return withTx(async (tx) => {
+    const inVarIds = Array.from(
+      new Set(
+        args.lines
+          .map((l) => Number(l.inputVariantId))
+          .filter((id) => Number.isFinite(id) && id > 0),
+      ),
+    );
+
+    if (inVarIds.length === 0) {
+      return {
+        branchId: args.branchId || 0,
+        maxCapacity: 0,
+        limitingComponent: null,
+        allAvailable: false,
+        components: [],
+      };
+    }
+
+    const availability =
+      args.branchId && args.branchId > 0
+        ? await loadVariantAvailability(tx, args.branchId, inVarIds)
+        : new Map();
+
+    const varRows = await tx
+      .select({
+        variantId: productVariants.id,
+        sku: productVariants.sku,
+        productName: products.name,
+        variantName: productVariants.variantName,
+        costPrice: productVariants.costPrice,
+      })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(productVariants.id, inVarIds));
+
+    const varMap = new Map<number, (typeof varRows)[0]>();
+    for (const v of varRows) {
+      varMap.set(Number(v.variantId), v);
+    }
+
+    const byVariant = new Map<number, Decimal>();
+    for (const l of args.lines) {
+      const vid = Number(l.inputVariantId);
+      if (!Number.isFinite(vid) || vid <= 0) continue;
+      const qty = Decimal.max(0, safeDecimal(l.qtyPerOutputBase, 0));
+      const existing = byVariant.get(vid) ?? new Decimal(0);
+      byVariant.set(vid, existing.plus(qty));
+    }
+
+    let minCapacity = Number.POSITIVE_INFINITY;
+    const rawComponents = inVarIds.map((variantId) => {
+      const avail = availability.get(variantId);
+      const available = avail?.availableBase ?? 0;
+      const onHand = avail?.onHandBase ?? 0;
+      const coef = byVariant.get(variantId) ?? new Decimal(0);
+      const vInfo = varMap.get(variantId);
+      const displayName = vInfo
+        ? vInfo.variantName
+          ? `${vInfo.productName} (${vInfo.variantName})`
+          : vInfo.productName
+        : `صنف #${variantId}`;
+
+      const isRequired = coef.gt(0);
+      const maxUnits = isRequired
+        ? Math.floor(new Decimal(Math.max(0, available)).div(coef).toNumber())
+        : null;
+
+      if (maxUnits !== null && maxUnits < minCapacity) {
+        minCapacity = maxUnits;
+      }
+
+      return {
+        variantId,
+        productName: displayName,
+        sku: vInfo?.sku ?? null,
+        available: Math.max(0, available),
+        onHand,
+        requiredPerUnit: coef.toString(),
+        maxUnitsFromThis: maxUnits !== null ? maxUnits : Math.max(0, available),
+        unitName: "وحدة",
+        isRequired,
+        costPrice: vInfo?.costPrice ? String(vInfo.costPrice) : "0",
+      };
+    });
+
+    const finalCapacity = Number.isFinite(minCapacity) ? Math.max(0, minCapacity) : 0;
+    const components: RecipeStockAvailabilityComponent[] = rawComponents.map((c) => ({
+      variantId: c.variantId,
+      productName: c.productName,
+      sku: c.sku,
+      available: c.available,
+      onHand: c.onHand,
+      requiredPerUnit: c.requiredPerUnit,
+      maxUnitsFromThis: c.maxUnitsFromThis,
+      unitName: c.unitName,
+      isLimiting: c.isRequired && c.maxUnitsFromThis === finalCapacity,
+      costPrice: c.costPrice,
+    }));
+    const limiting = components.find((c) => c.isLimiting && c.maxUnitsFromThis === finalCapacity);
+
+    return {
+      branchId: args.branchId,
+      maxCapacity: finalCapacity,
+      limitingComponent: limiting?.productName ?? null,
+      allAvailable: finalCapacity > 0,
+      components,
+    };
+  });
+}
+
 

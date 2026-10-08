@@ -72,6 +72,14 @@ export function CustomerSelectionDialog({
     staleTime: 60_000,
   });
 
+  // Fallback to fetch customer profile if customerId is provided but selectedCustomer wasn't passed by parent
+  const fetchedCustomer = trpc.customers.get.useQuery(
+    { customerId: customerId! },
+    { enabled: open && customerId != null && selectedCustomer == null, staleTime: 60_000 },
+  );
+
+  const activeCustomer = selectedCustomer ?? fetchedCustomer.data ?? null;
+
   const displayList = trimmedQuery.length >= 1
     ? (searchResults.data ?? [])
     : (customersList.data ?? []).slice(0, 20);
@@ -153,21 +161,21 @@ export function CustomerSelectionDialog({
           </div>
 
           {/* 2. Currently Selected Customer Profile Card */}
-          {customerId != null && selectedCustomer != null && (
+          {customerId != null && activeCustomer != null && (
             <div className="p-3.5 rounded-lg border bg-card shadow-xs space-y-3">
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="font-extrabold text-base text-foreground">
-                      {selectedCustomer.name}
+                      {activeCustomer.name}
                     </span>
                     <span className="text-xs px-2 py-0.5 rounded bg-muted text-muted-foreground font-medium">
-                      {(selectedCustomer as any).customerType ?? "فرد"}
+                      {(activeCustomer as any).customerType ?? "فرد"}
                     </span>
                   </div>
-                  {selectedCustomer.phone && (
+                  {activeCustomer.phone && (
                     <div className="text-xs text-muted-foreground mt-0.5" dir="ltr">
-                      {selectedCustomer.phone}
+                      {activeCustomer.phone}
                     </div>
                   )}
                 </div>
@@ -187,7 +195,7 @@ export function CustomerSelectionDialog({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs pt-1 border-t">
                 {/* Credit status */}
                 <div className="flex items-center gap-2 p-2 rounded-md bg-muted/30 border">
-                  {selectedCustomer.creditLimit != null && Number(selectedCustomer.creditLimit) === 0 ? (
+                  {activeCustomer.creditLimit != null && Number(activeCustomer.creditLimit) === 0 ? (
                     <>
                       <AlertCircle className="size-4 text-destructive shrink-0" aria-hidden />
                       <div>
@@ -195,7 +203,7 @@ export function CustomerSelectionDialog({
                         <div className="text-[11px] text-muted-foreground">حد الائتمان: صفر د.ع</div>
                       </div>
                     </>
-                  ) : selectedCustomer.creditLimit == null ? (
+                  ) : activeCustomer.creditLimit == null ? (
                     <>
                       <CheckCircle2 className="size-4 text-emerald-600 dark:text-emerald-400 shrink-0" aria-hidden />
                       <div>
@@ -209,7 +217,7 @@ export function CustomerSelectionDialog({
                       <div>
                         <div className="font-bold text-emerald-600 dark:text-emerald-400">مسموح بالبيع الآجل</div>
                         <div className="text-[11px] text-muted-foreground">
-                          سقف الائتمان: {fmt(selectedCustomer.creditLimit)} د.ع
+                          سقف الائتمان: {fmt(activeCustomer.creditLimit)} د.ع
                         </div>
                       </div>
                     </>
@@ -223,12 +231,12 @@ export function CustomerSelectionDialog({
                     <div className="font-medium text-muted-foreground">الرصيد / الذمة الحالية:</div>
                     <div
                       className={`font-bold ${
-                        selectedCustomer.currentBalance && D(selectedCustomer.currentBalance).gt(0)
+                        activeCustomer.currentBalance && D(activeCustomer.currentBalance).gt(0)
                           ? "text-amber-600 dark:text-amber-400"
                           : "text-foreground"
                       }`}
                     >
-                      {selectedCustomer.currentBalance ? fmt(selectedCustomer.currentBalance) : "0"} د.ع
+                      {activeCustomer.currentBalance ? fmt(activeCustomer.currentBalance) : "0"} د.ع
                     </div>
                   </div>
                 </div>
@@ -308,13 +316,58 @@ export function CustomerSelectionDialog({
                 </div>
               )}
               {searchResults.isError && (
-                <div className="p-3 text-center text-xs text-destructive">
-                  تعذّر البحث: {searchResults.error.message}
+                <div className="p-4 text-center space-y-2 text-xs">
+                  <div className="text-destructive font-medium flex items-center justify-center gap-1.5">
+                    <AlertCircle className="size-4 shrink-0" aria-hidden />
+                    <span>تعذّر البحث: {searchResults.error.message}</span>
+                  </div>
+                  <div className="flex items-center justify-center gap-2 pt-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => searchResults.refetch()}
+                      className="text-xs h-7 gap-1"
+                    >
+                      <RotateCcw className="size-3.5" aria-hidden />
+                      إعادة المحاولة
+                    </Button>
+                    {canCreate && !showNewForm && (
+                      <Button
+                        type="button"
+                        variant="default"
+                        size="sm"
+                        onClick={() => setShowNewForm(true)}
+                        className="text-xs h-7 gap-1"
+                      >
+                        <Plus className="size-3.5" aria-hidden />
+                        تسجيل عميل جديد مباشرةً
+                      </Button>
+                    )}
+                  </div>
                 </div>
               )}
               {!isSearching && !searchResults.isError && displayList.length === 0 && (
-                <div className="p-4 text-center text-xs text-muted-foreground">
-                  لا توجد نتائج مطابقة — يمكنك تسجيل عميل جديد بالضغط على «عميل جديد» أعلاه
+                <div className="p-4 text-center space-y-2 text-xs text-muted-foreground">
+                  <div>
+                    {trimmedQuery.length >= 1
+                      ? `لا توجد نتائج مطابقة لـ «${trimmedQuery}»`
+                      : "لا توجد نتائج مطابقة — يمكنك تسجيل عميل جديد بالضغط على «عميل جديد» أعلاه"}
+                  </div>
+                  {canCreate && !showNewForm && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowNewForm(true)}
+                      className="text-xs h-7 gap-1 mx-auto"
+                    >
+                      <Plus className="size-3.5" aria-hidden />
+                      {trimmedQuery.length >= 1
+                        ? `إضافة «${trimmedQuery}» كعميل جديد`
+                        : "تسجيل عميل جديد"}
+                    </Button>
+                  )}
                 </div>
               )}
               {!isSearching &&
@@ -376,6 +429,8 @@ export function CustomerSelectionDialog({
           {/* 4. Add New Customer Section */}
           {showNewForm && (
             <QuickCustomerCreateForm
+              initialName={/^\+?\d+$/.test(trimmedQuery) ? "" : trimmedQuery}
+              initialPhone={/^\+?\d+$/.test(trimmedQuery) ? trimmedQuery : ""}
               onCustomerCreated={(id, data) => {
                 setShowNewForm(false);
                 setSearchQuery("");
