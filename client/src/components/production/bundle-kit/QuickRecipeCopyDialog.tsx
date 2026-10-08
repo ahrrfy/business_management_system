@@ -39,10 +39,17 @@ import type { ComponentRequirementDto } from "@shared/bundleProductionTypes";
  * تسوية المدخلات العشرية: دعم الأرقام العربية المشرقية والفاصلة العربية العشرية.
  */
 export function normalizeDecimalInput(str: string): string {
-  return str
+  const sanitized = str
     .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
     .replace(/[،٫]/g, ".")
     .replace(/[^0-9.]/g, "");
+
+  const firstDotIndex = sanitized.indexOf(".");
+  if (firstDotIndex === -1) return sanitized;
+
+  const intPart = sanitized.slice(0, firstDotIndex);
+  const decPart = sanitized.slice(firstDotIndex + 1).replace(/\./g, "");
+  return `${intPart}.${decPart}`;
 }
 
 export interface EditableRecipeLine {
@@ -435,6 +442,18 @@ export function QuickRecipeCopyDialog({
         );
         return;
       }
+    }
+
+    const cleanWaste = wasteStdPct.trim();
+    if (cleanWaste && (!/^(\d+(\.\d*)?|\.\d+)$/.test(cleanWaste) || cleanWaste.split(".").length > 2)) {
+      notify.warn("نسبة الهدر غير صالحة، يرجى إدخال رقم عشري صحيح");
+      return;
+    }
+
+    const cleanLabor = laborPerOutputBase.trim();
+    if (cleanLabor && (!/^(\d+(\.\d*)?|\.\d+)$/.test(cleanLabor) || cleanLabor.split(".").length > 2)) {
+      notify.warn("تكلفة العمالة غير صالحة، يرجى إدخال رقم عشري صحيح");
+      return;
     }
 
     const wasteDec = moneyInput(wasteStdPct).div(100);

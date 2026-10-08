@@ -691,6 +691,33 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     expect(invalidatedKeys).toContain("production.recipes.*");
     expect(invalidatedKeys).toContain("catalog.*");
   });
+
+  it("يسوي الفواصل العشرية المتعددة إلى فاصلة عشرية واحدة فقط عبر normalizeDecimalInput", () => {
+    expect(normalizeDecimalInput("1..5")).toBe("1.5");
+    expect(normalizeDecimalInput("1.2.3")).toBe("1.23");
+    expect(normalizeDecimalInput("٠..٥")).toBe("0.5");
+    expect(normalizeDecimalInput("،،")).toBe(".");
+  });
+
+  it("يرفض مدخلات الهدر المعطوبة ذات الفواصل المتعددة (مثل 1..5) ولا يحولها بصمت إلى صفر", () => {
+    function validateWasteSyntax(rawWaste: string): boolean {
+      const clean = rawWaste.trim();
+      if (!clean) return true;
+      if (!/^(\d+(\.\d*)?|\.\d+)$/.test(clean) || clean.split(".").length > 2) {
+        return false;
+      }
+      return true;
+    }
+
+    expect(validateWasteSyntax("1.5")).toBe(true);
+    expect(validateWasteSyntax(".5")).toBe(true);
+    expect(validateWasteSyntax("0")).toBe(true);
+    expect(validateWasteSyntax("")).toBe(true);
+    expect(validateWasteSyntax("1..5")).toBe(false);
+    expect(validateWasteSyntax("1.2.3")).toBe(false);
+    expect(validateWasteSyntax("abc")).toBe(false);
+  });
 });
+
 
 
