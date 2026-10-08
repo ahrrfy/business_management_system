@@ -12,6 +12,10 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "server/realtime/__tests__/financialRefresh.test.ts",
+      "server/realtime/__tests__/financialCache.test.ts",
+      "client/src/lib/realtime/__tests__/financialQueries.test.ts",
+      "client/src/components/financial/LiveValue.test.tsx",
       "shared/productChannelSync.test.ts",
       "server/services/__tests__/predictiveRecipe.test.ts",
       "client/src/components/product/__tests__/recipeClipboard.test.ts",

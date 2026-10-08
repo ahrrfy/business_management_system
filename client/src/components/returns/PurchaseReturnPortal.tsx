@@ -89,7 +89,7 @@ export function PurchaseReturnPortal({
   >("CREDIT_OFFSET");
 
   const openDrawersQ = trpc.returns.getOpenRefundDrawers.useQuery(undefined, {
-    refetchInterval: 30_000,
+    refetchInterval: false,
   });
   const openDrawers = openDrawersQ.data ?? [];
   const [selectedShiftId, setSelectedShiftId] = useState<number | null>(null);

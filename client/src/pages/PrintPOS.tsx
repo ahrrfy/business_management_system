@@ -243,7 +243,7 @@ export default function PrintPOS() {
   const [heldDrawerOpen, setHeldDrawerOpen] = useState(false);
   const heldSalesQ = trpc.printPos.listHeldSales.useQuery(
     { branchId },
-    { refetchInterval: 15_000 },
+    { refetchInterval: false },
   );
   const heldCount = heldSalesQ.data?.length ?? 0;
 

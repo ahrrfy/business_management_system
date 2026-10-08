@@ -110,7 +110,7 @@ export function SalesReturnPortal({
   const [salesReason, setSalesReason] = useState("");
 
   const openDrawersQ = trpc.returns.getOpenRefundDrawers.useQuery(undefined, {
-    refetchInterval: 30_000,
+    refetchInterval: false,
   });
   const openDrawers = openDrawersQ.data ?? [];
   const [selectedShiftId, setSelectedShiftId] = useState<number | null>(null);
