@@ -40,6 +40,9 @@ import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/b
 import { printOnlineOrderPreparationA4, printOnlineOrderThermal, printOnlineOrderInvoiceA4 } from "@/lib/printing/onlineOrder";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { storefrontUrl } from "@/lib/siteHosts";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES, type StorefrontOrderPlacedPayload } from "@shared/realtimeEvents";
+import { playAudioFeedback } from "@/lib/audioFeedback";
 
 // حالات الطلب + خرائط العرض/الانتقال ⇐ shared/onlineOrderStatus.ts (مصدر الحقيقة الوحيد).
 // كانت مُعرَّفةً محلياً هنا (وفي Storefront/StoreDashboard/StoreAnalytics) بألوانٍ متفاوتة —
@@ -86,6 +89,17 @@ export default function OrderFulfillment() {
   const [cancelTarget, setCancelTarget] = useState<{ id: number; orderNumber: string } | null>(null);
   const [editOrderId, setEditOrderId] = useState<number | null>(null);
   const utils = trpc.useUtils();
+
+  useRealtimeEvent<StorefrontOrderPlacedPayload>(
+    REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED,
+    (event) => {
+      void utils.storeAdmin.orders.list.invalidate();
+      void utils.storeAdmin.orders.counts.invalidate();
+      playAudioFeedback("notification");
+      const p = event.payload as StorefrontOrderPlacedPayload;
+      notify.info(`طلب متجر جديد: ${p?.orderNumber ?? ""} بمبلغ ${money(p?.totalAmount)} د.ع`);
+    },
+  );
 
   const me = trpc.auth.me.useQuery();
   // الإرسال مديريّ فقط — يعكس storeManagerProcedure خادمياً (admin يعبُر داخل moduleAccessAllowed).

@@ -59,6 +59,8 @@ import { normalizeArabicSearch } from "@shared/storefrontSearchNormalize";
 import { cn } from "@/lib/utils";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import { buildCourierAssignmentMessage, buildCustomerDispatchMessage, buildWorkOrderStatusMessage, openWhatsApp } from "@/lib/whatsapp";
 import {
   CONSIGNMENT_VIEW_AR,
@@ -121,9 +123,25 @@ export default function DeliveryHub() {
    * شارةُ العدّاد: صفحةٌ واحدة (٢٠٠) تكفي عرفاً، ونضع «+» عندما يتجاوز العدد الصفحةَ الأولى
    * حتى لا يقرأ الكاشير رقماً كاذباً بعد الترقيم. الأعداد الدقيقة تحصل في التبويب نفسه.
    */
-  const transitFirstPage = trpc.delivery.inTransit.useQuery(undefined, { refetchInterval: 30_000 });
+  const utils = trpc.useUtils();
+  const transitFirstPage = trpc.delivery.inTransit.useQuery(undefined);
   const transitCount = transitFirstPage.data?.rows.length ?? 0;
   const transitMore = transitFirstPage.data?.hasMore ?? false;
+
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+      REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
+      REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED,
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+    ],
+    () => {
+      void utils.delivery.inTransit.invalidate();
+      void utils.delivery.readyForDispatch.invalidate();
+      void utils.delivery.listParties.invalidate();
+      void utils.delivery.obligations.invalidate();
+    },
+  );
   return (
     <div className="space-y-5 p-4 md:p-6" dir="rtl">
       <PageHeader
@@ -166,8 +184,8 @@ export default function DeliveryHub() {
 // ───────────────────────── تبويب: جاهز للإرسال ─────────────────────────
 function DispatchTab() {
   const utils = trpc.useUtils();
-  const ready = trpc.delivery.readyForDispatch.useQuery(undefined, { refetchInterval: 20_000, refetchOnWindowFocus: true });
-  const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { refetchInterval: 30_000, refetchOnWindowFocus: true });
+  const ready = trpc.delivery.readyForDispatch.useQuery(undefined, { refetchOnWindowFocus: true });
+  const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { refetchOnWindowFocus: true });
   const me = trpc.auth.me.useQuery();
   const canDispatch = !!me.data
     && moduleAccessAllowed(
@@ -584,7 +602,6 @@ function InTransitTab() {
   const rows = trpc.delivery.inTransit.useInfiniteQuery(
     { limit: 500 },
     {
-      refetchInterval: 20_000,
       refetchOnWindowFocus: true,
       getNextPageParam: (last) => last.nextCursor ?? undefined,
     },

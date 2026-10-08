@@ -1,8 +1,14 @@
 import { PLATFORM_ADMIN_COOKIE_NAME } from "@shared/const";
+import { appErrorMessage } from "@shared/errors";
 import { TRPCError } from "@trpc/server";
+import { count, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getSessionCookieOptions } from "../cookies";
+import { withTenantDb } from "../db";
+import { branches, users } from "../../drizzle/schema";
 import { listCompanies, setCompanyActive } from "../tenancy/registry";
+import { getControlDb } from "../tenancy/controlDb";
+import { companies } from "../tenancy/controlSchema";
 import {
   createProvisionRequest,
   getProvisionRequestStatus,
@@ -146,5 +152,105 @@ export const platformAdminRouter = router({
 
     /** آخر طلبات التوفير — لجدول «آخر الطلبات» في الشاشة (بلا كلمات مرور). */
     provisionRequests: platformAdminProcedure.query(() => listRecentProvisionRequests()),
+
+    /** فحص تفاصيل شركة محددة وقياس مؤشرات فروعها ومستخدميها وحالة قاعدتها. */
+    inspect: platformAdminProcedure
+      .input(z.object({ id: z.number().int().positive() }))
+      .query(async ({ input }) => {
+        const db = getControlDb();
+        if (!db) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "تعذّر فحص بيانات الشركة",
+              why: "قاعدة بيانات المنصة غير متصلة أو وضع تعدد الشركات غير مفعل",
+              doThis: "تحقّق من إعدادات CONTROL_DATABASE_URL ثم أعد المحاولة",
+            }),
+          });
+        }
+
+        const rows = await db.select().from(companies).where(eq(companies.id, input.id)).limit(1);
+        const company = rows[0];
+
+        if (!company) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "تعذّر فحص بيانات الشركة",
+              why: `الشركة رقم ${input.id} غير مسجّلة في سجل تحكّم المنصّة أو تم حذفها`,
+              doThis: "تحقّق من معرّف الشركة من جدول الشركات المسجّلة ثم أعد المحاولة",
+            }),
+          });
+        }
+
+        const companyDetails = {
+          id: company.id,
+          code: company.code,
+          name: company.name,
+          dbHost: company.dbHost,
+          dbPort: company.dbPort,
+          dbName: company.dbName,
+          dbUser: company.dbUser,
+          isActive: Boolean(company.isActive),
+          createdAt: company.createdAt ? new Date(company.createdAt).toISOString() : new Date().toISOString(),
+        };
+
+        try {
+          const counts = await withTenantDb(company.id, async (tenantDb) => {
+            const [u, b] = await Promise.all([
+              tenantDb.select({ count: count() }).from(users),
+              tenantDb.select({ count: count() }).from(branches),
+            ]);
+            return {
+              userCount: u[0]?.count ?? 0,
+              branchCount: b[0]?.count ?? 0,
+            };
+          });
+
+          return {
+            company: companyDetails,
+            metrics: {
+              userCount: counts.userCount,
+              branchCount: counts.branchCount,
+              status: "healthy" as const,
+            },
+            // Backwards compatibility aliases
+            id: company.id,
+            code: company.code,
+            name: company.name,
+            dbHost: company.dbHost,
+            dbPort: company.dbPort,
+            dbName: company.dbName,
+            dbUser: company.dbUser,
+            isActive: Boolean(company.isActive),
+            createdAt: companyDetails.createdAt,
+            databaseStatus: "CONNECTED" as const,
+            databaseError: null,
+          };
+        } catch (err: any) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          return {
+            company: companyDetails,
+            metrics: {
+              userCount: 0,
+              branchCount: 0,
+              status: "unreachable" as const,
+              error: errorMsg,
+            },
+            id: company.id,
+            code: company.code,
+            name: company.name,
+            dbHost: company.dbHost,
+            dbPort: company.dbPort,
+            dbName: company.dbName,
+            dbUser: company.dbUser,
+            isActive: Boolean(company.isActive),
+            createdAt: companyDetails.createdAt,
+            databaseStatus: "ERROR" as const,
+            databaseError: errorMsg,
+          };
+        }
+      }),
   }),
 });
+

@@ -45,6 +45,8 @@ import {
   salesManagerProcedure,
   workordersCashierProcedure,
 } from "../trpc";
+import { publishRealtimeEvent } from "../realtime";
+import { REALTIME_EVENT_TYPES } from "../../shared/realtimeEvents";
 
 /** نفس حارس IDOR في catalogRouter: غير المرتفعين محصورون بفرعهم المُسنَد. */
 function scopeBranch(ctx: { user: { role: string; branchId?: number | null } }, requested: number): number {
@@ -259,6 +261,19 @@ export const offlineRouter = router({
                 newValue: { approvedByUserId: priceOverrideApprovedBy, byRole: ctx.user.role, offlineReplay: true },
               });
             }
+            publishRealtimeEvent(
+              REALTIME_EVENT_TYPES.BATCH_SALES_SYNCED,
+              {
+                branchId: effectiveBranchId,
+                deviceId: input.deviceId ?? undefined,
+                syncedCount: 1,
+                totalAmount: input.payment.amount,
+                timestamp: Date.now(),
+              },
+              {
+                branchId: effectiveBranchId,
+              },
+            );
           }
           return res;
         } catch (e: unknown) {

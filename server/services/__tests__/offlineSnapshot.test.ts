@@ -109,6 +109,15 @@ describe("buildCatalogSnapshot — لقطة الكتالوج المسطّحة", 
     const svc = snap.rows.find((r) => r.productUnitId === 4)!;
     expect(svc.isService).toBe(true);
   });
+
+  it("تسمية الكاشير أوفلاين تطابق titleForChannel(pos) وتفضّل posLabel على name", async () => {
+    await db().update(s.products).set({ posLabel: "قلم أزرق كاشير", shortTitle: "قلم أزرق مختصر" }).where(eq(s.products.id, 1));
+    const snap = await buildCatalogSnapshot();
+    const piece = snap.rows.find((r) => r.productUnitId === 1)!;
+    expect(piece.productName).toBe("قلم أزرق كاشير");
+    expect(piece.searchText).toContain("قلم ازرق كاشير");
+    expect(piece.searchText).toContain("قلم جاف ازرق");
+  });
 });
 
 describe("النسخ — بصمة محتوى تتغيّر إذا-وفقط-إذا تغيّر المُصدَّر", () => {
@@ -159,6 +168,20 @@ describe("النسخ — بصمة محتوى تتغيّر إذا-وفقط-إذا
     const after = await buildOfflineVersions();
     expect(after.customersVersion).not.toBe(before.customersVersion);
     expect(after.catalogVersion).toBe(before.catalogVersion);
+  });
+
+  it("تعديل posLabel يغيّر نسخة الكتالوج لتحديث أجهزة الأوفلاين فوراً", async () => {
+    const before = await buildOfflineVersions();
+    await db().update(s.products).set({ posLabel: "تسمية جديدة للكاشير" }).where(eq(s.products.id, 1));
+    const after = await buildOfflineVersions();
+    expect(after.catalogVersion).not.toBe(before.catalogVersion);
+  });
+
+  it("تعديل shortTitle يغيّر نسخة الكتالوج", async () => {
+    const before = await buildOfflineVersions();
+    await db().update(s.products).set({ shortTitle: "تسمية مختصرة جديدة" }).where(eq(s.products.id, 1));
+    const after = await buildOfflineVersions();
+    expect(after.catalogVersion).not.toBe(before.catalogVersion);
   });
 });
 

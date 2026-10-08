@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Boxes, Loader2, PackageCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import {
   Dialog,
   DialogContent,
@@ -15,6 +16,7 @@ import { trpc } from "@/lib/trpc";
 import type {
   AggregatedMaterialDto,
   BundleRequirementMode,
+  ComponentRequirementDto,
   ProduceBundleComponentsResult,
 } from "@shared/bundleProductionTypes";
 import type {
@@ -29,6 +31,7 @@ import { BundleKitMaterialsStep } from "./BundleKitMaterialsStep";
 import { BundleKitParametersBar } from "./BundleKitParametersBar";
 import { BundleKitReviewStep } from "./BundleKitReviewStep";
 import { BundleKitSuccessStep } from "./BundleKitSuccessStep";
+import { QuickRecipeCopyDialog } from "./QuickRecipeCopyDialog";
 
 const STEP_ITEMS = [
   { id: 1, label: "1. المكونات والعجز" },
@@ -66,6 +69,39 @@ export function BundleKitProductionDialog({
   const [successResult, setSuccessResult] = useState<ProduceBundleComponentsResult | null>(null);
   const [clientRequestId, setClientRequestId] = useState<string>("");
   const [materialSubstitutions, setMaterialSubstitutions] = useState<MaterialSubstitutionItem[]>([]);
+  const [quickRecipeTarget, setQuickRecipeTarget] = useState<ComponentRequirementDto | null>(null);
+  const newlyCreatedRecipeVariantIdRef = useRef<number | null>(null);
+
+  const lastSyncedParamsRef = useRef<{
+    bundleVariantId: number | null;
+    bundleQuantity: number;
+    mode: BundleRequirementMode;
+  } | null>(null);
+
+  const isParamsClean =
+    lastSyncedParamsRef.current != null &&
+    lastSyncedParamsRef.current.bundleVariantId === selectedBundleId &&
+    lastSyncedParamsRef.current.bundleQuantity === bundleQuantity &&
+    lastSyncedParamsRef.current.mode === mode;
+
+  const customBatchesPayload = useMemo(() => {
+    if (!isParamsClean || batches.length === 0) return undefined;
+    return batches.map((b) => {
+      const trimmedLabor = b.laborPerUnit?.trim();
+      const validLabor =
+        trimmedLabor && /^\d+(\.\d{1,2})?$/.test(trimmedLabor) ? trimmedLabor : undefined;
+      return {
+        variantId: b.variantId,
+        recipeId: b.recipeId ?? undefined,
+        batchQty: b.selected ? b.batchQty : 0,
+        scrapQty: b.scrapQty ?? 0,
+        laborPerUnit: validLabor,
+        selected: b.selected,
+      };
+    });
+  }, [isParamsClean, batches]);
+
+  const debouncedCustomBatches = useDebouncedValue(customBatchesPayload, 200);
 
   const bundlesListQ = trpc.production.bundles.list.useQuery(undefined, {
     enabled: open && !initialBundleVariantId,
@@ -73,9 +109,13 @@ export function BundleKitProductionDialog({
 
   useEffect(() => {
     if (!open) {
+      setStep(1);
       setSuccessResult(null);
       setClientRequestId("");
       setMaterialSubstitutions([]);
+      lastSyncedParamsRef.current = null;
+      setQuickRecipeTarget(null);
+      newlyCreatedRecipeVariantIdRef.current = null;
       return;
     }
     setClientRequestId((prev) => prev || `bnd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
@@ -93,24 +133,88 @@ export function BundleKitProductionDialog({
       branchId: effectiveBranchId ?? undefined,
       mode,
       materialSubstitutions: materialSubstitutions.length > 0 ? materialSubstitutions : undefined,
+      batches: debouncedCustomBatches,
     },
-    { enabled: open && selectedBundleId != null && bundleQuantity > 0, staleTime: 5_000 }
+    { enabled: open && selectedBundleId != null && bundleQuantity > 0, staleTime: 3_000 }
   );
 
   useEffect(() => {
     if (!analysisQ.data?.components) return;
-    setBatches((prev) => {
-      const prevMap = new Map(prev.map((b) => [b.variantId, b]));
-      return analysisQ.data.components
-        .filter((c) => c.isManufactured)
-        .map((c) => {
+
+    const newlyCreatedId = newlyCreatedRecipeVariantIdRef.current;
+    const hasNewlyCreatedMfg =
+      newlyCreatedId != null &&
+      analysisQ.data.components.some(
+        (c) => c.variantId === newlyCreatedId && c.isManufactured,
+      );
+
+    const paramsChanged =
+      !lastSyncedParamsRef.current ||
+      lastSyncedParamsRef.current.bundleVariantId !== selectedBundleId ||
+      lastSyncedParamsRef.current.bundleQuantity !== bundleQuantity ||
+      lastSyncedParamsRef.current.mode !== mode;
+
+    if (paramsChanged) {
+      lastSyncedParamsRef.current = {
+        bundleVariantId: selectedBundleId,
+        bundleQuantity,
+        mode,
+      };
+      setBatches(
+        analysisQ.data.components
+          .filter((c) => c.isManufactured)
+          .map((c) => ({
+            variantId: c.variantId,
+            recipeId: c.recipeId,
+            batchQty: c.suggestedBatchQty,
+            scrapQty: 0,
+            laborPerUnit: c.laborPerUnit || "0.00",
+            selected: c.suggestedBatchQty > 0,
+          }))
+      );
+    } else {
+      setBatches((prev) => {
+        const prevMap = new Map(prev.map((b) => [b.variantId, b]));
+        const mfgComps = analysisQ.data.components.filter((c) => c.isManufactured);
+        if (prev.length === mfgComps.length && !hasNewlyCreatedMfg) {
+          const isIdentical = mfgComps.every((c) => {
+            const ex = prevMap.get(c.variantId);
+            return ex && ex.recipeId === c.recipeId;
+          });
+          if (isIdentical) return prev;
+        }
+        return mfgComps.map((c) => {
           const ex = prevMap.get(c.variantId);
+          const isNewlyCreated = c.variantId === newlyCreatedId;
+          const shouldSelect = c.suggestedBatchQty > 0;
+          const defaultBatchQty = c.suggestedBatchQty;
+
           return ex
-            ? { ...ex, recipeId: c.recipeId, batchQty: ex.batchQty > 0 ? ex.batchQty : c.suggestedBatchQty }
-            : { variantId: c.variantId, recipeId: c.recipeId, batchQty: c.suggestedBatchQty, scrapQty: 0, laborPerUnit: c.laborPerUnit || "0.00", selected: c.suggestedBatchQty > 0 };
+            ? {
+                ...ex,
+                recipeId: c.recipeId,
+                batchQty:
+                  ex.batchQty > 0
+                    ? ex.batchQty
+                    : defaultBatchQty,
+                selected: isNewlyCreated ? shouldSelect : ex.selected,
+              }
+            : {
+                variantId: c.variantId,
+                recipeId: c.recipeId,
+                batchQty: defaultBatchQty,
+                scrapQty: 0,
+                laborPerUnit: c.laborPerUnit || "0.00",
+                selected: shouldSelect,
+              };
         });
-    });
-  }, [analysisQ.data]);
+      });
+    }
+
+    if (hasNewlyCreatedMfg) {
+      newlyCreatedRecipeVariantIdRef.current = null;
+    }
+  }, [analysisQ.data, selectedBundleId, bundleQuantity, mode]);
 
   const produceMut = trpc.production.bundles.produceComponents.useMutation({
     onSuccess: async (res) => {
@@ -132,7 +236,39 @@ export function BundleKitProductionDialog({
   }
 
   function handleToggleAll(selected: boolean) {
-    setBatches((prev) => prev.map((b) => ({ ...b, selected })));
+    setBatches((prev) => {
+      const compMap = new Map(analysisQ.data?.components.map((c) => [c.variantId, c]) ?? []);
+      return prev.map((b) => {
+        const comp = compMap.get(b.variantId);
+        const fallback =
+          comp?.suggestedBatchQty && comp.suggestedBatchQty > 0
+            ? comp.suggestedBatchQty
+            : comp?.totalRequiredQty && comp.totalRequiredQty > 0
+              ? comp.totalRequiredQty
+              : (comp?.requiredBatchMultiple || 1);
+        return {
+          ...b,
+          selected,
+          batchQty: selected && b.batchQty <= 0 ? fallback : b.batchQty,
+        };
+      });
+    });
+  }
+
+  function handleResetToSuggested() {
+    if (!analysisQ.data?.components) return;
+    setBatches(
+      analysisQ.data.components
+        .filter((c) => c.isManufactured)
+        .map((c) => ({
+          variantId: c.variantId,
+          recipeId: c.recipeId,
+          batchQty: c.suggestedBatchQty,
+          scrapQty: 0,
+          laborPerUnit: c.laborPerUnit || "0.00",
+          selected: c.suggestedBatchQty > 0,
+        }))
+    );
   }
 
   function validateActiveBatches(): boolean {
@@ -198,6 +334,7 @@ export function BundleKitProductionDialog({
     setLinkedWorkOrderId(null);
     setMaterialSubstitutions([]);
     setClientRequestId(`bnd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
+    lastSyncedParamsRef.current = null;
   }
 
   const handleApplySubstitution = (sub: MaterialSubstitutionItem) => {
@@ -221,7 +358,7 @@ export function BundleKitProductionDialog({
         <DialogHeader className="p-4 border-b bg-muted/30">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Boxes className="size-5 text-primary" />
+              <Boxes className="size-5 text-primary" aria-hidden="true" />
               <DialogTitle className="text-base font-bold">مولّد إنتاج مكونات البكج</DialogTitle>
             </div>
             {analysis && step < 4 && <Badge variant="outline" className="text-xs">{analysis.bundleName}</Badge>}
@@ -234,7 +371,7 @@ export function BundleKitProductionDialog({
             <div className="flex items-center gap-2 pt-2 text-xs">
               {STEP_ITEMS.map((s, idx) => (
                 <div key={s.id} className="flex items-center gap-2">
-                  {idx > 0 && <ArrowLeft className="size-3 text-muted-foreground" />}
+                  {idx > 0 && <ArrowLeft className="size-3 text-muted-foreground" aria-hidden="true" />}
                   <button
                     type="button"
                     onClick={() => handleGoToStep(s.id)}
@@ -268,7 +405,7 @@ export function BundleKitProductionDialog({
 
           {analysisQ.isLoading && (
             <div className="flex flex-col items-center justify-center p-12 space-y-2 text-muted-foreground">
-              <Loader2 className="size-8 animate-spin text-primary" />
+              <Loader2 className="size-8 animate-spin text-primary" aria-hidden="true" />
               <p className="text-xs font-medium">جارٍ تحليل تركيبة البكج وأرصدة المواد…</p>
             </div>
           )}
@@ -279,6 +416,8 @@ export function BundleKitProductionDialog({
               batches={batches}
               onBatchChange={handleBatchChange}
               onToggleAll={handleToggleAll}
+              onResetToSuggested={handleResetToSuggested}
+              onAddRecipe={(comp) => setQuickRecipeTarget(comp)}
             />
           )}
 
@@ -338,7 +477,7 @@ export function BundleKitProductionDialog({
                   className="gap-1.5"
                   onClick={() => setStep((s) => (s - 1) as any)}
                 >
-                  <ArrowRight className="size-4" />
+                  <ArrowRight className="size-4" aria-hidden="true" />
                   السابق
                 </Button>
               )}
@@ -358,7 +497,7 @@ export function BundleKitProductionDialog({
                   onClick={() => handleGoToStep((step + 1) as any)}
                 >
                   التالي
-                  <ArrowLeft className="size-4" />
+                  <ArrowLeft className="size-4" aria-hidden="true" />
                 </Button>
               ) : (
                 <Button
@@ -370,12 +509,12 @@ export function BundleKitProductionDialog({
                 >
                   {produceMut.isPending ? (
                     <>
-                      <Loader2 className="size-4 animate-spin" />
+                      <Loader2 className="size-4 animate-spin" aria-hidden="true" />
                       جارٍ الترحيل الذري…
                     </>
                   ) : (
                     <>
-                      <PackageCheck className="size-4" />
+                      <PackageCheck className="size-4" aria-hidden="true" />
                       تأكيد وإنتاج المكونات
                     </>
                   )}
@@ -385,6 +524,23 @@ export function BundleKitProductionDialog({
           </DialogFooter>
         )}
       </DialogContent>
+
+      <QuickRecipeCopyDialog
+        open={quickRecipeTarget != null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) setQuickRecipeTarget(null);
+        }}
+        targetComponent={quickRecipeTarget}
+        otherBundleComponents={analysis?.components ?? []}
+        onRecipeCreated={async (newRecipeId, variantId) => {
+          newlyCreatedRecipeVariantIdRef.current = variantId;
+          await analysisQ.refetch();
+          await Promise.all([
+            utils.production.recipes.invalidate(),
+            utils.catalog.invalidate(),
+          ]);
+        }}
+      />
     </Dialog>
   );
 }

@@ -44,7 +44,7 @@ import { POSShiftOpenScreen } from "@/components/pos/POSShiftOpenScreen";
 import { usePOSTabsDraft } from "@/components/pos/usePOSTabsDraft";
 import { usePOSPrinter } from "@/components/pos/usePOSPrinter";
 import { usePOSKeyboardShortcuts } from "@/components/pos/usePOSKeyboardShortcuts";
-import { computePOSTotals } from "@/components/pos/posTotals";
+import { computePOSTotals, evaluatePosCreditPrompt } from "@/components/pos/posTotals";
 import { usePOSOfflineBoot } from "@/components/pos/usePOSOfflineBoot";
 import { usePOSCatalogSearch } from "@/components/pos/usePOSCatalogSearch";
 import { usePOSTabHelpers } from "@/components/pos/usePOSTabHelpers";
@@ -1003,17 +1003,13 @@ export default function POS() {
       notify.err("البيع الآجل يتطلّب اختيار عميل.");
       return;
     }
-    // الحدّ قبل الوعد (١٩/٨): الشاشة كانت تفحص **وجود** العميل وحده ثمّ ترسل،
-    // فيردّ الخادم بـFORBIDDEN بعد أن أتمّ الموظّف السلة والزبون واقفٌ أمامه. وحدُّ
-    // صفرٍ هو **الافتراضي** لكلّ عميلٍ يُنشأ من الكاشير ⤇ الحالة الغالبة لا النادرة.
-    if (!approval && !codMode && isCredit && selectedCustomer != null && Number(selectedCustomer.creditLimit ?? 0) === 0
-        && selectedCustomer.creditLimit != null) {
-      setCreditPrompt(
-        Number(selectedCustomer.currentBalance ?? 0) > 0
-          ? `هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) وعليه رصيد سابق (${Number(selectedCustomer.currentBalance).toFixed(2)}) — لا يمكن البيع بالآجل دون موافقة مدير`
-          : "هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) — لا يمكن البيع بالآجل دون موافقة مدير",
-      );
-      return;
+    // الحدّ قبل الوعد (١٩/٨): فحص سقف الائتمان وموافقة المدير قبل إرسال البيع بالآجل
+    if (!approval && !codMode) {
+      const creditMsg = evaluatePosCreditPrompt({ selectedCustomer, isCredit, creditAmount: credit });
+      if (creditMsg) {
+        setCreditPrompt(creditMsg);
+        return;
+      }
     }
     // ش٣ أوفلاين: الاتصال مقطوع ⇒ التقاط محلي (نقدي كامل فقط) بدل نداء سيفشل. سلّةُ التوصيل تُرفض
     // داخل captureOfflineSale نفسها (deliveryBlocksOfflineCapture) ⇒ حارسٌ واحدٌ يغطّي هذا المسار وquickPay.
