@@ -69,37 +69,73 @@ function toView(row: typeof companyProfile.$inferSelect): CompanyProfileView {
   };
 }
 
+/** العرض الافتراضي لهوية المنشأة المشتق من COMPANY_IDENTITY كاحتياط آمن. */
+export function defaultCompanyProfileView(): CompanyProfileView {
+  return {
+    id: 1,
+    name: COMPANY_IDENTITY.name,
+    tradeName: COMPANY_IDENTITY.sub,
+    shortName: COMPANY_IDENTITY.short,
+    legalSubtitle: COMPANY_IDENTITY.subtitle,
+    commercialRegistry: COMPANY_IDENTITY.commercialRegistry,
+    taxNumber: COMPANY_IDENTITY.taxId,
+    chamberLicense: COMPANY_IDENTITY.chamberLicense,
+    address: COMPANY_IDENTITY.address,
+    phones: COMPANY_IDENTITY.phones.map((p) => ({ label: p.l, number: p.n })),
+    logoUrl: null,
+    footerText: COMPANY_IDENTITY.footer,
+    updatedBy: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 /** يقرأ صفّ بيانات المنشأة (id=1)، وينشئه بالقيم الافتراضية إن لم يكن موجوداً بعد. */
 export async function getCompanyProfile(): Promise<CompanyProfileView> {
-  const db = requireDb();
-  const existing = await db.select().from(companyProfile).where(eq(companyProfile.id, 1)).limit(1);
-  if (existing[0]) return toView(existing[0]);
+  try {
+    const db = requireDb();
+    const existing = await db.select().from(companyProfile).where(eq(companyProfile.id, 1)).limit(1);
+    if (existing[0]) return toView(existing[0]);
 
-  const defaultPhones = COMPANY_IDENTITY.phones.map((p) => ({ label: p.l, number: p.n }));
+    const defaultPhones = COMPANY_IDENTITY.phones.map((p) => ({ label: p.l, number: p.n }));
 
-  await db
-    .insert(companyProfile)
-    .values({
-      id: 1,
-      name: COMPANY_IDENTITY.name,
-      tradeName: COMPANY_IDENTITY.sub,
-      shortName: COMPANY_IDENTITY.short,
-      legalSubtitle: COMPANY_IDENTITY.subtitle,
-      commercialRegistry: COMPANY_IDENTITY.commercialRegistry,
-      taxNumber: COMPANY_IDENTITY.taxId,
-      chamberLicense: COMPANY_IDENTITY.chamberLicense,
-      address: COMPANY_IDENTITY.address,
-      phones: defaultPhones,
-      logoUrl: null,
-      footerText: COMPANY_IDENTITY.footer,
-    })
-    .onDuplicateKeyUpdate({ set: { id: 1 } });
+    await db
+      .insert(companyProfile)
+      .values({
+        id: 1,
+        name: COMPANY_IDENTITY.name,
+        tradeName: COMPANY_IDENTITY.sub,
+        shortName: COMPANY_IDENTITY.short,
+        legalSubtitle: COMPANY_IDENTITY.subtitle,
+        commercialRegistry: COMPANY_IDENTITY.commercialRegistry,
+        taxNumber: COMPANY_IDENTITY.taxId,
+        chamberLicense: COMPANY_IDENTITY.chamberLicense,
+        address: COMPANY_IDENTITY.address,
+        phones: defaultPhones,
+        logoUrl: null,
+        footerText: COMPANY_IDENTITY.footer,
+      })
+      .onDuplicateKeyUpdate({ set: { id: 1 } });
 
-  const created = await db.select().from(companyProfile).where(eq(companyProfile.id, 1)).limit(1);
-  if (!created[0]) {
-    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إنشاء بيانات المنشأة." });
+    const created = await db.select().from(companyProfile).where(eq(companyProfile.id, 1)).limit(1);
+    if (!created[0]) {
+      return defaultCompanyProfileView();
+    }
+    return toView(created[0]);
+  } catch (error: any) {
+    // خط دفاعي عريض: إذا كان الجدول غير موجود (ER_NO_SUCH_TABLE 1146) أو في طور الهجرة،
+    // نُعيد الهوية الافتراضية لمنع انهيار الواجهة والطباعة والمستندات بـ 500 error.
+    const isTableMissing =
+      error?.code === "ER_NO_SUCH_TABLE" ||
+      error?.errno === 1146 ||
+      String(error?.message).includes("doesn't exist");
+
+    if (isTableMissing) {
+      console.warn("⚠ جدول companyProfile غير متوفر في قاعدة البيانات؛ تم اعتماد الهوية المؤسسية الافتراضية كاحتياط آمن.");
+      return defaultCompanyProfileView();
+    }
+    throw error;
   }
-  return toView(created[0]);
 }
 
 export interface UpdateCompanyProfileInput {
