@@ -60,10 +60,39 @@ export function parseSchemaColumns(source) {
       continue;
     }
     if (!table) continue;
-    const col = line.match(/^\s{4}(\w+):\s*(\w+)\(\s*"([^"]+)"/);
+    const col = line.match(/^\s{2,}(\w+):\s*(\w+)\(\s*"([^"]+)"/);
     if (col) out.push({ table, prop: col[1], dbCol: col[3] });
   }
   return out;
+}
+
+/** أسماء كل الجداول المعرّفة في schema.ts عبر mysqlTable. */
+export function parseSchemaTables(source) {
+  const tables = new Set();
+  let pendingTableConst = false;
+  for (const line of source.split("\n")) {
+    const inline = line.match(/^export const \w+ = mysqlTable\(\s*"([^"]+)"/);
+    if (inline) { tables.add(inline[1]); pendingTableConst = false; continue; }
+    if (/^export const \w+ = mysqlTable\(\s*$/.test(line)) { pendingTableConst = true; continue; }
+    if (pendingTableConst) {
+      const named = line.match(/^\s*"([^"]+)",\s*$/);
+      if (named) { tables.add(named[1]); pendingTableConst = false; }
+      continue;
+    }
+  }
+  return tables;
+}
+
+/** الجداول المعرّفة في schema.ts والتي ليس لها أي عبارة CREATE TABLE في ملفات الهجرة. */
+export function findMissingTables(schemaTables, effectiveColumns) {
+  const missing = [];
+  for (const table of schemaTables) {
+    const cols = effectiveColumns.get(table);
+    if (!cols || cols.size === 0) {
+      missing.push(table);
+    }
+  }
+  return missing;
 }
 
 /**
@@ -273,14 +302,52 @@ function selftest() {
       process.exit(1);
     }
   }
-  console.log(`✓ الاختبار الذاتي: ${cases.length} حالاتٍ تمرّ (إنشاء مُقتبَس/عارٍ · إعادة تسمية · CHANGE · إسقاط عمود/جدول · قيود · موافقة).`);
+
+  const missingCases = [
+    {
+      name: "يكشف جدولاً معرّفاً في schema.ts غائباً عن ملفّات الهجرة",
+      schemaTables: new Set(["widgets", "missingTable"]),
+      sql: [CREATE_MATCHING],
+      expect: ["missingTable"],
+    },
+    {
+      name: "يمرّ حين تكون كل الجداول منشأة بهجرات",
+      schemaTables: new Set(["widgets"]),
+      sql: [CREATE_MATCHING],
+      expect: [],
+    },
+  ];
+  for (const c of missingCases) {
+    const got = findMissingTables(c.schemaTables, resolveEffectiveColumns(c.sql)).sort();
+    const want = [...c.expect].sort();
+    if (JSON.stringify(got) !== JSON.stringify(want)) {
+      console.error(`⛔ فشل الاختبار الذاتي «${c.name}»: توقّعنا ${JSON.stringify(want)} وجاء ${JSON.stringify(got)}`);
+      process.exit(1);
+    }
+  }
+  console.log(`✓ الاختبار الذاتي: ${cases.length + missingCases.length} حالاتٍ تمرّ (إنشاء مُقتبَس/عارٍ · إعادة تسمية · CHANGE · إسقاط عمود/جدول · قيود · موافقة · كشف الجداول الناقصة).`);
 }
 
 function main() {
   if (process.argv.includes("--selftest")) { selftest(); return; }
-  const schemaColumns = parseSchemaColumns(fs.readFileSync(SCHEMA_FILE, "utf8"));
+  const schemaSource = fs.readFileSync(SCHEMA_FILE, "utf8");
+  const schemaColumns = parseSchemaColumns(schemaSource);
+  const schemaTables = parseSchemaTables(schemaSource);
   const files = orderedMigrationFiles().map((f) => fs.readFileSync(f, "utf8"));
   const effective = resolveEffectiveColumns(files);
+
+  const missingTables = findMissingTables(schemaTables, effective);
+  if (missingTables.length) {
+    console.error("⛔ جداول في schema.ts ليست لها عبارة CREATE TABLE في أي ملفّ هجرة (تسقط على الإنتاج فوراً):\n");
+    for (const t of missingTables) {
+      console.error(`  - جدول ناقص: \`${t}\``);
+    }
+    console.error(
+      "\nأنشئ ملفّ هجرة جديداً بصيغة CREATE TABLE وسجّله في drizzle/migrations/meta/_journal.json.",
+    );
+    process.exit(1);
+  }
+
   const drift = findDrift(schemaColumns, effective);
   if (drift.length) {
     console.error("⛔ انحراف اسم العمود بين schema.ts وملفّات الهجرة (يسقط على الإنتاج وحده):\n");
@@ -296,7 +363,7 @@ function main() {
     process.exit(1);
   }
   console.log(
-    `✓ لا انحراف في أسماء الأعمدة (${schemaColumns.length} عموداً مفحوصاً، ${effective.size} جدولاً من ${files.length} ملفّ هجرة).`,
+    `✓ لا انحراف في أسماء الأعمدة أو الجداول (${schemaColumns.length} عموداً مفحوصاً عبر ${schemaTables.size} جدولاً، ${effective.size} جدولاً من ${files.length} ملفّ هجرة).`,
   );
 }
 

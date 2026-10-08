@@ -97,7 +97,7 @@ export default function CompanyProfile() {
         taxId: d.taxNumber || "",
         commercialRegistry: d.commercialRegistry || "",
         chamberLicense: d.chamberLicense || "",
-        phones: d.phones.map((p) => ({ l: p.label, n: p.number })),
+        phones: (d.phones || []).map((p) => ({ l: p.label, n: p.number })),
         logoUrl: d.logoUrl || null,
       });
     }
@@ -117,7 +117,7 @@ export default function CompanyProfile() {
         taxId: d.taxNumber || "",
         commercialRegistry: d.commercialRegistry || "",
         chamberLicense: d.chamberLicense || "",
-        phones: d.phones.map((p) => ({ l: p.label, n: p.number })),
+        phones: (d.phones || []).map((p) => ({ l: p.label, n: p.number })),
         logoUrl: d.logoUrl || null,
       });
       await utils.system.getCompanyProfile.invalidate();

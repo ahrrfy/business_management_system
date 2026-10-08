@@ -2451,6 +2451,13 @@
 			"when": 1788148842000,
 			"tag": "0384_sync_product_channel_labels",
 			"breakpoints": true
+		},
+		{
+			"idx": 385,
+			"version": "5",
+			"when": 1788148843000,
+			"tag": "0385_company_profile",
+			"breakpoints": true
 		}
 	]
 }
