@@ -21,6 +21,7 @@ export const REALTIME_IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 دقيقة خمو�
 export const REALTIME_EVENT_TYPES = {
   // الموجة ٠ (Wave 0): اتصالات البنية التحتية
   CONNECTED: "CONNECTED",
+  RESYNC_REQUIRED: "RESYNC_REQUIRED",
   PING: "PING",
 
   // الموجة ١ (Wave 1): الإشعارات والاعتمادات
@@ -49,6 +50,7 @@ export const REALTIME_EVENT_TYPES = {
 
   // الموجة ٥ (Wave 5): المزامنة المجمعة
   BATCH_SALES_SYNCED: "BATCH_SALES_SYNCED",
+  FINANCIAL_DATA_CHANGED: "FINANCIAL_DATA_CHANGED",
 } as const;
 
 export type RealtimeEventType =

@@ -1,0 +1,11 @@
+.live-financial-value {
+  display: inline-block;
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: reduce), print {
+  .live-financial-value {
+    transform: none !important;
+    opacity: 1 !important;
+  }
+}

@@ -3,6 +3,8 @@ import { EventEmitter } from "node:events";
 import {
   REALTIME_BRIDGE_HOST,
   REALTIME_BRIDGE_PORT,
+  REALTIME_EVENT_TYPES,
+  createRealtimeEvent,
   type RealtimeEvent,
 } from "@shared/realtimeEvents";
 import { isBackgroundJobRunner, isMultiWorker } from "../lib/clusterRole";
@@ -39,6 +41,7 @@ export class RealtimeBridgeManager {
   private host = REALTIME_BRIDGE_HOST;
   private port = REALTIME_BRIDGE_PORT;
   private isConnectedToHub = false;
+  private needsResync = false;
   private workerId = `w_${process.pid}_${Math.random().toString(36).slice(2, 6)}`;
   private pendingOutbound: string[] = [];
   private static readonly MAX_PENDING_OUTBOUND = 500;
@@ -165,6 +168,11 @@ export class RealtimeBridgeManager {
       this.isConnectedToHub = true;
       logger.info({ host: this.host, port: this.port }, "realtime_bridge.client_connected_to_hub");
       this.flushPendingOutbound();
+      // An SSE connection can survive a hub outage. Repair missed inbound events without polling.
+      if (this.needsResync) {
+        this.needsResync = false;
+        this.publish(createRealtimeEvent(REALTIME_EVENT_TYPES.RESYNC_REQUIRED, {}));
+      }
     });
 
     this.clientSocket = socket;
@@ -193,6 +201,7 @@ export class RealtimeBridgeManager {
     });
 
     socket.on("error", (err) => {
+      this.needsResync = true;
       this.isConnectedToHub = false;
       this.clientSocket = null;
       if (!this.isStopping) {
@@ -201,6 +210,7 @@ export class RealtimeBridgeManager {
     });
 
     socket.on("close", () => {
+      this.needsResync = true;
       this.isConnectedToHub = false;
       this.clientSocket = null;
       if (!this.isStopping) {

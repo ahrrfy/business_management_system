@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   initRealtimeBridge,
   publishToBridge,
@@ -202,6 +202,32 @@ describe("realtimeBridge — ناقل الحلقات الداخلي بين عم�
       expect(hubReceived.some((e) => e.id === eventFromWorker1.id)).toBe(true);
     } finally {
       await worker1.stop();
+      await hub.stop();
+    }
+  });
+
+  it("requests one snapshot repair after hub recovery while the browser SSE can remain open", async () => {
+    const port = 4200 + Math.floor(Math.random() * 200);
+    const hub = new RealtimeBridgeManager();
+    const worker = new RealtimeBridgeManager();
+    const received: any[] = [];
+    const hubReceived: any[] = [];
+    worker.subscribe((event) => received.push(event));
+    hub.subscribe((event) => hubReceived.push(event));
+    try {
+      await hub.init({ port, isHub: true, isMultiWorker: true });
+      await worker.init({ port, isHub: false, isMultiWorker: true });
+      await vi.waitFor(() => expect(worker.getStatus().isConnectedToHub).toBe(true));
+      expect(received).toHaveLength(0);
+      await hub.stop();
+      await vi.waitFor(() => expect(worker.getStatus().isConnectedToHub).toBe(false));
+      await hub.init({ port, isHub: true, isMultiWorker: true });
+      await vi.waitFor(() => expect(received.some((event) => event.type === REALTIME_EVENT_TYPES.RESYNC_REQUIRED)).toBe(true), { timeout: 4000 });
+      expect(received.filter((event) => event.type === REALTIME_EVENT_TYPES.RESYNC_REQUIRED)).toHaveLength(1);
+      expect(received[0].payload).toEqual({});
+      await vi.waitFor(() => expect(hubReceived.some((event) => event.type === REALTIME_EVENT_TYPES.RESYNC_REQUIRED)).toBe(true));
+    } finally {
+      await worker.stop();
       await hub.stop();
     }
   });
