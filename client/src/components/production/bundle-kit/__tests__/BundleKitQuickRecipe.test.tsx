@@ -738,6 +738,25 @@ describe("BundleKitComponentsStep & QuickRecipe Transformation Flow", () => {
     const withoutNotes = computeCombinedNotes(null, "وصفة قلم قياسي");
     expect(withoutNotes).toBe("منسوخة من: وصفة قلم قياسي");
   });
+
+  it("يسترجع نسبة الهدر المعياري للقالب ويحولها إلى نسبة مئوية صحيحة بدلاً من إسقاطها بصمت", () => {
+    function parseTemplateWaste(storedWaste: string | null | undefined): string {
+      const rawWasteDec = moneyInput(storedWaste ?? "0");
+      return rawWasteDec.gt(0) && rawWasteDec.lt(1)
+        ? round2(rawWasteDec.mul(100)).toString()
+        : rawWasteDec.gte(1)
+          ? round2(rawWasteDec).toString()
+          : "0";
+    }
+
+    expect(parseTemplateWaste("0.05")).toBe("5");
+    expect(parseTemplateWaste("0.08")).toBe("8");
+    expect(parseTemplateWaste("0.025")).toBe("2.5");
+    expect(parseTemplateWaste("0.00")).toBe("0");
+    expect(parseTemplateWaste("0")).toBe("0");
+    expect(parseTemplateWaste(null)).toBe("0");
+    expect(parseTemplateWaste(undefined)).toBe("0");
+  });
 });
 
 

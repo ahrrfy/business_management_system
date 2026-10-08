@@ -212,7 +212,14 @@ export function QuickRecipeCopyDialog({
         sourceLabel || recipeData.name || `وصفة #${recipeId}`;
       setCopiedSourceName(sourceName);
       setLaborPerOutputBase(String(recipeData.laborPerOutputBase ?? "0"));
-      const rawWaste = Number(recipeData.wasteStdPct ?? 0);
+      const rawWasteDec = moneyInput(recipeData.wasteStdPct ?? "0");
+      const wastePercent =
+        rawWasteDec.gt(0) && rawWasteDec.lt(1)
+          ? round2(rawWasteDec.mul(100)).toString()
+          : rawWasteDec.gte(1)
+            ? round2(rawWasteDec).toString()
+            : "0";
+      setWasteStdPct(wastePercent);
       const sourceNotes = (recipeData.notes || "").trim();
       const provenanceNote = `منسوخة من: ${sourceName}`;
       const combinedNotes = sourceNotes
