@@ -1,6 +1,7 @@
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { digitsArabicToLatin } from "@shared/numberNormalize";
 import type { BundleRequirementMode } from "@shared/bundleProductionTypes";
 
 interface BundleKitParametersBarProps {
@@ -27,12 +28,15 @@ export function BundleKitParametersBar({
   onModeChange,
 }: BundleKitParametersBarProps) {
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 rounded-lg border bg-muted/20 p-3" dir="rtl">
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 rounded-lg border bg-muted/20 p-3.5" dir="rtl">
       {/* منتقي البكج */}
-      <div className="space-y-1">
-        <Label className="text-xs">البكج المطلوب</Label>
+      <div className="space-y-1.5 min-w-0">
+        <Label className="text-xs font-semibold text-foreground">البكج المطلوب</Label>
         {initialBundleVariantId ? (
-          <div className="h-9 px-3 rounded-md border bg-muted flex items-center text-xs font-semibold truncate">
+          <div
+            className="h-9 px-3 rounded-md border bg-muted/50 flex items-center text-xs font-semibold truncate select-all"
+            title={bundleName ?? `#${initialBundleVariantId}`}
+          >
             {bundleName ?? `#${initialBundleVariantId}`}
           </div>
         ) : (
@@ -51,15 +55,18 @@ export function BundleKitParametersBar({
       </div>
 
       {/* كمية الأطقم المطلوبة */}
-      <div className="space-y-1">
-        <Label className="text-xs">كمية الأطقم المطلوبة</Label>
+      <div className="space-y-1.5 min-w-0">
+        <Label className="text-xs font-semibold text-foreground">كمية الأطقم المطلوبة</Label>
         <Input
           type="number"
           min="1"
-          className="h-9 text-xs font-bold font-mono"
+          dir="ltr"
+          lang="en-US"
+          className="h-9 text-xs font-bold font-mono text-center"
           value={bundleQuantity}
           onChange={(e) => {
-            const q = parseInt(e.target.value, 10);
+            const raw = digitsArabicToLatin(e.target.value);
+            const q = parseInt(raw, 10);
             if (Number.isFinite(q) && q > 0) onBundleQuantityChange(q);
           }}
         />

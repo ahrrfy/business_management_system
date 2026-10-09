@@ -137,17 +137,17 @@ export function BundleKitMaterialsStep({
         </div>
 
         <div className="overflow-x-auto rounded-lg border">
-          <table className="w-full text-xs text-start">
+          <table className="w-full min-w-[780px] border-collapse text-xs text-start">
             <thead className="bg-muted/60 text-muted-foreground">
               <tr>
-                <th className="p-2.5 text-start font-medium">المادة الخام</th>
-                <th className="p-2.5 text-start font-medium">SKU</th>
-                <th className="p-2.5 text-center font-medium">الوحدة</th>
-                <th className="p-2.5 text-center font-medium">الاحتياج الكلي للدفعة</th>
-                <th className="p-2.5 text-center font-medium">المتاح بالفرع</th>
-                <th className="p-2.5 text-center font-medium">حالة الكفاية</th>
-                <th className="p-2.5 text-center font-medium">صافي العجز</th>
-                <th className="p-2.5 text-center font-medium">الإجراءات</th>
+                <th className="p-2.5 text-start font-medium whitespace-nowrap select-none min-w-[180px]">المادة الخام</th>
+                <th className="p-2.5 text-start font-medium whitespace-nowrap select-none min-w-[100px]">SKU</th>
+                <th className="p-2.5 text-center font-medium whitespace-nowrap select-none min-w-[70px]">الوحدة</th>
+                <th className="p-2.5 text-center font-medium whitespace-nowrap select-none min-w-[120px]">الاحتياج الكلي للدفعة</th>
+                <th className="p-2.5 text-center font-medium whitespace-nowrap select-none min-w-[100px]">المتاح بالفرع</th>
+                <th className="p-2.5 text-center font-medium whitespace-nowrap select-none min-w-[90px]">حالة الكفاية</th>
+                <th className="p-2.5 text-center font-medium whitespace-nowrap select-none min-w-[90px]">صافي العجز</th>
+                <th className="p-2.5 text-center font-medium whitespace-nowrap select-none min-w-[120px]">الإجراءات</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -169,21 +169,21 @@ export function BundleKitMaterialsStep({
                       <div className="flex flex-col gap-0.5">
                         <span>{m.materialName}</span>
                         {m.isSubstituted && m.originalMaterialName && (
-                          <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                          <span className="text-[10px] text-muted-foreground flex items-center gap-1 whitespace-nowrap">
                             <ArrowLeftRight aria-hidden className="size-2.5 text-primary" />
                             بديل عن «{m.originalMaterialName}»
                           </span>
                         )}
                       </div>
                     </td>
-                    <td className="p-2.5 font-mono text-[11px] text-muted-foreground" dir="ltr">
+                    <td className="p-2.5 font-mono text-[11px] text-muted-foreground tabular-nums" dir="ltr">
                       {m.sku}
                     </td>
-                    <td className="p-2.5 text-center">{m.unitName}</td>
-                    <td className="p-2.5 text-center font-mono font-bold">
+                    <td className="p-2.5 text-center whitespace-nowrap">{m.unitName}</td>
+                    <td className="p-2.5 text-center font-mono font-bold tabular-nums" dir="ltr">
                       {m.totalRequiredBase}
                     </td>
-                    <td className="p-2.5 text-center font-mono">
+                    <td className="p-2.5 text-center font-mono tabular-nums" dir="ltr">
                       <span
                         className={
                           m.isSufficient
@@ -194,24 +194,24 @@ export function BundleKitMaterialsStep({
                         {m.availableInBranch}
                       </span>
                     </td>
-                    <td className="p-2.5 text-center">
+                    <td className="p-2.5 text-center whitespace-nowrap">
                       {m.isSufficient ? (
                         <Badge
                           variant="secondary"
-                          className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-none text-[10px]"
+                          className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-none text-[10px] whitespace-nowrap"
                         >
                           متوفر بكفاية
                         </Badge>
                       ) : (
                         <Badge
                           variant="secondary"
-                          className="bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] border-none text-[10px]"
+                          className="bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] border-none text-[10px] whitespace-nowrap"
                         >
                           غير كافٍ
                         </Badge>
                       )}
                     </td>
-                    <td className="p-2.5 text-center font-mono">
+                    <td className="p-2.5 text-center font-mono tabular-nums" dir="ltr">
                       {m.isSufficient ? (
                         <span className="text-muted-foreground">0</span>
                       ) : (
@@ -220,12 +220,12 @@ export function BundleKitMaterialsStep({
                         </span>
                       )}
                     </td>
-                    <td className="p-2.5 text-center">
+                    <td className="p-2.5 text-center whitespace-nowrap">
                       {m.isSubstituted ? (
-                        <div className="flex items-center justify-center gap-1.5">
+                        <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
                           <Badge
                             variant="secondary"
-                            className="bg-primary/10 text-primary border-primary/20 text-[10px] gap-1 py-0.5"
+                            className="bg-primary/10 text-primary border-primary/20 text-[10px] gap-1 py-0.5 whitespace-nowrap"
                           >
                             <ArrowLeftRight aria-hidden className="size-3" />
                             مادة بديلة
@@ -234,7 +234,7 @@ export function BundleKitMaterialsStep({
                             type="button"
                             size="sm"
                             variant="ghost"
-                            className="h-7 text-xs text-destructive hover:bg-destructive/10 px-2 gap-1"
+                            className="h-7 text-xs text-destructive hover:bg-destructive/10 px-2 gap-1 whitespace-nowrap shrink-0"
                             onClick={() => onRemoveSubstitution(m)}
                             title="إلغاء البديل والرجوع للأصل"
                           >
@@ -245,7 +245,7 @@ export function BundleKitMaterialsStep({
                             type="button"
                             size="sm"
                             variant="ghost"
-                            className="h-7 text-xs text-muted-foreground hover:bg-muted px-2"
+                            className="h-7 text-xs text-muted-foreground hover:bg-muted px-2 whitespace-nowrap shrink-0"
                             onClick={() => {
                               setSelectedMaterialForSub(m);
                               setIsSubDialogOpen(true);
@@ -260,7 +260,7 @@ export function BundleKitMaterialsStep({
                           type="button"
                           size="sm"
                           variant="secondary"
-                          className="h-7 text-xs border border-[var(--sem-neg)]/50 bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] hover:bg-[var(--sem-neg)]/20 font-bold gap-1 px-2.5 shadow-xs transition-colors"
+                          className="h-7 text-xs border border-[var(--sem-neg)]/50 bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] hover:bg-[var(--sem-neg)]/20 font-bold gap-1 px-2.5 shadow-xs transition-colors whitespace-nowrap shrink-0"
                           onClick={() => {
                             setSelectedMaterialForSub(m);
                             setIsSubDialogOpen(true);
@@ -274,7 +274,7 @@ export function BundleKitMaterialsStep({
                           type="button"
                           size="sm"
                           variant="ghost"
-                          className="h-7 text-xs text-muted-foreground hover:text-foreground gap-1 px-2"
+                          className="h-7 text-xs text-muted-foreground hover:text-foreground gap-1 px-2 whitespace-nowrap shrink-0"
                           onClick={() => {
                             setSelectedMaterialForSub(m);
                             setIsSubDialogOpen(true);

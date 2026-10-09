@@ -124,15 +124,15 @@ export function BundleKitReviewStep({
           </div>
         ) : (
           <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full text-xs text-start">
+            <table className="w-full min-w-[650px] border-collapse text-xs text-start">
               <thead className="bg-muted/60 text-muted-foreground">
                 <tr>
-                  <th className="p-2.5 text-start font-medium">المكون</th>
-                  <th className="p-2.5 text-start font-medium">الوصفة</th>
-                  <th className="p-2.5 text-center font-medium">كمية الدفعة</th>
-                  <th className="p-2.5 text-center font-medium">التالف</th>
-                  <th className="p-2.5 text-center font-medium">الناتج السليم</th>
-                  <th className="p-2.5 text-center font-medium">أجور العمالة/وحدة</th>
+                  <th className="p-2.5 text-start font-medium whitespace-nowrap select-none min-w-[180px]">المكون</th>
+                  <th className="p-2.5 text-start font-medium whitespace-nowrap select-none min-w-[120px]">الوصفة</th>
+                  <th className="p-2.5 text-center font-medium whitespace-nowrap select-none min-w-[90px]">كمية الدفعة</th>
+                  <th className="p-2.5 text-center font-medium whitespace-nowrap select-none min-w-[70px]">التالف</th>
+                  <th className="p-2.5 text-center font-medium whitespace-nowrap select-none min-w-[90px]">الناتج السليم</th>
+                  <th className="p-2.5 text-center font-medium whitespace-nowrap select-none min-w-[110px]">أجور العمالة/وحدة</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -146,23 +146,23 @@ export function BundleKitReviewStep({
                         <span className="font-semibold text-foreground">
                           {comp?.productName ?? `#${b.variantId}`}
                         </span>
-                        <span className="block font-mono text-[10px] text-muted-foreground" dir="ltr">
+                        <span className="block font-mono text-[10px] text-muted-foreground tabular-nums" dir="ltr">
                           {comp?.sku}
                         </span>
                       </td>
-                      <td className="p-2.5 text-muted-foreground">
+                      <td className="p-2.5 text-muted-foreground whitespace-nowrap">
                         {comp?.recipeName ?? "وصفة أساسية"}
                       </td>
-                      <td className="p-2.5 text-center font-mono font-bold">
+                      <td className="p-2.5 text-center font-mono font-bold tabular-nums" dir="ltr">
                         {b.batchQty}
                       </td>
-                      <td className="p-2.5 text-center font-mono text-[var(--sem-neg)]">
+                      <td className="p-2.5 text-center font-mono tabular-nums text-[var(--sem-neg)]" dir="ltr">
                         {b.scrapQty > 0 ? b.scrapQty : 0}
                       </td>
-                      <td className="p-2.5 text-center font-mono text-[var(--sem-pos)] font-bold">
+                      <td className="p-2.5 text-center font-mono tabular-nums text-[var(--sem-pos)] font-bold" dir="ltr">
                         {goodQty}
                       </td>
-                      <td className="p-2.5 text-center font-mono">
+                      <td className="p-2.5 text-center font-mono tabular-nums whitespace-nowrap" dir="ltr">
                         {formatIqd(b.laborPerUnit || "0")}
                       </td>
                     </tr>
@@ -196,13 +196,15 @@ export function BundleKitReviewStep({
           <Input
             id="linked-wo"
             type="number"
+            dir="ltr"
+            lang="en-US"
             value={linkedWorkOrderId ?? ""}
             onChange={(e) => {
               const val = parseInt(e.target.value, 10);
               onLinkedWorkOrderChange(Number.isFinite(val) && val > 0 ? val : null);
             }}
             placeholder="رقم التعريف لأمر الشغل linkedWorkOrderId"
-            className="text-xs h-9 font-mono"
+            className="text-xs h-9 font-mono tabular-nums"
           />
         </div>
       </div>
