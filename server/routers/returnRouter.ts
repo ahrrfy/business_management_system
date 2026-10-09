@@ -1,7 +1,7 @@
 import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import {
   moduleAccessAllowed,
   type PermissionMap,
@@ -14,6 +14,9 @@ import {
   auditLogs,
   branchStock,
   customers,
+  deliveryConsignments,
+  deliveryLedgerEntries,
+  deliveryParties,
   invoiceItemBundleComponents,
   invoiceItems,
   invoices,
@@ -54,13 +57,17 @@ import { assertCashOutAvailable } from "../services/cash/cashAvailability";
 import { getDb, type Tx } from "../db";
 import { logAudit } from "../services/auditService";
 import {
+  allocateReturnAgainstInvoice,
   postPurchaseReturnCartCardRefund,
   recordPurchaseReturnCartReceipt,
   recordSalesReturnCartCardReceipt,
   recordSalesReturnCartReceipt,
+  remainingUnremittedDeliveryCustody,
   returnSaleAsOwner,
   returnSaleDirect,
   returnSaleInTx,
+  reverseUnremittedDeliveryConsignment,
+  type UnremittedDeliverySnapshot,
 } from "../services/returnService";
 import { reconcileDeliveryOnReturnTx } from "../services/delivery/returnReconciliation";
 import {
@@ -2130,6 +2137,27 @@ export const returnRouter = router({
 
           // ٠) التحقق من الفاتورة الأصلية إن أدخلت وفرض الحوكمة المالية الصارمة
           let matchedInvoice: typeof invoices.$inferSelect | null = null;
+          let matchedDeliveryPreview: {
+            id: number;
+            partyId: number;
+            branchId: number;
+            invoiceId: number;
+            consignmentNumber: string;
+            codAmount: string;
+            collectedAmount: string | null;
+            counterSettledAmount: string | null;
+            status: string;
+            parcelStatus: string;
+            moneyStatus:
+              | "NOT_APPLICABLE"
+              | "UNSETTLED"
+              | "PARTIAL"
+              | "SETTLED"
+              | "CANCELLED"
+              | "WRITTEN_OFF";
+            remittanceId: number | null;
+            custodyRecognizedAt?: Date | null;
+          } | null = null;
           let invoiceItemRows: Array<typeof invoiceItems.$inferSelect> = [];
           const resolvedBaseQtyByItem = new Map<any, number>();
           if (input.invoiceNumber?.trim()) {
@@ -2137,8 +2165,13 @@ export const returnRouter = router({
             const strippedNo = rawNo.replace(/^INV-/i, "");
             const prefixedNo = `INV-${strippedNo}`;
 
-            const [found] = await tx
-              .select()
+            // ١) قراءة الفاتورة أولاً دون قفل لمعرفة المعرّف والإرسالية:
+            const [invPreview] = await tx
+              .select({
+                id: invoices.id,
+                branchId: invoices.branchId,
+                status: invoices.status,
+              })
               .from(invoices)
               .where(
                 or(
@@ -2147,6 +2180,91 @@ export const returnRouter = router({
                   eq(invoices.invoiceNumber, prefixedNo),
                 ),
               )
+              .limit(1);
+
+            if (!invPreview) {
+              throw new TRPCError({
+                code: "NOT_FOUND",
+                message: appErrorMessage({
+                  what: "تعذر العثور على الفاتورة المحددة",
+                  why: `لا توجد فاتورة بالرقم «${input.invoiceNumber.trim()}» مسجلة في النظام`,
+                  doThis: "تأكد من صحة رقم الفاتورة أو رمز الباركود المدخل",
+                }),
+              });
+            }
+
+            // ٢) الترتيب الصارم للأقفال منعاً للـ Deadlock مع مسار التوريد:
+            // party → consignment → invoice
+            const [deliveryPreview] = await tx
+              .select({
+                id: deliveryConsignments.id,
+                partyId: deliveryConsignments.partyId,
+                branchId: deliveryConsignments.branchId,
+                invoiceId: deliveryConsignments.invoiceId,
+                consignmentNumber: deliveryConsignments.consignmentNumber,
+                codAmount: deliveryConsignments.codAmount,
+                collectedAmount: deliveryConsignments.collectedAmount,
+                counterSettledAmount: deliveryConsignments.counterSettledAmount,
+                status: deliveryConsignments.status,
+                parcelStatus: deliveryConsignments.parcelStatus,
+                moneyStatus: deliveryConsignments.moneyStatus,
+                remittanceId: deliveryConsignments.remittanceId,
+                custodyRecognizedAt: deliveryConsignments.custodyRecognizedAt,
+              })
+              .from(deliveryConsignments)
+              .where(
+                and(
+                  eq(deliveryConsignments.invoiceId, invPreview.id),
+                  ne(deliveryConsignments.status, "CANCELLED"),
+                ),
+              )
+              .limit(1);
+
+            if (deliveryPreview) {
+              // أ) قفل جهة التوصيل أولاً
+              await tx
+                .select({ id: deliveryParties.id })
+                .from(deliveryParties)
+                .where(eq(deliveryParties.id, Number(deliveryPreview.partyId)))
+                .for("update")
+                .limit(1);
+
+              // ب) قفل الإرسالية ثانياً
+              const [lockedDelivery] = await tx
+                .select({
+                  id: deliveryConsignments.id,
+                  partyId: deliveryConsignments.partyId,
+                  branchId: deliveryConsignments.branchId,
+                  invoiceId: deliveryConsignments.invoiceId,
+                  consignmentNumber: deliveryConsignments.consignmentNumber,
+                  codAmount: deliveryConsignments.codAmount,
+                  collectedAmount: deliveryConsignments.collectedAmount,
+                  counterSettledAmount: deliveryConsignments.counterSettledAmount,
+                  status: deliveryConsignments.status,
+                  parcelStatus: deliveryConsignments.parcelStatus,
+                  moneyStatus: deliveryConsignments.moneyStatus,
+                  remittanceId: deliveryConsignments.remittanceId,
+                  custodyRecognizedAt: deliveryConsignments.custodyRecognizedAt,
+                })
+                .from(deliveryConsignments)
+                .where(eq(deliveryConsignments.id, Number(deliveryPreview.id)))
+                .for("update")
+                .limit(1);
+              matchedDeliveryPreview = lockedDelivery ?? deliveryPreview;
+            } else {
+              // قفل فجوة الإرسالية
+              await tx
+                .select({ id: deliveryConsignments.id })
+                .from(deliveryConsignments)
+                .where(eq(deliveryConsignments.invoiceId, invPreview.id))
+                .for("update");
+            }
+
+            // ج) قفل الفاتورة ثالثاً بعد التوصيل (party → consignment → invoice)
+            const [found] = await tx
+              .select()
+              .from(invoices)
+              .where(eq(invoices.id, invPreview.id))
               .for("update")
               .limit(1);
 
@@ -2797,6 +2915,78 @@ export const returnRouter = router({
             const newReturnedTotal = money(
               matchedInvoice.returnedTotal ?? "0",
             ).plus(returnTotalDec);
+            const isFullyReturned = newReturnedTotal.gte(
+              money(matchedInvoice.total),
+            );
+
+            // تسوية إرسالية التوصيل المرتبطة بالفاتورة:
+            // فحص ما إذا كانت الإرسالية لديها عهدة مسلّمة غير مورّدة (unremitted custody)
+            let reversedDeliveryCustody = money(0);
+            const liveDeliveryCustody = matchedDeliveryPreview == null
+              ? money(0)
+              : (await remainingUnremittedDeliveryCustody(tx, Number(matchedDeliveryPreview.id))).total;
+            const hasPriorDeliveryCustodyReturn = matchedDeliveryPreview == null
+              ? false
+              : Boolean((await tx
+                  .select({ id: deliveryLedgerEntries.id })
+                  .from(deliveryLedgerEntries)
+                  .where(and(
+                    eq(deliveryLedgerEntries.consignmentId, Number(matchedDeliveryPreview.id)),
+                    inArray(deliveryLedgerEntries.entryType, ["COD_RETURNED", "SHORTFALL_SETTLED"]),
+                  ))
+                  .limit(1))[0]);
+            const isUnremittedDelivery =
+              matchedDeliveryPreview != null &&
+              (["DELIVERED", "PARTIAL"].includes(matchedDeliveryPreview.status) ||
+                ["DELIVERED", "PARTIAL"].includes(matchedDeliveryPreview.parcelStatus)) &&
+              (liveDeliveryCustody.gt(0) || hasPriorDeliveryCustodyReturn);
+
+            if (isUnremittedDelivery && matchedDeliveryPreview) {
+              const fullAllocation = allocateReturnAgainstInvoice(
+                matchedInvoice,
+                returnTotalDec,
+              );
+              const refundAmountForCustody = (input.settlement.method === "CASH" || input.settlement.method === "CARD")
+                ? money(input.settlement.totalAmount)
+                : money(0);
+              const deliveryReversal = await reverseUnremittedDeliveryConsignment(
+                tx,
+                matchedDeliveryPreview as UnremittedDeliverySnapshot,
+                matchedInvoice.id,
+                matchedInvoice.customerId == null ? null : Number(matchedInvoice.customerId),
+                matchedInvoice.invoiceNumber,
+                ctx.user.id,
+                Decimal.max(0, fullAllocation.paidRelief.minus(refundAmountForCustody)),
+                fullAllocation.unpaidRelief,
+                isFullyReturned,
+                clientRequestId?.slice(0, 20) ?? `cart-${matchedInvoice.id}-${matchedDeliveryPreview.counterSettledAmount ?? "0"}`,
+                "مرتجع مبيعات عبر سلة المرتجعات",
+              );
+              reversedDeliveryCustody = deliveryReversal.reversedCustody;
+              if (matchedInvoice.customerId != null && deliveryReversal.reversedCustody.gt(0)) {
+                await adjustCustomerBalance(
+                  tx,
+                  Number(matchedInvoice.customerId),
+                  deliveryReversal.reversedCustody,
+                );
+              }
+            } else {
+              // تسوية أي إرسالية توصيل نشطة (غير مسلّمة أو بلا عهدة نقدية غير مورّدة)
+              await reconcileDeliveryOnReturnTx(tx, {
+                invoiceId: matchedInvoice.id,
+                returnedTotal: returnTotalDec,
+                isFullReturn: isFullyReturned,
+                actor: {
+                  userId: ctx.user.id,
+                  branchId: actorBranchId,
+                  role: ctx.user.role,
+                },
+                clientRequestId: clientRequestId
+                  ? `${clientRequestId}:delivery-reconcile`
+                  : undefined,
+              });
+            }
+
             let newPaid = money(matchedInvoice.paidAmount ?? "0");
             if (
               input.settlement.method === "CASH" ||
@@ -2805,9 +2995,10 @@ export const returnRouter = router({
               const paidMinusRefund = newPaid.minus(returnTotalDec);
               newPaid = paidMinusRefund.lt(0) ? money(0) : paidMinusRefund;
             }
-            const isFullyReturned = newReturnedTotal.gte(
-              money(matchedInvoice.total),
-            );
+            if (reversedDeliveryCustody.gt(0)) {
+              const paidMinusCustody = newPaid.minus(reversedDeliveryCustody);
+              newPaid = paidMinusCustody.lt(0) ? money(0) : paidMinusCustody;
+            }
             const newStatus = isFullyReturned
               ? "RETURNED"
               : computeInvoiceStatus(
@@ -2823,21 +3014,6 @@ export const returnRouter = router({
                 status: newStatus,
               })
               .where(eq(invoices.id, matchedInvoice.id));
-
-            // تسوية أي إرسالية توصيل نشطة مرتبطة بهذه الفاتورة وتبرئة عهدة المندوب فوراً
-            await reconcileDeliveryOnReturnTx(tx, {
-              invoiceId: matchedInvoice.id,
-              returnedTotal: returnTotalDec,
-              isFullReturn: isFullyReturned,
-              actor: {
-                userId: ctx.user.id,
-                branchId: actorBranchId,
-                role: ctx.user.role,
-              },
-              clientRequestId: clientRequestId
-                ? `${clientRequestId}:delivery-reconcile`
-                : undefined,
-            });
           }
 
           // تسجيل مفتاح الـ Idempotency ذرياً داخل المعاملة نفسها

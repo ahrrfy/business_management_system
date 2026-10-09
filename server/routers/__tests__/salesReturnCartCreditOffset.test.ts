@@ -457,4 +457,112 @@ describe.sequential("returns.executeSalesReturnCart — الحوكمة المح�
     expect(await customerBalance(1)).toBe("0.00");
     expect(await reconcileCustomerBalances()).toEqual([]);
   });
+
+  it("٧) إرسالية توصيل مسلّمة وعليها عهدة نقدية غير مورّدة: عكس عهدة التوصيل وصون مسار التوريد", async () => {
+    const shiftId = await openShift();
+    await db().insert(s.deliveryParties).values({
+      id: 1,
+      name: "شركة التوصيل السريع",
+      partyType: "COMPANY",
+      currentBalance: "30.00",
+      branchId: 1,
+    });
+
+    const sale = await createSale(
+      {
+        branchId: 1,
+        shiftId,
+        customerId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }],
+        payment: null,
+      },
+      cashier,
+    );
+
+    // تسجيل إرسالية مسلّمة وقبض المندوب النقد لكن لم يورّده بعد (عهدة حية)
+    await db().insert(s.deliveryConsignments).values({
+      id: 1,
+      consignmentNumber: "CN-TEST-002",
+      branchId: 1,
+      invoiceId: sale.invoiceId,
+      sourceType: "INVOICE",
+      sourceId: sale.invoiceId,
+      partyId: 1,
+      recipientName: "العميل",
+      recipientPhone: "07700000000",
+      status: "DELIVERED",
+      parcelStatus: "DELIVERED",
+      moneyStatus: "UNSETTLED",
+      codAmount: "30.00",
+      collectedAmount: "30.00",
+      deliveryFee: "5.00",
+      feeCollection: "COURIER",
+    });
+
+    // تسجيل قيد تحصيل COD في دفتر التوصيل كعهدة غير مورّدة وتحديث الفاتورة إلى مسددة وسداد ذمة العميل
+    await db().update(s.invoices).set({
+      paidAmount: "30.00",
+      status: "PAID",
+    }).where(eq(s.invoices.id, sale.invoiceId));
+
+    await db().update(s.customers).set({
+      currentBalance: "0.00",
+    }).where(eq(s.customers.id, 1));
+
+    await db().insert(s.deliveryLedgerEntries).values({
+      id: 1,
+      eventKey: "CN:1:COD_COLLECTED:TEST",
+      partyId: 1,
+      consignmentId: 1,
+      branchId: 1,
+      entryType: "COD_COLLECTED",
+      amount: "30.00",
+      actorUserId: 2,
+      notes: "تحصيل كاش",
+    });
+
+    const caller = returnRouter.createCaller(context());
+    const inspected = await caller.inspectInvoiceForReturn({
+      invoiceNumber: sale.invoiceNumber,
+    });
+    const item = inspected!.items[0];
+
+    // إرجاع الفاتورة عبر سلة المرتجعات
+    await caller.executeSalesReturnCart({
+      invoiceNumber: sale.invoiceNumber,
+      customer: { customerId: 1, name: "عميل آجل" },
+      disposition: "RESTOCK",
+      items: [
+        {
+          variantId: item.variantId,
+          productUnitId: item.productUnitId,
+          invoiceItemId: item.invoiceItemId,
+          productName: item.productName,
+          quantity: 3,
+          unitPrice: item.unitPrice,
+        },
+      ],
+      settlement: {
+        method: "CREDIT_OFFSET",
+        totalAmount: "30.00",
+      },
+      clientRequestId: "test-return-with-unremitted-custody",
+    });
+
+    // التحقق من تسجيل قيد COD_RETURNED وعكس عهدة التوصيل دون فقدان المسار
+    const [revEntry] = await db()
+      .select()
+      .from(s.deliveryLedgerEntries)
+      .where(
+        and(
+          eq(s.deliveryLedgerEntries.consignmentId, 1),
+          eq(s.deliveryLedgerEntries.entryType, "COD_RETURNED"),
+        ),
+      );
+    expect(revEntry).toBeDefined();
+    expect(revEntry.amount).toBe("30.00");
+    expect(await customerBalance(1)).toBe("0.00");
+    expect(await reconcileCustomerBalances()).toEqual([]);
+  });
 });
