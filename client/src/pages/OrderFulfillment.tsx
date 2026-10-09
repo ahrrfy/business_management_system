@@ -6,11 +6,44 @@
  * حقيقية + يُخصم المخزون + قيد دفتر عبر orders.dispatch) ← تُسلَّم. عزل الفرع خادمياً.
  * الإرسال مديريّ فقط (يُقرّ ائتمان COD المؤقّت للزبون النقدي) — يُخفى زرّه عن غير المدير.
  */
-import { Suspense, lazy, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, ClipboardList, FileText, Loader2, MapPin, Package, Pencil, Printer, ReceiptText, Store, Truck, X } from "lucide-react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  Bell,
+  Check,
+  CheckCircle2,
+  ClipboardList,
+  Eye,
+  FileText,
+  Loader2,
+  MapPin,
+  Package,
+  PackageCheck,
+  Pencil,
+  Printer,
+  ReceiptText,
+  Store,
+  Trophy,
+  Truck,
+  UserCheck,
+  Volume2,
+  VolumeX,
+  X,
+} from "lucide-react";
 const EditOnlineOrderDialog = lazy(() =>
   import("@/components/store/EditOnlineOrderDialog").then((m) => ({ default: m.EditOnlineOrderDialog }))
 );
+import { OrderSlaBadge } from "@/components/store/OrderSlaBadge";
+import { OrderContactCell, type ContactStatus } from "@/components/store/OrderContactCell";
+import { OrderQuickViewDrawer } from "@/components/store/OrderQuickViewDrawer";
+import { OrderLeaderboardModal } from "@/components/store/OrderLeaderboardModal";
+import {
+  AUDIO_FEEDBACK_CHANGE_EVENT,
+  isAudioFeedbackEnabled,
+  playAudioFeedback,
+  setAudioFeedbackEnabled,
+} from "@/lib/audioFeedback";
+import { Button } from "@/components/ui/button";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { D, fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -42,7 +75,6 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 import { storefrontUrl } from "@/lib/siteHosts";
 import { useRealtimeEvent } from "@/lib/realtime";
 import { REALTIME_EVENT_TYPES, type StorefrontOrderPlacedPayload } from "@shared/realtimeEvents";
-import { playAudioFeedback } from "@/lib/audioFeedback";
 
 // حالات الطلب + خرائط العرض/الانتقال ⇐ shared/onlineOrderStatus.ts (مصدر الحقيقة الوحيد).
 // كانت مُعرَّفةً محلياً هنا (وفي Storefront/StoreDashboard/StoreAnalytics) بألوانٍ متفاوتة —
@@ -88,6 +120,11 @@ export default function OrderFulfillment() {
   const [dispatchTarget, setDispatchTarget] = useState<OrderRow | null>(null);
   const [cancelTarget, setCancelTarget] = useState<{ id: number; orderNumber: string } | null>(null);
   const [editOrderId, setEditOrderId] = useState<number | null>(null);
+  const [quickViewOrderId, setQuickViewOrderId] = useState<number | null>(null);
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(() => isAudioFeedbackEnabled());
+  const [myOrdersOnly, setMyOrdersOnly] = useState(false);
+  const prevUnclaimedCountRef = useRef(0);
   const utils = trpc.useUtils();
 
   useRealtimeEvent<StorefrontOrderPlacedPayload>(
@@ -107,13 +144,19 @@ export default function OrderFulfillment() {
     !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL", ["manager"]);
 
-  const countsQ = trpc.storeAdmin.orders.counts.useQuery();
+  const countsQ = trpc.storeAdmin.orders.counts.useQuery(undefined, {
+    refetchInterval: 30_000,
+  });
   // ترقيم حقيقي بالمؤشّر (كان يُحمَّل ٢٠٠ صفّاً فقط بلا مؤشّر ولا لافتة — اقتطاعٌ صامت). orders.list
   // يبقى مصفوفة مسطّحة (عقدٌ يشاركه StoreDashboard.tsx خارج نطاق هذه الشاشة) ⇒ hasMore heuristic
   // بطول الصفحة (نمط BoardColumn في TasksHub.tsx)، لا حقل hasMore صريح من الخادم.
   const listQ = trpc.storeAdmin.orders.list.useInfiniteQuery(
     { status: filter, from: f.from || undefined, to: f.to || undefined, limit: PAGE_SIZE },
-    { getNextPageParam: (last) => (last.length === PAGE_SIZE ? last[last.length - 1]?.id : undefined) },
+    {
+      getNextPageParam: (last) => (last.length === PAGE_SIZE ? last[last.length - 1]?.id : undefined),
+      refetchInterval: 30_000,
+      refetchOnWindowFocus: true,
+    },
   );
   const setStatusM = trpc.storeAdmin.orders.setStatus.useMutation({
     onSuccess: (res) => {
@@ -133,25 +176,130 @@ export default function OrderFulfillment() {
     },
     onError: (e) => notify.err(e),
   });
+  const claimM = trpc.storeAdmin.orders.claim.useMutation({
+    onSuccess: () => {
+      notify.ok("تم استلام الطلب وتثبيت اسمك مسؤولاً عن تجهيزه");
+      void utils.storeAdmin.orders.list.invalidate();
+      void utils.storeAdmin.orders.counts.invalidate();
+      void utils.storeAdmin.orders.leaderboard.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const updateContactM = trpc.storeAdmin.orders.updateContact.useMutation({
+    onSuccess: () => {
+      notify.ok("تم تحديث حالة التواصل مع العميل");
+      void utils.storeAdmin.orders.list.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const markPreparedM = trpc.storeAdmin.orders.markPrepared.useMutation({
+    onSuccess: () => {
+      notify.ok("تم إتمام تجهيز الطلب واحتساب نقاط وسرعة الإنجاز");
+      void utils.storeAdmin.orders.list.invalidate();
+      void utils.storeAdmin.orders.counts.invalidate();
+      void utils.storeAdmin.orders.leaderboard.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
 
   const counts = countsQ.data ?? {};
   const orders = useMemo(() => (listQ.data?.pages ?? []).flatMap((p) => p), [listQ.data]);
-  const visibleOrders = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase("ar");
-    if (!needle) return orders;
-    return orders.filter((order) =>
-      [order.orderNumber, order.customerName, order.customerPhone, order.governorate]
-        .some((value) => String(value ?? "").toLocaleLowerCase("ar").includes(needle)),
-    );
-  }, [orders, query]);
 
-  const activeFilterCount = (filter ? 1 : 0) + (f.from || f.to ? 1 : 0);
+  // الطلبات الواردة غير المستلمة — تُطلق تنبيهاً صوتياً وتشغيلياً عاجلاً
+  const unclaimedPendingOrders = useMemo(() => {
+    return orders.filter((o) => normalizeOrderStatus(o.status) === "PENDING" && !o.claimedByUserId);
+  }, [orders]);
+
+  useEffect(() => {
+    const onAudioPrefChange = (e: Event) => {
+      const detail = (e as CustomEvent<boolean>).detail;
+      setSoundEnabled(detail ?? isAudioFeedbackEnabled());
+    };
+    window.addEventListener(AUDIO_FEEDBACK_CHANGE_EVENT, onAudioPrefChange);
+    return () => window.removeEventListener(AUDIO_FEEDBACK_CHANGE_EVENT, onAudioPrefChange);
+  }, []);
+
+  useEffect(() => {
+    if (!soundEnabled || unclaimedPendingOrders.length === 0) {
+      prevUnclaimedCountRef.current = unclaimedPendingOrders.length;
+      return;
+    }
+
+    // رنين فوري فقط عند وصول طلب جديد (زيادة في عدد الطلبات غير المستلمة)
+    if (unclaimedPendingOrders.length > prevUnclaimedCountRef.current) {
+      playAudioFeedback("order_alert");
+    }
+    prevUnclaimedCountRef.current = unclaimedPendingOrders.length;
+
+    // تذكير صوتي دوري هادئ كل 45 ثانية إذا استمر وجود طلبات لم يستلمها أحد
+    const interval = setInterval(() => {
+      playAudioFeedback("order_alert");
+    }, 45000);
+    return () => clearInterval(interval);
+  }, [soundEnabled, unclaimedPendingOrders.length]);
+
+  const currentUserId = me.data?.id;
+  const visibleOrders = useMemo(() => {
+    let filtered = orders;
+    if (myOrdersOnly && currentUserId) {
+      filtered = filtered.filter((o) => o.claimedByUserId === currentUserId || o.preparedByUserId === currentUserId);
+    }
+    const needle = query.trim().toLocaleLowerCase("ar");
+    if (!needle) return filtered;
+    return filtered.filter((order) =>
+      [
+        order.orderNumber,
+        order.customerName,
+        order.customerPhone,
+        order.governorate,
+        order.claimedByName,
+        order.preparedByName,
+      ].some((value) => String(value ?? "").toLocaleLowerCase("ar").includes(needle)),
+    );
+  }, [orders, query, myOrdersOnly, currentUserId]);
+
+  const activeFilterCount = (filter ? 1 : 0) + (f.from || f.to ? 1 : 0) + (myOrdersOnly ? 1 : 0);
 
   // أعمدة الطلبات — داخل المكوّن لأنّ عمود الإجراءات يستدعي الطباعة والطفرات وحالة الصلاحية.
   const orderColumns = useMemo<ColumnDef<Row, unknown>[]>(() => [
-    { id: "orderNumber", header: "رقم الطلب", accessorFn: (o) => o.orderNumber, meta: { kind: "code", width: "id" }, cell: ({ row }) => <span className="font-bold tracking-wider">{row.original.orderNumber}</span> },
-    { id: "customerName", header: "العميل", accessorFn: (o) => o.customerName ?? "—", cell: ({ row }) => row.original.customerName ?? "—" },
-    { id: "customerPhone", header: "الهاتف", accessorFn: (o) => o.customerPhone ?? "—", meta: { kind: "phone" }, cell: ({ row }) => row.original.customerPhone ?? "—" },
+    {
+      id: "orderNumber",
+      header: "رقم الطلب والتوقيت",
+      accessorFn: (o) => o.orderNumber,
+      meta: { kind: "code", width: "id" },
+      cell: ({ row }) => {
+        const o = row.original;
+        const st = normalizeOrderStatus(o.status);
+        return (
+          <div className="flex flex-col items-start gap-1">
+            <span className="font-bold tracking-wider">{o.orderNumber}</span>
+            <OrderSlaBadge
+              createdAt={o.createdAt}
+              status={st}
+              reservationExpiresAt={o.reservationExpiresAt}
+              fulfillmentDurationMinutes={o.fulfillmentDurationMinutes}
+            />
+          </div>
+        );
+      },
+    },
+    {
+      id: "customer",
+      header: "العميل والتواصل",
+      accessorFn: (o) => o.customerName ?? "—",
+      cell: ({ row }) => {
+        const o = row.original;
+        return (
+          <OrderContactCell
+            order={o}
+            onUpdateContact={async (status: ContactStatus, notes?: string) => {
+              await updateContactM.mutateAsync({ id: o.id, contactStatus: status, contactNotes: notes });
+            }}
+            isUpdating={updateContactM.isPending}
+          />
+        );
+      },
+    },
     {
       id: "governorate",
       header: "المحافظة والعنوان",
@@ -177,7 +325,26 @@ export default function OrderFulfillment() {
         );
       },
     },
-    { id: "itemCount", header: "أصناف", accessorFn: (o) => o.itemCount, meta: { kind: "number", align: "center" }, cell: ({ row }) => row.original.itemCount },
+    {
+      id: "itemCount",
+      header: "الأصناف",
+      accessorFn: (o) => o.itemCount,
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => {
+        const o = row.original;
+        return (
+          <button
+            type="button"
+            onClick={() => setQuickViewOrderId(o.id)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs font-semibold hover:bg-accent transition"
+            title="معاينة تفاصيل وأصناف الطلب"
+          >
+            <Eye className="size-3.5 text-muted-foreground" />
+            <span>{o.itemCount} صنف</span>
+          </button>
+        );
+      },
+    },
     {
       id: "total",
       header: "الإجمالي (COD)",
@@ -200,6 +367,73 @@ export default function OrderFulfillment() {
               </span>
             )}
           </div>
+        );
+      },
+    },
+    {
+      id: "fulfillment",
+      header: "مسؤولية التجهيز",
+      accessorFn: (o) => o.preparedByName ?? o.claimedByName ?? "غير مستلم",
+      cell: ({ row }) => {
+        const o = row.original;
+        const st = normalizeOrderStatus(o.status);
+        const isCancelled = st === "CANCELLED";
+        const isDelivered = st === "DELIVERED";
+
+        if (o.preparedByUserId) {
+          return (
+            <div className="flex flex-col items-start gap-1">
+              <span className="inline-flex items-center gap-1 text-xs font-bold text-[var(--sem-pos)]">
+                <CheckCircle2 className="size-3.5" />
+                جهّزه: {o.preparedByName ?? "موظف"}
+              </span>
+              {o.fulfillmentDurationMinutes != null && (
+                <span className="text-[10px] text-muted-foreground">
+                  استغرق {o.fulfillmentDurationMinutes} دقيقة
+                </span>
+              )}
+            </div>
+          );
+        }
+
+        if (o.claimedByUserId) {
+          return (
+            <div className="flex flex-col items-start gap-1.5">
+              <span className="inline-flex items-center gap-1 text-xs font-medium text-primary">
+                <UserCheck className="size-3.5" />
+                استلمه: {o.claimedByName ?? "موظف"}
+              </span>
+              {!isCancelled && !isDelivered && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-[11px] font-bold text-[var(--sem-pos)] border-[var(--sem-pos)]/40 hover:bg-[var(--sem-pos-bg)] gap-1"
+                  onClick={() => markPreparedM.mutate({ id: o.id })}
+                  disabled={markPreparedM.isPending}
+                >
+                  <PackageCheck className="size-3.5" />
+                  إتمام التجهيز
+                </Button>
+              )}
+            </div>
+          );
+        }
+
+        if (isCancelled || isDelivered) {
+          return <span className="text-xs text-muted-foreground">—</span>;
+        }
+
+        return (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-2.5 text-xs font-bold gap-1 text-[var(--sem-warn)] border-[var(--sem-warn)]/40 hover:bg-[var(--sem-warn-bg)]"
+            onClick={() => claimM.mutate({ id: o.id })}
+            disabled={claimM.isPending}
+          >
+            <UserCheck className="size-3.5" />
+            استلام الطلب
+          </Button>
         );
       },
     },
@@ -354,7 +588,7 @@ export default function OrderFulfillment() {
         );
       },
     },
-  ], [canDispatch, printingId, setStatusM.isPending, dispatchM.isPending]);
+  ], [canDispatch, printingId, setStatusM.isPending, dispatchM.isPending, claimM.isPending, updateContactM.isPending, markPreparedM.isPending]);
 
   // تصدير/طباعة «الكل»: نمشي بمؤشّر id (لا offset — عقد orders.list) حتى تنضب الصفحات المطابقة
   // لفلاتر الحالة/المدى الحاليّة، بصرف النظر عمّا حُمِّل على الشاشة أو نطاق البحث المحلي.
@@ -510,8 +744,67 @@ export default function OrderFulfillment() {
         title="طلبات الموقع"
         description="راجع الطلبات الواردة، ثبّتها وجهّزها للتوصيل"
         icon={<Store aria-hidden className="size-5" />}
-        actions={<ShippingLabelSizeSelect />}
+        actions={
+          <div className="flex items-center gap-2">
+            <Button
+              variant={soundEnabled ? "outline" : "ghost"}
+              size="sm"
+              onClick={() => {
+                const next = !soundEnabled;
+                setSoundEnabled(next);
+                setAudioFeedbackEnabled(next);
+                if (next) playAudioFeedback("order_alert");
+              }}
+              className="gap-1.5 text-xs font-semibold"
+              title={soundEnabled ? "كتم التنبيهات الصوتية للطلبات الواردة" : "تفعيل التنبيهات الصوتية للطلبات الواردة"}
+            >
+              {soundEnabled ? <Volume2 className="size-4 text-primary" /> : <VolumeX className="size-4 text-muted-foreground" />}
+              <span className="hidden sm:inline">{soundEnabled ? "صوت التنبيه مفعّل" : "الصوت مكتوم"}</span>
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setLeaderboardOpen(true)}
+              className="gap-1.5 text-xs font-semibold text-primary border-primary/30 hover:bg-primary/10"
+              title="لوحة أبطال التجهيز ومنافسة الموظفين"
+            >
+              <Trophy className="size-4 text-primary" />
+              <span>أبطال التجهيز</span>
+            </Button>
+
+            <ShippingLabelSizeSelect />
+          </div>
+        }
       />
+
+      {unclaimedPendingOrders.length > 0 && (
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-xl border-2 border-[var(--sem-neg)]/50 bg-[var(--sem-neg-bg)] p-4 shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="rounded-full bg-[var(--sem-neg)]/20 p-2 text-[var(--sem-neg)]">
+              <Bell className="size-6" />
+            </div>
+            <div>
+              <h3 className="font-bold text-[var(--sem-neg)] text-sm sm:text-base">
+                تنبيه تشغيلي عاجل: يوجد {unclaimedPendingOrders.length} طلب متجر وارد بانتظار الاستلام والتجهيز!
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                يجب استلام الطلبات ومراسلة الزبائن فوراً لتأكيدها وتفادي الإلغاء التلقائي لحجز المخزون بعد 24 ساعة.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 self-end sm:self-auto">
+            <Button
+              size="sm"
+              variant="destructive"
+              className="font-bold text-xs"
+              onClick={() => setFilter("PENDING")}
+            >
+              عرض الطلبات الواردة
+            </Button>
+          </div>
+        </div>
+      )}
 
       <div role="note" className="flex gap-2 rounded-lg border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)] px-3 py-2 text-xs leading-relaxed text-muted-foreground">
         <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-info)]" />
@@ -535,7 +828,7 @@ export default function OrderFulfillment() {
         loading={listQ.isLoading}
         search={{ value: query, onChange: setQuery, placeholder: "رقم الطلب، العميل، الهاتف أو المحافظة…" }}
         activeFilterCount={activeFilterCount}
-        onResetFilters={() => { setQuery(""); setFilter(null); resetF(); }}
+        onResetFilters={() => { setQuery(""); setFilter(null); resetF(); setMyOrdersOnly(false); }}
         onRefresh={() => { void listQ.refetch(); void countsQ.refetch(); }}
         refreshing={listQ.isFetching || countsQ.isFetching}
         onPrint={printOrdersList}
@@ -553,6 +846,8 @@ export default function OrderFulfillment() {
             { key: "governorate", header: "المحافظة" },
             { key: "itemCount", header: "عدد الأصناف" },
             { key: "total", header: "الإجمالي", money: true },
+            { key: "claimedByName", header: "المستلم" },
+            { key: "preparedByName", header: "المجهّز" },
             { key: "status", header: "الحالة", map: (r) => orderStatusLabel(r.status) },
           ],
         }}
@@ -570,6 +865,17 @@ export default function OrderFulfillment() {
                   {opt.label}
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={() => setMyOrdersOnly((v) => !v)}
+                className={`rounded-full px-3 py-1.5 text-xs font-bold transition flex items-center gap-1.5 ${
+                  myOrdersOnly ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"
+                }`}
+                title="تصفية الطلبات التي استلمتها أو جهزتها بنفسك"
+              >
+                <UserCheck className="size-3.5" />
+                طلباتي فقط
+              </button>
             </div>
             <div className="flex items-center gap-1">
               <Input type="date" value={f.from} onChange={(e) => setF({ from: e.target.value })} className="h-8 w-[8.5rem]" aria-label="من تاريخ الطلب" max={f.to || undefined} />
@@ -640,6 +946,25 @@ export default function OrderFulfillment() {
           onOpenChange={(open) => !open && setEditOrderId(null)}
         />
       </Suspense>
+
+      <OrderQuickViewDrawer
+        orderId={quickViewOrderId}
+        open={quickViewOrderId != null}
+        onOpenChange={(open) => !open && setQuickViewOrderId(null)}
+        onDispatch={(o) => {
+          setQuickViewOrderId(null);
+          setDispatchTarget(o);
+        }}
+        onPrintLabel={(id) => void printLabel(id)}
+        onPrintThermal={(id) => void printThermal(id)}
+        onPrintPreparationA4={(id) => void printPreparationA4(id)}
+        canDispatch={canDispatch}
+      />
+
+      <OrderLeaderboardModal
+        open={leaderboardOpen}
+        onOpenChange={setLeaderboardOpen}
+      />
     </div>
   );
 }

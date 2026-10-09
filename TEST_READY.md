@@ -1,58 +1,57 @@
-# E2E Test Suite Ready — Prevent Duplicate Invoice Returns & Cross-Module Interlock
+# E2E Test Suite Ready — Store Order Fulfillment Automation & Commission Integration
 
-## Test Runner
-- **Command**:
+## 1. Test Runner & Verification Summary
+- **Execution Command**:
   ```bash
-  pnpm exec cross-env TZ=UTC TEST_DATABASE_URL="mysql://root:testpw@127.0.0.1:3310/erp_prevent_duplicate_invoice_returns_e2e_test" DATABASE_URL="mysql://root:testpw@127.0.0.1:3310/erp_prevent_duplicate_invoice_returns_e2e_test" vitest run server/routers/__tests__/salesReturnCartIdempotency.test.ts
+  pnpm exec cross-env TZ=UTC vitest run server/services/storeAdmin/__tests__/orderFulfillmentE2E.test.ts
   ```
-- **Execution Result**: 27 passed | 0 failed (100% Passing)
-- **Pre-Push Gates**: `pnpm check` (Clean TypeScript), `pnpm check:guards` (10 Guards passing)
+- **Test Result**: **23 passed | 0 failed** (100% Passing)
+- **Duration**: ~37 seconds
+- **Pre-Push Quality Gates**:
+  - `pnpm check`: **Exit Code 0** (Clean TypeScript compiler check, zero errors)
+  - `pnpm check:guards`: **Exit Code 0** (All project guards passing)
 
-## Test Architecture & Coverage Summary
-The test suite in `server/routers/__tests__/salesReturnCartIdempotency.test.ts` provides comprehensive, requirement-driven, opaque-box testing covering all 10 features (F1 to F10) across four rigorous testing tiers:
+---
+
+## 2. Test Architecture & 4-Tier Coverage Overview
+The comprehensive opaque-box E2E test suite in `server/services/storeAdmin/__tests__/orderFulfillmentE2E.test.ts` provides requirement-driven verification across all 4 tiers:
 
 | Tier | Test Count | Description | Status |
-|------|:----------:|-------------|:------:|
-| **Tier 1: Feature Coverage** | 10 | Complete happy-path and primary invariant verification for each individual feature F1 through F10. | **10/10 PASS** |
-| **Tier 2: Boundary & Corner Cases** | 9 | Strict validation of edge cases: zero refund amount, amount exceeding remaining total, cash refund exceeding actual paid cash, quantity exceeding sold quantity, foreign unbilled variants, terminal dead statuses (`RETURNED`, `CANCELLED`, `SUPERSEDED`), and exact boundary full returns. | **9/9 PASS** |
-| **Tier 3: Cross-Feature Combinations** | 5 | Bi-directional state interlocking: Return -> Cancel rejection, Cancel -> Return rejection, sequential step-down returns, walk-in return immunity during invoice lock, and in-cart line splitting anti-circumvention. | **5/5 PASS** |
-| **Tier 4: Real-World Retail Workflows** | 3 | End-to-end multi-shift cashier cycles: Cash sale -> morning partial return -> evening completing return -> lock/block; multi-line invoice partial return with remaining item availability; damaged item return (`DAMAGED`) with loss recording and zero saleable restock. | **3/3 PASS** |
-| **Total Test Suite** | **27 tests** | **Exhaustive coverage of F1–F10 across all lifecycle transitions** | **100% PASS** |
+|---|:---:|---|:---:|
+| **Tier 1: Feature Coverage** | 7 | Complete happy-path verification for every single feature in isolation (claims, contact updates, phone confirmation, order preparation, courier dispatch, inventory deduction, reservation sweeper). | **7/7 PASS** |
+| **Tier 2: Boundary & Corner Cases** | 8 | Stress-testing extreme edge conditions: simultaneous claim race conditions via `for update`, 24h expiration barrier, illegal state transitions, terminal state immutability, minimum SLA clamp, post-invoicing cancellation lock barrier, idempotent claims, and company courier tracking reference enforcement. | **8/8 PASS** |
+| **Tier 3: Cross-Feature Combinations** | 5 | Multi-step pipeline interlocks: attribution precedence hierarchy (preparer over claimer), direct dispatch attribution fallback, courier dispatch idempotency barrier, sweeper immunity for active/confirmed orders, and multi-line item allocation with ATP reservation exemption. | **5/5 PASS** |
+| **Tier 4: Real-World Scenarios** | 3 | Exhaustive operational lifecycles: Complete customer order workflow (web order -> WhatsApp -> phone confirm -> warehouse prep -> courier dispatch -> two-sided ledger verification), high-volume concurrent multi-staff processing, and orphaned invoice edge recovery. | **3/3 PASS** |
+| **Total Test Suite** | **23 tests** | **Exhaustive coverage of Store Order Fulfillment & Commission Integration** | **100% PASS** |
 
 ---
 
-## Detailed Feature Matrix (F1 – F10)
+## 3. Detailed Feature Matrix & Traceability
 
-| Feature | Description | Tests Covering Feature | Status |
-|:-------:|-------------|------------------------|:------:|
-| **F1** | **Backend Idempotency Replay Guard**: `executeSalesReturnCart` caches `clientRequestId` and safely replays previous receipt/response without duplicating financial entries or inventory movements. | T1-F1 | **VERIFIED** |
-| **F2** | **Client Request ID Handling**: Acceptance and unique tracking of disparate `clientRequestId` keys across consecutive cart transactions. | T1-F2 | **VERIFIED** |
-| **F3** | **Red Alert / Dead Invoice Predicate**: Instant detection of dead invoice statuses (`RETURNED`, `CANCELLED`, `SUPERSEDED`) and zeroing `maxRefundable` in `inspectInvoiceForReturn`. | T1-F3, T2-6, T2-7, T2-8 | **VERIFIED** |
-| **F4** | **Action Disablement & Qty Clamping**: Preventing returns exceeding remaining base item quantities and updating remaining items. | T1-F4, T2-4 | **VERIFIED** |
-| **F5** | **Walk-in Return Preservation**: Seamless execution of returns without invoice reference (`invoiceNumber: undefined`) for unregistered walk-in customers. | T1-F5, T3-4 | **VERIFIED** |
-| **F6** | **Atomic Cancellation Interlock**: Blocking cancellation on invoices that have been fully returned (`RETURNED`), preventing double refund/double restock. | T1-F6, T3-1, T4-1 | **VERIFIED** |
-| **F7** | **Cancellation UI Guard Invariant**: Pure predicate verification ensuring `isDeadInvoiceStatus` and `isDeadInvoice` correctly classify dead vs active states. | T1-F7 | **VERIFIED** |
-| **F8** | **Enriched Return Inspection Backend**: `inspectInvoiceForReturn` delivers precise breakdown of lines, unit prices, sold base quantities, prior returned quantities, remaining refundable totals, and dead invoice status. | T1-F8, T4-2 | **VERIFIED** |
-| **F9** | **Return Disclosure & Status Transition**: Automatic transition of invoice status to `RETURNED`, tracking `returnedTotal`, and zeroing effective refundable amount when fully returned. | T1-F9, T2-9 | **VERIFIED** |
-| **F10** | **Error Message Standardization**: Structured error messages complying with `appErrorMessage` (`what`, `why`, `doThis`) across all return rejections. | T1-F10 | **VERIFIED** |
+| ID | Feature & Requirement | Tests Covering Feature | Verification Invariants | Status |
+|---|---|---|---|:---:|
+| **F1** | **Order Claiming & Ownership** (R1) | T1.1, T2.1, T2.7, T4.1, T4.2 | Pessimistic locking (`for update`) guarantees row-level serialization; exactly 1 winner under simultaneous hits, others receive `CONFLICT`; idempotent self-claims; manager reassignment. | **VERIFIED** |
+| **F2** | **Contact Logging & Phone Confirmation** (R1, R3) | T1.2, T1.3, T4.1 | Atomic persistence of contact notes; WhatsApp communication logging; `CALLED_CONFIRMED` auto-promotes `PENDING` to `CONFIRMED` and sets `claimedByUserId`. | **VERIFIED** |
+| **F3** | **Order Preparation & SLA Metrics** (R1, R3) | T1.4, T2.5, T3.1, T4.1, T4.2 | Transitions `CONFIRMED` to `PROCESSING`; accurate calculation of `fulfillmentDurationMinutes`; minimum 1-minute safety clamp; sets `preparedByUserId` and `preparedAt`. | **VERIFIED** |
+| **F4** | **Courier Dispatch & COD Sales Invoicing** (R1, R2) | T1.5, T2.6, T2.8, T3.3, T4.1 | Calls `createSaleInTx`; generates real COD invoice (`paymentMode: 'COD'`); creates `deliveryConsignments` (`status: 'DISPATCHED'`); sets `onlineOrders.status = 'SHIPPED'`; blocks cancellation after invoicing. | **VERIFIED** |
+| **F5** | **Financial Attribution & Commissions** (R2) | T3.1, T3.2, T4.1, T4.2 | Fulfiller attribution contract: `attributeToUserId: preparedByUserId ?? claimedByUserId` with `role: 'FULFILLER'`; `invoices.createdBy` equals fulfiller; two-sided balanced ledger entries (`AR`, `REVENUE`, `COGS`, `INVENTORY`). | **VERIFIED** |
+| **F6** | **Base Unit Inventory Deduction** (R1, R2) | T1.6, T3.3, T3.5, T4.1 | Direct decrement of warehouse `branchStock`; generates `inventoryMovements` with `movementType = 'OUT'`, `referenceType = 'INVOICE'`, and exact item base quantities. | **VERIFIED** |
+| **F7** | **24-Hour Stock Reservation Sweeper** (R1) | T1.7, T2.2, T3.4 | Orders past 24h expiration are swept to `CANCELLED` with designated reason; active and confirmed orders remain immune; expired orders reject claim, confirmation, and phone activation. | **VERIFIED** |
 
 ---
 
-## Isolation & Reliability Guarantees
-1. **Isolated Test Database**: Provisioned dedicated schema `erp_prevent_duplicate_invoice_returns_e2e_test` on `127.0.0.1:3310` to eliminate test collision between concurrent background worker sessions.
-2. **Sequential Suite Execution**: Configured `describe.sequential` blocks across all tiers to guarantee serial execution, preventing DDL/DML lock contention in MySQL.
-3. **Clean Teardown**: Uses table truncation/deletion with foreign key checks toggled safely, ensuring zero cross-test state leakage.
+## 4. Ledger & Accounting Integrity (R2)
+- **Invariant: "No dinar is lost, wasted, or unattributed."**
+- **Two-Sided Balanced Posting**: Verified in T4.1 that order dispatch generates complete balanced accounting entries:
+  * **Debit AR**: Exact invoice total (customer liability under COD).
+  * **Credit REVENUE**: Net merchandise revenue.
+  * **Debit COGS**: Total inventory cost of sold goods.
+  * **Credit INVENTORY**: Exact merchandise asset reduction.
+- **Commission Attribution**: Verified in T3.1 and T3.2 that commissions are attributed directly to the warehouse employee who physically prepared the order (`preparedByUserId`), falling back to the claimer (`claimedByUserId`), preventing double attribution or ledger imbalance.
 
 ---
 
-## Cashier Roles & Down Payment / Deposit Refund Integration (الاستقبال / التجزئة / الطباعة)
-- **Suite**: `server/routers/__tests__/cashierRolesRefundAndCancel.test.ts`
-- **Result**: 5 passed | 0 failed (100% Passing)
-- **Features Verified**:
-  1. **Reception Cashier (`reception_clerk` / `workorders: "FULL"`)**: Full authority to inspect returns, fetch open branch shift drawers, and execute cash returns directly refunded from their active shift drawer with auto-resolved shift fallback.
-  2. **Print Cashier (`print_cashier` / `print_operator` / `pos: "FULL"`)**: Full authority to inspect returns, execute card returns with POS device reference, and cancel held sales (`cancelHeldSale`) with partial cash down payment/deposit refunded to the active shift drawer.
-  3. **Retail Cashier (`retail_cashier` / `sales: "FULL"`)**: Retains complete access to sales return and cancellation workflows.
-  4. **Strict Audit & Ledger Integrity**: All cash refunds generate `receipts` with `direction: "OUT"`, `cashBucket: "DRAWER"`, `shiftId`, and `invoiceId`, generating corresponding `PAYMENT_OUT` accounting entries with zero unlinked records.
-  5. **Card Refund POS Device Reference**: Strictly enforces transaction reference on non-zero card refunds, preventing untraceable financial outflows.
-  6. **UI Down Payment Refund Dialog**: `HeldOrdersDrawer` features an intuitive dialog when cancelling held orders with customer deposits, providing options for CASH (shift drawer), CARD (with POS reference), or TRANSFER.
-
+## 5. Concurrency & State Machine Integrity (R1)
+- **Pessimistic Row Locking (`for update`)**: Verified in T2.1 and T4.2 under simulated simultaneous requests across multiple staff members. MySQL InnoDB serializes claim transactions at the index record level, preventing duplicate claims or ghost assignments.
+- **State Progression Enforcement**: Verified in T2.3 and T2.4 that status transitions strictly adhere to `@shared/onlineOrderStatus.ts`, rejecting any illegal transitions (e.g. jumping from `PENDING` directly to `SHIPPED`, or modifying terminal `DELIVERED`/`CANCELLED` orders).
+- **Reservation Expiry Boundary**: Verified in T2.2 and T1.7 that expired orders cannot be confirmed or claimed, and are cleanly swept without ghost locks.

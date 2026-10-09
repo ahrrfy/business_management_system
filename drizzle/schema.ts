@@ -8169,10 +8169,29 @@ export const onlineOrders = mysqlTable(
     deliveryPartyId: bigint("deliveryPartyId", { mode: "number" }),
     // سبب الإلغاء — يملؤه المندوب عند «تعذّر التسليم» (رفض الزبون/عنوان خاطئ...) ليراه الموظّف. هجرة 0069.
     cancelReason: varchar("cancelReason", { length: 500 }),
+    // إسناد وتجهيز الطلب — تتبع الموظف المسؤول والمجهز وسرعة الإنجاز لحساب الحوافز والعمولات
+    claimedByUserId: int("claimedByUserId").references(() => users.id),
+    claimedAt: timestamp("claimedAt"),
+    preparedByUserId: int("preparedByUserId").references(() => users.id),
+    preparedAt: timestamp("preparedAt"),
+    fulfillmentDurationMinutes: int("fulfillmentDurationMinutes"),
+    // حالة التواصل والمراسلة مع العميل وتثبيت الطلب
+    contactStatus: mysqlEnum("contactStatus", [
+      "NOT_CONTACTED",
+      "WHATSAPP_SENT",
+      "CALLED_CONFIRMED",
+      "NO_ANSWER",
+      "RETRY",
+    ])
+      .default("NOT_CONTACTED")
+      .notNull(),
+    contactNotes: varchar("contactNotes", { length: 500 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => ({
+    claimedByUserIdx: index("idx_online_order_claimed_by").on(table.claimedByUserId),
+    preparedByUserIdx: index("idx_online_order_prepared_by").on(table.preparedByUserId),
     numberIdx: index("idx_order_number").on(table.orderNumber),
     customerIdx: index("idx_order_customer").on(table.customerId),
     statusIdx: index("idx_order_status").on(table.status),
