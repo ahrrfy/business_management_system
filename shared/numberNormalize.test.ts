@@ -158,11 +158,16 @@ describe("normalizeDecimalInput (تسوية حقول الإدخال العشري
     expect(normalizeDecimalInput("0,500")).toBe("0.500");
   });
 
-  it("يحافظ على الفواصل العشرية العربية (٫ و ،) ويحولها إلى نقطة", () => {
+  it("يحافظ على الفواصل العشرية العربية (٫ و ،) ويحولها إلى نقطة حتى مع 3 منازل بعد عدد غير صفري", () => {
     expect(normalizeDecimalInput("١٢٫٥")).toBe("12.5");
     expect(normalizeDecimalInput("١٢،٥")).toBe("12.5");
+    expect(normalizeDecimalInput("١،١٢٥")).toBe("1.125");
+    expect(normalizeDecimalInput("1،125")).toBe("1.125");
+    expect(normalizeDecimalInput("2،500")).toBe("2.500");
     expect(normalizeDecimalInput("12,50")).toBe("12.50");
     expect(normalizeDecimalInput("12.50")).toBe("12.50");
+    expect(normalizeDecimalInput("1٬000")).toBe("1000");
+    expect(normalizeDecimalInput("١٬٠٠٠")).toBe("1000");
   });
 
   it("يحوّل الأرقام الهندية-العربية والفارسية إلى أرقام لاتينية", () => {
