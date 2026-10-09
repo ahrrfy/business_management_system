@@ -590,14 +590,16 @@ export default function OrderFulfillment() {
     },
   ], [canDispatch, printingId, setStatusM.isPending, dispatchM.isPending, claimM.isPending, updateContactM.isPending, markPreparedM.isPending]);
 
-  // تصدير/طباعة «الكل»: نمشي بمؤشّر id (لا offset — عقد orders.list) حتى تنضب الصفحات المطابقة
-  // لفلاتر الحالة/المدى الحاليّة، بصرف النظر عمّا حُمِّل على الشاشة أو نطاق البحث المحلي.
+  // تصدير/طباعة «الكل»: نمشي بمؤشّر id حتى تنضب الصفحات المطابقة للفلاتر
   async function fetchAllOrders(): Promise<Row[]> {
     const out: Row[] = [];
     let cursor: number | undefined;
     for (let i = 0; i < 100; i++) { // صمّام أمان: حتى ٣٠ ألف طلب
       const page = await utils.storeAdmin.orders.list.fetch({ status: filter, from: f.from || undefined, to: f.to || undefined, cursor, limit: 300 });
-      out.push(...page);
+      const matched = (myOrdersOnly && currentUserId)
+        ? page.filter((o) => o.claimedByUserId === currentUserId || o.preparedByUserId === currentUserId)
+        : page;
+      out.push(...matched);
       if (page.length < 300) break;
       const lastId = page[page.length - 1]?.id;
       if (lastId == null) break;
@@ -1167,31 +1169,16 @@ function DispatchModal({
             <label htmlFor="store-dispatch-tracking" className="text-xs font-bold">
               رقم تتبّع / بوليصة الشركة <span className="text-destructive">*</span>
             </label>
-            <Input
-              id="store-dispatch-tracking"
-              value={externalTrackingRef}
-              onChange={(event) => setExternalTrackingRef(event.target.value)}
-              placeholder="امسح باركود بوليصة الشركة أو أدخل الرقم"
-              maxLength={100}
-              dir="ltr"
-              className="font-mono"
-            />
+            <Input id="store-dispatch-tracking" value={externalTrackingRef} onChange={(event) => setExternalTrackingRef(event.target.value)} placeholder="امسح باركود بوليصة الشركة أو أدخل الرقم" maxLength={100} dir="ltr" className="font-mono" />
           </div>
         )}
 
         <div className="mt-4 flex items-center justify-end gap-2">
-          <button
-            onClick={onCancel}
-            disabled={pending}
-            className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition hover:bg-accent disabled:opacity-50"
-          >
+          <button onClick={onCancel} disabled={pending} className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition hover:bg-accent disabled:opacity-50">
             إلغاء
           </button>
           <button
-            onClick={() => partyId != null && onConfirm({
-              partyId,
-              externalTrackingRef: externalTrackingRef.trim() || undefined,
-            })}
+            onClick={() => partyId != null && onConfirm({ partyId, externalTrackingRef: externalTrackingRef.trim() || undefined })}
             disabled={pending || partyId == null || parties.length === 0 || (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim())}
             className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:opacity-50"
           >
