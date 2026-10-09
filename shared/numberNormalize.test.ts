@@ -142,6 +142,14 @@ describe("toNormalizedNumber (وجه مبسَّط)", () => {
 });
 
 describe("normalizeDecimalInput (تسوية حقول الإدخال العشرية)", () => {
+  it("يحافظ على فواصل الآلاف عند لصق أرقام مجمعة مثل 1,000 من Excel", () => {
+    expect(normalizeDecimalInput("1,000")).toBe("1000");
+    expect(normalizeDecimalInput("10,000")).toBe("10000");
+    expect(normalizeDecimalInput("1,000.50")).toBe("1000.50");
+    expect(normalizeDecimalInput("١,٠٠٠")).toBe("1000");
+    expect(normalizeDecimalInput("١,٢٣٤٫٥٦")).toBe("1234.56");
+  });
+
   it("يحافظ على الفواصل العشرية العربية (٫ و ،) ويحولها إلى نقطة", () => {
     expect(normalizeDecimalInput("١٢٫٥")).toBe("12.5");
     expect(normalizeDecimalInput("١٢،٥")).toBe("12.5");
@@ -157,6 +165,7 @@ describe("normalizeDecimalInput (تسوية حقول الإدخال العشري
   it("يحتفظ بنقطة عشرية واحدة فقط ويزيل النقاط الزائدة", () => {
     expect(normalizeDecimalInput("12.3.4")).toBe("12.34");
     expect(normalizeDecimalInput("12..5")).toBe("12.5");
+    expect(normalizeDecimalInput("1..5")).toBe("1.5");
   });
 
   it("يتعامل مع الكسور التي تبدأ بفاصلة أو نقطة", () => {

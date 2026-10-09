@@ -196,12 +196,14 @@ describe("Bundle Production Zod Upper Bounds & Adversarial Input Matrix (ADV-01.
   // -------------------------------------------------------------
   // ADV-08: Arabic decimal commas (، and ٫)
   // -------------------------------------------------------------
-  describe("ADV-08: Arabic decimal commas normalization", () => {
-    it("normalizes Arabic comma '،' and decimal '٫' to standard '.'", () => {
+  describe("ADV-08: Arabic decimal commas normalization & thousands grouping preservation", () => {
+    it("normalizes Arabic comma '،' and decimal '٫' to standard '.' while preserving thousands grouping", () => {
       expect(normalizeDecimalInput("١٢،٥")).toBe("12.5");
       expect(normalizeDecimalInput("١٢٫٥")).toBe("12.5");
       expect(normalizeDecimalInput("12،50")).toBe("12.50");
       expect(normalizeDecimalInput("12٫50")).toBe("12.50");
+      expect(normalizeDecimalInput("1,000")).toBe("1000");
+      expect(normalizeDecimalInput("1,000.50")).toBe("1000.50");
     });
   });
 

@@ -236,20 +236,43 @@ export function toNormalizedNumber(input: string): string {
 }
 
 /**
- * تسوية المدخلات العشرية: دعم الأرقام العربية المشرقية والفارسية والفواصل العشرية (٫ و ،).
- * يحول [٠-٩] و [۰-۹] إلى [0-9] و [،٫] إلى [.]، ويزيل الأحرف غير الرقمية مع الإبقاء على نقطة عشرية واحدة فقط.
- * تستعمل في حقول الإدخال العشرية (مثل أجور العمالة ونسب الهدر ومضاعفات الوصفة).
+ * تسوية المدخلات العشرية: دعم الأرقام العربية المشرقية والفارسية وفصل الآلاف مقابل الفاصلة العشرية.
+ * - يميز فواصل الآلاف المجمعة (مثل 1,000 أو 10,000 الملصوقة من Excel) ويحذفها لئلا تتقزم الأرقام بـ 1000 ضعف.
+ * - يحول الفواصل العشرية (الفاصلة العربية ٫، أو ،/, إذا لم تكن فواصل آلاف) إلى نقطة عشرية «.».
+ * - يسوي أخطاء الطباعة الشائعة (مثل 1..5 أو 1.2.3) بالإبقاء على أول نقطة عشرية فقط.
+ * - يسوي البدايات بالكسر (مثل .5 أو ٫٥) إلى 0.5.
  */
 export function normalizeDecimalInput(str: string): string {
-  const sanitized = digitsArabicToLatin(str)
-    .replace(/[,،٫]/g, ".")
-    .replace(/[^0-9.]/g, "");
+  if (!str) return "";
 
-  const firstDotIndex = sanitized.indexOf(".");
-  if (firstDotIndex === -1) return sanitized;
+  // ١. تحويل الأرقام المشرقية والفارسية إلى أرقام لاتينية
+  let s = digitsArabicToLatin(str);
 
-  const intPart = sanitized.slice(0, firstDotIndex);
-  const decPart = sanitized.slice(firstDotIndex + 1).replace(/\./g, "");
-  const normalizedInt = !intPart && decPart ? "0" : intPart;
-  return `${normalizedInt}.${decPart}`;
+  // ٢. الفاصلة العشرية العربية «٫» دائماً عشريّة
+  s = s.replace(/٫/g, ".");
+
+  // ٣. فاصلة الآلاف العربية «٬» تُحذف دائماً
+  s = s.replace(/٬/g, "");
+
+  // ٤. تمييز فواصل الآلاف (1,000 أو 10,000 أو 1,234,567):
+  // أي فاصلة متبوعة بـ 3 أرقام (حتى نهاية النص أو الفاصل التالي) تُعتبر فاصلة آلاف وتُحذف.
+  const thousandsCommaRegex = /(?<=\d)[,،](?=\d{3}(?:\D|$))/g;
+  s = s.replace(thousandsCommaRegex, "");
+
+  // أي فواصل متبقية تُعامل كفاصلة عشرية
+  s = s.replace(/[,،]/g, ".");
+
+  // ٥. تعقيم الحروف غير الرقمية
+  s = s.replace(/[^0-9.]/g, "");
+
+  // ٦. الإبقاء على أول نقطة عشرية فقط وحذف أي نقاط إضافية
+  const firstDot = s.indexOf(".");
+  if (firstDot !== -1) {
+    const intPart = s.slice(0, firstDot);
+    const decPart = s.slice(firstDot + 1).replace(/\./g, "");
+    const normalizedInt = !intPart && decPart ? "0" : intPart;
+    s = `${normalizedInt}.${decPart}`;
+  }
+
+  return s;
 }
