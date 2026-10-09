@@ -163,6 +163,8 @@ describe("normalizeDecimalInput (تسوية حقول الإدخال العشري
     expect(normalizeDecimalInput("١٢،٥")).toBe("12.5");
     expect(normalizeDecimalInput("١،١٢٥")).toBe("1.125");
     expect(normalizeDecimalInput("1،125")).toBe("1.125");
+    expect(normalizeDecimalInput("1,125")).toBe("1.125");
+    expect(normalizeDecimalInput("1,250")).toBe("1.250");
     expect(normalizeDecimalInput("2،500")).toBe("2.500");
     expect(normalizeDecimalInput("12,50")).toBe("12.50");
     expect(normalizeDecimalInput("12.50")).toBe("12.50");

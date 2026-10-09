@@ -208,6 +208,7 @@ describe("Bundle Production Zod Upper Bounds & Adversarial Input Matrix (ADV-01.
       expect(normalizeDecimalInput("0،125")).toBe("0.125");
       expect(normalizeDecimalInput("١،١٢٥")).toBe("1.125");
       expect(normalizeDecimalInput("1،125")).toBe("1.125");
+      expect(normalizeDecimalInput("1,125")).toBe("1.125");
     });
   });
 
