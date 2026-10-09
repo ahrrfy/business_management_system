@@ -124,4 +124,42 @@ export interface ProduceBundleComponentsResult {
   updatedBundleUnitCost: string;
 }
 
+/**
+ * دالة فرز وتوحيد المعرفات تصاعدياً لمنع حدوث التوقف التام (Deadlock) أثناء القفل الحتمي (2PL).
+ */
+export function sortLockIds(ids: number[]): number[] {
+  return Array.from(new Set(ids)).sort((a, b) => a - b);
+}
+
+/**
+ * اشتقاق معرف فرعي فريد حتمي لكل دفعة من دفعات مكوّنات البكج لضمان الحتمية الذرية (Idempotency).
+ */
+export function deriveBundleComponentSubRequestId(clientRequestId: string, variantId: number): string {
+  return `${clientRequestId}:comp:${variantId}`;
+}
+
+/**
+ * التحقق من صلاحية إنتاجية الدفعة: كمية الدفعة موجبة وكمية التالف غير سالبة وأقل قطعيّاً من حجم الدفعة.
+ */
+export function isValidBatchYield(batchQty: number, scrapQty: number = 0): boolean {
+  return Number.isFinite(batchQty) && batchQty > 0 && Number.isFinite(scrapQty) && scrapQty >= 0 && scrapQty < batchQty;
+}
+
+/**
+ * جمع وتوحيد كافة معرّفات المتغيّرات المطلوب قفلها لعملية إنتاج مكونات البكج بترتيب تصاعدي حتمي.
+ */
+export function collectBundleProductionLockVariantIds(params: {
+  bundleVariantId: number;
+  batchVariantIds: number[];
+  recipeInputVariantIds: number[];
+  substituteVariantIds?: number[];
+}): number[] {
+  return sortLockIds([
+    params.bundleVariantId,
+    ...params.batchVariantIds,
+    ...params.recipeInputVariantIds,
+    ...(params.substituteVariantIds ?? []),
+  ]);
+}
+
 export * from "./multiRecipeProductionTypes";

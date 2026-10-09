@@ -23,6 +23,7 @@ export default defineConfig({
       "client/src/components/production/bundle-kit/__tests__/BundleKitReviewStep.test.tsx",
       "client/src/components/production/bundle-kit/__tests__/BundleKitDialogBadges.test.tsx",
       "shared/__tests__/bundleProductionAdversarial.test.ts",
+      "shared/numberNormalize.test.ts",
       "client/src/pages/__tests__/purchaseShippingFundingUi.test.tsx",
       "client/src/lib/moneyInput.test.ts",
       "client/src/lib/audioFeedback.test.ts",

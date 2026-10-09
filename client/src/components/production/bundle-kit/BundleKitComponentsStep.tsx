@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { digitsArabicToLatin } from "@shared/numberNormalize";
+import { digitsArabicToLatin, normalizeDecimalInput } from "@shared/numberNormalize";
 import type { ComponentRequirementDto } from "@shared/bundleProductionTypes";
 
 export interface BundleKitComponentBatch {
@@ -347,7 +347,7 @@ export function BundleKitComponentsStep({
                         className="h-8 text-center text-xs font-mono w-20 mx-auto"
                         value={batch?.laborPerUnit ?? c.laborPerUnit}
                         onChange={(e) => {
-                          const val = digitsArabicToLatin(e.target.value).replace(/[^0-9.]/g, "");
+                          const val = normalizeDecimalInput(e.target.value);
                           onBatchChange(c.variantId, {
                             laborPerUnit: val,
                           });

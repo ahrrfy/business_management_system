@@ -34,24 +34,9 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { requiredBatchMultiple } from "@shared/batchDivisibility";
 import type { ComponentRequirementDto } from "@shared/bundleProductionTypes";
+import { normalizeDecimalInput } from "@shared/numberNormalize";
 
-/**
- * تسوية المدخلات العشرية: دعم الأرقام العربية المشرقية والفاصلة العربية العشرية.
- */
-export function normalizeDecimalInput(str: string): string {
-  const sanitized = str
-    .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
-    .replace(/[،٫]/g, ".")
-    .replace(/[^0-9.]/g, "");
-
-  const firstDotIndex = sanitized.indexOf(".");
-  if (firstDotIndex === -1) return sanitized;
-
-  const intPart = sanitized.slice(0, firstDotIndex);
-  const decPart = sanitized.slice(firstDotIndex + 1).replace(/\./g, "");
-  const normalizedInt = !intPart && decPart ? "0" : intPart;
-  return `${normalizedInt}.${decPart}`;
-}
+export { normalizeDecimalInput };
 
 export interface EditableRecipeLine {
   inputVariantId: number;

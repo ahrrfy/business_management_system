@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   analyzeBundleRequirementsInputSchema,
+  collectBundleProductionLockVariantIds,
+  deriveBundleComponentSubRequestId,
+  isValidBatchYield,
   produceBundleComponentsInputSchema,
+  sortLockIds,
 } from "../bundleProductionTypes";
-import { digitsArabicToLatin } from "../numberNormalize";
-import { normalizeDecimalInput } from "@/components/production/bundle-kit/QuickRecipeCopyDialog";
+import { isBatchDivisible } from "../batchDivisibility";
+import { digitsArabicToLatin, normalizeDecimalInput } from "../numberNormalize";
 
 describe("Bundle Production Zod Upper Bounds & Adversarial Input Matrix (ADV-01..13)", () => {
   const baseProducePayload = {
@@ -249,51 +253,46 @@ describe("Bundle Production Zod Upper Bounds & Adversarial Input Matrix (ADV-01.
   });
 
   // -------------------------------------------------------------
-  // ADV-10: Batch divisibility multiple validation
+  // ADV-10: Batch divisibility multiple validation via production helper
   // -------------------------------------------------------------
-  describe("ADV-10: Batch divisibility multiple checking", () => {
-    function isBatchDivisible(qty: number, multiple: number): boolean {
-      if (multiple <= 1) return true;
-      return qty % multiple === 0;
-    }
-
-    it("identifies when batch quantity violates required batch multiple", () => {
-      expect(isBatchDivisible(5, 2)).toBe(false);
-      expect(isBatchDivisible(7, 3)).toBe(false);
-      expect(isBatchDivisible(6, 2)).toBe(true);
-      expect(isBatchDivisible(9, 3)).toBe(true);
+  describe("ADV-10: Batch divisibility multiple checking via production helper", () => {
+    it("identifies when batch quantity violates required batch multiple using isBatchDivisible", () => {
+      // Coef 0.5 requires batch multiple of 2 (0.5 * 2 = 1)
+      expect(isBatchDivisible(["0.5"], 5)).toBe(false);
+      expect(isBatchDivisible(["0.5"], 6)).toBe(true);
+      // Coef 0.25 requires multiple of 4
+      expect(isBatchDivisible(["0.25"], 7)).toBe(false);
+      expect(isBatchDivisible(["0.25"], 8)).toBe(true);
+      // Coef 0.125 requires multiple of 8
+      expect(isBatchDivisible(["0.125"], 15)).toBe(false);
+      expect(isBatchDivisible(["0.125"], 16)).toBe(true);
     });
   });
 
   // -------------------------------------------------------------
-  // ADV-11: Scrap equals or exceeds batch quantity
+  // ADV-11: Scrap equals or exceeds batch quantity via production helper
   // -------------------------------------------------------------
-  describe("ADV-11: Scrap equals or exceeds batch quantity", () => {
-    function isValidYield(batchQty: number, scrapQty: number): boolean {
-      return scrapQty < batchQty;
-    }
-
-    it("rejects zero or negative net yield where scrapQty >= batchQty", () => {
-      expect(isValidYield(10, 10)).toBe(false);
-      expect(isValidYield(10, 15)).toBe(false);
-      expect(isValidYield(10, 0)).toBe(true);
-      expect(isValidYield(10, 2)).toBe(true);
+  describe("ADV-11: Scrap equals or exceeds batch quantity via production helper", () => {
+    it("rejects zero or negative net yield where scrapQty >= batchQty via isValidBatchYield", () => {
+      expect(isValidBatchYield(10, 10)).toBe(false);
+      expect(isValidBatchYield(10, 15)).toBe(false);
+      expect(isValidBatchYield(10, 0)).toBe(true);
+      expect(isValidBatchYield(10, 2)).toBe(true);
+      expect(isValidBatchYield(0, 0)).toBe(false);
+      expect(isValidBatchYield(-5, 0)).toBe(false);
+      expect(isValidBatchYield(10, -1)).toBe(false);
     });
   });
 
   // -------------------------------------------------------------
-  // ADV-12: Network retry & idempotency sub-request derivation
+  // ADV-12: Network retry & idempotency sub-request derivation via production helper
   // -------------------------------------------------------------
-  describe("ADV-12: Deterministic subRequestId generation for atomic idempotency", () => {
-    function deriveSubRequestId(clientRequestId: string, variantId: number): string {
-      return `${clientRequestId}:comp:${variantId}`;
-    }
-
-    it("generates deterministic composite subRequestId across retries", () => {
+  describe("ADV-12: Deterministic subRequestId generation via production helper", () => {
+    it("generates deterministic composite subRequestId across retries via deriveBundleComponentSubRequestId", () => {
       const clientReq = "req-uuid-998877";
       const variantId = 201;
-      const sub1 = deriveSubRequestId(clientReq, variantId);
-      const sub2 = deriveSubRequestId(clientReq, variantId);
+      const sub1 = deriveBundleComponentSubRequestId(clientReq, variantId);
+      const sub2 = deriveBundleComponentSubRequestId(clientReq, variantId);
       expect(sub1).toBe("req-uuid-998877:comp:201");
       expect(sub1).toBe(sub2);
     });
@@ -323,17 +322,24 @@ describe("Bundle Production Zod Upper Bounds & Adversarial Input Matrix (ADV-01.
   });
 
   // -------------------------------------------------------------
-  // ADV-13: Concurrent deadlock prevention via ascending row locking
+  // ADV-13: Concurrent deadlock prevention via ascending row locking using production helpers
   // -------------------------------------------------------------
-  describe("ADV-13: Deadlock prevention via deterministic ascending locking", () => {
-    function sortLockIds(ids: number[]): number[] {
-      return [...new Set(ids)].sort((a, b) => a - b);
-    }
-
-    it("sorts variant IDs strictly ASC regardless of input order", () => {
+  describe("ADV-13: Deadlock prevention via deterministic ascending locking helpers", () => {
+    it("sorts variant IDs strictly ASC and deduplicates via sortLockIds", () => {
       const unorderedVariants = [305, 12, 88, 3, 88];
       const sorted = sortLockIds(unorderedVariants);
       expect(sorted).toEqual([3, 12, 88, 305]);
+    });
+
+    it("collects and sorts all bundle, batch, recipe lines, and substitution IDs via collectBundleProductionLockVariantIds", () => {
+      const lockedIds = collectBundleProductionLockVariantIds({
+        bundleVariantId: 500,
+        batchVariantIds: [100, 20],
+        recipeInputVariantIds: [850, 45, 100],
+        substituteVariantIds: [12, 500],
+      });
+      // All unique: 20, 100, 500, 850, 45, 12 -> sorted: 12, 20, 45, 100, 500, 850
+      expect(lockedIds).toEqual([12, 20, 45, 100, 500, 850]);
     });
   });
 });

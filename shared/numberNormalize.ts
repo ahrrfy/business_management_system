@@ -234,3 +234,22 @@ export function normalizeNumberInput(input: string): NormalizeResult {
 export function toNormalizedNumber(input: string): string {
   return normalizeNumberInput(input).normalized;
 }
+
+/**
+ * تسوية المدخلات العشرية: دعم الأرقام العربية المشرقية والفارسية والفواصل العشرية (٫ و ،).
+ * يحول [٠-٩] و [۰-۹] إلى [0-9] و [،٫] إلى [.]، ويزيل الأحرف غير الرقمية مع الإبقاء على نقطة عشرية واحدة فقط.
+ * تستعمل في حقول الإدخال العشرية (مثل أجور العمالة ونسب الهدر ومضاعفات الوصفة).
+ */
+export function normalizeDecimalInput(str: string): string {
+  const sanitized = digitsArabicToLatin(str)
+    .replace(/[,،٫]/g, ".")
+    .replace(/[^0-9.]/g, "");
+
+  const firstDotIndex = sanitized.indexOf(".");
+  if (firstDotIndex === -1) return sanitized;
+
+  const intPart = sanitized.slice(0, firstDotIndex);
+  const decPart = sanitized.slice(firstDotIndex + 1).replace(/\./g, "");
+  const normalizedInt = !intPart && decPart ? "0" : intPart;
+  return `${normalizedInt}.${decPart}`;
+}
