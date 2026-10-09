@@ -2,9 +2,27 @@
 // تقريب نقدي IQD + حدّ الائتمان + خصم المخزون + قيد SALE + الدفعة/الذمم.
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { couponRedemptions, coupons, customers, deliveryConsignments, deliveryParties, invoiceItemBundleComponents, invoiceItemServiceMaterials, invoiceItems, invoices, openingModeSettings, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
+import {
+  couponRedemptions,
+  coupons,
+  customers,
+  deliveryConsignments,
+  deliveryParties,
+  invoiceItemBundleComponents,
+  invoiceItemServiceMaterials,
+  invoiceItems,
+  invoices,
+  openingModeSettings,
+  productVariants,
+  products,
+  receipts,
+  shifts,
+} from "../../../drizzle/schema";
 import { dispatchInvoiceInTx } from "../delivery/dispatchInvoice";
-import { assertDeliveryFeeHeldConsistent, recordDeliveryFeeHeldInTx } from "../delivery/feeHeld";
+import {
+  assertDeliveryFeeHeldConsistent,
+  recordDeliveryFeeHeldInTx,
+} from "../delivery/feeHeld";
 import {
   computeInvoiceCost,
   computeInvoiceTotals,
@@ -35,14 +53,35 @@ import {
   resolvePromotionForLine,
   type ResolvedPromotion,
 } from "../salesPromotionService";
-import { consumeCoupon, hashCouponCode, lockCouponForSale } from "../couponService";
-import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
+import {
+  consumeCoupon,
+  hashCouponCode,
+  lockCouponForSale,
+} from "../couponService";
+import {
+  adjustCustomerBalance,
+  adjustSupplierBalance,
+  computeInvoiceStatus,
+  postEntry,
+} from "../ledgerService";
 import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
-import { createPostingIntent, creditLine, debitLine, signedPostingLines, type AccountRole, type PostingProfile } from "../accounting/postingEngine";
+import {
+  createPostingIntent,
+  creditLine,
+  debitLine,
+  signedPostingLines,
+  type AccountRole,
+  type PostingProfile,
+} from "../accounting/postingEngine";
 import { logger } from "../../logger";
 import { money, round2, roundCashIQD, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
-import { getUnitPrice, tryGetUnitPrice, resolveTier, type PriceTier } from "../pricing";
+import {
+  getUnitPrice,
+  tryGetUnitPrice,
+  resolveTier,
+  type PriceTier,
+} from "../pricing";
 import { type Actor, requireDb, withTx } from "../tx";
 import type { Tx } from "../../db";
 import { flowNotify } from "../whatsapp";
@@ -52,7 +91,11 @@ import { paymentAssetRole } from "./paymentPosting";
 import { userNameSnapshot } from "../userSnapshot";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
-import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
+import {
+  checkIdempotency,
+  idempotencyHash,
+  recordIdempotencyKey,
+} from "../idempotency";
 import {
   discoverServiceRecipeDefinitions,
   exactRecipeMaterialQuantity,
@@ -62,6 +105,10 @@ import {
 import type { CreateSaleInput, CreateSaleResult } from "./types";
 import { titleForChannel } from "@shared/productChannelTitles";
 import { appErrorMessage } from "@shared/errors";
+import {
+  resolveSaleAttribution,
+  recordInvoiceAttributionsInTx,
+} from "../commissions/attribution";
 
 // قنوات الاستقبال/التنفيذ المشمولة بإعفاء الائتمان في «وضع الافتتاح» (قرار المالك ١٠/٨):
 // البيع المباشر (POS) والطلبات (ORDER) وأوامر الشغل (WORKORDER). ONLINE (المتجر) خارج النطاق.
@@ -102,7 +149,8 @@ function withDeliveryDefaults(input: CreateSaleInput): CreateSaleInput {
       message: appErrorMessage({
         what: "تعذّر إسناد البيع للتوصيل من طابور الأوفلاين",
         why: "الإسناد يحتاج حرّاس الجهة الحيّة (سقف العهدة وعمر الطرود المفتوحة) ورقمَ إرسالية ووردية درجٍ لأمانة الأجرة، ولا يتوفّر شيءٌ منها لبيعٍ التُقط دون اتصال",
-        doThis: "أعِد تشغيل البيع من الطابور بلا توصيل، ثمّ أسنِد فاتورته لجهة التوصيل من شاشة الإرساليات بعد عودة الاتصال",
+        doThis:
+          "أعِد تشغيل البيع من الطابور بلا توصيل، ثمّ أسنِد فاتورته لجهة التوصيل من شاشة الإرساليات بعد عودة الاتصال",
       }),
     });
   }
@@ -116,7 +164,8 @@ function withDeliveryDefaults(input: CreateSaleInput): CreateSaleInput {
       message: appErrorMessage({
         what: "تعذّر قبض أمانة أجرة التوصيل بلا إسناد توصيل",
         why: "أرسلت مبلغ أمانة أجرة توصيل دون بيانات توصيلٍ في نفس البيع؛ الأمانة المحجوزة تبقى بلا إرساليّةٍ تُبرّئها، فيعلق مالُ الزبون بلا مسار ردٍّ عند أيّ إلغاء",
-        doThis: "أرسل بيانات التوصيل (الجهة والأجرة) مع الأمانة في نفس الطلب، أو احذف مبلغ الأمانة",
+        doThis:
+          "أرسل بيانات التوصيل (الجهة والأجرة) مع الأمانة في نفس الطلب، أو احذف مبلغ الأمانة",
       }),
     });
   }
@@ -129,1286 +178,1640 @@ export async function createSaleInTx(
   actor: Actor,
   capability?: typeof DIGITAL_SALE_CAPABILITY,
 ): Promise<CreateSaleResult> {
-    const input = withDeliveryDefaults(rawInput);
-    // Codex #1006 P1 — `paymentMode` مُشتقٌّ من وجود `delivery` (COD) لا معلومةٌ مستقلّة، فإدراجُه في
-    // بصمة idempotency يكسر تكرارَ بيعٍ التزم قبل نشر م١ (بصمتُه المخزَّنة بلا paymentMode) بـCONFLICT
-    // بدل replay عبر النشر ⇒ يعيد الموظّف البيعَ بمفتاحٍ جديد = فاتورةٌ مكرَّرة. نستبعده من البصمة
-    // وحدها؛ `delivery` نفسها فيها تحفظ التمييز، فحمايةُ «نفس المفتاح بحمولةٍ مختلفة» تبقى.
-    const { paymentMode: _fingerprintExcludedPaymentMode, ...fingerprintInput } = input;
-    const requestFingerprint = input.clientRequestId ? idempotencyHash(fingerprintInput) : null;
-    // نواة الفاتورة هي حدّ الأمان الأخير: لا نعتمد على راوتر أو marker لإثبات قبض خارجي.
-    if (input.payment) {
-      assertPosPaymentMethodEnabled(input.payment.method);
-      // ثابت «لا قبضَ بلا أثرٍ قابلٍ للمطابقة»: هذه النواة تُنشئ إيصالها بنفسها (بند ١٢ أدناه)
-      // فلا يمرّ بحارس `sale/payment.ts`. كل مسارات البيع تصبّ هنا (الكاشير، المطبعة، تحويل
-      // عرض السعر، الحجز، أمر الشغل)، فوَضعُ الشرط هنا يغلق الباب على كلّها مرّةً واحدة بدل
-      // تكراره في كل مستدعٍ — والمرجع يأتي إمّا نصّاً من الموظّف أو من محاولةٍ مؤكَّدة
-      // (createConfirmedPosSaleInTx يحقن مرجع المحاولة في الحمولة قبل بلوغ هذه النقطة).
-      if (input.payment.method !== "CASH" && !(input.payment.reference ?? "").trim()) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
+  const input = withDeliveryDefaults(rawInput);
+  // Codex #1006 P1 — `paymentMode` مُشتقٌّ من وجود `delivery` (COD) لا معلومةٌ مستقلّة، فإدراجُه في
+  // بصمة idempotency يكسر تكرارَ بيعٍ التزم قبل نشر م١ (بصمتُه المخزَّنة بلا paymentMode) بـCONFLICT
+  // بدل replay عبر النشر ⇒ يعيد الموظّف البيعَ بمفتاحٍ جديد = فاتورةٌ مكرَّرة. نستبعده من البصمة
+  // وحدها؛ `delivery` نفسها فيها تحفظ التمييز، فحمايةُ «نفس المفتاح بحمولةٍ مختلفة» تبقى.
+  const { paymentMode: _fingerprintExcludedPaymentMode, ...fingerprintInput } =
+    input;
+  const requestFingerprint = input.clientRequestId
+    ? idempotencyHash(fingerprintInput)
+    : null;
+  // نواة الفاتورة هي حدّ الأمان الأخير: لا نعتمد على راوتر أو marker لإثبات قبض خارجي.
+  if (input.payment) {
+    assertPosPaymentMethodEnabled(input.payment.method);
+    // ثابت «لا قبضَ بلا أثرٍ قابلٍ للمطابقة»: هذه النواة تُنشئ إيصالها بنفسها (بند ١٢ أدناه)
+    // فلا يمرّ بحارس `sale/payment.ts`. كل مسارات البيع تصبّ هنا (الكاشير، المطبعة، تحويل
+    // عرض السعر، الحجز، أمر الشغل)، فوَضعُ الشرط هنا يغلق الباب على كلّها مرّةً واحدة بدل
+    // تكراره في كل مستدعٍ — والمرجع يأتي إمّا نصّاً من الموظّف أو من محاولةٍ مؤكَّدة
+    // (createConfirmedPosSaleInTx يحقن مرجع المحاولة في الحمولة قبل بلوغ هذه النقطة).
+    if (
+      input.payment.method !== "CASH" &&
+      !(input.payment.reference ?? "").trim()
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "مرجع عملية البطاقة/التحويل مطلوب",
+      });
+    }
+  }
+  // This namespace is generated only by the trusted digital-card finalizer.  Check it
+  // before idempotency lookup so a public POS request cannot replay an existing
+  // digital invoice merely by guessing its sourceId.
+  if (
+    capability !== DIGITAL_SALE_CAPABILITY &&
+    input.clientRequestId?.startsWith("DIGITAL_INTENT:")
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "مفتاح الطلب محجوز لمسار البطاقات الرقمية",
+    });
+  }
+  // 1. Idempotency: replay the existing invoice for a repeated clientRequestId.
+  //    SALES-04 (تدقيق ٢٣/٦/٢٦): البصمة كانت قاصرة على branchId ⇒ كاشير يُعيد استعمال المفتاح
+  //    على بيع مختلف فيستلم فاتورة بيعٍ سابق ولا يُسجَّل البيع الجديد ⇒ منفذ سرقة نقد. الحلّ على
+  //    نمط processPayment/voucherService: نتحقّق من (branch, customer, payment.method, عدد الأسطر)
+  //    قبل إرجاع الفاتورة القديمة، وإلا CONFLICT صريح يُظهر للمستخدم أن المفتاح يخصّ بيعاً مغايراً.
+  if (input.clientRequestId) {
+    await checkIdempotency(
+      tx,
+      "sale.create",
+      input.clientRequestId,
+      requestFingerprint,
+    );
+    const existing = await tx
+      .select()
+      .from(invoices)
+      .where(eq(invoices.sourceId, input.clientRequestId))
+      .limit(1);
+    if (existing[0]) {
+      const ex = existing[0];
+      // SALES-03: عزل الفرع — مفتاح idempotency يخصّ بيع فرع آخر لا يُكشَف للمستخدم (تعارض، لا تسريب فاتورة).
+      if (Number(ex.branchId) !== input.branchId) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "مفتاح idempotency مستعمَل لبيع فرع آخر",
+        });
       }
-    }
-    // This namespace is generated only by the trusted digital-card finalizer.  Check it
-    // before idempotency lookup so a public POS request cannot replay an existing
-    // digital invoice merely by guessing its sourceId.
-    if (capability !== DIGITAL_SALE_CAPABILITY && input.clientRequestId?.startsWith("DIGITAL_INTENT:")) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "مفتاح الطلب محجوز لمسار البطاقات الرقمية" });
-    }
-    // 1. Idempotency: replay the existing invoice for a repeated clientRequestId.
-    //    SALES-04 (تدقيق ٢٣/٦/٢٦): البصمة كانت قاصرة على branchId ⇒ كاشير يُعيد استعمال المفتاح
-    //    على بيع مختلف فيستلم فاتورة بيعٍ سابق ولا يُسجَّل البيع الجديد ⇒ منفذ سرقة نقد. الحلّ على
-    //    نمط processPayment/voucherService: نتحقّق من (branch, customer, payment.method, عدد الأسطر)
-    //    قبل إرجاع الفاتورة القديمة، وإلا CONFLICT صريح يُظهر للمستخدم أن المفتاح يخصّ بيعاً مغايراً.
-    if (input.clientRequestId) {
-      await checkIdempotency(tx, "sale.create", input.clientRequestId, requestFingerprint);
-      const existing = await tx
-        .select()
-        .from(invoices)
-        .where(eq(invoices.sourceId, input.clientRequestId))
-        .limit(1);
-      if (existing[0]) {
-        const ex = existing[0];
-        // SALES-03: عزل الفرع — مفتاح idempotency يخصّ بيع فرع آخر لا يُكشَف للمستخدم (تعارض، لا تسريب فاتورة).
-        if (Number(ex.branchId) !== input.branchId) {
-          throw new TRPCError({ code: "CONFLICT", message: "مفتاح idempotency مستعمَل لبيع فرع آخر" });
-        }
-        const requestedCustomerId = input.customerId ?? null;
-        const storedCustomerId = ex.customerId != null ? Number(ex.customerId) : null;
-        if (storedCustomerId !== requestedCustomerId) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "تعارض idempotency: المفتاح مستعمَل لبيع عميل مختلف",
-          });
-        }
-        const requestedMethod = input.payment?.method ?? null;
-        if ((ex.paymentMethod ?? null) !== requestedMethod) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "تعارض idempotency: المفتاح مستعمَل لبيع بطريقة دفع مختلفة",
-          });
-        }
-        // SALES-04b (تدقيق ٢/٧): البصمة كانت تقارن «عدد» الأسطر فقط ⇒ بيع مختلف بنفس عدد الأصناف
-        // يُصادَر بفاتورة قديمة بصمت (منفذ سرقة نقد: النقد يُقبض ولا يُسجَّل). الآن نقارن **محتوى**
-        // الأسطر (الصنف + الوحدة + الكمية) كمجموعة مرتّبة. لا نقارن السعر/الخصم عمداً كي لا نُطلق
-        // تعارضاً زائفاً عند إعادة محاولة نفس البيع بعد تغيّر تسعيرة — الصنف+الوحدة+الكمية بصمة كافية.
-        const existingItems = await tx
-          .select({
-            variantId: invoiceItems.variantId,
-            productUnitId: invoiceItems.productUnitId,
-            quantity: invoiceItems.quantity,
-          })
-          .from(invoiceItems)
-          .where(eq(invoiceItems.invoiceId, ex.id));
-        const lineKey = (variantId: number | null, unitId: number | null, quantity: string) =>
-          `${Number(variantId)}:${unitId == null ? "" : Number(unitId)}:${money(quantity).toFixed(3)}`;
-        const existingKeys = existingItems
-          .map((i) => lineKey(Number(i.variantId), i.productUnitId == null ? null : Number(i.productUnitId), i.quantity))
-          .sort();
-        const requestedKeys = input.lines
-          .map((l) => lineKey(l.variantId, l.productUnitId, l.quantity))
-          .sort();
-        if (existingKeys.length !== requestedKeys.length) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "تعارض idempotency: المفتاح مستعمَل لبيع بعدد أصناف مختلف",
-          });
-        }
-        if (existingKeys.some((k, i) => k !== requestedKeys[i])) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "تعارض idempotency: المفتاح مستعمَل لبيع بأصناف أو كميات مختلفة",
-          });
-        }
-        // الكوبون جزء من بصمة البيع: لا يجوز لمفتاح إعادة المحاولة نفسه تبديل الكوبون أو إسقاطه.
-        const redemption = (await tx.select({ codeHash: coupons.codeHash })
+      const requestedCustomerId = input.customerId ?? null;
+      const storedCustomerId =
+        ex.customerId != null ? Number(ex.customerId) : null;
+      if (storedCustomerId !== requestedCustomerId) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "تعارض idempotency: المفتاح مستعمَل لبيع عميل مختلف",
+        });
+      }
+      const requestedMethod = input.payment?.method ?? null;
+      if ((ex.paymentMethod ?? null) !== requestedMethod) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "تعارض idempotency: المفتاح مستعمَل لبيع بطريقة دفع مختلفة",
+        });
+      }
+      // SALES-04b (تدقيق ٢/٧): البصمة كانت تقارن «عدد» الأسطر فقط ⇒ بيع مختلف بنفس عدد الأصناف
+      // يُصادَر بفاتورة قديمة بصمت (منفذ سرقة نقد: النقد يُقبض ولا يُسجَّل). الآن نقارن **محتوى**
+      // الأسطر (الصنف + الوحدة + الكمية) كمجموعة مرتّبة. لا نقارن السعر/الخصم عمداً كي لا نُطلق
+      // تعارضاً زائفاً عند إعادة محاولة نفس البيع بعد تغيّر تسعيرة — الصنف+الوحدة+الكمية بصمة كافية.
+      const existingItems = await tx
+        .select({
+          variantId: invoiceItems.variantId,
+          productUnitId: invoiceItems.productUnitId,
+          quantity: invoiceItems.quantity,
+        })
+        .from(invoiceItems)
+        .where(eq(invoiceItems.invoiceId, ex.id));
+      const lineKey = (
+        variantId: number | null,
+        unitId: number | null,
+        quantity: string,
+      ) =>
+        `${Number(variantId)}:${unitId == null ? "" : Number(unitId)}:${money(quantity).toFixed(3)}`;
+      const existingKeys = existingItems
+        .map((i) =>
+          lineKey(
+            Number(i.variantId),
+            i.productUnitId == null ? null : Number(i.productUnitId),
+            i.quantity,
+          ),
+        )
+        .sort();
+      const requestedKeys = input.lines
+        .map((l) => lineKey(l.variantId, l.productUnitId, l.quantity))
+        .sort();
+      if (existingKeys.length !== requestedKeys.length) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "تعارض idempotency: المفتاح مستعمَل لبيع بعدد أصناف مختلف",
+        });
+      }
+      if (existingKeys.some((k, i) => k !== requestedKeys[i])) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "تعارض idempotency: المفتاح مستعمَل لبيع بأصناف أو كميات مختلفة",
+        });
+      }
+      // الكوبون جزء من بصمة البيع: لا يجوز لمفتاح إعادة المحاولة نفسه تبديل الكوبون أو إسقاطه.
+      const redemption = (
+        await tx
+          .select({ codeHash: coupons.codeHash })
           .from(couponRedemptions)
           .innerJoin(coupons, eq(couponRedemptions.couponId, coupons.id))
           .where(eq(couponRedemptions.invoiceId, ex.id))
-          .limit(1))[0];
-        const requestedCouponHash = input.couponCode ? hashCouponCode(input.couponCode) : null;
-        if ((redemption?.codeHash ?? null) !== requestedCouponHash) {
-          throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: الكوبون مختلف عن البيع الأصلي" });
-        }
-        // م١ (PR-1): الإرسالية أُنشئت مع الفاتورة في المحاولة الفائزة — تعود مع الإعادة كي يحمل
-        // الإيصال المطبوع رقمَها (لا يُعاد الإسناد؛ الفاتورة الواحدة إرساليةٌ واحدة بقيدٍ فريد).
-        const replayConsignment = input.delivery
-          ? (
-              await tx
-                .select({ id: deliveryConsignments.id, consignmentNumber: deliveryConsignments.consignmentNumber })
-                .from(deliveryConsignments)
-                .where(eq(deliveryConsignments.invoiceId, Number(ex.id)))
-                .limit(1)
-            )[0]
-          : undefined;
-        return {
-          invoiceId: Number(ex.id),
-          invoiceNumber: ex.invoiceNumber,
-          // G3 (١١/٨): shiftId المُثبَّت على الفاتورة الأصليّة — لا shiftId الحاليّ للفاعل. الإعادة
-          // الـidempotent بعد إغلاق وردية وفتح أخرى تحتاج هذا لكي يطبع الإيصال الوردية الحقيقيّة
-          // للمعاملة (Codex P2 على PR #553).
-          shiftId: ex.shiftId ?? null,
-          total: ex.total,
-          status: ex.status as CreateSaleResult["status"],
-          idempotentReplay: true,
-          ...(replayConsignment
-            ? { consignmentId: Number(replayConsignment.id), consignmentNumber: replayConsignment.consignmentNumber }
-            : {}),
-        };
+          .limit(1)
+      )[0];
+      const requestedCouponHash = input.couponCode
+        ? hashCouponCode(input.couponCode)
+        : null;
+      if ((redemption?.codeHash ?? null) !== requestedCouponHash) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "تعارض idempotency: الكوبون مختلف عن البيع الأصلي",
+        });
       }
+      // م١ (PR-1): الإرسالية أُنشئت مع الفاتورة في المحاولة الفائزة — تعود مع الإعادة كي يحمل
+      // الإيصال المطبوع رقمَها (لا يُعاد الإسناد؛ الفاتورة الواحدة إرساليةٌ واحدة بقيدٍ فريد).
+      const replayConsignment = input.delivery
+        ? (
+            await tx
+              .select({
+                id: deliveryConsignments.id,
+                consignmentNumber: deliveryConsignments.consignmentNumber,
+              })
+              .from(deliveryConsignments)
+              .where(eq(deliveryConsignments.invoiceId, Number(ex.id)))
+              .limit(1)
+          )[0]
+        : undefined;
+      return {
+        invoiceId: Number(ex.id),
+        invoiceNumber: ex.invoiceNumber,
+        // G3 (١١/٨): shiftId المُثبَّت على الفاتورة الأصليّة — لا shiftId الحاليّ للفاعل. الإعادة
+        // الـidempotent بعد إغلاق وردية وفتح أخرى تحتاج هذا لكي يطبع الإيصال الوردية الحقيقيّة
+        // للمعاملة (Codex P2 على PR #553).
+        shiftId: ex.shiftId ?? null,
+        total: ex.total,
+        status: ex.status as CreateSaleResult["status"],
+        idempotentReplay: true,
+        ...(replayConsignment
+          ? {
+              consignmentId: Number(replayConsignment.id),
+              consignmentNumber: replayConsignment.consignmentNumber,
+            }
+          : {}),
+      };
     }
+  }
 
-    if (!input.lines.length) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إنشاء فاتورة بلا أصناف" });
-    }
+  if (!input.lines.length) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "لا يمكن إنشاء فاتورة بلا أصناف",
+    });
+  }
 
-    // 2. Shift must be OPEN and belong to the branch (when provided — POS).
-    //    .for("update") يُسَلْسِل البيع مع closeShift على نفس الصفّ ⇒ إمّا يقفل البيع قبل
-    //    الإغلاق ويُحتسَب، أو يُرفض إن سبق الإغلاق فلا يدخل receipt بعد قطع الـZ-report.
-    const isCashPayment = input.payment?.method === "CASH" && money(input.payment?.amount ?? "0").gt(0);
-    if (isCashPayment && (input.shiftId == null)) {
+  // 2. Shift must be OPEN and belong to the branch (when provided — POS).
+  //    .for("update") يُسَلْسِل البيع مع closeShift على نفس الصفّ ⇒ إمّا يقفل البيع قبل
+  //    الإغلاق ويُحتسَب، أو يُرفض إن سبق الإغلاق فلا يدخل receipt بعد قطع الـZ-report.
+  const isCashPayment =
+    input.payment?.method === "CASH" &&
+    money(input.payment?.amount ?? "0").gt(0);
+  if (isCashPayment && input.shiftId == null) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "يَلزم وردية مفتوحة للبيع النقدي",
+    });
+  }
+  // م١ (PR-1): أمانةُ أجرة التوصيل إيصالُ درجٍ نقديّ — تلزمها وردية كالبيع النقديّ تماماً.
+  const writesFeeHeldCash = money(input.deliveryFeeHeld ?? "0").gt(0);
+  if (writesFeeHeldCash && input.shiftId == null) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر قبض أمانة أجرة التوصيل",
+        why: "الأمانة تدخل درج الوردية نقداً، ولا وردية مفتوحة مرفقة بهذا البيع",
+        doThis:
+          "افتح وردية باسمك من شاشة الورديات ثمّ أعد البيع، أو اجعل أجرة التوصيل على المندوب (COURIER) بلا أمانة",
+      }),
+    });
+  }
+  if (input.shiftId) {
+    const s = await tx
+      .select()
+      .from(shifts)
+      .where(eq(shifts.id, input.shiftId))
+      .for("update")
+      .limit(1);
+    if (!s[0] || Number(s[0].branchId) !== input.branchId) {
       throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: "يَلزم وردية مفتوحة للبيع النقدي",
+        code: "BAD_REQUEST",
+        message: "الوردية غير مفتوحة أو لا تخص هذا الفرع",
       });
     }
-    // م١ (PR-1): أمانةُ أجرة التوصيل إيصالُ درجٍ نقديّ — تلزمها وردية كالبيع النقديّ تماماً.
-    const writesFeeHeldCash = money(input.deliveryFeeHeld ?? "0").gt(0);
-    if (writesFeeHeldCash && input.shiftId == null) {
+    if (s[0].status !== "OPEN") {
+      // الإقفال حدّ محاسبي غير قابل للكتابة بأثر رجعي. يبقى البيع الأوفلايني في طابور
+      // المراجعة ويُسوّى من مسار إداري لاحق، ولا يعدّل expected/count لوردية مقفلة.
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
+        message:
+          "الوردية مغلقة — لا يمكن ترحيل بيع إليها بعد الإقفال. حوّل العملية إلى مراجعة التسوية اللاحقة.",
+      });
+    }
+    // SHIFT-OWN (حظر انتحال الورديات - Fail-Closed): فرض ملكية الوردية للجميع بلا استثناء عند وجود حركة نقدية
+    // يُمنع أي مستخدم (بما في ذلك المدير والأدمن) من تسجيل بيع نقدي على وردية مستخدم آخر.
+    const hasCashMovement = isCashPayment || writesFeeHeldCash;
+    const role = actor.role;
+    const isDigitalSale = capability === DIGITAL_SALE_CAPABILITY;
+    if (
+      !isDigitalSale &&
+      (hasCashMovement || (role !== "admin" && role !== "manager")) &&
+      Number(s[0].userId) !== Number(actor.userId)
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "لا تَستطيع التسجيل على وردية مستخدم آخر",
+      });
+    }
+  }
+  // م١ (PR-1): إيصال أمانة الأجرة يكتب نقدَ الدرج أيضاً ⇒ نفس القفل (مرآة `checkoutReception`).
+  if (isCashPayment || writesFeeHeldCash) {
+    await lockMaterializedCashReceiptSourceForWrite(tx, {
+      branchId: input.branchId,
+      shiftId: input.shiftId,
+      cashBucket: "DRAWER",
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+    });
+  }
+
+  // 3. Resolve the effective price tier.
+  let customerTier: PriceTier | null = null;
+  if (input.customerId) {
+    // قفل صفّ العميل: يُسلسِل البيوع الآجلة المتزامنة فلا يتجاوز اثنان حدّ الائتمان معاً.
+    const c = await tx
+      .select()
+      .from(customers)
+      .where(eq(customers.id, input.customerId))
+      .for("update")
+      .limit(1);
+    if (!c[0])
+      throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+    customerTier = c[0].defaultPriceTier as PriceTier;
+  }
+  const tier = resolveTier({ override: input.priceTier ?? null, customerTier });
+
+  // يوم بغداد هو مرجع صلاحية العرض والكوبون معاً؛ يُحسَب مرة واحدة داخل المعاملة.
+  const _now = new Date();
+  const _bag = new Date(_now.getTime() + 3 * 60 * 60 * 1000);
+  const todayYmd = _bag.toISOString().slice(0, 10);
+  const lockedCoupon = input.couponCode
+    ? await lockCouponForSale(tx, {
+        code: input.couponCode,
+        branchId: input.branchId,
+        customerId: input.customerId ?? null,
+        todayYmd,
+      })
+    : null;
+
+  // 4. Price/cost/convert each line.
+  // D1 (٣٠/٦): حلّ N+1 — قراءة كل المتغيّرات بـinArray دفعةً واحدةً قبل الحلقة بدل
+  // round-trip لكل سطر. التكلفة لا تُقرأ هنا؛ تُلتقط لاحقاً بعد قفل اتحاد الأصناف
+  // ومكوّنات البكج ومواد الخدمة، كي تطابق COGS حركة المخزون ذاتها.
+  // قبل: ٢٠ سطر = ٢٠ استعلاماً متسلسلاً. بعد: استعلام واحد ⇒ زمن المعاملة ينخفض دراماتيكياً
+  // ونافذة الأقفال على shifts/customers تَنكمش (انكماش هذه النافذة = أقلّ تنافس عند الذروة).
+  const uniqueVariantIds = Array.from(
+    new Set(input.lines.map((l) => l.variantId)),
+  );
+  const variantRows = await tx
+    .select({
+      id: productVariants.id,
+      productId: productVariants.productId,
+      isActive: productVariants.isActive,
+      isService: products.isService,
+      isBundle: products.isBundle,
+      productType: products.productType,
+      productName: products.name,
+      invoiceLabel: products.invoiceLabel,
+      shortTitle: products.shortTitle,
+      // تدقيق ١١/٨ (H4): تعطيل المنتج نفسه يجب أن يمنع البيع أيضاً — كان الحارس يفحص المتغيّر فقط،
+      // فمنتجٌ عطّله المالك بمتغيّراتٍ نشطة يظلّ يُباع خادمياً عبر API/سلة قديمة/إعادة تشغيل أوفلاين.
+      productActive: products.isActive,
+    })
+    .from(productVariants)
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(inArray(productVariants.id, uniqueVariantIds));
+  const variantById = new Map<
+    number,
+    {
+      productId: number;
+      costPrice: string;
+      isActive: boolean | null;
+      productType: string | null;
+      productActive: boolean | null;
+      productName: string;
+      invoiceLabel: string | null;
+      shortTitle: string | null;
+    }
+  >();
+  for (const r of variantRows) {
+    variantById.set(Number(r.id), {
+      productId: Number(r.productId),
+      costPrice: "0",
+      isActive: r.isActive,
+      productType: r.productType ?? null,
+      productActive: r.productActive,
+      productName: r.productName,
+      invoiceLabel: r.invoiceLabel ?? null,
+      shortTitle: r.shortTitle ?? null,
+    });
+  }
+  if (variantById.size !== uniqueVariantIds.length) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر تثبيت أصناف الفاتورة",
+        why: "أحد المتغيّرات غير موجود أو حُذف أثناء تجهيز البيع",
+        doThis: "حدّث شاشة البيع واختر الأصناف مجدداً",
+      }),
+    });
+  }
+
+  // اكتشاف تعريفات البكج/الخدمة قبل الأقفال لا يتخذ قراراً مالياً؛ غايته فقط بناء
+  // اتحاد الأقفال الكامل. بعد القفل نعيد القراءة ونقارن البصمة، فتكون النتيجة إما
+  // التعريف القديم كاملاً أو الجديد كاملاً، ولا تُخصم وصفة هجينة تحت ضغط متزامن.
+  const discoveredKindByVariant = new Map<number, VariantKind>();
+  for (const row of variantRows) {
+    discoveredKindByVariant.set(
+      Number(row.id),
+      row.isBundle ? "BUNDLE" : row.isService ? "SERVICE" : "STOCKED",
+    );
+  }
+  const discoveredBundleVariantIds = uniqueVariantIds.filter(
+    (variantId) => discoveredKindByVariant.get(variantId) === "BUNDLE",
+  );
+  let bundleDefs = await getBundleDefinitions(tx, discoveredBundleVariantIds);
+  const discoveredServiceVariantIds = uniqueVariantIds.filter(
+    (variantId) => discoveredKindByVariant.get(variantId) === "SERVICE",
+  );
+  let serviceDefinitions = await discoverServiceRecipeDefinitions(
+    tx,
+    discoveredServiceVariantIds,
+  );
+  const discoveredNestedVariantIds = [
+    ...Array.from(bundleDefs.values()).flatMap((rows) =>
+      rows.map((row) => row.componentVariantId),
+    ),
+    ...Array.from(serviceDefinitions.values()).flatMap((definition) =>
+      definition.lines.map((line) => line.inputVariantId),
+    ),
+  ];
+  const fullScopeVariantIds = Array.from(
+    new Set([...uniqueVariantIds, ...discoveredNestedVariantIds]),
+  ).sort((a, b) => a - b);
+  const scopeRefs = await tx
+    .select({ id: productVariants.id, productId: productVariants.productId })
+    .from(productVariants)
+    .where(inArray(productVariants.id, fullScopeVariantIds))
+    .orderBy(productVariants.id);
+  if (scopeRefs.length !== fullScopeVariantIds.length) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تثبيت نطاق مخزون الفاتورة",
+        why: "مكوّن بكج أو مادة خدمة تغيّر أو حُذف أثناء تجهيز البيع",
+        doThis: "أعد المحاولة بعد تحديث شاشة البيع وتعريفات الوصفات",
+      }),
+    });
+  }
+  // نقفل صفوف المنتجات نفسها قبل اتخاذ أي قرار نوع/تفعيل. قفل المتغيّرات وحده لا يمنع
+  // تعديل isService/isBundle/isActive المتزامن، وكان يسمح بأن يُسعّر السطر كخدمة ثم يُخصم
+  // كبضاعة (أو العكس). القراءة القفلية هنا هي المصدر الحاكم لكل التصنيفات التالية.
+  const lineProductIds = Array.from(
+    new Set(scopeRefs.map((row) => Number(row.productId))),
+  ).sort((a, b) => a - b);
+  const lockedProducts = lineProductIds.length
+    ? await tx
+        .select({
+          id: products.id,
+          isActive: products.isActive,
+          isService: products.isService,
+          isBundle: products.isBundle,
+          productType: products.productType,
+          name: products.name,
+          invoiceLabel: products.invoiceLabel,
+          shortTitle: products.shortTitle,
+        })
+        .from(products)
+        .where(inArray(products.id, lineProductIds))
+        .orderBy(products.id)
+        .for("update")
+    : [];
+  const lockedProductById = new Map(
+    lockedProducts.map((p) => [Number(p.id), p]),
+  );
+  const kindByVariant = new Map<number, VariantKind>();
+  for (const [variantId, variant] of Array.from(variantById.entries())) {
+    const product = lockedProductById.get(variant.productId);
+    if (!product) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
         message: appErrorMessage({
-          what: "تعذّر قبض أمانة أجرة التوصيل",
-          why: "الأمانة تدخل درج الوردية نقداً، ولا وردية مفتوحة مرفقة بهذا البيع",
-          doThis: "افتح وردية باسمك من شاشة الورديات ثمّ أعد البيع، أو اجعل أجرة التوصيل على المندوب (COURIER) بلا أمانة",
+          what: `تعذّر تحميل منتج المتغيّر #${variantId}`,
+          why: "سجل المنتج غير موجود أو حُذف أثناء تجهيز الفاتورة",
+          doThis: "حدّث شاشة البيع واختر الصنف مجدداً",
         }),
       });
     }
-    if (input.shiftId) {
-      const s = await tx
-        .select()
-        .from(shifts)
-        .where(eq(shifts.id, input.shiftId))
-        .for("update")
-        .limit(1);
-      if (!s[0] || Number(s[0].branchId) !== input.branchId) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "الوردية غير مفتوحة أو لا تخص هذا الفرع" });
-      }
-      if (s[0].status !== "OPEN") {
-        // الإقفال حدّ محاسبي غير قابل للكتابة بأثر رجعي. يبقى البيع الأوفلايني في طابور
-        // المراجعة ويُسوّى من مسار إداري لاحق، ولا يعدّل expected/count لوردية مقفلة.
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "الوردية مغلقة — لا يمكن ترحيل بيع إليها بعد الإقفال. حوّل العملية إلى مراجعة التسوية اللاحقة.",
-        });
-      }
-      // SHIFT-OWN (حظر انتحال الورديات - Fail-Closed): فرض ملكية الوردية للجميع بلا استثناء عند وجود حركة نقدية
-      // يُمنع أي مستخدم (بما في ذلك المدير والأدمن) من تسجيل بيع نقدي على وردية مستخدم آخر.
-      const hasCashMovement = isCashPayment || writesFeeHeldCash;
-      const role = actor.role;
-      const isDigitalSale = capability === DIGITAL_SALE_CAPABILITY;
-      if (!isDigitalSale && (hasCashMovement || (role !== "admin" && role !== "manager")) && Number(s[0].userId) !== Number(actor.userId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا تَستطيع التسجيل على وردية مستخدم آخر" });
-      }
-    }
-    // م١ (PR-1): إيصال أمانة الأجرة يكتب نقدَ الدرج أيضاً ⇒ نفس القفل (مرآة `checkoutReception`).
-    if (isCashPayment || writesFeeHeldCash) {
-      await lockMaterializedCashReceiptSourceForWrite(tx, {
-        branchId: input.branchId,
-        shiftId: input.shiftId,
-        cashBucket: "DRAWER",
-        paymentMethod: "CASH",
-        status: "COMPLETED",
-        approvalStatus: "APPROVED",
+    variant.productActive = product.isActive;
+    variant.productType = product.productType ?? null;
+    variant.productName = product.name;
+    variant.invoiceLabel = product.invoiceLabel ?? null;
+    variant.shortTitle = product.shortTitle ?? null;
+    kindByVariant.set(
+      variantId,
+      product.isBundle ? "BUNDLE" : product.isService ? "SERVICE" : "STOCKED",
+    );
+  }
+  for (const variantId of uniqueVariantIds) {
+    if (
+      kindByVariant.get(variantId) !== discoveredKindByVariant.get(variantId)
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: `تغيّر تصنيف الصنف #${variantId} أثناء تجهيز الفاتورة`,
+          why: "تحول الصنف بين خدمة أو بكج أو مخزون بعد اكتشاف نطاق المواد",
+          doThis:
+            "حدّث شاشة البيع ثم أعد العملية كي تُبنى على التصنيف الحالي كاملاً",
+        }),
       });
     }
-
-    // 3. Resolve the effective price tier.
-    let customerTier: PriceTier | null = null;
-    if (input.customerId) {
-      // قفل صفّ العميل: يُسلسِل البيوع الآجلة المتزامنة فلا يتجاوز اثنان حدّ الائتمان معاً.
-      const c = await tx.select().from(customers).where(eq(customers.id, input.customerId)).for("update").limit(1);
-      if (!c[0]) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
-      customerTier = c[0].defaultPriceTier as PriceTier;
-    }
-    const tier = resolveTier({ override: input.priceTier ?? null, customerTier });
-
-    // يوم بغداد هو مرجع صلاحية العرض والكوبون معاً؛ يُحسَب مرة واحدة داخل المعاملة.
-    const _now = new Date();
-    const _bag = new Date(_now.getTime() + 3 * 60 * 60 * 1000);
-    const todayYmd = _bag.toISOString().slice(0, 10);
-    const lockedCoupon = input.couponCode
-      ? await lockCouponForSale(tx, { code: input.couponCode, branchId: input.branchId, customerId: input.customerId ?? null, todayYmd })
-      : null;
-
-    // 4. Price/cost/convert each line.
-    // D1 (٣٠/٦): حلّ N+1 — قراءة كل المتغيّرات بـinArray دفعةً واحدةً قبل الحلقة بدل
-    // round-trip لكل سطر. التكلفة لا تُقرأ هنا؛ تُلتقط لاحقاً بعد قفل اتحاد الأصناف
-    // ومكوّنات البكج ومواد الخدمة، كي تطابق COGS حركة المخزون ذاتها.
-    // قبل: ٢٠ سطر = ٢٠ استعلاماً متسلسلاً. بعد: استعلام واحد ⇒ زمن المعاملة ينخفض دراماتيكياً
-    // ونافذة الأقفال على shifts/customers تَنكمش (انكماش هذه النافذة = أقلّ تنافس عند الذروة).
-    const uniqueVariantIds = Array.from(new Set(input.lines.map((l) => l.variantId)));
-    const variantRows = await tx
+  }
+  const containsDigitalCard = Array.from(variantById.values()).some(
+    (v) => v.productType === "DIGITAL_CARD",
+  );
+  if (containsDigitalCard && capability !== DIGITAL_SALE_CAPABILITY) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "البطاقات الرقمية تُباع من مسار الإصدار المخصّص فقط — لا تُضاف كصنف عادي",
+    });
+  }
+  // A prepared ordinary product may have been reclassified since preparation.
+  // Every actual digital row still needs a trusted intent cost and detail token.
+  if (
+    capability === DIGITAL_SALE_CAPABILITY &&
+    input.lines.some(
+      (line) =>
+        variantById.get(line.variantId)?.productType === "DIGITAL_CARD" &&
+        (line.unitCostOverride == null || !line.internalLineToken?.trim()),
+    )
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر تثبيت بند رقمي في السلة",
+        why: "البند لا يحمل لقطة تكلفة وربطاً موثقاً بنيّة إصدار الكروت؛ ربما تغيّر تصنيف الصنف بعد إعداد السلة",
+        doThis:
+          "أوقف التثبيت وراجِع تصنيف الصنف والنيّة المحفوظة؛ لا تُعِد إصدار الكروت",
+      }),
+    });
+  }
+  if (
+    input.lines.some(
+      (line) =>
+        line.unitCostOverride != null &&
+        (capability !== DIGITAL_SALE_CAPABILITY ||
+          variantById.get(line.variantId)?.productType !== "DIGITAL_CARD"),
+    )
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر تثبيت تكلفة البيع",
+        why: "التكلفة المفروضة مخصصة للكرت الرقمي الموثق فقط؛ الأصناف العادية تتبع تكلفة المخزون",
+        doThis:
+          "أعِد إتمام البيع من نقطة البيع؛ لا ترسل تكلفة يدوية مع البنود العادية",
+      }),
+    });
+  }
+  // بضاعة الأمانة (ش٣): خريطة variantId → consignorId للأصناف الموسومة أمانةً — لالتقاط التزام المودِع
+  // لحظة البيع (قيد PURCHASE يتيم) ولاستثنائها من البيع بالسالب في المسار الحيّ. راجع design §٢-ب/§٥-ج.
+  const consignByVariant = new Map<number, number>();
+  {
+    const crows = await tx
       .select({
-        id: productVariants.id,
-        productId: productVariants.productId,
-        isActive: productVariants.isActive,
-        isService: products.isService,
-        isBundle: products.isBundle,
-        productType: products.productType,
-        productName: products.name,
-        invoiceLabel: products.invoiceLabel,
-        shortTitle: products.shortTitle,
-        // تدقيق ١١/٨ (H4): تعطيل المنتج نفسه يجب أن يمنع البيع أيضاً — كان الحارس يفحص المتغيّر فقط،
-        // فمنتجٌ عطّله المالك بمتغيّراتٍ نشطة يظلّ يُباع خادمياً عبر API/سلة قديمة/إعادة تشغيل أوفلاين.
-        productActive: products.isActive,
+        vid: productVariants.id,
+        isConsign: products.isConsignment,
+        cId: products.consignorId,
       })
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
       .where(inArray(productVariants.id, uniqueVariantIds));
-    const variantById = new Map<number, { productId: number; costPrice: string; isActive: boolean | null; productType: string | null; productActive: boolean | null; productName: string; invoiceLabel: string | null; shortTitle: string | null }>();
-    for (const r of variantRows) {
-      variantById.set(Number(r.id), {
-        productId: Number(r.productId),
-        costPrice: "0",
-        isActive: r.isActive,
-        productType: r.productType ?? null,
-        productActive: r.productActive,
-        productName: r.productName,
-        invoiceLabel: r.invoiceLabel ?? null,
-        shortTitle: r.shortTitle ?? null,
-      });
-    }
-    if (variantById.size !== uniqueVariantIds.length) {
-      throw new TRPCError({
-        code: "NOT_FOUND",
-        message: appErrorMessage({
-          what: "تعذّر تثبيت أصناف الفاتورة",
-          why: "أحد المتغيّرات غير موجود أو حُذف أثناء تجهيز البيع",
-          doThis: "حدّث شاشة البيع واختر الأصناف مجدداً",
-        }),
-      });
-    }
+    for (const r of crows)
+      if (r.isConsign && r.cId != null)
+        consignByVariant.set(Number(r.vid), Number(r.cId));
+  }
 
-    // اكتشاف تعريفات البكج/الخدمة قبل الأقفال لا يتخذ قراراً مالياً؛ غايته فقط بناء
-    // اتحاد الأقفال الكامل. بعد القفل نعيد القراءة ونقارن البصمة، فتكون النتيجة إما
-    // التعريف القديم كاملاً أو الجديد كاملاً، ولا تُخصم وصفة هجينة تحت ضغط متزامن.
-    const discoveredKindByVariant = new Map<number, VariantKind>();
-    for (const row of variantRows) {
-      discoveredKindByVariant.set(
-        Number(row.id),
-        row.isBundle ? "BUNDLE" : row.isService ? "SERVICE" : "STOCKED",
-      );
+  // بند 12ب (٧/٧): الأسعار التعاقدية النشطة للعميل — استعلام واحد (نمط D1 نفسه، لا N+1).
+  // أسبقية اختيار السعر تتبع البنية القائمة حرفياً: override صريح (سعرٌ قصده المستخدم ويعرضه
+  // للزبون — POS يثبّته دائماً، وحارس أقل-من-التكلفة يحكمه) ← السعر التعاقدي ← سعر الفئة.
+  // نفس `resolveContractPrices` تغذّي عرض POS في catalog/pos.ts ⇒ نقطة العرض = نقطة الفرض.
+  const contractPrices = input.customerId
+    ? await resolveContractPrices(
+        tx,
+        input.customerId,
+        input.lines.map((l) => l.productUnitId),
+      )
+    : new Map<number, string>();
+
+  // bundles (٧/٧/٢٦): تصنيف المتغيّرات لتوجيه منطق التكلفة والمخزون. متغيّر BUNDLE:
+  //   * تُحسب unitCost = Σ(componentCost × componentBaseQty) بدلاً من snapshotUnitCost(v.costPrice).
+  //   * لا يُطبَّق applyMovement على المتغيّر نفسه (لا branchStock له) — يُطبَّق على مكوّناته لاحقاً.
+  // القراءات دفعةً واحدة (لا N+1).
+  const bundleVariantIds = discoveredBundleVariantIds;
+  let bundleUnitCosts = new Map<number, string>();
+
+  // الخدمة لا تملك مخزوناً ذاتياً: تكلفتها من مواد وصفة الاستهلاك، والمواد تُخصم فعلياً.
+  // المحلّل المشترك يفشل مغلقاً عند وصفة معطلة/مكررة/فارغة ويتحقق أن مكوّناتها أصناف
+  // مخزنية مملوكة ونشطة. وحدها الخدمة التي لم تُعرّف لها أي وصفة تاريخياً تُعدّ عمالة صرفة.
+  const serviceVariantIds = discoveredServiceVariantIds;
+  const materialCostByVariant = new Map<number, string>();
+  const serviceMaterialIds = new Set<number>();
+  for (const definition of Array.from(serviceDefinitions.values())) {
+    for (const line of definition.lines) {
+      serviceMaterialIds.add(line.inputVariantId);
     }
-    const discoveredBundleVariantIds = uniqueVariantIds.filter(
-      (variantId) => discoveredKindByVariant.get(variantId) === "BUNDLE",
-    );
-    let bundleDefs = await getBundleDefinitions(tx, discoveredBundleVariantIds);
-    const discoveredServiceVariantIds = uniqueVariantIds.filter(
-      (variantId) => discoveredKindByVariant.get(variantId) === "SERVICE",
-    );
-    let serviceDefinitions = await discoverServiceRecipeDefinitions(
-      tx,
-      discoveredServiceVariantIds,
-    );
-    const discoveredNestedVariantIds = [
-      ...Array.from(bundleDefs.values()).flatMap((rows) =>
-        rows.map((row) => row.componentVariantId),
+  }
+
+  const bundleComponentIds = new Set<number>();
+  for (const defs of Array.from(bundleDefs.values())) {
+    for (const component of defs)
+      bundleComponentIds.add(component.componentVariantId);
+  }
+  await lockInventoryVariants(tx, fullScopeVariantIds);
+
+  // القراءات الثانية current reads بعد قفل كل المنتجات والمتغيّرات. كتّاب الوصفة والبكج
+  // يقفلون النطاق ذاته؛ اختلاف البصمة يعني أن الاكتشاف سبق تحديثاً ملتزماً، فنطلب إعادة
+  // المحاولة بدلاً من استخدام ids قديمة مع تعريف جديد.
+  const currentBundleDefs = await getBundleDefinitions(tx, bundleVariantIds);
+  if (
+    bundleDefinitionsFingerprint(bundleDefs) !==
+    bundleDefinitionsFingerprint(currentBundleDefs)
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: saleDefinitionChangedError(
+        "تغيّر تعريف أحد البكجات أثناء حفظ الفاتورة",
       ),
-      ...Array.from(serviceDefinitions.values()).flatMap((definition) =>
-        definition.lines.map((line) => line.inputVariantId),
+    });
+  }
+  bundleDefs = currentBundleDefs;
+  const currentServiceDefinitions = await discoverServiceRecipeDefinitions(
+    tx,
+    serviceVariantIds,
+  );
+  if (
+    serviceRecipeDefinitionsFingerprint(serviceDefinitions) !==
+    serviceRecipeDefinitionsFingerprint(currentServiceDefinitions)
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: saleDefinitionChangedError(
+        "تغيّرت وصفة مواد إحدى الخدمات أثناء حفظ الفاتورة",
       ),
-    ];
-    const fullScopeVariantIds = Array.from(
-      new Set([...uniqueVariantIds, ...discoveredNestedVariantIds]),
-    ).sort((a, b) => a - b);
-    const scopeRefs = await tx
-      .select({ id: productVariants.id, productId: productVariants.productId })
+    });
+  }
+  serviceDefinitions = currentServiceDefinitions;
+  await assertStockedOwnedMaterials(
+    tx,
+    Array.from(serviceMaterialIds),
+    "مكوّن وصفة الخدمة",
+  );
+  await assertStockedOwnedMaterials(
+    tx,
+    Array.from(bundleComponentIds),
+    "مكوّن البكج",
+  );
+  const serviceRecipe = new Map(
+    Array.from(serviceDefinitions.entries()).map(([variantId, definition]) => [
+      variantId,
+      definition.lines,
+    ]),
+  );
+
+  // كل لقطات التكلفة بعد mutex الحاكم: لا تستطيع إعادة تقييم أو WAVG أن تقع بين COGS
+  // وبين خصم المخزون في الفاتورة نفسها.
+  const lockedLineCosts = await tx
+    .select({
+      id: productVariants.id,
+      cost: productVariants.costPrice,
+      isActive: productVariants.isActive,
+    })
+    .from(productVariants)
+    .where(inArray(productVariants.id, uniqueVariantIds))
+    .orderBy(productVariants.id)
+    .for("update");
+  if (lockedLineCosts.length !== uniqueVariantIds.length) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر تثبيت أصناف الفاتورة",
+        why: "أحد المتغيّرات حُذف أو لم يعد متاحاً أثناء الحفظ",
+        doThis: "حدّث شاشة البيع وراجع الأصناف ثم أعد المحاولة",
+      }),
+    });
+  }
+  for (const r of lockedLineCosts) {
+    const current = variantById.get(Number(r.id));
+    if (current) {
+      current.costPrice = String(r.cost ?? "0");
+      current.isActive = r.isActive;
+    }
+  }
+  bundleUnitCosts = await computeBundleUnitCosts(
+    tx,
+    bundleVariantIds,
+    bundleDefs,
+  );
+  if (serviceMaterialIds.size) {
+    const matRows = await tx
+      .select({ id: productVariants.id, cost: productVariants.costPrice })
       .from(productVariants)
-      .where(inArray(productVariants.id, fullScopeVariantIds))
-      .orderBy(productVariants.id);
-    if (scopeRefs.length !== fullScopeVariantIds.length) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: appErrorMessage({
-          what: "تعذّر تثبيت نطاق مخزون الفاتورة",
-          why: "مكوّن بكج أو مادة خدمة تغيّر أو حُذف أثناء تجهيز البيع",
-          doThis: "أعد المحاولة بعد تحديث شاشة البيع وتعريفات الوصفات",
-        }),
-      });
-    }
-    // نقفل صفوف المنتجات نفسها قبل اتخاذ أي قرار نوع/تفعيل. قفل المتغيّرات وحده لا يمنع
-    // تعديل isService/isBundle/isActive المتزامن، وكان يسمح بأن يُسعّر السطر كخدمة ثم يُخصم
-    // كبضاعة (أو العكس). القراءة القفلية هنا هي المصدر الحاكم لكل التصنيفات التالية.
-    const lineProductIds = Array.from(
-      new Set(scopeRefs.map((row) => Number(row.productId))),
-    ).sort((a, b) => a - b);
-    const lockedProducts = lineProductIds.length
-      ? await tx
-          .select({
-            id: products.id,
-            isActive: products.isActive,
-            isService: products.isService,
-            isBundle: products.isBundle,
-            productType: products.productType,
-            name: products.name,
-            invoiceLabel: products.invoiceLabel,
-            shortTitle: products.shortTitle,
-          })
-          .from(products)
-          .where(inArray(products.id, lineProductIds))
-          .orderBy(products.id)
-          .for("update")
-      : [];
-    const lockedProductById = new Map(lockedProducts.map((p) => [Number(p.id), p]));
-    const kindByVariant = new Map<number, VariantKind>();
-    for (const [variantId, variant] of Array.from(variantById.entries())) {
-      const product = lockedProductById.get(variant.productId);
-      if (!product) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: appErrorMessage({
-            what: `تعذّر تحميل منتج المتغيّر #${variantId}`,
-            why: "سجل المنتج غير موجود أو حُذف أثناء تجهيز الفاتورة",
-            doThis: "حدّث شاشة البيع واختر الصنف مجدداً",
-          }),
-        });
-      }
-      variant.productActive = product.isActive;
-      variant.productType = product.productType ?? null;
-      variant.productName = product.name;
-      variant.invoiceLabel = product.invoiceLabel ?? null;
-      variant.shortTitle = product.shortTitle ?? null;
-      kindByVariant.set(variantId, product.isBundle ? "BUNDLE" : product.isService ? "SERVICE" : "STOCKED");
-    }
-    for (const variantId of uniqueVariantIds) {
-      if (kindByVariant.get(variantId) !== discoveredKindByVariant.get(variantId)) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: appErrorMessage({
-            what: `تغيّر تصنيف الصنف #${variantId} أثناء تجهيز الفاتورة`,
-            why: "تحول الصنف بين خدمة أو بكج أو مخزون بعد اكتشاف نطاق المواد",
-            doThis: "حدّث شاشة البيع ثم أعد العملية كي تُبنى على التصنيف الحالي كاملاً",
-          }),
-        });
-      }
-    }
-    const containsDigitalCard = Array.from(variantById.values()).some((v) => v.productType === "DIGITAL_CARD");
-    if (containsDigitalCard && capability !== DIGITAL_SALE_CAPABILITY) {
+      .where(inArray(productVariants.id, Array.from(serviceMaterialIds)));
+    for (const r of matRows)
+      materialCostByVariant.set(Number(r.id), String(r.cost ?? "0"));
+  }
+  // حارس صحّة: كل بكجٍ ورد كسطر بيع يجب أن يملك وصفة (على الأقل مكوّناً واحداً) — منتج بلا وصفة
+  // مسجَّل isBundle=true بحادثة سيّئة (ملفَّق يدوياً أو حالة سباق). نرفض البيع صراحةً بدل حساب صفر.
+  for (const bid of bundleVariantIds) {
+    const list = bundleDefs.get(bid);
+    if (!list || !list.length) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "البطاقات الرقمية تُباع من مسار الإصدار المخصّص فقط — لا تُضاف كصنف عادي",
+        message: `البكج (متغيّر ${bid}) بلا مكوّنات — أضف مكوّناته قبل البيع`,
       });
     }
-    // A prepared ordinary product may have been reclassified since preparation.
-    // Every actual digital row still needs a trusted intent cost and detail token.
-    if (capability === DIGITAL_SALE_CAPABILITY && input.lines.some((line) =>
-      variantById.get(line.variantId)?.productType === "DIGITAL_CARD" &&
-      (line.unitCostOverride == null || !line.internalLineToken?.trim()))) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: appErrorMessage({
-          what: "تعذّر تثبيت بند رقمي في السلة",
-          why: "البند لا يحمل لقطة تكلفة وربطاً موثقاً بنيّة إصدار الكروت؛ ربما تغيّر تصنيف الصنف بعد إعداد السلة",
-          doThis: "أوقف التثبيت وراجِع تصنيف الصنف والنيّة المحفوظة؛ لا تُعِد إصدار الكروت",
-        }),
-      });
-    }
-    if (input.lines.some((line) => line.unitCostOverride != null &&
-      (capability !== DIGITAL_SALE_CAPABILITY || variantById.get(line.variantId)?.productType !== "DIGITAL_CARD"))) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: appErrorMessage({
-          what: "تعذّر تثبيت تكلفة البيع",
-          why: "التكلفة المفروضة مخصصة للكرت الرقمي الموثق فقط؛ الأصناف العادية تتبع تكلفة المخزون",
-          doThis: "أعِد إتمام البيع من نقطة البيع؛ لا ترسل تكلفة يدوية مع البنود العادية",
-        }),
-      });
-    }
-    // بضاعة الأمانة (ش٣): خريطة variantId → consignorId للأصناف الموسومة أمانةً — لالتقاط التزام المودِع
-    // لحظة البيع (قيد PURCHASE يتيم) ولاستثنائها من البيع بالسالب في المسار الحيّ. راجع design §٢-ب/§٥-ج.
-    const consignByVariant = new Map<number, number>();
-    {
-      const crows = await tx
-        .select({ vid: productVariants.id, isConsign: products.isConsignment, cId: products.consignorId })
-        .from(productVariants).innerJoin(products, eq(productVariants.productId, products.id))
-        .where(inArray(productVariants.id, uniqueVariantIds));
-      for (const r of crows) if (r.isConsign && r.cId != null) consignByVariant.set(Number(r.vid), Number(r.cId));
-    }
-
-    // بند 12ب (٧/٧): الأسعار التعاقدية النشطة للعميل — استعلام واحد (نمط D1 نفسه، لا N+1).
-    // أسبقية اختيار السعر تتبع البنية القائمة حرفياً: override صريح (سعرٌ قصده المستخدم ويعرضه
-    // للزبون — POS يثبّته دائماً، وحارس أقل-من-التكلفة يحكمه) ← السعر التعاقدي ← سعر الفئة.
-    // نفس `resolveContractPrices` تغذّي عرض POS في catalog/pos.ts ⇒ نقطة العرض = نقطة الفرض.
-    const contractPrices = input.customerId
-      ? await resolveContractPrices(tx, input.customerId, input.lines.map((l) => l.productUnitId))
-      : new Map<number, string>();
-
-    // bundles (٧/٧/٢٦): تصنيف المتغيّرات لتوجيه منطق التكلفة والمخزون. متغيّر BUNDLE:
-    //   * تُحسب unitCost = Σ(componentCost × componentBaseQty) بدلاً من snapshotUnitCost(v.costPrice).
-    //   * لا يُطبَّق applyMovement على المتغيّر نفسه (لا branchStock له) — يُطبَّق على مكوّناته لاحقاً.
-    // القراءات دفعةً واحدة (لا N+1).
-    const bundleVariantIds = discoveredBundleVariantIds;
-    let bundleUnitCosts = new Map<number, string>();
-
-    // الخدمة لا تملك مخزوناً ذاتياً: تكلفتها من مواد وصفة الاستهلاك، والمواد تُخصم فعلياً.
-    // المحلّل المشترك يفشل مغلقاً عند وصفة معطلة/مكررة/فارغة ويتحقق أن مكوّناتها أصناف
-    // مخزنية مملوكة ونشطة. وحدها الخدمة التي لم تُعرّف لها أي وصفة تاريخياً تُعدّ عمالة صرفة.
-    const serviceVariantIds = discoveredServiceVariantIds;
-    const materialCostByVariant = new Map<number, string>();
-    const serviceMaterialIds = new Set<number>();
-    for (const definition of Array.from(serviceDefinitions.values())) {
-      for (const line of definition.lines) {
-        serviceMaterialIds.add(line.inputVariantId);
-      }
-    }
-
-    const bundleComponentIds = new Set<number>();
-    for (const defs of Array.from(bundleDefs.values())) {
-      for (const component of defs) bundleComponentIds.add(component.componentVariantId);
-    }
-    await lockInventoryVariants(
-      tx,
-      fullScopeVariantIds,
-    );
-
-    // القراءات الثانية current reads بعد قفل كل المنتجات والمتغيّرات. كتّاب الوصفة والبكج
-    // يقفلون النطاق ذاته؛ اختلاف البصمة يعني أن الاكتشاف سبق تحديثاً ملتزماً، فنطلب إعادة
-    // المحاولة بدلاً من استخدام ids قديمة مع تعريف جديد.
-    const currentBundleDefs = await getBundleDefinitions(tx, bundleVariantIds);
-    if (
-      bundleDefinitionsFingerprint(bundleDefs) !==
-      bundleDefinitionsFingerprint(currentBundleDefs)
-    ) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: saleDefinitionChangedError("تغيّر تعريف أحد البكجات أثناء حفظ الفاتورة"),
-      });
-    }
-    bundleDefs = currentBundleDefs;
-    const currentServiceDefinitions = await discoverServiceRecipeDefinitions(
-      tx,
-      serviceVariantIds,
-    );
-    if (
-      serviceRecipeDefinitionsFingerprint(serviceDefinitions) !==
-      serviceRecipeDefinitionsFingerprint(currentServiceDefinitions)
-    ) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: saleDefinitionChangedError("تغيّرت وصفة مواد إحدى الخدمات أثناء حفظ الفاتورة"),
-      });
-    }
-    serviceDefinitions = currentServiceDefinitions;
-    await assertStockedOwnedMaterials(
-      tx,
-      Array.from(serviceMaterialIds),
-      "مكوّن وصفة الخدمة",
-    );
-    await assertStockedOwnedMaterials(
-      tx,
-      Array.from(bundleComponentIds),
-      "مكوّن البكج",
-    );
-    const serviceRecipe = new Map(
-      Array.from(serviceDefinitions.entries()).map(
-        ([variantId, definition]) => [variantId, definition.lines],
-      ),
-    );
-
-    // كل لقطات التكلفة بعد mutex الحاكم: لا تستطيع إعادة تقييم أو WAVG أن تقع بين COGS
-    // وبين خصم المخزون في الفاتورة نفسها.
-    const lockedLineCosts = await tx
-      .select({ id: productVariants.id, cost: productVariants.costPrice, isActive: productVariants.isActive })
-      .from(productVariants)
-      .where(inArray(productVariants.id, uniqueVariantIds))
-      .orderBy(productVariants.id)
-      .for("update");
-    if (lockedLineCosts.length !== uniqueVariantIds.length) {
-      throw new TRPCError({
-        code: "NOT_FOUND",
-        message: appErrorMessage({
-          what: "تعذّر تثبيت أصناف الفاتورة",
-          why: "أحد المتغيّرات حُذف أو لم يعد متاحاً أثناء الحفظ",
-          doThis: "حدّث شاشة البيع وراجع الأصناف ثم أعد المحاولة",
-        }),
-      });
-    }
-    for (const r of lockedLineCosts) {
-      const current = variantById.get(Number(r.id));
-      if (current) {
-        current.costPrice = String(r.cost ?? "0");
-        current.isActive = r.isActive;
-      }
-    }
-    bundleUnitCosts = await computeBundleUnitCosts(tx, bundleVariantIds, bundleDefs);
-    if (serviceMaterialIds.size) {
-      const matRows = await tx
-        .select({ id: productVariants.id, cost: productVariants.costPrice })
-        .from(productVariants)
-        .where(inArray(productVariants.id, Array.from(serviceMaterialIds)));
-      for (const r of matRows) materialCostByVariant.set(Number(r.id), String(r.cost ?? "0"));
-    }
-    // حارس صحّة: كل بكجٍ ورد كسطر بيع يجب أن يملك وصفة (على الأقل مكوّناً واحداً) — منتج بلا وصفة
-    // مسجَّل isBundle=true بحادثة سيّئة (ملفَّق يدوياً أو حالة سباق). نرفض البيع صراحةً بدل حساب صفر.
+  }
+  // Codex #163 P2 (Block bundles whose components were later disabled): إن عُطِّل مكوّن بعد إنشاء
+  // البكج، البكج يبقى قابلاً للبيع بلا فحصٍ لحيويّة مكوّناته ⇒ يخصم مكوّناً معطَّلاً (يخالف B2 من
+  // bundleService لكنّه لا يفرضه في مسار البيع). الآن نلتقط كل مكوّنات البكجات المُباعة دفعةً واحدة
+  // ونرفض البيع لو أيٌّ منها معطَّل (منتج أو متغيّر).
+  if (bundleVariantIds.length) {
+    const allComponentIds = new Set<number>();
     for (const bid of bundleVariantIds) {
-      const list = bundleDefs.get(bid);
-      if (!list || !list.length) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: `البكج (متغيّر ${bid}) بلا مكوّنات — أضف مكوّناته قبل البيع`,
-        });
-      }
+      for (const c of bundleDefs.get(bid) ?? [])
+        allComponentIds.add(c.componentVariantId);
     }
-    // Codex #163 P2 (Block bundles whose components were later disabled): إن عُطِّل مكوّن بعد إنشاء
-    // البكج، البكج يبقى قابلاً للبيع بلا فحصٍ لحيويّة مكوّناته ⇒ يخصم مكوّناً معطَّلاً (يخالف B2 من
-    // bundleService لكنّه لا يفرضه في مسار البيع). الآن نلتقط كل مكوّنات البكجات المُباعة دفعةً واحدة
-    // ونرفض البيع لو أيٌّ منها معطَّل (منتج أو متغيّر).
-    if (bundleVariantIds.length) {
-      const allComponentIds = new Set<number>();
-      for (const bid of bundleVariantIds) {
-        for (const c of bundleDefs.get(bid) ?? []) allComponentIds.add(c.componentVariantId);
-      }
-      if (allComponentIds.size) {
-        const componentRows = await tx
-          .select({
-            id: productVariants.id,
-            variantActive: productVariants.isActive,
-            productActive: products.isActive,
-            productName: products.name,
-            sku: productVariants.sku,
-          })
-          .from(productVariants)
-          .innerJoin(products, eq(productVariants.productId, products.id))
-          .where(inArray(productVariants.id, Array.from(allComponentIds)));
-        for (const cr of componentRows) {
-          if (cr.variantActive === false || cr.productActive === false) {
-            throw new TRPCError({
-              code: "PRECONDITION_FAILED",
-              message: `مكوّن بكج معطَّل: «${cr.productName} — ${cr.sku}» — فعّله أو استبدله قبل البيع`,
-            });
-          }
-        }
-      }
-    }
-
-    // promotions v2: خرائط لتحقّق العرض بلا N+1.
-    const productIdByVariant = new Map<number, number>();
-    for (const r of variantRows) {
-      productIdByVariant.set(Number(r.id), 0); // سيُملأ لاحقاً
-    }
-    // نحتاج productId لكل متغيّر. نستعمل استعلام إضافي واحد.
-    let categoryByProduct = new Map<number, number | null>();
-    const linesNeedingPromo = input.lines.filter((l) => l.promotionId != null);
-    if (linesNeedingPromo.length) {
-      const productRows = await tx
-        .select({ variantId: productVariants.id, productId: productVariants.productId })
+    if (allComponentIds.size) {
+      const componentRows = await tx
+        .select({
+          id: productVariants.id,
+          variantActive: productVariants.isActive,
+          productActive: products.isActive,
+          productName: products.name,
+          sku: productVariants.sku,
+        })
         .from(productVariants)
-        .where(inArray(productVariants.id, Array.from(new Set(linesNeedingPromo.map((l) => l.variantId)))));
-      for (const pr of productRows) productIdByVariant.set(Number(pr.variantId), Number(pr.productId));
-      const productIds = Array.from(new Set(productRows.map((r) => Number(r.productId))));
-      categoryByProduct = await getProductCategoryIds(tx, productIds);
-    }
-    const computed = [];
-    // H6 (تدقيق ٢٧/٧): هل انحرف أيّ سطرٍ عن مرجعه بأكثر من العتبة؟ (خصمٌ/سعرٌ يدويّ فوق التكلفة يستوجب تفويضاً).
-    let manualDiscountGateTriggered = false;
-    // ومرجعُ **رأس** الفاتورة: مجموع (سعر المرجع × الكمية) للأسطر غير المُهداة. بوّابة السطر لا تراه،
-    // فخصمُ الرأس كان يفلت منها كلّياً (يُقصّ إلى [0, subtotal] وحسب) — وهو نصف H6 الثاني.
-    let referenceGrossTotal = money(0);
-    for (const l of input.lines) {
-      const v = variantById.get(l.variantId);
-      if (!v) throw new TRPCError({ code: "NOT_FOUND", message: `المتغيّر ${l.variantId} غير موجود` });
-      if (v.isActive !== true || v.productActive !== true) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `الصنف ${l.variantId} معطّل — لا يُباع` });
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(inArray(productVariants.id, Array.from(allComponentIds)));
+      for (const cr of componentRows) {
+        if (cr.variantActive === false || cr.productActive === false) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: `مكوّن بكج معطَّل: «${cr.productName} — ${cr.sku}» — فعّله أو استبدله قبل البيع`,
+          });
+        }
       }
+    }
+  }
 
-      const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId);
-      const contractPrice = contractPrices.get(l.productUnitId);
-      const hasOverride = l.unitPriceOverride != null && l.unitPriceOverride !== "";
-      // المرجع للقياس (H6): عقد ← سعر القائمة (غير رامٍ) ← بلا مرجع. لا نُجبر وجود سعرٍ عند وجود override.
-      const listRef = contractPrice != null ? money(contractPrice) : await tryGetUnitPrice(tx, l.productUnitId, tier);
-      const refUnit = listRef ?? money(0);
-      // السعر الفعليّ: override ← المرجع ← (بلا مرجعٍ ولا override) رميٌ محفوظ «عرّف السعر أولاً».
-      const unitPrice = hasOverride ? money(l.unitPriceOverride!) : (listRef ?? (await getUnitPrice(tx, l.productUnitId, tier)));
-      // bundles: تكلفة البكج محسوبة لحظياً من مجموع مكوّناته (لا `productVariants.costPrice`
-      // لأن البكج نفسه بلا WAVG — تكلفته صافي مجموع مكوّناته الحيّ لحظة البيع، قرار مالك ٧/٧).
-      const kind = kindByVariant.get(l.variantId) ?? "STOCKED";
-      // §١٠.٣ (البطاقات الرقمية): تكلفة مفروضة خادمياً تتقدّم على `costPrice` — تُملأ حصراً من
-      // نيّةٍ مقفولة في القاعدة (حصة المزوّد)، ولا يقبلها راوتر. راجع `SaleLineInput.unitCostOverride`.
-      // الخدمة: unitCost يُحسب من الوصفة (لقطة كلفة المواد لحظة البيع) — لا من `variants.costPrice`
-      // (الذي هو لقطة إدارية عرضية عند إنشاء الخدمة، يُحدَّث فقط بتعديل يدوي). المطابقة لمنطق
-      // printSaleService.ts: لكل مادةٍ في الوصفة نحسب الاستهلاك الدقيق لكامل السطر، نضربه
-      // بكلفتها، ثم unitCost = round2(Σ / baseQuantity). خدمةٌ
-      // بلا وصفة ⇒ unitCost=0 (متسّق مع سياسة النقطة النقدية القائمة).
-      const computeServiceCostSnapshot = () => {
-        const rlines = serviceRecipe.get(l.variantId);
-        if (!rlines || !rlines.length || baseQuantity <= 0) {
-          return { unitCost: "0.00", lineCost: "0.00", materials: [] as Array<{ materialVariantId: number; baseQuantity: number; unitCost: string; lineCost: string }> };
-        }
-        let lineCost = money(0);
-        const byMaterial = new Map<number, { baseQuantity: number; unitCost: string; lineCost: ReturnType<typeof money> }>();
-        for (const rl of rlines) {
-          const consumed = exactRecipeMaterialQuantity(
-            rl.qtyPerOutputBase,
-            baseQuantity,
-            `مادة الوصفة #${rl.inputVariantId}`,
-          );
-          const matCost = round2(money(materialCostByVariant.get(rl.inputVariantId) ?? "0"));
-          const materialLineCost = round2(matCost.times(consumed));
-          lineCost = lineCost.plus(materialLineCost);
-          const current = byMaterial.get(rl.inputVariantId) ?? {
-            baseQuantity: 0,
-            unitCost: matCost.toFixed(2),
-            lineCost: money(0),
-          };
-          current.baseQuantity += consumed;
-          current.lineCost = current.lineCost.plus(materialLineCost);
-          byMaterial.set(rl.inputVariantId, current);
-        }
-        const exactLineCost = round2(lineCost);
+  // promotions v2: خرائط لتحقّق العرض بلا N+1.
+  const productIdByVariant = new Map<number, number>();
+  for (const r of variantRows) {
+    productIdByVariant.set(Number(r.id), 0); // سيُملأ لاحقاً
+  }
+  // نحتاج productId لكل متغيّر. نستعمل استعلام إضافي واحد.
+  let categoryByProduct = new Map<number, number | null>();
+  const linesNeedingPromo = input.lines.filter((l) => l.promotionId != null);
+  if (linesNeedingPromo.length) {
+    const productRows = await tx
+      .select({
+        variantId: productVariants.id,
+        productId: productVariants.productId,
+      })
+      .from(productVariants)
+      .where(
+        inArray(
+          productVariants.id,
+          Array.from(new Set(linesNeedingPromo.map((l) => l.variantId))),
+        ),
+      );
+    for (const pr of productRows)
+      productIdByVariant.set(Number(pr.variantId), Number(pr.productId));
+    const productIds = Array.from(
+      new Set(productRows.map((r) => Number(r.productId))),
+    );
+    categoryByProduct = await getProductCategoryIds(tx, productIds);
+  }
+  const computed = [];
+  // H6 (تدقيق ٢٧/٧): هل انحرف أيّ سطرٍ عن مرجعه بأكثر من العتبة؟ (خصمٌ/سعرٌ يدويّ فوق التكلفة يستوجب تفويضاً).
+  let manualDiscountGateTriggered = false;
+  // ومرجعُ **رأس** الفاتورة: مجموع (سعر المرجع × الكمية) للأسطر غير المُهداة. بوّابة السطر لا تراه،
+  // فخصمُ الرأس كان يفلت منها كلّياً (يُقصّ إلى [0, subtotal] وحسب) — وهو نصف H6 الثاني.
+  let referenceGrossTotal = money(0);
+  for (const l of input.lines) {
+    const v = variantById.get(l.variantId);
+    if (!v)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: `المتغيّر ${l.variantId} غير موجود`,
+      });
+    if (v.isActive !== true || v.productActive !== true) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `الصنف ${l.variantId} معطّل — لا يُباع`,
+      });
+    }
+
+    const { baseQuantity } = await convertToBaseQuantity(
+      tx,
+      l.productUnitId,
+      l.quantity,
+      l.variantId,
+    );
+    const contractPrice = contractPrices.get(l.productUnitId);
+    const hasOverride =
+      l.unitPriceOverride != null && l.unitPriceOverride !== "";
+    // المرجع للقياس (H6): عقد ← سعر القائمة (غير رامٍ) ← بلا مرجع. لا نُجبر وجود سعرٍ عند وجود override.
+    const listRef =
+      contractPrice != null
+        ? money(contractPrice)
+        : await tryGetUnitPrice(tx, l.productUnitId, tier);
+    const refUnit = listRef ?? money(0);
+    // السعر الفعليّ: override ← المرجع ← (بلا مرجعٍ ولا override) رميٌ محفوظ «عرّف السعر أولاً».
+    const unitPrice = hasOverride
+      ? money(l.unitPriceOverride!)
+      : (listRef ?? (await getUnitPrice(tx, l.productUnitId, tier)));
+    // bundles: تكلفة البكج محسوبة لحظياً من مجموع مكوّناته (لا `productVariants.costPrice`
+    // لأن البكج نفسه بلا WAVG — تكلفته صافي مجموع مكوّناته الحيّ لحظة البيع، قرار مالك ٧/٧).
+    const kind = kindByVariant.get(l.variantId) ?? "STOCKED";
+    // §١٠.٣ (البطاقات الرقمية): تكلفة مفروضة خادمياً تتقدّم على `costPrice` — تُملأ حصراً من
+    // نيّةٍ مقفولة في القاعدة (حصة المزوّد)، ولا يقبلها راوتر. راجع `SaleLineInput.unitCostOverride`.
+    // الخدمة: unitCost يُحسب من الوصفة (لقطة كلفة المواد لحظة البيع) — لا من `variants.costPrice`
+    // (الذي هو لقطة إدارية عرضية عند إنشاء الخدمة، يُحدَّث فقط بتعديل يدوي). المطابقة لمنطق
+    // printSaleService.ts: لكل مادةٍ في الوصفة نحسب الاستهلاك الدقيق لكامل السطر، نضربه
+    // بكلفتها، ثم unitCost = round2(Σ / baseQuantity). خدمةٌ
+    // بلا وصفة ⇒ unitCost=0 (متسّق مع سياسة النقطة النقدية القائمة).
+    const computeServiceCostSnapshot = () => {
+      const rlines = serviceRecipe.get(l.variantId);
+      if (!rlines || !rlines.length || baseQuantity <= 0) {
         return {
-          unitCost: round2(exactLineCost.div(baseQuantity)).toFixed(2),
-          lineCost: exactLineCost.toFixed(2),
-          materials: Array.from(byMaterial.entries())
-            .sort((a, b) => a[0] - b[0])
-            .map(([materialVariantId, value]) => ({
-              materialVariantId,
-              baseQuantity: value.baseQuantity,
-              unitCost: value.unitCost,
-              lineCost: round2(value.lineCost).toFixed(2),
-            })),
+          unitCost: "0.00",
+          lineCost: "0.00",
+          materials: [] as Array<{
+            materialVariantId: number;
+            baseQuantity: number;
+            unitCost: string;
+            lineCost: string;
+          }>,
         };
+      }
+      let lineCost = money(0);
+      const byMaterial = new Map<
+        number,
+        {
+          baseQuantity: number;
+          unitCost: string;
+          lineCost: ReturnType<typeof money>;
+        }
+      >();
+      for (const rl of rlines) {
+        const consumed = exactRecipeMaterialQuantity(
+          rl.qtyPerOutputBase,
+          baseQuantity,
+          `مادة الوصفة #${rl.inputVariantId}`,
+        );
+        const matCost = round2(
+          money(materialCostByVariant.get(rl.inputVariantId) ?? "0"),
+        );
+        const materialLineCost = round2(matCost.times(consumed));
+        lineCost = lineCost.plus(materialLineCost);
+        const current = byMaterial.get(rl.inputVariantId) ?? {
+          baseQuantity: 0,
+          unitCost: matCost.toFixed(2),
+          lineCost: money(0),
+        };
+        current.baseQuantity += consumed;
+        current.lineCost = current.lineCost.plus(materialLineCost);
+        byMaterial.set(rl.inputVariantId, current);
+      }
+      const exactLineCost = round2(lineCost);
+      return {
+        unitCost: round2(exactLineCost.div(baseQuantity)).toFixed(2),
+        lineCost: exactLineCost.toFixed(2),
+        materials: Array.from(byMaterial.entries())
+          .sort((a, b) => a[0] - b[0])
+          .map(([materialVariantId, value]) => ({
+            materialVariantId,
+            baseQuantity: value.baseQuantity,
+            unitCost: value.unitCost,
+            lineCost: round2(value.lineCost).toFixed(2),
+          })),
       };
-      const serviceCost = kind === "SERVICE" ? computeServiceCostSnapshot() : null;
-      const unitCost = l.unitCostOverride != null
+    };
+    const serviceCost =
+      kind === "SERVICE" ? computeServiceCostSnapshot() : null;
+    const unitCost =
+      l.unitCostOverride != null
         ? snapshotUnitCost(l.unitCostOverride)
         : kind === "BUNDLE"
           ? snapshotUnitCost(bundleUnitCosts.get(l.variantId) ?? "0")
           : kind === "SERVICE"
             ? serviceCost!.unitCost
             : snapshotUnitCost(v.costPrice);
-      // البطاقة الرقمية منتج SERVICE بلا وصفة عادةً، لكن تكلفتها ليست صفراً: حصة المزوّد
-      // الموثقة في النيّة (`unitCostOverride`) تتقدّم على لقطة الوصفة في unitCost **وlineCost**.
-      const lineCost = l.unitCostOverride != null
+    // البطاقة الرقمية منتج SERVICE بلا وصفة عادةً، لكن تكلفتها ليست صفراً: حصة المزوّد
+    // الموثقة في النيّة (`unitCostOverride`) تتقدّم على لقطة الوصفة في unitCost **وlineCost**.
+    const lineCost =
+      l.unitCostOverride != null
         ? round2(money(unitCost).times(baseQuantity)).toFixed(2)
         : kind === "SERVICE"
           ? serviceCost!.lineCost
           : round2(money(unitCost).times(baseQuantity)).toFixed(2);
-      // هدايا الفاتورة (0149): السطر المُهدى مجّانيّ **بقرار خادميّ** — لا نثق بسعرٍ/خصمٍ وارد من
-      // الشاشة. السعر صفر والخصم صفر (خصمٌ على مجّانٍ لا معنى له، وحسابُه يفتح باب خصمٍ سالب)،
-      // بينما `unitCost` أعلاه يبقى لقطة WAVG الحقيقية — هي أساس مصروف الهدية في قيد GIFT_OUT.
-      const isGift = l.isGift === true;
-      const lineRes = isGift
-        ? computeLineTotal({ unitPrice: money(0), quantity: money(l.quantity) })
-        : computeLineTotal({
-            unitPrice,
-            quantity: money(l.quantity),
-            discountPercent: l.discountPercent,
-            discountAmount: l.discountAmount,
-          });
-      // H6: انحراف صافي السطر عن مرجعه لأسفل بأكثر من العتبة ⇒ يستوجب تفويض مدير (يُفرَض بعد الحلقة).
-      // الهدية مُستثناة: مجّانيّتها **مقصودة ومصنَّفة** (قيد GIFT_OUT + بوّابة عتبة الهدايا أدناه)،
-      // لا انحرافُ تسعيرٍ مستتر — وإلّا لَطالبت كلُّ هديةٍ بتفويضٍ بحجّة «خصم ١٠٠٪».
-      if (!isGift && lineDiscountExceedsThreshold(refUnit, money(l.quantity), lineRes.total)) manualDiscountGateTriggered = true;
-      if (!isGift) referenceGrossTotal = referenceGrossTotal.plus(refUnit.times(money(l.quantity)));
+    // هدايا الفاتورة (0149): السطر المُهدى مجّانيّ **بقرار خادميّ** — لا نثق بسعرٍ/خصمٍ وارد من
+    // الشاشة. السعر صفر والخصم صفر (خصمٌ على مجّانٍ لا معنى له، وحسابُه يفتح باب خصمٍ سالب)،
+    // بينما `unitCost` أعلاه يبقى لقطة WAVG الحقيقية — هي أساس مصروف الهدية في قيد GIFT_OUT.
+    const isGift = l.isGift === true;
+    const lineRes = isGift
+      ? computeLineTotal({ unitPrice: money(0), quantity: money(l.quantity) })
+      : computeLineTotal({
+          unitPrice,
+          quantity: money(l.quantity),
+          discountPercent: l.discountPercent,
+          discountAmount: l.discountAmount,
+        });
+    // H6: انحراف صافي السطر عن مرجعه لأسفل بأكثر من العتبة ⇒ يستوجب تفويض مدير (يُفرَض بعد الحلقة).
+    // الهدية مُستثناة: مجّانيّتها **مقصودة ومصنَّفة** (قيد GIFT_OUT + بوّابة عتبة الهدايا أدناه)،
+    // لا انحرافُ تسعيرٍ مستتر — وإلّا لَطالبت كلُّ هديةٍ بتفويضٍ بحجّة «خصم ١٠٠٪».
+    if (
+      !isGift &&
+      lineDiscountExceedsThreshold(refUnit, money(l.quantity), lineRes.total)
+    )
+      manualDiscountGateTriggered = true;
+    if (!isGift)
+      referenceGrossTotal = referenceGrossTotal.plus(
+        refUnit.times(money(l.quantity)),
+      );
 
-      // promotions v2 (idempotent verification): إن مرّر POS `promotionId`، نُعيد الحلّ خادمياً
-      // ونتحقّق أن `expectedPromoDiscount = discountForUnit × qty` يتّسق مع `discountAmount` (± 1 IQD).
-      // إن اتّسق ⇒ نخزّن promotionId + promotionDiscount على invoiceItem. إن اختلف (تغيّر العرض بين
-      // العرض والحفظ) ⇒ نعامل الخصم كيدوي بلا رفض — يحمي البيع من فشل بسبب تعديل عرض بين وقتين.
-      let recordedPromotionId: number | null = null;
-      let recordedPromoDiscount = "0.00";
-      // الهدية خارج العروض: خصمها صفر (السعر صفر أصلاً) فلا عرضَ يُثبَّت عليها.
-      if (l.promotionId != null && kind !== "BUNDLE" && !isGift) {
-        const productId = productIdByVariant.get(l.variantId);
-        if (productId != null && productId > 0) {
-          const categoryId = categoryByProduct.get(productId) ?? null;
-          const resolveInput = {
-            branchId: input.branchId,
-            customerTier: tier,
-            productId,
-            variantId: l.variantId,
-            categoryId,
-            unitPrice: unitPrice.toFixed(2),
-            lineAmount: unitPrice.mul(money(l.quantity)).toFixed(2),
-            hasContractPrice: contractPrice != null,
-            todayYmd,
-          };
-          const isCouponPromotion = !!lockedCoupon && Number(l.promotionId) === lockedCoupon.promotionId;
-          const resolved: ResolvedPromotion | null = isCouponPromotion
-            ? await resolveCouponPromotionForLine(tx, lockedCoupon.promotionId, resolveInput)
-            : await resolvePromotionForLine(tx, resolveInput);
-          if (resolved && Number(resolved.promotionId) === Number(l.promotionId)) {
-            const expected = money(resolved.discountForUnit).mul(money(l.quantity));
-            const actual = money(lineRes.discountAmount);
-            // IQD في POS يُعرض كعدد صحيح لكل وحدة. فرق التقريب المشروع أقصاه دينار واحد لكل وحدة؛
-            // للكوبون نسجل الخصم المعروض فعلياً (كي يطابق الإجمالي المقبوض)، وللتلقائي نبقي السلوك القديم.
-            const tolerance = isCouponPromotion ? money(l.quantity) : money(1);
-            if (actual.minus(expected).abs().lte(tolerance)) {
-              recordedPromotionId = Number(l.promotionId);
-              recordedPromoDiscount = isCouponPromotion ? actual.toFixed(2) : expected.toFixed(2);
-            }
+    // promotions v2 (idempotent verification): إن مرّر POS `promotionId`، نُعيد الحلّ خادمياً
+    // ونتحقّق أن `expectedPromoDiscount = discountForUnit × qty` يتّسق مع `discountAmount` (± 1 IQD).
+    // إن اتّسق ⇒ نخزّن promotionId + promotionDiscount على invoiceItem. إن اختلف (تغيّر العرض بين
+    // العرض والحفظ) ⇒ نعامل الخصم كيدوي بلا رفض — يحمي البيع من فشل بسبب تعديل عرض بين وقتين.
+    let recordedPromotionId: number | null = null;
+    let recordedPromoDiscount = "0.00";
+    // الهدية خارج العروض: خصمها صفر (السعر صفر أصلاً) فلا عرضَ يُثبَّت عليها.
+    if (l.promotionId != null && kind !== "BUNDLE" && !isGift) {
+      const productId = productIdByVariant.get(l.variantId);
+      if (productId != null && productId > 0) {
+        const categoryId = categoryByProduct.get(productId) ?? null;
+        const resolveInput = {
+          branchId: input.branchId,
+          customerTier: tier,
+          productId,
+          variantId: l.variantId,
+          categoryId,
+          unitPrice: unitPrice.toFixed(2),
+          lineAmount: unitPrice.mul(money(l.quantity)).toFixed(2),
+          hasContractPrice: contractPrice != null,
+          todayYmd,
+        };
+        const isCouponPromotion =
+          !!lockedCoupon && Number(l.promotionId) === lockedCoupon.promotionId;
+        const resolved: ResolvedPromotion | null = isCouponPromotion
+          ? await resolveCouponPromotionForLine(
+              tx,
+              lockedCoupon.promotionId,
+              resolveInput,
+            )
+          : await resolvePromotionForLine(tx, resolveInput);
+        if (
+          resolved &&
+          Number(resolved.promotionId) === Number(l.promotionId)
+        ) {
+          const expected = money(resolved.discountForUnit).mul(
+            money(l.quantity),
+          );
+          const actual = money(lineRes.discountAmount);
+          // IQD في POS يُعرض كعدد صحيح لكل وحدة. فرق التقريب المشروع أقصاه دينار واحد لكل وحدة؛
+          // للكوبون نسجل الخصم المعروض فعلياً (كي يطابق الإجمالي المقبوض)، وللتلقائي نبقي السلوك القديم.
+          const tolerance = isCouponPromotion ? money(l.quantity) : money(1);
+          if (actual.minus(expected).abs().lte(tolerance)) {
+            recordedPromotionId = Number(l.promotionId);
+            recordedPromoDiscount = isCouponPromotion
+              ? actual.toFixed(2)
+              : expected.toFixed(2);
           }
         }
       }
-
-      computed.push({
-        variantId: l.variantId,
-        productUnitId: l.productUnitId,
-        baseQuantity,
-        unitPrice: lineRes.unitPrice,
-        unitCost,
-        lineCost,
-        serviceMaterials: serviceCost?.materials ?? [],
-        quantity: lineRes.quantity,
-        discountAmount: lineRes.discountAmount,
-        total: lineRes.total,
-        kind,
-        isGift,
-        promotionId: recordedPromotionId,
-        promotionDiscount: recordedPromoDiscount,
-        internalLineToken: l.internalLineToken?.trim() || null,
-        invoiceName: titleForChannel({ name: v.productName, invoiceLabel: v.invoiceLabel, shortTitle: v.shortTitle }, "invoice"),
-      });
     }
 
-    const couponDiscount = lockedCoupon
-      ? computed
-          .filter((line) => line.promotionId === lockedCoupon.promotionId)
-          .reduce((sum, line) => sum.plus(money(line.promotionDiscount)), money(0))
-      : money(0);
-    if (lockedCoupon && couponDiscount.lte(0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون صالح لكنه لا ينطبق على أصناف الفاتورة" });
-    }
-
-    // 5. Deterministic lock order: sort by variantId ascending.
-    computed.sort((a, b) => a.variantId - b.variantId);
-
-    // 6. Totals + COGS.
-    const totals = computeInvoiceTotals({
-      lineTotals: computed.map((c) => c.total),
-      invoiceDiscount: input.invoiceDiscount,
-      taxRatePercent: input.taxRatePercent,
-      deliveryFee: input.deliveryFee,
+    computed.push({
+      variantId: l.variantId,
+      productUnitId: l.productUnitId,
+      baseQuantity,
+      unitPrice: lineRes.unitPrice,
+      unitCost,
+      lineCost,
+      serviceMaterials: serviceCost?.materials ?? [],
+      quantity: lineRes.quantity,
+      discountAmount: lineRes.discountAmount,
+      total: lineRes.total,
+      kind,
+      isGift,
+      promotionId: recordedPromotionId,
+      promotionDiscount: recordedPromoDiscount,
+      internalLineToken: l.internalLineToken?.trim() || null,
+      invoiceName: titleForChannel(
+        {
+          name: v.productName,
+          invoiceLabel: v.invoiceLabel,
+          shortTitle: v.shortTitle,
+        },
+        "invoice",
+      ),
     });
-    // هدايا الفاتورة (0149): فصلُ وعاءين. `costTotal` (⇐ `invoices.costTotal` وقيد SALE) يبقى
-    // **تكلفة البنود المدفوعة وحدها** — فالثابت القائم «SALE.cost = invoices.costTotal» يظلّ سارياً
-    // ويظلّ كلُّ قارئٍ قائمٍ صحيحاً بلا مساس (COALESCE(ic.cost, i.costTotal) في تقارير المبيعات،
-    // عكس التكلفة الكامل في مرتجع التوصيل، تحليل ربحية أوامر الشغل). وتكلفة الهدايا تُرحَّل وحدها
-    // في قيد GIFT_OUT (§١١.ب) مصروفَ هدايا وترويج — الاعتراف بها مرّةً واحدةً لا مرّتين.
-    const paidLines = computed.filter((c) => !c.isGift);
-    const giftLines = computed.filter((c) => c.isGift);
-    const costTotal = computeInvoiceCost(paidLines);
-    const giftCost = computeInvoiceCost(giftLines);
+  }
 
-    // إفصاح التوصيل المجّاني (0152): «مجّانيّ» = أجرةٌ صفر حتماً. الحسم خادميّ لا من الشاشة:
-    // عَلَمٌ مع أجرةٍ موجبة تناقضٌ (فاتورةٌ تقول «مجاناً» وتقبض) ⇒ الأجرة تُغلِّب والعَلَم يسقط.
-    // القيمة المُتنازَل عنها إفصاحيّة بحتة: تُعرَض للزبون وتُحصى في التقارير ولا تدخل إيراداً
-    // ولا قيداً — الإيراد يبقى `deliveryFee` وحده (صفرٌ في هذه الحالة).
-    const deliveryFeeD = round2(money(input.deliveryFee ?? "0"));
-    const isFreeDelivery = input.deliveryFree === true && deliveryFeeD.lte(0);
-    const waivedDelivery = round2(money(input.deliveryWaivedAmount ?? "0"));
-    if (waivedDelivery.lt(0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "قيمة التوصيل المُتنازَل عنها لا تصحّ أن تكون سالبة" });
-    }
-    // قرار المالك (٦/٨/٢٦): **القيمة إلزامية عند تفعيل «مجاني»**. كانت اختيارية فتُخزَّن صفراً،
-    // فتضيع فائدة القياس («كم أهديتُ توصيلاً وبكم؟») على تلك الفواتير وتُطبَع «مجاناً» بلا مقدار.
-    // الإلزام هنا لا في الشاشة وحدها: الشاشة تُرشِد، والخادم يمنع — فلا تتسرّب فاتورةٌ ناقصة
-    // الإفصاح من أيّ قناة (استيراد/أوفلاين/تكامل مستقبليّ).
-    if (isFreeDelivery && waivedDelivery.lte(0)) {
+  const couponDiscount = lockedCoupon
+    ? computed
+        .filter((line) => line.promotionId === lockedCoupon.promotionId)
+        .reduce(
+          (sum, line) => sum.plus(money(line.promotionDiscount)),
+          money(0),
+        )
+    : money(0);
+  if (lockedCoupon && couponDiscount.lte(0)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "الكوبون صالح لكنه لا ينطبق على أصناف الفاتورة",
+    });
+  }
+
+  // 5. Deterministic lock order: sort by variantId ascending.
+  computed.sort((a, b) => a.variantId - b.variantId);
+
+  // 6. Totals + COGS.
+  const totals = computeInvoiceTotals({
+    lineTotals: computed.map((c) => c.total),
+    invoiceDiscount: input.invoiceDiscount,
+    taxRatePercent: input.taxRatePercent,
+    deliveryFee: input.deliveryFee,
+  });
+  // هدايا الفاتورة (0149): فصلُ وعاءين. `costTotal` (⇐ `invoices.costTotal` وقيد SALE) يبقى
+  // **تكلفة البنود المدفوعة وحدها** — فالثابت القائم «SALE.cost = invoices.costTotal» يظلّ سارياً
+  // ويظلّ كلُّ قارئٍ قائمٍ صحيحاً بلا مساس (COALESCE(ic.cost, i.costTotal) في تقارير المبيعات،
+  // عكس التكلفة الكامل في مرتجع التوصيل، تحليل ربحية أوامر الشغل). وتكلفة الهدايا تُرحَّل وحدها
+  // في قيد GIFT_OUT (§١١.ب) مصروفَ هدايا وترويج — الاعتراف بها مرّةً واحدةً لا مرّتين.
+  const paidLines = computed.filter((c) => !c.isGift);
+  const giftLines = computed.filter((c) => c.isGift);
+  const costTotal = computeInvoiceCost(paidLines);
+  const giftCost = computeInvoiceCost(giftLines);
+
+  // إفصاح التوصيل المجّاني (0152): «مجّانيّ» = أجرةٌ صفر حتماً. الحسم خادميّ لا من الشاشة:
+  // عَلَمٌ مع أجرةٍ موجبة تناقضٌ (فاتورةٌ تقول «مجاناً» وتقبض) ⇒ الأجرة تُغلِّب والعَلَم يسقط.
+  // القيمة المُتنازَل عنها إفصاحيّة بحتة: تُعرَض للزبون وتُحصى في التقارير ولا تدخل إيراداً
+  // ولا قيداً — الإيراد يبقى `deliveryFee` وحده (صفرٌ في هذه الحالة).
+  const deliveryFeeD = round2(money(input.deliveryFee ?? "0"));
+  const isFreeDelivery = input.deliveryFree === true && deliveryFeeD.lte(0);
+  const waivedDelivery = round2(money(input.deliveryWaivedAmount ?? "0"));
+  if (waivedDelivery.lt(0)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "قيمة التوصيل المُتنازَل عنها لا تصحّ أن تكون سالبة",
+    });
+  }
+  // قرار المالك (٦/٨/٢٦): **القيمة إلزامية عند تفعيل «مجاني»**. كانت اختيارية فتُخزَّن صفراً،
+  // فتضيع فائدة القياس («كم أهديتُ توصيلاً وبكم؟») على تلك الفواتير وتُطبَع «مجاناً» بلا مقدار.
+  // الإلزام هنا لا في الشاشة وحدها: الشاشة تُرشِد، والخادم يمنع — فلا تتسرّب فاتورةٌ ناقصة
+  // الإفصاح من أيّ قناة (استيراد/أوفلاين/تكامل مستقبليّ).
+  if (isFreeDelivery && waivedDelivery.lte(0)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        "أدخِل قيمة أجرة التوصيل قبل جعله مجّانياً — تُطبَع للزبون وتُحصى في التقارير",
+    });
+  }
+
+  // 6.b SALES-01/02 — بوّابة البيع بأقل من التكلفة (سدّ حرج: كاشير يبيع بسعر/خصم صفر).
+  //     المنطق مشترك في billing.isInvoiceBelowCost ⇒ لا تَنجرف سياسة POS عن قناة الطباعة.
+  //     أيُّ بند/فاتورة تحت COGS يَلزمه موافقة مدير (الراوتر يَمنح المدير/الأدمن السلطة ذاتياً).
+  //     تُفحَص **البنود المدفوعة** وحدها مقابل `costTotal` (وهو تكلفتها وحدها) — سطر الهدية
+  //     مجّانيّ عمداً وتكلفته خارج هذا الوعاء، فإقحامه هنا يجعل كلّ فاتورةٍ فيها هديةٌ «تحت
+  //     التكلفة» زوراً. حوكمتُه بوّابةُ عتبة الهدايا أدناه لا هذه.
+  const belowCost = isInvoiceBelowCost(
+    paidLines,
+    totals.subtotal,
+    totals.discountAmount,
+    costTotal,
+  );
+  // حارس شذوذ التكلفة الكارثي (كشف إدخال تكلفة الوجبة ككلفة للقطعة):
+  // إذا كان السطر غير مهدى، وتجاوزت التكلفة المحتسبة للسطر إيراده بأكثر من ٥ أضعاف
+  // وكان فارق الخسارة على السطر يتجاوز ٥٠٠,٠٠٠ د.ع ⇒ رفض قاطع لحماية الدفتر المالي من الأخطاء الكارثية.
+  for (const l of paidLines) {
+    const lineCost = money(l.unitCost).times(l.baseQuantity);
+    const lineTotal = money(l.total);
+    if (
+      lineCost.gt(lineTotal.times(5)) &&
+      lineCost.minus(lineTotal).gt(500_000)
+    ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "أدخِل قيمة أجرة التوصيل قبل جعله مجّانياً — تُطبَع للزبون وتُحصى في التقارير",
+        message: appErrorMessage({
+          what: `تعذّر إتمام البيع بسبب شذوذ في تكلفة البند «${l.invoiceName ?? l.variantId}»`,
+          why: `التكلفة المحتسبة للسطر (${lineCost.toFixed(2)} د.ع) تفوق سعر البيع (${lineTotal.toFixed(2)} د.ع) بأكثر من ٥ أضعاف وبفارق خسارة يتجاوز ٥٠٠ ألف دينار`,
+          doThis:
+            "تحقّق من كلفة الوحدة في بطاقة الصنف أو قسّم تكلفة الوجبة على عدد القطع قبل حفظ الفاتورة لمنع تشويه الدفتر المالي",
+        }),
       });
     }
+  }
+  // H6/H7: بوّابة الخصم اليدويّ فوق التكلفة — تُفرَض على قناة POS الحيّة فقط، لا على إعادة تشغيل
+  // الأوفلاين (offlineCapture): بيعٌ اكتمل والتقاطُه لا يُعاد حظره — يُوسَم للمراجعة لا غير. المرتفعون
+  // والقنوات المُقِرّة سلفاً (بث/عرض سعر) يمرّون عبر priceOverrideApproved كما في بوّابة تحت-التكلفة.
+  // خصمُ الرأس يُقاس على الصافي (المجموع − خصم الفاتورة) مقابل المرجع الإجماليّ — بلا ضريبةٍ ولا
+  // أجرة توصيل (كلتاهما ليست تنازلاً سعرياً). فاتورةٌ بأسطرٍ بسعر القائمة وخصمِ رأسٍ ٤٠٪ تُمسَك هنا.
+  const invoiceNet = money(totals.subtotal).minus(money(totals.discountAmount));
+  const headDiscountGate = invoiceDiscountExceedsThreshold(
+    referenceGrossTotal,
+    invoiceNet,
+  );
+  if (headDiscountGate) manualDiscountGateTriggered = true;
+  const manualGate = manualDiscountGateTriggered && !input.offlineCapture;
+  // بعد إصدار كرت خارجي لا يجوز أن يحوّل تغيّر WAVG/مرجع السعر بين prepare وfinalize
+  // العملية إلى كرتٍ صادر بلا فاتورة. DIGITAL_SALE_CAPABILITY تعني أن الشروط التجارية
+  // اجتازت بوابة النيّة قبل الفعل الخارجي؛ وهي Symbol داخلية لا يستطيع راوتر/عميل تصنيعها.
+  const digitalIntentPreflight = capability === DIGITAL_SALE_CAPABILITY;
+  if (
+    (belowCost || manualGate) &&
+    !input.priceOverrideApproved &&
+    !digitalIntentPreflight
+  ) {
+    const reason = belowCost
+      ? "بيع بأقل من التكلفة"
+      : headDiscountGate
+        ? `خصم الفاتورة يتجاوز ${Math.round(MANUAL_DISCOUNT_APPROVAL_THRESHOLD * 100)}٪ عن مرجعها`
+        : `خصمٌ يتجاوز ${Math.round(MANUAL_DISCOUNT_APPROVAL_THRESHOLD * 100)}٪ عن السعر المرجعيّ`;
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `${reason} يتطلب موافقة مدير.`,
+    });
+  }
 
-    // 6.b SALES-01/02 — بوّابة البيع بأقل من التكلفة (سدّ حرج: كاشير يبيع بسعر/خصم صفر).
-    //     المنطق مشترك في billing.isInvoiceBelowCost ⇒ لا تَنجرف سياسة POS عن قناة الطباعة.
-    //     أيُّ بند/فاتورة تحت COGS يَلزمه موافقة مدير (الراوتر يَمنح المدير/الأدمن السلطة ذاتياً).
-    //     تُفحَص **البنود المدفوعة** وحدها مقابل `costTotal` (وهو تكلفتها وحدها) — سطر الهدية
-    //     مجّانيّ عمداً وتكلفته خارج هذا الوعاء، فإقحامه هنا يجعل كلّ فاتورةٍ فيها هديةٌ «تحت
-    //     التكلفة» زوراً. حوكمتُه بوّابةُ عتبة الهدايا أدناه لا هذه.
-    const belowCost = isInvoiceBelowCost(paidLines, totals.subtotal, totals.discountAmount, costTotal);
-    // حارس شذوذ التكلفة الكارثي (كشف إدخال تكلفة الوجبة ككلفة للقطعة):
-    // إذا كان السطر غير مهدى، وتجاوزت التكلفة المحتسبة للسطر إيراده بأكثر من ٥ أضعاف
-    // وكان فارق الخسارة على السطر يتجاوز ٥٠٠,٠٠٠ د.ع ⇒ رفض قاطع لحماية الدفتر المالي من الأخطاء الكارثية.
-    for (const l of paidLines) {
-      const lineCost = money(l.unitCost).times(l.baseQuantity);
-      const lineTotal = money(l.total);
-      if (lineCost.gt(lineTotal.times(5)) && lineCost.minus(lineTotal).gt(500_000)) {
+  // 6.ج حوكمة الهدايا داخل الفاتورة: تُستعار عتبةُ سند الهدية المستقلّ نفسها
+  //     (`GIFT_APPROVAL_THRESHOLD`) فلا تصير الفاتورة باباً خلفياً يلتفّ على حوكمة وحدة الهدايا
+  //     (إهداءٌ بلا سقف من شاشة البيع). المعيار **تكلفةُ** الهدية لا سعرُها (السعر صفر دائماً).
+  //     تحت العتبة يمرّ الكاشير مباشرةً؛ فوقها يفتح حوارُ اعتماد المدير نفسه (priceOverrideApproved).
+  const giftCostD = money(giftCost);
+  if (
+    giftCostD.gt(money(GIFT_APPROVAL_THRESHOLD)) &&
+    !input.priceOverrideApproved &&
+    !digitalIntentPreflight
+  ) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `تكلفة الهدايا في هذه الفاتورة (${giftCostD.toFixed(2)}) تتجاوز حدّ الإهداء بلا تفويض (${money(GIFT_APPROVAL_THRESHOLD).toFixed(2)} د.ع) — يتطلب موافقة مدير.`,
+    });
+  }
+
+  // 7. تقريب نقدي IQD للبيع النقدي الكامل: يُقرَّب الإجمالي لفئة 250، فالنقد المستلم = الإجمالي المقرّب
+  //    (لا فائض/عجز وهمي عند الرفع، ولا رفض بيع نقدي عند الخفض). الفرق يُسجَّل قيد ADJUST لاحقاً.
+  const roundCash = !!input.cashRoundIQD && input.payment?.method === "CASH";
+  const grandTotalD = money(totals.total);
+  // ش٦ — تقريب السلّة المختلطة: هذه الفاتورة تحمل فرق تقريب السلّة كلّها (checkoutReception
+  // يضبطه حصراً). مراجعة PR #495: الفرق **يُشتقّ خادمياً** من إجماليّ الأسطر المحسوب هنا
+  // ومجموعِ بقيّة السلّة كما حسبه الخادم — لا مبلغَ من العميل (كان يُقبل أيّ رقمٍ ضمن ٢٤٩
+  // ديناراً = خصمٌ غير معتمد يتخطّى بوّابتَي «تحت التكلفة» و«الخصم اليدويّ»).
+  let overrideD: ReturnType<typeof money> | null = null;
+  if (
+    input.cashRoundingBasketOthers != null &&
+    input.payment?.method === "CASH"
+  ) {
+    const basketRawD = round2(
+      grandTotalD.plus(money(input.cashRoundingBasketOthers)),
+    );
+    const deltaD = roundCashIQD(basketRawD).minus(basketRawD); // |الفرق| ≤ ١٢٥ حتماً
+    const cand = round2(grandTotalD.plus(deltaD));
+    if (cand.gt(0)) overrideD = cand;
+  }
+  const effectiveTotalD =
+    overrideD ?? (roundCash ? roundCashIQD(grandTotalD) : grandTotalD);
+  const cashRoundingAdj = effectiveTotalD.minus(grandTotalD); // ± (صفر إن لا تقريب)
+  const tendered = money(input.payment?.amount ?? "0");
+  // ش٤ (§٧.٢): المقبوض سلفاً (عرابين المسوّدة) يدخل الحساب **قبل** حرّاس الآجل/الائتمان —
+  // هذا هو الترتيب الحاسم: لولاه لرُفض زبونٌ عابر سدّد عربوناً كاملاً بحجّة «البيع الآجل
+  // يتطلب عميلاً» بينما ماله محبوسٌ في receipts (الحاصرة ١.١).
+  const preCollectedD = round2(money(input.preCollected?.amount ?? "0"));
+  // تصحيح الفاتورة (0168): allowPreCollectedOverpay يرفع هذا الحارس فقط (يضبطه correctSale داخلياً)
+  // — overpay-down يقصُر paidNow على الإجمالي (سطر أدناه) والفائض يُردّ/يُرصَّد خارجياً بعد الترحيل.
+  if (!input.allowPreCollectedOverpay && preCollectedD.gt(effectiveTotalD)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `المقبوض سلفاً (${preCollectedD.toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}) — خلل توزيع، راجع الطلب المحفوظ.`,
+    });
+  }
+  // SALES-05 (تدقيق ٢/٧): كان paidNow يُفرَض = الإجمالي المقرّب عند roundCash متجاهلاً المبلغ
+  // المُسلَّم ⇒ بيع آجل جزئي بعلم cashRoundIQD=true يُسجَّل «مدفوعاً بالكامل» فتُمحى ذمة العميل
+  // (والنقد الوهمي يظهر عجزاً بدرج الكاشير). الآن: التقريب يطبَّق على الإجمالي دائماً، لكن نعامل
+  // البيع كمدفوعٍ بالكامل (paidNow = الإجمالي المقرّب) فقط إذا كان المُسلَّم يغطّي الإجمالي فعلاً؛
+  // وإلا فهي دفعة جزئية ⇒ paidNow = المُسلَّم بالضبط والباقي ذمّة على العميل.
+  // تصحيح الفاتورة (0168): allowPreCollectedOverpay يرفع هذا الحارس الثاني أيضاً — overpay-down
+  // بلا دفعةٍ جديدة (method=undefined≠CASH) كان يُرمى هنا؛ paidNow يُقصَر على الإجمالي أدناه
+  // والفائض يُردّ/يُرصَّد في correctSale.
+  if (
+    !input.allowPreCollectedOverpay &&
+    input.payment?.method !== "CASH" &&
+    preCollectedD.plus(tendered).gt(effectiveTotalD)
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `المبلغ المدفوع (${preCollectedD.plus(tendered).toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}).`,
+    });
+  }
+  // الزيادة النقدية هي باقي للعميل، لا paidAmount ولا receipt ولا نقداً باقياً في الدرج.
+  // paidNow = إجمالي المسدَّد على الفاتورة (سلفاً + الآن)؛ الإيصال الجديد للجزء الجديد وحده.
+  const totalTenderedD = preCollectedD.plus(tendered);
+  const paidNow = totalTenderedD.gt(effectiveTotalD)
+    ? effectiveTotalD
+    : totalTenderedD;
+  const newMoneyD = round2(paidNow.minus(preCollectedD));
+  const unpaid = effectiveTotalD.minus(paidNow);
+  // ش٧ (قرار المالك ٦/٨): متبقّي فاتورة التوصيل COD ليس بيعاً آجلاً على زبونٍ عابر — إنّه
+  // **عهدةٌ على المندوب** تُرفع في نفس المعاملة (dispatchInvoiceInTx). الاستثناء محصورٌ
+  // بالعلم الداخليّ الذي ترفعه الخدمةُ المُسنِدة وحدها؛ حدّ ائتمان العميل المسجَّل يبقى نافذاً.
+  if (unpaid.gt(0) && !input.customerId && !input.codDispatchPending) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "البيع الآجل يتطلب عميلاً محدداً",
+    });
+  }
+  // 7.b فحص حدّ الائتمان (H4): null=بلا حدّ، 0=حظر آجل، >0=فحص الإسقاط.
+  //     B5 (١٩/٦/٢٦): الموافقة لم تعد blanket — تحتاج إمّا (أ) creditApprovalId جاهز، أو (ب) managerOverrideByUserId
+  //     يكون الـrouter قد وثّق هويته. الخدمة في حالة (ب) تُنشئ approval ذرّياً داخل نفس withTx.
+  let effectiveApprovalId = input.creditApprovalId;
+  // وضع الافتتاح — إعفاء حاجز الائتمان (قرار المالك ١٠/٨): أثناء النافذة الفعّالة تُعفى قنوات
+  // الاستقبال/التنفيذ من فحص السقف/الموافقة. الدَّين يُرحَّل ذمّةً كاملة على العميل (AR) لكنه لا
+  // يُرفض — يُرخَّى الحاجز لا التسجيل. مؤقّتٌ وينتهي بانتهاء النافذة (البيع الآجل يظلّ يتطلّب عميلاً).
+  const receptionDeferredWaiver =
+    unpaid.gt(0) &&
+    !!input.customerId &&
+    input.receptionDeferredAuthorized === true;
+  const openingCreditWaiver =
+    unpaid.gt(0) &&
+    !!input.customerId &&
+    !input.allowNegativeStock &&
+    input.codDispatchPending !== true && // COD يبقى محكوماً بحدّ ائتمان العميل المسجَّل (main).
+    OPENING_RECEPTION_CHANNELS.has(input.sourceType ?? "POS") &&
+    (await readOpeningWindowState(tx)).active;
+  if (receptionDeferredWaiver) {
+    logger.info(
+      {
+        customerId: input.customerId,
+        unpaid: unpaid.toFixed(2),
+        sourceType: input.sourceType,
+      },
+      "sale: بيع استقبال بدون عربون — تفويض هوية العميل محقق داخل checkoutReception",
+    );
+  } else if (openingCreditWaiver) {
+    logger.info(
+      {
+        customerId: input.customerId,
+        unpaid: unpaid.toFixed(2),
+        sourceType: input.sourceType ?? "POS",
+      },
+      "sale: إعفاء حدّ الائتمان أثناء وضع الافتتاح — الذمّة تُرحَّل على العميل كاملةً",
+    );
+  } else if (unpaid.gt(0) && input.customerId) {
+    if (input.creditApproved) {
+      if (!input.creditApprovalId && !input.managerOverrideByUserId) {
         throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: appErrorMessage({
-            what: `تعذّر إتمام البيع بسبب شذوذ في تكلفة البند «${l.invoiceName ?? l.variantId}»`,
-            why: `التكلفة المحتسبة للسطر (${lineCost.toFixed(2)} د.ع) تفوق سعر البيع (${lineTotal.toFixed(2)} د.ع) بأكثر من ٥ أضعاف وبفارق خسارة يتجاوز ٥٠٠ ألف دينار`,
-            doThis: "تحقّق من كلفة الوحدة في بطاقة الصنف أو قسّم تكلفة الوجبة على عدد القطع قبل حفظ الفاتورة لمنع تشويه الدفتر المالي",
-          }),
+          code: "FORBIDDEN",
+          message:
+            "تجاوز السقف يحتاج موافقة مُسجَّلة (creditApprovalId) أو هوية مدير مُتحقَّق منها — لا تُقبل موافقة بلا سقف.",
         });
       }
-    }
-    // H6/H7: بوّابة الخصم اليدويّ فوق التكلفة — تُفرَض على قناة POS الحيّة فقط، لا على إعادة تشغيل
-    // الأوفلاين (offlineCapture): بيعٌ اكتمل والتقاطُه لا يُعاد حظره — يُوسَم للمراجعة لا غير. المرتفعون
-    // والقنوات المُقِرّة سلفاً (بث/عرض سعر) يمرّون عبر priceOverrideApproved كما في بوّابة تحت-التكلفة.
-    // خصمُ الرأس يُقاس على الصافي (المجموع − خصم الفاتورة) مقابل المرجع الإجماليّ — بلا ضريبةٍ ولا
-    // أجرة توصيل (كلتاهما ليست تنازلاً سعرياً). فاتورةٌ بأسطرٍ بسعر القائمة وخصمِ رأسٍ ٤٠٪ تُمسَك هنا.
-    const invoiceNet = money(totals.subtotal).minus(money(totals.discountAmount));
-    const headDiscountGate = invoiceDiscountExceedsThreshold(referenceGrossTotal, invoiceNet);
-    if (headDiscountGate) manualDiscountGateTriggered = true;
-    const manualGate = manualDiscountGateTriggered && !input.offlineCapture;
-    // بعد إصدار كرت خارجي لا يجوز أن يحوّل تغيّر WAVG/مرجع السعر بين prepare وfinalize
-    // العملية إلى كرتٍ صادر بلا فاتورة. DIGITAL_SALE_CAPABILITY تعني أن الشروط التجارية
-    // اجتازت بوابة النيّة قبل الفعل الخارجي؛ وهي Symbol داخلية لا يستطيع راوتر/عميل تصنيعها.
-    const digitalIntentPreflight = capability === DIGITAL_SALE_CAPABILITY;
-    if (
-      (belowCost || manualGate) &&
-      !input.priceOverrideApproved &&
-      !digitalIntentPreflight
-    ) {
-      const reason = belowCost
-        ? "بيع بأقل من التكلفة"
-        : headDiscountGate
-          ? `خصم الفاتورة يتجاوز ${Math.round(MANUAL_DISCOUNT_APPROVAL_THRESHOLD * 100)}٪ عن مرجعها`
-          : `خصمٌ يتجاوز ${Math.round(MANUAL_DISCOUNT_APPROVAL_THRESHOLD * 100)}٪ عن السعر المرجعيّ`;
-      throw new TRPCError({ code: "FORBIDDEN", message: `${reason} يتطلب موافقة مدير.` });
-    }
-
-    // 6.ج حوكمة الهدايا داخل الفاتورة: تُستعار عتبةُ سند الهدية المستقلّ نفسها
-    //     (`GIFT_APPROVAL_THRESHOLD`) فلا تصير الفاتورة باباً خلفياً يلتفّ على حوكمة وحدة الهدايا
-    //     (إهداءٌ بلا سقف من شاشة البيع). المعيار **تكلفةُ** الهدية لا سعرُها (السعر صفر دائماً).
-    //     تحت العتبة يمرّ الكاشير مباشرةً؛ فوقها يفتح حوارُ اعتماد المدير نفسه (priceOverrideApproved).
-    const giftCostD = money(giftCost);
-    if (
-      giftCostD.gt(money(GIFT_APPROVAL_THRESHOLD)) &&
-      !input.priceOverrideApproved &&
-      !digitalIntentPreflight
-    ) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: `تكلفة الهدايا في هذه الفاتورة (${giftCostD.toFixed(2)}) تتجاوز حدّ الإهداء بلا تفويض (${money(GIFT_APPROVAL_THRESHOLD).toFixed(2)} د.ع) — يتطلب موافقة مدير.`,
-      });
-    }
-
-    // 7. تقريب نقدي IQD للبيع النقدي الكامل: يُقرَّب الإجمالي لفئة 250، فالنقد المستلم = الإجمالي المقرّب
-    //    (لا فائض/عجز وهمي عند الرفع، ولا رفض بيع نقدي عند الخفض). الفرق يُسجَّل قيد ADJUST لاحقاً.
-    const roundCash = !!input.cashRoundIQD && input.payment?.method === "CASH";
-    const grandTotalD = money(totals.total);
-    // ش٦ — تقريب السلّة المختلطة: هذه الفاتورة تحمل فرق تقريب السلّة كلّها (checkoutReception
-    // يضبطه حصراً). مراجعة PR #495: الفرق **يُشتقّ خادمياً** من إجماليّ الأسطر المحسوب هنا
-    // ومجموعِ بقيّة السلّة كما حسبه الخادم — لا مبلغَ من العميل (كان يُقبل أيّ رقمٍ ضمن ٢٤٩
-    // ديناراً = خصمٌ غير معتمد يتخطّى بوّابتَي «تحت التكلفة» و«الخصم اليدويّ»).
-    let overrideD: ReturnType<typeof money> | null = null;
-    if (input.cashRoundingBasketOthers != null && input.payment?.method === "CASH") {
-      const basketRawD = round2(grandTotalD.plus(money(input.cashRoundingBasketOthers)));
-      const deltaD = roundCashIQD(basketRawD).minus(basketRawD); // |الفرق| ≤ ١٢٥ حتماً
-      const cand = round2(grandTotalD.plus(deltaD));
-      if (cand.gt(0)) overrideD = cand;
-    }
-    const effectiveTotalD = overrideD ?? (roundCash ? roundCashIQD(grandTotalD) : grandTotalD);
-    const cashRoundingAdj = effectiveTotalD.minus(grandTotalD); // ± (صفر إن لا تقريب)
-    const tendered = money(input.payment?.amount ?? "0");
-    // ش٤ (§٧.٢): المقبوض سلفاً (عرابين المسوّدة) يدخل الحساب **قبل** حرّاس الآجل/الائتمان —
-    // هذا هو الترتيب الحاسم: لولاه لرُفض زبونٌ عابر سدّد عربوناً كاملاً بحجّة «البيع الآجل
-    // يتطلب عميلاً» بينما ماله محبوسٌ في receipts (الحاصرة ١.١).
-    const preCollectedD = round2(money(input.preCollected?.amount ?? "0"));
-    // تصحيح الفاتورة (0168): allowPreCollectedOverpay يرفع هذا الحارس فقط (يضبطه correctSale داخلياً)
-    // — overpay-down يقصُر paidNow على الإجمالي (سطر أدناه) والفائض يُردّ/يُرصَّد خارجياً بعد الترحيل.
-    if (!input.allowPreCollectedOverpay && preCollectedD.gt(effectiveTotalD)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `المقبوض سلفاً (${preCollectedD.toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}) — خلل توزيع، راجع الطلب المحفوظ.`,
-      });
-    }
-    // SALES-05 (تدقيق ٢/٧): كان paidNow يُفرَض = الإجمالي المقرّب عند roundCash متجاهلاً المبلغ
-    // المُسلَّم ⇒ بيع آجل جزئي بعلم cashRoundIQD=true يُسجَّل «مدفوعاً بالكامل» فتُمحى ذمة العميل
-    // (والنقد الوهمي يظهر عجزاً بدرج الكاشير). الآن: التقريب يطبَّق على الإجمالي دائماً، لكن نعامل
-    // البيع كمدفوعٍ بالكامل (paidNow = الإجمالي المقرّب) فقط إذا كان المُسلَّم يغطّي الإجمالي فعلاً؛
-    // وإلا فهي دفعة جزئية ⇒ paidNow = المُسلَّم بالضبط والباقي ذمّة على العميل.
-    // تصحيح الفاتورة (0168): allowPreCollectedOverpay يرفع هذا الحارس الثاني أيضاً — overpay-down
-    // بلا دفعةٍ جديدة (method=undefined≠CASH) كان يُرمى هنا؛ paidNow يُقصَر على الإجمالي أدناه
-    // والفائض يُردّ/يُرصَّد في correctSale.
-    if (!input.allowPreCollectedOverpay && input.payment?.method !== "CASH" && preCollectedD.plus(tendered).gt(effectiveTotalD)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `المبلغ المدفوع (${preCollectedD.plus(tendered).toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}).`,
-      });
-    }
-    // الزيادة النقدية هي باقي للعميل، لا paidAmount ولا receipt ولا نقداً باقياً في الدرج.
-    // paidNow = إجمالي المسدَّد على الفاتورة (سلفاً + الآن)؛ الإيصال الجديد للجزء الجديد وحده.
-    const totalTenderedD = preCollectedD.plus(tendered);
-    const paidNow = totalTenderedD.gt(effectiveTotalD) ? effectiveTotalD : totalTenderedD;
-    const newMoneyD = round2(paidNow.minus(preCollectedD));
-    const unpaid = effectiveTotalD.minus(paidNow);
-    // ش٧ (قرار المالك ٦/٨): متبقّي فاتورة التوصيل COD ليس بيعاً آجلاً على زبونٍ عابر — إنّه
-    // **عهدةٌ على المندوب** تُرفع في نفس المعاملة (dispatchInvoiceInTx). الاستثناء محصورٌ
-    // بالعلم الداخليّ الذي ترفعه الخدمةُ المُسنِدة وحدها؛ حدّ ائتمان العميل المسجَّل يبقى نافذاً.
-    if (unpaid.gt(0) && !input.customerId && !input.codDispatchPending) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });
-    }
-    // 7.b فحص حدّ الائتمان (H4): null=بلا حدّ، 0=حظر آجل، >0=فحص الإسقاط.
-    //     B5 (١٩/٦/٢٦): الموافقة لم تعد blanket — تحتاج إمّا (أ) creditApprovalId جاهز، أو (ب) managerOverrideByUserId
-    //     يكون الـrouter قد وثّق هويته. الخدمة في حالة (ب) تُنشئ approval ذرّياً داخل نفس withTx.
-    let effectiveApprovalId = input.creditApprovalId;
-    // وضع الافتتاح — إعفاء حاجز الائتمان (قرار المالك ١٠/٨): أثناء النافذة الفعّالة تُعفى قنوات
-    // الاستقبال/التنفيذ من فحص السقف/الموافقة. الدَّين يُرحَّل ذمّةً كاملة على العميل (AR) لكنه لا
-    // يُرفض — يُرخَّى الحاجز لا التسجيل. مؤقّتٌ وينتهي بانتهاء النافذة (البيع الآجل يظلّ يتطلّب عميلاً).
-    const receptionDeferredWaiver =
-      unpaid.gt(0) &&
-      !!input.customerId &&
-      input.receptionDeferredAuthorized === true;
-    const openingCreditWaiver =
-      unpaid.gt(0) &&
-      !!input.customerId &&
-      !input.allowNegativeStock &&
-      input.codDispatchPending !== true && // COD يبقى محكوماً بحدّ ائتمان العميل المسجَّل (main).
-      OPENING_RECEPTION_CHANNELS.has(input.sourceType ?? "POS") &&
-      (await readOpeningWindowState(tx)).active;
-    if (receptionDeferredWaiver) {
-      logger.info(
-        { customerId: input.customerId, unpaid: unpaid.toFixed(2), sourceType: input.sourceType },
-        "sale: بيع استقبال بدون عربون — تفويض هوية العميل محقق داخل checkoutReception",
-      );
-    } else if (openingCreditWaiver) {
-      logger.info(
-        { customerId: input.customerId, unpaid: unpaid.toFixed(2), sourceType: input.sourceType ?? "POS" },
-        "sale: إعفاء حدّ الائتمان أثناء وضع الافتتاح — الذمّة تُرحَّل على العميل كاملةً",
-      );
-    } else if (unpaid.gt(0) && input.customerId) {
-      if (input.creditApproved) {
-        if (!input.creditApprovalId && !input.managerOverrideByUserId) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: "تجاوز السقف يحتاج موافقة مُسجَّلة (creditApprovalId) أو هوية مدير مُتحقَّق منها — لا تُقبل موافقة بلا سقف.",
-          });
-        }
-        if (!effectiveApprovalId && input.managerOverrideByUserId) {
-          // تَنشئ Approval تلقائياً، مرتبطة بهذا العميل + سقف=unpaid (تماماً)، single-use.
-          const created = await (await import("../creditApprovalService")).createApproval(tx, {
-            customerId: input.customerId,
-            branchId: input.branchId,
-            maxAmount: unpaid.toFixed(2),
-            approvedBy: input.managerOverrideByUserId,
-            ttlMinutes: 5,
-            notes: "manager-verified override via sale router (auto-generated)",
-          });
-          effectiveApprovalId = created.id;
-        }
-        // SELECT FOR UPDATE داخل validateApproval ⇒ لا double-spend عبر سباق.
-        await validateApproval(tx, effectiveApprovalId!, input.customerId, unpaid, {
+      if (!effectiveApprovalId && input.managerOverrideByUserId) {
+        // تَنشئ Approval تلقائياً، مرتبطة بهذا العميل + سقف=unpaid (تماماً)، single-use.
+        const created = await (
+          await import("../creditApprovalService")
+        ).createApproval(tx, {
+          customerId: input.customerId,
+          branchId: input.branchId,
+          maxAmount: unpaid.toFixed(2),
+          approvedBy: input.managerOverrideByUserId,
+          ttlMinutes: 5,
+          notes: "manager-verified override via sale router (auto-generated)",
+        });
+        effectiveApprovalId = created.id;
+      }
+      // SELECT FOR UPDATE داخل validateApproval ⇒ لا double-spend عبر سباق.
+      await validateApproval(
+        tx,
+        effectiveApprovalId!,
+        input.customerId,
+        unpaid,
+        {
           branchId: input.branchId,
           consumerUserId: actor.userId,
-        });
-      } else {
-        // paymentMode='COD' (٢٨/٨/٢٦، هجرة 0276): يُتجاوز فحصُ السقف — المال يأتي مع المندوب،
-        // لا يبقى ديناً على العميل. الحمايةُ بديلة عبر workOrder.deliver عند التسليم.
-        await assertCreditLimit(tx, input.customerId, unpaid, input.branchId, input.paymentMode ?? undefined);
-      }
-    }
-
-    // 8. Invoice header.
-    const invoiceNumber = await nextInvoiceNumber(tx, input.branchId);
-    const status = computeInvoiceStatus(toDbMoney(effectiveTotalD), toDbMoney(paidNow));
-    // نسبة البيع: الفاعل، إلّا أن يُمرَّر `attributeToUserId` صراحةً (تفويضٌ داخليّ — التصحيح
-    // يُعيد إصدار بيع البائع الأصليّ بيد مديرٍ، فلا تُنقَل عمولته إلى المصحِّح).
-    const sellerUserId = input.attributeToUserId ?? actor.userId;
-    const salespersonNameSnapshot = await userNameSnapshot(tx, sellerUserId);
-    const insRes = await tx.insert(invoices).values({
-      invoiceNumber,
-      sourceType: input.sourceType,
-      // TX-01: clientRequestId فارغ ("") يُخزَّن null لا "" — وإلا اصطدم على uq_invoice_source وحجب
-      // كل بيعٍ لاحق بلا مفتاح. (|| يَلتقط "" بخلاف ?? الذي يُمرّره.)
-      sourceId: input.clientRequestId || null,
-      branchId: input.branchId,
-      shiftId: input.shiftId ?? null,
-      customerId: input.customerId ?? null,
-      priceTier: tier,
-      // dueDate يُحفظ كـDate إن وُرد، وإلا null. يستعمله AR aging والتنبيهات.
-      dueDate: input.dueDate ? new Date(input.dueDate) : null,
-      subtotal: totals.subtotal,
-      taxAmount: totals.taxAmount,
-      taxRatePercent: round2(money(input.taxRatePercent ?? "0")).toFixed(2),
-      discountAmount: totals.discountAmount,
-      total: toDbMoney(effectiveTotalD),
-      costTotal,
-      cashRoundingAdjustment: toDbMoney(cashRoundingAdj),
-      // أجرة الشحن كإيراد (مُضمَّنة في total ومُعترَف بها في revenue أدناه) — تُخزَّن صراحةً ليعكسها
-      // المرتجع الكامل بدقّة (returnService) فيبقى Σ(revenue)=Σ(profit)=0.
-      deliveryFee: toDbMoney(round2(money(input.deliveryFee ?? "0"))),
-      // إفصاح التوصيل المجّاني (0152): يُحسَم **خادمياً** — «مجّانيّ» تعني أجرةً صفراً حتماً،
-      // فلو وردت أجرةٌ موجبة مع العَلَم فالأجرة تُغلِّب والعَلَم يسقط (لا فاتورةٌ تقول «مجاناً»
-      // وتقبض أجرةً في آنٍ واحد). والقيمة المُتنازَل عنها لا تُخزَّن إلّا مع المجّانيّة الفعلية.
-      deliveryFree: isFreeDelivery,
-      deliveryWaivedAmount: toDbMoney(isFreeDelivery ? waivedDelivery : money(0)),
-      status,
-      paidAmount: toDbMoney(paidNow),
-      paymentMethod: input.payment?.method ?? null,
-      // paymentMode (٢٨/٨/٢٦، هجرة 0276): افتراضي PREPAID للحفاظ على السلوك الحاليّ لكلّ فاتورةٍ
-      // بلا مسار COD صريح. يُمرَّر من `checkoutReception` عند طلب توصيلٍ نقديٍّ عند التسليم.
-      // ⚠️ Codex #1006 P2 — COD يعني «تحصيلٌ عند التسليم»؛ فبيعٌ بتوصيلٍ **مدفوعٍ كاملاً** عند الإنشاء
-      // (لا متبقٍّ تحمله الإرساليّة، ومنه فاتورةُ المطبعة المدفوعة في السلّة المختلطة) هو PREPAID لا COD.
-      // نشتقّه من وجود متبقٍّ فعليّ لا من وجود التوصيل وحده (`withDeliveryDefaults` يختمه COD تفاؤلياً).
-      paymentMode: input.paymentMode === "COD" && unpaid.lte(0) ? "PREPAID" : (input.paymentMode ?? "PREPAID"),
-      paymentDate: paidNow.gt(0) ? new Date() : null,
-      notes: input.notes ?? null,
-      // ٥/٨ — زبونٌ عابر: مرجعٌ نصّيّ على الفاتورة بلا إنشاء عميل (customerId يبقى NULL ⇒ لا AR).
-      contactName: input.contactName?.trim() || null,
-      contactPhone: input.contactPhone?.trim() || null,
-      // أوفلاين (ش٣): وسم المنشأ + الرقم المؤقّت المطبوع + لحظة الالتقاط الحقيقية —
-      // يضبطها offline.replaySale حصراً (saleRouter لا يعرض offlineCapture).
-      originatedOffline: !!input.offlineCapture,
-      offlineReceiptNumber: input.offlineCapture?.offlineReceiptNumber ?? null,
-      capturedAt: input.offlineCapture?.capturedAt ?? null,
-      salespersonNameSnapshot,
-      posDeviceId: input.offlineCapture?.deviceId ?? input.deviceId ?? null,
-      createdBy: sellerUserId,
-    });
-    const invoiceId = extractInsertId(insRes);
-
-    // B5: استهلاك الموافقة (يربطها بالفاتورة الفعلية بعد إنشائها — single-use).
-    if (effectiveApprovalId) {
-      await consumeApproval(tx, effectiveApprovalId, invoiceId);
-    }
-
-    // 9. Items.
-    const createdLineItems: { lineToken: string; invoiceItemId: number }[] = [];
-    for (const c of computed) {
-      const itemInsRes = await tx.insert(invoiceItems).values({
-        invoiceId,
-        variantId: c.variantId,
-        productUnitId: c.productUnitId,
-        quantity: c.quantity,
-        baseQuantity: c.baseQuantity,
-        unitPrice: c.unitPrice,
-        unitCost: c.unitCost,
-        lineCost: c.lineCost,
-        serviceMaterialsSnapshotted: c.kind === "SERVICE",
-        discountAmount: c.discountAmount,
-        total: c.total,
-        // promotions v2: الأثر متجمّد على المستند — تعديل عرضٍ لاحقاً لا يمسّ سجلّ فواتير سابقة.
-        promotionId: c.promotionId,
-        promotionDiscount: c.promotionDiscount,
-        // هدايا الفاتورة (0149): وسمُ السطر المُهدى. `unitCost` أعلاه يحمل تكلفته الحقيقية كاملةً
-        // (لقطة WAVG) — مصدرُ مصروف الهدية ومصدرُ عكسِه عند الإرجاع.
-        isGift: c.isGift,
-        itemNameSnapshot: c.invoiceName,
-      });
-      const insertedInvoiceItemId = extractInsertId(itemInsRes);
-      if (c.internalLineToken) {
-        createdLineItems.push({ lineToken: c.internalLineToken, invoiceItemId: insertedInvoiceItemId });
-      }
-      // gstack B6: لقطة مكوّنات البكج لحظة البيع. المرتجع يقرأ منها حصراً بدل الوصفة الحيّة —
-      // يحمي من انحراف مخزون صامت لو عُدّلت الوصفة بين البيع والإرجاع.
-      if (c.kind === "BUNDLE") {
-        const invoiceItemId = insertedInvoiceItemId;
-        const def = bundleDefs.get(c.variantId) ?? [];
-        for (const bc of def) {
-          await tx.insert(invoiceItemBundleComponents).values({
-            invoiceItemId,
-            componentVariantId: bc.componentVariantId,
-            componentBaseQuantity: bc.componentBaseQuantity,
-          });
-        }
-      } else if (c.kind === "SERVICE") {
-        for (const material of c.serviceMaterials) {
-          await tx.insert(invoiceItemServiceMaterials).values({
-            invoiceItemId: insertedInvoiceItemId,
-            materialVariantId: material.materialVariantId,
-            baseQuantity: material.baseQuantity,
-            unitCost: material.unitCost,
-            lineCost: material.lineCost,
-          });
-        }
-      }
-    }
-
-    // الاسترداد جزء من نفس المعاملة: فشل أي قيد/مخزون لاحق يعيد الكوبون كما كان تلقائياً.
-    if (lockedCoupon) {
-      await consumeCoupon(tx, lockedCoupon, {
-        invoiceId,
-        customerId: input.customerId ?? null,
-        branchId: input.branchId,
-        discountAmount: couponDiscount.toFixed(2),
-        userId: actor.userId,
-      });
-    }
-
-    // 10. Deduct stock (OUT) per line.
-    //     bundles (٧/٧/٢٦): البكج لا يملك branchStock — نتخطّاه لصالح **مكوّناته**. نبني قائمة العمليات
-    //     المخزنيّة الفعلية أوّلاً ثم نجمّعها بالمتغيّر (بكجان يتشاركان مكوّناً ⇒ حركة واحدة مجمَّعة)
-    //     ثم نطبّقها بترتيب variantId التصاعدي — يحافظ على ترتيب القفل الحتميّ (بند 5 أعلاه).
-    //     ⚠️ نفس الترتيب مهم للسلامة تحت التزامن: تجميع قبل التطبيق يمنع سباق قفل على نفس الصفّ.
-    interface StockOp { variantId: number; baseQuantity: number; }
-    const stockOps: StockOp[] = [];
-    // مواد الخدمة تُخصم بمسار منفصل بعد الأصناف العادية، لكن بنفس سياسة المخزون الصارمة:
-    // بيع الخدمة لا يجوز أن يصنع رصيداً سالباً أو يتجاوز حجزاً قائماً.
-    const serviceMaterialOps: StockOp[] = [];
-    for (const c of computed) {
-      if (c.kind === "BUNDLE") {
-        const def = bundleDefs.get(c.variantId) ?? [];
-        // في هذه النقطة تحقّقنا سابقاً أن الوصفة غير فارغة (حارس PRECONDITION أعلاه).
-        for (const comp of def) {
-          stockOps.push({
-            variantId: comp.componentVariantId,
-            baseQuantity: comp.componentBaseQuantity * c.baseQuantity,
-          });
-        }
-      } else if (c.kind === "SERVICE") {
-        // اللقطة التي حُسبت للكلفة هي نفسها مصدر الخصم؛ لا نعيد توسيع وصفة حيّة ثانية.
-        for (const material of c.serviceMaterials) {
-          serviceMaterialOps.push({
-            variantId: material.materialVariantId,
-            baseQuantity: material.baseQuantity,
-          });
-        }
-      } else {
-        stockOps.push({ variantId: c.variantId, baseQuantity: c.baseQuantity });
-      }
-    }
-    // تجميع بحسب variantId (لتحاشي حركتين على نفس الصنف من بكجين مختلفين — كذلك سطر بكج + سطر مفرد
-    // من نفس الصنف يُجمعان في قفلٍ واحد). حساب decimal-free (كل الكميّات صحيحة موجبة).
-    const aggregated = new Map<number, number>();
-    for (const op of stockOps) {
-      aggregated.set(op.variantId, (aggregated.get(op.variantId) ?? 0) + op.baseQuantity);
-    }
-    const sortedVariantIds = Array.from(aggregated.keys()).sort((a, b) => a - b);
-    const serviceMaterialAgg = new Map<number, number>();
-    for (const op of serviceMaterialOps) {
-      serviceMaterialAgg.set(op.variantId, (serviceMaterialAgg.get(op.variantId) ?? 0) + op.baseQuantity);
-    }
-    const serviceMaterialVariantIds = Array.from(serviceMaterialAgg.keys()).sort((a, b) => a - b);
-    // «وضع الافتتاح» (ش٢ ١٩/٧): بيعٌ مسدّد بالكامل نقداً أو بالبطاقة من قناة POS
-    // يُسمح له بالنزول تحت الصفر للصنف. البطاقة سداد فوري كامل مثل النقد، لكن أثرها
-    // المالي يبقى في خزينة البطاقة ولا يدخل درج الكاشير.
-    // **غير المُفتتَح** (openedAt IS NULL — يُفحص داخل applyMovement تحت القفل) حتى يُجرَد افتتاحياً.
-    // شرطا الأمان الصنفيان (مراجعة عدائية ١٨/٧): تكلفة مُدخلة (>0) — سالبٌ بلا COGS = تسريب غير
-    // قابل للكشف — وسقف كمية للسطر يصدّ خطأ الإدخال والاحتيال. قناة الأوفلاين (allowNegativeStock)
-    // مستقلة تماماً ولا تتراكب. القراءة كسولة: البيع العادي المكتفي المخزون لا يدفع أي استعلام إضافي.
-    // الأهليّة الأساس: بيعٌ مسدَّدٌ بالكامل في الكاونتر (نقداً/بطاقة، unpaid<=0).
-    // امتداد الاستقبال (٨/٨): طلب توصيل COD (codDispatchPending) لا يُسدَّد في الكاونتر
-    // (المندوب يقبض من الزبون) فـunpaid>0 دائماً — لكن في وضع الافتتاح السالب يعني «غير مجرود»
-    // لا «نافد»، والمندوب يحمل الصنف الموجود فعلياً. فنسمح به **بتأكيد توفّرٍ فيزيائيّ صريح**
-    // من الموظّف؛ تبقى رِيلات الأمان (تكلفة>0 + سقف الكمية + استثناء الأمانة) نافذةً كما هي أدناه.
-    // توسعة قرار المالك (١٠/٨): من «POS مسدّد كاملاً» إلى **كل قنوات الاستقبال/التنفيذ**.
-    // نُبقي شروط main الأدقّ للـPOS (كاونتر مسدّد نقداً/بطاقة + COD بتأكيد التوفّر) كما هي دون
-    // تخفيف، ونُضيف: قنوات ORDER/WORKORDER (بأي دفع) + بيع POS آجل لعميلٍ محدَّد (البيع الآجل من
-    // الاستقبال). الريلات الصنفية أدناه (تكلفة>0 + سقف + غير مُفتتَح + استثناء الأمانة) تبقى نافذة.
-    const openingBaseEligible =
-      input.strictStock !== true &&
-      !input.allowNegativeStock &&
-      (
-        input.sourceType === "ORDER" ||
-        input.sourceType === "WORKORDER" ||
-        ((input.sourceType ?? "POS") === "POS" &&
-          (
-            ((input.payment?.method === "CASH" || input.payment?.method === "CARD") && unpaid.lte(0))
-            || (input.codDispatchPending === true && input.openingSellUnavailableConfirmed === true)
-            // بيع POS آجل من الاستقبال لعميلٍ محدَّد (توسعة ١٠/٨) — يُستثنى COD صراحةً كي يبقى
-            // محكوماً بحارس تأكيد التوفّر الفيزيائيّ الخاصّ به (main ٨/٨)، لا يتجاوزه حملُه عميلاً.
-            || (unpaid.gt(0) && !!input.customerId && input.codDispatchPending !== true)
-          ))
+        },
       );
-    const readOpeningWindow = async () => {
-      const om = (await tx.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1))[0];
-      return om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now()
-        ? { maxQty: om.maxNegativeQtyPerLine }
-        : null;
-    };
-    let openingWindow: { maxQty: number } | null = null;
-    const deductCosts = new Map<number, string>();
-    if (openingBaseEligible) {
-      openingWindow = await readOpeningWindow();
-      if (openingWindow && sortedVariantIds.length) {
-        // تكاليف الأصناف المخصومة فعلياً (مكوّنات البكج لا البكج نفسه).
-        const costRows = await tx
-          .select({ id: productVariants.id, cost: productVariants.costPrice })
-          .from(productVariants)
-          .where(inArray(productVariants.id, sortedVariantIds));
-        for (const r of costRows) deductCosts.set(Number(r.id), String(r.cost ?? "0"));
+    } else {
+      // paymentMode='COD' (٢٨/٨/٢٦، هجرة 0276): يُتجاوز فحصُ السقف — المال يأتي مع المندوب،
+      // لا يبقى ديناً على العميل. الحمايةُ بديلة عبر workOrder.deliver عند التسليم.
+      await assertCreditLimit(
+        tx,
+        input.customerId,
+        unpaid,
+        input.branchId,
+        input.paymentMode ?? undefined,
+      );
+    }
+  }
+
+  // 8. Invoice header.
+  const invoiceNumber = await nextInvoiceNumber(tx, input.branchId);
+  const status = computeInvoiceStatus(
+    toDbMoney(effectiveTotalD),
+    toDbMoney(paidNow),
+  );
+  // وعاء الإسناد التجاري: صافي إيراد البضاعة بعد استبعاد الخصم وأجرة الشحن
+  const baseRevenueForAttribution = round2(
+    money(totals.subtotal).minus(money(totals.discountAmount)),
+  );
+
+  // حل خطة الإسناد التجاري متعدد الأدوار (Multi-Role Sales Attribution)
+  const attributionPlan = resolveSaleAttribution({
+    branchId: input.branchId,
+    cashierUserId: actor.userId,
+    attribution: input.attribution,
+    salesRepId: input.attribution?.repId ?? input.salesRepId,
+    assistedByUserId: input.attribution?.assistedById ?? input.assistedByUserId,
+    attributionMode: input.attribution?.mode ?? input.attributionMode,
+    attributeToUserId: input.attributeToUserId,
+    baseAmount: baseRevenueForAttribution,
+  });
+
+  // لقطة اسم البائع: يُعرض على الإيصال اسم البائع التجاري الأساسي
+  const salespersonNameSnapshot = await userNameSnapshot(tx, attributionPlan.primaryUserId);
+  const insRes = await tx.insert(invoices).values({
+    invoiceNumber,
+    sourceType: input.sourceType,
+    // TX-01: clientRequestId فارغ ("") يُخزَّن null لا "" — وإلا اصطدم على uq_invoice_source وحجب
+    // كل بيعٍ لاحق بلا مفتاح. (|| يَلتقط "" بخلاف ?? الذي يُمرّره.)
+    sourceId: input.clientRequestId || null,
+    branchId: input.branchId,
+    shiftId: input.shiftId ?? null,
+    customerId: input.customerId ?? null,
+    priceTier: tier,
+    // dueDate يُحفظ كـDate إن وُرد، وإلا null. يستعمله AR aging والتنبيهات.
+    dueDate: input.dueDate ? new Date(input.dueDate) : null,
+    subtotal: totals.subtotal,
+    taxAmount: totals.taxAmount,
+    taxRatePercent: round2(money(input.taxRatePercent ?? "0")).toFixed(2),
+    discountAmount: totals.discountAmount,
+    total: toDbMoney(effectiveTotalD),
+    costTotal,
+    cashRoundingAdjustment: toDbMoney(cashRoundingAdj),
+    // أجرة الشحن كإيراد (مُضمَّنة في total ومُعترَف بها في revenue أدناه) — تُخزَّن صراحةً ليعكسها
+    // المرتجع الكامل بدقّة (returnService) فيبقى Σ(revenue)=Σ(profit)=0.
+    deliveryFee: toDbMoney(round2(money(input.deliveryFee ?? "0"))),
+    // إفصاح التوصيل المجّاني (0152): يُحسَم **خادمياً** — «مجّانيّ» تعني أجرةً صفراً حتماً،
+    // فلو وردت أجرةٌ موجبة مع العَلَم فالأجرة تُغلِّب والعَلَم يسقط (لا فاتورةٌ تقول «مجاناً»
+    // وتقبض أجرةً في آنٍ واحد). والقيمة المُتنازَل عنها لا تُخزَّن إلّا مع المجّانيّة الفعلية.
+    deliveryFree: isFreeDelivery,
+    deliveryWaivedAmount: toDbMoney(isFreeDelivery ? waivedDelivery : money(0)),
+    status,
+    paidAmount: toDbMoney(paidNow),
+    paymentMethod: input.payment?.method ?? null,
+    // paymentMode (٢٨/٨/٢٦، هجرة 0276): افتراضي PREPAID للحفاظ على السلوك الحاليّ لكلّ فاتورةٍ
+    // بلا مسار COD صريح. يُمرَّر من `checkoutReception` عند طلب توصيلٍ نقديٍّ عند التسليم.
+    // ⚠️ Codex #1006 P2 — COD يعني «تحصيلٌ عند التسليم»؛ فبيعٌ بتوصيلٍ **مدفوعٍ كاملاً** عند الإنشاء
+    // (لا متبقٍّ تحمله الإرساليّة، ومنه فاتورةُ المطبعة المدفوعة في السلّة المختلطة) هو PREPAID لا COD.
+    // نشتقّه من وجود متبقٍّ فعليّ لا من وجود التوصيل وحده (`withDeliveryDefaults` يختمه COD تفاؤلياً).
+    paymentMode:
+      input.paymentMode === "COD" && unpaid.lte(0)
+        ? "PREPAID"
+        : (input.paymentMode ?? "PREPAID"),
+    paymentDate: paidNow.gt(0) ? new Date() : null,
+    notes: input.notes ?? null,
+    // ٥/٨ — زبونٌ عابر: مرجعٌ نصّيّ على الفاتورة بلا إنشاء عميل (customerId يبقى NULL ⇒ لا AR).
+    contactName: input.contactName?.trim() || null,
+    contactPhone: input.contactPhone?.trim() || null,
+    // أوفلاين (ش٣): وسم المنشأ + الرقم المؤقّت المطبوع + لحظة الالتقاط الحقيقية —
+    // يضبطها offline.replaySale حصراً (saleRouter لا يعرض offlineCapture).
+    originatedOffline: !!input.offlineCapture,
+    offlineReceiptNumber: input.offlineCapture?.offlineReceiptNumber ?? null,
+    capturedAt: input.offlineCapture?.capturedAt ?? null,
+    salespersonNameSnapshot,
+    posDeviceId: input.offlineCapture?.deviceId ?? input.deviceId ?? null,
+    // 🔒 الحفاظ على الكاشير الحقيقي: createdBy يبقى دائماً هو مشغّل الصندوق الفعلي (actor.userId)
+    createdBy: actor.userId,
+    // الإسناد التجاري المباشر لسرعة الاستعلام
+    salesRepId: attributionPlan.primaryUserId,
+    attributionMode: attributionPlan.attributionMode,
+  });
+  const invoiceId = extractInsertId(insRes);
+
+  // تسجيل تفاصيل الإسناد ذرّياً في جدول invoiceAttributions ضمن نفس المعاملة (withTx)
+  await recordInvoiceAttributionsInTx(tx, {
+    branchId: input.branchId,
+    invoiceId,
+    plan: attributionPlan,
+    teamPoolId: input.attribution?.teamPoolId ?? null,
+  });
+
+  // B5: استهلاك الموافقة (يربطها بالفاتورة الفعلية بعد إنشائها — single-use).
+  if (effectiveApprovalId) {
+    await consumeApproval(tx, effectiveApprovalId, invoiceId);
+  }
+
+  // 9. Items.
+  const createdLineItems: { lineToken: string; invoiceItemId: number }[] = [];
+  for (const c of computed) {
+    const itemInsRes = await tx.insert(invoiceItems).values({
+      invoiceId,
+      variantId: c.variantId,
+      productUnitId: c.productUnitId,
+      quantity: c.quantity,
+      baseQuantity: c.baseQuantity,
+      unitPrice: c.unitPrice,
+      unitCost: c.unitCost,
+      lineCost: c.lineCost,
+      serviceMaterialsSnapshotted: c.kind === "SERVICE",
+      discountAmount: c.discountAmount,
+      total: c.total,
+      // promotions v2: الأثر متجمّد على المستند — تعديل عرضٍ لاحقاً لا يمسّ سجلّ فواتير سابقة.
+      promotionId: c.promotionId,
+      promotionDiscount: c.promotionDiscount,
+      // هدايا الفاتورة (0149): وسمُ السطر المُهدى. `unitCost` أعلاه يحمل تكلفته الحقيقية كاملةً
+      // (لقطة WAVG) — مصدرُ مصروف الهدية ومصدرُ عكسِه عند الإرجاع.
+      isGift: c.isGift,
+      itemNameSnapshot: c.invoiceName,
+    });
+    const insertedInvoiceItemId = extractInsertId(itemInsRes);
+    if (c.internalLineToken) {
+      createdLineItems.push({
+        lineToken: c.internalLineToken,
+        invoiceItemId: insertedInvoiceItemId,
+      });
+    }
+    // gstack B6: لقطة مكوّنات البكج لحظة البيع. المرتجع يقرأ منها حصراً بدل الوصفة الحيّة —
+    // يحمي من انحراف مخزون صامت لو عُدّلت الوصفة بين البيع والإرجاع.
+    if (c.kind === "BUNDLE") {
+      const invoiceItemId = insertedInvoiceItemId;
+      const def = bundleDefs.get(c.variantId) ?? [];
+      for (const bc of def) {
+        await tx.insert(invoiceItemBundleComponents).values({
+          invoiceItemId,
+          componentVariantId: bc.componentVariantId,
+          componentBaseQuantity: bc.componentBaseQuantity,
+        });
+      }
+    } else if (c.kind === "SERVICE") {
+      for (const material of c.serviceMaterials) {
+        await tx.insert(invoiceItemServiceMaterials).values({
+          invoiceItemId: insertedInvoiceItemId,
+          materialVariantId: material.materialVariantId,
+          baseQuantity: material.baseQuantity,
+          unitCost: material.unitCost,
+          lineCost: material.lineCost,
+        });
       }
     }
-    const negativeDips: { variantId: number; newQuantity: number }[] = [];
+  }
 
-    for (const vid of sortedVariantIds) {
-      const qty = aggregated.get(vid)!;
-      if (qty <= 0) continue; // احترازي — تجميع كميّات صفريّة لا يجب أن يحصل.
-      const openingAllow =
-        openingWindow != null && qty <= openingWindow.maxQty && money(deductCosts.get(vid) ?? "0").gt(0)
-        // بضاعة الأمانة (§٥-ج): لا بيع بالسالب لصنف أمانة في المسار الحيّ — تلفيقُ التزامٍ لبضاعةٍ لم تُودَع.
-        && !consignByVariant.has(vid);
-      try {
-        const moved = await applyMovement(tx, {
-          variantId: vid,
-          branchId: input.branchId,
-          baseQuantity: qty,
-          movementType: "OUT",
-          referenceType: "INVOICE",
-          referenceId: invoiceId,
-          createdBy: actor.userId,
-          notes: openingAllow ? "وضع الافتتاح — بيع/طلب لقناة استقبال مسموح بالسالب لصنف غير مُفتتَح" : undefined,
-          // أوفلاين (ش٣): البيع الملتقَط دون اتصال يُسجَّل ولو هبط الرصيد تحت الصفر — البضاعة
-          // خرجت فعلاً (قرار مالك: سالب موسوم بـoriginatedOffline، يظهر في تقرير المراجعة).
-          // **استثناء بضاعة الأمانة (§٥-ج، مرآة حارس وضع الافتتاح أعلاه):** لا بيع بالسالب لصنف
-          // أمانة حتى عبر الأوفلاين — بيعُ ما لم يُودَع يُلفّق التزاماً للمودِع (AP) لوحداتٍ لم تصل
-          // (استحقاق PURCHASE يتيم أدناه). يُرفض بـCONFLICT فيرتدّ ويُعلَّق لمراجعة المدير كالمسار الحيّ.
-          allowNegative: input.strictStock !== true && (input.allowNegativeStock ?? false) && !consignByVariant.has(vid),
-          allowNegativeUnopened: openingAllow,
-          onlineOrderAllocationExemptionId: input.onlineOrderAllocationId,
-          formalReservationExemptionBase: input.formalReservationExemptions?.[vid],
+  // الاسترداد جزء من نفس المعاملة: فشل أي قيد/مخزون لاحق يعيد الكوبون كما كان تلقائياً.
+  if (lockedCoupon) {
+    await consumeCoupon(tx, lockedCoupon, {
+      invoiceId,
+      customerId: input.customerId ?? null,
+      branchId: input.branchId,
+      discountAmount: couponDiscount.toFixed(2),
+      userId: actor.userId,
+    });
+  }
+
+  // 10. Deduct stock (OUT) per line.
+  //     bundles (٧/٧/٢٦): البكج لا يملك branchStock — نتخطّاه لصالح **مكوّناته**. نبني قائمة العمليات
+  //     المخزنيّة الفعلية أوّلاً ثم نجمّعها بالمتغيّر (بكجان يتشاركان مكوّناً ⇒ حركة واحدة مجمَّعة)
+  //     ثم نطبّقها بترتيب variantId التصاعدي — يحافظ على ترتيب القفل الحتميّ (بند 5 أعلاه).
+  //     ⚠️ نفس الترتيب مهم للسلامة تحت التزامن: تجميع قبل التطبيق يمنع سباق قفل على نفس الصفّ.
+  interface StockOp {
+    variantId: number;
+    baseQuantity: number;
+  }
+  const stockOps: StockOp[] = [];
+  // مواد الخدمة تُخصم بمسار منفصل بعد الأصناف العادية، لكن بنفس سياسة المخزون الصارمة:
+  // بيع الخدمة لا يجوز أن يصنع رصيداً سالباً أو يتجاوز حجزاً قائماً.
+  const serviceMaterialOps: StockOp[] = [];
+  for (const c of computed) {
+    if (c.kind === "BUNDLE") {
+      const def = bundleDefs.get(c.variantId) ?? [];
+      // في هذه النقطة تحقّقنا سابقاً أن الوصفة غير فارغة (حارس PRECONDITION أعلاه).
+      for (const comp of def) {
+        stockOps.push({
+          variantId: comp.componentVariantId,
+          baseQuantity: comp.componentBaseQuantity * c.baseQuantity,
         });
-        // معلومة استشارية للمحاولة الفائزة فقط (لا تُعاد في replay الـidempotency — لا حالة دائمة عليها).
-        if (openingAllow && moved.newQuantity < 0) negativeDips.push({ variantId: vid, newQuantity: moved.newQuantity });
-      } catch (e) {
-        // إثراء رسالة الرفض أثناء نافذة الافتتاح: يشرح للكاشير لماذا لم يُسمح بالسالب لهذا السطر.
-        if (e instanceof TRPCError && e.code === "CONFLICT" && e.message.includes("المخزون غير كافٍ")) {
-          const win = openingWindow ?? (await readOpeningWindow());
-          if (win) {
-            const hint = (input.codDispatchPending === true && input.openingSellUnavailableConfirmed !== true)
+      }
+    } else if (c.kind === "SERVICE") {
+      // اللقطة التي حُسبت للكلفة هي نفسها مصدر الخصم؛ لا نعيد توسيع وصفة حيّة ثانية.
+      for (const material of c.serviceMaterials) {
+        serviceMaterialOps.push({
+          variantId: material.materialVariantId,
+          baseQuantity: material.baseQuantity,
+        });
+      }
+    } else {
+      stockOps.push({ variantId: c.variantId, baseQuantity: c.baseQuantity });
+    }
+  }
+  // تجميع بحسب variantId (لتحاشي حركتين على نفس الصنف من بكجين مختلفين — كذلك سطر بكج + سطر مفرد
+  // من نفس الصنف يُجمعان في قفلٍ واحد). حساب decimal-free (كل الكميّات صحيحة موجبة).
+  const aggregated = new Map<number, number>();
+  for (const op of stockOps) {
+    aggregated.set(
+      op.variantId,
+      (aggregated.get(op.variantId) ?? 0) + op.baseQuantity,
+    );
+  }
+  const sortedVariantIds = Array.from(aggregated.keys()).sort((a, b) => a - b);
+  const serviceMaterialAgg = new Map<number, number>();
+  for (const op of serviceMaterialOps) {
+    serviceMaterialAgg.set(
+      op.variantId,
+      (serviceMaterialAgg.get(op.variantId) ?? 0) + op.baseQuantity,
+    );
+  }
+  const serviceMaterialVariantIds = Array.from(serviceMaterialAgg.keys()).sort(
+    (a, b) => a - b,
+  );
+  // «وضع الافتتاح» (ش٢ ١٩/٧): بيعٌ مسدّد بالكامل نقداً أو بالبطاقة من قناة POS
+  // يُسمح له بالنزول تحت الصفر للصنف. البطاقة سداد فوري كامل مثل النقد، لكن أثرها
+  // المالي يبقى في خزينة البطاقة ولا يدخل درج الكاشير.
+  // **غير المُفتتَح** (openedAt IS NULL — يُفحص داخل applyMovement تحت القفل) حتى يُجرَد افتتاحياً.
+  // شرطا الأمان الصنفيان (مراجعة عدائية ١٨/٧): تكلفة مُدخلة (>0) — سالبٌ بلا COGS = تسريب غير
+  // قابل للكشف — وسقف كمية للسطر يصدّ خطأ الإدخال والاحتيال. قناة الأوفلاين (allowNegativeStock)
+  // مستقلة تماماً ولا تتراكب. القراءة كسولة: البيع العادي المكتفي المخزون لا يدفع أي استعلام إضافي.
+  // الأهليّة الأساس: بيعٌ مسدَّدٌ بالكامل في الكاونتر (نقداً/بطاقة، unpaid<=0).
+  // امتداد الاستقبال (٨/٨): طلب توصيل COD (codDispatchPending) لا يُسدَّد في الكاونتر
+  // (المندوب يقبض من الزبون) فـunpaid>0 دائماً — لكن في وضع الافتتاح السالب يعني «غير مجرود»
+  // لا «نافد»، والمندوب يحمل الصنف الموجود فعلياً. فنسمح به **بتأكيد توفّرٍ فيزيائيّ صريح**
+  // من الموظّف؛ تبقى رِيلات الأمان (تكلفة>0 + سقف الكمية + استثناء الأمانة) نافذةً كما هي أدناه.
+  // توسعة قرار المالك (١٠/٨): من «POS مسدّد كاملاً» إلى **كل قنوات الاستقبال/التنفيذ**.
+  // نُبقي شروط main الأدقّ للـPOS (كاونتر مسدّد نقداً/بطاقة + COD بتأكيد التوفّر) كما هي دون
+  // تخفيف، ونُضيف: قنوات ORDER/WORKORDER (بأي دفع) + بيع POS آجل لعميلٍ محدَّد (البيع الآجل من
+  // الاستقبال). الريلات الصنفية أدناه (تكلفة>0 + سقف + غير مُفتتَح + استثناء الأمانة) تبقى نافذة.
+  const openingBaseEligible =
+    input.strictStock !== true &&
+    !input.allowNegativeStock &&
+    (input.sourceType === "ORDER" ||
+      input.sourceType === "WORKORDER" ||
+      ((input.sourceType ?? "POS") === "POS" &&
+        (((input.payment?.method === "CASH" ||
+          input.payment?.method === "CARD") &&
+          unpaid.lte(0)) ||
+          (input.codDispatchPending === true &&
+            input.openingSellUnavailableConfirmed === true) ||
+          // بيع POS آجل من الاستقبال لعميلٍ محدَّد (توسعة ١٠/٨) — يُستثنى COD صراحةً كي يبقى
+          // محكوماً بحارس تأكيد التوفّر الفيزيائيّ الخاصّ به (main ٨/٨)، لا يتجاوزه حملُه عميلاً.
+          (unpaid.gt(0) &&
+            !!input.customerId &&
+            input.codDispatchPending !== true))));
+  const readOpeningWindow = async () => {
+    const om = (
+      await tx
+        .select()
+        .from(openingModeSettings)
+        .where(eq(openingModeSettings.id, 1))
+        .limit(1)
+    )[0];
+    return om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now()
+      ? { maxQty: om.maxNegativeQtyPerLine }
+      : null;
+  };
+  let openingWindow: { maxQty: number } | null = null;
+  const deductCosts = new Map<number, string>();
+  if (openingBaseEligible) {
+    openingWindow = await readOpeningWindow();
+    if (openingWindow && sortedVariantIds.length) {
+      // تكاليف الأصناف المخصومة فعلياً (مكوّنات البكج لا البكج نفسه).
+      const costRows = await tx
+        .select({ id: productVariants.id, cost: productVariants.costPrice })
+        .from(productVariants)
+        .where(inArray(productVariants.id, sortedVariantIds));
+      for (const r of costRows)
+        deductCosts.set(Number(r.id), String(r.cost ?? "0"));
+    }
+  }
+  const negativeDips: { variantId: number; newQuantity: number }[] = [];
+
+  for (const vid of sortedVariantIds) {
+    const qty = aggregated.get(vid)!;
+    if (qty <= 0) continue; // احترازي — تجميع كميّات صفريّة لا يجب أن يحصل.
+    const openingAllow =
+      openingWindow != null &&
+      qty <= openingWindow.maxQty &&
+      money(deductCosts.get(vid) ?? "0").gt(0) &&
+      // بضاعة الأمانة (§٥-ج): لا بيع بالسالب لصنف أمانة في المسار الحيّ — تلفيقُ التزامٍ لبضاعةٍ لم تُودَع.
+      !consignByVariant.has(vid);
+    try {
+      const moved = await applyMovement(tx, {
+        variantId: vid,
+        branchId: input.branchId,
+        baseQuantity: qty,
+        movementType: "OUT",
+        referenceType: "INVOICE",
+        referenceId: invoiceId,
+        createdBy: actor.userId,
+        notes: openingAllow
+          ? "وضع الافتتاح — بيع/طلب لقناة استقبال مسموح بالسالب لصنف غير مُفتتَح"
+          : undefined,
+        // أوفلاين (ش٣): البيع الملتقَط دون اتصال يُسجَّل ولو هبط الرصيد تحت الصفر — البضاعة
+        // خرجت فعلاً (قرار مالك: سالب موسوم بـoriginatedOffline، يظهر في تقرير المراجعة).
+        // **استثناء بضاعة الأمانة (§٥-ج، مرآة حارس وضع الافتتاح أعلاه):** لا بيع بالسالب لصنف
+        // أمانة حتى عبر الأوفلاين — بيعُ ما لم يُودَع يُلفّق التزاماً للمودِع (AP) لوحداتٍ لم تصل
+        // (استحقاق PURCHASE يتيم أدناه). يُرفض بـCONFLICT فيرتدّ ويُعلَّق لمراجعة المدير كالمسار الحيّ.
+        allowNegative:
+          input.strictStock !== true &&
+          (input.allowNegativeStock ?? false) &&
+          !consignByVariant.has(vid),
+        allowNegativeUnopened: openingAllow,
+        onlineOrderAllocationExemptionId: input.onlineOrderAllocationId,
+        formalReservationExemptionBase:
+          input.formalReservationExemptions?.[vid],
+      });
+      // معلومة استشارية للمحاولة الفائزة فقط (لا تُعاد في replay الـidempotency — لا حالة دائمة عليها).
+      if (openingAllow && moved.newQuantity < 0)
+        negativeDips.push({ variantId: vid, newQuantity: moved.newQuantity });
+    } catch (e) {
+      // إثراء رسالة الرفض أثناء نافذة الافتتاح: يشرح للكاشير لماذا لم يُسمح بالسالب لهذا السطر.
+      if (
+        e instanceof TRPCError &&
+        e.code === "CONFLICT" &&
+        e.message.includes("المخزون غير كافٍ")
+      ) {
+        const win = openingWindow ?? (await readOpeningWindow());
+        if (win) {
+          const hint =
+            input.codDispatchPending === true &&
+            input.openingSellUnavailableConfirmed !== true
               ? "طلب توصيل COD لصنفٍ غير مجرود أثناء الافتتاح يتطلّب تأكيد توفّره فيزيائياً صراحةً قبل الإرسال"
               : !openingBaseEligible
-              ? "وضع الافتتاح فعّال، لكن البيع بالسالب للصنف غير المجرود متاحٌ لقنوات الاستقبال/التنفيذ فقط (بيع مباشر مسدّد أو آجل لعميلٍ محدَّد، أو طلب/أمر شغل) — هذه القناة/الحالة خارج النطاق"
-              : qty > win.maxQty
-                ? `الكمية تتجاوز سقف السطر السالب في وضع الافتتاح (${win.maxQty} وحدة أساس)`
-                : !money(deductCosts.get(vid) ?? "0").gt(0)
-                  ? "البيع بالسالب في وضع الافتتاح يتطلّب تكلفة مُدخلة للصنف — أدخِل تكلفته أولاً"
-                  : "الصنف مُفتتَح (مجرود) — رصيده مثبّت والبيع فوقه يخضع للفحص الصارم";
-            throw new TRPCError({ code: "CONFLICT", message: `${e.message} — ${hint}` });
-          }
+                ? "وضع الافتتاح فعّال، لكن البيع بالسالب للصنف غير المجرود متاحٌ لقنوات الاستقبال/التنفيذ فقط (بيع مباشر مسدّد أو آجل لعميلٍ محدَّد، أو طلب/أمر شغل) — هذه القناة/الحالة خارج النطاق"
+                : qty > win.maxQty
+                  ? `الكمية تتجاوز سقف السطر السالب في وضع الافتتاح (${win.maxQty} وحدة أساس)`
+                  : !money(deductCosts.get(vid) ?? "0").gt(0)
+                    ? "البيع بالسالب في وضع الافتتاح يتطلّب تكلفة مُدخلة للصنف — أدخِل تكلفته أولاً"
+                    : "الصنف مُفتتَح (مجرود) — رصيده مثبّت والبيع فوقه يخضع للفحص الصارم";
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: `${e.message} — ${hint}`,
+          });
         }
-        throw e;
       }
+      throw e;
     }
+  }
 
-    // 10.b مواد الخدمات: خصم صارم بعد stockOps وبترتيب variantId تصاعدي. التجميع per-variant
-    //      يمنع حركتين لنفس المادة من خدمتين مختلفتين. المرجع INVOICE يتيح العكس الداخلي الدقيق.
-    if (serviceMaterialOps.length) {
-      for (const vid of serviceMaterialVariantIds) {
-        const qty = serviceMaterialAgg.get(vid)!;
-        if (qty <= 0) continue;
-        await applyMovement(tx, {
-          variantId: vid,
-          branchId: input.branchId,
-          baseQuantity: qty,
-          movementType: "OUT",
-          referenceType: "INVOICE",
-          referenceId: invoiceId,
-          createdBy: actor.userId,
-          // البيع الحي صارم حتى إن كانت المادة «تُباع بالطلب». إعادة تشغيل الأوفلاين وحدها
-          // تسجّل العجز لأن الواقعة حدثت فعلاً أثناء الانقطاع.
-          allowNegative: input.allowNegativeStock === true,
-          respectProductBackorder: false,
-          formalReservationExemptionBase:
-            input.formalReservationExemptions?.[vid],
-          notes: SERVICE_RECIPE_CONSUMPTION_NOTE,
-        });
-      }
+  // 10.b مواد الخدمات: خصم صارم بعد stockOps وبترتيب variantId تصاعدي. التجميع per-variant
+  //      يمنع حركتين لنفس المادة من خدمتين مختلفتين. المرجع INVOICE يتيح العكس الداخلي الدقيق.
+  if (serviceMaterialOps.length) {
+    for (const vid of serviceMaterialVariantIds) {
+      const qty = serviceMaterialAgg.get(vid)!;
+      if (qty <= 0) continue;
+      await applyMovement(tx, {
+        variantId: vid,
+        branchId: input.branchId,
+        baseQuantity: qty,
+        movementType: "OUT",
+        referenceType: "INVOICE",
+        referenceId: invoiceId,
+        createdBy: actor.userId,
+        // البيع الحي صارم حتى إن كانت المادة «تُباع بالطلب». إعادة تشغيل الأوفلاين وحدها
+        // تسجّل العجز لأن الواقعة حدثت فعلاً أثناء الانقطاع.
+        allowNegative: input.allowNegativeStock === true,
+        respectProductBackorder: false,
+        formalReservationExemptionBase:
+          input.formalReservationExemptions?.[vid],
+        notes: SERVICE_RECIPE_CONSUMPTION_NOTE,
+      });
     }
+  }
 
-    // 11. SALE ledger entry (revenue = net before tax + أجرة الشحن كإيراد بلا تكلفة).
-    const byConsignor = new Map<number, { paid: ReturnType<typeof money>; gift: ReturnType<typeof money> }>();
+  // 11. SALE ledger entry (revenue = net before tax + أجرة الشحن كإيراد بلا تكلفة).
+  const byConsignor = new Map<
+    number,
+    { paid: ReturnType<typeof money>; gift: ReturnType<typeof money> }
+  >();
   let ownedInventoryCost = money(0);
   let ownedGiftInventoryCost = money(0);
   for (const c of computed) {
-      const share = money(c.lineCost);
+    const share = money(c.lineCost);
     const cId = consignByVariant.get(c.variantId);
-        if (cId != null) {
+    if (cId != null) {
       const current = byConsignor.get(cId) ?? {
         paid: money(0),
         gift: money(0),
@@ -1437,35 +1840,94 @@ export async function createSaleInTx(
   const analyticalInvoiceCost = money(costTotal);
   const ledgerOwnedCogs = ownedInventoryCost;
   const merchandiseRevenue = round2(revenue.minus(deliveryFeeD));
-  const revenueLines = computed.filter((c) => !c.isGift && money(c.total).gt(0));
-  const revenueBasis = revenueLines.reduce((sum, c) => sum.plus(money(c.total)), money(0));
+  const revenueLines = computed.filter(
+    (c) => !c.isGift && money(c.total).gt(0),
+  );
+  const revenueBasis = revenueLines.reduce(
+    (sum, c) => sum.plus(money(c.total)),
+    money(0),
+  );
   const revenueByRole = new Map<AccountRole, ReturnType<typeof money>>();
-  const saleClasses = new Set<"DIGITAL" | "SERVICE" | "CONSIGNMENT" | "INVENTORY">();
+  const saleClasses = new Set<
+    "DIGITAL" | "SERVICE" | "CONSIGNMENT" | "INVENTORY"
+  >();
   let allocatedRevenue = money(0);
   for (let index = 0; index < revenueLines.length; index++) {
     const line = revenueLines[index]!;
-    const isDigital = variantById.get(line.variantId)?.productType === "DIGITAL_CARD";
-    const saleClass = isDigital ? "DIGITAL" : line.kind === "SERVICE" ? "SERVICE" : consignByVariant.has(line.variantId) ? "CONSIGNMENT" : "INVENTORY";
+    const isDigital =
+      variantById.get(line.variantId)?.productType === "DIGITAL_CARD";
+    const saleClass = isDigital
+      ? "DIGITAL"
+      : line.kind === "SERVICE"
+        ? "SERVICE"
+        : consignByVariant.has(line.variantId)
+          ? "CONSIGNMENT"
+          : "INVENTORY";
     saleClasses.add(saleClass);
-    const role: AccountRole = input.sourceType === "WORKORDER" ? "SALES_FLEX" : isDigital ? "OTHER_REVENUE" : line.kind === "SERVICE" ? "SALES_PRINT" : "SALES_STATIONERY";
-    const lineRevenue = index === revenueLines.length - 1 ? round2(merchandiseRevenue.minus(allocatedRevenue)) : round2(merchandiseRevenue.times(money(line.total)).div(revenueBasis));
+    const role: AccountRole =
+      input.sourceType === "WORKORDER"
+        ? "SALES_FLEX"
+        : isDigital
+          ? "OTHER_REVENUE"
+          : line.kind === "SERVICE"
+            ? "SALES_PRINT"
+            : "SALES_STATIONERY";
+    const lineRevenue =
+      index === revenueLines.length - 1
+        ? round2(merchandiseRevenue.minus(allocatedRevenue))
+        : round2(merchandiseRevenue.times(money(line.total)).div(revenueBasis));
     allocatedRevenue = allocatedRevenue.plus(lineRevenue);
-    revenueByRole.set(role, round2((revenueByRole.get(role) ?? money(0)).plus(lineRevenue)));
+    revenueByRole.set(
+      role,
+      round2((revenueByRole.get(role) ?? money(0)).plus(lineRevenue)),
+    );
   }
-  const saleProfile: PostingProfile = input.sourceType === "WORKORDER" ? "SALE_SERVICE_FLEX" : saleClasses.size > 1 ? "SALE_MIXED" : saleClasses.has("DIGITAL") ? "SALE_DIGITAL" : saleClasses.has("SERVICE") ? "SALE_SERVICE" : saleClasses.has("CONSIGNMENT") ? "SALE_CONSIGNMENT" : "SALE_INVENTORY";
-  const appliedCustomerDeposit = input.allowPreCollectedOverpay === true ? money(0) : preCollectedD;
+  const saleProfile: PostingProfile =
+    input.sourceType === "WORKORDER"
+      ? "SALE_SERVICE_FLEX"
+      : saleClasses.size > 1
+        ? "SALE_MIXED"
+        : saleClasses.has("DIGITAL")
+          ? "SALE_DIGITAL"
+          : saleClasses.has("SERVICE")
+            ? "SALE_SERVICE"
+            : saleClasses.has("CONSIGNMENT")
+              ? "SALE_CONSIGNMENT"
+              : "SALE_INVENTORY";
+  const appliedCustomerDeposit =
+    input.allowPreCollectedOverpay === true ? money(0) : preCollectedD;
   const salePostingLines = [
-    ...(money(totals.total).isZero() ? [] : [debitLine("AR", money(totals.total))]),
+    ...(money(totals.total).isZero()
+      ? []
+      : [debitLine("AR", money(totals.total))]),
     ...Array.from(revenueByRole.entries())
       .filter(([, amount]) => !amount.isZero())
       .map(([role, amount]) => creditLine(role, amount)),
-    ...(deliveryFeeD.isZero() ? [] : [creditLine("DELIVERY_REVENUE", deliveryFeeD)]),
-    ...(money(totals.taxAmount).isZero() ? [] : [creditLine("TAX_PAYABLE", money(totals.taxAmount))]),
-    ...(ownedInventoryCost.isZero() ? [] : [debitLine("COGS", ownedInventoryCost), creditLine("INVENTORY", ownedInventoryCost)]),
-    ...(appliedCustomerDeposit.isZero() ? [] : [debitLine("OTHER_LIABILITY", appliedCustomerDeposit), creditLine("AR", appliedCustomerDeposit)]),
+    ...(deliveryFeeD.isZero()
+      ? []
+      : [creditLine("DELIVERY_REVENUE", deliveryFeeD)]),
+    ...(money(totals.taxAmount).isZero()
+      ? []
+      : [creditLine("TAX_PAYABLE", money(totals.taxAmount))]),
+    ...(ownedInventoryCost.isZero()
+      ? []
+      : [
+          debitLine("COGS", ownedInventoryCost),
+          creditLine("INVENTORY", ownedInventoryCost),
+        ]),
+    ...(appliedCustomerDeposit.isZero()
+      ? []
+      : [
+          debitLine("OTHER_LIABILITY", appliedCustomerDeposit),
+          creditLine("AR", appliedCustomerDeposit),
+        ]),
   ];
   const salePostingSource = {
-    roleDebits: { AR: money(totals.total), OTHER_LIABILITY: appliedCustomerDeposit, COGS: ownedInventoryCost },
+    roleDebits: {
+      AR: money(totals.total),
+      OTHER_LIABILITY: appliedCustomerDeposit,
+      COGS: ownedInventoryCost,
+    },
     roleCredits: {
       AR: appliedCustomerDeposit,
       SALES_STATIONERY: revenueByRole.get("SALES_STATIONERY") ?? money(0),
@@ -1478,7 +1940,14 @@ export async function createSaleInTx(
       WORK_IN_PROGRESS: money(0),
     },
   };
-  const salePostingIntent = salePostingLines.length ? createPostingIntent(saleProfile, "SALE", salePostingLines, salePostingSource) : null;
+  const salePostingIntent = salePostingLines.length
+    ? createPostingIntent(
+        saleProfile,
+        "SALE",
+        salePostingLines,
+        salePostingSource,
+      )
+    : null;
   // فاتورة هدايا صِرفة لا تملك SALE مالياً؛ قيدها الوحيد GIFT_OUT أدناه. لا ننشئ
   // SALE صفرياً بلا journal profile لأن ذلك ليس حدثاً مالياً في دفتر المبيعات.
   if (salePostingIntent) {
@@ -1493,7 +1962,7 @@ export async function createSaleInTx(
       profit: revenue.minus(ledgerOwnedCogs),
       taxAmount: money(totals.taxAmount),
       amount: money(totals.total),
-      createdBy: sellerUserId,
+      createdBy: actor.userId,
       createdByNameSnapshot: salespersonNameSnapshot,
       notes: analyticalInvoiceCost.eq(ledgerOwnedCogs)
         ? undefined
@@ -1509,7 +1978,11 @@ export async function createSaleInTx(
   // العمولة** لأنّ الوعاء يفلتر `entryType IN ('SALE','RETURN')` — فالبائع لا يُكافأ على إهداء
   // ولا يُعاقَب به. `dedupeKey` حارسٌ بنيويّ: قيد هدايا واحد لكل فاتورة (نظير SALE:${invoiceId}).
   if (giftCostD.gt(0)) {
-    const giftPosting = classifyGiftPosting(giftCostD, ownedGiftInventoryCost, 1);
+    const giftPosting = classifyGiftPosting(
+      giftCostD,
+      ownedGiftInventoryCost,
+      1,
+    );
     await postEntry(tx, {
       entryType: "GIFT_OUT",
       dedupeKey: `GIFT:INV:${invoiceId}`,
@@ -1524,7 +1997,7 @@ export async function createSaleInTx(
       postingIntent: giftPosting.intent,
       postingSourceComponents: giftPosting.sourceComponents,
     });
-      }
+  }
 
   // 11.أ بضاعة الأمانة (ش٣): التقاط التزام المودِع لحظة البيع. طريقة الإجمالي — قيد SALE أعلاه لم يُمسّ
   // (revenue كامل، الربح=الهامش لأن الحصة داخل unitCost). لكل مودِع: قيد PURCHASE **يتيم** بـinvoiceId
@@ -1532,174 +2005,241 @@ export async function createSaleInTx(
   {
     // ترتيب supplierId تصاعدياً — منع deadlock (مرآة ترتيب variantId في حركات المخزون).
     for (const cId of Array.from(byConsignor.keys()).sort((a, b) => a - b)) {
-        const split = byConsignor.get(cId)!;
+      const split = byConsignor.get(cId)!;
       const paidShare = round2(split.paid);
       const giftShare = round2(split.gift);
       const amount = round2(paidShare.plus(giftShare));
       if (amount.lte(0)) continue;
-        await postEntry(tx, {
-          entryType: "PURCHASE", supplierId: cId, invoiceId, branchId: input.branchId,
-          amount, revenue: money(0), cost: paidShare, profit: paidShare.neg(),
-          dedupeKey: `CONSIG:${invoiceId}:${cId}`,
-          notes: `استحقاق أمانة؛ COGS مبسّط=${toDbMoney(paidShare)}؛ هدايا=${toDbMoney(giftShare)}`,
-        postingIntent: createPostingIntent("PURCHASE_CONSIGNMENT", "PURCHASE", [...(paidShare.isZero() ? [] : [debitLine("COGS", paidShare)]), ...(giftShare.isZero() ? [] : [debitLine("GIFTS_PROMO", giftShare)]), creditLine("CONSIGNMENT_PAYABLE", amount)], { roleDebits: { COGS: paidShare, GIFTS_PROMO: giftShare }, roleCredits: { CONSIGNMENT_PAYABLE: amount } }),
-        postingSourceComponents: { roleDebits: { COGS: paidShare, GIFTS_PROMO: giftShare }, roleCredits: { CONSIGNMENT_PAYABLE: amount } },
-      });
-        await adjustSupplierBalance(tx, cId, amount);
-      }
-    }
-
-    // 11.b تسوية التقريب النقدي: قيد ADJUST بفرق التقريب ⇒ (SALE.amount + ADJUST.amount) = الإجمالي المقرّب = النقد المستلم.
-    // G6 (١٩/٦/٢٦): dedupeKey حارس ضدّ تكرار ADJUST لو حدثت إعادة محاولة بعد ER_DUP_ENTRY
-    // (tx.atomicity تحمي نظرياً، لكن dedupeKey defense-in-depth صريح).
-    if (!cashRoundingAdj.isZero()) {
       await postEntry(tx, {
-        entryType: "ADJUST",
-        dedupeKey: `ADJUST:IQD:${invoiceId}`,
-        branchId: input.branchId,
+        entryType: "PURCHASE",
+        supplierId: cId,
         invoiceId,
-        customerId: input.customerId ?? null,
-        revenue: cashRoundingAdj,
-        profit: cashRoundingAdj,
-        amount: cashRoundingAdj,
-        notes: "تقريب نقدي IQD",
-      postingIntent: createPostingIntent("ADJUST_ROUNDING", "ADJUST", signedPostingLines("AR", "ROUNDING_DIFF", cashRoundingAdj)),
+        branchId: input.branchId,
+        amount,
+        revenue: money(0),
+        cost: paidShare,
+        profit: paidShare.neg(),
+        dedupeKey: `CONSIG:${invoiceId}:${cId}`,
+        notes: `استحقاق أمانة؛ COGS مبسّط=${toDbMoney(paidShare)}؛ هدايا=${toDbMoney(giftShare)}`,
+        postingIntent: createPostingIntent(
+          "PURCHASE_CONSIGNMENT",
+          "PURCHASE",
+          [
+            ...(paidShare.isZero() ? [] : [debitLine("COGS", paidShare)]),
+            ...(giftShare.isZero()
+              ? []
+              : [debitLine("GIFTS_PROMO", giftShare)]),
+            creditLine("CONSIGNMENT_PAYABLE", amount),
+          ],
+          {
+            roleDebits: { COGS: paidShare, GIFTS_PROMO: giftShare },
+            roleCredits: { CONSIGNMENT_PAYABLE: amount },
+          },
+        ),
+        postingSourceComponents: {
+          roleDebits: { COGS: paidShare, GIFTS_PROMO: giftShare },
+          roleCredits: { CONSIGNMENT_PAYABLE: amount },
+        },
+      });
+      await adjustSupplierBalance(tx, cId, amount);
+    }
+  }
+
+  // 11.b تسوية التقريب النقدي: قيد ADJUST بفرق التقريب ⇒ (SALE.amount + ADJUST.amount) = الإجمالي المقرّب = النقد المستلم.
+  // G6 (١٩/٦/٢٦): dedupeKey حارس ضدّ تكرار ADJUST لو حدثت إعادة محاولة بعد ER_DUP_ENTRY
+  // (tx.atomicity تحمي نظرياً، لكن dedupeKey defense-in-depth صريح).
+  if (!cashRoundingAdj.isZero()) {
+    await postEntry(tx, {
+      entryType: "ADJUST",
+      dedupeKey: `ADJUST:IQD:${invoiceId}`,
+      branchId: input.branchId,
+      invoiceId,
+      customerId: input.customerId ?? null,
+      revenue: cashRoundingAdj,
+      profit: cashRoundingAdj,
+      amount: cashRoundingAdj,
+      notes: "تقريب نقدي IQD",
+      postingIntent: createPostingIntent(
+        "ADJUST_ROUNDING",
+        "ADJUST",
+        signedPostingLines("AR", "ROUNDING_DIFF", cashRoundingAdj),
+      ),
     });
-    }
+  }
 
-    // 12. Payment + AR.
-    //     ش٤ (I5): الإيصال والقيد للجزء **الجديد** وحده (newMoneyD) — المقبوض سلفاً له إيصاله
-    //     وقيده منذ لحظة القبض (deposits.ts)، وإنشاء ثانٍ له = نقدٌ وهميّ يمنع إغلاق الوردية.
-    if (newMoneyD.gt(0)) {
-      const rRes = await tx.insert(receipts).values({
-        invoiceId,
-        branchId: input.branchId,
-        shiftId: input.shiftId ?? null,
-        // cashBucket=DRAWER للنقد (يدخل تسوية Z-report)، NULL لغير النقد (لا يَمسّ صندوقاً).
-        // مرآة لنمط voucherService — يَحرس مستقبلاً صيَغ reconcile/cashOrphans التي تَفلتر بـcashBucket.
-        cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
-        direction: "IN",
-        amount: toDbMoney(newMoneyD),
-        paymentMethod: input.payment!.method,
-        referenceNumber: input.payment!.reference?.trim() || null,
-        status: "COMPLETED",
-        approvalStatus: "APPROVED",
-        createdBy: actor.userId,
-      });
-      const receiptId = extractInsertId(rRes);
-      const paymentRole = paymentAssetRole(input.payment!.method, input.payment!.method === "CASH" ? "DRAWER" : null, "IN");
-      const paymentPostingSource = {
-        roleDebits: { [paymentRole]: newMoneyD },
-        roleCredits: { AR: newMoneyD },
-      };
-      await postEntry(tx, {
-        entryType: "PAYMENT_IN",
-        branchId: input.branchId,
-        invoiceId,
-        receiptId,
-        customerId: input.customerId ?? null,
-        amount: newMoneyD,
-      postingIntent: createPostingIntent("PAYMENT_IN_CUSTOMER", "PAYMENT_IN", [debitLine(paymentRole, newMoneyD), creditLine("AR", newMoneyD)], paymentPostingSource),
+  // 12. Payment + AR.
+  //     ش٤ (I5): الإيصال والقيد للجزء **الجديد** وحده (newMoneyD) — المقبوض سلفاً له إيصاله
+  //     وقيده منذ لحظة القبض (deposits.ts)، وإنشاء ثانٍ له = نقدٌ وهميّ يمنع إغلاق الوردية.
+  if (newMoneyD.gt(0)) {
+    const rRes = await tx.insert(receipts).values({
+      invoiceId,
+      branchId: input.branchId,
+      shiftId: input.shiftId ?? null,
+      // cashBucket=DRAWER للنقد (يدخل تسوية Z-report)، NULL لغير النقد (لا يَمسّ صندوقاً).
+      // مرآة لنمط voucherService — يَحرس مستقبلاً صيَغ reconcile/cashOrphans التي تَفلتر بـcashBucket.
+      cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
+      direction: "IN",
+      amount: toDbMoney(newMoneyD),
+      paymentMethod: input.payment!.method,
+      referenceNumber: input.payment!.reference?.trim() || null,
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      createdBy: actor.userId,
+    });
+    const receiptId = extractInsertId(rRes);
+    const paymentRole = paymentAssetRole(
+      input.payment!.method,
+      input.payment!.method === "CASH" ? "DRAWER" : null,
+      "IN",
+    );
+    const paymentPostingSource = {
+      roleDebits: { [paymentRole]: newMoneyD },
+      roleCredits: { AR: newMoneyD },
+    };
+    await postEntry(tx, {
+      entryType: "PAYMENT_IN",
+      branchId: input.branchId,
+      invoiceId,
+      receiptId,
+      customerId: input.customerId ?? null,
+      amount: newMoneyD,
+      postingIntent: createPostingIntent(
+        "PAYMENT_IN_CUSTOMER",
+        "PAYMENT_IN",
+        [debitLine(paymentRole, newMoneyD), creditLine("AR", newMoneyD)],
+        paymentPostingSource,
+      ),
       postingSourceComponents: paymentPostingSource,
     });
-    }
-    // إيصالات المقبوض سلفاً المُمرَّرة صراحةً تُختم بالفاتورة فقط (append-only — نمط deliver.ts).
-    for (const preReceiptId of input.preCollected?.receiptIds ?? []) {
-      await tx
-        .update(receipts)
-        .set({ invoiceId })
-        .where(and(eq(receipts.id, preReceiptId), sql`${receipts.invoiceId} IS NULL`));
-    }
-    if (input.customerId) {
-      await adjustCustomerBalance(tx, input.customerId, effectiveTotalD.minus(paidNow));
-      if (effectiveTotalD.gt(paidNow)) {
-        await autoSettleCustomerAccountTx(tx, input.customerId, actor);
-      }
-    }
-    if (input.clientRequestId && requestFingerprint) {
-      await recordIdempotencyKey(tx, "sale.create", input.clientRequestId, invoiceId, requestFingerprint);
-    }
-
-    // ── م١ (PR-1): أمانةُ أجرة التوصيل ثمّ الإسناد — داخل معاملة البيع نفسها ─────────────────
-    // (قرار المالك ٦/٨): متبقّي فاتورة التوصيل عهدةٌ على المندوب تُرفع في اللحظة التي تُنشأ فيها
-    // الفاتورة — لا لحظةَ واحدة يكون فيها مالٌ بلا مالك: إمّا (فاتورة + إرسالية) معاً وإمّا لا شيء.
-    // الترتيب مقصود: إيصال الأمانة أوّلاً — `dispatchInvoiceInTx` يشترط وجوده لقبول COUNTER.
-    // Codex #1006/#1012 P2 — احلل أجرةَ الجهة الافتراضيّة مرّةً هنا لتقرأها بوّابةُ الأمانة والإسناد
-    // معاً: `delivery.fee = null` يعني `deliveryParties.defaultFee`؛ والمقارنةُ بصفرٍ قبل الحلّ كانت
-    // ترفض أمانةً = الأجرة الافتراضية (بوّابة الأمانة)، ثمّ ترفض الأمانة الغائبة (بوّابة COUNTER في الإسناد).
-    let resolvedDeliveryFee: string | null = null;
-    if (input.delivery) {
-      resolvedDeliveryFee = input.delivery.fee ?? null;
-      if (resolvedDeliveryFee == null) {
-        const dp = (
-          await tx
-            .select({ defaultFee: deliveryParties.defaultFee })
-            .from(deliveryParties)
-            .where(eq(deliveryParties.id, input.delivery.partyId))
-            .limit(1)
-        )[0];
-        resolvedDeliveryFee = dp?.defaultFee ?? "0";
-      }
-    }
-    const feeHeldD = round2(money(input.deliveryFeeHeld ?? "0"));
-    if (feeHeldD.gt(0)) {
-      assertDeliveryFeeHeldConsistent(
-        feeHeldD,
-        input.delivery ? { fee: resolvedDeliveryFee, feeCollection: input.delivery.feeCollection ?? null } : null,
+  }
+  // إيصالات المقبوض سلفاً المُمرَّرة صراحةً تُختم بالفاتورة فقط (append-only — نمط deliver.ts).
+  for (const preReceiptId of input.preCollected?.receiptIds ?? []) {
+    await tx
+      .update(receipts)
+      .set({ invoiceId })
+      .where(
+        and(eq(receipts.id, preReceiptId), sql`${receipts.invoiceId} IS NULL`),
       );
-      await recordDeliveryFeeHeldInTx(tx, {
-        branchId: input.branchId,
-        shiftId: input.shiftId ?? null,
-        invoiceId,
-        amount: feeHeldD,
-        actorUserId: actor.userId,
-        description: "أجرة توصيل مقبوضة أمانةً للمندوب — بيع مباشر",
-      });
+  }
+  if (input.customerId) {
+    await adjustCustomerBalance(
+      tx,
+      input.customerId,
+      effectiveTotalD.minus(paidNow),
+    );
+    if (effectiveTotalD.gt(paidNow)) {
+      await autoSettleCustomerAccountTx(tx, input.customerId, actor);
     }
-    let dispatched: { consignmentId: number; consignmentNumber: string } | null = null;
-    if (input.delivery) {
-      const d = await dispatchInvoiceInTx(
-        tx,
-        {
-          invoiceId,
-          partyId: input.delivery.partyId,
-          // م١: الأجرة المحلولة (الافتراضية إن غابت `delivery.fee`) — تقرأها بوّابةُ COUNTER وسطرُ
-          // الأجرة معاً، فلا تختلف قيمةُ الفحص عن قيمة الإسناد (Codex #1006/#1012 P2).
-          deliveryFee: resolvedDeliveryFee,
-          feeCollection: input.delivery.feeCollection ?? "COURIER",
-          recipientName: input.delivery.recipientName ?? input.contactName ?? null,
-          recipientPhone: input.delivery.recipientPhone ?? input.contactPhone ?? null,
-          deliveryAddress: input.delivery.address ?? null,
-          governorate: input.delivery.governorate ?? null,
-          externalTrackingRef: input.delivery.externalTrackingRef ?? null,
-          clientRequestId: input.clientRequestId ? `${input.clientRequestId}-dispatch` : null,
-        },
-        { userId: actor.userId, branchId: actor.branchId ?? null, role: actor.role },
-      );
-      dispatched = { consignmentId: d.consignmentId, consignmentNumber: d.consignmentNumber };
-    }
-
-    return {
+  }
+  if (input.clientRequestId && requestFingerprint) {
+    await recordIdempotencyKey(
+      tx,
+      "sale.create",
+      input.clientRequestId,
       invoiceId,
-      invoiceNumber,
-      // G3: نُعيد shiftId المُثبَّت الآن — يطابق مسار الـidempotent replay أعلاه.
+      requestFingerprint,
+    );
+  }
+
+  // ── م١ (PR-1): أمانةُ أجرة التوصيل ثمّ الإسناد — داخل معاملة البيع نفسها ─────────────────
+  // (قرار المالك ٦/٨): متبقّي فاتورة التوصيل عهدةٌ على المندوب تُرفع في اللحظة التي تُنشأ فيها
+  // الفاتورة — لا لحظةَ واحدة يكون فيها مالٌ بلا مالك: إمّا (فاتورة + إرسالية) معاً وإمّا لا شيء.
+  // الترتيب مقصود: إيصال الأمانة أوّلاً — `dispatchInvoiceInTx` يشترط وجوده لقبول COUNTER.
+  // Codex #1006/#1012 P2 — احلل أجرةَ الجهة الافتراضيّة مرّةً هنا لتقرأها بوّابةُ الأمانة والإسناد
+  // معاً: `delivery.fee = null` يعني `deliveryParties.defaultFee`؛ والمقارنةُ بصفرٍ قبل الحلّ كانت
+  // ترفض أمانةً = الأجرة الافتراضية (بوّابة الأمانة)، ثمّ ترفض الأمانة الغائبة (بوّابة COUNTER في الإسناد).
+  let resolvedDeliveryFee: string | null = null;
+  if (input.delivery) {
+    resolvedDeliveryFee = input.delivery.fee ?? null;
+    if (resolvedDeliveryFee == null) {
+      const dp = (
+        await tx
+          .select({ defaultFee: deliveryParties.defaultFee })
+          .from(deliveryParties)
+          .where(eq(deliveryParties.id, input.delivery.partyId))
+          .limit(1)
+      )[0];
+      resolvedDeliveryFee = dp?.defaultFee ?? "0";
+    }
+  }
+  const feeHeldD = round2(money(input.deliveryFeeHeld ?? "0"));
+  if (feeHeldD.gt(0)) {
+    assertDeliveryFeeHeldConsistent(
+      feeHeldD,
+      input.delivery
+        ? {
+            fee: resolvedDeliveryFee,
+            feeCollection: input.delivery.feeCollection ?? null,
+          }
+        : null,
+    );
+    await recordDeliveryFeeHeldInTx(tx, {
+      branchId: input.branchId,
       shiftId: input.shiftId ?? null,
-      total: toDbMoney(effectiveTotalD),
-      status,
-      priceOverride: belowCost || manualDiscountGateTriggered,
-      // هدايا الفاتورة: تكلفة ما أُهدي (للأثر التدقيقيّ في الراوتر — مَن أهدى وبكم).
-      ...(giftCostD.gt(0) ? { giftCost: giftCostD.toFixed(2) } : {}),
-      ...(negativeDips.length ? { negativeDips } : {}),
-      ...(createdLineItems.length ? { createdLineItems } : {}),
-      ...(dispatched ?? {}),
+      invoiceId,
+      amount: feeHeldD,
+      actorUserId: actor.userId,
+      description: "أجرة توصيل مقبوضة أمانةً للمندوب — بيع مباشر",
+    });
+  }
+  let dispatched: { consignmentId: number; consignmentNumber: string } | null =
+    null;
+  if (input.delivery) {
+    const d = await dispatchInvoiceInTx(
+      tx,
+      {
+        invoiceId,
+        partyId: input.delivery.partyId,
+        // م١: الأجرة المحلولة (الافتراضية إن غابت `delivery.fee`) — تقرأها بوّابةُ COUNTER وسطرُ
+        // الأجرة معاً، فلا تختلف قيمةُ الفحص عن قيمة الإسناد (Codex #1006/#1012 P2).
+        deliveryFee: resolvedDeliveryFee,
+        feeCollection: input.delivery.feeCollection ?? "COURIER",
+        recipientName:
+          input.delivery.recipientName ?? input.contactName ?? null,
+        recipientPhone:
+          input.delivery.recipientPhone ?? input.contactPhone ?? null,
+        deliveryAddress: input.delivery.address ?? null,
+        governorate: input.delivery.governorate ?? null,
+        externalTrackingRef: input.delivery.externalTrackingRef ?? null,
+        clientRequestId: input.clientRequestId
+          ? `${input.clientRequestId}-dispatch`
+          : null,
+      },
+      {
+        userId: actor.userId,
+        branchId: actor.branchId ?? null,
+        role: actor.role,
+      },
+    );
+    dispatched = {
+      consignmentId: d.consignmentId,
+      consignmentNumber: d.consignmentNumber,
     };
+  }
+
+  return {
+    invoiceId,
+    invoiceNumber,
+    // G3: نُعيد shiftId المُثبَّت الآن — يطابق مسار الـidempotent replay أعلاه.
+    shiftId: input.shiftId ?? null,
+    total: toDbMoney(effectiveTotalD),
+    status,
+    priceOverride: belowCost || manualDiscountGateTriggered,
+    // هدايا الفاتورة: تكلفة ما أُهدي (للأثر التدقيقيّ في الراوتر — مَن أهدى وبكم).
+    ...(giftCostD.gt(0) ? { giftCost: giftCostD.toFixed(2) } : {}),
+    ...(negativeDips.length ? { negativeDips } : {}),
+    ...(createdLineItems.length ? { createdLineItems } : {}),
+    ...(dispatched ?? {}),
+  };
 }
 
-export async function createSale(input: CreateSaleInput, actor: Actor): Promise<CreateSaleResult> {
-  const result = await withTx(
-    async (tx) => createSaleInTx(tx, input, actor),
-    { gate: "FINANCIAL_WRITER" },
-  );
+export async function createSale(
+  input: CreateSaleInput,
+  actor: Actor,
+): Promise<CreateSaleResult> {
+  const result = await withTx(async (tx) => createSaleInTx(tx, input, actor), {
+    gate: "FINANCIAL_WRITER",
+  });
 
   // إشعار الشكر (T4.2، خلف مفتاح flowPurchaseThanks) — خارج معاملة البيع تماماً وبعد نجاحها فقط.
   // ⚠️ لا يمسّ ذرّية البيع أبداً: يعمل بعد الالتزام (commit) لا داخله، ومحمي بغلاف دفاعيّ هنا فوق
@@ -1709,7 +2249,10 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     await notifySaleCustomerAfterCommit(input, result);
   } catch (e) {
     logger.warn(
-      { err: e instanceof Error ? e.message : String(e), invoiceId: result.invoiceId },
+      {
+        err: e instanceof Error ? e.message : String(e),
+        invoiceId: result.invoiceId,
+      },
       "sale: تعذّر إرسال إشعار الشكر — تُجوهل",
     );
   }
@@ -1719,11 +2262,18 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
 
 /** يجلب هاتف/اسم عميل الفاتورة (إن عُرف) ويستدعي flowNotify — لا شيء إن لا عميل/لا هاتف. */
 /** Post-commit customer acknowledgement, reusable by composite sale flows. */
-export async function notifySaleCustomerAfterCommit(input: CreateSaleInput, result: CreateSaleResult): Promise<void> {
+export async function notifySaleCustomerAfterCommit(
+  input: CreateSaleInput,
+  result: CreateSaleResult,
+): Promise<void> {
   if (!input.customerId) return;
   const db = requireDb();
   const cust = (
-    await db.select({ name: customers.name, phone: customers.phone }).from(customers).where(eq(customers.id, input.customerId)).limit(1)
+    await db
+      .select({ name: customers.name, phone: customers.phone })
+      .from(customers)
+      .where(eq(customers.id, input.customerId))
+      .limit(1)
   )[0];
   if (!cust?.phone) return;
   await flowNotify({

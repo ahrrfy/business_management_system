@@ -5,11 +5,33 @@
 
 import { variantDisplayName } from "@shared/variantDisplay";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useEffect, useMemo, useRef } from "react";
-import { ShoppingCart, X, AlertTriangle, CreditCard, PackagePlus } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ShoppingCart,
+  X,
+  AlertTriangle,
+  CreditCard,
+  PackagePlus,
+  UserCheck,
+  Search,
+  Check,
+} from "lucide-react";
 import { motion } from "framer-motion";
-import { digitalOfferingDescription, digitalOfferingTypeLabel } from "@shared/digitalSale";
-import { type Tier, type NumMode, type CartItem, type PosRow, lineIdOf, fmt, effectivePrice, itemTotal, type PosColors as C } from "./posShared";
+import {
+  digitalOfferingDescription,
+  digitalOfferingTypeLabel,
+} from "@shared/digitalSale";
+import {
+  type Tier,
+  type NumMode,
+  type CartItem,
+  type PosRow,
+  lineIdOf,
+  fmt,
+  effectivePrice,
+  itemTotal,
+  type PosColors as C,
+} from "./posShared";
 import { formatQuantity } from "@shared/quantityFormat";
 import { CartCustomerButton } from "./CartCustomerButton";
 import { CartDeliveryPanel } from "./CartDeliveryPanel";
@@ -17,26 +39,227 @@ import { CartPanelFooter } from "./CartPanelFooter";
 import { PosUnitSelector } from "./PosUnitSelector";
 import type { DeliveryCustomerIdentity } from "./DeliveryCustomerSection";
 import { emptyDeliveryDraft, type DeliveryDraft } from "./deliveryMode";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+
+export interface CartSalesRepButtonProps {
+  C: C;
+  salesRepId: number | null;
+  onSelect: (repId: number | null) => void;
+}
+
+/** زر ومنتقي بائع صالة العرض في رأس السلة لاحتساب العمولات وإسناد المبيعات */
+export function CartSalesRepButton({
+  C,
+  salesRepId,
+  onSelect,
+}: CartSalesRepButtonProps) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const empsQ = trpc.employees.list.useQuery(
+    { status: "active", limit: 100 },
+    { staleTime: 60_000 },
+  );
+  const reps = empsQ.data?.rows ?? [];
+
+  const selectedRep = useMemo(
+    () =>
+      salesRepId
+        ? (reps.find((r) => Number(r.id) === salesRepId) ?? null)
+        : null,
+    [reps, salesRepId],
+  );
+
+  const filtered = useMemo(() => {
+    if (!query) return reps;
+    const q = query.toLowerCase();
+    return reps.filter(
+      (r) =>
+        r.fullName?.toLowerCase().includes(q) ||
+        r.position?.toLowerCase().includes(q),
+    );
+  }, [reps, query]);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        title="تحديد بائع صالة العرض أو المستشار الفني المسند للبيع"
+        style={{
+          height: 34,
+          padding: "0 10px",
+          background: salesRepId ? C.primarySoft : C.card,
+          border: `1.5px solid ${salesRepId ? C.primary : C.border}`,
+          borderRadius: 8,
+          cursor: "pointer",
+          fontFamily: "inherit",
+          fontSize: 12.5,
+          fontWeight: 700,
+          color: salesRepId ? C.primary : C.fg,
+          display: "flex",
+          alignItems: "center",
+          gap: 5,
+          whiteSpace: "nowrap",
+        }}
+      >
+        <UserCheck size={14} aria-hidden />
+        {selectedRep ? selectedRep.fullName : "بائع الصالة"}
+        {salesRepId && (
+          <span
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect(null);
+            }}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 16,
+              height: 16,
+              borderRadius: "50%",
+              background: C.muted,
+              marginLeft: 2,
+            }}
+          >
+            <X size={10} aria-hidden />
+          </span>
+        )}
+      </button>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-md" dir="rtl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base font-bold">
+              <UserCheck className="size-5 text-primary" aria-hidden />
+              اختيار بائع صالة العرض (Sales Rep Attribution)
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              إسناد الفاتورة لبائع الصالة المباشر لاحتساب عمولته العادلة أو
+              الإبقاء على كاشير نقطة البيع.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2">
+            <div className="relative">
+              <Search
+                className="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-muted-foreground"
+                aria-hidden
+              />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="بحث باسم بائع الصالة أو المسمى…"
+                className="pr-9 h-9 text-sm"
+              />
+            </div>
+
+            <div className="max-h-60 overflow-y-auto space-y-1 border rounded-lg p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  onSelect(null);
+                  setOpen(false);
+                }}
+                className={cn(
+                  "w-full text-start flex items-center justify-between p-2 rounded-md text-xs font-semibold cursor-pointer transition-colors",
+                  salesRepId == null
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-muted",
+                )}
+              >
+                <span>الكاشير مباشرة (بدون بائع صالة مستقل)</span>
+                {salesRepId == null && <Check className="size-4" aria-hidden />}
+              </button>
+
+              {filtered.map((r) => {
+                const isSelected = salesRepId === Number(r.id);
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => {
+                      onSelect(Number(r.id));
+                      setOpen(false);
+                    }}
+                    className={cn(
+                      "w-full text-start flex items-center justify-between p-2 rounded-md text-xs transition-colors cursor-pointer",
+                      isSelected
+                        ? "bg-primary text-primary-foreground font-semibold"
+                        : "hover:bg-muted",
+                    )}
+                  >
+                    <div>
+                      <div className="font-bold">{r.fullName}</div>
+                      <div
+                        className={cn(
+                          "text-[11px]",
+                          isSelected
+                            ? "text-primary-foreground/80"
+                            : "text-muted-foreground",
+                        )}
+                      >
+                        {r.position || "موظف صالة"}{" "}
+                        {r.branchName ? `· ${r.branchName}` : ""}
+                      </div>
+                    </div>
+                    {isSelected && <Check className="size-4" aria-hidden />}
+                  </button>
+                );
+              })}
+
+              {filtered.length === 0 && (
+                <div className="p-4 text-center text-xs text-muted-foreground">
+                  لا يوجد موظفون مطابقون للبحث
+                </div>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2 sm:justify-start">
+            <Button variant="outline" size="sm" onClick={() => setOpen(false)}>
+              إغلاق
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
 
 export interface CartPanelProps {
   C: C;
   branchId: number;
   branchName: string;
-  cart: CartItem[]; total: number;
-  selId: number | null; setSelId: (id: number | null) => void;
+  cart: CartItem[];
+  total: number;
+  selId: number | null;
+  setSelId: (id: number | null) => void;
   changeQty: (id: number, qty: number) => void;
   removeRow: (id: number) => void;
   onUnitChange?: (oldUnitId: number, newRow: PosRow) => void;
-  numMode: NumMode; setNumMode: (m: NumMode) => void;
+  numMode: NumMode;
+  setNumMode: (m: NumMode) => void;
   customerId: number | null;
   selectedCustomer:
     | RouterOutputs["customers"]["list"][number]
     | NonNullable<RouterOutputs["customers"]["get"]>
     | null;
-  tierOverride: Tier | null; effectiveTier: Tier;
+  tierOverride: Tier | null;
+  effectiveTier: Tier;
   setTierOvr: (v: Tier | null) => void;
   setCustId: (id: number | null) => void;
-  showCustPicker: boolean; setShowCustPicker: (v: boolean) => void;
+  showCustPicker: boolean;
+  setShowCustPicker: (v: boolean) => void;
   onClear: () => void;
   /** «وضع الافتتاح» فعّال الآن (لافتة + وسم «غير مجرود» بدل «نافذ» المخيف). */
   openingActive: boolean;
@@ -51,9 +274,54 @@ export interface CartPanelProps {
   onDeliveryIdentity: (identity: DeliveryCustomerIdentity) => void;
   deliveryDisabledReason: string | null;
   customerBalance: string | null;
+  salesRepId?: number | null;
+  onSalesRepChange?: (repId: number | null) => void;
 }
 
-export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, changeQty, removeRow, onUnitChange, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd, addTick, tabId, delivery, onDeliveryChange, onDeliveryIdentity, deliveryDisabledReason, customerBalance }: CartPanelProps) {
+export function CartPanel({
+  C,
+  branchId,
+  branchName,
+  cart,
+  total,
+  selId,
+  setSelId,
+  changeQty,
+  removeRow,
+  onUnitChange,
+  numMode,
+  setNumMode,
+  customerId,
+  selectedCustomer,
+  tierOverride,
+  effectiveTier,
+  setTierOvr,
+  setCustId,
+  showCustPicker,
+  setShowCustPicker,
+  onClear,
+  openingActive,
+  openingEndsYmd,
+  addTick,
+  tabId,
+  delivery,
+  onDeliveryChange,
+  onDeliveryIdentity,
+  deliveryDisabledReason,
+  customerBalance,
+  salesRepId,
+  onSalesRepChange,
+}: CartPanelProps) {
+  const [internalSalesRepId, setInternalSalesRepId] = useState<number | null>(
+    null,
+  );
+  const activeSalesRepId =
+    salesRepId !== undefined ? salesRepId : internalSalesRepId;
+  const handleSalesRepChange = (id: number | null) => {
+    setInternalSalesRepId(id);
+    onSalesRepChange?.(id);
+  };
+
   const itemCount = cart.reduce((s, c) => s + c.qty, 0);
 
   // ٢٣/٨ — تمريرٌ تلقائيّ لآخر منتجٍ مُضاف (بلاغ المالك «لا يظهر المنتج المضاف حتى أنزل يدوياً»):
@@ -70,13 +338,30 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
     if (selId == null) return;
     // rAF: التمرير بعد الرسم كي نضمن أنّ الصفَّ في DOM وارتفاعه محسوب.
     const raf = requestAnimationFrame(() => {
-      selectedRowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+      selectedRowRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+        inline: "nearest",
+      });
     });
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addTick]);
-  const TH: React.CSSProperties = { padding: "6px 8px", fontWeight: 700, fontSize: 12, color: C.mutedFg, textAlign: "center", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.muted };
-  const TD: React.CSSProperties = { padding: "5px 6px", textAlign: "center", fontSize: 13 };
+  const TH: React.CSSProperties = {
+    padding: "6px 8px",
+    fontWeight: 700,
+    fontSize: 12,
+    color: C.mutedFg,
+    textAlign: "center",
+    borderBottom: `1px solid ${C.border}`,
+    whiteSpace: "nowrap",
+    background: C.muted,
+  };
+  const TD: React.CSSProperties = {
+    padding: "5px 6px",
+    textAlign: "center",
+    fontSize: 13,
+  };
 
   // حارس مخزون ليّن (إشارة بصرية فقط؛ الذرّية يفرضها الخادم في applyMovement). نجمع الطلب بالوحدة
   // الأساس لكل صنف (variant) عبر كل وحداته في السلّة، لأنّ رصيد الفرع (stockBase) واحدٌ للصنف
@@ -91,7 +376,14 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
     return map;
   }, [cart]);
   const reservationVariantIds = useMemo(
-    () => Array.from(new Set(cart.filter((item) => !item.row.isService && !item.digital).map((item) => item.row.variantId))),
+    () =>
+      Array.from(
+        new Set(
+          cart
+            .filter((item) => !item.row.isService && !item.digital)
+            .map((item) => item.row.variantId),
+        ),
+      ),
     [cart],
   );
   const allocationsQ = trpc.reservations.activeAllocations.useQuery(
@@ -105,58 +397,120 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
   const deliveryGovernorate = delivery?.governorate ?? "";
   const partySuggestionQ = trpc.delivery.suggestPartyForZone.useQuery(
     { governorate: deliveryGovernorate },
-    { enabled: delivery != null && deliveryGovernorate.length > 0 && deliveryDisabledReason == null, staleTime: 60_000 },
+    {
+      enabled:
+        delivery != null &&
+        deliveryGovernorate.length > 0 &&
+        deliveryDisabledReason == null,
+      staleTime: 60_000,
+    },
   );
-  const allocationsByVariant = new Map<number, NonNullable<typeof allocationsQ.data>>();
+  const allocationsByVariant = new Map<
+    number,
+    NonNullable<typeof allocationsQ.data>
+  >();
   for (const allocation of allocationsQ.data ?? []) {
     const list = allocationsByVariant.get(allocation.variantId) ?? [];
     list.push(allocation);
     allocationsByVariant.set(allocation.variantId, list);
   }
   const stockState = (c: CartItem) => {
-    const convFactor  = Number(c.row.conversionFactor) || 1;
+    const convFactor = Number(c.row.conversionFactor) || 1;
     // مُنتج خِدمي: لا مَخزون ⇒ لا نَفاد ولا نَقص (الخَادم يَتجاوز فَحص المَخزون أيضاً).
     if (c.row.isService) {
-      return { isKnown: true, isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
+      return {
+        isKnown: true,
+        isOut: false,
+        isShort: false,
+        availInUnit: Number.POSITIVE_INFINITY,
+      };
     }
     // ⚠ عقدٌ محفوظ (Codex P1 على PR #733): عرضُ `stockBase` أوفلاين كـ«متاحٍ للبيع» **يكذب**
     // بشأن الحجوزات — لقطةُ الأوفلاين تحمل الرصيد الفعليّ بلا reservationStock. صنفٌ رصيدُه ١٠
     // وحجوزاتٌ نشطة ١٠ يظهر «متاح ١٠» ⇒ الكاشير يقبض ثمّ يفشل الترحيل عند العودة. `isKnown` لا
     // يوسَّع؛ إصلاحُ حقيقيّ لبلاغ الأوفلاين يستلزم إثراءَ لقطة `buildStockSnapshot` بالحجز.
     const isKnown = c.row.branchId === branchId && c.row.availableBase != null;
-    if (!isKnown) return { isKnown: false, isOut: false, isShort: false, availInUnit: 0 };
-    const availBase   = c.row.availableBase ?? c.row.stockBase ?? 0;
-    const reqBase     = demandByVariant.get(c.row.variantId) ?? c.qty * convFactor; // إجمالي طلب الصنف
-    const isOut       = availBase <= 0;                       // نافذ — لا رصيد
-    const isShort     = !isOut && reqBase > availBase;        // الطلب يتجاوز المتاح
-    const availInUnit = Math.floor(availBase / convFactor);  // المتاح بوحدة السطر
+    if (!isKnown)
+      return { isKnown: false, isOut: false, isShort: false, availInUnit: 0 };
+    const availBase = c.row.availableBase ?? c.row.stockBase ?? 0;
+    const reqBase = demandByVariant.get(c.row.variantId) ?? c.qty * convFactor; // إجمالي طلب الصنف
+    const isOut = availBase <= 0; // نافذ — لا رصيد
+    const isShort = !isOut && reqBase > availBase; // الطلب يتجاوز المتاح
+    const availInUnit = Math.floor(availBase / convFactor); // المتاح بوحدة السطر
     // «يُباع بالطلب» (0318): الخادم يُعفيه من حارس النفاد إعفاءً دائماً (`applyMovement`)، فوسمُه
     // «نافذاً» يكذب على الكاشير ويحجب زرّاً يعمل. نُطفئ **الوسم وحده** ونُبقي `availInUnit`
     // صادقاً كما هو — رصيدُه السالب هو عدّاد «مُباعٌ لم يُورَّد»، وإخفاؤه خلف ∞ يطمس الفائدة.
-    if (c.row.allowBackorder) return { isKnown: true, isOut: false, isShort: false, availInUnit };
+    if (c.row.allowBackorder)
+      return { isKnown: true, isOut: false, isShort: false, availInUnit };
     return { isKnown: true, isOut, isShort, availInUnit };
   };
   // ملخّص للشارة الدائمة في التذييل (كي لا يختفي التحذير حين ينزلق السطر المميَّز خارج الرؤية).
-  let anyOut = false, flaggedCount = 0;
+  let anyOut = false,
+    flaggedCount = 0;
   for (const c of cart) {
     const s = stockState(c);
-    if (s.isOut)        { anyOut = true; flaggedCount++; }
-    else if (s.isShort) { flaggedCount++; }
+    if (s.isOut) {
+      anyOut = true;
+      flaggedCount++;
+    } else if (s.isShort) {
+      flaggedCount++;
+    }
   }
 
   // minHeight:0 لازمٌ في الوضع المكدَّس: min-height:auto الافتراضيّ يمنع الانكماش
   // دون ارتفاع المحتوى، فيفيض العمود ويُقصّ ما تحته.
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, background: C.card, borderRadius: 10, border: `1px solid ${C.border}`, overflow: "hidden" }}>
-
+    <div
+      style={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        minWidth: 0,
+        minHeight: 0,
+        background: C.card,
+        borderRadius: 10,
+        border: `1px solid ${C.border}`,
+        overflow: "hidden",
+      }}
+    >
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 12px", height: 46, background: C.muted, borderBottom: `1px solid ${C.border}`, flexShrink: 0, gap: 8 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "0 12px",
+          height: 46,
+          background: C.muted,
+          borderBottom: `1px solid ${C.border}`,
+          flexShrink: 0,
+          gap: 8,
+        }}
+      >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontWeight: 800, fontSize: 14.5, color: C.fg, display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <span
+            style={{
+              fontWeight: 800,
+              fontSize: 14.5,
+              color: C.fg,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
             <ShoppingCart size={17} aria-hidden /> سلة المشتريات
           </span>
           {cart.length > 0 && (
-            <span style={{ background: C.primary, color: C.primaryFg, borderRadius: 12, padding: "2px 9px", fontSize: 12, fontWeight: 700 }}>
+            <span
+              style={{
+                background: C.primary,
+                color: C.primaryFg,
+                borderRadius: 12,
+                padding: "2px 9px",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
               {cart.length} منتج · {itemCount} قطعة
             </span>
           )}
@@ -175,14 +529,38 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
             showCustPicker={showCustPicker}
             setShowCustPicker={setShowCustPicker}
             delivery={delivery != null}
-            onToggleDelivery={() => onDeliveryChange(delivery ? null : emptyDeliveryDraft())}
+            onToggleDelivery={() =>
+              onDeliveryChange(delivery ? null : emptyDeliveryDraft())
+            }
             deliveryDisabledReason={deliveryDisabledReason}
           />
 
-          <span style={{ fontSize: 11.5, color: C.mutedFg }}>F2 · F4 · F12</span>
+          {/* Sales rep / assisted-by attribution picker */}
+          <CartSalesRepButton
+            C={C}
+            salesRepId={activeSalesRepId}
+            onSelect={handleSalesRepChange}
+          />
+
+          <span style={{ fontSize: 11.5, color: C.mutedFg }}>
+            F2 · F4 · F12
+          </span>
           {cart.length > 0 && (
-            <button onClick={onClear}
-              style={{ height: 34, padding: "0 10px", background: "none", border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 12.5, color: C.danger, fontFamily: "inherit", fontWeight: 700 }}>
+            <button
+              onClick={onClear}
+              style={{
+                height: 34,
+                padding: "0 10px",
+                background: "none",
+                border: `1px solid ${C.border}`,
+                borderRadius: 8,
+                cursor: "pointer",
+                fontSize: 12.5,
+                color: C.danger,
+                fontFamily: "inherit",
+                fontWeight: 700,
+              }}
+            >
               تفريغ
             </button>
           )}
@@ -194,9 +572,26 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
           متوسّط اللمعان في الوضعين فيهبط تباينُه على `C.amberSoft` دون ٤.٥:١، بينما
           `--pos-mode-fg` يُظلم فاتحاً ويُفتِح داكناً فيصمد في الحالتين. */}
       {openingActive && (
-        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", background: C.amberSoft, borderBottom: `1px solid ${C.border}`, fontSize: 12, fontWeight: 700, color: C.modeFg, flexShrink: 0 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "5px 12px",
+            background: C.amberSoft,
+            borderBottom: `1px solid ${C.border}`,
+            fontSize: 12,
+            fontWeight: 700,
+            color: C.modeFg,
+            flexShrink: 0,
+          }}
+        >
           <AlertTriangle aria-hidden size={13} />
-          وضع الافتتاح فعّال{openingEndsYmd ? ` حتى نهاية يوم ${openingEndsYmd}` : ""} — المنتج غير المجرود يُباع حتى لو نفد رصيده (ينزل بالسالب حتى جرده الافتتاحي): نقداً/بطاقةً بسدادٍ كامل، أو آجلاً لعميلٍ محدَّد (يُسجَّل ذمّةً كاملة). البيع بلا عميلٍ محدَّد يبقى صارماً.
+          وضع الافتتاح فعّال
+          {openingEndsYmd ? ` حتى نهاية يوم ${openingEndsYmd}` : ""} — المنتج
+          غير المجرود يُباع حتى لو نفد رصيده (ينزل بالسالب حتى جرده الافتتاحي):
+          نقداً/بطاقةً بسدادٍ كامل، أو آجلاً لعميلٍ محدَّد (يُسجَّل ذمّةً
+          كاملة). البيع بلا عميلٍ محدَّد يبقى صارماً.
         </div>
       )}
 
@@ -220,7 +615,9 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
       )}
 
       <div style={{ flex: 1, overflowY: "auto", overflowX: "auto" }}>
-        <table style={{ width: "100%", minWidth: 540, borderCollapse: "collapse" }}>
+        <table
+          style={{ width: "100%", minWidth: 540, borderCollapse: "collapse" }}
+        >
           <thead>
             <tr style={{ position: "sticky", top: 0, zIndex: 2 }}>
               <th style={{ ...TH, width: 32 }}>#</th>
@@ -236,108 +633,341 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
           <tbody>
             {cart.length === 0 && (
               <tr>
-                <td colSpan={8} style={{ padding: "56px 0", textAlign: "center", color: C.mutedFg }}>
-                  <div style={{ marginBottom: 10, display: "flex", justifyContent: "center", opacity: 0.55 }}>
+                <td
+                  colSpan={8}
+                  style={{
+                    padding: "56px 0",
+                    textAlign: "center",
+                    color: C.mutedFg,
+                  }}
+                >
+                  <div
+                    style={{
+                      marginBottom: 10,
+                      display: "flex",
+                      justifyContent: "center",
+                      opacity: 0.55,
+                    }}
+                  >
                     <ShoppingCart size={42} strokeWidth={1.5} aria-hidden />
                   </div>
-                  <div style={{ fontSize: 14.5, fontWeight: 600 }}>السلة فارغة</div>
-                  <div style={{ fontSize: 12.5, marginTop: 6 }}>ابحث أو امسح الباركود لإضافة المنتجات</div>
+                  <div style={{ fontSize: 14.5, fontWeight: 600 }}>
+                    السلة فارغة
+                  </div>
+                  <div style={{ fontSize: 12.5, marginTop: 6 }}>
+                    ابحث أو امسح الباركود لإضافة المنتجات
+                  </div>
                 </td>
               </tr>
             )}
             {cart.map((c, i) => {
-              const ep       = effectivePrice(c);
-              const lineId   = lineIdOf(c);
+              const ep = effectivePrice(c);
+              const lineId = lineIdOf(c);
               const selected = selId === lineId;
               // تمييز بصري + نصّ قبل محاولة الدفع (المنطق المُجمَّع للصنف في stockState أعلاه).
               const { isKnown, isOut, isShort, availInUnit } = stockState(c);
-              const allocations = allocationsByVariant.get(c.row.variantId) ?? [];
+              const allocations =
+                allocationsByVariant.get(c.row.variantId) ?? [];
               // «وضع الافتتاح»: الصنف غير المُفتتَح (openedAt فارغ) يُباع نقداً بالسالب — وسم كهرماني
               // مطمئن بدل «نافذ» الأحمر المخيف (الحارس الفعلي خادميّ؛ الآجل/غير النقدي سيُرفض هناك).
-              const openingSellable = (isOut || isShort) && openingActive && c.row.openedAt == null && !c.row.isService;
-              const rowBg  = selected ? C.primarySoft : openingSellable ? C.amberSoft : isOut ? C.dangerSoft : isShort ? C.amberSoft : "transparent";
-              const accent = openingSellable ? C.amber : isOut ? C.danger : isShort ? C.amber : "transparent";
+              const openingSellable =
+                (isOut || isShort) &&
+                openingActive &&
+                c.row.openedAt == null &&
+                !c.row.isService;
+              const rowBg = selected
+                ? C.primarySoft
+                : openingSellable
+                  ? C.amberSoft
+                  : isOut
+                    ? C.dangerSoft
+                    : isShort
+                      ? C.amberSoft
+                      : "transparent";
+              const accent = openingSellable
+                ? C.amber
+                : isOut
+                  ? C.danger
+                  : isShort
+                    ? C.amber
+                    : "transparent";
               return (
-                <motion.tr key={lineId}
+                <motion.tr
+                  key={lineId}
                   initial={{ opacity: 0, x: 12 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ duration: 0.15 }}
                   ref={selected ? selectedRowRef : undefined}
-                  onClick={() => { setSelId(lineId); setNumMode("QTY"); }}
-                  style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: rowBg, transition: "background .08s" }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = selected ? C.primarySoft : isOut ? C.dangerSoft : isShort ? C.amberSoft : C.muted; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = rowBg; }}
+                  onClick={() => {
+                    setSelId(lineId);
+                    setNumMode("QTY");
+                  }}
+                  style={{
+                    borderBottom: `1px solid ${C.border}`,
+                    cursor: "pointer",
+                    background: rowBg,
+                    transition: "background .08s",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = selected
+                      ? C.primarySoft
+                      : isOut
+                        ? C.dangerSoft
+                        : isShort
+                          ? C.amberSoft
+                          : C.muted;
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = rowBg;
+                  }}
                 >
-                  <td style={{ ...TD, color: C.mutedFg, fontWeight: 600, borderInlineStart: `4px solid ${accent}` }}>{i + 1}</td>
-                  <td style={{ ...TD, textAlign: "right", fontWeight: 800, fontSize: 19, lineHeight: 1.35, color: C.fg }}>
+                  <td
+                    style={{
+                      ...TD,
+                      color: C.mutedFg,
+                      fontWeight: 600,
+                      borderInlineStart: `4px solid ${accent}`,
+                    }}
+                  >
+                    {i + 1}
+                  </td>
+                  <td
+                    style={{
+                      ...TD,
+                      textAlign: "right",
+                      fontWeight: 800,
+                      fontSize: 19,
+                      lineHeight: 1.35,
+                      color: C.fg,
+                    }}
+                  >
                     {/* م٣: الاسم الموحّد يُظهر اللون/القياس أو اسم البديل — كان يعرض اسم المنتج وحده. */}
-                    {variantDisplayName({ productName: c.row.productName, variantName: c.row.variantName, color: c.row.color, size: c.row.size })}
-                    <span style={{ fontSize: 13, color: C.mutedFg, fontWeight: 500, marginRight: 5 }}>{c.row.sku}</span>
+                    {variantDisplayName({
+                      productName: c.row.productName,
+                      variantName: c.row.variantName,
+                      color: c.row.color,
+                      size: c.row.size,
+                    })}
+                    <span
+                      style={{
+                        fontSize: 13,
+                        color: C.mutedFg,
+                        fontWeight: 500,
+                        marginRight: 5,
+                      }}
+                    >
+                      {c.row.sku}
+                    </span>
                     {!c.row.isService && !isKnown && (
-                      <span style={{ fontSize: 11, color: C.mutedFg, fontWeight: 700, marginRight: 5 }}>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: C.mutedFg,
+                          fontWeight: 700,
+                          marginRight: 5,
+                        }}
+                      >
                         جارٍ التحقق من الرصيد
                       </span>
                     )}
                     {c.disc != null && c.disc > 0 && (
-                      <span style={{ fontSize: 11, color: C.danger, fontWeight: 700, marginRight: 4 }}>−{c.disc}%</span>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: C.danger,
+                          fontWeight: 700,
+                          marginRight: 4,
+                        }}
+                      >
+                        −{c.disc}%
+                      </span>
                     )}
                     {c.digital && (
                       // §٨.٦: شارة السطر — «كرت رقمي»، أو «تعليمي — اسم الطالب» حين تُلتقط بياناته.
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: C.primaryFg, background: C.primary, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontSize: 11.5,
+                          color: C.primaryFg,
+                          background: C.primary,
+                          fontWeight: 800,
+                          borderRadius: 6,
+                          padding: "2px 8px",
+                          marginRight: 6,
+                          whiteSpace: "nowrap",
+                        }}
+                      >
                         <CreditCard aria-hidden size={12} />
                         {digitalOfferingTypeLabel(c.digital.offeringType)}
                       </span>
                     )}
                     {!c.digital && !c.row.isService && isKnown && (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 10px", marginTop: 5, fontSize: 11.5, fontWeight: 700, color: C.mutedFg }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          gap: "2px 10px",
+                          marginTop: 5,
+                          fontSize: 11.5,
+                          fontWeight: 700,
+                          color: C.mutedFg,
+                        }}
+                      >
                         <span>{branchName}</span>
                         <span>فعلي {formatQuantity(c.row.stockBase ?? 0)}</span>
-                        <span style={{ color: (c.row.reservedBase ?? 0) > 0 ? C.amber : C.mutedFg }}>
+                        <span
+                          style={{
+                            color:
+                              (c.row.reservedBase ?? 0) > 0
+                                ? C.amber
+                                : C.mutedFg,
+                          }}
+                        >
                           محجوز {formatQuantity(c.row.reservedBase ?? 0)}
                         </span>
-                        <span>متاح للبيع {formatQuantity(c.row.availableBase ?? c.row.stockBase ?? 0)}</span>
+                        <span>
+                          متاح للبيع{" "}
+                          {formatQuantity(
+                            c.row.availableBase ?? c.row.stockBase ?? 0,
+                          )}
+                        </span>
                       </div>
                     )}
                     {allocations.length > 0 && (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 5 }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          gap: 4,
+                          marginTop: 5,
+                        }}
+                      >
                         {allocations.map((allocation) => (
                           <span
                             key={allocation.reservationId}
-                            style={{ border: `1px solid ${C.amber}`, background: C.amberSoft, color: C.modeFg, borderRadius: 5, padding: "2px 7px", fontSize: 11.5, fontWeight: 800 }}
+                            style={{
+                              border: `1px solid ${C.amber}`,
+                              background: C.amberSoft,
+                              color: C.modeFg,
+                              borderRadius: 5,
+                              padding: "2px 7px",
+                              fontSize: 11.5,
+                              fontWeight: 800,
+                            }}
                           >
-                            حجز باسم {allocation.customerName} · {formatQuantity(allocation.remainingBase)} وحدة أساس
+                            حجز باسم {allocation.customerName} ·{" "}
+                            {formatQuantity(allocation.remainingBase)} وحدة أساس
                           </span>
                         ))}
                       </div>
                     )}
                     {c.digital && (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 12px", marginTop: 5, fontSize: 12.5, fontWeight: 800, color: C.fg }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          gap: "2px 12px",
+                          marginTop: 5,
+                          fontSize: 12.5,
+                          fontWeight: 800,
+                          color: C.fg,
+                        }}
+                      >
                         <span dir="ltr">
-                          {c.digital.providerName} · رقم عملية المزوّد: {c.digital.providerReference}
+                          {c.digital.providerName} · رقم عملية المزوّد:{" "}
+                          {c.digital.providerReference}
                         </span>
                         <span>{digitalOfferingDescription(c.digital)}</span>
-                        {c.digital.student && <span>{c.digital.student.studentName} · <span dir="ltr">{c.digital.student.studentPhone}</span></span>}
+                        {c.digital.student && (
+                          <span>
+                            {c.digital.student.studentName} ·{" "}
+                            <span dir="ltr">
+                              {c.digital.student.studentPhone}
+                            </span>
+                          </span>
+                        )}
                       </div>
                     )}
                     {openingSellable && (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#241900", background: C.amber, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
-                        <AlertTriangle aria-hidden size={12} /> غير مجرود — يُباع نقداً بالسالب
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontSize: 11.5,
+                          color: "#241900",
+                          background: C.amber,
+                          fontWeight: 800,
+                          borderRadius: 6,
+                          padding: "2px 8px",
+                          marginRight: 6,
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        <AlertTriangle aria-hidden size={12} /> غير مجرود —
+                        يُباع نقداً بالسالب
                       </span>
                     )}
                     {/* «يُباع بالطلب» (0318): الصنف مسموحٌ بيعه قبل توريده — نُصرّح بذلك بدل ترك
                         الكاشير يظنّ الرصيدَ الصفريّ/السالب عطباً. الرقم في العمود يبقى الحقيقة. */}
-                    {c.row.allowBackorder && (c.row.availableBase ?? 0) <= 0 && (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#241900", background: C.amber, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
-                        <PackagePlus aria-hidden size={12} /> يُباع بالطلب — يُورَّد لاحقاً
-                      </span>
-                    )}
+                    {c.row.allowBackorder &&
+                      (c.row.availableBase ?? 0) <= 0 && (
+                        <span
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            fontSize: 11.5,
+                            color: "#241900",
+                            background: C.amber,
+                            fontWeight: 800,
+                            borderRadius: 6,
+                            padding: "2px 8px",
+                            marginRight: 6,
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          <PackagePlus aria-hidden size={12} /> يُباع بالطلب —
+                          يُورَّد لاحقاً
+                        </span>
+                      )}
                     {!openingSellable && isOut && (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#fff", background: C.danger, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontSize: 11.5,
+                          color: "#fff",
+                          background: C.danger,
+                          fontWeight: 800,
+                          borderRadius: 6,
+                          padding: "2px 8px",
+                          marginRight: 6,
+                          whiteSpace: "nowrap",
+                        }}
+                      >
                         <AlertTriangle aria-hidden size={12} /> نافذ — لا مخزون
                       </span>
                     )}
                     {!openingSellable && isShort && (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#241900", background: C.amber, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontSize: 11.5,
+                          color: "#241900",
+                          background: C.amber,
+                          fontWeight: 800,
+                          borderRadius: 6,
+                          padding: "2px 8px",
+                          marginRight: 6,
+                          whiteSpace: "nowrap",
+                        }}
+                      >
                         <AlertTriangle aria-hidden size={12} />
                         {availInUnit === 0
                           ? "لا يكفي لوحدة كاملة"
@@ -356,44 +986,166 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
                         currentUnitName={c.row.unitName}
                         tier={effectiveTier}
                         C={C}
-                        onUnitChange={(newRow) => onUnitChange?.(c.row.productUnitId, newRow)}
+                        onUnitChange={(newRow) =>
+                          onUnitChange?.(c.row.productUnitId, newRow)
+                        }
                       />
                     )}
                   </td>
                   <td style={{ ...TD, direction: "ltr", color: C.mutedFg }}>
-                    {c.disc != null && c.disc > 0
-                      ? <>
-                          <span style={{ textDecoration: "line-through", fontSize: 12, opacity: 0.6 }}>{fmt(Number(c.row.price ?? 0))}</span>
-                          &nbsp;
-                          <span style={{ color: C.danger, fontWeight: 700 }}>{fmt(ep)}</span>
-                        </>
-                      : fmt(ep)
-                    }
+                    {c.disc != null && c.disc > 0 ? (
+                      <>
+                        <span
+                          style={{
+                            textDecoration: "line-through",
+                            fontSize: 12,
+                            opacity: 0.6,
+                          }}
+                        >
+                          {fmt(Number(c.row.price ?? 0))}
+                        </span>
+                        &nbsp;
+                        <span style={{ color: C.danger, fontWeight: 700 }}>
+                          {fmt(ep)}
+                        </span>
+                      </>
+                    ) : (
+                      fmt(ep)
+                    )}
                   </td>
                   {/* عمود المخزون: ∞ للخدمات، رقم بلون أحمر/أصفر/طبيعي حسب الحالة. */}
-                  <td style={{ ...TD, direction: "ltr", fontWeight: 700, color: isOut ? C.danger : isShort ? C.amber : C.mutedFg }}>
-                    {c.row.isService ? "∞" : isKnown ? formatQuantity(availInUnit) : "…"}
+                  <td
+                    style={{
+                      ...TD,
+                      direction: "ltr",
+                      fontWeight: 700,
+                      color: isOut ? C.danger : isShort ? C.amber : C.mutedFg,
+                    }}
+                  >
+                    {c.row.isService
+                      ? "∞"
+                      : isKnown
+                        ? formatQuantity(availInUnit)
+                        : "…"}
                   </td>
                   <td style={{ ...TD, padding: "6px 6px" }}>
                     {c.digital ? (
                       // §٨.٦: كمّية الكرت الرقميّ ثابتة — لا أزرار زيادة/نقصان؛ الزيادة بإضافة بطاقة أخرى.
-                      <div style={{ textAlign: "center", fontWeight: 800, fontSize: 15, direction: "ltr", color: C.mutedFg }} title="كل بطاقة سطر مستقل ضمن سلة المزوّد">1</div>
+                      <div
+                        style={{
+                          textAlign: "center",
+                          fontWeight: 800,
+                          fontSize: 15,
+                          direction: "ltr",
+                          color: C.mutedFg,
+                        }}
+                        title="كل بطاقة سطر مستقل ضمن سلة المزوّد"
+                      >
+                        1
+                      </div>
                     ) : (
-                      <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "center" }}>
-                        <button onClick={(e) => { e.stopPropagation(); changeQty(lineId, c.qty - 1); }}
-                          style={{ width: 44, height: 44, border: `1.5px solid ${C.border}`, borderRadius: 8, background: C.card, cursor: "pointer", fontSize: 22, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center" }}>−</button>
-                        <span style={{ minWidth: 40, textAlign: "center", fontWeight: 800, fontSize: 15, direction: "ltr", color: C.fg }}>{formatQuantity(c.qty)}</span>
-                        <button onClick={(e) => { e.stopPropagation(); changeQty(lineId, c.qty + 1); }}
-                          title={isOut || isShort ? "الزيادة تتجاوز المخزون المتاح" : undefined}
-                          style={{ width: 44, height: 44, border: `1.5px solid ${isOut || isShort ? accent : C.border}`, borderRadius: 8, background: C.card, cursor: "pointer", fontSize: 22, color: isOut || isShort ? accent : C.fg, display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 4,
+                          justifyContent: "center",
+                        }}
+                      >
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            changeQty(lineId, c.qty - 1);
+                          }}
+                          style={{
+                            width: 44,
+                            height: 44,
+                            border: `1.5px solid ${C.border}`,
+                            borderRadius: 8,
+                            background: C.card,
+                            cursor: "pointer",
+                            fontSize: 22,
+                            color: C.fg,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                          }}
+                        >
+                          −
+                        </button>
+                        <span
+                          style={{
+                            minWidth: 40,
+                            textAlign: "center",
+                            fontWeight: 800,
+                            fontSize: 15,
+                            direction: "ltr",
+                            color: C.fg,
+                          }}
+                        >
+                          {formatQuantity(c.qty)}
+                        </span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            changeQty(lineId, c.qty + 1);
+                          }}
+                          title={
+                            isOut || isShort
+                              ? "الزيادة تتجاوز المخزون المتاح"
+                              : undefined
+                          }
+                          style={{
+                            width: 44,
+                            height: 44,
+                            border: `1.5px solid ${isOut || isShort ? accent : C.border}`,
+                            borderRadius: 8,
+                            background: C.card,
+                            cursor: "pointer",
+                            fontSize: 22,
+                            color: isOut || isShort ? accent : C.fg,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                          }}
+                        >
+                          +
+                        </button>
                       </div>
                     )}
                   </td>
-                  <td style={{ ...TD, direction: "ltr", fontWeight: 800, fontSize: 14.5, color: C.fg }}>{fmt(itemTotal(c))}</td>
+                  <td
+                    style={{
+                      ...TD,
+                      direction: "ltr",
+                      fontWeight: 800,
+                      fontSize: 14.5,
+                      color: C.fg,
+                    }}
+                  >
+                    {fmt(itemTotal(c))}
+                  </td>
                   <td style={{ ...TD, padding: "6px" }}>
-                    <button onClick={(e) => { e.stopPropagation(); removeRow(lineId); }}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeRow(lineId);
+                      }}
                       aria-label="حذف السطر"
-                      style={{ width: 44, height: 44, background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X aria-hidden size={18} /></button>
+                      style={{
+                        width: 44,
+                        height: 44,
+                        background: "none",
+                        border: "none",
+                        cursor: "pointer",
+                        color: C.mutedFg,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <X aria-hidden size={18} />
+                    </button>
                   </td>
                 </motion.tr>
               );
