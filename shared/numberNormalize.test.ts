@@ -150,6 +150,14 @@ describe("normalizeDecimalInput (تسوية حقول الإدخال العشري
     expect(normalizeDecimalInput("١,٢٣٤٫٥٦")).toBe("1234.56");
   });
 
+  it("يحافظ على الكسور العشرية المسبوقة بصفر ذات 3 منازل (مثل 0,125 و 0،125 و ٠،١٢٥)", () => {
+    expect(normalizeDecimalInput("0,125")).toBe("0.125");
+    expect(normalizeDecimalInput("0،125")).toBe("0.125");
+    expect(normalizeDecimalInput("٠،١٢٥")).toBe("0.125");
+    expect(normalizeDecimalInput("0,005")).toBe("0.005");
+    expect(normalizeDecimalInput("0,500")).toBe("0.500");
+  });
+
   it("يحافظ على الفواصل العشرية العربية (٫ و ،) ويحولها إلى نقطة", () => {
     expect(normalizeDecimalInput("١٢٫٥")).toBe("12.5");
     expect(normalizeDecimalInput("١٢،٥")).toBe("12.5");
