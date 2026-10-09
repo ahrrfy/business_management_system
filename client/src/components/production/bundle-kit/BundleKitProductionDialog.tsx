@@ -354,30 +354,34 @@ export function BundleKitProductionDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-4xl max-w-full max-h-[90vh] flex flex-col p-0 overflow-hidden" dir="rtl">
+      <DialogContent className="sm:max-w-6xl lg:max-w-7xl w-[96vw] max-h-[92vh] flex flex-col p-0 overflow-hidden" dir="rtl">
         <DialogHeader className="p-4 border-b bg-muted/30">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Boxes className="size-5 text-primary" aria-hidden="true" />
-              <DialogTitle className="text-base font-bold">مولّد إنتاج مكونات البكج</DialogTitle>
+          <div className="flex flex-wrap items-center justify-between gap-3 pe-8">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <Boxes className="size-5 text-primary shrink-0" aria-hidden="true" />
+              <DialogTitle className="text-base font-bold whitespace-nowrap">مولّد إنتاج مكونات البكج</DialogTitle>
+              {analysis && step < 4 && (
+                <Badge variant="outline" className="text-xs font-semibold bg-background/80 px-2.5 py-0.5 whitespace-nowrap shrink-0">
+                  {analysis.bundleName}
+                </Badge>
+              )}
             </div>
-            {analysis && step < 4 && <Badge variant="outline" className="text-xs">{analysis.bundleName}</Badge>}
           </div>
           <DialogDescription className="text-xs text-muted-foreground mt-1">
             تحليل ذكي لمكونات البكج، فحص أرصدة الفرع، جبر مضاعف القسمة، وتوليد أوامر الإنتاج ذرّياً.
           </DialogDescription>
 
           {step < 4 && (
-            <div className="flex items-center gap-2 pt-2 text-xs">
+            <div className="flex items-center gap-2 pt-2.5 text-xs overflow-x-auto">
               {STEP_ITEMS.map((s, idx) => (
-                <div key={s.id} className="flex items-center gap-2">
-                  {idx > 0 && <ArrowLeft className="size-3 text-muted-foreground" aria-hidden="true" />}
+                <div key={s.id} className="flex items-center gap-2 shrink-0">
+                  {idx > 0 && <ArrowLeft className="size-3 text-muted-foreground shrink-0" aria-hidden="true" />}
                   <button
                     type="button"
                     onClick={() => handleGoToStep(s.id)}
                     disabled={s.id > 1 && !isReady}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md font-medium transition-colors ${
-                      step === s.id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium text-xs whitespace-nowrap transition-colors ${
+                      step === s.id ? "bg-primary text-primary-foreground shadow-xs" : "text-muted-foreground hover:bg-muted"
                     }`}
                   >
                     {s.label}
@@ -467,55 +471,74 @@ export function BundleKitProductionDialog({
         </div>
 
         {step < 4 && (
-          <DialogFooter className="p-3 border-t bg-muted/20 flex items-center justify-between gap-2">
+          <DialogFooter className="p-3.5 border-t bg-muted/20 flex sm:flex-row items-center justify-between gap-3">
             <div>
-              {step > 1 && (
+              {step > 1 ? (
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="gap-1.5"
+                  className="gap-1.5 px-4 h-9 font-medium"
                   onClick={() => setStep((s) => (s - 1) as any)}
                 >
                   <ArrowRight className="size-4" aria-hidden="true" />
-                  السابق
+                  <span>السابق</span>
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="px-4 h-9 text-muted-foreground hover:text-foreground"
+                  onClick={() => onOpenChange(false)}
+                >
+                  إلغاء
                 </Button>
               )}
             </div>
 
-            <div className="flex items-center gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
-                إلغاء
-              </Button>
+            <div className="flex items-center gap-2.5">
+              {step > 1 && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="px-4 h-9 text-muted-foreground hover:text-foreground"
+                  onClick={() => onOpenChange(false)}
+                >
+                  إلغاء
+                </Button>
+              )}
 
               {step < 3 ? (
                 <Button
                   type="button"
                   size="sm"
-                  className="gap-1.5"
+                  className="gap-1.5 px-5 h-9 font-semibold"
                   disabled={!isReady}
                   onClick={() => handleGoToStep((step + 1) as any)}
                 >
-                  التالي
+                  <span>التالي</span>
                   <ArrowLeft className="size-4" aria-hidden="true" />
                 </Button>
               ) : (
                 <Button
+                  variant="success"
                   type="button"
                   size="sm"
-                  className="gap-1.5"
+                  className="gap-1.5 px-5 h-9 font-semibold whitespace-nowrap shrink-0"
                   disabled={produceMut.isPending || batches.filter((b) => b.selected).length === 0}
                   onClick={handleConfirmProduce}
                 >
                   {produceMut.isPending ? (
                     <>
                       <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                      جارٍ الترحيل الذري…
+                      <span>جارٍ الترحيل الذري…</span>
                     </>
                   ) : (
                     <>
                       <PackageCheck className="size-4" aria-hidden="true" />
-                      تأكيد وإنتاج المكونات
+                      <span>تأكيد وإنتاج المكونات</span>
                     </>
                   )}
                 </Button>

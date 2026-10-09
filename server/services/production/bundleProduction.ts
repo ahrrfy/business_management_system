@@ -13,13 +13,17 @@ import {
   products,
 } from "../../../drizzle/schema";
 import { requiredBatchMultiple } from "../../../shared/batchDivisibility";
-import type {
-  AggregatedMaterialDto,
-  AnalyzeBundleRequirementsInput,
-  BundleRequirementsAnalysisResult,
-  ComponentRequirementDto,
-  ProduceBundleComponentsInput,
-  ProduceBundleComponentsResult,
+import {
+  collectBundleProductionLockVariantIds,
+  deriveBundleComponentSubRequestId,
+  isValidBatchYield,
+  sortLockIds,
+  type AggregatedMaterialDto,
+  type AnalyzeBundleRequirementsInput,
+  type BundleRequirementsAnalysisResult,
+  type ComponentRequirementDto,
+  type ProduceBundleComponentsInput,
+  type ProduceBundleComponentsResult,
 } from "../../../shared/bundleProductionTypes";
 import type { MaterialSubstitutionItem } from "../../../shared/recipeSubstitutionTypes";
 import { loadBundleUnitCosts, syncBundlesContainingComponents } from "../bundleService";
@@ -740,7 +744,7 @@ export async function produceBundleComponents(
       }
 
       const scrap = b.scrapQty ?? 0;
-      if (scrap >= b.batchQty) {
+      if (!isValidBatchYield(b.batchQty, scrap)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
@@ -827,14 +831,12 @@ export async function produceBundleComponents(
     ];
 
     // جمع كافة المتغيرات المشتركة في العملية وقفلها حتمياً بالترتيب الحاكم لمنع الـ Deadlock
-    const allVariantIdsToLock = Array.from(
-      new Set([
-        input.bundleVariantId,
-        ...sortedBatches.map((b) => b.variantId),
-        ...batchRecipeLines.map((l) => Number(l.inputVariantId)),
-        ...subVariantIds,
-      ])
-    ).sort((a, b) => a - b);
+    const allVariantIdsToLock = collectBundleProductionLockVariantIds({
+      bundleVariantId: input.bundleVariantId,
+      batchVariantIds: sortedBatches.map((b) => b.variantId),
+      recipeInputVariantIds: batchRecipeLines.map((l) => Number(l.inputVariantId)),
+      substituteVariantIds: subVariantIds,
+    });
 
     const variantProdRows = await tx
       .select({ id: productVariants.id, productId: productVariants.productId })
@@ -842,9 +844,9 @@ export async function produceBundleComponents(
       .where(inArray(productVariants.id, allVariantIdsToLock))
       .orderBy(asc(productVariants.id));
 
-    const allProductIdsToLock = Array.from(
-      new Set(variantProdRows.map((r) => Number(r.productId)))
-    ).sort((a, b) => a - b);
+    const allProductIdsToLock = sortLockIds(
+      variantProdRows.map((r) => Number(r.productId))
+    );
 
     // ١. قفل المنتجات تصاعدياً
     if (allProductIdsToLock.length > 0) {
@@ -901,7 +903,7 @@ export async function produceBundleComponents(
     let totalCostAccumulator = new Decimal(0);
 
     for (const batch of sortedBatches) {
-      const subRequestId = `${input.clientRequestId}:comp:${batch.variantId}`;
+      const subRequestId = deriveBundleComponentSubRequestId(input.clientRequestId, batch.variantId);
       const prodName = variantNameMap.get(batch.variantId) ?? `#${batch.variantId}`;
       const batchNotes = input.notes?.trim()
         ? `${input.notes.trim()} [حزمة ${bundleDocGroupRef} - بكج: ${bundle.name} (#${input.bundleVariantId})]`

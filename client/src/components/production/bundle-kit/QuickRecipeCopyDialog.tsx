@@ -34,23 +34,9 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { requiredBatchMultiple } from "@shared/batchDivisibility";
 import type { ComponentRequirementDto } from "@shared/bundleProductionTypes";
+import { normalizeDecimalInput } from "@shared/numberNormalize";
 
-/**
- * تسوية المدخلات العشرية: دعم الأرقام العربية المشرقية والفاصلة العربية العشرية.
- */
-export function normalizeDecimalInput(str: string): string {
-  const sanitized = str
-    .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
-    .replace(/[،٫]/g, ".")
-    .replace(/[^0-9.]/g, "");
-
-  const firstDotIndex = sanitized.indexOf(".");
-  if (firstDotIndex === -1) return sanitized;
-
-  const intPart = sanitized.slice(0, firstDotIndex);
-  const decPart = sanitized.slice(firstDotIndex + 1).replace(/\./g, "");
-  return `${intPart}.${decPart}`;
-}
+export { normalizeDecimalInput };
 
 export interface EditableRecipeLine {
   inputVariantId: number;
@@ -500,7 +486,7 @@ export function QuickRecipeCopyDialog({
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="sm:max-w-3xl max-w-full max-h-[92vh] flex flex-col p-0 overflow-hidden"
+        className="sm:max-w-4xl max-w-[96vw] max-h-[92vh] flex flex-col p-0 overflow-hidden"
         dir="rtl"
       >
         {/* رأس النافذة */}
@@ -521,14 +507,14 @@ export function QuickRecipeCopyDialog({
             </div>
 
             <div className="flex items-center gap-1.5 flex-wrap">
-              <Badge variant="outline" className="text-[11px] font-mono" dir="ltr">
+              <Badge variant="outline" className="text-[11px] font-mono whitespace-nowrap shrink-0" dir="ltr">
                 {targetComponent.sku}
               </Badge>
-              <Badge variant="secondary" className="text-[11px]">
+              <Badge variant="secondary" className="text-[11px] whitespace-nowrap shrink-0">
                 الوحدة: {effectiveBaseUnitName}
               </Badge>
               {targetComponent.shortageQty > 0 && (
-                <Badge variant="outline" className="border-[var(--sem-neg)] text-[var(--sem-neg)] text-[11px]">
+                <Badge variant="outline" className="border-[var(--sem-neg)] text-[var(--sem-neg)] text-[11px] whitespace-nowrap shrink-0">
                   عجز: {targetComponent.shortageQty}
                 </Badge>
               )}
@@ -694,14 +680,14 @@ export function QuickRecipeCopyDialog({
             </div>
 
             <div className="overflow-x-auto rounded-lg border bg-card">
-              <table className="w-full text-xs text-start">
+              <table className="w-full min-w-[560px] border-collapse text-xs text-start">
                 <thead className="bg-muted/60 text-muted-foreground">
                   <tr>
-                    <th className="p-2 text-start font-medium">المادة الخام</th>
-                    <th className="p-2 text-center font-medium w-28">كلفة الوحدة</th>
-                    <th className="p-2 text-center font-medium w-28">الكمية لكل ناتج</th>
-                    <th className="p-2 text-center font-medium w-28">إجمالي السطر</th>
-                    <th className="p-2 text-center w-10">إجراء</th>
+                    <th className="p-2 text-start font-medium whitespace-nowrap select-none">المادة الخام</th>
+                    <th className="p-2 text-center font-medium whitespace-nowrap select-none w-28">كلفة الوحدة</th>
+                    <th className="p-2 text-center font-medium whitespace-nowrap select-none w-28">الكمية لكل ناتج</th>
+                    <th className="p-2 text-center font-medium whitespace-nowrap select-none w-28">إجمالي السطر</th>
+                    <th className="p-2 text-center whitespace-nowrap select-none w-10">إجراء</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -724,37 +710,39 @@ export function QuickRecipeCopyDialog({
                               {line.inputProductName}
                             </div>
                             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground mt-0.5">
-                              <span className="font-mono" dir="ltr">{line.inputSku}</span>
+                              <span className="font-mono tabular-nums" dir="ltr">{line.inputSku}</span>
                               {line.unitName && <span>({line.unitName})</span>}
                             </div>
                           </td>
-                          <td className="p-2 text-center font-mono text-muted-foreground">
+                          <td className="p-2 text-center font-mono text-muted-foreground tabular-nums whitespace-nowrap" dir="ltr">
                             {formatIqd(line.inputCostPrice)}
                           </td>
                           <td className="p-2 text-center">
                             <Input
                               type="text"
                               inputMode="decimal"
+                              dir="ltr"
+                              lang="en-US"
                               aria-label={`كمية ${line.inputProductName} لكل وحدة ناتجة`}
                               value={line.qtyPerOutputBase}
                               onChange={(e) => {
                                 const val = normalizeDecimalInput(e.target.value);
                                 handleLineQtyChange(idx, val);
                               }}
-                              className="h-7 text-center font-mono font-bold text-xs"
+                              className="h-7 text-center font-mono font-bold text-xs tabular-nums"
                             />
                           </td>
-                          <td className="p-2 text-center font-mono font-semibold text-foreground">
+                          <td className="p-2 text-center font-mono font-semibold text-foreground tabular-nums whitespace-nowrap" dir="ltr">
                             {formatIqd(lineTotal.toString())}
                           </td>
-                          <td className="p-2 text-center">
+                          <td className="p-2 text-center whitespace-nowrap">
                             <Button
                               type="button"
                               variant="ghost"
                               size="sm"
                               aria-label={`حذف ${line.inputProductName} من الوصفة`}
                               onClick={() => handleRemoveLine(idx)}
-                              className="size-7 p-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                              className="size-7 p-0 text-destructive hover:bg-destructive/10 hover:text-destructive whitespace-nowrap shrink-0"
                             >
                               <Trash2 aria-hidden="true" className="size-3.5" />
                             </Button>
@@ -863,12 +851,14 @@ export function QuickRecipeCopyDialog({
                 id="quick-recipe-labor"
                 type="text"
                 inputMode="decimal"
+                dir="ltr"
+                lang="en-US"
                 value={laborPerOutputBase}
                 onChange={(e) =>
                   setLaborPerOutputBase(normalizeDecimalInput(e.target.value))
                 }
                 placeholder="0"
-                className="h-8 text-xs font-mono"
+                className="h-8 text-xs font-mono tabular-nums"
               />
             </div>
             <div className="space-y-1">
@@ -879,12 +869,14 @@ export function QuickRecipeCopyDialog({
                 id="quick-recipe-waste"
                 type="text"
                 inputMode="decimal"
+                dir="ltr"
+                lang="en-US"
                 value={wasteStdPct}
                 onChange={(e) =>
                   setWasteStdPct(normalizeDecimalInput(e.target.value))
                 }
                 placeholder="0"
-                className="h-8 text-xs font-mono"
+                className="h-8 text-xs font-mono tabular-nums"
               />
             </div>
           </div>
@@ -911,7 +903,7 @@ export function QuickRecipeCopyDialog({
                 <span>حساب التكلفة المعيارية الحية لكل 1 {effectiveBaseUnitName}:</span>
               </div>
               {costs.batchMultiple > 1 && (
-                <Badge variant="outline" className="border-[var(--sem-warn)] text-[var(--sem-warn)] text-[10px]">
+                <Badge variant="outline" className="border-[var(--sem-warn)] text-[var(--sem-warn)] text-[10px] whitespace-nowrap shrink-0">
                   مضاعف الدفعة: {costs.batchMultiple} وحدات
                 </Badge>
               )}
@@ -948,12 +940,14 @@ export function QuickRecipeCopyDialog({
             size="sm"
             onClick={() => onOpenChange(false)}
             disabled={createRecipeMut.isPending}
+            className="whitespace-nowrap shrink-0"
           >
             إلغاء
           </Button>
 
           <Button
             type="button"
+            variant="success"
             size="sm"
             onClick={handleSave}
             disabled={
@@ -962,7 +956,7 @@ export function QuickRecipeCopyDialog({
               !recipeName.trim() ||
               !effectiveBaseUnitId
             }
-            className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
+            className="gap-1.5 font-medium whitespace-nowrap shrink-0"
           >
             {createRecipeMut.isPending ? (
               <>
