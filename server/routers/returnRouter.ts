@@ -62,6 +62,7 @@ import {
   returnSaleDirect,
   returnSaleInTx,
 } from "../services/returnService";
+import { reconcileDeliveryOnReturnTx } from "../services/delivery/returnReconciliation";
 import {
   RETURN_EXECUTED_AUDIT_ACTION,
   type ReturnExecutionMode,
@@ -224,7 +225,7 @@ async function replaySalesReturnCartResult(
       barcode?: string | null;
     }>;
     settlement: {
-      method: "CASH" | "CARD" | "STORE_CREDIT";
+      method: "CASH" | "CARD" | "STORE_CREDIT" | "CREDIT_OFFSET";
       totalAmount: string;
       reference?: string | null;
     };
@@ -238,7 +239,7 @@ async function replaySalesReturnCartResult(
   originalInvoiceNumber: string | null | undefined;
   disposition: "RESTOCK" | "DAMAGED";
   totalAmount: string;
-  method: "CASH" | "CARD" | "STORE_CREDIT";
+  method: "CASH" | "CARD" | "STORE_CREDIT" | "CREDIT_OFFSET";
   reference: string | null | undefined;
   itemsCount: number;
   items: Array<{
@@ -1292,6 +1293,7 @@ export const returnRouter = router({
           customerId: invoices.customerId,
           customerName: customers.name,
           customerPhone: customers.phone,
+          customerBalance: customers.currentBalance,
           subtotal: invoices.subtotal,
           discountAmount: invoices.discountAmount,
           taxAmount: invoices.taxAmount,
@@ -1327,6 +1329,12 @@ export const returnRouter = router({
       );
       const paidDec = money(inv.paidAmount ?? "0");
       const maxRefundable = Decimal.min(remainingInvoiceTotal, paidDec);
+      const unpaidAmount = Decimal.max(0, remainingInvoiceTotal.minus(paidDec));
+      const subtotalDec = money(inv.subtotal ?? "0");
+      const discountDec = money(inv.discountAmount ?? "0");
+      const discountRatio = subtotalDec.gt(0)
+        ? discountDec.dividedBy(subtotalDec)
+        : new Decimal(0);
 
       const itemRows = await db
         .select({
@@ -1364,6 +1372,10 @@ export const returnRouter = router({
           0,
           (r.baseQuantity ?? 0) - (r.returnedBaseQuantity ?? 0),
         );
+        const rawPrice = money(r.unitPrice ?? "0");
+        const effectivePrice = discountRatio.gt(0)
+          ? rawPrice.times(new Decimal(1).minus(discountRatio)).toDecimalPlaces(2)
+          : rawPrice;
         return {
           invoiceItemId: Number(r.invoiceItemId),
           variantId: Number(r.variantId),
@@ -1379,6 +1391,7 @@ export const returnRouter = router({
           returnedBaseQuantity: Number(r.returnedBaseQuantity ?? 0),
           remainingQuantity,
           unitPrice: String(r.unitPrice),
+          effectiveUnitPrice: effectivePrice.toFixed(2),
           total: String(r.total),
         };
       });
@@ -1512,9 +1525,12 @@ export const returnRouter = router({
         customerId: inv.customerId != null ? Number(inv.customerId) : null,
         customerName: inv.customerName ?? "عميل نقدي",
         customerPhone: inv.customerPhone ?? null,
+        customerBalance: inv.customerBalance != null ? String(inv.customerBalance) : null,
         total: String(inv.total),
+        discountAmount: String(inv.discountAmount ?? "0"),
         paidAmount: String(inv.paidAmount ?? "0"),
         returnedTotal: String(inv.returnedTotal ?? "0"),
+        unpaidAmount: unpaidAmount.toFixed(2),
         remainingInvoiceTotal: remainingInvoiceTotal.toFixed(2),
         maxRefundable: maxRefundable.toFixed(2),
         paymentMethod: inv.paymentMethod,
@@ -2037,7 +2053,7 @@ export const returnRouter = router({
           )
           .min(1, "يجب تحديد صنف واحد على الأقل للإرجاع"),
         settlement: z.object({
-          method: z.enum(["CASH", "CARD", "STORE_CREDIT"]),
+          method: z.enum(["CASH", "CARD", "STORE_CREDIT", "CREDIT_OFFSET"]),
           totalAmount: nonNegMoneyString,
           shiftId: z.number().int().positive().nullish(),
           reference: z.string().trim().max(120).nullish(),
@@ -2235,9 +2251,26 @@ export const returnRouter = router({
                   code: "BAD_REQUEST",
                   message: appErrorMessage({
                     what: "مبلغ الاسترداد يتجاوز المدفوع الفعلي للفاتورة",
-                    why: `المبلغ المطلوب استرداده (${returnTotalDec.toFixed(2)} د.ع) أكبر من إجمالي المسدد فعلياً على الفاتورة (${paidDec.toFixed(2)} د.ع)`,
+                    why: `المبلغ المطلوب استرداده نقداً (${returnTotalDec.toFixed(2)} د.ع) أكبر من إجمالي المسدد فعلياً على الفاتورة (${paidDec.toFixed(2)} د.ع)${paidDec.lte(0) ? " — الفاتورة آجلة بالكامل ولم يُقبض منها أي مبلغ نقدي" : ""}`,
                     doThis:
-                      "لا يمكن صرف نقد أو بطاقة بمبلغ يفوق ما قبضه المحل من الزبون؛ خفّض مبلغ الاسترداد أو استخدم رصيد متجر إن كان العميل مسجلاً",
+                      "لا يمكن صرف نقد أو بطاقة بمبلغ يفوق ما قبضه المحل؛ اختر طريقة «معادلة ذمم (إنقاص الذمة)» لتسوية المبلغ في حساب العميل دون سحب نقد من الصندوق",
+                  }),
+                });
+              }
+            }
+
+            // 3) التحقق من وجود عميل في حال معادلة الذمم CREDIT_OFFSET
+            if (input.settlement.method === "CREDIT_OFFSET") {
+              const effectiveCustomerId =
+                input.customer?.customerId ??
+                (matchedInvoice.customerId ? Number(matchedInvoice.customerId) : null);
+              if (!effectiveCustomerId) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: "تعذر تنفيذ معادلة الذمة",
+                    why: "طريقة معادلة الذمم تتطلب تحديد عميل مسجل في النظام لإسقاط المبلغ من حسابه الآجل",
+                    doThis: "اختر العميل من CRM أو اربط الفاتورة بعميل مسجل",
                   }),
                 });
               }
@@ -2314,7 +2347,7 @@ export const returnRouter = router({
           // يُقرأ «سندَ صرفٍ يرفع AR» بينما لا رصيدَ يتحرّك ⇒ انحرافُ reconcile بقيمة المرتجع. النسبةُ
           // للعميل تبقى على **الإيصال** (partyId) لسلامة المسار (§٥). يحرسه salesReturnCartRefund.test.ts.
           const ledgerCustomerId = matchedInvoice
-            ? (input.customer?.customerId ?? null)
+            ? (input.customer?.customerId ?? (matchedInvoice.customerId ? Number(matchedInvoice.customerId) : null))
             : null;
 
           // ١) تنفيذ حركة المخزون لكل بند مع التوسيع الذري للبكجات وتفادي الخدمات
@@ -2587,6 +2620,27 @@ export const returnRouter = router({
               ),
               postingSourceComponents: refundPostingSource,
             });
+          } else if (input.settlement.method === "CREDIT_OFFSET") {
+            const effectiveCustomerId = Number(
+              input.customer?.customerId ?? matchedInvoice?.customerId,
+            );
+            if (!effectiveCustomerId) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "تعذر تنفيذ معادلة الذمة",
+                  why: "طريقة معادلة الذمم تتطلب تحديد عميل مسجل في النظام لإسقاط المبلغ من حسابه الآجل",
+                  doThis: "اختر العميل من CRM أو اربط الفاتورة بعميل مسجل",
+                }),
+              });
+            }
+            // خصم ذمة العميل في جدول العملاء بشكل ذري وكامل:
+            await adjustCustomerBalance(
+              tx,
+              effectiveCustomerId,
+              returnTotalDec.neg(),
+            );
+            generatedReceiptId = null;
           } else if (input.settlement.method === "STORE_CREDIT") {
             if (!input.customer?.customerId) {
               throw new TRPCError({
@@ -2662,7 +2716,9 @@ export const returnRouter = router({
                 ? `نقدي من درج #${input.settlement.shiftId}`
                 : input.settlement.method === "CARD"
                   ? "بطاقة"
-                  : "رصيد متجر"
+                  : input.settlement.method === "CREDIT_OFFSET"
+                    ? "معادلة ذمة"
+                    : "رصيد متجر"
             })`,
             createdBy: ctx.user.id,
             createdByNameSnapshot: ctx.user.name ?? "كاشير",
@@ -2767,6 +2823,21 @@ export const returnRouter = router({
                 status: newStatus,
               })
               .where(eq(invoices.id, matchedInvoice.id));
+
+            // تسوية أي إرسالية توصيل نشطة مرتبطة بهذه الفاتورة وتبرئة عهدة المندوب فوراً
+            await reconcileDeliveryOnReturnTx(tx, {
+              invoiceId: matchedInvoice.id,
+              returnedTotal: returnTotalDec,
+              isFullReturn: isFullyReturned,
+              actor: {
+                userId: ctx.user.id,
+                branchId: actorBranchId,
+                role: ctx.user.role,
+              },
+              clientRequestId: clientRequestId
+                ? `${clientRequestId}:delivery-reconcile`
+                : undefined,
+            });
           }
 
           // تسجيل مفتاح الـ Idempotency ذرياً داخل المعاملة نفسها
