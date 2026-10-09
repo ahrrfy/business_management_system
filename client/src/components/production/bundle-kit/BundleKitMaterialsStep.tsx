@@ -1,3 +1,4 @@
+import * as React from "react";
 import { useMemo, useState } from "react";
 import {
   AlertTriangle,
@@ -80,7 +81,7 @@ export function BundleKitMaterialsStep({
               </h4>
               <Badge
                 variant="secondary"
-                className={`text-xs ${
+                className={`text-xs whitespace-nowrap shrink-0 ${
                   isConstrained
                     ? "bg-[var(--sem-neg)] text-background"
                     : "bg-[var(--sem-pos)] text-background"
@@ -198,14 +199,14 @@ export function BundleKitMaterialsStep({
                       {m.isSufficient ? (
                         <Badge
                           variant="secondary"
-                          className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-none text-[10px] whitespace-nowrap"
+                          className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-none text-[10px] whitespace-nowrap shrink-0"
                         >
                           متوفر بكفاية
                         </Badge>
                       ) : (
                         <Badge
                           variant="secondary"
-                          className="bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] border-none text-[10px] whitespace-nowrap"
+                          className="bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] border-none text-[10px] whitespace-nowrap shrink-0"
                         >
                           غير كافٍ
                         </Badge>
@@ -225,7 +226,7 @@ export function BundleKitMaterialsStep({
                         <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
                           <Badge
                             variant="secondary"
-                            className="bg-primary/10 text-primary border-primary/20 text-[10px] gap-1 py-0.5 whitespace-nowrap"
+                            className="bg-primary/10 text-primary border-primary/20 text-[10px] gap-1 py-0.5 whitespace-nowrap shrink-0"
                           >
                             <ArrowLeftRight aria-hidden className="size-3" />
                             مادة بديلة

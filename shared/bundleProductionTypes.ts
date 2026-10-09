@@ -9,7 +9,7 @@ export type BundleRequirementMode = z.infer<typeof bundleRequirementModeSchema>;
 
 export const analyzeBundleRequirementsInputSchema = z.object({
   bundleVariantId: z.number().int().positive(),
-  bundleQuantity: z.number().int().positive(),
+  bundleQuantity: z.number().int().positive().max(1_000_000),
   branchId: z.number().int().positive().optional(),
   mode: bundleRequirementModeSchema.default("NET_SHORTAGE"),
   materialSubstitutions: z.array(materialSubstitutionItemSchema).nullish(),
@@ -18,8 +18,8 @@ export const analyzeBundleRequirementsInputSchema = z.object({
       z.object({
         variantId: z.number().int().positive(),
         recipeId: z.number().int().positive().nullish(),
-        batchQty: z.number().int().min(0),
-        scrapQty: z.number().int().min(0).optional(),
+        batchQty: z.number().int().min(0).max(1_000_000),
+        scrapQty: z.number().int().min(0).max(1_000_000).optional(),
         laborPerUnit: z
           .string()
           .regex(/^\d+(\.\d{1,2})?$/)
@@ -90,7 +90,7 @@ export interface BundleRequirementsAnalysisResult {
 
 export const produceBundleComponentsInputSchema = z.object({
   bundleVariantId: z.number().int().positive(),
-  bundleQuantity: z.number().int().positive(),
+  bundleQuantity: z.number().int().positive().max(1_000_000),
   branchId: z.number().int().positive().optional(),
   linkedWorkOrderId: z.number().int().positive().nullish(),
   clientRequestId: z.string().min(1).max(80),
@@ -100,8 +100,8 @@ export const produceBundleComponentsInputSchema = z.object({
     z.object({
       recipeId: z.number().int().positive(),
       variantId: z.number().int().positive(),
-      batchQty: z.number().int().positive(),
-      scrapQty: z.number().int().min(0).default(0),
+      batchQty: z.number().int().positive().max(1_000_000),
+      scrapQty: z.number().int().min(0).max(1_000_000).default(0),
       laborPerUnit: z.string().regex(/^\d+(\.\d{1,2})?$/).nullish(),
       materialSubstitutions: z.array(materialSubstitutionItemSchema).nullish(),
     })

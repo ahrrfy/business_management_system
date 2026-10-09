@@ -1,3 +1,4 @@
+import * as React from "react";
 import { AlertTriangle, Coins, FileText, Layers, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -6,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { formatIqd } from "@/lib/money";
 import type { ComponentRequirementDto } from "@shared/bundleProductionTypes";
 import type { BundleKitComponentBatch } from "./BundleKitComponentsStep";
+import { digitsArabicToLatin } from "@shared/numberNormalize";
 
 interface BundleKitReviewStepProps {
   bundleName: string;
@@ -79,7 +81,7 @@ export function BundleKitReviewStep({
             <span className="font-mono text-muted-foreground" dir="ltr">
               {bundleSku}
             </span>
-            <Badge variant="outline" className="text-[10px] py-0 px-1.5">
+            <Badge variant="outline" className="text-[10px] py-0 px-1.5 whitespace-nowrap shrink-0">
               {requestedBundleQty} طقم
             </Badge>
           </div>
@@ -200,7 +202,7 @@ export function BundleKitReviewStep({
             lang="en-US"
             value={linkedWorkOrderId ?? ""}
             onChange={(e) => {
-              const val = parseInt(e.target.value, 10);
+              const val = parseInt(digitsArabicToLatin(e.target.value), 10);
               onLinkedWorkOrderChange(Number.isFinite(val) && val > 0 ? val : null);
             }}
             placeholder="رقم التعريف لأمر الشغل linkedWorkOrderId"

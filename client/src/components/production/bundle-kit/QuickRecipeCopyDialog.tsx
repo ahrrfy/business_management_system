@@ -49,7 +49,8 @@ export function normalizeDecimalInput(str: string): string {
 
   const intPart = sanitized.slice(0, firstDotIndex);
   const decPart = sanitized.slice(firstDotIndex + 1).replace(/\./g, "");
-  return `${intPart}.${decPart}`;
+  const normalizedInt = !intPart && decPart ? "0" : intPart;
+  return `${normalizedInt}.${decPart}`;
 }
 
 export interface EditableRecipeLine {
@@ -521,14 +522,14 @@ export function QuickRecipeCopyDialog({
             </div>
 
             <div className="flex items-center gap-1.5 flex-wrap">
-              <Badge variant="outline" className="text-[11px] font-mono" dir="ltr">
+              <Badge variant="outline" className="text-[11px] font-mono whitespace-nowrap shrink-0" dir="ltr">
                 {targetComponent.sku}
               </Badge>
-              <Badge variant="secondary" className="text-[11px]">
+              <Badge variant="secondary" className="text-[11px] whitespace-nowrap shrink-0">
                 الوحدة: {effectiveBaseUnitName}
               </Badge>
               {targetComponent.shortageQty > 0 && (
-                <Badge variant="outline" className="border-[var(--sem-neg)] text-[var(--sem-neg)] text-[11px]">
+                <Badge variant="outline" className="border-[var(--sem-neg)] text-[var(--sem-neg)] text-[11px] whitespace-nowrap shrink-0">
                   عجز: {targetComponent.shortageQty}
                 </Badge>
               )}
@@ -917,7 +918,7 @@ export function QuickRecipeCopyDialog({
                 <span>حساب التكلفة المعيارية الحية لكل 1 {effectiveBaseUnitName}:</span>
               </div>
               {costs.batchMultiple > 1 && (
-                <Badge variant="outline" className="border-[var(--sem-warn)] text-[var(--sem-warn)] text-[10px]">
+                <Badge variant="outline" className="border-[var(--sem-warn)] text-[var(--sem-warn)] text-[10px] whitespace-nowrap shrink-0">
                   مضاعف الدفعة: {costs.batchMultiple} وحدات
                 </Badge>
               )}
@@ -961,6 +962,7 @@ export function QuickRecipeCopyDialog({
 
           <Button
             type="button"
+            variant="success"
             size="sm"
             onClick={handleSave}
             disabled={
@@ -969,7 +971,7 @@ export function QuickRecipeCopyDialog({
               !recipeName.trim() ||
               !effectiveBaseUnitId
             }
-            className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium whitespace-nowrap shrink-0"
+            className="gap-1.5 font-medium whitespace-nowrap shrink-0"
           >
             {createRecipeMut.isPending ? (
               <>

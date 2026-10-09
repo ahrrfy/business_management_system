@@ -361,7 +361,7 @@ export function BundleKitProductionDialog({
               <Boxes className="size-5 text-primary shrink-0" aria-hidden="true" />
               <DialogTitle className="text-base font-bold whitespace-nowrap">مولّد إنتاج مكونات البكج</DialogTitle>
               {analysis && step < 4 && (
-                <Badge variant="outline" className="text-xs font-semibold bg-background/80 px-2.5 py-0.5">
+                <Badge variant="outline" className="text-xs font-semibold bg-background/80 px-2.5 py-0.5 whitespace-nowrap shrink-0">
                   {analysis.bundleName}
                 </Badge>
               )}
