@@ -20,11 +20,11 @@ export function StorefrontSocialProofTicker({
   let badgeTone = "border-emerald-200/90 bg-emerald-50/70 text-emerald-900 dark:border-emerald-800/50 dark:bg-emerald-950/30 dark:text-emerald-300";
 
   if (count >= 10) {
-    text = `تم طلب هذا المنتج أكثر من ${formatQuantity(count)} مرة مؤخراً في بغداد والمحافظات`;
+    text = `تم طلب هذا المنتج أكثر من ${formatQuantity(count)} مرة في بغداد والمحافظات`;
     icon = <Flame aria-hidden className="size-3.5 text-orange-600 dark:text-orange-400" />;
     badgeTone = "border-orange-200/90 bg-orange-50/70 text-orange-950 dark:border-orange-800/50 dark:bg-orange-950/30 dark:text-orange-300";
   } else if (count >= 3) {
-    text = `إقبال مرتفع: تم شراء هذا المنتج ${formatQuantity(count)} مرات هذا الأسبوع`;
+    text = `منتج موثوق: تم طلبه ${formatQuantity(count)} مرات بنجاح`;
     icon = <TrendingUp aria-hidden className="size-3.5 text-blue-600 dark:text-blue-400" />;
     badgeTone = "border-blue-200/90 bg-blue-50/70 text-blue-950 dark:border-blue-800/50 dark:bg-blue-950/30 dark:text-blue-300";
   }

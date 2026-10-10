@@ -225,6 +225,10 @@ export function StorefrontProductReviews({ productId }: StorefrontProductReviews
             </div>
           </div>
 
+          <p className="mt-2 text-[10px] text-slate-500 dark:text-slate-400">
+            ملاحظة للخصوصية: تُنشر المراجعات المعتمدة بصفة «متسوق موثق» ولا تظهر أرقامك أو بياناتك للعامة.
+          </p>
+
           {/* نص التقييم والملاحظات */}
           <div className="mt-2.5">
             <div className="flex items-center justify-between">

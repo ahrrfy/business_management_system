@@ -48,7 +48,7 @@ export async function listStorefrontProductReviews(productId: number) {
       id: Number(row.id),
       rating: Number(row.rating),
       comment: row.comment,
-      reviewerName: row.reviewerName ? maskReviewerName(row.reviewerName) : null,
+      reviewerName: row.reviewerName ? "متسوق موثق" : "عميل موثق",
       createdAt: row.createdAt,
     })),
   };
