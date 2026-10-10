@@ -35,6 +35,7 @@ import { logAuditTx } from "./auditService";
 import { getAiStudioRuntime } from "./imageStudioSettingsService";
 import { requireDb, withTx, type Actor, type MaybeScopedActor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { baghdadToday, parseBusinessYmd } from "./businessDay";
 
 export {
   FEEDBACK_CATEGORIES,
@@ -555,21 +556,22 @@ export async function issueCustomerInstantGift(
     let program = existingProgramRow;
     const now = new Date();
     const daysValid = Math.max(1, input.daysValid ?? 30);
-    const validUntil = new Date(
-      now.getTime() + daysValid * 24 * 60 * 60 * 1000,
-    );
+    // اشتقاق تاريخ الصلاحية وفق تقويم بغداد التجاري (Baghdad civil calendar day)
+    const todayBaghdad = baghdadToday(now);
+    const { y, m, d } = parseBusinessYmd(todayBaghdad);
+    const validUntilDate = new Date(Date.UTC(y, m - 1, d + daysValid));
+    const validToYmd = validUntilDate.toISOString().slice(0, 10);
 
     if (existingProgramRow) {
-      const existingValidToMs = existingProgramRow.validTo
-        ? new Date(existingProgramRow.validTo).getTime()
-        : 0;
-      if (
-        !existingProgramRow.validTo ||
-        existingValidToMs < validUntil.getTime()
-      ) {
+      const existingValidToYmd = existingProgramRow.validTo
+        ? typeof existingProgramRow.validTo === "string"
+          ? existingProgramRow.validTo
+          : (existingProgramRow.validTo as Date).toISOString().slice(0, 10)
+        : null;
+      if (!existingValidToYmd || existingValidToYmd < validToYmd) {
         await tx
           .update(couponPrograms)
-          .set({ validTo: validUntil, updatedAt: now })
+          .set({ validTo: validUntilDate, updatedAt: now })
           .where(eq(couponPrograms.id, existingProgramRow.id));
       }
     } else {
@@ -600,7 +602,7 @@ export async function issueCustomerInstantGift(
         name: `برنامج إهداء وترضية الزبائن (${amountDec.toFixed(0)} د.ع)`,
         branchId: null,
         validFrom: now,
-        validTo: validUntil,
+        validTo: validUntilDate,
         perCouponLimit: 1,
         perCustomerLimit: 100,
         codePrefix: "GIFT",
@@ -622,7 +624,7 @@ export async function issueCustomerInstantGift(
         promotionId: promoId,
         codePrefix: "GIFT",
         branchId: null,
-        validTo: validUntil,
+        validTo: validUntilDate,
       };
     }
 
@@ -706,8 +708,8 @@ export async function issueCustomerInstantGift(
       code,
       amount: amountDec.toFixed(0),
       reason: input.reason || "ترضية وإهداء الزبون",
-      validFrom: now.toISOString().slice(0, 10),
-      validTo: validUntil.toISOString().slice(0, 10),
+      validFrom: todayBaghdad,
+      validTo: validToYmd,
       customerName: customer.name,
       customerPhone: customer.phone || customer.whatsapp || null,
     };

@@ -377,26 +377,25 @@ describe("CustomerFeedbackService - Pure Unit Tests", () => {
 
     it("verifies coupon program validTo extension logic with Date objects and strings", () => {
       const existingValidTo = new Date("2026-10-20T12:00:00Z"); // 10 days left
-      const newCouponValidUntil = new Date("2026-11-10T12:00:00Z"); // 31 days left
+      const newCouponValidYmd = "2026-11-10";
 
-      const existingMs = existingValidTo
-        ? new Date(existingValidTo).getTime()
-        : 0;
-      const needsExtension =
-        !existingValidTo || existingMs < newCouponValidUntil.getTime();
+      const existingYmd = existingValidTo
+        ? typeof existingValidTo === "string"
+          ? existingValidTo
+          : existingValidTo.toISOString().slice(0, 10)
+        : null;
+      const needsExtension = !existingYmd || existingYmd < newCouponValidYmd;
       expect(needsExtension).toBe(true);
 
       // Verify string representation (e.g. from MySQL date column)
       const stringValidTo = "2026-10-20";
-      const stringMs = new Date(stringValidTo).getTime();
       const stringNeedsExtension =
-        !stringValidTo || stringMs < newCouponValidUntil.getTime();
+        !stringValidTo || stringValidTo < newCouponValidYmd;
       expect(stringNeedsExtension).toBe(true);
 
-      const futureValidTo = new Date("2026-12-31T12:00:00Z");
-      const futureMs = new Date(futureValidTo).getTime();
+      const futureValidTo = "2026-12-31";
       const doesNotNeedExtension =
-        !futureValidTo || futureMs < newCouponValidUntil.getTime();
+        !futureValidTo || futureValidTo < newCouponValidYmd;
       expect(doesNotNeedExtension).toBe(false);
     });
   });
