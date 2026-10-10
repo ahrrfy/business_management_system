@@ -60,13 +60,17 @@ export function StrictCancelOrderDialog({
     return () => window.removeEventListener("keydown", onKey);
   }, [pending, showApprovalDialog, onClose]);
 
+  const MAX_NOTES_LENGTH = 280;
   const canProceedToReason = calledTwice && whatsappSent;
-  const isReasonValid = selectedReason.trim().length > 0 && notes.trim().length >= 5;
+  const isReasonValid =
+    selectedReason.trim().length > 0 &&
+    notes.trim().length >= 5 &&
+    notes.trim().length <= MAX_NOTES_LENGTH;
 
   function handleFinalSubmit(approval?: ManagerApprovalInput) {
     const fullAuditReason = `[بروتوكول حماية المبيعات: تم الاتصال + واتساب + عرض بدائل] [السبب: ${selectedReason}] [التفاصيل: ${notes.trim()}]${
       approval?.barcode ? ` [معتمد بباركود المدير: ${approval.barcode}]` : ""
-    }${approval?.pin ? ` [معتمد برمز PIN للمدير: ${approval.identifier}]` : ""}`;
+    }${approval?.pin ? ` [معتمد برمز PIN للمدير: ${approval.identifier}]` : ""}`.slice(0, 500);
 
     onConfirm(fullAuditReason, approval);
   }
@@ -207,15 +211,28 @@ export function StrictCancelOrderDialog({
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="cancel-notes" className="text-xs font-bold">
-                  تفاصيل المحادثة ومحاولات الاستبقاء (مطلوب للتدقيق الرقابي):
-                </Label>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="cancel-notes" className="text-xs font-bold">
+                    تفاصيل المحادثة ومحاولات الاستبقاء (مطلوب للتدقيق الرقابي):
+                  </Label>
+                  <span
+                    className={cn(
+                      "text-[10px] tabular-nums font-mono",
+                      notes.length > MAX_NOTES_LENGTH - 30
+                        ? "text-[var(--sem-warn)] font-bold"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {notes.length} / {MAX_NOTES_LENGTH}
+                  </span>
+                </div>
                 <Textarea
                   id="cancel-notes"
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                   placeholder="مثال: تم الاتصال الساعة 11:30 و 12:15 بلا رد، وأرسلنا رسالة واتساب، ثم رد العميل بأنه اشترى من مكان آخر..."
                   rows={3}
+                  maxLength={MAX_NOTES_LENGTH}
                   className="text-xs"
                 />
               </div>

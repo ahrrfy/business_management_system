@@ -52,7 +52,14 @@ function Bar({ pct }: { pct: number }) {
 
 export default function CommissionLeaderboard() {
   const [period, setPeriod] = useState(thisMonth());
-  const q = trpc.commissions.performance.leaderboard.useQuery({ period }, { staleTime: 30_000 });
+  const q = trpc.commissions.performance.leaderboard.useQuery(
+    { period },
+    {
+      staleTime: 30_000,
+      refetchInterval: 30_000,
+      refetchOnWindowFocus: true,
+    },
+  );
   const rows = q.data?.rows ?? [];
   const totals = q.data?.totals;
 
@@ -220,7 +227,12 @@ export default function CommissionLeaderboard() {
         />
       </div>
 
-      <LeaderboardPodium rows={rows} period={period} />
+      <LeaderboardPodium
+        rows={rows}
+        period={period}
+        onRefresh={() => q.refetch()}
+        isRefetching={q.isRefetching}
+      />
 
       <Card>
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">

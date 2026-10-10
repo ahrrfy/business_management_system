@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Crown, Award, Medal, TrendingUp, Tv, Maximize2, Minimize2, Sparkles, User } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Crown, Award, Medal, TrendingUp, Tv, Maximize2, Minimize2, Sparkles, User, RotateCw } from "lucide-react";
 import { iqd } from "@/lib/hr/ui";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -22,10 +22,21 @@ export interface PodiumRow {
 interface LeaderboardPodiumProps {
   rows: PodiumRow[];
   period: string;
+  onRefresh?: () => void;
+  isRefetching?: boolean;
 }
 
-export function LeaderboardPodium({ rows, period }: LeaderboardPodiumProps) {
+export function LeaderboardPodium({ rows, period, onRefresh, isRefetching }: LeaderboardPodiumProps) {
   const [tvMode, setTvMode] = useState(false);
+
+  // تحديث دوري تلقائي كل 20 ثانية أثناء تفعيل وضع الشاشة التلفزيونية لضمان عدم تجميد اللوحة
+  useEffect(() => {
+    if (!tvMode || !onRefresh) return;
+    const interval = setInterval(() => {
+      onRefresh();
+    }, 20_000);
+    return () => clearInterval(interval);
+  }, [tvMode, onRefresh]);
 
   const top3 = rows.slice(0, 3);
   if (top3.length === 0) return null;
@@ -62,26 +73,43 @@ export function LeaderboardPodium({ rows, period }: LeaderboardPodiumProps) {
           </div>
         </div>
 
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => setTvMode(!tvMode)}
-          className="h-8 gap-1.5 text-xs font-bold border-primary/30"
-          title={tvMode ? "الخروج من وضع الشاشة الكاملة" : "تفعيل وضع الشاشة التلفزيونية"}
-        >
-          {tvMode ? (
-            <>
-              <Minimize2 aria-hidden className="size-3.5" />
-              <span>إغلاق وضع الشاشة</span>
-            </>
-          ) : (
-            <>
-              <Tv aria-hidden className="size-3.5" />
-              <span>وضع شاشة الصالة (TV)</span>
-            </>
+        <div className="flex items-center gap-2">
+          {onRefresh && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onRefresh()}
+              disabled={isRefetching}
+              className="h-8 gap-1.5 text-xs font-bold border-border"
+              title="تحديث بيانات الصدارة لحظياً"
+            >
+              <RotateCw aria-hidden className={cn("size-3.5", isRefetching && "animate-spin text-primary")} />
+              <span className="hidden sm:inline">تحديث حي</span>
+            </Button>
           )}
-        </Button>
+
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setTvMode(!tvMode)}
+            className="h-8 gap-1.5 text-xs font-bold border-primary/30"
+            title={tvMode ? "الخروج من وضع الشاشة الكاملة" : "تفعيل وضع الشاشة التلفزيونية"}
+          >
+            {tvMode ? (
+              <>
+                <Minimize2 aria-hidden className="size-3.5" />
+                <span>إغلاق وضع الشاشة</span>
+              </>
+            ) : (
+              <>
+                <Tv aria-hidden className="size-3.5" />
+                <span>وضع شاشة الصالة (TV)</span>
+              </>
+            )}
+          </Button>
+        </div>
       </div>
 
       {/* منصة التتويج: في الموبايل الأول فالأول، وفي الديسكتوب (RTL) المركز 2 يمين، 1 وسط، 3 يسار */}
