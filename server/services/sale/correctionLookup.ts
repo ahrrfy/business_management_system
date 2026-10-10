@@ -40,13 +40,19 @@ export function correctionLookupBlockReason(facts: CorrectionLookupFacts): strin
   if (facts.itemCount < 1) return "الفاتورة بلا بنود قابلة للتعديل";
   if (facts.hasDigitalCards) return "الفاتورة تحتوي بطاقات رقمية؛ استخدم مسار عكس البطاقات";
   if (facts.hasActiveInstallmentPlan) return "الفاتورة مرتبطة بخطة أقساط نشطة";
-  if (facts.consignmentStatus != null) {
-    const cancelledSafely = facts.consignmentStatus === "CANCELLED"
-      && facts.consignmentParcelStatus === "CANCELLED"
-      && facts.consignmentMoneyStatus === "CANCELLED";
-    if (!cancelledSafely) return "ألغِ إسناد التوصيل وسوِّ عهدته قبل تعديل الفاتورة";
+  const noActiveConsignment = facts.consignmentStatus == null || (
+    facts.consignmentStatus === "CANCELLED"
+    && facts.consignmentParcelStatus === "CANCELLED"
+    && facts.consignmentMoneyStatus === "CANCELLED"
+  );
+  if (facts.consignmentStatus != null && !noActiveConsignment) {
+    return "ألغِ إسناد التوصيل وسوِّ عهدته قبل تعديل الفاتورة";
   }
-  if (facts.onlineOrderStatus != null && facts.onlineOrderStatus !== "CANCELLED") {
+  const safeOnlineStatus =
+    facts.onlineOrderStatus == null
+    || facts.onlineOrderStatus === "CANCELLED"
+    || (facts.onlineOrderStatus === "PROCESSING" && noActiveConsignment);
+  if (!safeOnlineStatus) {
     return "ألغِ طلب المتجر المرتبط قبل تعديل الفاتورة";
   }
   return null;

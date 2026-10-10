@@ -459,6 +459,7 @@ export default defineConfig({
       "server/services/__tests__/productChannelSyncSelfHeal.test.ts",
       "client/src/components/decision/DecisionRow.test.ts",
       "server/services/decisions/__tests__/rows.test.ts",
+      "server/services/__tests__/triggersAndStateMachinesRegression.test.ts",
     ],
   },
 });
