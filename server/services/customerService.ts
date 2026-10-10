@@ -1356,9 +1356,20 @@ export async function getCustomer360Dossier(
       ? ltvDec.dividedBy(completedInvoicesCount).toFixed(2)
       : "0.00";
 
-  // آخر تاريخ تعامل
-  const dates = [invAgg?.lastDate, woAgg?.lastDate].filter(Boolean) as string[];
-  const lastInteractionDate = dates.length ? dates.sort().slice(-1)[0] : null;
+  // آخر تاريخ تعامل — مقارنة زمنية دقيقة عبر الطوابع الزمنية (epoch ms)
+  const candidateTimes = [invAgg?.lastDate, woAgg?.lastDate]
+    .filter(Boolean)
+    .map((d) => {
+      const val = d as unknown;
+      return val instanceof Date
+        ? val.getTime()
+        : new Date(String(val)).getTime();
+    })
+    .filter((t) => !Number.isNaN(t));
+
+  const lastInteractionDate = candidateTimes.length
+    ? new Date(Math.max(...candidateTimes)).toISOString()
+    : null;
 
   const totalReviews = Number(feedbackAgg?.totalCount ?? 0);
   const averageRating = feedbackAgg?.avgRating
