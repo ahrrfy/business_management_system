@@ -47,7 +47,7 @@ describe("Milestone 2 Challenger 2: Adversarial Stress & Verification Suite", ()
   // Section 1: Migration Integrity & MySQL 8 DDL Collision Resistance
   // ==========================================================================
   describe("1. Migration Integrity & MySQL 8 DDL Collision Resistance", () => {
-    const migrationRelativePath = "drizzle/migrations/0390_comprehensive_permission_matrix_caps.sql";
+    const migrationRelativePath = "drizzle/migrations/0393_comprehensive_permission_matrix_caps.sql";
     const journalRelativePath = "drizzle/migrations/meta/_journal.json";
 
     it("1.1 Migration SQL file exists and consists of valid, non-empty MySQL 8 statements", () => {
@@ -84,7 +84,7 @@ describe("Milestone 2 Challenger 2: Adversarial Stress & Verification Suite", ()
       expect(content).not.toMatch(/json\s+DEFAULT\s+'/i);
     });
 
-    it("1.3 Migration journal entry 390 is valid, monotonic, and collision-resistant", () => {
+    it("1.3 Migration journal entry 393 is valid, monotonic, and collision-resistant", () => {
       const fullPath = path.resolve(process.cwd(), journalRelativePath);
       expect(existsSync(fullPath)).toBe(true);
 
@@ -92,10 +92,10 @@ describe("Milestone 2 Challenger 2: Adversarial Stress & Verification Suite", ()
       expect(Array.isArray(journal.entries)).toBe(true);
 
       const entry = journal.entries.find(
-        (e: { tag: string }) => e.tag === "0390_comprehensive_permission_matrix_caps",
+        (e: { tag: string }) => e.tag === "0393_comprehensive_permission_matrix_caps",
       );
       expect(entry).toBeDefined();
-      expect(entry.idx).toBe(390);
+      expect(entry.idx).toBe(393);
       expect(entry.version).toBe("5");
       expect(entry.breakpoints).toBe(true);
 
@@ -276,7 +276,16 @@ describe("Milestone 2 Challenger 2: Adversarial Stress & Verification Suite", ()
             from: () => ({
               where: () => ({
                 for: () => ({
-                  limit: async () => [{ id: 44, role: "cashier", isOwner: false, email: "u3@t.local" }],
+                  limit: async () => [
+                    {
+                      id: 44,
+                      role: "cashier",
+                      isOwner: false,
+                      email: "u3@t.local",
+                      atomicPermissions: { "pos.sale.view": true },
+                      operationalCaps: { maxDiscountPercent: 20 },
+                    },
+                  ],
                 }),
               }),
             }),

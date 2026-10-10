@@ -52,7 +52,7 @@ Every feature from user request and survey phase assigned to a milestone:
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
 | M1 | Atomic Taxonomy & Resolution Core | `shared/atomicPermissions.ts`, schemas, templates, resolution helpers, unit tests | None | DONE |
-| M2 | Schema Migration & Persistence | `drizzle/schema.ts`, migration `0390`, `userRouter`, `roleRouter`, `userService`, `context.ts` | M1 | DONE |
+| M2 | Schema Migration & Persistence | `drizzle/schema.ts`, migration `0393`, `userRouter`, `roleRouter`, `userService`, `context.ts` | M1 | DONE |
 | M3 | Interactive Matrix UI & Ergonomics | `client/src/components/permissions/*`, `UserEdit.tsx`, `RoleEdit.tsx`, `AccountFields.tsx` | M1, M2 | DONE |
 | E2E | E2E Testing Track | Independent requirement-driven test suite (Tiers 1-4) & `TEST_READY.md` | M1 | DONE |
 | M4 | Final E2E Pass & Coverage Hardening | 100% pass of E2E suite + Tier 5 adversarial hardening | M2, M3, E2E | DONE |
@@ -76,8 +76,8 @@ Every feature from user request and survey phase assigned to a milestone:
 - `shared/atomicPermissions.ts`: Taxonomy, types, constants, default presets, resolution functions.
 - `shared/__tests__/atomicPermissions.test.ts`: Pure unit tests for taxonomy and resolution.
 - `drizzle/schema.ts`: Table definitions for `users` and `roles`.
-- `drizzle/migrations/0390_comprehensive_permission_matrix_caps.sql`: Migration script.
-- `drizzle/migrations/meta/_journal.json`: Migration journal entry (idx: 390).
+- `drizzle/migrations/0393_comprehensive_permission_matrix_caps.sql`: Migration script.
+- `drizzle/migrations/meta/_journal.json`: Migration journal entry (idx: 393).
 - `server/routers/userRouter.ts`: Validation schemas, input/output types.
 - `server/routers/roleRouter.ts`: Validation schemas, input/output types.
 - `server/services/userService.ts`: Data access, `SAFE_COLUMNS`, audit logging.

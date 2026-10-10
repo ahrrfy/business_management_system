@@ -56,7 +56,7 @@ describe("Milestone 2: Schema & Persistence Integrity (R3)", () => {
     it("migration file exists and contains valid DDL for roles and users", () => {
       const migrationPath = path.resolve(
         process.cwd(),
-        "drizzle/migrations/0390_comprehensive_permission_matrix_caps.sql",
+        "drizzle/migrations/0393_comprehensive_permission_matrix_caps.sql",
       );
       expect(existsSync(migrationPath)).toBe(true);
 
@@ -67,7 +67,7 @@ describe("Milestone 2: Schema & Persistence Integrity (R3)", () => {
       expect(sqlContent).toContain("ALTER TABLE `users` ADD COLUMN `operationalCaps` json NULL;");
     });
 
-    it("migration journal registers entry 390 correctly", () => {
+    it("migration journal registers entry 393 correctly", () => {
       const journalPath = path.resolve(
         process.cwd(),
         "drizzle/migrations/meta/_journal.json",
@@ -76,11 +76,11 @@ describe("Milestone 2: Schema & Persistence Integrity (R3)", () => {
 
       const journal = JSON.parse(readFileSync(journalPath, "utf8"));
       const entry = journal.entries.find(
-        (e: { tag: string }) => e.tag === "0390_comprehensive_permission_matrix_caps",
+        (e: { tag: string }) => e.tag === "0393_comprehensive_permission_matrix_caps",
       );
       expect(entry).toBeDefined();
-      expect(entry.idx).toBe(390);
-      expect(entry.when).toBe(1788148848000);
+      expect(entry.idx).toBe(393);
+      expect(entry.when).toBe(1788148851000);
       expect(entry.breakpoints).toBe(true);
     });
   });

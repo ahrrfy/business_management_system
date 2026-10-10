@@ -380,7 +380,7 @@ function auditCapabilityShadow(
 export function requireAtomicPermission(key: AtomicPermissionKey) {
   return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
-    if (ctx.user.role === "admin" || (ctx.user as any).isOwner) {
+    if (ctx.user.role === "admin") {
       assertTwoFactorEnrolled(ctx.user, path);
       return next({ ctx: { ...ctx, user: ctx.user } });
     }
@@ -431,30 +431,7 @@ export function requireAtomicPermission(key: AtomicPermissionKey) {
 export function requireModule(moduleKey: string, minLevel: AccessLevel) {
   return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
-    if (ctx.user.role === "admin" || (ctx.user as any).isOwner) return next({ ctx: { ...ctx, user: ctx.user } });
-
-    // إن وُجدت خريطة ذرية محلولة، والطلب يتطلب مستوى كتابة FULL لكن كل أفعال الكتابة محظورة صراحة:
-    const atomic = (ctx.user as any).resolvedAtomicPermissions as AtomicPermissionsMap | undefined;
-    if (atomic && minLevel === "FULL") {
-      const defs = ATOMIC_PERMISSION_DEFINITIONS.filter((d) => d.legacyModule === moduleKey);
-      const writeDefs = defs.filter(
-        (d) =>
-          d.standardAction === "create" ||
-          d.standardAction === "edit" ||
-          d.standardAction === "cancel" ||
-          d.standardAction === "approve",
-      );
-      if (writeDefs.length > 0 && writeDefs.every((d) => atomic[d.key] === false)) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: appErrorMessage({
-            what: "إجراء غير مصرّح به",
-            why: `أفعال التعديل والكتابة في هذه الوحدة (${moduleKey}) محظورة صراحة على حسابك`,
-            doThis: "راجع مسؤول النظام أو مدير الفرع لتعديل الصلاحيات الذرية",
-          }),
-        });
-      }
-    }
+    if (ctx.user.role === "admin") return next({ ctx: { ...ctx, user: ctx.user } });
 
     const override = (ctx.user as any).permissionsOverride as Record<string, AccessLevel> | null;
     const map = resolvePermissions(ctx.user.role as RoleKey, override);
@@ -480,32 +457,9 @@ export function requireModule(moduleKey: string, minLevel: AccessLevel) {
 function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, minLevel: AccessLevel) {
   return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
-    if (ctx.user.role === "admin" || (ctx.user as any).isOwner) {
+    if (ctx.user.role === "admin") {
       assertTwoFactorEnrolled(ctx.user, path);
       return next({ ctx: { ...ctx, user: ctx.user } });
-    }
-
-    // إنفاذ حظر الكتابة الذرية عند طلب مستوى FULL
-    const atomic = (ctx.user as any).resolvedAtomicPermissions as AtomicPermissionsMap | undefined;
-    if (atomic && minLevel === "FULL") {
-      const defs = ATOMIC_PERMISSION_DEFINITIONS.filter((d) => d.legacyModule === moduleKey);
-      const writeDefs = defs.filter(
-        (d) =>
-          d.standardAction === "create" ||
-          d.standardAction === "edit" ||
-          d.standardAction === "cancel" ||
-          d.standardAction === "approve",
-      );
-      if (writeDefs.length > 0 && writeDefs.every((d) => atomic[d.key] === false)) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: appErrorMessage({
-            what: "إجراء غير مصرّح به",
-            why: `أفعال التعديل والكتابة في هذه الوحدة (${moduleKey}) محظورة صراحة على حسابك`,
-            doThis: "راجع مسؤول النظام أو مدير الفرع لتعديل الصلاحيات الذرية",
-          }),
-        });
-      }
     }
 
     const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as
