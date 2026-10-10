@@ -2248,10 +2248,7 @@ export const saleRouter = router({
             eq(deliveryParties.id, deliveryConsignments.partyId),
           )
           .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
-          .leftJoin(
-            onlineOrderCustomer,
-            eq(onlineOrderCustomer.id, onlineOrders.customerId),
-          )
+          .leftJoin(onlineOrderCustomer, eq(onlineOrderCustomer.id, onlineOrders.customerId))
           .leftJoin(
             onlineDeliveryParty,
             eq(onlineDeliveryParty.id, onlineOrders.deliveryPartyId),
