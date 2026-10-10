@@ -8,6 +8,8 @@
  */
 import { Suspense, lazy, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Check, ClipboardList, FileText, Loader2, MapPin, Package, Pencil, Printer, ReceiptText, Store, Truck, X } from "lucide-react";
+import { ReceptionCommandAlert } from "@/components/reception/ReceptionCommandAlert";
+import { StrictCancelOrderDialog } from "@/components/store/StrictCancelOrderDialog";
 const EditOnlineOrderDialog = lazy(() =>
   import("@/components/store/EditOnlineOrderDialog").then((m) => ({ default: m.EditOnlineOrderDialog }))
 );
@@ -83,7 +85,12 @@ export default function OrderFulfillment() {
   const [f, setF, resetF] = useUrlFilters({ from: "", to: "" });
   const [printingId, setPrintingId] = useState<number | null>(null);
   const [dispatchTarget, setDispatchTarget] = useState<OrderRow | null>(null);
-  const [cancelTarget, setCancelTarget] = useState<{ id: number; orderNumber: string } | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<{
+    id: number;
+    orderNumber: string;
+    customerName?: string | null;
+    customerPhone?: string | null;
+  } | null>(null);
   const [editOrderId, setEditOrderId] = useState<number | null>(null);
   const utils = trpc.useUtils();
 
@@ -333,7 +340,12 @@ export default function OrderFulfillment() {
                 gate: { module: "store", level: "FULL" },
                 disabled: isBusy,
                 disabledReason: "هناك عملية جارية على الطلب",
-                onSelect: () => setCancelTarget({ id: o.id, orderNumber: o.orderNumber }),
+                onSelect: () => setCancelTarget({
+                  id: o.id,
+                  orderNumber: o.orderNumber,
+                  customerName: o.customerName,
+                  customerPhone: o.customerPhone,
+                }),
               },
             ]}
           />
@@ -499,6 +511,8 @@ export default function OrderFulfillment() {
         actions={<ShippingLabelSizeSelect />}
       />
 
+      <ReceptionCommandAlert />
+
       <div role="note" className="flex gap-2 rounded-lg border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)] px-3 py-2 text-xs leading-relaxed text-muted-foreground">
         <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-info)]" />
         <p>
@@ -611,7 +625,7 @@ export default function OrderFulfillment() {
       )}
 
       {cancelTarget && (
-        <CancelModal
+        <StrictCancelOrderDialog
           order={cancelTarget}
           pending={setStatusM.isPending}
           onClose={() => !setStatusM.isPending && setCancelTarget(null)}
@@ -626,91 +640,6 @@ export default function OrderFulfillment() {
           onOpenChange={(open) => !open && setEditOrderId(null)}
         />
       </Suspense>
-    </div>
-  );
-}
-
-/** حوار إلغاء طلب المتجر — سببٌ اختياريّ (يظهر لاحقاً في صفّ الطلب الملغى وسجلّ التدقيق). محصورٌ
- *  بطلبٍ قبل الإرسال (بلا فاتورة) — الإلغاء بعده يكون بإرجاع الفاتورة أو «تعذّر التسليم». */
-const CANCEL_REASONS = ["نفد المخزون", "تعذّر التواصل مع العميل", "طلب مكرَّر", "رفض العميل الطلب", "خارج نطاق التوصيل"];
-function CancelModal({
-  order,
-  pending,
-  onClose,
-  onConfirm,
-}: {
-  order: { id: number; orderNumber: string };
-  pending: boolean;
-  onClose: () => void;
-  onConfirm: (reason: string) => void;
-}) {
-  const [reason, setReason] = useState("");
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !pending) onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [pending, onClose]);
-
-  return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="إلغاء الطلب"
-      onClick={onClose}
-    >
-      <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-1 flex items-center gap-2 text-base font-bold text-[var(--sem-neg)]">
-          <X aria-hidden className="size-5" />
-          إلغاء الطلب <span dir="ltr" className="tracking-wider text-foreground">{order.orderNumber}</span>
-        </div>
-        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-          لا يمكن التراجع. اذكر سبب الإلغاء (اختياريّ) — يُحفَظ ويظهر في صفّ الطلب وسجلّ التدقيق.
-        </p>
-
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {CANCEL_REASONS.map((r) => (
-            <button
-              key={r}
-              type="button"
-              onClick={() => setReason(r)}
-              className={`rounded-full px-2.5 py-1 text-xs font-bold transition ${
-                reason === r ? "bg-[var(--sem-neg)] text-background hover:bg-[var(--sem-neg)]/90" : "bg-muted text-muted-foreground hover:bg-accent"
-              }`}
-            >
-              {r}
-            </button>
-          ))}
-        </div>
-        <textarea
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-          maxLength={500}
-          rows={2}
-          placeholder="سبب الإلغاء…"
-          className="mb-3 w-full rounded-lg border border-input bg-transparent px-3 py-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        />
-
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={pending}
-            className="rounded-lg border border-border px-3.5 py-1.5 text-xs font-bold transition hover:bg-accent disabled:opacity-50"
-          >
-            تراجع
-          </button>
-          <button
-            type="button"
-            onClick={() => onConfirm(reason.trim())}
-            disabled={pending}
-            className="flex items-center gap-1 rounded-lg bg-[var(--sem-neg)] px-3.5 py-1.5 text-xs font-bold text-background transition hover:bg-[var(--sem-neg)]/90 disabled:opacity-50"
-          >
-            {pending ? <Loader2 aria-hidden className="size-3.5 animate-spin" /> : <X aria-hidden className="size-3.5" />}
-            تأكيد الإلغاء
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

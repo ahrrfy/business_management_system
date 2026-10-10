@@ -10,7 +10,7 @@ import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { users } from "../../drizzle/schema";
+import { users, employees } from "../../drizzle/schema";
 import { DUMMY_STORED, verifyPassword } from "../auth/password";
 import {
   createNativeSessionMarker,
@@ -167,7 +167,7 @@ export const authRouter = router({
     issueNativeDeviceChallenge(),
   ),
 
-  me: publicProcedure.query(({ ctx }) => {
+  me: publicProcedure.query(async ({ ctx }) => {
     if (!ctx.user) return null;
     // حجب الأسرار: passwordHash + سرّ TOTP المشفَّر + pinHash (لا شأن للعميل بها).
     const {
@@ -183,10 +183,25 @@ export const authRouter = router({
     // حاجبةً رغم إيقاف الإنفاذ) وحارس isCryptoReady (لا إلزام بلا مفتاح تشفير).
     const mustEnroll2FA = twoFactorEnrollmentRequired(safe);
     const hasPin = Boolean((ctx.user as any).pinHash);
+    let photoUrl: string | null = null;
+    try {
+      const db = await getDb();
+      if (db && ctx.user.id) {
+        const [emp] = await db
+          .select({ photoUrl: employees.photoUrl })
+          .from(employees)
+          .where(eq(employees.userId, ctx.user.id))
+          .limit(1);
+        if (emp?.photoUrl) photoUrl = emp.photoUrl;
+      }
+    } catch {
+      // safe fallback
+    }
     // معرّف الشركة من AsyncLocalStorage الخادميّ، لا من localStorage/حقل دخول قابل للتلاعب.
     // `null` يعني نشر شركة واحدة، ويستعمله العميل لعزل أي حالة تشغيلية في المتصفح.
     return {
       ...safe,
+      photoUrl,
       hasPin,
       badgeBarcode: (ctx.user as any).badgeBarcode ?? null,
       role: safe.isOwner ? "admin" : safe.role,
