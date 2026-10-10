@@ -923,16 +923,6 @@ describe("توافق بوابات الواجهة مع صلاحيات كاشير 
 describe("إلغاء إسناد إرسالية مرتبطة بطلب متجر إلكتروني مضى على إنشائه أكثر من 24 ساعة (معالجة حارس حجز المخزون)", () => {
   it("ينجح في إلغاء الإسناد عندما يكون مصدر الإرسالية ONLINE_ORDER ومضى على إنشائه أكثر من 24 ساعة", async () => {
     const d = db();
-    await seed();
-
-    // جهة توصيل
-    await d.insert(s.deliveryParties).values({
-      id: 1,
-      name: "شركة التوصيل السريع",
-      partyType: "COMPANY",
-      branchId: 1,
-      isActive: true,
-    });
 
     const now = Date.now();
     const orderDate = new Date(now - 36 * 3600 * 1000); // قبل 36 ساعة
@@ -1015,15 +1005,6 @@ describe("إلغاء إسناد إرسالية مرتبطة بطلب متجر إ
 
   it("ينجح في إلغاء الإسناد عندما يكون مصدر الإرسالية INVOICE مرتبطة بطلب متجر إلكتروني منتهي الحجز", async () => {
     const d = db();
-    await seed();
-
-    await d.insert(s.deliveryParties).values({
-      id: 1,
-      name: "شركة التوصيل السريع",
-      partyType: "COMPANY",
-      branchId: 1,
-      isActive: true,
-    });
 
     const now = Date.now();
     const orderDate = new Date(now - 48 * 3600 * 1000);
