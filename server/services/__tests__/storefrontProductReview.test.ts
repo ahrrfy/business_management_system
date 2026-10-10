@@ -223,4 +223,31 @@ describe("storefront product review integrity", () => {
       reviewerName: "متسوق موثق",
     });
   });
+
+  it("normalizes reviewer phone to match customer records and saves canonical E.164 phone", async () => {
+    await db().update(s.customers).set({ phone: "+9647701234567" }).where(eq(s.customers.id, 1));
+
+    const result = await submitPublicStorefrontReview({
+      productId: 1,
+      rating: 5,
+      reviewerName: "حسن الزيدي",
+      reviewerPhone: "0770 123 4567",
+      comment: "خدمة رائعة جداً واستجابة فورية من الدعم",
+    });
+
+    expect(result).toEqual({ ok: true, status: "PENDING" });
+
+    const review = (
+      await db()
+        .select({
+          customerId: s.storefrontProductReviews.customerId,
+          reviewerPhone: s.storefrontProductReviews.reviewerPhone,
+        })
+        .from(s.storefrontProductReviews)
+        .where(eq(s.storefrontProductReviews.productId, 1))
+    )[0];
+
+    expect(review?.customerId).toBe(1);
+    expect(review?.reviewerPhone).toBe("+9647701234567");
+  });
 });

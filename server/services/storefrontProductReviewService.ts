@@ -5,6 +5,7 @@ import { customers, onlineOrderItems, onlineOrders, productVariants, storefrontP
 import { appErrorMessage } from "../../shared/errors";
 import { getDb } from "../db";
 import { extractInsertId } from "../lib/insertId";
+import { normalizeIraqPhoneE164 } from "../lib/phone";
 import { createAppNotification } from "./appNotificationService";
 
 function cleanComment(value: string) {
@@ -165,12 +166,34 @@ export async function submitPublicStorefrontReview(input: {
     }
   }
 
-  if (!matchedCustomerId && input.reviewerPhone?.trim()) {
-    const cleanPhone = input.reviewerPhone.trim();
+  let normalizedPhone: string | null = null;
+  if (input.reviewerPhone?.trim()) {
+    normalizedPhone = normalizeIraqPhoneE164(input.reviewerPhone);
+  }
+
+  if (!matchedCustomerId && (normalizedPhone || input.reviewerPhone?.trim())) {
+    const rawTrimmed = input.reviewerPhone?.trim();
+    const phoneConds = [];
+    if (normalizedPhone) {
+      phoneConds.push(
+        eq(customers.phone, normalizedPhone),
+        eq(customers.phone2, normalizedPhone),
+        eq(customers.phone3, normalizedPhone),
+        eq(customers.whatsapp, normalizedPhone)
+      );
+    }
+    if (rawTrimmed && rawTrimmed !== normalizedPhone) {
+      phoneConds.push(
+        eq(customers.phone, rawTrimmed),
+        eq(customers.phone2, rawTrimmed),
+        eq(customers.phone3, rawTrimmed),
+        eq(customers.whatsapp, rawTrimmed)
+      );
+    }
     const foundCustomer = (await db
       .select({ id: customers.id })
       .from(customers)
-      .where(eq(customers.phone, cleanPhone))
+      .where(or(...phoneConds))
       .limit(1))[0];
     if (foundCustomer) {
       matchedCustomerId = Number(foundCustomer.id);
@@ -182,7 +205,7 @@ export async function submitPublicStorefrontReview(input: {
     customerId: matchedCustomerId,
     onlineOrderId: matchedOrderId,
     reviewerName: cleanName,
-    reviewerPhone: input.reviewerPhone?.trim() || null,
+    reviewerPhone: normalizedPhone ?? (input.reviewerPhone?.trim() || null),
     rating: input.rating,
     comment,
     status: "PENDING",
