@@ -170,28 +170,41 @@ export function CustomerDossierDrawer({
     });
   };
 
-  const handlePrintCoupon = (coupon: {
+  const handlePrintCoupon = async (coupon: {
     code: string;
     discountAmount?: string | number | null;
     programName?: string | null;
     validTo?: string | Date | null;
   }) => {
     if (!customer) return;
-    printGiftVoucherDoc({
-      couponCode: coupon.code,
-      amount:
-        coupon.discountAmount != null && coupon.discountAmount !== ""
-          ? String(coupon.discountAmount)
-          : "10000",
-      customerName: customer.name,
-      customerPhone:
-        preferredWhatsAppPhone(customer.whatsapp, customer.phone) ||
-        customer.phone ||
-        customer.whatsapp,
-      reason: coupon.programName || undefined,
-      validUntil: coupon.validTo ? fmtDate(coupon.validTo) : undefined,
-      terms: "تُخصم لمرة واحدة على أي فاتورة مبيعات أو أمر شغل داخل فروعنا.",
-    });
+    try {
+      const res = await printGiftVoucherDoc({
+        couponCode: coupon.code,
+        amount:
+          coupon.discountAmount != null && coupon.discountAmount !== ""
+            ? String(coupon.discountAmount)
+            : "10000",
+        customerName: customer.name,
+        customerPhone:
+          preferredWhatsAppPhone(customer.whatsapp, customer.phone) ||
+          customer.phone ||
+          customer.whatsapp,
+        reason: coupon.programName || undefined,
+        validUntil: coupon.validTo ? fmtDate(coupon.validTo) : undefined,
+        terms: "تُخصم لمرة واحدة على أي فاتورة مبيعات أو أمر شغل داخل فروعنا.",
+      });
+      if (res && !res.ok) {
+        if (res.reason === "popup-blocked") {
+          notify.err("تم حظر نافذة الطباعة من قبل المتصفح، يرجى السماح بالنوافذ المنبثقة للموقع");
+        } else {
+          notify.err("تعذر إرسال القسيمة إلى الطابعة");
+        }
+        return;
+      }
+      notify.ok("تم إرسال قسيمة الهدية للطباعة");
+    } catch {
+      notify.err("تعذر إرسال القسيمة إلى الطابعة");
+    }
   };
 
   const handleSendCouponWhatsApp = (coupon: {

@@ -162,7 +162,7 @@ export function InstantGiftModal({
   const handlePrint = async () => {
     if (!issuedCoupon) return;
     try {
-      await printGiftVoucher({
+      const res = await printGiftVoucher({
         code: issuedCoupon.code,
         amount: issuedCoupon.amount,
         customerName,
@@ -171,6 +171,14 @@ export function InstantGiftModal({
         validUntil: issuedCoupon.validTo,
         terms: "تُخصم لمرة واحدة على أي فاتورة مبيعات أو أمر شغل داخل فروعنا.",
       });
+      if (res && !res.ok) {
+        if (res.reason === "popup-blocked") {
+          notify.err("تم حظر نافذة الطباعة من قبل المتصفح، يرجى السماح بالنوافذ المنبثقة للموقع");
+        } else {
+          notify.err("تعذر إرسال القسيمة إلى الطابعة");
+        }
+        return;
+      }
       notify.ok("تم إرسال قسيمة الهدية للطباعة");
     } catch {
       notify.err("تعذر إرسال القسيمة إلى الطابعة");
