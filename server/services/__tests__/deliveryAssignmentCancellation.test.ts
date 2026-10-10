@@ -22,6 +22,8 @@ const TABLES = [
   "receipts",
   "invoiceItems",
   "invoices",
+  "onlineOrderItems",
+  "onlineOrders",
   "branchStock",
   "productUnits",
   "productVariants",
@@ -917,4 +919,139 @@ describe("توافق بوابات الواجهة مع صلاحيات كاشير 
     expect(moduleAccessAllowed("sales_rep", { store: "FULL" }, "store", "FULL", ["manager", "cashier"])).toBe(true);
   });
 });
+
+describe("إلغاء إسناد إرسالية مرتبطة بطلب متجر إلكتروني مضى على إنشائه أكثر من 24 ساعة (معالجة حارس حجز المخزون)", () => {
+  it("ينجح في إلغاء الإسناد عندما يكون مصدر الإرسالية ONLINE_ORDER ومضى على إنشائه أكثر من 24 ساعة", async () => {
+    const d = db();
+
+    const now = Date.now();
+    const orderDate = new Date(now - 36 * 3600 * 1000); // قبل 36 ساعة
+    const expiredReservation = new Date(now - 12 * 3600 * 1000); // انتهت قبل 12 ساعة
+
+    // فاتورة للطلب
+    await seedInvoice(301);
+
+    // طلب متجر إلكتروني تم شحنه سابقاً
+    await d.insert(s.onlineOrders).values({
+      id: 301,
+      orderNumber: "ORD-100301",
+      customerId: 1,
+      branchId: 1,
+      invoiceId: 301,
+      orderDate,
+      reservationExpiresAt: expiredReservation,
+      subtotal: "25000.00",
+      shippingCost: "5000.00",
+      taxAmount: "0.00",
+      total: "30000.00",
+      status: "SHIPPED",
+      deliveryPartyId: 1,
+    });
+
+    // إرسالية توصيل مرتبطة بالطلب
+    await d.insert(s.deliveryConsignments).values({
+      id: 301,
+      consignmentNumber: "CN-1-20261010-00301",
+      branchId: 1,
+      partyId: 1,
+      invoiceId: 301,
+      sourceType: "ONLINE_ORDER",
+      sourceId: 301,
+      codAmount: "30000.00",
+      collectedAmount: "0.00",
+      parcelStatus: "OUT_FOR_DELIVERY",
+      status: "DISPATCHED",
+      dispatchedBy: 6,
+    });
+
+    // إلغاء إسناد التوصيل بواسطة الكاشير
+    const result = await cancelDeliveryAssignment(
+      {
+        consignmentId: 301,
+        reason: "خطأ في الإسناد للمندوب",
+        clientRequestId: "cancel-online-ord-301",
+      },
+      CASHIER,
+    );
+
+    expect(result.consignmentId).toBe(301);
+
+    // التحقق من حالة الإرسالية
+    const updatedCn = (
+      await d.select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, 301)).limit(1)
+    )[0];
+    expect(updatedCn.status).toBe("CANCELLED");
+    expect(updatedCn.parcelStatus).toBe("CANCELLED");
+    expect(updatedCn.cancellationReason).toBe("خطأ في الإسناد للمندوب");
+
+    // التحقق من عودة الطلب الإلكتروني لحالة PROCESSING وتجديد مهلة الحجز
+    const updatedOrder = (
+      await d.select().from(s.onlineOrders).where(eq(s.onlineOrders.id, 301)).limit(1)
+    )[0];
+    expect(updatedOrder.status).toBe("PROCESSING");
+    expect(updatedOrder.deliveryPartyId).toBeNull();
+    expect(updatedOrder.reservationExpiresAt).toBeDefined();
+    expect(new Date(updatedOrder.reservationExpiresAt!).getTime()).toBeGreaterThan(now);
+  });
+
+  it("ينجح في إلغاء الإسناد عندما يكون مصدر الإرسالية INVOICE مرتبطة بطلب متجر إلكتروني منتهي الحجز", async () => {
+    const d = db();
+
+    const now = Date.now();
+    const orderDate = new Date(now - 48 * 3600 * 1000);
+    const expiredReservation = new Date(now - 24 * 3600 * 1000);
+
+    await seedInvoice(302);
+
+    await d.insert(s.onlineOrders).values({
+      id: 302,
+      orderNumber: "ORD-100302",
+      customerId: 1,
+      branchId: 1,
+      invoiceId: 302,
+      orderDate,
+      reservationExpiresAt: expiredReservation,
+      subtotal: "40000.00",
+      shippingCost: "5000.00",
+      taxAmount: "0.00",
+      total: "45000.00",
+      status: "SHIPPED",
+      deliveryPartyId: 1,
+    });
+
+    await d.insert(s.deliveryConsignments).values({
+      id: 302,
+      consignmentNumber: "CN-1-20261010-00302",
+      branchId: 1,
+      partyId: 1,
+      invoiceId: 302,
+      sourceType: "INVOICE",
+      sourceId: 302,
+      codAmount: "45000.00",
+      collectedAmount: "0.00",
+      parcelStatus: "ASSIGNED",
+      status: "DISPATCHED",
+      dispatchedBy: 6,
+    });
+
+    const result = await cancelDeliveryAssignment(
+      {
+        consignmentId: 302,
+        reason: "العميل يرغب بالاستلام من الفرع",
+        clientRequestId: "cancel-online-ord-302",
+      },
+      CASHIER,
+    );
+
+    expect(result.consignmentId).toBe(302);
+
+    const updatedOrder = (
+      await d.select().from(s.onlineOrders).where(eq(s.onlineOrders.id, 302)).limit(1)
+    )[0];
+    expect(updatedOrder.status).toBe("PROCESSING");
+    expect(updatedOrder.deliveryPartyId).toBeNull();
+    expect(new Date(updatedOrder.reservationExpiresAt!).getTime()).toBeGreaterThan(now);
+  });
+});
+
 
