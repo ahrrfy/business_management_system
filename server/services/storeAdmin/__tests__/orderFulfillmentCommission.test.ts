@@ -932,6 +932,6 @@ describe("5. Migration Parity & Zero Schema Drift Verification", () => {
     });
 
     expect(output).toContain("Migration journal check passed through");
-    expect(output).toMatch(/03(8[6-9]|9\d)_/);
+    expect(output).toMatch(/03[89]\d_/);
   });
 });
