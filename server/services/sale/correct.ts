@@ -27,6 +27,7 @@ import {
   externalPaymentAttempts,
   invoiceItems,
   invoices,
+  onlineOrders,
   products,
   productVariants,
   receipts,
@@ -733,6 +734,13 @@ export async function correctSaleInTx(
     // ── ٨) ربط الفاتورتين (نسب التصحيح ثنائية الاتجاه) ──
     await tx.update(invoices).set({ correctionOfInvoiceId: input.originalInvoiceId }).where(eq(invoices.id, newId));
     await tx.update(invoices).set({ correctedByInvoiceId: newId }).where(eq(invoices.id, input.originalInvoiceId));
+
+    if (inv.sourceType === "ONLINE") {
+      await tx
+        .update(onlineOrders)
+        .set({ invoiceId: newId })
+        .where(eq(onlineOrders.invoiceId, input.originalInvoiceId));
+    }
 
     // ── ٩) الفرق الزائد (overpay): المقبوض سلفاً > مستحقّ المصحّح ⇒ يُردّ نقداً أو يُرصَّد ──
     //    `createSaleInTx` يقصُر `paidNow` على الإجمالي الجديد (allowPreCollectedOverpay) فيبقى
