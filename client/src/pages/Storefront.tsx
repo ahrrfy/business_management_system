@@ -2860,7 +2860,7 @@ function StorefrontContent() {
 
                 {/* تقييمات وآراء العملاء المعتمدة (Social Proof) */}
                 {detailQ.data && (
-                  <StorefrontProductReviews productId={detailQ.data.productId} />
+                  <StorefrontProductReviews key={detailQ.data.productId} productId={detailQ.data.productId} />
                 )}
               </div>
             ) : (

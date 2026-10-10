@@ -37,6 +37,17 @@ export function StorefrontProductReviews({ productId }: StorefrontProductReviews
   const [submittedMessage, setSubmittedMessage] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
+  React.useEffect(() => {
+    setShowForm(false);
+    setRating(5);
+    setHoverRating(0);
+    setReviewerName("");
+    setContactRef("");
+    setComment("");
+    setSubmittedMessage(null);
+    setFormError(null);
+  }, [productId]);
+
   const reviewsQ = trpc.storefront.productReviews.useQuery(
     { productId },
     { staleTime: 60_000 }

@@ -1,5 +1,5 @@
 import React from "react";
-import { UserCheck, MessageCircle, ShieldCheck, Phone } from "lucide-react";
+import { UserCheck, MessageCircle, ShieldCheck } from "lucide-react";
 import { openWhatsApp } from "@/lib/whatsapp";
 
 interface StorefrontPersonalAdvisorCardProps {
@@ -13,7 +13,8 @@ export function StorefrontPersonalAdvisorCard({
   whatsappNumber,
   className = "",
 }: StorefrontPersonalAdvisorCardProps) {
-  const defaultWhatsapp = whatsappNumber || "9647700000000";
+  if (!whatsappNumber) return null;
+
   const inquiryMessage = productTitle
     ? `مرحباً، أود استشارة حول منتج «${productTitle}» وتفاصيل المواصفات والكميات للطلب.`
     : "مرحباً، أود استشارة بخصوص طلبات الشركات وتفاصيل التجهيز من الرؤية العربية.";
@@ -44,17 +45,15 @@ export function StorefrontPersonalAdvisorCard({
           </div>
         </div>
 
-        {whatsappNumber && (
-          <button
-            type="button"
-            onClick={() => openWhatsApp(whatsappNumber, inquiryMessage)}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-600 bg-white px-3 py-1.5 text-[11px] font-black text-emerald-700 shadow-xs transition hover:bg-emerald-600 hover:text-white active:scale-95 dark:border-emerald-500 dark:bg-slate-900 dark:text-emerald-400 dark:hover:bg-emerald-600 dark:hover:text-white"
-          >
-            <MessageCircle aria-hidden className="size-3.5" />
-            <span className="hidden sm:inline">استشارة فورية</span>
-            <span className="sm:hidden">واتساب</span>
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => openWhatsApp(whatsappNumber, inquiryMessage)}
+          className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-600 bg-white px-3 py-1.5 text-[11px] font-black text-emerald-700 shadow-xs transition hover:bg-emerald-600 hover:text-white active:scale-95 dark:border-emerald-500 dark:bg-slate-900 dark:text-emerald-400 dark:hover:bg-emerald-600 dark:hover:text-white"
+        >
+          <MessageCircle aria-hidden className="size-3.5" />
+          <span className="hidden sm:inline">استشارة فورية</span>
+          <span className="sm:hidden">واتساب</span>
+        </button>
       </div>
     </div>
   );
