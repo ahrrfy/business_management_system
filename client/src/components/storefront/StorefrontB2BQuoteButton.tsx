@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import Decimal from "decimal.js";
 import { FileText, Loader2, Check } from "lucide-react";
 import { printQuotationV2 } from "@/lib/printing/printTemplatesV2";
 import { summarizeStorefrontCustomization } from "@/pages/Storefront";
@@ -19,9 +20,18 @@ interface StorefrontB2BQuoteButtonProps {
   className?: string;
 }
 
+function toDecimalSafe(val: unknown): Decimal {
+  if (val === null || val === undefined || val === "") return new Decimal(0);
+  try {
+    return new Decimal(val as Decimal.Value);
+  } catch {
+    return new Decimal(0);
+  }
+}
+
 export function StorefrontB2BQuoteButton({
   cartLines,
-  cartSubtotal,
+  cartSubtotal: _cartSubtotal,
   className = "",
 }: StorefrontB2BQuoteButtonProps) {
   const [isGenerating, setIsGenerating] = useState(false);
@@ -44,21 +54,27 @@ export function StorefrontB2BQuoteButton({
         year: "numeric",
       }).format(expiryDate);
 
+      let computedSubtotal = new Decimal(0);
+
       const items = cartLines.map((line) => {
         const customText = summarizeStorefrontCustomization(line.customization);
         const details = [line.variantLabel, line.unitName, customText].filter(Boolean).join(" - ");
         const fullName = details ? `${line.name} (${details})` : line.name;
-        const unitPrice = Number(line.price) || 0;
-        const total = unitPrice * line.qty;
+        const decUnitPrice = toDecimalSafe(line.price);
+        const decQty = toDecimalSafe(line.qty);
+        const decLineTotal = decUnitPrice.mul(decQty);
+        computedSubtotal = computedSubtotal.plus(decLineTotal);
 
         return {
           productName: fullName,
           quantity: line.qty,
-          unitPrice,
-          total,
+          unitPrice: decUnitPrice.toFixed(2),
+          total: decLineTotal.toFixed(2),
           taxAmount: 0,
         };
       });
+
+      const finalSubtotal = computedSubtotal.toFixed(2);
 
       printQuotationV2({
         quoteNumber,
@@ -67,11 +83,11 @@ export function StorefrontB2BQuoteButton({
         customerName: "السادة / شركة أو مؤسسة محترمة",
         deliveryLocation: "بغداد وكافة المحافظات العراقية",
         items,
-        subtotal: cartSubtotal,
+        subtotal: finalSubtotal,
         discountAmount: 0,
         taxAmount: 0,
         taxRate: 0,
-        total: cartSubtotal,
+        total: finalSubtotal,
         terms: "عرض سعر رسمي معتمد صادر من شركة الرؤية العربية للتجارة العامة والمكتبة العربية. العرض سارٍ لمدة 15 يوماً. الأسعار شاملة وخاضعة لنسبة ضريبة 0% في جمهورية العراق. الدفع عند الاستلام أو بتحويل مصرفي معتمد.",
       });
 
