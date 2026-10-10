@@ -7,6 +7,9 @@
  */
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
+import { managerApprovalSchema } from "@shared/managerApproval";
+import { verifyManagerApproval } from "./saleRouter";
 import { logAudit } from "../services/auditService";
 import { router, storeFulfillProcedure, storeManagerProcedure, storeReadProcedure } from "../trpc";
 import {
@@ -88,7 +91,22 @@ const statusEnum = z.enum(["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DEL
  *  (owner مُطبَّع ⇒ admin)؛ مدير الفرع وغيره ⇒ فرعهم المُسنَد. */
 function actorScopedBranch(user: { role: string; branchId: number | null }): number | null {
   const elevated = user.role === "admin";
-  return elevated ? null : (user.branchId != null ? Number(user.branchId) : null);
+  if (elevated) return null;
+  if (user.branchId == null) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ العملية من حساب غير مقيد",
+        why: "حساب المستخدم غير مربوط بأي فرع تشغيلي حالياً",
+        doThis: "راجع مسؤول النظام لتعيين فرعك التشغيلي في شاشة الموظفين",
+      }),
+    });
+  }
+  return Number(user.branchId);
+}
+
+function isSupervisorOrAdmin(user: { role: string }): boolean {
+  return user.role === "admin" || user.role === "manager";
 }
 
 function assertCatalogBranchAccess(scopedBranchId: number | null, fulfillmentBranchId: number): void {
@@ -140,18 +158,49 @@ const ordersRouter = router({
     .input(z.object({ id: z.number().int().positive() }))
     .query(({ input, ctx }) => getOnlineOrder(input.id, ctx.scopedBranchId)),
 
-  /** تثبيت/نقل حالة الطلب (بحارس انتقال + تدقيق). */
+  /** تثبيت/نقل حالة الطلب (بحارس انتقال + تدقيق + إشراف صارم على الإلغاء). */
   setStatus: storeFulfillProcedure
-    .input(z.object({ id: z.number().int().positive(), status: statusEnum, cancelReason: z.string().trim().max(500).optional() }))
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        status: statusEnum,
+        cancelReason: z.string().trim().max(500).optional(),
+        managerApproval: managerApprovalSchema.optional(),
+      }).refine((data) => data.status !== "CANCELLED" || Boolean(data.cancelReason && data.cancelReason.length >= 5), {
+        message: "لا يمكن إلغاء الطلب دون توثيق سبب الإلغاء الرقابي بالتفصيل (5 أحرف على الأقل)",
+        path: ["cancelReason"],
+      })
+    )
     .mutation(async ({ input, ctx }) => {
       const scopedBranchId = actorScopedBranch(ctx.user);
+
+      // بروتوكول مكافحة الإلغاء: يلزم اعتماد المشرف المباشر إذا لم يكن المنفّذ مديراً أو أدمن
+      let approvedByManagerId: number | undefined;
+      if (input.status === "CANCELLED" && !isSupervisorOrAdmin(ctx.user)) {
+        if (!input.managerApproval) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر إلغاء طلب المبيعات",
+              why: "بروتوكول حماية المبيعات يشترط اعتماد المشرف المباشر للعملية",
+              doThis: "امسح شارة المشرف أو اطلب إدخال رمز PIN للاعتماد وإكمال الإلغاء",
+            }),
+          });
+        }
+        approvedByManagerId = await verifyManagerApproval(input.managerApproval, ctx, scopedBranchId ?? undefined);
+      }
+
       const res = await setOnlineOrderStatus({ id: input.id, status: input.status, scopedBranchId, cancelReason: input.cancelReason }, ctx.user.id);
       await logAudit(ctx, {
         action: "store.order.setStatus",
         entityType: "onlineOrder",
         entityId: input.id,
         oldValue: { status: res.from },
-        newValue: { status: res.to, ...(input.status === "CANCELLED" && input.cancelReason ? { cancelReason: input.cancelReason } : {}) },
+        newValue: {
+          status: res.to,
+          ...(input.status === "CANCELLED" && input.cancelReason ? { cancelReason: input.cancelReason } : {}),
+          ...(approvedByManagerId ? { approvedByManagerId } : {}),
+        },
       });
       return res;
     }),

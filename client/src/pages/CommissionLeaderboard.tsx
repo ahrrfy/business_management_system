@@ -19,6 +19,7 @@ import { trpc } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { Crown, FileDown, Search, Target, TrendingDown, Wallet, X } from "lucide-react";
 import { useMemo, useState } from "react";
+import { LeaderboardPodium } from "@/components/commission/LeaderboardPodium";
 
 function StatCard({ label, value, sub, accent, icon }: { label: string; value: string; sub?: string; accent?: string; icon: React.ReactNode }) {
   return (
@@ -51,7 +52,14 @@ function Bar({ pct }: { pct: number }) {
 
 export default function CommissionLeaderboard() {
   const [period, setPeriod] = useState(thisMonth());
-  const q = trpc.commissions.performance.leaderboard.useQuery({ period }, { staleTime: 30_000 });
+  const q = trpc.commissions.performance.leaderboard.useQuery(
+    { period },
+    {
+      staleTime: 30_000,
+      refetchInterval: 30_000,
+      refetchOnWindowFocus: true,
+    },
+  );
   const rows = q.data?.rows ?? [];
   const totals = q.data?.totals;
 
@@ -110,12 +118,27 @@ export default function CommissionLeaderboard() {
     {
       id: "employee", header: "الموظف", enableSorting: false,
       accessorFn: (r) => r.employeeName,
-      cell: ({ row }) => (
-        <div>
-          <div className="font-medium whitespace-nowrap">{row.original.employeeName}</div>
-          <div className="max-w-[11rem] truncate text-[11px] text-muted-foreground" title={row.original.planName}>{row.original.planName}</div>
-        </div>
-      ),
+      cell: ({ row }) => {
+        const r = row.original;
+        const photo = (r as any).photoUrl;
+        return (
+          <div className="flex items-center gap-2.5">
+            <div className="relative size-8 shrink-0 overflow-hidden rounded-full border border-border bg-muted">
+              {photo ? (
+                <img src={photo} alt={r.employeeName} className="size-full object-cover" />
+              ) : (
+                <div className="grid size-full place-items-center bg-primary/10 text-[10px] font-bold text-primary">
+                  {r.employeeName.slice(0, 2)}
+                </div>
+              )}
+            </div>
+            <div>
+              <div className="font-bold text-foreground whitespace-nowrap">{r.employeeName}</div>
+              <div className="max-w-[11rem] truncate text-[11px] text-muted-foreground" title={r.planName}>{r.planName}</div>
+            </div>
+          </div>
+        );
+      },
       meta: { kind: "text", wrap: true },
     },
     {
@@ -203,6 +226,13 @@ export default function CommissionLeaderboard() {
           icon={<TrendingDown className="size-4" />}
         />
       </div>
+
+      <LeaderboardPodium
+        rows={rows}
+        period={period}
+        onRefresh={() => q.refetch()}
+        isRefetching={q.isRefetching}
+      />
 
       <Card>
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">

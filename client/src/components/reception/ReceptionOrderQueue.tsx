@@ -15,6 +15,7 @@ import { DispatchDialog, type DispatchParty } from "@/components/delivery/Dispat
 import { DeliveryDepartureOverlay, type DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
 import { MarkPickedUpDialog } from "@/components/delivery/MarkPickedUpDialog";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import { ReceptionCommandAlert } from "@/components/reception/ReceptionCommandAlert";
 import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
@@ -247,6 +248,8 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 pb-8">
+      <ReceptionCommandAlert branchId={branchId} />
+
       <div className="mb-1 rounded-xl border bg-card p-3">
         <h1 className="font-extrabold">طابور الطلبات والتوصيل</h1>
         <p className="text-xs text-muted-foreground">من الاستلام حتى التسليم — استلام مباشر أو إسناد لمندوب/شركة توصيل.</p>

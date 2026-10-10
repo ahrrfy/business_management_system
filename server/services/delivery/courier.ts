@@ -38,6 +38,7 @@ import {
   postEntry,
 } from "../ledgerService";
 import { returnSale } from "../returnService";
+import { awardDeliveredOnlineOrderPoints } from "../storeAdmin/loyaltyService";
 import { withTx } from "../tx";
 import {
   checkIdempotency,
@@ -554,11 +555,20 @@ export async function confirmCourierDelivery(
     const net = money(inv.total).minus(money(inv.returnedTotal ?? "0"));
     const collected = Decimal.max(net.minus(money(inv.paidAmount ?? "0")), 0);
 
-    if (!wasDelivered)
+    if (!wasDelivered) {
       await tx
         .update(onlineOrders)
         .set({ status: "DELIVERED" })
         .where(eq(onlineOrders.id, order.id));
+
+      if (order.customerId != null) {
+        await awardDeliveredOnlineOrderPoints(tx, {
+          onlineOrderId: Number(order.id),
+          customerId: Number(order.customerId),
+          total: String(order.total),
+        });
+      }
+    }
 
     let custodyAfter = money(partyRow.balance ?? "0");
     if (collected.gt(0)) {
