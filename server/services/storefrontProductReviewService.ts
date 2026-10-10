@@ -54,6 +54,30 @@ export async function listStorefrontProductReviews(productId: number) {
   };
 }
 
+async function notifyManagersAboutReview(db: NonNullable<ReturnType<typeof getDb>>, reviewId: number, rating: number, reviewerDisplay: string) {
+  try {
+    const recipients = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.isActive, true), or(eq(users.role, "admin"), eq(users.role, "manager"))));
+
+    await Promise.all(recipients.map((recipient) => createAppNotification({
+      userId: Number(recipient.id),
+      kind: "APPROVAL_REQUIRED",
+      title: "مراجعة منتج جديدة بانتظار الاعتماد",
+      body: `وصل تقييم جديد (${rating} نجوم) من ${reviewerDisplay} بانتظار الاعتماد في المتجر.`,
+      route: "/store-admin?tab=reviews",
+      eventKey: `storefront-review:${reviewId}:user:${recipient.id}`,
+      entityType: "storefrontProductReview",
+      entityId: reviewId,
+      requiresAction: true,
+      push: true,
+    })));
+  } catch {
+    // Best-effort notification; do not fail the persisted review
+  }
+}
+
 /** يقبل مراجعة واحدة للمنتج في كل طلب مُسلّم من مالك جلسة الهاتف المتحققة. */
 export async function submitStorefrontProductReview(input: { customerId: number; productId: number; rating: number; comment: string }) {
   const db = getDb();
@@ -82,22 +106,7 @@ export async function submitStorefrontProductReview(input: { customerId: number;
   try {
     const inserted = await db.insert(storefrontProductReviews).values({ productId: input.productId, customerId: input.customerId, onlineOrderId: Number(deliveredOrder.id), rating: input.rating, comment: cleanComment(input.comment), status: "PENDING" });
     const reviewId = extractInsertId(inserted);
-    const recipients = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(and(eq(users.isActive, true), or(eq(users.role, "admin"), eq(users.role, "manager"))));
-    void Promise.all(recipients.map((recipient) => createAppNotification({
-      userId: Number(recipient.id),
-      kind: "APPROVAL_REQUIRED",
-      title: "مراجعة منتج جديدة",
-      body: "هناك مراجعة موثقة بانتظار اعتمادها في المتجر.",
-      route: "/store-admin?tab=reviews",
-      eventKey: `storefront-product-review:${reviewId}:user:${recipient.id}`,
-      entityType: "storefrontProductReview",
-      entityId: reviewId,
-      requiresAction: true,
-      push: true,
-    }))).catch(() => undefined);
+    void notifyManagersAboutReview(db, reviewId, input.rating, "عميل موثق");
     return { ok: true as const, status: "PENDING" as const };
   } catch (error) {
     if (String(error).includes("uq_storefront_review_order_product") || String(error).includes("Duplicate")) {
@@ -180,23 +189,7 @@ export async function submitPublicStorefrontReview(input: {
   });
 
   const reviewId = extractInsertId(inserted);
-  const recipients = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(and(eq(users.isActive, true), or(eq(users.role, "admin"), eq(users.role, "manager"))));
-
-  void Promise.all(recipients.map((recipient) => createAppNotification({
-    userId: Number(recipient.id),
-    kind: "APPROVAL_REQUIRED",
-    title: "مراجعة منتج جديدة بانتظار الاعتماد",
-    body: `وصل تقييم جديد (${input.rating} نجوم) للمنتج من ${cleanName} بانتظار الاعتماد في المتجر.`,
-    route: "/store-admin?tab=reviews",
-    eventKey: `storefront-public-review:${reviewId}:user:${recipient.id}`,
-    entityType: "storefrontProductReview",
-    entityId: reviewId,
-    requiresAction: true,
-    push: true,
-  }))).catch(() => undefined);
+  void notifyManagersAboutReview(db, reviewId, input.rating, cleanName);
 
   return { ok: true as const, status: "PENDING" as const };
 }

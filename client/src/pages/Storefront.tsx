@@ -2806,17 +2806,18 @@ function StorefrontContent() {
                     <button
                       type="button"
                       onClick={() => {
-                        const variantText = detailVariant?.variantName ? ` - الخيار: ${detailVariant.variantName}` : "";
-                        const unitText = detailUnit?.unitName ? ` - الوحدة: ${detailUnit.unitName}` : "";
+                        const variantDesc = detailVariant?.label || detailVariant?.variantName || [detailVariant?.color, detailVariant?.size].filter(Boolean).join(" - ") || "";
+                        const variantText = variantDesc ? ` (الخيار: ${variantDesc})` : "";
+                        const unitText = detailUnit?.unitName ? ` (الوحدة: ${detailUnit.unitName})` : "";
                         openWhatsApp(
                           settingsQ.data!.whatsappNumber!,
-                          `السلام عليكم، أود الاستفسار أو طلب منتج «${detailQ.data?.productName ?? ""}»${variantText}${unitText} عبر متجر الرؤية العربية.`
+                          `السلام عليكم، أود الاستفسار حول منتج «${detailQ.data?.productName ?? ""}»${variantText}${unitText} عبر متجر الرؤية العربية.`
                         );
                       }}
                       className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500 bg-emerald-50/80 py-2.5 text-xs font-black text-emerald-800 transition hover:bg-emerald-100 dark:border-emerald-600/40 dark:bg-emerald-950/30 dark:text-emerald-300"
                     >
                       <MessageCircle aria-hidden className="size-3.5" />
-                      <span>طلب أو استفسار عبر واتساب</span>
+                      <span>استفسار حول المنتج عبر واتساب</span>
                     </button>
                   )}
                 </div>
