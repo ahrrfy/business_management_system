@@ -224,8 +224,8 @@ describe("Store Order Components Suite", () => {
       expect(host.textContent).toContain("انتهت مهلة حجز المخزون!");
       expect(host.textContent).toContain("جديد (منذ 5 د)");
 
-      // حجز باقي فيه ساعات
-      const inThreeHours = new Date(Date.now() + 3 * 3600 * 1000);
+      // حجز باقي فيه ساعات (إضافة هامش دقيقتين لمنع انخفاض الفارق بأجزاء الثانية دون الـ 3 ساعات)
+      const inThreeHours = new Date(Date.now() + 3 * 3600 * 1000 + 120_000);
       act(() => {
         root.render(
           <OrderSlaBadge

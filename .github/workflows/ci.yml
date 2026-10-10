@@ -229,6 +229,8 @@ jobs:
           CONTROL_DATABASE_URL: mysql://root:erp_root_pw@127.0.0.1:3306/erp_control_test
       - name: فحص الأنواع
         run: pnpm check
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
       - name: حارس تشخيص فشل CI الآمن
         run: pnpm exec vitest run --config vitest.unit.config.ts scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts scripts/__tests__/dependencySecurityWorkflow.test.ts scripts/__tests__/ciCriticalPathWorkflow.test.ts
       - name: حارس عقد إصدار تطبيق Android الأصلي
