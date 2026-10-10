@@ -8,6 +8,8 @@ interface CartLineItem {
   name: string;
   qty: number;
   price: string | number;
+  variantLabel?: string;
+  unitName?: string;
   customization?: any;
 }
 
@@ -44,7 +46,8 @@ export function StorefrontB2BQuoteButton({
 
       const items = cartLines.map((line) => {
         const customText = summarizeStorefrontCustomization(line.customization);
-        const fullName = customText ? `${line.name} (${customText})` : line.name;
+        const details = [line.variantLabel, line.unitName, customText].filter(Boolean).join(" - ");
+        const fullName = details ? `${line.name} (${details})` : line.name;
         const unitPrice = Number(line.price) || 0;
         const total = unitPrice * line.qty;
 
