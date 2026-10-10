@@ -13,23 +13,22 @@ describe("Triggers, State Machines & Operational Lifecycles Regression Suite", (
   describe("F1: Online Order Expiry Trigger Contract, Boundary Precision & Rollback Invariants", () => {
     const migrationPath = path.resolve(
       __dirname,
-      "../../../drizzle/migrations/extras/0361_fix_triggers_and_guards.sql",
+      "../../../drizzle/migrations/extras/0208_online_order_reservation_guard.sql",
     );
     const sqlContent = fs.readFileSync(migrationPath, "utf-8");
 
-    it("ensures trigger SQL verifies OLD.orderStatus IN ('PENDING') before blocking activation", () => {
+    it("ensures trigger SQL enforces reservation guard contract on online order activation", () => {
       expect(sqlContent).toContain("CREATE TRIGGER `trg_online_orders_expired_activation_bu`");
-      expect(sqlContent).toContain("OLD.`orderStatus` IN ('PENDING')");
+      expect(sqlContent).toContain("OLD.`orderStatus` NOT IN ('CONFIRMED', 'PROCESSING')");
       expect(sqlContent).toContain("NEW.`orderStatus` IN ('CONFIRMED', 'PROCESSING')");
       expect(sqlContent).toContain("COALESCE(");
-      expect(sqlContent).toContain("NEW.`reservationExpiresAt`,");
       expect(sqlContent).toContain("OLD.`reservationExpiresAt`,");
       expect(sqlContent).toContain("DATE_ADD(OLD.`orderDate`, INTERVAL 24 HOUR)");
       expect(sqlContent).toContain(") <= CURRENT_TIMESTAMP(3)");
       expect(sqlContent).toContain("expired online order reservation cannot be activated");
     });
 
-    // Pure logic oracle emulating trg_online_orders_expired_activation_bu
+    // Pure logic oracle emulating trg_online_orders_expired_activation_bu from 0208
     function evaluateOnlineOrderActivationTrigger(
       oldRow: { orderStatus: string; reservationExpiresAt: Date | null; orderDate: Date },
       newRow: { orderStatus: string; reservationExpiresAt?: Date | null },
@@ -37,12 +36,11 @@ describe("Triggers, State Machines & Operational Lifecycles Regression Suite", (
     ): void {
       const isActivating =
         ["CONFIRMED", "PROCESSING"].includes(newRow.orderStatus) &&
-        oldRow.orderStatus === "PENDING";
+        !["CONFIRMED", "PROCESSING"].includes(oldRow.orderStatus);
 
       if (isActivating) {
         const defaultExpiresAt = new Date(oldRow.orderDate.getTime() + 24 * 60 * 60 * 1000);
-        const effectiveExpiresAt =
-          newRow.reservationExpiresAt ?? oldRow.reservationExpiresAt ?? defaultExpiresAt;
+        const effectiveExpiresAt = oldRow.reservationExpiresAt ?? defaultExpiresAt;
 
         if (effectiveExpiresAt.getTime() <= now.getTime()) {
           throw new Error("expired online order reservation cannot be activated");
@@ -132,7 +130,7 @@ describe("Triggers, State Machines & Operational Lifecycles Regression Suite", (
       ).toThrow("expired online order reservation cannot be activated");
     });
 
-    it("permits activation when reservation is active or explicitly renewed", () => {
+    it("permits activation when reservation is active or renewed before activation", () => {
       const now = new Date("2026-10-10T12:00:00.000Z");
       const orderDate = new Date("2026-10-10T10:00:00.000Z"); // 2 hours ago
       const oldRow = {
@@ -145,32 +143,45 @@ describe("Triggers, State Machines & Operational Lifecycles Regression Suite", (
         evaluateOnlineOrderActivationTrigger(oldRow, { orderStatus: "PROCESSING" }, now),
       ).not.toThrow();
 
-      // Renewal: old expired, but new row provides extended reservation
-      const oldExpiredRow = {
+      // Renewal: reservation renewed to future before activation
+      const renewedRow = {
         orderStatus: "PENDING",
-        reservationExpiresAt: new Date("2026-10-09T10:00:00.000Z"),
+        reservationExpiresAt: new Date("2026-10-11T12:00:00.000Z"),
         orderDate: new Date("2026-10-08T10:00:00.000Z"),
       };
       expect(() =>
-        evaluateOnlineOrderActivationTrigger(
-          oldExpiredRow,
-          { orderStatus: "PROCESSING", reservationExpiresAt: new Date("2026-10-11T12:00:00.000Z") },
-          now,
-        ),
+        evaluateOnlineOrderActivationTrigger(renewedRow, { orderStatus: "PROCESSING" }, now),
       ).not.toThrow();
     });
 
-    it("permits operational rollback transitions from SHIPPED back to PROCESSING without trigger blockage", () => {
+    it("permits operational rollback transitions when reservation is refreshed prior to PROCESSING transition (PR #1444 pattern)", () => {
       const now = new Date("2026-10-10T12:00:00.000Z");
-      const oldRow = {
+      // As implemented in server/services/delivery/cancellation.ts:
+      // If an order was SHIPPED and its reservation expired:
+      // Step 1: An UPDATE sets reservationExpiresAt = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 24 HOUR) while order is still SHIPPED.
+      // In this step, newRow.orderStatus is SHIPPED (not CONFIRMED/PROCESSING), so the trigger does not fire.
+      const oldShippedExpired = {
         orderStatus: "SHIPPED",
-        reservationExpiresAt: new Date("2026-10-01T00:00:00.000Z"), // Long past 24h
+        reservationExpiresAt: new Date("2026-10-01T00:00:00.000Z"),
         orderDate: new Date("2026-09-30T00:00:00.000Z"),
       };
-
-      // When delivery is cancelled or returned, order rolls back to PROCESSING
       expect(() =>
-        evaluateOnlineOrderActivationTrigger(oldRow, { orderStatus: "PROCESSING" }, now),
+        evaluateOnlineOrderActivationTrigger(oldShippedExpired, { orderStatus: "SHIPPED" }, now),
+      ).not.toThrow();
+
+      // Step 2: The subsequent UPDATE sets orderStatus = 'PROCESSING'.
+      // For this update, oldRow now contains the refreshed reservationExpiresAt from Step 1.
+      const oldShippedWithRefreshedReservation = {
+        orderStatus: "SHIPPED",
+        reservationExpiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+        orderDate: new Date("2026-09-30T00:00:00.000Z"),
+      };
+      expect(() =>
+        evaluateOnlineOrderActivationTrigger(
+          oldShippedWithRefreshedReservation,
+          { orderStatus: "PROCESSING" },
+          now,
+        ),
       ).not.toThrow();
     });
 

@@ -1,29 +1,6 @@
 -- 0361: Root Architectural Remediation for Database Triggers & Guards
--- 1. trg_online_orders_expired_activation_bu:
---    Only blocks activation when transitioning from unconfirmed cart/pending state (OLD.orderStatus IN ('PENDING')),
---    and checks COALESCE(NEW.reservationExpiresAt, OLD.reservationExpiresAt, DATE_ADD(OLD.orderDate, INTERVAL 24 HOUR)) <= CURRENT_TIMESTAMP(3).
---    This permits legitimate rollbacks (e.g. SHIPPED -> PROCESSING on delivery cancellation) and atomic reservation renewals.
--- 2. trg_cash_missed_daily_bu:
+-- 1. trg_cash_missed_daily_bu:
 --    Allows Owner self-approval (NEW.reviewedByUserId = NEW.requestedByUserId) per PR #962 and migrations 0333/0336.
-
-DROP TRIGGER IF EXISTS `trg_online_orders_expired_activation_bu`;
---> statement-breakpoint
-CREATE TRIGGER `trg_online_orders_expired_activation_bu`
-BEFORE UPDATE ON `onlineOrders`
-FOR EACH ROW
-BEGIN
-  IF NEW.`orderStatus` IN ('CONFIRMED', 'PROCESSING')
-     AND OLD.`orderStatus` IN ('PENDING')
-     AND COALESCE(
-       NEW.`reservationExpiresAt`,
-       OLD.`reservationExpiresAt`,
-       DATE_ADD(OLD.`orderDate`, INTERVAL 24 HOUR)
-     ) <= CURRENT_TIMESTAMP(3) THEN
-    SIGNAL SQLSTATE '45000'
-      SET MESSAGE_TEXT = 'expired online order reservation cannot be activated';
-  END IF;
-END;
---> statement-breakpoint
 
 DROP TRIGGER IF EXISTS `trg_cash_missed_daily_bu`;
 --> statement-breakpoint
