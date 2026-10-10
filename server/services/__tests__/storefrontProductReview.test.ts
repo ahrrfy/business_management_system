@@ -250,4 +250,25 @@ describe("storefront product review integrity", () => {
     expect(review?.customerId).toBe(1);
     expect(review?.reviewerPhone).toBe("+9647701234567");
   });
+
+  it("rejects public review for non-existent or unpublishable products with NOT_FOUND", async () => {
+    await expect(
+      submitPublicStorefrontReview({
+        productId: 999999,
+        rating: 5,
+        reviewerName: "زائر المتجر",
+        comment: "محاولة تقييم منتج غير موجود",
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    await db().update(s.products).set({ showInStore: false }).where(eq(s.products.id, 1));
+    await expect(
+      submitPublicStorefrontReview({
+        productId: 1,
+        rating: 5,
+        reviewerName: "زائر المتجر",
+        comment: "محاولة تقييم منتج مخفي من المتجر",
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
 });

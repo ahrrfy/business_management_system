@@ -124,7 +124,13 @@ export function StorefrontProductCard({
             )}
             {p.isCustomizable && (
               <span className="inline-flex items-center gap-0.5 sm:gap-1 rounded-md bg-purple-700 px-1 sm:px-1.5 py-0.5 text-[9px] sm:text-[10px] font-black text-white shadow-xs whitespace-nowrap">
-                <span>طباعة وتخصيص</span>
+                <span>
+                  {p.customizationKind === "PRINT"
+                    ? "طباعة وتخصيص"
+                    : p.customizationKind === "GIFT"
+                    ? "تخصيص وإهداء"
+                    : "قابل للتخصيص"}
+                </span>
               </span>
             )}
             {p.stockLeft != null && p.stockLeft <= 3 && p.stockLeft > 0 && (

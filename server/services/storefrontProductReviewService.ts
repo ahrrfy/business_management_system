@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 
-import { customers, onlineOrderItems, onlineOrders, productVariants, storefrontProductReviews, users } from "../../drizzle/schema";
+import { customers, onlineOrderItems, onlineOrders, productVariants, products, storefrontProductReviews, users } from "../../drizzle/schema";
 import { appErrorMessage } from "../../shared/errors";
 import { getDb } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -128,6 +128,25 @@ export async function submitPublicStorefrontReview(input: {
 }) {
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة بيانات المتجر غير متاحة" });
+
+  const publishableProduct = (
+    await db
+      .select({ id: products.id })
+      .from(products)
+      .where(and(eq(products.id, input.productId), eq(products.isActive, true), eq(products.showInStore, true)))
+      .limit(1)
+  )[0];
+  if (!publishableProduct) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المنتج غير متاح للتقييم",
+        why: "المنتج المطلوب غير معروض في المتجر العام حالياً أو تم إيقافه",
+        doThis: "تأكد من اختيار منتج منشور ونشط في واجهة المتجر لإضافة تقييمك",
+      }),
+    });
+  }
+
   if (input.rating < 1 || input.rating > 5) {
     throw new TRPCError({
       code: "BAD_REQUEST",
