@@ -25,6 +25,7 @@ import {
   invoiceItemServiceMaterials,
   invoiceItems,
   invoices,
+  onlineOrders,
   productVariants,
   products,
   receipts,
@@ -1419,6 +1420,25 @@ export async function returnSaleInTx(
           : {}),
       })
       .where(eq(invoices.id, input.invoiceId));
+    if (inv.sourceType === "ONLINE") {
+      await tx
+        .update(onlineOrders)
+        .set({
+          status: "CANCELLED",
+          cancelReason:
+            resolutionReason ||
+            (typeof input.operatorReason === "string"
+              ? input.operatorReason.trim()
+              : null) ||
+            "مرتجع فاتورة كامل",
+        })
+        .where(
+          and(
+            eq(onlineOrders.invoiceId, input.invoiceId),
+            sql`${onlineOrders.status} != 'CANCELLED'`,
+          ),
+        );
+    }
     if (!isUnremittedDelivery) {
       await reconcileDeliveryOnReturnTx(tx, {
         invoiceId: input.invoiceId,
@@ -2419,6 +2439,26 @@ export async function returnSaleInTx(
       status,
     })
     .where(eq(invoices.id, input.invoiceId));
+
+  if (fullyReturned && inv.sourceType === "ONLINE") {
+    await tx
+      .update(onlineOrders)
+      .set({
+        status: "CANCELLED",
+        cancelReason:
+          resolutionReason ||
+          (typeof input.operatorReason === "string"
+            ? input.operatorReason.trim()
+            : null) ||
+          "مرتجع فاتورة كامل",
+      })
+      .where(
+        and(
+          eq(onlineOrders.invoiceId, input.invoiceId),
+          sql`${onlineOrders.status} != 'CANCELLED'`,
+        ),
+      );
+  }
 
   // AR: the portion not refunded in cash is dropped from the customer's balance.
   if (inv.customerId) {

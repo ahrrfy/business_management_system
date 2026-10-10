@@ -624,6 +624,11 @@ export async function returnConsignment(
     }
     if (cn.sourceType === "ONLINE_ORDER") {
       await tx.update(onlineOrders).set({ status: "CANCELLED" }).where(eq(onlineOrders.id, Number(cn.sourceId)));
+    } else if (cn.sourceType === "INVOICE" && inv.sourceType === "ONLINE") {
+      await tx
+        .update(onlineOrders)
+        .set({ status: "CANCELLED" })
+        .where(eq(onlineOrders.invoiceId, Number(cn.invoiceId)));
     }
     await appendDeliveryEvent(tx, {
       eventKey: `CN:${consignmentId}:RETURNED:${actor.clientRequestId ?? "legacy"}`,

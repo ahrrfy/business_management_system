@@ -1,71 +1,60 @@
-# Project: English Numerals Enforcement & Bundle Kit Production Dialog Audit
+# Project: Database Triggers, State Machines & Operational Lifecycles Forensic Audit and Resolution
 
 ## Architecture
-- **Client Tier**: React 19 + Vite + Tailwind v4 + shadcn/ui + TanStack Query + wouter.
-  - Root: `client/index.html` configured with `lang="ar-u-nu-latn"` and `dir="rtl"`.
-  - CSS: `client/src/index.css` tabular numbers and input direction overrides.
-  - Production UI: `client/src/components/production/bundle-kit/*` (Multi-step wizard dialog: parameters, components, materials, review, success).
-- **Network / API Tier**: tRPC v11 (`server/routers/productionRouter.ts`).
-  - Layer rule: Zod validation only, Actor injection (`userId, branchId, role`), no business logic in router, no `ctx` leak to service.
-- **Service / Database Tier**: Express + Drizzle ORM (MySQL 8) + `decimal.js`.
-  - Transaction manager: `withTx(async (tx) => { ... })` in `server/services/tx.ts`.
-  - Core service: `server/services/production/bundleProduction.ts` (deterministic locking, FIFO/WAVG calculation, stock deduction, atomic sub-orders).
-- **Verification Harness**:
-  - `pnpm check`: TypeScript strict typecheck (`tsc --noEmit`).
-  - `pnpm check:guards`: 45 automated ratchets/guards.
-  - `pnpm test:unit`: In-memory unit test harness (`vitest.unit.config.ts`).
+The system utilizes a multi-tier transactional architecture across Node.js/TypeScript backend services, Drizzle ORM, and MySQL 8.0/8.4 database engines.
+- **Data Flow & Cross-Module Boundaries**:
+  - `onlineOrders` (E-Commerce) <-> `invoices` (Sales/Billing) <-> `deliveryConsignments` (Delivery/Logistics) <-> `branchStock` / `stockReservations` (Inventory) <-> `cashShifts` / `financialPeriods` (Treasury/Accounting).
+- **Enforcement Layers**:
+  1. TypeScript Service Guards: Validation functions (`assertParcelTransition`, `invoiceCancellationGuard`, `assertDateWithinOpenPeriodTx`).
+  2. Database Triggers: BEFORE INSERT / BEFORE UPDATE guards (`trg_online_orders_expired_activation_bu`, `trg_cash_missed_daily_bu`, financial period immutability triggers).
+  3. Database Schema Constraints: Unique keys (`uq_consignment_source`), check constraints.
 
 ## Feature Inventory
 | # | Feature | Description | Milestone | Source |
-|---|---|---|---|---|
-| F1 | Global Latin Numerals (R1) | BCP 47 `ar-u-nu-latn` in `index.html` and font styling in `index.css` | M1 | Survey 1 |
-| F2 | Input Component LTR / Latin enforcement (R1) | `client/src/components/ui/input.tsx` LTR and language defaults for numeric types | M1 | Survey 1 |
-| F3 | Bundle Kit Components Step Layout (R1) | Explicit table column widths, zero overlap, `whitespace-nowrap select-none` | M1 | Survey 1 |
-| F4 | Bundle Kit Badges & Button Tokens (R1) | `whitespace-nowrap shrink-0` on all badges; WCAG AA semantic `variant="success"` on buttons | M1 | Survey 1 |
-| F5 | Review Step Arabic-Indic Digit Input (R1) | Normalize `linkedWorkOrderId` input via `digitsArabicToLatin` in `BundleKitReviewStep.tsx` | M1 | Survey 1 |
-| F6 | Transaction Atomicity & Rollback (R2) | `withTx` wrapping all mutations in `bundleProduction.ts` with all-or-nothing guarantee | M1 | Survey 2 |
-| F7 | Deterministic Row Locking (R2) | Deadlock prevention: lock products, variants, and branchStock in `ASC` order with `forUpdate` | M1 | Survey 2 |
-| F8 | Stock Deductions & Backorder Guard (R2) | Strict stock availability verification with `respectProductBackorder: false` | M1 | Survey 2 |
-| F9 | WAVG / FIFO Cost Precision (R2) | High-precision arithmetic via `decimal.js` and parent bundle cost synchronization | M1 | Survey 2 |
-| F10 | Zod Schema Hardening & Max Bounds (R2) | Add upper bounds (`.max(1_000_000)`) to integer fields in `bundleProductionTypes.ts` | M1 | Survey 2, 3 |
-| F11 | Adversarial Input Normalization (R3) | Handle zero quantities, multiple dots, negative values, and non-numeric characters gracefully | M1 | Survey 3 |
-| F12 | Comprehensive Component Tests (R3) | Unit tests covering `BundleKitReviewStep`, `BundleKitMaterialsStep`, and adversarial scenarios | M1 | Survey 3 |
-| F13 | 45 Automated Quality Guards (R3) | All 45 ratchets passing in `pnpm check:guards` with zero violations | M1 | Survey 3 |
-| F14 | End-to-End Forensic Integrity Audit | Multi-agent review, adversarial challenger verification, and forensic audit | M1 | Survey 1, 2, 3 |
+|---|---------|-------------|-----------|--------|
+| F1 | Online Order Expiry Trigger Fix | Update `trg_online_orders_expired_activation_bu` to allow rollback transitions (e.g. `SHIPPED` -> `PROCESSING`) and evaluate `NEW.reservationExpiresAt`. | M1 | Survey 1, Survey 2, Survey 3 |
+| F2 | Owner Missed Daily Count Trigger Fix | Update `trg_cash_missed_daily_bu` to allow Owner self-approval per PR #962 / migrations 0333/0336. | M1 | Survey 1 |
+| F3 | Consignment Re-Dispatch Uniqueness Fix | Ensure cancelled/returned consignments do not block re-dispatching orders/invoices. | M1 | Survey 1 |
+| F4 | Delivery Parcel Transition Alignment | Add missing `CANCELLED` and `RETURNED` transitions from `ASSIGNED` in `assertParcelTransition`. | M2 | Survey 2 |
+| F5 | Consignment Return Online Order Sync | In `delivery/returns.ts`, synchronize online orders for consignments with `sourceType === 'INVOICE'` and `invoice.sourceType === 'ONLINE'`. | M2 | Survey 2 |
+| F6 | POS Formal Reservation Expiry Unblock | Allow cancelling `EXPIRED` reservations to refund stranded advance customer deposits in `reservations/lifecycle.ts`. | M2 | Survey 3 |
+| F7 | Sales Cancel & Storefront Circular Deadlock Resolution | Resolve mutual lockout between `invoiceCancellationGuard.ts` and `orderFulfillmentService.ts` for orders in `PROCESSING` without active consignments. | M3 | Survey 3 |
+| F8 | Invoice Correction Lockout Resolution | Allow `correctSale` in `correctionLookup.ts` when online order is in safe unassigned state (`PROCESSING` without active consignment). | M3 | Survey 3 |
+| F9 | Sales Return Online Order Synchronization | Mirror `sale/cancel.ts` in `returnService.ts` by updating linked online order status upon full return to eliminate dangling shipments. | M3 | Survey 3 |
+| F10 | Comprehensive Regression & Symmetry Test Suite | Full Vitest suite covering all reversal/cancellation paths, degraded edge cases, and deadlock scenarios. | M4 | Survey 1, Survey 2, Survey 3 |
 
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| 1 | End-to-End Remediation, Testing & Forensic Audit | UI numeral & layout fixes, Zod upper bounds, comprehensive unit tests, adversarial scenarios (ADV-01..13), guards & typecheck, forensic audit | none | DONE |
-
-## Key Outputs
-- Modified files:
-  - `client/src/components/production/bundle-kit/BundleKitReviewStep.tsx`
-  - `client/src/components/production/bundle-kit/BundleKitProductionDialog.tsx`
-  - `client/src/components/production/bundle-kit/BundleKitMaterialsStep.tsx`
-  - `client/src/components/production/bundle-kit/QuickRecipeCopyDialog.tsx`
-  - `shared/bundleProductionTypes.ts`
-  - `vitest.unit.config.ts`
-- Added test suites:
-  - `client/src/components/production/bundle-kit/__tests__/BundleKitReviewStep.test.tsx` (11 tests)
-  - `client/src/components/production/bundle-kit/__tests__/BundleKitDialogBadges.test.tsx` (4 tests)
-  - `shared/__tests__/bundleProductionAdversarial.test.ts` (18 tests)
-- Verification results:
-  - `pnpm check`: Exit 0 (0 diagnostic errors)
-  - `pnpm check:guards`: Exit 0 across all 45 guards
-  - Vitest bundle kit suites: 56/56 passing tests
-  - All Reviewers & Challengers: APPROVE
-  - Forensic Auditor: CLEAN
+| 1 | M1: Root Architectural Remediation (Triggers, Lifecycles & Reversals) | Features F1 through F9: Fix database triggers, state machine transitions, and reversal deadlocks | none | DONE |
+| 2 | M2: Comprehensive Regression Suite & Acceptance Verification | Feature F10 & CHALLENGE-001: Relink online order on correctSale, Vitest regression suite, `pnpm check`, `pnpm check:guards` | M1 | DONE |
 
 ## Interface Contracts
-### `BundleKitReviewStep` ↔ `digitsArabicToLatin`
-- `e.target.value` passed through `digitsArabicToLatin` before `parseInt`.
-- Input parsed to valid positive integer or `null`.
 
-### `QuickRecipeCopyDialog` ↔ Design Tokens
-- Save button uses `variant="success"` instead of hardcoded `bg-emerald-600`.
+### M1 ↔ M2: Database Trigger Guards
+- `trg_online_orders_expired_activation_bu`:
+  - `OLD.orderStatus IN ('PENDING')` guard condition.
+  - Evaluates `COALESCE(NEW.reservationExpiresAt, OLD.reservationExpiresAt, DATE_ADD(OLD.orderDate, INTERVAL 24 HOUR))`.
+- `trg_cash_missed_daily_bu`:
+  - Drops prohibition of `NEW.reviewedByUserId = NEW.requestedByUserId` when review is performed by Owner.
 
-### `shared/bundleProductionTypes` ↔ Backend Services & Zod
-- `bundleQuantity`: `z.number().int().positive().max(1_000_000)`
-- `batchQty`: `z.number().int().positive().max(1_000_000)`
-- `scrapQty`: `z.number().int().min(0).max(1_000_000).default(0)`
+### M2 ↔ M3: Delivery & Order Transitions
+- `assertParcelTransition(current, next)`:
+  - Allowed from `ASSIGNED`: `["ACCEPTED", "OUT_FOR_DELIVERY", "FAILED", "CANCELLED", "RETURNED"]`.
+- `cancelSale` ↔ `onlineOrders`:
+  - When `onlineOrder.status === 'PROCESSING'` and no active consignment exists, `safeOrderStatus` evaluates to true.
+  - `cancelSale` cascades `onlineOrders.status = 'CANCELLED'`.
+
+### M3 ↔ M4: Verification Contracts
+- All reversal endpoints (`cancelSale`, `returnSale`, `cancelDeliveryAssignment`, `reverseDelivery`) must succeed symmetrically without trigger exceptions or unhandled TRPCErrors.
+- `pnpm check` returns 0 errors.
+- `pnpm check:guards` returns 100% pass across all 10 guards.
+
+## Code Layout
+- Migrations: `drizzle/migrations/`, `drizzle/migrations/extras/`
+- Sales & Billing: `server/services/sale/`, `server/services/returnService.ts`
+- Delivery: `server/services/delivery/`
+- Online Store: `server/services/storeAdmin/`
+- Reservations & Inventory: `server/services/reservations/`, `server/services/inventoryService.ts`
+- Cash & Treasury: `server/services/cash/`, `server/services/voucher/`
+- Tests: `server/services/__tests__/`
