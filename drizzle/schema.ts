@@ -92,6 +92,8 @@ export const users = mysqlTable(
     jobTitle: varchar("jobTitle", { length: 120 }),
     hiredAt: date("hiredAt"),
     permissionsOverride: json("permissionsOverride"),
+    atomicPermissions: json("atomicPermissions"),
+    operationalCaps: json("operationalCaps"),
     // دور مخصّص (من جدول roles) — null ⇒ دور مبني (enum أعلاه). عند ضبطه: يُحلّ في context
     // إلى role=baseRole + permissionsOverride مشتقّ من خريطة الدور، فتعمل كل البوّابات بلا تغيير.
     customRoleId: bigint("customRoleId", { mode: "number" }),
@@ -161,6 +163,8 @@ export const roles = mysqlTable("roles", {
     .notNull(),
   // خريطة الصلاحيات الكاملة {moduleKey: FULL|READ|NONE}.
   permissions: json("permissions").notNull(),
+  atomicPermissions: json("atomicPermissions"),
+  operationalCaps: json("operationalCaps"),
   canSeeCost: boolean("canSeeCost").default(false).notNull(),
   isActive: boolean("isActive").default(true).notNull(),
   // RBAC ش٣: الأدوار القياسية المبذورة محميّة من الحذف/تغيير الفئة (قابلة للتحرير المُدقَّق).

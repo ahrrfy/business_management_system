@@ -21,6 +21,10 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import {
+  type AtomicPermissionsMap,
+  type OperationalCaps,
+} from "@shared/atomicPermissions";
 import { nanoid } from "nanoid";
 import { roles, users } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -46,6 +50,8 @@ export interface CreateRoleInput {
   description?: string | null;
   baseRole: RoleKey;
   permissions: RolePermissions;
+  atomicPermissions?: AtomicPermissionsMap | null;
+  operationalCaps?: OperationalCaps | null;
 }
 
 export interface UpdateRoleInput {
@@ -54,6 +60,8 @@ export interface UpdateRoleInput {
   description?: string | null;
   baseRole?: RoleKey;
   permissions?: RolePermissions;
+  atomicPermissions?: AtomicPermissionsMap | null;
+  operationalCaps?: OperationalCaps | null;
 }
 
 /** يطبّع مفتاح الدور: لاتيني صغير + أرقام + شرطة سفلية، يبدأ بحرف. الأسماء العربية (بلا أحرف
@@ -169,6 +177,8 @@ export async function createRole(input: CreateRoleInput, _actor: Actor) {
         description: input.description?.trim() || null,
         baseRole: input.baseRole,
         permissions,
+        atomicPermissions: input.atomicPermissions ?? null,
+        operationalCaps: input.operationalCaps ?? null,
         // رؤية التكلفة تتبع الفئة الأساسية (المدير/المحاسب يرونها؛ الكاشير/المخزن لا).
         canSeeCost: builtinCanSeeCost(input.baseRole),
         isActive: true,
@@ -202,6 +212,8 @@ export async function updateRole(input: UpdateRoleInput, _actor: Actor) {
       patch.canSeeCost = builtinCanSeeCost(input.baseRole); // التكلفة تتبع الفئة الأساسية
     }
     if (input.permissions !== undefined) patch.permissions = normalizePermissions(input.permissions);
+    if (input.atomicPermissions !== undefined) patch.atomicPermissions = input.atomicPermissions;
+    if (input.operationalCaps !== undefined) patch.operationalCaps = input.operationalCaps;
     if (Object.keys(patch).length === 0) return { id: input.id, changed: false };
     await tx.update(roles).set(patch).where(eq(roles.id, input.id));
     // تغيير الدور يُبطل جلسات أصحابه (الصلاحيات/الفئة قد تغيّرت) كي يُعاد تحميل السياق.

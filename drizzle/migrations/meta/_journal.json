@@ -2486,6 +2486,13 @@
 			"when": 1788148849000,
 			"tag": "0391_omnichannel_promotions_coupons",
 			"breakpoints": true
+		},
+		{
+			"idx": 393,
+			"version": "5",
+			"when": 1788148851000,
+			"tag": "0393_comprehensive_permission_matrix_caps",
+			"breakpoints": true
 		}
 	]
 }
