@@ -8,6 +8,8 @@ import {
   isDisconnected,
   useConnectivity,
 } from "@/lib/offline/connectivity";
+import { initRealtime } from "@/lib/realtime";
+import { installFinancialQueryRefresh } from "@/lib/realtime/financialQueries";
 import { shouldMountGlobalStudioTools } from "@/lib/productStudio/coldOfflinePolicy";
 import { screenAttributionHeaders } from "@/lib/screenAttribution";
 import { trpc } from "@/lib/trpc";
@@ -157,6 +159,9 @@ queryClient.getMutationCache().subscribe((event) => {
 // (refetchOnReconnect معطَّل أعلاه عمداً — الإنعاش هنا مضبوط بانتقال الحالة الفعلي لا بحدث
 // المتصفح غير الموثوق). في الشريحة ٣ سيسبق تفريغُ طابور المبيعات هذا الإبطال.
 initConnectivity({ onBackOnline: () => void queryClient.invalidateQueries() });
+const stopFinancialRefresh = installFinancialQueryRefresh(queryClient);
+if (import.meta.hot) import.meta.hot.dispose(stopFinancialRefresh);
+initRealtime();
 
 const trpcClient = createErpTrpcClient(() => screenAttributionHeaders());
 

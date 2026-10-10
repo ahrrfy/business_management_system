@@ -7,6 +7,8 @@ import { variantDescriptor } from "@shared/variantDisplay";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Download, Eye, FilterX, Plus, Printer, Search, ShoppingCart, Trash2, TriangleAlert, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES, type HeldOrderUpdatedPayload } from "@shared/realtimeEvents";
 import { notify } from "@/lib/notify";
 import { fmtDateTime } from "@/lib/date";
 import { fmt, formatQuantity } from "@/lib/money";
@@ -173,9 +175,24 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
     { id: Number(convertTarget?.id ?? 0) },
     {
       enabled: convertTarget != null,
-      // يرصد إلغاء/تحرير الحجز أو تغير ATP أثناء بقاء الحوار مفتوحاً؛ التحقق الحاسم يُعاد عند التأكيد.
-      refetchInterval: convertTarget != null && !isConversionBusy ? 10_000 : false,
+      refetchInterval: false,
       refetchOnWindowFocus: true,
+    },
+  );
+
+  useRealtimeEvent(
+    REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+    (event) => {
+      const payload = event.payload as HeldOrderUpdatedPayload;
+      if (effectiveBranch != null && payload.branchId === effectiveBranch) {
+        void utils.reservations.list.invalidate();
+        if (detailId != null && payload.heldOrderId === detailId) {
+          void utils.reservations.get.invalidate({ id: detailId });
+        }
+        if (convertTarget != null && payload.heldOrderId === Number(convertTarget.id)) {
+          void utils.reservations.get.invalidate({ id: Number(convertTarget.id) });
+        }
+      }
     },
   );
 

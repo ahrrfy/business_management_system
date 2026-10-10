@@ -12,6 +12,7 @@ import {
   type DecisionAction,
   type DecisionDecideResult,
   type DecisionKind,
+  type DecisionOperationalContext,
   type DecisionOutcome,
   type DecisionRowModel,
   type DecisionSummaryItem,
@@ -48,6 +49,7 @@ export interface RowInput {
   /** صيغُ الاعتماد حين يتعدّد (انظر `DecisionRowModel.approveVariants`). */
   approveVariants?: Array<{ key: string; label: string }>;
   trigger?: DecisionTrigger | null;
+  operationalContext?: DecisionOperationalContext | null;
 }
 
 /** نصٌّ عشريّ نظيف للمبلغ، أو `null`. لا `Number()` على المال — النصّ يمرّ كما هو. */
@@ -99,6 +101,7 @@ export function buildRow(input: RowInput, now: Date): DecisionRowModel {
     approveBlockedReason: input.approveBlockedReason ?? null,
     approveVariants: input.approveVariants ?? [],
     trigger,
+    operationalContext: input.operationalContext ?? null,
   };
 }
 

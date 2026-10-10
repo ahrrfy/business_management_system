@@ -4,6 +4,7 @@ import {
   stripCurrencySymbols,
   normalizeNumberInput,
   toNormalizedNumber,
+  normalizeDecimalInput,
 } from "./numberNormalize";
 
 describe("digitsArabicToLatin", () => {
@@ -137,5 +138,59 @@ describe("toNormalizedNumber (وجه مبسَّط)", () => {
     expect(toNormalizedNumber("١١٦٢٫٥")).toBe("1162.5");
     expect(toNormalizedNumber("1,000.50")).toBe("1000.50");
     expect(toNormalizedNumber("")).toBe("");
+  });
+});
+
+describe("normalizeDecimalInput (تسوية حقول الإدخال العشرية)", () => {
+  it("يحافظ على فواصل الآلاف عند لصق أرقام مجمعة مثل 1,000 من Excel", () => {
+    expect(normalizeDecimalInput("1,000")).toBe("1000");
+    expect(normalizeDecimalInput("10,000")).toBe("10000");
+    expect(normalizeDecimalInput("1,000.50")).toBe("1000.50");
+    expect(normalizeDecimalInput("١,٠٠٠")).toBe("1000");
+    expect(normalizeDecimalInput("١,٢٣٤٫٥٦")).toBe("1234.56");
+  });
+
+  it("يحافظ على الكسور العشرية المسبوقة بصفر ذات 3 منازل (مثل 0,125 و 0،125 و ٠،١٢٥)", () => {
+    expect(normalizeDecimalInput("0,125")).toBe("0.125");
+    expect(normalizeDecimalInput("0،125")).toBe("0.125");
+    expect(normalizeDecimalInput("٠،١٢٥")).toBe("0.125");
+    expect(normalizeDecimalInput("0,005")).toBe("0.005");
+    expect(normalizeDecimalInput("0,500")).toBe("0.500");
+  });
+
+  it("يحافظ على الفواصل العشرية العربية (٫ و ،) ويحولها إلى نقطة حتى مع 3 منازل بعد عدد غير صفري", () => {
+    expect(normalizeDecimalInput("١٢٫٥")).toBe("12.5");
+    expect(normalizeDecimalInput("١٢،٥")).toBe("12.5");
+    expect(normalizeDecimalInput("١،١٢٥")).toBe("1.125");
+    expect(normalizeDecimalInput("1،125")).toBe("1.125");
+    expect(normalizeDecimalInput("1,125")).toBe("1.125");
+    expect(normalizeDecimalInput("1,250")).toBe("1.250");
+    expect(normalizeDecimalInput("2،500")).toBe("2.500");
+    expect(normalizeDecimalInput("12,50")).toBe("12.50");
+    expect(normalizeDecimalInput("12.50")).toBe("12.50");
+    expect(normalizeDecimalInput("1٬000")).toBe("1000");
+    expect(normalizeDecimalInput("١٬٠٠٠")).toBe("1000");
+  });
+
+  it("يحوّل الأرقام الهندية-العربية والفارسية إلى أرقام لاتينية", () => {
+    expect(normalizeDecimalInput("١٢٣٫٤٥")).toBe("123.45");
+    expect(normalizeDecimalInput("۱۲۳.۴۵")).toBe("123.45");
+  });
+
+  it("يحتفظ بنقطة عشرية واحدة فقط ويزيل النقاط الزائدة", () => {
+    expect(normalizeDecimalInput("12.3.4")).toBe("12.34");
+    expect(normalizeDecimalInput("12..5")).toBe("12.5");
+    expect(normalizeDecimalInput("1..5")).toBe("1.5");
+  });
+
+  it("يتعامل مع الكسور التي تبدأ بفاصلة أو نقطة", () => {
+    expect(normalizeDecimalInput(".5")).toBe("0.5");
+    expect(normalizeDecimalInput("٫٥")).toBe("0.5");
+    expect(normalizeDecimalInput("،٧٥")).toBe("0.75");
+  });
+
+  it("يزيل الأحرف غير الرقمية دون إفساد القيمة", () => {
+    expect(normalizeDecimalInput("abc 12٫5 د.ع")).toBe("12.5");
+    expect(normalizeDecimalInput("")).toBe("");
   });
 });

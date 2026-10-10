@@ -15,7 +15,7 @@ import { PDFDocument, PDFFont, PDFImage, PDFPage, StandardFonts, rgb } from "pdf
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import QRCode from "qrcode";
-import { COMPANY_IDENTITY as CO } from "@shared/companyIdentity";
+import { resolveCompanyIdentity, type CompanyIdentityData } from "@shared/companyIdentity";
 import { isDeadInvoiceStatus, invoiceStatusLabel } from "@shared/invoiceStatus";
 import { formatArabicMoneyWords } from "@shared/tafqit";
 
@@ -28,6 +28,8 @@ export interface OfficialDocumentPdfData {
   validUntil?: string | Date | null;
   customerName?: string | null;
   customerPhone?: string | null;
+  companyProfile?: Partial<CompanyIdentityData> | null;
+  companyIdentity?: Partial<CompanyIdentityData> | null;
   subtotal: string | number;
   discountAmount?: string | number | null;
   taxAmount?: string | number | null;
@@ -222,6 +224,7 @@ type Rgb = ReturnType<typeof rgb>;
 interface TextOpts { color?: Rgb; bold?: boolean }
 
 export async function generateOfficialDocumentPdf(data: OfficialDocumentPdfData): Promise<Uint8Array> {
+  const co = resolveCompanyIdentity(data.companyProfile ?? data.companyIdentity);
   const pdf = await PDFDocument.create();
   pdf.registerFontkit(fontkit);
 
@@ -236,7 +239,7 @@ export async function generateOfficialDocumentPdf(data: OfficialDocumentPdfData)
   let qrImage: PDFImage | null = null;
   try {
     const qrPayload = [
-      CO.sub,
+      co.sub,
       `${docLabel}: ${data.number}`,
       `التاريخ: ${dateText(data.date)}`,
       `الإجمالي: ${money(data.total)} د.ع`,
@@ -341,9 +344,13 @@ export async function generateOfficialDocumentPdf(data: OfficialDocumentPdfData)
     const bandH = 86;
     page.drawRectangle({ x: MARGIN, y: bandTop - bandH, width: CONTENT_W, height: bandH, color: GREEN_PALE });
     // يمين: هوية الشركة + التواصل
-    drawAr(page, CO.sub, PAGE_W - MARGIN - 14, bandTop - 30, 15, { color: GREEN_DARK, bold: true });
-    drawAr(page, CO.name, PAGE_W - MARGIN - 14, bandTop - 48, 9.5, { color: BLACK });
-    drawAr(page, `${CO.address}  ·  هاتف: ${CO.phones[0].n} - ${CO.phones[1].n}`, PAGE_W - MARGIN - 14, bandTop - 68, 8, { color: INK });
+    drawAr(page, co.sub, PAGE_W - MARGIN - 14, bandTop - 30, 15, { color: GREEN_DARK, bold: true });
+    drawAr(page, co.name, PAGE_W - MARGIN - 14, bandTop - 48, 9.5, { color: BLACK });
+    const phonesStr = co.phones && co.phones.length > 0
+      ? (co.phones.length === 1 ? `هاتف: ${co.phones[0].n}` : `هاتف: ${co.phones[0].n} - ${co.phones[1].n}`)
+      : "";
+    const contactLine = [co.address, phonesStr].filter(Boolean).join("  ·  ");
+    drawAr(page, contactLine, PAGE_W - MARGIN - 14, bandTop - 68, 8, { color: INK });
     // يسار: عنوان المستند بشريط أخضر داكن
     const titleSize = 13.5;
     const titleW = cairo.widthOfTextAtSize(docLabel, titleSize) + 34;
@@ -568,8 +575,8 @@ export async function generateOfficialDocumentPdf(data: OfficialDocumentPdfData)
   const totalPages = pdf.getPageCount();
   pdf.getPages().forEach((pdfPage, index) => {
     pdfPage.drawLine({ start: { x: MARGIN, y: 54 }, end: { x: PAGE_W - MARGIN, y: 54 }, color: BORDER, thickness: 0.6 });
-    drawAr(pdfPage, CO.footer, PAGE_W - MARGIN, 40, 8.5, { color: GREEN_DARK, bold: true });
-    drawAr(pdfPage, CO.footerLine, PAGE_W - MARGIN, 27, 7.5, { color: INK });
+    drawAr(pdfPage, co.footer, PAGE_W - MARGIN, 40, 8.5, { color: GREEN_DARK, bold: true });
+    drawAr(pdfPage, co.footerLine, PAGE_W - MARGIN, 27, 7.5, { color: INK });
     pdfPage.drawText(`${index + 1} / ${totalPages}`, { x: MARGIN, y: 40, font: helv, size: 8, color: BLACK });
     pdfPage.drawText(`REF ${data.number}`, { x: MARGIN, y: 27, font: helv, size: 7, color: INK });
   });
