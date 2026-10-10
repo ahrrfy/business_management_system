@@ -363,6 +363,7 @@ export const crmRouter = router({
       description: z.string().trim().max(1000).optional(),
       codePrefix: z.string().trim().min(1).max(12).default("CRM"),
       type: z.enum(["PERCENT", "AMOUNT"]),
+      status: z.enum(["DRAFT", "ACTIVE"]).default("ACTIVE"),
       discountPercent: percentString.optional(),
       discountAmount: nonNegMoneyString.optional(),
       maxDiscountAmount: nonNegMoneyString.optional(),
@@ -449,8 +450,15 @@ export const crmRouter = router({
       const branchId = ownBranch(ctx, input.branchId);
 
       const result = await withTx(async (tx) => {
+        const targetStatus = input.status;
         if (input.campaignId != null) {
-          await getCampaignForWrite(tx, input.campaignId, ctx);
+          const campaign = await getCampaignForWrite(tx, input.campaignId, ctx);
+          if (targetStatus === "ACTIVE" && !["APPROVED", "SCHEDULED", "ACTIVE"].includes(campaign.status)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "اعتمد الحملة أولاً قبل تفعيل برنامج الكوبونات",
+            });
+          }
         }
 
         const safePrefix = input.codePrefix.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "CRM";
@@ -474,7 +482,7 @@ export const crmRouter = router({
           branchId,
           minLineAmount: "0",
           priority: 0,
-          isActive: true,
+          isActive: targetStatus === "ACTIVE",
           applicationMode: "COUPON",
           isStoreManaged: false,
           createdBy: ctx.user.id,
@@ -499,7 +507,7 @@ export const crmRouter = router({
         }
 
         // 3. قفل التفعيل الحصري لكوبون أول طلب إن طُلب
-        if (input.isFirstOrderSelfService) {
+        if (targetStatus === "ACTIVE" && input.isFirstOrderSelfService) {
           const activationLock = (await tx.select({ id: storeSettings.id })
             .from(storeSettings)
             .where(eq(storeSettings.id, 1))
@@ -541,12 +549,12 @@ export const crmRouter = router({
           }
         }
 
-        // 4. إنشاء برنامج الكوبونات فورياً بحالة نشطة
+        // 4. إنشاء برنامج الكوبونات فورياً بالحالة المستهدفة
         const progInsertResult = await tx.insert(couponPrograms).values({
           campaignId: input.campaignId ?? null,
           promotionId,
           name: input.name,
-          status: "ACTIVE",
+          status: targetStatus,
           branchId,
           validFrom: new Date(input.validFrom),
           validTo: input.validTo ? new Date(input.validTo) : null,
