@@ -2479,6 +2479,13 @@
 			"when": 1788148846000,
 			"tag": "0388_customer_feedback_hub",
 			"breakpoints": true
+		},
+		{
+			"idx": 391,
+			"version": "5",
+			"when": 1788148849000,
+			"tag": "0391_omnichannel_promotions_coupons",
+			"breakpoints": true
 		}
 	]
 }
