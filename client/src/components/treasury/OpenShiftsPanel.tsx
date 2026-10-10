@@ -1,4 +1,5 @@
-import { fmtAr } from "@/lib/money";
+import { D, fmtAr } from "@/lib/money";
+import { LiveValue } from "@/components/financial/LiveValue";
 import { Clock, User } from "lucide-react";
 import { Link } from "wouter";
 
@@ -82,19 +83,19 @@ export function OpenShiftsPanel({ shifts, loading }: OpenShiftsPanelProps) {
                 <div>
                   <div className="text-muted-foreground">الافتتاحي</div>
                   <div className="tabular-nums font-medium" dir="ltr">
-                    {fmtAr(s.openingBalance)}
+                    <LiveValue value={fmtAr(s.openingBalance)} />
                   </div>
                 </div>
                 <div>
                   <div className="text-muted-foreground">المتوقّع</div>
                   <div className="tabular-nums font-semibold text-primary" dir="ltr">
-                    {fmtAr(s.expectedCash)}
+                    <LiveValue value={fmtAr(s.expectedCash)} />
                   </div>
                 </div>
                 <div>
                   <div className="text-muted-foreground">صافي اليوم</div>
                   <div className="tabular-nums font-medium" dir="ltr">
-                    {fmtAr(Number(s.cashIn) - Number(s.cashOut))}
+                    <LiveValue value={fmtAr(D(s.cashIn).minus(s.cashOut).toFixed(2))} />
                   </div>
                 </div>
               </div>

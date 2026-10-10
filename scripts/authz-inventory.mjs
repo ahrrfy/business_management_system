@@ -148,6 +148,13 @@ const PROCEDURES = {
     roles: ["admin"],
     branch: false,
   },
+  companyProfileReadProcedure: {
+    authority: "module-gate",
+    module: "settings",
+    level: "READ",
+    roles: [],
+    branch: false,
+  },
   platformAdminProcedure: {
     authority: "platform",
     module: null,

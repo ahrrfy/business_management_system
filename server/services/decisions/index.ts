@@ -28,6 +28,8 @@ import { SALES_SOURCES } from "./sources/sales";
 import { TREASURY_SOURCES } from "./sources/treasury";
 import { costRevaluationSource, costWaveSource, stockAdjustmentSource } from "./sources/inventory";
 import type { DecideInput, DecideOptions, DecisionActor, DecisionScope, DecisionSource } from "./types";
+import { publishRealtimeEvent } from "../../realtime";
+import { REALTIME_EVENT_TYPES, type ApprovalResolvedPayload } from "@shared/realtimeEvents";
 
 export type { DecideInput, DecisionActor, DecisionSource } from "./types";
 
@@ -151,7 +153,26 @@ export async function decideDecision(input: DecideInput, actor: DecisionActor, o
     return decided(input, "STALE", freshness === "GONE" ? `${subject}: لم يعد موجوداً — أُزيل أو حُذف مستنده.` : defaultMessage("STALE", subject));
   }
   try {
-    return await source.decide(input, actor, options);
+    const res = await source.decide(input, actor, options);
+    try {
+      publishRealtimeEvent<ApprovalResolvedPayload>(
+        REALTIME_EVENT_TYPES.APPROVAL_RESOLVED,
+        {
+          entityType: input.kind,
+          entityId: input.id,
+          decision: res.outcome,
+          outcome: res.outcome,
+          action: input.action,
+          actorUserId: actor.userId,
+          managerId: actor.userId,
+          branchId: actor.branchId ?? null,
+          reason: input.reason ?? null,
+        },
+      );
+    } catch {
+      // fail-safe: لا يؤثر فشل البث اللحظي على سلامة حفظ القرار
+    }
+    return res;
   } catch (err) {
     if (err instanceof TRPCError && err.code === "CONFLICT") {
       return decided(input, "STALE", `${subject}: ${err.message}`);

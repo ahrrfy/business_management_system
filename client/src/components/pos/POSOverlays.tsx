@@ -88,6 +88,7 @@ export function POSOverlays({
           onApprove={onApproveCredit}
           onCancel={onCancelCredit}
           branchId={branchId}
+          currentUserId={me?.id}
         />
       )}
     </>

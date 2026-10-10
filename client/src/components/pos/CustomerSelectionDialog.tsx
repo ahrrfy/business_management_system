@@ -83,10 +83,17 @@ export function CustomerSelectionDialog({
     staleTime: 60_000,
   });
 
-  const displayList =
-    trimmedQuery.length >= 1
-      ? (searchResults.data ?? [])
-      : (customersList.data ?? []).slice(0, 20);
+  // Fallback to fetch customer profile if customerId is provided but selectedCustomer wasn't passed by parent
+  const fetchedCustomer = trpc.customers.get.useQuery(
+    { customerId: customerId! },
+    { enabled: open && customerId != null && selectedCustomer == null, staleTime: 60_000 },
+  );
+
+  const activeCustomer = selectedCustomer ?? fetchedCustomer.data ?? null;
+
+  const displayList = trimmedQuery.length >= 1
+    ? (searchResults.data ?? [])
+    : (customersList.data ?? []).slice(0, 20);
 
   const isSearching = searchEnabled && searchResults.isLoading;
 
@@ -104,18 +111,14 @@ export function CustomerSelectionDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent
-          className="sm:max-w-2xl max-h-[85vh] overflow-y-auto"
-          dir="rtl"
-        >
+        <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto" dir="rtl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-base font-bold text-foreground">
               <User className="size-5 text-primary" aria-hidden />
               اختيار أو ربط عميل الفاتورة
             </DialogTitle>
             <DialogDescription className="text-xs text-muted-foreground">
-              العميل الافتراضي هو «العميل النقدي». يمكنك ربط عميل لتطبيق فئات
-              الأسعار الخاصة أو البيع بالآجل وفق سقف الائتمان.
+              العميل الافتراضي هو «العميل النقدي». يمكنك ربط عميل لتطبيق فئات الأسعار الخاصة أو البيع بالآجل وفق سقف الائتمان.
             </DialogDescription>
           </DialogHeader>
 
@@ -170,37 +173,34 @@ export function CustomerSelectionDialog({
             </div>
 
             {/* 2. Currently Selected Customer Profile Card */}
-            {customerId != null && selectedCustomer != null && (
+            {customerId != null && activeCustomer != null && (
               <div className="p-3.5 rounded-lg border bg-card shadow-xs space-y-3">
                 <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="flex items-center gap-2">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-extrabold text-base text-foreground">
-                        {selectedCustomer.name}
+                        {activeCustomer.name}
                       </span>
                       <span className="text-xs px-2 py-0.5 rounded bg-muted text-muted-foreground font-medium">
-                        {(selectedCustomer as any).customerType ?? "فرد"}
+                        {(activeCustomer as any).customerType ?? "فرد"}
                       </span>
+                      <CustomerRadarBadges customerId={activeCustomer.id} compact />
                     </div>
-                    {selectedCustomer.phone && (
-                      <div
-                        className="text-xs text-muted-foreground mt-0.5"
-                        dir="ltr"
-                      >
-                        {selectedCustomer.phone}
+                    {activeCustomer.phone && (
+                      <div className="text-xs text-muted-foreground" dir="ltr">
+                        {activeCustomer.phone}
                       </div>
                     )}
                   </div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 shrink-0">
                     <Button
                       type="button"
                       variant="outline"
                       size="sm"
                       onClick={() => setDossierOpen(true)}
-                      className="text-xs h-8 px-2.5 gap-1.5 border-primary/30 text-primary hover:bg-primary/10"
-                      title="فتح ملف الزبون الشامل 360°"
+                      className="text-xs h-8 gap-1.5"
                     >
-                      <Sparkles className="size-3.5" aria-hidden />
+                      <Sparkles className="size-3.5 text-amber-500" aria-hidden />
                       <span>الملف الشامل 360°</span>
                     </Button>
                     <Button
@@ -216,48 +216,33 @@ export function CustomerSelectionDialog({
                   </div>
                 </div>
 
-                {/* رادار الكاشير: شارات فورية مميزة */}
-                <CustomerRadarBadges
-                  customerId={customerId}
-                  onClick={() => setDossierOpen(true)}
-                />
-
                 {/* Credit Status & Balance Badges */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs pt-1 border-t">
                   {/* Credit status */}
                   <div className="flex items-center gap-2 p-2 rounded-md bg-muted/30 border">
-                    {selectedCustomer.creditLimit != null &&
-                    Number(selectedCustomer.creditLimit) === 0 ? (
+                    {activeCustomer.creditLimit != null && Number(activeCustomer.creditLimit) === 0 ? (
                       <>
-                        <AlertCircle
-                          className="size-4 text-destructive shrink-0"
-                          aria-hidden
-                        />
+                        <AlertCircle className="size-4 text-destructive shrink-0" aria-hidden />
                         <div>
-                          <div className="font-bold text-destructive">
-                            نقديّ فقط (لا يقبل الآجل)
-                          </div>
-                          <div className="text-[11px] text-muted-foreground">
-                            حد الائتمان: صفر د.ع
-                          </div>
+                          <div className="font-bold text-destructive">نقديّ فقط (لا يقبل الآجل)</div>
+                          <div className="text-[11px] text-muted-foreground">حد الائتمان: صفر د.ع</div>
+                        </div>
+                      </>
+                    ) : activeCustomer.creditLimit == null ? (
+                      <>
+                        <CheckCircle2 className="size-4 text-emerald-600 dark:text-emerald-400 shrink-0" aria-hidden />
+                        <div>
+                          <div className="font-bold text-emerald-600 dark:text-emerald-400">مسموح بالبيع الآجل</div>
+                          <div className="text-[11px] text-muted-foreground">سقف الائتمان: غير محدود</div>
                         </div>
                       </>
                     ) : (
                       <>
-                        <CheckCircle2
-                          className="size-4 text-emerald-600 dark:text-emerald-400 shrink-0"
-                          aria-hidden
-                        />
+                        <CheckCircle2 className="size-4 text-emerald-600 dark:text-emerald-400 shrink-0" aria-hidden />
                         <div>
-                          <div className="font-bold text-emerald-600 dark:text-emerald-400">
-                            مسموح بالبيع الآجل
-                          </div>
+                          <div className="font-bold text-emerald-600 dark:text-emerald-400">مسموح بالبيع الآجل</div>
                           <div className="text-[11px] text-muted-foreground">
-                            {isElevatedRole
-                              ? selectedCustomer.creditLimit != null
-                                ? `سقف الائتمان: ${fmt(selectedCustomer.creditLimit)} د.ع`
-                                : "سقف الائتمان: غير محدود"
-                              : "سقف الائتمان: محجوب"}
+                            سقف الائتمان: {isElevatedRole ? `${fmt(activeCustomer.creditLimit)} د.ع` : "محدد (محجوب)"}
                           </div>
                         </div>
                       </>
@@ -266,27 +251,18 @@ export function CustomerSelectionDialog({
 
                   {/* Current Balance */}
                   <div className="flex items-center gap-2 p-2 rounded-md bg-muted/30 border">
-                    <CreditCard
-                      className="size-4 text-muted-foreground shrink-0"
-                      aria-hidden
-                    />
+                    <CreditCard className="size-4 text-muted-foreground shrink-0" aria-hidden />
                     <div>
-                      <div className="font-medium text-muted-foreground">
-                        الرصيد / الذمة الحالية:
-                      </div>
+                      <div className="font-medium text-muted-foreground">الرصيد / الذمة الحالية:</div>
                       <div
                         className={`font-bold ${
-                          isElevatedRole &&
-                          selectedCustomer.currentBalance &&
-                          D(selectedCustomer.currentBalance).gt(0)
+                          activeCustomer.currentBalance && D(activeCustomer.currentBalance).gt(0)
                             ? "text-amber-600 dark:text-amber-400"
                             : "text-foreground"
                         }`}
                       >
                         {isElevatedRole
-                          ? selectedCustomer.currentBalance
-                            ? `${fmt(selectedCustomer.currentBalance)} د.ع`
-                            : "0 د.ع"
+                          ? `${activeCustomer.currentBalance ? fmt(activeCustomer.currentBalance) : "0"} د.ع`
                           : "محجوب"}
                       </div>
                     </div>
@@ -296,9 +272,7 @@ export function CustomerSelectionDialog({
                 {/* Price Tier selector */}
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t text-xs">
                   <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground font-medium">
-                      فئة السعر للفاتورة:
-                    </span>
+                    <span className="text-muted-foreground font-medium">فئة السعر للفاتورة:</span>
                     <div className="w-32">
                       <AppSelect
                         value={effectiveTier}
@@ -352,8 +326,7 @@ export function CustomerSelectionDialog({
                 value={searchQuery}
                 onChange={setSearchQuery}
                 onSubmit={() => {
-                  if (displayList.length > 0)
-                    handlePick(displayList[0].id, displayList[0]);
+                  if (displayList.length > 0) handlePick(displayList[0].id, displayList[0]);
                 }}
                 placeholder="اكتب اسم العميل أو جزءاً من رقم الهاتف…"
                 debounceMs={180}
@@ -370,22 +343,63 @@ export function CustomerSelectionDialog({
                   </div>
                 )}
                 {searchResults.isError && (
-                  <div className="p-3 text-center text-xs text-destructive">
-                    تعذّر البحث: {searchResults.error.message}
+                  <div className="p-4 text-center space-y-2 text-xs">
+                    <div className="text-destructive font-medium flex items-center justify-center gap-1.5">
+                      <AlertCircle className="size-4 shrink-0" aria-hidden />
+                      <span>تعذّر البحث: {searchResults.error.message}</span>
+                    </div>
+                    <div className="flex items-center justify-center gap-2 pt-1">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => searchResults.refetch()}
+                        className="text-xs h-7 gap-1"
+                      >
+                        <RotateCcw className="size-3.5" aria-hidden />
+                        إعادة المحاولة
+                      </Button>
+                      {canCreate && !showNewForm && (
+                        <Button
+                          type="button"
+                          variant="default"
+                          size="sm"
+                          onClick={() => setShowNewForm(true)}
+                          className="text-xs h-7 gap-1"
+                        >
+                          <Plus className="size-3.5" aria-hidden />
+                          تسجيل عميل جديد مباشرةً
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {!isSearching && !searchResults.isError && displayList.length === 0 && (
+                  <div className="p-4 text-center space-y-2 text-xs text-muted-foreground">
+                    <div>
+                      {trimmedQuery.length >= 1
+                        ? `لا توجد نتائج مطابقة لـ «${trimmedQuery}»`
+                        : "لا توجد نتائج مطابقة — يمكنك تسجيل عميل جديد بالضغط على «عميل جديد» أعلاه"}
+                    </div>
+                    {canCreate && !showNewForm && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowNewForm(true)}
+                        className="text-xs h-7 gap-1 mx-auto"
+                      >
+                        <Plus className="size-3.5" aria-hidden />
+                        {trimmedQuery.length >= 1
+                          ? `إضافة «${trimmedQuery}» كعميل جديد`
+                          : "تسجيل عميل جديد"}
+                      </Button>
+                    )}
                   </div>
                 )}
                 {!isSearching &&
-                  !searchResults.isError &&
-                  displayList.length === 0 && (
-                    <div className="p-4 text-center text-xs text-muted-foreground">
-                      لا توجد نتائج مطابقة — يمكنك تسجيل عميل جديد بالضغط على
-                      «عميل جديد» أعلاه
-                    </div>
-                  )}
-                {!isSearching &&
                   displayList.map((c) => {
-                    const isCashOnly =
-                      c.creditLimit != null && Number(c.creditLimit) === 0;
+                    const isCashOnly = c.creditLimit != null && Number(c.creditLimit) === 0;
                     const tier = (c.defaultPriceTier ?? "RETAIL") as Tier;
                     const isSelected = c.id === customerId;
                     return (
@@ -404,6 +418,7 @@ export function CustomerSelectionDialog({
                             <span className="text-[11px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
                               {priceTierLabel(tier)}
                             </span>
+                            <CustomerRadarBadges customerId={c.id} compact />
                             {isCashOnly ? (
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-destructive/15 text-destructive font-bold">
                                 نقدي فقط
@@ -416,7 +431,7 @@ export function CustomerSelectionDialog({
                           </div>
                           <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5">
                             {c.phone && <span dir="ltr">{c.phone}</span>}
-                            {c.currentBalance && D(c.currentBalance).gt(0) && (
+                            {c.currentBalance && D(c.currentBalance).gt(0) && isElevatedRole && (
                               <span className="text-amber-600 dark:text-amber-400 font-medium">
                                 ذمة: {fmt(c.currentBalance)} د.ع
                               </span>
@@ -442,6 +457,8 @@ export function CustomerSelectionDialog({
             {/* 4. Add New Customer Section */}
             {showNewForm && (
               <QuickCustomerCreateForm
+                initialName={/^\+?\d+$/.test(trimmedQuery) ? "" : trimmedQuery}
+                initialPhone={/^\+?\d+$/.test(trimmedQuery) ? trimmedQuery : ""}
                 onCustomerCreated={(id, data) => {
                   setShowNewForm(false);
                   setSearchQuery("");

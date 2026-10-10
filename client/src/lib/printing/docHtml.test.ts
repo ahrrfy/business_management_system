@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { wrapA4Doc, wrapMultiA4Doc, wrapReceiptDoc, pageHeader, docHeader, docTableV2 } from "./docHtml";
+import { wrapA4Doc, wrapMultiA4Doc, wrapReceiptDoc, pageHeader, docHeader, docTableV2, docFooter } from "./docHtml";
 import {
   buildSalesInvoiceV2Html,
   buildPurchaseInvoiceV2Html,
@@ -358,6 +358,16 @@ describe("docTableV2 - دعم rawHtml للأعمدة المركبة مثل ال�
     // الأعمدة العادية يتم تشفير محتواها النصي للحماية
     expect(tableHtml).toContain("&amp;");
     expect(tableHtml).toContain("&lt;1&gt;");
+  });
+});
+
+describe("docFooter - تخصيص تذييل المستند عبر إعدادات المنشأة", () => {
+  it("يطبق سطر التذييل المخصص الممرر عبر CompanySettings", () => {
+    const footerHtml = docFooter({
+      footerLine: "بغداد — الكرادة · هاتف الإدارة: 07700000000",
+    });
+
+    expect(footerHtml).toContain("بغداد — الكرادة · هاتف الإدارة: 07700000000");
   });
 });
 

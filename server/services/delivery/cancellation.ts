@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { assertNotReturnDeclared } from "./declaredReturn";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { deliveryConsignments, onlineOrders } from "../../../drizzle/schema";
 import {
   checkIdempotency,
@@ -189,6 +189,16 @@ export async function cancelDeliveryAssignment(
       .where(eq(deliveryConsignments.id, Number(cn.id)));
 
       if (cn.sourceType === "ONLINE_ORDER" && cn.sourceId != null) {
+        // حارس القاعدة trg_online_orders_expired_activation_bu يمنع الانتقال إلى PROCESSING
+        // إذا كان OLD.orderStatus هو SHIPPED ومضى أكثر من 24 ساعة على إنشاء الطلب (reservationExpiresAt في الماضي).
+        // نجدد مهلة الحجز لـ 24 ساعة قادمة بينما الطلب لا يزال في حالته الحالية (SHIPPED) قبل تحويله إلى PROCESSING،
+        // فيعبر الحارس بنجاح وتعود الإرسالية لحالة التجهيز بأمان.
+        await tx
+          .update(onlineOrders)
+          .set({
+            reservationExpiresAt: sql`DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 24 HOUR)`,
+          })
+          .where(eq(onlineOrders.id, Number(cn.sourceId)));
         await tx
           .update(onlineOrders)
           .set({ deliveryPartyId: null, status: "PROCESSING" })
@@ -196,9 +206,15 @@ export async function cancelDeliveryAssignment(
       } else if (cn.invoiceId != null) {
         await tx
           .update(onlineOrders)
+          .set({
+            reservationExpiresAt: sql`DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 24 HOUR)`,
+          })
+          .where(eq(onlineOrders.invoiceId, Number(cn.invoiceId)));
+        await tx
+          .update(onlineOrders)
           .set({ deliveryPartyId: null, status: "PROCESSING" })
           .where(eq(onlineOrders.invoiceId, Number(cn.invoiceId)));
-    }
+      }
 
     await appendDeliveryEvent(tx, {
       eventKey: `CN:${cn.id}:ASSIGNMENT_CANCELLED:${input.clientRequestId}`,

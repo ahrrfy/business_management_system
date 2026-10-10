@@ -19,11 +19,17 @@ export interface QuickCustomerCreatedData {
 
 export interface QuickCustomerCreateFormProps {
   onCustomerCreated: (customerId: number, data?: QuickCustomerCreatedData) => void;
+  initialName?: string;
+  initialPhone?: string;
 }
 
-export function QuickCustomerCreateForm({ onCustomerCreated }: QuickCustomerCreateFormProps) {
-  const [newName, setNewName] = useState("");
-  const [newPhone, setNewPhone] = useState("");
+export function QuickCustomerCreateForm({
+  onCustomerCreated,
+  initialName = "",
+  initialPhone = "",
+}: QuickCustomerCreateFormProps) {
+  const [newName, setNewName] = useState(initialName);
+  const [newPhone, setNewPhone] = useState(initialPhone);
   const [newType, setNewType] = useState<string>("فرد");
   const [newTier, setNewTier] = useState<Tier>("RETAIL");
   const [formError, setFormError] = useState("");

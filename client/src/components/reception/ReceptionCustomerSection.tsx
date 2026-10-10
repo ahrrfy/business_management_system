@@ -99,9 +99,10 @@ export function ReceptionCustomerSection({
           if (res && res.status === "RESOLVED") {
             target = {
               id: res.customerId,
-              name: "",
-              phone: "",
+              name: (res as any).name ?? "",
+              phone: (res as any).phone ?? "",
               defaultPriceTier: res.defaultPriceTier,
+              creditLimit: (res as any).creditLimit,
             } as any;
           }
         } catch {

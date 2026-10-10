@@ -29,6 +29,7 @@ export interface CustomerRadarBadgesProps {
   } | null;
   className?: string;
   size?: "sm" | "default";
+  compact?: boolean;
   onClick?: () => void;
 }
 
@@ -37,6 +38,7 @@ export function CustomerRadarBadges({
   badges: badgesProp,
   className = "flex flex-wrap items-center gap-1.5",
   size = "default",
+  compact,
   onClick,
 }: CustomerRadarBadgesProps) {
   const dossierQuery = trpc.customers.dossier360.useQuery(
@@ -50,9 +52,10 @@ export function CustomerRadarBadges({
   const badges = badgesProp ?? dossierQuery.data?.metrics?.badges;
   if (!badges) return null;
 
-  const iconSize = size === "sm" ? "size-3" : "size-3.5";
+  const effectiveSize = compact ? "sm" : size;
+  const iconSize = effectiveSize === "sm" ? "size-3" : "size-3.5";
   const badgeCls =
-    size === "sm" ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-0.5 text-xs";
+    effectiveSize === "sm" ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-0.5 text-xs";
   const interactiveCls = onClick
     ? "cursor-pointer hover:opacity-85 transition-opacity"
     : "";

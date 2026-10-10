@@ -24,6 +24,12 @@ import { appErrorMessage } from "@shared/errors";
 import { assertBaseProductUnitBinding,
   requireWorkOrderBaseSnapshot,
 } from "./baseInventorySnapshot";
+import { publishRealtimeEvent } from "../../realtime";
+import {
+  REALTIME_EVENT_TYPES,
+  type WorkOrderStatusChangedPayload,
+  type ReceptionQueueUpdatedPayload,
+} from "@shared/realtimeEvents";
 
 export interface DeliverWorkOrderInput {
   workOrderId: number;
@@ -43,7 +49,7 @@ export interface DeliverWorkOrderInput {
 export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Actor & { role?: string }) {
   // دفعة التسليم قبضٌ ذاتي من الموظف؛ نرفض غير النقدي قبل فحص idempotency وقفل الأمر.
   if (input.payment) assertPosPaymentMethodEnabled(input.payment.method);
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const requestFingerprint = input.clientRequestId ? idempotencyHash(input) : null;
     // Idempotency: double-click / network-retry ⇒ return the already-created invoice.
     if (input.clientRequestId) {
@@ -51,7 +57,14 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       if (existingId != null) {
         const inv = (await tx.select({ invoiceNumber: invoices.invoiceNumber, status: invoices.status })
           .from(invoices).where(eq(invoices.id, existingId)).limit(1))[0];
-        return { workOrderId: input.workOrderId, invoiceId: existingId, invoiceNumber: inv?.invoiceNumber ?? "", status: inv?.status ?? "PENDING", idempotentReplay: true as const };
+        return {
+          workOrderId: input.workOrderId,
+          invoiceId: existingId,
+          invoiceNumber: inv?.invoiceNumber ?? "",
+          status: inv?.status ?? "PENDING",
+          idempotentReplay: true as const,
+          branchId: actor.branchId ?? 0,
+        };
       }
     }
     const wo = await loadWorkOrder(tx, input.workOrderId);
@@ -520,6 +533,48 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       await recordIdempotencyKey(tx, "workOrder.deliver", input.clientRequestId, invoiceId, requestFingerprint);
     }
 
-    return { workOrderId: Number(wo.id), invoiceId, invoiceNumber, status };
+    return {
+      workOrderId: Number(wo.id),
+      invoiceId,
+      invoiceNumber,
+      status,
+      branchId: Number(wo.branchId),
+    };
   });
+
+  if (!result.idempotentReplay) {
+    try {
+      publishRealtimeEvent<WorkOrderStatusChangedPayload>(
+        REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+        {
+          workOrderId: result.workOrderId,
+          branchId: result.branchId,
+          previousStatus: "READY",
+          newStatus: "DELIVERED",
+          updatedBy: actor.userId,
+        },
+        { branchId: result.branchId },
+      );
+      publishRealtimeEvent<ReceptionQueueUpdatedPayload>(
+        REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+        {
+          orderId: result.workOrderId,
+          branchId: result.branchId,
+          status: "DELIVERED",
+          readyForPickup: false,
+        },
+        { branchId: result.branchId },
+      );
+    } catch {
+      // fail-safe
+    }
+  }
+
+  return {
+    workOrderId: result.workOrderId,
+    invoiceId: result.invoiceId,
+    invoiceNumber: result.invoiceNumber,
+    status: result.status,
+    ...(result.idempotentReplay ? { idempotentReplay: true as const } : {}),
+  };
 }

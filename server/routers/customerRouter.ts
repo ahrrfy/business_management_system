@@ -100,7 +100,12 @@ export const customerRouter = router({
       limit: 500,
       skipTotal: true,
     });
-    return rows.map((r) => maskCustomerSensitive(r, ctx.user.role));
+    return rows.map((r) =>
+      maskCustomerSensitive(r, ctx.user.role, {
+        preserveCreditLimit: true,
+        preserveCurrentBalance: true,
+      }),
+    );
   }),
 
   /** قائمة كاملة مع بحث وفلاتر وتقسيم صفحات — لشاشة الإدارة. */
@@ -152,7 +157,7 @@ export const customerRouter = router({
       };
     }),
 
-  /** بحث ذكي بإحصاءات — لإدخال أمر شغل سريع. */
+  /** بحث ذكي بإحصاءات — لإدخال أمر شغل سريع واختيار العميل في الكاشير. */
   smartSearch: customersReadProcedure
     .input(
       z.object({
@@ -160,11 +165,14 @@ export const customerRouter = router({
         limit: z.number().int().min(1).max(20).optional(),
       }),
     )
-    // IDOR-REDACT (تدقيق ٢/٧): smartSearch كان يُعيد currentBalance خاماً لكل الأدوار متجاوزاً
-    // maskCustomerSensitive المطبَّق في list/get ⇒ تسريب رصيد العميل للكاشير. نطبّق نفس الحجب.
     .query(async ({ input, ctx }) => {
       const rows = await smartSearchCustomers(input);
-      return rows.map((r) => maskCustomerSensitive(r, ctx.user.role));
+      return rows.map((r) =>
+        maskCustomerSensitive(r, ctx.user.role, {
+          preserveCreditLimit: true,
+          preserveCurrentBalance: true,
+        }),
+      );
     }),
 
   /** dup-detect (٦/٧): مرشّحو تكرار محتمَل لشاشة الإضافة — تحذير حيّ قبل الحفظ (لا حجب).
@@ -190,7 +198,10 @@ export const customerRouter = router({
         id: c.id,
         name: c.name,
       }).qrPayload;
-      const masked = maskCustomerSensitive(c, ctx.user.role);
+      const masked = maskCustomerSensitive(c, ctx.user.role, {
+        preserveCreditLimit: true,
+        preserveCurrentBalance: true,
+      });
       return { ...masked, qrPayload };
     }),
 

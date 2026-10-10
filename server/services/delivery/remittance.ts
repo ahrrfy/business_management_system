@@ -52,6 +52,8 @@ import {
   paymentAccountRole,
 } from "./posting";
 import type { DeliveryTxActor } from "./types";
+import { publishRealtimeEvent } from "../../realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 
 /** سطر توريد: المُحصَّل لإرسالية واحدة (0..متبقّيها الحيّ). */
 export interface RemittanceLineInput {
@@ -119,7 +121,31 @@ export async function recordDeliveryRemittance(
   input: RemittanceInput,
   actor: DeliveryTxActor,
 ) {
-  return withTx((tx) => recordDeliveryRemittanceInTx(tx, input, actor));
+  const result = await withTx((tx) => recordDeliveryRemittanceInTx(tx, input, actor));
+  if (input.shortfall?.reason && Number(result.shortfallTotal) > 0) {
+    publishRealtimeEvent(
+      REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED,
+      {
+        deliveryId: result.remittanceId,
+        driverId: input.partyId,
+        amount: result.shortfallTotal,
+        reason: input.shortfall.reason,
+        branchId: input.branchId,
+      },
+      { branchId: input.branchId },
+    );
+  }
+  publishRealtimeEvent(
+    REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
+    {
+      deliveryId: result.remittanceId,
+      driverId: input.partyId,
+      branchId: input.branchId,
+      collectedAmount: result.collectedTotal,
+    },
+    { branchId: input.branchId },
+  );
+  return result;
 }
 
 /**

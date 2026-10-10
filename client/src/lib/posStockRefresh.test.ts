@@ -59,4 +59,45 @@ describe("تحديث مخزون سلال الكاشير", () => {
     expect(latest[0].cart[0].row).toMatchObject({ stockBase: -1, reservedBase: 0, availableBase: 0 });
     expect(first[0].cart[0].row).toMatchObject({ stockBase: 9, reservedBase: 2, availableBase: 7 });
   });
+
+  it("يحدّث اسم المنتج في السلال المفتوحة عند وصول لقطة خادمية باسم جديد", () => {
+    const tabs = [
+      {
+        id: 1,
+        cart: [
+          {
+            row: {
+              branchId: 1,
+              productUnitId: 10,
+              productName: "اسم قديم غير محدّث",
+              stockBase: 4,
+              isService: false,
+            },
+            qty: 1,
+          },
+        ],
+      },
+    ];
+
+    const refreshed = reconcilePosTabsStock(
+      tabs,
+      [
+        {
+          branchId: 1,
+          productUnitId: 10,
+          productName: "اسم المنتج المصحح من الخادم",
+          stockBase: 4,
+          reservedBase: 0,
+          availableBase: 4,
+          openedAt: null,
+          isService: false,
+          allowBackorder: false,
+        },
+      ],
+      1,
+    );
+
+    expect(refreshed[0].cart[0].row.productName).toBe("اسم المنتج المصحح من الخادم");
+  });
 });
+

@@ -25,6 +25,11 @@ import {
   deriveConsignmentView,
 } from "@shared/consignmentView";
 import { SHORTFALL_REASONS, SHORTFALL_REASON_LABEL_AR, type ShortfallReason } from "@shared/shortfallReason";
+import { useRealtimeEvent } from "@/lib/realtime";
+import {
+  REALTIME_EVENT_TYPES,
+  type DeliveryDispatchedPayload,
+} from "@shared/realtimeEvents";
 
 type MyDeliveries = RouterOutputs["courier"]["myDeliveries"];
 type DeliveryRow = MyDeliveries["toDeliver"][number];
@@ -40,8 +45,25 @@ function rowKey(row: DeliveryRow): string {
 }
 
 export default function MyDeliveries() {
-  const q = trpc.courier.myDeliveries.useQuery(undefined, { refetchInterval: 20_000, refetchOnWindowFocus: true });
+  const q = trpc.courier.myDeliveries.useQuery(undefined, { refetchOnWindowFocus: true });
   const utils = trpc.useUtils();
+
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+      REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
+      REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED,
+    ],
+    (event) => {
+      void utils.courier.myDeliveries.invalidate();
+      if (event.type === REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED) {
+        const p = event.payload as DeliveryDispatchedPayload;
+        notify.info(`طرد جديد مُسنَد للتوصيل: ${p?.trackingNumber ?? ""}`);
+      } else if (event.type === REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED) {
+        notify.warn("تنبيه: تم قيد نقص أو تسوية في العهدة");
+      }
+    },
+  );
   const [confirmingKey, setConfirmingKey] = useState<string | null>(null);
   const [failTarget, setFailTarget] = useState<DeliveryRow | null>(null);
   const [partialTarget, setPartialTarget] = useState<DeliveryRow | null>(null);

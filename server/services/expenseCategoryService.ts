@@ -25,6 +25,7 @@ import {
 import { getDb, type Tx } from "../db";
 import { extractAffectedRows, extractInsertId } from "../lib/insertId";
 import { createTtlCache } from "../lib/ttlCache";
+import { financialCacheKey } from "../realtime/financialCache";
 import { withTx, type Actor } from "./tx";
 
 export interface ExpenseCategoryListRow {
@@ -56,7 +57,7 @@ function nameKey(name: string): string {
 export async function listExpenseCategories(input?: {
   includeInactive?: boolean;
 }): Promise<ExpenseCategoryListRow[]> {
-  const cacheKey = input?.includeInactive ? "all" : "active";
+  const cacheKey = financialCacheKey(input?.includeInactive ? "all" : "active");
   return expenseCategoryCache.get(cacheKey, async () => {
     const db = getDb();
     if (!db) return [];
