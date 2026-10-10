@@ -1022,13 +1022,12 @@ export default function POS() {
     // كان يُرسَل غير المقرَّب، فأيّ إجمالٍ يُقرَّب صعوداً (2,380 ⇒ 2,500) يجعل الخادم يرى القبضَ ناقصاً
     // فيرفضه كبيعٍ آجلٍ بلا عميل. الخادم يحسب `cashRoundingAdj` من فرق الإجمالي/المقرَّب ⇒ الفارق موثَّق.
     saleCtxRef.current = captureSaleCtx();
-    const deviceId = activeTab.method === "CASH"
-      ? await getDeviceCode().catch(() => undefined)
-      : activeTab.externalPayment?.deviceId;
+    const deviceId = activeTab.method === "CASH" ? await getDeviceCode().catch(() => undefined) : activeTab.externalPayment?.deviceId;
     const cashFull = activeTab.method === "CASH" && !isCredit && !codMode;
     const payAmount = isCredit ? money(paid) : (cashFull ? money(cashRoundedTotal) : money(total));
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
+      ...(activeTab.salesRepId ? { salesRepId: activeTab.salesRepId, attribution: { repId: activeTab.salesRepId, mode: "DIRECT" as const } } : {}),
       deviceId,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
@@ -1076,12 +1075,11 @@ export default function POS() {
     }
     // الدفع السريع كامل؛ التقريب لفئة IQD يخص النقد وحده (نفس منطق submitSale أعلاه).
     saleCtxRef.current = captureSaleCtx();
-    const deviceId = activeTab.method === "CASH"
-      ? await getDeviceCode().catch(() => undefined)
-      : activeTab.externalPayment?.deviceId;
+    const deviceId = activeTab.method === "CASH" ? await getDeviceCode().catch(() => undefined) : activeTab.externalPayment?.deviceId;
     const payAmount = activeTab.method === "CASH" ? money(cashRoundedTotal) : money(total);
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
+      ...(activeTab.salesRepId ? { salesRepId: activeTab.salesRepId, attribution: { repId: activeTab.salesRepId, mode: "DIRECT" as const } } : {}),
       deviceId,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
@@ -1365,6 +1363,8 @@ export default function POS() {
           setShowCustPicker={setShowCustPicker}
           setCustId={setCustId}
           tabId={activeTab.id}
+          salesRepId={activeTab.salesRepId ?? null}
+          onSalesRepChange={(id) => patchActive({ salesRepId: id })}
           delivery={activeTab.delivery ?? null}
           onDeliveryChange={(d) => patchActive({ delivery: d })}
           onDeliveryIdentity={(identity) => {
