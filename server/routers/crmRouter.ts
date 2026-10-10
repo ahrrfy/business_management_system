@@ -371,8 +371,8 @@ export const crmRouter = router({
       freeShipping: z.boolean().default(false),
       shippingDiscountAmount: nonNegMoneyString.default("0"),
       scope: z.enum(["ALL", "CATEGORIES", "PRODUCTS"]).default("ALL"),
-      targetCategoryIds: z.array(z.number().int().positive()).optional(),
-      targetProductIds: z.array(z.number().int().positive()).optional(),
+      targetCategoryIds: z.array(z.number().int().positive()).max(500).optional(),
+      targetProductIds: z.array(z.number().int().positive()).max(500).optional(),
       customerTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).optional(),
       branchId: z.number().int().positive().nullish(),
       validFrom: ymd,
@@ -596,7 +596,7 @@ export const crmRouter = router({
           promotionId,
           name: input.name,
           codePrefix: safePrefix,
-          status: "ACTIVE" as const,
+          status: targetStatus,
         };
       });
 
