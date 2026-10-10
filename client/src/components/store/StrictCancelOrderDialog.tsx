@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ManagerApprovalDialog, type ManagerApprovalInput } from "@/components/reception/ManagerApprovalDialog";
+import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 
 interface StrictCancelOrderDialogProps {
@@ -47,6 +48,9 @@ export function StrictCancelOrderDialog({
   const [selectedReason, setSelectedReason] = useState("");
   const [notes, setNotes] = useState("");
   const [showApprovalDialog, setShowApprovalDialog] = useState(false);
+
+  const meQ = trpc.auth.me.useQuery();
+  const isManagerOrAdmin = meQ.data?.role === "admin" || meQ.data?.role === "manager";
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -249,7 +253,13 @@ export function StrictCancelOrderDialog({
                   variant="destructive"
                   size="sm"
                   disabled={!isReasonValid || pending}
-                  onClick={() => setShowApprovalDialog(true)}
+                  onClick={() => {
+                    if (isManagerOrAdmin) {
+                      handleFinalSubmit();
+                    } else {
+                      setShowApprovalDialog(true);
+                    }
+                  }}
                 >
                   {pending ? (
                     <Loader2 aria-hidden className="size-3.5 animate-spin" />

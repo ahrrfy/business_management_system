@@ -7,17 +7,22 @@ export function StorefrontDispatchCountdown() {
   useEffect(() => {
     function computeCutoff() {
       const now = new Date();
-      // موعد الشحن اليومي المعتمد: الساعة 3:00 عصراً بتوقيت بغداد
-      const cutoff = new Date(now);
-      cutoff.setHours(15, 0, 0, 0);
+      // بغداد بتوقيت موحد UTC+3 دون تغيير صيفي
+      const nowUtc = now.getTime();
+      // موعد الشحن اليومي 3:00 عصراً بتوقيت بغداد = 12:00:00 UTC
+      const cutoffUtc = new Date(now);
+      cutoffUtc.setUTCHours(12, 0, 0, 0);
 
-      if (now.getTime() >= cutoff.getTime()) {
-        // بعد الساعة الثالثة عصراً: العداد يحسب لموعد شحنة الغد الصباحية 10:00 صباحاً
-        cutoff.setDate(cutoff.getDate() + 1);
-        cutoff.setHours(10, 0, 0, 0);
+      let targetMs = cutoffUtc.getTime();
+      if (nowUtc >= targetMs) {
+        // بعد الساعة الثالثة عصراً بتوقيت بغداد: الشحنة الصباحية للغد 10:00 صباحاً بتوقيت بغداد = 07:00 UTC
+        const nextDayUtc = new Date(now);
+        nextDayUtc.setUTCDate(nextDayUtc.getUTCDate() + 1);
+        nextDayUtc.setUTCHours(7, 0, 0, 0);
+        targetMs = nextDayUtc.getTime();
       }
 
-      const diffMs = Math.max(0, cutoff.getTime() - now.getTime());
+      const diffMs = Math.max(0, targetMs - nowUtc);
       const hours = Math.floor(diffMs / (1000 * 60 * 60));
       const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
       const seconds = Math.floor((diffMs % (1000 * 60)) / 1000);
