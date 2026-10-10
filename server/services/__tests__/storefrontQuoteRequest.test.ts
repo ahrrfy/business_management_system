@@ -793,8 +793,10 @@ describe("storefront quote requests", () => {
     expect(await db().select().from(s.invoices)).toHaveLength(0);
   });
   it("يعامل العرض المنتهي في يوم بغداد كمنتهٍ حتى قبل منتصف UTC", async () => {
+    const futureDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const validUntilYmd = futureDate.toISOString().slice(0, 10);
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-09-10T22:30:00.000Z")); // 01:30 في بغداد من اليوم التالي
+    vi.setSystemTime(new Date(`${validUntilYmd}T22:30:00.000Z`)); // 01:30 في بغداد من اليوم التالي
     try {
       const request = await createStorefrontQuoteRequest({
         customerName: "مكتب بغداد",
@@ -813,7 +815,7 @@ describe("storefront quote requests", () => {
         requestId: request.requestId,
         customerId: Number(requestRow.customerId),
         clientRequestId: "quote-baghdad-expiry-official",
-        validUntil: "2026-09-10",
+        validUntil: validUntilYmd,
       });
 
       await expect(acceptStorefrontOfficialQuotationByGuestToken(request.guestTrackingToken!))
