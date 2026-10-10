@@ -1,7 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 
-import { onlineOrderItems, onlineOrders, productVariants, storefrontProductReviews, users } from "../../drizzle/schema";
+import { customers, onlineOrderItems, onlineOrders, productVariants, storefrontProductReviews, users } from "../../drizzle/schema";
+import { appErrorMessage } from "../../shared/errors";
 import { getDb } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { createAppNotification } from "./appNotificationService";
@@ -14,12 +15,25 @@ function cleanComment(value: string) {
   return comment;
 }
 
-/** لا تظهر علناً إلا مراجعات اعتمدها المتجر، ولا نعيد اسم العميل لحماية الخصوصية. */
+function maskReviewerName(name: string): string {
+  const trimmed = name.trim();
+  const parts = trimmed.split(/\s+/);
+  if (parts.length === 1) return parts[0];
+  return `${parts[0]} ${parts[1][0]}.`;
+}
+
+/** لا تظهر علناً إلا مراجعات اعتمدها المتجر، ولا نعيد اسم العميل الكامل لحماية الخصوصية. */
 export async function listStorefrontProductReviews(productId: number) {
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة بيانات المتجر غير متاحة" });
   const rows = await db
-    .select({ id: storefrontProductReviews.id, rating: storefrontProductReviews.rating, comment: storefrontProductReviews.comment, createdAt: storefrontProductReviews.createdAt })
+    .select({
+      id: storefrontProductReviews.id,
+      rating: storefrontProductReviews.rating,
+      comment: storefrontProductReviews.comment,
+      reviewerName: storefrontProductReviews.reviewerName,
+      createdAt: storefrontProductReviews.createdAt,
+    })
     .from(storefrontProductReviews)
     .where(and(eq(storefrontProductReviews.productId, productId), eq(storefrontProductReviews.status, "APPROVED")))
     .orderBy(desc(storefrontProductReviews.createdAt))
@@ -28,7 +42,16 @@ export async function listStorefrontProductReviews(productId: number) {
     .select({ count: sql<number>`COUNT(*)`, average: sql<string>`COALESCE(AVG(${storefrontProductReviews.rating}), 0)` })
     .from(storefrontProductReviews)
     .where(and(eq(storefrontProductReviews.productId, productId), eq(storefrontProductReviews.status, "APPROVED"))))[0];
-  return { summary: { count: Number(aggregate?.count ?? 0), average: Number(aggregate?.average ?? 0) }, items: rows.map((row) => ({ id: Number(row.id), rating: Number(row.rating), comment: row.comment, createdAt: row.createdAt })) };
+  return {
+    summary: { count: Number(aggregate?.count ?? 0), average: Number(aggregate?.average ?? 0) },
+    items: rows.map((row) => ({
+      id: Number(row.id),
+      rating: Number(row.rating),
+      comment: row.comment,
+      reviewerName: row.reviewerName ? maskReviewerName(row.reviewerName) : null,
+      createdAt: row.createdAt,
+    })),
+  };
 }
 
 /** يقبل مراجعة واحدة للمنتج في كل طلب مُسلّم من مالك جلسة الهاتف المتحققة. */
@@ -83,3 +106,98 @@ export async function submitStorefrontProductReview(input: { customerId: number;
     throw error;
   }
 }
+
+/** يقبل تقييماً ومراجعة من متسوقي وزوار المتجر العام؛ تدخل المراجعة طابور الاعتماد بانتظار موافقة الإدارة. */
+export async function submitPublicStorefrontReview(input: {
+  productId: number;
+  rating: number;
+  reviewerName: string;
+  reviewerPhone?: string | null;
+  orderNumber?: string | null;
+  comment: string;
+}) {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة بيانات المتجر غير متاحة" });
+  if (input.rating < 1 || input.rating > 5) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "قيمة التقييم غير مقبولة",
+        why: `القيمة المدخلة ${input.rating} بينما المقياس المعتمد من 1 إلى 5 نجوم`,
+        doThis: "اختر عدداً من النجوم بين 1 و 5 لتقييم المنتج",
+      }),
+    });
+  }
+  const cleanName = input.reviewerName.trim().slice(0, 100);
+  if (cleanName.length < 2) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "اسم كاتب التقييم قصير جداً",
+        why: `الاسم المدخل يتكون من ${cleanName.length} حرفاً فقط`,
+        doThis: "اكتب اسمك الصريح أو كنيتك بحرفين على الأقل لتظهر مراجعتك",
+      }),
+    });
+  }
+  const comment = cleanComment(input.comment);
+
+  let matchedCustomerId: number | null = null;
+  let matchedOrderId: number | null = null;
+
+  if (input.orderNumber?.trim()) {
+    const foundOrder = (await db
+      .select({ id: onlineOrders.id, customerId: onlineOrders.customerId })
+      .from(onlineOrders)
+      .where(eq(onlineOrders.orderNumber, input.orderNumber.trim()))
+      .limit(1))[0];
+    if (foundOrder) {
+      matchedOrderId = Number(foundOrder.id);
+      matchedCustomerId = Number(foundOrder.customerId);
+    }
+  }
+
+  if (!matchedCustomerId && input.reviewerPhone?.trim()) {
+    const cleanPhone = input.reviewerPhone.trim();
+    const foundCustomer = (await db
+      .select({ id: customers.id })
+      .from(customers)
+      .where(eq(customers.phone, cleanPhone))
+      .limit(1))[0];
+    if (foundCustomer) {
+      matchedCustomerId = Number(foundCustomer.id);
+    }
+  }
+
+  const inserted = await db.insert(storefrontProductReviews).values({
+    productId: input.productId,
+    customerId: matchedCustomerId,
+    onlineOrderId: matchedOrderId,
+    reviewerName: cleanName,
+    reviewerPhone: input.reviewerPhone?.trim() || null,
+    rating: input.rating,
+    comment,
+    status: "PENDING",
+  });
+
+  const reviewId = extractInsertId(inserted);
+  const recipients = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.isActive, true), or(eq(users.role, "admin"), eq(users.role, "manager"))));
+
+  void Promise.all(recipients.map((recipient) => createAppNotification({
+    userId: Number(recipient.id),
+    kind: "APPROVAL_REQUIRED",
+    title: "مراجعة منتج جديدة بانتظار الاعتماد",
+    body: `وصل تقييم جديد (${input.rating} نجوم) للمنتج من ${cleanName} بانتظار الاعتماد في المتجر.`,
+    route: "/store?tab=reviews",
+    eventKey: `storefront-public-review:${reviewId}:user:${recipient.id}`,
+    entityType: "storefrontProductReview",
+    entityId: reviewId,
+    requiresAction: true,
+    push: true,
+  }))).catch(() => undefined);
+
+  return { ok: true as const, status: "PENDING" as const };
+}
+

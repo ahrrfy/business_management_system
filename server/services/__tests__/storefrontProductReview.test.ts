@@ -3,10 +3,14 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { moderateStorefrontProductReview } from "../storeAdmin/storefrontProductReviewAdminService";
+import {
+  listStorefrontProductReviewsForAdmin,
+  moderateStorefrontProductReview,
+} from "../storeAdmin/storefrontProductReviewAdminService";
 import {
   listStorefrontProductReviews,
   submitStorefrontProductReview,
+  submitPublicStorefrontReview,
 } from "../storefrontProductReviewService";
 import { truncateAllTables } from "./__testUtils__";
 
@@ -189,5 +193,34 @@ describe("storefront product review integrity", () => {
     )[0];
     expect(stored).toMatchObject({ status: "APPROVED" });
     expect(stored.moderatedAt).toBeInstanceOf(Date);
+  });
+
+  it("accepts public review from web visitor and reflects in admin queue and published reviews upon approval", async () => {
+    const result = await submitPublicStorefrontReview({
+      productId: 1,
+      rating: 5,
+      reviewerName: "علي الكرخي",
+      reviewerPhone: "07801234567",
+      comment: "طباعة فاخرة جداً وتغليف محكم وتوصيل سريع",
+    });
+
+    expect(result).toEqual({ ok: true, status: "PENDING" });
+
+    const adminReviews = await listStorefrontProductReviewsForAdmin("PENDING");
+    const found = adminReviews.find((r) => r.comment === "طباعة فاخرة جداً وتغليف محكم وتوصيل سريع");
+    expect(found).toBeDefined();
+    expect(found?.customerName).toBe("علي الكرخي");
+    expect(found?.rating).toBe(5);
+
+    await moderateStorefrontProductReview({ reviewId: found!.id, status: "APPROVED" });
+
+    const published = await listStorefrontProductReviews(1);
+    expect(published.summary.count).toBe(1);
+    expect(published.summary.average).toBe(5);
+    expect(published.items[0]).toMatchObject({
+      rating: 5,
+      comment: "طباعة فاخرة جداً وتغليف محكم وتوصيل سريع",
+      reviewerName: "علي ا.",
+    });
   });
 });

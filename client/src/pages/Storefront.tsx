@@ -89,6 +89,9 @@ import { StorefrontLocationPicker } from "@/components/storefront/StorefrontLoca
 import { AnimatedAddToCartButton } from "@/components/storefront/AnimatedAddToCartButton";
 import { StorefrontProductReviews } from "@/components/storefront/StorefrontProductReviews";
 import { StorefrontDispatchCountdown } from "@/components/storefront/StorefrontDispatchCountdown";
+import { StorefrontB2BQuoteButton } from "@/components/storefront/StorefrontB2BQuoteButton";
+import { StorefrontPersonalAdvisorCard } from "@/components/storefront/StorefrontPersonalAdvisorCard";
+import { StorefrontSocialProofTicker } from "@/components/storefront/StorefrontSocialProofTicker";
 import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
 
 const STORE_NAME = "المكتبة العربية";
@@ -2799,7 +2802,27 @@ function StorefrontContent() {
                     cartCount={getProductCartQty(detailQ.data.productId)}
                     showCartCount={true}
                   />
+                  {settingsQ.data?.whatsappNumber && (
+                    <button
+                      type="button"
+                      onClick={() => openWhatsApp(
+                        settingsQ.data!.whatsappNumber!,
+                        `السلام عليكم، أود طلب المنتج: «${detailQ.data?.productName ?? ""}» عبر متجر الرؤية العربية.`
+                      )}
+                      className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500 bg-emerald-50/80 py-2.5 text-xs font-black text-emerald-800 transition hover:bg-emerald-100 dark:border-emerald-600/40 dark:bg-emerald-950/30 dark:text-emerald-300"
+                    >
+                      <MessageCircle aria-hidden className="size-3.5" />
+                      <span>اطلب فوراً عبر واتساب</span>
+                    </button>
+                  )}
                 </div>
+
+                {/* شريط الإقبال والدليل الاجتماعي اللحظي */}
+                <StorefrontSocialProofTicker
+                  soldCount={detailQ.data.soldCount}
+                  productName={detailQ.data.productName}
+                  className="mt-3"
+                />
 
                 {/* محتويات البكج */}
                 {detailQ.data.isBundle && detailQ.data.bundleItems && detailQ.data.bundleItems.length > 0 && (
@@ -2827,6 +2850,13 @@ function StorefrontContent() {
                     onRecommendationClick={trackRecommendationClick}
                   />
                 )}
+
+                {/* بطاقة المستشار الشخصي المباشر للزبائن والشركات */}
+                <StorefrontPersonalAdvisorCard
+                  productTitle={detailQ.data.productName}
+                  whatsappNumber={settingsQ.data?.whatsappNumber}
+                  className="mt-4"
+                />
 
                 {/* تقييمات وآراء العملاء المعتمدة (Social Proof) */}
                 {detailQ.data && (
@@ -2948,6 +2978,11 @@ function StorefrontContent() {
                   <MessageCircle aria-hidden className="size-4" /> أو أرسل سلّتك عبر واتساب
                 </button>
               )}
+              <StorefrontB2BQuoteButton
+                cartLines={cartLines}
+                cartSubtotal={cartSubtotal}
+                className="mt-2 w-full"
+              />
             </>
           )}
         </StorefrontPanelShell>

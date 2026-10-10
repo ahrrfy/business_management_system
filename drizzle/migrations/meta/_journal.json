@@ -2472,6 +2472,13 @@
 			"when": 1788148845000,
 			"tag": "0387_sales_attribution_engine",
 			"breakpoints": true
+		},
+		{
+			"idx": 392,
+			"version": "5",
+			"when": 1788148850000,
+			"tag": "0392_storefront_public_reviews",
+			"breakpoints": true
 		}
 	]
 }
