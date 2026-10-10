@@ -2474,10 +2474,24 @@
 			"breakpoints": true
 		},
 		{
-			"idx": 390,
+			"idx": 388,
 			"version": "5",
-			"when": 1788148850000,
-			"tag": "0390_comprehensive_permission_matrix_caps",
+			"when": 1788148846000,
+			"tag": "0388_customer_feedback_hub",
+			"breakpoints": true
+		},
+		{
+			"idx": 391,
+			"version": "5",
+			"when": 1788148849000,
+			"tag": "0391_omnichannel_promotions_coupons",
+			"breakpoints": true
+		},
+		{
+			"idx": 393,
+			"version": "5",
+			"when": 1788148851000,
+			"tag": "0393_comprehensive_permission_matrix_caps",
 			"breakpoints": true
 		}
 	]

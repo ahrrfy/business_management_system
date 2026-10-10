@@ -252,6 +252,7 @@ export default defineConfig({
       "server/lib/imageStore/__tests__/r2Store.test.ts",
       "server/lib/imageStore/__tests__/r2Canary.test.ts",
       "server/services/__tests__/couponService.test.ts",
+      "server/services/__tests__/customerFeedbackService.test.ts",
       "server/services/__tests__/automaticAuditContract.test.ts",
       "server/services/__tests__/returnAuditContract.test.ts",
       "server/services/__tests__/businessDay.test.ts",
@@ -462,6 +463,8 @@ export default defineConfig({
       "server/services/__tests__/productChannelSyncSelfHeal.test.ts",
       "client/src/components/decision/DecisionRow.test.ts",
       "server/services/decisions/__tests__/rows.test.ts",
+      "server/services/__tests__/omnichannelCouponEngine.unit.test.ts",
+      "client/src/components/promotions/__tests__/promotionBuilder.unit.test.ts",
     ],
   },
 });

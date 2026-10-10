@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
+import Decimal from "decimal.js";
 import {
   activateCustomer,
   createCustomer,
@@ -6,11 +9,19 @@ import {
   deleteCustomer,
   findSimilarCustomers,
   getCustomer,
+  getCustomer360Dossier,
   listCustomers,
   resolveReceptionCustomerByPhone,
   smartSearchCustomers,
   updateCustomer,
 } from "../services/customerService";
+import {
+  issueCustomerInstantGift,
+  listCustomerFeedback,
+  markGoogleReviewInviteSent,
+  recordCustomerFeedback,
+  updateCustomerFeedbackStatus,
+} from "../services/customerFeedbackService";
 import {
   listContractPricesForCustomer,
   listContractPricesForCustomerPage,
@@ -20,10 +31,18 @@ import {
 } from "../services/contractPriceService";
 import { logAudit } from "../services/auditService";
 import { customerBarcodeSet } from "../services/barcodeService";
-import { maskCustomerSensitive } from "../lib/redact";
+import { maskCustomerSensitive, isElevated } from "../lib/redact";
 import { resolveActorBranchId } from "../lib/branchAuthority";
 import { positiveMoneyString } from "../lib/schemas";
-import { customersCashierProcedure, customersManagerProcedure, customersReadProcedure, customersReceptionCreateProcedure, managerProcedure, router, userHasCrmWriteAccess } from "../trpc";
+import {
+  customersCashierProcedure,
+  customersManagerProcedure,
+  customersReadProcedure,
+  customersReceptionCreateProcedure,
+  managerProcedure,
+  router,
+  userHasCrmWriteAccess,
+} from "../trpc";
 import { getCustomerOperations } from "../services/customerOperationsService";
 import { withTx } from "../services/tx";
 import {
@@ -39,10 +58,18 @@ const operationsInput = z.object({
   priceTier: priceTier.optional(),
   includeInactive: z.boolean().default(false),
   balance: z.enum(["RECEIVABLE", "CREDIT", "ZERO"]).optional(),
-  collection: z.enum(["OVERDUE", "PROMISE_DUE", "PROMISE_FUTURE", "NO_FOLLOWUP"]).optional(),
-  credit: z.enum(["CASH_ONLY", "NEAR_LIMIT", "OVER_LIMIT", "UNLIMITED"]).optional(),
-  inactivityDays: z.union([z.literal(30), z.literal(60), z.literal(90)]).optional(),
-  sort: z.enum(["NAME", "BALANCE_DESC", "OLDEST_DUE", "LAST_PURCHASE"]).optional(),
+  collection: z
+    .enum(["OVERDUE", "PROMISE_DUE", "PROMISE_FUTURE", "NO_FOLLOWUP"])
+    .optional(),
+  credit: z
+    .enum(["CASH_ONLY", "NEAR_LIMIT", "OVER_LIMIT", "UNLIMITED"])
+    .optional(),
+  inactivityDays: z
+    .union([z.literal(30), z.literal(60), z.literal(90)])
+    .optional(),
+  sort: z
+    .enum(["NAME", "BALANCE_DESC", "OLDEST_DUE", "LAST_PURCHASE"])
+    .optional(),
   limit: z.number().int().positive().max(500).default(50),
   offset: z.number().int().min(0).default(0),
 });
@@ -68,8 +95,17 @@ export const customerRouter = router({
 
   /** قائمة بسيطة سريعة — يحتاجها الكاشير وأوامر الشغل والبيع الآجل. */
   list: customersReadProcedure.query(async ({ ctx }) => {
-    const { rows } = await listCustomers({ includeInactive: false, limit: 500, skipTotal: true });
-    return rows.map((r) => maskCustomerSensitive(r, ctx.user.role, { preserveCreditLimit: true, preserveCurrentBalance: true }));
+    const { rows } = await listCustomers({
+      includeInactive: false,
+      limit: 500,
+      skipTotal: true,
+    });
+    return rows.map((r) =>
+      maskCustomerSensitive(r, ctx.user.role, {
+        preserveCreditLimit: true,
+        preserveCurrentBalance: true,
+      }),
+    );
   }),
 
   /** قائمة كاملة مع بحث وفلاتر وتقسيم صفحات — لشاشة الإدارة. */
@@ -87,13 +123,16 @@ export const customerRouter = router({
           limit: z.number().int().positive().max(2000).default(100),
           offset: z.number().int().min(0).default(0),
         })
-        .optional()
+        .optional(),
     )
     .query(async ({ input, ctx }) => {
       const city = input?.city?.trim();
       if (!city) {
         const res = await listCustomers(input ?? {});
-        return { ...res, rows: res.rows.map((r) => maskCustomerSensitive(r, ctx.user.role)) };
+        return {
+          ...res,
+          rows: res.rows.map((r) => maskCustomerSensitive(r, ctx.user.role)),
+        };
       }
       // فلترة المدينة غير مدعومة في listCustomers (خدمة عملاء لا تخصّ هذه الشريحة) — نجلب حتى سقف
       // الخدمة الأقصى (٢٠٠٠، محدود أصلاً) ونُصفّي/نُرقّم يدوياً هنا كي لا نمسّ customerService.ts.
@@ -101,23 +140,39 @@ export const customerRouter = router({
       // TypeScript الزائد (listCustomers لا تعرف city) رغم أن القيمة undefined غير مؤذية وقت التشغيل.
       const cityNeedle = city.toLowerCase();
       const { city: _cityIgnored, ...listInput } = input ?? {};
-      const superset = await listCustomers({ ...listInput, limit: 2000, offset: 0 });
-      const filtered = superset.rows.filter((r) => (r.city ?? "").toLowerCase().includes(cityNeedle));
+      const superset = await listCustomers({
+        ...listInput,
+        limit: 2000,
+        offset: 0,
+      });
+      const filtered = superset.rows.filter((r) =>
+        (r.city ?? "").toLowerCase().includes(cityNeedle),
+      );
       const limit = input?.limit ?? 100;
       const offset = input?.offset ?? 0;
       const page = filtered.slice(offset, offset + limit);
-      return { rows: page.map((r) => maskCustomerSensitive(r, ctx.user.role)), total: filtered.length };
+      return {
+        rows: page.map((r) => maskCustomerSensitive(r, ctx.user.role)),
+        total: filtered.length,
+      };
     }),
 
   /** بحث ذكي بإحصاءات — لإدخال أمر شغل سريع واختيار العميل في الكاشير. */
   smartSearch: customersReadProcedure
-    .input(z.object({
-      q: z.string().min(1).max(120),
-      limit: z.number().int().min(1).max(20).optional(),
-    }))
+    .input(
+      z.object({
+        q: z.string().min(1).max(120),
+        limit: z.number().int().min(1).max(20).optional(),
+      }),
+    )
     .query(async ({ input, ctx }) => {
       const rows = await smartSearchCustomers(input);
-      return rows.map((r) => maskCustomerSensitive(r, ctx.user.role, { preserveCreditLimit: true, preserveCurrentBalance: true }));
+      return rows.map((r) =>
+        maskCustomerSensitive(r, ctx.user.role, {
+          preserveCreditLimit: true,
+          preserveCurrentBalance: true,
+        }),
+      );
     }),
 
   /** dup-detect (٦/٧): مرشّحو تكرار محتمَل لشاشة الإضافة — تحذير حيّ قبل الحفظ (لا حجب).
@@ -127,7 +182,7 @@ export const customerRouter = router({
       z.object({
         name: z.string().max(255).optional(),
         phones: z.array(z.string().max(25)).max(4).optional(),
-      })
+      }),
     )
     .query(async ({ input, ctx }) => {
       const rows = await findSimilarCustomers(input);
@@ -139,8 +194,14 @@ export const customerRouter = router({
     .query(async ({ input, ctx }) => {
       const c = await getCustomer(input.customerId);
       if (!c) return null;
-      const qrPayload = customerBarcodeSet({ id: c.id, name: c.name }).qrPayload;
-      const masked = maskCustomerSensitive(c, ctx.user.role, { preserveCreditLimit: true, preserveCurrentBalance: true });
+      const qrPayload = customerBarcodeSet({
+        id: c.id,
+        name: c.name,
+      }).qrPayload;
+      const masked = maskCustomerSensitive(c, ctx.user.role, {
+        preserveCreditLimit: true,
+        preserveCurrentBalance: true,
+      });
       return { ...masked, qrPayload };
     }),
 
@@ -150,15 +211,20 @@ export const customerRouter = router({
    * العملاء أو الأرصدة أو أي حقول مالية.
    */
   receptionResolveByPhone: customersReceptionCreateProcedure
-    .input(z.object({
-      phone: z.string().trim().min(1).max(32),
-      name: z.string().trim().min(2).max(255).optional(),
-      // ٣٠/٨/٢٦: حدّ الائتمان للعميل الجديد — أدمن/مدير فقط (تُفرض في الخدمة).
-      // "0" = نقديّ فقط (افتراض)، موجب = سقف يُفحَص، "" أو غير مُمرَّر = افتراض.
-      // نمرّرها كنصّ لتمييز "" (غير مُقصود) عن "0" (مقصود).
-      creditLimit: z.string().regex(/^(\d+(\.\d+)?)?$/).optional(),
-      branchId: z.number().int().positive().optional(),
-    }))
+    .input(
+      z.object({
+        phone: z.string().trim().min(1).max(32),
+        name: z.string().trim().min(2).max(255).optional(),
+        // ٣٠/٨/٢٦: حدّ الائتمان للعميل الجديد — أدمن/مدير فقط (تُفرض في الخدمة).
+        // "0" = نقديّ فقط (افتراض)، موجب = سقف يُفحَص، "" أو غير مُمرَّر = افتراض.
+        // نمرّرها كنصّ لتمييز "" (غير مُقصود) عن "0" (مقصود).
+        creditLimit: z
+          .string()
+          .regex(/^(\d+(\.\d+)?)?$/)
+          .optional(),
+        branchId: z.number().int().positive().optional(),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       const branchId = resolveActorBranchId(ctx, input.branchId);
       const result = await resolveReceptionCustomerByPhone(
@@ -179,7 +245,11 @@ export const customerRouter = router({
           action: "customer.receptionResolveCreate",
           entityType: "customer",
           entityId: result.customerId,
-          newValue: { name: result.name, phone: result.phone, deferredEligible: true },
+          newValue: {
+            name: result.name,
+            phone: result.phone,
+            deferredEligible: true,
+          },
         });
       }
       return result;
@@ -220,11 +290,13 @@ export const customerRouter = router({
         notes: z.string().nullish(),
         // رصيد افتتاحي (حقل مالي مدير فقط — يُجرّد للكاشير أدناه).
         openingBalance: z.string().nullish(),
-        openingBalanceDirection: z.enum(["OWED_TO_US", "OWED_BY_US"]).optional(),
+        openingBalanceDirection: z
+          .enum(["OWED_TO_US", "OWED_BY_US"])
+          .optional(),
         // dup-detect (٦/٧): مفتاح idempotency من النموذج (UUID لكل فتح) — إعادة الإرسال تعيد نفس العميل.
         clientRequestId: z.string().min(8).max(64).optional(),
         branchId: z.number().int().positive().optional(),
-      })
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       // سياسة المالك (٢٥/٧): مَن يملك crm=FULL (كاشير/مندوب/مدير + منح صريح) يُسجّل الرصيد
@@ -243,15 +315,36 @@ export const customerRouter = router({
         ? input
         : hasCrmWrite
           ? { ...input, creditLimit: "0" }
-          : { ...input, creditLimit: "0", openingBalance: undefined, openingBalanceDirection: undefined };
+          : {
+              ...input,
+              creditLimit: "0",
+              openingBalance: undefined,
+              openingBalanceDirection: undefined,
+            };
       const branchId = resolveActorBranchId(ctx, input.branchId);
-      const r = await createCustomer(safeInput, { userId: ctx.user.id, branchId });
+      const r = await createCustomer(safeInput, {
+        userId: ctx.user.id,
+        branchId,
+      });
       // إعادة تشغيل idempotent = لا كتابة جديدة ⇒ لا نكرّر سجلّ التدقيق.
       if (!r.idempotentReplay) {
-        await logAudit(ctx, { action: "customer.create", entityType: "customer", entityId: r.customerId, newValue: { name: input.name, creditLimitSet: elevated && input.creditLimit != null, openingBalanceSet: hasCrmWrite && !!input.openingBalance } });
+        await logAudit(ctx, {
+          action: "customer.create",
+          entityType: "customer",
+          entityId: r.customerId,
+          newValue: {
+            name: input.name,
+            creditLimitSet: elevated && input.creditLimit != null,
+            openingBalanceSet: hasCrmWrite && !!input.openingBalance,
+          },
+        });
       }
       // التوافق: المستهلكون القدامى يقرؤون `.id` (مثل WorkOrderNew)؛ نُبقي الكليهما.
-      return { id: r.customerId, customerId: r.customerId, idempotentReplay: !!r.idempotentReplay };
+      return {
+        id: r.customerId,
+        customerId: r.customerId,
+        idempotentReplay: !!r.idempotentReplay,
+      };
     }),
 
   update: customersManagerProcedure
@@ -272,8 +365,10 @@ export const customerRouter = router({
         notes: z.string().nullish(),
         // تصحيح الرصيد الافتتاحي (إدخال أوّليّ خاطئ) — حقلٌ ماليّ للأدمن/المدير وحدهما (يُجرَّد أدناه).
         openingBalance: z.string().nullish(),
-        openingBalanceDirection: z.enum(["OWED_TO_US", "OWED_BY_US"]).optional(),
-      })
+        openingBalanceDirection: z
+          .enum(["OWED_TO_US", "OWED_BY_US"])
+          .optional(),
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       // §٧ audit oldValue: نلتقط لقطة قبل التحديث لمسار تدقيق فروقات حقيقي.
@@ -281,23 +376,50 @@ export const customerRouter = router({
       // تعديل رصيدٍ افتتاحيٍّ قائم (يُزيح الرصيد الجاري) للأدمن/المدير وحدهما — غير المرتفعين يعدّلون
       // بقية الحقول بلا مسّ الرصيد (openingBalance=undefined ⇒ يتخطّاه updateCustomer).
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
-      const safeInput = elevated ? input : { ...input, openingBalance: undefined, openingBalanceDirection: undefined };
-      const res = await updateCustomer(safeInput, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const safeInput = elevated
+        ? input
+        : {
+            ...input,
+            openingBalance: undefined,
+            openingBalanceDirection: undefined,
+          };
+      const res = await updateCustomer(safeInput, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+      });
       await logAudit(ctx, {
         action: "customer.update",
         entityType: "customer",
         entityId: input.customerId,
-        oldValue: before ? {
-          name: before.name, phone: before.phone, phone2: before.phone2, phone3: before.phone3, whatsapp: before.whatsapp,
-          address: before.address, city: before.city, district: before.district,
-          customerType: before.customerType, defaultPriceTier: before.defaultPriceTier,
-          creditLimit: before.creditLimit, notes: before.notes,
-        } : null,
+        oldValue: before
+          ? {
+              name: before.name,
+              phone: before.phone,
+              phone2: before.phone2,
+              phone3: before.phone3,
+              whatsapp: before.whatsapp,
+              address: before.address,
+              city: before.city,
+              district: before.district,
+              customerType: before.customerType,
+              defaultPriceTier: before.defaultPriceTier,
+              creditLimit: before.creditLimit,
+              notes: before.notes,
+            }
+          : null,
         newValue: {
-          name: input.name, phone: input.phone, phone2: input.phone2, phone3: input.phone3, whatsapp: input.whatsapp,
-          address: input.address, city: input.city, district: input.district,
-          customerType: input.customerType, defaultPriceTier: input.defaultPriceTier,
-          creditLimit: input.creditLimit, notes: input.notes,
+          name: input.name,
+          phone: input.phone,
+          phone2: input.phone2,
+          phone3: input.phone3,
+          whatsapp: input.whatsapp,
+          address: input.address,
+          city: input.city,
+          district: input.district,
+          customerType: input.customerType,
+          defaultPriceTier: input.defaultPriceTier,
+          creditLimit: input.creditLimit,
+          notes: input.notes,
         },
       });
       return res;
@@ -306,16 +428,30 @@ export const customerRouter = router({
   deactivate: customersManagerProcedure
     .input(z.object({ customerId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await deactivateCustomer(input.customerId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "customer.deactivate", entityType: "customer", entityId: input.customerId });
+      const res = await deactivateCustomer(input.customerId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+      });
+      await logAudit(ctx, {
+        action: "customer.deactivate",
+        entityType: "customer",
+        entityId: input.customerId,
+      });
       return res;
     }),
 
   activate: customersManagerProcedure
     .input(z.object({ customerId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await activateCustomer(input.customerId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "customer.activate", entityType: "customer", entityId: input.customerId });
+      const res = await activateCustomer(input.customerId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+      });
+      await logAudit(ctx, {
+        action: "customer.activate",
+        entityType: "customer",
+        entityId: input.customerId,
+      });
       return res;
     }),
 
@@ -325,12 +461,21 @@ export const customerRouter = router({
     .input(z.object({ customerId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const before = await getCustomer(input.customerId);
-      const res = await deleteCustomer(input.customerId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await deleteCustomer(input.customerId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+      });
       await logAudit(ctx, {
         action: "customer.delete",
         entityType: "customer",
         entityId: input.customerId,
-        oldValue: before ? { name: before.name, currentBalance: before.currentBalance, openingBalance: before.openingBalance } : null,
+        oldValue: before
+          ? {
+              name: before.name,
+              currentBalance: before.currentBalance,
+              openingBalance: before.openingBalance,
+            }
+          : null,
       });
       return res;
     }),
@@ -361,15 +506,26 @@ export const customerRouter = router({
         productUnitId: z.number().int().positive(),
         price: positiveMoneyString,
         note: z.string().max(255).nullish(),
-      })
+      }),
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await upsertContractPrice(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      const res = await upsertContractPrice(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
       await logAudit(ctx, {
-        action: res.updated ? "customer.contractPrice.update" : "customer.contractPrice.create",
+        action: res.updated
+          ? "customer.contractPrice.update"
+          : "customer.contractPrice.create",
         entityType: "customerContractPrice",
         entityId: res.id,
-        newValue: { customerId: input.customerId, productUnitId: input.productUnitId, price: input.price, note: input.note ?? null },
+        newValue: {
+          customerId: input.customerId,
+          productUnitId: input.productUnitId,
+          price: input.price,
+          note: input.note ?? null,
+        },
       });
       return res;
     }),
@@ -380,7 +536,9 @@ export const customerRouter = router({
     .mutation(async ({ input, ctx }) => {
       const res = await setContractPriceActive(input.id, input.isActive);
       await logAudit(ctx, {
-        action: input.isActive ? "customer.contractPrice.activate" : "customer.contractPrice.deactivate",
+        action: input.isActive
+          ? "customer.contractPrice.activate"
+          : "customer.contractPrice.deactivate",
         entityType: "customerContractPrice",
         entityId: input.id,
         newValue: { isActive: input.isActive },
@@ -393,7 +551,11 @@ export const customerRouter = router({
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await removeContractPrice(input.id);
-      await logAudit(ctx, { action: "customer.contractPrice.remove", entityType: "customerContractPrice", entityId: input.id });
+      await logAudit(ctx, {
+        action: "customer.contractPrice.remove",
+        entityType: "customerContractPrice",
+        entityId: input.id,
+      });
       return res;
     }),
 
@@ -407,12 +569,18 @@ export const customerRouter = router({
         role: ctx.user.role,
         isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
       };
-      return withTx((tx) => autoSettleCustomerAccountTx(tx, input.customerId, actor));
+      return withTx((tx) =>
+        autoSettleCustomerAccountTx(tx, input.customerId, actor),
+      );
     }),
 
   /** تسوية شاملة لكافة فواتير العملاء تلقائياً (رصيد صفري أو سدادات غير مخصصة). */
   autoSettleAll: customersManagerProcedure
-    .input(z.object({ limit: z.number().int().positive().max(500).default(100) }).optional())
+    .input(
+      z
+        .object({ limit: z.number().int().positive().max(500).default(100) })
+        .optional(),
+    )
     .mutation(async ({ input, ctx }) => {
       const actor = {
         userId: ctx.user.id,
@@ -420,6 +588,149 @@ export const customerRouter = router({
         role: ctx.user.role,
         isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
       };
-      return withTx((tx) => autoSettleAllAccountsTx(tx, actor, input?.limit ?? 100));
+      return withTx((tx) =>
+        autoSettleAllAccountsTx(tx, actor, input?.limit ?? 100),
+      );
+    }),
+
+  /**
+   * ملف الزبون الشامل 360° (Customer 360° Dossier)
+   * يجلب كافة المؤشرات المالية، LTV، الذمة، أوامر الشغل، آخر المعاملات وسجل الشكاوى والتقييمات.
+   */
+  dossier360: customersReadProcedure
+    .input(z.object({ customerId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) =>
+      getCustomer360Dossier(input.customerId, ctx.user.role),
+    ),
+
+  /**
+   * استعراض سجل التغذية العكسية والشكاوى لعميل محدد أو عام
+   */
+  feedbackList: customersReadProcedure
+    .input(
+      z
+        .object({
+          customerId: z.number().int().positive().optional(),
+          limit: z.number().int().positive().max(100).default(20),
+        })
+        .optional(),
+    )
+    .query(async ({ input }) => listCustomerFeedback(input)),
+
+  /**
+   * تسجيل تقييم أو شكوى للعميل مع تحليل المشاعر التلقائي
+   */
+  createFeedback: customersCashierProcedure
+    .input(
+      z.object({
+        customerId: z.number().int().positive(),
+        branchId: z.number().int().positive().nullish(),
+        workOrderId: z.number().int().positive().nullish(),
+        invoiceId: z.number().int().positive().nullish(),
+        rating: z.number().int().min(1).max(5),
+        category: z.string().min(1).max(64),
+        comment: z.string().max(1000).nullish(),
+        rootCauseStation: z.string().max(64).nullish(),
+        resolutionAction: z.string().max(1000).nullish(),
+        issueStatus: z
+          .enum(["NEW", "IN_PROGRESS", "RESOLVED", "CLOSED"])
+          .optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const branchId = input.branchId
+        ? resolveActorBranchId(ctx, input.branchId)
+        : (ctx.user.branchId ?? null);
+      const actor = {
+        userId: ctx.user.id,
+        branchId,
+        role: ctx.user.role,
+        isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
+      };
+      return recordCustomerFeedback(input, actor);
+    }),
+
+  /**
+   * تحديث حالة الشكوى (جديدة -> قيد المعالجة -> تم الحل والتعويض)
+   */
+  updateFeedbackStatus: customersCashierProcedure
+    .input(
+      z.object({
+        feedbackId: z.number().int().positive(),
+        customerId: z.number().int().positive(),
+        issueStatus: z.enum(["NEW", "IN_PROGRESS", "RESOLVED", "CLOSED"]),
+        resolutionAction: z.string().max(1000).nullish(),
+        rootCauseStation: z.string().max(64).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? null,
+        role: ctx.user.role,
+        isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
+      };
+      return updateCustomerFeedbackStatus(input, actor);
+    }),
+
+  /**
+   * إصدار قسيمة هدية فورية لزبون (Instant Gift Coupon) لترضية الشكوى أو مكافأة الولاء
+   */
+  issueInstantGift: customersCashierProcedure
+    .input(
+      z.object({
+        customerId: z.number().int().positive(),
+        amount: positiveMoneyString,
+        reason: z.string().max(100).optional(),
+        feedbackId: z.number().int().positive().nullish(),
+        notes: z.string().max(500).nullish(),
+        daysValid: z.number().int().min(1).max(365).default(30),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      // سقف مالي للكاشير (50,000 د.ع) — ما زاد يتطلب صلاحية مدير أو أدمن
+      const isElevatedRole = isElevated(ctx.user.role);
+      const amountDec = new Decimal(input.amount);
+      const CASHIER_GIFT_CAP = new Decimal(50000);
+
+      if (!isElevatedRole && amountDec.greaterThan(CASHIER_GIFT_CAP)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تجاوز السقف المالي المسموح لقسائم الترضية",
+            why: `سقف قسائم الهدية للكاشير هو 50,000 د.ع. المبلغ المطلوب (${amountDec.toFixed(0)} د.ع) يتطلب اعتماد مدير.`,
+            doThis:
+              "اطلب من مدير الفرع إصدار القسيمة أو قلل المبلغ إلى 50,000 د.ع أو أقل.",
+          }),
+        });
+      }
+
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? null,
+        role: ctx.user.role,
+        isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
+      };
+      return issueCustomerInstantGift(input, actor);
+    }),
+
+  /**
+   * تعليم إرسال دعوة مراجعة وتقييم خرائط Google للزبون
+   */
+  markGoogleReviewInviteSent: customersCashierProcedure
+    .input(
+      z.object({
+        customerId: z.number().int().positive(),
+        feedbackId: z.number().int().positive().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? null,
+        role: ctx.user.role,
+        isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
+      };
+      return markGoogleReviewInviteSent(input, actor);
     }),
 });

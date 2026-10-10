@@ -2498,6 +2498,14 @@ export const promotions = mysqlTable(
     minLineAmount: decimal("minLineAmount", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
+    maxDiscountAmount: decimal("maxDiscountAmount", { precision: 15, scale: 2 }),
+    minOrderSpend: decimal("minOrderSpend", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    freeShipping: boolean("freeShipping").default(false).notNull(),
+    shippingDiscountAmount: decimal("shippingDiscountAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
     priority: int("priority").default(0).notNull(),
     isActive: boolean("isActive").default(true).notNull(),
     // AUTO = يطبّق تلقائياً في القناة. COUPON = لا يُطبّق إلا بعد تحقق كوبون صالح في معاملة البيع.
@@ -2601,6 +2609,11 @@ export const couponPrograms = mysqlTable(
     codePrefix: varchar("codePrefix", { length: 12 }).default("CRM").notNull(),
     // لقطة تصميم قابلة للإصدار؛ تغيير القالب لاحقاً لا يغيّر بطاقة سبق إصدارها.
     designJson: json("designJson"),
+    affiliateName: varchar("affiliateName", { length: 255 }),
+    affiliatePhone: varchar("affiliatePhone", { length: 32 }),
+    affiliateCommissionRate: decimal("affiliateCommissionRate", { precision: 5, scale: 2 })
+      .default("0.00")
+      .notNull(),
     createdBy: int("createdBy")
       .notNull()
       .references(() => users.id),
@@ -2677,6 +2690,12 @@ export const couponRedemptions = mysqlTable(
       precision: 15,
       scale: 2,
     }).notNull(),
+    affiliateCommissionAmount: decimal("affiliateCommissionAmount", {
+      precision: 15,
+      scale: 2,
+    })
+      .default("0.00")
+      .notNull(),
     redeemedBy: int("redeemedBy")
       .notNull()
       .references(() => users.id),
@@ -2699,6 +2718,63 @@ export const couponRedemptions = mysqlTable(
 export type CouponProgram = typeof couponPrograms.$inferSelect;
 export type Coupon = typeof coupons.$inferSelect;
 export type CouponRedemption = typeof couponRedemptions.$inferSelect;
+
+export const customerFeedback = mysqlTable(
+  "customerFeedback",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    customerId: bigint("customerId", { mode: "number" })
+      .notNull()
+      .references(() => customers.id),
+    branchId: bigint("branchId", { mode: "number" }).references(
+      () => branches.id,
+      { onDelete: "set null" },
+    ),
+    workOrderId: bigint("workOrderId", { mode: "number" }).references(
+      () => workOrders.id,
+      { onDelete: "set null" },
+    ),
+    invoiceId: bigint("invoiceId", { mode: "number" }).references(
+      () => invoices.id,
+      { onDelete: "set null" },
+    ),
+    rating: int("rating").notNull(),
+    category: varchar("category", { length: 64 }).notNull(),
+    sentiment: mysqlEnum("sentiment", ["POSITIVE", "NEUTRAL", "NEGATIVE"])
+      .default("NEUTRAL")
+      .notNull(),
+    comment: text("comment"),
+    issueStatus: mysqlEnum("issueStatus", ["NEW", "IN_PROGRESS", "RESOLVED", "CLOSED"])
+      .default("NEW")
+      .notNull(),
+    rootCauseStation: varchar("rootCauseStation", { length: 64 }),
+    resolutionAction: text("resolutionAction"),
+    resolvedBy: int("resolvedBy").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    resolvedAt: timestamp("resolvedAt"),
+    giftCouponId: bigint("giftCouponId", { mode: "number" }).references(
+      () => coupons.id,
+      { onDelete: "set null" },
+    ),
+    smartGuidance: text("smartGuidance"),
+    googleReviewInviteSent: boolean("googleReviewInviteSent").default(false).notNull(),
+    createdBy: int("createdBy")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    customerIdx: index("idx_cust_feedback_customer").on(table.customerId, table.createdAt),
+    statusIdx: index("idx_cust_feedback_status").on(table.issueStatus, table.createdAt),
+    branchIdx: index("idx_cust_feedback_branch").on(table.branchId, table.createdAt),
+    ratingIdx: index("idx_cust_feedback_rating").on(table.rating),
+  }),
+);
+
+export type CustomerFeedback = typeof customerFeedback.$inferSelect;
+export type InsertCustomerFeedback = typeof customerFeedback.$inferInsert;
 
 /** قفل دائمي لطلب كوبون أول طلب: برنامج واحد × عميل واحد، حتى مع الضغط المتزامن. */
 export const storefrontFirstOrderCouponClaims = mysqlTable(
