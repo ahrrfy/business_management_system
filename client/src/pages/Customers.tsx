@@ -32,6 +32,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import { selectClsSm } from "@/lib/ui/formStyles";
+import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
 
 // صفّ نتيجة البحث — صريح لأنّ الإجراء يُعيد اتحاداً (تقنيع التكلفة) يُفشل استدلال T في fetchAllPaged.
 type CustomerRow = RouterOutputs["customers"]["search"]["rows"][number];
@@ -132,6 +133,7 @@ export default function Customers() {
 
   const [importOpen, setImportOpen] = useState(false);
   const [followTarget, setFollowTarget] = useState<DisplayRow | null>(null);
+  const [selectedDossierCustomerId, setSelectedDossierCustomerId] = useState<number | null>(null);
   const importMut = trpc.imports.customers.useMutation();
   const limit = 50;
 
@@ -506,6 +508,13 @@ export default function Customers() {
               gate: { module: "crm", level: "READ" },
             }}
             actions={[
+              {
+                key: "dossier360",
+                kind: "view",
+                label: "الملف الشامل 360°",
+                onSelect: () => setSelectedDossierCustomerId(id),
+                gate: { module: "crm", level: "READ" },
+              },
               {
                 key: "edit",
                 kind: "edit",
@@ -953,6 +962,12 @@ export default function Customers() {
         defaultAmount={followTarget?.currentBalance ?? null}
         submitting={createNote.isPending}
         onSubmit={(value) => void saveFollowUp(value)}
+      />
+
+      <CustomerDossierDrawer
+        customerId={selectedDossierCustomerId}
+        open={selectedDossierCustomerId != null}
+        onClose={() => setSelectedDossierCustomerId(null)}
       />
 
       {/* شريط التحديد الجماعي: TSV لـExcel + ملخّص واتساب لقائمة العملاء. */}

@@ -1,16 +1,31 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { and, asc, desc, eq, inArray, like, ne, notInArray, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  like,
+  ne,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { VOIDED_INVOICE_STATUSES } from "@shared/invoiceStatus";
+import Decimal from "decimal.js";
 import {
   accountingEntries,
   arReminders,
   contactPersons,
   conversations,
   couponRedemptions,
+  couponPrograms,
   coupons,
   creditApprovals,
   customerContractPrices,
+  customerFeedback,
   customerNotes,
   customers,
   deliveryConsignments,
@@ -19,6 +34,7 @@ import {
   installmentPlans,
   invoices,
   onlineOrders,
+  promotions,
   quotations,
   waBroadcastRecipients,
   workOrders,
@@ -29,7 +45,12 @@ import { normalizeSearchText } from "../../shared/searchNormalize";
 import { money, toDbMoney } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
-import { canonicalIraqiMobile, normalizeIraqPhoneE164, phoneSuffix10 } from "../lib/phone";
+import { isElevated } from "../lib/redact";
+import {
+  canonicalIraqiMobile,
+  normalizeIraqPhoneE164,
+  phoneSuffix10,
+} from "../lib/phone";
 import {
   assertLegacyOpeningMutable,
   signedOpeningBalance,
@@ -38,8 +59,13 @@ import {
   type OpeningDirection,
 } from "./openingBalance";
 import { assertPeriodOpen } from "./periodLockService";
-import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
+import {
+  majorityTokenHitJs,
+  majorityTokenMatch,
+  phoneMatchSuffix,
+} from "../lib/similarMatch";
 import { snapshotBeforeUpdate } from "./versioning/recordVersion";
+import { computeCustomerSmartGuidance } from "./customerFeedbackService";
 
 export type PriceTier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 export type CustomerType = "فرد" | "تاجر" | "مؤسسة" | "شركة" | "حكومي";
@@ -112,15 +138,28 @@ function normalizeCreditLimit(input: string | null | undefined): string | null {
   const c = input?.trim();
   if (!c) return null; // فارغ أو غير مُحدّد ⇒ الافتراضي بلا حدّ (يقبل الفواتير بدون ائتمان).
   if (!/^\d+(\.\d{1,2})?$/.test(c))
-    throw new TRPCError({ code: "BAD_REQUEST", message: "سقف الائتمان غير صالح" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "سقف الائتمان غير صالح",
+    });
   return c;
 }
 
-async function assertUniquePhone(db: any, phone: string | null, excludeId?: number) {
+async function assertUniquePhone(
+  db: any,
+  phone: string | null,
+  excludeId?: number,
+) {
   if (!phone) return;
   const conds = [eq(customers.phone, phone)];
   if (excludeId) conds.push(ne(customers.id, excludeId));
-  const existing = (await db.select({ id: customers.id }).from(customers).where(and(...conds)).limit(1))[0];
+  const existing = (
+    await db
+      .select({ id: customers.id })
+      .from(customers)
+      .where(and(...conds))
+      .limit(1)
+  )[0];
   if (existing)
     throw new TRPCError({
       code: "CONFLICT",
@@ -137,20 +176,33 @@ async function assertUniquePhone(db: any, phone: string | null, excludeId?: numb
  *    يتلقّى ER_DUP_ENTRY فنعيد قراءة الفائز ونعيده (نمط conversationService/sale idempotency).
  *  - إعادة التشغيل لا تكرّر قيد OPENING (الفائز سجّله داخل معاملته الذرّية).
  */
-export async function createCustomer(input: CreateCustomerInput, _actor: Actor) {
+export async function createCustomer(
+  input: CreateCustomerInput,
+  _actor: Actor,
+) {
   const clientRequestId = input.clientRequestId?.trim() || null;
   try {
     return await withTx(async (tx) => {
       const name = input.name?.trim();
-      if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم العميل مطلوب" });
+      if (!name)
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "اسم العميل مطلوب",
+        });
       if (name.length > 255)
-        throw new TRPCError({ code: "BAD_REQUEST", message: "اسم العميل طويل جداً (٢٥٥ حرفاً كحد أقصى)" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "اسم العميل طويل جداً (٢٥٥ حرفاً كحد أقصى)",
+        });
 
       // idempotency: إعادة إرسال بنفس المفتاح ⇒ أعد العميل القائم، لا صفاً جديداً ولا قيداً جديداً.
       if (clientRequestId) {
         const prior = (
-          await tx.select({ id: customers.id }).from(customers)
-            .where(eq(customers.clientRequestId, clientRequestId)).limit(1)
+          await tx
+            .select({ id: customers.id })
+            .from(customers)
+            .where(eq(customers.clientRequestId, clientRequestId))
+            .limit(1)
         )[0];
         if (prior) return { customerId: prior.id, idempotentReplay: true };
       }
@@ -197,8 +249,11 @@ export async function createCustomer(input: CreateCustomerInput, _actor: Actor) 
       const db = getDb();
       const prior = db
         ? (
-            await db.select({ id: customers.id }).from(customers)
-              .where(eq(customers.clientRequestId, clientRequestId)).limit(1)
+            await db
+              .select({ id: customers.id })
+              .from(customers)
+              .where(eq(customers.clientRequestId, clientRequestId))
+              .limit(1)
           )[0]
         : undefined;
       if (prior) return { customerId: prior.id, idempotentReplay: true };
@@ -257,7 +312,11 @@ export async function resolveReceptionCustomerByPhone(
 
   const findExisting = async () => {
     const db = getDb();
-    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+    if (!db)
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "قاعدة البيانات غير متاحة",
+      });
     return (
       await db
         .select({
@@ -272,12 +331,14 @@ export async function resolveReceptionCustomerByPhone(
           creditLimit: customers.creditLimit,
         })
         .from(customers)
-        .where(or(
-          eq(customers.phone, phone),
-          eq(customers.phone2, phone),
-          eq(customers.phone3, phone),
-          eq(customers.whatsapp, phone),
-        ))
+        .where(
+          or(
+            eq(customers.phone, phone),
+            eq(customers.phone2, phone),
+            eq(customers.phone3, phone),
+            eq(customers.whatsapp, phone),
+          ),
+        )
         .orderBy(desc(customers.isActive), desc(customers.id))
         .limit(1)
     )[0];
@@ -288,7 +349,8 @@ export async function resolveReceptionCustomerByPhone(
     if (existing.isActive === false) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "هذا الرقم مرتبط بعميل معطّل — اطلب من المدير إعادة تفعيله قبل البيع",
+        message:
+          "هذا الرقم مرتبط بعميل معطّل — اطلب من المدير إعادة تفعيله قبل البيع",
       });
     }
     return {
@@ -301,7 +363,8 @@ export async function resolveReceptionCustomerByPhone(
       // `null` = بلا حدّ (سماحٌ كامل) · `"0"` = نقديٌّ فقط · موجب = سقفٌ يُفحَص عند البيع.
       creditLimit: existing.creditLimit,
       // أهليّةُ الآجل الحقيقية = مرتبطٌ **و** حدُّه ليس صفراً (مرآةُ `assertCreditLimit`).
-      deferredEligible: existing.creditLimit == null || Number(existing.creditLimit) !== 0,
+      deferredEligible:
+        existing.creditLimit == null || Number(existing.creditLimit) !== 0,
     };
   }
 
@@ -319,7 +382,10 @@ export async function resolveReceptionCustomerByPhone(
     };
   }
   if (name.length < 2) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "اكتب اسم العميل بحرفين على الأقل" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "اكتب اسم العميل بحرفين على الأقل",
+    });
   }
 
   try {
@@ -328,17 +394,25 @@ export async function resolveReceptionCustomerByPhone(
     // كي يبيع بلا الحاجة للحيلة (Slice O أعطاه COD، وهذا يُكمِله لبيعٍ آجل حقيقيّ لو أراد).
     // القيد أُلغي — كلّ من يملك بوابة إنشاء عميل الاستقبال يستطيع تمرير الحدّ الآن.
     // undefined = الافتراض null (بلا حدّ — يقبل الفواتير بدون ائتمان) · قيمة = يُخزَّن كما هو.
-    const creditLimit = input.creditLimit !== undefined ? input.creditLimit : null;
-    const created = await createCustomer({
-      name,
-      phone,
-      customerType: "فرد",
-      defaultPriceTier: "RETAIL",
-      creditLimit,
-      clientRequestId: `reception-phone:${phone.slice(1)}`,
-    }, actor);
+    const creditLimit =
+      input.creditLimit !== undefined ? input.creditLimit : null;
+    const created = await createCustomer(
+      {
+        name,
+        phone,
+        customerType: "فرد",
+        defaultPriceTier: "RETAIL",
+        creditLimit,
+        clientRequestId: `reception-phone:${phone.slice(1)}`,
+      },
+      actor,
+    );
     const row = await getCustomer(created.customerId);
-    if (!row) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر قراءة العميل بعد إنشائه" });
+    if (!row)
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "تعذّر قراءة العميل بعد إنشائه",
+      });
     return {
       status: "RESOLVED",
       customerId: Number(row.id),
@@ -350,7 +424,8 @@ export async function resolveReceptionCustomerByPhone(
       // ⚠️ جذر التناقض الذي رآه المالك: العميل يُنشأ هنا بـ`creditLimit: "0"` (نقديّ فقط —
       // قرار المالك الافتراضيّ) ثمّ يُعلَن `deferredEligible: true` ثابتاً ⇒ الشاشة تَعِد
       // بالآجل والخادم يرفضه. الأهليّة تُشتقّ الآن من الحدّ نفسه فيتطابق الوعد والتنفيذ.
-      deferredEligible: row.creditLimit == null || Number(row.creditLimit) !== 0,
+      deferredEligible:
+        row.creditLimit == null || Number(row.creditLimit) !== 0,
     };
   } catch (error) {
     // سباق رقم مع عملية قديمة لا تحمل مفتاحنا: أعد قراءة الهاتف بعد التزام الفائز.
@@ -365,7 +440,8 @@ export async function resolveReceptionCustomerByPhone(
           defaultPriceTier: won.defaultPriceTier as PriceTier,
           created: false,
           creditLimit: won.creditLimit,
-          deferredEligible: won.creditLimit == null || Number(won.creditLimit) !== 0,
+          deferredEligible:
+            won.creditLimit == null || Number(won.creditLimit) !== 0,
         };
       }
     }
@@ -394,9 +470,16 @@ export async function findSimilarCustomers(input: FindSimilarCustomersInput) {
 
   const nameRaw = input.name?.trim() ?? "";
   // حارس طول على الفضاء المُطبَّع (سلوك سابق مصون): حرف واحد مثل «ا» يطابق كل شيء LIKE.
-  const match = normalizeSearchText(nameRaw).length >= 2 ? majorityTokenMatch(sql`${customers.searchNorm}`, nameRaw) : null;
+  const match =
+    normalizeSearchText(nameRaw).length >= 2
+      ? majorityTokenMatch(sql`${customers.searchNorm}`, nameRaw)
+      : null;
   const suffixes = Array.from(
-    new Set((input.phones ?? []).map(phoneMatchSuffix).filter((s): s is string => !!s)),
+    new Set(
+      (input.phones ?? [])
+        .map(phoneMatchSuffix)
+        .filter((s): s is string => !!s),
+    ),
   ).slice(0, 4);
 
   const conds: ReturnType<typeof sql>[] = [];
@@ -426,18 +509,30 @@ export async function findSimilarCustomers(input: FindSimilarCustomersInput) {
     .from(customers)
     .where(or(...conds))
     // ملاءمة الاسم أولاً (تام ثم عدد الكلمات) ثم النشِط ثم أبجدياً — مطابقات الهاتف الصرفة تلي الاسمية.
-    .orderBy(...(match ? match.orderBy : []), desc(customers.isActive), asc(customers.name))
+    .orderBy(
+      ...(match ? match.orderBy : []),
+      desc(customers.isActive),
+      asc(customers.name),
+    )
     .limit(limit);
 
   return rows.map((r) => {
-    const rowDigits = [r.phone, r.phone2, r.phone3, r.whatsapp].map((x) => (x ?? "").replace(/\D/g, ""));
-    const phoneHit = suffixes.some((suf) => rowDigits.some((d) => d.length > 0 && d.endsWith(suf)));
+    const rowDigits = [r.phone, r.phone2, r.phone3, r.whatsapp].map((x) =>
+      (x ?? "").replace(/\D/g, ""),
+    );
+    const phoneHit = suffixes.some((suf) =>
+      rowDigits.some((d) => d.length > 0 && d.endsWith(suf)),
+    );
     // مرآة JS لقاعدة الأغلبية نفسها — تصنيف matchedOn متّسق مع شرط SQL.
     const nameHit = !!match && majorityTokenHitJs(r.name, nameRaw);
     const { phone2: _p2, phone3: _p3, whatsapp: _wa, ...pub } = r;
     return {
       ...pub,
-      matchedOn: (phoneHit && nameHit ? "both" : phoneHit ? "phone" : "name") as "both" | "phone" | "name",
+      matchedOn: (phoneHit && nameHit
+        ? "both"
+        : phoneHit
+          ? "phone"
+          : "name") as "both" | "phone" | "name",
     };
   });
 }
@@ -446,16 +541,29 @@ export async function findSimilarCustomers(input: FindSimilarCustomersInput) {
 export async function updateCustomer(input: UpdateCustomerInput, actor: Actor) {
   return withTx(async (tx) => {
     const existing = (
-      await tx.select().from(customers).where(eq(customers.id, input.customerId)).for("update").limit(1)
+      await tx
+        .select()
+        .from(customers)
+        .where(eq(customers.id, input.customerId))
+        .for("update")
+        .limit(1)
     )[0];
-    if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+    if (!existing)
+      throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
 
     const patch: Record<string, unknown> = {};
     if (input.name !== undefined) {
       const name = input.name.trim();
-      if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم العميل مطلوب" });
+      if (!name)
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "اسم العميل مطلوب",
+        });
       if (name.length > 255)
-        throw new TRPCError({ code: "BAD_REQUEST", message: "اسم العميل طويل جداً" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "اسم العميل طويل جداً",
+        });
       patch.name = name;
     }
     if (input.phone !== undefined) {
@@ -465,12 +573,17 @@ export async function updateCustomer(input: UpdateCustomerInput, actor: Actor) {
     }
     if (input.phone2 !== undefined) patch.phone2 = normPhone(input.phone2);
     if (input.phone3 !== undefined) patch.phone3 = normPhone(input.phone3);
-    if (input.whatsapp !== undefined) patch.whatsapp = normPhone(input.whatsapp);
-    if (input.address !== undefined) patch.address = input.address?.trim() || null;
+    if (input.whatsapp !== undefined)
+      patch.whatsapp = normPhone(input.whatsapp);
+    if (input.address !== undefined)
+      patch.address = input.address?.trim() || null;
     if (input.city !== undefined) patch.city = input.city?.trim() || null;
-    if (input.district !== undefined) patch.district = input.district?.trim() || null;
-    if (input.customerType !== undefined) patch.customerType = input.customerType;
-    if (input.defaultPriceTier !== undefined) patch.defaultPriceTier = input.defaultPriceTier;
+    if (input.district !== undefined)
+      patch.district = input.district?.trim() || null;
+    if (input.customerType !== undefined)
+      patch.customerType = input.customerType;
+    if (input.defaultPriceTier !== undefined)
+      patch.defaultPriceTier = input.defaultPriceTier;
     if (input.notes !== undefined) patch.notes = input.notes?.trim() || null;
     if (input.creditLimit !== undefined) {
       // نفس دلالة الإنشاء: null صريح ⇒ بلا حدّ؛ فارغ ⇒ "0" حظر؛ رقم ⇒ يُتحقَّق.
@@ -486,7 +599,12 @@ export async function updateCustomer(input: UpdateCustomerInput, actor: Actor) {
         input.openingBalance,
         input.openingBalanceDirection ?? "OWED_TO_US",
       );
-      const { delta } = await upsertOpeningEntry(tx, "CUSTOMER", input.customerId, newSigned);
+      const { delta } = await upsertOpeningEntry(
+        tx,
+        "CUSTOMER",
+        input.customerId,
+        newSigned,
+      );
       if (!money(delta).isZero()) {
         await tx
           .update(customers)
@@ -520,7 +638,10 @@ export async function updateCustomer(input: UpdateCustomerInput, actor: Actor) {
       actor,
     );
 
-    await tx.update(customers).set(patch).where(eq(customers.id, input.customerId));
+    await tx
+      .update(customers)
+      .set(patch)
+      .where(eq(customers.id, input.customerId));
     return { customerId: input.customerId, changed: true };
   });
 }
@@ -533,8 +654,16 @@ export async function updateCustomer(input: UpdateCustomerInput, actor: Actor) {
  */
 export async function deleteCustomer(customerId: number, _actor: Actor) {
   return withTx(async (tx) => {
-    const c = (await tx.select().from(customers).where(eq(customers.id, customerId)).for("update").limit(1))[0];
-    if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+    const c = (
+      await tx
+        .select()
+        .from(customers)
+        .where(eq(customers.id, customerId))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!c)
+      throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
 
     // لقطة السلة تحمل customerId داخل JSON (لا FK)، وعميل الطالب قد يظهر على بند النيّة.
     // prepareCheckoutSnapshot يقفل صف العميل نفسه؛ لذا يمنع هذا الفحص سباق "قرأ العميل ثم
@@ -581,24 +710,54 @@ export async function deleteCustomer(customerId: number, _actor: Actor) {
       [onlineOrders, onlineOrders.customerId, "طلبات متجر"],
       [creditApprovals, creditApprovals.customerId, "موافقات ائتمان"],
       [installmentPlans, installmentPlans.customerId, "خطط أقساط"],
-      [customerContractPrices, customerContractPrices.customerId, "أسعار عقدية"],
+      [
+        customerContractPrices,
+        customerContractPrices.customerId,
+        "أسعار عقدية",
+      ],
       [couponRedemptions, couponRedemptions.customerId, "استخدام كوبونات"],
       [coupons, coupons.customerId, "كوبونات مخصّصة"],
-      [deliveryConsignments, deliveryConsignments.endCustomerId, "إرساليات توصيل"],
+      [
+        deliveryConsignments,
+        deliveryConsignments.endCustomerId,
+        "إرساليات توصيل",
+      ],
       [conversations, conversations.customerId, "محادثات"],
-      [waBroadcastRecipients, waBroadcastRecipients.customerId, "قوائم بثّ تسويقيّ"],
+      [
+        waBroadcastRecipients,
+        waBroadcastRecipients.customerId,
+        "قوائم بثّ تسويقيّ",
+      ],
+      [customerFeedback, customerFeedback.customerId, "تقييمات أو شكاوى"],
     ];
     for (const [table, col, label] of checks) {
-      const [row] = await tx.select({ x: sql<number>`1` }).from(table).where(eq(col, customerId)).limit(1);
-      if (row) throw new TRPCError({ code: "BAD_REQUEST", message: `لا يمكن حذف عميل له ${label} — عطِّله بدلاً من الحذف` });
+      const [row] = await tx
+        .select({ x: sql<number>`1` })
+        .from(table)
+        .where(eq(col, customerId))
+        .limit(1);
+      if (row)
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `لا يمكن حذف عميل له ${label} — عطِّله بدلاً من الحذف`,
+        });
     }
     // قيود دفتر غير القيد الافتتاحيّ = حركة مالية حقيقية.
     const [ae] = await tx
       .select({ id: accountingEntries.id })
       .from(accountingEntries)
-      .where(and(eq(accountingEntries.customerId, customerId), ne(accountingEntries.entryType, "OPENING")))
+      .where(
+        and(
+          eq(accountingEntries.customerId, customerId),
+          ne(accountingEntries.entryType, "OPENING"),
+        ),
+      )
       .limit(1);
-    if (ae) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف عميل له حركات مالية — عطِّله بدلاً من الحذف" });
+    if (ae)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يمكن حذف عميل له حركات مالية — عطِّله بدلاً من الحذف",
+      });
 
     // قفل الفترة (اتساقاً مع مسار التصحيح upsertOpeningEntry): لا يُحذَف قيد OPENING مؤرَّخ داخل فترة
     // مُقفَلة (يُغيّر أرقامها بأثر رجعيّ) — يُرفض حتى تُفتح الفترة (admin). لا قيد ⇒ لا شيء يُحذَف.
@@ -611,20 +770,39 @@ export async function deleteCustomer(customerId: number, _actor: Actor) {
         count: sql<number>`COUNT(*)`,
       })
       .from(accountingEntries)
-      .where(and(eq(accountingEntries.customerId, customerId), eq(accountingEntries.entryType, "OPENING")));
+      .where(
+        and(
+          eq(accountingEntries.customerId, customerId),
+          eq(accountingEntries.entryType, "OPENING"),
+        ),
+      );
     const openingEntry =
       Number(openingAgg?.count ?? 0) > 0 && openingAgg?.earliest
         ? { entryDate: openingAgg.earliest }
         : null;
     if (openingEntry) {
       await assertLegacyOpeningMutable(tx);
-      await assertPeriodOpen(tx, new Date(openingEntry.entryDate as unknown as string));
-      await tx.delete(accountingEntries).where(and(eq(accountingEntries.customerId, customerId), eq(accountingEntries.entryType, "OPENING")));
+      await assertPeriodOpen(
+        tx,
+        new Date(openingEntry.entryDate as unknown as string),
+      );
+      await tx
+        .delete(accountingEntries)
+        .where(
+          and(
+            eq(accountingEntries.customerId, customerId),
+            eq(accountingEntries.entryType, "OPENING"),
+          ),
+        );
     }
 
     // إزالة البيانات التابعة الآمنة الوحيدة: القيد الافتتاحيّ + الملاحظات + جهات الاتصال + التذكيرات.
-    await tx.delete(customerNotes).where(eq(customerNotes.customerId, customerId));
-    await tx.delete(contactPersons).where(eq(contactPersons.customerId, customerId));
+    await tx
+      .delete(customerNotes)
+      .where(eq(customerNotes.customerId, customerId));
+    await tx
+      .delete(contactPersons)
+      .where(eq(contactPersons.customerId, customerId));
     await tx.delete(arReminders).where(eq(arReminders.customerId, customerId));
     await tx.delete(customers).where(eq(customers.id, customerId));
     return { customerId, deleted: true, name: c.name };
@@ -635,10 +813,20 @@ export async function deleteCustomer(customerId: number, _actor: Actor) {
 export async function deactivateCustomer(customerId: number, actor: Actor) {
   return withTx(async (tx) => {
     const c = (
-      await tx.select().from(customers).where(eq(customers.id, customerId)).for("update").limit(1)
+      await tx
+        .select()
+        .from(customers)
+        .where(eq(customers.id, customerId))
+        .for("update")
+        .limit(1)
     )[0];
-    if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
-    if (!c.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "العميل معطّل بالفعل" });
+    if (!c)
+      throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+    if (!c.isActive)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "العميل معطّل بالفعل",
+      });
 
     // الأموال عبر decimal.js (§٥) — أي رصيد غير صفري (مدين أو دائن) يمنع التعطيل.
     const balance = money(c.currentBalance ?? "0");
@@ -656,7 +844,11 @@ export async function deactivateCustomer(customerId: number, actor: Actor) {
         .where(
           and(
             eq(invoices.customerId, customerId),
-            inArray(invoices.status, ["PENDING", "CONFIRMED", "PARTIALLY_PAID"]),
+            inArray(invoices.status, [
+              "PENDING",
+              "CONFIRMED",
+              "PARTIALLY_PAID",
+            ]),
           ),
         )
         .limit(1)
@@ -664,7 +856,8 @@ export async function deactivateCustomer(customerId: number, actor: Actor) {
     if (open)
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يمكن تعطيل عميل له فواتير غير مسوّاة (معلّقة/مؤكّدة/مدفوعة جزئياً)",
+        message:
+          "لا يمكن تعطيل عميل له فواتير غير مسوّاة (معلّقة/مؤكّدة/مدفوعة جزئياً)",
       });
 
     // Codex #963 P2: التعطيلُ تغييرٌ حقيقيّ في حالة العميل — يستحقّ لقطةً كأيّ تعديل.
@@ -679,7 +872,10 @@ export async function deactivateCustomer(customerId: number, actor: Actor) {
       },
       actor,
     );
-    await tx.update(customers).set({ isActive: false }).where(eq(customers.id, customerId));
+    await tx
+      .update(customers)
+      .set({ isActive: false })
+      .where(eq(customers.id, customerId));
     return { customerId, isActive: false };
   });
 }
@@ -688,10 +884,20 @@ export async function deactivateCustomer(customerId: number, actor: Actor) {
 export async function activateCustomer(customerId: number, actor: Actor) {
   return withTx(async (tx) => {
     const c = (
-      await tx.select().from(customers).where(eq(customers.id, customerId)).for("update").limit(1)
+      await tx
+        .select()
+        .from(customers)
+        .where(eq(customers.id, customerId))
+        .for("update")
+        .limit(1)
     )[0];
-    if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
-    if (c.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "العميل مفعّل بالفعل" });
+    if (!c)
+      throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+    if (c.isActive)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "العميل مفعّل بالفعل",
+      });
     // Codex #963 P2: نفس المنطق — إعادةُ التفعيل تغييرُ حالة، لقطةٌ إلزامية.
     await snapshotBeforeUpdate(
       tx,
@@ -703,7 +909,10 @@ export async function activateCustomer(customerId: number, actor: Actor) {
       },
       actor,
     );
-    await tx.update(customers).set({ isActive: true }).where(eq(customers.id, customerId));
+    await tx
+      .update(customers)
+      .set({ isActive: true })
+      .where(eq(customers.id, customerId));
     return { customerId, isActive: true };
   });
 }
@@ -712,15 +921,27 @@ export async function activateCustomer(customerId: number, actor: Actor) {
 export async function getCustomer(customerId: number) {
   const db = getDb();
   if (!db) return null;
-  const row = (
-    await db.select().from(customers).where(eq(customers.id, customerId)).limit(1)
-  )[0] ?? null;
+  const row =
+    (
+      await db
+        .select()
+        .from(customers)
+        .where(eq(customers.id, customerId))
+        .limit(1)
+    )[0] ?? null;
   if (!row) return null;
   const op = (
     await db
-      .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
+      .select({
+        v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)`,
+      })
       .from(accountingEntries)
-      .where(and(eq(accountingEntries.entryType, "OPENING"), eq(accountingEntries.customerId, customerId)))
+      .where(
+        and(
+          eq(accountingEntries.entryType, "OPENING"),
+          eq(accountingEntries.customerId, customerId),
+        ),
+      )
   )[0];
   return { ...row, openingBalance: toDbMoney(money(op?.v ?? "0")) };
 }
@@ -737,8 +958,10 @@ export async function listCustomers(input: ListCustomersInput = {}) {
 
   const conds: any[] = [];
   if (!input.includeInactive) conds.push(eq(customers.isActive, true));
-  if (input.customerType) conds.push(eq(customers.customerType, input.customerType));
-  if (input.priceTier) conds.push(eq(customers.defaultPriceTier, input.priceTier));
+  if (input.customerType)
+    conds.push(eq(customers.customerType, input.customerType));
+  if (input.priceTier)
+    conds.push(eq(customers.defaultPriceTier, input.priceTier));
   if (input.q?.trim()) {
     const raw = input.q.trim();
     const q = `%${escLike(raw)}%`;
@@ -801,7 +1024,10 @@ export async function listCustomers(input: ListCustomersInput = {}) {
   }
 
   const totalRow = (
-    await db.select({ n: sql<number>`COUNT(*)` }).from(customers).where(where as any)
+    await db
+      .select({ n: sql<number>`COUNT(*)` })
+      .from(customers)
+      .where(where as any)
   )[0];
 
   return { rows, total: Number(totalRow?.n ?? 0) };
@@ -817,7 +1043,10 @@ export async function listCustomers(input: ListCustomersInput = {}) {
  * تعليل: حسبنا الإحصاءات بدّفعتين (فواتير + أوامر شغل) ثم دمجنا بمفتاح العميل،
  * لأن إجراء جوينَين في استعلام واحد يضاعف الصفوف ⇒ عدّ غير دقيق.
  */
-export async function smartSearchCustomers(input: { q: string; limit?: number }) {
+export async function smartSearchCustomers(input: {
+  q: string;
+  limit?: number;
+}) {
   const db = getDb();
   if (!db) return [];
   const q = input.q?.trim();
@@ -875,7 +1104,9 @@ export async function smartSearchCustomers(input: { q: string; limit?: number })
       total: sql<string>`COALESCE(SUM(${invoices.total}), 0)`,
     })
     .from(invoices)
-    .where(and(inArray(invoices.customerId, ids), ne(invoices.status, "CANCELLED")))
+    .where(
+      and(inArray(invoices.customerId, ids), ne(invoices.status, "CANCELLED")),
+    )
     .groupBy(invoices.customerId);
 
   const woStats = await db
@@ -885,18 +1116,33 @@ export async function smartSearchCustomers(input: { q: string; limit?: number })
       lastAt: sql<string>`MAX(${workOrders.createdAt})`,
     })
     .from(workOrders)
-    .where(and(inArray(workOrders.customerId, ids), ne(workOrders.status, "CANCELLED")))
+    .where(
+      and(
+        inArray(workOrders.customerId, ids),
+        ne(workOrders.status, "CANCELLED"),
+      ),
+    )
     .groupBy(workOrders.customerId);
 
-  const invMap = new Map<number, { count: number; lastAt: string | null; total: string }>();
+  const invMap = new Map<
+    number,
+    { count: number; lastAt: string | null; total: string }
+  >();
   for (const r of invStats) {
     if (r.customerId == null) continue;
-    invMap.set(Number(r.customerId), { count: Number(r.count), lastAt: r.lastAt ?? null, total: String(r.total ?? "0") });
+    invMap.set(Number(r.customerId), {
+      count: Number(r.count),
+      lastAt: r.lastAt ?? null,
+      total: String(r.total ?? "0"),
+    });
   }
   const woMap = new Map<number, { count: number; lastAt: string | null }>();
   for (const r of woStats) {
     if (r.customerId == null) continue;
-    woMap.set(Number(r.customerId), { count: Number(r.count), lastAt: r.lastAt ?? null });
+    woMap.set(Number(r.customerId), {
+      count: Number(r.count),
+      lastAt: r.lastAt ?? null,
+    });
   }
 
   return matched.map((m) => {
@@ -904,7 +1150,9 @@ export async function smartSearchCustomers(input: { q: string; limit?: number })
     const wo = woMap.get(m.id);
     const orderCount = (inv?.count ?? 0) + (wo?.count ?? 0);
     // آخر طلب = أحدث الاثنين (نقارن سلاسل ISO/Date كنصوص بأمان إن كانت بنفس الشكل).
-    const lastCandidates = [inv?.lastAt, wo?.lastAt].filter(Boolean) as string[];
+    const lastCandidates = [inv?.lastAt, wo?.lastAt].filter(
+      Boolean,
+    ) as string[];
     const lastOrderAt = lastCandidates.length
       ? lastCandidates.sort().slice(-1)[0]
       : null;
@@ -926,3 +1174,313 @@ export async function smartSearchCustomers(input: { q: string; limit?: number })
   });
 }
 
+/**
+ * مؤشرات وملف العميل الشامل 360° (Customer 360° Dossier)
+ * يجمع التاريخ المالي والتشغيلي ومؤشرات الجودة والتغذية العكسية ورادار الكاشير.
+ */
+export async function getCustomer360Dossier(
+  customerId: number,
+  role?: string | null,
+) {
+  const db = getDb();
+  if (!db) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "قاعدة البيانات غير متاحة",
+    });
+  }
+
+  const [customer] = await db
+    .select()
+    .from(customers)
+    .where(eq(customers.id, customerId))
+    .limit(1);
+
+  if (!customer) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذر فتح ملف الزبون الشامل",
+        why: "الزبون غير موجود في النظام",
+        doThis: "تأكد من اختيار زبون صالح من القائمة",
+      }),
+    });
+  }
+
+  // تسريع الاستعلامات بالتوازي عبر Promise.all
+  const [
+    [invAgg],
+    [woAgg],
+    recentInvoices,
+    recentWorkOrders,
+    [feedbackAgg],
+    recentFeedback,
+    recentCoupons,
+  ] = await Promise.all([
+    // 1. إجمالي المشتريات (LTV) الصافي وعدد الفواتير المكتملة (بعد خصم المرتجعات)
+    db
+      .select({
+        totalSpend: sql<string>`COALESCE(SUM(GREATEST(0, CAST(${invoices.total} AS DECIMAL(18,2)) - COALESCE(CAST(${invoices.returnedTotal} AS DECIMAL(18,2)), 0))), '0')`,
+        count: sql<number>`COALESCE(SUM(CASE WHEN ${invoices.status} != 'RETURNED' AND (CAST(${invoices.total} AS DECIMAL(18,2)) > COALESCE(CAST(${invoices.returnedTotal} AS DECIMAL(18,2)), 0)) THEN 1 ELSE 0 END), 0)`,
+        lastDate: sql<string | null>`MAX(${invoices.invoiceDate})`,
+      })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.customerId, customerId),
+          notInArray(invoices.status, [...VOIDED_INVOICE_STATUSES]),
+        ),
+      ),
+
+    // 2. عدد أوامر الشغل غير الملغاة
+    db
+      .select({
+        count: sql<number>`COUNT(*)`,
+        lastDate: sql<string | null>`MAX(${workOrders.createdAt})`,
+      })
+      .from(workOrders)
+      .where(
+        and(
+          eq(workOrders.customerId, customerId),
+          ne(workOrders.status, "CANCELLED"),
+        ),
+      ),
+
+    // 3. آخر 5 فواتير
+    db
+      .select({
+        id: invoices.id,
+        invoiceNumber: invoices.invoiceNumber,
+        invoiceDate: invoices.invoiceDate,
+        total: invoices.total,
+        status: invoices.status,
+        paidAmount: invoices.paidAmount,
+        remainingAmount: sql<string>`(${invoices.total} - ${invoices.paidAmount})`,
+      })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.customerId, customerId),
+          notInArray(invoices.status, [...VOIDED_INVOICE_STATUSES]),
+        ),
+      )
+      .orderBy(desc(invoices.id))
+      .limit(5),
+
+    // 4. آخر 5 أوامر شغل
+    db
+      .select({
+        id: workOrders.id,
+        orderNumber: workOrders.orderNumber,
+        title: workOrders.title,
+        status: workOrders.status,
+        totalAmount: workOrders.salePrice,
+        createdAt: workOrders.createdAt,
+      })
+      .from(workOrders)
+      .where(
+        and(
+          eq(workOrders.customerId, customerId),
+          ne(workOrders.status, "CANCELLED"),
+        ),
+      )
+      .orderBy(desc(workOrders.id))
+      .limit(5),
+
+    // 5. مؤشرات التغذية العكسية ورضا الزبون
+    db
+      .select({
+        totalCount: sql<number>`COUNT(*)`,
+        avgRating: sql<string | null>`AVG(${customerFeedback.rating})`,
+        openComplaints: sql<number>`SUM(CASE WHEN ${customerFeedback.issueStatus} IN ('NEW', 'IN_PROGRESS') THEN 1 ELSE 0 END)`,
+        resolvedComplaints: sql<number>`SUM(CASE WHEN ${customerFeedback.issueStatus} IN ('RESOLVED', 'CLOSED') THEN 1 ELSE 0 END)`,
+        uninvitedFiveStars: sql<number>`SUM(CASE WHEN ${customerFeedback.rating} = 5 AND (${customerFeedback.googleReviewInviteSent} = false OR ${customerFeedback.googleReviewInviteSent} = 0) THEN 1 ELSE 0 END)`,
+      })
+      .from(customerFeedback)
+      .where(eq(customerFeedback.customerId, customerId)),
+
+    // 6. آخر 5 تقييمات
+    db
+      .select({
+        id: customerFeedback.id,
+        workOrderId: customerFeedback.workOrderId,
+        workOrderNumber: workOrders.orderNumber,
+        rating: customerFeedback.rating,
+        category: customerFeedback.category,
+        sentiment: customerFeedback.sentiment,
+        comment: customerFeedback.comment,
+        issueStatus: customerFeedback.issueStatus,
+        rootCauseStation: customerFeedback.rootCauseStation,
+        resolutionAction: customerFeedback.resolutionAction,
+        smartGuidance: customerFeedback.smartGuidance,
+        googleReviewInviteSent: customerFeedback.googleReviewInviteSent,
+        createdAt: customerFeedback.createdAt,
+        giftCouponCode: coupons.code,
+      })
+      .from(customerFeedback)
+      .leftJoin(coupons, eq(coupons.id, customerFeedback.giftCouponId))
+      .leftJoin(workOrders, eq(workOrders.id, customerFeedback.workOrderId))
+      .where(eq(customerFeedback.customerId, customerId))
+      .orderBy(desc(customerFeedback.id))
+      .limit(5),
+
+    // 7. الكوبونات الصادرة للعميل
+    db
+      .select({
+        id: coupons.id,
+        code: coupons.code,
+        status: coupons.status,
+        issuedAt: coupons.issuedAt,
+        redemptionCount: coupons.redemptionCount,
+        programName: couponPrograms.name,
+        discountAmount: promotions.discountAmount,
+        discountPercent: promotions.discountPercent,
+        discountType: promotions.type,
+        validTo: couponPrograms.validTo,
+      })
+      .from(coupons)
+      .innerJoin(couponPrograms, eq(couponPrograms.id, coupons.programId))
+      .innerJoin(promotions, eq(promotions.id, couponPrograms.promotionId))
+      .where(eq(coupons.customerId, customerId))
+      .orderBy(desc(coupons.id))
+      .limit(5),
+  ]);
+
+  const completedInvoicesCount = Number(invAgg?.count ?? 0);
+  const workOrdersCount = Number(woAgg?.count ?? 0);
+  const ltvDec = new Decimal(invAgg?.totalSpend ?? "0");
+  const lifetimeValue = ltvDec.toFixed(2);
+
+  const avgInvoiceValue =
+    completedInvoicesCount > 0
+      ? ltvDec.dividedBy(completedInvoicesCount).toFixed(2)
+      : "0.00";
+
+  // آخر تاريخ تعامل
+  const dates = [invAgg?.lastDate, woAgg?.lastDate].filter(Boolean) as string[];
+  const lastInteractionDate = dates.length ? dates.sort().slice(-1)[0] : null;
+
+  const totalReviews = Number(feedbackAgg?.totalCount ?? 0);
+  const averageRating = feedbackAgg?.avgRating
+    ? Number(Number(feedbackAgg.avgRating).toFixed(1))
+    : 5;
+  const openComplaintsCount = Number(feedbackAgg?.openComplaints ?? 0);
+  const resolvedComplaintsCount = Number(feedbackAgg?.resolvedComplaints ?? 0);
+
+  // حساب نسب الائتمان والشارات مع تصحيح Decimal.js الصارم
+  const balanceDec = new Decimal(customer.currentBalance || "0");
+  const creditLimitDec = customer.creditLimit
+    ? new Decimal(customer.creditLimit)
+    : null;
+
+  const hasCreditLimit = !!creditLimitDec && creditLimitDec.greaterThan(0);
+
+  const isOverCreditLimit = hasCreditLimit
+    ? balanceDec.greaterThan(creditLimitDec)
+    : false;
+  const isNearCreditLimit = hasCreditLimit
+    ? balanceDec.greaterThanOrEqualTo(creditLimitDec.times(0.8))
+    : false;
+
+  const creditUsagePercent = hasCreditLimit
+    ? Math.max(
+        0,
+        Math.min(
+          100,
+          Math.round(
+            balanceDec.dividedBy(creditLimitDec).times(100).toNumber(),
+          ),
+        ) || 0,
+      )
+    : 0;
+
+  const isVip =
+    completedInvoicesCount >= 10 || ltvDec.greaterThanOrEqualTo(1000000);
+  const frequentCustomer =
+    completedInvoicesCount >= 3 && completedInvoicesCount < 10;
+  const hasOpenComplaint = openComplaintsCount > 0;
+  const hasPreviousComplaint =
+    resolvedComplaintsCount > 0 || recentFeedback.some((f) => f.rating <= 2);
+
+  // استحقاق دعوة مراجعات خرائط كوكل: أي تقييم 5 نجوم لم ترسل له دعوة بعد
+  const latestFeedback = recentFeedback[0];
+  const uninvitedFiveStar = recentFeedback.find(
+    (f) => f.rating === 5 && !f.googleReviewInviteSent,
+  );
+  const eligibleForGoogleReview =
+    Number(feedbackAgg?.uninvitedFiveStars ?? 0) > 0 || !!uninvitedFiveStar;
+
+  // حجب الأرصدة الحساسة لغير المدراء (لا إفصاح عند غياب الدور أو كاشير)
+  const canSeeBalance = isElevated(role);
+  const creditStatusBadge =
+    creditLimitDec && creditLimitDec.lessThanOrEqualTo(0)
+      ? "نقدي فقط"
+      : "مسموح بالآجل";
+
+  // صياغة الإرشاد الذكي المركب عبر محرك الأولويات المحكم
+  const smartGuidance = computeCustomerSmartGuidance({
+    hasOpenComplaint,
+    isOverCreditLimit,
+    isNearCreditLimit,
+    isVip,
+    frequentCustomer,
+    canSeeBalance,
+    creditLimit: customer.creditLimit,
+    creditUsagePercent,
+    ltvFormatted: ltvDec.toFixed(0),
+    latestFeedback,
+  });
+
+  return {
+    customer: {
+      id: customer.id,
+      name: customer.name,
+      phone: customer.phone,
+      phone2: customer.phone2,
+      phone3: customer.phone3,
+      whatsapp: customer.whatsapp,
+      address: customer.address,
+      city: customer.city,
+      district: customer.district,
+      customerType: customer.customerType,
+      defaultPriceTier: customer.defaultPriceTier,
+      currentBalance: canSeeBalance ? customer.currentBalance : null,
+      creditLimit: canSeeBalance ? customer.creditLimit : null,
+      creditStatus: creditStatusBadge,
+      notes: customer.notes,
+      isActive: customer.isActive,
+      createdAt: customer.createdAt,
+    },
+    metrics: {
+      lifetimeValue: canSeeBalance ? lifetimeValue : null,
+      completedInvoicesCount,
+      workOrdersCount,
+      avgInvoiceValue: canSeeBalance ? avgInvoiceValue : null,
+      lastInteractionDate,
+      balance: canSeeBalance ? customer.currentBalance : null,
+      creditLimit: canSeeBalance ? customer.creditLimit : null,
+      creditUsagePercent: canSeeBalance ? creditUsagePercent : 0,
+      creditStatus: creditStatusBadge,
+      feedbackSummary: {
+        averageRating,
+        totalReviews,
+        openComplaintsCount,
+        resolvedComplaintsCount,
+      },
+      badges: {
+        isVip,
+        frequentCustomer,
+        isNearCreditLimit,
+        isOverCreditLimit,
+        hasOpenComplaint,
+        hasPreviousComplaint,
+        eligibleForGoogleReview,
+      },
+    },
+    recentInvoices,
+    recentWorkOrders,
+    recentFeedback,
+    recentCoupons,
+    smartGuidance,
+  };
+}

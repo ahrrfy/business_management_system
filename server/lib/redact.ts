@@ -5,7 +5,7 @@ import type { Customer, Supplier, PurchaseOrderItem } from "../../drizzle/schema
  */
 const ELEVATED_ROLES = new Set(["admin", "manager"]);
 
-const isElevated = (role: string | null | undefined): boolean =>
+export const isElevated = (role: string | null | undefined): boolean =>
   !!role && ELEVATED_ROLES.has(role);
 
 /** يحجب حقول التكلفة من بند شراء/استلام (unitPrice/unitCost/total/costTotal)

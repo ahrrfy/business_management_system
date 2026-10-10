@@ -2444,6 +2444,41 @@
 			"when": 1788148841000,
 			"tag": "0383_historical_cash_correction",
 			"breakpoints": true
+		},
+		{
+			"idx": 384,
+			"version": "5",
+			"when": 1788148842000,
+			"tag": "0384_sync_product_channel_labels",
+			"breakpoints": true
+		},
+		{
+			"idx": 385,
+			"version": "5",
+			"when": 1788148843000,
+			"tag": "0385_company_profile",
+			"breakpoints": true
+		},
+		{
+			"idx": 386,
+			"version": "5",
+			"when": 1788148844000,
+			"tag": "0386_store_order_fulfillment_workflow",
+			"breakpoints": true
+		},
+		{
+			"idx": 387,
+			"version": "5",
+			"when": 1788148845000,
+			"tag": "0387_sales_attribution_engine",
+			"breakpoints": true
+		},
+		{
+			"idx": 388,
+			"version": "5",
+			"when": 1788148846000,
+			"tag": "0388_customer_feedback_hub",
+			"breakpoints": true
 		}
 	]
 }
