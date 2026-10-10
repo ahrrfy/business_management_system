@@ -149,6 +149,10 @@ export function InstantGiftModal({
 
   const handleSendWhatsApp = () => {
     if (!issuedCoupon) return;
+    if (!customerPhone?.trim()) {
+      notify.err("لا يوجد رقم هاتف أو واتساب مسجل لهذا الزبون");
+      return;
+    }
     const msg = buildInstantGiftWhatsAppMessage({
       customerName,
       code: issuedCoupon.code,
@@ -362,7 +366,13 @@ export function InstantGiftModal({
               <Button
                 type="button"
                 variant="outline"
-                className="h-10 text-xs font-semibold gap-1.5 border-emerald-400 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+                disabled={!customerPhone?.trim()}
+                title={
+                  !customerPhone?.trim()
+                    ? "لا يتوفر رقم هاتف أو واتساب مسجل للزبون"
+                    : "إرسال القسيمة فوراً عبر واتساب"
+                }
+                className="h-10 text-xs font-semibold gap-1.5 border-emerald-400 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 disabled:opacity-50"
                 onClick={handleSendWhatsApp}
               >
                 <MessageCircle
