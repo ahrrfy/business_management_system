@@ -420,6 +420,8 @@ export default defineConfig({
       "server/services/__tests__/storefrontThematicService.test.ts",
       "server/services/__tests__/customerReadAccess.test.ts",
       "client/src/components/pos/__tests__/posTotalsCredit.test.ts",
+      "server/services/__tests__/omnichannelCouponEngine.unit.test.ts",
+      "client/src/components/promotions/__tests__/promotionBuilder.unit.test.ts",
     ],
   },
 });

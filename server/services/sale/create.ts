@@ -30,6 +30,7 @@ import { lockInventoryVariants } from "../inventory/stockLock";
 import { assertStockedOwnedMaterials } from "../inventory/materialEligibility";
 import { resolveContractPrices } from "../contractPriceService";
 import {
+  allocateCouponDiscountAcrossLines,
   getProductCategoryIds,
   resolveCouponPromotionForLine,
   resolvePromotionForLine,
@@ -843,7 +844,12 @@ export async function createSaleInTx(
             // IQD في POS يُعرض كعدد صحيح لكل وحدة. فرق التقريب المشروع أقصاه دينار واحد لكل وحدة؛
             // للكوبون نسجل الخصم المعروض فعلياً (كي يطابق الإجمالي المقبوض)، وللتلقائي نبقي السلوك القديم.
             const tolerance = isCouponPromotion ? money(l.quantity) : money(1);
-            if (actual.minus(expected).abs().lte(tolerance)) {
+            const couponCap = isCouponPromotion && lockedCoupon?.maxDiscountAmount && money(lockedCoupon.maxDiscountAmount).gt(0)
+              ? money(lockedCoupon.maxDiscountAmount)
+              : null;
+            const matchesExpected = actual.minus(expected).abs().lte(tolerance);
+            const matchesCap = couponCap != null && actual.gt(0) && actual.lte(expected.plus(tolerance)) && actual.lte(couponCap.plus(tolerance));
+            if (matchesExpected || matchesCap) {
               recordedPromotionId = Number(l.promotionId);
               recordedPromoDiscount = isCouponPromotion ? actual.toFixed(2) : expected.toFixed(2);
             }
@@ -871,13 +877,32 @@ export async function createSaleInTx(
       });
     }
 
-    const couponDiscount = lockedCoupon
-      ? computed
-          .filter((line) => line.promotionId === lockedCoupon.promotionId)
-          .reduce((sum, line) => sum.plus(money(line.promotionDiscount)), money(0))
-      : money(0);
-    if (lockedCoupon && couponDiscount.lte(0)) {
+    const couponLines = lockedCoupon
+      ? computed.filter((line) => line.promotionId === lockedCoupon.promotionId)
+      : [];
+
+    const totalCouponDiscount = couponLines.reduce(
+      (sum, line) => sum.plus(money(line.promotionDiscount)),
+      money(0),
+    );
+
+    if (lockedCoupon && totalCouponDiscount.lte(0)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون صالح لكنه لا ينطبق على أصناف الفاتورة" });
+    }
+
+    let couponDiscount = totalCouponDiscount;
+    if (lockedCoupon) {
+      const allocation = allocateCouponDiscountAcrossLines(
+        computed,
+        lockedCoupon.promotionId,
+        lockedCoupon.maxDiscountAmount,
+      );
+      couponDiscount = money(allocation.totalCouponDiscount);
+      for (let i = 0; i < computed.length; i++) {
+        computed[i].promotionDiscount = allocation.lines[i].promotionDiscount;
+        computed[i].discountAmount = allocation.lines[i].discountAmount;
+        computed[i].total = allocation.lines[i].total;
+      }
     }
 
     // 5. Deterministic lock order: sort by variantId ascending.
@@ -890,6 +915,20 @@ export async function createSaleInTx(
       taxRatePercent: input.taxRatePercent,
       deliveryFee: input.deliveryFee,
     });
+
+    if (lockedCoupon?.minOrderSpend && money(lockedCoupon.minOrderSpend).gt(0)) {
+      const minSpend = money(lockedCoupon.minOrderSpend);
+      if (money(totals.subtotal).lt(minSpend)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "لم يبلغ إجمالي الطلب الحد الأدنى لتفعيل الكوبون",
+            why: `الحد الأدنى المطلوب لتفعيل هذا الكوبون هو ${minSpend.toFixed(2)} د.ع بينما إجمالي سلتك الحالي ${totals.subtotal} د.ع`,
+            doThis: "أضف المزيد من المنتجات إلى سلة الشراء لتفعيل الكوبون",
+          }),
+        });
+      }
+    }
     // هدايا الفاتورة (0149): فصلُ وعاءين. `costTotal` (⇐ `invoices.costTotal` وقيد SALE) يبقى
     // **تكلفة البنود المدفوعة وحدها** — فالثابت القائم «SALE.cost = invoices.costTotal» يظلّ سارياً
     // ويظلّ كلُّ قارئٍ قائمٍ صحيحاً بلا مساس (COALESCE(ic.cost, i.costTotal) في تقارير المبيعات،
@@ -1226,6 +1265,7 @@ export async function createSaleInTx(
         customerId: input.customerId ?? null,
         branchId: input.branchId,
         discountAmount: couponDiscount.toFixed(2),
+        netSales: totals.total,
         userId: actor.userId,
       });
     }

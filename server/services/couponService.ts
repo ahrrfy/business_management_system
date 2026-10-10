@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { appErrorMessage } from "../../shared/errors";
 import {
   couponPrograms,
   couponRedemptions,
@@ -13,7 +14,8 @@ import {
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractAffectedRows } from "../lib/insertId";
-import { money, toDbMoney } from "./money";
+import { DecimalInput, money, round2, toDbMoney } from "./money";
+import type Decimal from "decimal.js";
 
 export interface LockedCoupon {
   couponId: number;
@@ -23,6 +25,27 @@ export interface LockedCoupon {
   perCouponLimit: number;
   customerId: number | null;
   programName: string;
+  maxDiscountAmount?: string | null;
+  minOrderSpend?: string | null;
+  freeShipping?: boolean;
+  shippingDiscountAmount?: string | null;
+  affiliateCommissionRate?: string | null;
+  affiliateName?: string | null;
+  affiliatePhone?: string | null;
+}
+
+/**
+ * حساب عمولة المسوق بالدينار بدقة decimal.js وتقريب HALF_UP.
+ */
+export function calculateAffiliateCommission(
+  netRevenue: DecimalInput,
+  commissionRate?: DecimalInput | null,
+): Decimal {
+  if (commissionRate == null) return money(0);
+  const rev = money(netRevenue);
+  const rate = money(commissionRate);
+  if (rev.lte(0) || rate.lte(0)) return money(0);
+  return round2(rev.mul(rate).dividedBy(100));
 }
 
 export function normalizeCouponCode(value: string): string {
@@ -76,6 +99,8 @@ export async function lockCouponForSale(
     branchId: number;
     customerId: number | null;
     todayYmd: string;
+    /** إجمالي سلة الشراء للتحقق من الحد الأدنى للطلب (minOrderSpend) */
+    subtotal?: DecimalInput | null;
     /** طلب متجر يستهلك حجزه هو؛ يُستثنى هذا الحجز وحده من عدّ الحجوزات النشطة. */
     reservationOnlineOrderId?: number | null;
     /** واجهة المتجر لا تقبل قسيمة شخصية بلا إثبات جلسة مطابق للعميل المعيّن. */
@@ -96,6 +121,19 @@ export async function lockCouponForSale(
   }
   if (row.promotion.branchId != null && Number(row.promotion.branchId) !== input.branchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "العرض لا يخص هذا الفرع" });
+  }
+  if (input.subtotal != null && row.promotion.minOrderSpend != null) {
+    const minSpend = money(row.promotion.minOrderSpend);
+    if (minSpend.gt(0) && money(input.subtotal).lt(minSpend)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لم يبلغ إجمالي الطلب الحد الأدنى لتفعيل الكوبون",
+          why: `الحد الأدنى المطلوب لتفعيل هذا الكوبون هو ${minSpend.toFixed(2)} د.ع بينما إجمالي طلبك الحالي ${money(input.subtotal).toFixed(2)} د.ع`,
+          doThis: "أضف المزيد من المنتجات إلى سلة الشراء لتفعيل الكوبون",
+        }),
+      });
+    }
   }
   const assignedCustomerId = row.coupon.customerId == null ? null : Number(row.coupon.customerId);
   if (
@@ -234,6 +272,13 @@ export async function lockCouponForSale(
     perCouponLimit: Number(row.program.perCouponLimit),
     customerId: assignedCustomerId,
     programName: row.program.name,
+    maxDiscountAmount: row.promotion.maxDiscountAmount ? String(row.promotion.maxDiscountAmount) : null,
+    minOrderSpend: row.promotion.minOrderSpend ? String(row.promotion.minOrderSpend) : "0.00",
+    freeShipping: Boolean(row.promotion.freeShipping),
+    shippingDiscountAmount: row.promotion.shippingDiscountAmount ? String(row.promotion.shippingDiscountAmount) : "0.00",
+    affiliateCommissionRate: row.program.affiliateCommissionRate ? String(row.program.affiliateCommissionRate) : "0.00",
+    affiliateName: row.program.affiliateName ?? null,
+    affiliatePhone: row.program.affiliatePhone ?? null,
   };
 }
 
@@ -303,12 +348,14 @@ export async function releaseCouponReservationForOnlineOrder(
   return extractAffectedRows(result);
 }
 
-type CouponConsumptionInput = {
+export type CouponConsumptionInput = {
   invoiceId: number;
   customerId: number | null;
   branchId: number;
   discountAmount: string;
   userId: number;
+  /** إجمالي صافي المبيعات لحساب عمولة المسوق إن وُجدت نسبة عمولة */
+  netSales?: DecimalInput | null;
 };
 
 async function recordCouponConsumption(
@@ -318,6 +365,26 @@ async function recordCouponConsumption(
   options: { allowRedeemedOwnedReservation: boolean },
 ): Promise<void> {
   if (money(input.discountAmount).lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون لا ينطبق على أصناف الفاتورة" });
+
+  let commissionAmount = money(0);
+  const rate = money(coupon.affiliateCommissionRate ?? "0");
+  if (rate.gt(0)) {
+    let netSales = input.netSales != null ? money(input.netSales) : null;
+    if (netSales == null) {
+      const inv = (
+        await tx
+          .select({ total: invoices.total })
+          .from(invoices)
+          .where(eq(invoices.id, input.invoiceId))
+          .limit(1)
+      )[0];
+      if (inv) netSales = money(inv.total);
+    }
+    if (netSales && netSales.gt(0)) {
+      commissionAmount = calculateAffiliateCommission(netSales, rate);
+    }
+  }
+
   await tx.insert(couponRedemptions).values({
     couponId: coupon.couponId,
     programId: coupon.programId,
@@ -325,6 +392,7 @@ async function recordCouponConsumption(
     customerId: input.customerId,
     branchId: input.branchId,
     discountAmount: toDbMoney(input.discountAmount),
+    affiliateCommissionAmount: toDbMoney(commissionAmount),
     redeemedBy: input.userId,
   });
   const incremented = await tx.update(coupons).set({

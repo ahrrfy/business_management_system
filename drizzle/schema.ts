@@ -2398,6 +2398,14 @@ export const promotions = mysqlTable(
     minLineAmount: decimal("minLineAmount", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
+    maxDiscountAmount: decimal("maxDiscountAmount", { precision: 15, scale: 2 }),
+    minOrderSpend: decimal("minOrderSpend", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    freeShipping: boolean("freeShipping").default(false).notNull(),
+    shippingDiscountAmount: decimal("shippingDiscountAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
     priority: int("priority").default(0).notNull(),
     isActive: boolean("isActive").default(true).notNull(),
     // AUTO = يطبّق تلقائياً في القناة. COUPON = لا يُطبّق إلا بعد تحقق كوبون صالح في معاملة البيع.
@@ -2501,6 +2509,11 @@ export const couponPrograms = mysqlTable(
     codePrefix: varchar("codePrefix", { length: 12 }).default("CRM").notNull(),
     // لقطة تصميم قابلة للإصدار؛ تغيير القالب لاحقاً لا يغيّر بطاقة سبق إصدارها.
     designJson: json("designJson"),
+    affiliateName: varchar("affiliateName", { length: 255 }),
+    affiliatePhone: varchar("affiliatePhone", { length: 32 }),
+    affiliateCommissionRate: decimal("affiliateCommissionRate", { precision: 5, scale: 2 })
+      .default("0.00")
+      .notNull(),
     createdBy: int("createdBy")
       .notNull()
       .references(() => users.id),
@@ -2577,6 +2590,12 @@ export const couponRedemptions = mysqlTable(
       precision: 15,
       scale: 2,
     }).notNull(),
+    affiliateCommissionAmount: decimal("affiliateCommissionAmount", {
+      precision: 15,
+      scale: 2,
+    })
+      .default("0.00")
+      .notNull(),
     redeemedBy: int("redeemedBy")
       .notNull()
       .references(() => users.id),

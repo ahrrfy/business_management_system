@@ -2444,6 +2444,13 @@
 			"when": 1788148841000,
 			"tag": "0383_historical_cash_correction",
 			"breakpoints": true
+		},
+		{
+			"idx": 391,
+			"version": "5",
+			"when": 1788148849000,
+			"tag": "0391_omnichannel_promotions_coupons",
+			"breakpoints": true
 		}
 	]
 }

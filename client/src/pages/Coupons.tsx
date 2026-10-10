@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Download, FileText, Plus, Printer, Search, Ticket, XCircle } from "lucide-react";
+import { Download, FileText, Plus, Printer, Search, Sparkles, Ticket, XCircle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -18,6 +18,7 @@ import { notify } from "@/lib/notify";
 import { printCouponCards, type CouponPrintLayout } from "@/lib/printing/couponCard";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { RowActions } from "@/components/list/RowActions";
+import { PromotionBuilder } from "@/components/promotions/PromotionBuilder";
 
 type IssuedCoupon = RouterOutputs["crm"]["coupons"]["listIssued"]["rows"][number];
 type ProgramRow = RouterOutputs["crm"]["coupons"]["programs"][number];
@@ -56,6 +57,7 @@ export default function Coupons() {
   const offerById = useMemo(() => new Map((offers.data ?? []).map((offer) => [offer.id, offer])), [offers.data]);
 
   const [showForm, setShowForm] = useState(false);
+  const [showUnifiedBuilder, setShowUnifiedBuilder] = useState(false);
   const [promotionId, setPromotionId] = useState("");
   const [campaignId, setCampaignId] = useState("");
   const [name, setName] = useState("");
@@ -121,6 +123,10 @@ export default function Coupons() {
 
   const create = trpc.crm.coupons.createProgram.useMutation({
     onSuccess: async () => { await programs.refetch(); setShowForm(false); notify.ok("تم إنشاء برنامج الكوبونات كمسوّدة"); },
+    onError: (error) => notify.err(error),
+  });
+  const createUnified = trpc.crm.coupons.createUnified.useMutation({
+    onSuccess: async () => { await programs.refetch(); setShowForm(false); notify.ok("تم إنشاء برنامج الكوبونات والعرض بنجاح"); },
     onError: (error) => notify.err(error),
   });
   const status = trpc.crm.coupons.setProgramStatus.useMutation({
@@ -316,7 +322,20 @@ export default function Coupons() {
   ];
 
   return <div className="mx-auto max-w-7xl space-y-4 pb-8">
-    <PageHeader title="الكوبونات" description="برامج وإصدارات قابلة للتدقيق، مرتبطة بعرض مالي حقيقي، مع Excel وطباعة 54×84 مم أو A4/PDF." actions={<Button onClick={() => setShowForm((value) => !value)}><Plus className="size-4" /> برنامج جديد</Button>} />
+    <PageHeader
+      title="الكوبونات"
+      description="برامج وإصدارات قابلة للتدقيق، مرتبطة بعرض مالي حقيقي، مع Excel وطباعة 54×84 مم أو A4/PDF."
+      actions={
+        <div className="flex items-center gap-2">
+          <Button onClick={() => setShowUnifiedBuilder(true)} className="gap-1.5">
+            <Sparkles className="size-4" /> المحرر الموحد
+          </Button>
+          <Button variant="outline" onClick={() => setShowForm((value) => !value)}>
+            <Plus className="size-4" /> برنامج يدوي
+          </Button>
+        </div>
+      }
+    />
 
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
       <Kpi label="البرامج" value={programs.data?.length ?? 0} />
@@ -420,5 +439,10 @@ export default function Coupons() {
         />
       </CardContent></Card>
     </div>}
+    <PromotionBuilder
+      open={showUnifiedBuilder}
+      onOpenChange={setShowUnifiedBuilder}
+      onSuccess={() => void programs.refetch()}
+    />
   </div>;
 }
