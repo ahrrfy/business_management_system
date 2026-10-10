@@ -44,9 +44,12 @@ const builtSource = fs.readFileSync(artifact, "utf8");
 if (builtSource.includes("tsx/esm/api") || builtSource.includes("tsImport(")) {
   throw new Error("HR_BRIDGE_ARTIFACT_USES_RUNTIME_TYPESCRIPT");
 }
+const builtCodeOnly = builtSource
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/\/\/.*/g, "");
 if (
-  /(?:\bfrom\s+|\bimport\s*(?:\(\s*)?|\brequire\s*\(\s*)["'][^"']+\.(?:[cm]?ts|tsx)["']/.test(
-    builtSource,
+  /(?:\bfrom\s+|\bimport\s*(?:\(\s*)?|\brequire\s*\(\s*)["'][^"']+(?<!\.d)\.(?:[cm]?ts|tsx)["']/.test(
+    builtCodeOnly,
   )
 ) {
   throw new Error("HR_BRIDGE_ARTIFACT_IMPORTS_TYPESCRIPT_SOURCE");

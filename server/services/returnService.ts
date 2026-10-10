@@ -182,7 +182,7 @@ export interface ReturnSaleInput {
   operatorReason?: string | null;
 }
 
-type UnremittedDeliverySnapshot = {
+export type UnremittedDeliverySnapshot = {
   id: number;
   partyId: number;
   branchId: number;
@@ -203,13 +203,13 @@ type UnremittedDeliverySnapshot = {
   custodyRecognizedAt?: Date | null;
 };
 
-type RemainingDeliveryCustody = {
+export type RemainingDeliveryCustody = {
   total: Decimal;
   shortfall: Decimal;
 };
 
 /** قيمة المرتجع تمتص المتبقي غير المدفوع أولاً؛ وما زاد وحده يمس المال المقبوض. */
-function allocateReturnAgainstInvoice(
+export function allocateReturnAgainstInvoice(
   invoice: { total: string; paidAmount: string; returnedTotal?: string | null },
   returnAmount: Decimal,
 ): { unpaidRelief: Decimal; paidRelief: Decimal } {
@@ -227,7 +227,7 @@ function allocateReturnAgainstInvoice(
 }
 
 /** دفتر التوصيل هو الحقيقة: يفصل النقد الفعلي عن العجز غير النقدي بلا تخمين من `codAmount`. */
-async function remainingUnremittedDeliveryCustody(
+export async function remainingUnremittedDeliveryCustody(
   tx: Tx,
   consignmentId: number,
 ): Promise<RemainingDeliveryCustody> {
@@ -258,7 +258,7 @@ async function remainingUnremittedDeliveryCustody(
  * لا يخرج نقدٌ من درج الكاشير. المرتجع الجزئي يعكس حصته فقط ويبقي الطرد حيّاً؛
  * والمرتجع الكامل يغلق ما تبقّى من العهدة ويحوّل الطرد إلى راجع.
  */
-async function reverseUnremittedDeliveryConsignment(
+export async function reverseUnremittedDeliveryConsignment(
   tx: Tx,
   cn: UnremittedDeliverySnapshot,
   invoiceId: number,

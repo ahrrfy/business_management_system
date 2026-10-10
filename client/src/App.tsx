@@ -89,6 +89,7 @@ const ExpenseCategories = lazy(() => import("@/pages/ExpenseCategories"));
 const InvoiceDetail = lazy(() => import("@/pages/InvoiceDetail"));
 const PointOfSale = lazy(() => import("@/pages/PointOfSale"));
 const PriceChecker = lazy(() => import("@/pages/PriceChecker"));
+const CustomerFacingDisplay = lazy(() => import("@/pages/CustomerFacingDisplay"));
 const Kiosk = lazy(() => import("@/pages/Kiosk"));
 const Storefront = lazy(() => import("@/pages/Storefront"));
 const ShelfPriceLookup = lazy(() => import("@/pages/ShelfPriceLookup"));
@@ -389,6 +390,8 @@ export default function App() {
       <Route path="/price-check"><Redirect to="/shelf-lookup" /></Route>
       {/* جهاز الكشك الخارجي — بملء الشاشة بمصادقة جهاز (كوكي رمز للقراءة فقط)، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/kiosk" component={Kiosk} />
+      {/* شاشة العميل المقابلة (Customer Facing Display - CFD) — بملء الشاشة بلا AppLayout وبلا دخول */}
+      <Route path="/cfd" component={CustomerFacingDisplay} />
       {/* تحقق ضيق لتطبيق الهاتف: يعيد رمز Turnstile فقط، ولا يعرض المتجر أو بيانات العميل. */}
       <Route path="/store/mobile-turnstile" component={MobileTurnstile} />
       {/* متجر الزبون (B2C) — روابط مباشرة للمنتجات والأقسام للتسويق والـ SEO ومحركات البحث */}
@@ -629,6 +632,7 @@ export default function App() {
       {/* أُدمجت في وحدة الموردين (SuppliersHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       <Route path="/ap-aging"><Redirect to="/suppliers?tab=aging" /></Route>
       <Route path="/suppliers-statement"><RedirectKeepQuery to="/suppliers?tab=statement" /></Route>
+      <Route path="/company-profile"><Redirect to="/settings?tab=profile" /></Route>
       <Route path="/kiosk-devices"><Redirect to="/settings?tab=devices" /></Route>
       <Route path="/shelf-qr"><Redirect to="/settings?tab=shelf-qr" /></Route>
       <Route path="/users"><Redirect to="/settings?tab=users" /></Route>

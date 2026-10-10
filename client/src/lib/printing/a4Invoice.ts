@@ -1,4 +1,4 @@
-import { CAIRO_FONT } from "./brand";
+import { CAIRO_FONT, CO } from "./brand";
 import { fmtQty } from "@shared/quantityFormat";
 import { fmtDate } from "../date";
 import { qrCodeSvgSync } from "./qr";
@@ -25,7 +25,7 @@ export type A4Invoice = {
   qrPayload?: string | null;
 };
 
-const SHOP = "الرؤية العربية للتجارة العامة — المكتبة العربية للطباعة والقرطاسية";
+const getShopName = () => `${CO.name} — ${CO.sub}`;
 const money = (v: string | number | null | undefined) =>
   Number(v ?? 0).toLocaleString("ar-IQ-u-nu-latn", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const esc = (s: unknown) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
@@ -80,7 +80,7 @@ ${CAIRO_FONT}
   .foot{margin-top:20px;text-align:center;color:#666;font-size:11px}
 </style></head><body>
   <div class="head">
-    <div class="shop">${SHOP}</div>
+    <div class="shop">${esc(getShopName())}</div>
     <div style="display:flex;align-items:center;gap:12px">
       ${qrSvg ? `<div class="qr" style="width:72px;height:72px">${qrSvg}</div>` : ""}
       <div style="text-align:left">
@@ -103,7 +103,7 @@ ${CAIRO_FONT}
     <div class="row"><span>المتبقّي</span><span class="l-num">${money(remaining)}</span></div>
   </div>
   <div class="sign"><div>توقيع المستلم</div><div>ختم وتوقيع الشركة</div></div>
-  <div class="foot">شكراً لتعاملكم معنا — ${SHOP}</div>
+  <div class="foot">${esc(CO.footer)} — ${esc(getShopName())}</div>
 </body></html>`;
 }
 

@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, Suspense, lazy } from "react";
 import { trpc } from "@/lib/trpc";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import { playAnnouncementChime } from "@/lib/notifyBeep";
 import type { AnnouncementItem } from "./AnnouncementDetailModal";
 
@@ -24,14 +26,23 @@ import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 
 export function BroadcastTicker() {
+  const utils = trpc.useUtils();
   const announcementsQuery = trpc.announcements.mine.useQuery(
     { limit: 20 },
     {
-      refetchInterval: 30_000,
       refetchOnWindowFocus: true,
       staleTime: 15_000,
     }
   );
+
+  // الاستماع اللحظي لنشر الإعلانات الإدارية والعاجلة لعرضها فوراً وإطلاق التنبيه الصوتي
+  useRealtimeEvent(REALTIME_EVENT_TYPES.ANNOUNCEMENT_PUBLISHED, (event) => {
+    void utils.announcements.mine.invalidate();
+    const payload = event.payload as { priority?: string } | undefined;
+    if (payload?.priority === "CRITICAL" || payload?.priority === "IMPORTANT") {
+      playAnnouncementChime(payload.priority as "CRITICAL" | "IMPORTANT");
+    }
+  });
 
   const announcements = (announcementsQuery.data?.rows || []) as AnnouncementItem[];
   const [currentIndex, setCurrentIndex] = useState(0);

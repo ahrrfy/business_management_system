@@ -20,6 +20,8 @@ import { isCurrentNativeClient } from "./auth/deviceProof";
 import { isCryptoReady } from "./services/cryptoService";
 import { canCrossBranches } from "./lib/branchAuthority";
 import { logger } from "./logger";
+import { isFinancialMutation } from "@shared/financialRealtime";
+import { scheduleFinancialRefresh } from "./realtime/financialRefresh";
 import {
   automaticActorForProcedure,
   buildAutomaticAuditData,
@@ -103,6 +105,7 @@ const auditMutationOperation = t.middleware(async ({ ctx, type, path, input, get
   // الجذر يسبق محلّل input في سلسلة tRPC؛ نقرأ الخام المخبّأ كي لا نفقد معرّف هدف update/delete.
   const auditInput = input === undefined ? await getRawInput() : input;
   const { value: result, specializedAuditWritten } = await withMutationAuditScope(() => next());
+  if (result.ok && isFinancialMutation(path)) scheduleFinancialRefresh();
   // فشل المستخدم الموثّق يُسجّل دائماً: قد يكون logAuditTx قد عُلّم ثم تراجعت معاملته.
   // الفشل غير الموثّق لا يكتب سطراً عاماً كي لا يتحول رفض batch رخيص إلى تضخيم I/O عن بُعد.
   const shouldWriteAutomatic = result.ok ? !specializedAuditWritten : ctx.user != null;
@@ -421,6 +424,9 @@ export const usersAdminProcedure = auditedProcedure
 export const settingsAdminProcedure = auditedProcedure
   .use(requireAdmin)
   .use(requireModuleGate(["admin"], "settings", "FULL"));
+
+/** قراءة الهوية المؤسسية للمنشأة: متاحة لجميع مستخدمي المنشأة المصادق عليهم (تُستعمل في ترويسات الطباعة والمستندات وواجهة التطبيق). */
+export const companyProfileReadProcedure = protectedProcedure;
 
 /** عمليات إدارية/مالية: المدير فأعلى (توافق خلفي كامل). */
 export const managerProcedure = auditedProcedure.use(requireRole("manager"));
@@ -797,12 +803,23 @@ export function customerReadAllowed(user: {
 }): boolean {
   if (user.role === "admin") return true;
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
-  if (override?.["customers"] === "NONE") return false;
+
+  // 1. حظر صريح للأدوار الإدارية وغير المحطية عند حجب العملاء:
+  // إذا تم حجب وحدة العملاء صراحةً (customers: "NONE") لدور غير كاشير المحطات (كالمدير والمحاسب ومندوب المبيعات)،
+  // فيُحجب الوصول منعاً للالتفاف عبر صلاحيات القالب الأصلية (F2 Module Enforce).
+  if (override?.["customers"] === "NONE" && user.role !== "cashier" && user.role !== "print_operator") {
+    return false;
+  }
+
+  // 2. فحص صلاحيات استعراض وبحث بيانات العملاء:
+  // يمرّ أي مستخدم يملك صلاحية صريحة بقراءة العملاء أو ينتمي لأي من بوابات ومحطات نقاط البيع
+  // (التجزئة، خدمات الطباعة، استقبال أوامر الشغل) أو إدارة علاقات العملاء (CRM).
   if (levelSatisfies(override?.["customers"], "READ")) return true;
   if (moduleAccessAllowed(user.role, override, "crm", "READ", ["cashier", "manager", "sales_rep", "accountant"])) return true;
   if (moduleAccessAllowed(user.role, override, "sales", "READ", ["cashier", "manager", "sales_rep"])) return true;
   if (moduleAccessAllowed(user.role, override, "pos", "READ", ["cashier", "manager", "print_operator"])) return true;
   if (moduleAccessAllowed(user.role, override, "workorders", "READ", ["cashier", "manager", "print_operator"])) return true;
+
   return false;
 }
 

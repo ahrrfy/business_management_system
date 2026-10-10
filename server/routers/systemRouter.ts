@@ -4,7 +4,7 @@
 import { count } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { adminProcedure, protectedProcedure, publicProcedure, router } from "../trpc";
+import { adminProcedure, companyProfileReadProcedure, protectedProcedure, publicProcedure, router, settingsAdminProcedure } from "../trpc";
 import type { TrpcContext } from "../context";
 import { getDb, isMultiTenantModeActive } from "../db";
 import { branches, users, products, customers, invoices } from "../../drizzle/schema";
@@ -14,6 +14,7 @@ import { getConfiguredTarget, describeTarget } from "../services/printService";
 import * as maint from "../services/maintenanceService";
 import { getTaxSettings, updateTaxSettings } from "../services/taxSettingsService";
 import { getOpeningMode, getOpeningProgress, updateOpeningMode } from "../services/openingModeService";
+import { getCompanyProfile, updateCompanyProfile } from "../services/companyProfileService";
 
 /** يتحقّق من كلمة مرور المدير الحالية (دفاع ضد النقر الخاطئ/جلسة مسروقة). */
 async function assertPassword(ctx: TrpcContext, password: string) {
@@ -233,4 +234,45 @@ export const systemRouter = router({
       });
       return { ok: true as const, settings: after };
     }),
+
+  /** بيانات المنشأة وهويتها المؤسسية (أيّ مُصادَق — تحتاجه شاشات الطباعة والإدارة). */
+  getCompanyProfile: companyProfileReadProcedure.query(() => getCompanyProfile()),
+
+  /** تحديث بيانات المنشأة والهوية المؤسسية (admin فقط مع وحدة settings — تغيير هويّة المنشأة فعل حوكمة). */
+  updateCompanyProfile: settingsAdminProcedure
+    .input(
+      z.object({
+        name: z.string().trim().min(1, "اسم المنشأة مطلوب").max(255),
+        tradeName: z.string().trim().max(255).optional().nullable(),
+        shortName: z.string().trim().max(100).optional().nullable(),
+        legalSubtitle: z.string().trim().max(255).optional().nullable(),
+        commercialRegistry: z.string().trim().max(100).optional().nullable(),
+        taxNumber: z.string().trim().max(100).optional().nullable(),
+        chamberLicense: z.string().trim().max(100).optional().nullable(),
+        address: z.string().trim().max(500).optional().nullable(),
+        phones: z
+          .array(
+            z.object({
+              label: z.string().trim().max(100),
+              number: z.string().trim().max(50),
+            }),
+          )
+          .optional(),
+        logoUrl: z.string().trim().max(2000).optional().nullable(),
+        footerText: z.string().trim().max(500).optional().nullable(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const before = await getCompanyProfile();
+      const profile = await updateCompanyProfile(input, { userId: ctx.user.id });
+      await logAudit(ctx, {
+        action: "system.companyProfile.update",
+        entityType: "system",
+        entityId: null,
+        oldValue: before,
+        newValue: profile,
+      });
+      return { ok: true as const, profile };
+    }),
 });
+

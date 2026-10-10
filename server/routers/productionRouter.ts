@@ -34,15 +34,18 @@ import {
   produceMultiRecipeInputSchema,
 } from "@shared/multiRecipeProductionTypes";
 import {
+  checkRecipeMaterialsAvailability,
   createRecipe,
   deleteRecipe,
   getRecipe,
   getRecipeForProduct,
   listRecipes,
+  listRecipesForImport,
   listRunnableRecipes,
   recipePreview,
   setRecipeActive,
   substituteRecipeMaterial,
+  suggestSimilarRecipes,
   updateRecipe,
 } from "../services/recipeService";
 import {
@@ -50,6 +53,7 @@ import {
   substituteRecipeMaterialInputSchema,
 } from "@shared/recipeSubstitutionTypes";
 import { logAudit } from "../services/auditService";
+import { listMaterialsForRecipe } from "../services/catalog/productExtras";
 import { inventoryManagerProcedure, productsReadProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
@@ -535,10 +539,62 @@ export const productionRouter = router({
 
     get: inventoryManagerProcedure.input(z.object({ id: z.number().int().positive() })).query(({ input }) => getRecipe(input.id)),
 
+    /** بحث المواد الخام المتاحة للاستخدام في الوصفة لمنشئي ومعدلي الوصفات والمخزون */
+    materials: inventoryManagerProcedure
+      .input(
+        z.object({
+          query: z.string().optional(),
+          limit: z.number().int().positive().max(200).default(100),
+        }),
+      )
+      .query(({ input }) => listMaterialsForRecipe(input.query, input.limit)),
+
     /** وصفة منتج محدد (خدمة أو مادي) مع متغيّره الأساس ووحدته للعرض المباشر في بطاقة المنتج */
     forProduct: productsReadProcedure
       .input(z.object({ productId: z.number().int().positive() }))
       .query(({ input }) => getRecipeForProduct(input.productId)),
+
+    /** اقتراحات تنبؤية للوصفات المشابهة بناءً على الصنف والاسم وتطابق الكلمات الدلالية */
+    suggestSimilar: productsReadProcedure
+      .input(
+        z.object({
+          productId: z.number().int().positive(),
+          limit: z.number().int().min(1).max(20).optional(),
+        }),
+      )
+      .query(({ input }) => suggestSimilarRecipes(input.productId, input.limit)),
+
+    /** قائمة وبحث الوصفات المتاحة للاستيراد كقالب تشغيلي */
+    listForImport: productsReadProcedure
+      .input(
+        z.object({
+          query: z.string().optional(),
+          excludeProductId: z.number().int().positive().optional(),
+          limit: z.number().int().min(1).max(50).optional(),
+        }),
+      )
+      .query(({ input }) => listRecipesForImport(input)),
+
+    /** فحص فوري لتوفر مواد الوصفة في مخزن الفرع وحساب الطاقة الإنتاجية الفورية */
+    checkStockAvailability: productsReadProcedure
+      .input(
+        z.object({
+          branchId: z.number().int().positive().nullish(),
+          lines: z.array(
+            z.object({
+              inputVariantId: z.number().int().positive(),
+              qtyPerOutputBase: z.string(),
+            }),
+          ),
+        }),
+      )
+      .query(({ input, ctx }) => {
+        const elevated = ctx.user.role === "admin";
+        const effectiveBranchId = elevated
+          ? Number(input.branchId ?? ctx.user.branchId ?? 0) || null
+          : Number(ctx.user.branchId ?? 0) || null;
+        return checkRecipeMaterialsAvailability({ branchId: effectiveBranchId ?? 0, lines: input.lines });
+      }),
 
     create: inventoryManagerProcedure.input(recipeInput).mutation(async ({ input, ctx }) => {
       try {

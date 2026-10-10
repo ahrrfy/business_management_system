@@ -13,11 +13,15 @@ import { verifyManagerApproval } from "./saleRouter";
 import { logAudit } from "../services/auditService";
 import { router, storeFulfillProcedure, storeManagerProcedure, storeReadProcedure } from "../trpc";
 import {
+  claimOnlineOrder,
   getOnlineOrder,
+  getOnlineOrderLeaderboard,
   listOnlineOrders,
+  markOnlineOrderPrepared,
   onlineOrderStatusCounts,
   setOnlineOrderStatus,
   updateOnlineOrder,
+  updateOnlineOrderContact,
 } from "../services/storeAdmin/orderFulfillmentService";
 import { dispatchOnlineOrder } from "../services/storeAdmin/dispatchOnlineOrder";
 import { listDeliveryParties } from "../services/deliveryService";
@@ -200,6 +204,79 @@ const ordersRouter = router({
       });
       return res;
     }),
+
+  /** استلام الموظف للطلب لحسابه وبدء التجهيز التنافسي */
+  claim: storeFulfillProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const scopedBranchId = actorScopedBranch(ctx.user);
+      const res = await claimOnlineOrder({ id: input.id, scopedBranchId }, { userId: ctx.user.id, role: ctx.user.role });
+      await logAudit(ctx, {
+        action: "store.order.claim",
+        entityType: "onlineOrder",
+        entityId: input.id,
+        oldValue: null,
+        newValue: { claimedByUserId: ctx.user.id },
+      });
+      return res;
+    }),
+
+  /** تحديث حالة التواصل والمراسلة مع العميل وتثبيت الطلب */
+  updateContact: storeFulfillProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        contactStatus: z.enum([
+          "NOT_CONTACTED",
+          "WHATSAPP_SENT",
+          "CALLED_CONFIRMED",
+          "NO_ANSWER",
+          "RETRY",
+        ]),
+        contactNotes: z.string().trim().max(500).nullish(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const scopedBranchId = actorScopedBranch(ctx.user);
+      const res = await updateOnlineOrderContact(
+        {
+          id: input.id,
+          contactStatus: input.contactStatus,
+          contactNotes: input.contactNotes ?? null,
+          scopedBranchId,
+        },
+        { userId: ctx.user.id, role: ctx.user.role }
+      );
+      await logAudit(ctx, {
+        action: "store.order.updateContact",
+        entityType: "onlineOrder",
+        entityId: input.id,
+        oldValue: null,
+        newValue: { contactStatus: input.contactStatus, contactNotes: input.contactNotes },
+      });
+      return res;
+    }),
+
+  /** إتمام التجهيز والتعليب واحتساب سرعة الإنجاز */
+  markPrepared: storeFulfillProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const scopedBranchId = actorScopedBranch(ctx.user);
+      const res = await markOnlineOrderPrepared({ id: input.id, scopedBranchId }, { userId: ctx.user.id, role: ctx.user.role });
+      await logAudit(ctx, {
+        action: "store.order.markPrepared",
+        entityType: "onlineOrder",
+        entityId: input.id,
+        oldValue: null,
+        newValue: { preparedByUserId: ctx.user.id, durationMinutes: res.durationMinutes },
+      });
+      return res;
+    }),
+
+  /** لوحة شرف التجهيز اليومية والشهرية */
+  leaderboard: storeReadProcedure.query(({ ctx }) =>
+    getOnlineOrderLeaderboard(ctx.scopedBranchId)
+  ),
 
   /** تعديل بيانات وبنود الطلب (قبل الإرسال) — مع إعادة الحساب وفحص ATP المانع للضياع الصامت */
   update: storeFulfillProcedure

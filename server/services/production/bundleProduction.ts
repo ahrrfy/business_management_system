@@ -13,13 +13,17 @@ import {
   products,
 } from "../../../drizzle/schema";
 import { requiredBatchMultiple } from "../../../shared/batchDivisibility";
-import type {
-  AggregatedMaterialDto,
-  AnalyzeBundleRequirementsInput,
-  BundleRequirementsAnalysisResult,
-  ComponentRequirementDto,
-  ProduceBundleComponentsInput,
-  ProduceBundleComponentsResult,
+import {
+  collectBundleProductionLockVariantIds,
+  deriveBundleComponentSubRequestId,
+  isValidBatchYield,
+  sortLockIds,
+  type AggregatedMaterialDto,
+  type AnalyzeBundleRequirementsInput,
+  type BundleRequirementsAnalysisResult,
+  type ComponentRequirementDto,
+  type ProduceBundleComponentsInput,
+  type ProduceBundleComponentsResult,
 } from "../../../shared/bundleProductionTypes";
 import type { MaterialSubstitutionItem } from "../../../shared/recipeSubstitutionTypes";
 import { loadBundleUnitCosts, syncBundlesContainingComponents } from "../bundleService";
@@ -96,6 +100,7 @@ export async function analyzeBundleRequirements(
         id: bundleComponents.id,
         componentVariantId: bundleComponents.componentVariantId,
         componentBaseQuantity: bundleComponents.componentBaseQuantity,
+        productId: products.id,
         productName: products.name,
         sku: productVariants.sku,
         costPrice: productVariants.costPrice,
@@ -135,6 +140,33 @@ export async function analyzeBundleRequirements(
     }
 
     const compVariantIds = compRows.map((c) => c.componentVariantId);
+
+    // استعلام الوحدات الأساسية النشطة للمكونات لعرضها واستخدامها في بناء/نسخ الوصفات
+    const baseUnits = compVariantIds.length > 0
+      ? await tx
+          .select({
+            id: productUnits.id,
+            variantId: productUnits.variantId,
+            unitName: productUnits.unitName,
+            isBaseUnit: productUnits.isBaseUnit,
+            isActive: productUnits.isActive,
+          })
+          .from(productUnits)
+          .where(
+            and(
+              inArray(productUnits.variantId, compVariantIds),
+              eq(productUnits.isBaseUnit, true),
+              eq(productUnits.isActive, true),
+            ),
+          )
+      : [];
+    const baseUnitByVariant = new Map<number, { id: number; unitName: string }>();
+    for (const u of baseUnits) {
+      const vid = Number(u.variantId);
+      if (!baseUnitByVariant.has(vid)) {
+        baseUnitByVariant.set(vid, { id: Number(u.id), unitName: u.unitName });
+      }
+    }
 
     // ③ استعلام الوصفات النشطة للمكونات
     const activeRecipes = await tx
@@ -371,8 +403,13 @@ export async function analyzeBundleRequirements(
       const laborPerUnit = recipe ? String(recipe.laborPerOutputBase ?? "0.00") : "0.00";
       const wasteStdPct = recipe ? String(recipe.wasteStdPct ?? "0.00") : "0.00";
 
+      const baseUnit = baseUnitByVariant.get(variantId);
+
       components.push({
         variantId,
+        productId: Number(c.productId),
+        baseUnitId: baseUnit ? Number(baseUnit.id) : null,
+        baseUnitName: baseUnit?.unitName ?? null,
         productName: c.productName,
         sku: c.sku,
         componentBaseQuantity: c.componentBaseQuantity,
@@ -407,12 +444,33 @@ export async function analyzeBundleRequirements(
       originalSku?: string | null;
     }
 
+    const userBatchMap = input.batches
+      ? new Map(input.batches.map((b) => [Number(b.variantId), b]))
+      : null;
+
+    const getEffectiveBatchQty = (comp: (typeof components)[number]): number => {
+      if (!userBatchMap) return comp.suggestedBatchQty;
+      const userBatch = userBatchMap.get(comp.variantId);
+      if (!userBatch || userBatch.selected === false || userBatch.batchQty <= 0) return 0;
+      return userBatch.batchQty;
+    };
+
+    const getEffectiveLaborPerUnit = (comp: (typeof components)[number]): string => {
+      if (!userBatchMap) return comp.laborPerUnit;
+      const userBatch = userBatchMap.get(comp.variantId);
+      if (userBatch?.laborPerUnit && userBatch.laborPerUnit.trim() !== "") {
+        return userBatch.laborPerUnit.trim();
+      }
+      return comp.laborPerUnit;
+    };
+
     const materialMap = new Map<number, MaterialAccumulator>();
 
     for (const comp of components) {
       if (!comp.isManufactured || !comp.recipeId) continue;
+      const batchQty = getEffectiveBatchQty(comp);
+      if (batchQty <= 0) continue;
       const lines = linesByRecipeId.get(comp.recipeId) ?? [];
-      const batchQty = comp.suggestedBatchQty;
       for (const l of lines) {
         const matVarId = Number(l.inputVariantId);
         const needed = new Decimal(l.qtyPerOutputBase).times(batchQty);
@@ -530,18 +588,20 @@ export async function analyzeBundleRequirements(
       maxBundlesPossible = Math.max(0, maxBundlesPossible);
     }
 
-    // ⑧ تقدير التكاليف الإجمالية للدفعة المقترحة
+    // ⑧ تقدير التكاليف الإجمالية للدفعة
     let estLabor = new Decimal(0);
     let estMaterials = new Decimal(0);
 
     for (const comp of components) {
-      if (!comp.isManufactured || !comp.recipeId || comp.suggestedBatchQty <= 0) continue;
-      const lab = money(comp.laborPerUnit).times(comp.suggestedBatchQty);
+      if (!comp.isManufactured || !comp.recipeId) continue;
+      const batchQty = getEffectiveBatchQty(comp);
+      if (batchQty <= 0) continue;
+      const lab = money(getEffectiveLaborPerUnit(comp)).times(batchQty);
       estLabor = estLabor.plus(lab);
 
       const lines = linesByRecipeId.get(comp.recipeId) ?? [];
       for (const l of lines) {
-        const needed = new Decimal(l.qtyPerOutputBase).times(comp.suggestedBatchQty);
+        const needed = new Decimal(l.qtyPerOutputBase).times(batchQty);
         const cost = needed.times(money(l.materialCostPrice ?? "0"));
         estMaterials = estMaterials.plus(cost);
       }
@@ -684,7 +744,7 @@ export async function produceBundleComponents(
       }
 
       const scrap = b.scrapQty ?? 0;
-      if (scrap >= b.batchQty) {
+      if (!isValidBatchYield(b.batchQty, scrap)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
@@ -771,14 +831,12 @@ export async function produceBundleComponents(
     ];
 
     // جمع كافة المتغيرات المشتركة في العملية وقفلها حتمياً بالترتيب الحاكم لمنع الـ Deadlock
-    const allVariantIdsToLock = Array.from(
-      new Set([
-        input.bundleVariantId,
-        ...sortedBatches.map((b) => b.variantId),
-        ...batchRecipeLines.map((l) => Number(l.inputVariantId)),
-        ...subVariantIds,
-      ])
-    ).sort((a, b) => a - b);
+    const allVariantIdsToLock = collectBundleProductionLockVariantIds({
+      bundleVariantId: input.bundleVariantId,
+      batchVariantIds: sortedBatches.map((b) => b.variantId),
+      recipeInputVariantIds: batchRecipeLines.map((l) => Number(l.inputVariantId)),
+      substituteVariantIds: subVariantIds,
+    });
 
     const variantProdRows = await tx
       .select({ id: productVariants.id, productId: productVariants.productId })
@@ -786,9 +844,9 @@ export async function produceBundleComponents(
       .where(inArray(productVariants.id, allVariantIdsToLock))
       .orderBy(asc(productVariants.id));
 
-    const allProductIdsToLock = Array.from(
-      new Set(variantProdRows.map((r) => Number(r.productId)))
-    ).sort((a, b) => a - b);
+    const allProductIdsToLock = sortLockIds(
+      variantProdRows.map((r) => Number(r.productId))
+    );
 
     // ١. قفل المنتجات تصاعدياً
     if (allProductIdsToLock.length > 0) {
@@ -845,7 +903,7 @@ export async function produceBundleComponents(
     let totalCostAccumulator = new Decimal(0);
 
     for (const batch of sortedBatches) {
-      const subRequestId = `${input.clientRequestId}:comp:${batch.variantId}`;
+      const subRequestId = deriveBundleComponentSubRequestId(input.clientRequestId, batch.variantId);
       const prodName = variantNameMap.get(batch.variantId) ?? `#${batch.variantId}`;
       const batchNotes = input.notes?.trim()
         ? `${input.notes.trim()} [حزمة ${bundleDocGroupRef} - بكج: ${bundle.name} (#${input.bundleVariantId})]`

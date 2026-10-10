@@ -26,8 +26,8 @@ export function BundleKitSuccessStep({
         <h3 className="font-bold text-lg text-foreground">
           تم توليد وترحيل أوامر إنتاج البكج بنجاح!
         </h3>
-        <p className="text-xs text-muted-foreground font-mono">
-          المرجع التجميعي للحزمة: {result.bundleDocGroupRef}
+        <p className="text-xs text-muted-foreground font-mono tabular-nums" dir="ltr">
+          {result.bundleDocGroupRef}
         </p>
       </div>
 
@@ -36,7 +36,7 @@ export function BundleKitSuccessStep({
           <span className="text-[11px] text-muted-foreground block">
             إجمالي تكلفة كافة أوامر الإنتاج
           </span>
-          <span className="font-bold text-base text-[var(--sem-pos)]">
+          <span className="font-bold text-base text-[var(--sem-pos)] font-mono tabular-nums" dir="ltr">
             {formatIqd(result.totalCostAllOrders)}
           </span>
         </div>
@@ -45,7 +45,7 @@ export function BundleKitSuccessStep({
           <span className="text-[11px] text-muted-foreground block">
             تكلفة وحدة البكج المحدثة (WAVG)
           </span>
-          <span className="font-bold text-base text-foreground">
+          <span className="font-bold text-base text-foreground font-mono tabular-nums" dir="ltr">
             {formatIqd(result.updatedBundleUnitCost)}
           </span>
         </div>
@@ -63,15 +63,15 @@ export function BundleKitSuccessStep({
             >
               <div>
                 <span className="font-bold">{o.productName}</span>
-                <span className="text-muted-foreground ms-2">
-                  (سليم: {o.goodQty})
+                <span className="text-muted-foreground ms-2 whitespace-nowrap">
+                  (سليم: <span className="font-mono tabular-nums" dir="ltr">{o.goodQty}</span>)
                 </span>
               </div>
               <div className="flex items-center gap-3">
-                <span className="font-mono text-muted-foreground">
+                <span className="font-mono text-muted-foreground tabular-nums" dir="ltr">
                   {o.docNumber}
                 </span>
-                <span className="font-bold text-[var(--sem-pos)]">
+                <span className="font-bold text-[var(--sem-pos)] font-mono tabular-nums" dir="ltr">
                   {formatIqd(o.totalCost)}
                 </span>
               </div>
@@ -85,13 +85,13 @@ export function BundleKitSuccessStep({
           type="button"
           variant="outline"
           size="sm"
-          className="gap-1.5"
+          className="gap-1.5 whitespace-nowrap shrink-0"
           onClick={onProduceAnother}
         >
           <RotateCcw className="size-4" />
           إنتاج دفعة أخرى
         </Button>
-        <Button type="button" size="sm" onClick={onClose}>
+        <Button type="button" size="sm" className="whitespace-nowrap shrink-0" onClick={onClose}>
           إغلاق النافذة
         </Button>
       </div>

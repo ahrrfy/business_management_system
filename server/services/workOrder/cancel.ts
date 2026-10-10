@@ -32,6 +32,12 @@ import {
 import type { ApprovedWorkOrderControl } from "./update";
 import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
 import { computeWorkOrderInvoiceNetPaidInTx } from "./reverseDelivery";
+import { publishRealtimeEvent } from "../../realtime";
+import {
+  REALTIME_EVENT_TYPES,
+  type WorkOrderStatusChangedPayload,
+  type ReceptionQueueUpdatedPayload,
+} from "@shared/realtimeEvents";
 
 async function resolveLockedReceptionCashShift(
   tx: Tx,
@@ -933,7 +939,35 @@ export async function cancelWorkOrder(
   opts: CancelWorkOrderOptions = {},
   control: ApprovedWorkOrderControl = {},
 ) {
-  return withTx((tx) => cancelWorkOrderInTx(tx, workOrderId, actor, opts, control));
+  const result = await withTx((tx) =>
+    cancelWorkOrderInTx(tx, workOrderId, actor, opts, control),
+  );
+  try {
+    const branchId = actor.branchId ?? undefined;
+    publishRealtimeEvent<WorkOrderStatusChangedPayload>(
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+      {
+        workOrderId,
+        branchId: branchId ?? 0,
+        newStatus: "CANCELLED",
+        updatedBy: actor.userId,
+      },
+      branchId ? { branchId } : undefined,
+    );
+    publishRealtimeEvent<ReceptionQueueUpdatedPayload>(
+      REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+      {
+        orderId: workOrderId,
+        branchId: branchId ?? 0,
+        status: "CANCELLED",
+        readyForPickup: false,
+      },
+      branchId ? { branchId } : undefined,
+    );
+  } catch {
+    // fail-safe
+  }
+  return result;
 }
 
 /**

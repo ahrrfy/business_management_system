@@ -206,6 +206,24 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
         paymentMode: "COD" as const,
         codDispatchPending: true,
         onlineOrderAllocationId: Number(cur.id),
+        // إسناد البيع للموظف الذي جهز الطلب ليحصل على العمولة وحافز سرعة التجهيز المقطوع
+        attributeToUserId: cur.preparedByUserId
+          ? Number(cur.preparedByUserId)
+          : cur.claimedByUserId
+            ? Number(cur.claimedByUserId)
+            : undefined,
+        salesRepId: cur.preparedByUserId
+          ? Number(cur.preparedByUserId)
+          : cur.claimedByUserId
+            ? Number(cur.claimedByUserId)
+            : undefined,
+        attribution: (cur.preparedByUserId || cur.claimedByUserId)
+          ? {
+              repId: Number(cur.preparedByUserId ?? cur.claimedByUserId),
+              role: "FULFILLER" as const,
+              mode: "DIRECT" as const,
+            }
+          : undefined,
       };
       const sale = await createSaleInTx(tx, saleInput, actor);
       if (lockedCoupon) {

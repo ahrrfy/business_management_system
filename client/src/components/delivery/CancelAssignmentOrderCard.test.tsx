@@ -68,6 +68,55 @@ describe("CancelAssignmentOrderCard", () => {
     },
   };
 
+  const sampleParties = [
+    {
+      id: 10,
+      name: "مندوب السلام (أحمد)",
+      partyType: "INDIVIDUAL" as const,
+      phone: "07700000001",
+      userId: null,
+      branchId: 1,
+      defaultFee: "5000.00",
+      currentBalance: "350000.00",
+      floatLimit: "500000.00",
+      isActive: true,
+      drivers: [],
+      hasPortalAccess: false,
+      openConsignments: 4,
+      oldestOutstanding: null,
+      parcelsInTransitAmount: "350000.00",
+      deliveredUncollectedAmount: "0.00",
+      feesOwedAmount: "0.00",
+      shortfallOwedAmount: "0.00",
+      cashInHandLedger: "0.00",
+      cashInHandStored: "0.00",
+      cashInHandDrift: "0.00",
+    },
+    {
+      id: 20,
+      name: "شركة البراق السريع",
+      partyType: "COMPANY" as const,
+      phone: "07800000002",
+      userId: null,
+      branchId: 1,
+      defaultFee: "6000.00",
+      currentBalance: "100000.00",
+      floatLimit: null,
+      isActive: true,
+      drivers: [],
+      hasPortalAccess: false,
+      openConsignments: 2,
+      oldestOutstanding: null,
+      parcelsInTransitAmount: "100000.00",
+      deliveredUncollectedAmount: "0.00",
+      feesOwedAmount: "0.00",
+      shortfallOwedAmount: "0.00",
+      cashInHandLedger: "0.00",
+      cashInHandStored: "0.00",
+      cashInHandDrift: "0.00",
+    },
+  ];
+
   it("يعرض تنبيهاً واضحاً عندما يكون الطلب غير مسند حالياً", () => {
     const onNavigate = vi.fn();
     act(() => {
@@ -262,5 +311,87 @@ describe("CancelAssignmentOrderCard", () => {
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
     expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("يتيح اختيار أسباب الإلغاء السريعة بنقرة واحدة عبر الشرائح", () => {
+    const onReasonChange = vi.fn();
+    act(() => {
+      root.render(
+        <CancelAssignmentOrderCard
+          scannedOrder={sampleAssignedOrder}
+          reason=""
+          onReasonChange={onReasonChange}
+          onConfirmCancel={() => undefined}
+          onReset={() => undefined}
+          isPending={false}
+        />,
+      );
+    });
+
+    const chip = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("استلام الزبون من الفرع"),
+    );
+    expect(chip).toBeTruthy();
+    act(() => {
+      chip?.click();
+    });
+    expect(onReasonChange).toHaveBeenCalledWith("استلام الزبون من الفرع");
+  });
+
+  it("يعرض مؤشر عهدة المندوب الميدانية والطرود المفتوحة عبر شارة الذكاء التشغيلي", () => {
+    act(() => {
+      root.render(
+        <CancelAssignmentOrderCard
+          scannedOrder={sampleAssignedOrder}
+          allParties={sampleParties}
+          reason=""
+          onReasonChange={() => undefined}
+          onConfirmCancel={() => undefined}
+          onReset={() => undefined}
+          isPending={false}
+        />,
+      );
+    });
+
+    expect(host.textContent).toContain("مؤشر عهدة المندوب الميدانية:");
+    expect(host.textContent).toContain("4 طرد");
+    expect(host.textContent).toContain("350,000 د.ع");
+  });
+
+  it("يتيح التحويل المباشر لمندوب آخر واختياره وتأكيد الإسناد الفوري", () => {
+    const onConfirmReassign = vi.fn();
+    act(() => {
+      root.render(
+        <CancelAssignmentOrderCard
+          scannedOrder={sampleAssignedOrder}
+          allParties={sampleParties}
+          reason=""
+          onReasonChange={() => undefined}
+          onConfirmCancel={() => undefined}
+          onConfirmReassign={onConfirmReassign}
+          onReset={() => undefined}
+          isPending={false}
+        />,
+      );
+    });
+
+    const switchBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("تحويل لمندوب آخر مباشرة"),
+    );
+    expect(switchBtn).toBeTruthy();
+    act(() => {
+      switchBtn?.click();
+    });
+
+    expect(host.textContent).toContain("اختر المندوب الجديد لتحويل الإرسالية إليه");
+    const trigger = host.querySelector("[role='combobox']");
+    expect(trigger).toBeTruthy();
+
+    const reassignBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("تأكيد التحويل للمندوب الجديد"),
+    );
+    expect(reassignBtn).toBeTruthy();
+    // لم يتم اختيار مندوب بديل بعد => الزر معطل
+    expect(reassignBtn?.disabled).toBe(true);
   });
 });

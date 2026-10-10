@@ -1,7 +1,10 @@
-import { AlertTriangle, Check, Layers, SlidersHorizontal } from "lucide-react";
+import * as React from "react";
+import { AlertTriangle, Copy, Layers, Plus, RotateCcw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { digitsArabicToLatin, normalizeDecimalInput } from "@shared/numberNormalize";
 import type { ComponentRequirementDto } from "@shared/bundleProductionTypes";
 
 export interface BundleKitComponentBatch {
@@ -18,6 +21,8 @@ interface BundleKitComponentsStepProps {
   batches: BundleKitComponentBatch[];
   onBatchChange: (variantId: number, update: Partial<BundleKitComponentBatch>) => void;
   onToggleAll: (selected: boolean) => void;
+  onResetToSuggested?: () => void;
+  onAddRecipe?: (component: ComponentRequirementDto) => void;
 }
 
 export function BundleKitComponentsStep({
@@ -25,6 +30,8 @@ export function BundleKitComponentsStep({
   batches,
   onBatchChange,
   onToggleAll,
+  onResetToSuggested,
+  onAddRecipe,
 }: BundleKitComponentsStepProps) {
   const batchMap = new Map<number, BundleKitComponentBatch>(
     batches.map((b) => [b.variantId, b]),
@@ -46,7 +53,7 @@ export function BundleKitComponentsStep({
       {/* تنبيه السلع التجارية الناقصة */}
       {commercialShortages.length > 0 && (
         <div className="flex items-start gap-3 rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm text-[var(--sem-warn)]">
-          <AlertTriangle className="size-5 shrink-0 mt-0.5" />
+          <AlertTriangle aria-hidden="true" className="size-5 shrink-0 mt-0.5" />
           <div className="space-y-1">
             <p className="font-semibold">تنبيه: سلع تجارية غير مصنعة بحاجة لتوريد</p>
             <p className="text-xs text-muted-foreground">
@@ -75,40 +82,55 @@ export function BundleKitComponentsStep({
         </div>
 
         {manufacturedCount > 0 && (
-          <div className="flex items-center gap-2">
-            <Checkbox
-              id="toggle-all-mfg"
-              checked={allManufacturedSelected}
-              onCheckedChange={(checked) => onToggleAll(Boolean(checked))}
-            />
-            <label
-              htmlFor="toggle-all-mfg"
-              className="cursor-pointer font-medium select-none"
-            >
-              تحديد كافة المكونات المصنعة
-            </label>
+          <div className="flex items-center gap-3">
+            {onResetToSuggested && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onResetToSuggested}
+                className="h-7 text-xs px-2.5 gap-1.5 text-muted-foreground hover:text-foreground"
+              >
+                <RotateCcw className="size-3" aria-hidden="true" />
+                استعادة المقترحات
+              </Button>
+            )}
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="toggle-all-mfg"
+                aria-label="تحديد كافة المكونات المصنعة"
+                checked={allManufacturedSelected}
+                onCheckedChange={(checked) => onToggleAll(Boolean(checked))}
+              />
+              <label
+                htmlFor="toggle-all-mfg"
+                className="cursor-pointer font-medium select-none"
+              >
+                تحديد كافة المكونات المصنعة
+              </label>
+            </div>
           </div>
         )}
       </div>
 
       {/* جدول المكونات */}
-      <div className="overflow-x-auto rounded-lg border">
-        <table className="w-full text-xs text-start">
-          <thead className="bg-muted/60 text-muted-foreground">
+      <div className="overflow-x-auto rounded-lg border border-border bg-card/40">
+        <table className="w-full text-xs text-start min-w-[980px] border-collapse">
+          <thead className="bg-muted/70 text-muted-foreground">
             <tr>
-              <th className="p-2.5 text-center w-10">تضمين</th>
-              <th className="p-2.5 text-start font-medium">المكون والنوع</th>
-              <th className="p-2.5 text-center font-medium">لكل طقم</th>
-              <th className="p-2.5 text-center font-medium">المطلوب كلياً</th>
-              <th className="p-2.5 text-center font-medium">المتاح بالفرع</th>
-              <th className="p-2.5 text-center font-medium">العجز الصافي</th>
-              <th className="p-2.5 text-center font-medium">مضاعف الدفعة</th>
-              <th className="p-2.5 text-center font-medium w-28">كمية الإنتاج</th>
-              <th className="p-2.5 text-center font-medium w-20">تالف متوقع</th>
-              <th className="p-2.5 text-center font-medium w-24">أجور عمالة</th>
+              <th scope="col" className="p-2.5 text-center w-12 whitespace-nowrap select-none">تضمين</th>
+              <th scope="col" className="p-2.5 text-start font-medium min-w-[240px] whitespace-nowrap select-none">المكون والنوع</th>
+              <th scope="col" className="p-2.5 text-center font-medium min-w-[75px] whitespace-nowrap select-none">لكل طقم</th>
+              <th scope="col" className="p-2.5 text-center font-medium min-w-[85px] whitespace-nowrap select-none">المطلوب كلياً</th>
+              <th scope="col" className="p-2.5 text-center font-medium min-w-[85px] whitespace-nowrap select-none">المتاح بالفرع</th>
+              <th scope="col" className="p-2.5 text-center font-medium min-w-[85px] whitespace-nowrap select-none">العجز الصافي</th>
+              <th scope="col" className="p-2.5 text-center font-medium min-w-[100px] whitespace-nowrap select-none">مضاعف الدفعة</th>
+              <th scope="col" className="p-2.5 text-center font-medium min-w-[110px] w-28 whitespace-nowrap select-none">كمية الإنتاج</th>
+              <th scope="col" className="p-2.5 text-center font-medium min-w-[85px] w-20 whitespace-nowrap select-none">تالف متوقع</th>
+              <th scope="col" className="p-2.5 text-center font-medium min-w-[105px] w-24 whitespace-nowrap select-none">أجور عمالة</th>
             </tr>
           </thead>
-          <tbody className="divide-y">
+          <tbody className="divide-y divide-border">
             {components.map((c) => {
               const batch = batchMap.get(c.variantId);
               const isSelected = batch?.selected ?? false;
@@ -118,23 +140,30 @@ export function BundleKitComponentsStep({
                   key={c.variantId}
                   className={`transition-colors ${
                     !c.isManufactured
-                      ? "bg-muted/20 opacity-80"
+                      ? "bg-muted/15"
                       : isSelected
                         ? "bg-primary/5"
                         : "hover:bg-muted/30"
                   }`}
                 >
-                  <td className="p-2 text-center">
+                  <td className="p-2 text-center whitespace-nowrap">
                     {c.isManufactured ? (
                       <Checkbox
                         checked={isSelected}
+                        aria-label={`تضمين ${c.productName} في أمر تصنيع البكج`}
                         onCheckedChange={(checked) => {
                           const isNowSelected = Boolean(checked);
                           const currentBatch = batchMap.get(c.variantId);
                           const currentQty = currentBatch?.batchQty ?? 0;
+                          const fallbackQty =
+                            c.suggestedBatchQty > 0
+                              ? c.suggestedBatchQty
+                              : c.totalRequiredQty > 0
+                                ? c.totalRequiredQty
+                                : (c.requiredBatchMultiple || 1);
                           onBatchChange(c.variantId, {
                             selected: isNowSelected,
-                            batchQty: isNowSelected && currentQty <= 0 ? (c.requiredBatchMultiple || 1) : currentQty,
+                            batchQty: isNowSelected && currentQty <= 0 ? fallbackQty : currentQty,
                           });
                         }}
                       />
@@ -144,39 +173,55 @@ export function BundleKitComponentsStep({
                   </td>
 
                   <td className="p-2.5">
-                    <div className="font-semibold text-foreground">{c.productName}</div>
-                    <div className="flex items-center gap-1.5 mt-0.5">
+                    <div className="font-semibold text-foreground leading-snug">{c.productName}</div>
+                    <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                       <span className="font-mono text-[11px] text-muted-foreground" dir="ltr">
                         {c.sku}
                       </span>
                       {c.isManufactured ? (
                         <Badge
                           variant="secondary"
-                          className="text-[10px] py-0 px-1.5 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-none"
+                          className="text-[10px] py-0 px-1.5 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-none whitespace-nowrap shrink-0"
                         >
-                          <Layers className="size-3 me-1" />
+                          <Layers aria-hidden="true" className="size-3 me-1" />
                           {c.recipeName ?? "مصنّع"}
                         </Badge>
                       ) : (
-                        <Badge
-                          variant="outline"
-                          className="text-[10px] py-0 px-1.5 text-muted-foreground"
-                        >
-                          سلعة تجارية
-                        </Badge>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] py-0 px-1.5 text-muted-foreground whitespace-nowrap shrink-0"
+                          >
+                            سلعة تجارية
+                          </Badge>
+                          {onAddRecipe && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => onAddRecipe(c)}
+                              className="h-5 text-[10px] px-2 py-0 border-dashed border-primary/50 text-primary hover:bg-primary/10 hover:border-primary gap-1 font-medium whitespace-nowrap shrink-0"
+                              title="إضافة أو نسخ وصفة إنتاج لتحويل هذا الصنف إلى مكوّن مصنّع"
+                              aria-label={`تحويل ${c.productName} لمصنّع أو نسخ وصفة`}
+                            >
+                              <Copy aria-hidden="true" className="size-2.5" />
+                              <span>تحويل لمصنّع / نسخ وصفة</span>
+                            </Button>
+                          )}
+                        </div>
                       )}
                     </div>
                   </td>
 
-                  <td className="p-2.5 text-center font-mono font-medium">
+                  <td className="p-2.5 text-center font-mono font-medium whitespace-nowrap" dir="ltr">
                     {c.componentBaseQuantity}
                   </td>
 
-                  <td className="p-2.5 text-center font-mono font-medium">
+                  <td className="p-2.5 text-center font-mono font-medium whitespace-nowrap" dir="ltr">
                     {c.totalRequiredQty}
                   </td>
 
-                  <td className="p-2.5 text-center font-mono">
+                  <td className="p-2.5 text-center font-mono whitespace-nowrap" dir="ltr">
                     <span
                       className={
                         c.onHandStock >= c.totalRequiredQty
@@ -188,7 +233,7 @@ export function BundleKitComponentsStep({
                     </span>
                   </td>
 
-                  <td className="p-2.5 text-center font-mono">
+                  <td className="p-2.5 text-center font-mono whitespace-nowrap" dir="ltr">
                     {c.shortageQty > 0 ? (
                       <span className="text-[var(--sem-neg)] font-bold">
                         {c.shortageQty}
@@ -198,16 +243,16 @@ export function BundleKitComponentsStep({
                     )}
                   </td>
 
-                  <td className="p-2.5 text-center">
+                  <td className="p-2.5 text-center whitespace-nowrap">
                     {c.isManufactured ? (
                       <div className="space-y-0.5">
-                        <span className="font-mono text-xs">
+                        <span className="font-mono text-xs" dir="ltr">
                           {c.requiredBatchMultiple > 1
                             ? `مضاعف ${c.requiredBatchMultiple}`
                             : "1 (حر)"}
                         </span>
                         {c.surplusBufferQty > 0 && (
-                          <div className="text-[10px] text-[var(--sem-info)]">
+                          <div className="text-[10px] text-[var(--sem-info)] font-mono" dir="ltr">
                             فائض جبر: +{c.surplusBufferQty}
                           </div>
                         )}
@@ -217,15 +262,18 @@ export function BundleKitComponentsStep({
                     )}
                   </td>
 
-                  <td className="p-2 text-center">
+                  <td className="p-2 text-center whitespace-nowrap">
                     {c.isManufactured ? (
                       <div className="space-y-0.5">
                         <Input
                           type="number"
                           min="1"
+                          dir="ltr"
+                          lang="en-US"
                           step={c.requiredBatchMultiple || 1}
                           disabled={!isSelected}
-                          className="h-8 text-center text-xs font-mono font-bold"
+                          aria-label={`كمية إنتاج ${c.productName}`}
+                          className="h-8 text-center text-xs font-mono font-bold w-20 mx-auto"
                           value={batch ? (batch.batchQty === 0 ? "" : batch.batchQty) : c.suggestedBatchQty}
                           onChange={(e) => {
                             const raw = e.target.value;
@@ -233,33 +281,50 @@ export function BundleKitComponentsStep({
                               onBatchChange(c.variantId, { batchQty: 0 });
                               return;
                             }
-                            const val = parseInt(raw, 10);
+                            const val = parseInt(digitsArabicToLatin(raw), 10);
                             onBatchChange(c.variantId, {
                               batchQty: Number.isFinite(val) ? Math.max(0, val) : 0,
                             });
                           }}
                         />
                         {c.requiredBatchMultiple > 1 && isSelected && (batch?.batchQty ?? 0) > 0 && (batch?.batchQty ?? 0) % c.requiredBatchMultiple !== 0 && (
-                          <div className="text-[10px] text-[var(--sem-warn)]">
+                          <div className="text-[10px] text-[var(--sem-warn)] whitespace-nowrap">
                             مضاعف {c.requiredBatchMultiple}
                           </div>
                         )}
                       </div>
                     ) : (
-                      <span className="text-muted-foreground text-xs">شراء خارجي</span>
+                      <div className="flex flex-col items-center gap-1">
+                        <span className="text-muted-foreground text-xs whitespace-nowrap">شراء خارجي</span>
+                        {onAddRecipe && (
+                          <button
+                            type="button"
+                            onClick={() => onAddRecipe(c)}
+                            className="text-[10px] text-primary hover:underline font-medium flex items-center gap-0.5 cursor-pointer whitespace-nowrap shrink-0"
+                            title="إضافة وصفة وتصنيع الصنف"
+                            aria-label={`إضافة وصفة وتصنيع ${c.productName}`}
+                          >
+                            <Plus aria-hidden="true" className="size-2.5" />
+                            <span>+ إضافة وصفة</span>
+                          </button>
+                        )}
+                      </div>
                     )}
                   </td>
 
-                  <td className="p-2 text-center">
+                  <td className="p-2 text-center whitespace-nowrap">
                     {c.isManufactured ? (
                       <Input
                         type="number"
                         min="0"
+                        dir="ltr"
+                        lang="en-US"
                         disabled={!isSelected}
-                        className="h-8 text-center text-xs font-mono"
+                        aria-label={`تالف متوقع لـ ${c.productName}`}
+                        className="h-8 text-center text-xs font-mono w-16 mx-auto"
                         value={batch?.scrapQty ?? 0}
                         onChange={(e) => {
-                          const val = parseInt(e.target.value, 10);
+                          const val = parseInt(digitsArabicToLatin(e.target.value), 10);
                           onBatchChange(c.variantId, {
                             scrapQty: Number.isFinite(val) && val >= 0 ? val : 0,
                           });
@@ -270,15 +335,19 @@ export function BundleKitComponentsStep({
                     )}
                   </td>
 
-                  <td className="p-2 text-center">
+                  <td className="p-2 text-center whitespace-nowrap">
                     {c.isManufactured ? (
                       <Input
                         type="text"
+                        inputMode="decimal"
+                        dir="ltr"
+                        lang="en-US"
                         disabled={!isSelected}
-                        className="h-8 text-center text-xs font-mono"
+                        aria-label={`أجور عمالة لـ ${c.productName}`}
+                        className="h-8 text-center text-xs font-mono w-20 mx-auto"
                         value={batch?.laborPerUnit ?? c.laborPerUnit}
                         onChange={(e) => {
-                          const val = e.target.value.replace(/[^0-9.]/g, "");
+                          const val = normalizeDecimalInput(e.target.value);
                           onBatchChange(c.variantId, {
                             laborPerUnit: val,
                           });

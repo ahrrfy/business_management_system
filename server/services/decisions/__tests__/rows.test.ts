@@ -64,6 +64,30 @@ describe("buildRow — الصف يعرض ما يقرر عليه", () => {
     expect(row.requestedAt).toBe(new Date(0).toISOString());
     expect(row.sla?.breached).toBe(true);
   });
+
+  it("يحفظ ويعيد السياق التشغيلي والوظيفي المرفق بالصف", () => {
+    const row = buildRow(
+      {
+        kind: "treasury.voucher.approve",
+        id: 10,
+        title: "سند صرف",
+        requestedAt: NOW,
+        operationalContext: {
+          badgeLabel: "تسوية شحن وتخليص مشتريات",
+          sourceDocument: { type: "أمر الشراء", number: "PO-1-001" },
+          fundingSource: { mode: "TREASURY", label: "خزينة الفرع" },
+          facts: [{ label: "نسبة الشحن", value: "5.0%" }],
+          smartNotice: { tone: "info", text: "توجيه رقابي" },
+        },
+      },
+      NOW,
+    );
+    expect(row.operationalContext?.badgeLabel).toBe("تسوية شحن وتخليص مشتريات");
+    expect(row.operationalContext?.sourceDocument?.number).toBe("PO-1-001");
+    expect(row.operationalContext?.fundingSource?.mode).toBe("TREASURY");
+    expect(row.operationalContext?.facts?.[0]?.value).toBe("5.0%");
+    expect(row.operationalContext?.smartNotice?.text).toBe("توجيه رقابي");
+  });
 });
 
 describe("النتيجة المهيكلة — لا نجاح على STALE", () => {

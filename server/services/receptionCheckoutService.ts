@@ -1,11 +1,22 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { eq } from "drizzle-orm";
-import { auditLogs, customers, invoices, receipts, shifts } from "../../drizzle/schema";
+import {
+  auditLogs,
+  customers,
+  invoices,
+  receipts,
+  shifts,
+} from "../../drizzle/schema";
 import { extractInsertId } from "../lib/insertId";
 import { postEntry } from "./ledgerService";
-import { createPostingIntent, creditLine, debitLine } from "./accounting/postingEngine";
+import {
+  createPostingIntent,
+  creditLine,
+  debitLine,
+} from "./accounting/postingEngine";
 import type { SaleLineInput, PaymentMethod } from "./sale/types";
+import type { SaleAttributionInput } from "./commissions/attribution";
 import type { PriceTier } from "./pricing";
 import { createSaleInTx } from "./sale/create";
 import type { PrintSaleLineInput } from "./printSaleService";
@@ -15,7 +26,12 @@ import type { CreateWorkOrderInput } from "./workOrder/types";
 import { createWorkOrderInTx } from "./workOrder/create";
 import { dispatchInvoiceInTx } from "./delivery/dispatchInvoice";
 import { withTx, type Actor } from "./tx";
-import { checkIdempotency, findIdempotentRefId, idempotencyHash, recordIdempotencyKey } from "./idempotency";
+import {
+  checkIdempotency,
+  findIdempotentRefId,
+  idempotencyHash,
+  recordIdempotencyKey,
+} from "./idempotency";
 import { money, round2 } from "./money";
 import { assertTelecomCollectAllowed } from "./reception/telecom";
 import { canonicalIraqiMobile } from "../lib/phone";
@@ -25,6 +41,10 @@ export interface ReceptionCheckoutInput {
   branchId: number;
   shiftId: number;
   customerId?: number | null;
+  /** إسناد المبيعات لسلة الاستقبال (R2). */
+  attribution?: SaleAttributionInput | null;
+  receptionistUserId?: number | null;
+  salesRepId?: number | null;
   /** ٥/٨ — زبونٌ عابر: اسمٌ/هاتفٌ مرجعيّان يُكتبان على الفاتورة وأمر الشغل بلا إنشاء عميل.
    *  يُغني عن إجبار الكاشير على إنشاء عميلٍ (وكان يفشل بـFORBIDDEN لأدوار الاستقبال بلا crm=FULL). */
   contactName?: string | null;
@@ -32,7 +52,10 @@ export interface ReceptionCheckoutInput {
   /** طريقة القبض — **تلزم فقط حين يُقبض مالٌ جديد الآن**. سلّةٌ بلا قبض (آجل/عربون محتجَز
    *  سلفاً/COD) تُمرَّر `null` فتُختَم الفاتورة `paymentMethod = NULL` = «آجل» بحكم الاشتقاق.
    *  كانت إلزاميةً فيُختلَق «نقدي» لعمليةٍ صفريّة القبض (بلاغ المالك ١٨/٨). */
-  paymentMethod?: Extract<PaymentMethod, "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM"> | null;
+  paymentMethod?: Extract<
+    PaymentMethod,
+    "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM"
+  > | null;
   paymentReference?: string | null;
   /** المبلغ المطبّق على الطلب كله. البيع المباشر يُغطّى أولاً، ثم أوامر الشغل بالترتيب. */
   paidAmount?: string | null;
@@ -42,9 +65,15 @@ export interface ReceptionCheckoutInput {
   priceTier?: PriceTier | null;
   /** كوبون CRM — ينطبق على البيع المباشر فقط (createPrintSaleInTx لا يدعم كوبونات). */
   couponCode?: string | null;
-  regularSale?: { lines: SaleLineInput[]; amount: string; invoiceDiscount?: string | null } | null;
+  regularSale?: {
+    lines: SaleLineInput[];
+    amount: string;
+    invoiceDiscount?: string | null;
+  } | null;
   printSale?: { lines: PrintSaleLineInput[]; amount: string } | null;
-  workOrders?: Array<Omit<CreateWorkOrderInput, "branchId" | "customerId" | "clientRequestId">>;
+  workOrders?: Array<
+    Omit<CreateWorkOrderInput, "branchId" | "customerId" | "clientRequestId">
+  >;
   priceOverrideApproved?: boolean;
   /** الاستقبال (٨/٨) — تأكيد الموظّف أن الأصناف غير المجرودة (رصيد سالب) **متوفّرة فيزيائياً**
    *  في وضع الافتتاح، فيُسمح ببيعها بالسالب حتى لطلب توصيل COD (المندوب يحملها بيده). يُمرَّر
@@ -91,12 +120,20 @@ export interface ReceptionCheckoutInput {
   /** أوفلاين (تعميم على كاشير الاستقبال — داخليّ، يضبطه `offline.replayReception` حصراً):
    *  وسم منشأ الفاتورتين (البيع المباشر وخدمات الطباعة) بالالتقاط دون اتصال. أوامر الشغل
    *  لا تُلتقَط أصلاً (ترقيم/إسناد/صور خادميّة) فلا معنى لوسمها. */
-  offlineCapture?: { capturedAt: Date; offlineReceiptNumber: string; deviceId?: string | null } | null;
+  offlineCapture?: {
+    capturedAt: Date;
+    offlineReceiptNumber: string;
+    deviceId?: string | null;
+  } | null;
   /** ش٤ (§٧.٢) — مالٌ قُبض سلفاً على هذه السلة (عرابين مسوّدة، يضبطه commitDraft حصراً):
    *  يدخل التوزيع الجشع **أولاً** (البيع المباشر ⇒ أمر شغل ١ ⇒ ٢ …) ثم يكمله النقد الجديد
    *  (paidAmount)، ولا يُنشأ له إيصالٌ ثانٍ في أيّ خدمة (I5). receiptIds/paymentIds تحملها
    *  الحمولة لاكتمال العقد؛ التخصيص والختم في allocateAtCommit (حيث تُعرف وحدة الهدف). */
-  preCollected?: { total: string; receiptIds?: number[]; paymentIds?: number[] } | null;
+  preCollected?: {
+    total: string;
+    receiptIds?: number[];
+    paymentIds?: number[];
+  } | null;
 }
 
 /** حصص المال المقبوض سلفاً لكل هدفٍ بعد التوزيع الجشع — يستهلكها allocateAtCommit (ش٤). */
@@ -106,19 +143,32 @@ export interface PreCollectedSplit {
   workOrders: string[];
 }
 
-async function isCompleteReplay(tx: Parameters<Parameters<typeof withTx>[0]>[0], input: ReceptionCheckoutInput) {
+async function isCompleteReplay(
+  tx: Parameters<Parameters<typeof withTx>[0]>[0],
+  input: ReceptionCheckoutInput,
+) {
   if (input.regularSale) {
-    const row = await tx.select({ id: invoices.id }).from(invoices)
-      .where(eq(invoices.sourceId, `${input.clientRequestId}-sale`)).limit(1);
+    const row = await tx
+      .select({ id: invoices.id })
+      .from(invoices)
+      .where(eq(invoices.sourceId, `${input.clientRequestId}-sale`))
+      .limit(1);
     if (!row[0]) return false;
   }
   if (input.printSale) {
-    const row = await tx.select({ id: invoices.id }).from(invoices)
-      .where(eq(invoices.sourceId, `${input.clientRequestId}-print`)).limit(1);
+    const row = await tx
+      .select({ id: invoices.id })
+      .from(invoices)
+      .where(eq(invoices.sourceId, `${input.clientRequestId}-print`))
+      .limit(1);
     if (!row[0]) return false;
   }
   for (let index = 0; index < (input.workOrders?.length ?? 0); index += 1) {
-    const id = await findIdempotentRefId(tx, "workOrder.create", `${input.clientRequestId}-wo-${index}`);
+    const id = await findIdempotentRefId(
+      tx,
+      "workOrder.create",
+      `${input.clientRequestId}-wo-${index}`,
+    );
     if (!id) return false;
   }
   return true;
@@ -153,7 +203,10 @@ function assertCheckoutAmountMatches(
  * يستدعي الجسم داخل معاملته ويُكمل بعده ذرّياً. الغلاف يبقى للمستدعين القائمين
  * (workOrders.receptionCheckout المباشر + offline.replayReception — يبقيان إلى الأبد).
  */
-export async function checkoutReception(input: ReceptionCheckoutInput, actor: Actor) {
+export async function checkoutReception(
+  input: ReceptionCheckoutInput,
+  actor: Actor,
+) {
   assertReceptionPaymentMethod(input);
   return withTx((tx) => checkoutReceptionInTx(tx, input, actor));
 }
@@ -201,18 +254,29 @@ export async function checkoutReceptionInTx(
     // بالحارس الصارم أدناه؛ والحالة الناقصة لا يمكن أن تنتج عن هذه الخدمة لأن الالتزام ذرّي.
     // المفتاح المركّب جديد؛ غيابه قد يعني عمليةً تاريخية التزمت قبل إضافته. نحافظ على replay
     // التاريخي الكامل، لكن لا نخترع له بصمةً لأن حمولة الالتزام الأصلية غير قابلة للإثبات.
-    const legacyCompleteReplay = checkoutReplayRefId == null && await isCompleteReplay(tx, input);
+    const legacyCompleteReplay =
+      checkoutReplayRefId == null && (await isCompleteReplay(tx, input));
     const completeReplay = checkoutReplayRefId != null || legacyCompleteReplay;
     if (!completeReplay) {
-      const shift = await tx.select().from(shifts).where(eq(shifts.id, input.shiftId)).for("update").limit(1);
+      const shift = await tx
+        .select()
+        .from(shifts)
+        .where(eq(shifts.id, input.shiftId))
+        .for("update")
+        .limit(1);
       const current = shift[0];
-      if (!current || current.status !== "OPEN" || Number(current.branchId) !== input.branchId) {
+      if (
+        !current ||
+        current.status !== "OPEN" ||
+        Number(current.branchId) !== input.branchId
+      ) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: appErrorMessage({
             what: "لا يمكن تثبيت الطلب على هذه الوردية",
             why: "الوردية المرسلة أُغلقت للتوّ أو تخص فرعاً مختلفاً — لا مسار قبض متاح",
-            doThis: "افتح وردية استقبال جديدة على هذا الفرع من شاشة الورديات، ثم أعد التثبيت",
+            doThis:
+              "افتح وردية استقبال جديدة على هذا الفرع من شاشة الورديات، ثم أعد التثبيت",
           }),
         });
       }
@@ -222,22 +286,29 @@ export async function checkoutReceptionInTx(
           message: appErrorMessage({
             what: "الوردية ليست وردية استقبال",
             why: `ورديتك المفتوحة نوعها «${current.shiftType}» — الاستقبال يلزمه وردية RECEPTION (لأنّ درجها يستقبل العرابين والأمانات)`,
-            doThis: "أغلق وردية المبيعات الحالية وافتح وردية استقبال (RECEPTION) من شاشة الورديات، ثم أعد التثبيت",
+            doThis:
+              "أغلق وردية المبيعات الحالية وافتح وردية استقبال (RECEPTION) من شاشة الورديات، ثم أعد التثبيت",
           }),
         });
       }
-      if (actor.role !== "admin" && actor.role !== "manager" && Number(current.userId) !== Number(actor.userId)) {
+      if (
+        actor.role !== "admin" &&
+        actor.role !== "manager" &&
+        Number(current.userId) !== Number(actor.userId)
+      ) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: appErrorMessage({
             what: "لا يمكنك التسجيل على هذه الوردية",
             why: "الوردية المرسلة مفتوحة باسم مستخدم آخر، ودورك لا يعبُر الورديات (admin/manager فقط)",
-            doThis: "افتح وردية استقبال باسمك من شاشة الورديات ثم أعد التثبيت، أو اطلب من الإدارة تنفيذها",
+            doThis:
+              "افتح وردية استقبال باسمك من شاشة الورديات ثم أعد التثبيت، أو اطلب من الإدارة تنفيذها",
           }),
         });
       }
       const writesMaterialCash =
-        (input.paymentMethod === "CASH" && money(input.paidAmount ?? "0").gt(0)) ||
+        (input.paymentMethod === "CASH" &&
+          money(input.paidAmount ?? "0").gt(0)) ||
         money(input.deliveryFeeHeld ?? "0").gt(0);
       if (writesMaterialCash) {
         await lockMaterializedCashReceiptSourceForWrite(tx, {
@@ -262,7 +333,8 @@ export async function checkoutReceptionInTx(
           message: appErrorMessage({
             what: "لا يمكن إتمام هذا الطلب",
             why: "خيار «بدون عربون» (بيع مباشر آجل) لا يُجمع مع التوصيل — التوصيل يشترط سداداً حتى ولو COD على المندوب",
-            doThis: "احذف التوصيل من الطلب لبيعٍ آجل داخل المكتبة، أو قبضْ عرباناً وتابع التوصيل عادةً",
+            doThis:
+              "احذف التوصيل من الطلب لبيعٍ آجل داخل المكتبة، أو قبضْ عرباناً وتابع التوصيل عادةً",
           }),
         });
       }
@@ -272,13 +344,19 @@ export async function checkoutReceptionInTx(
           message: appErrorMessage({
             what: "خيار «بدون عربون» يتطلب عميلاً محفوظاً",
             why: "بيعٌ آجل بلا عميلٍ يعني ذمّةً بلا صاحب — لن تعرف من يدفع لك لاحقاً",
-            doThis: "اربط الطلب بعميلٍ محفوظ من قائمة العملاء، أو أنشئ العميل من شاشة العملاء أوّلاً",
+            doThis:
+              "اربط الطلب بعميلٍ محفوظ من قائمة العملاء، أو أنشئ العميل من شاشة العملاء أوّلاً",
           }),
         });
       }
       const customer = (
         await tx
-          .select({ id: customers.id, name: customers.name, phone: customers.phone, isActive: customers.isActive })
+          .select({
+            id: customers.id,
+            name: customers.name,
+            phone: customers.phone,
+            isActive: customers.isActive,
+          })
           .from(customers)
           .where(eq(customers.id, input.customerId))
           .for("update")
@@ -290,17 +368,22 @@ export async function checkoutReceptionInTx(
           message: appErrorMessage({
             what: "لا يمكن ربط الطلب بهذا العميل",
             why: "العميل غير موجود أو معطَّل (isActive=false) — لا يجوز فتح ذمّة على حساب مغلق",
-            doThis: "افتح شاشة العميل من قائمة العملاء وفعّله، أو اختر عميلاً آخر نشطاً",
+            doThis:
+              "افتح شاشة العميل من قائمة العملاء وفعّله، أو اختر عميلاً آخر نشطاً",
           }),
         });
       }
-      if (customer.name.trim().length < 2 || !canonicalIraqiMobile(customer.phone)) {
+      if (
+        customer.name.trim().length < 2 ||
+        !canonicalIraqiMobile(customer.phone)
+      ) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: appErrorMessage({
             what: "بيانات العميل ناقصة",
             why: "بيع «بدون عربون» يشترط عميلاً فعّالاً باسم لا يقلّ عن حرفين ورقم هاتف عراقي مكتمل — أحد الشرطين مفقود",
-            doThis: "افتح شاشة العميل من قائمة العملاء وأكمل الاسم ورقم الهاتف العراقي، ثم أعد التثبيت",
+            doThis:
+              "افتح شاشة العميل من قائمة العملاء وأكمل الاسم ورقم الهاتف العراقي، ثم أعد التثبيت",
           }),
         });
       }
@@ -310,7 +393,11 @@ export async function checkoutReceptionInTx(
     // ش٥ (§٩.٤): رصيد زين على أيّ قبضٍ جديد في السلة — خلف ضوابطه (كودٌ أحاديّ + سقفان + قفل
     // تقادم المطابقة). يُفحص مرّةً على مبلغ القبض الجديد كلّه قبل أيّ إنشاء مستند.
     // (يُتخطّى عند إعادة ردّ عمليةٍ ملتزمة — الكود سُجِّل فيها فسيصطدم بنفسه زوراً.)
-    if (!completeReplay && input.paymentMethod === "TELECOM" && money(input.paidAmount ?? "0").gt(0)) {
+    if (
+      !completeReplay &&
+      input.paymentMethod === "TELECOM" &&
+      money(input.paidAmount ?? "0").gt(0)
+    ) {
       await assertTelecomCollectAllowed(tx, {
         userId: actor.userId,
         branchId: input.branchId,
@@ -322,7 +409,11 @@ export async function checkoutReceptionInTx(
     // ش٤: التوزيع الجشع بترتيب السلّة كما هو، لكن **المقبوض سلفاً يُطبَّق أولاً** (§٧.٢):
     // البيع المباشر (العادي ثم الطباعة) ⇒ أمر شغل ١ ⇒ ٢ … كلُّ هدفٍ يستهلك P المتبقّي قبل N.
     const preTotalD = round2(money(input.preCollected?.total ?? "0"));
-    const preSplit: PreCollectedSplit = { sale: "0.00", print: "0.00", workOrders: [] };
+    const preSplit: PreCollectedSplit = {
+      sale: "0.00",
+      print: "0.00",
+      workOrders: [],
+    };
     // ش٧: المقبوض فعلاً المخصَّص لكل فاتورة (يساوي مبلغها الكامل بلا توصيل — والفرق مع COD).
     let saleApplied = round2(money(input.regularSale?.amount ?? "0"));
     let printApplied = round2(money(input.printSale?.amount ?? "0"));
@@ -334,10 +425,12 @@ export async function checkoutReceptionInTx(
       const regularAmount = round2(money(input.regularSale?.amount ?? "0"));
       const printAmount = round2(money(input.printSale?.amount ?? "0"));
       const directTotal = round2(regularAmount.plus(printAmount));
-      const workTotal = round2(normalizedWorkOrders.reduce(
-        (sum, order) => sum.plus(money(order.salePrice)),
-        money("0"),
-      ));
+      const workTotal = round2(
+        normalizedWorkOrders.reduce(
+          (sum, order) => sum.plus(money(order.salePrice)),
+          money("0"),
+        ),
+      );
       const grandTotal = round2(directTotal.plus(workTotal));
       const applied = round2(money(input.paidAmount ?? "0").plus(preTotalD));
       // ش٧: طلبٌ يُسنَد للتوصيل في نفس المعاملة ⇒ **لا يُشترط تغطية البيع المباشر نقداً**
@@ -345,7 +438,8 @@ export async function checkoutReceptionInTx(
       // بيع مباشر آجل (قرار المالك ١٠/٨): يُرخّى هذا الحاجز حين يوجد عميلٌ مسجَّل والعلَم الصريح
       // مرفوع — المتبقّي يصير ذمّةً على العميل عبر createSaleInTx (حدّ الائتمان نافذٌ فيها). بلا
       // عميلٍ (أو بلا علَم) يبقى صارماً: لا ذمّةٌ بلا صاحب، ولا ذمّةٌ صامتةٌ من إدخالٍ خاطئ.
-      const allowDeferredDirect = input.deferredDirect === true && input.customerId != null;
+      const allowDeferredDirect =
+        input.deferredDirect === true && input.customerId != null;
       if (!input.delivery && applied.lt(directTotal) && !allowDeferredDirect) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -372,9 +466,18 @@ export async function checkoutReceptionInTx(
       // حاملٍ ولا دافع = مالٌ بلا مسار. لذلك: الطباعة تُسدَّد أولاً كاملةً عند التوصيل، ثم
       // تحمل البضاعةُ المتبقّي عهدةً على المندوب. وبلا توصيلٍ يبقى الترتيب الأصلي كما هو.
       const codCarrier: "SALE" | "PRINT" | null = input.delivery
-        ? (input.regularSale ? "SALE" : input.printSale ? "PRINT" : null)
+        ? input.regularSale
+          ? "SALE"
+          : input.printSale
+            ? "PRINT"
+            : null
         : null;
-      if (input.delivery && codCarrier === "SALE" && printAmount.gt(0) && applied.lt(printAmount)) {
+      if (
+        input.delivery &&
+        codCarrier === "SALE" &&
+        printAmount.gt(0) &&
+        applied.lt(printAmount)
+      ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
@@ -408,14 +511,22 @@ export async function checkoutReceptionInTx(
       // يغطّي البيع المباشر دائماً (صحيحٌ بلا توصيل، خاطئٌ مع COD حيث الدرج لا يستلم شيئاً).
       let leftApplied = applied;
       if (codCarrier === "SALE") {
-        printApplied = round2(leftApplied.gte(printAmount) ? printAmount : leftApplied);
+        printApplied = round2(
+          leftApplied.gte(printAmount) ? printAmount : leftApplied,
+        );
         leftApplied = round2(leftApplied.minus(printApplied));
-        saleApplied = round2(leftApplied.gte(regularAmount) ? regularAmount : leftApplied);
+        saleApplied = round2(
+          leftApplied.gte(regularAmount) ? regularAmount : leftApplied,
+        );
         leftApplied = round2(leftApplied.minus(saleApplied));
       } else {
-        saleApplied = round2(leftApplied.gte(regularAmount) ? regularAmount : leftApplied);
+        saleApplied = round2(
+          leftApplied.gte(regularAmount) ? regularAmount : leftApplied,
+        );
         leftApplied = round2(leftApplied.minus(saleApplied));
-        printApplied = round2(leftApplied.gte(printAmount) ? printAmount : leftApplied);
+        printApplied = round2(
+          leftApplied.gte(printAmount) ? printAmount : leftApplied,
+        );
         leftApplied = round2(leftApplied.minus(printApplied));
       }
       let remainingForWork = leftApplied;
@@ -423,7 +534,9 @@ export async function checkoutReceptionInTx(
         const orderTotal = round2(money(order.salePrice));
         const deposit = remainingForWork.lte(0)
           ? money("0")
-          : round2(remainingForWork.gte(orderTotal) ? orderTotal : remainingForWork);
+          : round2(
+              remainingForWork.gte(orderTotal) ? orderTotal : remainingForWork,
+            );
         remainingForWork = round2(remainingForWork.minus(deposit));
         const woPre = round2(preLeft.gte(deposit) ? deposit : preLeft);
         preLeft = round2(preLeft.minus(woPre));
@@ -434,34 +547,44 @@ export async function checkoutReceptionInTx(
           deposit: deposit.toFixed(2),
           depositPreCollected: woPre.toFixed(2),
           // طريقة/مرجع إيصال العربون الجديد — تلزم فقط حين يوجد جزءٌ جديد N يُقبض الآن.
-          paymentMethod: newDeposit.gt(0) ? (input.paymentMethod ?? null) : null,
-          paymentReference: newDeposit.gt(0) && input.paymentMethod !== "CASH"
-            ? input.paymentReference?.trim() || null
+          paymentMethod: newDeposit.gt(0)
+            ? (input.paymentMethod ?? null)
             : null,
+          paymentReference:
+            newDeposit.gt(0) && input.paymentMethod !== "CASH"
+              ? input.paymentReference?.trim() || null
+              : null,
         };
       });
     }
 
     // ش٠ (V1): العلم يسري على البيع المباشر الخالص النقديّ حصراً — مزجُه بطباعة/أوامر شغل أو
     // بدفعٍ غير نقديّ يُسقطه صامتاً. المختلطة عبر cashRoundingOverride (ش٦) أدناه.
-    const roundDirectCash = input.cashRoundIQD === true
-      && input.paymentMethod === "CASH"
-      && !input.printSale
-      && normalizedWorkOrders.length === 0;
+    const roundDirectCash =
+      input.cashRoundIQD === true &&
+      input.paymentMethod === "CASH" &&
+      !input.printSale &&
+      normalizedWorkOrders.length === 0;
     // ش٦ — تقريب السلّة المختلطة: الفاتورة الحاملة تستلم مبلغها (المبيَّت فيه فرق السلّة كلّها)
     // إجماليّاً فعّالاً صريحاً. نقديّ فقط، ولا يجتمع مع علم البيع الخالص.
-    const overrideTarget = input.paymentMethod === "CASH" && !roundDirectCash
-      ? (input.cashRoundingOverride === "SALE" && input.regularSale ? "SALE"
-        : input.cashRoundingOverride === "PRINT" && input.printSale ? "PRINT"
-        : null)
-      : null;
+    const overrideTarget =
+      input.paymentMethod === "CASH" && !roundDirectCash
+        ? input.cashRoundingOverride === "SALE" && input.regularSale
+          ? "SALE"
+          : input.cashRoundingOverride === "PRINT" && input.printSale
+            ? "PRINT"
+            : null
+        : null;
 
     // مراجعة PR #495 — أساس تقريب السلّة المختلطة **خادميّ بالكامل**: مجموع أوامر الشغل
     // (سعرُها هو ما يُخزَّن فعلاً على الأمر) + إجماليُّ الفاتورة الأخرى **كما حسبه الخادم**
     // لا كما أرسله العميل. لذلك تُنشأ الفاتورةُ غيرُ الحاملة أوّلاً حين تحمل الأخرى الفرق:
     // الحاملة وحدها تحتاج «الباقي» لتشتقّ الفرق، فلا يبقى للعميل أثرٌ على المبلغ النهائيّ.
     const workTotalServerD = round2(
-      normalizedWorkOrders.reduce((sum, order) => sum.plus(money(order.salePrice)), money("0")),
+      normalizedWorkOrders.reduce(
+        (sum, order) => sum.plus(money(order.salePrice)),
+        money("0"),
+      ),
     );
     // النقد **الجديد** لكل فاتورة = المخصَّص لها ناقصَ حصّتها من المقبوض سلفاً (P له إيصالاته
     // منذ قبضه — I5). موجبٌ ⇒ دفعةٌ بطريقةٍ حقيقية؛ صفرٌ ⇒ لا دفعة ولا طريقة.
@@ -469,83 +592,109 @@ export async function checkoutReceptionInTx(
     const printNewCashD = round2(printApplied.minus(money(preSplit.print)));
     const buildSale = async (basketOthers: string | null) =>
       input.regularSale
-        ? await createSaleInTx(tx, {
-          branchId: input.branchId,
-          shiftId: input.shiftId,
-          customerId: input.customerId ?? null,
-          contactName: input.contactName ?? null,
-          contactPhone: input.contactPhone ?? null,
-          sourceType: "POS",
-          priceTier: input.priceTier ?? null,
-          couponCode: input.couponCode?.trim() || null,
-          lines: input.regularSale.lines,
-          // ٢٣/٨ — خصمُ رأس الفاتورة على البيع المباشر (مرآة POS.tsx buildSaleLine): يمرَّر مبلغاً
-          // مطلقاً فيدخل computeInvoiceTotals ويحرسه invoiceDiscountExceedsThreshold على الإجماليّ.
-          // صفر/غياب ⇒ فرعُ NULL في sale/create.ts (بلا خصمٍ رأس، صفر تغيير سلوكيّ).
-          invoiceDiscount: input.regularSale.invoiceDiscount ?? undefined,
-          cashRoundIQD: roundDirectCash,
-          cashRoundingBasketOthers: overrideTarget === "SALE" ? basketOthers : null,
-          // ش٤: حصة البيع المباشر من المقبوض سلفاً — تدخل paidAmount بلا إيصالٍ ثانٍ (I5)،
-          // والدفعة الجديدة payment.amount تُقلَّص بها (الفاتورة تستلم P + N = أمانها الكامل).
-          preCollected: money(preSplit.sale).gt(0) ? { amount: preSplit.sale, receiptIds: [] } : null,
-          // صدق طريقة الدفع (١٨/٨): الدفعة تُبنى **فقط حين يُقبض نقدٌ جديد الآن**. كان الكائن
-          // يُبنى دائماً ولو بصفر، فيموت فرع `?? null` في sale/create.ts ويُختَم «نقدي» على
-          // فاتورةٍ لم يدخلها دينار. صفر ⇒ null ⇒ paymentMethod NULL = «آجل» بالاشتقاق.
-          payment: saleNewCashD.gt(0)
-            ? {
-              // ش٧: المدفوع = **المخصَّص فعلاً** لا مبلغ الفاتورة — مع COD يبقى الفرق عهدةَ مندوب.
-              amount: saleNewCashD.toFixed(2),
-              method: input.paymentMethod!,
-              reference: input.paymentReference?.trim() || null,
-            }
-            : null,
-          codDispatchPending: input.delivery != null,
-          // م١ (PR-1) — الجذر: `credit.ts` يعبر COD حين يصله `paymentMode` فقط، ولم يكن يُمرَّر من هنا.
-          paymentMode: input.delivery != null ? "COD" : undefined,
-          // الاستقبال (٨/٨): يفتح السالب لطلب COD في وضع الافتتاح بتأكيد الموظّف — رِيلات الأمان في createSaleInTx.
-          openingSellUnavailableConfirmed: input.openingSellUnavailableConfirmed === true,
-          clientRequestId: `${input.clientRequestId}-sale`,
-          offlineCapture: input.offlineCapture ?? null,
-          // البضاعة خرجت فعلاً أثناء الانقطاع والنقد قُبض؛ رفض التسجيل يجعل الدفاتر تكذب
-          // (قرار المالك ١٨/٧: تسجيل بوسم مراجعة لا تعليق). الوسم = originatedOffline.
-          allowNegativeStock: input.offlineCapture != null,
-          creditApproved: false,
-          receptionDeferredAuthorized,
-          priceOverrideApproved: input.priceOverrideApproved === true,
-        }, actor)
-      : null;
+        ? await createSaleInTx(
+            tx,
+            {
+              branchId: input.branchId,
+              shiftId: input.shiftId,
+              customerId: input.customerId ?? null,
+              contactName: input.contactName ?? null,
+              contactPhone: input.contactPhone ?? null,
+              sourceType: "POS",
+              priceTier: input.priceTier ?? null,
+              couponCode: input.couponCode?.trim() || null,
+              lines: input.regularSale.lines,
+              // ٢٣/٨ — خصمُ رأس الفاتورة على البيع المباشر (مرآة POS.tsx buildSaleLine): يمرَّر مبلغاً
+              // مطلقاً فيدخل computeInvoiceTotals ويحرسه invoiceDiscountExceedsThreshold على الإجماليّ.
+              // صفر/غياب ⇒ فرعُ NULL في sale/create.ts (بلا خصمٍ رأس، صفر تغيير سلوكيّ).
+              invoiceDiscount: input.regularSale.invoiceDiscount ?? undefined,
+              cashRoundIQD: roundDirectCash,
+              cashRoundingBasketOthers:
+                overrideTarget === "SALE" ? basketOthers : null,
+              // ش٤: حصة البيع المباشر من المقبوض سلفاً — تدخل paidAmount بلا إيصالٍ ثانٍ (I5)،
+              // والدفعة الجديدة payment.amount تُقلَّص بها (الفاتورة تستلم P + N = أمانها الكامل).
+              preCollected: money(preSplit.sale).gt(0)
+                ? { amount: preSplit.sale, receiptIds: [] }
+                : null,
+              // صدق طريقة الدفع (١٨/٨): الدفعة تُبنى **فقط حين يُقبض نقدٌ جديد الآن**. كان الكائن
+              // يُبنى دائماً ولو بصفر، فيموت فرع `?? null` في sale/create.ts ويُختَم «نقدي» على
+              // فاتورةٍ لم يدخلها دينار. صفر ⇒ null ⇒ paymentMethod NULL = «آجل» بالاشتقاق.
+              payment: saleNewCashD.gt(0)
+                ? {
+                    // ش٧: المدفوع = **المخصَّص فعلاً** لا مبلغ الفاتورة — مع COD يبقى الفرق عهدةَ مندوب.
+                    amount: saleNewCashD.toFixed(2),
+                    method: input.paymentMethod!,
+                    reference: input.paymentReference?.trim() || null,
+                  }
+                : null,
+              codDispatchPending: input.delivery != null,
+              // م١ (PR-1) — الجذر: `credit.ts` يعبر COD حين يصله `paymentMode` فقط، ولم يكن يُمرَّر من هنا.
+              paymentMode: input.delivery != null ? "COD" : undefined,
+              // الاستقبال (٨/٨): يفتح السالب لطلب COD في وضع الافتتاح بتأكيد الموظّف — رِيلات الأمان في createSaleInTx.
+              openingSellUnavailableConfirmed:
+                input.openingSellUnavailableConfirmed === true,
+              clientRequestId: `${input.clientRequestId}-sale`,
+              offlineCapture: input.offlineCapture ?? null,
+              // البضاعة خرجت فعلاً أثناء الانقطاع والنقد قُبض؛ رفض التسجيل يجعل الدفاتر تكذب
+              // (قرار المالك ١٨/٧: تسجيل بوسم مراجعة لا تعليق). الوسم = originatedOffline.
+              allowNegativeStock: input.offlineCapture != null,
+              creditApproved: false,
+              receptionDeferredAuthorized,
+              priceOverrideApproved: input.priceOverrideApproved === true,
+              attribution:
+                input.attribution ??
+                (input.receptionistUserId
+                  ? {
+                      repId: input.receptionistUserId,
+                      role: "RECEPTIONIST",
+                      mode: "SPLIT",
+                      splitRatio: "0.70",
+                    }
+                  : undefined),
+              salesRepId: input.salesRepId ?? input.receptionistUserId,
+            },
+            actor,
+          )
+        : null;
 
     const buildPrint = async (basketOthers: string | null) =>
       input.printSale
-        ? await createPrintSaleInTx(tx, {
-          branchId: input.branchId,
-          shiftId: input.shiftId,
-          customerId: input.customerId ?? null,
-          contactName: input.contactName ?? null,
-          contactPhone: input.contactPhone ?? null,
-          priceTier: input.priceTier ?? null,
-          lines: input.printSale.lines,
-          cashRoundingBasketOthers: overrideTarget === "PRINT" ? basketOthers : null,
-          preCollected: money(preSplit.print).gt(0) ? { amount: preSplit.print, receiptIds: [] } : null,
-          // صدق طريقة الدفع (١٨/٨) — انظر التعليق في buildSale.
-          payment: printNewCashD.gt(0)
-            ? {
-              // ش٧: المخصَّص فعلاً (الطباعة تُسدَّد كاملةً عند التوصيل بحاملٍ SALE — حارسٌ أعلاه).
-              amount: printNewCashD.toFixed(2),
-              method: input.paymentMethod!,
-              reference: input.paymentReference?.trim() || null,
-            }
-            : null,
-          codDispatchPending: input.delivery != null,
-          // م١ (PR-1) — نفس الجذر على قناة الطباعة (كانت تفحص الحدّ inline بلا فرع COD).
-          paymentMode: input.delivery != null ? "COD" : undefined,
-          clientRequestId: `${input.clientRequestId}-print`,
-          offlineCapture: input.offlineCapture ?? null,
-          creditApproved: false,
-          receptionDeferredAuthorized,
-          priceOverrideApproved: input.priceOverrideApproved === true,
-        }, actor)
-      : null;
+        ? await createPrintSaleInTx(
+            tx,
+            {
+              branchId: input.branchId,
+              shiftId: input.shiftId,
+              customerId: input.customerId ?? null,
+              contactName: input.contactName ?? null,
+              contactPhone: input.contactPhone ?? null,
+              priceTier: input.priceTier ?? null,
+              lines: input.printSale.lines,
+              cashRoundingBasketOthers:
+                overrideTarget === "PRINT" ? basketOthers : null,
+              preCollected: money(preSplit.print).gt(0)
+                ? { amount: preSplit.print, receiptIds: [] }
+                : null,
+              // صدق طريقة الدفع (١٨/٨) — انظر التعليق في buildSale.
+              payment: printNewCashD.gt(0)
+                ? {
+                    // ش٧: المخصَّص فعلاً (الطباعة تُسدَّد كاملةً عند التوصيل بحاملٍ SALE — حارسٌ أعلاه).
+                    amount: printNewCashD.toFixed(2),
+                    method: input.paymentMethod!,
+                    reference: input.paymentReference?.trim() || null,
+                  }
+                : null,
+              codDispatchPending: input.delivery != null,
+              // م١ (PR-1) — نفس الجذر على قناة الطباعة (كانت تفحص الحدّ inline بلا فرع COD).
+              paymentMode: input.delivery != null ? "COD" : undefined,
+              clientRequestId: `${input.clientRequestId}-print`,
+              offlineCapture: input.offlineCapture ?? null,
+              creditApproved: false,
+              receptionDeferredAuthorized,
+              priceOverrideApproved: input.priceOverrideApproved === true,
+            },
+            actor,
+          )
+        : null;
 
     // ترتيب الإنشاء: غير الحاملة أوّلاً (كي يُعرَف إجماليُّها الخادميّ) ثم الحاملة بأساسها.
     // بلا تقريبٍ مختلط يبقى الترتيب الأصليّ حرفياً (بيع ⇐ طباعة) — صفر تغيير سلوكيّ.
@@ -554,12 +703,16 @@ export async function checkoutReceptionInTx(
     if (overrideTarget === "SALE") {
       printSale = await buildPrint(null);
       regularSale = await buildSale(
-        round2(money(printSale?.total ?? "0").plus(workTotalServerD)).toFixed(2),
+        round2(money(printSale?.total ?? "0").plus(workTotalServerD)).toFixed(
+          2,
+        ),
       );
     } else if (overrideTarget === "PRINT") {
       regularSale = await buildSale(null);
       printSale = await buildPrint(
-        round2(money(regularSale?.total ?? "0").plus(workTotalServerD)).toFixed(2),
+        round2(money(regularSale?.total ?? "0").plus(workTotalServerD)).toFixed(
+          2,
+        ),
       );
     } else {
       regularSale = await buildSale(null);
@@ -570,8 +723,16 @@ export async function checkoutReceptionInTx(
     // تحسب خدمتَا البيع والطباعة الإجمالي الحقيقي داخل المعاملة، يلزم التطابق أو تُردّ كل الآثار.
     // replay التاريخي وحده مستثنى لأن عملياتٍ قديمة التزمت قبل هذا الثابت وبمبالغ غير مطابقة.
     if (!legacyCompleteReplay) {
-      assertCheckoutAmountMatches("بيع البضاعة", input.regularSale?.amount, regularSale?.total);
-      assertCheckoutAmountMatches("خدمات الطباعة", input.printSale?.amount, printSale?.total);
+      assertCheckoutAmountMatches(
+        "بيع البضاعة",
+        input.regularSale?.amount,
+        regularSale?.total,
+      );
+      assertCheckoutAmountMatches(
+        "خدمات الطباعة",
+        input.printSale?.amount,
+        printSale?.total,
+      );
     }
 
     if (!completeReplay && receptionDeferredAuthorized) {
@@ -607,17 +768,24 @@ export async function checkoutReceptionInTx(
       // في الدرج بلا مسار ردّ. **بلا توصيلٍ في التثبيت يبقى الالتقاط مشروعاً** (الإسناد
       // المؤجَّل من الطابور — ش٦/V15): dispatchInvoice يفرض المساواة مع الإيصال لحظة الإسناد،
       // وإلغاء الطلب/الإرجاع يردّانها.
-      if (input.delivery && (input.delivery.feeCollection ?? "COURIER") !== "COUNTER") {
+      if (
+        input.delivery &&
+        (input.delivery.feeCollection ?? "COURIER") !== "COUNTER"
+      ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
             what: "أمانة الأجرة لا تناسب طريقة التوصيل",
             why: `أرسلت مبلغ أمانة أجرة (${feeHeldD.toFixed(2)}) مع توصيل أجرته على المندوب (COURIER) — المندوب سيقبضها من الزبون فيصير قبضاً مزدوجاً وأمانتك تعلق بلا تبرئة`,
-            doThis: "غيّر «التحصيل» إلى «مقبوضة في الاستقبال» (COUNTER)، أو احذف مبلغ الأمانة",
+            doThis:
+              "غيّر «التحصيل» إلى «مقبوضة في الاستقبال» (COUNTER)، أو احذف مبلغ الأمانة",
           }),
         });
       }
-      if (input.delivery && !feeHeldD.eq(round2(money(input.delivery.fee ?? "0")))) {
+      if (
+        input.delivery &&
+        !feeHeldD.eq(round2(money(input.delivery.fee ?? "0")))
+      ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
@@ -627,7 +795,8 @@ export async function checkoutReceptionInTx(
           }),
         });
       }
-      const carrierInvoiceId = regularSale?.invoiceId ?? printSale?.invoiceId ?? null;
+      const carrierInvoiceId =
+        regularSale?.invoiceId ?? printSale?.invoiceId ?? null;
       if (carrierInvoiceId == null) {
         if (normalizedWorkOrders.length === 0) {
           throw new TRPCError({
@@ -635,7 +804,8 @@ export async function checkoutReceptionInTx(
             message: appErrorMessage({
               what: "لا فاتورة تحمل أمانة الأجرة",
               why: "أمانة أجرة التوصيل تُختم على فاتورة (بضاعة أو طباعة) أو أمر شغل، ولا يوجد أي منها في هذا الطلب",
-              doThis: "أضف فاتورة بضاعة أو طباعة أو أمر شغل للسلّة قبل قبض الأمانة، أو انزع أمانة الأجرة",
+              doThis:
+                "أضف فاتورة بضاعة أو طباعة أو أمر شغل للسلّة قبل قبض الأمانة، أو انزع أمانة الأجرة",
             }),
           });
         }
@@ -670,10 +840,18 @@ export async function checkoutReceptionInTx(
             roleDebits: { CASH: feeHeldD },
             roleCredits: { COURIER_PAYABLE: feeHeldD },
           },
-          postingIntent: createPostingIntent("DELIVERY_FEE_HELD_RECEIPT", "DELIVERY_FEE_HELD", [debitLine("CASH", feeHeldD), creditLine("COURIER_PAYABLE", feeHeldD)], {
-            roleDebits: { CASH: feeHeldD },
-            roleCredits: { COURIER_PAYABLE: feeHeldD },
-          }),
+          postingIntent: createPostingIntent(
+            "DELIVERY_FEE_HELD_RECEIPT",
+            "DELIVERY_FEE_HELD",
+            [
+              debitLine("CASH", feeHeldD),
+              creditLine("COURIER_PAYABLE", feeHeldD),
+            ],
+            {
+              roleDebits: { CASH: feeHeldD },
+              roleCredits: { COURIER_PAYABLE: feeHeldD },
+            },
+          ),
         });
       }
     }
@@ -683,7 +861,8 @@ export async function checkoutReceptionInTx(
     // واحدة يكون فيها مالٌ بلا مالك: إمّا (فاتورة + عهدة) معاً وإمّا لا شيء.
     let dispatch: Awaited<ReturnType<typeof dispatchInvoiceInTx>> | null = null;
     if (input.delivery && !completeReplay) {
-      const carrierInvoiceId = regularSale?.invoiceId ?? printSale?.invoiceId ?? null;
+      const carrierInvoiceId =
+        regularSale?.invoiceId ?? printSale?.invoiceId ?? null;
       if (carrierInvoiceId != null) {
         dispatch = await dispatchInvoiceInTx(
           tx,
@@ -692,13 +871,19 @@ export async function checkoutReceptionInTx(
             partyId: input.delivery.partyId,
             deliveryFee: input.delivery.fee ?? "0",
             feeCollection: input.delivery.feeCollection ?? "COURIER",
-            recipientName: input.delivery.recipientName ?? input.contactName ?? null,
-            recipientPhone: input.delivery.recipientPhone ?? input.contactPhone ?? null,
+            recipientName:
+              input.delivery.recipientName ?? input.contactName ?? null,
+            recipientPhone:
+              input.delivery.recipientPhone ?? input.contactPhone ?? null,
             deliveryAddress: input.delivery.address ?? null,
             externalTrackingRef: input.delivery.externalTrackingRef ?? null,
             clientRequestId: `${input.clientRequestId}-dispatch`,
           },
-          { userId: actor.userId, branchId: actor.branchId ?? null, role: actor.role } as never,
+          {
+            userId: actor.userId,
+            branchId: actor.branchId ?? null,
+            role: actor.role,
+          } as never,
         );
       } else if (normalizedWorkOrders.length === 0) {
         throw new TRPCError({
@@ -706,7 +891,8 @@ export async function checkoutReceptionInTx(
           message: appErrorMessage({
             what: "لا فاتورة تصلح للتوصيل",
             why: "الإرسالية تتطلب فاتورة بيع مباشر أو طباعة أو أمر شغل، ولا يوجد أي منها في هذا الطلب",
-            doThis: "أضف بضاعة أو طباعة أو أمر شغل قبل جدولة التوصيل، أو انزع خيار التوصيل من الطلب",
+            doThis:
+              "أضف بضاعة أو طباعة أو أمر شغل قبل جدولة التوصيل، أو انزع خيار التوصيل من الطلب",
           }),
         });
       }
@@ -715,15 +901,26 @@ export async function checkoutReceptionInTx(
     }
 
     // ش٦ (§٩.٣) — هويّة مُقِرّ السعر داخل المعاملة: الراية بلا هويّةٍ كانت تُذيب المسؤولية.
-    if (!completeReplay && input.priceOverrideApproved === true && input.priceApprovedBy != null) {
+    if (
+      !completeReplay &&
+      input.priceOverrideApproved === true &&
+      input.priceApprovedBy != null
+    ) {
       const overriddenLines = [
-        ...(input.regularSale?.lines ?? []).filter((l) => l.unitPriceOverride != null || l.discountAmount != null),
-        ...(input.printSale?.lines ?? []).filter((l) => (l as { unitPriceOverride?: string }).unitPriceOverride != null),
+        ...(input.regularSale?.lines ?? []).filter(
+          (l) => l.unitPriceOverride != null || l.discountAmount != null,
+        ),
+        ...(input.printSale?.lines ?? []).filter(
+          (l) =>
+            (l as { unitPriceOverride?: string }).unitPriceOverride != null,
+        ),
       ].map((l) => ({
         variantId: (l as { variantId?: number }).variantId ?? null,
         productUnitId: (l as { productUnitId?: number }).productUnitId ?? null,
-        finalUnitPrice: (l as { unitPriceOverride?: string }).unitPriceOverride ?? null,
-        discountAmount: (l as { discountAmount?: string }).discountAmount ?? null,
+        finalUnitPrice:
+          (l as { unitPriceOverride?: string }).unitPriceOverride ?? null,
+        discountAmount:
+          (l as { discountAmount?: string }).discountAmount ?? null,
       }));
       await tx.insert(auditLogs).values({
         userId: actor.userId,
@@ -731,16 +928,23 @@ export async function checkoutReceptionInTx(
         action: "reception.priceOverride",
         entityType: "invoice",
         entityId: String(regularSale?.invoiceId ?? printSale?.invoiceId ?? 0),
-        newValue: JSON.stringify({ approvedBy: input.priceApprovedBy, lines: overriddenLines }),
+        newValue: JSON.stringify({
+          approvedBy: input.priceApprovedBy,
+          lines: overriddenLines,
+        }),
       });
     }
 
     if (input.delivery && normalizedWorkOrders.length > 0) {
-      const carrierInvoiceId = regularSale?.invoiceId ?? printSale?.invoiceId ?? null;
+      const carrierInvoiceId =
+        regularSale?.invoiceId ?? printSale?.invoiceId ?? null;
       normalizedWorkOrders = normalizedWorkOrders.map((order, idx) => {
         const isFirst = idx === 0;
         let woDeliveryCost = order.deliveryCost ?? "0.00";
-        let woFeeCollection = order.deliveryFeeCollection ?? input.delivery!.feeCollection ?? "COURIER";
+        let woFeeCollection =
+          order.deliveryFeeCollection ??
+          input.delivery!.feeCollection ??
+          "COURIER";
         if (carrierInvoiceId == null && isFirst) {
           if (feeHeldD.gt(0)) {
             woDeliveryCost = feeHeldD.toFixed(2);
@@ -752,9 +956,18 @@ export async function checkoutReceptionInTx(
         return {
           ...order,
           hasDelivery: true,
-          deliveryAddress: order.deliveryAddress ?? input.delivery!.address ?? null,
-          deliveryPhone: order.deliveryPhone ?? input.delivery!.recipientPhone ?? input.contactPhone ?? null,
-          contactName: order.contactName ?? input.delivery!.recipientName ?? input.contactName ?? null,
+          deliveryAddress:
+            order.deliveryAddress ?? input.delivery!.address ?? null,
+          deliveryPhone:
+            order.deliveryPhone ??
+            input.delivery!.recipientPhone ??
+            input.contactPhone ??
+            null,
+          contactName:
+            order.contactName ??
+            input.delivery!.recipientName ??
+            input.contactName ??
+            null,
           deliveryCost: woDeliveryCost,
           deliveryFeeCollection: woFeeCollection,
           paymentMode: order.paymentMode ?? "COD",
@@ -762,28 +975,40 @@ export async function checkoutReceptionInTx(
       });
     }
 
-    const workOrders = [] as Array<Awaited<ReturnType<typeof createWorkOrderInTx>> & { deposit: string }>;
+    const workOrders = [] as Array<
+      Awaited<ReturnType<typeof createWorkOrderInTx>> & { deposit: string }
+    >;
     for (let index = 0; index < normalizedWorkOrders.length; index += 1) {
       const order = normalizedWorkOrders[index];
-      const created = await createWorkOrderInTx(tx, {
-        ...order,
-        branchId: input.branchId,
-        customerId: input.customerId ?? null,
-        contactName: order.contactName ?? input.contactName ?? null,
-        contactPhone: order.contactPhone ?? input.contactPhone ?? null,
-        clientRequestId: `${input.clientRequestId}-wo-${index}`,
-        // ش٠ (V4): الوردية المُتحقَّق منها أعلاه (OPEN + RECEPTION + الفرع + المالك تحت قفل) تُمرَّر
-        // لكل أمر شغل ⇒ عرابين السلة تهبط على درج قابضها نفسه، لا على وردية أخرى يحلّها
-        // openShiftIdTx بنفسه (سلّةٌ كانت قابلة للانشطار على درجين ⇒ محاسبة موظّفٍ على نقدٍ لم يستلمه).
-        shiftId: input.shiftId,
-      }, actor);
+      const created = await createWorkOrderInTx(
+        tx,
+        {
+          ...order,
+          branchId: input.branchId,
+          customerId: input.customerId ?? null,
+          contactName: order.contactName ?? input.contactName ?? null,
+          contactPhone: order.contactPhone ?? input.contactPhone ?? null,
+          clientRequestId: `${input.clientRequestId}-wo-${index}`,
+          // ش٠ (V4): الوردية المُتحقَّق منها أعلاه (OPEN + RECEPTION + الفرع + المالك تحت قفل) تُمرَّر
+          // لكل أمر شغل ⇒ عرابين السلة تهبط على درج قابضها نفسه، لا على وردية أخرى يحلّها
+          // openShiftIdTx بنفسه (سلّةٌ كانت قابلة للانشطار على درجين ⇒ محاسبة موظّفٍ على نقدٍ لم يستلمه).
+          shiftId: input.shiftId,
+        },
+        actor,
+      );
       // ش٤: العربون الموزَّع يرافق النتيجة — تطبعه تذكرة الأمر («مدفوع مقدماً/المتبقّي») بلا
       // إعادة حسابٍ واجهيّ قد ينحرف عن الجشع الخادميّ.
-      workOrders.push({ ...created, deposit: round2(money(order.deposit ?? "0")).toFixed(2) });
+      workOrders.push({
+        ...created,
+        deposit: round2(money(order.deposit ?? "0")).toFixed(2),
+      });
     }
 
     if (checkoutReplayRefId == null && !legacyCompleteReplay) {
-      const checkoutRefId = regularSale?.invoiceId ?? printSale?.invoiceId ?? workOrders[0]?.workOrderId;
+      const checkoutRefId =
+        regularSale?.invoiceId ??
+        printSale?.invoiceId ??
+        workOrders[0]?.workOrderId;
       if (checkoutRefId != null) {
         await recordIdempotencyKey(
           tx,

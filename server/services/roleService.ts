@@ -90,7 +90,7 @@ function normalizePermissions(input: RolePermissions | null | undefined): Permis
   const legacyCustomers = input?.customers;
   out.customers = ACCESS_VALUES.includes(legacyCustomers as AccessLevel)
     ? (legacyCustomers as AccessLevel)
-    : "NONE";
+    : out.crm;
   // Old clients and stored payloads may know only `customers`; carry that level
   // into CRM when no explicit CRM decision exists.
   if (!ACCESS_VALUES.includes(input?.crm as AccessLevel) && ACCESS_VALUES.includes(legacyCustomers as AccessLevel)) {
