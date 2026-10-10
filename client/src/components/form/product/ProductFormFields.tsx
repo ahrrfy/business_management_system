@@ -375,7 +375,13 @@ export function ProductFormFields({
       )}
 
       {productId != null && !facts?.isBundle && (
-        <ProductRecipeSection productId={productId} isService={model.isService} />
+        <ProductRecipeSection
+          productId={productId}
+          isService={model.isService}
+          branchId={branchId}
+          sellingPrice={model.units.find((u) => u.isBase)?.retail || model.variants[0]?.retail}
+          wholesalePrice={model.units.find((u) => u.isBase)?.wholesale}
+        />
       )}
     </div>
   );

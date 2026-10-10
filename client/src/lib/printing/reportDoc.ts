@@ -25,6 +25,7 @@ import {
   type MetaSection,
   type SummaryItem,
   type DocHeaderBarcode,
+  type CompanySettings,
 } from "./docHtml";
 import { BRAND, esc } from "./brand";
 
@@ -45,6 +46,8 @@ export interface ReportDocInput {
   note?: string;
   /** بطاقات وصفية اختيارية (خضراء/برتقالية) — معلومات الطرف أو ملخّص الفلاتر. */
   meta?: MetaSection[];
+  /** إعدادات هوية المنشأة المخصصة للمستند. */
+  companySettings?: CompanySettings;
   /** أعمدة الجدول. */
   columns: TableCol[];
   /** صفوف الجدول (قيم نصّية جاهزة العرض — نسّق الأموال قبل التمرير). */
@@ -85,6 +88,7 @@ export function printReportDoc(input: ReportDocInput): boolean {
     input.headerExtra,
     input.barcode,
     input.barcodePlacement,
+    input.companySettings,
   );
   const note = input.note ? noteBlock(input.note) : "";
   const meta = input.meta && input.meta.length ? docMeta(input.meta) : "";
@@ -100,7 +104,7 @@ export function printReportDoc(input: ReportDocInput): boolean {
 
   const summary = input.summary && input.summary.length ? docSummary(input.summary) : "";
 
-  const body = `${head}${note}${meta}${table}${summary}${docFooter()}`;
+  const body = `${head}${note}${meta}${table}${summary}${docFooter(input.companySettings)}`;
   const ok = openPrintWindow(wrapA4Doc(input.title, body, { orientation: input.orientation }));
   if (!ok && input.notifyOnBlock !== false) {
     // رسالة عربية موحّدة عبر كل الشاشات — قبل هذا كان بعضها يعرض alert("popup blocked")،

@@ -18,6 +18,8 @@ import { requireDb } from "../services/tx";
 import { logger } from "../logger";
 import { branchScopedProcedure, requireModule, router } from "../trpc";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { publishRealtimeEvent } from "../realtime";
+import { REALTIME_EVENT_TYPES } from "../../shared/realtimeEvents";
 
 const reservationsRead = branchScopedProcedure.use(requireModule("reservations", "READ"));
 const reservationsWrite = branchScopedProcedure.use(requireModule("reservations", "FULL"));
@@ -292,6 +294,18 @@ export const reservationsRouter = router({
         entityId: res.reservationId,
         newValue: { reservationNumber: res.reservationNumber, lines: input.lines.length, overbooked: res.overbookedVariantIds.length },
       });
+      publishRealtimeEvent(
+        REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+        {
+          heldOrderId: res.reservationId,
+          branchId: input.branchId,
+          action: "HELD",
+          lockedByUserId: null,
+        },
+        {
+          branchId: input.branchId,
+        },
+      );
       return res;
     }),
 
@@ -304,6 +318,18 @@ export const reservationsRouter = router({
         role: ctx.user.role,
       });
       await logAudit(ctx, { action: "reservation.cancel", entityType: "reservation", entityId: input.id, newValue: { reason: input.reason ?? null } });
+      publishRealtimeEvent(
+        REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+        {
+          heldOrderId: input.id,
+          branchId: Number(ctx.user.branchId ?? 0),
+          action: "RELEASED",
+          lockedByUserId: null,
+        },
+        {
+          branchId: Number(ctx.user.branchId ?? 0),
+        },
+      );
       return res;
     }),
 
@@ -318,6 +344,18 @@ export const reservationsRouter = router({
         role: ctx.user.role,
       });
       await logAudit(ctx, { action: "reservation.extend", entityType: "reservation", entityId: input.id, newValue: { hours: input.hours } });
+      publishRealtimeEvent(
+        REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+        {
+          heldOrderId: input.id,
+          branchId: Number(ctx.user.branchId ?? 0),
+          action: "LOCKED",
+          lockedByUserId: null,
+        },
+        {
+          branchId: Number(ctx.user.branchId ?? 0),
+        },
+      );
       return res;
     }),
 
@@ -348,6 +386,18 @@ export const reservationsRouter = router({
         entityId: input.reservationId,
         newValue: { invoiceId: res.invoiceId, invoiceNumber: res.invoiceNumber, total: res.total },
       });
+      publishRealtimeEvent(
+        REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+        {
+          heldOrderId: input.reservationId,
+          branchId: Number(ctx.user.branchId ?? 0),
+          action: "RESUMED",
+          lockedByUserId: null,
+        },
+        {
+          branchId: Number(ctx.user.branchId ?? 0),
+        },
+      );
       return res;
     }),
 });

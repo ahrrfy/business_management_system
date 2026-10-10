@@ -50,7 +50,7 @@ export type CartItem = {
   /** لقطة السعر/العرض التلقائي قبل تطبيق كوبون، لاستعادتها عند تغيّر السلة أو إزالة الكوبون. */
   preCouponRow?: PosRow;
   qty: number;
-  disc?: number;      // خصم % (0–100)
+  disc?: number; // خصم % (0–100)
   origPrice?: number; // السعر الأصلي قبل الخصم
   digital?: DigitalLineMeta;
 };
@@ -66,7 +66,7 @@ export type POSTab = {
   cart: CartItem[];
   payInput: string;
   method: PaymentMethod;
-  selId: number | null;   // productUnitId المحدد في السلة
+  selId: number | null; // productUnitId المحدد في السلة
   numMode: NumMode;
   customerId: number | null;
   tierOverride: Tier | null;
@@ -85,6 +85,8 @@ export type POSTab = {
   invoiceDiscountValue?: string;
   /** وضع «توصيل» (م١ PR-B): مسوّدة الطرد لهذا التبويب؛ null/غائب = بيعٌ عاديّ. يُحفظ مع المسوّدة. */
   delivery?: DeliveryDraft | null;
+  /** إسناد موظف صالة العرض / بائع الصالة (R2 / F5). */
+  salesRepId?: number | null;
 };
 
 export type Receipt = {
@@ -99,7 +101,14 @@ export type Receipt = {
   customerName?: string;
   /** G3 (١١/٨): رقم الوردية — يُطبع في ترويسة الإيصال لتوثيق أصل المعاملة (invoices.shiftId). */
   shiftId?: number | null;
-  lines: { name: string; unit: string; qty: number; price: number; disc?: number; total: number }[];
+  lines: {
+    name: string;
+    unit: string;
+    qty: number;
+    price: number;
+    disc?: number;
+    total: number;
+  }[];
   /** المجموع قبل خصم رأس الفاتورة. مساوٍ لـ`total` عند غياب الخصم. */
   subtotal?: number;
   /** مبلغ خصم رأس الفاتورة، إن وُجد. */
@@ -117,7 +126,12 @@ export type Receipt = {
   /** ش١٠: لقطات الكروت الرقمية من الخادم (اسم الكرت/المرجع/بيانات الطالب) — بلا أرقام داخلية. */
   digitalDetails?: DigitalReceiptDetail[] | null;
   /** م١ PR-B: كتلة التوصيل على الإيصال (إفصاحٌ للزبون: الجهة/الأجرة/مَن يقبض/العنوان). */
-  delivery?: { partyName: string; fee: string; feeCollection: DeliveryFeeCollection; address?: string | null } | null;
+  delivery?: {
+    partyName: string;
+    fee: string;
+    feeCollection: DeliveryFeeCollection;
+    address?: string | null;
+  } | null;
   /** م١ PR-B: رقم الطرد المُنشأ في معاملة البيع (يظهر في نافذة الإيصال مع رابط إدارة التوصيل). */
   consignmentNumber?: string | null;
 };
@@ -125,30 +139,30 @@ export type Receipt = {
 // ─── Colour Tokens — مَربوطة بـtokens.css لِتَتنفّس مع .dark بِلا MutationObserver ─
 
 export const POS_COLORS = {
-  bg:         "var(--pos-bg)",
-  card:       "var(--pos-card)",
-  border:     "var(--pos-border)",
-  muted:      "var(--pos-muted)",
-  mutedFg:    "var(--pos-muted-fg)",
-  fg:         "var(--pos-fg)",
-  primary:    "var(--pos-primary)",
-  primaryH:   "var(--pos-primary-h)",
-  primaryFg:  "var(--pos-primary-fg)",
-  primarySoft:"var(--pos-primary-soft)",
-  success:    "var(--pos-success)",
-  successH:   "var(--pos-success-h)",
-  amber:      "var(--pos-amber)",
-  amberSoft:  "var(--pos-amber-soft)",
-  danger:     "var(--pos-danger)",
+  bg: "var(--pos-bg)",
+  card: "var(--pos-card)",
+  border: "var(--pos-border)",
+  muted: "var(--pos-muted)",
+  mutedFg: "var(--pos-muted-fg)",
+  fg: "var(--pos-fg)",
+  primary: "var(--pos-primary)",
+  primaryH: "var(--pos-primary-h)",
+  primaryFg: "var(--pos-primary-fg)",
+  primarySoft: "var(--pos-primary-soft)",
+  success: "var(--pos-success)",
+  successH: "var(--pos-success-h)",
+  amber: "var(--pos-amber)",
+  amberSoft: "var(--pos-amber-soft)",
+  danger: "var(--pos-danger)",
   dangerSoft: "var(--pos-danger-soft)",
   modeActive: "var(--pos-mode-active)",
-  modeBord:   "var(--pos-mode-bord)",
-  modeFg:     "var(--pos-mode-fg)",
-  numKey:     "var(--pos-numkey)",
-  numKeyHov:  "var(--pos-numkey-hov)",
-  delKey:     "var(--pos-delkey)",
-  delFg:      "var(--pos-del-fg)",
-  overlay:    "var(--pos-overlay)",
+  modeBord: "var(--pos-mode-bord)",
+  modeFg: "var(--pos-mode-fg)",
+  numKey: "var(--pos-numkey)",
+  numKeyHov: "var(--pos-numkey-hov)",
+  delKey: "var(--pos-delkey)",
+  delFg: "var(--pos-del-fg)",
+  overlay: "var(--pos-overlay)",
 } as const;
 
 export type PosColors = typeof POS_COLORS;
@@ -172,13 +186,17 @@ export const money = (n: number) => n.toFixed(2);
 // ثم الخصم اليدوي — بحيث لا يُلغي الكاشير العرض بلا وعي (يمكنه إضافة خصم فوقه).
 export const effectivePrice = (item: CartItem) => {
   if (item.digital) return D(item.row.price ?? 0).toNumber();
-  const base = D((item.row as any).promotionEffectivePrice ?? item.row.price ?? 0);
-  if (item.disc == null) return base.toDecimalPlaces(0, 4 /* ROUND_HALF_UP */).toNumber();
+  const base = D(
+    (item.row as any).promotionEffectivePrice ?? item.row.price ?? 0,
+  );
+  if (item.disc == null)
+    return base.toDecimalPlaces(0, 4 /* ROUND_HALF_UP */).toNumber();
   const discounted = round2(base.times(D(100).minus(D(item.disc))).div(100));
   return discounted.toDecimalPlaces(0, 4 /* ROUND_HALF_UP */).toNumber();
 };
 
-export const itemTotal = (item: CartItem) => D(effectivePrice(item)).times(item.qty).toNumber();
+export const itemTotal = (item: CartItem) =>
+  D(effectivePrice(item)).times(item.qty).toNumber();
 
 // POS-ROUND (تدقيق ٢/٧): يبني سطر البيع للخادم بسعر وحدةٍ صحيح (دينار) مطابق تماماً لِما يعرضه
 // ويحصّله الكاشير، مع تمرير الخصم كمبلغٍ صريح. كان العميل يرسل discountPercent فقط بينما يقرّب سعر
@@ -205,17 +223,27 @@ export const buildSaleLine = (c: CartItem) => {
 };
 
 export const createTab = (id: number, label?: string): POSTab => ({
-  id, label: label ?? `طلب ${id}`,
-  cart: [], payInput: "", method: "CASH",
-  selId: null, numMode: "PAY",
-  customerId: null, tierOverride: null,
+  id,
+  label: label ?? `طلب ${id}`,
+  cart: [],
+  payInput: "",
+  method: "CASH",
+  selId: null,
+  numMode: "PAY",
+  customerId: null,
+  tierOverride: null,
   clientRequestId: newClientRequestId(),
-  couponInput: "", couponCode: null, couponLabel: null,
-  paymentRef: "", externalPayment: null, dueDate: "",
+  couponInput: "",
+  couponCode: null,
+  couponLabel: null,
+  paymentRef: "",
+  externalPayment: null,
+  dueDate: "",
   invoiceDiscountPct: "",
   invoiceDiscountType: "percent",
   invoiceDiscountValue: "",
   delivery: null,
+  salesRepId: null,
 });
 
 /** السقف الأعلى لخصم رأس الفاتورة اليدويّ عند الكاشير (قرار المالك). فوقه يستلزم اعتماد مدير
@@ -249,11 +277,17 @@ export function computeInvoiceDiscount({
   type?: InvoiceDiscountType;
   value?: string;
 }): InvoiceDiscountResult {
-  const maxDiscountAmountD = (subtotalD.gt(0) && effectiveHeaderCapPctD.gt(0))
-    ? round2(subtotalD.times(effectiveHeaderCapPctD).div(100))
-    : D(0);
+  const maxDiscountAmountD =
+    subtotalD.gt(0) && effectiveHeaderCapPctD.gt(0)
+      ? round2(subtotalD.times(effectiveHeaderCapPctD).div(100))
+      : D(0);
 
-  if (!invoiceDiscountAllowed || !value || value.trim() === "" || subtotalD.lte(0)) {
+  if (
+    !invoiceDiscountAllowed ||
+    !value ||
+    value.trim() === "" ||
+    subtotalD.lte(0)
+  ) {
     return {
       discountType: type,
       discountValue: value,
@@ -333,7 +367,10 @@ export type FluidFn = (min: number, ratio: number, max: number) => string;
 /** تحويل إيصال الكاشير لبيانات الإيصال المُعلَّم — يُطبع بالتصميم المعتمد نفسه على كل النواقل. */
 export function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
   const subtotalForPrint = r.subtotal ?? r.total;
-  const discountForPrint = r.invoiceDiscount != null && r.invoiceDiscount > 0 ? r.invoiceDiscount : null;
+  const discountForPrint =
+    r.invoiceDiscount != null && r.invoiceDiscount > 0
+      ? r.invoiceDiscount
+      : null;
   return {
     receiptNumber: r.invoiceNumber,
     date: r.printDate ?? r.date,
@@ -349,7 +386,8 @@ export function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
     })),
     subtotal: subtotalForPrint,
     discount: discountForPrint,
-    cashRounding: r.cashRounding != null && r.cashRounding !== 0 ? r.cashRounding : null,
+    cashRounding:
+      r.cashRounding != null && r.cashRounding !== 0 ? r.cashRounding : null,
     total: r.total,
     paid: r.received,
     // «الباقي» يُطبع فقط حين يكون موجباً (فكّة فعلية) — كحارس الشاشة. الدفع المطابق/السريع

@@ -41,6 +41,7 @@ import { cn } from "@/lib/utils";
 import { WorkspaceBar, WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { ActorCell } from "@/components/data-table/ActorCell";
+import { LiveValue } from "@/components/financial/LiveValue";
 import {
   OperationActionCell,
   OperationAttributionCell,
@@ -895,7 +896,11 @@ export function DataTable<T, K = string>({
                                 columnHeader={columnHeaderText(cell.column)}
                                 columnValues={columnValuesByColId[colId]}
                               >
-                                {columnUsesLtrIsolate(cell.column) ? (
+                                {resolveColumnPresentation(cell.column).kind === "money" ? (
+                                  <LiveValue value={cellVal} identity={getRowId?.(row.original) ?? (row.original as { id?: unknown })?.id ?? row.original}>
+                                    <bdi dir="ltr">{flexRender(cell.column.columnDef.cell, cell.getContext())}</bdi>
+                                  </LiveValue>
+                                ) : columnUsesLtrIsolate(cell.column) ? (
                                   <bdi dir="ltr">{flexRender(cell.column.columnDef.cell, cell.getContext())}</bdi>
                                 ) : flexRender(cell.column.columnDef.cell, cell.getContext())}
                               </CopyContextMenu>
@@ -1041,7 +1046,11 @@ export function DataTable<T, K = string>({
                             columnHeader={columnHeaderText(cell.column)}
                             columnValues={columnValuesByColId[colId]}
                           >
-                            {columnUsesLtrIsolate(cell.column) ? (
+                            {resolveColumnPresentation(cell.column).kind === "money" ? (
+                              <LiveValue value={cellVal} identity={getRowId?.(row.original) ?? (row.original as { id?: unknown })?.id ?? row.original}>
+                                <bdi dir="ltr">{flexRender(cell.column.columnDef.cell, cell.getContext())}</bdi>
+                              </LiveValue>
+                            ) : columnUsesLtrIsolate(cell.column) ? (
                               <bdi dir="ltr">{flexRender(cell.column.columnDef.cell, cell.getContext())}</bdi>
                             ) : flexRender(cell.column.columnDef.cell, cell.getContext())}
                           </CopyContextMenu>

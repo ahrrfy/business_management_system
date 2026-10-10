@@ -84,7 +84,7 @@ export function ReceptionCollectSection({
 
   const utils = trpc.useUtils();
   const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { staleTime: 60_000 });
-  const obligationsQ = trpc.delivery.obligations.useQuery(undefined, { staleTime: 10_000, refetchInterval: 30_000 });
+  const obligationsQ = trpc.delivery.obligations.useQuery(undefined, { staleTime: 10_000, refetchInterval: false });
   const selectedParty = (obligationsQ.data ?? []).find((p: PartyObligation) => p.partyId === selectedPartyId);
   const partyInfo = (partiesQ.data ?? []).find((p) => p.id === selectedPartyId);
   const isCompany = partyInfo?.partyType === "COMPANY";
@@ -100,7 +100,7 @@ export function ReceptionCollectSection({
     {
       enabled: !!selectedPartyId,
       staleTime: 10_000,
-      refetchInterval: 30_000,
+      refetchInterval: false,
       getNextPageParam: (last) => last.nextCursor ?? undefined,
     },
   );

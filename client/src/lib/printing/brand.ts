@@ -1,6 +1,11 @@
 // ثوابت العلامة التجارية لمكتبة العربية — مشتركة بين كل قوالب الطباعة
 // المصدر البصري: تسليم «مطبوعات مكتبة العربية» ٥/٧/٢٦ (README + dc.html) — عالية الدقة.
-import { COMPANY_IDENTITY } from "@shared/companyIdentity";
+import {
+  COMPANY_IDENTITY,
+  resolveCompanyIdentity,
+  type CompanyIdentityData,
+  type CompanyIdentityPhone,
+} from "@shared/companyIdentity";
 
 /**
  * علامة الألوان — قيم HEX نهائية من تسليم التصميم (README).
@@ -53,15 +58,90 @@ export const BRAND = {
   white: "#FFFFFF",
 };
 
+let currentDynamicCompanyProfile: Partial<CompanyIdentityData> | null = null;
+
+const PROFILE_SYNC_CHANNEL = "alroya_company_profile_sync";
+let syncChannel: BroadcastChannel | null = null;
+if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
+  try {
+    syncChannel = new BroadcastChannel(PROFILE_SYNC_CHANNEL);
+    syncChannel.onmessage = (event) => {
+      if (event.data && typeof event.data === "object" && "profile" in event.data) {
+        currentDynamicCompanyProfile = event.data.profile;
+      }
+    };
+  } catch {
+    // سقوط آمن عند غياب دعم BroadcastChannel
+  }
+}
+
+/** يضبط بيانات هوية المنشأة المسترجعة ديناميكياً من قاعدة البيانات */
+export function setDynamicCompanyProfile(
+  profile: Partial<CompanyIdentityData> | null,
+  options?: { broadcast?: boolean },
+): void {
+  currentDynamicCompanyProfile = profile;
+  if (options?.broadcast !== false && syncChannel) {
+    try {
+      syncChannel.postMessage({ profile });
+    } catch {
+      // تجاهل إذا كانت القناة مغلقة
+    }
+  }
+}
+
+/** يعيد هوية المنشأة الحالية المدمجة ديناميكياً مع القيم الافتراضية المرجعية */
+export function getCompanyIdentity(): CompanyIdentityData {
+  return resolveCompanyIdentity(currentDynamicCompanyProfile);
+}
+
 /**
- * بيانات المنشأة — انتقل مصدر الحقيقة إلى shared/companyIdentity.ts ليشترك فيه الخادم
- * (PDF المستندات الرسمية كان بلا عنوان/هواتف) والعميل. القيم القانونية (ضريبي/سجل/إجازة)
- * قيم افتراضية بانتظار تحديث المالك؛ كل استدعاء طباعة يمكنه تجاوزها عبر `companySettings`.
+ * بيانات المنشأة — مصدر الحقيقة في shared/companyIdentity.ts مع دعم البيانات الحية
+ * المحفوظة للمنشأة. تدعم الاستعلام المباشر عبر Proxy لتعكس التحديثات الحية فوراً
+ * على كافة المستندات وقوالب الطباعة دون الحاجة لإعادة تحميل الصفحة.
  */
-export const CO = COMPANY_IDENTITY;
+export const CO: typeof COMPANY_IDENTITY & { logoUrl?: string | null } = new Proxy(
+  COMPANY_IDENTITY as any,
+  {
+    get(_target, prop, receiver) {
+      const active = getCompanyIdentity();
+      return Reflect.get(active, prop, receiver);
+    },
+    has(_target, prop) {
+      return Reflect.has(getCompanyIdentity(), prop);
+    },
+    ownKeys(_target) {
+      return Reflect.ownKeys(getCompanyIdentity());
+    },
+    getOwnPropertyDescriptor(_target, prop) {
+      return Reflect.getOwnPropertyDescriptor(getCompanyIdentity(), prop);
+    },
+  },
+);
 
 /** الأرقام المعروضة في إيصال نقطة البيع (الأقسام الأربعة الأولى) — مصدر واحد للقالب HTML والراسم الحراري */
-export const RECEIPT_PHONES = CO.phones.slice(0, 4);
+export const RECEIPT_PHONES: readonly CompanyIdentityPhone[] = new Proxy(
+  COMPANY_IDENTITY.phones.slice(0, 4) as any,
+  {
+    get(_target, prop, receiver) {
+      const active = getCompanyIdentity().phones.slice(0, 4);
+      const val = Reflect.get(active, prop, receiver);
+      if (typeof val === "function") {
+        return (val as (...args: any[]) => any).bind(active);
+      }
+      return val;
+    },
+    has(_target, prop) {
+      return Reflect.has(getCompanyIdentity().phones.slice(0, 4), prop);
+    },
+    ownKeys(_target) {
+      return Reflect.ownKeys(getCompanyIdentity().phones.slice(0, 4));
+    },
+    getOwnPropertyDescriptor(_target, prop) {
+      return Reflect.getOwnPropertyDescriptor(getCompanyIdentity().phones.slice(0, 4), prop);
+    },
+  },
+);
 
 /** HTML-escape helper */
 export const esc = (s: unknown): string =>
@@ -79,8 +159,12 @@ export const fmt = (n: string | number | null | undefined): string =>
 export const fmtC = (n: string | number | null | undefined): string =>
   n == null || n === "" ? "—" : `${fmt(n)} د.ع`;
 
-/** Absolute logo URL for use in print windows */
+/** Absolute logo URL for use in print windows (prefers dynamic profile logo if configured) */
 export function logoUrl(): string {
+  const dynamicLogo = getCompanyIdentity().logoUrl;
+  if (dynamicLogo && dynamicLogo.trim()) {
+    return dynamicLogo.trim();
+  }
   return typeof window !== "undefined"
     ? `${window.location.origin}/logo.png`
     : "/logo.png";

@@ -87,6 +87,8 @@ import { StorefrontColorSwatches } from "@/components/storefront/StorefrontColor
 import { StorefrontPanelShell } from "@/components/storefront/StorefrontPanelShell";
 import { StorefrontLocationPicker } from "@/components/storefront/StorefrontLocationPicker";
 import { AnimatedAddToCartButton } from "@/components/storefront/AnimatedAddToCartButton";
+import { StorefrontProductReviews } from "@/components/storefront/StorefrontProductReviews";
+import { StorefrontDispatchCountdown } from "@/components/storefront/StorefrontDispatchCountdown";
 import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
 
 const STORE_NAME = "المكتبة العربية";
@@ -1059,7 +1061,7 @@ type BannerItem = StoreBannerCreative;
 function InlineStrip({ banner }: { banner: BannerItem; tone?: "emerald" | "amber" }) {
   return (
     <div className="relative col-span-full aspect-[3/1] overflow-hidden rounded-xl shadow-sm">
-      <BannerFrame banner={banner} slot="HERO" />
+      <BannerFrame banner={banner} slot="INLINE" />
     </div>
   );
 }
@@ -1863,6 +1865,8 @@ function StorefrontContent() {
     // في الفواصل البينية حتى لا يبقى مسار الشراء بلا محفّز ترويجي.
     return heroBanners.slice(1, 4);
   }, [heroBanners, inlineBanners, offers]);
+  const topBanners = heroBanners.length ? heroBanners : feedStrips;
+  const topBannerSlot = heroBanners.length || !inlineBanners.length ? "HERO" : "INLINE";
 
   const dealProducts = useMemo(
     () => items.filter((p) => p.inStock && p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price)).slice(0, 12),
@@ -2356,11 +2360,15 @@ function StorefrontContent() {
             وخصمُ الكوبون وزرُّ الإضافة وشارةُ العرض وبطاقاتُ الأقسام وأخضرُ واتساب. */}
         {settingsQ.isSuccess && !storeOpen && <div className="mb-5 border border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] px-4 py-3 text-center text-sm font-bold text-[var(--sem-neg)]">المتجر مغلق مؤقتاً — يمكنك تصفح المنتجات والعودة لاحقاً لإتمام الطلب.</div>}
 
+        <div className="mb-4">
+          <StorefrontDispatchCountdown />
+        </div>
+
         <StorefrontMilestoneBar cartSubtotal={cartSubtotal} freeShippingThresholdBaghdad={settingsQ.data?.freeShippingThreshold} freeShippingThresholdGovernorates={settingsQ.data?.freeShippingThresholdGovernorates} className="mb-6" />
 
-        {!search && categoryId == null && !showWishlist && feedStrips.length > 0 && (
-          <div className="mb-8 w-[100vw] relative left-[50%] right-[50%] -ml-[50vw] -mr-[50vw] overflow-hidden">
-            <BannerCarousel banners={feedStrips} slot="HERO" />
+        {!search && categoryId == null && !showWishlist && topBanners.length > 0 && (
+          <div className="mb-8 w-full min-w-0">
+            <BannerCarousel banners={topBanners} slot={topBannerSlot} />
           </div>
         )}
 
@@ -2818,6 +2826,11 @@ function StorefrontContent() {
                     onAdd={(product, event) => addCatalogProduct(product, event)}
                     onRecommendationClick={trackRecommendationClick}
                   />
+                )}
+
+                {/* تقييمات وآراء العملاء المعتمدة (Social Proof) */}
+                {detailQ.data && (
+                  <StorefrontProductReviews productId={detailQ.data.productId} />
                 )}
               </div>
             ) : (

@@ -35,6 +35,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   decisionSpec,
@@ -210,6 +212,27 @@ export default function MyWork() {
     { limit: 20 },
     { enabled: updatesActive, staleTime: 30_000 },
   );
+  const utils = trpc.useUtils?.();
+
+  // تحديث فوري لطابور القرارات والإشعارات والإعلانات عند وقوع الأحداث اللحظية
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.PENDING_APPROVAL_CREATED,
+      REALTIME_EVENT_TYPES.APPROVAL_RESOLVED,
+    ],
+    () => {
+      void utils?.decisions?.inbox?.invalidate?.();
+    },
+  );
+
+  useRealtimeEvent(REALTIME_EVENT_TYPES.NOTIFICATION_INSERTED, () => {
+    void utils?.superApp?.notifications?.invalidate?.();
+  });
+
+  useRealtimeEvent(REALTIME_EVENT_TYPES.ANNOUNCEMENT_PUBLISHED, () => {
+    void utils?.announcements?.mine?.invalidate?.();
+  });
+
   const markRead = trpc.superApp.markNotificationRead.useMutation({
     onSuccess: () => void notifications.refetch(),
   });

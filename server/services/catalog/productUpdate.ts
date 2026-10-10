@@ -5,6 +5,7 @@
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
 import { barcodeComparisonKey, barcodeIdentityCandidates, canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "@shared/barcodeNormalize";
+import { resolveChannelLabelsOnUpdate } from "@shared/productChannelTitles";
 import { appErrorMessage } from "@shared/errors";
 import { findBarcodeClashes } from "./barcodeAliases";
 import { productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
@@ -107,16 +108,25 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
     await lockVariantsForUpdate(tx, input.variants.map((variant) => variant.id));
     // م٦ ق٨: «لا لقطة ⇒ لا تعديل» — تُقرأ الحالة بعد الأقفال وقبل أوّل كتابة، في نفس المعاملة.
     await snapshotProductBeforeUpdate(tx, input.productId, input.updateReason, actor);
+
+    const channelLabels = resolveChannelLabelsOnUpdate(
+      {
+        name: input.name,
+        posLabel: input.posLabel,
+        invoiceLabel: input.invoiceLabel,
+        storeTitle: input.storeTitle,
+        shortTitle: input.shortTitle,
+      },
+      p,
+    );
+
     await tx
       .update(products)
       .set({
-        name: input.name.trim(),
+        name: channelLabels.name,
         ...(input.internalName !== undefined ? { internalName: input.internalName?.trim() || null } : {}),
-        ...(input.storeTitle !== undefined ? { storeTitle: input.storeTitle?.trim() || null } : {}),
+        ...channelLabels.patch,
         ...(input.seoTitle !== undefined ? { seoTitle: input.seoTitle?.trim() || null } : {}),
-        ...(input.shortTitle !== undefined ? { shortTitle: input.shortTitle?.trim() || null } : {}),
-        ...(input.posLabel !== undefined ? { posLabel: input.posLabel?.trim() || null } : {}),
-        ...(input.invoiceLabel !== undefined ? { invoiceLabel: input.invoiceLabel?.trim() || null } : {}),
         ...(input.marketingCopy !== undefined ? { marketingCopy: input.marketingCopy?.trim() || null } : {}),
         categoryId: input.categoryId ?? null,
         isCustomizable: input.isCustomizable ?? !!p.isCustomizable,

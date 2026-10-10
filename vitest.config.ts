@@ -39,6 +39,7 @@ export default defineConfig({
     testTimeout: 30000,
     hookTimeout: 120000,
     fileParallelism: false,
+    maxWorkers: 1,
     env: {
       // Integration tests run against a dedicated test database.
       // Each session/agent may set TEST_DATABASE_URL to its own DB to avoid

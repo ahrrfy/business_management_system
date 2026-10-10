@@ -12,6 +12,18 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "server/realtime/__tests__/financialRefresh.test.ts",
+      "server/realtime/__tests__/financialCache.test.ts",
+      "client/src/lib/realtime/__tests__/financialQueries.test.ts",
+      "client/src/components/financial/LiveValue.test.tsx",
+      "shared/productChannelSync.test.ts",
+      "server/services/__tests__/predictiveRecipe.test.ts",
+      "client/src/components/product/__tests__/recipeClipboard.test.ts",
+      "client/src/components/production/bundle-kit/__tests__/BundleKitQuickRecipe.test.tsx",
+      "client/src/components/production/bundle-kit/__tests__/BundleKitReviewStep.test.tsx",
+      "client/src/components/production/bundle-kit/__tests__/BundleKitDialogBadges.test.tsx",
+      "shared/__tests__/bundleProductionAdversarial.test.ts",
+      "shared/numberNormalize.test.ts",
       "client/src/pages/__tests__/purchaseShippingFundingUi.test.tsx",
       "client/src/lib/moneyInput.test.ts",
       "client/src/lib/audioFeedback.test.ts",
@@ -43,6 +55,12 @@ export default defineConfig({
       "client/src/lib/printing/printTemplates.test.ts",
       "client/src/lib/printing/docHtml.test.ts",
       "client/src/lib/printing/__tests__/printExchangeReports.test.ts",
+      "client/src/lib/printing/__tests__/brandDynamic.unit.test.ts",
+      "shared/__tests__/companyIdentity.unit.test.ts",
+      "server/routers/__tests__/companyProfileAuthority.test.ts",
+      "server/routers/__tests__/platformAdminRouter.test.ts",
+      "server/services/__tests__/companyProfileService.test.ts",
+      "server/services/__tests__/companyProfileChallenge.test.ts",
       "client/src/lib/printing/printTransport.test.ts",
       "client/src/lib/printing/receptionReceiptMeta.test.ts",
       "client/src/lib/printing/labelDesign.test.ts",
@@ -403,6 +421,7 @@ export default defineConfig({
       "client/src/components/delivery/statementDraft.test.ts",
       "client/src/components/delivery/CompanyStatementScanQueue.test.tsx",
       "client/src/components/delivery/CancelAssignmentOrderCard.test.tsx",
+      "client/src/components/delivery/DeliveryOperationalIntelligenceBar.test.tsx",
       // تصليب قراءة القارئ (١٢/٩/٢٦): فكّ المفتاح الفيزيائيّ (مستقلّ عن التخطيط) + كشف ومضةٍ متسامحٍ مع التذبذب
       "shared/barcodeKeyDecode.test.ts",
       "client/src/lib/barcodeScanTiming.test.ts",
@@ -419,10 +438,29 @@ export default defineConfig({
       // محرك المطابقة الرمزية والتراكيب الذكية للتشكيلات التحريرية بالمتجر (منطق نقي بلا قاعدة)
       "server/services/__tests__/storefrontThematicService.test.ts",
       "server/services/__tests__/customerReadAccess.test.ts",
-      "client/src/components/pos/__tests__/posTotalsCredit.test.ts",
+      "server/services/__tests__/customerReceptionCreateAccess.test.ts",
       "tests/e2e/comprehensivePermissionMatrixE2E.test.ts",
       "shared/__tests__/atomicPermissions.test.ts",
       "server/__tests__/tier5BackendAdversarial.test.ts",
+      // الموجة ٠ (Wave 0): البنية التحتية اللحظية وناقل الحلقات الداخلي وتنسيق التبويبات المتعددة
+      "server/realtime/__tests__/bridge.test.ts",
+      "server/realtime/__tests__/sseStream.test.ts",
+      "client/src/lib/realtime/__tests__/tabCoordinator.test.ts",
+      // الموجة ١ (Wave 1): دورة الأحداث اللحظية للإشعارات والاعتمادات والإعلانات
+      "server/realtime/__tests__/wave1RealtimeEvents.test.ts",
+      "client/src/components/NotificationBell.test.ts",
+      // الموجة ٢ (Wave 2): خط إنتاج المطبعة والاستقبال
+      "server/realtime/__tests__/wave2RealtimeEvents.test.ts",
+      // الموجة ٣ (Wave 3): أسطول التوصيل وتنفيذ طلبات المتجر
+      "server/realtime/__tests__/wave3RealtimeEvents.test.ts",
+      // الموجة ٤ (Wave 4): العمليات الميدانية والجرد والسلال وشاشة العميل
+      "server/realtime/__tests__/wave4RealtimeEvents.test.ts",
+      // الموجة ٥ (Wave 5): تكامل تطبيقات الهاتف والمرونة وحصانة العمل دون اتصال
+      "server/realtime/__tests__/wave5RealtimeEvents.test.ts",
+      "client/src/lib/posStockRefresh.test.ts",
+      "server/services/__tests__/productChannelSyncSelfHeal.test.ts",
+      "client/src/components/decision/DecisionRow.test.ts",
+      "server/services/decisions/__tests__/rows.test.ts",
     ],
   },
 });

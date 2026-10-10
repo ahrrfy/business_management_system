@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Heart, Share2, Plus, Minus, AlertTriangle, Flame, Package, TrendingUp, Check, Eye } from "lucide-react";
+import { Heart, Share2, Plus, Minus, AlertTriangle, Flame, Package, TrendingUp, Check, Eye, Star } from "lucide-react";
 import { fmtInt } from "@/lib/money";
 import { formatQuantity } from "@shared/quantityFormat";
 import { AnimatedAddToCartButton } from "./AnimatedAddToCartButton";
@@ -197,10 +197,14 @@ export function StorefrontProductCard({
 
       {/* تفاصيل ومعلومات المنتج بارتفاعات عمودية محكمة لتوحيد خط الأزرار الأفقي */}
       <div className="flex flex-1 flex-col p-2.5 sm:p-4">
-        {/* الماركة أو الوسم — ارتفاع مقفل */}
-        <div className="flex h-4 items-center">
+        {/* الماركة أو الوسم والتقييم — ارتفاع مقفل */}
+        <div className="flex h-4 items-center justify-between gap-1">
           <span className="truncate text-[9.5px] sm:text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
             {p.brand ?? "المكتبة العربية"}
+          </span>
+          <span className="flex items-center gap-0.5 text-[9px] sm:text-[9.5px] font-black text-amber-500 shrink-0">
+            <Star aria-hidden className="size-2.5 fill-current" />
+            <span className="font-mono">{p.ratingAverage ? Number(p.ratingAverage).toFixed(1) : "5.0"}</span>
           </span>
         </div>
 
