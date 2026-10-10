@@ -5,6 +5,7 @@ import { money, toDbMoney } from "../money";
 import { getReminderQueue } from "../arRemindersService";
 import { getTodayNetSales } from "./todaySales";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
+import { financialCacheKey } from "../../realtime/financialCache";
 
 /**
  * أعمدةُ مسند «الرصيد المفتوح» بالاسم المستعار `i` (نمطُ SQL الخامّ في هذا الملفّ) —
@@ -121,7 +122,7 @@ export async function getDashboardMetrics(
   const isTest = process.env.NODE_ENV === "test" || Boolean(process.env.VITEST);
   const shouldSkipCache = opts.skipCache ?? isTest;
 
-  const cacheKey = `${branchId ?? "all"}:${includeOpeningBalance ? 1 : 0}:${includeFinancials ? 1 : 0}:${includeTodaySales ? 1 : 0}`;
+  const cacheKey = financialCacheKey(`${branchId ?? "all"}:${includeOpeningBalance ? 1 : 0}:${includeFinancials ? 1 : 0}:${includeTodaySales ? 1 : 0}`);
 
   const sharedPromise = shouldSkipCache
     ? fetchSharedDashboardMetrics(branchId, includeOpeningBalance, includeFinancials, includeTodaySales)

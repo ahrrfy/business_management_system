@@ -275,6 +275,15 @@
     font-weight: 600;
     line-height: 1.75;
     direction: rtl;
+    font-variant-numeric: tabular-nums;
+  }
+  input[type="number"],
+  input[type="tel"],
+  input[type="date"],
+  input[type="time"],
+  input[type="datetime-local"] {
+    font-variant-numeric: tabular-nums;
+    unicode-bidi: isolate;
   }
   /*
    * Native selects are still used by legacy forms across the application.

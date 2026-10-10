@@ -47,20 +47,28 @@ export function maskBankFields<T extends Partial<Supplier> & Record<string, unkn
   } as unknown as T;
 }
 
-/** يحجب الحقول الحسّاسة من قائمة عملاء (الرصيد + سقف الائتمان) لغير المدير/الإدمن. */
-export function maskCustomerSensitive<T extends Partial<Customer> & Record<string, unknown>>(row: T, role: string | null | undefined): T;
-export function maskCustomerSensitive<T extends Partial<Customer> & Record<string, unknown>>(row: T | null, role: string | null | undefined): T | null;
-export function maskCustomerSensitive<T extends Partial<Customer> & Record<string, unknown>>(row: T | undefined, role: string | null | undefined): T | undefined;
+export interface MaskCustomerOptions {
+  /** صون سقف الائتمان لنقاط البيع والاستقبال كي يعلم الكاشير إن كان مسموحاً له بالبيع الآجل أم نقديّ فقط */
+  preserveCreditLimit?: boolean;
+  /** صون الرصيد الجاري لنقاط البيع كي تظهر الذمة السابقة للعميل */
+  preserveCurrentBalance?: boolean;
+}
+
+/** يحجب الحقول الحسّاسة من قائمة عملاء (الرصيد + سقف الائتمان) لغير المدير/الإدمن مع إمكانية استثناء نقاط البيع والاستقبال. */
+export function maskCustomerSensitive<T extends Partial<Customer> & Record<string, unknown>>(row: T, role: string | null | undefined, options?: MaskCustomerOptions): T;
+export function maskCustomerSensitive<T extends Partial<Customer> & Record<string, unknown>>(row: T | null, role: string | null | undefined, options?: MaskCustomerOptions): T | null;
+export function maskCustomerSensitive<T extends Partial<Customer> & Record<string, unknown>>(row: T | undefined, role: string | null | undefined, options?: MaskCustomerOptions): T | undefined;
 export function maskCustomerSensitive<T extends Partial<Customer> & Record<string, unknown>>(
   row: T | null | undefined,
   role: string | null | undefined,
+  options?: MaskCustomerOptions,
 ): T | null | undefined {
   if (row == null) return row;
   if (isElevated(role)) return { ...row };
   return {
     ...row,
-    creditLimit: null,
-    currentBalance: "0",
+    creditLimit: options?.preserveCreditLimit ? (row.creditLimit ?? null) : null,
+    currentBalance: options?.preserveCurrentBalance ? (row.currentBalance ?? "0") : "0",
     // getCustomer يُرفق الرصيد الافتتاحيّ (قيد OPENING) لشاشة التعديل — يُحجب كـcurrentBalance تماماً.
     openingBalance: "0",
   } as unknown as T;

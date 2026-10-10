@@ -5,6 +5,8 @@ import { fmt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 
 import { effectiveCashInHand } from "@/components/delivery/partyBoardModel";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 
 export function DeliveryCustodyCard({ branchId }: { branchId?: number | null } = {}) {
   const uiFlags = trpc.delivery.deliveryUiFlags.useQuery(undefined, {
@@ -15,8 +17,18 @@ export function DeliveryCustodyCard({ branchId }: { branchId?: number | null } =
   const board = trpc.delivery.partyBoard.useQuery(
     branchId ? { branchId } : undefined,
     {
-      refetchInterval: 30_000,
       staleTime: 10_000,
+    },
+  );
+
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED,
+      REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
+      REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+    ],
+    () => {
+      void board.refetch();
     },
   );
 

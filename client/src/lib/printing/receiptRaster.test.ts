@@ -113,4 +113,53 @@ describe("receiptToCanvas — سعة الإيصال", () => {
     expect(fillTextCalls.some((t) => t.includes("5,000 د.ع"))).toBe(true);
     expect(fillTextCalls.some((t) => t.includes("البضاعة مدفوعة مسبقاً بالكامل"))).toBe(true);
   });
+
+  it("يطبع اسم المنشأة والشهرة وعنوانها ديناميكياً ويتجاوز قسم الهواتف عند تفريغها", async () => {
+    const { setDynamicCompanyProfile } = await import("./brand");
+    setDynamicCompanyProfile({
+      name: "شركة سومر للحلول الطباعية",
+      short: "سومر برنت",
+      subtitle: "مطبعة رقمية حديثة",
+      address: "المنصور — تقاطع الرواد",
+      phones: [],
+    });
+
+    const fillTextCalls: string[] = [];
+    const context = {
+      save: vi.fn(), restore: vi.fn(), fillRect: vi.fn(), drawImage: vi.fn(),
+      fillText: vi.fn((text: string) => fillTextCalls.push(String(text))),
+      setLineDash: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
+      arcTo: vi.fn(), closePath: vi.fn(),
+      measureText: (s: string) => ({ width: s.length * 10 }),
+      fillStyle: "", strokeStyle: "", lineWidth: 1, textAlign: "start", font: "",
+      textBaseline: "alphabetic", direction: "rtl",
+    };
+    const canvas = { width: 0, height: 0, getContext: () => context };
+    vi.stubGlobal("document", {
+      fonts: { load: () => Promise.resolve([]) },
+      createElement: () => canvas,
+    });
+    vi.stubGlobal("Image", class {
+      onload: (() => void) | null = null;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+
+    await receiptToCanvas({
+      receiptNumber: "INV-SOMER-1", date: "2026-10-08", time: "10:00",
+      cashierName: "كاشير سومر", customerName: "زبون نقدي", shiftId: 2,
+      items: [{ name: "مطبوعات ملونة", quantity: 5, price: "1000", total: "5000" }],
+      subtotal: "5000", total: "5000", paymentMethod: "نقدي", paid: "5000", change: "0",
+    });
+
+    // يجب أن تظهر أسماء المنشأة الديناميكية في استدعاءات fillText
+    expect(fillTextCalls).toContain("سومر برنت");
+    expect(fillTextCalls).toContain("مطبعة رقمية حديثة");
+    expect(fillTextCalls).toContain("شركة سومر للحلول الطباعية");
+    expect(fillTextCalls).toContain("المنصور — تقاطع الرواد");
+
+    // يجب ألا يحوي الإيصال ترويسة «القسم» أو «رقم التواصل» المعلقة عند غياب الهواتف
+    expect(fillTextCalls).not.toContain("رقم التواصل");
+
+    setDynamicCompanyProfile(null);
+  });
 });

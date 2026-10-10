@@ -98,10 +98,10 @@ export function DraftStrip({
       title: `إلغاء المسوّدة ${row.draftNumber}`,
       description: row.moneyLocked
         ? "عليها مبلغٌ مقبوض — الإلغاء يتطلّب مديراً ويُردّ المبلغ بمساره الموثَّق."
-        : "ستُلغى نهائياً (لا مالَ عليها).",
+        : "تحذير رقابي: لا تلغِ مسودة العميل إذا كان متردداً؛ اعرض بديلاً تجارياً أو خصماً مصرحاً به لإنقاذ البيع أولاً. هل تأكدت من تعذر إتمام الطلب؟",
       confirmText: "إلغاء المسوّدة",
     }))) return;
-    cancelM.mutate({ draftId: Number(row.id), version: Number(row.version), reason: "أُلغيت من شريط المحطة" });
+    cancelM.mutate({ draftId: Number(row.id), version: Number(row.version), reason: "أُلغيت من شريط المحطة بعد بروتوكول حماية المبيعات" });
   }
 
   const chip = (row: DraftRow) => (

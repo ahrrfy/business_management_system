@@ -15,6 +15,8 @@ import { PartyBoard } from "./PartyBoard";
 import { DailySettlementDialog } from "./DailySettlementDialog";
 import { partyDetailLinkFor, type PartyBoardRow } from "./partyBoardModel";
 import type { SettleDailyPayload } from "./dailySettlement";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 
 export interface PartyBoardSectionProps {
   outstandingOnly?: boolean;
@@ -40,7 +42,18 @@ export function PartyBoardSection({ outstandingOnly = false, shiftType = "RECEPT
   // علَما الطرح التدريجيّ (مصدر الحقيقة: الخادم): يحكمان عرضَ «نقد بيده» في اللوحة (المصدر الفعّال).
   const uiFlags = trpc.delivery.deliveryUiFlags.useQuery(undefined, { staleTime: 5 * 60_000 });
   const ledgerDerived = uiFlags.data?.courierLedgerDerived ?? false;
-  const board = trpc.delivery.partyBoard.useQuery(undefined, { refetchInterval: 30_000 });
+  const board = trpc.delivery.partyBoard.useQuery(undefined);
+
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED,
+      REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
+      REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+    ],
+    () => {
+      void board.refetch();
+    },
+  );
   const [settleFor, setSettleFor] = useState<PartyBoardRow | null>(null);
   const effectiveBranchId = settleBranchId ?? undefined;
   const preview = trpc.delivery.settlementPreview.useQuery(

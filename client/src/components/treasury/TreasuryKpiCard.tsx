@@ -1,4 +1,5 @@
 import { Card } from "@/components/ui/card";
+import { LiveValue } from "@/components/financial/LiveValue";
 import { fmtAr } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { ArrowDownRight, ArrowUpRight, Minus, type LucideIcon } from "lucide-react";
@@ -105,7 +106,7 @@ export function TreasuryKpiCard({
       <div className="text-xs text-muted-foreground mb-1">{label}</div>
       <div className="flex items-baseline gap-1.5">
         <div className="text-2xl md:text-3xl font-bold tabular-nums tracking-tight" dir="ltr">
-          {formatted}
+          <LiveValue value={formatted} />
         </div>
         {suffix && <div className="text-xs text-muted-foreground">{suffix}</div>}
       </div>

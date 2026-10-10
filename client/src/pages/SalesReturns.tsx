@@ -95,7 +95,7 @@ export default function SalesReturns({ embedded = false }: { embedded?: boolean 
    */
   const pendingControls = trpc.salesControl.list.useQuery(
     { status: "PENDING" },
-    { refetchInterval: 60_000, retry: false },
+    { refetchInterval: false, retry: false },
   );
   const pendingReturns = (pendingControls.data ?? []).filter((r) => r.requestType === "SALES_RETURN");
 

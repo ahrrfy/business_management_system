@@ -24,6 +24,13 @@ import { paymentMethodCompact } from "@shared/terms";
 import { printWoThermalFromCard, printWoShippingLabel } from "@/components/workOrders/workOrderTypes";
 import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 import { Package, Printer } from "lucide-react";
+import { useRealtimeEvent } from "@/lib/realtime";
+import {
+  REALTIME_EVENT_TYPES,
+  type WorkOrderClaimedPayload,
+  type WorkOrderCreatedPayload,
+  type WorkOrderStatusChangedPayload,
+} from "@shared/realtimeEvents";
 
 /**
  * محطة فني التنفيذ — `/work-orders/station` (دور print_operator + الكاشير/المدير).
@@ -655,6 +662,43 @@ export default function WorkOrderStation() {
     if (selId == null && mine.length) setSelId(mine[0].id);
   }, [mine, selId]);
 
+  const [claimedLocks, setClaimedLocks] = useState<Record<number, number>>({});
+
+  useRealtimeEvent<WorkOrderCreatedPayload>(
+    REALTIME_EVENT_TYPES.WORK_ORDER_CREATED,
+    () => {
+      void queueQ.refetch();
+    },
+  );
+
+  useRealtimeEvent<WorkOrderClaimedPayload>(
+    REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED,
+    (ev) => {
+      const { workOrderId, claimedByUserId } = ev.payload;
+      if (claimedByUserId == null) {
+        setClaimedLocks((prev) => {
+          const next = { ...prev };
+          delete next[workOrderId];
+          return next;
+        });
+      } else if (claimedByUserId !== me.data?.id) {
+        setClaimedLocks((prev) => ({ ...prev, [workOrderId]: claimedByUserId }));
+      }
+      void Promise.all([mineQ.refetch(), queueQ.refetch()]);
+    },
+  );
+
+  useRealtimeEvent<WorkOrderStatusChangedPayload>(
+    REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+    (ev) => {
+      void Promise.all([mineQ.refetch(), queueQ.refetch()]);
+      if (selId === ev.payload.workOrderId) {
+        void utils.workOrders.get.invalidate({ workOrderId: selId });
+        void utils.workOrders.timeline.invalidate({ workOrderId: selId });
+      }
+    },
+  );
+
   const claim = trpc.workOrders.claim.useMutation({
     onSuccess: (r) => { notify.ok("سُحب الأمر إلى قائمتك"); setSelId(r.workOrderId); utils.workOrders.list.invalidate(); },
     onError: (e) => notify.err(e),
@@ -717,18 +761,24 @@ export default function WorkOrderStation() {
         <div>
           <div className="text-xs font-semibold text-muted-foreground mb-1.5 inline-flex items-center gap-1"><CornerDownLeft aria-hidden className="size-3.5" /> الطابور العام — مشترك للجميع ({queue.length})</div>
           <div className="space-y-2">
-            {queue.map((o) => (
-              <div key={o.id} className="relative">
-                <OrderRow o={o} active={selId === o.id} onClick={() => setSelId(o.id)} />
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  className="absolute bottom-2 left-2 h-6 text-[11px]"
-                  disabled={claim.isPending}
-                  onClick={(e) => { e.stopPropagation(); claim.mutate({ workOrderId: o.id }); }}
-                >سحب</Button>
-              </div>
-            ))}
+            {queue.map((o) => {
+              const isLockedByOther =
+                claimedLocks[o.id] != null && claimedLocks[o.id] !== me.data?.id;
+              return (
+                <div key={o.id} className="relative">
+                  <OrderRow o={o} active={selId === o.id} onClick={() => setSelId(o.id)} />
+                  <Button
+                    size="sm"
+                    variant={isLockedByOther ? "outline" : "secondary"}
+                    className="absolute bottom-2 left-2 h-6 text-[11px]"
+                    disabled={claim.isPending || isLockedByOther}
+                    onClick={(e) => { e.stopPropagation(); claim.mutate({ workOrderId: o.id }); }}
+                  >
+                    {isLockedByOther ? "محجوز لزميل" : "سحب"}
+                  </Button>
+                </div>
+              );
+            })}
             {queue.length === 0 && (
               <div className="text-xs text-muted-foreground border rounded-lg p-3 text-center">
                 {queueAll.length === 0 ? "الطابور فارغ." : "لا نتائج مطابقة للبحث."}

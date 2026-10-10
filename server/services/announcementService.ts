@@ -2,6 +2,8 @@ import { and, count, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm"
 import { announcementReads, announcements, users } from "../../drizzle/schema";
 import { createAppNotification } from "./appNotificationService";
 import { requireDb } from "./tx";
+import { publishRealtimeEvent } from "../realtime";
+import { REALTIME_EVENT_TYPES, type AnnouncementPublishedPayload } from "@shared/realtimeEvents";
 
 /**
  * خدمة إعلانات الموظفين الداخلية — الإدارة تنشئ وتستهدف، والموظفون المستهدَفون يقرؤون/يُقرّون.
@@ -188,6 +190,33 @@ export async function createAnnouncement(input: CreateAnnouncementInput, actorUs
   const recipientCount = await countTargetedActiveUsers(input.audienceType, audienceBranchId, audienceRole);
   // تعميم best-effort بعد تثبيت الإعلان — لا يُفشِل النشرَ إن تعثّر.
   await fanOutAnnouncementNotifications(announcementId, input, audienceBranchId, audienceRole, actorUserId);
+  try {
+    const isDirectUser = audienceRole?.startsWith("user:");
+    const targetUserId = isDirectUser ? Number(audienceRole!.replace("user:", "")) : undefined;
+    const targetRole = isDirectUser ? undefined : (audienceRole ?? undefined);
+
+    publishRealtimeEvent<AnnouncementPublishedPayload>(
+      REALTIME_EVENT_TYPES.ANNOUNCEMENT_PUBLISHED,
+      {
+        id: announcementId,
+        title: input.title.trim(),
+        body: input.body.trim(),
+        priority: input.priority ?? "NORMAL",
+        audienceType: input.audienceType,
+        audienceBranchId,
+        audienceRole,
+        requiresAck: input.requiresAck ?? false,
+        createdBy: actorUserId,
+      },
+      {
+        branchId: audienceBranchId ?? undefined,
+        role: targetRole,
+        userId: targetUserId,
+      },
+    );
+  } catch {
+    // fail-safe: لا يؤثر فشل البث اللحظي على سلامة حفظ الإعلان
+  }
   return { id: announcementId, recipientCount };
 }
 

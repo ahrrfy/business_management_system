@@ -12,6 +12,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { truncateTables } from "./__testUtils__";
 import { computeCommissionRun } from "../commissions/engine";
 import { approveRun as approveCommission } from "../commissions/runs";
 import { approveCommissionRunRequest, requestCommissionRunApproval } from "../commissions/runApprovals";
@@ -23,10 +24,15 @@ const COMPUTER = { userId: 1, branchId: 1 };
 const APPROVER = { userId: 2, branchId: 1 };
 
 const TABLES = [
+  "invoiceAttributions",
   "accountingEntries",
   "receipts",
+  "payrollItemAllowances",
+  "payrollItemDeductions",
   "payrollItems",
   "payrollRuns",
+  "employeeSpotBonuses",
+  "employeeTerminations",
   "commissionRunApprovalRequests",
   "commissionRunLines",
   "commissionRuns",
@@ -49,10 +55,7 @@ function db() {
   return d;
 }
 async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 async function seedBase() {
@@ -64,7 +67,19 @@ async function seedBase() {
     { id: 3, openId: "t-seller", name: "بائع", role: "cashier", branchId: 1 },
   ]);
   await d.insert(s.employees).values([
-    { id: 11, userId: 3, branchId: 1, firstName: "علي", lastName: "البائع", payType: "monthly", salary: "1000000", allowances: "0" },
+    {
+      id: 11,
+      userId: 3,
+      branchId: 1,
+      firstName: "علي",
+      lastName: "البائع",
+      payType: "monthly",
+      salary: "1000000",
+      allowances: "0",
+      employmentStatus: "active",
+      hireDate: "2026-01-01",
+      terminationDate: null,
+    },
   ]);
   await d.insert(s.receipts).values({
     branchId: 1,

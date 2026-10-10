@@ -30,7 +30,12 @@ export function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row:
   const [amount, setAmount] = useState(String(remaining));
   const [note, setNote] = useState("");
   const [shortfallReason, setShortfallReason] = useState<ShortfallReason | "">("");
-  const QUICK_NOTES = ["اتصال المندوب", "رسالة واتساب من المندوب", "تأكيد من العميل"];
+  const QUICK_NOTES = [
+    "رمز تسليم العميل (Handshake OTP)",
+    "تأكيد هاتفي مباشر مع العميل",
+    "رسالة واتساب موثقة من المندوب",
+    "تسليم وتحصيل مباشر بالكاونتر",
+  ];
   const amountTrimmed = amount.trim();
   const amountNum = Number(amountTrimmed);
   const isAmountValid = amountTrimmed !== "" && Number.isFinite(amountNum) && amountNum >= 0;

@@ -30,6 +30,7 @@ export interface LeaderboardRow {
   employeeId: number;
   employeeName: string;
   position: string | null;
+  photoUrl: string | null;
   branchName: string | null;
   planName: string;
   sales: string;
@@ -90,6 +91,7 @@ export async function getLeaderboard(
       grandfatherName: employees.grandfatherName,
       lastName: employees.lastName,
       position: employees.position,
+      photoUrl: employees.photoUrl,
       branchName: branches.name,
     })
     .from(employees)
@@ -134,6 +136,7 @@ export async function getLeaderboard(
       employeeId: e.employeeId,
       employeeName: emp ? fullEmployeeName(emp) : `#${e.employeeId}`,
       position: emp?.position ?? null,
+      photoUrl: emp?.photoUrl ?? null,
       branchName: emp?.branchName ?? null,
       planName: plan.name,
       _base: effectiveBase,
@@ -173,6 +176,7 @@ export async function getLeaderboard(
 export interface MyStatusResult {
   period: string;
   employeeName: string;
+  photoUrl?: string | null;
   planName: string | null;
   tierMode: "TARGET_PCT" | "AMOUNT_SLAB" | null;
   sales: string;
@@ -203,6 +207,7 @@ export async function getMyStatus(userId: number, period?: string): Promise<MySt
       fatherName: employees.fatherName,
       grandfatherName: employees.grandfatherName,
       lastName: employees.lastName,
+      photoUrl: employees.photoUrl,
     })
     .from(employees)
     .where(eq(employees.userId, userId))
@@ -267,6 +272,7 @@ export async function getMyStatus(userId: number, period?: string): Promise<MySt
   return {
     period: p,
     employeeName: fullEmployeeName(emp),
+    photoUrl: emp.photoUrl ?? null,
     planName,
     tierMode,
     sales: toDbMoney(sales),
