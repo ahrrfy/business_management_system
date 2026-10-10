@@ -87,6 +87,8 @@ import { StorefrontColorSwatches } from "@/components/storefront/StorefrontColor
 import { StorefrontPanelShell } from "@/components/storefront/StorefrontPanelShell";
 import { StorefrontLocationPicker } from "@/components/storefront/StorefrontLocationPicker";
 import { AnimatedAddToCartButton } from "@/components/storefront/AnimatedAddToCartButton";
+import { StorefrontProductReviews } from "@/components/storefront/StorefrontProductReviews";
+import { StorefrontDispatchCountdown } from "@/components/storefront/StorefrontDispatchCountdown";
 import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
 
 const STORE_NAME = "المكتبة العربية";
@@ -2356,6 +2358,10 @@ function StorefrontContent() {
             وخصمُ الكوبون وزرُّ الإضافة وشارةُ العرض وبطاقاتُ الأقسام وأخضرُ واتساب. */}
         {settingsQ.isSuccess && !storeOpen && <div className="mb-5 border border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] px-4 py-3 text-center text-sm font-bold text-[var(--sem-neg)]">المتجر مغلق مؤقتاً — يمكنك تصفح المنتجات والعودة لاحقاً لإتمام الطلب.</div>}
 
+        <div className="mb-4">
+          <StorefrontDispatchCountdown />
+        </div>
+
         <StorefrontMilestoneBar cartSubtotal={cartSubtotal} freeShippingThresholdBaghdad={settingsQ.data?.freeShippingThreshold} freeShippingThresholdGovernorates={settingsQ.data?.freeShippingThresholdGovernorates} className="mb-6" />
 
         {!search && categoryId == null && !showWishlist && feedStrips.length > 0 && (
@@ -2818,6 +2824,11 @@ function StorefrontContent() {
                     onAdd={(product, event) => addCatalogProduct(product, event)}
                     onRecommendationClick={trackRecommendationClick}
                   />
+                )}
+
+                {/* تقييمات وآراء العملاء المعتمدة (Social Proof) */}
+                {detailQ.data && (
+                  <StorefrontProductReviews productId={detailQ.data.productId} />
                 )}
               </div>
             ) : (
