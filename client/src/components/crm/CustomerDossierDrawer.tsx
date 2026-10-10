@@ -29,6 +29,8 @@ import {
   buildGoogleReviewInviteWhatsAppMessage,
   buildInstantGiftWhatsAppMessage,
 } from "@/lib/whatsapp";
+import { invoiceStatusLabel } from "@shared/invoiceStatus";
+import { workOrderStatusLabel } from "@shared/workOrderStatus";
 import { printGiftVoucherDoc } from "@/lib/printing/giftVoucherPrint";
 import { CustomerRadarBadges } from "./CustomerRadarBadges";
 import { InstantGiftModal } from "./InstantGiftModal";
@@ -626,7 +628,7 @@ export function CustomerDossierDrawer({
                                   variant="outline"
                                   className="text-[10px] py-0"
                                 >
-                                  {inv.status}
+                                  {invoiceStatusLabel(inv.status)}
                                 </Badge>
                               </div>
                               <div className="text-[11px] text-muted-foreground flex items-center gap-1">
@@ -683,7 +685,7 @@ export function CustomerDossierDrawer({
                                   variant="secondary"
                                   className="text-[10px] py-0"
                                 >
-                                  {wo.status}
+                                  {workOrderStatusLabel(wo.status)}
                                 </Badge>
                                 <span>· {fmtDate(wo.createdAt)}</span>
                               </div>
@@ -992,7 +994,9 @@ export function CustomerDossierDrawer({
                               >
                                 {coupon.status === "ACTIVE"
                                   ? "صالحة للاستخدام"
-                                  : coupon.status}
+                                  : coupon.status === "REDEEMED"
+                                    ? "تم الاستخدام"
+                                    : "ملغاة"}
                               </Badge>
                             </div>
                             <div className="text-[11px] text-muted-foreground flex flex-wrap items-center gap-1.5">
