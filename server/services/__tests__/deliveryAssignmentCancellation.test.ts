@@ -929,16 +929,7 @@ describe("إلغاء إسناد إرسالية مرتبطة بطلب متجر إ
     const expiredReservation = new Date(now - 12 * 3600 * 1000); // انتهت قبل 12 ساعة
 
     // فاتورة للطلب
-    await d.insert(s.invoices).values({
-      id: 301,
-      invoiceNumber: "INV-1-20261010-00301",
-      branchId: 1,
-      userId: 6,
-      customerId: 1,
-      total: "25000.00",
-      paidAmount: "0.00",
-      status: "PENDING",
-    });
+    await seedInvoice(301);
 
     // طلب متجر إلكتروني تم شحنه سابقاً
     await d.insert(s.onlineOrders).values({
@@ -1010,16 +1001,7 @@ describe("إلغاء إسناد إرسالية مرتبطة بطلب متجر إ
     const orderDate = new Date(now - 48 * 3600 * 1000);
     const expiredReservation = new Date(now - 24 * 3600 * 1000);
 
-    await d.insert(s.invoices).values({
-      id: 302,
-      invoiceNumber: "INV-1-20261010-00302",
-      branchId: 1,
-      userId: 6,
-      customerId: 1,
-      total: "40000.00",
-      paidAmount: "0.00",
-      status: "PENDING",
-    });
+    await seedInvoice(302);
 
     await d.insert(s.onlineOrders).values({
       id: 302,
