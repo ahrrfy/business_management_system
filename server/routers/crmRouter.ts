@@ -482,7 +482,7 @@ export const crmRouter = router({
           branchId,
           minLineAmount: "0",
           priority: 0,
-          isActive: targetStatus === "ACTIVE",
+          isActive: true,
           applicationMode: "COUPON",
           isStoreManaged: false,
           createdBy: ctx.user.id,
@@ -615,7 +615,10 @@ export const crmRouter = router({
         }
         if (input.status === "ACTIVE") {
           const promotion = (await tx.select().from(promotions).where(eq(promotions.id, program.promotionId)).limit(1))[0];
-          if (!promotion?.isActive || promotion.applicationMode !== "COUPON") throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن التفعيل قبل تفعيل عرض كوبون صالح" });
+          if (!promotion || promotion.applicationMode !== "COUPON") throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن التفعيل قبل تفعيل عرض كوبون صالح" });
+          if (!promotion.isActive) {
+            await tx.update(promotions).set({ isActive: true }).where(eq(promotions.id, program.promotionId));
+          }
           if (program.campaignId != null) {
             const campaign = (await tx.select().from(crmCampaigns).where(eq(crmCampaigns.id, program.campaignId)).limit(1))[0];
             if (!campaign || !["APPROVED", "SCHEDULED", "ACTIVE"].includes(campaign.status)) {
