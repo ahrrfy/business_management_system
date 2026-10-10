@@ -794,12 +794,7 @@ describe("storefront quote requests", () => {
   });
   it("يعامل العرض المنتهي في يوم بغداد كمنتهٍ حتى قبل منتصف UTC", async () => {
     vi.useFakeTimers();
-    const now = new Date();
-    const y = now.getUTCFullYear();
-    const m = String(now.getUTCMonth() + 1).padStart(2, "0");
-    const d = String(now.getUTCDate()).padStart(2, "0");
-    const targetDate = `${y}-${m}-${d}`;
-    vi.setSystemTime(new Date(`${targetDate}T22:30:00.000Z`)); // 01:30 في بغداد من اليوم التالي
+    vi.setSystemTime(new Date("2030-09-10T22:30:00.000Z")); // 01:30 في بغداد من اليوم التالي
     try {
       const request = await createStorefrontQuoteRequest({
         customerName: "مكتب بغداد",
@@ -818,7 +813,7 @@ describe("storefront quote requests", () => {
         requestId: request.requestId,
         customerId: Number(requestRow.customerId),
         clientRequestId: "quote-baghdad-expiry-official",
-        validUntil: targetDate,
+        validUntil: "2030-09-10",
       });
 
       await expect(acceptStorefrontOfficialQuotationByGuestToken(request.guestTrackingToken!))

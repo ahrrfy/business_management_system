@@ -463,6 +463,7 @@ export default defineConfig({
       "server/services/__tests__/productChannelSyncSelfHeal.test.ts",
       "client/src/components/decision/DecisionRow.test.ts",
       "server/services/decisions/__tests__/rows.test.ts",
+      "server/services/__tests__/triggersAndStateMachinesRegression.test.ts",
       "server/services/__tests__/omnichannelCouponEngine.unit.test.ts",
       "client/src/components/promotions/__tests__/promotionBuilder.unit.test.ts",
     ],
