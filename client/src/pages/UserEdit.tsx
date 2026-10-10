@@ -23,6 +23,12 @@ import { printManagerBadge } from "@/lib/printing/managerBadge";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 import { ROLE_LABEL, ROLE_OPTIONS } from "@/lib/roles";
+import {
+  ROLE_DEFAULT_ATOMIC_PERMISSIONS,
+  ROLE_DEFAULT_OPERATIONAL_CAPS,
+  type AtomicPermissionsMap,
+  type OperationalCaps,
+} from "@shared/atomicPermissions";
 import { EffectiveAccessForAssignment } from "@/components/form/EffectiveAccessPreview";
 import { EffectivePermissionsPanel } from "@/components/form/EffectivePermissionsPanel";
 import {
@@ -121,6 +127,8 @@ export default function UserEdit() {
   const [jobTitle, setJobTitle] = useState("");
   const [hiredAt, setHiredAt] = useState("");
   const [permsOverride, setPermsOverride] = useState<PermissionMap>({});
+  const [atomicPermissions, setAtomicPermissions] = useState<AtomicPermissionsMap>({});
+  const [operationalCaps, setOperationalCaps] = useState<OperationalCaps | null>(null);
   const [isOwner, setIsOwner] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
@@ -149,6 +157,11 @@ export default function UserEdit() {
       setJobTitle((u as { jobTitle?: string | null }).jobTitle ?? "");
       setHiredAt(toDateInput((u as { hiredAt?: unknown }).hiredAt));
       setPermsOverride(((u as { permissionsOverride?: PermissionMap | null }).permissionsOverride as PermissionMap) ?? {});
+      const uAtomic = (u as { atomicPermissions?: AtomicPermissionsMap | null }).atomicPermissions;
+      const uCaps = (u as { operationalCaps?: OperationalCaps | null }).operationalCaps;
+      const initAtomic = uAtomic ?? ROLE_DEFAULT_ATOMIC_PERMISSIONS[(u.role as RoleKey) ?? "cashier"] ?? {};
+      setAtomicPermissions(initAtomic);
+      setOperationalCaps(uCaps ?? null);
       setIsOwner(!!(u as { isOwner?: boolean }).isOwner);
       baselineRef.current = JSON.stringify({
         name: u.name ?? "", email: u.email ?? "", username: (u as { username?: string | null }).username ?? "",
@@ -156,6 +169,8 @@ export default function UserEdit() {
         branchId: u.branchId ? String(u.branchId) : "", phone: (u as { phone?: string | null }).phone ?? "",
         jobTitle: (u as { jobTitle?: string | null }).jobTitle ?? "", hiredAt: toDateInput((u as { hiredAt?: unknown }).hiredAt),
         permsOverride: ((u as { permissionsOverride?: PermissionMap | null }).permissionsOverride as PermissionMap) ?? {},
+        atomicPermissions: initAtomic,
+        operationalCaps: uCaps ?? null,
         isOwner: !!(u as { isOwner?: boolean }).isOwner,
       });
       setLoaded(true);
@@ -163,7 +178,7 @@ export default function UserEdit() {
   }, [detail.data, loaded]);
 
   const isDirty = loaded && JSON.stringify({
-    name, email, username, role, customRoleId, branchId, phone, jobTitle, hiredAt, permsOverride, isOwner,
+    name, email, username, role, customRoleId, branchId, phone, jobTitle, hiredAt, permsOverride, atomicPermissions, operationalCaps, isOwner,
   }) !== baselineRef.current;
   useUnsavedGuard(isDirty);
 
@@ -176,7 +191,7 @@ export default function UserEdit() {
       setDone("تمّ حفظ التعديلات بنجاح.");
       // الحفظ نجح ⇒ الحالة الحالية هي الأساس الجديد (وإلا يبقى الحارس يُنذر بفقد بيانات محفوظة فعلاً).
       baselineRef.current = JSON.stringify({
-        name, email, username, role, customRoleId, branchId, phone, jobTitle, hiredAt, permsOverride, isOwner,
+        name, email, username, role, customRoleId, branchId, phone, jobTitle, hiredAt, permsOverride, atomicPermissions, operationalCaps, isOwner,
       });
       await invalidate();
     },
@@ -239,6 +254,8 @@ export default function UserEdit() {
       setCustomRoleId(null);
       setRole(val as RoleKey);
       setPermsOverride({});
+      setAtomicPermissions(ROLE_DEFAULT_ATOMIC_PERMISSIONS[val as RoleKey] ?? {});
+      setOperationalCaps(ROLE_DEFAULT_OPERATIONAL_CAPS[val as RoleKey] ?? null);
     }
   }
 
@@ -341,6 +358,8 @@ export default function UserEdit() {
       // isOwner: يُرسَل فقط إن كان المستخدم الحالي مالكاً (وإلا يتجاهله الخادم بحارس FORBIDDEN).
       ...(meIsOwner ? { isOwner } : {}),
       permissionsOverride: override,
+      atomicPermissions: customRoleId ? null : atomicPermissions,
+      operationalCaps: customRoleId ? null : operationalCaps,
     });
   }
 
@@ -648,7 +667,16 @@ export default function UserEdit() {
                 role={role}
                 permissions={resolvedPerms}
                 onChange={handlePermChange}
-                onReset={() => setPermsOverride({})}
+                onReset={() => {
+                  setPermsOverride({});
+                  setAtomicPermissions(ROLE_DEFAULT_ATOMIC_PERMISSIONS[role] ?? {});
+                  setOperationalCaps(ROLE_DEFAULT_OPERATIONAL_CAPS[role] ?? null);
+                }}
+                atomicPermissions={atomicPermissions}
+                onAtomicChange={(key, granted) => setAtomicPermissions((p) => ({ ...p, [key]: granted }))}
+                onAtomicBulkChange={(updates) => setAtomicPermissions((p) => ({ ...p, ...updates }))}
+                caps={operationalCaps}
+                onCapsChange={setOperationalCaps}
               />
             </>
           )}

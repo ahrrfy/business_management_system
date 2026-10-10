@@ -1,5 +1,6 @@
 import { PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG, PASSWORD_REGEX, USERNAME_MAX_LEN } from "@shared/const";
 import { ALL_ROLES, ALL_PERMISSION_MODULE_KEYS, type RoleKey } from "@shared/permissions";
+import { atomicPermissionsMapSchema, operationalCapsSchema } from "@shared/atomicPermissions";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import {
@@ -132,6 +133,8 @@ export const userRouter = router({
         jobTitle: z.string().max(120).nullish(),
         hiredAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
         permissionsOverride: PERM_OVERRIDE,
+        atomicPermissions: atomicPermissionsMapSchema.nullish(),
+        operationalCaps: operationalCapsSchema.nullish(),
         mustChangePassword: z.boolean().default(true),
       }).refine((d) => !!(d.email || d.username), { message: NEED_IDENTIFIER, path: ["username"] })
     )
@@ -141,7 +144,15 @@ export const userRouter = router({
         action: "user.create",
         entityType: "user",
         entityId: res.userId,
-        newValue: { email: input.email ?? null, username: input.username ?? null, role: input.role, branchId: input.branchId ?? null, mustChangePassword: input.mustChangePassword },
+        newValue: {
+          email: input.email ?? null,
+          username: input.username ?? null,
+          role: input.role,
+          branchId: input.branchId ?? null,
+          atomicPermissions: input.atomicPermissions ?? null,
+          operationalCaps: input.operationalCaps ?? null,
+          mustChangePassword: input.mustChangePassword,
+        },
       });
       return res;
     }),
@@ -161,6 +172,8 @@ export const userRouter = router({
         hiredAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
         isOwner: z.boolean().optional(),
         permissionsOverride: PERM_OVERRIDE,
+        atomicPermissions: atomicPermissionsMapSchema.nullish(),
+        operationalCaps: operationalCapsSchema.nullish(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -183,6 +196,8 @@ export const userRouter = router({
               customRoleId: (before as { customRoleId?: number | null }).customRoleId ?? null,
               isOwner: !!(before as { isOwner?: boolean }).isOwner,
               permissionsOverride: (before as { permissionsOverride?: unknown }).permissionsOverride ?? null,
+              atomicPermissions: (before as { atomicPermissions?: unknown }).atomicPermissions ?? null,
+              operationalCaps: (before as { operationalCaps?: unknown }).operationalCaps ?? null,
             }
           : null,
         newValue: {
@@ -194,6 +209,8 @@ export const userRouter = router({
           customRoleId: input.customRoleId,
           isOwner: input.isOwner,
           permissionsOverride: input.permissionsOverride,
+          atomicPermissions: input.atomicPermissions,
+          operationalCaps: input.operationalCaps,
         },
       });
       return res;

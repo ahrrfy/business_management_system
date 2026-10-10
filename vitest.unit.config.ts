@@ -420,6 +420,9 @@ export default defineConfig({
       "server/services/__tests__/storefrontThematicService.test.ts",
       "server/services/__tests__/customerReadAccess.test.ts",
       "client/src/components/pos/__tests__/posTotalsCredit.test.ts",
+      "tests/e2e/comprehensivePermissionMatrixE2E.test.ts",
+      "shared/__tests__/atomicPermissions.test.ts",
+      "server/__tests__/tier5BackendAdversarial.test.ts",
     ],
   },
 });

@@ -21,6 +21,10 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import {
+  type AtomicPermissionsMap,
+  type OperationalCaps,
+} from "@shared/atomicPermissions";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { and, asc, desc, eq, gt, gte, isNull, like, ne, or, sql } from "drizzle-orm";
@@ -88,6 +92,8 @@ export interface CreateUserInput {
   jobTitle?: string | null;
   hiredAt?: string | null;
   permissionsOverride?: Record<string, "FULL" | "READ" | "NONE"> | null;
+  atomicPermissions?: AtomicPermissionsMap | null;
+  operationalCaps?: OperationalCaps | null;
   mustChangePassword?: boolean;
 }
 
@@ -106,6 +112,8 @@ export interface UpdateUserInput {
   hiredAt?: string | null;
   isOwner?: boolean;
   permissionsOverride?: Record<string, "FULL" | "READ" | "NONE"> | null;
+  atomicPermissions?: AtomicPermissionsMap | null;
+  operationalCaps?: OperationalCaps | null;
 }
 
 export interface ListUsersInput {
@@ -133,6 +141,8 @@ const SAFE_COLUMNS = {
   jobTitle: users.jobTitle,
   hiredAt: users.hiredAt,
   permissionsOverride: users.permissionsOverride,
+  atomicPermissions: users.atomicPermissions,
+  operationalCaps: users.operationalCaps,
   mustChangePassword: users.mustChangePassword,
   lastSignedIn: users.lastSignedIn,
   createdAt: users.createdAt,
@@ -294,6 +304,8 @@ export async function createUserTx(tx: Tx, input: CreateUserInput, _actor: Maybe
         jobTitle: input.jobTitle?.trim() || null,
         hiredAt: input.hiredAt ? new Date(input.hiredAt) : null,
         permissionsOverride: permsOverride,
+        atomicPermissions: input.atomicPermissions ?? null,
+        operationalCaps: input.operationalCaps ?? null,
         mustChangePassword: mustChange,
         tempPasswordExpiresAt: expiresAt,
         // AUTH-02: حدّ الإبطال أقدم بثانيتين من الإنشاء كي لا تُرفَض أوّل جلسةٍ يُصدرها دخولٌ
@@ -424,6 +436,15 @@ export async function updateUser(input: UpdateUserInput, actor: MaybeScopedActor
         // على بقايا override قديمة خُزّنت قبل هذا الحارس فتستيقظ بقيم لا يذكرها أحد.
         patch.permissionsOverride = null;
       }
+    }
+
+    if (input.atomicPermissions !== undefined) {
+      patch.atomicPermissions = input.atomicPermissions;
+      patch.sessionsValidFrom = new Date();
+    }
+    if (input.operationalCaps !== undefined) {
+      patch.operationalCaps = input.operationalCaps;
+      patch.sessionsValidFrom = new Date();
     }
 
     if (Object.keys(patch).length === 0) return { userId: input.userId, changed: false };

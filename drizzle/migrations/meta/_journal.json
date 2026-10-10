@@ -2444,6 +2444,13 @@
 			"when": 1788148841000,
 			"tag": "0383_historical_cash_correction",
 			"breakpoints": true
+		},
+		{
+			"idx": 390,
+			"version": "5",
+			"when": 1788148848000,
+			"tag": "0390_comprehensive_permission_matrix_caps",
+			"breakpoints": true
 		}
 	]
 }
