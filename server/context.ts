@@ -65,6 +65,7 @@ export function normalizeOwnerAuthority(user: AuthUser): AuthUser {
  * كما يحلّ الصلاحيات الذرية والسقوف الرقمية للمستخدم (أدوار افتراضية ومخصصة واستثناءات).
  */
 export async function resolveCustomRole(user: AuthUser): Promise<void> {
+  if (!user || typeof user !== "object") return;
   if (!user.customRoleId) {
     const baseRole = user.role ?? "user";
     user.resolvedAtomicPermissions = resolveAtomicPermissions(

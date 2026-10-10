@@ -12,6 +12,11 @@ import {
   classifyCapabilityShadow,
   deriveCapabilityGrants,
 } from "@shared/capabilities";
+import {
+  type AtomicPermissionKey,
+  type AtomicPermissionsMap,
+  ATOMIC_PERMISSION_DEFINITIONS,
+} from "@shared/atomicPermissions";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
@@ -367,11 +372,90 @@ function auditCapabilityShadow(
   }
 }
 
+/**
+ * إنفاذ الصلاحية الذرية الدقيقة على مستوى الخادم (Atomic Permission Gate):
+ * يتحقق مباشرة من خريطة الصلاحيات الذرية المحلولة للمستخدم (resolvedAtomicPermissions).
+ * يفشل مغلقاً (FORBIDDEN) إذا كانت الصلاحية الذرية غير ممنوحة.
+ */
+export function requireAtomicPermission(key: AtomicPermissionKey) {
+  return t.middleware(async ({ ctx, next, path }) => {
+    if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    if (ctx.user.role === "admin" || (ctx.user as any).isOwner) {
+      assertTwoFactorEnrolled(ctx.user, path);
+      return next({ ctx: { ...ctx, user: ctx.user } });
+    }
+    const atomic = (ctx.user as any).resolvedAtomicPermissions as AtomicPermissionsMap | undefined;
+    if (atomic) {
+      if (atomic[key] !== true) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "إجراء غير مصرّح به",
+            why: `صلاحية المفتاح الذري (${key}) غير ممنوحة لحسابك`,
+            doThis: "راجع مسؤول النظام أو مدير الفرع لتوسيع صلاحياتك",
+          }),
+        });
+      }
+      assertTwoFactorEnrolled(ctx.user, path);
+      return next({ ctx: { ...ctx, user: ctx.user } });
+    }
+    // Fallback توافقي عند غياب الخريطة الذرية
+    const def = ATOMIC_PERMISSION_DEFINITIONS.find((d) => d.key === key);
+    if (def) {
+      const override = (ctx.user as any).permissionsOverride as Record<string, AccessLevel> | null;
+      const map = resolvePermissions(ctx.user.role as RoleKey, override);
+      const level = map[def.legacyModule] ?? "NONE";
+      const needsFull =
+        def.standardAction === "create" ||
+        def.standardAction === "edit" ||
+        def.standardAction === "cancel" ||
+        def.standardAction === "approve";
+      const allowed = level === "FULL" || (!needsFull && level === "READ");
+      if (!allowed) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "إجراء غير مصرّح به",
+            why: `صلاحية الوحدة الكلاسيكية غير كافية للمفتاح (${key})`,
+            doThis: "راجع مسؤول النظام أو مدير الفرع لتوسيع صلاحياتك",
+          }),
+        });
+      }
+    }
+    assertTwoFactorEnrolled(ctx.user, path);
+    return next({ ctx: { ...ctx, user: ctx.user } });
+  });
+}
+
 /** إنفاذ وحدة بمستوى وصول — يستخدم الخريطة المحسوبة (قالب + override). */
 export function requireModule(moduleKey: string, minLevel: AccessLevel) {
   return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
-    if (ctx.user.role === "admin") return next({ ctx: { ...ctx, user: ctx.user } });
+    if (ctx.user.role === "admin" || (ctx.user as any).isOwner) return next({ ctx: { ...ctx, user: ctx.user } });
+
+    // إن وُجدت خريطة ذرية محلولة، والطلب يتطلب مستوى كتابة FULL لكن كل أفعال الكتابة محظورة صراحة:
+    const atomic = (ctx.user as any).resolvedAtomicPermissions as AtomicPermissionsMap | undefined;
+    if (atomic && minLevel === "FULL") {
+      const defs = ATOMIC_PERMISSION_DEFINITIONS.filter((d) => d.legacyModule === moduleKey);
+      const writeDefs = defs.filter(
+        (d) =>
+          d.standardAction === "create" ||
+          d.standardAction === "edit" ||
+          d.standardAction === "cancel" ||
+          d.standardAction === "approve",
+      );
+      if (writeDefs.length > 0 && writeDefs.every((d) => atomic[d.key] === false)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "إجراء غير مصرّح به",
+            why: `أفعال التعديل والكتابة في هذه الوحدة (${moduleKey}) محظورة صراحة على حسابك`,
+            doThis: "راجع مسؤول النظام أو مدير الفرع لتعديل الصلاحيات الذرية",
+          }),
+        });
+      }
+    }
+
     const override = (ctx.user as any).permissionsOverride as Record<string, AccessLevel> | null;
     const map = resolvePermissions(ctx.user.role as RoleKey, override);
     const level = map[moduleKey] ?? "NONE";
@@ -396,6 +480,34 @@ export function requireModule(moduleKey: string, minLevel: AccessLevel) {
 function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, minLevel: AccessLevel) {
   return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    if (ctx.user.role === "admin" || (ctx.user as any).isOwner) {
+      assertTwoFactorEnrolled(ctx.user, path);
+      return next({ ctx: { ...ctx, user: ctx.user } });
+    }
+
+    // إنفاذ حظر الكتابة الذرية عند طلب مستوى FULL
+    const atomic = (ctx.user as any).resolvedAtomicPermissions as AtomicPermissionsMap | undefined;
+    if (atomic && minLevel === "FULL") {
+      const defs = ATOMIC_PERMISSION_DEFINITIONS.filter((d) => d.legacyModule === moduleKey);
+      const writeDefs = defs.filter(
+        (d) =>
+          d.standardAction === "create" ||
+          d.standardAction === "edit" ||
+          d.standardAction === "cancel" ||
+          d.standardAction === "approve",
+      );
+      if (writeDefs.length > 0 && writeDefs.every((d) => atomic[d.key] === false)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "إجراء غير مصرّح به",
+            why: `أفعال التعديل والكتابة في هذه الوحدة (${moduleKey}) محظورة صراحة على حسابك`,
+            doThis: "راجع مسؤول النظام أو مدير الفرع لتعديل الصلاحيات الذرية",
+          }),
+        });
+      }
+    }
+
     const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as
       | Record<string, AccessLevel>
       | null
@@ -403,7 +515,7 @@ function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, m
     const gateAllowed = moduleAccessAllowed(ctx.user.role, override, moduleKey, minLevel, allowedRoles);
     // م٨: تحقّق القدرات الظِلّيّ في وضع الظلّ الموثَّق (AUTHZ_ENGINE=shadow) — لا يغيّر `gateAllowed` (صفر
     // انحدار). admin مُستثنى (يعبُر البوّابة دائماً وقدراتُه مُطابِقة تلقائياً، فلا معنى لبناء خريطته للمقارنة).
-    if (capabilityShadowEnabled() && ctx.user.role !== "admin") {
+    if (capabilityShadowEnabled()) {
       const map = resolvePermissions(ctx.user.role as RoleKey, override);
       auditCapabilityShadow(ctx, "requireModuleGate", moduleKey, minLevel, map, gateAllowed, path);
     }
@@ -574,8 +686,17 @@ export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL
 export function returnOperationsAllowed(user: {
   role: string;
   permissionsOverride?: unknown;
+  resolvedAtomicPermissions?: AtomicPermissionsMap;
 }): boolean {
   if (user.role === "admin") return true;
+  if (user.resolvedAtomicPermissions) {
+    if (
+      user.resolvedAtomicPermissions["pos.refund.create"] === false &&
+      user.resolvedAtomicPermissions["pos.invoice.void"] === false
+    ) {
+      return false;
+    }
+  }
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
   const salesAllowed = moduleAccessAllowed(user.role, override, "sales", "FULL", ["cashier", "manager"]);
   const receptionAllowed = moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
@@ -600,6 +721,32 @@ export const returnsProcedure = auditedProcedure
             doThis: "تأكد من تسجيل الدخول بحساب كاشير (تجزئة، استقبال، أو طباعة) أو راجع مدير الفرع",
           }),
         });
+      }
+      const atomic = (ctx.user as any).resolvedAtomicPermissions as AtomicPermissionsMap | undefined;
+      if (atomic) {
+        if (path?.endsWith("cancel") && atomic["pos.invoice.void"] === false) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "إلغاء الفاتورة غير مصرّح به",
+              why: "تم حظر صلاحية إلغاء الفواتير (pos.invoice.void) لحسابك صراحة",
+              doThis: "راجع مسؤول النظام أو المشرف لإلغاء الفاتورة",
+            }),
+          });
+        }
+        if (
+          (path?.endsWith("create") || path?.includes("Refund") || path?.includes("Return")) &&
+          atomic["pos.refund.create"] === false
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "إصدار المرتجع غير مصرّح به",
+              why: "تم حظر صلاحية إنشاء المرتجعات (pos.refund.create) لحسابك صراحة",
+              doThis: "راجع مسؤول النظام أو المشرف لإصدار المرتجع",
+            }),
+          });
+        }
       }
       assertTwoFactorEnrolled(ctx.user, path);
       return next({ ctx: { ...ctx, user: ctx.user } });

@@ -198,6 +198,28 @@ function samePermissionOverride(a: PermissionMap | null | undefined, b: Permissi
   });
 }
 
+function sameAtomicPermissions(a: AtomicPermissionsMap | null | undefined, b: AtomicPermissionsMap | null | undefined): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  const aEntries = Object.entries(a).filter(([, v]) => v !== undefined).sort(([x], [y]) => x.localeCompare(y));
+  const bEntries = Object.entries(b).filter(([, v]) => v !== undefined).sort(([x], [y]) => x.localeCompare(y));
+  return aEntries.length === bEntries.length && aEntries.every(([k, v], idx) => {
+    const other = bEntries[idx];
+    return other?.[0] === k && other[1] === v;
+  });
+}
+
+function sameOperationalCaps(a: OperationalCaps | null | undefined, b: OperationalCaps | null | undefined): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  const aEntries = Object.entries(a).filter(([, v]) => v !== undefined).sort(([x], [y]) => x.localeCompare(y));
+  const bEntries = Object.entries(b).filter(([, v]) => v !== undefined).sort(([x], [y]) => x.localeCompare(y));
+  return aEntries.length === bEntries.length && aEntries.every(([k, v], idx) => {
+    const other = bEntries[idx];
+    return other?.[0] === k && String(other[1]) === String(v);
+  });
+}
+
 export async function assertNotLastActiveAdmin(tx: any, excludeUserId: number) {
   const other = (
     await tx
@@ -439,12 +461,16 @@ export async function updateUser(input: UpdateUserInput, actor: MaybeScopedActor
     }
 
     if (input.atomicPermissions !== undefined) {
-      patch.atomicPermissions = input.atomicPermissions;
-      patch.sessionsValidFrom = new Date();
+      if (!sameAtomicPermissions(existing.atomicPermissions as AtomicPermissionsMap | null, input.atomicPermissions)) {
+        patch.atomicPermissions = input.atomicPermissions;
+        patch.sessionsValidFrom = new Date();
+      }
     }
     if (input.operationalCaps !== undefined) {
-      patch.operationalCaps = input.operationalCaps;
-      patch.sessionsValidFrom = new Date();
+      if (!sameOperationalCaps(existing.operationalCaps as OperationalCaps | null, input.operationalCaps)) {
+        patch.operationalCaps = input.operationalCaps;
+        patch.sessionsValidFrom = new Date();
+      }
     }
 
     if (Object.keys(patch).length === 0) return { userId: input.userId, changed: false };

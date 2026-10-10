@@ -2376,6 +2376,13 @@ export function deriveLegacyModulesFromAtomic(
     const defs = ATOMIC_PERMISSION_DEFINITIONS.filter((def) => def.legacyModule === mod);
     let hasWrite = false;
     let hasRead = false;
+    const writeDefs = defs.filter(
+      (def) =>
+        def.standardAction === "create" ||
+        def.standardAction === "edit" ||
+        def.standardAction === "cancel" ||
+        def.standardAction === "approve",
+    );
 
     for (const def of defs) {
       if (map[def.key] === true) {
@@ -2390,6 +2397,11 @@ export function deriveLegacyModulesFromAtomic(
           hasRead = true;
         }
       }
+    }
+
+    // إذا كانت كل أفعال الكتابة معطلة صراحة (false) ⇒ لا يُمنح FULL إطلاقاً
+    if (writeDefs.length > 0 && writeDefs.every((def) => map[def.key] === false)) {
+      hasWrite = false;
     }
 
     if (hasWrite) {
