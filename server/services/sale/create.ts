@@ -1455,6 +1455,10 @@ export async function createSaleInTx(
 
   // لقطة اسم البائع: يُعرض على الإيصال اسم البائع التجاري الأساسي
   const salespersonNameSnapshot = await userNameSnapshot(tx, attributionPlan.primaryUserId);
+  // نسبة البيع: الفاعل، إلّا أن يُمرَّر `attributeToUserId` صراحةً (تفويضٌ داخليّ — التصحيح
+  // يُعيد إصدار بيع البائع الأصليّ بيد مديرٍ، فلا تُنقَل عمولته إلى المصحِّح؛ و dispatchOnlineOrder
+  // يُسند الفاتورة لموظّف التجهيز لا المشرف الذي ضغط زرّ الإرسال).
+  const sellerUserId = input.attributeToUserId ?? actor.userId;
   const insRes = await tx.insert(invoices).values({
     invoiceNumber,
     sourceType: input.sourceType,
@@ -1506,8 +1510,7 @@ export async function createSaleInTx(
     capturedAt: input.offlineCapture?.capturedAt ?? null,
     salespersonNameSnapshot,
     posDeviceId: input.offlineCapture?.deviceId ?? input.deviceId ?? null,
-    // 🔒 الحفاظ على الكاشير الحقيقي: createdBy يبقى دائماً هو مشغّل الصندوق الفعلي (actor.userId)
-    createdBy: actor.userId,
+    createdBy: sellerUserId,
     // الإسناد التجاري المباشر لسرعة الاستعلام
     salesRepId: attributionPlan.primaryUserId,
     attributionMode: attributionPlan.attributionMode,
@@ -1962,7 +1965,7 @@ export async function createSaleInTx(
       profit: revenue.minus(ledgerOwnedCogs),
       taxAmount: money(totals.taxAmount),
       amount: money(totals.total),
-      createdBy: actor.userId,
+      createdBy: sellerUserId,
       createdByNameSnapshot: salespersonNameSnapshot,
       notes: analyticalInvoiceCost.eq(ledgerOwnedCogs)
         ? undefined
@@ -2237,9 +2240,10 @@ export async function createSale(
   input: CreateSaleInput,
   actor: Actor,
 ): Promise<CreateSaleResult> {
-  const result = await withTx(async (tx) => createSaleInTx(tx, input, actor), {
-    gate: "FINANCIAL_WRITER",
-  });
+  const result = await withTx(
+    async (tx) => createSaleInTx(tx, input, actor),
+    { gate: "FINANCIAL_WRITER" },
+  );
 
   // إشعار الشكر (T4.2، خلف مفتاح flowPurchaseThanks) — خارج معاملة البيع تماماً وبعد نجاحها فقط.
   // ⚠️ لا يمسّ ذرّية البيع أبداً: يعمل بعد الالتزام (commit) لا داخله، ومحمي بغلاف دفاعيّ هنا فوق
