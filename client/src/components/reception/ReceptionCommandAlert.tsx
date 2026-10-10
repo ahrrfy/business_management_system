@@ -52,6 +52,37 @@ export function ReceptionCommandAlert({ branchId, className }: ReceptionCommandA
 
   const isUrgent = pendingOrders > 0;
 
+  if (countsQ.isLoading) {
+    return (
+      <div
+        className={cn(
+          "flex items-center justify-between rounded-xl border border-border/60 bg-muted/20 px-3.5 py-2 text-xs text-muted-foreground animate-pulse",
+          className,
+        )}
+      >
+        <span>جارٍ استطلاع طابور التجهيز الفوري للفرع…</span>
+        <EmployeeEarningsWidget compact />
+      </div>
+    );
+  }
+
+  if (countsQ.isError) {
+    return (
+      <div
+        className={cn(
+          "flex items-center justify-between rounded-xl border border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] px-3.5 py-2 text-xs text-[var(--sem-neg)] font-bold",
+          className,
+        )}
+      >
+        <div className="flex items-center gap-2">
+          <AlertTriangle aria-hidden="true" className="size-4 shrink-0 text-[var(--sem-neg)]" />
+          <span>تعذّر الاتصال بخادم طابور الطلبات؛ لا تفترض خلو الطابور وتحقق من الشبكة.</span>
+        </div>
+        <EmployeeEarningsWidget compact />
+      </div>
+    );
+  }
+
   if (totalActionable === 0 && !isUrgent) {
     return (
       <div
@@ -61,7 +92,7 @@ export function ReceptionCommandAlert({ branchId, className }: ReceptionCommandA
         )}
       >
         <div className="flex items-center gap-2">
-          <CheckCircle2 aria-hidden className="size-4 text-[var(--sem-pos)]" />
+          <CheckCircle2 aria-hidden="true" className="size-4 text-[var(--sem-pos)]" />
           <span className="font-bold text-foreground">
             طابور الطلبات مكتمل — لا توجد طلبات متجر أو مسودات معلقة بحاجة للتدخل الفوري.
           </span>

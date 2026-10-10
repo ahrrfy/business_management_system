@@ -84,9 +84,9 @@ export function LeaderboardPodium({ rows, period }: LeaderboardPodiumProps) {
         </Button>
       </div>
 
-      {/* منصة التتويج */}
+      {/* منصة التتويج: في الموبايل الأول فالأول، وفي الديسكتوب (RTL) المركز 2 يمين، 1 وسط، 3 يسار */}
       <div className={cn("grid grid-cols-1 md:grid-cols-3 gap-4 items-end pt-4", tvMode && "max-w-5xl mx-auto my-auto w-full")}>
-        {/* المركز الثاني */}
+        {/* المركز الثاني: order-2 في الموبايل، وorder-1 في الديسكتوب */}
         {second ? (
           <PodiumCard
             row={second}
@@ -95,12 +95,13 @@ export function LeaderboardPodium({ rows, period }: LeaderboardPodiumProps) {
             badgeColor="bg-slate-400 text-white"
             medalLabel="المركز الثاني"
             cardHeight="md:min-h-[260px]"
+            className="order-2 md:order-1"
           />
         ) : (
-          <div className="hidden md:block" />
+          <div className="hidden md:block md:order-1" />
         )}
 
-        {/* المركز الأول */}
+        {/* المركز الأول: order-1 في الموبايل (رأس القائمة)، وorder-2 في الديسكتوب (قلب المنصة) */}
         {first && (
           <PodiumCard
             row={first}
@@ -110,10 +111,11 @@ export function LeaderboardPodium({ rows, period }: LeaderboardPodiumProps) {
             medalLabel="بطل الصدارة"
             cardHeight="md:min-h-[300px]"
             isChampion
+            className="order-1 md:order-2"
           />
         )}
 
-        {/* المركز الثالث */}
+        {/* المركز الثالث: order-3 في الموبايل والديسكتوب */}
         {third ? (
           <PodiumCard
             row={third}
@@ -122,9 +124,10 @@ export function LeaderboardPodium({ rows, period }: LeaderboardPodiumProps) {
             badgeColor="bg-amber-700 text-white"
             medalLabel="المركز الثالث"
             cardHeight="md:min-h-[240px]"
+            className="order-3 md:order-3"
           />
         ) : (
-          <div className="hidden md:block" />
+          <div className="hidden md:block md:order-3" />
         )}
       </div>
     </div>
@@ -139,6 +142,7 @@ function PodiumCard({
   medalLabel,
   cardHeight,
   isChampion = false,
+  className,
 }: {
   row: PodiumRow;
   rank: number;
@@ -147,8 +151,10 @@ function PodiumCard({
   medalLabel: string;
   cardHeight: string;
   isChampion?: boolean;
+  className?: string;
 }) {
   const photo = row.photoUrl;
+  const [imgError, setImgError] = useState(false);
 
   return (
     <div
@@ -157,6 +163,7 @@ function PodiumCard({
         medalColor,
         cardHeight,
         isChampion && "ring-2 ring-amber-400/40",
+        className,
       )}
     >
       {/* تاج أو شارة المركز */}
@@ -173,8 +180,13 @@ function PodiumCard({
             isChampion ? "border-amber-400" : rank === 2 ? "border-slate-300" : "border-amber-700/40",
           )}
         >
-          {photo ? (
-            <img src={photo} alt={row.employeeName} className="size-full object-cover" />
+          {photo && !imgError ? (
+            <img
+              src={photo}
+              alt={row.employeeName}
+              className="size-full object-cover"
+              onError={() => setImgError(true)}
+            />
           ) : (
             <div className="grid size-full place-items-center bg-muted text-muted-foreground font-black text-xl">
               {row.employeeName.slice(0, 2)}

@@ -629,7 +629,14 @@ export default function OrderFulfillment() {
           order={cancelTarget}
           pending={setStatusM.isPending}
           onClose={() => !setStatusM.isPending && setCancelTarget(null)}
-          onConfirm={(reason) => setStatusM.mutate({ id: cancelTarget.id, status: "CANCELLED", cancelReason: reason || undefined })}
+          onConfirm={(reason, approval) =>
+            setStatusM.mutate({
+              id: cancelTarget.id,
+              status: "CANCELLED",
+              cancelReason: reason || undefined,
+              managerApproval: approval,
+            })
+          }
         />
       )}
 

@@ -249,7 +249,7 @@ export function StrictCancelOrderDialog({
                   variant="destructive"
                   size="sm"
                   disabled={!isReasonValid || pending}
-                  onClick={() => handleFinalSubmit()}
+                  onClick={() => setShowApprovalDialog(true)}
                 >
                   {pending ? (
                     <Loader2 aria-hidden className="size-3.5 animate-spin" />
