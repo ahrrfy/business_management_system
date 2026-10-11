@@ -35,7 +35,13 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
 
   const isMinSpendMet = D(simulatedSubtotal).gte(minSpend);
 
-  // الحساب المالي الدقيق للخصم مع احترام السقف المالي والحد الأدنى
+  const isScoped = data.scope === "CATEGORIES" || data.scope === "PRODUCTS";
+  const hasSelectedTargets =
+    data.scope === "ALL" ||
+    (data.scope === "CATEGORIES" && data.targetCategoryIds.length > 0) ||
+    (data.scope === "PRODUCTS" && data.targetProductIds.length > 0);
+
+  // الحساب المالي الدقيق للخصم مع احترام نطاق الأصناف والسقف المالي والحد الأدنى
   const calculation = useMemo(() => {
     const subtotal = D(simulatedSubtotal);
     if (!isMinSpendMet) {
@@ -43,26 +49,48 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
         discountAmount: D(0),
         isCapped: false,
         total: subtotal,
+        eligibleAmount: subtotal,
+        unrelatedAmount: D(0),
+        hasEligibleItems: true,
       };
+    }
+
+    // إذا كان العرض مقيداً بنطاق أصناف/تصنيفات محددة، نحدد الحصة المشمولة من السلة التجريبية
+    let eligibleAmount = subtotal;
+    let unrelatedAmount = D(0);
+    let hasEligibleItems = true;
+
+    if (isScoped) {
+      if (!hasSelectedTargets) {
+        eligibleAmount = D(0);
+        unrelatedAmount = subtotal;
+        hasEligibleItems = false;
+      } else {
+        // نمذجة سلة تحتوي على أصناف مشمولة (60٪) وأصناف عامة غير مشمولة (40٪)
+        eligibleAmount = subtotal.times(0.6).round();
+        unrelatedAmount = subtotal.minus(eligibleAmount);
+      }
     }
 
     let discount = D(0);
     let isCapped = false;
 
-    if (data.type === "PERCENT") {
-      const pct = moneyInput(data.discountPercent);
-      const rawDiscount = subtotal.times(pct).div(100);
-      const capVal = moneyInput(data.maxDiscountAmount);
+    if (hasEligibleItems && eligibleAmount.gt(0)) {
+      if (data.type === "PERCENT") {
+        const pct = moneyInput(data.discountPercent);
+        const rawDiscount = eligibleAmount.times(pct).div(100);
+        const capVal = moneyInput(data.maxDiscountAmount);
 
-      if (capVal.greaterThan(0) && rawDiscount.gt(capVal)) {
-        discount = capVal;
-        isCapped = true;
+        if (capVal.greaterThan(0) && rawDiscount.gt(capVal)) {
+          discount = capVal;
+          isCapped = true;
+        } else {
+          discount = rawDiscount;
+        }
       } else {
-        discount = rawDiscount;
+        const fixed = moneyInput(data.discountAmount);
+        discount = fixed.greaterThan(eligibleAmount) ? eligibleAmount : fixed;
       }
-    } else {
-      const fixed = moneyInput(data.discountAmount);
-      discount = fixed.greaterThan(subtotal) ? subtotal : fixed;
     }
 
     const netTotal = subtotal.minus(discount);
@@ -71,8 +99,20 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
       discountAmount: discount,
       isCapped,
       total: netTotal.gt(0) ? netTotal : D(0),
+      eligibleAmount,
+      unrelatedAmount,
+      hasEligibleItems,
     };
-  }, [data.type, data.discountPercent, data.maxDiscountAmount, data.discountAmount, simulatedSubtotal, isMinSpendMet]);
+  }, [
+    data.type,
+    data.discountPercent,
+    data.maxDiscountAmount,
+    data.discountAmount,
+    simulatedSubtotal,
+    isMinSpendMet,
+    isScoped,
+    hasSelectedTargets,
+  ]);
 
   const barcodeSvgResult = useMemo(() => {
     try {
@@ -170,17 +210,35 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
     </div>
     ${data.type === "PERCENT" && moneyInput(data.maxDiscountAmount).greaterThan(0) ? `<div>سقف التوفير: ${formatIqd(data.maxDiscountAmount)}</div>` : ""}
     ${moneyInput(data.minOrderSpend).greaterThan(0) ? `<div>الحد الأدنى للفاتورة: ${formatIqd(data.minOrderSpend)}</div>` : ""}
+    ${isScoped ? `<div style="font-size: 9.5px; font-weight: 700; color: #333;">نطاق الخصم: ${data.scope === "CATEGORIES" ? "تصنيفات محددة" : "منتجات محددة"}</div>` : ""}
     <div class="code-pill">${previewCode}</div>
     <div class="qr">${qrSvg || ""}</div>
     <div style="font-size: 9px; font-weight: 700;">امسح للطلب أونلاين أو أبرز الرمز للكاشير</div>
   </div>
 
   <div class="totals">
+    ${isScoped ? `
+    <div class="row">
+      <span>أصناف مشمولة (${data.scope === "CATEGORIES" ? "تصنيفات مختارة" : "منتجات مختارة"}):</span>
+      <span>${formatIqd(calculation.eligibleAmount.toString())}</span>
+    </div>
+    ${calculation.unrelatedAmount.gt(0) ? `
+    <div class="row" style="color: #555; font-size: 10px;">
+      <span>أصناف عامة غير مشمولة:</span>
+      <span>${formatIqd(calculation.unrelatedAmount.toString())}</span>
+    </div>
+    ` : ""}
+    <div class="row" style="border-top: 1px dashed #000; padding-top: 1mm; margin-top: 1mm;">
+      <span>إجمالي السلة التجريبية:</span>
+      <span>${formatIqd(simulatedSubtotal)}</span>
+    </div>
+    ` : `
     <div class="row">
       <span>مشتريات قرطاسية ومواد مكتبية:</span>
       <span>${formatIqd(simulatedSubtotal)}</span>
     </div>
-    ${isMinSpendMet ? `
+    `}
+    ${isMinSpendMet && calculation.discountAmount.gt(0) ? `
     <div class="row" style="font-weight: 900; color: #000;">
       <span>خصم كوبون (${previewCode}):</span>
       <span dir="ltr">-${formatIqd(calculation.discountAmount.toString())}</span>
@@ -331,13 +389,34 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
           {/* بنود الفاتورة والمجاميع */}
           <div className="space-y-1.5 text-xs border-t border-black border-dashed pt-2">
             <div className="flex justify-between font-bold text-zinc-700 text-[10.5px] border-b pb-1">
-              <span>الصنف</span>
+              <span>الصنف / البند</span>
               <span>المبلغ</span>
             </div>
-            <div className="flex justify-between font-semibold text-black">
-              <span>مشتريات قرطاسية ومواد مكتبية</span>
-              <span className="tabular-nums font-bold">{formatIqd(simulatedSubtotal)}</span>
-            </div>
+            {isScoped ? (
+              <>
+                <div className="flex justify-between font-semibold text-black">
+                  <span>
+                    أصناف مشمولة بالعرض ({data.scope === "CATEGORIES" ? "تصنيفات مختارة" : "منتجات مختارة"})
+                  </span>
+                  <span className="tabular-nums font-bold">
+                    {formatIqd(calculation.eligibleAmount.toString())}
+                  </span>
+                </div>
+                {calculation.unrelatedAmount.gt(0) && (
+                  <div className="flex justify-between text-zinc-600 text-[11px]">
+                    <span>أصناف عامة غير مشمولة بالعرض</span>
+                    <span className="tabular-nums">
+                      {formatIqd(calculation.unrelatedAmount.toString())}
+                    </span>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="flex justify-between font-semibold text-black">
+                <span>مشتريات قرطاسية ومواد مكتبية</span>
+                <span className="tabular-nums font-bold">{formatIqd(simulatedSubtotal)}</span>
+              </div>
+            )}
           </div>
 
           {/* فاصل الفاتورة */}
@@ -352,19 +431,25 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
 
             {/* سطر خصم الكوبون الصريح بالسالب بتباين عالي جداً */}
             {isMinSpendMet ? (
-              <div className="flex justify-between text-black font-black bg-zinc-200/80 px-2 py-1 rounded border border-black/40">
-                <div className="flex flex-col">
-                  <span>خصم كوبون ({previewCode})</span>
-                  {calculation.isCapped && (
-                    <span className="text-[9.5px] font-bold text-zinc-800">
-                      (تم تفعيل سقف الخصم الأقصى)
-                    </span>
-                  )}
+              calculation.discountAmount.gt(0) ? (
+                <div className="flex justify-between text-black font-black bg-zinc-200/80 px-2 py-1 rounded border border-black/40">
+                  <div className="flex flex-col">
+                    <span>خصم كوبون ({previewCode})</span>
+                    {calculation.isCapped && (
+                      <span className="text-[9.5px] font-bold text-zinc-800">
+                        (تم تفعيل سقف الخصم الأقصى)
+                      </span>
+                    )}
+                  </div>
+                  <span className="tabular-nums self-center text-sm font-black" dir="ltr">
+                    -{formatIqd(calculation.discountAmount.toString())}
+                  </span>
                 </div>
-                <span className="tabular-nums self-center text-sm font-black" dir="ltr">
-                  -{formatIqd(calculation.discountAmount.toString())}
-                </span>
-              </div>
+              ) : isScoped && !calculation.hasEligibleItems ? (
+                <div className="text-[10px] font-bold text-amber-800 bg-amber-50 p-1.5 rounded border border-amber-300">
+                  لم يتم احتساب خصم (يرجى اختيار {data.scope === "CATEGORIES" ? "التصنيفات" : "المنتجات"} المشمولة أولاً)
+                </div>
+              ) : null
             ) : (
               <div className="text-[10px] font-bold text-red-700 bg-red-50 p-1.5 rounded border border-red-300">
                 لم يتم تطبيق الكوبون (الحد الأدنى للسلة هو {formatIqd(minSpend.toString())})

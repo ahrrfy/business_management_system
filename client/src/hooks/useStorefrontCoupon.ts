@@ -6,6 +6,18 @@ interface UseStorefrontCouponOptions {
   onQuoteInvalidate?: () => void;
 }
 
+function cleanUrlCouponParams() {
+  if (typeof window === "undefined") return;
+  try {
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("coupon") || url.searchParams.has("c")) {
+      url.searchParams.delete("coupon");
+      url.searchParams.delete("c");
+      window.history.replaceState(window.history.state, "", url.toString());
+    }
+  } catch {}
+}
+
 export function useStorefrontCoupon(options?: UseStorefrontCouponOptions) {
   const [couponDraft, setCouponDraft] = useState("");
   const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(null);
@@ -24,6 +36,7 @@ export function useStorefrontCoupon(options?: UseStorefrontCouponOptions) {
       setCouponDraft(norm);
       setAppliedCouponCode(norm);
       setCouponFeedback(`تم تفعيل كوبون الخصم (${norm}) تلقائياً من الرابط الترويجي`);
+      cleanUrlCouponParams();
     } else {
       try {
         const saved = sessionStorage.getItem(STORAGE_KEY)?.trim();
@@ -54,6 +67,7 @@ export function useStorefrontCoupon(options?: UseStorefrontCouponOptions) {
     try {
       sessionStorage.removeItem(STORAGE_KEY);
     } catch {}
+    cleanUrlCouponParams();
     setAppliedCouponCode(null);
     setCouponDraft("");
     setCouponFeedback(null);
@@ -67,6 +81,7 @@ export function useStorefrontCoupon(options?: UseStorefrontCouponOptions) {
     try {
       sessionStorage.removeItem(STORAGE_KEY);
     } catch {}
+    cleanUrlCouponParams();
   }, []);
 
   return {
