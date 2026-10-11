@@ -1,5 +1,6 @@
 import { Calendar, DollarSign, Info, Palette, ShieldAlert, Tag, Truck, Users } from "lucide-react";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -8,6 +9,7 @@ import { Field } from "@/components/product/variantBits";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { trpc } from "@/lib/trpc";
+import { DAYS_OF_WEEK, formatActiveDays, getBaghdadDayOfWeek } from "@shared/promotionScheduling";
 import type { PromotionDiscountType, PromotionFormData, PromotionScope } from "./promotionBuilderTypes";
 
 interface PromotionBuilderFormProps {
@@ -295,6 +297,117 @@ export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionB
                 يطلبه العميل الموثق ذاتياً من تطبيق المتجر قبل أول طلب. يفرض استخداماً واحداً حصراً.
               </span>
             </label>
+          </div>
+
+          {/* جدولة أيام الأسبوع المحددة */}
+          <div className="md:col-span-2 rounded-lg border bg-muted/20 p-3 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <span className="text-xs font-bold block">أيام الأسبوع النشطة للكوبون</span>
+                <span className="text-xs text-muted-foreground block">
+                  {formatActiveDays(data.activeDays)} — تحديد الأيام التي يُسمح فيها بتفعيل واستخدام هذا الكوبون
+                </span>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="text-xs h-7"
+                onClick={() => {
+                  const allSelected = data.activeDays.length === 7;
+                  updateField("activeDays", allSelected ? [getBaghdadDayOfWeek()] : [0, 1, 2, 3, 4, 5, 6]);
+                }}
+              >
+                {data.activeDays.length === 7 ? "تخصيص أيام معينة" : "تفعيل طوال الأسبوع"}
+              </Button>
+            </div>
+
+            <div className="grid grid-cols-4 sm:grid-cols-7 gap-2 pt-1">
+              {DAYS_OF_WEEK.map((day) => {
+                const isSelected = data.activeDays.includes(day.id);
+                return (
+                  <button
+                    key={day.id}
+                    type="button"
+                    onClick={() => {
+                      const current = [...data.activeDays];
+                      if (isSelected) {
+                        if (current.length > 1) {
+                          updateField("activeDays", current.filter((id) => id !== day.id));
+                        }
+                      } else {
+                        updateField("activeDays", [...current, day.id].sort((a, b) => a - b));
+                      }
+                    }}
+                    className={`flex flex-col items-center justify-center p-2 rounded-md border text-xs font-bold transition-colors ${
+                      isSelected
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background text-muted-foreground hover:bg-muted"
+                    }`}
+                  >
+                    <span>{day.nameAr}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* الإصدار التلقائي لكوبون العودة مع فواتير الكاشير */}
+          <div className="md:col-span-2 rounded-lg border bg-muted/20 p-3 space-y-3">
+            <div className="flex items-start gap-2">
+              <Checkbox
+                id="auto-bounce-back"
+                checked={data.isAutoBounceBack}
+                onCheckedChange={(checked) => updateField("isAutoBounceBack", checked === true)}
+              />
+              <label htmlFor="auto-bounce-back" className="text-xs cursor-pointer space-y-0.5">
+                <span className="font-semibold block text-primary">الإصدار التلقائي لكوبون العودة مع فواتير الكاشير (Bounce-back Coupon)</span>
+                <span className="text-muted-foreground block">
+                  عند وصول الفاتورة للمبلغ المحدد، يقوم النظام تلقائياً بإصدار وطباعة قسيمة هدية بأسفل الإيصال للزيارة القادمة وتنبيه الكاشير لتذكير الزبون بها.
+                </span>
+              </label>
+            </div>
+
+            {data.isAutoBounceBack && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t">
+                <Field label="الحد الأدنى لقيمة الفاتورة للتفعيل (د.ع)" required>
+                  <MoneyInput
+                    value={data.autoBounceBackMinInvoice}
+                    onChange={(val) => updateField("autoBounceBackMinInvoice", val)}
+                    placeholder="50000"
+                  />
+                </Field>
+
+                <Field label="صلاحية كوبون العودة (بالأيام)">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={365}
+                    value={data.bounceBackValidityDays}
+                    onChange={(e) => updateField("bounceBackValidityDays", Math.max(1, Number(e.target.value)))}
+                    placeholder="14"
+                  />
+                </Field>
+
+                <Field label="بادئة رمز العودة (Prefix)">
+                  <Input
+                    value={data.bounceBackPrefix}
+                    onChange={(e) => updateField("bounceBackPrefix", e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12))}
+                    placeholder="NEXT"
+                    dir="ltr"
+                    maxLength={12}
+                  />
+                </Field>
+
+                <Field label="عنوان القسيمة في الإيصال الحراري" className="md:col-span-3">
+                  <Input
+                    value={data.bounceBackHeadline}
+                    onChange={(e) => updateField("bounceBackHeadline", e.target.value)}
+                    placeholder="قسيمة هدية لزيارتك القادمة"
+                  />
+                </Field>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>

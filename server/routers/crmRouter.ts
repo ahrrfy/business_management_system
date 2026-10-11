@@ -3,6 +3,8 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { appErrorMessage } from "../../shared/errors";
+import { formatActiveDays, type PromotionDesignMeta } from "../../shared/promotionScheduling";
+import { generateCouponsStandalonePdf, type CouponPdfItem } from "../services/couponPdfService";
 import {
   auditLogs,
   couponPrograms,
@@ -32,6 +34,19 @@ import { campaignsManagerProcedure, campaignsReadProcedure, router } from "../tr
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "التاريخ يجب أن يكون YYYY-MM-DD");
 const campaignStatus = z.enum(["DRAFT", "REVIEW", "APPROVED", "SCHEDULED", "ACTIVE", "PAUSED", "ENDED"]);
 const programStatus = z.enum(["DRAFT", "ACTIVE", "PAUSED", "ENDED"]);
+
+const promotionDesignSchema = z.object({
+  title: z.string().max(80).optional(),
+  subtitle: z.string().max(140).optional(),
+  terms: z.string().max(500).optional(),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  activeDays: z.array(z.number().int().min(0).max(6)).max(7).optional().nullable(),
+  isAutoBounceBack: z.boolean().optional(),
+  autoBounceBackMinInvoice: nonNegMoneyString.optional().nullable(),
+  bounceBackValidityDays: z.number().int().min(1).max(365).optional().nullable(),
+  bounceBackPrefix: z.string().trim().max(12).optional().nullable(),
+  bounceBackHeadline: z.string().trim().max(100).optional().nullable(),
+}).optional();
 
 type UserCtx = { user: { id: number; role: string; branchId?: number | null } };
 
@@ -303,7 +318,7 @@ export const crmRouter = router({
       perCustomerLimit: z.number().int().min(1).max(1000).default(1),
       isFirstOrderSelfService: z.boolean().default(false),
       codePrefix: z.string().trim().min(1).max(12).default("CRM"),
-      design: z.object({ title: z.string().max(80).optional(), subtitle: z.string().max(140).optional(), terms: z.string().max(500).optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional() }).optional(),
+      design: promotionDesignSchema,
       affiliateName: z.string().trim().max(255).optional(),
       affiliatePhone: z.string().trim().max(32).optional(),
       affiliateCommissionRate: percentString.default("0.00"),
@@ -383,12 +398,7 @@ export const crmRouter = router({
       affiliateName: z.string().trim().max(255).optional(),
       affiliatePhone: z.string().trim().max(32).optional(),
       affiliateCommissionRate: percentString.default("0.00"),
-      design: z.object({
-        title: z.string().max(80).optional(),
-        subtitle: z.string().max(140).optional(),
-        terms: z.string().max(500).optional(),
-        color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-      }).optional(),
+      design: promotionDesignSchema,
       campaignId: z.number().int().positive().nullish(),
     })).mutation(async ({ input, ctx }) => {
       if (input.validTo && input.validTo < input.validFrom) {
@@ -810,6 +820,118 @@ export const crmRouter = router({
       await logAudit(ctx, { action: "crm.coupon.void", entityType: "coupon", entityId: input.couponId });
       return { ok: true };
     }),
+
+    /**
+     * تصدير بطاقات الكوبونات كملف PDF مستقل (كل كوبون بصفحة مستقلة بقياس 54×84 مم).
+     */
+    exportPdf: campaignsReadProcedure
+      .input(z.object({
+        programId: z.number().int().positive(),
+        codes: z.array(z.string().min(1)).max(500).optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const db = requireDb();
+        const program = (
+          await db
+            .select({
+              id: couponPrograms.id,
+              name: couponPrograms.name,
+              branchId: couponPrograms.branchId,
+              validTo: couponPrograms.validTo,
+              designJson: couponPrograms.designJson,
+              promoType: promotions.type,
+              promoPercent: promotions.discountPercent,
+              promoAmount: promotions.discountAmount,
+              promoMaxDiscount: promotions.maxDiscountAmount,
+              promoMinSpend: promotions.minOrderSpend,
+            })
+            .from(couponPrograms)
+            .leftJoin(promotions, eq(couponPrograms.promotionId, promotions.id))
+            .where(eq(couponPrograms.id, input.programId))
+            .limit(1)
+        )[0];
+        if (!program) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "برنامج الكوبونات غير موجود",
+              why: `لم يتم العثور على برنامج الكوبونات برقم التعريف ${input.programId}`,
+              doThis: "تأكد من اختيار برنامج كوبونات صالح من القائمة ثم أعد المحاولة",
+            }),
+          });
+        }
+        ownBranch(ctx, program.branchId == null ? null : Number(program.branchId));
+
+        let targetCodes: string[] = [];
+        if (input.codes && input.codes.length > 0) {
+          targetCodes = input.codes;
+        } else {
+          const rows = await db
+            .select({ code: coupons.code })
+            .from(coupons)
+            .where(and(eq(coupons.programId, input.programId), eq(coupons.status, "ACTIVE")))
+            .orderBy(desc(coupons.id))
+            .limit(500);
+          targetCodes = rows.map((r) => r.code);
+        }
+
+        if (!targetCodes.length) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "لا توجد كوبونات صالحة للتصدير",
+              why: "البرنامج لا يحوي أي كوبونات فعالة أو أن القائمة المحددة فارغة",
+              doThis: "قم بإصدار كوبونات جديدة تابعة لهذا البرنامج أولاً قبل تصدير بطاقات PDF",
+            }),
+          });
+        }
+
+        const design = (program.designJson ?? {}) as PromotionDesignMeta;
+        let heroDiscount = "";
+        if (program.promoType === "PERCENT") {
+          heroDiscount = `خصم ${Number(program.promoPercent)}%`;
+        } else if (program.promoAmount) {
+          heroDiscount = `خصم ${Number(program.promoAmount).toLocaleString()} د.ع`;
+        }
+
+        let discountCap = "";
+        if (program.promoMaxDiscount && money(program.promoMaxDiscount).gt(0)) {
+          discountCap = `سقف الخصم: ${Number(program.promoMaxDiscount).toLocaleString()} د.ع`;
+        }
+
+        let minSpend = "";
+        if (program.promoMinSpend && money(program.promoMinSpend).gt(0)) {
+          minSpend = `للطلبات بقيمة ${Number(program.promoMinSpend).toLocaleString()} د.ع فأكثر`;
+        }
+
+        const activeDaysText = design.activeDays && design.activeDays.length > 0 && design.activeDays.length < 7
+          ? `متاح: ${formatActiveDays(design.activeDays)}`
+          : null;
+
+        const items: CouponPdfItem[] = targetCodes.map((code) => ({
+          code,
+          title: design.title || program.name,
+          subtitle: design.subtitle,
+          heroDiscount,
+          discountCap: discountCap || null,
+          minSpend: minSpend || null,
+          terms: design.terms,
+          validTo: program.validTo,
+          activeDaysText,
+          color: design.color || "#0D6B52",
+        }));
+
+        const result = await generateCouponsStandalonePdf({
+          programName: program.name,
+          coupons: items,
+        });
+
+        return {
+          base64: result.base64,
+          filename: result.filename,
+          pageCount: result.pageCount,
+        };
+      }),
   }),
 });
 

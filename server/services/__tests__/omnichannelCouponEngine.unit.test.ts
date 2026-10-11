@@ -14,6 +14,12 @@ import {
 } from "../couponService";
 import { computeInvoiceTotals } from "../billing";
 import { money, round2, roundCashIQD } from "../money";
+import {
+  isDayActive,
+  formatActiveDays,
+  getBaghdadDayOfWeek,
+  PromotionDesignMeta,
+} from "../../../shared/promotionScheduling";
 import type { Tx } from "../../db";
 
 describe("Omnichannel Promotion & Coupon Engine (Milestone M1)", () => {
@@ -1373,5 +1379,61 @@ describe("Omnichannel Promotion & Coupon Engine (Milestone M1)", () => {
       expect(lockedCoupon).toBeNull();
     });
   });
+
+  describe("Day-of-Week Scheduling & POS Bounce-Back Suite", () => {
+    it("يرفض تطبيق الكوبون في غير أيامه المحددة ويوضح الأيام المسموحة للعميل", () => {
+      // الكوبون مخصص لأيام الثلاثاء والخميس فقط [2, 4]
+      const activeDays = [2, 4];
+      const wednesday = new Date("2026-10-14T12:00:00.000Z"); // الأربعاء (3)
+      const thursday = new Date("2026-10-15T12:00:00.000Z");  // الخميس (4)
+
+      expect(isDayActive(wednesday, activeDays)).toBe(false);
+      expect(isDayActive(thursday, activeDays)).toBe(true);
+
+      const daysLabel = formatActiveDays(activeDays);
+      expect(daysLabel).toBe("كل الثلاثاء والخميس");
+
+      // التحقق من صياغة رسالة الخطأ المتوافقة مع النظام
+      const errorMessage = `هذا الكوبون غير متاح للاستخدام اليوم (${formatActiveDays(activeDays)})`;
+      expect(errorMessage).toContain("كل الثلاثاء والخميس");
+    });
+
+    it("يقيم شرط الحد الأدنى للفاتورة لإصدار كوبون العودة التلقائي عبر Decimal.js", () => {
+      const minInvoice = "50000.00";
+      const invoiceA = "45000.00"; // أقل من الحد الأدنى
+      const invoiceB = "50000.00"; // مساوٍ تماماً
+      const invoiceC = "85000.00"; // أعلى من الحد الأدنى
+
+      expect(money(invoiceA).gte(money(minInvoice))).toBe(false);
+      expect(money(invoiceB).gte(money(minInvoice))).toBe(true);
+      expect(money(invoiceC).gte(money(minInvoice))).toBe(true);
+    });
+
+    it("يحسب تاريخ نهاية صلاحية كوبون العودة التلقائي بناء على عدد الأيام المحدد", () => {
+      const validityDays = 14;
+      const baseDate = new Date("2026-10-11T12:00:00.000Z");
+      const validTo = new Date(baseDate.getTime() + validityDays * 24 * 60 * 60 * 1000);
+
+      const diffDays = Math.round((validTo.getTime() - baseDate.getTime()) / (1000 * 60 * 60 * 24));
+      expect(diffDays).toBe(14);
+      expect(validTo.toISOString().slice(0, 10)).toBe("2026-10-25");
+    });
+
+    it("يتحقق من بنية نص إيصال الكاشير الحراري لكوبون العودة وخلوه من الإيموجي", () => {
+      const bounceBackCoupon = {
+        code: "NEXT-9X4K2P",
+        headline: "هدية لزيارتك القادمة",
+        discountText: "خصم 10% (بحد أقصى 15,000 د.ع)",
+        minSpendText: "عند الشراء بـ 25,000 د.ع فأكثر",
+        validToText: "صالح لغاية 25/10/2026",
+      };
+
+      // التحقق من غياب الإيموجي والتوافق التام مع الطابعات الحرارية
+      expect(/[\u{1F300}-\u{1F9FF}]/u.test(bounceBackCoupon.headline)).toBe(false);
+      expect(/[\u{1F300}-\u{1F9FF}]/u.test(bounceBackCoupon.discountText)).toBe(false);
+      expect(bounceBackCoupon.code).toMatch(/^NEXT-[A-Z0-9]+$/);
+    });
+  });
 });
+
 

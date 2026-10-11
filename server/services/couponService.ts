@@ -1,7 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { baghdadToday } from "./businessDay";
 import { appErrorMessage } from "../../shared/errors";
+import { formatActiveDays, isDayActive, type PromotionDesignMeta } from "../../shared/promotionScheduling";
 import {
   couponPrograms,
   couponRedemptions,
@@ -213,6 +215,19 @@ export async function lockCouponForSale(
     const to = dateYmd(row.program.validTo);
     if (input.todayYmd < from || (to != null && input.todayYmd > to)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون خارج مدة الصلاحية" });
+    }
+
+    const designMeta = (row.program.designJson ?? {}) as PromotionDesignMeta;
+    if (!isDayActive(input.todayYmd, designMeta.activeDays)) {
+      const allowedDaysText = formatActiveDays(designMeta.activeDays);
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "الكوبون غير متاح للاستخدام اليوم",
+          why: `هذا الكوبون مخصص لأيام محددة: ${allowedDaysText}`,
+          doThis: "يرجى استخدام الكوبون في الأيام المسموح بها للعرض",
+        }),
+      });
     }
   }
 
@@ -678,3 +693,132 @@ export async function loadIssuedCouponDetails(
   }
   return result;
 }
+
+export interface IssueBounceBackInput {
+  branchId: number;
+  customerId?: number | null;
+  invoiceTotal: Decimal;
+}
+
+export interface BounceBackCouponResult {
+  code: string;
+  headline: string;
+  discountText: string;
+  minSpendText?: string | null;
+  validToText: string;
+}
+
+/**
+ * إصدار قسيمة عودة تلقائية (Bounce-Back Coupon) مع فواتير الكاشير
+ * إذا كانت الفاتورة تستوفي شرط الحد الأدنى وتطابق برنامج عودة نشط.
+ */
+export async function issueBounceBackCouponTx(
+  tx: Tx,
+  input: IssueBounceBackInput,
+): Promise<BounceBackCouponResult | null> {
+  const today = baghdadToday();
+  const candidates = await tx
+    .select({
+      id: couponPrograms.id,
+      name: couponPrograms.name,
+      codePrefix: couponPrograms.codePrefix,
+      validTo: couponPrograms.validTo,
+      designJson: couponPrograms.designJson,
+      promotionId: couponPrograms.promotionId,
+      branchId: couponPrograms.branchId,
+      promoType: promotions.type,
+      promoPercent: promotions.discountPercent,
+      promoAmount: promotions.discountAmount,
+      promoMaxDiscount: promotions.maxDiscountAmount,
+      promoMinSpend: promotions.minOrderSpend,
+    })
+    .from(couponPrograms)
+    .innerJoin(promotions, eq(couponPrograms.promotionId, promotions.id))
+    .where(and(
+      eq(couponPrograms.status, "ACTIVE"),
+      or(isNull(couponPrograms.branchId), eq(couponPrograms.branchId, input.branchId)),
+      sql`${couponPrograms.validFrom} <= ${today}`,
+      or(isNull(couponPrograms.validTo), sql`${couponPrograms.validTo} >= ${today}`),
+      eq(promotions.isActive, true),
+      eq(promotions.applicationMode, "COUPON"),
+      or(isNull(promotions.branchId), eq(promotions.branchId, input.branchId)),
+      sql`${promotions.effectiveFrom} <= ${today}`,
+      or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= ${today}`),
+    ))
+    .orderBy(desc(couponPrograms.branchId), desc(couponPrograms.id))
+    .limit(10)
+    .for("update");
+
+  if (!candidates.length) return null;
+
+  let matchedProgram: (typeof candidates)[number] | null = null;
+  let matchedMeta: PromotionDesignMeta | null = null;
+
+  for (const prog of candidates) {
+    const meta = (prog.designJson ?? {}) as PromotionDesignMeta;
+    if (!meta.isAutoBounceBack) continue;
+
+    if (!isDayActive(today, meta.activeDays)) continue;
+
+    const minInvoice = meta.autoBounceBackMinInvoice ? money(meta.autoBounceBackMinInvoice) : money(0);
+    if (input.invoiceTotal.lt(minInvoice)) continue;
+
+    matchedProgram = prog;
+    matchedMeta = meta;
+    break;
+  }
+
+  if (!matchedProgram || !matchedMeta) return null;
+
+  const prefix = matchedMeta.bounceBackPrefix?.trim() || matchedProgram.codePrefix || "NEXT";
+  const safePrefix = prefix.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "NEXT";
+  const token = randomBytes(5).toString("hex").toUpperCase();
+  const code = `${safePrefix}-${token.slice(0, 5)}-${token.slice(5)}`;
+  const codeHash = hashCouponCode(code);
+  const issuedAt = new Date();
+
+  await tx.insert(coupons).values({
+    programId: matchedProgram.id,
+    customerId: input.customerId ?? null,
+    code,
+    codeHash,
+    status: "ACTIVE",
+    issuedAt,
+  });
+
+  let discountText = "";
+  if (matchedProgram.promoType === "PERCENT") {
+    discountText = `${Number(matchedProgram.promoPercent)}%`;
+    if (matchedProgram.promoMaxDiscount && money(matchedProgram.promoMaxDiscount).gt(0)) {
+      discountText += ` (بسقف ${Number(matchedProgram.promoMaxDiscount).toLocaleString()} د.ع)`;
+    }
+  } else {
+    discountText = `${Number(matchedProgram.promoAmount).toLocaleString()} د.ع`;
+  }
+
+  let minSpendText: string | null = null;
+  if (matchedProgram.promoMinSpend && money(matchedProgram.promoMinSpend).gt(0)) {
+    minSpendText = `للطلبات بقيمة ${Number(matchedProgram.promoMinSpend).toLocaleString()} د.ع فأكثر`;
+  }
+
+  let validToText = "";
+  if (matchedMeta.bounceBackValidityDays && matchedMeta.bounceBackValidityDays > 0) {
+    const validUntilDate = new Date(Date.now() + matchedMeta.bounceBackValidityDays * 24 * 60 * 60 * 1000);
+    const validUntilYmd = validUntilDate.toISOString().slice(0, 10);
+    validToText = `صالح لمدة ${matchedMeta.bounceBackValidityDays} يوماً (حتى ${validUntilYmd})`;
+  } else if (matchedProgram.validTo) {
+    const validUntilYmd = new Date(matchedProgram.validTo).toISOString().slice(0, 10);
+    validToText = `صالح لغاية ${validUntilYmd}`;
+  } else {
+    validToText = "صالح حتى إشعار آخر";
+  }
+
+  return {
+    code,
+    headline: matchedMeta.bounceBackHeadline?.trim() || "قسيمة هدية لزيارتك القادمة",
+    discountText,
+    minSpendText,
+    validToText,
+  };
+}
+

@@ -57,6 +57,7 @@ import {
 import {
   consumeCoupon,
   hashCouponCode,
+  issueBounceBackCouponTx,
   lockCouponForSale,
 } from "../couponService";
 import {
@@ -2260,6 +2261,16 @@ export async function createSaleInTx(
     };
   }
 
+  // كوبونات العودة التلقائية (Bounce-Back Coupons) على فواتير الكاشير:
+  let bounceBackCoupon: CreateSaleResult["bounceBackCoupon"] = null;
+  if (status !== "PENDING" && effectiveTotalD.gt(0)) {
+    bounceBackCoupon = await issueBounceBackCouponTx(tx, {
+      branchId: input.branchId,
+      customerId: input.customerId ?? null,
+      invoiceTotal: effectiveTotalD,
+    });
+  }
+
   return {
     invoiceId,
     invoiceNumber,
@@ -2273,6 +2284,7 @@ export async function createSaleInTx(
     ...(negativeDips.length ? { negativeDips } : {}),
     ...(createdLineItems.length ? { createdLineItems } : {}),
     ...(dispatched ?? {}),
+    bounceBackCoupon,
   };
 }
 

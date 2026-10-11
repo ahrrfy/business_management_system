@@ -29,6 +29,12 @@ export interface PromotionFormData {
   affiliateName: string;
   affiliatePhone: string;
   affiliateCommissionRate: string;
+  activeDays: number[];
+  isAutoBounceBack: boolean;
+  autoBounceBackMinInvoice: string;
+  bounceBackValidityDays: number;
+  bounceBackPrefix: string;
+  bounceBackHeadline: string;
   design: {
     title: string;
     subtitle: string;
@@ -65,6 +71,12 @@ export const INITIAL_PROMOTION_FORM_DATA: PromotionFormData = {
   affiliateName: "",
   affiliatePhone: "",
   affiliateCommissionRate: "0.00",
+  activeDays: [0, 1, 2, 3, 4, 5, 6],
+  isAutoBounceBack: false,
+  autoBounceBackMinInvoice: "50000",
+  bounceBackValidityDays: 14,
+  bounceBackPrefix: "NEXT",
+  bounceBackHeadline: "قسيمة هدية لزيارتك القادمة",
   design: {
     title: "عرض ترويجي حصري",
     subtitle: "تسوق الآن واستفد من التوفير الفوري",
