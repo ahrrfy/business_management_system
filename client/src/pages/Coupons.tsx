@@ -98,14 +98,13 @@ export default function Coupons() {
   const [customerQuery, setCustomerQuery] = useState("");
   const [customerId, setCustomerId] = useState<number | null>(null);
   const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
   const customerSearch = trpc.customers.search.useQuery(
     { q: customerQuery.trim(), limit: 20, offset: 0 },
     { enabled: customerId == null && customerQuery.trim().length >= 2 },
   );
   const [lastIssue, setLastIssue] = useState<LastIssue | null>(null);
   const [printing, setPrinting] = useState(false);
-  const customersListQ = trpc.customers.list.useQuery();
-  const customerPhoneById = useMemo(() => new Map((customersListQ.data ?? []).map((c) => [c.id, c.phone])), [customersListQ.data]);
   const [dossierCustomerId, setDossierCustomerId] = useState<number | null>(null);
 
   const [page, setPage] = useState(0);
@@ -118,7 +117,7 @@ export default function Coupons() {
   }, [codeQuery]);
   useEffect(() => {
     setPage(0); setCodeQuery(""); setDebouncedCodeQuery(""); setStatusFilter("ALL");
-    setLastIssue(null); setCustomerId(null); setCustomerName(""); setCustomerQuery("");
+    setLastIssue(null); setCustomerId(null); setCustomerName(""); setCustomerPhone(""); setCustomerQuery("");
   }, [selected]);
   useEffect(() => setPage(0), [debouncedCodeQuery, statusFilter]);
 
@@ -231,7 +230,7 @@ export default function Coupons() {
     const isPercent = offer?.type === "PERCENT";
     const amount = offer?.type === "AMOUNT" ? Number(offer.discountAmount || 0) : 0;
     const discountPercent = isPercent && offer?.discountPercent ? Number(offer.discountPercent) : undefined;
-    const custPhone = coupon.customerId ? customerPhoneById.get(coupon.customerId) : null;
+    const custPhone = coupon.assignedCustomerPhone;
     const design = (selectedProgram?.designJson ?? {}) as { title?: string; subtitle?: string; terms?: string };
     const baseTitle = design.title || selectedProgram?.name || "قسيمة خصم";
     const discountSuffix = isPercent && offer?.discountPercent ? ` (خصم ${offer.discountPercent}%)` : "";
@@ -254,7 +253,7 @@ export default function Coupons() {
     const isPercent = offer?.type === "PERCENT";
     const amount = offer?.type === "AMOUNT" ? Number(offer.discountAmount || 0) : 0;
     const discountPercent = isPercent && offer?.discountPercent ? Number(offer.discountPercent) : undefined;
-    const custPhone = customerId ? customerPhoneById.get(customerId) : null;
+    const custPhone = customerPhone || undefined;
     const design = (selectedProgram?.designJson ?? {}) as { title?: string; subtitle?: string; terms?: string };
     const baseTitle = design.title || selectedProgram?.name || "قسيمة خصم";
     const discountSuffix = isPercent && offer?.discountPercent ? ` (خصم ${offer.discountPercent}%)` : "";
@@ -264,7 +263,7 @@ export default function Coupons() {
       amount,
       discountPercent,
       customerName: customerName || "زبون مكرّم",
-      customerPhone: custPhone || undefined,
+      customerPhone: custPhone,
       reason: `${baseTitle}${discountSuffix}`,
       validUntil: selectedProgram?.validTo ? displayDate(selectedProgram.validTo) : undefined,
       terms: design.terms || undefined,
@@ -454,7 +453,7 @@ export default function Coupons() {
       cell: ({ row }) => {
         const custId = row.original.customerId;
         const custName = row.original.assignedCustomerName;
-        const phone = custId ? customerPhoneById.get(custId) ?? null : null;
+        const phone = row.original.assignedCustomerPhone;
         const intlPhone = phone ? toIraqiIntl(phone) : null;
         if (!custId) return <span className="text-muted-foreground">عام</span>;
         return (

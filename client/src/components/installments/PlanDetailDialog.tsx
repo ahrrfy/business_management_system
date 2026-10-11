@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Ban, CircleDollarSign, Undo2, UserCheck } from "lucide-react";
+import { Ban, CircleDollarSign, Printer, Undo2, UserCheck } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, fmt } from "@/lib/money";
+import { printPlanScheduleReport } from "./installmentReportPrint";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -78,18 +79,32 @@ export function PlanDetailDialog({
         <DialogHeader>
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <DialogTitle>خطة الأقساط #{planId}</DialogTitle>
-            {p && onOpenDossier && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => onOpenDossier(p.customerId)}
-                className="gap-1.5 h-7 text-xs"
-              >
-                <UserCheck className="size-3.5" />
-                الملف الشامل 360°
-              </Button>
-            )}
+            <div className="flex items-center gap-2">
+              {p && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => printPlanScheduleReport(p)}
+                  className="gap-1.5 h-7 text-xs"
+                >
+                  <Printer className="size-3.5" />
+                  طباعة جدول الأقساط
+                </Button>
+              )}
+              {p && onOpenDossier && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onOpenDossier(p.customerId)}
+                  className="gap-1.5 h-7 text-xs"
+                >
+                  <UserCheck className="size-3.5" />
+                  الملف الشامل 360°
+                </Button>
+              )}
+            </div>
           </div>
           {p && (
             <DialogDescription>

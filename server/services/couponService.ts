@@ -578,6 +578,7 @@ export async function loadCouponProgramPerformance(
 
 export interface IssuedCouponDetail {
   assignedCustomerName: string | null;
+  assignedCustomerPhone: string | null;
   redeemedDiscount: string;
   lastInvoiceId: number | null;
   lastInvoiceNumber: string | null;
@@ -606,9 +607,9 @@ export async function loadIssuedCouponDetails(
   if (!couponIds.length) return new Map();
   const customerIds = Array.from(new Set(rows.flatMap((row) => row.customerId == null ? [] : [row.customerId])));
   const customerRows = customerIds.length
-    ? await tx.select({ id: customers.id, name: customers.name }).from(customers).where(inArray(customers.id, customerIds))
+    ? await tx.select({ id: customers.id, name: customers.name, phone: customers.phone }).from(customers).where(inArray(customers.id, customerIds))
     : [];
-  const customerNames = new Map(customerRows.map((row) => [Number(row.id), row.name]));
+  const customerMap = new Map(customerRows.map((row) => [Number(row.id), { name: row.name, phone: row.phone }]));
   const redemptions = await tx
     .select({
       couponId: couponRedemptions.couponId,
@@ -649,8 +650,10 @@ export async function loadIssuedCouponDetails(
 
   const result = new Map<number, IssuedCouponDetail>();
   for (const row of rows) {
+    const custInfo = row.customerId == null ? null : customerMap.get(row.customerId);
     result.set(row.id, {
-      assignedCustomerName: row.customerId == null ? null : customerNames.get(row.customerId) ?? null,
+      assignedCustomerName: custInfo?.name ?? null,
+      assignedCustomerPhone: custInfo?.phone ?? null,
       redeemedDiscount: "0.00",
       lastInvoiceId: null,
       lastInvoiceNumber: null,
