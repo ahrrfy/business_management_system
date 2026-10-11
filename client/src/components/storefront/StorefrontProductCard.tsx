@@ -31,7 +31,7 @@ interface StorefrontProductCardProps {
   heartPulseNonce?: number;
   sharePulseTarget?: string | null;
   sharePulseNonce?: number;
-  onOpen: (productId: number) => void;
+  onOpen: (productId: number, options?: { openReview?: boolean; orderNumber?: string | null }) => void;
   onAdd: (product: any, event: React.MouseEvent<HTMLButtonElement>) => void;
   onToggleWishlist: (productId: number) => void;
   onShare: (productId: number, productName: string) => void;
@@ -218,7 +218,7 @@ export function StorefrontProductCard({
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              onOpen(p.productId);
+              onOpen(p.productId, { openReview: true });
             }}
             aria-label={`تقييمات ومراجعات ${productTitle}`}
             className="flex items-center gap-0.5 text-[9px] sm:text-[9.5px] font-black text-amber-500 shrink-0 transition hover:opacity-80"

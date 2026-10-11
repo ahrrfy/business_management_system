@@ -328,9 +328,11 @@ export async function getRecentCelebrations(scopedBranchId: number | null): Prom
       preparedByUserId: onlineOrders.preparedByUserId,
       createdAt: onlineOrders.createdAt,
       userName: users.name,
+      photoUrl: employees.photoUrl,
     })
     .from(onlineOrders)
     .leftJoin(users, eq(sql`COALESCE(${onlineOrders.preparedByUserId}, ${onlineOrders.claimedByUserId})`, users.id))
+    .leftJoin(employees, eq(employees.userId, users.id))
     .where(and(...conds))
     .orderBy(desc(onlineOrders.orderDate))
     .limit(5);
@@ -341,7 +343,7 @@ export async function getRecentCelebrations(scopedBranchId: number | null): Prom
       id: `celeb_${o.id}`,
       employeeId: Number(o.preparedByUserId ?? o.claimedByUserId ?? 0),
       employeeName: o.userName ?? "زميل المبيعات",
-      employeePhotoUrl: null,
+      employeePhotoUrl: o.photoUrl ?? null,
       orderNumber: o.orderNumber,
       dealAmount: String(totalNum),
       commissionEarned: "0",

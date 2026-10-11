@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Star, ShieldCheck, MessageSquare, ThumbsUp, Send, CheckCircle2, AlertCircle, Plus } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { formatQuantity } from "@shared/quantityFormat";
+import { TurnstileWidget } from "./TurnstileWidget";
 
 interface StorefrontProductReviewsProps {
   productId: number;
@@ -42,8 +43,11 @@ export function StorefrontProductReviews({
   const [rating, setRating] = useState(5);
   const [hoverRating, setHoverRating] = useState(0);
   const [reviewerName, setReviewerName] = useState("");
-  const [contactRef, setContactRef] = useState(defaultOrderNumber ?? "");
+  const [reviewerPhone, setReviewerPhone] = useState("");
+  const [orderNumber, setOrderNumber] = useState(defaultOrderNumber ?? "");
   const [comment, setComment] = useState("");
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
   const [submittedMessage, setSubmittedMessage] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -52,11 +56,15 @@ export function StorefrontProductReviews({
     setRating(5);
     setHoverRating(0);
     setReviewerName("");
-    setContactRef(defaultOrderNumber ?? "");
+    setReviewerPhone("");
+    setOrderNumber(defaultOrderNumber ?? "");
     setComment("");
+    setTurnstileToken(null);
     setSubmittedMessage(null);
     setFormError(null);
   }, [productId, initialOpenForm, defaultOrderNumber]);
+
+  const settingsQ = trpc.storefront.settings.useQuery(undefined, { staleTime: 300_000 });
 
   const reviewsQ = trpc.storefront.productReviews.useQuery(
     { productId },
@@ -69,11 +77,16 @@ export function StorefrontProductReviews({
       setShowForm(false);
       setComment("");
       setReviewerName("");
-      setContactRef("");
+      setReviewerPhone("");
+      setOrderNumber("");
+      setTurnstileToken(null);
+      setTurnstileResetKey((k) => k + 1);
       setFormError(null);
       void reviewsQ.refetch();
     },
     onError: (err) => {
+      setTurnstileToken(null);
+      setTurnstileResetKey((k) => k + 1);
       setFormError(err.message || "تعذّر إرسال التقييم، يرجى التحقق من المدخلات وإعادة المحاولة.");
     },
   });
@@ -93,14 +106,14 @@ export function StorefrontProductReviews({
       setFormError("يرجى كتابة ملاحظاتك وتجربتك حول المنتج (8 أحرف على الأقل).");
       return;
     }
-    const isOrder = contactRef.toUpperCase().startsWith("ORD-");
     submitReviewM.mutate({
       productId,
       rating,
       reviewerName: reviewerName.trim(),
-      reviewerPhone: !isOrder && contactRef.trim() ? contactRef.trim() : null,
-      orderNumber: isOrder ? contactRef.trim() : null,
+      reviewerPhone: reviewerPhone.trim() || null,
+      orderNumber: orderNumber.trim() || null,
       comment: comment.trim(),
+      turnstileToken: turnstileToken ?? undefined,
     });
   };
 
@@ -217,8 +230,8 @@ export function StorefrontProductReviews({
             </div>
           </div>
 
-          {/* حقول الاسم ورقم الهاتف / رقم الطلب */}
-          <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+          {/* حقول الاسم ورقم الهاتف ورقم الطلب */}
+          <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
             <div>
               <label htmlFor="rev-name" className="block text-[10.5px] font-bold text-slate-700 dark:text-slate-300">
                 الاسم <span className="text-rose-500">*</span>
@@ -235,15 +248,29 @@ export function StorefrontProductReviews({
               />
             </div>
             <div>
-              <label htmlFor="rev-contact" className="block text-[10.5px] font-bold text-slate-700 dark:text-slate-300">
-                الهاتف أو رقم الطلب <span className="text-slate-400 font-normal">(اختياري للتوثيق)</span>
+              <label htmlFor="rev-phone" className="block text-[10.5px] font-bold text-slate-700 dark:text-slate-300">
+                رقم الهاتف <span className="text-slate-400 font-normal">(اختياري)</span>
               </label>
               <input
-                id="rev-contact"
+                id="rev-phone"
+                type="tel"
+                value={reviewerPhone}
+                onChange={(e) => setReviewerPhone(e.target.value)}
+                placeholder="+964 7... للتحقق"
+                maxLength={32}
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 outline-none transition focus:border-amber-500 focus:bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              />
+            </div>
+            <div>
+              <label htmlFor="rev-order" className="block text-[10.5px] font-bold text-slate-700 dark:text-slate-300">
+                رقم الطلب <span className="text-slate-400 font-normal">(شارة شراء موثق)</span>
+              </label>
+              <input
+                id="rev-order"
                 type="text"
-                value={contactRef}
-                onChange={(e) => setContactRef(e.target.value)}
-                placeholder="+964 7... أو رقم الطلب ORD-..."
+                value={orderNumber}
+                onChange={(e) => setOrderNumber(e.target.value)}
+                placeholder="ORD-..."
                 maxLength={40}
                 className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 outline-none transition focus:border-amber-500 focus:bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
               />
@@ -275,6 +302,17 @@ export function StorefrontProductReviews({
               className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 p-2.5 text-xs font-semibold leading-relaxed text-slate-800 outline-none transition focus:border-amber-500 focus:bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
             />
           </div>
+
+          {/* اختبار الحماية من الروبوتات Turnstile */}
+          {settingsQ.data?.turnstileSiteKey && (
+            <div className="mt-2.5">
+              <TurnstileWidget
+                siteKey={settingsQ.data.turnstileSiteKey}
+                resetKey={turnstileResetKey}
+                onTokenChange={setTurnstileToken}
+              />
+            </div>
+          )}
 
           {formError && (
             <div className="mt-2 flex items-center gap-1.5 text-[11px] font-bold text-rose-600 dark:text-rose-400" role="alert">

@@ -14,7 +14,7 @@
  *    الحوافز المقطوعة ومكافآت الـ SLA (مذكرة COORDINATION_STORE_ORDERS.md).
  * ========================================================================== */
 import Decimal from "decimal.js";
-import { and, eq, isNotNull, or, sql } from "drizzle-orm";
+import { and, eq, isNotNull, sql } from "drizzle-orm";
 import {
   accountingEntries,
   invoiceAttributions,
@@ -114,11 +114,11 @@ export async function computeNetSalesByUser(
         sql`${accountingEntries.entryDate} < ${toExclusive}`,
         branchId != null ? eq(accountingEntries.branchId, branchId) : undefined,
         targetUserId != null
-          ? or(
-              eq(invoiceAttributions.userId, targetUserId),
-              and(eq(invoices.sourceType, "WORKORDER"), eq(workOrders.createdBy, targetUserId)),
-              eq(invoices.createdBy, targetUserId),
-            )
+          ? sql`COALESCE(
+              ${invoiceAttributions.userId},
+              CASE WHEN ${invoices.sourceType} = 'WORKORDER' THEN ${workOrders.createdBy} END,
+              ${invoices.createdBy}
+            ) = ${targetUserId}`
           : undefined,
         // SALE/RETURN للبائع (supplierId فارغ)، أو قيد أمانة أُسنِد لفاتورته (PURCHASE بـsupplierId).
         sql`(
