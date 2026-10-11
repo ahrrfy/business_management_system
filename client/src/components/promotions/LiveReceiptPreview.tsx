@@ -44,18 +44,8 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
   // الحساب المالي الدقيق للخصم مع احترام نطاق الأصناف والسقف المالي والحد الأدنى
   const calculation = useMemo(() => {
     const subtotal = D(simulatedSubtotal);
-    if (!isMinSpendMet) {
-      return {
-        discountAmount: D(0),
-        isCapped: false,
-        total: subtotal,
-        eligibleAmount: subtotal,
-        unrelatedAmount: D(0),
-        hasEligibleItems: true,
-      };
-    }
 
-    // إذا كان العرض مقيداً بنطاق أصناف/تصنيفات محددة، نحدد الحصة المشمولة من السلة التجريبية
+    // إذا كان العرض مقيداً بنطاق أصناف/تصنيفات محددة، نحدد الحصة المشمولة من السلة التجريبية أولاً
     let eligibleAmount = subtotal;
     let unrelatedAmount = D(0);
     let hasEligibleItems = true;
@@ -70,6 +60,17 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
         eligibleAmount = subtotal.times(0.6).round();
         unrelatedAmount = subtotal.minus(eligibleAmount);
       }
+    }
+
+    if (!isMinSpendMet) {
+      return {
+        discountAmount: D(0),
+        isCapped: false,
+        total: subtotal,
+        eligibleAmount,
+        unrelatedAmount,
+        hasEligibleItems,
+      };
     }
 
     let discount = D(0);
