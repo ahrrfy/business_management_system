@@ -18,6 +18,7 @@ import {
   ATOMIC_PERMISSION_BY_KEY,
   ATOMIC_PERMISSION_DEFINITIONS,
   DOMAIN_METADATA,
+  RESOURCE_METADATA,
   ROLE_DEFAULT_ATOMIC_PERMISSIONS,
   ROLE_DEFAULT_DATA_MASKING,
   ROLE_DEFAULT_OPERATIONAL_CAPS,
@@ -79,9 +80,21 @@ describe("Atomic Permission Catalog & Taxonomy", () => {
     }
   });
 
-  it("يحتوي على أكثر من 75 مفتاحاً ذرياً مع تفاصيل المورد والفعل والتسمية العربية", () => {
-    expect(ATOMIC_PERMISSION_DEFINITIONS.length).toBeGreaterThanOrEqual(75);
+  it("يحتوي على أكثر من 380 مفتاحاً ذرياً مع 100+ مورد وتفاصيل الفعل والتسمية العربية", () => {
+    expect(ATOMIC_PERMISSION_DEFINITIONS.length).toBeGreaterThanOrEqual(380);
     expect(ALL_ATOMIC_PERMISSION_KEYS.length).toBe(ATOMIC_PERMISSION_DEFINITIONS.length);
+    expect(Object.keys(RESOURCE_METADATA).length).toBeGreaterThanOrEqual(100);
+
+    // مفاتيح قطاعية ومؤسسية دقيقة (SAP/Odoo parity)
+    expect(ALL_ATOMIC_PERMISSION_KEYS).toContain("pos.kiosk.view");
+    expect(ALL_ATOMIC_PERMISSION_KEYS).toContain("treasury.exchange.view");
+    expect(ALL_ATOMIC_PERMISSION_KEYS).toContain("treasury.installment.reschedule");
+    expect(ALL_ATOMIC_PERMISSION_KEYS).toContain("treasury.assets.depreciate");
+    expect(ALL_ATOMIC_PERMISSION_KEYS).toContain("treasury.statutory_accounting.view");
+    expect(ALL_ATOMIC_PERMISSION_KEYS).toContain("delivery.courier.view");
+    expect(ALL_ATOMIC_PERMISSION_KEYS).toContain("governance.print_audit.view");
+    expect(ALL_ATOMIC_PERMISSION_KEYS).toContain("governance.self_approval_audit.view");
+    expect(ALL_ATOMIC_PERMISSION_KEYS).toContain("pos.return.create");
 
     for (const def of ATOMIC_PERMISSION_DEFINITIONS) {
       // التحقق من صيغة المفتاح الذري domain.resource.action
