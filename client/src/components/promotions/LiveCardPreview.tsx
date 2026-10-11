@@ -81,7 +81,7 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
       const card = {
         code: previewCode,
         title: data.design.title || data.name || "هدية خاصة لك",
-        subtitle: data.design.subtitle || discountSummary,
+        subtitle: data.design.subtitle?.trim() || undefined,
         heroDiscount: heroDiscountText,
         discountCap: discountCapText,
         minSpend: minSpendText,
@@ -149,9 +149,9 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
             <h4 className="font-black text-sm tracking-tight text-foreground line-clamp-1">
               {data.design.title || data.name || "هدية خاصة لك"}
             </h4>
-            {(data.design.subtitle || discountSummary) && (
+            {data.design.subtitle?.trim() && (
               <p className="text-[10px] text-muted-foreground font-semibold line-clamp-1">
-                {data.design.subtitle || discountSummary}
+                {data.design.subtitle.trim()}
               </p>
             )}
           </div>

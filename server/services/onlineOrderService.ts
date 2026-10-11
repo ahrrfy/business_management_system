@@ -1315,6 +1315,10 @@ export async function totalOnlineOrderQuote(
   freeShippingThreshold: string | null | undefined,
   deliveryEligibilitySubtotal?: string,
   freeShippingThresholdGovernorates?: string | null | undefined,
+  couponShipping?: {
+    freeShipping?: boolean;
+    shippingDiscountAmount?: string | null;
+  } | null,
 ): Promise<
   Pick<
     OnlineOrderQuoteResult,
@@ -1352,8 +1356,26 @@ export async function totalOnlineOrderQuote(
     ? money(applicableThresholdStr)
     : null;
   const freeThreshold = configuredThreshold?.gt(0) ? configuredThreshold : null;
-  const deliveryFree = Boolean(freeThreshold && eligibilitySubtotal.gte(freeThreshold));
-  if (deliveryFree) customerDeliveryFee = round2(money(0));
+  const thresholdFree = Boolean(freeThreshold && eligibilitySubtotal.gte(freeThreshold));
+  const couponFree = Boolean(couponShipping?.freeShipping);
+
+  let couponShippingDiscount = money(couponShipping?.shippingDiscountAmount ?? 0);
+  if (!couponShippingDiscount.isFinite() || couponShippingDiscount.lt(0)) {
+    couponShippingDiscount = money(0);
+  }
+
+  let deliveryFree = thresholdFree || couponFree;
+  if (deliveryFree) {
+    customerDeliveryFee = round2(money(0));
+  } else if (couponShippingDiscount.gt(0)) {
+    const discounted = customerDeliveryFee.minus(couponShippingDiscount);
+    customerDeliveryFee = round2(discounted.isNegative() ? money(0) : discounted);
+    if (customerDeliveryFee.eq(0)) {
+      deliveryFree = true;
+    }
+  }
+
+  const deliveryWaivedAmount = round2(actualDeliveryFee.minus(customerDeliveryFee));
   const total = round2(subtotal.plus(customerDeliveryFee));
   if (!total.isFinite() || total.gt(MAX_ONLINE_ORDER_MONEY)) {
     throw new TRPCError({
@@ -1369,7 +1391,7 @@ export async function totalOnlineOrderQuote(
     subtotal: subtotal.toFixed(2),
     deliveryFee: customerDeliveryFee.toFixed(2),
     deliveryFree,
-    deliveryWaivedAmount: deliveryFree ? actualDeliveryFee.toFixed(2) : "0.00",
+    deliveryWaivedAmount: deliveryWaivedAmount.toFixed(2),
     freeShippingThreshold: freeThreshold?.toFixed(2) ?? null,
     freeShippingRemaining: freeThreshold
       ? (eligibilitySubtotal.gte(freeThreshold) ? money(0) : freeThreshold.minus(eligibilitySubtotal)).toFixed(2)
@@ -1431,7 +1453,12 @@ export async function quoteOnlineOrder(
         normalizedLines,
         { lock: false, coupon: lockedCoupon },
       );
-      if (lockedCoupon && money(pricing.couponCandidateDiscount).lte(0))
+      const couponHasShippingBenefit =
+        Boolean(lockedCoupon?.freeShipping) ||
+        money(lockedCoupon?.shippingDiscountAmount).gt(0);
+      const hasCouponBenefit =
+        money(pricing.couponCandidateDiscount).gt(0) || couponHasShippingBenefit;
+      if (lockedCoupon && !hasCouponBenefit)
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
@@ -1448,6 +1475,16 @@ export async function quoteOnlineOrder(
           money(0),
         ),
       );
+      const couponBenefitActive =
+        pricing.benefit.type === "COUPON" ||
+        (pricing.benefit.type === "NONE" && couponHasShippingBenefit);
+      const couponShipping =
+        couponBenefitActive && lockedCoupon
+          ? {
+              freeShipping: Boolean(lockedCoupon.freeShipping),
+              shippingDiscountAmount: lockedCoupon.shippingDiscountAmount,
+            }
+          : null;
       const totals = await totalOnlineOrderQuote(
         tx,
         pricing.items,
@@ -1455,20 +1492,25 @@ export async function quoteOnlineOrder(
         settings?.freeShippingThreshold,
         retailSubtotal.toFixed(2),
         settings?.freeShippingThresholdGovernorates,
+        couponShipping,
       );
       return {
-        couponCode:
-          pricing.benefit.type === "COUPON" ? lockedCoupon?.code ?? null : null,
-        couponProgramName:
-          pricing.benefit.type === "COUPON"
-            ? lockedCoupon?.programName ?? null
-            : null,
+        couponCode: couponBenefitActive ? lockedCoupon?.code ?? null : null,
+        couponProgramName: couponBenefitActive
+          ? lockedCoupon?.programName ?? null
+          : null,
         couponDiscount:
           pricing.benefit.type === "COUPON"
             ? pricing.benefit.discount
             : "0.00",
-        pricingBenefitType: pricing.benefit.type,
-        pricingBenefitLabel: pricing.benefit.label,
+        pricingBenefitType:
+          pricing.benefit.type === "NONE" && couponBenefitActive
+            ? "COUPON"
+            : pricing.benefit.type,
+        pricingBenefitLabel:
+          pricing.benefit.type === "NONE" && couponBenefitActive
+            ? (lockedCoupon?.programName ?? "توصيل مجاني")
+            : pricing.benefit.label,
         pricingBenefitDiscount: pricing.benefit.discount,
         couponSuperseded: pricing.benefit.couponSuperseded,
         wholesaleProgress: pricing.wholesaleProgress,
@@ -1829,7 +1871,12 @@ async function createOnlineOrderAttempt(
         );
       }
     }
-    if (lockedCoupon && money(currentPricing.couponCandidateDiscount).lte(0))
+    const couponHasShippingBenefit =
+      Boolean(lockedCoupon?.freeShipping) ||
+      money(lockedCoupon?.shippingDiscountAmount).gt(0);
+    const hasCouponBenefit =
+      money(currentPricing.couponCandidateDiscount).gt(0) || couponHasShippingBenefit;
+    if (lockedCoupon && !hasCouponBenefit)
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -1843,6 +1890,16 @@ async function createOnlineOrderAttempt(
       (sum, item) => sum.plus(money(item.retailUnitPrice).times(item.quantity)),
       money(0),
     ));
+    const couponBenefitActive =
+      currentPricing.benefit.type === "COUPON" ||
+      (currentPricing.benefit.type === "NONE" && couponHasShippingBenefit);
+    const couponShipping =
+      couponBenefitActive && lockedCoupon
+        ? {
+            freeShipping: Boolean(lockedCoupon.freeShipping),
+            shippingDiscountAmount: lockedCoupon.shippingDiscountAmount,
+          }
+        : null;
     const quoteTotals = await totalOnlineOrderQuote(
       tx,
       items,
@@ -1850,6 +1907,7 @@ async function createOnlineOrderAttempt(
       storeSettings?.freeShippingThreshold,
       retailSubtotal.toFixed(2),
       storeSettings?.freeShippingThresholdGovernorates,
+      couponShipping,
     );
     const subtotal = money(quoteTotals.subtotal);
     const deliveryFee = money(quoteTotals.deliveryFee);
@@ -1939,11 +1997,11 @@ async function createOnlineOrderAttempt(
       }
     }
 
-    const selectedCoupon =
-      currentPricing.benefit.type === "COUPON" ? lockedCoupon : null;
-    const couponDiscount = selectedCoupon
-      ? money(currentPricing.benefit.discount)
-      : money(0);
+    const selectedCoupon = couponBenefitActive ? lockedCoupon : null;
+    const couponDiscount =
+      currentPricing.benefit.type === "COUPON"
+        ? money(currentPricing.benefit.discount)
+        : money(0);
 
     // ④ إنشاء الطلب (PENDING) — رقمٌ مؤقّت فريد ثم ORD-{id} (بلا سباق ترقيم).
     const guestTrackingPublicId = randomBytes(16).toString("hex");
@@ -1975,8 +2033,14 @@ async function createOnlineOrderAttempt(
       guestTrackingExpiresAt,
       couponCode: selectedCoupon?.code ?? null,
       couponDiscount: toDbMoney(couponDiscount),
-      pricingBenefitType: currentPricing.benefit.type,
-      pricingBenefitLabel: currentPricing.benefit.label,
+      pricingBenefitType:
+        currentPricing.benefit.type === "NONE" && couponBenefitActive
+          ? "COUPON"
+          : currentPricing.benefit.type,
+      pricingBenefitLabel:
+        currentPricing.benefit.type === "NONE" && couponBenefitActive
+          ? (selectedCoupon?.programName ?? "توصيل مجاني")
+          : currentPricing.benefit.label,
       pricingBenefitDiscount: toDbMoney(currentPricing.benefit.discount),
     });
     const orderId = extractInsertId(insOrder);
@@ -2025,13 +2089,18 @@ async function createOnlineOrderAttempt(
       );
     }
     if (selectedCoupon) {
-      await reserveCouponForOnlineOrder(tx, selectedCoupon, {
-        onlineOrderId: orderId,
-        customerId,
-        branchId,
-        discountAmount: couponDiscount.toFixed(2),
-        expiresAt: reservationExpiresAt,
-      });
+      const reservedDiscountAmount = couponDiscount.gt(0)
+        ? couponDiscount
+        : money(quoteTotals.deliveryWaivedAmount);
+      if (reservedDiscountAmount.gt(0)) {
+        await reserveCouponForOnlineOrder(tx, selectedCoupon, {
+          onlineOrderId: orderId,
+          customerId,
+          branchId,
+          discountAmount: reservedDiscountAmount.toFixed(2),
+          expiresAt: reservationExpiresAt,
+        });
+      }
     }
 
     return {
