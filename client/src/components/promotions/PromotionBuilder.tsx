@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowRight, Loader2, Save, Sparkles, X } from "lucide-react";
+import { ArrowRight, Download, Loader2, Save, Sparkles, X } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
+import { downloadPdfFromBase64 } from "@/lib/printing/couponCardPdf";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { PromotionBuilderForm } from "./PromotionBuilderForm";
@@ -32,13 +33,30 @@ export function PromotionBuilder({ open, onOpenChange, onSuccess }: PromotionBui
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const createUnified = trpc.crm.coupons.createUnified.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (res) => {
       await Promise.all([
         utils.crm.coupons.programs.invalidate(),
         utils.salesPromotions.list.invalidate(),
         utils.crm.dashboard.invalidate(),
       ]);
-      notify.ok("تم إنشاء العرض الترويجي وبرنامج الكوبونات بنجاح");
+
+      if (res.pdf?.base64) {
+        downloadPdfFromBase64(res.pdf.base64, res.pdf.filename);
+        notify.ok(
+          "تم إنشاء البرنامج وتنزيل ملف PDF بنجاح",
+          `أُصدرت دفعة تحوي ${res.codes.length} كوبون (${res.pdf.pageCount} بطاقة 54×84 مم)`,
+        );
+      } else if (res.codes && res.codes.length > 0) {
+        notify.ok(
+          "تم إنشاء برنامج الكوبونات وتوليد الدفعة بنجاح",
+          `أُصدر ${res.codes.length} كوبون فعال وجاهز للاستخدام`,
+        );
+      } else if (res.applicationMode === "AUTO") {
+        notify.ok("تم إنشاء وتفعيل العرض الترويجي التلقائي المباشر بنجاح");
+      } else {
+        notify.ok("تم إنشاء العرض الترويجي وبرنامج الكوبونات بنجاح");
+      }
+
       onSuccess?.();
       onOpenChange(false);
       setFormData(INITIAL_PROMOTION_FORM_DATA);
@@ -60,10 +78,25 @@ export function PromotionBuilder({ open, onOpenChange, onSuccess }: PromotionBui
 
     setErrors({});
 
+    const parsedCustomCodes = formData.customCodesList.trim()
+      ? formData.customCodesList
+          .split("\n")
+          .map((s) => s.trim().toUpperCase().replace(/[^A-Z0-9-]/g, ""))
+          .filter(Boolean)
+      : undefined;
+
+    const isDirectPromo = formData.archetype === "DIRECT_PROMO";
+    const isCouponBatch = formData.archetype === "COUPON_BATCH";
+    const isAffiliate = formData.archetype === "AFFILIATE";
+    const isBounceBack = formData.archetype === "BOUNCE_BACK";
+    const isFirstOrder = formData.archetype === "FIRST_ORDER";
+
     createUnified.mutate({
+      archetype: formData.archetype,
+      applicationMode: isDirectPromo ? "AUTO" : "COUPON",
       name: formData.name.trim(),
       description: formData.description.trim() || undefined,
-      codePrefix: formData.codePrefix.trim(),
+      codePrefix: isDirectPromo ? "PROMO" : formData.codePrefix.trim(),
       type: formData.type,
       discountPercent: formData.type === "PERCENT" ? formData.discountPercent : undefined,
       discountAmount: formData.type === "AMOUNT" ? formData.discountAmount : undefined,
@@ -76,23 +109,26 @@ export function PromotionBuilder({ open, onOpenChange, onSuccess }: PromotionBui
       targetProductIds: formData.targetProductIds.length > 0 ? formData.targetProductIds : undefined,
       validFrom: formData.validFrom,
       validTo: formData.validTo || null,
-      perCouponLimit: formData.perCouponLimit,
-      perCustomerLimit: formData.perCustomerLimit,
-      isFirstOrderSelfService: formData.isFirstOrderSelfService,
-      affiliateName: formData.affiliateName.trim() || undefined,
-      affiliatePhone: formData.affiliatePhone.trim() || undefined,
-      affiliateCommissionRate: formData.affiliateCommissionRate || "0.00",
+      perCouponLimit: isFirstOrder ? 1 : formData.perCouponLimit,
+      perCustomerLimit: isFirstOrder ? 1 : formData.perCustomerLimit,
+      isFirstOrderSelfService: isFirstOrder,
+      initialBatchCount: isCouponBatch ? formData.initialBatchCount : 0,
+      customCodes: isCouponBatch && parsedCustomCodes?.length ? parsedCustomCodes : undefined,
+      exportPdfOnCreate: isCouponBatch && formData.exportPdfOnCreate,
+      affiliateName: isAffiliate ? formData.affiliateName.trim() : undefined,
+      affiliatePhone: isAffiliate ? formData.affiliatePhone.trim() : undefined,
+      affiliateCommissionRate: isAffiliate ? formData.affiliateCommissionRate : "0.00",
       design: {
         title: formData.design.title.trim() || undefined,
         subtitle: formData.design.subtitle.trim() || undefined,
         terms: formData.design.terms.trim() || undefined,
         color: formData.design.color,
         activeDays: formData.activeDays.length >= 7 ? null : formData.activeDays,
-        isAutoBounceBack: formData.isAutoBounceBack,
-        autoBounceBackMinInvoice: formData.isAutoBounceBack ? formData.autoBounceBackMinInvoice : null,
-        bounceBackValidityDays: formData.isAutoBounceBack ? formData.bounceBackValidityDays : null,
-        bounceBackPrefix: formData.isAutoBounceBack ? (formData.bounceBackPrefix.trim() || null) : null,
-        bounceBackHeadline: formData.isAutoBounceBack ? (formData.bounceBackHeadline.trim() || null) : null,
+        isAutoBounceBack: isBounceBack,
+        autoBounceBackMinInvoice: isBounceBack ? formData.autoBounceBackMinInvoice : null,
+        bounceBackValidityDays: isBounceBack ? formData.bounceBackValidityDays : null,
+        bounceBackPrefix: isBounceBack ? (formData.bounceBackPrefix.trim() || null) : null,
+        bounceBackHeadline: isBounceBack ? (formData.bounceBackHeadline.trim() || null) : null,
       },
       campaignId: formData.campaignId,
     });
@@ -117,7 +153,7 @@ export function PromotionBuilder({ open, onOpenChange, onSuccess }: PromotionBui
                 <span>المحرر المرئي الموحد للعروض والكوبونات (Unified Visual Builder)</span>
               </DialogTitle>
               <DialogDescription className="text-xs text-muted-foreground">
-                إنشاء العرض الترويجي المالي وبرنامج الكوبونات ذرياً في خطوة واحدة، مع المعاينة الحية وصمامات الأمان المالية.
+                أنماط ترويجية متخصصة ومعزولة (حملات، مؤثرين، عودة كاشير، ترحيب طلب أول، خصم مباشر) مع التوليد والتصدير الفوري.
               </DialogDescription>
             </div>
           </div>

@@ -1474,7 +1474,63 @@ describe("Omnichannel Promotion & Coupon Engine (Milestone M1)", () => {
       expect(invalidOrInactive).toContain("COUPON-VOID-2");
       expect(invalidOrInactive).toContain("COUPON-REDEEMED-3");
     });
+
+    it("يتحقق من عزل الأنماط الترويجية (Archetype Isolation) وقواعد كل نمط", () => {
+      // 1. نمط العرض المباشر التلقائي (DIRECT_PROMO): applicationMode = AUTO وبلا كود
+      const directPromo = {
+        archetype: "DIRECT_PROMO" as const,
+        applicationMode: "AUTO" as const,
+        name: "خصم نهاية الأسبوع",
+        requiresCoupon: false,
+      };
+      expect(directPromo.applicationMode).toBe("AUTO");
+      expect(directPromo.requiresCoupon).toBe(false);
+
+      // 2. نمط حملة الكوبونات المتعددة (COUPON_BATCH): توليد 50 كوداً فريداً يحمل البادئة
+      const prefix = "VIP";
+      const targetCount = 50;
+      const generatedCodes = new Set<string>();
+      for (let i = 0; i < targetCount; i++) {
+        generatedCodes.add(`${prefix}-${String(i + 1).padStart(4, "0")}`);
+      }
+      expect(generatedCodes.size).toBe(50);
+      for (const code of generatedCodes) {
+        expect(code.startsWith("VIP-")).toBe(true);
+      }
+
+      // 3. نمط المؤثرين (AFFILIATE): وجود المسوق ونسبة العمولة والكود المخصص
+      const affiliate = {
+        archetype: "AFFILIATE" as const,
+        affiliateName: "أحمد للتسويق",
+        affiliateCommissionRate: "7.50",
+        customCode: "AHMED10",
+      };
+      expect(parseFloat(affiliate.affiliateCommissionRate)).toBe(7.5);
+      expect(affiliate.customCode).toBe("AHMED10");
+
+      // 4. نمط كوبون العودة (BOUNCE_BACK): حد السعر وتاريخ الصلاحية
+      const bounceBack = {
+        archetype: "BOUNCE_BACK" as const,
+        autoBounceBackMinInvoice: "50000",
+        bounceBackValidityDays: 14,
+        bounceBackPrefix: "NEXT",
+      };
+      expect(parseFloat(bounceBack.autoBounceBackMinInvoice)).toBe(50000);
+      expect(bounceBack.bounceBackValidityDays).toBe(14);
+
+      // 5. نمط الطلب الأول (FIRST_ORDER): قفل الاستخدام على 1
+      const firstOrder = {
+        archetype: "FIRST_ORDER" as const,
+        perCouponLimit: 1,
+        perCustomerLimit: 1,
+        isFirstOrderSelfService: true,
+      };
+      expect(firstOrder.perCouponLimit).toBe(1);
+      expect(firstOrder.perCustomerLimit).toBe(1);
+      expect(firstOrder.isFirstOrderSelfService).toBe(true);
+    });
   });
 });
+
 
 

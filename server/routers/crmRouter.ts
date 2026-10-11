@@ -374,9 +374,11 @@ export const crmRouter = router({
 
     /** إنشاء موحّد للعرض الترويجي وبرنامج الكوبونات معاً في معاملة ذرية واحدة */
     createUnified: campaignsManagerProcedure.input(z.object({
+      archetype: z.enum(["COUPON_BATCH", "AFFILIATE", "BOUNCE_BACK", "FIRST_ORDER", "DIRECT_PROMO"]).default("COUPON_BATCH"),
+      applicationMode: z.enum(["COUPON", "AUTO"]).default("COUPON"),
       name: z.string().trim().min(2).max(255),
       description: z.string().trim().max(1000).optional(),
-      codePrefix: z.string().trim().min(1).max(12).default("CRM"),
+      codePrefix: z.string().trim().max(12).default("CRM"),
       type: z.enum(["PERCENT", "AMOUNT"]),
       status: z.enum(["DRAFT", "ACTIVE"]).default("ACTIVE"),
       discountPercent: percentString.optional(),
@@ -395,6 +397,9 @@ export const crmRouter = router({
       perCouponLimit: z.number().int().min(1).max(1000).default(1),
       perCustomerLimit: z.number().int().min(1).max(1000).default(1),
       isFirstOrderSelfService: z.boolean().default(false),
+      initialBatchCount: z.number().int().min(0).max(500).default(0),
+      customCodes: z.array(z.string().trim().min(2).max(32)).max(500).optional(),
+      exportPdfOnCreate: z.boolean().default(false),
       affiliateName: z.string().trim().max(255).optional(),
       affiliatePhone: z.string().trim().max(32).optional(),
       affiliateCommissionRate: percentString.default("0.00"),
@@ -446,7 +451,10 @@ export const crmRouter = router({
         }
       }
 
-      if (input.isFirstOrderSelfService && (input.perCustomerLimit !== 1 || input.perCouponLimit !== 1)) {
+      const isDirectPromo = input.archetype === "DIRECT_PROMO" || input.applicationMode === "AUTO";
+      const isFirstOrder = input.archetype === "FIRST_ORDER" || input.isFirstOrderSelfService;
+
+      if (isFirstOrder && !isDirectPromo && (input.perCustomerLimit !== 1 || input.perCouponLimit !== 1)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
@@ -459,7 +467,7 @@ export const crmRouter = router({
 
       const branchId = ownBranch(ctx, input.branchId);
 
-      const result = await withTx(async (tx) => {
+      const dbResult = await withTx(async (tx) => {
         const targetStatus = input.status;
         if (input.campaignId != null) {
           const campaign = await getCampaignForWrite(tx, input.campaignId, ctx);
@@ -471,7 +479,7 @@ export const crmRouter = router({
           }
         }
 
-        const safePrefix = input.codePrefix.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "CRM";
+        const effectiveAppMode = isDirectPromo ? "AUTO" : "COUPON";
 
         // 1. إنشاء العرض الترويجي المرتبط
         const promoInsertResult = await tx.insert(promotions).values({
@@ -493,7 +501,7 @@ export const crmRouter = router({
           minLineAmount: "0",
           priority: 0,
           isActive: true,
-          applicationMode: "COUPON",
+          applicationMode: effectiveAppMode,
           isStoreManaged: false,
           createdBy: ctx.user.id,
         });
@@ -516,8 +524,37 @@ export const crmRouter = router({
           );
         }
 
+        // إذا كان العرض خصماً مباشراً تلقائياً، ينتهي مسار الإنشاء هنا دون الحاجة لبرنامج كوبونات
+        if (isDirectPromo) {
+          await logAuditTx(tx, ctx, {
+            action: "crm.promotion.createDirect",
+            entityType: "promotion",
+            entityId: promotionId,
+            newValue: {
+              promotionId,
+              name: input.name,
+              applicationMode: "AUTO",
+              type: input.type,
+              discountPercent: input.discountPercent,
+              discountAmount: input.discountAmount,
+            },
+          });
+          return {
+            promotionId,
+            programId: null,
+            name: input.name,
+            codePrefix: "",
+            status: targetStatus,
+            applicationMode: "AUTO" as const,
+            codes: [] as string[],
+            batchReference: null,
+          };
+        }
+
+        const safePrefix = input.codePrefix.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "CRM";
+
         // 3. قفل التفعيل الحصري لكوبون أول طلب إن طُلب
-        if (targetStatus === "ACTIVE" && input.isFirstOrderSelfService) {
+        if (targetStatus === "ACTIVE" && isFirstOrder) {
           const activationLock = (await tx.select({ id: storeSettings.id })
             .from(storeSettings)
             .where(eq(storeSettings.id, 1))
@@ -559,7 +596,13 @@ export const crmRouter = router({
           }
         }
 
-        // 4. إنشاء برنامج الكوبونات فورياً بالحالة المستهدفة
+        // 4. دمج إعدادات التصميم حسب النمط
+        const effectiveDesign: PromotionDesignMeta = {
+          ...(input.design ?? {}),
+          isAutoBounceBack: input.archetype === "BOUNCE_BACK" ? true : input.design?.isAutoBounceBack,
+        };
+
+        // 5. إنشاء برنامج الكوبونات فورياً بالحالة المستهدفة
         const progInsertResult = await tx.insert(couponPrograms).values({
           campaignId: input.campaignId ?? null,
           promotionId,
@@ -568,11 +611,11 @@ export const crmRouter = router({
           branchId,
           validFrom: new Date(input.validFrom),
           validTo: input.validTo ? new Date(input.validTo) : null,
-          perCouponLimit: input.perCouponLimit,
-          perCustomerLimit: input.perCustomerLimit,
-          isFirstOrderSelfService: input.isFirstOrderSelfService,
+          perCouponLimit: isFirstOrder ? 1 : input.perCouponLimit,
+          perCustomerLimit: isFirstOrder ? 1 : input.perCustomerLimit,
+          isFirstOrderSelfService: isFirstOrder,
           codePrefix: safePrefix,
-          designJson: input.design ?? null,
+          designJson: effectiveDesign,
           affiliateName: input.affiliateName?.trim() || null,
           affiliatePhone: input.affiliatePhone?.trim() || null,
           affiliateCommissionRate: input.affiliateCommissionRate ?? "0.00",
@@ -580,7 +623,48 @@ export const crmRouter = router({
         });
         const programId = extractInsertId(progInsertResult);
 
-        // 5. تسجيل التدقيق الإلزامي
+        // 6. إصدار دفعة فورية متعددة إن طُلب (توليد متعدد مباشر)
+        let issuedCodes: string[] = [];
+        let batchReference: string | null = null;
+        const requestedCount = input.customCodes?.length ? input.customCodes.length : input.initialBatchCount;
+
+        if (requestedCount > 0 && !isFirstOrder) {
+          const issuedAt = new Date();
+          batchReference = `CP-${programId}-${issuedAt.toISOString().replace(/\D/g, "").slice(0, 14)}-${randomBytes(2).toString("hex").toUpperCase()}`;
+          const uniqueCodes = new Set<string>();
+
+          if (input.customCodes && input.customCodes.length > 0) {
+            for (const raw of input.customCodes) {
+              const norm = normalizeCode(raw);
+              if (norm) uniqueCodes.add(norm);
+            }
+          }
+          while (uniqueCodes.size < requestedCount) {
+            uniqueCodes.add(makeCode(safePrefix));
+          }
+
+          const couponRows = Array.from(uniqueCodes, (code) => ({
+            programId,
+            customerId: null,
+            code,
+            codeHash: codeHash(code),
+            status: "ACTIVE" as const,
+            issuedAt,
+          }));
+
+          if (couponRows.length > 0) {
+            await tx.insert(coupons).values(couponRows);
+            await logAuditTx(tx, ctx, {
+              action: "crm.coupon.issue",
+              entityType: "couponProgram",
+              entityId: programId,
+              newValue: { batchReference, count: couponRows.length, issuedAt: issuedAt.toISOString() },
+            });
+            issuedCodes = couponRows.map((r) => r.code);
+          }
+        }
+
+        // 7. تسجيل التدقيق الإلزامي لإنشاء البرنامج
         await logAuditTx(tx, ctx, {
           action: "crm.couponProgram.createUnified",
           entityType: "couponProgram",
@@ -598,6 +682,7 @@ export const crmRouter = router({
             minOrderSpend: input.minOrderSpend,
             affiliateName: input.affiliateName,
             affiliateCommissionRate: input.affiliateCommissionRate,
+            initialIssuedCount: issuedCodes.length,
           },
         });
 
@@ -607,10 +692,61 @@ export const crmRouter = router({
           name: input.name,
           codePrefix: safePrefix,
           status: targetStatus,
+          applicationMode: "COUPON" as const,
+          codes: issuedCodes,
+          batchReference,
         };
       });
 
-      return result;
+      // 8. تصدير PDF فوري إن كان مطلوباً ووجدت كوبونات صادرة
+      let pdf: { base64: string; filename: string; pageCount: number } | null = null;
+      if (input.exportPdfOnCreate && dbResult.codes.length > 0 && dbResult.programId != null) {
+        const design = (input.design ?? {}) as PromotionDesignMeta;
+        let heroDiscount = "";
+        if (input.type === "PERCENT") {
+          heroDiscount = `خصم ${Number(input.discountPercent)}%`;
+        } else if (input.discountAmount) {
+          heroDiscount = `خصم ${Number(input.discountAmount).toLocaleString()} د.ع`;
+        }
+        const discountCap = input.type === "PERCENT" && input.maxDiscountAmount && money(input.maxDiscountAmount).gt(0)
+          ? `سقف الخصم: ${Number(input.maxDiscountAmount).toLocaleString()} د.ع`
+          : null;
+        const minSpend = input.minOrderSpend && money(input.minOrderSpend).gt(0)
+          ? `للطلبات بقيمة ${Number(input.minOrderSpend).toLocaleString()} د.ع فأكثر`
+          : null;
+        const activeDaysText = design.activeDays && design.activeDays.length > 0 && design.activeDays.length < 7
+          ? `متاح: ${formatActiveDays(design.activeDays)}`
+          : null;
+
+        const items: CouponPdfItem[] = dbResult.codes.map((code) => ({
+          code,
+          title: design.title || input.name,
+          subtitle: design.subtitle,
+          heroDiscount,
+          discountCap,
+          minSpend,
+          terms: design.terms,
+          validTo: input.validTo ? new Date(input.validTo) : null,
+          activeDaysText,
+          color: design.color || "#0D6B52",
+        }));
+
+        const pdfDoc = await generateCouponsStandalonePdf({
+          programName: input.name,
+          coupons: items,
+        });
+
+        pdf = {
+          base64: Buffer.from(pdfDoc.pdfBytes).toString("base64"),
+          filename: `coupons-${dbResult.codePrefix}-${dbResult.codes.length}cards.pdf`,
+          pageCount: pdfDoc.pageCount,
+        };
+      }
+
+      return {
+        ...dbResult,
+        pdf,
+      };
     }),
 
     setProgramStatus: campaignsManagerProcedure.input(z.object({ programId: z.number().int().positive(), status: programStatus })).mutation(async ({ input, ctx }) => {

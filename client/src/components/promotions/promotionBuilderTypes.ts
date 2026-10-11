@@ -6,7 +6,23 @@
 export type PromotionDiscountType = "PERCENT" | "AMOUNT";
 export type PromotionScope = "ALL" | "CATEGORIES" | "PRODUCTS";
 
+/**
+ * الأنماط الترويجية المتخصصة:
+ * - COUPON_BATCH: حملة كوبونات عامة مع توليد دفعات متعددة وتصدير PDF بطاقات 54×84 مم.
+ * - AFFILIATE: كوبون شركاء ومؤثرين بالعمولة (رمز مخصص ونسبة عمولة وتتبع أداء).
+ * - BOUNCE_BACK: كوبون عودة تلقائي يصدر ويُطبع مع فواتير الكاشير عند بلوغ سقف الشراء.
+ * - FIRST_ORDER: كوبون ترحيبي للطلب الأول (إصدار ذاتي للعميل الموثق فقط).
+ * - DIRECT_PROMO: عرض خصم مالي مباشر بدون كود (تطبيق آلي على الفاتورة في الكاشير والمتجر).
+ */
+export type PromotionArchetype =
+  | "COUPON_BATCH"
+  | "AFFILIATE"
+  | "BOUNCE_BACK"
+  | "FIRST_ORDER"
+  | "DIRECT_PROMO";
+
 export interface PromotionFormData {
+  archetype: PromotionArchetype;
   name: string;
   description: string;
   codePrefix: string;
@@ -26,6 +42,9 @@ export interface PromotionFormData {
   perCouponLimit: number;
   perCustomerLimit: number;
   isFirstOrderSelfService: boolean;
+  initialBatchCount: number;
+  customCodesList: string;
+  exportPdfOnCreate: boolean;
   affiliateName: string;
   affiliatePhone: string;
   affiliateCommissionRate: string;
@@ -49,6 +68,7 @@ export function todayYmd(): string {
 }
 
 export const INITIAL_PROMOTION_FORM_DATA: PromotionFormData = {
+  archetype: "COUPON_BATCH",
   name: "عرض ترويجي خاص",
   description: "",
   codePrefix: "VIP",
@@ -68,9 +88,12 @@ export const INITIAL_PROMOTION_FORM_DATA: PromotionFormData = {
   perCouponLimit: 1,
   perCustomerLimit: 1,
   isFirstOrderSelfService: false,
+  initialBatchCount: 20,
+  customCodesList: "",
+  exportPdfOnCreate: true,
   affiliateName: "",
   affiliatePhone: "",
-  affiliateCommissionRate: "0.00",
+  affiliateCommissionRate: "5.00",
   activeDays: [0, 1, 2, 3, 4, 5, 6],
   isAutoBounceBack: false,
   autoBounceBackMinInvoice: "50000",
@@ -98,8 +121,11 @@ export function validatePromotionFormData(data: PromotionFormData): FormValidati
     errors.name = "اسم العرض والبرنامج إلزامي (حرفان على الأقل)";
   }
 
-  if (!data.codePrefix.trim()) {
-    errors.codePrefix = "بادئة الكود مطلوبة (مثل VIP أو CRM)";
+  // إذا لم يكن العرض خصماً مباشراً تلقائياً، يلزم تحديد بادئة الرمز
+  if (data.archetype !== "DIRECT_PROMO") {
+    if (!data.codePrefix.trim()) {
+      errors.codePrefix = "بادئة الكود مطلوبة (مثل VIP أو CRM)";
+    }
   }
 
   if (!data.validFrom) {
@@ -131,14 +157,32 @@ export function validatePromotionFormData(data: PromotionFormData): FormValidati
     errors.minOrderSpend = "الحد الأدنى لقيمة الفاتورة لا يمكن أن يكون سالباً";
   }
 
-  if (data.affiliateName.trim() && !data.affiliateCommissionRate.trim()) {
-    errors.affiliateCommissionRate = "حدد نسبة العمولة عند إضافة مسوق";
-  }
-
-  if (data.affiliateCommissionRate.trim()) {
+  // فحوصات نمط المؤثرين
+  if (data.archetype === "AFFILIATE") {
+    if (!data.affiliateName.trim()) {
+      errors.affiliateName = "اسم المسوق أو الشريك الترويجي إلزامي";
+    }
     const rate = parseFloat(data.affiliateCommissionRate);
     if (isNaN(rate) || rate < 0 || rate > 100) {
       errors.affiliateCommissionRate = "نسبة عمولة المسوق يجب أن تكون بين 0٪ و 100٪";
+    }
+  }
+
+  // فحوصات نمط كوبون العودة
+  if (data.archetype === "BOUNCE_BACK") {
+    const minInv = parseFloat(data.autoBounceBackMinInvoice);
+    if (isNaN(minInv) || minInv <= 0) {
+      errors.autoBounceBackMinInvoice = "حدد الحد الأدنى لقيمة الفاتورة لتفعيل كوبون العودة التلقائي";
+    }
+    if (!data.bounceBackPrefix.trim()) {
+      errors.bounceBackPrefix = "بادئة رمز كوبون العودة مطلوبة (مثل NEXT)";
+    }
+  }
+
+  // فحوصات التوليد المتعدد
+  if (data.archetype === "COUPON_BATCH") {
+    if (data.initialBatchCount < 0 || data.initialBatchCount > 500) {
+      errors.initialBatchCount = "عدد الكوبونات للإصدار المباشر يجب أن يكون بين 0 و 500";
     }
   }
 
