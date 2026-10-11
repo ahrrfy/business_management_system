@@ -29,6 +29,22 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
     return `${storefrontUrl()}?coupon=${previewCode}`;
   }, [previewCode]);
 
+  const displayStoreHost = useMemo(() => {
+    try {
+      const raw = storefrontUrl();
+      if (raw.startsWith("http://") || raw.startsWith("https://")) {
+        const u = new URL(raw);
+        return `${u.host}${u.pathname}`;
+      }
+      if (typeof window !== "undefined" && window.location.host) {
+        return `${window.location.host}${raw}`;
+      }
+      return "alarabiya.online/store";
+    } catch {
+      return "alarabiya.online/store";
+    }
+  }, []);
+
   const minSpend = useMemo(() => {
     return moneyInput(data.minOrderSpend);
   }, [data.minOrderSpend]);
@@ -148,7 +164,7 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
   <title>إيصال حراري - ${previewCode}</title>
   ${CAIRO_FONT}
   <style>
-    @page { size: 80mm auto; margin: 0; }
+    @page { size: 80mm 200mm; margin: 0; }
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -265,11 +281,11 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
     ${barcodeSvgResult ? barcodeSvgResult.svg : `<div>${previewCode}</div>`}
   </div>
 
-  <div class="footer">
-    <div>شكراً لتعاملكم معنا · للاستفسار: ${CO.phones[0]?.n ?? ""}</div>
-    <div>${data.design.terms || "تُطبق الشروط والأحكام الخاصة بالعرض"}</div>
-    <div>متجرنا الإلكتروني: alarabiya.online/store</div>
-  </div>
+    <div class="footer">
+      <div>شكراً لتعاملكم معنا · للاستفسار: ${CO.phones[0]?.n ?? ""}</div>
+      <div>${data.design.terms || "تُطبق الشروط والأحكام الخاصة بالعرض"}</div>
+      <div>متجرنا الإلكتروني: ${displayStoreHost}</div>
+    </div>
 
   <script>
     window.onload = function() {
@@ -507,7 +523,7 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
           <div className="text-center pt-2 text-[9.5px] font-bold text-zinc-800 border-t border-black border-dashed space-y-0.5">
             <div>شكراً لتعاملكم معنا · للاستفسار: {CO.phones[0]?.n ?? ""}</div>
             <div>{data.design.terms || "الكوبون يخضع لشروط العرض الترويجي"}</div>
-            <div className="font-mono text-[9px] text-zinc-600">متجرنا الإلكتروني: alarabiya.online/store</div>
+            <div className="font-mono text-[9px] text-zinc-600">متجرنا الإلكتروني: {displayStoreHost}</div>
           </div>
         </CardContent>
       </Card>

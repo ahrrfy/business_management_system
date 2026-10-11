@@ -29,15 +29,27 @@ export function useStorefrontCoupon(options?: UseStorefrontCouponOptions) {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
-    const couponParam = params.get("coupon")?.trim() || params.get("c")?.trim();
-    if (couponParam && VALID_COUPON_CODE_REGEX.test(couponParam)) {
-      const norm = couponParam.toUpperCase();
-      try {
-        sessionStorage.setItem(STORAGE_KEY, norm);
-      } catch {}
-      setCouponDraft(norm);
-      setAppliedCouponCode(norm);
-      setCouponFeedback(`تم تفعيل كوبون الخصم (${norm}) تلقائياً من الرابط الترويجي`);
+    const rawCoupon = params.get("coupon") ?? params.get("c");
+    const hasParamInUrl = rawCoupon !== null;
+    const couponParam = rawCoupon?.trim();
+
+    if (hasParamInUrl) {
+      if (couponParam && VALID_COUPON_CODE_REGEX.test(couponParam)) {
+        const norm = couponParam.toUpperCase();
+        try {
+          sessionStorage.setItem(STORAGE_KEY, norm);
+        } catch {}
+        setCouponDraft(norm);
+        setAppliedCouponCode(norm);
+        setCouponFeedback(`تم تفعيل كوبون الخصم (${norm}) تلقائياً من الرابط الترويجي`);
+      } else {
+        try {
+          sessionStorage.removeItem(STORAGE_KEY);
+        } catch {}
+        setCouponDraft("");
+        setAppliedCouponCode(null);
+        setCouponFeedback("رمز الكوبون في الرابط الترويجي غير صالح");
+      }
       cleanUrlCouponParams();
     } else {
       try {

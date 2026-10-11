@@ -55,12 +55,15 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
   // صياغة الرسائل الترويجية الذكية وفق الأنماط التسويقية المعتمدة (خالية تماماً من الإيموجي)
   const generatedMessage = useMemo(() => {
     const title = data.design.title || data.name || "عرض خاص";
-    const subtitle = data.design.subtitle ? `${data.design.subtitle}\n` : "";
+    const subtitle = data.design.subtitle ? data.design.subtitle : null;
     const terms = data.design.terms || "يُستخدم لمرة واحدة ولا يُجمع مع عروض أخرى.";
     const shippingBonus = data.freeShipping ? "\n• ميزة إضافية: توصيل مجاني مشمول" : "";
 
+    const joinLines = (lines: (string | null | undefined | false)[]) =>
+      lines.filter((l): l is string => l != null && l !== false).join("\n");
+
     if (style === "GIFT") {
-      return [
+      return joinLines([
         `*هدية تسوق خاصة لك من ${CO.short}*`,
         `تقديراً لثقتكم بنا، يسعدنا إهداؤك قسيمة الشراء الحصرية: *${previewCode}*`,
         ``,
@@ -75,11 +78,11 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
         `(أو تفضل بزيارة أقرب فرع وأبرز الرمز عند الدفع)`,
         ``,
         `* ${terms}`,
-      ].filter((l) => l !== "").join("\n");
+      ]);
     }
 
     if (style === "FLASH") {
-      return [
+      return joinLines([
         `*تخفيض استثنائي ولفترة محدودة من ${CO.short}!*`,
         `سارع بالاستفادة من كوبون الخصم الحصري: *${previewCode}*`,
         ``,
@@ -92,11 +95,11 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
         `أو امسح الرمز لدى الكاشير في الفرع مباشرة.`,
         ``,
         `* ${terms}`,
-      ].filter((l) => l !== "").join("\n");
+      ]);
     }
 
     // Default: PROMO
-    return [
+    return joinLines([
       `*عرض خاص وحصري من ${CO.short}!*`,
       `وفر الآن مع كوبون الخصم: *${previewCode}*`,
       ``,
@@ -112,7 +115,7 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
       `2. أو أظهر الرمز للكاشير عند زيارة فرعنا.`,
       ``,
       `* ${terms}`,
-    ].filter((l) => l !== "").join("\n");
+    ]);
   }, [
     style,
     data.design.title,
