@@ -176,7 +176,7 @@ export default function UserEdit() {
         jobTitle: (u as { jobTitle?: string | null }).jobTitle ?? "", hiredAt: toDateInput((u as { hiredAt?: unknown }).hiredAt),
         permsOverride: ((u as { permissionsOverride?: PermissionMap | null }).permissionsOverride as PermissionMap) ?? {},
         atomicPermissions: initAtomic,
-        operationalCaps: uCaps ?? null,
+        operationalCaps: initCaps,
         isOwner: !!(u as { isOwner?: boolean }).isOwner,
       });
       setLoaded(true);
