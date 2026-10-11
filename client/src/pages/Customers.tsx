@@ -609,7 +609,7 @@ export default function Customers() {
                   label: "إهداء كوبون فوري",
                   icon: Gift,
                   onSelect: () => setInstantGiftCustomer({ id, name: c.name ?? "", phone: c.phone }),
-                  gate: { module: "campaigns", level: "FULL" },
+                  gate: { roles: ["cashier", "manager", "sales_rep", "print_operator"], module: "crm", level: "FULL" },
                 },
                 {
                   key: "feedback",
@@ -617,7 +617,7 @@ export default function Customers() {
                   label: "تسجيل تقييم أو شكوى",
                   icon: MessageSquarePlus,
                   onSelect: () => setFeedbackCustomer({ id, name: c.name ?? "", phone: c.phone }),
-                  gate: { module: "crm", level: "FULL" },
+                  gate: { roles: ["cashier", "manager", "sales_rep", "print_operator"], module: "crm", level: "FULL" },
                 },
                 {
                   key: "edit",
