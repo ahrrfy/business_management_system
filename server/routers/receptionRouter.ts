@@ -33,6 +33,8 @@ import { router, workordersCashierProcedure, workordersExecProcedure,
 import { auditMetadataFromContext, logAudit } from "../services/auditService";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled,
 } from "@shared/posPaymentPolicy";
+import { getReceptionDuplicateOrders } from "../services/reception/duplicateOrders";
+import { RECEPTION_CHANNELS } from "@shared/receptionChannel";
 
 /** عزل الفرع (نمط deliveryRouter.effectiveBranch): المرتفعون يعبرون بـbranchId صريح؛
  *  غيرهم يُجبَرون على فرعهم، وغيابه = FORBIDDEN. */
@@ -109,6 +111,44 @@ function assertDraftImages(lines: Array<{ designImages?: string | null }>) {
 }
 
 export const receptionRouter = router({
+  duplicateOrders: workordersExecProcedure
+    .input(z.object({
+      branchId: z.number().int().positive().nullish(),
+      reference: z.object({
+        kind: z.enum(["DRAFT", "ONLINE", "WORK_ORDER"]),
+        id: z.number().int().positive(),
+      }).optional(),
+      phone: z.string().max(32).optional(),
+      customerId: z.number().int().positive().optional(),
+      channel: z.enum(RECEPTION_CHANNELS).optional(),
+      lines: z.array(z.object({
+        lineKind: z.enum(["GOODS", "PRINT", "CUSTOM"]).optional(),
+        variantId: z.number().int().positive().nullish(),
+        productUnitId: z.number().int().positive().nullish(),
+        quantity: quantityString,
+        title: z.string().max(255).nullish(),
+        customizationText: z.string().max(5000).nullish(),
+        printSpec: z.string().max(20000).nullish(),
+      })).max(100).optional(),
+      total: nonNegMoneyString.optional(),
+      excludeDraftId: z.number().int().positive().optional(),
+    }))
+    .query(({ input, ctx }) => {
+      const branchId = effectiveBranch(ctx, input.branchId);
+      if (!branchId) throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر فحص تشابه الطلبات",
+          why: "لا يوجد فرع مسند للمستخدم",
+          doThis: "اختر الفرع المصرح لك به ثم أعد الفحص",
+        }),
+      });
+      return getReceptionDuplicateOrders(
+        { ...input, branchId },
+        { userId: ctx.user.id, branchId, role: ctx.user.role },
+      );
+    }),
+
   /** طابور فواتير المحطة: قراءة/إعادة طباعة فقط. بوابة exec تُدرج مشغّل الطباعة وتبقي
    *  القبض/الاسترداد والطفرات المالية أدناه خلف workordersCashierProcedure. */
   invoiceQueue: workordersExecProcedure
