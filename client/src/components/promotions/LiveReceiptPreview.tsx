@@ -7,7 +7,7 @@ import { D, formatIqd, moneyInput } from "@/lib/money";
 import { code128Svg } from "@/lib/printing/barcode";
 import { qrSvgSync } from "@/lib/printing/qr";
 import { CO, CAIRO_FONT, esc } from "@/lib/printing/brand";
-import { storefrontUrl } from "@/lib/siteHosts";
+import { publicStorefrontUrl } from "@/lib/siteHosts";
 import { notify } from "@/lib/notify";
 import type { PromotionFormData } from "./promotionBuilderTypes";
 
@@ -26,24 +26,10 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
   }, [data.sampleCode, data.codePrefix]);
 
   const smartStoreUrl = useMemo(() => {
-    return `${storefrontUrl()}?coupon=${previewCode}`;
+    return publicStorefrontUrl(previewCode);
   }, [previewCode]);
 
-  const displayStoreHost = useMemo(() => {
-    try {
-      const raw = storefrontUrl();
-      if (raw.startsWith("http://") || raw.startsWith("https://")) {
-        const u = new URL(raw);
-        return `${u.host}${u.pathname}`;
-      }
-      if (typeof window !== "undefined" && window.location.host) {
-        return `${window.location.host}${raw}`;
-      }
-      return "alarabiya.online/store";
-    } catch {
-      return "alarabiya.online/store";
-    }
-  }, []);
+  const displayStoreHost = "alarabiya.online/store";
 
   const minSpend = useMemo(() => {
     return moneyInput(data.minOrderSpend);
@@ -180,68 +166,103 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
       margin: 0;
       padding: 4mm;
       width: 80mm;
-      font-family: 'Cairo', monospace, sans-serif;
-      font-size: 11px;
-      line-height: 1.35;
+      font-family: 'Cairo', 'Noto Sans Arabic', Arial, sans-serif;
+      font-size: 11.5px;
+      font-weight: 700;
+      line-height: 1.4;
       color: #000;
       background: #fff;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
     }
-    .header { text-align: center; border-bottom: 1px dashed #000; padding-bottom: 3mm; margin-bottom: 3mm; }
-    .brand { font-size: 15px; font-weight: 900; }
-    .subtitle { font-size: 10px; font-weight: 700; color: #333; }
+    .header { text-align: center; border-bottom: 2px dashed #000; padding-bottom: 3mm; margin-bottom: 3mm; }
+    .brand { font-size: 17px; font-weight: 900; letter-spacing: 0.3px; }
+    .subtitle { font-size: 11px; font-weight: 800; color: #000; }
+    .store-meta { font-size: 10.5px; font-weight: 700; color: #000; margin-top: 0.8mm; }
     .voucher-box {
-      border: 1.5px dashed #000;
+      border: 2px dashed #000;
       border-radius: 2mm;
-      padding: 2.5mm;
+      padding: 3mm 2mm;
       margin: 3mm 0;
       text-align: center;
-      background: #fdfdfd;
+      background: #fff;
     }
-    .voucher-title { font-size: 12px; font-weight: 900; }
-    .hero-discount { font-size: 16px; font-weight: 900; margin: 1mm 0; }
+    .voucher-title {
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 1px;
+      border-bottom: 1.5px solid #000;
+      padding-bottom: 1.5mm;
+      margin-bottom: 2mm;
+    }
+    .offer-name {
+      font-size: 13.5px;
+      font-weight: 900;
+      margin: 1.5mm 0;
+      color: #000;
+    }
+    .hero-discount {
+      font-size: 19px;
+      font-weight: 900;
+      margin: 2mm 0;
+      padding: 1.5mm 3.5mm;
+      border: 2px solid #000;
+      display: inline-block;
+      border-radius: 1.5mm;
+      color: #000;
+    }
+    .limit-row {
+      font-size: 11px;
+      font-weight: 800;
+      color: #000;
+      margin: 0.8mm 0;
+    }
     .code-pill {
       display: inline-block;
       background: #000;
       color: #fff;
-      font-family: monospace;
-      font-size: 13px;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 15px;
       font-weight: 900;
-      padding: 1mm 3mm;
-      border-radius: 1mm;
-      letter-spacing: 1px;
-      margin: 1.5mm 0;
+      padding: 2mm 4mm;
+      border-radius: 1.5mm;
+      letter-spacing: 2px;
+      margin: 2mm 0;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
     }
-    .totals { border-top: 1px dashed #000; padding-top: 2mm; margin-top: 2mm; }
-    .row { display: flex; justify-content: space-between; margin-bottom: 1mm; }
-    .row.bold { font-weight: 900; font-size: 13px; border-top: 1px solid #000; padding-top: 1.5mm; }
+    .totals { border-top: 2px dashed #000; padding-top: 2.5mm; margin-top: 2.5mm; }
+    .row { display: flex; justify-content: space-between; margin-bottom: 1.2mm; font-size: 11.5px; font-weight: 700; color: #000; }
+    .row.bold { font-weight: 900; font-size: 13.5px; border-top: 2px solid #000; padding-top: 2mm; margin-top: 1.5mm; }
     .barcode { text-align: center; margin: 3mm 0; }
     .barcode svg { max-width: 100%; height: auto; }
-    .qr { width: 30mm; height: 30mm; margin: 2mm auto; }
-    .qr svg { width: 100%; height: 100%; }
-    .footer { text-align: center; border-top: 1px dashed #000; padding-top: 2mm; font-size: 9px; font-weight: 700; }
+    .qr { width: 32mm; height: 32mm; margin: 2mm auto; }
+    .qr svg { width: 100%; height: 100%; display: block; }
+    .scan-hint { font-size: 10px; font-weight: 900; color: #000; margin-top: 1mm; }
+    .footer { text-align: center; border-top: 2px dashed #000; padding-top: 2.5mm; font-size: 10px; font-weight: 800; color: #000; line-height: 1.4; }
   </style>
 </head>
 <body>
   <div class="header">
     <div class="brand">${esc(CO.short)}</div>
     <div class="subtitle">${esc(CO.subtitle)}</div>
-    <div>فرع المنصور الرئيسي · كاشير #1</div>
-    <div>إيصال تجريبي: POS-${new Date().getFullYear()}-COUPON</div>
+    <div class="store-meta">فرع المنصور الرئيسي · كاشير #1</div>
+    <div class="store-meta">إيصال تجريبي: POS-${new Date().getFullYear()}-COUPON</div>
   </div>
 
   <div class="voucher-box">
     <div class="voucher-title">*** قسيمة خصم ترويجية معتمدة ***</div>
-    <div><strong>${esc(data.design.title || data.name || "هدية خاصة لك")}</strong></div>
+    <div class="offer-name">${esc(data.design.title || data.name || "عرض ترويجي حصري")}</div>
     <div class="hero-discount">
       ${data.type === "PERCENT" ? `خصم ${esc(data.discountPercent || "0")}٪` : `خصم ${esc(formatIqd(data.discountAmount || "0"))}`}
     </div>
-    ${data.type === "PERCENT" && moneyInput(data.maxDiscountAmount).greaterThan(0) ? `<div>سقف التوفير: ${esc(formatIqd(data.maxDiscountAmount))}</div>` : ""}
-    ${moneyInput(data.minOrderSpend).greaterThan(0) ? `<div>الحد الأدنى للفاتورة: ${esc(formatIqd(data.minOrderSpend))}</div>` : ""}
-    ${data.design.subtitle ? `<div style="font-size: 10px; color: #555; margin-top: 1mm;">${esc(data.design.subtitle)}</div>` : ""}
-    ${isScoped ? `<div style="font-size: 9.5px; font-weight: 700; color: #333;">نطاق الخصم: ${data.scope === "CATEGORIES" ? "تصنيفات محددة" : "منتجات محددة"}</div>` : ""}
-    <div class="code-pill">${esc(previewCode)}</div>
+    ${data.type === "PERCENT" && moneyInput(data.maxDiscountAmount).greaterThan(0) ? `<div class="limit-row">سقف التوفير الأقصى: ${esc(formatIqd(data.maxDiscountAmount))}</div>` : ""}
+    ${moneyInput(data.minOrderSpend).greaterThan(0) ? `<div class="limit-row">الحد الأدنى للفاتورة: ${esc(formatIqd(data.minOrderSpend))}</div>` : ""}
+    ${data.design.subtitle ? `<div class="limit-row" style="margin-top: 1mm;">${esc(data.design.subtitle)}</div>` : ""}
+    ${isScoped ? `<div class="limit-row">نطاق الخصم: ${data.scope === "CATEGORIES" ? "تصنيفات محددة" : "منتجات محددة"}</div>` : ""}
+    <div><span class="code-pill" dir="ltr">${esc(previewCode)}</span></div>
     <div class="qr">${qrSvg || ""}</div>
-    <div style="font-size: 9px; font-weight: 700;">امسح للطلب أونلاين أو أبرز الرمز للكاشير</div>
+    <div class="scan-hint">امسح للطلب أونلاين أو أبرز الرمز للكاشير</div>
   </div>
 
   <div class="totals">
@@ -251,12 +272,12 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
       <span>${formatIqd(calculation.eligibleAmount.toString())}</span>
     </div>
     ${calculation.unrelatedAmount.gt(0) ? `
-    <div class="row" style="color: #555; font-size: 10px;">
+    <div class="row">
       <span>أصناف عامة غير مشمولة:</span>
       <span>${formatIqd(calculation.unrelatedAmount.toString())}</span>
     </div>
     ` : ""}
-    <div class="row" style="border-top: 1px dashed #000; padding-top: 1mm; margin-top: 1mm;">
+    <div class="row" style="border-top: 1.5px dashed #000; padding-top: 1.5mm; margin-top: 1.5mm;">
       <span>إجمالي السلة التجريبية:</span>
       <span>${formatIqd(simulatedSubtotal)}</span>
     </div>
@@ -268,22 +289,22 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
     `}
     ${isMinSpendMet ? (
       calculation.discountAmount.gt(0) ? `
-      <div class="row" style="font-weight: 900; color: #000;">
+      <div class="row" style="font-weight: 900; font-size: 12.5px;">
         <span>خصم كوبون (${esc(previewCode)})${calculation.isCapped ? " (سقف الخصم)" : ""}:</span>
         <span dir="ltr">-${formatIqd(calculation.discountAmount.toString())}</span>
       </div>
       ` : isScoped && !calculation.hasEligibleItems ? `
-      <div style="font-size: 9.5px; font-weight: 700; color: #555; border: 1px dashed #666; padding: 1.5mm; margin: 1mm 0; text-align: center;">
+      <div style="font-size: 10px; font-weight: 800; border: 1.5px dashed #000; padding: 2mm; margin: 1.5mm 0; text-align: center;">
         لم يُطبّق الخصم: لا توجد عناصر مشمولة في السلة الحالية
       </div>
       ` : ""
     ) : `
-      <div style="font-size: 9.5px; font-weight: 700; color: #555; border: 1px dashed #666; padding: 1.5mm; margin: 1mm 0; text-align: center;">
+      <div style="font-size: 10px; font-weight: 800; border: 1.5px dashed #000; padding: 2mm; margin: 1.5mm 0; text-align: center;">
         لم يُطبّق الخصم: السلة دون الحد الأدنى المطلوب (${formatIqd(minSpend.toString())})
       </div>
     `}
     <div class="row bold">
-      <span>الصافي المطلوب:</span>
+      <span>الصافي المطلوب للدفع:</span>
       <span>${formatIqd(calculation.total.toString())}</span>
     </div>
   </div>
@@ -292,11 +313,11 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
     ${barcodeSvgResult ? barcodeSvgResult.svg : `<div>${esc(previewCode)}</div>`}
   </div>
 
-    <div class="footer">
-      <div>شكراً لتعاملكم معنا · للاستفسار: ${esc(CO.phones[0]?.n ?? "")}</div>
-      <div>${esc(data.design.terms || "تُطبق الشروط والأحكام الخاصة بالعرض")}</div>
-      <div>متجرنا الإلكتروني: ${esc(displayStoreHost)}</div>
-    </div>
+  <div class="footer">
+    <div>شكراً لتعاملكم معنا · للاستفسار: ${esc(CO.phones[0]?.n ?? "")}</div>
+    <div>${esc(data.design.terms || "تُطبق الشروط والأحكام الخاصة بالعرض")}</div>
+    <div>متجرنا الإلكتروني: ${esc(displayStoreHost)}</div>
+  </div>
 
   <script>
     window.onload = function() {
@@ -393,51 +414,53 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
           {/* ترويسة الإيصال */}
           <div className="text-center space-y-1 border-b-2 border-black border-dashed pb-3">
             <div className="font-black text-base tracking-wide text-black">{CO.short}</div>
-            <div className="text-[11px] font-bold text-zinc-800">{CO.subtitle}</div>
-            <div className="text-[10px] font-semibold text-zinc-700">فرع: المنصور الرئيسي · كاشير #1</div>
-            <div className="text-[9.5px] font-mono text-zinc-600">فاتورة تجريبية: POS-2026-9041</div>
+            <div className="text-[11px] font-extrabold text-black">{CO.subtitle}</div>
+            <div className="text-[10.5px] font-bold text-black">فرع المنصور الرئيسي · كاشير #1</div>
+            <div className="text-[10px] font-mono font-bold text-black">فاتورة تجريبية: POS-2026-9041</div>
           </div>
 
           {/* صندوق القسيمة الترويجية البارز داخل الإيصال (Promotional Voucher Box) */}
-          <div className="border-2 border-dashed border-black rounded-lg p-3 bg-zinc-50 text-center space-y-1.5 my-2">
-            <div className="text-[10px] uppercase font-black tracking-widest text-zinc-800">
+          <div className="border-2 border-dashed border-black rounded-lg p-3 bg-white text-center space-y-1.5 my-2">
+            <div className="text-[10px] uppercase font-black tracking-widest text-black border-b border-black pb-1 mb-1">
               *** قسيمة خصم ترويجية معتمدة ***
             </div>
             <div className="font-black text-sm text-black leading-tight">
-              {data.design.title || data.name || "هدية خاصة لك"}
+              {data.design.title || data.name || "عرض ترويجي حصري"}
             </div>
 
             {/* رقم الخصم البارز */}
-            <div className="font-black text-xl text-black tracking-tight my-1">
+            <div className="font-black text-xl text-black tracking-tight my-1 inline-block border-2 border-black rounded px-3 py-1 bg-zinc-50">
               {data.type === "PERCENT" ? `خصم ${data.discountPercent || "0"}٪` : `خصم ${formatIqd(data.discountAmount || "0")}`}
             </div>
 
             {data.type === "PERCENT" && moneyInput(data.maxDiscountAmount).greaterThan(0) && (
-              <div className="text-[10.5px] font-extrabold text-zinc-900">
+              <div className="text-[10.5px] font-extrabold text-black">
                 سقف التوفير الأقصى: {formatIqd(data.maxDiscountAmount)}
               </div>
             )}
 
             {moneyInput(data.minOrderSpend).greaterThan(0) && (
-              <div className="text-[10.5px] font-black text-black">
+              <div className="text-[10.5px] font-extrabold text-black">
                 الحد الأدنى للفاتورة: {formatIqd(data.minOrderSpend)}
               </div>
             )}
 
             {/* كود الكوبون البارز بخلفية سوداء وخط أبيض ناصع */}
-            <div className="my-2 inline-block bg-black text-white px-3 py-1 rounded font-mono text-base font-black tracking-widest" dir="ltr">
-              {previewCode}
+            <div>
+              <span className="my-1.5 inline-block bg-black text-white px-3.5 py-1 rounded font-mono text-base font-black tracking-widest" dir="ltr">
+                {previewCode}
+              </span>
             </div>
 
             {/* رمز الاستجابة السريعة QR للطلب أونلاين */}
             {qrSvg && (
               <div className="flex flex-col items-center justify-center pt-1">
                 <div
-                  className="size-20 flex items-center justify-center bg-white p-1 rounded border border-black/30 [&>svg]:size-full"
+                  className="size-24 flex items-center justify-center bg-white p-1 rounded border-2 border-black [&>svg]:size-full"
                   dangerouslySetInnerHTML={{ __html: qrSvg }}
                   aria-label={`رمز QR للكوبون ${previewCode}`}
                 />
-                <span className="text-[9px] font-extrabold text-black mt-1">
+                <span className="text-[9.5px] font-black text-black mt-1">
                   امسح للطلب أونلاين أو أبرز الرمز للكاشير
                 </span>
               </div>
@@ -445,23 +468,23 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
           </div>
 
           {/* بنود الفاتورة والمجاميع */}
-          <div className="space-y-1.5 text-xs border-t border-black border-dashed pt-2">
-            <div className="flex justify-between font-bold text-zinc-700 text-[10.5px] border-b pb-1">
+          <div className="space-y-1.5 text-xs border-t-2 border-black border-dashed pt-2">
+            <div className="flex justify-between font-black text-black text-[11px] border-b border-black pb-1">
               <span>الصنف / البند</span>
               <span>المبلغ</span>
             </div>
             {isScoped ? (
               <>
-                <div className="flex justify-between font-semibold text-black">
+                <div className="flex justify-between font-bold text-black">
                   <span>
                     أصناف مشمولة بالعرض ({data.scope === "CATEGORIES" ? "تصنيفات مختارة" : "منتجات مختارة"})
                   </span>
-                  <span className="tabular-nums font-bold">
+                  <span className="tabular-nums font-black">
                     {formatIqd(calculation.eligibleAmount.toString())}
                   </span>
                 </div>
                 {calculation.unrelatedAmount.gt(0) && (
-                  <div className="flex justify-between text-zinc-600 text-[11px]">
+                  <div className="flex justify-between font-bold text-black text-[11px]">
                     <span>أصناف عامة غير مشمولة بالعرض</span>
                     <span className="tabular-nums">
                       {formatIqd(calculation.unrelatedAmount.toString())}
@@ -470,31 +493,31 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
                 )}
               </>
             ) : (
-              <div className="flex justify-between font-semibold text-black">
+              <div className="flex justify-between font-bold text-black">
                 <span>مشتريات قرطاسية ومواد مكتبية</span>
-                <span className="tabular-nums font-bold">{formatIqd(simulatedSubtotal)}</span>
+                <span className="tabular-nums font-black">{formatIqd(simulatedSubtotal)}</span>
               </div>
             )}
           </div>
 
           {/* فاصل الفاتورة */}
-          <div className="border-b border-black border-dashed" />
+          <div className="border-b-2 border-black border-dashed" />
 
           {/* المجاميع والخصومات */}
           <div className="space-y-1 text-xs">
-            <div className="flex justify-between text-zinc-700 font-semibold">
+            <div className="flex justify-between text-black font-bold">
               <span>المجموع الفرعي:</span>
-              <span className="tabular-nums font-bold">{formatIqd(simulatedSubtotal)}</span>
+              <span className="tabular-nums font-black">{formatIqd(simulatedSubtotal)}</span>
             </div>
 
             {/* سطر خصم الكوبون الصريح بالسالب بتباين عالي جداً */}
             {isMinSpendMet ? (
               calculation.discountAmount.gt(0) ? (
-                <div className="flex justify-between text-black font-black bg-zinc-200/80 px-2 py-1 rounded border border-black/40">
+                <div className="flex justify-between text-black font-black bg-zinc-100 px-2 py-1 rounded border-2 border-black">
                   <div className="flex flex-col">
                     <span>خصم كوبون ({previewCode})</span>
                     {calculation.isCapped && (
-                      <span className="text-[9.5px] font-bold text-zinc-800">
+                      <span className="text-[10px] font-extrabold text-black">
                         (تم تفعيل سقف الخصم الأقصى)
                       </span>
                     )}
@@ -516,7 +539,7 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
 
             {/* الصافي النهائي المطلوب */}
             <div className="flex justify-between text-sm font-black border-t-2 border-black pt-1.5 text-black">
-              <span>الصافي النهائي للدفع:</span>
+              <span>الصافي المطلوب للدفع:</span>
               <span className="tabular-nums text-base font-black">
                 {formatIqd(calculation.total.toString())}
               </span>
@@ -536,16 +559,16 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
                 رمز الباركود: {previewCode}
               </div>
             )}
-            <div className="text-[9.5px] font-bold text-zinc-700 mt-1">
+            <div className="text-[10px] font-black text-black mt-1">
               مسح فوري عبر قارئ الباركود الضوئي (1D Code128)
             </div>
           </div>
 
           {/* تذييل الإيصال */}
-          <div className="text-center pt-2 text-[9.5px] font-bold text-zinc-800 border-t border-black border-dashed space-y-0.5">
+          <div className="text-center pt-2 text-[10px] font-bold text-black border-t-2 border-black border-dashed space-y-0.5">
             <div>شكراً لتعاملكم معنا · للاستفسار: {CO.phones[0]?.n ?? ""}</div>
             <div>{data.design.terms || "الكوبون يخضع لشروط العرض الترويجي"}</div>
-            <div className="font-mono text-[9px] text-zinc-600">متجرنا الإلكتروني: {displayStoreHost}</div>
+            <div>متجرنا الإلكتروني: <span className="font-mono font-bold text-black">{displayStoreHost}</span></div>
           </div>
         </CardContent>
       </Card>

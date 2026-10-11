@@ -7,7 +7,7 @@ import { notify } from "@/lib/notify";
 import { qrSvgSync } from "@/lib/printing/qr";
 import { printCouponCards } from "@/lib/printing/couponCard";
 import { BRAND, CO } from "@/lib/printing/brand";
-import { storefrontUrl } from "@/lib/siteHosts";
+import { publicStorefrontUrl } from "@/lib/siteHosts";
 import type { PromotionFormData } from "./promotionBuilderTypes";
 
 interface LiveCardPreviewProps {
@@ -24,7 +24,7 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
   }, [data.sampleCode, data.codePrefix]);
 
   const smartStoreUrl = useMemo(() => {
-    return `${storefrontUrl()}?coupon=${previewCode}`;
+    return publicStorefrontUrl(previewCode);
   }, [previewCode]);
 
   const qrSvg = useMemo(() => {
@@ -80,7 +80,7 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
     try {
       const card = {
         code: previewCode,
-        title: data.design.title || data.name || "هدية خاصة لك",
+        title: data.design.title || data.name || "عرض ترويجي حصري",
         subtitle: data.design.subtitle?.trim() || undefined,
         heroDiscount: heroDiscountText,
         discountCap: discountCapText,
@@ -147,7 +147,7 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
           {/* العنوان الرئيسي والفرعي الترويجي */}
           <div className="my-0.5 space-y-0.5">
             <h4 className="font-black text-sm tracking-tight text-foreground line-clamp-1">
-              {data.design.title || data.name || "هدية خاصة لك"}
+              {data.design.title || data.name || "عرض ترويجي حصري"}
             </h4>
             {data.design.subtitle?.trim() && (
               <p className="text-[10px] text-muted-foreground font-semibold line-clamp-1">
@@ -227,8 +227,8 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
             </div>
           </div>
 
-          {/* التذييل والشروط */}
-          <div className="pt-1 border-t text-[8.5px] font-medium text-muted-foreground line-clamp-1 leading-normal">
+          {/* التذييل والشروط بدون قص أو إخفاء */}
+          <div className="pt-1 border-t text-[8px] font-bold text-foreground text-center break-words leading-tight max-h-[32px] overflow-y-auto">
             {data.design.terms || "تُطبق الشروط والأحكام. غير قابل للدمج مع عروض أخرى."}
           </div>
         </CardContent>

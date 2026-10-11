@@ -7,7 +7,7 @@ import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { formatIqd, moneyInput } from "@/lib/money";
 import { CO } from "@/lib/printing/brand";
-import { storefrontUrl } from "@/lib/siteHosts";
+import { publicStorefrontUrl } from "@/lib/siteHosts";
 import { sanitizeForWhatsApp } from "@/lib/whatsapp";
 import { notify } from "@/lib/notify";
 import type { PromotionFormData } from "./promotionBuilderTypes";
@@ -31,7 +31,7 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
   }, [data.sampleCode, data.codePrefix]);
 
   const smartStoreUrl = useMemo(() => {
-    return `${storefrontUrl()}?coupon=${previewCode}`;
+    return publicStorefrontUrl(previewCode);
   }, [previewCode]);
 
   const discountSummary = useMemo(() => {
@@ -52,12 +52,20 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
     return data.validTo ? data.validTo : "لفترة محدودة أو حتى نفاد الكمية";
   }, [data.validTo]);
 
-  // صياغة الرسائل الترويجية الذكية وفق الأنماط التسويقية المعتمدة (خالية تماماً من الإيموجي)
+  // صياغة الرسائل الترويجية الذكية وفق الأنماط التسويقية المعتمدة (خالية تماماً من الإيموجي والرتابة البيروقراطية)
   const generatedMessage = useMemo(() => {
-    const title = data.design.title || data.name || "عرض خاص";
-    const subtitle = data.design.subtitle ? data.design.subtitle : null;
-    const terms = data.design.terms || "يُستخدم لمرة واحدة ولا يُجمع مع عروض أخرى.";
+    const rawTitle = (data.design.title || data.name || "").trim();
+    const rawSubtitle = (data.design.subtitle || "").trim();
+    const terms = (data.design.terms || "يُستخدم لمرة واحدة · لا يُجمع مع عروض أخرى").trim();
     const shippingBonus = data.freeShipping ? "\n• ميزة إضافية: توصيل مجاني مشمول" : "";
+
+    // إظهار العنوان إن كان مخصصاً وغير مكرر
+    const hasCustomTitle = rawTitle && rawTitle !== "عرض ترويجي خاص" && rawTitle !== "عرض خاص";
+    const titleLine = hasCustomTitle ? `*${rawTitle}*` : null;
+
+    // إظهار النص الفرعي إن كان يضيف قيمة توضيحية ولا يكرر الخصم
+    const hasCustomSubtitle = rawSubtitle && rawSubtitle !== rawTitle && !rawSubtitle.includes(discountSummary);
+    const subtitleLine = hasCustomSubtitle ? rawSubtitle : null;
 
     const joinLines = (lines: (string | null | undefined | false)[]) =>
       lines.filter((l): l is string => l != null && l !== false).join("\n");
@@ -65,16 +73,16 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
     if (style === "GIFT") {
       return joinLines([
         `*هدية تسوق خاصة لك من ${CO.short}*`,
-        `تقديراً لثقتكم بنا، يسعدنا إهداؤك قسيمة الشراء الحصرية: *${previewCode}*`,
+        `يسعدنا إهداؤك قسيمة الشراء الحصرية: *${previewCode}*`,
+        titleLine,
+        subtitleLine,
         ``,
-        `*${title}*`,
-        subtitle,
         `• قيمة الهدية: *${discountSummary}*`,
         `• الحد الأدنى للمشتريات: ${minSpendSummary}${shippingBonus}`,
         `• سارية لغاية: ${validityText}`,
         ``,
-        `*رابط التسوق المباشر بالخصم:*`,
-        `${smartStoreUrl}`,
+        `*استخدم هديتك الآن عبر متجرنا الإلكتروني:*`,
+        smartStoreUrl,
         `(أو تفضل بزيارة أقرب فرع وأبرز الرمز عند الدفع)`,
         ``,
         `• الشروط: ${terms}`,
@@ -84,15 +92,17 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
     if (style === "FLASH") {
       return joinLines([
         `*تخفيض استثنائي ولفترة محدودة من ${CO.short}!*`,
-        `سارع بالاستفادة من كوبون الخصم الحصري: *${previewCode}*`,
+        `كود الخصم الحصري: *${previewCode}*`,
+        titleLine,
+        subtitleLine,
         ``,
         `• احصل فوراً على: *${discountSummary}*`,
         `• عند الشراء بقيمة: ${minSpendSummary}${shippingBonus}`,
         `• سارع بالطلب قبل انتهاء العرض: ${validityText}`,
         ``,
-        `*رابط التفعيل الفوري للكوبون:*`,
-        `${smartStoreUrl}`,
-        `أو امسح الرمز لدى الكاشير في الفرع مباشرة.`,
+        `*سارع بالاستفادة عبر متجرنا الإلكتروني:*`,
+        smartStoreUrl,
+        `(أو امسح الرمز لدى الكاشير في الفرع مباشرة)`,
         ``,
         `• الشروط: ${terms}`,
       ]);
@@ -101,18 +111,17 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
     // Default: PROMO
     return joinLines([
       `*عرض خاص وحصري من ${CO.short}!*`,
-      `وفر الآن مع كوبون الخصم: *${previewCode}*`,
+      `وفر الآن مع كود الخصم: *${previewCode}*`,
+      titleLine,
+      subtitleLine,
       ``,
-      `*${title}*`,
-      subtitle,
       `• قيمة الخصم: *${discountSummary}*`,
       `• الحد الأدنى للطلب: ${minSpendSummary}${shippingBonus}`,
       `• الصلاحية: ${validityText}`,
       ``,
-      `*طريقة الاستخدام:*`,
-      `1. للطلب أونلاين وتفعيل الخصم فوراً:`,
-      `${smartStoreUrl}`,
-      `2. أو أظهر الرمز للكاشير عند زيارة فرعنا.`,
+      `*للطلب وتفعيل الخصم فوراً عبر متجرنا:*`,
+      smartStoreUrl,
+      `(أو أظهر الرمز للكاشير عند زيارة أي من فروعنا)`,
       ``,
       `• الشروط: ${terms}`,
     ]);

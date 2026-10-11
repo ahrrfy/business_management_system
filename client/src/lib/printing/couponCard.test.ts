@@ -58,5 +58,16 @@ describe("coupon card printing", () => {
     expect(htmlWithCap).toContain('<div class="discount-cap">سقف التوفير: 25,000 د.ع</div>');
     expect(htmlWithCap).toContain('<div class="min-spend">للطلبات بقيمة 50,000 د.ع فأكثر</div>');
   });
+
+  it("renders full terms with adaptive sizing without fixed height clipping", async () => {
+    const longTerms = "هذا الكوبون يخضع لجميع شروط وضوابط الحملة الترويجية لشركة الرؤية العربية. يُستخدم لمرة واحدة فقط لكل عميل ولا يمكن دمجه مع أي عروض أخرى أو فواتير تعاقدية خاصة.";
+    const htmlWithTerms = await couponCardsHtml([{
+      code: "TERMS-1",
+      terms: longTerms,
+    }]);
+    expect(htmlWithTerms).toContain(longTerms);
+    expect(htmlWithTerms).toContain("font-size:1.25mm");
+    expect(htmlWithTerms).not.toContain("max-height:7mm");
+  });
 });
 
