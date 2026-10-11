@@ -12,6 +12,7 @@ export interface GiftVoucherPrintData {
   code?: string;
   couponCode?: string;
   amount: string | number;
+  discountPercent?: string | number | null;
   customerName: string;
   customerPhone?: string | null;
   reason?: string | null;
@@ -19,10 +20,86 @@ export interface GiftVoucherPrintData {
   terms?: string | null;
 }
 
+/**
+ * تحليل وتنسيق قيمة الخصم المئوي إن وُجدت، لمنع انهيار Decimal.js.
+ */
+function resolvePercentageDiscount(data: GiftVoucherPrintData): string | null {
+  // 1. إذا تم تمرير discountPercent صراحة
+  if (data.discountPercent != null && data.discountPercent !== "") {
+    const pStr = String(data.discountPercent).trim();
+    return pStr.includes("%") || pStr.includes("٪") ? pStr : `${pStr}%`;
+  }
+
+  // 2. إذا احتوت قيمة data.amount على رمز النسبة المئوية (% أو ٪)
+  if (typeof data.amount === "string") {
+    const trimmed = data.amount.trim();
+    if (trimmed.includes("%") || trimmed.includes("٪")) {
+      return trimmed;
+    }
+  }
+
+  // 3. إذا كان المبلغ صفراً أو فارغاً وكان سبب الإهداء أو الشروط يذكر نسبة مئوية
+  const isZeroOrEmpty =
+    data.amount == null ||
+    data.amount === "" ||
+    data.amount === 0 ||
+    data.amount === "0" ||
+    (typeof data.amount === "string" && !Number.isNaN(Number(data.amount)) && Number(data.amount) === 0);
+
+  if (isZeroOrEmpty) {
+    const textToCheck = `${data.reason ?? ""} ${data.terms ?? ""}`.trim();
+    if (textToCheck) {
+      const match = textToCheck.match(/(\d+(?:\.\d+)?)\s*([%٪])/);
+      if (match) {
+        return `${match[1]}${match[2]}`;
+      }
+      if (
+        textToCheck.includes("%") ||
+        textToCheck.includes("٪") ||
+        textToCheck.includes("نسبة") ||
+        textToCheck.includes("مئوي")
+      ) {
+        return data.reason || "خصم مئوي";
+      }
+    }
+  }
+
+  return null;
+}
+
+function formatCurrencyAmount(amount: string | number | null | undefined): string {
+  if (amount === null || amount === undefined || amount === "") return "—";
+  try {
+    return fmtAr(amount);
+  } catch {
+    return String(amount);
+  }
+}
+
 export function giftVoucherToPrintDoc(data: GiftVoucherPrintData): PrintDoc {
-  const formattedAmount = fmtAr(data.amount);
+  const percentDiscount = resolvePercentageDiscount(data);
   const now = new Date();
   const code = data.code || data.couponCode || "GIFT";
+
+  let itemBlockName = "رصيد هدية معتمد في المطبعة والقرطاسية";
+  let itemPrice = "";
+  let itemTotal = "";
+  let totalLabel = "قيمة القسيمة";
+  let totalValue = "";
+
+  if (percentDiscount) {
+    itemBlockName = "خصم معتمد في المطبعة والقرطاسية";
+    itemPrice = `1 × ${percentDiscount}`;
+    itemTotal = percentDiscount;
+    totalLabel = "نسبة الخصم";
+    totalValue = percentDiscount;
+  } else {
+    const formattedAmount = formatCurrencyAmount(data.amount);
+    itemPrice = `1 × ${formattedAmount} د.ع`;
+    itemTotal = `${formattedAmount} د.ع`;
+    totalLabel = "قيمة القسيمة";
+    totalValue = `${formattedAmount} د.ع`;
+  }
 
   return {
     kind: "receipt",
@@ -38,12 +115,12 @@ export function giftVoucherToPrintDoc(data: GiftVoucherPrintData): PrintDoc {
     ],
     itemBlocks: [
       {
-        name: "رصيد هدية معتمد في المطبعة والقرطاسية",
-        quantityPrice: `1 × ${formattedAmount} د.ع`,
-        total: `${formattedAmount} د.ع`,
+        name: itemBlockName,
+        quantityPrice: itemPrice,
+        total: itemTotal,
       },
     ],
-    totals: [{ label: "قيمة القسيمة", value: `${formattedAmount} د.ع` }],
+    totals: [{ label: totalLabel, value: totalValue }],
     footer:
       data.terms ||
       "تُستخدم القسيمة لمرة واحدة عند المحاسبة • نعتز بثقتكم ونسعى لخدمتكم بأفضل معايير الجودة",

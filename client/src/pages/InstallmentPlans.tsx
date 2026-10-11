@@ -5,18 +5,17 @@
 import { useMemo, useState } from "react";
 import {
   CalendarPlus,
-  CheckCircle2,
   Download,
   FileText,
   Plus,
   RotateCcw,
+  Printer,
 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, fmt } from "@/lib/money";
 import { getDeviceCode } from "@/lib/offline/outbox";
 import { POS_METHODS, type PosPaymentMethod } from "@/lib/paymentMethod";
-import { fmtDateTime } from "@/lib/date";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { exportRows } from "@/lib/export";
@@ -33,8 +32,7 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
-import { RowActions } from "@/components/list";
-import { buildOperationalContactMessage } from "@/lib/whatsapp";
+import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
 import {
   Dialog,
   DialogContent,
@@ -45,6 +43,8 @@ import {
 } from "@/components/ui/dialog";
 import { DueSoonSection } from "@/components/installments/DueSoonSection";
 import { PlanDetailDialog } from "@/components/installments/PlanDetailDialog";
+import { PlansTable } from "@/components/installments/PlansTable";
+import { printDueSoonReport } from "@/components/installments/installmentReportPrint";
 import {
   type PlanRow,
   type PlanLine,
@@ -120,6 +120,7 @@ export default function InstallmentPlans() {
   const [createOpen, setCreateOpen] = useState(false);
   const [detailPlanId, setDetailPlanId] = useState<number | null>(null);
   const [payTarget, setPayTarget] = useState<PayTarget | null>(null);
+  const [dossierCustomerId, setDossierCustomerId] = useState<number | null>(null);
 
   async function invalidateAll() {
     await Promise.all([
@@ -149,6 +150,7 @@ export default function InstallmentPlans() {
         days={dueSoonDays}
         onDaysChange={setDueSoonDays}
         onPay={(r) => setPayTarget({ lineId: r.lineId, branchId: r.branchId, seq: r.seq, amount: r.amount, kind: r.kind, checkNumber: r.checkNumber })}
+        onOpenDossier={setDossierCustomerId}
       />
 
       <PendingExternalPaymentsPanel
@@ -231,6 +233,15 @@ export default function InstallmentPlans() {
           variant="outline"
           size="sm"
           className="gap-1.5"
+          onClick={() => printDueSoonReport(due.data ?? [], dueSoonDays)}
+          disabled={!due.data || due.data.length === 0}
+        >
+          <Printer className="size-3.5" aria-hidden /> طباعة طابور التحصيل
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1.5"
           onClick={() =>
             void fetchAllPaged<PlanRow>(
               (pageOffset, pageLimit) =>
@@ -258,6 +269,38 @@ export default function InstallmentPlans() {
         >
           <Download className="size-3.5" aria-hidden /> تصدير Excel
         </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1.5"
+          onClick={() =>
+            void fetchAllPaged<PlanRow>(
+              (pageOffset, pageLimit) =>
+                utils.installments.list
+                  .fetch({ ...listInput, limit: pageLimit, offset: pageOffset })
+                  .then((r) => ({ rows: r.rows, total: r.hasMore ? undefined : pageOffset + r.rows.length })),
+              { pageSize: 200 },
+            ).then((rows) =>
+              exportRows(rows, {
+                filename: "خطط-الأقساط",
+                title: "خطط الأقساط",
+                format: "csv",
+                columns: [
+                  { key: "id", header: "رقم الخطة" },
+                  { key: "customerName", header: "العميل" },
+                  { key: "totalAmount", header: "الإجمالي", money: true, map: (r) => Number(r.totalAmount) },
+                  { key: "downPayment", header: "الدفعة الأولى", money: true, map: (r) => Number(r.downPayment) },
+                  { key: "paidAmount", header: "المدفوع", money: true, map: (r) => Number(r.paidAmount) },
+                  { key: "status", header: "الحالة", map: (r) => PLAN_STATUS_AR[r.status]?.label ?? r.status },
+                  { key: "nextDueDate", header: "القسط القادم", map: (r) => r.nextDueDate ?? "" },
+                  { key: "createdAt", header: "أُنشئت", map: (r) => (r.createdAt ? new Date(r.createdAt).toISOString().slice(0, 10) : "") },
+                ],
+              }),
+            )
+          }
+        >
+          <Download className="size-3.5" aria-hidden /> تصدير CSV
+        </Button>
       </div>
 
       {/* جدول الخطط */}
@@ -268,9 +311,11 @@ export default function InstallmentPlans() {
         isError={list.isError}
         refetch={() => list.refetch()}
         onDetail={setDetailPlanId}
+        onOpenDossier={setDossierCustomerId}
         offset={offset}
         limit={LIMIT}
         onPage={(next) => setOffset(next)}
+        externalFiltersActive={Boolean(branchFilter || statusFilter || customerFilter.customerId || q || from || to)}
       />
 
       {/* حوار الإنشاء */}
@@ -290,6 +335,7 @@ export default function InstallmentPlans() {
           onClose={() => setDetailPlanId(null)}
           onPay={(l, planBranchId) => setPayTarget({ lineId: l.id, branchId: planBranchId, seq: l.seq, amount: l.amount, kind: l.kind, checkNumber: l.checkNumber })}
           onChanged={invalidateAll}
+          onOpenDossier={setDossierCustomerId}
         />
       )}
 
@@ -301,6 +347,13 @@ export default function InstallmentPlans() {
           onDone={async () => { setPayTarget(null); await invalidateAll(); }}
         />
       )}
+
+      {/* ملف العميل الشامل 360 */}
+      <CustomerDossierDrawer
+        customerId={dossierCustomerId}
+        open={dossierCustomerId != null}
+        onClose={() => setDossierCustomerId(null)}
+      />
     </div>
   );
 }
@@ -374,134 +427,6 @@ function PendingExternalPaymentsPanel({
 }
 
 
-/* ============================ جدول الخطط ============================ */
-
-function PlansTable({
-  rows,
-  hasMore,
-  isLoading,
-  isError,
-  refetch,
-  onDetail,
-  offset,
-  limit,
-  onPage,
-}: {
-  rows: PlanRow[];
-  hasMore: boolean;
-  isLoading: boolean;
-  isError: boolean;
-  refetch: () => void;
-  onDetail: (planId: number) => void;
-  offset: number;
-  limit: number;
-  onPage: (offset: number) => void;
-}) {
-  if (isLoading) return <LoadingState />;
-  if (isError) return <ErrorState message="تعذّر تحميل الخطط." onRetry={refetch} />;
-  if (rows.length === 0 && offset === 0) {
-    return (
-      <Card>
-        <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
-          <CalendarPlus className="size-10 text-muted-foreground" aria-hidden />
-          <p className="text-lg font-semibold">لا خطط أقساط بعد</p>
-          <p className="text-sm text-muted-foreground">أنشئ خطة لجدولة تحصيل ذمّة عميل بدفعات نقدية مجدولة.</p>
-        </CardContent>
-      </Card>
-    );
-  }
-  return (
-    <Card>
-      <CardContent className="p-0">
-        <ScrollTableShell bordered={false}>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="text-center">#</TableHead>
-                <TableHead className="text-right">العميل</TableHead>
-                <TableHead className="text-left">الإجمالي</TableHead>
-                <TableHead className="text-left">الدفعة الأولى</TableHead>
-                <TableHead className="text-center">التقدّم</TableHead>
-                <TableHead className="text-center">القسط القادم</TableHead>
-                <TableHead className="text-center">الحالة</TableHead>
-                <TableHead className="text-center">أُنشئت</TableHead>
-                <TableHead className="text-center">تفاصيل</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((p: PlanRow) => (
-                <TableRow key={p.id}>
-                  <TableCell className="text-center tabular-nums">{p.id}</TableCell>
-                  <TableCell className="font-medium">
-                    {p.customerName}
-                    {p.invoiceId != null && (
-                      <span className="ms-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                        <FileText className="size-3" aria-hidden /> فاتورة #{p.invoiceId}
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-left font-bold tabular-nums" dir="ltr">{fmt(p.totalAmount)}</TableCell>
-                  <TableCell className="text-left tabular-nums" dir="ltr">{fmt(p.downPayment)}</TableCell>
-                  <TableCell className="text-center">
-                    <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs tabular-nums">
-                      <CheckCircle2 className={`size-3 ${p.paidLines === p.totalLines && p.totalLines > 0 ? "text-[var(--sem-pos)]" : "text-muted-foreground"}`} aria-hidden />
-                      مدفوع {p.paidLines} من {p.totalLines}
-                    </span>
-                    {D(p.paidAmount).gt(0) && (
-                      <div className="mt-0.5 text-[11px] text-muted-foreground tabular-nums" dir="ltr">{fmt(p.paidAmount)}</div>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-center text-xs tabular-nums" dir="ltr">{p.nextDueDate ?? "—"}</TableCell>
-                  <TableCell className="text-center"><StatusBadge map={PLAN_STATUS_AR} value={p.status} /></TableCell>
-                  <TableCell className="text-center text-xs text-muted-foreground tabular-nums" dir="ltr">
-                    {p.createdAt ? fmtDateTime(p.createdAt as unknown as string) : "—"}
-                  </TableCell>
-                  <TableCell className="text-center">
-                    <RowActions
-                      mode="inline"
-                      contact={{
-                        phone: p.customerPhone,
-                        label: `واتساب ${p.customerName}`,
-                        message: buildOperationalContactMessage({
-                          entityLabel: "خطة أقساط",
-                          reference: String(p.id),
-                          partyName: p.customerName,
-                          title: `إجمالي الخطة: ${fmt(p.totalAmount)} د.ع`,
-                          dueAt: p.nextDueDate,
-                          status: PLAN_STATUS_AR[p.status]?.label ?? p.status,
-                          nextAction: p.nextDueDate ? "يرجى تأكيد موعد القسط القادم." : undefined,
-                        }),
-                        gate: { module: "treasury", level: "READ" },
-                      }}
-                      actions={[{
-                        key: "detail",
-                        kind: "view",
-                        label: "عرض",
-                        onSelect: () => onDetail(p.id),
-                        gate: { module: "treasury", level: "READ" },
-                      }]}
-                    />
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </ScrollTableShell>
-        <div className="flex items-center justify-between border-t p-2 text-xs text-muted-foreground">
-          <span>عرض {rows.length} خطة (من {offset + 1})</span>
-          <div className="flex gap-2">
-            <Button size="sm" variant="outline" disabled={offset === 0} onClick={() => onPage(Math.max(0, offset - limit))}>
-              السابق
-            </Button>
-            <Button size="sm" variant="outline" disabled={!hasMore} onClick={() => onPage(offset + limit)}>
-              التالي
-            </Button>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
 
 /* ============================ حوار إنشاء خطة ============================ */
 
@@ -1038,7 +963,7 @@ function PayLineDialog({
                 onClick={() => void confirmProviderPayment()}
               >
                 {initiateExternal.isPending || confirmExternal.isPending
-                  ? "جارٍ تثبيت التأكيد…"
+                  ? ACTION_LABELS.processing
                   : externalConfirmed
                     ? "الدفع معتمد — أكمل السداد"
                     : approval?.canConfirm
@@ -1093,7 +1018,7 @@ function PayLineDialog({
               });
             }}
           >
-            {pay.isPending ? "جارٍ السداد…" : "تأكيد السداد"}
+            {pay.isPending ? ACTION_LABELS.processing : "تأكيد السداد"}
           </Button>
         </DialogFooter>
       </DialogContent>

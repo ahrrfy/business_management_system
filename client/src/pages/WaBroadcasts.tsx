@@ -16,6 +16,7 @@ import {
   Calendar,
   CheckCircle2,
   Coins,
+  Download,
   Filter,
   Gauge,
   Info,
@@ -46,6 +47,22 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { exportRows } from "@/lib/export";
+import {
+  toIraqiIntl,
+  sanitizeForWhatsApp,
+  buildWhatsAppLinks,
+  openWhatsApp,
+} from "@/lib/whatsapp";
+
+export { toIraqiIntl, sanitizeForWhatsApp };
+export function buildWhatsAppUrl(
+  phone: string | null | undefined,
+  message: string,
+): string {
+  const { webUrl } = buildWhatsAppLinks(phone, message);
+  return webUrl;
+}
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -59,26 +76,24 @@ type BroadcastDetailData = RouterOutputs["broadcasts"]["get"];
 type SegmentCriteriaInput = RouterInputs["broadcasts"]["preview"]["segment"];
 type WaTemplateRow = RouterOutputs["integrations"]["templates"]["list"][number];
 
-type BadgeVariant = "default" | "secondary" | "destructive" | "outline" | "success" | "warning" | "danger" | "info" | "neutral";
-
-const BROADCAST_STATUS_META: Record<string, { label: string; variant: BadgeVariant }> = {
-  DRAFT: { label: "مسوّدة", variant: "neutral" },
-  PENDING_APPROVAL: { label: "بانتظار الاعتماد", variant: "warning" },
-  APPROVED: { label: "معتمدة", variant: "success" },
-  RUNNING: { label: "قيد التشغيل", variant: "success" },
-  PAUSED: { label: "موقوفة مؤقتاً", variant: "warning" },
-  COMPLETED: { label: "مكتملة", variant: "info" },
-  CANCELLED: { label: "ملغاة", variant: "neutral" },
+const BROADCAST_STATUS_META: Record<string, { label: string; className: string }> = {
+  DRAFT: { label: "مسوّدة", className: "bg-muted text-muted-foreground border-border" },
+  PENDING_APPROVAL: { label: "بانتظار الاعتماد", className: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border-[var(--sem-warn)]/30" },
+  APPROVED: { label: "معتمدة", className: "bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]/30" },
+  RUNNING: { label: "قيد التشغيل", className: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30" },
+  PAUSED: { label: "موقوفة مؤقتاً", className: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border-[var(--sem-warn)]/30" },
+  COMPLETED: { label: "مكتملة", className: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30" },
+  CANCELLED: { label: "ملغاة", className: "bg-muted text-muted-foreground border-border" },
 };
 
-const RECIPIENT_STATUS_META: Record<string, { label: string; variant: BadgeVariant }> = {
-  PENDING: { label: "قيد الانتظار", variant: "neutral" },
-  QUEUED: { label: "بالطابور", variant: "info" },
-  SENT: { label: "أُرسلت", variant: "secondary" },
-  DELIVERED: { label: "وصلت", variant: "success" },
-  READ: { label: "قُرئت", variant: "success" },
-  FAILED: { label: "فشلت", variant: "danger" },
-  SKIPPED_OPTOUT: { label: "تخطّي (غير موافق)", variant: "warning" },
+const RECIPIENT_STATUS_META: Record<string, { label: string; className: string }> = {
+  PENDING: { label: "قيد الانتظار", className: "bg-muted text-muted-foreground border-border" },
+  QUEUED: { label: "بالطابور", className: "bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]/30" },
+  SENT: { label: "أُرسلت", className: "bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]/30" },
+  DELIVERED: { label: "وصلت", className: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30" },
+  READ: { label: "قُرئت", className: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30" },
+  FAILED: { label: "فشلت", className: "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] border-[var(--sem-neg)]/30" },
+  SKIPPED_OPTOUT: { label: "تخطّي (غير موافق)", className: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border-[var(--sem-warn)]/30" },
 };
 
 const CANCELLABLE_STATUSES = new Set(["DRAFT", "PENDING_APPROVAL", "APPROVED", "RUNNING", "PAUSED"]);
@@ -105,8 +120,8 @@ const CUSTOMER_FIELD_OPTIONS = [
 ] as const;
 
 function StatusBadge({ status }: { status: string }) {
-  const m = BROADCAST_STATUS_META[status] ?? { label: status, variant: "neutral" as const };
-  return <Badge variant={m.variant}>{m.label}</Badge>;
+  const m = BROADCAST_STATUS_META[status] ?? { label: status, className: "bg-muted text-muted-foreground border-border" };
+  return <Badge variant="outline" className={m.className}>{m.label}</Badge>;
 }
 
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
@@ -397,8 +412,24 @@ function TemplatePicker({
           </div>
         )}
         {selected && (
-          <div className="rounded-md border bg-background p-2.5 text-xs whitespace-pre-wrap">
-            {preview || "—"}
+          <div className="space-y-1.5">
+            <div className="rounded-md border bg-background p-2.5 text-xs whitespace-pre-wrap">
+              {preview || "—"}
+            </div>
+            {preview && (
+              <div className="flex justify-end">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="text-xs h-7 gap-1 text-[var(--sem-pos)] hover:text-[var(--sem-pos)] hover:bg-[var(--sem-pos-bg)]"
+                  onClick={() => openWhatsApp(null, sanitizeForWhatsApp(preview))}
+                  title="معاينة النص في واتساب"
+                >
+                  <Play aria-hidden className="size-3" /> معاينة في واتساب
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </CardContent>
@@ -621,11 +652,11 @@ function ResultsSection({ broadcastId }: { broadcastId: number }) {
       {resultsQ.data && resultsQ.data.totalRecipients > 0 && (
         <div className="space-y-1.5">
           {Object.entries(resultsQ.data.counts).map(([status, count]) => {
-            const m = RECIPIENT_STATUS_META[status] ?? { label: status, variant: "neutral" as const };
+            const m = RECIPIENT_STATUS_META[status] ?? { label: status, className: "bg-muted text-muted-foreground border-border" };
             const pct = resultsQ.data.percentages[status] ?? "0.00";
             return (
               <div key={status} className="flex items-center gap-2 text-xs">
-                <Badge variant={m.variant} className="w-32 justify-center shrink-0">{m.label}</Badge>
+                <Badge variant="outline" className={`w-32 justify-center shrink-0 ${m.className}`}>{m.label}</Badge>
                 <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
                   <div className="h-full bg-primary" style={{ width: `${Math.min(100, Number(pct))}%` }} />
                 </div>
@@ -913,10 +944,27 @@ export default function WaBroadcasts() {
     [myId, usersMap],
   );
 
+  const handleExport = (format: "xlsx" | "csv") => {
+    exportRows(rows, {
+      filename: `رسائل_الواتساب_الجماعية_${new Date().toISOString().slice(0, 10)}`,
+      format,
+      title: "سجل رسائل الواتساب الجماعية",
+      columns: [
+        { key: "name", header: "اسم الحملة" },
+        { key: "status", header: "الحالة", map: (r) => BROADCAST_STATUS_META[r.broadcastStatus]?.label ?? r.broadcastStatus },
+        { key: "template", header: "القالب", map: (r) => templatesMap.get(r.templateId) ?? `#${r.templateId}` },
+        { key: "audience", header: "عدد الجمهور", map: (r) => r.audienceCount },
+        { key: "cost", header: "الكلفة التقديرية (د.ع)", money: true, map: (r) => Number(r.costEstimate) },
+        { key: "branch", header: "الفرع", map: (r) => r.branchId ? branchesMap.get(r.branchId) ?? `#${r.branchId}` : "كل الفروع" },
+        { key: "createdAt", header: "تاريخ الإنشاء", map: (r) => fmtDateTime(r.createdAt) },
+      ],
+    });
+  };
+
   return (
     <div className="space-y-4">
       <PageHeader
-        title="بث واتساب التسويقي"
+        title="رسائل الواتساب الجماعية"
         description="ابنِ شريحة جمهور (نوع عميل/فئة سعر/RFM)، اختر قالباً معتمَداً، واحسب الكلفة قبل الإطلاق — الإرسال الفعلي للموافقين على التسويق فقط."
         actions={canManage ? <Button onClick={() => setShowNew(true)}><Plus aria-hidden className="size-4" /> حملة جديدة</Button> : undefined}
       />
@@ -932,6 +980,14 @@ export default function WaBroadcasts() {
           <Button variant="outline" size="sm" onClick={() => list.refetch()} className="gap-1.5">
             <RotateCcw aria-hidden className="size-3.5" /> تحديث
           </Button>
+          <div className="flex items-center gap-1.5 ms-auto">
+            <Button variant="outline" size="sm" onClick={() => handleExport("xlsx")} className="gap-1.5 h-9">
+              <Download aria-hidden className="size-3.5" /> Excel
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => handleExport("csv")} className="gap-1.5 h-9">
+              <Download aria-hidden className="size-3.5" /> CSV
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Download, FileText, Plus, Printer, Search, Ticket, XCircle } from "lucide-react";
+import { Download, FileText, Phone, Plus, Printer, Search, Ticket, UserCheck, XCircle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -11,11 +11,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { confirm } from "@/lib/confirm";
-import { exportSheets, type SheetSpec } from "@/lib/export";
+import { exportRows, exportSheets, type SheetSpec } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { D, fmtAr, formatIqd } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printCouponCards, type CouponPrintLayout } from "@/lib/printing/couponCard";
+import { printGiftVoucherDoc } from "@/lib/printing/giftVoucherPrint";
+import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { toIraqiIntl } from "@/lib/whatsapp";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { RowActions } from "@/components/list/RowActions";
 
@@ -28,6 +32,19 @@ type LastIssue = { codes: string[]; batchReference: string; issuedAt: Date };
 const PAGE_SIZE = 50;
 const PROGRAM_STATUS_AR: Record<string, string> = { DRAFT: "مسوّدة", ACTIVE: "نشط", PAUSED: "موقوف", ENDED: "منتهٍ" };
 const COUPON_STATUS_AR: Record<string, string> = { ACTIVE: "نشط", REDEEMED: "مستخدم", VOID: "ملغى" };
+
+const PROGRAM_STATUS_CLASSES: Record<string, string> = {
+  DRAFT: "bg-muted text-muted-foreground border-border",
+  ACTIVE: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30",
+  PAUSED: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border-[var(--sem-warn)]/30",
+  ENDED: "bg-muted text-muted-foreground border-border",
+};
+
+const COUPON_STATUS_CLASSES: Record<string, string> = {
+  ACTIVE: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30",
+  REDEEMED: "bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]/30",
+  VOID: "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] border-[var(--sem-neg)]/30",
+};
 
 function today() { return new Date().toISOString().slice(0, 10); }
 function displayDate(value: unknown) {
@@ -82,6 +99,9 @@ export default function Coupons() {
   );
   const [lastIssue, setLastIssue] = useState<LastIssue | null>(null);
   const [printing, setPrinting] = useState(false);
+  const customersListQ = trpc.customers.list.useQuery();
+  const customerPhoneById = useMemo(() => new Map((customersListQ.data ?? []).map((c) => [c.id, c.phone])), [customersListQ.data]);
+  const [dossierCustomerId, setDossierCustomerId] = useState<number | null>(null);
 
   const [page, setPage] = useState(0);
   const [codeQuery, setCodeQuery] = useState("");
@@ -165,6 +185,96 @@ export default function Coupons() {
     const ok = await confirm({ variant: "danger", title: "إبطال الكوبون", description: `سيصبح الرمز «${code}» غير صالح نهائياً.`, confirmText: "إبطال" });
     if (ok) voidCoupon.mutate({ couponId });
   }
+  async function printCouponThermal(coupon: IssuedCoupon) {
+    const offer = selectedProgram ? offerById.get(selectedProgram.promotionId) : null;
+    const isPercent = offer?.type === "PERCENT";
+    const amount = offer?.type === "AMOUNT" ? Number(offer.discountAmount || 0) : 0;
+    const discountPercent = isPercent && offer?.discountPercent ? Number(offer.discountPercent) : undefined;
+    const custPhone = coupon.customerId ? customerPhoneById.get(coupon.customerId) : null;
+    const design = (selectedProgram?.designJson ?? {}) as { title?: string; subtitle?: string; terms?: string };
+    const baseTitle = design.title || selectedProgram?.name || "قسيمة خصم";
+    const discountSuffix = isPercent && offer?.discountPercent ? ` (خصم ${offer.discountPercent}%)` : "";
+    await printGiftVoucherDoc({
+      code: coupon.code,
+      couponCode: coupon.code,
+      amount,
+      discountPercent,
+      customerName: coupon.assignedCustomerName || "زبون مكرّم",
+      customerPhone: custPhone || undefined,
+      reason: `${baseTitle}${discountSuffix}`,
+      validUntil: selectedProgram?.validTo ? displayDate(selectedProgram.validTo) : undefined,
+      terms: design.terms || undefined,
+    });
+  }
+  async function printLastIssueThermal(issueData: LastIssue) {
+    const firstCode = issueData.codes[0];
+    if (!firstCode) return;
+    const offer = selectedProgram ? offerById.get(selectedProgram.promotionId) : null;
+    const isPercent = offer?.type === "PERCENT";
+    const amount = offer?.type === "AMOUNT" ? Number(offer.discountAmount || 0) : 0;
+    const discountPercent = isPercent && offer?.discountPercent ? Number(offer.discountPercent) : undefined;
+    const custPhone = customerId ? customerPhoneById.get(customerId) : null;
+    const design = (selectedProgram?.designJson ?? {}) as { title?: string; subtitle?: string; terms?: string };
+    const baseTitle = design.title || selectedProgram?.name || "قسيمة خصم";
+    const discountSuffix = isPercent && offer?.discountPercent ? ` (خصم ${offer.discountPercent}%)` : "";
+    await printGiftVoucherDoc({
+      code: firstCode,
+      couponCode: firstCode,
+      amount,
+      discountPercent,
+      customerName: customerName || "زبون مكرّم",
+      customerPhone: custPhone || undefined,
+      reason: `${baseTitle}${discountSuffix}`,
+      validUntil: selectedProgram?.validTo ? displayDate(selectedProgram.validTo) : undefined,
+      terms: design.terms || undefined,
+    });
+  }
+  function exportPrograms(format: "xlsx" | "csv" = "xlsx") {
+    const list = programs.data ?? [];
+    if (!list.length) return;
+    exportRows(list, {
+      filename: "برامج-الكوبونات",
+      format,
+      title: "برامج الكوبونات وقسائم الهدايا",
+      columns: [
+        { key: "name", header: "البرنامج" },
+        { key: "status", header: "الحالة", map: (r) => PROGRAM_STATUS_AR[r.status] ?? r.status },
+        { key: "isFirstOrderSelfService", header: "طريقة الإصدار", map: (r) => r.isFirstOrderSelfService ? "طلب العميل الأول" : "إصدار إداري" },
+        { key: "issued", header: "الصادر" },
+        { key: "activeCoupons", header: "النشط" },
+        { key: "redeemed", header: "المستخدم" },
+        { key: "redemptionRate", header: "معدل الاستخدام", map: (r) => `${redemptionRate(r)}٪` },
+        { key: "redeemedDiscount", header: "الخصم المستخدم", money: true, map: (r) => D(r.redeemedDiscount).toNumber() },
+        { key: "linkedNetSales", header: "المبيعات المرتبطة", money: true, map: (r) => D(r.linkedNetSales).toNumber() },
+        { key: "linkedGrossProfit", header: "الربح الإجمالي المرتبط", money: true, map: (r) => D(r.linkedGrossProfit).toNumber() },
+      ],
+    });
+  }
+  async function exportCoupons(format: "xlsx" | "csv" = "xlsx") {
+    if (!selected || !selectedProgram) return;
+    if (format === "xlsx") {
+      exportWorkbook();
+      return;
+    }
+    const q = debouncedCodeQuery || undefined;
+    const filterStatus = statusFilter === "ALL" ? undefined : statusFilter;
+    const all = await fetchAllPaged<IssuedCoupon>((offset, limit) => utils.crm.coupons.listIssued.fetch({ programId: selected, limit, offset, q, status: filterStatus }).then((result) => ({ rows: result.rows, total: result.total })), { pageSize: 500 });
+    exportRows(all, {
+      filename: `كوبونات-${selectedProgram.name}`,
+      format: "csv",
+      title: `سجل كوبونات — ${selectedProgram.name}`,
+      meta: [{ label: "الحالة", value: statusFilter === "ALL" ? "كل الحالات" : COUPON_STATUS_AR[statusFilter] }, { label: "البحث", value: q || "بلا فلتر" }],
+      columns: [
+        { key: "code", header: "الرمز" },
+        { key: "status", header: "الحالة", map: (row) => COUPON_STATUS_AR[row.status] ?? row.status },
+        { key: "assignedCustomerName", header: "العميل المخصص", map: (row) => row.assignedCustomerName ?? "عام" },
+        { key: "issuedAt", header: "تاريخ الإصدار", map: (row) => displayDate(row.issuedAt) },
+        { key: "lastInvoiceNumber", header: "آخر فاتورة", map: (row) => row.lastInvoiceNumber ?? "—" },
+        { key: "lastRedeemedAt", header: "آخر استخدام", map: (row) => displayDate(row.lastRedeemedAt) },
+        { key: "redeemedDiscount", header: "الخصم المستخدم", money: true, map: (row) => D(row.redeemedDiscount).toNumber() },
+      ],
+    });
+  }
   function exportWorkbook() {
     if (!selected || !selectedProgram) return;
     const q = debouncedCodeQuery || undefined;
@@ -220,7 +330,11 @@ export default function Coupons() {
       // التسمية العربية لا الرمز الخامّ — «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
       accessorFn: (r) => PROGRAM_STATUS_AR[r.status] ?? r.status,
       meta: { kind: "status" },
-      cell: ({ row }) => <Badge variant={row.original.status === "ACTIVE" ? "default" : "secondary"}>{PROGRAM_STATUS_AR[row.original.status] ?? row.original.status}</Badge>,
+      cell: ({ row }) => (
+        <Badge variant="outline" className={PROGRAM_STATUS_CLASSES[row.original.status] ?? "bg-muted text-muted-foreground border-border"}>
+          {PROGRAM_STATUS_AR[row.original.status] ?? row.original.status}
+        </Badge>
+      ),
     },
     {
       id: "issuance",
@@ -286,9 +400,65 @@ export default function Coupons() {
       header: "الحالة",
       accessorFn: (r) => COUPON_STATUS_AR[r.status] ?? r.status,
       meta: { kind: "status" },
-      cell: ({ row }) => <Badge variant={row.original.status === "ACTIVE" ? "default" : "secondary"}>{COUPON_STATUS_AR[row.original.status] ?? row.original.status}</Badge>,
+      cell: ({ row }) => (
+        <Badge variant="outline" className={COUPON_STATUS_CLASSES[row.original.status] ?? "bg-muted text-muted-foreground border-border"}>
+          {COUPON_STATUS_AR[row.original.status] ?? row.original.status}
+        </Badge>
+      ),
     },
-    { id: "customer", header: "العميل", accessorFn: (r) => r.assignedCustomerName ?? "عام", cell: ({ row }) => row.original.assignedCustomerName ?? "عام" },
+    {
+      id: "customer",
+      header: "العميل",
+      accessorFn: (r) => r.assignedCustomerName ?? "عام",
+      cell: ({ row }) => {
+        const custId = row.original.customerId;
+        const custName = row.original.assignedCustomerName;
+        const phone = custId ? customerPhoneById.get(custId) ?? null : null;
+        const intlPhone = phone ? toIraqiIntl(phone) : null;
+        if (!custId) return <span className="text-muted-foreground">عام</span>;
+        return (
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                className="font-medium text-primary hover:underline text-right"
+                onClick={() => setDossierCustomerId(custId)}
+              >
+                {custName ?? `عميل #${custId}`}
+              </button>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="size-6 text-muted-foreground hover:text-foreground"
+                title="الملف الشامل 360"
+                onClick={() => setDossierCustomerId(custId)}
+              >
+                <UserCheck className="size-3.5" />
+              </Button>
+            </div>
+            {phone && (
+              <div className="flex items-center gap-2">
+                <a
+                  href={`tel:${intlPhone ?? phone}`}
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                  dir="ltr"
+                >
+                  <Phone className="size-3" />
+                  {phone}
+                </a>
+                <WhatsAppShare
+                  phone={phone}
+                  message={`مرحباً ${custName ?? ""}، نهديك رمز الكوبون «${row.original.code}» من ${selectedProgram?.name ?? "متجرنا"}، صالح لغاية ${selectedProgram?.validTo || "إشعار آخر"}.`}
+                  label="مشاركة عبر واتساب"
+                  size="icon-sm"
+                  iconOnly
+                />
+              </div>
+            )}
+          </div>
+        );
+      },
+    },
     { id: "issuedAt", header: "الإصدار", accessorFn: (r) => displayDate(r.issuedAt), meta: { kind: "datetime" }, cell: ({ row }) => <span className="text-xs">{displayDate(row.original.issuedAt)}</span> },
     {
       id: "redemption",
@@ -311,12 +481,39 @@ export default function Coupons() {
       header: "",
       enableSorting: false,
       meta: { kind: "actions" },
-      cell: ({ row }) => <RowActions mode="inline" actions={row.original.status === "ACTIVE" ? [{ key: "void", kind: "cancel", label: "إبطال", icon: XCircle, variant: "destructive", gate: { module: "crm", level: "FULL" }, onSelect: () => void doVoid(row.original.id, row.original.code) }] : []} />,
+      cell: ({ row }) => (
+        <RowActions
+          mode="inline"
+          actions={[
+            ...(row.original.status === "ACTIVE"
+              ? [
+                  {
+                    key: "thermal",
+                    kind: "other" as const,
+                    label: "قسيمة حرارية 80 مم",
+                    icon: Printer,
+                    gate: { module: "crm" as const, level: "READ" as const },
+                    onSelect: () => void printCouponThermal(row.original),
+                  },
+                  {
+                    key: "void",
+                    kind: "cancel" as const,
+                    label: "إبطال",
+                    icon: XCircle,
+                    variant: "destructive" as const,
+                    gate: { module: "crm" as const, level: "FULL" as const },
+                    onSelect: () => void doVoid(row.original.id, row.original.code),
+                  },
+                ]
+              : []),
+          ]}
+        />
+      ),
     },
   ];
 
   return <div className="mx-auto max-w-7xl space-y-4 pb-8">
-    <PageHeader title="الكوبونات" description="برامج وإصدارات قابلة للتدقيق، مرتبطة بعرض مالي حقيقي، مع Excel وطباعة 54×84 مم أو A4/PDF." actions={<Button onClick={() => setShowForm((value) => !value)}><Plus className="size-4" /> برنامج جديد</Button>} />
+    <PageHeader title="الكوبونات وقسائم الهدايا" description="برامج وإصدارات قابلة للتدقيق، مرتبطة بعرض مالي حقيقي، مع Excel وطباعة 54×84 مم أو A4/PDF أو إيصال حراري 80 مم." actions={<Button onClick={() => setShowForm((value) => !value)}><Plus className="size-4" /> برنامج جديد</Button>} />
 
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
       <Kpi label="البرامج" value={programs.data?.length ?? 0} />
@@ -364,7 +561,7 @@ export default function Coupons() {
       </CardContent>
     </Card>}
 
-    <Card><CardHeader><CardTitle className="text-base">البرامج والأثر المالي</CardTitle></CardHeader><CardContent>
+    <Card><CardHeader className="flex flex-row items-center justify-between"><CardTitle className="text-base">البرامج والأثر المالي</CardTitle><div className="flex items-center gap-2"><Button size="sm" variant="outline" onClick={() => exportPrograms("xlsx")}><Download className="size-4" /> Excel</Button><Button size="sm" variant="outline" onClick={() => exportPrograms("csv")}><FileText className="size-4" /> CSV</Button></div></CardHeader><CardContent>
       {/* قائمة البرامج كاملةً بلا ترقيم (كما كانت) — والبحث المحلّي يعمل على كل الصفوف. */}
       <DataTable<ProgramRow>
         columns={programColumns}
@@ -385,7 +582,7 @@ export default function Coupons() {
           {customerId == null && customerQuery.trim().length >= 2 && <div className="max-h-36 overflow-auto rounded-md border">{(customerSearch.data?.rows ?? []).map((customer) => <button type="button" key={customer.id} className="block w-full border-b px-3 py-2 text-right text-sm last:border-0 hover:bg-muted" onClick={() => { setCustomerId(customer.id); setCustomerName(customer.name); setCustomerQuery(""); }}>{customer.name}</button>)}{customerSearch.isFetched && (customerSearch.data?.rows.length ?? 0) === 0 && <div className="p-3 text-xs text-muted-foreground">لا عميل مطابق.</div>}</div>}
           {customerId != null && <div className="flex items-center justify-between rounded-md border bg-muted/30 p-2 text-sm"><span>مخصص إلى: <b>{customerName}</b></span><Button size="sm" variant="ghost" onClick={() => { setCustomerId(null); setCustomerName(""); }}>إزالة</Button></div>}
           <Button className="w-full" disabled={selectedProgram.status === "ENDED" || issue.isPending} onClick={() => issue.mutate({ programId: selectedProgram.id, count: clampInt(count, 1, 500), customerId })}><Ticket className="size-4" /> {issue.isPending ? "جارٍ الإصدار…" : "إصدار الدفعة"}</Button><div className="text-xs text-muted-foreground">الإصدار عملية ذرية مسجلة: إما تُنشأ الدفعة كاملة أو لا يُنشأ شيء.</div>
-          {lastIssue && <div className="space-y-2 rounded-md border border-primary/30 bg-primary/5 p-3"><div className="font-medium">تم الإصدار: <span dir="ltr">{lastIssue.batchReference}</span></div><div className="text-xs text-muted-foreground">{lastIssue.codes.length} كوبون · {displayDate(lastIssue.issuedAt)}</div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => void printCodes(lastIssue.codes, "CARD")}><Printer className="size-4" /> بطاقات 54×84</Button><Button size="sm" variant="outline" onClick={() => void printCodes(lastIssue.codes, "A4")}><FileText className="size-4" /> A4 / حفظ PDF</Button></div></div>}
+          {lastIssue && <div className="space-y-2 rounded-md border border-primary/30 bg-primary/5 p-3"><div className="font-medium">تم الإصدار: <span dir="ltr">{lastIssue.batchReference}</span></div><div className="text-xs text-muted-foreground">{lastIssue.codes.length} كوبون · {displayDate(lastIssue.issuedAt)}</div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => void printLastIssueThermal(lastIssue)}><Printer className="size-4" /> إيصال حراري 80 مم</Button><Button size="sm" variant="outline" onClick={() => void printCodes(lastIssue.codes, "CARD")}><Printer className="size-4" /> بطاقات 54×84</Button><Button size="sm" variant="outline" onClick={() => void printCodes(lastIssue.codes, "A4")}><FileText className="size-4" /> A4 / حفظ PDF</Button></div></div>}
         </CardContent></Card>
         <Card><CardHeader><CardTitle className="text-base">دفعات الإصدار الأخيرة</CardTitle></CardHeader><CardContent>
           {/* مُضمَّن في بطاقةٍ تحمل عنوانه ⇒ بلا شريط حالةٍ ولا بحث؛ والارتفاع محبوسٌ كما كان. */}
@@ -403,7 +600,7 @@ export default function Coupons() {
         </CardContent></Card>
         </>}
       </div>
-      <Card><CardHeader className="flex-row items-center justify-between"><CardTitle className="text-base">سجل الكوبونات</CardTitle><span className="text-xs text-muted-foreground">حقل الرمز في الطباعة: 40×8 مم</span></CardHeader><CardContent><div className="mb-3 flex flex-wrap items-center gap-2"><div className="relative min-w-48 flex-1"><Search className="pointer-events-none absolute right-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input className="h-8 pr-8" value={codeQuery} onChange={(event) => setCodeQuery(event.target.value)} placeholder="بحث خادمي بالرمز…" /></div><AppSelect value={statusFilter} onValueChange={(value) => setStatusFilter(value as CouponStatusFilter)} className="h-8 w-32" size="sm"><option value="ALL">كل الحالات</option><option value="ACTIVE">نشط</option><option value="REDEEMED">مستخدم</option><option value="VOID">ملغى</option></AppSelect><Button size="sm" variant="outline" onClick={exportWorkbook}><Download className="size-4" /> Excel شامل</Button><Button size="sm" variant="outline" disabled={activeCount === 0 || printing} onClick={() => void printActive()}><FileText className="size-4" /> {printing ? "تحضير…" : `A4 / PDF للنشطة (${activeCount})`}</Button></div>
+      <Card><CardHeader className="flex-row items-center justify-between"><CardTitle className="text-base">سجل الكوبونات</CardTitle><span className="text-xs text-muted-foreground">حقل الرمز في الطباعة: 40×8 مم</span></CardHeader><CardContent><div className="mb-3 flex flex-wrap items-center gap-2"><div className="relative min-w-48 flex-1"><Search className="pointer-events-none absolute right-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input className="h-8 pr-8" value={codeQuery} onChange={(event) => setCodeQuery(event.target.value)} placeholder="بحث خادمي بالرمز…" /></div><AppSelect value={statusFilter} onValueChange={(value) => setStatusFilter(value as CouponStatusFilter)} className="h-8 w-32" size="sm"><option value="ALL">كل الحالات</option><option value="ACTIVE">نشط</option><option value="REDEEMED">مستخدم</option><option value="VOID">ملغى</option></AppSelect><Button size="sm" variant="outline" onClick={() => void exportCoupons("xlsx")}><Download className="size-4" /> Excel شامل</Button><Button size="sm" variant="outline" onClick={() => void exportCoupons("csv")}><FileText className="size-4" /> CSV</Button><Button size="sm" variant="outline" disabled={activeCount === 0 || printing} onClick={() => void printActive()}><FileText className="size-4" /> {printing ? "تحضير…" : `A4 / PDF للنشطة (${activeCount})`}</Button></div>
         {/* الترقيم خادميّ ويُصيّره DataTable نفسه — لا `TablePager` منفصل تحته (شريطان يقفزان
             بمقدارين مختلفين). والبحث بالرمز خادميٌّ في شريط الشاشة أعلاه ⇒ `searchable={false}`
             مع `externalFiltersActive` كي لا يُعلن الجدول «لا صفوف بعد» على فلترٍ حاجب. */}
@@ -420,5 +617,10 @@ export default function Coupons() {
         />
       </CardContent></Card>
     </div>}
+    <CustomerDossierDrawer
+      customerId={dossierCustomerId}
+      open={dossierCustomerId != null}
+      onClose={() => setDossierCustomerId(null)}
+    />
   </div>;
 }

@@ -20,6 +20,9 @@ import { notify } from "@/lib/notify";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { Phone, User } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
@@ -34,6 +37,7 @@ export default function CustomerNotes() {
   const [customer, setCustomer] = useState<SmartCustomerValue>(EMPTY_CUSTOMER);
   const [editing, setEditing] = useState<CustomerNoteRow | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [selectedDossierCustomerId, setSelectedDossierCustomerId] = useState<number | null>(null);
   // إخفاء المحلولة + بحث نصّي + ترقيم صفحات حقيقي (بدل اقتطاع ١٠٠ صامت) — الراوتر يدعمها فعلياً.
   const [hideResolved, setHideResolved] = useState(false);
   const [noteQuery, setNoteQuery] = useState("");
@@ -203,20 +207,48 @@ export default function CustomerNotes() {
                   <span className="text-xs text-muted-foreground truncate">{r.note}</span>
                   <span className="text-[11px] text-muted-foreground" dir="ltr">{fmtDate(r.followUpDate)}</span>
                 </button>
-                <WhatsAppShare
-                  phone={r.customerPhone}
-                  message={buildOperationalContactMessage({
-                    entityLabel: "متابعة عميل",
-                    reference: String(r.id),
-                    partyName: r.customerName,
-                    title: r.note,
-                    dueAt: r.followUpDate,
-                    nextAction: "نتواصل معكم بخصوص المتابعة المسجلة لدينا.",
-                  })}
-                  label={`واتساب ${r.customerName}`}
-                  size="icon-sm"
-                  iconOnly
-                />
+                <div className="flex items-center gap-1 shrink-0">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="size-8 text-primary hover:bg-primary/10"
+                    onClick={() => setSelectedDossierCustomerId(r.customerId)}
+                    title="الملف الشامل 360°"
+                    aria-label={`الملف الشامل 360° للزبون ${r.customerName}`}
+                  >
+                    <User className="size-3.5" aria-hidden />
+                  </Button>
+                  {r.customerPhone && (
+                    <Button
+                      asChild
+                      variant="ghost"
+                      size="icon-sm"
+                      className="size-8 text-[var(--sem-pos)] hover:bg-accent"
+                      title={`اتصال مباشر: ${r.customerPhone}`}
+                      aria-label={`اتصال بالزبون ${r.customerName}`}
+                    >
+                      <a href={`tel:${r.customerPhone}`}>
+                        <Phone className="size-3.5" aria-hidden />
+                      </a>
+                    </Button>
+                  )}
+                  <WhatsAppShare
+                    phone={r.customerPhone}
+                    message={buildOperationalContactMessage({
+                      entityLabel: "متابعة عميل",
+                      reference: String(r.id),
+                      partyName: r.customerName,
+                      title: r.note,
+                      dueAt: r.followUpDate,
+                      nextAction: "نتواصل معكم بخصوص المتابعة المسجلة لدينا.",
+                    })}
+                    label={`واتساب ${r.customerName}`}
+                    size="icon-sm"
+                    className="size-8"
+                    iconOnly
+                  />
+                </div>
               </div>
             ))}
           </CardContent>
@@ -236,6 +268,67 @@ export default function CustomerNotes() {
 
       {!!effectiveCustomerId && (
         <>
+          {/* شريط أدوات ورعاية العميل المباشر */}
+          <Card className="border-primary/20 bg-primary/5">
+            <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3">
+              <div className="flex items-center gap-2.5">
+                <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <User className="size-4" aria-hidden />
+                </div>
+                <div>
+                  <div className="font-semibold text-sm">
+                    {customer.name || `زبون #${effectiveCustomerId}`}
+                  </div>
+                  {customer.phone && (
+                    <div className="text-xs text-muted-foreground font-mono" dir="ltr">
+                      {customer.phone}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setSelectedDossierCustomerId(effectiveCustomerId)}
+                  className="text-xs h-8 gap-1.5 text-primary border-primary/30"
+                >
+                  <User className="size-3.5" aria-hidden />
+                  <span>الملف الشامل 360°</span>
+                </Button>
+
+                {customer.phone && (
+                  <Button
+                    asChild
+                    variant="outline"
+                    size="sm"
+                    className="text-xs h-8 gap-1.5 border-[var(--sem-pos)]/40 text-[var(--sem-pos)] hover:bg-accent"
+                  >
+                    <a href={`tel:${customer.phone}`}>
+                      <Phone className="size-3.5" aria-hidden />
+                      <span>اتصال مباشر</span>
+                    </a>
+                  </Button>
+                )}
+
+                {customer.phone && (
+                  <WhatsAppShare
+                    phone={customer.phone}
+                    message={buildOperationalContactMessage({
+                      partyName: customer.name || "الزبون",
+                      entityLabel: "متابعة العميل",
+                      nextAction: "نتواصل معكم لمتابعة الملاحظات والترتيبات المتفق عليها.",
+                    })}
+                    label="مراسلة واتساب"
+                    size="sm"
+                    className="h-8 text-xs"
+                  />
+                )}
+              </div>
+            </CardContent>
+          </Card>
           {/* نموذج الإضافة/التعديل — مرآة بوّابة الكتابة الخادمية؛ دور القراءة يرى السجلّ بلا نموذج. */}
           {canWrite && (
             <Card>
@@ -315,6 +408,14 @@ export default function CustomerNotes() {
             </CardContent>
           </Card>
         </>
+      )}
+
+      {selectedDossierCustomerId && (
+        <CustomerDossierDrawer
+          customerId={selectedDossierCustomerId}
+          open={Boolean(selectedDossierCustomerId)}
+          onClose={() => setSelectedDossierCustomerId(null)}
+        />
       )}
     </div>
   );
