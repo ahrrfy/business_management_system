@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { D, formatIqd, moneyInput } from "@/lib/money";
 import { code128Svg } from "@/lib/printing/barcode";
 import { qrSvgSync } from "@/lib/printing/qr";
-import { CO, CAIRO_FONT } from "@/lib/printing/brand";
+import { CO, CAIRO_FONT, esc } from "@/lib/printing/brand";
 import { storefrontUrl } from "@/lib/siteHosts";
 import { notify } from "@/lib/notify";
 import type { PromotionFormData } from "./promotionBuilderTypes";
@@ -171,7 +171,7 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8">
-  <title>إيصال حراري - ${previewCode}</title>
+  <title>إيصال حراري - ${esc(previewCode)}</title>
   ${CAIRO_FONT}
   <style>
     @page { size: 80mm ${estimatedReceiptHeightMm}mm; margin: 0; }
@@ -223,22 +223,23 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
 </head>
 <body>
   <div class="header">
-    <div class="brand">${CO.short}</div>
-    <div class="subtitle">${CO.subtitle}</div>
+    <div class="brand">${esc(CO.short)}</div>
+    <div class="subtitle">${esc(CO.subtitle)}</div>
     <div>فرع المنصور الرئيسي · كاشير #1</div>
     <div>إيصال تجريبي: POS-${new Date().getFullYear()}-COUPON</div>
   </div>
 
   <div class="voucher-box">
     <div class="voucher-title">*** قسيمة خصم ترويجية معتمدة ***</div>
-    <div><strong>${data.design.title || data.name || "هدية خاصة لك"}</strong></div>
+    <div><strong>${esc(data.design.title || data.name || "هدية خاصة لك")}</strong></div>
     <div class="hero-discount">
-      ${data.type === "PERCENT" ? `خصم ${data.discountPercent || "0"}٪` : `خصم ${formatIqd(data.discountAmount || "0")}`}
+      ${data.type === "PERCENT" ? `خصم ${esc(data.discountPercent || "0")}٪` : `خصم ${esc(formatIqd(data.discountAmount || "0"))}`}
     </div>
-    ${data.type === "PERCENT" && moneyInput(data.maxDiscountAmount).greaterThan(0) ? `<div>سقف التوفير: ${formatIqd(data.maxDiscountAmount)}</div>` : ""}
-    ${moneyInput(data.minOrderSpend).greaterThan(0) ? `<div>الحد الأدنى للفاتورة: ${formatIqd(data.minOrderSpend)}</div>` : ""}
+    ${data.type === "PERCENT" && moneyInput(data.maxDiscountAmount).greaterThan(0) ? `<div>سقف التوفير: ${esc(formatIqd(data.maxDiscountAmount))}</div>` : ""}
+    ${moneyInput(data.minOrderSpend).greaterThan(0) ? `<div>الحد الأدنى للفاتورة: ${esc(formatIqd(data.minOrderSpend))}</div>` : ""}
+    ${data.design.subtitle ? `<div style="font-size: 10px; color: #555; margin-top: 1mm;">${esc(data.design.subtitle)}</div>` : ""}
     ${isScoped ? `<div style="font-size: 9.5px; font-weight: 700; color: #333;">نطاق الخصم: ${data.scope === "CATEGORIES" ? "تصنيفات محددة" : "منتجات محددة"}</div>` : ""}
-    <div class="code-pill">${previewCode}</div>
+    <div class="code-pill">${esc(previewCode)}</div>
     <div class="qr">${qrSvg || ""}</div>
     <div style="font-size: 9px; font-weight: 700;">امسح للطلب أونلاين أو أبرز الرمز للكاشير</div>
   </div>
@@ -268,7 +269,7 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
     ${isMinSpendMet ? (
       calculation.discountAmount.gt(0) ? `
       <div class="row" style="font-weight: 900; color: #000;">
-        <span>خصم كوبون (${previewCode})${calculation.isCapped ? " (سقف الخصم)" : ""}:</span>
+        <span>خصم كوبون (${esc(previewCode)})${calculation.isCapped ? " (سقف الخصم)" : ""}:</span>
         <span dir="ltr">-${formatIqd(calculation.discountAmount.toString())}</span>
       </div>
       ` : isScoped && !calculation.hasEligibleItems ? `
@@ -288,13 +289,13 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
   </div>
 
   <div class="barcode">
-    ${barcodeSvgResult ? barcodeSvgResult.svg : `<div>${previewCode}</div>`}
+    ${barcodeSvgResult ? barcodeSvgResult.svg : `<div>${esc(previewCode)}</div>`}
   </div>
 
     <div class="footer">
-      <div>شكراً لتعاملكم معنا · للاستفسار: ${CO.phones[0]?.n ?? ""}</div>
-      <div>${data.design.terms || "تُطبق الشروط والأحكام الخاصة بالعرض"}</div>
-      <div>متجرنا الإلكتروني: ${displayStoreHost}</div>
+      <div>شكراً لتعاملكم معنا · للاستفسار: ${esc(CO.phones[0]?.n ?? "")}</div>
+      <div>${esc(data.design.terms || "تُطبق الشروط والأحكام الخاصة بالعرض")}</div>
+      <div>متجرنا الإلكتروني: ${esc(displayStoreHost)}</div>
     </div>
 
   <script>

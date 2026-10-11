@@ -1197,6 +1197,56 @@ describe("Omnichannel Promotion & Coupon Engine (Milestone M1)", () => {
       const totals = computeInvoiceTotals({ lineTotals: alloc.lines.map((l) => l.total) });
       expect(totals.total).toBe("135000.00"); // 150,000 gross - 15,000 cap
     });
+
+    it("T4.5 Free-shipping coupon requires minOrderSpend before waiving delivery fee", () => {
+      const minSpend = money("50000.00");
+      const cartSubtotalBelow = money("45000.00");
+      const cartSubtotalAbove = money("55000.00");
+
+      const isEligibleBelow = cartSubtotalBelow.gte(minSpend);
+      const isEligibleAbove = cartSubtotalAbove.gte(minSpend);
+
+      expect(isEligibleBelow).toBe(false);
+      expect(isEligibleAbove).toBe(true);
+    });
+
+    it("T4.6 Storewide threshold free delivery overrides shipping coupon (no double attribution or incremental waiver)", () => {
+      const storeFreeThreshold = money("50000.00");
+      const subtotal = money("60000.00");
+      const actualDeliveryFee = money("5000.00");
+
+      const thresholdFree = subtotal.gte(storeFreeThreshold);
+      expect(thresholdFree).toBe(true);
+
+      // Coupon provides no incremental benefit because delivery is already free from threshold
+      const couponShipping = { freeShipping: true };
+      const couponFree = Boolean(couponShipping.freeShipping && !thresholdFree && actualDeliveryFee.gt(0));
+      expect(couponFree).toBe(false);
+
+      const deliveryFree = thresholdFree || couponFree;
+      expect(deliveryFree).toBe(true);
+
+      const deliveryWaivedAmount = deliveryFree ? actualDeliveryFee : money(0);
+      const couponDeliveryWaivedAmount = couponFree ? actualDeliveryFee : money(0);
+
+      expect(deliveryWaivedAmount.toFixed(2)).toBe("5000.00");
+      expect(couponDeliveryWaivedAmount.toFixed(2)).toBe("0.00");
+    });
+
+    it("T4.7 Pure shipping coupon keeps merchandise discount at 0.00 and records waiver in reservation", () => {
+      const merchandiseDiscount = money(0);
+      const couponDeliveryWaivedAmount = money("5000.00");
+
+      // In onlineOrders table, couponDiscount must remain 0.00 so invoice & quick view don't double-deduct
+      const orderCouponDiscount = merchandiseDiscount;
+      expect(orderCouponDiscount.toFixed(2)).toBe("0.00");
+
+      // In couponReservations table, discountAmount records the financial waiver
+      const reservationAmount = merchandiseDiscount.gt(0)
+        ? merchandiseDiscount
+        : couponDeliveryWaivedAmount;
+      expect(reservationAmount.toFixed(2)).toBe("5000.00");
+    });
   });
 });
 

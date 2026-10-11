@@ -16,6 +16,7 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { D, fmtAr, formatIqd } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printCouponCards, type CouponPrintLayout } from "@/lib/printing/couponCard";
+import { storefrontUrl } from "@/lib/siteHosts";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { RowActions } from "@/components/list/RowActions";
 import { PromotionBuilder } from "@/components/promotions/PromotionBuilder";
@@ -148,7 +149,19 @@ export default function Coupons() {
 
   function couponCards(codes: string[]) {
     const design = (selectedProgram?.designJson ?? {}) as { title?: string; subtitle?: string; terms?: string; color?: string };
-    return codes.map((code) => ({ code, title: design.title ?? selectedProgram?.name, subtitle: design.subtitle, terms: design.terms, validTo: selectedProgram?.validTo, color: design.color }));
+    const baseStoreUrl = storefrontUrl();
+    return codes.map((code) => {
+      const trimmed = code.trim();
+      return {
+        code: trimmed,
+        title: design.title ?? selectedProgram?.name,
+        subtitle: design.subtitle,
+        terms: design.terms,
+        validTo: selectedProgram?.validTo,
+        color: design.color,
+        storeUrl: `${baseStoreUrl}?coupon=${encodeURIComponent(trimmed)}`,
+      };
+    });
   }
   async function printCodes(codes: string[], layout: CouponPrintLayout) {
     if (!codes.length) return;

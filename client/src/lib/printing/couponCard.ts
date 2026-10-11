@@ -1,6 +1,7 @@
 import { BRAND, CAIRO_FONT, CO, esc, logoUrl } from "./brand";
 import { fmtDate } from "../date";
 import { qrCodeSvg } from "./qr";
+import { storefrontUrl } from "../siteHosts";
 
 export const COUPON_CARD_SIZE = { widthMm: 54, heightMm: 84 } as const;
 /** المساحة القصوى المطلوبة للرمز المقروء بشرياً — لا تشمل QR المنفصل. */
@@ -36,7 +37,8 @@ export async function couponCardsHtml(
   const layout = options.layout ?? "CARD";
   const rendered = await Promise.all(cards.map(async (card) => {
     const accent = /^#[0-9a-fA-F]{6}$/.test(card.color ?? "") ? card.color! : BRAND.green;
-    const qrPayload = card.storeUrl || card.code;
+    const trimmedCode = card.code.trim();
+    const qrPayload = card.storeUrl?.trim() || `${storefrontUrl()}?coupon=${encodeURIComponent(trimmedCode)}`;
     const qr = await qrCodeSvg(qrPayload, { size: 220, margin: 1, errorCorrectionLevel: "H", dark: "#000000" });
     return `<article class="coupon" style="--accent:${accent}">
       <div class="frame">
