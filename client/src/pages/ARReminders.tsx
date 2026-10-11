@@ -20,7 +20,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
-import { WhatsAppShare } from "@/components/WhatsAppShare";
 import {
   Dialog,
   DialogContent,
@@ -560,7 +559,6 @@ function QueueTab({
           const r = row.original;
           if (!r.phone) return <span className="text-muted-foreground">—</span>;
           const intlPhone = toIraqiIntl(r.phone) || r.phone;
-          const msg = buildReminderMessage(r);
           return (
             <div className="flex items-center gap-1.5" dir="ltr">
               <a
@@ -572,13 +570,18 @@ function QueueTab({
                 <Phone className="size-3" aria-hidden />
                 <span className="tabular-nums">{r.phone}</span>
               </a>
-              <WhatsAppShare
-                phone={r.phone}
-                message={msg}
+              <Button
+                type="button"
+                variant="ghost"
                 size="icon-sm"
-                iconOnly
-                label={`واتساب ${r.customerName}`}
-              />
+                onClick={() => onSend(r)}
+                disabled={sendingId === r.customerId}
+                className="text-primary hover:bg-primary/10 h-6 w-6 p-0"
+                title={`إرسال تذكير واتساب وتسجيله: ${r.customerName}`}
+                aria-label={`إرسال تذكير واتساب وتسجيله: ${r.customerName}`}
+              >
+                <Send className="size-3" aria-hidden />
+              </Button>
             </div>
           );
         },

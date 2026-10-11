@@ -236,9 +236,12 @@ export default function ARAging() {
         cell: ({ row }) => {
           const r = row.original;
           const intlPhone = r.phone ? (toIraqiIntl(r.phone) || r.phone) : null;
+          const debtAmount = D(r.currentBalance || 0).gt(0)
+            ? (r.currentBalance ?? "0")
+            : (D(r.unpaidTotal || 0).gt(0) ? (r.unpaidTotal ?? "0") : "0");
           const reminderMsg = r.phone
             ? sanitizeForWhatsApp(
-                `السلام عليكم ${r.customerName}، نود تذكيركم بذمم مستحقة غير مدفوعة بقيمة ${fmt(r.unpaidTotal)} د.ع لدى المكتبة العربية للطباعة والقرطاسية. نرجو التكرم بالسداد أو التواصل لترتيب التسوية.`
+                `السلام عليكم ${r.customerName}، نود تذكيركم بذمم مستحقة غير مدفوعة بقيمة ${fmt(debtAmount)} د.ع لدى المكتبة العربية للطباعة والقرطاسية. نرجو التكرم بالسداد أو التواصل لترتيب التسوية.`
               )
             : "";
           return (
