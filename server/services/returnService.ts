@@ -46,6 +46,10 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import {
+  resolveAtomicPermissions,
+  type AtomicPermissionsMap,
+} from "@shared/atomicPermissions";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import {
@@ -2677,6 +2681,7 @@ export async function returnSaleDirect(
         baseRole: string;
         isActive: boolean;
         permissions: unknown;
+        atomicPermissions: unknown;
       } | null = null;
       if (probe?.customRoleId != null) {
         const [rRow] = await tx
@@ -2684,6 +2689,7 @@ export async function returnSaleDirect(
             baseRole: roles.baseRole,
             isActive: roles.isActive,
             permissions: roles.permissions,
+            atomicPermissions: roles.atomicPermissions,
           })
           .from(roles)
           .where(eq(roles.id, probe.customRoleId))
@@ -2694,6 +2700,7 @@ export async function returnSaleDirect(
             baseRole: rRow.baseRole,
             isActive: Boolean(rRow.isActive),
             permissions: rRow.permissions,
+            atomicPermissions: rRow.atomicPermissions,
           };
         }
       }
@@ -2707,6 +2714,7 @@ export async function returnSaleDirect(
           role: users.role,
           customRoleId: users.customRoleId,
           permissionsOverride: users.permissionsOverride,
+          atomicPermissions: users.atomicPermissions,
         })
         .from(users)
         .where(eq(users.id, actor.userId))
@@ -2734,6 +2742,7 @@ export async function returnSaleDirect(
               baseRole: roles.baseRole,
               isActive: roles.isActive,
               permissions: roles.permissions,
+              atomicPermissions: roles.atomicPermissions,
             })
             .from(roles)
             .where(eq(roles.id, userRow.customRoleId))
@@ -2744,6 +2753,7 @@ export async function returnSaleDirect(
                 baseRole: rRow.baseRole,
                 isActive: Boolean(rRow.isActive),
                 permissions: rRow.permissions,
+                atomicPermissions: rRow.atomicPermissions,
               }
             : null;
         } else {
@@ -2778,17 +2788,35 @@ export async function returnSaleDirect(
         }
       }
 
+      const resolvedAtomic = resolveAtomicPermissions(
+        effectiveRole as RoleKey,
+        (customRoleRow?.atomicPermissions as AtomicPermissionsMap | null) ?? null,
+        (userRow.atomicPermissions as AtomicPermissionsMap | null) ?? null,
+      );
+
       const isOwner = Boolean(userRow.isOwner);
       const isAdmin = effectiveRole === "admin";
       const hasSalesFull = effectivePermissions.sales === "FULL";
+      const hasReturnAtomic =
+        resolvedAtomic["pos.return.create"] === true ||
+        resolvedAtomic["pos.return.approve"] === true;
+      const isCashierRole = [
+        "manager",
+        "cashier",
+        "retail_cashier",
+        "print_cashier",
+        "reception_clerk",
+        "sales_rep",
+      ].includes(effectiveRole);
       const hasReceptionFull =
         effectiveRole === "print_operator" &&
         effectivePermissions.workorders === "FULL";
       const isAuthorized =
         isOwner ||
         isAdmin ||
-        (["manager", "cashier"].includes(effectiveRole) && hasSalesFull) ||
-        hasReceptionFull;
+        (isCashierRole && (hasSalesFull || hasReturnAtomic)) ||
+        hasReceptionFull ||
+        hasReturnAtomic;
 
       if (!isAuthorized) {
         throw new TRPCError({
@@ -2797,7 +2825,7 @@ export async function returnSaleDirect(
             what: "تعذّر تنفيذ المرتجع المباشر",
             why: `دورك الحالي (${effectiveRole}) أو صلاحياتك الفعّالة لا تملك صلاحية تنفيذ المرتجع المباشر`,
             doThis:
-              "يجب أن تكون مالكاً، أو تملك صلاحية المبيعات الكاملة (sales: FULL) لتنفيذ المرتجع",
+              "يجب أن تكون مالكاً، أو تملك صلاحية المبيعات الكاملة (sales: FULL)، أو صلاحية المرتجع المباشر (pos.return.create) لتنفيذ المرتجع",
           }),
         });
       }

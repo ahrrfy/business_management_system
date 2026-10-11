@@ -9,6 +9,7 @@ import { EffectiveAccessPreview } from "@/components/form/EffectiveAccessPreview
 import {
   ROLE_DEFAULT_ATOMIC_PERMISSIONS,
   ROLE_DEFAULT_OPERATIONAL_CAPS,
+  deriveAtomicFromLegacyModules,
   type AtomicPermissionsMap,
   type OperationalCaps,
 } from "@shared/atomicPermissions";
@@ -60,7 +61,7 @@ export default function RoleEdit() {
   const [baseRole, setBaseRole] = useState<RoleKey>("cashier");
   const [permissions, setPermissions] = useState<PermissionMap>(() => fullMapFromBase("cashier"));
   const [atomicPermissions, setAtomicPermissions] = useState<AtomicPermissionsMap>(
-    () => ROLE_DEFAULT_ATOMIC_PERMISSIONS.cashier || {},
+    () => (ROLE_DEFAULT_ATOMIC_PERMISSIONS.cashier || {}) as AtomicPermissionsMap,
   );
   const [operationalCaps, setOperationalCaps] = useState<OperationalCaps | null>(
     () => ROLE_DEFAULT_OPERATIONAL_CAPS.cashier || null,
@@ -81,7 +82,7 @@ export default function RoleEdit() {
       setPermissions(full);
       const dAtomic = (d as { atomicPermissions?: AtomicPermissionsMap | null }).atomicPermissions;
       const dCaps = (d as { operationalCaps?: OperationalCaps | null }).operationalCaps;
-      setAtomicPermissions(dAtomic ?? ROLE_DEFAULT_ATOMIC_PERMISSIONS[bRole] ?? {});
+      setAtomicPermissions((dAtomic ?? (Object.keys(map).length > 0 ? deriveAtomicFromLegacyModules(full, bRole) : (ROLE_DEFAULT_ATOMIC_PERMISSIONS[bRole] ?? {}))) as AtomicPermissionsMap);
       setOperationalCaps(dCaps ?? ROLE_DEFAULT_OPERATIONAL_CAPS[bRole] ?? null);
       setLoaded(true);
     }
@@ -97,7 +98,7 @@ export default function RoleEdit() {
     setBaseRole(next);
     // غيّر الفئة الأساسية ⇒ أعد ضبط الخريطة لقالبها (نقطة بداية واضحة).
     setPermissions(fullMapFromBase(next));
-    setAtomicPermissions(ROLE_DEFAULT_ATOMIC_PERMISSIONS[next] ?? {});
+    setAtomicPermissions((ROLE_DEFAULT_ATOMIC_PERMISSIONS[next] ?? {}) as AtomicPermissionsMap);
     setOperationalCaps(ROLE_DEFAULT_OPERATIONAL_CAPS[next] ?? null);
   }
   function handlePermChange(moduleKey: string, level: AccessLevel) {
@@ -109,7 +110,7 @@ export default function RoleEdit() {
       const key = value.slice(8) as RoleKey;
       setBaseRole(key);
       setPermissions(fullMapFromBase(key));
-      setAtomicPermissions(ROLE_DEFAULT_ATOMIC_PERMISSIONS[key] ?? {});
+      setAtomicPermissions((ROLE_DEFAULT_ATOMIC_PERMISSIONS[key] ?? {}) as AtomicPermissionsMap);
       setOperationalCaps(ROLE_DEFAULT_OPERATIONAL_CAPS[key] ?? null);
       return;
     }
@@ -125,7 +126,7 @@ export default function RoleEdit() {
       setPermissions(full);
       const srcAtomic = (src as { atomicPermissions?: AtomicPermissionsMap | null }).atomicPermissions;
       const srcCaps = (src as { operationalCaps?: OperationalCaps | null }).operationalCaps;
-      setAtomicPermissions(srcAtomic ?? ROLE_DEFAULT_ATOMIC_PERMISSIONS[base] ?? {});
+      setAtomicPermissions((srcAtomic ?? ROLE_DEFAULT_ATOMIC_PERMISSIONS[base] ?? {}) as AtomicPermissionsMap);
       setOperationalCaps(srcCaps ?? ROLE_DEFAULT_OPERATIONAL_CAPS[base] ?? null);
     }
   }
@@ -240,7 +241,7 @@ export default function RoleEdit() {
             onChange={handlePermChange}
             onReset={() => {
               setPermissions(fullMapFromBase(baseRole));
-              setAtomicPermissions(ROLE_DEFAULT_ATOMIC_PERMISSIONS[baseRole] ?? {});
+              setAtomicPermissions((ROLE_DEFAULT_ATOMIC_PERMISSIONS[baseRole] ?? {}) as AtomicPermissionsMap);
               setOperationalCaps(ROLE_DEFAULT_OPERATIONAL_CAPS[baseRole] ?? null);
             }}
             atomicPermissions={atomicPermissions}

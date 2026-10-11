@@ -32,14 +32,17 @@ export interface PermissionMatrixProps {
   basePermissions?: PermissionMap;
 
   // إضافات شجرة الصلاحيات الذرية التفاعلية والسقوف (R2)
+  baseAtomicPermissions?: AtomicPermissionsMap;
   atomicPermissions?: AtomicPermissionsMap;
   onAtomicChange?: (key: AtomicPermissionKey, granted: boolean) => void;
   onAtomicBulkChange?: (updates: Record<AtomicPermissionKey, boolean>) => void;
+  onBatchChange?: (updates: Record<string, AccessLevel>) => void;
   caps?: OperationalCaps | null;
   onCapsChange?: (caps: OperationalCaps) => void;
   masking?: SensitiveDataMasking | null;
   onMaskingChange?: (masking: SensitiveDataMasking) => void;
   defaultMode?: "atomic" | "legacy";
+  defaultViewMode?: "grid" | "cards";
 }
 
 const LEVELS: AccessLevel[] = ["FULL", "READ", "NONE"];
@@ -72,14 +75,17 @@ export function PermissionMatrix({
   onChange,
   onReset,
   basePermissions,
+  baseAtomicPermissions,
   atomicPermissions: propAtomicPermissions,
   onAtomicChange,
   onAtomicBulkChange,
+  onBatchChange,
   caps,
   onCapsChange,
   masking,
   onMaskingChange,
   defaultMode = "atomic",
+  defaultViewMode = "grid",
 }: PermissionMatrixProps) {
   const [activeTab, setActiveTab] = useState<"atomic" | "legacy">(defaultMode);
   const [internalAtomic, setInternalAtomic] = useState<AtomicPermissionsMap>(() => {
@@ -112,13 +118,23 @@ export function PermissionMatrix({
 
       // اشتقاق وحدات النظام القديمة
       const derivedModules = deriveLegacyModulesFromAtomic(nextAtomic, role);
+      const changed: Record<string, AccessLevel> = {};
       for (const [mod, lvl] of Object.entries(derivedModules)) {
         if ((permissions[mod] || "NONE") !== lvl) {
-          onChange(mod, lvl);
+          changed[mod] = lvl;
+        }
+      }
+      if (Object.keys(changed).length > 0) {
+        if (onBatchChange) {
+          onBatchChange(changed);
+        } else {
+          for (const [mod, lvl] of Object.entries(changed)) {
+            onChange(mod, lvl);
+          }
         }
       }
     },
-    [currentAtomic, propAtomicPermissions, onAtomicChange, role, permissions, onChange],
+    [currentAtomic, propAtomicPermissions, onAtomicChange, role, permissions, onChange, onBatchChange],
   );
 
   const handleAtomicBulkChange = useCallback(
@@ -131,22 +147,32 @@ export function PermissionMatrix({
 
       // اشتقاق وحدات النظام القديمة
       const derivedModules = deriveLegacyModulesFromAtomic(nextAtomic, role);
+      const changed: Record<string, AccessLevel> = {};
       for (const [mod, lvl] of Object.entries(derivedModules)) {
         if ((permissions[mod] || "NONE") !== lvl) {
-          onChange(mod, lvl);
+          changed[mod] = lvl;
+        }
+      }
+      if (Object.keys(changed).length > 0) {
+        if (onBatchChange) {
+          onBatchChange(changed);
+        } else {
+          for (const [mod, lvl] of Object.entries(changed)) {
+            onChange(mod, lvl);
+          }
         }
       }
     },
-    [currentAtomic, propAtomicPermissions, onAtomicBulkChange, role, permissions, onChange],
+    [currentAtomic, propAtomicPermissions, onAtomicBulkChange, role, permissions, onChange, onBatchChange],
   );
 
   const handleResetAll = useCallback(() => {
-    const baseAtomic = ROLE_DEFAULT_ATOMIC_PERMISSIONS[role] || ROLE_DEFAULT_ATOMIC_PERMISSIONS.user || {};
+    const baseAtomic = baseAtomicPermissions || ROLE_DEFAULT_ATOMIC_PERMISSIONS[role] || ROLE_DEFAULT_ATOMIC_PERMISSIONS.user || {};
     if (!propAtomicPermissions || Object.keys(propAtomicPermissions).length === 0) {
       setInternalAtomic(baseAtomic);
     }
     onReset();
-  }, [role, propAtomicPermissions, onReset]);
+  }, [role, baseAtomicPermissions, propAtomicPermissions, onReset]);
 
   // منطق العرض القديم
   const isCustom = (key: string) => (permissions[key] ?? "NONE") !== (template[key] ?? "NONE");
@@ -214,10 +240,12 @@ export function PermissionMatrix({
           onChange={handleAtomicSingleChange}
           onBulkChange={handleAtomicBulkChange}
           onReset={handleResetAll}
+          baseAtomicPermissions={baseAtomicPermissions}
           caps={caps}
           onCapsChange={onCapsChange}
           masking={masking}
           onMaskingChange={onMaskingChange}
+          defaultViewMode={defaultViewMode}
         />
       ) : (
         <div className="space-y-3">

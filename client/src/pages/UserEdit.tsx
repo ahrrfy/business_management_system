@@ -36,7 +36,9 @@ import {
   ROLE_TEMPLATES,
   PERMISSION_MODULES,
   diffFromTemplate,
+  diffFromPermissions,
   resolvePermissions,
+  applyPermissionOverrides,
   type AccessLevel,
   type PermissionMap,
   type RoleKey,
@@ -151,17 +153,21 @@ export default function UserEdit() {
       setEmail(u.email ?? "");
       setUsername((u as { username?: string | null }).username ?? "");
       setRole((u.role as RoleKey) ?? "cashier");
-      setCustomRoleId((u as { customRoleId?: number | null }).customRoleId ?? null);
+      const uRoleId = (u as { customRoleId?: number | null }).customRoleId ?? null;
+      setCustomRoleId(uRoleId);
       setBranchId(u.branchId ? String(u.branchId) : "");
       setPhone((u as { phone?: string | null }).phone ?? "");
       setJobTitle((u as { jobTitle?: string | null }).jobTitle ?? "");
       setHiredAt(toDateInput((u as { hiredAt?: unknown }).hiredAt));
       setPermsOverride(((u as { permissionsOverride?: PermissionMap | null }).permissionsOverride as PermissionMap) ?? {});
+      const cRole = uRoleId ? customRoles.find((r) => r.id === uRoleId) : null;
+      const bRole = (cRole?.baseRole as RoleKey) ?? (u.role as RoleKey) ?? "cashier";
       const uAtomic = (u as { atomicPermissions?: AtomicPermissionsMap | null }).atomicPermissions;
       const uCaps = (u as { operationalCaps?: OperationalCaps | null }).operationalCaps;
-      const initAtomic = uAtomic ?? ROLE_DEFAULT_ATOMIC_PERMISSIONS[(u.role as RoleKey) ?? "cashier"] ?? {};
+      const initAtomic = (uAtomic ?? cRole?.atomicPermissions ?? ROLE_DEFAULT_ATOMIC_PERMISSIONS[bRole] ?? {}) as AtomicPermissionsMap;
+      const initCaps = (uCaps ?? cRole?.operationalCaps ?? ROLE_DEFAULT_OPERATIONAL_CAPS[bRole] ?? null) as OperationalCaps | null;
       setAtomicPermissions(initAtomic);
-      setOperationalCaps(uCaps ?? null);
+      setOperationalCaps(initCaps);
       setIsOwner(!!(u as { isOwner?: boolean }).isOwner);
       baselineRef.current = JSON.stringify({
         name: u.name ?? "", email: u.email ?? "", username: (u as { username?: string | null }).username ?? "",
@@ -230,10 +236,31 @@ export default function UserEdit() {
   const revokeOneSession = trpc.users.revokeSession.useMutation({
     onSuccess: async () => { await utils.users.sessions.invalidate({ userId }); },
   });
-  const resolvedPerms = useMemo(
-    () => resolvePermissions(role, Object.keys(permsOverride).length ? permsOverride : null),
-    [role, permsOverride]
+  const selectedCustomRole = useMemo(
+    () => (customRoleId ? customRoles.find((r) => r.id === customRoleId) : null),
+    [customRoleId, customRoles]
   );
+  const effectiveBaseRole = (selectedCustomRole?.baseRole as RoleKey) ?? role;
+
+  const roleBasePerms = useMemo(() => {
+    if (!selectedCustomRole) {
+      return ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user;
+    }
+    const roleBase = ROLE_TEMPLATES[effectiveBaseRole] ?? ROLE_TEMPLATES.user;
+    return applyPermissionOverrides(roleBase, selectedCustomRole.permissions as PermissionMap | null);
+  }, [selectedCustomRole, effectiveBaseRole, role]);
+
+  const resolvedPerms = useMemo(
+    () => applyPermissionOverrides(roleBasePerms, Object.keys(permsOverride).length ? permsOverride : null),
+    [roleBasePerms, permsOverride]
+  );
+
+  const roleBaseAtomic = useMemo(() => {
+    if (selectedCustomRole?.atomicPermissions && Object.keys(selectedCustomRole.atomicPermissions).length > 0) {
+      return selectedCustomRole.atomicPermissions as AtomicPermissionsMap;
+    }
+    return ROLE_DEFAULT_ATOMIC_PERMISSIONS[effectiveBaseRole] ?? {};
+  }, [selectedCustomRole, effectiveBaseRole]);
 
   // Ctrl/⌘+S ⇒ حفظ. بلا onCancel/Esc عمداً — الشاشة مكتظّة بقوائم منسدلة (الدور/الفرع) وEsc
   // يتعارض مع إغلاقها (تحذير الهوك نفسه).
@@ -241,10 +268,17 @@ export default function UserEdit() {
 
   async function handleRoleChange(val: string) {
     if (val.startsWith("custom:")) {
-      setCustomRoleId(Number(val.slice(7))); // دور مخصّص — صلاحياته محفوظة فيه
+      const cid = Number(val.slice(7));
+      setCustomRoleId(cid);
+      const cRole = customRoles.find((r) => r.id === cid);
+      if (cRole) {
+        const bRole = (cRole.baseRole as RoleKey) ?? "cashier";
+        setRole(bRole);
+        setAtomicPermissions((cRole.atomicPermissions ? { ...cRole.atomicPermissions } : (ROLE_DEFAULT_ATOMIC_PERMISSIONS[bRole] ?? {})) as AtomicPermissionsMap);
+        setOperationalCaps(cRole.operationalCaps ? { ...cRole.operationalCaps } : (ROLE_DEFAULT_OPERATIONAL_CAPS[bRole] ?? null));
+        setPermsOverride({});
+      }
     } else {
-      // اختيار دور مبني يعيد الصلاحيات لقالبه ويمسح أي تخصيص يدوي حالي — تأكيدٌ صريح إن كان
-      // ثمّة تخصيصٌ فعلي ليخسره (كان يُمسَح صامتاً بلا تحذير).
       if (Object.keys(permsOverride).length > 0 && !(await confirm({
         variant: "warning",
         title: "تغيير الدور الأساسي",
@@ -254,14 +288,19 @@ export default function UserEdit() {
       setCustomRoleId(null);
       setRole(val as RoleKey);
       setPermsOverride({});
-      setAtomicPermissions(ROLE_DEFAULT_ATOMIC_PERMISSIONS[val as RoleKey] ?? {});
+      setAtomicPermissions((ROLE_DEFAULT_ATOMIC_PERMISSIONS[val as RoleKey] ?? {}) as AtomicPermissionsMap);
       setOperationalCaps(ROLE_DEFAULT_OPERATIONAL_CAPS[val as RoleKey] ?? null);
     }
   }
 
   function handlePermChange(moduleKey: string, level: AccessLevel) {
     const newResolved = { ...resolvedPerms, [moduleKey]: level };
-    setPermsOverride(diffFromTemplate(role, newResolved) ?? {});
+    setPermsOverride(diffFromPermissions(roleBasePerms, newResolved) ?? {});
+  }
+
+  function handleBatchPermChange(updates: Record<string, AccessLevel>) {
+    const newResolved = { ...resolvedPerms, ...updates };
+    setPermsOverride(diffFromPermissions(roleBasePerms, newResolved) ?? {});
   }
 
   // Codex #958: عدّاداتُ تسلسلٍ لإسقاط الردودِ المتأخّرة. لو حرّرَ المستخدمُ الحقلَ من A إلى B
@@ -342,14 +381,14 @@ export default function UserEdit() {
     if (emailV && !/^\S+@\S+\.\S+$/.test(emailV)) return setError("بريد إلكتروني غير صالح.");
     if (usernameV && !USERNAME_REGEX.test(usernameV)) return setError(USERNAME_POLICY_MSG);
     if (hiredAt && !/^\d{4}-\d{2}-\d{2}$/.test(hiredAt)) return setError("تاريخ التوظيف غير صالح.");
-    const override = customRoleId ? null : diffFromTemplate(role, resolvedPerms);
+    const override = diffFromPermissions(roleBasePerms, resolvedPerms);
     // نرسل القيمتين دائماً: "" ⇒ مسح المعرّف صراحةً (الخادم يضمن بقاء معرّف واحد على الأقل).
     update.mutate({
       userId,
       name: name.trim(),
       email: emailV,
       username: usernameV,
-      role,
+      role: effectiveBaseRole,
       customRoleId,
       branchId: branchId ? Number(branchId) : null,
       phone: phone.trim() || null,
@@ -358,8 +397,8 @@ export default function UserEdit() {
       // isOwner: يُرسَل فقط إن كان المستخدم الحالي مالكاً (وإلا يتجاهله الخادم بحارس FORBIDDEN).
       ...(meIsOwner ? { isOwner } : {}),
       permissionsOverride: override,
-      atomicPermissions: customRoleId ? null : atomicPermissions,
-      operationalCaps: customRoleId ? null : operationalCaps,
+      atomicPermissions: atomicPermissions,
+      operationalCaps: operationalCaps,
     });
   }
 
@@ -643,7 +682,7 @@ export default function UserEdit() {
         <CardHeader>
           <CardTitle className="text-base">
             الصلاحيات
-            {!customRoleId && customCount > 0 && (
+            {customCount > 0 && (
               <span className="text-[10px] font-medium text-primary mr-2 align-middle">
                 {customCount} مخصّص
               </span>
@@ -651,35 +690,45 @@ export default function UserEdit() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {customRoleId ? (
-            // المصفوفة تختفي عمداً (الصلاحيات محفوظة في تعريف الدور لا فرقاً فوقه) — لكنّ السطر
-            // كان يسمّي الشاشة بلا رابطٍ إليها، فيصير بابَ خروجٍ مسدوداً. الرابط يقصد الدور بعينه.
-            <p className="text-sm text-muted-foreground">
-              صلاحيات الدور المخصّص محفوظة في تعريفه لا في هذا الحساب — تعديلها هنا كان سيغيّرها لكل
-              مَن يحمله.{" "}
-              <Link className="text-primary underline" href={`/roles/${customRoleId}/edit`}>افتح تعريف الدور لتعديل صلاحياته</Link>
-              ، أو أسنِد للحساب دوراً من «أدوار النظام» أعلاه لتظهر المصفوفة الفردية.
-            </p>
-          ) : (
-            <>
-              <PermDiffSummary role={role} override={permsOverride} />
-              <PermissionMatrix
-                role={role}
-                permissions={resolvedPerms}
-                onChange={handlePermChange}
-                onReset={() => {
-                  setPermsOverride({});
-                  setAtomicPermissions(ROLE_DEFAULT_ATOMIC_PERMISSIONS[role] ?? {});
-                  setOperationalCaps(ROLE_DEFAULT_OPERATIONAL_CAPS[role] ?? null);
-                }}
-                atomicPermissions={atomicPermissions}
-                onAtomicChange={(key, granted) => setAtomicPermissions((p) => ({ ...p, [key]: granted }))}
-                onAtomicBulkChange={(updates) => setAtomicPermissions((p) => ({ ...p, ...updates }))}
-                caps={operationalCaps}
-                onCapsChange={setOperationalCaps}
-              />
-            </>
+          {customRoleId && (
+            <div className="text-xs text-muted-foreground mb-3 flex items-center justify-between gap-2 p-2.5 rounded-lg bg-muted/40 border border-border flex-wrap">
+              <div className="flex items-center gap-1.5">
+                <ShieldCheck aria-hidden="true" className="size-4 text-primary shrink-0" />
+                <span>
+                  يستند هذا الحساب إلى الدور المخصّص <strong>«{selectedCustomRole?.label || `#${customRoleId}`}»</strong>.
+                  المصفوفة أدناه تتيح لك تخصيص استثناءات فردية لهذا المستخدم (منح أو حجب).
+                </span>
+              </div>
+              <Link className="text-primary underline font-medium" href={`/roles/${customRoleId}/edit`}>
+                تعديل قالب الدور الأصلي
+              </Link>
+            </div>
           )}
+          <PermDiffSummary role={effectiveBaseRole} override={permsOverride} />
+          <PermissionMatrix
+            role={effectiveBaseRole}
+            permissions={resolvedPerms}
+            onChange={handlePermChange}
+            onBatchChange={handleBatchPermChange}
+            onReset={() => {
+              setPermsOverride({});
+              const resetAtomic = (selectedCustomRole?.atomicPermissions
+                ? { ...selectedCustomRole.atomicPermissions }
+                : (ROLE_DEFAULT_ATOMIC_PERMISSIONS[effectiveBaseRole] ?? {})) as AtomicPermissionsMap;
+              setAtomicPermissions(resetAtomic);
+              const resetCaps = selectedCustomRole?.operationalCaps
+                ? { ...selectedCustomRole.operationalCaps }
+                : (ROLE_DEFAULT_OPERATIONAL_CAPS[effectiveBaseRole] ?? null);
+              setOperationalCaps(resetCaps);
+            }}
+            basePermissions={roleBasePerms}
+            baseAtomicPermissions={roleBaseAtomic}
+            atomicPermissions={atomicPermissions}
+            onAtomicChange={(key, granted) => setAtomicPermissions((p) => ({ ...p, [key]: granted }))}
+            onAtomicBulkChange={(updates) => setAtomicPermissions((p) => ({ ...p, ...updates }))}
+            caps={operationalCaps}
+            onCapsChange={setOperationalCaps}
+          />
         </CardContent>
       </Card>
 

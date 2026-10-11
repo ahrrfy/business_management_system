@@ -16,6 +16,10 @@
 import { z } from "zod";
 import { ALL_PERMISSION_MODULE_KEYS } from "./permissions";
 import { normalizeSearchText } from "./searchNormalize";
+import {
+  ENTERPRISE_ATOMIC_DEFINITIONS,
+  ENTERPRISE_RESOURCE_METADATA,
+} from "./atomicPermissionExtensions";
 
 // ============================================================================
 // ١. تعريفات القطاعات التشغيلية (Domains) والأفعال المعيارية (Standard Actions)
@@ -205,7 +209,7 @@ export interface AtomicPermissionDefinition {
   isSpecialOperation?: boolean;
 }
 
-export const ATOMIC_PERMISSION_DEFINITIONS: AtomicPermissionDefinition[] = [
+const BASE_ATOMIC_PERMISSION_DEFINITIONS: AtomicPermissionDefinition[] = [
   // --------------------------------------------------------------------------
   // 1. pos (الكاشير ونقاط البيع)
   // --------------------------------------------------------------------------
@@ -1773,7 +1777,7 @@ export const ATOMIC_PERMISSION_DEFINITIONS: AtomicPermissionDefinition[] = [
     description: "عرض المخزون الرقمي لبطاقات الإنترنت والشحن والألعاب",
     descriptionAr: "عرض المخزون الرقمي لبطاقات الإنترنت والشحن والألعاب",
     sensitivity: "normal",
-    legacyModule: "digitalCards",
+    legacyModule: "digital_cards",
       },
   {
     key: "pos.digital_card.print",
@@ -1786,7 +1790,7 @@ export const ATOMIC_PERMISSION_DEFINITIONS: AtomicPermissionDefinition[] = [
     description: "إصدار وطباعة إيصال يحتوي الرقم السري وكود التعبئة للبطاقة",
     descriptionAr: "إصدار وطباعة إيصال يحتوي الرقم السري وكود التعبئة للبطاقة",
     sensitivity: "medium",
-    legacyModule: "digitalCards",
+    legacyModule: "digital_cards",
       },
   {
     key: "pos.operations.hold",
@@ -3212,6 +3216,11 @@ export const ATOMIC_PERMISSION_DEFINITIONS: AtomicPermissionDefinition[] = [
   },
 ];
 
+export const ATOMIC_PERMISSION_DEFINITIONS: AtomicPermissionDefinition[] = [
+  ...BASE_ATOMIC_PERMISSION_DEFINITIONS,
+  ...ENTERPRISE_ATOMIC_DEFINITIONS,
+];
+
 export const ALL_ATOMIC_PERMISSION_KEYS: AtomicPermissionKey[] =
   ATOMIC_PERMISSION_DEFINITIONS.map((def) => def.key);
 
@@ -4510,7 +4519,7 @@ export interface ResourceMetadata {
   iconName: string;
 }
 
-export const RESOURCE_METADATA: Record<string, ResourceMetadata> = {
+const BASE_RESOURCE_METADATA: Record<string, ResourceMetadata> = {
   // pos
   "pos.shift": { domain: "pos", resource: "shift", label: "ورديات الصندوق وجرد Z", labelAr: "ورديات الصندوق وجرد Z", description: "فتح وإغلاق الورديات، جرد النقدية، وتقارير Z اليومية", descriptionAr: "فتح وإغلاق الورديات، جرد النقدية، وتقارير Z اليومية", iconName: "Clock" },
   "pos.invoice": { domain: "pos", resource: "invoice", label: "فواتير المبيعات الفورية", labelAr: "فواتير المبيعات الفورية", description: "إصدار، تعديل، إلغاء، طباعة، وتصدير إيصالات وفواتير الكاشير", descriptionAr: "إصدار، تعديل، إلغاء، طباعة، وتصدير إيصالات وفواتير الكاشير", iconName: "Receipt" },
@@ -4599,5 +4608,10 @@ export const RESOURCE_METADATA: Record<string, ResourceMetadata> = {
   "governance.executive": { domain: "governance", resource: "executive", label: "اللوحات والمؤشرات التنفيذية", labelAr: "اللوحات والمؤشرات التنفيذية", description: "استعراض مؤشرات الأداء العليا KPI وتقارير المبيعات الشاملة", descriptionAr: "استعراض مؤشرات الأداء العليا KPI وتقارير المبيعات الشاملة", iconName: "TrendingUp" },
   "governance.cost_margin": { domain: "governance", resource: "cost_margin", label: "أسعار التكلفة وهوامش الأرباح", labelAr: "أسعار التكلفة وهوامش الأرباح", description: "كشف تكاليف الشراء وهوامش الربح الصافية بالفواتير والمنتجات", descriptionAr: "كشف تكاليف الشراء وهوامش الربح الصافية بالفواتير والمنتجات", iconName: "BadgePercent" },
   "governance.limit": { domain: "governance", resource: "limit", label: "تجاوز السقوف والضوابط (Break-Glass)", labelAr: "تجاوز السقوف والضوابط (Break-Glass)", description: "إجازة وتمرير العمليات الاستثنائية التي تتجاوز السقوف الرقمية المحددة", descriptionAr: "إجازة وتمرير العمليات الاستثنائية التي تتجاوز السقوف الرقمية المحددة", iconName: "KeyRound" },
+};
+
+export const RESOURCE_METADATA: Record<string, ResourceMetadata> = {
+  ...BASE_RESOURCE_METADATA,
+  ...ENTERPRISE_RESOURCE_METADATA,
 };
 
