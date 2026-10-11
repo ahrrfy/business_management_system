@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { CreditCard, MessageSquare, Receipt, RefreshCw } from "lucide-react";
+import { useState, useEffect } from "react";
+import { CreditCard, MessageSquare, Receipt, RefreshCw, Zap } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { LiveCardPreview } from "./LiveCardPreview";
@@ -14,7 +14,22 @@ interface LivePreviewPanelProps {
 type PreviewTab = "card" | "receipt" | "whatsapp";
 
 export function LivePreviewPanel({ data }: LivePreviewPanelProps) {
-  const [activeTab, setActiveTab] = useState<PreviewTab>("card");
+  const [activeTab, setActiveTab] = useState<PreviewTab>(() =>
+    data.archetype === "DIRECT_PROMO" || data.archetype === "BOUNCE_BACK" ? "receipt" : "card",
+  );
+
+  // تحديث التبويب النشط عند تغيير النمط الترويجي
+  useEffect(() => {
+    if (data.archetype === "DIRECT_PROMO") {
+      setActiveTab("receipt");
+    } else if (data.archetype === "BOUNCE_BACK") {
+      setActiveTab("receipt");
+    } else if (data.archetype === "AFFILIATE") {
+      setActiveTab("card");
+    }
+  }, [data.archetype]);
+
+  const isDirectPromo = data.archetype === "DIRECT_PROMO";
 
   return (
     <Card className="h-full border shadow-sm flex flex-col bg-muted/10">
@@ -28,7 +43,7 @@ export function LivePreviewPanel({ data }: LivePreviewPanelProps) {
             </Badge>
           </CardTitle>
           <span className="text-xs text-muted-foreground font-mono" dir="ltr">
-            {data.sampleCode || `${data.codePrefix}-SAMPLE`}
+            {isDirectPromo ? "DIRECT-AUTO" : data.sampleCode || `${data.codePrefix}-SAMPLE`}
           </span>
         </div>
 
@@ -76,7 +91,28 @@ export function LivePreviewPanel({ data }: LivePreviewPanelProps) {
       </CardHeader>
 
       <CardContent className="p-4 flex-1 flex flex-col justify-start items-center overflow-y-auto">
-        {activeTab === "card" && <LiveCardPreview data={data} />}
+        {activeTab === "card" && (
+          isDirectPromo ? (
+            <div className="flex flex-col items-center justify-center py-12 px-4 text-center space-y-3">
+              <div className="p-3 rounded-full bg-emerald-500/10 text-emerald-600">
+                <Zap className="size-6" />
+              </div>
+              <div className="font-bold text-sm">عرض خصم مباشر تلقائي (بدون بطاقة كود)</div>
+              <p className="text-xs text-muted-foreground max-w-xs leading-relaxed">
+                هذا العرض لا يتطلب بطاقة كوبون ورقية، بل ينطبق آلياً على فاتورة الكاشير أو المتجر الإلكتروني. انتقل لتبويب الإيصال لمعاينة الخصم المباشر.
+              </p>
+              <button
+                type="button"
+                onClick={() => setActiveTab("receipt")}
+                className="text-xs text-primary hover:underline font-bold"
+              >
+                معاينة الإيصال الحراري ←
+              </button>
+            </div>
+          ) : (
+            <LiveCardPreview data={data} />
+          )
+        )}
         {activeTab === "receipt" && <LiveReceiptPreview data={data} />}
         {activeTab === "whatsapp" && <LiveWhatsAppPreview data={data} />}
       </CardContent>

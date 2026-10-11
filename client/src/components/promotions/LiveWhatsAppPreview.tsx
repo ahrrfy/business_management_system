@@ -57,7 +57,7 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
     const rawTitle = (data.design.title || data.name || "").trim();
     const rawSubtitle = (data.design.subtitle || "").trim();
     const terms = (data.design.terms || "يُستخدم لمرة واحدة · لا يُجمع مع عروض أخرى").trim();
-    const shippingBonus = data.freeShipping ? "\n• ميزة إضافية: توصيل مجاني مشمول" : "";
+    const shippingBonus = data.archetype !== "DIRECT_PROMO" && data.freeShipping ? "\n• ميزة إضافية: توصيل مجاني مشمول" : "";
 
     // إظهار العنوان إن كان مخصصاً وغير مكرر
     const hasCustomTitle = rawTitle && rawTitle !== "عرض ترويجي خاص" && rawTitle !== "عرض خاص";
@@ -69,6 +69,22 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
 
     const joinLines = (lines: (string | null | undefined | false)[]) =>
       lines.filter((l): l is string => l != null && l !== false).join("\n");
+
+    if (data.archetype === "DIRECT_PROMO") {
+      return joinLines([
+        `*تخفيضات وعروض خاصة من ${CO.short}!*`,
+        titleLine || `*${data.name}*`,
+        subtitleLine,
+        ``,
+        `• قيمة الخصم المباشر: *${discountSummary}*`,
+        `• فترة العرض: ${validityText}`,
+        ``,
+        `*يطبق الخصم تلقائياً عند التسوق عبر المتجر الإلكتروني أو زيارة فروعنا دون الحاجة لأي كود كوبون.*`,
+        publicStorefrontUrl(),
+        ``,
+        `• الشروط: ${terms || "تطبق الشروط والأحكام على الأصناف المشمولة بالعرض"}`,
+      ]);
+    }
 
     if (style === "GIFT") {
       return joinLines([
@@ -131,6 +147,7 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
     data.design.subtitle,
     data.design.terms,
     data.name,
+    data.archetype,
     data.freeShipping,
     validityText,
     previewCode,
