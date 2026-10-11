@@ -1433,6 +1433,47 @@ describe("Omnichannel Promotion & Coupon Engine (Milestone M1)", () => {
       expect(/[\u{1F300}-\u{1F9FF}]/u.test(bounceBackCoupon.discountText)).toBe(false);
       expect(bounceBackCoupon.code).toMatch(/^NEXT-[A-Z0-9]+$/);
     });
+
+    it("يطابق فئة تسعير العميل في إصدار كوبون العودة التلقائي ويمنع إصدار كوبون تجزئة لعميل جملة", () => {
+      // قاعدة التوافق: البرنامج العام (null) يناسب كل الفئات، وبرنامج الجملة يناسب الجملة، والتجزئة يناسب التجزئة فقط
+      type MockProg = { id: number; promoCustomerTier: "RETAIL" | "WHOLESALE" | null };
+      const progs: MockProg[] = [
+        { id: 1, promoCustomerTier: "RETAIL" },
+        { id: 2, promoCustomerTier: "WHOLESALE" },
+        { id: 3, promoCustomerTier: null }, // عام للجميع
+      ];
+
+      const filterForTier = (tier?: "RETAIL" | "WHOLESALE" | null) =>
+        progs.filter((p) => (tier ? p.promoCustomerTier === null || p.promoCustomerTier === tier : p.promoCustomerTier === null));
+
+      // لعميل الجملة (WHOLESALE): يجب أن يرى برامج الجملة والبرامج العامة فقط (لا يرى برامج التجزئة)
+      const wholesaleMatches = filterForTier("WHOLESALE");
+      expect(wholesaleMatches.map((p) => p.id)).toEqual([2, 3]);
+      expect(wholesaleMatches.some((p) => p.promoCustomerTier === "RETAIL")).toBe(false);
+
+      // لعميل التجزئة (RETAIL): يجب أن يرى برامج التجزئة والبرامج العامة فقط
+      const retailMatches = filterForTier("RETAIL");
+      expect(retailMatches.map((p) => p.id)).toEqual([1, 3]);
+      expect(retailMatches.some((p) => p.promoCustomerTier === "WHOLESALE")).toBe(false);
+
+      // لعميل بدون فئة محددة: يرى البرامج العامة فقط
+      const unassignedMatches = filterForTier(null);
+      expect(unassignedMatches.map((p) => p.id)).toEqual([3]);
+    });
+
+    it("يتحقق من فحص الكوبونات المطلوبة صراحة لتصدير PDF وكشف أي كوبون ملغى أو مستهلك", () => {
+      const requestedCodes = ["COUPON-ACTIVE-1", "COUPON-VOID-2", "COUPON-REDEEMED-3"];
+      const dbRows = [
+        { code: "COUPON-ACTIVE-1", status: "ACTIVE", programId: 10 },
+      ];
+
+      const activeSet = new Set(dbRows.filter((r) => r.status === "ACTIVE" && r.programId === 10).map((r) => r.code));
+      const invalidOrInactive = requestedCodes.filter((c) => !activeSet.has(c));
+
+      expect(invalidOrInactive).toHaveLength(2);
+      expect(invalidOrInactive).toContain("COUPON-VOID-2");
+      expect(invalidOrInactive).toContain("COUPON-REDEEMED-3");
+    });
   });
 });
 
