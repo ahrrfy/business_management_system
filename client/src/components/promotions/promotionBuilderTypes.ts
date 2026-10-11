@@ -6,7 +6,23 @@
 export type PromotionDiscountType = "PERCENT" | "AMOUNT";
 export type PromotionScope = "ALL" | "CATEGORIES" | "PRODUCTS";
 
+/**
+ * الأنماط الترويجية المتخصصة:
+ * - COUPON_BATCH: حملة كوبونات عامة مع توليد دفعات متعددة وتصدير PDF بطاقات 54×84 مم.
+ * - AFFILIATE: كوبون شركاء ومؤثرين بالعمولة (رمز مخصص ونسبة عمولة وتتبع أداء).
+ * - BOUNCE_BACK: كوبون عودة تلقائي يصدر ويُطبع مع فواتير الكاشير عند بلوغ سقف الشراء.
+ * - FIRST_ORDER: كوبون ترحيبي للطلب الأول (إصدار ذاتي للعميل الموثق فقط).
+ * - DIRECT_PROMO: عرض خصم مالي مباشر بدون كود (تطبيق آلي على الفاتورة في الكاشير والمتجر).
+ */
+export type PromotionArchetype =
+  | "COUPON_BATCH"
+  | "AFFILIATE"
+  | "BOUNCE_BACK"
+  | "FIRST_ORDER"
+  | "DIRECT_PROMO";
+
 export interface PromotionFormData {
+  archetype: PromotionArchetype;
   name: string;
   description: string;
   codePrefix: string;
@@ -26,6 +42,9 @@ export interface PromotionFormData {
   perCouponLimit: number;
   perCustomerLimit: number;
   isFirstOrderSelfService: boolean;
+  initialBatchCount: number;
+  customCodesList: string;
+  exportPdfOnCreate: boolean;
   affiliateName: string;
   affiliatePhone: string;
   affiliateCommissionRate: string;
@@ -49,6 +68,7 @@ export function todayYmd(): string {
 }
 
 export const INITIAL_PROMOTION_FORM_DATA: PromotionFormData = {
+  archetype: "COUPON_BATCH",
   name: "عرض ترويجي خاص",
   description: "",
   codePrefix: "VIP",
@@ -68,9 +88,12 @@ export const INITIAL_PROMOTION_FORM_DATA: PromotionFormData = {
   perCouponLimit: 1,
   perCustomerLimit: 1,
   isFirstOrderSelfService: false,
+  initialBatchCount: 20,
+  customCodesList: "",
+  exportPdfOnCreate: true,
   affiliateName: "",
   affiliatePhone: "",
-  affiliateCommissionRate: "0.00",
+  affiliateCommissionRate: "5.00",
   activeDays: [0, 1, 2, 3, 4, 5, 6],
   isAutoBounceBack: false,
   autoBounceBackMinInvoice: "50000",
@@ -98,8 +121,11 @@ export function validatePromotionFormData(data: PromotionFormData): FormValidati
     errors.name = "اسم العرض والبرنامج إلزامي (حرفان على الأقل)";
   }
 
-  if (!data.codePrefix.trim()) {
-    errors.codePrefix = "بادئة الكود مطلوبة (مثل VIP أو CRM)";
+  // إذا لم يكن العرض خصماً مباشراً تلقائياً، يلزم تحديد بادئة الرمز
+  if (data.archetype !== "DIRECT_PROMO") {
+    if (!data.codePrefix.trim()) {
+      errors.codePrefix = "بادئة الكود مطلوبة (مثل VIP أو CRM)";
+    }
   }
 
   if (!data.validFrom) {
@@ -115,9 +141,11 @@ export function validatePromotionFormData(data: PromotionFormData): FormValidati
     if (isNaN(pct) || pct <= 0 || pct > 100) {
       errors.discountPercent = "نسبة الخصم يجب أن تكون بين 0.01٪ و 100٪";
     }
-    const cap = parseFloat(data.maxDiscountAmount);
-    if (isNaN(cap) || cap <= 0) {
-      errors.maxDiscountAmount = "سقف الخصم الأقصى بالدينار إلزامي لمنع الخسائر غير المتوقعة";
+    if (data.archetype !== "DIRECT_PROMO") {
+      const cap = parseFloat(data.maxDiscountAmount);
+      if (isNaN(cap) || cap <= 0) {
+        errors.maxDiscountAmount = "سقف الخصم الأقصى بالدينار إلزامي لمنع الخسائر غير المتوقعة";
+      }
     }
   } else {
     const amt = parseFloat(data.discountAmount);
@@ -126,19 +154,66 @@ export function validatePromotionFormData(data: PromotionFormData): FormValidati
     }
   }
 
-  const minSpend = parseFloat(data.minOrderSpend);
-  if (isNaN(minSpend) || minSpend < 0) {
-    errors.minOrderSpend = "الحد الأدنى لقيمة الفاتورة لا يمكن أن يكون سالباً";
+  if (data.archetype !== "DIRECT_PROMO") {
+    const minSpend = parseFloat(data.minOrderSpend);
+    if (isNaN(minSpend) || minSpend < 0) {
+      errors.minOrderSpend = "الحد الأدنى لقيمة الفاتورة لا يمكن أن يكون سالباً";
+    }
   }
 
-  if (data.affiliateName.trim() && !data.affiliateCommissionRate.trim()) {
-    errors.affiliateCommissionRate = "حدد نسبة العمولة عند إضافة مسوق";
+  // التحقق من نطاق التطبيق والأهداف المحددة
+  if (data.scope === "CATEGORIES" && data.targetCategoryIds.length === 0) {
+    errors.targetCategoryIds = "حدد فئة واحدة على الأقل عند قصر العرض على فئات محددة";
   }
 
-  if (data.affiliateCommissionRate.trim()) {
+  if (data.scope === "PRODUCTS" && data.targetProductIds.length === 0) {
+    errors.targetProductIds = "حدد منتجاً واحداً على الأقل عند قصر العرض على منتجات محددة";
+  }
+
+  // التحقق من صحة وعدم تكرار الأكواد المخصصة (حصرها بنمط COUPON_BATCH)
+  if (data.archetype === "COUPON_BATCH" && data.customCodesList.trim()) {
+    const rawLines = data.customCodesList
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const invalidLines = rawLines.filter((l) => !/^[A-Za-z0-9-]+$/.test(l));
+    if (invalidLines.length > 0) {
+      errors.customCodesList = `تحتوي الأكواد على محارف غير صالحة (يُسمح فقط بالحروف الإنجليزية والأرقام والشرطة): ${invalidLines.slice(0, 3).join(", ")}`;
+    } else {
+      const normalized = rawLines.map((s) => s.toUpperCase());
+      const duplicates = normalized.filter((code, idx) => normalized.indexOf(code) !== idx);
+      if (duplicates.length > 0) {
+        errors.customCodesList = `يوجد تكرار في الأكواد المدخلة: ${Array.from(new Set(duplicates)).slice(0, 3).join(", ")}`;
+      }
+    }
+  }
+
+  // فحوصات نمط المؤثرين
+  if (data.archetype === "AFFILIATE") {
+    if (!data.affiliateName.trim()) {
+      errors.affiliateName = "اسم المسوق أو الشريك الترويجي إلزامي";
+    }
     const rate = parseFloat(data.affiliateCommissionRate);
     if (isNaN(rate) || rate < 0 || rate > 100) {
       errors.affiliateCommissionRate = "نسبة عمولة المسوق يجب أن تكون بين 0٪ و 100٪";
+    }
+  }
+
+  // فحوصات نمط كوبون العودة
+  if (data.archetype === "BOUNCE_BACK") {
+    const minInv = parseFloat(data.autoBounceBackMinInvoice);
+    if (isNaN(minInv) || minInv <= 0) {
+      errors.autoBounceBackMinInvoice = "حدد الحد الأدنى لقيمة الفاتورة لتفعيل كوبون العودة التلقائي";
+    }
+    if (!data.bounceBackPrefix.trim()) {
+      errors.bounceBackPrefix = "بادئة رمز كوبون العودة مطلوبة (مثل NEXT)";
+    }
+  }
+
+  // فحوصات التوليد المتعدد
+  if (data.archetype === "COUPON_BATCH") {
+    if (data.initialBatchCount < 0 || data.initialBatchCount > 500) {
+      errors.initialBatchCount = "عدد الكوبونات للإصدار المباشر يجب أن يكون بين 0 و 500";
     }
   }
 
