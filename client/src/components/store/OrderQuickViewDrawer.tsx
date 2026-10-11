@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { orderStatusLabel, orderStatusChipClass, type OnlineOrderStatus } from "@shared/onlineOrderStatus";
+import { ReceptionDuplicateAlert } from "@/components/reception/ReceptionDuplicateAlert";
 
 interface OrderQuickViewDrawerProps {
   orderId: number | null;
@@ -95,6 +96,10 @@ export function OrderQuickViewDrawer({
             </div>
           ) : order ? (
             <>
+              <ReceptionDuplicateAlert input={{
+                branchId: Number(order.branchId),
+                reference: { kind: "ONLINE", id: order.id },
+              }} />
               {/* بطاقة معلومات العميل والتوصيل */}
               <div className="rounded-lg border bg-card p-3 space-y-2 text-xs">
                 <div className="flex items-center justify-between">

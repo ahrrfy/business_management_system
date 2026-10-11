@@ -16,6 +16,13 @@ import { OrderLeaderboardModal } from "../OrderLeaderboardModal";
 const trpcMocks = vi.hoisted(() => ({
   orderDetailQuery: vi.fn(),
   leaderboardQuery: vi.fn(),
+  duplicateAlert: vi.fn(() => null),
+}));
+
+// The alert's requests and decisions have their own component suite; this suite
+// verifies the drawer passes its authoritative order reference to that boundary.
+vi.mock("@/components/reception/ReceptionDuplicateAlert", () => ({
+  ReceptionDuplicateAlert: trpcMocks.duplicateAlert,
 }));
 
 const whatsappMocks = vi.hoisted(() => ({
@@ -63,6 +70,7 @@ describe("Store Order Components Suite", () => {
     whatsappMocks.buildOnlineOrderFollowupMessage.mockClear();
     trpcMocks.orderDetailQuery.mockClear();
     trpcMocks.leaderboardQuery.mockClear();
+    trpcMocks.duplicateAlert.mockClear();
 
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
       value: vi.fn(),
@@ -448,6 +456,7 @@ describe("Store Order Components Suite", () => {
   describe("OrderQuickViewDrawer", () => {
     const sampleOrderDetail = {
       id: 501,
+      branchId: 2,
       orderNumber: "SO-501",
       status: "CONFIRMED",
       customerName: "فاطمة حيدر",
@@ -562,6 +571,10 @@ describe("Store Order Components Suite", () => {
       expect(bodyText).toContain("خصم القسيمة (STUDENT2026):");
       expect(bodyText).toContain("-3,000 د.ع");
       expect(bodyText).toContain("27,000 د.ع");
+      expect(trpcMocks.duplicateAlert).toHaveBeenCalledWith(
+        { input: { branchId: 2, reference: { kind: "ONLINE", id: 501 } } },
+        undefined,
+      );
     });
 
     it("يشغّل أزرار طباعة الملصق والحراري واستمارة التجهيز A4", () => {

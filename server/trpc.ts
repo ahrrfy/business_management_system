@@ -1,11 +1,12 @@
 import { NOT_ADMIN_ERR_MSG, TWO_FACTOR_REQUIRED_ROLES, UNAUTHED_ERR_MSG } from "@shared/const";
 import { GENERIC_INTERNAL_AR, mysqlCodeFrom, toArabicMessage } from "@shared/errorMap.ar";
 import { appErrorMessage } from "@shared/errors";
+import { canCheckReceptionDuplicates } from "@shared/receptionDuplicateOrders";
 import {
   AI_PROVIDER_ERROR_CATEGORIES,
   type AiProviderErrorCategory,
 } from "@shared/productContentAi";
-import { canSeeCost as _canSeeCost, canUseDigitalCardsSellingStation, levelSatisfies, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
+import { canSeeCost as _canSeeCost, canUseDigitalCardsSellingStation, levelSatisfies, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey, type PermissionMap } from "@shared/permissions";
 import {
   capabilityModuleDecision,
   capabilityShadowEnabled,
@@ -1080,6 +1081,21 @@ export const expensesGlobalProcedure = auditedProcedure.use(
 export const workordersReadProcedure = branchScopedProcedure.use(requireModule("workorders", "READ"));
 export const workordersCashierProcedure = moduleProcedure(["cashier", "manager"], "workorders", "FULL");
 export const workordersExecProcedure = moduleProcedure(["cashier", "manager", "print_operator"], "workorders", "FULL");
+/** Read-only duplicate advice for existing reception execution or store fulfillment authority. */
+export const receptionDuplicateReadProcedure = branchScopedProcedure.use(({ ctx, next }) => {
+  const override = (ctx.user as { permissionsOverride?: PermissionMap | null }).permissionsOverride ?? null;
+  if (!canCheckReceptionDuplicates(ctx.user.role, override)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر فحص تشابه الطلبات",
+        why: "الحساب لا يملك صلاحية تنفيذ الاستقبال أو تجهيز طلبات المتجر",
+        doThis: "راجع مسؤول الفرع لمنح صلاحية الاستقبال أو تجهيز المتجر قبل المتابعة",
+      }),
+    });
+  }
+  return next({ ctx });
+});
 export const workordersManagerProcedure = moduleProcedure(["manager"], "workorders", "FULL");
 /**
  * **الإلغاءُ المباشر لأمر الشغل** — مدير **أو فنّي مطبعة** (قرار المالك ١/٩/٢٦: الفنّي أوّلُ من
