@@ -12,6 +12,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "server/services/digitalCards/__tests__/intentSchemas.test.ts",
       "server/realtime/__tests__/financialRefresh.test.ts",
       "server/realtime/__tests__/financialCache.test.ts",
       "client/src/lib/realtime/__tests__/financialQueries.test.ts",

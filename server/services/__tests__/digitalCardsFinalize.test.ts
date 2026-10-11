@@ -85,6 +85,7 @@ async function prepareAndExecute(
   options: {
     paymentMethod?: "CASH" | "CREDIT";
     customerId?: number;
+    salesRepId?: number | null;
     sourceType?: "POS" | "INVOICE";
     dueDate?: string;
     notes?: string;
@@ -122,6 +123,7 @@ async function prepareAndExecute(
       branchId: 1,
       shiftId: 1,
       customerId: options.customerId,
+      salesRepId: options.salesRepId,
       priceTier: "RETAIL",
       clientRequestId,
       dueDate: options.dueDate,
@@ -214,7 +216,14 @@ describe("ش٨ — البيع من مزوّد مسبق الدفع (§٦.٢)", ()
     expect(variant.costPrice).toBe("0.00"); // لم يُمَسّ
   });
 
-  it("يثبّت فاتورة الكروت الآجلة ذمّةً كاملة بلا إيصال ويحفظ الاستحقاق", async () => {
+  it.each([
+    { educational: false, salesRepId: undefined },
+    { educational: false, salesRepId: null },
+    { educational: false, salesRepId: 2 },
+    { educational: true, salesRepId: undefined },
+    { educational: true, salesRepId: null },
+    { educational: true, salesRepId: 2 },
+  ])("يثبّت البيع الآجل بلا قبض ويحفظ الاستحقاق والمندوب ($educational / $salesRepId)", async ({ educational, salesRepId }) => {
     await db().insert(s.customers).values({
       id: 1,
       name: "عميل آجل",
@@ -224,15 +233,20 @@ describe("ش٨ — البيع من مزوّد مسبق الدفع (§٦.٢)", ()
     });
     const { providerId } = await mkProvider("آسياسيل آجل للعميل", "PREPAID");
     const walletId = await mkWallet(providerId, "100000");
-    const offeringId = await mkOffering(providerId, "كارت آجل", walletId);
+    const offeringId = await mkOffering(providerId, "كارت آجل", walletId, educational);
     const priced = await publish(providerId, [
       { offeringId, providerShare: "13400" },
     ]);
     const intentId = await prepareAndExecute(
-      [{ offeringId, priced: priced.get(offeringId)! }],
+      [{
+        offeringId,
+        priced: priced.get(offeringId)!,
+        ...(educational ? { student: { studentName: "طالب آجل", studentPhone: "07700000000" } } : {}),
+      }],
       {
         paymentMethod: "CREDIT",
         customerId: 1,
+        salesRepId,
         sourceType: "INVOICE",
         dueDate: "2026-10-31",
         notes: "بيع آجل موثق",
@@ -254,6 +268,8 @@ describe("ش٨ — البيع من مزوّد مسبق الدفع (§٦.٢)", ()
       paymentMethod: null,
       status: "PENDING",
       notes: "بيع آجل موثق",
+      salesRepId: salesRepId ?? actor.userId,
+      salespersonNameSnapshot: salesRepId === manager.userId ? "مدير" : "كاشير",
     });
     expect(invoice.dueDate?.toISOString().slice(0, 10)).toBe("2026-10-31");
     expect(await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, res.invoiceId))).toHaveLength(0);
