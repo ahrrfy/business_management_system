@@ -16,13 +16,15 @@ import {
   Eye,
   CheckCircle2,
   XCircle,
+  RotateCcw,
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { PermissionResourceRow } from "./PermissionResourceRow";
-import type { DomainCategoryViewModel } from "./types";
+import { PermissionResourceCard } from "./PermissionResourceCard";
+import type { DomainCategoryViewModel, PermissionViewMode } from "./types";
 import { STANDARD_ACTIONS } from "@shared/atomicPermissions";
 
 export interface PermissionCategoryCardProps {
@@ -31,6 +33,7 @@ export interface PermissionCategoryCardProps {
   onBulkUpdate: (updates: Record<string, boolean>) => void;
   disabled?: boolean;
   defaultExpanded?: boolean;
+  viewMode?: PermissionViewMode;
 }
 
 const DOMAIN_ICONS: Record<string, LucideIcon> = {
@@ -52,6 +55,7 @@ export const PermissionCategoryCard = memo(function PermissionCategoryCard({
   onBulkUpdate,
   disabled = false,
   defaultExpanded = true,
+  viewMode = "grid",
 }: PermissionCategoryCardProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
 
@@ -61,10 +65,9 @@ export const PermissionCategoryCard = memo(function PermissionCategoryCard({
     if (disabled) return;
     const updates: Record<string, boolean> = {};
     for (const res of category.resources) {
-      for (const slot of Object.values(res.actions)) {
-        if (slot.isSupported) {
-          updates[slot.key] = true;
-        }
+      const actions = res.allActions && res.allActions.length > 0 ? res.allActions : Object.values(res.actions || {});
+      for (const slot of actions) {
+        if (slot.key) updates[slot.key] = true;
       }
     }
     onBulkUpdate(updates);
@@ -74,10 +77,14 @@ export const PermissionCategoryCard = memo(function PermissionCategoryCard({
     if (disabled) return;
     const updates: Record<string, boolean> = {};
     for (const res of category.resources) {
-      for (const slot of Object.values(res.actions)) {
-        if (slot.isSupported) {
-          updates[slot.key] = slot.action === "view";
-        }
+      const actions = res.allActions && res.allActions.length > 0 ? res.allActions : Object.values(res.actions || {});
+      for (const slot of actions) {
+        if (!slot.key) continue;
+        const isView =
+          slot.action === "view" ||
+          slot.definition?.standardAction === "view" ||
+          slot.key.endsWith(".view");
+        updates[slot.key] = isView;
       }
     }
     onBulkUpdate(updates);
@@ -87,10 +94,21 @@ export const PermissionCategoryCard = memo(function PermissionCategoryCard({
     if (disabled) return;
     const updates: Record<string, boolean> = {};
     for (const res of category.resources) {
-      for (const slot of Object.values(res.actions)) {
-        if (slot.isSupported) {
-          updates[slot.key] = false;
-        }
+      const actions = res.allActions && res.allActions.length > 0 ? res.allActions : Object.values(res.actions || {});
+      for (const slot of actions) {
+        if (slot.key) updates[slot.key] = false;
+      }
+    }
+    onBulkUpdate(updates);
+  };
+
+  const handleResetToRole = () => {
+    if (disabled) return;
+    const updates: Record<string, boolean> = {};
+    for (const res of category.resources) {
+      const actions = res.allActions && res.allActions.length > 0 ? res.allActions : Object.values(res.actions || {});
+      for (const slot of actions) {
+        if (slot.key) updates[slot.key] = slot.baseGranted;
       }
     }
     onBulkUpdate(updates);
@@ -118,7 +136,7 @@ export const PermissionCategoryCard = memo(function PermissionCategoryCard({
           <IconComponent aria-hidden="true" className="size-4 text-primary shrink-0" />
           <span>{category.label}</span>
           <span className="text-[11px] font-normal text-muted-foreground hidden sm:inline">
-            ({category.resources.length} موارد)
+            ({category.resources.length} موارد • {category.totalActions} مفاتيح ذرية)
           </span>
         </button>
 
@@ -156,8 +174,8 @@ export const PermissionCategoryCard = memo(function PermissionCategoryCard({
                 variant="ghost"
                 size="sm"
                 onClick={handleGrantAll}
-                className="h-6 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
-                title="منح كل الأفعال في هذا المجال"
+                className="h-6 px-1.5 text-[10px] text-muted-foreground hover:text-[var(--sem-pos)]"
+                title="منح كل العمليات في هذا القطاع"
               >
                 <CheckCircle2 aria-hidden="true" className="size-3 me-1 text-[var(--sem-pos)]" />
                 منح الكل
@@ -167,7 +185,7 @@ export const PermissionCategoryCard = memo(function PermissionCategoryCard({
                 variant="ghost"
                 size="sm"
                 onClick={handleViewOnly}
-                className="h-6 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+                className="h-6 px-1.5 text-[10px] text-muted-foreground hover:text-primary"
                 title="تفعيل العرض فقط وحجب الإضافة والتعديل والاعتماد"
               >
                 <Eye aria-hidden="true" className="size-3 me-1 text-primary" />
@@ -178,47 +196,77 @@ export const PermissionCategoryCard = memo(function PermissionCategoryCard({
                 variant="ghost"
                 size="sm"
                 onClick={handleDenyAll}
-                className="h-6 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
-                title="حجب كافة الأفعال في هذا المجال"
+                className="h-6 px-1.5 text-[10px] text-muted-foreground hover:text-[var(--sem-neg)]"
+                title="حجب كافة العمليات في هذا القطاع"
               >
                 <XCircle aria-hidden="true" className="size-3 me-1 text-[var(--sem-neg)]" />
                 حجب الكل
               </Button>
+              {category.customOverridesCount > 0 && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleResetToRole}
+                  className="h-6 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+                  title="استعادة قالب الدور لكافة عمليات هذا القطاع"
+                >
+                  <RotateCcw aria-hidden="true" className="size-3 me-1" />
+                  استعادة القطاع
+                </Button>
+              )}
             </div>
           )}
         </div>
       </div>
 
-      {/* Resource Table */}
+      {/* Resource Content: Cards View vs Grid View */}
       {isExpanded && (
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs border-collapse">
-            <thead>
-              <tr className="bg-muted/20 border-b border-border text-[11px] text-muted-foreground font-semibold">
-                <th className="px-3 py-2 text-start sticky start-0 bg-muted/40 z-10 border-e border-border min-w-[200px] max-w-[280px]">
-                  المورد / الشاشة
-                </th>
-                {STANDARD_ACTIONS.map((act) => (
-                  <th
-                    key={act.action}
-                    className="px-1 py-2 text-center border-e border-border min-w-[56px]"
-                  >
-                    {act.labelAr}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
+        <div className="p-3">
+          {viewMode === "cards" ? (
+            <div className="space-y-3">
               {category.resources.map((res) => (
-                <PermissionResourceRow
+                <PermissionResourceCard
                   key={res.resource}
                   resource={res}
                   onToggle={onToggle}
+                  onBulkUpdate={onBulkUpdate}
                   disabled={disabled}
                 />
               ))}
-            </tbody>
-          </table>
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded border border-border">
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr className="bg-muted/20 border-b border-border text-[11px] text-muted-foreground font-semibold">
+                    <th className="px-3 py-2 text-start sticky start-0 bg-muted/40 z-10 border-e border-border min-w-[240px] max-w-[320px]">
+                      المورد / الشاشة
+                    </th>
+                    {STANDARD_ACTIONS.map((act) => (
+                      <th
+                        key={act.action}
+                        className="px-1 py-2 text-center border-e border-border min-w-[56px]"
+                      >
+                        {act.labelAr}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {category.resources.map((res) => (
+                    <PermissionResourceRow
+                      key={res.resource}
+                      resource={res}
+                      onToggle={onToggle}
+                      onBulkUpdate={onBulkUpdate}
+                      disabled={disabled}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
     </div>

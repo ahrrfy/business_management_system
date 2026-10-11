@@ -1,11 +1,19 @@
 import React, { memo, useEffect, useState } from "react";
-import { Search, Filter, RotateCcw, X, SlidersHorizontal } from "lucide-react";
+import {
+  Search,
+  RotateCcw,
+  X,
+  SlidersHorizontal,
+  LayoutGrid,
+  Table,
+} from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { cn } from "@/lib/utils";
 import { ALL_DOMAINS, DOMAIN_METADATA, type DomainKey } from "@shared/atomicPermissions";
+import type { PermissionViewMode } from "./types";
 
 export interface PermissionMatrixFiltersProps {
   searchQuery: string;
@@ -14,6 +22,8 @@ export interface PermissionMatrixFiltersProps {
   onDomainChange: (domain: DomainKey | "all") => void;
   overridesOnly: boolean;
   onOverridesOnlyChange: (overridesOnly: boolean) => void;
+  viewMode: PermissionViewMode;
+  onViewModeChange: (mode: PermissionViewMode) => void;
   customGrantsCount: number;
   customDeniesCount: number;
   onResetToTemplate?: () => void;
@@ -27,6 +37,8 @@ export const PermissionMatrixFilters = memo(function PermissionMatrixFilters({
   onDomainChange,
   overridesOnly,
   onOverridesOnlyChange,
+  viewMode,
+  onViewModeChange,
   customGrantsCount,
   customDeniesCount,
   onResetToTemplate,
@@ -51,9 +63,9 @@ export const PermissionMatrixFilters = memo(function PermissionMatrixFilters({
   const totalOverrides = customGrantsCount + customDeniesCount;
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2.5 p-2 rounded-lg bg-card border border-border">
+    <div className="flex flex-wrap items-center justify-between gap-2.5 p-2 rounded-lg bg-card border border-border shadow-xs">
       <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[240px]">
-        {/* حقل البحث الذكي مع صون المسافات العربية وتأخير 180ms */}
+        {/* Search Input */}
         <div className="relative flex-1 min-w-[180px] max-w-sm">
           <Search
             aria-hidden="true"
@@ -83,7 +95,7 @@ export const PermissionMatrixFilters = memo(function PermissionMatrixFilters({
           )}
         </div>
 
-        {/* منسدلة تصفية القطاعات */}
+        {/* Domain Filter Select */}
         <div className="w-[160px]">
           <AppSelect
             id="domain-filter-select"
@@ -101,7 +113,7 @@ export const PermissionMatrixFilters = memo(function PermissionMatrixFilters({
           </AppSelect>
         </div>
 
-        {/* زر حصر الاستثناءات الفردية فقط */}
+        {/* Overrides Only Toggle */}
         <Button
           type="button"
           variant={overridesOnly ? "default" : "outline"}
@@ -133,8 +145,40 @@ export const PermissionMatrixFilters = memo(function PermissionMatrixFilters({
         </Button>
       </div>
 
-      {/* ملخص الاستثناءات وزر استعادة القالب */}
+      {/* View Mode Toggle + Overrides Summary */}
       <div className="flex items-center gap-2 flex-wrap">
+        {/* Dual View Mode Switcher */}
+        <div className="inline-flex items-center p-0.5 rounded-md bg-muted text-xs border border-border">
+          <button
+            type="button"
+            onClick={() => onViewModeChange("cards")}
+            className={cn(
+              "flex items-center gap-1.5 px-2.5 py-1 rounded transition-all cursor-pointer",
+              viewMode === "cards"
+                ? "bg-background text-foreground shadow-xs font-semibold"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            title="عرض البطاقات والشجرة (أفضل ممارسة — بدون أعمدة فارغة)"
+          >
+            <LayoutGrid aria-hidden="true" className="size-3.5 text-primary" />
+            <span>البطاقات والشجرة</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onViewModeChange("grid")}
+            className={cn(
+              "flex items-center gap-1.5 px-2.5 py-1 rounded transition-all cursor-pointer",
+              viewMode === "grid"
+                ? "bg-background text-foreground shadow-xs font-semibold"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            title="عرض جدول المصفوفة والمقارنة"
+          >
+            <Table aria-hidden="true" className="size-3.5" />
+            <span>جدول المصفوفة</span>
+          </button>
+        </div>
+
         {totalOverrides > 0 && (
           <div className="flex items-center gap-1.5 text-xs font-mono">
             <span className="text-muted-foreground font-sans">الاستثناءات:</span>
@@ -164,8 +208,9 @@ export const PermissionMatrixFilters = memo(function PermissionMatrixFilters({
             size="sm"
             onClick={onResetToTemplate}
             className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground gap-1"
+            title="إعادة ضبط كافة الصلاحيات إلى قالب الدور المعتمد"
           >
-            <RotateCcw aria-hidden="true" className="size-3" />
+            <RotateCcw aria-hidden="true" className="size-3.5" />
             <span>إعادة لقالب الدور</span>
           </Button>
         )}

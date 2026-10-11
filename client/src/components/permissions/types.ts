@@ -78,7 +78,12 @@ export interface ResourceRowViewModel {
   domain: DomainKey;
   label: string;
   description?: string;
+  iconName?: string;
   actions: Record<StandardActionType, ResourceActionSlot>;
+  allActions: ResourceActionSlot[];
+  specialActions: ResourceActionSlot[];
+  totalActionsCount: number;
+  grantedActionsCount: number;
   hasCustomOverrides: boolean;
 }
 
@@ -94,10 +99,13 @@ export interface DomainCategoryViewModel {
   customOverridesCount: number;
 }
 
+export type PermissionViewMode = "cards" | "grid";
+
 export interface PermissionFilterState {
   searchQuery: string;
   domain: DomainKey | "all";
   overridesOnly: boolean;
+  viewMode: PermissionViewMode;
 }
 
 export interface OperationalPreset {
@@ -127,4 +135,6 @@ export interface PermissionMatrixProps {
   showPresetsBar?: boolean;
   showCapsPanel?: boolean;
   showMaskingPanel?: boolean;
+  defaultViewMode?: PermissionViewMode;
 }
+
