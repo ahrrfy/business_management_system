@@ -8,6 +8,7 @@ import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { formatIqd, moneyInput } from "@/lib/money";
 import { CO } from "@/lib/printing/brand";
 import { storefrontUrl } from "@/lib/siteHosts";
+import { sanitizeForWhatsApp } from "@/lib/whatsapp";
 import { notify } from "@/lib/notify";
 import type { PromotionFormData } from "./promotionBuilderTypes";
 
@@ -130,7 +131,7 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
 
   async function handleCopyMessage() {
     try {
-      await navigator.clipboard.writeText(activeMessage);
+      await navigator.clipboard.writeText(sanitizeForWhatsApp(activeMessage));
       setCopied(true);
       notify.ok("تم نسخ نص رسالة WhatsApp الترويجية");
       setTimeout(() => setCopied(false), 2000);
