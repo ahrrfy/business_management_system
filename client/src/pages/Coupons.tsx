@@ -290,7 +290,7 @@ export default function Coupons() {
       ],
     });
   }
-  async function exportCoupons(format: "xlsx" | "csv" = "xlsx") {
+  function exportCoupons(format: "xlsx" | "csv" = "xlsx") {
     if (!selected || !selectedProgram) return;
     if (format === "xlsx") {
       exportWorkbook();
@@ -298,22 +298,29 @@ export default function Coupons() {
     }
     const q = debouncedCodeQuery || undefined;
     const filterStatus = statusFilter === "ALL" ? undefined : statusFilter;
-    const all = await fetchAllPaged<IssuedCoupon>((offset, limit) => utils.crm.coupons.listIssued.fetch({ programId: selected, limit, offset, q, status: filterStatus }).then((result) => ({ rows: result.rows, total: result.total })), { pageSize: 500 });
-    exportRows(all, {
-      filename: `كوبونات-${selectedProgram.name}`,
-      format: "csv",
-      title: `سجل كوبونات — ${selectedProgram.name}`,
-      meta: [{ label: "الحالة", value: statusFilter === "ALL" ? "كل الحالات" : COUPON_STATUS_AR[statusFilter] }, { label: "البحث", value: q || "بلا فلتر" }],
-      columns: [
-        { key: "code", header: "الرمز" },
-        { key: "status", header: "الحالة", map: (row) => COUPON_STATUS_AR[row.status] ?? row.status },
-        { key: "assignedCustomerName", header: "العميل المخصص", map: (row) => row.assignedCustomerName ?? "عام" },
-        { key: "issuedAt", header: "تاريخ الإصدار", map: (row) => displayDate(row.issuedAt) },
-        { key: "lastInvoiceNumber", header: "آخر فاتورة", map: (row) => row.lastInvoiceNumber ?? "—" },
-        { key: "lastRedeemedAt", header: "آخر استخدام", map: (row) => displayDate(row.lastRedeemedAt) },
-        { key: "redeemedDiscount", header: "الخصم المستخدم", money: true, map: (row) => D(row.redeemedDiscount).toNumber() },
-      ],
-    });
+    exportRows(
+      () =>
+        fetchAllPaged<IssuedCoupon>(
+          (offset, limit) =>
+            utils.crm.coupons.listIssued.fetch({ programId: selected, limit, offset, q, status: filterStatus }).then((result) => ({ rows: result.rows, total: result.total })),
+          { pageSize: 500 }
+        ),
+      {
+        filename: `كوبونات-${selectedProgram.name}`,
+        format: "csv",
+        title: `سجل كوبونات — ${selectedProgram.name}`,
+        meta: [{ label: "الحالة", value: statusFilter === "ALL" ? "كل الحالات" : COUPON_STATUS_AR[statusFilter] }, { label: "البحث", value: q || "بلا فلتر" }],
+        columns: [
+          { key: "code", header: "الرمز" },
+          { key: "status", header: "الحالة", map: (row) => COUPON_STATUS_AR[row.status] ?? row.status },
+          { key: "assignedCustomerName", header: "العميل المخصص", map: (row) => row.assignedCustomerName ?? "عام" },
+          { key: "issuedAt", header: "تاريخ الإصدار", map: (row) => displayDate(row.issuedAt) },
+          { key: "lastInvoiceNumber", header: "آخر فاتورة", map: (row) => row.lastInvoiceNumber ?? "—" },
+          { key: "lastRedeemedAt", header: "آخر استخدام", map: (row) => displayDate(row.lastRedeemedAt) },
+          { key: "redeemedDiscount", header: "الخصم المستخدم", money: true, map: (row) => D(row.redeemedDiscount).toNumber() },
+        ],
+      }
+    );
   }
   function exportWorkbook() {
     if (!selected || !selectedProgram) return;

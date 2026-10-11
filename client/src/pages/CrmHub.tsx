@@ -537,13 +537,6 @@ const CARE_TABS: HubTab[] = [
   { value: "inbox", label: "التواصل والوارد", gate: { module: "channels", level: "READ" }, Component: Inbox },
 ];
 
-const CARE_CANONICAL_TABS: HubTab[] = [
-  { value: "customers", label: "قائمة الزبائن", gate: { module: "crm", level: "READ" }, Component: Customers },
-  { value: "complaints", label: "الشكاوى ورضا الزبائن", gate: { module: "crm", level: "READ" }, Component: CustomerComplaintsView },
-  { value: "followups", label: "الملاحظات والمتابعات", gate: { module: "crm", level: "READ" }, Component: CustomerNotes },
-  { value: "contacts", label: "دليل أرقام وهواتف الزبائن", gate: { module: "crm", level: "READ" }, Component: ContactsBank },
-];
-
 // 2. جناح المبيعات وعروض الأسعار (Sales)
 const SALES_TABS: HubTab[] = [
   { value: "quotations", label: "عروض الأسعار والمقايسات", gate: { module: "sales", level: "READ" }, Component: Quotations },
@@ -788,7 +781,7 @@ export default function CrmHub() {
   const activeWingTabs = useMemo(() => {
     switch (activeWing) {
       case "care":
-        return rawTab === "inbox" ? CARE_TABS : CARE_CANONICAL_TABS;
+        return CARE_TABS;
       case "sales":
         return SALES_TABS;
       case "marketing":
@@ -798,7 +791,7 @@ export default function CrmHub() {
       default:
         return OVERVIEW_TABS;
     }
-  }, [activeWing, rawTab]);
+  }, [activeWing]);
 
   return (
     <div className="space-y-4">
