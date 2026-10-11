@@ -2268,6 +2268,7 @@ export async function createSaleInTx(
       branchId: input.branchId,
       customerId: input.customerId ?? null,
       invoiceTotal: effectiveTotalD,
+      customerTier: tier,
     });
   }
 

@@ -1,6 +1,6 @@
 import { randomBytes, createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { appErrorMessage } from "../../shared/errors";
 import { formatActiveDays, type PromotionDesignMeta } from "../../shared/promotionScheduling";
@@ -864,7 +864,41 @@ export const crmRouter = router({
 
         let targetCodes: string[] = [];
         if (input.codes && input.codes.length > 0) {
-          targetCodes = input.codes;
+          const normalized = Array.from(new Set(input.codes.map((c) => normalizeCode(c)).filter(Boolean)));
+          if (!normalized.length) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "رموز الكوبونات غير صالحة",
+                why: "لم يتم تمرير أي رمز كوبون صالح للتصدير",
+                doThis: "تأكد من تحديد رموز كوبونات صحيحة ثم أعد المحاولة",
+              }),
+            });
+          }
+          const hashes = normalized.map((c) => codeHash(c));
+          const rows = await db
+            .select({ code: coupons.code })
+            .from(coupons)
+            .where(
+              and(
+                eq(coupons.programId, input.programId),
+                eq(coupons.status, "ACTIVE"),
+                inArray(coupons.codeHash, hashes),
+              ),
+            );
+          const activeSet = new Set(rows.map((r) => normalizeCode(r.code)));
+          const invalidOrInactive = normalized.filter((c) => !activeSet.has(c));
+          if (invalidOrInactive.length > 0) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "بعض الكوبونات المطلوبة غير صالحة للتصدير",
+                why: `هناك ${invalidOrInactive.length} كوبون غير نشط أو ملغى أو لا يتبع هذا البرنامج (${invalidOrInactive[0]})`,
+                doThis: "تأكد من اختيار كوبونات نشطة تابعة للبرنامج المحدد فقط قبل تصدير ملف PDF",
+              }),
+            });
+          }
+          targetCodes = rows.map((r) => r.code);
         } else {
           const rows = await db
             .select({ code: coupons.code })

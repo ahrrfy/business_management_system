@@ -18,6 +18,7 @@ import type { Tx } from "../db";
 import { extractAffectedRows } from "../lib/insertId";
 import { DecimalInput, money, round2, toDbMoney } from "./money";
 import type Decimal from "decimal.js";
+import type { PriceTier } from "./pricing";
 
 export interface LockedCoupon {
   couponId: number;
@@ -698,6 +699,7 @@ export interface IssueBounceBackInput {
   branchId: number;
   customerId?: number | null;
   invoiceTotal: Decimal;
+  customerTier?: PriceTier | null;
 }
 
 export interface BounceBackCouponResult {
@@ -710,7 +712,7 @@ export interface BounceBackCouponResult {
 
 /**
  * إصدار قسيمة عودة تلقائية (Bounce-Back Coupon) مع فواتير الكاشير
- * إذا كانت الفاتورة تستوفي شرط الحد الأدنى وتطابق برنامج عودة نشط.
+ * إذا كانت الفاتورة تستوفي شرط الحد الأدنى وتطابق برنامج عودة نشط، مع مطابقة فئة تسعير العميل.
  */
 export async function issueBounceBackCouponTx(
   tx: Tx,
@@ -726,6 +728,7 @@ export async function issueBounceBackCouponTx(
       designJson: couponPrograms.designJson,
       promotionId: couponPrograms.promotionId,
       branchId: couponPrograms.branchId,
+      customerTier: promotions.customerTier,
       promoType: promotions.type,
       promoPercent: promotions.discountPercent,
       promoAmount: promotions.discountAmount,
@@ -742,6 +745,9 @@ export async function issueBounceBackCouponTx(
       eq(promotions.isActive, true),
       eq(promotions.applicationMode, "COUPON"),
       or(isNull(promotions.branchId), eq(promotions.branchId, input.branchId)),
+      input.customerTier
+        ? or(isNull(promotions.customerTier), eq(promotions.customerTier, input.customerTier))
+        : isNull(promotions.customerTier),
       sql`${promotions.effectiveFrom} <= ${today}`,
       or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= ${today}`),
     ))
