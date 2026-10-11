@@ -253,7 +253,7 @@ function operationEnvelope(metadata: AuditMetadata, data: AuditData): OperationA
  * القاعدتان: ① data URL ⇒ علامةٌ تصف الحجم (لا بايتاتها). ② سقفٌ نهائيّ للحمولة كلّها —
  * شبكة أمانٍ لأيّ حقلٍ ضخمٍ غير متوقَّع (نصّ طويل، مصفوفة كبيرة) لا نعرفه بعد.
  */
-const MAX_AUDIT_VALUE_BYTES = 32 * 1024;
+const MAX_AUDIT_VALUE_BYTES = 8 * 1024;
 const MAX_AUDIT_STRING_CHARS = 1024;
 /**
  * حاجزٌ أخير ضدّ تداخلٍ مَرَضيّ فقط — **ليس** أداة تحديد الحجم (ذاك عمل `MAX_AUDIT_VALUE_BYTES`).
