@@ -1087,7 +1087,6 @@ export default function Customers() {
           customerPhone={instantGiftCustomer.phone}
           onSuccess={() => {
             invalidateCustomers();
-            setInstantGiftCustomer(null);
           }}
         />
       )}

@@ -524,7 +524,6 @@ function CustomerComplaintsView() {
           feedbackId={giftCustomer.feedbackId}
           onSuccess={() => {
             feedbackQuery.refetch();
-            setGiftCustomer(null);
           }}
         />
       )}
