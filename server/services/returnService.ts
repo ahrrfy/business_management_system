@@ -2797,9 +2797,30 @@ export async function returnSaleDirect(
       const isOwner = Boolean(userRow.isOwner);
       const isAdmin = effectiveRole === "admin";
       const hasSalesFull = effectivePermissions.sales === "FULL";
-      const hasReturnAtomic =
-        resolvedAtomic["pos.return.create"] === true ||
-        resolvedAtomic["pos.return.approve"] === true;
+      const isSalesDenied = effectivePermissions.sales === "NONE";
+
+      const explicitAtomicGrant =
+        (userRow.atomicPermissions as AtomicPermissionsMap | null)?.[
+          "pos.return.create"
+        ] === true ||
+        (userRow.atomicPermissions as AtomicPermissionsMap | null)?.[
+          "pos.return.approve"
+        ] === true ||
+        (customRoleRow?.atomicPermissions as AtomicPermissionsMap | null)?.[
+          "pos.return.create"
+        ] === true ||
+        (customRoleRow?.atomicPermissions as AtomicPermissionsMap | null)?.[
+          "pos.return.approve"
+        ] === true;
+
+      const explicitAtomicRevoke =
+        (userRow.atomicPermissions as AtomicPermissionsMap | null)?.[
+          "pos.return.create"
+        ] === false ||
+        (customRoleRow?.atomicPermissions as AtomicPermissionsMap | null)?.[
+          "pos.return.create"
+        ] === false;
+
       const isCashierRole = [
         "manager",
         "cashier",
@@ -2808,15 +2829,18 @@ export async function returnSaleDirect(
         "reception_clerk",
         "sales_rep",
       ].includes(effectiveRole);
+
       const hasReceptionFull =
         effectiveRole === "print_operator" &&
         effectivePermissions.workorders === "FULL";
+
       const isAuthorized =
         isOwner ||
         isAdmin ||
-        (isCashierRole && (hasSalesFull || hasReturnAtomic)) ||
-        hasReceptionFull ||
-        hasReturnAtomic;
+        (!explicitAtomicRevoke &&
+          (explicitAtomicGrant ||
+            (!isSalesDenied &&
+              (hasReceptionFull || (isCashierRole && hasSalesFull)))));
 
       if (!isAuthorized) {
         throw new TRPCError({

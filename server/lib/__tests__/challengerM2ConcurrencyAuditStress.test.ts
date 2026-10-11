@@ -627,10 +627,10 @@ describe("Milestone 2 Challenger 2: Adversarial Stress & Verification Suite", ()
         const redacted = redactAuditValue(fullAtomicMap);
         expect(redacted).toEqual(fullAtomicMap);
 
-        // Verify payload size is well below MAX_AUDIT_VALUE_BYTES (8KB)
+        // Verify payload size is well below MAX_AUDIT_VALUE_BYTES (32KB)
         const serializedBytes = Buffer.byteLength(JSON.stringify(redacted), "utf8");
-        expect(serializedBytes).toBeLessThan(8192);
-        expect(serializedBytes).toBeGreaterThan(1500); // typically ~2.5KB
+        expect(serializedBytes).toBeLessThan(32768);
+        expect(serializedBytes).toBeGreaterThan(1500);
       });
 
       it("Preserves full OperationalCaps structure without modification or truncation", () => {
@@ -647,16 +647,16 @@ describe("Milestone 2 Challenger 2: Adversarial Stress & Verification Suite", ()
         expect(redacted).toEqual(fullCaps);
       });
 
-      it("Safely protects against malicious oversized values exceeding 8KB", () => {
+      it("Safely protects against malicious oversized values exceeding 32KB", () => {
         const hugeMap: Record<string, boolean> = {};
-        // Generate 500 keys to exceed 8KB
-        for (let i = 0; i < 500; i++) {
+        // Generate 1000 keys to exceed 32KB
+        for (let i = 0; i < 1000; i++) {
           hugeMap[`pos.custom_domain_test_key_oversized_stress_padding_${i}.action`] = true;
         }
 
         const serializedRaw = JSON.stringify(hugeMap);
         const rawBytes = Buffer.byteLength(serializedRaw, "utf8");
-        expect(rawBytes).toBeGreaterThan(8192);
+        expect(rawBytes).toBeGreaterThan(32768);
 
         const redacted = redactAuditValue(hugeMap) as any;
         expect(redacted._truncated).toBe(true);
