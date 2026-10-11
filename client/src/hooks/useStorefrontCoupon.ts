@@ -69,13 +69,25 @@ export function useStorefrontCoupon(options?: UseStorefrontCouponOptions) {
       setCouponFeedback("اكتب رمز الكوبون أولاً");
       return;
     }
-    try {
-      sessionStorage.setItem(STORAGE_KEY, normalized);
-    } catch {}
+    // لا يُحفظ في الجلسة إلا بعد التحقق من صحة التسعير بالمخدم
     setAppliedCouponCode(normalized);
     setCouponFeedback("جارٍ التحقق من الكوبون…");
     options?.onQuoteInvalidate?.();
   }, [couponDraft, options]);
+
+  const persistValidCoupon = useCallback((code: string) => {
+    if (code && VALID_COUPON_CODE_REGEX.test(code)) {
+      try {
+        sessionStorage.setItem(STORAGE_KEY, code.toUpperCase());
+      } catch {}
+    }
+  }, []);
+
+  const invalidateCoupon = useCallback(() => {
+    try {
+      sessionStorage.removeItem(STORAGE_KEY);
+    } catch {}
+  }, []);
 
   const removeCoupon = useCallback(() => {
     try {
@@ -108,5 +120,7 @@ export function useStorefrontCoupon(options?: UseStorefrontCouponOptions) {
     applyCoupon,
     removeCoupon,
     clearCouponOnSuccess,
+    persistValidCoupon,
+    invalidateCoupon,
   };
 }

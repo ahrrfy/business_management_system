@@ -150,12 +150,22 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
 
   function handlePrintReceipt() {
     setPrinting(true);
+    let win: Window | null = null;
     try {
-      const win = window.open("", "_blank", "width=400,height=700");
+      win = window.open("", "_blank", "width=400,height=700");
       if (!win) {
         notify.err("يرجى السماح بالنوافذ المنبثقة لطباعة الإيصال الحراري");
+        setPrinting(false);
         return;
       }
+
+      const termsLen = (data.design.terms || "").length;
+      const titleLen = (data.design.title || data.name || "").length;
+      const subtitleLen = (data.design.subtitle || "").length;
+      const estimatedReceiptHeightMm = Math.max(
+        240,
+        190 + Math.ceil((termsLen + titleLen + subtitleLen) / 25) * 5 + (isScoped ? 35 : 0)
+      );
 
       const receiptHtml = `<!doctype html>
 <html lang="ar" dir="rtl">
@@ -164,7 +174,7 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
   <title>إيصال حراري - ${previewCode}</title>
   ${CAIRO_FONT}
   <style>
-    @page { size: 80mm 200mm; margin: 0; }
+    @page { size: 80mm ${estimatedReceiptHeightMm}mm; margin: 0; }
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -298,9 +308,20 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
       win.document.open();
       win.document.write(receiptHtml);
       win.document.close();
+
+      const cleanupTimer = setInterval(() => {
+        if (!win || win.closed) {
+          clearInterval(cleanupTimer);
+          setPrinting(false);
+        }
+      }, 500);
+
+      setTimeout(() => {
+        clearInterval(cleanupTimer);
+        setPrinting(false);
+      }, 15000);
     } catch {
       notify.err("تعذر فتح نافذة الطباعة الحرارية");
-    } finally {
       setPrinting(false);
     }
   }

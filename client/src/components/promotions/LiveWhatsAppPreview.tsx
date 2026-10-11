@@ -77,7 +77,7 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
         `${smartStoreUrl}`,
         `(أو تفضل بزيارة أقرب فرع وأبرز الرمز عند الدفع)`,
         ``,
-        `* ${terms}`,
+        `• الشروط: ${terms}`,
       ]);
     }
 
@@ -94,7 +94,7 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
         `${smartStoreUrl}`,
         `أو امسح الرمز لدى الكاشير في الفرع مباشرة.`,
         ``,
-        `* ${terms}`,
+        `• الشروط: ${terms}`,
       ]);
     }
 
@@ -114,7 +114,7 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
       `${smartStoreUrl}`,
       `2. أو أظهر الرمز للكاشير عند زيارة فرعنا.`,
       ``,
-      `* ${terms}`,
+      `• الشروط: ${terms}`,
     ]);
   }, [
     style,

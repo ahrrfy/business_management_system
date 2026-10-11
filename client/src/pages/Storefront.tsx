@@ -1231,6 +1231,8 @@ function StorefrontContent() {
     applyCoupon,
     removeCoupon,
     clearCouponOnSuccess,
+    persistValidCoupon,
+    invalidateCoupon,
   } = useStorefrontCoupon({
     onQuoteInvalidate: () => {
       acceptedQuoteRef.current = null;
@@ -1397,6 +1399,16 @@ function StorefrontContent() {
   // mutation functions are stable; request identity is the intentional trigger.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cart.size, panel, privateQuoteInput]);
+
+  useEffect(() => {
+    if (!appliedCouponCode) return;
+    if (privateQuoteM.isError) {
+      invalidateCoupon();
+    } else if (privateQuoteM.data) {
+      persistValidCoupon(appliedCouponCode);
+    }
+  }, [appliedCouponCode, privateQuoteM.data, privateQuoteM.isError, persistValidCoupon, invalidateCoupon]);
+
   const quoteQ = {
     data: privateQuoteRequired ? privateQuoteM.data : publicQuoteQ.data,
     isFetching: privateQuoteRequired ? privateQuoteM.isPending : publicQuoteQ.isFetching,
