@@ -255,7 +255,7 @@ export default function Coupons() {
         customerName: coupon.assignedCustomerName || "زبون مكرّم",
         customerPhone: custPhone || undefined,
         reason: `${baseTitle}${discountSuffix}`,
-        validUntil: selectedProgram?.validTo ? displayDate(selectedProgram.validTo) : undefined,
+        validUntil: selectedProgram?.validTo ?? undefined,
         terms: terms || undefined,
       });
       if (res && !res.ok) {
@@ -303,7 +303,7 @@ export default function Coupons() {
         customerName: customerName || "زبون مكرّم",
         customerPhone: custPhone,
         reason: `${baseTitle}${discountSuffix}`,
-        validUntil: selectedProgram?.validTo ? displayDate(selectedProgram.validTo) : undefined,
+        validUntil: selectedProgram?.validTo ?? undefined,
         terms: terms || undefined,
       });
       if (res && !res.ok) {

@@ -18,7 +18,7 @@ export interface GiftVoucherPrintData {
   customerName: string;
   customerPhone?: string | null;
   reason?: string | null;
-  validUntil?: string | null;
+  validUntil?: string | Date | null;
   terms?: string | null;
   discountScope?: "fixed_credit" | "per_unit";
   totalLabel?: string;
@@ -81,10 +81,24 @@ function formatCurrencyAmount(amount: string | number | null | undefined): strin
   }
 }
 
+function formatValidUntil(val: string | Date | null | undefined): string | null {
+  if (!val) return null;
+  if (val instanceof Date) return fmtDate(val);
+  const str = String(val).trim();
+  if (!str || str === "—") return null;
+  const dmy = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(str);
+  if (dmy) {
+    return `${dmy[1].padStart(2, "0")}/${dmy[2].padStart(2, "0")}/${dmy[3]}`;
+  }
+  const formatted = fmtDate(str);
+  return formatted !== "—" ? formatted : str;
+}
+
 export function giftVoucherToPrintDoc(data: GiftVoucherPrintData): PrintDoc {
   const percentDiscount = resolvePercentageDiscount(data);
   const now = new Date();
   const code = data.code || data.couponCode || "GIFT";
+  const expiry = formatValidUntil(data.validUntil);
 
   let itemBlockName = "رصيد هدية معتمد في المطبعة والقرطاسية";
   let itemPrice = "";
@@ -123,7 +137,7 @@ export function giftVoucherToPrintDoc(data: GiftVoucherPrintData): PrintDoc {
       `الزبون: ${data.customerName}`,
       ...(data.customerPhone ? [`الهاتف: ${data.customerPhone}`] : []),
       ...(data.reason ? [`نوع الإهداء: ${data.reason}`] : []),
-      ...(data.validUntil ? [`صالحة لغاية: ${data.validUntil}`] : []),
+      ...(expiry ? [`صالحة لغاية: ${expiry}`] : []),
     ],
     itemBlocks: [
       {

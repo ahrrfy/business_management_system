@@ -259,6 +259,10 @@ export default function ContractPrices() {
           bold: true,
         },
       ],
+      signatures: [
+        { label: "توقيع العميل / الجهة المتعاقدة", subtext: "الاسم والتوقيع والختم" },
+        { label: "توقيع المخوَّل بالمكتبة", subtext: "الاعتماد والختم الرسمي" },
+      ],
     });
   }
 

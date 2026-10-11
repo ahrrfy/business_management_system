@@ -190,7 +190,7 @@ export function CustomerDossierDrawer({
           customer.phone ||
           customer.whatsapp,
         reason: coupon.programName || undefined,
-        validUntil: coupon.validTo ? fmtDate(coupon.validTo) : undefined,
+        validUntil: coupon.validTo ?? undefined,
         terms: "تُخصم لمرة واحدة على أي فاتورة مبيعات أو أمر شغل داخل فروعنا.",
       });
       if (res && !res.ok) {
