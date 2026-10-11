@@ -121,6 +121,41 @@ export default function InstallmentPlans() {
   const [detailPlanId, setDetailPlanId] = useState<number | null>(null);
   const [payTarget, setPayTarget] = useState<PayTarget | null>(null);
   const [dossierCustomerId, setDossierCustomerId] = useState<number | null>(null);
+  const [isPrintingDue, setIsPrintingDue] = useState(false);
+
+  async function handlePrintDueSoonReport() {
+    setIsPrintingDue(true);
+    try {
+      let allDue: DueRow[] = [];
+      const currentList = due.data ?? [];
+      if (currentList.length < 200) {
+        allDue = currentList;
+      } else {
+        const pageSize = 500;
+        let pageOffset = 0;
+        while (true) {
+          const batch = (await utils.installments.dueSoon.fetch({
+            branchId: isAdmin ? branchFilter : undefined,
+            days: dueSoonDays,
+            limit: pageSize,
+            offset: pageOffset,
+          })) as DueRow[];
+          allDue.push(...batch);
+          if (batch.length < pageSize) break;
+          pageOffset += batch.length;
+        }
+      }
+      if (allDue.length === 0) {
+        notify.err("لا توجد أقساط مستحقة للطباعة");
+        return;
+      }
+      printDueSoonReport(allDue, dueSoonDays);
+    } catch (e) {
+      notify.err(e);
+    } finally {
+      setIsPrintingDue(false);
+    }
+  }
 
   async function invalidateAll() {
     await Promise.all([
@@ -233,10 +268,10 @@ export default function InstallmentPlans() {
           variant="outline"
           size="sm"
           className="gap-1.5"
-          onClick={() => printDueSoonReport(due.data ?? [], dueSoonDays)}
-          disabled={!due.data || due.data.length === 0}
+          onClick={handlePrintDueSoonReport}
+          disabled={isPrintingDue || !due.data || due.data.length === 0}
         >
-          <Printer className="size-3.5" aria-hidden /> طباعة طابور التحصيل
+          <Printer className="size-3.5" aria-hidden /> {isPrintingDue ? "جارٍ تجهيز التقرير…" : "طباعة طابور التحصيل"}
         </Button>
         <Button
           variant="outline"

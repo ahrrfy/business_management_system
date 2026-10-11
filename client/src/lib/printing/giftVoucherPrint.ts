@@ -6,6 +6,8 @@
 import { fmtAr } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { printDoc } from "@/lib/printing/print";
+import { isPaired } from "@/lib/printing/thermal";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
 import type { PrintDoc } from "@/lib/printing/render";
 
 export interface GiftVoucherPrintData {
@@ -129,8 +131,19 @@ export function giftVoucherToPrintDoc(data: GiftVoucherPrintData): PrintDoc {
 }
 
 export async function printGiftVoucher(data: GiftVoucherPrintData) {
-  const doc = giftVoucherToPrintDoc(data);
-  return printDoc(doc);
+  const isPairedPrinter = isPaired();
+  const reserved = !isPairedPrinter && reservePrintWindow("width=380,height=640");
+  try {
+    const doc = giftVoucherToPrintDoc(data);
+    const res = await printDoc(doc);
+    if (res.ok && res.via !== "browser") {
+      releaseReservedPrintWindow();
+    }
+    return res;
+  } catch (err) {
+    if (reserved) releaseReservedPrintWindow();
+    throw err;
+  }
 }
 
 export const printGiftVoucherDoc = printGiftVoucher;

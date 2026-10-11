@@ -234,17 +234,30 @@ export default function Coupons() {
     const design = (selectedProgram?.designJson ?? {}) as { title?: string; subtitle?: string; terms?: string };
     const baseTitle = design.title || selectedProgram?.name || "قسيمة خصم";
     const discountSuffix = isPercent && offer?.discountPercent ? ` (خصم ${offer.discountPercent}%)` : "";
-    await printGiftVoucherDoc({
-      code: coupon.code,
-      couponCode: coupon.code,
-      amount,
-      discountPercent,
-      customerName: coupon.assignedCustomerName || "زبون مكرّم",
-      customerPhone: custPhone || undefined,
-      reason: `${baseTitle}${discountSuffix}`,
-      validUntil: selectedProgram?.validTo ? displayDate(selectedProgram.validTo) : undefined,
-      terms: design.terms || undefined,
-    });
+    try {
+      const res = await printGiftVoucherDoc({
+        code: coupon.code,
+        couponCode: coupon.code,
+        amount,
+        discountPercent,
+        customerName: coupon.assignedCustomerName || "زبون مكرّم",
+        customerPhone: custPhone || undefined,
+        reason: `${baseTitle}${discountSuffix}`,
+        validUntil: selectedProgram?.validTo ? displayDate(selectedProgram.validTo) : undefined,
+        terms: design.terms || undefined,
+      });
+      if (res && !res.ok) {
+        if (res.reason === "popup-blocked") {
+          notify.err("تم حظر نافذة الطباعة من قبل المتصفح، يرجى السماح بالنوافذ المنبثقة");
+        } else {
+          notify.err("تعذر إرسال القسيمة إلى الطابعة");
+        }
+      } else {
+        notify.ok("تم إرسال القسيمة للطباعة");
+      }
+    } catch {
+      notify.err("تعذر إرسال القسيمة إلى الطابعة");
+    }
   }
   async function printLastIssueThermal(issueData: LastIssue) {
     const firstCode = issueData.codes[0];
@@ -257,17 +270,30 @@ export default function Coupons() {
     const design = (selectedProgram?.designJson ?? {}) as { title?: string; subtitle?: string; terms?: string };
     const baseTitle = design.title || selectedProgram?.name || "قسيمة خصم";
     const discountSuffix = isPercent && offer?.discountPercent ? ` (خصم ${offer.discountPercent}%)` : "";
-    await printGiftVoucherDoc({
-      code: firstCode,
-      couponCode: firstCode,
-      amount,
-      discountPercent,
-      customerName: customerName || "زبون مكرّم",
-      customerPhone: custPhone,
-      reason: `${baseTitle}${discountSuffix}`,
-      validUntil: selectedProgram?.validTo ? displayDate(selectedProgram.validTo) : undefined,
-      terms: design.terms || undefined,
-    });
+    try {
+      const res = await printGiftVoucherDoc({
+        code: firstCode,
+        couponCode: firstCode,
+        amount,
+        discountPercent,
+        customerName: customerName || "زبون مكرّم",
+        customerPhone: custPhone,
+        reason: `${baseTitle}${discountSuffix}`,
+        validUntil: selectedProgram?.validTo ? displayDate(selectedProgram.validTo) : undefined,
+        terms: design.terms || undefined,
+      });
+      if (res && !res.ok) {
+        if (res.reason === "popup-blocked") {
+          notify.err("تم حظر نافذة الطباعة من قبل المتصفح، يرجى السماح بالنوافذ المنبثقة");
+        } else {
+          notify.err("تعذر إرسال القسيمة إلى الطابعة");
+        }
+      } else {
+        notify.ok("تم إرسال القسيمة للطباعة");
+      }
+    } catch {
+      notify.err("تعذر إرسال القسيمة إلى الطابعة");
+    }
   }
   function exportPrograms(format: "xlsx" | "csv" = "xlsx") {
     const list = programs.data ?? [];

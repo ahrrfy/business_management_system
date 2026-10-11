@@ -20,6 +20,7 @@ import {
   AlertCircle,
   Plus,
   Gift,
+  RotateCcw,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -319,6 +320,27 @@ function CustomerComplaintsView() {
         <div className="p-12 text-center text-sm text-muted-foreground">
           جارٍ تحميل سجلات الشكاوى والتقييمات...
         </div>
+      ) : feedbackQuery.isError ? (
+        <Card className="rounded-xl border border-destructive/30 bg-destructive/5 p-8 text-center">
+          <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-destructive/10 text-destructive mb-3">
+            <AlertCircle className="size-6" aria-hidden />
+          </div>
+          <div className="text-sm font-semibold text-destructive">تعذّر جلب سجلات الشكاوى والتقييمات</div>
+          <p className="text-xs text-muted-foreground mt-1 max-w-md mx-auto">
+            حدث خطأ أثناء الاتصال بالخادم. يرجى إعادة المحاولة للتأكد من عدم وجود شكاوى مفتوحة بحاجة لمتابعة.
+          </p>
+          <div className="mt-4 flex justify-center">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => feedbackQuery.refetch()}
+              className="gap-1.5"
+            >
+              <RotateCcw className="size-3.5" aria-hidden /> إعادة المحاولة
+            </Button>
+          </div>
+        </Card>
       ) : filteredItems.length === 0 ? (
         <Card className="rounded-xl border border-dashed p-10 text-center">
           <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground mb-3">
