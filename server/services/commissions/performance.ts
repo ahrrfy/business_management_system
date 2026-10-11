@@ -227,12 +227,12 @@ export async function getMyStatus(userId: number, period?: string): Promise<MySt
   const target = targetRow ? money(targetRow.targetAmount) : null;
   if (!mine && !target) return null; // لا خطة ولا هدف — لا شيء يُعرض.
 
-  const baseByUser = await computeNetSalesByUser(db, p);
+  const baseByUser = await computeNetSalesByUser(db, p, undefined, userId);
   const base = baseByUser.get(userId);
   const sales = base?.sales ?? new Decimal(0);
   const returns = base?.returns ?? new Decimal(0);
   const consigDeduction = base?.consigDeduction ?? new Decimal(0);
-  const carryIn = (await loadCarryIn(db, p)).get(employeeId) ?? new Decimal(0);
+  const carryIn = (await loadCarryIn(db, p, employeeId)).get(employeeId) ?? new Decimal(0);
   const effectiveBase = Decimal.max(0, sales.minus(returns).minus(consigDeduction).plus(carryIn));
   const achievementPct = target && target.gt(0) ? round2(effectiveBase.div(target).times(100)) : null;
 
@@ -313,7 +313,7 @@ export async function getRecentCelebrations(scopedBranchId: number | null): Prom
   const conds = [
     gte(onlineOrders.orderDate, twoHoursAgo),
     gte(onlineOrders.total, "500000"),
-    ne(onlineOrders.status, "CANCELLED"),
+    eq(onlineOrders.status, "DELIVERED"),
   ];
   if (scopedBranchId != null) {
     conds.push(eq(onlineOrders.branchId, scopedBranchId));
@@ -337,7 +337,6 @@ export async function getRecentCelebrations(scopedBranchId: number | null): Prom
 
   return bigOrders.map((o) => {
     const totalNum = Number(o.total);
-    const commissionNum = Math.round(totalNum * 0.02);
     return {
       id: `celeb_${o.id}`,
       employeeId: Number(o.preparedByUserId ?? o.claimedByUserId ?? 0),
@@ -345,7 +344,7 @@ export async function getRecentCelebrations(scopedBranchId: number | null): Prom
       employeePhotoUrl: null,
       orderNumber: o.orderNumber,
       dealAmount: String(totalNum),
-      commissionEarned: String(commissionNum),
+      commissionEarned: "0",
       celebrationType: "BIG_DEAL" as const,
       timestamp: o.createdAt.toISOString(),
     };

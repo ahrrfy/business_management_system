@@ -43,8 +43,7 @@ export function StorefrontB2BQuoteButton({
 
     try {
       const today = new Date();
-      const randomSuffix = Math.floor(1000 + Math.random() * 9000);
-      const quoteNumber = `QUO-${today.getFullYear()}-${randomSuffix}`;
+      const quoteNumber = `EST-${today.toISOString().slice(0, 10).replace(/-/g, "")}-B2B`;
 
       const expiryDate = new Date(today);
       expiryDate.setDate(expiryDate.getDate() + 15);
@@ -88,7 +87,7 @@ export function StorefrontB2BQuoteButton({
         taxAmount: 0,
         taxRate: 0,
         total: finalSubtotal,
-        terms: "عرض سعر رسمي معتمد صادر من شركة الرؤية العربية للتجارة العامة والمكتبة العربية. العرض سارٍ لمدة 15 يوماً. الأسعار شاملة وخاضعة لنسبة ضريبة 0% في جمهورية العراق. الدفع عند الاستلام أو بتحويل مصرفي معتمد.",
+        terms: "عرض سعر تقديري صادر من متجر شركة الرؤية العربية للتجارة العامة والمكتبة العربية. العرض سارٍ لمدة 15 يوماً. الأسعار شاملة ومطابقة لقوائم الأسعار المعلنة وخاضعة لنسبة ضريبة 0% في جمهورية العراق. لاعتماد عرض سعر رسمي ومختوم برقم مرجعي للمؤسسات، يرجى تقديم طلب عرض السعر المباشر أو التواصل مع الإدارة.",
       });
 
       setIsGenerated(true);

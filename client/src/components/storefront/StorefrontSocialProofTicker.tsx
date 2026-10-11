@@ -14,10 +14,11 @@ export function StorefrontSocialProofTicker({
   className = "",
 }: StorefrontSocialProofTickerProps) {
   const count = soldCount ?? 0;
+  if (count < 3) return null;
 
-  let text = "منتج مميز: يحظى باهتمام متزايد من المتسوقين اليوم";
-  let icon = <CheckCircle aria-hidden className="size-3.5 text-emerald-600 dark:text-emerald-400" />;
-  let badgeTone = "border-emerald-200/90 bg-emerald-50/70 text-emerald-900 dark:border-emerald-800/50 dark:bg-emerald-950/30 dark:text-emerald-300";
+  let text = "";
+  let icon = null;
+  let badgeTone = "";
 
   if (count >= 10) {
     text = `تم طلب هذا المنتج أكثر من ${formatQuantity(count)} مرة في بغداد والمحافظات`;

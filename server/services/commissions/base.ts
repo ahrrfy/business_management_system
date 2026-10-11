@@ -14,7 +14,7 @@
  *    الحوافز المقطوعة ومكافآت الـ SLA (مذكرة COORDINATION_STORE_ORDERS.md).
  * ========================================================================== */
 import Decimal from "decimal.js";
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { and, eq, isNotNull, or, sql } from "drizzle-orm";
 import {
   accountingEntries,
   invoiceAttributions,
@@ -48,6 +48,7 @@ export async function computeNetSalesByUser(
   runner: DB | Tx,
   period: string,
   branchId?: number,
+  targetUserId?: number,
 ): Promise<Map<number, UserMonthBase>> {
   const { from, toExclusive } = periodDateRange(period);
 
@@ -112,6 +113,13 @@ export async function computeNetSalesByUser(
         sql`${accountingEntries.entryDate} >= ${from}`,
         sql`${accountingEntries.entryDate} < ${toExclusive}`,
         branchId != null ? eq(accountingEntries.branchId, branchId) : undefined,
+        targetUserId != null
+          ? or(
+              eq(invoiceAttributions.userId, targetUserId),
+              and(eq(invoices.sourceType, "WORKORDER"), eq(workOrders.createdBy, targetUserId)),
+              eq(invoices.createdBy, targetUserId),
+            )
+          : undefined,
         // SALE/RETURN للبائع (supplierId فارغ)، أو قيد أمانة أُسنِد لفاتورته (PURCHASE بـsupplierId).
         sql`(
           (${accountingEntries.entryType} IN ('SALE','RETURN') AND ${accountingEntries.supplierId} IS NULL)

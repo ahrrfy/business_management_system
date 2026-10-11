@@ -155,6 +155,7 @@ export async function loadPlans(
 export async function loadCarryIn(
   runner: DB | Tx,
   period: string,
+  targetEmployeeId?: number,
 ): Promise<Map<number, Decimal>> {
   const rows = await runner
     .select({
@@ -168,6 +169,7 @@ export async function loadCarryIn(
       and(
         eq(commissionRuns.status, "approved"),
         lt(commissionRuns.period, period),
+        targetEmployeeId != null ? eq(commissionRunLines.employeeId, targetEmployeeId) : undefined,
       ),
     );
 

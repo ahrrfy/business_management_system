@@ -42,6 +42,7 @@ import {
   ShieldCheck,
   ShoppingBag,
   ShoppingCart,
+  Star,
   Tag,
   Trash2,
   Truck,
@@ -94,6 +95,7 @@ import { StorefrontPersonalAdvisorCard } from "@/components/storefront/Storefron
 import { StorefrontSocialProofTicker } from "@/components/storefront/StorefrontSocialProofTicker";
 import { StorefrontThematicStrip, type ThematicCollectionCard } from "@/components/storefront/StorefrontThematicStrip";
 import { StorefrontCustomizerStudio } from "@/components/storefront/StorefrontCustomizerStudio";
+import { StorefrontHeuristicsBadges } from "@/components/storefront/StorefrontHeuristicsBadges";
 import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
 
 const STORE_NAME = "المكتبة العربية";
@@ -1195,11 +1197,13 @@ function StorefrontContent() {
   const [checkoutErrors, setCheckoutErrors] = useState<CheckoutFieldErrors>({});
   const productDialogCloseRef = useRef<HTMLButtonElement | null>(null);
   const productDialogTriggerRef = useRef<HTMLElement | null>(null);
-  function openProduct(productId: number) {
+  const [productReviewOpenRequest, setProductReviewOpenRequest] = useState<{ open: boolean; orderNumber?: string | null }>({ open: false });
+  function openProduct(productId: number, options?: { openReview?: boolean; orderNumber?: string | null }) {
     const activeElement = typeof document === "undefined" ? null : document.activeElement;
     productDialogTriggerRef.current = activeElement instanceof HTMLElement && activeElement !== document.body
       ? activeElement
       : null;
+    setProductReviewOpenRequest({ open: options?.openReview ?? false, orderNumber: options?.orderNumber ?? null });
     setSelectedId(productId);
   }
   const cartRef = useRef(cart);
@@ -1764,18 +1768,9 @@ function StorefrontContent() {
   }
   function handleSelectThematicCollection(card: ThematicCollectionCard) {
     setSelectedThematicCollection(card);
-    if (card.filterType === "category") {
-      const foundCat = cats.find((c) => c.name === card.filterValue || String(c.id) === card.filterValue);
-      if (foundCat) {
-        setCategoryId(foundCat.id);
-      } else {
-        setSearch(card.filterValue);
-        setRawSearch(card.filterValue);
-      }
-    } else if (card.filterType === "keyword") {
-      setSearch(card.filterValue);
-      setRawSearch(card.filterValue);
-    }
+    setCategoryId(null);
+    setSearch("");
+    setRawSearch("");
     scrollToResults();
   }
   function handleClearThematicCollection() {
@@ -2675,6 +2670,56 @@ function StorefrontContent() {
                   <div className="min-w-0">
                     {detailQ.data.brand && <p className="text-xs font-medium text-slate-400">{detailQ.data.brand}</p>}
                     <h3 className="text-base font-extrabold leading-snug text-slate-900 dark:text-white">{detailQ.data.productName}</h3>
+
+                    {/* شريط التقييمات والنجوم السريع مع زر كتابة التقييم */}
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50/80 p-2.5 ring-1 ring-slate-200/70 dark:bg-slate-800/60 dark:ring-slate-700/80">
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-0.5 text-amber-500">
+                          {[1, 2, 3, 4, 5].map((s) => (
+                            <Star
+                              key={s}
+                              aria-hidden
+                              className={`size-3.5 ${
+                                s <= Math.round(Number(detailQ.data?.ratingAverage ?? 5))
+                                  ? "fill-current text-amber-400"
+                                  : "text-slate-300 dark:text-slate-600"
+                              }`}
+                            />
+                          ))}
+                        </div>
+                        <span className="font-mono text-xs font-black text-slate-800 dark:text-slate-100">
+                          {detailQ.data?.ratingAverage ? Number(detailQ.data.ratingAverage).toFixed(1) : "5.0"}
+                        </span>
+                        <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                          {detailQ.data?.reviewsCount
+                            ? `(${formatQuantity(detailQ.data.reviewsCount)} تقييم معتمد)`
+                            : "(كن أول من يقيّم المنتج)"}
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProductReviewOpenRequest({ open: true, orderNumber: null });
+                          document.getElementById("storefront-product-reviews")?.scrollIntoView({ behavior: "smooth" });
+                        }}
+                        className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1 text-[11px] font-black text-white shadow-xs transition hover:bg-amber-600 active:scale-95"
+                      >
+                        <Star aria-hidden className="size-3 fill-current" />
+                        <span>اكتب تقييمك</span>
+                      </button>
+                    </div>
+
+                    {/* وسوم السمات الإرشادية السريعة (Category Heuristics Badges) */}
+                    <StorefrontHeuristicsBadges
+                      productName={detailQ.data.productName}
+                      category={detailQ.data.category}
+                      description={detailQ.data.description}
+                      isCustomizable={detailQ.data.isCustomizable}
+                      isBundle={detailQ.data.isBundle}
+                      limit={3}
+                      className="mt-2.5"
+                    />
                     {detailQ.data.description && <p className="mt-2 whitespace-pre-line text-xs leading-6 text-slate-600 dark:text-slate-300">{detailQ.data.description}</p>}
                     {detailQ.data.category && <p className="mt-1 text-xs text-slate-500">الفئة: {detailQ.data.category}</p>}
                     {detailQ.data.categoryId != null && detailQ.data.category && <button type="button" onClick={() => { setSelectedId(null); selectCategory(detailQ.data!.categoryId!); }} className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-[#c5e8dc] bg-[#e9f7f2] px-3 py-1.5 text-[11px] font-black text-[#276c5d] transition hover:border-[#1e4a63] hover:bg-[#d9f1e8]" aria-label={`تصفح منتجات فئة ${detailQ.data.category}`}><Store aria-hidden className="size-3.5" /> تصفح منتجات «{detailQ.data.category}» <ArrowRight aria-hidden className="size-3.5 rotate-180" /></button>}
@@ -2920,7 +2965,12 @@ function StorefrontContent() {
 
                 {/* تقييمات وآراء العملاء المعتمدة (Social Proof) */}
                 {detailQ.data && (
-                  <StorefrontProductReviews key={detailQ.data.productId} productId={detailQ.data.productId} />
+                  <StorefrontProductReviews
+                    key={`${detailQ.data.productId}-${productReviewOpenRequest.open ? "open" : "closed"}-${productReviewOpenRequest.orderNumber ?? ""}`}
+                    productId={detailQ.data.productId}
+                    initialOpenForm={productReviewOpenRequest.open}
+                    defaultOrderNumber={productReviewOpenRequest.orderNumber}
+                  />
                 )}
               </div>
             ) : (
@@ -3360,9 +3410,28 @@ function StorefrontContent() {
                 )}
                 <div className="divide-y divide-slate-100 dark:divide-slate-800">
                   {trackResult.items.map((it, i) => (
-                    <div key={i} className="flex items-center justify-between py-2 text-sm">
-                      <span className="min-w-0 flex-1 truncate text-slate-700 dark:text-slate-200">{it.productName} <span className="text-slate-400">×{formatQuantity(it.quantity)}</span></span>
-                      <span className="tabular-nums text-slate-500" dir="ltr">{money(it.total)} د.ع</span>
+                    <div key={i} className="flex items-center justify-between py-2.5 text-sm gap-2">
+                      <div className="min-w-0 flex-1">
+                        <span className="truncate text-slate-700 dark:text-slate-200 block font-semibold">
+                          {it.productName} <span className="text-slate-400 font-normal">×{formatQuantity(it.quantity)}</span>
+                        </span>
+                        {it.productId && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              openProduct(it.productId!, {
+                                openReview: true,
+                                orderNumber: trackResult.orderNumber,
+                              });
+                            }}
+                            className="mt-1 inline-flex items-center gap-1 text-[11px] font-bold text-amber-600 hover:text-amber-700 dark:text-amber-400 hover:underline"
+                          >
+                            <Star aria-hidden className="size-3 fill-current" />
+                            <span>أضف تقييمك وتجربتك لهذا المنتج</span>
+                          </button>
+                        )}
+                      </div>
+                      <span className="tabular-nums text-slate-500 shrink-0" dir="ltr">{money(it.total)} د.ع</span>
                     </div>
                   ))}
                 </div>

@@ -3,6 +3,7 @@ import { Heart, Share2, Plus, Minus, AlertTriangle, Flame, Package, TrendingUp, 
 import { fmtInt } from "@/lib/money";
 import { formatQuantity } from "@shared/quantityFormat";
 import { AnimatedAddToCartButton } from "./AnimatedAddToCartButton";
+import { StorefrontHeuristicsBadges } from "./StorefrontHeuristicsBadges";
 
 export interface StorefrontCatalogProduct {
   productId: number;
@@ -213,13 +214,23 @@ export function StorefrontProductCard({
           <span className="truncate text-[9.5px] sm:text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
             {p.brand ?? "المكتبة العربية"}
           </span>
-          <span className="flex items-center gap-0.5 text-[9px] sm:text-[9.5px] font-black text-amber-500 shrink-0">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen(p.productId);
+            }}
+            aria-label={`تقييمات ومراجعات ${productTitle}`}
+            className="flex items-center gap-0.5 text-[9px] sm:text-[9.5px] font-black text-amber-500 shrink-0 transition hover:opacity-80"
+          >
             <Star aria-hidden className="size-2.5 fill-current" />
             <span className="font-mono">{p.ratingAverage ? Number(p.ratingAverage).toFixed(1) : "5.0"}</span>
             {p.reviewsCount ? (
               <span className="text-slate-400 font-normal font-mono">({formatQuantity(p.reviewsCount)})</span>
-            ) : null}
-          </span>
+            ) : (
+              <span className="text-amber-600/80 font-bold text-[8.5px] dark:text-amber-400">جديد</span>
+            )}
+          </button>
         </div>
 
         {/* عنوان المنتج — معروض دائماً وبخط واضح */}
@@ -274,6 +285,17 @@ export function StorefrontProductCard({
             <span className="truncate text-slate-400 dark:text-slate-500">{p.unitName}</span>
           )}
         </div>
+
+        {/* شارات السمات الإرشادية السريعة (Category Heuristics Badges) */}
+        <StorefrontHeuristicsBadges
+          productName={productTitle}
+          category={p.category}
+          description={p.description}
+          isCustomizable={p.isCustomizable}
+          isBundle={p.isBundle}
+          limit={1}
+          className="mt-1"
+        />
 
         {/* زر الإضافة السريع للسلة أو وحدة التحكم بالكمية المتحولة — متطابق أفقياً ومرن للهواتف */}
         {!p.isCustomizable && cartQuantity > 0 && onUpdateQuantity ? (

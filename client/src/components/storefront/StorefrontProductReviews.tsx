@@ -5,6 +5,10 @@ import { formatQuantity } from "@shared/quantityFormat";
 
 interface StorefrontProductReviewsProps {
   productId: number;
+  initialOpenForm?: boolean;
+  defaultOrderNumber?: string | null;
+  onFormToggle?: (isOpen: boolean) => void;
+  className?: string;
 }
 
 const dateFormatter = new Intl.DateTimeFormat("ar-IQ-u-nu-latn", {
@@ -27,26 +31,32 @@ const RATING_DESCRIPTIONS: Record<number, string> = {
   1: "ضعيف (1 من 5)",
 };
 
-export function StorefrontProductReviews({ productId }: StorefrontProductReviewsProps) {
-  const [showForm, setShowForm] = useState(false);
+export function StorefrontProductReviews({
+  productId,
+  initialOpenForm = false,
+  defaultOrderNumber = null,
+  onFormToggle,
+  className = "",
+}: StorefrontProductReviewsProps) {
+  const [showForm, setShowForm] = useState(initialOpenForm);
   const [rating, setRating] = useState(5);
   const [hoverRating, setHoverRating] = useState(0);
   const [reviewerName, setReviewerName] = useState("");
-  const [contactRef, setContactRef] = useState("");
+  const [contactRef, setContactRef] = useState(defaultOrderNumber ?? "");
   const [comment, setComment] = useState("");
   const [submittedMessage, setSubmittedMessage] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
   React.useEffect(() => {
-    setShowForm(false);
+    setShowForm(initialOpenForm);
     setRating(5);
     setHoverRating(0);
     setReviewerName("");
-    setContactRef("");
+    setContactRef(defaultOrderNumber ?? "");
     setComment("");
     setSubmittedMessage(null);
     setFormError(null);
-  }, [productId]);
+  }, [productId, initialOpenForm, defaultOrderNumber]);
 
   const reviewsQ = trpc.storefront.productReviews.useQuery(
     { productId },
@@ -95,7 +105,11 @@ export function StorefrontProductReviews({ productId }: StorefrontProductReviews
   };
 
   return (
-    <section className="mt-5 rounded-2xl border border-slate-200/90 bg-slate-50/70 p-3.5 sm:p-4 dark:border-slate-800 dark:bg-slate-900/60" aria-label="تقييمات وآراء العملاء">
+    <section
+      id="storefront-product-reviews"
+      className={`mt-5 rounded-2xl border border-slate-200/90 bg-slate-50/70 p-3.5 sm:p-4 dark:border-slate-800 dark:bg-slate-900/60 ${className}`}
+      aria-label="تقييمات وآراء العملاء"
+    >
       {/* الترويسة الرئيسية للمراجعات مع زر إضافة التقييم */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 pb-3 dark:border-slate-800">
         <div className="flex items-center gap-2">
@@ -334,10 +348,16 @@ export function StorefrontProductReviews({ productId }: StorefrontProductReviews
                   <span className="font-bold text-[10.5px] text-slate-800 dark:text-slate-200">
                     {rev.reviewerName ?? "مشتري موثّق"}
                   </span>
-                  <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100/70 px-1.5 py-0.2 text-[9px] font-bold text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
-                    <ShieldCheck aria-hidden className="size-2.5" />
-                    <span>تقييم موثّق</span>
-                  </span>
+                  {rev.isVerifiedPurchase ? (
+                    <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100/80 px-1.5 py-0.5 text-[9px] font-bold text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
+                      <ShieldCheck aria-hidden className="size-2.5" />
+                      <span>شراء موثّق</span>
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-0.5 rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                      <span>متسوق</span>
+                    </span>
+                  )}
                 </div>
                 {rev.createdAt && (
                   <time className="text-[10px] text-slate-400 font-mono">

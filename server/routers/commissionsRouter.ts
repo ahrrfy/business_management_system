@@ -301,8 +301,9 @@ const performanceRouter = router({
   recentCelebrations: commissionsReadProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(async ({ input, ctx }) => {
-      const scopedBranchId = input?.branchId ?? (ctx.user.role === "admin" ? null : ctx.user.branchId ?? null);
-      return perfSvc.getRecentCelebrations(scopedBranchId);
+      const allowedScope = commissionReadScope(ctx.user);
+      const targetBranchId = allowedScope ?? (input?.branchId ?? null);
+      return perfSvc.getRecentCelebrations(targetBranchId);
     }),
 });
 

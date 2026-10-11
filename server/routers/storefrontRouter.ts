@@ -260,15 +260,21 @@ export const storefrontRouter = router({
       reviewerPhone: z.string().trim().max(32).nullish(),
       orderNumber: z.string().trim().max(50).nullish(),
       comment: z.string().trim().min(8).max(1_000),
+      turnstileToken: z.string().trim().min(1).max(STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH).nullish(),
     }))
-    .mutation(async ({ input }) => submitPublicStorefrontReview({
-      productId: input.productId,
-      rating: input.rating,
-      reviewerName: input.reviewerName,
-      reviewerPhone: input.reviewerPhone ?? null,
-      orderNumber: input.orderNumber ?? null,
-      comment: input.comment,
-    })),
+    .mutation(async ({ input }) => {
+      if (process.env.STOREFRONT_TURNSTILE_ENABLED === "1" && input.turnstileToken) {
+        await verifyStorefrontTurnstile(input.turnstileToken);
+      }
+      return submitPublicStorefrontReview({
+        productId: input.productId,
+        rating: input.rating,
+        reviewerName: input.reviewerName,
+        reviewerPhone: input.reviewerPhone ?? null,
+        orderNumber: input.orderNumber ?? null,
+        comment: input.comment,
+      });
+    }),
 
   /** ينشئ رابطاً عشوائياً قصير العمر لمعرّفات منتجات علنية فقط؛ الكتابة محمية بالحدود العامة. */
   createWishlistShare: storefrontPublicWriteProcedure

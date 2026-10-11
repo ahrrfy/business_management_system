@@ -1291,6 +1291,7 @@ export async function autoAssignRoundRobinOnlineOrders(
       .select({
         id: onlineOrders.id,
         orderNumber: onlineOrders.orderNumber,
+        status: onlineOrders.status,
         branchId: onlineOrders.branchId,
         createdAt: onlineOrders.createdAt,
       })
@@ -1357,11 +1358,16 @@ export async function autoAssignRoundRobinOnlineOrders(
       const order = unassignedOrders[i];
       const staff = eligibleStaff[(startIdx + i) % eligibleStaff.length];
 
+      if (order.status === "PENDING") {
+        await confirmCouponReservationForOnlineOrder(tx, order.id);
+      }
+
       await tx
         .update(onlineOrders)
         .set({
           claimedByUserId: staff.id,
           claimedAt: assignTime,
+          status: order.status === "PENDING" ? "CONFIRMED" : order.status,
         })
         .where(eq(onlineOrders.id, order.id));
 
