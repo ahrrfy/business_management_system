@@ -243,14 +243,16 @@ export default function InstallmentPlans() {
           size="sm"
           className="gap-1.5"
           onClick={() =>
-            void fetchAllPaged<PlanRow>(
-              (pageOffset, pageLimit) =>
-                utils.installments.list
-                  .fetch({ ...listInput, limit: pageLimit, offset: pageOffset })
-                  .then((r) => ({ rows: r.rows, total: r.hasMore ? undefined : pageOffset + r.rows.length })),
-              { pageSize: 200 },
-            ).then((rows) =>
-              exportRows(rows, {
+            exportRows(
+              () =>
+                fetchAllPaged<PlanRow>(
+                  (pageOffset, pageLimit) =>
+                    utils.installments.list
+                      .fetch({ ...listInput, limit: pageLimit, offset: pageOffset })
+                      .then((r) => ({ rows: r.rows, total: r.hasMore ? undefined : pageOffset + r.rows.length })),
+                  { pageSize: 200 },
+                ),
+              {
                 filename: "خطط-الأقساط",
                 title: "خطط الأقساط",
                 columns: [
@@ -263,7 +265,7 @@ export default function InstallmentPlans() {
                   { key: "nextDueDate", header: "القسط القادم", map: (r) => r.nextDueDate ?? "" },
                   { key: "createdAt", header: "أُنشئت", map: (r) => (r.createdAt ? new Date(r.createdAt).toISOString().slice(0, 10) : "") },
                 ],
-              }),
+              },
             )
           }
         >
@@ -274,14 +276,16 @@ export default function InstallmentPlans() {
           size="sm"
           className="gap-1.5"
           onClick={() =>
-            void fetchAllPaged<PlanRow>(
-              (pageOffset, pageLimit) =>
-                utils.installments.list
-                  .fetch({ ...listInput, limit: pageLimit, offset: pageOffset })
-                  .then((r) => ({ rows: r.rows, total: r.hasMore ? undefined : pageOffset + r.rows.length })),
-              { pageSize: 200 },
-            ).then((rows) =>
-              exportRows(rows, {
+            exportRows(
+              () =>
+                fetchAllPaged<PlanRow>(
+                  (pageOffset, pageLimit) =>
+                    utils.installments.list
+                      .fetch({ ...listInput, limit: pageLimit, offset: pageOffset })
+                      .then((r) => ({ rows: r.rows, total: r.hasMore ? undefined : pageOffset + r.rows.length })),
+                  { pageSize: 200 },
+                ),
+              {
                 filename: "خطط-الأقساط",
                 title: "خطط الأقساط",
                 format: "csv",
@@ -295,7 +299,7 @@ export default function InstallmentPlans() {
                   { key: "nextDueDate", header: "القسط القادم", map: (r) => r.nextDueDate ?? "" },
                   { key: "createdAt", header: "أُنشئت", map: (r) => (r.createdAt ? new Date(r.createdAt).toISOString().slice(0, 10) : "") },
                 ],
-              }),
+              },
             )
           }
         >
