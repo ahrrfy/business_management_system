@@ -6,6 +6,7 @@
 import { variantDisplayName } from "@shared/variantDisplay";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { salesRepresentativeOptions } from "@/components/invoice/salesRepresentatives";
 import {
   ShoppingCart,
   X,
@@ -69,7 +70,7 @@ export function CartSalesRepButton({
     { status: "active", limit: 100 },
     { staleTime: 60_000 },
   );
-  const reps = empsQ.data?.rows ?? [];
+  const reps = useMemo(() => salesRepresentativeOptions(empsQ.data?.rows ?? []), [empsQ.data?.rows]);
 
   const selectedRep = useMemo(
     () =>
@@ -84,7 +85,7 @@ export function CartSalesRepButton({
     const q = query.toLowerCase();
     return reps.filter(
       (r) =>
-        r.fullName?.toLowerCase().includes(q) ||
+        r.name.toLowerCase().includes(q) ||
         r.position?.toLowerCase().includes(q),
     );
   }, [reps, query]);
@@ -113,7 +114,7 @@ export function CartSalesRepButton({
         }}
       >
         <UserCheck size={14} aria-hidden />
-        {selectedRep ? selectedRep.fullName : "بائع الصالة"}
+        {selectedRep ? selectedRep.name : "بائع الصالة"}
         {salesRepId && (
           <span
             onClick={(e) => {
@@ -199,7 +200,7 @@ export function CartSalesRepButton({
                     )}
                   >
                     <div>
-                      <div className="font-bold">{r.fullName}</div>
+                      <div className="font-bold">{r.name}</div>
                       <div
                         className={cn(
                           "text-[11px]",

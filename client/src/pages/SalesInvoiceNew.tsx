@@ -80,6 +80,7 @@ import {
 } from "@/components/invoice";
 import { createPricingIntentEpoch } from "@/components/invoice/productSearchResolution"; import { ACTION_LABELS } from "@shared/actionLabels";
 import { SalesCorrectionPanel, resolvePriorReceipt, type PriorReceiptMode } from "@/components/invoice/SalesCorrectionPanel";
+import { salesRepresentativeOptions } from "@/components/invoice/salesRepresentatives";
 
 const INVOICE_TYPE = "SALE" as const;
 
@@ -96,7 +97,7 @@ export default function SalesInvoice() {
   const utils = trpc.useUtils();
   const defaultBranchId = me.data?.branchId ? Number(me.data.branchId) : 0;
   const employeesQ = trpc.employees.list.useQuery({ status: "active", limit: 200 });
-  const salesReps = useMemo(() => (employeesQ.data?.rows ?? []).map((e: { id: number; fullName?: string | null }) => ({ id: e.id, name: e.fullName || `موظف #${e.id}` })), [employeesQ.data?.rows]);
+  const salesReps = useMemo(() => salesRepresentativeOptions(employeesQ.data?.rows ?? []), [employeesQ.data?.rows]);
 
   const [state, dispatch] = useReducer(
     invoiceReducer,
