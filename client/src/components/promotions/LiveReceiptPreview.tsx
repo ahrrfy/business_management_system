@@ -286,19 +286,28 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
           <Receipt className="size-3.5 text-primary" />
           <span>إيصال نقطة البيع الحراري (عرض 80 مم)</span>
         </div>
-        <Badge variant={isMinSpendMet ? "outline" : "destructive"} className="text-[10px]">
-          {isMinSpendMet ? (
-            <span className="flex items-center gap-1">
-              <CheckCircle2 className="size-3 text-primary" />
-              <span>مؤهل للخصم</span>
-            </span>
-          ) : (
+        {!isMinSpendMet ? (
+          <Badge variant="destructive" className="text-[10px]">
             <span className="flex items-center gap-1">
               <AlertTriangle className="size-3" />
               <span>دون الحد الأدنى</span>
             </span>
-          )}
-        </Badge>
+          </Badge>
+        ) : !calculation.hasEligibleItems ? (
+          <Badge variant="secondary" className="text-[10px] text-amber-600 dark:text-amber-400 border-amber-300 dark:border-amber-800">
+            <span className="flex items-center gap-1">
+              <AlertTriangle className="size-3" />
+              <span>غير مشمول بالسلة</span>
+            </span>
+          </Badge>
+        ) : (
+          <Badge variant="outline" className="text-[10px]">
+            <span className="flex items-center gap-1">
+              <CheckCircle2 className="size-3 text-primary" />
+              <span>مؤهل للخصم</span>
+            </span>
+          </Badge>
+        )}
       </div>
 
       {/* تحكم محاكاة قيمة السلة للتحقق الفوري من صمام الأمان */}

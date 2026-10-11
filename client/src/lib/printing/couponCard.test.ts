@@ -36,4 +36,15 @@ describe("coupon card printing", () => {
     expect(html).not.toContain('<img src=x onerror="alert(1)">');
     expect(html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
   });
+
+  it("formats validity cleanly without duplicating prefix when validTo is omitted", async () => {
+    const htmlWithoutDate = await couponCardsHtml([{ code: "OPEN-1" }]);
+    expect(htmlWithoutDate).toContain('<div class="valid">صالح حتى نفاد/انتهاء الحملة</div>');
+    expect(htmlWithoutDate).not.toContain("صالح لغاية حتى");
+
+    const htmlWithDate = await couponCardsHtml([{ code: "EXPIRE-1", validTo: "2026-12-31" }]);
+    expect(htmlWithDate).toContain('<div class="valid">صالح لغاية');
+    expect(htmlWithDate).not.toContain("حتى نفاد");
+  });
 });
+

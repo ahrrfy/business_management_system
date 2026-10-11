@@ -21,9 +21,10 @@ export interface CouponCardData {
 }
 
 function validDate(value: string | Date | null | undefined) {
-  if (!value) return "حتى نفاد/انتهاء الحملة";
+  if (!value) return "صالح حتى نفاد/انتهاء الحملة";
   const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value).slice(0, 10) : fmtDate(date);
+  const formatted = Number.isNaN(date.getTime()) ? String(value).slice(0, 10) : fmtDate(date);
+  return `صالح لغاية ${formatted}`;
 }
 
 export async function couponCardsHtml(
@@ -48,7 +49,7 @@ export async function couponCardsHtml(
           ${card.subtitle && card.subtitle !== card.heroDiscount && card.subtitle !== card.title ? `<p class="subtitle">${esc(card.subtitle)}</p>` : ""}
           <div class="qr">${qr}</div>
           <div class="code" dir="ltr">${esc(card.code)}</div>
-          <div class="valid">صالح لغاية ${esc(validDate(card.validTo))}</div>
+          <div class="valid">${esc(validDate(card.validTo))}</div>
         </main>
         <footer>${esc(card.terms || "يُستخدم وفق شروط العرض، ولمرة واحدة ما لم يُذكر خلاف ذلك.")}</footer>
       </div>
