@@ -135,11 +135,16 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
             </div>
           </div>
 
-          {/* العنوان الرئيسي */}
-          <div className="my-0.5">
+          {/* العنوان الرئيسي والفرعي الترويجي */}
+          <div className="my-0.5 space-y-0.5">
             <h4 className="font-black text-sm tracking-tight text-foreground line-clamp-1">
               {data.design.title || data.name || "هدية خاصة لك"}
             </h4>
+            {(data.design.subtitle || discountSummary) && (
+              <p className="text-[10px] text-muted-foreground font-semibold line-clamp-1">
+                {data.design.subtitle || discountSummary}
+              </p>
+            )}
           </div>
 
           {/* صندوق الخصم البارز (Hero Discount Box) */}

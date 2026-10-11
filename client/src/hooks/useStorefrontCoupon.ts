@@ -18,6 +18,8 @@ function cleanUrlCouponParams() {
   } catch {}
 }
 
+const VALID_COUPON_CODE_REGEX = /^[A-Za-z0-9_-]{1,64}$/;
+
 export function useStorefrontCoupon(options?: UseStorefrontCouponOptions) {
   const [couponDraft, setCouponDraft] = useState("");
   const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(null);
@@ -28,7 +30,7 @@ export function useStorefrontCoupon(options?: UseStorefrontCouponOptions) {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     const couponParam = params.get("coupon")?.trim() || params.get("c")?.trim();
-    if (couponParam && /^[A-Za-z0-9_-]{3,32}$/.test(couponParam)) {
+    if (couponParam && VALID_COUPON_CODE_REGEX.test(couponParam)) {
       const norm = couponParam.toUpperCase();
       try {
         sessionStorage.setItem(STORAGE_KEY, norm);
@@ -40,7 +42,7 @@ export function useStorefrontCoupon(options?: UseStorefrontCouponOptions) {
     } else {
       try {
         const saved = sessionStorage.getItem(STORAGE_KEY)?.trim();
-        if (saved && /^[A-Za-z0-9_-]{3,32}$/.test(saved)) {
+        if (saved && VALID_COUPON_CODE_REGEX.test(saved)) {
           const norm = saved.toUpperCase();
           setCouponDraft(norm);
           setAppliedCouponCode(norm);

@@ -239,12 +239,22 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
       <span>${formatIqd(simulatedSubtotal)}</span>
     </div>
     `}
-    ${isMinSpendMet && calculation.discountAmount.gt(0) ? `
-    <div class="row" style="font-weight: 900; color: #000;">
-      <span>خصم كوبون (${previewCode}):</span>
-      <span dir="ltr">-${formatIqd(calculation.discountAmount.toString())}</span>
-    </div>
-    ` : ""}
+    ${isMinSpendMet ? (
+      calculation.discountAmount.gt(0) ? `
+      <div class="row" style="font-weight: 900; color: #000;">
+        <span>خصم كوبون (${previewCode})${calculation.isCapped ? " (سقف الخصم)" : ""}:</span>
+        <span dir="ltr">-${formatIqd(calculation.discountAmount.toString())}</span>
+      </div>
+      ` : isScoped && !calculation.hasEligibleItems ? `
+      <div style="font-size: 9.5px; font-weight: 700; color: #555; border: 1px dashed #666; padding: 1.5mm; margin: 1mm 0; text-align: center;">
+        لم يُطبّق الخصم: لا توجد عناصر مشمولة في السلة الحالية
+      </div>
+      ` : ""
+    ) : `
+      <div style="font-size: 9.5px; font-weight: 700; color: #555; border: 1px dashed #666; padding: 1.5mm; margin: 1mm 0; text-align: center;">
+        لم يُطبّق الخصم: السلة دون الحد الأدنى المطلوب (${formatIqd(minSpend.toString())})
+      </div>
+    `}
     <div class="row bold">
       <span>الصافي المطلوب:</span>
       <span>${formatIqd(calculation.total.toString())}</span>
