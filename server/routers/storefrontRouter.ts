@@ -48,7 +48,7 @@ import { createVerifiedStorefrontQuoteRequest } from "../services/storefrontQuot
 import { STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH } from "@shared/storefrontTurnstile";
 import { registerStorefrontPushDevice, trackStorefrontPushInteraction } from "../services/storeAdmin/storefrontPushCampaignService";
 import { claimFirebaseStorefrontCustomer, requireActiveStorefrontCustomer, storefrontCustomerBenefits, verifyStorefrontCustomerSession } from "../services/storefrontCustomerIdentityService";
-import { listStorefrontProductReviews, submitStorefrontProductReview } from "../services/storefrontProductReviewService";
+import { listStorefrontProductReviews, submitStorefrontProductReview, submitPublicStorefrontReview } from "../services/storefrontProductReviewService";
 import { requestStorefrontFirstOrderCoupon } from "../services/storefrontFirstOrderCouponService";
 import { createStorefrontWishlistShare, resolveStorefrontWishlistShare } from "../services/storefrontWishlistShareService";
 import { createStorefrontCartShare, resolveStorefrontCartShare } from "../services/storefrontCartShareService";
@@ -248,6 +248,25 @@ export const storefrontRouter = router({
       customerId: (await requireActiveStorefrontCustomer(input.customerSessionToken)).customerId,
       productId: input.productId,
       rating: input.rating,
+      comment: input.comment,
+    })),
+
+  /** يرسل زائر أو متسوق المتجر مراجعة وتقييماً بالنجوم؛ تدخل طابور الاعتماد بانتظار موافقة الإدارة. */
+  submitPublicProductReview: storefrontPublicWriteProcedure
+    .input(z.object({
+      productId: z.number().int().positive(),
+      rating: z.number().int().min(1).max(5),
+      reviewerName: z.string().trim().min(2).max(100),
+      reviewerPhone: z.string().trim().max(32).nullish(),
+      orderNumber: z.string().trim().max(50).nullish(),
+      comment: z.string().trim().min(8).max(1_000),
+    }))
+    .mutation(async ({ input }) => submitPublicStorefrontReview({
+      productId: input.productId,
+      rating: input.rating,
+      reviewerName: input.reviewerName,
+      reviewerPhone: input.reviewerPhone ?? null,
+      orderNumber: input.orderNumber ?? null,
       comment: input.comment,
     })),
 

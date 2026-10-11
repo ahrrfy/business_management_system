@@ -2493,6 +2493,13 @@
 			"when": 1788148851000,
 			"tag": "0393_comprehensive_permission_matrix_caps",
 			"breakpoints": true
+		},
+		{
+			"idx": 394,
+			"version": "5",
+			"when": 1788148852000,
+			"tag": "0394_storefront_public_reviews",
+			"breakpoints": true
 		}
 	]
 }

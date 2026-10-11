@@ -1,9 +1,11 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 
-import { onlineOrderItems, onlineOrders, productVariants, storefrontProductReviews, users } from "../../drizzle/schema";
+import { customers, onlineOrderItems, onlineOrders, productVariants, products, storefrontProductReviews, users } from "../../drizzle/schema";
+import { appErrorMessage } from "../../shared/errors";
 import { getDb } from "../db";
 import { extractInsertId } from "../lib/insertId";
+import { normalizeIraqPhoneE164 } from "../lib/phone";
 import { createAppNotification } from "./appNotificationService";
 
 function cleanComment(value: string) {
@@ -14,12 +16,25 @@ function cleanComment(value: string) {
   return comment;
 }
 
-/** لا تظهر علناً إلا مراجعات اعتمدها المتجر، ولا نعيد اسم العميل لحماية الخصوصية. */
+function maskReviewerName(name: string): string {
+  const trimmed = name.trim();
+  const parts = trimmed.split(/\s+/);
+  if (parts.length === 1) return parts[0];
+  return `${parts[0]} ${parts[1][0]}.`;
+}
+
+/** لا تظهر علناً إلا مراجعات اعتمدها المتجر، ولا نعيد اسم العميل الكامل لحماية الخصوصية. */
 export async function listStorefrontProductReviews(productId: number) {
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة بيانات المتجر غير متاحة" });
   const rows = await db
-    .select({ id: storefrontProductReviews.id, rating: storefrontProductReviews.rating, comment: storefrontProductReviews.comment, createdAt: storefrontProductReviews.createdAt })
+    .select({
+      id: storefrontProductReviews.id,
+      rating: storefrontProductReviews.rating,
+      comment: storefrontProductReviews.comment,
+      reviewerName: storefrontProductReviews.reviewerName,
+      createdAt: storefrontProductReviews.createdAt,
+    })
     .from(storefrontProductReviews)
     .where(and(eq(storefrontProductReviews.productId, productId), eq(storefrontProductReviews.status, "APPROVED")))
     .orderBy(desc(storefrontProductReviews.createdAt))
@@ -28,7 +43,40 @@ export async function listStorefrontProductReviews(productId: number) {
     .select({ count: sql<number>`COUNT(*)`, average: sql<string>`COALESCE(AVG(${storefrontProductReviews.rating}), 0)` })
     .from(storefrontProductReviews)
     .where(and(eq(storefrontProductReviews.productId, productId), eq(storefrontProductReviews.status, "APPROVED"))))[0];
-  return { summary: { count: Number(aggregate?.count ?? 0), average: Number(aggregate?.average ?? 0) }, items: rows.map((row) => ({ id: Number(row.id), rating: Number(row.rating), comment: row.comment, createdAt: row.createdAt })) };
+  return {
+    summary: { count: Number(aggregate?.count ?? 0), average: Number(aggregate?.average ?? 0) },
+    items: rows.map((row) => ({
+      id: Number(row.id),
+      rating: Number(row.rating),
+      comment: row.comment,
+      reviewerName: row.reviewerName ? "متسوق موثق" : "عميل موثق",
+      createdAt: row.createdAt,
+    })),
+  };
+}
+
+async function notifyManagersAboutReview(db: NonNullable<ReturnType<typeof getDb>>, reviewId: number, rating: number, reviewerDisplay: string) {
+  try {
+    const recipients = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.isActive, true), or(eq(users.role, "admin"), eq(users.role, "manager"))));
+
+    await Promise.all(recipients.map((recipient) => createAppNotification({
+      userId: Number(recipient.id),
+      kind: "APPROVAL_REQUIRED",
+      title: "مراجعة منتج جديدة بانتظار الاعتماد",
+      body: `وصل تقييم جديد (${rating} نجوم) من ${reviewerDisplay} بانتظار الاعتماد في المتجر.`,
+      route: "/store-admin?tab=reviews",
+      eventKey: `storefront-review:${reviewId}:user:${recipient.id}`,
+      entityType: "storefrontProductReview",
+      entityId: reviewId,
+      requiresAction: true,
+      push: true,
+    })));
+  } catch {
+    // Best-effort notification; do not fail the persisted review
+  }
 }
 
 /** يقبل مراجعة واحدة للمنتج في كل طلب مُسلّم من مالك جلسة الهاتف المتحققة. */
@@ -59,22 +107,7 @@ export async function submitStorefrontProductReview(input: { customerId: number;
   try {
     const inserted = await db.insert(storefrontProductReviews).values({ productId: input.productId, customerId: input.customerId, onlineOrderId: Number(deliveredOrder.id), rating: input.rating, comment: cleanComment(input.comment), status: "PENDING" });
     const reviewId = extractInsertId(inserted);
-    const recipients = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(and(eq(users.isActive, true), or(eq(users.role, "admin"), eq(users.role, "manager"))));
-    void Promise.all(recipients.map((recipient) => createAppNotification({
-      userId: Number(recipient.id),
-      kind: "APPROVAL_REQUIRED",
-      title: "مراجعة منتج جديدة",
-      body: "هناك مراجعة موثقة بانتظار اعتمادها في المتجر.",
-      route: "/store?tab=reviews",
-      eventKey: `storefront-product-review:${reviewId}:user:${recipient.id}`,
-      entityType: "storefrontProductReview",
-      entityId: reviewId,
-      requiresAction: true,
-      push: true,
-    }))).catch(() => undefined);
+    void notifyManagersAboutReview(db, reviewId, input.rating, "عميل موثق");
     return { ok: true as const, status: "PENDING" as const };
   } catch (error) {
     if (String(error).includes("uq_storefront_review_order_product") || String(error).includes("Duplicate")) {
@@ -83,3 +116,123 @@ export async function submitStorefrontProductReview(input: { customerId: number;
     throw error;
   }
 }
+
+/** يقبل تقييماً ومراجعة من متسوقي وزوار المتجر العام؛ تدخل المراجعة طابور الاعتماد بانتظار موافقة الإدارة. */
+export async function submitPublicStorefrontReview(input: {
+  productId: number;
+  rating: number;
+  reviewerName: string;
+  reviewerPhone?: string | null;
+  orderNumber?: string | null;
+  comment: string;
+}) {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة بيانات المتجر غير متاحة" });
+
+  const publishableProduct = (
+    await db
+      .select({ id: products.id })
+      .from(products)
+      .where(and(eq(products.id, input.productId), eq(products.isActive, true), eq(products.showInStore, true)))
+      .limit(1)
+  )[0];
+  if (!publishableProduct) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المنتج غير متاح للتقييم",
+        why: "المنتج المطلوب غير معروض في المتجر العام حالياً أو تم إيقافه",
+        doThis: "تأكد من اختيار منتج منشور ونشط في واجهة المتجر لإضافة تقييمك",
+      }),
+    });
+  }
+
+  if (input.rating < 1 || input.rating > 5) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "قيمة التقييم غير مقبولة",
+        why: `القيمة المدخلة ${input.rating} بينما المقياس المعتمد من 1 إلى 5 نجوم`,
+        doThis: "اختر عدداً من النجوم بين 1 و 5 لتقييم المنتج",
+      }),
+    });
+  }
+  const cleanName = input.reviewerName.trim().slice(0, 100);
+  if (cleanName.length < 2) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "اسم كاتب التقييم قصير جداً",
+        why: `الاسم المدخل يتكون من ${cleanName.length} حرفاً فقط`,
+        doThis: "اكتب اسمك الصريح أو كنيتك بحرفين على الأقل لتظهر مراجعتك",
+      }),
+    });
+  }
+  const comment = cleanComment(input.comment);
+
+  let matchedCustomerId: number | null = null;
+  let matchedOrderId: number | null = null;
+
+  if (input.orderNumber?.trim()) {
+    const foundOrder = (await db
+      .select({ id: onlineOrders.id, customerId: onlineOrders.customerId })
+      .from(onlineOrders)
+      .where(eq(onlineOrders.orderNumber, input.orderNumber.trim()))
+      .limit(1))[0];
+    if (foundOrder) {
+      matchedOrderId = Number(foundOrder.id);
+      matchedCustomerId = Number(foundOrder.customerId);
+    }
+  }
+
+  let normalizedPhone: string | null = null;
+  if (input.reviewerPhone?.trim()) {
+    normalizedPhone = normalizeIraqPhoneE164(input.reviewerPhone);
+  }
+
+  if (!matchedCustomerId && (normalizedPhone || input.reviewerPhone?.trim())) {
+    const rawTrimmed = input.reviewerPhone?.trim();
+    const phoneConds = [];
+    if (normalizedPhone) {
+      phoneConds.push(
+        eq(customers.phone, normalizedPhone),
+        eq(customers.phone2, normalizedPhone),
+        eq(customers.phone3, normalizedPhone),
+        eq(customers.whatsapp, normalizedPhone)
+      );
+    }
+    if (rawTrimmed && rawTrimmed !== normalizedPhone) {
+      phoneConds.push(
+        eq(customers.phone, rawTrimmed),
+        eq(customers.phone2, rawTrimmed),
+        eq(customers.phone3, rawTrimmed),
+        eq(customers.whatsapp, rawTrimmed)
+      );
+    }
+    const foundCustomer = (await db
+      .select({ id: customers.id })
+      .from(customers)
+      .where(or(...phoneConds))
+      .limit(1))[0];
+    if (foundCustomer) {
+      matchedCustomerId = Number(foundCustomer.id);
+    }
+  }
+
+  const inserted = await db.insert(storefrontProductReviews).values({
+    productId: input.productId,
+    customerId: matchedCustomerId,
+    onlineOrderId: matchedOrderId,
+    reviewerName: cleanName,
+    reviewerPhone: normalizedPhone ?? (input.reviewerPhone?.trim() || null),
+    rating: input.rating,
+    comment,
+    status: "PENDING",
+  });
+
+  const reviewId = extractInsertId(inserted);
+  void notifyManagersAboutReview(db, reviewId, input.rating, cleanName);
+
+  return { ok: true as const, status: "PENDING" as const };
+}
+

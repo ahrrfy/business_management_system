@@ -122,6 +122,17 @@ export function StorefrontProductCard({
                 <span>بكج</span>
               </span>
             )}
+            {p.isCustomizable && (
+              <span className="inline-flex items-center gap-0.5 sm:gap-1 rounded-md bg-purple-700 px-1 sm:px-1.5 py-0.5 text-[9px] sm:text-[10px] font-black text-white shadow-xs whitespace-nowrap">
+                <span>
+                  {p.customizationKind === "PRINT"
+                    ? "طباعة وتخصيص"
+                    : p.customizationKind === "GIFT"
+                    ? "تخصيص وإهداء"
+                    : "قابل للتخصيص"}
+                </span>
+              </span>
+            )}
             {p.stockLeft != null && p.stockLeft <= 3 && p.stockLeft > 0 && (
               <span className="inline-flex items-center gap-0.5 sm:gap-1 rounded-md bg-rose-600 px-1 sm:px-1.5 py-0.5 text-[9px] sm:text-[10px] font-black text-white shadow-xs whitespace-nowrap">
                 <span>بقي {formatQuantity(p.stockLeft)}</span>
@@ -205,6 +216,9 @@ export function StorefrontProductCard({
           <span className="flex items-center gap-0.5 text-[9px] sm:text-[9.5px] font-black text-amber-500 shrink-0">
             <Star aria-hidden className="size-2.5 fill-current" />
             <span className="font-mono">{p.ratingAverage ? Number(p.ratingAverage).toFixed(1) : "5.0"}</span>
+            {p.reviewsCount ? (
+              <span className="text-slate-400 font-normal font-mono">({formatQuantity(p.reviewsCount)})</span>
+            ) : null}
           </span>
         </div>
 
@@ -254,7 +268,7 @@ export function StorefrontProductCard({
           ) : p.soldCount >= 3 ? (
             <span className="flex items-center gap-1 text-blue-700 truncate dark:text-blue-400">
               <TrendingUp aria-hidden className="size-2.5 sm:size-3 shrink-0" />
-              <span className="truncate">الأكثر طلباً</span>
+              <span className="truncate">الأكثر طلباً ({formatQuantity(p.soldCount)})</span>
             </span>
           ) : (
             <span className="truncate text-slate-400 dark:text-slate-500">{p.unitName}</span>

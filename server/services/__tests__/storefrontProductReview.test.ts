@@ -3,10 +3,14 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { moderateStorefrontProductReview } from "../storeAdmin/storefrontProductReviewAdminService";
+import {
+  listStorefrontProductReviewsForAdmin,
+  moderateStorefrontProductReview,
+} from "../storeAdmin/storefrontProductReviewAdminService";
 import {
   listStorefrontProductReviews,
   submitStorefrontProductReview,
+  submitPublicStorefrontReview,
 } from "../storefrontProductReviewService";
 import { truncateAllTables } from "./__testUtils__";
 
@@ -189,5 +193,82 @@ describe("storefront product review integrity", () => {
     )[0];
     expect(stored).toMatchObject({ status: "APPROVED" });
     expect(stored.moderatedAt).toBeInstanceOf(Date);
+  });
+
+  it("accepts public review from web visitor and reflects in admin queue and published reviews upon approval", async () => {
+    const result = await submitPublicStorefrontReview({
+      productId: 1,
+      rating: 5,
+      reviewerName: "علي الكرخي",
+      reviewerPhone: "07801234567",
+      comment: "طباعة فاخرة جداً وتغليف محكم وتوصيل سريع",
+    });
+
+    expect(result).toEqual({ ok: true, status: "PENDING" });
+
+    const adminReviews = await listStorefrontProductReviewsForAdmin("PENDING");
+    const found = adminReviews.find((r) => r.comment === "طباعة فاخرة جداً وتغليف محكم وتوصيل سريع");
+    expect(found).toBeDefined();
+    expect(found?.customerName).toBe("علي الكرخي");
+    expect(found?.rating).toBe(5);
+
+    await moderateStorefrontProductReview({ reviewId: found!.id, status: "APPROVED" });
+
+    const published = await listStorefrontProductReviews(1);
+    expect(published.summary.count).toBe(1);
+    expect(published.summary.average).toBe(5);
+    expect(published.items[0]).toMatchObject({
+      rating: 5,
+      comment: "طباعة فاخرة جداً وتغليف محكم وتوصيل سريع",
+      reviewerName: "متسوق موثق",
+    });
+  });
+
+  it("normalizes reviewer phone to match customer records and saves canonical E.164 phone", async () => {
+    await db().update(s.customers).set({ phone: "+9647701234567" }).where(eq(s.customers.id, 1));
+
+    const result = await submitPublicStorefrontReview({
+      productId: 1,
+      rating: 5,
+      reviewerName: "حسن الزيدي",
+      reviewerPhone: "0770 123 4567",
+      comment: "خدمة رائعة جداً واستجابة فورية من الدعم",
+    });
+
+    expect(result).toEqual({ ok: true, status: "PENDING" });
+
+    const review = (
+      await db()
+        .select({
+          customerId: s.storefrontProductReviews.customerId,
+          reviewerPhone: s.storefrontProductReviews.reviewerPhone,
+        })
+        .from(s.storefrontProductReviews)
+        .where(eq(s.storefrontProductReviews.productId, 1))
+    )[0];
+
+    expect(review?.customerId).toBe(1);
+    expect(review?.reviewerPhone).toBe("+9647701234567");
+  });
+
+  it("rejects public review for non-existent or unpublishable products with NOT_FOUND", async () => {
+    await expect(
+      submitPublicStorefrontReview({
+        productId: 999999,
+        rating: 5,
+        reviewerName: "زائر المتجر",
+        comment: "محاولة تقييم منتج غير موجود",
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    await db().update(s.products).set({ showInStore: false }).where(eq(s.products.id, 1));
+    await expect(
+      submitPublicStorefrontReview({
+        productId: 1,
+        rating: 5,
+        reviewerName: "زائر المتجر",
+        comment: "محاولة تقييم منتج مخفي من المتجر",
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });

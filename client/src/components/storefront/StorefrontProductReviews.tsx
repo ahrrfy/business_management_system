@@ -1,5 +1,5 @@
-import React from "react";
-import { Star, ShieldCheck, MessageSquare, ThumbsUp } from "lucide-react";
+import React, { useState } from "react";
+import { Star, ShieldCheck, MessageSquare, ThumbsUp, Send, CheckCircle2, AlertCircle, Plus } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { formatQuantity } from "@shared/quantityFormat";
 
@@ -19,17 +19,84 @@ function formatReviewDate(dateVal: Date | string): string {
   return dateFormatter.format(d);
 }
 
+const RATING_DESCRIPTIONS: Record<number, string> = {
+  5: "ممتاز (5 من 5)",
+  4: "جيد جداً (4 من 5)",
+  3: "جيد (3 من 5)",
+  2: "مقبول (2 من 5)",
+  1: "ضعيف (1 من 5)",
+};
+
 export function StorefrontProductReviews({ productId }: StorefrontProductReviewsProps) {
+  const [showForm, setShowForm] = useState(false);
+  const [rating, setRating] = useState(5);
+  const [hoverRating, setHoverRating] = useState(0);
+  const [reviewerName, setReviewerName] = useState("");
+  const [contactRef, setContactRef] = useState("");
+  const [comment, setComment] = useState("");
+  const [submittedMessage, setSubmittedMessage] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    setShowForm(false);
+    setRating(5);
+    setHoverRating(0);
+    setReviewerName("");
+    setContactRef("");
+    setComment("");
+    setSubmittedMessage(null);
+    setFormError(null);
+  }, [productId]);
+
   const reviewsQ = trpc.storefront.productReviews.useQuery(
     { productId },
     { staleTime: 60_000 }
   );
 
+  const submitReviewM = trpc.storefront.submitPublicProductReview.useMutation({
+    onSuccess: () => {
+      setSubmittedMessage("شكراً لمشاركتك! تم استلام تقييمك بنجاح وسيظهر للمتسوقين فور مراجعته واعتماده.");
+      setShowForm(false);
+      setComment("");
+      setReviewerName("");
+      setContactRef("");
+      setFormError(null);
+      void reviewsQ.refetch();
+    },
+    onError: (err) => {
+      setFormError(err.message || "تعذّر إرسال التقييم، يرجى التحقق من المدخلات وإعادة المحاولة.");
+    },
+  });
+
   const summary = reviewsQ.data?.summary ?? { count: 0, average: 0 };
   const items = reviewsQ.data?.items ?? [];
+  const effectiveRating = hoverRating > 0 ? hoverRating : rating;
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError(null);
+    if (!reviewerName.trim() || reviewerName.trim().length < 2) {
+      setFormError("يرجى كتابة اسمك أو اسم مستعار (حرفين على الأقل).");
+      return;
+    }
+    if (!comment.trim() || comment.trim().length < 8) {
+      setFormError("يرجى كتابة ملاحظاتك وتجربتك حول المنتج (8 أحرف على الأقل).");
+      return;
+    }
+    const isOrder = contactRef.toUpperCase().startsWith("ORD-");
+    submitReviewM.mutate({
+      productId,
+      rating,
+      reviewerName: reviewerName.trim(),
+      reviewerPhone: !isOrder && contactRef.trim() ? contactRef.trim() : null,
+      orderNumber: isOrder ? contactRef.trim() : null,
+      comment: comment.trim(),
+    });
+  };
 
   return (
     <section className="mt-5 rounded-2xl border border-slate-200/90 bg-slate-50/70 p-3.5 sm:p-4 dark:border-slate-800 dark:bg-slate-900/60" aria-label="تقييمات وآراء العملاء">
+      {/* الترويسة الرئيسية للمراجعات مع زر إضافة التقييم */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 pb-3 dark:border-slate-800">
         <div className="flex items-center gap-2">
           <div className="flex size-7 items-center justify-center rounded-lg bg-amber-500/15 text-amber-600 dark:bg-amber-400/20 dark:text-amber-400">
@@ -37,50 +104,213 @@ export function StorefrontProductReviews({ productId }: StorefrontProductReviews
           </div>
           <div>
             <h4 className="text-xs font-black text-slate-800 dark:text-slate-100">تقييمات المتسوقين</h4>
-            <p className="text-[10px] text-slate-500 dark:text-slate-400">آراء معتمدة من مشترين حقيقيين</p>
+            <p className="text-[10px] text-slate-500 dark:text-slate-400">آراء معتمدة ومراجعة من المشترين</p>
           </div>
         </div>
 
-        {summary.count > 0 ? (
-          <div className="flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 ring-1 ring-slate-200/80 dark:bg-slate-800 dark:ring-slate-700">
-            <span className="font-mono text-xs font-black text-amber-600 dark:text-amber-400">
-              {summary.average.toFixed(1)}
-            </span>
-            <div className="flex items-center gap-0.5" aria-label={`متوسط التقييم ${summary.average.toFixed(1)} من 5`}>
-              {[1, 2, 3, 4, 5].map((s) => (
-                <Star
-                  key={s}
-                  aria-hidden
-                  className={`size-3 ${
-                    s <= Math.round(summary.average)
-                      ? "fill-amber-400 text-amber-400"
-                      : "text-slate-300 dark:text-slate-600"
-                  }`}
-                />
-              ))}
+        <div className="flex items-center gap-2">
+          {summary.count > 0 ? (
+            <div className="flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 ring-1 ring-slate-200/80 dark:bg-slate-800 dark:ring-slate-700">
+              <span className="font-mono text-xs font-black text-amber-600 dark:text-amber-400">
+                {summary.average.toFixed(1)}
+              </span>
+              <div className="flex items-center gap-0.5" aria-label={`متوسط التقييم ${summary.average.toFixed(1)} من 5`}>
+                {[1, 2, 3, 4, 5].map((s) => (
+                  <Star
+                    key={s}
+                    aria-hidden
+                    className={`size-3 ${
+                      s <= Math.round(summary.average)
+                        ? "fill-amber-400 text-amber-400"
+                        : "text-slate-300 dark:text-slate-600"
+                    }`}
+                  />
+                ))}
+              </div>
+              <span className="text-[10px] font-bold text-slate-400">
+                ({formatQuantity(summary.count)})
+              </span>
             </div>
-            <span className="text-[10px] font-bold text-slate-400">
-              ({formatQuantity(summary.count)})
+          ) : (
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+              تقييمات جديدة
             </span>
-          </div>
-        ) : (
-          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-            تقييمات جديدة
-          </span>
-        )}
+          )}
+
+          <button
+            type="button"
+            onClick={() => {
+              setShowForm(!showForm);
+              setSubmittedMessage(null);
+              setFormError(null);
+            }}
+            className="inline-flex items-center gap-1 rounded-xl bg-amber-500 px-3 py-1.5 text-[11px] font-black text-white shadow-xs transition hover:bg-amber-600 active:scale-95"
+            aria-expanded={showForm}
+          >
+            {showForm ? (
+              "إلغاء التقييم"
+            ) : (
+              <>
+                <Star aria-hidden className="size-3 fill-current" />
+                <span>أضف تقييمك</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
+      {/* إشعار النجاح بعد إرسال التقييم */}
+      {submittedMessage && (
+        <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800 dark:border-emerald-800/60 dark:bg-emerald-950/40 dark:text-emerald-300" role="status">
+          <CheckCircle2 aria-hidden className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
+          <div className="flex-1 font-bold leading-relaxed">{submittedMessage}</div>
+        </div>
+      )}
+
+      {/* نموذج كتابة وإرسال التقييم التفاعلي */}
+      {showForm && (
+        <form onSubmit={handleSubmit} className="mt-3 rounded-xl border border-amber-200/80 bg-white p-3.5 shadow-xs dark:border-slate-700 dark:bg-slate-800/90">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-2.5 dark:border-slate-700">
+            <span className="text-xs font-black text-slate-800 dark:text-slate-100">اكتب تقييمك للمنتج</span>
+            <span className="text-[11px] font-bold text-amber-600 dark:text-amber-400">
+              {RATING_DESCRIPTIONS[effectiveRating] ?? ""}
+            </span>
+          </div>
+
+          {/* محدد النجوم التفاعلي */}
+          <div className="mt-3 flex flex-col items-center gap-1.5 rounded-xl bg-slate-50/80 py-2.5 dark:bg-slate-900/50">
+            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">حدد تقييمك بالضغط على النجوم</span>
+            <div className="flex items-center gap-1" onMouseLeave={() => setHoverRating(0)}>
+              {[1, 2, 3, 4, 5].map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setRating(s)}
+                  onMouseEnter={() => setHoverRating(s)}
+                  aria-label={`تقييم ${s} من 5 نجوم`}
+                  className="rounded-md p-1 transition hover:scale-125 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                >
+                  <Star
+                    aria-hidden
+                    className={`size-6 transition-colors ${
+                      s <= effectiveRating
+                        ? "fill-amber-400 text-amber-400"
+                        : "text-slate-300 hover:text-amber-300 dark:text-slate-600"
+                    }`}
+                  />
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* حقول الاسم ورقم الهاتف / رقم الطلب */}
+          <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+            <div>
+              <label htmlFor="rev-name" className="block text-[10.5px] font-bold text-slate-700 dark:text-slate-300">
+                الاسم <span className="text-rose-500">*</span>
+              </label>
+              <input
+                id="rev-name"
+                type="text"
+                value={reviewerName}
+                onChange={(e) => setReviewerName(e.target.value)}
+                placeholder="اسمك أو اسم مستعار"
+                maxLength={80}
+                required
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 outline-none transition focus:border-amber-500 focus:bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              />
+            </div>
+            <div>
+              <label htmlFor="rev-contact" className="block text-[10.5px] font-bold text-slate-700 dark:text-slate-300">
+                الهاتف أو رقم الطلب <span className="text-slate-400 font-normal">(اختياري للتوثيق)</span>
+              </label>
+              <input
+                id="rev-contact"
+                type="text"
+                value={contactRef}
+                onChange={(e) => setContactRef(e.target.value)}
+                placeholder="+964 7... أو رقم الطلب ORD-..."
+                maxLength={40}
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 outline-none transition focus:border-amber-500 focus:bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              />
+            </div>
+          </div>
+
+          <p className="mt-2 text-[10px] text-slate-500 dark:text-slate-400">
+            ملاحظة للخصوصية: تُنشر المراجعات المعتمدة بصفة «متسوق موثق» ولا تظهر أرقامك أو بياناتك للعامة.
+          </p>
+
+          {/* نص التقييم والملاحظات */}
+          <div className="mt-2.5">
+            <div className="flex items-center justify-between">
+              <label htmlFor="rev-comment" className="block text-[10.5px] font-bold text-slate-700 dark:text-slate-300">
+                رأيك وتجربتك مع المنتج <span className="text-rose-500">*</span>
+              </label>
+              <span className="font-mono text-[9.5px] text-slate-400">
+                {formatQuantity(comment.length)} / {formatQuantity(1000)}
+              </span>
+            </div>
+            <textarea
+              id="rev-comment"
+              rows={3}
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="اكتب تجربتك وملاحظاتك حول جودة المنتج، دقة الوصف، سرعة التوصيل، والتغليف..."
+              maxLength={1000}
+              required
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 p-2.5 text-xs font-semibold leading-relaxed text-slate-800 outline-none transition focus:border-amber-500 focus:bg-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+            />
+          </div>
+
+          {formError && (
+            <div className="mt-2 flex items-center gap-1.5 text-[11px] font-bold text-rose-600 dark:text-rose-400" role="alert">
+              <AlertCircle aria-hidden className="size-3.5 shrink-0" />
+              <span>{formError}</span>
+            </div>
+          )}
+
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setShowForm(false)}
+              className="rounded-xl px-3 py-1.5 text-xs font-bold text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+            >
+              إلغاء
+            </button>
+            <button
+              type="submit"
+              disabled={submitReviewM.isPending}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-1.5 text-xs font-black text-white shadow-sm transition hover:bg-amber-600 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Send aria-hidden className="size-3" />
+              <span>{submitReviewM.isPending ? "جارٍ إرسال التقييم…" : "إرسال التقييم"}</span>
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* عرض المراجعات المعتمدة أو الحالة الفارغة */}
       {reviewsQ.isLoading ? (
         <div className="py-4 text-center text-xs text-slate-400 font-medium">جارٍ تحميل التقييمات…</div>
       ) : items.length === 0 ? (
-        <div className="py-4 text-center">
-          <div className="mx-auto flex size-8 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400">
+        <div className="py-5 text-center">
+          <div className="mx-auto flex size-9 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400">
             <ThumbsUp aria-hidden className="size-4" />
           </div>
           <p className="mt-2 text-xs font-bold text-slate-700 dark:text-slate-300">كن أول من يشارك تجربته مع هذا المنتج!</p>
           <p className="mt-0.5 text-[10.5px] text-slate-500 dark:text-slate-400">
-            يمكنك تقييم المنتج وكتابة ملاحظاتك بعد استلام طلبك من المندوب.
+            رأيك يهمنا ويفيد عملاءنا في بغداد والمحافظات. شاركنا تقييمك الآن.
           </p>
+          {!showForm && (
+            <button
+              type="button"
+              onClick={() => setShowForm(true)}
+              className="mt-3 inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-50 px-3.5 py-1.5 text-xs font-black text-amber-800 shadow-xs transition hover:bg-amber-100 active:scale-95 dark:border-amber-400/30 dark:bg-amber-950/30 dark:text-amber-300"
+            >
+              <Star aria-hidden className="size-3.5 fill-current text-amber-500" />
+              <span>أضف أول تقييم للمنتج</span>
+            </button>
+          )}
         </div>
       ) : (
         <div className="mt-3 divide-y divide-slate-200/60 dark:divide-slate-800/80">
@@ -88,7 +318,7 @@ export function StorefrontProductReviews({ productId }: StorefrontProductReviews
             <article key={rev.id} className="py-2.5 first:pt-1 last:pb-1">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5">
-                  <div className="flex items-center gap-0.5">
+                  <div className="flex items-center gap-0.5" aria-label={`تقييم ${rev.rating} من 5`}>
                     {[1, 2, 3, 4, 5].map((s) => (
                       <Star
                         key={s}
@@ -101,9 +331,12 @@ export function StorefrontProductReviews({ productId }: StorefrontProductReviews
                       />
                     ))}
                   </div>
+                  <span className="font-bold text-[10.5px] text-slate-800 dark:text-slate-200">
+                    {rev.reviewerName ?? "مشتري موثّق"}
+                  </span>
                   <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100/70 px-1.5 py-0.2 text-[9px] font-bold text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
                     <ShieldCheck aria-hidden className="size-2.5" />
-                    <span>مشتري موثّق</span>
+                    <span>تقييم موثّق</span>
                   </span>
                 </div>
                 {rev.createdAt && (

@@ -8615,8 +8615,10 @@ export const storefrontProductReviews = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     productId: bigint("productId", { mode: "number" }).notNull().references(() => products.id, { onDelete: "cascade" }),
-    customerId: bigint("customerId", { mode: "number" }).notNull().references(() => customers.id, { onDelete: "cascade" }),
-    onlineOrderId: bigint("onlineOrderId", { mode: "number" }).notNull().references(() => onlineOrders.id, { onDelete: "cascade" }),
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id, { onDelete: "cascade" }),
+    onlineOrderId: bigint("onlineOrderId", { mode: "number" }).references(() => onlineOrders.id, { onDelete: "cascade" }),
+    reviewerName: varchar("reviewerName", { length: 255 }),
+    reviewerPhone: varchar("reviewerPhone", { length: 32 }),
     rating: int("rating").notNull(),
     comment: varchar("comment", { length: 1000 }).notNull(),
     status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED"]).default("PENDING").notNull(),
