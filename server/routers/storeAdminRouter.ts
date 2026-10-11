@@ -13,6 +13,7 @@ import { verifyManagerApproval } from "./saleRouter";
 import { logAudit } from "../services/auditService";
 import { router, storeFulfillProcedure, storeManagerProcedure, storeReadProcedure } from "../trpc";
 import {
+  autoAssignRoundRobinOnlineOrders,
   claimOnlineOrder,
   getOnlineOrder,
   getOnlineOrderLeaderboard,
@@ -218,6 +219,27 @@ const ordersRouter = router({
         oldValue: null,
         newValue: { claimedByUserId: ctx.user.id },
       });
+      return res;
+    }),
+
+  /** التوزيع التلقائي العادل الإجباري للطلبات المعلقة بالتناوب (Round-Robin) */
+  autoAssignRoundRobin: storeFulfillProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .mutation(async ({ input, ctx }) => {
+      const scopedBranchId = input?.branchId ?? actorScopedBranch(ctx.user);
+      const res = await autoAssignRoundRobinOnlineOrders(
+        { scopedBranchId },
+        { userId: ctx.user.id, role: ctx.user.role }
+      );
+      if (res.assignedCount > 0) {
+        await logAudit(ctx, {
+          action: "store.order.autoAssignRoundRobin",
+          entityType: "onlineOrder",
+          entityId: res.assignments[0]?.orderId ?? 0,
+          oldValue: null,
+          newValue: { assignedCount: res.assignedCount, assignments: res.assignments },
+        });
+      }
       return res;
     }),
 

@@ -6,7 +6,7 @@
  * عزل ذاتي خادمي: كل نقطة تحلّ المندوب من الجلسة (courier.myDeliveries/confirmDelivery).
  */
 import { useEffect, useState } from "react";
-import { AlertCircle, Banknote, CheckCircle2, Info, Loader2, MapPin, MessageCircle, PackageCheck, Phone, Truck, XCircle } from "lucide-react";
+import { AlertCircle, Banknote, CheckCircle2, Info, KeyRound, Loader2, MapPin, MessageCircle, PackageCheck, Phone, Truck, XCircle } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
@@ -67,6 +67,7 @@ export default function MyDeliveries() {
   const [confirmingKey, setConfirmingKey] = useState<string | null>(null);
   const [failTarget, setFailTarget] = useState<DeliveryRow | null>(null);
   const [partialTarget, setPartialTarget] = useState<DeliveryRow | null>(null);
+  const [onlineDeliveryTarget, setOnlineDeliveryTarget] = useState<DeliveryRow | null>(null);
   const [toDeliverFilter, setToDeliverFilter] = useState<"ALL" | "UNRECEIVED" | "IN_TRANSIT">("ALL");
 
   // طلب متجر: يُحصّل COD ويرفع العهدة (confirmDelivery).
@@ -77,6 +78,7 @@ export default function MyDeliveries() {
           ? `تم تسليم ${res.orderNumber} وتحصيل ${money(res.collected)} د.ع`
           : `تم تسليم ${res.orderNumber}`,
       );
+      setOnlineDeliveryTarget(null);
       void utils.courier.myDeliveries.invalidate();
     },
     onError: (e) => notify.err(e),
@@ -139,24 +141,8 @@ export default function MyDeliveries() {
       confirmCnM.mutate({ consignmentId: row.id, clientRequestId: crypto.randomUUID() });
       return;
     }
-    // طلب متجر: تأكيد + تحصيل COD يرفع عهدتك.
-    const due = Number(row.codDue);
-    const fee = Number(row.courierFee ?? 0);
-    const isOnlineFree = row.deliveryFree === true;
-    const ok = await confirm({
-      variant: due > 0 ? "warning" : "info",
-      title: "تأكيد التسليم والتحصيل",
-      description:
-        isOnlineFree
-          ? `أكّد استلام العميل للطلب ${row.orderNumber} وتحصيلك ${money(row.codDue)} د.ع نقداً فقط (توصيل مجاني: لا تقبض أي أجرة من الزبون، وأجرتك مستحقة على المتجر).`
-          : due > 0
-          ? `أكّد استلام العميل للطلب ${row.orderNumber} وتحصيلك ${money(row.codDue)} د.ع نقداً${fee > 0 ? ` (+ أجرتك ${money(row.courierFee)} د.ع تقبضها من الزبون وتبقى لك)` : ""}. سيُضاف مبلغ التوريد إلى ما بذمّتك حتى تُورّده للمتجر.`
-          : `أكّد استلام العميل للطلب ${row.orderNumber} (مدفوع مسبقاً — لا تحصيل).`,
-      confirmText: "تم التسليم",
-    });
-    if (!ok) return;
-    setConfirmingKey(rowKey(row));
-    confirmM.mutate({ onlineOrderId: row.id });
+    // طلب متجر: فتح حوار إدخال رمز استلام الزبون (Handshake OTP) ومراجعة التحصيل.
+    setOnlineDeliveryTarget(row);
   }
 
   function doPartialConfirm(row: DeliveryRow, collectedAmount: string, reason?: string) {
@@ -367,6 +353,18 @@ export default function MyDeliveries() {
           onConfirm={(reason) => failTarget.kind === "consignment"
             ? transitionParcel(failTarget, "FAILED", reason)
             : failM.mutate({ onlineOrderId: failTarget.id, reason })}
+        />
+      )}
+
+      {onlineDeliveryTarget && (
+        <OnlineDeliveryModal
+          row={onlineDeliveryTarget}
+          pending={confirmM.isPending}
+          onCancel={() => !confirmM.isPending && setOnlineDeliveryTarget(null)}
+          onConfirm={(handshakeOtp) => {
+            setConfirmingKey(rowKey(onlineDeliveryTarget));
+            confirmM.mutate({ onlineOrderId: onlineDeliveryTarget.id, handshakeOtp });
+          }}
         />
       )}
     </div>
@@ -726,6 +724,121 @@ function FailModal({ row, pending, onCancel, onConfirm }: { row: DeliveryRow; pe
           >
             {pending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <XCircle aria-hidden className="size-4" />}
             تأكيد الإلغاء
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** حوار «تأكيد تسليم طلب متجر»: إدخال رمز استلام الزبون (Handshake OTP) وتأكيد تحصيل COD. z-[100]. */
+function OnlineDeliveryModal({
+  row,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  row: DeliveryRow;
+  pending: boolean;
+  onCancel: () => void;
+  onConfirm: (handshakeOtp?: string) => void;
+}) {
+  const [otp, setOtp] = useState("");
+  const due = Number(row.codDue);
+  const fee = Number(row.courierFee ?? 0);
+  const isOnlineFree = row.deliveryFree === true;
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !pending) onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pending, onCancel]);
+
+  const cleanOtp = otp.trim();
+  const isValidOtp = cleanOtp.length === 0 || cleanOtp.length === 4;
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="تأكيد تسليم الطلب"
+      onClick={onCancel}
+      dir="rtl"
+    >
+      <div
+        className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-2 flex items-center gap-2 text-base font-bold text-teal-700 dark:text-teal-400">
+          <PackageCheck aria-hidden className="size-5" />
+          تأكيد تسليم الطلب <span dir="ltr" className="tracking-wider">{row.orderNumber}</span>
+        </div>
+
+        <div className="mb-4 space-y-2 rounded-xl border border-border/80 bg-muted/30 p-3 text-xs leading-relaxed">
+          {isOnlineFree ? (
+            <div className="flex items-center gap-1.5 font-bold text-[var(--sem-pos)]">
+              <Truck aria-hidden className="size-4 shrink-0" />
+              توصيل مجاني: لا تقبض أي أجرة من الزبون، وأجرتك مستحقة على المتجر.
+            </div>
+          ) : due > 0 ? (
+            <div>
+              المطلوب تحصيله نقداً: <span className="font-extrabold tabular-nums text-teal-700 dark:text-teal-400">{money(row.codDue)} د.ع</span>
+              {fee > 0 && <span className="text-muted-foreground"> (+ أجرتك {money(row.courierFee)} د.ع تقبضها من الزبون)</span>}
+              . سيُضاف مبلغ التوريد إلى عهدتك حتى تُورّده للمتجر.
+            </div>
+          ) : (
+            <div className="text-muted-foreground">الطلب مدفوع مسبقاً — لا تحصيل نقدي مطلوب.</div>
+          )}
+        </div>
+
+        {/* حقل رمز استلام العميل (Delivery Handshake OTP) */}
+        <div className="mb-4">
+          <label className="mb-1.5 flex items-center justify-between text-xs font-bold text-foreground">
+            <span className="flex items-center gap-1">
+              <KeyRound aria-hidden className="size-3.5 text-primary" />
+              رمز تسليم العميل (PIN)
+            </span>
+            <span className="text-[11px] font-normal text-muted-foreground">(اختياري للضرورة)</span>
+          </label>
+          <input
+            type="text"
+            inputMode="numeric"
+            maxLength={4}
+            value={otp}
+            onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 4))}
+            placeholder="مثال: 5432 (4 أرقام)"
+            dir="ltr"
+            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-center text-lg font-bold tracking-widest tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          />
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            الرمز المكون من 4 أرقام الظاهر في شاشة تتبع الطلب لدى العميل لإثبات التسليم الفعلي يداً بيد.
+          </p>
+        </div>
+
+        <div className="flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={pending}
+            className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition hover:bg-accent disabled:opacity-50"
+          >
+            تراجع
+          </button>
+          <button
+            type="button"
+            onClick={() => isValidOtp && onConfirm(cleanOtp || undefined)}
+            disabled={pending || !isValidOtp}
+            className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:opacity-50"
+          >
+            {pending ? (
+              <Loader2 aria-hidden className="size-4 animate-spin" />
+            ) : (
+              <CheckCircle2 aria-hidden className="size-4" />
+            )}
+            تأكيد التسليم والتحصيل
           </button>
         </div>
       </div>

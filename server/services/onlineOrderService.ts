@@ -2064,13 +2064,32 @@ export interface OnlineOrderTracking {
   total: string;
   governorate: string | null;
   createdAt: Date;
+  deliveryHandshakeOtp?: string | null;
   items: {
+    productId?: number | null;
     productName: string;
     unitName: string;
     quantity: string;
     unitPrice: string;
     total: string;
   }[];
+}
+
+/**
+ * توليد رمز التسليم السري للعميل (Delivery Handshake OTP):
+ * رمز رقمي مشفر من 4 أرقام مشتق حتمياً من رقم الطلب وتاريخ إنشائه مع سر النظام.
+ * يزود به الزبون يداً بيد للمندوب لإثبات التسليم الفعلي وتحصين أموال COD ضد الاحتيال.
+ */
+export function computeOrderDeliveryOtp(orderNumber: string, createdAt: Date | string | number): string {
+  const baseSecret = process.env.DELIVERY_OTP_SECRET || process.env.JWT_SECRET;
+  if (!baseSecret && process.env.NODE_ENV === "production") {
+    throw new Error("JWT_SECRET or DELIVERY_OTP_SECRET is required to generate delivery handshake OTP");
+  }
+  const secretKey = (baseSecret || "alroya_delivery_secret_dev") + ":delivery_handshake_otp_domain_v1";
+  const ts = new Date(createdAt).getTime();
+  const hmac = createHmac("sha256", secretKey).update(`${orderNumber}:${ts}`).digest("hex");
+  const num = (parseInt(hmac.slice(0, 8), 16) % 9000) + 1000;
+  return num.toString();
 }
 
 /**
@@ -2114,6 +2133,7 @@ async function buildOnlineOrderTracking(
 ): Promise<OnlineOrderTracking> {
   const rows = await db
     .select({
+      productId: products.id,
       productName: products.name,
       unitName: productUnits.unitName,
       quantity: onlineOrderItems.quantity,
@@ -2142,7 +2162,9 @@ async function buildOnlineOrderTracking(
     total: String(order.total),
     governorate: order.governorate ?? null,
     createdAt: order.createdAt,
+    deliveryHandshakeOtp: computeOrderDeliveryOtp(order.orderNumber, order.createdAt),
     items: rows.map((r) => ({
+      productId: Number(r.productId),
       productName: r.productName,
       unitName: r.unitName ?? "",
       quantity: String(r.quantity),

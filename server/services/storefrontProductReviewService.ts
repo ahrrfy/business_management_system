@@ -11,7 +11,14 @@ import { createAppNotification } from "./appNotificationService";
 function cleanComment(value: string) {
   const comment = value.trim().replace(/\s+/g, " ");
   if (comment.length < 8 || comment.length > 1000) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "اكتب مراجعة من 8 إلى 1000 حرف" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "طول نص المراجعة غير مناسب",
+        why: `عدد الأحرف الحالي ${comment.length} حرفاً، بينما المطلوب بين 8 و 1000 حرف`,
+        doThis: "اكتب تجربة مفيدة ومفصلة عن المنتج بما لا يقل عن 8 أحرف",
+      }),
+    });
   }
   return comment;
 }
@@ -33,6 +40,7 @@ export async function listStorefrontProductReviews(productId: number) {
       rating: storefrontProductReviews.rating,
       comment: storefrontProductReviews.comment,
       reviewerName: storefrontProductReviews.reviewerName,
+      onlineOrderId: storefrontProductReviews.onlineOrderId,
       createdAt: storefrontProductReviews.createdAt,
     })
     .from(storefrontProductReviews)
@@ -49,7 +57,8 @@ export async function listStorefrontProductReviews(productId: number) {
       id: Number(row.id),
       rating: Number(row.rating),
       comment: row.comment,
-      reviewerName: row.reviewerName ? "متسوق موثق" : "عميل موثق",
+      reviewerName: row.reviewerName ? maskReviewerName(row.reviewerName) : "متسوق موثق",
+      isVerifiedPurchase: Boolean(row.onlineOrderId != null),
       createdAt: row.createdAt,
     })),
   };
@@ -103,7 +112,16 @@ export async function submitStorefrontProductReview(input: { customerId: number;
     ))
     .orderBy(desc(onlineOrders.orderDate))
     .limit(1))[0];
-  if (!deliveredOrder) throw new TRPCError({ code: "FORBIDDEN", message: "يمكن إرسال مراجعة بعد استلام طلب يتضمن هذا المنتج" });
+  if (!deliveredOrder) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "لا يمكن إرسال مراجعة موثقة",
+        why: "لم يتم العثور على طلب مُسلّم ومكتمل يتضمن هذا المنتج في حسابك",
+        doThis: "يمكنك كتابة مراجعتك بعد استلام الشحنة وتأكيد تسليم الطلب",
+      }),
+    });
+  }
   try {
     const inserted = await db.insert(storefrontProductReviews).values({ productId: input.productId, customerId: input.customerId, onlineOrderId: Number(deliveredOrder.id), rating: input.rating, comment: cleanComment(input.comment), status: "PENDING" });
     const reviewId = extractInsertId(inserted);
@@ -111,7 +129,14 @@ export async function submitStorefrontProductReview(input: { customerId: number;
     return { ok: true as const, status: "PENDING" as const };
   } catch (error) {
     if (String(error).includes("uq_storefront_review_order_product") || String(error).includes("Duplicate")) {
-      throw new TRPCError({ code: "CONFLICT", message: "سبق أن أرسلت مراجعتك لهذا المنتج من هذا الطلب" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "مراجعة مكررة لنفس الطلب",
+          why: "سبق أن أرسلت مراجعتك لهذا المنتج من هذا الطلب المسلم",
+          doThis: "يمكنك مراجعة منتج آخر أو تعديل مراجعتك الحالية بالتواصل مع الدعم",
+        }),
+      });
     }
     throw error;
   }
@@ -173,21 +198,123 @@ export async function submitPublicStorefrontReview(input: {
   let matchedCustomerId: number | null = null;
   let matchedOrderId: number | null = null;
 
-  if (input.orderNumber?.trim()) {
-    const foundOrder = (await db
-      .select({ id: onlineOrders.id, customerId: onlineOrders.customerId })
-      .from(onlineOrders)
-      .where(eq(onlineOrders.orderNumber, input.orderNumber.trim()))
-      .limit(1))[0];
-    if (foundOrder) {
-      matchedOrderId = Number(foundOrder.id);
-      matchedCustomerId = Number(foundOrder.customerId);
-    }
-  }
-
   let normalizedPhone: string | null = null;
   if (input.reviewerPhone?.trim()) {
     normalizedPhone = normalizeIraqPhoneE164(input.reviewerPhone);
+  }
+
+  if (input.orderNumber?.trim()) {
+    const orderNum = input.orderNumber.trim();
+    const verifiedOrder = (
+      await db
+        .select({
+          id: onlineOrders.id,
+          customerId: onlineOrders.customerId,
+          customerPhone: customers.phone,
+          status: onlineOrders.status,
+        })
+        .from(onlineOrders)
+        .innerJoin(customers, eq(onlineOrders.customerId, customers.id))
+        .innerJoin(onlineOrderItems, eq(onlineOrderItems.onlineOrderId, onlineOrders.id))
+        .innerJoin(productVariants, eq(onlineOrderItems.variantId, productVariants.id))
+        .where(
+          and(
+            eq(onlineOrders.orderNumber, orderNum),
+            eq(productVariants.productId, input.productId),
+            eq(onlineOrders.status, "DELIVERED"),
+          ),
+        )
+        .limit(1)
+    )[0];
+
+    if (verifiedOrder) {
+      if (!normalizedPhone) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "رقم هاتف الاستلام مطلوب لتوثيق الشراء",
+            why: "لتوثيق تقييمك بشارة مشتري موثق، يرجى إدخال نفس رقم هاتف استلام الطلب",
+            doThis: "أدخل رقم هاتفك لتأكيد الشراء أو اترك حقل رقم الطلب فارغاً لنشر تقييمك كمتسوق عام",
+          }),
+        });
+      }
+      if (verifiedOrder.customerPhone) {
+        const orderPhoneNorm = normalizeIraqPhoneE164(verifiedOrder.customerPhone);
+        if (orderPhoneNorm && orderPhoneNorm !== normalizedPhone) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "عدم تطابق رقم هاتف الاستلام",
+              why: "رقم الهاتف المدخل لا يطابق رقم هاتف العميل المسجل في هذا الطلب",
+              doThis: "أدخل نفس رقم الهاتف الذي استلمت به الشحنة أو اترك حقل الطلب فارغاً للتقييم العام",
+            }),
+          });
+        }
+      }
+      matchedOrderId = Number(verifiedOrder.id);
+      matchedCustomerId = Number(verifiedOrder.customerId);
+
+      const existingReview = (
+        await db
+          .select({ id: storefrontProductReviews.id })
+          .from(storefrontProductReviews)
+          .where(
+            and(
+              eq(storefrontProductReviews.onlineOrderId, matchedOrderId),
+              eq(storefrontProductReviews.productId, input.productId),
+            ),
+          )
+          .limit(1)
+      )[0];
+      if (existingReview) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تقييم مكرر لنفس الطلب",
+            why: "سبق تسجيل تقييم معتمد لهذا المنتج من نفس رقم الطلب",
+            doThis: "يمكنك كتابة مراجعة لمنتج آخر في الطلب أو تحديث مراجعتك عبر خدمة العملاء",
+          }),
+        });
+      }
+    } else {
+      const orderExists = (
+        await db
+          .select({ id: onlineOrders.id, status: onlineOrders.status })
+          .from(onlineOrders)
+          .where(eq(onlineOrders.orderNumber, orderNum))
+          .limit(1)
+      )[0];
+      if (orderExists) {
+        if (orderExists.status !== "DELIVERED") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "الطلب غير مكتمل التسليم",
+              why: "يمكن توثيق شارة الشراء المؤكد فقط بعد استلام الشحنة وتأكيد التسليم",
+              doThis: "انتظر حتى تستلم الشحنة لتسجيل مراجعة موثقة أو اترك رقم الطلب فارغاً للمراجعة العامة",
+            }),
+          });
+        } else {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "المنتج غير موجود بالطلب",
+              why: "رقم الطلب المدخل لا يتضمن هذا المنتج المحدد",
+              doThis: "تأكد من اختيار صفحة المنتج الصحيح الذي طلبته أو راجع قائمة طلباتك",
+            }),
+          });
+        }
+      } else {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "رقم الطلب غير موجود",
+            why: "لم يتم العثور على طلب مسجل بهذا الرقم في النظام",
+            doThis: "تحقق من رقم الطلب كما ورد في رسالة التأكيد أو الفاتورة (مثال: ORD-...) أو اتركه فارغاً",
+          }),
+        });
+      }
+    }
   }
 
   if (!matchedCustomerId && (normalizedPhone || input.reviewerPhone?.trim())) {
@@ -219,20 +346,34 @@ export async function submitPublicStorefrontReview(input: {
     }
   }
 
-  const inserted = await db.insert(storefrontProductReviews).values({
-    productId: input.productId,
-    customerId: matchedCustomerId,
-    onlineOrderId: matchedOrderId,
-    reviewerName: cleanName,
-    reviewerPhone: normalizedPhone ?? (input.reviewerPhone?.trim() || null),
-    rating: input.rating,
-    comment,
-    status: "PENDING",
-  });
+  try {
+    const inserted = await db.insert(storefrontProductReviews).values({
+      productId: input.productId,
+      customerId: matchedCustomerId,
+      onlineOrderId: matchedOrderId,
+      reviewerName: cleanName,
+      reviewerPhone: normalizedPhone ?? (input.reviewerPhone?.trim() || null),
+      rating: input.rating,
+      comment,
+      status: "PENDING",
+    });
 
-  const reviewId = extractInsertId(inserted);
-  void notifyManagersAboutReview(db, reviewId, input.rating, cleanName);
+    const reviewId = extractInsertId(inserted);
+    void notifyManagersAboutReview(db, reviewId, input.rating, cleanName);
 
-  return { ok: true as const, status: "PENDING" as const };
+    return { ok: true as const, status: "PENDING" as const };
+  } catch (error) {
+    if (String(error).includes("uq_storefront_review_order_product") || String(error).includes("Duplicate")) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تقييم مكرر لنفس الطلب",
+          why: "سبق تسجيل تقييم معتمد لهذا المنتج من نفس رقم الطلب",
+          doThis: "يمكنك كتابة مراجعة لمنتج آخر في الطلب أو تحديث مراجعتك عبر خدمة العملاء",
+        }),
+      });
+    }
+    throw error;
+  }
 }
 

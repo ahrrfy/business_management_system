@@ -48,6 +48,7 @@ export async function computeNetSalesByUser(
   runner: DB | Tx,
   period: string,
   branchId?: number,
+  targetUserId?: number,
 ): Promise<Map<number, UserMonthBase>> {
   const { from, toExclusive } = periodDateRange(period);
 
@@ -112,6 +113,13 @@ export async function computeNetSalesByUser(
         sql`${accountingEntries.entryDate} >= ${from}`,
         sql`${accountingEntries.entryDate} < ${toExclusive}`,
         branchId != null ? eq(accountingEntries.branchId, branchId) : undefined,
+        targetUserId != null
+          ? sql`COALESCE(
+              ${invoiceAttributions.userId},
+              CASE WHEN ${invoices.sourceType} = 'WORKORDER' THEN ${workOrders.createdBy} END,
+              ${invoices.createdBy}
+            ) = ${targetUserId}`
+          : undefined,
         // SALE/RETURN للبائع (supplierId فارغ)، أو قيد أمانة أُسنِد لفاتورته (PURCHASE بـsupplierId).
         sql`(
           (${accountingEntries.entryType} IN ('SALE','RETURN') AND ${accountingEntries.supplierId} IS NULL)
