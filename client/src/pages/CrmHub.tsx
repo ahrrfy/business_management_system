@@ -118,6 +118,21 @@ function CustomerComplaintsView() {
     feedbackId?: number;
   } | null>(null);
 
+  const me = trpc.auth.me.useQuery();
+  const role = me.data?.role;
+  const permsOverride = (me.data?.permissionsOverride ?? null) as
+    | import("@shared/permissions").PermissionMap
+    | null;
+  const canManageComplaints = canSeeGate(
+    {
+      roles: ["cashier", "manager", "sales_rep", "print_operator"],
+      module: "crm",
+      level: "FULL",
+    },
+    role,
+    permsOverride,
+  );
+
   const feedbackQuery = trpc.customers.feedbackList.useQuery({ limit: 100 });
   const markGoogleInviteMut = trpc.customers.markGoogleReviewInviteSent.useMutation();
   const items = feedbackQuery.data ?? [];
@@ -180,17 +195,19 @@ function CustomerComplaintsView() {
         title="الشكاوى ومستوى رضا الزبائن"
         description="متابعة جودة الخدمة ورضا الزبائن ومعالجة الشكاوى التشغيلية المرتبطة بمحطات العمل والطباعة."
         actions={
-          <Button
-            type="button"
-            onClick={() => {
-              setEditingFeedback(null);
-              setFeedbackModalOpen(true);
-            }}
-            className="flex items-center gap-2"
-          >
-            <Plus className="size-4" aria-hidden />
-            <span>تسجيل تقييم أو شكوى</span>
-          </Button>
+          canManageComplaints ? (
+            <Button
+              type="button"
+              onClick={() => {
+                setEditingFeedback(null);
+                setFeedbackModalOpen(true);
+              }}
+              className="flex items-center gap-2"
+            >
+              <Plus className="size-4" aria-hidden />
+              <span>تسجيل تقييم أو شكوى</span>
+            </Button>
+          ) : undefined
         }
       />
 
@@ -407,59 +424,61 @@ function CustomerComplaintsView() {
                       <span>الملف الشامل 360°</span>
                     </Button>
 
-                    <div className="flex items-center gap-1">
-                      {/* إجراء سريع: دعوة Google للزبون الراضي */}
-                      {isSatisfied && (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleSendGoogleReviewInvite(item)}
-                          className="h-8 text-xs gap-1 border-[var(--sem-pos)]/40 text-[var(--sem-pos)] hover:bg-accent"
-                          title="إرسال دعوة تقييم Google عبر واتساب"
-                        >
-                          <MessageSquare className="size-3.5" aria-hidden />
-                          <span>دعوة Google</span>
-                        </Button>
-                      )}
+                    {canManageComplaints && (
+                      <div className="flex items-center gap-1">
+                        {/* إجراء سريع: دعوة Google للزبون الراضي */}
+                        {isSatisfied && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleSendGoogleReviewInvite(item)}
+                            className="h-8 text-xs gap-1 border-[var(--sem-pos)]/40 text-[var(--sem-pos)] hover:bg-accent"
+                            title="إرسال دعوة تقييم Google عبر واتساب"
+                          >
+                            <MessageSquare className="size-3.5" aria-hidden />
+                            <span>دعوة Google</span>
+                          </Button>
+                        )}
 
-                      {/* إجراء سريع: كوبون ترضية فوري في حالات الشكاوى أو التقييم المنخفض */}
-                      {!isSatisfied && (
+                        {/* إجراء سريع: كوبون ترضية فوري في حالات الشكاوى أو التقييم المنخفض */}
+                        {!isSatisfied && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setGiftCustomer({
+                                customerId: item.customerId,
+                                customerName: `زبون #${item.customerId}`,
+                                feedbackId: item.id,
+                              });
+                            }}
+                            className="h-8 text-xs gap-1 border-[var(--sem-warn)]/40 text-[var(--sem-warn)] hover:bg-accent"
+                            title="إصدار قسيمة هدية فورية للترضية"
+                          >
+                            <Gift className="size-3.5" aria-hidden />
+                            <span>{item.giftCouponCode ? "قسيمة إضافية" : "إهداء كوبون"}</span>
+                          </Button>
+                        )}
+
+                        {/* متابعة أو تحديث حالة الشكوى */}
                         <Button
                           type="button"
-                          variant="outline"
+                          variant="ghost"
                           size="sm"
                           onClick={() => {
-                            setGiftCustomer({
-                              customerId: item.customerId,
-                              customerName: `زبون #${item.customerId}`,
-                              feedbackId: item.id,
-                            });
+                            setEditingFeedback(item);
+                            setFeedbackModalOpen(true);
                           }}
-                          className="h-8 text-xs gap-1 border-[var(--sem-warn)]/40 text-[var(--sem-warn)] hover:bg-accent"
-                          title="إصدار قسيمة هدية فورية للترضية"
+                          className="h-8 text-xs text-muted-foreground hover:text-foreground"
+                          title="معالجة وتحديث حالة الشكوى"
                         >
-                          <Gift className="size-3.5" aria-hidden />
-                          <span>{item.giftCouponCode ? "قسيمة إضافية" : "إهداء كوبون"}</span>
+                          <Clock className="size-3.5 me-1" aria-hidden />
+                          <span>معالجة</span>
                         </Button>
-                      )}
-
-                      {/* متابعة أو تحديث حالة الشكوى */}
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          setEditingFeedback(item);
-                          setFeedbackModalOpen(true);
-                        }}
-                        className="h-8 text-xs text-muted-foreground hover:text-foreground"
-                        title="معالجة وتحديث حالة الشكوى"
-                      >
-                        <Clock className="size-3.5 me-1" aria-hidden />
-                        <span>معالجة</span>
-                      </Button>
-                    </div>
+                      </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>
