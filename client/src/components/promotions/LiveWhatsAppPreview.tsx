@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
-import { formatIqd } from "@/lib/money";
+import { formatIqd, moneyInput } from "@/lib/money";
 import { CO } from "@/lib/printing/brand";
 import { storefrontUrl } from "@/lib/siteHosts";
 import { notify } from "@/lib/notify";
@@ -35,16 +35,16 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
 
   const discountSummary = useMemo(() => {
     if (data.type === "PERCENT") {
-      const cap = parseFloat(data.maxDiscountAmount);
-      const capText = !isNaN(cap) && cap > 0 ? ` (سقف التوفير: ${formatIqd(data.maxDiscountAmount)})` : "";
+      const cap = moneyInput(data.maxDiscountAmount);
+      const capText = cap.greaterThan(0) ? ` (سقف التوفير: ${formatIqd(data.maxDiscountAmount)})` : "";
       return `خصم ${data.discountPercent || "0"}٪${capText}`;
     }
     return `خصم بقيمة ${formatIqd(data.discountAmount || "0")}`;
   }, [data.type, data.discountPercent, data.maxDiscountAmount, data.discountAmount]);
 
   const minSpendSummary = useMemo(() => {
-    const min = parseFloat(data.minOrderSpend);
-    return !isNaN(min) && min > 0 ? formatIqd(data.minOrderSpend) : "بلا حد أدنى";
+    const min = moneyInput(data.minOrderSpend);
+    return min.greaterThan(0) ? formatIqd(data.minOrderSpend) : "بلا حد أدنى";
   }, [data.minOrderSpend]);
 
   const validityText = useMemo(() => {

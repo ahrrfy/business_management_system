@@ -97,6 +97,7 @@ import { StorefrontThematicStrip, type ThematicCollectionCard } from "@/componen
 import { StorefrontCustomizerStudio } from "@/components/storefront/StorefrontCustomizerStudio";
 import { StorefrontHeuristicsBadges } from "@/components/storefront/StorefrontHeuristicsBadges";
 import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
+import { useStorefrontCoupon } from "@/hooks/useStorefrontCoupon";
 
 const STORE_NAME = "المكتبة العربية";
 const STORE_TAGLINE = "قرطاسية • طباعة • هدايا — يصلك أينما كنت في العراق";
@@ -1183,9 +1184,6 @@ function StorefrontContent() {
   const [wishlistIds, setWishlistIds] = useState<Set<number>>(loadStorefrontWishlist);
   const [showWishlist, setShowWishlist] = useState(false);
   const [shareFeedback, setShareFeedback] = useState<{ text: string; tone: ShareFeedbackTone } | null>(null);
-  const [couponDraft, setCouponDraft] = useState("");
-  const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(null);
-  const [couponFeedback, setCouponFeedback] = useState<string | null>(null);
   const [cart, setCart] = useState<Map<string, CartLine>>(loadCart);
   const [cartStatus, setCartStatus] = useState("");
   const cartRecommendationProductIds = useMemo(
@@ -1223,6 +1221,23 @@ function StorefrontContent() {
     total: string;
     reservationExpiresAt: Date | string;
   } | null>(null);
+  const {
+    couponDraft,
+    setCouponDraft,
+    appliedCouponCode,
+    setAppliedCouponCode,
+    couponFeedback,
+    setCouponFeedback,
+    applyCoupon,
+    removeCoupon,
+    clearCouponOnSuccess,
+  } = useStorefrontCoupon({
+    onQuoteInvalidate: () => {
+      acceptedQuoteRef.current = null;
+      setCheckoutSafetyError(null);
+    },
+  });
+
   const viewedProductIds = useRef(new Set<number>());
   const catalogLoadMoreRef = useRef<HTMLDivElement | null>(null);
 
@@ -1392,14 +1407,6 @@ function StorefrontContent() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const couponParam = params.get("coupon")?.trim() || params.get("c")?.trim();
-    if (couponParam && /^[A-Za-z0-9_-]{3,32}$/.test(couponParam)) {
-      const norm = couponParam.toUpperCase();
-      setCouponDraft(norm);
-      setAppliedCouponCode(norm);
-      setCouponFeedback(`تم تفعيل كوبون الخصم (${norm}) تلقائياً من الرابط الترويجي`);
-    }
-
     const token = params.get("cartToken")?.trim();
     if (!token || !/^[A-Za-z0-9_-]{20,32}$/.test(token)) return;
     let cancelled = false;
@@ -1475,9 +1482,7 @@ function StorefrontContent() {
         }));
       }
       setCart(new Map());
-      setCouponDraft("");
-      setAppliedCouponCode(null);
-      setCouponFeedback(null);
+      clearCouponOnSuccess();
       // امسح بيانات التوصيل (اسم/هاتف/عنوان) من الحالة و localStorage بعد نجاح الطلب (مراجعة عدائية
       // ١٢/٧): المتجر علنيّ بلا جلسة ⇒ إبقاؤها يسرّبها للزبون التالي على جهازٍ مشترك/كشك. الاستعادة
       // عبر التحديث تخصّ طلباً قيد الإنشاء فقط، لا بعد إتمامه.
@@ -1950,25 +1955,6 @@ function StorefrontContent() {
   const couponForCheckout = couponSuperseded ? null : appliedCouponCode;
   const quotedDeliveryFree = quoteQ.data?.deliveryFree ?? qualifiesFree;
   const quoteReady = !!quoteQ.data && !quoteQ.isFetching && !quoteQ.isError;
-
-  function applyCoupon() {
-    const normalized = couponDraft.trim().toUpperCase().replace(/\s+/g, "");
-    if (!normalized) {
-      setCouponFeedback("اكتب رمز الكوبون أولاً");
-      return;
-    }
-    setAppliedCouponCode(normalized);
-    setCouponFeedback("جارٍ التحقق من الكوبون…");
-    acceptedQuoteRef.current = null;
-    setCheckoutSafetyError(null);
-  }
-  function removeCoupon() {
-    setAppliedCouponCode(null);
-    setCouponDraft("");
-    setCouponFeedback(null);
-    acceptedQuoteRef.current = null;
-    setCheckoutSafetyError(null);
-  }
 
   function addToCart(p: {
     productUnitId: number; productId: number; productName: string; price: string | null;

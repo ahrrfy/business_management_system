@@ -2,7 +2,7 @@ import { useState, useMemo } from "react";
 import { Check, Copy, Printer, Sparkles, QrCode } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { formatIqd } from "@/lib/money";
+import { formatIqd, moneyInput } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { qrSvgSync } from "@/lib/printing/qr";
 import { printCouponCards } from "@/lib/printing/couponCard";
@@ -37,8 +37,8 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
 
   const discountSummary = useMemo(() => {
     if (data.type === "PERCENT") {
-      const cap = parseFloat(data.maxDiscountAmount);
-      const capText = !isNaN(cap) && cap > 0 ? ` (سقف: ${formatIqd(data.maxDiscountAmount)})` : "";
+      const cap = moneyInput(data.maxDiscountAmount);
+      const capText = cap.greaterThan(0) ? ` (سقف: ${formatIqd(data.maxDiscountAmount)})` : "";
       return `خصم ${data.discountPercent || "0"}٪${capText}`;
     }
     return `خصم بقيمة ${formatIqd(data.discountAmount || "0")}`;
@@ -52,8 +52,8 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
   }, [data.type, data.discountPercent, data.discountAmount]);
 
   const minSpendText = useMemo(() => {
-    const min = parseFloat(data.minOrderSpend);
-    return !isNaN(min) && min > 0 ? `للطلبات بقيمة ${formatIqd(data.minOrderSpend)} فأكثر` : null;
+    const min = moneyInput(data.minOrderSpend);
+    return min.greaterThan(0) ? `للطلبات بقيمة ${formatIqd(data.minOrderSpend)} فأكثر` : null;
   }, [data.minOrderSpend]);
 
   async function handleCopy() {
@@ -156,7 +156,7 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
               </span>
               <span className="text-xs font-black">خصم</span>
             </div>
-            {data.type === "PERCENT" && parseFloat(data.maxDiscountAmount) > 0 && (
+            {data.type === "PERCENT" && moneyInput(data.maxDiscountAmount).greaterThan(0) && (
               <div className="text-[9.5px] font-bold text-foreground mt-0.5">
                 سقف التوفير: {formatIqd(data.maxDiscountAmount)}
               </div>

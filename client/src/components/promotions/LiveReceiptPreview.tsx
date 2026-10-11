@@ -3,7 +3,7 @@ import { Receipt, AlertTriangle, CheckCircle2, SlidersHorizontal, Printer, QrCod
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { D, formatIqd } from "@/lib/money";
+import { D, formatIqd, moneyInput } from "@/lib/money";
 import { code128Svg } from "@/lib/printing/barcode";
 import { qrSvgSync } from "@/lib/printing/qr";
 import { CO, CAIRO_FONT } from "@/lib/printing/brand";
@@ -30,19 +30,19 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
   }, [previewCode]);
 
   const minSpend = useMemo(() => {
-    const val = parseFloat(data.minOrderSpend);
-    return isNaN(val) ? 0 : val;
+    return moneyInput(data.minOrderSpend);
   }, [data.minOrderSpend]);
 
-  const isMinSpendMet = simulatedSubtotal >= minSpend;
+  const isMinSpendMet = D(simulatedSubtotal).gte(minSpend);
 
   // الحساب المالي الدقيق للخصم مع احترام السقف المالي والحد الأدنى
   const calculation = useMemo(() => {
+    const subtotal = D(simulatedSubtotal);
     if (!isMinSpendMet) {
       return {
         discountAmount: D(0),
         isCapped: false,
-        total: D(simulatedSubtotal),
+        total: subtotal,
       };
     }
 
@@ -50,22 +50,22 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
     let isCapped = false;
 
     if (data.type === "PERCENT") {
-      const pct = parseFloat(data.discountPercent) || 0;
-      const rawDiscount = D(simulatedSubtotal).times(pct).div(100);
-      const capVal = parseFloat(data.maxDiscountAmount);
+      const pct = moneyInput(data.discountPercent);
+      const rawDiscount = subtotal.times(pct).div(100);
+      const capVal = moneyInput(data.maxDiscountAmount);
 
-      if (!isNaN(capVal) && capVal > 0 && rawDiscount.gt(capVal)) {
-        discount = D(capVal);
+      if (capVal.greaterThan(0) && rawDiscount.gt(capVal)) {
+        discount = capVal;
         isCapped = true;
       } else {
         discount = rawDiscount;
       }
     } else {
-      const fixed = parseFloat(data.discountAmount) || 0;
-      discount = D(Math.min(simulatedSubtotal, fixed));
+      const fixed = moneyInput(data.discountAmount);
+      discount = fixed.greaterThan(subtotal) ? subtotal : fixed;
     }
 
-    const netTotal = D(simulatedSubtotal).minus(discount);
+    const netTotal = subtotal.minus(discount);
 
     return {
       discountAmount: discount,
@@ -168,8 +168,8 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
     <div class="hero-discount">
       ${data.type === "PERCENT" ? `خصم ${data.discountPercent || "0"}٪` : `خصم ${formatIqd(data.discountAmount || "0")}`}
     </div>
-    ${data.type === "PERCENT" && parseFloat(data.maxDiscountAmount) > 0 ? `<div>سقف التوفير: ${formatIqd(data.maxDiscountAmount)}</div>` : ""}
-    ${parseFloat(data.minOrderSpend) > 0 ? `<div>الحد الأدنى للفاتورة: ${formatIqd(data.minOrderSpend)}</div>` : ""}
+    ${data.type === "PERCENT" && moneyInput(data.maxDiscountAmount).greaterThan(0) ? `<div>سقف التوفير: ${formatIqd(data.maxDiscountAmount)}</div>` : ""}
+    ${moneyInput(data.minOrderSpend).greaterThan(0) ? `<div>الحد الأدنى للفاتورة: ${formatIqd(data.minOrderSpend)}</div>` : ""}
     <div class="code-pill">${previewCode}</div>
     <div class="qr">${qrSvg || ""}</div>
     <div style="font-size: 9px; font-weight: 700;">امسح للطلب أونلاين أو أبرز الرمز للكاشير</div>
@@ -296,13 +296,13 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
               {data.type === "PERCENT" ? `خصم ${data.discountPercent || "0"}٪` : `خصم ${formatIqd(data.discountAmount || "0")}`}
             </div>
 
-            {data.type === "PERCENT" && parseFloat(data.maxDiscountAmount) > 0 && (
+            {data.type === "PERCENT" && moneyInput(data.maxDiscountAmount).greaterThan(0) && (
               <div className="text-[10.5px] font-extrabold text-zinc-900">
                 سقف التوفير الأقصى: {formatIqd(data.maxDiscountAmount)}
               </div>
             )}
 
-            {parseFloat(data.minOrderSpend) > 0 && (
+            {moneyInput(data.minOrderSpend).greaterThan(0) && (
               <div className="text-[10.5px] font-black text-black">
                 الحد الأدنى للفاتورة: {formatIqd(data.minOrderSpend)}
               </div>
@@ -367,7 +367,7 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
               </div>
             ) : (
               <div className="text-[10px] font-bold text-red-700 bg-red-50 p-1.5 rounded border border-red-300">
-                لم يتم تطبيق الكوبون (الحد الأدنى للسلة هو {formatIqd(minSpend)})
+                لم يتم تطبيق الكوبون (الحد الأدنى للسلة هو {formatIqd(minSpend.toString())})
               </div>
             )}
 
