@@ -449,6 +449,7 @@ export default defineConfig({
       "client/src/components/permissions/__tests__/challengerM3UiStress.test.tsx",
       "client/src/components/permissions/__tests__/tier5FrontendAdversarial.test.tsx",
       "client/src/components/permissions/__tests__/comprehensiveDualViewAndRowControls.test.tsx",
+      "server/services/__tests__/permissionWhitelist.unit.test.ts",
       // الموجة ٠ (Wave 0): البنية التحتية اللحظية وناقل الحلقات الداخلي وتنسيق التبويبات المتعددة
       "server/realtime/__tests__/bridge.test.ts",
       "server/realtime/__tests__/sseStream.test.ts",

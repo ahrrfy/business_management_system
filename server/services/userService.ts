@@ -9,6 +9,7 @@ import {
   normalizeUsername,
 } from "@shared/const";
 import {
+  ALL_PERMISSION_MODULE_KEYS,
   ALL_ROLES,
   PERMISSION_MODULES,
   ROLE_TEMPLATES,
@@ -172,13 +173,13 @@ function assertPasswordPolicy(pw: string) {
 
 /**
  * لا نقبل في استثناء المستخدم إلا مفاتيح وحدات النظام المعروفة. هذا يمنع تخزين مفاتيح
- * صامتة لا يقرأها الإنفاذ، ويحافظ على توافق `customers` القديم الذي يُرحّل إلى CRM.
+ * صامتة لا يقرأها الإنفاذ، ويحافظ على توافق `customers` و`tasks` القديمين.
  */
 function normalizePermissionOverride(
   override: Record<string, "FULL" | "READ" | "NONE"> | null | undefined,
 ): PermissionMap | null {
   if (!override) return null;
-  const allowed = new Set([...PERMISSION_MODULES.map((m) => m.key), "customers"]);
+  const allowed = new Set<string>(ALL_PERMISSION_MODULE_KEYS);
   const normalized: PermissionMap = {};
   for (const [key, level] of Object.entries(override)) {
     if (!allowed.has(key)) {
