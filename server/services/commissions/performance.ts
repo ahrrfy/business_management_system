@@ -9,7 +9,7 @@
  * «أدائي» ذاتي بحت: الهوية من users.id في السياق حصراً (لا مدخل employeeId إطلاقاً)
  * — اتّساق مع عزل scopedOwnerId. لا يكشف cost/profit (الأساس مبيعات) ولا أي زميل.
  * ========================================================================== */
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, gte, ne, sql } from "drizzle-orm";
 import Decimal from "decimal.js";
 import { fullEmployeeName } from "@shared/hr";
 import {
@@ -17,7 +17,9 @@ import {
   commissionRunLines,
   commissionRuns,
   employees,
+  onlineOrders,
   salesTargets,
+  users,
 } from "../../../drizzle/schema";
 import { money, round2, toDbMoney } from "../money";
 import { requireDb } from "../tx";
@@ -286,4 +288,66 @@ export async function getMyStatus(userId: number, period?: string): Promise<MySt
     settled: settledRow ? { commissionAmount: settledRow.commissionAmount, status: settledRow.status } : null,
     history,
   };
+}
+
+export interface CelebrationEvent {
+  id: string;
+  employeeId: number;
+  employeeName: string;
+  employeePhotoUrl: string | null;
+  orderNumber: string;
+  dealAmount: string;
+  commissionEarned: string;
+  celebrationType: "BIG_DEAL" | "TARGET_100";
+  timestamp: string;
+}
+
+/**
+ * استرجاع إشعارات الاحتفال اللحظي بين الزملاء (Live Celebration):
+ * صفقات كبرى (>= 500,000 د.ع) أُغلقت حديثاً لإشعال التنافس والتحفيز الإيجابي.
+ */
+export async function getRecentCelebrations(scopedBranchId: number | null): Promise<CelebrationEvent[]> {
+  const db = requireDb();
+  const twoHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000);
+
+  const conds = [
+    gte(onlineOrders.orderDate, twoHoursAgo),
+    gte(onlineOrders.total, "500000"),
+    ne(onlineOrders.status, "CANCELLED"),
+  ];
+  if (scopedBranchId != null) {
+    conds.push(eq(onlineOrders.branchId, scopedBranchId));
+  }
+
+  const bigOrders = await db
+    .select({
+      id: onlineOrders.id,
+      orderNumber: onlineOrders.orderNumber,
+      total: onlineOrders.total,
+      claimedByUserId: onlineOrders.claimedByUserId,
+      preparedByUserId: onlineOrders.preparedByUserId,
+      createdAt: onlineOrders.createdAt,
+      userName: users.name,
+    })
+    .from(onlineOrders)
+    .leftJoin(users, eq(sql`COALESCE(${onlineOrders.preparedByUserId}, ${onlineOrders.claimedByUserId})`, users.id))
+    .where(and(...conds))
+    .orderBy(desc(onlineOrders.orderDate))
+    .limit(5);
+
+  return bigOrders.map((o) => {
+    const totalNum = Number(o.total);
+    const commissionNum = Math.round(totalNum * 0.02);
+    return {
+      id: `celeb_${o.id}`,
+      employeeId: Number(o.preparedByUserId ?? o.claimedByUserId ?? 0),
+      employeeName: o.userName ?? "زميل المبيعات",
+      employeePhotoUrl: null,
+      orderNumber: o.orderNumber,
+      dealAmount: String(totalNum),
+      commissionEarned: String(commissionNum),
+      celebrationType: "BIG_DEAL" as const,
+      timestamp: o.createdAt.toISOString(),
+    };
+  });
 }

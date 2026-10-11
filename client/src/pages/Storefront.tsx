@@ -92,6 +92,8 @@ import { StorefrontDispatchCountdown } from "@/components/storefront/StorefrontD
 import { StorefrontB2BQuoteButton } from "@/components/storefront/StorefrontB2BQuoteButton";
 import { StorefrontPersonalAdvisorCard } from "@/components/storefront/StorefrontPersonalAdvisorCard";
 import { StorefrontSocialProofTicker } from "@/components/storefront/StorefrontSocialProofTicker";
+import { StorefrontThematicStrip, type ThematicCollectionCard } from "@/components/storefront/StorefrontThematicStrip";
+import { StorefrontCustomizerStudio } from "@/components/storefront/StorefrontCustomizerStudio";
 import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
 
 const STORE_NAME = "المكتبة العربية";
@@ -1153,6 +1155,7 @@ function StorefrontContent() {
   const [searchFocused, setSearchFocused] = useState(false);
   const [searchSuggestionIndex, setSearchSuggestionIndex] = useState(0);
   const [categoryId, setCategoryId] = useState<number | null>(null);
+  const [selectedThematicCollection, setSelectedThematicCollection] = useState<ThematicCollectionCard | null>(null);
   // البدء بالمتوفر يحمي نية الشراء: لا نُغرق العميل ببطاقات لا يمكن إضافتها للسلة.
   const [availability, setAvailability] = useState<AvailabilityFilter>("IN_STOCK");
   const [priceFilter, setPriceFilter] = useState<PriceFilter>("ALL");
@@ -1722,6 +1725,9 @@ function StorefrontContent() {
       if (showWishlist && !wishlistIds.has(p.productId)) return false;
       if (availability === "IN_STOCK" && !p.inStock) return false;
       if (brand && p.brand !== brand) return false;
+      if (selectedThematicCollection?.productIds && selectedThematicCollection.productIds.length > 0) {
+        if (!selectedThematicCollection.productIds.includes(p.productId)) return false;
+      }
       return matchesPriceFilter(Number(p.salePrice ?? p.price ?? 0), priceFilter);
     });
     if (sort === "RECOMMENDED") return filtered;
@@ -1731,8 +1737,8 @@ function StorefrontContent() {
       const bPrice = Number(b.salePrice ?? b.price ?? 0);
       return sort === "PRICE_ASC" ? aPrice - bPrice : bPrice - aPrice;
     });
-  }, [availability, brand, items, priceFilter, showWishlist, sort, wishlistIds]);
-  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist;
+  }, [availability, brand, items, priceFilter, selectedThematicCollection, showWishlist, sort, wishlistIds]);
+  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist || selectedThematicCollection != null;
   // اقتراحات البحث: مُصفَّرة من `filteredItems` (Codex #4) — لا يظهر اقتراحٌ ينتفي فور اختياره.
   const searchSuggestions = useMemo(() => getStorefrontSearchSuggestions(filteredItems, rawSearch), [filteredItems, rawSearch]);
   useEffect(() => { setSearchSuggestionIndex(0); }, [rawSearch]);
@@ -1746,25 +1752,48 @@ function StorefrontContent() {
   };
   // catalog يُرشّح البحث والفئة خادمياً، بينما السعر/الماركة عميلان. غياب العناصر من الصفحة الأولى
   // يعني كتالوجاً فارغاً حقاً؛ وأي غياب مع بحث/فئة/تنقيح يعني صفراً بسبب التصفية.
-  const isEmptyCatalog = items.length === 0 && !search && categoryId == null;
+  const isEmptyCatalog = items.length === 0 && !search && categoryId == null && selectedThematicCollection == null;
 
   function scrollToResults() {
     window.setTimeout(() => document.getElementById("store-results")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   }
   function selectCategory(id: number | null) {
+    setSelectedThematicCollection(null);
     setCategoryId(id);
     scrollToResults();
+  }
+  function handleSelectThematicCollection(card: ThematicCollectionCard) {
+    setSelectedThematicCollection(card);
+    if (card.filterType === "category") {
+      const foundCat = cats.find((c) => c.name === card.filterValue || String(c.id) === card.filterValue);
+      if (foundCat) {
+        setCategoryId(foundCat.id);
+      } else {
+        setSearch(card.filterValue);
+        setRawSearch(card.filterValue);
+      }
+    } else if (card.filterType === "keyword") {
+      setSearch(card.filterValue);
+      setRawSearch(card.filterValue);
+    }
+    scrollToResults();
+  }
+  function handleClearThematicCollection() {
+    setSelectedThematicCollection(null);
+    clearCatalogFilters();
   }
   function clearRefinements() {
     setAvailability("IN_STOCK");
     setPriceFilter("ALL");
     setBrand("");
     setSort("RECOMMENDED");
+    setSelectedThematicCollection(null);
   }
   function clearCatalogFilters() {
     setRawSearch("");
     setSearch("");
     setCategoryId(null);
+    setSelectedThematicCollection(null);
     clearRefinements();
   }
   function pulseHeart(target: string) {
@@ -2375,7 +2404,6 @@ function StorefrontContent() {
           </div>
         )}
 
-        {/* قسم الأقسام الرئيسية */}
         {cats.length > 0 && (
           <StorefrontCategories
             id="store-categories"
@@ -2384,6 +2412,15 @@ function StorefrontContent() {
             onSelectCategory={selectCategory}
             categoryCountFn={(c) => storefrontCategoryCount(c, availability)}
             className="mb-8 scroll-mt-28"
+          />
+        )}
+
+        {(!search && categoryId == null && !showWishlist || selectedThematicCollection != null) && (
+          <StorefrontThematicStrip
+            activeCollectionId={selectedThematicCollection?.id ?? null}
+            onSelectCollection={handleSelectThematicCollection}
+            onClearCollection={handleClearThematicCollection}
+            className="mb-8"
           />
         )}
 
@@ -2755,6 +2792,24 @@ function StorefrontContent() {
                         {customizationValidation && <p id="storefront-customization-error" role="alert" className="mt-2 rounded-xl bg-[var(--store-accent)]/10 px-2.5 py-2 text-xs font-bold text-[var(--store-accent-strong)]">{customizationValidation}</p>}
                       </section>
                     ) : null}
+
+                    {detailQ.data.isCustomizable && (
+                      <StorefrontCustomizerStudio
+                        productName={detailQ.data.productName}
+                        baseImageUrl={detailMedia.fallbackUrl ?? detailQ.data.imageUrl}
+                        onApplyCustomization={(customData) => {
+                          const primaryField = visibleCustomizationFields.find((f) => f.fieldType === "TEXT" || f.fieldType === "TEXTAREA");
+                          if (primaryField && customData.customText) {
+                            updateCustomizationField(primaryField, customData.customText);
+                          }
+                          const fileField = visibleCustomizationFields.find((f) => f.fieldType === "FILE");
+                          if (fileField && customData.hasLogo) {
+                            updateCustomizationField(fileField, "شعار مرفق من استوديو المعاينة الحية");
+                          }
+                        }}
+                        className="mt-4"
+                      />
+                    )}
                     <div className="mt-3 flex items-baseline gap-2">
                       <p className="text-xl font-extrabold text-money-positive">{priceLabel(detailUnit?.salePrice ?? detailUnit?.price ?? null)}</p>
                       {detailUnit?.salePrice != null && detailUnit.price != null && Number(detailUnit.salePrice) < Number(detailUnit.price) && (
@@ -3288,6 +3343,21 @@ function StorefrontContent() {
                     {orderStatusLabelForCustomer(trackResult.status)}
                   </span>
                 </div>
+                {trackResult.deliveryHandshakeOtp && (
+                  <div className="flex items-center justify-between rounded-xl border border-amber-500/30 bg-amber-50/70 p-3 dark:border-amber-500/20 dark:bg-amber-950/30">
+                    <div>
+                      <p className="text-xs font-black text-amber-900 dark:text-amber-200">
+                        رمز تسليم الشحنة للمندوب (Handshake PIN)
+                      </p>
+                      <p className="text-[10px] font-bold text-amber-700/80 dark:text-amber-400">
+                        سلّم هذا الرمز للمندوب يداً بيد عند استلام شحنتك
+                      </p>
+                    </div>
+                    <span className="font-mono text-base font-black tracking-widest text-amber-900 bg-white dark:bg-slate-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 px-3 py-1 rounded-lg shadow-xs" dir="ltr">
+                      {trackResult.deliveryHandshakeOtp}
+                    </span>
+                  </div>
+                )}
                 <div className="divide-y divide-slate-100 dark:divide-slate-800">
                   {trackResult.items.map((it, i) => (
                     <div key={i} className="flex items-center justify-between py-2 text-sm">

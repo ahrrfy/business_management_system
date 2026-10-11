@@ -1262,3 +1262,122 @@ export async function getOnlineOrderLeaderboard(scopedBranchId: number | null): 
   return { today, month };
 }
 
+/**
+ * التوزيع التلقائي العادل الإجباري للطلبات المعلقة (Smart Round-Robin Dispatch):
+ * يفحص موظفي الاستقبال/المبيعات النشطين في الفرع، ويوزع الطلبات المعلقة بالتناوب الآلي الصارم.
+ * يضمن عدالة العبء التشغيلي وفرص العمولات ومنع تراكم الطلبات أو التهرب من المسؤولية.
+ */
+export async function autoAssignRoundRobinOnlineOrders(
+  input: { scopedBranchId: number | null },
+  actor: { userId: number; role?: string }
+): Promise<{
+  assignedCount: number;
+  assignments: Array<{ orderId: number; orderNumber: string; assignedToUserId: number; assignedToName: string }>;
+}> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+
+  return await withTx(async (tx) => {
+    // 1. استرجاع الطلبات المعلقة غير المستلمة (PENDING + claimedByUserId IS NULL)
+    const baseConds = [
+      eq(onlineOrders.status, "PENDING"),
+      sql`${onlineOrders.claimedByUserId} IS NULL`,
+    ];
+    if (input.scopedBranchId != null) {
+      baseConds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+    }
+
+    const unassignedOrders = await tx
+      .select({
+        id: onlineOrders.id,
+        orderNumber: onlineOrders.orderNumber,
+        branchId: onlineOrders.branchId,
+        createdAt: onlineOrders.createdAt,
+      })
+      .from(onlineOrders)
+      .where(and(...baseConds))
+      .orderBy(asc(onlineOrders.createdAt))
+      .for("update");
+
+    if (unassignedOrders.length === 0) {
+      return { assignedCount: 0, assignments: [] };
+    }
+
+    // 2. البحث عن موظفي الفرع المؤهلين النشطين
+    const userConds = [eq(users.isActive, true)];
+    if (input.scopedBranchId != null) {
+      userConds.push(eq(users.branchId, input.scopedBranchId));
+    }
+    const eligibleStaff = await tx
+      .select({
+        id: users.id,
+        name: users.name,
+      })
+      .from(users)
+      .where(and(...userConds))
+      .orderBy(asc(users.id));
+
+    if (eligibleStaff.length === 0) {
+      eligibleStaff.push({ id: actor.userId, name: "المستخدم الحالي" });
+    }
+
+    // 3. تطبيق Round-Robin بالتناوب انطلاقاً من آخر إسناد
+    const lastClaimed = (
+      await tx
+        .select({ claimedByUserId: onlineOrders.claimedByUserId })
+        .from(onlineOrders)
+        .where(
+          and(
+            sql`${onlineOrders.claimedByUserId} IS NOT NULL`,
+            input.scopedBranchId != null ? eq(onlineOrders.branchId, input.scopedBranchId) : undefined,
+          )
+        )
+        .orderBy(desc(onlineOrders.claimedAt))
+        .limit(1)
+    )[0];
+
+    let startIdx = 0;
+    if (lastClaimed?.claimedByUserId) {
+      const lastIndex = eligibleStaff.findIndex((s) => s.id === lastClaimed.claimedByUserId);
+      if (lastIndex >= 0) {
+        startIdx = (lastIndex + 1) % eligibleStaff.length;
+      }
+    }
+
+    const assignments: Array<{
+      orderId: number;
+      orderNumber: string;
+      assignedToUserId: number;
+      assignedToName: string;
+    }> = [];
+
+    const assignTime = new Date();
+
+    for (let i = 0; i < unassignedOrders.length; i++) {
+      const order = unassignedOrders[i];
+      const staff = eligibleStaff[(startIdx + i) % eligibleStaff.length];
+
+      await tx
+        .update(onlineOrders)
+        .set({
+          claimedByUserId: staff.id,
+          claimedAt: assignTime,
+        })
+        .where(eq(onlineOrders.id, order.id));
+
+      assignments.push({
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        assignedToUserId: staff.id,
+        assignedToName: staff.name ?? "—",
+      });
+    }
+
+    return {
+      assignedCount: assignments.length,
+      assignments,
+    };
+  });
+}
+
+

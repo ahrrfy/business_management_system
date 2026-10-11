@@ -2064,6 +2064,7 @@ export interface OnlineOrderTracking {
   total: string;
   governorate: string | null;
   createdAt: Date;
+  deliveryHandshakeOtp?: string | null;
   items: {
     productName: string;
     unitName: string;
@@ -2071,6 +2072,19 @@ export interface OnlineOrderTracking {
     unitPrice: string;
     total: string;
   }[];
+}
+
+/**
+ * توليد رمز التسليم السري للعميل (Delivery Handshake OTP):
+ * رمز رقمي مشفر من 4 أرقام مشتق حتمياً من رقم الطلب وتاريخ إنشائه مع سر النظام.
+ * يزود به الزبون يداً بيد للمندوب لإثبات التسليم الفعلي وتحصين أموال COD ضد الاحتيال.
+ */
+export function computeOrderDeliveryOtp(orderNumber: string, createdAt: Date | string | number): string {
+  const secret = process.env.SESSION_SECRET || "alroya_delivery_secret_2026";
+  const ts = new Date(createdAt).getTime();
+  const hmac = createHmac("sha256", secret).update(`${orderNumber}:${ts}`).digest("hex");
+  const num = (parseInt(hmac.slice(0, 8), 16) % 9000) + 1000;
+  return num.toString();
 }
 
 /**
@@ -2142,6 +2156,7 @@ async function buildOnlineOrderTracking(
     total: String(order.total),
     governorate: order.governorate ?? null,
     createdAt: order.createdAt,
+    deliveryHandshakeOtp: computeOrderDeliveryOtp(order.orderNumber, order.createdAt),
     items: rows.map((r) => ({
       productName: r.productName,
       unitName: r.unitName ?? "",

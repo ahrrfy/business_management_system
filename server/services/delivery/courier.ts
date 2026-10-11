@@ -17,6 +17,7 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { assertNotReturnDeclared } from "./declaredReturn";
+import { computeOrderDeliveryOtp } from "../onlineOrderService";
 import Decimal from "decimal.js";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
@@ -393,7 +394,7 @@ export interface ConfirmDeliveryResult {
 
 /** تأكيد تسليم طلب متجر + تحصيل COD كاملاً. ذرّي: فاتورة تُسدَّد + ذمّة عميل↓ + عهدة المندوب↑. */
 export async function confirmCourierDelivery(
-  input: { onlineOrderId: number },
+  input: { onlineOrderId: number; handshakeOtp?: string | null },
   actor: { userId: number },
 ): Promise<ConfirmDeliveryResult> {
   const membership = await resolveDeliveryMembership(actor.userId);
@@ -470,6 +471,21 @@ export async function confirmCourierDelivery(
           doThis: "اطلب من المدير نقلَ إسناد الطلب إليك قبل الختم؛ وإن كنتَ سلّمتَ فعلاً فسلّم النقد لكاشير الاستقبال ليُثبِت التسليم بمستند",
         }),
       });
+    }
+
+    // التحقق من رمز التسليم السري للعميل (Delivery Handshake OTP)
+    if (input.handshakeOtp != null && input.handshakeOtp.trim() !== "") {
+      const expectedOtp = computeOrderDeliveryOtp(order.orderNumber, order.createdAt);
+      if (input.handshakeOtp.trim() !== expectedOtp) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: `تعذّر إتمام تسليم الطلب ${order.orderNumber}`,
+            why: "رمز تسليم العميل (Handshake OTP) غير متطابق مع الرمز الصادر للطلب",
+            doThis: "تأكد من إدخال رمز التحقق المكون من 4 أرقام من العميل يداً بيد",
+          }),
+        });
+      }
     }
     // يجب أن يكون مُرسَلاً (SHIPPED) أو مُسلَّماً (DELIVERED — استرداد idempotent). غيرهما: لم يُجهَّز بعد.
     if (order.status !== "SHIPPED" && order.status !== "DELIVERED") {
