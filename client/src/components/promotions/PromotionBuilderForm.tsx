@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   Calendar,
   CheckCircle2,
@@ -14,6 +15,7 @@ import {
   Truck,
   UserCheck,
   Users,
+  X,
   Zap,
 } from "lucide-react";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -87,6 +89,15 @@ const ARCHETYPES: Array<{
 
 export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionBuilderFormProps) {
   const campaignsQ = trpc.crm.campaigns.list.useQuery();
+  const categoriesQ = trpc.catalog.categories.useQuery(undefined, {
+    enabled: data.scope === "CATEGORIES",
+  });
+  const [productPicker, setProductPicker] = useState("");
+  const [productLabels, setProductLabels] = useState<Record<number, string>>({});
+  const productSearchQ = trpc.bundles.searchComponents.useQuery(
+    { q: productPicker.trim(), limit: 20 },
+    { enabled: data.scope === "PRODUCTS" && productPicker.trim().length >= 2, staleTime: 5_000 }
+  );
 
   function updateField<K extends keyof PromotionFormData>(field: K, value: PromotionFormData[K]) {
     onChange((prev) => ({ ...prev, [field]: value }));
@@ -144,7 +155,8 @@ export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionB
         isAutoBounceBack: nextBounceBack,
         initialBatchCount: nextBatchCount,
         exportPdfOnCreate: nextExportPdf,
-        perCouponLimit: nextFirstOrder ? 1 : (archetype === "AFFILIATE" ? 10000 : prev.perCouponLimit),
+        customCodesList: archetype === "COUPON_BATCH" ? prev.customCodesList : "",
+        perCouponLimit: nextFirstOrder ? 1 : (archetype === "AFFILIATE" ? 1000 : prev.perCouponLimit),
         perCustomerLimit: nextFirstOrder ? 1 : prev.perCustomerLimit,
       };
     });
@@ -662,15 +674,185 @@ export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionB
         </Card>
       )}
 
-      {/* 4. الصلاحية والجدولة الزمنية للأيام */}
+      {/* 4. الصلاحية ونطاق التطبيق والجدولة الزمنية للأيام */}
       <Card className="border shadow-sm">
         <CardHeader className="pb-3 border-b">
           <CardTitle className="text-sm font-bold flex items-center gap-2">
             <Calendar className="size-4 text-primary" />
-            <span>4. الصلاحية وتحديد أيام الأسبوع</span>
+            <span>4. الصلاحية ونطاق التطبيق وتحديد أيام الأسبوع</span>
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Field
+            label="نطاق تطبيق الخصم"
+            className="md:col-span-2"
+            hint={errors.targetCategoryIds || errors.targetProductIds || "حدد ما إذا كان الخصم يشمل كل منتجات المتجر أو فئات أو منتجات محددة"}
+          >
+            <AppSelect
+              value={data.scope}
+              onValueChange={(val) => {
+                const nextScope = val as PromotionScope;
+                onChange((prev) => ({
+                  ...prev,
+                  scope: nextScope,
+                  targetCategoryIds: nextScope === "CATEGORIES" ? prev.targetCategoryIds : [],
+                  targetProductIds: nextScope === "PRODUCTS" ? prev.targetProductIds : [],
+                }));
+              }}
+              className="h-9 px-3"
+            >
+              <option value="ALL">كل المنتجات دون استثناء</option>
+              <option value="CATEGORIES">فئات وأقسام محددة</option>
+              <option value="PRODUCTS">منتجات محددة فقط</option>
+            </AppSelect>
+          </Field>
+
+          {/* اختيار الفئات المحددة */}
+          {data.scope === "CATEGORIES" && (
+            <div className="md:col-span-2 space-y-2 rounded-lg border bg-muted/10 p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold">الفئات المشمولة بالخصم</span>
+                {errors.targetCategoryIds && (
+                  <span className="text-xs text-destructive font-medium">{errors.targetCategoryIds}</span>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto p-1">
+                {(categoriesQ.data ?? []).map((cat) => {
+                  const isSelected = data.targetCategoryIds.includes(cat.id);
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => {
+                        if (isSelected) {
+                          updateField(
+                            "targetCategoryIds",
+                            data.targetCategoryIds.filter((id) => id !== cat.id)
+                          );
+                        } else {
+                          updateField("targetCategoryIds", [...data.targetCategoryIds, cat.id]);
+                        }
+                      }}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-colors flex items-center gap-1 ${
+                        isSelected
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-background text-foreground hover:bg-muted border-border"
+                      }`}
+                    >
+                      {isSelected && <CheckCircle2 className="size-3" />}
+                      <span>{cat.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex items-center justify-between text-xs text-muted-foreground pt-1 border-t">
+                <span>
+                  {data.targetCategoryIds.length === 0
+                    ? "لم يتم تحديد أي فئة بعد (حدد فئة واحدة على الأقل)"
+                    : `تم اختيار ${data.targetCategoryIds.length} فئة`}
+                </span>
+                {data.targetCategoryIds.length > 0 && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 text-xs text-destructive hover:text-destructive"
+                    onClick={() => updateField("targetCategoryIds", [])}
+                  >
+                    إلغاء تحديد الكل
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* اختيار المنتجات المحددة */}
+          {data.scope === "PRODUCTS" && (
+            <div className="md:col-span-2 space-y-3 rounded-lg border bg-muted/10 p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold">المنتجات المشمولة بالخصم</span>
+                {errors.targetProductIds && (
+                  <span className="text-xs text-destructive font-medium">{errors.targetProductIds}</span>
+                )}
+              </div>
+
+              <div className="relative">
+                <Input
+                  value={productPicker}
+                  onChange={(e) => setProductPicker(e.target.value)}
+                  placeholder="ابحث عن منتج بالاسم أو الباركود أو SKU (حرفان على الأقل)..."
+                  className="h-9"
+                />
+                {productPicker.trim().length >= 2 && (productSearchQ.data?.items ?? []).length > 0 && (
+                  <div className="absolute z-50 w-full mt-1 max-h-48 overflow-auto rounded-md border bg-popover text-popover-foreground shadow-md">
+                    {(productSearchQ.data?.items ?? []).map((prod) => {
+                      const isAlreadyAdded = data.targetProductIds.includes(prod.productId);
+                      return (
+                        <button
+                          key={prod.variantId || prod.productId}
+                          type="button"
+                          disabled={isAlreadyAdded}
+                          onClick={() => {
+                            if (!isAlreadyAdded) {
+                              setProductLabels((prev) => ({ ...prev, [prod.productId]: prod.productName }));
+                              updateField("targetProductIds", [...data.targetProductIds, prod.productId]);
+                              setProductPicker("");
+                            }
+                          }}
+                          className={`w-full text-right px-3 py-2 text-xs flex items-center justify-between border-b last:border-b-0 hover:bg-accent transition-colors ${
+                            isAlreadyAdded ? "opacity-50 cursor-not-allowed bg-muted/30" : "cursor-pointer"
+                          }`}
+                        >
+                          <span className="font-medium">{prod.productName}</span>
+                          <span className="text-muted-foreground font-mono">
+                            {prod.sku} {isAlreadyAdded && "(مضاف)"}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {productPicker.trim().length >= 2 && !productSearchQ.isLoading && (productSearchQ.data?.items ?? []).length === 0 && (
+                  <div className="absolute z-50 w-full mt-1 p-2 text-xs text-muted-foreground bg-popover border rounded-md shadow-md text-center">
+                    لا توجد منتجات مطابقة لنتيجة البحث
+                  </div>
+                )}
+              </div>
+
+              {data.targetProductIds.length > 0 && (
+                <div className="space-y-1.5 pt-1">
+                  <div className="text-xs font-medium text-muted-foreground">
+                    المنتجات المحددة ({data.targetProductIds.length}):
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto">
+                    {data.targetProductIds.map((pid) => (
+                      <Badge
+                        key={pid}
+                        variant="secondary"
+                        className="text-xs gap-1.5 py-1 px-2.5 bg-background border"
+                      >
+                        <span>{productLabels[pid] || `منتج #${pid}`}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            updateField(
+                              "targetProductIds",
+                              data.targetProductIds.filter((id) => id !== pid)
+                            );
+                          }}
+                          className="hover:text-destructive transition-colors"
+                          aria-label="إزالة المنتج"
+                        >
+                          <X className="size-3" />
+                        </button>
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <Field label="صالح من تاريخ" required hint={errors.validFrom}>
             <Input
               type="date"

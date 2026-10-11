@@ -161,8 +161,17 @@ export function validatePromotionFormData(data: PromotionFormData): FormValidati
     }
   }
 
-  // التحقق من صحة وعدم تكرار الأكواد المخصصة
-  if (data.customCodesList.trim()) {
+  // التحقق من نطاق التطبيق والأهداف المحددة
+  if (data.scope === "CATEGORIES" && data.targetCategoryIds.length === 0) {
+    errors.targetCategoryIds = "حدد فئة واحدة على الأقل عند قصر العرض على فئات محددة";
+  }
+
+  if (data.scope === "PRODUCTS" && data.targetProductIds.length === 0) {
+    errors.targetProductIds = "حدد منتجاً واحداً على الأقل عند قصر العرض على منتجات محددة";
+  }
+
+  // التحقق من صحة وعدم تكرار الأكواد المخصصة (حصرها بنمط COUPON_BATCH)
+  if (data.archetype === "COUPON_BATCH" && data.customCodesList.trim()) {
     const rawLines = data.customCodesList
       .split("\n")
       .map((s) => s.trim())

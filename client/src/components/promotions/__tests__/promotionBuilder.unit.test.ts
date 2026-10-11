@@ -91,6 +91,7 @@ describe("Omnichannel Promotion Builder (M2 & M3)", () => {
   it("يتحقق من نسبة عمولة المسوق عند إدخال بيانات المسوق", () => {
     const invalidAffiliateData: PromotionFormData = {
       ...INITIAL_PROMOTION_FORM_DATA,
+      archetype: "AFFILIATE",
       affiliateName: "وكالة تسويق",
       affiliateCommissionRate: "150", // أكبر من 100%
     };
@@ -98,6 +99,63 @@ describe("Omnichannel Promotion Builder (M2 & M3)", () => {
     const res = validatePromotionFormData(invalidAffiliateData);
     expect(res.valid).toBe(false);
     expect(res.errors.affiliateCommissionRate).toBeDefined();
+  });
+
+  it("يفرض تحديد فئة واحدة على الأقل عند اختيار نطاق الفئات", () => {
+    const noCatsData: PromotionFormData = {
+      ...INITIAL_PROMOTION_FORM_DATA,
+      scope: "CATEGORIES",
+      targetCategoryIds: [],
+    };
+    const res = validatePromotionFormData(noCatsData);
+    expect(res.valid).toBe(false);
+    expect(res.errors.targetCategoryIds).toContain("حدد فئة واحدة على الأقل");
+
+    const withCatsData: PromotionFormData = {
+      ...noCatsData,
+      targetCategoryIds: [12, 15],
+    };
+    const validRes = validatePromotionFormData(withCatsData);
+    expect(validRes.errors.targetCategoryIds).toBeUndefined();
+  });
+
+  it("يفرض تحديد منتج واحد على الأقل عند اختيار نطاق المنتجات", () => {
+    const noProdsData: PromotionFormData = {
+      ...INITIAL_PROMOTION_FORM_DATA,
+      scope: "PRODUCTS",
+      targetProductIds: [],
+    };
+    const res = validatePromotionFormData(noProdsData);
+    expect(res.valid).toBe(false);
+    expect(res.errors.targetProductIds).toContain("حدد منتجاً واحداً على الأقل");
+
+    const withProdsData: PromotionFormData = {
+      ...noProdsData,
+      targetProductIds: [42],
+    };
+    const validRes = validatePromotionFormData(withProdsData);
+    expect(validRes.errors.targetProductIds).toBeUndefined();
+  });
+
+  it("يعزل التحقق من الأكواد المخصصة لنمط COUPON_BATCH فقط", () => {
+    const affiliateWithIgnoredCustomCodes: PromotionFormData = {
+      ...INITIAL_PROMOTION_FORM_DATA,
+      archetype: "AFFILIATE",
+      affiliateName: "شريك تسويقي",
+      affiliateCommissionRate: "10.00",
+      customCodesList: "invalid code with spaces!!",
+    };
+    const resAffiliate = validatePromotionFormData(affiliateWithIgnoredCustomCodes);
+    expect(resAffiliate.errors.customCodesList).toBeUndefined();
+
+    const batchWithInvalidCodes: PromotionFormData = {
+      ...INITIAL_PROMOTION_FORM_DATA,
+      archetype: "COUPON_BATCH",
+      customCodesList: "invalid code with spaces!!",
+    };
+    const resBatch = validatePromotionFormData(batchWithInvalidCodes);
+    expect(resBatch.valid).toBe(false);
+    expect(resBatch.errors.customCodesList).toBeDefined();
   });
 
   it("يولد رمز QR متزامن بصيغة SVG صالحة لكود الكوبون", () => {
