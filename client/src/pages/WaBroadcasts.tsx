@@ -885,13 +885,21 @@ export default function WaBroadcasts() {
   );
 
   const [statusFilter, setStatusFilter] = useState("");
+  const [search, setSearch] = useState("");
   const [showNew, setShowNew] = useState(false);
   const [detailId, setDetailId] = useState<number | null>(null);
 
-  const rows = useMemo(
-    () => (list.data ?? []).filter((r) => !statusFilter || r.broadcastStatus === statusFilter),
-    [list.data, statusFilter],
-  );
+  const rows = useMemo(() => {
+    let out = list.data ?? [];
+    if (statusFilter) {
+      out = out.filter((r) => r.broadcastStatus === statusFilter);
+    }
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      out = out.filter((r) => r.name.toLowerCase().includes(q));
+    }
+    return out;
+  }, [list.data, statusFilter, search]);
 
   const columns: ColumnDef<BroadcastRow>[] = useMemo(
     () => [
@@ -973,6 +981,12 @@ export default function WaBroadcasts() {
 
       <Card>
         <CardContent className="p-3 flex flex-wrap items-center gap-2">
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="ابحث باسم الحملة…"
+            className="h-9 w-60 text-sm"
+          />
           <AppSelect className="h-9" value={statusFilter} onValueChange={(next) => setStatusFilter(next)}>
             <option value="">كل الحالات</option>
             {Object.entries(BROADCAST_STATUS_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
@@ -994,7 +1008,7 @@ export default function WaBroadcasts() {
       {list.isLoading && <LoadingState />}
       {list.isError && <ErrorState message="تعذّر تحميل الحملات." onRetry={() => list.refetch()} />}
       {!list.isLoading && !list.isError && (
-        <DataTable data={rows} columns={columns} operation={operation} emptyText="لا حملات بثّ بعد." searchPlaceholder="ابحث بالاسم…" pageSize={20} />
+        <DataTable data={rows} columns={columns} operation={operation} emptyText="لا حملات بثّ بعد." searchable={false} pageSize={20} />
       )}
 
       {showNew && (

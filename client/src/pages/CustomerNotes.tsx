@@ -5,7 +5,7 @@
 // العقد: خادم customerNotes.{list,dueToday,create,resolve,update,delete} (راوتر منفصل
 // customerNoteRouter.ts يُركَّبه القائد في server/routers.ts). هذه الصفحة مبنيّة بالكامل
 // على الشكل المتّفق عليه في العقد فتتكامل بلا إعادة عمل فور دمج الخلفية.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -73,8 +73,27 @@ export default function CustomerNotes() {
   }
 
   // إن أعاد تحميل الصفحة بـ?id= معروف بلا اختيار محلي — نُبقي customerId من الرابط فقط
-  // لعرض القائمة (لا حاجة لاسم العميل لعرض الملاحظات، فقط للـUI التوضيحي أعلى القائمة).
-  const effectiveCustomerId = customer.customerId ?? customerId;
+  // لعرض القائمة، مع جلب وتثبيت بيانات العميل تلقائياً لإظهار الاسم ورقم الهاتف وأدوات الاتصال.
+  const effectiveCustomerId: number = customer.customerId ?? customerId;
+
+  const customerDetail = trpc.customers.get.useQuery(
+    { customerId: effectiveCustomerId },
+    { enabled: effectiveCustomerId > 0 && (!customer.name || !customer.phone) },
+  );
+
+  useEffect(() => {
+    if (customerDetail.data && (!customer.name || !customer.phone)) {
+      setCustomer({
+        customerId: customerDetail.data.id,
+        name: customerDetail.data.name,
+        phone: customerDetail.data.phone || null,
+        isNew: false,
+      });
+    }
+  }, [customerDetail.data, customer.name, customer.phone]);
+
+  const displayName = customer.name || customerDetail.data?.name || (effectiveCustomerId > 0 ? `زبون #${effectiveCustomerId}` : "");
+  const displayPhone = customer.phone || customerDetail.data?.phone || null;
 
   const utils = trpc.useUtils();
   const notesQuery = trpc.customerNotes.list.useQuery(
@@ -85,11 +104,15 @@ export default function CustomerNotes() {
       limit: NOTES_LIMIT,
       offset,
     },
-    { enabled: !!effectiveCustomerId }
+    { enabled: effectiveCustomerId > 0 }
   );
   const dueToday = trpc.customerNotes.dueToday.useQuery(undefined, { enabled: canManage });
 
-  const invalidateList = () => utils.customerNotes.list.invalidate({ customerId: effectiveCustomerId });
+  const invalidateList = () => {
+    if (effectiveCustomerId > 0) {
+      void utils.customerNotes.list.invalidate({ customerId: effectiveCustomerId });
+    }
+  };
 
   const createMut = trpc.customerNotes.create.useMutation({
     onSuccess: async () => {
@@ -277,11 +300,11 @@ export default function CustomerNotes() {
                 </div>
                 <div>
                   <div className="font-semibold text-sm">
-                    {customer.name || `زبون #${effectiveCustomerId}`}
+                    {displayName}
                   </div>
-                  {customer.phone && (
+                  {displayPhone && (
                     <div className="text-xs text-muted-foreground font-mono" dir="ltr">
-                      {customer.phone}
+                      {displayPhone}
                     </div>
                   )}
                 </div>
@@ -299,25 +322,25 @@ export default function CustomerNotes() {
                   <span>الملف الشامل 360°</span>
                 </Button>
 
-                {customer.phone && (
+                {displayPhone && (
                   <Button
                     asChild
                     variant="outline"
                     size="sm"
                     className="text-xs h-8 gap-1.5 border-[var(--sem-pos)]/40 text-[var(--sem-pos)] hover:bg-accent"
                   >
-                    <a href={`tel:${customer.phone}`}>
+                    <a href={`tel:${displayPhone}`}>
                       <Phone className="size-3.5" aria-hidden />
                       <span>اتصال مباشر</span>
                     </a>
                   </Button>
                 )}
 
-                {customer.phone && (
+                {displayPhone && (
                   <WhatsAppShare
-                    phone={customer.phone}
+                    phone={displayPhone}
                     message={buildOperationalContactMessage({
-                      partyName: customer.name || "الزبون",
+                      partyName: displayName,
                       entityLabel: "متابعة العميل",
                       nextAction: "نتواصل معكم لمتابعة الملاحظات والترتيبات المتفق عليها.",
                     })}
