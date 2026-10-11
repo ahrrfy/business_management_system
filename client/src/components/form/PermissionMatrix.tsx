@@ -83,7 +83,7 @@ export function PermissionMatrix({
 }: PermissionMatrixProps) {
   const [activeTab, setActiveTab] = useState<"atomic" | "legacy">(defaultMode);
   const [internalAtomic, setInternalAtomic] = useState<AtomicPermissionsMap>(() => {
-    if (propAtomicPermissions) return propAtomicPermissions;
+    if (propAtomicPermissions && Object.keys(propAtomicPermissions).length > 0) return propAtomicPermissions;
     return deriveAtomicFromLegacyModules(permissions, role);
   });
 
@@ -91,13 +91,21 @@ export function PermissionMatrix({
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
-  const currentAtomic = propAtomicPermissions || internalAtomic;
+  const currentAtomic = useMemo<AtomicPermissionsMap>(() => {
+    if (propAtomicPermissions && Object.keys(propAtomicPermissions).length > 0) {
+      return propAtomicPermissions;
+    }
+    if (Object.keys(internalAtomic).length > 0) {
+      return internalAtomic;
+    }
+    return deriveAtomicFromLegacyModules(permissions, role);
+  }, [propAtomicPermissions, internalAtomic, permissions, role]);
 
   // مزامنة التغييرات الذرية وإسقاطها على الوحدات القديمة تلقائياً
   const handleAtomicSingleChange = useCallback(
     (key: AtomicPermissionKey, granted: boolean) => {
       const nextAtomic = { ...currentAtomic, [key]: granted };
-      if (!propAtomicPermissions) {
+      if (!propAtomicPermissions || Object.keys(propAtomicPermissions).length === 0) {
         setInternalAtomic(nextAtomic);
       }
       onAtomicChange?.(key, granted);
@@ -116,7 +124,7 @@ export function PermissionMatrix({
   const handleAtomicBulkChange = useCallback(
     (updates: Record<AtomicPermissionKey, boolean>) => {
       const nextAtomic = { ...currentAtomic, ...updates };
-      if (!propAtomicPermissions) {
+      if (!propAtomicPermissions || Object.keys(propAtomicPermissions).length === 0) {
         setInternalAtomic(nextAtomic);
       }
       onAtomicBulkChange?.(updates);
@@ -134,7 +142,7 @@ export function PermissionMatrix({
 
   const handleResetAll = useCallback(() => {
     const baseAtomic = ROLE_DEFAULT_ATOMIC_PERMISSIONS[role] || ROLE_DEFAULT_ATOMIC_PERMISSIONS.user || {};
-    if (!propAtomicPermissions) {
+    if (!propAtomicPermissions || Object.keys(propAtomicPermissions).length === 0) {
       setInternalAtomic(baseAtomic);
     }
     onReset();
