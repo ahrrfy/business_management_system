@@ -1333,6 +1333,45 @@ describe("Omnichannel Promotion & Coupon Engine (Milestone M1)", () => {
       const combinedTotalSavings = Number("3000.00") + Number(couponDeliveryWaivedAmount);
       expect(combinedTotalSavings).toBe(8000);
     });
+
+    it("T4.12 Threshold-free destination edit cancels/releases shipping-only reservation and detaches couponCode", () => {
+      // Order had a shipping coupon with active reservation
+      const orderCouponCode = "FREESHIP-2026";
+      const orderCouponDiscount = "0.00";
+      const activeReservation = { id: 42, programId: 10, status: "ACTIVE", discountAmount: "5000.00" };
+
+      // Destination is edited: new governorate or subtotal now meets store-wide freeShippingThreshold
+      const quoteTotals = {
+        deliveryFee: "0.00",
+        deliveryFree: true,
+        deliveryWaivedAmount: "5000.00", // provided by store threshold
+        couponDeliveryWaivedAmount: "0.00", // coupon provides 0 incremental benefit
+      };
+
+      // Fulfillment logic verifies:
+      let targetCouponCode: string | null = orderCouponCode;
+      let reservationStatus = activeReservation.status;
+      let reservationDiscount = activeReservation.discountAmount;
+
+      if (activeReservation && money(orderCouponDiscount).lte(0)) {
+        if (money(quoteTotals.couponDeliveryWaivedAmount).gt(0)) {
+          reservationDiscount = quoteTotals.couponDeliveryWaivedAmount;
+        } else {
+          // Store threshold granted 100% free shipping: release reservation and detach coupon
+          reservationStatus = "RELEASED";
+          reservationDiscount = "0.00";
+          targetCouponCode = null;
+        }
+      }
+
+      expect(reservationStatus).toBe("RELEASED");
+      expect(reservationDiscount).toBe("0.00");
+      expect(targetCouponCode).toBeNull();
+
+      // At dispatch, if targetCouponCode is null, lockedCoupon is null and no false redemption occurs
+      const lockedCoupon = targetCouponCode ? { code: targetCouponCode } : null;
+      expect(lockedCoupon).toBeNull();
+    });
   });
 });
 

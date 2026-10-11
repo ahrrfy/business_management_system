@@ -12,7 +12,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { eq, and, sql } from "drizzle-orm";
-import { customers, deliveryParties, invoiceItems, invoices, onlineOrderItems, onlineOrders, deliveryConsignments } from "../../../drizzle/schema";
+import { customers, deliveryParties, invoiceItems, invoices, onlineOrderItems, onlineOrders, deliveryConsignments, couponReservations } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { dispatchInvoiceInTx } from "../delivery/dispatchInvoice";
 import { createSaleInTx, notifySaleCustomerAfterCommit } from "../sale/create";
@@ -227,17 +227,35 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       };
       const sale = await createSaleInTx(tx, saleInput, actor);
       if (lockedCoupon) {
-        const discountAmount = money(cur.couponDiscount).gt(0)
-          ? String(cur.couponDiscount)
-          : String(cur.deliveryWaivedAmount ?? "0");
-        await consumeReservedCoupon(tx, lockedCoupon, {
-          onlineOrderId: Number(cur.id),
-          invoiceId: sale.invoiceId,
-          customerId: Number(cur.customerId),
-          branchId,
-          discountAmount,
-          userId: actor.userId,
-        });
+        let discountAmount = "0.00";
+        if (money(cur.couponDiscount).gt(0)) {
+          discountAmount = String(cur.couponDiscount);
+        } else {
+          const res = (
+            await tx
+              .select({ discountAmount: couponReservations.discountAmount })
+              .from(couponReservations)
+              .where(
+                and(
+                  eq(couponReservations.onlineOrderId, cur.id),
+                  eq(couponReservations.status, "ACTIVE"),
+                ),
+              )
+              .limit(1)
+          )[0];
+          discountAmount = res?.discountAmount ? String(res.discountAmount) : "0.00";
+        }
+
+        if (money(discountAmount).gt(0)) {
+          await consumeReservedCoupon(tx, lockedCoupon, {
+            onlineOrderId: Number(cur.id),
+            invoiceId: sale.invoiceId,
+            customerId: Number(cur.customerId),
+            branchId,
+            discountAmount,
+            userId: actor.userId,
+          });
+        }
       }
       invoiceId = sale.invoiceId;
       invoiceNumber = sale.invoiceNumber;

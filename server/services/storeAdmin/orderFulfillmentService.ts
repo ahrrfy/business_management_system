@@ -857,9 +857,35 @@ export async function updateOnlineOrder(
         });
       }
 
+      let targetCouponCode = order.couponCode;
+      if (activeReservation && couponShipping?.freeShipping && currentCouponDiscount.lte(0)) {
+        if (money(quoteTotals.couponDeliveryWaivedAmount).gt(0)) {
+          await tx
+            .update(couponReservations)
+            .set({
+              discountAmount: quoteTotals.couponDeliveryWaivedAmount,
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+        } else {
+          // Destination's store threshold now grants free delivery:
+          // Release reservation and detach coupon from order so customer's one-time coupon isn't burned with 0 incremental benefit.
+          await tx
+            .update(couponReservations)
+            .set({
+              status: "RELEASED",
+              releasedAt: sql`CURRENT_TIMESTAMP(3)`,
+              releaseReason: "شحن مجاني تلقائي من سقف المتجر",
+              discountAmount: "0.00",
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+          targetCouponCode = null;
+        }
+      }
+
       await tx
         .update(onlineOrders)
         .set({
+          couponCode: targetCouponCode,
           subtotal: quoteTotals.subtotal,
           shippingCost: quoteTotals.deliveryFee,
           deliveryFree: quoteTotals.deliveryFree,
@@ -902,18 +928,35 @@ export async function updateOnlineOrder(
       // Do NOT subtract couponDiscount again to prevent double coupon deduction.
       const grandTotal = money(quoteTotals.total);
 
+      let targetCouponCode = order.couponCode;
       if (activeReservation && couponShipping?.freeShipping && money(order.couponDiscount ?? "0").lte(0)) {
-        await tx
-          .update(couponReservations)
-          .set({
-            discountAmount: quoteTotals.couponDeliveryWaivedAmount,
-          })
-          .where(eq(couponReservations.id, activeReservation.id));
+        if (money(quoteTotals.couponDeliveryWaivedAmount).gt(0)) {
+          await tx
+            .update(couponReservations)
+            .set({
+              discountAmount: quoteTotals.couponDeliveryWaivedAmount,
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+        } else {
+          // Destination's store threshold now grants free delivery:
+          // Release reservation and detach coupon from order so customer's one-time coupon isn't burned with 0 incremental benefit.
+          await tx
+            .update(couponReservations)
+            .set({
+              status: "RELEASED",
+              releasedAt: sql`CURRENT_TIMESTAMP(3)`,
+              releaseReason: "شحن مجاني تلقائي من سقف المتجر",
+              discountAmount: "0.00",
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+          targetCouponCode = null;
+        }
       }
 
       await tx
         .update(onlineOrders)
         .set({
+          couponCode: targetCouponCode,
           shippingCost: quoteTotals.deliveryFee,
           deliveryFree: quoteTotals.deliveryFree,
           deliveryWaivedAmount: quoteTotals.deliveryWaivedAmount,
