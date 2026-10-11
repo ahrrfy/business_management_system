@@ -298,7 +298,7 @@ const performanceRouter = router({
     .query(({ input, ctx }) => perfSvc.getMyStatus(ctx.user.id, input?.period)),
 
   /** إشعارات الاحتفال اللحظي بالصفقات الكبرى وإغلاق الأهداف اليومية */
-  recentCelebrations: protectedProcedure
+  recentCelebrations: commissionsReadProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(async ({ input, ctx }) => {
       const scopedBranchId = input?.branchId ?? (ctx.user.role === "admin" ? null : ctx.user.branchId ?? null);
