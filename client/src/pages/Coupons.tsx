@@ -378,7 +378,10 @@ export default function Coupons() {
     const filterStatus = statusFilter === "ALL" ? undefined : statusFilter;
     exportSheets(`كوبونات-${selectedProgram.name}`, async () => {
       const all = await fetchAllPaged<IssuedCoupon>((offset, limit) => utils.crm.coupons.listIssued.fetch({ programId: selected, limit, offset, q, status: filterStatus }).then((result) => ({ rows: result.rows, total: result.total })), { pageSize: 500 });
-      const batchRows = await utils.crm.coupons.batches.fetch({ programId: selected, limit: 200 });
+      const batchRows = await fetchAllPaged<BatchRow>(
+        (offset, limit) => utils.crm.coupons.batches.fetch({ programId: selected, limit, offset }).then((rows) => ({ rows })),
+        { pageSize: 200 },
+      );
       return [
         {
           sheetName: "الكوبونات", title: `سجل كوبونات — ${selectedProgram.name}`,

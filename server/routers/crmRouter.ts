@@ -887,7 +887,13 @@ export const crmRouter = router({
 
     /** سجل دفعات الإصدار الذريّ من سجل التدقيق الإلزامي؛ لا يخزن الرموز السرية داخله. */
     batches: campaignsReadProcedure
-      .input(z.object({ programId: z.number().int().positive(), limit: z.number().int().positive().max(200).default(50) }))
+      .input(
+        z.object({
+          programId: z.number().int().positive(),
+          limit: z.number().int().positive().max(200).default(50),
+          offset: z.number().int().min(0).default(0),
+        }),
+      )
       .query(async ({ input, ctx }) => {
         const db = requireDb();
         const program = (await db.select().from(couponPrograms).where(eq(couponPrograms.id, input.programId)).limit(1))[0];
@@ -903,7 +909,8 @@ export const crmRouter = router({
             eq(auditLogs.entityId, String(input.programId)),
           ))
           .orderBy(desc(auditLogs.id))
-          .limit(input.limit);
+          .limit(input.limit)
+          .offset(input.offset);
         return rows.map((row) => {
           const value = (row.newValue ?? {}) as Record<string, unknown>;
           return {
