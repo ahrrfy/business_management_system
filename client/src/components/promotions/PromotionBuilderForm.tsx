@@ -327,18 +327,20 @@ export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionB
                 />
               </Field>
 
-              <Field
-                label="سقف الخصم الأقصى بالدينار (Cap)"
-                required
-                hint={errors.maxDiscountAmount || "صمام أمان إلزامي لمنع تجاوز الخصم هذا المبلغ"}
-                className="md:col-span-2"
-              >
-                <MoneyInput
-                  value={data.maxDiscountAmount}
-                  onChange={(val) => updateField("maxDiscountAmount", val)}
-                  placeholder="25000"
-                />
-              </Field>
+              {!isDirectPromo && (
+                <Field
+                  label="سقف الخصم الأقصى بالدينار (Cap)"
+                  required
+                  hint={errors.maxDiscountAmount || "صمام أمان إلزامي لمنع تجاوز الخصم هذا المبلغ"}
+                  className="md:col-span-2"
+                >
+                  <MoneyInput
+                    value={data.maxDiscountAmount}
+                    onChange={(val) => updateField("maxDiscountAmount", val)}
+                    placeholder="25000"
+                  />
+                </Field>
+              )}
             </>
           ) : (
             <Field label="مبلغ الخصم بالدينار (د.ع)" required hint={errors.discountAmount}>
@@ -350,17 +352,30 @@ export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionB
             </Field>
           )}
 
-          <Field
-            label="الحد الأدنى لقيمة الفاتورة لتفعيل الخصم"
-            hint={errors.minOrderSpend || "اتركه 0 إذا كان الخصم متاحاً لأي قيمة مشتريات"}
-            className="md:col-span-2"
-          >
-            <MoneyInput
-              value={data.minOrderSpend}
-              onChange={(val) => updateField("minOrderSpend", val)}
-              placeholder="50000"
-            />
-          </Field>
+          {!isDirectPromo && (
+            <Field
+              label="الحد الأدنى لقيمة الفاتورة لتفعيل الخصم"
+              hint={errors.minOrderSpend || "اتركه 0 إذا كان الخصم متاحاً لأي قيمة مشتريات"}
+              className="md:col-span-2"
+            >
+              <MoneyInput
+                value={data.minOrderSpend}
+                onChange={(val) => updateField("minOrderSpend", val)}
+                placeholder="50000"
+              />
+            </Field>
+          )}
+
+          {isDirectPromo && (
+            <div className="md:col-span-2 rounded-lg border bg-emerald-500/10 border-emerald-500/30 p-3 text-xs text-muted-foreground space-y-1">
+              <span className="font-semibold text-emerald-700 dark:text-emerald-400 block">
+                تطبيق مباشر على البنود بدون اشتراط حد أدنى للسلة أو كود ترويجي
+              </span>
+              <span>
+                سيتم احتساب الخصم تلقائياً لكل صنف مشمول في العرض داخل الكاشير والمتجر طوال فترة الصلاحية المحددة.
+              </span>
+            </div>
+          )}
 
           {/* مزايا التوصيل والشحن الإضافية */}
           <div className="md:col-span-2 flex items-start gap-2 rounded-lg border bg-muted/20 p-3">
@@ -694,58 +709,60 @@ export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionB
             </>
           )}
 
-          {/* جدولة أيام الأسبوع المحددة */}
-          <div className="md:col-span-2 rounded-lg border bg-muted/20 p-3 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <span className="text-xs font-bold block">أيام الأسبوع النشطة للعرض</span>
-                <span className="text-xs text-muted-foreground block">
-                  {formatActiveDays(data.activeDays)} — تحديد الأيام التي يُسمح فيها بتفعيل واستخدام هذا العرض
-                </span>
+          {/* جدولة أيام الأسبوع المحددة (للكوبونات فقط) */}
+          {!isDirectPromo && (
+            <div className="md:col-span-2 rounded-lg border bg-muted/20 p-3 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <span className="text-xs font-bold block">أيام الأسبوع النشطة للعرض</span>
+                  <span className="text-xs text-muted-foreground block">
+                    {formatActiveDays(data.activeDays)} — تحديد الأيام التي يُسمح فيها بتفعيل واستخدام هذا العرض
+                  </span>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-7"
+                  onClick={() => {
+                    const allSelected = data.activeDays.length === 7;
+                    updateField("activeDays", allSelected ? [getBaghdadDayOfWeek()] : [0, 1, 2, 3, 4, 5, 6]);
+                  }}
+                >
+                  {data.activeDays.length === 7 ? "تخصيص أيام معينة" : "تفعيل طوال الأسبوع"}
+                </Button>
               </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="text-xs h-7"
-                onClick={() => {
-                  const allSelected = data.activeDays.length === 7;
-                  updateField("activeDays", allSelected ? [getBaghdadDayOfWeek()] : [0, 1, 2, 3, 4, 5, 6]);
-                }}
-              >
-                {data.activeDays.length === 7 ? "تخصيص أيام معينة" : "تفعيل طوال الأسبوع"}
-              </Button>
-            </div>
 
-            <div className="grid grid-cols-4 sm:grid-cols-7 gap-2 pt-1">
-              {DAYS_OF_WEEK.map((day) => {
-                const isSelected = data.activeDays.includes(day.id);
-                return (
-                  <button
-                    key={day.id}
-                    type="button"
-                    onClick={() => {
-                      const current = [...data.activeDays];
-                      if (isSelected) {
-                        if (current.length > 1) {
-                          updateField("activeDays", current.filter((id) => id !== day.id));
+              <div className="grid grid-cols-4 sm:grid-cols-7 gap-2 pt-1">
+                {DAYS_OF_WEEK.map((day) => {
+                  const isSelected = data.activeDays.includes(day.id);
+                  return (
+                    <button
+                      key={day.id}
+                      type="button"
+                      onClick={() => {
+                        const current = [...data.activeDays];
+                        if (isSelected) {
+                          if (current.length > 1) {
+                            updateField("activeDays", current.filter((id) => id !== day.id));
+                          }
+                        } else {
+                          updateField("activeDays", [...current, day.id].sort((a, b) => a - b));
                         }
-                      } else {
-                        updateField("activeDays", [...current, day.id].sort((a, b) => a - b));
-                      }
-                    }}
-                    className={`flex flex-col items-center justify-center p-2 rounded-md border text-xs font-bold transition-colors ${
-                      isSelected
-                        ? "bg-primary text-primary-foreground border-primary"
-                        : "bg-background text-muted-foreground hover:bg-muted"
-                    }`}
-                  >
-                    <span>{day.nameAr}</span>
-                  </button>
-                );
-              })}
+                      }}
+                      className={`flex flex-col items-center justify-center p-2 rounded-md border text-xs font-bold transition-colors ${
+                        isSelected
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-background text-muted-foreground hover:bg-muted"
+                      }`}
+                    >
+                      <span>{day.nameAr}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          )}
         </CardContent>
       </Card>
 

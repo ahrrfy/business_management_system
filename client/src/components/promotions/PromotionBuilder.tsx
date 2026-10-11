@@ -57,6 +57,10 @@ export function PromotionBuilder({ open, onOpenChange, onSuccess }: PromotionBui
         notify.ok("تم إنشاء العرض الترويجي وبرنامج الكوبونات بنجاح");
       }
 
+      if (res.pdfWarning) {
+        notify.warn(res.pdfWarning);
+      }
+
       onSuccess?.();
       onOpenChange(false);
       setFormData(INITIAL_PROMOTION_FORM_DATA);
@@ -91,6 +95,10 @@ export function PromotionBuilder({ open, onOpenChange, onSuccess }: PromotionBui
     const isBounceBack = formData.archetype === "BOUNCE_BACK";
     const isFirstOrder = formData.archetype === "FIRST_ORDER";
 
+    const affiliateCode = isAffiliate && formData.codePrefix.trim()
+      ? [formData.codePrefix.trim().toUpperCase().replace(/[^A-Z0-9-]/g, "")]
+      : undefined;
+
     createUnified.mutate({
       archetype: formData.archetype,
       applicationMode: isDirectPromo ? "AUTO" : "COUPON",
@@ -100,8 +108,8 @@ export function PromotionBuilder({ open, onOpenChange, onSuccess }: PromotionBui
       type: formData.type,
       discountPercent: formData.type === "PERCENT" ? formData.discountPercent : undefined,
       discountAmount: formData.type === "AMOUNT" ? formData.discountAmount : undefined,
-      maxDiscountAmount: formData.type === "PERCENT" ? formData.maxDiscountAmount : undefined,
-      minOrderSpend: formData.minOrderSpend || "0",
+      maxDiscountAmount: !isDirectPromo && formData.type === "PERCENT" ? formData.maxDiscountAmount : undefined,
+      minOrderSpend: isDirectPromo ? "0" : (formData.minOrderSpend || "0"),
       freeShipping: formData.freeShipping,
       shippingDiscountAmount: formData.shippingDiscountAmount || "0",
       scope: formData.scope,
@@ -112,8 +120,8 @@ export function PromotionBuilder({ open, onOpenChange, onSuccess }: PromotionBui
       perCouponLimit: isFirstOrder ? 1 : formData.perCouponLimit,
       perCustomerLimit: isFirstOrder ? 1 : formData.perCustomerLimit,
       isFirstOrderSelfService: isFirstOrder,
-      initialBatchCount: isCouponBatch ? formData.initialBatchCount : 0,
-      customCodes: isCouponBatch && parsedCustomCodes?.length ? parsedCustomCodes : undefined,
+      initialBatchCount: isCouponBatch ? formData.initialBatchCount : (isAffiliate ? 1 : 0),
+      customCodes: isCouponBatch ? (parsedCustomCodes?.length ? parsedCustomCodes : undefined) : affiliateCode,
       exportPdfOnCreate: isCouponBatch && formData.exportPdfOnCreate,
       affiliateName: isAffiliate ? formData.affiliateName.trim() : undefined,
       affiliatePhone: isAffiliate ? formData.affiliatePhone.trim() : undefined,
@@ -123,7 +131,7 @@ export function PromotionBuilder({ open, onOpenChange, onSuccess }: PromotionBui
         subtitle: formData.design.subtitle.trim() || undefined,
         terms: formData.design.terms.trim() || undefined,
         color: formData.design.color,
-        activeDays: formData.activeDays.length >= 7 ? null : formData.activeDays,
+        activeDays: isDirectPromo || formData.activeDays.length >= 7 ? null : formData.activeDays,
         isAutoBounceBack: isBounceBack,
         autoBounceBackMinInvoice: isBounceBack ? formData.autoBounceBackMinInvoice : null,
         bounceBackValidityDays: isBounceBack ? formData.bounceBackValidityDays : null,

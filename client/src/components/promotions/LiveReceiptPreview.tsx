@@ -250,6 +250,16 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
     <div class="store-meta">إيصال تجريبي: POS-${new Date().getFullYear()}-COUPON</div>
   </div>
 
+  ${data.archetype === "DIRECT_PROMO" ? `
+  <div class="voucher-box" style="border: 2px solid #000; background: #fafafa;">
+    <div class="voucher-title">*** خصم ترويجي مباشر تلقائي ***</div>
+    <div class="offer-name">${esc(data.name || "عرض خصم مباشر")}</div>
+    <div class="hero-discount">
+      ${data.type === "PERCENT" ? `خصم ${esc(data.discountPercent || "0")}٪` : `خصم ${esc(formatIqd(data.discountAmount || "0"))}`}
+    </div>
+    <div class="scan-hint">مطبق آلياً على بنود الفاتورة دون الحاجة لكود كوبون</div>
+  </div>
+  ` : `
   <div class="voucher-box">
     <div class="voucher-title">*** قسيمة خصم ترويجية معتمدة ***</div>
     <div class="offer-name">${esc(data.design.title || data.name || "عرض ترويجي حصري")}</div>
@@ -264,6 +274,7 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
     <div class="qr">${qrSvg || ""}</div>
     <div class="scan-hint">امسح للطلب أونلاين أو أبرز الرمز للكاشير</div>
   </div>
+  `}
 
   <div class="totals">
     ${isScoped ? `
@@ -309,9 +320,11 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
     </div>
   </div>
 
+  ${data.archetype !== "DIRECT_PROMO" ? `
   <div class="barcode">
     ${barcodeSvgResult ? barcodeSvgResult.svg : `<div>${esc(previewCode)}</div>`}
   </div>
+  ` : ""}
 
   <div class="footer">
     <div>شكراً لتعاملكم معنا · للاستفسار: ${esc(CO.phones[0]?.n ?? "")}</div>
@@ -420,52 +433,69 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
           </div>
 
           {/* صندوق القسيمة الترويجية البارز داخل الإيصال (Promotional Voucher Box) */}
-          <div className="border-2 border-dashed border-black rounded-lg p-3 bg-white text-center space-y-1.5 my-2">
-            <div className="text-[10px] uppercase font-black tracking-widest text-black border-b border-black pb-1 mb-1">
-              *** قسيمة خصم ترويجية معتمدة ***
-            </div>
-            <div className="font-black text-sm text-black leading-tight">
-              {data.design.title || data.name || "عرض ترويجي حصري"}
-            </div>
-
-            {/* رقم الخصم البارز */}
-            <div className="font-black text-xl text-black tracking-tight my-1 inline-block border-2 border-black rounded px-3 py-1 bg-zinc-50">
-              {data.type === "PERCENT" ? `خصم ${data.discountPercent || "0"}٪` : `خصم ${formatIqd(data.discountAmount || "0")}`}
-            </div>
-
-            {data.type === "PERCENT" && moneyInput(data.maxDiscountAmount).greaterThan(0) && (
-              <div className="text-[10.5px] font-extrabold text-black">
-                سقف التوفير الأقصى: {formatIqd(data.maxDiscountAmount)}
+          {data.archetype === "DIRECT_PROMO" ? (
+            <div className="border-2 border-solid border-black rounded-lg p-3 bg-zinc-50 text-center space-y-1.5 my-2">
+              <div className="text-[10px] uppercase font-black tracking-widest text-black border-b border-black pb-1 mb-1">
+                *** خصم ترويجي مباشر تلقائي ***
               </div>
-            )}
-
-            {moneyInput(data.minOrderSpend).greaterThan(0) && (
-              <div className="text-[10.5px] font-extrabold text-black">
-                الحد الأدنى للفاتورة: {formatIqd(data.minOrderSpend)}
+              <div className="font-black text-sm text-black leading-tight">
+                {data.name || "عرض خصم مباشر"}
               </div>
-            )}
-
-            {/* كود الكوبون البارز بخلفية سوداء وخط أبيض ناصع */}
-            <div>
-              <span className="my-1.5 inline-block bg-black text-white px-3.5 py-1 rounded font-mono text-base font-black tracking-widest" dir="ltr">
-                {previewCode}
-              </span>
+              <div className="font-black text-xl text-black tracking-tight my-1 inline-block border-2 border-black rounded px-3 py-1 bg-white">
+                {data.type === "PERCENT" ? `خصم ${data.discountPercent || "0"}٪` : `خصم ${formatIqd(data.discountAmount || "0")}`}
+              </div>
+              <div className="text-[10px] font-bold text-black text-center pt-0.5">
+                مطبق آلياً على بنود الفاتورة في الكاشير والمتجر دون الحاجة لكود كوبون
+              </div>
             </div>
+          ) : (
+            <div className="border-2 border-dashed border-black rounded-lg p-3 bg-white text-center space-y-1.5 my-2">
+              <div className="text-[10px] uppercase font-black tracking-widest text-black border-b border-black pb-1 mb-1">
+                *** قسيمة خصم ترويجية معتمدة ***
+              </div>
+              <div className="font-black text-sm text-black leading-tight">
+                {data.design.title || data.name || "عرض ترويجي حصري"}
+              </div>
 
-            {/* رمز الاستجابة السريعة QR للطلب أونلاين */}
-            {qrSvg && (
-              <div className="flex flex-col items-center justify-center pt-1">
-                <div
-                  className="size-24 flex items-center justify-center bg-white p-1 rounded border-2 border-black [&>svg]:size-full"
-                  dangerouslySetInnerHTML={{ __html: qrSvg }}
-                  aria-label={`رمز QR للكوبون ${previewCode}`}
-                />
-                <span className="text-[9.5px] font-black text-black mt-1">
-                  امسح للطلب أونلاين أو أبرز الرمز للكاشير
+              {/* رقم الخصم البارز */}
+              <div className="font-black text-xl text-black tracking-tight my-1 inline-block border-2 border-black rounded px-3 py-1 bg-zinc-50">
+                {data.type === "PERCENT" ? `خصم ${data.discountPercent || "0"}٪` : `خصم ${formatIqd(data.discountAmount || "0")}`}
+              </div>
+
+              {data.type === "PERCENT" && moneyInput(data.maxDiscountAmount).greaterThan(0) && (
+                <div className="text-[10.5px] font-extrabold text-black">
+                  سقف التوفير الأقصى: {formatIqd(data.maxDiscountAmount)}
+                </div>
+              )}
+
+              {moneyInput(data.minOrderSpend).greaterThan(0) && (
+                <div className="text-[10.5px] font-extrabold text-black">
+                  الحد الأدنى للفاتورة: {formatIqd(data.minOrderSpend)}
+                </div>
+              )}
+
+              {/* كود الكوبون البارز بخلفية سوداء وخط أبيض ناصع */}
+              <div>
+                <span className="my-1.5 inline-block bg-black text-white px-3.5 py-1 rounded font-mono text-base font-black tracking-widest" dir="ltr">
+                  {previewCode}
                 </span>
               </div>
-            )}
-          </div>
+
+              {/* رمز الاستجابة السريعة QR للطلب أونلاين */}
+              {qrSvg && (
+                <div className="flex flex-col items-center justify-center pt-1">
+                  <div
+                    className="size-24 flex items-center justify-center bg-white p-1 rounded border-2 border-black [&>svg]:size-full"
+                    dangerouslySetInnerHTML={{ __html: qrSvg }}
+                    aria-label={`رمز QR للكوبون ${previewCode}`}
+                  />
+                  <span className="text-[9.5px] font-black text-black mt-1">
+                    امسح للطلب أونلاين أو أبرز الرمز للكاشير
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* بنود الفاتورة والمجاميع */}
           <div className="space-y-1.5 text-xs border-t-2 border-black border-dashed pt-2">
@@ -546,23 +576,25 @@ export function LiveReceiptPreview({ data }: LiveReceiptPreviewProps) {
             </div>
           </div>
 
-          {/* الباركود الحراري Code128 الخاص بالكوبون */}
-          <div className="pt-2 border-t-2 border-black border-dashed text-center flex flex-col items-center justify-center">
-            {barcodeSvgResult ? (
-              <div
-                className="w-full flex items-center justify-center overflow-hidden [&>svg]:max-w-full"
-                dangerouslySetInnerHTML={{ __html: barcodeSvgResult.svg }}
-                aria-label={`باركود الكوبون ${previewCode}`}
-              />
-            ) : (
-              <div className="py-2 text-[10px] font-bold text-black">
-                رمز الباركود: {previewCode}
+          {/* الباركود الحراري Code128 الخاص بالكوبون (للكوبونات فقط) */}
+          {data.archetype !== "DIRECT_PROMO" && (
+            <div className="pt-2 border-t-2 border-black border-dashed text-center flex flex-col items-center justify-center">
+              {barcodeSvgResult ? (
+                <div
+                  className="w-full flex items-center justify-center overflow-hidden [&>svg]:max-w-full"
+                  dangerouslySetInnerHTML={{ __html: barcodeSvgResult.svg }}
+                  aria-label={`باركود الكوبون ${previewCode}`}
+                />
+              ) : (
+                <div className="py-2 text-[10px] font-bold text-black">
+                  رمز الباركود: {previewCode}
+                </div>
+              )}
+              <div className="text-[10px] font-black text-black mt-1">
+                مسح فوري عبر قارئ الباركود الضوئي (1D Code128)
               </div>
-            )}
-            <div className="text-[10px] font-black text-black mt-1">
-              مسح فوري عبر قارئ الباركود الضوئي (1D Code128)
             </div>
-          </div>
+          )}
 
           {/* تذييل الإيصال */}
           <div className="text-center pt-2 text-[10px] font-bold text-black border-t-2 border-black border-dashed space-y-0.5">

@@ -141,9 +141,11 @@ export function validatePromotionFormData(data: PromotionFormData): FormValidati
     if (isNaN(pct) || pct <= 0 || pct > 100) {
       errors.discountPercent = "نسبة الخصم يجب أن تكون بين 0.01٪ و 100٪";
     }
-    const cap = parseFloat(data.maxDiscountAmount);
-    if (isNaN(cap) || cap <= 0) {
-      errors.maxDiscountAmount = "سقف الخصم الأقصى بالدينار إلزامي لمنع الخسائر غير المتوقعة";
+    if (data.archetype !== "DIRECT_PROMO") {
+      const cap = parseFloat(data.maxDiscountAmount);
+      if (isNaN(cap) || cap <= 0) {
+        errors.maxDiscountAmount = "سقف الخصم الأقصى بالدينار إلزامي لمنع الخسائر غير المتوقعة";
+      }
     }
   } else {
     const amt = parseFloat(data.discountAmount);
@@ -152,9 +154,23 @@ export function validatePromotionFormData(data: PromotionFormData): FormValidati
     }
   }
 
-  const minSpend = parseFloat(data.minOrderSpend);
-  if (isNaN(minSpend) || minSpend < 0) {
-    errors.minOrderSpend = "الحد الأدنى لقيمة الفاتورة لا يمكن أن يكون سالباً";
+  if (data.archetype !== "DIRECT_PROMO") {
+    const minSpend = parseFloat(data.minOrderSpend);
+    if (isNaN(minSpend) || minSpend < 0) {
+      errors.minOrderSpend = "الحد الأدنى لقيمة الفاتورة لا يمكن أن يكون سالباً";
+    }
+  }
+
+  // التحقق من تكرار الأكواد المخصصة
+  if (data.customCodesList.trim()) {
+    const lines = data.customCodesList
+      .split("\n")
+      .map((s) => s.trim().toUpperCase().replace(/[^A-Z0-9-]/g, ""))
+      .filter(Boolean);
+    const duplicates = lines.filter((code, idx) => lines.indexOf(code) !== idx);
+    if (duplicates.length > 0) {
+      errors.customCodesList = `يوجد تكرار في الأكواد المدخلة: ${Array.from(new Set(duplicates)).slice(0, 3).join(", ")}`;
+    }
   }
 
   // فحوصات نمط المؤثرين

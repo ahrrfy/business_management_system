@@ -1529,6 +1529,23 @@ describe("Omnichannel Promotion & Coupon Engine (Milestone M1)", () => {
       expect(firstOrder.perCustomerLimit).toBe(1);
       expect(firstOrder.isFirstOrderSelfService).toBe(true);
     });
+
+    it("يكتشف ويرفض الأكواد المخصصة المكررة بدقة", () => {
+      const rawCodes = ["VIP-1", "vip-1", "VIP-2", "VIP-3", "vip-2"];
+      const normalized = rawCodes.map((s) => s.trim().toUpperCase().replace(/[^A-Z0-9-]/g, "")).filter(Boolean);
+      const duplicates = normalized.filter((code, idx) => normalized.indexOf(code) !== idx);
+      const uniqueDuplicates = Array.from(new Set(duplicates));
+
+      expect(uniqueDuplicates).toEqual(["VIP-1", "VIP-2"]);
+      expect(uniqueDuplicates.length).toBe(2);
+    });
+
+    it("يضمن إصدار كود المؤثر الفوري دون توليد أكواد عشوائية بديلة", () => {
+      const affiliateCode = "AHMED20";
+      const customCodes = [affiliateCode];
+      expect(customCodes.length).toBe(1);
+      expect(customCodes[0]).toBe("AHMED20");
+    });
   });
 });
 

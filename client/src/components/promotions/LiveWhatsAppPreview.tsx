@@ -70,6 +70,23 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
     const joinLines = (lines: (string | null | undefined | false)[]) =>
       lines.filter((l): l is string => l != null && l !== false).join("\n");
 
+    if (data.archetype === "DIRECT_PROMO") {
+      return joinLines([
+        `*تخفيضات وعروض خاصة من ${CO.short}!*`,
+        titleLine || `*${data.name}*`,
+        subtitleLine,
+        ``,
+        `• قيمة الخصم المباشر: *${discountSummary}*`,
+        shippingBonus ? `• ميزة إضافية: توصيل مجاني مشمول` : null,
+        `• فترة العرض: ${validityText}`,
+        ``,
+        `*يطبق الخصم تلقائياً عند التسوق عبر المتجر الإلكتروني أو زيارة فروعنا دون الحاجة لأي كود كوبون.*`,
+        publicStorefrontUrl(),
+        ``,
+        `• الشروط: ${terms || "تطبق الشروط والأحكام على الأصناف المشمولة بالعرض"}`,
+      ]);
+    }
+
     if (style === "GIFT") {
       return joinLines([
         `*هدية تسوق خاصة لك من ${CO.short}*`,

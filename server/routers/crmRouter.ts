@@ -500,7 +500,7 @@ export const crmRouter = router({
           branchId,
           minLineAmount: "0",
           priority: 0,
-          isActive: true,
+          isActive: targetStatus === "ACTIVE",
           applicationMode: effectiveAppMode,
           isStoreManaged: false,
           createdBy: ctx.user.id,
@@ -623,6 +623,21 @@ export const crmRouter = router({
         });
         const programId = extractInsertId(progInsertResult);
 
+        if (input.customCodes && input.customCodes.length > 0) {
+          const rawCodes = input.customCodes.map((s) => normalizeCode(s)).filter(Boolean);
+          const duplicates = rawCodes.filter((code, idx) => rawCodes.indexOf(code) !== idx);
+          if (duplicates.length > 0) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "تكرار في الأكواد المخصصة",
+                why: `تحتوي القائمة على أكواد مكررة بعد التنسيق: ${Array.from(new Set(duplicates)).slice(0, 3).join(", ")}`,
+                doThis: "احذف الأكواد المكررة ثم أعد المحاولة",
+              }),
+            });
+          }
+        }
+
         // 6. إصدار دفعة فورية متعددة إن طُلب (توليد متعدد مباشر)
         let issuedCodes: string[] = [];
         let batchReference: string | null = null;
@@ -638,9 +653,10 @@ export const crmRouter = router({
               const norm = normalizeCode(raw);
               if (norm) uniqueCodes.add(norm);
             }
-          }
-          while (uniqueCodes.size < requestedCount) {
-            uniqueCodes.add(makeCode(safePrefix));
+          } else {
+            while (uniqueCodes.size < requestedCount) {
+              uniqueCodes.add(makeCode(safePrefix));
+            }
           }
 
           const couponRows = Array.from(uniqueCodes, (code) => ({
@@ -698,54 +714,62 @@ export const crmRouter = router({
         };
       });
 
-      // 8. تصدير PDF فوري إن كان مطلوباً ووجدت كوبونات صادرة
+      // 8. تصدير PDF فوري إن كان مطلوباً ووجدت كوبونات صادرة (محمي ضد الفشل لمنع تكرار الحفظ)
       let pdf: { base64: string; filename: string; pageCount: number } | null = null;
+      let pdfWarning: string | null = null;
+
       if (input.exportPdfOnCreate && dbResult.codes.length > 0 && dbResult.programId != null) {
-        const design = (input.design ?? {}) as PromotionDesignMeta;
-        let heroDiscount = "";
-        if (input.type === "PERCENT") {
-          heroDiscount = `خصم ${Number(input.discountPercent)}%`;
-        } else if (input.discountAmount) {
-          heroDiscount = `خصم ${Number(input.discountAmount).toLocaleString()} د.ع`;
+        try {
+          const design = (input.design ?? {}) as PromotionDesignMeta;
+          let heroDiscount = "";
+          if (input.type === "PERCENT") {
+            heroDiscount = `خصم ${Number(input.discountPercent)}%`;
+          } else if (input.discountAmount) {
+            heroDiscount = `خصم ${Number(input.discountAmount).toLocaleString()} د.ع`;
+          }
+          const discountCap = input.type === "PERCENT" && input.maxDiscountAmount && money(input.maxDiscountAmount).gt(0)
+            ? `سقف الخصم: ${Number(input.maxDiscountAmount).toLocaleString()} د.ع`
+            : null;
+          const minSpend = input.minOrderSpend && money(input.minOrderSpend).gt(0)
+            ? `للطلبات بقيمة ${Number(input.minOrderSpend).toLocaleString()} د.ع فأكثر`
+            : null;
+          const activeDaysText = design.activeDays && design.activeDays.length > 0 && design.activeDays.length < 7
+            ? `متاح: ${formatActiveDays(design.activeDays)}`
+            : null;
+
+          const items: CouponPdfItem[] = dbResult.codes.map((code) => ({
+            code,
+            title: design.title || input.name,
+            subtitle: design.subtitle,
+            heroDiscount,
+            discountCap,
+            minSpend,
+            terms: design.terms,
+            validTo: input.validTo ? new Date(input.validTo) : null,
+            activeDaysText,
+            color: design.color || "#0D6B52",
+          }));
+
+          const pdfDoc = await generateCouponsStandalonePdf({
+            programName: input.name,
+            coupons: items,
+          });
+
+          pdf = {
+            base64: Buffer.from(pdfDoc.pdfBytes).toString("base64"),
+            filename: `coupons-${dbResult.codePrefix}-${dbResult.codes.length}cards.pdf`,
+            pageCount: pdfDoc.pageCount,
+          };
+        } catch (pdfErr) {
+          console.error("[CRM] Failed to generate PDF post-commit:", pdfErr);
+          pdfWarning = "تم حفظ البرنامج وإصدار الكوبونات بنجاح، ولكن تعذر توليد ملف PDF تلقائياً. يمكنك تصديرها لاحقاً من قائمة الكوبونات.";
         }
-        const discountCap = input.type === "PERCENT" && input.maxDiscountAmount && money(input.maxDiscountAmount).gt(0)
-          ? `سقف الخصم: ${Number(input.maxDiscountAmount).toLocaleString()} د.ع`
-          : null;
-        const minSpend = input.minOrderSpend && money(input.minOrderSpend).gt(0)
-          ? `للطلبات بقيمة ${Number(input.minOrderSpend).toLocaleString()} د.ع فأكثر`
-          : null;
-        const activeDaysText = design.activeDays && design.activeDays.length > 0 && design.activeDays.length < 7
-          ? `متاح: ${formatActiveDays(design.activeDays)}`
-          : null;
-
-        const items: CouponPdfItem[] = dbResult.codes.map((code) => ({
-          code,
-          title: design.title || input.name,
-          subtitle: design.subtitle,
-          heroDiscount,
-          discountCap,
-          minSpend,
-          terms: design.terms,
-          validTo: input.validTo ? new Date(input.validTo) : null,
-          activeDaysText,
-          color: design.color || "#0D6B52",
-        }));
-
-        const pdfDoc = await generateCouponsStandalonePdf({
-          programName: input.name,
-          coupons: items,
-        });
-
-        pdf = {
-          base64: Buffer.from(pdfDoc.pdfBytes).toString("base64"),
-          filename: `coupons-${dbResult.codePrefix}-${dbResult.codes.length}cards.pdf`,
-          pageCount: pdfDoc.pageCount,
-        };
       }
 
       return {
         ...dbResult,
         pdf,
+        pdfWarning,
       };
     }),
 
