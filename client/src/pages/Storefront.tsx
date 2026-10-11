@@ -3171,7 +3171,7 @@ function StorefrontContent() {
                 </button>
               </div>
               <p id="storefront-coupon-feedback" className="mt-2 text-xs font-bold text-slate-600" role="status" aria-live="polite">
-                {quoteQ.isFetching && appliedCouponCode ? "جارٍ التحقق من الكوبون…" : quoteQ.isError && appliedCouponCode ? (quoteQ.error?.message ?? "تعذّر التحقق من الكوبون") : couponSuperseded ? `لم يُستخدم الكوبون؛ طُبقت منفعة ${quoteQ.data?.pricingBenefitLabel ?? "أفضل سعر متاح"} بدلاً منه.` : appliedCouponCode && quoteQ.data ? `تم تطبيق ${quoteQ.data.couponProgramName ?? "الكوبون"} — التوفير ${money(quotedCouponDiscount)} د.ع` : couponFeedback ?? "يمكنك إدخال رمز العرض قبل تأكيد الطلب"}
+                {quoteQ.isFetching && appliedCouponCode ? "جارٍ التحقق من الكوبون…" : quoteQ.isError && appliedCouponCode ? (quoteQ.error?.message ?? "تعذّر التحقق من الكوبون") : couponSuperseded ? `لم يُستخدم الكوبون؛ طُبقت منفعة ${quoteQ.data?.pricingBenefitLabel ?? "أفضل سعر متاح"} بدلاً منه.` : appliedCouponCode && quoteQ.data ? `تم تطبيق ${quoteQ.data.couponProgramName ?? "الكوبون"} — التوفير ${money(Number(quotedCouponDiscount) + Number(quoteQ.data.couponDeliveryWaivedAmount ?? 0))} د.ع` : couponFeedback ?? "يمكنك إدخال رمز العرض قبل تأكيد الطلب"}
               </p>
             </div>
 

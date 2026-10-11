@@ -852,12 +852,19 @@ export type StorefrontPricingBenefitType =
   | "OFFER"
   | "COUPON";
 
+export interface OnlineOrderDeliveryContext {
+  actualDeliveryFee: import("decimal.js").default;
+  freeShippingThreshold: import("decimal.js").default | null;
+}
+
 export interface StorefrontPricingBenefit {
   type: StorefrontPricingBenefitType;
   label: string | null;
   discount: string;
   /** الكوبون صالح للسلة لكنه خسر أمام منفعة أعلى، فلا نحجزه ولا نستهلكه. */
   couponSuperseded: boolean;
+  /** ميزة الشحن المجاني للكوبون مفعلة كفائز */
+  couponShippingActive: boolean;
 }
 
 export interface PricedOnlineOrderLines {
@@ -904,6 +911,7 @@ export interface OnlineOrderQuoteResult {
     customization: OnlineOrderCustomizationSnapshot | null;
     retailUnitPrice: string;
     discountPerUnit: string;
+    couponDiscountPerUnit: string;
     unitPrice: string;
     lineTotal: string;
   }>;
@@ -913,6 +921,8 @@ export interface OnlineOrderQuoteResult {
   deliveryFee: string;
   deliveryFree: boolean;
   deliveryWaivedAmount: string;
+  couponDeliveryWaivedAmount: string;
+  couponShippingApplied: boolean;
   /** العتبة التي فعّلتها الإدارة الآن؛ null يعني أن حافز التوصيل المجاني غير مفعّل. */
   freeShippingThreshold: string | null;
   /** ما ينقص من قيمة المنتجات لبلوغ العتبة؛ null عندما لا تكون هناك عتبة مفعّلة. */
@@ -925,7 +935,11 @@ export async function priceOnlineOrderLines(
   tx: Tx,
   branchId: number,
   lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity" | "customization">>,
-  options: { lock: boolean; coupon?: LockedCoupon | null },
+  options: {
+    lock: boolean;
+    coupon?: LockedCoupon | null;
+    deliveryContext?: OnlineOrderDeliveryContext | null;
+  },
 ): Promise<PricedOnlineOrderLines> {
   const unitIds = Array.from(
     new Set(lines.map((line) => Number(line.productUnitId))),
@@ -1139,9 +1153,22 @@ export async function priceOnlineOrderLines(
     })
     .sort((left, right) => left.productName.localeCompare(right.productName, "ar"));
 
+  const retailSubtotal = round2(
+    candidates.reduce(
+      (sum, item) => sum.plus(money(item.retailUnitPrice).times(item.quantity)),
+      money(0),
+    ),
+  );
+
+  const hasMinSpend =
+    options.coupon?.minOrderSpend &&
+    money(options.coupon.minOrderSpend).gt(0);
+  const minSpendSatisfied =
+    !hasMinSpend || retailSubtotal.gte(money(options.coupon!.minOrderSpend));
+
   let wholesaleDiscount = money(0);
   let offerDiscount = money(0);
-  let couponDiscount = money(0);
+  let rawCouponMerchandiseDiscount = money(0);
   const offerNames = new Set<string>();
   for (const item of candidates) {
     const parentBaseQuantity = baseQuantityByProduct.get(item.productId) ?? 0;
@@ -1161,41 +1188,77 @@ export async function priceOnlineOrderLines(
     if (automaticPerUnit.gt(0) && item.automaticPromotionName) {
       offerNames.add(item.automaticPromotionName);
     }
-    couponDiscount = couponDiscount.plus(
+    rawCouponMerchandiseDiscount = rawCouponMerchandiseDiscount.plus(
       money(item.couponDiscountCandidatePerUnit).times(item.quantity),
     );
   }
 
+  const couponMerchandiseDiscount = minSpendSatisfied
+    ? rawCouponMerchandiseDiscount
+    : money(0);
+
+  let couponShippingWaiver = money(0);
+  if (
+    options.coupon?.freeShipping &&
+    minSpendSatisfied &&
+    options.deliveryContext
+  ) {
+    const { actualDeliveryFee, freeShippingThreshold } = options.deliveryContext;
+    const thresholdFree = Boolean(
+      freeShippingThreshold &&
+      freeShippingThreshold.gt(0) &&
+      retailSubtotal.gte(freeShippingThreshold),
+    );
+    if (!thresholdFree && actualDeliveryFee.gt(0)) {
+      couponShippingWaiver = actualDeliveryFee;
+    }
+  }
+
+  const totalCouponBenefit = couponMerchandiseDiscount.plus(couponShippingWaiver);
+
   const candidatesByBenefit: Array<{
     type: Exclude<StorefrontPricingBenefitType, "NONE">;
-    discount: ReturnType<typeof money>;
+    totalBenefit: ReturnType<typeof money>;
+    merchandiseDiscount: ReturnType<typeof money>;
     priority: number;
     label: string;
+    shippingActive: boolean;
   }> = [
     // عند التعادل لا نستهلك كوبوناً بلا توفير إضافي؛ تبقى قيمة الكوبون للعميل لاحقاً.
-    { type: "WHOLESALE" as const, discount: wholesaleDiscount, priority: 3, label: "سعر الجملة التلقائي" },
+    {
+      type: "WHOLESALE" as const,
+      totalBenefit: wholesaleDiscount,
+      merchandiseDiscount: wholesaleDiscount,
+      priority: 3,
+      label: "سعر الجملة التلقائي",
+      shippingActive: false,
+    },
     {
       type: "OFFER" as const,
-      discount: offerDiscount,
+      totalBenefit: offerDiscount,
+      merchandiseDiscount: offerDiscount,
       priority: 2,
       label:
         offerNames.size === 1
           ? Array.from(offerNames)[0]!
           : "أفضل عرض تلقائي",
+      shippingActive: false,
     },
     {
       type: "COUPON" as const,
-      discount: couponDiscount,
+      totalBenefit: totalCouponBenefit,
+      merchandiseDiscount: couponMerchandiseDiscount,
       priority: 1,
-      label: options.coupon?.programName ?? "خصم الكوبون",
+      label: options.coupon?.programName ?? (couponShippingWaiver.gt(0) ? "توصيل مجاني" : "خصم الكوبون"),
+      shippingActive: couponShippingWaiver.gt(0),
     },
-  ].filter((candidate) => candidate.discount.gt(0));
+  ].filter((candidate) => candidate.totalBenefit.gt(0));
   candidatesByBenefit.sort((a, b) => {
-    const compared = b.discount.comparedTo(a.discount);
+    const compared = b.totalBenefit.comparedTo(a.totalBenefit);
     return compared !== 0 ? compared : b.priority - a.priority;
   });
   const selected = candidatesByBenefit[0];
-  if (selected && round2(selected.discount).gt(MAX_ONLINE_ORDER_MONEY)) {
+  if (selected && round2(selected.totalBenefit).gt(MAX_ONLINE_ORDER_MONEY)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: appErrorMessage({
@@ -1209,17 +1272,19 @@ export async function priceOnlineOrderLines(
     ? {
         type: selected.type,
         label: selected.label,
-        discount: round2(selected.discount).toFixed(2),
+        discount: round2(selected.merchandiseDiscount).toFixed(2),
         couponSuperseded:
           options.coupon != null &&
-          couponDiscount.gt(0) &&
+          totalCouponBenefit.gt(0) &&
           selected.type !== "COUPON",
+        couponShippingActive: selected.type === "COUPON" && selected.shippingActive,
       }
     : {
         type: "NONE",
         label: null,
         discount: "0.00",
         couponSuperseded: false,
+        couponShippingActive: false,
       };
 
   const items = candidates.map((item) => {
@@ -1237,7 +1302,7 @@ export async function priceOnlineOrderLines(
         ? wholesalePerUnit
         : benefit.type === "OFFER"
           ? money(item.automaticDiscountPerUnit)
-          : benefit.type === "COUPON"
+          : benefit.type === "COUPON" && minSpendSatisfied
             ? money(item.couponDiscountCandidatePerUnit)
             : money(0);
     const priceAfterBenefit = money(item.retailUnitPrice).minus(selectedDiscount);
@@ -1269,7 +1334,7 @@ export async function priceOnlineOrderLines(
       customizationSnapshot: item.customizationSnapshot,
       discountPerUnit: round2(selectedDiscount).toFixed(2),
       couponDiscountPerUnit:
-        benefit.type === "COUPON"
+        benefit.type === "COUPON" && minSpendSatisfied
           ? round2(selectedDiscount).toFixed(2)
           : "0.00",
       unitPrice: unitPrice.toFixed(2),
@@ -1280,7 +1345,7 @@ export async function priceOnlineOrderLines(
     items,
     benefit,
     wholesaleProgress,
-    couponCandidateDiscount: round2(couponDiscount).toFixed(2),
+    couponCandidateDiscount: round2(couponMerchandiseDiscount).toFixed(2),
   };
 }
 
@@ -1455,11 +1520,28 @@ export async function quoteOnlineOrder(
             { lock: false },
           )
         : null;
+      const isBaghdad = isBaghdadGovernorate(input.governorate);
+      const applicableThresholdStr = isBaghdad
+        ? settings?.freeShippingThreshold
+        : (settings?.freeShippingThresholdGovernorates ?? settings?.freeShippingThreshold);
+      const configuredThreshold = applicableThresholdStr
+        ? money(applicableThresholdStr)
+        : null;
+      const freeThreshold = configuredThreshold?.gt(0) ? configuredThreshold : null;
+      const actualDeliveryFee = await resolveDeliveryFee(tx, input.governorate);
+
       const pricing = await priceOnlineOrderLines(
         tx,
         context.branchId,
         normalizedLines,
-        { lock: false, coupon: lockedCoupon },
+        {
+          lock: false,
+          coupon: lockedCoupon,
+          deliveryContext: {
+            actualDeliveryFee,
+            freeShippingThreshold: freeThreshold,
+          },
+        },
       );
       const retailSubtotal = round2(
         pricing.items.reduce(
@@ -1484,7 +1566,9 @@ export async function quoteOnlineOrder(
         });
       }
       const couponShipping =
-        lockedCoupon && lockedCoupon.freeShipping
+        pricing.benefit.type === "COUPON" &&
+        pricing.benefit.couponShippingActive &&
+        lockedCoupon?.freeShipping
           ? {
               freeShipping: true,
               shippingDiscountAmount: lockedCoupon.shippingDiscountAmount,
@@ -1499,13 +1583,16 @@ export async function quoteOnlineOrder(
         settings?.freeShippingThresholdGovernorates,
         couponShipping,
       );
-      const hasMerchandiseDiscount = pricing.benefit.type === "COUPON";
+      const hasMerchandiseDiscount =
+        pricing.benefit.type === "COUPON" && money(pricing.benefit.discount).gt(0);
       const hasShippingWaiver =
         totals.couponShippingApplied &&
         money(totals.couponDeliveryWaivedAmount).gt(0);
-      const couponBenefitActive = hasMerchandiseDiscount || hasShippingWaiver;
+      const couponBenefitActive =
+        pricing.benefit.type === "COUPON" &&
+        (hasMerchandiseDiscount || hasShippingWaiver);
 
-      if (lockedCoupon && !couponBenefitActive) {
+      if (lockedCoupon && !pricing.benefit.couponSuperseded && !couponBenefitActive) {
         const isThresholdFree =
           totals.deliveryFree && !totals.couponShippingApplied;
         throw new TRPCError({
@@ -1529,14 +1616,8 @@ export async function quoteOnlineOrder(
           pricing.benefit.type === "COUPON"
             ? pricing.benefit.discount
             : "0.00",
-        pricingBenefitType:
-          pricing.benefit.type === "NONE" && couponBenefitActive
-            ? "COUPON"
-            : pricing.benefit.type,
-        pricingBenefitLabel:
-          pricing.benefit.type === "NONE" && couponBenefitActive
-            ? (lockedCoupon?.programName ?? "توصيل مجاني")
-            : pricing.benefit.label,
+        pricingBenefitType: pricing.benefit.type,
+        pricingBenefitLabel: pricing.benefit.label,
         pricingBenefitDiscount: pricing.benefit.discount,
         couponSuperseded: pricing.benefit.couponSuperseded,
         wholesaleProgress: pricing.wholesaleProgress,
@@ -1745,11 +1826,26 @@ async function createOnlineOrderAttempt(
         })
       : null;
 
+    const isBaghdad = isBaghdadGovernorate(input.governorate);
+    const applicableThresholdStr = isBaghdad
+      ? storeSettings?.freeShippingThreshold
+      : (storeSettings?.freeShippingThresholdGovernorates ?? storeSettings?.freeShippingThreshold);
+    const configuredThreshold = applicableThresholdStr
+      ? money(applicableThresholdStr)
+      : null;
+    const freeThreshold = configuredThreshold?.gt(0) ? configuredThreshold : null;
+    const actualDeliveryFee = await resolveDeliveryFee(tx, input.governorate);
+    const deliveryContext = {
+      actualDeliveryFee,
+      freeShippingThreshold: freeThreshold,
+    };
+
     // ② لقطة تسعير أولية لبناء متطلبات الأقفال. التثبيت المالي الوحيد أدناه يعيد
     // تشغيل المحرك نفسه بقراءة current مقفلة بعد قفل الوحدات.
     const initialPricing = await priceOnlineOrderLines(tx, branchId, normalizedLines, {
       lock: false,
       coupon: lockedCoupon,
+      deliveryContext,
     });
     const items = initialPricing.items;
     const requestedBaseByVariant = new Map<number, number>();
@@ -1768,7 +1864,7 @@ async function createOnlineOrderAttempt(
       tx,
       branchId,
       normalizedLines,
-      { lock: true, coupon: lockedCoupon },
+      { lock: true, coupon: lockedCoupon, deliveryContext },
     );
     const currentItems = currentPricing.items;
     requestedBaseByVariant.clear();
@@ -1917,7 +2013,9 @@ async function createOnlineOrderAttempt(
       });
     }
     const couponShipping =
-      lockedCoupon && lockedCoupon.freeShipping
+      currentPricing.benefit.type === "COUPON" &&
+      currentPricing.benefit.couponShippingActive &&
+      lockedCoupon?.freeShipping
         ? {
             freeShipping: true,
             shippingDiscountAmount: lockedCoupon.shippingDiscountAmount,
@@ -1932,13 +2030,15 @@ async function createOnlineOrderAttempt(
       storeSettings?.freeShippingThresholdGovernorates,
       couponShipping,
     );
-    const hasMerchandiseDiscount = currentPricing.benefit.type === "COUPON";
+    const hasMerchandiseDiscount =
+      currentPricing.benefit.type === "COUPON" && money(currentPricing.benefit.discount).gt(0);
     const hasShippingWaiver =
       quoteTotals.couponShippingApplied &&
       money(quoteTotals.couponDeliveryWaivedAmount).gt(0);
-    const couponBenefitActive = hasMerchandiseDiscount || hasShippingWaiver;
+    const couponBenefitActive =
+      currentPricing.benefit.type === "COUPON" && (hasMerchandiseDiscount || hasShippingWaiver);
 
-    if (lockedCoupon && !couponBenefitActive) {
+    if (lockedCoupon && !currentPricing.benefit.couponSuperseded && !couponBenefitActive) {
       const isThresholdFree =
         quoteTotals.deliveryFree && !quoteTotals.couponShippingApplied;
       throw new TRPCError({
@@ -2080,14 +2180,8 @@ async function createOnlineOrderAttempt(
       guestTrackingExpiresAt,
       couponCode: selectedCoupon?.code ?? null,
       couponDiscount: toDbMoney(merchandiseCouponDiscount),
-      pricingBenefitType:
-        currentPricing.benefit.type === "NONE" && couponBenefitActive
-          ? "COUPON"
-          : currentPricing.benefit.type,
-      pricingBenefitLabel:
-        currentPricing.benefit.type === "NONE" && couponBenefitActive
-          ? (selectedCoupon?.programName ?? "توصيل مجاني")
-          : currentPricing.benefit.label,
+      pricingBenefitType: currentPricing.benefit.type,
+      pricingBenefitLabel: currentPricing.benefit.label,
       pricingBenefitDiscount: toDbMoney(currentPricing.benefit.discount),
     });
     const orderId = extractInsertId(insOrder);

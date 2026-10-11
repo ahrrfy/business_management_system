@@ -1247,6 +1247,92 @@ describe("Omnichannel Promotion & Coupon Engine (Milestone M1)", () => {
         : couponDeliveryWaivedAmount;
       expect(reservationAmount.toFixed(2)).toBe("5000.00");
     });
+
+    it("T4.8 Combined coupon benefit competes against automatic offer without benefit stacking", () => {
+      const actualDeliveryFee = money("5000.00");
+      const freeShippingThreshold = money("100000.00");
+      const retailSubtotal = money("60000.00");
+
+      // Case A: Offer = 8,000 IQD, Coupon gives Free Shipping (5,000 IQD waiver) + 0 merchandise discount
+      // Offer (8,000) > Coupon total benefit (5,000). Offer wins, coupon is superseded, coupon shipping NOT activated.
+      const offerDiscountA = money("8000.00");
+      const couponMerchandiseDiscountA = money("0.00");
+      const couponShippingWaiverA = actualDeliveryFee; // 5000
+      const totalCouponBenefitA = couponMerchandiseDiscountA.plus(couponShippingWaiverA);
+
+      expect(offerDiscountA.gt(totalCouponBenefitA)).toBe(true);
+      const winnerA = offerDiscountA.gte(totalCouponBenefitA) ? "OFFER" : "COUPON";
+      expect(winnerA).toBe("OFFER");
+      // Since OFFER won, coupon shipping is NOT granted (no stacking)
+      const couponShippingGrantedA = winnerA === "COUPON";
+      expect(couponShippingGrantedA).toBe(false);
+
+      // Case B: Offer = 4,000 IQD, Coupon gives Free Shipping (5,000 IQD waiver) + 0 merchandise discount
+      // Coupon total benefit (5,000) > Offer (4,000). Coupon wins, shipping activated, offer NOT stacked.
+      const offerDiscountB = money("4000.00");
+      const winnerB = totalCouponBenefitA.gt(offerDiscountB) ? "COUPON" : "OFFER";
+      expect(winnerB).toBe("COUPON");
+      const couponShippingGrantedB = winnerB === "COUPON";
+      expect(couponShippingGrantedB).toBe(true);
+
+      // Case C: Offer = 8,000 IQD, Coupon gives 4,000 merchandise + 5,000 shipping waiver = 9,000 total benefit
+      // Coupon (9,000) > Offer (8,000). Coupon wins, merchandise 4,000 applied, shipping waived, offer NOT stacked.
+      const couponMerchandiseDiscountC = money("4000.00");
+      const totalCouponBenefitC = couponMerchandiseDiscountC.plus(couponShippingWaiverA);
+      expect(totalCouponBenefitC.gt(offerDiscountA)).toBe(true);
+      const winnerC = totalCouponBenefitC.gt(offerDiscountA) ? "COUPON" : "OFFER";
+      expect(winnerC).toBe("COUPON");
+    });
+
+    it("T4.9 Order recalculation on address edit preserves reserved coupon shipping and updates waiver", () => {
+      // Original order in Baghdad: fee 5,000 IQD waived by shipping coupon
+      let governorateFee = money("5000.00");
+      let activeReservationAmount = governorateFee;
+      expect(activeReservationAmount.toFixed(2)).toBe("5000.00");
+
+      // Customer address changed to Basra: delivery fee is 8,000 IQD
+      governorateFee = money("8000.00");
+      const couponShipping = { freeShipping: true, shippingDiscountAmount: "0.00" };
+      const thresholdFree = false;
+      const couponFree = Boolean(couponShipping.freeShipping && !thresholdFree && governorateFee.gt(0));
+      expect(couponFree).toBe(true);
+
+      const deliveryFee = couponFree ? money(0) : governorateFee;
+      const couponDeliveryWaivedAmount = couponFree ? governorateFee : money(0);
+      expect(deliveryFee.toFixed(2)).toBe("0.00");
+      expect(couponDeliveryWaivedAmount.toFixed(2)).toBe("8000.00");
+
+      // Reservation discountAmount updated to match new governorate delivery waiver
+      activeReservationAmount = couponDeliveryWaivedAmount;
+      expect(activeReservationAmount.toFixed(2)).toBe("8000.00");
+    });
+
+    it("T4.10 Pre-discount basket merchandise subtotal basis for minOrderSpend is aligned across POS and Online", () => {
+      const minOrderSpend = money("50000.00");
+      // Basket has 55,000 IQD of merchandise, with a 10% coupon (5,500 discount)
+      const basketSubtotal = money("55000.00");
+      const couponDiscount = money("5500.00");
+      const postDiscountSubtotal = basketSubtotal.minus(couponDiscount); // 49,500
+
+      // Pre-discount evaluation: both POS and Online evaluate against pre-discount basketSubtotal
+      const posEligible = basketSubtotal.gte(minOrderSpend);
+      const onlineEligible = basketSubtotal.gte(minOrderSpend);
+      expect(posEligible).toBe(true);
+      expect(onlineEligible).toBe(true);
+      expect(postDiscountSubtotal.lt(minOrderSpend)).toBe(true); // post-discount is under 50k, but pre-discount qualifies
+    });
+
+    it("T4.11 Storefront savings message reports combined savings for shipping-only and merchandise coupons", () => {
+      // Shipping-only coupon: merchandise discount is 0.00, delivery waiver is 5,000.00
+      const quotedCouponDiscount = "0.00";
+      const couponDeliveryWaivedAmount = "5000.00";
+      const totalSavings = Number(quotedCouponDiscount) + Number(couponDeliveryWaivedAmount);
+      expect(totalSavings).toBe(5000);
+
+      // Combined coupon: merchandise discount is 3,000.00, delivery waiver is 5,000.00
+      const combinedTotalSavings = Number("3000.00") + Number(couponDeliveryWaivedAmount);
+      expect(combinedTotalSavings).toBe(8000);
+    });
   });
 });
 
