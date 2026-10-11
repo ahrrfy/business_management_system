@@ -220,7 +220,7 @@ describe("storefront product review integrity", () => {
     expect(published.items[0]).toMatchObject({
       rating: 5,
       comment: "طباعة فاخرة جداً وتغليف محكم وتوصيل سريع",
-      reviewerName: "متسوق موثق",
+      reviewerName: "علي ا.",
     });
   });
 
