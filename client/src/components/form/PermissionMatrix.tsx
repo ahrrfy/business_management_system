@@ -23,6 +23,8 @@ import {
 } from "@shared/atomicPermissions";
 import { PermissionMatrix as InteractiveAtomicMatrix } from "@/components/permissions/PermissionMatrix";
 
+const ACTIVE_MODULE_KEYS = new Set<string>(PERMISSION_MODULES.map((m) => m.key));
+
 export interface PermissionMatrixProps {
   role: RoleKey;
   permissions: PermissionMap;
@@ -116,11 +118,11 @@ export function PermissionMatrix({
       }
       onAtomicChange?.(key, granted);
 
-      // اشتقاق وحدات النظام القديمة
+      // اشتقاق وحدات النظام القديمة وتحديث الوحدات النشطة فقط
       const derivedModules = deriveLegacyModulesFromAtomic(nextAtomic, role);
       const changed: Record<string, AccessLevel> = {};
       for (const [mod, lvl] of Object.entries(derivedModules)) {
-        if ((permissions[mod] || "NONE") !== lvl) {
+        if (ACTIVE_MODULE_KEYS.has(mod) && (permissions[mod] || "NONE") !== lvl) {
           changed[mod] = lvl;
         }
       }
@@ -145,11 +147,11 @@ export function PermissionMatrix({
       }
       onAtomicBulkChange?.(updates);
 
-      // اشتقاق وحدات النظام القديمة
+      // اشتقاق وحدات النظام القديمة وتحديث الوحدات النشطة فقط
       const derivedModules = deriveLegacyModulesFromAtomic(nextAtomic, role);
       const changed: Record<string, AccessLevel> = {};
       for (const [mod, lvl] of Object.entries(derivedModules)) {
-        if ((permissions[mod] || "NONE") !== lvl) {
+        if (ACTIVE_MODULE_KEYS.has(mod) && (permissions[mod] || "NONE") !== lvl) {
           changed[mod] = lvl;
         }
       }

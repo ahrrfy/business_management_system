@@ -12,6 +12,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
 import {
+  ALL_PERMISSION_MODULE_KEYS,
   ALL_ROLES,
   canSeeCost as builtinCanSeeCost,
   PERMISSION_MODULES,
@@ -32,11 +33,10 @@ import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 
 const ACCESS_VALUES: AccessLevel[] = ["FULL", "READ", "NONE"];
-// `customers` remains a storage/API compatibility key for existing custom roles.
-// It is intentionally absent from PERMISSION_MODULES so the UI exposes CRM as the
-// single functional owner instead of presenting a second, scattered module.
-const LEGACY_PERMISSION_KEYS = ["customers"] as const;
-const MODULE_KEYS = new Set([...PERMISSION_MODULES.map((m) => m.key), ...LEGACY_PERMISSION_KEYS]);
+// `customers` and `tasks` remain storage/API compatibility keys for existing custom roles.
+// `customers` maps to CRM; `tasks` is an eradicated unit preserved for database backward-compatibility.
+const LEGACY_PERMISSION_KEYS = ["customers", "tasks"] as const;
+const MODULE_KEYS = new Set<string>(ALL_PERMISSION_MODULE_KEYS);
 const BUILTIN_KEYS = new Set<string>(ALL_ROLES);
 /** مفاتيح الأدوار المبنية محجوزة — لا يجوز لدور مخصّص أن ينتحلها. */
 
@@ -103,6 +103,10 @@ function normalizePermissions(input: RolePermissions | null | undefined): Permis
   // into CRM when no explicit CRM decision exists.
   if (!ACCESS_VALUES.includes(input?.crm as AccessLevel) && ACCESS_VALUES.includes(legacyCustomers as AccessLevel)) {
     out.crm = legacyCustomers as AccessLevel;
+  }
+  const legacyTasks = input?.tasks;
+  if (legacyTasks && ACCESS_VALUES.includes(legacyTasks as AccessLevel)) {
+    out.tasks = legacyTasks as AccessLevel;
   }
   // ارفض مفاتيح غير معروفة صراحةً (لا تتجاهلها بصمت — قد تدلّ على خطأ عقد).
   for (const k of Object.keys(input ?? {})) {
