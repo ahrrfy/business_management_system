@@ -160,7 +160,13 @@ export default function CrmOverview() {
     let overdueCount = 0;
     if (canViewReports && arAgingQ.data) {
       for (const row of arAgingQ.data) {
-        totalReceivables = totalReceivables.plus(D(row.unpaidTotal || 0));
+        const currentBal = D(row.currentBalance ?? 0);
+        const unbucketedVal = D(row.unbucketed ?? 0);
+        const unbucketedPos = unbucketedVal.gt(0) ? unbucketedVal : D(0);
+        const effectiveReceivable = currentBal.gt(0)
+          ? currentBal
+          : D(row.unpaidTotal ?? 0).plus(unbucketedPos);
+        totalReceivables = totalReceivables.plus(effectiveReceivable);
         const overdueSum = D(row.d31_60 || 0).plus(D(row.d61_90 || 0)).plus(D(row.d91p || 0));
         if (overdueSum.gt(0)) overdueCount++;
       }
