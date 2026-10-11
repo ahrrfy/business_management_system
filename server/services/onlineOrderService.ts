@@ -1356,26 +1356,26 @@ export async function totalOnlineOrderQuote(
     ? money(applicableThresholdStr)
     : null;
   const freeThreshold = configuredThreshold?.gt(0) ? configuredThreshold : null;
+  if (couponShipping && money(couponShipping.shippingDiscountAmount).gt(0) && !couponShipping.freeShipping) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تطبيق خصم الشحن",
+        why: "الخصم الجزئي على أجور الشحن غير مدعوم في متجر التوصيل، الدعم مخصص للشحن المجاني الكامل",
+        doThis: "استخدم كوبون شحن مجاني كامل أو كوبون خصم على الأصناف",
+      }),
+    });
+  }
+
   const thresholdFree = Boolean(freeThreshold && eligibilitySubtotal.gte(freeThreshold));
   const couponFree = Boolean(couponShipping?.freeShipping);
 
-  let couponShippingDiscount = money(couponShipping?.shippingDiscountAmount ?? 0);
-  if (!couponShippingDiscount.isFinite() || couponShippingDiscount.lt(0)) {
-    couponShippingDiscount = money(0);
-  }
-
-  let deliveryFree = thresholdFree || couponFree;
+  const deliveryFree = thresholdFree || couponFree;
   if (deliveryFree) {
     customerDeliveryFee = round2(money(0));
-  } else if (couponShippingDiscount.gt(0)) {
-    const discounted = customerDeliveryFee.minus(couponShippingDiscount);
-    customerDeliveryFee = round2(discounted.isNegative() ? money(0) : discounted);
-    if (customerDeliveryFee.eq(0)) {
-      deliveryFree = true;
-    }
   }
 
-  const deliveryWaivedAmount = round2(actualDeliveryFee.minus(customerDeliveryFee));
+  const deliveryWaivedAmount = deliveryFree ? actualDeliveryFee : round2(money(0));
   const total = round2(subtotal.plus(customerDeliveryFee));
   if (!total.isFinite() || total.gt(MAX_ONLINE_ORDER_MONEY)) {
     throw new TRPCError({
@@ -1998,10 +1998,14 @@ async function createOnlineOrderAttempt(
     }
 
     const selectedCoupon = couponBenefitActive ? lockedCoupon : null;
+    const effectiveDeliveryWaived =
+      quoteTotals.deliveryFree && Boolean(lockedCoupon?.freeShipping)
+        ? money(quoteTotals.deliveryWaivedAmount)
+        : money(0);
     const couponDiscount =
       currentPricing.benefit.type === "COUPON"
         ? money(currentPricing.benefit.discount)
-        : money(0);
+        : effectiveDeliveryWaived;
 
     // ④ إنشاء الطلب (PENDING) — رقمٌ مؤقّت فريد ثم ORD-{id} (بلا سباق ترقيم).
     const guestTrackingPublicId = randomBytes(16).toString("hex");
@@ -2088,19 +2092,14 @@ async function createOnlineOrderAttempt(
         })),
       );
     }
-    if (selectedCoupon) {
-      const reservedDiscountAmount = couponDiscount.gt(0)
-        ? couponDiscount
-        : money(quoteTotals.deliveryWaivedAmount);
-      if (reservedDiscountAmount.gt(0)) {
-        await reserveCouponForOnlineOrder(tx, selectedCoupon, {
-          onlineOrderId: orderId,
-          customerId,
-          branchId,
-          discountAmount: reservedDiscountAmount.toFixed(2),
-          expiresAt: reservationExpiresAt,
-        });
-      }
+    if (selectedCoupon && couponDiscount.gt(0)) {
+      await reserveCouponForOnlineOrder(tx, selectedCoupon, {
+        onlineOrderId: orderId,
+        customerId,
+        branchId,
+        discountAmount: couponDiscount.toFixed(2),
+        expiresAt: reservationExpiresAt,
+      });
     }
 
     return {

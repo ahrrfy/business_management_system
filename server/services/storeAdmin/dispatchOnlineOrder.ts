@@ -227,12 +227,15 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       };
       const sale = await createSaleInTx(tx, saleInput, actor);
       if (lockedCoupon) {
+        const discountAmount = money(cur.couponDiscount).gt(0)
+          ? String(cur.couponDiscount)
+          : String(cur.deliveryWaivedAmount ?? "0");
         await consumeReservedCoupon(tx, lockedCoupon, {
           onlineOrderId: Number(cur.id),
           invoiceId: sale.invoiceId,
           customerId: Number(cur.customerId),
           branchId,
-          discountAmount: String(cur.couponDiscount ?? "0"),
+          discountAmount,
           userId: actor.userId,
         });
       }

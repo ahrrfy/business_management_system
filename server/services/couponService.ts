@@ -450,7 +450,15 @@ export async function consumeReservedCoupon(
     throw new TRPCError({ code: "CONFLICT", message: "حجز القسيمة غير موجود أو انتهت صلاحيته" });
   }
   // لا يُفتح REDEEMED للاستهلاك العام: الوصول هنا مشروط بحجز ACTIVE مملوك ومقفول أعلاه.
-  await recordCouponConsumption(tx, coupon, input, { allowRedeemedOwnedReservation: true });
+  const effectiveDiscountAmount = money(input.discountAmount).gt(0)
+    ? input.discountAmount
+    : String(reservation.discountAmount);
+  await recordCouponConsumption(
+    tx,
+    coupon,
+    { ...input, discountAmount: effectiveDiscountAmount },
+    { allowRedeemedOwnedReservation: true },
+  );
   const transitioned = await tx
     .update(couponReservations)
     .set({ status: "REDEEMED", redeemedAt: sql`CURRENT_TIMESTAMP(3)`, expiresAt: null })
