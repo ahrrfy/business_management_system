@@ -345,16 +345,19 @@ export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionB
         </CardContent>
       </Card>
 
-      {/* 5. تصميم البطاقة الفاخرة والهوية البصرية */}
+      {/* 5. تصميم البطاقة الفاخرة والمطبوعات والهوية البصرية */}
       <Card className="border shadow-sm">
         <CardHeader className="pb-3 border-b">
           <CardTitle className="text-sm font-bold flex items-center gap-2">
             <Palette className="size-4 text-primary" />
-            <span>5. الهوية البصرية وتصميم البطاقة المطبوعة (54×84 مم)</span>
+            <span>5. الهوية البصرية وتصميم المطبوعات (البطاقة 54×84 والإيصال الحراري والواتساب)</span>
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label="عنوان البطاقة المطبوعة">
+          <Field
+            label="عنوان العرض / البطاقة المطبوعة"
+            hint="يظهر كعنوان بارز في بطاقة الكوبون، رأس الإيصال الحراري، ورسالة الواتساب"
+          >
             <Input
               value={data.design.title}
               maxLength={80}
@@ -363,7 +366,7 @@ export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionB
             />
           </Field>
 
-          <Field label="لون الهوية المميز للبطاقة">
+          <Field label="لون الهوية المميز للبطاقة" hint="لون الإطار وشريط التمييز وشعار البطاقة">
             <div className="flex items-center gap-2">
               <Input
                 type="color"
@@ -381,16 +384,24 @@ export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionB
             </div>
           </Field>
 
-          <Field label="عبارة فرعية توضيحية" className="md:col-span-2">
+          <Field
+            label="عبارة فرعية ترويجية توضيحية"
+            hint="تظهر أسفل العنوان لشرح ميزة العرض أو مناسبته"
+            className="md:col-span-2"
+          >
             <Input
               value={data.design.subtitle}
               maxLength={140}
               onChange={(e) => updateDesign("subtitle", e.target.value)}
-              placeholder="خصم مميز لعملائنا الكرام"
+              placeholder="خصم ترويجي مميز لعملائنا الكرام"
             />
           </Field>
 
-          <Field label="شروط استخدام مختصرة بالبطاقة" className="md:col-span-2">
+          <Field
+            label="شروط وأحكام الاستخدام الميداني"
+            hint="تُطبع بأسفل البطاقة وتذييل الإيصال الحراري وتُرسل بالواتساب"
+            className="md:col-span-2"
+          >
             <Input
               value={data.design.terms}
               maxLength={500}

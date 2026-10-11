@@ -1,97 +1,252 @@
 import { useMemo, useState } from "react";
-import { CheckCheck, MessageSquare, Send, Sparkles } from "lucide-react";
+import { Check, CheckCheck, Copy, Edit3, MessageSquare, RotateCcw, Send, Sparkles } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
-import { formatIqd } from "@/lib/money";
+import { formatIqd, moneyInput } from "@/lib/money";
 import { CO } from "@/lib/printing/brand";
+import { publicStorefrontUrl } from "@/lib/siteHosts";
+import { sanitizeForWhatsApp } from "@/lib/whatsapp";
+import { notify } from "@/lib/notify";
 import type { PromotionFormData } from "./promotionBuilderTypes";
 
 interface LiveWhatsAppPreviewProps {
   data: PromotionFormData;
 }
 
+type MessageStyle = "PROMO" | "GIFT" | "FLASH";
+
 export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
   const [recipientPhone, setRecipientPhone] = useState<string>("07700000000");
+  const [style, setStyle] = useState<MessageStyle>("PROMO");
+  const [isCustomEditing, setIsCustomEditing] = useState<boolean>(false);
+  const [customText, setCustomText] = useState<string>("");
+  const [copied, setCopied] = useState<boolean>(false);
 
   const previewCode = useMemo(() => {
     const raw = data.sampleCode.trim() || `${data.codePrefix || "VIP"}-8899`;
     return raw.toUpperCase().replace(/[^A-Z0-9-]/g, "");
   }, [data.sampleCode, data.codePrefix]);
 
+  const smartStoreUrl = useMemo(() => {
+    return publicStorefrontUrl(previewCode);
+  }, [previewCode]);
+
   const discountSummary = useMemo(() => {
     if (data.type === "PERCENT") {
-      const cap = parseFloat(data.maxDiscountAmount);
-      const capText = !isNaN(cap) && cap > 0 ? ` (بسقف أقصى ${formatIqd(data.maxDiscountAmount)})` : "";
+      const cap = moneyInput(data.maxDiscountAmount);
+      const capText = cap.greaterThan(0) ? ` (سقف التوفير: ${formatIqd(data.maxDiscountAmount)})` : "";
       return `خصم ${data.discountPercent || "0"}٪${capText}`;
     }
     return `خصم بقيمة ${formatIqd(data.discountAmount || "0")}`;
   }, [data.type, data.discountPercent, data.maxDiscountAmount, data.discountAmount]);
 
   const minSpendSummary = useMemo(() => {
-    const min = parseFloat(data.minOrderSpend);
-    return !isNaN(min) && min > 0 ? formatIqd(data.minOrderSpend) : "بلا حد أدنى";
+    const min = moneyInput(data.minOrderSpend);
+    return min.greaterThan(0) ? formatIqd(data.minOrderSpend) : "بلا حد أدنى";
   }, [data.minOrderSpend]);
 
-  // صياغة رسالة الواتساب التسويقية الاحترافية باللغة العربية (خالية من الإيموجي تماماً)
-  const formattedMessage = useMemo(() => {
-    const lines: string[] = [
-      `السلام عليكم ورحمة الله وبركاته،`,
-      `تحية طيبة من ${CO.short}،`,
+  const validityText = useMemo(() => {
+    return data.validTo ? data.validTo : "لفترة محدودة أو حتى نفاد الكمية";
+  }, [data.validTo]);
+
+  // صياغة الرسائل الترويجية الذكية وفق الأنماط التسويقية المعتمدة (خالية تماماً من الإيموجي والرتابة البيروقراطية)
+  const generatedMessage = useMemo(() => {
+    const rawTitle = (data.design.title || data.name || "").trim();
+    const rawSubtitle = (data.design.subtitle || "").trim();
+    const terms = (data.design.terms || "يُستخدم لمرة واحدة · لا يُجمع مع عروض أخرى").trim();
+    const shippingBonus = data.freeShipping ? "\n• ميزة إضافية: توصيل مجاني مشمول" : "";
+
+    // إظهار العنوان إن كان مخصصاً وغير مكرر
+    const hasCustomTitle = rawTitle && rawTitle !== "عرض ترويجي خاص" && rawTitle !== "عرض خاص";
+    const titleLine = hasCustomTitle ? `*${rawTitle}*` : null;
+
+    // إظهار النص الفرعي إن كان يضيف قيمة توضيحية ولا يكرر الخصم
+    const hasCustomSubtitle = rawSubtitle && rawSubtitle !== rawTitle && !rawSubtitle.includes(discountSummary);
+    const subtitleLine = hasCustomSubtitle ? rawSubtitle : null;
+
+    const joinLines = (lines: (string | null | undefined | false)[]) =>
+      lines.filter((l): l is string => l != null && l !== false).join("\n");
+
+    if (style === "GIFT") {
+      return joinLines([
+        `*هدية تسوق خاصة لك من ${CO.short}*`,
+        `يسعدنا إهداؤك قسيمة الشراء الحصرية: *${previewCode}*`,
+        titleLine,
+        subtitleLine,
+        ``,
+        `• قيمة الهدية: *${discountSummary}*`,
+        `• الحد الأدنى للمشتريات: ${minSpendSummary}${shippingBonus}`,
+        `• سارية لغاية: ${validityText}`,
+        ``,
+        `*استخدم هديتك الآن عبر متجرنا الإلكتروني:*`,
+        smartStoreUrl,
+        `(أو تفضل بزيارة أقرب فرع وأبرز الرمز عند الدفع)`,
+        ``,
+        `• الشروط: ${terms}`,
+      ]);
+    }
+
+    if (style === "FLASH") {
+      return joinLines([
+        `*تخفيض استثنائي ولفترة محدودة من ${CO.short}!*`,
+        `كود الخصم الحصري: *${previewCode}*`,
+        titleLine,
+        subtitleLine,
+        ``,
+        `• احصل فوراً على: *${discountSummary}*`,
+        `• عند الشراء بقيمة: ${minSpendSummary}${shippingBonus}`,
+        `• سارع بالطلب قبل انتهاء العرض: ${validityText}`,
+        ``,
+        `*سارع بالاستفادة عبر متجرنا الإلكتروني:*`,
+        smartStoreUrl,
+        `(أو امسح الرمز لدى الكاشير في الفرع مباشرة)`,
+        ``,
+        `• الشروط: ${terms}`,
+      ]);
+    }
+
+    // Default: PROMO
+    return joinLines([
+      `*عرض خاص وحصري من ${CO.short}!*`,
+      `وفر الآن مع كود الخصم: *${previewCode}*`,
+      titleLine,
+      subtitleLine,
       ``,
-      `يسرنا إهداؤك هذا العرض الترويجي الحصري:`,
-      `*${data.design.title || data.name || "عرض خاص"}*`,
-      `${data.design.subtitle || ""}`,
+      `• قيمة الخصم: *${discountSummary}*`,
+      `• الحد الأدنى للطلب: ${minSpendSummary}${shippingBonus}`,
+      `• الصلاحية: ${validityText}`,
       ``,
-      `رمز الكوبون: *${previewCode}*`,
-      `قيمة الخصم: *${discountSummary}*`,
-      `الحد الأدنى للطلب: ${minSpendSummary}`,
-    ];
-
-    if (data.freeShipping) {
-      lines.push(`ميزة إضافية: توصيل مجاني مشمول`);
-    }
-
-    if (data.validTo) {
-      lines.push(`صالح لغاية: ${data.validTo}`);
-    } else {
-      lines.push(`صالح لفترة محدودة أو حتى نفاد الكمية`);
-    }
-
-    if (data.design.terms) {
-      lines.push(`الشروط: ${data.design.terms}`);
-    }
-
-    lines.push(``);
-    lines.push(`يمكنك استخدام الكوبون مباشرة لدى موظف الكاشير أو عبر المتجر:`);
-    lines.push(`https://alruya.iq/offers/${previewCode}`);
-    lines.push(``);
-    lines.push(`نتشرف بخدمتكم دائماً.`);
-
-    return lines.filter((l) => l !== null).join("\n");
+      `*للطلب وتفعيل الخصم فوراً عبر متجرنا:*`,
+      smartStoreUrl,
+      `(أو أظهر الرمز للكاشير عند زيارة أي من فروعنا)`,
+      ``,
+      `• الشروط: ${terms}`,
+    ]);
   }, [
+    style,
     data.design.title,
     data.design.subtitle,
     data.design.terms,
     data.name,
     data.freeShipping,
-    data.validTo,
+    validityText,
     previewCode,
     discountSummary,
     minSpendSummary,
+    smartStoreUrl,
   ]);
+
+  const activeMessage = isCustomEditing ? customText : generatedMessage;
+
+  async function handleCopyMessage() {
+    try {
+      await navigator.clipboard.writeText(sanitizeForWhatsApp(activeMessage));
+      setCopied(true);
+      notify.ok("تم نسخ نص رسالة WhatsApp الترويجية");
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      notify.err("تعذر النسخ إلى الحافظة");
+    }
+  }
+
+  function handleStartCustomEdit() {
+    setCustomText(generatedMessage);
+    setIsCustomEditing(true);
+  }
+
+  function handleResetToGenerated() {
+    setIsCustomEditing(false);
+    setCustomText("");
+    notify.ok("تمت استعادة النص الترويجي المولد تلقائياً");
+  }
 
   return (
     <div className="flex flex-col items-center gap-4">
       <div className="flex items-center justify-between w-full max-w-[340px]">
         <div className="text-xs text-muted-foreground flex items-center gap-1.5">
           <MessageSquare className="size-3.5 text-primary" />
-          <span>معاينة رسالة WhatsApp التسويقية</span>
+          <span>رسالة WhatsApp الترويجية الذكية</span>
         </div>
-        <div className="text-[10px] text-muted-foreground flex items-center gap-1">
+        <div className="text-[10px] text-muted-foreground flex items-center gap-1 font-medium">
           <Sparkles className="size-3 text-primary" />
-          <span>توليد تلقائي للرسالة</span>
+          <span>رابط المتجر الفعلي</span>
         </div>
+      </div>
+
+      {/* منتقي النمط التسويقي للرسالة */}
+      <div className="w-full max-w-[340px] flex flex-col gap-1.5 rounded-lg border bg-muted/30 p-2 text-xs">
+        <div className="flex items-center justify-between">
+          <span className="font-semibold text-muted-foreground">النمط التسويقي:</span>
+          {isCustomEditing ? (
+            <button
+              type="button"
+              className="text-[11px] text-primary hover:underline flex items-center gap-1 font-medium"
+              onClick={handleResetToGenerated}
+            >
+              <RotateCcw className="size-3" />
+              <span>استعادة التلقائي</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-1 font-medium"
+              onClick={handleStartCustomEdit}
+            >
+              <Edit3 className="size-3" />
+              <span>تعديل يدوي</span>
+            </button>
+          )}
+        </div>
+
+        {!isCustomEditing ? (
+          <div className="grid grid-cols-3 gap-1 pt-1">
+            <button
+              type="button"
+              className={`py-1 px-1.5 rounded text-[10.5px] font-semibold transition-colors border ${
+                style === "PROMO"
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "bg-background hover:bg-muted text-muted-foreground border-border"
+              }`}
+              onClick={() => setStyle("PROMO")}
+            >
+              ترويجي مباشر
+            </button>
+            <button
+              type="button"
+              className={`py-1 px-1.5 rounded text-[10.5px] font-semibold transition-colors border ${
+                style === "GIFT"
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "bg-background hover:bg-muted text-muted-foreground border-border"
+              }`}
+              onClick={() => setStyle("GIFT")}
+            >
+              هدية ومكافأة
+            </button>
+            <button
+              type="button"
+              className={`py-1 px-1.5 rounded text-[10.5px] font-semibold transition-colors border ${
+                style === "FLASH"
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "bg-background hover:bg-muted text-muted-foreground border-border"
+              }`}
+              onClick={() => setStyle("FLASH")}
+            >
+              تخفيض عاجل
+            </button>
+          </div>
+        ) : (
+          <div className="pt-1">
+            <Textarea
+              value={customText}
+              onChange={(e) => setCustomText(e.target.value)}
+              className="text-xs font-sans min-h-[90px] leading-relaxed resize-y bg-background"
+              placeholder="اكتب أو عدل نص الرسالة الترويجية هنا…"
+            />
+          </div>
+        )}
       </div>
 
       {/* محاكاة واجهة محادثة الواتساب */}
@@ -113,8 +268,8 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
         {/* جسم المحادثة والفقاعة الخضراء الفاتحة */}
         <CardContent className="p-3 space-y-2">
           <div className="bg-[#DCF8C6] dark:bg-emerald-950/60 dark:text-emerald-100 text-neutral-900 p-3 rounded-lg rounded-tr-none shadow-sm text-xs leading-relaxed border border-emerald-200/50 dark:border-emerald-800/40 relative">
-            <pre className="whitespace-pre-wrap font-sans text-xs select-text">
-              {formattedMessage}
+            <pre className="whitespace-pre-wrap font-sans text-xs select-text leading-relaxed">
+              {activeMessage}
             </pre>
 
             {/* وقت الإرسال وعلامة القراءة المزدوجة */}
@@ -126,10 +281,23 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
         </CardContent>
       </Card>
 
-      {/* حقل إدخال الهاتف وزر الإرسال المباشر */}
+      {/* أزرار الإجراءات وحقل إدخال الهاتف */}
       <div className="w-full max-w-[340px] space-y-2 rounded-lg border bg-card p-3 shadow-sm">
+        <div className="flex items-center gap-2 pb-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="flex-1 text-xs gap-1.5"
+            onClick={handleCopyMessage}
+          >
+            {copied ? <Check className="size-3.5 text-primary" /> : <Copy className="size-3.5" />}
+            <span>{copied ? "تم النسخ" : "نسخ نص الرسالة"}</span>
+          </Button>
+        </div>
+
         <label className="text-xs font-medium text-foreground block">
-          رقم المستلم للتجربة والإرسال الميداني:
+          رقم المستلم للإرسال الميداني:
         </label>
         <IntlPhoneInput
           value={recipientPhone}
@@ -141,7 +309,7 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
         <div className="pt-1">
           <WhatsAppShare
             phone={recipientPhone}
-            message={formattedMessage}
+            message={activeMessage}
             label="إرسال عبر WhatsApp الآن"
             appearance="solid"
             size="default"

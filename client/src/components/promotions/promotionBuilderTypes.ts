@@ -66,9 +66,9 @@ export const INITIAL_PROMOTION_FORM_DATA: PromotionFormData = {
   affiliatePhone: "",
   affiliateCommissionRate: "0.00",
   design: {
-    title: "هدية خاصة لك",
-    subtitle: "خصم ترويجي مميز لعملائنا الكرام",
-    terms: "يُستخدم لمرة واحدة ولا يُجمع مع أسعار تعاقدية أو عروض أخرى",
+    title: "عرض ترويجي حصري",
+    subtitle: "تسوق الآن واستفد من التوفير الفوري",
+    terms: "يُستخدم لمرة واحدة · لا يُجمع مع أسعار تعاقدية أو عروض أخرى",
     color: "#0D6B52",
   },
   campaignId: null,

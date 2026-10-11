@@ -2,11 +2,12 @@ import { useState, useMemo } from "react";
 import { Check, Copy, Printer, Sparkles, QrCode } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { formatIqd } from "@/lib/money";
+import { formatIqd, moneyInput } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { qrSvgSync } from "@/lib/printing/qr";
 import { printCouponCards } from "@/lib/printing/couponCard";
 import { BRAND, CO } from "@/lib/printing/brand";
+import { publicStorefrontUrl } from "@/lib/siteHosts";
 import type { PromotionFormData } from "./promotionBuilderTypes";
 
 interface LiveCardPreviewProps {
@@ -22,9 +23,13 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
     return raw.toUpperCase().replace(/[^A-Z0-9-]/g, "");
   }, [data.sampleCode, data.codePrefix]);
 
-  const qrSvg = useMemo(() => {
-    return qrSvgSync(previewCode, 130);
+  const smartStoreUrl = useMemo(() => {
+    return publicStorefrontUrl(previewCode);
   }, [previewCode]);
+
+  const qrSvg = useMemo(() => {
+    return qrSvgSync(smartStoreUrl, 130);
+  }, [smartStoreUrl]);
 
   const accentColor = useMemo(() => {
     return /^#[0-9a-fA-F]{6}$/.test(data.design.color) ? data.design.color : BRAND.green;
@@ -32,12 +37,32 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
 
   const discountSummary = useMemo(() => {
     if (data.type === "PERCENT") {
-      const cap = parseFloat(data.maxDiscountAmount);
-      const capText = !isNaN(cap) && cap > 0 ? ` (سقف: ${formatIqd(data.maxDiscountAmount)})` : "";
+      const cap = moneyInput(data.maxDiscountAmount);
+      const capText = cap.greaterThan(0) ? ` (سقف: ${formatIqd(data.maxDiscountAmount)})` : "";
       return `خصم ${data.discountPercent || "0"}٪${capText}`;
     }
     return `خصم بقيمة ${formatIqd(data.discountAmount || "0")}`;
   }, [data.type, data.discountPercent, data.maxDiscountAmount, data.discountAmount]);
+
+  const heroDiscountText = useMemo(() => {
+    if (data.type === "PERCENT") {
+      return `خصم ${data.discountPercent || "0"}٪`;
+    }
+    return `خصم ${formatIqd(data.discountAmount || "0")}`;
+  }, [data.type, data.discountPercent, data.discountAmount]);
+
+  const minSpendText = useMemo(() => {
+    const min = moneyInput(data.minOrderSpend);
+    return min.greaterThan(0) ? `للطلبات بقيمة ${formatIqd(data.minOrderSpend)} فأكثر` : null;
+  }, [data.minOrderSpend]);
+
+  const discountCapText = useMemo(() => {
+    if (data.type === "PERCENT") {
+      const cap = moneyInput(data.maxDiscountAmount);
+      return cap.greaterThan(0) ? `سقف التوفير: ${formatIqd(data.maxDiscountAmount)}` : null;
+    }
+    return null;
+  }, [data.type, data.maxDiscountAmount]);
 
   async function handleCopy() {
     try {
@@ -55,11 +80,15 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
     try {
       const card = {
         code: previewCode,
-        title: data.design.title || data.name || "هدية خاصة لك",
-        subtitle: data.design.subtitle || discountSummary,
+        title: data.design.title || data.name || "عرض ترويجي حصري",
+        subtitle: data.design.subtitle?.trim() || undefined,
+        heroDiscount: heroDiscountText,
+        discountCap: discountCapText,
+        minSpend: minSpendText,
         terms: data.design.terms || "تُطبق الشروط والأحكام الخاصة بالعرض.",
         validTo: data.validTo || null,
         color: accentColor,
+        storeUrl: smartStoreUrl,
       };
       const ok = await printCouponCards([card], { layout: "CARD" });
       if (!ok) {
@@ -87,7 +116,7 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
           aspectRatio: "54 / 84",
         }}
       >
-        <CardContent className="h-full p-4 flex flex-col justify-between text-center bg-card relative selection:bg-primary/20">
+        <CardContent className="h-full p-3.5 flex flex-col justify-between text-center bg-card relative selection:bg-primary/20">
           {/* شريط الإطار العلوي باللون المميز */}
           <div
             className="absolute top-0 inset-x-0 h-1.5"
@@ -95,8 +124,8 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
           />
 
           {/* الترويسة والعلامة التجارية */}
-          <div className="pt-1 space-y-1">
-            <div className="flex items-center justify-center gap-1.5 text-xs font-semibold text-muted-foreground">
+          <div className="pt-0.5 space-y-0.5">
+            <div className="flex items-center justify-center gap-1.5 text-xs font-black text-foreground">
               <span
                 className="inline-block size-2 rounded-full"
                 style={{ backgroundColor: accentColor }}
@@ -104,51 +133,80 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
               <span>{CO.short}</span>
             </div>
             <div
-              className="text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded-full inline-block border"
+              className="text-[9.5px] uppercase tracking-wider font-extrabold px-2 py-0.5 rounded-full inline-block border"
               style={{
-                borderColor: `color-mix(in srgb, ${accentColor} 40%, transparent)`,
+                borderColor: `color-mix(in srgb, ${accentColor} 45%, transparent)`,
                 color: accentColor,
-                backgroundColor: `color-mix(in srgb, ${accentColor} 8%, transparent)`,
+                backgroundColor: `color-mix(in srgb, ${accentColor} 10%, transparent)`,
               }}
             >
               قسيمة خصم رسمية
             </div>
           </div>
 
-          {/* العنوان الرئيسي والفرعي */}
-          <div className="my-1 space-y-1">
-            <h4 className="font-bold text-sm tracking-tight text-foreground line-clamp-1">
-              {data.design.title || data.name || "هدية خاصة لك"}
+          {/* العنوان الرئيسي والفرعي الترويجي */}
+          <div className="my-0.5 space-y-0.5">
+            <h4 className="font-black text-sm tracking-tight text-foreground line-clamp-1">
+              {data.design.title || data.name || "عرض ترويجي حصري"}
             </h4>
-            <p className="text-[11px] text-muted-foreground line-clamp-2">
-              {data.design.subtitle || discountSummary}
-            </p>
+            {data.design.subtitle?.trim() && (
+              <p className="text-[10px] text-muted-foreground font-semibold line-clamp-1">
+                {data.design.subtitle.trim()}
+              </p>
+            )}
           </div>
 
-          {/* رمز الاستجابة السريعة QR المتزامن */}
-          <div className="my-1 flex flex-col items-center justify-center">
-            <div className="bg-white p-2 rounded-lg border shadow-sm flex items-center justify-center">
+          {/* صندوق الخصم البارز (Hero Discount Box) */}
+          <div
+            className="rounded-lg p-2 my-0.5 border flex flex-col items-center justify-center"
+            style={{
+              backgroundColor: `color-mix(in srgb, ${accentColor} 10%, transparent)`,
+              borderColor: `color-mix(in srgb, ${accentColor} 30%, transparent)`,
+            }}
+          >
+            <div className="flex items-baseline gap-1" style={{ color: accentColor }}>
+              <span className="text-2xl font-black tracking-tight leading-none">
+                {data.type === "PERCENT" ? `${data.discountPercent || "0"}٪` : formatIqd(data.discountAmount || "0")}
+              </span>
+              <span className="text-xs font-black">خصم</span>
+            </div>
+            {discountCapText && (
+              <div className="text-[9.5px] font-bold text-foreground mt-0.5">
+                {discountCapText}
+              </div>
+            )}
+            {minSpendText && (
+              <div className="text-[9px] font-bold text-muted-foreground mt-0.5">
+                {minSpendText}
+              </div>
+            )}
+          </div>
+
+          {/* رمز الاستجابة السريعة QR الذكي */}
+          <div className="my-0.5 flex flex-col items-center justify-center">
+            <div className="bg-white p-1.5 rounded-lg border shadow-sm flex items-center justify-center">
               {qrSvg ? (
                 <div
-                  className="size-24 flex items-center justify-center [&>svg]:size-full"
+                  className="size-20 flex items-center justify-center [&>svg]:size-full"
                   dangerouslySetInnerHTML={{ __html: qrSvg }}
                   aria-label={`رمز QR للكوبون ${previewCode}`}
                 />
               ) : (
-                <div className="size-24 flex items-center justify-center bg-muted text-muted-foreground">
-                  <QrCode className="size-8" />
+                <div className="size-20 flex items-center justify-center bg-muted text-muted-foreground">
+                  <QrCode className="size-7" />
                 </div>
               )}
             </div>
-            <span className="text-[10px] text-muted-foreground mt-1">
-              امسح بالكاميرا أو ماسح نقطة البيع
+            <span className="text-[9px] font-bold text-muted-foreground mt-0.5">
+              امسح للطلب أونلاين أو أبرز الرمز للكاشير
             </span>
           </div>
 
           {/* حقل الرمز المقروء بشرياً */}
-          <div className="space-y-1">
+          <div className="space-y-0.5">
             <div
-              className="group relative flex items-center justify-center gap-2 rounded-md border border-dashed py-1.5 px-3 bg-muted/40 font-mono text-sm font-bold tracking-wider text-foreground cursor-pointer hover:bg-muted"
+              className="group relative flex items-center justify-center gap-2 rounded-md border-2 border-dashed py-1 px-3 bg-muted/30 font-mono text-sm font-black tracking-wider text-foreground cursor-pointer hover:bg-muted"
+              style={{ borderColor: `color-mix(in srgb, ${accentColor} 50%, transparent)` }}
               onClick={handleCopy}
               title="انقر لنسخ الرمز"
             >
@@ -160,17 +218,17 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
               )}
             </div>
 
-            {/* تاريخ الصلاحية والشروط */}
-            <div className="text-[10px] text-muted-foreground flex justify-between items-center px-1">
+            {/* تاريخ الصلاحية */}
+            <div className="text-[9.5px] font-bold text-foreground flex justify-between items-center px-1">
               <span>الصلاحية:</span>
-              <span className="font-medium text-foreground">
+              <span className="font-extrabold text-foreground">
                 {data.validTo ? data.validTo : "حتى نفاد الحملة"}
               </span>
             </div>
           </div>
 
-          {/* التذييل والشروط */}
-          <div className="pt-1.5 border-t text-[9px] text-muted-foreground line-clamp-2 leading-relaxed">
+          {/* التذييل والشروط بدون قص أو إخفاء */}
+          <div className="pt-1 border-t text-[8px] font-bold text-foreground text-center break-words leading-tight max-h-[32px] overflow-y-auto">
             {data.design.terms || "تُطبق الشروط والأحكام. غير قابل للدمج مع عروض أخرى."}
           </div>
         </CardContent>
