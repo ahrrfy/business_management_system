@@ -17,6 +17,7 @@ export default defineConfig({
       "client/src/components/reception/ReceptionDuplicateAlert.test.tsx",
       "client/src/pages/__tests__/OrderFulfillment.test.tsx",
       "client/src/components/store/__tests__/orderComponents.test.tsx",
+      "client/src/lib/receptionDuplicatePreflight.test.ts",
     ],
     fileParallelism: false,
   },

@@ -8,15 +8,16 @@ import { D, fmt } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 import { useConnectivity, isDisconnected } from "@/lib/offline/connectivity";
 import { useRealtimeEvent } from "@/lib/realtime";
-import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
+import type { PermissionMap } from "@shared/permissions";
 import { digitsArabicToLatin } from "@shared/numberNormalize";
 import { receptionChannelLabel } from "@shared/receptionChannel";
 import { invoiceStatusLabel } from "@shared/invoiceStatus";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
-import type {
-  ReceptionDuplicateInput,
-  ReceptionDuplicateMatch,
-  ReceptionDuplicateResult,
+import {
+  canCheckReceptionDuplicates,
+  type ReceptionDuplicateInput,
+  type ReceptionDuplicateMatch,
+  type ReceptionDuplicateResult,
 } from "@shared/receptionDuplicateOrders";
 import "./ReceptionDuplicateAlert.css";
 
@@ -284,12 +285,9 @@ export function ReceptionDuplicateAlert({
   const me = trpc.auth.me.useQuery(undefined, { enabled: false });
   const canRead =
     me.data != null &&
-    moduleAccessAllowed(
+    canCheckReceptionDuplicates(
       me.data.role,
-      me.data.permissionsOverride as PermissionMap | null,
-      "workorders",
-      "FULL",
-      ["cashier", "manager", "print_operator"],
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
     );
   const isReference = input?.reference != null;
 

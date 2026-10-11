@@ -1,5 +1,25 @@
 import Decimal from "decimal.js";
 import type { ReceptionChannel } from "./receptionChannel";
+import { moduleAccessAllowed, type PermissionMap } from "./permissions";
+
+/** Same authority as reception execution or online-store preparation. */
+export function canCheckReceptionDuplicates(
+  role: string,
+  override: PermissionMap | null | undefined,
+): boolean {
+  return (
+    moduleAccessAllowed(role, override, "workorders", "FULL", [
+      "cashier",
+      "manager",
+      "print_operator",
+    ]) ||
+    moduleAccessAllowed(role, override, "store", "FULL", [
+      "manager",
+      "cashier",
+      "sales_rep",
+    ])
+  );
+}
 
 export type ReceptionDuplicateKind = "DRAFT" | "ONLINE" | "WORK_ORDER";
 export type ReceptionDuplicateLine = {

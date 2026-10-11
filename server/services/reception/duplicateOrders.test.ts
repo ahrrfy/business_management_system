@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { canonicalIraqiMobile } from "../../lib/phone";
+import { MySqlDialect } from "drizzle-orm/mysql-core";
+import type { SQL } from "drizzle-orm";
 
 const fake = vi.hoisted(() => ({
   rows: [] as unknown[][],
   selects: 0,
   wheres: [] as unknown[],
+  limits: [] as number[],
 }));
 vi.mock("../tx", () => ({
   requireDb: () => ({
@@ -20,7 +23,10 @@ vi.mock("../tx", () => ({
           return builder;
         },
         orderBy: () => builder,
-        limit: () => Promise.resolve(rows),
+        limit: (limit: number) => {
+          fake.limits.push(limit);
+          return Promise.resolve(rows);
+        },
         then: (resolve: (rows: unknown[]) => unknown) =>
           Promise.resolve(rows).then(resolve),
       };
@@ -56,6 +62,7 @@ beforeEach(() => {
   fake.rows = [];
   fake.selects = 0;
   fake.wheres = [];
+  fake.limits = [];
 });
 
 describe("reception duplicate server boundary", () => {
@@ -220,6 +227,39 @@ describe("reception duplicate server boundary", () => {
       actor,
     );
     expect(result).toEqual({ checked: true, matches: [], truncated: true });
+  });
+  it("probes all four phone slots by exact equality with a bounded identity result", async () => {
+    await getReceptionDuplicateOrders(
+      {
+        branchId: 2,
+        phone: "٠٧٨٠١٢٣٤٥٦٧",
+        lines: [{ variantId: 1, quantity: "1" }],
+      },
+      actor,
+    );
+    const query = new MySqlDialect().sqlToQuery(fake.wheres[0] as SQL);
+    for (const slot of ["phone", "phone2", "phone3", "whatsapp"]) {
+      expect(query.sql).toContain(`\`customers\`.\`${slot}\` in (`);
+    }
+    expect(query.params).toContain("+9647801234567");
+    expect(query.sql).not.toMatch(/LIKE|REGEXP|REPLACE|RIGHT\(/i);
+    expect(fake.limits[0]).toBe(61);
+  });
+  it("explicitly reports an incomplete identity lookup instead of claiming no matching orders", async () => {
+    fake.rows = [
+      Array.from({ length: 61 }, (_, i) => ({ id: i + 1, ...phones })),
+      [],
+      [],
+      [],
+      [],
+    ];
+    expect(
+      await getReceptionDuplicateOrders(
+        { branchId: 2, phone, lines: [{ variantId: 1, quantity: "1" }] },
+        actor,
+      ),
+    ).toEqual({ checked: true, matches: [], truncated: true });
+    expect(fake.limits[0]).toBe(61);
   });
 });
 

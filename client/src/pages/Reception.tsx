@@ -2609,7 +2609,7 @@ export default function Reception() {
       <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 pb-0">
         <ReceptionCartDuplicateAlert branchId={branchId} phone={receptionPhone || customer.phone || ""} customerId={customer.customerId}
           channel={channel} cart={cart} total={round2(grandTotalD).toFixed(2)} draftId={activeDraft?.id}
-          disabled={offline || hasDigitalCards || needsBranchChoice} onVerify={() => void saveDraft()} />
+          disabled={hasDigitalCards || needsBranchChoice} onVerify={() => void saveDraft()} />
         {/* ─ عمود العمل: تبويبات الورش تركب رأس السلة (§٨.١ — صفر تكلفة عمودية) ─ */}
         <div ref={cartSectionRef} tabIndex={-1} className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30">
           {/* إصلاح (٧/٨، طلب مالك): تبويبات الورش («الفواتير»/«الطلبات»/«طلبات الموقع») حُذفت من

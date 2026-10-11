@@ -33,7 +33,8 @@ import {
 } from "lucide-react";
 import { ReceptionCommandAlert } from "@/components/reception/ReceptionCommandAlert";
 import { ReceptionDuplicateAlertView } from "@/components/reception/ReceptionDuplicateAlert";
-import type { ReceptionDuplicateResult } from "@shared/receptionDuplicateOrders";
+import { canCheckReceptionDuplicates, type ReceptionDuplicateResult } from "@shared/receptionDuplicateOrders";
+import { resolveOnlineDuplicateReference } from "@/lib/receptionDuplicatePreflight";
 import { StrictCancelOrderDialog } from "@/components/store/StrictCancelOrderDialog";
 const EditOnlineOrderDialog = lazy(() =>
   import("@/components/store/EditOnlineOrderDialog").then((m) => ({ default: m.EditOnlineOrderDialog }))
@@ -172,10 +173,9 @@ export default function OrderFulfillment() {
   const canDispatch =
     !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL", ["manager"]);
-  const canCheckDuplicates = !!me.data?.role && moduleAccessAllowed(
-    me.data.role as RoleKey,
+  const canCheckDuplicates = !!me.data?.role && canCheckReceptionDuplicates(
+    me.data.role,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
-    "workorders", "FULL", ["cashier", "manager", "print_operator"],
   );
 
   async function reviewBeforePreparation(orderId: number, proceed: () => void) {
@@ -185,13 +185,9 @@ export default function OrderFulfillment() {
     setDuplicateReview(null);
     duplicateActionRef.current = null;
     try {
-      const branchId = me.data?.branchId != null
-        ? Number(me.data.branchId)
-        : (await utils.storeAdmin.orders.detail.fetch({ id: orderId }))?.branchId;
-      if (!branchId) throw new Error("No assigned fulfillment branch");
-      const result = await utils.reception.duplicateOrders.fetch({
-        branchId, reference: { kind: "ONLINE", id: orderId },
-      }, { staleTime: 0 });
+      const reference = await resolveOnlineDuplicateReference(orderId,
+        () => utils.storeAdmin.orders.detail.fetch({ id: orderId }));
+      const result = await utils.reception.duplicateOrders.fetch(reference, { staleTime: 0 });
       if (epoch !== duplicateCheckEpoch.current) return false;
       if (result.matches.length || result.truncated) {
         duplicateActionRef.current = proceed;
@@ -666,7 +662,7 @@ export default function OrderFulfillment() {
         );
       },
     },
-  ], [canDispatch, printingId, setStatusM.isPending, dispatchM.isPending, claimM.isPending, updateContactM.isPending, markPreparedM.isPending, checkingDuplicateId, canCheckDuplicates, me.data?.branchId]);
+  ], [canDispatch, printingId, setStatusM.isPending, dispatchM.isPending, claimM.isPending, updateContactM.isPending, markPreparedM.isPending, checkingDuplicateId, canCheckDuplicates]);
 
   // تصدير/طباعة «الكل»: نمشي بمؤشّر id حتى تنضب الصفحات المطابقة للفلاتر
   async function fetchAllOrders(): Promise<Row[]> {

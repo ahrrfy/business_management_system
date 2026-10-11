@@ -1,8 +1,47 @@
 import { describe, expect, it } from "vitest";
 import {
+  canCheckReceptionDuplicates,
   compareReceptionDuplicateContents as compare,
   type ResolvedDuplicateLine,
 } from "./receptionDuplicateOrders";
+
+describe("duplicate check preparation authority", () => {
+  it("covers reception and storefront preparers including sales representatives", () => {
+    for (const role of [
+      "cashier",
+      "manager",
+      "print_operator",
+      "sales_rep",
+      "admin",
+    ]) {
+      expect(canCheckReceptionDuplicates(role, null), role).toBe(true);
+    }
+  });
+
+  it("denies reading-only roles and honors explicit revocation or grants", () => {
+    for (const role of ["auditor", "courier", "warehouse", "user"]) {
+      expect(canCheckReceptionDuplicates(role, null), role).toBe(false);
+    }
+    expect(
+      canCheckReceptionDuplicates("sales_rep", {
+        store: "READ",
+        workorders: "NONE",
+      }),
+    ).toBe(false);
+    expect(
+      canCheckReceptionDuplicates("cashier", {
+        store: "NONE",
+        workorders: "NONE",
+      }),
+    ).toBe(false);
+    expect(canCheckReceptionDuplicates("warehouse", { store: "FULL" })).toBe(
+      true,
+    );
+    expect(
+      canCheckReceptionDuplicates("warehouse", { workorders: "FULL" }),
+    ).toBe(true);
+  });
+});
 
 const goods = (
   variantId: number,

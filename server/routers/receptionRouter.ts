@@ -1,9 +1,9 @@
 // راوتر محطة خدمة الزبائن — ش١ من docs/reception-cashier-system-design-2026-08-05.md §٦.
 //
-// **صفر بوّابة جديدة**: كل النقاط خلف workordersCashierProcedure القائمة (cashier/manager +
-// workorders=FULL) — نفس بوّابة الالتزام receptionCheckout والطابور القديم بالضبط، فلا مدخل
-// جديد في authz-inventory. (workordersReadProcedure مرفوضة هنا عمداً — V9: بوّابة خريطةٍ بلا
-// قائمة أدوار تفتح الطابور لـwarehouse/user/auditor.)
+// تستعمل المحطة صلاحيات الاستقبال القائمة؛ فحص التشابه القرائي وحده يقبل أيضاً صلاحية
+// تجهيز المتجر القائمة لأنه يخدم شاشة تجهيز الطلبات. لا يفتح ذلك تحرير المسوّدات أو المال.
+// workordersReadProcedure مرفوضة هنا عمداً — V9: بوّابة خريطةٍ بلا قائمة أدوار تفتح الطابور
+// لـwarehouse/user/auditor.
 import { WORK_ORDER_CHANNELS } from "@shared/receptionChannel";
 import { appErrorMessage } from "@shared/errors";
 import { TRPCError } from "@trpc/server";
@@ -29,6 +29,7 @@ import { managerApprovalSchema } from "@shared/managerApproval";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { retryOnDup } from "../lib/retryDup";
 import { router, workordersCashierProcedure, workordersExecProcedure,
+  receptionDuplicateReadProcedure,
 } from "../trpc";
 import { auditMetadataFromContext, logAudit } from "../services/auditService";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled,
@@ -111,7 +112,7 @@ function assertDraftImages(lines: Array<{ designImages?: string | null }>) {
 }
 
 export const receptionRouter = router({
-  duplicateOrders: workordersExecProcedure
+  duplicateOrders: receptionDuplicateReadProcedure
     .input(z.object({
       branchId: z.number().int().positive().nullish(),
       reference: z.object({

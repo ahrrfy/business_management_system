@@ -14,6 +14,12 @@ import {
   ReceptionDuplicateAlert,
   ReceptionDuplicateAlertView,
 } from "./ReceptionDuplicateAlert";
+import { ReceptionCartDuplicateAlert } from "./ReceptionCartDuplicateAlert";
+import type { CartLine } from "./cartMath";
+
+vi.mock("@/components/CustomizationDialog", () => ({
+  composeCustomizationText: vi.fn(),
+}));
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -383,7 +389,10 @@ describe("bounded duplicate requests", () => {
 
   it("uses cached permission gates and skips a second request for supplied preflight results", () => {
     mocks.me.mockReturnValue({
-      data: { role: "sales_rep", permissionsOverride: null },
+      data: {
+        role: "sales_rep",
+        permissionsOverride: { store: "NONE", workorders: "NONE" },
+      },
     });
     render(<ReceptionDuplicateAlert input={cart} />);
     advance(600);
@@ -399,6 +408,66 @@ describe("bounded duplicate requests", () => {
     render(<ReceptionDuplicateAlert input={cart} />);
     advance(600);
     expect(latestQueryOptions().enabled).toBe(true);
+  });
+
+  it("checks online orders for store-only preparers without a second identity request", () => {
+    mocks.me.mockReturnValue({
+      data: { role: "sales_rep", permissionsOverride: null },
+    });
+    render(
+      <ReceptionDuplicateAlert
+        input={{ branchId: 2, reference: { kind: "ONLINE", id: 18 } }}
+      />,
+    );
+    expect(latestQueryOptions().enabled).toBe(true);
+    expect(mocks.me.mock.lastCall?.[1]).toEqual({ enabled: false });
+    expect(host.textContent).toContain("الهاتف مطابق");
+    mocks.me.mockReturnValue({
+      data: {
+        role: "sales_rep",
+        permissionsOverride: { store: "READ", workorders: "NONE" },
+      },
+    });
+    render(
+      <ReceptionDuplicateAlert
+        input={{ branchId: 2, reference: { kind: "ONLINE", id: 18 } }}
+      />,
+    );
+    expect(latestQueryOptions().enabled).toBe(false);
+    expect(host.textContent).toBe("");
+  });
+
+  it("retains the remote cart's unavailable warning offline and keeps walk-in carts silent", () => {
+    mocks.connection = "offline";
+    const lines: CartLine[] = [
+      {
+        key: "goods-4",
+        qty: 1,
+        row: {
+          variantId: 4,
+          productUnitId: 8,
+          productName: "دفتر",
+          isPrintService: false,
+        } as CartLine["row"],
+      },
+    ];
+    const props = {
+      branchId: 2,
+      phone: cart.phone!,
+      cart: lines,
+      total: "45000.00",
+      disabled: false,
+      onVerify: vi.fn(),
+    };
+    render(<ReceptionCartDuplicateAlert {...props} channel="WHATSAPP" />);
+    advance(600);
+    expect(latestQueryOptions().enabled).toBe(false);
+    expect(host.textContent).toContain("تعذّر فحص التشابه");
+    expect(host.textContent).not.toContain("الهاتف مطابق");
+    render(<ReceptionCartDuplicateAlert {...props} channel="WALK_IN" />);
+    advance(600);
+    expect(latestQueryOptions().enabled).toBe(false);
+    expect(host.textContent).toBe("");
   });
 
   it("shows a nonblocking failure with a working retry and hides cached matches when offline", () => {

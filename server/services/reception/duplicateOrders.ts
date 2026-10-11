@@ -324,11 +324,20 @@ export async function getReceptionDuplicateOrders(
         .map((p) => p.trim()),
     ]),
   );
-  // Customer primary phone and draft contactPhone have indexes. Linked customer IDs avoid joins scanning history.
+  // Match every stored phone slot, as in resolveReceptionCustomer. Secondary slots currently
+  // have no index, so this is one equality probe of the customer directory, never order history.
+  // Bound returned IDs; the +1 row makes any incomplete identity search explicit to the caller.
   const customerRows = await db
     .select({ id: customers.id, ...customerColumns })
     .from(customers)
-    .where(inArray(customers.phone, forms))
+    .where(
+      or(
+        inArray(customers.phone, forms),
+        inArray(customers.phone2, forms),
+        inArray(customers.phone3, forms),
+        inArray(customers.whatsapp, forms),
+      ),
+    )
     .limit(CANDIDATE_LIMIT + 1);
   let verifiedCustomerId: number | null = null;
   if (

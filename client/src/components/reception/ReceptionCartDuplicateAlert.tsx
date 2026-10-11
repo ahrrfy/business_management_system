@@ -5,7 +5,7 @@ import { ReceptionDuplicateAlert } from "./ReceptionDuplicateAlert";
 import type { WorkOrderChannel } from "@shared/receptionChannel";
 import type { ReceptionDuplicateInput } from "@shared/receptionDuplicateOrders";
 
-/** Remote baskets only: no added identity prompt or query in the counter-sale path. */
+/** Remote baskets only: connection state is handled inside the alert so offline stays visible. */
 export function ReceptionCartDuplicateAlert({
   branchId,
   phone,
