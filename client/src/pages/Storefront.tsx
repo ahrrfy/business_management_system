@@ -1392,6 +1392,14 @@ function StorefrontContent() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    const couponParam = params.get("coupon")?.trim() || params.get("c")?.trim();
+    if (couponParam && /^[A-Za-z0-9_-]{3,32}$/.test(couponParam)) {
+      const norm = couponParam.toUpperCase();
+      setCouponDraft(norm);
+      setAppliedCouponCode(norm);
+      setCouponFeedback(`تم تفعيل كوبون الخصم (${norm}) تلقائياً من الرابط الترويجي`);
+    }
+
     const token = params.get("cartToken")?.trim();
     if (!token || !/^[A-Za-z0-9_-]{20,32}$/.test(token)) return;
     let cancelled = false;

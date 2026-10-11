@@ -12,9 +12,12 @@ export interface CouponCardData {
   code: string;
   title?: string | null;
   subtitle?: string | null;
+  heroDiscount?: string | null;
+  minSpend?: string | null;
   terms?: string | null;
   validTo?: string | Date | null;
   color?: string | null;
+  storeUrl?: string | null;
 }
 
 function validDate(value: string | Date | null | undefined) {
@@ -31,18 +34,21 @@ export async function couponCardsHtml(
   const layout = options.layout ?? "CARD";
   const rendered = await Promise.all(cards.map(async (card) => {
     const accent = /^#[0-9a-fA-F]{6}$/.test(card.color ?? "") ? card.color! : BRAND.green;
-    const qr = await qrCodeSvg(card.code, { size: 220, margin: 1, errorCorrectionLevel: "H", dark: "#000000" });
+    const qrPayload = card.storeUrl || card.code;
+    const qr = await qrCodeSvg(qrPayload, { size: 220, margin: 1, errorCorrectionLevel: "H", dark: "#000000" });
     return `<article class="coupon" style="--accent:${accent}">
       <div class="frame">
         <header><img src="${esc(logoUrl())}" alt=""><div><strong>${esc(CO.short)}</strong><small>${esc(CO.subtitle)}</small></div></header>
         <div class="rule"></div>
         <main>
-          <div class="eyebrow">كوبون خصم</div>
+          <div class="eyebrow">قسيمة خصم رسمية</div>
           <h1>${esc(card.title || "هدية خاصة لك")}</h1>
+          ${card.heroDiscount ? `<div class="hero-discount">${esc(card.heroDiscount)}</div>` : ""}
+          ${card.minSpend ? `<div class="min-spend">${esc(card.minSpend)}</div>` : ""}
           ${card.subtitle ? `<p class="subtitle">${esc(card.subtitle)}</p>` : ""}
           <div class="qr">${qr}</div>
           <div class="code" dir="ltr">${esc(card.code)}</div>
-          <div class="valid">صالح ${esc(validDate(card.validTo))}</div>
+          <div class="valid">صالح لغاية ${esc(validDate(card.validTo))}</div>
         </main>
         <footer>${esc(card.terms || "يُستخدم وفق شروط العرض، ولمرة واحدة ما لم يُذكر خلاف ذلك.")}</footer>
       </div>
@@ -63,9 +69,9 @@ export async function couponCardsHtml(
     .coupon{width:54mm;height:84mm;overflow:hidden;padding:2.2mm;background:linear-gradient(145deg,#fff 0%,#fff 65%,color-mix(in srgb,var(--accent) 8%,#fff) 100%)}
     body:not(:has(.sheet))>.coupon{page-break-after:always;break-after:page}body:not(:has(.sheet))>.coupon:last-child{page-break-after:auto;break-after:auto}.frame{height:100%;border:.45mm solid var(--accent);border-radius:2.4mm;padding:2.2mm;display:flex;flex-direction:column;position:relative}
     .frame:after{content:'';position:absolute;inset:1.1mm;border:.18mm solid color-mix(in srgb,var(--accent) 32%,transparent);border-radius:1.7mm;pointer-events:none}
-    header{display:flex;align-items:center;gap:1.6mm;min-height:9mm;position:relative;z-index:1}header img{width:8mm;height:8mm;object-fit:contain}header div{display:flex;flex-direction:column;line-height:1.15}header strong{font-size:3mm;color:var(--accent)}header small{font-size:1.7mm}
-    .rule{height:.4mm;background:var(--accent);margin:1mm 0 1.4mm}main{text-align:center;display:flex;flex-direction:column;align-items:center;flex:1;position:relative;z-index:1}.eyebrow{font-size:2mm;font-weight:800;color:var(--accent);letter-spacing:.3mm}h1{font-size:4.2mm;line-height:1.25;margin:1mm 0 .7mm}.subtitle{font-size:2.05mm;line-height:1.4;margin:0;min-height:4mm}.qr{width:25mm;height:25mm;margin:1.4mm auto .8mm}.qr svg{display:block;width:100%;height:100%}.code{width:40mm;height:8mm;max-width:40mm;max-height:8mm;display:flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden;font-family:ui-monospace,Consolas,monospace;font-size:3mm;line-height:1;font-weight:900;letter-spacing:.16mm;border:.3mm dashed var(--accent);border-radius:1mm;padding:0 1mm;background:#fff}.valid{font-size:1.8mm;margin-top:.8mm;font-weight:700}
-    footer{border-top:.2mm solid #bbb;padding-top:1.2mm;font-size:1.55mm;line-height:1.45;text-align:center;min-height:8mm;position:relative;z-index:1}
+    header{display:flex;align-items:center;gap:1.6mm;min-height:9mm;position:relative;z-index:1}header img{width:8mm;height:8mm;object-fit:contain}header div{display:flex;flex-direction:column;line-height:1.15}header strong{font-size:3mm;font-weight:900;color:var(--accent)}header small{font-size:1.7mm;font-weight:700;color:#333}
+    .rule{height:.4mm;background:var(--accent);margin:1mm 0 1.4mm}main{text-align:center;display:flex;flex-direction:column;align-items:center;flex:1;position:relative;z-index:1}.eyebrow{font-size:2mm;font-weight:900;color:var(--accent);letter-spacing:.3mm}h1{font-size:4.2mm;line-height:1.25;margin:1mm 0 .7mm;font-weight:900;color:#000}.hero-discount{font-size:3.2mm;font-weight:900;color:var(--accent);line-height:1.2;margin:.6mm 0 .3mm;padding:.4mm 1.6mm;border-radius:.8mm;background:color-mix(in srgb,var(--accent) 12%,#fff);border:.2mm solid color-mix(in srgb,var(--accent) 30%,transparent)}.min-spend{font-size:1.7mm;font-weight:800;color:#333;margin-bottom:.3mm}.subtitle{font-size:2.05mm;line-height:1.4;margin:0;min-height:4mm;font-weight:700;color:#222}.qr{width:25mm;height:25mm;margin:1.4mm auto .8mm}.qr svg{display:block;width:100%;height:100%}.code{width:40mm;height:8mm;max-width:40mm;max-height:8mm;display:flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden;font-family:ui-monospace,Consolas,monospace;font-size:3mm;line-height:1;font-weight:900;letter-spacing:.16mm;border:.3mm dashed var(--accent);border-radius:1mm;padding:0 1mm;background:#fff}.valid{font-size:1.8mm;margin-top:.8mm;font-weight:800;color:#111}
+    footer{border-top:.2mm solid #bbb;padding-top:1.2mm;font-size:1.55mm;line-height:1.45;text-align:center;min-height:8mm;position:relative;z-index:1;font-weight:600;color:#333}
     @media screen{body{background:#ddd;padding:10mm}.coupon{box-shadow:0 2mm 8mm #0003}body:not(:has(.sheet))>.coupon{margin:0 auto 8mm}.sheet{margin:0 auto 10mm;background:#fff}}
     @media print{body{background:#fff}.coupon{margin:0;box-shadow:none}.sheet{margin:0}}
   </style></head><body>${body}<script>Promise.all(Array.from(document.images).map(i=>i.complete?Promise.resolve():new Promise(r=>{i.onload=i.onerror=r}))).then(()=>setTimeout(()=>window.print(),100));window.addEventListener('afterprint',()=>window.close());</script></body></html>`;
