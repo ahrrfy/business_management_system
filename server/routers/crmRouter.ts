@@ -417,6 +417,9 @@ export const crmRouter = router({
         });
       }
 
+      const isDirectPromo = input.archetype === "DIRECT_PROMO" || input.applicationMode === "AUTO";
+      const isFirstOrder = input.archetype === "FIRST_ORDER" || input.isFirstOrderSelfService;
+
       if (input.type === "PERCENT") {
         if (!input.discountPercent || money(input.discountPercent).lte(0)) {
           throw new TRPCError({
@@ -428,12 +431,12 @@ export const crmRouter = router({
             }),
           });
         }
-        if (!input.maxDiscountAmount || money(input.maxDiscountAmount).lte(0)) {
+        if (!isDirectPromo && (!input.maxDiscountAmount || money(input.maxDiscountAmount).lte(0))) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: appErrorMessage({
               what: "سقف الخصم الأقصى مطلوب",
-              why: "عروض النسبة المئوية تتطلب سقفاً مالياً أقصى (بالدينار) لمنع الخسائر غير المتوقعة",
+              why: "عروض النسبة المئوية في برامج الكوبونات تتطلب سقفاً مالياً أقصى (بالدينار) لمنع الخسائر غير المتوقعة",
               doThis: "حدد سقف الخصم الأقصى بالدينار العراقي ثم أعد الحفظ",
             }),
           });
@@ -450,9 +453,6 @@ export const crmRouter = router({
           });
         }
       }
-
-      const isDirectPromo = input.archetype === "DIRECT_PROMO" || input.applicationMode === "AUTO";
-      const isFirstOrder = input.archetype === "FIRST_ORDER" || input.isFirstOrderSelfService;
 
       if (isFirstOrder && !isDirectPromo && (input.perCustomerLimit !== 1 || input.perCouponLimit !== 1)) {
         throw new TRPCError({
@@ -490,9 +490,9 @@ export const crmRouter = router({
           discountPercent: input.type === "PERCENT" ? (input.discountPercent ?? "0") : "0",
           discountAmount: input.type === "AMOUNT" ? (input.discountAmount ?? "0") : "0",
           maxDiscountAmount: input.type === "PERCENT" ? (input.maxDiscountAmount ?? null) : null,
-          minOrderSpend: input.minOrderSpend ?? "0",
-          freeShipping: input.freeShipping ?? false,
-          shippingDiscountAmount: input.shippingDiscountAmount ?? "0",
+          minOrderSpend: isDirectPromo ? "0" : (input.minOrderSpend ?? "0"),
+          freeShipping: isDirectPromo ? false : (input.freeShipping ?? false),
+          shippingDiscountAmount: isDirectPromo ? "0" : (input.shippingDiscountAmount ?? "0"),
           scope: input.scope,
           effectiveFrom: new Date(input.validFrom),
           effectiveTo: input.validTo ? new Date(input.validTo) : null,

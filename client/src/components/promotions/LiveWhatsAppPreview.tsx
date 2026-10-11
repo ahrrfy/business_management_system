@@ -57,7 +57,7 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
     const rawTitle = (data.design.title || data.name || "").trim();
     const rawSubtitle = (data.design.subtitle || "").trim();
     const terms = (data.design.terms || "يُستخدم لمرة واحدة · لا يُجمع مع عروض أخرى").trim();
-    const shippingBonus = data.freeShipping ? "\n• ميزة إضافية: توصيل مجاني مشمول" : "";
+    const shippingBonus = data.archetype !== "DIRECT_PROMO" && data.freeShipping ? "\n• ميزة إضافية: توصيل مجاني مشمول" : "";
 
     // إظهار العنوان إن كان مخصصاً وغير مكرر
     const hasCustomTitle = rawTitle && rawTitle !== "عرض ترويجي خاص" && rawTitle !== "عرض خاص";
@@ -77,7 +77,6 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
         subtitleLine,
         ``,
         `• قيمة الخصم المباشر: *${discountSummary}*`,
-        shippingBonus ? `• ميزة إضافية: توصيل مجاني مشمول` : null,
         `• فترة العرض: ${validityText}`,
         ``,
         `*يطبق الخصم تلقائياً عند التسوق عبر المتجر الإلكتروني أو زيارة فروعنا دون الحاجة لأي كود كوبون.*`,
@@ -148,6 +147,7 @@ export function LiveWhatsAppPreview({ data }: LiveWhatsAppPreviewProps) {
     data.design.subtitle,
     data.design.terms,
     data.name,
+    data.archetype,
     data.freeShipping,
     validityText,
     previewCode,

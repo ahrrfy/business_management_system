@@ -161,15 +161,21 @@ export function validatePromotionFormData(data: PromotionFormData): FormValidati
     }
   }
 
-  // التحقق من تكرار الأكواد المخصصة
+  // التحقق من صحة وعدم تكرار الأكواد المخصصة
   if (data.customCodesList.trim()) {
-    const lines = data.customCodesList
+    const rawLines = data.customCodesList
       .split("\n")
-      .map((s) => s.trim().toUpperCase().replace(/[^A-Z0-9-]/g, ""))
+      .map((s) => s.trim())
       .filter(Boolean);
-    const duplicates = lines.filter((code, idx) => lines.indexOf(code) !== idx);
-    if (duplicates.length > 0) {
-      errors.customCodesList = `يوجد تكرار في الأكواد المدخلة: ${Array.from(new Set(duplicates)).slice(0, 3).join(", ")}`;
+    const invalidLines = rawLines.filter((l) => !/^[A-Za-z0-9-]+$/.test(l));
+    if (invalidLines.length > 0) {
+      errors.customCodesList = `تحتوي الأكواد على محارف غير صالحة (يُسمح فقط بالحروف الإنجليزية والأرقام والشرطة): ${invalidLines.slice(0, 3).join(", ")}`;
+    } else {
+      const normalized = rawLines.map((s) => s.toUpperCase());
+      const duplicates = normalized.filter((code, idx) => normalized.indexOf(code) !== idx);
+      if (duplicates.length > 0) {
+        errors.customCodesList = `يوجد تكرار في الأكواد المدخلة: ${Array.from(new Set(duplicates)).slice(0, 3).join(", ")}`;
+      }
     }
   }
 

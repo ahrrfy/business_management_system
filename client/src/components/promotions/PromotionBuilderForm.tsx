@@ -144,7 +144,7 @@ export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionB
         isAutoBounceBack: nextBounceBack,
         initialBatchCount: nextBatchCount,
         exportPdfOnCreate: nextExportPdf,
-        perCouponLimit: nextFirstOrder ? 1 : prev.perCouponLimit,
+        perCouponLimit: nextFirstOrder ? 1 : (archetype === "AFFILIATE" ? 10000 : prev.perCouponLimit),
         perCustomerLimit: nextFirstOrder ? 1 : prev.perCustomerLimit,
       };
     });
@@ -377,23 +377,25 @@ export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionB
             </div>
           )}
 
-          {/* مزايا التوصيل والشحن الإضافية */}
-          <div className="md:col-span-2 flex items-start gap-2 rounded-lg border bg-muted/20 p-3">
-            <Checkbox
-              id="free-shipping"
-              checked={data.freeShipping}
-              onCheckedChange={(checked) => updateField("freeShipping", checked === true)}
-            />
-            <label htmlFor="free-shipping" className="text-xs cursor-pointer space-y-0.5">
-              <span className="font-semibold block flex items-center gap-1.5">
-                <Truck className="size-3.5 text-primary" />
-                <span>توصيل مجاني مشمول مع هذا العرض</span>
-              </span>
-              <span className="text-muted-foreground block">
-                تصفير أجور الشحن تلقائياً عند تطبيق العرض على الطلبات الإلكترونية
-              </span>
-            </label>
-          </div>
+          {/* مزايا التوصيل والشحن الإضافية (للكوبونات فقط) */}
+          {!isDirectPromo && (
+            <div className="md:col-span-2 flex items-start gap-2 rounded-lg border bg-muted/20 p-3">
+              <Checkbox
+                id="free-shipping"
+                checked={data.freeShipping}
+                onCheckedChange={(checked) => updateField("freeShipping", checked === true)}
+              />
+              <label htmlFor="free-shipping" className="text-xs cursor-pointer space-y-0.5">
+                <span className="font-semibold block flex items-center gap-1.5">
+                  <Truck className="size-3.5 text-primary" />
+                  <span>توصيل مجاني مشمول مع هذا العرض</span>
+                </span>
+                <span className="text-muted-foreground block">
+                  تصفير أجور الشحن تلقائياً عند تطبيق العرض على الطلبات الإلكترونية
+                </span>
+              </label>
+            </div>
+          )}
         </CardContent>
       </Card>
 

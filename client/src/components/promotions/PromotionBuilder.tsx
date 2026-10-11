@@ -85,7 +85,7 @@ export function PromotionBuilder({ open, onOpenChange, onSuccess }: PromotionBui
     const parsedCustomCodes = formData.customCodesList.trim()
       ? formData.customCodesList
           .split("\n")
-          .map((s) => s.trim().toUpperCase().replace(/[^A-Z0-9-]/g, ""))
+          .map((s) => s.trim().toUpperCase())
           .filter(Boolean)
       : undefined;
 
@@ -110,14 +110,14 @@ export function PromotionBuilder({ open, onOpenChange, onSuccess }: PromotionBui
       discountAmount: formData.type === "AMOUNT" ? formData.discountAmount : undefined,
       maxDiscountAmount: !isDirectPromo && formData.type === "PERCENT" ? formData.maxDiscountAmount : undefined,
       minOrderSpend: isDirectPromo ? "0" : (formData.minOrderSpend || "0"),
-      freeShipping: formData.freeShipping,
-      shippingDiscountAmount: formData.shippingDiscountAmount || "0",
+      freeShipping: !isDirectPromo && formData.freeShipping,
+      shippingDiscountAmount: !isDirectPromo ? (formData.shippingDiscountAmount || "0") : "0",
       scope: formData.scope,
       targetCategoryIds: formData.targetCategoryIds.length > 0 ? formData.targetCategoryIds : undefined,
       targetProductIds: formData.targetProductIds.length > 0 ? formData.targetProductIds : undefined,
       validFrom: formData.validFrom,
       validTo: formData.validTo || null,
-      perCouponLimit: isFirstOrder ? 1 : formData.perCouponLimit,
+      perCouponLimit: isFirstOrder ? 1 : (isAffiliate ? (formData.perCouponLimit > 1 ? formData.perCouponLimit : 10000) : formData.perCouponLimit),
       perCustomerLimit: isFirstOrder ? 1 : formData.perCustomerLimit,
       isFirstOrderSelfService: isFirstOrder,
       initialBatchCount: isCouponBatch ? formData.initialBatchCount : (isAffiliate ? 1 : 0),
