@@ -11,6 +11,8 @@ import { appErrorMessage } from "@shared/errors";
 import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import {
   bundleComponents,
+  couponPrograms,
+  couponReservations,
   customers,
   deliveryParties,
   invoices,
@@ -20,6 +22,7 @@ import {
   productVariants,
   productImages,
   products,
+  promotions,
   storeSettings as storeSettingsTable,
   users,
 } from "../../../drizzle/schema";
@@ -593,6 +596,49 @@ export async function updateOnlineOrder(
         .limit(1)
     )[0];
 
+    // استعادة ميزة شحن الكوبون المحجوزة للطلب لضمان عدم فقدانها عند إعادة حساب الطلب أو تغيير العنوان
+    let couponShipping: { freeShipping?: boolean; shippingDiscountAmount?: string | null } | null = null;
+    let activeReservation: { id: number; programId: number } | null = null;
+    if (order.couponCode) {
+      const reservation = (
+        await tx
+          .select({
+            id: couponReservations.id,
+            programId: couponReservations.programId,
+          })
+          .from(couponReservations)
+          .where(
+            and(
+              eq(couponReservations.onlineOrderId, order.id),
+              eq(couponReservations.status, "ACTIVE"),
+            ),
+          )
+          .limit(1)
+      )[0];
+
+      if (reservation) {
+        activeReservation = { id: Number(reservation.id), programId: Number(reservation.programId) };
+        const promo = (
+          await tx
+            .select({
+              freeShipping: promotions.freeShipping,
+              shippingDiscountAmount: promotions.shippingDiscountAmount,
+            })
+            .from(couponPrograms)
+            .innerJoin(promotions, eq(couponPrograms.promotionId, promotions.id))
+            .where(eq(couponPrograms.id, reservation.programId))
+            .limit(1)
+        )[0];
+
+        if (promo?.freeShipping) {
+          couponShipping = {
+            freeShipping: true,
+            shippingDiscountAmount: promo.shippingDiscountAmount ? String(promo.shippingDiscountAmount) : "0.00",
+          };
+        }
+      }
+    }
+
     // 6. Handle items update if items array provided
     if (input.items !== undefined) {
       const customizedItem = (await tx
@@ -786,6 +832,7 @@ export async function updateOnlineOrder(
         storeSettings?.freeShippingThreshold,
         retailSubtotal.toFixed(2),
         storeSettings?.freeShippingThresholdGovernorates,
+        couponShipping,
       );
 
       // Deduct coupon discount if order had one
@@ -810,9 +857,35 @@ export async function updateOnlineOrder(
         });
       }
 
+      let targetCouponCode = order.couponCode;
+      if (activeReservation && couponShipping?.freeShipping && currentCouponDiscount.lte(0)) {
+        if (money(quoteTotals.couponDeliveryWaivedAmount).gt(0)) {
+          await tx
+            .update(couponReservations)
+            .set({
+              discountAmount: quoteTotals.couponDeliveryWaivedAmount,
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+        } else {
+          // Destination's store threshold now grants free delivery:
+          // Release reservation and detach coupon from order so customer's one-time coupon isn't burned with 0 incremental benefit.
+          await tx
+            .update(couponReservations)
+            .set({
+              status: "RELEASED",
+              releasedAt: sql`CURRENT_TIMESTAMP(3)`,
+              releaseReason: "شحن مجاني تلقائي من سقف المتجر",
+              discountAmount: "0.00",
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+          targetCouponCode = null;
+        }
+      }
+
       await tx
         .update(onlineOrders)
         .set({
+          couponCode: targetCouponCode,
           subtotal: quoteTotals.subtotal,
           shippingCost: quoteTotals.deliveryFee,
           deliveryFree: quoteTotals.deliveryFree,
@@ -848,15 +921,42 @@ export async function updateOnlineOrder(
         storeSettings?.freeShippingThreshold,
         String(order.subtotal),
         storeSettings?.freeShippingThresholdGovernorates,
+        couponShipping,
       );
 
       // quoteTotals.total is subtotal (sum of existing item line totals, which already reflect any coupon discount) + deliveryFee.
       // Do NOT subtract couponDiscount again to prevent double coupon deduction.
       const grandTotal = money(quoteTotals.total);
 
+      let targetCouponCode = order.couponCode;
+      if (activeReservation && couponShipping?.freeShipping && money(order.couponDiscount ?? "0").lte(0)) {
+        if (money(quoteTotals.couponDeliveryWaivedAmount).gt(0)) {
+          await tx
+            .update(couponReservations)
+            .set({
+              discountAmount: quoteTotals.couponDeliveryWaivedAmount,
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+        } else {
+          // Destination's store threshold now grants free delivery:
+          // Release reservation and detach coupon from order so customer's one-time coupon isn't burned with 0 incremental benefit.
+          await tx
+            .update(couponReservations)
+            .set({
+              status: "RELEASED",
+              releasedAt: sql`CURRENT_TIMESTAMP(3)`,
+              releaseReason: "شحن مجاني تلقائي من سقف المتجر",
+              discountAmount: "0.00",
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+          targetCouponCode = null;
+        }
+      }
+
       await tx
         .update(onlineOrders)
         .set({
+          couponCode: targetCouponCode,
           shippingCost: quoteTotals.deliveryFee,
           deliveryFree: quoteTotals.deliveryFree,
           deliveryWaivedAmount: quoteTotals.deliveryWaivedAmount,

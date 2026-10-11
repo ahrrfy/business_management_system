@@ -140,6 +140,18 @@ export function storefrontUrl(hostname: string = currentHost()): string {
   return `${publicOriginFor(hostname)}/store`;
 }
 
+/**
+ * رابط المتجر العام للزبائن (مخصص للمشاركة والتسويق عبر واتساب والمطبوعات)
+ * يُشير دائماً إلى الدومين العام الإنتاجي https://alarabiya.online/store
+ */
+export function publicStorefrontUrl(couponCode?: string | null): string {
+  const base = `${PUBLIC_ORIGIN}/store`;
+  if (couponCode && couponCode.trim()) {
+    return `${base}?coupon=${encodeURIComponent(couponCode.trim())}`;
+  }
+  return base;
+}
+
 /** رابط صفحة الوظائف العامة (يُنسَخ ويُنشر في إعلانات التوظيف) — الدومين العام. */
 export function careersUrl(hostname: string = currentHost()): string {
   return `${publicOriginFor(hostname)}/apply`;

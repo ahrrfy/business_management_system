@@ -97,6 +97,7 @@ import { StorefrontThematicStrip, type ThematicCollectionCard } from "@/componen
 import { StorefrontCustomizerStudio } from "@/components/storefront/StorefrontCustomizerStudio";
 import { StorefrontHeuristicsBadges } from "@/components/storefront/StorefrontHeuristicsBadges";
 import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
+import { useStorefrontCoupon } from "@/hooks/useStorefrontCoupon";
 
 const STORE_NAME = "المكتبة العربية";
 const STORE_TAGLINE = "قرطاسية • طباعة • هدايا — يصلك أينما كنت في العراق";
@@ -1183,9 +1184,6 @@ function StorefrontContent() {
   const [wishlistIds, setWishlistIds] = useState<Set<number>>(loadStorefrontWishlist);
   const [showWishlist, setShowWishlist] = useState(false);
   const [shareFeedback, setShareFeedback] = useState<{ text: string; tone: ShareFeedbackTone } | null>(null);
-  const [couponDraft, setCouponDraft] = useState("");
-  const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(null);
-  const [couponFeedback, setCouponFeedback] = useState<string | null>(null);
   const [cart, setCart] = useState<Map<string, CartLine>>(loadCart);
   const [cartStatus, setCartStatus] = useState("");
   const cartRecommendationProductIds = useMemo(
@@ -1223,6 +1221,25 @@ function StorefrontContent() {
     total: string;
     reservationExpiresAt: Date | string;
   } | null>(null);
+  const {
+    couponDraft,
+    setCouponDraft,
+    appliedCouponCode,
+    setAppliedCouponCode,
+    couponFeedback,
+    setCouponFeedback,
+    applyCoupon,
+    removeCoupon,
+    clearCouponOnSuccess,
+    persistValidCoupon,
+    invalidateCoupon,
+  } = useStorefrontCoupon({
+    onQuoteInvalidate: () => {
+      acceptedQuoteRef.current = null;
+      setCheckoutSafetyError(null);
+    },
+  });
+
   const viewedProductIds = useRef(new Set<number>());
   const catalogLoadMoreRef = useRef<HTMLDivElement | null>(null);
 
@@ -1382,6 +1399,16 @@ function StorefrontContent() {
   // mutation functions are stable; request identity is the intentional trigger.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cart.size, panel, privateQuoteInput]);
+
+  useEffect(() => {
+    if (!appliedCouponCode) return;
+    if (privateQuoteM.isError) {
+      invalidateCoupon();
+    } else if (privateQuoteM.data) {
+      persistValidCoupon(appliedCouponCode);
+    }
+  }, [appliedCouponCode, privateQuoteM.data, privateQuoteM.isError, persistValidCoupon, invalidateCoupon]);
+
   const quoteQ = {
     data: privateQuoteRequired ? privateQuoteM.data : publicQuoteQ.data,
     isFetching: privateQuoteRequired ? privateQuoteM.isPending : publicQuoteQ.isFetching,
@@ -1467,9 +1494,7 @@ function StorefrontContent() {
         }));
       }
       setCart(new Map());
-      setCouponDraft("");
-      setAppliedCouponCode(null);
-      setCouponFeedback(null);
+      clearCouponOnSuccess();
       // امسح بيانات التوصيل (اسم/هاتف/عنوان) من الحالة و localStorage بعد نجاح الطلب (مراجعة عدائية
       // ١٢/٧): المتجر علنيّ بلا جلسة ⇒ إبقاؤها يسرّبها للزبون التالي على جهازٍ مشترك/كشك. الاستعادة
       // عبر التحديث تخصّ طلباً قيد الإنشاء فقط، لا بعد إتمامه.
@@ -1942,25 +1967,6 @@ function StorefrontContent() {
   const couponForCheckout = couponSuperseded ? null : appliedCouponCode;
   const quotedDeliveryFree = quoteQ.data?.deliveryFree ?? qualifiesFree;
   const quoteReady = !!quoteQ.data && !quoteQ.isFetching && !quoteQ.isError;
-
-  function applyCoupon() {
-    const normalized = couponDraft.trim().toUpperCase().replace(/\s+/g, "");
-    if (!normalized) {
-      setCouponFeedback("اكتب رمز الكوبون أولاً");
-      return;
-    }
-    setAppliedCouponCode(normalized);
-    setCouponFeedback("جارٍ التحقق من الكوبون…");
-    acceptedQuoteRef.current = null;
-    setCheckoutSafetyError(null);
-  }
-  function removeCoupon() {
-    setAppliedCouponCode(null);
-    setCouponDraft("");
-    setCouponFeedback(null);
-    acceptedQuoteRef.current = null;
-    setCheckoutSafetyError(null);
-  }
 
   function addToCart(p: {
     productUnitId: number; productId: number; productName: string; price: string | null;
@@ -3165,7 +3171,7 @@ function StorefrontContent() {
                 </button>
               </div>
               <p id="storefront-coupon-feedback" className="mt-2 text-xs font-bold text-slate-600" role="status" aria-live="polite">
-                {quoteQ.isFetching && appliedCouponCode ? "جارٍ التحقق من الكوبون…" : quoteQ.isError && appliedCouponCode ? (quoteQ.error?.message ?? "تعذّر التحقق من الكوبون") : couponSuperseded ? `لم يُستخدم الكوبون؛ طُبقت منفعة ${quoteQ.data?.pricingBenefitLabel ?? "أفضل سعر متاح"} بدلاً منه.` : appliedCouponCode && quoteQ.data ? `تم تطبيق ${quoteQ.data.couponProgramName ?? "الكوبون"} — التوفير ${money(quotedCouponDiscount)} د.ع` : couponFeedback ?? "يمكنك إدخال رمز العرض قبل تأكيد الطلب"}
+                {quoteQ.isFetching && appliedCouponCode ? "جارٍ التحقق من الكوبون…" : quoteQ.isError && appliedCouponCode ? (quoteQ.error?.message ?? "تعذّر التحقق من الكوبون") : couponSuperseded ? `لم يُستخدم الكوبون؛ طُبقت منفعة ${quoteQ.data?.pricingBenefitLabel ?? "أفضل سعر متاح"} بدلاً منه.` : appliedCouponCode && quoteQ.data ? `تم تطبيق ${quoteQ.data.couponProgramName ?? "الكوبون"} — التوفير ${money(Number(quotedCouponDiscount) + Number(quoteQ.data.couponDeliveryWaivedAmount ?? 0))} د.ع` : couponFeedback ?? "يمكنك إدخال رمز العرض قبل تأكيد الطلب"}
               </p>
             </div>
 

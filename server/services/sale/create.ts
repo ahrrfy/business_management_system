@@ -1180,14 +1180,20 @@ export async function createSaleInTx(
     deliveryFee: input.deliveryFee,
   });
 
+  const basketSubtotal = round2(
+    computed.reduce(
+      (sum, line) => sum.plus(money(line.unitPrice).times(line.quantity)),
+      money(0),
+    ),
+  );
   if (lockedCoupon?.minOrderSpend && money(lockedCoupon.minOrderSpend).gt(0)) {
     const minSpend = money(lockedCoupon.minOrderSpend);
-    if (money(totals.subtotal).lt(minSpend)) {
+    if (basketSubtotal.lt(minSpend)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
           what: "لم يبلغ إجمالي الطلب الحد الأدنى لتفعيل الكوبون",
-          why: `الحد الأدنى المطلوب لتفعيل هذا الكوبون هو ${minSpend.toFixed(2)} د.ع بينما إجمالي سلتك الحالي ${totals.subtotal} د.ع`,
+          why: `الحد الأدنى المطلوب لتفعيل هذا الكوبون هو ${minSpend.toFixed(2)} د.ع بينما إجمالي سلتك الحالي ${basketSubtotal.toFixed(2)} د.ع`,
           doThis: "أضف المزيد من المنتجات إلى سلة الشراء لتفعيل الكوبون",
         }),
       });
