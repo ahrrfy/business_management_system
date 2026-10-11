@@ -218,6 +218,18 @@ function normalizeIntentSource(input: PrepareInput): {
 
 /* ────────── إعداد النيّة ────────── */
 
+async function assertInvoiceSalesRepresentative(tx: Tx, payload: InvoiceSourcePayload | null): Promise<void> {
+  if (payload?.salesRepId == null) return;
+  const [representative] = await tx.select({ id: users.id }).from(users)
+    .where(eq(users.id, payload.salesRepId)).for("share").limit(1);
+  if (!representative) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: intentOperationError("حساب مندوب المبيعات غير موجود", "اختر موظفاً مرتبطاً بحساب مستخدم صالح ثم أعد الإعداد قبل إصدار أي كرت"),
+    });
+  }
+}
+
 export async function prepare(
   tx: Tx,
   input: PrepareInput,
@@ -226,6 +238,7 @@ export async function prepare(
   const normalizedSource = normalizeIntentSource(input);
   input = normalizedSource.input;
   const invoicePayload = normalizedSource.invoicePayload;
+  await assertInvoiceSalesRepresentative(tx, invoicePayload);
   // يسبق replay حتى لا تعبر نيّة تاريخية CREDIT/طريقة معطّلة إلى claim ثم تفشل بعد الإصدار.
   if (
     !ALLOWED_PAYMENT_METHODS.has(input.paymentMethod) &&
@@ -1023,6 +1036,10 @@ export async function claimExecution(
   // المشتركة، لذلك لا يستطيع إقفال الشهر العبور بين هذا الفحص والتزام المطالبة.
   // وبعد المطالبة يمنع lockPeriod الإقفال ما دامت النية غير محسومة.
   await assertPeriodOpen(tx, new Date());
+
+  if (intent.checkoutSnapshot?.sourceType === "INVOICE") {
+    await assertInvoiceSalesRepresentative(tx, parseInvoiceSourcePayload(intent.checkoutSnapshot.sourcePayload));
+  }
 
   const { item, items } = await lockExecutionItems(tx, input.intentId, input.intentItemId);
   const intentItemId = Number(item.id);

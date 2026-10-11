@@ -29,6 +29,7 @@ export function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row:
   const [mode, setMode] = useState<"exact" | "different">("exact");
   const [amount, setAmount] = useState(String(remaining));
   const [note, setNote] = useState("");
+  const [handshakeOtp, setHandshakeOtp] = useState("");
   const [shortfallReason, setShortfallReason] = useState<ShortfallReason | "">("");
   const QUICK_NOTES = [
     "رمز تسليم العميل (Handshake OTP)",
@@ -43,7 +44,7 @@ export function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row:
   const diff = remaining - effectiveAmount;
   const isShort = diff > 0.005;
   const isOver = diff < -0.005;
-  const noteValid = note.trim().length >= 3;
+  const noteValid = note.trim().length >= 3 || handshakeOtp.length === 4;
   const reasonRequired = mode === "different" && isShort;
   const reasonValid = !reasonRequired || (shortfallReason !== "" && SHORTFALL_REASONS.includes(shortfallReason as ShortfallReason));
   const canConfirm =
@@ -53,9 +54,13 @@ export function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row:
     reasonValid;
 
   const handleConfirm = () => {
+    const finalEvidence = [
+      note.trim() || (handshakeOtp ? "رمز تسليم العميل (Handshake OTP)" : ""),
+      handshakeOtp ? `[رمز التسليم: ${handshakeOtp}]` : null,
+    ].filter(Boolean).join(" ");
     onConfirm(
       effectiveAmount.toFixed(2),
-      note.trim(),
+      finalEvidence,
       isShort && shortfallReason ? (shortfallReason as ShortfallReason) : undefined,
     );
   };
@@ -151,6 +156,26 @@ export function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row:
             )}
           </>
         )}
+
+        <div className="mb-3 rounded-xl border border-blue-200/80 bg-blue-50/60 p-2.5 dark:border-blue-900/40 dark:bg-blue-950/20">
+          <Label htmlFor="handshake-otp-input" className="text-xs font-bold text-blue-900 dark:text-blue-200">
+            رمز تسليم العميل السري (Handshake OTP — اختياري)
+          </Label>
+          <Input
+            id="handshake-otp-input"
+            value={handshakeOtp}
+            onChange={(e) => {
+              const cleaned = e.target.value.replace(/\D/g, "").slice(0, 4);
+              setHandshakeOtp(cleaned);
+              if (cleaned.length === 4 && !note.trim()) {
+                setNote(`رمز تسليم العميل (Handshake OTP: ${cleaned})`);
+              }
+            }}
+            placeholder="أدخل الرمز المكون من 4 أرقام من الزبون"
+            maxLength={4}
+            className="mt-1 font-mono text-center tracking-widest text-sm font-black bg-white dark:bg-slate-900"
+          />
+        </div>
 
         <Label className="text-xs">مصدر التأكيد (اختصار سريع أو نصّ حرّ)</Label>
         <div className="mb-2 flex flex-wrap gap-1.5">

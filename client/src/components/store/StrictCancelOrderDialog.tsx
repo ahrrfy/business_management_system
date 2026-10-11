@@ -237,23 +237,32 @@ export function StrictCancelOrderDialog({
                 />
               </div>
 
-              <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2">
-                  <Lock aria-hidden className="size-4 text-primary" />
-                  <span className="font-bold text-foreground">
-                    اعتماد المشرف الميداني (PIN أو مسح الشارة)
+              {!isManagerOrAdmin ? (
+                <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    <Lock aria-hidden className="size-4 text-primary" />
+                    <span className="font-bold text-foreground">
+                      اعتماد المشرف الميداني (PIN أو مسح الشارة)
+                    </span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs border-primary/40 text-primary"
+                    onClick={() => setShowApprovalDialog(true)}
+                  >
+                    طلب اعتماد المشرف
+                  </Button>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 flex items-center gap-2 text-xs text-emerald-800 dark:text-emerald-300">
+                  <CheckCircle2 aria-hidden className="size-4 text-emerald-600 shrink-0" />
+                  <span className="font-bold">
+                    أنت مسجل بصلاحية إدارة — مصرح لك بتأكيد الإلغاء مباشرة مع تسجيل التدقيق الرقابي.
                   </span>
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-xs border-primary/40 text-primary"
-                  onClick={() => setShowApprovalDialog(true)}
-                >
-                  طلب اعتماد المشرف
-                </Button>
-              </div>
+              )}
 
               <div className="flex items-center justify-between pt-2 border-t">
                 <Button

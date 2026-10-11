@@ -70,6 +70,18 @@ describe("roleService — إنشاء/تحقّق", () => {
     await expect(createRole({ label: "y", baseRole: "user", permissions: { bogus: "FULL" } as any }, actor)).rejects.toThrow(/غير معروفة/);
   });
 
+  it("يقبل وحدات الصلاحيات الموروثة مثل tasks وcustomers دون رمي خطأ", async () => {
+    const r = await createRole({
+      label: "دور بتوافق تاريخي",
+      baseRole: "cashier",
+      permissions: perms({ tasks: "READ", customers: "FULL" }),
+    }, actor);
+    expect(r.id).toBeGreaterThan(0);
+    const row = await getRole(r.id);
+    expect((row?.permissions as any).tasks).toBe("READ");
+    expect((row?.permissions as any).crm).toBe("FULL");
+  });
+
   it("يرفض مفتاحاً مكرّراً (CONFLICT)", async () => {
     await createRole({ label: "دور أ", key: "role_a", baseRole: "user", permissions: perms() }, actor);
     await expect(createRole({ label: "دور أ٢", key: "role_a", baseRole: "user", permissions: perms() }, actor)).rejects.toThrow(/مستخدم مسبقاً/);

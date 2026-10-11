@@ -12,6 +12,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "server/services/digitalCards/__tests__/intentSchemas.test.ts",
+      "client/src/components/invoice/salesRepresentatives.test.ts",
       "server/realtime/__tests__/financialRefresh.test.ts",
       "server/realtime/__tests__/financialCache.test.ts",
       "client/src/lib/realtime/__tests__/financialQueries.test.ts",
@@ -40,6 +42,8 @@ export default defineConfig({
       "shared/cashReceiptSourceDocument.test.ts",
       "shared/negativeCashDiagnosis.test.ts",
       "client/src/lib/printing/couponCard.test.ts",
+      "server/services/__tests__/couponPdfService.unit.test.ts",
+      "shared/__tests__/promotionScheduling.unit.test.ts",
       "client/src/lib/printing/managerBadge.test.ts",
       "client/src/lib/printing/barcode.test.ts",
       "client/src/lib/printing/barcodePdf.test.ts",
@@ -451,6 +455,15 @@ export default defineConfig({
       "server/services/__tests__/customerReadAccess.test.ts",
       "server/services/__tests__/customerReceptionCreateAccess.test.ts",
       "client/src/components/pos/__tests__/posTotalsCredit.test.ts",
+      "tests/e2e/comprehensivePermissionMatrixE2E.test.ts",
+      "shared/__tests__/atomicPermissions.test.ts",
+      "server/__tests__/tier5BackendAdversarial.test.ts",
+      "client/src/components/permissions/__tests__/PermissionMatrix.test.tsx",
+      "client/src/components/permissions/__tests__/PermissionMatrixChallenger.test.tsx",
+      "client/src/components/permissions/__tests__/challengerM3UiStress.test.tsx",
+      "client/src/components/permissions/__tests__/tier5FrontendAdversarial.test.tsx",
+      "client/src/components/permissions/__tests__/comprehensiveDualViewAndRowControls.test.tsx",
+      "server/services/__tests__/permissionWhitelist.unit.test.ts",
       // الموجة ٠ (Wave 0): البنية التحتية اللحظية وناقل الحلقات الداخلي وتنسيق التبويبات المتعددة
       "server/realtime/__tests__/bridge.test.ts",
       "server/realtime/__tests__/sseStream.test.ts",
@@ -470,6 +483,9 @@ export default defineConfig({
       "server/services/__tests__/productChannelSyncSelfHeal.test.ts",
       "client/src/components/decision/DecisionRow.test.ts",
       "server/services/decisions/__tests__/rows.test.ts",
+      "server/services/__tests__/triggersAndStateMachinesRegression.test.ts",
+      "server/services/__tests__/omnichannelCouponEngine.unit.test.ts",
+      "client/src/components/promotions/__tests__/promotionBuilder.unit.test.ts",
     ],
   },
 });

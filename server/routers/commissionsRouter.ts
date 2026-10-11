@@ -296,6 +296,15 @@ const performanceRouter = router({
   myStatus: protectedProcedure
     .input(z.object({ period: period.optional() }).optional())
     .query(({ input, ctx }) => perfSvc.getMyStatus(ctx.user.id, input?.period)),
+
+  /** إشعارات الاحتفال اللحظي بالصفقات الكبرى وإغلاق الأهداف اليومية */
+  recentCelebrations: commissionsReadProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const allowedScope = commissionReadScope(ctx.user);
+      const targetBranchId = allowedScope ?? (input?.branchId ?? null);
+      return perfSvc.getRecentCelebrations(targetBranchId);
+    }),
 });
 
 export const commissionsRouter = router({

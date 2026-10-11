@@ -234,7 +234,7 @@ export async function appendDeliveryEvent(
 }
 
 const allowed: Record<ParcelStatus, ParcelStatus[]> = {
-  ASSIGNED: ["ACCEPTED", "OUT_FOR_DELIVERY", "FAILED"],
+  ASSIGNED: ["ACCEPTED", "OUT_FOR_DELIVERY", "FAILED", "CANCELLED", "RETURNED"],
   ACCEPTED: ["PICKED_UP", "FAILED"],
   PICKED_UP: ["OUT_FOR_DELIVERY", "FAILED"],
   OUT_FOR_DELIVERY: ["ACCEPTED", "PICKED_UP", "DELIVERED", "FAILED", "CANCELLED", "RETURNED"],

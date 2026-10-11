@@ -25,6 +25,7 @@
     "branchRouter.update@server/routers/branchRouter.ts",
     "cardAccountRouter.createReconciliation@server/routers/cardAccountRouter.ts",
     "commissionsRouter.myStatus@server/routers/commissionsRouter.ts",
+    "commissionsRouter.recentCelebrations@server/routers/commissionsRouter.ts",
     "conversationRouter.linkCustomer@server/routers/conversationRouter.ts",
     "conversationRouter.linkWorkOrder@server/routers/conversationRouter.ts",
     "conversationRouter.markRead@server/routers/conversationRouter.ts",

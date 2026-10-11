@@ -11,6 +11,8 @@ import { appErrorMessage } from "@shared/errors";
 import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import {
   bundleComponents,
+  couponPrograms,
+  couponReservations,
   customers,
   deliveryParties,
   invoices,
@@ -20,6 +22,7 @@ import {
   productVariants,
   productImages,
   products,
+  promotions,
   storeSettings as storeSettingsTable,
   users,
 } from "../../../drizzle/schema";
@@ -593,6 +596,49 @@ export async function updateOnlineOrder(
         .limit(1)
     )[0];
 
+    // استعادة ميزة شحن الكوبون المحجوزة للطلب لضمان عدم فقدانها عند إعادة حساب الطلب أو تغيير العنوان
+    let couponShipping: { freeShipping?: boolean; shippingDiscountAmount?: string | null } | null = null;
+    let activeReservation: { id: number; programId: number } | null = null;
+    if (order.couponCode) {
+      const reservation = (
+        await tx
+          .select({
+            id: couponReservations.id,
+            programId: couponReservations.programId,
+          })
+          .from(couponReservations)
+          .where(
+            and(
+              eq(couponReservations.onlineOrderId, order.id),
+              eq(couponReservations.status, "ACTIVE"),
+            ),
+          )
+          .limit(1)
+      )[0];
+
+      if (reservation) {
+        activeReservation = { id: Number(reservation.id), programId: Number(reservation.programId) };
+        const promo = (
+          await tx
+            .select({
+              freeShipping: promotions.freeShipping,
+              shippingDiscountAmount: promotions.shippingDiscountAmount,
+            })
+            .from(couponPrograms)
+            .innerJoin(promotions, eq(couponPrograms.promotionId, promotions.id))
+            .where(eq(couponPrograms.id, reservation.programId))
+            .limit(1)
+        )[0];
+
+        if (promo?.freeShipping) {
+          couponShipping = {
+            freeShipping: true,
+            shippingDiscountAmount: promo.shippingDiscountAmount ? String(promo.shippingDiscountAmount) : "0.00",
+          };
+        }
+      }
+    }
+
     // 6. Handle items update if items array provided
     if (input.items !== undefined) {
       const customizedItem = (await tx
@@ -786,6 +832,7 @@ export async function updateOnlineOrder(
         storeSettings?.freeShippingThreshold,
         retailSubtotal.toFixed(2),
         storeSettings?.freeShippingThresholdGovernorates,
+        couponShipping,
       );
 
       // Deduct coupon discount if order had one
@@ -810,9 +857,35 @@ export async function updateOnlineOrder(
         });
       }
 
+      let targetCouponCode = order.couponCode;
+      if (activeReservation && couponShipping?.freeShipping && currentCouponDiscount.lte(0)) {
+        if (money(quoteTotals.couponDeliveryWaivedAmount).gt(0)) {
+          await tx
+            .update(couponReservations)
+            .set({
+              discountAmount: quoteTotals.couponDeliveryWaivedAmount,
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+        } else {
+          // Destination's store threshold now grants free delivery:
+          // Release reservation and detach coupon from order so customer's one-time coupon isn't burned with 0 incremental benefit.
+          await tx
+            .update(couponReservations)
+            .set({
+              status: "RELEASED",
+              releasedAt: sql`CURRENT_TIMESTAMP(3)`,
+              releaseReason: "شحن مجاني تلقائي من سقف المتجر",
+              discountAmount: "0.00",
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+          targetCouponCode = null;
+        }
+      }
+
       await tx
         .update(onlineOrders)
         .set({
+          couponCode: targetCouponCode,
           subtotal: quoteTotals.subtotal,
           shippingCost: quoteTotals.deliveryFee,
           deliveryFree: quoteTotals.deliveryFree,
@@ -848,15 +921,42 @@ export async function updateOnlineOrder(
         storeSettings?.freeShippingThreshold,
         String(order.subtotal),
         storeSettings?.freeShippingThresholdGovernorates,
+        couponShipping,
       );
 
       // quoteTotals.total is subtotal (sum of existing item line totals, which already reflect any coupon discount) + deliveryFee.
       // Do NOT subtract couponDiscount again to prevent double coupon deduction.
       const grandTotal = money(quoteTotals.total);
 
+      let targetCouponCode = order.couponCode;
+      if (activeReservation && couponShipping?.freeShipping && money(order.couponDiscount ?? "0").lte(0)) {
+        if (money(quoteTotals.couponDeliveryWaivedAmount).gt(0)) {
+          await tx
+            .update(couponReservations)
+            .set({
+              discountAmount: quoteTotals.couponDeliveryWaivedAmount,
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+        } else {
+          // Destination's store threshold now grants free delivery:
+          // Release reservation and detach coupon from order so customer's one-time coupon isn't burned with 0 incremental benefit.
+          await tx
+            .update(couponReservations)
+            .set({
+              status: "RELEASED",
+              releasedAt: sql`CURRENT_TIMESTAMP(3)`,
+              releaseReason: "شحن مجاني تلقائي من سقف المتجر",
+              discountAmount: "0.00",
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+          targetCouponCode = null;
+        }
+      }
+
       await tx
         .update(onlineOrders)
         .set({
+          couponCode: targetCouponCode,
           shippingCost: quoteTotals.deliveryFee,
           deliveryFree: quoteTotals.deliveryFree,
           deliveryWaivedAmount: quoteTotals.deliveryWaivedAmount,
@@ -1261,4 +1361,129 @@ export async function getOnlineOrderLeaderboard(scopedBranchId: number | null): 
   const [today, month] = await Promise.all([queryFor(todayStart), queryFor(monthStart)]);
   return { today, month };
 }
+
+/**
+ * التوزيع التلقائي العادل الإجباري للطلبات المعلقة (Smart Round-Robin Dispatch):
+ * يفحص موظفي الاستقبال/المبيعات النشطين في الفرع، ويوزع الطلبات المعلقة بالتناوب الآلي الصارم.
+ * يضمن عدالة العبء التشغيلي وفرص العمولات ومنع تراكم الطلبات أو التهرب من المسؤولية.
+ */
+export async function autoAssignRoundRobinOnlineOrders(
+  input: { scopedBranchId: number | null },
+  actor: { userId: number; role?: string }
+): Promise<{
+  assignedCount: number;
+  assignments: Array<{ orderId: number; orderNumber: string; assignedToUserId: number; assignedToName: string }>;
+}> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+
+  return await withTx(async (tx) => {
+    // 1. استرجاع الطلبات المعلقة غير المستلمة (PENDING + claimedByUserId IS NULL)
+    const baseConds = [
+      eq(onlineOrders.status, "PENDING"),
+      sql`${onlineOrders.claimedByUserId} IS NULL`,
+    ];
+    if (input.scopedBranchId != null) {
+      baseConds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+    }
+
+    const unassignedOrders = await tx
+      .select({
+        id: onlineOrders.id,
+        orderNumber: onlineOrders.orderNumber,
+        status: onlineOrders.status,
+        branchId: onlineOrders.branchId,
+        createdAt: onlineOrders.createdAt,
+      })
+      .from(onlineOrders)
+      .where(and(...baseConds))
+      .orderBy(asc(onlineOrders.createdAt))
+      .for("update");
+
+    if (unassignedOrders.length === 0) {
+      return { assignedCount: 0, assignments: [] };
+    }
+
+    // 2. البحث عن موظفي الفرع المؤهلين النشطين
+    const userConds = [eq(users.isActive, true)];
+    if (input.scopedBranchId != null) {
+      userConds.push(eq(users.branchId, input.scopedBranchId));
+    }
+    const eligibleStaff = await tx
+      .select({
+        id: users.id,
+        name: users.name,
+      })
+      .from(users)
+      .where(and(...userConds))
+      .orderBy(asc(users.id));
+
+    if (eligibleStaff.length === 0) {
+      eligibleStaff.push({ id: actor.userId, name: "المستخدم الحالي" });
+    }
+
+    // 3. تطبيق Round-Robin بالتناوب انطلاقاً من آخر إسناد
+    const lastClaimed = (
+      await tx
+        .select({ claimedByUserId: onlineOrders.claimedByUserId })
+        .from(onlineOrders)
+        .where(
+          and(
+            sql`${onlineOrders.claimedByUserId} IS NOT NULL`,
+            input.scopedBranchId != null ? eq(onlineOrders.branchId, input.scopedBranchId) : undefined,
+          )
+        )
+        .orderBy(desc(onlineOrders.claimedAt))
+        .limit(1)
+    )[0];
+
+    let startIdx = 0;
+    if (lastClaimed?.claimedByUserId) {
+      const lastIndex = eligibleStaff.findIndex((s) => s.id === lastClaimed.claimedByUserId);
+      if (lastIndex >= 0) {
+        startIdx = (lastIndex + 1) % eligibleStaff.length;
+      }
+    }
+
+    const assignments: Array<{
+      orderId: number;
+      orderNumber: string;
+      assignedToUserId: number;
+      assignedToName: string;
+    }> = [];
+
+    const assignTime = new Date();
+
+    for (let i = 0; i < unassignedOrders.length; i++) {
+      const order = unassignedOrders[i];
+      const staff = eligibleStaff[(startIdx + i) % eligibleStaff.length];
+
+      if (order.status === "PENDING") {
+        await confirmCouponReservationForOnlineOrder(tx, order.id);
+      }
+
+      await tx
+        .update(onlineOrders)
+        .set({
+          claimedByUserId: staff.id,
+          claimedAt: assignTime,
+          status: order.status === "PENDING" ? "CONFIRMED" : order.status,
+        })
+        .where(eq(onlineOrders.id, order.id));
+
+      assignments.push({
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        assignedToUserId: staff.id,
+        assignedToName: staff.name ?? "—",
+      });
+    }
+
+    return {
+      assignedCount: assignments.length,
+      assignments,
+    };
+  });
+}
+
 

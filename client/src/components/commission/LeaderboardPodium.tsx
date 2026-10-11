@@ -3,6 +3,7 @@ import { Crown, Award, Medal, TrendingUp, Tv, Maximize2, Minimize2, Sparkles, Us
 import { iqd } from "@/lib/hr/ui";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { LiveCelebrationOverlay } from "./LiveCelebrationOverlay";
 
 export interface PodiumRow {
   rank: number;
@@ -56,6 +57,7 @@ export function LeaderboardPodium({ rows, period, onRefresh, isRefetching }: Lea
       )}
       dir="rtl"
     >
+      <LiveCelebrationOverlay />
       {/* الرأس والتحكم */}
       <div className="flex items-center justify-between border-b border-border/60 pb-3 mb-4">
         <div className="flex items-center gap-2">

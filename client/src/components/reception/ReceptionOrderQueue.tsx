@@ -1,6 +1,6 @@
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Check, Clock, Package, Store, Truck, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Check, Clock, Package, Shuffle, Store, Truck, type LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,6 +16,7 @@ import { DeliveryDepartureOverlay, type DeliveryDepartureData } from "@/componen
 import { MarkPickedUpDialog } from "@/components/delivery/MarkPickedUpDialog";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 import { ReceptionCommandAlert } from "@/components/reception/ReceptionCommandAlert";
+import { LiveCelebrationOverlay } from "@/components/commission/LiveCelebrationOverlay";
 import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
@@ -84,6 +85,21 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
     { refetchOnWindowFocus: true },
   );
   const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: canDispatch });
+
+  const autoAssignM = trpc.storeAdmin.orders.autoAssignRoundRobin.useMutation({
+    onSuccess: (res) => {
+      notify.ok(
+        res.assignedCount > 0
+          ? `تم توزيع ${res.assignedCount} طلبات معلقة بالتناوب الآلي العادل (Round-Robin).`
+          : "لا توجد طلبات معلقة بانتظار التوزيع حالياً."
+      );
+      utils.storeAdmin.orders.list.invalidate();
+      utils.workOrders.list.invalidate();
+    },
+    onError: (err) => {
+      notify.err(err.message || "تعذر إتمام التوزيع التلقائي.");
+    },
+  });
 
   useRealtimeEvent<ReceptionQueueUpdatedPayload>(
     REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
@@ -248,11 +264,25 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 pb-8">
+      <LiveCelebrationOverlay branchId={branchId} />
       <ReceptionCommandAlert branchId={branchId} />
 
-      <div className="mb-1 rounded-xl border bg-card p-3">
-        <h1 className="font-extrabold">طابور الطلبات والتوصيل</h1>
-        <p className="text-xs text-muted-foreground">من الاستلام حتى التسليم — استلام مباشر أو إسناد لمندوب/شركة توصيل.</p>
+      <div className="mb-1 flex flex-col gap-3 rounded-xl border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="font-extrabold">طابور الطلبات والتوصيل</h1>
+          <p className="text-xs text-muted-foreground">من الاستلام حتى التسليم — استلام مباشر أو إسناد لمندوب/شركة توصيل.</p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={autoAssignM.isPending}
+          onClick={() => autoAssignM.mutate({ branchId })}
+          className="gap-2 text-xs font-bold shrink-0"
+        >
+          <Shuffle className="size-3.5" />
+          <span>توزيع إجباري عادل (Round-Robin)</span>
+        </Button>
       </div>
 
       {canDispatch && parties.isLoading && (

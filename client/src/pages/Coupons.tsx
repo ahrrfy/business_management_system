@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Download, FileText, Phone, Plus, Printer, Search, Ticket, UserCheck, XCircle } from "lucide-react";
+import { Download, FileText, Phone, Plus, Printer, Search, Sparkles, Ticket, UserCheck, XCircle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -17,11 +17,15 @@ import { D, fmtAr, formatIqd } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printCouponCards, type CouponPrintLayout } from "@/lib/printing/couponCard";
 import { printGiftVoucherDoc } from "@/lib/printing/giftVoucherPrint";
+import { downloadPdfFromBase64 } from "@/lib/printing/couponCardPdf";
+import { formatActiveDays, type PromotionDesignMeta } from "@shared/promotionScheduling";
+import { storefrontUrl } from "@/lib/siteHosts";
 import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { toIraqiIntl } from "@/lib/whatsapp";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { RowActions } from "@/components/list/RowActions";
+import { PromotionBuilder } from "@/components/promotions/PromotionBuilder";
 
 type IssuedCoupon = RouterOutputs["crm"]["coupons"]["listIssued"]["rows"][number];
 type ProgramRow = RouterOutputs["crm"]["coupons"]["programs"][number];
@@ -73,6 +77,7 @@ export default function Coupons() {
   const offerById = useMemo(() => new Map((offers.data ?? []).map((offer) => [offer.id, offer])), [offers.data]);
 
   const [showForm, setShowForm] = useState(false);
+  const [showUnifiedBuilder, setShowUnifiedBuilder] = useState(false);
   const [promotionId, setPromotionId] = useState("");
   const [campaignId, setCampaignId] = useState("");
   const [name, setName] = useState("");
@@ -143,6 +148,10 @@ export default function Coupons() {
     onSuccess: async () => { await programs.refetch(); setShowForm(false); notify.ok("تم إنشاء برنامج الكوبونات كمسوّدة"); },
     onError: (error) => notify.err(error),
   });
+  const createUnified = trpc.crm.coupons.createUnified.useMutation({
+    onSuccess: async () => { await programs.refetch(); setShowForm(false); notify.ok("تم إنشاء برنامج الكوبونات والعرض بنجاح"); },
+    onError: (error) => notify.err(error),
+  });
   const status = trpc.crm.coupons.setProgramStatus.useMutation({
     onSuccess: async () => { await programs.refetch(); await utils.crm.dashboard.invalidate(); notify.ok("تم تحديث حالة البرنامج"); },
     onError: (error) => notify.err(error),
@@ -160,9 +169,41 @@ export default function Coupons() {
     onError: (error) => notify.err(error),
   });
 
+  const exportPdf = trpc.crm.coupons.exportPdf.useMutation({
+    onSuccess: (res) => {
+      downloadPdfFromBase64(res.base64, res.filename);
+      notify.ok("تم إنشاء وتنزيل ملف PDF بنجاح", `${res.pageCount} بطاقة بقياس 54×84 مم (صفحة لكل بطاقة)`);
+    },
+    onError: (error) => notify.err(error),
+  });
+
+  async function downloadPdf(codes?: string[]) {
+    if (!selected) return;
+    exportPdf.mutate({
+      programId: selected,
+      codes: codes && codes.length > 0 ? codes : undefined,
+    });
+  }
+
   function couponCards(codes: string[]) {
-    const design = (selectedProgram?.designJson ?? {}) as { title?: string; subtitle?: string; terms?: string; color?: string };
-    return codes.map((code) => ({ code, title: design.title ?? selectedProgram?.name, subtitle: design.subtitle, terms: design.terms, validTo: selectedProgram?.validTo, color: design.color }));
+    const design = (selectedProgram?.designJson ?? {}) as PromotionDesignMeta;
+    const baseStoreUrl = storefrontUrl();
+    const activeDaysText = design.activeDays && design.activeDays.length > 0 && design.activeDays.length < 7
+      ? `متاح: ${formatActiveDays(design.activeDays)}`
+      : null;
+    return codes.map((code) => {
+      const trimmed = code.trim();
+      return {
+        code: trimmed,
+        title: design.title ?? selectedProgram?.name,
+        subtitle: design.subtitle,
+        terms: design.terms,
+        validTo: selectedProgram?.validTo,
+        activeDaysText,
+        color: design.color,
+        storeUrl: `${baseStoreUrl}?coupon=${encodeURIComponent(trimmed)}`,
+      };
+    });
   }
   async function printCodes(codes: string[], layout: CouponPrintLayout) {
     if (!codes.length) return;
@@ -513,7 +554,20 @@ export default function Coupons() {
   ];
 
   return <div className="mx-auto max-w-7xl space-y-4 pb-8">
-    <PageHeader title="الكوبونات وقسائم الهدايا" description="برامج وإصدارات قابلة للتدقيق، مرتبطة بعرض مالي حقيقي، مع Excel وطباعة 54×84 مم أو A4/PDF أو إيصال حراري 80 مم." actions={<Button onClick={() => setShowForm((value) => !value)}><Plus className="size-4" /> برنامج جديد</Button>} />
+    <PageHeader
+      title="الكوبونات وقسائم الهدايا"
+      description="برامج وإصدارات قابلة للتدقيق، مرتبطة بعرض مالي حقيقي، مع Excel وطباعة 54×84 مم أو A4/PDF أو إيصال حراري 80 مم."
+      actions={
+        <div className="flex items-center gap-2">
+          <Button onClick={() => setShowUnifiedBuilder(true)} className="gap-1.5">
+            <Sparkles className="size-4" /> المحرر الموحد
+          </Button>
+          <Button variant="outline" onClick={() => setShowForm((value) => !value)}>
+            <Plus className="size-4" /> برنامج جديد
+          </Button>
+        </div>
+      }
+    />
 
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
       <Kpi label="البرامج" value={programs.data?.length ?? 0} />
@@ -582,7 +636,7 @@ export default function Coupons() {
           {customerId == null && customerQuery.trim().length >= 2 && <div className="max-h-36 overflow-auto rounded-md border">{(customerSearch.data?.rows ?? []).map((customer) => <button type="button" key={customer.id} className="block w-full border-b px-3 py-2 text-right text-sm last:border-0 hover:bg-muted" onClick={() => { setCustomerId(customer.id); setCustomerName(customer.name); setCustomerQuery(""); }}>{customer.name}</button>)}{customerSearch.isFetched && (customerSearch.data?.rows.length ?? 0) === 0 && <div className="p-3 text-xs text-muted-foreground">لا عميل مطابق.</div>}</div>}
           {customerId != null && <div className="flex items-center justify-between rounded-md border bg-muted/30 p-2 text-sm"><span>مخصص إلى: <b>{customerName}</b></span><Button size="sm" variant="ghost" onClick={() => { setCustomerId(null); setCustomerName(""); }}>إزالة</Button></div>}
           <Button className="w-full" disabled={selectedProgram.status === "ENDED" || issue.isPending} onClick={() => issue.mutate({ programId: selectedProgram.id, count: clampInt(count, 1, 500), customerId })}><Ticket className="size-4" /> {issue.isPending ? "جارٍ الإصدار…" : "إصدار الدفعة"}</Button><div className="text-xs text-muted-foreground">الإصدار عملية ذرية مسجلة: إما تُنشأ الدفعة كاملة أو لا يُنشأ شيء.</div>
-          {lastIssue && <div className="space-y-2 rounded-md border border-primary/30 bg-primary/5 p-3"><div className="font-medium">تم الإصدار: <span dir="ltr">{lastIssue.batchReference}</span></div><div className="text-xs text-muted-foreground">{lastIssue.codes.length} كوبون · {displayDate(lastIssue.issuedAt)}</div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => void printLastIssueThermal(lastIssue)}><Printer className="size-4" /> إيصال حراري 80 مم</Button><Button size="sm" variant="outline" onClick={() => void printCodes(lastIssue.codes, "CARD")}><Printer className="size-4" /> بطاقات 54×84</Button><Button size="sm" variant="outline" onClick={() => void printCodes(lastIssue.codes, "A4")}><FileText className="size-4" /> A4 / حفظ PDF</Button></div></div>}
+          {lastIssue && <div className="space-y-2 rounded-md border border-primary/30 bg-primary/5 p-3"><div className="font-medium">تم الإصدار: <span dir="ltr">{lastIssue.batchReference}</span></div><div className="text-xs text-muted-foreground">{lastIssue.codes.length} كوبون · {displayDate(lastIssue.issuedAt)}</div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => void printLastIssueThermal(lastIssue)}><Printer className="size-4" /> إيصال حراري 80 مم</Button><Button size="sm" variant="outline" disabled={exportPdf.isPending} onClick={() => void downloadPdf(lastIssue.codes)}><Download className="size-4" /> {exportPdf.isPending ? "جارٍ التوليد…" : "تنزيل PDF بطاقات 54×84"}</Button><Button size="sm" variant="outline" onClick={() => void printCodes(lastIssue.codes, "CARD")}><Printer className="size-4" /> بطاقات 54×84</Button><Button size="sm" variant="outline" onClick={() => void printCodes(lastIssue.codes, "A4")}><FileText className="size-4" /> A4 / حفظ PDF</Button></div></div>}
         </CardContent></Card>
         <Card><CardHeader><CardTitle className="text-base">دفعات الإصدار الأخيرة</CardTitle></CardHeader><CardContent>
           {/* مُضمَّن في بطاقةٍ تحمل عنوانه ⇒ بلا شريط حالةٍ ولا بحث؛ والارتفاع محبوسٌ كما كان. */}
@@ -600,7 +654,7 @@ export default function Coupons() {
         </CardContent></Card>
         </>}
       </div>
-      <Card><CardHeader className="flex-row items-center justify-between"><CardTitle className="text-base">سجل الكوبونات</CardTitle><span className="text-xs text-muted-foreground">حقل الرمز في الطباعة: 40×8 مم</span></CardHeader><CardContent><div className="mb-3 flex flex-wrap items-center gap-2"><div className="relative min-w-48 flex-1"><Search className="pointer-events-none absolute right-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input className="h-8 pr-8" value={codeQuery} onChange={(event) => setCodeQuery(event.target.value)} placeholder="بحث خادمي بالرمز…" /></div><AppSelect value={statusFilter} onValueChange={(value) => setStatusFilter(value as CouponStatusFilter)} className="h-8 w-32" size="sm"><option value="ALL">كل الحالات</option><option value="ACTIVE">نشط</option><option value="REDEEMED">مستخدم</option><option value="VOID">ملغى</option></AppSelect><Button size="sm" variant="outline" onClick={() => void exportCoupons("xlsx")}><Download className="size-4" /> Excel شامل</Button><Button size="sm" variant="outline" onClick={() => void exportCoupons("csv")}><FileText className="size-4" /> CSV</Button><Button size="sm" variant="outline" disabled={activeCount === 0 || printing} onClick={() => void printActive()}><FileText className="size-4" /> {printing ? "تحضير…" : `A4 / PDF للنشطة (${activeCount})`}</Button></div>
+      <Card><CardHeader className="flex-row items-center justify-between"><CardTitle className="text-base">سجل الكوبونات</CardTitle><span className="text-xs text-muted-foreground">حقل الرمز في الطباعة: 40×8 مم</span></CardHeader><CardContent><div className="mb-3 flex flex-wrap items-center gap-2"><div className="relative min-w-48 flex-1"><Search className="pointer-events-none absolute right-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input className="h-8 pr-8" value={codeQuery} onChange={(event) => setCodeQuery(event.target.value)} placeholder="بحث خادمي بالرمز…" /></div><AppSelect value={statusFilter} onValueChange={(value) => setStatusFilter(value as CouponStatusFilter)} className="h-8 w-32" size="sm"><option value="ALL">كل الحالات</option><option value="ACTIVE">نشط</option><option value="REDEEMED">مستخدم</option><option value="VOID">ملغى</option></AppSelect><Button size="sm" variant="outline" onClick={() => void exportCoupons("xlsx")}><Download className="size-4" /> Excel شامل</Button><Button size="sm" variant="outline" onClick={() => void exportCoupons("csv")}><FileText className="size-4" /> CSV</Button><Button size="sm" variant="outline" disabled={activeCount === 0 || exportPdf.isPending} onClick={() => void downloadPdf()}><Download className="size-4" /> {exportPdf.isPending ? "جارٍ التوليد…" : `تنزيل PDF للنشطة (${activeCount})`}</Button><Button size="sm" variant="outline" disabled={activeCount === 0 || printing} onClick={() => void printActive()}><FileText className="size-4" /> {printing ? "تحضير…" : `A4 للنشطة (${activeCount})`}</Button></div>
         {/* الترقيم خادميّ ويُصيّره DataTable نفسه — لا `TablePager` منفصل تحته (شريطان يقفزان
             بمقدارين مختلفين). والبحث بالرمز خادميٌّ في شريط الشاشة أعلاه ⇒ `searchable={false}`
             مع `externalFiltersActive` كي لا يُعلن الجدول «لا صفوف بعد» على فلترٍ حاجب. */}
@@ -621,6 +675,11 @@ export default function Coupons() {
       customerId={dossierCustomerId}
       open={dossierCustomerId != null}
       onClose={() => setDossierCustomerId(null)}
+    />
+    <PromotionBuilder
+      open={showUnifiedBuilder}
+      onOpenChange={setShowUnifiedBuilder}
+      onSuccess={() => void programs.refetch()}
     />
   </div>;
 }

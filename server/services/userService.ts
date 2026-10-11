@@ -9,6 +9,7 @@ import {
   normalizeUsername,
 } from "@shared/const";
 import {
+  ALL_PERMISSION_MODULE_KEYS,
   ALL_ROLES,
   PERMISSION_MODULES,
   ROLE_TEMPLATES,
@@ -21,6 +22,10 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import {
+  type AtomicPermissionsMap,
+  type OperationalCaps,
+} from "@shared/atomicPermissions";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { and, asc, desc, eq, gt, gte, isNull, like, ne, or, sql } from "drizzle-orm";
@@ -88,6 +93,8 @@ export interface CreateUserInput {
   jobTitle?: string | null;
   hiredAt?: string | null;
   permissionsOverride?: Record<string, "FULL" | "READ" | "NONE"> | null;
+  atomicPermissions?: AtomicPermissionsMap | null;
+  operationalCaps?: OperationalCaps | null;
   mustChangePassword?: boolean;
 }
 
@@ -106,6 +113,8 @@ export interface UpdateUserInput {
   hiredAt?: string | null;
   isOwner?: boolean;
   permissionsOverride?: Record<string, "FULL" | "READ" | "NONE"> | null;
+  atomicPermissions?: AtomicPermissionsMap | null;
+  operationalCaps?: OperationalCaps | null;
 }
 
 export interface ListUsersInput {
@@ -133,6 +142,8 @@ const SAFE_COLUMNS = {
   jobTitle: users.jobTitle,
   hiredAt: users.hiredAt,
   permissionsOverride: users.permissionsOverride,
+  atomicPermissions: users.atomicPermissions,
+  operationalCaps: users.operationalCaps,
   mustChangePassword: users.mustChangePassword,
   lastSignedIn: users.lastSignedIn,
   createdAt: users.createdAt,
@@ -162,13 +173,13 @@ function assertPasswordPolicy(pw: string) {
 
 /**
  * لا نقبل في استثناء المستخدم إلا مفاتيح وحدات النظام المعروفة. هذا يمنع تخزين مفاتيح
- * صامتة لا يقرأها الإنفاذ، ويحافظ على توافق `customers` القديم الذي يُرحّل إلى CRM.
+ * صامتة لا يقرأها الإنفاذ، ويحافظ على توافق `customers` و`tasks` القديمين.
  */
 function normalizePermissionOverride(
   override: Record<string, "FULL" | "READ" | "NONE"> | null | undefined,
 ): PermissionMap | null {
   if (!override) return null;
-  const allowed = new Set([...PERMISSION_MODULES.map((m) => m.key), "customers"]);
+  const allowed = new Set<string>(ALL_PERMISSION_MODULE_KEYS);
   const normalized: PermissionMap = {};
   for (const [key, level] of Object.entries(override)) {
     if (!allowed.has(key)) {
@@ -185,6 +196,28 @@ function samePermissionOverride(a: PermissionMap | null | undefined, b: Permissi
   return aEntries.length === bEntries.length && aEntries.every(([key, level], index) => {
     const other = bEntries[index];
     return other?.[0] === key && other[1] === level;
+  });
+}
+
+function sameAtomicPermissions(a: AtomicPermissionsMap | null | undefined, b: AtomicPermissionsMap | null | undefined): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  const aEntries = Object.entries(a).filter(([, v]) => v !== undefined).sort(([x], [y]) => x.localeCompare(y));
+  const bEntries = Object.entries(b).filter(([, v]) => v !== undefined).sort(([x], [y]) => x.localeCompare(y));
+  return aEntries.length === bEntries.length && aEntries.every(([k, v], idx) => {
+    const other = bEntries[idx];
+    return other?.[0] === k && other[1] === v;
+  });
+}
+
+function sameOperationalCaps(a: OperationalCaps | null | undefined, b: OperationalCaps | null | undefined): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  const aEntries = Object.entries(a).filter(([, v]) => v !== undefined).sort(([x], [y]) => x.localeCompare(y));
+  const bEntries = Object.entries(b).filter(([, v]) => v !== undefined).sort(([x], [y]) => x.localeCompare(y));
+  return aEntries.length === bEntries.length && aEntries.every(([k, v], idx) => {
+    const other = bEntries[idx];
+    return other?.[0] === k && String(other[1]) === String(v);
   });
 }
 
@@ -294,6 +327,8 @@ export async function createUserTx(tx: Tx, input: CreateUserInput, _actor: Maybe
         jobTitle: input.jobTitle?.trim() || null,
         hiredAt: input.hiredAt ? new Date(input.hiredAt) : null,
         permissionsOverride: permsOverride,
+        atomicPermissions: input.atomicPermissions ?? null,
+        operationalCaps: input.operationalCaps ?? null,
         mustChangePassword: mustChange,
         tempPasswordExpiresAt: expiresAt,
         // AUTH-02: حدّ الإبطال أقدم بثانيتين من الإنشاء كي لا تُرفَض أوّل جلسةٍ يُصدرها دخولٌ
@@ -423,6 +458,19 @@ export async function updateUser(input: UpdateUserInput, actor: MaybeScopedActor
         // مسح الدور المخصّص بلا override صريح في الطلب ⇒ هبوطٌ على قالب الدور **النظيف** — لا
         // على بقايا override قديمة خُزّنت قبل هذا الحارس فتستيقظ بقيم لا يذكرها أحد.
         patch.permissionsOverride = null;
+      }
+    }
+
+    if (input.atomicPermissions !== undefined) {
+      if (!sameAtomicPermissions(existing.atomicPermissions as AtomicPermissionsMap | null, input.atomicPermissions)) {
+        patch.atomicPermissions = input.atomicPermissions;
+        patch.sessionsValidFrom = new Date();
+      }
+    }
+    if (input.operationalCaps !== undefined) {
+      if (!sameOperationalCaps(existing.operationalCaps as OperationalCaps | null, input.operationalCaps)) {
+        patch.operationalCaps = input.operationalCaps;
+        patch.sessionsValidFrom = new Date();
       }
     }
 

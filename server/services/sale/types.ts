@@ -265,4 +265,12 @@ export interface CreateSaleResult {
   /** م١ (PR-1): الإرسالية المُنشأة في معاملة البيع حين وُجد `input.delivery` (تعود أيضاً في replay). */
   consignmentId?: number;
   consignmentNumber?: string;
+  /** كوبون العودة التلقائي (Bounce-Back Coupon) الصادر مع الفاتورة للزيارة القادمة */
+  bounceBackCoupon?: {
+    code: string;
+    headline: string;
+    discountText: string;
+    minSpendText?: string | null;
+    validToText: string;
+  } | null;
 }

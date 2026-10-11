@@ -12,6 +12,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
 import {
+  ALL_PERMISSION_MODULE_KEYS,
   ALL_ROLES,
   canSeeCost as builtinCanSeeCost,
   PERMISSION_MODULES,
@@ -21,6 +22,10 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import {
+  type AtomicPermissionsMap,
+  type OperationalCaps,
+} from "@shared/atomicPermissions";
 import { nanoid } from "nanoid";
 import { roles, users } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -28,11 +33,10 @@ import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 
 const ACCESS_VALUES: AccessLevel[] = ["FULL", "READ", "NONE"];
-// `customers` remains a storage/API compatibility key for existing custom roles.
-// It is intentionally absent from PERMISSION_MODULES so the UI exposes CRM as the
-// single functional owner instead of presenting a second, scattered module.
-const LEGACY_PERMISSION_KEYS = ["customers"] as const;
-const MODULE_KEYS = new Set([...PERMISSION_MODULES.map((m) => m.key), ...LEGACY_PERMISSION_KEYS]);
+// `customers` and `tasks` remain storage/API compatibility keys for existing custom roles.
+// `customers` maps to CRM; `tasks` is an eradicated unit preserved for database backward-compatibility.
+const LEGACY_PERMISSION_KEYS = ["customers", "tasks"] as const;
+const MODULE_KEYS = new Set<string>(ALL_PERMISSION_MODULE_KEYS);
 const BUILTIN_KEYS = new Set<string>(ALL_ROLES);
 /** مفاتيح الأدوار المبنية محجوزة — لا يجوز لدور مخصّص أن ينتحلها. */
 
@@ -46,6 +50,8 @@ export interface CreateRoleInput {
   description?: string | null;
   baseRole: RoleKey;
   permissions: RolePermissions;
+  atomicPermissions?: AtomicPermissionsMap | null;
+  operationalCaps?: OperationalCaps | null;
 }
 
 export interface UpdateRoleInput {
@@ -54,6 +60,8 @@ export interface UpdateRoleInput {
   description?: string | null;
   baseRole?: RoleKey;
   permissions?: RolePermissions;
+  atomicPermissions?: AtomicPermissionsMap | null;
+  operationalCaps?: OperationalCaps | null;
 }
 
 /** يطبّع مفتاح الدور: لاتيني صغير + أرقام + شرطة سفلية، يبدأ بحرف. الأسماء العربية (بلا أحرف
@@ -95,6 +103,10 @@ function normalizePermissions(input: RolePermissions | null | undefined): Permis
   // into CRM when no explicit CRM decision exists.
   if (!ACCESS_VALUES.includes(input?.crm as AccessLevel) && ACCESS_VALUES.includes(legacyCustomers as AccessLevel)) {
     out.crm = legacyCustomers as AccessLevel;
+  }
+  const legacyTasks = input?.tasks;
+  if (legacyTasks && ACCESS_VALUES.includes(legacyTasks as AccessLevel)) {
+    out.tasks = legacyTasks as AccessLevel;
   }
   // ارفض مفاتيح غير معروفة صراحةً (لا تتجاهلها بصمت — قد تدلّ على خطأ عقد).
   for (const k of Object.keys(input ?? {})) {
@@ -169,6 +181,8 @@ export async function createRole(input: CreateRoleInput, _actor: Actor) {
         description: input.description?.trim() || null,
         baseRole: input.baseRole,
         permissions,
+        atomicPermissions: input.atomicPermissions ?? null,
+        operationalCaps: input.operationalCaps ?? null,
         // رؤية التكلفة تتبع الفئة الأساسية (المدير/المحاسب يرونها؛ الكاشير/المخزن لا).
         canSeeCost: builtinCanSeeCost(input.baseRole),
         isActive: true,
@@ -202,6 +216,8 @@ export async function updateRole(input: UpdateRoleInput, _actor: Actor) {
       patch.canSeeCost = builtinCanSeeCost(input.baseRole); // التكلفة تتبع الفئة الأساسية
     }
     if (input.permissions !== undefined) patch.permissions = normalizePermissions(input.permissions);
+    if (input.atomicPermissions !== undefined) patch.atomicPermissions = input.atomicPermissions;
+    if (input.operationalCaps !== undefined) patch.operationalCaps = input.operationalCaps;
     if (Object.keys(patch).length === 0) return { id: input.id, changed: false };
     await tx.update(roles).set(patch).where(eq(roles.id, input.id));
     // تغيير الدور يُبطل جلسات أصحابه (الصلاحيات/الفئة قد تغيّرت) كي يُعاد تحميل السياق.

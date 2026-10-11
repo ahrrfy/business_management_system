@@ -456,6 +456,7 @@ export async function finalize(
     branchId: Number(intent.branchId),
     shiftId: Number(intent.shiftId),
     customerId: checkout?.customerId ?? null,
+    salesRepId: invoicePayload?.salesRepId,
     contactName: null,
     contactPhone: null,
     couponCode: null,
