@@ -56,6 +56,14 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
     return min.greaterThan(0) ? `للطلبات بقيمة ${formatIqd(data.minOrderSpend)} فأكثر` : null;
   }, [data.minOrderSpend]);
 
+  const discountCapText = useMemo(() => {
+    if (data.type === "PERCENT") {
+      const cap = moneyInput(data.maxDiscountAmount);
+      return cap.greaterThan(0) ? `سقف التوفير: ${formatIqd(data.maxDiscountAmount)}` : null;
+    }
+    return null;
+  }, [data.type, data.maxDiscountAmount]);
+
   async function handleCopy() {
     try {
       await navigator.clipboard.writeText(previewCode);
@@ -75,6 +83,7 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
         title: data.design.title || data.name || "هدية خاصة لك",
         subtitle: data.design.subtitle || discountSummary,
         heroDiscount: heroDiscountText,
+        discountCap: discountCapText,
         minSpend: minSpendText,
         terms: data.design.terms || "تُطبق الشروط والأحكام الخاصة بالعرض.",
         validTo: data.validTo || null,
@@ -161,9 +170,9 @@ export function LiveCardPreview({ data }: LiveCardPreviewProps) {
               </span>
               <span className="text-xs font-black">خصم</span>
             </div>
-            {data.type === "PERCENT" && moneyInput(data.maxDiscountAmount).greaterThan(0) && (
+            {discountCapText && (
               <div className="text-[9.5px] font-bold text-foreground mt-0.5">
-                سقف التوفير: {formatIqd(data.maxDiscountAmount)}
+                {discountCapText}
               </div>
             )}
             {minSpendText && (

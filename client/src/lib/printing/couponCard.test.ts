@@ -46,5 +46,17 @@ describe("coupon card printing", () => {
     expect(htmlWithDate).toContain('<div class="valid">صالح لغاية');
     expect(htmlWithDate).not.toContain("حتى نفاد");
   });
+
+  it("renders discount cap on printed card when specified", async () => {
+    const htmlWithCap = await couponCardsHtml([{
+      code: "CAP-1",
+      heroDiscount: "خصم 20٪",
+      discountCap: "سقف التوفير: 25,000 د.ع",
+      minSpend: "للطلبات بقيمة 50,000 د.ع فأكثر",
+    }]);
+    expect(htmlWithCap).toContain('<div class="hero-discount">خصم 20٪</div>');
+    expect(htmlWithCap).toContain('<div class="discount-cap">سقف التوفير: 25,000 د.ع</div>');
+    expect(htmlWithCap).toContain('<div class="min-spend">للطلبات بقيمة 50,000 د.ع فأكثر</div>');
+  });
 });
 
