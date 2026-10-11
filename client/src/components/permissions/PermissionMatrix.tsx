@@ -2,7 +2,7 @@ import React, { memo, useMemo, useState, useCallback } from "react";
 import {
   ALL_DOMAINS,
   DOMAIN_METADATA,
-  STANDARD_ACTIONS,
+  RESOURCE_METADATA,
   ATOMIC_PERMISSION_DEFINITIONS,
   ROLE_DEFAULT_ATOMIC_PERMISSIONS,
   type AtomicPermissionKey,
@@ -22,6 +22,7 @@ import type {
   OperationalPreset,
   PermissionMatrixProps,
   PermissionState,
+  PermissionViewMode,
   ResourceActionSlot,
   ResourceRowViewModel,
 } from "./types";
@@ -53,10 +54,12 @@ export const PermissionMatrix = memo(function PermissionMatrix({
   showPresetsBar = true,
   showCapsPanel = true,
   showMaskingPanel = true,
+  defaultViewMode = "grid",
 }: PermissionMatrixProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedDomain, setSelectedDomain] = useState<DomainKey | "all">("all");
   const [overridesOnly, setOverridesOnly] = useState(false);
+  const [viewMode, setViewMode] = useState<PermissionViewMode>(defaultViewMode);
 
   // Template comparison base
   const templateMap = useMemo<AtomicPermissionsMap>(() => {
@@ -73,7 +76,7 @@ export const PermissionMatrix = memo(function PermissionMatrix({
     [readOnly, onChange],
   );
 
-  // Handle bulk updates from category card
+  // Handle bulk updates from category card or row
   const handleBulkUpdate = useCallback(
     (updates: Record<string, boolean>) => {
       if (readOnly) return;
@@ -136,6 +139,12 @@ export const PermissionMatrix = memo(function PermissionMatrix({
 
       let resModel = resMap.get(def.resource);
       if (!resModel) {
+        const metaKey = `${def.domain}.${def.resource}`;
+        const resMeta = RESOURCE_METADATA[metaKey];
+        const resLabel = resMeta?.labelAr || resMeta?.label || def.labelAr || def.label;
+        const resDesc = resMeta?.descriptionAr || resMeta?.description || def.descriptionAr || def.description;
+        const resIcon = resMeta?.iconName || "Shield";
+
         const initialSlots: Record<StandardActionType, ResourceActionSlot> = {
           view: { key: "", action: "view", isSupported: false, state: "INHERITED_DENY", granted: false, baseGranted: false },
           create: { key: "", action: "create", isSupported: false, state: "INHERITED_DENY", granted: false, baseGranted: false },
@@ -150,39 +159,62 @@ export const PermissionMatrix = memo(function PermissionMatrix({
         resModel = {
           resource: def.resource,
           domain: def.domain,
-          label: def.labelAr || def.label,
-          description: def.descriptionAr || def.description,
+          label: resLabel,
+          description: resDesc,
+          iconName: resIcon,
           actions: initialSlots,
+          allActions: [],
+          specialActions: [],
+          totalActionsCount: 0,
+          grantedActionsCount: 0,
           hasCustomOverrides: false,
         };
         resMap.set(def.resource, resModel);
       }
 
-      // Map action
+      // Compute slot permission state
       const actKey = (def.standardAction || def.action) as StandardActionType;
+      const baseVal = Boolean(templateMap[def.key]);
+      const curVal = atomicPermissions[def.key] !== undefined ? Boolean(atomicPermissions[def.key]) : baseVal;
+
+      let state: PermissionState = "INHERITED_DENY";
+      if (curVal !== baseVal) {
+        state = curVal ? "CUSTOM_GRANT" : "CUSTOM_DENY";
+        resModel.hasCustomOverrides = true;
+        if (curVal) customGrants++;
+        else customDenies++;
+      } else {
+        state = curVal ? "INHERITED_GRANT" : "INHERITED_DENY";
+      }
+
+      const slot: ResourceActionSlot = {
+        key: def.key,
+        action: actKey,
+        definition: def,
+        isSupported: true,
+        state,
+        granted: curVal,
+        baseGranted: baseVal,
+      };
+
+      resModel.allActions.push(slot);
+      resModel.totalActionsCount++;
+      if (curVal) resModel.grantedActionsCount++;
+
+      // Standard Action vs Special Action
       if (STANDARD_ACTION_KEYS.includes(actKey)) {
-        const baseVal = Boolean(templateMap[def.key]);
-        const curVal = atomicPermissions[def.key] !== undefined ? Boolean(atomicPermissions[def.key]) : baseVal;
-
-        let state: PermissionState = "INHERITED_DENY";
-        if (curVal !== baseVal) {
-          state = curVal ? "CUSTOM_GRANT" : "CUSTOM_DENY";
-          resModel.hasCustomOverrides = true;
-          if (curVal) customGrants++;
-          else customDenies++;
+        if (!resModel.actions[actKey].isSupported) {
+          resModel.actions[actKey] = slot;
         } else {
-          state = curVal ? "INHERITED_GRANT" : "INHERITED_DENY";
+          // Secondary action mapping to same standard slot is treated as special operation
+          resModel.specialActions.push(slot);
         }
+      } else {
+        resModel.specialActions.push(slot);
+      }
 
-        resModel.actions[actKey] = {
-          key: def.key,
-          action: actKey,
-          definition: def,
-          isSupported: true,
-          state,
-          granted: curVal,
-          baseGranted: baseVal,
-        };
+      if (def.isSpecialOperation && !resModel.specialActions.some((s) => s.key === slot.key)) {
+        resModel.specialActions.push(slot);
       }
     }
 
@@ -219,11 +251,12 @@ export const PermissionMatrix = memo(function PermissionMatrix({
         if (textMatches) return true;
 
         // Check action definitions
-        return Object.values(res.actions).some(
+        return res.allActions.some(
           (slot) =>
-            slot.isSupported &&
-            (slot.key.toLowerCase().includes(rawQ) ||
-              (slot.definition?.labelAr && slot.definition.labelAr.toLowerCase().includes(rawQ))),
+            slot.key.toLowerCase().includes(rawQ) ||
+            (slot.definition?.labelAr && slot.definition.labelAr.toLowerCase().includes(rawQ)) ||
+            (slot.definition?.label && slot.definition.label.toLowerCase().includes(rawQ)) ||
+            (slot.definition?.descriptionAr && slot.definition.descriptionAr.toLowerCase().includes(rawQ)),
         );
       });
 
@@ -237,14 +270,10 @@ export const PermissionMatrix = memo(function PermissionMatrix({
       let customCount = 0;
 
       for (const res of rawResources) {
-        for (const slot of Object.values(res.actions)) {
-          if (slot.isSupported) {
-            totalActions++;
-            if (slot.granted) grantedActions++;
-            if (slot.state === "CUSTOM_GRANT" || slot.state === "CUSTOM_DENY") {
-              customCount++;
-            }
-          }
+        totalActions += res.totalActionsCount;
+        grantedActions += res.grantedActionsCount;
+        if (res.hasCustomOverrides) {
+          customCount++;
         }
       }
 
@@ -293,6 +322,8 @@ export const PermissionMatrix = memo(function PermissionMatrix({
         onDomainChange={setSelectedDomain}
         overridesOnly={overridesOnly}
         onOverridesOnlyChange={setOverridesOnly}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
         customGrantsCount={totalGrants}
         customDeniesCount={totalDenies}
         onResetToTemplate={onReset}
@@ -308,6 +339,7 @@ export const PermissionMatrix = memo(function PermissionMatrix({
             onToggle={handleToggle}
             onBulkUpdate={handleBulkUpdate}
             disabled={readOnly}
+            viewMode={viewMode}
           />
         ))}
 

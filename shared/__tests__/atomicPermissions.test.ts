@@ -479,8 +479,8 @@ describe("UI & Ergonomics Helpers", () => {
 
   it("getAtomicPermissionsByResource: يسترجع الصلاحيات التابعة لمورد محدد", () => {
     const shiftKeys = getAtomicPermissionsByResource("pos", "shift");
-    expect(shiftKeys.length).toBe(2);
-    expect(shiftKeys.map((s) => s.action).sort()).toEqual(["close", "open"]);
+    expect(shiftKeys.length).toBe(5);
+    expect(shiftKeys.map((s) => s.action).sort()).toEqual(["close", "open", "print", "variance_approve", "view"]);
   });
 
   it("searchAtomicPermissions: يدعم البحث الذكي بالعربية والإنجليزية ويصون المسافات", () => {
@@ -652,8 +652,8 @@ describe("Milestone 1 Remediation Invariants & Edge Cases", () => {
     expect(overrides["pos.invoice.create"].overridden).toBe(false);
 
     expect(() => searchAtomicPermissions(null)).not.toThrow();
-    expect(searchAtomicPermissions(null)).toHaveLength(104);
-    expect(searchAtomicPermissions(undefined)).toHaveLength(104);
+    expect(searchAtomicPermissions(null)).toHaveLength(ATOMIC_PERMISSION_DEFINITIONS.length);
+    expect(searchAtomicPermissions(undefined)).toHaveLength(ATOMIC_PERMISSION_DEFINITIONS.length);
 
     expect(() => deriveLegacyModulesFromAtomic(null)).not.toThrow();
     const nullDerived = deriveLegacyModulesFromAtomic(null);
