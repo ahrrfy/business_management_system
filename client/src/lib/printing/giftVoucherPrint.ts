@@ -20,6 +20,9 @@ export interface GiftVoucherPrintData {
   reason?: string | null;
   validUntil?: string | null;
   terms?: string | null;
+  discountScope?: "fixed_credit" | "per_unit";
+  totalLabel?: string;
+  itemDescription?: string;
 }
 
 /**
@@ -95,17 +98,24 @@ export function giftVoucherToPrintDoc(data: GiftVoucherPrintData): PrintDoc {
     itemTotal = percentDiscount;
     totalLabel = "نسبة الخصم";
     totalValue = percentDiscount;
+  } else if (data.discountScope === "per_unit") {
+    const formattedAmount = formatCurrencyAmount(data.amount);
+    itemBlockName = data.itemDescription || "خصم ترويجي لكل قطعة/وحدة مؤهلة";
+    itemPrice = `1 × ${formattedAmount} د.ع`;
+    itemTotal = `${formattedAmount} د.ع/وحدة`;
+    totalLabel = data.totalLabel || "قيمة الخصم للوحدة";
+    totalValue = `${formattedAmount} د.ع / وحدة`;
   } else {
     const formattedAmount = formatCurrencyAmount(data.amount);
     itemPrice = `1 × ${formattedAmount} د.ع`;
     itemTotal = `${formattedAmount} د.ع`;
-    totalLabel = "قيمة القسيمة";
+    totalLabel = data.totalLabel || "قيمة القسيمة";
     totalValue = `${formattedAmount} د.ع`;
   }
 
   return {
     kind: "receipt",
-    title: "قسيمة هدية وترضية",
+    title: percentDiscount || data.discountScope === "per_unit" ? "قسيمة خصم ترويجي" : "قسيمة هدية وترضية",
     subtitle: "المكتبة العربية للطباعة والقرطاسية",
     meta: [
       `التاريخ: ${fmtDate(now)}`,

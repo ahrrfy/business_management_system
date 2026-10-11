@@ -228,23 +228,35 @@ export default function Coupons() {
   async function printCouponThermal(coupon: IssuedCoupon) {
     const offer = selectedProgram ? offerById.get(selectedProgram.promotionId) : null;
     const isPercent = offer?.type === "PERCENT";
-    const amount = offer?.type === "AMOUNT" ? Number(offer.discountAmount || 0) : 0;
+    const isAmountPerUnit = offer?.type === "AMOUNT";
+    const amount = isAmountPerUnit ? Number(offer.discountAmount || 0) : 0;
     const discountPercent = isPercent && offer?.discountPercent ? Number(offer.discountPercent) : undefined;
     const custPhone = coupon.assignedCustomerPhone;
     const design = (selectedProgram?.designJson ?? {}) as { title?: string; subtitle?: string; terms?: string };
     const baseTitle = design.title || selectedProgram?.name || "قسيمة خصم";
-    const discountSuffix = isPercent && offer?.discountPercent ? ` (خصم ${offer.discountPercent}%)` : "";
+    const discountSuffix = isPercent && offer?.discountPercent
+      ? ` (خصم ${offer.discountPercent}%)`
+      : isAmountPerUnit && offer?.discountAmount
+      ? ` (خصم ${fmtAr(offer.discountAmount)} د.ع/وحدة)`
+      : "";
+    const terms = [
+      design.terms,
+      isAmountPerUnit ? `خصم ترويجي بقيمة ${fmtAr(offer.discountAmount)} د.ع لكل قطعة أو وحدة مؤهلة مشمولة بالعرض.` : undefined,
+    ].filter(Boolean).join(" • ");
     try {
       const res = await printGiftVoucherDoc({
         code: coupon.code,
         couponCode: coupon.code,
         amount,
         discountPercent,
+        discountScope: isAmountPerUnit ? "per_unit" : "fixed_credit",
+        totalLabel: isAmountPerUnit ? "قيمة الخصم للوحدة" : undefined,
+        itemDescription: isAmountPerUnit ? "خصم ترويجي لكل قطعة/وحدة مؤهلة" : undefined,
         customerName: coupon.assignedCustomerName || "زبون مكرّم",
         customerPhone: custPhone || undefined,
         reason: `${baseTitle}${discountSuffix}`,
         validUntil: selectedProgram?.validTo ? displayDate(selectedProgram.validTo) : undefined,
-        terms: design.terms || undefined,
+        terms: terms || undefined,
       });
       if (res && !res.ok) {
         if (res.reason === "popup-blocked") {
@@ -264,23 +276,35 @@ export default function Coupons() {
     if (!firstCode) return;
     const offer = selectedProgram ? offerById.get(selectedProgram.promotionId) : null;
     const isPercent = offer?.type === "PERCENT";
-    const amount = offer?.type === "AMOUNT" ? Number(offer.discountAmount || 0) : 0;
+    const isAmountPerUnit = offer?.type === "AMOUNT";
+    const amount = isAmountPerUnit ? Number(offer.discountAmount || 0) : 0;
     const discountPercent = isPercent && offer?.discountPercent ? Number(offer.discountPercent) : undefined;
     const custPhone = customerPhone || undefined;
     const design = (selectedProgram?.designJson ?? {}) as { title?: string; subtitle?: string; terms?: string };
     const baseTitle = design.title || selectedProgram?.name || "قسيمة خصم";
-    const discountSuffix = isPercent && offer?.discountPercent ? ` (خصم ${offer.discountPercent}%)` : "";
+    const discountSuffix = isPercent && offer?.discountPercent
+      ? ` (خصم ${offer.discountPercent}%)`
+      : isAmountPerUnit && offer?.discountAmount
+      ? ` (خصم ${fmtAr(offer.discountAmount)} د.ع/وحدة)`
+      : "";
+    const terms = [
+      design.terms,
+      isAmountPerUnit ? `خصم ترويجي بقيمة ${fmtAr(offer.discountAmount)} د.ع لكل قطعة أو وحدة مؤهلة مشمولة بالعرض.` : undefined,
+    ].filter(Boolean).join(" • ");
     try {
       const res = await printGiftVoucherDoc({
         code: firstCode,
         couponCode: firstCode,
         amount,
         discountPercent,
+        discountScope: isAmountPerUnit ? "per_unit" : "fixed_credit",
+        totalLabel: isAmountPerUnit ? "قيمة الخصم للوحدة" : undefined,
+        itemDescription: isAmountPerUnit ? "خصم ترويجي لكل قطعة/وحدة مؤهلة" : undefined,
         customerName: customerName || "زبون مكرّم",
         customerPhone: custPhone,
         reason: `${baseTitle}${discountSuffix}`,
         validUntil: selectedProgram?.validTo ? displayDate(selectedProgram.validTo) : undefined,
-        terms: design.terms || undefined,
+        terms: terms || undefined,
       });
       if (res && !res.ok) {
         if (res.reason === "popup-blocked") {

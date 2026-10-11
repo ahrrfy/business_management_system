@@ -19,6 +19,7 @@ import { POS_METHODS, type PosPaymentMethod } from "@/lib/paymentMethod";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { exportRows } from "@/lib/export";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -125,6 +126,7 @@ export default function InstallmentPlans() {
 
   async function handlePrintDueSoonReport() {
     setIsPrintingDue(true);
+    const reserved = reservePrintWindow("width=900,height=1100");
     try {
       let allDue: DueRow[] = [];
       const currentList = due.data ?? [];
@@ -146,11 +148,17 @@ export default function InstallmentPlans() {
         }
       }
       if (allDue.length === 0) {
+        if (reserved) releaseReservedPrintWindow();
         notify.err("لا توجد أقساط مستحقة للطباعة");
         return;
       }
-      printDueSoonReport(allDue, dueSoonDays);
+      const ok = printDueSoonReport(allDue, dueSoonDays);
+      if (!ok) {
+        if (reserved) releaseReservedPrintWindow();
+        notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
+      }
     } catch (e) {
+      if (reserved) releaseReservedPrintWindow();
       notify.err(e);
     } finally {
       setIsPrintingDue(false);
