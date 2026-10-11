@@ -97,7 +97,13 @@ export const salesRouter = router({
             ...(approvedBy != null
               ? { priceApprovalCapability: VERIFIED_DIGITAL_PRICE_APPROVAL }
               : {}),
-            priceApprovedBy: approvedBy,
+            priceApprovedBy: approvedBy ?? (actor.role === "admin" ? actor.userId : null),
+            ...(approvedBy != null && approvedBy !== actor.userId
+              ? {
+                  creditApprovedBy: approvedBy,
+                  creditApprovalCapability: intentService.VERIFIED_DIGITAL_CREDIT_APPROVAL,
+                }
+              : {}),
           },
           actor,
         ),

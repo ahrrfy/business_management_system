@@ -131,6 +131,8 @@ function saleDefinitionChangedError(why: string): string {
  */
 /** رمز غير قابل للإنشاء من حمولة tRPC؛ يفتح منتجات DIGITAL_CARD لمسار التثبيت الموثوق فقط. */
 export const DIGITAL_SALE_CAPABILITY = Symbol("DIGITAL_SALE_CAPABILITY");
+/** Completion of an exact, previously admitted digital credit intent; never supplied over JSON. */
+export const VERIFIED_DIGITAL_CREDIT_PREFLIGHT = Symbol("VERIFIED_DIGITAL_CREDIT_PREFLIGHT");
 
 /**
  * م١ (PR-1) — البيعُ بتوصيلٍ بيعٌ COD **خادمياً**: يُشتقّ العلمان من وجود `delivery` وحده، فلا
@@ -1405,6 +1407,23 @@ export async function createSaleInTx(
     input.codDispatchPending !== true && // COD يبقى محكوماً بحدّ ائتمان العميل المسجَّل (main).
     OPENING_RECEPTION_CHANNELS.has(input.sourceType ?? "POS") &&
     (await readOpeningWindowState(tx)).active;
+  const preflight = input.digitalCreditPreflight;
+  const digitalCreditPreflight =
+    unpaid.gt(0) &&
+    capability === DIGITAL_SALE_CAPABILITY &&
+    preflight?.capability === VERIFIED_DIGITAL_CREDIT_PREFLIGHT &&
+    input.customerId === preflight.customerId &&
+    input.branchId === preflight.branchId &&
+    input.sourceType === "POS" &&
+    input.clientRequestId === `DIGITAL_INTENT:${preflight.intentId}` &&
+    unpaid.eq(money(preflight.amount));
+  if (preflight != null && !digitalCreditPreflight) {
+    throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
+      what: "تعذّر تثبيت ذمة البيع الرقمي",
+      why: "تفويض ائتمان النيّة الرقمية لا يطابق العميل والفرع والمبلغ",
+      doThis: "راجع النيّة من طابور الكروت مع مسؤول النظام",
+    }) });
+  }
   if (receptionDeferredWaiver) {
     logger.info(
       {
@@ -1457,7 +1476,7 @@ export async function createSaleInTx(
           consumerUserId: actor.userId,
         },
       );
-    } else {
+    } else if (!digitalCreditPreflight) {
       // paymentMode='COD' (٢٨/٨/٢٦، هجرة 0276): يُتجاوز فحصُ السقف — المال يأتي مع المندوب،
       // لا يبقى ديناً على العميل. الحمايةُ بديلة عبر workOrder.deliver عند التسليم.
       await assertCreditLimit(

@@ -39,7 +39,7 @@ import { adjustSupplierBalance, postEntry } from "../ledgerService";
 import { createApproval } from "../creditApprovalService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, sumMoney, toDbMoney } from "../money";
-import { DIGITAL_SALE_CAPABILITY } from "../sale/create";
+import { DIGITAL_SALE_CAPABILITY, VERIFIED_DIGITAL_CREDIT_PREFLIGHT } from "../sale/create";
 import type { PaymentMethod } from "../sale/types";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
@@ -452,6 +452,16 @@ export async function finalize(
   /* ٦. نواة البيع داخل المعاملة نفسها — بيانات الطالب لقطة بيع فقط، بلا عقد أو ملف تشغيلي. */
   let sale: any;
   const invoiceItemByIntentItem = new Map<string, number>();
+  const creditPreflight = checkout?.creditLimitPreflight;
+  // Admission was checked before irreversible issuance. Bind its exact scope again;
+  // a later receivable must not strand an already issued card without its invoice.
+  const admittedCredit = input.paymentMethod === "CREDIT" &&
+    checkout?.creditApprovalId == null &&
+    creditPreflight != null &&
+    creditPreflight.customerId === boundCustomerId &&
+    creditPreflight.branchId === Number(intent.branchId) &&
+    money(creditPreflight.amount).eq(expectedTotal) &&
+    expectedTotal.gt(0);
   const salePayload = {
     branchId: Number(intent.branchId),
     shiftId: Number(intent.shiftId),
@@ -467,6 +477,15 @@ export async function finalize(
     clientRequestId: `DIGITAL_INTENT:${input.intentId}`,
     creditApproved: checkout?.creditApprovalId != null,
     creditApprovalId: checkout?.creditApprovalId ?? undefined,
+    ...(admittedCredit ? {
+      digitalCreditPreflight: {
+        capability: VERIFIED_DIGITAL_CREDIT_PREFLIGHT,
+        intentId: input.intentId,
+        customerId: creditPreflight!.customerId,
+        branchId: creditPreflight!.branchId,
+        amount: creditPreflight!.amount,
+      },
+    } : {}),
     payment: input.paymentMethod === "CREDIT" ? undefined : {
       amount: input.paymentAmount,
       method: input.paymentMethod,
@@ -713,6 +732,7 @@ export async function finalize(
     items: items.length,
     priceApprovedBeforeIssuance: checkout?.priceOverrideApproved === true,
     priceApprovedBy: checkout?.priceApprovedBy ?? null,
+    creditLimitApprovedBeforeIssuance: admittedCredit,
     // true مع غياب اعتماد مدير يعني أن WAVG/مرجع السعر تغيّر بعد prepare؛ نُكمل الكرت
     // الصادر تحت قدرة النيّة الموثقة ونترك أثراً واضحاً بدلاً من خلق بيع ضائع.
     commitPricingGateTriggered: sale.priceOverride === true,
