@@ -40,6 +40,8 @@ export default defineConfig({
       "shared/cashReceiptSourceDocument.test.ts",
       "shared/negativeCashDiagnosis.test.ts",
       "client/src/lib/printing/couponCard.test.ts",
+      "server/services/__tests__/couponPdfService.unit.test.ts",
+      "shared/__tests__/promotionScheduling.unit.test.ts",
       "client/src/lib/printing/managerBadge.test.ts",
       "client/src/lib/printing/barcode.test.ts",
       "client/src/lib/printing/barcodePdf.test.ts",

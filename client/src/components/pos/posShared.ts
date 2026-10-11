@@ -134,6 +134,8 @@ export type Receipt = {
   } | null;
   /** م١ PR-B: رقم الطرد المُنشأ في معاملة البيع (يظهر في نافذة الإيصال مع رابط إدارة التوصيل). */
   consignmentNumber?: string | null;
+  /** قسيمة عودة تلقائية (Bounce-Back Coupon) تُطبع بأسفل الإيصال */
+  bounceBackCoupon?: ReceiptBrowserData["bounceBackCoupon"];
 };
 
 // ─── Colour Tokens — مَربوطة بـtokens.css لِتَتنفّس مع .dark بِلا MutationObserver ─
@@ -399,5 +401,6 @@ export function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
     digitalDetails: r.digitalDetails ?? null,
     // م١ PR-B: كتلة التوصيل تُطبع بالراسم القائم نفسه (٨/٨) — الأجرة تمريرٌ لا إيراد.
     delivery: r.delivery ?? null,
+    bounceBackCoupon: r.bounceBackCoupon ?? null,
   };
 }

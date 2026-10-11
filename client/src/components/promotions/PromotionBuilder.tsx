@@ -87,6 +87,12 @@ export function PromotionBuilder({ open, onOpenChange, onSuccess }: PromotionBui
         subtitle: formData.design.subtitle.trim() || undefined,
         terms: formData.design.terms.trim() || undefined,
         color: formData.design.color,
+        activeDays: formData.activeDays.length >= 7 ? null : formData.activeDays,
+        isAutoBounceBack: formData.isAutoBounceBack,
+        autoBounceBackMinInvoice: formData.isAutoBounceBack ? formData.autoBounceBackMinInvoice : null,
+        bounceBackValidityDays: formData.isAutoBounceBack ? formData.bounceBackValidityDays : null,
+        bounceBackPrefix: formData.isAutoBounceBack ? (formData.bounceBackPrefix.trim() || null) : null,
+        bounceBackHeadline: formData.isAutoBounceBack ? (formData.bounceBackHeadline.trim() || null) : null,
       },
       campaignId: formData.campaignId,
     });

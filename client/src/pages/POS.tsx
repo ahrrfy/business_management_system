@@ -650,6 +650,7 @@ export default function POS() {
         // م١ PR-B: الطرد المُنشأ في معاملة البيع (يعود من الخادم) + كتلة التوصيل للإيصال.
         delivery: ctx.delivery ?? null,
         consignmentNumber: r.consignmentNumber ?? null,
+        bounceBackCoupon: (r as { bounceBackCoupon?: Receipt["bounceBackCoupon"] }).bounceBackCoupon ?? null,
       };
       // #2 (تدقيق التثبيت): إن رجع الخادم total (المُقرَّب المخزَّن فعلاً) نستعمله في الإيصال
       // كمصدر حقيقة أخير — يُغطّي أي انحراف تقريب مستقبليّ بين العميل والخادم (roundCashIQD مشتركة
@@ -658,12 +659,10 @@ export default function POS() {
       const alignedRec: Receipt = { ...rec, total: serverTotal };
       setReceipt(alignedRec);
       setLastInv({ num: r.invoiceNumber, total: serverTotal });
-      notify.ok(
-        `تم البيع — فاتورة ${r.invoiceNumber}`,
-        r.consignmentNumber
-          ? `أُسند الطرد ${r.consignmentNumber} للتوصيل في المعاملة نفسها — تابعه من «إدارة التوصيل ← قيد التوصيل»`
-          : "افتح من شريط «آخر فاتورة» أعلاه أو من صفحة الفواتير",
-      );
+      const saleMsg = r.consignmentNumber
+        ? `أُسند الطرد ${r.consignmentNumber} للتوصيل`
+        : (alignedRec.bounceBackCoupon ? `قسيمة هدية صادرة: ${alignedRec.bounceBackCoupon.code} (خصم ${alignedRec.bounceBackCoupon.discountText})` : "افتح من شريط «آخر فاتورة» أعلاه");
+      notify.ok(`تم البيع — فاتورة ${r.invoiceNumber}`, saleMsg);
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
       patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "", delivery: null });
 
