@@ -133,6 +133,8 @@ export interface InvoicePrintData {
   barcode?: DocHeaderBarcode | string | boolean | null;
   /** موضع الباركود: بجانب الرقم أو تحته (الافتراضي "beside") */
   barcodePlacement?: 'beside' | 'below';
+  /** نمط الدفع (PREPAID/COD/CREDIT) — يميّز فواتير الدفع عند الاستلام عن الفواتير الآجلة. */
+  paymentMode?: string | null;
 }
 
 export async function printInvoiceA4(d: InvoicePrintData): Promise<boolean> {
@@ -148,10 +150,11 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<boolean> {
   const qrSvg = await qrCodeSvg(qrTarget, { size: 88, margin: 1 }).catch(() => '');
 
   const remainingNum = Math.max(Number(d.total) - Number(d.paidAmount ?? 0), 0);
+  const isCod = d.paymentMode === 'COD';
   const statusLabel = remainingNum <= 0.001
     ? 'مدفوعة'
-    : (Number(d.paidAmount ?? 0) > 0 ? 'مدفوعة جزئياً' : 'آجلة');
-  const statusColor = remainingNum <= 0.001 ? '#0D6B52' : (Number(d.paidAmount ?? 0) > 0 ? '#92400E' : '#8A1F11');
+    : (isCod ? 'دفع عند الاستلام (COD)' : (Number(d.paidAmount ?? 0) > 0 ? 'مدفوعة جزئياً' : 'آجلة'));
+  const statusColor = remainingNum <= 0.001 ? '#0D6B52' : (isCod ? '#0284C7' : (Number(d.paidAmount ?? 0) > 0 ? '#92400E' : '#8A1F11'));
 
   // حساب الرصيد السابق والرصيد النهائي (الذمة الكلية) من دفتر الأستاذ الفعلي
   let balAfter = d.customerBalanceAfter != null ? Number(d.customerBalanceAfter) : null;
@@ -963,6 +966,8 @@ export interface ReceiptBrowserData {
   change?: string | number | null;
   /** مبلغ الآجل/الذمة في البيع الآجل (يظهر صفّاً بارزاً بعد المدفوع) */
   credit?: string | number | null;
+  /** نمط الدفع (PREPAID/COD/CREDIT) — للتمييز بين المتبقي الآجل والمطلوب عند الاستلام (COD) */
+  paymentMode?: string | null;
   /** طريقة الدفع كنصّ جاهز للعرض (نقدي/بطاقة/تحويل/محفظة/صك) — تظهر في كتلة الإجماليات */
   paymentMethod?: string | null;
   /** البطاقات الرقمية (ش١٠): تفاصيل كل كرت — بلا أيّ حقلٍ ماليّ داخليّ (§١٢.٢). */
@@ -1166,7 +1171,7 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
       ${d.paid != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المدفوع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.paid)}</td></tr>` : ''}
       ${d.change != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المتبقي (الفكة)</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.change)}</td></tr>` : ''}
       ${Number(d.heldDeposits ?? 0) > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">عربون محتجز</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.heldDeposits)}</td></tr>` : ''}
-      ${Number(d.credit ?? 0) > 0 ? `<tr style="border:2px solid #000;"><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;">متبقٍّ (حساب آجل)</td><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.credit)} د.ع</td></tr>` : ''}
+      ${Number(d.credit ?? 0) > 0 ? `<tr style="border:2px solid #000;"><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;">${d.paymentMode === "COD" ? "المطلوب عند الاستلام (COD)" : "متبقٍّ (حساب آجل)"}</td><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.credit)} د.ع</td></tr>` : ''}
     </tbody>
   </table>
 

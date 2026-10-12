@@ -362,7 +362,8 @@ export async function receiptToCanvas(
   if (Number(d.credit ?? 0) > 0) {
     y += 4; dashedLine(ctx, y); y += 30;
     ctx.font = "900 26px Cairo, sans-serif";
-    ctx.textAlign = "right"; ctx.fillText("متبقٍّ (آجل):", W - PAD, y);
+    const creditLabel = d.paymentMode === "COD" ? "المطلوب عند الاستلام (COD):" : "متبقٍّ (آجل):";
+    ctx.textAlign = "right"; ctx.fillText(creditLabel, W - PAD, y);
     ctx.textAlign = "left"; ctx.fillText(`${fmt(d.credit)} د.ع`, PAD, y);
     y += 30;
   }
