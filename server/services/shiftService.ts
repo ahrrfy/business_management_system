@@ -426,9 +426,8 @@ export async function closeShift(
         ? actor.userId
         : (input.managerApprovedByUserId ?? null);
 
-    // العدّ يثبت الموجود مادياً فقط ولا ينشئ مصدراً نقدياً. بوابة API لا تسمح بإغلاق
-    // الوردية مع أي فرق، حتى بموافقة مدير: يجب تصحيح الفاتورة/المرتجع أو تسجيل الحركة
-    // النظامية من وحدتها المختصة أولاً، ثم يعاد احتساب المتوقع وتتم المطابقة.
+    // العدّ يثبت الموجود مادياً فقط ولا ينشئ مصدراً نقدياً. إغلاق الوردية بفرق نقدي
+    // يتطلب موافقة مدير مسؤول وتوثيق سبب الفرق ورمزه، وإلا يُحظر الإغلاق.
     validateCashBreakdown(input.countedBreakdown, counted);
     if (input.enforceCashGovernance && hasVariance) {
       throw new TRPCError({
@@ -439,6 +438,29 @@ export async function closeShift(
           `والفرق ${variance.toFixed(2)} د.ع. العدّ لا ينشئ مالاً: راجع الرصيد الافتتاحي ` +
           `والمبيعات والمرتجعات النقدية، وسجّل أو صحّح العملية من وحدتها المختصة ثم أعد الإغلاق.`,
       });
+    }
+
+    if (hasVariance) {
+      if (!varianceApproverId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر إغلاق الوردية مع وجود فرق نقدي",
+            why: "لا يمكن إغلاق وردية بفرق نقدي دون موافقة واعتماد مدير مصرح",
+            doThis: "اطلب اعتماد فرق الوردية من مدير الفرع أو الإدارة",
+          }),
+        });
+      }
+      if (!reasonCode || !reason) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر إغلاق الوردية بفرق نقدي معتمد",
+            why: "إغلاق الوردية مع وجود فرق نقدي معتمد يتطلب تحديد سبب الفرق وكتابة بيانه",
+            doThis: "حدد رمز سبب الفرق من القائمة واكتب التبرير التفصيلي",
+          }),
+        });
+      }
     }
 
     // العهدة الوسيطة (imprest، قرار المالك ٢٨/٧/٢٦): يعود **كامل** النقد المعدود إلى الخزينة تلقائياً
