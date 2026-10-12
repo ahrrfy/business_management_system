@@ -262,6 +262,7 @@ export default function ARReminders() {
       notify.err("تعذّر تحديد الفرع — يُرجى تحديد فرع أو الانتظار حتى اكتمال تحميل الفروع.");
       return;
     }
+    const isAll = effectiveScope === "all";
     logSent.mutate({
       customerId: row.customerId,
       totalUnpaidSnapshot: row.totalUnpaid,
@@ -269,6 +270,7 @@ export default function ARReminders() {
       daysOverdue: row.daysOverdue,
       messageBody: message,
       isOpeningBalance: row.isOpeningBalance || undefined,
+      isAllBranches: isAll || undefined,
       branchId: targetBranch,
     });
   }
@@ -283,12 +285,14 @@ export default function ARReminders() {
       notify.err("تعذّر تحديد الفرع — يُرجى تحديد فرع أو الانتظار حتى اكتمال تحميل الفروع.");
       return;
     }
+    const isAll = effectiveScope === "all";
     sendViaApi.mutate({
       customerId: row.customerId,
       totalUnpaidSnapshot: row.totalUnpaid,
       oldestInvoiceDate: row.oldestInvoiceDate,
       daysOverdue: row.daysOverdue,
       isOpeningBalance: row.isOpeningBalance || undefined,
+      isAllBranches: isAll || undefined,
       branchId: targetBranch,
     });
   }
@@ -313,6 +317,7 @@ export default function ARReminders() {
       notify.err("تعذّر تحديد الفرع — يُرجى تحديد فرع أو الانتظار حتى اكتمال تحميل الفروع.");
       return;
     }
+    const isAll = effectiveScope === "all";
     logSkipped.mutate({
       customerId: skipTarget.customerId,
       totalUnpaidSnapshot: skipTarget.totalUnpaid,
@@ -321,6 +326,7 @@ export default function ARReminders() {
       skipReason: skipReason.trim(),
       promisedDate: promise || null,
       isOpeningBalance: skipTarget.isOpeningBalance || undefined,
+      isAllBranches: isAll || undefined,
       branchId: targetBranch,
     });
   }
@@ -401,7 +407,7 @@ export default function ARReminders() {
               <span className="text-xl font-bold tabular-nums">
                 {filteredQueue.length > 0
                   ? Math.max(...filteredQueue.map((r) => r.daysOverdue))
-                  : (queue.data && queue.data.length > 0 ? Math.max(...queue.data.map((r) => r.daysOverdue)) : 0)} يوماً
+                  : 0} يوماً
               </span>
             </CardContent>
           </Card>
@@ -877,6 +883,28 @@ function HistoryTab({
         },
       },
       {
+        id: "branch",
+        header: "الفرع",
+        accessorKey: "branchName",
+        cell: ({ row }) => {
+          const r = row.original;
+          if (r.isAllBranches) {
+            return (
+              <div className="text-center">
+                <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                  كل الفروع
+                </span>
+              </div>
+            );
+          }
+          return (
+            <span className="text-xs text-muted-foreground block text-center">
+              {r.branchName ?? `فرع #${r.branchId}`}
+            </span>
+          );
+        },
+      },
+      {
         id: "totalUnpaidSnapshot",
         header: "الرصيد وقت التذكير",
         accessorKey: "totalUnpaidSnapshot",
@@ -946,6 +974,7 @@ function HistoryTab({
       columns: [
         { key: "createdAt", header: "التاريخ", map: (r) => fmtDateTime(r.createdAt) },
         { key: "customerName", header: "العميل" },
+        { key: "branch", header: "الفرع", map: (r) => (r.isAllBranches ? "كل الفروع" : (r.branchName ?? `فرع #${r.branchId}`)) },
         { key: "totalUnpaidSnapshot", header: "الرصيد وقت التذكير", money: true, map: (r) => Number(r.totalUnpaidSnapshot) },
         { key: "daysOverdue", header: "أيام التأخّر" },
         { key: "status", header: "الحالة", map: (r) => (r.status === "SENT" ? "أُرسل" : r.promisedDate ? "وعد" : "تُخطّي") },

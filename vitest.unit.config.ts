@@ -12,6 +12,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "shared/__tests__/arRemindersHybridAging.unit.test.ts",
       "shared/deliverySearch.test.ts",
       "client/src/lib/deliveryWorkspace.test.ts",
       "client/src/lib/deliveryOperations.test.ts",
