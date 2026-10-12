@@ -1,3 +1,4 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { useEffect, useState } from "react";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import {
@@ -61,10 +62,12 @@ export function CostWaveDetailDialog({
 }) {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
+  const canOperation = (path: string) => canLifecycleOperation(me.data, path, true);
   const detail = trpc.inventory.costWave.useQuery(
     { id: waveId ?? 0 },
-    { enabled: waveId != null },
+    { enabled: (waveId != null) && canOperation("inventory.costWave") },
   );
+  const detailData = canOperation("inventory.costWave") ? detail.data : undefined;
   const [rejectionReason, setRejectionReason] = useState("");
 
   useEffect(() => {
@@ -113,7 +116,7 @@ export function CostWaveDetailDialog({
   const eventColumns = COST_WAVE_EVENT_COLUMNS;
   const skippedColumns = COST_WAVE_SKIPPED_COLUMNS;
 
-  const data = detail.data;
+  const data = detailData;
   const alreadyDecided = data?.approvals.some(
     (row) => Number(row.approverId) === Number(me.data?.id),
   );
@@ -135,7 +138,7 @@ export function CostWaveDetailDialog({
         : "سيُحفظ اسمك وتاريخ القرار وبصمة اللقطة، ولن تتغير التكلفة قبل اعتماد شخص آخر.",
       confirmText: finalApproval ? "اعتماد وتطبيق" : "تسجيل الاعتماد",
     });
-    if (ok) approve.mutate({ id: data.wave.id });
+    if (ok) (canOperation("inventory.approveCostWave") && approve.mutate({ id: data.wave.id }));
   }
 
   return (
@@ -161,7 +164,8 @@ export function CostWaveDetailDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {detail.isError && (
+        {!me.isLoading && !canOperation("inventory.costWave") && <p className="text-sm text-muted-foreground">يتطلب العرض تفويض تفاصيل موجة التكلفة وعرض التكلفة والربح.</p>}
+        {canOperation("inventory.costWave") && detail.isError && (
           <div
             role="alert"
             aria-live="assertive"
@@ -265,7 +269,7 @@ export function CostWaveDetailDialog({
               </section>
             </div>
 
-            {canDecide && (
+            {canDecide && (canOperation("inventory.approveCostWave") || canOperation("inventory.rejectCostWave")) && (
               <div className="grid gap-3 rounded-md border p-3 md:grid-cols-[1fr_auto]">
                 <div className="space-y-1.5">
                   <label htmlFor="cost-wave-rejection-reason" className="text-sm font-medium">
@@ -282,7 +286,7 @@ export function CostWaveDetailDialog({
                 <div className="flex flex-wrap items-end gap-2">
                   <Button
                     onClick={approveNow}
-                    disabled={approve.isPending || reject.isPending}
+                    disabled={!canOperation("inventory.approveCostWave") || (approve.isPending || reject.isPending)}
                   >
                     <CheckCircle2 aria-hidden />
                     {approve.isPending
@@ -294,16 +298,16 @@ export function CostWaveDetailDialog({
                   <Button
                     variant="destructive"
                     disabled={
-                      rejectionReason.trim().length <
+                      !canOperation("inventory.rejectCostWave") || (rejectionReason.trim().length <
                         COST_WAVE_MIN_REASON_LENGTH ||
                       approve.isPending ||
-                      reject.isPending
+                      reject.isPending)
                     }
                     onClick={() =>
-                      reject.mutate({
+                      (canOperation("inventory.rejectCostWave") && reject.mutate({
                         id: data.wave.id,
                         reason: rejectionReason.trim(),
-                      })
+                      }))
                     }
                   >
                     <XCircle aria-hidden />{" "}

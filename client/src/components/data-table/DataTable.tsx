@@ -41,6 +41,7 @@ import { cn } from "@/lib/utils";
 import { WorkspaceBar, WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { ActorCell } from "@/components/data-table/ActorCell";
+import { LiveValue } from "@/components/financial/LiveValue";
 import {
   OperationActionCell,
   OperationAttributionCell,
@@ -105,6 +106,7 @@ export type DataTableSelection<K> = {
 type DataTableProps<T, K = string> = {
   columns: ColumnDef<T, unknown>[];
   data: T[];
+  defaultColumnVisibility?: VisibilityState;
   searchable?: boolean;
   searchPlaceholder?: string;
   /** ٢٤/٨ — تركيزٌ تلقائيّ لحقل البحث عند تركيب الجدول. مفيدٌ للشاشات التي يفتحها المستخدم
@@ -303,6 +305,7 @@ function renderHeaderContent<T>(
 export function DataTable<T, K = string>({
   columns,
   data,
+  defaultColumnVisibility,
   searchable = true,
   searchPlaceholder = "بحث…",
   autoFocusSearch = false,
@@ -453,7 +456,7 @@ export function DataTable<T, K = string>({
   }, [effectiveColumns, viewKey]);
   const initialView = useMemo(() => readTableView(storageKey), [storageKey]);
   const [globalFilter, setGlobalFilter] = useState("");
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(initialView.columnVisibility ?? {});
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({ ...defaultColumnVisibility, ...initialView.columnVisibility });
   const [compact, setCompact] = useState(initialView.compact === true);
   const [lastIndex, setLastIndex] = useState<number | null>(null);
 
@@ -895,7 +898,11 @@ export function DataTable<T, K = string>({
                                 columnHeader={columnHeaderText(cell.column)}
                                 columnValues={columnValuesByColId[colId]}
                               >
-                                {columnUsesLtrIsolate(cell.column) ? (
+                                {resolveColumnPresentation(cell.column).kind === "money" ? (
+                                  <LiveValue value={cellVal} identity={getRowId?.(row.original) ?? (row.original as { id?: unknown })?.id ?? row.original}>
+                                    <bdi dir="ltr">{flexRender(cell.column.columnDef.cell, cell.getContext())}</bdi>
+                                  </LiveValue>
+                                ) : columnUsesLtrIsolate(cell.column) ? (
                                   <bdi dir="ltr">{flexRender(cell.column.columnDef.cell, cell.getContext())}</bdi>
                                 ) : flexRender(cell.column.columnDef.cell, cell.getContext())}
                               </CopyContextMenu>
@@ -1041,7 +1048,11 @@ export function DataTable<T, K = string>({
                             columnHeader={columnHeaderText(cell.column)}
                             columnValues={columnValuesByColId[colId]}
                           >
-                            {columnUsesLtrIsolate(cell.column) ? (
+                            {resolveColumnPresentation(cell.column).kind === "money" ? (
+                              <LiveValue value={cellVal} identity={getRowId?.(row.original) ?? (row.original as { id?: unknown })?.id ?? row.original}>
+                                <bdi dir="ltr">{flexRender(cell.column.columnDef.cell, cell.getContext())}</bdi>
+                              </LiveValue>
+                            ) : columnUsesLtrIsolate(cell.column) ? (
                               <bdi dir="ltr">{flexRender(cell.column.columnDef.cell, cell.getContext())}</bdi>
                             ) : flexRender(cell.column.columnDef.cell, cell.getContext())}
                           </CopyContextMenu>

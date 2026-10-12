@@ -1,4 +1,6 @@
 import { trpc } from "@/lib/trpc";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
+import { OPERATION_PERMISSIONS, hasOperationPolicy, operationDecision, type OperationUser } from "@shared/operationPermissions";
 import { Loader2 } from "lucide-react";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { lazy, Suspense } from "react";
@@ -12,11 +14,13 @@ const StudioPhotographerWorkspace = lazy(() => import("@/components/product-stud
 export const STUDIO_STORAGE_DISABLED_MESSAGE = "خدمة التخزين السحابي غير متصلة. لا يمكن رفع صور جديدة أو سحب المسودات السابقة. استعادة المسودة المحلية متاح للحفظ المؤقت.";
 
 export default function ProductImageStudio() {
+  const studioMe = trpc.auth.me.useQuery();
+  const canReadDashboard = useOperationPermission("productStudio.dashboard").allowed;
   const connectivity = useConnectivity();
   const offline = isDisconnected(connectivity) || (typeof navigator !== "undefined" && !navigator.onLine);
   
   const dashboard = trpc.productStudio.dashboard.useQuery(undefined, {
-    enabled: !offline,
+    enabled: !offline && canReadDashboard,
   });
 
   if (!offline && dashboard.isLoading) {
@@ -30,7 +34,13 @@ export default function ProductImageStudio() {
     );
   }
 
-  const canManage = dashboard.data?.canManage === true;
+  const studioUser = studioMe.data as OperationUser | undefined;
+  const canManage = studioUser && hasOperationPolicy(studioUser)
+    ? OPERATION_PERMISSIONS.some(operation => operation.domain === "productStudio" &&
+        operation.delegable && (operation.roles.length === 1 && operation.roles[0] === "manager" ||
+          ["productStudio.campaigns", "productStudio.campaignBoard", "productStudio.campaignAnalytics", "productStudio.productImages"].includes(operation.path)) &&
+        operationDecision(studioUser, operation.path).allowed)
+    : dashboard.data?.canManage === true;
 
   return (
     <Suspense fallback={

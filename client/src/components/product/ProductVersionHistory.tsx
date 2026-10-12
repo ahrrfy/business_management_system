@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 /**
  * ProductVersionHistory — لوحةُ «السجلّ» في شاشة المنتج (م٦ ق٨): النسخ (مَن/متى/السبب/الحقول
  * المتغيّرة)، و«ما الذي تغيّر» حقلاً بحقل (قديم ⇒ جديد)، وزرّ «استعادة هذه النسخة».
@@ -38,13 +39,15 @@ export function ProductVersionHistory({
   onRestored?: (result: RouterOutputs["catalog"]["restoreProductVersion"]) => void;
   className?: string;
 }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
-  const versionsQ = trpc.catalog.productVersions.useQuery({ productId, limit: 50 }, { enabled: productId > 0 });
+  const versionsQ = trpc.catalog.productVersions.useQuery({ productId, limit: 50 }, { enabled: can("catalog.productVersions") && (productId > 0) });
   const [open, setOpen] = useState<number | null>(null);
   const [outcome, setOutcome] = useState<SaveOutcome | null>(null);
   const restore = trpc.catalog.restoreProductVersion.useMutation();
 
   async function restoreVersion(v: VersionRow) {
+    if (!can("catalog.restoreProductVersion")) return;
     const ok = await confirm({
       variant: "warning",
       title: `استعادة النسخة ${v.versionNumber}؟`,
@@ -113,7 +116,7 @@ export function ProductVersionHistory({
                 open={open === v.versionNumber}
                 onToggle={() => setOpen((cur) => (cur === v.versionNumber ? null : v.versionNumber))}
                 onRestore={() => void restoreVersion(v)}
-                restoring={restore.isPending}
+                restoring={!can("catalog.restoreProductVersion") || restore.isPending}
               />
             ))}
           </ul>
@@ -138,9 +141,10 @@ function VersionItem({
   onRestore: () => void;
   restoring: boolean;
 }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const diffQ = trpc.catalog.productVersionDiff.useQuery(
     { productId, versionNumber: v.versionNumber },
-    { enabled: open, staleTime: 30_000 },
+    { enabled: can("catalog.productVersionDiff") && (open), staleTime: 30_000 },
   );
   const Chevron = open ? ChevronUp : ChevronDown;
   return (

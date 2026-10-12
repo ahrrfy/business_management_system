@@ -1,7 +1,8 @@
 // CRUD جهات التوصيل.
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, isNull, like, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
+import { isOpenConsignmentStatus } from "@shared/deliveryOpenParcel";
 import { courierCommissionRules, deliveryConsignments, deliveryLedgerEntries, deliveryParties, deliveryPartyMembers, onlineOrders, users } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { getDb } from "../../db";
@@ -11,7 +12,8 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idem
 import { withTx } from "../tx";
 import { computePartyExposure } from "@shared/partyExposure";
 import { deliveryCashSource, partyCashInHandTx } from "./cashSource";
-import { loadPartyExposureInputsTx } from "./exposureInputs";
+import { loadScopedPartyExposureInputsTx } from "./scopedExposure";
+import { deliverySearchSql } from "./readSearch";
 import { appendDeliveryEvent } from "./lifecycle";
 import {
   assertExternalTrackingRefAvailable,
@@ -479,10 +481,12 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
     conds.push(or(eq(deliveryParties.branchId, opts.branchId), isNull(deliveryParties.branchId))!);
   }
   if (opts.activeOnly) conds.push(eq(deliveryParties.isActive, true));
-  if (opts.search && opts.search.trim()) {
-    const s = `%${opts.search.trim()}%`;
-    conds.push(or(like(deliveryParties.name, s), like(deliveryParties.phone, s)));
-  }
+  const search = deliverySearchSql(opts.search ?? "", {
+    names: [deliveryParties.name],
+    phones: [deliveryParties.phone],
+    references: [deliveryParties.id],
+  });
+  if (search.where) conds.push(search.where);
   const where = conds.length ? and(...conds) : undefined;
   const parties = await db
     .select({
@@ -518,7 +522,14 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
     })
     .from(deliveryConsignments)
     // OPEN_CONSIGNMENT_STATUSES = ['DISPATCHED', 'PARTIAL'] من `shared/deliveryOpenParcel.ts`.
-    .where(sql`${deliveryConsignments.status} IN ('DISPATCHED', 'PARTIAL')`)
+    .where(
+      and(
+        sql`${deliveryConsignments.status} IN ('DISPATCHED', 'PARTIAL')`,
+        opts.branchId == null
+          ? undefined
+          : eq(deliveryConsignments.branchId, opts.branchId),
+      ),
+    )
     .groupBy(deliveryConsignments.partyId);
   const openMap = new Map(openAgg.map((r) => [Number(r.partyId), { openCount: Number(r.openCount), oldest: r.oldest }]));
 
@@ -529,10 +540,10 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
    * **مستوى الجهة كلّها** (كما كانت الحسبة هنا بلا فرع)، و«النقد بيده» يُعاد بمصدرَيه (الدفتر/
    * المخزَّن) وفرقهما للطرح الظلّيّ (§١٠).
    */
-  const exposureInputs = await loadPartyExposureInputsTx(
+  const exposureInputs = await loadScopedPartyExposureInputsTx(
     db as unknown as Tx,
     parties.map((p) => Number(p.id)),
-    null,
+    opts.branchId ?? null,
   );
   const cashSource = deliveryCashSource();
 
@@ -562,7 +573,10 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
   return parties.map((p) => {
     const inputs = exposureInputs.get(Number(p.id));
     // العهدةُ الكلّية (نقد + عجز) بمصدرَيها — تُمرَّر للدالّة النقيّة التي تفصل الماديّ عن العجز.
-    const custodyStored = round2(money(p.currentBalance ?? "0")).toFixed(2);
+    const custodyStored =
+      opts.branchId == null
+        ? round2(money(p.currentBalance ?? "0")).toFixed(2)
+        : (inputs?.cashInHandLedger ?? "0.00");
     const custodyLedger = inputs?.cashInHandLedger ?? "0.00";
     const exposure = computePartyExposure({
       cashInHand: cashSource === "ledger" ? custodyLedger : custodyStored,
@@ -575,6 +589,7 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
     const cashInHandStored = round2(money(custodyStored).minus(money(shortfallOwed))).toFixed(2);
     return {
       ...p,
+      currentBalance: custodyStored,
       drivers: driversByParty.get(Number(p.id)) ?? [],
       hasPortalAccess: p.userId != null || portalPartyIds.has(Number(p.id)),
       openConsignments: openMap.get(Number(p.id))?.openCount ?? 0,
@@ -593,11 +608,15 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
   });
 }
 
-export async function getDeliveryParty(id: number) {
+export async function getDeliveryParty(id: number, scopedBranchId?: number | null) {
   const db = getDb();
   if (!db) return null;
   const rows = await db.select().from(deliveryParties).where(eq(deliveryParties.id, id)).limit(1);
-  return rows[0] ?? null;
+  const party = rows[0];
+  if (!party) return null;
+  if (scopedBranchId == null) return party;
+  const inputs = await loadScopedPartyExposureInputsTx(db as unknown as Tx, [id], scopedBranchId);
+  return { ...party, currentBalance: inputs.get(id)?.cashInHandLedger ?? "0.00" };
 }
 
 /** حسابات المناديب (دور courier) لربطها بجهة توصيل — مع الجهة المرتبطة حالياً (لمنتقي الربط). */
@@ -770,6 +789,26 @@ export async function reassignDeliveryConsignment(
     }
     const replay = await checkIdempotency(tx, "delivery.reassignConsignment", input.clientRequestId, payloadHash);
     if (replay != null) return { consignmentId: replay, replay: true as const };
+    if (cn.returnDeclaredAt != null) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّرت إعادة إسناد الطرد",
+          why: `أُعلن رجوع الإرسالية ${cn.consignmentNumber} وحُرّر تعرّضها سلفاً`,
+          doThis: "أكمِل استلام المرتجع وفحصه من إجراء «استلام المرتجع»؛ لا تُعد إسناده للتوصيل",
+        }),
+      });
+    }
+    if (!isOpenConsignmentStatus(cn.status)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّرت إعادة إسناد الطرد",
+          why: `الإرسالية ${cn.consignmentNumber} مغلقة بحالة (${cn.status})`,
+          doThis: "افتح تفاصيل الإرسالية لمراجعة سجلّها؛ اختر إرسالية مفتوحة لإعادة الإسناد",
+        }),
+      });
+    }
     if (Number(cn.partyId) !== Number(input.partyId)) {
       throw new TRPCError({
         code: "BAD_REQUEST",

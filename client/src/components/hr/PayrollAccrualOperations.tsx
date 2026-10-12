@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -83,11 +84,12 @@ export function PayrollAccrualOperations({
   run: RunDetail;
   onChanged: () => Promise<void> | void;
 }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const branchesQ = trpc.branches.list.useQuery();
-  const obligationsQ = trpc.payroll.obligations.useQuery();
-  const remittancesQ = trpc.payroll.remittances.useQuery();
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: can("branches.list") });
+  const obligationsQ = trpc.payroll.obligations.useQuery(undefined, { enabled: can("payroll.obligations") });
+  const remittancesQ = trpc.payroll.remittances.useQuery(undefined, { enabled: can("payroll.remittances") });
   const [action, setAction] = useState<{
     type: "REJECT" | "PAY" | "RETURN" | "RETURN_SALARY";
     request?: Remittance;
@@ -234,7 +236,7 @@ export function PayrollAccrualOperations({
                   <td className="p-2"><div className="flex justify-end gap-1">
                     <RemittanceDocumentLink value={request.supportingDocumentUrl} />
                     {request.status === "PENDING" && <>
-                      <Button size="sm" variant="outline" disabled={!independent || approveRemittance.isPending} onClick={async () => {
+                      <Button size="sm" variant="outline" disabled={!can("payroll.approveRemittance") || (!independent || approveRemittance.isPending)} onClick={async () => {
                         if (!(await confirm({ variant: "warning", title: "اعتماد طلب التحويل", description: "يعتمد الطلب فقط؛ لا يخرج مال حتى تنفيذ الدفع.", confirmText: "اعتماد" }))) return;
                         approveRemittance.mutate({ id: Number(request.id) });
                       }}><Check className="size-3.5" /> اعتماد</Button>
@@ -263,11 +265,12 @@ function AuditField({ label, value, title, ltr = false }: { label: string; value
 
 /** لوحة صانع طلب التحويل: فرعية النطاق ولا تقرأ أي مسيّر أو راتب موظف. */
 export function PayrollRemittanceRequestPanel() {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const branchesQ = trpc.branches.list.useQuery();
-  const statutorySummaryQ = trpc.payroll.statutoryObligationSummary.useQuery();
-  const remittancesQ = trpc.payroll.remittances.useQuery();
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: can("branches.list") });
+  const statutorySummaryQ = trpc.payroll.statutoryObligationSummary.useQuery(undefined, { enabled: can("payroll.statutoryObligationSummary") });
+  const remittancesQ = trpc.payroll.remittances.useQuery(undefined, { enabled: can("payroll.remittances") });
   const [createOpen, setCreateOpen] = useState(false);
   const owner = me.data?.isOwner === true;
   const branchName = useMemo(
@@ -326,6 +329,7 @@ function CreateRemittanceDialog({
   obligations: StatutorySummary[];
   onDone: () => Promise<void> | void;
 }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const me = trpc.auth.me.useQuery(undefined, { enabled: open });
   const [kind, setKind] = useState<"INCOME_TAX" | "SOCIAL_SECURITY">("INCOME_TAX");
   const [branchId, setBranchId] = useState("");
@@ -360,7 +364,7 @@ function CreateRemittanceDialog({
       <div><Label>المستند المؤيد (إلزامي)</Label><ImageUploader value={documents} onChange={setDocuments} maxItems={1} maxSizeMB={2} singlePrimary={false} hint="صورة كتاب الجهة أو المطالبة الرسمية." /></div>
       <p className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">إنشاء الطلب لا يخرج نقداً. يلزم مالك مستقل للاعتماد ثم الدفع.</p>
     </div>
-    <DialogFooter><Button variant="outline" onClick={onClose}>إلغاء</Button><Button disabled={!valid || create.isPending} onClick={() => create.mutate({ kind, payingBranchId: Number(selectedBranch), amount: D(amount).toFixed(2), authorityName: authority.trim(), referenceNumber: reference.trim(), supportingDocumentUrl: documents[0]!.dataUrl!, clientRequestId: requestId.current })}>{create.isPending ? "جارٍ الإنشاء…" : "إنشاء الطلب"}</Button></DialogFooter>
+    <DialogFooter><Button variant="outline" onClick={onClose}>إلغاء</Button><Button disabled={!can("payroll.createRemittance") || (!valid || create.isPending)} onClick={() => create.mutate({ kind, payingBranchId: Number(selectedBranch), amount: D(amount).toFixed(2), authorityName: authority.trim(), referenceNumber: reference.trim(), supportingDocumentUrl: documents[0]!.dataUrl!, clientRequestId: requestId.current })}>{create.isPending ? "جارٍ الإنشاء…" : "إنشاء الطلب"}</Button></DialogFooter>
   </DialogContent></Dialog>;
 }
 

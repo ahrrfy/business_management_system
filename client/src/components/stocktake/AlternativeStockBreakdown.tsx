@@ -1,3 +1,4 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 // توزيع مخزون البدائل — مكوّنٌ مشترك: بطاقةُ منتجٍ تعرض الإجماليّ (مجموع الترميزات) وحصّة كل ترميز.
 // يستهلكه تقرير Stocktakes.tsx وحوار Products.tsx (نفس العرض في المكانين).
 import { useState } from "react";
@@ -70,9 +71,12 @@ export function AlternativeStockCard({ product }: { product: ProductBreakdown })
 /* ─────────── تقرير شامل: كل المنتجات ذات البدائل (مدير) ─────────── */
 
 export function AlternativeStockReportPanel() {
+  const me = trpc.auth.me.useQuery();
+  const canRead = canLifecycleOperation(me.data, "stocktakes.alternativeStockBreakdown", true);
   const [open, setOpen] = useState(false);
-  const q = trpc.stocktakes.alternativeStockBreakdown.useQuery(undefined, { enabled: open });
-  const products = q.data ?? [];
+  const q = trpc.stocktakes.alternativeStockBreakdown.useQuery(undefined, { enabled: open && canRead });
+  const products = canRead ? q.data ?? [] : [];
+  if (!canRead) return null;
   return (
     <Card>
       <CardHeader className="cursor-pointer p-4" onClick={() => setOpen((v) => !v)}>

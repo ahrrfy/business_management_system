@@ -9,7 +9,7 @@ export interface PrintSalesReturnData {
   customerName: string;
   customerPhone?: string | null;
   disposition: "RESTOCK" | "DAMAGED";
-  method: "CASH" | "CARD" | "STORE_CREDIT";
+  method: "CASH" | "CARD" | "STORE_CREDIT" | "CREDIT_OFFSET";
   reference?: string | null;
   totalAmount: string;
   items: Array<{
@@ -44,6 +44,8 @@ export async function printSalesReturnReceipt(data: PrintSalesReturnData) {
       ? "استرداد نقدي"
       : data.method === "CARD"
       ? "استرداد بالبطاقة"
+      : data.method === "CREDIT_OFFSET"
+      ? "معادلة ذمم (خصم من حساب العميل الآجل)"
       : "قسيمة رصيد متجر (Store Credit)";
 
   const dispositionLabel =

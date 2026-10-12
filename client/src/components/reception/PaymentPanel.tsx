@@ -74,7 +74,7 @@ export interface PaymentPanelProps {
   couponInput: string; setCouponInput: (v: string) => void;
   couponOpen: boolean; setCouponOpen: (v: boolean) => void;
   applyCoupon: () => void; clearCoupon: () => void; couponPending: boolean;
-  submitting: boolean; cartEmpty: boolean; hasShift: boolean;
+  submitting: boolean; cartEmpty: boolean; hasShift: boolean; submitAllowed?: boolean;
   onSubmit: (opts: { quickFullPay: boolean; isReservation?: boolean }) => void;
 }
 
@@ -102,7 +102,7 @@ export function PaymentPanel({
   couponInput, setCouponInput,
   couponOpen, setCouponOpen,
   applyCoupon, clearCoupon, couponPending,
-  submitting, cartEmpty, hasShift,
+  submitting, cartEmpty, hasShift, submitAllowed = true,
   onSubmit,
 }: PaymentPanelProps) {
   // ٢٣/٨ (Codex P1 v2): حقلُ المبلغ يفصل «العرض» عن «القيمة الملتزمة». هذا يحلّ ثلاث حالات:
@@ -461,7 +461,7 @@ export function PaymentPanel({
                 <>
                   <button
                     type="button"
-                    disabled={cartEmpty || submitting || !hasShift}
+                    disabled={!submitAllowed || cartEmpty || submitting || !hasShift}
                     onClick={() => onSubmit({ quickFullPay: false, isReservation: true })}
                     title="حفظ بدون دفعة وتأجيل كامل المبلغ للدفع عند الاستلام"
                     className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg border-2 border-primary/80 bg-primary/5 px-3 text-xs font-black text-primary shadow-xs transition-colors hover:bg-primary/15 disabled:bg-muted disabled:text-muted-foreground disabled:border-transparent disabled:shadow-none"
@@ -472,7 +472,7 @@ export function PaymentPanel({
                   {paid < expectedNow && (
                     <button
                       type="button"
-                      disabled={cartEmpty || submitting || !hasShift}
+                      disabled={!submitAllowed || cartEmpty || submitting || !hasShift}
                       onClick={() => onSubmit({ quickFullPay: true })}
                       title="تحصيل الإجمالي كاملاً وطباعة"
                       className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-[var(--sem-warn)] px-3 text-xs font-black text-background shadow-md transition-colors hover:bg-[var(--sem-warn)]/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
@@ -483,7 +483,7 @@ export function PaymentPanel({
                   )}
                   <button
                     type="button"
-                    disabled={cartEmpty || submitting || !hasShift}
+                    disabled={!submitAllowed || cartEmpty || submitting || !hasShift}
                     onClick={() => onSubmit({ quickFullPay: false })}
                     title={paid >= expectedNow ? "قبض المبلغ كاملاً وإرسال للتنفيذ" : "قبض الدفعة/العربون وإرسال للتنفيذ"}
                     className="inline-flex h-11 min-w-44 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
@@ -502,7 +502,7 @@ export function PaymentPanel({
                 <>
                   <button
                     type="button"
-                    disabled={cartEmpty || submitting || !hasShift}
+                    disabled={!submitAllowed || cartEmpty || submitting || !hasShift}
                     onClick={() => onSubmit({ quickFullPay: true })}
                     title="تحصيل الإجمالي كاملاً وطباعة (F4)"
                     className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-[var(--sem-warn)] px-4 text-sm font-black text-background shadow-md transition-colors hover:bg-[var(--sem-warn)]/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
@@ -512,7 +512,7 @@ export function PaymentPanel({
                   </button>
                   <button
                     type="button"
-                    disabled={cartEmpty || submitting || !hasShift}
+                    disabled={!submitAllowed || cartEmpty || submitting || !hasShift}
                     onClick={() => onSubmit({ quickFullPay: false, isReservation: true })}
                     title="تأكيد الطلب للتنفيذ والتحصيل عند الاستلام"
                     className="inline-flex h-11 min-w-48 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
@@ -533,7 +533,7 @@ export function PaymentPanel({
             <>
               <button
                 type="button"
-                disabled={cartEmpty || submitting || !hasShift}
+                disabled={!submitAllowed || cartEmpty || submitting || !hasShift}
                 onClick={() => onSubmit({ quickFullPay: false, isReservation: true })}
                 title="تأكيد الفاتورة للدفع عند الاستلام مباشرة أو عبر جهة التوصيل"
                 className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg border-2 border-primary/80 bg-primary/5 px-4 text-sm font-black text-primary shadow-xs transition-colors hover:bg-primary/15 disabled:bg-muted disabled:text-muted-foreground disabled:border-transparent disabled:shadow-none"
@@ -544,7 +544,7 @@ export function PaymentPanel({
               {!deferred && (
                 <button
                   type="button"
-                  disabled={cartEmpty || submitting || !hasShift}
+                  disabled={!submitAllowed || cartEmpty || submitting || !hasShift}
                   onClick={() => onSubmit({ quickFullPay: true })}
                   title="تحصيل المطلوب الآن وطباعة (F4)"
                   className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-[var(--sem-warn)] px-4 text-sm font-black text-background shadow-md transition-colors hover:bg-[var(--sem-warn)]/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
@@ -555,7 +555,7 @@ export function PaymentPanel({
               )}
               <button
                 type="button"
-                disabled={cartEmpty || submitting || !hasShift || (deferred && !deferredAvailable)}
+                disabled={!submitAllowed || cartEmpty || submitting || !hasShift || (deferred && !deferredAvailable)}
                 onClick={() => onSubmit({ quickFullPay: !deferred && paid <= 0 })}
                 title="إتمام البيع المباشر"
                 className="inline-flex h-11 min-w-44 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"

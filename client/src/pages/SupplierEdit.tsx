@@ -14,6 +14,7 @@ import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { whatsappLink, displayE164 } from "@/lib/intlPhone";
 import { printConsignmentAgreement } from "@/lib/printing/printConsignmentAgreement";
 import { cn } from "@/lib/utils";
@@ -140,6 +141,7 @@ export default function SupplierEdit() {
   });
 
   function submit() {
+    if (!canLifecycleOperation(me.data, "suppliers.update", true)) return;
     if (update.isPending) return; // يمنع الإرسال المزدوج (Ctrl+S/تكرار المفتاح).
     setError("");
     if (!name.trim()) {
@@ -507,7 +509,7 @@ export default function SupplierEdit() {
 
       <FormError message={error} />
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-        <Button onClick={submit} disabled={update.isPending} title="Ctrl+S">
+        <Button onClick={submit} disabled={!canLifecycleOperation(me.data, "suppliers.update", true) || update.isPending} title="Ctrl+S">
           {update.isPending ? ACTION_LABELS.saving : "حفظ التعديلات"}
         </Button>
         <Link href="/suppliers"><Button variant="outline" title="Esc">رجوع</Button></Link>

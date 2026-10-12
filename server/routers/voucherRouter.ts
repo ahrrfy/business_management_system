@@ -444,6 +444,7 @@ async function aggregateVouchers(input: VoucherListFilters) {
 }
 
 import { createTtlCache } from "../lib/ttlCache";
+import { financialCacheKey } from "../realtime/financialCache";
 
 const voucherCategoriesCache = createTtlCache<string, any[]>({
   ttlMs: 60_000,
@@ -486,7 +487,7 @@ export const voucherCategoryRouter = router({
     .input(z.object({ includeInactive: z.boolean().default(false) }).optional())
     .query(async ({ input }) => {
       const includeInactive = !!input?.includeInactive;
-      const cacheKey = includeInactive ? "all" : "active";
+      const cacheKey = financialCacheKey(includeInactive ? "all" : "active");
       if (process.env.NODE_ENV === "test") {
         return fetchVoucherCategories(includeInactive);
       }

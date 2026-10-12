@@ -1,3 +1,4 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 /**
  * متابعة جلسة الجرد الحية — /stocktakes/:id
  * مرجع التصميم: jrd-sessions.jsx (قسم SessionMonitor) — hi-fi بمكونات النظام.
@@ -35,7 +36,9 @@ import { internalUrl } from "@/lib/siteHosts";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { fmtInt } from "@/lib/money";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES, type StocktakeProgressPayload } from "@shared/realtimeEvents";
 import { Link, useLocation, useParams } from "wouter";
 import {
   Lock,
@@ -150,20 +153,29 @@ export default function StocktakeMonitor() {
   const utils = trpc.useUtils();
 
   const me = trpc.auth.me.useQuery();
+  const canOperation = (path: string) => canLifecycleOperation(me.data, path, true);
   const role = me.data?.role ?? "";
   const isAdmin = role === "admin";
   const isManager = isAdmin || role === "manager";
-  const canView = isManager || role === "warehouse";
+  const canView = canLifecycleOperation(me.data, "stocktakes.monitor", isManager || role === "warehouse");
+  const canReview = canLifecycleOperation(me.data, "stocktakes.review", isManager);
+  const canForceReview = canLifecycleOperation(me.data, "stocktakes.forceReview", isManager);
+  const canAddWorker = canLifecycleOperation(me.data, "stocktakes.addWorker", isManager);
+  const canRemoveWorker = canLifecycleOperation(me.data, "stocktakes.removeWorker", isManager);
+  const canReadLog = canLifecycleOperation(me.data, "stocktakes.log", isManager);
   // مراجعة Codex #10: طابور الباركود المجهول يُشتقّ بصلاحية الوحدة (كبوّابتَي الخادم:
   // inventoryReadProcedure للعرض، inventoryManagerProcedure للحسم) لا بالأدوار الخام —
   // كي يراه/يديره مستخدمٌ مُنِح inventory:READ/FULL صراحةً وإن لم يكن manager/warehouse.
   const permOverride = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  const canViewUnknown =
+  const legacyViewUnknown =
     !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, permOverride, "inventory", "READ", ["manager", "warehouse"]);
-  const canManageUnknown =
+  const legacyManageUnknown =
     !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, permOverride, "inventory", "FULL", ["manager"]);
+
+  const canViewUnknown = canLifecycleOperation(me.data, "stocktakes.unknownScans", legacyViewUnknown);
+  const canManageUnknown = canLifecycleOperation(me.data, "stocktakes.resolveUnknownScan", legacyManageUnknown);
 
   // بحث في العدّات — يمرَّر q للخادم ليجد أي منتج معدود (لا آخر ٢٠ فقط)، مع debounce بسيط.
   const [countSearch, setCountSearch] = useState("");
@@ -173,23 +185,63 @@ export default function StocktakeMonitor() {
     return () => clearTimeout(t);
   }, [countSearch]);
 
-  // متابعة حية — تحديث كل ٥ ثوانٍ (العقد §٦).
+  // متابعة حية عبر الأحداث اللحظية المقيّدة بزمن خنق (2s throttle).
   const monitor = trpc.stocktakes.monitor.useQuery(
     { sessionId, q: countQ || undefined },
-    { enabled: idOk && canView, refetchInterval: 5000 },
+    { enabled: (idOk && canView) && canOperation("stocktakes.monitor") },
   );
+  const monitorData = canOperation("stocktakes.monitor") ? monitor.data : undefined;
   // سجلّ الأحداث (تدقيق) — للمدير+ فقط.
   const log = trpc.stocktakes.log.useQuery(
     { sessionId },
-    { enabled: idOk && isManager, refetchInterval: 10000 },
+    { enabled: (idOk && canReadLog) && canOperation("stocktakes.log") },
   );
+  const logData = canOperation("stocktakes.log") ? log.data : undefined;
   const assignableUsers = trpc.stocktakes.assignableUsers.useQuery(undefined, {
-    enabled: idOk && isManager,
+    enabled: idOk && canOperation("stocktakes.assignableUsers"),
   });
+  const assignableUsersData = canOperation("stocktakes.assignableUsers") ? assignableUsers.data : undefined;
   // طابور الباركود المجهول (ب-٤) — باركوداتٌ مُسِحت خارج نطاق الجلسة، للعرض لأمين المخزن+.
   const unknownScans = trpc.stocktakes.unknownScans.useQuery(
     { sessionId },
-    { enabled: idOk && canViewUnknown, refetchInterval: 5000 },
+    { enabled: (idOk && canViewUnknown) && canOperation("stocktakes.unknownScans") },
+  );
+  const unknownScansData = canOperation("stocktakes.unknownScans") ? unknownScans.data : undefined;
+
+  const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingInvalidateRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      if (throttleTimerRef.current) {
+        clearTimeout(throttleTimerRef.current);
+      }
+    };
+  }, []);
+
+  useRealtimeEvent(
+    REALTIME_EVENT_TYPES.STOCKTAKE_PROGRESS,
+    (event) => {
+      const payload = event.payload as StocktakeProgressPayload;
+      if (payload.sessionId !== sessionId) return;
+
+      if (!throttleTimerRef.current) {
+        void utils.stocktakes.monitor.invalidate();
+        void utils.stocktakes.unknownScans.invalidate();
+        void utils.stocktakes.log.invalidate();
+        throttleTimerRef.current = setTimeout(() => {
+          throttleTimerRef.current = null;
+          if (pendingInvalidateRef.current) {
+            pendingInvalidateRef.current = false;
+            void utils.stocktakes.monitor.invalidate();
+            void utils.stocktakes.unknownScans.invalidate();
+            void utils.stocktakes.log.invalidate();
+          }
+        }, 2000);
+      } else {
+        pendingInvalidateRef.current = true;
+      }
+    },
   );
   const resolveUnknown = trpc.stocktakes.resolveUnknownScan.useMutation({
     onSuccess: async (res) => {
@@ -253,7 +305,7 @@ export default function StocktakeMonitor() {
   });
   const regenPin = trpc.stocktakes.regeneratePin.useMutation({
     onSuccess: async (r, vars) => {
-      const a = monitor.data?.assignments.find((x: { id: number }) => x.id === vars.assignmentId);
+      const a = monitorData?.assignments.find((x: { id: number }) => x.id === vars.assignmentId);
       setNewPin({ name: a?.name ?? "العامل", pin: r.pin });
       await utils.stocktakes.monitor.invalidate();
     },
@@ -305,8 +357,8 @@ export default function StocktakeMonitor() {
         <div className="mx-auto grid size-16 place-items-center rounded-full bg-muted text-muted-foreground">
           <Lock aria-hidden className="size-8" />
         </div>
-        <p className="font-bold">متابعة الجرد صلاحية أمين مخزن فأعلى</p>
-        <p className="text-sm text-muted-foreground">دورك الحالي لا يخوّلك الاطلاع على جلسات الجرد.</p>
+        <p className="font-bold">يتطلب عرض المتابعة تفويض متابعة الجرد</p>
+        <p className="text-sm text-muted-foreground">لم يُمنح الحساب صلاحية متابعة جلسات الجرد.</p>
         <Link href="/"><Button variant="outline">العودة للوحة التحكم</Button></Link>
       </div>
     );
@@ -319,11 +371,11 @@ export default function StocktakeMonitor() {
         </div>
       </div>
     );
-  if (!monitor.data) return <div className="p-10 text-center text-muted-foreground">الجلسة غير موجودة.</div>;
+  if (!monitorData) return <div className="p-10 text-center text-muted-foreground">الجلسة غير موجودة.</div>;
 
-  const { session: s, assignments, recentCounts, pendingRecounts, conflicts } = monitor.data;
-  const total = monitor.data.progress.total;
-  const counted = monitor.data.progress.counted;
+  const { session: s, assignments, recentCounts, pendingRecounts, conflicts } = monitorData;
+  const total = monitorData.progress.total;
+  const counted = monitorData.progress.counted;
   const remaining = Math.max(0, total - counted);
   const pct = total > 0 ? Math.round((counted / total) * 100) : 0;
   const currentAssignments = assignments.filter((a: { status: string }) => a.status !== "REMOVED");
@@ -332,7 +384,7 @@ export default function StocktakeMonitor() {
   const submittedCount = currentAssignments.filter((a: { status: string }) => a.status === "SUBMITTED").length;
   const isCounting = s.status === "COUNTING";
   const scopeLabel = (s as unknown as { scopeLabel?: string }).scopeLabel ?? SCOPE_LABEL[s.scopeType] ?? s.scopeType;
-  const availableUsers = (assignableUsers.data ?? []).filter(
+  const availableUsers = (assignableUsersData ?? []).filter(
     (u) => !currentAssignments.some((a: { method: string; userId: number | null; status: string }) =>
       a.method === "USER" && a.status === "ACTIVE" && Number(a.userId) === Number(u.id)),
   );
@@ -352,7 +404,7 @@ export default function StocktakeMonitor() {
       confirmText: "إنهاء العدّ",
     });
     if (!ok) return;
-    forceReview.mutate({ sessionId });
+    (canOperation("stocktakes.forceReview") && forceReview.mutate({ sessionId }));
   }
 
   async function onRegenPin(a: { id: number; name: string }) {
@@ -367,7 +419,7 @@ export default function StocktakeMonitor() {
       confirmText: "توليد",
     });
     if (!ok) return;
-    regenPin.mutate({ assignmentId: a.id });
+    (canOperation("stocktakes.regeneratePin") && regenPin.mutate({ assignmentId: a.id }));
   }
 
   function remind(a: { name: string; zone: string | null; counted: number; total: number }) {
@@ -401,7 +453,7 @@ export default function StocktakeMonitor() {
       notify.warn("سبب الطلب إلزامي (٣ أحرف على الأقل) — يُسجَّل في سجلّ التدقيق.");
       return;
     }
-    requestRecount.mutate({ sessionId, variantId: recountFor.variantId, reason });
+    (canOperation("stocktakes.requestRecount") && requestRecount.mutate({ sessionId, variantId: recountFor.variantId, reason }));
   }
 
   function submitAddWorker() {
@@ -411,13 +463,13 @@ export default function StocktakeMonitor() {
       notify.warn(addMethod === "USER" ? "اختر حساب الموظف" : "اكتب اسم عامل الجرد");
       return;
     }
-    addWorker.mutate({
+    (canOperation("stocktakes.addWorker") && addWorker.mutate({
       sessionId,
       name,
       method: addMethod,
       userId: addMethod === "USER" ? Number(addUserId) : undefined,
       zone: addZone.trim() || undefined,
-    });
+    }));
   }
 
   function submitRemoveWorker() {
@@ -427,7 +479,7 @@ export default function StocktakeMonitor() {
       notify.warn("سبب الإزالة مطلوب (٣ أحرف على الأقل) لحفظ سجل التدقيق.");
       return;
     }
-    removeWorker.mutate({ sessionId, assignmentId: removeFor.id, reason });
+    (canOperation("stocktakes.removeWorker") && removeWorker.mutate({ sessionId, assignmentId: removeFor.id, reason }));
   }
 
   return (
@@ -462,15 +514,15 @@ export default function StocktakeMonitor() {
         actions={
           <>
             {isAdmin && (s.status === "COUNTING" || s.status === "REVIEW") && (
-              <Button variant="destructive" size="sm" onClick={() => setCancelOpen(true)}>
+              <Button variant="destructive" size="sm" onClick={() => setCancelOpen(true)} disabled={!canOperation("stocktakes.cancel")}>
                 إلغاء الجلسة
               </Button>
             )}
             <Button variant="outline" size="sm" onClick={() => void copyCountLink()}>
               نسخ رابط العدّ
             </Button>
-            {isManager && isCounting && (
-              <Button variant="outline" size="sm" onClick={() => setAddWorkerOpen(true)}>
+            {canAddWorker && isCounting && (
+              <Button variant="outline" size="sm" onClick={() => setAddWorkerOpen(true)} disabled={!canOperation("stocktakes.addWorker")}>
                 <UserPlus aria-hidden className="size-4" /> إضافة عامل جرد
               </Button>
             )}
@@ -489,7 +541,7 @@ export default function StocktakeMonitor() {
                 <Button size="sm">المحضر والتقرير</Button>
               </Link>
             )}
-            {isManager && (s.status === "COUNTING" || s.status === "REVIEW" || s.status === "APPROVED") && (
+            {canReview && (s.status === "COUNTING" || s.status === "REVIEW" || s.status === "APPROVED") && (
               <Link href={`/stocktakes/${sessionId}/review`}>
                 <Button size="sm" variant={s.status === "REVIEW" ? "default" : "outline"}>
                   {s.status === "COUNTING"
@@ -504,13 +556,13 @@ export default function StocktakeMonitor() {
               <Button
                 size="sm"
                 variant={submittedCount === currentAssignments.length ? "default" : "outline"}
-                disabled={!isManager || counted < total || forceReview.isPending}
+                disabled={!canOperation("stocktakes.forceReview") || (!canForceReview || counted < total || forceReview.isPending)}
                 title={
-                  isManager
+                  canForceReview
                     ? counted < total
                       ? "العدّ لم يكتمل — يجب عدّ المنتجات المتبقية أولاً"
                       : ""
-                    : "إنهاء العدّ صلاحية مشرف فأعلى"
+                    : "يتطلب إنهاء العدّ تفويض إنهاء جلسة الجرد"
                 }
                 onClick={() => void onForceReview()}
               >
@@ -538,7 +590,7 @@ export default function StocktakeMonitor() {
               {c.variantLabel}: {c.by1} عدّ <b dir="ltr">{nf(c.qty1)}</b> — {c.by2} عدّ <b dir="ltr">{nf(c.qty2)}</b>
             </p>
           ))}
-          {isManager && (
+          {canReview && (
             <Link href={`/stocktakes/${sessionId}/review`} className="text-xs font-bold underline">
               الفصل في شاشة المراجعة ←
             </Link>
@@ -559,14 +611,14 @@ export default function StocktakeMonitor() {
       )}
 
       {/* طابور الباركود المجهول (ب-٤): باركوداتٌ مُسِحت خارج نطاق الجلسة */}
-      {(unknownScans.data?.length ?? 0) > 0 && (
+      {(unknownScansData?.length ?? 0) > 0 && (
         <div className="space-y-2 rounded-lg border px-4 py-3 text-sm badge-status-pending">
           <p className="inline-flex items-center gap-1.5 font-bold">
-            <ScanBarcode aria-hidden className="size-4" /> {nf(unknownScans.data!.length)} باركود
+            <ScanBarcode aria-hidden className="size-4" /> {nf(unknownScansData!.length)} باركود
             مُسِح خارج نطاق الجلسة — راجعها: أضِف الصنف للنطاق أو تجاهل
           </p>
           <div className="space-y-1.5">
-            {unknownScans.data!.map((u) => (
+            {unknownScansData!.map((u) => (
               <div
                 key={u.barcode}
                 className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-background/60 px-3 py-2"
@@ -589,7 +641,7 @@ export default function StocktakeMonitor() {
                         size="sm"
                         variant="outline"
                         className="h-7 gap-1 text-xs"
-                        disabled={resolveUnknown.isPending}
+                        disabled={!canOperation("stocktakes.resolveUnknownScan") || (resolveUnknown.isPending)}
                         onClick={async () => {
                           const ok = await confirm({
                             title: "إضافة الصنف لنطاق الجرد",
@@ -597,11 +649,11 @@ export default function StocktakeMonitor() {
                             confirmText: "أضِف للنطاق",
                           });
                           if (!ok) return;
-                          resolveUnknown.mutate({
+                          (canOperation("stocktakes.resolveUnknownScan") && resolveUnknown.mutate({
                             sessionId,
                             barcode: u.barcode,
                             action: "ADD_TO_SCOPE",
-                          });
+                          }));
                         }}
                       >
                         <PackagePlus aria-hidden className="size-3.5" /> أضِف للنطاق
@@ -612,13 +664,13 @@ export default function StocktakeMonitor() {
                         size="sm"
                         variant="outline"
                         className="h-7 gap-1 text-xs"
-                        disabled={resolveUnknown.isPending}
+                        disabled={!canOperation("stocktakes.resolveUnknownScan") || (resolveUnknown.isPending)}
                         onClick={() =>
-                          resolveUnknown.mutate({
+                          (canOperation("stocktakes.resolveUnknownScan") && resolveUnknown.mutate({
                             sessionId,
                             barcode: u.barcode,
                             action: "ADD_TO_SCOPE",
-                          })
+                          }))
                         }
                       >
                         <PackagePlus aria-hidden className="size-3.5" /> أغلِق (مُدرَج)
@@ -628,7 +680,7 @@ export default function StocktakeMonitor() {
                       size="sm"
                       variant="ghost"
                       className="h-7 gap-1 text-xs"
-                      disabled={resolveUnknown.isPending}
+                      disabled={!canOperation("stocktakes.resolveUnknownScan") || (resolveUnknown.isPending)}
                       onClick={async () => {
                         const ok = await confirm({
                           variant: "warning",
@@ -638,11 +690,11 @@ export default function StocktakeMonitor() {
                           confirmText: "تجاهل",
                         });
                         if (!ok) return;
-                        resolveUnknown.mutate({
+                        (canOperation("stocktakes.resolveUnknownScan") && resolveUnknown.mutate({
                           sessionId,
                           barcode: u.barcode,
                           action: "DISMISS",
-                        });
+                        }));
                       }}
                     >
                       <Ban aria-hidden className="size-3.5" /> تجاهل
@@ -741,19 +793,19 @@ export default function StocktakeMonitor() {
                           <Button
                             size="sm"
                             variant="outline"
-                            disabled={regenPin.isPending}
+                            disabled={!canOperation("stocktakes.regeneratePin") || (regenPin.isPending)}
                             title="يُبطل الرمز الحالي ويولّد رمزاً جديداً يظهر مرة واحدة"
                             onClick={() => void onRegenPin(a)}
                           >
                             <Key aria-hidden className="size-4" /> PIN جديد
                           </Button>
                         )}
-                        {isManager && (
+                        {canRemoveWorker && (
                           <Button
                             size="sm"
                             variant="ghost"
                             className="text-destructive"
-                            disabled={removeWorker.isPending || (a.status === "ACTIVE" && activeWorkerCount <= 1)}
+                            disabled={!canOperation("stocktakes.removeWorker") || (removeWorker.isPending || (a.status === "ACTIVE" && activeWorkerCount <= 1))}
                             title={a.status === "ACTIVE" && activeWorkerCount <= 1
                               ? "أضف العامل البديل أولاً، ثم أزل هذا العامل"
                               : "إبطال وصول العامل مع حفظ كل العدّات السابقة"}
@@ -859,7 +911,7 @@ export default function StocktakeMonitor() {
                           onClick={() => {
                             setRecountReason("");
                             setRecountFor({ variantId: c.variantId, label: c.variantLabel });
-                          }}
+                          }} disabled={!canOperation("stocktakes.requestRecount")}
                         >
                           <RefreshCw aria-hidden className="size-4" />
                         </Button>
@@ -876,14 +928,14 @@ export default function StocktakeMonitor() {
             </div>
           </Card>
 
-          {isManager && (
+          {canReadLog && (
             <Card className="gap-0 py-0">
               <CardHeader className="border-b px-4 py-4">
                 <CardTitle className="text-base">سجلّ الجلسة (تدقيق)</CardTitle>
                 <p className="text-xs text-muted-foreground">من فعل ماذا ومتى — يُكتب آلياً ولا يُعدَّل.</p>
               </CardHeader>
               <div className="max-h-[320px] divide-y overflow-auto">
-                {(log.data ?? []).map(
+                {(logData ?? []).map(
                   (l: { at: string | Date; byName: string; action: string; detail?: string | null }, i: number) => (
                     <div key={i} className="flex items-start gap-3 px-4 py-2.5 text-sm">
                       <span className="mt-1.5 size-2 shrink-0 rounded-full bg-primary/50"></span>
@@ -899,7 +951,7 @@ export default function StocktakeMonitor() {
                     </div>
                   ),
                 )}
-                {log.data && log.data.length === 0 && (
+                {logData && logData.length === 0 && (
                   <p className="p-6 text-center text-sm text-muted-foreground">لا أحداث مسجّلة بعد.</p>
                 )}
               </div>
@@ -979,7 +1031,7 @@ export default function StocktakeMonitor() {
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setAddWorkerOpen(false)}>إلغاء</Button>
-            <Button disabled={addWorker.isPending} onClick={submitAddWorker}>
+            <Button disabled={!canOperation("stocktakes.addWorker") || (addWorker.isPending)} onClick={submitAddWorker}>
               {addWorker.isPending ? "جارٍ الإضافة…" : "إضافة وتوزيع التوجيه"}
             </Button>
           </DialogFooter>
@@ -1008,7 +1060,7 @@ export default function StocktakeMonitor() {
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setRemoveFor(null)}>رجوع</Button>
-            <Button variant="destructive" disabled={removeWorker.isPending} onClick={submitRemoveWorker}>
+            <Button variant="destructive" disabled={!canOperation("stocktakes.removeWorker") || (removeWorker.isPending)} onClick={submitRemoveWorker}>
               {removeWorker.isPending ? "جارٍ الإزالة…" : "إبطال الوصول مع حفظ السجل"}
             </Button>
           </DialogFooter>
@@ -1036,7 +1088,7 @@ export default function StocktakeMonitor() {
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setRecountFor(null)}>إلغاء</Button>
-            <Button onClick={submitRecount} disabled={requestRecount.isPending}>
+            <Button onClick={submitRecount} disabled={!canOperation("stocktakes.requestRecount") || (requestRecount.isPending)}>
               {requestRecount.isPending ? ACTION_LABELS.sending : "إرسال الطلب للعامل"}
             </Button>
           </DialogFooter>
@@ -1061,8 +1113,8 @@ export default function StocktakeMonitor() {
             <Button variant="ghost" onClick={() => setCancelOpen(false)}>رجوع</Button>
             <Button
               variant="destructive"
-              disabled={cancelSession.isPending}
-              onClick={() => cancelSession.mutate({ sessionId, reason: cancelReason.trim() || undefined })}
+              disabled={!canOperation("stocktakes.cancel") || (cancelSession.isPending)}
+              onClick={() => (canOperation("stocktakes.cancel") && cancelSession.mutate({ sessionId, reason: cancelReason.trim() || undefined }))}
             >
               {cancelSession.isPending ? ACTION_LABELS.cancelling : "تأكيد إلغاء الجلسة"}
             </Button>

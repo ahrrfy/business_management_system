@@ -1,3 +1,4 @@
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "wouter";
 import { ArrowLeft, Check, FileWarning, Package, Printer, RefreshCcw, Undo2, X } from "lucide-react";
@@ -22,6 +23,7 @@ import { notify } from "@/lib/notify";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { printReceipt } from "@/lib/printing/print";
+import { beginInvoicePrintAttempt, completeInvoicePrintAttempt, hasPendingFirstInvoicePrint } from "@/lib/printing/invoicePrintAttempt";
 import { invoiceToShippingLabel } from "@/lib/printing/invoiceShippingLabel";
 import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -225,13 +227,25 @@ function CorrectionBeforeAfter({ request, approvalAction }: { request: ControlRe
 export default function SalesControlApprovals() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const canReview = !!me.data?.role && moduleAccessAllowed(
+  const legacyCanReview = !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
     "sales",
     "FULL",
     ["manager"],
   );
+  const canApprove = lifecycleActionAllowed(me.data, "salesControl.approve", legacyCanReview);
+  const canReject = lifecycleActionAllowed(me.data, "salesControl.reject", legacyCanReview);
+  const canWithdraw = lifecycleActionAllowed(me.data, "salesControl.withdraw", !!me.data);
+  const canClaimPayment = lifecycleActionAllowed(me.data, "salesControl.claimCorrectionPayment", legacyCanReview);
+  const canReleaseClaim = lifecycleActionAllowed(me.data, "salesControl.releaseCorrectionPaymentClaim", legacyCanReview);
+  const canReprint = lifecycleActionAllowed(me.data, "invoicePrinting.requestReprint", !!me.data);
+  const canFirstPrint = lifecycleActionAllowed(me.data, "invoicePrinting.requestPrint", !!me.data);
+  const canRetryCorrectedInvoice = (invoiceId: number) => canReprint ||
+    (canFirstPrint && hasPendingFirstInvoicePrint(me.data?.id, invoiceId, "THERMAL"));
+  const canReview = canApprove || canReject;
+  const requestPrint = trpc.invoicePrinting.requestPrint.useMutation();
+  const requestReprint = trpc.invoicePrinting.requestReprint.useMutation();
   const pending = trpc.salesControl.list.useQuery(
     canReview ? { status: "PENDING" } : { mine: true },
   );
@@ -280,6 +294,7 @@ export default function SalesControlApprovals() {
     invoiceId: number,
     windowReserved = false,
     knownInvoice?: NonNullable<RouterOutputs["sales"]["get"]>,
+    isFirstPrint = false,
   ): Promise<"printed" | "browser" | "failed"> {
     if (printingInvoiceId != null) return "failed";
     setPrintingInvoiceId(invoiceId);
@@ -290,8 +305,12 @@ export default function SalesControlApprovals() {
         notify.warn("تم التصحيح لكن تعذّر جلب الفاتورة البديلة للطباعة");
         return "failed";
       }
+      if (!me.data) throw new Error("تعذّر التحقق من حساب الطباعة؛ أعد تسجيل الدخول.");
+      const attempt = beginInvoicePrintAttempt(me.data.id, invoiceId, "THERMAL", !isFirstPrint, canFirstPrint);
+      await (attempt.mode === "PRINT" ? requestPrint : requestReprint).mutateAsync({ invoiceId, requestId: attempt.requestId, purpose: "THERMAL" });
       // اعتماد التصحيح ليس بيعاً نقدياً جديداً على محطة المدير؛ لا تفتح درجاً لمجرد طباعة البديلة.
       const printed = await printReceipt(invoiceToReceipt(invoice), { openDrawer: false });
+      if (printed.ok) completeInvoicePrintAttempt(attempt);
       if (!printed.ok) {
         notify.warn(
           "تم التصحيح وحُفظت الفاتورة البديلة",
@@ -316,6 +335,7 @@ export default function SalesControlApprovals() {
   }
 
   function requestCorrectedInvoicePrint(invoiceId: number) {
+    if (!canRetryCorrectedInvoice(invoiceId)) return;
     if (!reservePrintWindow()) {
       notify.warn("تعذّر فتح نافذة الطباعة", "تحقّق من مانع النوافذ المنبثقة ثم أعد المحاولة.");
       return;
@@ -324,6 +344,7 @@ export default function SalesControlApprovals() {
   }
 
   function requestShippingLabelPrint(invoiceId: number) {
+    if (!canReprint) return;
     if (printingLabelInvoiceId != null) return;
     const labelWindow = preopenShippingLabelWindow();
     if (!labelWindow) {
@@ -335,7 +356,11 @@ export default function SalesControlApprovals() {
       try {
         const invoice = await utils.sales.get.fetch({ invoiceId });
         if (!invoice) throw new Error("تعذّر جلب الفاتورة البديلة");
+        if (!me.data) throw new Error("تعذّر التحقق من حساب الطباعة؛ أعد تسجيل الدخول.");
+        const attempt = beginInvoicePrintAttempt(me.data.id, invoiceId, "SHIPPING_LABEL", true, canFirstPrint);
+        await (attempt.mode === "PRINT" ? requestPrint : requestReprint).mutateAsync({ invoiceId, requestId: attempt.requestId, purpose: "SHIPPING_LABEL" });
         const printed = await printShippingLabel(invoiceToShippingLabel(invoice), { into: labelWindow });
+        if (printed.ok) completeInvoicePrintAttempt(attempt);
         if (!printed.ok) notify.warn("تعذّرت طباعة ليبل الشحن", "أعد المحاولة بعد السماح بالنوافذ المنبثقة.");
       } catch (cause) {
         try { labelWindow.close(); } catch { /* النافذة مغلقة سلفاً */ }
@@ -386,6 +411,7 @@ export default function SalesControlApprovals() {
           correctedInvoiceId,
           windowReserved,
           replacement ?? undefined,
+          !result.replayed,
         );
         if (replacement) setLastApprovedPrintStatus(printStatus);
       } else if (approvalPrintReservation.current != null) {
@@ -441,6 +467,7 @@ export default function SalesControlApprovals() {
   });
 
   async function withdrawOne(requestId: number, invoiceNumber: string) {
+    if (!canWithdraw) return;
     if (!(await confirm({
       variant: "warning",
       title: `سحب الطلب #${requestId}`,
@@ -451,6 +478,7 @@ export default function SalesControlApprovals() {
   }
 
   async function approveOne(requestId: number, invoiceNumber: string, type: SalesControlType) {
+    if (!canApprove) return;
     const editingThis = routingFor === requestId;
     const shiftId = editingThis && routingShiftId ? Number(routingShiftId) : null;
     const request = pending.data?.find((row) => Number(row.id) === requestId);
@@ -523,6 +551,7 @@ export default function SalesControlApprovals() {
   }
 
   async function beginCorrectionPaymentClaim(requestId: number) {
+    if (!canClaimPayment) return;
     if (paymentClaimFor === requestId || claimCorrectionPayment.isPending) return;
     if (paymentClaimFor != null && paymentClaimFor !== requestId) {
       setComparisonFor(paymentClaimFor);
@@ -582,6 +611,7 @@ export default function SalesControlApprovals() {
   }
 
   async function releaseCorrectionClaim(requestId: number) {
+    if (!canReleaseClaim) return;
     if (!(await confirm({
       variant: "danger",
       title: `تحرير حجز الدفع للطلب #${requestId}`,
@@ -640,10 +670,10 @@ export default function SalesControlApprovals() {
           </div>
           <div className="flex flex-wrap gap-2">
             <Link href={`/invoices/${lastApprovedInvoice.id}`} className="inline-flex h-9 items-center rounded-md border bg-background px-3 text-xs font-bold text-primary hover:bg-muted">فتح الفاتورة</Link>
-            <Button size="sm" variant="outline" onClick={() => requestCorrectedInvoicePrint(Number(lastApprovedInvoice.id))} disabled={printingInvoiceId != null}>
+            <Button size="sm" variant="outline" onClick={() => requestCorrectedInvoicePrint(Number(lastApprovedInvoice.id))} disabled={!canRetryCorrectedInvoice(Number(lastApprovedInvoice.id)) || printingInvoiceId != null}>
               <Printer aria-hidden className="me-1 size-4" /> إعادة طباعة حرارية
             </Button>
-            <Button size="sm" variant="outline" onClick={() => requestShippingLabelPrint(Number(lastApprovedInvoice.id))} disabled={printingLabelInvoiceId != null}>
+            <Button size="sm" variant="outline" onClick={() => requestShippingLabelPrint(Number(lastApprovedInvoice.id))} disabled={!canReprint || printingLabelInvoiceId != null}>
               <Package aria-hidden className="me-1 size-4" /> ليبل الشحن
             </Button>
           </div>
@@ -710,7 +740,7 @@ export default function SalesControlApprovals() {
                 comparisonFor === Number(request.id) ? (
                   <CorrectionBeforeAfter
                     request={request}
-                    approvalAction={canReview ? (
+                    approvalAction={canApprove ? (
                       <div className="flex w-full flex-wrap items-end gap-3">
                         {correctionNeedsCashRouting && !reviewerConflict ? (
                           <div className="min-w-56 flex-1 space-y-1">
@@ -761,7 +791,7 @@ export default function SalesControlApprovals() {
                                 ? "تحقق من سجل الجهاز أولاً: أدخل المرجع القائم، أو حرّر الحجز بإقرار فقط إن لم يحدث قبض."
                                 : paymentClaimFor === Number(request.id) ? "محجوز لك؛ الدليل يبقى آمناً لإعادة المحاولة إن تعذر الترحيل." : "لا تمرّر البطاقة قبل نجاح الحجز."}</span>
                               {paymentClaimFor === Number(request.id) && !routingReference.trim() ? (
-                                <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => releaseCorrectionClaim(Number(request.id))} disabled={releaseCorrectionPaymentClaim.isPending}>تحرير الحجز</Button>
+                                <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => releaseCorrectionClaim(Number(request.id))} disabled={!canReleaseClaim || releaseCorrectionPaymentClaim.isPending}>تحرير الحجز</Button>
                               ) : null}
                             </div>
                           </div>
@@ -769,7 +799,7 @@ export default function SalesControlApprovals() {
                         <Button
                           className="h-11 min-w-56 text-base font-extrabold"
                           onClick={() => approveOne(Number(request.id), request.invoiceNumber, request.requestType as SalesControlType)}
-                          disabled={approve.isPending || reject.isPending || reviewerConflict
+                          disabled={!canApprove || approve.isPending || reject.isPending || reviewerConflict
                             || (correctionNeedsExternalRouting
                               && (paymentClaimFor !== Number(request.id) || !routingReference.trim()))}
                         >
@@ -862,7 +892,7 @@ export default function SalesControlApprovals() {
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={withdraw.isPending}
+                    disabled={!canWithdraw || withdraw.isPending}
                     onClick={() => withdrawOne(Number(request.id), request.invoiceNumber)}
                   >
                     <Undo2 aria-hidden className="me-1 size-4" />
@@ -889,7 +919,7 @@ export default function SalesControlApprovals() {
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={printingInvoiceId != null}
+                    disabled={!canRetryCorrectedInvoice(Number(request.resultInvoiceId)) || printingInvoiceId != null}
                     onClick={() => requestCorrectedInvoicePrint(Number(request.resultInvoiceId))}
                   >
                     <Printer aria-hidden className="me-1 size-4" />
@@ -898,7 +928,7 @@ export default function SalesControlApprovals() {
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={printingLabelInvoiceId != null}
+                    disabled={!canReprint || printingLabelInvoiceId != null}
                     onClick={() => requestShippingLabelPrint(Number(request.resultInvoiceId))}
                   >
                     <Package aria-hidden className="me-1 size-4" />
@@ -909,7 +939,7 @@ export default function SalesControlApprovals() {
               {canReview && <div className="flex flex-wrap gap-2">
                 {!isPendingCorrection && <Button
                   onClick={() => approveOne(Number(request.id), request.invoiceNumber, request.requestType as SalesControlType)}
-                  disabled={approve.isPending || reject.isPending || reviewerConflict}
+                  disabled={!canApprove || approve.isPending || reject.isPending || reviewerConflict}
                 >
                   <Check aria-hidden className="me-1 size-4" />
                   اعتماد وتنفيذ
@@ -917,7 +947,7 @@ export default function SalesControlApprovals() {
                 <Button
                   variant="destructive"
                   onClick={() => { setRejecting(Number(request.id)); setRejectReason(""); }}
-                  disabled={approve.isPending || reject.isPending || reviewerConflict}
+                  disabled={!canReject || approve.isPending || reject.isPending || reviewerConflict}
                 >
                   <X aria-hidden className="me-1 size-4" />
                   رفض
@@ -949,7 +979,7 @@ export default function SalesControlApprovals() {
             <Button variant="outline" onClick={() => setRejecting(null)}>رجوع</Button>
             <Button
               variant="destructive"
-              disabled={rejectReason.trim().length < 3 || reject.isPending}
+              disabled={!canReject || rejectReason.trim().length < 3 || reject.isPending}
               onClick={() => rejecting != null && reject.mutate({ requestId: rejecting, reason: rejectReason.trim() })}
             >
               {reject.isPending ? ACTION_LABELS.sending : ACTION_LABELS.reject}

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
+import type { OperationUser } from "@shared/operationPermissions";
 import {
   canReviewGovernanceRequest,
   governanceDecisionMessage,
@@ -7,6 +9,21 @@ import {
 } from "@/components/purchases/purchaseGovernanceUiPolicy";
 
 describe("purchase S5-S7 governance UI policy", () => {
+  it("separates delegated supplier payment requests, payment decisions and refund decisions", () => {
+    const user: OperationUser = {
+      role: "courier",
+      operationPolicy: { version: 1, grants: {
+        "operation.supplierPayments.requestPayment": true,
+        "operation.supplierPayments.decidePayment": true,
+      } },
+    };
+    expect(canLifecycleOperation(user, "supplierPayments.requestPayment", false)).toBe(true);
+    expect(canLifecycleOperation(user, "supplierPayments.decidePayment", false)).toBe(true);
+    expect(canLifecycleOperation(user, "supplierPayments.requestRefund", true)).toBe(false);
+    expect(canLifecycleOperation(user, "supplierPayments.decideRefund", true)).toBe(false);
+    expect(canLifecycleOperation(user, "purchases.decideControl", true)).toBe(false);
+  });
+
   it("shows that pending requests have not changed money or stock", () => {
     expect(governanceStatusLabel("PENDING")).toContain("بانتظار");
     expect(governanceStatusLabel("REJECTED")).toContain("بلا أثر");
@@ -130,9 +147,10 @@ describe("purchase S5-S7 governance UI policy", () => {
     );
     expect(page).toContain('"treasury"');
     expect(page).toContain('"FULL"');
-    expect(page).toContain("صلاحية المشتريات تتيح إنشاء الطلب ومتابعته فقط");
+    expect(page).toContain("تفويض اعتماد دفعة المورد أو اعتماد استرداد المورد بحسب نوع الطلب");
     expect(page).toContain("canDecide={canDecide}");
-    expect(workspace).toContain("reviewAllowed={canDecide}");
+    expect(workspace).toContain('reviewAllowed={canLifecycleOperation(me.data, "supplierPayments.decidePayment", canDecide)}');
+    expect(workspace).toContain('reviewAllowed={canLifecycleOperation(me.data, "supplierPayments.decideRefund", canDecide)}');
     expect(queue).toContain("reviewAllowed &&");
     expect(queue).toContain("reviewBlockedReason");
   });

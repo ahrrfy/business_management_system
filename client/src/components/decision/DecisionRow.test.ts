@@ -37,4 +37,11 @@ describe("DecisionRow — عقود الواجهة", () => {
     expect(row).toContain('title={row.trigger === "MONEY_OUT" ? "طبيعة القرار: خروج مال عند الاعتماد"');
     expect(row).toContain('لحظة الخطر: {row.trigger === "MONEY_OUT" ? "خروج مال عند الاعتماد"');
   });
+
+  it("يعرض لوحة البيان والذكاء التشغيلي عند توفر السياق التشغيلي", () => {
+    expect(row).toContain("<DecisionOperationalPanel");
+    expect(row).toContain("row.operationalContext");
+    expect(row).toContain("بيان البنود والمستندات");
+  });
 });
+

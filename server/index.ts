@@ -55,6 +55,12 @@ import {
 import { publicStorefrontHostBoundary } from "./middleware/publicStorefrontHost";
 import { isBackgroundJobRunner, isClustered } from "./lib/clusterRole";
 import {
+  realtimeRouter,
+  initRealtimeBridge,
+  stopRealtimeBridge,
+  sseManager,
+} from "./realtime";
+import {
   createOverloadGuard,
   startLagMonitor,
 } from "./middleware/overloadGuard";
@@ -76,6 +82,7 @@ import { closeControlDb, getControlDb } from "./tenancy/controlDb";
 import { assertMobileProductionReadiness } from "./services/mobileProductionReadiness";
 import { runWithLegacyHashScope } from "./services/idempotency";
 import { sweepStaleRestoreArtifacts } from "./services/maintenanceService";
+import { selfHealDivergedProductChannelLabels } from "./services/catalog/productChannelSyncSelfHeal";
 import { assertImageStoreStartupConfiguration } from "./lib/imageStore";
 import { assertStorefrontOrderingReadiness } from "./services/storefrontTurnstile";
 import { STOREFRONT_TURNSTILE_SCRIPT_ORIGIN } from "@shared/storefrontTurnstile";
@@ -142,6 +149,9 @@ async function startServer() {
     .catch((err) =>
       logger.warn({ err }, "restore.stale_artifacts.sweep_failed"),
     );
+  void selfHealDivergedProductChannelLabels().catch((err) =>
+    logger.warn({ err }, "catalog.channel_labels.self_heal_failed"),
+  );
 
   // نشر التطبيق الأصلي يعلن اعتماده على FCM و2FA وجسر جهاز الحضور. عند تفعيل العلم
   // الصريح في الإنتاج نفشل قبل فتح المنفذ إذا كانت أي حلقة ناقصة، لا بعد دخول الموظفين.
@@ -422,7 +432,19 @@ async function startServer() {
       const db = isMultiTenantModeActive() ? getControlDb() : getDb();
       if (!db) return res.status(503).json({ ok: false, db: "unconfigured" });
       await db.execute(sql`SELECT 1`);
-      res.json({ ok: true, time: new Date().toISOString() });
+      const mem = process.memoryUsage();
+      const sseStats = sseManager.getStats();
+      res.json({
+        ok: true,
+        time: new Date().toISOString(),
+        metrics: {
+          activeSubscribers: sseStats.activeConnections,
+          memoryRssBytes: mem.rss,
+          heapUsedBytes: mem.heapUsed,
+          heapTotalBytes: mem.heapTotal,
+          uptimeSeconds: Math.floor(process.uptime()),
+        },
+      });
     } catch (e) {
       logger.error({ err: e }, "healthz failed");
       res.status(503).json({ ok: false, db: "down" });
@@ -713,6 +735,7 @@ async function startServer() {
 
   app.use("/api/webhooks", channelWebhooksRouter());
   app.use("/api/webhooks/company/:companyCode", companyChannelWebhooksRouter());
+  app.use("/api/realtime", tenancy, realtimeRouter);
 
   const preferredPort = parseInt(process.env.PORT || "3000", 10);
   // HOST حُسم وفُحص قبل إنشاء التطبيق؛ في الإنتاج لا يمرّ غيابه أو ربط غير loopback بلا opt-in.
@@ -744,6 +767,10 @@ async function startServer() {
   logger.info(
     `Server running on http://${host ?? "localhost"}:${port}/ ${sentryEnabled ? "(Sentry on)" : ""}`,
   );
+
+  // تهيئة الناقل الحلقي للعمليات اللحظية (Wave 0):
+  // عامل 0 يشغّل Hub على 127.0.0.1:3009، وبقية العمال يتصلون كـ Client، مع fallback للذاكرة.
+  await initRealtimeBridge();
 
   // ── طبقة العمّال: الوظائف الخلفيّة تعمل في عاملٍ واحدٍ فقط ─────────────────────────────────
   // في العنقود تعمل عدّة نسخ من الخادم على النوى؛ لو بدأت كلٌّ منها الكنّاسات والكرون لتكرّر
@@ -914,6 +941,8 @@ async function startServer() {
       stopOnlineOrderExpirySweeper?.();
       stopPurchaseIntegrityMonitor?.();
       stopReconcileScheduler?.();
+      sseManager.closeAll();
+      await stopRealtimeBridge();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await closeDb();
       await closeControlDb();

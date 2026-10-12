@@ -1,3 +1,4 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 /**
  * قوائم العدّ الورقية (/stocktakes/:id/sheets) — مرجع التصميم jrd-countsheet.jsx.
  * معاينة قائمة كل عامل (تبويب) من trpc.stocktakes.countSheets (العقد §٣ — أعمى: بلا expectedQty
@@ -50,32 +51,38 @@ const dOnly = (v?: string | Date | null): string =>
 export default function StocktakeCountSheets() {
   const params = useParams();
   const sessionId = Number(params.id);
+  const me = trpc.auth.me.useQuery();
+  const canOperation = (path: string) => canLifecycleOperation(me.data, path, true);
   const enabled = Number.isFinite(sessionId);
 
-  const sheetsQ = trpc.stocktakes.countSheets.useQuery({ sessionId }, { enabled });
-  const getQ = trpc.stocktakes.get.useQuery({ sessionId }, { enabled });
+  const sheetsQ = trpc.stocktakes.countSheets.useQuery({ sessionId }, { enabled: enabled && canOperation("stocktakes.countSheets")});
+  const sheetsQData = canOperation("stocktakes.countSheets") ? sheetsQ.data : undefined;
+  const getQ = trpc.stocktakes.get.useQuery({ sessionId }, { enabled: enabled && canOperation("stocktakes.get")});
+  const getQData = canOperation("stocktakes.get") ? getQ.data : undefined;
 
   const [tab, setTab] = useState("0");
 
   // دفاعي: المخرج إمّا مصفوفة تكليفات مباشرة أو { session, sheets }
   const sheets: Sheet[] = useMemo(() => {
-    const raw = sheetsQ.data as unknown;
+    const raw = sheetsQData as unknown;
     if (!raw) return [];
     if (Array.isArray(raw)) return raw as Sheet[];
     const o = raw as { sheets?: Sheet[]; assignments?: Sheet[] };
     return o.sheets ?? o.assignments ?? [];
-  }, [sheetsQ.data]);
+  }, [sheetsQData]);
 
   const sess: SessionHeader | undefined = useMemo(() => {
-    const g = getQ.data as unknown as ({ session?: SessionHeader } & SessionHeader) | undefined;
+    const g = getQData as unknown as ({ session?: SessionHeader } & SessionHeader) | undefined;
     if (!g) {
-      const raw = sheetsQ.data as unknown as { session?: SessionHeader } | undefined;
+      const raw = sheetsQData as unknown as { session?: SessionHeader } | undefined;
       return raw && !Array.isArray(raw) ? raw.session : undefined;
     }
     return g.session ?? g;
-  }, [getQ.data, sheetsQ.data]);
+  }, [getQData, sheetsQData]);
 
   if (!enabled) return <div className="p-10 text-center text-muted-foreground">جلسة غير صالحة.</div>;
+  if (me.isLoading) return <div className="p-10 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>;
+  if (!canOperation("stocktakes.countSheets")) return <div className="p-10 text-center text-muted-foreground">يتطلب العرض تفويض قوائم العدّ.</div>;
   if (sheetsQ.isLoading) return <div className="p-10 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>;
   if (sheetsQ.error) return <div className="p-10 text-center text-destructive">تعذّر تحميل قوائم العدّ: {sheetsQ.error.message}</div>;
 

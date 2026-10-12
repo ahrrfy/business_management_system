@@ -35,20 +35,17 @@ import { confirm } from "@/lib/confirm";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { printWarehouseSlipV2 } from "@/lib/printing/printTemplatesV2";
 import { printReceipt } from "@/lib/printing/print";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
+import { useInvoiceActionPermissions } from "@/hooks/useInvoiceActionPermissions";
+import { beginInvoicePrintAttempt, completeInvoicePrintAttempt, hasPendingFirstInvoicePrint, type InvoicePrintPurpose } from "@/lib/printing/invoicePrintAttempt";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { invoiceToShippingLabel } from "@/lib/printing/invoiceShippingLabel";
 import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
-import { allocateLineTax } from "@/components/invoice";
+import { invoiceDetailPrintData } from "@/lib/printing/invoiceDetailPrintData";
 import { D, fmt, round2 } from "@/lib/money";
 import { DataTable } from "@/components/data-table/DataTable";
 import { trpc } from "@/lib/trpc";
 import { variantDisplayName } from "@shared/variantDisplay";
-import {
-  hasModuleAccess,
-  moduleAccessAllowed,
-  type PermissionMap,
-  type RoleKey,
-} from "@shared/permissions";
 import { InvoiceDigitalCards } from "@/components/digitalCards/InvoiceDigitalCards";
 import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDialog";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
@@ -97,6 +94,8 @@ export default function InvoiceDetail() {
   const [, navigate] = useLocation();
   const invoiceId = Number(params.id);
   const utils = trpc.useUtils();
+  const requestPrint = trpc.invoicePrinting.requestPrint.useMutation();
+  const requestReprint = trpc.invoicePrinting.requestReprint.useMutation();
   const inv = trpc.sales.get.useQuery(
     { invoiceId },
     { enabled: Number.isFinite(invoiceId) },
@@ -119,6 +118,7 @@ export default function InvoiceDetail() {
   const [done, setDone] = useState("");
   const [printingReceipt, setPrintingReceipt] = useState(false);
   const [printingShippingLabel, setPrintingShippingLabel] = useState(false);
+  const [printingDocument, setPrintingDocument] = useState(false);
   // idempotency: مفتاح ثابت لكل دفعة (يتجدّد بعد النجاح) ⇒ نقرة مزدوجة لا تُسجّل دفعتين.
   const [clientRequestId, setClientRequestId] = useState(() =>
     crypto.randomUUID(),
@@ -185,47 +185,25 @@ export default function InvoiceDetail() {
   // نُخفي لوحة «تسديد دفعة» عمّن يرفضه الخادم (محاسب/مدقّق/مندوب: sales=READ) بدل عرض نموذج يفشل
   // بـ403 — بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
   const me = trpc.auth.me.useQuery();
+  const { canFirstPrint, canReprint, canOpenStatement, canOpenVouchers, canCorrectInvoice, canReadCorrectionHistory, canLookupFullCorrection, canFullReissue, canRecordPayment, canInitiatePayment, canConfirmPayment, canReadDigital, canCancelInvoice, canDispatch, canCancelAssignment, canReverseWorkOrder, canRequestDueDateChange, canDownloadPdf } = useInvoiceActionPermissions(me.data);
+  const canRetryA4 = canReprint || (canFirstPrint && hasPendingFirstInvoicePrint(me.data?.id, invoiceId, "A4"));
+  const canRetryThermal = canReprint || (canFirstPrint && hasPendingFirstInvoicePrint(me.data?.id, invoiceId, "THERMAL"));
+  async function authorizePrintAttempt(purpose: InvoicePrintPurpose, reprint = true) {
+    if (!me.data) throw new Error("تعذّر التحقق من حساب الطباعة؛ أعد تسجيل الدخول.");
+    const attempt = beginInvoicePrintAttempt(me.data.id, invoiceId, purpose, reprint, canFirstPrint);
+    await (attempt.mode === "PRINT" ? requestPrint : requestReprint).mutateAsync({ invoiceId, requestId: attempt.requestId, purpose });
+    return attempt;
+  }
+  const printBusy = printingReceipt || printingShippingLabel || printingDocument;
   // ٢٤/٨ (Codex P2 على PR #744): بوّابتان للروابط المُضافة حديثاً — كلاهما لأدوارٍ فعلاً تستطيع فتح الوجهة.
-  const canOpenStatement = !!me.data?.role && moduleAccessAllowed(
-    me.data.role as RoleKey,
-    (me.data.permissionsOverride ?? null) as PermissionMap | null,
-    "reports",
-    "READ",
-    ["admin", "manager", "accountant", "auditor"],
-  );
-  const canOpenVouchers = !!me.data?.role && moduleAccessAllowed(
-    me.data.role as RoleKey,
-    (me.data.permissionsOverride ?? null) as PermissionMap | null,
-    "treasury",
-    "READ",
-    ["admin", "manager", "accountant"],
-  );
-  const canCorrectInvoice =
-    !!me.data?.role &&
-    moduleAccessAllowed(
-      me.data.role as RoleKey,
-      (me.data.permissionsOverride ?? null) as PermissionMap | null,
-      "sales",
-      "FULL",
-      ["manager"],
-    );
-  const canRecordPayment =
-    !!me.data?.role &&
-    moduleAccessAllowed(
-      me.data.role as RoleKey,
-      (me.data.permissionsOverride ?? null) as PermissionMap | null,
-      "sales",
-      "FULL",
-      ["cashier", "manager"],
-    );
   const corrections = trpc.sales.correctionHistory.useQuery(
     { invoiceId },
-    { enabled: Number.isFinite(invoiceId) && canCorrectInvoice, retry: false },
+    { enabled: Number.isFinite(invoiceId) && canReadCorrectionHistory, retry: false },
   );
   const fullCorrectionEligibility = trpc.sales.lookupForCorrection.useQuery(
     { invoiceNumber: inv.data?.invoiceNumber ?? "" },
     {
-      enabled: canRecordPayment && Boolean(inv.data?.invoiceNumber),
+      enabled: canLookupFullCorrection && Boolean(inv.data?.invoiceNumber),
       retry: false,
     },
   );
@@ -242,14 +220,6 @@ export default function InvoiceDetail() {
   // ش١٠: لقطات الكروت الرقمية للفاتورة — بدونها تفقد **إعادة** الطباعة مراجع الكروت وبيانات
   // الطالب التي طُبعت أوّل مرّة (الإيصال الأصلي يأخذها من ردّ `finalize`). محجوبة خلف صلاحية
   // الوحدة بنفس دالة الخادم فلا يُطلق مَن لا يملكها نداءً يعود بـ403.
-  const canReadDigital =
-    !!me.data?.role &&
-    hasModuleAccess(
-      me.data.role as RoleKey,
-      (me.data.permissionsOverride ?? null) as PermissionMap | null,
-      "digital_cards",
-      "READ",
-    );
   const digitalPrint = trpc.digitalCards.sales.printDetails.useQuery(
     { invoiceId },
     { enabled: Number.isFinite(invoiceId) && canReadDigital, retry: false },
@@ -293,24 +263,8 @@ export default function InvoiceDetail() {
       externalAttempt.fingerprint === externalFingerprint);
   const canPay = data.status === "PENDING" || data.status === "PARTIALLY_PAID";
   // الإلغاء صار طلباً صفري الأثر؛ موظف sales=FULL يطلب، ومديرٌ مستقل يعتمد وينفّذ.
-  const canCancelInvoice =
-    !!me.data?.role &&
-    moduleAccessAllowed(
-      me.data.role as RoleKey,
-      (me.data.permissionsOverride ?? null) as PermissionMap | null,
-      "sales",
-      "FULL",
-      ["cashier", "manager"],
-    );
   const canDispatchInvoice =
-    !!me.data?.role &&
-    moduleAccessAllowed(
-      me.data.role as RoleKey,
-      (me.data.permissionsOverride ?? null) as PermissionMap | null,
-      "store",
-      "FULL",
-      ["manager", "cashier"],
-    ) &&
+    canDispatch &&
     (!data.consignmentNumber || data.consignmentStatus === "CANCELLED") &&
     data.status !== "CANCELLED" &&
     data.status !== "RETURNED" &&
@@ -318,14 +272,7 @@ export default function InvoiceDetail() {
     data.sourceType !== "ONLINE" &&
     data.sourceType !== "WORKORDER";
   const canCancelDelivery =
-    !!me.data?.role &&
-    moduleAccessAllowed(
-      me.data.role as RoleKey,
-      (me.data.permissionsOverride ?? null) as PermissionMap | null,
-      "store",
-      "FULL",
-      ["manager", "cashier"],
-    ) &&
+    canCancelAssignment &&
     data.consignmentId != null &&
     (data.consignmentParcelStatus === "ASSIGNED" || data.consignmentParcelStatus === "OUT_FOR_DELIVERY" || data.consignmentParcelStatus === "FAILED");
   const hasDeliveryLifecycle =
@@ -359,14 +306,7 @@ export default function InvoiceDetail() {
     data.status !== "CANCELLED" &&
     data.status !== "RETURNED" &&
     data.status !== "SUPERSEDED" &&
-    !!me.data?.role &&
-    moduleAccessAllowed(
-      me.data.role as RoleKey,
-      (me.data.permissionsOverride ?? null) as PermissionMap | null,
-      "workorders",
-      "FULL",
-      ["cashier", "manager"],
-    );
+    canReverseWorkOrder;
   const paidAmountForRefund = round2(D(data.paidAmount ?? "0"));
   // مرجع جهاز الدفع إلزاميّ لِـCARD وحدها (تفرضه الخدمة) — ومقصورٌ على حالة وجود استردادٍ فعليّ
   // كي لا يحجب فاتورةً بلا استرداد بسبب طريقةٍ متبقّية من فتحةٍ سابقة للحوار.
@@ -380,7 +320,7 @@ export default function InvoiceDetail() {
   //    **كل فاتورة استقبالٍ عليها عربون لا يظهر لها زرّ تصحيحٍ إطلاقاً** — وهو جوهر الشكوى.
   //    الآن المقبوض يُنقل للمصحّحة كما هو، والفرق الزائد يُردّ نقداً أو يُرصَّد (correct.ts خطوة ⑨).
   const canFullCorrect =
-    canRecordPayment &&
+    canFullReissue &&
     fullCorrectionEligibility.data?.canCorrect === true;
 
   function openCorrection() {
@@ -455,13 +395,16 @@ export default function InvoiceDetail() {
   }
 
   async function reprintThermal() {
-    if (printingReceipt) return;
+    if (printBusy || !canRetryThermal) return;
+    reservePrintWindow();
     setPrintingReceipt(true);
     try {
+      const attempt = await authorizePrintAttempt("THERMAL");
       const result = await printReceipt({
         ...invoiceToReceipt(data),
         digitalDetails: digitalPrint.data?.length ? digitalPrint.data : null,
       });
+      if (result.ok) completeInvoicePrintAttempt(attempt);
       if (!result.ok) {
         notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة",
         );
@@ -484,12 +427,13 @@ export default function InvoiceDetail() {
     } catch (e) {
       notify.err(e);
     } finally {
+      releaseReservedPrintWindow();
       setPrintingReceipt(false);
     }
   }
 
   function printInvoiceShippingLabel() {
-    if (printingShippingLabel) return;
+    if (printBusy || !canReprint) return;
     if (!canPrintShippingLabel) {
       notify.warn("لا يمكن طباعة ليبل شحن لهذه الفاتورة", "اطبع الليبل من الفاتورة البديلة الفعّالة.");
       return;
@@ -500,8 +444,10 @@ export default function InvoiceDetail() {
       return;
     }
     setPrintingShippingLabel(true);
-    void printShippingLabel(invoiceToShippingLabel(data), { into: labelWindow })
-      .then((result) => {
+    void authorizePrintAttempt("SHIPPING_LABEL")
+      .then(async (attempt) => {
+        const result = await printShippingLabel(invoiceToShippingLabel(data), { into: labelWindow });
+        if (result.ok) completeInvoicePrintAttempt(attempt);
         if (!result.ok) notify.warn("تعذّرت طباعة ليبل الشحن", "أعد المحاولة بعد السماح بالنوافذ المنبثقة.");
       })
       .catch((cause) => {
@@ -512,6 +458,7 @@ export default function InvoiceDetail() {
   }
 
   async function confirmInvoiceExternalPayment() {
+    if (!canInitiatePayment || !canConfirmPayment) return setError("صلاحية تأكيد الدفع الخارجي غير ممنوحة لحسابك.");
     const reference = payReference.trim();
     if (!reference) return setError("أدخل مرجع العملية أولاً.");
     if (!D(payAmount || "0").gt(0))
@@ -611,64 +558,29 @@ export default function InvoiceDetail() {
     });
   }
 
-  async function printApprovedA4() {
-    // توزيع ضريبة الفاتورة على السطور لعمود «الضريبة» في القالب الرسمي.
-    const afterDisc = round2(
-      D(data.subtotal).minus(D(data.discountAmount ?? "0")),
-    ).toFixed(2);
-    const shares = allocateLineTax(
-      data.items.map((it) => ({ total: String(it.total) })),
-      String(data.taxAmount ?? "0"),
-      afterDisc,
-    );
-    await printInvoiceA4({
-      invoiceNumber: data.invoiceNumber,
-      invoiceDate: data.invoiceDate,
-      customerName: data.customerName,
-      customerPhone: data.customerPhone,
-      customerAddress: data.customerAddress,
-      customerBalance: data.customerId ? data.customerBalance : null,
-      salespersonName: data.salespersonName,
-      companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
-      paymentMethod: paymentMethodLabel(data.paymentMethod),
-      subtotal: data.subtotal,
-      discountAmount: data.discountAmount,
-      taxAmount: data.taxAmount,
-      taxRate: Number(data.taxRatePercent ?? 0),
-      total: data.total,
-      paidAmount: data.paidAmount,
-      qrPayload: data.qrPayload ?? null,
-      items: data.items.map((it, i) => ({
-        productName: variantDisplayName({
-          productName: it.productName ?? "",
-          variantName: it.variantName,
-          color: it.color,
-          size: it.size,
-          variantKind: it.variantKind,
-          sku: it.sku,
-        }),
-        unitName: it.unitName,
-        quantity: it.quantity,
-        unitPrice: it.unitPrice,
-        total: it.total,
-        taxAmount: shares[i] ?? "0",
-        isGift: it.isGift,
-        barcode: it.barcode ?? it.sku ?? null,
-      })),
-      deliveryFee: data.deliveryFee,
-      deliveryFree: data.deliveryFree,
-      deliveryWaivedAmount: data.deliveryWaivedAmount,
-      // ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا الفاتورة ⇒ نمرّرها للعرض
-      // كي تُظهر الفاتورة المطبوعة «المجموع النهائي الذي يدفعه الزبون شاملاً التوصيل».
-      courierDelivery: data.courierName && Number(data.courierFee ?? 0) > 0 && data.consignmentStatus !== "CANCELLED"
-        ? { partyName: data.courierName, fee: data.courierFee ?? "0", feeCollection: data.courierFeeCollection ?? "COURIER",
-            }
-        : null,
-    });
+  async function printApprovedA4(firstPrint = false) {
+    if (printBusy || (!firstPrint && !canRetryA4)) return;
+    if (!firstPrint) reservePrintWindow();
+    setPrintingDocument(true);
+    try {
+    const attempt = await authorizePrintAttempt("A4", !firstPrint);
+    const opened = await printInvoiceA4(invoiceDetailPrintData(data, taxSettings.data?.taxRegistrationNumber ?? null));
+    if (opened) completeInvoicePrintAttempt(attempt);
+    } catch (cause) {
+      notify.err(cause);
+    } finally {
+      releaseReservedPrintWindow();
+      setPrintingDocument(false);
+    }
   }
 
-  function printWarehouseSlip() {
-    printWarehouseSlipV2({
+  async function printWarehouseSlip() {
+    if (printBusy || !canReprint) return;
+    reservePrintWindow();
+    setPrintingDocument(true);
+    try {
+    const attempt = await authorizePrintAttempt("WAREHOUSE");
+    const opened = printWarehouseSlipV2({
       invoiceNumber: data.invoiceNumber,
       invoiceDate: data.invoiceDate,
       customerName: data.customerName,
@@ -688,6 +600,13 @@ export default function InvoiceDetail() {
       })),
       notes: data.notes,
     });
+    if (opened) completeInvoicePrintAttempt(attempt);
+    } catch (cause) {
+      notify.err(cause);
+    } finally {
+      releaseReservedPrintWindow();
+      setPrintingDocument(false);
+    }
   }
 
   function downloadOfficialDocument() {
@@ -702,7 +621,7 @@ export default function InvoiceDetail() {
   return (
     <div className="space-y-4 max-w-6xl">
       {new URLSearchParams(search).get("print") === "1" && (
-        <AutoPrintOnce onPrint={() => void printApprovedA4()} />
+        <AutoPrintOnce onPrint={() => void printApprovedA4(true)} />
       )}
       {/* ٢٤/٨ (تدقيق): رقم الفاتورة في العنوان — عند فتح تبويباتٍ متعدّدة لفواتير مختلفة كلٌّ منها
           كان يعرض «تفاصيل الفاتورة» ذاتها. الرقم يميّز التبويبات بصرياً وفي `document.title` عبر
@@ -801,7 +720,7 @@ export default function InvoiceDetail() {
               إلغاء إسناد التوصيل
             </Button>
           )}
-          {canCorrectInvoice && (
+          {(canCorrectInvoice || canRequestDueDateChange) && (
             <Button variant="outline" size="sm" onClick={openCorrection}>
               <Pencil aria-hidden className="size-4" />
               تعديل البيانات
@@ -809,7 +728,7 @@ export default function InvoiceDetail() {
           )}
           <Button
             size="sm"
-            disabled={printingReceipt}
+            disabled={printBusy || !canRetryThermal}
             onClick={() => void reprintThermal()}
           >
             <Printer aria-hidden className="size-4" />
@@ -819,7 +738,7 @@ export default function InvoiceDetail() {
             <Button
               variant="outline"
               size="sm"
-              disabled={printingShippingLabel}
+              disabled={printBusy || !canReprint}
               onClick={printInvoiceShippingLabel}
             >
               <Package aria-hidden className="size-4" />
@@ -835,15 +754,15 @@ export default function InvoiceDetail() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => void printApprovedA4()}>
+              <DropdownMenuItem disabled={printBusy || !canRetryA4} onClick={() => void printApprovedA4()}>
                 <FileText aria-hidden className="size-4" />
                 فاتورة الزبون
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => downloadOfficialDocument()}>
+              <DropdownMenuItem disabled={!canDownloadPdf} onClick={() => downloadOfficialDocument()}>
                 <Download aria-hidden className="size-4" />
                 تحميل / حفظ PDF
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => printWarehouseSlip()}>
+              <DropdownMenuItem disabled={printBusy || !canReprint} onClick={() => void printWarehouseSlip()}>
                 <Package aria-hidden className="size-4" />
                 سند تجهيز مخزني
               </DropdownMenuItem>
@@ -1014,7 +933,7 @@ export default function InvoiceDetail() {
                 ))}
               </AppSelect>
             </div>
-            {payMethod !== "CASH" && (
+            {payMethod !== "CASH" && canInitiatePayment && canConfirmPayment && (
               <div className="md:col-span-3 rounded-xl border bg-card p-3">
                 <PaymentReferenceField
                   value={payReference}
@@ -1066,7 +985,7 @@ export default function InvoiceDetail() {
         </Card>
       )}
 
-      {canCorrectInvoice && (
+      {canReadCorrectionHistory && (
         <InvoiceCorrectionHistoryCard
           isLoading={corrections.isLoading}
           history={corrections.data}
@@ -1088,6 +1007,7 @@ export default function InvoiceDetail() {
               <Label htmlFor="invoice-correction-notes">ملاحظات الفاتورة</Label>
               <Textarea
                 id="invoice-correction-notes"
+                disabled={!canCorrectInvoice}
                 value={correctionNotes}
                 onChange={(event) => setCorrectionNotes(event.target.value)}
                 rows={3}
@@ -1099,6 +1019,7 @@ export default function InvoiceDetail() {
               </Label>
               <Input
                 id="invoice-correction-due-date"
+                disabled={!canRequestDueDateChange}
                 type="date"
                 value={correctionDueDate}
                 onChange={(event) => setCorrectionDueDate(event.target.value)}

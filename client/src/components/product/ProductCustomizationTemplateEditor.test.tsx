@@ -2,6 +2,7 @@
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { OperationUser } from "@shared/operationPermissions";
 
 import { ProductCustomizationTemplateEditor } from "./ProductCustomizationTemplateEditor";
 
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   querySuccess: true,
   queryError: null as Error | null,
   order: [] as string[],
+  user: { role: "manager" } as OperationUser,
 }));
 
 vi.mock("@/lib/confirm", () => ({ confirm: mocks.confirm }));
@@ -27,6 +29,7 @@ vi.mock("@/components/search/UnifiedSearchInput", () => ({
 }));
 vi.mock("@/lib/trpc", () => ({
   trpc: {
+    auth: { me: { useQuery: () => ({ data: mocks.user, isLoading: false }) } },
     catalog: {
       customizationTemplate: {
         useQuery: () => ({ data: mocks.queryData, isSuccess: mocks.querySuccess, isError: !!mocks.queryError, error: mocks.queryError, refetch: mocks.refetch }),
@@ -89,6 +92,7 @@ describe("محرر قالب تخصيص المنتج", () => {
 
   beforeEach(async () => {
     mocks.order.length = 0;
+    mocks.user = { role: "manager" };
     mocks.queryData = null;
     mocks.querySuccess = true;
     mocks.queryError = null;
@@ -141,6 +145,27 @@ describe("محرر قالب تخصيص المنتج", () => {
 
     expect(mocks.order).toEqual([]);
     expect(mocks.copy).not.toHaveBeenCalled();
+  });
+
+  it("يمنع النسخ المستقل عندما يفوض الدور حفظ القالب وحده", async () => {
+    mocks.user = { role: "manager", operationPolicyEnabled: true, roleOperationPolicy: { version: 1, grants: { "operation.catalog.saveCustomizationTemplate": true } } };
+    await act(async () => root.render(<ProductCustomizationTemplateEditor productId={1} enabled />));
+    await openCategoryCopy(host, false);
+    const button = byText<HTMLButtonElement>(host, "button", "حفظ ونسخ إلى الفئة");
+    expect(button.disabled).toBe(true);
+    await act(async () => button.click());
+    expect(mocks.copy).not.toHaveBeenCalled();
+  });
+
+  it("يفتح النسخ المفوض لمستخدم من دور مختلف دون توسيع صلاحية الحفظ", async () => {
+    mocks.user = { role: "cashier", operationPolicyEnabled: true, roleOperationPolicy: { version: 1, grants: { "operation.catalog.copyCustomizationTemplate": true } } };
+    await act(async () => root.render(<ProductCustomizationTemplateEditor productId={1} enabled />));
+    await openCategoryCopy(host, false);
+    const button = byText<HTMLButtonElement>(host, "button", "حفظ ونسخ إلى الفئة");
+    expect(button.disabled).toBe(false);
+    await act(async () => button.click());
+    expect(mocks.copy).toHaveBeenCalledOnce();
+    expect(mocks.save).not.toHaveBeenCalled();
   });
 
   it("لا يمحو تعديلاً بدأ بعد إرسال النسخ عندما يصل تحديث الخلفية", async () => {

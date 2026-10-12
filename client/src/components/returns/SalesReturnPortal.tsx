@@ -1,3 +1,4 @@
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 /**
  * SalesReturnPortal — المنفذ الأول: مرتجعات المبيعات (العملاء والتجزئة)
  *
@@ -28,6 +29,7 @@ import {
   UserCheck,
   Wallet,
   History,
+  Scale,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -76,6 +78,9 @@ export function SalesReturnPortal({
 }: SalesReturnPortalProps) {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
+  const operationPermission = useOperationPermission(
+    "returns.executeSalesReturnCart",
+  );
   const branches = trpc.branches.list.useQuery();
   const activeBranchId = me.data?.branchId
     ? Number(me.data.branchId)
@@ -104,13 +109,13 @@ export function SalesReturnPortal({
   const [salesBarcode, setSalesBarcode] = useState("");
   const [salesCart, setSalesCart] = useState<SalesCartItem[]>([]);
   const [salesRefundMethod, setSalesRefundMethod] = useState<
-    "CASH" | "CARD" | "STORE_CREDIT"
+    "CASH" | "CARD" | "STORE_CREDIT" | "CREDIT_OFFSET"
   >("CASH");
   const [salesCardRef, setSalesCardRef] = useState("");
   const [salesReason, setSalesReason] = useState("");
 
   const openDrawersQ = trpc.returns.getOpenRefundDrawers.useQuery(undefined, {
-    refetchInterval: 30_000,
+    refetchInterval: false,
   });
   const openDrawers = openDrawersQ.data ?? [];
   const [selectedShiftId, setSelectedShiftId] = useState<number | null>(null);
@@ -151,15 +156,16 @@ export function SalesReturnPortal({
 
   const isInsufficientCash = useMemo(() => {
     return (
+      salesRefundMethod === "CASH" &&
       selectedDrawer != null &&
       Number(selectedDrawer.expectedCash || 0) < salesTotal
     );
-  }, [selectedDrawer, salesTotal]);
+  }, [salesRefundMethod, selectedDrawer, salesTotal]);
 
   const isOverInvoiceLimit = useMemo(() => {
     if (!inspectedInvoice) return false;
     const limit =
-      salesRefundMethod === "STORE_CREDIT"
+      salesRefundMethod === "STORE_CREDIT" || salesRefundMethod === "CREDIT_OFFSET"
         ? Number(inspectedInvoice.remainingInvoiceTotal || 0)
         : Number(inspectedInvoice.maxRefundable || 0);
     return salesTotal > limit;
@@ -224,7 +230,7 @@ export function SalesReturnPortal({
     }
 
     const priceStr = matchedInvItem
-      ? matchedInvItem.unitPrice
+      ? (matchedInvItem.effectiveUnitPrice || matchedInvItem.unitPrice)
       : String(line.price || "0");
     const maxQty = matchedInvItem
       ? matchedInvItem.remainingQuantity
@@ -267,7 +273,7 @@ export function SalesReturnPortal({
           maxAllowedQuantity: maxQty,
           unitPrice: priceStr,
           originalUnitPrice: matchedInvItem
-            ? matchedInvItem.unitPrice
+            ? (matchedInvItem.effectiveUnitPrice || matchedInvItem.unitPrice)
             : undefined,
           unit: line.unit || "قطعة",
           conversionFactor: factor,
@@ -365,7 +371,7 @@ export function SalesReturnPortal({
       }
 
       const priceStr = matchedInvItem
-        ? matchedInvItem.unitPrice
+        ? (matchedInvItem.effectiveUnitPrice || matchedInvItem.unitPrice)
         : String(res.retailPrice || res.lowestHistoricalPrice || "0");
       const maxQty = matchedInvItem?.remainingQuantity;
 
@@ -405,7 +411,7 @@ export function SalesReturnPortal({
             maxAllowedQuantity: maxQty,
             unitPrice: priceStr,
             originalUnitPrice: matchedInvItem
-              ? matchedInvItem.unitPrice
+              ? (matchedInvItem.effectiveUnitPrice || matchedInvItem.unitPrice)
               : undefined,
           },
           ...prev,
@@ -427,6 +433,18 @@ export function SalesReturnPortal({
     const raw = (targetNo ?? salesInvoiceNo).trim();
     if (!raw) return;
     setInvoiceLookupLoading(true);
+
+    const applyInspected = (inv: InspectedInvoice) => {
+      setInspectedInvoice(inv);
+      setSalesCustomerName(inv.customerName ?? "عميل نقدي");
+      if (inv.customerId) setSalesCustomerId(inv.customerId);
+      if (inv.customerPhone) setSalesCustomerPhone(inv.customerPhone);
+      setSalesInvoiceNo(inv.invoiceNumber);
+      if (Number(inv.paidAmount || 0) <= 0) {
+        setSalesRefundMethod("CREDIT_OFFSET");
+      }
+    };
+
     try {
       // ١) فحص مباشر عبر إجراء حوكمة المرتجعات inspectInvoiceForReturn
       try {
@@ -434,11 +452,7 @@ export function SalesReturnPortal({
           invoiceNumber: raw,
         });
         if (inv) {
-          setInspectedInvoice(inv);
-          setSalesCustomerName(inv.customerName ?? "عميل نقدي");
-          if (inv.customerId) setSalesCustomerId(inv.customerId);
-          if (inv.customerPhone) setSalesCustomerPhone(inv.customerPhone);
-          setSalesInvoiceNo(inv.invoiceNumber);
+          applyInspected(inv);
           const isFullyRet =
             inv.isDead ||
             inv.isFullyReturned ||
@@ -453,7 +467,13 @@ export function SalesReturnPortal({
             );
           } else {
             notify.ok(
-              `تم جلب الفاتورة #${inv.invoiceNumber} (المتبقي: ${fmt(inv.remainingInvoiceTotal)} د.ع${Number(inv.maxRefundable || 0) > 0 ? ` — سقف نقدي: ${fmt(inv.maxRefundable)} د.ع` : ""})`,
+              `تم جلب الفاتورة #${inv.invoiceNumber} (المتبقي: ${fmt(inv.remainingInvoiceTotal)} د.ع${
+                Number(inv.paidAmount || 0) <= 0
+                  ? " — فاتورة آجلة: تم تحديد معادلة الذمم تلقائياً"
+                  : Number(inv.maxRefundable || 0) > 0
+                    ? ` — سقف نقدي: ${fmt(inv.maxRefundable)} د.ع`
+                    : ""
+              })`,
             );
           }
           return;
@@ -474,25 +494,20 @@ export function SalesReturnPortal({
               invoiceNumber: invData.invoiceNumber,
             });
             if (inspected) {
-              setInspectedInvoice(inspected);
-              setSalesCustomerName(inspected.customerName ?? "عميل نقدي");
-              if (inspected.customerId) setSalesCustomerId(inspected.customerId);
-              if (inspected.customerPhone)
-                setSalesCustomerPhone(inspected.customerPhone);
-              setSalesInvoiceNo(inspected.invoiceNumber);
+              applyInspected(inspected);
               const isFullyRet =
-                inspected.isDead ||
-                inspected.isFullyReturned ||
-                Number(inspected.remainingInvoiceTotal || 0) <= 0;
+              inspected.isDead ||
+              inspected.isFullyReturned ||
+              Number(inspected.remainingInvoiceTotal || 0) <= 0;
               if (inspected.isOtherBranch) {
-                notify.err(
-                  `الفاتورة #${inspected.invoiceNumber} صادرة من فرع آخر (فرع #${inspected.originBranchId}) ولا يمكن إرجاعها من هذا الفرع إلا بصلاحية مدير عام`,
-                );
-              } else if (isFullyRet) {
-                notify.warn(
-                  `الفاتورة #${inspected.invoiceNumber} مغلقة أو ملغاة أو مرجعة بالكامل ولا تقبل مرتجعات`,
-                );
-              } else {
+              notify.err(
+                `الفاتورة #${inspected.invoiceNumber} صادرة من فرع آخر (فرع #${inspected.originBranchId}) ولا يمكن إرجاعها من هذا الفرع إلا بصلاحية مدير عام`,
+              );
+            } else if (isFullyRet) {
+              notify.warn(
+                `الفاتورة #${inspected.invoiceNumber} مغلقة أو ملغاة أو مرجعة بالكامل ولا تقبل مرتجعات`,
+              );
+            } else {
                 notify.ok(`تم التعرف على الفاتورة #${inspected.invoiceNumber}`);
               }
               return;
@@ -513,21 +528,16 @@ export function SalesReturnPortal({
               invoiceNumber: invData.invoiceNumber,
             });
             if (inspected) {
-              setInspectedInvoice(inspected);
-              setSalesCustomerName(inspected.customerName ?? "عميل نقدي");
-              if (inspected.customerId) setSalesCustomerId(inspected.customerId);
-              if (inspected.customerPhone)
-                setSalesCustomerPhone(inspected.customerPhone);
-              setSalesInvoiceNo(inspected.invoiceNumber);
+              applyInspected(inspected);
               const isFullyRet =
-                inspected.isDead ||
-                inspected.isFullyReturned ||
-                Number(inspected.remainingInvoiceTotal || 0) <= 0;
+              inspected.isDead ||
+              inspected.isFullyReturned ||
+              Number(inspected.remainingInvoiceTotal || 0) <= 0;
               if (isFullyRet) {
-                notify.warn(
-                  `الفاتورة #${inspected.invoiceNumber} مغلقة أو ملغاة أو مرجعة بالكامل ولا تقبل مرتجعات`,
-                );
-              } else {
+              notify.warn(
+                `الفاتورة #${inspected.invoiceNumber} مغلقة أو ملغاة أو مرجعة بالكامل ولا تقبل مرتجعات`,
+              );
+            } else {
                 notify.ok(`تم التعرف على الفاتورة #${inspected.invoiceNumber}`);
               }
               return;
@@ -554,12 +564,7 @@ export function SalesReturnPortal({
             invoiceNumber: first.invoiceNumber,
           });
           if (inspected) {
-            setInspectedInvoice(inspected);
-            setSalesCustomerName(inspected.customerName ?? "عميل نقدي");
-            if (inspected.customerId) setSalesCustomerId(inspected.customerId);
-            if (inspected.customerPhone)
-              setSalesCustomerPhone(inspected.customerPhone);
-            setSalesInvoiceNo(inspected.invoiceNumber);
+            applyInspected(inspected);
             const isFullyRet =
               inspected.isDead ||
               inspected.isFullyReturned ||
@@ -621,8 +626,8 @@ export function SalesReturnPortal({
     setSalesCart((prev) => {
       const existingIdx = prev.findIndex(
         (i) =>
-          i.invoiceItemId === item.invoiceItemId ||
-          (!i.invoiceItemId && i.variantId === item.variantId),
+            i.invoiceItemId === item.invoiceItemId ||
+            (!i.invoiceItemId && i.variantId === item.variantId),
       );
       if (existingIdx >= 0) {
         const target = prev[existingIdx];
@@ -653,8 +658,8 @@ export function SalesReturnPortal({
           barcode: item.barcode,
           quantity: 1,
           maxAllowedQuantity: item.remainingQuantity,
-          unitPrice: item.unitPrice,
-          originalUnitPrice: item.unitPrice,
+          unitPrice: item.effectiveUnitPrice || item.unitPrice,
+          originalUnitPrice: item.effectiveUnitPrice || item.unitPrice,
           unit: item.unitName,
           conversionFactor: item.conversionFactor,
         },
@@ -698,8 +703,8 @@ export function SalesReturnPortal({
             ...nextCart[existingIdx],
             quantity: item.remainingQuantity,
             maxAllowedQuantity: item.remainingQuantity,
-            unitPrice: item.unitPrice,
-            originalUnitPrice: item.unitPrice,
+            unitPrice: item.effectiveUnitPrice || item.unitPrice,
+            originalUnitPrice: item.effectiveUnitPrice || item.unitPrice,
           };
         } else {
           const newId = `${item.variantId}-${Date.now()}-${Math.random()}`;
@@ -713,8 +718,8 @@ export function SalesReturnPortal({
             barcode: item.barcode,
             quantity: item.remainingQuantity,
             maxAllowedQuantity: item.remainingQuantity,
-            unitPrice: item.unitPrice,
-            originalUnitPrice: item.unitPrice,
+            unitPrice: item.effectiveUnitPrice || item.unitPrice,
+            originalUnitPrice: item.effectiveUnitPrice || item.unitPrice,
             unit: item.unitName,
             conversionFactor: item.conversionFactor,
           });
@@ -749,6 +754,10 @@ export function SalesReturnPortal({
   const salesReturnMutation = trpc.returns.executeSalesReturnCart.useMutation();
 
   const handleExecuteSalesReturn = async () => {
+    if (!operationPermission.allowed) {
+      notify.err(operationPermission.reason);
+      return;
+    }
     if (salesCart.length === 0) {
       notify.warn("يرجى إضافة صنف واحد على الأقل للسلة");
       return;
@@ -773,7 +782,7 @@ export function SalesReturnPortal({
       }
       if (isOverInvoiceLimit) {
         notify.warn(
-          salesRefundMethod === "STORE_CREDIT"
+          salesRefundMethod === "STORE_CREDIT" || salesRefundMethod === "CREDIT_OFFSET"
             ? `إجمالي مبلغ المرتجع (${fmt(String(salesTotal))} د.ع) يتجاوز القيمة المتبقية للفاتورة (${fmt(inspectedInvoice.remainingInvoiceTotal)} د.ع)`
             : `إجمالي مبلغ المرتجع (${fmt(String(salesTotal))} د.ع) يتجاوز سقف الاسترداد المتبقي للفاتورة (${fmt(inspectedInvoice.maxRefundable)} د.ع)`,
         );
@@ -816,6 +825,19 @@ export function SalesReturnPortal({
         );
         return;
       }
+    } else if (salesRefundMethod === "CREDIT_OFFSET") {
+      if (!salesCustomerId && !inspectedInvoice?.customerId) {
+        notify.warn(
+          "طريقة معادلة الذمم تتطلب اختيار عميل مسجل لإلغاء المديونية من حسابه",
+        );
+        return;
+      }
+      if (!salesInvoiceNo.trim()) {
+        notify.warn(
+          "معادلة الذمم تتطلب ربط المرتجع بالفاتورة الأصلية لتسوية رصيدها مع حساب العميل",
+        );
+        return;
+      }
     }
 
     const drawerNotice =
@@ -823,7 +845,9 @@ export function SalesReturnPortal({
         ? `استرداد نقدي من درج [${selectedDrawer?.userName || "الكاشير"}]`
         : salesRefundMethod === "CARD"
           ? "استرداد بالبطاقة"
-          : "إيداع رصيد متجر بحساب العميل";
+          : salesRefundMethod === "STORE_CREDIT"
+            ? "إيداع رصيد متجر بحساب العميل"
+            : "معادلة ذمم وإنقاص حساب العميل الآجل";
 
     const ok = await confirm({
       title: "تأكيد تنفيذ مرتجع المبيعات",
@@ -1167,7 +1191,8 @@ export function SalesReturnPortal({
                   <div className="text-xs">
                     <span className="font-bold">تنبيه: تم إرجاع هذه الفاتورة بالكامل مسبقاً!</span>
                     <span className="block text-[11px] text-muted-foreground mt-0.5">
-                      لا يمكن إضافة بنود أو تنفيذ أي عمليات استرداد إضافية على هذه الفاتورة (إجمالي المرتجع: {fmt(inspectedInvoice.returnedTotal)} د.ع).
+                      لا يمكن إضافة بنود أو تنفيذ أي عمليات استرداد إضافية على هذه الفاتورة (إجمالي المرتجع: {" "}
+                      {fmt(inspectedInvoice.returnedTotal)} د.ع).
                     </span>
                   </div>
                 </div>
@@ -1201,13 +1226,16 @@ export function SalesReturnPortal({
                 </div>
                 <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 shadow-2xs">
                   <div className="text-[10px] text-emerald-800 dark:text-emerald-300 font-bold">
-                    {salesRefundMethod === "STORE_CREDIT"
-                      ? "سقف رصيد المتجر (المتبقي)"
-                      : "سقف الاسترداد المتاح"}
+                    {salesRefundMethod === "CREDIT_OFFSET"
+                      ? "سقف معادلة الذمم"
+                      : salesRefundMethod === "STORE_CREDIT"
+                        ? "سقف رصيد المتجر (المتبقي)"
+                        : "سقف الاسترداد المتاح"}
                   </div>
                   <div className="font-black font-mono text-emerald-700 dark:text-emerald-400 mt-0.5">
                     {fmt(
-                      salesRefundMethod === "STORE_CREDIT"
+                      salesRefundMethod === "CREDIT_OFFSET" ||
+                        salesRefundMethod === "STORE_CREDIT"
                         ? inspectedInvoice.remainingInvoiceTotal
                         : inspectedInvoice.maxRefundable,
                     )}{" "}
@@ -1494,7 +1522,8 @@ export function SalesReturnPortal({
                                 )}
                                 {item.maxAllowedQuantity != null && (
                                   <span className="text-[10px] text-muted-foreground font-mono">
-                                    (المتبقي بالفاتورة: {formatQuantity(item.maxAllowedQuantity)})
+                                    (المتبقي بالفاتورة:{" "}
+                                    {formatQuantity(item.maxAllowedQuantity)})
                                   </span>
                                 )}
                               </div>
@@ -1538,7 +1567,7 @@ export function SalesReturnPortal({
                                     ) {
                                       q = item.maxAllowedQuantity;
                                       notify.warn(
-                                        `الحد الأقصى المتاح للإرجاع من الفاتورة هو ${formatQuantity(item.maxAllowedQuantity)}`,
+                                        `الحد الأقصى المتاح للإرجاع من الفاتورة هو ${formatQuantity(item.maxAllowedQuantity)})`,
                                       );
                                     }
                                     setSalesCart((prev) =>
@@ -1554,7 +1583,7 @@ export function SalesReturnPortal({
                                   onClick={() => {
                                     if (
                                       item.maxAllowedQuantity != null &&
-                                      item.quantity >= item.maxAllowedQuantity
+                                    item.quantity >= item.maxAllowedQuantity
                                     ) {
                                       notify.warn(
                                         `لا يمكن تجاوز الكمية المتبقية في الفاتورة (${formatQuantity(item.maxAllowedQuantity)})`,
@@ -1680,7 +1709,7 @@ export function SalesReturnPortal({
               </div>
               <span className="text-[11px] text-muted-foreground">
                 إجمالي الأصناف: {salesCart.length} ({salesTotalPieces} قطعة)
-              </span>
+                                    </span>
             </div>
 
             {/* اختيار طريقة الاسترداد */}
@@ -1689,6 +1718,70 @@ export function SalesReturnPortal({
                 طريقة الاسترداد المالي
               </label>
               <div className="space-y-2">
+                {/* خيار معادلة الذمم (للفواتير الآجلة أو تصفية الحساب) */}
+                <button
+                  type="button"
+                  onClick={() => setSalesRefundMethod("CREDIT_OFFSET")}
+                  className={cn(
+                    "w-full p-3 rounded-lg border text-right transition-all flex items-center justify-between text-xs cursor-pointer",
+                    salesRefundMethod === "CREDIT_OFFSET"
+                      ? "border-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 font-bold text-emerald-900 dark:text-emerald-200"
+                      : "border-border hover:bg-muted/50 text-foreground",
+                  )}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Scale className="size-4 text-emerald-600" />
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <span>معادلة ذمم (إنقاص ذمة العميل / تسوية الآجل)</span>
+                        {inspectedInvoice &&
+                          Number(inspectedInvoice.paidAmount || 0) <= 0 && (
+                            <Badge
+                              variant="outline"
+                              className="text-[9px] px-1 py-0 border-emerald-500 text-emerald-700 bg-emerald-50/50"
+                            >
+                              موصى به (فاتورة آجلة)
+                            </Badge>
+                          )}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground font-normal">
+                        يُخصم مباشرة من رصيد ذمة العميل في حسابه دون صرف نقد من الدرج
+                      </div>
+                    </div>
+                  </div>
+                  {salesRefundMethod === "CREDIT_OFFSET" && (
+                    <CheckCircle2 className="size-4 text-emerald-600" />
+                  )}
+                </button>
+
+                {salesRefundMethod === "CREDIT_OFFSET" && (
+                  <div className="p-2.5 rounded-lg border border-emerald-200 dark:border-emerald-800/60 bg-emerald-50/50 dark:bg-emerald-950/20 space-y-1.5 text-xs">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-emerald-900 dark:text-emerald-300">
+                      <span className="flex items-center gap-1.5">
+                        <Scale className="size-3.5 text-emerald-600" />
+                        تسوية الحساب الآجل للعميل
+                      </span>
+                      {inspectedInvoice?.customerBalance != null && (
+                        <span className="text-[10px] text-muted-foreground font-mono">
+                          رصيد الذمة الحالي:{" "}
+                          {fmt(inspectedInvoice.customerBalance)} د.ع
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {inspectedInvoice ? (
+                        <span>
+                          سيتم إلغاء مديونية الفاتورة بقيمة ({fmt(String(salesTotal))} د.ع) وتنزيلها ذرياً من رصيد ذمة العميل [{inspectedInvoice.customerName || "العميل"}] دون أي صرف نقد من الدرج.
+                        </span>
+                      ) : (
+                        <span>
+                          اختر أو ابحث عن العميل أعلاه لربط المرتجع بحسابه وتخفيض ذمته بمبلغ المرتجع.
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 <button
                   type="button"
                   onClick={() => setSalesRefundMethod("CASH")}
@@ -1702,7 +1795,18 @@ export function SalesReturnPortal({
                   <div className="flex items-center gap-2.5">
                     <Wallet className="size-4 text-emerald-600" />
                     <div>
-                      <div>صرف نقدي كاش (من الصندوق)</div>
+                      <div className="flex items-center gap-1.5">
+                        <span>صرف نقدي كاش (من الصندوق)</span>
+                        {inspectedInvoice &&
+                          Number(inspectedInvoice.paidAmount || 0) <= 0 && (
+                            <Badge
+                              variant="destructive"
+                              className="text-[9px] px-1 py-0"
+                            >
+                              غير متاح (المدفوع 0 د.ع)
+                            </Badge>
+                          )}
+                      </div>
                       <div className="text-[10px] text-muted-foreground font-normal">
                         يصرف نقداً ويُسجل كحركة خروج نقد من الدرج
                       </div>
@@ -1712,6 +1816,17 @@ export function SalesReturnPortal({
                     <CheckCircle2 className="size-4 text-emerald-600" />
                   )}
                 </button>
+
+                {salesRefundMethod === "CASH" &&
+                  inspectedInvoice &&
+                  Number(inspectedInvoice.paidAmount || 0) <= 0 && (
+                    <div className="p-2 rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 text-[11px] flex items-start gap-1.5">
+                      <AlertCircle className="size-3.5 shrink-0 mt-0.5 text-amber-600" />
+                      <span>
+                        تنبيه محاسبي: الفاتورة آجلة بالكامل (المدفوع 0 د.ع). لا يمكن صرف نقد من الدرج لعميل لم يدفع. يرجى اختيار [معادلة ذمم] لتسوية رصيد العميل.
+                      </span>
+                    </div>
+                  )}
 
                 {salesRefundMethod === "CASH" && (
                   <div className="p-2.5 rounded-lg border border-emerald-200 dark:border-emerald-800/60 bg-emerald-50/50 dark:bg-emerald-950/20 space-y-2">
@@ -1740,7 +1855,7 @@ export function SalesReturnPortal({
                           </div>
                           <div className="text-[10px] text-muted-foreground">
                             يجب فتح وردية في هذا الفرع لصرف النقد، أو اختيار
-                            طريقة استرداد أخرى كالبطاقة أو رصيد المتجر.
+                            طريقة استرداد أخرى كالبطاقة أو رصيد المتجر أو معادلة الذمم.
                           </div>
                         </div>
                       </div>
@@ -1896,10 +2011,20 @@ export function SalesReturnPortal({
                 <div className="flex items-center justify-between font-bold">
                   <span className="flex items-center gap-1.5">
                     <FileCheck className="size-3.5 text-emerald-600" />
-                    سقف استرداد الفاتورة #{inspectedInvoice.invoiceNumber}
+                    {salesRefundMethod === "CREDIT_OFFSET"
+                      ? `سقف معادلة الفاتورة #${inspectedInvoice.invoiceNumber}`
+                      : salesRefundMethod === "STORE_CREDIT"
+                        ? `سقف رصيد المتجر #${inspectedInvoice.invoiceNumber}`
+                        : `سقف الاسترداد النقدي #${inspectedInvoice.invoiceNumber}`}
                   </span>
                   <span className="font-mono font-black text-sm">
-                    {fmt(inspectedInvoice.maxRefundable)} د.ع
+                    {fmt(
+                      salesRefundMethod === "CREDIT_OFFSET" ||
+                        salesRefundMethod === "STORE_CREDIT"
+                        ? inspectedInvoice.remainingInvoiceTotal
+                        : inspectedInvoice.maxRefundable,
+                    )}{" "}
+                    د.ع
                   </span>
                 </div>
                 {isInvoiceFullyReturned ? (
@@ -1920,20 +2045,22 @@ export function SalesReturnPortal({
                   <div className="text-[11px] font-medium flex items-center gap-1 text-destructive">
                     <AlertCircle className="size-3.5 shrink-0" />
                     <span>
-                      تجاوز السقف بمقدار (
-                      {fmt(
-                        String(
-                          salesTotal -
-                            Number(inspectedInvoice.maxRefundable || 0),
-                        ),
-                      )}{" "}
-                      د.ع) — يرجى تصحيح السلة
+                      {salesRefundMethod === "CASH" || salesRefundMethod === "CARD"
+                        ? Number(inspectedInvoice.paidAmount || 0) <= 0
+                          ? "الفاتورة آجلة بالكامل ولم يُدفع منها نقد — يرجى اختيار [معادلة ذمم] لتسوية الحساب دون صرف نقد"
+                          : `تجاوز سقف الاسترداد النقدي بمقدار (${fmt(String(salesTotal - Number(inspectedInvoice.maxRefundable || 0)))} د.ع)`
+                        : `تجاوز سقف الفاتورة المتبقي بمقدار (${fmt(String(salesTotal - Number(inspectedInvoice.remainingInvoiceTotal || 0)))} د.ع)`}
                     </span>
                   </div>
                 ) : (
                   <div className="text-[10px] text-muted-foreground flex items-center justify-between">
                     <span>المدفوع: {fmt(inspectedInvoice.paidAmount)} د.ع</span>
                     <span>المرتجع: {fmt(inspectedInvoice.returnedTotal)} د.ع</span>
+                    {Number(inspectedInvoice.unpaidAmount || 0) > 0 && (
+                      <span className="text-amber-700 dark:text-amber-400 font-semibold">
+                        الآجل: {fmt(inspectedInvoice.unpaidAmount)} د.ع
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
@@ -1944,6 +2071,7 @@ export function SalesReturnPortal({
               type="button"
               onClick={() => void handleExecuteSalesReturn()}
               disabled={
+                !operationPermission.allowed ||
                 salesReturnMutation.isPending ||
                 salesCart.length === 0 ||
                 salesTotal <= 0 ||

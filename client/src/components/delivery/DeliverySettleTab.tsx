@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearch } from "wouter";
 import { Truck, Wallet } from "lucide-react";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -18,10 +19,19 @@ import { companyStatementPartyTransition } from "@/components/delivery/statement
 import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
-import { fmt } from "@/lib/money";
+import { D, fmt , moneyInput } from "@/lib/money";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
+import {
+  filterOperationalRows,
+  mergeDisplayedSelection,
+} from "@/lib/deliveryOperations";
+import { statementQueueRemaining } from "@/components/delivery/companyStatementQueue";
+import { CompanyStatementImport } from "@/components/delivery/CompanyStatementImport";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 
 type OpenConsignment = RouterOutputs["delivery"]["openConsignments"]["rows"][number];
 
@@ -35,28 +45,46 @@ export function DeliverySettleTab() {
     { branchId, shiftType: "RECEPTION" },
     { enabled: branchId > 0 },
   );
-  const canRemit = !!me.data
+  const canRemit = lifecycleActionAllowed(me.data, "delivery.recordRemittance", !!me.data
     && moduleAccessAllowed(
       me.data.role as RoleKey,
       (me.data.permissionsOverride ?? null) as PermissionMap | null,
       "store",
       "FULL",
       ["cashier", "manager"],
-    );
-  const canReturn = !!me.data
+    ));
+  const canReturn = lifecycleActionAllowed(me.data, "delivery.returnConsignment", !!me.data
     && moduleAccessAllowed(
       me.data.role as RoleKey,
       (me.data.permissionsOverride ?? null) as PermissionMap | null,
       "store",
       "FULL",
       ["manager", "cashier", "sales_rep"],
-    );
+    ));
 
+  const canRecordStatement = lifecycleActionAllowed(me.data, "delivery.recordCompanyStatement", canRemit);
+  const canPayPartyFees = lifecycleActionAllowed(me.data, "delivery.payPartyFees", !!me.data);
   const settleSearch = useSearch();
   const [partyId, setPartyId] = useState<string>(() => new URLSearchParams(settleSearch).get("party") ?? "");
   const [returnTarget, setReturnTarget] = useState<ReturnConsignmentTarget | null>(null);
-  const obligations = trpc.delivery.obligations.useQuery(undefined, { refetchInterval: 30_000 });
-  const staleParties = trpc.delivery.staleParties.useQuery(undefined, { refetchInterval: 60_000 });
+  const obligations = trpc.delivery.obligations.useQuery(undefined);
+  const staleParties = trpc.delivery.staleParties.useQuery(undefined);
+
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+      REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
+      REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED,
+    ],
+    () => {
+      void utils.delivery.obligations.invalidate();
+      void utils.delivery.staleParties.invalidate();
+      if (partyId) {
+        void utils.delivery.openConsignments.invalidate();
+        void utils.delivery.remittances.invalidate();
+      }
+    },
+  );
 
   const cons = trpc.delivery.openConsignments.useInfiniteQuery(
     { partyId: Number(partyId), limit: 500 },
@@ -67,8 +95,10 @@ export function DeliverySettleTab() {
   );
 
   useEffect(() => {
-    if (cons.hasNextPage && !cons.isFetchingNextPage) void cons.fetchNextPage();
-  }, [cons.hasNextPage, cons.isFetchingNextPage, cons.fetchNextPage]);
+    if (cons.hasNextPage && !cons.isFetchingNextPage&& !cons.isError) void cons.fetchNextPage();
+  }, [cons.hasNextPage, cons.isFetchingNextPage, cons.isError,
+    cons.fetchNextPage,
+  ]);
 
   const remittances = trpc.delivery.remittances.useQuery({ partyId: Number(partyId), limit: 20 }, { enabled: !!partyId });
   const [rows, setRows] = useState<Record<number, { outcome: "COLLECTED" | "NONE"; collected: string }>>({});
@@ -78,15 +108,19 @@ export function DeliverySettleTab() {
   const [remitReqId, setRemitReqId] = useState(() => crypto.randomUUID());
   const [drawerId, setDrawerId] = useState<number | null>(null);
   const [statementNumber, setStatementNumber] = useState("");
+  const [parcelFilter, setParcelFilter] = useState("");
   const [statementDate, setStatementDate] = useState("");
   const [statementDeductions, setStatementDeductions] = useState(0);
   const [statementNotes, setStatementNotes] = useState("");
 
+  const draftBusyRef = useRef(false);
   const switchParty = (nextPartyId: string) => {
+    if (draftBusyRef.current) return;
     const reset = companyStatementPartyTransition(partyId, nextPartyId, 0);
     if (!reset) return;
 
     setPartyId(reset.partyId);
+    setParcelFilter("");
     setRows(reset.selections);
     setStatementQueueIds(reset.queueIds);
     setCountedBreakdown(reset.countedBreakdown);
@@ -133,11 +167,11 @@ export function DeliverySettleTab() {
   const remit = trpc.delivery.recordRemittance.useMutation({
     onSuccess: (r) => {
       const commissionNote = r.courierCommissionAmount != null
-        ? ` · عمولة القاعدة ${fmt(r.courierCommissionAmount)} (فرقٌ ${fmt(String(Number(r.feesTotal) - Number(r.courierCommissionAmount)))})`
-        : "";
+        ? ` · عمولة القاعدة ${fmt(r.courierCommissionAmount)} (فرقٌ ${fmt(D(r.feesTotal).minus(D(r.courierCommissionAmount)).toFixed(2))})`
+          : "";
       notify.ok(
         "سُجِّل التوريد",
-        `${r.remittanceNumber} — صافٍ ${fmt(r.netRemitted)} د.ع${Number(r.shortfallTotal) > 0 ? ` (عجز ${fmt(r.shortfallTotal)})` : ""}${commissionNote}`,
+        `${r.remittanceNumber} — صافٍ ${fmt(r.netRemitted)} د.ع${D(r.shortfallTotal).gt(0) ? ` (عجز ${fmt(r.shortfallTotal)})` : ""}${commissionNote}`,
       );
       const pName = obligations.data?.find((p) => String(p.partyId) === partyId)?.name ?? "";
       printRemittanceReceipt(pName, r);
@@ -149,28 +183,46 @@ export function DeliverySettleTab() {
   const payPartyFees = trpc.delivery.payPartyFees.useMutation({
     onSuccess: (r) => {
       notify.ok(`صُرفت ${r.count} أجرة`, `المجموع ${fmt(r.paidTotal)} د.ع — بسند واحد`);
-      resetAfterSettle();
+      void utils.delivery.invalidate();
     },
     onError: (e) => notify.err(e),
   });
 
   const ret = trpc.delivery.returnConsignment.useMutation({
-    onSuccess: () => { notify.ok("أُرجعت الإرسالية"); resetAfterSettle(); },
+    onSuccess: (_, variables) => { notify.ok("أُرجعت الإرسالية"); setReturnTarget(null);
+      setRows((current) => {
+        const next = { ...current };
+        delete next[variables.consignmentId];
+        return next;
+      });
+      setStatementQueueIds((current) =>
+        current.filter((id) => id !== variables.consignmentId),
+      );
+      void utils.delivery.invalidate(); },
     onError: (e) => notify.err(e),
   });
+
+  draftBusyRef.current =
+    companyStatement.isPending ||
+    remit.isPending ||
+    ret.isPending ||
+    payPartyFees.isPending;
 
   const list = useMemo(
     () => (cons.data?.pages ?? []).flatMap((p) => p.rows),
     [cons.data],
   );
-  const listStillLoading = cons.hasNextPage || cons.isFetchingNextPage;
+  const listStillLoading = cons.isLoading ||
+    cons.hasNextPage || cons.isFetchingNextPage||
+    cons.isError;
+  const displayedStatementRows = filterOperationalRows(list, parcelFilter);
   const partyName = obligations.data?.find((p) => String(p.partyId) === partyId)?.name ?? "";
   const partyRow = obligations.data?.find((p) => String(p.partyId) === partyId);
 
-  const remainingOf = (c: OpenConsignment) => Math.max(0, Number(c.codAmount) - Number(c.collectedAmount) - Number(c.counterSettledAmount ?? "0") - Number(c.shortfallAssigned ?? "0"));
+  const remainingOf = (c: OpenConsignment) => statementQueueRemaining(c);
   const isRemittable = (c: OpenConsignment) => c.parcelStatus === "DELIVERED"
     && (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL")
-    && remainingOf(c) > 0;
+    && remainingOf(c) .gt(0);
 
   const statementMode = partyRow?.partyType === "COMPANY" || statementNumber.trim().length > 0;
   const isStatementConfirmable = (c: OpenConsignment) => c.status === "DISPATCHED"
@@ -180,50 +232,69 @@ export function DeliverySettleTab() {
 
   const get = (c: OpenConsignment) => rows[c.id] ?? (statementMode
     ? { outcome: "NONE" as const, collected: "0" }
-    : (isSettleable(c) ? { outcome: "COLLECTED" as const, collected: String(remainingOf(c)) } : { outcome: "NONE" as const, collected: "0" }));
+    : (isSettleable(c) ? { outcome: "COLLECTED" as const, collected: remainingOf(c).toFixed(2) ,
+          } : { outcome: "NONE" as const, collected: "0" }));
 
   const totals = useMemo(() => {
-    let collected = 0, expected = 0, leftInTransit = 0, selectedCount = 0;
+    let collected = D(0), expected = D(0), leftInTransit = 0, selectedCount = 0;
     for (const c of list) {
       if (!isSettleable(c)) continue;
       const remaining = remainingOf(c);
       const st = get(c);
-      const col = st.outcome === "COLLECTED" ? Math.min(remaining, Math.max(0, Number(st.collected) || 0)) : 0;
-      if (col > 0) {
-        expected += remaining;
-        collected += col;
+      if (st.outcome === "COLLECTED" ) {
         selectedCount += 1;
-      } else if (remaining > 0) {
-        leftInTransit += 1;
+        expected = expected.plus(remaining);
+        collected = collected.plus(moneyInput(st.collected) );
+      } else if (remaining .gt(0) ) leftInTransit += 1;
       }
-    }
-    const deductions = statementMode ? Math.max(0, statementDeductions || 0) : 0;
-    const net = Math.max(0, collected - deductions);
-    return { collected, fees: 0, net, deductions, shortfall: expected - collected, expected, leftInTransit, selectedCount };
+    const deductions = statementMode ? moneyInput(statementDeductions) : D(0) ;
+    const rawNet = collected.minus(deductions);
+    const net = rawNet.isNegative() ? D(0): rawNet;
+    // Existing summary/cash-counter presentation contract is numeric; calculations stay Decimal.
+    return { collected: collected.toNumber(), fees: 0, net: net.toNumber(), deductions: deductions.toNumber(), shortfall: expected .minus(collected).toNumber(), expected: expected.toNumber(), leftInTransit, selectedCount };
   }, [list, rows, statementMode, statementDeductions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = async () => {
+    if (!(statementMode ? canRecordStatement : canRemit)) { notify.err("صلاحية تسجيل الكشف أو التوريد غير ممنوحة لحسابك"); return; }
+    if (listStillLoading) {
+      notify.err("لا يمكن التسوية قبل اكتمال تحميل قائمة الإرساليات");
+      return;
+    }
     if (partyRow?.partyType === "COMPANY" && statementNumber.trim().length < 2) {
       notify.err("رقم كشف شركة التوصيل مطلوب", "أدخل رقم الكشف ثم امسح باركود كل بوليصة وردت فيه.");
       return;
     }
-    const lines = list
-      .filter((c) => isSettleable(c) && get(c).outcome === "COLLECTED")
-      .map((c) => ({ consignmentId: c.id, collectedAmount: String(Math.max(0, Number(get(c).collected) || 0)) }))
-      .filter((l) => Number(l.collectedAmount) >= 0);
-    const validLines = statementMode ? lines : lines.filter((l) => Number(l.collectedAmount) > 0);
+    const selected = list
+      .filter((c) => isSettleable(c) && get(c).outcome === "COLLECTED",
+    )
+      ;
+    if (
+      selected.some(
+        (c) =>
+          !/^(?:\d+(?:\.\d{1,2})?|\.\d{1,2})$/.test(get(c).collected) ||
+          D(get(c).collected).gt(remainingOf(c)),
+      )
+    ) {
+      notify.err(
+        "راجع مبالغ الطرود المحددة",
+        "يلزم مبلغ صحيح غير سالب لا يتجاوز المتبقي لكل إرسالية.",
+      );
+      return;
+    }
+    const lines = selected.map((c) => ({ consignmentId: c.id, collectedAmount: D(get(c).collected) .toFixed(2) }));
+    const validLines = statementMode ? lines : lines.filter((line) => D(line.collectedAmount) .gt(0));
     if (validLines.length === 0) {
       notify.err("لا أسطر للتسوية — حدّد ما حُصِّل فعلاً");
       return;
     }
-    if (Math.abs(countedCash - totals.net) > 0.01) {
+    if (D(countedCash ).minus(D(totals.net) ).abs().gt("0.01")) {
       notify.err(`النقد المعدود لا يطابق الصافي المتوقع. المعدود ${fmt(String(countedCash))} والمتوقع ${fmt(String(totals.net))} د.ع`);
       return;
     }
     const ok = await confirm({
       variant: "danger",
       title: "تأكيد تسوية تحصيلات المندوب",
-      description: `المُحصَّل والمورّد للمكتبة ${fmt(String(totals.net))} د.ع.${statementMode && validLines.filter((l) => Number(l.collectedAmount) === 0).length > 0 ? ` سيُثبَت تسليم ${validLines.filter((l) => Number(l.collectedAmount) === 0).length} طرداً بلا نقد.` : ""}${totals.leftInTransit > 0 ? ` (${totals.leftInTransit} إرسالية تبقى بالطريق خارج هذا التوريد.)` : ""}`,
+      description: `عدد الإرساليات المحددة: ${validLines.length}. المُحصَّل والمورّد للمكتبة ${fmt(String(totals.net))} د.ع.${statementMode && validLines.filter((l) => D(l.collectedAmount).isZero()).length > 0 ? ` سيُثبَت تسليم ${validLines.filter((l) => D(l.collectedAmount) .isZero()).length} طرداً بلا نقد.` : ""}${totals.leftInTransit > 0 ? ` (${totals.leftInTransit} إرسالية تبقى بالطريق خارج هذا التوريد.)` : ""}`,
       confirmText: "تأكيد التسوية",
     });
     if (!ok) return;
@@ -248,12 +319,26 @@ export function DeliverySettleTab() {
     });
   };
 
+  const displayedEligible = displayedStatementRows.filter(isSettleable);
   const selectAll = () => {
-    const next: Record<number, { outcome: "COLLECTED" | "NONE"; collected: string }> = {};
-    for (const c of list) {
-      if (isSettleable(c)) next[c.id] = { outcome: "COLLECTED", collected: String(remainingOf(c)) };
-    }
-    setRows(next);
+    setRows((current) =>
+      mergeDisplayedSelection(current, displayedEligible, (id) =>
+        current[id]?.outcome === "COLLECTED"
+          ? current[id]
+          : { outcome: "COLLECTED" as const,
+              collected: remainingOf(list.find((c)=> c.id=== id)!).toFixed(2),
+            },
+      ),
+    );
+    setStatementQueueIds((current) => Array.from(new Set([...current, ...displayedEligible.map((c) => c.id)])));
+
+  };
+  const clearDisplayed = () => {
+    const visible = new Set(displayedEligible.map((c) => c.id));
+    setRows((current) =>
+      mergeDisplayedSelection(current, displayedEligible, () => ({ outcome: "NONE" as const, collected: "0",
+      })) );
+    setStatementQueueIds((current) => current.filter((id) => !visible.has(id)));
   };
 
   return (
@@ -271,6 +356,12 @@ export function DeliverySettleTab() {
         <label htmlFor="delivery-settle-party" className="mb-1.5 block text-sm font-bold">اختر جهة التوصيل</label>
         <div className="flex flex-wrap items-center gap-2">
           <AppSelect
+            disabled={
+              companyStatement.isPending ||
+              remit.isPending ||
+              ret.isPending ||
+              payPartyFees.isPending
+            }
             id="delivery-settle-party"
             className="w-auto min-w-64 max-w-md"
             value={partyId}
@@ -284,11 +375,11 @@ export function DeliverySettleTab() {
           {partyId && partyName && (
             <>
               <DeliveryManifestButton partyId={Number(partyId)} partyName={partyName} />
-              {partyRow && Number(partyRow.feeDueTotal) > 0 && (
+              {partyRow && D(partyRow.feeDueTotal) .gt(0 ) && (
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={payPartyFees.isPending || !currentShift.data?.id}
+                  disabled={!canPayPartyFees || payPartyFees.isPending || !currentShift.data?.id}
                   title={!currentShift.data?.id ? "افتح وردية استقبال لصرف الأجور من درج موثَّق" : `صرف ${fmt(partyRow.feeDueTotal)} د.ع مستحقة`}
                   onClick={async () => {
                     const ok = await confirm({
@@ -311,16 +402,51 @@ export function DeliverySettleTab() {
 
       {!partyId ? null : cons.isLoading ? (
         <div className="p-8 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>
+      ) : cons.isError && list.length === 0 ? (
+        <div role="alert" className="rounded border p-4 text-sm">
+          تعذر تحميل الإرساليات.{" "}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void cons.refetch()}
+          >
+            إعادة المحاولة
+          </Button>
+        </div>
       ) : list.length === 0 ? (
         <EmptyState icon={Truck} title="لا التزامات مفتوحة" description="لا توجد مبالغ للتوريد أو أجور للدفع أو إرساليات قابلة للإرجاع لهذه الجهة." />
       ) : (
         <>
+          <UnifiedSearchInput
+            value={parcelFilter}
+            onChange={setParcelFilter}
+            placeholder="بحث بالاسم والهاتف والفاتورة والبوليصة…"
+            aria-label="تصفية إرساليات التسوية"
+          />
+          <p className="text-xs text-muted-foreground">
+            المعروض: {displayedStatementRows.length} من {list.length} · التحديد
+            المحفوظ يشمل النتائج المخفية؛ راجعه قبل التأكيد.
+          </p>
+          {cons.isError && (
+            <p role="alert" className="text-sm text-destructive">
+              تعذر تحميل قائمة الإرساليات كاملة. التحديد محفوظ؛ أعد المحاولة قبل
+              التسوية.{" "}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void cons.refetch()}
+              >
+                إعادة المحاولة
+              </Button>
+            </p>
+          )}
           <DeliveryConsignmentsTable
-            list={list}
+            list={displayedStatementRows}
             rows={rows}
             statementMode={statementMode}
             canReturn={canReturn}
-            onOutcomeToggle={(id, current, remaining) => {
+            onOutcomeToggle={(id, current) => {
+              if (companyStatement.isPending || remit.isPending) return;
               if (statementMode) {
                 setStatementQueueIds((ids) => current === "COLLECTED"
                   ? ids.filter((queuedId) => queuedId !== id)
@@ -330,11 +456,13 @@ export function DeliverySettleTab() {
                 ...r,
                 [id]: {
                   outcome: current === "COLLECTED" ? "NONE" : "COLLECTED",
-                  collected: current === "COLLECTED" ? "0" : String(remaining),
+                  collected: current === "COLLECTED" ? "0" : remainingOf(list.find((candidate) => candidate.id === id)!,
+                        ).toFixed(2),
                 },
               }));
             }}
             onCollectedChange={(id, value) => {
+              if (companyStatement.isPending || remit.isPending) return;
               setRows((r) => ({ ...r, [id]: { outcome: "COLLECTED", collected: value } }));
             }}
             onReturn={setReturnTarget}
@@ -343,13 +471,17 @@ export function DeliverySettleTab() {
 
           <CompanyStatementBox
             required={partyRow?.partyType === "COMPANY"}
+            disabled={companyStatement.isPending || remit.isPending}
             statementNumber={statementNumber} onStatementNumberChange={(v) => { setStatementNumber(v); setRows({}); setStatementQueueIds([]); }}
             statementDate={statementDate} onStatementDateChange={setStatementDate}
             deductions={statementDeductions} onDeductionsChange={setStatementDeductions}
             notes={statementNotes} onNotesChange={setStatementNotes}
-            onSelectAll={() => { selectAll(); setStatementQueueIds(list.filter((c) => isSettleable(c)).map((c) => c.id)); }}
-            onClearSelection={() => { setRows({}); setStatementQueueIds([]); }}
-            lines={list.filter((c) => isSettleable(c)).map((c) => ({ consignmentId: c.id, consignmentNumber: c.consignmentNumber, remaining: String(remainingOf(c)), selected: get(c).outcome === "COLLECTED", collected: get(c).collected }))}
+            onSelectAll={selectAll}
+            onClearSelection={clearDisplayed}
+            displayedCount={ displayedEligible.length}
+            selectionDisabled={listStillLoading || companyStatement.isPending || remit.isPending
+            }
+            lines={list.filter((c) => isSettleable(c)).map((c) => ({ consignmentId: c.id, consignmentNumber: c.consignmentNumber, remaining: remainingOf(c).toFixed(2), selected: get(c).outcome === "COLLECTED", collected: get(c).collected }))}
           />
 
           {partyRow?.partyType === "COMPANY" && (
@@ -357,7 +489,9 @@ export function DeliverySettleTab() {
               candidates={list.filter((candidate) => isSettleable(candidate)) as CompanyStatementQueueCandidate[]}
               queuedIds={statementQueueIds}
               collectedById={Object.fromEntries(Object.entries(rows).map(([id, row]) => [Number(id), row.collected]))}
-              disabled={statementNumber.trim().length < 2 || listStillLoading}
+              disabled={statementNumber.trim().length < 2 || listStillLoading||
+                companyStatement.isPending
+              }
               onQueue={(candidate, collected) => {
                 setStatementQueueIds((ids) => ids.includes(candidate.id) ? ids : [...ids, candidate.id]);
                 setRows((current) => ({ ...current, [candidate.id]: { outcome: "COLLECTED", collected } }));
@@ -372,12 +506,44 @@ export function DeliverySettleTab() {
             />
           )}
 
+          {partyRow?.partyType === "COMPANY" && (
+            <CompanyStatementImport
+              key={partyId}
+              partyId={Number(partyId)}
+              candidates={list.filter(isSettleable)}
+              selectedIds={list
+                .filter((candidate) => get(candidate).outcome === "COLLECTED")
+                .map((candidate) => candidate.id)}
+              disabled={
+                statementNumber.trim().length < 2 ||
+                listStillLoading ||
+                companyStatement.isPending
+              }
+              onApply={(lines) => {
+                setRows((current) => ({
+                  ...current,
+                  ...Object.fromEntries(
+                    lines.map((line) => [
+                      line.consignmentId,
+                      {
+                        outcome: "COLLECTED" as const,
+                        collected: line.collectedAmount,
+                      },
+                    ]),
+                  ),
+                }));
+                setStatementQueueIds((current) => Array.from(new Set([...current, ...lines.map((line) => line.consignmentId)])));
+
+              }}
+            />
+          )}
+
           <DeliverySettleSummaryCard
             totals={totals}
             countedCash={countedCash}
             countedBreakdown={countedBreakdown}
-            onCountedChange={(c, total) => { setCountedBreakdown(c); setCountedCash(Number(total)); }}
-            canRemit={canRemit}
+            onCountedChange={(c, total) => { if (companyStatement.isPending || remit.isPending) return; setCountedBreakdown(c); setCountedCash(Number(total)); }}
+            canRemit={statementMode ? canRecordStatement : canRemit}
             isPending={remit.isPending || companyStatement.isPending}
             listStillLoading={listStillLoading}
             statementMode={statementMode}
@@ -398,8 +564,7 @@ export function DeliverySettleTab() {
         onClose={() => setReturnTarget(null)}
         onConfirm={({ consignmentId, refundShiftId }) => {
           ret.mutate({ consignmentId, clientRequestId: crypto.randomUUID(), refundShiftId });
-          setReturnTarget(null);
-        }}
+          }}
       />
 
       <ConsignmentTimelineDrawer consignmentId={drawerId} onClose={() => setDrawerId(null)} />

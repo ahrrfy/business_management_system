@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { ActorCell } from "@/components/data-table/ActorCell";
 import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
 import { FILTER_LABELS } from "@shared/uiContracts";
@@ -119,7 +120,7 @@ export default function Vouchers() {
   const utils = trpc.useUtils();
   const printAudit = usePrintAudit();
   const me = trpc.auth.me.useQuery();
-  const canManage =
+  const legacyCanManage =
     !!me.data &&
     moduleAccessAllowed(
       me.data.role as RoleKey,
@@ -128,6 +129,10 @@ export default function Vouchers() {
       "FULL",
       ["manager", "accountant"],
     );
+  const canCancel = treasuryOperationAllowed(me.data, "vouchers.cancel", legacyCanManage);
+  const canResubmit = treasuryOperationAllowed(me.data, "vouchers.resubmitExpensePayment", legacyCanManage);
+  const canApproveReceipt = treasuryOperationAllowed(me.data, "vouchers.approve", legacyCanManage);
+  const canRejectReceipt = treasuryOperationAllowed(me.data, "vouchers.reject", legacyCanManage);
   // عرضٌ إرشادي فقط؛ approve على الخادم ملزم بإعادة قراءة isOwner النشط وفصل المنشئ عن المعتمد.
   const isOwner = me.data?.isOwner === true;
   // الفلاتر تعيش في querystring — تبقى مع فتح التفاصيل والرجوع، وتُشارَك رابطاً.
@@ -217,10 +222,10 @@ export default function Vouchers() {
     () => ({ ...filterInput, limit, offset: page * limit }),
     [filterInput, page],
   );
-  const list = trpc.vouchers.list.useQuery(input);
+  const list = trpc.vouchers.list.useQuery(input, { enabled: treasuryOperationAllowed(me.data, "vouchers.list", true) });
   const all = list.data ?? [];
   // مجاميع كامل النطاق المفلتر من الخادم (لا جمع صفوف الصفحة — كان مضلّلاً فوق ١٠٠ سند).
-  const agg = trpc.vouchers.aggregate.useQuery(filterInput);
+  const agg = trpc.vouchers.aggregate.useQuery(filterInput, { enabled: treasuryOperationAllowed(me.data, "vouchers.aggregate", true) });
 
   const cancelMut = trpc.vouchers.cancel.useMutation({
     onSuccess: async (res) => {
@@ -561,10 +566,10 @@ export default function Vouchers() {
               </Button>
             </Link>
             <Link href="/vouchers/receipt/new">
-              <Button variant="success">+ سند قبض</Button>
+              <Button variant="success" disabled={!treasuryOperationAllowed(me.data, "vouchers.create", true)}>+ سند قبض</Button>
             </Link>
             <Link href="/vouchers/payment/new">
-              <Button variant="destructive">+ طلب صرف</Button>
+              <Button variant="destructive" disabled={!treasuryOperationAllowed(me.data, "vouchers.create", true)}>+ طلب صرف</Button>
             </Link>
           </div>
         }
@@ -1065,6 +1070,7 @@ export default function Vouchers() {
                           hidden: !canPrintOfficialVoucher(r),
                           onSelect: () => void printVoucher(r, "thermal"),
                           gate: {
+                            operations: ["vouchers.get"],
                             roles: ["manager", "accountant"],
                             module: "treasury",
                             level: "READ",
@@ -1077,6 +1083,7 @@ export default function Vouchers() {
                           hidden: !canPrintOfficialVoucher(r),
                           onSelect: () => void printVoucher(r, "a4"),
                           gate: {
+                            operations: ["vouchers.get"],
                             roles: ["manager", "accountant"],
                             module: "treasury",
                             level: "READ",
@@ -1090,12 +1097,12 @@ export default function Vouchers() {
                             direction: r.direction,
                             approvalStatus: r.approvalStatus,
                             isOwner,
-                            canManageLegacyReceipt: canManage,
+                            canManageLegacyReceipt: canApproveReceipt,
                           }),
                           disabled: approveMut.isPending,
                           disabledReason: "توجد عملية اعتماد وصرف قيد التنفيذ",
                           onSelect: () => void approveVoucher(r),
-                          gate: { module: "treasury", level: "FULL" },
+                          gate: { operations: ["vouchers.approve"], module: "treasury", level: "FULL" },
                         },
                         {
                           key: "reject",
@@ -1106,12 +1113,12 @@ export default function Vouchers() {
                             direction: r.direction,
                             approvalStatus: r.approvalStatus,
                             isOwner,
-                            canManageLegacyReceipt: canManage,
+                            canManageLegacyReceipt: canRejectReceipt,
                           }),
                           disabled: rejectMut.isPending,
                           disabledReason: "توجد عملية رفض قيد التنفيذ",
                           onSelect: () => openReject(r),
-                          gate: { module: "treasury", level: "FULL" },
+                          gate: { operations: ["vouchers.reject"], module: "treasury", level: "FULL" },
                         },
                         {
                           key: "resubmit-system-payment",
@@ -1130,10 +1137,10 @@ export default function Vouchers() {
                               referenceNumber: r.referenceNumber,
                               approvalStatus: r.approvalStatus,
                               resubmitLineageStatus: r.resubmitLineageStatus,
-                              canManage,
+                              canManage: canResubmit,
                             }) &&
                             !(
-                              canManage &&
+                              canResubmit &&
                               r.approvalStatus === "REJECTED" &&
                               r.resubmitLineageStatus !== "BROKEN" &&
                               isPurchaseSupplierPaymentReference(r.referenceNumber)
@@ -1142,6 +1149,7 @@ export default function Vouchers() {
                           disabledReason: "توجد إعادة تقديم قيد التنفيذ",
                           onSelect: () => openResubmitSystemPayment(r),
                           gate: {
+                            operations: ["vouchers.resubmitExpensePayment"],
                             roles: ["manager", "accountant"],
                             module: "treasury",
                             level: "FULL",
@@ -1168,7 +1176,7 @@ export default function Vouchers() {
                               : "إلغاء الطلب",
                           variant: "destructive",
                           hidden:
-                            !canManage ||
+                            !canCancel ||
                             r.status === "REVERSED" ||
                             r.paymentMethod === "EXCHANGE" ||
                             (isSystemPaymentReference(r.referenceNumber) &&
@@ -1177,6 +1185,7 @@ export default function Vouchers() {
                           disabledReason: "توجد عملية إلغاء قيد التنفيذ",
                           onSelect: () => void cancelVoucher(r),
                           gate: {
+                            operations: ["vouchers.cancel"],
                             roles: ["manager", "accountant"],
                             module: "treasury",
                             level: "FULL",

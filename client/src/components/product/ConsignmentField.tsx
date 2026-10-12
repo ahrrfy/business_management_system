@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -34,6 +35,7 @@ export function ConsignmentField({
   disabled?: boolean;
   disabledHint?: string;
 }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
   const [open, setOpen] = useState(false);
@@ -45,7 +47,7 @@ export function ConsignmentField({
 
   const search = trpc.suppliers.search.useQuery(
     { q: debounced || undefined, kind: "CONSIGNOR", limit: 20 },
-    { enabled: value.isConsignment && !value.consignorId, placeholderData: (p) => p },
+    { enabled: can("suppliers.search") && (value.isConsignment && !value.consignorId), placeholderData: (p) => p },
   );
   const results = useMemo(() => search.data?.rows ?? [], [search.data]);
 

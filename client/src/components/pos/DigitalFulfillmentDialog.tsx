@@ -7,6 +7,7 @@ import { D, fmtAr } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { AlertTriangle, Check, CircleHelp, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { receptionOperationAllowed } from "@/lib/receptionOperationAccess";
 
 type IntentData = RouterOutputs["digitalCards"]["sales"]["getIntent"];
 type IntentItem = IntentData["items"][number];
@@ -52,6 +53,12 @@ export function DigitalFulfillmentDialog({
   onAllExecuted: (intentId: number) => void;
 }) {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const canRead = receptionOperationAllowed(me.data, "digitalCards.sales.getIntent");
+  const canClaim = receptionOperationAllowed(me.data, "digitalCards.sales.claimExecution");
+  const canMark = receptionOperationAllowed(me.data, "digitalCards.sales.markExecution");
+  const canCancel = receptionOperationAllowed(me.data, "digitalCards.sales.cancelIntent");
+  const canFinalize = receptionOperationAllowed(me.data, "digitalCards.sales.finalize");
   const [warnLeave, setWarnLeave] = useState(false);
   const [activeClaim, setActiveClaim] = useState<{
     intentItemId: number;
@@ -62,7 +69,7 @@ export function DigitalFulfillmentDialog({
 
   const q = trpc.digitalCards.sales.getIntent.useQuery(
     { intentId: intentId ?? 0 },
-    { enabled: intentId != null, refetchOnWindowFocus: false },
+    { enabled: intentId != null && canRead, refetchOnWindowFocus: false },
   );
 
   const claim = trpc.digitalCards.sales.claimExecution.useMutation({
@@ -102,12 +109,13 @@ export function DigitalFulfillmentDialog({
   }, [current?.id]);
 
   useEffect(() => {
-    if (allSuccess && intentId != null) onAllExecuted(intentId);
+    if (canFinalize && allSuccess && intentId != null) onAllExecuted(intentId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allSuccess, intentId]);
+  }, [canFinalize, allSuccess, intentId]);
 
   function attemptClose() {
     if (finalizing) return;
+    if (intentId != null && !canCancel) { notify.err("إلغاء النية الرقمية غير مفوض لحسابك"); return; }
     // §٨.٧: قبل أيّ تنفيذ يجوز التراجع؛ بعده لا تجاهُل — تحذير مراجعة صريح.
     if (anySuccess || activeClaim != null) { setWarnLeave(true); return; }
     if (intentId != null) cancel.mutate({ intentId, reason: "cashier-cancel" });
@@ -115,7 +123,7 @@ export function DigitalFulfillmentDialog({
   }
 
   function submit(status: "SUCCESS" | "FAILED" | "UNKNOWN") {
-    if (!current || intentId == null || !activeClaim || activeClaim.intentItemId !== current.id || mark.isPending) return;
+    if (!canMark || !current || intentId == null || !activeClaim || activeClaim.intentItemId !== current.id || mark.isPending) return;
     if (status === "SUCCESS" && !current.providerReference?.trim()) {
       notify.err("رقم العملية غير محفوظ — أوقف العملية وراجع السلة");
       return;
@@ -130,7 +138,7 @@ export function DigitalFulfillmentDialog({
   }
 
   function beginIssuance() {
-    if (!current || intentId == null || claim.isPending) return;
+    if (!canClaim || !current || intentId == null || claim.isPending) return;
     const cryptoApi = globalThis.crypto;
     if (!cryptoApi?.getRandomValues) {
       notify.err("تعذّر إنشاء رمز إصدار آمن؛ حدّث المتصفح ثم أعد المحاولة");
@@ -198,7 +206,7 @@ export function DigitalFulfillmentDialog({
                   </span>
                   <button
                     onClick={beginIssuance}
-                    disabled={claim.isPending}
+                    disabled={!canClaim || claim.isPending}
                     style={{ height: 52, borderRadius: 10, border: "none", background: C.primary, color: C.primaryFg, fontFamily: "inherit", fontSize: 16, fontWeight: 900, cursor: claim.isPending ? "not-allowed" : "pointer" }}
                   >
                     {claim.isPending ? "جارٍ حجز التأكيد…" : "ابدأ تأكيد عملية المزوّد"}
@@ -209,21 +217,21 @@ export function DigitalFulfillmentDialog({
               {activeClaim && <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button
                   onClick={() => submit("SUCCESS")}
-                  disabled={mark.isPending}
+                  disabled={!canMark || mark.isPending}
                   style={{ flex: 2, minWidth: 160, height: 50, borderRadius: 10, border: "none", background: C.success, color: "#fff", fontFamily: "inherit", fontSize: 15.5, fontWeight: 800, cursor: mark.isPending ? "not-allowed" : "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7 }}
                 >
                   <Check aria-hidden size={18} /> نُفّذت جميع بطاقات العملية
                 </button>
                 <button
                   onClick={() => submit("FAILED")}
-                  disabled={mark.isPending}
+                  disabled={!canMark || mark.isPending}
                   style={{ flex: 1, minWidth: 120, height: 50, borderRadius: 10, border: `1.5px solid ${C.danger}`, background: C.card, color: C.danger, fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" }}
                 >
                   فشلت العملية كاملة
                 </button>
                 <button
                   onClick={() => submit("UNKNOWN")}
-                  disabled={mark.isPending}
+                  disabled={!canMark || mark.isPending}
                   title="الجهاز لم يُظهر نتيجة واضحة — تُراجَع إدارياً"
                   style={{ flex: 1, minWidth: 120, height: 50, borderRadius: 10, border: `1.5px solid ${C.amber}`, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }}
                 >
@@ -241,7 +249,7 @@ export function DigitalFulfillmentDialog({
               ) : (
                 <span style={{ fontSize: 13, color: C.mutedFg }}>جارٍ تثبيت الفاتورة وتحصيل المبلغ…</span>
               )}
-              <button disabled={finalizing} onClick={() => intentId != null && onAllExecuted(intentId)} style={{ padding: 10, border: `1px solid ${C.border}`, background: C.card, color: C.fg }}>
+              <button disabled={!canFinalize || finalizing} onClick={() => canFinalize && intentId != null && onAllExecuted(intentId)} style={{ padding: 10, border: `1px solid ${C.border}`, background: C.card, color: C.fg }}>
                 {finalizeError ? "أعد محاولة تثبيت الفاتورة" : "إعادة محاولة تثبيت الفاتورة عند تعذّر الاتصال"}
               </button>
             </div>
@@ -321,8 +329,8 @@ export function DigitalFulfillmentDialog({
                 متابعة التنفيذ
               </button>
               <button
-                onClick={() => { setWarnLeave(false); if (intentId != null) cancel.mutate({ intentId, reason: "cashier-abandoned-after-execution" }); }}
-                disabled={cancel.isPending}
+                onClick={() => { setWarnLeave(false); if (canCancel && intentId != null) cancel.mutate({ intentId, reason: "cashier-abandoned-after-execution" }); }}
+                disabled={!canCancel || cancel.isPending}
                 style={{ flex: 1, height: 46, borderRadius: 10, border: "none", background: C.amber, color: "#241900", fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: "pointer" }}
               >
                 نقلها للمراجعة

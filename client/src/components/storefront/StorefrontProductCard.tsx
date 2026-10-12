@@ -1,8 +1,9 @@
 import React, { useState } from "react";
-import { Heart, Share2, Plus, Minus, AlertTriangle, Flame, Package, TrendingUp, Check, Eye } from "lucide-react";
+import { Heart, Share2, Plus, Minus, AlertTriangle, Flame, Package, TrendingUp, Check, Eye, Star } from "lucide-react";
 import { fmtInt } from "@/lib/money";
 import { formatQuantity } from "@shared/quantityFormat";
 import { AnimatedAddToCartButton } from "./AnimatedAddToCartButton";
+import { StorefrontHeuristicsBadges } from "./StorefrontHeuristicsBadges";
 
 export interface StorefrontCatalogProduct {
   productId: number;
@@ -30,7 +31,7 @@ interface StorefrontProductCardProps {
   heartPulseNonce?: number;
   sharePulseTarget?: string | null;
   sharePulseNonce?: number;
-  onOpen: (productId: number) => void;
+  onOpen: (productId: number, options?: { openReview?: boolean; orderNumber?: string | null }) => void;
   onAdd: (product: any, event: React.MouseEvent<HTMLButtonElement>) => void;
   onToggleWishlist: (productId: number) => void;
   onShare: (productId: number, productName: string) => void;
@@ -122,6 +123,17 @@ export function StorefrontProductCard({
                 <span>بكج</span>
               </span>
             )}
+            {p.isCustomizable && (
+              <span className="inline-flex items-center gap-0.5 sm:gap-1 rounded-md bg-purple-700 px-1 sm:px-1.5 py-0.5 text-[9px] sm:text-[10px] font-black text-white shadow-xs whitespace-nowrap">
+                <span>
+                  {p.customizationKind === "PRINT"
+                    ? "طباعة وتخصيص"
+                    : p.customizationKind === "GIFT"
+                    ? "تخصيص وإهداء"
+                    : "قابل للتخصيص"}
+                </span>
+              </span>
+            )}
             {p.stockLeft != null && p.stockLeft <= 3 && p.stockLeft > 0 && (
               <span className="inline-flex items-center gap-0.5 sm:gap-1 rounded-md bg-rose-600 px-1 sm:px-1.5 py-0.5 text-[9px] sm:text-[10px] font-black text-white shadow-xs whitespace-nowrap">
                 <span>بقي {formatQuantity(p.stockLeft)}</span>
@@ -197,11 +209,28 @@ export function StorefrontProductCard({
 
       {/* تفاصيل ومعلومات المنتج بارتفاعات عمودية محكمة لتوحيد خط الأزرار الأفقي */}
       <div className="flex flex-1 flex-col p-2.5 sm:p-4">
-        {/* الماركة أو الوسم — ارتفاع مقفل */}
-        <div className="flex h-4 items-center">
+        {/* الماركة أو الوسم والتقييم — ارتفاع مقفل */}
+        <div className="flex h-4 items-center justify-between gap-1">
           <span className="truncate text-[9.5px] sm:text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
             {p.brand ?? "المكتبة العربية"}
           </span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen(p.productId, { openReview: true });
+            }}
+            aria-label={`تقييمات ومراجعات ${productTitle}`}
+            className="flex items-center gap-0.5 text-[9px] sm:text-[9.5px] font-black text-amber-500 shrink-0 transition hover:opacity-80"
+          >
+            <Star aria-hidden className="size-2.5 fill-current" />
+            <span className="font-mono">{p.ratingAverage ? Number(p.ratingAverage).toFixed(1) : "5.0"}</span>
+            {p.reviewsCount ? (
+              <span className="text-slate-400 font-normal font-mono">({formatQuantity(p.reviewsCount)})</span>
+            ) : (
+              <span className="text-amber-600/80 font-bold text-[8.5px] dark:text-amber-400">جديد</span>
+            )}
+          </button>
         </div>
 
         {/* عنوان المنتج — معروض دائماً وبخط واضح */}
@@ -250,12 +279,23 @@ export function StorefrontProductCard({
           ) : p.soldCount >= 3 ? (
             <span className="flex items-center gap-1 text-blue-700 truncate dark:text-blue-400">
               <TrendingUp aria-hidden className="size-2.5 sm:size-3 shrink-0" />
-              <span className="truncate">الأكثر طلباً</span>
+              <span className="truncate">الأكثر طلباً ({formatQuantity(p.soldCount)})</span>
             </span>
           ) : (
             <span className="truncate text-slate-400 dark:text-slate-500">{p.unitName}</span>
           )}
         </div>
+
+        {/* شارات السمات الإرشادية السريعة (Category Heuristics Badges) */}
+        <StorefrontHeuristicsBadges
+          productName={productTitle}
+          category={p.category}
+          description={p.description}
+          isCustomizable={p.isCustomizable}
+          isBundle={p.isBundle}
+          limit={1}
+          className="mt-1"
+        />
 
         {/* زر الإضافة السريع للسلة أو وحدة التحكم بالكمية المتحولة — متطابق أفقياً ومرن للهواتف */}
         {!p.isCustomizable && cartQuantity > 0 && onUpdateQuantity ? (

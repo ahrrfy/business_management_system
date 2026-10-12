@@ -23,6 +23,7 @@ import {
   productVariants,
   products,
   promotions,
+  storefrontProductReviews,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { createTtlCache } from "../lib/ttlCache";
@@ -139,6 +140,10 @@ export interface StorefrontProduct {
   stockLeft: number | null;
   /** الدليل الاجتماعي: عدد مرّات بيع المنتج فعلياً (من الفواتير). */
   soldCount: number;
+  /** متوسط تقييم المنتج المعتمد من المتسوقين (1 إلى 5)؛ null إن لم تتوفر مراجعات معتمدة بعد. */
+  ratingAverage?: number | null;
+  /** عدد المراجعات المعتمدة والمنشورة للمنتج. */
+  reviewsCount?: number;
   /**
    * ألوان المنتج (اسم + لون حقيقي «#RRGGBB» + توفّر) — سواتش تسويقية للزبون. تُملأ إن وُجد ≥ لون معروف.
    * تشمل الألوان **النافدة** (inStock=false) لعرض نطاق الألوان كاملاً؛ الواجهة تميّزها بصرياً (باهتة + «نافد»)
@@ -681,6 +686,43 @@ async function attachSoldCounts(
   for (const it of items) it.soldCount = map.get(it.productId) ?? 0;
 }
 
+/** يُرفق إحصائيات المراجعات المعتمدة (العدد ومتوسط النجوم) لكل بطاقة — استعلام مجمَّع واحد للدفعة. */
+async function attachReviewAggregates(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  items: StorefrontProduct[]
+): Promise<void> {
+  if (!items.length) return;
+  const productIds = Array.from(new Set(items.map((i) => i.productId)));
+  const reviewStats = await db
+    .select({
+      productId: storefrontProductReviews.productId,
+      count: sql<number>`COUNT(*)`,
+      avg: sql<string>`COALESCE(AVG(${storefrontProductReviews.rating}), 5.0)`,
+    })
+    .from(storefrontProductReviews)
+    .where(and(
+      inArray(storefrontProductReviews.productId, productIds),
+      eq(storefrontProductReviews.status, "APPROVED"),
+    ))
+    .groupBy(storefrontProductReviews.productId);
+
+  const statsMap = new Map<number, { count: number; avg: number }>();
+  for (const row of reviewStats) {
+    statsMap.set(Number(row.productId), {
+      count: Number(row.count ?? 0),
+      avg: Number(Number(row.avg ?? 5).toFixed(1)),
+    });
+  }
+
+  for (const item of items) {
+    const stat = statsMap.get(item.productId);
+    if (stat && stat.count > 0) {
+      item.reviewsCount = stat.count;
+      item.ratingAverage = stat.avg;
+    }
+  }
+}
+
 /**
  * يُرفق ألوان المنتج المتاحة (اسم + لون حقيقي «#RRGGBB») لكل بطاقة — استعلام مجمَّع واحد للدفعة.
  * اللون الحقيقي = colorHex الصريح إن وُجد، وإلّا يُستنتَج من الاسم عبر بنك الألوان؛ الاسم غير
@@ -951,6 +993,7 @@ export async function storefrontCatalog(opts: {
   }
   await applyStorefrontPromotions(items, branchId);
   await attachSoldCounts(db, items);
+  await attachReviewAggregates(db, items);
   await attachVariantColors(db, items, branchId);
   await attachStorefrontListMedia(db, items);
   // المؤشّر يتقدّم بآخر **معرّفٍ مختار** لا بآخر بطاقةٍ مرسومة (مراجعة عدائية ٣١/٨): كل صنفٍ
@@ -1111,6 +1154,7 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
     item.customizationTemplate = await loadStorefrontCustomizationTemplate(db, item.productId);
   }
   await attachSoldCounts(db, [item]);
+  await attachReviewAggregates(db, [item]);
   await attachVariantColors(db, [item], branchId);
   if (item.isBundle) item.bundleItems = await getBundleItems(db, item.variantId);
   await attachBundleComponentImages(db, [item]);
@@ -1213,6 +1257,7 @@ export async function storefrontCartRecommendations(
   const items = [...manualItems, ...autoItems].slice(0, cap);
   await applyStorefrontPromotions(items, branchId);
   await attachSoldCounts(db, items);
+  await attachReviewAggregates(db, items);
   await attachVariantColors(db, items, branchId);
   await attachStorefrontListMedia(db, items);
   return items;
@@ -1315,6 +1360,7 @@ export async function storefrontRelated(
 
   await applyStorefrontPromotions(items, branchId);
   await attachSoldCounts(db, items);
+  await attachReviewAggregates(db, items);
   await attachVariantColors(db, items, branchId);
   await attachStorefrontListMedia(db, items);
   return items;

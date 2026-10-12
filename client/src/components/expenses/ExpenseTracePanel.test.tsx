@@ -8,12 +8,14 @@ import { ExpenseTracePanel } from "./ExpenseTracePanel";
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
 
 const mocks = vi.hoisted(() => ({
+  meUseQuery: vi.fn(),
   traceUseQuery: vi.fn(),
   traceDetails: vi.fn(),
 }));
 
 vi.mock("@/lib/trpc", () => ({
   trpc: {
+    auth: { me: { useQuery: mocks.meUseQuery } },
     expenses: {
       trace: { useQuery: mocks.traceUseQuery },
     },
@@ -36,6 +38,7 @@ describe("ExpenseTracePanel — فصل المنشئ عن منفذ الحركة",
     document.body.appendChild(host);
     root = createRoot(host);
     mocks.traceDetails.mockClear();
+    mocks.meUseQuery.mockReturnValue({ data: { role: "manager" } });
     mocks.traceUseQuery.mockReturnValue({
       isLoading: false,
       isError: false,
@@ -94,5 +97,13 @@ describe("ExpenseTracePanel — فصل المنشئ عن منفذ الحركة",
       name: "منفذ الدفع",
       id: 3,
     });
+  });
+
+  it("يمنع القراءة والعرض عند سحب تفويض التتبع ولو بقيت نتيجة مخزنة", async () => {
+    mocks.meUseQuery.mockReturnValue({ data: { role: "manager", operationPolicyEnabled: true, resolvedOperationPolicy: { version: 1, grants: { "operation.expenses.trace": false } } } });
+    await act(async () => root.render(<ExpenseTracePanel expenseId={91} />));
+    expect(mocks.traceUseQuery).toHaveBeenLastCalledWith({ expenseId: 91 }, { enabled: false });
+    expect(mocks.traceDetails).not.toHaveBeenCalled();
+    expect(host.textContent).toBe("");
   });
 });

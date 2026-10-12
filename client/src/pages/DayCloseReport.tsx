@@ -26,6 +26,7 @@ import { newClientRequestId } from "@/lib/countQueue";
 import { D } from "@/lib/money";
 import { Link } from "wouter";
 import { moduleAccessAllowed } from "@shared/permissions";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { MissedDailyCountExceptionPanel } from "@/components/cash/MissedDailyCountExceptionPanel";
 import { DayCloseCellDetailsHover } from "@/components/treasury/DayCloseCellDetailsHover";
 import { DirectOperationsPanel } from "@/components/treasury/DirectOperationsPanel";
@@ -126,14 +127,14 @@ export default function DayCloseReport() {
   const q = trpc.reports.dayCloseReconciliation.useQuery({
     date,
     branchId: branchId ? Number(branchId) : undefined,
-  });
+  }, { enabled: treasuryOperationAllowed(me.data, "reports.dayCloseReconciliation", true) });
   const dc: DC | undefined = q.data;
   // الراوتر يفرض فرع المدير حتى لو ترك محدّد «كل الفروع» فارغاً. اعتمد النطاق
   // الموثّق في نتيجة الخادم للعنوان والجرد، لا قيمة المحدّد غير الموثوقة.
   const effectiveBranchId: number | "" = dc?.branchId ?? branchId;
   const dailyQ = trpc.treasury.dailyCashReconciliation.useQuery(
     { branchId: Number(effectiveBranchId || 0), businessDate: date },
-    { enabled: effectiveBranchId !== "" },
+    { enabled: effectiveBranchId !== "" && treasuryOperationAllowed(me.data, "treasury.dailyCashReconciliation", true) },
   );
   const userRole = me.data?.role ?? "";
   const canManageDaily = moduleAccessAllowed(
@@ -270,7 +271,7 @@ export default function DayCloseReport() {
           </div>
         )}
 
-        {daily?.actions.canCount && canManageDaily && (
+        {daily?.actions.canCount && treasuryOperationAllowed(me.data, "treasury.recordDailyTreasuryCount", canManageDaily) && (
           <div className="space-y-3 border-t pt-4">
             <CashCounter
               value={treasuryBreakdown}
@@ -295,7 +296,7 @@ export default function DayCloseReport() {
           </div>
         )}
 
-        {daily?.actions.canClose && saved && canManageDaily && (
+        {daily?.actions.canClose && saved && treasuryOperationAllowed(me.data, "treasury.closeDailyCashReconciliation", canManageDaily) && (
           <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
             <p className="text-xs text-muted-foreground">الإقفال يحتاج مستخدماً مختلفاً عن منفّذ الجرد، بلا استثناء للدور.</p>
             <Button
@@ -308,7 +309,7 @@ export default function DayCloseReport() {
           </div>
         )}
 
-        {daily?.actions.canReopen && saved?.status === "CLOSED" && canManageDaily && (
+        {daily?.actions.canReopen && saved?.status === "CLOSED" && treasuryOperationAllowed(me.data, "treasury.reopenDailyCashReconciliation", canManageDaily) && (
           <div className="space-y-2 border-t pt-4">
             <Textarea value={reopenReason} onChange={(event) => setReopenReason(event.target.value)} maxLength={500} placeholder="سبب إعادة الفتح (10 أحرف على الأقل)" />
             <Button

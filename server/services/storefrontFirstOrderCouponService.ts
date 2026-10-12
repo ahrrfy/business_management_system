@@ -11,6 +11,7 @@ import {
   storefrontFirstOrderCouponClaims,
 } from "../../drizzle/schema";
 import { appErrorMessage } from "../../shared/errors";
+import { formatActiveDays, isDayActive, type PromotionDesignMeta } from "../../shared/promotionScheduling";
 import { extractInsertId } from "../lib/insertId";
 import { hashCouponCode } from "./couponService";
 import { baghdadToday } from "./businessDay";
@@ -52,6 +53,7 @@ export async function requestStorefrontFirstOrderCoupon(
         validTo: couponPrograms.validTo,
         perCouponLimit: couponPrograms.perCouponLimit,
         perCustomerLimit: couponPrograms.perCustomerLimit,
+        designJson: couponPrograms.designJson,
       })
       .from(couponPrograms)
       .innerJoin(promotions, eq(couponPrograms.promotionId, promotions.id))
@@ -91,6 +93,19 @@ export async function requestStorefrontFirstOrderCoupon(
       });
     }
     const program = programs[0]!;
+    const designMeta = (program.designJson ?? {}) as PromotionDesignMeta;
+    if (!isDayActive(today, designMeta.activeDays)) {
+      const allowedDaysText = formatActiveDays(designMeta.activeDays);
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن إصدار كوبون الطلب الأول اليوم",
+          why: `كوبون الطلب الأول متاح فقط في: ${allowedDaysText}`,
+          doThis: "يرجى طلب الكوبون في الأيام المحددة للعرض أو متابعة الشراء بالأسعار الاعتيادية",
+        }),
+      });
+    }
+
     if (program.perCouponLimit !== 1 || program.perCustomerLimit !== 1) {
       throw new TRPCError({
         code: "CONFLICT",

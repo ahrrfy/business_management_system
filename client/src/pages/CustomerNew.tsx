@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -60,6 +61,7 @@ function suggestedTier(t: CustomerType): PriceTier {
 }
 
 export default function CustomerNew() {
+  const { can } = useCatalogPeopleOperationAccess();
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
 
@@ -122,7 +124,7 @@ export default function CustomerNew() {
   }, [name, phone, phone2, phone3]);
   const dupEnabled = !!(dupInput.name || dupInput.phones?.length);
   const similar = trpc.customers.findSimilar.useQuery(dupInput, {
-    enabled: dupEnabled,
+    enabled: can("customers.findSimilar") && (dupEnabled),
     placeholderData: (prev) => prev,
   });
   const dupMatches = dupEnabled ? (similar.data ?? []) : [];
@@ -160,6 +162,7 @@ export default function CustomerNew() {
     tierTouched && defaultPriceTier !== suggestedTier(customerType);
 
   function submit() {
+    if (!can("customers.create")) { setError("العملية غير مفوضة لحسابك"); return; }
     if (create.isPending) return; // حاجز واجهة أول؛ والحاجز البنيوي clientRequestId خادمياً (هجرة 0051).
     setError("");
     if (!name.trim()) {
@@ -519,7 +522,7 @@ export default function CustomerNew() {
 
       <FormError message={error} />
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-        <Button onClick={submit} disabled={create.isPending} title="Ctrl+S">
+        <Button onClick={submit} disabled={!can("customers.create") || (create.isPending)} title="Ctrl+S">
           {create.isPending ? ACTION_LABELS.saving : "حفظ العميل"}
         </Button>
         <Button variant="outline" title="Esc" onClick={() => void handleCancel()}>إلغاء</Button>

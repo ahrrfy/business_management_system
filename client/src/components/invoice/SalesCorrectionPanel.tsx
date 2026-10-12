@@ -48,6 +48,7 @@ export interface SalesCorrectionPanelProps {
   reason: string;
   setReason: (v: string) => void;
   correctionKind: "REISSUE" | "EXCHANGE";
+  allowedKinds?: readonly ("REISSUE" | "EXCHANGE")[];
   setCorrectionKind: (v: "REISSUE" | "EXCHANGE") => void;
   collectNow: string;
   setCollectNow: (v: string) => void;
@@ -80,14 +81,14 @@ export function SalesCorrectionPanel(p: SalesCorrectionPanelProps) {
       </p>
 
       <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="نوع العملية">
-        <Button type="button" variant={p.correctionKind === "REISSUE" ? "default" : "outline"}
+        {(!p.allowedKinds || p.allowedKinds.includes("REISSUE")) && <Button type="button" variant={p.correctionKind === "REISSUE" ? "default" : "outline"}
           onClick={() => p.setCorrectionKind("REISSUE")} aria-pressed={p.correctionKind === "REISSUE"}>
           تصحيح وإعادة إصدار
-        </Button>
-        <Button type="button" variant={p.correctionKind === "EXCHANGE" ? "default" : "outline"}
+        </Button>}
+        {(!p.allowedKinds || p.allowedKinds.includes("EXCHANGE")) && <Button type="button" variant={p.correctionKind === "EXCHANGE" ? "default" : "outline"}
           onClick={() => p.setCorrectionKind("EXCHANGE")} aria-pressed={p.correctionKind === "EXCHANGE"}>
           استبدال للعميل
-        </Button>
+        </Button>}
       </div>
 
       <div className="space-y-1">

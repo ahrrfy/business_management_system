@@ -23,8 +23,10 @@
 import { ZipArchive } from "archiver";
 import type { Response } from "express";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { requireDb } from "./tx";
-import { categories, productImages, productVariants, products } from "../../drizzle/schema";
+import { requireDb, withTx } from "./tx";
+import { categories, productImages, productImageJobs, productVariants, products } from "../../drizzle/schema";
+import { assertStudioOperationTx } from "./authorization/studioOperationAuthority";
+import { canCrossBranches } from "../lib/branchAuthority";
 import { getImageStore, isImageStoreOperational } from "../lib/imageStore";
 import { logger } from "../logger";
 import type { ProductStudioActor } from "./productStudioService";
@@ -52,7 +54,9 @@ interface ExportImageRow {
  */
 async function queryExportImages(actor: ProductStudioActor, scope: StudioExportScope): Promise<ExportImageRow[]> {
   const db = requireDb();
-  void actor;
+  if (actor.operationAuthority) {
+    await withTx(tx => assertStudioOperationTx(tx, actor, "productStudio.authorizeExport"), { gate: "NONE" });
+  }
   const scopeCondition = (() => {
     if (scope.kind === "ALL") return undefined;
     if (scope.kind === "CATEGORY") {
@@ -86,6 +90,7 @@ async function queryExportImages(actor: ProductStudioActor, scope: StudioExportS
     .from(productImages)
     .innerJoin(products, eq(products.id, productImages.productId))
     .leftJoin(productVariants, eq(productVariants.id, productImages.variantId))
+    .leftJoin(productImageJobs, eq(productImageJobs.id, productImages.publishedStudioJobId))
     .where(
       and(
         eq(productImages.reviewStatus, "APPROVED"),
@@ -100,6 +105,12 @@ async function queryExportImages(actor: ProductStudioActor, scope: StudioExportS
         // الخدمات لا تُصوَّر ⇒ لا تُصدَّر (تكامل مع استبعادها من الحملات).
         eq(products.isService, false),
         scopeCondition,
+        actor.operationAuthority && !canCrossBranches(actor)
+          ? actor.branchId == null ? sql`1 = 0` : eq(productImageJobs.branchId, actor.branchId)
+          : undefined,
+        actor.operationAuthority && actor.scopedOwnerId != null
+          ? eq(productImageJobs.assignedTo, actor.scopedOwnerId)
+          : undefined,
       ),
     )
     // ترتيبٌ ثابت (منتج ثمّ id) كي تكون التسمية `-N` مستقرّةً عبر التصديرات.

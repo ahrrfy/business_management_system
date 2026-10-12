@@ -5,9 +5,16 @@
 // وحدته صراحةً (permissionsOverride/دور مخصّص) — مرآةُ بوّابة الخادم requireModuleGate.
 // ⚠️ راحة بصرية فقط — الإنفاذ الأمني الحقيقي خادمي (server/trpc.ts) + RequireRole.
 import { hasModuleAccess, moduleAccessAllowed, POS_STATION_GATES, type AccessLevel, type PermissionMap, type RoleKey } from "@shared/permissions";
+import {
+  OPERATION_PERMISSIONS,
+  getOperationPermission,
+  type OperationPolicy,
+} from "@shared/operationPermissions";
 
 /** قيد وصول لعنصر تنقّل/تبويب — أيٌّ منها (أو لا شيء = مرئي للكل). */
 export type RoleGate = {
+  /** Exact operation paths when a page/tab has an explicit canonical contract. */
+  operations?: string[];
   /** مرئي لـ admin فقط. */
   adminOnly?: boolean;
   /** مرئي لـ admin أو manager. */
@@ -37,6 +44,28 @@ export const RECEPTION_STATION_GATE: RoleGate = {
   module: POS_STATION_GATES.RECEPTION.module,
   level: "FULL",
 };
+
+/** Ordinary and digital sales have separate real execution paths. */
+export const SALE_CREATION_OPERATION_GATE: RoleGate = {
+  anyOf: [
+    { operations: ["sales.create"] },
+    { allOf: ["prepare", "getIntent", "claimExecution", "markExecution", "finalize"].map(
+      (action) => ({ operations: [`digitalCards.sales.${action}`] }),
+    ) },
+  ],
+};
+
+/** Editors need their document read and at least one supported write action. */
+export const EDITOR_OPERATION_GATES = {
+  product: { allOf: [{ operations: ["catalog.getForVariantEdit"] }, { operations: ["catalog.updateProductVariants"] }] },
+  customer: { allOf: [{ operations: ["customers.get"] }, { operations: ["customers.update"] }] },
+  supplier: { allOf: [{ operations: ["suppliers.get"] }, { operations: ["suppliers.update"] }] },
+  purchase: { allOf: [{ operations: ["purchases.get"] }, { operations: ["purchases.updateOrder"] }] },
+  asset: { allOf: [{ operations: ["assets.get"] }, { operations: ["assets.update"] }] },
+  employee: { allOf: [{ operations: ["employees.get"] }, { operations: ["employees.update"] }] },
+  quotation: { allOf: [{ operations: ["quotations.get"] }, { operations: ["quotations.update", "quotations.convert"] }] },
+  correction: { allOf: [{ operations: ["sales.get"] }, { operations: ["catalog.byUnitIds"] }, { operations: ["sales.reissue", "salesControl.requestExchange"] }] },
+} satisfies Record<string, RoleGate>;
 
 /**
  * قائمةُ مداخل الكاشير البيضاء — **إتاحةُ وصولٍ لا منحُ صلاحية**.
@@ -75,6 +104,11 @@ export const RECONCILE_CONTROL_GATE = Object.freeze({
   adminOnly: true,
 }) satisfies RoleGate;
 
+export const AUDIT_LOGS_GATE: RoleGate = {
+  roles: ["admin", "auditor"],
+  operations: ["audit.list", "audit.facets"],
+};
+
 /**
  * هل يرى المستخدم (بدوره role وصلاحياته الممنوحة override) عنصراً يحمل القيد gate؟
  * قيد الدور يطابق حرفياً منطق AppLayout التاريخي، وmodule يفتح مساراً إضافياً بالمنح الصريح.
@@ -82,20 +116,43 @@ export const RECONCILE_CONTROL_GATE = Object.freeze({
 export function canSeeGate(
   gate: RoleGate | undefined,
   role: string | null | undefined,
-  override?: PermissionMap | null
+  override?: PermissionMap | null,
+  operationPolicy?: OperationPolicy | null,
 ): boolean {
   if (!gate) return true;
   const isAdmin = role === "admin";
   // البوّابة المركّبة أولاً: تُقيَّم فروعُها بنفس الدالّة (تعشيشٌ مسموح) ⇒ مرآةٌ دقيقة لأيّ
   // بوّابةٍ خادمية «أو»-ية بلا ازدواج منطقٍ في الواجهة.
   if (gate.anyOf?.length) {
-    return gate.anyOf.some((g) => canSeeGate(g, role, override));
+    return gate.anyOf.some((g) =>
+      canSeeGate(g, role, override, operationPolicy),
+    );
   }
   if (gate.allOf?.length) {
-    return gate.allOf.every((g) => canSeeGate(g, role, override));
+    return gate.allOf.every((g) =>
+      canSeeGate(g, role, override, operationPolicy),
+    );
   }
   // adminOnly حصري عمداً (إدارة النظام) — لا يُفتح بمنح وحدة.
   if (gate.adminOnly) return isAdmin;
+  const operationAllowed = (operation: (typeof OPERATION_PERMISSIONS)[number]) =>
+    operationPolicy?.grants[operation.key] === true &&
+    (!operation.requiresCostVisibility ||
+      (operationPolicy.dataVisibility?.purchaseCost === true &&
+        operationPolicy.dataVisibility?.profitMargin === true));
+  if (operationPolicy && gate.operations?.length)
+    return gate.operations.some((path) => {
+      const operation = getOperationPermission(path);
+      return operation != null && operationAllowed(operation);
+    });
+  if (operationPolicy && gate.module) {
+    return OPERATION_PERMISSIONS.some(
+      (operation) =>
+        operation.delegable &&
+        (operation.navigationModule ?? operation.module)?.split("|").includes(gate.module!) &&
+        operationAllowed(operation),
+    );
+  }
   // بوّابة الوحدة تُحسم بالخريطة المحلولة (قالب الدور + المنح الصريح) — تدقيق ١٧/٧: كان القيد بلا قيود
   // دور يعيد true فراغياً (roleOk صحيح فراغياً) فيُظهر تبويبات module-only لكل الأدوار وإن رفضها الخادم
   // بـ403؛ كما كان يستشير المنح الصريح (override) وحده لا قالب الدور. الآن يطابق الخادم بدقّة:

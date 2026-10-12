@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { AlertCircle, History, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,7 @@ export function UnitPriceHistory({
   variantLabel,
   className,
 }: UnitPriceHistoryProps) {
+  const { can } = useCatalogPeopleOperationAccess();
   const [open, setOpen] = useState(false);
   const canOpen =
     Number.isInteger(Number(variantId)) &&
@@ -35,12 +37,12 @@ export function UnitPriceHistory({
     !!unitName.trim();
   const resolveQ = trpc.catalog.resolveProductUnitId.useQuery(
     { variantId: Number(variantId), unitName },
-    { enabled: open && canOpen, staleTime: 30_000 },
+    { enabled: can("catalog.resolveProductUnitId") && (open && canOpen), staleTime: 30_000 },
   );
   const productUnitId = resolveQ.data ?? null;
   const historyQ = trpc.priceWaves.unitHistory.useQuery(
     { productUnitId: Number(productUnitId), limit: 50 },
-    { enabled: open && productUnitId != null, staleTime: 15_000 },
+    { enabled: can("priceWaves.unitHistory") && (open && productUnitId != null), staleTime: 15_000 },
   );
 
   return (

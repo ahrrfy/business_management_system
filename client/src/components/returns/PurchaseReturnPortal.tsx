@@ -9,6 +9,7 @@
  *  - طباعة سند إرجاع مشتريات حراري 80مم/58مم
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import {
   AlertTriangle,
   Building2,
@@ -65,6 +66,7 @@ export function PurchaseReturnPortal({
 }: PurchaseReturnPortalProps) {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
+  const operationPermission = useOperationPermission("returns.executePurchaseReturnCart");
   const branches = trpc.branches.list.useQuery();
   const activeBranchId = me.data?.branchId
     ? Number(me.data.branchId)
@@ -89,7 +91,7 @@ export function PurchaseReturnPortal({
   >("CREDIT_OFFSET");
 
   const openDrawersQ = trpc.returns.getOpenRefundDrawers.useQuery(undefined, {
-    refetchInterval: 30_000,
+    refetchInterval: false,
   });
   const openDrawers = openDrawersQ.data ?? [];
   const [selectedShiftId, setSelectedShiftId] = useState<number | null>(null);
@@ -235,6 +237,7 @@ export function PurchaseReturnPortal({
     trpc.returns.executePurchaseReturnCart.useMutation();
 
   const handleExecutePurchaseReturn = async () => {
+    if (!operationPermission.allowed) { notify.err(operationPermission.reason); return; }
     if (!selectedSupplierId || !selectedSupplier) {
       notify.warn("يرجى اختيار المورد أولاً");
       return;
@@ -823,6 +826,7 @@ export function PurchaseReturnPortal({
               type="button"
               onClick={() => void handleExecutePurchaseReturn()}
               disabled={
+                !operationPermission.allowed ||
                 purchaseReturnMutation.isPending ||
                 !selectedSupplierId ||
                 purchaseCart.length === 0 ||

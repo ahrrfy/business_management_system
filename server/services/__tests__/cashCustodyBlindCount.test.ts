@@ -187,6 +187,35 @@ beforeEach(async () => {
 });
 
 describe("cash custody blind-count visibility", () => {
+  it("protects a delegated warehouse receiver from source and aggregate correlation until its first count", async () => {
+    await db().update(s.users).set({ role: "warehouse", operationPolicy: {
+      version: 1,
+      grants: {
+        "operation.treasury.acceptHandoverReceipt": true,
+        "operation.treasury.pendingHandoverReceipts": true,
+        "operation.treasury.getRecentMovements": true,
+        "operation.reports.dayCloseReconciliation": true,
+      },
+    } }).where(eq(s.users.id, RECIPIENT));
+    const contract = await seedCustody({ prefix: "CH", amount: "75000.00", opening: "75000.00" });
+    const date = new Date().toISOString().slice(0, 10);
+    const caller = appRouter.createCaller(makeCtx(await loadUser(RECIPIENT)));
+    expect(await caller.treasury.pendingHandoverReceipts()).toHaveLength(1);
+    const beforeMovements = await caller.treasury.getRecentMovements({ branchId: 1, limit: 100 });
+    expect(beforeMovements.rows.some((row) => row.referenceNumber === contract.referenceNumber || row.shiftId === contract.shiftId)).toBe(false);
+    const beforeReport = await caller.reports.dayCloseReconciliation({ date, branchId: 1 });
+    expect(beforeReport.withheldBlindCountShiftCount).toBe(1);
+    expect(beforeReport.shifts).toEqual([]);
+    expect(JSON.stringify(beforeReport)).not.toContain("75000.00");
+
+    await recordFirstCount(contract, "blind-delegated-first-count");
+    const afterMovements = await caller.treasury.getRecentMovements({ branchId: 1, limit: 100 });
+    expect(afterMovements.rows.find((row) => row.referenceNumber === contract.referenceNumber)).toMatchObject({ amount: "75000.00" });
+    const afterReport = await caller.reports.dayCloseReconciliation({ date, branchId: 1 });
+    expect(afterReport.withheldBlindCountShiftCount).toBe(0);
+    expect(afterReport.shifts.map((row) => row.shiftId)).toEqual([contract.shiftId]);
+  });
+
   it("blocks CH and CD amount correlation by reference and shift until each first count", async () => {
     const ch = await seedCustody({ prefix: "CH", amount: "75000.00", opening: "75000.00" });
     const cd = await seedCustody({ prefix: "CD", amount: "42000.00", opening: "84000.00" });

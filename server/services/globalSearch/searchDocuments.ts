@@ -23,10 +23,18 @@ async function searchInvoices(
   query: string,
   limit: number,
   scopedBranchId: number | null,
+  scopedOwnerId: number | null = null,
 ): Promise<SearchResult[]> {
   const conds: any[] = [];
   if (scopedBranchId !== null)
     conds.push(eq(invoices.branchId, scopedBranchId));
+  if (scopedOwnerId !== null)
+    conds.push(
+      or(
+        eq(invoices.createdBy, scopedOwnerId),
+        eq(workOrders.createdBy, scopedOwnerId),
+      ),
+    );
 
   const sfx = phoneSuffix10(query);
   const like_ = `%${escLike(query)}%`;
@@ -78,13 +86,16 @@ async function searchInvoices(
       invoiceNumber: invoices.invoiceNumber,
       customerName: customers.name,
       contactName: invoices.contactName,
-      customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${invoices.contactPhone}, ''))`,
+      customerPhone: sql<
+        string | null
+      >`COALESCE(NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${invoices.contactPhone}, ''))`,
       total: invoices.total,
       invoiceDate: invoices.invoiceDate,
       status: invoices.status,
     })
     .from(invoices)
     .leftJoin(customers, eq(customers.id, invoices.customerId))
+    .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
     .where(and(...conds))
     .orderBy(desc(invoices.invoiceDate), desc(invoices.id))
     .limit(limit);
@@ -166,7 +177,9 @@ async function searchQuotations(
       id: quotations.id,
       quoteNumber: quotations.quoteNumber,
       customerName: customers.name,
-      customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''))`,
+      customerPhone: sql<
+        string | null
+      >`COALESCE(NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''))`,
       total: quotations.total,
       quoteDate: quotations.quoteDate,
     })
@@ -177,7 +190,9 @@ async function searchQuotations(
     .limit(limit);
 
   return rows.map((r) => {
-    const sub = [r.customerName ?? "عميل نقدي", r.customerPhone].filter(Boolean).join(" · ");
+    const sub = [r.customerName ?? "عميل نقدي", r.customerPhone]
+      .filter(Boolean)
+      .join(" · ");
     return {
       type: "QUOTATION" as const,
       id: r.id,
@@ -255,7 +270,9 @@ async function searchWorkOrders(
       orderNumber: workOrders.orderNumber,
       title: workOrders.title,
       customerName: customers.name,
-      customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${workOrders.contactPhone}, ''))`,
+      customerPhone: sql<
+        string | null
+      >`COALESCE(NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${workOrders.contactPhone}, ''))`,
       deliveryAddress: workOrders.deliveryAddress,
       status: workOrders.status,
       createdAt: workOrders.createdAt,
@@ -267,7 +284,13 @@ async function searchWorkOrders(
     .limit(limit);
 
   return rows.map((r) => {
-    const sub = [r.customerName ?? "بلا عميل", r.customerPhone, r.deliveryAddress].filter(Boolean).join(" · ");
+    const sub = [
+      r.customerName ?? "بلا عميل",
+      r.customerPhone,
+      r.deliveryAddress,
+    ]
+      .filter(Boolean)
+      .join(" · ");
     return {
       type: "WORK_ORDER" as const,
       id: r.id,
@@ -347,12 +370,14 @@ async function searchExpenses(
   query: string,
   limit: number,
   scopedBranchId: number | null,
+  scopedOwnerId: number | null = null,
 ): Promise<SearchResult[]> {
   if (kind === "BARCODE" || kind === "PHONE") return [];
 
   const conds: any[] = [eq(expenses.status, "ACTIVE")];
   if (scopedBranchId !== null)
     conds.push(eq(expenses.branchId, scopedBranchId));
+  if (scopedOwnerId !== null) conds.push(eq(expenses.createdBy, scopedOwnerId));
 
   const like_ = `%${escLike(query)}%`;
   conds.push(

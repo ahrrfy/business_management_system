@@ -35,6 +35,7 @@ import { FILTER_LABELS } from "@shared/uiContracts";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { variantDisplayName, variantDescriptor } from "@shared/variantDisplay";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { Camera, CheckCircle2, ExternalLink, Layers3, Scale, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
@@ -67,10 +68,10 @@ export default function Inventory() {
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
   const canPickBranch = role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يختاران فرعاً
-  const canAdjust = role === "admin" || role === "manager" || role === "warehouse";
+  const canAdjust = canLifecycleOperation(me.data, "stocktakes.create", role === "admin" || role === "manager" || role === "warehouse");
   // التسوية المضمّنة سطر-بسطر للمدير فقط — المسار المعتمد للجميع صار جلسة جرد موثّقة.
-  const canInlineAdjust = role === "admin" || role === "manager";
-  const canCostWaves = me.data
+  const canInlineAdjust = canLifecycleOperation(me.data, "inventory.adjust", role === "admin" || role === "manager");
+  const legacyCostWaves = me.data
     ? moduleAccessAllowed(
         me.data.role,
         (me.data.permissionsOverride ?? null) as PermissionMap | null,
@@ -79,6 +80,7 @@ export default function Inventory() {
         ["manager"],
       )
     : false;
+  const canCostWaves = canLifecycleOperation(me.data, "inventory.costWaves", legacyCostWaves);
   const myBranch = me.data?.branchId ?? 1;
 
   const branches = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
@@ -206,7 +208,14 @@ export default function Inventory() {
   });
 
   // اعتماد/رفض طلبات التسوية المعلَّقة (للمدير/الأدمن — على طلبات غيره، SOD-04).
-  const canApprove = role === "admin" || role === "manager";
+  const legacyApprove = role === "admin" || role === "manager";
+  const canApprove = canLifecycleOperation(me.data, "inventory.pendingAdjustments", legacyApprove);
+  const canApproveAdjustment = canLifecycleOperation(me.data, "inventory.approveAdjustment", legacyApprove);
+  const canRejectAdjustment = canLifecycleOperation(me.data, "inventory.rejectAdjustment", legacyApprove);
+  const canReadRevaluations = canLifecycleOperation(me.data, "inventory.costRevaluations", legacyApprove);
+  const canRequestRevaluation = canLifecycleOperation(me.data, "inventory.requestCostRevaluation", legacyApprove);
+  const canApproveRevaluation = canLifecycleOperation(me.data, "inventory.approveCostRevaluation", legacyApprove);
+  const canRejectRevaluation = canLifecycleOperation(me.data, "inventory.rejectCostRevaluation", legacyApprove);
   const pending = trpc.inventory.pendingAdjustments.useQuery(
     { status: "PENDING_APPROVAL" },
     { enabled: canApprove && me.data != null },
@@ -259,7 +268,7 @@ export default function Inventory() {
   const [revalTab, setRevalTab] = useState<"PENDING_APPROVAL" | "APPROVED" | "REJECTED">("PENDING_APPROVAL");
   const pendingRevals = trpc.inventory.costRevaluations.useQuery(
     { status: revalTab },
-    { enabled: canApprove && me.data != null },
+    { enabled: canReadRevaluations && me.data != null },
   );
   const revalRows = pendingRevals.data ?? [];
   const requestReval = trpc.inventory.requestCostRevaluation.useMutation({
@@ -420,7 +429,7 @@ export default function Inventory() {
   const outOfStockCount = useMemo(() => rows.filter((r) => Number(r.quantity ?? 0) <= 0).length, [rows]);
   const lowStockRows = useMemo(() => rows.filter((r) => r.isLow || Number(r.quantity ?? 0) <= 0), [rows]);
   const lowVariantIds = useMemo(() => lowStockRows.map((r) => r.variantId), [lowStockRows]);
-  const canManagePurchases = role === "admin" || role === "manager" || role === "purchasing";
+  const canManagePurchases = canLifecycleOperation(me.data, "purchases.createOrder", role === "admin" || role === "manager" || role === "purchasing");
   /**
    * عدّاد الفلاتر المفعّلة — **بلا حقل البحث** (اصطلاح ListToolbar القائم) كي لا يقفز
    * العدّاد مع كل حرف يكتبه الموظّف. زرّ التصفير في FilterShell يظهر تبعاً له.
@@ -571,7 +580,7 @@ export default function Inventory() {
                 label: "جلسة جرد للمنتج",
                 hidden: !canAdjust,
                 href: `/stocktakes/new?variants=${r.variantId}&name=${encodeURIComponent(`جرد تحقّق — ${r.productName}`)}`,
-                gate: { roles: ["warehouse", "manager"], module: "inventory", level: "FULL" },
+                gate: { roles: ["warehouse", "manager"], module: "inventory", level: "FULL", operations: ["stocktakes.create"] },
               },
               {
                 key: "adjust",
@@ -579,15 +588,15 @@ export default function Inventory() {
                 label: "تسوية مباشرة (مدير)",
                 hidden: !canInlineAdjust,
                 onSelect: () => startAdjust(r),
-                gate: { roles: ["manager"], module: "inventory", level: "FULL" },
+                gate: { roles: ["manager"], module: "inventory", level: "FULL", operations: ["inventory.adjust"] },
               },
               {
                 key: "revalue",
                 kind: "edit",
                 label: "إعادة تقييم التكلفة",
-                hidden: !canInlineAdjust,
+                hidden: !canRequestRevaluation,
                 onSelect: () => startReval(r),
-                gate: { roles: ["manager"], module: "inventory", level: "FULL" },
+                gate: { roles: ["manager"], module: "inventory", level: "FULL", operations: ["inventory.requestCostRevaluation"] },
               },
               {
                 key: "transfer",
@@ -844,10 +853,10 @@ export default function Inventory() {
                     if (mine) return <span className="text-xs text-muted-foreground">أنت المُنشئ — يعتمده غيرك (فصل مهام)</span>;
                     return (
                       <div className="flex items-center justify-center gap-2">
-                        <Button size="sm" onClick={() => approveFlow(r.id)} disabled={approveAdj.isPending}>
+                        <Button size="sm" onClick={() => approveFlow(r.id)} disabled={!canApproveAdjustment || approveAdj.isPending}>
                           <CheckCircle2 aria-hidden className="size-4 ml-1" /> اعتماد
                         </Button>
-                        <Button size="sm" variant="outline" onClick={() => rejectFlow(r.id)} disabled={rejectAdj.isPending}>
+                        <Button size="sm" variant="outline" onClick={() => rejectFlow(r.id)} disabled={!canRejectAdjustment || rejectAdj.isPending}>
                           <XCircle aria-hidden className="size-4 ml-1" /> رفض
                         </Button>
                       </div>
@@ -885,7 +894,7 @@ export default function Inventory() {
         </DialogContent>
       </Dialog>
 
-      {canApprove && (revalRows.length > 0 || revalTab !== "PENDING_APPROVAL") && (
+      {canReadRevaluations && (revalRows.length > 0 || revalTab !== "PENDING_APPROVAL") && (
         <Card>
           <CardHeader className="flex-row items-center justify-between">
             <CardTitle className="text-base">
@@ -957,14 +966,14 @@ export default function Inventory() {
                     }
                     return (
                       <div className="flex items-center justify-center gap-2">
-                        <Button size="sm" onClick={() => approveRevalFlow(r.id, r.expectedValueDelta)} disabled={approveReval.isPending}>
+                        <Button size="sm" onClick={() => approveRevalFlow(r.id, r.expectedValueDelta)} disabled={!canApproveRevaluation || approveReval.isPending}>
                           <CheckCircle2 aria-hidden className="size-4 ml-1" /> اعتماد
                         </Button>
                         <Button
                           size="sm"
                           variant="outline"
                           onClick={() => { setRevalRejectReason(""); setRevalRejectTarget(r.id); }}
-                          disabled={rejectReval.isPending}
+                          disabled={!canRejectRevaluation || rejectReval.isPending}
                         >
                           <XCircle aria-hidden className="size-4 ml-1" /> رفض
                         </Button>

@@ -1,7 +1,7 @@
 /**
  * CancelDeliveryAssignmentSection - قسم إلغاء الإسناد والتوصيل بالباركود
  * يتيح مسح باركود الطلب أو الإرسالية (أو إدخال الرقم يدوياً)
- * وعرض تفاصيل الإسناد الحالية، ثم إلغاء الإسناد ذرياً عبر delivery.cancelAssignment
+ * وعرض تفاصيل الإسناد الحالية، ثم إلغاء الإسناد ذرياً أو تحويله لمندوب آخر مباشرة
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ScanLine } from "lucide-react";
@@ -68,8 +68,11 @@ export function CancelDeliveryAssignmentSection({
   const [isSearching, setIsSearching] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const pendingCancelRef = useRef<{ consignmentNumber: string; orderNumber: string } | null>(null);
+  const pendingReassignRef = useRef<{ consignmentNumber: string; partyName: string } | null>(null);
 
   const utils = trpc.useUtils();
+  const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { staleTime: 60_000 });
+  const allParties = partiesQ.data ?? [];
 
   const cancelAssignmentMut = trpc.delivery.cancelAssignment.useMutation({
     onSuccess: async () => {
@@ -98,9 +101,32 @@ export function CancelDeliveryAssignmentSection({
     },
   });
 
+  const reassignMut = trpc.delivery.reassignConsignment.useMutation({
+    onSuccess: async () => {
+      const { consignmentNumber = "", partyName = "" } = pendingReassignRef.current ?? {};
+      notify.ok(
+        `تم تحويل الإرسالية ${consignmentNumber} إلى ${partyName} بنجاح`,
+        "تم تحديث دفتر التوصيل وعُهدة المندوب الجديد أصولياً.",
+      );
+      pendingReassignRef.current = null;
+      await Promise.all([
+        utils.delivery.invalidate(),
+        utils.workOrders.invalidate(),
+        utils.sales.invalidate(),
+      ]);
+      setScannedOrder(null);
+      setBarcodeInput("");
+      setReason("");
+    },
+    onError: (e) => {
+      pendingReassignRef.current = null;
+      notify.err(e, "تعذّر تحويل الإرسالية للمندوب الجديد");
+    },
+  });
+
   const lookupOrder = useCallback(
     async (raw: string) => {
-      if (cancelAssignmentMut.isPending) return;
+      if (cancelAssignmentMut.isPending || reassignMut.isPending) return;
       const r = parseScan(raw);
       const orderNumber =
         r.type === "workOrder" || r.type === "invoice" || r.type === "consignment"
@@ -169,16 +195,16 @@ export function CancelDeliveryAssignmentSection({
         setIsSearching(false);
       }
     },
-    [cancelAssignmentMut.isPending, utils],
+    [cancelAssignmentMut.isPending, reassignMut.isPending, utils],
   );
 
   // استهلاك الباركود الخارجي الممرر من شاشة سير العمل
   useEffect(() => {
-    if (scannedBarcode && !cancelAssignmentMut.isPending) {
+    if (scannedBarcode && !cancelAssignmentMut.isPending && !reassignMut.isPending) {
       void lookupOrder(scannedBarcode);
       onBarcodeConsumed?.();
     }
-  }, [scannedBarcode, cancelAssignmentMut.isPending, lookupOrder, onBarcodeConsumed]);
+  }, [scannedBarcode, cancelAssignmentMut.isPending, reassignMut.isPending, lookupOrder, onBarcodeConsumed]);
 
   // التركيز التلقائي على حقل البحث عند تفريغ النتيجة
   useEffect(() => {
@@ -188,7 +214,7 @@ export function CancelDeliveryAssignmentSection({
   }, [scannedOrder]);
 
   async function handleConfirmCancel() {
-    if (!scannedOrder?.activeConsignment || cancelAssignmentMut.isPending) return;
+    if (!scannedOrder?.activeConsignment || cancelAssignmentMut.isPending || reassignMut.isPending) return;
     if (reason.trim().length < 3) {
       notify.err("يرجى كتابة سبب الإلغاء (٣ أحرف على الأقل)");
       return;
@@ -212,8 +238,32 @@ export function CancelDeliveryAssignmentSection({
     });
   }
 
+  async function handleConfirmReassign(targetPartyId: number) {
+    if (!scannedOrder?.activeConsignment || cancelAssignmentMut.isPending || reassignMut.isPending) return;
+    const cn = scannedOrder.activeConsignment;
+    const targetParty = allParties.find((p) => p.id === targetPartyId);
+    if (!targetParty) {
+      notify.err("المندوب المختار غير صالح");
+      return;
+    }
+
+    const ok = await confirm({
+      title: "تأكيد تحويل الإرسالية",
+      description: `سيتم تحويل الإرسالية #${cn.consignmentNumber} من ${cn.partyName ?? "المندوب السابق"} إلى ${targetParty.name}.\nالمبلغ المطلوب (COD): ${fmt(cn.codAmount)} د.ع`,
+      confirmText: "تأكيد التحويل",
+    });
+    if (!ok) return;
+
+    pendingReassignRef.current = { consignmentNumber: cn.consignmentNumber, partyName: targetParty.name };
+    reassignMut.mutate({
+      consignmentId: cn.id,
+      partyId: targetPartyId,
+      clientRequestId: crypto.randomUUID(),
+    });
+  }
+
   function handleReset() {
-    if (cancelAssignmentMut.isPending) return;
+    if (cancelAssignmentMut.isPending || reassignMut.isPending) return;
     setScannedOrder(null);
     setBarcodeInput("");
     setReason("");
@@ -259,12 +309,14 @@ export function CancelDeliveryAssignmentSection({
         <CancelAssignmentOrderCard
           scannedOrder={scannedOrder}
           branchId={branchId}
+          allParties={allParties}
           reason={reason}
           onReasonChange={setReason}
           onConfirmCancel={() => void handleConfirmCancel()}
+          onConfirmReassign={(targetId) => void handleConfirmReassign(targetId)}
           onReset={handleReset}
           onNavigateToDispatch={onNavigateToDispatch}
-          isPending={cancelAssignmentMut.isPending}
+          isPending={cancelAssignmentMut.isPending || reassignMut.isPending}
         />
       )}
     </div>

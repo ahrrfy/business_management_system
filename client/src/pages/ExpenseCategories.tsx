@@ -15,6 +15,7 @@ import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { useMemo, useState } from "react";
 import { Edit3, Info, Plus, RotateCcw, Wrench } from "lucide-react";
 import { ListToolbar, RowActions } from "@/components/list";
@@ -34,12 +35,12 @@ type Row = RouterOutputs["expenses"]["categories"]["list"][number];
 
 export default function ExpenseCategories() {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
   const list = trpc.expenses.categories.list.useQuery({
     includeInactive: true,
-  });
-  const unclassified = trpc.expenses.categories.unclassifiedCount.useQuery();
-  const me = trpc.auth.me.useQuery();
-  const canManage =
+  }, { enabled: treasuryOperationAllowed(me.data, "expenses.categories.list", true) });
+  const unclassified = trpc.expenses.categories.unclassifiedCount.useQuery(undefined, { enabled: treasuryOperationAllowed(me.data, "expenses.categories.unclassifiedCount", true) });
+  const legacyCanManage =
     !!me.data?.role &&
     moduleAccessAllowed(
       me.data.role as RoleKey,
@@ -48,6 +49,8 @@ export default function ExpenseCategories() {
       "FULL",
       ["manager", "accountant"],
     );
+  const can = (path: string) => treasuryOperationAllowed(me.data, `expenses.categories.${path}`, legacyCanManage);
+  const canManage = ["create", "update", "setActive", "restoreDefaults", "backfill"].some(can);
 
   const [query, setQuery] = useState("");
   const rows = list.data ?? [];
@@ -140,6 +143,7 @@ export default function ExpenseCategories() {
   }
 
   function submitForm() {
+    if (!can(editing ? "update" : "create")) return;
     const trimmed = name.trim();
     if (!trimmed) {
       notify.err("الاسم مطلوب");
@@ -164,6 +168,7 @@ export default function ExpenseCategories() {
   }
 
   async function toggleActive(r: Row) {
+    if (!can("setActive")) return;
     const ok = await confirm({
       variant: r.isActive ? "warning" : "info",
       title: r.isActive ? "تعطيل الفئة" : "تفعيل الفئة",
@@ -177,6 +182,7 @@ export default function ExpenseCategories() {
   }
 
   async function confirmRestore() {
+    if (!can("restoreDefaults")) return;
     const ok = await confirm({
       variant: "info",
       title: "استعادة الفئات الافتراضية",
@@ -233,7 +239,7 @@ export default function ExpenseCategories() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={restoreDefaults.isPending}
+                disabled={!can("restoreDefaults") || restoreDefaults.isPending}
                 onClick={() => void confirmRestore()}
               >
                 <RotateCcw aria-hidden className="size-4 ms-1" />
@@ -246,6 +252,7 @@ export default function ExpenseCategories() {
                   resetForm();
                   setShowForm(true);
                 }}
+                disabled={!can("create")}
                 className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)]"
               >
                 <Plus aria-hidden className="size-4 ms-1" /> فئة جديدة
@@ -285,7 +292,7 @@ export default function ExpenseCategories() {
             <Button
               size="sm"
               variant="outline"
-              disabled={backfill.isPending}
+              disabled={!can("backfill") || backfill.isPending}
               onClick={() => backfill.mutate()}
             >
               {backfill.isPending ? "جارٍ التصنيف…" : "أسنِدها لفئة دلوها"}
@@ -358,7 +365,7 @@ export default function ExpenseCategories() {
             <div className="md:col-span-2 flex gap-2">
               <Button
                 onClick={submitForm}
-                disabled={create.isPending || update.isPending}
+                disabled={!can(editing ? "update" : "create") || create.isPending || update.isPending}
                 className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)]"
               >
                 {editing ? "حفظ التعديل" : "حفظ الفئة"}
@@ -537,6 +544,7 @@ export default function ExpenseCategories() {
                               icon: Edit3,
                               onSelect: () => startEdit(row.original),
                               gate: {
+                                operations: ["expenses.categories.update"],
                                 roles: ["manager", "accountant"],
                                 module: "expenses",
                                 level: "FULL",
@@ -550,6 +558,7 @@ export default function ExpenseCategories() {
                               variant: row.original.isActive ? "destructive" : "default",
                               onSelect: () => void toggleActive(row.original),
                               gate: {
+                                operations: ["expenses.categories.setActive"],
                                 roles: ["manager", "accountant"],
                                 module: "expenses",
                                 level: "FULL",

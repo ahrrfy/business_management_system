@@ -1,3 +1,5 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
+import { hasOperationPolicy } from "@shared/operationPermissions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -45,12 +47,17 @@ export function StocktakeDetailDrawer({
   onClose,
   isManagerPlus,
 }: StocktakeDetailDrawerProps) {
+  const me = trpc.auth.me.useQuery();
+  const canRead = canLifecycleOperation(me.data, "stocktakes.get", true);
+  const canReview = canLifecycleOperation(me.data, "stocktakes.review", !!isManagerPlus);
+  const canReport = canLifecycleOperation(me.data, "stocktakes.report", !!isManagerPlus);
+  const canShowGovernance = me.data && hasOperationPolicy(me.data) ? canRead : isManagerPlus;
   const query = trpc.stocktakes.get.useQuery(
     { sessionId: sessionId! },
-    { enabled: !!sessionId },
+    { enabled: !!sessionId && canRead },
   );
 
-  const data = query.data;
+  const data = canRead ? query.data : undefined;
   const session = data?.session;
   const assignments = data?.assignments ?? [];
   const progress = data?.progress ?? { total: 0, counted: 0 };
@@ -89,7 +96,7 @@ export function StocktakeDetailDrawer({
         </SheetHeader>
 
         <div className="p-6 space-y-6 flex-1">
-          {query.isLoading ? (
+          {me.isLoading ? <LoadingState /> : !canRead ? <p className="text-sm text-muted-foreground">يتطلب العرض تفويض تفاصيل الجرد.</p> : query.isLoading ? (
             <LoadingState message="جارٍ تحميل تفاصيل الجلسة..." />
           ) : query.isError ? (
             <ErrorState
@@ -239,7 +246,7 @@ export function StocktakeDetailDrawer({
               </div>
 
               {/* معايير الحوكمة وحدود الفروقات */}
-              {isManagerPlus && (
+              {canShowGovernance && (
                 <div className="border rounded-lg p-3.5 bg-muted/20 space-y-2 text-xs">
                   <h4 className="font-semibold flex items-center gap-1.5 text-foreground">
                     <ShieldAlert className="h-3.5 w-3.5 text-primary" />
@@ -311,7 +318,7 @@ export function StocktakeDetailDrawer({
               </Link>
             )}
 
-            {session.status === "REVIEW" && isManagerPlus && (
+            {session.status === "REVIEW" && canReview && (
               <Link href={`/stocktakes/${session.id}/review`}>
                 <Button size="sm" className="gap-1.5">
                   <FileText className="h-3.5 w-3.5" />
@@ -320,7 +327,7 @@ export function StocktakeDetailDrawer({
               </Link>
             )}
 
-            {session.status === "APPROVED" && isManagerPlus && (
+            {session.status === "APPROVED" && canReport && (
               <Link href={`/stocktakes/${session.id}/report`}>
                 <Button size="sm" className="gap-1.5">
                   <FileText className="h-3.5 w-3.5" />

@@ -1,4 +1,5 @@
 import { Card } from "@/components/ui/card";
+import { LiveValue } from "@/components/financial/LiveValue";
 import { fmtAr } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { Building2, Wallet, Vault } from "lucide-react";
@@ -58,7 +59,7 @@ export function BranchBalanceCard({
             <span className="text-xs text-muted-foreground">نقد الدرج</span>
           </div>
           <div className="text-xl font-bold tabular-nums mb-1" dir="ltr">
-            {fmtAr(drawer.expected)}
+            <LiveValue value={fmtAr(drawer.expected)} />
           </div>
           <div className="text-[11px] text-muted-foreground">
             افتتاحي: <span dir="ltr" className="tabular-nums">{fmtAr(drawer.opening)}</span>
@@ -75,7 +76,7 @@ export function BranchBalanceCard({
               <span className="text-xs text-muted-foreground">نقد الخزينة</span>
             </div>
             <div className="text-xl font-bold tabular-nums mb-1" dir="ltr">
-              {fmtAr(treasury.balance)}
+              <LiveValue value={fmtAr(treasury.balance)} />
             </div>
             <div className="text-[11px] text-muted-foreground">رصيد تراكمي</div>
           </div>

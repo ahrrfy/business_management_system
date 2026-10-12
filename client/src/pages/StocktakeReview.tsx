@@ -1,3 +1,4 @@
+import { stocktakeOperationAccess } from "@/lib/stocktakeOperationAccess";
 /**
  * مراجعة وتدقيق واعتماد الجرد — /stocktakes/:id/review (الشاشة الأهم في الدورة)
  * مرجع التصميم: jrd-review.jsx — hi-fi بمكونات النظام.
@@ -214,8 +215,7 @@ export default function StocktakeReview() {
   const utils = trpc.useUtils();
 
   const me = trpc.auth.me.useQuery();
-  const role = me.data?.role ?? "";
-  const isManager = role === "admin" || role === "manager";
+  const { canOperation, role, canReview } = stocktakeOperationAccess(me.data);
 
   /* ───── حالة الشاشة ───── */
   const [autoAdjust, setAutoAdjust] = useState(true); // التصحيح الآلي للحركات اللاحقة (افتراضي ON)
@@ -250,8 +250,9 @@ export default function StocktakeReview() {
   // autoAdjust جزء من مفتاح الاستعلام ⇒ تبديله يعيد الاستعلام بالبنية نفسها (العقد §٤).
   const review = trpc.stocktakes.review.useQuery(
     { sessionId, autoAdjust },
-    { enabled: idOk && isManager },
+    { enabled: (idOk && canReview) && canOperation("stocktakes.review") },
   );
+  const reviewData = canOperation("stocktakes.review") ? review.data : undefined;
 
   /* ───── الطفرات ───── */
   const invalidate = async () =>
@@ -377,15 +378,15 @@ export default function StocktakeReview() {
         onRetry={() => void me.refetch()}
       />
     );
-  if (me.data && !isManager)
+  if (me.data && !canReview)
     return (
       <div className="mx-auto max-w-lg space-y-4 p-10 text-center">
         <div className="mx-auto grid size-16 place-items-center rounded-full bg-muted text-muted-foreground">
           <Lock aria-hidden className="size-8" />
         </div>
-        <p className="font-bold">مراجعة الجرد واعتماده صلاحية مشرف فأعلى</p>
+        <p className="font-bold">يتطلب عرض المراجعة تفويض مراجعة الجرد</p>
         <p className="text-sm text-muted-foreground">
-          قيم التكلفة وقرارات التسوية محجوبة عن دورك في الخادم. يمكنك متابعة
+          لم يمنحك الحساب صلاحية عرض المراجعة. يمكنك متابعة
           تقدم العدّ وطلب إعادة العدّ من شاشة المتابعة.
         </p>
         <Link href={`/stocktakes/${sessionId}`}>
@@ -409,7 +410,7 @@ export default function StocktakeReview() {
         </Link>
       </div>
     );
-  if (!review.data)
+  if (!reviewData)
     return (
       <div className="p-10 text-center text-muted-foreground">
         الجلسة غير موجودة.
@@ -424,7 +425,7 @@ export default function StocktakeReview() {
     ledgerPreview,
     valuationIntegrity,
     countIntegrity,
-  } = review.data;
+  } = reviewData;
   const isOpening = s.sessionType === "OPENING";
   const hasMissingBaseCost = valuationIntegrity.rows.some(
     (row) => row.reason === "ZERO_BASE_COST",
@@ -578,7 +579,7 @@ export default function StocktakeReview() {
         "سيُقفل عدّ هذه المنتجات إدارياً كي لا يتغير بعد المراجعة، بينما يستمر العمال في عدّ المنتجات المتبقية. لا تُرحّل حركة مخزون أو قيد مالي حتى الاعتماد النهائي للجلسة.",
       confirmText: "اعتماد المحدد ومتابعة الجرد",
     });
-    if (ok) approveItems.mutate({ sessionId, variantIds: ids });
+    if (ok) (canOperation("stocktakes.approveItems") && approveItems.mutate({ sessionId, variantIds: ids }));
   }
 
   function submitReopen() {
@@ -588,11 +589,11 @@ export default function StocktakeReview() {
       notify.warn("اكتب سبب إعادة الفتح (3 أحرف على الأقل)");
       return;
     }
-    reopenItemReview.mutate({
+    (canOperation("stocktakes.reopenItemReview") && reopenItemReview.mutate({
       sessionId,
       variantId: reopenFor.variantId,
       reason,
-    });
+    }));
   }
 
   /* ───── زر الاعتماد (التدفق المزدوج) ───── */
@@ -614,6 +615,7 @@ export default function StocktakeReview() {
     approveLabel = "التوقيع الثاني والاعتماد النهائي";
   }
   const approveDisabled =
+    !canOperation(approveMode === "first" ? "stocktakes.firstSign" : "stocktakes.approve") ||
     !isReview ||
     !barriers.canApprove ||
     approveMode === "wait" ||
@@ -672,15 +674,16 @@ export default function StocktakeReview() {
 
   /* ───── أفعال ───── */
   function onReasonChange(r: Row, value: Reason) {
+    if (!canOperation("stocktakes.decide")) return;
     setReasonSel((prev) => ({ ...prev, [r.variantId]: value }));
     if (r.decision) {
       // تحديث سبب قرار قائم بإعادة استدعاء decide بنفس الفعل (upsert في الخادم).
-      decide.mutate({
+      (canOperation("stocktakes.decide") && decide.mutate({
         sessionId,
         variantId: r.variantId,
         action: r.decision.action,
         reason: value,
-      });
+      }));
     } else if (
       r.diff != null &&
       r.diff !== 0 &&
@@ -689,21 +692,21 @@ export default function StocktakeReview() {
     ) {
       // ضمن الحدّ: تثبيت التصنيف فوراً كقرار تسوية صريح — نفس أثر التسوية التلقائية مع حفظ السبب
       // (وإلا ضاع السبب وسُجِّل «غير محدد» في القرار التلقائي عند الاعتماد).
-      decide.mutate({
+      (canOperation("stocktakes.decide") && decide.mutate({
         sessionId,
         variantId: r.variantId,
         action: "ADJUST",
         reason: value,
-      });
+      }));
     }
   }
   function onDecide(r: Row, action: "ADJUST" | "KEEP") {
-    decide.mutate({
+    (canOperation("stocktakes.decide") && decide.mutate({
       sessionId,
       variantId: r.variantId,
       action,
       reason: effReason(r),
-    });
+    }));
   }
   function openRecount(r: Row) {
     setRecountReason("");
@@ -721,13 +724,14 @@ export default function StocktakeReview() {
       );
       return;
     }
-    requestRecount.mutate({
+    (canOperation("stocktakes.requestRecount") && requestRecount.mutate({
       sessionId,
       variantId: recountFor.variantId,
       reason,
-    });
+    }));
   }
   async function onApproveClick() {
+    if (approveDisabled) return;
     if (approveMode === "first") {
       if (
         !(await confirm({
@@ -738,7 +742,7 @@ export default function StocktakeReview() {
         }))
       )
         return;
-      firstSign.mutate({ sessionId });
+      (canOperation("stocktakes.firstSign") && firstSign.mutate({ sessionId }));
     } else setConfirmOpen(true);
   }
 
@@ -748,11 +752,11 @@ export default function StocktakeReview() {
       notify.warn("اكتب سبباً موثقاً لا يقل عن 10 أحرف");
       return;
     }
-    refreshOpeningValuation.mutate({
+    (canOperation("stocktakes.refreshOpeningValuationBasis") && refreshOpeningValuation.mutate({
       sessionId,
       expectedDigest: valuationIntegrity.digest,
       reason,
-    });
+    }));
   }
 
   /** تصدير صفوف الفروقات إلى Excel (المعروضة بعد الفلتر/البحث) — للمدير+ فقط. */
@@ -1362,7 +1366,7 @@ export default function StocktakeReview() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={shownReady.length === 0 || approveItems.isPending}
+                disabled={!canOperation("stocktakes.approveItems") || (shownReady.length === 0 || approveItems.isPending)}
                 onClick={selectShownReady}
               >
                 تحديد الجاهز المعروض ({nf(Math.min(shownReady.length, 500))})
@@ -1370,7 +1374,7 @@ export default function StocktakeReview() {
               <Button
                 size="sm"
                 className="bg-[var(--stock-ok)] text-white hover:opacity-90"
-                disabled={selectedReady.length === 0 || approveItems.isPending}
+                disabled={!canOperation("stocktakes.approveItems") || (selectedReady.length === 0 || approveItems.isPending)}
                 onClick={() => void approveSelectedItems()}
               >
                 {approveItems.isPending
@@ -1485,7 +1489,7 @@ export default function StocktakeReview() {
                             )
                           }
                           className="size-4 accent-[var(--stock-ok)]"
-                          aria-label={`تحديد ${r.productName} للاعتماد المرحلي`}
+                          aria-label={`تحديد ${r.productName} للاعتماد المرحلي`} disabled={!canOperation("stocktakes.approveItems")}
                         />
                       ) : (
                         <span className="text-muted-foreground">—</span>
@@ -1708,7 +1712,7 @@ export default function StocktakeReview() {
                                 label: variantDisplayName(r),
                               });
                               setReopenReason("");
-                            }}
+                            }} disabled={!canOperation("stocktakes.reopenItemReview")}
                           >
                             إلغاء الاعتماد
                           </Button>
@@ -1743,7 +1747,7 @@ export default function StocktakeReview() {
                           size="sm"
                           variant="outline"
                           className="text-[var(--sem-neg)]"
-                          disabled={!isOperational || !!r.reviewApproved}
+                          disabled={!canOperation("stocktakes.resolveConflict") || (!isOperational || !!r.reviewApproved)}
                           onClick={() => setConflictFor(r.variantId)}
                         >
                           <Scale aria-hidden className="size-4" /> الفصل في
@@ -1780,7 +1784,7 @@ export default function StocktakeReview() {
                                     size="sm"
                                     variant="ghost"
                                     className="h-6 px-2 text-[11px]"
-                                    disabled={decide.isPending}
+                                    disabled={!canOperation("stocktakes.decide") || (decide.isPending)}
                                     title="تبديل القرار"
                                     onClick={() =>
                                       onDecide(
@@ -1806,7 +1810,7 @@ export default function StocktakeReview() {
                                         variant="ghost"
                                         className="h-6 px-2 text-[11px] text-violet-700"
                                         title="طلب إعادة عدّ (سبب إلزامي) — إلزاميّ فوق الحدّ"
-                                        onClick={() => openRecount(r)}
+                                        onClick={() => openRecount(r)} disabled={!canOperation("stocktakes.requestRecount")}
                                       >
                                         <RefreshCw aria-hidden className="size-3" />{" "}
                                         إعادة عدّ
@@ -1827,7 +1831,7 @@ export default function StocktakeReview() {
                                     size="sm"
                                     variant="ghost"
                                     className="h-6 px-2 text-[11px]"
-                                    disabled={decide.isPending}
+                                    disabled={!canOperation("stocktakes.decide") || (decide.isPending)}
                                     title="تجاهل العدّ وإبقاء الرصيد الدفتري"
                                     onClick={() => onDecide(r, "KEEP")}
                                   >
@@ -1838,7 +1842,7 @@ export default function StocktakeReview() {
                                     variant="ghost"
                                     className="h-6 px-2 text-[11px] text-violet-700"
                                     title="طلب إعادة عدّ (سبب إلزامي)"
-                                    onClick={() => openRecount(r)}
+                                    onClick={() => openRecount(r)} disabled={!canOperation("stocktakes.requestRecount")}
                                   >
                                     <RefreshCw aria-hidden className="size-3" />{" "}
                                     إعادة عدّ
@@ -1851,7 +1855,7 @@ export default function StocktakeReview() {
                               <Button
                                 size="sm"
                                 variant="outline"
-                                disabled={decide.isPending}
+                                disabled={!canOperation("stocktakes.decide") || (decide.isPending)}
                                 title="اعتماد الكمية المعدودة وتسوية الفرق"
                                 onClick={() => onDecide(r, "ADJUST")}
                               >
@@ -1860,7 +1864,7 @@ export default function StocktakeReview() {
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                disabled={decide.isPending}
+                                disabled={!canOperation("stocktakes.decide") || (decide.isPending)}
                                 title="تجاهل العدّ وإبقاء الرصيد الدفتري"
                                 onClick={() => onDecide(r, "KEEP")}
                               >
@@ -1871,7 +1875,7 @@ export default function StocktakeReview() {
                                 variant="ghost"
                                 className="text-violet-700"
                                 title="طلب إعادة عدّ (سبب إلزامي)"
-                                onClick={() => openRecount(r)}
+                                onClick={() => openRecount(r)} disabled={!canOperation("stocktakes.requestRecount")}
                               >
                                 <RefreshCw aria-hidden className="size-4" />{" "}
                                 إعادة عدّ
@@ -1886,9 +1890,9 @@ export default function StocktakeReview() {
                           <AppSelect
                             value={reason}
                             disabled={
-                              !isOperational ||
+                              !canOperation("stocktakes.decide") || (!isOperational ||
                               !!r.reviewApproved ||
-                              decide.isPending
+                              decide.isPending)
                             }
                             onValueChange={(v) => onReasonChange(r, v as Reason)}
                             title="سبب الفرق — يُسجَّل في تقرير الانكماش"
@@ -1992,16 +1996,16 @@ export default function StocktakeReview() {
                 <Button
                   variant="outline"
                   disabled={
-                    resolveConflict.isPending ||
+                    !canOperation("stocktakes.resolveConflict") || (resolveConflict.isPending ||
                     !isOperational ||
-                    !!conflictRow.reviewApproved
+                    !!conflictRow.reviewApproved)
                   }
                   onClick={() =>
-                    resolveConflict.mutate({
+                    (canOperation("stocktakes.resolveConflict") && resolveConflict.mutate({
                       sessionId,
                       variantId: conflictRow.variantId,
                       pick: "FIRST",
-                    })
+                    }))
                   }
                 >
                   اعتماد عدّ {conflictRow.conflict.by1}
@@ -2009,16 +2013,16 @@ export default function StocktakeReview() {
                 <Button
                   variant="outline"
                   disabled={
-                    resolveConflict.isPending ||
+                    !canOperation("stocktakes.resolveConflict") || (resolveConflict.isPending ||
                     !isOperational ||
-                    !!conflictRow.reviewApproved
+                    !!conflictRow.reviewApproved)
                   }
                   onClick={() =>
-                    resolveConflict.mutate({
+                    (canOperation("stocktakes.resolveConflict") && resolveConflict.mutate({
                       sessionId,
                       variantId: conflictRow.variantId,
                       pick: "VERIFY",
-                    })
+                    }))
                   }
                 >
                   اعتماد عدّ {conflictRow.conflict.by2}
@@ -2027,7 +2031,7 @@ export default function StocktakeReview() {
               <Button
                 variant="ghost"
                 className="w-full text-violet-700"
-                disabled={!isOperational || !!conflictRow.reviewApproved}
+                disabled={!canOperation("stocktakes.requestRecount") || !isOperational || !!conflictRow.reviewApproved}
                 onClick={() => {
                   const r = conflictRow;
                   setConflictFor(null);
@@ -2079,7 +2083,7 @@ export default function StocktakeReview() {
             <Button
               variant="destructive"
               onClick={submitReopen}
-              disabled={reopenItemReview.isPending}
+              disabled={!canOperation("stocktakes.reopenItemReview") || (reopenItemReview.isPending)}
             >
               {reopenItemReview.isPending
                 ? "جارٍ إعادة الفتح…"
@@ -2119,7 +2123,7 @@ export default function StocktakeReview() {
             <Button variant="ghost" onClick={() => setRecountFor(null)}>
               إلغاء
             </Button>
-            <Button onClick={submitRecount} disabled={requestRecount.isPending}>
+            <Button onClick={submitRecount} disabled={!canOperation("stocktakes.requestRecount") || (requestRecount.isPending)}>
               {requestRecount.isPending
                 ? ACTION_LABELS.sending
                 : "إرسال الطلب للعامل"}
@@ -2203,8 +2207,8 @@ export default function StocktakeReview() {
             <Button
               variant="destructive"
               disabled={
-                valuationRefreshReason.trim().length < 10 ||
-                refreshOpeningValuation.isPending
+                !canOperation("stocktakes.refreshOpeningValuationBasis") || (valuationRefreshReason.trim().length < 10 ||
+                refreshOpeningValuation.isPending)
               }
               onClick={submitValuationRefresh}
             >
@@ -2360,8 +2364,8 @@ export default function StocktakeReview() {
             </Button>
             <Button
               className="bg-[var(--money-positive)] text-white hover:opacity-90"
-              disabled={approve.isPending}
-              onClick={() => approve.mutate({ sessionId })}
+              disabled={!canOperation("stocktakes.approve") || (approve.isPending)}
+              onClick={() => (canOperation("stocktakes.approve") && approve.mutate({ sessionId }))}
             >
               {approve.isPending
                 ? "جارٍ التنفيذ…"

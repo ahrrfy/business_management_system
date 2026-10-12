@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -25,18 +26,19 @@ import { selectClsSm } from "@/lib/ui/formStyles";
 type Row = RouterOutputs["employees"]["list"]["rows"][number];
 
 export default function Employees() {
+  const { can } = useCatalogPeopleOperationAccess();
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   // مرآة بوّابة الخادم: `employees.create` = `hrWrite` (hr:FULL) — server/routers/employeeRouter.ts:154.
   // إخفاء زرّ «موظف جديد» على من لا يستطيع الحفظ (بدل رابطٍ يفتح ثمّ يُرفض عند submit).
   const me = trpc.auth.me.useQuery();
-  const canCreate = !!me.data?.role && moduleAccessAllowed(
+  const canCreate = can("employees.create", !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
     "hr",
     "FULL",
     ["manager"],
-  );
+  ));
   // فلاتر محفوظة في querystring (تعيش مع فتح بطاقة موظف والرجوع، وتُشارَك رابطاً).
   const [f, setF, resetF] = useUrlFilters({
     q: "", department: "", branchId: "", status: "", includeInactive: "",
@@ -44,7 +46,7 @@ export default function Employees() {
   const [page, setPage] = useState(0);
   const limit = 50;
 
-  const opts = trpc.employees.formOptions.useQuery();
+  const opts = trpc.employees.formOptions.useQuery(undefined, { enabled: can("employees.formOptions") });
   /**
    * «منتهي الخدمة» موظفٌ isActive=false (setEmploymentStatus يطفئه دائماً) — والقائمة الافتراضية
    * تستثني غير النشطين. فلترةُ هذه الحالة بلا تفعيل includeInactive تُعيد صفراً كاذباً دائماً
@@ -73,7 +75,7 @@ export default function Employees() {
     () => ({ ...filterInput, limit, offset: page * limit }),
     [filterInput, page],
   );
-  const list = trpc.employees.list.useQuery(input);
+  const list = trpc.employees.list.useQuery(input, { enabled: can("employees.list") });
 
   const rows = list.data?.rows ?? [];
   const total = list.data?.total ?? 0;

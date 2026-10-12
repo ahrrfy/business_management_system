@@ -22,6 +22,7 @@ import { sourceTypeLabel } from "@/lib/labels";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { QuickSalesPaymentDialog } from "./QuickSalesPaymentDialog";
 import { hasModuleAccess } from "@shared/permissions";
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 
 export interface InvoiceDetailDrawerProps {
   invoiceId: number | null;
@@ -65,7 +66,7 @@ export function InvoiceDetailDrawer({
   );
 
   const canReturn =
-    canWriteSales &&
+    lifecycleActionAllowed(me.data, "returns.create", canWriteSales) &&
     inv &&
     inv.status !== "CANCELLED" &&
     inv.status !== "RETURNED" &&
@@ -73,7 +74,7 @@ export function InvoiceDetailDrawer({
     !isInvoiceFullyReturned;
 
   const canPay =
-    canWriteSales &&
+    lifecycleActionAllowed(me.data, "sales.pay", canWriteSales) &&
     inv &&
     inv.status !== "CANCELLED" &&
     inv.status !== "RETURNED" &&

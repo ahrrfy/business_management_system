@@ -7,8 +7,8 @@ import { useState } from "react";
 import { CopyButton } from "@/components/CopyButton";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { dashboardActionBranchId } from "@/lib/dashboardActionScope";
-import { APPLICATION_MODULES } from "@/lib/moduleRegistry";
-import { canSeeGate } from "@/lib/navVisibility";
+import { visibleApplicationModules } from "@/lib/moduleRegistry";
+import type { OperationPolicy } from "@shared/operationPermissions";
 import { resolveWorkspaceProfile, type WorkspaceNavItem } from "@/lib/workspaceProfiles";
 import { ROLE_LABEL } from "@/lib/roles";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -133,14 +133,14 @@ function SystemModulesPanel({
   role,
   permissionsOverride,
   branchScope,
+  operationPolicy,
 }: {
   role: RoleKey;
   permissionsOverride: PermissionMap | null;
   branchScope?: number;
+  operationPolicy?: OperationPolicy | null;
 }) {
-  const visibleModules = APPLICATION_MODULES.filter((module) =>
-    canSeeGate(module, role, permissionsOverride),
-  );
+  const visibleModules = visibleApplicationModules(role, permissionsOverride, operationPolicy);
 
   const shift = trpc.shifts.current.useQuery(
     { branchId: branchScope ?? 0 },
@@ -761,7 +761,7 @@ export default function Dashboard() {
 
   // ملف العمل هو الذي يختار المحطة. كاشير بلا محطة فعلية يسقط إلى اللوحة العامة الآمنة
   // بدلاً من افتراض محطة تجزئة أو استنتاج الاستقبال من صلاحية أخرى.
-  if (me.data.role === "cashier" && cashierStation && profile.defaultAction) {
+  if (me.data.role === "cashier" && !me.data.operationPolicyEnabled && !me.data.isOwner && cashierStation && profile.defaultAction) {
     return (
       <CashierHome
         station={cashierStation}
@@ -772,17 +772,23 @@ export default function Dashboard() {
   }
 
   const isAdmin = me.data.role === "admin";
+  const operationPolicy = me.data.operationPolicyEnabled && !me.data.isOwner ? me.data.resolvedOperationPolicy : null;
+  const allowedModules = operationPolicy ? visibleApplicationModules(me.data.role, null, operationPolicy) : null;
+  const primaryNav = allowedModules
+    ? profile.primaryNav.filter((item) => allowedModules.some((module) => item.activePath === module.href || item.activePath.startsWith(`${module.href}/`)))
+    : profile.primaryNav;
   const branchScope = isAdmin ? adminBranchScope : dashboardActionBranchId(me.data.branchId);
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.25 }} style={{ minHeight: "100vh", background: T.bg, direction: "rtl", fontFamily: "'Cairo', sans-serif", margin: "-24px" }}>
       <DashboardHeader branchScope={branchScope} isAdmin={isAdmin} onBranchScopeChange={setAdminBranchScope} />
       <SystemModulesPanel
-        role={me.data.role as RoleKey}
-        permissionsOverride={(me.data.permissionsOverride ?? null) as PermissionMap | null}
+        role={(me.data.isOwner ? "admin" : me.data.role) as RoleKey}
+        permissionsOverride={(me.data.isOwner ? null : me.data.permissionsOverride ?? null) as PermissionMap | null}
+        operationPolicy={operationPolicy}
         branchScope={branchScope}
       />
-      <MetricsBar branchScope={branchScope} primaryNav={profile.primaryNav} />
-      <MorningBrief branchScope={branchScope} isAdmin={isAdmin} primaryNav={profile.primaryNav} />
+      <MetricsBar branchScope={branchScope} primaryNav={primaryNav} />
+      <MorningBrief branchScope={branchScope} isAdmin={isAdmin} primaryNav={primaryNav} />
     </motion.div>
   );
 }

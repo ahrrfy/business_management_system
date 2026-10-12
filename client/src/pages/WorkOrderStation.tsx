@@ -20,10 +20,18 @@ import { normalizeSearchText } from "@shared/searchNormalize";
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { paymentMethodCompact } from "@shared/terms";
 import { printWoThermalFromCard, printWoShippingLabel } from "@/components/workOrders/workOrderTypes";
 import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 import { Package, Printer } from "lucide-react";
+import { useRealtimeEvent } from "@/lib/realtime";
+import {
+  REALTIME_EVENT_TYPES,
+  type WorkOrderClaimedPayload,
+  type WorkOrderCreatedPayload,
+  type WorkOrderStatusChangedPayload,
+} from "@shared/realtimeEvents";
 
 /**
  * محطة فني التنفيذ — `/work-orders/station` (دور print_operator + الكاشير/المدير).
@@ -177,8 +185,14 @@ function OrderRow({ o, active, onClick, mine }: { o: WO; active: boolean; onClic
 }
 
 function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; onChanged: () => void; canOperateWorkOrders: boolean }) {
-  const detail = trpc.workOrders.get.useQuery({ workOrderId: id });
-  const timeline = trpc.workOrders.timeline.useQuery({ workOrderId: id });
+  const me = trpc.auth.me.useQuery();
+  const canStart = canLifecycleOperation(me.data, "workOrders.start", canOperateWorkOrders);
+  const canMarkReady = canLifecycleOperation(me.data, "workOrders.markReady", canOperateWorkOrders);
+  const canRelease = canLifecycleOperation(me.data, "workOrders.release", canOperateWorkOrders);
+  const canReadDetail = canLifecycleOperation(me.data, "workOrders.get", true);
+  const canReadTimeline = canLifecycleOperation(me.data, "workOrders.timeline", true);
+  const detail = trpc.workOrders.get.useQuery({ workOrderId: id }, { enabled: canReadDetail });
+  const timeline = trpc.workOrders.timeline.useQuery({ workOrderId: id }, { enabled: canReadDetail && canReadTimeline });
   const utils = trpc.useUtils();
   const [lightbox, setLightbox] = useState<string | null>(null);
 
@@ -236,7 +250,7 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
       return { startAt, endAt: startAt };
     }
     // المسار القَديم (fallback): اشتقاق من سَجلّ التَدقيق للأَوامر قبل الهَجرة.
-    const rows = timeline.data ?? [];
+    const rows = canReadTimeline ? timeline.data ?? [] : [];
     const s = rows.find((r) => r.action === "workOrder.start");
     const e = rows.find((r) => r.action === "workOrder.markReady" || r.action === "workOrder.deliver");
     const startAt = s?.createdAt ? new Date(s.createdAt as unknown as string) : null;
@@ -244,8 +258,10 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
     // قيد التنفيذ بلا حدث جاهزية ⇒ حيّ (endAt = null).
     if (d?.status === "IN_PROGRESS") endAt = null;
     return { startAt, endAt };
-  }, [d?.workStartedAt, d?.workSeconds, d?.status, timeline.data]);
+  }, [d?.workStartedAt, d?.workSeconds, d?.status, timeline.data, canReadTimeline]);
 
+  if (me.isLoading) return <LoadingState message="جارٍ تحميل الصلاحيات…" />;
+  if (!canReadDetail) return <div className="p-4 text-muted-foreground">يتطلب عرض تفاصيل الأمر تفويض عرض أمر الشغل.</div>;
   if (detail.isLoading) return <LoadingState message="جارٍ تحميل تفاصيل أمر الشغل…" />;
   if (detail.isError) {
     return (
@@ -258,10 +274,10 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
   if (!d) {
     return <div className="grid place-items-center h-full text-muted-foreground">أمر الشغل غير موجود.</div>;
   }
-  if (!d.workStartedAt && timeline.isLoading) {
+  if (canReadTimeline && !d.workStartedAt && timeline.isLoading) {
     return <LoadingState message="جارٍ تحميل سجل الأمر القديم…" />;
   }
-  if (!d.workStartedAt && timeline.isError) {
+  if (canReadTimeline && !d.workStartedAt && timeline.isError) {
     return (
       <ErrorState
         message="تعذّر تحميل سجل الأمر اللازم لحساب زمن التنفيذ."
@@ -271,7 +287,6 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
   }
 
   const chLabel = receptionChannelLabel(d.receptionChannel);
-  const cannotOperate = !canOperateWorkOrders;
   const pri = PRIORITIES[d.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
   const cur = STAGE_INDEX[d.status] ?? 0;
   const remainingDue = positiveDiff(d.salePrice, d.deposit ?? 0);
@@ -286,12 +301,12 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
   });
 
   async function doStart() {
-    if (cannotOperate) return;
+    if (!canStart) return;
     if (!(await confirm({ variant: "warning", title: "بدء التنفيذ", description: `بدء تنفيذ «${d!.title}» يخصم المواد المطلوبة من المخزون تلقائياً. متابعة؟`, confirmText: "بدء التنفيذ", cancelText: "تراجع" }))) return;
     start.mutate({ workOrderId: d!.id });
   }
   async function doReady() {
-    if (cannotOperate) return;
+    if (!canMarkReady) return;
     if (!(await confirm({ variant: "info", title: "وضع علامة: جاهز للتسليم", description: `وضع «${d!.title}» جاهزاً للتسليم. سيُسلّمه الكاشير ويُصدر الفاتورة. متابعة؟`, confirmText: "جاهز للتسليم", cancelText: "تراجع" }))) return;
     markReady.mutate({ workOrderId: d!.id });
   }
@@ -562,13 +577,13 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
           </div>
 
           {/* زر الإجراء المتدرّج */}
-          {canOperateWorkOrders && d.status === "RECEIVED" && (
+          {(canStart || canRelease) && d.status === "RECEIVED" && (
             <div className="space-y-2">
-              <Button className="w-full h-12 text-base" disabled={busy || cannotOperate} onClick={doStart}>
+              {canStart && <Button className="w-full h-12 text-base" disabled={busy} onClick={doStart}>
                 <ChevronRight aria-hidden className="size-4 me-1" /> "بدء التنفيذ (خصم المواد)"
-              </Button>
+              </Button>}
               {/* ش٣: المخرجُ المشروع قبل البدء — بعده يرفضه الخادم ويُوجّه إلى النقل بسبب. */}
-              {d.assignedTo != null && (
+              {canRelease && d.assignedTo != null && (
                 <Button
                   variant="outline"
                   className="w-full"
@@ -580,10 +595,10 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
               )}
             </div>
           )}
-          {canOperateWorkOrders && d.status === "IN_PROGRESS" && (
+          {canMarkReady && d.status === "IN_PROGRESS" && (
             <Button
               className="w-full h-12 text-base bg-[var(--status-done)] hover:opacity-90 text-white"
-              disabled={busy || cannotOperate}
+              disabled={busy}
               onClick={doReady}
             >
               <Check aria-hidden className="size-4 me-1" />
@@ -617,13 +632,15 @@ const ACTIVE_STATUSES = ["RECEIVED", "IN_PROGRESS", "READY"] as const;
 export default function WorkOrderStation() {
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
-  const canOperateWorkOrders = !!me.data?.role && moduleAccessAllowed(
+  const legacyOperateWorkOrders = !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
     "workorders",
     "FULL",
     ["cashier", "manager", "print_operator"],
   );
+  const canOperateWorkOrders = canLifecycleOperation(me.data, "workOrders.list", legacyOperateWorkOrders);
+  const canClaim = canLifecycleOperation(me.data, "workOrders.claim", legacyOperateWorkOrders);
   const [selId, setSelId] = useState<number | null>(null);
 
   // ترشيح **خادميّ** لقائمتَي المحطة بدل تصفية نافذةٍ مقتطعة في المتصفّح.
@@ -654,6 +671,43 @@ export default function WorkOrderStation() {
   useEffect(() => {
     if (selId == null && mine.length) setSelId(mine[0].id);
   }, [mine, selId]);
+
+  const [claimedLocks, setClaimedLocks] = useState<Record<number, number>>({});
+
+  useRealtimeEvent<WorkOrderCreatedPayload>(
+    REALTIME_EVENT_TYPES.WORK_ORDER_CREATED,
+    () => {
+      void queueQ.refetch();
+    },
+  );
+
+  useRealtimeEvent<WorkOrderClaimedPayload>(
+    REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED,
+    (ev) => {
+      const { workOrderId, claimedByUserId } = ev.payload;
+      if (claimedByUserId == null) {
+        setClaimedLocks((prev) => {
+          const next = { ...prev };
+          delete next[workOrderId];
+          return next;
+        });
+      } else if (claimedByUserId !== me.data?.id) {
+        setClaimedLocks((prev) => ({ ...prev, [workOrderId]: claimedByUserId }));
+      }
+      void Promise.all([mineQ.refetch(), queueQ.refetch()]);
+    },
+  );
+
+  useRealtimeEvent<WorkOrderStatusChangedPayload>(
+    REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+    (ev) => {
+      void Promise.all([mineQ.refetch(), queueQ.refetch()]);
+      if (selId === ev.payload.workOrderId) {
+        void utils.workOrders.get.invalidate({ workOrderId: selId });
+        void utils.workOrders.timeline.invalidate({ workOrderId: selId });
+      }
+    },
+  );
 
   const claim = trpc.workOrders.claim.useMutation({
     onSuccess: (r) => { notify.ok("سُحب الأمر إلى قائمتك"); setSelId(r.workOrderId); utils.workOrders.list.invalidate(); },
@@ -717,18 +771,24 @@ export default function WorkOrderStation() {
         <div>
           <div className="text-xs font-semibold text-muted-foreground mb-1.5 inline-flex items-center gap-1"><CornerDownLeft aria-hidden className="size-3.5" /> الطابور العام — مشترك للجميع ({queue.length})</div>
           <div className="space-y-2">
-            {queue.map((o) => (
-              <div key={o.id} className="relative">
-                <OrderRow o={o} active={selId === o.id} onClick={() => setSelId(o.id)} />
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  className="absolute bottom-2 left-2 h-6 text-[11px]"
-                  disabled={claim.isPending}
-                  onClick={(e) => { e.stopPropagation(); claim.mutate({ workOrderId: o.id }); }}
-                >سحب</Button>
-              </div>
-            ))}
+            {queue.map((o) => {
+              const isLockedByOther =
+                claimedLocks[o.id] != null && claimedLocks[o.id] !== me.data?.id;
+              return (
+                <div key={o.id} className="relative">
+                  <OrderRow o={o} active={selId === o.id} onClick={() => setSelId(o.id)} />
+                  <Button
+                    size="sm"
+                    variant={isLockedByOther ? "outline" : "secondary"}
+                    className="absolute bottom-2 left-2 h-6 text-[11px]"
+                    disabled={!canClaim || claim.isPending || isLockedByOther}
+                    onClick={(e) => { e.stopPropagation(); claim.mutate({ workOrderId: o.id }); }}
+                  >
+                    {isLockedByOther ? "محجوز لزميل" : "سحب"}
+                  </Button>
+                </div>
+              );
+            })}
             {queue.length === 0 && (
               <div className="text-xs text-muted-foreground border rounded-lg p-3 text-center">
                 {queueAll.length === 0 ? "الطابور فارغ." : "لا نتائج مطابقة للبحث."}

@@ -3,6 +3,7 @@
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
 
+const CompanyProfile = lazy(() => import("@/pages/CompanyProfile"));
 const Settings = lazy(() => import("@/pages/Settings"));
 const IntegrationsSettings = lazy(() => import("@/pages/IntegrationsSettings"));
 const Branches = lazy(() => import("@/pages/Branches"));
@@ -15,6 +16,7 @@ const LegacyDataRepair = lazy(() => import("@/pages/LegacyDataRepair"));
 const SystemHealth = lazy(() => import("@/pages/SystemHealth"));
 
 const TABS: HubTab[] = [
+  { value: "profile", label: "بيانات المنشأة", gate: { managerOnly: true }, Component: CompanyProfile },
   { value: "settings", label: "الإعدادات", gate: { managerOnly: true }, Component: Settings },
   { value: "branches", label: "الفروع", gate: { adminOnly: true }, Component: Branches },
   { value: "integrations", label: "تكاملات القنوات", gate: { adminOnly: true }, Component: IntegrationsSettings },

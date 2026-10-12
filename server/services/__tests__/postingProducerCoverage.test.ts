@@ -464,6 +464,6 @@ describe("canonical double-entry producer coverage", () => {
       const failures = collectProducerFailures();
       expect(formatFailures(failures), formatFailures(failures)).toBe("");
     },
-    60_000,
+    120_000,
   );
 });

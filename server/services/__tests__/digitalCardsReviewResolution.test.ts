@@ -34,10 +34,10 @@ function db() {
 async function seed() {
   await db().insert(s.branches).values({ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" });
   await db().insert(s.users).values([
-    { id: 1, openId: "rr-u1", username: "cashier", name: "موظف البيع", role: "cashier", loginMethod: "local" },
-    { id: 2, openId: "rr-u2", username: "manager-1", name: "المدير الأول", role: "manager", loginMethod: "local" },
-    { id: 3, openId: "rr-u3", username: "manager-2", name: "المدير الثاني", role: "manager", loginMethod: "local" },
-    { id: 4, openId: "rr-u4", username: "owner", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
+    { id: 1, openId: "rr-u1", username: "cashier", name: "موظف البيع", role: "cashier", branchId: 1, loginMethod: "local" },
+    { id: 2, openId: "rr-u2", username: "manager-1", name: "المدير الأول", role: "manager", branchId: 1, loginMethod: "local" },
+    { id: 3, openId: "rr-u3", username: "manager-2", name: "المدير الثاني", role: "manager", branchId: 1, loginMethod: "local" },
+    { id: 4, openId: "rr-u4", username: "owner", name: "المالك", role: "admin", branchId: 1, loginMethod: "local", isOwner: true },
   ]);
   await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, status: "OPEN", openingBalance: "0" });
 
@@ -216,6 +216,8 @@ describe("digital sale review resolution", () => {
     const context = await seed();
     const operation = await prepare(context, "RR-BRANCH-1");
     await forceReview(operation.intentId);
+    await db().insert(s.branches).values({ id: 2, name: "الفرع الثاني", code: "SECOND", type: "SALES" });
+    await db().update(s.users).set({ branchId: 2 }).where(eq(s.users.id, manager.userId));
     const otherBranchManager = { ...manager, branchId: 2 };
 
     await expect(reviewResolutionService.getReviewDetails(db(), operation.intentId, 2)).rejects.toThrow(/فرعاً آخر/);

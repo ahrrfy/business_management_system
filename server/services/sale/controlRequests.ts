@@ -1,4 +1,11 @@
 import { TRPCError } from "@trpc/server";
+import { hasOperationPolicy, operationDecision } from "@shared/operationPermissions";
+import { resolveCustomRole, type AuthUser } from "../../context";
+import {
+  assertOperationAuthorityTx,
+  hasServiceOperationAuthority,
+  type ServiceOperationAuthority,
+} from "../authorization/operationAuthority";
 import { and, asc, desc, eq, getTableColumns, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
@@ -39,6 +46,13 @@ import {
 } from "./controlSnapshot";
 import { createConfirmedExternalPaymentAttemptTx } from "../posExternalPayment";
 import { correctionRequestBlockReasonTx } from "./correctionLookup";
+import { createAppNotification } from "../appNotificationService";
+import { publishRealtimeEvent } from "../../realtime";
+import {
+  REALTIME_EVENT_TYPES,
+  type ApprovalResolvedPayload,
+  type PendingApprovalCreatedPayload,
+} from "@shared/realtimeEvents";
 
 export type SalesReturnControlPayload = Omit<
   ReturnSaleInput,
@@ -181,8 +195,14 @@ function normalizeDueDatePayload(payload: SalesDueDateChangeControlPayload): str
   return payload.dueDate;
 }
 
-function assertManager(actor: Actor): void {
-  if (actor.role !== "manager" && actor.role !== "admin") {
+type SalesControlActor = Actor & {
+  operationAuthority?: ServiceOperationAuthority;
+  reviewAuthority?: ServiceOperationAuthority;
+  operationPolicyEnabled?: boolean;
+};
+
+function assertManager(actor: SalesControlActor, path: string): void {
+  if (actor.role !== "manager" && actor.role !== "admin" && !hasServiceOperationAuthority(actor.operationAuthority, actor.userId, path)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "مراجعة عمليات البيع الحرجة محصورة بمدير أو أدمن" });
   }
 }
@@ -233,6 +253,69 @@ function exactReplay(
     && row.reason === reason
     && payloadHashMatches(payloadHash, row.payloadHash)
     && Number(row.requestedBy) === Number(actor.userId);
+}
+
+async function notifySalesControlPending(
+  requestId: number,
+  requestType: string,
+  branchId: number,
+  actorUserId: number,
+  reason: string,
+): Promise<void> {
+  try {
+    const db = requireDb();
+    const rows = await db
+      .select()
+      .from(users)
+      .where(
+        and(
+          eq(users.isActive, true),
+          sql`(${users.accessExpiresAt} IS NULL OR ${users.accessExpiresAt} > NOW())`,
+        ),
+      );
+    await Promise.all(rows.map((user) => resolveCustomRole(user as AuthUser)));
+    const approvers = rows
+      .filter((u) => {
+        if (Number(u.id) === actorUserId) return false;
+        if (u.isOwner) return true;
+        if (hasOperationPolicy(u as AuthUser)) {
+          return Number(u.branchId) === branchId && (
+            operationDecision(u as AuthUser, "salesControl.approve").allowed ||
+            operationDecision(u as AuthUser, "salesControl.reject").allowed
+          );
+        }
+        if (u.role === "manager" || u.role === "admin") {
+          return u.branchId == null || Number(u.branchId) === branchId;
+        }
+        return false;
+      })
+      .map((u) => Number(u.id));
+
+    if (approvers.length === 0) return;
+
+    const title = `طلب اعتماد مبيعات #${requestId}`;
+    const body = `طلب ${requestType} يتطلب الاعتماد في فرع ${branchId} — ${reason || "بدون سبب"}`;
+
+    await Promise.allSettled(
+      approvers.map((recipientId) =>
+        createAppNotification({
+          userId: recipientId,
+          kind: "APPROVAL_REQUIRED",
+          family: "APPROVAL",
+          title,
+          body,
+          route: "/my-work",
+          eventKey: `sales_control:${requestId}:${recipientId}`,
+          entityType: "sales_control_request",
+          entityId: requestId,
+          requiresAction: true,
+          lockScreenSafe: false,
+        }),
+      ),
+    );
+  } catch {
+    // fail-safe
+  }
 }
 
 /** ينشئ مستند نيّة فقط: لا قيد ولا إيصال ولا حركة مخزون ولا تغيير فاتورة. */
@@ -446,6 +529,33 @@ export async function requestSalesControl(
     id: Number(result.id),
     reason,
   });
+  if (!approved && result.status === "PENDING" && !result.replayed) {
+    try {
+      publishRealtimeEvent<PendingApprovalCreatedPayload>(
+        REALTIME_EVENT_TYPES.PENDING_APPROVAL_CREATED,
+        {
+          entityType: "sales_control_request",
+          entityId: Number(result.id),
+          requestType: input.requestType,
+          invoiceId: input.invoiceId,
+          branchId: Number(result.branchId),
+          reason,
+        },
+        {
+          branchId: Number(result.branchId),
+        },
+      );
+    } catch {
+      // fail-safe
+    }
+    void notifySalesControlPending(
+      Number(result.id),
+      input.requestType,
+      Number(result.branchId),
+      actor.userId,
+      reason,
+    );
+  }
   return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
@@ -653,10 +763,11 @@ function applyCancelCashRouting(
  */
 export async function claimSalesCorrectionPayment(
   requestId: number,
-  actor: Actor & { role?: string },
+  actor: SalesControlActor,
 ) {
-  assertManager(actor);
+  assertManager(actor, "salesControl.claimCorrectionPayment");
   return withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "salesControl.claimCorrectionPayment", actor.role === "admin" || actor.role === "manager", actor.operationAuthority);
     const request = (
       await tx.select().from(salesControlRequests)
         .where(eq(salesControlRequests.id, requestId)).for("update").limit(1)
@@ -737,11 +848,12 @@ export async function claimSalesCorrectionPayment(
 /** يحرر حجزاً لم يبدأ قبضه بعد؛ وجود دليل CONFIRMED يجعل التحرير محظوراً منعاً لضياع المال. */
 export async function releaseSalesCorrectionPaymentClaim(
   requestId: number,
-  actor: Actor & { role?: string },
+  actor: SalesControlActor,
   confirmation: "NO_EXTERNAL_PAYMENT_EXECUTED",
 ) {
-  assertManager(actor);
+  assertManager(actor, "salesControl.releaseCorrectionPaymentClaim");
   return withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "salesControl.releaseCorrectionPaymentClaim", actor.role === "admin" || actor.role === "manager", actor.operationAuthority);
     const request = (
       await tx.select().from(salesControlRequests)
         .where(eq(salesControlRequests.id, requestId)).for("update").limit(1)
@@ -795,10 +907,11 @@ export async function releaseSalesCorrectionPaymentClaim(
  */
 async function prepareCorrectionExternalPaymentAttempt(
   requestId: number,
-  actor: Actor & { role?: string },
+  actor: SalesControlActor,
   cashRouting?: SalesControlCashRouting | null,
 ) {
   return withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "salesControl.approve", actor.role === "admin" || actor.role === "manager", actor.operationAuthority);
     const request = (
       await tx.select().from(salesControlRequests)
         .where(eq(salesControlRequests.id, requestId)).for("update").limit(1)
@@ -863,11 +976,11 @@ async function prepareCorrectionExternalPaymentAttempt(
 
 export async function approveSalesControlRequest(
   requestId: number,
-  actor: Actor & { role?: string },
+  actor: SalesControlActor,
   reviewNote?: string | null,
   cashRouting?: SalesControlCashRouting | null,
 ) {
-  assertManager(actor);
+  assertManager(actor, "salesControl.approve");
   const note = reviewNote?.trim() || null;
   if (note && note.length > 500) {
     throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر اعتماد الطلب", why: "ملاحظة الاعتماد أطول من 500 محرف", doThis: "اختصر الملاحظة ثم أعد الاعتماد" }) });
@@ -878,6 +991,7 @@ export async function approveSalesControlRequest(
     cashRouting,
   );
   const executeApproval = () => withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "salesControl.approve", actor.role === "admin" || actor.role === "manager", actor.operationAuthority);
     const request = (
       await tx.select().from(salesControlRequests)
         .where(eq(salesControlRequests.id, requestId)).for("update").limit(1)
@@ -1092,17 +1206,39 @@ export async function approveSalesControlRequest(
         : "تغيّرت الفاتورة منذ الطلب؛ وُسم الطلب قديماً وافتح طلباً جديداً",
     });
   }
+  try {
+    publishRealtimeEvent<ApprovalResolvedPayload>(
+        REALTIME_EVENT_TYPES.APPROVAL_RESOLVED,
+        {
+          entityType: "sales_control_request",
+          entityId: requestId,
+          decision: "APPROVED",
+          outcome: "APPROVED",
+          action: "APPROVE",
+          actorUserId: actor.userId,
+          managerId: actor.userId,
+          branchId: Number(result.request.branchId),
+          reason: note ?? null,
+        },
+        {
+          branchId: Number(result.request.branchId),
+        },
+      );
+  } catch {
+    // fail-safe
+  }
   return result;
 }
 
 export async function rejectSalesControlRequest(
   requestId: number,
   reason: string,
-  actor: Actor & { role?: string },
+  actor: SalesControlActor,
 ) {
-  assertManager(actor);
+  assertManager(actor, "salesControl.reject");
   const note = normalizeReason(reason, "الرفض");
-  return withTx(async (tx) => {
+  const res = await withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "salesControl.reject", actor.role === "admin" || actor.role === "manager", actor.operationAuthority);
     const request = (
       await tx.select().from(salesControlRequests)
         .where(eq(salesControlRequests.id, requestId)).for("update").limit(1)
@@ -1138,6 +1274,30 @@ export async function rejectSalesControlRequest(
       replayed: false as const,
     };
   }, { gate: "NONE" });
+
+  try {
+    publishRealtimeEvent<ApprovalResolvedPayload>(
+      REALTIME_EVENT_TYPES.APPROVAL_RESOLVED,
+      {
+        entityType: "sales_control_request",
+        entityId: requestId,
+        decision: "REJECTED",
+        outcome: "REJECTED",
+        action: "REJECT",
+        actorUserId: actor.userId,
+        managerId: actor.userId,
+        branchId: Number(res.request.branchId),
+        reason: note ?? null,
+      },
+      {
+        branchId: Number(res.request.branchId),
+      },
+    );
+  } catch {
+    // fail-safe
+  }
+
+  return res;
 }
 
 /**
@@ -1202,7 +1362,7 @@ export async function withdrawSalesControlRequest(
 }
 
 export async function listSalesControlRequests(
-  actor: Actor & { role?: string },
+  actor: SalesControlActor,
   options?: {
     status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE" | "WITHDRAWN";
     mine?: boolean;
@@ -1215,7 +1375,9 @@ export async function listSalesControlRequests(
   },
 ) {
   const db = requireDb();
-  const mineOnly = options?.mine === true || (actor.role !== "admin" && actor.role !== "manager");
+  const delegatedReviewer = hasServiceOperationAuthority(actor.reviewAuthority, actor.userId, "salesControl.approve") || hasServiceOperationAuthority(actor.reviewAuthority, actor.userId, "salesControl.reject");
+  const canReview = actor.operationPolicyEnabled ? delegatedReviewer : actor.role === "admin" || actor.role === "manager";
+  const mineOnly = options?.mine === true || !canReview;
   const where = and(
     options?.status ? eq(salesControlRequests.status, options.status) : undefined,
     actor.role === "admin" ? undefined : eq(salesControlRequests.branchId, actor.branchId),
@@ -1245,7 +1407,7 @@ export async function listSalesControlRequests(
 
 export async function getSalesControlRequest(
   requestId: number,
-  actor: Actor & { role?: string },
+  actor: SalesControlActor,
 ) {
   const db = requireDb();
   const request = (
@@ -1254,7 +1416,9 @@ export async function getSalesControlRequest(
   )[0];
   if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التحكم غير موجود" });
   assertBranch(Number(request.branchId), actor);
-  if (actor.role !== "admin" && actor.role !== "manager" && Number(request.requestedBy) !== actor.userId) {
+  const delegatedReviewer = hasServiceOperationAuthority(actor.reviewAuthority, actor.userId, "salesControl.approve") || hasServiceOperationAuthority(actor.reviewAuthority, actor.userId, "salesControl.reject");
+  const canReview = actor.operationPolicyEnabled ? delegatedReviewer : actor.role === "admin" || actor.role === "manager";
+  if (!canReview && Number(request.requestedBy) !== actor.userId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا تملك صلاحية عرض هذا الطلب" });
   }
   return request;

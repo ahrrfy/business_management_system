@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -64,12 +65,13 @@ function suggestedTier(t: CustomerType): PriceTier {
 
 
 export default function CustomerEdit() {
+  const { can } = useCatalogPeopleOperationAccess();
   const [, params] = useRoute<{ id: string }>("/customers/:id/edit");
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   const customerId = Number(params?.id ?? 0);
 
-  const detail = trpc.customers.get.useQuery({ customerId }, { enabled: customerId > 0 });
+  const detail = trpc.customers.get.useQuery({ customerId }, { enabled: can("customers.get") && (customerId > 0) });
   const me = trpc.auth.me.useQuery();
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
 
@@ -191,6 +193,7 @@ export default function CustomerEdit() {
   const tierMismatch = tierTouched && defaultPriceTier !== suggestedTier(customerType);
 
   function submit() {
+    if (!can("customers.update")) { setError("العملية غير مفوضة لحسابك"); return; }
     if (update.isPending) return; // يمنع الإرسال المزدوج (Ctrl+S/تكرار المفتاح).
     setError("");
     if (!name.trim()) {
@@ -544,7 +547,7 @@ export default function CustomerEdit() {
 
       <FormError message={error} />
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-        <Button onClick={submit} disabled={update.isPending} title="Ctrl+S">
+        <Button onClick={submit} disabled={!can("customers.update") || (update.isPending)} title="Ctrl+S">
           {update.isPending ? ACTION_LABELS.saving : "حفظ التعديلات"}
         </Button>
         {isActive ? (
@@ -559,7 +562,7 @@ export default function CustomerEdit() {
               }))) return;
               deactivate.mutate({ customerId });
             })()}
-            disabled={deactivate.isPending}
+            disabled={!can("customers.deactivate") || (deactivate.isPending)}
           >
             {deactivate.isPending ? "…" : "تعطيل العميل"}
           </Button>
@@ -567,7 +570,7 @@ export default function CustomerEdit() {
           <Button
             variant="outline"
             onClick={() => activate.mutate({ customerId })}
-            disabled={activate.isPending}
+            disabled={!can("customers.activate") || (activate.isPending)}
           >
             {activate.isPending ? "…" : "إعادة تفعيل"}
           </Button>

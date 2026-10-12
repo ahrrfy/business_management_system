@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -18,12 +19,13 @@ const RELATION_LABELS: Record<RelationType, string> = {
 };
 
 export function ProductRelatedProductsEditor({ productId }: { productId: number }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const [query, setQuery] = useState("");
   const [relations, setRelations] = useState<RelationDraft[]>([]);
-  const relationsQ = trpc.bundles.getRelatedProducts.useQuery({ sourceProductId: productId });
+  const relationsQ = trpc.bundles.getRelatedProducts.useQuery({ sourceProductId: productId }, { enabled: can("bundles.getRelatedProducts") });
   const searchQ = trpc.bundles.searchComponents.useQuery(
     { q: query.trim(), limit: 20 },
-    { enabled: query.trim().length >= 1, staleTime: 30_000 },
+    { enabled: can("bundles.searchComponents") && (query.trim().length >= 1), staleTime: 30_000 },
   );
   const save = trpc.bundles.setRelatedProducts.useMutation({
     onSuccess: (result) => {
@@ -96,7 +98,7 @@ export function ProductRelatedProductsEditor({ productId }: { productId: number 
         </div> : <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">لم تتم إضافة علاقات يدوية بعد. سيستخدم المتجر fallback محدوداً من نفس الفئة.</div>}
         <div className="flex items-center justify-between gap-3">
           <p className="text-[11px] text-muted-foreground">تظهر التوصيات في السلة بعنوان «أكمل تجهيزك» وبحد أقصى 4 منتجات متاحة.</p>
-          <Button type="button" size="sm" onClick={() => save.mutate({ sourceProductId: productId, items: relations.map(({ relatedProductId, relationType, sortOrder }) => ({ relatedProductId, relationType, sortOrder })) })} disabled={save.isPending || relationsQ.isLoading}>
+          <Button type="button" size="sm" onClick={() => save.mutate({ sourceProductId: productId, items: relations.map(({ relatedProductId, relationType, sortOrder }) => ({ relatedProductId, relationType, sortOrder })) })} disabled={!can("bundles.setRelatedProducts") || (save.isPending || relationsQ.isLoading)}>
             {save.isPending ? "جارٍ الحفظ…" : <><Check className="size-4" aria-hidden /> حفظ العلاقات</>}
           </Button>
         </div>

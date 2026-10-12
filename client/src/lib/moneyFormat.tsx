@@ -1,6 +1,7 @@
 import * as React from "react";
 import { D, fmt, fmtAr } from "@/lib/money";
 import { cn } from "@/lib/utils";
+import { LiveValue } from "@/components/financial/LiveValue";
 
 /**
  * عرض مبلغٍ ماليّ بلونٍ دلاليّ (موجب/سالب/محايد) — **مصدرٌ وحيد** يمنع ألوان Tailwind الخامّة.
@@ -52,7 +53,7 @@ export function SignedMoney({ value, sign = "auto", variant = "en", suffix, clas
   const shown = sign === "always" && isPos ? `+${raw}` : raw;
   return (
     <span dir="ltr" className={cn("tabular-nums", tone, className)}>
-      {shown}
+      <LiveValue value={shown} />
       {suffix}
     </span>
   );

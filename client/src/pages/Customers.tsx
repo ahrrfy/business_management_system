@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { CopyInline } from "@/components/CopyButton";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { Button } from "@/components/ui/button";
@@ -30,8 +31,13 @@ import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
-import { buildOperationalContactMessage } from "@/lib/whatsapp";
+import { Phone, User, Gift, MessageSquarePlus } from "lucide-react";
+import { buildOperationalContactMessage, toIraqiIntl, sanitizeForWhatsApp } from "@/lib/whatsapp";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { selectClsSm } from "@/lib/ui/formStyles";
+import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
+import { InstantGiftModal } from "@/components/crm/InstantGiftModal";
+import { FeedbackModal } from "@/components/crm/FeedbackModal";
 
 // صفّ نتيجة البحث — صريح لأنّ الإجراء يُعيد اتحاداً (تقنيع التكلفة) يُفشل استدلال T في fetchAllPaged.
 type CustomerRow = RouterOutputs["customers"]["search"]["rows"][number];
@@ -71,19 +77,21 @@ function legacyCodeOf(r: { legacyCode?: string | null }): string | null {
 }
 
 export default function Customers() {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
   // للكاشير يُحجب سقف الائتمان خادمياً (maskCustomerSensitive ⇒ null) — فـnull عنده ليس «بلا حدّ»
   // بل «مخفي»؛ لذا لا نعرض «بلا حدّ» إلا للمدير/الإدمن حيث null=ائتمان غير محدود فعلاً.
   const me = trpc.auth.me.useQuery();
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
+  const usesOperations = can("customers.operations", isElevated);
   // ٢٤/٨ (Codex P2 على PR #744): كشف الحساب تحت `reports=READ` — البقيّة يُعاد توجيهها بلا نتيجة.
-  const canOpenStatement = !!me.data?.role && moduleAccessAllowed(
+  const canOpenStatement = can("reports.customerStatement", !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
     "reports",
     "READ",
     ["admin", "manager", "accountant", "auditor"],
-  );
+  ));
   // فلاتر الشاشة محفوظة في الرابط (useUrlFilters) — تعيش مع فتح التفاصيل والرجوع، وقابلة للمشاركة.
   // كل القيم نصوص (اتفاقية useUrlFilters)؛ نشتقّ الأنواع الفعلية أدناه ونُعرّف مُغلِّفات setters
   // بتوقيع مطابق لِـuseState القديم كي تبقى كل مواقع الاستدعاء أدناه بلا تغيير.
@@ -132,6 +140,9 @@ export default function Customers() {
 
   const [importOpen, setImportOpen] = useState(false);
   const [followTarget, setFollowTarget] = useState<DisplayRow | null>(null);
+  const [selectedDossierCustomerId, setSelectedDossierCustomerId] = useState<number | null>(null);
+  const [instantGiftCustomer, setInstantGiftCustomer] = useState<{ id: number; name: string; phone?: string | null } | null>(null);
+  const [feedbackCustomer, setFeedbackCustomer] = useState<{ id: number; name: string; phone?: string | null } | null>(null);
   const importMut = trpc.imports.customers.useMutation();
   const limit = 50;
 
@@ -139,7 +150,7 @@ export default function Customers() {
   // الصامت على الفرع ١ (نمط PR #288 محظور — §٤ ق١١). لا يمسّ مستخدماً له فرع (يبقى فرعه).
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
   const needsBranchChoice = isElevated && me.data != null && me.data.branchId == null;
-  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: needsBranchChoice });
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: can("branches.list") && (needsBranchChoice) });
   const effectiveFollowUpBranchId = me.data?.branchId != null ? Number(me.data.branchId) : pickedBranch;
 
   // الميل الأخير للبحث الشامل: عند الوصول بـ?q=&focus= نبذر البحث (يُحمِّل العميل) ثمّ نُبرز صفّه.
@@ -174,9 +185,9 @@ export default function Customers() {
     }),
     [input, balanceFilter, collectionFilter, creditFilter, inactivityDays, sort],
   );
-  const basicList = trpc.customers.search.useQuery(input, { enabled: !isElevated });
-  const operations = trpc.customers.operations.useQuery(operationsInput, { enabled: isElevated });
-  const list = isElevated ? operations : basicList;
+  const basicList = trpc.customers.search.useQuery(input, { enabled: can("customers.search") && (!usesOperations) });
+  const operations = trpc.customers.operations.useQuery(operationsInput, { enabled: usesOperations });
+  const list = usesOperations ? operations : basicList;
   const invalidateCustomers = () => {
     void utils.customers.search.invalidate();
     void utils.customers.list.invalidate();
@@ -324,6 +335,42 @@ export default function Customers() {
     }
   }
 
+  function handlePrintCustomersPdf() {
+    const opened = printReportDoc({
+      title: "دليل وقائمة الزبائن",
+      headerExtra: [
+        { label: "إجمالي الزبائن", value: String(total) },
+        { label: "الفلاتر النشطة", value: hasAnyFilter ? "مفلترة" : "كافة الزبائن" },
+      ],
+      note: "دليل تشغيلي رسمي لبيانات الزبائن صادر من نظام إدارة العملاء والعمليات (Customer Hub).",
+      columns: [
+        { key: "name", label: "اسم الزبون" },
+        { key: "phone", label: "الهاتف" },
+        { key: "type", label: "النوع والفئة" },
+        { key: "city", label: "المدينة" },
+        { key: "balance", label: "الرصيد الحالي", align: "left" },
+        { key: "status", label: "الحالة" },
+      ],
+      rows: rows.map((r) => ({
+        name: r.name ?? "—",
+        phone: r.phone ?? "—",
+        type: `${r.customerType ?? ""} · ${TIER_LABEL[r.defaultPriceTier] ?? r.defaultPriceTier ?? ""}`,
+        city: [r.city, r.district].filter(Boolean).join(" / ") || "—",
+        balance: `${fmt(r.currentBalance)} د.ع`,
+        status: r.isActive ? "مفعّل" : "معطّل",
+      })),
+      summary: [
+        {
+          label: "إجمالي أرصدة الزبائن المعروضة",
+          value: `${fmt(rows.reduce((sum, r) => sum + Number(r.currentBalance ?? 0), 0))} د.ع`,
+          bold: true,
+          large: true,
+        },
+      ],
+    });
+    if (!opened) notify.err("حجب المتصفح نافذة الطباعة");
+  }
+
   function resetOperationalFilters() {
     setBalanceFilter("");
     setCollectionFilter("");
@@ -443,7 +490,7 @@ export default function Customers() {
         </div>
       ),
     },
-    ...(isElevated
+    ...(usesOperations
       ? [{
           id: "collection",
           header: "حالة التحصيل",
@@ -487,94 +534,164 @@ export default function Customers() {
         const c = row.original;
         const id = Number(c.id);
         const isActive = !!c.isActive;
+        const phone = c.phone?.trim() || null;
         return (
-          /* ٣ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */
-          <RowActions
-            contact={{
-              phone: c.phone,
-              whatsapp: (c as { whatsapp?: string | null }).whatsapp,
-              alternativePhones: [
-                (c as { phone2?: string | null }).phone2,
-                (c as { phone3?: string | null }).phone3,
-              ],
-              label: `واتساب ${c.name}`,
-              message: buildOperationalContactMessage({
-                partyName: c.name,
-                entityLabel: "حساب العميل",
-                nextAction: "نتواصل معكم لمتابعة طلبكم أو حسابكم. يرجى الرد عند الملاءمة.",
-              }),
-              gate: { module: "crm", level: "READ" },
-            }}
-            actions={[
-              {
-                key: "edit",
-                kind: "edit",
-                label: "تعديل",
-                href: `/customers/${id}/edit`,
-                gate: { roles: ["manager"], module: "crm", level: "FULL" },
-              },
-              // كشف الحساب يقرأ ?id= من URL (نمط CustomerStatement)
-              {
-                key: "stmt",
-                kind: "view",
-                label: "كشف حساب",
-                href: `/customers-statement?id=${id}`,
+          <div className="flex items-center justify-end gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="size-7 text-primary hover:bg-primary/10"
+              onClick={() => setSelectedDossierCustomerId(id)}
+              title="الملف الشامل 360°"
+              aria-label={`الملف الشامل 360° للزبون ${c.name}`}
+            >
+              <User className="size-3.5" aria-hidden />
+            </Button>
+            {phone && (
+              <Button
+                asChild
+                variant="ghost"
+                size="icon-sm"
+                className="size-7 text-[var(--sem-pos)] hover:bg-accent"
+                title={`اتصال مباشر: ${phone}`}
+                aria-label={`اتصال بالزبون ${c.name}`}
+              >
+                <a href={`tel:${phone}`}>
+                  <Phone className="size-3.5" aria-hidden />
+                </a>
+              </Button>
+            )}
+            {phone && (
+              <WhatsAppShare
+                phone={phone}
+                whatsapp={(c as { whatsapp?: string | null }).whatsapp}
+                alternativePhones={[
+                  (c as { phone2?: string | null }).phone2,
+                  (c as { phone3?: string | null }).phone3,
+                ]}
+                message={buildOperationalContactMessage({
+                  partyName: c.name,
+                  entityLabel: "حساب العميل",
+                  nextAction: "نتواصل معكم لمتابعة طلبكم أو حسابكم. يرجى الرد عند الملاءمة.",
+                })}
+                iconOnly
+                size="icon-sm"
+                className="size-7"
+                label={`واتساب ${c.name}`}
+              />
+            )}
+            <RowActions
+              contact={{
+                phone: c.phone,
+                whatsapp: (c as { whatsapp?: string | null }).whatsapp,
+                alternativePhones: [
+                  (c as { phone2?: string | null }).phone2,
+                  (c as { phone3?: string | null }).phone3,
+                ],
+                label: `واتساب ${c.name}`,
+                message: buildOperationalContactMessage({
+                  partyName: c.name,
+                  entityLabel: "حساب العميل",
+                  nextAction: "نتواصل معكم لمتابعة طلبكم أو حسابكم. يرجى الرد عند الملاءمة.",
+                }),
                 gate: { module: "crm", level: "READ" },
-              },
-              {
-                key: "receipt",
-                kind: "pay",
-                label: "تسجيل دفعة",
-                href: `/vouchers/receipt/new?customerId=${id}`,
-                hidden: !isElevated,
-                gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
-              },
-              {
-                key: "follow",
-                kind: "create",
-                label: "تسجيل متابعة",
-                hidden: !isElevated,
-                onSelect: () => setFollowTarget(c),
-                gate: { roles: ["manager"], module: "crm", level: "FULL" },
-              },
-              {
-                key: "notes",
-                kind: "view",
-                label: "سجل المتابعة",
-                href: `/crm?tab=followups&id=${id}`,
-                gate: { module: "crm", level: "READ" },
-              },
-              {
-                key: "reminder",
-                kind: "create",
-                label: "تذكير واتساب",
-                href: "/reports/ar-reminders",
-                hidden: !isElevated,
-                gate: { roles: ["manager", "accountant"], module: "collections", level: "FULL" },
-              },
-              {
-                key: "toggle",
-                kind: "approve",
-                label: isActive ? "تعطيل" : "تفعيل",
-                variant: isActive ? "destructive" : "default",
-                disabled: deactivate.isPending || activate.isPending,
-                disabledReason: "توجد عملية تحديث قيد التنفيذ",
-                onSelect: () => void toggle(id, isActive, c.name ?? ""),
-                gate: { roles: ["manager"], module: "crm", level: "FULL" },
-              },
-              {
-                key: "delete",
-                kind: "delete",
-                label: "حذف نهائي",
-                variant: "destructive",
-                disabled: del.isPending,
-                disabledReason: "توجد عملية حذف قيد التنفيذ",
-                hidden: !isElevated,
-                onSelect: () => void remove(id, c.name ?? ""),
-                gate: { managerOnly: true },
-              },
-            ]}
-          />
+              }}
+              actions={[
+                {
+                  key: "dossier360",
+                  kind: "view",
+                  label: "الملف الشامل 360°",
+                  icon: User,
+                  onSelect: () => setSelectedDossierCustomerId(id),
+                  gate: { operations: ["customers.dossier360"], module: "crm", level: "READ" },
+                },
+                {
+                  key: "gift",
+                  kind: "create",
+                  label: "إهداء كوبون فوري",
+                  icon: Gift,
+                  onSelect: () => setInstantGiftCustomer({ id, name: c.name ?? "", phone: c.phone }),
+                  gate: { operations: ["customers.issueInstantGift"], roles: ["cashier", "manager", "sales_rep", "print_operator"], module: "crm", level: "FULL" },
+                },
+                {
+                  key: "feedback",
+                  kind: "create",
+                  label: "تسجيل تقييم أو شكوى",
+                  icon: MessageSquarePlus,
+                  onSelect: () => setFeedbackCustomer({ id, name: c.name ?? "", phone: c.phone }),
+                  gate: { operations: ["customers.createFeedback"], roles: ["cashier", "manager", "sales_rep", "print_operator"], module: "crm", level: "FULL" },
+                },
+                {
+                  key: "edit",
+                  kind: "edit",
+                  label: "تعديل",
+                  href: `/customers/${id}/edit`,
+                  gate: { operations: ["customers.update"], roles: ["manager"], module: "crm", level: "FULL" },
+                },
+                // كشف الحساب يقرأ ?id= من URL (نمط CustomerStatement)
+                {
+                  key: "stmt",
+                  kind: "view",
+                  label: "كشف حساب",
+                  href: `/customers-statement?id=${id}`,
+                  gate: { operations: ["reports.customerStatement"], module: "crm", level: "READ" },
+                },
+                {
+                  key: "receipt",
+                  kind: "pay",
+                  label: "تسجيل دفعة",
+                  href: `/vouchers/receipt/new?customerId=${id}`,
+                  hidden: !can("vouchers.create", isElevated),
+                  gate: { operations: ["vouchers.create"], roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                },
+                {
+                  key: "follow",
+                  kind: "create",
+                  label: "تسجيل متابعة",
+                  hidden: !can("customerNotes.create", isElevated),
+                  onSelect: () => setFollowTarget(c),
+                  gate: { operations: ["customerNotes.create"], roles: ["manager"], module: "crm", level: "FULL" },
+                },
+                {
+                  key: "notes",
+                  kind: "view",
+                  label: "سجل المتابعة",
+                  href: `/crm?tab=followups&id=${id}`,
+                  gate: { operations: ["customerNotes.list"], module: "crm", level: "READ" },
+                },
+                {
+                  key: "reminder",
+                  kind: "create",
+                  label: "تذكير واتساب",
+                  href: "/reports/ar-reminders",
+                  hidden: !can("arReminders.queue", isElevated),
+                  gate: { operations: ["arReminders.queue"], roles: ["manager", "accountant"], module: "collections", level: "FULL" },
+                },
+                {
+                  key: "toggle",
+                  kind: "approve",
+                  label: isActive ? "تعطيل" : "تفعيل",
+                  variant: isActive ? "destructive" : "default",
+                  disabled: deactivate.isPending || activate.isPending,
+                  disabledReason: "توجد عملية تحديث قيد التنفيذ",
+                  onSelect: () => void toggle(id, isActive, c.name ?? ""),
+                  gate: { operations: [isActive ? "customers.deactivate" : "customers.activate"], roles: ["manager"], module: "crm", level: "FULL" },
+                },
+                {
+                  key: "delete",
+                  kind: "delete",
+                  label: "حذف نهائي",
+                  variant: "destructive",
+                  disabled: del.isPending,
+                  disabledReason: "توجد عملية حذف قيد التنفيذ",
+                  hidden: !can("customers.delete", isElevated),
+                  onSelect: () => void remove(id, c.name ?? ""),
+                  gate: { operations: ["customers.delete"], managerOnly: true },
+                },
+              ]}
+            />
+          </div>
         );
       },
     },
@@ -674,7 +791,7 @@ export default function Customers() {
                 </FilterField>
                 {/* فلتر مدينة — مدعوم خادمياً في customers.search فقط (المستخدم غير المرتفع)؛
                     لوحة العمليات (operations) للمرتفعين لا تدعمه فنُخفيه عنهم بدل عرض فلتر معطَّل. */}
-                {!isElevated && (
+                {!usesOperations && (
                   <FilterField label="المدينة">
                     <Input
                       value={city}
@@ -684,7 +801,7 @@ export default function Customers() {
                     />
                   </FilterField>
                 )}
-                {isElevated && (
+                {usesOperations && (
                   <>
                     <FilterField label="حالة الرصيد">
                       <AppSelect className="h-9" value={balanceFilter} onValueChange={(value) => { setBalanceFilter(value as typeof balanceFilter); setPage(0); }}>
@@ -750,14 +867,15 @@ export default function Customers() {
               </>
             }
             exportSpec={{
-              filename: "العملاء",
+              filename: "دليل_الزبائن",
               rows,
+              formats: ["xlsx", "csv"],
               // تصدير شامل: يجلب كل النتائج المطابقة للفلاتر الحالية (لا الصفحة المعروضة فقط).
               // نفس مدخلات الاستعلام بدون limit/offset — يُمرّرهما fetchAllPaged.
               fetchAll: () =>
                 fetchAllPaged<DisplayRow>(
                   (offset, limit) =>
-                    isElevated
+                    usesOperations
                       ? utils.customers.operations
                           .fetch({ ...operationsInput, limit, offset })
                           .then((r) => ({ rows: (r.rows ?? []) as DisplayRow[], total: r.total }))
@@ -781,15 +899,17 @@ export default function Customers() {
                 { key: "phone", header: "الهاتف" },
                 { key: "city", header: "المدينة", map: (r) => [r.city, r.district].filter(Boolean).join(" / ") || "" },
                 { key: "defaultPriceTier", header: "فئة السعر" },
-                { key: "creditLimit", header: "سقف الائتمان", map: (r) => (isElevated && r.creditLimit == null ? "بلا حدّ" : Number(r.creditLimit ?? 0)) },
-                { key: "currentBalance", header: "الرصيد الحالي", map: (r) => Number(r.currentBalance ?? 0) },
+                { key: "creditLimit", header: "سقف الائتمان", money: true, map: (r) => (isElevated && r.creditLimit == null ? "بلا حدّ" : Number(r.creditLimit ?? 0)) },
+                { key: "currentBalance", header: "الرصيد الحالي", money: true, map: (r) => Number(r.currentBalance ?? 0) },
                 { key: "isActive", header: "نشط", map: (r) => (r.isActive ? "نعم" : "لا") },
               ],
             }}
+            onPrint={handlePrintCustomersPdf}
+            printLabel="طباعة تقرير PDF"
             // imports.customers = managerProcedure خادمياً — زرّ الاستيراد للمدير/الأدمن فقط.
-            onImport={isElevated ? () => setImportOpen(true) : undefined}
+            onImport={can("imports.customers", isElevated) ? () => setImportOpen(true) : undefined}
             importLabel="استيراد Excel"
-            add={{ href: "/customers/new", label: "عميل جديد" }}
+            add={can("customers.create") ? { href: "/customers/new", label: "عميل جديد" } : undefined}
           />
         </CardHeader>
         <CardContent className="p-0">
@@ -811,7 +931,7 @@ export default function Customers() {
               isError: list.isError,
               message: list.error?.message,
               // `list` اتحادُ استعلامَين (المرتفع/العاديّ) — نُعيد الجلب على المُفعَّل منهما صراحةً.
-              onRetry: () => void (isElevated ? operations.refetch() : basicList.refetch()),
+              onRetry: () => void (usesOperations ? operations.refetch() : basicList.refetch()),
             }}
             getRowClassName={(c) =>
               [c.isActive ? "" : "opacity-60", rowProps(Number(c.id)).className].filter(Boolean).join(" ") || undefined
@@ -844,7 +964,7 @@ export default function Customers() {
       </Card>
 
 
-      {isElevated && (
+      {usesOperations && (
         <OperationsSummary
           title="ملخص العملاء والتحصيل"
           subtitle="جميع الصفحات وفق البحث والفلاتر الحالية. المتأخرات محسوبة من الاستحقاقات، ولا تساوي الرصيد الإجمالي بالضرورة."
@@ -954,6 +1074,39 @@ export default function Customers() {
         submitting={createNote.isPending}
         onSubmit={(value) => void saveFollowUp(value)}
       />
+
+      <CustomerDossierDrawer
+        customerId={selectedDossierCustomerId}
+        open={selectedDossierCustomerId != null}
+        onClose={() => setSelectedDossierCustomerId(null)}
+      />
+
+      {instantGiftCustomer && (
+        <InstantGiftModal
+          open={Boolean(instantGiftCustomer)}
+          onClose={() => setInstantGiftCustomer(null)}
+          customerId={instantGiftCustomer.id}
+          customerName={instantGiftCustomer.name}
+          customerPhone={instantGiftCustomer.phone}
+          onSuccess={() => {
+            invalidateCustomers();
+          }}
+        />
+      )}
+
+      {feedbackCustomer && (
+        <FeedbackModal
+          open={Boolean(feedbackCustomer)}
+          onClose={() => setFeedbackCustomer(null)}
+          customerId={feedbackCustomer.id}
+          customerName={feedbackCustomer.name}
+          customerPhone={feedbackCustomer.phone}
+          onSuccess={() => {
+            invalidateCustomers();
+            setFeedbackCustomer(null);
+          }}
+        />
+      )}
 
       {/* شريط التحديد الجماعي: TSV لـExcel + ملخّص واتساب لقائمة العملاء. */}
       <SelectionBar

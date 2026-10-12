@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Layers, X } from "lucide-react";
@@ -70,13 +71,14 @@ function SimpleEditCostCoach({
   onUseLastPurchase: (cost: string) => void;
   disabled?: boolean;
 }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const statsQ = trpc.catalog.categoryStats.useQuery(
     { categoryId, brand: brand.trim() || null, productType: productType.trim() || null, excludeProductId: productId },
-    { enabled: categoryId != null || !!brand.trim() || !!productType.trim(), staleTime: 5 * 60 * 1000 }
+    { enabled: can("catalog.categoryStats") && (categoryId != null || !!brand.trim() || !!productType.trim()), staleTime: 5 * 60 * 1000 }
   );
   const lastPurchaseQ = trpc.catalog.lastPurchaseCost.useQuery(
     { variantId: variantId ?? 0 },
-    { enabled: variantId != null && variantId > 0 && !disabled, staleTime: 60 * 1000 }
+    { enabled: can("catalog.lastPurchaseCost") && (variantId != null && variantId > 0 && !disabled), staleTime: 60 * 1000 }
   );
   const daysAgo = lastPurchaseQ.data?.receivedAt
     ? Math.floor((Date.now() - new Date(lastPurchaseQ.data.receivedAt).getTime()) / (1000 * 60 * 60 * 24))
@@ -115,11 +117,12 @@ export default function SimpleProductEditForm({
   productId: number;
   onAdvanced: () => void;
 }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
   const [, navigate] = useLocation();
-  const branchesQ = trpc.branches.list.useQuery();
-  const categoriesQ = trpc.catalog.categories.useQuery();
-  const product = trpc.catalog.getForVariantEdit.useQuery({ productId }, { enabled: Number.isFinite(productId) });
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: can("branches.list") });
+  const categoriesQ = trpc.catalog.categories.useQuery(undefined, { enabled: can("catalog.categories") });
+  const product = trpc.catalog.getForVariantEdit.useQuery({ productId }, { enabled: can("catalog.getForVariantEdit") && (Number.isFinite(productId)) });
 
   const [hydrated, setHydrated] = useState(false);
   const [name, setName] = useState("");
@@ -270,7 +273,7 @@ export default function SimpleProductEditForm({
   const debouncedCodes = useMemo(() => (debouncedKey ? debouncedKey.split("\n") : []), [debouncedKey]);
   const checkQ = trpc.catalog.checkBarcodes.useQuery(
     { codes: debouncedCodes },
-    { enabled: debouncedCodes.length > 0, staleTime: 10_000 }
+    { enabled: can("catalog.checkBarcodes") && (debouncedCodes.length > 0), staleTime: 10_000 }
   );
   const takenInDb = useMemo(
     () => findTakenEditableBarcodeCodes(checkQ.data ?? [], barcodeFields, originalBarcodeCodes.current),
@@ -330,6 +333,7 @@ export default function SimpleProductEditForm({
 
   /** يُرجع نتيجة الخادم أو يرمي — `RecordForm` يُصنّف المآل ويعرضه (SAVED/CONFLICT/FAILED). */
   async function save(): Promise<unknown> {
+    if (!can("catalog.updateProductVariants")) throw new Error("العملية غير مفوضة لحسابك");
     const err = validate();
     if (err) throw new Error(err);
     // فحص أخير حاسم للباركود ضدّ القاعدة (نستثني ما يخصّ هذا المنتج).
@@ -427,7 +431,7 @@ export default function SimpleProductEditForm({
       <RecordForm
         mode="edit"
         isDirty={dirty}
-        blockedBy={validationReason ? [validationReason] : []}
+        blockedBy={!can("catalog.updateProductVariants") ? ["العملية غير مفوضة لحسابك"] : validationReason ? [validationReason] : []}
         isPending={update.isPending}
         onSave={save}
         onCancel={() => navigate("/products")}
@@ -725,7 +729,12 @@ export default function SimpleProductEditForm({
         productExists
       />
 
-      <ProductRecipeSection productId={productId} isService={Boolean(product.data?.isService)} />
+      <ProductRecipeSection
+        productId={productId}
+        isService={Boolean(product.data?.isService)}
+        sellingPrice={units.find((u) => u.isBase)?.retail}
+        wholesalePrice={units.find((u) => u.isBase)?.wholesale}
+      />
 
       {/* م٦ ق٨ — السجلّ والاستعادة: بعد استعادةٍ ناجحة نُعيد التعبئة من الخادم (كما بعد الحفظ). */}
       <ProductVersionHistory

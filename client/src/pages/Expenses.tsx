@@ -18,11 +18,9 @@ import { notify } from "@/lib/notify";
 import { D, fmt } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc } from "@/lib/trpc";
-import {
-  moduleAccessAllowed,
-  type PermissionMap,
-  type RoleKey,
-} from "@shared/permissions";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
+import { expenseOperationAccess } from "@/lib/expenseOperationAccess";
+import type { RoleKey } from "@shared/permissions";
 import {
   AlertTriangle,
   Ban,
@@ -83,6 +81,7 @@ import { ExpenseCorrectionDialog } from "@/components/expenses/ExpenseCorrection
 
 export default function Expenses() {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
   const branches = trpc.branches.list.useQuery();
   const [branchId, setBranchId] = useState<number | "">("");
   const [category, setCategory] = useState<string>("");
@@ -90,7 +89,7 @@ export default function Expenses() {
   const [expenseCategoryId, setExpenseCategoryId] = useState<string>("");
   const expenseCategoryOptions = trpc.expenses.categories.list.useQuery({
     includeInactive: true,
-  });
+  }, { enabled: treasuryOperationAllowed(me.data, "expenses.categories.list", true) });
   const [status, setStatus] = useState<string>(() =>
     typeof window === "undefined"
       ? ""
@@ -152,7 +151,7 @@ export default function Expenses() {
     ...listInput,
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
-  });
+  }, { enabled: treasuryOperationAllowed(me.data, "expenses.list", true) });
   const rows = (list.data?.rows ?? []) as ExpenseRow[];
   const totals = (list.data?.totals ?? {}) as ExpenseTotals;
   const total = Number(totals.count ?? 0);
@@ -592,18 +591,7 @@ export default function Expenses() {
     }
   }
 
-  // الإلغاء = expensesManagerProcedure(["manager"], "expenses", "FULL") — نُخفي الزرّ عمّن يرفضه
-  // الخادم (كاشير/محاسب: إدخالٌ بلا إلغاء) بنفس دالة الخادم moduleAccessAllowed ⇒ لا تباعُد.
-  const me = trpc.auth.me.useQuery();
-  const canCancel =
-    !!me.data?.role &&
-    moduleAccessAllowed(
-      me.data.role as RoleKey,
-      (me.data.permissionsOverride ?? null) as PermissionMap | null,
-      "expenses",
-      "FULL",
-      ["manager"],
-    );
+  const { canCancel, canExecuteManaged, canCorrect } = expenseOperationAccess(me.data);
   const canApprove = me.data?.isOwner === true;
 
   const cancel = trpc.expenses.cancel.useMutation({
@@ -662,7 +650,7 @@ export default function Expenses() {
         onSelect: () => void printExpenseReceipt(r),
         hidden:
           !isExpenseFinanciallyPrintable(r.status) || r.source === "ACCRUAL",
-        gate: { module: "expenses" as const, level: "READ" as const },
+        gate: { operations: ["expenses.list"], module: "expenses" as const, level: "READ" as const },
       },
       {
         key: "approve",
@@ -694,7 +682,7 @@ export default function Expenses() {
         kind: "approve" as const,
         icon: WalletCards,
         label: "صرف من ورديتي",
-        hidden: !approvedAwaitingExecution || r.paymentMethod !== "CASH" || !isRequester,
+        hidden: !approvedAwaitingExecution || r.paymentMethod !== "CASH" || !isRequester || !treasuryOperationAllowed(me.data, "expenses.executeFromOwnDrawer", true),
         disabled: executeFromOwnDrawer.isPending,
         disabledReason: "توجد عملية تنفيذ قيد المعالجة",
         onSelect: () =>
@@ -730,7 +718,7 @@ export default function Expenses() {
           r.paymentMethod === "CASH"
             ? "دفع مباشر من الخزينة"
             : "تنفيذ طريقة الدفع",
-        hidden: !approvedAwaitingExecution || !canCancel,
+        hidden: !approvedAwaitingExecution || !canExecuteManaged,
         disabled: executeManaged.isPending,
         disabledReason: "توجد عملية تنفيذ قيد المعالجة",
         onSelect: () =>
@@ -784,11 +772,12 @@ export default function Expenses() {
             "CORRECTION_PENDING",
             "REFUND_PENDING",
           ].includes(r.settlementStatus ?? "") ||
-          !canCancel,
+          !canCorrect,
         onSelect: () => {
           setCorrectionTarget(r);
         },
         gate: {
+          operations: ["expenses.requestAccrualCorrection"],
           roles: ["manager"] as RoleKey[],
           module: "expenses" as const,
           level: "FULL" as const,
@@ -822,6 +811,7 @@ export default function Expenses() {
             cancel.mutate({ expenseId: Number(r.id) });
           })(),
         gate: {
+          operations: ["expenses.cancel"],
           roles: ["manager"] as RoleKey[],
           module: "expenses" as const,
           level: "FULL" as const,
@@ -860,7 +850,7 @@ export default function Expenses() {
               {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
             </Button>
             <Link href="/expenses/new">
-              <Button>+ مصروف جديد</Button>
+              <Button disabled={!treasuryOperationAllowed(me.data, "expenses.create", true)}>+ مصروف جديد</Button>
             </Link>
           </div>
         }
@@ -1613,6 +1603,7 @@ export default function Expenses() {
                                     size="sm"
                                     aria-label={`مسار تتبع المصروف ${Number(r.id)}`}
                                     aria-expanded={traceExpanded}
+                                    disabled={!treasuryOperationAllowed(me.data, "expenses.trace", true)}
                                     onClick={() => toggleTrace(Number(r.id))}
                                   >
                                     {traceExpanded ? (

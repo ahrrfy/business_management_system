@@ -9,3 +9,4 @@ deploy/** text eol=lf
 docs/authz/endpoint-inventory.csv text eol=lf
 docs/authz/endpoint-inventory.json text eol=lf
 docs/authz/authz-baseline.json text eol=lf
+shared/operationPermissionCatalog*.generated.ts text eol=lf

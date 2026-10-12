@@ -18,24 +18,31 @@ export const courierRouter = router({
   /** توصيلاتي: قيد التوصيل + المُسلّمة حديثاً + عهدتي (غير مرتبط ⇒ linked:false). */
   myDeliveries: courierProcedure.query(({ ctx }) => listMyDeliveries(ctx.user.id)),
 
-  /** تأكيد تسليم + تحصيل COD كاملاً لطلبٍ من توصيلاتي. */
+  /** تأكيد تسليم + تحصيل COD كاملاً لطلبٍ من توصيلاتي (مع فحص Handshake OTP). */
   confirmDelivery: courierProcedure
-    .input(z.object({ onlineOrderId: z.number().int().positive() }))
+    .input(z.object({
+      onlineOrderId: z.number().int().positive(),
+      handshakeOtp: z.string().trim().length(4).optional(),
+    }))
     .mutation(async ({ input, ctx }) => {
       const actor = { userId: ctx.user.id };
       let res;
       try {
-        res = await confirmCourierDelivery({ onlineOrderId: input.onlineOrderId }, actor);
+        res = await confirmCourierDelivery({ onlineOrderId: input.onlineOrderId, handshakeOtp: input.handshakeOtp }, actor);
       } catch (e) {
         // سباق قيد مزدوج نادر (dedupeKey) ⇒ إعادة محاولة واحدة (الثانية ترى DELIVERED فتُرجِع idempotent).
-        if (isDupEntry(e)) res = await confirmCourierDelivery({ onlineOrderId: input.onlineOrderId }, actor);
+        if (isDupEntry(e)) res = await confirmCourierDelivery({ onlineOrderId: input.onlineOrderId, handshakeOtp: input.handshakeOtp }, actor);
         else throw e;
       }
       await logAudit(ctx, {
         action: "courier.confirmDelivery",
         entityType: "onlineOrder",
         entityId: input.onlineOrderId,
-        newValue: { collected: res.collected, custodyAfter: res.custodyAfter },
+        newValue: {
+          collected: res.collected,
+          custodyAfter: res.custodyAfter,
+          ...(input.handshakeOtp ? { handshakeOtpVerified: true } : {}),
+        },
       });
       return res;
     }),

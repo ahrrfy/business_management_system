@@ -138,11 +138,11 @@ describe("userService — تسمية الدور المخصّص (customRoleLabel)
     // استثناء فردي: يمنح هذا الحساب البيع رغم أن الدور يمنعه.
     await db().update(s.users).set({ permissionsOverride: { sales: "FULL" } }).where(sql`id = ${userId}`);
     // تعديل عابر لا يجوز أن يمسح قراراً فردياً مشروعاً.
-    await updateUser({ userId, name: "سارة" }, { userId: 999, branchId: 1 });
+    await updateUser({ userId, name: "سارة" }, actor);
     const afterEdit = (await db().select().from(s.users).where(sql`id = ${userId}`).limit(1))[0];
     expect(afterEdit.permissionsOverride).toEqual({ sales: "FULL" });
     // مسح الدور المخصّص بلا override صريح يهبط على قالب نظيف؛ لا تُنقل فروق الدور السابق تلقائياً.
-    await updateUser({ userId, customRoleId: null }, { userId: 999, branchId: 1 });
+    await updateUser({ userId, customRoleId: null }, actor);
     const cleared = (await db().select().from(s.users).where(sql`id = ${userId}`).limit(1))[0];
     expect(cleared.customRoleId ?? null).toBeNull();
     expect(cleared.permissionsOverride ?? null).toBeNull();

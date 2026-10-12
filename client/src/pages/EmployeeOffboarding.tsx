@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 // تصفية خروج الموظف — شاشة قراءةٍ فقط تجمع ذمّة الموظّف عبر ستّ وحدات قبل إنهاء خدمته.
 //
 // عمداً بلا أزرار إجراء: كل بندٍ يوجّه للشاشة المخوَّلة بمعالجته بحوكمتها وSODها. إضافةُ
@@ -15,11 +16,12 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { cn } from "@/lib/utils";
 
 export default function EmployeeOffboarding() {
+  const { can } = useCatalogPeopleOperationAccess();
   const [employeeId, setEmployeeId] = useState<number | null>(null);
-  const list = trpc.employees.list.useQuery({ limit: 500 } as never, { staleTime: 60_000 });
+  const list = trpc.employees.list.useQuery({ limit: 500 } as never, { enabled: can("employees.list"), staleTime: 60_000 });
   const clearance = trpc.employees.clearance.useQuery(
     { employeeId: employeeId ?? 0 },
-    { enabled: employeeId != null && employeeId > 0 },
+    { enabled: can("employees.clearance") && (employeeId != null && employeeId > 0) },
   );
 
   const rows = (list.data as { rows?: Array<{ id: number; firstName: string; lastName: string }> } | undefined)?.rows ?? [];

@@ -219,14 +219,32 @@ describe("الاستعادة = تعديلٌ جديد بحمولةٍ قديمة �
     const list = await listProductVersions(1);
     expect(list.map((v) => v.versionNumber)).toEqual([2, 1]);
     expect(list[1]).toMatchObject({ reason: "رفع السعر", actorName: "المدير", comparedTo: "next" });
-    expect(list[1].changedFields).toEqual(["اسم المنتج", "الوحدة «قطعة» — سعر المفرد"]);
+    expect(list[1].changedFields).toEqual([
+      "اسم المنتج",
+      "عنوان المتجر",
+      "العنوان المختصر",
+      "تسمية الكاشير",
+      "تسمية الفاتورة",
+      "الوحدة «قطعة» — سعر المفرد",
+    ]);
     expect(list[0]).toMatchObject({ comparedTo: "current" });
-    expect(list[0].changedFields).toEqual(["اسم المنتج", "الوحدة «قطعة» — سعر المفرد"]);
+    expect(list[0].changedFields).toEqual([
+      "اسم المنتج",
+      "عنوان المتجر",
+      "العنوان المختصر",
+      "تسمية الكاشير",
+      "تسمية الفاتورة",
+      "الوحدة «قطعة» — سعر المفرد",
+    ]);
 
     const diff = await getProductVersionDiff(1, 1);
     expect(diff.comparedToVersion).toBe(2);
     expect(diff.changes).toEqual([
       { path: "name", label: "اسم المنتج", before: "دفتر 100 ورقة", after: "دفتر 100 ورقة — طبعة 2026" },
+      { path: "storeTitle", label: "عنوان المتجر", before: null, after: "دفتر 100 ورقة — طبعة 2026" },
+      { path: "shortTitle", label: "العنوان المختصر", before: null, after: "دفتر 100 ورقة — طبعة 2026" },
+      { path: "posLabel", label: "تسمية الكاشير", before: null, after: "دفتر 100 ورقة — طبعة 2026" },
+      { path: "invoiceLabel", label: "تسمية الفاتورة", before: null, after: "دفتر 100 ورقة — طبعة 2026" },
       { path: "unit:قطعة.retail", label: "الوحدة «قطعة» — سعر المفرد", before: "1000.00", after: "1250.00" },
     ]);
   });

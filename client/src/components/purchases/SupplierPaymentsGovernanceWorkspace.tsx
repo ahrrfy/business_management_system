@@ -25,6 +25,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { D, fmt, sum } from "@/lib/money";
 import { newGovernanceKey } from "./purchaseGovernanceUiPolicy";
 import { trpc } from "@/lib/trpc";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { shiftTypeLabel } from "@/lib/labels";
 
 type Method = "CASH" | "CARD" | "TRANSFER" | "WALLET";
@@ -174,6 +175,9 @@ export function SupplierPaymentsGovernanceWorkspace({
   onRetryPendingPayments: () => void;
   onRetryPendingRefunds: () => void;
 }) {
+  const me = trpc.auth.me.useQuery();
+  const canRequestPayment = canLifecycleOperation(me.data, "supplierPayments.requestPayment", true);
+  const canRequestRefund = canLifecycleOperation(me.data, "supplierPayments.requestRefund", true);
   const [mode, setMode] = useState<"PAYMENT" | "REFUND" | null>(null);
   const [groupKey, setGroupKey] = useState("");
   const [refundId, setRefundId] = useState("");
@@ -320,6 +324,7 @@ export function SupplierPaymentsGovernanceWorkspace({
   }
 
   async function submitRequest() {
+    if (mode === "PAYMENT" ? !canRequestPayment : !canRequestRefund) return;
     if (!valid) return;
     if (
       method === "CASH" &&
@@ -426,6 +431,7 @@ export function SupplierPaymentsGovernanceWorkspace({
                 type="button"
                 size="sm"
                 onClick={() => setMode("PAYMENT")}
+                disabled={!canRequestPayment}
               >
                 طلب سداد
               </Button>
@@ -434,6 +440,7 @@ export function SupplierPaymentsGovernanceWorkspace({
                 size="sm"
                 variant="outline"
                 onClick={() => setMode("REFUND")}
+                disabled={!canRequestRefund}
               >
                 طلب استرداد دفعة
               </Button>
@@ -502,7 +509,7 @@ export function SupplierPaymentsGovernanceWorkspace({
         loading={pendingPaymentLoading}
         error={pendingPaymentError}
         pending={decisionPending}
-        reviewAllowed={canDecide}
+        reviewAllowed={canLifecycleOperation(me.data, "supplierPayments.decidePayment", canDecide)}
         reviewBlockedReason={decisionBlockedReason}
         onRetry={onRetryPendingPayments}
         onDecide={onDecidePayment}
@@ -516,7 +523,7 @@ export function SupplierPaymentsGovernanceWorkspace({
         loading={pendingRefundLoading}
         error={pendingRefundError}
         pending={decisionPending}
-        reviewAllowed={canDecide}
+        reviewAllowed={canLifecycleOperation(me.data, "supplierPayments.decideRefund", canDecide)}
         reviewBlockedReason={decisionBlockedReason}
         onRetry={onRetryPendingRefunds}
         onDecide={onDecideRefund}

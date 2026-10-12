@@ -2,7 +2,6 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, gte, like, lte, or, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { isDupEntry } from "@shared/errorMap.ar";
-import { canSeeCost } from "@shared/permissions";
 import { customers, giftVouchers, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { positiveMoneyString, ymdDate } from "../lib/schemas";
@@ -14,7 +13,7 @@ import { logAudit } from "../services/auditService";
 import { approveGift, cancelOutboundGift, createOutboundGift } from "../services/gifts/outbound";
 import { recordPurchaseBonusGift } from "../services/gifts/purchaseBonus";
 import { giftsReport } from "../services/gifts/reports";
-import { branchScopedProcedure, reportViewerProcedure, requireModule, router } from "../trpc";
+import { branchScopedProcedure, canSeeCostForUser, reportViewerProcedure, requireModule, router } from "../trpc";
 
 /**
  * وحدة الهدايا/المجانيات — G-م١ الوارد (بضاعة مجّانية من مورّد، صفر تكلفة تُخفِّف WAVG، بلا دين).
@@ -126,7 +125,7 @@ export const giftsRouter = router({
         { rowsLength: rows.length, limit: input?.limit ?? 50, offset: input?.offset },
       );
       // حجب التكلفة (تدقيق Codex P1) — نفس دلالة listGifts.redactCost.
-      const redact = !canSeeCost(ctx.user.role);
+      const redact = !canSeeCostForUser(ctx.user);
       return {
         rows: rows.map((r) => (redact ? { ...r, totalCost: null as string | null } : r)),
         total,
@@ -214,7 +213,7 @@ export const giftsRouter = router({
         else throw e;
       }
       // حجب التكلفة عمّن لا يراها (تدقيق Codex P1) — المُنشئ غير مرئيّ الكلفة لا يتلقّى totalCost.
-      return canSeeCost(ctx.user.role) ? r : { ...r, totalCost: null };
+      return canSeeCostForUser(ctx.user) ? r : { ...r, totalCost: null };
     }),
 
   // اعتماد هدية صادرة معلَّقة (مدير آخر، SOD-04). الخدمة تفرض دور المدير + عزل الفرع + منع اعتماد الذات.
@@ -279,7 +278,7 @@ export const giftsRouter = router({
     .query(async ({ input, ctx }) => {
       const rows = await listGiftCampaigns(input ?? {});
       // حجب التكلفة عمّن لا يراها (تدقيق Codex P1) — مخزن/مشتريات لهما gifts≥READ لكنّهما ليسا canSeeCost.
-      if (canSeeCost(ctx.user.role)) return rows;
+      if (canSeeCostForUser(ctx.user)) return rows;
       return rows.map((r) => ({ ...r, budgetCost: null, spent: null }));
     }),
 

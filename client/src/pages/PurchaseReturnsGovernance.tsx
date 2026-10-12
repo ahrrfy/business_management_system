@@ -238,6 +238,7 @@ export default function PurchaseReturnsGovernance() {
         </div>
       ) : (
         <PurchaseReturnGovernanceWorkspace
+          operationUser={me.data}
           returnSources={returnSources}
           reversalSources={reversalSources}
           pendingReturns={pendingReturns}

@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Badge } from "@/components/ui/badge";
@@ -37,13 +38,14 @@ type EduRow = EmployeeEducation & { key: number };
 
 /** نموذج إضافة/تعديل موظف. يعمل كإضافة افتراضياً، وكتعديل إن مرّر مسارٌ id. */
 export default function EmployeeNew() {
+  const { can } = useCatalogPeopleOperationAccess();
   const params = useParams();
   const editId = params.id ? Number(params.id) : null;
   const isEdit = Number.isFinite(editId);
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
-  const opts = trpc.employees.formOptions.useQuery();
-  const existing = trpc.employees.get.useQuery({ id: editId! }, { enabled: isEdit });
+  const opts = trpc.employees.formOptions.useQuery(undefined, { enabled: can("employees.formOptions") });
+  const existing = trpc.employees.get.useQuery({ id: editId! }, { enabled: can("employees.get") && (isEdit) });
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
 
@@ -80,7 +82,7 @@ export default function EmployeeNew() {
    */
   const payLocked = isEdit && !isAdmin;
   // تسمية الدور المخصّص الحقيقية لبطاقة بيانات الدخول (كانت «دور مخصّص» عامّة تُخفي الهوية).
-  const rolesQ = trpc.roles.list.useQuery(undefined, { enabled: isAdmin });
+  const rolesQ = trpc.roles.list.useQuery(undefined, { enabled: can("roles.list") && (isAdmin) });
   const [accountMode, setAccountMode] = useState<AccountMode>("none"); // وضع الإضافة
   const [editAccountMode, setEditAccountMode] = useState<"new" | "link">("link"); // وضع التعديل (لا حساب بعد)
   const [account, setAccount] = useState<AccountFieldsValue>(emptyAccountValue);
@@ -192,6 +194,7 @@ export default function EmployeeNew() {
   const pending = create.isPending || update.isPending || createWithAccount.isPending;
 
   function submit() {
+    if (!can(isEdit ? "employees.update" : "employees.create")) { setError("العملية غير مفوضة لحسابك"); return; }
     setError("");
     if (!form.firstName.trim()) { setError("الاسم الأول مطلوب."); return; }
     if (!form.lastName.trim()) { setError("اللقب مطلوب."); return; }
@@ -250,7 +253,7 @@ export default function EmployeeNew() {
   useUnsavedGuard(isDirty && !createdInfo);
 
   // اختصار: Ctrl+S حفظ — بلا Esc (النموذج مكتظّ بقوائم منسدلة، راجع تحذير الهوك).
-  useSaveShortcuts({ onSave: submit, enabled: !pending });
+  useSaveShortcuts({ onSave: submit, enabled: can(isEdit ? "employees.update" : "employees.create") && !pending });
 
   /** يبني حقول الحساب الجديد للإرسال (الاسم من الموظف؛ الفرع/الهاتف/المسمّى تُؤخذ من الموظف خادمياً). */
   function accountNewPayload() {
@@ -326,7 +329,7 @@ export default function EmployeeNew() {
       <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <div className="text-lg font-semibold text-muted-foreground">{isEdit ? "تعديل موظف" : "إضافة موظف"}</div>
         <div className="flex items-center gap-2">
-          <Button onClick={submit} disabled={pending} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
+          <Button onClick={submit} disabled={!can(isEdit ? "employees.update" : "employees.create") || pending} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
           <Link href="/hr/employees"><Button variant="outline">إلغاء</Button></Link>
         </div>
       </div>
@@ -474,7 +477,7 @@ export default function EmployeeNew() {
                 </span>
                 <Button
                   variant="ghost" size="sm" className="text-destructive shrink-0"
-                  disabled={unlinkAccountM.isPending}
+                  disabled={!can("employees.unlinkAccount") || (unlinkAccountM.isPending)}
                   /* حوار التأكيد الموحّد **غير متزامن** ⇒ المعالج نفسه صار async، وفكّ الربط
                    * لا يقع إلّا بعد `await` صريح (الحوار المتزامن السابق كان يحجب الخيط). */
                   onClick={async () => {
@@ -500,13 +503,13 @@ export default function EmployeeNew() {
                 {editAccountMode === "new" ? (
                   <>
                     <AccountFields value={account} onChange={patchAccount} nameForSuggest={employeeFullName} autoSuggestSignal={autoSuggestSignal} />
-                    <Button onClick={createAccountForEdit} disabled={createAccountForM.isPending}>{createAccountForM.isPending ? "جارٍ…" : "إنشاء الحساب وربطه"}</Button>
+                    <Button onClick={createAccountForEdit} disabled={!can("employees.createAccountFor") || (createAccountForM.isPending)}>{createAccountForM.isPending ? "جارٍ…" : "إنشاء الحساب وربطه"}</Button>
                   </>
                 ) : (
                   <div className="space-y-2 max-w-md">
                     <SmartUserInput value={linkUser} onChange={setLinkUser} employeeId={editId ?? undefined} placeholder="ابحث باسم المستخدم أو البريد — يعرض الحسابات غير المرتبطة" />
                     <p className="text-[11px] text-muted-foreground">تُعرض فقط الحسابات غير المرتبطة بموظف آخر.</p>
-                    <Button onClick={linkAccountForEdit} disabled={linkAccountM.isPending}>{linkAccountM.isPending ? "جارٍ…" : "ربط الحساب"}</Button>
+                    <Button onClick={linkAccountForEdit} disabled={!can("employees.linkAccount") || (linkAccountM.isPending)}>{linkAccountM.isPending ? "جارٍ…" : "ربط الحساب"}</Button>
                   </div>
                 )}
               </>
@@ -555,7 +558,7 @@ export default function EmployeeNew() {
         </div>
       )}
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-        <Button onClick={submit} disabled={pending} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
+        <Button onClick={submit} disabled={!can(isEdit ? "employees.update" : "employees.create") || pending} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
         <Link href="/hr/employees"><Button variant="outline">إلغاء</Button></Link>
       </div>
     </div>

@@ -19,7 +19,7 @@ import {
 import type { Tx } from "../../db";
 import { logAuditTx } from "../auditService";
 import { assertTreasuryOutException, lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
-import { appendDeliveryEvent } from "../delivery/lifecycle";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "../delivery/lifecycle";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { money, round2, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
@@ -667,6 +667,19 @@ export async function reverseWorkOrderDeliveryInTx(
       returnedAt: reversedAt, settledAt: reversedAt,
       returnDeclaredAt: null, returnDeclaredBy: null, returnDeclaredReason: null,
     }).where(eq(deliveryConsignments.id, Number(consignment.id)));
+    if (consignment.partyId != null && money(consignment.codAmount ?? "0").gt(0)) {
+      await appendDeliveryLedgerEntry(tx, {
+        eventKey: `CN:${Number(consignment.id)}:COD_RELEASED:WO_REVERSED:${invoiceId}`,
+        partyId: Number(consignment.partyId),
+        consignmentId: Number(consignment.id),
+        branchId: Number(consignment.branchId ?? wo.branchId),
+        entryType: "COD_RELEASED",
+        amount: toDbMoney(money(consignment.codAmount ?? "0")),
+        notes: `عكس تسليم أمر الشغل #${workOrderId}: ${reason}`,
+        actorUserId: actor.userId,
+        occurredAt: reversedAt,
+      });
+    }
     await appendDeliveryEvent(tx, {
       eventKey: `CN:${Number(consignment.id)}:WO_REVERSED:${invoiceId}`,
       consignmentId: Number(consignment.id), eventType: "RETURNED",

@@ -1,5 +1,6 @@
 // عقد البحث الشامل: تصنيف الاستعلام (BARCODE/DOC_NUMBER/PHONE/TEXT) وأنواع النتائج.
 import type { AccessLevel } from "@shared/permissions";
+import type { OperationUser } from "@shared/operationPermissions";
 
 export type SearchEntityType =
   | "PRODUCT"
@@ -33,7 +34,10 @@ const NUM_ONLY_RX = /^\d+$/;
 const PHONE_PREFIX_RX = /^\+/;
 const IRAQI_PHONE_RX = /^(?:(?:\+|00)?964|0)?7\d{9}$/;
 
-export function classifyQuery(raw: string): { kind: SearchKind; query: string } {
+export function classifyQuery(raw: string): {
+  kind: SearchKind;
+  query: string;
+} {
   const trimmed = (raw ?? "").trim();
   if (!trimmed) return { kind: "TEXT", query: "" };
 
@@ -66,6 +70,8 @@ export type GlobalSearchInput = {
   role: string;
   /** فروق صلاحيات الدور المخصّص (يُحلّ إلى خريطة وحدات؛ يُحكم وصول الموظفين به). */
   permissionsOverride?: Record<string, AccessLevel> | null;
+  /** سياق خادمي موثوق فقط؛ لا يقبل من مدخلات البحث. */
+  operationUser?: (OperationUser & { id?: number }) | null;
   /** الحد لكل كيان (افتراضي ٦). */
   perEntityLimit?: number;
   /** قصر البحث على أنواع محدّدة (اختياري). */

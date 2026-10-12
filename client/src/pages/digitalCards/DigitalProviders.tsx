@@ -1,3 +1,4 @@
+import { useDigitalGiftOperationAccess } from "@/lib/digitalGiftOperationAccess";
 // مزوّدو البطاقات الرقمية والاشتراكات — كل مزوّد يرثُ مورّداً قائماً في المنظومة (ذمّته وكشفه).
 // نمط التسوية هو القرار المالي الحاكم: PREPAID (محفظة رصيد لدى المزوّد) أو POSTPAID (ذمّة دائنة).
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -47,8 +48,9 @@ const SETTLEMENT_CYCLE: Record<string, string> = {
 };
 
 export default function DigitalProviders() {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const utils = trpc.useUtils();
-  const list = trpc.digitalCards.providers.list.useQuery();
+  const list = digitalAccess.query("digitalCards.providers.list", trpc.digitalCards.providers.list.useQuery(undefined, { enabled: digitalAccess.can("digitalCards.providers.list") }));
   const rows = list.data ?? [];
 
   const [formOpen, setFormOpen] = useState(false);
@@ -95,6 +97,7 @@ export default function DigitalProviders() {
   }
 
   function submitForm() {
+    if (!digitalAccess.can(`digitalCards.providers.${editId != null ? "update" : "create"}`)) return;
     const notes = fNotes.trim() || null;
     if (editId != null) {
       updateMut.mutate({
@@ -200,7 +203,8 @@ export default function DigitalProviders() {
                   kind: "edit",
                   label: "تعديل",
                   onSelect: () => openEdit(p),
-                  gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                  hidden: !digitalAccess.can("digitalCards.providers.update"),
+                  gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "digital_cards", level: "FULL" },
                 },
                 {
                   key: "toggle",
@@ -210,7 +214,8 @@ export default function DigitalProviders() {
                   disabled: toggleMut.isPending,
                   disabledReason: "توجد عملية تحديث قيد التنفيذ",
                   onSelect: () => void toggle(p),
-                  gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                  hidden: !digitalAccess.can("digitalCards.providers.toggle"),
+                  gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "digital_cards", level: "FULL" },
                 },
               ]}
             />
@@ -219,7 +224,7 @@ export default function DigitalProviders() {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [toggleMut.isPending],
+    [toggleMut.isPending, digitalAccess],
   );
 
   return (
@@ -227,7 +232,7 @@ export default function DigitalProviders() {
       <PageHeader
         title="شركات ومزوّدو البطاقات"
         description="حدد الشركة التي تصدر الكروت، وكيف ندفع لها: من رصيد مشحون مسبقاً أو كدين مستحق بعد البيع. النظام ينشئ الأثر المالي الصحيح تلقائياً."
-        actions={<Button size="sm" onClick={openAdd}><Plus className="size-4" /> مزوّد جديد</Button>}
+        actions={<Button size="sm" onClick={openAdd} disabled={!digitalAccess.can("digitalCards.providers.create")}><Plus className="size-4" /> مزوّد جديد</Button>}
       />
 
       <Card>
@@ -309,7 +314,7 @@ export default function DigitalProviders() {
           </div>
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setFormOpen(false)}>إلغاء</Button>
-            <Button size="sm" onClick={submitForm} disabled={saving}>
+            <Button size="sm" onClick={submitForm} disabled={!digitalAccess.can(`digitalCards.providers.${editing ? "update" : "create"}`) || saving}>
               {saving ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>

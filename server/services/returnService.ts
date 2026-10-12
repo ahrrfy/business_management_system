@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { canonicalOperationAllowed, storedOperationUser } from "./authorization/operationAuthority";
 import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
 import { refundDueAfterReturn } from "@shared/predicates/invoiceRemaining";
@@ -25,6 +26,7 @@ import {
   invoiceItemServiceMaterials,
   invoiceItems,
   invoices,
+  onlineOrders,
   productVariants,
   products,
   receipts,
@@ -45,6 +47,10 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import {
+  resolveAtomicPermissions,
+  type AtomicPermissionsMap,
+} from "@shared/atomicPermissions";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import {
@@ -182,7 +188,7 @@ export interface ReturnSaleInput {
   operatorReason?: string | null;
 }
 
-type UnremittedDeliverySnapshot = {
+export type UnremittedDeliverySnapshot = {
   id: number;
   partyId: number;
   branchId: number;
@@ -203,13 +209,13 @@ type UnremittedDeliverySnapshot = {
   custodyRecognizedAt?: Date | null;
 };
 
-type RemainingDeliveryCustody = {
+export type RemainingDeliveryCustody = {
   total: Decimal;
   shortfall: Decimal;
 };
 
 /** قيمة المرتجع تمتص المتبقي غير المدفوع أولاً؛ وما زاد وحده يمس المال المقبوض. */
-function allocateReturnAgainstInvoice(
+export function allocateReturnAgainstInvoice(
   invoice: { total: string; paidAmount: string; returnedTotal?: string | null },
   returnAmount: Decimal,
 ): { unpaidRelief: Decimal; paidRelief: Decimal } {
@@ -227,7 +233,7 @@ function allocateReturnAgainstInvoice(
 }
 
 /** دفتر التوصيل هو الحقيقة: يفصل النقد الفعلي عن العجز غير النقدي بلا تخمين من `codAmount`. */
-async function remainingUnremittedDeliveryCustody(
+export async function remainingUnremittedDeliveryCustody(
   tx: Tx,
   consignmentId: number,
 ): Promise<RemainingDeliveryCustody> {
@@ -258,7 +264,7 @@ async function remainingUnremittedDeliveryCustody(
  * لا يخرج نقدٌ من درج الكاشير. المرتجع الجزئي يعكس حصته فقط ويبقي الطرد حيّاً؛
  * والمرتجع الكامل يغلق ما تبقّى من العهدة ويحوّل الطرد إلى راجع.
  */
-async function reverseUnremittedDeliveryConsignment(
+export async function reverseUnremittedDeliveryConsignment(
   tx: Tx,
   cn: UnremittedDeliverySnapshot,
   invoiceId: number,
@@ -1419,6 +1425,25 @@ export async function returnSaleInTx(
           : {}),
       })
       .where(eq(invoices.id, input.invoiceId));
+    if (inv.sourceType === "ONLINE") {
+      await tx
+        .update(onlineOrders)
+        .set({
+          status: "CANCELLED",
+          cancelReason:
+            resolutionReason ||
+            (typeof input.operatorReason === "string"
+              ? input.operatorReason.trim()
+              : null) ||
+            "مرتجع فاتورة كامل",
+        })
+        .where(
+          and(
+            eq(onlineOrders.invoiceId, input.invoiceId),
+            sql`${onlineOrders.status} != 'CANCELLED'`,
+          ),
+        );
+    }
     if (!isUnremittedDelivery) {
       await reconcileDeliveryOnReturnTx(tx, {
         invoiceId: input.invoiceId,
@@ -2420,6 +2445,26 @@ export async function returnSaleInTx(
     })
     .where(eq(invoices.id, input.invoiceId));
 
+  if (fullyReturned && inv.sourceType === "ONLINE") {
+    await tx
+      .update(onlineOrders)
+      .set({
+        status: "CANCELLED",
+        cancelReason:
+          resolutionReason ||
+          (typeof input.operatorReason === "string"
+            ? input.operatorReason.trim()
+            : null) ||
+          "مرتجع فاتورة كامل",
+      })
+      .where(
+        and(
+          eq(onlineOrders.invoiceId, input.invoiceId),
+          sql`${onlineOrders.status} != 'CANCELLED'`,
+        ),
+      );
+  }
+
   // AR: the portion not refunded in cash is dropped from the customer's balance.
   if (inv.customerId) {
     const balanceRelief = Decimal.max(
@@ -2637,6 +2682,8 @@ export async function returnSaleDirect(
         baseRole: string;
         isActive: boolean;
         permissions: unknown;
+        atomicPermissions: unknown;
+        operationPolicy: unknown;
       } | null = null;
       if (probe?.customRoleId != null) {
         const [rRow] = await tx
@@ -2644,6 +2691,8 @@ export async function returnSaleDirect(
             baseRole: roles.baseRole,
             isActive: roles.isActive,
             permissions: roles.permissions,
+            atomicPermissions: roles.atomicPermissions,
+            operationPolicy: roles.operationPolicy,
           })
           .from(roles)
           .where(eq(roles.id, probe.customRoleId))
@@ -2654,6 +2703,8 @@ export async function returnSaleDirect(
             baseRole: rRow.baseRole,
             isActive: Boolean(rRow.isActive),
             permissions: rRow.permissions,
+            atomicPermissions: rRow.atomicPermissions,
+            operationPolicy: rRow.operationPolicy,
           };
         }
       }
@@ -2667,6 +2718,10 @@ export async function returnSaleDirect(
           role: users.role,
           customRoleId: users.customRoleId,
           permissionsOverride: users.permissionsOverride,
+          atomicPermissions: users.atomicPermissions,
+          operationPolicy: users.operationPolicy,
+          accessExpiresAt: users.accessExpiresAt,
+          branchId: users.branchId,
         })
         .from(users)
         .where(eq(users.id, actor.userId))
@@ -2686,29 +2741,13 @@ export async function returnSaleDirect(
         });
       }
 
-      // إن تغيّر customRoleId بين الاستكشاف وقفل المستخدم، نقفل الدور الجديد
+      // تغيّر الإسناد يستدعي إعادة الطلب؛ قفل دور جديد بعد المستخدم يعكس ترتيب roles -> users.
       if (userRow.customRoleId !== probe?.customRoleId) {
-        if (userRow.customRoleId != null) {
-          const [rRow] = await tx
-            .select({
-              baseRole: roles.baseRole,
-              isActive: roles.isActive,
-              permissions: roles.permissions,
-            })
-            .from(roles)
-            .where(eq(roles.id, userRow.customRoleId))
-            .for("share")
-            .limit(1);
-          customRoleRow = rRow
-            ? {
-                baseRole: rRow.baseRole,
-                isActive: Boolean(rRow.isActive),
-                permissions: rRow.permissions,
-              }
-            : null;
-        } else {
-          customRoleRow = null;
-        }
+        throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+          what: "تغيّر دور الحساب أثناء تنفيذ المرتجع",
+          why: "الإدارة حدّثت إسناد الدور قبل تثبيت صلاحية العملية",
+          doThis: "حدّث الصفحة وأعد تنفيذ المرتجع بصلاحيات الدور الجديد",
+        }) });
       }
 
       let effectiveRole = userRow.role;
@@ -2738,17 +2777,71 @@ export async function returnSaleDirect(
         }
       }
 
+      const resolvedAtomic = resolveAtomicPermissions(
+        effectiveRole as RoleKey,
+        (customRoleRow?.atomicPermissions as AtomicPermissionsMap | null) ?? null,
+        (userRow.atomicPermissions as AtomicPermissionsMap | null) ?? null,
+      );
+
       const isOwner = Boolean(userRow.isOwner);
       const isAdmin = effectiveRole === "admin";
       const hasSalesFull = effectivePermissions.sales === "FULL";
+      const isSalesDenied = effectivePermissions.sales === "NONE";
+
+      const explicitAtomicGrant =
+        (userRow.atomicPermissions as AtomicPermissionsMap | null)?.[
+          "pos.return.create"
+        ] === true ||
+        (userRow.atomicPermissions as AtomicPermissionsMap | null)?.[
+          "pos.return.approve"
+        ] === true ||
+        (customRoleRow?.atomicPermissions as AtomicPermissionsMap | null)?.[
+          "pos.return.create"
+        ] === true ||
+        (customRoleRow?.atomicPermissions as AtomicPermissionsMap | null)?.[
+          "pos.return.approve"
+        ] === true;
+
+      const explicitAtomicRevoke =
+        (userRow.atomicPermissions as AtomicPermissionsMap | null)?.[
+          "pos.return.create"
+        ] === false ||
+        (customRoleRow?.atomicPermissions as AtomicPermissionsMap | null)?.[
+          "pos.return.create"
+        ] === false;
+
+      const isCashierRole = [
+        "manager",
+        "cashier",
+        "retail_cashier",
+        "print_cashier",
+        "reception_clerk",
+        "sales_rep",
+      ].includes(effectiveRole);
+
       const hasReceptionFull =
         effectiveRole === "print_operator" &&
         effectivePermissions.workorders === "FULL";
-      const isAuthorized =
+
+      const legacyAuthorized =
         isOwner ||
         isAdmin ||
-        (["manager", "cashier"].includes(effectiveRole) && hasSalesFull) ||
-        hasReceptionFull;
+        (!explicitAtomicRevoke &&
+          (explicitAtomicGrant ||
+            (!isSalesDenied &&
+              (hasReceptionFull || (isCashierRole && hasSalesFull)))));
+
+      const isAuthorized = canonicalOperationAllowed(
+        storedOperationUser(userRow, customRoleRow), "returns.create",
+      ) ?? legacyAuthorized;
+
+      if (!isOwner && !isAdmin && Number(actor.branchId) !== Number(userRow.branchId)) {
+        throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+          what: "تغيّر فرع الحساب أثناء تنفيذ المرتجع",
+          why: "فرع الطلب المفتوح يختلف عن الفرع المسند حالياً للحساب",
+          doThis: "حدّث الصفحة وأعد تنفيذ المرتجع من فرعك الحالي",
+        }) });
+      }
 
       if (!isAuthorized) {
         throw new TRPCError({
@@ -2757,7 +2850,7 @@ export async function returnSaleDirect(
             what: "تعذّر تنفيذ المرتجع المباشر",
             why: `دورك الحالي (${effectiveRole}) أو صلاحياتك الفعّالة لا تملك صلاحية تنفيذ المرتجع المباشر`,
             doThis:
-              "يجب أن تكون مالكاً، أو تملك صلاحية المبيعات الكاملة (sales: FULL) لتنفيذ المرتجع",
+              "يجب أن تكون مالكاً، أو تملك صلاحية المبيعات الكاملة (sales: FULL)، أو صلاحية المرتجع المباشر (pos.return.create) لتنفيذ المرتجع",
           }),
         });
       }

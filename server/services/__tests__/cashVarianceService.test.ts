@@ -534,6 +534,18 @@ describe("cash variance maker-checker resolution", () => {
   });
 
   it("derives custody responsibility from the shift contract and blocks the responsible actor", async () => {
+    // The reviewer uses the persisted cashier identity with exact delegated capabilities;
+    // claiming a manager role would stop at identity drift before testing independence.
+    const responsibleActor = { userId: RESPONSIBLE_USER_ID, branchId: 1, role: "cashier" as const };
+    await db().update(s.users).set({ operationPolicy: {
+      version: 1,
+      grants: {
+        "operation.treasury.cashVariance.registerEvidence": true,
+        "operation.treasury.cashVariance.propose": true,
+        "operation.treasury.cashVariance.approve": true,
+        "operation.treasury.cashVariance.reject": true,
+      },
+    } }).where(eq(s.users.id, RESPONSIBLE_USER_ID));
     const source = await seedCustodyVariance({ reference: "CH-1-20260831-0006" });
     const maliciousEvidence = await evidence("variance-derived-responsible");
     const malicious = await proposeCashVarianceCase(
@@ -558,18 +570,17 @@ describe("cash variance maker-checker resolution", () => {
     await expect(
       approveCashVarianceCase(
         { caseId: malicious.caseId, expectedVersion: 1, clientRequestId: "responsible-approve-denied" },
-        { userId: RESPONSIBLE_USER_ID, branchId: 1, role: "manager" },
+        responsibleActor,
       ),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    ).rejects.toMatchObject({ code: "FORBIDDEN", message: "لا يجوز للموظف المسؤول اعتماد قضية فرق النقد الخاصة به" });
     await expect(
       rejectCashVarianceCase(
         { caseId: malicious.caseId, expectedVersion: 1, clientRequestId: "responsible-reject-denied", reason: "المسؤول لا يحسم قضيته المالية بنفسه" },
-        { userId: RESPONSIBLE_USER_ID, branchId: 1, role: "manager" },
+        responsibleActor,
       ),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    ).rejects.toMatchObject({ code: "FORBIDDEN", message: "قرار فرق النقد يحتاج مراجعاً مستقلاً" });
 
     const second = await seedCustodyVariance({ reference: "CH-1-20260831-0007" });
-    const responsibleActor = { userId: RESPONSIBLE_USER_ID, branchId: 1, role: "manager" as const };
     const responsibleEvidence = await evidence("responsible-propose-denied", responsibleActor);
     await expect(
       proposeCashVarianceCase(
@@ -584,7 +595,7 @@ describe("cash variance maker-checker resolution", () => {
         },
         responsibleActor,
       ),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    ).rejects.toMatchObject({ code: "FORBIDDEN", message: "منفذ العد أو الموظف المسؤول لا ينشئ قضية فرق النقد" });
 
     const shiftless = await seedCustodyVariance({
       reference: "CH-1-20260831-0008",
