@@ -12,6 +12,12 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "client/src/pages/__tests__/cashierDashboardIsolation.test.tsx",
+      "shared/cashierPermissionMigration.test.ts",
+      "client/src/pages/Treasury.permissionCache.test.tsx",
+      "client/src/hooks/useSessionContext.permissionCache.test.tsx",
+      "server/routers/__tests__/shiftOwnerScope.unit.test.ts",
+      "server/services/__tests__/cashierMovementScope.unit.test.ts",
       "client/src/lib/receptionOperationAccess.test.ts",
       "client/src/hooks/useInvoiceReceiptPrinter.test.tsx",
       "client/src/lib/printing/invoicePrintAttempt.test.ts",

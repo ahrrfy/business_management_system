@@ -631,7 +631,11 @@ export function canSeeCostForUser(user: OperationUser): boolean {
  * فلا نُسقِط الإجراء كلّه إلى reportViewerProcedure (يُخفي lowStock التشغيليّ عن الكاشير/المخزن).
  * ملاحظة أمنية: هذا قرار خادميّ — الواجهة تعيد الفحص نفسه لإخفاء البطاقة، لكن الخادم هو الحاجز.
  */
-export function canViewReports(user: { role: string; permissionsOverride?: unknown }): boolean {
+export function canViewReports(user: OperationUser): boolean {
+  if (hasOperationPolicy(user)) {
+    return ["reports.dashboardMetrics", "reports.treasurySummary", "reports.financialPosition", "reports.profitAndLoss", "reports.salesReport"]
+      .some((path) => canonicalOperationAllowed(user, path) === true);
+  }
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
   return moduleAccessAllowed(user.role, override, "reports", "READ", ["manager", "accountant", "auditor"]);
 }

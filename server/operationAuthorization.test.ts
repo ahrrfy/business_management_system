@@ -13,7 +13,7 @@ vi.mock("./realtime/financialRefresh", () => ({ scheduleFinancialRefresh: vi.fn(
 import {
   router, salesCashierProcedure, salesManagerProcedure, deliveryCashierProcedure,
   returnsProcedure, adminProcedure, publicProcedure, salesReadProcedure,
-  directPrintBridgeProcedure,
+  directPrintBridgeProcedure, invoiceViewProcedure, requireAtomicPermission, canViewReports,
   digitalCardsPosProcedure, receptionDuplicateReadProcedure,
   customerReadAllowed, customerReceptionCreateAllowed,
 } from "./trpc";
@@ -40,7 +40,11 @@ const api = router({
   }),
   delivery: router({ dispatchInvoice: deliveryCashierProcedure.mutation(() => "assigned") }),
   returns: router({ create: returnsProcedure.mutation(() => "returned") }),
-  invoicePrinting: router({ authorizeBridge: directPrintBridgeProcedure.query(() => true) }),
+  invoicePrinting: router({
+    authorizeBridge: directPrintBridgeProcedure.query(() => true),
+    requestPrint: invoiceViewProcedure.use(requireAtomicPermission("pos.invoice.print")).mutation(() => true),
+    requestReprint: invoiceViewProcedure.use(requireAtomicPermission("pos.invoice.reprint")).mutation(() => true),
+  }),
   digitalCards: router({ sales: router({ prepare: digitalCardsPosProcedure.mutation(() => "prepared"), finalize: digitalCardsPosProcedure.mutation(() => "finalized") }) }),
   reception: router({ duplicateOrders: receptionDuplicateReadProcedure.query(() => "checked") }),
   roles: router({ create: adminProcedure.mutation(() => "reserved") }),
@@ -48,6 +52,22 @@ const api = router({
 });
 
 describe("actual procedure delegation", () => {
+  it("does not derive financial payload access from a compatibility module summary", () => {
+    expect(canViewReports(context({ "operation.shifts.current": true }, { role: "cashier", permissionsOverride: { reports: "FULL" } }).user!)).toBe(false);
+    expect(canViewReports(context({ "operation.reports.treasurySummary": true }).user!)).toBe(true);
+    expect(canViewReports(context({ "operation.reports.dashboardMetrics": true }).user!)).toBe(true);
+  });
+  it("canonical reception printing bypasses obsolete atomic denials only for selected print actions", async () => {
+    const caller = api.createCaller(context({
+      "operation.invoicePrinting.requestPrint": true,
+      "operation.invoicePrinting.requestReprint": true,
+      "operation.invoicePrinting.authorizeBridge": true,
+    }, { role: "cashier", resolvedAtomicPermissions: { "pos.invoice.print": false, "pos.invoice.reprint": false } }));
+    await expect(caller.invoicePrinting.requestPrint()).resolves.toBe(true);
+    await expect(caller.invoicePrinting.requestReprint()).resolves.toBe(true);
+    await expect(caller.invoicePrinting.authorizeBridge()).resolves.toBe(true);
+    await expect(api.createCaller(context({})).invoicePrinting.requestPrint()).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
   it.each([
     ["manager", { customers: "NONE" }], ["cashier", { customers: "NONE", crm: "NONE", sales: "NONE", pos: "NONE", workorders: "FULL" }],
     ["warehouse", { customers: "FULL", crm: "NONE", workorders: "NONE" }], ["warehouse", { crm: "NONE", workorders: "READ" }],

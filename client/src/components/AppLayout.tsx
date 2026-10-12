@@ -279,7 +279,7 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   // البيضاء تُقاطَع مع canSeeGate ⇒ ما يظهر محكوم بصلاحيات دوره الفعلية (كاشير طباعة بلا store
   // لا يرى «طلبات المتجر»)، وإطفاء وحدةٍ من شاشة «الأدوار» يُسقط بندها هنا فوراً. العزل الحقيقي
   // خادميّ كما هو؛ وبقية الشاشات المسموحة تبقى بلوغاً بالبحث (Ctrl+K) — تركيزٌ لا حجبٌ جديد.
-  const isCashier = role === "cashier" && !operationPolicy && !me.data?.isOwner;
+  const isCashier = role === "cashier" && !me.data?.isOwner;
   // طلبات المتجر التشغيلية والحجوزات والقنوات أصبحت داخل محطة الاستقبال؛ يبقى StoreHub
   // للإدارة (كتالوج/بنرات/إعدادات) ولا يُشتّت قائمة الكاشير اليومية.
   // «/delivery» (٩/٨): الكاشير هو منفِّذ توريد المناديب الطبيعي وكان مخوَّلاً بلا مدخل مرئي
@@ -299,7 +299,7 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
     role: role ?? null,
     permissionsOverride: permsOverride,
   });
-  const primaryNav = operationPolicy ? workspaceProfile.primaryNav.filter((item) => visibleNav.some((allowed) => item.href === allowed.href || item.href.startsWith(allowed.href + "/"))) : workspaceProfile.primaryNav;
+  const primaryNav = operationPolicy && !isCashier ? workspaceProfile.primaryNav.filter((item) => visibleNav.some((allowed) => item.activePath === allowed.href || item.activePath.startsWith(allowed.href + "/"))) : workspaceProfile.primaryNav;
   const hasMyStocktake = (myStocktakes.data?.length ?? 0) > 0;
   const allowedNavPaths = visibleNav.map((item) => item.href);
   const allowedNavPathsKey = allowedNavPaths.join("|");

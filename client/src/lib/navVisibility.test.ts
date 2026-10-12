@@ -9,6 +9,28 @@ import { canSeeGate, EDITOR_OPERATION_GATES, INVOICE_CORRECTION_GATE, RECONCILE_
 
 describe("canonical operation navigation", () => {
   const policy = (grants: Record<string, boolean>): OperationPolicy => ({ version: 1, grants });
+  it("an own-shift grant does not open corporate treasury or exchange", () => {
+    const ownShift = policy({ "operation.shifts.current": true });
+    expect(canSeeGate({ module: "treasury" }, "cashier", null, ownShift)).toBe(false);
+    const hrefs = visibleApplicationModules("cashier", null, ownShift).map((entry) => entry.href);
+    expect(hrefs).not.toContain("/treasury");
+    expect(hrefs).not.toContain("/exchange");
+  });
+  it("a dashboard helper does not open unrelated financial reporting", () => {
+    expect(canSeeGate({ module: "reports" }, "cashier", null, policy({ "operation.reports.dashboardMetrics": true }))).toBe(false);
+  });
+  it("treasury authority does not grant exchange and one report does not grant unrelated accounting pages", () => {
+    const treasuryHrefs = visibleApplicationModules("manager", null, policy({ "operation.treasury.getDashboard": true })).map((entry) => entry.href);
+    expect(treasuryHrefs).not.toContain("/exchange");
+    const reportHrefs = visibleApplicationModules("manager", null, policy({ "operation.reports.salesReport": true })).map((entry) => entry.href);
+    for (const href of ["/card-account", "/chart-of-accounts", "/statutory-accounting", "/closing"])
+      expect(reportHrefs).not.toContain(href);
+  });
+  it("focused canonical cashiers retain only their station navigation", () => {
+    const hrefs = visibleApplicationModules("cashier", null, policy({ "operation.assets.list": true, "operation.treasury.getDashboard": true }), true).map((entry) => entry.href);
+    expect(hrefs).not.toContain("/assets");
+    expect(hrefs).not.toContain("/treasury");
+  });
   it("requires both product retrieval and editing instead of opening an unusable editor", () => {
     for (const grants of [
       { "operation.catalog.updateProductVariants": true },
@@ -45,21 +67,21 @@ describe("canonical operation navigation", () => {
   it("uses reader navigation metadata and lets a query open an old FULL shell", () => {
     const operation = OPERATION_PERMISSIONS.find((entry) => entry.delegable && entry.kind === "query" && entry.navigationModule && entry.navigationModule !== entry.module)!;
     expect(operation).toBeDefined();
-    expect(canSeeGate({ module: operation.navigationModule!, level: "FULL" }, "user", null,
+    expect(canSeeGate({ operations: [operation.path], module: operation.navigationModule!, level: "FULL" }, "user", null,
       { ...policy({ [operation.key]: true }), dataVisibility: { purchaseCost: true, profitMargin: true } })).toBe(true);
   });
   it("delegation bypasses focused cashier and courier sidebars without reusing template permissions", () => {
     const allowed = policy({ "operation.assets.list": true });
     for (const role of ["cashier", "courier"]) {
       const hrefs = visibleApplicationModules(role, null, allowed, true).map((entry) => entry.href);
-      expect(hrefs).toContain("/assets");
+      expect(hrefs.includes("/assets")).toBe(role !== "cashier");
       expect(hrefs).not.toContain("/my-deliveries");
     }
   });
   it("mobile generic candidates show independently delegated modules for focused base roles", () => {
     for (const role of ["cashier", "courier"]) {
       const hrefs = getMobileBottomNavItems(role, null, policy({ "operation.assets.list": true })).flatMap((entry) => entry.href ?? []);
-      expect(hrefs).toContain("/assets");
+      expect(hrefs.includes("/assets")).toBe(role !== "cashier");
       expect(hrefs).not.toContain("/my-deliveries");
     }
   });

@@ -198,6 +198,16 @@ function legacyAllowed(
 }
 
 /** Compatibility snapshot: only the real gate's own module can grant an operation. */
+const CASHIER_OPERATIONAL_FINANCE_PATHS = new Set([
+  "shifts.current", "shifts.open", "shifts.close", "shifts.cashDrop", "shifts.list", "shifts.report",
+  "shifts.handoverRecipients", "shifts.eligibleVarianceApprovers",
+  "treasury.getOpenShifts", "treasury.getRecentMovements", "refundRails.preflight",
+]);
+const COMPANY_FINANCE_DOMAINS = new Set([
+  "reports", "accounts", "exchange", "closing", "statutoryAccounting", "cardAccount",
+  "vouchers", "cashTransfers", "supplierPayments",
+]);
+
 export function legacyOperationPolicy(
   role: string,
   resolvedLegacyModules: PermissionMap,
@@ -211,7 +221,13 @@ export function legacyOperationPolicy(
   const recordScopes: Record<string, OperationRecordScope> = {};
   for (const operation of OPERATION_PERMISSIONS) {
     if (!operation.delegable) continue;
-    grants[operation.key] = legacyAllowed(
+    // Converting a station cashier must not promote old shared module keys into
+    // company financial authority. Administrators can select these exact actions explicitly.
+    const cashierFinance = role === "cashier" && !CASHIER_OPERATIONAL_FINANCE_PATHS.has(operation.path) && (
+      (operation.module ?? "").split("|").some(module => module === "treasury" || module === "reports") ||
+      COMPANY_FINANCE_DOMAINS.has(operation.domain) || operation.path === "expenses.accrualCorrections"
+    );
+    grants[operation.key] = !cashierFinance && legacyAllowed(
       role,
       resolvedLegacyModules,
       override,

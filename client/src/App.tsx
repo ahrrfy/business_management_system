@@ -544,8 +544,8 @@ export default function App() {
       <Route path="/expense-categories"><Shell><RequireRole roles={["admin","manager","accountant"]} module="expenses" level="FULL"><ExpenseCategories /></RequireRole></Shell></Route>
       <Route path="/shifts"><Redirect to="/treasury?tab=shifts" /></Route>
       <Route path="/treasury"><Shell><TreasuryHub /></Shell></Route>
-      <Route path="/card-account"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CardAccount /></RequireRole></Shell></Route>
-      <Route path="/exchange"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury"><ExchangeHub /></RequireRole></Shell></Route>
+      <Route path="/card-account"><Shell><RequireRole operations={["cardAccount.summary"]} roles={["admin","manager","accountant","auditor"]} module="reports"><CardAccount /></RequireRole></Shell></Route>
+      <Route path="/exchange"><Shell><RequireRole operations={["exchange.list"]} roles={["admin","manager","accountant"]} module="treasury"><ExchangeHub /></RequireRole></Shell></Route>
       <Route path="/treasury/transfers"><Redirect to="/treasury?tab=transfers" /></Route>
       <Route path="/delivery"><Shell><RequireRole roles={["admin","manager","accountant","cashier","auditor"]} module="store"><DeliveryCenter /></RequireRole></Shell></Route>
       {/* شاشة المندوب الذاتية «توصيلاتي» (courier فقط + منح صريح لوحدة courier؛ admin يعبُر). */}
@@ -554,8 +554,8 @@ export default function App() {
       <Route path="/store-admin"><Shell><RequireRole roles={["admin","manager","cashier","sales_rep","accountant","auditor"]} module="store" level="READ"><StoreHub /></RequireRole></Shell></Route>
       <Route path="/delivery/parties"><Redirect to="/delivery?tab=parties" /></Route>
       <Route path="/reports"><Shell><ReportsHub /></Shell></Route>
-      <Route path="/chart-of-accounts"><Shell><ChartOfAccounts /></Shell></Route>
-      <Route path="/statutory-accounting"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><StatutoryAccounting /></RequireRole></Shell></Route>
+      <Route path="/chart-of-accounts"><Shell><RequireRole operations={["accounts.tree"]} roles={["admin","manager","accountant","auditor"]} module="reports"><ChartOfAccounts /></RequireRole></Shell></Route>
+      <Route path="/statutory-accounting"><Shell><RequireRole operations={["statutoryAccounting.profiles", "statutoryAccounting.readiness"]} roles={["admin","manager","accountant","auditor"]} module="reports"><StatutoryAccounting /></RequireRole></Shell></Route>
       <Route path="/journal"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><JournalEntriesList /></RequireRole></Shell></Route>
       <Route path="/journal/new"><Shell><RequireRole operations={["accounts.createManualJournal"]} roles={["admin","manager","accountant"]} module="reports"><JournalEntryNew /></RequireRole></Shell></Route>
       {/* مسارات التقارير: module="reports" ⇒ المنح الصريح للتقارير يفتحها لأي دور (مرآة
@@ -646,7 +646,7 @@ export default function App() {
       <Route path="/account"><Shell><Account /></Shell></Route>
       <Route path="/announcements"><Shell><RequireRole roles={["admin","manager"]} module="announcements" level="READ"><Announcements /></RequireRole></Shell></Route>
       <Route path="/audit"><Shell><RequireRole gate={AUDIT_LOGS_GATE}><AuditLogs /></RequireRole></Shell></Route>
-      <Route path="/closing"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports" level="READ"><ClosingHub /></RequireRole></Shell></Route>
+      <Route path="/closing"><Shell><RequireRole operations={["reports.monthlyClosePack", "reports.wipReport", "creditApproval.list"]} roles={["admin","manager","accountant","auditor"]} module="reports" level="READ"><ClosingHub /></RequireRole></Shell></Route>
       <Route path="/period-lock"><Redirect to="/closing?tab=period" /></Route>
       <Route path="/credit-approvals"><Redirect to="/closing?tab=credit" /></Route>
       <Route path="/year-end"><Redirect to="/closing?tab=yearend" /></Route>

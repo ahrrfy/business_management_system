@@ -6,6 +6,8 @@
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
 import { RequireRole } from "@/components/RequireRole";
+import { trpc } from "@/lib/trpc";
+import { hasOperationPolicy } from "@shared/operationPermissions";
 
 const Treasury = lazy(() => import("@/pages/Treasury"));
 const DayCloseReport = lazy(() => import("@/pages/DayCloseReport"));
@@ -16,6 +18,10 @@ const Vouchers = lazy(() => import("@/pages/Vouchers"));
 const VoucherCategories = lazy(() => import("@/pages/VoucherCategories"));
 const Shifts = lazy(() => import("@/pages/Shifts"));
 const CashVarianceResolutionPanel = lazy(() => import("@/components/treasury/CashVarianceResolutionPanel"));
+
+function TreasuryCustody() {
+  return <Treasury operationalOnly />;
+}
 
 function DailyReconciliationAccess() {
   return (
@@ -33,7 +39,8 @@ function DailyReconciliationAccess() {
 //    (treasury=READ قالبياً) خارج قائمتها فكان يهبط على تبويبٍ ترفض قائمتُه بـ403 رغم ظهوره.
 //  - المصروفات: expensesReadProcedure = requireModule("expenses","READ") (أمين المخزن expenses=NONE).
 const TABS: HubTab[] = [
-  { value: "dashboard", label: "لوحة الخزينة", gate: { operations: ["treasury.getDashboard", "treasury.pendingHandoverReceipts", "treasury.pendingHandoverQueue", "treasury.fundTreasury"], roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "treasury" }, Component: Treasury },
+  { value: "dashboard", label: "لوحة الخزينة", gate: { operations: ["treasury.getDashboard"], roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "treasury" }, Component: Treasury },
+  { value: "custody", label: "العهدة والتمويل", gate: { operations: ["treasury.pendingHandoverReceipts", "treasury.pendingHandoverQueue", "treasury.fundTreasury"] }, Component: TreasuryCustody },
   {
     value: "daily-reconciliation",
     label: "المطابقة اليومية",
@@ -58,5 +65,7 @@ const TABS: HubTab[] = [
 ];
 
 export default function TreasuryHub() {
-  return <PageTabs tabs={TABS} ariaLabel="أقسام الخزينة" />;
+  const me = trpc.auth.me.useQuery();
+  const tabs = hasOperationPolicy(me.data) ? TABS : TABS.filter(tab => tab.value !== "custody");
+  return <PageTabs tabs={tabs} ariaLabel="أقسام الخزينة" />;
 }

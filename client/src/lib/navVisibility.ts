@@ -150,6 +150,11 @@ export function canSeeGate(
       (operation) =>
         operation.delegable &&
         (operation.navigationModule ?? operation.module)?.split("|").includes(gate.module!) &&
+        // A cashier's shift helpers share treasury, but do not authorize its financial pages.
+        (gate.module !== "treasury" || operation.domain === "treasury") &&
+        // Mixed operational dashboards and lookup helpers are not a financial-report entry.
+        (gate.module !== "reports" ||
+          (operation.domain === "reports" && !["reports.dashboardMetrics", "reports.morningBrief"].includes(operation.path))) &&
         operationAllowed(operation),
     );
   }

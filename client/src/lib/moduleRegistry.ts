@@ -54,7 +54,7 @@ export const APPLICATION_MODULES: readonly ApplicationModule[] = [
     module: "sales",
   },
   { id: "treasury", href: "/treasury", label: "الخزينة والمدفوعات", description: "أرصدة وسندات وتحويلات", section: 3, icon: Wallet, roles: ["manager", "accountant", "cashier", "auditor"], module: "treasury" },
-  { id: "cardAccount", href: "/card-account", label: "حساب البطاقة/البنك", description: "أرصدة وتسويات البطاقة", section: 3, icon: CreditCard, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
+  { id: "cardAccount", href: "/card-account", label: "حساب البطاقة/البنك", description: "أرصدة وتسويات البطاقة", section: 3, icon: CreditCard, operations: ["cardAccount.summary"], roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
   { id: "delivery", href: "/delivery", label: "التوصيل", description: "طلبات وشركات وتحصيل COD", section: 4, icon: Truck, roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "store" },
   { id: "myDeliveries", href: "/my-deliveries", label: "توصيلاتي", description: "طلبات المندوب ومسار التسليم", section: 4, icon: PackageCheck, roles: ["courier"], module: "courier" },
   { id: "store", href: "/store-admin", label: "طلبات المتجر", description: "طلبات وبنرات وإعدادات", section: 4, icon: Store, roles: ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"], module: "store" },
@@ -66,13 +66,13 @@ export const APPLICATION_MODULES: readonly ApplicationModule[] = [
   { id: "gifts", href: "/gifts", label: "الهدايا والمجانيات", description: "الحوافز والهدايا المجانية", section: 2, icon: Gift, roles: ["admin", "manager", "accountant", "warehouse", "purchasing", "auditor"], module: "gifts" },
   { id: "digitalCards", href: "/digital-cards", label: "البطاقات الرقمية", description: "مخزون وتسليم البطاقات", section: 2, icon: WalletCards, roles: ["admin", "manager", "accountant", "auditor"], module: "digital_cards" },
   { id: "reports", href: "/reports", label: "التقارير والكشوفات", description: "مالية وتشغيلية ورقابية", section: 3, icon: BarChart3, module: "reports" },
-  { id: "chartOfAccounts", href: "/chart-of-accounts", label: "شجرة الحسابات", description: "دليل الحسابات والهيكل المالي", section: 3, icon: Landmark, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
-  { id: "statutoryAccounting", href: "/statutory-accounting", label: "الدليل المحاسبي النظامي", description: "تقارير وخرائط الامتثال المحاسبي", section: 3, icon: FileCheck2, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
-  { id: "exchange", href: "/exchange", label: "الصيرفة", description: "صرف وتسوية العملات", section: 3, icon: DollarSign, roles: ["admin", "manager", "accountant"], module: "treasury" },
+  { id: "chartOfAccounts", href: "/chart-of-accounts", label: "شجرة الحسابات", description: "دليل الحسابات والهيكل المالي", section: 3, icon: Landmark, operations: ["accounts.tree"], roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
+  { id: "statutoryAccounting", href: "/statutory-accounting", label: "الدليل المحاسبي النظامي", description: "تقارير وخرائط الامتثال المحاسبي", section: 3, icon: FileCheck2, operations: ["statutoryAccounting.profiles", "statutoryAccounting.readiness"], roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
+  { id: "exchange", href: "/exchange", label: "الصيرفة", description: "صرف وتسوية العملات", section: 3, icon: DollarSign, operations: ["exchange.list"], roles: ["admin", "manager", "accountant"], module: "treasury" },
   { id: "assets", href: "/assets", label: "الأصول الثابتة", description: "سجلّ وإهلاك وعهدة", section: 5, icon: Server, managerOnly: true, module: "assets" },
   { id: "announcements", href: "/announcements", label: "إعلانات وتوجيهات الشركة", description: "بث السبتلايت وتوجيهات الكادر والإقرارات", section: 5, icon: BellRing, roles: ["admin", "manager"], module: "announcements" },
   { id: "hr", href: "/hr", label: "الموارد البشرية", description: "موظفون وحضور ورواتب", section: 5, icon: Briefcase, roles: ["admin", "manager", "accountant", "auditor"], module: "hr" },
-  { id: "closing", href: "/closing", label: "الإقفال والرَقابة", description: "فترات واعتمادات وتوافق", section: 5, icon: Lock, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
+  { id: "closing", href: "/closing", label: "الإقفال والرَقابة", description: "فترات واعتمادات وتوافق", section: 5, icon: Lock, operations: ["reports.monthlyClosePack", "reports.wipReport", "creditApproval.list"], roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
   { id: "audit", href: "/audit", label: "سجل التدقيق", description: "الحركات والتغييرات وهوية منفّذها", section: 5, icon: ListChecks, ...AUDIT_LOGS_GATE },
   { id: "settings", href: "/settings", label: "الإدارة والإعدادات", description: "فروع وأدوار وتكاملات", section: 5, icon: Settings, managerOnly: true },
 ] as const;
@@ -87,8 +87,8 @@ export function visibleApplicationModules(
   focused = false,
 ) {
   return APPLICATION_MODULES.filter((module) => {
-    if (focused && !operationPolicy) {
-      if (role === "courier" && !module.roles?.includes("courier")) return false;
+    if (focused) {
+      if (role === "courier" && !operationPolicy && !module.roles?.includes("courier")) return false;
       if (role === "cashier" && !CASHIER_NAV_PATHS.includes(module.href)) return false;
     }
     return canSeeGate(module, role, permissionsOverride, operationPolicy);
