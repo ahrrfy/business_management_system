@@ -5,7 +5,7 @@
 // العقد: خادم customerNotes.{list,dueToday,create,resolve,update,delete} (راوتر منفصل
 // customerNoteRouter.ts يُركَّبه القائد في server/routers.ts). هذه الصفحة مبنيّة بالكامل
 // على الشكل المتّفق عليه في العقد فتتكامل بلا إعادة عمل فور دمج الخلفية.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -20,6 +20,9 @@ import { notify } from "@/lib/notify";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { Phone, User } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
@@ -34,6 +37,7 @@ export default function CustomerNotes() {
   const [customer, setCustomer] = useState<SmartCustomerValue>(EMPTY_CUSTOMER);
   const [editing, setEditing] = useState<CustomerNoteRow | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [selectedDossierCustomerId, setSelectedDossierCustomerId] = useState<number | null>(null);
   // إخفاء المحلولة + بحث نصّي + ترقيم صفحات حقيقي (بدل اقتطاع ١٠٠ صامت) — الراوتر يدعمها فعلياً.
   const [hideResolved, setHideResolved] = useState(false);
   const [noteQuery, setNoteQuery] = useState("");
@@ -69,8 +73,27 @@ export default function CustomerNotes() {
   }
 
   // إن أعاد تحميل الصفحة بـ?id= معروف بلا اختيار محلي — نُبقي customerId من الرابط فقط
-  // لعرض القائمة (لا حاجة لاسم العميل لعرض الملاحظات، فقط للـUI التوضيحي أعلى القائمة).
-  const effectiveCustomerId = customer.customerId ?? customerId;
+  // لعرض القائمة، مع جلب وتثبيت بيانات العميل تلقائياً لإظهار الاسم ورقم الهاتف وأدوات الاتصال.
+  const effectiveCustomerId: number = customer.customerId ?? customerId;
+
+  const customerDetail = trpc.customers.get.useQuery(
+    { customerId: effectiveCustomerId },
+    { enabled: effectiveCustomerId > 0 && (!customer.name || !customer.phone) },
+  );
+
+  useEffect(() => {
+    if (customerDetail.data && (!customer.name || !customer.phone)) {
+      setCustomer({
+        customerId: customerDetail.data.id,
+        name: customerDetail.data.name,
+        phone: customerDetail.data.phone || null,
+        isNew: false,
+      });
+    }
+  }, [customerDetail.data, customer.name, customer.phone]);
+
+  const displayName = customer.name || customerDetail.data?.name || (effectiveCustomerId > 0 ? `زبون #${effectiveCustomerId}` : "");
+  const displayPhone = customer.phone || customerDetail.data?.phone || null;
 
   const utils = trpc.useUtils();
   const notesQuery = trpc.customerNotes.list.useQuery(
@@ -81,11 +104,15 @@ export default function CustomerNotes() {
       limit: NOTES_LIMIT,
       offset,
     },
-    { enabled: !!effectiveCustomerId }
+    { enabled: effectiveCustomerId > 0 }
   );
   const dueToday = trpc.customerNotes.dueToday.useQuery(undefined, { enabled: canManage });
 
-  const invalidateList = () => utils.customerNotes.list.invalidate({ customerId: effectiveCustomerId });
+  const invalidateList = () => {
+    if (effectiveCustomerId > 0) {
+      void utils.customerNotes.list.invalidate({ customerId: effectiveCustomerId });
+    }
+  };
 
   const createMut = trpc.customerNotes.create.useMutation({
     onSuccess: async () => {
@@ -203,20 +230,48 @@ export default function CustomerNotes() {
                   <span className="text-xs text-muted-foreground truncate">{r.note}</span>
                   <span className="text-[11px] text-muted-foreground" dir="ltr">{fmtDate(r.followUpDate)}</span>
                 </button>
-                <WhatsAppShare
-                  phone={r.customerPhone}
-                  message={buildOperationalContactMessage({
-                    entityLabel: "متابعة عميل",
-                    reference: String(r.id),
-                    partyName: r.customerName,
-                    title: r.note,
-                    dueAt: r.followUpDate,
-                    nextAction: "نتواصل معكم بخصوص المتابعة المسجلة لدينا.",
-                  })}
-                  label={`واتساب ${r.customerName}`}
-                  size="icon-sm"
-                  iconOnly
-                />
+                <div className="flex items-center gap-1 shrink-0">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="size-8 text-primary hover:bg-primary/10"
+                    onClick={() => setSelectedDossierCustomerId(r.customerId)}
+                    title="الملف الشامل 360°"
+                    aria-label={`الملف الشامل 360° للزبون ${r.customerName}`}
+                  >
+                    <User className="size-3.5" aria-hidden />
+                  </Button>
+                  {r.customerPhone && (
+                    <Button
+                      asChild
+                      variant="ghost"
+                      size="icon-sm"
+                      className="size-8 text-[var(--sem-pos)] hover:bg-accent"
+                      title={`اتصال مباشر: ${r.customerPhone}`}
+                      aria-label={`اتصال بالزبون ${r.customerName}`}
+                    >
+                      <a href={`tel:${r.customerPhone}`}>
+                        <Phone className="size-3.5" aria-hidden />
+                      </a>
+                    </Button>
+                  )}
+                  <WhatsAppShare
+                    phone={r.customerPhone}
+                    message={buildOperationalContactMessage({
+                      entityLabel: "متابعة عميل",
+                      reference: String(r.id),
+                      partyName: r.customerName,
+                      title: r.note,
+                      dueAt: r.followUpDate,
+                      nextAction: "نتواصل معكم بخصوص المتابعة المسجلة لدينا.",
+                    })}
+                    label={`واتساب ${r.customerName}`}
+                    size="icon-sm"
+                    className="size-8"
+                    iconOnly
+                  />
+                </div>
               </div>
             ))}
           </CardContent>
@@ -236,6 +291,67 @@ export default function CustomerNotes() {
 
       {!!effectiveCustomerId && (
         <>
+          {/* شريط أدوات ورعاية العميل المباشر */}
+          <Card className="border-primary/20 bg-primary/5">
+            <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3">
+              <div className="flex items-center gap-2.5">
+                <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <User className="size-4" aria-hidden />
+                </div>
+                <div>
+                  <div className="font-semibold text-sm">
+                    {displayName}
+                  </div>
+                  {displayPhone && (
+                    <div className="text-xs text-muted-foreground font-mono" dir="ltr">
+                      {displayPhone}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setSelectedDossierCustomerId(effectiveCustomerId)}
+                  className="text-xs h-8 gap-1.5 text-primary border-primary/30"
+                >
+                  <User className="size-3.5" aria-hidden />
+                  <span>الملف الشامل 360°</span>
+                </Button>
+
+                {customer.phone && (
+                  <Button
+                    asChild
+                    variant="outline"
+                    size="sm"
+                    className="text-xs h-8 gap-1.5 border-[var(--sem-pos)]/40 text-[var(--sem-pos)] hover:bg-accent"
+                  >
+                    <a href={`tel:${customer.phone}`}>
+                      <Phone className="size-3.5" aria-hidden />
+                      <span>اتصال مباشر</span>
+                    </a>
+                  </Button>
+                )}
+
+                {displayPhone && (
+                  <WhatsAppShare
+                    phone={displayPhone}
+                    message={buildOperationalContactMessage({
+                      partyName: displayName,
+                      entityLabel: "متابعة العميل",
+                      nextAction: "نتواصل معكم لمتابعة الملاحظات والترتيبات المتفق عليها.",
+                    })}
+                    label="مراسلة واتساب"
+                    size="sm"
+                    className="h-8 text-xs"
+                  />
+                )}
+              </div>
+            </CardContent>
+          </Card>
           {/* نموذج الإضافة/التعديل — مرآة بوّابة الكتابة الخادمية؛ دور القراءة يرى السجلّ بلا نموذج. */}
           {canWrite && (
             <Card>
@@ -315,6 +431,14 @@ export default function CustomerNotes() {
             </CardContent>
           </Card>
         </>
+      )}
+
+      {selectedDossierCustomerId && (
+        <CustomerDossierDrawer
+          customerId={selectedDossierCustomerId}
+          open={Boolean(selectedDossierCustomerId)}
+          onClose={() => setSelectedDossierCustomerId(null)}
+        />
       )}
     </div>
   );

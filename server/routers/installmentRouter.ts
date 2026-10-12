@@ -363,6 +363,8 @@ export const installmentRouter = router({
         .object({
           branchId: z.number().int().positive().optional(),
           days: z.number().int().min(0).max(90).default(7),
+          limit: z.number().int().min(1).max(5000).default(200).optional(),
+          offset: z.number().int().min(0).default(0).optional(),
         })
         .optional(),
     )
@@ -371,6 +373,8 @@ export const installmentRouter = router({
       return dueSoon({
         branchId: restrict != null ? restrict : (input?.branchId ?? null),
         days: input?.days ?? 7,
+        limit: input?.limit ?? 200,
+        offset: input?.offset ?? 0,
       });
     }),
 });

@@ -5,11 +5,11 @@
 // نافذة التبريد ٧ أيام تمنع تكرار العميل في القائمة قبل استحقاق تذكير جديد.
 import { useMemo, useState } from "react";
 import { FILTER_LABELS } from "@shared/uiContracts";
-import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Landmark, Info, Bot, Printer, Download } from "lucide-react";
+import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Landmark, Info, Bot, Printer, Download, Phone, UserCheck, FileText } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
-import { sum } from "@/lib/money";
-import { openWhatsApp, sanitizeForWhatsApp } from "@/lib/whatsapp";
+import { sum, D } from "@/lib/money";
+import { openWhatsApp, sanitizeForWhatsApp, toIraqiIntl } from "@/lib/whatsapp";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Card, CardContent } from "@/components/ui/card";
@@ -17,8 +17,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Textarea } from "@/components/ui/textarea";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
 import {
   Dialog,
   DialogContent,
@@ -109,6 +111,7 @@ type Tab = "queue" | "history";
 
 export default function ARReminders() {
   const [tab, setTab] = useState<Tab>("queue");
+  const [dossierCustomerId, setDossierCustomerId] = useState<number | null>(null);
   const utils = trpc.useUtils();
 
   const me = trpc.auth.me.useQuery();
@@ -222,9 +225,10 @@ export default function ARReminders() {
     if (!opened) notify.err("حجب المتصفح نافذة الطباعة");
   }
 
-  function exportTodayList() {
+  function exportTodayList(format: "xlsx" | "csv" = "xlsx") {
     void exportRows(filteredQueue, {
       filename: "تذكيرات-الذمم-اليوم",
+      format,
       title: "تذكيرات الذمم الآجلة — قائمة اليوم",
       columns: [
         { key: "customerName", header: "العميل" },
@@ -393,6 +397,7 @@ export default function ARReminders() {
           onSkip={setSkipTarget}
           onPrint={printTodayList}
           onExport={exportTodayList}
+          onOpenDossier={setDossierCustomerId}
           sendingId={logSent.isPending ? logSent.variables?.customerId ?? null : null}
           sendingViaApiId={sendViaApi.isPending ? sendViaApi.variables?.customerId ?? null : null}
         />
@@ -402,6 +407,7 @@ export default function ARReminders() {
           isLoading={history.isLoading}
           isError={history.isError}
           refetch={() => history.refetch()}
+          onOpenDossier={setDossierCustomerId}
         />
       )}
 
@@ -461,6 +467,12 @@ export default function ARReminders() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <CustomerDossierDrawer
+        customerId={dossierCustomerId}
+        open={dossierCustomerId != null}
+        onClose={() => setDossierCustomerId(null)}
+      />
     </div>
   );
 }
@@ -480,6 +492,7 @@ function QueueTab({
   onSkip,
   onPrint,
   onExport,
+  onOpenDossier,
   sendingId,
   sendingViaApiId,
 }: {
@@ -496,10 +509,194 @@ function QueueTab({
   onSendViaApi: (row: QueueRow) => void;
   onSkip: (row: QueueRow) => void;
   onPrint: () => void;
-  onExport: () => void;
+  onExport: (format?: "xlsx" | "csv") => void;
+  onOpenDossier: (customerId: number) => void;
   sendingId: number | null;
   sendingViaApiId: number | null;
 }) {
+  const queueColumns = useMemo<ColumnDef<QueueRow, unknown>[]>(
+    () => [
+      {
+        id: "customer",
+        header: "العميل",
+        accessorKey: "customerName",
+        cell: ({ row }) => {
+          const r = row.original;
+          return (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-medium">{r.customerName}</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => onOpenDossier(r.customerId)}
+                className="text-primary hover:bg-primary/10 h-6 w-6 p-0"
+                title={`الملف الشامل 360° — ${r.customerName}`}
+                aria-label={`الملف الشامل 360° — ${r.customerName}`}
+              >
+                <UserCheck className="size-3.5" aria-hidden />
+              </Button>
+              {r.isPromiseDue && (
+                <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn-bg)] px-2 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]">
+                  <CalendarClock className="size-3" aria-hidden />
+                  موعود{r.promisedDate ? ` (${r.promisedDate})` : ""}
+                </span>
+              )}
+              {r.isOpeningBalance && (
+                <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-info-bg)] px-2 py-0.5 text-[11px] font-bold text-[var(--sem-info)]">
+                  <Landmark className="size-3" aria-hidden />
+                  رصيد مُدوَّر
+                </span>
+              )}
+            </div>
+          );
+        },
+      },
+      {
+        id: "phone",
+        header: "الهاتف",
+        accessorKey: "phone",
+        cell: ({ row }) => {
+          const r = row.original;
+          if (!r.phone) return <span className="text-muted-foreground">—</span>;
+          const intlPhone = toIraqiIntl(r.phone) || r.phone;
+          return (
+            <div className="flex items-center gap-1.5" dir="ltr">
+              <a
+                href={`tel:${intlPhone}`}
+                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                title={`اتصال: ${r.phone}`}
+                aria-label={`اتصال: ${r.phone}`}
+              >
+                <Phone className="size-3" aria-hidden />
+                <span className="tabular-nums">{r.phone}</span>
+              </a>
+              <WhatsAppShare
+                phone={r.phone}
+                message={buildReminderMessage(r)}
+                size="icon-sm"
+                iconOnly
+                label={`واتساب ${r.customerName}`}
+                className="h-6 w-6 p-0"
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => onSend(r)}
+                disabled={sendingId === r.customerId}
+                className="text-primary hover:bg-primary/10 h-6 w-6 p-0"
+                title={`إرسال تذكير واتساب وتسجيله: ${r.customerName}`}
+                aria-label={`إرسال تذكير واتساب وتسجيله: ${r.customerName}`}
+              >
+                <Send className="size-3" aria-hidden />
+              </Button>
+            </div>
+          );
+        },
+      },
+      {
+        id: "totalUnpaid",
+        header: "الرصيد الآجل",
+        accessorKey: "totalUnpaid",
+        meta: { kind: "money" },
+        sortDescFirst: true,
+        sortingFn: (a, b) => D(a.original.totalUnpaid).cmp(D(b.original.totalUnpaid)),
+        cell: ({ row }) => (
+          <span className="text-left font-bold tabular-nums text-money-negative block" dir="ltr">
+            {fmtAmount(row.original.totalUnpaid)}
+          </span>
+        ),
+      },
+      {
+        id: "oldestInvoiceDate",
+        header: "متأخّر منذ",
+        accessorKey: "oldestInvoiceDate",
+        cell: ({ row }) => (
+          <span className="text-center text-xs tabular-nums block" dir="ltr">
+            {row.original.oldestInvoiceDate}
+          </span>
+        ),
+      },
+      {
+        id: "daysOverdue",
+        header: "أيام التأخّر",
+        accessorKey: "daysOverdue",
+        sortDescFirst: true,
+        cell: ({ row }) => (
+          <div className="text-center">
+            <span className={`inline-flex items-center rounded-md px-2.5 py-1 text-xs tabular-nums ${daysBadgeCls(row.original.daysOverdue)}`}>
+              {row.original.daysOverdue}
+            </span>
+          </div>
+        ),
+      },
+      {
+        id: "lastReminderAt",
+        header: "آخر تذكير",
+        accessorKey: "lastReminderAt",
+        cell: ({ row }) => (
+          <span className="text-center text-xs text-muted-foreground block">
+            {row.original.lastReminderAt ? fmtDateTime(row.original.lastReminderAt) : "—"}
+          </span>
+        ),
+      },
+      {
+        id: "actions",
+        header: "إجراءات",
+        meta: { kind: "actions" },
+        enableSorting: false,
+        cell: ({ row }) => {
+          const r = row.original;
+          return (
+            <RowActions
+              mode="menu"
+              actions={[
+                {
+                  key: "dossier",
+                  kind: "view",
+                  label: "الملف الشامل 360°",
+                  icon: UserCheck,
+                  onSelect: () => onOpenDossier(r.customerId),
+                  gate: { module: "crm", level: "READ" },
+                },
+                {
+                  key: "send",
+                  kind: "other",
+                  label: "أرسل",
+                  icon: Send,
+                  disabled: !r.phone || sendingId === r.customerId,
+                  disabledReason: !r.phone ? "لا رقم هاتف مسجّل" : "الإرسال قيد التنفيذ",
+                  onSelect: () => onSend(r),
+                  gate: { roles: ["manager", "accountant"], module: "collections", level: "FULL" },
+                },
+                {
+                  key: "send-api",
+                  kind: "other",
+                  label: "أرسل عبر API",
+                  icon: Bot,
+                  disabled: !r.phone || sendingViaApiId === r.customerId,
+                  disabledReason: !r.phone ? "لا رقم هاتف مسجّل" : "الإرسال قيد التنفيذ",
+                  onSelect: () => onSendViaApi(r),
+                  gate: { roles: ["manager", "accountant"], module: "collections", level: "FULL" },
+                },
+                {
+                  key: "skip",
+                  kind: "approve",
+                  label: "تخطَّ",
+                  icon: SkipForward,
+                  onSelect: () => onSkip(r),
+                  gate: { roles: ["manager", "accountant"], module: "collections", level: "FULL" },
+                },
+              ]}
+            />
+          );
+        },
+      },
+    ],
+    [onOpenDossier, onSend, onSendViaApi, onSkip, sendingId, sendingViaApiId],
+  );
+
   if (isLoading) return <LoadingState />;
   if (isError) {
     return <ErrorState message="تعذّر تحميل قائمة التذكيرات." onRetry={refetch} />;
@@ -545,109 +742,24 @@ function QueueTab({
           <Button variant="outline" size="sm" onClick={refetch} className="gap-1.5">
             <RotateCcw className="size-3.5" aria-hidden /> تحديث
           </Button>
-          <Button variant="outline" size="sm" onClick={onExport} className="gap-1.5">
+          <Button variant="outline" size="sm" onClick={() => onExport("xlsx")} className="gap-1.5">
             <Download className="size-3.5" aria-hidden /> تصدير Excel
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => onExport("csv")} className="gap-1.5">
+            <FileText className="size-3.5" aria-hidden /> تصدير CSV
           </Button>
           <Button variant="outline" size="sm" onClick={onPrint} className="gap-1.5">
             <Printer className="size-3.5" aria-hidden /> طباعة القائمة
           </Button>
         </div>
-        <ScrollTableShell bordered={false}>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="text-right">العميل</TableHead>
-                <TableHead className="text-right">الهاتف</TableHead>
-                <TableHead className="text-left">الرصيد الآجل</TableHead>
-                {/* «متأخّر منذ» لا «أقدم فاتورة» — القيمة لصفوف الرصيد الافتتاحي هي تاريخ قيد
-                    OPENING لا فاتورة، فالتسمية السابقة كانت مضلِّلة لهذه الصفوف (تحقّق عدائي ٥/٧). */}
-                <TableHead className="text-center">متأخّر منذ</TableHead>
-                <TableHead className="text-center">أيام التأخّر</TableHead>
-                <TableHead className="text-center">آخر تذكير</TableHead>
-                <TableHead className="text-center">إجراءات</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
-                    {search ? `لا نتائج للبحث «${search}»` : "لا نتائج مطابقة لشريحة التقادم المختارة"}
-                  </TableCell>
-                </TableRow>
-              ) : (
-                filtered.map((row) => (
-                  <TableRow key={row.customerId} className={row.isPromiseDue ? "bg-[var(--sem-warn-bg)]/60" : ""}>
-                    <TableCell className="font-medium">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span>{row.customerName}</span>
-                        {row.isPromiseDue && (
-                          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn-bg)] px-2 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]">
-                            <CalendarClock className="size-3" aria-hidden />
-                            موعود{row.promisedDate ? ` (${row.promisedDate})` : ""}
-                          </span>
-                        )}
-                        {row.isOpeningBalance && (
-                          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-info-bg)] px-2 py-0.5 text-[11px] font-bold text-[var(--sem-info)]">
-                            <Landmark className="size-3" aria-hidden />
-                            رصيد مُدوَّر
-                          </span>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell dir="ltr" className="text-xs text-muted-foreground tabular-nums">{row.phone ?? "—"}</TableCell>
-                    <TableCell className="text-left font-bold tabular-nums text-money-negative" dir="ltr">
-                      {fmtAmount(row.totalUnpaid)}
-                    </TableCell>
-                    <TableCell className="text-center text-xs tabular-nums" dir="ltr">{row.oldestInvoiceDate}</TableCell>
-                    <TableCell className="text-center">
-                      <span className={`inline-flex items-center rounded-md px-2.5 py-1 text-xs tabular-nums ${daysBadgeCls(row.daysOverdue)}`}>
-                        {row.daysOverdue}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-center text-xs text-muted-foreground">
-                      {row.lastReminderAt ? fmtDateTime(row.lastReminderAt) : "—"}
-                    </TableCell>
-                    <TableCell className="text-center whitespace-nowrap">
-                      <RowActions
-                        mode="menu"
-                        actions={[
-                          {
-                            key: "send",
-                            kind: "other",
-                            label: "أرسل",
-                            icon: Send,
-                            disabled: !row.phone || sendingId === row.customerId,
-                            disabledReason: !row.phone ? "لا رقم هاتف مسجّل" : "الإرسال قيد التنفيذ",
-                            onSelect: () => onSend(row),
-                            gate: { roles: ["manager", "accountant"], module: "collections", level: "FULL" },
-                          },
-                          {
-                            key: "send-api",
-                            kind: "other",
-                            label: "أرسل عبر API",
-                            icon: Bot,
-                            disabled: !row.phone || sendingViaApiId === row.customerId,
-                            disabledReason: !row.phone ? "لا رقم هاتف مسجّل" : "الإرسال قيد التنفيذ",
-                            onSelect: () => onSendViaApi(row),
-                            gate: { roles: ["manager", "accountant"], module: "collections", level: "FULL" },
-                          },
-                          {
-                            key: "skip",
-                            kind: "approve",
-                            label: "تخطَّ",
-                            icon: SkipForward,
-                            onSelect: () => onSkip(row),
-                            gate: { roles: ["manager", "accountant"], module: "collections", level: "FULL" },
-                          },
-                        ]}
-                      />
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </ScrollTableShell>
+        <DataTable<QueueRow>
+          columns={queueColumns}
+          data={filtered}
+          searchable={false}
+          externalFiltersActive={Boolean(search || agingBracket)}
+          emptyState="لا تذكيرات مستحقّة اليوم"
+          emptyFilteredState={search ? `لا نتائج للبحث «${search}»` : "لا نتائج مطابقة لشريحة التقادم المختارة"}
+        />
       </CardContent>
     </Card>
   );
@@ -658,14 +770,14 @@ function HistoryTab({
   isLoading,
   isError,
   refetch,
+  onOpenDossier,
 }: {
   data: HistoryRow[];
   isLoading: boolean;
   isError: boolean;
   refetch: () => void;
+  onOpenDossier: (customerId: number) => void;
 }) {
-  // فلاتر السجلّ (بحث + حالة + مدى تاريخ) — تصفية عميلة على النافذة المجلوبة أصلاً (٣٠ يوماً، حدّ
-  // ١٠٠٠ صفّ) لأن توسيع النافذة نفسها يتطلّب تعديل arRemindersService.ts (خارج نطاق هذه الشريحة).
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"" | "SENT" | "SKIPPED">("");
   const [from, setFrom] = useState("");
@@ -682,6 +794,121 @@ function HistoryTab({
     if (to) rows = rows.filter((r) => new Date(r.createdAt).toISOString().slice(0, 10) <= to);
     return rows;
   }, [data, search, status, from, to]);
+
+  const historyColumns = useMemo<ColumnDef<HistoryRow, unknown>[]>(
+    () => [
+      {
+        id: "createdAt",
+        header: "التاريخ",
+        accessorKey: "createdAt",
+        cell: ({ row }) => (
+          <span className="text-xs text-muted-foreground tabular-nums block" dir="ltr">
+            {fmtDateTime(row.original.createdAt)}
+          </span>
+        ),
+      },
+      {
+        id: "customer",
+        header: "العميل",
+        accessorKey: "customerName",
+        cell: ({ row }) => {
+          const r = row.original;
+          return (
+            <div className="flex items-center gap-2">
+              <span className="font-medium">{r.customerName}</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => onOpenDossier(r.customerId)}
+                className="text-primary hover:bg-primary/10 h-6 w-6 p-0"
+                title={`الملف الشامل 360° — ${r.customerName}`}
+                aria-label={`الملف الشامل 360° — ${r.customerName}`}
+              >
+                <UserCheck className="size-3.5" aria-hidden />
+              </Button>
+            </div>
+          );
+        },
+      },
+      {
+        id: "totalUnpaidSnapshot",
+        header: "الرصيد وقت التذكير",
+        accessorKey: "totalUnpaidSnapshot",
+        meta: { kind: "money" },
+        sortDescFirst: true,
+        sortingFn: (a, b) => D(a.original.totalUnpaidSnapshot).cmp(D(b.original.totalUnpaidSnapshot)),
+        cell: ({ row }) => (
+          <span className="text-left tabular-nums block" dir="ltr">
+            {fmtAmount(row.original.totalUnpaidSnapshot)}
+          </span>
+        ),
+      },
+      {
+        id: "daysOverdue",
+        header: "أيام التأخّر",
+        accessorKey: "daysOverdue",
+        sortDescFirst: true,
+        cell: ({ row }) => (
+          <span className="text-center tabular-nums block">
+            {row.original.daysOverdue}
+          </span>
+        ),
+      },
+      {
+        id: "status",
+        header: "الحالة",
+        accessorKey: "status",
+        cell: ({ row }) => {
+          const r = row.original;
+          return (
+            <div className="text-center">
+              <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs ${r.status === "SENT" ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : r.promisedDate ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "bg-muted text-muted-foreground"}`}>
+                {r.status === "SENT" ? "أُرسل" : r.promisedDate ? "وعد" : "تُخطّي"}
+              </span>
+            </div>
+          );
+        },
+      },
+      {
+        id: "skipReason",
+        header: "السبب/الملاحظة",
+        accessorKey: "skipReason",
+        cell: ({ row }) => {
+          const r = row.original;
+          return (
+            <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+              <span>{r.skipReason ?? (r.status === "SENT" ? "رسالة واتساب" : "—")}</span>
+              {r.promisedDate && (
+                <span className="text-[11px] text-[var(--sem-warn)] inline-flex items-center gap-1">
+                  <CalendarClock className="size-3" aria-hidden />
+                  موعود بالدفع: <span dir="ltr" className="tabular-nums">{r.promisedDate}</span>
+                </span>
+              )}
+            </div>
+          );
+        },
+      },
+    ],
+    [onOpenDossier],
+  );
+
+  function exportHistory(format: "xlsx" | "csv" = "xlsx") {
+    void exportRows(filtered, {
+      filename: "سجل-تذكيرات-الذمم",
+      format,
+      title: "سجل تذكيرات الذمم الآجلة (٣٠ يوماً)",
+      columns: [
+        { key: "createdAt", header: "التاريخ", map: (r) => fmtDateTime(r.createdAt) },
+        { key: "customerName", header: "العميل" },
+        { key: "totalUnpaidSnapshot", header: "الرصيد وقت التذكير", money: true, map: (r) => Number(r.totalUnpaidSnapshot) },
+        { key: "daysOverdue", header: "أيام التأخّر" },
+        { key: "status", header: "الحالة", map: (r) => (r.status === "SENT" ? "أُرسل" : r.promisedDate ? "وعد" : "تُخطّي") },
+        { key: "skipReason", header: "السبب / الملاحظة", map: (r) => r.skipReason ?? (r.status === "SENT" ? "رسالة واتساب" : "") },
+        { key: "promisedDate", header: "تاريخ الوعد بالدفع", map: (r) => r.promisedDate ?? "" },
+      ],
+    });
+  }
 
   if (isLoading) return <LoadingState />;
   if (isError) {
@@ -724,52 +951,21 @@ function HistoryTab({
           {(search || status || from || to) && (
             <Button variant="ghost" size="sm" onClick={() => { setSearch(""); setStatus(""); setFrom(""); setTo(""); }}>{FILTER_LABELS.reset}</Button>
           )}
+          <Button variant="outline" size="sm" onClick={() => exportHistory("xlsx")} disabled={rows.length === 0} className="gap-1.5">
+            <Download className="size-3.5" aria-hidden /> تصدير Excel
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => exportHistory("csv")} disabled={rows.length === 0} className="gap-1.5">
+            <FileText className="size-3.5" aria-hidden /> تصدير CSV
+          </Button>
         </div>
-        <ScrollTableShell bordered={false}>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="text-right">التاريخ</TableHead>
-                <TableHead className="text-right">العميل</TableHead>
-                <TableHead className="text-left">الرصيد وقت التذكير</TableHead>
-                <TableHead className="text-center">أيام التأخّر</TableHead>
-                <TableHead className="text-center">الحالة</TableHead>
-                <TableHead className="text-right">السبب/الملاحظة</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">لا نتائج مطابقة للفلاتر.</TableCell>
-                </TableRow>
-              )}
-              {rows.map((r) => (
-                <TableRow key={r.id}>
-                  <TableCell className="text-xs text-muted-foreground tabular-nums" dir="ltr">{fmtDateTime(r.createdAt)}</TableCell>
-                  <TableCell className="font-medium">{r.customerName}</TableCell>
-                  <TableCell className="text-left tabular-nums" dir="ltr">{fmtAmount(r.totalUnpaidSnapshot)}</TableCell>
-                  <TableCell className="text-center tabular-nums">{r.daysOverdue}</TableCell>
-                  <TableCell className="text-center">
-                    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs ${r.status === "SENT" ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : r.promisedDate ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "bg-muted text-muted-foreground"}`}>
-                      {r.status === "SENT" ? "أُرسل" : r.promisedDate ? "وعد" : "تُخطّي"}
-                    </span>
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    <div className="flex flex-col gap-0.5">
-                      <span>{r.skipReason ?? (r.status === "SENT" ? "رسالة واتساب" : "—")}</span>
-                      {r.promisedDate && (
-                        <span className="text-[11px] text-[var(--sem-warn)] inline-flex items-center gap-1">
-                          <CalendarClock className="size-3" aria-hidden />
-                          موعود بالدفع: <span dir="ltr" className="tabular-nums">{r.promisedDate}</span>
-                        </span>
-                      )}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </ScrollTableShell>
+        <DataTable<HistoryRow>
+          columns={historyColumns}
+          data={rows}
+          searchable={false}
+          externalFiltersActive={Boolean(search || status || from || to)}
+          emptyState="لا تذكيرات في آخر ٣٠ يوماً"
+          emptyFilteredState="لا نتائج مطابقة للفلاتر."
+        />
       </CardContent>
     </Card>
   );

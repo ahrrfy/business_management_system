@@ -54,6 +54,8 @@ export interface ReportDocInput {
   rows: Record<string, string>[];
   /** صندوق الملخّص المالي (يمين)؛ آخر عنصر بـlarge=true يأخذ الخلفية الخضراء. */
   summary?: SummaryItem[];
+  /** خانات توقيع رسمية أسفل المستند (توقيع العميل / المخول بالمكتبة / الاعتماد). */
+  signatures?: SignatureItem[];
   /** إظهار عمود التسلسل «م». الافتراضي true. */
   showIndex?: boolean;
   /** نصّ يظهر حين لا صفوف (بدل جدول فارغ). */
@@ -68,6 +70,12 @@ export interface ReportDocInput {
   notifyOnBlock?: boolean;
 }
 
+export interface SignatureItem {
+  label: string;
+  name?: string;
+  subtext?: string;
+}
+
 /** تنويه احترافي (شريط خفيف) — يُستعمل للافتراضات/حدود التقرير. */
 function noteBlock(note: string): string {
   return `<div style="margin-bottom:4mm;padding:2.5mm 3.5mm;background:${BRAND.orangePale};
@@ -75,9 +83,29 @@ function noteBlock(note: string): string {
     font-size:8.5px;color:${BRAND.orangeDark};line-height:1.6;">${esc(note)}</div>`;
 }
 
+/** خانات التوقيع والاعتماد الرسمية */
+function docSignatures(sigs: SignatureItem[]): string {
+  if (!sigs || sigs.length === 0) return "";
+  const cols = sigs
+    .map(
+      (s) => `
+      <div style="flex: 1; max-width: 45%; text-align: center;">
+        <div style="font-size: 10px; font-weight: 700; color: ${BRAND.text}; margin-bottom: 12mm;">
+          ${esc(s.label)}
+        </div>
+        <div style="border-top: 1px solid ${BRAND.text}; padding-top: 2mm; font-size: 9px; color: ${BRAND.textMuted};">
+          ${s.name ? esc(s.name) : s.subtext ? esc(s.subtext) : "الاسم والتوقيع: ____________________"}
+        </div>
+      </div>`,
+    )
+    .join("");
+
+  return `<div style="display: flex; justify-content: space-between; gap: 16mm; margin-top: 14mm; margin-bottom: 6mm; padding: 0 4mm;">${cols}</div>`;
+}
+
 /**
  * يبني مستند A4 ويفتح نافذة الطباعة. يعيد false إن حُجبت النافذة المنبثقة (ليُبلَّغ المستخدم).
- * المحتوى: رأس الشركة → تنويه (اختياري) → بطاقات وصفية (اختياري) → جدول → صندوق ملخّص (اختياري) → تذييل.
+ * المحتوى: رأس الشركة → تنويه (اختياري) → بطاقات وصفية (اختياري) → جدول → صندوق ملخّص (اختياري) → خانات توقيع (اختياري) → تذييل.
  */
 export function printReportDoc(input: ReportDocInput): boolean {
   const date = input.docDate ?? fmtDate(new Date());
@@ -103,8 +131,9 @@ export function printReportDoc(input: ReportDocInput): boolean {
   }
 
   const summary = input.summary && input.summary.length ? docSummary(input.summary) : "";
+  const signatures = input.signatures && input.signatures.length ? docSignatures(input.signatures) : "";
 
-  const body = `${head}${note}${meta}${table}${summary}${docFooter(input.companySettings)}`;
+  const body = `${head}${note}${meta}${table}${summary}${signatures}${docFooter(input.companySettings)}`;
   const ok = openPrintWindow(wrapA4Doc(input.title, body, { orientation: input.orientation }));
   if (!ok && input.notifyOnBlock !== false) {
     // رسالة عربية موحّدة عبر كل الشاشات — قبل هذا كان بعضها يعرض alert("popup blocked")،
