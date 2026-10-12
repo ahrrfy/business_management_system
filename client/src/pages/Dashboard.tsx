@@ -753,6 +753,7 @@ export default function Dashboard() {
   const profile = resolveWorkspaceProfile({
     role: me.data.role as RoleKey,
     permissionsOverride: (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    operationPolicy: me.data.operationPolicyEnabled && !me.data.isOwner ? me.data.resolvedOperationPolicy : null,
   });
   // ملف العمل يغذّي روابط التنقل الأساسية والإجراءات اليومية المعتمدة (href={item.href})
   const cashierStation = profile.defaultAction?.access.kind === "STATION"

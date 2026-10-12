@@ -5,7 +5,7 @@ import {
   Receipt, RotateCcw, ScanLine, Server, Settings, ShoppingCart, Sparkles, Store, Truck, Users, Wallet,
   WalletCards, BellRing,
 } from "lucide-react";
-import { AUDIT_LOGS_GATE, CASHIER_NAV_PATHS, INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import { AUDIT_LOGS_GATE, CASHIER_NAV_PATHS, CLOSING_ENTRY_GATE, INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import type { PermissionMap } from "@shared/permissions";
 import type { OperationPolicy } from "@shared/operationPermissions";
 
@@ -72,7 +72,7 @@ export const APPLICATION_MODULES: readonly ApplicationModule[] = [
   { id: "assets", href: "/assets", label: "الأصول الثابتة", description: "سجلّ وإهلاك وعهدة", section: 5, icon: Server, managerOnly: true, module: "assets" },
   { id: "announcements", href: "/announcements", label: "إعلانات وتوجيهات الشركة", description: "بث السبتلايت وتوجيهات الكادر والإقرارات", section: 5, icon: BellRing, roles: ["admin", "manager"], module: "announcements" },
   { id: "hr", href: "/hr", label: "الموارد البشرية", description: "موظفون وحضور ورواتب", section: 5, icon: Briefcase, roles: ["admin", "manager", "accountant", "auditor"], module: "hr" },
-  { id: "closing", href: "/closing", label: "الإقفال والرَقابة", description: "فترات واعتمادات وتوافق", section: 5, icon: Lock, operations: ["reports.monthlyClosePack", "reports.wipReport", "creditApproval.list"], roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
+  { id: "closing", href: "/closing", label: "الإقفال والرَقابة", description: "فترات واعتمادات وتوافق", section: 5, icon: Lock, ...CLOSING_ENTRY_GATE },
   { id: "audit", href: "/audit", label: "سجل التدقيق", description: "الحركات والتغييرات وهوية منفّذها", section: 5, icon: ListChecks, ...AUDIT_LOGS_GATE },
   { id: "settings", href: "/settings", label: "الإدارة والإعدادات", description: "فروع وأدوار وتكاملات", section: 5, icon: Settings, managerOnly: true },
 ] as const;

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { getMobileBottomNavItems } from "@/components/MobileBottomNav";
 import { OPERATION_PERMISSIONS, type OperationPolicy } from "@shared/operationPermissions";
 import { visibleApplicationModules } from "./moduleRegistry";
-import { canSeeGate, EDITOR_OPERATION_GATES, INVOICE_CORRECTION_GATE, RECONCILE_CONTROL_GATE } from "./navVisibility";
+import { canSeeGate, CLOSING_ENTRY_GATE, EDITOR_OPERATION_GATES, INVOICE_CORRECTION_GATE, RECONCILE_CONTROL_GATE } from "./navVisibility";
 
 describe("canonical operation navigation", () => {
   const policy = (grants: Record<string, boolean>): OperationPolicy => ({ version: 1, grants });
@@ -16,6 +16,9 @@ describe("canonical operation navigation", () => {
     expect(hrefs).not.toContain("/treasury");
     expect(hrefs).not.toContain("/exchange");
   });
+  it.each(["cashTransfers.list", "vouchers.list", "shifts.list"])("keeps the hosted treasury workflow reachable for %s", (path) => {
+    expect(canSeeGate({ module: "treasury" }, "accountant", null, policy({ [`operation.${path}`]: true }))).toBe(true);
+  });
   it("a dashboard helper does not open unrelated financial reporting", () => {
     expect(canSeeGate({ module: "reports" }, "cashier", null, policy({ "operation.reports.dashboardMetrics": true }))).toBe(false);
   });
@@ -25,6 +28,16 @@ describe("canonical operation navigation", () => {
     const reportHrefs = visibleApplicationModules("manager", null, policy({ "operation.reports.salesReport": true })).map((entry) => entry.href);
     for (const href of ["/card-account", "/chart-of-accounts", "/statutory-accounting", "/closing"])
       expect(reportHrefs).not.toContain(href);
+  });
+  it("a credit list grant does not open the closing workflow's create screen", () => {
+    const hrefs = visibleApplicationModules("manager", null, policy({ "operation.creditApproval.list": true })).map(entry => entry.href);
+    expect(hrefs).not.toContain("/closing");
+  });
+  it("preserves the independent credit create workflow with its required selectors", () => {
+    const complete = policy(Object.fromEntries(["create", "customerOptions", "listForCustomer"].map(action => [`operation.creditApproval.${action}`, true])));
+    expect(canSeeGate(CLOSING_ENTRY_GATE, "manager", null, complete)).toBe(true);
+    expect(canSeeGate(CLOSING_ENTRY_GATE, "manager", null, policy({ "operation.creditApproval.create": true }))).toBe(false);
+    expect(visibleApplicationModules("manager", null, complete).map(entry => entry.href)).toContain("/closing");
   });
   it("focused canonical cashiers retain only their station navigation", () => {
     const hrefs = visibleApplicationModules("cashier", null, policy({ "operation.assets.list": true, "operation.treasury.getDashboard": true }), true).map((entry) => entry.href);

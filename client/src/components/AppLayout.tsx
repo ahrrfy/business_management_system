@@ -298,6 +298,7 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   const workspaceProfile = resolveWorkspaceProfile({
     role: role ?? null,
     permissionsOverride: permsOverride,
+    operationPolicy,
   });
   const primaryNav = operationPolicy && !isCashier ? workspaceProfile.primaryNav.filter((item) => visibleNav.some((allowed) => item.activePath === allowed.href || item.activePath.startsWith(allowed.href + "/"))) : workspaceProfile.primaryNav;
   const hasMyStocktake = (myStocktakes.data?.length ?? 0) > 0;

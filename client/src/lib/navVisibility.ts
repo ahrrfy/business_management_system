@@ -45,6 +45,18 @@ export const RECEPTION_STATION_GATE: RoleGate = {
   level: "FULL",
 };
 
+/** The credit screen initially creates approvals and loads its customer selectors. */
+export const CREDIT_APPROVAL_CREATE_GATE: RoleGate = {
+  allOf: ["creditApproval.create", "creditApproval.customerOptions", "creditApproval.listForCustomer"]
+    .map(path => ({ operations: [path], managerOnly: true })),
+};
+export const CLOSING_ENTRY_GATE: RoleGate = {
+  anyOf: [
+    { operations: ["reports.monthlyClosePack", "reports.wipReport"], roles: ["admin", "manager", "accountant", "auditor"], module: "reports", level: "READ" },
+    CREDIT_APPROVAL_CREATE_GATE,
+  ],
+};
+
 /** Ordinary and digital sales have separate real execution paths. */
 export const SALE_CREATION_OPERATION_GATE: RoleGate = {
   anyOf: [
@@ -151,7 +163,8 @@ export function canSeeGate(
         operation.delegable &&
         (operation.navigationModule ?? operation.module)?.split("|").includes(gate.module!) &&
         // A cashier's shift helpers share treasury, but do not authorize its financial pages.
-        (gate.module !== "treasury" || operation.domain === "treasury") &&
+        (gate.module !== "treasury" || operation.domain === "treasury" ||
+          ["cashTransfers.list", "cashTransfers.send", "vouchers.list", "vouchers.create", "voucherCategories.list", "shifts.list"].includes(operation.path)) &&
         // Mixed operational dashboards and lookup helpers are not a financial-report entry.
         (gate.module !== "reports" ||
           (operation.domain === "reports" && !["reports.dashboardMetrics", "reports.morningBrief"].includes(operation.path))) &&

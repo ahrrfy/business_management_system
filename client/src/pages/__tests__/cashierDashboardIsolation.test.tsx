@@ -61,4 +61,11 @@ describe("cashier dashboard separation", () => {
     expect(container.textContent).not.toContain("وحدات الإدارة العامة");
     expect(state.queries).not.toContain("reports.dashboardMetrics");
   });
+  it("an unrelated sales mutation cannot create a retail station", () => {
+    Object.assign(state.user, { operationPolicyEnabled: true, permissionsOverride: { sales: "FULL", pos: "NONE", workorders: "NONE" }, resolvedOperationPolicy: { version: 1, grants: { "operation.sales.correct": true } } });
+    act(() => root.render(<Dashboard />));
+    expect(container.querySelector('[aria-label="محطة الكاشير"]')).toBeNull();
+    expect(container.textContent).toContain("لم تُحدّد محطة عمل مفوّضة");
+    expect(state.queries).not.toContain("reports.dashboardMetrics");
+  });
 });

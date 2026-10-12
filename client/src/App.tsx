@@ -32,7 +32,7 @@ import { trpc } from "@/lib/trpc";
 import { Redirect, Route, Switch, useLocation } from "wouter";
 import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
-import { AUDIT_LOGS_GATE, EDITOR_OPERATION_GATES, INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, RECEPTION_STATION_GATE, SALE_CREATION_OPERATION_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
+import { AUDIT_LOGS_GATE, CLOSING_ENTRY_GATE, EDITOR_OPERATION_GATES, INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, RECEPTION_STATION_GATE, SALE_CREATION_OPERATION_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
 import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
 import { QuranAudioProvider, pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 
@@ -646,7 +646,7 @@ export default function App() {
       <Route path="/account"><Shell><Account /></Shell></Route>
       <Route path="/announcements"><Shell><RequireRole roles={["admin","manager"]} module="announcements" level="READ"><Announcements /></RequireRole></Shell></Route>
       <Route path="/audit"><Shell><RequireRole gate={AUDIT_LOGS_GATE}><AuditLogs /></RequireRole></Shell></Route>
-      <Route path="/closing"><Shell><RequireRole operations={["reports.monthlyClosePack", "reports.wipReport", "creditApproval.list"]} roles={["admin","manager","accountant","auditor"]} module="reports" level="READ"><ClosingHub /></RequireRole></Shell></Route>
+      <Route path="/closing"><Shell><RequireRole gate={CLOSING_ENTRY_GATE}><ClosingHub /></RequireRole></Shell></Route>
       <Route path="/period-lock"><Redirect to="/closing?tab=period" /></Route>
       <Route path="/credit-approvals"><Redirect to="/closing?tab=credit" /></Route>
       <Route path="/year-end"><Redirect to="/closing?tab=yearend" /></Route>
