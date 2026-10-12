@@ -41,7 +41,7 @@ import {
   recordIdempotencyKey,
 } from "./idempotency";
 import { postEntry } from "./ledgerService";
-import { getActiveLock } from "./periodLockService";
+import { assertPeriodOpen, getActiveLock } from "./periodLockService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
 import { assertCashOutAvailable, lockCashSourceForUpdate } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
@@ -622,6 +622,8 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
       )[0];
       if (!b)
         throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود" });
+
+      await assertPeriodOpen(tx, new Date(resolvedExpenseDate));
 
       // فئة المصروف المُدارة (هجرة 0203) — تُحلّ **قبل أي كتابة أو ترحيل**: حين تُمرَّر فئة
       // يُشتقّ الدلو منها ويُتجاهَل ما أرسله العميل، فيستحيل أن يفترق التصنيف عن الحساب الذي
