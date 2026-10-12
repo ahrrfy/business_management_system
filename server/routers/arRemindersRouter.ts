@@ -184,16 +184,19 @@ export const arRemindersRouter = router({
         daysOverdue: z.number().int().nonnegative(),
         messageBody: z.string().min(1).max(4000),
         isOpeningBalance: z.boolean().optional(),
+        isAllBranches: z.boolean().optional(),
         branchId: optionalBranch,
       }),
     )
     .mutation(async ({ input, ctx }) => {
       const { branchId: requestedBranchId, ...payload } = input;
+      const targetBranchId =
+        input.isAllBranches || input.isOpeningBalance
+          ? openingWriteBranch(ctx, requestedBranchId)
+          : scopedBranch(ctx, requestedBranchId);
       const r = await logReminderSent(payload, {
         userId: ctx.user.id,
-        branchId: input.isOpeningBalance
-          ? openingWriteBranch(ctx, requestedBranchId)
-          : scopedBranch(ctx, requestedBranchId),
+        branchId: targetBranchId,
       });
       await logAudit(ctx, {
         action: "arReminder.sent",
@@ -220,16 +223,19 @@ export const arRemindersRouter = router({
         oldestInvoiceDate: ymd,
         daysOverdue: z.number().int().nonnegative(),
         isOpeningBalance: z.boolean().optional(),
+        isAllBranches: z.boolean().optional(),
         branchId: optionalBranch,
       }),
     )
     .mutation(async ({ input, ctx }) => {
       const { branchId: requestedBranchId, ...payload } = input;
+      const targetBranchId =
+        input.isAllBranches || input.isOpeningBalance
+          ? openingWriteBranch(ctx, requestedBranchId)
+          : scopedBranch(ctx, requestedBranchId);
       const r = await sendViaApi(payload, {
         userId: ctx.user.id,
-        branchId: input.isOpeningBalance
-          ? openingWriteBranch(ctx, requestedBranchId)
-          : scopedBranch(ctx, requestedBranchId),
+        branchId: targetBranchId,
       });
       if (r.sent) {
         await logAudit(ctx, {
@@ -258,16 +264,19 @@ export const arRemindersRouter = router({
         // اختياري: إن مُلئ ⇒ العميل يعود لقائمة اليوم يوم الوعد (يتخطّى تبريد ٧ أيام).
         promisedDate: ymd.optional().nullable(),
         isOpeningBalance: z.boolean().optional(),
+        isAllBranches: z.boolean().optional(),
         branchId: optionalBranch,
       }),
     )
     .mutation(async ({ input, ctx }) => {
       const { branchId: requestedBranchId, ...payload } = input;
+      const targetBranchId =
+        input.isAllBranches || input.isOpeningBalance
+          ? openingWriteBranch(ctx, requestedBranchId)
+          : scopedBranch(ctx, requestedBranchId);
       const r = await logReminderSkipped(payload, {
         userId: ctx.user.id,
-        branchId: input.isOpeningBalance
-          ? openingWriteBranch(ctx, requestedBranchId)
-          : scopedBranch(ctx, requestedBranchId),
+        branchId: targetBranchId,
       });
       await logAudit(ctx, {
         action: "arReminder.skipped",
