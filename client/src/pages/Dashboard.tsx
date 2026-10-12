@@ -753,15 +753,16 @@ export default function Dashboard() {
   const profile = resolveWorkspaceProfile({
     role: me.data.role as RoleKey,
     permissionsOverride: (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    operationPolicy: me.data.operationPolicyEnabled && !me.data.isOwner ? me.data.resolvedOperationPolicy : null,
   });
   // ملف العمل يغذّي روابط التنقل الأساسية والإجراءات اليومية المعتمدة (href={item.href})
   const cashierStation = profile.defaultAction?.access.kind === "STATION"
     ? profile.defaultAction.access.station
     : undefined;
 
-  // ملف العمل هو الذي يختار المحطة. كاشير بلا محطة فعلية يسقط إلى اللوحة العامة الآمنة
-  // بدلاً من افتراض محطة تجزئة أو استنتاج الاستقبال من صلاحية أخرى.
-  if (me.data.role === "cashier" && !me.data.operationPolicyEnabled && !me.data.isOwner && cashierStation && profile.defaultAction) {
+  // ملف العمل يختار المحطة؛ تفعيل التفويض المستقل لا يخرج الكاشير إلى لوحة الشركة.
+  // غياب المحطة يُعرض كحالة صريحة بلا افتراض محطة أو جلب بيانات الشركة.
+  if (me.data.role === "cashier" && !me.data.isOwner && cashierStation && profile.defaultAction) {
     return (
       <CashierHome
         station={cashierStation}
@@ -772,6 +773,12 @@ export default function Dashboard() {
   }
 
   const isAdmin = me.data.role === "admin";
+  if (me.data.role === "cashier" && !me.data.isOwner) {
+    return <div className="p-6 space-y-4" dir="rtl">
+      <p>لم تُحدّد محطة عمل مفوّضة لهذا الحساب. راجع مسؤول النظام لتحديد عمليات محطتك.</p>
+      <Link href="/my-work" className="text-primary underline">مهامي المطلوبة</Link>
+    </div>;
+  }
   const operationPolicy = me.data.operationPolicyEnabled && !me.data.isOwner ? me.data.resolvedOperationPolicy : null;
   const allowedModules = operationPolicy ? visibleApplicationModules(me.data.role, null, operationPolicy) : null;
   const primaryNav = allowedModules

@@ -196,6 +196,7 @@ describe("cash custody blind-count visibility", () => {
         "operation.treasury.getRecentMovements": true,
         "operation.reports.dayCloseReconciliation": true,
       },
+      recordScopes: { "operation.treasury.getRecentMovements": "BRANCH" },
     } }).where(eq(s.users.id, RECIPIENT));
     const contract = await seedCustody({ prefix: "CH", amount: "75000.00", opening: "75000.00" });
     const date = new Date().toISOString().slice(0, 10);
@@ -211,6 +212,10 @@ describe("cash custody blind-count visibility", () => {
     await recordFirstCount(contract, "blind-delegated-first-count");
     const afterMovements = await caller.treasury.getRecentMovements({ branchId: 1, limit: 100 });
     expect(afterMovements.rows.find((row) => row.referenceNumber === contract.referenceNumber)).toMatchObject({ amount: "75000.00" });
+    const ownUser = await loadUser(RECIPIENT);
+    ownUser.operationPolicy = { ...(ownUser.operationPolicy as any), recordScopes: { "operation.treasury.getRecentMovements": "OWN" } };
+    const ownMovements = await appRouter.createCaller(makeCtx(ownUser)).treasury.getRecentMovements({ branchId: 1, limit: 100 });
+    expect(ownMovements.rows.some(row => row.referenceNumber === contract.referenceNumber || row.shiftId === contract.shiftId)).toBe(false);
     const afterReport = await caller.reports.dayCloseReconciliation({ date, branchId: 1 });
     expect(afterReport.withheldBlindCountShiftCount).toBe(0);
     expect(afterReport.shifts.map((row) => row.shiftId)).toEqual([contract.shiftId]);

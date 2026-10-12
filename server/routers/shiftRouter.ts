@@ -36,8 +36,8 @@ import { cashHandoverRecipientAllowed } from "../services/authorization/operatio
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
 export const shiftRouter = router({
-  // سجلّ الورديات — قائمة مُصفّحة branch-scoped (IDOR كـreport): الكاشير يرى ورديات فرعه فقط،
-  // المرتفعون يرون الكل أو يفلترون بفرع. تُغذّي شاشة /shifts وإعادة طباعة Z-report.
+  // سجلّ الورديات: نطاق الموظف يقيّد المالك، ونطاق المشرف يقيّد الفرع.
+  // تُغذّي شاشة /shifts وإعادة طباعة Z-report.
   list: treasuryReadProcedure
     .input(
       z
@@ -63,6 +63,7 @@ export const shiftRouter = router({
       const conds: SQL[] = [];
       const effectiveBranchId = ctx.scopedBranchId ?? i.branchId;
       if (effectiveBranchId != null) conds.push(eq(shifts.branchId, effectiveBranchId));
+      if (ctx.scopedOwnerId != null) conds.push(eq(shifts.userId, ctx.scopedOwnerId));
       if (i.status) conds.push(eq(shifts.status, i.status));
       if (i.shiftType) conds.push(eq(shifts.shiftType, i.shiftType));
       if (i.varianceState === "WITH_VARIANCE") {
@@ -591,14 +592,23 @@ export const shiftRouter = router({
     .query(async ({ input, ctx }) => {
       const report = await getShiftReport(input.shiftId);
       if (!report) return null;
-      // ctx.scopedBranchId == null للمرتفعين (admin/manager): مرور حر.
-      // ctx.scopedBranchId == number لغيرهم: فرض المطابقة.
+      // نطاق الفرع يُفرض حتى على المشرف؛ null محصور بالعابرين المفوّضين.
       // إصلاح تدقيق ٢٧/٧: فرعُ الوردية مُعشَّشٌ تحت report.shift لا في جذر report — كان القالب
       // `(report as { branchId? })` يقرأ undefined دائماً فيُبطِل الحارس صامتاً (IDOR ماليّ عابر
       // للفروع). المسار الصحيح مُنمَّطٌ الآن فيمتنع تكرار الخطأ (لا cast).
       const sBranchId = report.shift.branchId;
-      if (ctx.scopedBranchId != null && sBranchId != null && Number(sBranchId) !== ctx.scopedBranchId) {
+      if (ctx.scopedBranchId != null && Number(sBranchId) !== ctx.scopedBranchId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "ليس لك صلاحية على ورديات هذا الفرع" });
+      }
+      if (ctx.scopedOwnerId != null && Number(report.shift.userId) !== ctx.scopedOwnerId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "ليس لك صلاحية على وردية موظف آخر",
+            why: "نطاق صلاحيتك يقتصر على وردياتك",
+            doThis: "اختر ورديتك أو اطلب من الإدارة تفويض الاطلاع على ورديات الفرع",
+          }),
+        });
       }
       return report;
     }),

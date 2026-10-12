@@ -219,6 +219,7 @@ export const treasuryRouter = router({
           userId: ctx.user.id,
           actorBranchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId),
           operationPolicyEnabled: hasOperationPolicy(ctx.user),
+          scopedOwnerId: ctx.scopedOwnerId,
           canAcceptHandover: operationDecision(ctx.user, "treasury.acceptHandoverReceipt").allowed,
         },
       );

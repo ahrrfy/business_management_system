@@ -27,6 +27,12 @@ function ids(input: Parameters<typeof resolveWorkspaceProfile>[0]): string[] {
 }
 
 describe("resolveWorkspaceProfile", () => {
+  it("canonical stations depend on the exact selling operation", () => {
+    const input = { role: "cashier" as const, permissionsOverride: { sales: "FULL", pos: "FULL", workorders: "FULL" } as PermissionMap };
+    expect(resolveWorkspaceProfile({ ...input, operationPolicy: { version: 1, grants: { "operation.sales.correct": true } } }).stations).toEqual([]);
+    for (const [path, station] of [["sales.create", "RETAIL"], ["printPos.createSale", "PRINT_SERVICES"], ["workOrders.receptionCheckout", "RECEPTION"]] as const)
+      expect(resolveWorkspaceProfile({ ...input, operationPolicy: { version: 1, grants: { [`operation.${path}`]: true } } }).stations).toEqual([station]);
+  });
   it("يبقى فارغاً حتى تُحلّ هوية الجلسة", () => {
     for (const role of [undefined, null] as const) {
       const profile = resolveWorkspaceProfile({ role });

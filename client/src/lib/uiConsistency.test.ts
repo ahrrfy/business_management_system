@@ -60,7 +60,7 @@ describe("سجل وحدات التطبيق", () => {
       "utf8",
     );
     const resolveAt = dashboard.indexOf("const profile = resolveWorkspaceProfile({");
-    const cashierAt = dashboard.indexOf('me.data.role === "cashier" && !me.data.operationPolicyEnabled && !me.data.isOwner && cashierStation');
+    const cashierAt = dashboard.indexOf('me.data.role === "cashier" && !me.data.isOwner && cashierStation');
 
     expect(resolveAt).toBeGreaterThan(-1);
     expect(cashierAt).toBeGreaterThan(resolveAt);

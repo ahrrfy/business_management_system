@@ -77,7 +77,7 @@ export function getMobileBottomNavItems(
     // Exact operation pages take precedence over broad module links; self/home defaults fill remaining slots.
     const priority = (gate?: RoleGate) => gate?.operations?.length ? 0
       : gate?.module || gate?.anyOf?.length || gate?.allOf?.length ? 1 : 2;
-    const candidates: BottomNavItem[] = visibleApplicationModules(role, permsOverride, operationPolicy)
+    const candidates: BottomNavItem[] = visibleApplicationModules(role, permsOverride, operationPolicy, role === "cashier")
       .map((module) => ({
         href: module.href, label: module.label, icon: module.icon, gate: module,
       }))

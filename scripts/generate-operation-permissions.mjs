@@ -652,6 +652,9 @@ const FIXED_HANDLER_AUTHORITY = new Set([
 ]);
 // Mutating scopes implemented and revalidated inside these exact services.
 const SERVICE_RECORD_SCOPE_PATHS = new Set([
+  "treasury.getRecentMovements",
+  "shifts.list",
+  "shifts.report",
   "workOrders.start",
   "workOrders.markReady",
   "workOrders.setKanbanState",
