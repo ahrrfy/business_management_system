@@ -2,6 +2,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
+import { isOpenConsignmentStatus } from "@shared/deliveryOpenParcel";
 import { courierCommissionRules, deliveryConsignments, deliveryLedgerEntries, deliveryParties, deliveryPartyMembers, onlineOrders, users } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { getDb } from "../../db";
@@ -788,6 +789,26 @@ export async function reassignDeliveryConsignment(
     }
     const replay = await checkIdempotency(tx, "delivery.reassignConsignment", input.clientRequestId, payloadHash);
     if (replay != null) return { consignmentId: replay, replay: true as const };
+    if (cn.returnDeclaredAt != null) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّرت إعادة إسناد الطرد",
+          why: `أُعلن رجوع الإرسالية ${cn.consignmentNumber} وحُرّر تعرّضها سلفاً`,
+          doThis: "أكمِل استلام المرتجع وفحصه من إجراء «استلام المرتجع»؛ لا تُعد إسناده للتوصيل",
+        }),
+      });
+    }
+    if (!isOpenConsignmentStatus(cn.status)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّرت إعادة إسناد الطرد",
+          why: `الإرسالية ${cn.consignmentNumber} مغلقة بحالة (${cn.status})`,
+          doThis: "افتح تفاصيل الإرسالية لمراجعة سجلّها؛ اختر إرسالية مفتوحة لإعادة الإسناد",
+        }),
+      });
+    }
     if (Number(cn.partyId) !== Number(input.partyId)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
