@@ -353,7 +353,7 @@ export async function getReminderQueue(opts: {
           WHERE inner_r.customerId = ${arReminders.customerId}
             ${
               opts.branchId != null
-                ? sql`AND (inner_r.branchId = ${opts.branchId} OR inner_r.messageBody LIKE '[ALL_BRANCHES]%' OR inner_r.skipReason LIKE '[ALL_BRANCHES]%')`
+                ? sql`AND (inner_r.branchId = ${opts.branchId} OR COALESCE(inner_r.messageBody, '') LIKE '[ALL_BRANCHES]%' OR COALESCE(inner_r.skipReason, '') LIKE '[ALL_BRANCHES]%')`
                 : sql``
             }
         )`,
@@ -411,17 +411,9 @@ export async function getReminderQueue(opts: {
     );
     // وعد المستقبل ⇒ استبعاد فوري (متابعة مؤجَّلة بقرار موظف).
     if (isFuturePromise) continue;
-    // ليس وعداً مستحقّاً + في نافذة التبريد:
+    // ليس وعداً مستحقّاً + في نافذة التبريد (التبريد الموحَّد عبر الفروع يمنع إزعاج العميل مجدداً):
     if (!isPromiseDue && last && nowMs - last.at.getTime() < cooldownMs) {
-      // تدقيق مراجعة كودكس: في العرض الشامل المجمّع (opts.branchId == null):
-      // إذا كان التذكير السابق محلياً بفرع واحد فقط (ليس [ALL_BRANCHES])،
-      // والعميل لديه فواتير في فروع أخرى (branchId === null)، فالذمة الإجمالية لم تُغطَّ بالكامل
-      const isCustomerMultiBranch = branchId === null && !isOpeningBalance;
-      if (opts.branchId == null && !last.isAllBranches && isCustomerMultiBranch) {
-        // لا يُحجب عن الطابور الإداري الشامل
-      } else {
-        continue;
-      }
+      continue;
     }
     queue.push({
       customerId: row.customerId,
@@ -825,7 +817,7 @@ export async function getReminderHistory(opts: {
               // في سجل فرع معين: استبعاد التذكيرات العامة المجمعة [ALL_BRANCHES]
               // كي لا تتشوه أرقام وسجلات الفرع المحلي بذمم فروع أخرى
               eq(arReminders.branchId, opts.branchId),
-              sql`NOT (${arReminders.messageBody} LIKE '[ALL_BRANCHES]%' OR ${arReminders.skipReason} LIKE '[ALL_BRANCHES]%')`,
+              sql`COALESCE(${arReminders.messageBody}, '') NOT LIKE '[ALL_BRANCHES]%' AND COALESCE(${arReminders.skipReason}, '') NOT LIKE '[ALL_BRANCHES]%'`,
             ]
           : []),
         gte(arReminders.createdAt, thirtyDaysAgo),
