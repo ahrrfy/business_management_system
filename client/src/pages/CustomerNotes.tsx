@@ -322,14 +322,14 @@ export default function CustomerNotes() {
                   <span>الملف الشامل 360°</span>
                 </Button>
 
-                {displayPhone && (
+                {customer.phone && (
                   <Button
                     asChild
                     variant="outline"
                     size="sm"
                     className="text-xs h-8 gap-1.5 border-[var(--sem-pos)]/40 text-[var(--sem-pos)] hover:bg-accent"
                   >
-                    <a href={`tel:${displayPhone}`}>
+                    <a href={`tel:${customer.phone}`}>
                       <Phone className="size-3.5" aria-hidden />
                       <span>اتصال مباشر</span>
                     </a>
