@@ -1,0 +1,75 @@
+.reception-duplicate-alert {
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-inline-start: 3px solid var(--sem-warn);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--foreground);
+}
+
+.reception-duplicate-candidate {
+  padding-block: 0.5rem;
+  border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.reception-duplicate-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-height: 2.75rem;
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.reception-duplicate-sprite {
+  display: inline-block;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  overflow: hidden;
+  direction: ltr;
+  color: var(--sem-warn);
+}
+
+/* Three discrete inline sprite frames; only the icon moves, twice, then rests. */
+.reception-duplicate-sprite-track {
+  display: block;
+  max-width: none;
+  animation: reception-duplicate-scan 900ms steps(3, end) 2;
+}
+
+@keyframes reception-duplicate-scan {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-72px);
+  }
+}
+
+.reception-duplicate-unavailable {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  color: var(--muted-foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reception-duplicate-sprite-track {
+    animation: none;
+  }
+}
+
+@media print {
+  .reception-duplicate-alert,
+  .reception-duplicate-unavailable {
+    display: none;
+  }
+  .reception-duplicate-sprite-track {
+    animation: none;
+  }
+}

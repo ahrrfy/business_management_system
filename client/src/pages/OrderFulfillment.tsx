@@ -7,6 +7,7 @@
  * الإرسال مديريّ فقط (يُقرّ ائتمان COD المؤقّت للزبون النقدي) — يُخفى زرّه عن غير المدير.
  */
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { useSearch } from "wouter";
 import {
   AlertTriangle,
   Bell,
@@ -31,6 +32,9 @@ import {
   X,
 } from "lucide-react";
 import { ReceptionCommandAlert } from "@/components/reception/ReceptionCommandAlert";
+import { ReceptionDuplicateAlertView } from "@/components/reception/ReceptionDuplicateAlert";
+import { canCheckReceptionDuplicates, type ReceptionDuplicateResult } from "@shared/receptionDuplicateOrders";
+import { resolveOnlineDuplicateReference } from "@/lib/receptionDuplicatePreflight";
 import { StrictCancelOrderDialog } from "@/components/store/StrictCancelOrderDialog";
 const EditOnlineOrderDialog = lazy(() =>
   import("@/components/store/EditOnlineOrderDialog").then((m) => ({ default: m.EditOnlineOrderDialog }))
@@ -114,6 +118,8 @@ type Row = RouterOutputs["storeAdmin"]["orders"]["list"][number];
 const PAGE_SIZE = 200;
 
 export default function OrderFulfillment() {
+  const search = useSearch();
+  const linkedOrderId = Number(new URLSearchParams(search).get("orderId"));
   const [filter, setFilter] = useState<OnlineOrderStatus | null>(null);
   const [query, setQuery] = useState("");
   // مدى تاريخ الطلب (إنشاء الطلب) — محفوظ في querystring (يعيش مع الرجوع من التفاصيل، يُشارَك رابطاً).
@@ -127,12 +133,29 @@ export default function OrderFulfillment() {
     customerPhone?: string | null;
   } | null>(null);
   const [editOrderId, setEditOrderId] = useState<number | null>(null);
-  const [quickViewOrderId, setQuickViewOrderId] = useState<number | null>(null);
+  const [quickViewOrderId, setQuickViewOrderId] = useState<number | null>(
+    Number.isSafeInteger(linkedOrderId) && linkedOrderId > 0 ? linkedOrderId : null,
+  );
+  const [duplicateReview, setDuplicateReview] = useState<{
+    orderId: number; result: ReceptionDuplicateResult | null;
+  } | null>(null);
+  const duplicateReviewRef = useRef<HTMLElement | null>(null);
+  const [checkingDuplicateId, setCheckingDuplicateId] = useState<number | null>(null);
+  const duplicateActionRef = useRef<(() => void) | null>(null);
+  const duplicateCheckEpoch = useRef(0);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(() => isAudioFeedbackEnabled());
   const [myOrdersOnly, setMyOrdersOnly] = useState(false);
   const prevUnclaimedCountRef = useRef(0);
   const utils = trpc.useUtils();
+  useEffect(() => {
+    if (Number.isSafeInteger(linkedOrderId) && linkedOrderId > 0) setQuickViewOrderId(linkedOrderId);
+  }, [linkedOrderId]);
+  useEffect(() => {
+    if (!duplicateReview) return;
+    duplicateReviewRef.current?.scrollIntoView({ block: "nearest" });
+    duplicateReviewRef.current?.focus({ preventScroll: true });
+  }, [duplicateReview]);
 
   useRealtimeEvent<StorefrontOrderPlacedPayload>(
     REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED,
@@ -150,6 +173,45 @@ export default function OrderFulfillment() {
   const canDispatch =
     !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL", ["manager"]);
+  const canCheckDuplicates = !!me.data?.role && canCheckReceptionDuplicates(
+    me.data.role,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+  );
+
+  async function reviewBeforePreparation(orderId: number, proceed: () => void) {
+    if (!canCheckDuplicates) { proceed(); return true; }
+    const epoch = ++duplicateCheckEpoch.current;
+    setCheckingDuplicateId(orderId);
+    setDuplicateReview(null);
+    duplicateActionRef.current = null;
+    try {
+      const reference = await resolveOnlineDuplicateReference(orderId,
+        () => utils.storeAdmin.orders.detail.fetch({ id: orderId }));
+      const result = await utils.reception.duplicateOrders.fetch(reference, { staleTime: 0 });
+      if (epoch !== duplicateCheckEpoch.current) return false;
+      if (result.matches.length || result.truncated) {
+        duplicateActionRef.current = proceed;
+        setDuplicateReview({ orderId, result });
+        return false;
+      }
+      proceed();
+      return true;
+    } catch {
+      if (epoch !== duplicateCheckEpoch.current) return false;
+      duplicateActionRef.current = proceed;
+      setDuplicateReview({ orderId, result: null });
+      return false;
+    } finally {
+      if (epoch === duplicateCheckEpoch.current) setCheckingDuplicateId(null);
+    }
+  }
+
+  function continueAfterDuplicateReview() {
+    const proceed = duplicateActionRef.current;
+    duplicateActionRef.current = null;
+    setDuplicateReview(null);
+    proceed?.();
+  }
 
   const countsQ = trpc.storeAdmin.orders.counts.useQuery(undefined, {
     refetchInterval: 30_000,
@@ -415,8 +477,8 @@ export default function OrderFulfillment() {
                   size="sm"
                   variant="outline"
                   className="h-7 px-2 text-[11px] font-bold text-[var(--sem-pos)] border-[var(--sem-pos)]/40 hover:bg-[var(--sem-pos-bg)] gap-1"
-                  onClick={() => markPreparedM.mutate({ id: o.id })}
-                  disabled={markPreparedM.isPending}
+                  onClick={() => void reviewBeforePreparation(o.id, () => markPreparedM.mutate({ id: o.id }))}
+                  disabled={markPreparedM.isPending || checkingDuplicateId === o.id}
                 >
                   <PackageCheck className="size-3.5" />
                   إتمام التجهيز
@@ -476,7 +538,7 @@ export default function OrderFulfillment() {
         const next = courierShipped ? undefined : ORDER_NEXT_STEP[st];
         const canPrintPreparation = st === "CONFIRMED" || st === "PROCESSING";
         const canPrintInvoice = st !== "PENDING" && st !== "CANCELLED";
-        const isBusy = setStatusM.isPending || printingId === o.id;
+        const isBusy = setStatusM.isPending || printingId === o.id || checkingDuplicateId === o.id;
         return (
           <RowActions
             mode="menu"
@@ -600,7 +662,7 @@ export default function OrderFulfillment() {
         );
       },
     },
-  ], [canDispatch, printingId, setStatusM.isPending, dispatchM.isPending, claimM.isPending, updateContactM.isPending, markPreparedM.isPending]);
+  ], [canDispatch, printingId, setStatusM.isPending, dispatchM.isPending, claimM.isPending, updateContactM.isPending, markPreparedM.isPending, checkingDuplicateId, canCheckDuplicates]);
 
   // تصدير/طباعة «الكل»: نمشي بمؤشّر id حتى تنضب الصفحات المطابقة للفلاتر
   async function fetchAllOrders(): Promise<Row[]> {
@@ -622,8 +684,15 @@ export default function OrderFulfillment() {
 
   // نصّ التأكيد يستعمل رقم الطلب الظاهر للمستخدم (orderNumber) لا معرّفه الداخلي (id).
   async function advance(order: { id: number; orderNumber: string }, to: OnlineOrderStatus, label: string) {
-    const ok = await confirm({ title: `${label}؟`, description: `الطلب رقم ${order.orderNumber}` });
-    if (ok) setStatusM.mutate({ id: order.id, status: to });
+    const proceed = async () => {
+      const ok = await confirm({ title: `${label}؟`, description: `الطلب رقم ${order.orderNumber}` });
+      if (ok) setStatusM.mutate({ id: order.id, status: to });
+    };
+    if (to === "CONFIRMED" || to === "PROCESSING") {
+      await reviewBeforePreparation(order.id, () => void proceed());
+    } else {
+      await proceed();
+    }
   }
   async function printLabel(id: number) {
     setPrintingId(id);
@@ -673,7 +742,7 @@ export default function OrderFulfillment() {
     finally { setPrintingId(null); }
   }
 
-  async function printPreparationA4(id: number) {
+  async function printPreparationA4(id: number, reviewed = false) {
     if (!reservePrintWindow()) return notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
     setPrintingId(id);
     try {
@@ -683,7 +752,27 @@ export default function OrderFulfillment() {
         notify.err("تعذر جلب تفاصيل الطلب");
         return;
       }
-      printOnlineOrderPreparationA4(d);
+      if (d.status !== "CONFIRMED" && d.status !== "PROCESSING") {
+        releaseReservedPrintWindow();
+        notify.warn("تغيّرت حالة الطلب", "راجع الحالة الحالية قبل طباعة ورقة التجهيز.");
+        return;
+      }
+      if (reviewed) {
+        printOnlineOrderPreparationA4(d);
+        return;
+      }
+      let deferred = false;
+      const proceeded = await reviewBeforePreparation(id, () => {
+        if (deferred) {
+          void printPreparationA4(id, true);
+          return;
+        }
+        printOnlineOrderPreparationA4(d);
+      });
+      if (!proceeded) {
+        releaseReservedPrintWindow();
+        deferred = true;
+      }
     } catch (e) {
       releaseReservedPrintWindow();
       notify.err(e);
@@ -793,6 +882,35 @@ export default function OrderFulfillment() {
       />
 
       <ReceptionCommandAlert />
+      {duplicateReview && (
+        <section ref={duplicateReviewRef} tabIndex={-1} className="space-y-2" aria-label="مراجعة تشابه الطلب قبل التجهيز">
+          <p className="text-sm font-bold">
+            مراجعة {visibleOrders.find((order) => order.id === duplicateReview.orderId)?.orderNumber ?? `طلب #${duplicateReview.orderId}`}
+          </p>
+          {duplicateReview.result ? (
+            <ReceptionDuplicateAlertView
+              result={duplicateReview.result}
+              inputKey={String(duplicateReview.orderId)}
+              onContinue={continueAfterDuplicateReview}
+              onVerify={() => {
+                duplicateActionRef.current = null;
+                setQuickViewOrderId(duplicateReview.orderId);
+                setDuplicateReview(null);
+              }}
+            />
+          ) : (
+            <div role="status" className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] p-3 text-sm">
+              <span>تعذّر فحص التشابه. اختر المتابعة أو التأكد من الطلب أولاً.</span>
+              <Button type="button" size="sm" onClick={continueAfterDuplicateReview}>إكمال التجهيز</Button>
+              <Button type="button" size="sm" variant="outline" onClick={() => {
+                duplicateActionRef.current = null;
+                setQuickViewOrderId(duplicateReview.orderId);
+                setDuplicateReview(null);
+              }}>التأكد أولاً</Button>
+            </div>
+          )}
+        </section>
+      )}
 
       <div role="note" className="flex gap-2 rounded-lg border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)] px-3 py-2 text-xs leading-relaxed text-muted-foreground">
         <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-info)]" />

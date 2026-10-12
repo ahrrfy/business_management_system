@@ -1,5 +1,6 @@
 // عقد البيع (POS/عبر القنوات) المشترك.
 import type { PriceTier } from "../pricing";
+import type { VERIFIED_DIGITAL_CREDIT_PREFLIGHT } from "./create";
 import type {
   SaleAttributionInput,
   AttributionMode,
@@ -137,6 +138,14 @@ export interface CreateSaleInput {
   /** موافقة مدير على تجاوز حدّ الائتمان (يضبطها الراوتر بعد التحقّق من هوية المدير).
    *  B5: إن كانت true يجب توفير إمّا creditApprovalId (تدفّق UI جديد) أو managerOverrideByUserId (تدفّق router قديم). */
   creditApproved?: boolean;
+  /** Internal completion of a locked, issued digital intent admitted before provider issuance. */
+  digitalCreditPreflight?: {
+    capability: typeof VERIFIED_DIGITAL_CREDIT_PREFLIGHT;
+    intentId: number;
+    customerId: number;
+    branchId: number;
+    amount: string;
+  };
   /**
    * تفويض داخلي حصراً من checkoutReception بعد قفل عميل فعّال والتحقق من اسمه وهاتفه العراقي.
    * لا يظهر في أي مخطط راوتر عام، ويعفي بيع الاستقبال «بدون عربون» من سقف الائتمان مع إبقاء AR.
