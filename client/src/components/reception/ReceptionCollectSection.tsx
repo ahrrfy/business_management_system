@@ -2,7 +2,7 @@
  * ReceptionCollectSection - قسم التحصيل والذمم في شاشة الاستقبال
  * تحصيل وذمم المناديب والشركات ومطابقة الكشوفات ومسح باركود الإرسالية
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { RouterOutputs } from "@/lib/trpc";
 import { BarChart3, Building2, CheckCircle2, CheckSquare, Clock, Loader2, MapPin, Phone, ScanLine, Search, Square, User } from "lucide-react";
 import { Card } from "@/components/ui/card";
@@ -22,7 +22,9 @@ import { CompanyStatementScanQueue } from "@/components/delivery/CompanyStatemen
 import { statementQueueRemaining, type CompanyStatementQueueCandidate } from "@/components/delivery/companyStatementQueue";
 import { companyStatementPartyTransition } from "@/components/delivery/statementDraft";
 import { PredictiveConsignmentSearchInput, type PredictiveItem } from "@/components/delivery/PredictiveConsignmentSearchInput";
-import { normalizeArabicSearch } from "@shared/storefrontSearchNormalize";
+import { filterOperationalRows, mergeDisplayedSelection } from "@/lib/deliveryOperations";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
+import { CompanyStatementImport } from "@/components/delivery/CompanyStatementImport";
 
 export type PartyObligation = RouterOutputs["delivery"]["obligations"][number];
 
@@ -64,10 +66,12 @@ export function ReceptionCollectSection({
   const [parcelFilter, setParcelFilter] = useState("");
   const [isSearchingCollect, setIsSearchingCollect] = useState(false);
 
+  const draftBusyRef = useRef(false);
   const switchCollectParty = useCallback((
     nextPartyId: number | null,
     nextPartyType: "INDIVIDUAL" | "COMPANY" | null | undefined,
   ) => {
+    if (draftBusyRef.current) return;
     const reset = companyStatementPartyTransition(selectedPartyId, nextPartyId, "");
     if (reset) {
       setSelectedPartyId(reset.partyId);
@@ -105,11 +109,11 @@ export function ReceptionCollectSection({
     },
   );
   useEffect(() => {
-    if (openConsQ.hasNextPage && !openConsQ.isFetchingNextPage) void openConsQ.fetchNextPage();
-  }, [openConsQ.hasNextPage, openConsQ.isFetchingNextPage, openConsQ.fetchNextPage]);
+    if (openConsQ.hasNextPage && !openConsQ.isFetchingNextPage && !openConsQ.isError) void openConsQ.fetchNextPage();
+  }, [openConsQ.hasNextPage, openConsQ.isFetchingNextPage, openConsQ.isError, openConsQ.fetchNextPage]);
 
   const openRows = (openConsQ.data?.pages ?? []).flatMap((page) => page.rows);
-  const openConsStillLoading = openConsQ.isLoading || openConsQ.hasNextPage || openConsQ.isFetchingNextPage;
+  const openConsStillLoading = openConsQ.isLoading || openConsQ.hasNextPage || openConsQ.isFetchingNextPage || openConsQ.isError;
   const statementRows = openRows.filter((row) => (
     row.parcelStatus === "DELIVERED"
       && (row.moneyStatus === "UNSETTLED" || row.moneyStatus === "PARTIAL")
@@ -119,57 +123,8 @@ export function ReceptionCollectSection({
       && row.parcelStatus !== "RETURNED"
       && (row.moneyStatus === "UNSETTLED" || row.moneyStatus === "PARTIAL" || row.moneyStatus === "NOT_APPLICABLE")
   ));
-  const normalizedParcelFilter = parcelFilter.trim().toLowerCase();
-  const filterDigits = parcelFilter.replace(/\D/g, "");
-  const normFilterAr = normalizeArabicSearch(parcelFilter);
-
-  const filterParcelRow = (row: (typeof openRows)[number]) => {
-    if (!normalizedParcelFilter) return true;
-    const r = row as {
-      customerPhone?: string | null;
-      recipientPhone?: string | null;
-      address?: string | null;
-      deliveryAddress?: string | null;
-      externalTrackingRef?: string | null;
-      orderNumber?: string | null;
-    };
-    const phone = r.customerPhone ?? r.recipientPhone ?? "";
-    const phoneDigits = phone.replace(/\D/g, "");
-    const addr = r.address ?? r.deliveryAddress ?? "";
-    const name = row.customerName ?? row.recipientName ?? "";
-    const num = row.invoiceNumber ?? String(row.invoiceId ?? "");
-    const cn = row.consignmentNumber ?? "";
-    const ext = r.externalTrackingRef ?? "";
-    const ord = r.orderNumber ?? "";
-
-    // ١. مطابقة جزئية للأرقام من خانتين فأكثر (هاتف، فاتورة، إرسالية، طلب)
-    if (filterDigits.length >= 2) {
-      if (phoneDigits.includes(filterDigits)) return true;
-      if (num.replace(/\D/g, "").includes(filterDigits)) return true;
-      if (cn.replace(/\D/g, "").includes(filterDigits)) return true;
-      if (ord.replace(/\D/g, "").includes(filterDigits)) return true;
-      if (ext.replace(/\D/g, "").includes(filterDigits)) return true;
-    }
-
-    // ٢. مطابقة نصوص مع تطبيع الأحرف العربية
-    if (normFilterAr) {
-      if (normalizeArabicSearch(name).includes(normFilterAr)) return true;
-      if (normalizeArabicSearch(addr).includes(normFilterAr)) return true;
-    }
-
-    // ٣. مطابقة عامة للرموز والأحرف الإنجليزية
-    return [name, phone, addr, num, cn, ext, ord].some((v) =>
-      v.toLowerCase().includes(normalizedParcelFilter),
-    );
-  };
-
-  const displayedStatementRows = normalizedParcelFilter
-    ? statementRows.filter(filterParcelRow)
-    : statementRows;
-
-  const displayedOpenRows = normalizedParcelFilter
-    ? openRows.filter(filterParcelRow)
-    : openRows;
+  const displayedStatementRows = filterOperationalRows(statementRows, parcelFilter);
+  const displayedOpenRows = filterOperationalRows(openRows, parcelFilter);
 
   const remittableRows = openRows.filter((r) => r.parcelStatus === "DELIVERED");
   const remittableTotal = remittableRows.reduce((sum, r) => {
@@ -301,7 +256,7 @@ export function ReceptionCollectSection({
   }
 
   async function handleCompanyStatementCollect() {
-    if (!selectedPartyId || !shift) return;
+    if (!selectedPartyId || !shift || openConsStillLoading) return;
     if (!statementNumber.trim()) {
       notify.err("يرجى إدخال رقم كشف الشركة");
       return;
@@ -354,12 +309,16 @@ export function ReceptionCollectSection({
     });
   }
 
+  draftBusyRef.current = companyStatementMut.isPending || remitMut.isPending;
+
   const handleCollectBarcode = useCallback(async (raw: string) => {
+    if (draftBusyRef.current) return;
     const code = raw.trim();
     if (!code) return;
     setIsSearchingCollect(true);
     try {
       const doc = await utils.workOrders.getByNumber.fetch({ orderNumber: code });
+      if (draftBusyRef.current) return;
       if (!doc) {
         notify.err(`لم يتم العثور على أي طلب أو إرسالية للرمز: ${code}`);
         return;
@@ -406,6 +365,7 @@ export function ReceptionCollectSection({
 
   const handleSelectPredictiveParcel = useCallback(
     async (item: PredictiveItem) => {
+      if (draftBusyRef.current) return;
       try {
         const pInfo = (partiesQ.data ?? []).find((p) => p.id === item.partyId) ?? {
           id: item.partyId,
@@ -461,6 +421,7 @@ export function ReceptionCollectSection({
           </span>
         </div>
         <PredictiveConsignmentSearchInput
+          disabled={companyStatementMut.isPending || remitMut.isPending}
           onSelect={handleSelectPredictiveParcel}
           onBarcodeEnter={(raw) => void handleCollectBarcode(raw)}
           partyId={selectedPartyId}
@@ -476,6 +437,7 @@ export function ReceptionCollectSection({
           <BarChart3 aria-hidden className="size-5" /> تحصيل وذمم المناديب والشركات
         </h2>
         <AppSelect
+          disabled={companyStatementMut.isPending || remitMut.isPending}
           value={selectedPartyId ? String(selectedPartyId) : ""}
           onValueChange={(v) => {
             const nextId = v ? Number(v) : null;
@@ -529,6 +491,7 @@ export function ReceptionCollectSection({
 
       {selectedPartyId && (
         <Card className="gap-0 p-4 space-y-4">
+          {openConsQ.isError && <p role="alert" className="text-xs text-destructive">تعذر تحميل إرساليات الجهة كاملة. التحديد محفوظ والتسوية محجوبة. <Button size="sm" variant="outline" onClick={() => void openConsQ.refetch()}>إعادة المحاولة</Button></p>}
           {obligationsQ.isLoading ? (
             <div className="py-8 text-center text-muted-foreground">جارٍ تحميل الذمة…</div>
           ) : (
@@ -577,7 +540,7 @@ export function ReceptionCollectSection({
                       <div>
                         <label className="mb-1 block text-xs font-bold">رقم الكشف المسلَّم من الشركة <span className="text-destructive">*</span></label>
                         <Input
-                          value={statementNumber}
+                          value={statementNumber} disabled={companyStatementMut.isPending}
                           onChange={(e) => {
                             setStatementNumber(e.target.value);
                           }}
@@ -589,7 +552,7 @@ export function ReceptionCollectSection({
                       <div>
                         <label className="mb-1 block text-xs font-bold">استقطاعات أجور الشركة (د.ع)</label>
                         <MoneyInput
-                          value={statementDeductions}
+                          value={statementDeductions} disabled={companyStatementMut.isPending}
                           onChange={setStatementDeductions}
                           placeholder="0"
                           className="h-10 bg-background"
@@ -603,7 +566,7 @@ export function ReceptionCollectSection({
                     candidates={statementRows as CompanyStatementQueueCandidate[]}
                     queuedIds={statementQueueIds}
                     collectedById={statementAmounts}
-                    disabled={statementNumber.trim().length < 2 || openConsStillLoading}
+                    disabled={statementNumber.trim().length < 2 || openConsStillLoading || companyStatementMut.isPending}
                     onQueue={(candidate, collected) => {
                       setStatementQueueIds((ids) => ids.includes(candidate.id) ? ids : [...ids, candidate.id]);
                       setSelectedStatementLines((current) => ({ ...current, [candidate.id]: true }));
@@ -623,6 +586,19 @@ export function ReceptionCollectSection({
                     }}
                   />
 
+                  <CompanyStatementImport
+                    key={selectedPartyId}
+                    partyId={selectedPartyId}
+                    candidates={statementRows as CompanyStatementQueueCandidate[]}
+                    selectedIds={statementSelectedRows.map((row) => row.id)}
+                    disabled={statementNumber.trim().length < 2 || openConsStillLoading || companyStatementMut.isPending}
+                    onApply={(lines) => {
+                      setSelectedStatementLines((current) => ({ ...current, ...Object.fromEntries(lines.map((line) => [line.consignmentId, true])) }));
+                      setStatementAmounts((current) => ({ ...current, ...Object.fromEntries(lines.map((line) => [line.consignmentId, line.collectedAmount])) }));
+                      setStatementQueueIds((current) => Array.from(new Set([...current, ...lines.map((line) => line.consignmentId)])));
+                    }}
+                  />
+
                   {/* قائمة الطرود مع إمكانية التحديد بالمطابقة */}
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
@@ -634,46 +610,41 @@ export function ReceptionCollectSection({
                           variant="ghost"
                           size="sm"
                           className="text-xs h-7 font-bold"
+                          disabled={openConsStillLoading || companyStatementMut.isPending || displayedStatementRows.length === 0}
                           onClick={() => {
-                            const next: Record<number, boolean> = {};
-                            const amounts: Record<number, string> = {};
-                            statementRows.forEach((row) => {
-                              next[row.id] = true;
-                              amounts[row.id] = statementQueueRemaining(row as CompanyStatementQueueCandidate).toFixed(2);
-                            });
-                            setSelectedStatementLines(next);
-                            setStatementAmounts(amounts);
-                            setStatementQueueIds(statementRows.map((row) => row.id));
+                            setSelectedStatementLines((current) => mergeDisplayedSelection(current, displayedStatementRows, () => true));
+                            setStatementAmounts((current) => mergeDisplayedSelection(current, displayedStatementRows, (id) => current[id] ?? statementQueueRemaining(statementRows.find((row) => row.id === id) as CompanyStatementQueueCandidate).toFixed(2)));
+                            setStatementQueueIds((current) => Array.from(new Set([...current, ...displayedStatementRows.map((row) => row.id)])));
                           }}
                         >
-                          تحديد الكل
+                          تحديد النتائج المعروضة ({displayedStatementRows.length})
                         </Button>
                         <Button
                           variant="ghost"
                           size="sm"
                           className="text-xs h-7 font-bold text-muted-foreground"
+                          disabled={companyStatementMut.isPending}
                           onClick={() => {
-                            setSelectedStatementLines({});
-                            setStatementAmounts({});
-                            setStatementQueueIds([]);
+                            const visible = new Set(displayedStatementRows.map((row) => row.id));
+                            setSelectedStatementLines((current) => mergeDisplayedSelection(current, displayedStatementRows, () => false));
+                            setStatementQueueIds((current) => current.filter((id) => !visible.has(id)));
                           }}
                         >
-                          إلغاء التحديد
+                          إلغاء تحديد المعروض
                         </Button>
                       </div>
                     </div>
 
                     {statementRows.length > 0 && (
                       <div className="relative">
-                        <Search aria-hidden="true" className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
-                        <Input
-                          type="text"
+                        <UnifiedSearchInput
                           value={parcelFilter}
-                          onChange={(e) => setParcelFilter(e.target.value)}
+                          onChange={setParcelFilter}
                           placeholder="بحث برقم الهاتف، اسم الزبون، رقم الفاتورة أو الإرسالية…"
                           aria-label="تصفية طرود كشف الشركة"
                           className="ps-9 h-9 text-xs"
                         />
+                        <p className="mt-1 text-xs text-muted-foreground">المعروض: {displayedStatementRows.length} من {statementRows.length} · التحديد خارج نتائج البحث محفوظ ويشمله تأكيد الكشف.</p>
                       </div>
                     )}
 
@@ -697,6 +668,7 @@ export function ReceptionCollectSection({
                             <div
                               key={row.id}
                               onClick={() => {
+                                if (companyStatementMut.isPending) return;
                                 if (isSelected) {
                                   setSelectedStatementLines((current) => ({ ...current, [row.id]: false }));
                                   setStatementQueueIds((ids) => ids.filter((id) => id !== row.id));
@@ -776,7 +748,7 @@ export function ReceptionCollectSection({
 
                       <div className="flex gap-2 pt-1">
                         <MoneyInput
-                          value={countedCash}
+                          value={countedCash} disabled={companyStatementMut.isPending || remitMut.isPending}
                           onChange={setCountedCash}
                           placeholder={"المبلغ الصافي المستلم (المتوقع: " + fmt(statementNetExpected.toFixed(2)) + ")"}
                           className="flex-1 h-11 text-base font-bold bg-background"
@@ -808,11 +780,9 @@ export function ReceptionCollectSection({
 
                     {openRows.length > 0 && (
                       <div className="relative">
-                        <Search aria-hidden="true" className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
-                        <Input
-                          type="text"
+                        <UnifiedSearchInput
                           value={parcelFilter}
-                          onChange={(e) => setParcelFilter(e.target.value)}
+                          onChange={setParcelFilter}
                           placeholder="بحث برقم الهاتف، اسم الزبون، رقم الفاتورة أو الإرسالية…"
                           aria-label="تصفية الطرود المفتوحة"
                           className="ps-9 h-9 text-xs"
@@ -905,7 +875,7 @@ export function ReceptionCollectSection({
                       <p className="text-xs text-muted-foreground">توريد المبالغ المحصلة من الطرود المسلمة للوردية الحالية — الأجرة معزولة</p>
                       <div className="flex gap-2">
                         <MoneyInput
-                          value={countedCash}
+                          value={countedCash} disabled={companyStatementMut.isPending || remitMut.isPending}
                           onChange={setCountedCash}
                           placeholder={"المبلغ المستلَم (الكامل: " + fmt(String(remittableTotal)) + ")"}
                           className="flex-1 h-11 text-base font-bold bg-background"

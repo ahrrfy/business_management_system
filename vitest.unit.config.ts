@@ -12,6 +12,10 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "shared/deliverySearch.test.ts",
+      "client/src/lib/deliveryWorkspace.test.ts",
+      "client/src/lib/deliveryOperations.test.ts",
+      "client/src/components/delivery/CompanyStatementScanQueue.test.tsx",
       "server/services/digitalCards/__tests__/intentSchemas.test.ts",
       "client/src/components/invoice/salesRepresentatives.test.ts",
       "server/realtime/__tests__/financialRefresh.test.ts",

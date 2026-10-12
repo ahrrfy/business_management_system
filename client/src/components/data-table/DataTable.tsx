@@ -106,6 +106,7 @@ export type DataTableSelection<K> = {
 type DataTableProps<T, K = string> = {
   columns: ColumnDef<T, unknown>[];
   data: T[];
+  defaultColumnVisibility?: VisibilityState;
   searchable?: boolean;
   searchPlaceholder?: string;
   /** ٢٤/٨ — تركيزٌ تلقائيّ لحقل البحث عند تركيب الجدول. مفيدٌ للشاشات التي يفتحها المستخدم
@@ -304,6 +305,7 @@ function renderHeaderContent<T>(
 export function DataTable<T, K = string>({
   columns,
   data,
+  defaultColumnVisibility,
   searchable = true,
   searchPlaceholder = "بحث…",
   autoFocusSearch = false,
@@ -454,7 +456,7 @@ export function DataTable<T, K = string>({
   }, [effectiveColumns, viewKey]);
   const initialView = useMemo(() => readTableView(storageKey), [storageKey]);
   const [globalFilter, setGlobalFilter] = useState("");
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(initialView.columnVisibility ?? {});
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({ ...defaultColumnVisibility, ...initialView.columnVisibility });
   const [compact, setCompact] = useState(initialView.compact === true);
   const [lastIndex, setLastIndex] = useState<number | null>(null);
 

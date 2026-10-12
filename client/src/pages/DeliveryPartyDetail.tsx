@@ -1,12 +1,5 @@
-// لوحة تفاصيل جهة التوصيل (٩/٨) — تُفتح من شاشة «جهات التوصيل» بلا مسار مستقل.
-//
-// كانت الجهة سطراً واحداً (رصيد + عدّادات) وكشفها «طباعةً فقط»؛ سؤال «أي فواتير عند
-// المندوب الآن ومتى آخر توريد؟» كان بلا شاشة تجيبه — endpoint الإرساليات موجود خادمياً
-// وغير مستهلَك، والتوريدات بلا سجل أصلاً. هنا الخيط كاملاً: إرساليات (بفواتيرها روابط)
-// → توريدات → كشف حساب حيّ (يشمل أمانات الأجرة التي كان الكشف المطبوع يُسقطها صامتاً)
-// → بيانات الجهة وتعديلها (سقف العهدة كان غير قابل للضبط من أي شاشة = حارس ميت).
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Ban, Banknote, PackageOpen, Printer, Truck, Wallet, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Banknote, Truck, Wallet, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,128 +7,28 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { EmptyState } from "@/components/EmptyState";
 import { WhatsAppStageActionsMenu } from "@/components/delivery/WhatsAppStageActionsMenu";
-import { CollectConsignmentDialog, type TargetConsignment } from "@/components/delivery/CollectConsignmentDialog";
-import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
-import { DataTable } from "@/components/data-table/DataTable";
-import type { ColumnDef } from "@tanstack/react-table";
+import { CollectConsignmentDialog } from "@/components/delivery/CollectConsignmentDialog";
+import { ConsignmentsTab, type OrderState } from "@/components/delivery/CompanyConsignments";
+import { RemittancesTab } from "@/components/delivery/CompanyRemittances";
+import { PartyFinancialSummary } from "@/components/delivery/CompanyFinancialSummary";
+import { StatementTab } from "@/components/delivery/CompanyStatement";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { fmtDate, fmtDateTime } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
 import { balanceDirection } from "@shared/predicates";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
-import { printDeliveryPartyStmt } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { ACTION_LABELS } from "@shared/actionLabels";
-
 type PartyRow = RouterOutputs["delivery"]["listParties"][number];
-type StatementEntry = NonNullable<RouterOutputs["delivery"]["partyStatement"]>["entries"][number];
-type ConsignmentRow = NonNullable<RouterOutputs["delivery"]["consignments"]>["rows"][number];
-type RemittanceRow = RouterOutputs["delivery"]["remittances"][number];
-
-/**
- * عمود مبلغ. `accessorFn` يُرجع النصّ المعروض (للنسخ)، و`sortingFn` رقميّ صريح بـDecimal
- * لأنّ الفرز الافتراضيّ يقارن نصّاً فيه فواصل آلاف («1,234» قبل «999») فيقلب ترتيب الذمم.
- */
-function moneyCol<T>(
-  id: string,
-  header: string,
-  get: (r: T) => string | number | null | undefined,
-  display?: (r: T) => string,
-  cls?: (r: T) => string | undefined,
-): ColumnDef<T, unknown> {
-  return {
-    id,
-    header,
-    accessorFn: (r) => (display ? display(r) : fmt(get(r))),
-    meta: { kind: "money" },
-    sortDescFirst: true,
-    sortingFn: (a, b) => D(get(a.original) ?? 0).cmp(D(get(b.original) ?? 0)),
-    cell: ({ row }) => <span className={cls?.(row.original)}>{display ? display(row.original) : fmt(get(row.original))}</span>,
-  };
-}
-
-const CN_STATUS: Record<string, { label: string; cls: string }> = {
-  NOT_APPLICABLE: { label: "لا تحصيل", cls: "bg-muted text-muted-foreground" },
-  UNSETTLED: { label: "غير مورّد", cls: "badge-stock-low" },
-  DISPATCHED: { label: "غير مسوّاة", cls: "badge-stock-low" },
-  PARTIAL: { label: "سُوّيت جزئياً", cls: "badge-stock-low" },
-  SETTLED: { label: "مسوّاة", cls: "badge-status-active" },
-  CANCELLED: { label: "ملغاة", cls: "bg-muted text-muted-foreground" },
-  DELIVERED: { label: "مسوّاة", cls: "badge-status-active" },
-  RETURNED: { label: "أُرجعت", cls: "bg-muted text-muted-foreground" },
-  WRITTEN_OFF: { label: "شُطبت", cls: "badge-stock-out" },
-};
-
-const PARCEL_STATUS: Record<string, string> = {
-  ASSIGNED: "مسند",
-  ACCEPTED: "مقبول",
-  PICKED_UP: "استلمه السائق",
-  OUT_FOR_DELIVERY: "خرج للتوصيل",
-  DELIVERED: "وصل العميل",
-  FAILED: "تعذر التوصيل",
-  RETURNED: "مرتجع",
-};
-
-const tabBtn = (active: boolean) =>
-  cn(
-    "rounded-lg px-3.5 py-1.5 text-sm font-bold transition-colors",
-    active ? "bg-primary text-primary-foreground" : "border bg-card hover:bg-muted/60",
-  );
-
-/** يبني صفوف الكشف بالرصيد الجاري (Decimal لا Number العائم) — يشمل FEE/FEE_HELD كصفوف
- *  إفصاح خارج الرصيد (الرصيد = DISPATCH − REMIT − WRITEOFF، نفس صيغة reconcileDeliveryFloat). */
-function buildStatementRows(entries: StatementEntry[]) {
-  let bal = D(0);
-  let totDispatch = D(0), totSettled = D(0), totFees = D(0), heldNet = D(0);
-  const rows: {
-    id: number; date: string; ref: string; description: string;
-    debit: string | null; credit: string | null; balance: string | null;
-    /** الرصيد الجاري لحظة الصفّ — للطباعة (صفوف الإفصاح لا تغيّره لكن القالب يطبع عموده دائماً). */
-    carry: string; info?: boolean;
-  }[] = [];
-  for (const e of entries) {
-    const amt = D(e.amount);
-    const date = fmtDate(e.entryDate);
-    const ref = e.invoiceNumber ?? (e.notes ?? "").match(/[A-Z]{2,6}-[A-Za-z0-9-]+/)?.[0] ?? "—";
-    if (e.type === "DELIVERY_DISPATCH") {
-      bal = bal.plus(amt); totDispatch = totDispatch.plus(amt);
-      rows.push({ id: e.id, date, ref, description: "إرسالية (عهدة COD)", debit: amt.toFixed(2), credit: null, balance: bal.toFixed(2), carry: bal.toFixed(2) });
-    } else if (e.type === "DELIVERY_REMIT") {
-      bal = bal.minus(amt); totSettled = totSettled.plus(amt);
-      rows.push({ id: e.id, date, ref, description: e.notes?.includes("تسوية") ? "تسوية نقدية" : "توريد", debit: null, credit: amt.toFixed(2), balance: bal.toFixed(2), carry: bal.toFixed(2) });
-    } else if (e.type === "DELIVERY_WRITEOFF") {
-      bal = bal.minus(amt); totSettled = totSettled.plus(amt);
-      const recovery = amt.lt(0);
-      rows.push({
-        id: e.id, date, ref,
-        description: recovery ? "عكس شطب (استرداد نقدي)" : "شطب عجز",
-        debit: recovery ? amt.neg().toFixed(2) : null,
-        credit: recovery ? null : amt.toFixed(2),
-        balance: bal.toFixed(2), carry: bal.toFixed(2),
-      });
-    } else if (e.type === "DELIVERY_FEE") {
-      totFees = totFees.plus(amt);
-      rows.push({ id: e.id, date, ref, description: "أجرة توصيل (على المكتبة)", debit: null, credit: amt.toFixed(2), balance: null, carry: bal.toFixed(2), info: true });
-    } else if (e.type === "DELIVERY_FEE_HELD") {
-      heldNet = heldNet.plus(amt);
-      rows.push({
-        id: e.id, date, ref,
-        description: amt.gte(0) ? "أمانة أجرة — قُبضت في الدرج" : "أمانة أجرة — صُرفت/رُدَّت",
-        debit: null, credit: amt.abs().toFixed(2), balance: null, carry: bal.toFixed(2), info: true,
-      });
-    }
-  }
-  return { rows, totDispatch, totSettled, totFees, heldNet, closing: bal };
-}
-
-/** صفُّ كشف الحساب — مشتقٌّ من بانيه فلا ينجرف عنه. */
-type StatementRow = ReturnType<typeof buildStatementRows>["rows"][number];
-
-export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
+const tabBtn = (active: boolean) => cn("rounded-md px-4 py-2 text-sm font-bold", active ? "bg-primary text-primary-foreground" : "border bg-card hover:bg-muted/60");
+export default function DeliveryPartyDetail({
+  party,
+  onClose,
+  onChanged,
+}: {
   party: PartyRow;
   onClose: () => void;
   onChanged: () => void;
@@ -143,85 +36,188 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
   const me = trpc.auth.me.useQuery();
   // مرآة بوّابة الخادم deliveryManagerProcedure (store=FULL على manager) — لا قائمة أدوار خام:
   // مدير سُحبت منه store لا يرى لوحةً سيرفضها الخادم، ودورٌ مُنح store:FULL صراحةً يراها.
-  const canManageParty = !!me.data?.role && moduleAccessAllowed(
-    me.data.role as RoleKey,
-    (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined,
-    "store",
-    "FULL",
-    ["manager"],
-  );
-  const canSettle = !!me.data?.role && moduleAccessAllowed(
-    me.data.role as RoleKey,
-    (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined,
-    "store",
-    "FULL",
-    ["cashier", "manager"],
-  );
+  const canManageParty =
+    !!me.data?.role &&
+    moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined,
+      "store",
+      "FULL",
+      ["manager"],
+    );
+  const canSettle =
+    !!me.data?.role &&
+    moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined,
+      "store",
+      "FULL",
+      ["cashier", "manager"],
+    );
   const canRecover = canManageParty;
-  const [tab, setTab] = useState<"consignments" | "remittances" | "statement" | "members" | "commission" | "settings">("consignments");
+  const [tab, setTab] = useState<
+    | "consignments"
+    | "remittances"
+    | "statement"
+    | "members"
+    | "commission"
+    | "settings"
+  >("consignments");
   const [showCollectModal, setShowCollectModal] = useState(false);
+  const [orderState, setOrderState] = useState<OrderState>("ALL");
+  const openOrders = (state: typeof orderState) => {
+    setOrderState(state);
+    setTab("consignments");
+  };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-black/70 p-3 backdrop-blur-sm md:p-8" dir="rtl" onClick={onClose}>
-      <div className="w-full max-w-5xl rounded-2xl bg-background p-4 shadow-2xl md:p-6" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="fixed inset-0 z-[45] flex items-start justify-center overflow-y-auto bg-black/70 p-2 md:p-4"
+      dir="rtl"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`مساحة عمل ${party.name}`}
+        className="relative min-h-[calc(100dvh-2rem)] w-full max-w-[1600px] rounded-lg border bg-background p-4 shadow-xl md:p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="flex items-center gap-2 text-xl font-extrabold">
+          <div className="pe-8">
+            <h2 className="flex flex-wrap items-center gap-2 text-lg font-extrabold sm:text-xl">
               <Truck aria-hidden className="size-5 text-primary" />
               {party.name}
-              <Badge variant="secondary">{party.partyType === "COMPANY" ? "شركة توصيل" : "مندوب"}</Badge>
+              <Badge variant="secondary">
+                {party.partyType === "COMPANY" ? "شركة توصيل" : "مندوب"}
+              </Badge>
               {!party.isActive && <Badge variant="outline">معطل</Badge>}
             </h2>
-            {party.phone && <div className="mt-1 text-xs text-muted-foreground" dir="ltr">{party.phone}</div>}
+            {party.phone && (
+              <div className="mt-1 text-xs text-muted-foreground" dir="ltr">
+                {party.phone}
+              </div>
+            )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm">
             <WhatsAppStageActionsMenu
               data={{
                 courierName: party.name,
                 courierPhone: party.phone,
                 totalSettlementCod: party.currentBalance,
-                openConsignmentsCount: 1,
+                openConsignmentsCount: party.openConsignments,
               }}
               target="courier"
               size="sm"
               label="رسائل واتساب للمندوب"
             />
             <div className="rounded-lg border px-3 py-1.5 text-sm">
-              <span className="text-muted-foreground">نقد بذمّتها: </span>
-              <b className={cn("tabular-nums", balanceDirection(party, "deliveryParty") === "receivable" ? "text-destructive" : "")} dir="ltr">{fmt(party.currentBalance)} د.ع</b>
+              <span className="text-muted-foreground">رصيد عهدة الجهة: </span>
+              <b
+                className={cn(
+                  "tabular-nums",
+                  balanceDirection(party, "deliveryParty") === "receivable"
+                    ? "text-destructive"
+                    : "",
+                )}
+                dir="ltr"
+              >
+                {fmt(party.currentBalance)} د.ع
+              </b>
             </div>
             {canSettle && (
               <Button
                 size="sm"
                 className="gap-1.5 font-bold"
                 onClick={() => setShowCollectModal(true)}
-                title="قبض النقد من المندوب وتصفير رصيده بسند توريد فوري"
+                title="مراجعة النقد والتسوية بسند توريد"
               >
-                <Wallet aria-hidden className="size-4" /> قبض الرصيد وتصفير الذمة
+                <Wallet aria-hidden className="size-4" /> استلام توريد وتسوية
               </Button>
             )}
             <StoreInTransitChip partyId={party.id} />
-            <Button variant="ghost" size="icon" onClick={onClose} aria-label="إغلاق"><X aria-hidden className="size-4" /></Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="absolute end-2 top-2 md:static"
+              onClick={onClose}
+              aria-label="إغلاق"
+            >
+              <X aria-hidden className="size-4" />
+            </Button>
           </div>
         </div>
 
-        <PartyFinancialSummary partyId={party.id} />
+        <PartyFinancialSummary party={party} onOrders={openOrders} onStatement={() => setTab("statement")} />
 
         <div className="mb-4 flex flex-wrap gap-2">
-          <button className={tabBtn(tab === "consignments")} onClick={() => setTab("consignments")}>الإرساليات والفواتير</button>
-          <button className={tabBtn(tab === "remittances")} onClick={() => setTab("remittances")}>سجل التوريدات</button>
-          <button className={tabBtn(tab === "statement")} onClick={() => setTab("statement")}>كشف الحساب</button>
-          <button className={tabBtn(tab === "members")} onClick={() => setTab("members")}>حسابات الشركة والمندوبين</button>
-          <button className={tabBtn(tab === "commission")} onClick={() => setTab("commission")}>قاعدة العمولة</button>
-          <button className={tabBtn(tab === "settings")} onClick={() => setTab("settings")}>بيانات الجهة</button>
+          <button
+            className={tabBtn(tab === "consignments")}
+            onClick={() => setTab("consignments")}
+          >
+            الإرساليات والفواتير
+          </button>
+          <button
+            className={tabBtn(tab === "remittances")}
+            onClick={() => setTab("remittances")}
+          >
+            سجل التوريدات
+          </button>
+          <button
+            className={tabBtn(tab === "statement")}
+            onClick={() => setTab("statement")}
+          >
+            كشف الحساب
+          </button>
+          <button
+            className={tabBtn(tab === "members")}
+            onClick={() => setTab("members")}
+          >
+            حسابات الشركة والمندوبين
+          </button>
+          <button
+            className={tabBtn(tab === "commission")}
+            onClick={() => setTab("commission")}
+          >
+            قاعدة العمولة
+          </button>
+          <button
+            className={tabBtn(tab === "settings")}
+            onClick={() => setTab("settings")}
+          >
+            بيانات الجهة
+          </button>
         </div>
 
-        {tab === "consignments" && <ConsignmentsTab partyId={party.id} canEdit={canManageParty} />}
-        {tab === "remittances" && <RemittancesTab partyId={party.id} />}
-        {tab === "statement" && <StatementTab party={party} />}
-        {tab === "members" && <PartyMembersTab partyId={party.id} canEdit={canManageParty} />}
-        {tab === "commission" && <CommissionRuleTab partyId={party.id} canEdit={canManageParty} />}
-        {tab === "settings" && <SettingsTab party={party} canManage={canManageParty} canRecover={canRecover} onChanged={onChanged} />}
+        <div hidden={tab !== "consignments"}>
+          <ConsignmentsTab
+            party={party}
+            canEdit={canManageParty}
+            canSettle={canSettle}
+            state={orderState}
+            onState={setOrderState}
+          />
+        </div>
+        <div hidden={tab !== "remittances"}>
+          <RemittancesTab party={party} active={tab === "remittances"} />
+        </div>
+        <div hidden={tab !== "statement"}>
+          <StatementTab party={party} active={tab === "statement"} />
+        </div>
+        {tab === "members" && (
+          <PartyMembersTab partyId={party.id} canEdit={canManageParty} />
+        )}
+        {tab === "commission" && (
+          <CommissionRuleTab partyId={party.id} canEdit={canManageParty} />
+        )}
+        {tab === "settings" && (
+          <SettingsTab
+            party={party}
+            canManage={canManageParty}
+            canRecover={canRecover}
+            onChanged={onChanged}
+          />
+        )}
 
         {showCollectModal && (
           <CollectConsignmentDialog
@@ -237,78 +233,6 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
         )}
       </div>
     </div>
-  );
-}
-
-/** طرود متجر «مع المندوب» لم تُؤكَّد بعد (١٠/٨): عهدة المتجر تُرفع عند التأكيد لا الإرسال —
- *  ما بيده فعلياً كان غير ظاهر في أي عهدة أو كشف. */
-/**
- * ملخّصٌ ماليّ لجهة التوصيل — Slice DFP2 (٣١/٨/٢٦، إعادة تصميم):
- *
- * الفحص البصريّ (٣١/٨) أظهر شبكةً بستّ إحصائيّات تعرض:
- *   COD مطلوب: 500 (آخر طرد فقط!) · COD خطل: 102,500 · COD ورد: 0 · نقد بذمة: 102,500 ·
- *   **أجرة مكتسبة: 705,000** (تراكميّة تاريخيّة مضلِّلة) · **أجرة مستحقة: -1,000** (سالبة!).
- * ستّة أرقام تدّعي أنّها التعرّض، بعضها متضارب وبعضها بمعانٍ غير واضحة.
- *
- * الحلّ: أربع إحصائيّات وحيدةٌ تُطابق نموذج `partyExposure` (نقد بيده + طرود بالطريق +
- * سلَّم لم يحصَّل + أجور له) + **قسمُ الشفافيّة التاريخيّة** يعرض التراكميّات (أجرة مكتسبة
- * تاريخيّاً + قصّ صريح للسالب) بلونٍ رمادي بلا إبراز.
- *
- * التسميات كلها بلا تشكيل (شارات < 14px تتشوّه بصرياً بالتشكيل).
- */
-function PartyFinancialSummary({ partyId }: { partyId: number }) {
-  const q = trpc.delivery.partyFinancials.useQuery({ partyId }, { staleTime: 15_000 });
-  const s = q.data?.summary;
-  if (!s) return null;
-  // الأربعة الرئيسة (بصريّة بارزة).
-  const primary: Array<[string, string, string, string]> = [
-    ["نقد بيده", s.cashInCustody, "text-[var(--sem-warn)]", "المندوب قبضه من الزبائن ولم يورّده للمكتبة بعد."],
-    ["قيد التحصيل من العملاء", s.codOutstanding, "text-foreground", "المتبقّي على الطرود المفتوحة لدى العملاء (لم يقبضه المندوب بعد)."],
-    ["إجمالي التوريد التاريخيّ", s.codRemitted, "text-[var(--sem-pos)]", "مجموع ما وُرِّد من هذه الجهة إلى درج المكتبة منذ بدء العمل."],
-    ["أجور له الآن", s.feeDue, "text-[var(--sem-info)]", "أجورٌ تراكمت على المكتبة لم تُدفَع بعد — تُقصّ عند صفر بحكم القرار المحاسبيّ."],
-  ];
-  // الشفافيّة التاريخيّة (رمادية، بلا إبراز — للتقارير لا للتسوية).
-  // Slice DFP2 (٣١/٨/٢٦): إن كان feeDueRaw سالباً ⇒ الجهة استقبلت زيادةً تاريخية.
-  const feeDueRaw = Number((s as { feeDueRaw?: string }).feeDueRaw ?? s.feeDue);
-  const showOverpaidNote = feeDueRaw < -0.01;
-  return (
-    <>
-      <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-4">
-        {primary.map(([label, value, tone, tip]) => (
-          <div key={label} className="rounded-xl border bg-card p-3" title={tip}>
-            <div className="text-[11px] font-medium text-muted-foreground">{label}</div>
-            <div className={`mt-1 font-extrabold tabular-nums ${tone}`} dir="ltr">{fmt(value)} د.ع</div>
-          </div>
-        ))}
-      </div>
-      <details className="mb-4 rounded-lg border bg-muted/20 p-2 text-xs">
-        <summary className="cursor-pointer font-bold text-muted-foreground">أرقامٌ تاريخيّة تراكميّة (للتقارير لا للتسوية)</summary>
-        <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
-          <div className="rounded border bg-card p-2" title="مجموع مبالغ COD التي أُسندت للمندوب منذ بدء العمل (تاريخيّ).">
-            <div className="text-[10px] text-muted-foreground">COD أسند اجمالا</div>
-            <div className="tabular-nums font-bold" dir="ltr">{fmt(s.codAssigned)} د.ع</div>
-          </div>
-          <div className="rounded border bg-card p-2" title="مجموع ما قبضه المندوب فعلاً من الزبائن (تاريخيّ).">
-            <div className="text-[10px] text-muted-foreground">COD قبض اجمالا</div>
-            <div className="tabular-nums font-bold" dir="ltr">{fmt(s.codCollected)} د.ع</div>
-          </div>
-          <div className="rounded border bg-card p-2" title="مجموع الأجور التي اكتسبها هذا المندوب على كل طرودٍ ناجحة منذ بدء العمل.">
-            <div className="text-[10px] text-muted-foreground">أجور مكتسبة تاريخيا</div>
-            <div className="tabular-nums font-bold" dir="ltr">{fmt(s.feeEarned)} د.ع</div>
-          </div>
-          <div className="rounded border bg-card p-2" title="مجموع الأجور المدفوعة لهذا المندوب منذ بدء العمل.">
-            <div className="text-[10px] text-muted-foreground">أجور مدفوعة تاريخيا</div>
-            <div className="tabular-nums font-bold" dir="ltr">{fmt(s.feePaid)} د.ع</div>
-          </div>
-        </div>
-        {showOverpaidNote && (
-          <div className="mt-2 flex items-start gap-1 rounded border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-[11px] font-bold text-[var(--sem-warn)]">
-            <AlertTriangle aria-hidden className="mt-0.5 size-3 shrink-0" />
-            <span>أدفع لهذه الجهة زيادة عن مستحقها بمقدار {fmt(String(Math.abs(feeDueRaw)))} د.ع — راجع سندات صرف الأجور القديمة.</span>
-          </div>
-        )}
-      </details>
-    </>
   );
 }
 
@@ -372,428 +296,6 @@ function StoreInTransitChip({ partyId }: { partyId: number }) {
     <div className="rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-sm" title="طلبات متجر مُرسَلة معه لم يؤكَّد تسليمها — قيمتها ليست ضمن «نقد بذمّتها» بعد (تُضاف عند تأكيد التسليم)">
       <span className="text-[var(--sem-warn)] font-bold">طرود متجر بالطريق: {q.data.count}</span>
       <b className="ms-1.5 tabular-nums text-[var(--sem-warn)]" dir="ltr">{fmt(q.data.value)} د.ع</b>
-    </div>
-  );
-}
-
-// ───────────────────────── الإرساليات والفواتير ─────────────────────────
-function ConsignmentsTab({ partyId, canEdit }: { partyId: number; canEdit: boolean }) {
-  const [openOnly, setOpenOnly] = useState(false);
-  const [collectConsignmentTarget, setCollectConsignmentTarget] = useState<ConsignmentRow | null>(null);
-  const [cancelConsignmentTarget, setCancelConsignmentTarget] = useState<{ id: number; number: string } | null>(null);
-  const q = trpc.delivery.consignments.useQuery({ partyId, openOnly });
-  const members = trpc.delivery.partyMembers.useQuery({ partyId });
-  const utils = trpc.useUtils();
-  const reassignM = trpc.delivery.reassignConsignment.useMutation({
-    onSuccess: () => { notify.ok("تم تحديث إسناد الطرد"); void utils.delivery.consignments.invalidate({ partyId }); },
-    onError: (e) => notify.err(e),
-  });
-  const list = q.data?.rows ?? [];
-  const listHasMore = q.data?.hasMore ?? false;
-  const drivers = (members.data ?? []).filter((m) => m.isActive && m.memberRole === "DRIVER");
-  // الأعمدة تُغلِق على طفرة إعادة الإسناد وقائمة السائقين ⇒ تُبنى في كل تصيير (بلا تجميد يُقادم الحالة).
-  const columns: ColumnDef<ConsignmentRow, unknown>[] = [
-    {
-      id: "actions",
-      header: "الإجراءات",
-      enableSorting: false,
-      meta: { kind: "actions", align: "start" },
-      cell: ({ row }) => {
-        const c = row.original;
-        const remaining = Math.max(0, Number(c.codAmount) - Number(c.collectedAmount));
-        const canRemit = c.parcelStatus === "DELIVERED" && c.moneyStatus !== "SETTLED" && remaining > 0;
-        const canCancel = (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "OUT_FOR_DELIVERY" || c.parcelStatus === "FAILED") && Number(c.collectedAmount ?? 0) === 0;
-        return (
-          <div className="flex items-center gap-1">
-            {canRemit && (
-              <Button
-                size="sm"
-                variant="default"
-                className="h-7 px-2 text-xs font-bold gap-1"
-                onClick={() => setCollectConsignmentTarget(c)}
-                title="قبض وتحصيل هذا الطرد فوراً"
-              >
-                <Wallet aria-hidden className="size-3" /> سجّل التحصيل
-              </Button>
-            )}
-            {canEdit && canCancel && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
-                onClick={() => setCancelConsignmentTarget({ id: Number(c.id), number: c.consignmentNumber })}
-                title="إلغاء إسناد الطرد للمندوب وتحرير العهدة"
-              >
-                <Ban aria-hidden className="size-3" /> إلغاء الإسناد
-              </Button>
-            )}
-          </div>
-        );
-      },
-    },
-    {
-      id: "consignmentNumber",
-      header: "الإرسالية",
-      accessorFn: (c) => c.consignmentNumber,
-      meta: { kind: "code" },
-      cell: ({ row }) => <span className="text-xs">{row.original.consignmentNumber}</span>,
-    },
-    {
-      id: "invoice",
-      header: "الفاتورة",
-      accessorFn: (c) => (c.invoiceId ? (c.invoiceNumber ?? "#" + c.invoiceId) : "—"),
-      meta: { kind: "code" },
-      cell: ({ row }) =>
-        row.original.invoiceId ? (
-          <a className="text-xs text-primary hover:underline" dir="ltr" href={"/invoices/" + row.original.invoiceId}>
-            {row.original.invoiceNumber ?? "#" + row.original.invoiceId}
-          </a>
-        ) : (
-          "—"
-        ),
-    },
-    {
-      id: "customer",
-      header: "العميل/المستلم",
-      accessorFn: (c) => c.customerName ?? c.recipientName ?? "عميل نقدي",
-      meta: { width: "wide" },
-      cell: ({ row }) => row.original.customerName ?? row.original.recipientName ?? "عميل نقدي",
-    },
-    moneyCol<ConsignmentRow>("cod", "COD", (c) => c.codAmount),
-    moneyCol<ConsignmentRow>("collected", "المقبوض", (c) => c.collectedAmount),
-    moneyCol<ConsignmentRow>(
-      "remaining",
-      "المتبقي",
-      (c) => Math.max(0, Number(c.codAmount) - Number(c.collectedAmount)),
-      undefined,
-      (c) => (Math.max(0, Number(c.codAmount) - Number(c.collectedAmount)) > 0 ? "font-bold text-destructive" : "font-bold"),
-    ),
-    {
-      id: "moneyStatus",
-      header: "حالة التسوية",
-      accessorFn: (c) => CN_STATUS[c.moneyStatus]?.label ?? c.moneyStatus,
-      meta: { kind: "status" },
-      cell: ({ row }) => {
-        const st = CN_STATUS[row.original.moneyStatus] ?? { label: row.original.moneyStatus, cls: "bg-muted" };
-        return <span className={cn("rounded px-2 py-0.5 text-xs font-bold", st.cls)}>{st.label}</span>;
-      },
-    },
-    {
-      id: "parcelStatus",
-      header: "التسليم للعميل",
-      accessorFn: (c) => PARCEL_STATUS[c.parcelStatus] ?? c.parcelStatus,
-      meta: { kind: "status" },
-      cell: ({ row }) => (
-        <div className="text-xs">
-          <Badge variant={row.original.parcelStatus === "DELIVERED" ? "success" : row.original.parcelStatus === "FAILED" ? "danger" : "info"}>
-            {PARCEL_STATUS[row.original.parcelStatus] ?? row.original.parcelStatus}
-          </Badge>
-          {row.original.courierDeliveredAt && <div className="mt-1 text-money-positive">{fmtDate(row.original.courierDeliveredAt)}</div>}
-        </div>
-      ),
-    },
-    {
-      id: "driver",
-      header: "السائق والحركة",
-      accessorFn: (c) => c.assignedUserName ?? "طابور الشركة المشترك",
-      meta: { width: "wide", wrap: true },
-      enableSorting: false,
-      cell: ({ row }) => {
-        const c = row.original;
-        return (
-          <div className="text-xs">
-            <div className="mb-1">{c.assignedUserName ?? "طابور الشركة المشترك"}</div>
-            {c.failureReason && <div className="mb-1 text-destructive">{c.failureReason}</div>}
-            {canEdit && (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "OUT_FOR_DELIVERY" || c.parcelStatus === "FAILED") && (
-              <AppSelect
-                value={String(c.assignedUserId ?? "")}
-                disabled={reassignM.isPending}
-                onValueChange={(next) => reassignM.mutate({
-                  partyId,
-                  consignmentId: Number(c.id),
-                  assignedUserId: next ? Number(next) : null,
-                  clientRequestId: crypto.randomUUID(),
-                })}
-                className="px-2 py-1"
-              >
-                <option value="">مشترك لكل السائقين</option>
-                {drivers.map((d) => <option key={d.userId} value={d.userId}>{d.name ?? d.username ?? "#" + d.userId}</option>)}
-              </AppSelect>
-            )}
-          </div>
-        );
-      },
-    },
-    {
-      id: "dispatchedAt",
-      header: "ارسلت",
-      accessorFn: (c) => (c.dispatchedAt ? fmtDate(c.dispatchedAt) : "—"),
-      meta: { kind: "date" },
-      cell: ({ row }) => (row.original.dispatchedAt ? fmtDate(row.original.dispatchedAt) : "—"),
-    },
-    {
-      id: "remittanceNumber",
-      header: "التوريد",
-      accessorFn: (c) => c.remittanceNumber ?? "—",
-      meta: { kind: "code" },
-      cell: ({ row }) =>
-        row.original.remittanceNumber ? (
-          <span className="text-xs">{row.original.remittanceNumber}</span>
-        ) : (
-          <span className="text-xs text-muted-foreground">—</span>
-        ),
-    },
-  ];
-  return (
-    <div className="space-y-3">
-      <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-        <input type="checkbox" checked={openOnly} onChange={(e) => setOpenOnly(e.target.checked)} />
-        المالية المفتوحة فقط (غير مسوّاة / مسوّاة جزئياً)
-      </label>
-      <DataTable<ConsignmentRow>
-        columns={columns}
-        data={list}
-        /* الفلترة بمربّع «المالية المفتوحة فقط» أعلاه (يغذّي الاستعلام). */
-        searchable={false}
-        externalFiltersActive={openOnly}
-        loading={q.isLoading}
-        errorState={{ isError: q.isError, message: q.error?.message, onRetry: () => void q.refetch() }}
-        emptyState={<EmptyState icon={PackageOpen} title="لا إرساليات" description="لم تُسنَد لهذه الجهة إرساليات بعد." />}
-        emptyFilteredState={<EmptyState icon={PackageOpen} title="لا إرساليات مفتوحة" description="لا إرسالية غير مسوّاة لهذه الجهة." />}
-      />
-      {/* اقتطاعُ الخادم يُعلَن صراحةً: صفوفٌ لا تظهر ولا تُبحَث لو صمتنا عنه. */}
-      {listHasMore && (
-        <div className="rounded-md border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] p-2 text-center text-xs font-bold text-[var(--sem-warn)]">
-          تعرض {list.length} إرسالية — هناك المزيد. استعمل «المالية المفتوحة فقط» للتصفية.
-        </div>
-      )}
-
-      {collectConsignmentTarget && (
-        <CollectConsignmentDialog
-          consignment={{
-            id: Number(collectConsignmentTarget.id),
-            consignmentNumber: collectConsignmentTarget.consignmentNumber,
-            partyId,
-            orderNumber: collectConsignmentTarget.invoiceNumber ?? (collectConsignmentTarget.invoiceId ? `#${collectConsignmentTarget.invoiceId}` : null),
-            invoiceNumber: collectConsignmentTarget.invoiceNumber,
-            customerName: collectConsignmentTarget.customerName ?? collectConsignmentTarget.recipientName,
-            recipientPhone: collectConsignmentTarget.recipientPhone,
-            codDue: Math.max(0, Number(collectConsignmentTarget.codAmount) - Number(collectConsignmentTarget.collectedAmount)),
-            codAmount: collectConsignmentTarget.codAmount,
-            collectedAmount: collectConsignmentTarget.collectedAmount,
-            parcelStatus: collectConsignmentTarget.parcelStatus,
-          }}
-          open={collectConsignmentTarget != null}
-          onOpenChange={(open) => { if (!open) setCollectConsignmentTarget(null); }}
-          onCompleted={() => {
-            setCollectConsignmentTarget(null);
-            void utils.delivery.consignments.invalidate({ partyId });
-            void utils.delivery.getParty.invalidate({ id: partyId });
-            void utils.delivery.partyFinancials.invalidate({ partyId });
-          }}
-        />
-      )}
-
-      <CancelDeliveryAssignmentDialog
-        consignment={cancelConsignmentTarget}
-        open={cancelConsignmentTarget != null}
-        onOpenChange={(open) => { if (!open) setCancelConsignmentTarget(null); }}
-        onCompleted={() => {
-          setCancelConsignmentTarget(null);
-          void utils.delivery.consignments.invalidate({ partyId });
-          void utils.delivery.getParty.invalidate({ id: partyId });
-          void utils.delivery.partyFinancials.invalidate({ partyId });
-        }}
-      />
-    </div>
-  );
-}
-
-// ───────────────────────── سجل التوريدات ─────────────────────────
-function RemittancesTab({ partyId }: { partyId: number }) {
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const q = trpc.delivery.remittances.useQuery({ partyId, from: from || undefined, to: to || undefined });
-  const list = q.data ?? [];
-  const columns: ColumnDef<RemittanceRow, unknown>[] = [
-    {
-      id: "remittanceNumber",
-      header: "رقم التوريد",
-      accessorFn: (r) => r.remittanceNumber,
-      meta: { kind: "code" },
-      cell: ({ row }) => <span className="text-xs">{row.original.remittanceNumber}</span>,
-    },
-    {
-      id: "receivedAt",
-      header: "التاريخ",
-      accessorFn: (r) => fmtDateTime(r.receivedAt),
-      meta: { kind: "datetime" },
-      cell: ({ row }) => <span className="text-xs">{fmtDateTime(row.original.receivedAt)}</span>,
-    },
-    moneyCol<RemittanceRow>("collectedTotal", "المقبوض", (r) => r.collectedTotal),
-    moneyCol<RemittanceRow>(
-      "feesTotal",
-      "الأجور",
-      (r) => r.feesTotal,
-      (r) => (Number(r.feesTotal) > 0 ? "−" + fmt(r.feesTotal) : "—"),
-      () => "text-[var(--sem-warn)]",
-    ),
-    moneyCol<RemittanceRow>("netRemitted", "صافي التوريد", (r) => r.netRemitted, undefined, () => "font-bold"),
-    moneyCol<RemittanceRow>(
-      "shortfallTotal",
-      "عجز بقي عهدة",
-      (r) => r.shortfallTotal,
-      (r) => (Number(r.shortfallTotal) > 0 ? fmt(r.shortfallTotal) : "—"),
-      (r) => (Number(r.shortfallTotal) > 0 ? "font-bold text-destructive" : "text-muted-foreground"),
-    ),
-    {
-      id: "status",
-      header: "الحالة",
-      accessorFn: (r) => (r.status === "BALANCED" ? "مطابق" : r.status === "SHORT" ? "بعجز" : "بزيادة"),
-      meta: { kind: "status" },
-      cell: ({ row }) => (
-        <span
-          className={cn(
-            "rounded px-2 py-0.5 text-xs font-bold",
-            row.original.status === "BALANCED" ? "badge-status-active" : row.original.status === "SHORT" ? "badge-stock-out" : "badge-stock-low",
-          )}
-        >
-          {row.original.status === "BALANCED" ? "مطابق" : row.original.status === "SHORT" ? "بعجز" : "بزيادة"}
-        </span>
-      ),
-    },
-    {
-      id: "receivedBy",
-      header: "استلمه",
-      accessorFn: (r) => r.receivedByName ?? "—",
-      meta: { kind: "actor" },
-      cell: ({ row }) => <span className="text-xs">{row.original.receivedByName ?? "—"}</span>,
-    },
-  ];
-  return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <label className="inline-flex items-center gap-1.5">من <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 w-40" /></label>
-        <label className="inline-flex items-center gap-1.5">إلى <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 w-40" /></label>
-      </div>
-      <DataTable<RemittanceRow>
-        columns={columns}
-        data={list}
-        /* فلترُ الفترة أعلاه يغذّي الاستعلام — لا حقلَ بحثٍ ثانياً في الجدول. */
-        searchable={false}
-        externalFiltersActive={Boolean(from || to)}
-        loading={q.isLoading}
-        errorState={{ isError: q.isError, message: q.error?.message, onRetry: () => void q.refetch() }}
-        emptyState={<EmptyState icon={Banknote} title="لا توريدات" description="لم تُسجَّل توريدات لهذه الجهة في الفترة." />}
-        emptyFilteredState={<EmptyState icon={Banknote} title="لا توريدات" description="لم تُسجَّل توريدات لهذه الجهة في الفترة." />}
-      />
-    </div>
-  );
-}
-
-// ───────────────────────── كشف الحساب ─────────────────────────
-function StatementTab({ party }: { party: PartyRow }) {
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const q = trpc.delivery.partyStatement.useQuery({ partyId: party.id, from: from || undefined, to: to || undefined });
-  const built = useMemo(() => (q.data ? buildStatementRows(q.data.entries) : null), [q.data]);
-  /*
-   * ⛔ لا فرزَ على كشف حساب: الرصيد عمودٌ **جارٍ** يُحسب بترتيب القيود، وإعادةُ ترتيب الصفوف
-   * تُنتج عمود رصيدٍ لا يقود إلى شيء. لذلك `enableSorting: false` على كل عمود.
-   */
-  const statementColumns: ColumnDef<StatementRow, unknown>[] = [
-    { id: "date", header: "التاريخ", accessorFn: (r) => r.date, meta: { kind: "date" }, enableSorting: false, cell: ({ row }) => <span className="text-xs">{row.original.date}</span> },
-    { id: "ref", header: "المرجع", accessorFn: (r) => r.ref, meta: { kind: "code" }, enableSorting: false, cell: ({ row }) => <span className="text-xs">{row.original.ref}</span> },
-    { id: "description", header: "البيان", accessorFn: (r) => r.description, meta: { width: "wide", wrap: true }, enableSorting: false, cell: ({ row }) => row.original.description },
-    { id: "debit", header: "مدين (عهدة+)", accessorFn: (r) => (r.debit ? fmt(r.debit) : "—"), meta: { kind: "money" }, enableSorting: false, cell: ({ row }) => (row.original.debit ? fmt(row.original.debit) : "—") },
-    { id: "credit", header: "دائن (توريد/شطب)", accessorFn: (r) => (r.credit ? fmt(r.credit) : "—"), meta: { kind: "money" }, enableSorting: false, cell: ({ row }) => (row.original.credit ? fmt(row.original.credit) : "—") },
-    {
-      id: "balance",
-      header: "الرصيد",
-      // صفوف الإفصاح (أجور/أمانات) لا تغيّر العهدة ⇒ خانةُ رصيدها تبقى فارغة كما كانت.
-      accessorFn: (r) => (r.balance ? fmt(r.balance) : ""),
-      meta: { kind: "money" },
-      enableSorting: false,
-      cell: ({ row }) => <span className="font-bold">{row.original.balance ? fmt(row.original.balance) : ""}</span>,
-    },
-  ];
-
-  const print = () => {
-    if (!q.data || !built) return;
-    const filtered = Boolean(from || to);
-    printDeliveryPartyStmt({
-      partyName: q.data.party.name,
-      partyType: q.data.party.partyType === "COMPANY" ? "شركة توصيل" : "مندوب",
-      partyPhone: q.data.party.phone ?? undefined,
-      fromDate: from || undefined,
-      toDate: to || undefined,
-      transactions: built.rows.map((r) => ({
-        date: r.date, ref: r.ref, description: r.description,
-        debit: r.debit, credit: r.credit,
-        // صفوف الإفصاح (أجور/أمانات) لا تغيّر العهدة — تطبع الرصيد الجاري لحظتها لا «0.00».
-        balance: r.balance ?? r.carry,
-      })),
-      totalDispatched: built.totDispatch.toFixed(2),
-      totalSettled: built.totSettled.toFixed(2),
-      totalFees: built.totFees.toFixed(2),
-      // كشفٌ بفترة مفلترة يُختم برصيد **الفترة** (جدوله يبدأ من صفر) لا بالرصيد الحيّ الكامل —
-      // وإلا حمل المستند الورقي رقمين لا يفسّر أحدهما الآخر (مراجعة عدائية ٩/٨).
-      closingBalance: filtered ? built.closing.toFixed(2) : q.data.currentBalance,
-    });
-  };
-
-  return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <label className="inline-flex items-center gap-1.5">من <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 w-40" /></label>
-          <label className="inline-flex items-center gap-1.5">إلى <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 w-40" /></label>
-        </div>
-        <Button variant="outline" size="sm" onClick={print} disabled={!built}>
-          <Printer aria-hidden className="size-3.5" /> طباعة الكشف
-        </Button>
-      </div>
-      {!built || built.rows.length === 0 ? (
-        <DataTable<StatementRow>
-          /* مُضمَّن كنظيره أدناه: شريطُ حالةٍ يقول «لا بيانات» ومنتقي أعمدةٍ فوق كشفٍ فارغ
-             ضجيجٌ يزاحم رسالةَ الفراغ نفسها. */
-          embedded
-          columns={statementColumns}
-          data={[]}
-          searchable={false}
-          loading={q.isLoading}
-          errorState={{ isError: q.isError, message: q.error?.message, onRetry: () => void q.refetch() }}
-          emptyState={<EmptyState icon={Banknote} title="لا حركات" description="لا قيود توصيل لهذه الجهة في الفترة." />}
-        />
-      ) : (
-        <>
-          {/* مُضمَّن: المجاميع تحته مباشرةً، والكشف يُعرض كاملاً (لا ترقيم يقطع الرصيد الجاري). */}
-          <DataTable<StatementRow>
-            embedded
-            searchable={false}
-            pageSize={Infinity}
-            columns={statementColumns}
-            data={built.rows}
-            /* `!bg-…`: تلوينُ `odd:`/`even:` في `DataTable` أعلى تخصّصاً ⇒ بلا `!` يذوب
-               تمييزُ صفوف الإفصاح (أجور/أمانات) التي لا تُغيّر عمودَ الرصيد. */
-            getRowClassName={(r) => (r.info ? "!bg-muted/20 text-muted-foreground" : undefined)}
-          />
-          <div className="grid gap-2 rounded-xl border bg-card p-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-            <div><span className="text-muted-foreground">إجمالي الإرساليات: </span><b className="tabular-nums" dir="ltr">{fmt(built.totDispatch.toFixed(2))}</b></div>
-            <div><span className="text-muted-foreground">إجمالي التوريد/التسوية: </span><b className="tabular-nums" dir="ltr">{fmt(built.totSettled.toFixed(2))}</b></div>
-            <div><span className="text-muted-foreground">أجور على المكتبة: </span><b className="tabular-nums" dir="ltr">{fmt(built.totFees.toFixed(2))}</b></div>
-            <div>
-              <span className="text-muted-foreground">أمانات أجرة معلّقة (Σ): </span>
-              <b className={cn("tabular-nums", !built.heldNet.isZero() && "text-destructive")} dir="ltr">{fmt(built.heldNet.toFixed(2))}</b>
-            </div>
-          </div>
-          {/* رصيد الفترة قد يخالف الرصيد الجاري حين تُفلتر فترة جزئية — نُفصح لا نموّه. */}
-          <div className="text-xs text-muted-foreground">
-            الرصيد الجاري الفعلي للجهة الآن: <b className="tabular-nums" dir="ltr">{fmt(q.data?.currentBalance ?? "0")}</b> د.ع
-            {(from || to) && " — الجدول أعلاه محصور بالفترة المختارة."}
-          </div>
-        </>
-      )}
     </div>
   );
 }
