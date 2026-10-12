@@ -1624,7 +1624,7 @@ export async function getDayCloseReconciliation(opts: {
                       SELECT 1 FROM receipts sv
                       WHERE sv.shiftId = ${shifts.id}
                         AND sv.referenceNumber = CONCAT('SV-', ${shifts.id})
-                        AND sv.status = 'COMPLETED'
+                        AND sv.receiptStatus = 'COMPLETED'
                         AND sv.amount = ABS(${shifts.variance})
                     ))
                   ))
