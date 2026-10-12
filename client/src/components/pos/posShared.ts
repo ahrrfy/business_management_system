@@ -375,6 +375,7 @@ export function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
       : null;
   return {
     receiptNumber: r.invoiceNumber,
+    invoiceId: r.invoiceId,
     date: r.printDate ?? r.date,
     time: r.printTime ?? null,
     cashierName: r.cashierName ?? null,

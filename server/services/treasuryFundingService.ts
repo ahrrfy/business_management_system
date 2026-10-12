@@ -3,7 +3,7 @@
 // لماذا: نموذج العهدة الوسيطة يسحب عهدة كل وردية **من الخزينة** (openShift ⇒ TREASURY OUT). فإن لم
 // تُموَّل الخزينة أولاً بمصدرٍ خارجيّ (رأس مال المالك) يصير رصيدها سالباً. هذه الخدمة هي البوّابة الوحيدة
 // لضخّ نقدٍ خارجيّ في الخزينة: تُنشئ إيصال TREASURY IN + قيد TREASURY_FUNDING (revenue=cost=0). تُقصَر
-// على admin/manager (فعلٌ ماديّ: وضع نقدٍ في الخزنة)، مقيّدة بفرع المدير، وidempotent (نقرٌ مزدوج لا
+// على admin/manager قديماً أو مفوّض بالإجراء حالياً (وضع نقدٍ في الخزنة)، مقيّدة بفرع المنفذ، وidempotent (نقرٌ مزدوج لا
 // يضاعف رأس المال). التبرير (الوصف) إلزاميّ للسجلّ التدقيقي. — راجع getTreasuryBalance/sendTransfer للنمط.
 //
 // ملاحظة حوكمة (مؤجَّلة بقرار المالك): التمويل حاليّاً فعلٌ مباشرٌ بمدير واحد + سجلّ تدقيق. يمكن رفعه إلى
@@ -21,6 +21,7 @@ import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
 import { withTx, type Actor } from "./tx";
 import { lockCashSourceForUpdate } from "./cash/cashAvailability";
+import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
 
 export interface FundTreasuryInput {
   branchId: number;
@@ -76,6 +77,13 @@ export async function fundTreasury(
   actor: Actor,
 ): Promise<FundTreasuryResult> {
   return withTx(async (tx) => {
+    const canonicalAuthorized = await assertOperationAuthorityTx(tx, actor, "treasury.fundTreasury", true);
+    if (actor.role !== "admin" && actor.role !== "manager" && !canonicalAuthorized) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "تمويل الخزينة للمدير فأعلى" });
+    }
+    if (actor.role !== "admin" && Number(actor.branchId) !== Number(input.branchId)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك تمويل خزينة فرعٍ غير فرعك" });
+    }
     if (!input.clientRequestId?.trim()) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "مفتاح idempotency إلزامي لتمويل الخزينة" });
     }
@@ -109,18 +117,9 @@ export async function fundTreasury(
       throw new TRPCError({ code: "BAD_REQUEST", message: "تبرير التمويل مطلوب (مصدر رأس المال/القرار) للسجل التدقيقي" });
     }
 
-    // الفرع موجود + صلاحية الفاعل: admin (أيّ فرع) أو manager (فرعه فقط) — فعلٌ ماديّ (وضع نقدٍ في الخزنة).
+    // وجود الفرع مستقل عن التفويض المثبّت قبل idempotency وأي حركة مالية.
     const branch = (await tx.select().from(branches).where(eq(branches.id, input.branchId)).limit(1))[0];
     if (!branch) throw new TRPCError({ code: "BAD_REQUEST", message: "فرع غير موجود" });
-    if (actor.role !== "admin") {
-      if (actor.role !== "manager") {
-        throw new TRPCError({ code: "FORBIDDEN", message: "تمويل الخزينة للمدير فأعلى" });
-      }
-      if (Number(actor.branchId) !== Number(input.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك تمويل خزينة فرعٍ غير فرعك" });
-      }
-    }
-
     // القفل يسبق الترقيم والإيصال: تمويلان متزامنان لا يملكان FK/S على الفرع
     // ثم يحاولان ترقية القفل إلى X عبر قارئ الرصيد، كما يضمن رقمين متسلسلين مرئيين.
     await lockCashSourceForUpdate(tx, {

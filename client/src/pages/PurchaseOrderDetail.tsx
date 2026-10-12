@@ -10,6 +10,7 @@ import { D, fmtAr, formatQuantity, positiveDiff } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { hasModuleAccess } from "@shared/permissions";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import {
   AlertTriangle,
   Banknote,
@@ -165,7 +166,7 @@ export default function PurchaseOrderDetail() {
   );
   const me = trpc.auth.me.useQuery();
 
-  const canEdit = hasModuleAccess(
+  const legacyEdit = hasModuleAccess(
     me.data?.role ?? "",
     (
       me.data as
@@ -180,6 +181,10 @@ export default function PurchaseOrderDetail() {
     "purchases",
     "FULL",
   );
+  const canEdit = canLifecycleOperation(me.data, "purchases.updateOrder", legacyEdit);
+  const canSettleShipping = canLifecycleOperation(me.data, "purchases.settleShippingFromShift", legacyEdit);
+  const canRequestPayment = canLifecycleOperation(me.data, "supplierPayments.requestPayment", legacyEdit);
+  const canReverseReceipt = canLifecycleOperation(me.data, "goodsReceiptReversal.requestReversal", legacyEdit);
 
   const [isSettleShippingOpen, setIsSettleShippingOpen] = useState(false);
   const utils = trpc.useUtils();
@@ -255,9 +260,9 @@ export default function PurchaseOrderDetail() {
       <PageHeader
         title={`أمر شراء ${d.poNumber ?? `#${d.id}`}`}
         actions={
-          canEdit ? (
+          canEdit || canReverseReceipt ? (
             <div className="flex items-center gap-2">
-              {openForEditing ? (
+              {canEdit && openForEditing ? (
                 <Button asChild size="sm" variant="outline">
                   <Link href={`/purchases/${d.id}/edit`}>
                     <Pencil aria-hidden className="size-4" />
@@ -265,7 +270,7 @@ export default function PurchaseOrderDetail() {
                   </Link>
                 </Button>
               ) : null}
-              {d.status === "RECEIVED" ? (
+              {canReverseReceipt && d.status === "RECEIVED" ? (
                 <Button asChild size="sm" variant="outline">
                   <Link href="/purchases/goods-receipt-reversals">
                     <RotateCcw aria-hidden className="size-4" />
@@ -284,7 +289,7 @@ export default function PurchaseOrderDetail() {
         terminalReason={d.nextActionReason ?? null}
       />
 
-      {d.status === "RECEIVED" && canEdit && (
+      {d.status === "RECEIVED" && canReverseReceipt && (
         <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
           <div className="flex items-center gap-2">
             <CheckCircle2 aria-hidden className="size-4 text-[var(--sem-pos)]" />
@@ -331,7 +336,7 @@ export default function PurchaseOrderDetail() {
       </Card>
 
       {/* بعد cutover، الدفع يُخصَّص إلى فاتورة مورد مرحّلة لا إلى أمر الشراء مباشرةً. */}
-      {canEdit &&
+      {canRequestPayment &&
       d.status !== "CANCELLED" &&
       remaining != null &&
       remaining.gt(0) ? (
@@ -511,7 +516,7 @@ export default function PurchaseOrderDetail() {
                         تصريح الدفع من درج المنشئ ينتظر اعتماد سند الشحن المرتبط أعلاه، مستقلاً عن اعتماد الفاتورة. لا تغلق الوردية قبل توثيقه.
                       </p>
                     ) : null}
-                    {canEdit && d.shippingFundingSource !== "DRAWER" && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
+                    {canSettleShipping && d.shippingFundingSource !== "DRAWER" && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
                       <div className="pt-2 flex items-center justify-between border-t gap-2 flex-wrap">
                         <p className="text-xs text-muted-foreground">
                           يمكن صرف أجور الشحن مباشرةً من درج الوردية النقدية النشطة لتُسجل كنفقات وردية وتُخصم من رصيد الكاشير.

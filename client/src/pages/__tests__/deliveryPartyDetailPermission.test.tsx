@@ -14,9 +14,9 @@ const columns = readFileSync(
 ).replace(/\s+/g, " ");
 
 describe("DeliveryPartyDetail operational permission parity", () => {
-  it("mirrors deliveryManagerProcedure instead of checking raw roles", () => {
+  it("retains the legacy module gate while delegating canonical party editing independently", () => {
     expect(source).toContain(
-      "const canManageParty = !!me.data?.role && moduleAccessAllowed(",
+      'const canManageParty = lifecycleActionAllowed(me.data, "delivery.updateParty", !!me.data?.role && moduleAccessAllowed(',
     );
     expect(source).toContain('"store",');
     expect(source).toContain('"FULL",');
@@ -24,7 +24,7 @@ describe("DeliveryPartyDetail operational permission parity", () => {
     expect(source).not.toContain('["admin", "manager"].includes');
   });
 
-  it("uses the same capability for every governed party control", () => {
+  it("keeps independent grants for party, membership, commission and parcel actions", () => {
     expect(source).toContain(
       "<ConsignmentsTab party={party} canEdit={canManageParty} canSettle={canSettle}",
     );
@@ -37,9 +37,16 @@ describe("DeliveryPartyDetail operational permission parity", () => {
     expect(source).toContain(
       "<SettingsTab party={party} canManage={canManageParty}",
     );
-    expect(source).toContain("const canRecover = canManageParty;");
+    for (const path of ["recoverWriteOff", "addPartyMember", "removePartyMember", "saveCommissionRule", "deleteCommissionRule", "setPartyActive"]) {
+      expect(source).toContain(`"delivery.${path}"`);
+    }
     expect(source).toContain('["cashier", "manager"],');
-    expect(columns).toContain("canSettle && canRemit");
-    expect(columns).toContain("canEdit && canCancel");
+    expect(columns).toContain('lifecycleActionAllowed(me.data, "delivery.recordRemittance", canSettle) && canRemit');
+    expect(columns).toContain('lifecycleActionAllowed(me.data, "delivery.cancelAssignment", canEdit) && canCancel');
+    expect(columns).toContain('lifecycleActionAllowed(me.data, "delivery.reassignConsignment", canEdit)');
+    expect(columns).toContain('lifecycleActionAllowed(me.data, "delivery.returnConsignment", canEdit)');
+    expect(columns).toContain("D(c.collectedAmount).isZero()");
+    expect(columns).toContain("D(c.counterSettledAmount).isZero()");
+    expect(columns).toContain("D(c.shortfallAssigned).isZero()");
   });
 });

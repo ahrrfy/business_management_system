@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -19,7 +20,8 @@ import { useMemo } from "react";
 import { Link } from "wouter";
 
 export default function AssetDisposalLog() {
-  const q = trpc.assets.disposalLog.useQuery();
+  const { can } = useCatalogPeopleOperationAccess();
+  const q = trpc.assets.disposalLog.useQuery(undefined, { enabled: can("assets.disposalLog") });
   const [f, setF, resetF] = useUrlFilters({ q: "", type: "", from: "", to: "" });
 
   const allRows = q.data ?? [];

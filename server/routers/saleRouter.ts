@@ -1,5 +1,6 @@
 import { INVOICE_CHANNELS } from "@shared/invoiceChannel";
 import { failOpaque } from "../lib/opaqueFailure";
+import { canonicalOperationAllowed } from "../operationAuthorization";
 import { TRPCError } from "@trpc/server";
 import {
   and,
@@ -1290,6 +1291,7 @@ export const saleRouter = router({
           (ctx.user as { permissionsOverride?: PermissionMap | null })
             .permissionsOverride ?? null;
         if (
+          !canonicalOperationAllowed(ctx.user, "delivery.dispatchInvoice") &&
           !moduleAccessAllowed(ctx.user.role, override, "store", "FULL", [
             "manager",
             "cashier",

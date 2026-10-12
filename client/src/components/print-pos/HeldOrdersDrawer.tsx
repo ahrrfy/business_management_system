@@ -37,8 +37,8 @@ import {
 import { InvoiceDispatchDialog, type DispatchableInvoice } from "@/components/delivery/InvoiceDispatchDialog";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { getDeviceCode } from "@/lib/offline/outbox";
-import { printReceipt } from "@/lib/printing/print";
-import { buildBrandedReceipt, type Receipt } from "@/components/pos/posShared";
+import { useInvoiceReceiptPrinter } from "@/hooks/useInvoiceReceiptPrinter";
+import { type Receipt } from "@/components/pos/posShared";
 
 export interface HeldSaleOrder {
   id: number;
@@ -104,6 +104,7 @@ export function HeldOrdersDrawer({
 
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
+  const { printAuthorizedReceipt } = useInvoiceReceiptPrinter(me.data, me.data?.id);
   const [lockedOrders, setLockedOrders] = useState<Record<number, number>>({});
   const heldQ = trpc.printPos.listHeldSales.useQuery(
     { branchId },
@@ -184,7 +185,7 @@ export function HeldOrdersDrawer({
             methodCode: vars.method,
             isCredit: false,
           };
-          void printReceipt(buildBrandedReceipt(rec));
+          await printAuthorizedReceipt(rec, true);
         } catch {
           // خطأ طباعة لا يُبطل التحصيل
         }

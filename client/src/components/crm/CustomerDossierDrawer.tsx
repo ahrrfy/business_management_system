@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 /**
  * الملف الشامل للعميل 360° (Customer 360° Dossier Drawer)
  * يعرض بطاقة الاتصال، المؤشرات المالية، مؤشرات الجودة والرضا،
@@ -95,6 +96,7 @@ export function CustomerDossierDrawer({
   open,
   onClose,
 }: CustomerDossierDrawerProps) {
+  const { can } = useCatalogPeopleOperationAccess();
   const [giftModalOpen, setGiftModalOpen] = useState(false);
   const [feedbackModalOpen, setFeedbackModalOpen] = useState(false);
   const [targetFeedbackId, setTargetFeedbackId] = useState<number | undefined>(
@@ -111,7 +113,7 @@ export function CustomerDossierDrawer({
 
   const dossierQuery = trpc.customers.dossier360.useQuery(
     { customerId: customerId! },
-    { enabled: open && customerId != null && customerId > 0 },
+    { enabled: can("customers.dossier360") && (open && customerId != null && customerId > 0) },
   );
 
   const updateStatusMutation = trpc.customers.updateFeedbackStatus.useMutation({
@@ -138,8 +140,8 @@ export function CustomerDossierDrawer({
   const override = (me.data?.permissionsOverride ??
     null) as PermissionMap | null;
   const canReadReports =
-    !!role &&
-    (role === "admin" || hasModuleAccess(role, override, "reports", "READ"));
+    can("reports.customerStatement", !!role &&
+    (role === "admin" || hasModuleAccess(role, override, "reports", "READ")));
 
   const dossier = dossierQuery.data;
   const customer = dossier?.customer;
@@ -396,7 +398,7 @@ export function CustomerDossierDrawer({
                   onClick={() =>
                     handleSendGoogleReviewInvite(latestFiveStarFeedback?.id)
                   }
-                  disabled={markGoogleReviewMutation.isPending}
+                  disabled={!can("customers.markGoogleReviewInviteSent") || (markGoogleReviewMutation.isPending)}
                 >
                   <Star
                     aria-hidden
@@ -885,7 +887,7 @@ export function CustomerDossierDrawer({
                                       className="h-6 text-[10px] text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50 gap-1 px-2"
                                       onClick={() =>
                                         handleSendGoogleReviewInvite(fb.id)
-                                      }
+                                      } disabled={!can("customers.markGoogleReviewInviteSent")}
                                     >
                                       <Star
                                         aria-hidden
@@ -919,7 +921,7 @@ export function CustomerDossierDrawer({
                                         variant="outline"
                                         className="h-6 text-[10px] gap-1 px-2 text-emerald-700 border-emerald-300 hover:bg-emerald-50"
                                         disabled={
-                                          updateStatusMutation.isPending
+                                          !can("customers.updateFeedbackStatus") || (updateStatusMutation.isPending)
                                         }
                                         onClick={() =>
                                           updateStatusMutation.mutate({

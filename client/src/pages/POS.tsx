@@ -7,7 +7,10 @@ import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { notify, errMsg } from "@/lib/notify";
 import { D, round2 } from "@/lib/money";
-import { printReceipt, printShiftOpen } from "@/lib/printing/print";
+import { usePOSShiftOpening } from "@/hooks/usePOSShiftOpening";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
+import { useInvoiceReceiptPrinter } from "@/hooks/useInvoiceReceiptPrinter";
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { useOfflineCatalogSync } from "@/lib/offline/catalogSync";
@@ -30,7 +33,7 @@ import { createPortal } from "react-dom";
 import {
   type Tier, type PaymentMethod, type NumMode, type PosRow, type CartItem, type POSTab, type Receipt, type ShiftData,
   type PosColors as C,
-  lineIdOf, POS_COLORS, fmt, money, effectivePrice, itemTotal, buildSaleLine, createTab, buildBrandedReceipt,
+  lineIdOf, POS_COLORS, fmt, money, effectivePrice, itemTotal, buildSaleLine, createTab,
 } from "@/components/pos/posShared";
 import { POSHeader } from "@/components/pos/POSHeader";
 import { TabBar } from "@/components/pos/TabBar";
@@ -59,7 +62,6 @@ export default function POS() {
   const me       = trpc.auth.me.useQuery();
   const branches = trpc.branches.list.useQuery();
   const utils    = trpc.useUtils();
-
   // «وضع الافتتاح» (ش٥): لافتة + وسم «غير مجرود» — مرآة عرضية فقط، الحارس الفعلي خادميّ في sale/create.
   const openingModeQ = trpc.system.getOpeningMode.useQuery(undefined, { staleTime: 60_000 });
   const openingActive = openingModeQ.data?.active === true;
@@ -71,6 +73,7 @@ export default function POS() {
   // ش٥ — إقلاع دون اتصال: هوية الجهاز وورديته من آخر جلسة أونلاين معلومة
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
   const { offlineBoot, offlineSaleOn } = usePOSOfflineBoot(me.data);
+  const { printAuthorizedReceipt, receiptPrinting } = useInvoiceReceiptPrinter(me.data, offlineBoot?.userId);
   const branchId = me.data?.branchId ?? offlineBoot?.branchId ?? pickedBranch ?? 1;
   const activeBranchName = (branches.data ?? []).find((branch) => Number(branch.id) === branchId)?.name ?? `فرع #${branchId}`;
   const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
@@ -278,6 +281,9 @@ export default function POS() {
     externalPaymentConfirmed,
   } = computePOSTotals({ cart, activeTab });
   // الاستجابات المتأخرة للكوبونات يجب ألا تغيّر أسعار سلة صار فيها رقميّ.
+  const canSubmitSale = !me.data || (cartHasDigital
+    ? lifecycleActionAllowed(me.data, "digitalCards.sales.prepare", true) && lifecycleActionAllowed(me.data, "digitalCards.sales.finalize", true)
+    : lifecycleActionAllowed(me.data, "sales.create", true));
   const cartHasDigitalRef = useRef(cartHasDigital);
   cartHasDigitalRef.current = cartHasDigital;
 
@@ -375,7 +381,7 @@ export default function POS() {
 
   const prepareIntent = trpc.digitalCards.sales.prepare.useMutation({
     onSuccess: (r) => setFulfillIntentId(r.intentId),
-    onError: (e) => { digitalCheckoutRef.current = null; notify.err(e); },
+    onError: (e) => { releaseReservedPrintWindow(); digitalCheckoutRef.current = null; notify.err(e); },
   });
 
   /** ش٨: التثبيت المالي — الفاتورة والقبض والتسوية والتفاصيل في معاملة خادمية واحدة. */
@@ -410,15 +416,15 @@ export default function POS() {
       setReceipt(rec);
       notify.ok(`تمّت الفاتورة ${r.invoiceNumber}`, `الإجمالي ${r.total} د.ع — سُجِّلت الكروت وتسوية المزوّد.`);
       void utils.shifts.current.invalidate();
-      void printReceipt(buildBrandedReceipt(rec))
+      void printAuthorizedReceipt(rec)
         .then((printed) => {
           if (!printed.ok) notify.warn("تعذّرت الطباعة التلقائية", "حجب المتصفح نافذة الطباعة — الفاتورة محفوظة ويمكن إعادة طباعتها.");
         })
-        .catch(() => {
-          notify.warn("تعذّرت الطباعة التلقائية", "الفاتورة محفوظة — أعِد الطباعة من شاشة الفواتير.");
+        .catch((cause) => {
+          notify.warn("الفاتورة محفوظة؛ تعذّرت الطباعة التلقائية", errMsg(cause));
         });
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => { releaseReservedPrintWindow(); notify.err(e); },
   });
 
   /** يبدأ مسار البيع الرقميّ: تحقّقٌ خادميّ + حجز رصيد، **قبل** لمس جهاز المزوّد. */
@@ -442,6 +448,7 @@ export default function POS() {
       received: paidD.gt(total) ? paidD.toFixed(2) : D(total).toFixed(2),
       method: activeTab.method, customerId: activeTab.customerId ?? null, customerName: selectedCustomer?.name, shiftId: shift.id,
     };
+    reservePrintWindow();
     prepareIntent.mutate({
       clientRequestId: activeTab.clientRequestId,
       branchId,
@@ -666,7 +673,8 @@ export default function POS() {
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
       patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "", delivery: null });
 
-      const printed = await printReceipt(buildBrandedReceipt(alignedRec));
+      try {
+      const printed = await printAuthorizedReceipt(alignedRec);
       if (!printed.ok) {
         notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
       } else if (printed.via === "server") {
@@ -675,6 +683,9 @@ export default function POS() {
         notify.ok("تمت الطباعة الحرارية", `فاتورة ${r.invoiceNumber} أُرسلت إلى الطابعة المربوطة`);
       } else {
         notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة؛ اربط طابعة الكاشير من رمز الطابعة لتعمل مباشرة لاحقاً");
+      }
+      } catch (cause) {
+        notify.warn("الفاتورة محفوظة؛ تعذّرت الطباعة", errMsg(cause));
       }
       await Promise.all([
         utils.catalog.posList.invalidate(),
@@ -685,6 +696,7 @@ export default function POS() {
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd(""); setSaleError(null);
     },
     onError: (e) => {
+      releaseReservedPrintWindow();
       const errData = e.data as unknown as { code?: string; httpStatus?: number } | null | undefined;
       const code = errData?.code;
       // ش٣ أوفلاين — تدهور سلس: فشل نقل (لا كود tRPC بنيوي = الطلب لم يصل أصلاً) في أول بيعة
@@ -967,15 +979,20 @@ export default function POS() {
     setLastInv({ num: receiptNumber, total: ctx.total });
     notify.ok(`بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`, "الرقم الرسمي يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)");
     patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "", delivery: null });
-    const printed = await printReceipt(buildBrandedReceipt(rec));
+    try {
+    const printed = await printAuthorizedReceipt(rec);
     if (!printed.ok) {
       notify.err("تعذّرت طباعة الإيصال المؤقت", "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
     } else if (printed.via === "browser") {
       notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة للإيصال المؤقت");
     }
+    } catch (cause) {
+      notify.warn("البيع المؤقت محفوظ؛ تعذّرت طباعة الإيصال", errMsg(cause));
+    }
   }
 
   async function submitSale(approval?: ManagerApprovalInput) {
+    if (!canSubmitSale) { notify.err("صلاحية تنفيذ البيع غير ممنوحة لحسابك"); return; }
     setSaleError(null);
     if (!shift || !cart.length) return;
     if (activeTab.method !== "CASH" && !externalPaymentConfirmed) {
@@ -1021,6 +1038,7 @@ export default function POS() {
     // كان يُرسَل غير المقرَّب، فأيّ إجمالٍ يُقرَّب صعوداً (2,380 ⇒ 2,500) يجعل الخادم يرى القبضَ ناقصاً
     // فيرفضه كبيعٍ آجلٍ بلا عميل. الخادم يحسب `cashRoundingAdj` من فرق الإجمالي/المقرَّب ⇒ الفارق موثَّق.
     saleCtxRef.current = captureSaleCtx();
+    reservePrintWindow();
     const deviceId = activeTab.method === "CASH" ? await getDeviceCode().catch(() => undefined) : activeTab.externalPayment?.deviceId;
     const cashFull = activeTab.method === "CASH" && !isCredit && !codMode;
     const payAmount = isCredit ? money(paid) : (cashFull ? money(cashRoundedTotal) : money(total));
@@ -1052,6 +1070,7 @@ export default function POS() {
   }
 
   async function quickPay() {
+    if (!canSubmitSale) { notify.err("صلاحية تنفيذ البيع غير ممنوحة لحسابك"); return; }
     setSaleError(null);
     if (!shift || !cart.length) return;
     if (activeTab.method !== "CASH" && !externalPaymentConfirmed) {
@@ -1074,6 +1093,7 @@ export default function POS() {
     }
     // الدفع السريع كامل؛ التقريب لفئة IQD يخص النقد وحده (نفس منطق submitSale أعلاه).
     saleCtxRef.current = captureSaleCtx();
+    reservePrintWindow();
     const deviceId = activeTab.method === "CASH" ? await getDeviceCode().catch(() => undefined) : activeTab.externalPayment?.deviceId;
     const payAmount = activeTab.method === "CASH" ? money(cashRoundedTotal) : money(total);
     sale.mutate({
@@ -1096,30 +1116,10 @@ export default function POS() {
   }
 
   // ── Shift open ────────────────────────────────────────────────────────────
-  const openShift = trpc.shifts.open.useMutation({
-    onSuccess: async (res) => {
-      await shiftQ.refetch();
-      // العهدة الوسيطة: تحذيرٌ لينٌ إن سحبت العهدة الخزينة إلى العجز (الضابط التعويضي لقرار «الفتح مسموح
-      // مع تحذير»). الرصيد يظهر للمرتفعين فقط (محجوبٌ عن الكاشير خادمياً ⇒ null).
-      if (res.treasuryWarning) {
-        notify.warn(
-          "تنبيه: عجز الخزينة",
-          res.treasuryBalanceAfter != null
-            ? `عهدة الافتتاح فاقت رصيد الخزينة — الرصيد الآن ${fmt(Number(res.treasuryBalanceAfter))} د.ع. موّل الخزينة.`
-            : "عهدة الافتتاح فاقت رصيد الخزينة (عجز). أبلغ المدير لتمويل الخزينة.",
-        );
-      }
-      void printShiftOpen({
-        shiftId:        res.shiftId,
-        openingBalance: Number(opening || 0),
-        cashierName:    me.data?.name ?? "كاشير",
-        branchName:     (branches.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
-        openedAt:       new Date(),
-      });
-    },
-    onError: (e) => notify.err(e),
+  const openShift = usePOSShiftOpening({
+    onOpened: () => shiftQ.refetch(), opening, cashierName: me.data?.name ?? "كاشير",
+    branchName: (branches.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
   });
-
 
   // مرجعٌ حيٌّ لأحدث `submitSale`: مستمعُ F4 يُثبَّت مرّةً بتبعيّاتٍ لا تشمل `activeTab.delivery`
   // (exhaustive-deps مُعطَّل)، فنداءُ الإغلاق المُثبَّت مباشرةً كان قد يبيع سلّةَ توصيلٍ بلا رؤيتها.
@@ -1180,6 +1180,7 @@ export default function POS() {
   // تدقيق ١٧/٧: أتِح زرّ الدفع للبيع الآجل الجزئي عند اختيار عميل — كان معطَّلاً لأي دفعة أقل من الإجمالي
   // فيستحيل إتمام الآجل الجزئي باللمس/الفأرة (F4 وحده كان يتجاوزه، وهو غائب على اللوحي).
   const canPay =
+    canSubmitSale &&
     cart.length > 0 &&
     !(cartHasDigital && activeTab.method !== "CASH" && activeTab.method !== "CARD") &&
     (activeTab.payInput === "" || paid >= total || (!cartHasDigital && isCredit && activeTab.customerId != null)) &&
@@ -1258,7 +1259,7 @@ export default function POS() {
       <DigitalFulfillmentDialog
         intentId={fulfillIntentId}
         finalizing={finalizeSale.isPending} finalizeError={finalizeSale.error ? errMsg(finalizeSale.error) : null}
-        onClose={() => { setFulfillIntentId(null); digitalCheckoutRef.current = null; }}
+        onClose={() => { releaseReservedPrintWindow(); setFulfillIntentId(null); digitalCheckoutRef.current = null; }}
         onAllExecuted={(intentId) => {
           // كل الكروت صدرت ⇒ التثبيت المالي فوراً. المفتاح نفسه يجعل إعادة الإرسال تُعيد
           // الفاتورة ذاتها بدل إنشاء ثانية (idempotency على مستوى الخادم).
@@ -1395,7 +1396,9 @@ export default function POS() {
           setTimeout(() => searchRef.current?.focus(), 0);
         }}
         onPrintReceipt={() => {
-          void printReceipt(buildBrandedReceipt(receipt!)).then((printed) => {
+          if (!receipt || receiptPrinting.current) return;
+          reservePrintWindow();
+          void printAuthorizedReceipt(receipt, true).then((printed) => {
             if (!printed.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
           }).catch((error) => notify.err(error));
         }}

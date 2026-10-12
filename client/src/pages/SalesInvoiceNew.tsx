@@ -81,6 +81,7 @@ import {
 import { createPricingIntentEpoch } from "@/components/invoice/productSearchResolution"; import { ACTION_LABELS } from "@shared/actionLabels";
 import { SalesCorrectionPanel, resolvePriorReceipt, type PriorReceiptMode } from "@/components/invoice/SalesCorrectionPanel";
 import { salesRepresentativeOptions } from "@/components/invoice/salesRepresentatives";
+import { salesOperationAllowed, salesCostVisible, salesCorrectionKinds, salesEditorActions, salesDigitalAllowed, salesExternalPaymentAllowed, salesEditorShortcuts } from "@/lib/salesOperationAccess";
 
 const INVOICE_TYPE = "SALE" as const;
 
@@ -96,7 +97,7 @@ export default function SalesInvoice() {
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
   const defaultBranchId = me.data?.branchId ? Number(me.data.branchId) : 0;
-  const employeesQ = trpc.employees.list.useQuery({ status: "active", limit: 200 });
+  const employeesQ = trpc.employees.list.useQuery({ status: "active", limit: 200 }, { enabled: salesOperationAllowed(me.data, "employees.list", true) });
   const salesReps = useMemo(() => salesRepresentativeOptions(employeesQ.data?.rows ?? []), [employeesQ.data?.rows]);
 
   const [state, dispatch] = useReducer(
@@ -111,7 +112,7 @@ export default function SalesInvoice() {
   const correctInvoiceId = corrMatch && corrParams?.id ? Number(corrParams.id) : null;
   const isCorrection = correctInvoiceId != null && correctInvoiceId > 0;
   const correctionFromReception = new URLSearchParams(useSearch()).get("from") === "reception-edit";
-  const original = trpc.sales.get.useQuery({ invoiceId: correctInvoiceId ?? 0 }, { enabled: isCorrection },
+  const original = trpc.sales.get.useQuery({ invoiceId: correctInvoiceId ?? 0 }, { enabled: isCorrection && salesOperationAllowed(me.data, "sales.get", true) },
   );
   const correctionUnitIds = useMemo(
     () => Array.from(new Set((original.data?.items ?? []).map((item) => item.productUnitId ?? 0).filter((id) => id > 0),
@@ -122,13 +123,17 @@ export default function SalesInvoice() {
   const correctionCatalog = trpc.catalog.byUnitIds.useQuery(
     { branchId: original.data?.branchId ?? defaultBranchId, tier: (original.data?.priceTier ?? "RETAIL") as PriceTier, productUnitIds: correctionUnitIds,
     },
-    { enabled: isCorrection && !!original.data && correctionUnitIds.length > 0, staleTime: 15_000,
+    { enabled: isCorrection && !!original.data && correctionUnitIds.length > 0 && salesOperationAllowed(me.data, "catalog.byUnitIds", true), staleTime: 15_000,
     },
   );
   const originalPaid = useMemo(() => D(original.data?.paidAmount ?? "0"), [original.data?.paidAmount],
   );
   const [reason, setReason] = useState("");
   const [correctionKind, setCorrectionKind] = useState<"REISSUE" | "EXCHANGE">("REISSUE");
+  const allowedKinds = salesCorrectionKinds(me.data);
+  const availableActions = salesEditorActions(me.data, isCorrection, correctionKind, state.items.some((line) => line.digital != null));
+  const canUseDigital = salesDigitalAllowed(me.data);
+  useEffect(() => { if (!allowedKinds.includes(correctionKind) && allowedKinds[0]) setCorrectionKind(allowedKinds[0]); }, [allowedKinds.join("|"), correctionKind]);
   const [overpayHandling, setOverpayHandling] = useState<"CREDIT" | "CASH_REFUND">("CASH_REFUND");
   const [collectNow, setCollectNow] = useState("");
   // التسوية تُستنتَج من كان/أصبح: الأصل نقديّ صار آجلاً ⇒ المقبوض لم يُستلم؛ والمفتاح يصحّح الاستنتاج.
@@ -276,7 +281,7 @@ export default function SalesInvoice() {
   const liveStockQ = trpc.catalog.stockByUnitIds.useQuery(
     { branchId: state.branchId, productUnitIds: stockUnitIds },
     {
-      enabled: stockUnitIds.length > 0,
+      enabled: stockUnitIds.length > 0 && salesOperationAllowed(me.data, "catalog.stockByUnitIds", true),
       staleTime: 0,
       refetchInterval: stockUnitIds.length > 0 ? 15_000 : false,
       refetchOnWindowFocus: true,
@@ -336,7 +341,7 @@ export default function SalesInvoice() {
   const currentShift = trpc.shifts.current.useQuery(
     { branchId: state.branchId },
     // التصحيح لا يكتب مالاً قبل الاعتماد؛ درج التنفيذ يختاره المراجع في شاشة الاعتماد.
-    { enabled: !!state.branchId && !isCorrection },
+    { enabled: !!state.branchId && !isCorrection && salesOperationAllowed(me.data, "shifts.current", true) },
   );
 
   // idempotency: مفتاح ثابت لكل محاولة إنشاء (يُجدَّد بعد كل حفظ ناجح / RESET).
@@ -355,8 +360,7 @@ export default function SalesInvoice() {
   const [mgrPwd, setMgrPwd] = useState("");
 
   // RBAC: المدير/الأدمن يرى التكلفة والهامش؛ الكاشير لا.
-  const role = me.data?.role;
-  const showCost = role === "manager" || role === "admin";
+  const showCost = salesCostVisible(me.data);
 
   const totals = useMemo(() => calcTotals(state.items, state), [state]);
   /**
@@ -401,11 +405,13 @@ export default function SalesInvoice() {
   const externalFingerprint = `${externalChannel}|${state.branchId}|${state.paymentMethod}|${externalAmount}|${paymentRef.trim()}`;
   const externalConfirmed =
     !externalNeeded || (externalAttempt?.confirmed === true && externalAttempt.fingerprint === externalFingerprint);
+  const canConfirmExternal = salesExternalPaymentAllowed(me.data, externalAttempt?.attemptId != null && externalAttempt.fingerprint === externalFingerprint);
 
   const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
   const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
 
   async function confirmExternalPayment() {
+    if (!canConfirmExternal) return notify.warn("تأكيد الدفع الخارجي غير مفوّض لحسابك.");
     if (hasDigitalItems) return notify.err("الدفع بالبطاقة لفاتورة تحتوي كروتاً رقمية موقوف مؤقتاً؛ لم يبدأ النظام أي عملية قبض خارجية.");
     const reference = paymentRef.trim();
     if (!reference) return notify.err("أدخل مرجع العملية أولاً.");
@@ -699,6 +705,8 @@ export default function SalesInvoice() {
 
   /** تحقّق أعمالي قبل الإرسال. يُرجع رسالة عربية أو null إن صالح. */
   function validate(): string | null {
+    if (!availableActions.includes("save")) return "حفظ هذه العملية غير مفوّض لحسابك.";
+    if (hasDigitalItems && !canUseDigital) return "دورة بيع الكروت الرقمية غير مفوّضة بالكامل لحسابك.";
     if (!isPosPaymentMethodEnabled(state.paymentMethod)) return posPaymentRejectionMessage(state.paymentMethod);
     if (!state.branchId) return "اختر الفرع.";
     if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
@@ -772,6 +780,7 @@ export default function SalesInvoice() {
   }
 
   function finalizeDigitalIntent(id: number) {
+    if (!salesOperationAllowed(me.data, "digitalCards.sales.finalize", true)) return notify.warn("إتمام الفاتورة الرقمية غير مفوّض لحسابك.");
     const settlement = resolveDigitalInvoiceSettlement({ paymentTerms: state.paymentTerms, paymentMethod: state.paymentMethod, paidTotal: computePaidStr() }); if (finalizeSale.isPending) return; finalizeSale.mutate({
       intentId: id, clientRequestId, paymentAmount: settlement.paymentAmount,
       paymentMethod: settlement.paymentMethod,
@@ -861,6 +870,7 @@ export default function SalesInvoice() {
   }
 
   function handleAction(action: InvoiceActionKind) {
+    if (!availableActions.includes(action)) return notify.warn("هذه العملية غير مفوّضة لحسابك.");
     switch (action) {
       case "save":
         releaseReservedPrintWindow();
@@ -940,7 +950,7 @@ export default function SalesInvoice() {
 
   /* ─── اختصارات لوحة المفاتيح (F2/F4/F9/F12/Esc) ───────────────────── */
   const containerRef = useRef<HTMLDivElement>(null);
-  const submitPending = isCorrection ? reissue.isPending || exchange.isPending : create.isPending;
+  const submitPending = isCorrection ? reissue.isPending || exchange.isPending : create.isPending || prepareIntent.isPending || finalizeSale.isPending;
   useEffect(() => {
     const isTypingTarget = (el: EventTarget | null) =>
       !!el && (el as HTMLElement).matches?.("input, textarea, select, [contenteditable='true']",
@@ -965,7 +975,7 @@ export default function SalesInvoice() {
       }
       if (e.key === "F4") {
         e.preventDefault();
-        if (!submitPending) {
+        if (!submitPending && availableActions.includes("save")) {
           releaseReservedPrintWindow();
           printAfterSaveRef.current = false;
           shareAfterSaveRef.current = false;
@@ -979,7 +989,7 @@ export default function SalesInvoice() {
           notify.info("طباعة التصحيح متاحة بعد اعتماد الطلب وإصدار الفاتورة البديلة.");
           return;
         }
-        if (!submitPending) {
+        if (!submitPending && availableActions.includes("print")) {
           reservePrintWindow();
           printAfterSaveRef.current = true;
           shareAfterSaveRef.current = false;
@@ -1019,7 +1029,7 @@ export default function SalesInvoice() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, bulkOpen, creditPrompt, create.isPending, isDirty]);
+  }, [state, bulkOpen, creditPrompt, submitPending, isDirty, me.data, correctionKind, externalAttempt]);
 
   const typeInfo = INVOICE_TYPES[INVOICE_TYPE];
 
@@ -1030,6 +1040,9 @@ export default function SalesInvoice() {
     [state.items],
   );
 
+  if (me.isLoading) return null;
+  if (me.data && (isCorrection ? !salesOperationAllowed(me.data, "sales.get", true) || allowedKinds.length === 0 : !salesOperationAllowed(me.data, "sales.create", true) && !canUseDigital)) return <div className="rounded-lg border p-5 text-sm text-muted-foreground">هذه العملية غير مفوّضة لحسابك؛ راجع مسؤول الصلاحيات.</div>;
+  if (isCorrection && correctionUnitIds.length > 0 && !salesOperationAllowed(me.data, "catalog.byUnitIds", true)) return <div className="rounded-lg border p-5 text-sm text-muted-foreground">يلزم تفويض قراءة أصناف الفاتورة وأسعارها الحالية لإكمال التصحيح.</div>;
   if (isCorrection && original.isLoading) {
     return <div className="p-10 text-center text-muted-foreground">جارٍ تحميل الفاتورة الأصلية…</div>;
   }
@@ -1123,7 +1136,7 @@ export default function SalesInvoice() {
             /* حصص ضريبة الفاتورة (توزيع تناسبي، عرض فقط) — تظهر كعمود حين taxEnabled=true. */
             taxShares={taxShares}
             onOpenBulkPicker={() => setBulkOpen(true)}
-            onOpenDigitalCardsPicker={isCorrection ? undefined : () => setCardsOpen(true)}
+            onOpenDigitalCardsPicker={isCorrection || !canUseDigital ? undefined : () => setCardsOpen(true)}
             onNotify={(msg, kind) =>
               kind === "error" ? notify.err(msg) : notify.info(msg)
             }
@@ -1169,7 +1182,7 @@ export default function SalesInvoice() {
           {/* بوّابة الإثبات: مرجعٌ + تأكيدٌ خادميّ قبل فتح الحفظ — مطابقة لكل قبض مبيعات. */}
           {externalNeeded && (
             <Card className="p-3">
-              <PaymentReferenceField
+              {canConfirmExternal ? <PaymentReferenceField
                 value={paymentRef}
                 onChange={(v) => { setPaymentRef(v); setExternalAttempt(null); }}
                 method={state.paymentMethod}
@@ -1181,7 +1194,7 @@ export default function SalesInvoice() {
                   border: "var(--border)", muted: "var(--muted)", mutedFg: "var(--muted-foreground)",
                   fg: "var(--foreground)", amber: "var(--sem-warn)", success: "var(--sem-pos)",
                 }}
-              />
+              /> : <p className="text-sm text-muted-foreground">تأكيد الدفع الخارجي غير مفوّض لحسابك؛ راجع المسؤول لتفويض بدء العملية وتأكيدها.</p>}
             </Card>
           )}
           {isCorrection && (
@@ -1200,6 +1213,7 @@ export default function SalesInvoice() {
               reason={reason}
               setReason={setReason}
               correctionKind={correctionKind}
+              allowedKinds={allowedKinds}
               setCorrectionKind={setCorrectionKind}
               collectNow={collectNow}
               setCollectNow={setCollectNow}
@@ -1214,9 +1228,9 @@ export default function SalesInvoice() {
           <ActionButtons
             invoiceType={INVOICE_TYPE}
             items={state.items}
-            saving={isCorrection ? reissue.isPending || exchange.isPending : create.isPending}
+            saving={submitPending}
             pasteAvailable={pasteAvailable}
-            availableActions={isCorrection ? ["save"] : undefined}
+            availableActions={availableActions}
             primaryLabel={isCorrection ? ownerExecutes ? "تنفيذ التصحيح" : correctionKind === "EXCHANGE" ? "إرسال طلب الاستبدال" : "إرسال طلب إعادة الإصدار" : undefined}
             onAction={handleAction}
           />
@@ -1224,12 +1238,7 @@ export default function SalesInvoice() {
         </aside>
       </div>
 
-      <ShortcutsBar shortcuts={isCorrection ? [
-        { key: "F2", label: "بحث" },
-        { key: "F4", label: "إرسال الطلب" },
-        { key: "F12", label: "تفريغ" },
-        { key: "Esc", label: "إلغاء" },
-      ] : undefined} />
+      <ShortcutsBar shortcuts={salesEditorShortcuts(availableActions, isCorrection)} />
 
       {/* حوار موافقة المدير (تجاوز حدّ الائتمان / بيع بأقل من التكلفة) */}
       <Dialog open={!!creditPrompt} onOpenChange={(o) => { if (!o) closeApprovalPrompt(); }}>

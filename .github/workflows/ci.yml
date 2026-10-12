@@ -318,6 +318,8 @@ jobs:
         run: pnpm check:firebase-config-security
       - name: ESLint (قواعد الخطّافات — يمنع خطّافاً بعد رجوعٍ مبكّر)
         run: pnpm check:lint
+      - name: Verify operation catalog and lifecycle bindings
+        run: pnpm check:operation-permissions
       - name: حارِس تسجيل الحرّاس في CI (يمنع حارساً في aggregate بلا خطوة)
         run: pnpm check:guards-registered
       # تناظر شاشتَي الإنشاء/التعديل (برنامج v2، ق٤) — يحجب على الارتفاع فقط. يتبع مكوّنات

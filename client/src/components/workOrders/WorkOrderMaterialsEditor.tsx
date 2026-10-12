@@ -25,6 +25,8 @@ import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { formatQuantity } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
+import { canViewOperationData } from "@shared/operationPermissions";
 import { newClientRequestId } from "@/lib/countQueue";
 
 export interface EditableMaterial {
@@ -49,6 +51,7 @@ export interface WorkOrderMaterialsEditorProps {
 export function WorkOrderMaterialsEditor({
   workOrderId, version, branchId, orderNumber, status, initial, onSaved, onCancel,
 }: WorkOrderMaterialsEditorProps) {
+  const me = trpc.auth.me.useQuery();
   const [rows, setRows] = useState<EditableMaterial[]>(initial);
   const [search, setSearch] = useState("");
   const [reason, setReason] = useState("");
@@ -67,7 +70,7 @@ export function WorkOrderMaterialsEditor({
   const setMaterials = trpc.workOrders.setMaterials.useMutation({
     onSuccess: async (res) => {
       notify.ok(
-        res.stockAdjusted
+        res.stockAdjusted && me.data && canViewOperationData(me.data, "purchaseCost")
           ? `حُفظت البنود — عُدِّل المخزون تبعاً للفرق (كلفة المواد ${res.materialsCost}).`
           : "حُفظت البنود.",
       );
@@ -148,6 +151,7 @@ export function WorkOrderMaterialsEditor({
   }
 
   async function save() {
+    if (!canLifecycleOperation(me.data, consumed ? "workOrders.requestControl" : "workOrders.setMaterials", true)) return notify.err("عملية تعديل البنود غير مفوضة لهذا الحساب.");
     if (!diff.length) return notify.info("لا تغييرات لحفظها.");
     const normalizedReason = reason.trim();
     if (normalizedReason.length < 3) return notify.warn("سبب التعديل مطلوب", "اكتب سبباً واضحاً من 3 محارف على الأقل.");

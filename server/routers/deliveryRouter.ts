@@ -52,6 +52,7 @@ import {
 } from "../services/delivery/writeoffRequests";
 import { declareConsignmentReturn } from "../services/delivery/declaredReturn";
 import { cancelDeliveryAssignment } from "../services/delivery/cancellation";
+import { routeOperationAuthority } from "../services/authorization/operationAuthority";
 import { logAudit } from "../services/auditService";
 import { GOVERNORATE_IDS } from "@shared/governorates";
 import { appErrorMessage } from "@shared/errors";
@@ -236,7 +237,10 @@ export const deliveryRouter = router({
       clientRequestId: z.string().trim().min(8).max(100),
     }))
     .mutation(async ({ input, ctx }) => {
-      const res = await retryOnDeadlock(() => cancelDeliveryAssignment(input, actorOf(ctx)));
+      const res = await retryOnDeadlock(() => cancelDeliveryAssignment(input, {
+        ...actorOf(ctx),
+        operationAuthority: routeOperationAuthority(ctx.user, "delivery.cancelAssignment"),
+      }));
       await logAudit(ctx, {
         action: "delivery.assignment.cancel",
         entityType: "deliveryConsignment",

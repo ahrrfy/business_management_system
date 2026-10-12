@@ -19,6 +19,7 @@ import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { INBOUND_METHOD_OPTIONS } from "@/lib/paymentMethod";
 import { trpc } from "@/lib/trpc";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import type { InboundEnabledPaymentMethod } from "@shared/inboundPaymentPolicy";
 import { FUNDING_META, fundingKindOf, type ExpenseRow } from "./expenseView";
 
@@ -56,7 +57,7 @@ export function ExpenseCorrectionDialog({
 
   const correctionHistory = trpc.expenses.accrualCorrections.useQuery(
     { obligationId: Number(target?.accrualObligationId ?? 0) },
-    { enabled: Number(target?.accrualObligationId ?? 0) > 0 },
+    { enabled: Number(target?.accrualObligationId ?? 0) > 0 && treasuryOperationAllowed(me.data, "expenses.accrualCorrections", true) },
   );
 
   const requestCorrection = trpc.expenses.requestAccrualCorrection.useMutation({
@@ -267,7 +268,7 @@ export function ExpenseCorrectionDialog({
                 {Number(retryableRefundCorrection.requestedBy) ===
                 Number(me.data?.id) ? (
                   <Button
-                    disabled={retryCorrectionRefund.isPending}
+                    disabled={!treasuryOperationAllowed(me.data, "expenses.retryAccrualCorrectionRefund", true) || retryCorrectionRefund.isPending}
                     onClick={() =>
                       retryCorrectionRefund.mutate({
                         correctionRequestId: Number(
@@ -403,6 +404,7 @@ export function ExpenseCorrectionDialog({
             <Button
               variant="destructive"
               disabled={
+                !treasuryOperationAllowed(me.data, "expenses.requestAccrualCorrection", true) ||
                 correctionHistory.isLoading ||
                 requestCorrection.isPending ||
                 correctionReason.trim().length < 3 ||

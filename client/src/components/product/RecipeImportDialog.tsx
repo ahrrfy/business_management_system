@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useState } from "react";
 import {
   Check,
@@ -56,6 +57,7 @@ export function RecipeImportDialog({
   currentProductId,
   onApplyRecipe,
 }: RecipeImportDialogProps) {
+  const { can } = useCatalogPeopleOperationAccess();
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedRecipeId, setSelectedRecipeId] = useState<number | null>(null);
   const [isApplying, setIsApplying] = useState(false);
@@ -66,7 +68,7 @@ export function RecipeImportDialog({
       excludeProductId: currentProductId,
       limit: 20,
     },
-    { enabled: open, staleTime: 30_000 },
+    { enabled: can("production.recipes.listForImport") && (open), staleTime: 30_000 },
   );
 
   const recipes = importListQ.data ?? [];

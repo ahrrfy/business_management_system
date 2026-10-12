@@ -1,4 +1,6 @@
 import { useMemo } from "react";
+import { trpc } from "@/lib/trpc";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import {
   Calendar,
   CheckCircle2,
@@ -59,6 +61,7 @@ export function WorkOrdersTable({
   onCancel: (order: Pick<WO, "id" | "title" | "orderNumber">) => void;
   operation?: any;
 }) {
+  const me = trpc.auth.me.useQuery();
   const columns = useMemo<ColumnDef<WO, unknown>[]>(() => [
     {
       accessorKey: "orderNumber",
@@ -212,14 +215,14 @@ export function WorkOrdersTable({
         const next = WO_NEXT_STATUS[o.status as WorkOrderStatus];
         const actions: RowAction[] = [
           { key: "open", kind: "view", label: "فتح التفاصيل", onSelect: () => onOpen(o.id) },
-          { key: "edit", kind: "edit", label: isManager ? "تعديل" : "طلب تعديل", icon: Pencil, hidden: isFinal || !canRequestControl, onSelect: () => onEdit(o.id), gate: { roles: ["cashier", "manager"], module: "workorders", level: "FULL" } },
+          { key: "edit", kind: "edit", label: isManager ? "تعديل" : "طلب تعديل", icon: Pencil, hidden: isFinal || !canRequestControl, onSelect: () => onEdit(o.id), gate: { roles: ["cashier", "manager"], module: "workorders", level: "FULL", operations: ["workOrders.update", "workOrders.requestControl"] } },
           { key: "print", kind: "print", label: "طباعة A4", onSelect: () => printWoFromCard(o) },
           { key: "print-thermal", kind: "print", label: "طباعة حرارية (80مم)", onSelect: () => printWoThermalFromCard(o) },
           { key: "print-label", kind: "print", label: "ملصق شحن", onSelect: () => printWoShippingLabel(o) },
         ];
-        if (next === ("DELIVERED" as ColKey) && o.hasDelivery && canDeliver) {
+        if (next === ("DELIVERED" as ColKey) && o.hasDelivery && canLifecycleOperation(me.data, "delivery.dispatch", canDeliver)) {
           actions.push({ key: "dispatch", kind: "approve", label: "إسناد للتوصيل", icon: Truck, href: "/delivery" });
-        } else if (next && (next !== "DELIVERED" || canDeliver)) {
+        } else if (next && canLifecycleOperation(me.data, next === "IN_PROGRESS" ? "workOrders.start" : next === "READY" ? "workOrders.markReady" : "workOrders.deliver", next !== "DELIVERED" || canDeliver)) {
           actions.push({ key: "advance", kind: next === ("DELIVERED" as ColKey) ? "pay" : "approve", label: ADV_LABEL[next], onSelect: () => onAdvance(o, next) });
         }
         if (canRequestCancel && !isFinal) {
@@ -241,7 +244,7 @@ export function WorkOrdersTable({
         );
       },
     },
-  ], [isManager, canRequestControl, canRequestCancel, canDeliver, onOpen, onEdit, onAdvance, onCancel]);
+  ], [me.data, isManager, canRequestControl, canRequestCancel, canDeliver, onOpen, onEdit, onAdvance, onCancel]);
 
   const defaultOperation = useMemo(() => ({
     getOperation: (order: WO) => ({

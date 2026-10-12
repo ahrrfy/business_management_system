@@ -12,7 +12,9 @@ describe("واجهة طلب شطب عهدة COD", () => {
   });
 
   it("تعرض قائمة مراجعة مستقلة مع النسخة ومفاتيح القرار", () => {
-    expect(page).toContain("const canReviewWriteOff = !!role && moduleAccessAllowed");
+    expect(page).toContain('lifecycleActionAllowed(me.data, "delivery.listWriteOffRequests"');
+    expect(page).toContain('lifecycleActionAllowed(me.data, "delivery.approveWriteOffRequest"');
+    expect(page).toContain('lifecycleActionAllowed(me.data, "delivery.rejectWriteOffRequest"');
     expect(page).toContain("listWriteOffRequests.useQuery");
     expect(page).toContain("approveWriteOffRequest.useMutation");
     expect(page).toContain("rejectWriteOffRequest.useMutation");

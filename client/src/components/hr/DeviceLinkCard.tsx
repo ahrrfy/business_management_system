@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 /* ============================================================================
  * بطاقة ربط الموظف بجهاز الحضور (client/src/components/hr/DeviceLinkCard.tsx)
  *
@@ -52,18 +53,19 @@ export function DeviceLinkCard({
   isTerminated: boolean;
   onChanged: () => Promise<void> | void;
 }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
-  const bridge = trpc.hrDevices.bridgeStatus.useQuery();
+  const bridge = trpc.hrDevices.bridgeStatus.useQuery(undefined, { enabled: can("hrDevices.bridgeStatus") });
   const [open, setOpen] = useState(false);
   const [deviceId, setDeviceId] = useState<string>("");
   const [enrollId, setEnrollId] = useState<string>("");
   const [effectiveFrom, setEffectiveFrom] = useState<string>(hireDate ?? "");
 
-  const devices = trpc.hrDevices.list.useQuery(undefined, { enabled: open });
+  const devices = trpc.hrDevices.list.useQuery(undefined, { enabled: can("hrDevices.list") && (open) });
   // أرقام الجهاز غير المربوطة — الجهاز يُبلّغ الاسم المكتوب فيه فيسهل التطابق البصريّ.
   const unlinked = trpc.hrDevices.unlinkedDeviceUsers.useQuery(
     { deviceId: Number(deviceId) },
-    { enabled: open && !!deviceId },
+    { enabled: can("hrDevices.unlinkedDeviceUsers") && (open && !!deviceId) },
   );
 
   const map = trpc.hrDevices.mapUser.useMutation({
@@ -144,7 +146,7 @@ export function DeviceLinkCard({
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={map.isPending}
+                  disabled={!can("hrDevices.mapUser") || (map.isPending)}
                   onClick={() =>
                     void (async () => {
                       if (
@@ -259,7 +261,7 @@ export function DeviceLinkCard({
               إلغاء
             </Button>
             <Button
-              disabled={!deviceId || enrollId === "" || map.isPending}
+              disabled={!can("hrDevices.mapUser") || (!deviceId || enrollId === "" || map.isPending)}
               onClick={() =>
                 map.mutate({
                   deviceId: Number(deviceId),

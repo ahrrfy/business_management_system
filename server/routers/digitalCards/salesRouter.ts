@@ -1,3 +1,4 @@
+import { routeOperationAuthority } from "../../services/authorization/operationAuthority";
 // نيّة البيع والتنفيذ الخارجيّ (ش٧) + التثبيت المالي (ش٨) — راوتر البطاقات الرقمية والاشتراكات.
 // `prepare` يحجز رصيد المحفظة ويسجّل النيّة **قبل** لمس جهاز المزوّد — بلا فاتورة ولا خصم رصيد.
 // `markExecution` يسجّل نجاح كل كرت لحظةَ إصداره، فيبقى أثره حتى لو أُغلق المتصفّح بعدها.
@@ -177,17 +178,17 @@ export const salesRouter = router({
       })).min(1).max(50),
     }))
     .mutation(async ({ input, ctx }) =>
-      withTx((tx) => reviewResolutionService.requestResolution(tx, input, actorOf(ctx)))),
+      withTx((tx) => reviewResolutionService.requestResolution(tx, input, { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.sales.requestReviewResolution") }))),
 
   approveReviewResolution: digitalCardsManagerProcedure
     .input(z.object({ intentId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) =>
-      withTx((tx) => reviewResolutionService.approveResolution(tx, input, actorOf(ctx)))),
+      withTx((tx) => reviewResolutionService.approveResolution(tx, input, { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.sales.approveReviewResolution") }))),
 
   rejectReviewResolution: digitalCardsManagerProcedure
     .input(z.object({ intentId: z.number().int().positive(), reason: z.string().min(3).max(500) }))
     .mutation(async ({ input, ctx }) =>
-      withTx((tx) => reviewResolutionService.rejectResolution(tx, input, actorOf(ctx)))),
+      withTx((tx) => reviewResolutionService.rejectResolution(tx, input, { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.sales.rejectReviewResolution") }))),
 
   /** كنّاس النيّات المهجورة — يُشغّله المدير يدوياً حتى تُجدوَل مهمّة دورية. */
   expireStale: digitalCardsManagerProcedure.mutation(async () =>
@@ -199,19 +200,19 @@ export const salesRouter = router({
   requestWriteoff: digitalCardsManagerProcedure
     .input(z.object({ intentId: z.number().int().positive(), reason: z.string().min(3).max(300) }))
     .mutation(async ({ input, ctx }) =>
-      withTx((tx) => writeoffService.requestWriteoff(tx, input, actorOf(ctx))),
+      withTx((tx) => writeoffService.requestWriteoff(tx, input, { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.sales.requestWriteoff") })),
     ),
 
   approveWriteoff: digitalCardsManagerProcedure
     .input(z.object({ intentId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) =>
-      withTx((tx) => writeoffService.approveWriteoff(tx, input, actorOf(ctx))),
+      withTx((tx) => writeoffService.approveWriteoff(tx, input, { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.sales.approveWriteoff") })),
     ),
 
   rejectWriteoff: digitalCardsManagerProcedure
     .input(z.object({ intentId: z.number().int().positive(), reason: z.string().max(300).nullish() }))
     .mutation(async ({ input, ctx }) =>
-      withTx((tx) => writeoffService.rejectWriteoff(tx, input, actorOf(ctx))),
+      withTx((tx) => writeoffService.rejectWriteoff(tx, input, { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.sales.rejectWriteoff") })),
     ),
 
   /** التثبيت المالي (ش٨): الفاتورة والقبض والتسوية والتفاصيل في معاملة واحدة — أو لا شيء. */
@@ -233,7 +234,7 @@ export const salesRouter = router({
   recover: digitalCardsManagerProcedure
     .input(z.object({ intentId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) =>
-      withTx((tx) => finalizeService.recoverNeedsReview(tx, input.intentId, actorOf(ctx))),
+      withTx((tx) => finalizeService.recoverNeedsReview(tx, input.intentId, { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.sales.recover") })),
     ),
 
   saleDetails: digitalCardsAdminReadProcedure

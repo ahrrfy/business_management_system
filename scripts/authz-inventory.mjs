@@ -77,6 +77,15 @@ const PROCEDURES = {
     roles: [],
     branch: false,
   },
+  // Explicit operation gate shared with the REST printer transport; the exact
+  // saved bridge grant is independent of invoice first-print/reprint grants.
+  directPrintBridgeProcedure: {
+    authority: "operation-gate",
+    module: "sales",
+    level: "READ",
+    roles: [],
+    branch: false,
+  },
   ownerProcedure: {
     authority: "owner",
     module: "ownership",
@@ -233,8 +242,8 @@ const PROCEDURES = {
   // صلاحية وحدة المبيعات لمشغّل الاستقبال.
   invoiceViewProcedure: {
     authority: "module-map",
-    module: "sales|workorders",
-    level: "READ|FULL",
+    module: "sales|workorders|pos",
+    level: "READ|FULL|FULL",
     roles: [],
     branch: "scoped",
   },
@@ -1482,6 +1491,8 @@ function computeInventory(root) {
         module: meta?.module ?? "",
         level: meta?.level ?? "",
         roles: roles.join("|"),
+        gateRoles: gateRoles.join("|"),
+        inheritedAuthority: meta?.inheritedAuthority ?? null,
         branch:
           meta?.branch === false ? "none" : String(meta?.branch ?? "unknown"),
         sensitivity: s.level,
@@ -1581,6 +1592,22 @@ function argVal(name) {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
+// Pipe writes are asynchronous on POSIX; wait for delivery before exiting.
+async function emitMachineJson(value) {
+  await new Promise((resolve, reject) => {
+    process.stdout.write(JSON.stringify(value), (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+// Machine-readable, read-only metadata for the canonical mounted-operation catalog.
+if (process.argv.includes("--json")) {
+  await emitMachineJson(computeInventory(argVal("--root") || ROOT));
+  process.exit(0);
+}
+
 /* ─────────── وضع «بصمات الانتهاك» (يستهلكه حارس merge-base) ───────────
  * `--emit-violations [--root <dir>]` يمسح جذراً مّا (head أو checkout الأساس) ويطبع بصمات الانتهاك
  * JSON على stdout **بلا كتابة أي ملف**. حارس authz-guard-diff.mjs يستدعيه مرّتين (head/base) ويفرّق. */
@@ -1599,7 +1626,7 @@ if (process.argv.includes("--emit-violations")) {
       )
       .join(","),
   }));
-  process.stdout.write(JSON.stringify({ root, count: items.length, items }));
+  await emitMachineJson({ root, count: items.length, items });
   process.exit(0);
 }
 

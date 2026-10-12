@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 /**
  * نافذة إصدار قسيمة هدية فورية للزبون (Instant Gift Voucher Modal)
  * تُستخدم للإهداء الفوري وترضية الشكاوى ومكافأة كبار العملاء (VIP).
@@ -70,6 +71,7 @@ export function InstantGiftModal({
   feedbackId,
   onSuccess,
 }: InstantGiftModalProps) {
+  const { can } = useCatalogPeopleOperationAccess();
   const modalOpen = open ?? isOpen ?? false;
   const [amount, setAmount] = useState<string>("10000");
   const [reason, setReason] = useState<string>("COMPENSATION");
@@ -409,7 +411,7 @@ export function InstantGiftModal({
                 type="button"
                 className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
                 onClick={handleIssue}
-                disabled={issueMutation.isPending}
+                disabled={!can("customers.issueInstantGift") || (issueMutation.isPending)}
               >
                 {issueMutation.isPending ? (
                   <>

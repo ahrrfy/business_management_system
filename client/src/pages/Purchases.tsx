@@ -45,6 +45,7 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 
 // نوع صفّ أمر الشراء (يوحّد فرعَي الإخراج: المُقنَّع cost=null وغير المُقنَّع).
 type PurchaseRow = RouterOutputs["purchases"]["list"][number];
@@ -139,7 +140,7 @@ export default function Purchases() {
     | undefined;
 
   const me = trpc.auth.me.useQuery();
-  const canManagePurchases =
+  const legacyManagePurchases =
     !!me.data?.role &&
     moduleAccessAllowed(
       me.data.role as RoleKey,
@@ -148,9 +149,12 @@ export default function Purchases() {
       "FULL",
       ["manager", "purchasing"],
     );
+  const canManagePurchases = canLifecycleOperation(me.data, "purchases.decideControl", legacyManagePurchases);
+  const canCreateOrder = canLifecycleOperation(me.data, "purchases.createOrder", legacyManagePurchases);
+  const canReadPendingControls = canLifecycleOperation(me.data, "purchases.pendingControls", legacyManagePurchases);
   const pendingControls = trpc.purchases.pendingControls.useQuery(
     { limit: 200 },
-    { enabled: canManagePurchases },
+    { enabled: canReadPendingControls },
   );
   const pendingOrderIds = useMemo(
     () =>
@@ -202,7 +206,7 @@ export default function Purchases() {
     onError: (err) => notify.err(err),
   });
   const controlStateUnavailable =
-    canManagePurchases &&
+    canReadPendingControls &&
     (pendingControls.isLoading || pendingControls.isError);
   // فلتر الفرع وعموده — للمرتفعين العابرين للفروع فقط (الخادم يتجاهل branchId لغيرهم أصلاً:
   // scopedBranchId الحاكم في buildPurchasesListConds، فالإخفاء هنا عرضيّ لا أمنيّ — نمط Invoices.tsx).
@@ -213,9 +217,8 @@ export default function Purchases() {
   // `reports:READ` صراحةً كان يرى الرابط ثمّ يُدفَع خارج التبويب. البوّابة الصحيحة الوحيدة
   // هنا: **الدور** (لا `moduleAccessAllowed`). حين يُحدَّث الوجهةُ لتحترم reports، ترجع
   // البوّابةُ إليها؛ إلى ذلك الحين نُطابق `managerOnly` بالحرف.
-  const canOpenSupplierStatement =
-    me.data?.role === "admin" || me.data?.role === "manager";
-  const canViewIntegrity = canManagePurchases;
+  const canOpenSupplierStatement = canLifecycleOperation(me.data, "reports.supplierStatement", me.data?.role === "admin" || me.data?.role === "manager");
+  const canViewIntegrity = canLifecycleOperation(me.data, "purchases.integrityReport", legacyManagePurchases);
   const integrityBranchId =
     me.data?.role === "admin"
       ? f.branchId
@@ -570,7 +573,7 @@ export default function Purchases() {
               ],
             }}
             add={
-              canManagePurchases
+              canCreateOrder
                 ? { href: "/purchases/new", label: "أمر شراء جديد" }
                 : undefined
             }
@@ -896,8 +899,7 @@ export default function Purchases() {
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
-                            level: "FULL",
-                          },
+                            level: "FULL", operations: ["purchases.decideControl"] },
                         },
                         {
                           key: "quick-pay",
@@ -908,8 +910,7 @@ export default function Purchases() {
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
-                            level: "FULL",
-                          },
+                            level: "FULL", operations: ["supplierPayments.requestPayment"] },
                         },
                         {
                           key: "confirm",
@@ -935,8 +936,7 @@ export default function Purchases() {
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
-                            level: "FULL",
-                          },
+                            level: "FULL", operations: ["purchases.confirmOrder"] },
                         },
                         {
                           key: "edit",
@@ -952,29 +952,28 @@ export default function Purchases() {
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
-                            level: "FULL",
-                          },
+                            level: "FULL", operations: ["purchases.updateOrder"] },
                         },
                         {
                           key: "preview",
                           kind: "view",
                           label: "معاينة التفاصيل",
                           onSelect: () => setDrawerPoId(p.id),
-                          gate: { module: "purchases", level: "READ" },
+                          gate: { module: "purchases", level: "READ" , operations: ["purchases.get"] },
                         },
                         {
                           key: "receive",
                           kind: "view",
                           label: "عرض التفاصيل",
                           href: `/purchases/${p.id}`,
-                          gate: { module: "purchases", level: "READ" },
+                          gate: { module: "purchases", level: "READ" , operations: ["purchases.get"] },
                         },
                         {
                           key: "print",
                           kind: "print",
                           label: "طباعة أمر الشراء",
                           onSelect: () => void printOrder(p.id),
-                          gate: { module: "purchases", level: "READ" },
+                          gate: { module: "purchases", level: "READ" , operations: ["purchases.get"] },
                         },
                         {
                           key: "stmt",
@@ -982,7 +981,7 @@ export default function Purchases() {
                           label: "كشف حساب المورد",
                           href: `/suppliers-statement?id=${p.supplierId}`,
                           hidden: p.supplierId == null,
-                          gate: { module: "suppliers", level: "READ" },
+                          gate: { module: "suppliers", level: "READ" , operations: ["reports.supplierStatement"] },
                         },
                         {
                           key: "preturn",
@@ -994,8 +993,7 @@ export default function Purchases() {
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
-                            level: "FULL",
-                          },
+                            level: "FULL", operations: ["purchaseReturns.create"] },
                         },
                         {
                           key: "cancel",
@@ -1024,8 +1022,7 @@ export default function Purchases() {
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
-                            level: "FULL",
-                          },
+                            level: "FULL", operations: ["purchases.cancel"] },
                         },
                       ]}
                     />

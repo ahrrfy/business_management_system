@@ -11,6 +11,7 @@ import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, fmtAr, round2 } from "@/lib/money";
 import { canCancelWorkOrder } from "@/lib/workOrderRefundPolicy";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { newClientRequestId } from "@/lib/countQueue";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { WORK_ORDER_CHANNELS, receptionChannelOptions } from "@shared/receptionChannel";
@@ -57,7 +58,8 @@ export function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrd
   const [form, setForm] = useState<EditForm | null>(null);
   const [reason, setReason] = useState("");
   const requestKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
-  const hasDirectAuthority = canCancelWorkOrder(me.data?.role, me.data?.permissionsOverride ?? null);
+  const hasDirectAuthority = canLifecycleOperation(me.data, "workOrders.update", canCancelWorkOrder(me.data?.role, me.data?.permissionsOverride ?? null));
+  const canRequestControl = canLifecycleOperation(me.data, "workOrders.requestControl", true);
 
   // يعبّئ النموذج من بيانات الخادم عند فتح طلبٍ جديد — لا يُعيد الكتابة فوق تعديلات المستخدم
   // الجارية إن أُعيد جلب نفس الطلب (invalidate) أثناء الفتح.
@@ -105,6 +107,7 @@ export function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrd
     preflight.data?.controlRequired.commercial === false;
 
   function submit() {
+    if (!canDirect && !canRequestControl) { notify.err("تتطلب حالة الأمر تفويض طلب التعديل واعتماده من مراجع مستقل."); return; }
     if (!form) return;
     const title = form.title.trim();
     if (!title) { notify.err("عنوان الطلب مطلوب"); return; }

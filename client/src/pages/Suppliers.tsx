@@ -17,6 +17,7 @@ import { fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -39,18 +40,20 @@ export default function Suppliers() {
   // بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد (نمط InvoiceDetail).
   const me = trpc.auth.me.useQuery();
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
-  const canWrite = !!me.data?.role &&
+  const legacyWrite = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "suppliers", "FULL", ["manager", "warehouse", "purchasing"]);
+  const canWrite = canLifecycleOperation(me.data, "suppliers.update", legacyWrite);
+  const canCreate = canLifecycleOperation(me.data, "suppliers.create", legacyWrite);
   // الاستيراد بوّابته أضيق: imports.suppliers = managerProcedure (المدير فأعلى) — server/routers/imports.ts.
-  const canImport = me.data?.role === "admin" || me.data?.role === "manager";
+  const canImport = canLifecycleOperation(me.data, "imports.suppliers", isElevated);
   // الحذف النهائيّ: suppliers.delete = managerProcedure (أدمن/مدير) — عمليةٌ لا رجعة فيها لتنظيف
   // أخطاء الإدخال الأوّليّ، والحارس الخادميّ يرفض أيّ مورّدٍ له حركة (يوجّه للتعطيل).
-  const canDelete = me.data?.role === "admin" || me.data?.role === "manager";
+  const canDelete = canLifecycleOperation(me.data, "suppliers.delete", isElevated);
   // رابطُ اسم المورّد ⇒ كشف الحساب. تبويب `statement` في SuppliersHub مُحصَّنٌ صراحةً بـ
   // `managerOnly: true` ولا يحترم `permissionsOverride` (نمط ٢٤/٨ في Purchases). البوّابةُ
   // الصحيحة الوحيدة هي الدور الصريح لا `moduleAccessAllowed("reports","READ")` — التمرير
   // بالـoverride يُظهر رابطاً يُدفَع خارج التبويب صامتاً.
-  const canOpenStatement = isElevated;
+  const canOpenStatement = canLifecycleOperation(me.data, "reports.supplierStatement", isElevated);
   // فلاتر في querystring — تعيش مع فتح تفاصيل المورّد والرجوع، ويمكن مشاركتها رابطاً.
   const [filters, setFilters, resetFilters] = useUrlFilters({ q: "", inactive: "", kind: "", page: "0" });
   // تصحيح قيم URL (Codex P2): querystring يمكن أن يحمل قيماً باطلة (مشاركة/تعديل يدوي) ⇒
@@ -257,7 +260,7 @@ export default function Suppliers() {
                 label: "تعديل",
                 href: `/suppliers/${id}/edit`,
                 hidden: !canWrite,
-                gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL" },
+                gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL", operations: ["suppliers.update"] },
               },
               // كشف الحساب يقرأ ?id= من URL (نمط SupplierStatement)
               {
@@ -281,9 +284,9 @@ export default function Suppliers() {
                 variant: isActive ? "destructive" : "default",
                 disabled: deactivate.isPending || activate.isPending,
                 disabledReason: "توجد عملية تحديث قيد التنفيذ",
-                hidden: !canWrite,
+                hidden: !canLifecycleOperation(me.data, isActive ? "suppliers.deactivate" : "suppliers.activate", legacyWrite),
                 onSelect: () => void toggle(id, isActive, s.name ?? ""),
-                gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL" },
+                gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL", operations: [isActive ? "suppliers.deactivate" : "suppliers.activate"] },
               },
               {
                 key: "delete",
@@ -294,7 +297,7 @@ export default function Suppliers() {
                 disabledReason: "توجد عملية حذف قيد التنفيذ",
                 hidden: !canDelete,
                 onSelect: () => void remove(id, s.name ?? ""),
-                gate: { managerOnly: true },
+                gate: { managerOnly: true, operations: ["suppliers.delete"] },
               },
             ]}
           />
@@ -415,7 +418,7 @@ export default function Suppliers() {
             }}
             onImport={canImport ? () => setImportOpen(true) : undefined}
             importLabel="استيراد Excel"
-            add={canWrite ? { href: "/suppliers/new", label: "مورّد جديد" } : undefined}
+            add={canCreate ? { href: "/suppliers/new", label: "مورّد جديد" } : undefined}
           />
         </CardHeader>
         <CardContent className="p-0">

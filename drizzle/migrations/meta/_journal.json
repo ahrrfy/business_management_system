@@ -2500,6 +2500,13 @@
 			"when": 1788148852000,
 			"tag": "0394_storefront_public_reviews",
 			"breakpoints": true
+		},
+		{
+			"idx": 395,
+			"version": "5",
+			"when": 1788148853000,
+			"tag": "0395_lifecycle_operation_permissions",
+			"breakpoints": true
 		}
 	]
 }

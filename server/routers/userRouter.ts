@@ -1,6 +1,7 @@
 import { PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG, PASSWORD_REGEX, USERNAME_MAX_LEN } from "@shared/const";
 import { ALL_ROLES, ALL_PERMISSION_MODULE_KEYS, type RoleKey } from "@shared/permissions";
 import { atomicPermissionsMapSchema, operationalCapsSchema } from "@shared/atomicPermissions";
+import { operationPolicySchema } from "@shared/operationPermissions";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import {
@@ -117,26 +118,29 @@ export const userRouter = router({
 
   create: adminProcedure
     .input(
-      z.object({
-        email: emailCreate,
-        username: usernameCreate,
-        password: z
+      z
+        .object({
+          email: emailCreate,
+          username: usernameCreate,
+          password: z
           .string()
           .min(PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG)
           .max(128)
           .regex(PASSWORD_REGEX, PASSWORD_POLICY_MSG),
-        name: z.string().min(1).max(255),
-        role: ROLE.default("cashier"),
-        customRoleId: z.number().int().positive().nullish(),
-        branchId: z.number().int().positive().nullish(),
-        phone: z.string().max(20).nullish(),
-        jobTitle: z.string().max(120).nullish(),
-        hiredAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
-        permissionsOverride: PERM_OVERRIDE,
-        atomicPermissions: atomicPermissionsMapSchema.nullish(),
-        operationalCaps: operationalCapsSchema.nullish(),
-        mustChangePassword: z.boolean().default(true),
-      }).refine((d) => !!(d.email || d.username), { message: NEED_IDENTIFIER, path: ["username"] })
+          name: z.string().min(1).max(255),
+          role: ROLE.default("cashier"),
+          customRoleId: z.number().int().positive().nullish(),
+          branchId: z.number().int().positive().nullish(),
+          phone: z.string().max(20).nullish(),
+          jobTitle: z.string().max(120).nullish(),
+          hiredAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+          permissionsOverride: PERM_OVERRIDE,
+          atomicPermissions: atomicPermissionsMapSchema.nullish(),
+          operationalCaps: operationalCapsSchema.nullish(),
+          operationPolicy: operationPolicySchema.nullish(),
+          mustChangePassword: z.boolean().default(true),
+        })
+        .refine((d) => !!(d.email || d.username), { message: NEED_IDENTIFIER, path: ["username"] }),
     )
     .mutation(async ({ input, ctx }) => {
       const res = await createUser(input, { userId: ctx.user.id, branchId: ctx.user.branchId, role: ctx.user.role });
@@ -151,6 +155,7 @@ export const userRouter = router({
           branchId: input.branchId ?? null,
           atomicPermissions: input.atomicPermissions ?? null,
           operationalCaps: input.operationalCaps ?? null,
+          operationPolicyRevision: res.operationPolicyRevision,
           mustChangePassword: input.mustChangePassword,
         },
       });
@@ -174,7 +179,13 @@ export const userRouter = router({
         permissionsOverride: PERM_OVERRIDE,
         atomicPermissions: atomicPermissionsMapSchema.nullish(),
         operationalCaps: operationalCapsSchema.nullish(),
-      })
+        operationPolicy: operationPolicySchema.nullish(),
+        expectedOperationPolicyRevision: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional(),
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       // M (تدقيق ٢٣/٦/٢٦): سجلّ user.update كان newValue فقط — بلا oldValue ولا permissionsOverride.
@@ -198,6 +209,7 @@ export const userRouter = router({
               permissionsOverride: (before as { permissionsOverride?: unknown }).permissionsOverride ?? null,
               atomicPermissions: (before as { atomicPermissions?: unknown }).atomicPermissions ?? null,
               operationalCaps: (before as { operationalCaps?: unknown }).operationalCaps ?? null,
+              operationPolicyRevision: before.operationPolicyRevision,
             }
           : null,
         newValue: {
@@ -211,6 +223,7 @@ export const userRouter = router({
           permissionsOverride: input.permissionsOverride,
           atomicPermissions: input.atomicPermissions,
           operationalCaps: input.operationalCaps,
+          operationPolicyRevision: res.operationPolicyRevision,
         },
       });
       return res;

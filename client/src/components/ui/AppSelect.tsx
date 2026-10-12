@@ -223,7 +223,12 @@ export function AppSelect({
        * إلى placeholder ولا يُنشئ له SelectItem.
        */
       value={value === "" ? EMPTY_VALUE : value}
-      onValueChange={(next) => onValueChange(next === EMPTY_VALUE ? "" : next)}
+      onValueChange={(next) => {
+        // Radix's hidden form select can emit an empty synchronization event.
+        // Real empty choices use EMPTY_VALUE; never erase a controlled value on that event.
+        if (next === "") return;
+        onValueChange(next === EMPTY_VALUE ? "" : next);
+      }}
       disabled={disabled}
       open={open}
       onOpenChange={onOpenChange}

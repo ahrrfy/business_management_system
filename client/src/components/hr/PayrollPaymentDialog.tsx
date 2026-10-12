@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -23,6 +24,7 @@ export function PayrollPaymentDialog({
   onClose: () => void;
   onPaid: () => Promise<void> | void;
 }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const me = trpc.auth.me.useQuery(undefined, { enabled: open });
   const [method, setMethod] = useState<PaymentMethod>("CASH");
   const [paymentDate, setPaymentDate] = useState("");
@@ -97,7 +99,7 @@ export function PayrollPaymentDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>إلغاء</Button>
           <Button
-            disabled={!canSubmit}
+            disabled={!can("payroll.pay") || (!canSubmit)}
             onClick={async () => {
               if (!run) return;
               const approved = await confirm({

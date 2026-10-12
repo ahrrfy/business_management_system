@@ -1,6 +1,9 @@
 import { z } from "zod";
+import { operationDecision, type OperationUser } from "@shared/operationPermissions";
+import { STUDIO_REVIEW_READ_OPERATIONS, STUDIO_TASK_MANAGEMENT_OPERATIONS } from "../services/authorization/studioOperationAuthority";
+import { routeOperationAuthority } from "../services/authorization/operationAuthority";
 import { reserveStudioImageTasks } from "../services/productStudioService";
-import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
+import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, requireRole, router } from "../trpc";
 import { barcodeString, barcodeStorageString } from "../lib/schemas";
 import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, drainStudioCampaignBacklog, distributeCampaignTasks, getNextPhotographerTask, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioTaskPreviousImages, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, getStudioProductUnits, getStudioProductVariantMatrix, linkStudioBarcode, quickBarcodeLookup, quickSaveBarcodeProductImage, quickAiTransform, type ProductStudioActor } from "../services/productStudioService";
 import { logAudit } from "../services/auditService";
@@ -8,18 +11,23 @@ import { deleteProductImage, listProductImagesForManager, reorderProductImages, 
 import { discoverImageGaps, getGapProductIds, getImageHealthCounts, getTopGapCategories, IMAGE_HEALTH_STATES } from "../services/productStudioDiscovery";
 
 function actor(ctx: {
-  user: {
+  user: OperationUser & {
     id: number;
     branchId?: number | null;
     role: string;
     isOwner?: boolean;
   };
-}): ProductStudioActor {
+ }, path: string): ProductStudioActor {
+  const managementPath = STUDIO_REVIEW_READ_OPERATIONS.has(path)
+    ? Array.from(STUDIO_TASK_MANAGEMENT_OPERATIONS).find(operation => operationDecision(ctx.user, operation).allowed)
+    : undefined;
   return {
     userId: Number(ctx.user.id),
     branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId),
     role: ctx.user.role,
     isOwner: ctx.user.isOwner === true,
+    operationAuthority: routeOperationAuthority(ctx.user, path),
+    managementAuthority: managementPath ? routeOperationAuthority(ctx.user, managementPath) : undefined,
   };
 }
 
@@ -31,7 +39,10 @@ const nullableText = (max: number) => z.string().trim().max(max).nullable().opti
 const adminOverrideReason = z.string().trim().min(5).max(500).optional();
 
 export const productStudioRouter = router({
-  dashboard: productStudioReadProcedure.query(({ ctx }) => getStudioDashboard(actor(ctx))),
+  authorizeExport: productStudioReadProcedure.use(requireRole("manager")).query(({ ctx }) => {
+    return { authorized: true, scope: ctx.scopedOwnerId == null ? "BRANCH" as const : "OWN" as const };
+  }),
+  dashboard: productStudioReadProcedure.query(({ ctx }) => getStudioDashboard(actor(ctx, "productStudio.dashboard"))),
   products: productStudioReadProcedure
     .input(
       z.object({
@@ -40,30 +51,30 @@ export const productStudioRouter = router({
         includeInactive: z.boolean().optional(),
       }),
     )
-    .query(({ ctx, input }) => listStudioProducts(actor(ctx), input)),
-  resolveBarcode: productStudioReadProcedure.input(z.object({ barcode: barcodeString })).query(({ ctx, input }) => resolveStudioBarcode(actor(ctx), input.barcode)),
-  productImages: productStudioReadProcedure.input(z.object({ productId: z.number().int().positive() })).query(({ ctx, input }) => listStudioProductImages(actor(ctx), input.productId)),
+    .query(({ ctx, input }) => listStudioProducts(actor(ctx, "productStudio.products"), input)),
+  resolveBarcode: productStudioReadProcedure.input(z.object({ barcode: barcodeString })).query(({ ctx, input }) => resolveStudioBarcode(actor(ctx, "productStudio.resolveBarcode"), input.barcode)),
+  productImages: productStudioReadProcedure.input(z.object({ productId: z.number().int().positive() })).query(({ ctx, input }) => listStudioProductImages(actor(ctx, "productStudio.productImages"), input.productId)),
   productUnits: productStudioReadProcedure
     .input(z.object({ productId: z.number().int().positive() }))
-    .query(({ ctx, input }) => getStudioProductUnits(actor(ctx), input.productId)),
+    .query(({ ctx, input }) => getStudioProductUnits(actor(ctx, "productStudio.productUnits"), input.productId)),
   variantMatrix: productStudioReadProcedure
     .input(z.object({ productId: z.number().int().positive() }))
-    .query(({ ctx, input }) => getStudioProductVariantMatrix(actor(ctx), input.productId)),
+    .query(({ ctx, input }) => getStudioProductVariantMatrix(actor(ctx, "productStudio.variantMatrix"), input.productId)),
   // إدارةُ صور المنتج القائمة — للمدير (طلب المالك ٢٦/٨: التحكم الكامل بالصور).
   managerImages: productStudioManagerProcedure
     .input(z.object({ productId: z.number().int().positive() }))
-    .query(({ ctx, input }) => listProductImagesForManager(actor(ctx), input.productId)),
+    .query(({ ctx, input }) => listProductImagesForManager(actor(ctx, "productStudio.managerImages"), input.productId)),
   deleteImage: productStudioManagerProcedure
     .input(z.object({ imageId: z.number().int().positive(), reason: z.string().trim().max(500).optional() }))
-    .mutation(({ ctx, input }) => deleteProductImage(actor(ctx), input)),
+    .mutation(({ ctx, input }) => deleteProductImage(actor(ctx, "productStudio.deleteImage"), input)),
   setImagePrimary: productStudioManagerProcedure
     .input(z.object({ imageId: z.number().int().positive() }))
-    .mutation(({ ctx, input }) => setPrimaryProductImage(actor(ctx), input.imageId)),
+    .mutation(({ ctx, input }) => setPrimaryProductImage(actor(ctx, "productStudio.setImagePrimary"), input.imageId)),
   reorderImages: productStudioManagerProcedure
     .input(z.object({ productId: z.number().int().positive(), orderedImageIds: z.array(z.number().int().positive()).min(1).max(200) }))
-    .mutation(({ ctx, input }) => reorderProductImages(actor(ctx), input)),
+    .mutation(({ ctx, input }) => reorderProductImages(actor(ctx, "productStudio.reorderImages"), input)),
   // كاشفُ فجوات الصور (طلب المالك ٢٦/٨): تصنيفٌ ذكيّ يُبرِز الأولويّات لتوفير الوقت.
-  imageHealthCounts: productStudioManagerProcedure.query(({ ctx }) => getImageHealthCounts(actor(ctx))),
+  imageHealthCounts: productStudioManagerProcedure.query(({ ctx }) => getImageHealthCounts(actor(ctx, "productStudio.imageHealthCounts"))),
   discoverImageGaps: productStudioManagerProcedure
     .input(
       z.object({
@@ -78,7 +89,7 @@ export const productStudioRouter = router({
         sort: z.enum(["MISSING_MOST", "NAME_ASC", "APPROVED_ASC", "VARIANTS_MISSING_MOST"]).optional(),
       }),
     )
-    .query(({ ctx, input }) => discoverImageGaps(actor(ctx), input)),
+    .query(({ ctx, input }) => discoverImageGaps(actor(ctx, "productStudio.discoverImageGaps"), input)),
   gapProductIds: productStudioManagerProcedure
     .input(
       z.object({
@@ -90,14 +101,14 @@ export const productStudioRouter = router({
         sort: z.enum(["MISSING_MOST", "NAME_ASC", "APPROVED_ASC", "VARIANTS_MISSING_MOST"]).optional(),
       }),
     )
-    .query(({ ctx, input }) => getGapProductIds(actor(ctx), input)),
+    .query(({ ctx, input }) => getGapProductIds(actor(ctx, "productStudio.gapProductIds"), input)),
   topGapCategories: productStudioManagerProcedure
     .input(z.object({ limit: z.number().int().min(1).max(50).optional() }))
-    .query(({ ctx, input }) => getTopGapCategories(actor(ctx), input.limit)),
-  assignees: productStudioManagerProcedure.query(({ ctx }) => listStudioAssignees(actor(ctx))),
+    .query(({ ctx, input }) => getTopGapCategories(actor(ctx, "productStudio.topGapCategories"), input.limit)),
+  assignees: productStudioManagerProcedure.query(({ ctx }) => listStudioAssignees(actor(ctx, "productStudio.assignees"))),
   grantStudioAccess: productStudioManagerProcedure
     .input(z.object({ userId: z.number().int().positive() }))
-    .mutation(({ ctx, input }) => grantStudioAccess(actor(ctx), input.userId)),
+    .mutation(({ ctx, input }) => grantStudioAccess(actor(ctx, "productStudio.grantStudioAccess"), input.userId)),
   tasks: productStudioReadProcedure
     .input(
       z.object({
@@ -120,14 +131,14 @@ export const productStudioRouter = router({
         hideClosedCampaigns: z.boolean().optional(),
       }),
     )
-    .query(({ ctx, input }) => listStudioTasks(actor(ctx), input)),
-  campaigns: productStudioReadProcedure.query(({ ctx }) => listStudioCampaigns(actor(ctx))),
+    .query(({ ctx, input }) => listStudioTasks(actor(ctx, "productStudio.tasks"), input)),
+  campaigns: productStudioReadProcedure.query(({ ctx }) => listStudioCampaigns(actor(ctx, "productStudio.campaigns"))),
   /**
    * حملاتُ المستخدم الحاليّ (نشطةٌ وهو عضوٌ فيها) — نافذته الوحيدة على «ماذا يخصّني».
    * قراءةٌ ضيّقة تُعوّض غياب `campaigns` عن الأدوار غير الإدارية بلا تسريب حملاتٍ لا تعنيه.
    */
-  myCampaigns: productStudioReadProcedure.query(({ ctx }) => listMyStudioCampaigns(actor(ctx))),
-  nextPhotographerTask: productStudioWriteProcedure.mutation(({ ctx }) => getNextPhotographerTask(actor(ctx))),
+  myCampaigns: productStudioReadProcedure.query(({ ctx }) => listMyStudioCampaigns(actor(ctx, "productStudio.myCampaigns"))),
+  nextPhotographerTask: productStudioWriteProcedure.mutation(({ ctx }) => getNextPhotographerTask(actor(ctx, "productStudio.nextPhotographerTask"))),
   createCampaign: productStudioManagerProcedure
     .input(
       z.object({
@@ -148,7 +159,7 @@ export const productStudioRouter = router({
         assigneeIds: z.array(z.number().int().positive()).max(50).optional(),
       }),
     )
-    .mutation(({ ctx, input }) => createStudioCampaign(actor(ctx), input)),
+    .mutation(({ ctx, input }) => createStudioCampaign(actor(ctx, "productStudio.createCampaign"), input)),
   /**
    * تعديلُ بيانات حملةٍ نشطة أو مسوَّدة: الاسم، عدد الصور المطلوبة، والمواعيد.
    * كلّ الحقول اختياريّة (مسار PATCH)؛ الحمولةُ الفارغة مرفوضة. الحالة والفرع والنطاق
@@ -164,7 +175,7 @@ export const productStudioRouter = router({
         dueAt: z.coerce.date().nullable().optional(),
       }),
     )
-    .mutation(({ ctx, input }) => updateStudioCampaignDetails(actor(ctx), input)),
+    .mutation(({ ctx, input }) => updateStudioCampaignDetails(actor(ctx, "productStudio.updateCampaignDetails"), input)),
   transitionCampaign: productStudioManagerProcedure
     .input(z.object({
       campaignId,
@@ -177,33 +188,33 @@ export const productStudioRouter = router({
       // ٢٩/٨ (بلاغ مالك): CANCELLED + true ⇒ إلغاءُ كلّ المهام الحيّة لا الطابور فقط.
       cascadeAssignedTasks: z.boolean().optional(),
     }))
-    .mutation(({ ctx, input }) => transitionStudioCampaign(actor(ctx), input)),
-  previewCampaignBacklog: productStudioManagerProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => previewStudioCampaignBacklog(actor(ctx), input.campaignId)),
+    .mutation(({ ctx, input }) => transitionStudioCampaign(actor(ctx, "productStudio.transitionCampaign"), input)),
+  previewCampaignBacklog: productStudioManagerProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => previewStudioCampaignBacklog(actor(ctx, "productStudio.previewCampaignBacklog"), input.campaignId)),
   createCampaignBacklog: productStudioManagerProcedure
     .input(z.object({ campaignId }))
-    .mutation(({ ctx, input }) => createStudioCampaignBacklog(actor(ctx), input.campaignId)),
+    .mutation(({ ctx, input }) => createStudioCampaignBacklog(actor(ctx, "productStudio.createCampaignBacklog"), input.campaignId)),
   drainCampaignBacklog: productStudioManagerProcedure
     .input(z.object({ campaignId, autoDistribute: z.boolean().optional() }))
-    .mutation(({ ctx, input }) => drainStudioCampaignBacklog(actor(ctx), input.campaignId, { autoDistribute: input.autoDistribute })),
+    .mutation(({ ctx, input }) => drainStudioCampaignBacklog(actor(ctx, "productStudio.drainCampaignBacklog"), input.campaignId, { autoDistribute: input.autoDistribute })),
   distributeCampaignTasks: productStudioManagerProcedure
     .input(z.object({ campaignId, assigneeIds: z.array(z.number().int().positive()).max(50).optional() }))
-    .mutation(({ ctx, input }) => distributeCampaignTasks(actor(ctx), input)),
-  campaignAnalytics: productStudioReadProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => getStudioCampaignAnalytics(actor(ctx), input.campaignId)),
-  campaignBoard: productStudioReadProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => getStudioCampaignBoard(actor(ctx), input.campaignId)),
+    .mutation(({ ctx, input }) => distributeCampaignTasks(actor(ctx, "productStudio.distributeCampaignTasks"), input)),
+  campaignAnalytics: productStudioReadProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => getStudioCampaignAnalytics(actor(ctx, "productStudio.campaignAnalytics"), input.campaignId)),
+  campaignBoard: productStudioReadProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => getStudioCampaignBoard(actor(ctx, "productStudio.campaignBoard"), input.campaignId)),
   createTemporaryPhotographer: productStudioManagerProcedure
     .input(z.object({ campaignId, name: z.string().trim().min(3).max(80) }))
-    .mutation(({ ctx, input }) => createTemporaryCampaignPhotographer(actor(ctx), input)),
+    .mutation(({ ctx, input }) => createTemporaryCampaignPhotographer(actor(ctx, "productStudio.createTemporaryPhotographer"), input)),
   /**
    * توفيقُ مصوّري الحملة بعد الإنشاء — إضافةٌ وإزالةٌ في نداءٍ واحد.
    * يستقبل القائمة النهائيّة (لا الفرق) فتغيّرات الشاشة تنعكس ذرّياً بلا سباق.
    */
   updateCampaignAssignees: productStudioManagerProcedure
     .input(z.object({ campaignId, assigneeIds: z.array(z.number().int().positive()).max(50) }))
-    .mutation(({ ctx, input }) => updateCampaignAssignees(actor(ctx), input)),
+    .mutation(({ ctx, input }) => updateCampaignAssignees(actor(ctx, "productStudio.updateCampaignAssignees"), input)),
   revokeTemporaryPhotographers: productStudioManagerProcedure
     .input(z.object({ campaignId }))
-    .mutation(({ ctx, input }) => revokeTemporaryCampaignPhotographers(actor(ctx), input.campaignId)),
-  claimByBarcode: productStudioWriteProcedure.input(z.object({ barcode: barcodeString })).mutation(({ ctx, input }) => claimStudioProductByBarcode(actor(ctx), input.barcode)),
+    .mutation(({ ctx, input }) => revokeTemporaryCampaignPhotographers(actor(ctx, "productStudio.revokeTemporaryPhotographers"), input.campaignId)),
+  claimByBarcode: productStudioWriteProcedure.input(z.object({ barcode: barcodeString })).mutation(({ ctx, input }) => claimStudioProductByBarcode(actor(ctx, "productStudio.claimByBarcode"), input.barcode)),
   linkBarcode: productStudioWriteProcedure
     .input(
       z.object({
@@ -213,7 +224,7 @@ export const productStudioRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const res = await linkStudioBarcode(actor(ctx), input);
+      const res = await linkStudioBarcode(actor(ctx, "productStudio.linkBarcode"), input);
       await logAudit(ctx, {
         action: "productStudio.linkBarcode",
         entityType: "productUnit",
@@ -222,16 +233,16 @@ export const productStudioRouter = router({
       });
       return res;
     }),
-  sendDueNotifications: productStudioManagerProcedure.input(z.object({ horizonHours: z.number().int().min(1).max(168).default(24) })).mutation(({ ctx, input }) => sendStudioDueNotifications(actor(ctx), new Date(), input.horizonHours)),
+  sendDueNotifications: productStudioManagerProcedure.input(z.object({ horizonHours: z.number().int().min(1).max(168).default(24) })).mutation(({ ctx, input }) => sendStudioDueNotifications(actor(ctx, "productStudio.sendDueNotifications"), new Date(), input.horizonHours)),
   candidatePreview: productStudioReadProcedure.input(z.object({ taskId })).query(({ ctx, input }) => {
     ctx.res.setHeader("Cache-Control", "private, no-store, max-age=0");
     ctx.res.setHeader("Pragma", "no-cache");
-    return getStudioCandidatePreview(actor(ctx), input.taskId);
+    return getStudioCandidatePreview(actor(ctx, "productStudio.candidatePreview"), input.taskId);
   }),
   taskPreviousImages: productStudioReadProcedure.input(z.object({ taskId })).query(({ ctx, input }) => {
     ctx.res.setHeader("Cache-Control", "private, no-store, max-age=0");
     ctx.res.setHeader("Pragma", "no-cache");
-    return getStudioTaskPreviousImages(actor(ctx), input.taskId);
+    return getStudioTaskPreviousImages(actor(ctx, "productStudio.taskPreviousImages"), input.taskId);
   }),
   assign: productStudioManagerProcedure
     .input(
@@ -243,7 +254,7 @@ export const productStudioRouter = router({
         dueAt: z.coerce.date().nullable().optional(),
       }),
     )
-    .mutation(({ ctx, input }) => assignStudioTask(actor(ctx), input)),
+    .mutation(({ ctx, input }) => assignStudioTask(actor(ctx, "productStudio.assign"), input)),
   bulkAssign: productStudioManagerProcedure
     .input(
       z.object({
@@ -253,7 +264,7 @@ export const productStudioRouter = router({
         dueAt: z.coerce.date().nullable().optional(),
       }),
     )
-    .mutation(({ ctx, input }) => bulkAssignStudioTasks(actor(ctx), input)),
+    .mutation(({ ctx, input }) => bulkAssignStudioTasks(actor(ctx, "productStudio.bulkAssign"), input)),
   /**
    * إعادةُ إسناد مهمّةٍ **قائمة** إلى مصوّرٍ آخر — أو إلى الطابور المفتوح
    * (`newAssigneeId=null`). المسار الوحيد لتحرير مهمّةٍ عالقةٍ بيد مصوّرٍ غائب
@@ -268,7 +279,7 @@ export const productStudioRouter = router({
         reason: z.string().trim().max(500).optional(),
       }),
     )
-    .mutation(({ ctx, input }) => reassignStudioTask(actor(ctx), input)),
+    .mutation(({ ctx, input }) => reassignStudioTask(actor(ctx, "productStudio.reassign"), input)),
   /** إعادةُ إسنادٍ جماعيّة — يستقبل معرّفات مهام لا منتجات؛ يوفّق المصوّر الجديد بلا إنشاء صفوف. */
   bulkReassign: productStudioManagerProcedure
     .input(
@@ -278,7 +289,7 @@ export const productStudioRouter = router({
         reason: z.string().trim().max(500).optional(),
       }),
     )
-    .mutation(({ ctx, input }) => bulkReassignStudioTasks(actor(ctx), input)),
+    .mutation(({ ctx, input }) => bulkReassignStudioTasks(actor(ctx, "productStudio.bulkReassign"), input)),
   /** ضبطُ الأولويّة على دفعةٍ من المهام دفعةً واحدة — بلا هذا المسار كان المدير يفتح كلاًّ منفرداً. */
   bulkSetPriority: productStudioManagerProcedure
     .input(
@@ -288,7 +299,7 @@ export const productStudioRouter = router({
         dueAt: z.coerce.date().nullable().optional(),
       }),
     )
-    .mutation(({ ctx, input }) => bulkSetStudioPriority(actor(ctx), input)),
+    .mutation(({ ctx, input }) => bulkSetStudioPriority(actor(ctx, "productStudio.bulkSetPriority"), input)),
   updateSchedule: productStudioManagerProcedure
     .input(
       z.object({
@@ -298,7 +309,7 @@ export const productStudioRouter = router({
         dueAt: z.coerce.date().nullable().optional(),
       }),
     )
-    .mutation(({ ctx, input }) => updateStudioTaskSchedule(actor(ctx), input)),
+    .mutation(({ ctx, input }) => updateStudioTaskSchedule(actor(ctx, "productStudio.updateSchedule"), input)),
   saveDraft: productStudioWriteProcedure
     .input(
       z.object({
@@ -310,7 +321,7 @@ export const productStudioRouter = router({
         expectedRevision,
       }),
     )
-    .mutation(({ ctx, input }) => saveStudioDraft(actor(ctx), { ...input, requireBarcodeVerification: true })),
+    .mutation(({ ctx, input }) => saveStudioDraft(actor(ctx, "productStudio.saveDraft"), { ...input, requireBarcodeVerification: true })),
   bindProcessingProof: productStudioWriteProcedure
     .input(
       z.object({
@@ -321,10 +332,10 @@ export const productStudioRouter = router({
         expectedRevision: expectedRevision.optional(),
       }),
     )
-    .mutation(({ ctx, input }) => bindStudioProcessingCandidate(actor(ctx), { ...input, requireBarcodeVerification: true })),
+    .mutation(({ ctx, input }) => bindStudioProcessingCandidate(actor(ctx, "productStudio.bindProcessingProof"), { ...input, requireBarcodeVerification: true })),
   reserveImages: productStudioWriteProcedure
     .input(z.object({ taskId, count: z.number().int().min(1).max(10), adminOverrideReason }))
-    .mutation(({ ctx, input }) => reserveStudioImageTasks(actor(ctx), { ...input, requireBarcodeVerification: true })),
+    .mutation(({ ctx, input }) => reserveStudioImageTasks(actor(ctx, "productStudio.reserveImages"), { ...input, requireBarcodeVerification: true })),
   submitCandidate: productStudioWriteProcedure
     .input(
       z.object({
@@ -341,8 +352,8 @@ export const productStudioRouter = router({
         expectedRevision,
       }),
     )
-    .mutation(({ ctx, input }) => submitStudioCandidate(actor(ctx), { ...input, requireBarcodeVerification: true })),
-  approve: productStudioManagerProcedure.input(z.object({ taskId, adminOverrideReason, expectedRevision })).mutation(({ ctx, input }) => approveStudioTask(actor(ctx), input.taskId, input.adminOverrideReason, input.expectedRevision)),
+    .mutation(({ ctx, input }) => submitStudioCandidate(actor(ctx, "productStudio.submitCandidate"), { ...input, requireBarcodeVerification: true })),
+  approve: productStudioManagerProcedure.input(z.object({ taskId, adminOverrideReason, expectedRevision })).mutation(({ ctx, input }) => approveStudioTask(actor(ctx, "productStudio.approve"), input.taskId, input.adminOverrideReason, input.expectedRevision)),
   reject: productStudioManagerProcedure
     .input(
       z.object({
@@ -352,8 +363,8 @@ export const productStudioRouter = router({
         expectedRevision,
       }),
     )
-    .mutation(({ ctx, input }) => rejectStudioTask(actor(ctx), input.taskId, input.reason, input.adminOverrideReason, input.expectedRevision)),
-  revert: productStudioManagerProcedure.input(z.object({ taskId, expectedRevision })).mutation(({ ctx, input }) => revertStudioTask(actor(ctx), input.taskId, input.expectedRevision)),
+    .mutation(({ ctx, input }) => rejectStudioTask(actor(ctx, "productStudio.reject"), input.taskId, input.reason, input.adminOverrideReason, input.expectedRevision)),
+  revert: productStudioManagerProcedure.input(z.object({ taskId, expectedRevision })).mutation(({ ctx, input }) => revertStudioTask(actor(ctx, "productStudio.revert"), input.taskId, input.expectedRevision)),
   cancel: productStudioManagerProcedure
     .input(
       z.object({
@@ -362,7 +373,7 @@ export const productStudioRouter = router({
         expectedRevision,
       }),
     )
-    .mutation(({ ctx, input }) => cancelStudioTask(actor(ctx), input)),
+    .mutation(({ ctx, input }) => cancelStudioTask(actor(ctx, "productStudio.cancel"), input)),
   cancelCampaignBacklog: productStudioManagerProcedure
     .input(
       z.object({
@@ -372,11 +383,11 @@ export const productStudioRouter = router({
         cascadeAssigned: z.boolean().optional(),
       }),
     )
-    .mutation(({ ctx, input }) => bulkCancelStudioBacklog(actor(ctx), input)),
+    .mutation(({ ctx, input }) => bulkCancelStudioBacklog(actor(ctx, "productStudio.cancelCampaignBacklog"), input)),
   // البحث السريع بالباركود للمنتجات وصورها — متاح لكل من يملك الوصول للاستوديو بلا حملات
   quickBarcodeLookup: productStudioReadProcedure
     .input(z.object({ barcode: barcodeString }))
-    .query(({ ctx, input }) => quickBarcodeLookup(actor(ctx), input.barcode)),
+    .query(({ ctx, input }) => quickBarcodeLookup(actor(ctx, "productStudio.quickBarcodeLookup"), input.barcode)),
   // الحفظ الفوري والمعالجة: اعتماد مباشر وتلقائي للمدير بلا روتين، وإرسال للاعتماد لغير المدير
   quickSaveBarcodeProductImage: productStudioWriteProcedure
     .input(
@@ -392,7 +403,7 @@ export const productStudioRouter = router({
         adminOverrideReason,
       }),
     )
-    .mutation(({ ctx, input }) => quickSaveBarcodeProductImage(actor(ctx), input)),
+    .mutation(({ ctx, input }) => quickSaveBarcodeProductImage(actor(ctx, "productStudio.quickSaveBarcodeProductImage"), input)),
   // معالجة بالذكاء الاصطناعي السريعة عبر API (Gemini أو remove.bg) لصور الباركود المباشرة
   quickAiTransform: productStudioWriteProcedure
     .input(
@@ -404,5 +415,5 @@ export const productStudioRouter = router({
         adminOverrideReason,
       }),
     )
-    .mutation(({ ctx, input }) => quickAiTransform(actor(ctx), input)),
+    .mutation(({ ctx, input }) => quickAiTransform(actor(ctx, "productStudio.quickAiTransform"), input)),
 });

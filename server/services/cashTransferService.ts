@@ -3,6 +3,7 @@
 // الأمان: قفل ثنائي على cashTransfers بـ.for("update") + IDOR (الـreceiver في toBranchId).
 
 import { TRPCError } from "@trpc/server";
+import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
 import { and, desc, eq, gte, inArray, like, lte, or, sql } from "drizzle-orm";
 import { branches, cashTransfers, receipts, users } from "../../drizzle/schema";
 import { getDb, type Tx } from "../db";
@@ -87,6 +88,7 @@ export async function sendTransfer(
   actor: Actor,
 ): Promise<SendTransferResult> {
   return withTx(async (tx) => {
+    const canonicalAuthorized = await assertOperationAuthorityTx(tx, actor, "cashTransfers.send", actor.role === "admin" || actor.role === "manager");
     // 1. Idempotency — مع فحص بصمة الكيان (تدقيق ٢٣/٦/٢٦):
     //    البصمة كانت قاصرة على clientRequestId ⇒ مدير يُعيد استعمال المفتاح لتحويل جديد فيتلقّى
     //    تأكيد التحويل القديم بينما الجديد لم يُنفَّذ ⇒ مال لا يصل لوجهته مع رسالة «نُقل بنجاح».
@@ -166,7 +168,7 @@ export async function sendTransfer(
 
     // 3. الصلاحية: admin/manager فقط + admin له صلاحية cross-branch.
     if (actor.role !== "admin") {
-      if (actor.role !== "manager") {
+      if (actor.role !== "manager" && !canonicalAuthorized) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "إرسال التحويل النقدي للمدير فأعلى",
@@ -266,6 +268,7 @@ export async function receiveTransfer(
   actor: Actor,
 ): Promise<{ transferId: number; receivedReceiptId: number }> {
   return withTx(async (tx) => {
+    const canonicalAuthorized = await assertOperationAuthorityTx(tx, actor, "cashTransfers.receive", actor.role === "admin" || actor.role === "manager");
     // 1. قفل الصف ضدّ سباق استلامين متزامنَين.
     const rows = await tx
       .select()
@@ -285,7 +288,7 @@ export async function receiveTransfer(
 
     // 2. الصلاحية + IDOR.
     if (actor.role !== "admin") {
-      if (actor.role !== "manager") {
+      if (actor.role !== "manager" && !canonicalAuthorized) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "الاستلام للمدير فأعلى",
@@ -391,6 +394,8 @@ export async function cancelTransfer(
   actor: Actor,
 ): Promise<{ transferId: number; reversalReceiptId: number }> {
   return withTx(async (tx) => {
+    // Sender/source-branch rules below remain required in legacy mode.
+    const canonicalAuthorized = await assertOperationAuthorityTx(tx, actor, "cashTransfers.cancel", true);
     const rows = await tx
       .select()
       .from(cashTransfers)
@@ -417,7 +422,7 @@ export async function cancelTransfer(
     // الصلاحية: المُرسِل نفسه أو admin، أو manager في فرع الإرسال.
     if (actor.role !== "admin") {
       const isManagerOfSource =
-        actor.role === "manager" &&
+        (actor.role === "manager" || canonicalAuthorized) &&
         Number(actor.branchId) === Number(t.fromBranchId);
       const isSender = actor.userId === Number(t.sentBy);
       if (!isManagerOfSource && !isSender) {

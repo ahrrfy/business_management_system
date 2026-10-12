@@ -1,3 +1,4 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 /**
  * StocktakeNew — معالج إنشاء جلسة جرد جديدة (/stocktakes/new).
  *
@@ -151,9 +152,10 @@ export default function StocktakeNew() {
   const [prefill] = useState(readPrefill);
 
   const me = trpc.auth.me.useQuery();
+  const canOperation = (path: string) => canLifecycleOperation(me.data, path, true);
   const role = me.data?.role ?? "";
-  const isManagerPlus = role === "admin" || role === "manager";
-  const isWarehouseOnly = role === "warehouse";
+  const isManagerPlus = role === "admin" || role === "manager" || me.data?.isOwner === true;
+  const isWarehouseOnly = !isManagerPlus;
 
   const branchesQ = trpc.branches.list.useQuery();
 
@@ -234,18 +236,21 @@ export default function StocktakeNew() {
       limit: PICKER_PAGE_SIZE + 1,
       offset: pickPage * PICKER_PAGE_SIZE,
     },
-    { enabled: effectiveBranchId > 0 && scopeType === "MANUAL" }
+    { enabled: (effectiveBranchId > 0 && scopeType === "MANUAL") && canOperation("stocktakes.pickerVariants") }
   );
-  const onHand = onHandQ.data ?? [];
+  const onHandQData = canOperation("stocktakes.pickerVariants") ? onHandQ.data : undefined;
+  const onHand = onHandQData ?? [];
 
   /* قائمة الفئات (لنطاق CATEGORY). */
-  const categoriesQ = trpc.catalog.categories.useQuery(undefined, { enabled: scopeType === "CATEGORY" });
-  const categoryOptions = categoriesQ.data ?? [];
+  const categoriesQ = trpc.catalog.categories.useQuery(undefined, { enabled: (scopeType === "CATEGORY") && canOperation("catalog.categories") });
+  const categoriesQData = canOperation("catalog.categories") ? categoriesQ.data : undefined;
+  const categoryOptions = categoriesQData ?? [];
 
   /* حسابات قابلة للتكليف (USER) — warehouseProcedure: متاحة لكل الأدوار المخوّلة. */
   const wantsUser = workers.some((w) => w.method === "USER");
-  const usersQ = trpc.stocktakes.assignableUsers.useQuery(undefined, { enabled: wantsUser });
-  const userOptions = usersQ.data ?? [];
+  const usersQ = trpc.stocktakes.assignableUsers.useQuery(undefined, { enabled: (wantsUser) && canOperation("stocktakes.assignableUsers") });
+  const usersQData = canOperation("stocktakes.assignableUsers") ? usersQ.data : undefined;
+  const userOptions = usersQData ?? [];
 
   /* عدّاد النطاق الحقيقي (يعكس ما سيُنشأ فعلاً عند الضغط على «إنشاء»):
      FULL/MOVING/CATEGORY يُحسبان خادمياً؛ MANUAL يُحسب في العميل من الاختيار.
@@ -262,21 +267,23 @@ export default function StocktakeNew() {
     },
     {
       enabled:
-        effectiveBranchId > 0 &&
+        (effectiveBranchId > 0 &&
         scopeType !== "MANUAL" &&
-        (scopeType !== "CATEGORY" || categoryIds.length > 0),
+        (scopeType !== "CATEGORY" || categoryIds.length > 0)) && canOperation("stocktakes.previewScopeCount"),
     },
   );
-  const previewCount = previewCountQ.data ?? null;
+  const previewCountQData = canOperation("stocktakes.previewScopeCount") ? previewCountQ.data : undefined;
+  const previewCount = previewCountQData ?? null;
 
   // تغطية الباركود لنطاق MANUAL (متغيّرات مختارة صراحةً) — نطاقات FULL/MOVING/CATEGORY
   // تأتي تغطيتها ضمن previewCount.coverage. بوّابة جاهزية م٢.
   const manualCoverageQ = trpc.stocktakes.barcodeCoverage.useQuery(
     { variantIds: manualIds },
-    { enabled: scopeType === "MANUAL" && manualIds.length > 0 },
+    { enabled: (scopeType === "MANUAL" && manualIds.length > 0) && canOperation("stocktakes.barcodeCoverage") },
   );
+  const manualCoverageQData = canOperation("stocktakes.barcodeCoverage") ? manualCoverageQ.data : undefined;
   const coverage =
-    scopeType === "MANUAL" ? (manualCoverageQ.data ?? null) : (previewCount?.coverage ?? null);
+    scopeType === "MANUAL" ? (manualCoverageQData ?? null) : (previewCount?.coverage ?? null);
 
   const scopeCount: number | null =
     scopeType === "MANUAL"
@@ -347,6 +354,7 @@ export default function StocktakeNew() {
   });
 
   function handleCreate() {
+    if (!canOperation("stocktakes.create")) return;
     const err = stepError();
     if (err) {
       notify.warn(err);
@@ -359,7 +367,7 @@ export default function StocktakeNew() {
       zone: w.zone.trim() || undefined,
     }));
 
-    createMut.mutate({
+    (canOperation("stocktakes.create") && createMut.mutate({
       name: name.trim() || `${SCOPE_TYPE_LABEL[scopeType]} — ${branchName}`,
       branchId: effectiveBranchId,
       sessionType: isOpeningSession ? "OPENING" : undefined,
@@ -385,11 +393,11 @@ export default function StocktakeNew() {
       countMethod: isManagerPlus && scanRequired ? "SCAN_REQUIRED" : "FREE",
       notes: notes.trim() || undefined,
       assignments,
-    });
+    }));
   }
 
   /* ─── شاشة النجاح: الروابط ورموز الدخول ─── */
-  if (created) {
+  if (created && canOperation("stocktakes.create")) {
     return <CreatedLinksScreen created={created} sessionName={name.trim() || `${SCOPE_TYPE_LABEL[scopeType]} — ${branchName}`} />;
   }
 
@@ -400,6 +408,7 @@ export default function StocktakeNew() {
       {/* شريط الرجوع اليدويّ («→ جلسات الجرد / جلسة جرد جديدة») صار `backHref` داخل الرأس نفسه:
           سهمٌ موحّد بدل محرفٍ خامّ، والقطعة الأخيرة كانت تكرّر العنوان الذي تحتها حرفياً. */}
       <PageHeader title="جلسة جرد جديدة" backHref="/stocktakes" backLabel="جلسات الجرد" />
+      {!isManagerPlus && <p className="text-sm text-muted-foreground">إنشاء الجلسة مفوّض لك؛ إعدادات الحوكمة المتقدمة والجرد الافتتاحي مخصصة للإدارة.</p>}
 
       {/* مؤشر الخطوات */}
       <div className="flex items-center gap-2">
@@ -1166,7 +1175,7 @@ export default function StocktakeNew() {
             التالي ←
           </Button>
         ) : (
-          <Button size="lg" disabled={!canNext || createMut.isPending} onClick={handleCreate}>
+          <Button size="lg" disabled={!canOperation("stocktakes.create") || (!canNext || createMut.isPending)} onClick={handleCreate}>
             {createMut.isPending ? "جارٍ الإنشاء…" : "إنشاء الجلسة وبدء العدّ"}
           </Button>
         )}

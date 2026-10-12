@@ -174,6 +174,8 @@ export const authRouter = router({
       passwordHash: _passwordHash,
       totpSecretEncrypted: _totpSecret,
       pinHash: _pinHash,
+      inheritedOperationPolicy: _inheritedOperationPolicy,
+      roleOperationPolicy: _roleOperationPolicy,
       ...safe
     } = ctx.user as any;
     // إلزام 2FA (قرار المالك ٢٣/٧ + إنفاذ خادميّ M9 ٣/٨): الأدمن/المدير يجب أن يُفعّلوا 2FA قبل
@@ -201,6 +203,11 @@ export const authRouter = router({
     // `null` يعني نشر شركة واحدة، ويستعمله العميل لعزل أي حالة تشغيلية في المتصفح.
     return {
       ...safe,
+      operationPolicyEnabled: ctx.user.operationPolicyEnabled ?? false,
+      resolvedOperationPolicy: ctx.user.resolvedOperationPolicy ?? null,
+      operationPolicyRevision: ctx.user.operationPolicyRevision,
+      inheritedOperationPolicyRevision:
+        ctx.user.inheritedOperationPolicyRevision ?? 0,
       photoUrl,
       hasPin,
       badgeBarcode: (ctx.user as any).badgeBarcode ?? null,

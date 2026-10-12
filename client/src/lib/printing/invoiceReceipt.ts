@@ -5,6 +5,7 @@ import type { ReceiptBrowserData } from "./print";
 import { variantDescriptor } from "@shared/variantDisplay";
 
 export interface InvoiceReceiptSource {
+  id?: number;
   invoiceNumber: string;
   invoiceDate: DateInput;
   customerName?: string | null;
@@ -61,6 +62,7 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
 
   return {
     receiptNumber: d.invoiceNumber,
+    ...(d.id != null ? { invoiceId: d.id } : {}),
     date: fmtDate(d.invoiceDate),
     time: fmtTime(d.invoiceDate),
     cashierName: d.salespersonName ?? null,

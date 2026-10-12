@@ -33,10 +33,9 @@ import {
   Menu, Search, Printer, UserCircle2, ChevronLeft, LogOut, Check,
 } from "lucide-react";
 import { Link, useLocation, useSearch } from "wouter";
-import { CASHIER_NAV_PATHS, canSeeGate } from "@/lib/navVisibility";
 import { hasModuleAccess } from "@shared/permissions";
 import { ROLE_LABEL } from "@/lib/roles";
-import { APPLICATION_MODULES as NAV_LINKS } from "@/lib/moduleRegistry";
+import { visibleApplicationModules } from "@/lib/moduleRegistry";
 import { resolveWorkspaceProfile } from "@/lib/workspaceProfiles";
 import {
   loadNavWorkspace,
@@ -273,13 +272,14 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
     | null;
   // المندوب (courier) شاشةٌ واحدة «توصيلاتي» فقط — نخفي بقية الروابط (كلها إمّا محجوبة خادمياً أو
   // بلا معنى له) بدل عرض جدارٍ من روابط ميتة (مراجعة عدائية ١٢/٧). العزل الحقيقي خادميّ؛ هذا تحسين UX.
-  const isCourier = role === "courier";
+  const operationPolicy = me.data?.operationPolicyEnabled && !me.data.isOwner ? me.data.resolvedOperationPolicy : null;
+  const isCourier = role === "courier" && !operationPolicy && !me.data?.isOwner;
   // «مساحة العمل المركّزة» لفئة الكاشير (٢٤/٧، قرار المالك): موظف الوردية عمله فتح وردية ← بيع ←
   // إغلاق وتسليم — يرى أدوات منضدته فقط لا جدار وحدات النظام (تعميم نمط المندوب أعلاه). القائمة
   // البيضاء تُقاطَع مع canSeeGate ⇒ ما يظهر محكوم بصلاحيات دوره الفعلية (كاشير طباعة بلا store
   // لا يرى «طلبات المتجر»)، وإطفاء وحدةٍ من شاشة «الأدوار» يُسقط بندها هنا فوراً. العزل الحقيقي
   // خادميّ كما هو؛ وبقية الشاشات المسموحة تبقى بلوغاً بالبحث (Ctrl+K) — تركيزٌ لا حجبٌ جديد.
-  const isCashier = role === "cashier";
+  const isCashier = role === "cashier" && !operationPolicy && !me.data?.isOwner;
   // طلبات المتجر التشغيلية والحجوزات والقنوات أصبحت داخل محطة الاستقبال؛ يبقى StoreHub
   // للإدارة (كتالوج/بنرات/إعدادات) ولا يُشتّت قائمة الكاشير اليومية.
   // «/delivery» (٩/٨): الكاشير هو منفِّذ توريد المناديب الطبيعي وكان مخوَّلاً بلا مدخل مرئي
@@ -290,21 +290,16 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   // محكوماً ببوّابته أدناه (`canSeeGate`)، فالإضافة هنا **إتاحةُ وصولٍ لا منحُ صلاحية**.
   // القائمة البيضاء صارت في `navVisibility.ts` بجوار البوّابة التي تُطبَّق معها — ويحرسها
   // اختبارُ تطابقٍ مع الخادم بعد أن أخفت مدخلاً مسموحاً (بلاغ ٢٠/٨).
-  const CASHIER_NAV = CASHIER_NAV_PATHS;
   // `coldStudio` (من main): شلٌّ كاملٌ للتنقّل في وضع الاستوديو البارد — يبقى **قبل** كلّ
   // فرعٍ آخر، فالإضافةُ أعلاه لا تفتح مدخلاً في وضعٍ صُمّم ليكون بلا مداخل.
   const visibleNav = coldStudio || !me.data
     ? []
-    : isCourier
-    ? NAV_LINKS.filter((m) => m.roles?.includes("courier"))
-    : isCashier
-      ? NAV_LINKS.filter((m) => CASHIER_NAV.includes(m.href) && canSeeGate(m, role, permsOverride))
-      : NAV_LINKS.filter((m) => canSeeGate(m, role, permsOverride));
+    : visibleApplicationModules(me.data.isOwner ? "admin" : role, me.data.isOwner ? null : permsOverride, operationPolicy, true);
   const workspaceProfile = resolveWorkspaceProfile({
     role: role ?? null,
     permissionsOverride: permsOverride,
   });
-  const primaryNav = workspaceProfile.primaryNav;
+  const primaryNav = operationPolicy ? workspaceProfile.primaryNav.filter((item) => visibleNav.some((allowed) => item.href === allowed.href || item.href.startsWith(allowed.href + "/"))) : workspaceProfile.primaryNav;
   const hasMyStocktake = (myStocktakes.data?.length ?? 0) > 0;
   const allowedNavPaths = visibleNav.map((item) => item.href);
   const allowedNavPathsKey = allowedNavPaths.join("|");
@@ -488,14 +483,15 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
         <div className="px-3 pt-3 md:px-6 md:pt-4 empty:hidden">
           <PushNotificationPrompt />
         </div>
-        <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 pb-24 lg:pb-6 overflow-auto outline-none">{children}</main>
+        <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 pb-24 md:pb-24 lg:pb-6 overflow-auto outline-none">{children}</main>
       </div>
 
       {/* شريط التنقل السريع للهاتف أسفل الشاشة (<lg) */}
       {shellCapabilities.mountMobileBottomNav && (
         <MobileBottomNav
-          role={role}
-          permsOverride={permsOverride}
+          role={me.data?.isOwner ? "admin" : role}
+          permsOverride={me.data?.isOwner ? null : permsOverride}
+          operationPolicy={operationPolicy}
           onOpenMenu={() => setNavOpen(true)}
           // Codex P2 (٢٩/٨) — الشارات على الجوال أيضاً: القائمة الجانبية مخفيّة أقلَّ من lg،
           // فبلا هذا لا يرى موظّفو الاستقبال على الهاتف/التابلت أيَّ إعلانٍ للجاهز.

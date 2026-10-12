@@ -5,6 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { CollectConsignmentDialog } from "@/components/delivery/CollectConsignmentDialog";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
+import { trpc } from "@/lib/trpc";
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 
 export interface WorkOrderDeliveryData {
   id: number | string;
@@ -33,6 +35,7 @@ export function WorkOrderDeliverySection({
   role,
   onInvalidate,
 }: WorkOrderDeliverySectionProps) {
+  const me = trpc.auth.me.useQuery();
   const [showCollectDelivery, setShowCollectDelivery] = useState(false);
   const [showCancelDelivery, setShowCancelDelivery] = useState(false);
 
@@ -124,7 +127,7 @@ export function WorkOrderDeliverySection({
             {/* إلغاء الإسناد إذا أُسند بالخطأ ولم يُحصّل */}
             {data.consignmentId != null &&
               (data.parcelStatus === "ASSIGNED" || data.parcelStatus === "OUT_FOR_DELIVERY" || data.parcelStatus === "FAILED") &&
-              (role === "admin" || role === "manager" || role === "cashier") && (
+              lifecycleActionAllowed(me.data, "delivery.cancelAssignment", role === "admin" || role === "manager" || role === "cashier") && (
                 <Button
                   size="sm"
                   variant="destructive"
@@ -137,7 +140,7 @@ export function WorkOrderDeliverySection({
               )}
 
             {/* تسجيل التحصيل إذا سُلّم أو لضبط التحصيل */}
-            {data.consignmentId != null && (
+            {data.consignmentId != null && lifecycleActionAllowed(me.data, "delivery.recordRemittance", true) && (
               <Button
                 size="sm"
                 variant="default"
@@ -150,11 +153,11 @@ export function WorkOrderDeliverySection({
             )}
 
             {/* رابط سريع لطاولة التوصيل */}
-            <Button size="sm" variant="outline" asChild className="gap-1">
+            {lifecycleActionAllowed(me.data, "delivery.inTransit", true) && <Button size="sm" variant="outline" asChild className="gap-1">
               <Link href="/delivery?tab=transit">
                 <Truck className="size-4" /> طاولة التوصيل الكاملة
               </Link>
-            </Button>
+            </Button>}
           </div>
         </CardContent>
       </Card>

@@ -202,6 +202,7 @@ export default function PurchaseChargesGovernance() {
         </div>
       ) : (
         <PurchaseChargesGovernanceWorkspace
+          operationUser={me.data}
           branchId={branchId}
           sources={sources}
           charges={charges}

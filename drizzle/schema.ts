@@ -25,6 +25,7 @@ import {
 import { sql } from "drizzle-orm";
 import { barcodeIdentityColumn, barcodeIdentitySql } from "./barcodeIdentitySql";
 import type { DigitalCheckoutSnapshot } from "../shared/digitalSale";
+import type { OperationPolicy } from "../shared/operationPermissions";
 
 /** Raw binary storage for small, validated documents that must travel with DB backups. */
 const mediumblob = customType<{ data: Buffer; driverData: Buffer }>({
@@ -94,6 +95,8 @@ export const users = mysqlTable(
     permissionsOverride: json("permissionsOverride"),
     atomicPermissions: json("atomicPermissions"),
     operationalCaps: json("operationalCaps"),
+    operationPolicy: json("operationPolicy").$type<OperationPolicy>(),
+    operationPolicyRevision: int("operationPolicyRevision").default(0).notNull(),
     // دور مخصّص (من جدول roles) — null ⇒ دور مبني (enum أعلاه). عند ضبطه: يُحلّ في context
     // إلى role=baseRole + permissionsOverride مشتقّ من خريطة الدور، فتعمل كل البوّابات بلا تغيير.
     customRoleId: bigint("customRoleId", { mode: "number" }),
@@ -165,6 +168,8 @@ export const roles = mysqlTable("roles", {
   permissions: json("permissions").notNull(),
   atomicPermissions: json("atomicPermissions"),
   operationalCaps: json("operationalCaps"),
+  operationPolicy: json("operationPolicy").$type<OperationPolicy>(),
+  operationPolicyRevision: int("operationPolicyRevision").default(0).notNull(),
   canSeeCost: boolean("canSeeCost").default(false).notNull(),
   isActive: boolean("isActive").default(true).notNull(),
   // RBAC ش٣: الأدوار القياسية المبذورة محميّة من الحذف/تغيير الفئة (قابلة للتحرير المُدقَّق).

@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
@@ -281,6 +282,7 @@ export function ProductRecipeSection({
   sellingPrice: propSellingPrice,
   wholesalePrice: propWholesalePrice,
 }: ProductRecipeSectionProps) {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
   const { context } = useSessionContext();
   const me = trpc.auth.me.useQuery(undefined, { staleTime: 60_000 });
@@ -297,7 +299,7 @@ export function ProductRecipeSection({
   // استعلام قراءة وصفة المنتج مع تفاصيل الصنف وأسعار البيع
   const recipeQ = trpc.production.recipes.forProduct.useQuery(
     { productId },
-    { enabled: Number.isFinite(productId) && productId > 0 },
+    { enabled: can("production.recipes.forProduct") && (Number.isFinite(productId) && productId > 0) },
   );
 
   const [isEditing, setIsEditing] = useState(false);
@@ -369,7 +371,7 @@ export function ProductRecipeSection({
 
   const materialsQ = trpc.catalog.materialsForRecipe.useQuery(
     { query: searchQuery.trim(), limit: 15 },
-    { enabled: isEditing && searchQuery.trim().length >= 1, staleTime: 30_000 },
+    { enabled: can("catalog.materialsForRecipe") && (isEditing && searchQuery.trim().length >= 1), staleTime: 30_000 },
   );
 
   // دالة موحدة لإبطال كاش الوصفات والمقترحات عبر التبويبات
@@ -444,7 +446,7 @@ export function ProductRecipeSection({
       lines: activeLinesForCheck,
     },
     {
-      enabled: Boolean(activeLinesForCheck.length > 0),
+      enabled: can("production.recipes.checkStockAvailability") && (Boolean(activeLinesForCheck.length > 0)),
       staleTime: 15_000,
     },
   );
@@ -1057,7 +1059,7 @@ export function ProductRecipeSection({
                       active: !currentRecipe.isActive,
                     })
                   }
-                  disabled={setActiveMut.isPending}
+                  disabled={!can("production.recipes.setActive") || (setActiveMut.isPending)}
                   className="h-8 gap-1 text-xs"
                 >
                   <Power className="size-3.5" />
@@ -1078,7 +1080,7 @@ export function ProductRecipeSection({
                   variant="outline"
                   size="sm"
                   onClick={handleDelete}
-                  disabled={deleteMut.isPending}
+                  disabled={!can("production.recipes.remove") || (deleteMut.isPending)}
                   className="h-8 gap-1 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
                 >
                   <Trash2 className="size-3.5" />

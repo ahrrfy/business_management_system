@@ -38,6 +38,26 @@ import {
   type OperationalCaps,
 } from "@shared/atomicPermissions";
 
+/** Persisted actor/target rows for identity services' fresh, ordered lock reads. */
+function lockedIdentitySelect(
+  targetRows: Array<Record<string, unknown>>,
+  roleRows: Array<Record<string, unknown>> = [],
+) {
+  return () => ({
+    from: (table: unknown) => ({
+      where: () => {
+        const rows = table === roles ? roleRows : [
+          { id: 1, role: "admin", isOwner: true, isActive: true, branchId: 1, customRoleId: null },
+          ...targetRows,
+        ];
+        return Object.assign(Promise.resolve(rows), {
+          orderBy: () => ({ for: async () => rows }),
+        });
+      },
+    }),
+  });
+}
+
 describe("Milestone 2 Challenger 2: Adversarial Stress & Verification Suite", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -192,15 +212,7 @@ describe("Milestone 2 Challenger 2: Adversarial Stress & Verification Suite", ()
       it("Updating atomicPermissions triggers patch.sessionsValidFrom = new Date()", async () => {
         let capturedPatch: any = null;
         const fakeTx = {
-          select: () => ({
-            from: () => ({
-              where: () => ({
-                for: () => ({
-                  limit: async () => [{ id: 42, role: "cashier", isOwner: false, email: "u@t.local" }],
-                }),
-              }),
-            }),
-          }),
+          select: lockedIdentitySelect([{ id: 42, role: "cashier", isOwner: false, email: "u@t.local" }]),
           update: () => ({
             set: (patch: any) => {
               capturedPatch = patch;
@@ -232,15 +244,7 @@ describe("Milestone 2 Challenger 2: Adversarial Stress & Verification Suite", ()
       it("Updating operationalCaps triggers patch.sessionsValidFrom = new Date()", async () => {
         let capturedPatch: any = null;
         const fakeTx = {
-          select: () => ({
-            from: () => ({
-              where: () => ({
-                for: () => ({
-                  limit: async () => [{ id: 43, role: "cashier", isOwner: false, email: "u2@t.local" }],
-                }),
-              }),
-            }),
-          }),
+          select: lockedIdentitySelect([{ id: 43, role: "cashier", isOwner: false, email: "u2@t.local" }]),
           update: () => ({
             set: (patch: any) => {
               capturedPatch = patch;
@@ -272,24 +276,10 @@ describe("Milestone 2 Challenger 2: Adversarial Stress & Verification Suite", ()
       it("Updating null atomicPermissions/operationalCaps (clearing overrides) also invalidates sessions", async () => {
         let capturedPatch: any = null;
         const fakeTx = {
-          select: () => ({
-            from: () => ({
-              where: () => ({
-                for: () => ({
-                  limit: async () => [
-                    {
-                      id: 44,
-                      role: "cashier",
-                      isOwner: false,
-                      email: "u3@t.local",
-                      atomicPermissions: { "pos.sale.view": true },
-                      operationalCaps: { maxDiscountPercent: 20 },
-                    },
-                  ],
-                }),
-              }),
-            }),
-          }),
+          select: lockedIdentitySelect([{
+            id: 44, role: "cashier", isOwner: false, email: "u3@t.local",
+            atomicPermissions: { "pos.sale.view": true }, operationalCaps: { maxDiscountPercent: 20 },
+          }]),
           update: () => ({
             set: (patch: any) => {
               capturedPatch = patch;
@@ -320,15 +310,7 @@ describe("Milestone 2 Challenger 2: Adversarial Stress & Verification Suite", ()
       it("Updating ONLY non-governance fields (e.g. phone) does NOT invalidate user sessions", async () => {
         let capturedPatch: any = null;
         const fakeTx = {
-          select: () => ({
-            from: () => ({
-              where: () => ({
-                for: () => ({
-                  limit: async () => [{ id: 45, role: "cashier", isOwner: false, email: "u4@t.local" }],
-                }),
-              }),
-            }),
-          }),
+          select: lockedIdentitySelect([{ id: 45, role: "cashier", isOwner: false, email: "u4@t.local" }]),
           update: () => ({
             set: (patch: any) => {
               capturedPatch = patch;
@@ -362,17 +344,10 @@ describe("Milestone 2 Challenger 2: Adversarial Stress & Verification Suite", ()
       it("updateRole invalidates sessions of ALL users assigned to that custom role", async () => {
         const updateCalls: Array<{ table: any; patch: any; where: any }> = [];
         const fakeTx = {
-          select: () => ({
-            from: () => ({
-              where: () => ({
-                for: () => ({
-                  limit: async () => [
-                    { id: 77, label: "كاشير فرعي", baseRole: "cashier", isSystem: false },
-                  ],
-                }),
-              }),
-            }),
-          }),
+          select: lockedIdentitySelect(
+            [{ id: 2, customRoleId: 77 }, { id: 3, customRoleId: 77 }],
+            [{ id: 77, label: "كاشير فرعي", baseRole: "cashier", isSystem: false }],
+          ),
           update: (table: any) => ({
             set: (patch: any) => ({
               where: async (where: any) => {
@@ -402,7 +377,7 @@ describe("Milestone 2 Challenger 2: Adversarial Stress & Verification Suite", ()
         expect(updateCalls[0].patch.atomicPermissions).toEqual({ "pos.drawer.open": true });
         expect(updateCalls[0].patch.operationalCaps).toEqual({ maxDiscountPercent: 12 });
 
-        // 2nd update: on users table cascading sessionsValidFrom = new Date() where customRoleId == 77
+        // 2nd update: invalidate the locked users currently assigned to custom role 77.
         expect(updateCalls[1].table).toBe(users);
         expect(updateCalls[1].patch.sessionsValidFrom).toBeInstanceOf(Date);
         expect(updateCalls[1].patch.sessionsValidFrom.getTime()).toBeGreaterThanOrEqual(beforeNow);

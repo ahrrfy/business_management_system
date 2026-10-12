@@ -1,3 +1,4 @@
+import { useDigitalGiftOperationAccess } from "@/lib/digitalGiftOperationAccess";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
@@ -139,9 +140,10 @@ function causeFor(row: QueueRow): { title: string; detail: string; next: string 
 }
 
 export default function DigitalReview() {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const utils = trpc.useUtils();
-  const needsReview = trpc.digitalCards.sales.needsReview.useQuery();
-  const variances = trpc.digitalCards.wallets.reconciliations.useQuery({ status: "VARIANCE_OPEN" });
+  const needsReview = digitalAccess.query("digitalCards.sales.needsReview", trpc.digitalCards.sales.needsReview.useQuery(undefined, { enabled: digitalAccess.can("digitalCards.sales.needsReview") }));
+  const variances = digitalAccess.query("digitalCards.wallets.reconciliations", trpc.digitalCards.wallets.reconciliations.useQuery({ status: "VARIANCE_OPEN" }, { enabled: digitalAccess.can("digitalCards.wallets.reconciliations") }));
   const [reviewing, setReviewing] = useState<QueueRow | null>(null);
   const [resolving, setResolving] = useState<Reconciliation | null>(null);
 
@@ -267,7 +269,8 @@ export default function DigitalReview() {
             key: "review",
             kind: "view",
             label: row.original.resolutionStatus === "PENDING" ? "مراجعة القرار" : "معالجة الآن",
-            gate: { module: "digital_cards", level: "READ" },
+            hidden: !digitalAccess.can("digitalCards.sales.reviewDetails"),
+            gate: digitalAccess.canonical ? undefined : { module: "digital_cards", level: "READ" },
             disabled: Number(row.original.activeClaimCount) > 0,
             disabledReason: "نافذة الإصدار ما زالت نشطة",
             onSelect: () => setReviewing(row.original),
@@ -349,7 +352,8 @@ export default function DigitalReview() {
             key: "resolve-variance",
             kind: "correct",
             label: "معالجة الفرق",
-            gate: { module: "digital_cards", level: "FULL" },
+            hidden: !digitalAccess.can("digitalCards.wallets.statement"),
+            gate: digitalAccess.canonical ? undefined : { module: "digital_cards", level: "FULL" },
             onSelect: () => setResolving(row.original),
           }]}
         />
@@ -363,7 +367,7 @@ export default function DigitalReview() {
         title="عمليات تحتاج معالجة"
         description="كل عملية هنا توقفت قبل اكتمال البيع. يعرض النظام ما حدث، ومن قام به، والخطوة الصحيحة. أي قرار مالي يحتاج طلب مدير واعتماد مدير آخر؛ مالك النظام مستثنى."
         actions={
-          <Button size="sm" variant="outline" disabled={sweepMut.isPending} onClick={() => void sweep()}>
+          <Button size="sm" variant="outline" disabled={!digitalAccess.can("digitalCards.sales.expireStale") || (sweepMut.isPending)} onClick={() => void sweep()}>
             <RefreshCw className="size-4" /> {sweepMut.isPending ? "جارٍ الفحص…" : "فحص العمليات القديمة"}
           </Button>
         }
@@ -441,12 +445,13 @@ export default function DigitalReview() {
 }
 
 function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClose: () => void }) {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const details = trpc.digitalCards.sales.reviewDetails.useQuery(
+  const details = digitalAccess.query("digitalCards.sales.reviewDetails", trpc.digitalCards.sales.reviewDetails.useQuery(
     { intentId: row?.id ?? 0 },
-    { enabled: row != null },
-  );
+    { enabled: digitalAccess.can("digitalCards.sales.reviewDetails") && (row != null) },
+  ));
   const [decision, setDecision] = useState<Decision | "">("");
   const [reason, setReason] = useState("");
   const [verified, setVerified] = useState(false);
@@ -528,6 +533,7 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
   }
 
   function submitRequest() {
+    if (!digitalAccess.can("digitalCards.sales.requestReviewResolution")) return;
     if (!data || !decision) return notify.err("اختر ما حدث للعملية");
     if (!verified) return notify.err("أكد أنك طابقت النتيجة مع تقرير جهاز المزوّد");
     if (reason.trim().length < 5) return notify.err("اكتب نتيجة المطابقة وسبب القرار بوضوح");
@@ -545,6 +551,7 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
   }
 
   async function approve() {
+    if (!digitalAccess.can("digitalCards.sales.approveReviewResolution")) return;
     if (!data?.resolution) return;
     const copy = decisionCopy(data.intent.paymentMethod)[data.resolution.decision as Decision];
     if (!(await confirm({
@@ -703,7 +710,7 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
         <DialogFooter>
           <Button variant="outline" size="sm" onClick={onClose}>إغلاق</Button>
           {data && !pending && (
-            <Button size="sm" disabled={requestMut.isPending || !decision} onClick={submitRequest}>
+            <Button size="sm" disabled={!digitalAccess.can("digitalCards.sales.requestReviewResolution") || (requestMut.isPending || !decision)} onClick={submitRequest}>
               {requestMut.isPending ? ACTION_LABELS.sending : "إرسال لمدير آخر"}
             </Button>
           )}
@@ -743,6 +750,7 @@ function PendingResolution({
   onApprove: () => void;
   onReject: () => void;
 }) {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const resolution = data.resolution!;
   const copy = decisionCopy(data.intent.paymentMethod)[resolution.decision as Decision];
   const requestItems = new Map(resolution.items.map((item) => [Number(item.intentItemId), item]));
@@ -783,10 +791,10 @@ function PendingResolution({
         <div className="space-y-2">
           <Textarea value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} placeholder="سبب الرفض عند عدم مطابقة التقرير…" rows={2} />
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" disabled={approving || rejecting} onClick={onApprove}>
+            <Button size="sm" disabled={!digitalAccess.can("digitalCards.sales.approveReviewResolution") || approving || rejecting} onClick={onApprove}>
               <CheckCircle2 className="size-4" /> {approving ? "جارٍ التنفيذ…" : "اعتماد وتنفيذ"}
             </Button>
-            <Button size="sm" variant="destructive" disabled={approving || rejecting} onClick={onReject}>
+            <Button size="sm" variant="destructive" disabled={!digitalAccess.can("digitalCards.sales.rejectReviewResolution") || approving || rejecting} onClick={onReject}>
               {rejecting ? ACTION_LABELS.rejecting : "رفض القرار"}
             </Button>
           </div>
@@ -799,14 +807,15 @@ function PendingResolution({
 function ResolveVarianceDialog({
   reconciliation, onClose,
 }: { reconciliation: Reconciliation | null; onClose: () => void }) {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const [reason, setReason] = useState("");
   const [rejectReason, setRejectReason] = useState("");
-  const statement = trpc.digitalCards.wallets.statement.useQuery(
+  const statement = digitalAccess.query("digitalCards.wallets.statement", trpc.digitalCards.wallets.statement.useQuery(
     { walletId: reconciliation?.walletId ?? 0 },
-    { enabled: reconciliation != null },
-  );
+    { enabled: digitalAccess.can("digitalCards.wallets.statement") && (reconciliation != null) },
+  ));
 
   useEffect(() => { setReason(""); setRejectReason(""); }, [reconciliation?.id]);
 
@@ -884,7 +893,7 @@ function ResolveVarianceDialog({
               <div className="space-y-2">
                 <label className="text-sm font-medium" htmlFor="variance-reason">سبب الاختلاف بعد مراجعة تقرير الجهاز</label>
                 <Textarea id="variance-reason" value={reason} onChange={(event) => setReason(event.target.value)} rows={3} placeholder="مثال: حركة شحن ظهرت في جهاز المزوّد ولم تكن مسجلة في النظام…" />
-                <Button size="sm" disabled={requestMut.isPending} onClick={requestCorrection}>
+                <Button size="sm" disabled={!digitalAccess.can("digitalCards.wallets.requestAdjustment") || (requestMut.isPending)} onClick={requestCorrection}>
                   {requestMut.isPending ? ACTION_LABELS.sending : "إرسال طلب تصحيح"}
                 </Button>
                 <p className="text-xs text-muted-foreground">إرسال الطلب لا يغير الرصيد.</p>
@@ -904,7 +913,7 @@ function ResolveVarianceDialog({
                     <div className="flex flex-wrap gap-2">
                       <Button
                         size="sm"
-                        disabled={approveResolveMut.isPending || rejectMut.isPending}
+                        disabled={!digitalAccess.can("digitalCards.wallets.approveAndResolveVariance") || (approveResolveMut.isPending || rejectMut.isPending)}
                         onClick={() => approveResolveMut.mutate({ reconciliationId: Number(reconciliation.id), adjustmentTransactionId: Number(pending.id) })}
                       >
                         اعتماد التصحيح وإغلاق الفرق
@@ -912,7 +921,7 @@ function ResolveVarianceDialog({
                       <Button
                         size="sm"
                         variant="destructive"
-                        disabled={approveResolveMut.isPending || rejectMut.isPending}
+                        disabled={!digitalAccess.can("digitalCards.wallets.rejectAdjustment") || (approveResolveMut.isPending || rejectMut.isPending)}
                         onClick={() => {
                           if (rejectReason.trim().length < 3) return notify.err("اكتب سبب رفض طلب التصحيح");
                           rejectMut.mutate({ transactionId: Number(pending.id), reason: rejectReason.trim() });
@@ -932,7 +941,7 @@ function ResolveVarianceDialog({
                 <p>تحقق النظام من تطابق المبلغ والاتجاه والمحفظة. أغلق المعالجة لربط التصحيح بهذا التقرير.</p>
                 <Button
                   size="sm"
-                  disabled={resolveMut.isPending}
+                  disabled={!digitalAccess.can("digitalCards.wallets.resolveVariance") || (resolveMut.isPending)}
                   onClick={() => resolveMut.mutate({ reconciliationId: Number(reconciliation.id), adjustmentTransactionId: Number(active.id) })}
                 >
                   إغلاق المعالجة

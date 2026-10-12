@@ -3,9 +3,18 @@
 // البحثُ ما تمنعه شاشةُ النوع. يُغلق تسريب PII/الوثائق حيث كان دورٌ سُحبت عنه الوحدة
 // (crm/sales/products/...) يظلّ يراه في البحث الشامل رغم أن وحدته NONE.
 import { hasModuleAccess, type AccessLevel } from "@shared/permissions";
+import {
+  hasOperationPolicy,
+  operationDecision,
+  type OperationUser,
+} from "@shared/operationPermissions";
 import type { SearchEntityType } from "./types";
 
-const MASTER_DATA_TYPES: ReadonlyArray<SearchEntityType> = ["PRODUCT", "CUSTOMER", "SUPPLIER"];
+const MASTER_DATA_TYPES: ReadonlyArray<SearchEntityType> = [
+  "PRODUCT",
+  "CUSTOMER",
+  "SUPPLIER",
+];
 
 const BRANCH_SCOPED_TYPES: ReadonlyArray<SearchEntityType> = [
   "INVOICE",
@@ -23,7 +32,11 @@ const ADMIN_TYPES: ReadonlyArray<SearchEntityType> = ["EMPLOYEE", "USER"];
  * الأدوار غير المرتفعة/المحاسب حتى لو أتاحتها وحدتها (سلوكٌ قائمٌ مقصود — لا يوسّع وصولاً أبداً،
  * إذ يُطبَّق بعد أن تكون الوحدة قد سمحت).
  */
-const MANAGER_ONLY_TYPES: ReadonlyArray<SearchEntityType> = ["SUPPLIER", "PURCHASE_ORDER", "EXPENSE"];
+const MANAGER_ONLY_TYPES: ReadonlyArray<SearchEntityType> = [
+  "SUPPLIER",
+  "PURCHASE_ORDER",
+  "EXPENSE",
+];
 
 /**
  * وحدة الصلاحية الحارِسة لكل نوع — **مصدر الحقيقة: بوّابات راوترات `server/trpc.ts`**:
@@ -44,6 +57,20 @@ const TYPE_MODULE: Record<SearchEntityType, string | null> = {
   USER: null,
 };
 
+/** نفس إجراء القراءة الذي يفتح وجهة النتيجة؛ منح عملية أخرى في الوحدة لا يكفي. */
+export const SEARCH_SOURCE_READ_PATH: Record<SearchEntityType, string> = {
+  PRODUCT: "catalog.adminList",
+  CUSTOMER: "customers.list",
+  SUPPLIER: "suppliers.get",
+  INVOICE: "sales.get",
+  QUOTATION: "quotations.get",
+  PURCHASE_ORDER: "purchases.get",
+  WORK_ORDER: "workOrders.get",
+  EXPENSE: "expenses.list",
+  EMPLOYEE: "employees.get",
+  USER: "users.list",
+};
+
 function isElevated(role: string) {
   return role === "admin" || role === "manager";
 }
@@ -59,7 +86,14 @@ export function canSeeType(
   role: string,
   type: SearchEntityType,
   override?: Record<string, AccessLevel> | null,
+  operationUser?: OperationUser | null,
 ): boolean {
+  if (operationUser && hasOperationPolicy(operationUser)) {
+    return (
+      operationDecision(operationUser, "globalSearch.search").allowed &&
+      operationDecision(operationUser, SEARCH_SOURCE_READ_PATH[type]).allowed
+    );
+  }
   // الإدارة ترى كل شيء (يطابق اختصار requireModule للأدمن).
   if (role === "admin") return true;
   const moduleKey = TYPE_MODULE[type];

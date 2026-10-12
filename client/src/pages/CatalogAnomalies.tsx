@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 /**
  * CatalogAnomalies.tsx — لوحة تدقيق شذوذ الكتالوج (L2.3).
  *
@@ -86,6 +87,7 @@ function revertStateLabel(r: CostLogRow, canWrite: boolean): string {
 }
 
 export default function CatalogAnomalies() {
+  const { can } = useCatalogPeopleOperationAccess();
   const [includeOverridden, setIncludeOverridden] = useState(false);
   const [codeFilter, setCodeFilter] = useState<LensCode | "">("");
   const [sevFilter, setSevFilter] = useState<Severity | "">("");
@@ -98,13 +100,16 @@ export default function CatalogAnomalies() {
 
   const utils = trpc.useUtils();
   const meQ = trpc.auth.me.useQuery();
-  const canWrite = !!meQ.data?.role && moduleAccessAllowed(
+  const legacyWrite = !!meQ.data?.role && moduleAccessAllowed(
     meQ.data.role as RoleKey,
     (meQ.data.permissionsOverride ?? null) as PermissionMap | null,
     "catalogAnomalies",
     "FULL",
     ["manager"],
   );
+  const canMarkIntentional = can("catalogAnomalies.markIntentional", legacyWrite);
+  const canMarkIgnored = can("catalogAnomalies.markIgnored", legacyWrite);
+  const canClearOverride = can("catalogAnomalies.clearOverride", legacyWrite);
   const filterInput = {
     includeOverridden,
     codes: codeFilter ? [codeFilter] : undefined,
@@ -115,7 +120,7 @@ export default function CatalogAnomalies() {
     ...filterInput,
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
-  }, { staleTime: 60 * 1000 });
+  }, { enabled: can("catalogAnomalies.list"), staleTime: 60 * 1000 });
   const total = listQ.data?.total ?? 0;
 
   /** تصدير كامل — كل صفحات النتائج المطابقة للفلاتر الحاليّة (لا الصفحة المعروضة فقط). */
@@ -236,17 +241,18 @@ export default function CatalogAnomalies() {
           return (
             <div className="flex items-center gap-1">
               <Link href={`/products/${f.productId}/edit`}>
-                <Button size="sm" variant="outline" className="h-7 text-xs" title="فتح المنتج للتعديل">
+                <Button size="sm" variant="outline" className="h-7 text-xs" title="فتح المنتج للتعديل" disabled={!can("catalog.updateProductVariants")}>
                   <ExternalLink className="size-3 me-1" aria-hidden />
                   إصلاح
                 </Button>
               </Link>
-              {canWrite && !f.override && (
+              {(canMarkIntentional || canMarkIgnored) && !f.override && (
                 <>
                   <Button
                     size="sm"
                     variant="ghost"
                     className="h-7 text-xs"
+                    disabled={!canMarkIntentional}
                     onClick={() => setMarkDialog({ variantId: f.variantId, code: f.code as LensCode, kind: "INTENTIONAL", productLabel: f.productName })}
                   >
                     قصديّ
@@ -255,18 +261,19 @@ export default function CatalogAnomalies() {
                     size="sm"
                     variant="ghost"
                     className="h-7 text-xs"
+                    disabled={!canMarkIgnored}
                     onClick={() => setMarkDialog({ variantId: f.variantId, code: f.code as LensCode, kind: "IGNORED", productLabel: f.productName })}
                   >
                     تجاهل
                   </Button>
                 </>
               )}
-              {canWrite && f.override && (
+              {canClearOverride && f.override && (
                 <Button
                   size="sm"
                   variant="ghost"
                   className="h-7 text-xs"
-                  onClick={() => clearOverride.mutate({ variantId: f.variantId, code: f.code as LensCode })}
+                  onClick={() => clearOverride.mutate({ variantId: f.variantId, code: f.code as LensCode })} disabled={!can("catalogAnomalies.clearOverride")}
                 >
                   <RotateCcw className="size-3 me-1" aria-hidden />
                   إلغاء الاستثناء
@@ -278,7 +285,7 @@ export default function CatalogAnomalies() {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [canWrite, clearOverride],
+    [can, canMarkIntentional, canMarkIgnored, canClearOverride, clearOverride],
   );
 
   return (
@@ -423,7 +430,7 @@ export default function CatalogAnomalies() {
       )}
 
       {/* L3: سجلّ تغيّرات التكلفة الأخيرة + استعادة */}
-      <CostChangeLogSection canWrite={canWrite} />
+      <CostChangeLogSection legacyWrite={legacyWrite} />
     </div>
   );
 }
@@ -433,11 +440,13 @@ export default function CatalogAnomalies() {
  * كل صفٍّ يعرض قبل/بعد + نسبة + الفاعل + الوقت؛ الاستعادة المباشرة تظهر فقط حين يسمح
  * الحارس، وذو المخزون يُوجَّه إلى طلب إعادة التقييم المحاسبيّ.
  */
-function CostChangeLogSection({ canWrite }: { canWrite: boolean }) {
+function CostChangeLogSection({ legacyWrite }: { legacyWrite: boolean }) {
+  const { can } = useCatalogPeopleOperationAccess();
+  const canWrite = can("catalogAnomalies.revertChange", legacyWrite);
   const [minSeverity, setMinSeverity] = useState<"info" | "warning" | "blocker" | "catastrophic">("warning");
   const [days, setDays] = useState(30);
   const utils = trpc.useUtils();
-  const logQ = trpc.catalogAnomalies.changeLog.useQuery({ minSeverity, days, limit: 50 }, { staleTime: 60 * 1000 });
+  const logQ = trpc.catalogAnomalies.changeLog.useQuery({ minSeverity, days, limit: 50 }, { enabled: can("catalogAnomalies.changeLog"), staleTime: 60 * 1000 });
   const revert = trpc.catalogAnomalies.revertChange.useMutation({
     onSuccess: () => {
       utils.catalogAnomalies.changeLog.invalidate();
@@ -529,7 +538,7 @@ function CostChangeLogSection({ canWrite }: { canWrite: boolean }) {
                       confirmText: "استعادة",
                     });
                     if (ok) revert.mutate({ logId: r.id });
-                  }}
+                  }} disabled={!can("catalogAnomalies.revertChange")}
                 >
                   <RotateCcw className="size-3 me-1" aria-hidden /> استعادة
                 </Button>
@@ -550,7 +559,7 @@ function CostChangeLogSection({ canWrite }: { canWrite: boolean }) {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [canWrite, revert],
+    [can, canWrite, revert],
   );
 
   return (

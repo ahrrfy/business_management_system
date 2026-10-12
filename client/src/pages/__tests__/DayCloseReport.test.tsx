@@ -87,7 +87,9 @@ describe("عقد صلاحيات وحالات تحميل المطابقة الي�
     }
     expect(source).toContain("لا يمكن افتراض عدم وجود عهد");
     expect(source).toContain("أُوقفت إعادة الإسناد لحين نجاح التحميل");
-    expect(source).toContain("const canGovernHandovers = moduleAccessAllowed(");
+    expect(source).toContain("const legacyGovernHandovers = moduleAccessAllowed(");
+    expect(source).toContain('treasuryOperationAllowed(me.data, "treasury.pendingHandoverQueue", legacyGovernHandovers)');
+    expect(source).toContain('treasuryOperationAllowed(me.data, "treasury.reassignHandoverReceipt", legacyGovernHandovers)');
     expect(source).toContain("enabled: canGovernHandovers");
     expect(source).not.toContain("enabled: isAdmin || isManager");
   });
@@ -189,7 +191,7 @@ describe("عقد صلاحيات وحالات تحميل المطابقة الي�
 
     expect(source).toContain('const effectiveBranchId: number | "" = dc?.branchId ?? branchId');
     expect(source).toContain('{ branchId: Number(effectiveBranchId || 0), businessDate: date }');
-    expect(source).toContain('{ enabled: effectiveBranchId !== "" }');
+    expect(source).toContain('{ enabled: effectiveBranchId !== "" && treasuryOperationAllowed(me.data, "treasury.dailyCashReconciliation", true) }');
     expect(source).toContain('const branchLabel = effectiveBranchId');
     expect(source).toContain('const dailyPanel = effectiveBranchId === ""');
   });

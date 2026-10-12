@@ -1,5 +1,6 @@
 import { ALL_ROLES, type RoleKey } from "@shared/permissions";
 import { atomicPermissionsMapSchema, operationalCapsSchema } from "@shared/atomicPermissions";
+import { operationPolicySchema } from "@shared/operationPermissions";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import {
@@ -44,7 +45,8 @@ export const roleRouter = router({
         permissions: PERMISSIONS,
         atomicPermissions: atomicPermissionsMapSchema.nullish(),
         operationalCaps: operationalCapsSchema.nullish(),
-      })
+        operationPolicy: operationPolicySchema.nullish(),
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       const res = await createRole(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
@@ -61,6 +63,7 @@ export const roleRouter = router({
           permissions: input.permissions,
           atomicPermissions: input.atomicPermissions ?? null,
           operationalCaps: input.operationalCaps ?? null,
+          operationPolicyRevision: res.operationPolicyRevision,
         },
       });
       return res;
@@ -76,7 +79,13 @@ export const roleRouter = router({
         permissions: PERMISSIONS.optional(),
         atomicPermissions: atomicPermissionsMapSchema.nullish(),
         operationalCaps: operationalCapsSchema.nullish(),
-      })
+        operationPolicy: operationPolicySchema.nullish(),
+        expectedOperationPolicyRevision: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional(),
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       // H5 (تدقيق ٢٣/٦/٢٦): توسعة دور خفيّة كانت بلا أَثَر forensic — لا oldValue ولا حتى
@@ -95,6 +104,7 @@ export const roleRouter = router({
           permissions: (before as { permissions?: unknown })?.permissions ?? null,
           atomicPermissions: (before as { atomicPermissions?: unknown })?.atomicPermissions ?? null,
           operationalCaps: (before as { operationalCaps?: unknown })?.operationalCaps ?? null,
+          operationPolicyRevision: before?.operationPolicyRevision ?? 0,
         },
         newValue: {
           label: input.label,
@@ -103,6 +113,7 @@ export const roleRouter = router({
           permissions: input.permissions,
           atomicPermissions: input.atomicPermissions,
           operationalCaps: input.operationalCaps,
+          operationPolicyRevision: res.operationPolicyRevision,
         },
       });
       return res;

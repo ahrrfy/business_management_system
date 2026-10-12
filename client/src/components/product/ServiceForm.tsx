@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { AlertCircle, FileSpreadsheet, Plus, Printer, ReceiptText, ShoppingCart, Users, X, Search } from "lucide-react";
@@ -48,6 +49,7 @@ function MaterialPicker({
   value: MaterialRow | null;
   onPick: (m: MaterialRow) => void;
 }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -64,7 +66,7 @@ function MaterialPicker({
 
   const res = trpc.catalog.materialsForRecipe.useQuery(
     { query: q.trim(), limit: 50 },
-    { enabled: open }
+    { enabled: can("catalog.materialsForRecipe") && (open) }
   );
 
   const items = res.data ?? [];
@@ -125,9 +127,10 @@ function MaterialPicker({
 }
 
 export default function ServiceForm() {
+  const { can } = useCatalogPeopleOperationAccess();
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
-  const categoriesQ = trpc.catalog.categories.useQuery();
+  const categoriesQ = trpc.catalog.categories.useQuery(undefined, { enabled: can("catalog.categories") });
 
   const [name, setName] = useState("");
   const [categoryId, setCategoryId] = useState<number | "">("");
@@ -512,7 +515,7 @@ export default function ServiceForm() {
             </Badge>
           )}
         </div>
-        <Button type="button" size="sm" onClick={save} disabled={create.isPending}>
+        <Button type="button" size="sm" onClick={save} disabled={!can("catalog.createProduct") || (create.isPending)}>
           {create.isPending ? "جارٍ الحفظ…" : "حفظ البند"}
         </Button>
       </div>

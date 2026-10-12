@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Button } from "@/components/ui/button";
@@ -105,12 +106,13 @@ function repaymentPrint(request: RepaymentRequest, allocations: RepaymentLedger[
 }
 
 export function EmployeeAdvanceRepaymentPanel() {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const owner = me.data?.isOwner === true;
-  const advancesQ = trpc.payroll.advancesList.useQuery({ status: "ACTIVE" });
-  const requestsQ = trpc.payroll.advanceRepaymentRequests.useQuery();
-  const ledgerQ = trpc.payroll.advanceRepaymentLedger.useQuery();
+  const advancesQ = trpc.payroll.advancesList.useQuery({ status: "ACTIVE" }, { enabled: can("payroll.advancesList") });
+  const requestsQ = trpc.payroll.advanceRepaymentRequests.useQuery(undefined, { enabled: can("payroll.advanceRepaymentRequests") });
+  const ledgerQ = trpc.payroll.advanceRepaymentLedger.useQuery(undefined, { enabled: can("payroll.advanceRepaymentLedger") });
   const [dialog, setDialog] = useState<{ kind: "REPAYMENT" } | { kind: "RETURN"; request: RepaymentRequest } | null>(null);
   const [rejecting, setRejecting] = useState<RepaymentRequest | null>(null);
 
@@ -218,7 +220,7 @@ export function EmployeeAdvanceRepaymentPanel() {
       <div className="flex items-center gap-2">
         {owner && <span className="rounded-md border px-3 py-1.5 text-xs">طابور المراجعة: <b dir="ltr">{pendingCount}</b></span>}
         <Button size="sm" variant="outline" onClick={exportRepaymentLedger} disabled={requests.length === 0}><FileSpreadsheet className="size-4" aria-hidden /> تصدير سجل الحركات</Button>
-        {!owner && <Button size="sm" onClick={() => setDialog({ kind: "REPAYMENT" })} disabled={employeeBalances.length === 0}><HandCoins className="size-4" aria-hidden /> تسجيل قبض سداد</Button>}
+        {!owner && <Button size="sm" onClick={() => setDialog({ kind: "REPAYMENT" })} disabled={!can("payroll.requestAdvanceRepayment") || employeeBalances.length === 0}><HandCoins className="size-4" aria-hidden /> تسجيل قبض سداد</Button>}
       </div>
     </CardHeader>
     <CardContent className="space-y-3">
@@ -247,7 +249,7 @@ export function EmployeeAdvanceRepaymentPanel() {
                 <td className="p-2 text-center"><span className={`inline-flex rounded-full px-2 py-0.5 ${REQUEST_STATUS_CLS[request.status] ?? "bg-muted"}`}>{REQUEST_STATUS_LABEL[request.status] ?? request.status}</span>{request.rejectionReason && <div className="mt-1 max-w-48 text-destructive">{request.rejectionReason}</div>}</td>
                 <td className="p-2"><div className="flex justify-end gap-1">
                   {owner && request.status === "PENDING" && <>
-                    <Button size="sm" variant="outline" disabled={approve.isPending} onClick={async () => {
+                    <Button size="sm" variant="outline" disabled={!can("payroll.approveAdvanceRepayment") || (approve.isPending)} onClick={async () => {
                       const incoming = request.requestKind === "REPAYMENT";
                       const ok = await confirm({ variant: incoming ? "warning" : "danger", title: `اعتماد ${requestKindLabel(request.requestKind)}`, description: `${incoming ? "سيُنشأ إيصال قبض ويُخفّض أصل سلفة الموظف" : "سيُنشأ سند صرف ويُعاد فتح أصل سلفة الموظف"} بمبلغ ${iqd(request.amount)} د.ع وفق الدليل المحفوظ. هذه حركة مالية فعلية وليست موافقة شكلية.`, confirmText: incoming ? "اعتماد القبض" : "اعتماد الإعادة والصرف" });
                       if (ok) approve.mutate({ id: Number(request.id) });
@@ -286,6 +288,7 @@ function RepaymentEvidenceDialog({
   onClose: () => void;
   onDone: () => Promise<void> | void;
 }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const [employeeScopeKey, setEmployeeScopeKey] = useState("");
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<PaymentMethod>("TRANSFER");
@@ -301,7 +304,7 @@ function RepaymentEvidenceDialog({
   const effectiveAmount = returning ? mode.request.amount : amount;
   const shiftQ = trpc.shifts.current.useQuery(
     { branchId: selected?.branchId ?? 0 },
-    { enabled: open && method === "CASH" && !!selected?.branchId },
+    { enabled: can("shifts.current") && (open && method === "CASH" && !!selected?.branchId) },
   );
   const create = trpc.payroll.requestAdvanceRepayment.useMutation({
     onSuccess: async (result) => {
@@ -349,7 +352,7 @@ function RepaymentEvidenceDialog({
       <div><Label htmlFor="advrep-note">وصف دليل الحركة (10 أحرف على الأقل)</Label><Input id="advrep-note" value={evidenceNote} onChange={(event) => setEvidenceNote(event.target.value)} minLength={10} maxLength={500} placeholder="مثال: إشعار تحويل مصرفي مطابق ومراجع" /></div>
       <p className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">الحفظ ينشئ طلباً صفري الأثر. عند اعتماد مالك مستقل فقط ينشأ الإيصال والقيد والتخصيص؛ وطلب الإعادة ينشئ سند صرف حقيقياً بعد تأكيد صريح.</p>
     </div>
-    <DialogFooter><Button variant="outline" onClick={onClose}>إلغاء</Button><Button disabled={!valid || busy} onClick={() => {
+    <DialogFooter><Button variant="outline" onClick={onClose}>إلغاء</Button><Button disabled={!can(returning ? "payroll.requestAdvanceRepaymentReturn" : "payroll.requestAdvanceRepayment") || !valid || busy} onClick={() => {
       if (!selected || !mode) return;
       if (mode.kind === "RETURN") createReturn.mutate({ originalRequestId: Number(mode.request.id), ...evidence });
       else create.mutate({ employeeId: selected.employeeId, branchId: selected.branchId, amount: D(effectiveAmount).toFixed(2), ...evidence });
@@ -358,6 +361,7 @@ function RepaymentEvidenceDialog({
 }
 
 function RejectRepaymentDialog({ request, onClose, onDone }: { request: RepaymentRequest | null; onClose: () => void; onDone: () => Promise<void> | void }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const [reason, setReason] = useState("");
   const reject = trpc.payroll.rejectAdvanceRepayment.useMutation({
     onSuccess: async (result) => { notify.ok(result.replayed ? "الطلب مرفوض سابقاً بالسبب نفسه" : "تم رفض الطلب مع حفظ السبب"); setReason(""); onClose(); await onDone(); },
@@ -366,6 +370,6 @@ function RejectRepaymentDialog({ request, onClose, onDone }: { request: Repaymen
   return <Dialog open={request != null} onOpenChange={(value) => !value && onClose()}><DialogContent>
     <DialogHeader><DialogTitle>رفض طلب سداد السلفة</DialogTitle></DialogHeader>
     <div><Label htmlFor="advrep-reject-reason">سبب الرفض (5 أحرف على الأقل)</Label><Input id="advrep-reject-reason" value={reason} onChange={(event) => setReason(event.target.value)} minLength={5} maxLength={255} /></div>
-    <DialogFooter><Button variant="outline" onClick={onClose}>إلغاء</Button><Button variant="destructive" disabled={reason.trim().length < 5 || reject.isPending} onClick={() => request && reject.mutate({ id: Number(request.id), reason: reason.trim() })}>{reject.isPending ? "جارٍ الرفض…" : "رفض الطلب"}</Button></DialogFooter>
+    <DialogFooter><Button variant="outline" onClick={onClose}>إلغاء</Button><Button variant="destructive" disabled={!can("payroll.rejectAdvanceRepayment") || (reason.trim().length < 5 || reject.isPending)} onClick={() => request && reject.mutate({ id: Number(request.id), reason: reason.trim() })}>{reject.isPending ? "جارٍ الرفض…" : "رفض الطلب"}</Button></DialogFooter>
   </DialogContent></Dialog>;
 }

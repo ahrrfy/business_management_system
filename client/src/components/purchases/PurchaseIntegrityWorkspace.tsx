@@ -1,3 +1,5 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
+import type { OperationUser } from "@shared/operationPermissions";
 import { useMemo, useState } from "react";
 import {
   AlertOctagon,
@@ -159,6 +161,7 @@ const STATUS_LABEL: Record<CaseStatus, string> = {
 };
 
 export function PurchaseIntegrityWorkspace({
+  operationUser,
   branchId,
   rows,
   blockers,
@@ -179,6 +182,7 @@ export function PurchaseIntegrityWorkspace({
   onRequestResolution,
   onDecideResolution,
 }: {
+  operationUser?: OperationUser | null;
   branchId: number;
   rows: PurchaseIntegrityRow[];
   blockers: MonthCloseBlocker[];
@@ -221,6 +225,8 @@ export function PurchaseIntegrityWorkspace({
     reason: string;
   }) => Promise<unknown>;
 }) {
+  const can = (path: string) =>
+    operationUser == null || canLifecycleOperation(operationUser, path, true);
   const [openCase, setOpenCase] = useState(false);
   const [resolution, setResolution] = useState<PurchaseIntegrityRow | null>(
     null,
@@ -252,6 +258,7 @@ export function PurchaseIntegrityWorkspace({
   }
 
   async function submitOpenCase() {
+    if (!can("purchaseIntegrity.open")) return;
     try {
       await onOpenCase({
         caseKey: newGovernanceKey("purchase-integrity-case"),
@@ -278,6 +285,7 @@ export function PurchaseIntegrityWorkspace({
   // code يبقى OTHER دائماً: أكواد التشخيص الحيّ (LIVE_CODE_LABEL) مصدرها GL مباشرة ولا تتقاطع
   // مع قاموس أكواد القضايا اليدوية (CODE_LABEL) — الاسم الحقيقي يبقى محفوظاً في العنوان والدليل.
   async function openFromLiveFinding(finding: LiveIntegrityFinding) {
+    if (!can("purchaseIntegrity.open")) return;
     const label = LIVE_CODE_LABEL[finding.code] ?? finding.code;
     const ok = await confirm({
       variant: "warning",
@@ -316,6 +324,7 @@ export function PurchaseIntegrityWorkspace({
   }
 
   async function submitResolutionRequest() {
+    if (!can("purchaseIntegrity.requestResolution")) return;
     if (!resolution) return;
     try {
       await onRequestResolution({
@@ -333,6 +342,7 @@ export function PurchaseIntegrityWorkspace({
   }
 
   async function submitDecision() {
+    if (!can("purchaseIntegrity.decideResolution")) return;
     if (!decision) return;
     try {
       await onDecideResolution({
@@ -400,6 +410,7 @@ export function PurchaseIntegrityWorkspace({
                   setEvidenceReference("");
                   setReason("");
                 }}
+                disabled={!can("purchaseIntegrity.requestResolution")}
               >
                 طلب إقفال القضية
               </Button>
@@ -414,7 +425,9 @@ export function PurchaseIntegrityWorkspace({
               <Button
                 type="button"
                 size="sm"
-                disabled={!allowed}
+                disabled={
+                  !allowed || !can("purchaseIntegrity.decideResolution")
+                }
                 onClick={() => {
                   setDecision({ row: item, value: "APPROVE_RESOLVED" });
                   setReason("");
@@ -427,7 +440,9 @@ export function PurchaseIntegrityWorkspace({
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={!allowed}
+                disabled={
+                  !allowed || !can("purchaseIntegrity.decideResolution")
+                }
                 onClick={() => {
                   setDecision({ row: item, value: "APPROVE_DISMISSED" });
                   setReason("");
@@ -439,7 +454,9 @@ export function PurchaseIntegrityWorkspace({
                 type="button"
                 size="sm"
                 variant="destructive"
-                disabled={!allowed}
+                disabled={
+                  !allowed || !can("purchaseIntegrity.decideResolution")
+                }
                 onClick={() => {
                   setDecision({ row: item, value: "REJECT" });
                   setReason("");
@@ -513,7 +530,7 @@ export function PurchaseIntegrityWorkspace({
             type="button"
             size="sm"
             variant="outline"
-            disabled={pending}
+            disabled={pending || !can("purchaseIntegrity.open")}
             onClick={() => void openFromLiveFinding(row.original)}
           >
             فتح قضية
@@ -572,8 +589,8 @@ export function PurchaseIntegrityWorkspace({
           {liveIsPartial ? (
             <p className="inline-flex items-center gap-1 text-xs font-semibold text-money-negative">
               <AlertTriangle aria-hidden className="size-3" />
-              الفرع كبيرٌ جداً — هذا مسحٌ جزئيّ فقط ولا يغطّي كل أوامر الشراء. لا
-              تعتمد على «لا اكتشافات» هنا كدليل نظافةٍ كاملة.
+              الفرع كبيرٌ جداً — هذا مسحٌ جزئيّ فقط ولا يغطّي كل أوامر الشراء.
+              لا تعتمد على «لا اكتشافات» هنا كدليل نظافةٍ كاملة.
             </p>
           ) : null}
           {liveError ? (
@@ -601,7 +618,12 @@ export function PurchaseIntegrityWorkspace({
               قضايا نزاهة الشراء
             </span>
             <div className="flex flex-wrap gap-2">
-              <Button type="button" size="sm" onClick={() => setOpenCase(true)}>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => setOpenCase(true)}
+                disabled={!can("purchaseIntegrity.open")}
+              >
                 فتح قضية يدوية
               </Button>
               <Button
@@ -774,7 +796,8 @@ export function PurchaseIntegrityWorkspace({
                 title.trim().length === 0 ||
                 description.trim().length === 0 ||
                 evidenceReference.trim().length === 0 ||
-                reason.trim().length < 3
+                reason.trim().length < 3 ||
+                !can("purchaseIntegrity.open")
               }
               onClick={() => void submitOpenCase()}
             >
@@ -834,7 +857,8 @@ export function PurchaseIntegrityWorkspace({
               pendingText={ACTION_LABELS.sending}
               disabled={
                 evidenceReference.trim().length === 0 ||
-                reason.trim().length < 3
+                reason.trim().length < 3 ||
+                !can("purchaseIntegrity.requestResolution")
               }
               onClick={() => void submitResolutionRequest()}
             >
@@ -886,7 +910,10 @@ export function PurchaseIntegrityWorkspace({
               pending={pending}
               pendingText={ACTION_LABELS.processing}
               variant={decision?.value === "REJECT" ? "destructive" : "default"}
-              disabled={reason.trim().length < 3}
+              disabled={
+                reason.trim().length < 3 ||
+                !can("purchaseIntegrity.decideResolution")
+              }
               onClick={() => void submitDecision()}
             >
               تثبيت القرار

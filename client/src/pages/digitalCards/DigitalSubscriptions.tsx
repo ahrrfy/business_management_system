@@ -1,3 +1,4 @@
+import { useDigitalGiftOperationAccess } from "@/lib/digitalGiftOperationAccess";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -22,16 +23,17 @@ const STATUS: Record<string, string> = {
 };
 
 export default function DigitalSubscriptions() {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const utils = trpc.useUtils();
-  const branches = trpc.branches.list.useQuery();
+  const branches = digitalAccess.query("branches.list", trpc.branches.list.useQuery(undefined, { enabled: digitalAccess.can("branches.list") }));
   const me = trpc.auth.me.useQuery();
   const canPickBranch = me.data?.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
   const [f, setF, resetF] = useUrlFilters({ branch: "", q: "" });
 
-  const list = trpc.digitalCards.subscriptions.list.useQuery({
+  const list = digitalAccess.query("digitalCards.subscriptions.list", trpc.digitalCards.subscriptions.list.useQuery({
     branchId: f.branch ? Number(f.branch) : undefined,
     q: f.q.trim() || undefined,
-  });
+  }, { enabled: digitalAccess.can("digitalCards.subscriptions.list") }));
 
   const columns = useMemo<ColumnDef<SubscriptionRow, unknown>[]>(() => [
     { id: "invoiceDate", header: "وقت البيع", accessorFn: (r) => fmtDateTime(r.invoiceDate), meta: { kind: "datetime" }, cell: ({ row }) => fmtDateTime(row.original.invoiceDate) },

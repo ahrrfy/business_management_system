@@ -16,6 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import type { RefundRail } from "@shared/refundRail";
 import {
   ApprovalRefundRailPicker,
@@ -87,6 +88,9 @@ function SupervisorWorkOrderControlApprovals({
 }: {
   currentUserId: number | null | undefined;
 }) {
+  const me = trpc.auth.me.useQuery();
+  const canApprove = canLifecycleOperation(me.data, "workOrders.approveControl", true);
+  const canReject = canLifecycleOperation(me.data, "workOrders.rejectControl", true);
   const utils = trpc.useUtils();
   const queue = trpc.workOrders.pendingControlRequests.useQuery();
   const [decision, setDecision] = useState<WorkOrderControlDecision | null>(null);
@@ -143,6 +147,8 @@ function SupervisorWorkOrderControlApprovals({
         onRetry={() => { void queue.refetch(); }}
         onApprove={(row) => openDecision(row, "APPROVE")}
         onReject={(row) => openDecision(row, "REJECT")}
+        canApprove={canApprove}
+        canReject={canReject}
       />
       <WorkOrderControlDecisionDialog
         decision={decision}
@@ -156,7 +162,7 @@ function SupervisorWorkOrderControlApprovals({
         onRetry={() => { void detail.refetch(); }}
         onClose={closeDecision}
         onSubmit={(refundOverride) => {
-          if (!decision) return;
+          if (!decision || (decision.mode === "APPROVE" ? !canApprove : !canReject)) return;
           if (decision.mode === "APPROVE") {
             // التجاوزُ يُرسَل **حين يختلف عن اقتراح الطالب وحده** — فلا يمتلئ سجلّ الأمر
             // بتجاوزاتٍ صوريّة تطابق ما طُلب أصلاً.
@@ -178,6 +184,8 @@ export function WorkOrderControlApprovalsView({
   onRetry,
   onApprove,
   onReject,
+  canApprove = true,
+  canReject = true,
 }: {
   rows: PendingWorkOrderControl[];
   currentUserId: number | null | undefined;
@@ -186,6 +194,8 @@ export function WorkOrderControlApprovalsView({
   onRetry: () => void;
   onApprove: (row: PendingWorkOrderControl) => void;
   onReject: (row: PendingWorkOrderControl) => void;
+  canApprove?: boolean;
+  canReject?: boolean;
 }) {
   return (
     <Card className="border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/20">
@@ -224,6 +234,8 @@ export function WorkOrderControlApprovalsView({
             currentUserId={currentUserId}
             onApprove={onApprove}
             onReject={onReject}
+            canApprove={canApprove}
+            canReject={canReject}
           />
         ))}
       </CardContent>
@@ -236,11 +248,15 @@ export function WorkOrderControlApprovalRow({
   currentUserId,
   onApprove,
   onReject,
+  canApprove = true,
+  canReject = true,
 }: {
   row: PendingWorkOrderControl;
   currentUserId: number | null | undefined;
   onApprove: (row: PendingWorkOrderControl) => void;
   onReject: (row: PendingWorkOrderControl) => void;
+  canApprove?: boolean;
+  canReject?: boolean;
 }) {
   const requestId = Number(row.id);
   const workOrderId = Number(row.workOrderId);
@@ -277,12 +293,12 @@ export function WorkOrderControlApprovalRow({
           </dl>
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">
-          <Button size="sm" onClick={() => onApprove(row)} disabled={ownRequest}>
+          {canApprove && <Button size="sm" onClick={() => onApprove(row)} disabled={ownRequest}>
             <CheckCircle2 aria-hidden className="size-4" /> اعتماد وتطبيق
-          </Button>
-          <Button size="sm" variant="destructive" onClick={() => onReject(row)} disabled={ownRequest}>
+          </Button>}
+          {canReject && <Button size="sm" variant="destructive" onClick={() => onReject(row)} disabled={ownRequest}>
             <XCircle aria-hidden className="size-4" /> رفض
-          </Button>
+          </Button>}
         </div>
       </div>
       {ownRequest && (

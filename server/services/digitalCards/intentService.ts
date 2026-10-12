@@ -52,6 +52,14 @@ import { GIFT_APPROVAL_THRESHOLD } from "../gifts/outbound";
 import { money, sumMoney, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import type { Actor } from "../tx";
+import {
+  assertDigitalIntentScope,
+  digitalIntentCanRecover,
+  digitalIntentCanRetry,
+  digitalIntentCanUseOtherShift,
+  loadDigitalIntentScopeTx,
+  type DigitalIntentActor,
+} from "./intentOperationScope";
 import { redactAuditValue } from "../auditService";
 import { lockConfirmedExternalPaymentAttempt } from "../posExternalPayment";
 import {
@@ -238,8 +246,10 @@ async function assertInvoiceSalesRepresentative(tx: Tx, payload: InvoiceSourcePa
 export async function prepare(
   tx: Tx,
   input: PrepareInput,
-  actor: Actor,
+  actor: DigitalIntentActor,
 ): Promise<{ intentId: number; replay: boolean; expiresAt: Date }> {
+  const authority = await loadDigitalIntentScopeTx(tx, actor, "digitalCards.sales.prepare");
+  assertDigitalIntentScope(authority, { createdBy: actor.userId, branchId: input.branchId });
   const normalizedSource = normalizeIntentSource(input);
   input = normalizedSource.input;
   const invoicePayload = normalizedSource.invoicePayload;
@@ -274,6 +284,7 @@ export async function prepare(
     .where(eq(digitalSaleIntents.clientRequestId, input.clientRequestId))
     .limit(1);
   if (existing) {
+    if (authority.canonical) assertDigitalIntentScope(authority, existing);
     if (
       existing.fp !== (existing.checkoutSnapshot == null ? input.cartFingerprint : digitalCartFingerprint(input)) ||
       Number(existing.branchId) !== input.branchId ||
@@ -281,7 +292,7 @@ export async function prepare(
       existing.paymentMethod !== input.paymentMethod ||
       (existing.externalPaymentAttemptId == null ? null : Number(existing.externalPaymentAttemptId)) !== (input.externalPaymentAttemptId ?? null) ||
       (existing.externalPaymentDeviceId ?? null) !== (input.externalPaymentDeviceId?.trim() || null) ||
-      ((actor.role !== "admin" && actor.role !== "manager") && Number(existing.createdBy) !== actor.userId)
+      (!authority.canonical && !authority.legacyElevated && Number(existing.createdBy) !== actor.userId)
     ) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -379,7 +390,7 @@ export async function prepare(
   if (Number(shift.branchId) !== input.branchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "الوردية تخصّ فرعاً آخر" });
   }
-  if (Number(shift.userId) !== actor.userId && actor.role !== "admin" && actor.role !== "manager") {
+  if (Number(shift.userId) !== actor.userId && !digitalIntentCanUseOtherShift(authority)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "الوردية تخصّ مستخدماً آخر" });
   }
 
@@ -818,6 +829,7 @@ export async function prepare(
         ),
       });
     }
+    if (authority.canonical) assertDigitalIntentScope(authority, winner);
     if (
       winner.fp !== digitalCartFingerprint(input) ||
       Number(winner.branchId) !== input.branchId ||
@@ -830,7 +842,7 @@ export async function prepare(
         (input.externalPaymentAttemptId ?? null) ||
       (winner.externalPaymentDeviceId ?? null) !==
         (input.externalPaymentDeviceId?.trim() || null) ||
-      ((actor.role !== "admin" && actor.role !== "manager") &&
+      (!authority.canonical && !authority.legacyElevated &&
         Number(winner.createdBy) !== actor.userId)
     ) {
       throw new TRPCError({
@@ -1009,21 +1021,22 @@ export interface ClaimExecutionResult {
 export async function claimExecution(
   tx: Tx,
   input: { intentId: number; intentItemId: number; claimToken: string },
-  actor: Actor,
+  actor: DigitalIntentActor,
 ): Promise<ClaimExecutionResult> {
+  const authority = await loadDigitalIntentScopeTx(tx, actor, "digitalCards.sales.claimExecution");
   const intent = await lockIntent(tx, input.intentId);
-  assertActorOwnsIntent(intent, actor);
+  assertDigitalIntentScope(authority, intent);
   if (!isAllowedIntentPayment(intent)) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: intentOperationError("هذه نيّة تاريخية بطريقة دفع غير مسموحة", "لا تُصدر الكرت؛ افتحها في طابور المراجعة وعالجها إدارياً"),
     });
   }
-  const elevated = actor.role === "admin" || actor.role === "manager";
+  const canRetry = digitalIntentCanRetry(authority);
   if (!["PREPARED", "EXECUTING", "NEEDS_REVIEW"].includes(intent.status)) {
     throw new TRPCError({ code: "CONFLICT", message: "هذه العملية مغلقة ولا تقبل إصدار بطاقة جديدة" });
   }
-  if (intent.status === "NEEDS_REVIEW" && !elevated) {
+  if (intent.status === "NEEDS_REVIEW" && !digitalIntentCanRecover(authority, intent)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "تحتاج هذه العملية إلى مراجعة المدير قبل إعادة الإصدار" });
   }
   const [issuanceShift] = await tx
@@ -1041,7 +1054,7 @@ export async function claimExecution(
     !issuanceShift ||
     issuanceShift.status !== "OPEN" ||
     Number(issuanceShift.branchId) !== Number(intent.branchId) ||
-    (!elevated && Number(issuanceShift.userId) !== actor.userId)
+    (!digitalIntentCanUseOtherShift(authority) && Number(issuanceShift.userId) !== actor.userId)
   ) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
@@ -1073,7 +1086,7 @@ export async function claimExecution(
   if (items.some((member) => member.fulfillmentStatus === "SUCCESS")) {
     throw new TRPCError({ code: "CONFLICT", message: "هذه البطاقة صدرت وسُجلت بنجاح بالفعل" });
   }
-  if (items.some((member) => member.fulfillmentStatus !== "PENDING") && !elevated) {
+  if (items.some((member) => member.fulfillmentStatus !== "PENDING") && !canRetry) {
     throw new TRPCError({ code: "FORBIDDEN", message: "إعادة محاولة هذه البطاقة تحتاج إلى مراجعة المدير" });
   }
 
@@ -1098,7 +1111,7 @@ export async function claimExecution(
       message: "هذه البطاقة قيد الإصدار في نافذة أخرى؛ لا تُصدرها مرة ثانية",
     });
   }
-  if (claim?.completedAt != null && item.fulfillmentStatus !== "PENDING" && !elevated) {
+  if (claim?.completedAt != null && item.fulfillmentStatus !== "PENDING" && !canRetry) {
     throw new TRPCError({ code: "CONFLICT", message: "نتيجة هذه البطاقة مسجلة؛ لا تبدأ إصداراً جديداً" });
   }
 
@@ -1142,10 +1155,11 @@ export async function claimExecution(
 export async function markExecution(
   tx: Tx,
   input: { intentId: number; intentItemId: number; claimToken: string; status: ExecutionStatus; providerReference?: string | null },
-  actor: Actor,
+  actor: DigitalIntentActor,
 ): Promise<{ itemId: number; itemIds: number[]; status: ExecutionStatus; allSettled: boolean; idempotent: boolean }> {
+  const authority = await loadDigitalIntentScopeTx(tx, actor, "digitalCards.sales.markExecution");
   const intent = await lockIntent(tx, input.intentId);
-  assertActorOwnsIntent(intent, actor);
+  assertDigitalIntentScope(authority, intent);
   if (!isAllowedIntentPayment(intent)) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
@@ -1155,7 +1169,7 @@ export async function markExecution(
   if (!["PREPARED", "EXECUTING", "EXECUTED", "NEEDS_REVIEW"].includes(intent.status)) {
     throw new TRPCError({ code: "CONFLICT", message: `Intent status ${intent.status} is final and cannot be edited` });
   }
-  const elevated = actor.role === "admin" || actor.role === "manager";
+  const canRetry = digitalIntentCanRetry(authority);
 
   const { item, items } = await lockExecutionItems(tx, input.intentId, input.intentItemId);
   const intentItemId = Number(item.id);
@@ -1196,7 +1210,7 @@ export async function markExecution(
       message: "A successful issued card is immutable; finalize, write off, or reverse it",
     });
   }
-  if (items.some((member) => member.fulfillmentStatus !== "PENDING") && !elevated) {
+  if (items.some((member) => member.fulfillmentStatus !== "PENDING") && !canRetry) {
     throw new TRPCError({ code: "FORBIDDEN", message: "Manager review is required to correct a recorded result" });
   }
 
@@ -1270,10 +1284,11 @@ export async function markExecution(
 export async function cancelIntent(
   tx: Tx,
   input: { intentId: number; reason?: string | null },
-  actor: Actor,
+  actor: DigitalIntentActor,
 ): Promise<{ intentId: number; outcome: "CANCELLED" | "NEEDS_REVIEW" }> {
+  const authority = await loadDigitalIntentScopeTx(tx, actor, "digitalCards.sales.cancelIntent");
   const intent = await lockIntent(tx, input.intentId);
-  assertActorOwnsIntent(intent, actor);
+  assertDigitalIntentScope(authority, intent);
   if (intent.status === "CANCELLED") {
     return { intentId: input.intentId, outcome: "CANCELLED" };
   }
@@ -1363,62 +1378,65 @@ export async function expireStaleIntents(
 
 /* ────────── قراءات ────────── */
 
-export async function getIntent(db: DB, intentId: number, actor: Actor) {
-  const [intent] = await db.select().from(digitalSaleIntents).where(eq(digitalSaleIntents.id, intentId)).limit(1);
-  if (!intent) return null;
-  assertActorOwnsIntent(intent, actor);
+export async function getIntent(db: DB, intentId: number, actor: DigitalIntentActor) {
+  return db.transaction(async (tx) => {
+    const authority = await loadDigitalIntentScopeTx(tx, actor, "digitalCards.sales.getIntent");
+    const [intent] = await tx.select().from(digitalSaleIntents).where(eq(digitalSaleIntents.id, intentId)).limit(1);
+    if (!intent) return null;
+    assertDigitalIntentScope(authority, intent);
 
-  const items = await db
-    .select({
-      id: digitalSaleIntentItems.id,
-      lineKey: digitalSaleIntentItems.lineKey,
-      providerBasketKey: digitalSaleIntentItems.providerBasketKey,
-      referenceOwnerItemId: digitalSaleIntentItems.referenceOwnerItemId,
-      offeringId: digitalSaleIntentItems.offeringId,
-      variantId: digitalOfferings.variantId,
-      productUnitId: digitalOfferings.productUnitId,
-      offeringType: digitalOfferings.offeringType,
-      name: products.name,
-      providerName: suppliers.name,
-      referencePolicy: digitalProviders.referencePolicy,
-      sellPrice: digitalSaleIntentItems.sellPriceSnapshot,
-      fulfillmentStatus: digitalSaleIntentItems.fulfillmentStatus,
-      providerReference: digitalSaleIntentItems.providerReference,
-      studentName: digitalSaleIntentItems.studentNameSnapshot,
-      confirmedAt: digitalSaleIntentItems.confirmedAt,
-    })
-    .from(digitalSaleIntentItems)
-    .innerJoin(digitalOfferings, eq(digitalSaleIntentItems.offeringId, digitalOfferings.id))
-    .innerJoin(products, eq(digitalOfferings.productId, products.id))
-    .innerJoin(digitalProviders, eq(digitalSaleIntentItems.providerId, digitalProviders.id))
-    .innerJoin(suppliers, eq(digitalProviders.supplierId, suppliers.id))
-    .where(eq(digitalSaleIntentItems.intentId, intentId))
-    .orderBy(asc(digitalSaleIntentItems.id));
+    const items = await tx
+      .select({
+        id: digitalSaleIntentItems.id,
+        lineKey: digitalSaleIntentItems.lineKey,
+        providerBasketKey: digitalSaleIntentItems.providerBasketKey,
+        referenceOwnerItemId: digitalSaleIntentItems.referenceOwnerItemId,
+        offeringId: digitalSaleIntentItems.offeringId,
+        variantId: digitalOfferings.variantId,
+        productUnitId: digitalOfferings.productUnitId,
+        offeringType: digitalOfferings.offeringType,
+        name: products.name,
+        providerName: suppliers.name,
+        referencePolicy: digitalProviders.referencePolicy,
+        sellPrice: digitalSaleIntentItems.sellPriceSnapshot,
+        fulfillmentStatus: digitalSaleIntentItems.fulfillmentStatus,
+        providerReference: digitalSaleIntentItems.providerReference,
+        studentName: digitalSaleIntentItems.studentNameSnapshot,
+        confirmedAt: digitalSaleIntentItems.confirmedAt,
+      })
+      .from(digitalSaleIntentItems)
+      .innerJoin(digitalOfferings, eq(digitalSaleIntentItems.offeringId, digitalOfferings.id))
+      .innerJoin(products, eq(digitalOfferings.productId, products.id))
+      .innerJoin(digitalProviders, eq(digitalSaleIntentItems.providerId, digitalProviders.id))
+      .innerJoin(suppliers, eq(digitalProviders.supplierId, suppliers.id))
+      .where(eq(digitalSaleIntentItems.intentId, intentId))
+      .orderBy(asc(digitalSaleIntentItems.id));
 
-  let netByLineKey: Map<string, string> | null = null;
-  const checkout = intent.checkoutSnapshot ?? null;
-  if (checkout?.sourceType === "INVOICE") {
-    const payload = parseInvoiceSourcePayload(checkout.sourcePayload);
-    netByLineKey = computeInvoiceIntentTotal({
-      regularSubtotal: checkout.expectedSubtotal,
-      sourcePayload: payload,
-      digitalLines: items.map((item) => ({
-        lineKey: item.lineKey,
-        variantId: Number(item.variantId),
-        productUnitId: Number(item.productUnitId),
-        sellPrice: item.sellPrice,
+    let netByLineKey: Map<string, string> | null = null;
+    const checkout = intent.checkoutSnapshot ?? null;
+    if (checkout?.sourceType === "INVOICE") {
+      const payload = parseInvoiceSourcePayload(checkout.sourcePayload);
+      netByLineKey = computeInvoiceIntentTotal({
+        regularSubtotal: checkout.expectedSubtotal,
+        sourcePayload: payload,
+        digitalLines: items.map((item) => ({
+          lineKey: item.lineKey,
+          variantId: Number(item.variantId),
+          productUnitId: Number(item.productUnitId),
+          sellPrice: item.sellPrice,
+        })),
+      }).digitalLineTotals;
+    }
+
+    return {
+      intent,
+      items: items.map(({ variantId: _variantId, productUnitId: _productUnitId, ...item }) => ({
+        ...item,
+        /** المبلغ الفعلي المحصّل لهذا السطر؛ سعر القائمة وحده يضلّل عند خصم السطر. */
+        chargeAmount: netByLineKey?.get(item.lineKey) ?? item.sellPrice,
       })),
-    }).digitalLineTotals;
-  }
-
-  return {
-    intent,
-    items: items.map(({ variantId: _variantId, productUnitId: _productUnitId, ...item }) => ({
-      ...item,
-      /** المبلغ الفعلي المحصّل لهذا السطر؛ سعر القائمة وحده يضلّل عند خصم السطر. */
-      chargeAmount: netByLineKey?.get(item.lineKey) ?? item.sellPrice,
-    })),
-  };
+    };
+  });
 }
 
 /**
@@ -1712,19 +1730,6 @@ async function lockIntent(tx: Tx, intentId: number) {
   const [intent] = await tx.select().from(digitalSaleIntents).where(eq(digitalSaleIntents.id, intentId)).for("update");
   if (!intent) throw new TRPCError({ code: "NOT_FOUND", message: "النيّة غير موجودة" });
   return intent;
-}
-
-function assertActorOwnsIntent(intent: { createdBy: number; branchId: number }, actor: Actor): void {
-  // المشرف (المالك/الأدمن/المدير) يرى نيّات موظّفي نطاقه لا ما أنشأه هو فقط (عزل السجلّ الفرديّ للكاشير).
-  const supervisor = actor.role === "admin" || actor.role === "manager";
-  if (!supervisor && Number(intent.createdBy) !== actor.userId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "هذه النيّة لمستخدم آخر" });
-  }
-  // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران الفروع (owner مُطبَّع ⇒ admin)؛
-  // المدير مقيَّدٌ بفرعه — كان `|| manager` يُعفيه فيمسّ نيّة فرعٍ آخر.
-  if (actor.role !== "admin" && Number(intent.branchId) !== Number(actor.branchId)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "هذه النيّة تخص فرعاً آخر" });
-  }
 }
 
 async function allItemsSettled(tx: Tx, intentId: number): Promise<boolean> {

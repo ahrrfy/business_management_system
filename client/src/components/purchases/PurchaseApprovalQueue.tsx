@@ -1,3 +1,5 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
+import type { OperationUser } from "@shared/operationPermissions";
 import { useState } from "react";
 import { Link } from "wouter";
 import {
@@ -59,9 +61,11 @@ function violatesVisibleSod(
 }
 
 export function PurchaseApprovalQueue({
+  operationUser,
   currentUserId,
   isOwner,
 }: {
+  operationUser?: OperationUser | null;
   currentUserId: number | null | undefined;
   /**
    * ⭐ قرار المالك (٣/٩/٢٦، وسّعه PR #998 على طلب الشراء الداخليّ): لا اعتماد ثانٍ بعد
@@ -70,6 +74,15 @@ export function PurchaseApprovalQueue({
    */
   isOwner?: boolean;
 }) {
+  const canDecide = (row: PendingControl) =>
+    operationUser == null ||
+    canLifecycleOperation(
+      operationUser,
+      row.documentType === "PURCHASE_ORDER"
+        ? "purchases.decideControl"
+        : "purchases.decideRequisition",
+      true,
+    );
   const utils = trpc.useUtils();
   const queue = trpc.purchases.pendingControls.useInfiniteQuery(
     { limit: 50 },
@@ -113,7 +126,8 @@ export function PurchaseApprovalQueue({
   const pending = orderDecision.isPending || requisitionDecision.isPending;
 
   function submit() {
-    if (!decision || reason.trim().length < 3) return;
+    if (!decision || !canDecide(decision.row) || reason.trim().length < 3)
+      return;
     const input = {
       requestId: Number(decision.row.id),
       decisionKey: decision.decisionKey,
@@ -153,8 +167,8 @@ export function PurchaseApprovalQueue({
         <CardContent className="space-y-3">
           <p className="text-sm text-muted-foreground">
             الإرسال أو طلب الإلغاء صفري الأثر. اعتماد فاتورة الشراء يعني أن
-            البضاعة وصلت كاملة؛ عندها يضيفها الخادم إلى المخزون ويرحّل القيد
-            في عملية واحدة.
+            البضاعة وصلت كاملة؛ عندها يضيفها الخادم إلى المخزون ويرحّل القيد في
+            عملية واحدة.
           </p>
           {queue.isLoading ? (
             <LoadingState message="جارٍ تحميل قائمة الاعتماد…" />
@@ -175,7 +189,8 @@ export function PurchaseApprovalQueue({
           ) : null}
           {queueRows.map((row) => {
             const identityUnavailable = currentUserId == null;
-            const ownerExempt = isOwner === true && row.documentType === "REQUISITION";
+            const ownerExempt =
+              isOwner === true && row.documentType === "REQUISITION";
             const own =
               !ownerExempt &&
               (identityUnavailable || violatesVisibleSod(row, currentUserId));
@@ -231,7 +246,7 @@ export function PurchaseApprovalQueue({
                     ) : null}
                     <Button
                       size="sm"
-                      disabled={own}
+                      disabled={own || !canDecide(row)}
                       onClick={() => {
                         setReason("");
                         setDecision({
@@ -246,7 +261,7 @@ export function PurchaseApprovalQueue({
                     <Button
                       size="sm"
                       variant="destructive"
-                      disabled={own}
+                      disabled={own || !canDecide(row)}
                       onClick={() => {
                         setReason("");
                         setDecision({
@@ -315,13 +330,19 @@ export function PurchaseApprovalQueue({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-              {decision?.approve && decision.row.documentType === "PURCHASE_ORDER" && ["APPROVE_REVISION", "CANCEL_ORDER"].includes(decision.row.kind) && (
-              <p className="rounded-md border p-3 text-sm">
-                {decision.row.shippingFundingSource === "DRAWER"
+            {decision?.approve &&
+              decision.row.documentType === "PURCHASE_ORDER" &&
+              ["APPROVE_REVISION", "CANCEL_ORDER"].includes(
+                decision.row.kind,
+              ) && (
+                <p className="rounded-md border p-3 text-sm">
+                  {decision.row.shippingFundingSource === "DRAWER"
                     ? `المنشئ صرح بدفع الشحن من ورديته #${decision.row.shippingFundingShiftId}. هذا القرار ينشئ طلب صرف معلّقاً فقط؛ اعتماد سند الشحن المستقل يوثق المصروف على وردية المنشئ، لا ورديتك. إلغاء البضاعة لا يلغي الشحن المدفوع فعلياً.`
-                    : decision.row.kind === "CANCEL_ORDER" ? "الشحن غير مدفوع: إلغاء الأمر لا ينشئ صرفاً نقدياً." : "الشحن غير مدفوع: الاعتماد يسجل الاستحقاق فقط، دون خصم نقد من درج أو خزينة."}
-              </p>
-            )}
+                    : decision.row.kind === "CANCEL_ORDER"
+                      ? "الشحن غير مدفوع: إلغاء الأمر لا ينشئ صرفاً نقدياً."
+                      : "الشحن غير مدفوع: الاعتماد يسجل الاستحقاق فقط، دون خصم نقد من درج أو خزينة."}
+                </p>
+              )}
             <Label htmlFor="purchase-control-decision-reason">سبب القرار</Label>
             <Textarea
               id="purchase-control-decision-reason"
@@ -345,8 +366,8 @@ export function PurchaseApprovalQueue({
                   }
                 />
                 <span>
-                  أؤكد أن جميع كميات الفاتورة وصلت فعلياً وتطابق البنود؛
-                  سيزداد المخزون وتُرحّل الفاتورة فور الاعتماد.
+                  أؤكد أن جميع كميات الفاتورة وصلت فعلياً وتطابق البنود؛ سيزداد
+                  المخزون وتُرحّل الفاتورة فور الاعتماد.
                 </span>
               </label>
             ) : null}

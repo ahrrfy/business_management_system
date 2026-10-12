@@ -1,3 +1,4 @@
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
@@ -78,6 +79,8 @@ export function CollectConsignmentDialog({
 
   // استعلام بيانات الفاعل
   const me = trpc.auth.me.useQuery(undefined, { enabled: open });
+  const canRemit = lifecycleActionAllowed(me.data, "delivery.recordRemittance", true);
+  const canConfirmDelivery = lifecycleActionAllowed(me.data, "delivery.staffConfirm", true);
   const isAdmin = me.data?.role === "admin";
   const isManager = me.data?.role === "manager" || isAdmin;
 
@@ -202,6 +205,7 @@ export function CollectConsignmentDialog({
   const isPending = staffConfirm.isPending || recordRemittance.isPending;
 
   const handleSettle = async () => {
+    if (!canRemit || (settleScope === "SINGLE" && confirmDeliveryFirst && consignment?.parcelStatus !== "DELIVERED" && !canConfirmDelivery)) { notify.err("صلاحية تنفيذ التحصيل أو تأكيد التسليم غير ممنوحة لحسابك"); return; }
     if (effectivePartyId == null) {
       notify.err("لم يتم تحديد جهة التوصيل");
       return;
@@ -424,6 +428,7 @@ export function CollectConsignmentDialog({
                 type="checkbox"
                 id="confirm-first-check"
                 checked={confirmDeliveryFirst}
+                disabled={!canConfirmDelivery}
                 onChange={(e) => setConfirmDeliveryFirst(e.target.checked)}
                 className="mt-0.5 rounded border-amber-500"
               />
@@ -533,6 +538,8 @@ export function CollectConsignmentDialog({
           <Button
             className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-black px-6"
             disabled={
+              !canRemit ||
+              (settleScope === "SINGLE" && confirmDeliveryFirst && consignment?.parcelStatus !== "DELIVERED" && !canConfirmDelivery) ||
               isPending ||
               countedNum <= 0 ||
               isExcess ||

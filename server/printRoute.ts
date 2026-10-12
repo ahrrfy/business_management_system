@@ -4,12 +4,15 @@
 //   POST /api/print/raw     { bytesB64 }  → يطبع بايتات ESC/POS مرسَلة base64
 //   POST /api/print/test    → يطبع تذكرة اختبار ASCII من الخادم مباشرة
 import { Router, type Request, type Response } from "express";
-import type { User } from "../drizzle/schema";
-import { getUserFromRequest } from "./auth/session";
+import { createContext, type AuthUser } from "./context";
 import {
-  getConfiguredTarget, describeTarget, isBridgeEnabled, sendToPrinter, buildTestTicket,
+  getConfiguredTarget,
+  describeTarget,
+  isBridgeEnabled,
+  sendToPrinter,
+  buildTestTicket,
 } from "./services/printService";
-import { getOpenShift } from "./services/shiftService";
+import { assertDirectPrintBridgeAuthorized } from "./services/invoicePrintAuthorization";
 import { logAudit } from "./services/auditService";
 import { logger } from "./logger";
 
@@ -17,24 +20,51 @@ import { logger } from "./logger";
 // متّسق مع حدّ /api/print/raw في server/index.ts ⇒ يُرفض كلاهما قبل تشكيل Buffer.
 const MAX_PRINT_B64_CHARS = 14_000_000;
 
-async function requireAuth(req: Request, res: Response): Promise<User | null> {
+async function requireAuth(
+  req: Request,
+  res: Response,
+): Promise<AuthUser | null> {
   try {
-    const user = await getUserFromRequest(req);
+    const { user } = await createContext({ req, res } as Parameters<
+      typeof createContext
+    >[0]);
     if (user) return user;
-  } catch { /* يسقط للرفض */ }
+  } catch {
+    /* يسقط للرفض */
+  }
   res.status(401).json({ ok: false, error: "يلزم تسجيل الدخول." });
   return null;
 }
 
 // يسمح بالطباعة لجميع كوادر النظام المسجّلين (كاشير، محاسب، أمين مخزن، فني، مدير)
 // دون اشتراط وردية مفتوحة، لأن الطباعة تشمل إغلاق الوردية، وسندات التسليم، ومحاضر الشحن، والكشوف.
-async function requirePrintAuthorized(user: User, res: Response): Promise<boolean> {
-  if (user.role === "admin" || user.role === "manager") return true;
-  if (user.role === "courier") {
-    res.status(403).json({ ok: false, error: "غير مخوّل بالطباعة المباشرة على طابعة المتجر." });
+async function requirePrintAuthorized(
+  user: AuthUser,
+  req: Request,
+  res: Response,
+): Promise<boolean> {
+  try {
+    assertDirectPrintBridgeAuthorized(user);
+    return true;
+  } catch (error) {
+    await logAudit(
+      { user, req },
+      {
+        action: "print.authorization",
+        entityType: "printer",
+        outcome: "FAILURE",
+        newValue: { operation: "invoicePrinting.authorizeBridge" },
+      },
+    );
+    res.status(403).json({
+      ok: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "غير مخوّل بالطباعة المباشرة على طابعة المتجر.",
+    });
     return false;
   }
-  return true;
 }
 
 export function printRouter(): Router {
@@ -44,33 +74,48 @@ export function printRouter(): Router {
   r.get("/status", async (req, res) => {
     if (!(await requireAuth(req, res))) return;
     const target = getConfiguredTarget();
-    res.json({ ok: true, enabled: target != null, description: describeTarget(target) });
+    res.json({
+      ok: true,
+      enabled: target != null,
+      description: describeTarget(target),
+    });
   });
 
   // طباعة بايتات ESC/POS خام (base64). العميل يولّد النقطية (raster) فالعربية تُرسَّم على Canvas لديه.
   r.post("/raw", async (req, res) => {
     const user = await requireAuth(req, res);
     if (!user) return;
-    if (!(await requirePrintAuthorized(user, res))) return;
+    if (!(await requirePrintAuthorized(user, req, res))) return;
     if (!isBridgeEnabled()) {
-      return res.status(501).json({ ok: false, error: "جسر الطباعة غير مفعّل على الخادم (PRINT_TARGET غير مضبوط)." });
+      return res.status(501).json({
+        ok: false,
+        error: "جسر الطباعة غير مفعّل على الخادم (PRINT_TARGET غير مضبوط).",
+      });
     }
     const b64 = (req.body?.bytesB64 ?? "") as string;
     if (typeof b64 !== "string" || b64.length === 0) {
-      return res.status(400).json({ ok: false, error: "حقل bytesB64 مطلوب (base64)." });
+      return res
+        .status(400)
+        .json({ ok: false, error: "حقل bytesB64 مطلوب (base64)." });
     }
     // سقف صريح قبل تشكيل Buffer (طبقة دفاع فوق حدّ ١٠mb على مستوى Express).
     if (b64.length > MAX_PRINT_B64_CHARS) {
-      return res.status(413).json({ ok: false, error: "حجم بيانات الطباعة يتجاوز الحدّ المسموح." });
+      return res
+        .status(413)
+        .json({ ok: false, error: "حجم بيانات الطباعة يتجاوز الحدّ المسموح." });
     }
     let bytes: Buffer;
     try {
       bytes = Buffer.from(b64, "base64");
     } catch {
-      return res.status(400).json({ ok: false, error: "تعذّر فكّ ترميز base64." });
+      return res
+        .status(400)
+        .json({ ok: false, error: "تعذّر فكّ ترميز base64." });
     }
     if (bytes.length === 0) {
-      return res.status(400).json({ ok: false, error: "بيانات الطباعة فارغة." });
+      return res
+        .status(400)
+        .json({ ok: false, error: "بيانات الطباعة فارغة." });
     }
     try {
       const target = await sendToPrinter(bytes);
@@ -83,7 +128,12 @@ export function printRouter(): Router {
           newValue: { bytes: bytes.length },
         },
       );
-      res.json({ ok: true, via: "server", target: target.kind, bytes: bytes.length });
+      res.json({
+        ok: true,
+        via: "server",
+        target: target.kind,
+        bytes: bytes.length,
+      });
     } catch (e) {
       await logAudit(
         { user, req },
@@ -105,9 +155,12 @@ export function printRouter(): Router {
   r.post("/test", async (req, res) => {
     const user = await requireAuth(req, res);
     if (!user) return;
-    if (!(await requirePrintAuthorized(user, res))) return;
+    if (!(await requirePrintAuthorized(user, req, res))) return;
     if (!isBridgeEnabled()) {
-      return res.status(501).json({ ok: false, error: "جسر الطباعة غير مفعّل على الخادم (PRINT_TARGET غير مضبوط)." });
+      return res.status(501).json({
+        ok: false,
+        error: "جسر الطباعة غير مفعّل على الخادم (PRINT_TARGET غير مضبوط).",
+      });
     }
     try {
       const target = await sendToPrinter(buildTestTicket());

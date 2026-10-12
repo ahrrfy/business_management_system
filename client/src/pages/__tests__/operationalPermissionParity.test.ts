@@ -82,7 +82,7 @@ describe("operational UI permission parity", () => {
     ).toBe(false);
   });
 
-  it("keeps dispatch, manual proof, remittance, and row actions on store FULL", () => {
+  it("binds dispatch and manual proof to exact operations while preserving legacy remittance gate", () => {
     const source =
       readPage("DeliveryHub.tsx") +
       "\n" +
@@ -108,16 +108,12 @@ describe("operational UI permission parity", () => {
     const remitAuthority = section(source, "const canRemit", "const canReturn");
     const remitAction = section(source, "{canRemit && (", "</Button>");
 
-    expect(dispatchAuthority).toMatch(
-      /moduleAccessAllowed\([\s\S]*?"store",\s*"FULL",\s*\["cashier", "manager"\]/,
-    );
-    expect(dispatchActions).toContain("hidden: !canDispatch");
-    expect(dispatchActions).toContain(
-      'gate: { roles: ["cashier", "manager"], module: "store", level: "FULL" }',
-    );
-    expect(manualProofAuthority).toMatch(
-      /moduleAccessAllowed\([\s\S]*?"store",\s*"FULL",\s*\["manager"\]/,
-    );
+    expect(dispatchAuthority).toContain('useOperationPermission("delivery.dispatch")');
+    expect(dispatchAuthority).toContain('useOperationPermission("delivery.dispatchByBarcode")');
+    expect(dispatchActions).toContain('o.sourceType === "ONLINE_ORDER"');
+    expect(dispatchActions).toContain('operations:');
+    expect(dispatchActions).toContain('"delivery.dispatchByBarcode"');
+    expect(manualProofAuthority).toContain('useOperationPermission("delivery.manualProof")');
     expect(manualProofAction).toContain("setManualProofTarget(r)");
     expect(remitAuthority).toMatch(
       /moduleAccessAllowed\([\s\S]*?"store",\s*"FULL",\s*\["cashier", "manager"\]/,

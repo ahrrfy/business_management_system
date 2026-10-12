@@ -19,6 +19,7 @@
  *   • POSTPAID — المزوّد سيُطالبنا: ذمّته ترتفع بالحصة (لا محفظة ولا حجز أصلاً).
  */
 import { TRPCError } from "@trpc/server";
+import { assertServiceOperationTx, type ServiceOperationActor } from "../authorization/operationAuthority";
 import { and, eq, inArray } from "drizzle-orm";
 import {
   auditLogs,
@@ -50,12 +51,6 @@ async function auditLog(tx: Tx, actor: Actor, action: string, entityId: number, 
     });
   } catch {
     // best-effort — نفس اصطلاح بقية خدمات الوحدة (لا يُسقِط عمليةً مالية لأجل سطر تدقيق).
-  }
-}
-
-function assertManager(actor: Actor): void {
-  if (actor.role !== "admin" && actor.role !== "manager") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "شطب النيّة قرارٌ مديريّ" });
   }
 }
 
@@ -95,9 +90,9 @@ async function issuedItems(tx: Tx, intentId: number) {
 export async function requestWriteoff(
   tx: Tx,
   input: { intentId: number; reason: string },
-  actor: Actor,
+  actor: Actor & ServiceOperationActor,
 ): Promise<{ intentId: number; issuedCount: number; amount: string }> {
-  assertManager(actor);
+  await assertServiceOperationTx(tx, actor, "digitalCards.sales.requestWriteoff");
   const reason = input.reason.trim();
   if (reason.length < 3) throw new TRPCError({ code: "BAD_REQUEST", message: "اكتب سبباً واضحاً للشطب" });
 
@@ -151,9 +146,9 @@ export async function requestWriteoff(
 export async function approveWriteoff(
   tx: Tx,
   input: { intentId: number },
-  actor: Actor,
+  actor: Actor & ServiceOperationActor,
 ): Promise<{ intentId: number; writtenOff: number; loss: string }> {
-  assertManager(actor);
+  await assertServiceOperationTx(tx, actor, "digitalCards.sales.approveWriteoff", ["digitalCards.sales.approveReviewResolution"]);
 
   const intent = await lockIntent(tx, input.intentId);
   if (intent.status === "WRITTEN_OFF") {
@@ -378,9 +373,9 @@ export async function approveWriteoff(
 export async function rejectWriteoff(
   tx: Tx,
   input: { intentId: number; reason?: string | null },
-  actor: Actor,
+  actor: Actor & ServiceOperationActor,
 ): Promise<{ intentId: number }> {
-  assertManager(actor);
+  await assertServiceOperationTx(tx, actor, "digitalCards.sales.rejectWriteoff");
   const intent = await lockIntent(tx, input.intentId);
   if (intent.status !== "WRITEOFF_PENDING") {
     throw new TRPCError({ code: "CONFLICT", message: "لا طلب شطبٍ معلّقاً على هذه النيّة" });

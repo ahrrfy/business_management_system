@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
+import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
 import { and, asc, desc, eq, gt, lt, or, sql } from "drizzle-orm";
 import {
   accountingEntries,
@@ -47,7 +48,7 @@ import { postEntry, type EntryType } from "./ledgerService";
 import { money, toDbMoney } from "./money";
 import { todayUtcDate } from "./businessDay";
 import { logAuditTx, type AuditMetadata } from "./auditService";
-import { requireDb, withTx, type Actor } from "./tx";
+import { withTx, type Actor } from "./tx";
 import { assertApprover, resolveApprovalActor } from "./approval/ownerGate";
 import {
   cashVarianceApprovalRetainsLegacy,
@@ -128,13 +129,8 @@ function assertBranchScope(actor: Actor, branchId: number): void {
   }
 }
 
-function assertDecisionRole(actor: Actor): void {
-  if (!["admin", "manager", "accountant"].includes(actor.role ?? "")) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "اعتماد فرق النقد محصور بالإدارة أو المحاسبة",
-    });
-  }
+async function assertCashVarianceOperation(tx: Tx, actor: Actor, path: string): Promise<void> {
+  await assertOperationAuthorityTx(tx, actor, path, ["admin", "manager", "accountant"].includes(actor.role ?? ""));
 }
 
 function addComponent(
@@ -315,7 +311,6 @@ export async function registerCashVarianceEvidence(
   actor: Actor,
   auditCtx: AuditMetadata = { userId: actor.userId, branchId: actor.branchId },
 ) {
-  assertDecisionRole(actor);
   assertBranchScope(actor, input.branchId);
   const fileName = normalizeRequiredText(input.fileName, "اسم ملف الدليل", 1, 255);
   const parsed = parseEvidenceDataUrl(input.dataUrl);
@@ -327,6 +322,7 @@ export async function registerCashVarianceEvidence(
     actorUserId: actor.userId,
   });
   return withTx(async (tx) => {
+    await assertCashVarianceOperation(tx, actor, "treasury.cashVariance.registerEvidence");
     const replay = (
       await tx.select().from(cashVarianceEvidenceDocuments)
         .where(eq(cashVarianceEvidenceDocuments.registrationClientRequestId, input.clientRequestId))
@@ -595,7 +591,6 @@ export async function proposeCashVarianceCase(
   actor: Actor,
   auditCtx: AuditMetadata = { userId: actor.userId, branchId: actor.branchId },
 ) {
-  assertDecisionRole(actor);
   if (!isCashVarianceReasonAllowed(input.sourceType, input.reasonCode)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -620,6 +615,7 @@ export async function proposeCashVarianceCase(
   });
 
   const result = await withTx(async (tx) => {
+    await assertCashVarianceOperation(tx, actor, "treasury.cashVariance.propose");
     const replay = await loadIdempotentProposal(tx, input, actor, requestHash);
     if (replay) return replay;
 
@@ -933,7 +929,6 @@ export async function approveCashVarianceCase(
   actor: Actor,
   auditCtx: AuditMetadata = { userId: actor.userId, branchId: actor.branchId },
 ) {
-  assertDecisionRole(actor);
   const note = input.note?.trim() || null;
   if (note && note.length > 500) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "ملاحظة الاعتماد طويلة" });
@@ -947,6 +942,7 @@ export async function approveCashVarianceCase(
   });
 
   return withTx(async (tx) => {
+    await assertCashVarianceOperation(tx, actor, "treasury.cashVariance.approve");
     const candidate = (
       await tx
         .select()
@@ -1274,7 +1270,6 @@ export async function rejectCashVarianceCase(
   actor: Actor,
   auditCtx: AuditMetadata = { userId: actor.userId, branchId: actor.branchId },
 ) {
-  assertDecisionRole(actor);
   const reason = normalizeRequiredText(input.reason, "سبب رفض التسوية", 10, 500);
   const requestHash = hashRequest({
     action: "REJECT",
@@ -1284,6 +1279,7 @@ export async function rejectCashVarianceCase(
     actorUserId: actor.userId,
   });
   return withTx(async (tx) => {
+    await assertCashVarianceOperation(tx, actor, "treasury.cashVariance.reject");
     const candidate = (
       await tx.select().from(cashVarianceCases).where(eq(cashVarianceCases.id, input.caseId)).limit(1)
     )[0];
@@ -1374,143 +1370,149 @@ export async function listCashVarianceCases(
   },
   actor: Actor,
 ) {
-  assertDecisionRole(actor);
-  const branchId = input.branchId ?? actor.branchId;
-  assertBranchScope(actor, branchId);
-  const runner = requireDb();
-  const latestVersions = runner
-    .select({
-      caseId: cashVarianceCaseEvents.caseId,
-      version: sql<number>`MAX(${cashVarianceCaseEvents.version})`.as("latestVersion"),
-    })
-    .from(cashVarianceCaseEvents)
-    .groupBy(cashVarianceCaseEvents.caseId)
-    .as("cashVarianceLatestVersions");
-  const baseWhere = and(
-    eq(cashVarianceCases.branchId, branchId),
-    input.status ? eq(cashVarianceCaseEvents.eventType, input.status) : undefined,
-  );
-  const oldestFirst = input.status === "PROPOSED";
-  const cursorWhere = input.cursor == null
-    ? undefined
-    : oldestFirst
-      ? or(
-          gt(cashVarianceCases.createdAt, input.cursor.createdAt),
-          and(
-            eq(cashVarianceCases.createdAt, input.cursor.createdAt),
-            gt(cashVarianceCases.id, input.cursor.id),
-          ),
-        )
-      : or(
-          lt(cashVarianceCases.createdAt, input.cursor.createdAt),
-          and(
-            eq(cashVarianceCases.createdAt, input.cursor.createdAt),
-            lt(cashVarianceCases.id, input.cursor.id),
-          ),
-        );
-  const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
-  const total = Number((await runner
-    .select({ count: sql<number>`COUNT(*)` })
-    .from(cashVarianceCases)
-    .innerJoin(latestVersions, eq(latestVersions.caseId, cashVarianceCases.id))
-    .innerJoin(
-      cashVarianceCaseEvents,
-      and(
-        eq(cashVarianceCaseEvents.caseId, cashVarianceCases.id),
-        eq(cashVarianceCaseEvents.version, latestVersions.version),
-      ),
-    )
-    .where(baseWhere))[0]?.count ?? 0);
-  const pageRows = await runner
-    .select({ case: cashVarianceCases, latestEvent: cashVarianceCaseEvents })
-    .from(cashVarianceCases)
-    .innerJoin(latestVersions, eq(latestVersions.caseId, cashVarianceCases.id))
-    .innerJoin(
-      cashVarianceCaseEvents,
-      and(
-        eq(cashVarianceCaseEvents.caseId, cashVarianceCases.id),
-        eq(cashVarianceCaseEvents.version, latestVersions.version),
-      ),
-    )
-    .where(and(baseWhere, cursorWhere))
-    .orderBy(
-      oldestFirst ? asc(cashVarianceCases.createdAt) : desc(cashVarianceCases.createdAt),
-      oldestFirst ? asc(cashVarianceCases.id) : desc(cashVarianceCases.id),
-    )
-    .limit(limit + 1);
-  const hasMore = pageRows.length > limit;
-  const page = hasMore ? pageRows.slice(0, limit) : pageRows;
-  const rows = page.map(({ case: row, latestEvent }) => ({
-    ...row,
-    status: latestEvent.eventType,
-    version: Number(latestEvent.version),
-    latestEvent,
-  }));
-  const last = page.at(-1)?.case;
-  return {
-    rows,
-    hasMore,
-    nextCursor: hasMore && last
-      ? { createdAt: last.createdAt, id: Number(last.id) }
-      : null,
-    total,
-  };
+  return withTx(async (tx) => {
+    await assertCashVarianceOperation(tx, actor, "treasury.cashVariance.list");
+    const branchId = input.branchId ?? actor.branchId;
+    assertBranchScope(actor, branchId);
+    const runner = tx;
+    const latestVersions = runner
+      .select({
+        caseId: cashVarianceCaseEvents.caseId,
+        version: sql<number>`MAX(${cashVarianceCaseEvents.version})`.as("latestVersion"),
+      })
+      .from(cashVarianceCaseEvents)
+      .groupBy(cashVarianceCaseEvents.caseId)
+      .as("cashVarianceLatestVersions");
+    const baseWhere = and(
+      eq(cashVarianceCases.branchId, branchId),
+      input.status ? eq(cashVarianceCaseEvents.eventType, input.status) : undefined,
+    );
+    const oldestFirst = input.status === "PROPOSED";
+    const cursorWhere = input.cursor == null
+      ? undefined
+      : oldestFirst
+        ? or(
+            gt(cashVarianceCases.createdAt, input.cursor.createdAt),
+            and(
+              eq(cashVarianceCases.createdAt, input.cursor.createdAt),
+              gt(cashVarianceCases.id, input.cursor.id),
+            ),
+          )
+        : or(
+            lt(cashVarianceCases.createdAt, input.cursor.createdAt),
+            and(
+              eq(cashVarianceCases.createdAt, input.cursor.createdAt),
+              lt(cashVarianceCases.id, input.cursor.id),
+            ),
+          );
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+    const total = Number((await runner
+      .select({ count: sql<number>`COUNT(*)` })
+      .from(cashVarianceCases)
+      .innerJoin(latestVersions, eq(latestVersions.caseId, cashVarianceCases.id))
+      .innerJoin(
+        cashVarianceCaseEvents,
+        and(
+          eq(cashVarianceCaseEvents.caseId, cashVarianceCases.id),
+          eq(cashVarianceCaseEvents.version, latestVersions.version),
+        ),
+      )
+      .where(baseWhere))[0]?.count ?? 0);
+    const pageRows = await runner
+      .select({ case: cashVarianceCases, latestEvent: cashVarianceCaseEvents })
+      .from(cashVarianceCases)
+      .innerJoin(latestVersions, eq(latestVersions.caseId, cashVarianceCases.id))
+      .innerJoin(
+        cashVarianceCaseEvents,
+        and(
+          eq(cashVarianceCaseEvents.caseId, cashVarianceCases.id),
+          eq(cashVarianceCaseEvents.version, latestVersions.version),
+        ),
+      )
+      .where(and(baseWhere, cursorWhere))
+      .orderBy(
+        oldestFirst ? asc(cashVarianceCases.createdAt) : desc(cashVarianceCases.createdAt),
+        oldestFirst ? asc(cashVarianceCases.id) : desc(cashVarianceCases.id),
+      )
+      .limit(limit + 1);
+    const hasMore = pageRows.length > limit;
+    const page = hasMore ? pageRows.slice(0, limit) : pageRows;
+    const rows = page.map(({ case: row, latestEvent }) => ({
+      ...row,
+      status: latestEvent.eventType,
+      version: Number(latestEvent.version),
+      latestEvent,
+    }));
+    const last = page.at(-1)?.case;
+    return {
+      rows,
+      hasMore,
+      nextCursor: hasMore && last
+        ? { createdAt: last.createdAt, id: Number(last.id) }
+        : null,
+      total,
+    };
+  }, { gate: "NONE" });
 }
 
 export async function getCashVarianceCase(caseId: number, actor: Actor) {
-  assertDecisionRole(actor);
-  const row = (
-    await requireDb()
+  return withTx(async (tx) => {
+    await assertCashVarianceOperation(tx, actor, "treasury.cashVariance.get");
+    const row = (
+      await tx
+        .select()
+        .from(cashVarianceCases)
+        .where(eq(cashVarianceCases.id, caseId))
+        .limit(1)
+    )[0];
+    if (!row) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "حالة فرق النقد غير موجودة" });
+    }
+    assertBranchScope(actor, Number(row.branchId));
+    const events = await tx
       .select()
-      .from(cashVarianceCases)
-      .where(eq(cashVarianceCases.id, caseId))
-      .limit(1)
-  )[0];
-  if (!row) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "حالة فرق النقد غير موجودة" });
-  }
-  assertBranchScope(actor, Number(row.branchId));
-  const events = await requireDb()
-    .select()
-    .from(cashVarianceCaseEvents)
-    .where(eq(cashVarianceCaseEvents.caseId, caseId))
-    .orderBy(desc(cashVarianceCaseEvents.version));
-  const latest = events[0];
-  if (!latest) {
-    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "سجل حالة فرق النقد غير مكتمل" });
-  }
-  return {
-    ...row,
-    status: latest.eventType,
-    version: Number(latest.version),
-    latestEvent: latest,
-    events,
-    decisionPolicy: cashVarianceDecisionPolicy(row, latest.eventType, actor),
-  };
+      .from(cashVarianceCaseEvents)
+      .where(eq(cashVarianceCaseEvents.caseId, caseId))
+      .orderBy(desc(cashVarianceCaseEvents.version));
+    const latest = events[0];
+    if (!latest) {
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "سجل حالة فرق النقد غير مكتمل" });
+    }
+    return {
+      ...row,
+      status: latest.eventType,
+      version: Number(latest.version),
+      latestEvent: latest,
+      events,
+      decisionPolicy: cashVarianceDecisionPolicy(row, latest.eventType, actor),
+    };
+  }, { gate: "NONE" });
 }
 
 export async function listCashVarianceResponsibleUsers(branchId: number, actor: Actor) {
-  assertDecisionRole(actor);
-  assertBranchScope(actor, branchId);
-  return requireDb()
-    .select({
-      id: users.id,
-      employeeId: employees.id,
-      name: users.name,
-      username: users.username,
-      role: users.role,
-    })
-    .from(employees)
-    .innerJoin(users, eq(users.id, employees.userId))
-    .where(
-      and(
-        eq(employees.branchId, branchId),
-        eq(employees.isActive, true),
-        eq(employees.employmentStatus, "active"),
-        eq(users.branchId, branchId),
-        eq(users.isActive, true),
-      ),
-    )
-    .orderBy(users.name, users.id)
-    .limit(500);
+  return withTx(async (tx) => {
+    await assertCashVarianceOperation(tx, actor, "treasury.cashVariance.responsibleUsers");
+    assertBranchScope(actor, branchId);
+    return tx
+      .select({
+        id: users.id,
+        employeeId: employees.id,
+        name: users.name,
+        username: users.username,
+        role: users.role,
+      })
+      .from(employees)
+      .innerJoin(users, eq(users.id, employees.userId))
+      .where(
+        and(
+          eq(employees.branchId, branchId),
+          eq(employees.isActive, true),
+          eq(employees.employmentStatus, "active"),
+          eq(users.branchId, branchId),
+          eq(users.isActive, true),
+        ),
+      )
+      .orderBy(users.name, users.id)
+      .limit(500);
+  }, { gate: "NONE" });
 }

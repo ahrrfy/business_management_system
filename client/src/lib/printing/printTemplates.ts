@@ -135,7 +135,7 @@ export interface InvoicePrintData {
   barcodePlacement?: 'beside' | 'below';
 }
 
-export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
+export async function printInvoiceA4(d: InvoicePrintData): Promise<boolean> {
   // hifi-redesign (٥/٧/٢٦): ينفَّذ عبر printSalesInvoiceV2 بالتصميم المرجعي. الحقول الوصفية (customerTaxId/
   // companyTaxId/notes) لم تعُد تظهر بالترويسة الجديدة (الأرقام القانونية تُقرأ من إعدادات الشركة).
   const date = fmtDate(d.invoiceDate ?? new Date());
@@ -163,7 +163,7 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
     }
   }
 
-  printSalesInvoiceV2({
+  return printSalesInvoiceV2({
     invoiceNumber: d.invoiceNumber,
     invoiceDate: d.invoiceDate,
     barcode: d.barcode,
@@ -206,7 +206,6 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
       chamberLicense: COMPANY_SETTINGS.chamberLicense,
     },
   });
-  return;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -933,6 +932,7 @@ export function printProductionDoc(d: ProductionDocData, mode: 'order' | 'docume
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export interface ReceiptBrowserData {
+  invoiceId?: number;
   receiptNumber: string;
   date: string;
   time?: string | null;

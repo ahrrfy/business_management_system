@@ -351,7 +351,7 @@ describe("Milestone 2 Challenger 1: Adversarial Verification", () => {
     it("InstantGiftModal prevents double-clicks and race conditions via mutation pending state", () => {
       const modalContent = fs.readFileSync(INSTANT_GIFT_MODAL_FILE, "utf-8");
       // Submit button is disabled while issueMutation is pending
-      expect(modalContent).toContain("disabled={issueMutation.isPending}");
+      expect(modalContent).toContain('disabled={!can("customers.issueInstantGift") || (issueMutation.isPending)}');
       // Shows animated spinner during mutation
       expect(modalContent).toContain("issueMutation.isPending ?");
       expect(modalContent).toContain("animate-spin");

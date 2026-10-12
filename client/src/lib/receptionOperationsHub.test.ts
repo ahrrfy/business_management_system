@@ -141,8 +141,8 @@ describe("ReceptionOperationsHub", () => {
 
     // PageTabs يصفّي قبل اختيار المكوّن، ويسقط للرأس المرئي، ولا يجبر panels
     // المخفية على التركيب؛ لذا لا تنفّذ React.lazy import ولا استعلامات الصفحة.
-    expect(pageTabsSource).toContain(
-      "const visible = tabs.filter((t) => canSeeGate(t.gate, role, permsOverride))",
+    expect(pageTabsSource).toMatch(
+      /const visible = tabs\.filter\(\(t\) =>\s*canSeeGate\(t\.gate, role, permsOverride, operationPolicy\),?\s*\)/,
     );
     expect(pageTabsSource).not.toContain("forceMount");
   });

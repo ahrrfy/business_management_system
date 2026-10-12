@@ -29,6 +29,7 @@ import { assertStockedOwnedMaterials } from "./inventory/materialEligibility";
 import { loadVariantAvailability } from "./catalog/variantAvailability";
 import { money, round2 } from "./money";
 import { withTx, type Actor, type MaybeScopedActor } from "./tx";
+import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
 import { extractInsertId } from "../lib/insertId";
 import { escLike } from "../lib/sqlLike";
 import { assertNoActiveDigitalInventoryBinding } from "./digitalCards/inventoryBindingGuard";
@@ -968,7 +969,7 @@ export async function updateRecipe(id: number, input: CreateRecipeInput) {
 /**
  * استبدال مادة خام ببديل مع الحفظ الذري للوصفة وإعادة حساب تكاليف البكجات التابعة.
  *
- * الحوكمة: مقصور على دور مدير فأعلى (ADMIN / MANAGER).
+ * الحوكمة: مدير فأعلى قديماً، أو تفويض حاليّ صريح باستبدال المادة الدائم.
  * التزامن: قفل هرمي كلي تصاعدي 2PL + فحص بصمة اللقطة التفاؤلي + فحص أهلية المخزون المملوك النشط.
  * التكافؤ: اعتماد كمية المادة السابقة تلقائياً إن لم تُحدد كمية جديدة صريحة.
  * الأثر المحاسبي: مزامنة تكاليف البكجات التابعة تلقائياً عبر syncBundlesContainingComponents لمنع أي Drift.
@@ -979,18 +980,18 @@ export async function substituteRecipeMaterial(
   actor: MaybeScopedActor,
 ): Promise<SubstituteRecipeMaterialResult> {
   const role = String(actor.role ?? "").toUpperCase();
-  if (!["ADMIN", "MANAGER"].includes(role)) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: appErrorMessage({
-        what: "غير مصرح باعتماد تعديل الوصفة الدائم",
-        why: "تحديث شجرة المواد الدائمة في الوصفة مقصور على دور مدير فأعلى لحماية التكاليف والتسعير",
-        doThis: "استخدم الاستبدال المؤقت للدفعة، أو اطلب من مدير النظام اعتماد التعديل الدائم",
-      }),
-    });
-  }
-
   return withTx(async (tx) => {
+    const canonicalAuthorized = await assertOperationAuthorityTx(tx, actor, "production.recipes.substituteMaterial", true);
+    if (!["ADMIN", "MANAGER"].includes(role) && !canonicalAuthorized) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "غير مصرح باعتماد تعديل الوصفة الدائم",
+          why: "تحديث شجرة المواد الدائمة في الوصفة مقصور على دور مدير فأعلى لحماية التكاليف والتسعير",
+          doThis: "استخدم الاستبدال المؤقت للدفعة، أو اطلب من مدير النظام اعتماد التعديل الدائم",
+        }),
+      });
+    }
     const initial = await readRecipeMutationSnapshot(tx, input.recipeId, false);
     if (!initial) {
       throw new TRPCError({

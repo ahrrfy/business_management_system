@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { assertOperationAuthorityTx, canonicalOperationAllowed, loadOperationUserTx } from "../authorization/operationAuthority";
 import { and, desc, eq, gt, gte, lt, or } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
@@ -64,15 +65,6 @@ function assertBranchScope(actor: Actor, branchId: number): void {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "لا يمكنك إدارة استثناء جرد لفرع آخر",
-    });
-  }
-}
-
-function assertManagerOrAccountant(actor: Actor): void {
-  if (!["admin", "manager", "accountant"].includes(actor.role ?? "")) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "استثناء الجرد اليومي محصور بالإدارة أو المحاسبة",
     });
   }
 }
@@ -291,6 +283,8 @@ export async function getMissedDailyCountExceptionContext(
   assertBranchScope(actor, input.branchId);
   return withTx(
     async (tx) => {
+      const currentUser = await loadOperationUserTx(tx, actor.userId);
+      const legacyAllowed = ["admin", "manager", "accountant"].includes(actor.role ?? "");
       const [existingReconciliation] = await tx
         .select({ id: cashDailyReconciliations.id })
         .from(cashDailyReconciliations)
@@ -365,11 +359,11 @@ export async function getMissedDailyCountExceptionContext(
             evidence.required &&
             carryForward != null &&
             active == null &&
-            ["admin", "manager", "accountant"].includes(actor.role ?? ""),
+            (canonicalOperationAllowed(currentUser, "treasury.missedDailyCount.request") ?? legacyAllowed),
           canDecide:
             active?.status === "PENDING" &&
             Number(active.requestedByUserId) !== actor.userId &&
-            ["admin", "manager", "accountant"].includes(actor.role ?? ""),
+            (canonicalOperationAllowed(currentUser, "treasury.missedDailyCount.decide") ?? legacyAllowed),
         },
       };
     },
@@ -382,7 +376,6 @@ export async function requestMissedDailyCountException(
   actor: Actor,
   auditCtx: AuditMetadata,
 ) {
-  assertManagerOrAccountant(actor);
   assertBranchScope(actor, input.branchId);
   assertHistoricalDay(input.businessDate);
   const reason = normalizeText(
@@ -408,6 +401,7 @@ export async function requestMissedDailyCountException(
   });
 
   const result = await withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "treasury.missedDailyCount.request", ["admin", "manager", "accountant"].includes(actor.role ?? ""));
     const [replay] = await tx
       .select()
       .from(cashMissedDailyCountExceptions)
@@ -557,7 +551,6 @@ export async function decideMissedDailyCountException(
   actor: Actor,
   auditCtx: AuditMetadata,
 ) {
-  assertManagerOrAccountant(actor);
   const note = normalizeText(input.note, "ملاحظة القرار", 10, 500);
   const requestHash = idempotencyHash({
     operation: "MISSED_DAILY_COUNT_DECISION",
@@ -569,6 +562,7 @@ export async function decideMissedDailyCountException(
   });
 
   return withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "treasury.missedDailyCount.decide", ["admin", "manager", "accountant"].includes(actor.role ?? ""));
     const [candidate] = await tx
       .select({ branchId: cashMissedDailyCountExceptions.branchId })
       .from(cashMissedDailyCountExceptions)

@@ -111,7 +111,7 @@ const plansRouter = router({
   assign: commissionsWriteProcedure
     .input(z.object({ employeeId: z.number().int().positive(), planId: z.number().int().positive(), effectiveFrom: period }))
     .mutation(async ({ input, ctx }) => {
-      const res = await plansSvc.assignPlan(input, actorOf(ctx), commissionWriteScope(ctx.user));
+      const res = await plansSvc.assignPlan(input, actorOf(ctx), commissionWriteScope(ctx.user, "commissions.plans.assign"));
       await logAudit(ctx, {
         action: "commissions.assign",
         entityType: "commissionAssignment",
@@ -124,7 +124,7 @@ const plansRouter = router({
   endAssignment: commissionsWriteProcedure
     .input(z.object({ assignmentId: z.number().int().positive(), effectiveTo: period }))
     .mutation(async ({ input, ctx }) => {
-      await plansSvc.endAssignment(input, commissionWriteScope(ctx.user));
+      await plansSvc.endAssignment(input, commissionWriteScope(ctx.user, "commissions.plans.endAssignment"));
       await logAudit(ctx, {
         action: "commissions.endAssignment",
         entityType: "commissionAssignment",
@@ -152,7 +152,7 @@ const targetsRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await targetsSvc.saveTargets(input, actorOf(ctx), commissionWriteScope(ctx.user));
+      const res = await targetsSvc.saveTargets(input, actorOf(ctx), commissionWriteScope(ctx.user, "commissions.targets.saveAll"));
       await logAudit(ctx, {
         action: "commissions.targetsSave",
         entityType: "salesTarget",
@@ -165,7 +165,7 @@ const targetsRouter = router({
   copyFromPrevious: commissionsWriteProcedure
     .input(z.object({ period, overwrite: z.boolean().default(false) }))
     .mutation(async ({ input, ctx }) => {
-      const res = await targetsSvc.copyTargetsFromPrevious(input, actorOf(ctx), commissionWriteScope(ctx.user));
+      const res = await targetsSvc.copyTargetsFromPrevious(input, actorOf(ctx), commissionWriteScope(ctx.user, "commissions.targets.copyFromPrevious"));
       await logAudit(ctx, {
         action: "commissions.targetsCopy",
         entityType: "salesTarget",
@@ -186,7 +186,7 @@ const runsRouter = router({
   /** احتساب (أو إعادة احتساب مسودة) تشغيلة الشهر — ذرّي، بحارس تسلسل الأشهر. */
   compute: commissionsWriteProcedure.input(z.object({ period })).mutation(async ({ input, ctx }) => {
     try {
-      const res = await computeCommissionRun(input.period, actorOf(ctx), commissionWriteScope(ctx.user));
+      const res = await computeCommissionRun(input.period, actorOf(ctx), commissionWriteScope(ctx.user, "commissions.runs.compute"));
       await logAudit(ctx, {
         action: "commissions.runCompute",
         entityType: "commissionRun",
@@ -208,7 +208,7 @@ const runsRouter = router({
       reason: z.string().trim().min(3).max(500),
     }))
     .mutation(async ({ input, ctx }) => {
-      const scopeBranchId = commissionWriteScope(ctx.user);
+      const scopeBranchId = commissionWriteScope(ctx.user, "commissions.runs.approve");
       const res = await runApprovalsSvc.requestCommissionRunApproval({
         requestKey: input.requestKey,
         runId: input.id,

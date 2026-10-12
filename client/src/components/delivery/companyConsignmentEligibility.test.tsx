@@ -6,6 +6,10 @@ import {
   CompanyConsignmentActions,
   CompanyConsignmentDriver,
 } from "./companyConsignmentColumns";
+import type { OperationUser } from "@shared/operationPermissions";
+
+const auth = vi.hoisted(() => ({ user: { role: "manager" } as OperationUser }));
+vi.mock("@/lib/trpc", () => ({ trpc: { auth: { me: { useQuery: () => ({ data: auth.user }) } } } }));
 
 vi.mock("@/components/ui/AppSelect", () => ({
   AppSelect: ({
@@ -67,6 +71,7 @@ describe("company consignment operational eligibility", () => {
   };
   beforeEach(() => {
     vi.clearAllMocks();
+    auth.user = { role: "manager" };
     host = document.createElement("div");
     document.body.appendChild(host);
     root = createRoot(host);
@@ -90,6 +95,17 @@ describe("company consignment operational eligibility", () => {
     render(healthy);
     expect(host.querySelector("select")).not.toBeNull();
     expect(host.textContent).toContain("إلغاء الإسناد");
+  });
+  it("keeps exact reassignment separate from cancellation while preserving return-pending restrictions", () => {
+    auth.user = { role: "warehouse", operationPolicyEnabled: true, resolvedOperationPolicy: {
+      version: 1, grants: { "operation.delivery.reassignConsignment": true },
+    } };
+    render(healthy);
+    expect(host.querySelector("select")).not.toBeNull();
+    expect(host.textContent).not.toContain("إلغاء الإسناد");
+    render({ ...healthy, returnDeclaredAt: new Date() });
+    expect(host.querySelector("select")).toBeNull();
+    expect(host.textContent).not.toContain("استلام المرتجع");
   });
   it.each(["ASSIGNED", "OUT_FOR_DELIVERY", "FAILED"] as const)(
     "return pending %s retains details and receive-return only",

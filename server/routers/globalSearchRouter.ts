@@ -8,7 +8,10 @@
 
 import { z } from "zod";
 import { protectedProcedure, router } from "../trpc";
-import { globalSearch, type SearchEntityType } from "../services/globalSearchService";
+import {
+  globalSearch,
+  type SearchEntityType,
+} from "../services/globalSearchService";
 
 const ENTITY_TYPES = [
   "PRODUCT",
@@ -38,6 +41,7 @@ export const globalSearchRouter = router({
         branchId: ctx.user.branchId ?? null,
         role: ctx.user.role,
         permissionsOverride: (ctx.user as any).permissionsOverride ?? null,
+        operationUser: ctx.user,
         perEntityLimit: input.perEntityLimit,
         scopes: input.scopes,
       }),

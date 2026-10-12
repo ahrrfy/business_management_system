@@ -43,11 +43,13 @@ export function CustodyQueryNotice({
 
 export function PendingHandoversSection({
   canGovernHandovers,
+  canReassignHandovers,
   pendingQueue,
   handoverRecipients,
   reassignHandover,
 }: {
   canGovernHandovers: boolean;
+  canReassignHandovers: boolean;
   pendingQueue: {
     isLoading: boolean;
     isError: boolean;
@@ -140,6 +142,7 @@ export function PendingHandoversSection({
                       }
                     }}
                     disabled={
+                      !canReassignHandovers ||
                       reassignHandover.isPending ||
                       handoverRecipients.isLoading ||
                       handoverRecipients.isError

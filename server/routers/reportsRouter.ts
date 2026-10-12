@@ -3,6 +3,7 @@ import { INVOICE_STATUSES } from "@shared/invoiceStatus";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { and, asc, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
+import { hasOperationPolicy, operationDecision } from "@shared/operationPermissions";
 import { branches, customers, invoices, suppliers } from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { parseBusinessYmd } from "../services/businessDay";
@@ -840,8 +841,8 @@ export const reportsRouter = router({
    */
   inventoryValuationAt: reportsBranchScoped
     .input(z.object({ cutoffDate: ymdStr }))
-    .query(async ({ input }) => {
-      return withTx((tx) => readValuationAt(tx, input.cutoffDate));
+    .query(async ({ input, ctx }) => {
+      return withTx((tx) => readValuationAt(tx, input.cutoffDate, scopedBranchId(ctx)));
     }),
 
   /** التدفّق النقدي (أساس نقدي مباشر) — صافي المقبوضات حسب اتّجاه/طريقة الدفع. manager + عزل الفرع. */
@@ -1195,6 +1196,8 @@ export const reportsRouter = router({
           userId: ctx.user.id,
           role: ctx.user.role,
           branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId),
+          operationPolicyEnabled: hasOperationPolicy(ctx.user),
+          canAcceptHandover: operationDecision(ctx.user, "treasury.acceptHandoverReceipt").allowed,
         },
       });
     }),

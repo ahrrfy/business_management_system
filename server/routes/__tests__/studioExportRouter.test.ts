@@ -7,6 +7,11 @@ const mocks = vi.hoisted(() => ({
   getUserFromRequest: vi.fn(),
   normalizeOwnerAuthority: vi.fn(),
   resolveCustomRole: vi.fn(),
+  createContext: vi.fn(),
+  operationDecision: vi.fn(),
+  hasOperationPolicy: vi.fn(),
+  operationRecordScope: vi.fn(),
+  routeOperationAuthority: vi.fn(),
   hasModuleAccess: vi.fn(),
   twoFactorEnrollmentRequired: vi.fn(),
   streamStudioImageExport: vi.fn(),
@@ -16,8 +21,17 @@ vi.mock("../../auth/session", () => ({
   getUserFromRequest: mocks.getUserFromRequest,
 }));
 vi.mock("../../context", () => ({
+  createContext: mocks.createContext,
   normalizeOwnerAuthority: mocks.normalizeOwnerAuthority,
   resolveCustomRole: mocks.resolveCustomRole,
+}));
+vi.mock("@shared/operationPermissions", () => ({
+  operationDecision: mocks.operationDecision,
+  hasOperationPolicy: mocks.hasOperationPolicy,
+  operationRecordScope: mocks.operationRecordScope,
+}));
+vi.mock("../../services/authorization/operationAuthority", () => ({
+  routeOperationAuthority: mocks.routeOperationAuthority,
 }));
 vi.mock("../../../shared/permissions", () => ({
   hasModuleAccess: mocks.hasModuleAccess,
@@ -57,6 +71,16 @@ describe("studio image export route", () => {
       permissionsOverride: null,
     });
     mocks.resolveCustomRole.mockResolvedValue(undefined);
+    mocks.hasOperationPolicy.mockReturnValue(false);
+    mocks.operationDecision.mockReturnValue({ allowed: true });
+    mocks.operationRecordScope.mockReturnValue("OWN");
+    mocks.routeOperationAuthority.mockReturnValue(undefined);
+    mocks.createContext.mockImplementation(async ({ req }) => {
+      const user = await mocks.getUserFromRequest(req);
+      if (user?.isOwner) mocks.normalizeOwnerAuthority(user);
+      else if (user) await mocks.resolveCustomRole(user);
+      return { user };
+    });
     mocks.hasModuleAccess.mockReturnValue(true);
     mocks.twoFactorEnrollmentRequired.mockReturnValue(false);
     mocks.streamStudioImageExport.mockImplementation(
@@ -174,5 +198,41 @@ describe("studio image export route", () => {
     expect(source).toContain("window.location.assign(downloadUrl)");
     expect(source).not.toContain("await check.blob(");
     expect(source).not.toContain("new Blob(");
+  });
+
+  it("يسمح بالتصدير المفوض مستقلاً لموظف ويصل نطاق ملكيته إلى البث", async () => {
+    mocks.getUserFromRequest.mockResolvedValue({ id: 14, role: "cashier", branchId: 2 });
+    mocks.hasOperationPolicy.mockReturnValue(true);
+    const proof = { userId: 14, path: "productStudio.authorizeExport" };
+    mocks.routeOperationAuthority.mockReturnValue(proof);
+    await withStudioExportServer(async baseUrl => {
+      const response = await fetch(`${baseUrl}/api/studio/export.zip?scope=ALL`);
+      expect(response.status).toBe(200);
+    });
+    expect(mocks.operationDecision).toHaveBeenCalledWith(expect.objectContaining({ id: 14 }), "productStudio.authorizeExport");
+    expect(mocks.hasModuleAccess).not.toHaveBeenCalled();
+    expect(mocks.streamStudioImageExport).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 14, role: "cashier", branchId: 2, scopedOwnerId: 14, operationAuthority: proof,
+    }), { kind: "ALL" }, expect.anything());
+  });
+
+  it("يرفض المدير عند إيقاف تفويض التصدير الفعلي حتى لو بقيت الوحدة مفتوحة", async () => {
+    mocks.hasOperationPolicy.mockReturnValue(true);
+    mocks.operationDecision.mockReturnValue({ allowed: false });
+    await withStudioExportServer(async baseUrl => {
+      const response = await fetch(`${baseUrl}/api/studio/export.zip?scope=ALL&preflight=1`);
+      expect(response.status).toBe(403);
+    });
+    expect(mocks.streamStudioImageExport).not.toHaveBeenCalled();
+  });
+
+  it("يبقي الفرع إلزامياً للمستخدم المفوض ولا يبث بيانات من فرع مجهول", async () => {
+    mocks.getUserFromRequest.mockResolvedValue({ id: 14, role: "cashier", branchId: null });
+    mocks.hasOperationPolicy.mockReturnValue(true);
+    await withStudioExportServer(async baseUrl => {
+      const response = await fetch(`${baseUrl}/api/studio/export.zip?scope=ALL&preflight=1`);
+      expect(response.status).toBe(403);
+    });
+    expect(mocks.streamStudioImageExport).not.toHaveBeenCalled();
   });
 });
