@@ -23,6 +23,7 @@ import {
   assertExternalPaymentReplay,
   consumeConfirmedExternalPaymentAttemptTx,
 } from "../posExternalPayment";
+import { assertNoInTransitConsignment } from "../delivery/guards";
 
 export interface ProcessPaymentInput {
   invoiceId: number;
@@ -368,6 +369,8 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
     }
     // انسب الدفع النقدي لوردية الموظّف المفتوحة إن لم يُمرَّر صراحةً (تسوية الصندوق).
     const shiftId = prelockedShiftId;
+    // حارس بنيوي: حظر تحصيل أي فاتورة شحنتها بالطريق مع المندوب دون استثناء.
+    await assertNoInTransitConsignment(tx, input.invoiceId);
     if (input.preInsertCheck) await input.preInsertCheck(tx);
     const rRes = await tx.insert(receipts).values({
       invoiceId: input.invoiceId,
