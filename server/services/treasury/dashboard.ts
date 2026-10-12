@@ -211,7 +211,7 @@ export async function getDashboard(
     await db.execute(sql`
       SELECT COUNT(*) AS cnt
       FROM cashTransfers
-      WHERE status = 'IN_TRANSIT'
+      WHERE cashTransferStatus = 'IN_TRANSIT'
         ${effectiveBranch != null ? sql`AND toBranchId = ${effectiveBranch}` : sql``}
     `),
   );
