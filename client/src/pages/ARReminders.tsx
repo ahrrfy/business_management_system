@@ -126,7 +126,7 @@ export default function ARReminders() {
   // نطاق العرض: فرع محدَّد (رقم) | مدينو الرصيد الافتتاحي ("opening") | كل الفروع ("all") | undefined (فرع المستخدم لغير الأدمن).
   const [scope, setScope] = useState<number | "opening" | "all" | undefined>(undefined);
   const effectiveScope: number | "opening" | "all" | undefined =
-    scope ?? (isAdmin ? requestedBranchId ?? "all" : undefined);
+    scope ?? (isAdmin ? requestedBranchId ?? accountBranchId ?? branches.data?.[0]?.id : undefined);
   const queueInput =
     effectiveScope === "all"
       ? { allBranches: true as const }
