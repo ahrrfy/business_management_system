@@ -25,11 +25,14 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../../drizzle/schema";
 import { getDb } from "../../../db";
 import {
+  autoAssignRoundRobinOnlineOrders,
   claimOnlineOrder,
   markOnlineOrderPrepared,
+  reviveAndConfirmOnlineOrder,
   setOnlineOrderStatus,
   updateOnlineOrderContact,
 } from "../orderFulfillmentService";
+import { closeShift, openShift } from "../../shiftService";
 import { sweepExpiredOnlineOrdersOnce } from "../../onlineOrderExpirySweeper";
 import { truncateTables } from "../../__tests__/__testUtils__";
 
@@ -94,6 +97,7 @@ beforeEach(async () => {
     "storefrontPushDevices",
     "onlineOrderItems",
     "onlineOrders",
+    "shifts",
   ]);
   await db()
     .insert(s.branches)
@@ -489,7 +493,8 @@ describe("updateOnlineOrderContact — Atomic Contact Updates & Notes Persistenc
     const o = await getOrder(id);
     expect(o.contactStatus).toBe("WHATSAPP_SENT");
     expect(o.contactNotes).toBe("تم مراسلة العميل عبر الواتساب لتأكيد العنوان");
-    expect(o.claimedByUserId).toBe(2);
+    expect(o.claimedByUserId).toBeNull();
+    expect(o.status).toBe("PENDING");
   });
 
   it("تأكيد هاتفياً (CALLED_CONFIRMED) يحوّل الطلب الوارد PENDING إلى CONFIRMED ويسجل المستلم", async () => {
@@ -589,3 +594,261 @@ describe("onlineOrderExpirySweeper — 24h Reservation Expiry Sweep", () => {
     expect(confirmedO.status).toBe("CONFIRMED");
   });
 });
+
+describe("reviveAndConfirmOnlineOrder — إحياء الطلبات منتهية الحجز والتأكيد المباشر", () => {
+  it("إحياء طلب منتهي الحجز (CANCELLED) يعيد تمديد الحجز 24 ساعة ويؤكده ويسنده للموظف", async () => {
+    const expiredOrderId = await seedOrder("CANCELLED", {
+      cancelReason: "انتهت مهلة حجز المخزون (24 ساعة تلقائياً)",
+    });
+    await db().execute(sql`
+      UPDATE onlineOrders
+      SET reservationExpiresAt = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 2 HOUR)
+      WHERE id = ${expiredOrderId}
+    `);
+
+    const result = await reviveAndConfirmOnlineOrder(
+      { id: expiredOrderId, scopedBranchId: 1 },
+      { userId: 2, role: "user" }
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.status).toBe("CONFIRMED");
+    expect(result.claimedByUserId).toBe(2);
+
+    const order = await getOrder(expiredOrderId);
+    expect(order.status).toBe("CONFIRMED");
+    expect(order.claimedByUserId).toBe(2);
+    expect(order.cancelReason).toBeNull();
+    expect(new Date(order.reservationExpiresAt!).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("يرفض إحياء طلب ليس بحالة PENDING أو CANCELLED (مثل SHIPPED أو DELIVERED)", async () => {
+    const shippedId = await seedOrder("SHIPPED");
+
+    await expect(
+      reviveAndConfirmOnlineOrder(
+        { id: shippedId, scopedBranchId: 1 },
+        { userId: 2, role: "user" }
+      )
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("يرفض إحياء الطلب إذا كان المخزون الحر في الفرع أقل من baseQuantity المطلوبة", async () => {
+    // إدخال منتج ووحدة ورصيد مخزون أساس
+    await db().insert(s.products).values({
+      id: 99,
+      name: "دفتر تجريبي",
+      type: "STOCK",
+    }).onDuplicateKeyUpdate({ set: { name: "دفتر تجريبي" } });
+
+    await db().insert(s.productVariants).values({
+      id: 99,
+      productId: 99,
+      sku: "TEST-SKU-99",
+      costPrice: "1000.00",
+      isActive: true,
+    }).onDuplicateKeyUpdate({ set: { sku: "TEST-SKU-99" } });
+
+    await db().insert(s.productUnits).values({
+      id: 99,
+      variantId: 99,
+      unitName: "درزن (12)",
+      conversionFactor: "12.0000",
+      isBaseUnit: false,
+      isStoreSaleUnit: true,
+      isActive: true,
+    }).onDuplicateKeyUpdate({ set: { unitName: "درزن (12)" } });
+
+    // رصيد المخزون في الفرع 15 وحدة أساس فقط (يكفي علبة واحدة 12، لكن لا يكفي درزنين 24)
+    await db().insert(s.branchStock).values({
+      variantId: 99,
+      branchId: 1,
+      quantity: 15,
+    }).onDuplicateKeyUpdate({ set: { quantity: 15 } });
+
+    const expiredId = await seedOrder("CANCELLED", {
+      cancelReason: "انتهت مهلة حجز المخزون (24 ساعة تلقائياً)",
+    });
+
+    // إضافة بند: 2 درزن (كمية العرض 2، الكمية الأساسية 24)
+    await db().insert(s.onlineOrderItems).values({
+      onlineOrderId: expiredId,
+      variantId: 99,
+      productUnitId: 99,
+      unitPrice: "10000.00",
+      quantity: 2,
+      baseQuantity: 24,
+      total: "20000.00",
+    });
+
+    await expect(
+      reviveAndConfirmOnlineOrder(
+        { id: expiredId, scopedBranchId: 1 },
+        { userId: 2, role: "user" }
+      )
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+  });
+});
+
+describe("autoAssignRoundRobinOnlineOrders — توزيع الورديات الذكي وموازنة العبء الفعلي", () => {
+  it("يسند الطلبات حصراً للموظفين أصحاب الورديات المفتوحة (Shift-Aware)", async () => {
+    // موظف 2 لديه وردية مفتوحة
+    await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: 2,
+      openingBalance: "0",
+      status: "OPEN",
+      shiftType: "RETAIL",
+      openGuard: "2:1:RETAIL",
+    });
+
+    // موظف 3 لديه وردية مغلقة
+    await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: 3,
+      openingBalance: "0",
+      status: "CLOSED",
+      shiftType: "RETAIL",
+      openGuard: null,
+    });
+
+    const o1 = await seedOrder("PENDING");
+    const o2 = await seedOrder("PENDING");
+
+    const res = await autoAssignRoundRobinOnlineOrders(
+      { scopedBranchId: 1 },
+      { userId: 1, role: "admin" }
+    );
+
+    expect(res.assignedCount).toBe(2);
+    expect(res.assignments.every((a) => a.assignedToUserId === 2)).toBe(true);
+
+    const row1 = await getOrder(o1);
+    const row2 = await getOrder(o2);
+    expect(row1.claimedByUserId).toBe(2);
+    expect(row1.status).toBe("CONFIRMED");
+    expect(row2.claimedByUserId).toBe(2);
+    expect(row2.status).toBe("CONFIRMED");
+  });
+
+  it("يوازن العبء الفعلي ويختار الموظف الأقل حملاً من بين الورديات المفتوحة (Least-Loaded)", async () => {
+    // كلا الموظفين 2 و 3 لديهما وردية مفتوحة
+    await db().insert(s.shifts).values([
+      {
+        branchId: 1,
+        userId: 2,
+        openingBalance: "0",
+        status: "OPEN",
+        shiftType: "RETAIL",
+        openGuard: "2:1:RETAIL",
+      },
+      {
+        branchId: 1,
+        userId: 3,
+        openingBalance: "0",
+        status: "OPEN",
+        shiftType: "RETAIL",
+        openGuard: "3:1:RETAIL",
+      },
+    ]);
+
+    // موظف 2 لديه مسبقاً طلبان قيد التجهيز
+    await seedOrder("CONFIRMED", { claimedByUserId: 2 });
+    await seedOrder("PROCESSING", { claimedByUserId: 2 });
+
+    // موظف 3 لديه طلب واحد فقط
+    await seedOrder("CONFIRMED", { claimedByUserId: 3 });
+
+    // طلب جديد غير مسند
+    const newOrder = await seedOrder("PENDING");
+
+    const res = await autoAssignRoundRobinOnlineOrders(
+      { scopedBranchId: 1 },
+      { userId: 1, role: "admin" }
+    );
+
+    expect(res.assignedCount).toBe(1);
+    expect(res.assignments[0].assignedToUserId).toBe(3);
+
+    const updated = await getOrder(newOrder);
+    expect(updated.claimedByUserId).toBe(3);
+    expect(updated.status).toBe("CONFIRMED");
+  });
+
+  it("يعزل الفروع ولا يسند طلبات فرع لموظفي فرع آخر حتى لو كان للفرع الأول وردية مفتوحة", async () => {
+    await db()
+      .insert(s.branches)
+      .values({ id: 2, name: "فرع الكرخ", code: "KARKH", type: "SALES" })
+      .onDuplicateKeyUpdate({ set: { name: "فرع الكرخ" } });
+
+    // موظف 2 لديه وردية مفتوحة في فرع 1
+    await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: 2,
+      openingBalance: "0",
+      status: "OPEN",
+      shiftType: "RETAIL",
+      openGuard: "2:1:RETAIL",
+    });
+
+    // طلب يخص فرع 2
+    const b2Order = await seedOrder("PENDING");
+    await db().execute(sql`UPDATE onlineOrders SET branchId = 2 WHERE id = ${b2Order}`);
+
+    // تشغيل التوزيع الآلي على مستوى النظام (scopedBranchId = null)
+    const res = await autoAssignRoundRobinOnlineOrders(
+      { scopedBranchId: null },
+      { userId: 1, role: "admin" }
+    );
+
+    // الطلب في فرع 2 لا يجب أن يُسند لموظف فرع 1
+    expect(res.assignedCount).toBe(0);
+    const b2Row = await getOrder(b2Order);
+    expect(b2Row.claimedByUserId).toBeNull();
+    expect(b2Row.status).toBe("PENDING");
+  });
+});
+
+describe("closeShift — تحرير الطلبات غير المكتملة عند إغلاق الوردية", () => {
+  it("يحرر الطلبات غير المكتملة (CONFIRMED/PROCESSING) ويعيد PROCESSING إلى CONFIRMED ويحفظ الطلبات المجهزة والمشحونة", async () => {
+    const shift = await openShift(
+      { branchId: 1, openingBalance: "0", shiftType: "RETAIL" },
+      { userId: 2, branchId: 1 }
+    );
+
+    const pendingOrder = await seedOrder("PENDING", { claimedByUserId: 2 });
+    const confirmedOrder = await seedOrder("CONFIRMED", { claimedByUserId: 2 });
+    const processingOrder = await seedOrder("PROCESSING", { claimedByUserId: 2 });
+    const preparedOrder = await seedOrder("PROCESSING", {
+      claimedByUserId: 2,
+      preparedByUserId: 2,
+      preparedAt: new Date(),
+    });
+    const shippedOrder = await seedOrder("SHIPPED", { claimedByUserId: 2 });
+
+    await closeShift(
+      { shiftId: shift.shiftId, countedCash: "0" },
+      { userId: 2, branchId: 1, role: "user" }
+    );
+
+    const pRow = await getOrder(pendingOrder);
+    const cRow = await getOrder(confirmedOrder);
+    const prRow = await getOrder(processingOrder);
+    const prepRow = await getOrder(preparedOrder);
+    const sRow = await getOrder(shippedOrder);
+
+    expect(pRow.claimedByUserId).toBeNull();
+    expect(cRow.claimedByUserId).toBeNull();
+    expect(prRow.claimedByUserId).toBeNull();
+    expect(prRow.status).toBe("CONFIRMED");
+
+    // الطلب المجهز يحتفظ بمعرّف وتوقيت التجهيز
+    expect(prepRow.preparedByUserId).toBe(2);
+    expect(prepRow.preparedAt).not.toBeNull();
+
+    expect(sRow.claimedByUserId).toBe(2);
+  });
+});
+

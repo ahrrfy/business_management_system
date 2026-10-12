@@ -114,25 +114,39 @@ type HybridSidebarNavProps = Readonly<{
   onToggleFavorite: (path: string) => void;
   workOrderReadyCount: number;
   deliveryReadyCount: number;
+  storeOrdersPendingCount?: number;
 }>;
 
 function routeBadge(
   href: string,
   workOrderReadyCount: number,
   deliveryReadyCount: number,
+  storeOrdersPendingCount?: number,
 ): number {
   if (href === "/work-orders") return workOrderReadyCount;
   if (href === "/delivery") return deliveryReadyCount;
+  if (href === "/store-admin") return storeOrdersPendingCount ?? 0;
   return 0;
 }
 
 function NavBadge({ href, count }: { href: string; count: number }) {
   if (count <= 0) return null;
-  const delivery = href === "/delivery";
+  const isDelivery = href === "/delivery";
+  const isStore = href === "/store-admin";
+  const label = isDelivery
+    ? `${count} إرسالية جاهزة`
+    : isStore
+      ? `${count} طلب متجر بانتظار التجهيز`
+      : `${count} أمر جاهز`;
+  const title = isDelivery
+    ? `${count} إرسالية جاهزة للتوصيل`
+    : isStore
+      ? `${count} طلب متجر جديد أو قيد التجهيز`
+      : `${count} أمر شغل جاهز للتسليم`;
   return (
     <span
-      aria-label={delivery ? `${count} إرسالية جاهزة` : `${count} أمر جاهز`}
-      title={delivery ? `${count} إرسالية جاهزة للتوصيل` : `${count} أمر شغل جاهز للتسليم`}
+      aria-label={label}
+      title={title}
       className="ms-auto inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-[var(--sem-warn)] px-1.5 py-0.5 text-[10px] font-black text-background tabular-nums"
     >
       {count > 99 ? "99+" : String(count)}
@@ -151,6 +165,7 @@ export function HybridSidebarNav({
   onToggleFavorite,
   workOrderReadyCount,
   deliveryReadyCount,
+  storeOrdersPendingCount,
 }: HybridSidebarNavProps) {
   const [allModulesOpen, setAllModulesOpen] = useState(false);
   const groupedNav = groupSidebarModules(visibleModules);
@@ -222,6 +237,7 @@ export function HybridSidebarNav({
               item.activePath,
               workOrderReadyCount,
               deliveryReadyCount,
+              storeOrdersPendingCount,
             );
             return (
               <Link
@@ -337,6 +353,7 @@ export function HybridSidebarNav({
                     module.href,
                     workOrderReadyCount,
                     deliveryReadyCount,
+                    storeOrdersPendingCount,
                   );
                   if (module.id === "crm") {
                     return (
