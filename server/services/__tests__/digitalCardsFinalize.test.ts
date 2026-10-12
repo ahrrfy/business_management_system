@@ -34,8 +34,8 @@ function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set
 async function seedBase() {
   await db().insert(s.branches).values({ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" });
   await db().insert(s.users).values([
-    { id: 1, openId: "u1", name: "كاشير", role: "cashier", loginMethod: "local" },
-    { id: 2, openId: "u2", name: "مدير", role: "manager", loginMethod: "local" },
+    { id: 1, openId: "u1", name: "كاشير", role: "cashier", branchId: 1, loginMethod: "local" },
+    { id: 2, openId: "u2", name: "مدير", role: "manager", branchId: 1, loginMethod: "local" },
   ]);
   await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, status: "OPEN", openingBalance: "0" });
 }
