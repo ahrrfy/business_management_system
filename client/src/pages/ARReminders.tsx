@@ -258,6 +258,10 @@ export default function ARReminders() {
     // البديل (تأكيد لاحق) يفتح باب نسيان التسجيل مع التبريد المفقود ⇒ إغراق العميل بتذكيرات.
     openWhatsApp(row.phone, message);
     const targetBranch = row.branchId ?? writeBranchId ?? accountBranchId ?? branches.data?.[0]?.id;
+    if (!targetBranch) {
+      notify.err("تعذّر تحديد الفرع — يُرجى تحديد فرع أو الانتظار حتى اكتمال تحميل الفروع.");
+      return;
+    }
     logSent.mutate({
       customerId: row.customerId,
       totalUnpaidSnapshot: row.totalUnpaid,
@@ -275,6 +279,10 @@ export default function ARReminders() {
       return;
     }
     const targetBranch = row.branchId ?? writeBranchId ?? accountBranchId ?? branches.data?.[0]?.id;
+    if (!targetBranch) {
+      notify.err("تعذّر تحديد الفرع — يُرجى تحديد فرع أو الانتظار حتى اكتمال تحميل الفروع.");
+      return;
+    }
     sendViaApi.mutate({
       customerId: row.customerId,
       totalUnpaidSnapshot: row.totalUnpaid,
@@ -301,6 +309,10 @@ export default function ARReminders() {
       }
     }
     const targetBranch = skipTarget.branchId ?? writeBranchId ?? accountBranchId ?? branches.data?.[0]?.id;
+    if (!targetBranch) {
+      notify.err("تعذّر تحديد الفرع — يُرجى تحديد فرع أو الانتظار حتى اكتمال تحميل الفروع.");
+      return;
+    }
     logSkipped.mutate({
       customerId: skipTarget.customerId,
       totalUnpaidSnapshot: skipTarget.totalUnpaid,
@@ -386,7 +398,11 @@ export default function ARReminders() {
           <Card>
             <CardContent className="flex items-center justify-between p-4">
               <span className="text-sm text-muted-foreground">أقدم تأخّر</span>
-              <span className="text-xl font-bold tabular-nums">{filteredQueue[0]?.daysOverdue ?? queue.data[0]?.daysOverdue ?? 0} يوماً</span>
+              <span className="text-xl font-bold tabular-nums">
+                {filteredQueue.length > 0
+                  ? Math.max(...filteredQueue.map((r) => r.daysOverdue))
+                  : (queue.data && queue.data.length > 0 ? Math.max(...queue.data.map((r) => r.daysOverdue)) : 0)} يوماً
+              </span>
             </CardContent>
           </Card>
         </div>

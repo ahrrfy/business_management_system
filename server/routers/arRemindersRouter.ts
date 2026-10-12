@@ -35,7 +35,9 @@ function scopedBranch(
   inputBranchId?: number,
 ): number {
   if (ctx.user.role === "admin") {
-    const resolved = inputBranchId ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+    const resolved =
+      inputBranchId ??
+      (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
     if (resolved == null) {
       throw new TRPCError({
         code: "FORBIDDEN",
@@ -45,11 +47,17 @@ function scopedBranch(
     return resolved;
   }
   if (ctx.user.branchId == null) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "لا فرع مُسنَد لهذا المستخدم",
+    });
   }
   const own = Number(ctx.user.branchId);
   if (inputBranchId !== undefined && inputBranchId !== own) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن قراءة بيانات فرع آخر" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "لا يمكن قراءة بيانات فرع آخر",
+    });
   }
   return own;
 }
@@ -65,9 +73,14 @@ function openingWriteBranch(
   inputBranchId?: number,
 ): number {
   if (ctx.user.role !== "admin") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "مدينو الرصيد الافتتاحي متاحون للأدمن فقط." });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "مدينو الرصيد الافتتاحي متاحون للأدمن فقط.",
+    });
   }
-  const resolved = inputBranchId ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+  const resolved =
+    inputBranchId ??
+    (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
   if (resolved == null) {
     throw new TRPCError({
       code: "FORBIDDEN",
@@ -107,7 +120,10 @@ export const arRemindersRouter = router({
       }
       if (input?.openingScope) {
         if (ctx.user.role !== "admin") {
-          throw new TRPCError({ code: "FORBIDDEN", message: "مدينو الرصيد الافتتاحي متاحون للأدمن فقط." });
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "مدينو الرصيد الافتتاحي متاحون للأدمن فقط.",
+          });
         }
         return getReminderQueue({ branchId: null, openingOnly: true });
       }
@@ -145,11 +161,17 @@ export const arRemindersRouter = router({
       }
       if (input?.openingScope) {
         if (ctx.user.role !== "admin") {
-          throw new TRPCError({ code: "FORBIDDEN", message: "مدينو الرصيد الافتتاحي متاحون للأدمن فقط." });
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "مدينو الرصيد الافتتاحي متاحون للأدمن فقط.",
+          });
         }
         return getReminderHistory({ branchId: null, limit: input?.limit });
       }
-      return getReminderHistory({ branchId: scopedBranch(ctx, input?.branchId), limit: input?.limit });
+      return getReminderHistory({
+        branchId: scopedBranch(ctx, input?.branchId),
+        limit: input?.limit,
+      });
     }),
 
   /** تسجيل تذكير أُرسِل — يستدعيه الزبون فور عودة المستخدم من فتح wa.me وتأكيده الإرسال. */
