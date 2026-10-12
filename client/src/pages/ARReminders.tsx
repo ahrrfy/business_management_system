@@ -20,6 +20,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
 import {
   Dialog,
   DialogContent,
@@ -570,6 +571,14 @@ function QueueTab({
                 <Phone className="size-3" aria-hidden />
                 <span className="tabular-nums">{r.phone}</span>
               </a>
+              <WhatsAppShare
+                phone={r.phone}
+                message={buildReminderMessage(r)}
+                size="icon-sm"
+                iconOnly
+                label={`واتساب ${r.customerName}`}
+                className="h-6 w-6 p-0"
+              />
               <Button
                 type="button"
                 variant="ghost"

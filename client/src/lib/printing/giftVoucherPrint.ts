@@ -83,15 +83,10 @@ function formatCurrencyAmount(amount: string | number | null | undefined): strin
 
 function formatValidUntil(val: string | Date | null | undefined): string | null {
   if (!val) return null;
-  if (val instanceof Date) return fmtDate(val);
+  if (val instanceof Date) return val.toISOString().slice(0, 10);
   const str = String(val).trim();
   if (!str || str === "—") return null;
-  const dmy = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(str);
-  if (dmy) {
-    return `${dmy[1].padStart(2, "0")}/${dmy[2].padStart(2, "0")}/${dmy[3]}`;
-  }
-  const formatted = fmtDate(str);
-  return formatted !== "—" ? formatted : str;
+  return str;
 }
 
 export function giftVoucherToPrintDoc(data: GiftVoucherPrintData): PrintDoc {

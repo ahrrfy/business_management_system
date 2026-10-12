@@ -340,7 +340,7 @@ export default function Coupons() {
       ],
     });
   }
-  function exportCoupons(format: "xlsx" | "csv" = "xlsx") {
+  async function exportCoupons(format: "xlsx" | "csv" = "xlsx") {
     if (!selected || !selectedProgram) return;
     if (format === "xlsx") {
       exportWorkbook();

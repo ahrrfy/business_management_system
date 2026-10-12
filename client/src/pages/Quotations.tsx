@@ -132,7 +132,7 @@ export default function Quotations() {
         return;
       }
       const opened = printReportDoc({
-        title: d.status === "ACCEPTED" ? "عرض أسعار رسمي معتمد" : "عرض أسعار رسمي",
+        title: "عرض أسعار رسمي معتمد",
         docNum: d.quoteNumber,
         docDate: d.quoteDate ? fmtDate(d.quoteDate) : undefined,
         headerExtra: [
