@@ -1,3 +1,4 @@
+import React from "react";
 import { Ban, Wallet } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -7,6 +8,7 @@ import { fmtDate } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { type RouterOutputs, type RouterInputs } from "@/lib/trpc";
+import { isOpenConsignmentStatus } from "@shared/deliveryOpenParcel";
 type ConsignmentRow = RouterOutputs["delivery"]["consignments"]["rows"][number];
 export function moneyCol<T>(
   id: string,
@@ -76,12 +78,15 @@ export function CompanyConsignmentActions({
   setTimelineId,
   setReturnTarget,
 }: CompanyConsignmentOptions & { c: ConsignmentRow }) {
+  const isOpen = isOpenConsignmentStatus(c.status);
   const remaining = D(c.remainingDue);
   const canRemit =
+    isOpen && c.returnDeclaredAt == null &&
     c.parcelStatus === "DELIVERED" &&
     c.moneyStatus !== "SETTLED" &&
     remaining.gt(0);
   const canCancel =
+    isOpen && c.returnDeclaredAt == null &&
     (c.parcelStatus === "ASSIGNED" ||
       c.parcelStatus === "OUT_FOR_DELIVERY" ||
       c.parcelStatus === "FAILED") &&
@@ -153,16 +158,19 @@ export function CompanyConsignmentDriver({
   drivers,
   reassignM,
 }: CompanyConsignmentOptions & { c: ConsignmentRow }) {
+  const canReassign =
+    isOpenConsignmentStatus(c.status) &&
+    c.returnDeclaredAt == null &&
+    (c.parcelStatus === "ASSIGNED" ||
+      c.parcelStatus === "OUT_FOR_DELIVERY" ||
+      c.parcelStatus === "FAILED");
   return (
     <div className="text-xs">
       <div className="mb-1">{c.assignedUserName ?? "طابور الشركة المشترك"}</div>
       {c.failureReason && (
         <div className="mb-1 text-destructive">{c.failureReason}</div>
       )}
-      {canEdit &&
-        (c.parcelStatus === "ASSIGNED" ||
-          c.parcelStatus === "OUT_FOR_DELIVERY" ||
-          c.parcelStatus === "FAILED") && (
+      {canEdit && canReassign && (
           <AppSelect
             value={String(c.assignedUserId ?? "")}
             disabled={reassignM.isPending}
