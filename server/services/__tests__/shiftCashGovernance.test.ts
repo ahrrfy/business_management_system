@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   accountingEntries,
   branches,
@@ -13,10 +13,20 @@ import { closeShift, openShift } from "../shiftService";
 import { computeDrawerCashBalance } from "../cash/cashAvailability";
 import { ensureFinancialPostingGate } from "../reports/monthCloseGate";
 import { buildDailyCashEvidenceTx } from "../cashDailyReconciliationService";
-import { baghdadToday } from "../businessDay";
+import { todayUtcDate } from "../businessDay";
 
 const CASHIER = { userId: 10, branchId: 1, role: "cashier" };
 const MANAGER = { userId: 20, branchId: 1, role: "manager" };
+const UTC_DAY_BOUNDARIES = [
+  ["2026-10-12T20:59:59.000Z", "2026-10-12"],
+  ["2026-10-12T21:00:00.000Z", "2026-10-12"],
+  ["2026-10-12T23:59:59.000Z", "2026-10-12"],
+  ["2026-10-13T00:00:00.000Z", "2026-10-13"],
+] as const;
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function db() {
   const value = getDb();
@@ -373,11 +383,16 @@ describe.sequential("حوكمة فروقات درج النقد", () => {
     ).rejects.toThrow(/تفصيل فئات النقد مطلوب عند وجود فرق نقدي/);
   });
 
-  it("يسمح للوردية المعتمدة بفرق نقدي بالتقدم إلى مطابقة اليوم دون حظر UNMATCHED_SHIFT (P1)", async () => {
+  it.each(UTC_DAY_BOUNDARIES)("يسمح للوردية المعتمدة بفرق نقدي بالتقدم إلى مطابقة اليوم دون حظر UNMATCHED_SHIFT (P1) عند %s", async (now, businessDate) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(now));
+    expect(todayUtcDate()).toBe(businessDate);
     const shift = await openShift(
       { branchId: 1, openingBalance: "100000", shiftType: "RETAIL" },
       CASHIER,
     );
+    // MySQL supplies openedAt independently of the JavaScript clock.
+    await db().update(shifts).set({ openedAt: new Date(now) }).where(eq(shifts.id, shift.shiftId));
 
     // إغلاق معتمد بفرق ومعه تفصيل فئات صحيح
     const result = await closeShift({
@@ -393,7 +408,7 @@ describe.sequential("حوكمة فروقات درج النقد", () => {
 
     // التحقق من دليل مطابقة اليوم
     const evidence = await db().transaction(async (tx) => {
-      return buildDailyCashEvidenceTx(tx, 1, baghdadToday());
+      return buildDailyCashEvidenceTx(tx, 1, todayUtcDate());
     });
 
     expect(evidence.shiftCount).toBe(1);
@@ -401,7 +416,10 @@ describe.sequential("حوكمة فروقات درج النقد", () => {
     expect(evidence.unmatchedShiftCount).toBe(0); // لا يُحظر بـ UNMATCHED_SHIFT
   });
 
-  it("يحظر وردية تحمل MANAGER_APPROVED ولكن ينقصها إيصال التسوية SV-<shiftId> (P1 Evidence)", async () => {
+  it.each(UTC_DAY_BOUNDARIES)("يحظر وردية تحمل MANAGER_APPROVED ولكن ينقصها إيصال التسوية SV-<shiftId> (P1 Evidence) عند %s", async (now, businessDate) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(now));
+    expect(todayUtcDate()).toBe(businessDate);
     const shift = await openShift(
       { branchId: 1, openingBalance: "100000", shiftType: "RETAIL" },
       CASHIER,
@@ -411,6 +429,7 @@ describe.sequential("حوكمة فروقات درج النقد", () => {
     await db()
       .update(shifts)
       .set({
+        openedAt: new Date(now),
         status: "CLOSED",
         closedAt: new Date(),
         countedCash: "80000.00",
@@ -422,7 +441,7 @@ describe.sequential("حوكمة فروقات درج النقد", () => {
 
     // التحقق من دليل مطابقة اليوم: يجب أن تُعد غير مطابقة (unmatchedShiftCount = 1) لغياب إيصال التسوية
     const evidence = await db().transaction(async (tx) => {
-      return buildDailyCashEvidenceTx(tx, 1, baghdadToday());
+      return buildDailyCashEvidenceTx(tx, 1, todayUtcDate());
     });
 
     expect(evidence.shiftCount).toBe(1);
