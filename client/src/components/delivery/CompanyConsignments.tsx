@@ -80,7 +80,7 @@ export function ConsignmentsTab({
     state,
     limit: 50,
   };
-  const filterLabel = `بحث: ${query || "الكل"} · الحالة: ${DELIVERY_WORKSPACE_STATES.find((option) => option.value === state)?.label ?? state} · من: ${from || "البداية"} · إلى: ${to || "اليوم"}`;
+  const filterLabel = `بحث: ${query || "الكل"} · الحالة: ${DELIVERY_WORKSPACE_STATES.find((option) => option.value === state)?.label ?? state} · تاريخ الإرسال (UTC) من: ${from || "البداية"} · إلى: ${to || "اليوم"}`;
   const [collectConsignmentTarget, setCollectConsignmentTarget] =
     useState<ConsignmentRow | null>(null);
   const [cancelConsignmentTarget, setCancelConsignmentTarget] = useState<{
@@ -151,7 +151,7 @@ export function ConsignmentsTab({
     { key: "status", header: "التسوية" },
     { key: "parcel", header: "الطرد" },
     { key: "driver", header: "السائق" },
-    { key: "dispatched", header: "الإرسال" },
+    { key: "dispatched", header: "الإرسال (توقيت الجهاز)" },
     { key: "remittance", header: "التوريد", text: true },
   ];
   const totalExports = (rows: Record<string, string>[]) => {
@@ -284,6 +284,9 @@ export function ConsignmentsTab({
         التصدير والطباعة يجلبان جميع النتائج المطابقة. التحديد محفوظ بين صفحات
         الفلتر الحالي. إجمالي المطابق: {q.data?.totals.count ?? "—"} · متبقي
         التسوية: {fmt(q.data?.totals.remainingDue)} د.ع
+      </p>
+      <p className="text-xs text-muted-foreground">
+        فلترة تاريخ الإرسال حسب يوم العمل (UTC). تواريخ العرض والتصدير بتوقيت جهازك.
       </p>
       <DataTable<ConsignmentRow, number>
         columns={columns}

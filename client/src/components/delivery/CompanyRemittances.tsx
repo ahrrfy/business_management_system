@@ -92,7 +92,7 @@ export function RemittancesTab({
   ];
   const exportColumns = [
     { key: "number", header: "رقم التوريد", text: true },
-    { key: "date", header: "التاريخ" },
+    { key: "date", header: "التاريخ (توقيت الجهاز)" },
     { key: "settled", header: "إجمالي التسوية", money: true },
     { key: "cash", header: "النقد المستلم فعلا", money: true },
     { key: "fee", header: "الأجور", money: true },
@@ -131,7 +131,7 @@ export function RemittancesTab({
             ? "جميع الفروع المخولة"
             : `الفرع #${q.data.scopedBranchId}`
         }
-        filters={`من: ${from || "البداية"} · إلى: ${to || "اليوم"}`}
+        filters={`تاريخ التوريد (UTC) من: ${from || "البداية"} · إلى: ${to || "اليوم"}`}
         columns={exportColumns}
         load={async () =>
           (
@@ -175,7 +175,7 @@ export function RemittancesTab({
       />
       <p className="text-xs text-muted-foreground">
         النقد المستلم فعلا مستقل عن إجمالي التسوية وخصم الأجور. التصدير يشمل
-        كامل الفترة.
+        كامل الفترة. فلترة تاريخ التوريد حسب يوم العمل (UTC)، والعرض والتصدير بتوقيت جهازك.
       </p>
       <DataTable<RemittanceRow>
         data={q.data?.rows ?? []}

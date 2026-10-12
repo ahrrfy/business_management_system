@@ -16,6 +16,7 @@ import { loadScopedPartyExposureInputsTx } from "./scopedExposure";
 import { getDeliveryFinancialSummary } from "./lifecycle";
 import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
 import { deliverySearchSql } from "./readSearch";
+import { deliveryReportDates } from "./reportDates";
 import {
   matchesDeliverySearch,
 } from "@shared/deliverySearch";
@@ -405,6 +406,7 @@ export async function listInTransitConsignments(branchId: number | null, partyId
 export async function listConsignmentsForParty(partyId: number, openOnly = false, page: DeliveryConsignmentPage = {},
   scopedBranchId?: number | null,
 ) {
+  const dates = deliveryReportDates(page.from, page.to);
   const db = getDb();
   const emptyTotals = {
     count: 0,
@@ -422,18 +424,18 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
   if (scopedBranchId != null)
     conds.push(eq(deliveryConsignments.branchId, scopedBranchId));
   if (openOnly) conds.push(sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`);
-  if (page.from)
+  if (dates.start)
     conds.push(
       gte(
         deliveryConsignments.dispatchedAt,
-        new Date(`${page.from}T00:00:00Z`),
+        dates.start,
       ),
     );
-  if (page.to)
+  if (dates.endExclusive)
     conds.push(
       lt(
         deliveryConsignments.dispatchedAt,
-        new Date(new Date(`${page.to}T00:00:00Z`).getTime() + 86400000),
+        dates.endExclusive,
       ),
     );
   // Terminal closures retain original COD history without an open settlement obligation.
@@ -569,15 +571,16 @@ export async function listPartyRemittances(partyId: number, opts?: { from?: stri
     cursor?: number;
     scopedBranchId?: number | null;
   }) {
+  const dates = deliveryReportDates(opts?.from, opts?.to);
   const db = getDb();
   if (!db) return [];
   const conds = [eq(deliveryRemittances.partyId, partyId)];
   if (opts?.scopedBranchId != null)
     conds.push(eq(deliveryRemittances.branchId, opts.scopedBranchId));
   if (opts?.cursor != null) conds.push(lt(deliveryRemittances.id, opts.cursor));
-  if (opts?.from) conds.push(gte(deliveryRemittances.receivedAt, new Date(`${opts.from}T00:00:00Z`)));
-  if (opts?.to) conds.push(
-      lt(deliveryRemittances.receivedAt, new Date(new Date(`${opts.to}T00:00:00Z`).getTime() + 86400000)));
+  if (dates.start) conds.push(gte(deliveryRemittances.receivedAt, dates.start));
+  if (dates.endExclusive) conds.push(
+      lt(deliveryRemittances.receivedAt, dates.endExclusive));
   return db
     .select({
       id: deliveryRemittances.id,
@@ -670,6 +673,7 @@ export async function getDeliveryPartyStatement(
   to?: string,
   scopedBranchId?: number | null,
 ) {
+  deliveryReportDates(from, to);
   const db = getDb();
   if (!db) return null;
   const party = (
