@@ -35,7 +35,17 @@ import {
   assertOperatorOwns,
   assertWorkOrderBranch,
   loadWorkOrder,
+  workOrderOperationScopeTx,
 } from "./helpers";
+import { assertOperationAuthorityTx, loadOperationUserTx } from "../authorization/operationAuthority";
+import { workOrderAssigneeAllowed } from "../authorization/operationRecipientEligibility";
+import { publishRealtimeEvent } from "../../realtime";
+import {
+  REALTIME_EVENT_TYPES,
+  type WorkOrderClaimedPayload,
+  type WorkOrderStatusChangedPayload,
+  type ReceptionQueueUpdatedPayload,
+} from "@shared/realtimeEvents";
 
 /**
  * السحب الذاتي (Pull/Claim): يضبط assignedTo = المستخدم الحالي على أمرٍ **في الطابور الوارد**
@@ -46,7 +56,7 @@ export async function claimWorkOrder(
   workOrderId: number,
   actor: Actor & { role?: string },
 ) {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.status !== "RECEIVED")
@@ -97,8 +107,22 @@ export async function claimWorkOrder(
         payload: { assignedTo: actor.userId },
       });
     }
-    return { workOrderId, assignedTo: actor.userId };
+    return { workOrderId, assignedTo: actor.userId, branchId: Number(wo.branchId) };
   });
+  try {
+    publishRealtimeEvent<WorkOrderClaimedPayload>(
+      REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED,
+      {
+        workOrderId: result.workOrderId,
+        branchId: result.branchId,
+        claimedByUserId: actor.userId,
+      },
+      { branchId: result.branchId },
+    );
+  } catch {
+    // fail-safe
+  }
+  return { workOrderId: result.workOrderId, assignedTo: result.assignedTo };
 }
 
 /** Move RECEIVED → IN_PROGRESS: consume materials from stock (OUT movements) + snapshot unitCost. */
@@ -106,10 +130,11 @@ export async function startWorkOrder(
   workOrderId: number,
   actor: Actor & { role?: string },
 ) {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
+    const scope = await workOrderOperationScopeTx(tx, actor, "workOrders.start");
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
-    assertOperatorOwns(wo, actor);
+    assertOperatorOwns(wo, actor, scope);
     if (wo.status !== "RECEIVED")
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -418,8 +443,39 @@ export async function startWorkOrder(
       workOrderId,
       status: "IN_PROGRESS",
       materialsCost: materialsCost.toFixed(2),
+      branchId: Number(wo.branchId),
     };
   });
+  try {
+    publishRealtimeEvent<WorkOrderStatusChangedPayload>(
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+      {
+        workOrderId: result.workOrderId,
+        branchId: result.branchId,
+        previousStatus: "RECEIVED",
+        newStatus: "IN_PROGRESS",
+        updatedBy: actor.userId,
+      },
+      { branchId: result.branchId },
+    );
+    publishRealtimeEvent<ReceptionQueueUpdatedPayload>(
+      REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+      {
+        orderId: result.workOrderId,
+        branchId: result.branchId,
+        status: "IN_PROGRESS",
+        readyForPickup: false,
+      },
+      { branchId: result.branchId },
+    );
+  } catch {
+    // fail-safe
+  }
+  return {
+    workOrderId: result.workOrderId,
+    status: result.status,
+    materialsCost: result.materialsCost,
+  };
 }
 
 export interface ReassignWorkOrderInput {
@@ -445,7 +501,9 @@ export async function reassignWorkOrder(
   input: ReassignWorkOrderInput,
   actor: Actor & { role?: string; isOwner?: boolean },
 ) {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "workOrders.assign", true);
+    const assigneeProfile = input.assignedTo == null ? null : await loadOperationUserTx(tx, input.assignedTo);
     const wo = await loadWorkOrder(tx, input.workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.status === "DELIVERED" || wo.status === "CANCELLED") {
@@ -485,12 +543,12 @@ export async function reassignWorkOrder(
           message: "الموظف غير موجود أو معطّل",
         });
       if (
-        !hasModuleAccess(
+        !workOrderAssigneeAllowed(assigneeProfile!, hasModuleAccess(
           u.role,
           (u.permissionsOverride as never) ?? null,
           "workorders",
           "FULL",
-        )
+        ), Number(wo.branchId))
       ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -500,9 +558,9 @@ export async function reassignWorkOrder(
       }
       // عابرُ الفروع وحده يُستثنى (`canCrossBranches` لا شرطٌ منسوخ). الموظف بلا فرع مشترك.
       if (
-        !canCrossBranches({ role: u.role, isOwner: u.isOwner }) &&
-        u.branchId != null &&
-        Number(u.branchId) !== Number(wo.branchId)
+        !canCrossBranches(assigneeProfile) &&
+        assigneeProfile?.branchId != null &&
+        Number(assigneeProfile.branchId) !== Number(wo.branchId)
       ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -540,8 +598,25 @@ export async function reassignWorkOrder(
       workOrderId: Number(wo.id),
       assignedTo: input.assignedTo,
       previous,
+      branchId: Number(wo.branchId),
     };
   });
+
+  try {
+    publishRealtimeEvent<WorkOrderClaimedPayload>(
+      REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED,
+      {
+        workOrderId: result.workOrderId,
+        branchId: result.branchId,
+        claimedByUserId: result.assignedTo,
+      },
+      { branchId: result.branchId },
+    );
+  } catch {
+    // fail-safe
+  }
+
+  return result;
 }
 
 /**
@@ -553,11 +628,11 @@ export async function releaseWorkOrder(
   workOrderId: number,
   actor: Actor & { role?: string },
 ) {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.assignedTo == null)
-      return { ok: true as const, workOrderId, alreadyFree: true as const };
+      return { ok: true as const, workOrderId, alreadyFree: true as const, branchId: Number(wo.branchId) };
     if (Number(wo.assignedTo) !== Number(actor.userId)) {
       throw new TRPCError({
         code: "FORBIDDEN",
@@ -590,8 +665,26 @@ export async function releaseWorkOrder(
         newValue: { assignedTo: null },
       },
     );
-    return { ok: true as const, workOrderId, alreadyFree: false as const };
+    return { ok: true as const, workOrderId, alreadyFree: false as const, branchId: Number(wo.branchId) };
   });
+
+  if (!result.alreadyFree) {
+    try {
+      publishRealtimeEvent<WorkOrderClaimedPayload>(
+        REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED,
+        {
+          workOrderId: result.workOrderId,
+          branchId: result.branchId,
+          claimedByUserId: null,
+        },
+        { branchId: result.branchId },
+      );
+    } catch {
+      // fail-safe
+    }
+  }
+
+  return result;
 }
 
 /** IN_PROGRESS → READY (no stock change).
@@ -603,10 +696,11 @@ export async function markWorkOrderReady(
   actor?: Actor & { role?: string },
 ) {
   const result = await withTx(async (tx) => {
+    const scope = actor ? await workOrderOperationScopeTx(tx, actor, "workOrders.markReady") : null;
     const wo = await loadWorkOrder(tx, workOrderId);
     if (actor) {
       assertWorkOrderBranch(wo, actor);
-      assertOperatorOwns(wo, actor);
+      assertOperatorOwns(wo, actor, scope);
     }
     if (wo.status !== "IN_PROGRESS")
       throw new TRPCError({
@@ -682,6 +776,34 @@ export async function markWorkOrderReady(
       },
       "workOrder: تعذّر إرسال إشعار طلبك جاهز — تُجوهل",
     );
+  }
+
+  try {
+    publishRealtimeEvent<WorkOrderStatusChangedPayload>(
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+      {
+        workOrderId: result.workOrderId,
+        orderNumber: result.orderNumber,
+        branchId: result.branchId,
+        previousStatus: "IN_PROGRESS",
+        newStatus: "READY",
+        updatedBy: actor?.userId,
+      },
+      { branchId: result.branchId },
+    );
+    publishRealtimeEvent<ReceptionQueueUpdatedPayload>(
+      REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+      {
+        orderId: result.workOrderId,
+        orderNumber: result.orderNumber,
+        branchId: result.branchId,
+        status: "READY",
+        readyForPickup: true,
+      },
+      { branchId: result.branchId },
+    );
+  } catch {
+    // fail-safe
   }
 
   return { workOrderId: result.workOrderId, status: result.status };

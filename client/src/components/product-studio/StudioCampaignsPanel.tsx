@@ -1,3 +1,4 @@
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import { useState, useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
@@ -33,6 +34,19 @@ export function StudioCampaignsPanel({
   prefilledCategoryId?: number | null;
   onPrefillConsumed?: () => void;
 }) {
+  const studioMe = trpc.auth.me.useQuery();
+  const studioAccountManager = studioMe.data?.isOwner === true || ["admin", "manager"].includes(studioMe.data?.role ?? "");
+  const studioCan = {
+    assignees: useOperationPermission("productStudio.assignees").allowed,
+    campaigns: useOperationPermission("productStudio.campaigns").allowed,
+    createCampaign: useOperationPermission("productStudio.createCampaign").allowed,
+    createCampaignBacklog: useOperationPermission("productStudio.createCampaignBacklog").allowed,
+    distributeCampaignTasks: useOperationPermission("productStudio.distributeCampaignTasks").allowed,
+    drainCampaignBacklog: useOperationPermission("productStudio.drainCampaignBacklog").allowed,
+    grantStudioAccess: studioAccountManager,
+    transitionCampaign: useOperationPermission("productStudio.transitionCampaign").allowed,
+    updateCampaignDetails: useOperationPermission("productStudio.updateCampaignDetails").allowed,
+  };
   const [campaignName, setCampaignName] = useState("");
   const [campaignBranchId, setCampaignBranchId] = useState("");
   const [campaignStartAt, setCampaignStartAt] = useState("");
@@ -65,9 +79,9 @@ export function StudioCampaignsPanel({
   }, [prefilledProductIds, prefilledCategoryId, onPrefillConsumed]);
 
   const utils = trpc.useUtils();
-  const assignees = trpc.productStudio.assignees.useQuery(undefined, { enabled: !offline });
+  const assignees = trpc.productStudio.assignees.useQuery(undefined, { enabled: studioCan.assignees && (!offline) });
   const categoryOptions = trpc.catalog.categories.useQuery(undefined, { enabled: !offline && (campaignScope === "CATEGORY" || campaignScope === "CATEGORIES") });
-  const campaigns = trpc.productStudio.campaigns.useQuery(undefined, { enabled: !offline });
+  const campaigns = trpc.productStudio.campaigns.useQuery(undefined, { enabled: studioCan.campaigns && (!offline) });
 
   const selectedCampaign = selectedCampaignId 
     ? campaigns.data?.find((c) => Number(c.id) === selectedCampaignId) 
@@ -313,7 +327,7 @@ export function StudioCampaignsPanel({
                   return (
                     <span key={user.id} className="inline-flex items-center gap-1 rounded-md border border-dashed px-2 py-1 text-xs text-muted-foreground">
                       {user.name}
-                      <Button type="button" size="sm" variant="ghost" className="min-h-11 px-2 text-xs" disabled={offline || grantStudioAccess.isPending} onClick={() => grantStudioAccess.mutate({ userId: user.id })}>
+                      <Button type="button" size="sm" variant="ghost" className="min-h-11 px-2 text-xs" disabled={!studioCan.grantStudioAccess || (offline || grantStudioAccess.isPending)} onClick={() => grantStudioAccess.mutate({ userId: user.id })}>
                         امنح الصلاحية
                       </Button>
                     </span>
@@ -336,7 +350,7 @@ export function StudioCampaignsPanel({
           <div className="flex items-end">
             <Button
               className="min-h-11 w-full"
-              disabled={offline || campaignName.trim().length < 3 || createCampaign.isPending || !(campaignBranchId || branchId) || (campaignScope === "CATEGORY" && !campaignCategoryId) || (campaignScope === "CATEGORIES" && campaignCategoryIds.length === 0) || (campaignScope === "PRODUCTS" && campaignProductIds.length === 0)}
+              disabled={!studioCan.createCampaign || (offline || campaignName.trim().length < 3 || createCampaign.isPending || !(campaignBranchId || branchId) || (campaignScope === "CATEGORY" && !campaignCategoryId) || (campaignScope === "CATEGORIES" && campaignCategoryIds.length === 0) || (campaignScope === "PRODUCTS" && campaignProductIds.length === 0))}
               onClick={() =>
                 createCampaign.mutate({
                   name: campaignName.trim(),
@@ -370,7 +384,7 @@ export function StudioCampaignsPanel({
               {selectedCampaign.status === "DRAFT" && (
                 <Button
                   className="min-h-11"
-                  disabled={offline || transitionCampaign.isPending}
+                  disabled={!studioCan.transitionCampaign || (offline || transitionCampaign.isPending)}
                   onClick={() => transitionCampaign.mutate({
                     campaignId: Number(selectedCampaign.id),
                     status: "ACTIVE",
@@ -384,7 +398,7 @@ export function StudioCampaignsPanel({
               {selectedCampaign.status === "ACTIVE" && (
                 <Button
                   variant="outline" className="min-h-11"
-                  disabled={offline || transitionCampaign.isPending}
+                  disabled={!studioCan.transitionCampaign || (offline || transitionCampaign.isPending)}
                   onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "PAUSED" })}
                   title="تجميد ذكيّ: تختفي عن مسار المصوّر لكن المهام المُسنَدة تبقى قابلةً للإتمام"
                 >
@@ -394,7 +408,7 @@ export function StudioCampaignsPanel({
               {selectedCampaign.status === "PAUSED" && (
                 <Button
                   className="min-h-11"
-                  disabled={offline || transitionCampaign.isPending}
+                  disabled={!studioCan.transitionCampaign || (offline || transitionCampaign.isPending)}
                   onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "ACTIVE" })}
                 >
                   <PlayCircle aria-hidden className="size-4" /> استئناف الحملة
@@ -403,7 +417,7 @@ export function StudioCampaignsPanel({
               {(selectedCampaign.status === "ACTIVE" || selectedCampaign.status === "PAUSED") && (
                 <Button
                   variant="outline" className="min-h-11"
-                  disabled={offline || transitionCampaign.isPending}
+                  disabled={!studioCan.transitionCampaign || (offline || transitionCampaign.isPending)}
                   onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "COMPLETED" })}
                 >
                   <CheckCircle2 aria-hidden className="size-4" /> إكمال الحملة
@@ -413,7 +427,7 @@ export function StudioCampaignsPanel({
                 <>
                   <Button
                     variant="default" className="min-h-11 gap-1.5"
-                    disabled={offline || drainCampaignBacklog.isPending}
+                    disabled={!studioCan.drainCampaignBacklog || (offline || drainCampaignBacklog.isPending)}
                     onClick={() => drainCampaignBacklog.mutate({ campaignId: Number(selectedCampaign.id) })}
                     title="توليد كامل مهام الحملة آلياً وتوزيعها بالتساوي على المصورين حتى الصفر"
                   >
@@ -427,7 +441,7 @@ export function StudioCampaignsPanel({
 
                   <Button
                     variant="outline" className="min-h-11 gap-1.5"
-                    disabled={offline || distributeCampaignTasks.isPending}
+                    disabled={!studioCan.distributeCampaignTasks || (offline || distributeCampaignTasks.isPending)}
                     onClick={() => distributeCampaignTasks.mutate({ campaignId: Number(selectedCampaign.id) })}
                     title="إعادة توزيع كافة المهام غير المسندة بالتساوي على مصوري الحملة"
                   >
@@ -441,7 +455,7 @@ export function StudioCampaignsPanel({
 
                   <Button
                     variant="outline" className="min-h-11"
-                    disabled={offline || createCampaignBacklog.isPending}
+                    disabled={!studioCan.createCampaignBacklog || (offline || createCampaignBacklog.isPending)}
                     onClick={() => createCampaignBacklog.mutate({ campaignId: Number(selectedCampaign.id) })}
                     title="مسح نطاق الحملة وتوليد دفعة واحدة من المهام الناقصة"
                   >
@@ -453,7 +467,7 @@ export function StudioCampaignsPanel({
               {(selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE" || selectedCampaign.status === "PAUSED") && (
                 <Button
                   variant="outline" className="min-h-11"
-                  disabled={offline || transitionCampaign.isPending || backlogCancelReason.trim().length < 5}
+                  disabled={!studioCan.transitionCampaign || (offline || transitionCampaign.isPending || backlogCancelReason.trim().length < 5)}
                   title={backlogCancelReason.trim().length < 5 ? "اكتب سبب الإلغاء في الحقل أدناه أولاً" : undefined}
                   onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "CANCELLED", reason: backlogCancelReason })}
                 >
@@ -497,7 +511,7 @@ export function StudioCampaignsPanel({
                 <div className="flex items-end pt-2 md:col-span-2">
                   <Button
                     className="min-h-11"
-                    disabled={offline || updateCampaignDetails.isPending || editCampaignName.trim().length < 3 || Number(editCampaignRequired) < 1}
+                    disabled={!studioCan.updateCampaignDetails || (offline || updateCampaignDetails.isPending || editCampaignName.trim().length < 3 || Number(editCampaignRequired) < 1)}
                     onClick={() => {
                       updateCampaignDetails.mutate({
                         campaignId: Number(selectedCampaign.id),

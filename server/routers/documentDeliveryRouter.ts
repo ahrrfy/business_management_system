@@ -8,7 +8,7 @@ import {
   getDocumentOutboxStatus,
   loadOfficialDocumentSnapshot,
 } from "../services/documentDeliveryService";
-import { router, salesReadProcedure } from "../trpc";
+import { requireAtomicPermission, router, salesReadProcedure } from "../trpc";
 
 const documentRef = z.object({
   kind: z.enum(["INVOICE", "QUOTATION"]),
@@ -26,6 +26,7 @@ async function loadForUser(
 
 export const documentDeliveryRouter = router({
   readiness: salesReadProcedure
+    .use(requireAtomicPermission("delivery.document_delivery.view"))
     .input(documentRef.extend({ phone: z.string().trim().max(30).nullish() }))
     .query(async ({ input, ctx }) => {
       const document = await loadForUser(input, ctx);
@@ -33,6 +34,7 @@ export const documentDeliveryRouter = router({
     }),
 
   downloadPdf: salesReadProcedure
+    .use(requireAtomicPermission("delivery.document_delivery.dispatch"))
     .input(documentRef)
     .mutation(async ({ input, ctx }) => {
       const document = await loadForUser(input, ctx);
@@ -40,6 +42,7 @@ export const documentDeliveryRouter = router({
     }),
 
   sendWhatsAppPdf: salesReadProcedure
+    .use(requireAtomicPermission("delivery.document_delivery.dispatch"))
     .input(documentRef.extend({
       phone: z.string().trim().min(8).max(30).nullish(),
       caption: z.string().trim().max(1024).nullish(),

@@ -1,3 +1,4 @@
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Dialog,
@@ -105,6 +106,7 @@ export function NoReceiptReturnDialog({
   onSuccess,
 }: NoReceiptReturnDialogProps) {
   const utils = trpc.useUtils();
+  const operationPermission = useOperationPermission("returns.executeNoReceiptOrExchange");
 
   const [mode, setMode] = useState<"STORE_CREDIT" | "DIRECT_EXCHANGE">("STORE_CREDIT");
   const [returnItems, setReturnItems] = useState<BasketReturnItem[]>([]);
@@ -324,6 +326,7 @@ export function NoReceiptReturnDialog({
   });
 
   const handleSubmit = async () => {
+    if (!operationPermission.allowed) { notify.err(operationPermission.reason); return; }
     if (returnItems.length === 0) {
       notify.err("يرجى إضافة صنف واحد على الأقل إلى سلة المرتجعات");
       return;
@@ -946,7 +949,7 @@ export function NoReceiptReturnDialog({
               <Button
                 type="button"
                 onClick={handleSubmit}
-                disabled={executeMutation.isPending || returnItems.length === 0}
+                disabled={!operationPermission.allowed || executeMutation.isPending || returnItems.length === 0}
                 className="gap-2"
               >
                 <CheckCircle2 className="size-4" aria-hidden />

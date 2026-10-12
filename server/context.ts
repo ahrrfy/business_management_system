@@ -1,18 +1,42 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
 import { applyPermissionOverrides, diffFromTemplate, resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
+import {
+  resolveAtomicPermissions,
+  resolveOperationalCaps,
+  resolveSensitiveDataMasking,
+  type AtomicPermissionsMap,
+  type OperationalCaps,
+  type SensitiveDataMasking,
+} from "@shared/atomicPermissions";
 import type { User } from "../drizzle/schema";
 import type { NativeClientId } from "./auth/deviceProof";
 import { getSessionContext } from "./auth/session";
 import { loadActiveCustomRole } from "./services/roleService";
 import { getPlatformAdminFromRequest } from "./tenancy/platformAuth";
 import type { PlatformAdmin } from "./tenancy/controlSchema";
+import {
+  buildOperationPolicyFromLegacy,
+  operationPolicySchema,
+  resolveOperationPolicy,
+  summarizeOperationModules,
+  type OperationPolicy,
+} from "@shared/operationPermissions";
 
-/** المستخدم المُحلّل: صفّ users + (للأدوار المخصّصة) تسمية/مفتاح الدور للعرض. */
+/** المستخدم المُحلّل: صفّ users + (للأدوار المخصّصة) تسمية/مفتاح الدور للعرض + الصلاحيات والسقوف المحلولة. */
 export type AuthUser = User & {
+  operationPolicy: OperationPolicy | null;
   customRoleLabel?: string | null;
   customRoleKey?: string | null;
   /** ش٢: دورٌ مخصّص مُسنَد لكنه معطَّل/محذوف ⇒ هبط الحساب فشلاً مغلقاً إلى «user» (لا الفئة الكاملة). */
   roleLockedByInactiveCustomRole?: boolean;
+  resolvedAtomicPermissions?: AtomicPermissionsMap;
+  resolvedOperationalCaps?: Required<OperationalCaps>;
+  resolvedSensitiveDataMasking?: Required<SensitiveDataMasking>;
+  operationPolicyEnabled?: boolean;
+  resolvedOperationPolicy?: OperationPolicy;
+  inheritedOperationPolicy?: OperationPolicy;
+  inheritedOperationPolicyRevision?: number;
+  roleOperationPolicy?: OperationPolicy | null;
 };
 
 export type TrpcContext = {
@@ -36,9 +60,21 @@ export function normalizeOwnerAuthority(user: AuthUser): AuthUser {
   if (!user.isOwner) return user;
   user.role = "admin" as User["role"];
   user.permissionsOverride = null;
+  user.operationPolicy = null;
   user.customRoleLabel = null;
   user.customRoleKey = null;
   user.roleLockedByInactiveCustomRole = false;
+  user.resolvedAtomicPermissions = resolveAtomicPermissions("admin");
+  user.resolvedOperationalCaps = resolveOperationalCaps("admin");
+  user.resolvedSensitiveDataMasking = resolveSensitiveDataMasking("admin");
+  user.operationPolicyEnabled = false;
+  user.roleOperationPolicy = null;
+  user.resolvedOperationPolicy = buildOperationPolicyFromLegacy(
+    "admin",
+    resolvePermissions("admin", null),
+  );
+  user.inheritedOperationPolicy = user.resolvedOperationPolicy;
+  user.inheritedOperationPolicyRevision = 0;
   return user;
 }
 
@@ -48,9 +84,67 @@ export function normalizeOwnerAuthority(user: AuthUser): AuthUser {
  *  permissionsOverride ← خريطة الدور المخصّص، ثم استثناء المستخدم الفردي إن وُجد.
  * هكذا تعمل كل البوّابات (requireRole/requireModule/canSeeCost) بلا أي تغيير، وتنتشر تعديلات
  * الدور لحظياً (يُقرأ الدور طازجاً كل طلب). إن عُطِّل الدور/حُذف ⇒ نرجع للدور المخزَّن (baseRole) بأمان.
+ * كما يحلّ الصلاحيات الذرية والسقوف الرقمية للمستخدم (أدوار افتراضية ومخصصة واستثناءات).
  */
 export async function resolveCustomRole(user: AuthUser): Promise<void> {
-  if (!user.customRoleId) return;
+  if (!user || typeof user !== "object") return;
+  const legacyIndividual = {
+    permissionsOverride: user.permissionsOverride as PermissionMap | null,
+    atomicPermissions: user.atomicPermissions as AtomicPermissionsMap | null,
+  };
+  if (!user.customRoleId) {
+    const baseRole = user.role ?? "user";
+    user.resolvedAtomicPermissions = resolveAtomicPermissions(
+      baseRole,
+      null,
+      user.atomicPermissions as AtomicPermissionsMap | null,
+    );
+    user.resolvedOperationalCaps = resolveOperationalCaps(
+      baseRole,
+      null,
+      user.operationalCaps as OperationalCaps | null,
+    );
+    user.resolvedSensitiveDataMasking = resolveSensitiveDataMasking(
+    baseRole,
+    null,
+    null,
+  );
+    const modules = resolvePermissions(
+      baseRole,
+      user.permissionsOverride as PermissionMap | null,
+    );
+    const individualPolicy = user.operationPolicy == null ? null : operationPolicySchema.parse(user.operationPolicy);
+    const inherited = buildOperationPolicyFromLegacy(
+      baseRole,
+      resolvePermissions(baseRole, null),
+    );
+    const legacyEffective = buildOperationPolicyFromLegacy(
+      baseRole,
+      modules,
+      user.atomicPermissions as AtomicPermissionsMap | null,
+      user.permissionsOverride as PermissionMap | null,
+    );
+    user.operationPolicyEnabled = individualPolicy != null;
+    user.roleOperationPolicy = null;
+    user.inheritedOperationPolicy = inherited;
+    user.inheritedOperationPolicyRevision = 0;
+    user.resolvedOperationPolicy = user.operationPolicyEnabled
+      ? resolveOperationPolicy(
+          baseRole,
+          modules,
+          inherited,
+          individualPolicy,
+          user.permissionsOverride as PermissionMap | null,
+          legacyIndividual,
+        )
+      : legacyEffective;
+    if (user.operationPolicyEnabled)
+      user.permissionsOverride = diffFromTemplate(
+        baseRole,
+        summarizeOperationModules(user.resolvedOperationPolicy),
+      );
+    return;
+  }
   const role = await loadActiveCustomRole(user.customRoleId);
   if (!role) {
     // ش٢ — إغلاق الفشل المفتوح: كان دورٌ مخصّص معطَّل/محذوف يُبقي baseRole المخزَّن (users.role)
@@ -63,6 +157,19 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
     user.customRoleLabel = null;
     user.customRoleKey = null;
     user.roleLockedByInactiveCustomRole = true;
+    user.resolvedAtomicPermissions = resolveAtomicPermissions("user");
+    user.resolvedOperationalCaps = resolveOperationalCaps("user");
+    user.resolvedSensitiveDataMasking = resolveSensitiveDataMasking("user");
+    user.operationPolicyEnabled = true;
+    user.roleOperationPolicy = { version: 1, grants: {} };
+    user.resolvedOperationPolicy = resolveOperationPolicy(
+      "user",
+      {},
+      user.roleOperationPolicy,
+      null,
+    );
+    user.inheritedOperationPolicy = user.resolvedOperationPolicy;
+    user.inheritedOperationPolicyRevision = 0;
     return;
   }
   user.role = role.baseRole as RoleKey as User["role"];
@@ -77,10 +184,63 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
   user.permissionsOverride = diffFromTemplate(baseRole, effectivePermissions);
   user.customRoleLabel = role.label;
   user.customRoleKey = role.key;
+  user.resolvedAtomicPermissions = resolveAtomicPermissions(
+    baseRole,
+    role.atomicPermissions as AtomicPermissionsMap | null,
+    user.atomicPermissions as AtomicPermissionsMap | null,
+  );
+  user.resolvedOperationalCaps = resolveOperationalCaps(
+    baseRole,
+    role.operationalCaps as OperationalCaps | null,
+    user.operationalCaps as OperationalCaps | null,
+  );
+  user.resolvedSensitiveDataMasking = resolveSensitiveDataMasking(
+    baseRole,
+    null,
+    null,
+  );
+  const rolePolicy = role.operationPolicy == null ? null : operationPolicySchema.parse(role.operationPolicy);
+  const individualPolicy = user.operationPolicy == null ? null : operationPolicySchema.parse(user.operationPolicy);
+  const inherited =
+    rolePolicy ??
+    buildOperationPolicyFromLegacy(
+      baseRole,
+      customPermissions,
+      role.atomicPermissions as AtomicPermissionsMap | null,
+      diffFromTemplate(baseRole, customPermissions),
+    );
+  user.roleOperationPolicy = rolePolicy;
+  user.operationPolicyEnabled =
+    role.operationPolicy != null || user.operationPolicy != null;
+  user.inheritedOperationPolicy = inherited;
+  user.inheritedOperationPolicyRevision = role.operationPolicyRevision;
+  user.resolvedOperationPolicy = user.operationPolicyEnabled
+    ? resolveOperationPolicy(
+        baseRole,
+        effectivePermissions,
+        inherited,
+        individualPolicy,
+        user.permissionsOverride as PermissionMap | null,
+        legacyIndividual,
+      )
+    : buildOperationPolicyFromLegacy(
+        baseRole,
+        effectivePermissions,
+        {
+          ...role.atomicPermissions as AtomicPermissionsMap | null,
+          ...user.atomicPermissions as AtomicPermissionsMap | null,
+        },
+        user.permissionsOverride as PermissionMap | null,
+      );
+  if (user.operationPolicyEnabled)
+    user.permissionsOverride = diffFromTemplate(
+      baseRole,
+      summarizeOperationModules(user.resolvedOperationPolicy),
+    );
 }
 
 export async function createContext(
-  opts: CreateExpressContextOptions
+  opts: Pick<CreateExpressContextOptions, "req" | "res">
 ): Promise<TrpcContext> {
   let user: AuthUser | null = null;
   let sessionId: number | null = null;

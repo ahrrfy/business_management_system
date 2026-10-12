@@ -27,6 +27,9 @@ describe("واجهة حوكمة عمليات البيع الحرجة", () => {
     expect(approvals).toContain("لا يمكن للطالب أو منشئ الفاتورة اعتمادها");
     expect(approvals).toContain("canReview ? { status: \"PENDING\" } : { mine: true }");
     expect(approvals).toContain("SALES_CONTROL_STATUS_LABELS");
+    expect(approvals).toContain('lifecycleActionAllowed(me.data, "salesControl.approve", legacyCanReview)');
+    expect(approvals).toContain('lifecycleActionAllowed(me.data, "salesControl.reject", legacyCanReview)');
+    expect(approvals).toContain('lifecycleActionAllowed(me.data, "salesControl.withdraw", !!me.data)');
     /**
      * حقائقُ الحمولة انتقلت إلى مصدرٍ مشترك (`shared/salesControlFacts.ts`) يعرضه الويب
      * ويُرسله الخادمُ لصندوق موافقات أندرويد — كان تعريفُها محلّياً هنا يعرض «مصير البضاعة»
@@ -64,6 +67,10 @@ describe("واجهة حوكمة عمليات البيع الحرجة", () => {
     expect(approvals).toContain("requestShippingLabelPrint");
     expect(approvals).toContain("طُبعت حرارياً تلقائياً");
     expect(approvals).toContain('{ openDrawer: false }');
+    expect(approvals).toContain("trpc.invoicePrinting.requestPrint.useMutation()");
+    expect(approvals).toContain("trpc.invoicePrinting.requestReprint.useMutation()");
+    expect(approvals.indexOf('purpose: "THERMAL"')).toBeLessThan(approvals.indexOf("await printReceipt("));
+    expect(approvals.indexOf('purpose: "SHIPPING_LABEL"')).toBeLessThan(approvals.indexOf("await printShippingLabel("));
     expect(correctionConfirm).toContain('type === "SALES_REISSUE" || type === "SALES_EXCHANGE"');
     expect(correctionConfirm).toContain('{ requireText: invoiceNumber }');
     expect(controlRouter).toContain("claimCorrectionPayment");
@@ -92,13 +99,14 @@ describe("واجهة حوكمة عمليات البيع الحرجة", () => {
       saleRouter.indexOf("correct: salesManagerProcedure"),
       saleRouter.indexOf("reissue: salesCorrectionProcedure"),
     );
-    const correctionGate = invoice.slice(
-      invoice.indexOf("const canCorrectInvoice"),
-      invoice.indexOf("const corrections"),
-    );
+    const correctionGate = readFileSync(new URL("../../hooks/useInvoiceActionPermissions.ts", import.meta.url), "utf8");
     expect(invoice).toContain("salesControl.requestDueDateChange.useMutation");
     expect(correctionGate).toContain("moduleAccessAllowed(");
     expect(correctionGate).toContain('["manager"]');
+    expect(correctionGate).toContain('allowed("sales.correct", manager)');
+    expect(correctionGate).toContain('"salesControl.requestDueDateChange"');
+    expect(invoice).toContain("disabled={!canCorrectInvoice}");
+    expect(invoice).toContain("disabled={!canRequestDueDateChange}");
     expect(correctionGate).not.toContain('me.data.role === "admin"');
     expect(notesOnlyRoute).not.toContain("dueDate:");
     expect(notesOnlyRoute).toContain("SALES_DUE_DATE_CHANGE");

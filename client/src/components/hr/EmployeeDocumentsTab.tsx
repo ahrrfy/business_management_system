@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,8 +26,9 @@ const DOC_TYPE_LABELS: Record<string, string> = {
 };
 
 export function EmployeeDocumentsTab({ employeeId }: { employeeId: number }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
-  const q = trpc.hrEnterprise.documents.list.useQuery({ employeeId });
+  const q = trpc.hrEnterprise.documents.list.useQuery({ employeeId }, { enabled: can("hrEnterprise.documents.list") });
   const [open, setOpen] = useState(false);
 
   const [docType, setDocType] = useState<string>("RESIDENCY_VISA");
@@ -100,7 +102,7 @@ export function EmployeeDocumentsTab({ employeeId }: { employeeId: number }) {
             إدارة الجوازات والإقامات وإجازات العمل والفحوصات مع تنبيهات الصلاحية التلقائية.
           </p>
         </div>
-        <Button size="sm" onClick={() => setOpen(true)} className="gap-1.5">
+        <Button size="sm" onClick={() => setOpen(true)} className="gap-1.5" disabled={!can("hrEnterprise.documents.add")}>
           <Plus className="h-4 w-4" />
           إضافة مستند
         </Button>
@@ -151,7 +153,7 @@ export function EmployeeDocumentsTab({ employeeId }: { employeeId: number }) {
                       variant="ghost"
                       size="sm"
                       className="h-8 w-8 p-0 text-destructive hover:bg-destructive/10"
-                      disabled={delMut.isPending}
+                      disabled={!can("hrEnterprise.documents.delete") || (delMut.isPending)}
                       onClick={async () => {
                         const ok = await confirm({
                           variant: "danger",
@@ -263,7 +265,7 @@ export function EmployeeDocumentsTab({ employeeId }: { employeeId: number }) {
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 إلغاء
               </Button>
-              <Button type="submit" disabled={createMut.isPending}>
+              <Button type="submit" disabled={!can("hrEnterprise.documents.add") || (createMut.isPending)}>
                 {createMut.isPending ? "جاري الحفظ..." : "حفظ المستند"}
               </Button>
             </DialogFooter>

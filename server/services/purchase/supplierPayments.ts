@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalOperationAllowed, loadOperationUserTx } from "../authorization/operationAuthority";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
@@ -428,6 +429,8 @@ function cashSourceError(
 }
 
 async function treasurySourceAllowed(tx: Tx, actor: Actor): Promise<boolean> {
+  const canonical = canonicalOperationAllowed(await loadOperationUserTx(tx, actor.userId), "supplierPayments.cashSources");
+  if (canonical !== undefined) return canonical;
   const [user] = await tx
     .select()
     .from(users)

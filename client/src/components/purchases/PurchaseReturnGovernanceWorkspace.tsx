@@ -1,3 +1,5 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
+import type { OperationUser } from "@shared/operationPermissions";
 import { useMemo, useState } from "react";
 import { PackageMinus, RotateCcw } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -79,6 +81,7 @@ function quantityLines(
 }
 
 export function PurchaseReturnGovernanceWorkspace({
+  operationUser,
   returnSources,
   reversalSources,
   pendingReturns,
@@ -101,6 +104,7 @@ export function PurchaseReturnGovernanceWorkspace({
   onRetryPendingReturns,
   onRetryPendingReversals,
 }: {
+  operationUser?: OperationUser | null;
   returnSources: ReturnSource[];
   reversalSources: ReversalSource[];
   pendingReturns: GovernanceQueueRow[];
@@ -148,6 +152,8 @@ export function PurchaseReturnGovernanceWorkspace({
   onRetryPendingReturns: () => void;
   onRetryPendingReversals: () => void;
 }) {
+  const can = (path: string) =>
+    operationUser == null || canLifecycleOperation(operationUser, path, true);
   const [mode, setMode] = useState<"RETURN" | "REVERSAL" | null>(null);
   const [sourceId, setSourceId] = useState("");
   const [quantities, setQuantities] = useState<Record<number, string>>({});
@@ -188,6 +194,14 @@ export function PurchaseReturnGovernanceWorkspace({
   }
 
   async function submitRequest() {
+    if (
+      !can(
+        mode === "RETURN"
+          ? "purchaseReturnGovernance.requestReturn"
+          : "purchaseReturnGovernance.requestReversal",
+      )
+    )
+      return;
     if (!valid) return;
     if (mode === "RETURN" && selectedReturn) {
       try {
@@ -259,6 +273,7 @@ export function PurchaseReturnGovernanceWorkspace({
                   setMode("RETURN");
                   setEvidenceType("RETURN_NOTE");
                 }}
+                disabled={!can("purchaseReturnGovernance.requestReturn")}
               >
                 طلب مرتجع
               </Button>
@@ -270,6 +285,7 @@ export function PurchaseReturnGovernanceWorkspace({
                   setMode("REVERSAL");
                   setEvidenceType("SUPPLIER_ACKNOWLEDGEMENT");
                 }}
+                disabled={!can("purchaseReturnGovernance.requestReversal")}
               >
                 طلب عكس مرتجع
               </Button>
@@ -305,6 +321,7 @@ export function PurchaseReturnGovernanceWorkspace({
       </Card>
 
       <GovernanceApprovalQueue
+        reviewAllowed={can("purchaseReturnGovernance.decideReturn")}
         title="طلبات مرتجعات الشراء بانتظار اعتماد"
         scope="purchase-return"
         rows={pendingReturns}
@@ -317,6 +334,7 @@ export function PurchaseReturnGovernanceWorkspace({
         onDecide={onDecideReturn}
       />
       <GovernanceApprovalQueue
+        reviewAllowed={can("purchaseReturnGovernance.decideReversal")}
         title="طلبات عكس المرتجعات بانتظار اعتماد"
         scope="purchase-return-reversal"
         rows={pendingReversals}
@@ -514,7 +532,14 @@ export function PurchaseReturnGovernanceWorkspace({
               type="button"
               pending={requestPending}
               pendingText={ACTION_LABELS.sending}
-              disabled={!valid}
+              disabled={
+                !valid ||
+                !can(
+                  mode === "RETURN"
+                    ? "purchaseReturnGovernance.requestReturn"
+                    : "purchaseReturnGovernance.requestReversal",
+                )
+              }
               onClick={() => void submitRequest()}
             >
               إرسال للاعتماد

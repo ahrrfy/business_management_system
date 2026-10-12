@@ -6,7 +6,7 @@ import {
   listSupplierInvoices,
   requestSupplierInvoiceApproval,
 } from "../services/purchase/supplierInvoices";
-import { purchasesManagerProcedure, purchasesReadProcedure, router } from "../trpc";
+import { purchasesManagerProcedure, purchasesReadProcedure, requireAtomicPermission, router } from "../trpc";
 
 const actor = (ctx: { user: { id: number; branchId?: number | null; role?: string } }) => ({
   userId: ctx.user.id,
@@ -18,6 +18,7 @@ const reason = z.string().trim().min(3).max(500);
 
 export const supplierInvoiceApprovalRouter = router({
   list: purchasesReadProcedure
+    .use(requireAtomicPermission("purchasing.supplier_invoice_approval.view"))
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -30,6 +31,7 @@ export const supplierInvoiceApprovalRouter = router({
     )
     .query(({ input, ctx }) => listSupplierInvoices(input, actor(ctx))),
   get: purchasesReadProcedure
+    .use(requireAtomicPermission("purchasing.supplier_invoice_approval.view"))
     .input(z.object({ supplierInvoiceId: z.number().int().positive() }))
     .query(({ input, ctx }) => getSupplierInvoice(input.supplierInvoiceId, actor(ctx))),
   // ⛔ (مراجعة Codex على #1001) يقبل REVERSE_INVOICE فقط عمداً — لا POST_INVOICE.
@@ -40,6 +42,7 @@ export const supplierInvoiceApprovalRouter = router({
   // رصيد المورّد) **بلا** تحديث حالة أمر الشراء ولا معالجة مصاريف الشحن/الكمرك التي تؤدّيها
   // السلسلة الذرّية — يتجاوز الحظر الموثَّق على واجهة برمجة تطبيقاتٍ مستقلّة لفاتورة المورّد.
   requestApproval: purchasesManagerProcedure
+    .use(requireAtomicPermission("purchasing.supplier_invoice_approval.audit"))
     .input(
       z.object({
         supplierInvoiceId: z.number().int().positive(),
@@ -55,6 +58,7 @@ export const supplierInvoiceApprovalRouter = router({
     )
     .mutation(({ input, ctx }) => requestSupplierInvoiceApproval(input, actor(ctx))),
   decideApproval: purchasesManagerProcedure
+    .use(requireAtomicPermission("purchasing.supplier_invoice_approval.approve"))
     .input(
       z.object({
         requestId: z.number().int().positive(),
@@ -65,6 +69,7 @@ export const supplierInvoiceApprovalRouter = router({
     )
     .mutation(({ input, ctx }) => decideSupplierInvoiceApproval(input, actor(ctx))),
   pendingApprovals: purchasesManagerProcedure
+    .use(requireAtomicPermission("purchasing.supplier_invoice_approval.view"))
     .input(z.object({ branchId: z.number().int().positive() }))
     .query(({ input, ctx }) => listPendingSupplierInvoiceApprovals(input.branchId, actor(ctx))),
 });

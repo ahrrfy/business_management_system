@@ -9,10 +9,10 @@ const AssetCustodyReport = lazy(() => import("@/pages/AssetCustodyReport"));
 const AssetDisposalLog = lazy(() => import("@/pages/AssetDisposalLog"));
 
 const TABS: HubTab[] = [
-  { value: "dashboard", label: "لوحة الأصول", gate: { managerOnly: true }, Component: Assets },
-  { value: "register", label: "سجلّ الأصول", gate: { managerOnly: true }, Component: AssetRegister },
-  { value: "custody", label: "تقرير العهد", gate: { managerOnly: true }, Component: AssetCustodyReport },
-  { value: "disposal", label: "سجلّ الاستبعاد", gate: { managerOnly: true }, Component: AssetDisposalLog },
+  { value: "dashboard", label: "لوحة الأصول", gate: { managerOnly: true, operations: ["assets.dashboard", "assets.postDepreciation"] }, Component: Assets },
+  { value: "register", label: "سجلّ الأصول", gate: { managerOnly: true, operations: ["assets.list", "assets.registerReport", "assets.create", "assets.import"] }, Component: AssetRegister },
+  { value: "custody", label: "تقرير العهد", gate: { managerOnly: true, operations: ["assets.custodyReport"] }, Component: AssetCustodyReport },
+  { value: "disposal", label: "سجلّ الاستبعاد", gate: { managerOnly: true, operations: ["assets.disposalLog"] }, Component: AssetDisposalLog },
 ];
 
 export default function AssetsHub() {

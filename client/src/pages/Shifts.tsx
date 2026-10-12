@@ -1,4 +1,5 @@
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
@@ -135,7 +136,7 @@ export default function Shifts() {
   const me = trpc.auth.me.useQuery();
   // إدارة أي وردية مفتوحة عن بُعد (كاشير نسي إغلاقها) — بنفس صلاحيات closeShift الخادمية
   // (admin أي فرع، manager فرعه فقط)؛ الكاشير لا يرى الزرّ أصلاً (والخادم يرفضه لو حاول).
-  const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
+  const canCloseShift = treasuryOperationAllowed(me.data, "shifts.close", me.data?.role === "admin" || me.data?.role === "manager");
   const branches = trpc.branches.list.useQuery();
   const list = trpc.shifts.list.useQuery({
     branchId: branchId ? Number(branchId) : undefined,
@@ -147,7 +148,7 @@ export default function Shifts() {
     to: dateTo || undefined,
     limit: PAGE,
     offset: page * PAGE,
-  });
+  }, { enabled: treasuryOperationAllowed(me.data, "shifts.list", true) });
   const fundingRequestsQ = trpc.shifts.fundingRequests.useQuery();
 
   const rows = list.data?.rows ?? [];
@@ -973,7 +974,7 @@ export default function Shifts() {
                           label: "الفواتير",
                           icon: Receipt,
                           onSelect: () => setInvoicesShiftId(r.id),
-                          gate: { module: "sales", level: "READ" },
+                          gate: { operations: ["sales.list"], module: "sales", level: "READ" },
                         },
                         {
                           key: "zreport",
@@ -983,7 +984,7 @@ export default function Shifts() {
                           disabled: printing === r.id,
                           disabledReason: "التقرير قيد التحضير",
                           onSelect: () => void reprintZ(r.id),
-                          gate: { module: "treasury", level: "READ" },
+                          gate: { operations: ["shifts.report"], module: "treasury", level: "READ" },
                         },
                         {
                           key: "copy",
@@ -993,7 +994,7 @@ export default function Shifts() {
                           disabled: copying === r.id,
                           disabledReason: "الملخص قيد التحضير",
                           onSelect: () => void copyZ(r.id),
-                          gate: { module: "treasury", level: "READ" },
+                          gate: { operations: ["shifts.report"], module: "treasury", level: "READ" },
                         },
                         {
                           key: "funding",
@@ -1009,9 +1010,10 @@ export default function Shifts() {
                           kind: "reverse",
                           label: "إغلاق",
                           icon: Lock,
-                          hidden: r.status !== "OPEN" || !isElevated,
+                          hidden: r.status !== "OPEN" || !canCloseShift,
                           onSelect: () => openCloseDialog(r.id),
                           gate: {
+                            operations: ["shifts.close"],
                             roles: ["cashier", "manager"],
                             module: "treasury",
                             level: "READ",
@@ -1146,6 +1148,8 @@ export default function Shifts() {
           legacyEvidenceNote: note,
           legacyClientRequestId: reqId,
           closeCounted: counted,
+          varianceReasonCode,
+          varianceReason,
         }) => {
           if (isNeg) {
             closeShiftM.mutate({
@@ -1164,6 +1168,8 @@ export default function Shifts() {
           closeShiftM.mutate({
             shiftId: sId,
             countedCash: counted,
+            varianceReasonCode,
+            varianceReason,
           });
         }}
       />

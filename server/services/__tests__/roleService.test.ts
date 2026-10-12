@@ -16,7 +16,6 @@ import {
 import { createUser, getUser, updateUser } from "../userService";
 
 const actor = { userId: 1, branchId: 1 };
-const otherActor = { userId: 999, branchId: 1 };
 const TABLES = ["auditLogs", "users", "roles", "branches"];
 const PW = "Pass1234!Aaa";
 
@@ -68,6 +67,18 @@ describe("roleService — إنشاء/تحقّق", () => {
 
   it("يرفض وحدة صلاحيات غير معروفة", async () => {
     await expect(createRole({ label: "y", baseRole: "user", permissions: { bogus: "FULL" } as any }, actor)).rejects.toThrow(/غير معروفة/);
+  });
+
+  it("يقبل وحدات الصلاحيات الموروثة مثل tasks وcustomers دون رمي خطأ", async () => {
+    const r = await createRole({
+      label: "دور بتوافق تاريخي",
+      baseRole: "cashier",
+      permissions: perms({ tasks: "READ", customers: "FULL" }),
+    }, actor);
+    expect(r.id).toBeGreaterThan(0);
+    const row = await getRole(r.id);
+    expect((row?.permissions as any).tasks).toBe("READ");
+    expect((row?.permissions as any).crm).toBe("FULL");
   });
 
   it("يرفض مفتاحاً مكرّراً (CONFLICT)", async () => {
@@ -124,7 +135,7 @@ describe("roleService — إسناد لمستخدم + حلّ السياق", () =
   it("تبديل المستخدم لدور مبني يمسح الدور المخصّص", async () => {
     const role = await createRole({ label: "د", baseRole: "cashier", permissions: perms({ pos: "FULL" }) }, actor);
     const { userId } = await createUser({ name: "س", username: "salem", password: PW, customRoleId: role.id }, actor);
-    await updateUser({ userId, role: "warehouse" }, otherActor);
+    await updateUser({ userId, role: "warehouse" }, actor);
     const row = await getUser(userId);
     expect(row?.role).toBe("warehouse");
     expect(row?.customRoleId == null).toBe(true);

@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Ban, CircleDollarSign, Undo2 } from "lucide-react";
+import { Ban, CircleDollarSign, Printer, Undo2, UserCheck } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, fmt } from "@/lib/money";
+import { printPlanScheduleReport } from "./installmentReportPrint";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -11,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { RowActions } from "@/components/list";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   Dialog,
   DialogContent,
@@ -31,6 +33,7 @@ interface PlanDetailDialogProps {
   onClose: () => void;
   onPay: (line: PlanLine, branchId: number) => void;
   onChanged: () => Promise<void> | void;
+  onOpenDossier?: (customerId: number) => void;
 }
 
 export function PlanDetailDialog({
@@ -38,6 +41,7 @@ export function PlanDetailDialog({
   onClose,
   onPay,
   onChanged,
+  onOpenDossier,
 }: PlanDetailDialogProps) {
   const plan = trpc.installments.get.useQuery({ planId });
   const [bounceTarget, setBounceTarget] = useState<PlanLine | null>(null);
@@ -73,7 +77,35 @@ export function PlanDetailDialog({
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>خطة الأقساط #{planId}</DialogTitle>
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <DialogTitle>خطة الأقساط #{planId}</DialogTitle>
+            <div className="flex items-center gap-2">
+              {p && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => printPlanScheduleReport(p)}
+                  className="gap-1.5 h-7 text-xs"
+                >
+                  <Printer className="size-3.5" />
+                  طباعة جدول الأقساط
+                </Button>
+              )}
+              {p && onOpenDossier && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onOpenDossier(p.customerId)}
+                  className="gap-1.5 h-7 text-xs"
+                >
+                  <UserCheck className="size-3.5" />
+                  الملف الشامل 360°
+                </Button>
+              )}
+            </div>
+          </div>
           {p && (
             <DialogDescription>
               {p.customerName} — الإجمالي <span dir="ltr" className="tabular-nums">{fmt(p.totalAmount)}</span> د.ع
@@ -211,7 +243,7 @@ export function PlanDetailDialog({
                 disabled={bounce.isPending}
                 onClick={() => bounceTarget && bounce.mutate({ lineId: bounceTarget.id, note: bounceNote.trim() || undefined })}
               >
-                {bounce.isPending ? "جارٍ…" : "تسجيل الارتجاع"}
+                {bounce.isPending ? ACTION_LABELS.processing : "تسجيل الارتجاع"}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -239,7 +271,7 @@ export function PlanDetailDialog({
                   clientRequestId: cancelClientRequestId,
                 })}
               >
-                {cancel.isPending ? "جارٍ…" : "تأكيد الإلغاء"}
+                {cancel.isPending ? ACTION_LABELS.processing : "تأكيد الإلغاء"}
               </Button>
             </DialogFooter>
           </DialogContent>

@@ -19,8 +19,8 @@ const CashVarianceResolutionPanel = lazy(() => import("@/components/treasury/Cas
 
 function DailyReconciliationAccess() {
   return (
-    <RequireRole roles={["admin", "manager", "accountant", "auditor"]} module="reports" level="READ">
-      <RequireRole roles={["admin", "manager", "accountant", "auditor"]} module="treasury" level="READ">
+    <RequireRole gate={{ roles: ["admin", "manager", "accountant", "auditor"], module: "reports", level: "READ", operations: ["reports.dayCloseReconciliation"] }}>
+      <RequireRole gate={{ roles: ["admin", "manager", "accountant", "auditor"], module: "treasury", level: "READ", operations: ["treasury.dailyCashReconciliation"] }}>
         <DayCloseReport />
       </RequireRole>
     </RequireRole>
@@ -33,28 +33,28 @@ function DailyReconciliationAccess() {
 //    (treasury=READ قالبياً) خارج قائمتها فكان يهبط على تبويبٍ ترفض قائمتُه بـ403 رغم ظهوره.
 //  - المصروفات: expensesReadProcedure = requireModule("expenses","READ") (أمين المخزن expenses=NONE).
 const TABS: HubTab[] = [
-  { value: "dashboard", label: "لوحة الخزينة", gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "treasury" }, Component: Treasury },
+  { value: "dashboard", label: "لوحة الخزينة", gate: { operations: ["treasury.getDashboard", "treasury.pendingHandoverReceipts", "treasury.pendingHandoverQueue", "treasury.fundTreasury"], roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "treasury" }, Component: Treasury },
   {
     value: "daily-reconciliation",
     label: "المطابقة اليومية",
     gate: {
       allOf: [
-        { roles: ["admin", "manager", "accountant", "auditor"], module: "reports", level: "READ" },
-        { roles: ["admin", "manager", "accountant", "auditor"], module: "treasury", level: "READ" },
+        { operations: ["reports.dayCloseReconciliation"], roles: ["admin", "manager", "accountant", "auditor"], module: "reports", level: "READ" },
+        { operations: ["treasury.dailyCashReconciliation"], roles: ["admin", "manager", "accountant", "auditor"], module: "treasury", level: "READ" },
       ],
     },
     Component: DailyReconciliationAccess,
   },
-  { value: "cash-variance", label: "فروقات النقد", gate: { roles: ["admin", "manager", "accountant"], module: "treasury" }, Component: CashVarianceResolutionPanel },
-  { value: "transfers", label: "تحويلات نقدية", gate: { roles: ["manager", "accountant"], module: "treasury" }, Component: TreasuryTransfers },
-  { value: "expenses", label: "المصروفات", gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "expenses" }, Component: Expenses },
+  { value: "cash-variance", label: "فروقات النقد", gate: { operations: ["treasury.cashVariance.list", "treasury.cashVariance.propose"], roles: ["admin", "manager", "accountant"], module: "treasury" }, Component: CashVarianceResolutionPanel },
+  { value: "transfers", label: "تحويلات نقدية", gate: { operations: ["cashTransfers.list", "cashTransfers.send"], roles: ["manager", "accountant"], module: "treasury" }, Component: TreasuryTransfers },
+  { value: "expenses", label: "المصروفات", gate: { operations: ["expenses.list", "expenses.create"], roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "expenses" }, Component: Expenses },
   // فئات المصروفات: إدارة (مدير/محاسب) — الكاشير يُنشئ مصروفاً ويقرأ المنتقي لكنه لا يديره.
-  { value: "expense-categories", label: "فئات المصروفات", gate: { roles: ["manager", "accountant"], module: "expenses" }, Component: ExpenseCategories },
-  { value: "vouchers", label: "السندات", gate: { roles: ["manager", "accountant"], module: "treasury" }, Component: Vouchers },
+  { value: "expense-categories", label: "فئات المصروفات", gate: { operations: ["expenses.categories.list"], roles: ["manager", "accountant"], module: "expenses" }, Component: ExpenseCategories },
+  { value: "vouchers", label: "السندات", gate: { operations: ["vouchers.list", "vouchers.create"], roles: ["manager", "accountant"], module: "treasury" }, Component: Vouchers },
   // فئات السندات: كانت شاشةً يتيمة بلا مدخلٍ في التنقّل — لا تُبلَغ إلّا من رابطٍ صغير داخل نموذج
   // السند، بينما فئتُها **إلزامية** لإتمام سند «أخرى». مكانها الطبيعيّ تبويبٌ في محور الخزينة.
-  { value: "voucher-categories", label: "فئات السندات", gate: { roles: ["manager", "accountant"], module: "treasury" }, Component: VoucherCategories },
-  { value: "shifts", label: "الورديات", gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "treasury" }, Component: Shifts },
+  { value: "voucher-categories", label: "فئات السندات", gate: { operations: ["voucherCategories.list"], roles: ["manager", "accountant"], module: "treasury" }, Component: VoucherCategories },
+  { value: "shifts", label: "الورديات", gate: { operations: ["shifts.list"], roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "treasury" }, Component: Shifts },
 ];
 
 export default function TreasuryHub() {

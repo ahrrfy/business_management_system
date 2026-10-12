@@ -2,7 +2,7 @@ import { imageDataToRaster, type Raster } from "./escpos";
 import { code128Svg } from "./barcode";
 import { qrCodeSvg, qrCodeDataUrl } from "./qr";
 import type { BarcodeSet } from "@shared/barcodeTypes";
-import { CAIRO_FONT, CO, logoUrl } from "./brand";
+import { CAIRO_FONT, CO, logoUrl, openPrintWindow } from "./brand";
 
 /** بندٌ مركّب لإيصال 80مم: الاسم مستقل عن سطر الكمية/السعر والإجمالي. */
 export interface PrintItemBlock {
@@ -506,10 +506,5 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
 }
 
 export function printHtml(html: string): boolean {
-  if (typeof window === "undefined") return false;
-  const w = window.open("", "_blank", "width=380,height=640");
-  if (!w) return false;
-  w.document.write(html);
-  w.document.close();
-  return true;
+  return openPrintWindow(html, "width=380,height=640");
 }

@@ -31,6 +31,7 @@ import type {
 } from "@shared/offlineCatalog";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { titleForChannel } from "@shared/productChannelTitles";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "../../db";
 
@@ -48,7 +49,7 @@ async function catalogVersionParts(db: NonNullable<ReturnType<typeof getDb>>): P
   const [prod] = await db
     .select({
       cnt: sql<number>`count(*)`,
-      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${products.id}, ${products.name}, ${products.isActive}, ${products.isService}, ${products.isCustomizable}, ${products.isBundle}, coalesce(${products.productType}, ''), ${products.showInPrintPos}, ${products.showInQuotations}, ${products.showInAdvancedSales}, ${products.allowBackorder}))), 0)`,
+      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${products.id}, ${products.name}, coalesce(${products.posLabel}, ''), coalesce(${products.shortTitle}, ''), ${products.isActive}, ${products.isService}, ${products.isCustomizable}, ${products.isBundle}, coalesce(${products.productType}, ''), ${products.showInPrintPos}, ${products.showInQuotations}, ${products.showInAdvancedSales}, ${products.allowBackorder}))), 0)`,
     })
     .from(products);
   const [vars] = await db
@@ -90,7 +91,9 @@ async function catalogVersionParts(db: NonNullable<ReturnType<typeof getDb>>): P
     // v5 (٤/٩، مراجعة Codex P2): اللقطة صارت تُصدّر الباركود **مُطبَّعاً** (`canonicalizeBarcodeInput`)
     // كي يطابقه مُدخلُ المسح المُطبَّع أوفلاين كما أونلاين. البادئة لازمةٌ لأنّ الـCRC محسوبٌ على العمود
     // الخامّ فلا يتغيّر بتطبيع القيمة المُصدَّرة وحده — بلا رفعها يبقى الجهاز على باركوداتٍ خام لا تُطابَق.
-    "v5",
+    // v6: اعتماد عنوان القناة (titleForChannel مع قناة "pos" / posLabel / shortTitle) في productName
+    // وsearchText للقطة، لتتطابق تسمية الكاشير أوفلاين مع الكاشير أونلاين تماماً + تضمين الحقلين في الـCRC.
+    "v6",
     prod.cnt, prod.crc,
     vars.cnt, vars.crc,
     prices.cnt, prices.crc,
@@ -132,6 +135,8 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
         productUnitId: productUnits.id,
         productId: products.id,
         productName: products.name,
+        posLabel: products.posLabel,
+        shortTitle: products.shortTitle,
         variantId: productVariants.id,
         variantName: productVariants.variantName,
         color: productVariants.color,
@@ -199,10 +204,18 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
     const allBarcodes = Array.from(
       new Set([r.barcode, ...aliases].map((b) => canonicalizeBarcodeInput(b ?? "")).filter(Boolean)),
     );
+    const posTitle = titleForChannel(
+      {
+        name: r.productName,
+        posLabel: r.posLabel,
+        shortTitle: r.shortTitle,
+      },
+      "pos",
+    );
     return {
       productUnitId: unitId,
       productId: Number(r.productId),
-      productName: r.productName,
+      productName: posTitle,
       variantId: Number(r.variantId),
       variantName: r.variantName,
       color: r.color,
@@ -232,7 +245,16 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
       // الباركودات ضمن نص البحث — تكافؤ مع بحث الخادم الذي يطابق productUnits.barcode
       // (كتابة الباركود يدوياً في حقل البحث تجده حتى بلا توقيت ماسح HID).
       searchText: normalizeSearchText(
-        [r.productName, r.variantName, r.color, r.size, r.sku, r.unitName, ...allBarcodes]
+        [
+          posTitle,
+          r.productName !== posTitle ? r.productName : null,
+          r.variantName,
+          r.color,
+          r.size,
+          r.sku,
+          r.unitName,
+          ...allBarcodes,
+        ]
           .filter(Boolean)
           .join(" "),
       ),

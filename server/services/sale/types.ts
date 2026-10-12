@@ -1,10 +1,21 @@
 // عقد البيع (POS/عبر القنوات) المشترك.
 import type { PriceTier } from "../pricing";
+import type { VERIFIED_DIGITAL_CREDIT_PREFLIGHT } from "./create";
+import type {
+  SaleAttributionInput,
+  AttributionMode,
+} from "../commissions/attribution";
 
 // تصدير داخلي للحزمة فقط (يستهلكه create/payment) — لا يُعاد تصديره من البرميل saleService.ts.
 // ش٥: TELECOM (رصيد زين) — يقبله receipts.paymentMethod منذ 0154؛ سطوح البيع العادية لا
 // تعرضه (مقصورٌ على محطة الاستقبال خلف ضوابط reception/telecom.ts).
-export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM";
+export type PaymentMethod =
+  | "CASH"
+  | "CARD"
+  | "CHECK"
+  | "TRANSFER"
+  | "WALLET"
+  | "TELECOM";
 
 export interface SaleLineInput {
   variantId: number;
@@ -85,7 +96,11 @@ export interface CreateSaleInput {
    */
   deliveryWaivedAmount?: string | null;
   taxRatePercent?: string | null;
-  payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
+  payment?: {
+    amount: string;
+    method: PaymentMethod;
+    reference?: string | null;
+  } | null;
   /** ش٤ (§٧.٢) — مالٌ قُبض **سلفاً** على هذه السلة (عرابين مسوّدة عبر orderPayments):
    *  يدخل paidAmount والذمّة، و**لا يُنشأ له إيصالٌ ثانٍ أبداً** (الإيصال الجديد للجزء
    *  المُسلَّم الآن وحده — I5). receiptIds إيصالاتٌ قائمة تُختم invoiceId فقط إن مُرّرت
@@ -104,6 +119,17 @@ export interface CreateSaleInput {
    * للمدير — بلا إنذارٍ ولا أثرٍ ظاهر. هويّة المصحِّح تبقى محفوظةً في `auditLogs` وحدها.
    */
   attributeToUserId?: number | null;
+  /**
+   * إسناد المبيعات متعدد الأدوار (R2).
+   * يدعم تعيين بائع صالة العرض، موظف الاستقبال، مجهّز الطلب، أو نسب التقسيم المخصصة.
+   */
+  attribution?: SaleAttributionInput | null;
+  /** معرّف بائع الصالة المباشر (اختصار مباشر وسريع لـ POS). */
+  salesRepId?: number | null;
+  /** نمط الإسناد (DIRECT / SPLIT / POOL). */
+  attributionMode?: AttributionMode | null;
+  /** هوية بائع الصالة المساعد في حالة التقسيم المباشر */
+  assistedByUserId?: number | null;
   /** معرّف محطة/جهاز نقطة البيع للتدقيق (ليس سراً ولا رمز مصادقة). */
   deviceId?: string | null;
   /** رمز كوبون CRM؛ يُقفل ويُتحقق ويُستهلك ذرّياً مع الفاتورة. */
@@ -112,6 +138,14 @@ export interface CreateSaleInput {
   /** موافقة مدير على تجاوز حدّ الائتمان (يضبطها الراوتر بعد التحقّق من هوية المدير).
    *  B5: إن كانت true يجب توفير إمّا creditApprovalId (تدفّق UI جديد) أو managerOverrideByUserId (تدفّق router قديم). */
   creditApproved?: boolean;
+  /** Internal completion of a locked, issued digital intent admitted before provider issuance. */
+  digitalCreditPreflight?: {
+    capability: typeof VERIFIED_DIGITAL_CREDIT_PREFLIGHT;
+    intentId: number;
+    customerId: number;
+    branchId: number;
+    amount: string;
+  };
   /**
    * تفويض داخلي حصراً من checkoutReception بعد قفل عميل فعّال والتحقق من اسمه وهاتفه العراقي.
    * لا يظهر في أي مخطط راوتر عام، ويعفي بيع الاستقبال «بدون عربون» من سقف الائتمان مع إبقاء AR.
@@ -192,7 +226,11 @@ export interface CreateSaleInput {
   /** أوفلاين (ش٣ — داخلي، لا يعرضه saleRouter): بيانات التقاط بيعٍ جرى دون اتصال —
    *  يضبطها offline.replaySale حصراً. تُخزَّن على الفاتورة (originatedOffline/الرقم المؤقّت/
    *  لحظة الالتقاط الحقيقية) — قيود الدفتر تبقى بوقت الخادم (سلامة assertPeriodOpen). */
-  offlineCapture?: { capturedAt: Date; offlineReceiptNumber: string; deviceId?: string | null } | null;
+  offlineCapture?: {
+    capturedAt: Date;
+    offlineReceiptNumber: string;
+    deviceId?: string | null;
+  } | null;
   /** أوفلاين (ش٣ — داخلي): سماح بمخزون سالب — البضاعة خرجت فعلاً أثناء الانقطاع والنقد قُبض؛
    *  رفض التسجيل يجعل الدفاتر تكذب (قرار مالك ١٨/٧: تسجيل بوسم مراجعة لا تعليق).
    *  يضبطه offline.replaySale فقط، والوسم = originatedOffline + تقرير المبيعات الأوفلاين. */
@@ -236,4 +274,12 @@ export interface CreateSaleResult {
   /** م١ (PR-1): الإرسالية المُنشأة في معاملة البيع حين وُجد `input.delivery` (تعود أيضاً في replay). */
   consignmentId?: number;
   consignmentNumber?: string;
+  /** كوبون العودة التلقائي (Bounce-Back Coupon) الصادر مع الفاتورة للزيارة القادمة */
+  bounceBackCoupon?: {
+    code: string;
+    headline: string;
+    discountText: string;
+    minSpendText?: string | null;
+    validToText: string;
+  } | null;
 }

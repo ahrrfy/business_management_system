@@ -130,21 +130,14 @@
     "systemRouter.updateOpeningMode@server/routers/systemRouter.ts",
     "systemRouter.updateTaxSettings@server/routers/systemRouter.ts",
     "treasuryRouter.fundTreasury@server/routers/treasuryRouter.ts",
-    "userRouter.changeMyPin@server/routers/userRouter.ts",
     "userRouter.changePassword@server/routers/userRouter.ts",
-    "userRouter.clearBadgeBarcode@server/routers/userRouter.ts",
-    "userRouter.clearMyBadgeBarcode@server/routers/userRouter.ts",
-    "userRouter.clearPin@server/routers/userRouter.ts",
     "userRouter.create@server/routers/userRouter.ts",
     "userRouter.delete@server/routers/userRouter.ts",
-    "userRouter.generateBadgeBarcode@server/routers/userRouter.ts",
-    "userRouter.generateMyBadgeBarcode@server/routers/userRouter.ts",
     "userRouter.resetPassword@server/routers/userRouter.ts",
     "userRouter.resetTwoFactor@server/routers/userRouter.ts",
     "userRouter.revokeSession@server/routers/userRouter.ts",
     "userRouter.revokeSessions@server/routers/userRouter.ts",
     "userRouter.setActive@server/routers/userRouter.ts",
-    "userRouter.setPin@server/routers/userRouter.ts",
     "userRouter.update@server/routers/userRouter.ts"
   ]
 }

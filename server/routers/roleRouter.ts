@@ -1,4 +1,6 @@
 import { ALL_ROLES, type RoleKey } from "@shared/permissions";
+import { atomicPermissionsMapSchema, operationalCapsSchema } from "@shared/atomicPermissions";
+import { operationPolicySchema } from "@shared/operationPermissions";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import {
@@ -41,7 +43,10 @@ export const roleRouter = router({
         description: z.string().max(2000).nullish(),
         baseRole: BASE_ROLE,
         permissions: PERMISSIONS,
-      })
+        atomicPermissions: atomicPermissionsMapSchema.nullish(),
+        operationalCaps: operationalCapsSchema.nullish(),
+        operationPolicy: operationPolicySchema.nullish(),
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       const res = await createRole(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
@@ -51,7 +56,15 @@ export const roleRouter = router({
         entityId: res.id,
         // H5 (تدقيق ٢٣/٦/٢٦): سَجِّل خريطة الصلاحيات الأوّليّة كاملةً ⇒ يَكشف لاحقاً «من
         // أعطى أيّ صلاحية من البداية» (لا يَكفي label/baseRole — هما لا يُظهران FULL/READ/NONE).
-        newValue: { key: res.key, label: input.label, baseRole: input.baseRole, permissions: input.permissions },
+        newValue: {
+          key: res.key,
+          label: input.label,
+          baseRole: input.baseRole,
+          permissions: input.permissions,
+          atomicPermissions: input.atomicPermissions ?? null,
+          operationalCaps: input.operationalCaps ?? null,
+          operationPolicyRevision: res.operationPolicyRevision,
+        },
       });
       return res;
     }),
@@ -64,7 +77,15 @@ export const roleRouter = router({
         description: z.string().max(2000).nullish(),
         baseRole: BASE_ROLE.optional(),
         permissions: PERMISSIONS.optional(),
-      })
+        atomicPermissions: atomicPermissionsMapSchema.nullish(),
+        operationalCaps: operationalCapsSchema.nullish(),
+        operationPolicy: operationPolicySchema.nullish(),
+        expectedOperationPolicyRevision: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional(),
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       // H5 (تدقيق ٢٣/٦/٢٦): توسعة دور خفيّة كانت بلا أَثَر forensic — لا oldValue ولا حتى
@@ -81,12 +102,18 @@ export const roleRouter = router({
           label: before?.label ?? null,
           baseRole: before?.baseRole ?? null,
           permissions: (before as { permissions?: unknown })?.permissions ?? null,
+          atomicPermissions: (before as { atomicPermissions?: unknown })?.atomicPermissions ?? null,
+          operationalCaps: (before as { operationalCaps?: unknown })?.operationalCaps ?? null,
+          operationPolicyRevision: before?.operationPolicyRevision ?? 0,
         },
         newValue: {
           label: input.label,
           baseRole: input.baseRole,
           // input.permissions optional ⇒ undefined = «بلا تغيير» (لا نَكتب null بدل غير المعطى).
           permissions: input.permissions,
+          atomicPermissions: input.atomicPermissions,
+          operationalCaps: input.operationalCaps,
+          operationPolicyRevision: res.operationPolicyRevision,
         },
       });
       return res;

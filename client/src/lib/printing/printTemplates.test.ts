@@ -14,6 +14,11 @@ import { printBrowserReceipt, printShiftCloseBrowser, printInvoiceA4 } from "./p
 import { resolveQrUrl } from "./render";
 import * as qrModule from "./qr";
 import { printA4Invoice } from "./a4Invoice";
+
+it.each([false, true])("propagates A4 preview opening: %s", async (opened) => {
+  vi.mocked(openPrintWindow).mockReturnValueOnce(opened);
+  expect(await printInvoiceA4({ invoiceNumber: "PRINT-RETRY", total: "10", subtotal: "10", items: [] })).toBe(opened);
+});
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import React from "react";
 import { createRoot } from "react-dom/client";

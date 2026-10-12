@@ -22,6 +22,7 @@ import { createPostingIntentEvidence } from "./accounting/postingEngine";
 import { money, toDbMoney } from "./money";
 import { assertPeriodOpen } from "./periodLockService";
 import { lockFinancialPostingGate } from "./reports/monthCloseGate";
+import { enqueueFinancialRefresh } from "../realtime/financialRefresh";
 
 export type EntryType =
   | "SALE"
@@ -247,6 +248,7 @@ export async function postEntry(tx: Tx, e: EntryInput): Promise<number> {
     runtime,
     postingValidationError,
   });
+  enqueueFinancialRefresh(tx, e.branchId ?? null);
   return entryId;
 }
 

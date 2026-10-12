@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
+import { stocktakeOperationAccess } from "@/lib/stocktakeOperationAccess";
+import type { OperationUser } from "@shared/operationPermissions";
 const page = readFileSync(new URL("../CostWaves.tsx", import.meta.url), "utf8");
 const detail = readFileSync(
   new URL(
@@ -32,6 +35,60 @@ const decisionSource = readFileSync(
 );
 
 describe("عقد واجهة موجات التكلفة", () => {
+  it("يفصل المنح المالية والقراءة عن كل حركة جرد ويشترط كشف التكلفة للمعاينة", () => {
+    const user: OperationUser = {
+      role: "courier",
+      operationPolicy: { version: 1, grants: {
+        "operation.stocktakes.list": true,
+        "operation.stocktakes.approveItems": true,
+        "operation.inventory.previewCostWave": true,
+      } },
+    };
+    expect(canLifecycleOperation(user, "stocktakes.list", false)).toBe(true);
+    expect(canLifecycleOperation(user, "stocktakes.approveItems", false)).toBe(true);
+    expect(canLifecycleOperation(user, "stocktakes.create", true)).toBe(false);
+    expect(canLifecycleOperation(user, "stocktakes.approve", true)).toBe(false);
+    expect(canLifecycleOperation(user, "stocktakes.firstSign", true)).toBe(false);
+    expect(canLifecycleOperation(user, "inventory.previewCostWave", true)).toBe(false);
+    user.operationPolicy!.dataVisibility = { purchaseCost: true, profitMargin: true };
+    expect(canLifecycleOperation(user, "inventory.previewCostWave", false)).toBe(true);
+    expect(canLifecycleOperation(user, "inventory.submitCostWave", true)).toBe(false);
+    expect(canLifecycleOperation(user, "inventory.costWave", true)).toBe(false);
+  });
+
+  it("يسحب عرض البيانات المخزنة عند المنع الفردي أو سحب كشف التكلفة", () => {
+    const user: OperationUser = {
+      role: "manager",
+      roleOperationPolicy: { version: 1, grants: {
+        "operation.inventory.costWave": true,
+        "operation.stocktakes.monitor": true,
+      }, dataVisibility: { purchaseCost: true, profitMargin: true } },
+    };
+    expect(canLifecycleOperation(user, "inventory.costWave", false)).toBe(true);
+    user.operationPolicy = { version: 1, grants: { "operation.stocktakes.monitor": false }, dataVisibility: { purchaseCost: false, profitMargin: false } };
+    expect(canLifecycleOperation(user, "inventory.costWave", true)).toBe(false);
+    expect(canLifecycleOperation(user, "stocktakes.monitor", true)).toBe(false);
+    expect(detail).toContain('canOperation("inventory.costWave") ? detail.data : undefined');
+    expect(page).toContain('const preview = canPreview ? cachedPreview : null');
+  });
+
+  it("لا يشترط الإنشاء لقراءة الجرد ولا يحجب المراجعة باسم الدور ولا يمنع إغلاق الحوار بعد السحب", () => {
+    const sessions = readFileSync(new URL("../Stocktakes.tsx", import.meta.url), "utf8");
+    const review = readFileSync(new URL("../StocktakeReview.tsx", import.meta.url), "utf8");
+    const monitor = readFileSync(new URL("../StocktakeMonitor.tsx", import.meta.url), "utf8");
+    expect(sessions).toContain("{ enabled: canReadList }");
+    expect(sessions).toContain("hasOperationPolicy(me.data) ?");
+    expect(review).toContain("stocktakeOperationAccess(me.data)");
+    expect(stocktakeOperationAccess({ role: "courier", operationPolicy: { version: 1, grants: { "operation.stocktakes.review": true }, dataVisibility: { purchaseCost: true, profitMargin: true } } }).canReview).toBe(true);
+    expect(stocktakeOperationAccess({ role: "manager", roleOperationPolicy: { version: 1, grants: {} } }).canReview).toBe(false);
+    expect(stocktakeOperationAccess({ role: "courier" }).canReview).toBe(false);
+    expect(review).not.toContain("if (me.data && !isManager)");
+    expect(review).toContain('canOperation(approveMode === "first" ? "stocktakes.firstSign" : "stocktakes.approve")');
+    for (const source of [review, monitor]) {
+      expect(source).not.toMatch(/onClick=\{\(\) => set\w+\((?:null|false)\)\} disabled=\{!canOperation/);
+    }
+  });
+
   it("تظهر كوحدة مستقلة بجوار موجات الأسعار مع الأقسام الأربعة", () => {
     expect(hub).toContain('value: "price-waves"');
     expect(hub).toContain('value: "cost-waves"');

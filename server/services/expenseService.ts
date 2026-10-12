@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
 import { appErrorMessage } from "@shared/errors";
 import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
@@ -245,15 +246,6 @@ function assertExpenseFundingInput(input: CreateExpenseInput) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "مصدر النقد يُحدَّد للمصروف المالي النقدي فقط",
-    });
-  }
-}
-
-function assertStockExpenseAuthority(actor: Actor) {
-  if (actor.role !== "admin" && actor.role !== "manager") {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "صرف المخزون كمصروف يتطلب صلاحية مدير مخزون/مدير",
     });
   }
 }
@@ -604,6 +596,9 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
   const resolvedExpenseDate = input.expenseDate?.trim() || toDateStr();
   try {
     const result = await withTx(async (tx) => {
+      if ((input.source ?? "CASH") === "STOCK") {
+        await assertOperationAuthorityTx(tx, actor, "expenses.create", actor.role === "admin" || actor.role === "manager");
+      }
       const replayId = await checkIdempotency(
         tx,
         opKey,
@@ -642,7 +637,6 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
 
       // production-slice: صرف من المخزون (نثرية/تلف) — مسار منفصل لا يلمس الصندوق النقدي.
       if ((input.source ?? "CASH") === "STOCK") {
-        assertStockExpenseAuthority(actor);
         return await createStockExpenseTx(
           tx,
           input,

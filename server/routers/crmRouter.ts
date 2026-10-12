@@ -1,8 +1,10 @@
 import { randomBytes, createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { appErrorMessage } from "../../shared/errors";
+import { formatActiveDays, type PromotionDesignMeta } from "../../shared/promotionScheduling";
+import { generateCouponsStandalonePdf, type CouponPdfItem } from "../services/couponPdfService";
 import {
   auditLogs,
   couponPrograms,
@@ -10,11 +12,13 @@ import {
   coupons,
   crmCampaigns,
   promotions,
+  promotionTargets,
   storeSettings,
   users,
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
+import { nonNegMoneyString, percentString } from "../lib/schemas";
 import { logAudit, logAuditTx } from "../services/auditService";
 import { getProductCategoryIds, resolveCouponPromotionForLine } from "../services/salesPromotionService";
 import {
@@ -30,6 +34,19 @@ import { campaignsManagerProcedure, campaignsReadProcedure, router } from "../tr
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "التاريخ يجب أن يكون YYYY-MM-DD");
 const campaignStatus = z.enum(["DRAFT", "REVIEW", "APPROVED", "SCHEDULED", "ACTIVE", "PAUSED", "ENDED"]);
 const programStatus = z.enum(["DRAFT", "ACTIVE", "PAUSED", "ENDED"]);
+
+const promotionDesignSchema = z.object({
+  title: z.string().max(80).optional(),
+  subtitle: z.string().max(140).optional(),
+  terms: z.string().max(500).optional(),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  activeDays: z.array(z.number().int().min(0).max(6)).max(7).optional().nullable(),
+  isAutoBounceBack: z.boolean().optional(),
+  autoBounceBackMinInvoice: nonNegMoneyString.optional().nullable(),
+  bounceBackValidityDays: z.number().int().min(1).max(365).optional().nullable(),
+  bounceBackPrefix: z.string().trim().max(12).optional().nullable(),
+  bounceBackHeadline: z.string().trim().max(100).optional().nullable(),
+}).optional();
 
 type UserCtx = { user: { id: number; role: string; branchId?: number | null } };
 
@@ -174,7 +191,21 @@ export const crmRouter = router({
       return withTx(async (tx) => {
         const now = new Date();
         const todayYmd = new Date(now.getTime() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
-        const coupon = await lockCouponForSale(tx, { code: input.code, branchId, customerId: input.customerId ?? null, todayYmd });
+        const lineSubtotal = input.lines.reduce(
+          (sum, line) => sum.add(money(line.unitPrice).mul(line.quantity)),
+          money(0),
+        );
+        const coupon = await lockCouponForSale(
+          tx,
+          {
+            code: input.code,
+            branchId,
+            customerId: input.customerId ?? null,
+            todayYmd,
+            subtotal: lineSubtotal,
+          },
+          { lock: false },
+        );
         const categories = await getProductCategoryIds(tx, input.lines.map((line) => line.productId));
         const lines = [];
         for (const line of input.lines) {
@@ -198,8 +229,26 @@ export const crmRouter = router({
             promotionEffectivePrice: toDbMoney(money(line.unitPrice).minus(money(resolved.discountForUnit))),
           });
         }
-        if (!lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون لا ينطبق على أصناف السلة" });
-        return { code: coupon.code, programName: coupon.programName, lines };
+        if (!lines.length) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذر تطبيق الكوبون",
+              why: "الكوبون لا ينطبق على أي صنف من أصناف السلة الحالية أو تعارض مع أسعار تعاقدية",
+              doThis: "تحقق من أصناف السلة أو أضف منتجات مشمولة بالعرض",
+            }),
+          });
+        }
+        return {
+          code: coupon.code,
+          programName: coupon.programName,
+          lines,
+          maxDiscountAmount: coupon.maxDiscountAmount,
+          minOrderSpend: coupon.minOrderSpend,
+          freeShipping: coupon.freeShipping,
+          shippingDiscountAmount: coupon.shippingDiscountAmount,
+          affiliateName: coupon.affiliateName,
+        };
       });
     }),
 
@@ -219,8 +268,16 @@ export const crmRouter = router({
         isFirstOrderSelfService: couponPrograms.isFirstOrderSelfService,
         codePrefix: couponPrograms.codePrefix,
         designJson: couponPrograms.designJson,
+        affiliateName: couponPrograms.affiliateName,
+        affiliatePhone: couponPrograms.affiliatePhone,
+        affiliateCommissionRate: couponPrograms.affiliateCommissionRate,
         createdAt: couponPrograms.createdAt,
+        minOrderSpend: promotions.minOrderSpend,
+        maxDiscountAmount: promotions.maxDiscountAmount,
+        freeShipping: promotions.freeShipping,
+        shippingDiscountAmount: promotions.shippingDiscountAmount,
       }).from(couponPrograms)
+        .leftJoin(promotions, eq(couponPrograms.promotionId, promotions.id))
         .where(branchId == null ? undefined : or(isNull(couponPrograms.branchId), eq(couponPrograms.branchId, branchId)))
         .orderBy(desc(couponPrograms.id));
       const performance = await withTx((tx) => loadCouponProgramPerformance(tx, branchId));
@@ -232,6 +289,10 @@ export const crmRouter = router({
           campaignId: row.campaignId == null ? null : Number(row.campaignId),
           promotionId: Number(row.promotionId),
           branchId: row.branchId == null ? null : Number(row.branchId),
+          minOrderSpend: row.minOrderSpend ?? "0.00",
+          maxDiscountAmount: row.maxDiscountAmount ?? null,
+          freeShipping: Boolean(row.freeShipping),
+          shippingDiscountAmount: row.shippingDiscountAmount ?? "0.00",
           issued: p?.issuedCoupons ?? 0,
           // الاستخدام الصالح فقط؛ فواتير الإلغاء/الإرجاع الكامل لا تُضخّم معدل الاسترداد.
           redeemed: p?.invoiceCount ?? 0,
@@ -257,9 +318,21 @@ export const crmRouter = router({
       perCustomerLimit: z.number().int().min(1).max(1000).default(1),
       isFirstOrderSelfService: z.boolean().default(false),
       codePrefix: z.string().trim().min(1).max(12).default("CRM"),
-      design: z.object({ title: z.string().max(80).optional(), subtitle: z.string().max(140).optional(), terms: z.string().max(500).optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional() }).optional(),
+      design: promotionDesignSchema,
+      affiliateName: z.string().trim().max(255).optional(),
+      affiliatePhone: z.string().trim().max(32).optional(),
+      affiliateCommissionRate: percentString.default("0.00"),
     })).mutation(async ({ input, ctx }) => {
-      if (input.validTo && input.validTo < input.validFrom) throw new TRPCError({ code: "BAD_REQUEST", message: "نهاية الصلاحية أقدم من البداية" });
+      if (input.validTo && input.validTo < input.validFrom) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تاريخ انتهاء الصلاحية غير صالح",
+            why: "نهاية الصلاحية تسبق تاريخ البدء",
+            doThis: "حدد تاريخ انتهاء لاحقاً لتاريخ البداية أو اتركه فارغاً",
+          }),
+        });
+      }
       if (input.isFirstOrderSelfService && (input.perCustomerLimit !== 1 || input.perCouponLimit !== 1)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -289,11 +362,415 @@ export const crmRouter = router({
           isFirstOrderSelfService: input.isFirstOrderSelfService,
           codePrefix: input.codePrefix.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "CRM",
           designJson: input.design ?? null,
+          affiliateName: input.affiliateName?.trim() || null,
+          affiliatePhone: input.affiliatePhone?.trim() || null,
+          affiliateCommissionRate: input.affiliateCommissionRate ?? "0.00",
           createdBy: ctx.user.id,
         }));
       });
       await logAudit(ctx, { action: "crm.couponProgram.create", entityType: "couponProgram", entityId: programId, newValue: { ...input, branchId } });
       return { programId };
+    }),
+
+    /** إنشاء موحّد للعرض الترويجي وبرنامج الكوبونات معاً في معاملة ذرية واحدة */
+    createUnified: campaignsManagerProcedure.input(z.object({
+      archetype: z.enum(["COUPON_BATCH", "AFFILIATE", "BOUNCE_BACK", "FIRST_ORDER", "DIRECT_PROMO"]).default("COUPON_BATCH"),
+      applicationMode: z.enum(["COUPON", "AUTO"]).default("COUPON"),
+      name: z.string().trim().min(2).max(255),
+      description: z.string().trim().max(1000).optional(),
+      codePrefix: z.string().trim().max(12).default("CRM"),
+      type: z.enum(["PERCENT", "AMOUNT"]),
+      status: z.enum(["DRAFT", "ACTIVE"]).default("ACTIVE"),
+      discountPercent: percentString.optional(),
+      discountAmount: nonNegMoneyString.optional(),
+      maxDiscountAmount: nonNegMoneyString.optional(),
+      minOrderSpend: nonNegMoneyString.default("0"),
+      freeShipping: z.boolean().default(false),
+      shippingDiscountAmount: nonNegMoneyString.default("0"),
+      scope: z.enum(["ALL", "CATEGORIES", "PRODUCTS"]).default("ALL"),
+      targetCategoryIds: z.array(z.number().int().positive()).max(500).optional(),
+      targetProductIds: z.array(z.number().int().positive()).max(500).optional(),
+      customerTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).optional(),
+      branchId: z.number().int().positive().nullish(),
+      validFrom: ymd,
+      validTo: ymd.nullish(),
+      perCouponLimit: z.number().int().min(1).max(1000).default(1),
+      perCustomerLimit: z.number().int().min(1).max(1000).default(1),
+      isFirstOrderSelfService: z.boolean().default(false),
+      initialBatchCount: z.number().int().min(0).max(500).default(0),
+      customCodes: z.array(z.string().trim().min(2).max(32)).max(500).optional(),
+      exportPdfOnCreate: z.boolean().default(false),
+      affiliateName: z.string().trim().max(255).optional(),
+      affiliatePhone: z.string().trim().max(32).optional(),
+      affiliateCommissionRate: percentString.default("0.00"),
+      design: promotionDesignSchema,
+      campaignId: z.number().int().positive().nullish(),
+    })).mutation(async ({ input, ctx }) => {
+      if (input.validTo && input.validTo < input.validFrom) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تاريخ انتهاء الصلاحية غير صالح",
+            why: "نهاية الصلاحية تسبق تاريخ البدء",
+            doThis: "حدد تاريخ انتهاء لاحقاً لتاريخ البداية أو اتركه فارغاً",
+          }),
+        });
+      }
+
+      const isDirectPromo = input.archetype === "DIRECT_PROMO" || input.applicationMode === "AUTO";
+      const isFirstOrder = input.archetype === "FIRST_ORDER" || input.isFirstOrderSelfService;
+
+      if (input.type === "PERCENT") {
+        if (!input.discountPercent || money(input.discountPercent).lte(0)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "نسبة الخصم غير صالحة",
+              why: "يجب تحديد نسبة خصم موجبة أكبر من صفر عند اختيار نوع الخصم بالنسبة المئوية",
+              doThis: "أدخل نسبة خصم بين 0.01 و 100",
+            }),
+          });
+        }
+        if (!isDirectPromo && (!input.maxDiscountAmount || money(input.maxDiscountAmount).lte(0))) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "سقف الخصم الأقصى مطلوب",
+              why: "عروض النسبة المئوية في برامج الكوبونات تتطلب سقفاً مالياً أقصى (بالدينار) لمنع الخسائر غير المتوقعة",
+              doThis: "حدد سقف الخصم الأقصى بالدينار العراقي ثم أعد الحفظ",
+            }),
+          });
+        }
+      } else {
+        if (!input.discountAmount || money(input.discountAmount).lte(0)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "مبلغ الخصم غير صالح",
+              why: "يجب تحديد مبلغ خصم موجب أكبر من صفر عند اختيار نوع الخصم بالمبلغ المقطوع",
+              doThis: "أدخل مبلغ الخصم بالدينار العراقي",
+            }),
+          });
+        }
+      }
+
+      if (isFirstOrder && !isDirectPromo && (input.perCustomerLimit !== 1 || input.perCouponLimit !== 1)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذر إنشاء برنامج كوبون الطلب الأول",
+            why: "هذا البرنامج يجب أن يسمح باستخدام واحد وكوبون واحد للعميل",
+            doThis: "اضبط حدي الاستخدام لكل كوبون ولكل عميل على 1 ثم احفظ البرنامج",
+          }),
+        });
+      }
+
+      const branchId = ownBranch(ctx, input.branchId);
+
+      const dbResult = await withTx(async (tx) => {
+        const targetStatus = input.status;
+        if (input.campaignId != null) {
+          const campaign = await getCampaignForWrite(tx, input.campaignId, ctx);
+          if (targetStatus === "ACTIVE" && !["APPROVED", "SCHEDULED", "ACTIVE"].includes(campaign.status)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "اعتمد الحملة أولاً قبل تفعيل برنامج الكوبونات",
+            });
+          }
+        }
+
+        const effectiveAppMode = isDirectPromo ? "AUTO" : "COUPON";
+
+        // 1. إنشاء العرض الترويجي المرتبط
+        const promoInsertResult = await tx.insert(promotions).values({
+          campaignId: input.campaignId ?? null,
+          name: input.name,
+          description: input.description ?? null,
+          type: input.type,
+          discountPercent: input.type === "PERCENT" ? (input.discountPercent ?? "0") : "0",
+          discountAmount: input.type === "AMOUNT" ? (input.discountAmount ?? "0") : "0",
+          maxDiscountAmount: input.type === "PERCENT" ? (input.maxDiscountAmount ?? null) : null,
+          minOrderSpend: isDirectPromo ? "0" : (input.minOrderSpend ?? "0"),
+          freeShipping: isDirectPromo ? false : (input.freeShipping ?? false),
+          shippingDiscountAmount: isDirectPromo ? "0" : (input.shippingDiscountAmount ?? "0"),
+          scope: input.scope,
+          effectiveFrom: new Date(input.validFrom),
+          effectiveTo: input.validTo ? new Date(input.validTo) : null,
+          customerTier: input.customerTier ?? null,
+          branchId,
+          minLineAmount: "0",
+          priority: 0,
+          isActive: targetStatus === "ACTIVE",
+          applicationMode: effectiveAppMode,
+          isStoreManaged: false,
+          createdBy: ctx.user.id,
+        });
+        const promotionId = extractInsertId(promoInsertResult);
+
+        // 2. إدراج أهداف العرض إن وجدت
+        if (input.scope === "CATEGORIES" && input.targetCategoryIds?.length) {
+          await tx.insert(promotionTargets).values(
+            input.targetCategoryIds.map((categoryId) => ({
+              promotionId,
+              categoryId,
+            })),
+          );
+        } else if (input.scope === "PRODUCTS" && input.targetProductIds?.length) {
+          await tx.insert(promotionTargets).values(
+            input.targetProductIds.map((productId) => ({
+              promotionId,
+              productId,
+            })),
+          );
+        }
+
+        // إذا كان العرض خصماً مباشراً تلقائياً، ينتهي مسار الإنشاء هنا دون الحاجة لبرنامج كوبونات
+        if (isDirectPromo) {
+          await logAuditTx(tx, ctx, {
+            action: "crm.promotion.createDirect",
+            entityType: "promotion",
+            entityId: promotionId,
+            newValue: {
+              promotionId,
+              name: input.name,
+              applicationMode: "AUTO",
+              type: input.type,
+              discountPercent: input.discountPercent,
+              discountAmount: input.discountAmount,
+            },
+          });
+          return {
+            promotionId,
+            programId: null,
+            name: input.name,
+            codePrefix: "",
+            status: targetStatus,
+            applicationMode: "AUTO" as const,
+            codes: [] as string[],
+            batchReference: null,
+          };
+        }
+
+        const safePrefix = input.codePrefix.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "CRM";
+
+        // 3. قفل التفعيل الحصري لكوبون أول طلب إن طُلب
+        if (targetStatus === "ACTIVE" && isFirstOrder) {
+          const activationLock = (await tx.select({ id: storeSettings.id })
+            .from(storeSettings)
+            .where(eq(storeSettings.id, 1))
+            .for("update")
+            .limit(1))[0];
+          if (!activationLock) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: appErrorMessage({
+                what: "تعذر تفعيل برنامج كوبون الطلب الأول",
+                why: "لا يوجد صف إعدادات المتجر الذي يحمي التفعيل المتزامن",
+                doThis: "أكمل إعدادات المتجر ثم أعد محاولة التفعيل",
+              }),
+            });
+          }
+          const anotherFirstOrderProgram = (await tx.select({ id: couponPrograms.id })
+            .from(couponPrograms)
+            .where(and(
+              eq(couponPrograms.status, "ACTIVE"),
+              eq(couponPrograms.isFirstOrderSelfService, true),
+              branchId == null
+                ? undefined
+                : or(
+                    isNull(couponPrograms.branchId),
+                    eq(couponPrograms.branchId, branchId),
+                  ),
+            ))
+            .for("update")
+            .limit(1))[0];
+          if (anotherFirstOrderProgram) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: appErrorMessage({
+                what: "تعذر تفعيل برنامج كوبون الطلب الأول",
+                why: "يوجد برنامج فعّال آخر يخدم الفرع نفسه أو يغطي كل الفروع",
+                doThis: "أوقف البرنامج الحالي أولاً، ثم فعّل هذا البرنامج",
+              }),
+            });
+          }
+        }
+
+        // 4. دمج إعدادات التصميم حسب النمط
+        const effectiveDesign: PromotionDesignMeta = {
+          ...(input.design ?? {}),
+          isAutoBounceBack: input.archetype === "BOUNCE_BACK" ? true : input.design?.isAutoBounceBack,
+        };
+
+        // 5. إنشاء برنامج الكوبونات فورياً بالحالة المستهدفة
+        const progInsertResult = await tx.insert(couponPrograms).values({
+          campaignId: input.campaignId ?? null,
+          promotionId,
+          name: input.name,
+          status: targetStatus,
+          branchId,
+          validFrom: new Date(input.validFrom),
+          validTo: input.validTo ? new Date(input.validTo) : null,
+          perCouponLimit: isFirstOrder ? 1 : input.perCouponLimit,
+          perCustomerLimit: isFirstOrder ? 1 : input.perCustomerLimit,
+          isFirstOrderSelfService: isFirstOrder,
+          codePrefix: safePrefix,
+          designJson: effectiveDesign,
+          affiliateName: input.affiliateName?.trim() || null,
+          affiliatePhone: input.affiliatePhone?.trim() || null,
+          affiliateCommissionRate: input.affiliateCommissionRate ?? "0.00",
+          createdBy: ctx.user.id,
+        });
+        const programId = extractInsertId(progInsertResult);
+
+        if (input.customCodes && input.customCodes.length > 0) {
+          const rawCodes = input.customCodes.map((s) => normalizeCode(s)).filter(Boolean);
+          const duplicates = rawCodes.filter((code, idx) => rawCodes.indexOf(code) !== idx);
+          if (duplicates.length > 0) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "تكرار في الأكواد المخصصة",
+                why: `تحتوي القائمة على أكواد مكررة بعد التنسيق: ${Array.from(new Set(duplicates)).slice(0, 3).join(", ")}`,
+                doThis: "احذف الأكواد المكررة ثم أعد المحاولة",
+              }),
+            });
+          }
+        }
+
+        // 6. إصدار دفعة فورية متعددة إن طُلب (توليد متعدد مباشر)
+        let issuedCodes: string[] = [];
+        let batchReference: string | null = null;
+        const requestedCount = input.customCodes?.length ? input.customCodes.length : input.initialBatchCount;
+
+        if (requestedCount > 0 && !isFirstOrder) {
+          const issuedAt = new Date();
+          batchReference = `CP-${programId}-${issuedAt.toISOString().replace(/\D/g, "").slice(0, 14)}-${randomBytes(2).toString("hex").toUpperCase()}`;
+          const uniqueCodes = new Set<string>();
+
+          if (input.customCodes && input.customCodes.length > 0) {
+            for (const raw of input.customCodes) {
+              const norm = normalizeCode(raw);
+              if (norm) uniqueCodes.add(norm);
+            }
+          } else {
+            while (uniqueCodes.size < requestedCount) {
+              uniqueCodes.add(makeCode(safePrefix));
+            }
+          }
+
+          const couponRows = Array.from(uniqueCodes, (code) => ({
+            programId,
+            customerId: null,
+            code,
+            codeHash: codeHash(code),
+            status: "ACTIVE" as const,
+            issuedAt,
+          }));
+
+          if (couponRows.length > 0) {
+            await tx.insert(coupons).values(couponRows);
+            await logAuditTx(tx, ctx, {
+              action: "crm.coupon.issue",
+              entityType: "couponProgram",
+              entityId: programId,
+              newValue: { batchReference, count: couponRows.length, issuedAt: issuedAt.toISOString() },
+            });
+            issuedCodes = couponRows.map((r) => r.code);
+          }
+        }
+
+        // 7. تسجيل التدقيق الإلزامي لإنشاء البرنامج
+        await logAuditTx(tx, ctx, {
+          action: "crm.couponProgram.createUnified",
+          entityType: "couponProgram",
+          entityId: programId,
+          newValue: {
+            programId,
+            promotionId,
+            name: input.name,
+            codePrefix: safePrefix,
+            branchId,
+            type: input.type,
+            discountPercent: input.discountPercent,
+            discountAmount: input.discountAmount,
+            maxDiscountAmount: input.maxDiscountAmount,
+            minOrderSpend: input.minOrderSpend,
+            affiliateName: input.affiliateName,
+            affiliateCommissionRate: input.affiliateCommissionRate,
+            initialIssuedCount: issuedCodes.length,
+          },
+        });
+
+        return {
+          programId,
+          promotionId,
+          name: input.name,
+          codePrefix: safePrefix,
+          status: targetStatus,
+          applicationMode: "COUPON" as const,
+          codes: issuedCodes,
+          batchReference,
+        };
+      });
+
+      // 8. تصدير PDF فوري إن كان مطلوباً ووجدت كوبونات صادرة (محمي ضد الفشل لمنع تكرار الحفظ)
+      let pdf: { base64: string; filename: string; pageCount: number } | null = null;
+      let pdfWarning: string | null = null;
+
+      if (input.exportPdfOnCreate && dbResult.codes.length > 0 && dbResult.programId != null) {
+        try {
+          const design = (input.design ?? {}) as PromotionDesignMeta;
+          let heroDiscount = "";
+          if (input.type === "PERCENT") {
+            heroDiscount = `خصم ${Number(input.discountPercent)}%`;
+          } else if (input.discountAmount) {
+            heroDiscount = `خصم ${Number(input.discountAmount).toLocaleString()} د.ع`;
+          }
+          const discountCap = input.type === "PERCENT" && input.maxDiscountAmount && money(input.maxDiscountAmount).gt(0)
+            ? `سقف الخصم: ${Number(input.maxDiscountAmount).toLocaleString()} د.ع`
+            : null;
+          const minSpend = input.minOrderSpend && money(input.minOrderSpend).gt(0)
+            ? `للطلبات بقيمة ${Number(input.minOrderSpend).toLocaleString()} د.ع فأكثر`
+            : null;
+          const activeDaysText = design.activeDays && design.activeDays.length > 0 && design.activeDays.length < 7
+            ? `متاح: ${formatActiveDays(design.activeDays)}`
+            : null;
+
+          const items: CouponPdfItem[] = dbResult.codes.map((code) => ({
+            code,
+            title: design.title || input.name,
+            subtitle: design.subtitle,
+            heroDiscount,
+            discountCap,
+            minSpend,
+            terms: design.terms,
+            validTo: input.validTo ? new Date(input.validTo) : null,
+            activeDaysText,
+            color: design.color || "#0D6B52",
+          }));
+
+          const pdfDoc = await generateCouponsStandalonePdf({
+            programName: input.name,
+            coupons: items,
+          });
+
+          pdf = {
+            base64: Buffer.from(pdfDoc.pdfBytes).toString("base64"),
+            filename: `coupons-${dbResult.codePrefix}-${dbResult.codes.length}cards.pdf`,
+            pageCount: pdfDoc.pageCount,
+          };
+        } catch (pdfErr) {
+          console.error("[CRM] Failed to generate PDF post-commit:", pdfErr);
+          pdfWarning = "تم حفظ البرنامج وإصدار الكوبونات بنجاح، ولكن تعذر توليد ملف PDF تلقائياً. يمكنك تصديرها لاحقاً من قائمة الكوبونات.";
+        }
+      }
+
+      return {
+        ...dbResult,
+        pdf,
+        pdfWarning,
+      };
     }),
 
     setProgramStatus: campaignsManagerProcedure.input(z.object({ programId: z.number().int().positive(), status: programStatus })).mutation(async ({ input, ctx }) => {
@@ -308,7 +785,10 @@ export const crmRouter = router({
         }
         if (input.status === "ACTIVE") {
           const promotion = (await tx.select().from(promotions).where(eq(promotions.id, program.promotionId)).limit(1))[0];
-          if (!promotion?.isActive || promotion.applicationMode !== "COUPON") throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن التفعيل قبل تفعيل عرض كوبون صالح" });
+          if (!promotion || promotion.applicationMode !== "COUPON") throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن التفعيل قبل تفعيل عرض كوبون صالح" });
+          if (!promotion.isActive) {
+            await tx.update(promotions).set({ isActive: true }).where(eq(promotions.id, program.promotionId));
+          }
           if (program.campaignId != null) {
             const campaign = (await tx.select().from(crmCampaigns).where(eq(crmCampaigns.id, program.campaignId)).limit(1))[0];
             if (!campaign || !["APPROVED", "SCHEDULED", "ACTIVE"].includes(campaign.status)) {
@@ -407,7 +887,13 @@ export const crmRouter = router({
 
     /** سجل دفعات الإصدار الذريّ من سجل التدقيق الإلزامي؛ لا يخزن الرموز السرية داخله. */
     batches: campaignsReadProcedure
-      .input(z.object({ programId: z.number().int().positive(), limit: z.number().int().positive().max(200).default(50) }))
+      .input(
+        z.object({
+          programId: z.number().int().positive(),
+          limit: z.number().int().positive().max(200).default(50),
+          offset: z.number().int().min(0).default(0),
+        }),
+      )
       .query(async ({ input, ctx }) => {
         const db = requireDb();
         const program = (await db.select().from(couponPrograms).where(eq(couponPrograms.id, input.programId)).limit(1))[0];
@@ -423,7 +909,8 @@ export const crmRouter = router({
             eq(auditLogs.entityId, String(input.programId)),
           ))
           .orderBy(desc(auditLogs.id))
-          .limit(input.limit);
+          .limit(input.limit)
+          .offset(input.offset);
         return rows.map((row) => {
           const value = (row.newValue ?? {}) as Record<string, unknown>;
           return {
@@ -500,6 +987,152 @@ export const crmRouter = router({
       await logAudit(ctx, { action: "crm.coupon.void", entityType: "coupon", entityId: input.couponId });
       return { ok: true };
     }),
+
+    /**
+     * تصدير بطاقات الكوبونات كملف PDF مستقل (كل كوبون بصفحة مستقلة بقياس 54×84 مم).
+     */
+    exportPdf: campaignsReadProcedure
+      .input(z.object({
+        programId: z.number().int().positive(),
+        codes: z.array(z.string().min(1)).max(500).optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const db = requireDb();
+        const program = (
+          await db
+            .select({
+              id: couponPrograms.id,
+              name: couponPrograms.name,
+              branchId: couponPrograms.branchId,
+              validTo: couponPrograms.validTo,
+              designJson: couponPrograms.designJson,
+              promoType: promotions.type,
+              promoPercent: promotions.discountPercent,
+              promoAmount: promotions.discountAmount,
+              promoMaxDiscount: promotions.maxDiscountAmount,
+              promoMinSpend: promotions.minOrderSpend,
+            })
+            .from(couponPrograms)
+            .leftJoin(promotions, eq(couponPrograms.promotionId, promotions.id))
+            .where(eq(couponPrograms.id, input.programId))
+            .limit(1)
+        )[0];
+        if (!program) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "برنامج الكوبونات غير موجود",
+              why: `لم يتم العثور على برنامج الكوبونات برقم التعريف ${input.programId}`,
+              doThis: "تأكد من اختيار برنامج كوبونات صالح من القائمة ثم أعد المحاولة",
+            }),
+          });
+        }
+        ownBranch(ctx, program.branchId == null ? null : Number(program.branchId));
+
+        let targetCodes: string[] = [];
+        if (input.codes && input.codes.length > 0) {
+          const normalized = Array.from(new Set(input.codes.map((c) => normalizeCode(c)).filter(Boolean)));
+          if (!normalized.length) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "رموز الكوبونات غير صالحة",
+                why: "لم يتم تمرير أي رمز كوبون صالح للتصدير",
+                doThis: "تأكد من تحديد رموز كوبونات صحيحة ثم أعد المحاولة",
+              }),
+            });
+          }
+          const hashes = normalized.map((c) => codeHash(c));
+          const rows = await db
+            .select({ code: coupons.code })
+            .from(coupons)
+            .where(
+              and(
+                eq(coupons.programId, input.programId),
+                eq(coupons.status, "ACTIVE"),
+                inArray(coupons.codeHash, hashes),
+              ),
+            );
+          const activeSet = new Set(rows.map((r) => normalizeCode(r.code)));
+          const invalidOrInactive = normalized.filter((c) => !activeSet.has(c));
+          if (invalidOrInactive.length > 0) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "بعض الكوبونات المطلوبة غير صالحة للتصدير",
+                why: `هناك ${invalidOrInactive.length} كوبون غير نشط أو ملغى أو لا يتبع هذا البرنامج (${invalidOrInactive[0]})`,
+                doThis: "تأكد من اختيار كوبونات نشطة تابعة للبرنامج المحدد فقط قبل تصدير ملف PDF",
+              }),
+            });
+          }
+          targetCodes = rows.map((r) => r.code);
+        } else {
+          const rows = await db
+            .select({ code: coupons.code })
+            .from(coupons)
+            .where(and(eq(coupons.programId, input.programId), eq(coupons.status, "ACTIVE")))
+            .orderBy(desc(coupons.id))
+            .limit(500);
+          targetCodes = rows.map((r) => r.code);
+        }
+
+        if (!targetCodes.length) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "لا توجد كوبونات صالحة للتصدير",
+              why: "البرنامج لا يحوي أي كوبونات فعالة أو أن القائمة المحددة فارغة",
+              doThis: "قم بإصدار كوبونات جديدة تابعة لهذا البرنامج أولاً قبل تصدير بطاقات PDF",
+            }),
+          });
+        }
+
+        const design = (program.designJson ?? {}) as PromotionDesignMeta;
+        let heroDiscount = "";
+        if (program.promoType === "PERCENT") {
+          heroDiscount = `خصم ${Number(program.promoPercent)}%`;
+        } else if (program.promoAmount) {
+          heroDiscount = `خصم ${Number(program.promoAmount).toLocaleString()} د.ع`;
+        }
+
+        let discountCap = "";
+        if (program.promoMaxDiscount && money(program.promoMaxDiscount).gt(0)) {
+          discountCap = `سقف الخصم: ${Number(program.promoMaxDiscount).toLocaleString()} د.ع`;
+        }
+
+        let minSpend = "";
+        if (program.promoMinSpend && money(program.promoMinSpend).gt(0)) {
+          minSpend = `للطلبات بقيمة ${Number(program.promoMinSpend).toLocaleString()} د.ع فأكثر`;
+        }
+
+        const activeDaysText = design.activeDays && design.activeDays.length > 0 && design.activeDays.length < 7
+          ? `متاح: ${formatActiveDays(design.activeDays)}`
+          : null;
+
+        const items: CouponPdfItem[] = targetCodes.map((code) => ({
+          code,
+          title: design.title || program.name,
+          subtitle: design.subtitle,
+          heroDiscount,
+          discountCap: discountCap || null,
+          minSpend: minSpend || null,
+          terms: design.terms,
+          validTo: program.validTo,
+          activeDaysText,
+          color: design.color || "#0D6B52",
+        }));
+
+        const result = await generateCouponsStandalonePdf({
+          programName: program.name,
+          coupons: items,
+        });
+
+        return {
+          base64: result.base64,
+          filename: result.filename,
+          pageCount: result.pageCount,
+        };
+      }),
   }),
 });
 

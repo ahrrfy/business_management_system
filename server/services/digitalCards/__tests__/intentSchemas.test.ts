@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import superjson from "superjson";
 
 import {
   assertInvoiceFullPayment,
@@ -45,6 +46,23 @@ const digitalLines = [
 ] as const;
 
 describe("INVOICE digital intent source payload", () => {
+  it.each([undefined, null, 2])("يقبل مندوب الفاتورة الآجلة من نقل tRPC ويحفظه (%s)", (salesRepId) => {
+    const transported = superjson.parse<Record<string, unknown>>(superjson.stringify({
+      ...rawPayload(),
+      salesRepId,
+      payment: undefined,
+    }));
+    expect(Object.hasOwn(transported, "salesRepId")).toBe(true);
+    const parsed = parseInvoiceSourcePayload(transported);
+    expect(parsed).toHaveProperty("salesRepId", salesRepId);
+    expect(parsed.payment).toBeUndefined();
+  });
+
+  it.each([0, -1, 1.5, "2"])("يرفض هوية مندوب غير صالحة (%s)", (salesRepId) => {
+    expect(() => parseInvoiceSourcePayload({ ...rawPayload(), salesRepId }))
+      .toThrow(/حمولة فاتورة البيع الرقمية غير صالحة/);
+  });
+
   it("يقبل خصم السطر الرقمي ويحسب الإجمالي من السعر الموثق بدقة", () => {
     const sourcePayload = parseInvoiceSourcePayload(rawPayload());
     const result = computeInvoiceIntentTotal({

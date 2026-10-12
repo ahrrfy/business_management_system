@@ -31,14 +31,16 @@ import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
-import { allocateLineTax } from "@/components/invoice";
 import type { DispatchParty } from "@/components/delivery/DispatchDialog";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
-import { printReceipt } from "@/lib/printing/print";
+import { useInvoiceReceiptPrinter } from "@/hooks/useInvoiceReceiptPrinter";
+import { useInvoiceActionPermissions } from "@/hooks/useInvoiceActionPermissions";
+import { receptionInvoiceActions, receptionOperationAllowed } from "@/lib/receptionOperationAccess";
+import { hasPendingFirstInvoicePrint } from "@/lib/printing/invoicePrintAttempt";
+import { invoiceDetailPrintData } from "@/lib/printing/invoiceDetailPrintData";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
@@ -62,8 +64,6 @@ export function ReceptionInvoiceQueue({
   currentShiftId,
   branchName,
   parties,
-  canFulfill,
-  isManager,
   defaultPayChip,
 }: {
   branchId: number;
@@ -71,9 +71,6 @@ export function ReceptionInvoiceQueue({
   currentShiftId: number | null;
   branchName: string;
   parties: DispatchParty[];
-  canFulfill: boolean;
-  /** م٧: المرتجع مديريّ — للمدير رابط /returns، ولغيره حوار «استدعِ المدير». */
-  isManager: boolean;
   /**
    * الفلتر الافتراضيّ عند الفتح (١٩/٨). شاشة «فواتير للتحصيل» تفتح على **غير المسدَّدة**
    * لأنّ غرضها في اسمها؛ واللوحة العامّة تبقى على `ALL`. الفلتر يبقى قابلاً للتبديل بعدها.
@@ -81,6 +78,11 @@ export function ReceptionInvoiceQueue({
   defaultPayChip?: PayChip;
 }) {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const actions = receptionInvoiceActions(me.data);
+  const { canFirstPrint, canReprint } = useInvoiceActionPermissions(me.data);
+  const { printAuthorizedReceiptData, printAuthorizedDocument } = useInvoiceReceiptPrinter(me.data, me.data?.id);
+  const canRetryThermal = (invoiceId: number) => canReprint || (canFirstPrint && hasPendingFirstInvoicePrint(me.data?.id, invoiceId, "THERMAL"));
   const [range, setRange] = useState<RangeChip>(currentShiftId ? "MY_SHIFT" : "TODAY",
   );
   const [payChip, setPayChip] = useState<PayChip>(defaultPayChip ?? "ALL");
@@ -104,6 +106,7 @@ export function ReceptionInvoiceQueue({
   }, [branchId, debouncedQ, payChip, range, currentShiftId, cursor]);
 
   const q = trpc.reception.invoiceQueue.useQuery(queryInput, {
+    enabled: receptionOperationAllowed(me.data, "reception.invoiceQueue"),
     // إبقاء الصفحة الظاهرة أثناء تبديل الفلاتر يمنع وميض جدولٍ فارغ.
     placeholderData: (prev) => prev,
   });
@@ -164,12 +167,12 @@ export function ReceptionInvoiceQueue({
 
   /** إعادة الطباعة تتبع نطاق قراءة الفرع لا الملكية (§٨.٥): قراءةٌ محضة من لقطة الفاتورة. */
   async function reprintThermal(row: Row) {
-    if (printingId != null) return;
+    if (printingId != null || !actions.canReadInvoice || !canRetryThermal(Number(row.id))) return;
     setPrintingId(Number(row.id));
     try {
       const d = await utils.sales.get.fetch({ invoiceId: Number(row.id) });
       if (!d) { notify.err("تعذّر جلب الفاتورة"); return; }
-      const result = await printReceipt(invoiceToReceipt(d));
+      const result = await printAuthorizedReceiptData(invoiceToReceipt(d), true);
       if (!result.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة",
         );
       else if (result.via === "browser") notify.warn("الطابعة المباشرة غير متاحة", "فُتحت نافذة الطباعة البديلة",
@@ -183,44 +186,13 @@ export function ReceptionInvoiceQueue({
   }
 
   async function printA4(row: Row) {
+    if (!actions.canReadInvoice || (!canFirstPrint && !canReprint)) return;
     try {
       const d = await utils.sales.get.fetch({ invoiceId: Number(row.id) });
       if (!d) { notify.err("تعذّر جلب الفاتورة"); return; }
-      const afterDisc = round2(D(d.subtotal).minus(D(d.discountAmount ?? "0")),
-      ).toFixed(2);
-      const shares = allocateLineTax(
-        d.items.map((it) => ({ total: String(it.total) })),
-        String(d.taxAmount ?? "0"),
-        afterDisc,
-      );
-      await printInvoiceA4({
-        invoiceNumber: d.invoiceNumber,
-        invoiceDate: d.invoiceDate,
-        customerName: d.customerName,
-        customerPhone: d.customerPhone ?? null,
-        customerAddress: d.customerAddress ?? null,
-        customerBalance: d.customerId ? d.customerBalance : null,
-        salespersonName: d.salespersonName,
-        companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
-        paymentMethod: paymentMethodLabel(d.paymentMethod),
-        subtotal: d.subtotal,
-        discountAmount: d.discountAmount,
-        taxAmount: d.taxAmount,
-        taxRate: Number(d.taxRatePercent ?? 0),
-        total: d.total,
-        paidAmount: d.paidAmount,
-        qrPayload: d.qrPayload ?? null,
-        items: d.items.map((it, i) => ({
-          productName: it.productName ?? "",
-          unitName: it.unitName,
-          quantity: it.quantity,
-          unitPrice: it.unitPrice,
-          total: it.total,
-          taxAmount: shares[i] ?? "0",
-          isGift: it.isGift,
-          barcode: it.barcode ?? it.sku ?? null,
-        })),
-      });
+      await printAuthorizedDocument(Number(row.id), "A4", canReprint, async () =>
+        await printInvoiceA4(invoiceDetailPrintData(d, taxSettings.data?.taxRegistrationNumber ?? null))
+          ? { ok: true, via: "browser" } : { ok: false, via: "browser", reason: "popup-blocked" });
     } catch (e) {
       notify.err(e);
     }
@@ -298,7 +270,7 @@ export function ReceptionInvoiceQueue({
             <tbody>
               {rows.map((r) => {
                 const remaining = remainingOf(r);
-                const canCorrect = canFulfill;
+                const canCorrect = actions.canCorrect;
                 return (
                   <tr key={String(r.id)} className="border-b align-middle hover:bg-muted/30">
                     <td className="px-2 py-2 font-bold" dir="ltr">
@@ -353,7 +325,7 @@ export function ReceptionInvoiceQueue({
                     <td className="px-2 py-2">
                       <div className="flex items-center justify-center gap-1">
                         {/* بالطريق مع المندوب ⇒ التحصيل عبر توريده لا الدرج (مرآة حارس الخادم — مراجعة ٥/٨) */}
-                        {remaining > 0 && r.consignmentStatus !== "DISPATCHED" && r.consignmentStatus !== "PARTIAL" && (
+                        {actions.canCollect && remaining > 0 && r.consignmentStatus !== "DISPATCHED" && r.consignmentStatus !== "PARTIAL" && (
                           <Button size="sm" className="h-7 px-2 text-[10px]" onClick={() => setCollectTarget(r)}>
                             <HandCoins aria-hidden className="size-3 me-1" />{" "}
                               تسديد
@@ -364,10 +336,10 @@ export function ReceptionInvoiceQueue({
                             مع المندوب
                           </span>
                         )}
-                        <Button size="sm" variant="outline" className="h-7 px-1.5" title="إعادة طباعة حرارية" aria-label={`إعادة طباعة الفاتورة ${r.invoiceNumber}`} disabled={printingId != null} onClick={() => void reprintThermal(r)}>
+                        <Button size="sm" variant="outline" className="h-7 px-1.5" title="إعادة طباعة حرارية" aria-label={`إعادة طباعة الفاتورة ${r.invoiceNumber}`} disabled={printingId != null || !canRetryThermal(Number(r.id))} onClick={() => void reprintThermal(r)}>
                           <Printer aria-hidden className="size-3" />
                         </Button>
-                        <Button size="sm" variant="outline" className="h-7 px-1.5" title="طباعة A4" aria-label={`طباعة A4 للفاتورة ${r.invoiceNumber}`} onClick={() => void printA4(r)}>
+                        <Button size="sm" variant="outline" className="h-7 px-1.5" title="طباعة A4" aria-label={`طباعة A4 للفاتورة ${r.invoiceNumber}`} disabled={!canFirstPrint && !canReprint} onClick={() => void printA4(r)}>
                           <FileText aria-hidden className="size-3" />
                         </Button>
                         {canCorrect && (
@@ -381,12 +353,12 @@ export function ReceptionInvoiceQueue({
                             تعديل
                           </a>
                         )}
-                        {(!r.consignmentId || r.consignmentStatus === "CANCELLED") && canFulfill && (
+                        {(!r.consignmentId || r.consignmentStatus === "CANCELLED") && actions.canDispatch && (
                           <Button size="sm" variant="outline" className="h-7 px-1.5" title="إسناد للتوصيل" aria-label={`إسناد الفاتورة ${r.invoiceNumber} للتوصيل`} onClick={() => setDispatchTarget(r)}>
                             <Truck aria-hidden className="size-3" />
                           </Button>
                         )}
-                        <a
+                        {actions.canReadInvoice && <a
                           href={`/invoices/${r.id}`}
                           target="_blank"
                           rel="noreferrer"
@@ -394,8 +366,8 @@ export function ReceptionInvoiceQueue({
                           title="التفاصيل الكاملة (تبويب جديد — سلّتك محفوظة)"
                         >
                           تفاصيل
-                        </a>
-                        {r.status !== "RETURNED" && r.status !== "CANCELLED" && (
+                        </a>}
+                        {(actions.canCreateReturn || actions.canRequestReturn) && r.status !== "RETURNED" && r.status !== "CANCELLED" && (
                           <Button size="sm" variant="ghost" className="h-7 px-1.5 text-[10px] text-muted-foreground" title="طلب إرجاع" onClick={() => setReturnTarget(r)}>
                             <RotateCcw aria-hidden className="size-3" />
                           </Button>
@@ -422,7 +394,7 @@ export function ReceptionInvoiceQueue({
         «تعديل» يفتح محرر الفاتورة نفسه. عند اعتماد مدير مستقل يُعكس الأصل وتصدر فاتورة بديلة بكل آثارها المالية والمخزنية، ثم تُطبع البديلة.
       </div>
 
-      {collectTarget && (
+      {collectTarget && actions.canCollect && (
         <CollectPaymentDialog
           row={collectTarget}
           remaining={remainingOf(collectTarget)}
@@ -438,7 +410,7 @@ export function ReceptionInvoiceQueue({
         />
       )}
 
-      {dispatchTarget && (
+      {dispatchTarget && actions.canDispatch && (
         <InvoiceDispatchDialog
           row={dispatchTarget}
           parties={parties}
@@ -446,11 +418,13 @@ export function ReceptionInvoiceQueue({
           partialNotice={partialNotice}
           onClose={() => { setPartialNotice(null); setDispatchTarget(null); }}
           onConfirmPartial={() => {
+            if (!actions.canDispatch) return;
             const prev = lastDispatchArgs.current;
             if (prev) dispatchInvoice.mutate({ ...prev, partialDispatchConfirmed: true,
               });
           }}
           onConfirm={(args) => {
+            if (!actions.canDispatch) return;
             const payload = {
               invoiceId: Number(dispatchTarget.id),
               partyId: args.partyId,
@@ -471,10 +445,10 @@ export function ReceptionInvoiceQueue({
         />
       )}
 
-      {returnTarget && (
+      {returnTarget && (actions.canCreateReturn || actions.canRequestReturn) && (
         <ReturnRequestDialog
           row={returnTarget}
-          isManager={isManager}
+          canCreateReturn={actions.canCreateReturn}
           onClose={() => setReturnTarget(null)}
         />
       )}
@@ -500,6 +474,8 @@ function CollectPaymentDialog({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const me = trpc.auth.me.useQuery();
+  const actions = receptionInvoiceActions(me.data);
   const [amount, setAmount] = useState(String(remaining));
   const [method, setMethod] = useState<"CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM">("CASH");
   const [reference, setReference] = useState("");
@@ -541,6 +517,7 @@ function CollectPaymentDialog({
       externalAttempt.fingerprint === externalFingerprint);
 
   async function confirmReceptionExternalPayment() {
+    if (!actions.canCollect || !actions.canConfirmExternalPayment) return;
     const normalizedReference = reference.trim();
     if (
       !normalizedReference ||
@@ -712,7 +689,7 @@ function CollectPaymentDialog({
           <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
           <Button
             className="flex-1"
-            disabled={collect.isPending || D(amount || 0).lte(0) || (needRef && !reference.trim()) ||
+            disabled={!actions.canCollect || collect.isPending || D(amount || 0).lte(0) || (needRef && !reference.trim()) ||
               !externalConfirmed ||
               (method === "TELECOM" && !telecomConfirmed)}
             onClick={() =>
@@ -749,7 +726,9 @@ function StaffReturnRequestForm({ row, onClose,
 }: { row: Row; onClose: () => void;
 }) {
   const utils = trpc.useUtils();
-  const detail = trpc.sales.get.useQuery({ invoiceId: Number(row.id) });
+  const me = trpc.auth.me.useQuery();
+  const canRequest = receptionInvoiceActions(me.data).canRequestReturn;
+  const detail = trpc.sales.get.useQuery({ invoiceId: Number(row.id) }, { enabled: canRequest });
   const [qty, setQty] = useState<Record<number, number>>({});
   const [reason, setReason] = useState("");
 
@@ -773,7 +752,7 @@ function StaffReturnRequestForm({ row, onClose,
     .map((it) => ({ invoiceItemId: it.id, baseQuantity: Math.min(qty[it.id] ?? 0, it.remaining),
     }))
     .filter((l) => l.baseQuantity > 0);
-  const canSubmit = lines.length > 0 && reason.trim().length >= 3 && !req.isPending;
+  const canSubmit = canRequest && lines.length > 0 && reason.trim().length >= 3 && !req.isPending;
 
   return (
     <>
@@ -835,14 +814,14 @@ function StaffReturnRequestForm({ row, onClose,
 }
 
 /** م٧ — المرتجع مديريّ: المدير يُوجَّه لشاشة المرتجعات، وغيره يقدّم طلباً يعتمده المدير. */
-function ReturnRequestDialog({ row, isManager, onClose,
-}: { row: Row; isManager: boolean; onClose: () => void;
+function ReturnRequestDialog({ row, canCreateReturn, onClose,
+}: { row: Row; canCreateReturn: boolean; onClose: () => void;
 }) {
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" dir="rtl" onClick={onClose}>
       <div className="w-full max-w-sm space-y-3 rounded-2xl bg-card p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <h3 className="text-sm font-extrabold">طلب إرجاع — {row.invoiceNumber}</h3>
-        {isManager ? (
+        {canCreateReturn ? (
           <>
             <p className="text-xs text-muted-foreground">
               الإرجاع يعكس مخزوناً وقيوداً ونقداً — تُنفّذه من شاشة المرتجعات بصلاحيتك.

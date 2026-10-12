@@ -4,36 +4,36 @@ import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { PermissionMatrix } from "@/components/form/PermissionMatrix";
-import { EffectiveAccessPreview } from "@/components/form/EffectiveAccessPreview";
 import {
-  PERMISSION_MODULES,
+  OperationPermissionMatrix,
+  editableOperationPolicy,
+} from "@/components/form/OperationPermissionMatrix";
+import {
+  buildOperationPolicyFromLegacy,
+  summarizeOperationModules,
+  type OperationPolicy,
+} from "@shared/operationPermissions";
+import {
   ROLE_TEMPLATES,
   ROLES,
-  diffFromTemplate,
-  type AccessLevel,
+  applyPermissionOverrides,
   type PermissionMap,
   type RoleKey,
 } from "@/lib/permissionsModel";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { useEffect, useMemo, useState } from "react";
+import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
-/** الفئات الأساسية المتاحة لدور مخصّص (admin مستثنى — يمنح وصولاً كاملاً يتجاوز التخصيص). */
-const BASE_ROLE_OPTIONS = ROLES.filter((r) => r.key !== "admin");
-
-/** يبني خريطة صلاحيات كاملة من قالب فئة أساسية. */
-function fullMapFromBase(base: RoleKey): PermissionMap {
-  const tpl = ROLE_TEMPLATES[base] ?? ROLE_TEMPLATES.user;
-  const out: PermissionMap = {};
-  for (const m of PERMISSION_MODULES) out[m.key] = tpl[m.key] ?? "NONE";
-  return out;
-}
+const BASE_ROLE_OPTIONS = ROLES.filter((role) => role.key !== "admin");
+const emptyPolicy = (): OperationPolicy => ({
+  version: 1,
+  grants: {},
+  dataVisibility: { purchaseCost: false, profitMargin: false },
+});
 
 export default function RoleEdit() {
   const [, navigate] = useLocation();
@@ -41,102 +41,189 @@ export default function RoleEdit() {
   const utils = trpc.useUtils();
   const roleId = editParams?.id ? Number(editParams.id) : 0;
   const isEdit = roleId > 0;
-
   const detail = trpc.roles.get.useQuery({ id: roleId }, { enabled: isEdit });
   const rolesList = trpc.roles.list.useQuery();
-  // عدد المستخدمين المُسنَد لهم هذا الدور (حوكمة الحفظ: «سيؤثّر على N حساباً»).
-  const assignedCount = isEdit ? Number((rolesList.data?.counts as Record<string, number> | undefined)?.[roleId] ?? 0) : 0;
-  // الأدوار الجاهزة للاشتقاق «انسخ ثم عدّل»: القياسية المخصّصة (isSystem) + قوالب النظام المبنية.
-  const standardRoles = (rolesList.data?.custom ?? []).filter((r: { isSystem?: boolean }) => r.isSystem);
-
+  const assignedCount = isEdit
+    ? Number(
+        (rolesList.data?.counts as Record<string, number> | undefined)?.[
+          roleId
+        ] ?? 0,
+      )
+    : 0;
+  const cloneRoles = rolesList.data?.custom ?? [];
   const [label, setLabel] = useState("");
   const [description, setDescription] = useState("");
-  const [baseRole, setBaseRole] = useState<RoleKey>("cashier");
-  const [permissions, setPermissions] = useState<PermissionMap>(() => fullMapFromBase("cashier"));
+  const [baseRole, setBaseRole] = useState<RoleKey>("user");
+  const [operationPolicy, setOperationPolicy] =
+    useState<OperationPolicy>(emptyPolicy);
+  const [initialPolicy, setInitialPolicy] =
+    useState<OperationPolicy>(emptyPolicy);
+  const [policyEdited, setPolicyEdited] = useState(false);
+  const [revision, setRevision] = useState(0);
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const baseline = useRef("");
 
   useEffect(() => {
-    if (isEdit && detail.data && !loaded) {
-      const d = detail.data;
-      setLabel(d.label ?? "");
-      setDescription(d.description ?? "");
-      setBaseRole((d.baseRole as RoleKey) ?? "cashier");
-      const map = (d.permissions as PermissionMap) ?? {};
-      const full: PermissionMap = {};
-      for (const m of PERMISSION_MODULES) full[m.key] = map[m.key] ?? "NONE";
-      setPermissions(full);
-      setLoaded(true);
-    }
-  }, [isEdit, detail.data, loaded]);
+    if (!isEdit || !detail.data || loaded) return;
+    const row = detail.data;
+    const base = (row.baseRole as RoleKey) ?? "user";
+    const modules = applyPermissionOverrides(
+      ROLE_TEMPLATES[base],
+      row.permissions as PermissionMap | null,
+    );
+    const policy = editableOperationPolicy(
+      row.operationPolicy ??
+        buildOperationPolicyFromLegacy(
+          base,
+          modules,
+          row.atomicPermissions as Record<string, boolean> | null,
+          row.permissions as PermissionMap | null,
+        ),
+    );
+    setLabel(row.label ?? "");
+    setDescription(row.description ?? "");
+    setBaseRole(base);
+    setOperationPolicy(policy);
+    setInitialPolicy(policy);
+    setRevision(row.operationPolicyRevision ?? 0);
+    baseline.current = JSON.stringify({
+      label: row.label ?? "",
+      description: row.description ?? "",
+      baseRole: base,
+      operationPolicy: policy,
+    });
+    setLoaded(true);
+  }, [detail.data, isEdit, loaded]);
 
-  const baseInfo = ROLES.find((r) => r.key === baseRole);
-  const customCount = useMemo(
-    () => PERMISSION_MODULES.reduce((a, m) => a + (permissions[m.key] !== (ROLE_TEMPLATES[baseRole]?.[m.key] ?? "NONE") ? 1 : 0), 0),
-    [permissions, baseRole],
-  );
-
-  function handleBaseRoleChange(next: RoleKey) {
-    setBaseRole(next);
-    // غيّر الفئة الأساسية ⇒ أعد ضبط الخريطة لقالبها (نقطة بداية واضحة).
-    setPermissions(fullMapFromBase(next));
+  const snapshot = JSON.stringify({
+    label,
+    description,
+    baseRole,
+    operationPolicy,
+  });
+  const newBlank =
+    !label &&
+    !description &&
+    baseRole === "user" &&
+    JSON.stringify(operationPolicy) === JSON.stringify(emptyPolicy());
+  useUnsavedGuard(isEdit ? loaded && snapshot !== baseline.current : !newBlank);
+  function changePolicy(policy: OperationPolicy) {
+    setOperationPolicy(policy);
+    setPolicyEdited(true);
   }
-  function handlePermChange(moduleKey: string, level: AccessLevel) {
-    setPermissions((p) => ({ ...p, [moduleKey]: level }));
-  }
-  // ش٤ «انسخ ثم عدّل»: يبدأ الدور من دورٍ جاهز (قياسيّ أو قالب مبنيّ) بخريطته الكاملة، ثم يُعدَّل بالفروق.
   function cloneFrom(value: string) {
-    if (value.startsWith("builtin:")) {
-      const key = value.slice(8) as RoleKey;
-      setBaseRole(key);
-      setPermissions(fullMapFromBase(key));
+    if (!value) return;
+    if (value === "blank") {
+      changePolicy(emptyPolicy());
       return;
     }
-    if (value.startsWith("system:")) {
-      const id = Number(value.slice(7));
-      const src = standardRoles.find((r: { id: number | string }) => Number(r.id) === id);
-      if (!src) return;
-      const base = (src.baseRole as RoleKey) ?? "cashier";
-      const map = (src.permissions as PermissionMap) ?? {};
-      const full: PermissionMap = {};
-      for (const m of PERMISSION_MODULES) full[m.key] = map[m.key] ?? "NONE";
+    if (value.startsWith("builtin:")) {
+      const base = value.slice(8) as RoleKey;
       setBaseRole(base);
-      setPermissions(full);
+      changePolicy(
+        editableOperationPolicy(
+          buildOperationPolicyFromLegacy(base, ROLE_TEMPLATES[base]),
+        ),
+      );
+      return;
     }
+    const source = cloneRoles.find(
+      (role) => Number(role.id) === Number(value.slice(7)),
+    );
+    if (!source) return;
+    const base = (source.baseRole as RoleKey) ?? "user";
+    const modules = applyPermissionOverrides(
+      ROLE_TEMPLATES[base],
+      source.permissions as PermissionMap | null,
+    );
+    setBaseRole(base);
+    changePolicy(
+      editableOperationPolicy(
+        source.operationPolicy ??
+          buildOperationPolicyFromLegacy(
+            base,
+            modules,
+            source.atomicPermissions as Record<string, boolean> | null,
+            source.permissions as PermissionMap | null,
+          ),
+      ),
+    );
   }
-
-  const createM = trpc.roles.create.useMutation({
-    onSuccess: () => { utils.roles.list.invalidate(); navigate("/roles"); },
-    onError: (e) => setError(e.message),
+  const create = trpc.roles.create.useMutation({
+    onSuccess: async () => {
+      await utils.roles.list.invalidate();
+      bypassUnsavedGuard();
+      navigate("/roles");
+    },
+    onError: (cause) => setError(cause.message),
   });
-  const updateM = trpc.roles.update.useMutation({
-    onSuccess: () => { utils.roles.list.invalidate(); utils.roles.get.invalidate({ id: roleId }); navigate("/roles"); },
-    onError: (e) => setError(e.message),
+  const update = trpc.roles.update.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        utils.roles.list.invalidate(),
+        utils.roles.get.invalidate({ id: roleId }),
+      ]);
+      bypassUnsavedGuard();
+      navigate("/roles");
+    },
+    onError: (cause) => setError(cause.message),
   });
-  const pending = createM.isPending || updateM.isPending;
-
+  const pending = create.isPending || update.isPending;
   async function submit() {
     setError("");
-    if (!label.trim()) { setError("اسم الدور مطلوب."); return; }
-    // حوكمة الحفظ (ش٤): تعديل دورٍ مُسنَد يُغيّر صلاحيات أصحابه فوراً ويُبطل جلساتهم — تأكيدٌ صريح.
-    if (isEdit && assignedCount > 0) {
-      const ok = await confirm({
-        variant: "warning",
-        title: "تعديل دور مُسنَد",
-        description: `هذا الدور مُسنَد لـ${assignedCount} حساباً — سيسري التعديل عليهم فوراً وتُبطَل جلساتهم. هل تتابع؟`,
-        confirmText: "حفظ وتطبيق",
-      });
-      if (!ok) return;
+    if (!label.trim()) {
+      setError("اسم الدور مطلوب.");
+      return;
     }
-    const payload = { label: label.trim(), description: description.trim() || null, baseRole, permissions: permissions as Record<string, AccessLevel> };
-    if (isEdit) updateM.mutate({ id: roleId, ...payload });
-    else createM.mutate(payload);
+    if (
+      isEdit &&
+      assignedCount > 0 &&
+      !(await confirm({
+        variant: "warning",
+        title: "تطبيق تعديل الدور",
+        description: `سيُطبّق هذا التعديل على ${assignedCount} حساباً مرتبطاً بالدور، وقد يحتاج أصحابها إلى تسجيل الدخول مجدداً. راجع أثر المنح والمنع في المصفوفة قبل الحفظ.`,
+        confirmText: "حفظ وتطبيق",
+      }))
+    )
+      return;
+    const persistPolicy =
+      !isEdit || !!detail.data?.operationPolicy || policyEdited;
+    const payload = {
+      label: label.trim(),
+      description: description.trim() || null,
+      baseRole,
+      permissions: persistPolicy
+        ? summarizeOperationModules(operationPolicy)
+        : ((detail.data?.permissions as PermissionMap) ?? {}),
+      ...(persistPolicy
+        ? { operationPolicy: editableOperationPolicy(operationPolicy) }
+        : {}),
+    };
+    if (isEdit)
+      update.mutate({
+        id: roleId,
+        ...payload,
+        expectedOperationPolicyRevision: revision,
+      });
+    else create.mutate(payload);
   }
-
-  // نصٌّ مخصّص عمداً: هذا الرجوع المبكّر يسبق <PageHeader> ⇒ لا سياق آخر على الشاشة أثناء الانتظار.
-  // وليس من أنماط check:loading-strings («جارٍ تحميل الدور» ≠ «جارٍ التحميل») ⇒ لا يُعمَّم على القاموس.
-  if (isEdit && detail.isLoading) return <div className="p-6 text-center text-muted-foreground">جارٍ تحميل الدور…</div>;
-
+  useSaveShortcuts({
+    onSave: () => void submit(),
+    enabled: !pending && (!isEdit || loaded),
+  });
+  if (isEdit && detail.isLoading)
+    return (
+      <div className="p-6 text-center text-muted-foreground">
+        {ACTION_LABELS.loading}
+      </div>
+    );
+  if (isEdit && !detail.data)
+    return (
+      <div className="p-6 text-destructive">
+        {detail.error?.message ?? "الدور غير موجود."}
+      </div>
+    );
   return (
     <div className="space-y-4">
       <PageHeader
@@ -144,78 +231,133 @@ export default function RoleEdit() {
         backHref="/roles"
         backLabel="رجوع للأدوار"
       />
-
-      <Card>
-        <CardHeader><CardTitle className="text-base">بيانات الدور</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
-          <div className="space-y-1">
-            <Label htmlFor="label">اسم الدور *</Label>
-            <Input id="label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="مثال: مشرف فرع، مسؤول تحصيل" />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="base">الفئة الأساسية (المستوى)</Label>
-            <AppSelect id="base" className="h-9" value={baseRole} onValueChange={(next) => handleBaseRoleChange(next as RoleKey)}>
-              {BASE_ROLE_OPTIONS.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
-            </AppSelect>
-            <p className="text-[11px] text-muted-foreground">
-              تحدّد البوّابات الخشنة ورؤية التكلفة{baseInfo?.canSeeCost ? " (يرى التكلفة)" : " (لا يرى التكلفة)"}. ابدأ من قالبها ثم خصّص.
-            </p>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="desc">وصف (اختياري)</Label>
-            <Input id="desc" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="وصف موجز لمهام هذا الدور" />
-          </div>
-          {/* ش٤ «انسخ ثم عدّل»: بداية من دورٍ جاهز (قياسيّ/مبنيّ) بدل الصفر — يُلغي فخّ «نسيتُ وحدة». */}
-          <div className="space-y-1">
-            <Label htmlFor="clone">ابدأ من دورٍ جاهز (اختياري)</Label>
-            <AppSelect id="clone" className="h-9" value="" onValueChange={(next) => cloneFrom(next)}>
-              <option value="">— انسخ صلاحيات دورٍ ثم عدّل —</option>
-              {standardRoles.length > 0 && (
-                <optgroup label="أدوار قياسية">
-                  {standardRoles.map((r: { id: number | string; label: string }) => (
-                    <option key={`s${r.id}`} value={`system:${r.id}`}>{r.label}</option>
+      <form
+        className="space-y-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
+        }}
+      >
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">بيانات الدور</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+            <div className="space-y-1">
+              <Label htmlFor="role-label">اسم الدور *</Label>
+              <Input
+                id="role-label"
+                value={label}
+                onChange={(event) => setLabel(event.target.value)}
+                placeholder="مثال: مسؤول إسناد التوصيل"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="role-base">الفئة الوظيفية الأساسية</Label>
+              <AppSelect
+                id="role-base"
+                value={baseRole}
+                onValueChange={(next) => setBaseRole(next as RoleKey)}
+              >
+                {BASE_ROLE_OPTIONS.map((role) => (
+                  <option key={role.key} value={role.key}>
+                    {role.label}
+                  </option>
+                ))}
+              </AppSelect>
+              <p className="text-xs text-muted-foreground">
+                تغيير الفئة لا يبدّل اختيارات التفويض. تبقى الضوابط المحجوزة
+                لإدارة النظام خاضعة لفئتها.
+              </p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="role-description">الوصف</Label>
+              <Input
+                id="role-description"
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                placeholder="المهام والمسؤوليات"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="role-clone">نسخ صلاحيات من دور (اختياري)</Label>
+              <AppSelect id="role-clone" value="" onValueChange={cloneFrom}>
+                <option value="">اختر نموذجاً للنسخ ثم عدّل</option>
+                <option value="blank">إفراغ جميع التفويضات</option>
+                <optgroup label="قوالب الفئات الوظيفية">
+                  {BASE_ROLE_OPTIONS.map((role) => (
+                    <option key={role.key} value={`builtin:${role.key}`}>
+                      {role.label}
+                    </option>
                   ))}
                 </optgroup>
-              )}
-              <optgroup label="قوالب النظام">
-                {BASE_ROLE_OPTIONS.map((r) => <option key={`b${r.key}`} value={`builtin:${r.key}`}>{r.label}</option>)}
-              </optgroup>
-            </AppSelect>
-          </div>
-          {isEdit && assignedCount > 0 && (
-            <p className="text-[11px] text-[var(--sem-warn)] md:col-span-3">مُسنَد حالياً لـ{assignedCount} حساباً — أي تعديل يسري عليهم فوراً.</p>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">
-            الصلاحيات
-            {customCount > 0 && <span className="text-[10px] font-medium text-primary mr-2 align-middle">{customCount} مخصّص عن القالب</span>}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {/* معاينة الأثر الفعليّ (ش١) للدور أثناء بنائه — «سيفتح: تجزئة فقط» محسوباً من الخريطة الحيّة. */}
-          <EffectiveAccessPreview
-            role={baseRole}
-            override={diffFromTemplate(baseRole, permissions)}
-            title="هذا الدور سيمنح أصحابه:"
-          />
-          <PermissionMatrix
-            role={baseRole}
-            permissions={permissions}
-            onChange={handlePermChange}
-            onReset={() => setPermissions(fullMapFromBase(baseRole))}
-          />
-        </CardContent>
-      </Card>
-
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      <div className="flex flex-wrap gap-2">
-        <Button onClick={submit} disabled={pending}>{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الدور"}</Button>
-        <Link href="/roles"><Button variant="ghost">إلغاء</Button></Link>
-      </div>
+                {cloneRoles.length > 0 && (
+                  <optgroup label="الأدوار المحفوظة">
+                    {cloneRoles
+                      .filter((role) => role.id !== roleId)
+                      .map((role) => (
+                        <option key={role.id} value={`custom:${role.id}`}>
+                          {role.label}
+                        </option>
+                      ))}
+                  </optgroup>
+                )}
+              </AppSelect>
+              <p className="text-xs text-muted-foreground">
+                الدور الجديد يبدأ بلا تفويضات. النسخ يغيّر اختيارات هذا الدور
+                وحده.
+              </p>
+            </div>
+            {isEdit && (
+              <p className="text-sm text-muted-foreground md:col-span-2 lg:col-span-3">
+                هذا الدور مرتبط بـ{assignedCount} حساباً. الاستثناءات الفردية
+                للمستخدمين تبقى مستقلة عنه.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              تفويض العمليات ومراحل العمل
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {isEdit && !detail.data?.operationPolicy && (
+              <p className="border p-3 text-xs text-muted-foreground">
+                عُرضت الصلاحيات الحالية للمراجعة. تعديل اختيارات المصفوفة يحوّل
+                الدور إلى تفويض العمليات المستقل عند الحفظ.
+              </p>
+            )}
+            <OperationPermissionMatrix
+              mode="role"
+              value={operationPolicy}
+              baseline={initialPolicy}
+              onChange={changePolicy}
+              disabled={pending}
+            />
+          </CardContent>
+        </Card>
+        {error && (
+          <p className="text-sm text-destructive" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="flex flex-wrap gap-2">
+          <Button type="submit" disabled={pending}>
+            {pending
+              ? ACTION_LABELS.saving
+              : isEdit
+                ? "حفظ التعديلات"
+                : "حفظ الدور"}
+          </Button>
+          <Link href="/roles">
+            <Button type="button" variant="ghost">
+              إلغاء
+            </Button>
+          </Link>
+        </div>
+      </form>
     </div>
   );
 }

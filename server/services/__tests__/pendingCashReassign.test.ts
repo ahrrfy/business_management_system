@@ -212,7 +212,7 @@ describe("المسار أ — حوكمة النقد المعلَّق", () => {
     await db().update(s.users).set({ isActive: false }).where(eq(s.users.id, NEW_HOLDER));
     await expect(
       manager.treasury.reassignHandoverReceipt({ receiptId, toUserId: NEW_HOLDER }),
-    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("لا تُسنَد العهدة إلى مُسلِّم النقد نفسه — لا يُطوى الشاهدان بشخصٍ واحد", async () => {

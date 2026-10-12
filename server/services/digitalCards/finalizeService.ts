@@ -14,6 +14,7 @@
  * الأسعار والتكاليف تُقرأ من **النيّة المقفولة** في القاعدة حصراً — لا رقم من العميل.
  */
 import { TRPCError } from "@trpc/server";
+import { routeOperationAuthority, type ServiceOperationActor } from "../authorization/operationAuthority";
 import { and, asc, eq, sql } from "drizzle-orm";
 import {
   auditLogs,
@@ -39,9 +40,16 @@ import { adjustSupplierBalance, postEntry } from "../ledgerService";
 import { createApproval } from "../creditApprovalService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, sumMoney, toDbMoney } from "../money";
-import { DIGITAL_SALE_CAPABILITY } from "../sale/create";
+import { DIGITAL_SALE_CAPABILITY, VERIFIED_DIGITAL_CREDIT_PREFLIGHT } from "../sale/create";
 import type { PaymentMethod } from "../sale/types";
 import type { Actor } from "../tx";
+import {
+  assertDigitalIntentScope,
+  digitalIntentCanRecover,
+  DIGITAL_REVIEW_PARENT,
+  loadDigitalIntentScopeTx,
+  type DigitalIntentActor,
+} from "./intentOperationScope";
 import { redactAuditValue } from "../auditService";
 import { assertExternalPaymentReplay, createConfirmedPosSaleInTx } from "../posExternalPayment";
 import { checkoutSnapshotToSaleLines } from "./mixedCartService";
@@ -128,8 +136,11 @@ export async function finalize(
   tx: Tx,
   input: FinalizeInput,
   actor: Actor,
-  authorizationActor: Actor = actor,
+  authorizationActor: DigitalIntentActor = actor,
 ): Promise<FinalizeResult> {
+  const authority = await loadDigitalIntentScopeTx(tx, authorizationActor, "digitalCards.sales.finalize", [
+    "digitalCards.sales.recover", DIGITAL_REVIEW_PARENT,
+  ]);
   /* ١. قفل النيّة وبنودها. */
   const [intent] = await tx
     .select()
@@ -138,15 +149,8 @@ export async function finalize(
     .for("update");
   if (!intent) throw new TRPCError({ code: "NOT_FOUND", message: "النيّة غير موجودة" });
 
-  // العزل والملكية يسبقان replay: لا تكشف فاتورة/طباعة نيّةٍ لمستخدم أو فرع آخر.
-  // المشرف (المالك/الأدمن/المدير) يرى نيّات نطاقه؛ عزل مدير الفرع (قرار المالك ١٢/٨): الفرع للمالك/الأدمن فقط.
-  const supervisor = authorizationActor.role === "admin" || authorizationActor.role === "manager";
-  if (!supervisor && Number(intent.createdBy) !== actor.userId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "هذه النيّة لمستخدم آخر" });
-  }
-  if (authorizationActor.role !== "admin" && Number(intent.branchId) !== Number(authorizationActor.branchId)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "هذه النيّة تخصّ فرعاً آخر" });
-  }
+  // التفويض يخصّ المعتمِد الفعلي؛ إسناد البيع المحاسبي يبقى لمنشئ النيّة الأصلي.
+  assertDigitalIntentScope(authority, intent);
   if (input.paymentMethod !== intent.paymentMethod) {
     throw new TRPCError({
       code: "CONFLICT",
@@ -391,7 +395,7 @@ export async function finalize(
       message: "حجز المحفظة لهذه النيّة عولج مسبقاً — لا تُنشأ فاتورة ثانية",
     });
   }
-  if (intent.status === "NEEDS_REVIEW" && !supervisor) {
+  if (intent.status === "NEEDS_REVIEW" && !digitalIntentCanRecover(authority, intent)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "إكمال نيّة المراجعة قرارٌ مديريّ" });
   }
 
@@ -452,10 +456,21 @@ export async function finalize(
   /* ٦. نواة البيع داخل المعاملة نفسها — بيانات الطالب لقطة بيع فقط، بلا عقد أو ملف تشغيلي. */
   let sale: any;
   const invoiceItemByIntentItem = new Map<string, number>();
+  const creditPreflight = checkout?.creditLimitPreflight;
+  // Admission was checked before irreversible issuance. Bind its exact scope again;
+  // a later receivable must not strand an already issued card without its invoice.
+  const admittedCredit = input.paymentMethod === "CREDIT" &&
+    checkout?.creditApprovalId == null &&
+    creditPreflight != null &&
+    creditPreflight.customerId === boundCustomerId &&
+    creditPreflight.branchId === Number(intent.branchId) &&
+    money(creditPreflight.amount).eq(expectedTotal) &&
+    expectedTotal.gt(0);
   const salePayload = {
     branchId: Number(intent.branchId),
     shiftId: Number(intent.shiftId),
     customerId: checkout?.customerId ?? null,
+    salesRepId: invoicePayload?.salesRepId,
     contactName: null,
     contactPhone: null,
     couponCode: null,
@@ -466,6 +481,15 @@ export async function finalize(
     clientRequestId: `DIGITAL_INTENT:${input.intentId}`,
     creditApproved: checkout?.creditApprovalId != null,
     creditApprovalId: checkout?.creditApprovalId ?? undefined,
+    ...(admittedCredit ? {
+      digitalCreditPreflight: {
+        capability: VERIFIED_DIGITAL_CREDIT_PREFLIGHT,
+        intentId: input.intentId,
+        customerId: creditPreflight!.customerId,
+        branchId: creditPreflight!.branchId,
+        amount: creditPreflight!.amount,
+      },
+    } : {}),
     payment: input.paymentMethod === "CREDIT" ? undefined : {
       amount: input.paymentAmount,
       method: input.paymentMethod,
@@ -712,6 +736,7 @@ export async function finalize(
     items: items.length,
     priceApprovedBeforeIssuance: checkout?.priceOverrideApproved === true,
     priceApprovedBy: checkout?.priceApprovedBy ?? null,
+    creditLimitApprovedBeforeIssuance: admittedCredit,
     // true مع غياب اعتماد مدير يعني أن WAVG/مرجع السعر تغيّر بعد prepare؛ نُكمل الكرت
     // الصادر تحت قدرة النيّة الموثقة ونترك أثراً واضحاً بدلاً من خلق بيع ضائع.
     commitPricingGateTriggered: sale.priceOverride === true,
@@ -735,8 +760,12 @@ export async function finalize(
  * إكمال نيّة كل كروتها SUCCESS لكنها انتقلت للمراجعة بسبب انقطاع/إغلاق الواجهة.
  * القيم المالية وطريقة الدفع تُقرأ من النيّة؛ لا يختار المدير أرقاماً جديدة أثناء الإنقاذ.
  */
-export async function recoverNeedsReview(tx: Tx, intentId: number, actor: Actor): Promise<FinalizeResult> {
-  const recoveryManager = actor;
+export async function recoverNeedsReview(tx: Tx, intentId: number, actor: Actor & ServiceOperationActor): Promise<FinalizeResult> {
+  const authority = await loadDigitalIntentScopeTx(tx, actor, "digitalCards.sales.recover", [DIGITAL_REVIEW_PARENT],
+    actor.role === "admin" || actor.role === "manager");
+  // Bind the nested financial step to the checked parent even for direct service callers.
+  const recoveryManager = { ...actor, operationAuthority: actor.operationAuthority ??
+    routeOperationAuthority({ ...authority.current, id: actor.userId }, authority.path) };
   const [intent] = await tx
     .select({
       clientRequestId: digitalSaleIntents.clientRequestId,
@@ -752,17 +781,11 @@ export async function recoverNeedsReview(tx: Tx, intentId: number, actor: Actor)
     .where(eq(digitalSaleIntents.id, intentId))
     .limit(1);
   if (!intent) throw new TRPCError({ code: "NOT_FOUND", message: "النيّة غير موجودة" });
+  assertDigitalIntentScope(authority, intent);
   if (intent.paymentMethod !== "CASH" && intent.paymentMethod !== "CARD" && intent.paymentMethod !== "CREDIT") {
     throw new TRPCError({ code: "CONFLICT", message: "طريقة دفع النيّة غير قابلة للاسترداد" });
   }
   if (intent.paymentMethod === "CREDIT") {
-    if (actor.role !== "admin" && actor.role !== "manager") {
-      throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
-        what: "تعذّر استرداد نيّة البيع الآجل",
-        why: "الكرت صدر من المزوّد وإنشاء الذمّة بعد ذلك يحتاج قراراً مديرياً",
-        doThis: "اطلب من مدير الفرع فتح طابور المراجعة واعتماد إكمال النيّة",
-      }) });
-    }
     const checkoutSnapshot = intent.checkoutSnapshot;
     if (checkoutSnapshot == null || checkoutSnapshot.customerId == null) {
       throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({

@@ -9,6 +9,7 @@ import { accountsRouter } from "./routers/accountsRouter";
 import { returnRouter } from "./routers/returnRouter";
 import { purchaseReturnsRouter } from "./routers/purchaseReturns";
 import { printAuditRouter } from "./routers/printAuditRouter";
+import { invoicePrintingRouter } from "./routers/invoicePrintingRouter";
 import { shiftRouter } from "./routers/shiftRouter";
 import { catalogRouter } from "./routers/catalogRouter";
 import { catalogAnomaliesRouter } from "./routers/catalogAnomaliesRouter";
@@ -126,6 +127,7 @@ export const appRouter = router({
   returns: returnRouter,
   purchaseReturns: purchaseReturnsRouter,
   printAudit: printAuditRouter,
+  invoicePrinting: invoicePrintingRouter,
   shifts: shiftRouter,
   catalog: catalogRouter,
   catalogAnomalies: catalogAnomaliesRouter,

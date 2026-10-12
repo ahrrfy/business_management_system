@@ -52,12 +52,14 @@ import {
 } from "../services/delivery/writeoffRequests";
 import { declareConsignmentReturn } from "../services/delivery/declaredReturn";
 import { cancelDeliveryAssignment } from "../services/delivery/cancellation";
+import { routeOperationAuthority } from "../services/authorization/operationAuthority";
 import { logAudit } from "../services/auditService";
 import { GOVERNORATE_IDS } from "@shared/governorates";
 import { appErrorMessage } from "@shared/errors";
 import { listPartyBoardTx, suggestPartyForZoneTx } from "../services/delivery/board";
 import { previewDailySettlementTx, settleDailyTx } from "../services/delivery/dailySettlement";
 import { withTx } from "../services/tx";
+import { listPartyRemittancesPage } from "../services/delivery/queries";
 import { rolloutMode } from "../config/rolloutFlags";
 import { dispatchByBarcode } from "../services/delivery/barcodeDispatchService";
 import { returnByBarcode } from "../services/delivery/barcodeReturnService";
@@ -106,7 +108,7 @@ function effectiveBranch(ctx: { user: { role?: string; branchId?: number | null 
 // المالك/الأدمن عابرا الفروع ⇒ null؛ مدير الفرع وغيره مقيَّدون بفرعهم (قرار المالك ١٢/٨؛ requireOwnBranch يضمن branchId).
 function scopedBranchOf(ctx: { user: { role?: string; branchId?: number | null } }): number | null {
   const crossBranch = ctx.user.role === "admin";
-  return crossBranch ? null : (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+  return crossBranch ? null : ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
 }
 
 // IDOR (تدقيق ٢/٧): قراءات جهة التوصيل بالمعرّف (getParty/consignments/partyStatement) كانت تمرّر
@@ -157,7 +159,7 @@ export const deliveryRouter = router({
     .input(z.object({ id: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.id, ctx.scopedBranchId);
-      return getDeliveryParty(input.id);
+      return getDeliveryParty(input.id, ctx.scopedBranchId);
     }),
 
   partyFinancials: deliveryReadProcedure
@@ -177,7 +179,9 @@ export const deliveryRouter = router({
         ledger: { limit: input.ledgerLimit, cursor: input.ledgerCursor },
         allocations: { limit: input.allocationsLimit, cursor: input.allocationsCursor },
         events: { limit: input.eventsLimit, cursor: input.eventsCursor },
-      });
+      },
+        ctx.scopedBranchId,
+      );
     }),
 
   // حسابات المناديب (دور courier) لربطها بجهة — لمنتقي الربط في نموذج الجهة (مدير).
@@ -233,7 +237,10 @@ export const deliveryRouter = router({
       clientRequestId: z.string().trim().min(8).max(100),
     }))
     .mutation(async ({ input, ctx }) => {
-      const res = await retryOnDeadlock(() => cancelDeliveryAssignment(input, actorOf(ctx)));
+      const res = await retryOnDeadlock(() => cancelDeliveryAssignment(input, {
+        ...actorOf(ctx),
+        operationAuthority: routeOperationAuthority(ctx.user, "delivery.cancelAssignment"),
+      }));
       await logAudit(ctx, {
         action: "delivery.assignment.cancel",
         entityType: "deliveryConsignment",
@@ -373,17 +380,46 @@ export const deliveryRouter = router({
       openOnly: z.boolean().optional(),
       limit: z.number().int().positive().max(500).optional(),
       cursor: z.number().int().positive().optional(),
-    }))
+        query: z.string().max(100).optional(),
+        from: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+        to: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+        state: z
+          .enum([
+            "ALL",
+            "IN_TRANSIT",
+            "DELIVERED_UNCOLLECTED",
+            "COLLECTED_UNREMITTED",
+            "RETURN_PENDING",
+            "CLOSED",
+          ])
+          .optional(),
+      }))
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, ctx.scopedBranchId);
-      return listConsignmentsForParty(input.partyId, input.openOnly ?? false, { limit: input.limit, cursor: input.cursor });
+      return listConsignmentsForParty(input.partyId, input.openOnly ?? false, { limit: input.limit, cursor: input.cursor,
+          query: input.query,
+          from: input.from,
+          to: input.to,
+          state: input.state,
+        },
+        ctx.scopedBranchId,
+      );
     }),
 
   partyStatement: deliveryReadProcedure
-    .input(z.object({ partyId: z.number().int().positive(), from: z.string().optional(), to: z.string().optional() }))
+    .input(z.object({ partyId: z.number().int().positive(), from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(), to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }))
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, ctx.scopedBranchId);
-      return getDeliveryPartyStatement(input.partyId, input.from, input.to);
+      return getDeliveryPartyStatement(input.partyId, input.from, input.to,
+        ctx.scopedBranchId,
+      );
     }),
 
   // طرود متجر بالطريق لجهة (١٠/٨) — فجوة الرؤية بين توقيتَي العهدة في القناتين.
@@ -391,7 +427,7 @@ export const deliveryRouter = router({
     .input(z.object({ partyId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, ctx.scopedBranchId);
-      return getPartyStoreInTransit(input.partyId);
+      return getPartyStoreInTransit(input.partyId, ctx.scopedBranchId);
     }),
 
   /**
@@ -433,11 +469,39 @@ export const deliveryRouter = router({
       // YYYY-MM-DD حصراً — نصٌّ حرّ كان يبني Date غير صالح فيتفجّر 500 بدل BAD_REQUEST.
       from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").optional(),
       to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").optional(),
-      limit: z.number().int().positive().max(300).optional(),
+      limit: z.number().int().positive().max(500).optional(),
+        cursor: z.number().int().positive().optional(),
     }))
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, ctx.scopedBranchId);
-      return listPartyRemittances(input.partyId, { from: input.from, to: input.to, limit: input.limit });
+      return listPartyRemittances(input.partyId, { from: input.from, to: input.to, limit: input.limit,
+        cursor: input.cursor,
+        scopedBranchId: ctx.scopedBranchId,
+      });
+    }),
+
+  remittancesPage: deliveryReadProcedure
+    .input(
+      z.object({
+        partyId: z.number().int().positive(),
+        from: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+        to: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+        limit: z.number().int().positive().max(500).optional(),
+        cursor: z.number().int().positive().optional(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, ctx.scopedBranchId);
+      return listPartyRemittancesPage(input.partyId, {
+        ...input,
+        scopedBranchId: ctx.scopedBranchId,
+      });
     }),
 
   // ─── م١ PR-C — لوحة الخمسة أعمدة + التسوية اليوميّة بتأكيدٍ واحد + اقتراح الجهة بالمنطقة ───
@@ -856,7 +920,8 @@ export const deliveryRouter = router({
             countedCash: input.countedCash,
             shiftType: input.shiftType,
             targetShiftId: input.targetShiftId ?? null,
-            shortfall: input.shortfall as { reason: ShortfallReason; notes?: string | null } | null | undefined,
+            shortfall: input.shortfall as
+                | { reason: ShortfallReason; notes?: string | null } | null | undefined,
             clientRequestId: input.clientRequestId,
           },
           actorOf(ctx),
@@ -1019,12 +1084,12 @@ export const deliveryRouter = router({
       collectedAmount: moneyStr,
       evidence: z.string().trim().min(3).max(255),
       clientRequestId: z.string().trim().min(8).max(64),
-      /**
-       * Slice DFP1 (٣٠/٨/٢٦): سببُ العجز حين `collectedAmount < remainingOnParcel`.
-       * القيمة من enum ثابت `shared/shortfallReason.ts` — الخادم يرفض عجزاً بلا سبب.
-       * اختياريّ في المخطّط لأنّ التحصيل الكامل لا يحتاجه؛ الخدمة تُلزمه ديناميكياً.
-       */
-      shortfallReason: z.enum(SHORTFALL_REASONS as readonly [string, ...string[]]).optional(),
+        /**
+         * Slice DFP1 (٣٠/٨/٢٦): سببُ العجز حين `collectedAmount < remainingOnParcel`.
+         * القيمة من enum ثابت `shared/shortfallReason.ts` — الخادم يرفض عجزاً بلا سبب.
+         * اختياريّ في المخطّط لأنّ التحصيل الكامل لا يحتاجه؛ الخدمة تُلزمه ديناميكياً.
+         */
+        shortfallReason: z.enum(SHORTFALL_REASONS as readonly [string, ...string[]]).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const res = await retryOnDeadlock(() => recordStaffDeliveryConfirmation(input, actorOf(ctx)));
@@ -1569,7 +1634,7 @@ export const deliveryRouter = router({
       // `scopedBranchOf` (المالك/الأدمن يعبُران، غيرهم مثبَّت على فرعهم).
       const scopedBranchId = ctx.user.role === "admin"
         ? null
-        : (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+        : ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
       return commissionComparison({
         scopedBranchId,
         fromDate: input?.fromDate,

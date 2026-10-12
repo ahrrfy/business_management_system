@@ -32,6 +32,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import {
   copyInvoiceItems,
@@ -192,6 +193,7 @@ function editorFingerprint(
 }
 
 export default function PurchaseEdit() {
+  const me = trpc.auth.me.useQuery();
   const params = useParams();
   const purchaseOrderId = Number(params.id);
   const [, navigate] = useLocation();
@@ -442,6 +444,7 @@ export default function PurchaseEdit() {
   }
 
   async function handleSubmit() {
+    if (!canLifecycleOperation(me.data, "purchases.updateOrder", true)) return notify.err("تعديل أمر الشراء غير مفوض لهذا الحساب.");
     if (update.isPending) return;
     const err = validate();
     if (err) {
@@ -830,7 +833,7 @@ export default function PurchaseEdit() {
             onAction={handleAction}
             saving={update.isPending}
             pasteAvailable={pasteAvailable}
-            availableActions={EDIT_ACTIONS}
+            availableActions={canLifecycleOperation(me.data, "purchases.updateOrder", true) ? EDIT_ACTIONS : EDIT_ACTIONS.filter((action) => action !== "save")}
             primaryLabel="حفظ التعديلات قبل الاعتماد"
             printLabel="طباعة"
           />

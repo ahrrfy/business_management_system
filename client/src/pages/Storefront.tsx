@@ -42,6 +42,7 @@ import {
   ShieldCheck,
   ShoppingBag,
   ShoppingCart,
+  Star,
   Tag,
   Trash2,
   Truck,
@@ -87,7 +88,16 @@ import { StorefrontColorSwatches } from "@/components/storefront/StorefrontColor
 import { StorefrontPanelShell } from "@/components/storefront/StorefrontPanelShell";
 import { StorefrontLocationPicker } from "@/components/storefront/StorefrontLocationPicker";
 import { AnimatedAddToCartButton } from "@/components/storefront/AnimatedAddToCartButton";
+import { StorefrontProductReviews } from "@/components/storefront/StorefrontProductReviews";
+import { StorefrontDispatchCountdown } from "@/components/storefront/StorefrontDispatchCountdown";
+import { StorefrontB2BQuoteButton } from "@/components/storefront/StorefrontB2BQuoteButton";
+import { StorefrontPersonalAdvisorCard } from "@/components/storefront/StorefrontPersonalAdvisorCard";
+import { StorefrontSocialProofTicker } from "@/components/storefront/StorefrontSocialProofTicker";
+import { StorefrontThematicStrip, type ThematicCollectionCard } from "@/components/storefront/StorefrontThematicStrip";
+import { StorefrontCustomizerStudio } from "@/components/storefront/StorefrontCustomizerStudio";
+import { StorefrontHeuristicsBadges } from "@/components/storefront/StorefrontHeuristicsBadges";
 import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
+import { useStorefrontCoupon } from "@/hooks/useStorefrontCoupon";
 
 const STORE_NAME = "المكتبة العربية";
 const STORE_TAGLINE = "قرطاسية • طباعة • هدايا — يصلك أينما كنت في العراق";
@@ -1059,7 +1069,7 @@ type BannerItem = StoreBannerCreative;
 function InlineStrip({ banner }: { banner: BannerItem; tone?: "emerald" | "amber" }) {
   return (
     <div className="relative col-span-full aspect-[3/1] overflow-hidden rounded-xl shadow-sm">
-      <BannerFrame banner={banner} slot="HERO" />
+      <BannerFrame banner={banner} slot="INLINE" />
     </div>
   );
 }
@@ -1148,6 +1158,7 @@ function StorefrontContent() {
   const [searchFocused, setSearchFocused] = useState(false);
   const [searchSuggestionIndex, setSearchSuggestionIndex] = useState(0);
   const [categoryId, setCategoryId] = useState<number | null>(null);
+  const [selectedThematicCollection, setSelectedThematicCollection] = useState<ThematicCollectionCard | null>(null);
   // البدء بالمتوفر يحمي نية الشراء: لا نُغرق العميل ببطاقات لا يمكن إضافتها للسلة.
   const [availability, setAvailability] = useState<AvailabilityFilter>("IN_STOCK");
   const [priceFilter, setPriceFilter] = useState<PriceFilter>("ALL");
@@ -1173,9 +1184,6 @@ function StorefrontContent() {
   const [wishlistIds, setWishlistIds] = useState<Set<number>>(loadStorefrontWishlist);
   const [showWishlist, setShowWishlist] = useState(false);
   const [shareFeedback, setShareFeedback] = useState<{ text: string; tone: ShareFeedbackTone } | null>(null);
-  const [couponDraft, setCouponDraft] = useState("");
-  const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(null);
-  const [couponFeedback, setCouponFeedback] = useState<string | null>(null);
   const [cart, setCart] = useState<Map<string, CartLine>>(loadCart);
   const [cartStatus, setCartStatus] = useState("");
   const cartRecommendationProductIds = useMemo(
@@ -1187,11 +1195,13 @@ function StorefrontContent() {
   const [checkoutErrors, setCheckoutErrors] = useState<CheckoutFieldErrors>({});
   const productDialogCloseRef = useRef<HTMLButtonElement | null>(null);
   const productDialogTriggerRef = useRef<HTMLElement | null>(null);
-  function openProduct(productId: number) {
+  const [productReviewOpenRequest, setProductReviewOpenRequest] = useState<{ open: boolean; orderNumber?: string | null }>({ open: false });
+  function openProduct(productId: number, options?: { openReview?: boolean; orderNumber?: string | null }) {
     const activeElement = typeof document === "undefined" ? null : document.activeElement;
     productDialogTriggerRef.current = activeElement instanceof HTMLElement && activeElement !== document.body
       ? activeElement
       : null;
+    setProductReviewOpenRequest({ open: options?.openReview ?? false, orderNumber: options?.orderNumber ?? null });
     setSelectedId(productId);
   }
   const cartRef = useRef(cart);
@@ -1211,6 +1221,25 @@ function StorefrontContent() {
     total: string;
     reservationExpiresAt: Date | string;
   } | null>(null);
+  const {
+    couponDraft,
+    setCouponDraft,
+    appliedCouponCode,
+    setAppliedCouponCode,
+    couponFeedback,
+    setCouponFeedback,
+    applyCoupon,
+    removeCoupon,
+    clearCouponOnSuccess,
+    persistValidCoupon,
+    invalidateCoupon,
+  } = useStorefrontCoupon({
+    onQuoteInvalidate: () => {
+      acceptedQuoteRef.current = null;
+      setCheckoutSafetyError(null);
+    },
+  });
+
   const viewedProductIds = useRef(new Set<number>());
   const catalogLoadMoreRef = useRef<HTMLDivElement | null>(null);
 
@@ -1370,6 +1399,16 @@ function StorefrontContent() {
   // mutation functions are stable; request identity is the intentional trigger.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cart.size, panel, privateQuoteInput]);
+
+  useEffect(() => {
+    if (!appliedCouponCode) return;
+    if (privateQuoteM.isError) {
+      invalidateCoupon();
+    } else if (privateQuoteM.data) {
+      persistValidCoupon(appliedCouponCode);
+    }
+  }, [appliedCouponCode, privateQuoteM.data, privateQuoteM.isError, persistValidCoupon, invalidateCoupon]);
+
   const quoteQ = {
     data: privateQuoteRequired ? privateQuoteM.data : publicQuoteQ.data,
     isFetching: privateQuoteRequired ? privateQuoteM.isPending : publicQuoteQ.isFetching,
@@ -1455,9 +1494,7 @@ function StorefrontContent() {
         }));
       }
       setCart(new Map());
-      setCouponDraft("");
-      setAppliedCouponCode(null);
-      setCouponFeedback(null);
+      clearCouponOnSuccess();
       // امسح بيانات التوصيل (اسم/هاتف/عنوان) من الحالة و localStorage بعد نجاح الطلب (مراجعة عدائية
       // ١٢/٧): المتجر علنيّ بلا جلسة ⇒ إبقاؤها يسرّبها للزبون التالي على جهازٍ مشترك/كشك. الاستعادة
       // عبر التحديث تخصّ طلباً قيد الإنشاء فقط، لا بعد إتمامه.
@@ -1717,6 +1754,9 @@ function StorefrontContent() {
       if (showWishlist && !wishlistIds.has(p.productId)) return false;
       if (availability === "IN_STOCK" && !p.inStock) return false;
       if (brand && p.brand !== brand) return false;
+      if (selectedThematicCollection?.productIds && selectedThematicCollection.productIds.length > 0) {
+        if (!selectedThematicCollection.productIds.includes(p.productId)) return false;
+      }
       return matchesPriceFilter(Number(p.salePrice ?? p.price ?? 0), priceFilter);
     });
     if (sort === "RECOMMENDED") return filtered;
@@ -1726,8 +1766,8 @@ function StorefrontContent() {
       const bPrice = Number(b.salePrice ?? b.price ?? 0);
       return sort === "PRICE_ASC" ? aPrice - bPrice : bPrice - aPrice;
     });
-  }, [availability, brand, items, priceFilter, showWishlist, sort, wishlistIds]);
-  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist;
+  }, [availability, brand, items, priceFilter, selectedThematicCollection, showWishlist, sort, wishlistIds]);
+  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist || selectedThematicCollection != null;
   // اقتراحات البحث: مُصفَّرة من `filteredItems` (Codex #4) — لا يظهر اقتراحٌ ينتفي فور اختياره.
   const searchSuggestions = useMemo(() => getStorefrontSearchSuggestions(filteredItems, rawSearch), [filteredItems, rawSearch]);
   useEffect(() => { setSearchSuggestionIndex(0); }, [rawSearch]);
@@ -1741,25 +1781,39 @@ function StorefrontContent() {
   };
   // catalog يُرشّح البحث والفئة خادمياً، بينما السعر/الماركة عميلان. غياب العناصر من الصفحة الأولى
   // يعني كتالوجاً فارغاً حقاً؛ وأي غياب مع بحث/فئة/تنقيح يعني صفراً بسبب التصفية.
-  const isEmptyCatalog = items.length === 0 && !search && categoryId == null;
+  const isEmptyCatalog = items.length === 0 && !search && categoryId == null && selectedThematicCollection == null;
 
   function scrollToResults() {
     window.setTimeout(() => document.getElementById("store-results")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   }
   function selectCategory(id: number | null) {
+    setSelectedThematicCollection(null);
     setCategoryId(id);
     scrollToResults();
+  }
+  function handleSelectThematicCollection(card: ThematicCollectionCard) {
+    setSelectedThematicCollection(card);
+    setCategoryId(null);
+    setSearch("");
+    setRawSearch("");
+    scrollToResults();
+  }
+  function handleClearThematicCollection() {
+    setSelectedThematicCollection(null);
+    clearCatalogFilters();
   }
   function clearRefinements() {
     setAvailability("IN_STOCK");
     setPriceFilter("ALL");
     setBrand("");
     setSort("RECOMMENDED");
+    setSelectedThematicCollection(null);
   }
   function clearCatalogFilters() {
     setRawSearch("");
     setSearch("");
     setCategoryId(null);
+    setSelectedThematicCollection(null);
     clearRefinements();
   }
   function pulseHeart(target: string) {
@@ -1863,6 +1917,8 @@ function StorefrontContent() {
     // في الفواصل البينية حتى لا يبقى مسار الشراء بلا محفّز ترويجي.
     return heroBanners.slice(1, 4);
   }, [heroBanners, inlineBanners, offers]);
+  const topBanners = heroBanners.length ? heroBanners : feedStrips;
+  const topBannerSlot = heroBanners.length || !inlineBanners.length ? "HERO" : "INLINE";
 
   const dealProducts = useMemo(
     () => items.filter((p) => p.inStock && p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price)).slice(0, 12),
@@ -1911,25 +1967,6 @@ function StorefrontContent() {
   const couponForCheckout = couponSuperseded ? null : appliedCouponCode;
   const quotedDeliveryFree = quoteQ.data?.deliveryFree ?? qualifiesFree;
   const quoteReady = !!quoteQ.data && !quoteQ.isFetching && !quoteQ.isError;
-
-  function applyCoupon() {
-    const normalized = couponDraft.trim().toUpperCase().replace(/\s+/g, "");
-    if (!normalized) {
-      setCouponFeedback("اكتب رمز الكوبون أولاً");
-      return;
-    }
-    setAppliedCouponCode(normalized);
-    setCouponFeedback("جارٍ التحقق من الكوبون…");
-    acceptedQuoteRef.current = null;
-    setCheckoutSafetyError(null);
-  }
-  function removeCoupon() {
-    setAppliedCouponCode(null);
-    setCouponDraft("");
-    setCouponFeedback(null);
-    acceptedQuoteRef.current = null;
-    setCheckoutSafetyError(null);
-  }
 
   function addToCart(p: {
     productUnitId: number; productId: number; productName: string; price: string | null;
@@ -2356,15 +2393,18 @@ function StorefrontContent() {
             وخصمُ الكوبون وزرُّ الإضافة وشارةُ العرض وبطاقاتُ الأقسام وأخضرُ واتساب. */}
         {settingsQ.isSuccess && !storeOpen && <div className="mb-5 border border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] px-4 py-3 text-center text-sm font-bold text-[var(--sem-neg)]">المتجر مغلق مؤقتاً — يمكنك تصفح المنتجات والعودة لاحقاً لإتمام الطلب.</div>}
 
+        <div className="mb-4">
+          <StorefrontDispatchCountdown />
+        </div>
+
         <StorefrontMilestoneBar cartSubtotal={cartSubtotal} freeShippingThresholdBaghdad={settingsQ.data?.freeShippingThreshold} freeShippingThresholdGovernorates={settingsQ.data?.freeShippingThresholdGovernorates} className="mb-6" />
 
-        {!search && categoryId == null && !showWishlist && feedStrips.length > 0 && (
-          <div className="mb-8 w-[100vw] relative left-[50%] right-[50%] -ml-[50vw] -mr-[50vw] overflow-hidden">
-            <BannerCarousel banners={feedStrips} slot="HERO" />
+        {!search && categoryId == null && !showWishlist && topBanners.length > 0 && (
+          <div className="mb-8 w-full min-w-0">
+            <BannerCarousel banners={topBanners} slot={topBannerSlot} />
           </div>
         )}
 
-        {/* قسم الأقسام الرئيسية */}
         {cats.length > 0 && (
           <StorefrontCategories
             id="store-categories"
@@ -2373,6 +2413,15 @@ function StorefrontContent() {
             onSelectCategory={selectCategory}
             categoryCountFn={(c) => storefrontCategoryCount(c, availability)}
             className="mb-8 scroll-mt-28"
+          />
+        )}
+
+        {(!search && categoryId == null && !showWishlist || selectedThematicCollection != null) && (
+          <StorefrontThematicStrip
+            activeCollectionId={selectedThematicCollection?.id ?? null}
+            onSelectCollection={handleSelectThematicCollection}
+            onClearCollection={handleClearThematicCollection}
+            className="mb-8"
           />
         )}
 
@@ -2627,6 +2676,56 @@ function StorefrontContent() {
                   <div className="min-w-0">
                     {detailQ.data.brand && <p className="text-xs font-medium text-slate-400">{detailQ.data.brand}</p>}
                     <h3 className="text-base font-extrabold leading-snug text-slate-900 dark:text-white">{detailQ.data.productName}</h3>
+
+                    {/* شريط التقييمات والنجوم السريع مع زر كتابة التقييم */}
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50/80 p-2.5 ring-1 ring-slate-200/70 dark:bg-slate-800/60 dark:ring-slate-700/80">
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-0.5 text-amber-500">
+                          {[1, 2, 3, 4, 5].map((s) => (
+                            <Star
+                              key={s}
+                              aria-hidden
+                              className={`size-3.5 ${
+                                s <= Math.round(Number(detailQ.data?.ratingAverage ?? 5))
+                                  ? "fill-current text-amber-400"
+                                  : "text-slate-300 dark:text-slate-600"
+                              }`}
+                            />
+                          ))}
+                        </div>
+                        <span className="font-mono text-xs font-black text-slate-800 dark:text-slate-100">
+                          {detailQ.data?.ratingAverage ? Number(detailQ.data.ratingAverage).toFixed(1) : "5.0"}
+                        </span>
+                        <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                          {detailQ.data?.reviewsCount
+                            ? `(${formatQuantity(detailQ.data.reviewsCount)} تقييم معتمد)`
+                            : "(كن أول من يقيّم المنتج)"}
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProductReviewOpenRequest({ open: true, orderNumber: null });
+                          document.getElementById("storefront-product-reviews")?.scrollIntoView({ behavior: "smooth" });
+                        }}
+                        className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1 text-[11px] font-black text-white shadow-xs transition hover:bg-amber-600 active:scale-95"
+                      >
+                        <Star aria-hidden className="size-3 fill-current" />
+                        <span>اكتب تقييمك</span>
+                      </button>
+                    </div>
+
+                    {/* وسوم السمات الإرشادية السريعة (Category Heuristics Badges) */}
+                    <StorefrontHeuristicsBadges
+                      productName={detailQ.data.productName}
+                      category={detailQ.data.category}
+                      description={detailQ.data.description}
+                      isCustomizable={detailQ.data.isCustomizable}
+                      isBundle={detailQ.data.isBundle}
+                      limit={3}
+                      className="mt-2.5"
+                    />
                     {detailQ.data.description && <p className="mt-2 whitespace-pre-line text-xs leading-6 text-slate-600 dark:text-slate-300">{detailQ.data.description}</p>}
                     {detailQ.data.category && <p className="mt-1 text-xs text-slate-500">الفئة: {detailQ.data.category}</p>}
                     {detailQ.data.categoryId != null && detailQ.data.category && <button type="button" onClick={() => { setSelectedId(null); selectCategory(detailQ.data!.categoryId!); }} className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-[#c5e8dc] bg-[#e9f7f2] px-3 py-1.5 text-[11px] font-black text-[#276c5d] transition hover:border-[#1e4a63] hover:bg-[#d9f1e8]" aria-label={`تصفح منتجات فئة ${detailQ.data.category}`}><Store aria-hidden className="size-3.5" /> تصفح منتجات «{detailQ.data.category}» <ArrowRight aria-hidden className="size-3.5 rotate-180" /></button>}
@@ -2744,6 +2843,24 @@ function StorefrontContent() {
                         {customizationValidation && <p id="storefront-customization-error" role="alert" className="mt-2 rounded-xl bg-[var(--store-accent)]/10 px-2.5 py-2 text-xs font-bold text-[var(--store-accent-strong)]">{customizationValidation}</p>}
                       </section>
                     ) : null}
+
+                    {detailQ.data.isCustomizable && (
+                      <StorefrontCustomizerStudio
+                        productName={detailQ.data.productName}
+                        baseImageUrl={detailMedia.fallbackUrl ?? detailQ.data.imageUrl}
+                        onApplyCustomization={(customData) => {
+                          const primaryField = visibleCustomizationFields.find((f) => f.fieldType === "TEXT" || f.fieldType === "TEXTAREA");
+                          if (primaryField && customData.customText) {
+                            updateCustomizationField(primaryField, customData.customText);
+                          }
+                          const fileField = visibleCustomizationFields.find((f) => f.fieldType === "FILE");
+                          if (fileField && customData.hasLogo) {
+                            updateCustomizationField(fileField, "شعار مرفق من استوديو المعاينة الحية");
+                          }
+                        }}
+                        className="mt-4"
+                      />
+                    )}
                     <div className="mt-3 flex items-baseline gap-2">
                       <p className="text-xl font-extrabold text-money-positive">{priceLabel(detailUnit?.salePrice ?? detailUnit?.price ?? null)}</p>
                       {detailUnit?.salePrice != null && detailUnit.price != null && Number(detailUnit.salePrice) < Number(detailUnit.price) && (
@@ -2791,7 +2908,32 @@ function StorefrontContent() {
                     cartCount={getProductCartQty(detailQ.data.productId)}
                     showCartCount={true}
                   />
+                  {settingsQ.data?.whatsappNumber && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const variantDesc = detailVariant?.label || detailVariant?.variantName || [detailVariant?.color, detailVariant?.size].filter(Boolean).join(" - ") || "";
+                        const variantText = variantDesc ? ` (الخيار: ${variantDesc})` : "";
+                        const unitText = detailUnit?.unitName ? ` (الوحدة: ${detailUnit.unitName})` : "";
+                        openWhatsApp(
+                          settingsQ.data!.whatsappNumber!,
+                          `السلام عليكم، أود الاستفسار حول منتج «${detailQ.data?.productName ?? ""}»${variantText}${unitText} عبر متجر الرؤية العربية.`
+                        );
+                      }}
+                      className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500 bg-emerald-50/80 py-2.5 text-xs font-black text-emerald-800 transition hover:bg-emerald-100 dark:border-emerald-600/40 dark:bg-emerald-950/30 dark:text-emerald-300"
+                    >
+                      <MessageCircle aria-hidden className="size-3.5" />
+                      <span>استفسار حول المنتج عبر واتساب</span>
+                    </button>
+                  )}
                 </div>
+
+                {/* شريط الإقبال والدليل الاجتماعي اللحظي */}
+                <StorefrontSocialProofTicker
+                  soldCount={detailQ.data.soldCount}
+                  productName={detailQ.data.productName}
+                  className="mt-3"
+                />
 
                 {/* محتويات البكج */}
                 {detailQ.data.isBundle && detailQ.data.bundleItems && detailQ.data.bundleItems.length > 0 && (
@@ -2817,6 +2959,23 @@ function StorefrontContent() {
                     onSelect={setSelectedId}
                     onAdd={(product, event) => addCatalogProduct(product, event)}
                     onRecommendationClick={trackRecommendationClick}
+                  />
+                )}
+
+                {/* بطاقة المستشار الشخصي المباشر للزبائن والشركات */}
+                <StorefrontPersonalAdvisorCard
+                  productTitle={detailQ.data.productName}
+                  whatsappNumber={settingsQ.data?.whatsappNumber}
+                  className="mt-4"
+                />
+
+                {/* تقييمات وآراء العملاء المعتمدة (Social Proof) */}
+                {detailQ.data && (
+                  <StorefrontProductReviews
+                    key={`${detailQ.data.productId}-${productReviewOpenRequest.open ? "open" : "closed"}-${productReviewOpenRequest.orderNumber ?? ""}`}
+                    productId={detailQ.data.productId}
+                    initialOpenForm={productReviewOpenRequest.open}
+                    defaultOrderNumber={productReviewOpenRequest.orderNumber}
                   />
                 )}
               </div>
@@ -2935,6 +3094,11 @@ function StorefrontContent() {
                   <MessageCircle aria-hidden className="size-4" /> أو أرسل سلّتك عبر واتساب
                 </button>
               )}
+              <StorefrontB2BQuoteButton
+                cartLines={cartLines}
+                cartSubtotal={cartSubtotal}
+                className="mt-2 w-full"
+              />
             </>
           )}
         </StorefrontPanelShell>
@@ -3007,7 +3171,7 @@ function StorefrontContent() {
                 </button>
               </div>
               <p id="storefront-coupon-feedback" className="mt-2 text-xs font-bold text-slate-600" role="status" aria-live="polite">
-                {quoteQ.isFetching && appliedCouponCode ? "جارٍ التحقق من الكوبون…" : quoteQ.isError && appliedCouponCode ? (quoteQ.error?.message ?? "تعذّر التحقق من الكوبون") : couponSuperseded ? `لم يُستخدم الكوبون؛ طُبقت منفعة ${quoteQ.data?.pricingBenefitLabel ?? "أفضل سعر متاح"} بدلاً منه.` : appliedCouponCode && quoteQ.data ? `تم تطبيق ${quoteQ.data.couponProgramName ?? "الكوبون"} — التوفير ${money(quotedCouponDiscount)} د.ع` : couponFeedback ?? "يمكنك إدخال رمز العرض قبل تأكيد الطلب"}
+                {quoteQ.isFetching && appliedCouponCode ? "جارٍ التحقق من الكوبون…" : quoteQ.isError && appliedCouponCode ? (quoteQ.error?.message ?? "تعذّر التحقق من الكوبون") : couponSuperseded ? `لم يُستخدم الكوبون؛ طُبقت منفعة ${quoteQ.data?.pricingBenefitLabel ?? "أفضل سعر متاح"} بدلاً منه.` : appliedCouponCode && quoteQ.data ? `تم تطبيق ${quoteQ.data.couponProgramName ?? "الكوبون"} — التوفير ${money(Number(quotedCouponDiscount) + Number(quoteQ.data.couponDeliveryWaivedAmount ?? 0))} د.ع` : couponFeedback ?? "يمكنك إدخال رمز العرض قبل تأكيد الطلب"}
               </p>
             </div>
 
@@ -3235,11 +3399,45 @@ function StorefrontContent() {
                     {orderStatusLabelForCustomer(trackResult.status)}
                   </span>
                 </div>
+                {trackResult.deliveryHandshakeOtp && (
+                  <div className="flex items-center justify-between rounded-xl border border-amber-500/30 bg-amber-50/70 p-3 dark:border-amber-500/20 dark:bg-amber-950/30">
+                    <div>
+                      <p className="text-xs font-black text-amber-900 dark:text-amber-200">
+                        رمز تسليم الشحنة للمندوب (Handshake PIN)
+                      </p>
+                      <p className="text-[10px] font-bold text-amber-700/80 dark:text-amber-400">
+                        سلّم هذا الرمز للمندوب يداً بيد عند استلام شحنتك
+                      </p>
+                    </div>
+                    <span className="font-mono text-base font-black tracking-widest text-amber-900 bg-white dark:bg-slate-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 px-3 py-1 rounded-lg shadow-xs" dir="ltr">
+                      {trackResult.deliveryHandshakeOtp}
+                    </span>
+                  </div>
+                )}
                 <div className="divide-y divide-slate-100 dark:divide-slate-800">
                   {trackResult.items.map((it, i) => (
-                    <div key={i} className="flex items-center justify-between py-2 text-sm">
-                      <span className="min-w-0 flex-1 truncate text-slate-700 dark:text-slate-200">{it.productName} <span className="text-slate-400">×{formatQuantity(it.quantity)}</span></span>
-                      <span className="tabular-nums text-slate-500" dir="ltr">{money(it.total)} د.ع</span>
+                    <div key={i} className="flex items-center justify-between py-2.5 text-sm gap-2">
+                      <div className="min-w-0 flex-1">
+                        <span className="truncate text-slate-700 dark:text-slate-200 block font-semibold">
+                          {it.productName} <span className="text-slate-400 font-normal">×{formatQuantity(it.quantity)}</span>
+                        </span>
+                        {it.productId && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              openProduct(it.productId!, {
+                                openReview: true,
+                                orderNumber: trackResult.orderNumber,
+                              });
+                            }}
+                            className="mt-1 inline-flex items-center gap-1 text-[11px] font-bold text-amber-600 hover:text-amber-700 dark:text-amber-400 hover:underline"
+                          >
+                            <Star aria-hidden className="size-3 fill-current" />
+                            <span>أضف تقييمك وتجربتك لهذا المنتج</span>
+                          </button>
+                        )}
+                      </div>
+                      <span className="tabular-nums text-slate-500 shrink-0" dir="ltr">{money(it.total)} د.ع</span>
                     </div>
                   ))}
                 </div>

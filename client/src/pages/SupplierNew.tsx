@@ -11,6 +11,7 @@ import { FormError } from "@/components/form/FormError";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { fmt } from "@/lib/money";
 import { whatsappLink, displayE164 } from "@/lib/intlPhone";
 import { cn } from "@/lib/utils";
@@ -36,6 +37,8 @@ const PAYMENT_TERMS = ["نقدي فوري", "آجل 15 يوم", "آجل 30 يو�
 
 
 export default function SupplierNew() {
+  const me = trpc.auth.me.useQuery();
+  const canCreate = canLifecycleOperation(me.data, "suppliers.create", true);
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
 
@@ -111,6 +114,7 @@ export default function SupplierNew() {
   });
 
   function submit() {
+    if (!canCreate) return;
     if (create.isPending) return; // حاجز واجهة أول؛ والحاجز البنيوي clientRequestId خادمياً (هجرة 0090).
     setError("");
     if (!name.trim()) {
@@ -515,7 +519,7 @@ export default function SupplierNew() {
 
       <FormError message={error} />
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-        <Button onClick={submit} disabled={create.isPending} title="Ctrl+S">
+        <Button onClick={submit} disabled={!canCreate || create.isPending} title="Ctrl+S">
           {create.isPending ? ACTION_LABELS.saving : "حفظ المورّد"}
         </Button>
         <Link href="/suppliers"><Button variant="outline" title="Esc">إلغاء</Button></Link>

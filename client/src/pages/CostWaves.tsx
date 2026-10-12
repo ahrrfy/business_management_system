@@ -1,3 +1,4 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -174,7 +175,9 @@ function CreateCostWave({
 }) {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const categories = trpc.catalog.categories.useQuery();
+  const canOperation = (path: string) => canLifecycleOperation(me.data, path, true);
+  const categories = trpc.catalog.categories.useQuery(undefined, { enabled: canOperation("catalog.categories") });
+  const categoriesData = canOperation("catalog.categories") ? categories.data : undefined;
   const branches = trpc.branches.list.useQuery();
 
   const [scope, setScope] = useState<CostWaveScope>("FILTERED");
@@ -189,7 +192,9 @@ function CreateCostWave({
   const [ruleType, setRuleType] =
     useState<CostWaveRuleType>("DECREASE_PERCENT");
   const [changeValue, setChangeValue] = useState("5");
-  const [preview, setPreview] = useState<Preview | null>(null);
+  const [cachedPreview, setPreview] = useState<Preview | null>(null);
+  const canPreview = canOperation("inventory.previewCostWave");
+  const preview = canPreview ? cachedPreview : null;
   const [name, setName] = useState("");
   const [reason, setReason] = useState("");
   const [description, setDescription] = useState("");
@@ -211,11 +216,12 @@ function CreateCostWave({
     { branchId: branchId ?? 0, q: debouncedPicker.trim(), limit: 30, offset: 0 },
     {
       enabled:
-        scope === "SELECTED" &&
+        (scope === "SELECTED" &&
         branchId != null &&
-        debouncedPicker.trim().length > 0,
+        debouncedPicker.trim().length > 0) && canOperation("inventory.onHand"),
     },
   );
+  const pickerData = canOperation("inventory.onHand") ? picker.data : undefined;
 
   const filters = useMemo(
     () => ({
@@ -241,7 +247,7 @@ function CreateCostWave({
   useEffect(() => {
     setPreview(null);
     setConfirmationCount("");
-  }, [input]);
+  }, [input, canPreview]);
 
   const previewMutation = trpc.inventory.previewCostWave.useMutation({
     onSuccess: (data) => {
@@ -271,10 +277,10 @@ function CreateCostWave({
 
   const pickerRows = useMemo(() => {
     const map = new Map<number, InventoryCandidateRow>();
-    for (const row of picker.data ?? [])
+    for (const row of pickerData ?? [])
       map.set(Number(row.variantId), row);
     return Array.from(map.values());
-  }, [picker.data]);
+  }, [pickerData]);
 
   function toggleVariant(row: InventoryCandidateRow) {
     const id = Number(row.variantId);
@@ -299,15 +305,17 @@ function CreateCostWave({
   }
 
   function runPreview() {
+    if (!canPreview) return;
     if (scopeError) {
       setError(scopeError);
       return;
     }
     setError("");
-    previewMutation.mutate(input);
+    (canOperation("inventory.previewCostWave") && previewMutation.mutate(input));
   }
 
   async function submit() {
+    if (!canOperation("inventory.submitCostWave") || !canPreview) return;
     if (!preview) return;
     if (
       name.trim().length < 3 ||
@@ -329,13 +337,13 @@ function CreateCostWave({
       requireTextLabel: `اكتب عدد الأصناف (${preview.totals.itemCount}) للتأكيد`,
     });
     if (!ok) return;
-    submitMutation.mutate({
+    (canOperation("inventory.submitCostWave") && submitMutation.mutate({
       ...input,
       name: name.trim(),
       reason: reason.trim(),
       description: description.trim() || null,
       previewFingerprint: preview.fingerprint,
-    });
+    }));
   }
 
   const previewColumns = useMemo<ColumnDef<PreviewRow, unknown>[]>(
@@ -421,6 +429,7 @@ function CreateCostWave({
 
   return (
     <div className="space-y-4 pt-2">
+      {!me.isLoading && !canPreview && <p role="status" className="text-sm text-muted-foreground">تحتاج المعاينة تفويض معاينة موجة التكلفة وإتاحة عرض التكلفة والربح.</p>}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">
@@ -480,7 +489,7 @@ function CreateCostWave({
                     }
                   >
                     <option value="">كل الفئات</option>
-                    <CategoryOptionList categories={categories.data ?? []} />
+                    <CategoryOptionList categories={categoriesData ?? []} />
                   </AppSelect>
                 </Field>
                 <Field label="بحث المنتج / SKU / الباركود">
@@ -635,7 +644,7 @@ function CreateCostWave({
           )}
           <Button
             onClick={runPreview}
-            disabled={previewMutation.isPending || !!scopeError || !changeValue}
+            disabled={!canPreview || (previewMutation.isPending || !!scopeError || !changeValue)}
           >
             <Eye aria-hidden />{" "}
             {previewMutation.isPending
@@ -767,10 +776,10 @@ function CreateCostWave({
                 <Button
                   onClick={submit}
                   disabled={
-                    submitMutation.isPending ||
+                    !canOperation("inventory.submitCostWave") || (submitMutation.isPending ||
                     name.trim().length < 3 ||
                     reason.trim().length < COST_WAVE_MIN_REASON_LENGTH ||
-                    confirmationCount !== String(preview.totals.itemCount)
+                    confirmationCount !== String(preview.totals.itemCount))
                   }
                 >
                   <Send aria-hidden />{" "}
@@ -794,6 +803,8 @@ function WaveList({
   view: "AWAITING_MINE" | "MY_REQUESTS" | "HISTORY";
   onOpen: (id: number) => void;
 }) {
+  const me = trpc.auth.me.useQuery();
+  const canOperation = (path: string) => canLifecycleOperation(me.data, path, true);
   const PAGE_SIZE = 50;
   const [page, setPage] = useState(0);
   const [cursors, setCursors] = useState<Array<number | null>>([null]);
@@ -808,11 +819,12 @@ function WaveList({
     limit: PAGE_SIZE,
     cursor: cursors[page] ?? undefined,
     search: debouncedSearch || undefined,
-  });
+  }, { enabled: canOperation("inventory.costWaves") });
+  const queryData = canOperation("inventory.costWaves") ? query.data : undefined;
 
   function changePage(nextPage: number) {
     if (nextPage > page) {
-      const nextCursor = query.data?.nextCursor;
+      const nextCursor = queryData?.nextCursor;
       if (nextCursor == null) return;
       setCursors((current) => {
         const next = current.slice(0, nextPage + 1);
@@ -837,7 +849,7 @@ function WaveList({
           <div>
             <button
               type="button"
-              onClick={() => onOpen(row.original.id)}
+              disabled={!canOperation("inventory.costWave")} onClick={() => onOpen(row.original.id)}
               className="font-semibold text-primary hover:underline"
             >
               {row.original.name}
@@ -916,14 +928,14 @@ function WaveList({
         meta: { kind: "actions" },
       },
     ],
-    [onOpen],
+    [onOpen, me.data],
   );
   return (
     <Card className="mt-2">
       <CardContent className="pt-5">
         <DataTable
           columns={columns}
-          data={query.data?.rows ?? []}
+          data={queryData?.rows ?? []}
           searchable
           searchPlaceholder="بحث باسم الموجة أو المنشئ أو الحالة"
           serverSearch={{ value: search, onChange: setSearch }}
@@ -931,7 +943,7 @@ function WaveList({
             page,
             onPageChange: changePage,
             pageSize: PAGE_SIZE,
-            hasMore: query.data?.hasMore ?? false,
+            hasMore: queryData?.hasMore ?? false,
             isFetching: query.isFetching,
           }}
           loading={query.isLoading}

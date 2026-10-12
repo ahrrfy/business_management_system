@@ -17,6 +17,7 @@
  * كلتاهما مديريّة وتُسجَّل في التدقيق، وكلتاهما ذرّية: إمّا الكلّ أو لا شيء.
  */
 import { TRPCError } from "@trpc/server";
+import { assertServiceOperationTx, type ServiceOperationActor } from "../authorization/operationAuthority";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import {
@@ -55,12 +56,6 @@ async function auditLog(tx: Tx, actor: Actor, action: string, entityId: number, 
     // best-effort
   }
 }
-function assertManager(actor: Actor): void {
-  if (actor.role !== "admin" && actor.role !== "manager") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "عكس بيع الكروت قرارٌ مديريّ" });
-  }
-}
-
 async function prelockCashReversal(
   tx: Tx,
   input: { invoiceId: number; detailIds: number[] },
@@ -387,9 +382,9 @@ async function adjustReturnedReceivable(
 export async function approveReversal(
   tx: Tx,
   input: { invoiceId: number; detailIds: number[]; reason: string },
-  actor: Actor,
+  actor: Actor & ServiceOperationActor,
 ): Promise<{ invoiceId: number; reversed: number; refunded: string; outcome: ReversalOutcome }> {
-  assertManager(actor);
+  await assertServiceOperationTx(tx, actor, "digitalCards.reversal.approve");
   const reason = input.reason.trim();
   if (!reason) throw new TRPCError({ code: "BAD_REQUEST", message: "سبب العكس مطلوب" });
 
@@ -595,9 +590,9 @@ export async function approveReversal(
 export async function requestLossRefund(
   tx: Tx,
   input: { invoiceId: number; detailIds: number[]; reason: string },
-  actor: Actor,
+  actor: Actor & ServiceOperationActor,
 ): Promise<{ invoiceId: number; requested: number; refund: string; loss: string }> {
-  assertManager(actor);
+  await assertServiceOperationTx(tx, actor, "digitalCards.reversal.requestLossRefund");
   const reason = input.reason.trim();
   if (reason.length < 3) throw new TRPCError({ code: "BAD_REQUEST", message: "اكتب سبباً واضحاً لردّ الخسارة" });
 
@@ -631,9 +626,9 @@ export async function requestLossRefund(
 export async function rejectLossRefund(
   tx: Tx,
   input: { invoiceId: number; detailIds: number[]; reason?: string | null },
-  actor: Actor,
+  actor: Actor & ServiceOperationActor,
 ): Promise<{ invoiceId: number; rejected: number }> {
-  assertManager(actor);
+  await assertServiceOperationTx(tx, actor, "digitalCards.reversal.rejectLossRefund");
   const details = await lockDetails(tx, input.invoiceId, input.detailIds, "LOSS_REFUND_PENDING");
   const requesters = new Set(details.map((d) => Number(d.lossRefundRequestedBy)));
   if (requesters.size === 1 && requesters.has(actor.userId) && !actor.isOwner) {
@@ -669,9 +664,9 @@ export async function rejectLossRefund(
 export async function lossRefund(
   tx: Tx,
   input: { invoiceId: number; detailIds: number[] },
-  actor: Actor,
+  actor: Actor & ServiceOperationActor,
 ): Promise<{ invoiceId: number; reversed: number; refunded: string; loss: string; outcome: ReversalOutcome }> {
-  assertManager(actor);
+  await assertServiceOperationTx(tx, actor, "digitalCards.reversal.lossRefund");
 
   const prelocked = await prelockCashReversal(tx, input, actor, false);
 

@@ -45,8 +45,13 @@ export function CompanyStatementScanQueue({
     setTimeout(() => inputRef.current?.focus(), 30);
   }, []);
 
-  const scan = () => {
-    const result = resolveCompanyStatementBarcode(candidates, barcode, queuedSet);
+  const acceptedIdsRef = useRef(new Set<number>());
+  // Props are authoritative after a render; the ref also prevents a burst from adding twice
+  // before the parent selection update renders.
+  acceptedIdsRef.current = new Set(queuedSet);
+  const scan = (raw: string) => {
+    if (disabled) return;
+    const result = resolveCompanyStatementBarcode(candidates, raw, acceptedIdsRef.current);
     if (result.kind === "EMPTY") return;
     if (result.kind === "NOT_FOUND") {
       notify.err("البوليصة غير موجودة لهذه الشركة", `الرقم ${result.trackingRef} لا يطابق إرسالية مفتوحة للشركة المختارة.`);
@@ -55,6 +60,7 @@ export function CompanyStatementScanQueue({
     } else if (result.kind === "DUPLICATE") {
       notify.warn("البوليصة موجودة في طابور الكشف", result.candidate.invoiceNumber ?? result.candidate.consignmentNumber);
     } else {
+      acceptedIdsRef.current.add(result.candidate.id);
       const remaining = statementQueueRemaining(result.candidate).toFixed(2);
       onQueue(result.candidate, remaining);
       playReadyBeep();
@@ -76,11 +82,9 @@ export function CompanyStatementScanQueue({
           ref={inputRef}
           value={barcode}
           onChange={setBarcode}
-          onScan={(code) => {
-            setBarcode(code);
-            scan();
-          }}
-          onSubmit={() => scan()}
+          onScan={scan}
+          onSubmit={scan}
+          debounceMs={0}
           disabled={disabled}
           placeholder={disabled ? "أدخل رقم الكشف أولاً" : "امسح باركود البوليصة المطبوع في كشف الشركة (Enter)"}
           dir="ltr"
@@ -89,7 +93,7 @@ export function CompanyStatementScanQueue({
           className="h-11 flex-1"
           inputClassName="text-center font-mono text-base font-bold"
         />
-        <Button type="button" onClick={scan} disabled={disabled || !barcode.trim()} className="h-11">
+        <Button type="button" onClick={() => scan(barcode)} disabled={disabled || !barcode.trim()} className="h-11">
           مسح وإضافة
         </Button>
       </div>
@@ -126,12 +130,14 @@ export function CompanyStatementScanQueue({
                   <strong className="tabular-nums" dir="ltr">{fmt(expected.toFixed(2))}</strong>
                 </div>
                 <MoneyInput
+                  disabled={disabled}
                   value={collectedById[candidate.id] ?? expected.toFixed(2)}
                   onChange={(value) => onCollectedChange(candidate.id, value)}
                   ariaLabel={`مبلغ الكشف للفاتورة ${candidate.invoiceNumber ?? candidate.invoiceId}`}
                   className="h-8 text-end font-mono text-xs"
                 />
-                <Button type="button" size="icon" variant="ghost" onClick={() => onRemove(candidate.id)} aria-label="إزالة من طابور الكشف">
+                <Button type="button" size="icon" variant="ghost" disabled={disabled}
+                  onClick={() => onRemove(candidate.id)} aria-label="إزالة من طابور الكشف">
                   <CircleX aria-hidden className="size-4 text-destructive" />
                 </Button>
               </div>

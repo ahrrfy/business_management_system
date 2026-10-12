@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { moduleAccessAllowed } from "@shared/permissions";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
+import { type OperationUser } from "@shared/operationPermissions";
 
 const readPage = (name: string) => readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 const readReceptionQueue = () =>
@@ -9,12 +11,47 @@ const readCancelDialog = () =>
   readFileSync(new URL("../../components/workorder/CancelWorkOrderDialog.tsx", import.meta.url), "utf8");
 
 describe("عقد صلاحيات وفشل واجهات أوامر الشغل التشغيلية", () => {
+  it("يظهر التفويض لمندوب مستقل لكل مرحلة ولا يحول القراءة أو بدء التنفيذ إلى إذن تسليم", () => {
+    const user: OperationUser = {
+      role: "courier",
+      operationPolicy: { version: 1, grants: {
+        "operation.workOrders.get": true,
+        "operation.workOrders.start": true,
+        "operation.workOrders.requestControl": true,
+      } },
+    };
+    expect(canLifecycleOperation(user, "workOrders.get", false)).toBe(true);
+    expect(canLifecycleOperation(user, "workOrders.start", false)).toBe(true);
+    expect(canLifecycleOperation(user, "workOrders.requestControl", false)).toBe(true);
+    expect(canLifecycleOperation(user, "workOrders.markReady", true)).toBe(false);
+    expect(canLifecycleOperation(user, "workOrders.deliver", true)).toBe(false);
+    expect(canLifecycleOperation(user, "workOrders.assign", true)).toBe(false);
+    expect(canLifecycleOperation(user, "suppliers.delete", true)).toBe(false);
+  });
+
+  it("يحترم المنع الفردي فوق الدور ويحافظ على شرط الواجهة السابق للحسابات غير المنقولة", () => {
+    const user: OperationUser = {
+      role: "manager",
+      roleOperationPolicy: { version: 1, grants: {
+        "operation.workOrders.start": true,
+        "operation.workOrders.markReady": true,
+      } },
+      operationPolicy: { version: 1, grants: { "operation.workOrders.start": false } },
+    };
+    expect(canLifecycleOperation(user, "workOrders.start", true)).toBe(false);
+    expect(canLifecycleOperation(user, "workOrders.markReady", false)).toBe(true);
+    expect(canLifecycleOperation({ role: "print_operator" }, "workOrders.start", true)).toBe(true);
+    expect(canLifecycleOperation({ role: "print_operator" }, "workOrders.deliver", false)).toBe(false);
+    expect(canLifecycleOperation(undefined, "workOrders.start", true)).toBe(false);
+  });
+
   it("تربط محطة التنفيذ ببوابة workorders FULL وتنفذ المنح والتقييد الصريح", () => {
     const hub = readPage("PrintHub.tsx");
     const station = readPage("WorkOrderStation.tsx");
 
     expect(hub).toContain('module: "workorders", level: "FULL"');
-    expect(station).toContain("const canOperateWorkOrders = !!me.data?.role && moduleAccessAllowed(");
+    expect(station).toContain("const legacyOperateWorkOrders = !!me.data?.role && moduleAccessAllowed(");
+    expect(station).toContain('canLifecycleOperation(me.data, "workOrders.list", legacyOperateWorkOrders)');
     expect(
       moduleAccessAllowed("user", { workorders: "FULL" }, "workorders", "FULL", ["cashier", "manager", "print_operator"]),
     ).toBe(true);
@@ -39,9 +76,12 @@ describe("عقد صلاحيات وفشل واجهات أوامر الشغل ال
   it("يفصل صلاحية تنفيذ الطلب عن الإرسال ويعلن فشل الجهات والطلبات المسلمة", () => {
     const source = readReceptionQueue();
 
-    expect(source).toContain("const canFulfill = !!role && moduleAccessAllowed(");
+    expect(source).toContain("const legacyCanFulfill = !!role && moduleAccessAllowed(");
+    expect(source).toContain('const canFulfill = lifecycleActionAllowed(me.data, "workOrders.deliver", legacyCanFulfill)');
     expect(source).not.toContain('const canFulfill = role === "admin"');
-    expect(source).toContain("const canDispatch = canFulfill");
+    expect(source).toContain("const legacyCanDispatch = legacyCanFulfill");
+    expect(source).toContain('const canDispatch = lifecycleActionAllowed(me.data, "delivery.dispatch", legacyCanDispatch)');
+    expect(source).toContain('const canReadParties = lifecycleActionAllowed(me.data, "delivery.listParties", legacyCanDispatch)');
     expect(source).toContain('hasModuleAccess(role ?? "", permissions, "store", "READ")');
     for (const query of ["active", "deliveredToday", "parties"]) {
       expect(source).toContain(`${query}.isLoading`);
@@ -88,7 +128,8 @@ describe("عقد صلاحيات وفشل واجهات أوامر الشغل ال
     expect(detail).not.toContain("blockingTask={(data.blockingTask");
     expect(station).not.toContain("blockingTask={(d.blockingTask");
     // الحجزُ الوحيد الباقي في محطّة الفنّي هو الصلاحية نفسها.
-    expect(station).toContain("const cannotOperate = !canOperateWorkOrders");
+    expect(station).toContain('canLifecycleOperation(me.data, "workOrders.start", canOperateWorkOrders)');
+    expect(station).toContain('canLifecycleOperation(me.data, "workOrders.markReady", canOperateWorkOrders)');
   });
 
   it("⭐ يحرس استقلال إحصائيات أعمدة الكانبان وعزل مبالغ «طابور وارد» عن «مسحوب» بلا تكرار", () => {

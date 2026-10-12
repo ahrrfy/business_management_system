@@ -54,5 +54,6 @@ describe("users.list branch filter", () => {
     expect(result.rows).toHaveLength(1);
     expect(result.rows[0]?.name).toBe("Z-Retail 2");
     expect(result.rows[0]?.branchId).toBe(2);
+    expect(Object.keys(result.rows[0] ?? {}).filter((key) => key.startsWith("_role"))).toEqual([]);
   });
 });

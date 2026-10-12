@@ -1,3 +1,4 @@
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 /**
  * **درج تفصيل الإرسالية** (٢٢/٨) — الشاشة التي كانت مفقودة: «ماذا حدث لهذا الطرد؟».
  * `deliveryEvents` يكتب لكلّ انتقال إلزامياً، لكن لا مستهلكَ له في الواجهة قبل اليوم.
@@ -72,14 +73,14 @@ export interface ConsignmentTimelineDrawerProps {
 export function ConsignmentTimelineDrawer({ consignmentId, onClose }: ConsignmentTimelineDrawerProps) {
   const isOpen = consignmentId != null;
   const me = trpc.auth.me.useQuery();
-  const canEditTracking = !!me.data
+  const canEditTracking = lifecycleActionAllowed(me.data, "delivery.updateTrackingRef", !!me.data
     && moduleAccessAllowed(
       me.data.role as RoleKey,
       (me.data.permissionsOverride ?? null) as PermissionMap | null,
       "store",
       "FULL",
       ["cashier", "manager"],
-    );
+    ));
   const q = trpc.delivery.consignmentTimeline.useQuery(
     { consignmentId: consignmentId ?? 0 },
     { enabled: isOpen },

@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useState } from "react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -30,7 +31,8 @@ export function AssetTransferDialog({
   asset,
   onSuccess,
 }: AssetTransferDialogProps) {
-  const opts = trpc.assets.formOptions.useQuery(undefined, { enabled: open });
+  const { can } = useCatalogPeopleOperationAccess();
+  const opts = trpc.assets.formOptions.useQuery(undefined, { enabled: can("assets.formOptions") && (open) });
   const [targetBranchId, setTargetBranchId] = useState<string>("");
   const [targetCustodianId, setTargetCustodianId] = useState<string>("");
   const [location, setLocation] = useState<string>("");
@@ -166,7 +168,7 @@ export function AssetTransferDialog({
             >
               إلغاء
             </Button>
-            <Button type="submit" disabled={transferMut.isPending}>
+            <Button type="submit" disabled={!can("assets.transferBranch") || (transferMut.isPending)}>
               {transferMut.isPending ? "جارٍ تنفيذ المناقلة…" : "تأكيد المناقلة"}
             </Button>
           </DialogFooter>

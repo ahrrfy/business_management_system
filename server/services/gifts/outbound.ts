@@ -3,6 +3,7 @@
 // لا بيع، لا نقد للصندوق، لا ذمة على العميل. حوكمة SOD (منع الإساءة): فوق عتبة التكلفة أو من غير مدير ⇒
 // PENDING_APPROVAL بلا أثر، يعتمدها **مدير آخر** (approveGift، SOD-04: المعتمِد ≠ المنشئ، admin مُستثنى).
 import { TRPCError } from "@trpc/server";
+import { assertOperationAuthorityTx, canonicalOperationAllowed, loadOperationUserTx } from "../authorization/operationAuthority";
 import type Decimal from "decimal.js";
 import { and, eq, inArray } from "drizzle-orm";
 import { branches, customers, giftCampaigns, giftVoucherLines, giftVouchers, productVariants } from "../../../drizzle/schema";
@@ -217,6 +218,10 @@ export async function createOutboundGift(input: CreateOutboundGiftInput, actor: 
   }
 
   const result = await withTx(async (tx) => {
+    const canonicalAuthorized = await assertOperationAuthorityTx(tx, actor, "gifts.createOutbound", true);
+    const canApprove = canonicalAuthorized
+      ? canonicalOperationAllowed(await loadOperationUserTx(tx, actor.userId), "gifts.approveGift") === true
+      : actor.role === "manager";
     const b = (await tx.select({ id: branches.id }).from(branches).where(eq(branches.id, input.branchId)).limit(1))[0];
     if (!b) {
       throw new TRPCError({
@@ -282,11 +287,10 @@ export async function createOutboundGift(input: CreateOutboundGiftInput, actor: 
     // ربط حملة — المرحلة ٢: فحص الميزانيّة الآن بعد معرفة التكلفة (القفل من المرحلة ١ لا يزال سارياً).
     const overCampaignBudget = input.campaignId != null ? await checkCampaignBudget(tx, input.campaignId, campaignBudget, totalCost) : false;
 
-    // حوكمة SOD: admin يُنجز مباشرةً؛ المدير يُنجز تحت العتبة (العامة وميزانيّة الحملة) فقط؛ غيرهما يلزمه اعتماد دائماً.
+    // حوكمة SOD: الإدارة المفوضة بالاعتماد تنجز تحت العتبة؛ ما فوقها أو فوق الميزانية يحتاج اعتماداً منفصلاً.
     const isAdmin = actor.role === "admin";
-    const isManager = actor.role === "manager";
     const overThreshold = totalCost.gt(money(GIFT_APPROVAL_THRESHOLD));
-    const needsApproval = !isAdmin && (overThreshold || !isManager || overCampaignBudget);
+    const needsApproval = !isAdmin && (overThreshold || !canApprove || overCampaignBudget);
 
     const giftNumber = await nextGiftNumber(tx, input.branchId);
     const insHead = await tx.insert(giftVouchers).values({
@@ -356,19 +360,9 @@ export interface ApproveGiftResult {
 /** اعتماد هدية صادرة معلَّقة (SOD-04). يعيد فحص التكلفة تحت القفل (قد تتغيّر WAVG بين الإنشاء والاعتماد). */
 export async function approveGift(giftId: number, actor: Actor): Promise<ApproveGiftResult> {
   const isAdmin = actor.role === "admin";
-  const isManager = actor.role === "manager";
-  if (!isAdmin && !isManager) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: appErrorMessage({
-        what: "تعذّر اعتماد الهدية",
-        why: "اعتماد الهدايا الصادرة من صلاحية المدير أو المالك فقط، وحسابك لا يحمل أياً منهما",
-        doThis: "اطلب من المدير أو المالك اعتماد الطلب من شاشة «الهدايا الصادرة»",
-      }),
-    });
-  }
 
   return withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "gifts.approveGift", isAdmin || actor.role === "manager");
     const gift = (await tx.select().from(giftVouchers).where(eq(giftVouchers.id, giftId)).for("update").limit(1))[0];
     if (!gift) {
       throw new TRPCError({
@@ -514,6 +508,7 @@ export async function cancelOutboundGift(
   const isAdmin = actor.role === "admin";
   const isManager = actor.role === "manager";
   return withTx(async (tx) => {
+    const canonicalAuthorized = await assertOperationAuthorityTx(tx, actor, "gifts.cancelGift", true);
     const gift = (await tx.select().from(giftVouchers).where(eq(giftVouchers.id, giftId)).for("update").limit(1))[0];
     if (!gift) {
       throw new TRPCError({
@@ -547,7 +542,7 @@ export async function cancelOutboundGift(
       });
     }
     const isOwnerOfRequest = Number(gift.createdBy) === actor.userId;
-    if (!isAdmin && !isOwnerOfRequest && !isManager) {
+    if (!isAdmin && !isOwnerOfRequest && !isManager && !canonicalAuthorized) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({

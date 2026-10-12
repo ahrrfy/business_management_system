@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { FILTER_LABELS } from "@shared/uiContracts";
@@ -144,33 +145,34 @@ const assetColumns: ColumnDef<AssetRow, unknown>[] = [
 ];
 
 export default function AssetRegister() {
+  const { can } = useCatalogPeopleOperationAccess();
   const [, navigate] = useLocation();
   // مرآة الخادم: `assets.create = assetWrite` (assets:FULL) — server/routers/assetsRouter.ts:133.
   // إخفاءُ زرّ «أصل جديد» على القرّاء (تبويب managerOnly لكن `assets:FULL` قد يُمنح بـoverride).
   const me = trpc.auth.me.useQuery();
-  const canWrite = !!me.data?.role && moduleAccessAllowed(
+  const canWrite = can("assets.create", !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
     "assets",
     "FULL",
     ["manager"],
-  );
+  ));
   const [f, setF, resetF] = useUrlFilters({ q: "", category: "", branchId: "", status: "", includeDisposed: "" });
   const [importOpen, setImportOpen] = useState(false);
   const utils = trpc.useUtils();
   const importMut = trpc.assets.import.useMutation();
 
-  const opts = trpc.assets.formOptions.useQuery();
+  const opts = trpc.assets.formOptions.useQuery(undefined, { enabled: can("assets.formOptions") });
   const report = trpc.assets.registerReport.useQuery({
     category: (f.category || undefined) as never,
     branchId: f.branchId ? Number(f.branchId) : undefined,
-  });
+  }, { enabled: can("assets.registerReport") });
   const list = trpc.assets.list.useQuery({
     category: (f.category || undefined) as never,
     branchId: f.branchId ? Number(f.branchId) : undefined,
     status: (f.status || undefined) as never,
     includeDisposed: f.includeDisposed === "1",
-  });
+  }, { enabled: can("assets.list") });
 
   const rows = useMemo(() => {
     const all = list.data ?? [];
@@ -285,7 +287,7 @@ export default function AssetRegister() {
                 { key: "settlementStatus", header: "تسوية الاقتناء", map: (r) => assetSettlementPresentation(r.settlementStatus).label },
               ],
             }}
-            onImport={canWrite ? () => setImportOpen(true) : undefined}
+            onImport={can("assets.import", canWrite) ? () => setImportOpen(true) : undefined}
             importLabel="استيراد أصول"
             add={canWrite ? { href: "/assets/new", label: "أصل جديد" } : undefined}
           />

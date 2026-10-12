@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 /* ============================================================================
  * شاشة سلف الموظفين — تبويب في hub الموارد البشرية (بند 12ج).
  *
@@ -67,33 +68,34 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export default function EmployeeAdvances() {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
   // مرآة الخادم: `payroll.advanceGrant` و`payroll.advanceCancel` = `hrWrite` (hr:FULL) —
   // server/routers/payrollRouter.ts:522/547. إخفاءُ زرّ «منح سلفة» على من لا يستطيع الحفظ (بدل
   // فتحِ حوارٍ يُرفض عند submit).
   const me = trpc.auth.me.useQuery();
-  const canGrant = !!me.data?.role && moduleAccessAllowed(
+  const canGrant = can("payroll.advanceGrant", !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
     "hr",
     "FULL",
     ["manager"],
-  );
+  ));
   const [status, setStatus] = useState<"" | "ACTIVE" | "PENDING_APPROVAL" | "SETTLED" | "CANCELLED">("ACTIVE");
   const [empFilter, setEmpFilter] = useState("");
   const [branchFilter, setBranchFilter] = useState("");
   const [q, setQ] = useState("");
   const [grantOpen, setGrantOpen] = useState(false);
 
-  const empOpts = trpc.employees.formOptions.useQuery();
-  const allEmpsQ = trpc.employees.list.useQuery({ limit: 500 });
+  const empOpts = trpc.employees.formOptions.useQuery(undefined, { enabled: can("employees.formOptions") });
+  const allEmpsQ = trpc.employees.list.useQuery({ limit: 500 }, { enabled: can("employees.list") });
   const allEmployees = useMemo(() => {
     if (allEmpsQ.data?.rows) {
       return allEmpsQ.data.rows.map((e) => ({ id: e.id, name: e.fullName }));
     }
     return empOpts.data?.managers ?? [];
   }, [allEmpsQ.data?.rows, empOpts.data?.managers]);
-  const branchesQ = trpc.branches.list.useQuery();
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: can("branches.list") });
 
   const listInput = useMemo(
     () => ({
@@ -103,7 +105,7 @@ export default function EmployeeAdvances() {
     }),
     [status, empFilter, branchFilter],
   );
-  const listQ = trpc.payroll.advancesList.useQuery(listInput);
+  const listQ = trpc.payroll.advancesList.useQuery(listInput, { enabled: can("payroll.advancesList") });
   const rows = listQ.data ?? [];
 
   const filtered = useMemo(() => {
@@ -206,7 +208,7 @@ export default function EmployeeAdvances() {
       meta: { kind: "actions" },
       cell: ({ row }) => {
         const r = row.original;
-        const cancellable = canGrant && r.status === "ACTIVE" && D(r.remaining).eq(D(r.amount));
+        const cancellable = can("payroll.advanceCancel", canGrant) && r.status === "ACTIVE" && D(r.remaining).eq(D(r.amount));
         // سلفةٌ نشطة بدأ الخصم فيها: نُظهر «—» بتوضيح — لا نتركها فارغة صامتاً.
         const partiallyDeducted = r.status === "ACTIVE" && !D(r.remaining).eq(D(r.amount));
         if (cancellable) {
@@ -231,7 +233,7 @@ export default function EmployeeAdvances() {
                 });
                 if (ok) cancelM.mutate({ advanceId: Number(r.id) });
               }}
-              disabled={cancelM.isPending}
+              disabled={!can("payroll.advanceCancel") || (cancelM.isPending)}
             >
               <X className="size-3.5" aria-hidden /> إلغاء
             </button>
@@ -361,6 +363,7 @@ export default function EmployeeAdvances() {
 }
 
 function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => void; onDone: () => void }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const [employeeId, setEmployeeId] = useState<string>("");
   const [amount, setAmount] = useState("");
   const [monthly, setMonthly] = useState("");
@@ -368,17 +371,17 @@ function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
   const [attachmentImages, setAttachmentImages] = useState<ImageItem[]>([]);
   const attachmentUrl = attachmentImages[0]?.dataUrl ?? "";
 
-  const empsQ = trpc.employees.list.useQuery({ status: "active", limit: 200 }, { enabled: open });
+  const empsQ = trpc.employees.list.useQuery({ status: "active", limit: 200 }, { enabled: can("employees.list") && (open) });
   const emps = empsQ.data?.rows ?? [];
   const selected = emps.find((e) => String(e.id) === employeeId);
 
   const balQ = trpc.payroll.advanceBalance.useQuery(
     { employeeId: Number(employeeId) },
-    { enabled: open && !!employeeId },
+    { enabled: can("payroll.advanceBalance") && (open && !!employeeId) },
   );
 
   // عَتبة الاعتماد (الخادم هو المرجع؛ القيمة هنا للتنبيه المسبق فقط). لا عَتبة مُرفق — المُرفق اختياريّ (٣١/٧).
-  const thresholdsQ = trpc.payroll.advanceThresholds.useQuery(undefined, { enabled: open });
+  const thresholdsQ = trpc.payroll.advanceThresholds.useQuery(undefined, { enabled: can("payroll.advanceThresholds") && (open) });
   const approvalThreshold = thresholdsQ.data?.approval ?? 1_000_000;
   const overApproval = D(amount || 0).gte(D(approvalThreshold));
 
@@ -478,7 +481,7 @@ function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
                 clientRequestId: reqIdRef.current,
               });
             }}
-            disabled={!canSave}
+            disabled={!can("payroll.advanceGrant") || (!canSave)}
           >
             {grantM.isPending ? "جارٍ المنح…" : "منح وإصدار السند"}
           </Button>

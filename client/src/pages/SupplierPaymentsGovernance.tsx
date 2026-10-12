@@ -19,6 +19,7 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 
 export default function SupplierPaymentsGovernance() {
   const utils = trpc.useUtils();
@@ -36,7 +37,7 @@ export default function SupplierPaymentsGovernance() {
       : pickedBranchId
         ? Number(pickedBranchId)
         : null;
-  const canDecide =
+  const legacyDecide =
     me.data != null &&
     moduleAccessAllowed(
       me.data.role as RoleKey,
@@ -45,8 +46,9 @@ export default function SupplierPaymentsGovernance() {
       "FULL",
       ["manager", "accountant"],
     );
+  const canDecide = canLifecycleOperation(me.data, "supplierPayments.decidePayment", legacyDecide) || canLifecycleOperation(me.data, "supplierPayments.decideRefund", legacyDecide);
   const decisionBlockedReason =
-    "القرار المالي يتطلب صلاحية الخزينة الكاملة؛ صلاحية المشتريات تتيح إنشاء الطلب ومتابعته فقط.";
+    "يتطلب القرار تفويض اعتماد دفعة المورد أو اعتماد استرداد المورد بحسب نوع الطلب.";
   const queryBranchId = branchId === null ? 0 : branchId;
   const enabled = queryBranchId > 0;
   const paymentSourcesQuery = trpc.supplierPayments.paymentSources.useInfiniteQuery(

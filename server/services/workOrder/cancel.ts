@@ -32,6 +32,13 @@ import {
 import type { ApprovedWorkOrderControl } from "./update";
 import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
 import { computeWorkOrderInvoiceNetPaidInTx } from "./reverseDelivery";
+import { publishRealtimeEvent } from "../../realtime";
+import { assertOperationAuthorityTx } from "../authorization/operationAuthority";
+import {
+  REALTIME_EVENT_TYPES,
+  type WorkOrderStatusChangedPayload,
+  type ReceptionQueueUpdatedPayload,
+} from "@shared/realtimeEvents";
 
 async function resolveLockedReceptionCashShift(
   tx: Tx,
@@ -136,6 +143,10 @@ export async function cancelWorkOrderInTx(
   opts: CancelWorkOrderOptions = {},
   control: ApprovedWorkOrderControl = {},
 ) {
+    const directAuthority = hasWorkOrderDirectCancelAuthority(actor.role ?? "", (actor.permissionsOverride ?? null) as never);
+    const delegatedCancel = control.approvedControlRequestId == null
+      ? await assertOperationAuthorityTx(tx, actor, "workOrders.cancel", directAuthority)
+      : false;
     const reason = opts.reason?.trim() ?? "";
     if (reason.length < 3 || reason.length > 500) {
       throw new TRPCError({
@@ -278,7 +289,10 @@ export async function cancelWorkOrderInTx(
       || appliedDepositsBeforeCancel.length > 0
       || heldFeeBeforeCancel.gt(0)
       || wo.invoiceId != null;
-    const directCancelAllowed = mayCancelWorkOrderWithoutApproval({
+    const directCancelAllowed = delegatedCancel
+      // Planned material rows have no stock effect before execution starts.
+      ? wo.status === "RECEIVED" && !moneyAtStake
+      : mayCancelWorkOrderWithoutApproval({
       role: actor.role ?? "",
       override: (actor.permissionsOverride ?? null) as never,
       status: wo.status,
@@ -288,7 +302,7 @@ export async function cancelWorkOrderInTx(
     if (!directCancelAllowed && control.approvedControlRequestId == null) {
       // **٤٠٣ لِمَن ليس له القرار، و٤١٢ لِمَن له القرار وحالةُ الأمر تمنعه** — رمزان مختلفان
       // لسببَين مختلفَين. الكاشير يقع في الأوّل (مسارُه الطلب) ولو كان الأمرُ خالياً من المال.
-      if (!hasWorkOrderDirectCancelAuthority(actor.role ?? "", (actor.permissionsOverride ?? null) as never)) {
+      if (!delegatedCancel && !directAuthority) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: appErrorMessage({
@@ -933,7 +947,35 @@ export async function cancelWorkOrder(
   opts: CancelWorkOrderOptions = {},
   control: ApprovedWorkOrderControl = {},
 ) {
-  return withTx((tx) => cancelWorkOrderInTx(tx, workOrderId, actor, opts, control));
+  const result = await withTx((tx) =>
+    cancelWorkOrderInTx(tx, workOrderId, actor, opts, control),
+  );
+  try {
+    const branchId = actor.branchId ?? undefined;
+    publishRealtimeEvent<WorkOrderStatusChangedPayload>(
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+      {
+        workOrderId,
+        branchId: branchId ?? 0,
+        newStatus: "CANCELLED",
+        updatedBy: actor.userId,
+      },
+      branchId ? { branchId } : undefined,
+    );
+    publishRealtimeEvent<ReceptionQueueUpdatedPayload>(
+      REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+      {
+        orderId: workOrderId,
+        branchId: branchId ?? 0,
+        status: "CANCELLED",
+        readyForPickup: false,
+      },
+      branchId ? { branchId } : undefined,
+    );
+  } catch {
+    // fail-safe
+  }
+  return result;
 }
 
 /**

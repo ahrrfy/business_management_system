@@ -9,6 +9,7 @@ import {
   normalizeUsername,
 } from "@shared/const";
 import {
+  ALL_PERMISSION_MODULE_KEYS,
   ALL_ROLES,
   PERMISSION_MODULES,
   ROLE_TEMPLATES,
@@ -21,6 +22,16 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import {
+  type AtomicPermissionsMap,
+  type OperationalCaps,
+} from "@shared/atomicPermissions";
+import {
+  buildOperationPolicyFromLegacy,
+  resolveOperationPolicy,
+  summarizeOperationModules,
+  type OperationPolicy,
+} from "@shared/operationPermissions";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { and, asc, desc, eq, gt, gte, isNull, like, ne, or, sql } from "drizzle-orm";
@@ -46,6 +57,19 @@ import { assertCanAdministerUser } from "./userAdminPolicy";
 import { notifyAdminsOfSessionEvent } from "./sessionEventNotifier";
 import { revokeAllNativePushDevicesForUser } from "./nativePushService";
 import { revokeAllSuperAppExpoPushDevicesForUser } from "./superAppPushService";
+import {
+  resolveCustomRole,
+  normalizeOwnerAuthority,
+  type AuthUser,
+} from "../context";
+import {
+  assertOperationPolicyRevision,
+  auditOperationPolicyTx,
+  lockIdentityAdministrationTx,
+  normalizeOperationPolicy,
+  sameOperationPolicy,
+  type PolicyChange,
+} from "./operationPolicyStorage";
 
 export type Role = typeof ALL_ROLES[number];
 
@@ -88,6 +112,9 @@ export interface CreateUserInput {
   jobTitle?: string | null;
   hiredAt?: string | null;
   permissionsOverride?: Record<string, "FULL" | "READ" | "NONE"> | null;
+  atomicPermissions?: AtomicPermissionsMap | null;
+  operationalCaps?: OperationalCaps | null;
+  operationPolicy?: OperationPolicy | null;
   mustChangePassword?: boolean;
 }
 
@@ -106,6 +133,10 @@ export interface UpdateUserInput {
   hiredAt?: string | null;
   isOwner?: boolean;
   permissionsOverride?: Record<string, "FULL" | "READ" | "NONE"> | null;
+  atomicPermissions?: AtomicPermissionsMap | null;
+  operationalCaps?: OperationalCaps | null;
+  operationPolicy?: OperationPolicy | null;
+  expectedOperationPolicyRevision?: number;
 }
 
 export interface ListUsersInput {
@@ -133,6 +164,10 @@ const SAFE_COLUMNS = {
   jobTitle: users.jobTitle,
   hiredAt: users.hiredAt,
   permissionsOverride: users.permissionsOverride,
+  atomicPermissions: users.atomicPermissions,
+  operationalCaps: users.operationalCaps,
+  operationPolicy: users.operationPolicy,
+  operationPolicyRevision: users.operationPolicyRevision,
   mustChangePassword: users.mustChangePassword,
   lastSignedIn: users.lastSignedIn,
   createdAt: users.createdAt,
@@ -162,13 +197,13 @@ function assertPasswordPolicy(pw: string) {
 
 /**
  * لا نقبل في استثناء المستخدم إلا مفاتيح وحدات النظام المعروفة. هذا يمنع تخزين مفاتيح
- * صامتة لا يقرأها الإنفاذ، ويحافظ على توافق `customers` القديم الذي يُرحّل إلى CRM.
+ * صامتة لا يقرأها الإنفاذ، ويحافظ على توافق `customers` و`tasks` القديمين.
  */
 function normalizePermissionOverride(
   override: Record<string, "FULL" | "READ" | "NONE"> | null | undefined,
 ): PermissionMap | null {
   if (!override) return null;
-  const allowed = new Set([...PERMISSION_MODULES.map((m) => m.key), "customers"]);
+  const allowed = new Set<string>(ALL_PERMISSION_MODULE_KEYS);
   const normalized: PermissionMap = {};
   for (const [key, level] of Object.entries(override)) {
     if (!allowed.has(key)) {
@@ -185,6 +220,28 @@ function samePermissionOverride(a: PermissionMap | null | undefined, b: Permissi
   return aEntries.length === bEntries.length && aEntries.every(([key, level], index) => {
     const other = bEntries[index];
     return other?.[0] === key && other[1] === level;
+  });
+}
+
+function sameAtomicPermissions(a: AtomicPermissionsMap | null | undefined, b: AtomicPermissionsMap | null | undefined): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  const aEntries = Object.entries(a).filter(([, v]) => v !== undefined).sort(([x], [y]) => x.localeCompare(y));
+  const bEntries = Object.entries(b).filter(([, v]) => v !== undefined).sort(([x], [y]) => x.localeCompare(y));
+  return aEntries.length === bEntries.length && aEntries.every(([k, v], idx) => {
+    const other = bEntries[idx];
+    return other?.[0] === k && other[1] === v;
+  });
+}
+
+function sameOperationalCaps(a: OperationalCaps | null | undefined, b: OperationalCaps | null | undefined): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  const aEntries = Object.entries(a).filter(([, v]) => v !== undefined).sort(([x], [y]) => x.localeCompare(y));
+  const bEntries = Object.entries(b).filter(([, v]) => v !== undefined).sort(([x], [y]) => x.localeCompare(y));
+  return aEntries.length === bEntries.length && aEntries.every(([k, v], idx) => {
+    const other = bEntries[idx];
+    return other?.[0] === k && String(other[1]) === String(v);
   });
 }
 
@@ -250,10 +307,18 @@ export async function createUser(input: CreateUserInput, actor: MaybeScopedActor
  * في معاملة ذرّية واحدة (مثل «أضف موظفاً + أنشئ حسابه» معاً ⇒ أي فشل يُرجِع الكل).
  * نفس منطق createUser تماماً لكن بلا withTx خاص.
  */
-export async function createUserTx(tx: Tx, input: CreateUserInput, _actor: MaybeScopedActor) {
+export async function createUserTx(
+  tx: Tx,
+  input: CreateUserInput,
+  _actor: MaybeScopedActor,
+) {
   {
+    const locked = await lockIdentityAdministrationTx(tx, _actor, {
+      roleIds: input.customRoleId == null ? [] : [input.customRoleId],
+    });
+    const actor = locked.actor;
     const name = input.name?.trim();
-    if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "الاسم مطلوب" });
+    if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "الاسم مطلوب", why: "لم يُدخل اسم المستخدم المراد إنشاؤه", doThis: "اكتب اسم المستخدم في البيانات الأساسية ثم احفظ الحساب" }) });
     if (name.length > 255) throw new TRPCError({ code: "BAD_REQUEST", message: "الاسم طويل جداً" });
     const email = normEmail(input.email);
     const username = normUsernameOrThrow(input.username);
@@ -269,22 +334,24 @@ export async function createUserTx(tx: Tx, input: CreateUserInput, _actor: Maybe
     let customRoleId: number | null = null;
     let permsOverride = normalizePermissionOverride(input.permissionsOverride);
     if (input.customRoleId != null) {
-      const r = (await tx.select({ id: roles.id, baseRole: roles.baseRole }).from(roles)
-        .where(and(eq(roles.id, input.customRoleId), eq(roles.isActive, true))).limit(1))[0];
-      if (!r) throw new TRPCError({ code: "BAD_REQUEST", message: "الدور المخصّص غير موجود أو معطّل." });
+      const r = locked.roles.get(input.customRoleId);
+      if (!r?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "الدور المخصّص غير موجود أو معطّل." });
       roleValue = r.baseRole as Role;
       customRoleId = Number(r.id);
     }
     // عند غياب branchId صراحةً، يرث الحساب فرع الفاعل الموثق؛ الفاعل العالمي لا يمنح فرعاً ضمنياً.
-    const assignedBranchId = input.branchId ?? _actor.branchId ?? null;
+    const assignedBranchId = input.branchId ?? actor.branchId ?? null;
     await assertUserBranchAssignmentTx(tx, assignedBranchId, roleValue);
+    const operationPolicy = normalizeOperationPolicy(input.operationPolicy);
     try {
+      const passwordHash = await hashPassword(input.password);
+      locked.assertAuthority();
       const res = await tx.insert(users).values({
         openId: `local_${nanoid()}`,
         email: email || null,
         username,
         name,
-        passwordHash: await hashPassword(input.password),
+        passwordHash,
         role: roleValue,
         customRoleId,
         loginMethod: "local",
@@ -294,6 +361,10 @@ export async function createUserTx(tx: Tx, input: CreateUserInput, _actor: Maybe
         jobTitle: input.jobTitle?.trim() || null,
         hiredAt: input.hiredAt ? new Date(input.hiredAt) : null,
         permissionsOverride: permsOverride,
+        atomicPermissions: input.atomicPermissions ?? null,
+        operationalCaps: input.operationalCaps ?? null,
+        operationPolicy,
+        operationPolicyRevision: operationPolicy ? 1 : 0,
         mustChangePassword: mustChange,
         tempPasswordExpiresAt: expiresAt,
         // AUTH-02: حدّ الإبطال أقدم بثانيتين من الإنشاء كي لا تُرفَض أوّل جلسةٍ يُصدرها دخولٌ
@@ -303,19 +374,35 @@ export async function createUserTx(tx: Tx, input: CreateUserInput, _actor: Maybe
         sessionsValidFrom: new Date(Date.now() - 2000),
       });
       const userId = extractInsertId(res);
-      return { userId };
-    } catch (e) {
-      rethrowDup(e);
-    }
+      if (operationPolicy)
+        await auditOperationPolicyTx(
+          tx,
+          actor,
+          "user",
+          userId,
+          null,
+          operationPolicy,
+          0,
+          1,
+        );
+      return { userId, operationPolicyRevision: operationPolicy ? 1 : 0 };
+    } catch (e) { rethrowDup(e); }
   }
 }
 
 /** تعديل مستخدم. */
-export async function updateUser(input: UpdateUserInput, actor: MaybeScopedActor) {
+export async function updateUser(
+  input: UpdateUserInput,
+  requestActor: MaybeScopedActor,
+) {
   return withTx(async (tx) => {
-    const existing = (
-      await tx.select().from(users).where(eq(users.id, input.userId)).for("update").limit(1)
-    )[0];
+    const locked = await lockIdentityAdministrationTx(tx, requestActor, {
+      userIds: [input.userId],
+      roleIds: input.customRoleId == null ? [] : [input.customRoleId],
+      includeActiveAdmins: input.role !== undefined || input.customRoleId !== undefined,
+    });
+    const actor = locked.actor;
+    const existing = locked.users.get(input.userId);
     if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "المستخدم غير موجود" });
 
     const patch: Record<string, unknown> = {};
@@ -356,15 +443,15 @@ export async function updateUser(input: UpdateUserInput, actor: MaybeScopedActor
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكنك سحب صفة المالك عن نفسك." });
       }
       patch.isOwner = !!input.isOwner;
+      patch.sessionsValidFrom = new Date();
     }
 
     // إسناد الدور (مبني أو مخصّص). نحسب الوجهة ثم نطبّق الحُرّاس إن تغيّر فعلاً.
     let nextRole: Role | undefined;
     let nextCustomRoleId: number | null | undefined;
     if (input.customRoleId != null) {
-      const r = (await tx.select({ id: roles.id, baseRole: roles.baseRole }).from(roles)
-        .where(and(eq(roles.id, input.customRoleId), eq(roles.isActive, true))).limit(1))[0];
-      if (!r) throw new TRPCError({ code: "BAD_REQUEST", message: "الدور المخصّص غير موجود أو معطّل." });
+      const r = locked.roles.get(input.customRoleId);
+      if (!r?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "الدور المخصّص غير موجود أو معطّل." });
       nextRole = r.baseRole as Role;
       nextCustomRoleId = Number(r.id);
     } else if (input.role !== undefined) {
@@ -381,7 +468,13 @@ export async function updateUser(input: UpdateUserInput, actor: MaybeScopedActor
         if (input.userId === actor.userId) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكنك تغيير دور حسابك بنفسك." });
         }
-        if (existing.role === "admin" && nextRole !== "admin") await assertNotLastActiveAdmin(tx, input.userId);
+        if (existing.role === "admin" && nextRole !== "admin" &&
+          !Array.from(locked.users.values()).some((user) => user.id !== input.userId && user.role === "admin" && user.isActive)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "لا يمكن تعطيل/تخفيض آخر مدير نشط في النظام — عيّن مديراً آخر أولاً.",
+          });
+        }
         patch.role = nextRole;
         patch.customRoleId = nextCustomRoleId ?? null;
         // تغيير الدور يُبطل الجلسات (يُعاد تحميل السياق/الصلاحيات).
@@ -426,11 +519,96 @@ export async function updateUser(input: UpdateUserInput, actor: MaybeScopedActor
       }
     }
 
-    if (Object.keys(patch).length === 0) return { userId: input.userId, changed: false };
+    if (input.atomicPermissions !== undefined) {
+      if (!sameAtomicPermissions(existing.atomicPermissions as AtomicPermissionsMap | null, input.atomicPermissions)) {
+        patch.atomicPermissions = input.atomicPermissions;
+        patch.sessionsValidFrom = new Date();
+      }
+    }
+    if (input.operationalCaps !== undefined) {
+      if (!sameOperationalCaps(existing.operationalCaps as OperationalCaps | null, input.operationalCaps)) {
+        patch.operationalCaps = input.operationalCaps;
+        patch.sessionsValidFrom = new Date();
+      }
+    }
+
+    let operationPolicyRevision = existing.operationPolicyRevision;
+    let nextOperationPolicy =
+      existing.operationPolicy as OperationPolicy | null;
+    let policyChanged = false;
+    const clearedLegacyChanges: PolicyChange[] = [];
+    if (input.operationPolicy !== undefined) {
+      nextOperationPolicy = normalizeOperationPolicy(input.operationPolicy);
+      if (nextOperationPolicy && (existing.isOwner || input.isOwner === true)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تخصيص تفويض المالك",
+            why: "صفة المالك سلطة نظام محمية ولا تتبع مصفوفة التفويض",
+            doThis: "استخدم حساب موظف أو دور مخصّص لتحديد تفويض العمليات",
+          }),
+        });
+      }
+      policyChanged = !sameOperationPolicy(
+        existing.operationPolicy,
+        nextOperationPolicy,
+      );
+      if (
+        policyChanged ||
+        existing.atomicPermissions != null ||
+        existing.permissionsOverride != null
+      ) {
+        // The hierarchy guard reads only userId/role/isOwner; its branch is irrelevant here.
+        assertCanAdministerUser(actor as Actor, existing);
+        assertOperationPolicyRevision(
+          operationPolicyRevision,
+          input.expectedOperationPolicyRevision,
+        );
+        patch.operationPolicy = nextOperationPolicy;
+        patch.operationPolicyRevision = ++operationPolicyRevision;
+        patch.sessionsValidFrom = new Date();
+        policyChanged = true;
+      }
+      // Saving the individual operation matrix replaces both older individual maps.
+      patch.permissionsOverride = null;
+      for (const [key, before] of Object.entries(
+        (existing.permissionsOverride as PermissionMap) ?? {},
+      ))
+        clearedLegacyChanges.push({
+          field: `legacy.permissionsOverride.${key}`,
+          before,
+          after: null,
+        });
+      patch.atomicPermissions = null;
+      for (const [key, before] of Object.entries(
+        (existing.atomicPermissions as AtomicPermissionsMap) ?? {},
+      ))
+        clearedLegacyChanges.push({
+          field: `legacy.atomicPermissions.${key}`,
+          before,
+          after: null,
+        });
+    }
+
+    if (Object.keys(patch).length === 0)
+      return { userId: input.userId, changed: false, operationPolicyRevision };
     try {
+      locked.assertAuthority();
       await tx.update(users).set(patch).where(eq(users.id, input.userId));
     } catch (e) { rethrowDup(e); }
-    return { userId: input.userId, changed: true };
+    if (policyChanged)
+      await auditOperationPolicyTx(
+        tx,
+        actor,
+        "user",
+        input.userId,
+        existing.operationPolicy as OperationPolicy | null,
+        nextOperationPolicy,
+        existing.operationPolicyRevision,
+        operationPolicyRevision,
+        clearedLegacyChanges,
+      );
+    return { userId: input.userId, changed: true, operationPolicyRevision };
   });
 }
 
@@ -846,7 +1024,8 @@ const SAFE_COLUMNS_WITH_ROLE = { ...SAFE_COLUMNS, customRoleLabel: roles.label }
 export async function getUser(userId: number) {
   const db = getDb();
   if (!db) return null;
-  return (
+  const row =
+    (
     await db
       .select(SAFE_COLUMNS_WITH_ROLE)
       .from(users)
@@ -856,6 +1035,19 @@ export async function getUser(userId: number) {
       .where(eq(users.id, userId))
       .limit(1)
   )[0] ?? null;
+  if (!row) return null;
+  // The safe projection contains every authorization column; secrets are deliberately absent.
+  const effective = { ...row } as unknown as AuthUser;
+  if (effective.isOwner) normalizeOwnerAuthority(effective);
+  else await resolveCustomRole(effective);
+  return {
+    ...row,
+    inheritedOperationPolicy: effective.inheritedOperationPolicy,
+    inheritedOperationPolicyRevision:
+      effective.inheritedOperationPolicyRevision ?? 0,
+    operationPolicyEnabled: effective.operationPolicyEnabled ?? false,
+    resolvedOperationPolicy: effective.resolvedOperationPolicy,
+  };
 }
 
 /* ============================ الأثر الفعليّ (طبقة الشفافية — ش١ RBAC) ============================
@@ -868,7 +1060,12 @@ export interface EffectiveModuleRow {
   label: string;
   level: AccessLevel;
   /** مصدر هذه القيمة: قالب الفئة / دور مخصّص / أوفررايد فرديّ / تجاوز admin. */
-  source: "template" | "customRole" | "individual" | "admin";
+  source:
+    | "template"
+    | "customRole"
+    | "individual"
+    | "admin"
+    | "operationPolicy";
 }
 
 export interface EffectivePermissionsResult {
@@ -880,6 +1077,11 @@ export interface EffectivePermissionsResult {
   customRoleInactive: boolean;
   access: EffectiveAccessSummary;
   modules: EffectiveModuleRow[];
+  operationPolicyEnabled: boolean;
+  operationPolicyRevision: number;
+  inheritedOperationPolicyRevision: number;
+  inheritedOperationPolicy?: OperationPolicy;
+  resolvedOperationPolicy?: OperationPolicy;
 }
 
 /** يحلّ (role، override) الفعّالين لحساب — يعكس resolveCustomRole دون تعديل السياق (قراءة). */
@@ -918,21 +1120,28 @@ async function resolveEffective(
   };
 }
 
-export async function getEffectivePermissions(userId: number): Promise<EffectivePermissionsResult | null> {
+export async function getEffectivePermissions(
+  userId: number,
+): Promise<EffectivePermissionsResult | null> {
   const db = getDb();
   if (!db) return null;
-  const row = (await db.select({
-    id: users.id, role: users.role, customRoleId: users.customRoleId, permissionsOverride: users.permissionsOverride,
-  }).from(users).where(eq(users.id, userId)).limit(1))[0];
+  const row = (await db.select().from(users).where(eq(users.id, userId)).limit(1))[0];
   if (!row) return null;
   const eff = await resolveEffective(row);
-  const access = deriveEffectiveAccess(eff.role, eff.override);
+  const resolved = { ...row } as AuthUser;
+  if (resolved.isOwner) normalizeOwnerAuthority(resolved);
+  else await resolveCustomRole(resolved);
+  const access = deriveEffectiveAccess(
+    resolved.role,
+    resolved.permissionsOverride as PermissionMap | null,
+  );
   const isAdmin = eff.role === "admin";
   const base = ROLE_TEMPLATES[eff.role as RoleKey] ?? ROLE_TEMPLATES.user;
   const modules: EffectiveModuleRow[] = PERMISSION_MODULES.map((m) => {
     const level = (access.resolved[m.key] ?? "NONE") as AccessLevel;
     let source: EffectiveModuleRow["source"];
-    if (isAdmin) source = "admin";
+    if (resolved.operationPolicyEnabled) source = "operationPolicy";
+    else if (isAdmin) source = "admin";
     else if (eff.label) {
       const individual = eff.individualOverride?.[m.key];
       const customLevel = eff.customPermissions?.[m.key] ?? "NONE";
@@ -944,24 +1153,70 @@ export async function getEffectivePermissions(userId: number): Promise<Effective
     return { key: m.key, label: m.label, level, source };
   });
   return {
-    userId: Number(row.id), effectiveRole: eff.role, customRoleLabel: eff.label,
-    customRoleInactive: eff.inactive, access, modules,
+    userId: Number(row.id),
+    effectiveRole: resolved.role,
+    customRoleLabel: eff.label,
+    customRoleInactive: eff.inactive,
+    access,
+    modules,
+    operationPolicyEnabled: resolved.operationPolicyEnabled ?? false,
+    operationPolicyRevision: row.operationPolicyRevision,
+    inheritedOperationPolicyRevision:
+      resolved.inheritedOperationPolicyRevision ?? 0,
+    inheritedOperationPolicy: resolved.inheritedOperationPolicy,
+    resolvedOperationPolicy: resolved.resolvedOperationPolicy,
   };
 }
 
 /** القسم الفعليّ لصفٍّ في القائمة (تجزئة/طباعة/استقبال/متعدّد/لا قسم) — يعكس منطق السياق مباشرةً. */
 function effectiveStationForRow(row: {
-  role: string; customRoleId: number | null; permissionsOverride: unknown;
-  roleBaseRole: string | null; rolePermissions: unknown;
+  role: string;
+  customRoleId: number | null;
+  permissionsOverride: unknown;
+  atomicPermissions: unknown;
+  roleBaseRole: string | null;
+  rolePermissions: unknown;
+  operationPolicy: unknown;
+  roleOperationPolicy: unknown;
+  roleAtomicPermissions: unknown;
 }): EffectiveAccessSummary["station"] {
-  let role = row.role;
+  let role = row.role as RoleKey;
   let override: PermissionMap | null = (row.permissionsOverride as PermissionMap) ?? null;
+  let inheritedModules = resolvePermissions(role, null);
   // الدور المخصّص النشط (roleBaseRole غير فارغ = الـLEFT JOIN وجد صفّاً نشطاً) يقود بخريطته.
   if (row.customRoleId != null && row.roleBaseRole) {
     const baseRole = row.roleBaseRole as RoleKey;
     role = baseRole;
     const customPermissions = resolvePermissions(baseRole, diffFromTemplate(baseRole, (row.rolePermissions as PermissionMap) ?? {}));
+    inheritedModules = customPermissions;
     override = diffFromTemplate(baseRole, applyPermissionOverrides(customPermissions, row.permissionsOverride as PermissionMap | null));
+  } else if (row.customRoleId != null) {
+    // Same fail-closed contract as context for a missing or inactive custom role.
+    return deriveEffectiveAccess("user", null).station;
+  }
+  if (row.operationPolicy != null || row.roleOperationPolicy != null) {
+    const inherited =
+      (row.roleOperationPolicy as OperationPolicy | null) ??
+      buildOperationPolicyFromLegacy(
+        role,
+        inheritedModules,
+        row.roleAtomicPermissions as AtomicPermissionsMap | null,
+      );
+    const resolved = resolveOperationPolicy(
+      role,
+      inheritedModules,
+      inherited,
+      row.operationPolicy as OperationPolicy | null,
+      override,
+      {
+        permissionsOverride: row.permissionsOverride as PermissionMap | null,
+        atomicPermissions: row.atomicPermissions as AtomicPermissionsMap | null,
+      },
+    );
+    override = diffFromTemplate(
+      role as RoleKey,
+      summarizeOperationModules(resolved),
+    );
   }
   return deriveEffectiveAccess(role, override).station;
 }
@@ -985,18 +1240,44 @@ export async function listUsers(input: ListUsersInput = {}) {
   // الدور المخصّص، فلو اشتقّ القسم من العمود الخام لكذب على أصحاب الأدوار المخصّصة). لا نُسرّب الخريطة
   // الكاملة للعميل — نحسب القسم ونُسقطها.
   const raw = await db
-    .select({ ...SAFE_COLUMNS_WITH_ROLE, _roleBaseRole: roles.baseRole, _rolePermissions: roles.permissions })
+    .select({
+      ...SAFE_COLUMNS_WITH_ROLE,
+      _roleBaseRole: roles.baseRole,
+      _rolePermissions: roles.permissions,
+      _roleOperationPolicy: roles.operationPolicy,
+      _roleAtomicPermissions: roles.atomicPermissions,
+    })
     .from(users)
-    .leftJoin(roles, and(eq(users.customRoleId, roles.id), eq(roles.isActive, true)))
+    .leftJoin(
+      roles,
+      and(eq(users.customRoleId, roles.id), eq(roles.isActive, true)),
+    )
     .where(where as any)
-    .orderBy(asc(users.name), desc(users.id)).limit(limit).offset(offset);
-  const rows = raw.map(({ _roleBaseRole, _rolePermissions, ...r }) => ({
-    ...r,
-    effectiveStation: effectiveStationForRow({
-      role: r.role as string, customRoleId: (r.customRoleId as number | null) ?? null,
-      permissionsOverride: r.permissionsOverride, roleBaseRole: _roleBaseRole, rolePermissions: _rolePermissions,
+    .orderBy(asc(users.name), desc(users.id))
+    .limit(limit)
+    .offset(offset);
+  const rows = raw.map(
+    ({
+      _roleBaseRole,
+      _rolePermissions,
+      _roleOperationPolicy,
+      _roleAtomicPermissions,
+      ...r
+    }) => ({
+      ...r,
+      effectiveStation: effectiveStationForRow({
+        role: r.role as string,
+        customRoleId: (r.customRoleId as number | null) ?? null,
+        permissionsOverride: r.permissionsOverride,
+        atomicPermissions: r.atomicPermissions,
+        roleBaseRole: _roleBaseRole,
+        rolePermissions: _rolePermissions,
+        operationPolicy: r.operationPolicy,
+        roleOperationPolicy: _roleOperationPolicy,
+        roleAtomicPermissions: _roleAtomicPermissions,
+      }),
     }),
-  }));
+  );
   const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(users).where(where as any))[0];
   return { rows, total: Number(totalRow?.n ?? 0) };
 }

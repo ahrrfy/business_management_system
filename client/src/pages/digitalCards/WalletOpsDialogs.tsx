@@ -1,3 +1,4 @@
+import { useDigitalGiftOperationAccess } from "@/lib/digitalGiftOperationAccess";
 // حوارات عمليات المحفظة (ش٩): إيداع/سحب، طلب تعديل، كشف حساب، مطابقة يومية.
 // مفصولةٌ عن شاشة المحافظ كي تبقى الأخيرة قائمةً بسيطة.
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -51,6 +52,7 @@ const TX_STATUS: Record<string, string> = {
 export function WalletMoveDialog({
   wallet, mode, onClose,
 }: { wallet: WalletRow | null; mode: "deposit" | "withdraw"; onClose: () => void }) {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const utils = trpc.useUtils();
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<"CASH" | "TRANSFER">("CASH");
@@ -83,6 +85,7 @@ export function WalletMoveDialog({
   });
 
   function submit() {
+    if (!digitalAccess.can(`digitalCards.wallets.${isDep ? "deposit" : "withdraw"}`)) return;
     if (!wallet) return;
     if (!amount || Number(amount) <= 0) return notify.err("أدخِل مبلغاً أكبر من صفر");
     if (!isInboundPaymentMethodEnabled(method)) return notify.err(inboundPaymentRejectionMessage(method));
@@ -147,7 +150,7 @@ export function WalletMoveDialog({
         </div>
         <DialogFooter>
           <Button variant="outline" size="sm" onClick={onClose}>إلغاء</Button>
-          <Button size="sm" onClick={submit} disabled={busy}>{busy ? "جارٍ التنفيذ…" : isDep ? "إيداع" : "سحب"}</Button>
+          <Button size="sm" onClick={submit} disabled={!digitalAccess.can(`digitalCards.wallets.${isDep ? "deposit" : "withdraw"}`) || busy}>{busy ? "جارٍ التنفيذ…" : isDep ? "إيداع" : "سحب"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -156,6 +159,7 @@ export function WalletMoveDialog({
 
 /** طلب تعديل رصيد — لا يمسّ الرصيد؛ يعتمده مديرٌ آخر. */
 export function WalletAdjustDialog({ wallet, onClose }: { wallet: WalletRow | null; onClose: () => void }) {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const utils = trpc.useUtils();
   const [amount, setAmount] = useState("");
   const [direction, setDirection] = useState<"IN" | "OUT">("OUT");
@@ -201,7 +205,7 @@ export function WalletAdjustDialog({ wallet, onClose }: { wallet: WalletRow | nu
           <Button variant="outline" size="sm" onClick={onClose}>إلغاء</Button>
           <Button
             size="sm"
-            disabled={req.isPending}
+            disabled={!digitalAccess.can("digitalCards.wallets.requestAdjustment") || (req.isPending)}
             onClick={() => {
               if (!wallet) return;
               if (!amount || Number(amount) <= 0) return notify.err("أدخِل مبلغاً أكبر من صفر");
@@ -219,6 +223,7 @@ export function WalletAdjustDialog({ wallet, onClose }: { wallet: WalletRow | nu
 
 /** المطابقة اليومية: تسجّل الفعليّ وتحسب الفرق — ولا تعدّل الرصيد. */
 export function WalletReconcileDialog({ wallet, onClose }: { wallet: WalletRow | null; onClose: () => void }) {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const utils = trpc.useUtils();
   const [actual, setActual] = useState("");
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -265,7 +270,7 @@ export function WalletReconcileDialog({ wallet, onClose }: { wallet: WalletRow |
           <Button variant="outline" size="sm" onClick={onClose}>إلغاء</Button>
           <Button
             size="sm"
-            disabled={rec.isPending}
+            disabled={!digitalAccess.can("digitalCards.wallets.reconcile") || (rec.isPending)}
             onClick={() => {
               if (!wallet) return;
               if (actual === "") return notify.err("أدخِل الرصيد الفعليّ");
@@ -282,12 +287,13 @@ export function WalletReconcileDialog({ wallet, onClose }: { wallet: WalletRow |
 
 /** كشف حساب المحفظة + اعتماد/رفض طلبات التعديل المعلّقة. */
 export function WalletStatementDialog({ wallet, onClose }: { wallet: WalletRow | null; onClose: () => void }) {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const q = trpc.digitalCards.wallets.statement.useQuery(
+  const q = digitalAccess.query("digitalCards.wallets.statement", trpc.digitalCards.wallets.statement.useQuery(
     { walletId: wallet?.id ?? 0 },
-    { enabled: wallet != null },
-  );
+    { enabled: digitalAccess.can("digitalCards.wallets.statement") && (wallet != null) },
+  ));
 
   function refresh() {
     void utils.digitalCards.wallets.statement.invalidate();
@@ -379,7 +385,8 @@ export function WalletStatementDialog({ wallet, onClose }: { wallet: WalletRow |
                 key: "approve",
                 kind: "approve",
                 label: "اعتماد",
-                gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                hidden: !digitalAccess.can("digitalCards.wallets.approveAdjustment"),
+                gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "digital_cards", level: "FULL" },
                 disabled: approve.isPending || selfRequest,
                 disabledReason: selfRequest ? "طلبك يحتاج مديراً آخر؛ مالك النظام وحده مستثنى" : "جارٍ اعتماد الحركة",
                 onSelect: () => approve.mutate({ transactionId: r.id }),
@@ -389,7 +396,8 @@ export function WalletStatementDialog({ wallet, onClose }: { wallet: WalletRow |
                 kind: "reverse",
                 label: "رفض",
                 variant: "destructive",
-                gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                hidden: !digitalAccess.can("digitalCards.wallets.rejectAdjustment"),
+                gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "digital_cards", level: "FULL" },
                 disabled: reject.isPending,
                 disabledReason: "جارٍ رفض الحركة",
                 onSelect: () => reject.mutate({ transactionId: r.id }),
@@ -399,7 +407,7 @@ export function WalletStatementDialog({ wallet, onClose }: { wallet: WalletRow |
         );
       },
     },
-  ], [approve, reject, me.data?.isOwner, me.data?.id]);
+  ], [approve, reject, me.data?.isOwner, me.data?.id, digitalAccess]);
 
   return (
     <Dialog open={wallet != null} onOpenChange={(o) => { if (!o) onClose(); }}>

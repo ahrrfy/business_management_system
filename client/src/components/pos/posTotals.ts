@@ -124,3 +124,36 @@ export function computePOSTotals({ cart, activeTab }: ComputePOSTotalsParams) {
     externalPaymentConfirmed,
   };
 }
+
+export interface CustomerCreditLimitCheckParams {
+  selectedCustomer: { creditLimit?: string | number | null; currentBalance?: string | number | null } | null | undefined;
+  isCredit: boolean;
+  creditAmount: number;
+}
+
+/**
+ * فحص سقف الائتمان قبل إرسال البيع في نقطة البيع:
+ * - حدّ ائتمان صفر (نقدي فقط): يطلب موافقة مدير فوراً
+ * - تجاوز سقف الائتمان (الرصيد السابق + هذا البيع > السقف): يطلب موافقة مدير فوراً
+ * - سقف غير محدود (null) أو بيع ضمن السقف: يعيد null (مسموح)
+ */
+export function evaluatePosCreditPrompt({
+  selectedCustomer,
+  isCredit,
+  creditAmount,
+}: CustomerCreditLimitCheckParams): string | null {
+  if (!isCredit || !selectedCustomer || selectedCustomer.creditLimit == null) return null;
+  const limit = Number(selectedCustomer.creditLimit);
+  const balance = Number(selectedCustomer.currentBalance ?? 0);
+  if (limit === 0) {
+    return balance > 0
+      ? `هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) وعليه رصيد سابق (${balance.toFixed(2)}) — لا يمكن البيع بالآجل دون موافقة مدير`
+      : "هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) — لا يمكن البيع بالآجل دون موافقة مدير";
+  }
+  const projected = balance + creditAmount;
+  if (projected > limit) {
+    const available = limit - balance;
+    return `تجاوز حدّ الائتمان: على العميل ${balance.toFixed(2)} وهذا البيع يضيف ${creditAmount.toFixed(2)}، وسقفه ${limit.toFixed(2)} — المتاح ${available <= 0 ? "0.00" : available.toFixed(2)} — لا يمكن البيع بالآجل دون موافقة مدير`;
+  }
+  return null;
+}

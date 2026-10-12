@@ -28,6 +28,8 @@ import {
   submitCount,
 } from "../services/countPortalService";
 import { publicProcedure, router, stocktakeAssignmentProcedure } from "../trpc";
+import { publishRealtimeEvent } from "../realtime";
+import { REALTIME_EVENT_TYPES } from "../../shared/realtimeEvents";
 
 /** رمز الجلسة من الرابط (مثل CNT-2026-0008) — يُطبَّع داخل الخدمة (trim/uppercase). */
 const sessionCode = z
@@ -288,6 +290,21 @@ export const countPortalRouter = router({
             clientRequestId: input.clientRequestId,
           },
         });
+
+        publishRealtimeEvent(
+          REALTIME_EVENT_TYPES.STOCKTAKE_PROGRESS,
+          {
+            sessionId: Number(identity.session.id),
+            branchId: Number(identity.session.branchId),
+            totalScanned: 1,
+            lastItemSku: input.scannedBarcode ?? undefined,
+            counterUserId: identity.countedByUserId ?? undefined,
+            timestamp: Date.now(),
+          },
+          {
+            branchId: Number(identity.session.branchId),
+          },
+        );
       }
       return res;
     }),

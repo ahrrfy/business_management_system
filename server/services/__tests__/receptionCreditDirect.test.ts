@@ -121,7 +121,9 @@ describe("بيع مباشر آجل في الاستقبال — deferredDirect", 
     expect(effectivePermissions.workorders).toBe("FULL");
 
     const caller = appRouter.createCaller(callerContext(receptionUser));
-    await expect(caller.customers.list({ limit: 10, offset: 0 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    // أصبح استعراض وبحث العملاء متاحاً لموظف الاستقبال ومحطات نقاط البيع لاختيار العميل وربطه بالفاتورة
+    const customerList = await caller.customers.list({ limit: 10, offset: 0 });
+    expect(Array.isArray(customerList)).toBe(true);
 
     const customer = await caller.customers.receptionResolveByPhone({
       phone: "07509998888",

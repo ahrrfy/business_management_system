@@ -1,7 +1,7 @@
 /**
  * سياسة الرؤية قبل العد الأول لعهد النقد CD/CH.
  *
- * المستلم الصالح يجب أن يكون مديراً/إدارياً نشطاً من الفرع، ومختلفاً عن
+ * المستلم الصالح مفوّض بالقبول (أو مدير/إداري في السياسة القديمة) من الفرع، ومختلف عن
  * مُسلِّم النقد ومالك الوردية. حالة النشاط يضمنها تسجيل الدخول وقائمة المستلمين؛
  * هنا نعيد فرض بقية العقد عند منافذ القراءة كي لا يعرف مستلم محتمل المبلغ قبل عدّه.
  */
@@ -9,6 +9,9 @@ export interface CashCustodyVisibilityActor {
   userId: number;
   role: string;
   branchId: number | null;
+  /** Server-authored from the authenticated user's current policy, never request input. */
+  operationPolicyEnabled?: boolean;
+  canAcceptHandover?: boolean;
 }
 
 export interface CashCustodySourceIdentity {
@@ -21,7 +24,11 @@ export function isPotentialCashCustodyRecipient(
   actor: CashCustodyVisibilityActor | undefined,
   source: CashCustodySourceIdentity,
 ): boolean {
-  if (!actor || (actor.role !== "admin" && actor.role !== "manager")) return false;
+  if (!actor) return false;
+  const eligible = actor.operationPolicyEnabled === true
+    ? actor.canAcceptHandover === true
+    : actor.role === "admin" || actor.role === "manager";
+  if (!eligible) return false;
   if (actor.branchId == null || source.branchId == null || actor.branchId !== source.branchId) return false;
   if (source.handedOverByUserId != null && actor.userId === source.handedOverByUserId) return false;
   if (source.shiftOwnerUserId != null && actor.userId === source.shiftOwnerUserId) return false;

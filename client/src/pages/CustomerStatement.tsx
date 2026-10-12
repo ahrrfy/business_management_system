@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { CopyInline } from "@/components/CopyButton";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
@@ -14,7 +15,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { StatementReconcile } from "@/components/StatementReconcile";
 import { FinancialCellProvenanceHover } from "@/components/financial";
 import type { FinancialCellProvenancePayload } from "@shared/financialProvenance";
-import { buildStatementMessage } from "@/lib/whatsapp";
+import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
+import { buildStatementMessage, toIraqiIntl } from "@/lib/whatsapp";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printCustomerStmt } from "@/lib/printing/printTemplates";
@@ -23,7 +25,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
-import { Search, X as XIcon, CheckCircle2, AlertCircle, RefreshCw, Layers } from "lucide-react";
+import { Search, X as XIcon, CheckCircle2, AlertCircle, RefreshCw, Layers, Phone, UserCheck, FileText } from "lucide-react";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
 import { priceTierLabel, sourceTypeLabel } from "@/lib/labels";
@@ -332,6 +334,7 @@ function getStmtPaymentColumns(onDrilldown: (target: DrilldownTarget) => void): 
 }
 
 export default function CustomerStatement() {
+  const { can } = useCatalogPeopleOperationAccess();
   // الـURL مصدر الحقيقة لهوية العميل ⇒ رابط مستقلّ قابل للمشاركة + يتحدّث فوراً عند تغيّر ?id=
   // (يُصلح فقدان الاستقلالية: كان يُقرأ مرّة واحدة عند التركيب فلا يتبع تغيّر الرابط داخل الـhub).
   const [loc, navigate] = useLocation();
@@ -355,10 +358,10 @@ export default function CustomerStatement() {
   const setTo = (v: string) => setPeriodF({ to: v });
   const setInvoiceFilter = (v: string) => setPeriodF({ filter: v });
 
-  const index = trpc.reports.customersIndex.useQuery();
+  const index = trpc.reports.customersIndex.useQuery(undefined, { enabled: can("reports.customersIndex") });
   const stmt = trpc.reports.customerStatement.useQuery(
     { customerId: customerId || 0, from: from || undefined, to: to || undefined },
-    { enabled: !!customerId }
+    { enabled: can("reports.customerStatement") && (!!customerId) }
   );
   /**
    * Tier-3 #6 (٢٧/٨): تفصيلٌ محاسبيٌّ إضافيّ من `journalLines` (يحتاج SHADOW/ACTIVE
@@ -367,11 +370,12 @@ export default function CustomerStatement() {
    */
   const journal = trpc.reports.customerJournalBreakdown.useQuery(
     { customerId: customerId || 0, from: from || undefined, to: to || undefined },
-    { enabled: !!customerId }
+    { enabled: can("reports.customerJournalBreakdown") && (!!customerId) }
   );
   const utils = trpc.useUtils();
   const printAudit = usePrintAudit();
   const [drilldownTarget, setDrilldownTarget] = useState<DrilldownTarget | null>(null);
+  const [dossierCustomerId, setDossierCustomerId] = useState<number | null>(null);
 
   const autoSettleM = trpc.customers.autoSettle.useMutation({
     onSuccess: (res) => {
@@ -566,6 +570,32 @@ export default function CustomerStatement() {
               </Button>
             )}
             {stmt.data && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!ledger?.txs.length}
+                onClick={() =>
+                  exportRows(ledger?.txs ?? [], {
+                    filename: `كشف-حساب-${stmt.data!.customer.name}`,
+                    format: "csv",
+                    title: `كشف حساب عميل — ${stmt.data!.customer.name}`,
+                    columns: [
+                      { key: "date", header: "التاريخ" },
+                      { key: "ref", header: "المرجع" },
+                      { key: "description", header: "البيان" },
+                      { key: "actor", header: "المنفذ" },
+                      { key: "debit", header: "مدين", map: (r) => (r.debit == null ? 0 : Number(r.debit)) },
+                      { key: "credit", header: "دائن", map: (r) => (r.credit == null ? 0 : Number(r.credit)) },
+                      { key: "balance", header: "الرصيد", map: (r) => Number(r.balance) },
+                    ],
+                  })
+                }
+              >
+                <FileText className="size-3.5 ms-1" />
+                تصدير CSV
+              </Button>
+            )}
+            {stmt.data && (
               <CopyAsMenu
                 plain={copyPayload.plain}
                 whatsapp={copyPayload.whatsapp}
@@ -636,9 +666,32 @@ export default function CustomerStatement() {
             <CardContent className="pt-6">
               <div className="flex items-start justify-between flex-wrap gap-3">
                 <div>
-                  <div className="text-lg font-semibold">{stmt.data.customer.name}</div>
-                  <div className="text-xs"><CopyInline value={stmt.data.customer.phone} /></div>
-                  <div className="text-xs text-muted-foreground">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="text-lg font-semibold">{stmt.data.customer.name}</div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setDossierCustomerId(customerId)}
+                      className="gap-1.5 h-7 text-xs"
+                    >
+                      <UserCheck className="size-3.5" />
+                      الملف الشامل 360°
+                    </Button>
+                  </div>
+                  {stmt.data.customer.phone && (
+                    <div className="flex items-center gap-2 mt-1">
+                      <a
+                        href={`tel:${toIraqiIntl(stmt.data.customer.phone) || stmt.data.customer.phone}`}
+                        className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                        dir="ltr"
+                      >
+                        <Phone className="size-3" />
+                        {stmt.data.customer.phone}
+                      </a>
+                      <CopyInline value={stmt.data.customer.phone} />
+                    </div>
+                  )}
+                  <div className="text-xs text-muted-foreground mt-0.5">
                     {stmt.data.customer.customerType} · فئة سعرية {priceTierLabel(stmt.data.customer.defaultPriceTier)}
                     {stmt.data.customer.creditLimit && Number(stmt.data.customer.creditLimit) > 0
                       ? ` · سقف ائتمان ${fmt(stmt.data.customer.creditLimit)}`
@@ -694,7 +747,7 @@ export default function CustomerStatement() {
                 <Button
                   size="sm"
                   className="shrink-0 gap-1.5"
-                  disabled={autoSettleM.isPending}
+                  disabled={!can("customers.autoSettle") || (autoSettleM.isPending)}
                   onClick={() => autoSettleM.mutate({ customerId })}
                 >
                   <RefreshCw className={`h-4 w-4 ${autoSettleM.isPending ? "animate-spin" : ""}`} />
@@ -812,6 +865,12 @@ export default function CustomerStatement() {
         target={drilldownTarget}
         open={!!drilldownTarget}
         onOpenChange={(open) => !open && setDrilldownTarget(null)}
+      />
+
+      <CustomerDossierDrawer
+        customerId={dossierCustomerId}
+        open={dossierCustomerId != null}
+        onClose={() => setDossierCustomerId(null)}
       />
     </div>
   );

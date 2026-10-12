@@ -1,3 +1,4 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 /**
  * معاينة «محضر جرد وتسوية» على الشاشة (/stocktakes/:id/report) — مرجع التصميم jrd-report.jsx.
  * يعتمد على trpc.stocktakes.report (managerProcedure — العقد §٣) ويعيد احتساب المجاميع محلياً
@@ -149,11 +150,14 @@ const decisionLabelOf = (r: ReportRow, isOpening = false): string => {
 export default function StocktakeReport() {
   const params = useParams();
   const sessionId = Number(params.id);
+  const me = trpc.auth.me.useQuery();
+  const canOperation = (path: string) => canLifecycleOperation(me.data, path, true);
   const q = trpc.stocktakes.report.useQuery(
     { sessionId },
-    { enabled: Number.isFinite(sessionId) },
+    { enabled: (Number.isFinite(sessionId)) && canOperation("stocktakes.report") },
   );
-  const data = q.data as unknown as ReportData | undefined;
+  const qData = canOperation("stocktakes.report") ? q.data : undefined;
+  const data = qData as unknown as ReportData | undefined;
 
   // إعادة احتساب أقسام المحضر من الصفوف (decimal.js للمجاميع المالية — العقد §٢ و§٦ خطوة القيد)
   const calc = useMemo(() => {
@@ -426,6 +430,8 @@ export default function StocktakeReport() {
         جلسة غير صالحة.
       </div>
     );
+  if (me.isLoading) return <LoadingState />;
+  if (!canOperation("stocktakes.report")) return <ErrorState message="يتطلب العرض تفويض محضر الجرد." />;
   if (q.isLoading) return <LoadingState />;
   if (q.error)
     return (

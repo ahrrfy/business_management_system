@@ -22,6 +22,7 @@ import {
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { readInventoryValuation, type InventoryValuation } from "./valuation";
+import { money, toDbMoney } from "../money";
 
 export interface CaptureSnapshotArgs {
   /** الفترة المُقفَلة التي تُلتقط اللقطة لها. */
@@ -106,6 +107,15 @@ export interface HistoricalValuation {
   capturedBy?: number;
 }
 
+/** Scope both snapshot rows and derived totals; the company total is never retained. */
+export function scopeHistoricalValuation(value: HistoricalValuation, branchId?: number | null): HistoricalValuation {
+  if (branchId == null) return value;
+  const branches = value.branches.filter((branch) => Number(branch.branchId) === Number(branchId));
+  const stock = branches.reduce((total, branch) => total.plus(money(branch.value)), money(0));
+  const inTransit = branches.reduce((total, branch) => total.plus(money(branch.inTransitValue ?? "0")), money(0));
+  return { ...value, branches, stockValue: toDbMoney(stock), inTransitValue: toDbMoney(inTransit), totalValue: toDbMoney(stock.plus(inTransit)) };
+}
+
 /**
  * يُعيد التقييمَ كما كان في تاريخٍ معيّن: لقطةُ COMPANY للفترة التي تحمل نفس `cutoffDate` إن
  * وُجدت (SNAPSHOT)، وإلّا يُقدَّر بالحالة الحيّة (LIVE) — بحيث تستمرّ الفترات ما قبل هذه
@@ -114,6 +124,7 @@ export interface HistoricalValuation {
 export async function readValuationAt(
   tx: Tx,
   cutoffDate: string,
+  branchId?: number | null,
 ): Promise<HistoricalValuation> {
   const [snap] = await tx
     .select()
@@ -129,7 +140,7 @@ export async function readValuationAt(
     const branches = snap.branchesJson
       ? (JSON.parse(snap.branchesJson) as SnapshotBranch[])
       : [];
-    return {
+    return scopeHistoricalValuation({
       source: "SNAPSHOT",
       cutoffDate: String(snap.cutoffDate),
       totalValue: String(snap.totalValue),
@@ -138,18 +149,18 @@ export async function readValuationAt(
       branches,
       capturedAt: snap.capturedAt,
       capturedBy: snap.capturedBy == null ? undefined : Number(snap.capturedBy),
-    };
+    }, branchId);
   }
   // Fallback: لا لقطةَ ⇒ نُعيد الحالةَ الحيّة موسومةً بـLIVE (لا لبس على القارئ).
   const live = await readInventoryValuation(tx);
-  return {
+  return scopeHistoricalValuation({
     source: "LIVE",
     cutoffDate,
     totalValue: live.total,
     stockValue: (Number(live.total) - Number(live.inTransitTotal)).toFixed(2),
     inTransitValue: live.inTransitTotal,
     branches: live.branches,
-  };
+  }, branchId);
 }
 
 /**

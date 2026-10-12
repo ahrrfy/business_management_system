@@ -4,7 +4,7 @@
  */
 
 import { fmtDate } from "./date";
-import { D } from "./money";
+import { D, fmtAr } from "./money";
 import { formatQuantity } from "@shared/quantityFormat";
 import { invoiceStatusLabel, isDeadInvoiceStatus } from "@shared/invoiceStatus";
 
@@ -860,4 +860,65 @@ export function buildCourierCancellationMessage(d: CourierCancellationData): str
   L.push("", COMPANY_NAME);
   return L.join("\n");
 }
+
+export interface InstantGiftWhatsAppParams {
+  customerName: string;
+  code: string;
+  amount: string | number;
+  validUntil?: string | null;
+  reason?: string | null;
+}
+
+export function buildInstantGiftWhatsAppMessage(p: InstantGiftWhatsAppParams): string {
+  const lines: string[] = [
+    `*قسيمة هدية خاصة — ${COMPANY_NAME}*`,
+    "",
+    `زبوننا العزيز ${p.customerName} المحترم،`,
+    "نعتز جداً بثقتكم المستمرة بنا ونسعى دوماً لتقديم أفضل تجربة تليق بكم.",
+    "",
+    `يسرنا إهداؤكم قسيمة رصيد بقيمة *${fmtAr(p.amount)} د.ع*`,
+    `رمز الكوبون: *${p.code}*`,
+  ];
+  if (p.validUntil) {
+    lines.push(`صالحة لغاية: ${p.validUntil}`);
+  }
+  if (p.reason) {
+    lines.push(`المناسبة: ${p.reason}`);
+  }
+  lines.push(
+    "",
+    "يمكنكم استخدام هذه القسيمة عند المحاسبة في أي من فروعنا.",
+    "أهلاً وسهلاً بكم دائماً!",
+    "",
+    COMPANY_NAME,
+  );
+  return lines.join("\n");
+}
+
+export interface GoogleReviewInviteWhatsAppParams {
+  customerName: string;
+  reviewUrl?: string | null;
+}
+
+export function buildGoogleReviewInviteWhatsAppMessage(p: GoogleReviewInviteWhatsAppParams): string {
+  const url = p.reviewUrl || "https://maps.google.com";
+  const lines: string[] = [
+    `*رأيكم يسعدنا ويهمنا — ${COMPANY_NAME}*`,
+    "",
+    `زبوننا الغالي ${p.customerName} المحترم،`,
+    "سعدنا جداً بخدمتكم وتلبية طلباتكم اليوم!",
+    "يسرنا ويسعد فريقنا مشاركتكم تقييم تجربتكم المميزة معنا على خرائط Google عبر الرابط التالي:",
+    url,
+    "",
+    "رأيكم دعم كبير لنا لنستمر في التطوير وتقديم الأفضل دائماً.",
+    "شكراً لثقتكم الغالية!",
+    "",
+    COMPANY_NAME,
+  ];
+  return lines.join("\n");
+}
+
+export type GiftVoucherWhatsAppParams = InstantGiftWhatsAppParams;
+export const buildGiftVoucherWhatsAppMessage = buildInstantGiftWhatsAppMessage;
+
 

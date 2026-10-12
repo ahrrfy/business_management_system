@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Link, useLocation } from "wouter";
 import { AlertCircle, Images, ListPlus, Package, Plus, Search, X } from "lucide-react";
@@ -40,10 +41,11 @@ type ComponentPick = {
 };
 
 export default function BundleForm() {
+  const { can } = useCatalogPeopleOperationAccess();
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const categoriesQ = trpc.catalog.categories.useQuery();
+  const categoriesQ = trpc.catalog.categories.useQuery(undefined, { enabled: can("catalog.categories") });
 
   // ── بيانات المنتج ──
   const [name, setName] = useState("");
@@ -90,7 +92,7 @@ export default function BundleForm() {
   const debouncedCode = useDebouncedValue(code, 450);
   const checkQ = trpc.catalog.checkBarcodes.useQuery(
     { codes: [debouncedCode] },
-    { enabled: debouncedCode.length > 0, staleTime: 10_000 }
+    { enabled: can("catalog.checkBarcodes") && (debouncedCode.length > 0), staleTime: 10_000 }
   );
   const taken = useMemo(() => (checkQ.data ?? []).find((r) => r.code === code), [checkQ.data, code]);
   const bcInfo = barcodeInfo(code, { countInForm: 1, takenInDb: !!taken });
@@ -105,7 +107,7 @@ export default function BundleForm() {
       categoryId: hasCategory ? Number(pickerCategoryId) : undefined,
       limit: 30,
     },
-    { enabled: hasQuery || hasCategory, staleTime: 5_000 }
+    { enabled: can("bundles.searchComponents") && (hasQuery || hasCategory), staleTime: 5_000 }
   );
 
   // ── بحث موازٍ داخل حوار «إضافة متعدّدة» ──
@@ -118,7 +120,7 @@ export default function BundleForm() {
       categoryId: bulkHasCategory ? Number(bulkCategoryId) : undefined,
       limit: 50,
     },
-    { enabled: bulkOpen && (bulkHasQuery || bulkHasCategory), staleTime: 5_000 }
+    { enabled: can("bundles.searchComponents") && (bulkOpen && (bulkHasQuery || bulkHasCategory)), staleTime: 5_000 }
   );
 
   // مؤقّت الوميض المُشترَك — يُلغى قبل جدولة جديدة كي لا يُطفئ مسحٌ سابقٌ وميض مسحٍ لاحق.
@@ -612,7 +614,7 @@ export default function BundleForm() {
 
       <div className="sticky bottom-0 z-10 -mx-4 border-t bg-background/95 px-4 py-3 backdrop-blur flex items-center justify-end gap-2">
         <Button variant="outline" onClick={() => navigate("/products")}>إلغاء</Button>
-        <Button onClick={save} disabled={create.isPending || components.length === 0}>
+        <Button onClick={save} disabled={!can("catalog.createProduct") || (create.isPending || components.length === 0)}>
           {create.isPending ? "جارٍ الحفظ…" : "حفظ البكج"}
         </Button>
       </div>

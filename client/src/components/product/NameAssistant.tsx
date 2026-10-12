@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 /**
  * مساعد تسمية المنتج — ثلاث طبقات إرشادية غير متلفة تحت حقل الاسم:
  *  ١) مشابهات حيّة من القاعدة (debounced) تمنع ازدواج الكتالوج عند المصدر،
@@ -25,6 +26,7 @@ interface NameAssistantProps {
 }
 
 export function NameAssistant({ name, onApply, excludeProductId, warnColors = false }: NameAssistantProps) {
+  const { can } = useCatalogPeopleOperationAccess();
   const debounced = useDebouncedValue(name, 450);
   const trimmed = debounced.trim();
 
@@ -38,7 +40,7 @@ export function NameAssistant({ name, onApply, excludeProductId, warnColors = fa
 
   const similarQ = trpc.catalog.similarNames.useQuery(
     { name: trimmed, excludeProductId },
-    { enabled: trimmed.length >= 3, staleTime: 10_000 }
+    { enabled: can("catalog.similarNames") && (trimmed.length >= 3), staleTime: 10_000 }
   );
   const similar = similarQ.data ?? [];
   const exact = similar.find((s) => s.isExact);

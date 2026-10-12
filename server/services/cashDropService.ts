@@ -37,6 +37,8 @@ import {
   computeDrawerCashBalance,
 } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
+import { assertOperationAuthorityTx, loadOperationUserTx } from "./authorization/operationAuthority";
+import { cashHandoverRecipientAllowed } from "./authorization/operationRecipientEligibility";
 
 export interface CashDropInput {
   shiftId: number;
@@ -123,6 +125,8 @@ async function cashDropTx(
   input: CashDropInput,
   actor: Actor & { role?: string },
 ): Promise<CashDropResult> {
+  await assertOperationAuthorityTx(tx, actor, "shifts.cashDrop", true);
+  const recipientProfile = input.dropTo == null ? null : await loadOperationUserTx(tx, input.dropTo);
   // 1. الوردية: موجودة (تحت القفل — يمنع سحباً بالتزامن مع الإغلاق).
   const sh = (
     await tx
@@ -264,7 +268,7 @@ async function cashDropTx(
   if (input.dropTo == null) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "يجب تحديد مدير مستلم للنقد",
+      message: "يجب تحديد مدير مستلم للحساب القديم أو مستلم مفوّض بقبول عهدة النقد",
     });
   }
   const recipient = (
@@ -276,10 +280,10 @@ async function cashDropTx(
       message: "المستلِم غير موجود أو معطّل",
     });
   }
-  if (recipient.role !== "admin" && recipient.role !== "manager") {
+  if (!cashHandoverRecipientAllowed(recipientProfile!, recipient.role === "admin" || recipient.role === "manager")) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "مستلِم النقد يجب أن يكون مديراً أو إدارياً (admin/manager)",
+      message: "لا توجد صلاحية قبول عهدة التسليم؛ يجب تفويض المستلِم أو أن يكون للحساب القديم مديراً أو إدارياً",
     });
   }
   if (Number(recipient.id) === Number(actor.userId)) {
@@ -288,7 +292,7 @@ async function cashDropTx(
       message: "لا يجوز أن يكون مُسلِّم النقد هو المستلم نفسه",
     });
   }
-  if (recipient.branchId == null || Number(recipient.branchId) !== branchId) {
+  if (recipientProfile?.branchId == null || Number(recipientProfile.branchId) !== branchId) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "مستلِم النقد يجب أن يكون من فرع الوردية نفسه",
