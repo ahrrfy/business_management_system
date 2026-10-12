@@ -20,6 +20,7 @@ export interface PermissionResourceRowProps {
   onToggle: (key: string, nextGranted: boolean) => void;
   onBulkUpdate?: (updates: Record<string, boolean>) => void;
   disabled?: boolean;
+  expandSpecialOperations?: boolean;
 }
 
 const ACTION_KEYS: StandardActionType[] = [
@@ -38,8 +39,10 @@ export const PermissionResourceRow = memo(function PermissionResourceRow({
   onToggle,
   onBulkUpdate,
   disabled = false,
+  expandSpecialOperations = false,
 }: PermissionResourceRowProps) {
   const [showSpecialTray, setShowSpecialTray] = useState(false);
+  const isTrayOpen = showSpecialTray || expandSpecialOperations;
 
   const handleGrantAll = () => {
     if (disabled || !onBulkUpdate) return;
@@ -168,7 +171,7 @@ export const PermissionResourceRow = memo(function PermissionResourceRow({
                 <span>
                   {resource.specialActions.length} عمليات إضافية / حساسة
                 </span>
-                {showSpecialTray ? (
+                {isTrayOpen ? (
                   <ChevronUp aria-hidden="true" className="size-2.5" />
                 ) : (
                   <ChevronDown aria-hidden="true" className="size-2.5" />
@@ -207,7 +210,7 @@ export const PermissionResourceRow = memo(function PermissionResourceRow({
       </tr>
 
       {/* Special Operations Drawer if expanded */}
-      {showSpecialTray && hasSpecial && (
+      {isTrayOpen && hasSpecial && (
         <tr className="bg-amber-50/20 dark:bg-amber-950/10 border-b border-border">
           <td colSpan={9} className="p-2.5">
             <div className="flex flex-wrap gap-2 items-center">
@@ -217,6 +220,7 @@ export const PermissionResourceRow = memo(function PermissionResourceRow({
               </span>
               {resource.specialActions.map((slot) => {
                 const tokens = getActionVisualTokens(slot.state);
+                const sensitivity = slot.definition?.sensitivity;
                 return (
                   <button
                     key={slot.key}
@@ -232,6 +236,16 @@ export const PermissionResourceRow = memo(function PermissionResourceRow({
                     title={slot.definition?.descriptionAr || slot.definition?.description}
                   >
                     <span>{slot.definition?.labelAr || slot.definition?.label}</span>
+                    {sensitivity === "critical" && (
+                      <Badge variant="outline" className="text-[9px] px-1 py-0 bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/30">
+                        حرج
+                      </Badge>
+                    )}
+                    {sensitivity === "high" && (
+                      <Badge variant="outline" className="text-[9px] px-1 py-0 bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30">
+                        عالي
+                      </Badge>
+                    )}
                     <Badge
                       variant="outline"
                       className={cn(

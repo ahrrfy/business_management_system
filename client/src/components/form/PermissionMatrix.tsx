@@ -45,6 +45,8 @@ export interface PermissionMatrixProps {
   onMaskingChange?: (masking: SensitiveDataMasking) => void;
   defaultMode?: "atomic" | "legacy";
   defaultViewMode?: "grid" | "cards";
+  expandSpecialOperations?: boolean;
+  onExpandSpecialOperationsChange?: (expand: boolean) => void;
 }
 
 const LEVELS: AccessLevel[] = ["FULL", "READ", "NONE"];
@@ -88,6 +90,8 @@ export function PermissionMatrix({
   onMaskingChange,
   defaultMode = "atomic",
   defaultViewMode = "grid",
+  expandSpecialOperations,
+  onExpandSpecialOperationsChange,
 }: PermissionMatrixProps) {
   const [activeTab, setActiveTab] = useState<"atomic" | "legacy">(defaultMode);
   const [internalAtomic, setInternalAtomic] = useState<AtomicPermissionsMap>(() => {
@@ -248,6 +252,8 @@ export function PermissionMatrix({
           masking={masking}
           onMaskingChange={onMaskingChange}
           defaultViewMode={defaultViewMode}
+          expandSpecialOperations={expandSpecialOperations}
+          onExpandSpecialOperationsChange={onExpandSpecialOperationsChange}
         />
       ) : (
         <div className="space-y-3">

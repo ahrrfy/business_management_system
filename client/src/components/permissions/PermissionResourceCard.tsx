@@ -293,8 +293,18 @@ export const PermissionResourceCard = memo(function PermissionResourceCard({
 
               {isSpecial && (
                 <div className="mt-1.5 flex items-center gap-1 text-[10px] text-amber-700 dark:text-amber-400 font-medium">
-                  <Zap aria-hidden="true" className="size-3 shrink-0" />
+                  <Zap aria-hidden="true" className="size-3 shrink-0 text-amber-500" />
                   <span>عملية تشغيلية حساسة</span>
+                  {slot.definition?.sensitivity === "critical" && (
+                    <Badge variant="outline" className="text-[9px] px-1 py-0 bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/30 ms-1 font-bold">
+                      حرج
+                    </Badge>
+                  )}
+                  {slot.definition?.sensitivity === "high" && (
+                    <Badge variant="outline" className="text-[9px] px-1 py-0 bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30 ms-1 font-semibold">
+                      عالي
+                    </Badge>
+                  )}
                 </div>
               )}
 

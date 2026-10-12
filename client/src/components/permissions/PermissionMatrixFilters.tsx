@@ -6,6 +6,7 @@ import {
   SlidersHorizontal,
   LayoutGrid,
   Table,
+  Zap,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,8 @@ export interface PermissionMatrixFiltersProps {
   customDeniesCount: number;
   onResetToTemplate?: () => void;
   disabled?: boolean;
+  expandSpecialOperations?: boolean;
+  onExpandSpecialOperationsChange?: (expand: boolean) => void;
 }
 
 export const PermissionMatrixFilters = memo(function PermissionMatrixFilters({
@@ -43,6 +46,8 @@ export const PermissionMatrixFilters = memo(function PermissionMatrixFilters({
   customDeniesCount,
   onResetToTemplate,
   disabled = false,
+  expandSpecialOperations = false,
+  onExpandSpecialOperationsChange,
 }: PermissionMatrixFiltersProps) {
   // Local state for 60fps fast typing while debouncing upstream change by 180ms.
   // Preserves Arabic spaces (NO trim on keystroke).
@@ -178,6 +183,24 @@ export const PermissionMatrixFilters = memo(function PermissionMatrixFilters({
             <span>جدول المصفوفة</span>
           </button>
         </div>
+
+        {onExpandSpecialOperationsChange && (
+          <Button
+            type="button"
+            variant={expandSpecialOperations ? "secondary" : "outline"}
+            size="sm"
+            disabled={disabled}
+            onClick={() => onExpandSpecialOperationsChange(!expandSpecialOperations)}
+            className={cn(
+              "h-8 px-2.5 text-xs gap-1.5 transition-colors cursor-pointer",
+              expandSpecialOperations && "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/40 font-medium",
+            )}
+            title="توسيع أو طي كافة العمليات التشغيلية الاستثنائية والحساسة عبر كافة الموارد"
+          >
+            <Zap aria-hidden="true" className="size-3.5 text-amber-500" />
+            <span>العمليات الخاصة</span>
+          </Button>
+        )}
 
         {totalOverrides > 0 && (
           <div className="flex items-center gap-1.5 text-xs font-mono">

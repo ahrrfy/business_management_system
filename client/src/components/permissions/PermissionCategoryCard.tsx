@@ -34,6 +34,7 @@ export interface PermissionCategoryCardProps {
   disabled?: boolean;
   defaultExpanded?: boolean;
   viewMode?: PermissionViewMode;
+  expandSpecialOperations?: boolean;
 }
 
 const DOMAIN_ICONS: Record<string, LucideIcon> = {
@@ -56,6 +57,7 @@ export const PermissionCategoryCard = memo(function PermissionCategoryCard({
   disabled = false,
   defaultExpanded = true,
   viewMode = "grid",
+  expandSpecialOperations = false,
 }: PermissionCategoryCardProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
 
@@ -261,6 +263,7 @@ export const PermissionCategoryCard = memo(function PermissionCategoryCard({
                       onToggle={onToggle}
                       onBulkUpdate={onBulkUpdate}
                       disabled={disabled}
+                      expandSpecialOperations={expandSpecialOperations}
                     />
                   ))}
                 </tbody>

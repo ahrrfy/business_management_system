@@ -106,6 +106,7 @@ export interface PermissionFilterState {
   domain: DomainKey | "all";
   overridesOnly: boolean;
   viewMode: PermissionViewMode;
+  expandSpecial?: boolean;
 }
 
 export interface OperationalPreset {
@@ -136,5 +137,7 @@ export interface PermissionMatrixProps {
   showCapsPanel?: boolean;
   showMaskingPanel?: boolean;
   defaultViewMode?: PermissionViewMode;
+  expandSpecialOperations?: boolean;
+  onExpandSpecialOperationsChange?: (expand: boolean) => void;
 }
 
