@@ -2444,6 +2444,62 @@
 			"when": 1788148841000,
 			"tag": "0383_historical_cash_correction",
 			"breakpoints": true
+		},
+		{
+			"idx": 384,
+			"version": "5",
+			"when": 1788148842000,
+			"tag": "0384_sync_product_channel_labels",
+			"breakpoints": true
+		},
+		{
+			"idx": 385,
+			"version": "5",
+			"when": 1788148843000,
+			"tag": "0385_company_profile",
+			"breakpoints": true
+		},
+		{
+			"idx": 386,
+			"version": "5",
+			"when": 1788148844000,
+			"tag": "0386_store_order_fulfillment_workflow",
+			"breakpoints": true
+		},
+		{
+			"idx": 387,
+			"version": "5",
+			"when": 1788148845000,
+			"tag": "0387_sales_attribution_engine",
+			"breakpoints": true
+		},
+		{
+			"idx": 388,
+			"version": "5",
+			"when": 1788148846000,
+			"tag": "0388_customer_feedback_hub",
+			"breakpoints": true
+		},
+		{
+			"idx": 391,
+			"version": "5",
+			"when": 1788148849000,
+			"tag": "0391_omnichannel_promotions_coupons",
+			"breakpoints": true
+		},
+		{
+			"idx": 393,
+			"version": "5",
+			"when": 1788148851000,
+			"tag": "0393_comprehensive_permission_matrix_caps",
+			"breakpoints": true
+		},
+		{
+			"idx": 394,
+			"version": "5",
+			"when": 1788148852000,
+			"tag": "0394_storefront_public_reviews",
+			"breakpoints": true
 		}
 	]
 }

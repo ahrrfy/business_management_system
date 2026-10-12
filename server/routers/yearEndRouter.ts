@@ -7,6 +7,7 @@ import { retryOnDup } from "../lib/retryDup";
 import {
   reportsAdminProcedure,
   reportsManagerProcedure,
+  requireAtomicPermission,
   router,
 } from "../trpc";
 import { withGovernanceTx, withTx } from "../services/tx";
@@ -22,6 +23,7 @@ import { logAuditTx } from "../services/auditService";
 
 export const yearEndRouter = router({
   close: reportsAdminProcedure
+    .use(requireAtomicPermission("treasury.year_end.lock"))
     .input(
       z
         .object({
@@ -60,6 +62,7 @@ export const yearEndRouter = router({
     ),
 
   list: reportsManagerProcedure
+    .use(requireAtomicPermission("treasury.year_end.view"))
     .input(
       z
         .object({
@@ -74,6 +77,7 @@ export const yearEndRouter = router({
     }),
 
   reopenRequests: reportsManagerProcedure
+    .use(requireAtomicPermission("treasury.year_end.view"))
     .input(
       z
         .object({
@@ -89,6 +93,7 @@ export const yearEndRouter = router({
     })),
 
   requestReopen: reportsManagerProcedure
+    .use(requireAtomicPermission("treasury.period.reopen"))
     .input(
       z
         .object({
@@ -128,6 +133,7 @@ export const yearEndRouter = router({
     ),
 
   approveReopen: reportsAdminProcedure
+    .use(requireAtomicPermission("treasury.period.reopen"))
     .input(
       z
         .object({
@@ -155,6 +161,7 @@ export const yearEndRouter = router({
     ),
 
   rejectReopen: reportsAdminProcedure
+    .use(requireAtomicPermission("treasury.period.reopen"))
     .input(
       z
         .object({

@@ -80,6 +80,7 @@ import {
 } from "@/components/invoice";
 import { createPricingIntentEpoch } from "@/components/invoice/productSearchResolution"; import { ACTION_LABELS } from "@shared/actionLabels";
 import { SalesCorrectionPanel, resolvePriorReceipt, type PriorReceiptMode } from "@/components/invoice/SalesCorrectionPanel";
+import { salesRepresentativeOptions } from "@/components/invoice/salesRepresentatives";
 
 const INVOICE_TYPE = "SALE" as const;
 
@@ -95,6 +96,8 @@ export default function SalesInvoice() {
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
   const defaultBranchId = me.data?.branchId ? Number(me.data.branchId) : 0;
+  const employeesQ = trpc.employees.list.useQuery({ status: "active", limit: 200 });
+  const salesReps = useMemo(() => salesRepresentativeOptions(employeesQ.data?.rows ?? []), [employeesQ.data?.rows]);
 
   const [state, dispatch] = useReducer(
     invoiceReducer,
@@ -572,6 +575,7 @@ export default function SalesInvoice() {
 
     return {
       branchId: state.branchId,
+      salesRepId: state.salesRepId ? Number(state.salesRepId) : undefined,
       shiftId: currentShift.data?.id ?? undefined,
       customerId: state.entityId ?? undefined,
       priceTier: state.tier,
@@ -645,6 +649,7 @@ export default function SalesInvoice() {
     return {
       originalInvoiceId: correctInvoiceId!,
       customerId: base.customerId ?? null,
+      salesRepId: base.salesRepId,
       contactName: original.data?.contactName ?? null,
       contactPhone: original.data?.contactPhone ?? null,
       priceTier: base.priceTier,
@@ -1083,7 +1088,7 @@ export default function SalesInvoice() {
       />
 
       {/* رأس الفاتورة (بيانات المستند + العميل + الشروط المالية) */}
-      <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} pricingIntentEpoch={pricingIntentEpochRef.current} />
+      <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} pricingIntentEpoch={pricingIntentEpochRef.current} salesReps={salesReps} />
 
       {openingModeQuery.data?.active === true && (
         <div className="flex items-center gap-2 rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-xs font-semibold text-[var(--sem-warn)]">

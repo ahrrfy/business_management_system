@@ -12,7 +12,7 @@ import { DELIVERY_AGE_DANGER_HOURS } from "@shared/deliveryAging";
 import { getDb } from "../db";
 import { createTtlCache } from "../lib/ttlCache";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
-import { getCurrentCompanyId } from "../tenancy/context";
+import { financialAlertsCacheKey } from "../realtime/financialCache";
 import { toDbMoney, money } from "./money";
 import { getStockStatus } from "./reportsInventoryService";
 import { getCreditExposure } from "./reportsCreditExposureService";
@@ -94,7 +94,7 @@ export async function getManagementAlerts(opts: {
 }): Promise<ManagementAlertsResult> {
   // الاختبارات تتحقّق من محتوى التنبيهات بعد كتاباتها مباشرةً — الكاش يعمى عنها.
   if (process.env.NODE_ENV === "test") return computeManagementAlerts(opts);
-  const key = `${getCurrentCompanyId() ?? 0}:${opts.branchId ?? 0}:${opts.isAdmin === true}`;
+  const key = financialAlertsCacheKey(`${opts.branchId ?? 0}:${opts.isAdmin === true}`);
   return managementAlertsCache.get(key, () => computeManagementAlerts(opts));
 }
 

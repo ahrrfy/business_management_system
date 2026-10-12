@@ -148,6 +148,13 @@ const PROCEDURES = {
     roles: ["admin"],
     branch: false,
   },
+  companyProfileReadProcedure: {
+    authority: "module-gate",
+    module: "settings",
+    level: "READ",
+    roles: [],
+    branch: false,
+  },
   platformAdminProcedure: {
     authority: "platform",
     module: null,
@@ -600,6 +607,14 @@ const PROCEDURES = {
     level: "FULL",
     roles: ["cashier", "manager", "print_operator"],
     branch: "required",
+  },
+  // Advisory read only: reception execution OR store fulfillment, using the shared policy.
+  receptionDuplicateReadProcedure: {
+    authority: "module-gate",
+    module: "workorders|store",
+    level: "FULL|FULL",
+    roles: ["cashier", "manager", "print_operator", "sales_rep"],
+    branch: "scoped",
   },
   workordersManagerProcedure: {
     authority: "module-gate",

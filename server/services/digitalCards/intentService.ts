@@ -128,7 +128,12 @@ export interface PrepareInput {
   /** process-local capability: cannot be supplied over JSON. */
   priceApprovalCapability?: typeof VERIFIED_DIGITAL_PRICE_APPROVAL;
   priceApprovedBy?: number | null;
+  /** Internal manager credit authority; price attribution alone grants no override. */
+  creditApprovalCapability?: typeof VERIFIED_DIGITAL_CREDIT_APPROVAL;
+  creditApprovedBy?: number | null;
 }
+
+export const VERIFIED_DIGITAL_CREDIT_APPROVAL = Symbol("VERIFIED_DIGITAL_CREDIT_APPROVAL");
 
 /** مهلة النيّة: نافذةٌ معقولة لإصدار الكروت من جهاز المزوّد قبل أن تُعتبر مهجورة. */
 const INTENT_TTL_MINUTES = 30;
@@ -218,6 +223,18 @@ function normalizeIntentSource(input: PrepareInput): {
 
 /* ────────── إعداد النيّة ────────── */
 
+async function assertInvoiceSalesRepresentative(tx: Tx, payload: InvoiceSourcePayload | null): Promise<void> {
+  if (payload?.salesRepId == null) return;
+  const [representative] = await tx.select({ id: users.id }).from(users)
+    .where(eq(users.id, payload.salesRepId)).for("share").limit(1);
+  if (!representative) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: intentOperationError("حساب مندوب المبيعات غير موجود", "اختر موظفاً مرتبطاً بحساب مستخدم صالح ثم أعد الإعداد قبل إصدار أي كرت"),
+    });
+  }
+}
+
 export async function prepare(
   tx: Tx,
   input: PrepareInput,
@@ -226,6 +243,7 @@ export async function prepare(
   const normalizedSource = normalizeIntentSource(input);
   input = normalizedSource.input;
   const invoicePayload = normalizedSource.invoicePayload;
+  await assertInvoiceSalesRepresentative(tx, invoicePayload);
   // يسبق replay حتى لا تعبر نيّة تاريخية CREDIT/طريقة معطّلة إلى claim ثم تفشل بعد الإصدار.
   if (
     !ALLOWED_PAYMENT_METHODS.has(input.paymentMethod) &&
@@ -720,14 +738,24 @@ export async function prepare(
   }
 
   let creditApprovalId: number | null = null;
+  let creditLimitPreflight: { customerId: number; branchId: number; amount: string } | undefined;
   if (input.paymentMethod === "CREDIT") {
     const customerId = input.customerId!;
-    if (input.priceApprovedBy != null) {
+    if (
+      input.creditApprovalCapability === VERIFIED_DIGITAL_CREDIT_APPROVAL &&
+      input.creditApprovedBy != null
+    ) {
+      if (input.creditApprovedBy === actor.userId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: intentOperationError(
+          "لا يمكن اعتماد تجاوز الائتمان لنفس منفذ البيع قبل إصدار الكرت",
+          "استخدم اعتماد مدير آخر أو صحح سقف العميل قبل الإصدار",
+        ) });
+      }
       const approval = await createApproval(tx, {
         customerId,
         branchId: input.branchId,
         maxAmount: expectedTotal,
-        approvedBy: input.priceApprovedBy,
+        approvedBy: input.creditApprovedBy,
         ttlMinutes: INTENT_TTL_MINUTES,
         notes: "digital-card credit approved before provider issuance",
       });
@@ -736,10 +764,11 @@ export async function prepare(
       const opening = await readOpeningWindowState(tx);
       if (!opening.active) {
         await assertCreditLimit(tx, customerId, expectedTotal, input.branchId, "CREDIT");
+        creditLimitPreflight = { customerId, branchId: input.branchId, amount: expectedTotal };
       }
     }
   }
-  const checkoutSnapshot = { ...checkoutBase, creditApprovalId };
+  const checkoutSnapshot = { ...checkoutBase, creditApprovalId, creditLimitPreflight };
 
   let intentId: number;
   try {
@@ -1023,6 +1052,10 @@ export async function claimExecution(
   // المشتركة، لذلك لا يستطيع إقفال الشهر العبور بين هذا الفحص والتزام المطالبة.
   // وبعد المطالبة يمنع lockPeriod الإقفال ما دامت النية غير محسومة.
   await assertPeriodOpen(tx, new Date());
+
+  if (intent.checkoutSnapshot?.sourceType === "INVOICE") {
+    await assertInvoiceSalesRepresentative(tx, parseInvoiceSourcePayload(intent.checkoutSnapshot.sourcePayload));
+  }
 
   const { item, items } = await lockExecutionItems(tx, input.intentId, input.intentItemId);
   const intentItemId = Number(item.id);

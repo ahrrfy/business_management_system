@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -85,10 +85,14 @@ async function prepareAndExecute(
   options: {
     paymentMethod?: "CASH" | "CREDIT";
     customerId?: number;
+    salesRepId?: number | null;
     sourceType?: "POS" | "INVOICE";
     dueDate?: string;
     notes?: string;
     priceApprovedBy?: number;
+    creditApprovedBy?: number;
+    creditApprovalCapability?: typeof intentService.VERIFIED_DIGITAL_CREDIT_APPROVAL;
+    execute?: boolean;
   } = {},
 ) {
   const id = ++seq;
@@ -122,6 +126,7 @@ async function prepareAndExecute(
       branchId: 1,
       shiftId: 1,
       customerId: options.customerId,
+      salesRepId: options.salesRepId,
       priceTier: "RETAIL",
       clientRequestId,
       dueDate: options.dueDate,
@@ -129,11 +134,20 @@ async function prepareAndExecute(
       lines: invoiceLines,
     },
     priceApprovedBy: options.priceApprovedBy,
+    creditApprovedBy: options.creditApprovedBy ?? (
+      options.paymentMethod === "CREDIT" ? options.priceApprovedBy : undefined
+    ),
+    creditApprovalCapability: options.creditApprovedBy != null
+      ? options.creditApprovalCapability
+      : options.paymentMethod === "CREDIT" && options.priceApprovedBy != null
+        ? intentService.VERIFIED_DIGITAL_CREDIT_APPROVAL
+        : undefined,
     lines: lines.map((l, i) => ({
       lineKey: lineKeys[i], offeringId: l.offeringId, priceVersionId: l.priced.pv,
       expectedSellPrice: l.priced.price, providerReference: `REF-FIN-${id}-${i}`, student: l.student ?? null,
     })),
   }, actor));
+  if (options.execute === false) return r.intentId;
   const items = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, r.intentId));
   for (const it of items) {
     await withTx(async (tx) => {
@@ -159,6 +173,47 @@ beforeEach(async () => {
 });
 
 describe("ش٨ — البيع من مزوّد مسبق الدفع (§٦.٢)", () => {
+  it("يرفض مندوباً مفقوداً قبل حجز أو إصدار الكروت", async () => {
+    await db().insert(s.customers).values({ id: 1, name: "عميل آجل", creditLimit: null });
+    const { providerId } = await mkProvider("مزوّد تحقق المندوب", "PREPAID");
+    const walletId = await mkWallet(providerId, "100000");
+    const offeringId = await mkOffering(providerId, "كارت", walletId);
+    const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
+
+    await expect(prepareAndExecute([{ offeringId, priced: priced.get(offeringId)! }], {
+      sourceType: "INVOICE", paymentMethod: "CREDIT", customerId: 1, salesRepId: 999, execute: false,
+    })).rejects.toThrow(/حساب مندوب المبيعات غير موجود/);
+    expect(await db().select().from(s.digitalSaleIntents)).toHaveLength(0);
+    expect(await db().select().from(s.digitalWalletReservations)).toHaveLength(0);
+    const [wallet] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));
+    expect(wallet.reservedBalance).toBe("0.00");
+  });
+
+  it("يرفض حساب مندوب مفقوداً في لقطة محفوظة قبل مطالبة الإصدار", async () => {
+    await db().insert(s.customers).values({ id: 1, name: "عميل آجل", creditLimit: null });
+    const { providerId } = await mkProvider("مزوّد لقطة المندوب", "PREPAID");
+    const walletId = await mkWallet(providerId, "100000");
+    const offeringId = await mkOffering(providerId, "كارت", walletId);
+    const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
+    const intentId = await prepareAndExecute([{ offeringId, priced: priced.get(offeringId)! }], {
+      sourceType: "INVOICE", paymentMethod: "CREDIT", customerId: 1, salesRepId: manager.userId, execute: false,
+    });
+    const [intent] = await db().select().from(s.digitalSaleIntents).where(eq(s.digitalSaleIntents.id, intentId));
+    const snapshot = intent.checkoutSnapshot!;
+    await db().update(s.digitalSaleIntents).set({ checkoutSnapshot: {
+      ...snapshot, sourcePayload: { ...(snapshot.sourcePayload as object), salesRepId: 999 },
+    } }).where(eq(s.digitalSaleIntents.id, intentId));
+    const [item] = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, intentId));
+
+    await expect(withTx((tx) => intentService.claimExecution(tx, {
+      intentId, intentItemId: Number(item.id), claimToken: "missing-rep-account",
+    }, actor))).rejects.toThrow(/حساب مندوب المبيعات غير موجود/);
+    const claims = await db().execute(sql`SELECT intentItemId FROM digitalSaleExecutionClaims WHERE intentItemId = ${Number(item.id)}`);
+    expect((claims as unknown as [unknown[]])[0]).toHaveLength(0);
+    const [unissued] = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.id, Number(item.id)));
+    expect(unissued.fulfillmentStatus).toBe("PENDING");
+  });
+
   it("قيد SALE يحمل حصة المزوّد تكلفةً والهامش ربحاً؛ والمحفظة تُخصَم بقيد أصلٍ صفريّ", async () => {
     const { providerId } = await mkProvider("آسياسيل", "PREPAID");
     const walletId = await mkWallet(providerId, "100000");
@@ -214,7 +269,14 @@ describe("ش٨ — البيع من مزوّد مسبق الدفع (§٦.٢)", ()
     expect(variant.costPrice).toBe("0.00"); // لم يُمَسّ
   });
 
-  it("يثبّت فاتورة الكروت الآجلة ذمّةً كاملة بلا إيصال ويحفظ الاستحقاق", async () => {
+  it.each([
+    { educational: false, salesRepId: undefined },
+    { educational: false, salesRepId: null },
+    { educational: false, salesRepId: 2 },
+    { educational: true, salesRepId: undefined },
+    { educational: true, salesRepId: null },
+    { educational: true, salesRepId: 2 },
+  ])("يثبّت البيع الآجل بلا قبض ويحفظ الاستحقاق والمندوب ($educational / $salesRepId)", async ({ educational, salesRepId }) => {
     await db().insert(s.customers).values({
       id: 1,
       name: "عميل آجل",
@@ -224,15 +286,20 @@ describe("ش٨ — البيع من مزوّد مسبق الدفع (§٦.٢)", ()
     });
     const { providerId } = await mkProvider("آسياسيل آجل للعميل", "PREPAID");
     const walletId = await mkWallet(providerId, "100000");
-    const offeringId = await mkOffering(providerId, "كارت آجل", walletId);
+    const offeringId = await mkOffering(providerId, "كارت آجل", walletId, educational);
     const priced = await publish(providerId, [
       { offeringId, providerShare: "13400" },
     ]);
     const intentId = await prepareAndExecute(
-      [{ offeringId, priced: priced.get(offeringId)! }],
+      [{
+        offeringId,
+        priced: priced.get(offeringId)!,
+        ...(educational ? { student: { studentName: "طالب آجل", studentPhone: "07700000000" } } : {}),
+      }],
       {
         paymentMethod: "CREDIT",
         customerId: 1,
+        salesRepId,
         sourceType: "INVOICE",
         dueDate: "2026-10-31",
         notes: "بيع آجل موثق",
@@ -254,6 +321,8 @@ describe("ش٨ — البيع من مزوّد مسبق الدفع (§٦.٢)", ()
       paymentMethod: null,
       status: "PENDING",
       notes: "بيع آجل موثق",
+      salesRepId: salesRepId ?? actor.userId,
+      salespersonNameSnapshot: salesRepId === manager.userId ? "مدير" : "كاشير",
     });
     expect(invoice.dueDate?.toISOString().slice(0, 10)).toBe("2026-10-31");
     expect(await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, res.invoiceId))).toHaveLength(0);
@@ -333,6 +402,121 @@ describe("ش٨ — البيع من مزوّد مسبق الدفع (§٦.٢)", ()
     expect(recovered.invoiceId).toBeGreaterThan(0);
     const [approval] = await db().select().from(s.creditApprovals);
     expect(approval.consumedByInvoiceId).toBe(recovered.invoiceId);
+  });
+
+  it.each([
+    { field: "amount", patch: { amount: "14000.00" } },
+    { field: "customerId", patch: { customerId: 2 } },
+    { field: "branchId", patch: { branchId: 2 } },
+  ])("لا يمنح تفويض السقف من لقطة تغيّر فيها $field بعد الإصدار", async ({ patch }) => {
+    await db().insert(s.customers).values({
+      id: 1, name: "عميل لقطة ائتمان", defaultPriceTier: "RETAIL",
+      creditLimit: "20000", currentBalance: "0",
+    });
+    const { providerId } = await mkProvider("مزوّد لقطة ائتمان", "PREPAID");
+    const walletId = await mkWallet(providerId, "100000");
+    const offeringId = await mkOffering(providerId, "كرت لقطة ائتمان", walletId);
+    const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
+    const intentId = await prepareAndExecute(
+      [{ offeringId, priced: priced.get(offeringId)! }],
+      { paymentMethod: "CREDIT", customerId: 1, sourceType: "INVOICE" },
+    );
+    const [intent] = await db().select().from(s.digitalSaleIntents).where(eq(s.digitalSaleIntents.id, intentId));
+    const snapshot = intent.checkoutSnapshot!;
+    expect(snapshot.creditLimitPreflight).toEqual({ customerId: 1, branchId: 1, amount: "14250.00" });
+    await db().update(s.digitalSaleIntents).set({ checkoutSnapshot: {
+      ...snapshot,
+      creditLimitPreflight: { ...snapshot.creditLimitPreflight!, ...patch },
+    } }).where(eq(s.digitalSaleIntents.id, intentId));
+    await db().update(s.customers).set({ currentBalance: "10000" }).where(eq(s.customers.id, 1));
+
+    await expect(withTx((tx) => finalizeService.finalize(tx, {
+      intentId, clientRequestId: "fin-invalid-preflight", paymentAmount: "0", paymentMethod: "CREDIT", customerId: 1,
+    }, actor))).rejects.toMatchObject({ code: expect.stringMatching(/^(FORBIDDEN|CONFLICT)$/) });
+
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(await db().select().from(s.creditApprovals)).toHaveLength(0);
+    const [customer] = await db().select().from(s.customers).where(eq(s.customers.id, 1));
+    expect(customer.currentBalance).toBe("10000.00");
+    const [unfinalized] = await db().select().from(s.digitalSaleIntents).where(eq(s.digitalSaleIntents.id, intentId));
+    expect(unfinalized).toMatchObject({ status: "EXECUTED", invoiceId: null });
+    const [wallet] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));
+    expect(wallet).toMatchObject({ currentBalance: "100000.00", reservedBalance: "13400.00" });
+  });
+
+  it("تبقى النيّة التاريخية بلا لقطة تفويض خاضعة للسقف ومسار الاسترداد", async () => {
+    await db().insert(s.customers).values({
+      id: 1, name: "عميل نيّة تاريخية", defaultPriceTier: "RETAIL",
+      creditLimit: "20000", currentBalance: "0",
+    });
+    const { providerId } = await mkProvider("مزوّد نيّة تاريخية", "PREPAID");
+    const walletId = await mkWallet(providerId, "100000");
+    const offeringId = await mkOffering(providerId, "كرت نيّة تاريخية", walletId);
+    const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
+    const intentId = await prepareAndExecute(
+      [{ offeringId, priced: priced.get(offeringId)! }],
+      { paymentMethod: "CREDIT", customerId: 1, sourceType: "INVOICE" },
+    );
+    const [intent] = await db().select().from(s.digitalSaleIntents).where(eq(s.digitalSaleIntents.id, intentId));
+    const { creditLimitPreflight: _preflight, ...legacySnapshot } = intent.checkoutSnapshot!;
+    await db().update(s.digitalSaleIntents).set({ checkoutSnapshot: legacySnapshot }).where(eq(s.digitalSaleIntents.id, intentId));
+    await db().update(s.customers).set({ currentBalance: "10000" }).where(eq(s.customers.id, 1));
+
+    await expect(withTx((tx) => finalizeService.finalize(tx, {
+      intentId, clientRequestId: "fin-legacy-preflight", paymentAmount: "0", paymentMethod: "CREDIT", customerId: 1,
+    }, actor))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    await db().update(s.digitalSaleIntents).set({ status: "NEEDS_REVIEW" }).where(eq(s.digitalSaleIntents.id, intentId));
+    const recovered = await withTx((tx) => finalizeService.recoverNeedsReview(tx, intentId, manager));
+    const [customer] = await db().select().from(s.customers).where(eq(s.customers.id, 1));
+    expect(customer.currentBalance).toBe("24250.00");
+    const [approval] = await db().select().from(s.creditApprovals);
+    expect(approval.consumedByInvoiceId).toBe(recovered.invoiceId);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+  });
+
+  it("لا يتجاوز معرّف مدير رقمي بلا قدرة موثّقة سقف عميل نقدي", async () => {
+    await db().insert(s.customers).values({ id: 1, name: "عميل نقدي", creditLimit: "0" });
+    const { providerId } = await mkProvider("مزوّد اعتماد مزوّر", "PREPAID");
+    const walletId = await mkWallet(providerId, "100000");
+    const offeringId = await mkOffering(providerId, "كرت اعتماد مزوّر", walletId);
+    const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
+
+    await expect(prepareAndExecute(
+      [{ offeringId, priced: priced.get(offeringId)! }],
+      { paymentMethod: "CREDIT", customerId: 1, sourceType: "INVOICE", creditApprovedBy: manager.userId, execute: false },
+    )).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await db().select().from(s.creditApprovals)).toHaveLength(0);
+    expect(await db().select().from(s.digitalSaleIntents)).toHaveLength(0);
+    expect(await db().select().from(s.digitalWalletReservations)).toHaveLength(0);
+    const claims = await db().execute(sql`SELECT intentItemId FROM digitalSaleExecutionClaims`);
+    expect((claims as unknown as [unknown[]])[0]).toHaveLength(0);
+  });
+
+  it("يرفض اعتماد منفّذ البيع لنفسه قبل أي حجز أو إصدار", async () => {
+    await db().insert(s.customers).values({ id: 1, name: "عميل اعتماد ذاتي", creditLimit: "0" });
+    const { providerId } = await mkProvider("مزوّد اعتماد ذاتي", "PREPAID");
+    const walletId = await mkWallet(providerId, "100000");
+    const offeringId = await mkOffering(providerId, "كرت اعتماد ذاتي", walletId);
+    const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
+
+    await expect(prepareAndExecute(
+      [{ offeringId, priced: priced.get(offeringId)! }],
+      {
+        paymentMethod: "CREDIT", customerId: 1, sourceType: "INVOICE", execute: false,
+        creditApprovedBy: actor.userId, creditApprovalCapability: intentService.VERIFIED_DIGITAL_CREDIT_APPROVAL,
+      },
+    )).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await db().select().from(s.creditApprovals)).toHaveLength(0);
+    expect(await db().select().from(s.digitalSaleIntents)).toHaveLength(0);
+    expect(await db().select().from(s.digitalWalletReservations)).toHaveLength(0);
+    const claims = await db().execute(sql`SELECT intentItemId FROM digitalSaleExecutionClaims`);
+    expect((claims as unknown as [unknown[]])[0]).toHaveLength(0);
+    const [wallet] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));
+    expect(wallet).toMatchObject({ currentBalance: "100000.00", reservedBalance: "0.00" });
   });
 });
 

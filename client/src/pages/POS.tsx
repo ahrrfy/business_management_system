@@ -44,7 +44,7 @@ import { POSShiftOpenScreen } from "@/components/pos/POSShiftOpenScreen";
 import { usePOSTabsDraft } from "@/components/pos/usePOSTabsDraft";
 import { usePOSPrinter } from "@/components/pos/usePOSPrinter";
 import { usePOSKeyboardShortcuts } from "@/components/pos/usePOSKeyboardShortcuts";
-import { computePOSTotals } from "@/components/pos/posTotals";
+import { computePOSTotals, evaluatePosCreditPrompt } from "@/components/pos/posTotals";
 import { usePOSOfflineBoot } from "@/components/pos/usePOSOfflineBoot";
 import { usePOSCatalogSearch } from "@/components/pos/usePOSCatalogSearch";
 import { usePOSTabHelpers } from "@/components/pos/usePOSTabHelpers";
@@ -650,6 +650,7 @@ export default function POS() {
         // م١ PR-B: الطرد المُنشأ في معاملة البيع (يعود من الخادم) + كتلة التوصيل للإيصال.
         delivery: ctx.delivery ?? null,
         consignmentNumber: r.consignmentNumber ?? null,
+        bounceBackCoupon: (r as { bounceBackCoupon?: Receipt["bounceBackCoupon"] }).bounceBackCoupon ?? null,
       };
       // #2 (تدقيق التثبيت): إن رجع الخادم total (المُقرَّب المخزَّن فعلاً) نستعمله في الإيصال
       // كمصدر حقيقة أخير — يُغطّي أي انحراف تقريب مستقبليّ بين العميل والخادم (roundCashIQD مشتركة
@@ -658,12 +659,10 @@ export default function POS() {
       const alignedRec: Receipt = { ...rec, total: serverTotal };
       setReceipt(alignedRec);
       setLastInv({ num: r.invoiceNumber, total: serverTotal });
-      notify.ok(
-        `تم البيع — فاتورة ${r.invoiceNumber}`,
-        r.consignmentNumber
-          ? `أُسند الطرد ${r.consignmentNumber} للتوصيل في المعاملة نفسها — تابعه من «إدارة التوصيل ← قيد التوصيل»`
-          : "افتح من شريط «آخر فاتورة» أعلاه أو من صفحة الفواتير",
-      );
+      const saleMsg = r.consignmentNumber
+        ? `أُسند الطرد ${r.consignmentNumber} للتوصيل`
+        : (alignedRec.bounceBackCoupon ? `قسيمة هدية صادرة: ${alignedRec.bounceBackCoupon.code} (خصم ${alignedRec.bounceBackCoupon.discountText})` : "افتح من شريط «آخر فاتورة» أعلاه");
+      notify.ok(`تم البيع — فاتورة ${r.invoiceNumber}`, saleMsg);
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
       patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "", delivery: null });
 
@@ -1003,17 +1002,13 @@ export default function POS() {
       notify.err("البيع الآجل يتطلّب اختيار عميل.");
       return;
     }
-    // الحدّ قبل الوعد (١٩/٨): الشاشة كانت تفحص **وجود** العميل وحده ثمّ ترسل،
-    // فيردّ الخادم بـFORBIDDEN بعد أن أتمّ الموظّف السلة والزبون واقفٌ أمامه. وحدُّ
-    // صفرٍ هو **الافتراضي** لكلّ عميلٍ يُنشأ من الكاشير ⤇ الحالة الغالبة لا النادرة.
-    if (!approval && !codMode && isCredit && selectedCustomer != null && Number(selectedCustomer.creditLimit ?? 0) === 0
-        && selectedCustomer.creditLimit != null) {
-      setCreditPrompt(
-        Number(selectedCustomer.currentBalance ?? 0) > 0
-          ? `هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) وعليه رصيد سابق (${Number(selectedCustomer.currentBalance).toFixed(2)}) — لا يمكن البيع بالآجل دون موافقة مدير`
-          : "هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) — لا يمكن البيع بالآجل دون موافقة مدير",
-      );
-      return;
+    // الحدّ قبل الوعد (١٩/٨): فحص سقف الائتمان وموافقة المدير قبل إرسال البيع بالآجل
+    if (!approval && !codMode) {
+      const creditMsg = evaluatePosCreditPrompt({ selectedCustomer, isCredit, creditAmount: credit });
+      if (creditMsg) {
+        setCreditPrompt(creditMsg);
+        return;
+      }
     }
     // ش٣ أوفلاين: الاتصال مقطوع ⇒ التقاط محلي (نقدي كامل فقط) بدل نداء سيفشل. سلّةُ التوصيل تُرفض
     // داخل captureOfflineSale نفسها (deliveryBlocksOfflineCapture) ⇒ حارسٌ واحدٌ يغطّي هذا المسار وquickPay.
@@ -1026,13 +1021,12 @@ export default function POS() {
     // كان يُرسَل غير المقرَّب، فأيّ إجمالٍ يُقرَّب صعوداً (2,380 ⇒ 2,500) يجعل الخادم يرى القبضَ ناقصاً
     // فيرفضه كبيعٍ آجلٍ بلا عميل. الخادم يحسب `cashRoundingAdj` من فرق الإجمالي/المقرَّب ⇒ الفارق موثَّق.
     saleCtxRef.current = captureSaleCtx();
-    const deviceId = activeTab.method === "CASH"
-      ? await getDeviceCode().catch(() => undefined)
-      : activeTab.externalPayment?.deviceId;
+    const deviceId = activeTab.method === "CASH" ? await getDeviceCode().catch(() => undefined) : activeTab.externalPayment?.deviceId;
     const cashFull = activeTab.method === "CASH" && !isCredit && !codMode;
     const payAmount = isCredit ? money(paid) : (cashFull ? money(cashRoundedTotal) : money(total));
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
+      ...(activeTab.salesRepId ? { salesRepId: activeTab.salesRepId, attribution: { repId: activeTab.salesRepId, mode: "DIRECT" as const } } : {}),
       deviceId,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
@@ -1080,12 +1074,11 @@ export default function POS() {
     }
     // الدفع السريع كامل؛ التقريب لفئة IQD يخص النقد وحده (نفس منطق submitSale أعلاه).
     saleCtxRef.current = captureSaleCtx();
-    const deviceId = activeTab.method === "CASH"
-      ? await getDeviceCode().catch(() => undefined)
-      : activeTab.externalPayment?.deviceId;
+    const deviceId = activeTab.method === "CASH" ? await getDeviceCode().catch(() => undefined) : activeTab.externalPayment?.deviceId;
     const payAmount = activeTab.method === "CASH" ? money(cashRoundedTotal) : money(total);
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
+      ...(activeTab.salesRepId ? { salesRepId: activeTab.salesRepId, attribution: { repId: activeTab.salesRepId, mode: "DIRECT" as const } } : {}),
       deviceId,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
@@ -1369,6 +1362,8 @@ export default function POS() {
           setShowCustPicker={setShowCustPicker}
           setCustId={setCustId}
           tabId={activeTab.id}
+          salesRepId={activeTab.salesRepId ?? null}
+          onSalesRepChange={(id) => patchActive({ salesRepId: id })}
           delivery={activeTab.delivery ?? null}
           onDeliveryChange={(d) => patchActive({ delivery: d })}
           onDeliveryIdentity={(identity) => {

@@ -12,7 +12,8 @@ export type AudioFeedbackKind =
   | "confirm"
   | "notification"
   | "warning"
-  | "error";
+  | "error"
+  | "order_alert";
 
 type Tone = {
   frequency: number;
@@ -116,6 +117,30 @@ const PATTERNS: Record<AudioFeedbackKind, readonly Tone[]> = {
       waveform: "triangle",
     },
   ],
+  // رنين وتنبيه استثنائي للطلبات الواردة (Doorbell Chime ثلاثي النغمات)
+  order_alert: [
+    {
+      frequency: 587.33, // D5
+      startsAt: 0,
+      duration: 0.12,
+      gain: 0.12,
+      waveform: "sine",
+    },
+    {
+      frequency: 880, // A5
+      startsAt: 0.14,
+      duration: 0.15,
+      gain: 0.14,
+      waveform: "sine",
+    },
+    {
+      frequency: 1174.66, // D6
+      startsAt: 0.3,
+      duration: 0.25,
+      gain: 0.16,
+      waveform: "sine",
+    },
+  ],
 };
 
 const MIN_INTERVAL_MS: Record<AudioFeedbackKind, number> = {
@@ -126,6 +151,7 @@ const MIN_INTERVAL_MS: Record<AudioFeedbackKind, number> = {
   notification: 250,
   warning: 220,
   error: 220,
+  order_alert: 1000,
 };
 
 let audioCtx: AudioContext | null = null;

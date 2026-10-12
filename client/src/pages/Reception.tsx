@@ -65,6 +65,7 @@ import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import { DraftStrip } from "@/components/reception/DraftStrip";
+import { ReceptionCartDuplicateAlert } from "@/components/reception/ReceptionCartDuplicateAlert";
 import { printDraftTicket } from "@/lib/printing/draftTicket";
 import { receptionCheckoutReceiptMeta } from "@/lib/printing/receptionReceiptMeta";
 import { applyReceptionCouponPreview, clearReceptionCouponPricing, createReceptionDraftPointer, createReceptionDraftSyncQueue, isDefinitiveReceptionPromotionRejection, prepareReceptionConversationStart, prepareReceptionDepositDraft, prepareReceptionDraftCart, prepareReceptionDraftSwitch, prepareReceptionLocalWorkspaceRestore, resolveReceptionRestoredPricingContext, type ReceptionDraftSyncOutcome as DraftSyncOutcome, type ReceptionDraftSyncQueue, type ReceptionLocalWorkspaceSnapshot, type ReceptionServerDraftPointer, updateRestoredReceptionCustomization, useReceptionWorkspacePersistence } from "@/lib/receptionWorkspaceState";
@@ -2606,6 +2607,9 @@ export default function Reception() {
 
       {/* ─── الجسم: عمود السلة يملأ العرض؛ لوحة الدفع شريطٌ مستقلّ أسفله (خارج الحشوة، حافّة-لحافّة) ─── */}
       <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 pb-0">
+        <ReceptionCartDuplicateAlert branchId={branchId} phone={receptionPhone || customer.phone || ""} customerId={customer.customerId}
+          channel={channel} cart={cart} total={round2(grandTotalD).toFixed(2)} draftId={activeDraft?.id}
+          disabled={hasDigitalCards || needsBranchChoice} onVerify={() => void saveDraft()} />
         {/* ─ عمود العمل: تبويبات الورش تركب رأس السلة (§٨.١ — صفر تكلفة عمودية) ─ */}
         <div ref={cartSectionRef} tabIndex={-1} className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card outline-none focus:ring-2 focus:ring-primary/30">
           {/* إصلاح (٧/٨، طلب مالك): تبويبات الورش («الفواتير»/«الطلبات»/«طلبات الموقع») حُذفت من

@@ -13,12 +13,15 @@ import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { exportRows } from "@/lib/export";
 import { printARAging } from "@/lib/printing/printTemplates";
 import { D, fmt as fmtMoney, fmtAr } from "@/lib/money";
-import { sanitizeForWhatsApp } from "@/lib/whatsapp";
+import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { confirm } from "@/lib/confirm";
+import { sanitizeForWhatsApp, toIraqiIntl } from "@/lib/whatsapp";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtDate } from "@/lib/date";
-import { Info, X, RefreshCw } from "lucide-react";
+import { Info, X, RefreshCw, Phone, UserCheck } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useRowSelection, SelectionBar } from "@/components/list/SelectionBar";
 import { RowActions } from "@/components/list";
@@ -65,6 +68,7 @@ export default function ARAging() {
     branchId: canCrossBranches && f.branch ? Number(f.branch) : undefined,
   });
   const sel = useRowSelection<number>();
+  const [dossierCustomerId, setDossierCustomerId] = useState<number | null>(null);
   const utils = trpc.useUtils();
   const autoSettleAllM = trpc.customers.autoSettleAll.useMutation({
     onSuccess: (res) => {
@@ -229,18 +233,71 @@ export default function ARAging() {
         header: "إجراء",
         meta: { kind: "actions" },
         enableSorting: false,
-        cell: ({ row }) => (
-          <RowActions
-            mode="inline"
-            actions={[{
-              key: "statement",
-              kind: "view",
-              label: "كشف الحساب",
-              href: "/customers-statement?id=" + row.original.customerId,
-              gate: { module: "crm", level: "READ" },
-            }]}
-          />
-        ),
+        cell: ({ row }) => {
+          const r = row.original;
+          const intlPhone = r.phone ? (toIraqiIntl(r.phone) || r.phone) : null;
+          const debtAmount = D(r.currentBalance || 0).gt(0)
+            ? (r.currentBalance ?? "0")
+            : (D(r.unpaidTotal || 0).gt(0) ? (r.unpaidTotal ?? "0") : "0");
+          const reminderMsg = r.phone
+            ? sanitizeForWhatsApp(
+                `السلام عليكم ${r.customerName}، نود تذكيركم بذمم مستحقة غير مدفوعة بقيمة ${fmt(debtAmount)} د.ع لدى المكتبة العربية للطباعة والقرطاسية. نرجو التكرم بالسداد أو التواصل لترتيب التسوية.`
+              )
+            : "";
+          return (
+            <div className="flex items-center gap-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setDossierCustomerId(r.customerId)}
+                className="text-primary hover:bg-primary/10 h-7 w-7 p-0"
+                title={`الملف الشامل 360° — ${r.customerName}`}
+                aria-label={`الملف الشامل 360° — ${r.customerName}`}
+              >
+                <UserCheck className="size-3.5" aria-hidden />
+              </Button>
+              {r.phone && intlPhone && (
+                <a
+                  href={`tel:${intlPhone}`}
+                  className="inline-flex items-center justify-center h-7 w-7 rounded-md text-[var(--sem-pos)] hover:bg-[var(--sem-pos-bg)]"
+                  title={`اتصال: ${r.phone}`}
+                  aria-label={`اتصال: ${r.phone}`}
+                >
+                  <Phone className="size-3.5" aria-hidden />
+                </a>
+              )}
+              {r.phone && (
+                <WhatsAppShare
+                  phone={r.phone}
+                  message={reminderMsg}
+                  size="icon-sm"
+                  iconOnly
+                  label={`واتساب ${r.customerName}`}
+                />
+              )}
+              <RowActions
+                mode="inline"
+                actions={[
+                  {
+                    key: "dossier",
+                    kind: "view",
+                    label: "الملف الشامل 360°",
+                    onSelect: () => setDossierCustomerId(r.customerId),
+                    gate: { module: "crm", level: "READ" },
+                  },
+                  {
+                    key: "statement",
+                    kind: "view",
+                    label: "كشف الحساب",
+                    href: "/customers-statement?id=" + r.customerId,
+                    gate: { module: "crm", level: "READ" },
+                  },
+                ]}
+              />
+            </div>
+          );
+        },
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -304,6 +361,32 @@ export default function ARAging() {
             >
               تصدير Excel
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!aging.data?.length}
+              onClick={() =>
+                exportRows(aging.data ?? [], {
+                  filename: "ذمم-مدينة",
+                  format: "csv",
+                  columns: [
+                    { key: "customerName", header: "العميل" },
+                    { key: "customerType", header: "الفئة" },
+                    { key: "phone", header: "الهاتف" },
+                    { key: "d0_30", header: "0–30", map: (r) => Number(r.d0_30) },
+                    { key: "d31_60", header: "31–60", map: (r) => Number(r.d31_60) },
+                    { key: "d61_90", header: "61–90", map: (r) => Number(r.d61_90) },
+                    { key: "d91p", header: "+90", map: (r) => Number(r.d91p) },
+                    { key: "unpaidTotal", header: "إجمالي غير المدفوع", map: (r) => Number(r.unpaidTotal) },
+                    { key: "unbilled", header: "غير مفوتر/افتتاحي", map: (r) => unbilledOf(r).toNumber() },
+                    { key: "currentBalance", header: "الرصيد الحالي", map: (r) => Number(r.currentBalance) },
+                    { key: "oldestInvoiceDate", header: "أقدم فاتورة" },
+                  ],
+                })
+              }
+            >
+              تصدير CSV
+            </Button>
             <Button variant="outline" size="sm" disabled={!aging.data?.length} onClick={() => printARAging({
               date: fmtDate(new Date()),
               rows: (aging.data ?? []).map(r => ({
@@ -326,7 +409,15 @@ export default function ARAging() {
               variant="outline"
               size="sm"
               disabled={autoSettleAllM.isPending}
-              onClick={() => autoSettleAllM.mutate()}
+              onClick={async () => {
+                const ok = await confirm({
+                  title: "تسوية ومطابقة الذمم الشاملة",
+                  description: "هل أنت متأكد من تشغيل المطابقة الشاملة لكافة فواتير العملاء المسددة بنظام FIFO؟ سيتم تسوية الفواتير المفتوحة تلقائياً.",
+                  confirmText: "بدء التسوية والمطابقة",
+                  variant: "warning",
+                });
+                if (ok) autoSettleAllM.mutate();
+              }}
               title="تسوية ومطابقة شاملة لكافة فواتير العملاء المسددة بنظام FIFO"
               className="gap-1.5"
             >
@@ -378,7 +469,7 @@ export default function ARAging() {
       </Card>
 
       <Card>
-        <CardContent className="pt-6 grid grid-cols-2 md:grid-cols-6 gap-3 text-sm">
+        <CardContent className="pt-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 text-sm">
           <Bucket label="0–30 يوم" value={totals.d0_30} color="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" />
           <Bucket label="31–60 يوم" value={totals.d31_60} color="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" />
           <Bucket label="61–90 يوم" value={totals.d61_90} color="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" />
@@ -427,6 +518,12 @@ export default function ARAging() {
         onClear={sel.clear}
         onExport={onExportSelected}
         exportLabel="تصدير المحدَّد Excel"
+      />
+
+      <CustomerDossierDrawer
+        customerId={dossierCustomerId}
+        open={dossierCustomerId != null}
+        onClose={() => setDossierCustomerId(null)}
       />
     </div>
   );

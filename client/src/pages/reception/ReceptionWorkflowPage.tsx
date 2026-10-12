@@ -32,6 +32,7 @@ import { ReceptionCollectSection } from "@/components/reception/ReceptionCollect
 import { DispatchPreviewCard } from "@/components/delivery/DispatchPreviewCard";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import { CancelDeliveryAssignmentSection } from "@/components/delivery/CancelDeliveryAssignmentSection";
+import { DeliveryOperationalIntelligenceBar } from "@/components/delivery/DeliveryOperationalIntelligenceBar";
 import { invoiceStatusBadgeVariant, invoiceStatusLabel } from "@shared/invoiceStatus";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { fmtDateTime } from "@/lib/date";
@@ -484,6 +485,11 @@ export default function DeliveryWorkflowPage() {
       </div>
 
       <div id="workflow-active-panel" role="tabpanel" aria-labelledby={`workflow-tab-${activeSection}`} className="flex-1 overflow-auto p-4">
+        {allParties.length > 0 && (
+          <div className="mx-auto max-w-4xl mb-4">
+            <DeliveryOperationalIntelligenceBar parties={allParties} />
+          </div>
+        )}
         {activeSection === "dispatch" && (
           <div className="mx-auto max-w-2xl space-y-4">
             {lastDispatchedSlip && (

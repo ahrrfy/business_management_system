@@ -147,7 +147,7 @@ export default function Treasury() {
   const branches = trpc.branches.list.useQuery();
   const dashboard = trpc.treasury.getDashboard.useQuery(
     { branchId: branchId ? Number(branchId) : undefined },
-    { refetchInterval: 30_000 },
+    { refetchInterval: false },
   );
   const trends = trpc.treasury.getKpiTrends.useQuery(
     { branchId: branchId ? Number(branchId) : undefined },
@@ -169,7 +169,7 @@ export default function Treasury() {
       from: movFrom || undefined,
       to: movTo || undefined,
     },
-    { refetchInterval: 30_000 },
+    { refetchInterval: false },
   );
   // أي تغيير في فلاتر جدول الحركات يعيدنا للصفحة الأولى (وإلا بقي offset قديماً على مجموعة أصغر).
   useEffect(() => {
@@ -177,11 +177,11 @@ export default function Treasury() {
   }, [branchId, movFrom, movTo]);
   const openShifts = trpc.treasury.getOpenShifts.useQuery(
     { branchId: branchId ? Number(branchId) : undefined },
-    { refetchInterval: 30_000 },
+    { refetchInterval: false },
   );
   const pendingHandovers = trpc.treasury.pendingHandoverReceipts.useQuery(
     undefined,
-    { refetchInterval: 15_000 },
+    { refetchInterval: false },
   );
   const [acceptTarget, setAcceptTarget] = useState<PendingHandover | null>(null);
   const [acceptBreakdown, setAcceptBreakdown] = useState<Record<number, number>>({});
@@ -230,7 +230,7 @@ export default function Treasury() {
   );
   const pendingQueue = trpc.treasury.pendingHandoverQueue.useQuery(undefined, {
     enabled: canGovernHandovers,
-    refetchInterval: 30_000,
+    refetchInterval: false,
   });
   const reassignHandover = trpc.treasury.reassignHandoverReceipt.useMutation({
     onSuccess: (result) => {

@@ -211,7 +211,8 @@ export async function assertInvoiceReversalDeliverySafeTx(
       && consignment.sourceType === "ONLINE_ORDER"
       && Number(consignment.sourceId) === Number(onlineOrder.id);
     const safeOrderStatus = onlineOrder.status === "CANCELLED"
-      || (input.mode === "CANCEL" && linkedToSafeConsignment && onlineOrder.status === "SHIPPED");
+      || (input.mode === "CANCEL" && linkedToSafeConsignment && onlineOrder.status === "SHIPPED")
+      || (onlineOrder.status === "PROCESSING" && (consignment == null || consignment.status === "CANCELLED"));
     if (!safeOrderStatus) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",

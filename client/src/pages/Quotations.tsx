@@ -20,10 +20,14 @@ import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { Download } from "lucide-react";
+import { Download, FileSpreadsheet, Phone, Printer, User } from "lucide-react";
 import { downloadOfficialPdf } from "@/lib/exportPdf";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { Link } from "wouter";
 import { buildQuotationMessage } from "@/lib/whatsapp";
+import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 
 const STATUS: Record<string, string> = {
   DRAFT: "مسوّدة",
@@ -33,19 +37,49 @@ const STATUS: Record<string, string> = {
   CONVERTED: "محوّل لفاتورة",
   EXPIRED: "منتهٍ",
 };
-const STATUS_CLS: Record<string, string> = {
-  DRAFT: "bg-muted text-muted-foreground",
-  SENT: "badge-status-pending",
-  ACCEPTED: "badge-status-done",
-  REJECTED: "badge-stock-out",
-  CONVERTED: "badge-status-active",
-  EXPIRED: "badge-stock-low",
+
+const STATUS_SEMANTIC_STYLE: Record<
+  string,
+  { bg: string; text: string; border: string }
+> = {
+  DRAFT: {
+    bg: "bg-muted/40",
+    text: "text-muted-foreground",
+    border: "border-border",
+  },
+  SENT: {
+    bg: "bg-[var(--sem-warn-bg)]",
+    text: "text-[var(--sem-warn)]",
+    border: "border-[var(--sem-warn)]/30",
+  },
+  ACCEPTED: {
+    bg: "bg-[var(--sem-pos-bg)]",
+    text: "text-[var(--sem-pos)]",
+    border: "border-[var(--sem-pos)]/30",
+  },
+  REJECTED: {
+    bg: "bg-[var(--sem-neg-bg)]",
+    text: "text-[var(--sem-neg)]",
+    border: "border-[var(--sem-neg)]/30",
+  },
+  CONVERTED: {
+    bg: "bg-[var(--sem-pos-bg)]",
+    text: "text-[var(--sem-pos)]",
+    border: "border-[var(--sem-pos)]/30",
+  },
+  EXPIRED: {
+    bg: "bg-[var(--sem-neg-bg)]",
+    text: "text-[var(--sem-neg)]",
+    border: "border-[var(--sem-neg)]/30",
+  },
 };
 
 type Row = RouterOutputs["quotations"]["list"]["rows"][number];
 
 export default function Quotations() {
   const utils = trpc.useUtils();
+  const [selectedDossierCustomerId, setSelectedDossierCustomerId] =
+    useState<number | null>(null);
   // بوّابة عرض مطابقة للخادم: الكتابة (create/setStatus) salesManagerProcedure(["manager"],"sales","FULL")
   // — نفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
   const me = trpc.auth.me.useQuery();
@@ -89,56 +123,99 @@ export default function Quotations() {
     onError: (e) => notify.err(e),
   });
 
-  // طباعة العرض من القائمة: نجلب التفاصيل (quotations.get) ثم نطبع بنفس قالب شاشة العرض.
-  async function printQuote(quotationId: number) {
+  // طباعة العرض الرسمية من القائمة: نجلب التفاصيل ثم نطبع عبر printReportDoc
+  async function printOfficialQuoteDoc(quotationId: number) {
     try {
       const d = await utils.quotations.get.fetch({ quotationId });
-      if (!d) { notify.err("تعذّر جلب عرض السعر"); return; }
-      const taxableBase = round2(D(d.subtotal).minus(D(d.discountAmount ?? "0"))).toFixed(2);
-      const taxShares = allocateLineTax(
-        d.items.map((it) => ({ total: String(it.total) })),
-        String(d.taxAmount ?? "0"),
-        taxableBase,
-      );
-      printQuotation({
-        quoteNumber: d.quoteNumber,
-        quoteDate: d.quoteDate ? String(d.quoteDate).slice(0, 10) : undefined,
-        validUntil: d.validUntil ? String(d.validUntil).slice(0, 10) : undefined,
-        customerName: d.customerName,
-        notes: d.notes,
-        items: d.items.map((it, index) => ({
-          productName: variantDisplayName({ ...it, productName: it.productName ?? "" }),
-          variantName: it.variantName,
-          color: it.color,
-          size: it.size,
-          variantKind: it.variantKind,
-          unitName: it.unitName,
-          quantity: it.quantity,
-          unitPrice: it.unitPrice,
-          taxAmount: taxShares[index] ?? "0",
-          total: it.total,
+      if (!d) {
+        notify.err("تعذّر جلب تفاصيل عرض السعر");
+        return;
+      }
+      const opened = printReportDoc({
+        title: "عرض أسعار رسمي معتمد",
+        docNum: d.quoteNumber,
+        docDate: d.quoteDate ? fmtDate(d.quoteDate) : undefined,
+        headerExtra: [
+          { label: "حالة العرض", value: STATUS[d.status] ?? d.status },
+          { label: "صالح لغاية", value: d.validUntil ? fmtDate(d.validUntil) : "—" },
+        ],
+        meta: [
+          {
+            title: "بيانات العميل والمشروع",
+            fields: [
+              { label: "اسم العميل", value: d.customerName ?? "—" },
+              { label: "الهاتف", value: d.customerPhone ?? "—" },
+              { label: "ملاحظات", value: d.notes ?? "—" },
+            ],
+          },
+        ],
+        columns: [
+          { key: "item", label: "المادة والمواصفات", align: "right" },
+          { key: "unit", label: "الوحدة", align: "center" },
+          { key: "qty", label: "الكمية", align: "center" },
+          { key: "price", label: "سعر الوحدة", align: "left" },
+          { key: "total", label: "المجموع", align: "left" },
+        ],
+        rows: d.items.map((it) => ({
+          item: variantDisplayName({ ...it, productName: it.productName ?? "" }),
+          unit: it.unitName ?? "—",
+          qty: String(it.quantity),
+          price: `${fmt(it.unitPrice)} د.ع`,
+          total: `${fmt(it.total)} د.ع`,
         })),
-        subtotal: d.subtotal,
-        discountAmount: d.discountAmount,
-        taxAmount: d.taxAmount,
-        taxRate: Number(d.taxRatePercent ?? 0),
-        total: d.total,
+        summary: [
+          { label: "المجموع الفرعي", value: `${fmt(d.subtotal)} د.ع` },
+          ...(D(d.discountAmount ?? "0").gt(0)
+            ? [{ label: "الخصم", value: `${fmt(d.discountAmount ?? "0")} د.ع` }]
+            : []),
+          ...(D(d.taxAmount ?? "0").gt(0)
+            ? [{ label: "الضريبة", value: `${fmt(d.taxAmount ?? "0")} د.ع` }]
+            : []),
+          { label: "الإجمالي النهائي", value: `${fmt(d.total)} د.ع`, large: true, bold: true },
+        ],
       });
+      if (!opened) {
+        notify.err("تعذّر فتح نافذة الطباعة الرسمية");
+      }
     } catch (e) {
       notify.err(e);
     }
   }
-  /**
-   * أعمدة عروض الأسعار — نُقلت حرفياً من صفوف JSX السابقة: نفس التنسيق ونفس بوّابات
-   * الصلاحيات في RowActions. الفائدة من DataTable هنا: حالات التحميل/الخطأ/الفراغ
-   * (تمييز «لا سجلات بعد» عن «لا مطابق للفلتر») وبطاقات الجوّال — وكلّها كانت غائبة.
-   */
-  /*
-   * ⛔ كل عمود بـ`enableSorting: false` عمداً: القائمة تُحمَّل تدريجياً (infinite) فما بين يدي
-   * DataTable هو الصفحات المُحمَّلة لا كامل البيانات — فرزُ الرؤوس كان سيرتّب المُحمَّل وحده
-   * ويبدو فرزاً شاملاً (نظير ما أمسكته مراجعة Codex على القوائم المُرقَّمة خادمياً).
-   * ولا يصحّ `serverPagination` هنا: لا مفهومَ «صفحة» في التحميل التراكميّ.
-   */
+
+  function printQuotationsSummaryReport() {
+    if (items.length === 0) {
+      notify.err("لا توجد عروض أسعار لطباعتها");
+      return;
+    }
+    const totalSum = items.reduce((acc, r) => acc.plus(D(r.total ?? 0)), D(0));
+    printReportDoc({
+      title: "تقرير عروض الأسعار والمقايسات",
+      headerExtra: [
+        { label: "تاريخ التقرير", value: fmtDate(new Date()) },
+        { label: "عدد العروض", value: String(items.length) },
+      ],
+      columns: [
+        { key: "quoteNumber", label: "رقم العرض", align: "right" },
+        { key: "customerName", label: "العميل", align: "right" },
+        { key: "quoteDate", label: "التاريخ", align: "center" },
+        { key: "validUntil", label: "الصلاحية", align: "center" },
+        { key: "status", label: "الحالة", align: "center" },
+        { key: "total", label: "الإجمالي", align: "left" },
+      ],
+      rows: items.map((r) => ({
+        quoteNumber: r.quoteNumber,
+        customerName: r.customerName ?? "—",
+        quoteDate: fmtDate(r.quoteDate),
+        validUntil: r.validUntil ? String(r.validUntil).slice(0, 10) : "—",
+        status: STATUS[r.status] ?? r.status,
+        total: `${fmt(r.total)} د.ع`,
+      })),
+      summary: [
+        { label: "إجمالي قيمة العروض المعروضة", value: `${fmt(totalSum.toString())} د.ع`, large: true, bold: true },
+      ],
+    });
+  }
+
   const quotationColumns = useMemo<ColumnDef<Row, unknown>[]>(() => [
     {
       id: "quoteNumber",
@@ -153,6 +230,58 @@ export default function Quotations() {
       enableSorting: false,
       header: "العميل",
       accessorFn: (r) => r.customerName ?? "—",
+      cell: ({ row }) => {
+        const qr = row.original;
+        const phone = qr.customerPhone;
+        return (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="font-medium text-foreground">{qr.customerName ?? "—"}</span>
+            {qr.customerId && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="size-6 text-primary hover:bg-primary/10"
+                onClick={() => setSelectedDossierCustomerId(qr.customerId)}
+                title="الملف الشامل 360°"
+                aria-label={`الملف الشامل 360° للعميل ${qr.customerName ?? ""}`}
+              >
+                <User className="size-3.5" aria-hidden />
+              </Button>
+            )}
+            {phone && (
+              <Button
+                asChild
+                variant="ghost"
+                size="icon-sm"
+                className="size-6 text-[var(--sem-pos)] hover:bg-accent"
+                title={`اتصال مباشر: ${phone}`}
+                aria-label={`اتصال بالعميل ${qr.customerName ?? ""}`}
+              >
+                <a href={`tel:${phone}`}>
+                  <Phone className="size-3.5" aria-hidden />
+                </a>
+              </Button>
+            )}
+            {phone && (
+              <WhatsAppShare
+                phone={phone}
+                message={buildQuotationMessage({
+                  quoteNumber: qr.quoteNumber,
+                  quoteDate: qr.quoteDate ? String(qr.quoteDate) : null,
+                  validUntil: qr.validUntil ? String(qr.validUntil) : null,
+                  customerName: qr.customerName,
+                  total: qr.total,
+                })}
+                iconOnly
+                size="icon-sm"
+                className="size-6"
+                label={`واتساب ${qr.customerName ?? "العميل"}`}
+              />
+            )}
+          </div>
+        );
+      },
       meta: { kind: "text", wrap: true },
     },
     {
@@ -184,11 +313,14 @@ export default function Quotations() {
       enableSorting: false,
       header: "الحالة",
       accessorFn: (r) => STATUS[r.status] ?? r.status,
-      cell: ({ row }) => (
-        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[row.original.status] ?? "bg-muted"}`}>
-          {STATUS[row.original.status] ?? row.original.status}
-        </span>
-      ),
+      cell: ({ row }) => {
+        const style = STATUS_SEMANTIC_STYLE[row.original.status] ?? STATUS_SEMANTIC_STYLE.DRAFT;
+        return (
+          <span className={`inline-block rounded-full border px-2 py-0.5 text-xs font-medium ${style.bg} ${style.text} ${style.border}`}>
+            {STATUS[row.original.status] ?? row.original.status}
+          </span>
+        );
+      },
       meta: { kind: "status" },
     },
     {
@@ -214,13 +346,22 @@ export default function Quotations() {
               gate: { module: "sales", level: "READ" },
             }}
             actions={[
+              {
+                key: "dossier360",
+                kind: "view",
+                icon: User,
+                label: "الملف الشامل 360°",
+                hidden: !qr.customerId,
+                onSelect: () => setSelectedDossierCustomerId(qr.customerId),
+                gate: { module: "crm", level: "READ" },
+              },
               { key: "open", kind: "view", label: "فتح", href: `/quotations/${qr.id}`, gate: { module: "sales", level: "READ" } },
               {
                 key: "edit", kind: "edit", label: "تعديل", href: `/quotations/${qr.id}/edit`,
                 hidden: qr.status !== "DRAFT" || !canManage,
                 gate: { roles: ["manager"], module: "sales", level: "FULL" },
               },
-              { key: "print", kind: "print", label: "طباعة", onSelect: () => void printQuote(qr.id), gate: { module: "sales", level: "READ" } },
+              { key: "print", kind: "print", label: "طباعة رسمية (A4)", onSelect: () => void printOfficialQuoteDoc(qr.id), gate: { module: "sales", level: "READ" } },
               {
                 key: "download-pdf",
                 kind: "export",
@@ -261,7 +402,30 @@ export default function Quotations() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="عروض الأسعار" description="عروض الأسعار مستندات تفاوضية بلا أثر على المخزون حتى تُحوَّل إلى فاتورة." />
+      <PageHeader
+        title="عروض الأسعار والمقايسات"
+        description="عروض الأسعار مستندات تفاوضية بلا أثر على المخزون حتى تُحوَّل إلى فاتورة."
+        actions={
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={printQuotationsSummaryReport}
+              disabled={items.length === 0}
+              className="gap-1.5"
+            >
+              <Printer className="size-4" aria-hidden />
+              طباعة تقرير العروض
+            </Button>
+            {canManage && (
+              <Button asChild size="sm">
+                <Link href="/quotations/new">عرض سعر جديد</Link>
+              </Button>
+            )}
+          </div>
+        }
+      />
       <Card>
         <CardHeader>
           <ListToolbar
@@ -307,6 +471,7 @@ export default function Quotations() {
             }
             exportSpec={{
               filename: "عروض الأسعار",
+              formats: ["xlsx", "csv"],
               rows: items,
               // كل الصفحات المطابقة للفلتر (لا المُحمَّل على الشاشة فقط) — offset يعمل حين لا cursor
               // يُمرَّر (توافق عَكسي في paginateKeyset)، فتُغطّى كل الصفوف مهما كثرت.
@@ -327,7 +492,6 @@ export default function Quotations() {
                 { key: "status", header: "الحالة", map: (r) => STATUS[r.status] ?? r.status },
               ],
             }}
-            add={canManage ? { href: "/quotations/new", label: "عرض سعر جديد" } : undefined}
           />
         </CardHeader>
         <CardContent className="p-0">
@@ -349,6 +513,12 @@ export default function Quotations() {
           )}
         </CardContent>
       </Card>
+
+      <CustomerDossierDrawer
+        customerId={selectedDossierCustomerId}
+        open={selectedDossierCustomerId != null}
+        onClose={() => setSelectedDossierCustomerId(null)}
+      />
     </div>
   );
 }

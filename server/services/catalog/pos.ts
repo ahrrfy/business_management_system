@@ -81,6 +81,7 @@ export interface CatalogStockSnapshotRow {
   branchId: number;
   productUnitId: number;
   variantId: number;
+  productName: string;
   stockBase: number;
   reservedBase: number;
   availableBase: number;
@@ -306,6 +307,9 @@ export async function listStockByUnitIds(
     .select({
       productUnitId: productUnits.id,
       variantId: productVariants.id,
+      productName: products.name,
+      posLabel: products.posLabel,
+      shortTitle: products.shortTitle,
       stockBase: branchStock.quantity,
       reservedBase: reservationStock.reservedBase,
       openedAt: branchStock.openedAt,
@@ -333,6 +337,7 @@ export async function listStockByUnitIds(
       branchId,
       productUnitId: Number(row.productUnitId),
       variantId: Number(row.variantId),
+      productName: titleForChannel({ name: row.productName, posLabel: row.posLabel, shortTitle: row.shortTitle }, "pos"),
       stockBase,
       reservedBase,
       availableBase: Math.max(0, stockBase - reservedBase),

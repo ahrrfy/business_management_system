@@ -4,7 +4,7 @@
 // يتقدّم على سعر الفئة في POS وفي فرض الخادم معاً (resolveContractPrices واحدة للنقطتين).
 import { useMemo, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { FileSignature, Plus, Printer, Search, X } from "lucide-react";
+import { Download, FileSignature, FileSpreadsheet, Phone, Plus, Printer, Search, User, X } from "lucide-react";
 import CustomerPicker from "@/components/CustomerPicker";
 import { PageHeader } from "@/components/PageHeader";
 import { EmptyState } from "@/components/PageState";
@@ -21,7 +21,10 @@ import { Label } from "@/components/ui/label";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime, toDate, type DateInput } from "@/lib/date";
 import { notify } from "@/lib/notify";
-import { esc } from "@/lib/printing/brand";
+import { exportRows } from "@/lib/export";
+import { printReportDoc } from "@/lib/printing/reportDoc";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -65,6 +68,7 @@ export default function ContractPrices() {
   const branchId = Number(me.data?.branchId ?? pickedBranch ?? 1);
 
   const [customerId, setCustomerId] = useState<number | null>(null);
+  const [dossierCustomerId, setDossierCustomerId] = useState<number | null>(null);
   const customer = trpc.customers.get.useQuery(
     { customerId: customerId ?? 0 },
     { enabled: customerId != null, staleTime: 60_000 },
@@ -150,7 +154,13 @@ export default function ContractPrices() {
       accessorFn: (r) => (r.isActive ? "نشط" : "معطَّل"),
       meta: { kind: "status" },
       cell: ({ row }) => (
-        <span className={`rounded-full px-2 py-0.5 text-xs ${row.original.isActive ? "badge-status-active" : "bg-muted text-muted-foreground"}`}>
+        <span
+          className={`inline-block rounded-full border px-2 py-0.5 text-xs font-medium ${
+            row.original.isActive
+              ? "border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+              : "border-border bg-muted/40 text-muted-foreground"
+          }`}
+        >
           {row.original.isActive ? "نشط" : "معطَّل"}
         </span>
       ),
@@ -165,6 +175,16 @@ export default function ContractPrices() {
       cell: ({ row }) => (
         <RowActions
           actions={[
+            {
+              key: "dossier360",
+              kind: "view",
+              icon: User,
+              label: "الملف الشامل 360° للعميل",
+              onSelect: () => {
+                if (customerId != null) setDossierCustomerId(customerId);
+              },
+              gate: { module: "crm", level: "READ" },
+            },
             {
               key: "toggle",
               kind: "approve",
@@ -185,7 +205,7 @@ export default function ContractPrices() {
       ),
     },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [setActive]);
+  ], [setActive, customerId]);
 
   async function onRemove(r: ContractRow) {
     if (
@@ -200,53 +220,112 @@ export default function ContractPrices() {
     remove.mutate({ id: r.id });
   }
 
-  /** طباعة/تصدير ملحق الأسعار التعاقدية — مستند A4 بسيط يُرفَق بالعقد الحكومي (الأسعار النشطة
-   * فقط — المعطَّلة لا تسري على البيع فلا معنى لإدراجها في ملحق يُوقَّع). التصدير عبر «طباعة
-   * إلى PDF» من نافذة المتصفّح (نمط مبسّط مطابق لتصدير طلب الخدمة في WorkOrderNew.tsx). */
+  /** طباعة ملحق الأسعار التعاقدية عبر طابعة ReportDoc الرسمية الموحدة */
   function printAddendum() {
     const active = rows.filter((r) => r.isActive);
-    if (customerId == null || active.length === 0) return notify.err("لا أسعار تعاقدية نشطة لطباعتها");
-    const w = window.open("", "_blank", "width=900,height=1000");
-    if (!w) return;
-    const trRows = active
-      .map(
-        (r) => `<tr><td>${esc(variantLabel(r))}</td><td dir="ltr">${esc(r.sku)}</td><td>${esc(r.unitName)}</td><td class="num">${esc(fmtMoney(r.price))}</td><td>${esc(r.note ?? "—")}</td></tr>`,
-      )
-      .join("");
-    w.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>ملحق الأسعار التعاقدية</title>
-      <style>
-        body{font-family:Cairo,sans-serif;padding:28px;color:#222}
-        h1{margin:0 0 4px;font-size:20px}
-        .muted{color:#666;font-size:12.5px;margin:0 0 16px}
-        table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13px}
-        th,td{border:1px solid #ccc;padding:6px 8px;text-align:right}
-        thead{background:#f4f4f5}
-        td.num{text-align:left;direction:ltr;font-weight:600}
-        .sign{display:flex;justify-content:space-between;margin-top:56px;font-size:13px}
-        .sign div{width:40%;border-top:1px solid #999;padding-top:6px;text-align:center}
-      </style>
-      </head><body>
-      <h1>ملحق الأسعار التعاقدية</h1>
-      <p class="muted">العميل: ${esc(customer.data?.name ?? "")} · تاريخ الطباعة: ${esc(fmtDate(new Date()))}</p>
-      <table><thead><tr><th>المنتج</th><th>SKU</th><th>الوحدة</th><th>السعر التعاقدي (د.ع)</th><th>ملاحظة</th></tr></thead>
-      <tbody>${trRows}</tbody></table>
-      <div class="sign"><div>توقيع العميل / الجهة</div><div>توقيع المخوَّل بالمكتبة</div></div>
-      <script>setTimeout(()=>window.print(),300)</script>
-      </body></html>`);
-    w.document.close();
+    if (customerId == null || !customer.data || active.length === 0) {
+      notify.err("لا أسعار تعاقدية نشطة لطباعتها");
+      return;
+    }
+
+    printReportDoc({
+      title: "ملحق الأسعار الخاصة والتعاقدية",
+      docNum: `CTR-${customerId}-${fmtDate(new Date()).replace(/\//g, "")}`,
+      docDate: fmtDate(new Date()),
+      headerExtra: [
+        { label: "الجهة / العميل", value: customer.data.name },
+        { label: "رقم الهاتف", value: customer.data.phone || "—" },
+        { label: "فئة السعر الأصلية", value: TIER_LABEL[tier] },
+      ],
+      note: "الأسعار الواردة في هذا الملحق خاصة ومعتمدة رسميّاً وتتقدّم على أسعار الفئات الافتراضية.",
+      columns: [
+        { key: "product", label: "المنتج والصنف" },
+        { key: "sku", label: "الرمز SKU", align: "center" },
+        { key: "unit", label: "الوحدة", align: "center" },
+        { key: "price", label: "السعر التعاقدي (د.ع)", align: "left" },
+        { key: "note", label: "ملاحظات" },
+      ],
+      rows: active.map((r) => ({
+        product: variantLabel(r),
+        sku: r.sku,
+        unit: r.unitName,
+        price: `${fmtMoney(r.price)} د.ع`,
+        note: r.note || "—",
+      })),
+      summary: [
+        {
+          label: "عدد المواد المشمولة بالاتفاق",
+          value: `${active.length.toLocaleString("ar-IQ-u-nu-latn")} مادة`,
+          bold: true,
+        },
+      ],
+      signatures: [
+        { label: "توقيع العميل / الجهة المتعاقدة", subtext: "الاسم والتوقيع والختم" },
+        { label: "توقيع المخوَّل بالمكتبة", subtext: "الاعتماد والختم الرسمي" },
+      ],
+    });
   }
+
+  const handleExport = (format: "xlsx" | "csv") => {
+    if (!customer.data || filteredRows.length === 0) {
+      notify.err("لا توجد أسعار تعاقدية لتصديرها");
+      return;
+    }
+    void exportRows<ContractRow>(filteredRows, {
+      filename: `أسعار-خاصة-${customer.data.name}-${fmtDate(new Date())}`,
+      title: `ملحق الأسعار الخاصة والتعاقدية — ${customer.data.name}`,
+      format,
+      columns: [
+        { key: "product", header: "المنتج", map: (r) => variantLabel(r) },
+        { key: "sku", header: "SKU", text: true, map: (r) => r.sku },
+        { key: "unitName", header: "الوحدة", map: (r) => r.unitName },
+        { key: "price", header: "السعر التعاقدي (د.ع)", money: true, map: (r) => Number(r.price) },
+        { key: "isActive", header: "الحالة", map: (r) => (r.isActive ? "نشط" : "معطَّل") },
+        { key: "note", header: "ملاحظة", map: (r) => r.note ?? "—" },
+        { key: "updatedAt", header: "آخر تحديث", map: (r) => fmtDateTime(r.updatedAt) },
+      ],
+    });
+  };
 
   return (
     <div className="space-y-4">
       <PageHeader
-        title="التسعير التعاقدي"
-        description="أسعار خاصة بعميل (عقود الدوائر الحكومية) تتقدّم على فئات التسعير في الكاشير والفواتير."
+        title="أسعار خاصة وعقود الشركات"
+        description="أسعار خاصة بعميل (عقود الدوائر والشركات) تتقدّم على فئات التسعير في الكاشير والفواتير."
         icon={<FileSignature aria-hidden className="size-6" />}
         actions={
-          customerId != null && rows.some((r) => r.isActive) ? (
-            <Button variant="outline" size="sm" onClick={printAddendum}>
-              <Printer aria-hidden className="size-4" /> طباعة ملحق الأسعار
-            </Button>
+          customerId != null ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {filteredRows.length > 0 && (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleExport("xlsx")}
+                    title="تصدير إلى Excel"
+                  >
+                    <Download aria-hidden className="size-4 text-muted-foreground" />
+                    Excel
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleExport("csv")}
+                    title="تصدير إلى CSV"
+                  >
+                    <FileSpreadsheet aria-hidden className="size-4 text-muted-foreground" />
+                    CSV
+                  </Button>
+                </>
+              )}
+              {rows.some((r) => r.isActive) && (
+                <Button variant="outline" size="sm" onClick={printAddendum}>
+                  <Printer aria-hidden className="size-4" /> طباعة ملحق الأسعار
+                </Button>
+              )}
+            </div>
           ) : undefined
         }
       />
@@ -271,18 +350,58 @@ export default function ContractPrices() {
 
       <Card>
         <CardHeader className="pb-2">
-          <div className="max-w-xl">
-            <CustomerPicker
-              customerId={customerId}
-              onCustomerChange={(id) => {
-                setCustomerId(id);
-                resetForm();
-              }}
-              balance={customer.data?.currentBalance ?? null}
-            />
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="max-w-xl flex-1">
+              <CustomerPicker
+                customerId={customerId}
+                onCustomerChange={(id) => {
+                  setCustomerId(id);
+                  resetForm();
+                }}
+                balance={customer.data?.currentBalance ?? null}
+              />
+            </div>
+            {customerId != null && customer.data && (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setDossierCustomerId(customerId)}
+                  className="gap-1.5"
+                  title="الملف الشامل 360° للعميل"
+                >
+                  <User className="size-4 text-primary" aria-hidden />
+                  الملف الشامل 360°
+                </Button>
+                {customer.data.phone && (
+                  <Button
+                    asChild
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 text-[var(--sem-pos)] hover:bg-accent"
+                    title={`اتصال: ${customer.data.phone}`}
+                  >
+                    <a href={`tel:${customer.data.phone}`}>
+                      <Phone className="size-4" aria-hidden />
+                      اتصال
+                    </a>
+                  </Button>
+                )}
+                {customer.data.phone && (
+                  <WhatsAppShare
+                    phone={customer.data.phone}
+                    message={`السلام عليكم ${customer.data.name}، نود إعلامكم بتحديث قائمة الأسعار التعاقدية المعتمدة لحسابكم الموقر.`}
+                    size="sm"
+                    appearance="outline"
+                    label="واتساب"
+                  />
+                )}
+              </div>
+            )}
           </div>
           {customerId != null && customer.data && (
-            <p className="text-xs text-muted-foreground">
+            <p className="mt-1 text-xs text-muted-foreground">
               فئة العميل الافتراضية: <span className="font-semibold">{TIER_LABEL[tier]}</span> — السعر
               التعاقدي النشط يتقدّم عليها لوحدة المنتج المحدَّدة.
             </p>
@@ -382,6 +501,12 @@ export default function ContractPrices() {
           </CardContent>
         )}
       </Card>
+
+      <CustomerDossierDrawer
+        customerId={dossierCustomerId}
+        open={dossierCustomerId != null}
+        onClose={() => setDossierCustomerId(null)}
+      />
     </div>
   );
 }

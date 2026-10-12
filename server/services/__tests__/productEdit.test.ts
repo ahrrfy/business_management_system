@@ -1549,4 +1549,86 @@ describe("تطبيع معامل التحويل — تعديل متعدّد ال�
     expect(pieceUnit?.barcode).toBe("BC-PEN-DOZEN");
     expect(dozenUnit?.barcode).toBe("BC-PEN-PIECE");
   });
+
+  it("⭐ تزامن عناوين القنوات (posLabel / invoiceLabel / storeTitle / shortTitle) تلقائياً مع الاسم الجديد عند التعديل إذا كانت undefined", async () => {
+    // منتج 1 أُنشئ باسم "دفتر ١٠٠ ورقة"
+    // نعدّله إلى "دفتر ٢٠٠ ورقة سوبر" دون إرسال posLabel / invoiceLabel / storeTitle / shortTitle
+    const template = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1500.00" }] },
+      { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "16000.00" }] },
+    ];
+
+    await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ٢٠٠ ورقة سوبر",
+        unitTemplate: template,
+        variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }],
+      },
+      actor,
+    );
+
+    const [updated] = await db().select().from(s.products).where(eq(s.products.id, 1));
+    expect(updated.name).toBe("دفتر ٢٠٠ ورقة سوبر");
+    expect(updated.posLabel).toBe("دفتر ٢٠٠ ورقة سوبر");
+    expect(updated.invoiceLabel).toBe("دفتر ٢٠٠ ورقة سوبر");
+    expect(updated.storeTitle).toBe("دفتر ٢٠٠ ورقة سوبر");
+    expect(updated.shortTitle).toBe("دفتر ٢٠٠ ورقة سوبر");
+  });
+
+  it("⭐ الحفاظ على عناوين القنوات المحدّدة صراحةً عند تعديل الاسم", async () => {
+    const template = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1500.00" }] },
+      { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "16000.00" }] },
+    ];
+
+    await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر جامعي فاخر",
+        posLabel: "دفتر جامعي",
+        storeTitle: "دفتر جامعي فاخر للمتجر",
+        unitTemplate: template,
+        variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }],
+      },
+      actor,
+    );
+
+    const [updated] = await db().select().from(s.products).where(eq(s.products.id, 1));
+    expect(updated.name).toBe("دفتر جامعي فاخر");
+    expect(updated.posLabel).toBe("دفتر جامعي"); // لم يُطمس بالاسم الكامل
+    expect(updated.storeTitle).toBe("دفتر جامعي فاخر للمتجر"); // لم يُطمس
+    expect(updated.invoiceLabel).toBe("دفتر جامعي فاخر"); // غير محدّد صراحةً ⇒ زُومن مع الاسم الجديد
+    expect(updated.shortTitle).toBe("دفتر جامعي فاخر"); // غير محدّد صراحةً ⇒ زُومن مع الاسم الجديد
+  });
+
+  it("⭐ عدم طمس العناوين المخصصة القائمة إذا لم يتغير اسم المنتج", async () => {
+    // اضبط أولاً عناوين مخصصة في القاعدة
+    await db().update(s.products).set({
+      name: "قلم حبر مخصص",
+      posLabel: "قلم مخصص",
+      storeTitle: "قلم للمتجر",
+    }).where(eq(s.products.id, 2));
+
+    // عدّل فقط التكلفة أو وحدات المنتج دون تغيير الاسم
+    await updateProduct(
+      {
+        productId: 2,
+        name: "قلم حبر مخصص", // نفس الاسم
+        variants: [
+          {
+            id: 2,
+            sku: "PEN-2",
+            costPrice: "300",
+            units: [{ id: 3, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "BC-PEN-2", prices: [] }],
+          },
+        ],
+      },
+      actor,
+    );
+
+    const [product] = await db().select().from(s.products).where(eq(s.products.id, 2));
+    expect(product.posLabel).toBe("قلم مخصص"); // محفوظ ولم يُطمس
+    expect(product.storeTitle).toBe("قلم للمتجر"); // محفوظ ولم يُطمس
+  });
 });

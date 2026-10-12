@@ -4,6 +4,7 @@ import { asc } from "drizzle-orm";
 import { accounts } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { createTtlCache } from "../lib/ttlCache";
+import { financialCacheKey } from "../realtime/financialCache";
 
 export type AccountType = "ASSET" | "LIABILITY" | "EQUITY" | "REVENUE" | "EXPENSE";
 
@@ -57,7 +58,7 @@ export async function listAccounts(): Promise<AccountRow[]> {
   if (process.env.NODE_ENV === "test") {
     return fetchAccountsFromDb();
   }
-  return accountsCache.get("all", fetchAccountsFromDb);
+  return accountsCache.get(financialCacheKey("all"), fetchAccountsFromDb);
 }
 
 /** الشجرة مجموعةً حسب النوع (لعرض الواجهة) — لكل نوعٍ عنوانُه العربيّ وحساباته مرتّبة. */

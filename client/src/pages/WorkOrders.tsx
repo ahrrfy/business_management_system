@@ -65,6 +65,8 @@ import { WorkOrderPreviewDrawer } from "@/components/workOrders/WorkOrderPreview
 import { WorkOrdersTable } from "@/components/workOrders/WorkOrdersTable";
 import { WorkOrderBlockedReasonDialog } from "@/components/workOrders/WorkOrderBlockedReasonDialog";
 import { WorkOrderDeliverDialog } from "@/components/workOrders/WorkOrderDeliverDialog";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 
 // الحالات النشطة — مرآة WO_ACTIVE_STATUSES في workOrderRouter (الحالات غير النهائية).
 const ACTIVE_STATUSES = ["RECEIVED", "IN_PROGRESS", "READY"] as const;
@@ -174,6 +176,17 @@ export default function WorkOrders() {
     utils.inventory.movements.invalidate(),
     utils.delivery.readyForDispatch.invalidate(),
   ]);
+
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.WORK_ORDER_CREATED,
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+      REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED,
+    ],
+    () => {
+      void invalidateAll();
+    },
+  );
   // التفاؤل على استعلام النشطة فقط — الانتقال إلى «مُسلَّم» يمرّ بحوار التسليم ثم invalidateAll.
   const optimisticMove = (id: number, to: Status) =>
     utils.workOrders.list.setData(activeInput, (old) => old?.map((o) => (o.id === id ? { ...o, status: to } : o)));

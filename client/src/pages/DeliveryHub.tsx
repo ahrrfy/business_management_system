@@ -25,7 +25,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -49,16 +49,18 @@ import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { playReadyBeep } from "@/lib/notifyBeep";
-import { fmt } from "@/lib/money";
+import { D, fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { type ShortfallReason } from "@shared/shortfallReason";
 import { PARTY_EXPOSURE_LABEL_AR } from "@shared/partyExposure";
 import { DELIVERY_TERMS as DT } from "@shared/deliveryTerminology";
-import { normalizeArabicSearch } from "@shared/storefrontSearchNormalize";
+import { filterOperationalRows } from "@/lib/deliveryOperations";
 import { cn } from "@/lib/utils";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import { buildCourierAssignmentMessage, buildCustomerDispatchMessage, buildWorkOrderStatusMessage, openWhatsApp } from "@/lib/whatsapp";
 import {
   CONSIGNMENT_VIEW_AR,
@@ -121,9 +123,25 @@ export default function DeliveryHub() {
    * شارةُ العدّاد: صفحةٌ واحدة (٢٠٠) تكفي عرفاً، ونضع «+» عندما يتجاوز العدد الصفحةَ الأولى
    * حتى لا يقرأ الكاشير رقماً كاذباً بعد الترقيم. الأعداد الدقيقة تحصل في التبويب نفسه.
    */
-  const transitFirstPage = trpc.delivery.inTransit.useQuery(undefined, { refetchInterval: 30_000 });
+  const utils = trpc.useUtils();
+  const transitFirstPage = trpc.delivery.inTransit.useQuery(undefined);
   const transitCount = transitFirstPage.data?.rows.length ?? 0;
   const transitMore = transitFirstPage.data?.hasMore ?? false;
+
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+      REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
+      REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED,
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+    ],
+    () => {
+      void utils.delivery.inTransit.invalidate();
+      void utils.delivery.readyForDispatch.invalidate();
+      void utils.delivery.listParties.invalidate();
+      void utils.delivery.obligations.invalidate();
+    },
+  );
   return (
     <div className="space-y-5 p-4 md:p-6" dir="rtl">
       <PageHeader
@@ -166,8 +184,8 @@ export default function DeliveryHub() {
 // ───────────────────────── تبويب: جاهز للإرسال ─────────────────────────
 function DispatchTab() {
   const utils = trpc.useUtils();
-  const ready = trpc.delivery.readyForDispatch.useQuery(undefined, { refetchInterval: 20_000, refetchOnWindowFocus: true });
-  const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { refetchInterval: 30_000, refetchOnWindowFocus: true });
+  const ready = trpc.delivery.readyForDispatch.useQuery(undefined, { refetchOnWindowFocus: true });
+  const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { refetchOnWindowFocus: true });
   const me = trpc.auth.me.useQuery();
   const canDispatch = !!me.data
     && moduleAccessAllowed(
@@ -295,28 +313,7 @@ function DispatchTab() {
   });
 
   const allRows = ready.data ?? [];
-  const rows = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return allRows;
-    const digits = query.replace(/\D/g, "");
-    const normAr = normalizeArabicSearch(query);
-    return allRows.filter((o) => {
-      const phone1 = (o.deliveryPhone ?? "").replace(/\D/g, "");
-      const phone2 = (o.customerPhone ?? "").replace(/\D/g, "");
-      if (digits.length >= 2) {
-        if (phone1.includes(digits) || phone2.includes(digits)) return true;
-        if ((o.orderNumber ?? "").replace(/\D/g, "").includes(digits)) return true;
-      }
-      if (normAr) {
-        if (normalizeArabicSearch(o.customerName ?? "").includes(normAr)) return true;
-        if (normalizeArabicSearch(o.title ?? "").includes(normAr)) return true;
-        if (normalizeArabicSearch(o.deliveryAddress ?? "").includes(normAr)) return true;
-      }
-      return [o.orderNumber, o.title, o.customerName, o.deliveryPhone, o.customerPhone, o.deliveryAddress].some((v) =>
-        String(v ?? "").toLowerCase().includes(q),
-      );
-    });
-  }, [allRows, query]);
+  const rows = useMemo(() => filterOperationalRows(allRows, query), [allRows, query]);
 
   const readyColumns = useMemo<ColumnDef<ReadyOrder, unknown>[]>(
     () => [
@@ -468,9 +465,9 @@ function DispatchTab() {
         <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
           <span className="text-sm font-bold">الطلبات الجاهزة للتوصيل ({rows.length})</span>
           <div className="flex items-center gap-2">
-            <Input
+            <UnifiedSearchInput
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={setQuery}
               placeholder="بحث بالهاتف أو الزبون أو الطلب…"
               aria-label="بحث في الطلبات الجاهزة"
               className="h-8 w-64"
@@ -584,7 +581,6 @@ function InTransitTab() {
   const rows = trpc.delivery.inTransit.useInfiniteQuery(
     { limit: 500 },
     {
-      refetchInterval: 20_000,
       refetchOnWindowFocus: true,
       getNextPageParam: (last) => last.nextCursor ?? undefined,
     },
@@ -598,6 +594,7 @@ function InTransitTab() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [drawerId, setDrawerId] = useState<number | null>(null);
   const [failTarget, setFailTarget] = useState<{ ids: number[] } | null>(null);
+  const [bulkFailurePending, setBulkFailurePending] = useState(false);
   const [manualProofTarget, setManualProofTarget] = useState<InTransitRow | null>(null);
   const [staffConfirmTarget, setStaffConfirmTarget] = useState<InTransitRow | null>(null);
   const [declareTarget, setDeclareTarget] = useState<InTransitRow | null>(null);
@@ -646,10 +643,12 @@ function InTransitTab() {
     utils.workOrders.list.invalidate();
   };
   const staffHandover = trpc.delivery.staffHandover.useMutation({
-    onSuccess: (r) => {
-      const skippedNote = r.skipped.length > 0 ? ` — تُخطّي ${r.skipped.length}` : "";
-      notify.ok("خرجت الطرود مع المندوب", `أُخرج ${r.moved} طرداً${skippedNote}`);
-      setSelectedIds(new Set());
+    onSuccess: (r, variables) => {
+      if (r.skipped.length) notify.warn(`خرج ${r.moved} طرداً؛ لم يخرج ${r.skipped.length}`, r.skipped.map((item) => `#${item.consignmentId}: ${item.reason}`).join(" · "));
+      else notify.ok("خرجت الطرود مع المندوب", `أُخرج ${r.moved} طرداً`);
+      const skippedIds = new Set(r.skipped.map((item) => item.consignmentId));
+      const movedIds = new Set(variables.consignmentIds.filter((id) => !skippedIds.has(id)));
+      setSelectedIds((previous) => new Set(Array.from(previous).filter((id) => !movedIds.has(id))));
       invalidateAll();
     },
     onError: (e) => notify.err(e),
@@ -661,12 +660,13 @@ function InTransitTab() {
   const declareReturn = trpc.delivery.declareReturn.useMutation({
     onSuccess: (res) => {
       notify.ok("سُجّل رجوعٌ مُعلَن", `تحرّر تحصيلٌ متوقّع ${fmt(res.releasedExposure ?? "0")} د.ع — والبضاعة تنتظر الاستلام والفحص`);
+      setDeclareTarget(null);
       invalidateAll();
     },
     onError: (e) => notify.err(e),
   });
   const returnCn = trpc.delivery.returnConsignment.useMutation({
-    onSuccess: () => { notify.ok("رجع الطرد للمكتبة", "عُكس البيع كاملاً: المخزون والفاتورة وذمّة العميل وعهدة المندوب."); invalidateAll(); },
+    onSuccess: () => { notify.ok("رجع الطرد للمكتبة", "عُكس البيع كاملاً: المخزون والفاتورة وذمّة العميل وعهدة المندوب."); setReturnTarget(null); invalidateAll(); },
     onError: (e) => notify.err(e),
   });
   const manualProof = trpc.delivery.manualProof.useMutation({
@@ -700,42 +700,7 @@ function InTransitTab() {
     if (stateFilter === "ALL") return rowsWithView;
     return rowsWithView.filter((r) => r.viewKey === stateFilter);
   }, [rowsWithView, stateFilter]);
-  const list = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return filtered;
-    const digits = query.replace(/\D/g, "");
-    const normAr = normalizeArabicSearch(query);
-    return filtered.filter((r) => {
-      const phone1 = (r.recipientPhone ?? "").replace(/\D/g, "");
-      const phone2 = ((r as { customerPhone?: string | null }).customerPhone ?? "").replace(/\D/g, "");
-      if (digits.length >= 2) {
-        if (phone1.includes(digits) || phone2.includes(digits)) return true;
-        if ((r.invoiceNumber ?? "").replace(/\D/g, "").includes(digits)) return true;
-        if ((r.orderNumber ?? "").replace(/\D/g, "").includes(digits)) return true;
-        if ((r.consignmentNumber ?? "").replace(/\D/g, "").includes(digits)) return true;
-      }
-      if (normAr) {
-        if (normalizeArabicSearch(r.customerName ?? "").includes(normAr)) return true;
-        if (normalizeArabicSearch(r.recipientName ?? "").includes(normAr)) return true;
-        if (normalizeArabicSearch(r.partyName ?? "").includes(normAr)) return true;
-        if (normalizeArabicSearch(r.driverName ?? "").includes(normAr)) return true;
-        if (normalizeArabicSearch(r.address ?? "").includes(normAr)) return true;
-      }
-      return [
-        r.consignmentNumber,
-        r.invoiceNumber,
-        r.orderNumber,
-        r.partyName,
-        r.driverName,
-        r.recipientName,
-        r.customerName,
-        r.recipientPhone,
-        (r as { customerPhone?: string | null }).customerPhone,
-        r.returnDeclaredReason,
-        r.address,
-      ].some((v) => (v ?? "").toLowerCase().includes(q));
-    });
-  }, [filtered, query]);
+  const list = useMemo(() => filterOperationalRows(filtered, query), [filtered, query]);
 
   // ── Counts per view key (صادقة، بحسب الاشتقاق الموحّد) ──
   const counts = useMemo(() => {
@@ -752,8 +717,11 @@ function InTransitTab() {
    * حذر — طردٌ مدفوعٌ سلفاً بـ500,000 ليس «صفر مسؤوليّة»، والبضاعة بيد المندوب حتى تصل.
    */
   const totals = useMemo(() => {
-    const codDue = list.reduce((s, r) => s + Number(r.codDue || 0), 0);
-    const goodsValue = list.reduce((s, r) => s + Math.max(0, Number(r.invoiceTotal || 0) - Number(r.invoiceReturnedTotal || 0)), 0);
+    const codDue = list.reduce((sum, row) => sum.plus(D(row.codDue)), D(0)).toFixed(2);
+    const goodsValue = list.reduce((sum, row) => {
+      const value = D(row.invoiceTotal).minus(D(row.invoiceReturnedTotal));
+      return sum.plus(value.isNegative() ? D(0) : value);
+    }, D(0)).toFixed(2);
     return { codDue, goodsValue };
   }, [list]);
 
@@ -1111,9 +1079,9 @@ function InTransitTab() {
             </button>
           ))}
         </div>
-        <Input
+        <UnifiedSearchInput
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={setQuery}
           placeholder="بحث برقم الهاتف، اسم الزبون، رقم الفاتورة أو الإرسالية…"
           aria-label="بحث في طرود قيد التوصيل"
           className="h-10 max-w-md"
@@ -1134,14 +1102,14 @@ function InTransitTab() {
       {/* ─── شريط الإجراءات الجماعية (يظهر حين يوجد محدَّد) ─── */}
       {selectedIds.size > 0 && canFulfil && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-primary/5 p-2 text-sm">
-          <span className="font-bold">المحدَّد: <span className="tabular-nums">{selectedIds.size}</span></span>
+          <span className="font-bold">المحدد المعروض: <span className="tabular-nums">{selectedList.length}</span> · المخفي المحفوظ: {selectedIds.size - selectedList.length}</span>
           {eligibleForHandoverIds.filter((id) => selectedIds.has(id)).length > 0 && (
             <Button size="sm" variant="outline" disabled={staffHandover.isPending} onClick={bulkHandover}>
               <Send aria-hidden className="size-3.5" /> خرج مع المندوب ({selectedList.filter((r) => r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT").length})
             </Button>
           )}
-          <Button size="sm" variant="outline" disabled={staffMarkFailed.isPending} onClick={() => setFailTarget({ ids: Array.from(selectedIds) })}>
-            <XCircle aria-hidden className="size-3.5" /> علّم متعذّراً
+          <Button size="sm" variant="outline" disabled={staffMarkFailed.isPending || bulkFailurePending || selectedList.length === 0} onClick={() => setFailTarget({ ids: selectedList.map((row) => Number(row.id)) })}>
+            <XCircle aria-hidden className="size-3.5" /> علّم المعروض متعذّراً ({selectedList.length})
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>مسح التحديد</Button>
         </div>
@@ -1194,9 +1162,12 @@ function InTransitTab() {
       {failTarget && (
         <FailReasonDialog
           count={failTarget.ids.length}
-          pending={staffMarkFailed.isPending}
+          pending={staffMarkFailed.isPending || bulkFailurePending}
           onCancel={() => setFailTarget(null)}
           onConfirm={async (reason) => {
+            if (bulkFailurePending) return;
+            setBulkFailurePending(true);
+            try {
             const results = await Promise.allSettled(
               failTarget.ids.map((id) => staffMarkFailed.mutateAsync({
                 consignmentId: id,
@@ -1208,9 +1179,12 @@ function InTransitTab() {
             const err = results.length - ok;
             if (err === 0) notify.ok(`وُسم ${ok} طرداً متعذّراً`);
             else notify.err(`نجح ${ok} وفشل ${err}`);
-            setSelectedIds(new Set());
-            setFailTarget(null);
+            const successfulIds = new Set(failTarget.ids.filter((_, index) => results[index].status === "fulfilled"));
+            setSelectedIds((previous) => new Set(Array.from(previous).filter((id) => !successfulIds.has(id))));
+            const failedIds = failTarget.ids.filter((id) => !successfulIds.has(id));
+            setFailTarget(failedIds.length ? { ...failTarget, ids: failedIds } : null);
             invalidateAll();
+            } finally { setBulkFailurePending(false); }
           }}
         />
       )}
@@ -1228,7 +1202,6 @@ function InTransitTab() {
               ...(statementNumber ? { statementNumber } : {}),
               clientRequestId: crypto.randomUUID(),
             });
-            setDeclareTarget(null);
           }}
         />
       )}
@@ -1240,7 +1213,6 @@ function InTransitTab() {
         onClose={() => setReturnTarget(null)}
         onConfirm={({ consignmentId, refundShiftId }) => {
           returnCn.mutate({ consignmentId, clientRequestId: crypto.randomUUID(), refundShiftId });
-          setReturnTarget(null);
         }}
       />
 

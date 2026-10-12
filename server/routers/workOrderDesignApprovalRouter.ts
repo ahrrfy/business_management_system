@@ -6,6 +6,7 @@ import {
   requestWorkOrderDesignApproval,
 } from "../services/workOrder/designApproval";
 import {
+  requireAtomicPermission,
   router,
   workordersExecProcedure,
   workordersManagerProcedure,
@@ -30,6 +31,7 @@ function actorFromContext(ctx: {
 
 export const workOrderDesignApprovalRouter = router({
   request: workordersExecProcedure
+    .use(requireAtomicPermission("workshop.design_approval.upload_proof"))
     .input(
       z.object({
         workOrderId: z.number().int().positive(),
@@ -42,6 +44,7 @@ export const workOrderDesignApprovalRouter = router({
     ),
 
   getCurrent: workordersReadProcedure
+    .use(requireAtomicPermission("workshop.design_approval.view"))
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .query(({ input, ctx }) =>
       getCurrentWorkOrderDesignApproval(
@@ -51,6 +54,7 @@ export const workOrderDesignApprovalRouter = router({
     ),
 
   decide: workordersManagerProcedure
+    .use(requireAtomicPermission("workshop.design_approval.approve"))
     .input(
       z.object({
         approvalId: z.number().int().positive(),

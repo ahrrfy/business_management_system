@@ -35,7 +35,7 @@ import {
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
-import { money, toDbMoney } from "./money";
+import { DecimalInput, money, round2, toDbMoney } from "./money";
 import type { PriceTier } from "./pricing";
 
 export type SalesPromotionType = "PERCENT" | "AMOUNT";
@@ -54,6 +54,10 @@ export interface CreatePromotionInput {
   type: SalesPromotionType;
   discountPercent?: string;
   discountAmount?: string;
+  maxDiscountAmount?: string | null;
+  minOrderSpend?: string;
+  freeShipping?: boolean;
+  shippingDiscountAmount?: string;
   scope: SalesPromotionScope;
   effectiveFrom: string; // YYYY-MM-DD
   effectiveTo?: string | null;
@@ -73,12 +77,38 @@ function assertShape(input: CreatePromotionInput) {
     const p = money(input.discountPercent ?? "0");
     if (!p.gt(0) || p.gt(100)) throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة الخصم بين 0 و100 (حصريّاً > 0)" });
     if (input.discountAmount && money(input.discountAmount).gt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "نوع النسبة لا يقبل مبلغاً ثابتاً" });
+    if (input.maxDiscountAmount != null && input.maxDiscountAmount !== "") {
+      const cap = money(input.maxDiscountAmount);
+      if (cap.lt(0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "سقف الخصم الأقصى غير صالح",
+            why: "سقف الخصم الأقصى يجب ألا يكون سالباً",
+            doThis: "أدخل مبلغ سقف خصم موجب أو اتركه فارغاً",
+          }),
+        });
+      }
+    }
   } else if (input.type === "AMOUNT") {
     const a = money(input.discountAmount ?? "0");
     if (!a.gt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ الثابت يجب أن يكون أكبر من صفر" });
     if (input.discountPercent && money(input.discountPercent).gt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "نوع المبلغ الثابت لا يقبل نسبة" });
   } else {
     throw new TRPCError({ code: "BAD_REQUEST", message: "نوع عرض غير معروف" });
+  }
+  if (input.minOrderSpend != null && input.minOrderSpend !== "") {
+    const minSpend = money(input.minOrderSpend);
+    if (minSpend.lt(0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "الحد الأدنى لقيمة الطلب غير صالح",
+          why: "الحد الأدنى المطلوب لتفعيل العرض يجب ألا يكون سالباً",
+          doThis: "أدخل مبلغاً غير سالب أو اتركه صفراً",
+        }),
+      });
+    }
   }
 }
 
@@ -117,6 +147,10 @@ export async function createPromotion(tx: Tx, input: CreatePromotionInput, actor
     type: input.type,
     discountPercent: toDbMoney(input.discountPercent ?? "0"),
     discountAmount: toDbMoney(input.discountAmount ?? "0"),
+    maxDiscountAmount: input.maxDiscountAmount ? toDbMoney(input.maxDiscountAmount) : null,
+    minOrderSpend: toDbMoney(input.minOrderSpend ?? "0"),
+    freeShipping: input.freeShipping ?? false,
+    shippingDiscountAmount: toDbMoney(input.shippingDiscountAmount ?? "0"),
     scope: input.scope,
     effectiveFrom: new Date(input.effectiveFrom),
     effectiveTo: input.effectiveTo ? new Date(input.effectiveTo) : null,
@@ -160,6 +194,10 @@ export interface UpdatePromotionInput {
   type?: SalesPromotionType;
   discountPercent?: string;
   discountAmount?: string;
+  maxDiscountAmount?: string | null;
+  minOrderSpend?: string;
+  freeShipping?: boolean;
+  shippingDiscountAmount?: string;
   scope?: SalesPromotionScope;
   effectiveFrom?: string;
   effectiveTo?: string | null;
@@ -201,6 +239,8 @@ export async function updatePromotion(
   const mergedTo = input.effectiveTo !== undefined ? input.effectiveTo : (existing.effectiveTo ? (existing.effectiveTo instanceof Date ? existing.effectiveTo.toISOString().slice(0, 10) : String(existing.effectiveTo).slice(0, 10)) : null);
   const mergedPercent = input.discountPercent !== undefined ? input.discountPercent : String(existing.discountPercent ?? "0");
   const mergedAmount = input.discountAmount !== undefined ? input.discountAmount : String(existing.discountAmount ?? "0");
+  const mergedMaxCap = input.maxDiscountAmount !== undefined ? input.maxDiscountAmount : (existing.maxDiscountAmount ? String(existing.maxDiscountAmount) : null);
+  const mergedMinSpend = input.minOrderSpend !== undefined ? input.minOrderSpend : String(existing.minOrderSpend ?? "0");
 
   assertShape({
     name: input.name ?? existing.name,
@@ -210,6 +250,8 @@ export async function updatePromotion(
     effectiveTo: mergedTo,
     discountPercent: mergedPercent,
     discountAmount: mergedAmount,
+    maxDiscountAmount: mergedMaxCap,
+    minOrderSpend: mergedMinSpend,
   });
 
   assertDates({
@@ -236,6 +278,10 @@ export async function updatePromotion(
   if (input.type !== undefined) patch.type = input.type;
   if (input.discountPercent !== undefined) patch.discountPercent = input.discountPercent ? toDbMoney(input.discountPercent) : "0.00";
   if (input.discountAmount !== undefined) patch.discountAmount = input.discountAmount ? toDbMoney(input.discountAmount) : "0.00";
+  if (input.maxDiscountAmount !== undefined) patch.maxDiscountAmount = input.maxDiscountAmount ? toDbMoney(input.maxDiscountAmount) : null;
+  if (input.minOrderSpend !== undefined) patch.minOrderSpend = input.minOrderSpend ? toDbMoney(input.minOrderSpend) : "0.00";
+  if (input.freeShipping !== undefined) patch.freeShipping = input.freeShipping;
+  if (input.shippingDiscountAmount !== undefined) patch.shippingDiscountAmount = input.shippingDiscountAmount ? toDbMoney(input.shippingDiscountAmount) : "0.00";
   if (input.scope !== undefined) patch.scope = input.scope;
   if (input.effectiveFrom !== undefined) patch.effectiveFrom = new Date(input.effectiveFrom);
   if (input.effectiveTo !== undefined) patch.effectiveTo = input.effectiveTo ? new Date(input.effectiveTo) : null;
@@ -313,6 +359,10 @@ export interface PromotionRuleSnapshot {
     readonly type: SalesPromotionType;
     readonly discountPercent: string;
     readonly discountAmount: string;
+    readonly maxDiscountAmount: string | null;
+    readonly minOrderSpend: string;
+    readonly freeShipping: boolean;
+    readonly shippingDiscountAmount: string;
     readonly scope: SalesPromotionScope;
     readonly priority: number;
     readonly minLineAmount: string;
@@ -339,6 +389,10 @@ export async function loadPromotionRuleSnapshot(
       type: promotions.type,
       discountPercent: promotions.discountPercent,
       discountAmount: promotions.discountAmount,
+      maxDiscountAmount: promotions.maxDiscountAmount,
+      minOrderSpend: promotions.minOrderSpend,
+      freeShipping: promotions.freeShipping,
+      shippingDiscountAmount: promotions.shippingDiscountAmount,
       scope: promotions.scope,
       priority: promotions.priority,
       minLineAmount: promotions.minLineAmount,
@@ -398,6 +452,10 @@ export async function loadPromotionRuleSnapshot(
       type: row.type,
       discountPercent: String(row.discountPercent),
       discountAmount: String(row.discountAmount),
+      maxDiscountAmount: row.maxDiscountAmount ? String(row.maxDiscountAmount) : null,
+      minOrderSpend: String(row.minOrderSpend ?? "0"),
+      freeShipping: Boolean(row.freeShipping),
+      shippingDiscountAmount: String(row.shippingDiscountAmount ?? "0"),
       scope: row.scope,
       priority: Number(row.priority ?? 0),
       minLineAmount: String(row.minLineAmount ?? "0"),
@@ -443,8 +501,12 @@ export function resolvePromotionFromSnapshot(
       if (!targetMatches) continue;
     }
     let discount = rule.type === "PERCENT"
-      ? unitPrice.mul(money(rule.discountPercent)).dividedBy(100)
+      ? round2(unitPrice.mul(money(rule.discountPercent)).dividedBy(100))
       : money(rule.discountAmount);
+    if (rule.type === "PERCENT" && rule.maxDiscountAmount != null && money(rule.maxDiscountAmount).gt(0)) {
+      const cap = money(rule.maxDiscountAmount);
+      if (discount.gt(cap)) discount = cap;
+    }
     if (discount.gt(unitPrice)) discount = unitPrice;
     if (discount.lte(0)) continue;
     scored.push({
@@ -465,6 +527,131 @@ export function resolvePromotionFromSnapshot(
     promotionId: winner.id,
     promotionName: winner.name,
     discountForUnit: toDbMoney(winner.discountForUnit),
+  };
+}
+
+/**
+ * دالة مركزية لحساب مبلغ الخصم مع تطبيق السقف المالي بالدينار والتقريب المحاسبي HALF_UP.
+ */
+export function calculateDiscountAmount(options: {
+  type: SalesPromotionType;
+  unitPrice: DecimalInput;
+  quantity?: DecimalInput;
+  discountPercent?: DecimalInput | null;
+  discountAmount?: DecimalInput | null;
+  maxDiscountAmount?: DecimalInput | null;
+}): Decimal {
+  const unitPrice = money(options.unitPrice);
+  const qty = options.quantity != null ? money(options.quantity) : money(1);
+  const lineTotal = unitPrice.mul(qty);
+  let discount: Decimal;
+
+  if (options.type === "PERCENT") {
+    const rawDiscount = round2(lineTotal.mul(money(options.discountPercent ?? "0")).dividedBy(100));
+    if (options.maxDiscountAmount != null && money(options.maxDiscountAmount).gt(0)) {
+      const cap = money(options.maxDiscountAmount);
+      discount = rawDiscount.gt(cap) ? cap : rawDiscount;
+    } else {
+      discount = rawDiscount;
+    }
+  } else {
+    discount = round2(money(options.discountAmount ?? "0"));
+  }
+
+  if (discount.gt(lineTotal)) {
+    discount = lineTotal;
+  }
+  if (discount.lt(0)) {
+    discount = money(0);
+  }
+  return round2(discount);
+}
+
+export interface LineForCouponAllocation {
+  promotionId?: number | null;
+  promotionDiscount: DecimalInput;
+  discountAmount: DecimalInput;
+  total: DecimalInput;
+}
+
+export interface AllocatedCouponLineResult {
+  promotionDiscount: string;
+  discountAmount: string;
+  total: string;
+  clampedDelta: string;
+}
+
+/**
+ * توزيع سقف الكوبون المالي (maxDiscountAmount) بالتناسب على أسطر الفاتورة المؤهلة
+ * لضمان عدم تجاوز مجموع الخصومات الممنوحة للعميل السقف المحدد بالدينار إطلاقاً،
+ * وتحقيق التطابق المحاسبي الكامل بين أسطر الفاتورة وإجمالي الخصم ومبلغ الاستهلاك.
+ */
+export function allocateCouponDiscountAcrossLines<T extends LineForCouponAllocation>(
+  lines: T[],
+  promotionId: number,
+  maxDiscountAmount?: DecimalInput | null,
+): {
+  lines: Array<T & AllocatedCouponLineResult>;
+  totalCouponDiscount: string;
+  isCapped: boolean;
+} {
+  const cap = (maxDiscountAmount != null && money(maxDiscountAmount).gt(0))
+    ? money(maxDiscountAmount)
+    : null;
+
+  // تحديد الأسطر المؤهلة للكوبون
+  const qualifyingIndices: number[] = [];
+  let totalUncapped = money(0);
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (l.promotionId != null && Number(l.promotionId) === promotionId) {
+      const pDisc = money(l.promotionDiscount);
+      if (pDisc.gt(0)) {
+        qualifyingIndices.push(i);
+        totalUncapped = totalUncapped.plus(pDisc);
+      }
+    }
+  }
+
+  const shouldCap = cap != null && totalUncapped.gt(cap);
+  const finalTotalDiscount = shouldCap ? cap : totalUncapped;
+
+  const resultLines: Array<T & AllocatedCouponLineResult> = lines.map((l) => ({
+    ...l,
+    promotionDiscount: round2(money(l.promotionDiscount)).toFixed(2),
+    discountAmount: round2(money(l.discountAmount)).toFixed(2),
+    total: round2(money(l.total)).toFixed(2),
+    clampedDelta: "0.00",
+  }));
+
+  if (shouldCap && cap && qualifyingIndices.length > 0) {
+    let remainingCap = cap;
+    for (let k = 0; k < qualifyingIndices.length; k++) {
+      const idx = qualifyingIndices[k];
+      const origPromo = money(lines[idx].promotionDiscount);
+      let alloc: Decimal;
+      if (k === qualifyingIndices.length - 1) {
+        alloc = remainingCap;
+      } else {
+        alloc = round2(origPromo.mul(cap).dividedBy(totalUncapped));
+        if (alloc.gt(remainingCap)) alloc = remainingCap;
+        remainingCap = remainingCap.minus(alloc);
+      }
+      const delta = origPromo.minus(alloc);
+      const newDiscountAmount = round2(money(lines[idx].discountAmount).minus(delta));
+      const newTotal = round2(money(lines[idx].total).plus(delta));
+
+      resultLines[idx].promotionDiscount = alloc.toFixed(2);
+      resultLines[idx].discountAmount = newDiscountAmount.toFixed(2);
+      resultLines[idx].total = newTotal.toFixed(2);
+      resultLines[idx].clampedDelta = delta.toFixed(2);
+    }
+  }
+
+  return {
+    lines: resultLines,
+    totalCouponDiscount: finalTotalDiscount.toFixed(2),
+    isCapped: shouldCap,
   };
 }
 
@@ -495,6 +682,10 @@ export async function resolvePromotionForLine(tx: Tx, input: ResolveLineInput): 
       type: promotions.type,
       discountPercent: promotions.discountPercent,
       discountAmount: promotions.discountAmount,
+      maxDiscountAmount: promotions.maxDiscountAmount,
+      minOrderSpend: promotions.minOrderSpend,
+      freeShipping: promotions.freeShipping,
+      shippingDiscountAmount: promotions.shippingDiscountAmount,
       scope: promotions.scope,
       priority: promotions.priority,
       customerTier: promotions.customerTier,
@@ -559,7 +750,11 @@ export async function resolvePromotionForLine(tx: Tx, input: ResolveLineInput): 
     if (c.scope !== "ALL" && !matchedTargetPromoIds.has(Number(c.id))) continue;
     let discount: Decimal;
     if (c.type === "PERCENT") {
-      discount = unitPrice.mul(money(c.discountPercent)).dividedBy(100);
+      discount = round2(unitPrice.mul(money(c.discountPercent)).dividedBy(100));
+      if (c.maxDiscountAmount != null && money(c.maxDiscountAmount).gt(0)) {
+        const cap = money(c.maxDiscountAmount);
+        if (discount.gt(cap)) discount = cap;
+      }
     } else {
       discount = money(c.discountAmount);
     }

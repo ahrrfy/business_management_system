@@ -983,6 +983,14 @@ export interface ReceiptBrowserData {
   /** G3: مجموع العرابين المحتجزة على أوامر شغلٍ مرتبطة بهذه الفاتورة — إفصاحٌ منفصلٌ في كتلة
    *  الإجماليات كي يعرف الزبون أنّ لديه رصيداً محجوزاً سيُخصم عند التسليم. */
   heldDeposits?: string | number | null;
+  /** قسيمة عودة تلقائية (Bounce-Back Coupon) تُطبع بأسفل الإيصال الحراري */
+  bounceBackCoupon?: {
+    code: string;
+    headline: string;
+    discountText: string;
+    minSpendText?: string | null;
+    validToText: string;
+  } | null;
 }
 
 export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
@@ -1102,8 +1110,8 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
   const body = `
   <div style="text-align:center;margin-bottom:2mm;">
     <img src="${logo}" style="width:18mm;height:18mm;object-fit:contain;filter:grayscale(100%) contrast(1000%);" alt="" onerror="this.style.display='none'">
-    <div style="font-size:18px;font-weight:900;margin-top:1mm;color:#000;">مكتبة العربية</div>
-    <div style="font-size:12.5px;font-weight:900;margin-top:0.3mm;color:#000;">للطباعة والقرطاسية</div>
+    <div style="font-size:18px;font-weight:900;margin-top:1mm;color:#000;">${esc(CO.short || CO.sub)}</div>
+    <div style="font-size:12.5px;font-weight:900;margin-top:0.3mm;color:#000;">${esc(CO.subtitle)}</div>
     <div style="font-size:9.5px;font-weight:800;color:#000;margin-top:0.3mm;">${esc(CO.name)}</div>
   </div>
 
@@ -1186,7 +1194,27 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
   <div style="text-align:center;margin:2mm 0;padding:2mm;border:1.5px solid #000;font-size:10px;font-weight:900;line-height:1.5;color:#000;">
     نعتذر عن قبول الاسترجاع — والاستبدال متاح<br>
     خلال 48 ساعة بشرط سلامة المنتج بـ100%
-  </div>`;
+  </div>
+  ${d.bounceBackCoupon ? `
+  <div style="margin-top:3.5mm;padding-top:2.5mm;border-top:1.5px dashed #000;text-align:center;color:#000;">
+    <div style="font-size:9.5px;font-weight:900;letter-spacing:1px;margin-bottom:1.5mm;">[ --- قسيمة هديتك للزيارة القادمة --- ]</div>
+    <div style="border:1.5px solid #000;padding:2mm;background:#f9f9f9;border-radius:1.5mm;">
+      <div style="font-size:12px;font-weight:900;margin-bottom:1mm;color:#000;">${esc(d.bounceBackCoupon.headline)}</div>
+      <div style="font-size:16px;font-weight:900;margin:1.5mm 0;padding:1.2mm;background:#000;color:#fff;border-radius:1mm;letter-spacing:1px;">
+        خصم ${esc(d.bounceBackCoupon.discountText)}
+      </div>
+      <div style="font-size:12px;font-weight:900;margin:1.5mm 0;letter-spacing:1.5px;direction:ltr;background:#fff;padding:1mm;border:1px dashed #000;">
+        ${esc(d.bounceBackCoupon.code)}
+      </div>
+      ${d.bounceBackCoupon.minSpendText ? `<div style="font-size:9.5px;font-weight:800;color:#222;margin-top:0.8mm;">${esc(d.bounceBackCoupon.minSpendText)}</div>` : ''}
+      <div style="font-size:9px;font-weight:800;color:#333;margin-top:0.8mm;">
+        ${esc(d.bounceBackCoupon.validToText)}
+      </div>
+      <div style="font-size:8.5px;font-weight:900;margin-top:1.2mm;color:#000;">
+        احتفظ بهذه القسيمة وقدّمها للكاشير في زيارتك القادمة
+      </div>
+    </div>
+  </div>` : ''}`;
 
   return wrapReceiptDoc(`إيصال ${d.receiptNumber}`, body);
 }
@@ -1257,8 +1285,8 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
 
   <div style="text-align:center;margin-bottom:3mm;">
     ${logo ? `<img src="${logo}" style="height:40px;margin-bottom:1.5mm;" onerror="this.style.display='none'">` : ''}
-    <div style="font-size:14px;font-weight:900;">مكتبة العربية</div>
-    <div style="font-size:11px;font-weight:800;">للطباعة والقرطاسية</div>
+    <div style="font-size:14px;font-weight:900;">${esc(CO.short || CO.sub)}</div>
+    <div style="font-size:11px;font-weight:800;">${esc(CO.subtitle)}</div>
   </div>
 
   ${barSvg ? `<div style="text-align:center;margin:2mm 0;">${barSvg}</div>` : ''}
@@ -1325,7 +1353,7 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
   </div>
 
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
-  <div style="text-align:center;font-size:10px;font-weight:700;margin:1.5mm 0;">شكراً لتعاملكم مع مكتبة العربية</div>
+  <div style="text-align:center;font-size:10px;font-weight:700;margin:1.5mm 0;">${esc(CO.footer)}</div>
   <table style="width:100%;font-size:9px;border-collapse:collapse;margin:1mm 0;">
     <tbody>${contactRows}</tbody>
   </table>
@@ -1453,8 +1481,8 @@ export function buildShiftOpenHtml(d: ShiftOpenData): string {
   <div style="text-align:center;padding:2mm 0;">
     <img src="${logo}" style="width:40px;height:40px;object-fit:contain;margin-bottom:2px;filter:grayscale(100%) contrast(1000%);"
          alt="" onerror="this.style.display='none'">
-    <div style="font-size:17px;font-weight:900;color:#000;">مكتبة العربية</div>
-    <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">للطباعة والقرطاسية</div>
+    <div style="font-size:17px;font-weight:900;color:#000;">${esc(CO.short || CO.sub)}</div>
+    <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">${esc(CO.subtitle)}</div>
     <div style="font-size:9.5px;font-weight:800;margin-top:2px;line-height:1.3;color:#000;">
       ${esc(CO.name)}<br>${esc(CO.address)}
     </div>
@@ -1616,8 +1644,8 @@ export function buildShiftCloseHtml(d: ShiftCloseData): string {
   <div style="text-align:center;padding:2mm 0;">
     <img src="${logo}" style="width:40px;height:40px;object-fit:contain;margin-bottom:2px;filter:grayscale(100%) contrast(1000%);"
          alt="" onerror="this.style.display='none'">
-    <div style="font-size:17px;font-weight:900;color:#000;">مكتبة العربية</div>
-    <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">للطباعة والقرطاسية</div>
+    <div style="font-size:17px;font-weight:900;color:#000;">${esc(CO.short || CO.sub)}</div>
+    <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">${esc(CO.subtitle)}</div>
     <div style="font-size:9.5px;font-weight:800;margin-top:2px;line-height:1.3;color:#000;">
       ${esc(CO.name)}<br>${esc(CO.address)}
     </div>

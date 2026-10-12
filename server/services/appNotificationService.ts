@@ -20,6 +20,8 @@ import {
   buildSuperAppExpoPushPayload,
   superAppExpoPushEnvironment,
 } from "./superAppPushService";
+import { publishRealtimeEvent } from "../realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import { requireDb } from "./tx";
 
 export const APP_NOTIFICATION_KINDS = [
@@ -442,6 +444,24 @@ export async function createAppNotification(
   } catch (error) {
     if (isDupEntry(error)) return { created: false };
     throw error;
+  }
+  try {
+    publishRealtimeEvent(
+      REALTIME_EVENT_TYPES.NOTIFICATION_INSERTED,
+      {
+        userId: input.userId,
+        kind: input.kind,
+        family,
+        title: input.title.trim().slice(0, 180),
+        body: input.body.trim().slice(0, 600),
+        route,
+        entityType: input.entityType?.slice(0, 60) ?? null,
+        entityId: input.entityId ?? null,
+      },
+      { userId: input.userId },
+    );
+  } catch {
+    // fail-safe: لا يؤثر فشل البث اللحظي على سلامة حفظ الإشعار
   }
   return { created: true };
 }

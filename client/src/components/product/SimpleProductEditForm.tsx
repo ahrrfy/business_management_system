@@ -725,7 +725,12 @@ export default function SimpleProductEditForm({
         productExists
       />
 
-      <ProductRecipeSection productId={productId} isService={Boolean(product.data?.isService)} />
+      <ProductRecipeSection
+        productId={productId}
+        isService={Boolean(product.data?.isService)}
+        sellingPrice={units.find((u) => u.isBase)?.retail}
+        wholesalePrice={units.find((u) => u.isBase)?.wholesale}
+      />
 
       {/* م٦ ق٨ — السجلّ والاستعادة: بعد استعادةٍ ناجحة نُعيد التعبئة من الخادم (كما بعد الحفظ). */}
       <ProductVersionHistory

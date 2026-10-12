@@ -5,7 +5,7 @@
 // أيضاً تَرفض طلب فرعٍ غير فرع غير-الأدمن (عزل IDOR). الإنشاء يُحجَب عن المدقّق (auditor) — قراءةٌ فقط.
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { reportViewerProcedure, router } from "../trpc";
+import { reportViewerProcedure, requireAtomicPermission, router } from "../trpc";
 import { logAudit } from "../services/auditService";
 import { moneyString, ymdDate } from "../lib/schemas";
 
@@ -31,11 +31,13 @@ const accountKindInput = z.enum(["CARD", "TELECOM"]).optional();
 export const cardAccountRouter = router({
   /** ملخّص الرصيد الجاري + دخل/صرف اليوم + آخر لقطة مطابقة. */
   summary: reportViewerProcedure
+    .use(requireAtomicPermission("treasury.card_account.view"))
     .input(z.object({ branchId: branchInput, accountKind: accountKindInput }).optional())
     .query(({ input, ctx }) => getCardSummary(input ?? {}, scopeOf(ctx))),
 
   /** حركات حساب البطاقة (دخل/صرف) برصيدٍ جارٍ لكل صفّ (للفرع المحدَّد) + إجماليات النطاق. */
   movements: reportViewerProcedure
+    .use(requireAtomicPermission("treasury.card_account.view"))
     .input(
       z
         .object({
@@ -57,11 +59,13 @@ export const cardAccountRouter = router({
 
   /** سجلّ لقطات المطابقة السابقة. */
   reconciliations: reportViewerProcedure
+    .use(requireAtomicPermission("treasury.card_account.view"))
     .input(z.object({ branchId: branchInput, accountKind: accountKindInput, limit: z.number().int().min(1).max(200).optional() }).optional())
     .query(({ input, ctx }) => listCardReconciliations(input ?? {}, scopeOf(ctx))),
 
   /** إنشاء لقطة مطابقة: النظام يحسب الرصيد المتوقَّع، والمستخدم يُدخل رصيد كشف البنك ⇒ الفرق. */
   createReconciliation: reportViewerProcedure
+    .use(requireAtomicPermission("treasury.card_account.reconcile"))
     .input(
       z.object({
         branchId: branchInput,

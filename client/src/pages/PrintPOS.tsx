@@ -243,7 +243,7 @@ export default function PrintPOS() {
   const [heldDrawerOpen, setHeldDrawerOpen] = useState(false);
   const heldSalesQ = trpc.printPos.listHeldSales.useQuery(
     { branchId },
-    { refetchInterval: 15_000 },
+    { refetchInterval: false },
   );
   const heldCount = heldSalesQ.data?.length ?? 0;
 
@@ -1192,7 +1192,7 @@ export default function PrintPOS() {
       )}
       {creditPrompt && (
         <CreditApprovalDialog C={C as any} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail} mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}
-          isPending={sale.isPending} branchId={branchId} onApprove={(appr) => submit(false, appr ?? (mgrEmail && mgrPwd ? { email: mgrEmail, password: mgrPwd } : undefined))} onCancel={() => setCreditPrompt(null)} />
+          isPending={sale.isPending} branchId={branchId} currentUserId={me.data?.id} onApprove={(appr) => submit(false, appr ?? (mgrEmail && mgrPwd ? { email: mgrEmail, password: mgrPwd } : undefined))} onCancel={() => setCreditPrompt(null)} />
       )}
       <HeldOrdersDrawer
         open={heldDrawerOpen}

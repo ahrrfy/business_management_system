@@ -35,7 +35,9 @@ import { internalUrl } from "@/lib/siteHosts";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { fmtInt } from "@/lib/money";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES, type StocktakeProgressPayload } from "@shared/realtimeEvents";
 import { Link, useLocation, useParams } from "wouter";
 import {
   Lock,
@@ -173,15 +175,15 @@ export default function StocktakeMonitor() {
     return () => clearTimeout(t);
   }, [countSearch]);
 
-  // متابعة حية — تحديث كل ٥ ثوانٍ (العقد §٦).
+  // متابعة حية عبر الأحداث اللحظية المقيّدة بزمن خنق (2s throttle).
   const monitor = trpc.stocktakes.monitor.useQuery(
     { sessionId, q: countQ || undefined },
-    { enabled: idOk && canView, refetchInterval: 5000 },
+    { enabled: idOk && canView },
   );
   // سجلّ الأحداث (تدقيق) — للمدير+ فقط.
   const log = trpc.stocktakes.log.useQuery(
     { sessionId },
-    { enabled: idOk && isManager, refetchInterval: 10000 },
+    { enabled: idOk && isManager },
   );
   const assignableUsers = trpc.stocktakes.assignableUsers.useQuery(undefined, {
     enabled: idOk && isManager,
@@ -189,7 +191,43 @@ export default function StocktakeMonitor() {
   // طابور الباركود المجهول (ب-٤) — باركوداتٌ مُسِحت خارج نطاق الجلسة، للعرض لأمين المخزن+.
   const unknownScans = trpc.stocktakes.unknownScans.useQuery(
     { sessionId },
-    { enabled: idOk && canViewUnknown, refetchInterval: 5000 },
+    { enabled: idOk && canViewUnknown },
+  );
+
+  const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingInvalidateRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      if (throttleTimerRef.current) {
+        clearTimeout(throttleTimerRef.current);
+      }
+    };
+  }, []);
+
+  useRealtimeEvent(
+    REALTIME_EVENT_TYPES.STOCKTAKE_PROGRESS,
+    (event) => {
+      const payload = event.payload as StocktakeProgressPayload;
+      if (payload.sessionId !== sessionId) return;
+
+      if (!throttleTimerRef.current) {
+        void utils.stocktakes.monitor.invalidate();
+        void utils.stocktakes.unknownScans.invalidate();
+        void utils.stocktakes.log.invalidate();
+        throttleTimerRef.current = setTimeout(() => {
+          throttleTimerRef.current = null;
+          if (pendingInvalidateRef.current) {
+            pendingInvalidateRef.current = false;
+            void utils.stocktakes.monitor.invalidate();
+            void utils.stocktakes.unknownScans.invalidate();
+            void utils.stocktakes.log.invalidate();
+          }
+        }, 2000);
+      } else {
+        pendingInvalidateRef.current = true;
+      }
+    },
   );
   const resolveUnknown = trpc.stocktakes.resolveUnknownScan.useMutation({
     onSuccess: async (res) => {

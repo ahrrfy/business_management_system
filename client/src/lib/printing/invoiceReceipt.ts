@@ -48,6 +48,7 @@ export interface InvoiceReceiptSource {
     /** هدايا الفاتورة (0149): يُوسَم الاسم بـ«هدية» في الإيصال الحراريّ (السعر صفر أصلاً). */
     isGift?: boolean | null;
   }[];
+  bounceBackCoupon?: ReceiptBrowserData["bounceBackCoupon"];
 }
 
 /**
@@ -107,5 +108,6 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
     delivery: d.courierName && Number(d.courierFee ?? 0) > 0 && d.consignmentStatus !== "CANCELLED"
       ? { partyName: d.courierName, fee: d.courierFee ?? "0", feeCollection: d.courierFeeCollection ?? "COURIER" }
       : null,
+    bounceBackCoupon: d.bounceBackCoupon ?? null,
   };
 }

@@ -1,6 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { baghdadToday } from "./businessDay";
+import { appErrorMessage } from "../../shared/errors";
+import { formatActiveDays, isDayActive, type PromotionDesignMeta } from "../../shared/promotionScheduling";
 import {
   couponPrograms,
   couponRedemptions,
@@ -13,7 +16,9 @@ import {
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractAffectedRows } from "../lib/insertId";
-import { money, toDbMoney } from "./money";
+import { DecimalInput, money, round2, toDbMoney } from "./money";
+import type Decimal from "decimal.js";
+import type { PriceTier } from "./pricing";
 
 export interface LockedCoupon {
   couponId: number;
@@ -23,6 +28,27 @@ export interface LockedCoupon {
   perCouponLimit: number;
   customerId: number | null;
   programName: string;
+  maxDiscountAmount?: string | null;
+  minOrderSpend?: string | null;
+  freeShipping?: boolean;
+  shippingDiscountAmount?: string | null;
+  affiliateCommissionRate?: string | null;
+  affiliateName?: string | null;
+  affiliatePhone?: string | null;
+}
+
+/**
+ * حساب عمولة المسوق بالدينار بدقة decimal.js وتقريب HALF_UP.
+ */
+export function calculateAffiliateCommission(
+  netRevenue: DecimalInput,
+  commissionRate?: DecimalInput | null,
+): Decimal {
+  if (commissionRate == null) return money(0);
+  const rev = money(netRevenue);
+  const rate = money(commissionRate);
+  if (rev.lte(0) || rate.lte(0)) return money(0);
+  return round2(rev.mul(rate).dividedBy(100));
 }
 
 export function normalizeCouponCode(value: string): string {
@@ -76,6 +102,8 @@ export async function lockCouponForSale(
     branchId: number;
     customerId: number | null;
     todayYmd: string;
+    /** إجمالي سلة الشراء للتحقق من الحد الأدنى للطلب (minOrderSpend) */
+    subtotal?: DecimalInput | null;
     /** طلب متجر يستهلك حجزه هو؛ يُستثنى هذا الحجز وحده من عدّ الحجوزات النشطة. */
     reservationOnlineOrderId?: number | null;
     /** واجهة المتجر لا تقبل قسيمة شخصية بلا إثبات جلسة مطابق للعميل المعيّن. */
@@ -96,6 +124,19 @@ export async function lockCouponForSale(
   }
   if (row.promotion.branchId != null && Number(row.promotion.branchId) !== input.branchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "العرض لا يخص هذا الفرع" });
+  }
+  if (input.subtotal != null && row.promotion.minOrderSpend != null) {
+    const minSpend = money(row.promotion.minOrderSpend);
+    if (minSpend.gt(0) && money(input.subtotal).lt(minSpend)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لم يبلغ إجمالي الطلب الحد الأدنى لتفعيل الكوبون",
+          why: `الحد الأدنى المطلوب لتفعيل هذا الكوبون هو ${minSpend.toFixed(2)} د.ع بينما إجمالي طلبك الحالي ${money(input.subtotal).toFixed(2)} د.ع`,
+          doThis: "أضف المزيد من المنتجات إلى سلة الشراء لتفعيل الكوبون",
+        }),
+      });
+    }
   }
   const assignedCustomerId = row.coupon.customerId == null ? null : Number(row.coupon.customerId);
   if (
@@ -176,6 +217,19 @@ export async function lockCouponForSale(
     if (input.todayYmd < from || (to != null && input.todayYmd > to)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون خارج مدة الصلاحية" });
     }
+
+    const designMeta = (row.program.designJson ?? {}) as PromotionDesignMeta;
+    if (!isDayActive(input.todayYmd, designMeta.activeDays)) {
+      const allowedDaysText = formatActiveDays(designMeta.activeDays);
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "الكوبون غير متاح للاستخدام اليوم",
+          why: `هذا الكوبون مخصص لأيام محددة: ${allowedDaysText}`,
+          doThis: "يرجى استخدام الكوبون في الأيام المسموح بها للعرض",
+        }),
+      });
+    }
   }
 
   if (!consumingOwnReservation) {
@@ -234,6 +288,13 @@ export async function lockCouponForSale(
     perCouponLimit: Number(row.program.perCouponLimit),
     customerId: assignedCustomerId,
     programName: row.program.name,
+    maxDiscountAmount: row.promotion.maxDiscountAmount ? String(row.promotion.maxDiscountAmount) : null,
+    minOrderSpend: row.promotion.minOrderSpend ? String(row.promotion.minOrderSpend) : "0.00",
+    freeShipping: Boolean(row.promotion.freeShipping),
+    shippingDiscountAmount: row.promotion.shippingDiscountAmount ? String(row.promotion.shippingDiscountAmount) : "0.00",
+    affiliateCommissionRate: row.program.affiliateCommissionRate ? String(row.program.affiliateCommissionRate) : "0.00",
+    affiliateName: row.program.affiliateName ?? null,
+    affiliatePhone: row.program.affiliatePhone ?? null,
   };
 }
 
@@ -303,12 +364,14 @@ export async function releaseCouponReservationForOnlineOrder(
   return extractAffectedRows(result);
 }
 
-type CouponConsumptionInput = {
+export type CouponConsumptionInput = {
   invoiceId: number;
   customerId: number | null;
   branchId: number;
   discountAmount: string;
   userId: number;
+  /** إجمالي صافي المبيعات لحساب عمولة المسوق إن وُجدت نسبة عمولة */
+  netSales?: DecimalInput | null;
 };
 
 async function recordCouponConsumption(
@@ -318,6 +381,26 @@ async function recordCouponConsumption(
   options: { allowRedeemedOwnedReservation: boolean },
 ): Promise<void> {
   if (money(input.discountAmount).lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون لا ينطبق على أصناف الفاتورة" });
+
+  let commissionAmount = money(0);
+  const rate = money(coupon.affiliateCommissionRate ?? "0");
+  if (rate.gt(0)) {
+    let netSales = input.netSales != null ? money(input.netSales) : null;
+    if (netSales == null) {
+      const inv = (
+        await tx
+          .select({ total: invoices.total })
+          .from(invoices)
+          .where(eq(invoices.id, input.invoiceId))
+          .limit(1)
+      )[0];
+      if (inv) netSales = money(inv.total);
+    }
+    if (netSales && netSales.gt(0)) {
+      commissionAmount = calculateAffiliateCommission(netSales, rate);
+    }
+  }
+
   await tx.insert(couponRedemptions).values({
     couponId: coupon.couponId,
     programId: coupon.programId,
@@ -325,6 +408,7 @@ async function recordCouponConsumption(
     customerId: input.customerId,
     branchId: input.branchId,
     discountAmount: toDbMoney(input.discountAmount),
+    affiliateCommissionAmount: toDbMoney(commissionAmount),
     redeemedBy: input.userId,
   });
   const incremented = await tx.update(coupons).set({
@@ -382,7 +466,15 @@ export async function consumeReservedCoupon(
     throw new TRPCError({ code: "CONFLICT", message: "حجز القسيمة غير موجود أو انتهت صلاحيته" });
   }
   // لا يُفتح REDEEMED للاستهلاك العام: الوصول هنا مشروط بحجز ACTIVE مملوك ومقفول أعلاه.
-  await recordCouponConsumption(tx, coupon, input, { allowRedeemedOwnedReservation: true });
+  const effectiveDiscountAmount = money(input.discountAmount).gt(0)
+    ? input.discountAmount
+    : String(reservation.discountAmount);
+  await recordCouponConsumption(
+    tx,
+    coupon,
+    { ...input, discountAmount: effectiveDiscountAmount },
+    { allowRedeemedOwnedReservation: true },
+  );
   const transitioned = await tx
     .update(couponReservations)
     .set({ status: "REDEEMED", redeemedAt: sql`CURRENT_TIMESTAMP(3)`, expiresAt: null })
@@ -486,6 +578,7 @@ export async function loadCouponProgramPerformance(
 
 export interface IssuedCouponDetail {
   assignedCustomerName: string | null;
+  assignedCustomerPhone: string | null;
   redeemedDiscount: string;
   lastInvoiceId: number | null;
   lastInvoiceNumber: string | null;
@@ -514,9 +607,9 @@ export async function loadIssuedCouponDetails(
   if (!couponIds.length) return new Map();
   const customerIds = Array.from(new Set(rows.flatMap((row) => row.customerId == null ? [] : [row.customerId])));
   const customerRows = customerIds.length
-    ? await tx.select({ id: customers.id, name: customers.name }).from(customers).where(inArray(customers.id, customerIds))
+    ? await tx.select({ id: customers.id, name: customers.name, phone: customers.phone }).from(customers).where(inArray(customers.id, customerIds))
     : [];
-  const customerNames = new Map(customerRows.map((row) => [Number(row.id), row.name]));
+  const customerMap = new Map(customerRows.map((row) => [Number(row.id), { name: row.name, phone: row.phone }]));
   const redemptions = await tx
     .select({
       couponId: couponRedemptions.couponId,
@@ -557,8 +650,10 @@ export async function loadIssuedCouponDetails(
 
   const result = new Map<number, IssuedCouponDetail>();
   for (const row of rows) {
+    const custInfo = row.customerId == null ? null : customerMap.get(row.customerId);
     result.set(row.id, {
-      assignedCustomerName: row.customerId == null ? null : customerNames.get(row.customerId) ?? null,
+      assignedCustomerName: custInfo?.name ?? null,
+      assignedCustomerPhone: custInfo?.phone ?? null,
       redeemedDiscount: "0.00",
       lastInvoiceId: null,
       lastInvoiceNumber: null,
@@ -602,3 +697,137 @@ export async function loadIssuedCouponDetails(
   }
   return result;
 }
+
+export interface IssueBounceBackInput {
+  branchId: number;
+  customerId?: number | null;
+  invoiceTotal: Decimal;
+  customerTier?: PriceTier | null;
+}
+
+export interface BounceBackCouponResult {
+  code: string;
+  headline: string;
+  discountText: string;
+  minSpendText?: string | null;
+  validToText: string;
+}
+
+/**
+ * إصدار قسيمة عودة تلقائية (Bounce-Back Coupon) مع فواتير الكاشير
+ * إذا كانت الفاتورة تستوفي شرط الحد الأدنى وتطابق برنامج عودة نشط، مع مطابقة فئة تسعير العميل.
+ */
+export async function issueBounceBackCouponTx(
+  tx: Tx,
+  input: IssueBounceBackInput,
+): Promise<BounceBackCouponResult | null> {
+  const today = baghdadToday();
+  const candidates = await tx
+    .select({
+      id: couponPrograms.id,
+      name: couponPrograms.name,
+      codePrefix: couponPrograms.codePrefix,
+      validTo: couponPrograms.validTo,
+      designJson: couponPrograms.designJson,
+      promotionId: couponPrograms.promotionId,
+      branchId: couponPrograms.branchId,
+      customerTier: promotions.customerTier,
+      promoType: promotions.type,
+      promoPercent: promotions.discountPercent,
+      promoAmount: promotions.discountAmount,
+      promoMaxDiscount: promotions.maxDiscountAmount,
+      promoMinSpend: promotions.minOrderSpend,
+    })
+    .from(couponPrograms)
+    .innerJoin(promotions, eq(couponPrograms.promotionId, promotions.id))
+    .where(and(
+      eq(couponPrograms.status, "ACTIVE"),
+      or(isNull(couponPrograms.branchId), eq(couponPrograms.branchId, input.branchId)),
+      sql`${couponPrograms.validFrom} <= ${today}`,
+      or(isNull(couponPrograms.validTo), sql`${couponPrograms.validTo} >= ${today}`),
+      eq(promotions.isActive, true),
+      eq(promotions.applicationMode, "COUPON"),
+      or(isNull(promotions.branchId), eq(promotions.branchId, input.branchId)),
+      input.customerTier
+        ? or(isNull(promotions.customerTier), eq(promotions.customerTier, input.customerTier))
+        : isNull(promotions.customerTier),
+      sql`${promotions.effectiveFrom} <= ${today}`,
+      or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= ${today}`),
+    ))
+    .orderBy(desc(couponPrograms.branchId), desc(couponPrograms.id))
+    .limit(10)
+    .for("update");
+
+  if (!candidates.length) return null;
+
+  let matchedProgram: (typeof candidates)[number] | null = null;
+  let matchedMeta: PromotionDesignMeta | null = null;
+
+  for (const prog of candidates) {
+    const meta = (prog.designJson ?? {}) as PromotionDesignMeta;
+    if (!meta.isAutoBounceBack) continue;
+
+    if (!isDayActive(today, meta.activeDays)) continue;
+
+    const minInvoice = meta.autoBounceBackMinInvoice ? money(meta.autoBounceBackMinInvoice) : money(0);
+    if (input.invoiceTotal.lt(minInvoice)) continue;
+
+    matchedProgram = prog;
+    matchedMeta = meta;
+    break;
+  }
+
+  if (!matchedProgram || !matchedMeta) return null;
+
+  const prefix = matchedMeta.bounceBackPrefix?.trim() || matchedProgram.codePrefix || "NEXT";
+  const safePrefix = prefix.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "NEXT";
+  const token = randomBytes(5).toString("hex").toUpperCase();
+  const code = `${safePrefix}-${token.slice(0, 5)}-${token.slice(5)}`;
+  const codeHash = hashCouponCode(code);
+  const issuedAt = new Date();
+
+  await tx.insert(coupons).values({
+    programId: matchedProgram.id,
+    customerId: input.customerId ?? null,
+    code,
+    codeHash,
+    status: "ACTIVE",
+    issuedAt,
+  });
+
+  let discountText = "";
+  if (matchedProgram.promoType === "PERCENT") {
+    discountText = `${Number(matchedProgram.promoPercent)}%`;
+    if (matchedProgram.promoMaxDiscount && money(matchedProgram.promoMaxDiscount).gt(0)) {
+      discountText += ` (بسقف ${Number(matchedProgram.promoMaxDiscount).toLocaleString()} د.ع)`;
+    }
+  } else {
+    discountText = `${Number(matchedProgram.promoAmount).toLocaleString()} د.ع`;
+  }
+
+  let minSpendText: string | null = null;
+  if (matchedProgram.promoMinSpend && money(matchedProgram.promoMinSpend).gt(0)) {
+    minSpendText = `للطلبات بقيمة ${Number(matchedProgram.promoMinSpend).toLocaleString()} د.ع فأكثر`;
+  }
+
+  let validToText = "";
+  if (matchedMeta.bounceBackValidityDays && matchedMeta.bounceBackValidityDays > 0) {
+    const validUntilDate = new Date(Date.now() + matchedMeta.bounceBackValidityDays * 24 * 60 * 60 * 1000);
+    const validUntilYmd = validUntilDate.toISOString().slice(0, 10);
+    validToText = `صالح لمدة ${matchedMeta.bounceBackValidityDays} يوماً (حتى ${validUntilYmd})`;
+  } else if (matchedProgram.validTo) {
+    const validUntilYmd = new Date(matchedProgram.validTo).toISOString().slice(0, 10);
+    validToText = `صالح لغاية ${validUntilYmd}`;
+  } else {
+    validToText = "صالح حتى إشعار آخر";
+  }
+
+  return {
+    code,
+    headline: matchedMeta.bounceBackHeadline?.trim() || "قسيمة هدية لزيارتك القادمة",
+    discountText,
+    minSpendText,
+    validToText,
+  };
+}
+

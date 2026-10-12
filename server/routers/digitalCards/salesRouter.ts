@@ -89,7 +89,6 @@ export const salesRouter = router({
         ? await verifyManagerApproval(managerApproval, ctx, input.branchId)
         : null;
       const actor = actorOf(ctx);
-      const elevated = actor.role === "admin";
       return withTx((tx) =>
         intentService.prepare(
           tx,
@@ -98,7 +97,13 @@ export const salesRouter = router({
             ...(approvedBy != null
               ? { priceApprovalCapability: VERIFIED_DIGITAL_PRICE_APPROVAL }
               : {}),
-            priceApprovedBy: approvedBy ?? (elevated ? actor.userId : null),
+            priceApprovedBy: approvedBy ?? (actor.role === "admin" ? actor.userId : null),
+            ...(approvedBy != null && approvedBy !== actor.userId
+              ? {
+                  creditApprovedBy: approvedBy,
+                  creditApprovalCapability: intentService.VERIFIED_DIGITAL_CREDIT_APPROVAL,
+                }
+              : {}),
           },
           actor,
         ),

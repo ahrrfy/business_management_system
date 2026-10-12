@@ -1,9 +1,8 @@
-// زرّ العميل ومنتقيه في رأس سلّة الكاشير.
-// استُخرج مكوّنياً كي ينزل تحت خطّ أساس `check:page-size` ومقياس الاحتكاك D4.
-
+import { useState } from "react";
 import { CustomerSelectionDialog } from "./CustomerSelectionDialog";
+import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
 import type { RouterOutputs } from "@/lib/trpc";
-import { User, ChevronDown, Truck, Phone } from "lucide-react";
+import { User, ChevronDown, Truck, Phone, Sparkles } from "lucide-react";
 import { priceTierLabel } from "@/lib/labels";
 import { type Tier, type PosColors as C } from "./posShared";
 
@@ -47,6 +46,7 @@ export function CartCustomerButton({
     selectedCustomer != null &&
     selectedCustomer.creditLimit != null &&
     Number(selectedCustomer.creditLimit) === 0;
+  const [showDossier, setShowDossier] = useState(false);
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -58,10 +58,10 @@ export function CartCustomerButton({
         aria-pressed={delivery}
         title={
           toggleDisabled
-            ? deliveryDisabledReason ?? undefined
+            ? (deliveryDisabledReason ?? undefined)
             : delivery
-            ? "إلغاء وضع التوصيل — يعود البيع عادياً"
-            : "بيعٌ بتوصيل: عميلٌ بالهاتف + طردٌ يُسند مع الفاتورة ويُحصَّل عند التسليم"
+              ? "إلغاء وضع التوصيل — يعود البيع عادياً"
+              : "بيعٌ بتوصيل: عميلٌ بالهاتف + طردٌ يُسند مع الفاتورة ويُحصَّل عند التسليم"
         }
         style={{
           height: 34,
@@ -102,7 +102,9 @@ export function CartCustomerButton({
           }}
         >
           <Phone size={14} aria-hidden />{" "}
-          {selectedCustomer ? selectedCustomer.name : "عميلٌ بالهاتف — أدخل رقمه أدناه"}
+          {selectedCustomer
+            ? selectedCustomer.name
+            : "عميلٌ بالهاتف — أدخل رقمه أدناه"}
           {selectedCustomer && (
             <span style={{ fontSize: 11, opacity: 0.8 }}>
               ({priceTierLabel(effectiveTier)})
@@ -110,7 +112,7 @@ export function CartCustomerButton({
           )}
         </span>
       ) : (
-        <div>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
           <button
             type="button"
             onClick={() => setShowCustPicker(true)}
@@ -132,7 +134,9 @@ export function CartCustomerButton({
             }}
           >
             <User size={14} aria-hidden />
-            <span>{selectedCustomer ? selectedCustomer.name : "عميل نقدي"}</span>
+            <span>
+              {selectedCustomer ? selectedCustomer.name : "عميل نقدي"}
+            </span>
             {selectedCustomer && (
               <span style={{ fontSize: 11, opacity: 0.8 }}>
                 ({priceTierLabel(effectiveTier)})
@@ -145,7 +149,9 @@ export function CartCustomerButton({
                   padding: "1px 5px",
                   borderRadius: 4,
                   fontWeight: 800,
-                  background: isCashOnly ? "rgba(239, 68, 68, 0.15)" : "rgba(16, 185, 129, 0.15)",
+                  background: isCashOnly
+                    ? "rgba(239, 68, 68, 0.15)"
+                    : "rgba(16, 185, 129, 0.15)",
                   color: isCashOnly ? "#ef4444" : "#10b981",
                 }}
               >
@@ -154,6 +160,32 @@ export function CartCustomerButton({
             )}
             <ChevronDown aria-hidden size={14} />
           </button>
+
+          {customerId != null && (
+            <button
+              type="button"
+              onClick={() => setShowDossier(true)}
+              title="الملف الشامل للزبون 360°"
+              style={{
+                height: 34,
+                padding: "0 8px",
+                background: C.primarySoft,
+                border: `1.5px solid ${C.primary}`,
+                borderRadius: 8,
+                cursor: "pointer",
+                color: C.primary,
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                fontSize: 11.5,
+                fontWeight: 800,
+                whiteSpace: "nowrap",
+              }}
+            >
+              <Sparkles size={13} aria-hidden />
+              <span>360°</span>
+            </button>
+          )}
 
           <CustomerSelectionDialog
             open={showCustPicker}
@@ -166,6 +198,14 @@ export function CartCustomerButton({
             onSelectCustomer={setCustId}
             onSelectTier={setTierOvr}
           />
+
+          {customerId != null && (
+            <CustomerDossierDrawer
+              customerId={customerId}
+              open={showDossier}
+              onClose={() => setShowDossier(false)}
+            />
+          )}
         </div>
       )}
     </div>

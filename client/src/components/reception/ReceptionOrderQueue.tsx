@@ -1,6 +1,6 @@
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Check, Clock, Package, Store, Truck, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Check, Clock, Package, Shuffle, Store, Truck, type LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,8 @@ import { DispatchDialog, type DispatchParty } from "@/components/delivery/Dispat
 import { DeliveryDepartureOverlay, type DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
 import { MarkPickedUpDialog } from "@/components/delivery/MarkPickedUpDialog";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import { ReceptionCommandAlert } from "@/components/reception/ReceptionCommandAlert";
+import { LiveCelebrationOverlay } from "@/components/commission/LiveCelebrationOverlay";
 import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
@@ -27,6 +29,12 @@ import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { computeStateAgeMinutes, formatAgeShort, slaLevel, slaLevelChipClass } from "@shared/orderSla";
 import { cn } from "@/lib/utils";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { useRealtimeEvent } from "@/lib/realtime";
+import {
+  REALTIME_EVENT_TYPES,
+  type ReceptionQueueUpdatedPayload,
+  type WorkOrderStatusChangedPayload,
+} from "@shared/realtimeEvents";
 
 type QueueRow = RouterOutputs["workOrders"]["list"][number];
 type PickupPayment = NonNullable<RouterInputs["workOrders"]["deliver"]["payment"]>;
@@ -65,22 +73,70 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
     && hasModuleAccess(role ?? "", permissions, "store", "READ");
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
-  // Polling كل ١٥ث + على استعادة التركيز: بلاغ المالك ٢٨/٨/٢٦ («الطلب يتيه — الاستقبال لا يرى»).
-  // كان `useQuery` بلا refetchInterval إطلاقاً — لا يحدَّث الطابور إلا بإعادة تحميلٍ يدويٍّ أو
-  // بـinvalidate من إجراءِ هذه الشاشة نفسها. إشعارُ «طلبك جاهز» يذهب للعميل بواتساب، والموظّف
-  // لا يعلم حتى يفتح الشاشة (T4 من تدقيق ٢٨/٨). refetchInterval ثابتٌ لا يتغيّر بتغيّر البيانات
-  // (كي لا تُتَخذ الشاشة نفسها ذريعةً لتوقّف polling حين تصفر النتائج).
+  // تم استبدال الـpolling ببث الأحداث اللحظية عبر SSE (الموجة 2).
   const active = trpc.workOrders.list.useQuery(
     { branchId, statuses: ["RECEIVED", "IN_PROGRESS", "READY"], limit: 200 },
-    { refetchInterval: 15_000, refetchOnWindowFocus: true },
+    { refetchOnWindowFocus: true },
   );
   // مُتَسلَّم اليوم بصرف النظر عن تاريخ إنشاء الأمر (قد يكون أمس) — deliveredFrom/deliveredTo
   // يفلتران على workOrders.deliveredAt، لا from/to (تاريخ الإنشاء، يُخفي أوامر أُنشئت أمس وسُلِّمت اليوم).
   const deliveredToday = trpc.workOrders.list.useQuery(
     { branchId, statuses: ["DELIVERED"], deliveredFrom: todayStr, deliveredTo: todayStr, limit: 100 },
-    { refetchInterval: 30_000, refetchOnWindowFocus: true },
+    { refetchOnWindowFocus: true },
   );
   const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: canDispatch });
+
+  const autoAssignM = trpc.storeAdmin.orders.autoAssignRoundRobin.useMutation({
+    onSuccess: (res) => {
+      notify.ok(
+        res.assignedCount > 0
+          ? `تم توزيع ${res.assignedCount} طلبات معلقة بالتناوب الآلي العادل (Round-Robin).`
+          : "لا توجد طلبات معلقة بانتظار التوزيع حالياً."
+      );
+      utils.storeAdmin.orders.list.invalidate();
+      utils.workOrders.list.invalidate();
+    },
+    onError: (err) => {
+      notify.err(err.message || "تعذر إتمام التوزيع التلقائي.");
+    },
+  });
+
+  useRealtimeEvent<ReceptionQueueUpdatedPayload>(
+    REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+    (ev) => {
+      void active.refetch();
+      if (ev.payload.status === "DELIVERED") {
+        void deliveredToday.refetch();
+      }
+      if (ev.payload.readyForPickup || ev.payload.status === "READY") {
+        playReadyBeep();
+        notify.info(
+          `طلب جاهز للتسليم: ${ev.payload.orderNumber ?? `#${ev.payload.orderId}`}`,
+          ev.payload.customerName ? `العميل: ${ev.payload.customerName}` : undefined,
+        );
+      }
+    },
+  );
+
+  useRealtimeEvent<WorkOrderStatusChangedPayload>(
+    REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+    (ev) => {
+      void active.refetch();
+      if (ev.payload.newStatus === "DELIVERED") {
+        void deliveredToday.refetch();
+      }
+      if (ev.payload.newStatus === "READY") {
+        playReadyBeep();
+        notify.info(
+          `طلب جاهز للتسليم: ${ev.payload.orderNumber ?? `#${ev.payload.workOrderId}`}`,
+        );
+      }
+    },
+  );
+
+  useRealtimeEvent(REALTIME_EVENT_TYPES.WORK_ORDER_CREATED, () => {
+    void active.refetch();
+  });
 
   // كشف READY الجدد بين استعلامَين متتاليَين — يُشعِر الموظّف بجاهزيّة أمر شغل خرج من المطبعة
   // للتوّ (بلاغ ٢٨/٨/٢٦). يقارن Set<workOrderId> بالسابق: النقلة تفلترها ورشة الطلب لا الاستعلام
@@ -208,9 +264,25 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 pb-8">
-      <div className="mb-1 rounded-xl border bg-card p-3">
-        <h1 className="font-extrabold">طابور الطلبات والتوصيل</h1>
-        <p className="text-xs text-muted-foreground">من الاستلام حتى التسليم — استلام مباشر أو إسناد لمندوب/شركة توصيل.</p>
+      <LiveCelebrationOverlay branchId={branchId} />
+      <ReceptionCommandAlert branchId={branchId} />
+
+      <div className="mb-1 flex flex-col gap-3 rounded-xl border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="font-extrabold">طابور الطلبات والتوصيل</h1>
+          <p className="text-xs text-muted-foreground">من الاستلام حتى التسليم — استلام مباشر أو إسناد لمندوب/شركة توصيل.</p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={autoAssignM.isPending}
+          onClick={() => autoAssignM.mutate({ branchId })}
+          className="gap-2 text-xs font-bold shrink-0"
+        >
+          <Shuffle className="size-3.5" />
+          <span>توزيع إجباري عادل (Round-Robin)</span>
+        </Button>
       </div>
 
       {canDispatch && parties.isLoading && (

@@ -3,19 +3,22 @@
 // عزل الفرع: الجهة المشتركة مرئية للفروع، لكن سند التوريد ونقد الدرج يخصان فرعاً واحداً حتماً؛
 // لذلك قائمة «المفتوح للتوريد» تقبل branchId وتعرض فقط طرود ذلك الفرع. أما السجل الإداري العام
 // للجهة فيبقى عابراً للفروع لمن يملك صلاحية رؤيتها، وتبقى كل حركة موسومة بفرعها.
-import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, round2 } from "../money";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
-import { computePartyExposure } from "@shared/partyExposure";
+import { computePartyExposure,
+  PARCEL_IN_TRANSIT_STATUSES,
+} from "@shared/partyExposure";
 import { deliveryCashSource } from "./cashSource";
-import { loadPartyExposureInputsTx } from "./exposureInputs";
+import { loadScopedPartyExposureInputsTx } from "./scopedExposure";
 import { getDeliveryFinancialSummary } from "./lifecycle";
 import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
-import { escLike } from "../../lib/sqlLike";
-import { phoneSuffix10 } from "../../lib/phone";
-import { ARABIC_NORMALIZATION_PAIRS, normalizeArabicSearch } from "../../../shared/storefrontSearchNormalize";
+import { deliverySearchSql } from "./readSearch";
+import {
+  matchesDeliverySearch,
+} from "@shared/deliverySearch";
 
 /**
  * ⭐ Tier-2 #1 (٢٥/٨): ترقيمُ الصفحات لقوائم التوصيل — كانت الدوال أدناه تُحمّل الصفوف كلّها
@@ -26,7 +29,20 @@ import { ARABIC_NORMALIZATION_PAIRS, normalizeArabicSearch } from "../../../shar
  * و`WHERE id < cursor` يجلب ما هو أقدم. عدّ الصفوف الكامل يُتجاوَز لأنّ hasMore يُشتقّ من
  * limit+1 حين يوجد cursor، ومن جلب دفعة واحدة حين لا يوجد.
  */
-export interface DeliveryListPage { limit?: number; cursor?: number }
+export interface DeliveryListPage { limit?: number; cursor?: number;
+}
+export interface DeliveryConsignmentPage extends DeliveryListPage {
+  query?: string;
+  from?: string;
+  to?: string;
+  state?:
+    | "ALL"
+    | "IN_TRANSIT"
+    | "DELIVERED_UNCOLLECTED"
+    | "COLLECTED_UNREMITTED"
+    | "RETURN_PENDING"
+    | "CLOSED";
+}
 export interface DeliveryPagedResult<T> { rows: T[]; hasMore: boolean; nextCursor: number | null }
 
 const DEFAULT_DELIVERY_LIST_LIMIT = 200;
@@ -386,22 +402,128 @@ export async function listInTransitConsignments(branchId: number | null, partyId
 }
 
 /** كل إرساليات جهة (تبويب «إرساليات الجهة» في شاشة التفاصيل) — بأرقام فواتيرها وتوريداتها. */
-export async function listConsignmentsForParty(partyId: number, openOnly = false, page: DeliveryListPage = {}) {
+export async function listConsignmentsForParty(partyId: number, openOnly = false, page: DeliveryConsignmentPage = {},
+  scopedBranchId?: number | null,
+) {
   const db = getDb();
-  if (!db) return { rows: [], hasMore: false, nextCursor: null };
+  const emptyTotals = {
+    count: 0,
+    codAmount: "0.00",
+    creditedCollections: "0.00",
+    counterSettledAmount: "0.00",
+    shortfallAssigned: "0.00",
+    remainingDue: "0.00",
+  };
+  if (!db) return { rows: [], hasMore: false, nextCursor: null,
+      totals: emptyTotals,
+      scopedBranchId: scopedBranchId ?? null };
   const effLimit = resolvePageLimit(page.limit);
   const conds = [eq(deliveryConsignments.partyId, partyId)];
+  if (scopedBranchId != null)
+    conds.push(eq(deliveryConsignments.branchId, scopedBranchId));
   if (openOnly) conds.push(sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`);
+  if (page.from)
+    conds.push(
+      gte(
+        deliveryConsignments.dispatchedAt,
+        new Date(`${page.from}T00:00:00Z`),
+      ),
+    );
+  if (page.to)
+    conds.push(
+      lt(
+        deliveryConsignments.dispatchedAt,
+        new Date(new Date(`${page.to}T00:00:00Z`).getTime() + 86400000),
+      ),
+    );
+  // Terminal closures retain original COD history without an open settlement obligation.
+  const remainingDueSql = sql<string>`CASE WHEN ${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL') THEN GREATEST(${deliveryConsignments.codAmount} - ${deliveryConsignments.collectedAmount} - ${deliveryConsignments.counterSettledAmount} - ${consignmentShortfallAssignedSql}, 0) ELSE 0 END`;
+  const live = inArray(deliveryConsignments.status, ["DISPATCHED", "PARTIAL"]);
+  const custody = sql<string>`(SELECT COALESCE(SUM(CASE WHEN dle.entryType = 'COD_COLLECTED' THEN dle.amount WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF') THEN -dle.amount ELSE 0 END), 0) FROM deliveryLedgerEntries dle WHERE dle.consignmentId = deliveryConsignments.id)`;
+  switch (page.state) {
+    case "IN_TRANSIT":
+      conds.push(
+        and(
+          live,
+          isNull(deliveryConsignments.returnDeclaredAt),
+          inArray(deliveryConsignments.parcelStatus, [
+            ...PARCEL_IN_TRANSIT_STATUSES,
+          ]),
+        )!,
+      );
+      break;
+    case "DELIVERED_UNCOLLECTED":
+      conds.push(
+        and(
+          live,
+          isNull(deliveryConsignments.returnDeclaredAt),
+          eq(deliveryConsignments.parcelStatus, "DELIVERED"),
+          sql`${remainingDueSql} > GREATEST(${custody}, 0)`,
+        )!,
+      );
+      break;
+    case "COLLECTED_UNREMITTED":
+      conds.push(sql`${custody} > 0`);
+      break;
+    case "RETURN_PENDING":
+      conds.push(and(live, isNotNull(deliveryConsignments.returnDeclaredAt))!);
+      break;
+    case "CLOSED":
+      conds.push(
+        sql`${deliveryConsignments.status} NOT IN ('DISPATCHED','PARTIAL')`,
+      );
+      break;
+  }
+  const search = deliverySearchSql(page.query ?? "", {
+    names: [deliveryConsignments.recipientName, customers.name],
+    phones: [
+      deliveryConsignments.recipientPhone,
+      customers.phone,
+      customers.phone2,
+      customers.phone3,
+      customers.whatsapp,
+    ],
+    addresses: [deliveryConsignments.deliveryAddress, customers.address],
+    references: [
+      deliveryConsignments.id,
+      deliveryConsignments.consignmentNumber,
+      deliveryConsignments.externalTrackingRef,
+      invoices.invoiceNumber,
+    ],
+  });
+  if (search.where) conds.push(search.where);
+  // Totals describe the complete filtered set, independently of the cursor/page.
+  const totalsRow = (
+    await db
+      .select({
+        count: sql<number>`COUNT(*)`,
+        codAmount: sql<string>`COALESCE(SUM(${deliveryConsignments.codAmount}), 0)`,
+        creditedCollections: sql<string>`COALESCE(SUM(${deliveryConsignments.collectedAmount}), 0)`,
+        counterSettledAmount: sql<string>`COALESCE(SUM(${deliveryConsignments.counterSettledAmount}), 0)`,
+        shortfallAssigned: sql<string>`COALESCE(SUM(${consignmentShortfallAssignedSql}), 0)`,
+        remainingDue: sql<string>`COALESCE(SUM(${remainingDueSql}), 0)`,
+      })
+      .from(deliveryConsignments)
+      .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
+      .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
+      .where(and(...conds))
+  )[0];
   if (page.cursor != null) conds.push(lt(deliveryConsignments.id, page.cursor));
   const rows = await db
     .select({
       id: deliveryConsignments.id,
       consignmentNumber: deliveryConsignments.consignmentNumber,
+      externalTrackingRef: deliveryConsignments.externalTrackingRef,
+      branchId: deliveryConsignments.branchId,
+      returnDeclaredAt: deliveryConsignments.returnDeclaredAt,
       invoiceId: deliveryConsignments.invoiceId,
       invoiceNumber: invoices.invoiceNumber,
       invoiceStatus: invoices.status,
       codAmount: deliveryConsignments.codAmount,
       collectedAmount: deliveryConsignments.collectedAmount,
+      counterSettledAmount: deliveryConsignments.counterSettledAmount,
+      shortfallAssigned: consignmentShortfallAssignedSql,
+      remainingDue: remainingDueSql,
       deliveryFee: deliveryConsignments.deliveryFee,
       feeCollection: deliveryConsignments.feeCollection,
       status: deliveryConsignments.status,
@@ -429,17 +551,33 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
     .where(and(...conds))
     .orderBy(desc(deliveryConsignments.id))
     .limit(effLimit + 1);
-  return buildPageResult(rows.map((r) => ({ ...r, id: Number(r.id) })), effLimit);
+  const totals = {
+    ...emptyTotals,
+    ...totalsRow,
+    count: Number(totalsRow?.count ?? 0),
+  };
+  return {
+    ...buildPageResult(rows.map((r) => ({ ...r, id: Number(r.id) })), effLimit),
+    totals,
+    scopedBranchId: scopedBranchId ?? null,
+  };
 }
 
 /** سجل توريدات جهة (٩/٨): كان أثر التوريد الوحيد إيصالاً حرارياً يُطبع مرة واحدة — سلسلة
  *  invoice⇒consignment⇒remittance⇒receipt كاملة في القاعدة ومقطوعة في الشاشات. */
-export async function listPartyRemittances(partyId: number, opts?: { from?: string; to?: string; limit?: number }) {
+export async function listPartyRemittances(partyId: number, opts?: { from?: string; to?: string; limit?: number;
+    cursor?: number;
+    scopedBranchId?: number | null;
+  }) {
   const db = getDb();
   if (!db) return [];
   const conds = [eq(deliveryRemittances.partyId, partyId)];
+  if (opts?.scopedBranchId != null)
+    conds.push(eq(deliveryRemittances.branchId, opts.scopedBranchId));
+  if (opts?.cursor != null) conds.push(lt(deliveryRemittances.id, opts.cursor));
   if (opts?.from) conds.push(gte(deliveryRemittances.receivedAt, new Date(`${opts.from}T00:00:00Z`)));
-  if (opts?.to) conds.push(lte(deliveryRemittances.receivedAt, new Date(`${opts.to}T23:59:59Z`)));
+  if (opts?.to) conds.push(
+      lt(deliveryRemittances.receivedAt, new Date(new Date(`${opts.to}T00:00:00Z`).getTime() + 86400000)));
   return db
     .select({
       id: deliveryRemittances.id,
@@ -453,18 +591,41 @@ export async function listPartyRemittances(partyId: number, opts?: { from?: stri
       receivedAt: deliveryRemittances.receivedAt,
       receivedByName: users.name,
       shiftId: deliveryRemittances.shiftId,
+      receiptInId: deliveryRemittances.receiptInId,
+      receiptOutId: deliveryRemittances.receiptOutId,
+      companyStatementNumber: deliveryRemittances.companyStatementNumber,
+      statementDate: deliveryRemittances.statementDate,
+      statementAttachmentUrl: deliveryRemittances.statementAttachmentUrl,
+      cashReceived: sql<string>`CASE WHEN deliveryRemittances.receiptInId IS NOT NULL THEN COALESCE((SELECT r.amount FROM receipts r WHERE r.id = deliveryRemittances.receiptInId AND r.direction = 'IN' AND r.receiptStatus = 'COMPLETED' AND r.paymentMethod = 'CASH' AND (r.receiptApprovalStatus IS NULL OR r.receiptApprovalStatus = 'APPROVED')),0) ELSE COALESCE((SELECT SUM(drl.cashReceived) FROM deliveryRemittanceLines drl WHERE drl.remittanceId = deliveryRemittances.id), 0) END`,
     })
     .from(deliveryRemittances)
     .leftJoin(users, eq(deliveryRemittances.receivedBy, users.id))
     .where(and(...conds))
     .orderBy(desc(deliveryRemittances.id))
-    .limit(Math.min(opts?.limit ?? 100, 300));
+    .limit(Math.max(1, Math.min(opts?.limit ?? 100, 501)));
+}
+
+export async function listPartyRemittancesPage(
+  partyId: number,
+  opts: NonNullable<Parameters<typeof listPartyRemittances>[1]> = {},
+) {
+  const limit = resolvePageLimit(opts.limit);
+  const rows = await listPartyRemittances(partyId, {
+    ...opts,
+    limit: limit + 1,
+  });
+  return {
+    ...buildPageResult(rows, limit),
+    scopedBranchId: opts.scopedBranchId ?? null,
+  };
 }
 
 /** طرود متجر «مع المندوب» (SHIPPED) لجهة — فجوة الرؤية بين القناتين (١٠/٨): عهدة المتجر
  *  تُرفَع عند تأكيد المندوب لا عند الإرسال، فما بيده من طرودٍ لم تُؤكَّد كان غير ظاهر في
  *  أي عهدة أو كشف. القيمة = متبقّي الفاتورة (البضاعة — بعد التمرير الكامل لا تشمل الأجرة). */
-export async function getPartyStoreInTransit(partyId: number) {
+export async function getPartyStoreInTransit(partyId: number,
+  scopedBranchId?: number | null,
+) {
   const db = getDb();
   if (!db) return { count: 0, value: "0.00" };
   const row = (
@@ -483,7 +644,10 @@ export async function getPartyStoreInTransit(partyId: number) {
       .where(and(
         eq(onlineOrders.deliveryPartyId, partyId),
         eq(onlineOrders.status, "SHIPPED"),
-        // ازدواجُ التعرّض (٢٢/٨): طلبُ متجرٍ أُسندت فاتورتُه إرساليةً **حيّة** يُعرَض تعرّضُه
+          scopedBranchId == null
+            ? undefined
+            : eq(onlineOrders.branchId, scopedBranchId),
+          // ازدواجُ التعرّض (٢٢/٨): طلبُ متجرٍ أُسندت فاتورتُه إرساليةً **حيّة** يُعرَض تعرّضُه
         // في قوائم الإرساليات نفسها — فعدُّه هنا ثانيةً يضخّم «مع المندوب» بضعف القيمة.
         // مرآةُ `legacyOnlineScope` في courier.ts مع تقييد الحياة (نمط listReadyForDispatch):
         // الإرسالية الملغاة/المرتجعة تُعيد الطلبَ لهذه العدسة كي لا يسقط من العدّادات كلّها.
@@ -500,16 +664,27 @@ export async function getPartyStoreInTransit(partyId: number) {
 
 /** كشف حساب جهة توصيل: قيود العهدة (DISPATCH مدين، REMIT/WRITEOFF دائن) + أجور (FEE/FEE_HELD).
  *  ٩/٨: + رقم الفاتورة (كان المرجع يُستخرج من نص الملاحظات بـregex هشّ في الواجهة). */
-export async function getDeliveryPartyStatement(partyId: number, from?: string, to?: string) {
+export async function getDeliveryPartyStatement(
+  partyId: number,
+  from?: string,
+  to?: string,
+  scopedBranchId?: number | null,
+) {
   const db = getDb();
   if (!db) return null;
-  const party = (await db.select().from(deliveryParties).where(eq(deliveryParties.id, partyId)).limit(1))[0];
+  const party = (
+    await db
+      .select()
+      .from(deliveryParties)
+      .where(eq(deliveryParties.id, partyId))
+      .limit(1)
+  )[0];
   if (!party) return null;
   // ساقا أمانة الأجرة (مراجعة عدائية ٩/٨): قيدُ **القبض** يُكتب لحظة البيع قبل معرفة الجهة
   // (بلا deliveryPartyId) وقيدُ الصرف بعد الإسناد (به) — فلترةُ الجهة وحدها كانت تعرض الصرف
   // بلا قبضه ⇒ «أمانات معلّقة Σ» سالبةٌ متراكمة كاذبة. نضمّ قيود FEE_HELD لفواتير إرساليات
   // الجهة أيضاً (uq_consignment_invoice ⇒ الفاتورة لجهةٍ واحدة، لا ازدواج عبر الجهات).
-  const conds = [
+  const scope = [
     sql`(
       (${accountingEntries.deliveryPartyId} = ${partyId}
         AND ${accountingEntries.entryType} IN ('DELIVERY_DISPATCH','DELIVERY_REMIT','DELIVERY_WRITEOFF','DELIVERY_FEE','DELIVERY_FEE_HELD'))
@@ -518,6 +693,21 @@ export async function getDeliveryPartyStatement(partyId: number, from?: string, 
         AND ${accountingEntries.invoiceId} IN (SELECT dc.invoiceId FROM deliveryConsignments dc WHERE dc.partyId = ${partyId}))
     )`,
   ];
+  if (scopedBranchId != null)
+    scope.push(eq(accountingEntries.branchId, scopedBranchId));
+  // Custody entries move this balance; fee/fee-held entries remain visible as separate liabilities.
+  const delta = sql<string>`CASE WHEN ${accountingEntries.entryType} = 'DELIVERY_DISPATCH' THEN ${accountingEntries.amount} WHEN ${accountingEntries.entryType} IN ('DELIVERY_REMIT','DELIVERY_WRITEOFF') THEN -${accountingEntries.amount} ELSE 0 END`;
+  const balances = (
+    await db
+      .select({
+        openingBalance: sql<string>`COALESCE(SUM(CASE WHEN ${from ? sql`${accountingEntries.entryDate} < ${from}` : sql`FALSE`} THEN ${delta} ELSE 0 END),0)`,
+        closingBalance: sql<string>`COALESCE(SUM(CASE WHEN ${to ? sql`${accountingEntries.entryDate} <= ${to}` : sql`TRUE`} THEN ${delta} ELSE 0 END),0)`,
+        currentBalance: sql<string>`COALESCE(SUM(${delta}),0)`,
+      })
+      .from(accountingEntries)
+      .where(and(...scope))
+  )[0];
+  const conds = [...scope];
   if (from) conds.push(sql`${accountingEntries.entryDate} >= ${from}`);
   if (to) conds.push(sql`${accountingEntries.entryDate} <= ${to}`);
   const entries = await db
@@ -535,14 +725,39 @@ export async function getDeliveryPartyStatement(partyId: number, from?: string, 
     .leftJoin(invoices, eq(accountingEntries.invoiceId, invoices.id))
     .where(and(...conds))
     .orderBy(accountingEntries.id);
+  const periodTotals = { debit: money(0), credit: money(0) };
+  for (const entry of entries) {
+    if (
+      entry.type !== "DELIVERY_DISPATCH" &&
+      entry.type !== "DELIVERY_REMIT" &&
+      entry.type !== "DELIVERY_WRITEOFF"
+    )
+      continue;
+    const movement =
+      entry.type === "DELIVERY_DISPATCH"
+        ? money(entry.amount)
+        : money(entry.amount).neg();
+    if (movement.gte(0)) periodTotals.debit = periodTotals.debit.plus(movement);
+    else periodTotals.credit = periodTotals.credit.minus(movement);
+  }
   return {
     party: { name: party.name, partyType: party.partyType, phone: party.phone },
-    currentBalance: party.currentBalance,
+    scopedBranchId: scopedBranchId ?? null,
+    currentBalance:
+      scopedBranchId == null
+        ? party.currentBalance
+        : String(balances?.currentBalance ?? "0.00"),
+    openingBalance: round2(money(balances?.openingBalance ?? "0")).toFixed(2),
+    closingBalance: round2(money(balances?.closingBalance ?? "0")).toFixed(2),
+    debitTotal: round2(periodTotals.debit).toFixed(2),
+    creditTotal: round2(periodTotals.credit).toFixed(2),
     entries,
   };
 }
 
-export async function getDeliveryPartyFinancials(partyId: number, pages: { ledger?: DeliveryListPage; allocations?: DeliveryListPage; events?: DeliveryListPage } = {}) {
+export async function getDeliveryPartyFinancials(partyId: number, pages: { ledger?: DeliveryListPage; allocations?: DeliveryListPage; events?: DeliveryListPage } = {},
+  scopedBranchId?: number | null,
+) {
   const db = getDb();
   if (!db) return null;
   const party = (await db.select({ id: deliveryParties.id, name: deliveryParties.name }).from(deliveryParties).where(eq(deliveryParties.id, partyId)).limit(1))[0];
@@ -554,7 +769,7 @@ export async function getDeliveryPartyFinancials(partyId: number, pages: { ledge
   const allocationsCursor = pages.allocations?.cursor;
   const eventsCursor = pages.events?.cursor;
   const [summary, ledgerRows, allocationsRows, eventsRows] = await Promise.all([
-    getDeliveryFinancialSummary(partyId),
+    getDeliveryFinancialSummary(partyId, undefined, scopedBranchId),
     db.select({
       id: deliveryLedgerEntries.id,
       eventKey: deliveryLedgerEntries.eventKey,
@@ -566,7 +781,10 @@ export async function getDeliveryPartyFinancials(partyId: number, pages: { ledge
       notes: deliveryLedgerEntries.notes,
       occurredAt: deliveryLedgerEntries.occurredAt,
     }).from(deliveryLedgerEntries)
-      .where(and(eq(deliveryLedgerEntries.partyId, partyId), ledgerCursor != null ? lt(deliveryLedgerEntries.id, ledgerCursor) : undefined))
+      .where(and(eq(deliveryLedgerEntries.partyId, partyId),
+          scopedBranchId == null
+            ? undefined
+            : eq(deliveryLedgerEntries.branchId, scopedBranchId), ledgerCursor != null ? lt(deliveryLedgerEntries.id, ledgerCursor) : undefined))
       .orderBy(desc(deliveryLedgerEntries.id)).limit(ledgerLimit + 1),
     db.select({
       id: deliveryRemittanceLines.id,
@@ -582,7 +800,13 @@ export async function getDeliveryPartyFinancials(partyId: number, pages: { ledge
     }).from(deliveryRemittanceLines)
       .innerJoin(deliveryConsignments, eq(deliveryConsignments.id, deliveryRemittanceLines.consignmentId))
       .innerJoin(deliveryRemittances, eq(deliveryRemittances.id, deliveryRemittanceLines.remittanceId))
-      .where(and(eq(deliveryConsignments.partyId, partyId), allocationsCursor != null ? lt(deliveryRemittanceLines.id, allocationsCursor) : undefined))
+      .where(and(eq(deliveryConsignments.partyId, partyId),
+          scopedBranchId == null
+            ? undefined
+            : and(
+                eq(deliveryConsignments.branchId, scopedBranchId),
+                eq(deliveryRemittances.branchId, scopedBranchId),
+              ), allocationsCursor != null ? lt(deliveryRemittanceLines.id, allocationsCursor) : undefined))
       .orderBy(desc(deliveryRemittanceLines.id)).limit(allocationsLimit + 1),
     db.select({
       id: deliveryEvents.id,
@@ -595,13 +819,18 @@ export async function getDeliveryPartyFinancials(partyId: number, pages: { ledge
       occurredAt: deliveryEvents.occurredAt,
     }).from(deliveryEvents)
       .innerJoin(deliveryConsignments, eq(deliveryConsignments.id, deliveryEvents.consignmentId))
-      .where(and(eq(deliveryConsignments.partyId, partyId), eventsCursor != null ? lt(deliveryEvents.id, eventsCursor) : undefined))
+      .where(and(eq(deliveryConsignments.partyId, partyId),
+          scopedBranchId == null
+            ? undefined
+            : eq(deliveryConsignments.branchId, scopedBranchId), eventsCursor != null ? lt(deliveryEvents.id, eventsCursor) : undefined))
       .orderBy(desc(deliveryEvents.id)).limit(eventsLimit + 1),
   ]);
   const ledger = buildPageResult(ledgerRows.map((r) => ({ ...r, id: Number(r.id) })), ledgerLimit);
   const allocations = buildPageResult(allocationsRows.map((r) => ({ ...r, id: Number(r.id) })), allocationsLimit);
   const events = buildPageResult(eventsRows.map((r) => ({ ...r, id: Number(r.id) })), eventsLimit);
-  return { party, summary, ledger, allocations, events };
+  return { party, summary, ledger, allocations, events,
+    scopedBranchId: scopedBranchId ?? null,
+  };
 }
 
 /**
@@ -774,7 +1003,8 @@ export async function listPartyObligations(branchId: number | null) {
       codDueTotal: sql<string>`(SELECT COALESCE(SUM(CASE WHEN dc.returnDeclaredAt IS NOT NULL THEN 0
         ELSE GREATEST(CAST(dc.codAmount AS DECIMAL(15,2))
           - CAST(dc.collectedAmount AS DECIMAL(15,2))
-          - CAST(dc.counterSettledAmount AS DECIMAL(15,2)), 0) END), 0) ${openScope})`,
+          - CAST(dc.counterSettledAmount AS DECIMAL(15,2))
+          - (SELECT COALESCE(SUM(CASE WHEN dle.entryType = 'SHORTFALL_ASSIGNED' THEN dle.amount WHEN dle.entryType = 'SHORTFALL_SETTLED' THEN -dle.amount ELSE 0 END),0) FROM deliveryLedgerEntries dle WHERE dle.consignmentId = dc.id), 0) END), 0) ${openScope})`,
       /** عمر أقدم إرسالية مفتوحة بالساعات — محور «الأقدم أولاً». NULL = لا مفتوح. */
       oldestOpenAgeHours: sql<number | null>`(SELECT TIMESTAMPDIFF(HOUR, MIN(dc.dispatchedAt), NOW()) ${openScope})`,
       /**
@@ -831,7 +1061,9 @@ export async function listPartyObligations(branchId: number | null) {
           WHERE dc.partyId = ${deliveryParties.id}
             AND dc.consignmentStatus IN ('DISPATCHED', 'PARTIAL'))`,
         sql`CAST(${deliveryParties.currentBalance} AS DECIMAL(15,2)) > 0`,
-      ),
+          // Historical fees remain payable even when a company is inactive and owns no parcels.
+          sql`EXISTS (SELECT 1 FROM deliveryLedgerEntries dle WHERE dle.partyId = ${deliveryParties.id} AND dle.entryType IN ('FEE_EARNED','FEE_REFUNDED','FEE_PAID','FEE_OFFSET'))`,
+        ),
       // رؤية الجهة نفسها كرؤية بقية الوحدة: المملوكة لفرعٍ تظهر في فرعها وحده، والمشتركة
       // (branchId=NULL) تظهر لكل فرعٍ — بالتزامات ذلك الفرع (الشروط المترابطة أعلاه).
       branchId == null
@@ -840,7 +1072,28 @@ export async function listPartyObligations(branchId: number | null) {
     ));
   // «عليها التزام» = إرسالية مفتوحة أو أجرة مستحقّة أو عهدة قائمة. الفلترة والفرز في الذاكرة
   // عمداً: جهات التوصيل بالعشرات، وHAVING كان سيكرّر الاستعلامات المترابطة الثلاثة حرفياً.
-  const kept = rows
+  const exposureInputs = await loadScopedPartyExposureInputsTx(
+    db as unknown as Parameters<typeof loadScopedPartyExposureInputsTx>[0],
+    rows.map((r) => Number(r.partyId)),
+    branchId,
+  );
+  const scopedRows = rows.map((r) => {
+    const input = exposureInputs.get(Number(r.partyId));
+    const exposure = computePartyExposure({
+      cashInHand: input?.cashInHandLedger ?? "0.00",
+      parcels: input?.parcels ?? [],
+      ledger: input?.ledger ?? [],
+    });
+    return {
+      ...r,
+      currentBalance:
+        branchId == null
+          ? r.currentBalance
+          : (input?.cashInHandLedger ?? "0.00"),
+      feeDueTotal: exposure.feesOwedToThem,
+    };
+  });
+  const kept = scopedRows
     .filter((r) =>
       Number(r.openCount) > 0
       || money(r.feeDueTotal ?? "0").gt(0)
@@ -848,11 +1101,6 @@ export async function listPartyObligations(branchId: number | null) {
     )
     .sort((a, b) => Number(b.oldestOpenAgeHours ?? -1) - Number(a.oldestOpenAgeHours ?? -1));
   // م١ (PR-3): أعمدة التعرّض من **الدالّة النقيّة** (كانت SQL موازيةً لـ`parties.ts` انحرفت عنها).
-  const exposureInputs = await loadPartyExposureInputsTx(
-    db as unknown as Parameters<typeof loadPartyExposureInputsTx>[0],
-    kept.map((r) => Number(r.partyId)),
-    branchId,
-  );
   const cashSource = deliveryCashSource();
   return kept.map((r) => {
     const inputs = exposureInputs.get(Number(r.partyId));
@@ -879,9 +1127,14 @@ export async function listPartyObligations(branchId: number | null) {
       parcelsInTransitAmount: exposure.parcelsInTransit,
       deliveredUncollectedAmount: exposure.deliveredUncollected,
       // م١ (PR-3) — الطرح الظلّيّ: المصدران معاً وفرقهما.
-      cashInHandLedger,
-      cashInHandStored,
+      cashInHandLedger: round2(
+        money(cashInHandLedger).minus(money(exposure.shortfallOwed)),
+      ).toFixed(2),
+      cashInHandStored: round2(
+        money(cashInHandStored).minus(money(exposure.shortfallOwed)),
+      ).toFixed(2),
       cashInHandDrift: round2(money(cashInHandLedger).minus(money(cashInHandStored))).toFixed(2),
+      shortfallOwedAmount: exposure.shortfallOwed,
     };
   });
 }
@@ -979,7 +1232,8 @@ export interface PredictiveConsignmentItem {
   collectedAmount: string;
   counterSettledAmount: string;
   remainingAmount: string;
-  matchedOn: ("PHONE" | "CUSTOMER_NAME" | "INVOICE_NUMBER" | "CONSIGNMENT_NUMBER" | "ADDRESS" | "ORDER_NUMBER")[];
+  matchedOn: (
+    | "PHONE" | "CUSTOMER_NAME" | "INVOICE_NUMBER" | "CONSIGNMENT_NUMBER" | "ADDRESS" | "ORDER_NUMBER")[];
   score: number;
 }
 
@@ -989,7 +1243,8 @@ export interface PredictiveConsignmentItem {
  * ويعيد النتائج مرتبة حسب جودة التطابق لاكتمال التحديد الفوري في الواجهة.
  */
 export async function predictiveSearchConsignments(
-  queryOrOpts: string | {
+  queryOrOpts:
+    | string | {
     branchId?: number | null;
     query: string;
     partyId?: number | null;
@@ -1008,121 +1263,63 @@ export async function predictiveSearchConsignments(
     ? { query: queryOrOpts, branchId: maybeOpts?.branchId ?? null, partyId: maybeOpts?.partyId, limit: maybeOpts?.limit }
     : queryOrOpts;
 
-  const rawQ = (opts.query ?? "").trim();
-  if (!rawQ || rawQ.length < 2) return [];
+  if ((opts.query ?? "").trim().length < 2) return [];
 
-  const toAsciiDigits = (s: string) =>
-    s
-      .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 1632))
-      .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776));
+  const search = deliverySearchSql(opts.query ?? "", {
+    names: [
+      deliveryConsignments.recipientName,
+      customers.name,
+      workOrders.contactName,
+    ],
+    phones: [
+      deliveryConsignments.recipientPhone,
+      workOrders.deliveryPhone,
+      workOrders.contactPhone,
+      customers.phone,
+      customers.phone2,
+      customers.phone3,
+      customers.whatsapp,
+    ],
+    addresses: [
+      deliveryConsignments.deliveryAddress,
+      workOrders.deliveryAddress,
+      onlineOrders.shippingAddress,
+      customers.address,
+    ],
+    references: [
+      deliveryConsignments.id,
+      deliveryConsignments.consignmentNumber,
+      deliveryConsignments.externalTrackingRef,
+      invoices.id,
+      invoices.invoiceNumber,
+      workOrders.id,
+      workOrders.orderNumber,
+      onlineOrders.id,
+      onlineOrders.orderNumber,
+    ],
+  });
+  if (!search.where) return [];
 
   const effLimit = Math.max(1, Math.min(30, opts.limit ?? 10));
-  const asciiQ = toAsciiDigits(rawQ);
-  const digits = asciiQ.replace(/\D/g, "");
-  const normAr = normalizeArabicSearch(rawQ).replace(/ى/g, "ي");
-  const normPattern = `%${escLike(normAr)}%`;
-  const likeQuery = `%${escLike(rawQ)}%`;
-
-  const arabicLike = (col: any, pattern: string) => {
-    let expr = sql`${col}`;
-    for (const [from, to] of ARABIC_NORMALIZATION_PAIRS) {
-      expr = sql`REPLACE(${expr}, ${from}, ${to})`;
-    }
-    expr = sql`REPLACE(${expr}, 'ى', 'ي')`;
-    return sql`LOWER(TRIM(REGEXP_REPLACE(${expr}, '[[:space:]]+', ' '))) LIKE ${pattern} ESCAPE '!'`;
-  };
-
-  const searchConds: any[] = [
-    sql`${deliveryConsignments.consignmentNumber} LIKE ${likeQuery} ESCAPE '!'`,
-    sql`${deliveryConsignments.externalTrackingRef} LIKE ${likeQuery} ESCAPE '!'`,
-    sql`${invoices.invoiceNumber} LIKE ${likeQuery} ESCAPE '!'`,
-    sql`${workOrders.orderNumber} LIKE ${likeQuery} ESCAPE '!'`,
-    sql`${onlineOrders.orderNumber} LIKE ${likeQuery} ESCAPE '!'`,
-    sql`${customers.name} LIKE ${likeQuery} ESCAPE '!'`,
-    sql`${deliveryConsignments.recipientName} LIKE ${likeQuery} ESCAPE '!'`,
-    sql`${workOrders.contactName} LIKE ${likeQuery} ESCAPE '!'`,
-    sql`${deliveryConsignments.deliveryAddress} LIKE ${likeQuery} ESCAPE '!'`,
-    sql`${customers.address} LIKE ${likeQuery} ESCAPE '!'`,
-    sql`${workOrders.deliveryAddress} LIKE ${likeQuery} ESCAPE '!'`,
-    sql`${onlineOrders.shippingAddress} LIKE ${likeQuery} ESCAPE '!'`,
-    arabicLike(customers.name, normPattern),
-    arabicLike(deliveryConsignments.recipientName, normPattern),
-    arabicLike(workOrders.contactName, normPattern),
-    arabicLike(deliveryConsignments.deliveryAddress, normPattern),
-    arabicLike(customers.address, normPattern),
-    arabicLike(workOrders.deliveryAddress, normPattern),
-    arabicLike(onlineOrders.shippingAddress, normPattern),
-  ];
-
-  if (digits.length >= 2) {
-    const likeDigits = `%${escLike(digits)}%`;
-    searchConds.push(
-      sql`${deliveryConsignments.recipientPhone} LIKE ${likeDigits} ESCAPE '!'`,
-      sql`${customers.phone} LIKE ${likeDigits} ESCAPE '!'`,
-      sql`${customers.phone2} LIKE ${likeDigits} ESCAPE '!'`,
-      sql`${customers.phone3} LIKE ${likeDigits} ESCAPE '!'`,
-      sql`${customers.whatsapp} LIKE ${likeDigits} ESCAPE '!'`,
-      sql`${workOrders.deliveryPhone} LIKE ${likeDigits} ESCAPE '!'`,
-      sql`${workOrders.contactPhone} LIKE ${likeDigits} ESCAPE '!'`,
-      sql`${deliveryConsignments.consignmentNumber} LIKE ${likeDigits} ESCAPE '!'`,
-      sql`${invoices.invoiceNumber} LIKE ${likeDigits} ESCAPE '!'`,
-      sql`${workOrders.orderNumber} LIKE ${likeDigits} ESCAPE '!'`,
-      sql`${onlineOrders.orderNumber} LIKE ${likeDigits} ESCAPE '!'`,
-    );
-
-    if (digits.length <= 9) {
-      const numId = Number(digits);
-      if (!isNaN(numId) && numId > 0) {
-        searchConds.push(
-          eq(deliveryConsignments.id, numId),
-          eq(invoices.id, numId),
-          eq(workOrders.id, numId),
-          eq(onlineOrders.id, numId),
-        );
-      }
-    }
-
-    const localDigits = digits.startsWith("964") ? digits.slice(3) : digits.startsWith("00964") ? digits.slice(5) : digits;
-    if (localDigits.length >= 2 && localDigits !== digits) {
-      const likeLocal = `%${escLike(localDigits)}%`;
-      searchConds.push(
-        sql`${deliveryConsignments.recipientPhone} LIKE ${likeLocal} ESCAPE '!'`,
-        sql`${workOrders.deliveryPhone} LIKE ${likeLocal} ESCAPE '!'`,
-        sql`${customers.phone} LIKE ${likeLocal} ESCAPE '!'`,
-        sql`${customers.phone2} LIKE ${likeLocal} ESCAPE '!'`,
-        sql`${customers.phone3} LIKE ${likeLocal} ESCAPE '!'`,
-        sql`${customers.whatsapp} LIKE ${likeLocal} ESCAPE '!'`,
-      );
-    }
-  }
-
-  if (digits.length >= 7) {
-    const sfx = phoneSuffix10(digits);
-    if (sfx) {
-      const likeSfx = `%${escLike(sfx)}%`;
-      searchConds.push(
-        sql`${deliveryConsignments.recipientPhone} LIKE ${likeSfx} ESCAPE '!'`,
-        sql`${workOrders.deliveryPhone} LIKE ${likeSfx} ESCAPE '!'`,
-        sql`${customers.phone} LIKE ${likeSfx} ESCAPE '!'`,
-        sql`${customers.whatsapp} LIKE ${likeSfx} ESCAPE '!'`,
-      );
-    }
-  }
-
-  const baseConds: any[] = [
+  const baseConds = [
     sql`${deliveryConsignments.parcelStatus} NOT IN ('CANCELLED', 'RETURNED')`,
-    or(...searchConds),
+    search.where,
   ];
 
-  if (opts.branchId != null) {
+  if (opts.branchId != null)
     baseConds.push(eq(deliveryConsignments.branchId, opts.branchId));
-  }
-  if (opts.partyId != null) {
+  if (opts.partyId != null)
     baseConds.push(eq(deliveryConsignments.partyId, opts.partyId));
-  }
-
   const rows = await db
     .select({
+      searchScore: search.score,
+      searchRecipientPhone: deliveryConsignments.recipientPhone,
+      searchDeliveryPhone: workOrders.deliveryPhone,
+      searchContactPhone: workOrders.contactPhone,
+      searchCustomerPhone: customers.phone,
+      searchCustomerPhone2: customers.phone2,
+      searchCustomerPhone3: customers.phone3,
+      searchWhatsapp: customers.whatsapp,
       id: deliveryConsignments.id,
       consignmentNumber: deliveryConsignments.consignmentNumber,
       externalTrackingRef: deliveryConsignments.externalTrackingRef,
@@ -1142,7 +1339,7 @@ export async function predictiveSearchConsignments(
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
       shortfallAssigned: consignmentShortfallAssignedSql,
       customerName: sql<string>`COALESCE(NULLIF(${deliveryConsignments.recipientName}, ''), NULLIF(${customers.name}, ''), NULLIF(${workOrders.contactName}, ''), 'عميل نقدي')`,
-      customerPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${workOrders.contactPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
       deliveryAddress: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${workOrders.deliveryAddress}, ''), NULLIF(${onlineOrders.shippingAddress}, ''), NULLIF(${customers.address}, ''))`,
     })
     .from(deliveryConsignments)
@@ -1164,120 +1361,50 @@ export async function predictiveSearchConsignments(
     .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
     .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
     .where(and(...baseConds))
-    .orderBy(desc(deliveryConsignments.id))
-    .limit(effLimit * 2);
-
-  const normQ = rawQ.toLowerCase();
-  const normArQ = normQ.replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/ى/g, "ي");
+    .orderBy(desc(search.score), desc(deliveryConsignments.id))
+    .limit(effLimit);
 
   const scored = rows.map((r) => {
-    const matchedOn: ("PHONE" | "CUSTOMER_NAME" | "INVOICE_NUMBER" | "CONSIGNMENT_NUMBER" | "ADDRESS" | "ORDER_NUMBER")[] = [];
-    const phone = r.customerPhone ?? "";
-    const name = r.customerName ?? "";
-    const normName = name.toLowerCase().replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/ى/g, "ي");
-    const invNum = r.invoiceNumber ?? "";
-    const cnNum = r.consignmentNumber ?? "";
-    const extRef = r.externalTrackingRef ?? "";
-    const ordNum = r.orderNumber ?? "";
-    const addr = r.deliveryAddress ?? "";
-    const normAddr = addr.toLowerCase().replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/ى/g, "ي");
-
-    let score = 3;
-
-    // مطابقة المعرفات الرقمية المباشرة (ID)
-    if (digits.length >= 2 && digits.length <= 9) {
-      const numId = Number(digits);
-      if (!isNaN(numId) && numId > 0) {
-        if (Number(r.id) === numId) {
-          if (!matchedOn.includes("CONSIGNMENT_NUMBER")) matchedOn.push("CONSIGNMENT_NUMBER");
-          score = Math.min(score, 0);
-        }
-        if (r.invoiceId != null && Number(r.invoiceId) === numId) {
-          if (!matchedOn.includes("INVOICE_NUMBER")) matchedOn.push("INVOICE_NUMBER");
-          score = Math.min(score, 0);
-        }
-        if (
-          (r.workOrderId != null && Number(r.workOrderId) === numId) ||
-          (r.onlineOrderId != null && Number(r.onlineOrderId) === numId)
-        ) {
-          if (!matchedOn.includes("ORDER_NUMBER")) matchedOn.push("ORDER_NUMBER");
-          score = Math.min(score, 0);
-        }
-      }
-    }
-
-    // مطابقة الهاتف
-    const sfxDigits = phoneSuffix10(digits);
-    const sfxPhone = phoneSuffix10(phone);
-    const phoneClean = phone.replace(/\D/g, "");
-    const localDigits = digits.startsWith("964") ? digits.slice(3) : digits.startsWith("00964") ? digits.slice(5) : digits;
-
-    const isPhoneMatch =
-      (digits.length >= 2 && phoneClean.includes(digits)) ||
-      (localDigits.length >= 2 && phoneClean.includes(localDigits)) ||
-      (sfxDigits != null && sfxPhone != null && sfxDigits === sfxPhone) ||
-      (sfxDigits != null && phoneClean.includes(sfxDigits));
-
-    if (isPhoneMatch) {
-      matchedOn.push("PHONE");
-      if (
-        phoneClean === digits ||
-        phoneClean === localDigits ||
-        phoneClean.endsWith(digits) ||
-        phoneClean.endsWith(localDigits) ||
-        (sfxDigits != null && sfxPhone != null && sfxDigits === sfxPhone)
-      ) {
-        score = Math.min(score, 0);
-      } else {
-        score = Math.min(score, 1);
-      }
-    }
-
-    // مطابقة رقم الإرسالية
-    if (cnNum.toLowerCase().includes(normQ) || (digits.length >= 2 && cnNum.includes(digits))) {
-      matchedOn.push("CONSIGNMENT_NUMBER");
-      if (cnNum.toLowerCase() === normQ || (extRef && extRef.toLowerCase() === normQ)) score = Math.min(score, 0);
-      else if (cnNum.toLowerCase().startsWith(normQ)) score = Math.min(score, 1);
-      else score = Math.min(score, 2);
-    }
-
-    // مطابقة رقم البوليصة الخارجي
-    if (extRef && (extRef.toLowerCase().includes(normQ) || (digits.length >= 2 && extRef.includes(digits)))) {
-      if (!matchedOn.includes("CONSIGNMENT_NUMBER")) matchedOn.push("CONSIGNMENT_NUMBER");
-      if (extRef.toLowerCase() === normQ) score = Math.min(score, 0);
-      else if (extRef.toLowerCase().startsWith(normQ)) score = Math.min(score, 1);
-      else score = Math.min(score, 2);
-    }
-
-    // مطابقة رقم الفاتورة
-    if (invNum.toLowerCase().includes(normQ) || (digits.length >= 2 && invNum.includes(digits))) {
-      matchedOn.push("INVOICE_NUMBER");
-      if (invNum.toLowerCase() === normQ) score = Math.min(score, 0);
-      else if (invNum.toLowerCase().startsWith(normQ)) score = Math.min(score, 1);
-      else score = Math.min(score, 2);
-    }
-
-    // مطابقة رقم أمر الشغل أو الطلب
-    if (ordNum && (ordNum.toLowerCase().includes(normQ) || (digits.length >= 2 && ordNum.includes(digits)))) {
-      matchedOn.push("ORDER_NUMBER");
-      if (ordNum.toLowerCase() === normQ) score = Math.min(score, 0);
-      else if (ordNum.toLowerCase().startsWith(normQ)) score = Math.min(score, 1);
-      else score = Math.min(score, 2);
-    }
-
-    // مطابقة اسم العميل
-    if (normName.includes(normArQ) || name.toLowerCase().includes(normQ)) {
+    const target = {
+      names: [r.customerName],
+      phones: [r.searchRecipientPhone, r.searchDeliveryPhone, r.searchContactPhone, r.searchCustomerPhone, r.searchCustomerPhone2, r.searchCustomerPhone3, r.searchWhatsapp],
+      addresses: [r.deliveryAddress],
+      references: [
+        r.id,
+        r.consignmentNumber,
+        r.externalTrackingRef,
+        r.invoiceId,
+        r.invoiceNumber,
+        r.workOrderId,
+        r.onlineOrderId,
+        r.orderNumber,
+      ],
+    };
+    const matchedOn: PredictiveConsignmentItem["matchedOn"] = [];
+    if (matchesDeliverySearch({ phones: target.phones }, opts.query)) matchedOn.push("PHONE");
+    if (matchesDeliverySearch({ names: target.names }, opts.query))
       matchedOn.push("CUSTOMER_NAME");
-      if (normName.startsWith(normArQ)) score = Math.min(score, 1);
-      else score = Math.min(score, 2);
-    }
-
-    // مطابقة العنوان
-    if (normAddr.includes(normArQ) || addr.toLowerCase().includes(normQ)) {
+    if (matchesDeliverySearch({ addresses: target.addresses }, opts.query))
       matchedOn.push("ADDRESS");
-      score = Math.min(score, 2);
-    }
-
+    if (
+      matchesDeliverySearch(
+        { references: [r.invoiceId, r.invoiceNumber] },
+        opts.query,
+      )) matchedOn.push("INVOICE_NUMBER");
+    if (
+      matchesDeliverySearch(
+        { references: [r.id, r.consignmentNumber, r.externalTrackingRef] },
+        opts.query,
+      )) matchedOn.push("CONSIGNMENT_NUMBER");
+      if (
+      matchesDeliverySearch(
+        { references: [r.workOrderId, r.onlineOrderId, r.orderNumber] },
+        opts.query,
+      ))
+      matchedOn.push("ORDER_NUMBER");
+    // Preserve the existing coarse score contract; full shared relevance ranks in SQL.
+    const relevance = Number(r.searchScore);
+    const score = relevance >= 800 ? 0 : relevance >= 300 ? 1 : 2;
     const cod = money(r.codAmount ?? "0");
     const collected = money(r.collectedAmount ?? "0");
     const counterSettled = money(r.counterSettledAmount ?? "0");
@@ -1307,7 +1434,8 @@ export async function predictiveSearchConsignments(
       collectedAmount: String(r.collectedAmount ?? "0.00"),
       counterSettledAmount: String(r.counterSettledAmount ?? "0.00"),
       remainingAmount: remaining,
-      matchedOn: (matchedOn.length > 0 ? matchedOn : ["CONSIGNMENT_NUMBER"]) as ("PHONE" | "CUSTOMER_NAME" | "INVOICE_NUMBER" | "CONSIGNMENT_NUMBER" | "ADDRESS" | "ORDER_NUMBER")[],
+      matchedOn: (matchedOn.length > 0 ? matchedOn : ["CONSIGNMENT_NUMBER"]) as (
+        | "PHONE" | "CUSTOMER_NAME" | "INVOICE_NUMBER" | "CONSIGNMENT_NUMBER" | "ADDRESS" | "ORDER_NUMBER")[],
       score,
     };
   });
@@ -1320,7 +1448,5 @@ export async function predictiveSearchConsignments(
   });
 
   return deduplicated
-    .sort((a, b) => a.score - b.score || b.id - a.id)
     .slice(0, effLimit);
 }
-

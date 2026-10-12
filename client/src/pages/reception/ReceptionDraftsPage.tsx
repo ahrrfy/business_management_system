@@ -36,6 +36,7 @@ import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { useSearch } from "wouter";
+import { ReceptionDuplicateAlert } from "@/components/reception/ReceptionDuplicateAlert";
 
 type DraftItem = RouterOutputs["reception"]["draftList"]["rows"][number];
 
@@ -447,6 +448,12 @@ export function DraftDetailsModal({
             <div className="p-8 text-center text-destructive">تعذر العثور على الطلب المطلوب.</div>
           ) : (
             <>
+              {draft.status === "OPEN" && (
+                <ReceptionDuplicateAlert input={{
+                  branchId: Number(draft.branchId),
+                  reference: { kind: "DRAFT", id: draftId },
+                }} />
+              )}
               {/* بطاقة ملخص العميل والمال */}
               <Card className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3.5 shadow-xs">
                 <div>

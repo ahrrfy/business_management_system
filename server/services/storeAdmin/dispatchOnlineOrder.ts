@@ -12,7 +12,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { eq, and, sql } from "drizzle-orm";
-import { customers, deliveryParties, invoiceItems, invoices, onlineOrderItems, onlineOrders, deliveryConsignments } from "../../../drizzle/schema";
+import { customers, deliveryParties, invoiceItems, invoices, onlineOrderItems, onlineOrders, deliveryConsignments, couponReservations } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { dispatchInvoiceInTx } from "../delivery/dispatchInvoice";
 import { createSaleInTx, notifySaleCustomerAfterCommit } from "../sale/create";
@@ -206,17 +206,56 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
         paymentMode: "COD" as const,
         codDispatchPending: true,
         onlineOrderAllocationId: Number(cur.id),
+        // إسناد البيع للموظف الذي جهز الطلب ليحصل على العمولة وحافز سرعة التجهيز المقطوع
+        attributeToUserId: cur.preparedByUserId
+          ? Number(cur.preparedByUserId)
+          : cur.claimedByUserId
+            ? Number(cur.claimedByUserId)
+            : undefined,
+        salesRepId: cur.preparedByUserId
+          ? Number(cur.preparedByUserId)
+          : cur.claimedByUserId
+            ? Number(cur.claimedByUserId)
+            : undefined,
+        attribution: (cur.preparedByUserId || cur.claimedByUserId)
+          ? {
+              repId: Number(cur.preparedByUserId ?? cur.claimedByUserId),
+              role: "FULFILLER" as const,
+              mode: "DIRECT" as const,
+            }
+          : undefined,
       };
       const sale = await createSaleInTx(tx, saleInput, actor);
       if (lockedCoupon) {
-        await consumeReservedCoupon(tx, lockedCoupon, {
-          onlineOrderId: Number(cur.id),
-          invoiceId: sale.invoiceId,
-          customerId: Number(cur.customerId),
-          branchId,
-          discountAmount: String(cur.couponDiscount ?? "0"),
-          userId: actor.userId,
-        });
+        let discountAmount = "0.00";
+        if (money(cur.couponDiscount).gt(0)) {
+          discountAmount = String(cur.couponDiscount);
+        } else {
+          const res = (
+            await tx
+              .select({ discountAmount: couponReservations.discountAmount })
+              .from(couponReservations)
+              .where(
+                and(
+                  eq(couponReservations.onlineOrderId, cur.id),
+                  eq(couponReservations.status, "ACTIVE"),
+                ),
+              )
+              .limit(1)
+          )[0];
+          discountAmount = res?.discountAmount ? String(res.discountAmount) : "0.00";
+        }
+
+        if (money(discountAmount).gt(0)) {
+          await consumeReservedCoupon(tx, lockedCoupon, {
+            onlineOrderId: Number(cur.id),
+            invoiceId: sale.invoiceId,
+            customerId: Number(cur.customerId),
+            branchId,
+            discountAmount,
+            userId: actor.userId,
+          });
+        }
       }
       invoiceId = sale.invoiceId;
       invoiceNumber = sale.invoiceNumber;

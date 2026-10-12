@@ -8,8 +8,10 @@ import { BroadcastTicker } from "@/components/announcements/BroadcastTicker";
 import { PushNotificationPrompt } from "@/components/notifications/PushNotificationPrompt";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import { openSearch } from "@/lib/searchEvents";
 import { resetSessionForLogout } from "@/lib/offline/sessionBoundary";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
@@ -25,6 +27,7 @@ import {
   shouldSkipColdStudioAuth,
 } from "@/lib/productStudio/coldOfflinePolicy";
 import { usePrinterConnection } from "@/hooks/usePrinterConnection";
+import { setDynamicCompanyProfile } from "@/lib/printing/brand";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Menu, Search, Printer, UserCircle2, ChevronLeft, LogOut, Check,
@@ -129,10 +132,34 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   });
   const [coldProfile, setColdProfile] = useState<OfflineProfile | null>(null);
   const shellCapabilities = coldStudioShellCapabilities(coldStudio);
+  const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery(undefined, { enabled: !coldStudio });
+  const companyProfileQuery = trpc.system.getCompanyProfile.useQuery(undefined, {
+    enabled: !coldStudio && Boolean(me.data),
+    staleTime: 5 * 60_000,
+  });
+
+  useEffect(() => {
+    if (companyProfileQuery.data) {
+      const d = companyProfileQuery.data;
+      setDynamicCompanyProfile({
+        name: d.name,
+        sub: d.tradeName || d.name,
+        short: d.shortName || d.name,
+        subtitle: d.legalSubtitle || "",
+        footer: d.footerText || "",
+        address: d.address || "",
+        taxId: d.taxNumber || "",
+        commercialRegistry: d.commercialRegistry || "",
+        chamberLicense: d.chamberLicense || "",
+        phones: d.phones.map((p) => ({ l: p.label, n: p.number })),
+        logoUrl: d.logoUrl || null,
+      });
+    }
+  }, [companyProfileQuery.data]);
+
   const myStocktakes = trpc.count.mine.useQuery(undefined, {
     enabled: !coldStudio && Boolean(me.data),
-    refetchInterval: 30_000,
   });
   // ٢٩/٨ (بلاغ المالك): «الفنيّ حوّله لجاهز — لا شي يظهر ولا يلاحظه موظفو الاستقبال». Slice A كان
   // إشعاراً داخل شاشة الطابور فقط (يعمل حين تكون مفتوحة). هنا شارةٌ عالميّة على /work-orders
@@ -160,16 +187,56 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
     canBranchQueueWorkOrders ? { branchQueue: true } : {},
     {
       enabled: canReadWorkOrders,
-      refetchInterval: 20_000,
       refetchOnWindowFocus: true,
     },
   );
   // Codex P2 (٢٩/٨) — نستهلك عدّاداً خفيفاً بدل الصفوف الكاملة (شارة تحتاج `.length` فقط).
   const deliveryReadyCountQ = trpc.delivery.readyForDispatchCount.useQuery(undefined, {
     enabled: canReadDelivery,
-    refetchInterval: 20_000,
     refetchOnWindowFocus: true,
   });
+
+  // الاستغناء عن الاستطلاع الدوري (Polling) لصالح الإبطال اللحظي المعتمد على الأحداث (Event-Driven)
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.STOCKTAKE_PROGRESS,
+      REALTIME_EVENT_TYPES.BATCH_SALES_SYNCED,
+    ],
+    () => {
+      if (!coldStudio && me.data) {
+        void utils.count.mine.invalidate();
+      }
+    },
+  );
+
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.WORK_ORDER_CREATED,
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+      REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED,
+      REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+    ],
+    () => {
+      if (canReadWorkOrders) {
+        void utils.workOrders.counts.invalidate();
+      }
+    },
+  );
+
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED,
+      REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+      REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
+      REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED,
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+    ],
+    () => {
+      if (canReadDelivery) {
+        void utils.delivery.readyForDispatchCount.invalidate();
+      }
+    },
+  );
   const workOrderReadyCount = woCounts.data?.ready ?? 0;
   const deliveryReadyCount = deliveryReadyCountQ.data ?? 0;
   const printer = usePrinterConnection();

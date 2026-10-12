@@ -1,5 +1,13 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
 import { applyPermissionOverrides, diffFromTemplate, resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
+import {
+  resolveAtomicPermissions,
+  resolveOperationalCaps,
+  resolveSensitiveDataMasking,
+  type AtomicPermissionsMap,
+  type OperationalCaps,
+  type SensitiveDataMasking,
+} from "@shared/atomicPermissions";
 import type { User } from "../drizzle/schema";
 import type { NativeClientId } from "./auth/deviceProof";
 import { getSessionContext } from "./auth/session";
@@ -7,12 +15,15 @@ import { loadActiveCustomRole } from "./services/roleService";
 import { getPlatformAdminFromRequest } from "./tenancy/platformAuth";
 import type { PlatformAdmin } from "./tenancy/controlSchema";
 
-/** المستخدم المُحلّل: صفّ users + (للأدوار المخصّصة) تسمية/مفتاح الدور للعرض. */
+/** المستخدم المُحلّل: صفّ users + (للأدوار المخصّصة) تسمية/مفتاح الدور للعرض + الصلاحيات والسقوف المحلولة. */
 export type AuthUser = User & {
   customRoleLabel?: string | null;
   customRoleKey?: string | null;
   /** ش٢: دورٌ مخصّص مُسنَد لكنه معطَّل/محذوف ⇒ هبط الحساب فشلاً مغلقاً إلى «user» (لا الفئة الكاملة). */
   roleLockedByInactiveCustomRole?: boolean;
+  resolvedAtomicPermissions?: AtomicPermissionsMap;
+  resolvedOperationalCaps?: Required<OperationalCaps>;
+  resolvedSensitiveDataMasking?: Required<SensitiveDataMasking>;
 };
 
 export type TrpcContext = {
@@ -39,6 +50,9 @@ export function normalizeOwnerAuthority(user: AuthUser): AuthUser {
   user.customRoleLabel = null;
   user.customRoleKey = null;
   user.roleLockedByInactiveCustomRole = false;
+  user.resolvedAtomicPermissions = resolveAtomicPermissions("admin");
+  user.resolvedOperationalCaps = resolveOperationalCaps("admin");
+  user.resolvedSensitiveDataMasking = resolveSensitiveDataMasking("admin");
   return user;
 }
 
@@ -48,9 +62,29 @@ export function normalizeOwnerAuthority(user: AuthUser): AuthUser {
  *  permissionsOverride ← خريطة الدور المخصّص، ثم استثناء المستخدم الفردي إن وُجد.
  * هكذا تعمل كل البوّابات (requireRole/requireModule/canSeeCost) بلا أي تغيير، وتنتشر تعديلات
  * الدور لحظياً (يُقرأ الدور طازجاً كل طلب). إن عُطِّل الدور/حُذف ⇒ نرجع للدور المخزَّن (baseRole) بأمان.
+ * كما يحلّ الصلاحيات الذرية والسقوف الرقمية للمستخدم (أدوار افتراضية ومخصصة واستثناءات).
  */
 export async function resolveCustomRole(user: AuthUser): Promise<void> {
-  if (!user.customRoleId) return;
+  if (!user || typeof user !== "object") return;
+  if (!user.customRoleId) {
+    const baseRole = user.role ?? "user";
+    user.resolvedAtomicPermissions = resolveAtomicPermissions(
+      baseRole,
+      null,
+      user.atomicPermissions as AtomicPermissionsMap | null,
+    );
+    user.resolvedOperationalCaps = resolveOperationalCaps(
+      baseRole,
+      null,
+      user.operationalCaps as OperationalCaps | null,
+    );
+    user.resolvedSensitiveDataMasking = resolveSensitiveDataMasking(
+      baseRole,
+      null,
+      null,
+    );
+    return;
+  }
   const role = await loadActiveCustomRole(user.customRoleId);
   if (!role) {
     // ش٢ — إغلاق الفشل المفتوح: كان دورٌ مخصّص معطَّل/محذوف يُبقي baseRole المخزَّن (users.role)
@@ -63,6 +97,9 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
     user.customRoleLabel = null;
     user.customRoleKey = null;
     user.roleLockedByInactiveCustomRole = true;
+    user.resolvedAtomicPermissions = resolveAtomicPermissions("user");
+    user.resolvedOperationalCaps = resolveOperationalCaps("user");
+    user.resolvedSensitiveDataMasking = resolveSensitiveDataMasking("user");
     return;
   }
   user.role = role.baseRole as RoleKey as User["role"];
@@ -77,6 +114,21 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
   user.permissionsOverride = diffFromTemplate(baseRole, effectivePermissions);
   user.customRoleLabel = role.label;
   user.customRoleKey = role.key;
+  user.resolvedAtomicPermissions = resolveAtomicPermissions(
+    baseRole,
+    role.atomicPermissions as AtomicPermissionsMap | null,
+    user.atomicPermissions as AtomicPermissionsMap | null,
+  );
+  user.resolvedOperationalCaps = resolveOperationalCaps(
+    baseRole,
+    role.operationalCaps as OperationalCaps | null,
+    user.operationalCaps as OperationalCaps | null,
+  );
+  user.resolvedSensitiveDataMasking = resolveSensitiveDataMasking(
+    baseRole,
+    null,
+    null,
+  );
 }
 
 export async function createContext(

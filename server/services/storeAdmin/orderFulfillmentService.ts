@@ -11,6 +11,8 @@ import { appErrorMessage } from "@shared/errors";
 import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import {
   bundleComponents,
+  couponPrograms,
+  couponReservations,
   customers,
   deliveryParties,
   invoices,
@@ -20,8 +22,11 @@ import {
   productVariants,
   productImages,
   products,
+  promotions,
   storeSettings as storeSettingsTable,
+  users,
 } from "../../../drizzle/schema";
+import { alias } from "drizzle-orm/mysql-core";
 import { getDb } from "../../db";
 import { money, round2 } from "../money";
 import { withTx } from "../tx";
@@ -81,6 +86,16 @@ export interface OnlineOrderRow {
   longitude?: string | null;
   itemCount: number;
   createdAt: Date;
+  reservationExpiresAt: Date | null;
+  claimedByUserId: number | null;
+  claimedByName: string | null;
+  claimedAt: Date | null;
+  preparedByUserId: number | null;
+  preparedByName: string | null;
+  preparedAt: Date | null;
+  fulfillmentDurationMinutes: number | null;
+  contactStatus: "NOT_CONTACTED" | "WHATSAPP_SENT" | "CALLED_CONFIRMED" | "NO_ANSWER" | "RETRY";
+  contactNotes: string | null;
 }
 
 /** قائمة طلبات المتجر (اختياري: فلترة حالة/مدى تاريخ + تحميل صفحات إضافية بالمؤشّر) — مقيّدة
@@ -117,6 +132,10 @@ export async function listOnlineOrders(opts: {
   }
   if (opts.cursor != null) conds.push(lt(onlineOrders.id, opts.cursor));
   const where = conds.length ? and(...conds) : undefined;
+
+  const claimedUsers = alias(users, "claimedUsers");
+  const preparedUsers = alias(users, "preparedUsers");
+
   const rows = await db
     .select({
       id: onlineOrders.id,
@@ -136,13 +155,26 @@ export async function listOnlineOrders(opts: {
       latitude: onlineOrders.latitude,
       longitude: onlineOrders.longitude,
       createdAt: onlineOrders.createdAt,
+      reservationExpiresAt: onlineOrders.reservationExpiresAt,
+      claimedByUserId: onlineOrders.claimedByUserId,
+      claimedByName: claimedUsers.name,
+      claimedAt: onlineOrders.claimedAt,
+      preparedByUserId: onlineOrders.preparedByUserId,
+      preparedByName: preparedUsers.name,
+      preparedAt: onlineOrders.preparedAt,
+      fulfillmentDurationMinutes: onlineOrders.fulfillmentDurationMinutes,
+      contactStatus: onlineOrders.contactStatus,
+      contactNotes: onlineOrders.contactNotes,
       itemCount: sql<number>`(SELECT COUNT(*) FROM ${onlineOrderItems} WHERE ${onlineOrderItems.onlineOrderId} = ${onlineOrders.id})`,
     })
     .from(onlineOrders)
     .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
+    .leftJoin(claimedUsers, eq(onlineOrders.claimedByUserId, claimedUsers.id))
+    .leftJoin(preparedUsers, eq(onlineOrders.preparedByUserId, preparedUsers.id))
     .where(where)
     .orderBy(desc(onlineOrders.id))
     .limit(limit);
+
   return rows.map((r) => ({
     id: Number(r.id),
     orderNumber: r.orderNumber,
@@ -160,6 +192,16 @@ export async function listOnlineOrders(opts: {
     cancelReason: r.cancelReason ?? null,
     itemCount: Number(r.itemCount),
     createdAt: r.createdAt,
+    reservationExpiresAt: r.reservationExpiresAt ? new Date(r.reservationExpiresAt) : null,
+    claimedByUserId: r.claimedByUserId != null ? Number(r.claimedByUserId) : null,
+    claimedByName: r.claimedByName ?? null,
+    claimedAt: r.claimedAt ? new Date(r.claimedAt) : null,
+    preparedByUserId: r.preparedByUserId != null ? Number(r.preparedByUserId) : null,
+    preparedByName: r.preparedByName ?? null,
+    preparedAt: r.preparedAt ? new Date(r.preparedAt) : null,
+    fulfillmentDurationMinutes: r.fulfillmentDurationMinutes != null ? Number(r.fulfillmentDurationMinutes) : null,
+    contactStatus: (r.contactStatus as OnlineOrderRow["contactStatus"]) ?? "NOT_CONTACTED",
+    contactNotes: r.contactNotes ?? null,
   }));
 }
 
@@ -206,6 +248,8 @@ export interface OnlineOrderDetail extends OnlineOrderRow {
 export async function getOnlineOrder(id: number, scopedBranchId: number | null): Promise<OnlineOrderDetail | null> {
   const db = getDb();
   if (!db) return null;
+  const claimedUsers = alias(users, "claimedUsers");
+  const preparedUsers = alias(users, "preparedUsers");
   const order = (
     await db
       .select({
@@ -230,10 +274,22 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
         couponCode: onlineOrders.couponCode,
         couponDiscount: onlineOrders.couponDiscount,
         createdAt: onlineOrders.createdAt,
+        reservationExpiresAt: onlineOrders.reservationExpiresAt,
+        claimedByUserId: onlineOrders.claimedByUserId,
+        claimedByName: claimedUsers.name,
+        claimedAt: onlineOrders.claimedAt,
+        preparedByUserId: onlineOrders.preparedByUserId,
+        preparedByName: preparedUsers.name,
+        preparedAt: onlineOrders.preparedAt,
+        fulfillmentDurationMinutes: onlineOrders.fulfillmentDurationMinutes,
+        contactStatus: onlineOrders.contactStatus,
+        contactNotes: onlineOrders.contactNotes,
       })
       .from(onlineOrders)
       .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
       .leftJoin(deliveryParties, eq(onlineOrders.deliveryPartyId, deliveryParties.id))
+      .leftJoin(claimedUsers, eq(onlineOrders.claimedByUserId, claimedUsers.id))
+      .leftJoin(preparedUsers, eq(onlineOrders.preparedByUserId, preparedUsers.id))
       .where(eq(onlineOrders.id, id))
       .limit(1)
   )[0];
@@ -289,6 +345,16 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
     couponDiscount: String(order.couponDiscount ?? "0"),
     itemCount: items.length,
     createdAt: order.createdAt,
+    reservationExpiresAt: order.reservationExpiresAt ? new Date(order.reservationExpiresAt) : null,
+    claimedByUserId: order.claimedByUserId != null ? Number(order.claimedByUserId) : null,
+    claimedByName: order.claimedByName ?? null,
+    claimedAt: order.claimedAt ? new Date(order.claimedAt) : null,
+    preparedByUserId: order.preparedByUserId != null ? Number(order.preparedByUserId) : null,
+    preparedByName: order.preparedByName ?? null,
+    preparedAt: order.preparedAt ? new Date(order.preparedAt) : null,
+    fulfillmentDurationMinutes: order.fulfillmentDurationMinutes != null ? Number(order.fulfillmentDurationMinutes) : null,
+    contactStatus: (order.contactStatus as OnlineOrderRow["contactStatus"]) ?? "NOT_CONTACTED",
+    contactNotes: order.contactNotes ?? null,
     items: items.map((i) => ({
       id: Number(i.id),
       productId: Number(i.productId),
@@ -530,6 +596,49 @@ export async function updateOnlineOrder(
         .limit(1)
     )[0];
 
+    // استعادة ميزة شحن الكوبون المحجوزة للطلب لضمان عدم فقدانها عند إعادة حساب الطلب أو تغيير العنوان
+    let couponShipping: { freeShipping?: boolean; shippingDiscountAmount?: string | null } | null = null;
+    let activeReservation: { id: number; programId: number } | null = null;
+    if (order.couponCode) {
+      const reservation = (
+        await tx
+          .select({
+            id: couponReservations.id,
+            programId: couponReservations.programId,
+          })
+          .from(couponReservations)
+          .where(
+            and(
+              eq(couponReservations.onlineOrderId, order.id),
+              eq(couponReservations.status, "ACTIVE"),
+            ),
+          )
+          .limit(1)
+      )[0];
+
+      if (reservation) {
+        activeReservation = { id: Number(reservation.id), programId: Number(reservation.programId) };
+        const promo = (
+          await tx
+            .select({
+              freeShipping: promotions.freeShipping,
+              shippingDiscountAmount: promotions.shippingDiscountAmount,
+            })
+            .from(couponPrograms)
+            .innerJoin(promotions, eq(couponPrograms.promotionId, promotions.id))
+            .where(eq(couponPrograms.id, reservation.programId))
+            .limit(1)
+        )[0];
+
+        if (promo?.freeShipping) {
+          couponShipping = {
+            freeShipping: true,
+            shippingDiscountAmount: promo.shippingDiscountAmount ? String(promo.shippingDiscountAmount) : "0.00",
+          };
+        }
+      }
+    }
+
     // 6. Handle items update if items array provided
     if (input.items !== undefined) {
       const customizedItem = (await tx
@@ -723,6 +832,7 @@ export async function updateOnlineOrder(
         storeSettings?.freeShippingThreshold,
         retailSubtotal.toFixed(2),
         storeSettings?.freeShippingThresholdGovernorates,
+        couponShipping,
       );
 
       // Deduct coupon discount if order had one
@@ -747,9 +857,35 @@ export async function updateOnlineOrder(
         });
       }
 
+      let targetCouponCode = order.couponCode;
+      if (activeReservation && couponShipping?.freeShipping && currentCouponDiscount.lte(0)) {
+        if (money(quoteTotals.couponDeliveryWaivedAmount).gt(0)) {
+          await tx
+            .update(couponReservations)
+            .set({
+              discountAmount: quoteTotals.couponDeliveryWaivedAmount,
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+        } else {
+          // Destination's store threshold now grants free delivery:
+          // Release reservation and detach coupon from order so customer's one-time coupon isn't burned with 0 incremental benefit.
+          await tx
+            .update(couponReservations)
+            .set({
+              status: "RELEASED",
+              releasedAt: sql`CURRENT_TIMESTAMP(3)`,
+              releaseReason: "شحن مجاني تلقائي من سقف المتجر",
+              discountAmount: "0.00",
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+          targetCouponCode = null;
+        }
+      }
+
       await tx
         .update(onlineOrders)
         .set({
+          couponCode: targetCouponCode,
           subtotal: quoteTotals.subtotal,
           shippingCost: quoteTotals.deliveryFee,
           deliveryFree: quoteTotals.deliveryFree,
@@ -785,15 +921,42 @@ export async function updateOnlineOrder(
         storeSettings?.freeShippingThreshold,
         String(order.subtotal),
         storeSettings?.freeShippingThresholdGovernorates,
+        couponShipping,
       );
 
       // quoteTotals.total is subtotal (sum of existing item line totals, which already reflect any coupon discount) + deliveryFee.
       // Do NOT subtract couponDiscount again to prevent double coupon deduction.
       const grandTotal = money(quoteTotals.total);
 
+      let targetCouponCode = order.couponCode;
+      if (activeReservation && couponShipping?.freeShipping && money(order.couponDiscount ?? "0").lte(0)) {
+        if (money(quoteTotals.couponDeliveryWaivedAmount).gt(0)) {
+          await tx
+            .update(couponReservations)
+            .set({
+              discountAmount: quoteTotals.couponDeliveryWaivedAmount,
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+        } else {
+          // Destination's store threshold now grants free delivery:
+          // Release reservation and detach coupon from order so customer's one-time coupon isn't burned with 0 incremental benefit.
+          await tx
+            .update(couponReservations)
+            .set({
+              status: "RELEASED",
+              releasedAt: sql`CURRENT_TIMESTAMP(3)`,
+              releaseReason: "شحن مجاني تلقائي من سقف المتجر",
+              discountAmount: "0.00",
+            })
+            .where(eq(couponReservations.id, activeReservation.id));
+          targetCouponCode = null;
+        }
+      }
+
       await tx
         .update(onlineOrders)
         .set({
+          couponCode: targetCouponCode,
           shippingCost: quoteTotals.deliveryFee,
           deliveryFree: quoteTotals.deliveryFree,
           deliveryWaivedAmount: quoteTotals.deliveryWaivedAmount,
@@ -815,4 +978,512 @@ export async function updateOnlineOrder(
     }
   });
 }
+
+/**
+ * استلام موظف للطلب لحسابه (Claiming):
+ * يسجل الطلب باسم الموظف ويبدأ توقيت التجهيز لحساب عمولته وحافز السرعة،
+ * ويمنع تشتت المسؤولية وحجة «مو شغلي وما ندري».
+ */
+export async function claimOnlineOrder(
+  input: { id: number; scopedBranchId: number | null },
+  actor: { userId: number; role?: string }
+): Promise<{ success: boolean; claimedByUserId: number; orderNumber: string }> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  return await withTx(async (tx) => {
+    const order = (
+      await tx
+        .select()
+        .from(onlineOrders)
+        .where(eq(onlineOrders.id, input.id))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!order) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "الطلب غير موجود في النظام",
+          why: `لم يُعثر على سجل طلب متجر بالمعرّف ${input.id}`,
+          doThis: "تحقّق من رقم الطلب أو أعد تحديث قائمة الطلبات الواردة",
+        }),
+      });
+    }
+    if (input.scopedBranchId != null && Number(order.branchId) !== input.scopedBranchId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر استلام الطلب للتجهيز",
+          why: "الطلب مسجّل على فرع آخر خارج نطاق صلاحيتك الحالية",
+          doThis: "تواصل مع مدير الفرع المعني أو بدّل الفرع في النظام",
+        }),
+      });
+    }
+    if (order.status === "CANCELLED" || order.status === "DELIVERED" || order.status === "SHIPPED") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن استلام هذا الطلب للتجهيز",
+          why:
+            order.status === "SHIPPED"
+              ? "تم شحن الطلب وتسليمه للمندوب بالفعل"
+              : "الطلب ملغى أو تم تسليمه للعميل مسبقاً",
+          doThis: "اختر طلباً قيد الانتظار أو قيد المعالجة لتجهيزه",
+        }),
+      });
+    }
+
+    const elevated = actor.role === "admin" || actor.role === "manager";
+    if (order.claimedByUserId && Number(order.claimedByUserId) !== actor.userId && !elevated) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "الطلب مستلم ومحجوز مسبقاً",
+          why: "قام موظف آخر بالتقاط هذا الطلب لحسابه وبدأ التجهيز بالفعل",
+          doThis: "اختر طلباً آخر غير مستلم أو راجع مدير الصالة لإعادة التعيين",
+        }),
+      });
+    }
+
+    if (order.status === "PENDING") {
+      const expiry = (
+        await tx
+          .select({
+            reservationExpiresAt: sql<Date>`COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR))`,
+            expired: sql<number>`COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR)) <= CURRENT_TIMESTAMP(3)`,
+          })
+          .from(onlineOrders)
+          .where(eq(onlineOrders.id, input.id))
+          .limit(1)
+      )[0];
+      if (expiry && Number(expiry.expired) === 1) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر استلام الطلب للتجهيز",
+            why: "انتهت مهلة حجز مخزون هذا الطلب — اطلب من الزبون إعادة الطلب حسب التوفر الحالي",
+            doThis: "اطلب من الزبون إعادة الطلب حسب التوفر الحالي للمخزون",
+          }),
+        });
+      }
+      await confirmCouponReservationForOnlineOrder(tx, input.id);
+    }
+
+    await tx
+      .update(onlineOrders)
+      .set({
+        claimedByUserId: actor.userId,
+        claimedAt: order.claimedAt ?? new Date(),
+        status: order.status === "PENDING" ? "CONFIRMED" : order.status,
+      })
+      .where(eq(onlineOrders.id, input.id));
+
+    return {
+      success: true,
+      claimedByUserId: actor.userId,
+      orderNumber: order.orderNumber,
+    };
+  });
+}
+
+/**
+ * تحديث حالة التواصل والمراسلة مع العميل وتثبيت الطلب هاتفياً/واتساب
+ */
+export async function updateOnlineOrderContact(
+  input: {
+    id: number;
+    contactStatus: "NOT_CONTACTED" | "WHATSAPP_SENT" | "CALLED_CONFIRMED" | "NO_ANSWER" | "RETRY";
+    contactNotes?: string | null;
+    scopedBranchId: number | null;
+  },
+  actor: { userId: number; role?: string }
+): Promise<{ success: boolean; contactStatus: string }> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  return await withTx(async (tx) => {
+    const order = (
+      await tx
+        .select()
+        .from(onlineOrders)
+        .where(eq(onlineOrders.id, input.id))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!order) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "الطلب غير موجود في النظام",
+          why: `لم يُعثر على سجل الطلب بالمعرّف ${input.id}`,
+          doThis: "أعد تحديث الصفحة وتأكد من وجود الطلب في القائمة",
+        }),
+      });
+    }
+    if (input.scopedBranchId != null && Number(order.branchId) !== input.scopedBranchId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر تحديث حالة الاتصال للطلب",
+          why: "الطلب مسجّل على فرع آخر خارج نطاق صلاحيتك الحالية",
+          doThis: "بدّل الفرع الحالي في الشريط العلوي للفرع المطابق",
+        }),
+      });
+    }
+    if (order.status === "CANCELLED" || order.status === "DELIVERED") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تحديث حالة الاتصال للطلب",
+          why: `الطلب حالياً بحالة «${order.status}» وهي حالة نهائية`,
+          doThis: "اختر طلباً نشطاً لتحديث حالة التواصل",
+        }),
+      });
+    }
+
+    if (input.contactStatus === "CALLED_CONFIRMED" && order.status === "PENDING") {
+      const expiry = (
+        await tx
+          .select({
+            reservationExpiresAt: sql<Date>`COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR))`,
+            expired: sql<number>`COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR)) <= CURRENT_TIMESTAMP(3)`,
+          })
+          .from(onlineOrders)
+          .where(eq(onlineOrders.id, input.id))
+          .limit(1)
+      )[0];
+      if (expiry && Number(expiry.expired) === 1) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر تأكيد الطلب هاتفياً",
+            why: "انتهت مهلة حجز مخزون هذا الطلب — اطلب من الزبون إعادة الطلب حسب التوفر الحالي",
+            doThis: "اطلب من الزبون إعادة الطلب حسب التوفر الحالي للمخزون",
+          }),
+        });
+      }
+      await confirmCouponReservationForOnlineOrder(tx, input.id);
+    }
+
+    await tx
+      .update(onlineOrders)
+      .set({
+        contactStatus: input.contactStatus,
+        contactNotes: input.contactNotes !== undefined ? input.contactNotes : order.contactNotes,
+        status: input.contactStatus === "CALLED_CONFIRMED" && order.status === "PENDING" ? "CONFIRMED" : order.status,
+        claimedByUserId: order.claimedByUserId ?? actor.userId,
+        claimedAt: order.claimedAt ?? new Date(),
+      })
+      .where(eq(onlineOrders.id, input.id));
+
+    return { success: true, contactStatus: input.contactStatus };
+  });
+}
+
+/**
+ * إتمام تجهيز الطلب وتعليبه (Mark as Prepared):
+ * يحسب سرعة التجهيز بالدقائق ويقيد الطلب للموظف المجهز ليحصل على عمولته وحافز السرعة
+ */
+export async function markOnlineOrderPrepared(
+  input: { id: number; scopedBranchId: number | null },
+  actor: { userId: number; role?: string }
+): Promise<{
+  success: boolean;
+  durationMinutes: number;
+  orderNumber: string;
+  orderId?: number;
+  status?: string;
+  preparedAt?: Date | null;
+  preparedByUserId?: number | null;
+  idempotent?: boolean;
+}> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  return await withTx(async (tx) => {
+    const order = (
+      await tx
+        .select()
+        .from(onlineOrders)
+        .where(eq(onlineOrders.id, input.id))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!order) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "الطلب غير موجود في النظام",
+          why: `لم يُعثر على سجل الطلب رقم ${input.id}`,
+          doThis: "تأكد من رقم الطلب من القائمة الرئيسية وأعد المحاولة",
+        }),
+      });
+    }
+    if (input.scopedBranchId != null && Number(order.branchId) !== input.scopedBranchId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر إتمام تجهيز الطلب",
+          why: "الطلب مسجّل على فرع آخر غير الفرع المصرّح لك بالعمل عليه",
+          doThis: "راجع إدارة الفرع المختص أو اختر طلباً من فرعك",
+        }),
+      });
+    }
+    if (order.status === "CANCELLED" || order.status === "DELIVERED" || order.status === "SHIPPED") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر وضع علامة تم التجهيز",
+          why: `الطلب حالياً بحالة «${order.status}» ولا يقبل إجراء التجهيز مجدداً`,
+          doThis: "اختر طلباً مفتوحاً قيد المعالجة لتسجيل اكتمال تجهيزه",
+        }),
+      });
+    }
+    if (order.status !== "CONFIRMED" && order.status !== "PROCESSING") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر وضع علامة تم التجهيز",
+          why: `الطلب حالياً بحالة «${order.status}» ولا يقبل إجراء التجهيز مباشرة (يجب أن يكون مثبتاً أو قيد التجهيز)`,
+          doThis: "ثبّت الطلب أولاً قبل البدء بتجهيزه",
+        }),
+      });
+    }
+
+    const elevated = actor.role === "admin" || actor.role === "manager";
+    const otherClaimed = order.claimedByUserId && Number(order.claimedByUserId) !== actor.userId;
+    const otherPrepared = order.preparedByUserId && Number(order.preparedByUserId) !== actor.userId;
+    if ((otherClaimed || otherPrepared) && !elevated) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "الطلب مستلم للتجهيز بواسطة موظف آخر",
+          why: "قام موظف آخر باستلام هذا الطلب للتجهيز بالفعل",
+          doThis: "اختر طلباً مخصصاً لك أو راجع مشرف الصالة",
+        }),
+      });
+    }
+
+    if (order.preparedAt) {
+      return {
+        success: true,
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        status: order.status,
+        preparedAt: order.preparedAt,
+        durationMinutes: Number(order.fulfillmentDurationMinutes ?? 1),
+        preparedByUserId: order.preparedByUserId != null ? Number(order.preparedByUserId) : null,
+        idempotent: true,
+      };
+    }
+
+    const startTime = order.claimedAt ?? order.createdAt;
+    const now = new Date();
+    const durationMinutes = Math.max(1, Math.round((now.getTime() - new Date(startTime).getTime()) / 60000));
+
+    await tx
+      .update(onlineOrders)
+      .set({
+        preparedByUserId: actor.userId,
+        preparedAt: now,
+        fulfillmentDurationMinutes: durationMinutes,
+        status: "PROCESSING",
+        claimedByUserId: order.claimedByUserId ?? actor.userId,
+        claimedAt: order.claimedAt ?? now,
+      })
+      .where(eq(onlineOrders.id, input.id));
+
+    return {
+      success: true,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      status: "PROCESSING",
+      preparedAt: now,
+      durationMinutes,
+      preparedByUserId: actor.userId,
+      idempotent: false,
+    };
+  });
+}
+
+export interface LeaderboardEntry {
+  userId: number;
+  userName: string;
+  count: number;
+  avgMinutes: number;
+  fastestMinutes: number;
+}
+
+/**
+ * لوحة أبطال التجهيز والمنافسة اليومية والشهرية (Leaderboard):
+ * يعرض عدد الطلبات المجهزة ومتوسط سرعة التجهيز لكل موظف لفتح التنافس وتحفيز الإنتاجية
+ */
+export async function getOnlineOrderLeaderboard(scopedBranchId: number | null): Promise<{
+  today: LeaderboardEntry[];
+  month: LeaderboardEntry[];
+}> {
+  const db = getDb();
+  if (!db) return { today: [], month: [] };
+
+  const now = new Date();
+  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
+
+  const queryFor = async (since: Date) => {
+    const conds = [
+      sql`${onlineOrders.preparedByUserId} IS NOT NULL`,
+      gte(onlineOrders.preparedAt, since),
+    ];
+    if (scopedBranchId != null) conds.push(eq(onlineOrders.branchId, scopedBranchId));
+
+    const rows = await db
+      .select({
+        userId: onlineOrders.preparedByUserId,
+        userName: users.name,
+        count: sql<number>`COUNT(*)`,
+        avgMinutes: sql<number>`ROUND(AVG(COALESCE(${onlineOrders.fulfillmentDurationMinutes}, 10)))`,
+        fastestMinutes: sql<number>`MIN(COALESCE(${onlineOrders.fulfillmentDurationMinutes}, 10))`,
+      })
+      .from(onlineOrders)
+      .innerJoin(users, eq(onlineOrders.preparedByUserId, users.id))
+      .where(and(...conds))
+      .groupBy(onlineOrders.preparedByUserId, users.name)
+      .orderBy(desc(sql`COUNT(*)`), asc(sql`AVG(COALESCE(${onlineOrders.fulfillmentDurationMinutes}, 10))`))
+      .limit(10);
+
+    return rows.map((r) => ({
+      userId: Number(r.userId),
+      userName: r.userName ?? "—",
+      count: Number(r.count),
+      avgMinutes: Number(r.avgMinutes || 0),
+      fastestMinutes: Number(r.fastestMinutes || 0),
+    }));
+  };
+
+  const [today, month] = await Promise.all([queryFor(todayStart), queryFor(monthStart)]);
+  return { today, month };
+}
+
+/**
+ * التوزيع التلقائي العادل الإجباري للطلبات المعلقة (Smart Round-Robin Dispatch):
+ * يفحص موظفي الاستقبال/المبيعات النشطين في الفرع، ويوزع الطلبات المعلقة بالتناوب الآلي الصارم.
+ * يضمن عدالة العبء التشغيلي وفرص العمولات ومنع تراكم الطلبات أو التهرب من المسؤولية.
+ */
+export async function autoAssignRoundRobinOnlineOrders(
+  input: { scopedBranchId: number | null },
+  actor: { userId: number; role?: string }
+): Promise<{
+  assignedCount: number;
+  assignments: Array<{ orderId: number; orderNumber: string; assignedToUserId: number; assignedToName: string }>;
+}> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+
+  return await withTx(async (tx) => {
+    // 1. استرجاع الطلبات المعلقة غير المستلمة (PENDING + claimedByUserId IS NULL)
+    const baseConds = [
+      eq(onlineOrders.status, "PENDING"),
+      sql`${onlineOrders.claimedByUserId} IS NULL`,
+    ];
+    if (input.scopedBranchId != null) {
+      baseConds.push(eq(onlineOrders.branchId, input.scopedBranchId));
+    }
+
+    const unassignedOrders = await tx
+      .select({
+        id: onlineOrders.id,
+        orderNumber: onlineOrders.orderNumber,
+        status: onlineOrders.status,
+        branchId: onlineOrders.branchId,
+        createdAt: onlineOrders.createdAt,
+      })
+      .from(onlineOrders)
+      .where(and(...baseConds))
+      .orderBy(asc(onlineOrders.createdAt))
+      .for("update");
+
+    if (unassignedOrders.length === 0) {
+      return { assignedCount: 0, assignments: [] };
+    }
+
+    // 2. البحث عن موظفي الفرع المؤهلين النشطين
+    const userConds = [eq(users.isActive, true)];
+    if (input.scopedBranchId != null) {
+      userConds.push(eq(users.branchId, input.scopedBranchId));
+    }
+    const eligibleStaff = await tx
+      .select({
+        id: users.id,
+        name: users.name,
+      })
+      .from(users)
+      .where(and(...userConds))
+      .orderBy(asc(users.id));
+
+    if (eligibleStaff.length === 0) {
+      eligibleStaff.push({ id: actor.userId, name: "المستخدم الحالي" });
+    }
+
+    // 3. تطبيق Round-Robin بالتناوب انطلاقاً من آخر إسناد
+    const lastClaimed = (
+      await tx
+        .select({ claimedByUserId: onlineOrders.claimedByUserId })
+        .from(onlineOrders)
+        .where(
+          and(
+            sql`${onlineOrders.claimedByUserId} IS NOT NULL`,
+            input.scopedBranchId != null ? eq(onlineOrders.branchId, input.scopedBranchId) : undefined,
+          )
+        )
+        .orderBy(desc(onlineOrders.claimedAt))
+        .limit(1)
+    )[0];
+
+    let startIdx = 0;
+    if (lastClaimed?.claimedByUserId) {
+      const lastIndex = eligibleStaff.findIndex((s) => s.id === lastClaimed.claimedByUserId);
+      if (lastIndex >= 0) {
+        startIdx = (lastIndex + 1) % eligibleStaff.length;
+      }
+    }
+
+    const assignments: Array<{
+      orderId: number;
+      orderNumber: string;
+      assignedToUserId: number;
+      assignedToName: string;
+    }> = [];
+
+    const assignTime = new Date();
+
+    for (let i = 0; i < unassignedOrders.length; i++) {
+      const order = unassignedOrders[i];
+      const staff = eligibleStaff[(startIdx + i) % eligibleStaff.length];
+
+      if (order.status === "PENDING") {
+        await confirmCouponReservationForOnlineOrder(tx, order.id);
+      }
+
+      await tx
+        .update(onlineOrders)
+        .set({
+          claimedByUserId: staff.id,
+          claimedAt: assignTime,
+          status: order.status === "PENDING" ? "CONFIRMED" : order.status,
+        })
+        .where(eq(onlineOrders.id, order.id));
+
+      assignments.push({
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        assignedToUserId: staff.id,
+        assignedToName: staff.name ?? "—",
+      });
+    }
+
+    return {
+      assignedCount: assignments.length,
+      assignments,
+    };
+  });
+}
+
 

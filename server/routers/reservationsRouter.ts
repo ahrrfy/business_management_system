@@ -16,10 +16,14 @@ import {
 } from "../services/reservations";
 import { requireDb } from "../services/tx";
 import { logger } from "../logger";
-import { branchScopedProcedure, requireModule, router } from "../trpc";
+import { branchScopedProcedure, requireAtomicPermission, requireModule, router } from "../trpc";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { publishRealtimeEvent } from "../realtime";
+import { REALTIME_EVENT_TYPES } from "../../shared/realtimeEvents";
 
-const reservationsRead = branchScopedProcedure.use(requireModule("reservations", "READ"));
+const reservationsRead = branchScopedProcedure
+  .use(requireModule("reservations", "READ"))
+  .use(requireAtomicPermission("inventory.reservation.view"));
 const reservationsWrite = branchScopedProcedure.use(requireModule("reservations", "FULL"));
 
 /**
@@ -279,6 +283,7 @@ export const reservationsRouter = router({
           .min(1),
       }),
     )
+    .use(requireAtomicPermission("inventory.reservation.create"))
     .mutation(async ({ ctx, input }) => {
       // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران؛ المدير يحجز بفرعه المُسنَد فقط.
       const elevated = ctx.user.role === "admin";
@@ -292,10 +297,23 @@ export const reservationsRouter = router({
         entityId: res.reservationId,
         newValue: { reservationNumber: res.reservationNumber, lines: input.lines.length, overbooked: res.overbookedVariantIds.length },
       });
+      publishRealtimeEvent(
+        REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+        {
+          heldOrderId: res.reservationId,
+          branchId: input.branchId,
+          action: "HELD",
+          lockedByUserId: null,
+        },
+        {
+          branchId: input.branchId,
+        },
+      );
       return res;
     }),
 
   cancel: reservationsWrite
+    .use(requireAtomicPermission("inventory.reservation.cancel"))
     .input(z.object({ id: z.number().int().positive(), reason: z.string().max(300).nullish() }))
     .mutation(async ({ ctx, input }) => {
       const res = await cancelReservation(input.id, input.reason ?? null, {
@@ -304,11 +322,24 @@ export const reservationsRouter = router({
         role: ctx.user.role,
       });
       await logAudit(ctx, { action: "reservation.cancel", entityType: "reservation", entityId: input.id, newValue: { reason: input.reason ?? null } });
+      publishRealtimeEvent(
+        REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+        {
+          heldOrderId: input.id,
+          branchId: Number(ctx.user.branchId ?? 0),
+          action: "RELEASED",
+          lockedByUserId: null,
+        },
+        {
+          branchId: Number(ctx.user.branchId ?? 0),
+        },
+      );
       return res;
     }),
 
   // التمديد مديريّ (مراجعة Codex P1): بوّابة وحدة reservations (requireModule عبر reservationsWrite) + دور مدير.
   extend: reservationsWrite
+    .use(requireAtomicPermission("inventory.reservation.edit"))
     .input(z.object({ id: z.number().int().positive(), hours: z.number().int().positive().max(72) }))
     .mutation(async ({ ctx, input }) => {
       assertElevated(ctx.user.role);
@@ -318,6 +349,18 @@ export const reservationsRouter = router({
         role: ctx.user.role,
       });
       await logAudit(ctx, { action: "reservation.extend", entityType: "reservation", entityId: input.id, newValue: { hours: input.hours } });
+      publishRealtimeEvent(
+        REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+        {
+          heldOrderId: input.id,
+          branchId: Number(ctx.user.branchId ?? 0),
+          action: "LOCKED",
+          lockedByUserId: null,
+        },
+        {
+          branchId: Number(ctx.user.branchId ?? 0),
+        },
+      );
       return res;
     }),
 
@@ -348,6 +391,18 @@ export const reservationsRouter = router({
         entityId: input.reservationId,
         newValue: { invoiceId: res.invoiceId, invoiceNumber: res.invoiceNumber, total: res.total },
       });
+      publishRealtimeEvent(
+        REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+        {
+          heldOrderId: input.reservationId,
+          branchId: Number(ctx.user.branchId ?? 0),
+          action: "RESUMED",
+          lockedByUserId: null,
+        },
+        {
+          branchId: Number(ctx.user.branchId ?? 0),
+        },
+      );
       return res;
     }),
 });
