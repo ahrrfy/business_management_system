@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -38,6 +38,16 @@ export function ReceptionShiftCloseDialog({
   const [varianceReasonCode, setVarianceReasonCode] = useState<ShiftVarianceCode | "">("");
   const [varianceReason, setVarianceReason] = useState("");
   const [managerApprovedByUserId, setManagerApprovedByUserId] = useState<number | "">("");
+
+  useEffect(() => {
+    if (!open) {
+      setCounted("");
+      setCountEntered(false);
+      setVarianceReasonCode("");
+      setVarianceReason("");
+      setManagerApprovedByUserId("");
+    }
+  }, [open, shift.id]);
 
   // تقرير الوردية (Z) — يُحمَّل فقط عند فتح نافذة الإغلاق.
   const reportQ = trpc.shifts.report.useQuery(

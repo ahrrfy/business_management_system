@@ -1620,6 +1620,13 @@ export async function getDayCloseReconciliation(opts: {
                     ${shifts.variance} IS NULL
                     OR ${shifts.expectedCash} IS NULL
                     OR ${shifts.countedCash} IS NULL
+                    OR (${shifts.variance} <> 0 AND NOT EXISTS (
+                      SELECT 1 FROM receipts sv
+                      WHERE sv.shiftId = ${shifts.id}
+                        AND sv.referenceNumber = CONCAT('SV-', ${shifts.id})
+                        AND sv.status = 'COMPLETED'
+                        AND sv.amount = ABS(${shifts.variance})
+                    ))
                   ))
                   THEN 1 ELSE 0 END), 0)`,
               })

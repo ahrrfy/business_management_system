@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -90,11 +90,21 @@ export function ShiftCloseDialog({
 }: ShiftCloseDialogProps) {
   const [varianceReasonCode, setVarianceReasonCode] = useState<ShiftVarianceCode | "">("");
   const [varianceReason, setVarianceReason] = useState("");
+
+  useEffect(() => {
+    setVarianceReasonCode("");
+    setVarianceReason("");
+  }, [closingShiftId]);
+
   return (
     <Dialog
       open={closingShiftId != null}
       onOpenChange={(open) => {
-        if (!open) onClose();
+        if (!open) {
+          setVarianceReasonCode("");
+          setVarianceReason("");
+          onClose();
+        }
       }}
     >
       <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-6xl">

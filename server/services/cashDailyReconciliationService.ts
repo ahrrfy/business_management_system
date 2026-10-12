@@ -8,6 +8,7 @@ import {
   eq,
   gt,
   gte,
+  inArray,
   lt,
   notInArray,
   or,
@@ -288,22 +289,81 @@ export async function buildDailyCashEvidenceTx(
         .where(and(eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")))
         .then((rows) => Number(rows[0]?.count ?? 0))
     : 0;
-  const unmatchedShiftCount = dayShifts.filter(
-    (row) =>
-      row.status !== "CLOSED" ||
-      (row.reconciliationStatus !== "MATCHED" &&
-        row.reconciliationStatus !== "MANAGER_APPROVED") ||
-      (row.reconciliationStatus === "MATCHED" &&
-        (row.variance == null ||
-          hasCashVariance(row.variance) ||
-          row.expectedCash == null ||
-          row.countedCash == null ||
-          !money(row.expectedCash).eq(money(row.countedCash)))) ||
-      (row.reconciliationStatus === "MANAGER_APPROVED" &&
-        (row.expectedCash == null ||
-          row.countedCash == null ||
-          row.variance == null)),
-  ).length;
+  const approvedShiftIdsWithVariance = dayShifts
+    .filter(
+      (row) =>
+        row.reconciliationStatus === "MANAGER_APPROVED" &&
+        row.variance != null &&
+        hasCashVariance(row.variance),
+    )
+    .map((row) => row.id);
+
+  const adjustmentReceipts =
+    approvedShiftIdsWithVariance.length > 0
+      ? await tx
+          .select({
+            shiftId: receipts.shiftId,
+            amount: receipts.amount,
+            status: receipts.status,
+          })
+          .from(receipts)
+          .where(
+            and(
+              inArray(receipts.shiftId, approvedShiftIdsWithVariance),
+              inArray(
+                receipts.referenceNumber,
+                approvedShiftIdsWithVariance.map((id) => `SV-${id}`),
+              ),
+              eq(receipts.status, "COMPLETED"),
+            ),
+          )
+      : [];
+
+  const adjustmentReceiptMap = new Map<number, string>();
+  for (const r of adjustmentReceipts) {
+    if (r.shiftId != null) {
+      adjustmentReceiptMap.set(Number(r.shiftId), String(r.amount));
+    }
+  }
+
+  const unmatchedShiftCount = dayShifts.filter((row) => {
+    if (row.status !== "CLOSED") return true;
+    if (
+      row.reconciliationStatus !== "MATCHED" &&
+      row.reconciliationStatus !== "MANAGER_APPROVED"
+    ) {
+      return true;
+    }
+    if (row.reconciliationStatus === "MATCHED") {
+      return (
+        row.variance == null ||
+        hasCashVariance(row.variance) ||
+        row.expectedCash == null ||
+        row.countedCash == null ||
+        !money(row.expectedCash).eq(money(row.countedCash))
+      );
+    }
+    if (row.reconciliationStatus === "MANAGER_APPROVED") {
+      if (
+        row.expectedCash == null ||
+        row.countedCash == null ||
+        row.variance == null
+      ) {
+        return true;
+      }
+      if (hasCashVariance(row.variance)) {
+        const adjAmount = adjustmentReceiptMap.get(Number(row.id));
+        if (
+          adjAmount == null ||
+          !money(adjAmount).eq(money(row.variance).abs())
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+    return false;
+  }).length;
 
   const pendingHash = createHash("sha256");
   let pendingCursor = 0;

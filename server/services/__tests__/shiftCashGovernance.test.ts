@@ -400,4 +400,32 @@ describe.sequential("حوكمة فروقات درج النقد", () => {
     expect(evidence.openShiftCount).toBe(0);
     expect(evidence.unmatchedShiftCount).toBe(0); // لا يُحظر بـ UNMATCHED_SHIFT
   });
+
+  it("يحظر وردية تحمل MANAGER_APPROVED ولكن ينقصها إيصال التسوية SV-<shiftId> (P1 Evidence)", async () => {
+    const shift = await openShift(
+      { branchId: 1, openingBalance: "100000", shiftType: "RETAIL" },
+      CASHIER,
+    );
+
+    // محاكاة وردية أُغلقت تاريخياً بحالة MANAGER_APPROVED مع فرق، ولكن دون إنشاء إيصال SV
+    await db()
+      .update(shifts)
+      .set({
+        status: "CLOSED",
+        closedAt: new Date(),
+        countedCash: "80000.00",
+        expectedCash: "100000.00",
+        variance: "-20000.00",
+        reconciliationStatus: "MANAGER_APPROVED",
+      })
+      .where(eq(shifts.id, shift.shiftId));
+
+    // التحقق من دليل مطابقة اليوم: يجب أن تُعد غير مطابقة (unmatchedShiftCount = 1) لغياب إيصال التسوية
+    const evidence = await db().transaction(async (tx) => {
+      return buildDailyCashEvidenceTx(tx, 1, baghdadToday());
+    });
+
+    expect(evidence.shiftCount).toBe(1);
+    expect(evidence.unmatchedShiftCount).toBe(1); // محظور لعدم وجود إيصال التسوية SV
+  });
 });

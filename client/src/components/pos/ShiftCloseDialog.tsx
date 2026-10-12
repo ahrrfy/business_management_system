@@ -111,6 +111,12 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
   const [varianceReason, setVarianceReason] = useState("");
   const [managerApprovedByUserId, setManagerApprovedByUserId] = useState<number | "">("");
 
+  useEffect(() => {
+    setVarianceReasonCode("");
+    setVarianceReason("");
+    setManagerApprovedByUserId("");
+  }, [shift?.id]);
+
   // النقد المتوقع يأتي من نفس مصدر حقيقة closeShift على الخادم (DRAWER حصراً).
   const openingD    = D(shift?.openingBalance ?? 0);
   // ش٤: النقد غير المُزامَن موجود فيزيائياً بالدرج ⇒ يدخل المتوقع المعروض للعدّ (الخادم عند
