@@ -164,9 +164,9 @@ describe("sales operation choices", () => {
       );
     expect(
       list.indexOf("utils.client.invoicePrinting.requestPrint.mutate"),
-    ).toBeLessThan(list.indexOf("printInvoiceA4({"));
+    ).toBeLessThan(list.indexOf("printInvoiceA4(invoiceDetailPrintData("));
     expect(
-      list.indexOf("utils.client.invoicePrinting.requestReprint.mutate"),
+      list.indexOf("utils.client.invoicePrinting[attempt.mode"),
     ).toBeLessThan(list.indexOf("printReceipt(invoiceToReceipt(d))"));
   });
 });

@@ -21,6 +21,7 @@ export function useInvoiceActionPermissions(
   const allowed = (path: string, before: boolean) =>
     lifecycleActionAllowed(user, path, before);
   return {
+    canFirstPrint: allowed("invoicePrinting.requestPrint", !!user),
     canReprint: allowed("invoicePrinting.requestReprint", !!user),
     canOpenStatement: allowed(
       "reports.customerStatement",

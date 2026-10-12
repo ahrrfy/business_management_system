@@ -229,6 +229,18 @@ describe("mandatory authorization journal", () => {
       authorizeInvoicePrint(input, "REPRINT", actor, {}),
     ).rejects.toThrow("audit unavailable");
   });
+  it.each(["REPRINT", "other-purpose", "CANCELLED"])("rejects an incompatible or revoked replay: %s", async (change) => {
+    state.rows = [
+      [{ ...invoice, status: change === "CANCELLED" ? "CANCELLED" : "PAID" }],
+      [],
+      [{ userId: 7, action: "invoice.print_authorized", newValue: { purpose: "THERMAL" } }],
+    ];
+    await expect(authorizeInvoicePrint(
+      { ...input, purpose: change === "other-purpose" ? "A4" : "THERMAL" },
+      change === "REPRINT" ? "REPRINT" : "PRINT", actor, {},
+    )).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(state.audit).not.toHaveBeenCalled();
+  });
 });
 
 describe("direct bridge independent grant", () => {

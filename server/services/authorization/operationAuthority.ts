@@ -61,6 +61,7 @@ interface StoredUser {
   isOwner: boolean;
   customRoleId: number | null;
   permissionsOverride: unknown;
+  atomicPermissions?: unknown;
   operationPolicy: unknown;
   accessExpiresAt?: Date | null;
   branchId?: number | null;
@@ -117,7 +118,10 @@ export function storedOperationUser(user: StoredUser, role?: StoredRole | null):
     roleOperationPolicy: rolePolicy,
     operationPolicy: userPolicy,
     operationPolicyEnabled: Boolean(rolePolicy || userPolicy),
-    resolvedOperationPolicy: resolveOperationPolicy(effectiveRole, modules, inheritedPolicy, userPolicy, override),
+    resolvedOperationPolicy: resolveOperationPolicy(effectiveRole, modules, inheritedPolicy, userPolicy, override, {
+      permissionsOverride: user.permissionsOverride as PermissionMap | null,
+      atomicPermissions: user.atomicPermissions as Record<string, boolean> | null | undefined,
+    }),
   };
 }
 

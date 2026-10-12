@@ -23,6 +23,7 @@ import { notify } from "@/lib/notify";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { printReceipt } from "@/lib/printing/print";
+import { beginInvoicePrintAttempt, completeInvoicePrintAttempt, hasPendingFirstInvoicePrint } from "@/lib/printing/invoicePrintAttempt";
 import { invoiceToShippingLabel } from "@/lib/printing/invoiceShippingLabel";
 import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -239,6 +240,9 @@ export default function SalesControlApprovals() {
   const canClaimPayment = lifecycleActionAllowed(me.data, "salesControl.claimCorrectionPayment", legacyCanReview);
   const canReleaseClaim = lifecycleActionAllowed(me.data, "salesControl.releaseCorrectionPaymentClaim", legacyCanReview);
   const canReprint = lifecycleActionAllowed(me.data, "invoicePrinting.requestReprint", !!me.data);
+  const canFirstPrint = lifecycleActionAllowed(me.data, "invoicePrinting.requestPrint", !!me.data);
+  const canRetryCorrectedInvoice = (invoiceId: number) => canReprint ||
+    (canFirstPrint && hasPendingFirstInvoicePrint(me.data?.id, invoiceId, "THERMAL"));
   const canReview = canApprove || canReject;
   const requestPrint = trpc.invoicePrinting.requestPrint.useMutation();
   const requestReprint = trpc.invoicePrinting.requestReprint.useMutation();
@@ -301,9 +305,12 @@ export default function SalesControlApprovals() {
         notify.warn("تم التصحيح لكن تعذّر جلب الفاتورة البديلة للطباعة");
         return "failed";
       }
-      await (isFirstPrint ? requestPrint : requestReprint).mutateAsync({ invoiceId, requestId: crypto.randomUUID(), purpose: "THERMAL" });
+      if (!me.data) throw new Error("تعذّر التحقق من حساب الطباعة؛ أعد تسجيل الدخول.");
+      const attempt = beginInvoicePrintAttempt(me.data.id, invoiceId, "THERMAL", !isFirstPrint, canFirstPrint);
+      await (attempt.mode === "PRINT" ? requestPrint : requestReprint).mutateAsync({ invoiceId, requestId: attempt.requestId, purpose: "THERMAL" });
       // اعتماد التصحيح ليس بيعاً نقدياً جديداً على محطة المدير؛ لا تفتح درجاً لمجرد طباعة البديلة.
       const printed = await printReceipt(invoiceToReceipt(invoice), { openDrawer: false });
+      if (printed.ok) completeInvoicePrintAttempt(attempt);
       if (!printed.ok) {
         notify.warn(
           "تم التصحيح وحُفظت الفاتورة البديلة",
@@ -328,7 +335,7 @@ export default function SalesControlApprovals() {
   }
 
   function requestCorrectedInvoicePrint(invoiceId: number) {
-    if (!canReprint) return;
+    if (!canRetryCorrectedInvoice(invoiceId)) return;
     if (!reservePrintWindow()) {
       notify.warn("تعذّر فتح نافذة الطباعة", "تحقّق من مانع النوافذ المنبثقة ثم أعد المحاولة.");
       return;
@@ -349,8 +356,11 @@ export default function SalesControlApprovals() {
       try {
         const invoice = await utils.sales.get.fetch({ invoiceId });
         if (!invoice) throw new Error("تعذّر جلب الفاتورة البديلة");
-        await requestReprint.mutateAsync({ invoiceId, requestId: crypto.randomUUID(), purpose: "SHIPPING_LABEL" });
+        if (!me.data) throw new Error("تعذّر التحقق من حساب الطباعة؛ أعد تسجيل الدخول.");
+        const attempt = beginInvoicePrintAttempt(me.data.id, invoiceId, "SHIPPING_LABEL", true, canFirstPrint);
+        await (attempt.mode === "PRINT" ? requestPrint : requestReprint).mutateAsync({ invoiceId, requestId: attempt.requestId, purpose: "SHIPPING_LABEL" });
         const printed = await printShippingLabel(invoiceToShippingLabel(invoice), { into: labelWindow });
+        if (printed.ok) completeInvoicePrintAttempt(attempt);
         if (!printed.ok) notify.warn("تعذّرت طباعة ليبل الشحن", "أعد المحاولة بعد السماح بالنوافذ المنبثقة.");
       } catch (cause) {
         try { labelWindow.close(); } catch { /* النافذة مغلقة سلفاً */ }
@@ -660,7 +670,7 @@ export default function SalesControlApprovals() {
           </div>
           <div className="flex flex-wrap gap-2">
             <Link href={`/invoices/${lastApprovedInvoice.id}`} className="inline-flex h-9 items-center rounded-md border bg-background px-3 text-xs font-bold text-primary hover:bg-muted">فتح الفاتورة</Link>
-            <Button size="sm" variant="outline" onClick={() => requestCorrectedInvoicePrint(Number(lastApprovedInvoice.id))} disabled={!canReprint || printingInvoiceId != null}>
+            <Button size="sm" variant="outline" onClick={() => requestCorrectedInvoicePrint(Number(lastApprovedInvoice.id))} disabled={!canRetryCorrectedInvoice(Number(lastApprovedInvoice.id)) || printingInvoiceId != null}>
               <Printer aria-hidden className="me-1 size-4" /> إعادة طباعة حرارية
             </Button>
             <Button size="sm" variant="outline" onClick={() => requestShippingLabelPrint(Number(lastApprovedInvoice.id))} disabled={!canReprint || printingLabelInvoiceId != null}>
@@ -909,7 +919,7 @@ export default function SalesControlApprovals() {
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={!canReprint || printingInvoiceId != null}
+                    disabled={!canRetryCorrectedInvoice(Number(request.resultInvoiceId)) || printingInvoiceId != null}
                     onClick={() => requestCorrectedInvoicePrint(Number(request.resultInvoiceId))}
                   >
                     <Printer aria-hidden className="me-1 size-4" />

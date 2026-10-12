@@ -32,8 +32,8 @@ async function seedBase() {
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
   await db().insert(s.users).values([
-    { id: 1, openId: "u1", name: "كاشير", role: "cashier", loginMethod: "local" },
-    { id: 2, openId: "u2", name: "مدير", role: "manager", loginMethod: "local" },
+    { id: 1, openId: "u1", name: "كاشير", role: "cashier", branchId: 1, loginMethod: "local" },
+    { id: 2, openId: "u2", name: "مدير", role: "manager", branchId: 1, loginMethod: "local" },
   ]);
   await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, status: "OPEN", openingBalance: "0" });
 }
@@ -550,10 +550,10 @@ describe("ش٧ — تسجيل التنفيذ", () => {
   it("نيّة مستخدم آخر محجوبة عن الكاشير ومتاحة للمدير", async () => {
     const p = await prepared();
     const other = { userId: 99, branchId: 1, role: "cashier" } as const;
-    await db().insert(s.users).values({ id: 99, openId: "u99", name: "كاشير آخر", role: "cashier", loginMethod: "local" });
+    await db().insert(s.users).values({ id: 99, openId: "u99", name: "كاشير آخر", role: "cashier", branchId: 1, loginMethod: "local" });
     await expect(withTx((tx) => claimAndMark(tx, {
       intentId: p.intentId, intentItemId: Number(p.items[0].id), status: "SUCCESS", providerReference: "R-9",
-    }, other))).rejects.toThrow(/لمستخدم آخر/);
+    }, other))).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     await withTx((tx) => claimAndMark(tx, {
       intentId: p.intentId, intentItemId: Number(p.items[0].id), status: "SUCCESS", providerReference: "R-9",

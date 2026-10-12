@@ -45,36 +45,33 @@ async function nextTransferNumber(
 ): Promise<string> {
   const ymd = toDateStr().replace(/-/g, "");
   const prefix = `CT-${fromBranchId}-${ymd}-`;
-  const lockName = `cash_transfer:${fromBranchId}:${ymd}`;
-  const lockRes: any = await tx.execute(
-    sql`SELECT GET_LOCK(${lockName}, 5) AS locked`,
-  );
-  const lockedRow = Array.isArray(lockRes)
-    ? lockRes[0]?.[0]
-    : lockRes?.rows?.[0];
-  if (!lockedRow || Number(lockedRow.locked) !== 1) {
-    throw new Error(`transfer numbering lock timeout for ${lockName}`);
-  }
-  try {
-    // لا تعتمد على آخر id: قد تحتوي البيانات التاريخية على مرجع حر يبدأ
-    // بالبادئة نفسها ولا ينتهي برقم. parseInt عندها يعطي NaN ويعطّل كل
-    // التحويلات اللاحقة لذلك اليوم. نأخذ أعلى لاحقة رقمية صالحة فقط.
-    const rows = await tx
-      .select({ n: cashTransfers.transferNumber })
-      .from(cashTransfers)
-      .where(like(cashTransfers.transferNumber, `${prefix}%`));
-    let maxSeq = 0;
-    for (const row of rows) {
-      const suffix = String(row.n ?? "").slice(prefix.length);
-      if (/^\d+$/.test(suffix)) {
-        const seq = Number(suffix);
-        if (Number.isSafeInteger(seq) && seq > maxSeq) maxSeq = seq;
-      }
+  const counterKey = `cash_transfer:${fromBranchId}:${ymd}`;
+
+  // لا تعتمد على آخر id: قد تحتوي البيانات التاريخية على مرجع حر يبدأ
+  // بالبادئة نفسها ولا ينتهي برقم. parseInt عندها يعطي NaN ويعطّل كل
+  // التحويلات اللاحقة لذلك اليوم. نأخذ أعلى لاحقة رقمية صالحة فقط كأرضية للعدّاد.
+  const rows = await tx
+    .select({ n: cashTransfers.transferNumber })
+    .from(cashTransfers)
+    .where(like(cashTransfers.transferNumber, `${prefix}%`));
+  let maxSeq = 0;
+  for (const row of rows) {
+    const suffix = String(row.n ?? "").slice(prefix.length);
+    if (/^\d+$/.test(suffix)) {
+      const seq = Number(suffix);
+      if (Number.isSafeInteger(seq) && seq > maxSeq) maxSeq = seq;
     }
-    return prefix + String(maxSeq + 1).padStart(5, "0");
-  } finally {
-    await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
   }
+
+  await tx.execute(sql`
+    INSERT INTO documentCounters (counterKey, lastValue)
+    VALUES (${counterKey}, LAST_INSERT_ID(${maxSeq + 1}))
+    ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(GREATEST(lastValue + 1, ${maxSeq + 1}))
+  `);
+  const res: any = await tx.execute(sql`SELECT LAST_INSERT_ID() AS v`);
+  const row = Array.isArray(res) ? res[0]?.[0] : res?.rows?.[0];
+  const seq = Number(row?.v ?? 1);
+  return prefix + String(seq).padStart(5, "0");
 }
 
 /** يَحسب رصيد TREASURY الحالي لفرع معيّن. تَكلفة استعلام واحد. */

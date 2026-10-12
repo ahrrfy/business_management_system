@@ -336,11 +336,19 @@ describe("delivery company reads — branch scope and complete filtered totals",
         await listConsignmentsForParty(
           1,
           false,
-          { ...filters, from: "2026-10-12" },
+          { ...filters, from: "2026-10-12", to: "2026-10-12" },
           1,
         )
       ).totals.count,
     ).toBe(0);
+    await expect(
+      listConsignmentsForParty(
+        1,
+        false,
+        { ...filters, from: "2026-10-12" },
+        1,
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("subtracts partial collections, counter payments and net assigned shortfall exactly once and clamps each remaining amount", async () => {

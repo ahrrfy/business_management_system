@@ -88,6 +88,10 @@ export function normalizeOwnerAuthority(user: AuthUser): AuthUser {
  */
 export async function resolveCustomRole(user: AuthUser): Promise<void> {
   if (!user || typeof user !== "object") return;
+  const legacyIndividual = {
+    permissionsOverride: user.permissionsOverride as PermissionMap | null,
+    atomicPermissions: user.atomicPermissions as AtomicPermissionsMap | null,
+  };
   if (!user.customRoleId) {
     const baseRole = user.role ?? "user";
     user.resolvedAtomicPermissions = resolveAtomicPermissions(
@@ -131,6 +135,7 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
           inherited,
           individualPolicy,
           user.permissionsOverride as PermissionMap | null,
+          legacyIndividual,
         )
       : legacyEffective;
     if (user.operationPolicyEnabled)
@@ -216,6 +221,7 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
         inherited,
         individualPolicy,
         user.permissionsOverride as PermissionMap | null,
+        legacyIndividual,
       )
     : buildOperationPolicyFromLegacy(
         baseRole,

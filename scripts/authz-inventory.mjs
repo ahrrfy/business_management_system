@@ -242,8 +242,8 @@ const PROCEDURES = {
   // صلاحية وحدة المبيعات لمشغّل الاستقبال.
   invoiceViewProcedure: {
     authority: "module-map",
-    module: "sales|workorders",
-    level: "READ|FULL",
+    module: "sales|workorders|pos",
+    level: "READ|FULL|FULL",
     roles: [],
     branch: "scoped",
   },

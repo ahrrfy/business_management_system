@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { hasOperationPolicy } from "@shared/operationPermissions";
 import { failOpaque } from "../lib/opaqueFailure";
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
@@ -643,10 +644,11 @@ export const workOrderRouter = router({
       // حين unassignedOnly=true ⇒ لا يكشف سجلَّ أيّ موظفٍ آخر (الأمر بلا مالك بحكم التعريف).
       // سياسة عزل سجلّات الموظف (٢٤/٦) تبقى كما هي لكل ما عداه.
       const sharedQueue = input?.unassignedOnly === true;
+      const canonical = hasOperationPolicy(ctx.user);
       // طابور الفرع: يلزمه `workorders:FULL` صراحةً — لا يكفي أن يطلبه العميل.
       const branchQueue = input?.branchQueue === true && workOrdersFullAccess(ctx.user);
       const ownerCond =
-        ctx.scopedOwnerId != null && !sharedQueue && !branchQueue
+        ctx.scopedOwnerId != null && (canonical || (!sharedQueue && !branchQueue))
           ? or(eq(workOrders.createdBy, ctx.scopedOwnerId), eq(workOrders.assignedTo, ctx.scopedOwnerId))
           : undefined;
       const extra = [
@@ -821,7 +823,7 @@ export const workOrderRouter = router({
       const effectiveBranchId = ctx.scopedBranchId ?? input?.branchId;
       const branchCond = effectiveBranchId != null ? eq(workOrders.branchId, effectiveBranchId) : undefined;
       const ownerCond =
-        ctx.scopedOwnerId != null && !(input?.branchQueue === true && workOrdersFullAccess(ctx.user))
+        ctx.scopedOwnerId != null && (hasOperationPolicy(ctx.user) || !(input?.branchQueue === true && workOrdersFullAccess(ctx.user)))
           ? or(eq(workOrders.createdBy, ctx.scopedOwnerId), eq(workOrders.assignedTo, ctx.scopedOwnerId))
           : undefined;
       const allConds = [branchCond, ownerCond, ...buildWoFilterConds(input)].filter(Boolean) as SQL[];

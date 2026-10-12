@@ -9,6 +9,8 @@ import { listConsignmentsForParty } from "../delivery/queries";
 import { moduleAccessAllowed } from "@shared/permissions";
 
 const TABLES = [
+  "productPrices",
+  "shifts",
   "deliveryOutbox",
   "deliveryEvents",
   "deliveryLedgerEntries",
@@ -234,6 +236,29 @@ beforeEach(async () => {
 });
 
 describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", () => {
+  it("canonical sale and independent dispatch grants execute together with store NONE", async () => {
+    await db().insert(s.productPrices).values({ productUnitId: 1, priceTier: "RETAIL", price: "1000.00" });
+    await db().insert(s.shifts).values({ branchId: 1, userId: 6, shiftType: "RETAIL", openingBalance: "0.00", shiftStatus: "OPEN" });
+    const operationPolicy = { version: 1 as const, grants: { "operation.sales.create": true, "operation.delivery.dispatchInvoice": true } as Record<string, boolean> };
+    await db().update(s.users).set({ operationPolicy, permissionsOverride: { store: "NONE" } }).where(eq(s.users.id, 6));
+    const api = appRouter.createCaller({ req: { headers: {} }, res: {}, user: {
+      id: 6, role: "cashier", branchId: 1, permissionsOverride: { store: "NONE" }, operationPolicyEnabled: true, resolvedOperationPolicy: operationPolicy,
+    } } as never);
+    const result = await api.sales.create({ branchId: 1, customerId: 1, lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      delivery: { partyId: 1, fee: "0", recipientPhone: "07701234567" }, clientRequestId: "canonical-sale-dispatch-store-none" });
+    const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, result.invoiceId)))[0];
+    expect(invoice?.status).toBe("PENDING");
+    expect(invoice?.paymentMode).toBe("COD");
+    expect(Number(invoice?.total)).toBe(1000);
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, result.invoiceId))).length).toBe(1);
+    expect((await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, result.invoiceId))).length).toBe(0);
+    expect((await db().select().from(s.deliveryLedgerEntries)).filter((entry) => entry.entryType === "COD_ASSIGNED").map((entry) => Number(entry.amount))).toEqual([1000]);
+    expect(Number((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0]?.quantity)).toBe(24);
+    delete operationPolicy.grants["operation.delivery.dispatchInvoice"];
+    await expect(api.sales.create({ branchId: 1, lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      delivery: { partyId: 1, fee: "0" }, clientRequestId: "canonical-sale-dispatch-denied" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await db().select().from(s.invoices)).length).toBe(1);
+  });
   it.each(["OUT_FOR_DELIVERY", "FAILED"] as const)(
     "%s: يلغي الإسناد ويحرر COD بلا لمس الفاتورة أو المخزون أو الإيصالات",
     async (parcelStatus) => {

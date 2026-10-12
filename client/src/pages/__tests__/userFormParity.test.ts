@@ -31,6 +31,14 @@ const passwordResetSource = readFileSync(
  * صامتاً فيبدو الإصلاح واقعاً وهو وهم. لذلك تُقاس الحمولةُ مقابل عقد `userRouter` نفسه أدناه.
  */
 describe("تماثل نموذجَي المستخدم (إضافة/تعديل)", () => {
+  it("keeps a policy snapshot bound to its own revision across metadata-only saves", () => {
+    const success = editSource.slice(editSource.indexOf("onSuccess: async (result, variables)"), editSource.indexOf("const setActive ="));
+    expect(success).toContain("variables.operationPolicy !== undefined");
+    expect(success).toContain("setOperationPolicyRevision(result.operationPolicyRevision)");
+    expect(success).not.toContain("getData({ userId })");
+    expect(success).toContain("submittedSaveRef.current.baseline");
+    expect(editSource).toContain("...(!policyEdited ? { permissionsOverride: override } : {})");
+  });
   it("يحرس النموذجين معاً من فقد البيانات غير المحفوظة بلقطةٍ مرجعية لا بحالةٍ فارغة", () => {
     for (const source of [newSource, editSource]) {
       expect(source).toMatch(/import\s*\{[^}]*\buseUnsavedGuard\b[^}]*\}\s*from\s*["']@\/hooks\/useUnsavedGuard["'];?/);

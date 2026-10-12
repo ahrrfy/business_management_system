@@ -833,6 +833,7 @@ const WORDS = {
   eligible: "المستحق",
   eligibility: "الاستحقاق",
   approved: "المعتمد",
+  approvers: "المعتمدون",
   rejected: "المرفوض",
   cancelled: "الملغى",
   failed: "الفشل",
@@ -1832,6 +1833,7 @@ export function generateOperationPermissions() {
       meta.flags.includes("UNAUTHENTICATED") ||
       ["public", "public-read"].includes(meta.authority);
     const fixedAuthority =
+      meta.procedure === "storeGlobalAdminProcedure" ||
       ["owner", "admin"].includes(meta.authority) ||
       meta.gateRoles === "admin" ||
       meta.inheritedAuthority === "admin" ||
@@ -1896,7 +1898,7 @@ export function generateOperationPermissions() {
         ? AUTHENTICATED_BUSINESS_READERS[ep.path]
         : (NAVIGATION_MODULE_OVERRIDES[ep.path] ?? module),
       roles: meta.roles.split("|").filter(Boolean).sort(),
-      authority: meta.authority,
+      authority: meta.procedure === "storeGlobalAdminProcedure" ? "admin" : meta.authority,
       inheritedAuthority: meta.inheritedAuthority ?? null,
       branch:
         meta.branch === "none"

@@ -55,6 +55,18 @@ export const SALE_CREATION_OPERATION_GATE: RoleGate = {
   ],
 };
 
+/** Editors need their document read and at least one supported write action. */
+export const EDITOR_OPERATION_GATES = {
+  product: { allOf: [{ operations: ["catalog.getForVariantEdit"] }, { operations: ["catalog.updateProductVariants"] }] },
+  customer: { allOf: [{ operations: ["customers.get"] }, { operations: ["customers.update"] }] },
+  supplier: { allOf: [{ operations: ["suppliers.get"] }, { operations: ["suppliers.update"] }] },
+  purchase: { allOf: [{ operations: ["purchases.get"] }, { operations: ["purchases.updateOrder"] }] },
+  asset: { allOf: [{ operations: ["assets.get"] }, { operations: ["assets.update"] }] },
+  employee: { allOf: [{ operations: ["employees.get"] }, { operations: ["employees.update"] }] },
+  quotation: { allOf: [{ operations: ["quotations.get"] }, { operations: ["quotations.update", "quotations.convert"] }] },
+  correction: { allOf: [{ operations: ["sales.get"] }, { operations: ["catalog.byUnitIds"] }, { operations: ["sales.reissue", "salesControl.requestExchange"] }] },
+} satisfies Record<string, RoleGate>;
+
 /**
  * قائمةُ مداخل الكاشير البيضاء — **إتاحةُ وصولٍ لا منحُ صلاحية**.
  *

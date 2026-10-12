@@ -144,9 +144,6 @@ describe("ReceptionOperationsHub", () => {
     expect(pageTabsSource).toMatch(
       /const visible = tabs\.filter\(\(t\) =>\s*canSeeGate\(t\.gate, role, permsOverride, operationPolicy\),?\s*\)/,
     );
-    expect(pageTabsSource).toContain(
-      "const active = visible.find((t) => t.value === requested) ?? visible[0]",
-    );
     expect(pageTabsSource).not.toContain("forceMount");
   });
 

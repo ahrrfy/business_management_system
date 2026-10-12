@@ -41,5 +41,5 @@ const TABS: HubTab[] = [
 ];
 
 export default function DeliveryCenter() {
-  return <PageTabs tabs={TABS} ariaLabel="أقسام التوصيل" />;
+  return <PageTabs tabs={TABS} ariaLabel="أقسام التوصيل" tabAliases={{ settle: "dispatch", transit: "dispatch", board: "dispatch" }} />;
 }

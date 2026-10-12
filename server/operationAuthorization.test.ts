@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { TrpcContext } from "./context";
 import { assertOperationAuthorized } from "./operationAuthorization";
-import { getOperationPermission, type OperationPolicy } from "@shared/operationPermissions";
+import { getOperationPermission, legacyOperationPolicy, type OperationPolicy } from "@shared/operationPermissions";
+import { resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 vi.mock("./services/auditService", () => ({
   withMutationAuditScope: async (run: () => Promise<unknown>) => ({ value: await run(), specializedAuditWritten: true }),
@@ -13,6 +14,8 @@ import {
   router, salesCashierProcedure, salesManagerProcedure, deliveryCashierProcedure,
   returnsProcedure, adminProcedure, publicProcedure, salesReadProcedure,
   directPrintBridgeProcedure,
+  digitalCardsPosProcedure, receptionDuplicateReadProcedure,
+  customerReadAllowed, customerReceptionCreateAllowed,
 } from "./trpc";
 
 function context(grants: Record<string, boolean>, overrides: Record<string, unknown> = {}): TrpcContext {
@@ -38,11 +41,67 @@ const api = router({
   delivery: router({ dispatchInvoice: deliveryCashierProcedure.mutation(() => "assigned") }),
   returns: router({ create: returnsProcedure.mutation(() => "returned") }),
   invoicePrinting: router({ authorizeBridge: directPrintBridgeProcedure.query(() => true) }),
+  digitalCards: router({ sales: router({ prepare: digitalCardsPosProcedure.mutation(() => "prepared"), finalize: digitalCardsPosProcedure.mutation(() => "finalized") }) }),
+  reception: router({ duplicateOrders: receptionDuplicateReadProcedure.query(() => "checked") }),
   roles: router({ create: adminProcedure.mutation(() => "reserved") }),
   auth: router({ login: publicProcedure.mutation(() => "public") }),
 });
 
 describe("actual procedure delegation", () => {
+  it.each([
+    ["manager", { customers: "NONE" }], ["cashier", { customers: "NONE", crm: "NONE", sales: "NONE", pos: "NONE", workorders: "FULL" }],
+    ["warehouse", { customers: "FULL", crm: "NONE", workorders: "NONE" }], ["warehouse", { crm: "NONE", workorders: "READ" }],
+    ["print_operator", { crm: "NONE", pos: "NONE", workorders: "FULL" }],
+  ] as const)("preserves customer-read and reception-resolution alternatives for %s %j", (role, override) => {
+    const modules = resolvePermissions(role as RoleKey, override);
+    const snapshot = legacyOperationPolicy(role, modules, override);
+    expect(snapshot.grants["operation.customers.get"]).toBe(customerReadAllowed({ role, permissionsOverride: override }));
+    expect(snapshot.grants["operation.customers.receptionResolveByPhone"]).toBe(customerReceptionCreateAllowed({ role, permissionsOverride: override }));
+  });
+  it("delegates digital preparation and duplicate advice without reopening obsolete selling modules", async () => {
+    const caller = api.createCaller(context({ "operation.digitalCards.sales.prepare": true, "operation.reception.duplicateOrders": true }));
+    expect(await caller.digitalCards.sales.prepare()).toBe("prepared");
+    expect(await caller.reception.duplicateOrders()).toBe("checked");
+    await expect(caller.digitalCards.sales.finalize()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(api.createCaller(context({ "operation.reception.duplicateOrders": true }, { branchId: null })).reception.duplicateOrders()).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+  it("keeps the legacy digital selling-station prerequisite in migration snapshots", () => {
+    const modules: PermissionMap = { digital_cards: "READ", sales: "NONE", workorders: "NONE", pos: "FULL" };
+    expect(legacyOperationPolicy("warehouse", modules, modules).grants["operation.digitalCards.sales.prepare"]).toBe(false);
+    modules.workorders = "FULL";
+    expect(legacyOperationPolicy("warehouse", modules, modules).grants["operation.digitalCards.sales.prepare"]).toBe(true);
+  });
+  it.each([
+    [{ workorders: "READ" }, false],
+    [{ workorders: "FULL" }, true],
+    [{ sales: "READ" }, true],
+    [{ pos: "READ" }, false],
+    [{ pos: "FULL" }, true],
+  ] as const)("preserves invoice alternatives and their distinct levels: %j", (selected, allowed) => {
+    const modules: PermissionMap = { sales: "NONE", workorders: "NONE", pos: "NONE", ...selected };
+    const snapshot = legacyOperationPolicy("warehouse", modules, modules);
+    for (const path of ["sales.get", "invoicePrinting.requestPrint", "invoicePrinting.requestReprint"]) {
+      expect(snapshot.grants[`operation.${path}`], path).toBe(allowed);
+    }
+  });
+  it.each([
+    [{ products: "READ" }, false, false],
+    [{ sales: "FULL" }, false, true],
+    [{ workorders: "FULL" }, false, false],
+    [{ sales: "FULL", products: "READ" }, true, true],
+    [{ workorders: "FULL", products: "READ" }, true, true],
+  ] as const)("preserves correction conjunctions: %j", (selected, editing, comparison) => {
+    const modules: PermissionMap = { sales: "NONE", workorders: "NONE", products: "NONE", ...selected };
+    const snapshot = legacyOperationPolicy("warehouse", modules, modules);
+    expect(snapshot.grants["operation.sales.lookupForCorrection"]).toBe(editing);
+    expect(snapshot.grants["operation.sales.reissue"]).toBe(editing);
+    expect(snapshot.grants["operation.salesControl.correctionCatalog"]).toBe(comparison);
+  });
+  it("preserves the legacy bridge exception without granting couriers", () => {
+    const modules: PermissionMap = { sales: "NONE" };
+    expect(legacyOperationPolicy("warehouse", modules, modules).grants["operation.invoicePrinting.authorizeBridge"]).toBe(true);
+    expect(legacyOperationPolicy("courier", { sales: "FULL" }, { sales: "FULL" }).grants["operation.invoicePrinting.authorizeBridge"]).toBe(false);
+  });
   it("enforces the same independent hardware bridge gate for canonical and legacy sessions", async () => {
     expect(await api.createCaller(context({ "operation.invoicePrinting.authorizeBridge": true }, { role: "courier" })).invoicePrinting.authorizeBridge()).toBe(true);
     await expect(api.createCaller(context({ "operation.invoicePrinting.authorizeBridge": false })).invoicePrinting.authorizeBridge()).rejects.toMatchObject({ code: "FORBIDDEN" });

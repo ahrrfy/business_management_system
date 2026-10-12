@@ -5,10 +5,20 @@ import { describe, expect, it } from "vitest";
 import { getMobileBottomNavItems } from "@/components/MobileBottomNav";
 import { OPERATION_PERMISSIONS, type OperationPolicy } from "@shared/operationPermissions";
 import { visibleApplicationModules } from "./moduleRegistry";
-import { canSeeGate, INVOICE_CORRECTION_GATE, RECONCILE_CONTROL_GATE } from "./navVisibility";
+import { canSeeGate, EDITOR_OPERATION_GATES, INVOICE_CORRECTION_GATE, RECONCILE_CONTROL_GATE } from "./navVisibility";
 
 describe("canonical operation navigation", () => {
   const policy = (grants: Record<string, boolean>): OperationPolicy => ({ version: 1, grants });
+  it("requires both product retrieval and editing instead of opening an unusable editor", () => {
+    for (const grants of [
+      { "operation.catalog.updateProductVariants": true },
+      { "operation.catalog.getForVariantEdit": true },
+    ]) expect(canSeeGate(EDITOR_OPERATION_GATES.product, "warehouse", null, policy(grants))).toBe(false);
+    expect(canSeeGate(EDITOR_OPERATION_GATES.product, "warehouse", null, { ...policy({
+      "operation.catalog.updateProductVariants": true,
+      "operation.catalog.getForVariantEdit": true,
+    }), dataVisibility: { purchaseCost: true, profitMargin: true } })).toBe(true);
+  });
   it("shows individually delegated operations regardless of the old role template", () => {
     expect(canSeeGate({ roles: ["manager"], module: "store", operations: ["delivery.dispatch"] }, "user", null,
       policy({ "operation.delivery.dispatch": true }))).toBe(true);

@@ -1,3 +1,4 @@
+import React from "react";
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { Ban, Wallet } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -8,6 +9,7 @@ import { fmtDate } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { trpc, type RouterOutputs, type RouterInputs } from "@/lib/trpc";
+import { isOpenConsignmentStatus } from "@shared/deliveryOpenParcel";
 type ConsignmentRow = RouterOutputs["delivery"]["consignments"]["rows"][number];
 export function moneyCol<T>(
   id: string,
@@ -51,6 +53,7 @@ export const PARCEL_STATUS: Record<string, string> = {
   DELIVERED: "وصل العميل",
   FAILED: "تعذر التوصيل",
   RETURNED: "مرتجع",
+  CANCELLED: "ملغى",
 };
 
 type CompanyConsignmentOptions = {
@@ -78,12 +81,15 @@ export function CompanyConsignmentActions({
   setReturnTarget,
 }: CompanyConsignmentOptions & { c: ConsignmentRow }) {
   const me = trpc.auth.me.useQuery();
+  const isOpen = isOpenConsignmentStatus(c.status);
   const remaining = D(c.remainingDue);
   const canRemit =
+    isOpen && c.returnDeclaredAt == null &&
     c.parcelStatus === "DELIVERED" &&
     c.moneyStatus !== "SETTLED" &&
     remaining.gt(0);
   const canCancel =
+    isOpen && c.returnDeclaredAt == null &&
     (c.parcelStatus === "ASSIGNED" ||
       c.parcelStatus === "OUT_FOR_DELIVERY" ||
       c.parcelStatus === "FAILED") &&
@@ -156,16 +162,19 @@ export function CompanyConsignmentDriver({
   reassignM,
 }: CompanyConsignmentOptions & { c: ConsignmentRow }) {
   const me = trpc.auth.me.useQuery();
+  const canReassign =
+    isOpenConsignmentStatus(c.status) &&
+    c.returnDeclaredAt == null &&
+    (c.parcelStatus === "ASSIGNED" ||
+      c.parcelStatus === "OUT_FOR_DELIVERY" ||
+      c.parcelStatus === "FAILED");
   return (
     <div className="text-xs">
       <div className="mb-1">{c.assignedUserName ?? "طابور الشركة المشترك"}</div>
       {c.failureReason && (
         <div className="mb-1 text-destructive">{c.failureReason}</div>
       )}
-      {lifecycleActionAllowed(me.data, "delivery.reassignConsignment", canEdit) &&
-        (c.parcelStatus === "ASSIGNED" ||
-          c.parcelStatus === "OUT_FOR_DELIVERY" ||
-          c.parcelStatus === "FAILED") && (
+      {lifecycleActionAllowed(me.data, "delivery.reassignConsignment", canEdit) && canReassign && (
           <AppSelect
             value={String(c.assignedUserId ?? "")}
             disabled={reassignM.isPending}

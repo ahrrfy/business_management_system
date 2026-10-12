@@ -538,7 +538,7 @@ describe("Adversarial Stress & Property Checks: Milestone 2 Persistence (R3)", (
       expect(code).toContain("const SAFE_COLUMNS_WITH_ROLE = { ...SAFE_COLUMNS, customRoleLabel: roles.label } as const;");
     });
 
-    it("4.3 listUsers excludes internal joined role columns (_roleBaseRole, _rolePermissions)", () => {
+    it("4.3 listUsers excludes internal joined role columns including operation policy", () => {
       const userServicePath = path.resolve(
         process.cwd(),
         "server/services/userService.ts",
@@ -546,7 +546,11 @@ describe("Adversarial Stress & Property Checks: Milestone 2 Persistence (R3)", (
       const code = readFileSync(userServicePath, "utf8");
 
       // Verify destructuring drops internal columns before returning rows
-      expect(code).toContain("const rows = raw.map(({ _roleBaseRole, _rolePermissions, ...r }) => ({");
+      const projection = code.match(/const rows = raw\.map\(\s*\(\{([\s\S]*?)\.\.\.r\s*\}\)\s*=>\s*\(\{\s*\.\.\.r,/);
+      expect(projection).not.toBeNull();
+      for (const field of ["_roleBaseRole", "_rolePermissions", "_roleOperationPolicy", "_roleAtomicPermissions"]) {
+        expect(projection?.[1]).toContain(field);
+      }
     });
 
     it("4.4 Simulated full DB row projection: 100% of sensitive fields are excluded from safe user objects", () => {

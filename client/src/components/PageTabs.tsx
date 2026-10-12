@@ -11,7 +11,7 @@
 //
 // العنوان: الـ hub لا يَرسم h1 خاصّاً به — كل صفحة مُضمَّنة تَحتفظ بـ PageHeader خاصّها،
 // فلا ازدواج عناوين (شريط تبويبات + PageHeader واحد).
-import { Suspense, useEffect, useRef } from "react";
+import React, { Suspense, useEffect, useRef } from "react";
 import { useLocation, useSearch } from "wouter";
 import * as TabsPrimitive from "@radix-ui/react-tabs";
 import { cn } from "@/lib/utils";
@@ -56,11 +56,14 @@ export function PageTabs({
   tabs,
   ariaLabel,
   actions,
+  tabAliases,
 }: {
   tabs: HubTab[];
   ariaLabel?: string;
   /** إجراءات على مستوى الوحدة كلّها (تظهر بمحاذاة شريط التبويبات، خارج tablist حفاظاً على الإتاحة). */
   actions?: React.ReactNode;
+  /** Nested tab deep links activate their visible parent without rewriting the URL. */
+  tabAliases?: Readonly<Record<string, string>>;
 }) {
   const [loc, navigate] = useLocation();
   const search = useSearch();
@@ -80,7 +83,9 @@ export function PageTabs({
     canSeeGate(t.gate, role, permsOverride, operationPolicy),
   );
   const requested = new URLSearchParams(search).get("tab");
-  const active = visible.find((t) => t.value === requested) ?? visible[0];
+  const active = visible.find((t) => t.value === requested)
+    ?? (requested ? visible.find((t) => t.value === tabAliases?.[requested]) : undefined)
+    ?? visible[0];
   const activeTriggerRef = useRef<HTMLButtonElement>(null);
 
   // On narrow screens the tabs stay on one scrollable row. Deep links can open

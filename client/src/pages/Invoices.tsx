@@ -1,6 +1,8 @@
+import { invoiceDetailPrintData } from "@/lib/printing/invoiceDetailPrintData";
 import { deriveInvoiceChannel, invoiceChannelLabel, invoiceChannelOptions } from "@shared/invoiceChannel";
 import InvoiceChannelBadge from "@/components/InvoiceChannelBadge";
 import { CopyInline } from "@/components/CopyButton";
+import { beginInvoicePrintAttempt, completeInvoicePrintAttempt, hasPendingFirstInvoicePrint } from "@/lib/printing/invoicePrintAttempt";
 import { DataTable } from "@/components/data-table/DataTable";
 import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import { ListToolbar, RowActions, SelectionBar, useRowSelection } from "@/components/list";
@@ -364,60 +366,39 @@ export default function Invoices() {
   async function printA4(invoiceId: number) {
     if (!salesOperationAllowed(me.data, "sales.get", true) || !salesOperationAllowed(me.data, "invoicePrinting.requestPrint", true)) return notify.warn("طباعة الفاتورة غير مفوّضة لحسابك.");
     try {
-      await utils.client.invoicePrinting.requestPrint.mutate({ invoiceId, requestId: crypto.randomUUID(), purpose: "A4" });
       const d = await utils.sales.get.fetch({ invoiceId });
       if (!d) {
         notify.err("تعذّر جلب الفاتورة");
         return;
       }
-      // توزيع ضريبة الفاتورة تناسبياً على السطور لعمود «الضريبة» في A4 (نفس خوارزمية محرّر
-      // الفاتورة والـInvoiceDetail: آخر سطر يمتصّ التقريب ⇒ Σ الحصص = d.taxAmount بلا انجراف).
-      const afterDisc = round2(D(d.subtotal).minus(D(d.discountAmount ?? "0"))).toFixed(2);
-      const shares = allocateLineTax(
-        d.items.map((it) => ({ total: String(it.total) })),
-        String(d.taxAmount ?? "0"),
-        afterDisc,
-      );
-      await printInvoiceA4({
-        invoiceNumber: d.invoiceNumber,
-        invoiceDate: d.invoiceDate,
-        customerName: d.customerName,
-        customerPhone: d.customerPhone ?? null,
-        customerAddress: d.customerAddress ?? null,
-        customerBalance: d.customerId ? d.customerBalance : null,
-        salespersonName: d.salespersonName,
-        companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
-        paymentMethod: paymentMethodLabel(d.paymentMethod),
-        subtotal: d.subtotal,
-        discountAmount: d.discountAmount,
-        taxAmount: d.taxAmount,
-        taxRate: Number(d.taxRatePercent ?? 0),
-        total: d.total,
-        paidAmount: d.paidAmount,
-        qrPayload: d.qrPayload ?? null,
-        items: d.items.map((it, i) => ({
-          productName: variantDisplayName({ ...it, productName: it.productName ?? "" }),
-          unitName: it.unitName, quantity: it.quantity, unitPrice: it.unitPrice, total: it.total,
-          taxAmount: shares[i] ?? "0", isGift: it.isGift, barcode: it.barcode ?? it.sku ?? null,
-        })),
-      });
+      if (!me.data) return;
+      const attempt = beginInvoicePrintAttempt(me.data.id, invoiceId, "A4", false);
+      await utils.client.invoicePrinting.requestPrint.mutate({ invoiceId, requestId: attempt.requestId, purpose: "A4" });
+      const opened = await printInvoiceA4(invoiceDetailPrintData(d, taxSettings.data?.taxRegistrationNumber ?? null));
+      if (opened) completeInvoicePrintAttempt(attempt);
     } catch (e) {
       notify.err(e);
     }
   }
 
+  const canRetryThermal = (invoiceId: number) => salesOperationAllowed(me.data, "invoicePrinting.requestReprint", true) ||
+    (salesOperationAllowed(me.data, "invoicePrinting.requestPrint", true) && hasPendingFirstInvoicePrint(me.data?.id, invoiceId, "THERMAL"));
+
   async function reprintThermal(invoiceId: number) {
-    if (!salesOperationAllowed(me.data, "sales.get", true) || !salesOperationAllowed(me.data, "invoicePrinting.requestReprint", true)) return notify.warn("إعادة طباعة الفاتورة غير مفوّضة لحسابك.");
+    if (!salesOperationAllowed(me.data, "sales.get", true) || !canRetryThermal(invoiceId)) return notify.warn("إعادة طباعة الفاتورة غير مفوّضة لحسابك.");
     if (printingReceiptId != null) return;
     setPrintingReceiptId(invoiceId);
     try {
-      await utils.client.invoicePrinting.requestReprint.mutate({ invoiceId, requestId: crypto.randomUUID(), purpose: "THERMAL" });
+      if (!me.data) return;
+      const attempt = beginInvoicePrintAttempt(me.data.id, invoiceId, "THERMAL", true, salesOperationAllowed(me.data, "invoicePrinting.requestPrint", true));
+      await utils.client.invoicePrinting[attempt.mode === "PRINT" ? "requestPrint" : "requestReprint"].mutate({ invoiceId, requestId: attempt.requestId, purpose: "THERMAL" });
       const d = await utils.sales.get.fetch({ invoiceId });
       if (!d) {
         notify.err("تعذّر جلب الفاتورة");
         return;
       }
       const result = await printReceipt(invoiceToReceipt(d));
+      if (result.ok) completeInvoicePrintAttempt(attempt);
       if (!result.ok) {
         notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
       } else if (result.via === "server") {
@@ -722,7 +703,7 @@ export default function Invoices() {
                   disabled: printingReceiptId != null,
                   disabledReason: "توجد عملية طباعة قيد التنفيذ",
                   hidden: !salesOperationAllowed(me.data, "sales.get", true),
-                  gate: {operations: ["invoicePrinting.requestReprint"], module: "sales", level: "READ" },
+                  gate: {operations: [hasPendingFirstInvoicePrint(me.data?.id, r.id, "THERMAL") && salesOperationAllowed(me.data, "invoicePrinting.requestPrint", true) ? "invoicePrinting.requestPrint" : "invoicePrinting.requestReprint"], module: "sales", level: "READ" },
                 },
                 {
                   key: "print",
@@ -1160,7 +1141,7 @@ export default function Invoices() {
                   : []),
               ]}
               onClick={salesOperationAllowed(me.data, "sales.get", true) ? () => navigate(`/invoices/${r.id}`) : undefined}
-              primaryAction={salesOperationAllowed(me.data, "sales.get", true) && salesOperationAllowed(me.data, "invoicePrinting.requestReprint", true) ? {
+              primaryAction={salesOperationAllowed(me.data, "sales.get", true) && canRetryThermal(r.id) ? {
                 label: "وصل",
                 icon: Printer,
                 disabled: printingReceiptId === r.id,

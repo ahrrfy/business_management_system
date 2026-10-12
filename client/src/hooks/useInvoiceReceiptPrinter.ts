@@ -1,8 +1,9 @@
 import { useEffect, useRef } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { getMeta, setMeta } from "@/lib/offline/db";
-import { printReceipt } from "@/lib/printing/print";
+import { printReceipt, type PrintResult, type ReceiptBrowserData } from "@/lib/printing/print";
 import { releaseReservedPrintWindow } from "@/lib/printing/brand";
+import { beginInvoicePrintAttempt, completeInvoicePrintAttempt, type InvoicePrintPurpose } from "@/lib/printing/invoicePrintAttempt";
 import {
   hasOperationPolicy,
   operationDecision,
@@ -24,16 +25,21 @@ export function useInvoiceReceiptPrinter(
     );
   }, [user]);
 
-  async function printAuthorizedReceipt(rec: Receipt, reprint = false) {
+  async function printAuthorizedDocument(invoiceId: number, purpose: InvoicePrintPurpose, reprint: boolean, render: () => Promise<PrintResult>) {
     if (receiptPrinting.current)
       return { ok: false as const, via: "browser" as const };
     receiptPrinting.current = true;
     try {
-      if (rec.invoiceId > 0) {
-        await (reprint ? requestReprint : requestPrint).mutateAsync({
-          invoiceId: rec.invoiceId,
-          requestId: crypto.randomUUID(),
-          purpose: "THERMAL",
+      const attempt = invoiceId > 0 && user
+        ? beginInvoicePrintAttempt(user.id, invoiceId, purpose, reprint,
+            user.isOwner || !hasOperationPolicy(user) || operationDecision(user, "invoicePrinting.requestPrint").allowed)
+        : null;
+      if (invoiceId > 0) {
+        if (!attempt) throw new Error("تعذّر التحقق من حساب طباعة الفاتورة؛ أعد تسجيل الدخول.");
+        await (attempt.mode === "REPRINT" ? requestReprint : requestPrint).mutateAsync({
+          invoiceId: invoiceId,
+          requestId: attempt.requestId,
+          purpose,
         });
       } else {
         // A temporary offline receipt has no server invoice to authorize or journal.
@@ -63,11 +69,19 @@ export function useInvoiceReceiptPrinter(
             "تعذّر التحقق من صلاحية طباعة الإيصال المؤقت؛ اتصل بالخادم لتحديث صلاحيات حسابك.",
           );
       }
-      return await printReceipt(buildBrandedReceipt(rec));
+      const result = await render();
+      if (result.ok && attempt) completeInvoicePrintAttempt(attempt);
+      return result;
     } finally {
       releaseReservedPrintWindow();
       receiptPrinting.current = false;
     }
   }
-  return { printAuthorizedReceipt, receiptPrinting };
+  function printAuthorizedReceiptData(rec: ReceiptBrowserData, reprint = false) {
+    return printAuthorizedDocument(rec.invoiceId ?? 0, "THERMAL", reprint, () => printReceipt(rec));
+  }
+  function printAuthorizedReceipt(rec: Receipt, reprint = false) {
+    return printAuthorizedReceiptData(buildBrandedReceipt(rec), reprint);
+  }
+  return { printAuthorizedReceipt, printAuthorizedReceiptData, printAuthorizedDocument, receiptPrinting };
 }

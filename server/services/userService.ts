@@ -555,9 +555,8 @@ export async function updateUser(
       );
       if (
         policyChanged ||
-        (input.operationPolicy === null &&
-          (existing.atomicPermissions != null ||
-            existing.permissionsOverride != null))
+        existing.atomicPermissions != null ||
+        existing.permissionsOverride != null
       ) {
         // The hierarchy guard reads only userId/role/isOwner; its branch is irrelevant here.
         assertCanAdministerUser(actor as Actor, existing);
@@ -570,30 +569,25 @@ export async function updateUser(
         patch.sessionsValidFrom = new Date();
         policyChanged = true;
       }
-      if (input.operationPolicy === null) {
-        if (input.permissionsOverride === undefined) {
-          patch.permissionsOverride = null;
-          for (const [key, before] of Object.entries(
-            (existing.permissionsOverride as PermissionMap) ?? {},
-          ))
-            clearedLegacyChanges.push({
-              field: `legacy.permissionsOverride.${key}`,
-              before,
-              after: null,
-            });
-        }
-        if (input.atomicPermissions === undefined) {
-          patch.atomicPermissions = null;
-          for (const [key, before] of Object.entries(
-            (existing.atomicPermissions as AtomicPermissionsMap) ?? {},
-          ))
-            clearedLegacyChanges.push({
-              field: `legacy.atomicPermissions.${key}`,
-              before,
-              after: null,
-            });
-        }
-      }
+      // Saving the individual operation matrix replaces both older individual maps.
+      patch.permissionsOverride = null;
+      for (const [key, before] of Object.entries(
+        (existing.permissionsOverride as PermissionMap) ?? {},
+      ))
+        clearedLegacyChanges.push({
+          field: `legacy.permissionsOverride.${key}`,
+          before,
+          after: null,
+        });
+      patch.atomicPermissions = null;
+      for (const [key, before] of Object.entries(
+        (existing.atomicPermissions as AtomicPermissionsMap) ?? {},
+      ))
+        clearedLegacyChanges.push({
+          field: `legacy.atomicPermissions.${key}`,
+          before,
+          after: null,
+        });
     }
 
     if (Object.keys(patch).length === 0)
@@ -1179,6 +1173,7 @@ function effectiveStationForRow(row: {
   role: string;
   customRoleId: number | null;
   permissionsOverride: unknown;
+  atomicPermissions: unknown;
   roleBaseRole: string | null;
   rolePermissions: unknown;
   operationPolicy: unknown;
@@ -1212,6 +1207,11 @@ function effectiveStationForRow(row: {
       inheritedModules,
       inherited,
       row.operationPolicy as OperationPolicy | null,
+      override,
+      {
+        permissionsOverride: row.permissionsOverride as PermissionMap | null,
+        atomicPermissions: row.atomicPermissions as AtomicPermissionsMap | null,
+      },
     );
     override = diffFromTemplate(
       role as RoleKey,
@@ -1269,6 +1269,7 @@ export async function listUsers(input: ListUsersInput = {}) {
         role: r.role as string,
         customRoleId: (r.customRoleId as number | null) ?? null,
         permissionsOverride: r.permissionsOverride,
+        atomicPermissions: r.atomicPermissions,
         roleBaseRole: _roleBaseRole,
         rolePermissions: _rolePermissions,
         operationPolicy: r.operationPolicy,

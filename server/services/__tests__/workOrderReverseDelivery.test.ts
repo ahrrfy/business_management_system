@@ -471,6 +471,7 @@ describe("حوكمة عكس تسليم أمر الشغل", () => {
     const order = await deliveredOrder({ key: "sod" });
     const { request } = await requestReverse({ workOrderId: order.workOrderId });
     await expect(approveWorkOrderControlRequest(Number(request.id), REQUESTER)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await db().update(s.users).set({ role: "admin" }).where(eq(s.users.id, CASHIER.userId));
     await expect(approveWorkOrderControlRequest(Number(request.id), { ...CASHIER, role: "admin" })).rejects.toMatchObject({ code: "FORBIDDEN" });
     const results = await Promise.all([
       approveWorkOrderControlRequest(Number(request.id), REVIEWER),

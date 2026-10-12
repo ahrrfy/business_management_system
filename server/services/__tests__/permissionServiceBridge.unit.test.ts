@@ -35,6 +35,22 @@ function fakeTx(results: unknown[][]): Tx {
 }
 
 describe("transactional operation service bridge", () => {
+  it("preserves individual old revocations after role conversion and replaces them on explicit user conversion", async () => {
+    const role = { baseRole: "warehouse", isActive: true, permissions: resolvePermissions("warehouse", null), operationPolicy: policy("sales.create", "sales.list", "returns.create") };
+    const unrestricted = { ...account(), customRoleId: 9 };
+    expect(canonicalOperationAllowed(storedOperationUser(unrestricted, role), "sales.create")).toBe(true);
+    const atomicDenied = { ...unrestricted, atomicPermissions: { "pos.return.create": false } };
+    expect(canonicalOperationAllowed(storedOperationUser(atomicDenied, role), "returns.create")).toBe(false);
+    expect(canonicalOperationAllowed(storedOperationUser(atomicDenied, role), "sales.create")).toBe(true);
+    const readOnly = { ...unrestricted, permissionsOverride: { sales: "READ" as const } };
+    expect(canonicalOperationAllowed(storedOperationUser(readOnly, role), "sales.list")).toBe(true);
+    expect(canonicalOperationAllowed(storedOperationUser(readOnly, role), "sales.create")).toBe(false);
+    const denied = { ...unrestricted, permissionsOverride: { sales: "NONE" as const, workorders: "NONE" as const, pos: "NONE" as const } };
+    expect(canonicalOperationAllowed(storedOperationUser(denied, role), "sales.list")).toBe(false);
+    const proof = routeOperationAuthority({ ...storedOperationUser(unrestricted, role), id: 4 }, "returns.create");
+    await expect(assertOperationAuthorityTx(fakeTx([[{ customRoleId: 9 }], [role], [atomicDenied]]), { userId: 4 }, "returns.create", true, proof)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(canonicalOperationAllowed(storedOperationUser({ ...atomicDenied, operationPolicy: policy() }, role), "returns.create")).toBe(true);
+  });
   it("delegates only the selected real operation, without expanding another action", () => {
     const user = storedOperationUser(account(policy(paths[0]!)));
     expect(canonicalOperationAllowed(user, paths[0]!)).toBe(true);

@@ -627,13 +627,33 @@ describe("canonical operation policy persistence and resolution", () => {
       })
       .where(eq(s.users.id, userId));
     await updateUser(
-      { userId, operationPolicy: null, expectedOperationPolicyRevision: 1 },
+      { userId, operationPolicy: null, expectedOperationPolicyRevision: 1, permissionsOverride: { sales: "NONE" }, atomicPermissions: { "pos.invoice.create": false } },
       actor,
     );
     const user = await resolve(userId);
     expect(user.operationPolicy).toBeNull();
     expect(user.atomicPermissions).toBeNull();
     expect(user.resolvedOperationPolicy?.grants[sale]).toBe(true);
+  });
+
+  it("preserves old individual denials when a role converts, with context and fresh-service parity", async () => {
+    const role = await createRole({ label: "قديم", baseRole: "cashier", permissions: {} }, actor);
+    const { userId } = await makeUser(role.id);
+    await db().update(s.users).set({ permissionsOverride: { sales: "NONE" }, atomicPermissions: { "pos.return.create": false } }).where(eq(s.users.id, userId));
+    await updateRole({ id: role.id, operationPolicy: policy({ [sale]: true, [returned]: true }), expectedOperationPolicyRevision: 0 }, actor);
+    const resolved = await resolve(userId);
+    expect(resolved.resolvedOperationPolicy?.grants[sale]).toBe(false);
+    expect(resolved.resolvedOperationPolicy?.grants[returned]).toBe(false);
+    expect((await getUser(userId)).resolvedOperationPolicy?.grants[returned]).toBe(false);
+    const [stored] = await db().select().from(s.users).where(eq(s.users.id, userId));
+    const [storedRole] = await db().select().from(s.roles).where(eq(s.roles.id, role.id));
+    const { storedOperationUser } = await import("../authorization/operationAuthority");
+    expect(storedOperationUser(stored!, storedRole!).resolvedOperationPolicy?.grants[returned]).toBe(false);
+    await updateUser({ userId, operationPolicy: policy({}), expectedOperationPolicyRevision: 0 }, actor);
+    const converted = await resolve(userId);
+    expect(converted.atomicPermissions).toBeNull();
+    expect(converted.resolvedOperationPolicy?.grants[sale]).toBe(true);
+    expect(converted.resolvedOperationPolicy?.grants[returned]).toBe(true);
   });
 
   it("untouched legacy user retains the old module contract without enabling canonical enforcement", async () => {

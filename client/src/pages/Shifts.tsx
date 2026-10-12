@@ -1148,6 +1148,8 @@ export default function Shifts() {
           legacyEvidenceNote: note,
           legacyClientRequestId: reqId,
           closeCounted: counted,
+          varianceReasonCode,
+          varianceReason,
         }) => {
           if (isNeg) {
             closeShiftM.mutate({
@@ -1166,6 +1168,8 @@ export default function Shifts() {
           closeShiftM.mutate({
             shiftId: sId,
             countedCash: counted,
+            varianceReasonCode,
+            varianceReason,
           });
         }}
       />

@@ -1138,9 +1138,9 @@ export const workordersReadProcedure = branchScopedProcedure.use(requireModule("
 export const workordersCashierProcedure = moduleProcedure(["cashier", "manager"], "workorders", "FULL");
 export const workordersExecProcedure = moduleProcedure(["cashier", "manager", "print_operator"], "workorders", "FULL");
 /** Read-only duplicate advice for existing reception execution or store fulfillment authority. */
-export const receptionDuplicateReadProcedure = branchScopedProcedure.use(({ ctx, next }) => {
+export const receptionDuplicateReadProcedure = branchScopedProcedure.use(({ ctx, next, path }) => {
   const override = (ctx.user as { permissionsOverride?: PermissionMap | null }).permissionsOverride ?? null;
-  if (!canCheckReceptionDuplicates(ctx.user.role, override)) {
+  if (!canonicalOperationAllowed(ctx.user, path) && !canCheckReceptionDuplicates(ctx.user.role, override)) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: appErrorMessage({
@@ -1220,13 +1220,13 @@ export const commissionsReadProcedure = protectedProcedure.use(requireModule("co
  * reception. The print-services station remains outside this gate, while the
  * independent digital_cards module gate below still applies.
  */
-const requireDigitalCardsSellingStation = t.middleware(async ({ ctx, next }) => {
+const requireDigitalCardsSellingStation = t.middleware(async ({ ctx, next, path }) => {
   if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
   const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as
     | Record<string, AccessLevel>
     | null
     | undefined;
-  if (!canUseDigitalCardsSellingStation(ctx.user.role, override)) {
+  if (!canonicalOperationAllowed(ctx.user, path) && !canUseDigitalCardsSellingStation(ctx.user.role, override)) {
     throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
   }
   return next({ ctx: { ...ctx, user: ctx.user } });

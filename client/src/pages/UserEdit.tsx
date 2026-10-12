@@ -10,6 +10,7 @@ import {
 } from "@/components/form/OperationPermissionMatrix";
 import {
   buildOperationPolicyFromLegacy,
+  applyLegacyIndividualOperationDenials,
   resolveOperationPolicy,
   type OperationPolicy,
 } from "@shared/operationPermissions";
@@ -112,6 +113,8 @@ export default function UserEdit() {
   // لقطة القيم عند التحميل (وبعد كل حفظ ناجح) — أساس مقارنة حارس فقد البيانات (useUnsavedGuard).
   // مبنيّة من سجلّ الخادم مباشرةً (لا من الحالة) لتفادي سباق التحديثات المُجمَّعة عند setLoaded.
   const baselineRef = useRef<string>("");
+  const policyGenerationRef = useRef(0);
+  const submittedSaveRef = useRef<{ baseline: string; policyGeneration: number } | null>(null);
 
   useEffect(() => {
     if (detail.data && !loaded) {
@@ -128,10 +131,21 @@ export default function UserEdit() {
       setHiredAt(toDateInput((u as { hiredAt?: unknown }).hiredAt));
       setPermsOverride(((u as { permissionsOverride?: PermissionMap | null }).permissionsOverride as PermissionMap) ?? {});
       const inherited = u.inheritedOperationPolicy;
+      const legacyIndividual = applyLegacyIndividualOperationDenials({ version: 1, grants: {} }, u.role, u.permissionsOverride as PermissionMap | null, u.atomicPermissions as Record<string, boolean> | null);
       const initOperationPolicy =
         u.operationPolicy ??
         (u.resolvedOperationPolicy && inherited
-          ? individualOperationOverrides(u.resolvedOperationPolicy, inherited)
+          ? {
+              ...individualOperationOverrides(u.resolvedOperationPolicy, inherited),
+              grants: {
+                ...legacyIndividual.grants,
+                ...individualOperationOverrides(u.resolvedOperationPolicy, inherited).grants,
+              },
+              dataVisibility: {
+                ...legacyIndividual.dataVisibility,
+                ...individualOperationOverrides(u.resolvedOperationPolicy, inherited).dataVisibility,
+              },
+            }
           : null);
       setOperationPolicy(initOperationPolicy);
       setInitialOperationPolicy(initOperationPolicy);
@@ -155,9 +169,7 @@ export default function UserEdit() {
     }
   }, [detail.data, loaded]);
 
-  const isDirty =
-    loaded &&
-    JSON.stringify({
+  const snapshot = JSON.stringify({
       name,
       email,
       username,
@@ -170,7 +182,8 @@ export default function UserEdit() {
       permsOverride,
       operationPolicy,
       isOwner,
-    }) !== baselineRef.current;
+    });
+  const isDirty = loaded && snapshot !== baselineRef.current;
   useUnsavedGuard(isDirty);
 
   function invalidate() {
@@ -178,30 +191,18 @@ export default function UserEdit() {
   }
 
   const update = trpc.users.update.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (result, variables) => {
       setDone("تمّ حفظ التعديلات بنجاح.");
       // الحفظ نجح ⇒ الحالة الحالية هي الأساس الجديد (وإلا يبقى الحارس يُنذر بفقد بيانات محفوظة فعلاً).
-      baselineRef.current = JSON.stringify({
-        name,
-        email,
-        username,
-        role,
-        customRoleId,
-        branchId,
-        phone,
-        jobTitle,
-        hiredAt,
-        permsOverride,
-        operationPolicy,
-        isOwner,
-      });
+      if (submittedSaveRef.current) baselineRef.current = submittedSaveRef.current.baseline;
+      if (variables.operationPolicy !== undefined &&
+          submittedSaveRef.current?.policyGeneration === policyGenerationRef.current) {
+        setOperationPolicyRevision(result.operationPolicyRevision);
+        setInitialOperationPolicy(variables.operationPolicy);
+        setPolicyEdited(false);
+        setPermsOverride({});
+      }
       await invalidate();
-      setOperationPolicyRevision(
-        utils.users.get.getData({ userId })?.operationPolicyRevision ??
-          operationPolicyRevision,
-      );
-      setPolicyEdited(false);
-      setInitialOperationPolicy(operationPolicy);
     },
     onError: (e) => setError(e.message),
   });
@@ -304,6 +305,7 @@ export default function UserEdit() {
     }
     setPermsOverride({});
     setOperationPolicy(null);
+    policyGenerationRef.current++;
     setPolicyEdited(true);
   }
 
@@ -375,6 +377,7 @@ export default function UserEdit() {
   }
 
   function submit() {
+    if (update.isPending) return;
     setError("");
     setDone("");
     if (!name.trim()) return setError("الاسم مطلوب.");
@@ -387,6 +390,10 @@ export default function UserEdit() {
     if (usernameV && !USERNAME_REGEX.test(usernameV)) return setError(USERNAME_POLICY_MSG);
     if (hiredAt && !/^\d{4}-\d{2}-\d{2}$/.test(hiredAt)) return setError("تاريخ التوظيف غير صالح.");
     const override = diffFromPermissions(roleBasePerms, resolvedPerms);
+    submittedSaveRef.current = {
+      baseline: policyEdited ? JSON.stringify({ ...JSON.parse(snapshot), permsOverride: {} }) : snapshot,
+      policyGeneration: policyGenerationRef.current,
+    };
     // نرسل القيمتين دائماً: "" ⇒ مسح المعرّف صراحةً (الخادم يضمن بقاء معرّف واحد على الأقل).
     update.mutate({
       userId,
@@ -401,7 +408,7 @@ export default function UserEdit() {
       hiredAt: hiredAt || null,
       // isOwner: يُرسَل فقط إن كان المستخدم الحالي مالكاً (وإلا يتجاهله الخادم بحارس FORBIDDEN).
       ...(meIsOwner ? { isOwner } : {}),
-      permissionsOverride: override,
+      ...(!policyEdited ? { permissionsOverride: override } : {}),
       ...(policyEdited
         ? {
             operationPolicy,
@@ -589,6 +596,7 @@ export default function UserEdit() {
               id="role"
               value={customRoleId ? `custom:${customRoleId}` : role}
               onValueChange={(value) => void handleRoleChange(value)}
+              disabled={update.isPending}
             >
               <optgroup label="أدوار النظام">
                 {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
@@ -726,6 +734,7 @@ export default function UserEdit() {
               inherited={inheritedOperationPolicy}
               baseline={initialOperationPolicy}
               onChange={(policy) => {
+                policyGenerationRef.current++;
                 setOperationPolicy(policy);
                 setPolicyEdited(true);
               }}
@@ -736,7 +745,9 @@ export default function UserEdit() {
               size="sm"
               variant="outline"
               className="mt-3"
+              disabled={update.isPending}
               onClick={() => {
+                policyGenerationRef.current++;
                 setOperationPolicy(null);
                 setPermsOverride({});
                 setPolicyEdited(true);

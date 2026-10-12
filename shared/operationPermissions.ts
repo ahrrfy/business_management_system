@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   ALL_PERMISSION_MODULE_KEYS,
   canSeeCost,
+  canUseDigitalCardsSellingStation,
   diffFromTemplate,
   levelSatisfies,
   moduleAccessAllowed,
@@ -12,6 +13,7 @@ import {
   type RoleKey,
 } from "./permissions";
 import { GENERATED_OPERATION_PERMISSIONS } from "./operationPermissionCatalog.generated";
+import { canCheckReceptionDuplicates } from "./receptionDuplicateOrders";
 
 /** The catalog is generated from real tRPC paths, never from display aliases. */
 export interface OperationPermission {
@@ -34,6 +36,7 @@ export interface OperationPermission {
   reservedKind?: "AUTHORITY" | "IDENTITY" | "PUBLIC" | "UNSUPPORTED" | null;
   /** The inherited legacy gate can require FULL even for a query. */
   level?: string | null;
+  procedure?: string;
   inheritedAuthority?: string | null;
   /** Only paths whose handler actually consumes the owner filter expose this choice. */
   supportsRecordScope?: boolean;
@@ -140,7 +143,7 @@ function legacyAllowed(
   override: PermissionMap | null | undefined,
   operation: OperationPermission,
 ): boolean {
-  if (operation.path === "invoicePrinting.authorizeBridge" && role === "courier") return false;
+  if (operation.path === "invoicePrinting.authorizeBridge") return role !== "courier";
   if (role === "admin") return true;
   if (operation.authority === "unknown") return false;
   if (
@@ -149,7 +152,21 @@ function legacyAllowed(
   )
     return false;
   if (operation.authority === "raw-role") return operation.roles.includes(role);
-  const minimum = legacyMinimumLevel(operation);
+  if (operation.procedure === "receptionDuplicateReadProcedure") return canCheckReceptionDuplicates(role, override);
+  if (operation.procedure === "digitalCardsPosProcedure" && !canUseDigitalCardsSellingStation(role, override)) return false;
+  if (operation.procedure === "customersReadProcedure") {
+    if (override?.customers === "NONE" && role !== "cashier" && role !== "print_operator") return false;
+    return levelSatisfies(override?.customers, "READ") ||
+      moduleAccessAllowed(role, override, "crm", "READ", ["cashier", "manager", "sales_rep", "accountant"]) ||
+      moduleAccessAllowed(role, override, "sales", "READ", ["cashier", "manager", "sales_rep"]) ||
+      moduleAccessAllowed(role, override, "pos", "READ", ["cashier", "manager", "print_operator"]) ||
+      moduleAccessAllowed(role, override, "workorders", "READ", ["cashier", "manager", "print_operator"]);
+  }
+  if (operation.procedure === "customersReceptionCreateProcedure") {
+    return levelSatisfies(override?.customers, "FULL") ||
+      moduleAccessAllowed(role, override, "crm", "FULL", ["cashier", "manager", "sales_rep", "print_operator"]) ||
+      moduleAccessAllowed(role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
+  }
   const moduleKeys = operation.module?.split("|").filter(Boolean) ?? [];
   if (moduleKeys.length === 0) {
     return (
@@ -158,14 +175,26 @@ function legacyAllowed(
       operation.roles.includes("authenticated-user")
     );
   }
-  if (operation.authority === "module-gate") {
-    return moduleKeys.some((moduleKey) =>
-      moduleAccessAllowed(role, override, moduleKey, minimum, operation.roles),
-    );
+  const allows = (moduleKey: string, minimum: AccessLevel): boolean =>
+    operation.authority === "module-gate"
+      ? moduleAccessAllowed(role, override, moduleKey, minimum, operation.roles)
+      : levelSatisfies(modules[moduleKey], minimum);
+  if (operation.procedure === "salesCorrectionProcedure") {
+    return (allows("sales", "FULL") || allows("workorders", "FULL")) &&
+      allows("products", "READ");
   }
-  return moduleKeys.some((moduleKey) =>
-    levelSatisfies(modules[moduleKey], minimum),
-  );
+  if (operation.procedure === "salesCorrectionComparisonProcedure") {
+    return allows("sales", "FULL") ||
+      (allows("workorders", "FULL") && allows("products", "READ"));
+  }
+  const levels = operation.level?.split("|") ?? [];
+  if (levels.length > 1) {
+    if (levels.length !== moduleKeys.length ||
+        levels.some((level) => level !== "READ" && level !== "FULL" && level !== "WRITE")) return false;
+    return moduleKeys.some((moduleKey, index) =>
+      allows(moduleKey, levels[index] === "READ" ? "READ" : "FULL"));
+  }
+  return moduleKeys.some((moduleKey) => allows(moduleKey, legacyMinimumLevel(operation)));
 }
 
 /** Compatibility snapshot: only the real gate's own module can grant an operation. */
@@ -217,15 +246,22 @@ export function resolveOperationPolicy(
   rolePolicy?: OperationPolicy | null,
   userPolicy?: OperationPolicy | null,
   legacyOverride?: PermissionMap | null,
+  legacyIndividual?: {
+    permissionsOverride?: PermissionMap | null;
+    atomicPermissions?: Record<string, boolean> | null;
+  },
 ): OperationPolicy {
   const legacy = legacyOperationPolicy(role, modules, legacyOverride);
+  // Until this account is explicitly converted, preserve its own old revocations.
+  // A saved sparse user policy replaces the old individual matrix completely.
+  const inherited = userPolicy == null && legacyIndividual
+    ? applyLegacyIndividualOperationDenials(rolePolicy ?? legacy, role, legacyIndividual.permissionsOverride, legacyIndividual.atomicPermissions)
+    : rolePolicy ?? legacy;
   const grants: Record<string, boolean> = {};
   const recordScopes: Record<string, OperationRecordScope> = {};
   for (const operation of OPERATION_PERMISSIONS) {
     if (!operation.delegable) continue;
-    const roleGrant = rolePolicy
-      ? rolePolicy.grants[operation.key] === true
-      : legacy.grants[operation.key] === true;
+    const roleGrant = inherited.grants[operation.key] === true;
     grants[operation.key] =
       userPolicy && own(userPolicy.grants, operation.key)
         ? userPolicy.grants[operation.key] === true
@@ -249,10 +285,36 @@ export function resolveOperationPolicy(
             profitMargin: false,
           }
         : legacy.dataVisibility),
-      ...rolePolicy?.dataVisibility,
+      ...inherited.dataVisibility,
       ...userPolicy?.dataVisibility,
     },
   };
+}
+
+/** Carry only explicit individual restrictions, never old template restrictions. */
+export function applyLegacyIndividualOperationDenials(
+  policy: OperationPolicy,
+  role: string,
+  rawModules?: PermissionMap | null,
+  rawAtomic?: Record<string, boolean> | null,
+): OperationPolicy {
+  const full: PermissionMap = Object.fromEntries(ALL_PERMISSION_MODULE_KEYS.map((key) => [key, "FULL"]));
+  const restricted = { ...full };
+  let hasRestriction = false;
+  for (const [key, level] of Object.entries(rawModules ?? {})) {
+    if (level === "NONE" || level === "READ") {
+      restricted[key] = level;
+      hasRestriction = true;
+    }
+  }
+  const grants = { ...policy.grants };
+  if (hasRestriction) for (const operation of OPERATION_PERMISSIONS) {
+    if (operation.delegable && legacyAllowed(role, full, full, operation) &&
+        !legacyAllowed(role, restricted, restricted, operation)) grants[operation.key] = false;
+  }
+  const result = applyLegacyOperationDenials({ ...policy, grants }, rawAtomic);
+  if (rawModules?.reports === "NONE") result.dataVisibility = { purchaseCost: false, profitMargin: false };
+  return result;
 }
 
 export interface OperationUser {
