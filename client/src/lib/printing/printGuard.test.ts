@@ -2,7 +2,7 @@
 // «الاعتماد على انضباط المطوّر القادم هو ما يُنتج هذه الثغرات» — الحارس بنيويٌّ لا اتفاقيّ.
 import { describe, expect, it } from "vitest";
 import { printReceipt } from "./print";
-import type { ReceiptBrowserData } from "./printTemplates";
+import { buildBrowserReceiptHtml, type ReceiptBrowserData } from "./printTemplates";
 
 const base: ReceiptBrowserData = {
   receiptNumber: "",
@@ -24,5 +24,24 @@ describe("printReceipt guard — لا إيصال بلا رقم مستند حقي
   });
   it("رقم مسوّدة DRF- ⇒ رفض (تُطبَع بقالب المسوّدة لا الإيصال)", async () => {
     await expect(printReceipt({ ...base, receiptNumber: "DRF-1-20260805-00001" })).rejects.toThrow(/قالب المسوّدة/);
+  });
+  it("renders المطلوب عند الاستلام (COD) when paymentMode is COD and credit > 0", () => {
+    const html = buildBrowserReceiptHtml({
+      ...base,
+      receiptNumber: "INV-101",
+      credit: "5000.00",
+      paymentMode: "COD",
+    });
+    expect(html).toContain("المطلوب عند الاستلام (COD)");
+    expect(html).not.toContain("متبقٍّ (حساب آجل)");
+  });
+  it("renders متبقٍّ (حساب آجل) when paymentMode is CREDIT or undefined and credit > 0", () => {
+    const html = buildBrowserReceiptHtml({
+      ...base,
+      receiptNumber: "INV-102",
+      credit: "5000.00",
+    });
+    expect(html).toContain("متبقٍّ (حساب آجل)");
+    expect(html).not.toContain("المطلوب عند الاستلام (COD)");
   });
 });

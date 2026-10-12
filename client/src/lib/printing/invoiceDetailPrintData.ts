@@ -25,6 +25,7 @@ export function invoiceDetailPrintData(data: NonNullable<RouterOutputs['sales'][
       salespersonName: data.salespersonName,
       companyTaxId: companyTaxId,
       paymentMethod: paymentMethodLabel(data.paymentMethod),
+      paymentMode: data.paymentMode,
       subtotal: data.subtotal,
       discountAmount: data.discountAmount,
       taxAmount: data.taxAmount,

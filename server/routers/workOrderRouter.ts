@@ -220,6 +220,8 @@ const receptionCheckoutSchema = z.object({
   }).nullish(),
   // الاستقبال (٨/٨): تأكيد الموظّف توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في وضع الافتتاح).
   openingSellUnavailableConfirmed: z.boolean().optional(),
+  // نمط دفع الفاتورة (PREPAID/COD/CREDIT) — يميّز الحجز والدفع عند الاستلام عن البيع الآجل.
+  paymentMode: z.enum(["PREPAID", "COD", "CREDIT"]).nullish(),
   // بيع مباشر بدون عربون: المقبوض أقلّ من إجمالي البضاعة/الطباعة بلا توصيل ⇒ المتبقّي ذمّةٌ على
   // عميل استقبال فعّال بهوية مكتملة (اسم + هاتف عراقي). التفويض الخادمي محصور في checkoutReception.
   deferredDirect: z.boolean().optional(),

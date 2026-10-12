@@ -74,4 +74,20 @@ describe("invoiceToReceipt", () => {
 
     expect(receipt.delivery).toBeNull();
   });
+
+  it("maps COD paymentMode and formats payment method label when unpaid", () => {
+    const receipt = invoiceToReceipt({
+      invoiceNumber: "INV-COD-1",
+      invoiceDate: "2026-10-12T12:00:00.000Z",
+      subtotal: "15000.00",
+      total: "15000.00",
+      paidAmount: "0.00",
+      paymentMode: "COD",
+      items: [],
+    });
+
+    expect(receipt.paymentMode).toBe("COD");
+    expect(receipt.credit).toBe("15000");
+    expect(receipt.paymentMethod).toBe("دفع عند الاستلام (COD)");
+  });
 });

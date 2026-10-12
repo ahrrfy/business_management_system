@@ -83,6 +83,8 @@ export interface ReceptionCheckoutInput {
    *  حين يوجد عميلٌ فعّال بهوية مكتملة (اسم + هاتف عراقي) — المتبقّي يصير ذمّةً على العميل (AR).
    *  التفويض محصور بهذه المعاملة ويُسجَّل تدقيقياً؛ بلا عميلٍ موثّق يبقى الحاجز صارماً. */
   deferredDirect?: boolean;
+  /** نمط دفع الفاتورة (PREPAID/COD/CREDIT) — يميّز الحجز والدفع عند الاستلام عن البيع الآجل. */
+  paymentMode?: "PREPAID" | "COD" | "CREDIT" | null;
   /** ش٠ (٥/٨، V1): تقريب نقدي IQD لأقرب ٢٥٠ — للبيع المباشر **الخالص** النقديّ فقط (بلا خدمات
    *  طباعة وبلا أوامر شغل). الواجهة تُقرّب أوّلاً وترسل المبالغ مقرَّبة، والخادم يعيد التقريب
    *  بنفس الدالة ويقيّد الفرق ADJUST (نمط POS حرفياً). السلة المختلطة عبر cashRoundingOverride
@@ -406,6 +408,15 @@ export async function checkoutReceptionInTx(
       });
     }
 
+    const resolvedPaymentMode: "PREPAID" | "COD" | "CREDIT" | undefined =
+      input.delivery != null
+        ? "COD"
+        : input.paymentMode != null
+          ? input.paymentMode
+          : (input.deferredDirect || receptionDeferredAuthorized)
+            ? "CREDIT"
+            : undefined;
+
     // ش٤: التوزيع الجشع بترتيب السلّة كما هو، لكن **المقبوض سلفاً يُطبَّق أولاً** (§٧.٢):
     // البيع المباشر (العادي ثم الطباعة) ⇒ أمر شغل ١ ⇒ ٢ … كلُّ هدفٍ يستهلك P المتبقّي قبل N.
     const preTotalD = round2(money(input.preCollected?.total ?? "0"));
@@ -419,6 +430,7 @@ export async function checkoutReceptionInTx(
     let printApplied = round2(money(input.printSale?.amount ?? "0"));
     let normalizedWorkOrders = (input.workOrders ?? []).map((order) => ({
       ...order,
+      paymentMode: order.paymentMode ?? resolvedPaymentMode,
       depositPreCollected: "0.00",
     }));
     if (input.paidAmount != null || preTotalD.gt(0)) {
@@ -629,7 +641,7 @@ export async function checkoutReceptionInTx(
                 : null,
               codDispatchPending: input.delivery != null,
               // م١ (PR-1) — الجذر: `credit.ts` يعبر COD حين يصله `paymentMode` فقط، ولم يكن يُمرَّر من هنا.
-              paymentMode: input.delivery != null ? "COD" : undefined,
+              paymentMode: resolvedPaymentMode,
               // الاستقبال (٨/٨): يفتح السالب لطلب COD في وضع الافتتاح بتأكيد الموظّف — رِيلات الأمان في createSaleInTx.
               openingSellUnavailableConfirmed:
                 input.openingSellUnavailableConfirmed === true,
@@ -685,7 +697,7 @@ export async function checkoutReceptionInTx(
                 : null,
               codDispatchPending: input.delivery != null,
               // م١ (PR-1) — نفس الجذر على قناة الطباعة (كانت تفحص الحدّ inline بلا فرع COD).
-              paymentMode: input.delivery != null ? "COD" : undefined,
+              paymentMode: resolvedPaymentMode,
               clientRequestId: `${input.clientRequestId}-print`,
               offlineCapture: input.offlineCapture ?? null,
               creditApproved: false,
