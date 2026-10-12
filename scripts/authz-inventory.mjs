@@ -1592,9 +1592,19 @@ function argVal(name) {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
+// Pipe writes are asynchronous on POSIX; wait for delivery before exiting.
+async function emitMachineJson(value) {
+  await new Promise((resolve, reject) => {
+    process.stdout.write(JSON.stringify(value), (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
 // Machine-readable, read-only metadata for the canonical mounted-operation catalog.
 if (process.argv.includes("--json")) {
-  process.stdout.write(JSON.stringify(computeInventory(argVal("--root") || ROOT)));
+  await emitMachineJson(computeInventory(argVal("--root") || ROOT));
   process.exit(0);
 }
 
@@ -1616,7 +1626,7 @@ if (process.argv.includes("--emit-violations")) {
       )
       .join(","),
   }));
-  process.stdout.write(JSON.stringify({ root, count: items.length, items }));
+  await emitMachineJson({ root, count: items.length, items });
   process.exit(0);
 }
 

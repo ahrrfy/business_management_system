@@ -182,8 +182,17 @@ if (process.argv.includes("--selftest")) {
       "UNSUPPORTED",
       "Reviewed override is exact: no whole-family role bypass",
     );
+    // The real inventory exceeds a pipe buffer. Immediate process.exit used to
+    // truncate --json on Linux while passing Windows-only catalog validation.
+    const bulkCount = 400;
+    write("server/routers/bulkFixture.ts", `import {router,salesReadProcedure} from "../trpc";\nexport const bulkRouter = router({\n${Array.from({ length: bulkCount }, (_, index) => `list${index}: salesReadProcedure.query(() => []),`).join("\n")}\n});\n`);
+    const bulkOutput = execFileSync(process.execPath, [
+      resolve(root, "scripts/authz-inventory.mjs"), "--json", "--root", fixture,
+    ], { encoding: "utf8", maxBuffer: 20_000_000 });
+    assert.ok(Buffer.byteLength(bulkOutput) > 65_536, "Fixture must exceed the asynchronous pipe buffer");
+    assert.equal(JSON.parse(bulkOutput).endpoints.filter((entry) => entry.loc.startsWith("server/routers/bulkFixture.ts:")).length, bulkCount, "Large machine output must arrive completely before the process exits");
     console.log(
-      "Operation catalog self-test passed: mounted aliases, multiple exports, nested routers, scopes, admin reservations, drift, unknown gates, Arabic labels, undefined aliases, duplicate paths, unsupported role/service guards, exact reviewed bridges.",
+      "Operation catalog self-test passed: mounted aliases, multiple exports, nested routers, scopes, admin reservations, drift, unknown gates, Arabic labels, undefined aliases, duplicate paths, unsupported role/service guards, exact reviewed bridges, complete large pipe output.",
     );
   } finally {
     // Delete only the exact temporary directory created above, after checking its resolved parent.
