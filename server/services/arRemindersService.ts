@@ -10,7 +10,7 @@
 // الخدمة تعتمد getARAging الموجودة (server/services/reports/arAging.ts) لحساب أعمار الذمم
 // وأقدم فاتورة لكل عميل ⇒ لا نكرّر منطق التعمير.
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { accountingEntries, arReminders, customers, invoices } from "../../drizzle/schema";
 import { requireDb } from "./tx";
 import { getARAging } from "./reports/arAging";
@@ -50,6 +50,11 @@ export interface ReminderQueueRow {
   /** `true` حين الصفّ مدينٌ برصيد افتتاحي/مُدوَّر فقط (بلا فاتورة نظام) — قرار المالك (٥/٧): يظهر في
    *  العرض المجمَّع (branchId=null) فقط، مؤرَّخاً من قيد OPENING، والمبلغ = كامل الرصيد الجاري. الواجهة تُبرزه بشارة. */
   isOpeningBalance: boolean;
+  /**
+   * معرّف الفرع المسند للذمّة (null للمدينين بالرصيد الافتتاحي المجمَّع على مستوى الشركة).
+   * يضمن دقة نسبة التذكير لفرعه وتفادي خطأ «لا فرع مسند».
+   */
+  branchId: number | null;
 }
 
 /** حساب أيام التأخّر بين تاريخين UTC نقيّاً (لا Date، لا مناطق زمنية). */
@@ -78,6 +83,8 @@ export async function getReminderQueue(opts: {
   /** `true` ⇒ **مدينو الرصيد الافتتاحي فقط** (بلا فواتير نظام)، مجمَّعين عبر الفروع. نطاق مستقلّ
    *  للأدمن في الشاشة، معزول عن طابور الفواتير الفرعيّ (يتجنّب حاصر «قراءة مجمَّعة + كتابة فرعيّة»). */
   openingOnly?: boolean;
+  /** `true` ⇒ شمول مديني الرصيد الافتتاحي مع فواتير النظام في العرض الموحَّد الشامل. */
+  includeOpening?: boolean;
 }): Promise<ReminderQueueRow[]> {
   const db = requireDb();
   // نطاق «مدينو الافتتاحي فقط» يجمع بلا فلتر فرع دائماً (بلا انتماء فرعيّ أصلاً) — فلترة aging بفرع
@@ -114,18 +121,45 @@ export async function getReminderQueue(opts: {
         oldestInvoiceDate: r.oldestInvoiceDate!,
         daysOverdue: daysBetween(r.oldestInvoiceDate!, today),
         isOpeningBalance: false,
+        branchId: opts.branchId,
       };
     })
     .filter((x) => x.daysOverdue >= REMINDER_MIN_DAYS_OVERDUE);
 
+  // إذا كنا في عرض مجمّع (branchId == null)، نحسب فرع أقدم فاتورة لكل عميل في invoiceEligible
+  if (opts.branchId == null && invoiceEligible.length > 0) {
+    const invCustIds = invoiceEligible.map((x) => x.row.customerId);
+    const oldestInvBranches = await db
+      .select({
+        customerId: invoices.customerId,
+        branchId: invoices.branchId,
+      })
+      .from(invoices)
+      .where(
+        and(
+          sql`${invoices.customerId} IN (${sql.join(invCustIds.map((id) => sql`${id}`), sql`, `)})`,
+          inArray(invoices.status, ["PENDING", "PARTIALLY_PAID"]),
+        ),
+      )
+      .orderBy(asc(sql`COALESCE(${invoices.dueDate}, ${invoices.invoiceDate})`));
+    const invBranchMap = new Map<number, number>();
+    for (const r of oldestInvBranches) {
+      if (r.customerId && r.branchId && !invBranchMap.has(r.customerId)) {
+        invBranchMap.set(r.customerId, r.branchId);
+      }
+    }
+    for (const item of invoiceEligible) {
+      const b = invBranchMap.get(item.row.customerId);
+      if (b != null) {
+        item.branchId = b;
+      }
+    }
+  }
+
   // مسار (ب) — مدينو الرصيد الافتتاحي/المُدوَّر فقط (بلا فاتورة نظام) — قرار المالك (٥/٧): يُدرَجون
-  // **فقط عند طلب صريح `openingOnly`** (لا بمجرّد branchId=null) — نطاق مقصودٌ للأدمن حصراً عبر
-  // الراوتر (arRemindersRouter.queue بـopeningScope). ⚠️ تحقّق عدائي (٥/٧) كشف أن الشرط السابق
-  // (`branchId==null || openingOnly`) كان يُسرِّب هؤلاء المدينين إلى تجميع `dashboard.ts` العادي —
-  // الذي يستدعي branchId=null لأي مدير مرتفع (لا الأدمن حصراً)، فيظهرون في «برنامج اليوم» لكل مدير
-  // بلا علمه رغم أن الراوتر يمنعه صراحةً من رؤيتهم مباشرةً. الشرط الآن صريح لا يتفعّل صدفةً.
+  // عند طلب صريح `openingOnly` أو في العرض الموحَّد `includeOpening`.
   let openingEligible: typeof invoiceEligible = [];
-  if (opts.openingOnly) {
+  if (opts.openingOnly || opts.includeOpening) {
     const openingCandidates = aging.filter(
       (r) => !r.oldestInvoiceDate && money(r.currentBalance).gt(0),
     );
@@ -135,6 +169,7 @@ export async function getReminderQueue(opts: {
         .select({
           customerId: accountingEntries.customerId,
           openedOn: sql<string>`DATE_FORMAT(MIN(${accountingEntries.entryDate}), '%Y-%m-%d')`,
+          branchId: sql<number | null>`MIN(${accountingEntries.branchId})`,
         })
         .from(accountingEntries)
         .where(
@@ -149,7 +184,11 @@ export async function getReminderQueue(opts: {
         // هو مجموع القيود موجباً — وإلّا طُولب عميلٌ بمبلغٍ سبق أن أُلغي.
         .having(sql`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0) > 0`);
       const openedOn = new Map<number, string>();
-      for (const r of openRows) if (r.openedOn) openedOn.set(Number(r.customerId), r.openedOn);
+      const openBranch = new Map<number, number | null>();
+      for (const r of openRows) {
+        if (r.openedOn) openedOn.set(Number(r.customerId), r.openedOn);
+        if (r.branchId != null) openBranch.set(Number(r.customerId), Number(r.branchId));
+      }
       openingEligible = openingCandidates
         // نشترط قيد OPENING فعليّاً (تعريف «مدين افتتاحي») — رصيد موجب من مصدر آخر بلا OPENING يُستبعَد.
         .filter((r) => openedOn.has(r.customerId))
@@ -161,13 +200,18 @@ export async function getReminderQueue(opts: {
             oldestInvoiceDate: openingDate,
             daysOverdue: daysBetween(openingDate, today),
             isOpeningBalance: true,
+            branchId: openBranch.get(r.customerId) ?? null,
           };
         })
         .filter((x) => x.daysOverdue >= REMINDER_MIN_DAYS_OVERDUE);
     }
   }
 
-  const eligible = [...invoiceEligible, ...openingEligible];
+  const eligible = opts.openingOnly
+    ? openingEligible
+    : opts.includeOpening
+      ? [...invoiceEligible, ...openingEligible]
+      : invoiceEligible;
   if (eligible.length === 0) return [];
 
   // آخر تذكير لكل عميل مع تاريخ الوعد (لكل عميل، ONLY latest row) — استعلام subquery داخلي
@@ -221,7 +265,7 @@ export async function getReminderQueue(opts: {
   const nowMs = Date.now();
   const cooldownMs = REMINDER_COOLDOWN_DAYS * 86_400_000;
   const queue: ReminderQueueRow[] = [];
-  for (const { row, dueAmount, oldestInvoiceDate, daysOverdue, isOpeningBalance } of eligible) {
+  for (const { row, dueAmount, oldestInvoiceDate, daysOverdue, isOpeningBalance, branchId } of eligible) {
     const last = lastByCustomer.get(row.customerId);
     const isPromiseDue = !!(last && last.promisedDate && last.promisedDate <= today);
     const isFuturePromise = !!(last && last.promisedDate && last.promisedDate > today);
@@ -241,6 +285,7 @@ export async function getReminderQueue(opts: {
       promisedDate: last?.promisedDate ?? null,
       isPromiseDue,
       isOpeningBalance,
+      branchId,
     });
   }
 
