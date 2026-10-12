@@ -32,7 +32,7 @@ import {
   setKioskDeviceActive,
   updateKioskDevice,
 } from "../services/kioskDeviceService";
-import { adminProcedure, middleware, publicProcedure, router, settingsAdminProcedure } from "../trpc";
+import { adminProcedure, middleware, publicProcedure, requireAtomicPermission, router, settingsAdminProcedure } from "../trpc";
 
 /**
  * وسيط القراءة: يُمرّر المستخدم المسجَّل كما هو (deviceBranchId=null ⇒ يُستعمل branchId من المدخل)،
@@ -155,10 +155,13 @@ export const kioskRouter = router({
 
   devices: router({
     /** قائمة الأجهزة (بلا الرمز الخام — يُعرض مرّة واحدة عند الإنشاء/التدوير فقط). */
-    list: adminProcedure.query(() => listKioskDevices()),
+    list: adminProcedure
+      .use(requireAtomicPermission("pos.kiosk.view"))
+      .query(() => listKioskDevices()),
 
     /** إنشاء جهاز ⇒ يُعيد الرمز الخام مرّة واحدة (احفظه فوراً؛ لن يظهر ثانيةً). */
     create: adminProcedure
+      .use(requireAtomicPermission("pos.kiosk.manage"))
       .input(z.object({ branchId: z.number().int().positive(), label: z.string().trim().min(1).max(120) }))
       .mutation(async ({ input, ctx }) => {
         const r = await createKioskDevice({ branchId: input.branchId, label: input.label, createdBy: ctx.user.id });
@@ -173,6 +176,7 @@ export const kioskRouter = router({
 
     /** تعديل اسم الجهاز أو فرعه المربوط. */
     update: settingsAdminProcedure
+      .use(requireAtomicPermission("pos.kiosk.manage"))
       .input(
         z.object({
           id: z.number().int().positive(),
@@ -192,7 +196,9 @@ export const kioskRouter = router({
       }),
 
     /** تدوير الرمز ⇒ رمز خام جديد (يُبطل القديم فوراً). */
-    rotate: adminProcedure.input(deviceIdInput).mutation(async ({ input, ctx }) => {
+    rotate: adminProcedure
+      .use(requireAtomicPermission("pos.kiosk.reboot"))
+      .input(deviceIdInput).mutation(async ({ input, ctx }) => {
       const r = await rotateKioskDevice(input.id);
       await logAudit(ctx, {
         action: "kiosk.device.rotate",
@@ -205,6 +211,7 @@ export const kioskRouter = router({
 
     /** تفعيل/إلغاء الجهاز (الإلغاء يُبطل توكنه فوراً). */
     setActive: adminProcedure
+      .use(requireAtomicPermission("pos.kiosk.reboot"))
       .input(z.object({ id: z.number().int().positive(), active: z.boolean() }))
       .mutation(async ({ input, ctx }) => {
         await setKioskDeviceActive(input.id, input.active);
@@ -217,7 +224,9 @@ export const kioskRouter = router({
       }),
 
     /** حذف الجهاز نهائياً. */
-    remove: adminProcedure.input(deviceIdInput).mutation(async ({ input, ctx }) => {
+    remove: adminProcedure
+      .use(requireAtomicPermission("pos.kiosk.reboot"))
+      .input(deviceIdInput).mutation(async ({ input, ctx }) => {
       await deleteKioskDevice(input.id);
       await logAudit(ctx, { action: "kiosk.device.delete", entityType: "kioskDevice", entityId: input.id });
       return { ok: true as const };

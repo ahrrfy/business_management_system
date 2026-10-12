@@ -492,8 +492,8 @@ describe("UI & Ergonomics Helpers", () => {
 
   it("getAtomicPermissionsByResource: يسترجع الصلاحيات التابعة لمورد محدد", () => {
     const shiftKeys = getAtomicPermissionsByResource("pos", "shift");
-    expect(shiftKeys.length).toBe(5);
-    expect(shiftKeys.map((s) => s.action).sort()).toEqual(["close", "open", "print", "variance_approve", "view"]);
+    expect(shiftKeys.length).toBe(6);
+    expect(shiftKeys.map((s) => s.action).sort()).toEqual(["close", "handover", "open", "print", "variance_approve", "view"]);
   });
 
   it("searchAtomicPermissions: يدعم البحث الذكي بالعربية والإنجليزية ويصون المسافات", () => {

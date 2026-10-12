@@ -27,7 +27,7 @@ import { auditMetadataFromContext, logAudit } from "../services/auditService";
 import { retryOnDup } from "../lib/retryDup";
 import { cashVarianceRouter } from "./cashVarianceRouter";
 import { missedDailyCountExceptionRouter } from "./missedDailyCountExceptionRouter";
-import { branchScopedProcedure, managerBranchScopedProcedure, reportViewerProcedure, requireModule, router, treasuryManagerProcedure } from "../trpc";
+import { branchScopedProcedure, managerBranchScopedProcedure, reportViewerProcedure, requireAtomicPermission, requireModule, router, treasuryManagerProcedure } from "../trpc";
 
 const periodEnum = z.enum(["today", "yesterday", "week", "month"]);
 const businessDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح");
@@ -94,6 +94,7 @@ export const treasuryRouter = router({
     ),
 
   reopenDailyCashReconciliation: treasuryManagerProcedure
+    .use(requireAtomicPermission("treasury.period.reopen"))
     .input(z.object({
       reconciliationId: z.number().int().positive(),
       expectedVersion: z.number().int().positive(),

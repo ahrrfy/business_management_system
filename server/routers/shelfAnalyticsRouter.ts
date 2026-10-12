@@ -7,7 +7,7 @@
  *  - تصفير ومسح سجل الاستعلامات والبيانات الوهمية والبدء من الصفر.
  */
 import { z } from "zod";
-import { router, storeManagerProcedure } from "../trpc";
+import { requireAtomicPermission, router, storeManagerProcedure } from "../trpc";
 import {
   getShelfBeneficiariesStats,
   purgeShelfLookupLogs,
@@ -19,6 +19,7 @@ export const shelfAnalyticsRouter = router({
    * جلب إحصائيات المستفيدين من خدمة الرفوف والمسح بالباركود.
    */
   getStats: storeManagerProcedure
+    .use(requireAtomicPermission("inventory.shelf_analytics.view"))
     .input(
       z
         .object({
@@ -37,7 +38,9 @@ export const shelfAnalyticsRouter = router({
   /**
    * مسح وتصفير كافة سجلات استعلامات الرفوف والبيانات الوهمية والبدء من الصفر.
    */
-  purgeLogs: storeManagerProcedure.mutation(async () => {
+  purgeLogs: storeManagerProcedure
+    .use(requireAtomicPermission("inventory.shelf_analytics.optimize"))
+    .mutation(async () => {
     const deletedCount = await purgeShelfLookupLogs();
     return { success: true, count: deletedCount };
   }),

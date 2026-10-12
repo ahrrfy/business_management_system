@@ -3,7 +3,7 @@ import { z } from "zod";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { getCashRemediationDryRun } from "../services/cashRemediation/reportService";
 import { REMEDIATION_CLASSIFICATIONS } from "../services/cashRemediation/types";
-import { reportViewerProcedure, router } from "../trpc";
+import { reportViewerProcedure, requireAtomicPermission, router } from "../trpc";
 
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "صيغة التاريخ YYYY-MM-DD");
 const positiveIds = z.array(z.number().int().positive()).min(1).max(100);
@@ -43,7 +43,9 @@ const dryRunInput = z
 
 /** S1: مسار قراءة واحد فقط. لا mutation ولا endpoint اعتماد/ترحيل في هذه الشريحة. */
 export const cashRemediationRouter = router({
-  dryRun: reportViewerProcedure.input(dryRunInput).query(async ({ input, ctx }) => {
+  dryRun: reportViewerProcedure
+    .use(requireAtomicPermission("treasury.cash_remediation.view"))
+    .input(dryRunInput).query(async ({ input, ctx }) => {
     let branchId = input.branchId;
     if (!canCrossBranches(ctx.user)) {
       if (ctx.user.branchId == null) {

@@ -4321,6 +4321,11 @@ export function searchAtomicPermissions(query?: string | null): AtomicPermission
   const normQ = normalizeSearchText(qTrim);
   const rawQ = qTrim.toLowerCase();
 
+  // إذا كان الاستعلام يطابق مفتاحاً ذرياً كاملاً بدقة
+  if (ATOMIC_PERMISSION_BY_KEY[rawQ]) {
+    return [ATOMIC_PERMISSION_BY_KEY[rawQ]!];
+  }
+
   return ATOMIC_PERMISSION_DEFINITIONS.filter((def) => {
     const normText = ATOMIC_PERMISSION_SEARCH_TEXTS.get(def.key);
     if (normText && normText.includes(normQ)) return true;

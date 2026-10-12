@@ -457,6 +457,8 @@ export default defineConfig({
       "client/src/components/pos/__tests__/posTotalsCredit.test.ts",
       "tests/e2e/comprehensivePermissionMatrixE2E.test.ts",
       "shared/__tests__/atomicPermissions.test.ts",
+      "shared/__tests__/enterpriseOperationalMatrix.test.ts",
+      "server/routers/__tests__/atomicPermissionEnforcement.test.ts",
       "server/__tests__/tier5BackendAdversarial.test.ts",
       "client/src/components/permissions/__tests__/PermissionMatrix.test.tsx",
       "client/src/components/permissions/__tests__/PermissionMatrixChallenger.test.tsx",

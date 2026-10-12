@@ -55,11 +55,16 @@ export const PermissionMatrix = memo(function PermissionMatrix({
   showCapsPanel = true,
   showMaskingPanel = true,
   defaultViewMode = "grid",
+  expandSpecialOperations,
+  onExpandSpecialOperationsChange,
 }: PermissionMatrixProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedDomain, setSelectedDomain] = useState<DomainKey | "all">("all");
   const [overridesOnly, setOverridesOnly] = useState(false);
   const [viewMode, setViewMode] = useState<PermissionViewMode>(defaultViewMode);
+  const [internalExpandSpecial, setInternalExpandSpecial] = useState(false);
+  const isSpecialExpanded = expandSpecialOperations ?? internalExpandSpecial;
+  const handleExpandSpecialChange = onExpandSpecialOperationsChange ?? setInternalExpandSpecial;
 
   // Template comparison base
   const templateMap = useMemo<AtomicPermissionsMap>(() => {
@@ -328,6 +333,8 @@ export const PermissionMatrix = memo(function PermissionMatrix({
         customDeniesCount={totalDenies}
         onResetToTemplate={onReset}
         disabled={readOnly}
+        expandSpecialOperations={isSpecialExpanded}
+        onExpandSpecialOperationsChange={handleExpandSpecialChange}
       />
 
       {/* 3. Domain Categories */}
@@ -340,6 +347,7 @@ export const PermissionMatrix = memo(function PermissionMatrix({
             onBulkUpdate={handleBulkUpdate}
             disabled={readOnly}
             viewMode={viewMode}
+            expandSpecialOperations={isSpecialExpanded}
           />
         ))}
 
