@@ -119,6 +119,7 @@ export async function listReceptionInvoices(input: ReceptionInvoiceQueueInput) {
           returnedTotal: invoices.returnedTotal,
           status: invoices.status,
           paymentMethod: invoices.paymentMethod,
+          paymentMode: invoices.paymentMode,
           customerId: invoices.customerId,
           customerName: customers.name,
           customerPhone: customers.phone,

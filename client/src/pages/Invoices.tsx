@@ -384,6 +384,7 @@ export default function Invoices() {
         salespersonName: d.salespersonName,
         companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
         paymentMethod: paymentMethodLabel(d.paymentMethod),
+        paymentMode: d.paymentMode,
         subtotal: d.subtotal,
         discountAmount: d.discountAmount,
         taxAmount: d.taxAmount,

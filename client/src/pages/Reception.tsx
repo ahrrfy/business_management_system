@@ -375,8 +375,14 @@ export default function Reception() {
   // idempotency: مفتاح واحد لكل دورة إرسال — يتجدّد بعد النجاح.
   const reqIdRef = useRef<string>(crypto.randomUUID());
   const searchRef = useRef<HTMLInputElement>(null);
+  const searchWrapRef = useRef<HTMLDivElement>(null);
   const customerSectionRef = useRef<HTMLDivElement>(null);
   const cartSectionRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (!searchWrapRef.current?.contains(e.target as Node)) setShowDrop(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
 
   // فئة العميل الافتراضية: دور الاستقبال قد لا يملك CRM READ، لذلك تأتي الفئة من endpoint الهوية
   // الضيّق. الاستعلام العام يبقى فقط لمن يملك صلاحية قراءة سياق العميل.
@@ -1438,11 +1444,15 @@ export default function Reception() {
       return;
     }
     // الافتراضي يقبل الفواتير بدون ائتمان: وجود عميل مسجّل يحوّل أي نقص نقدي إلى آجل (ذمّة) تلقائياً.
-    const willDefer = deferred || isReserve || (customer.customerId != null && phoneResolution === "RESOLVED" && !orderDelivery && !draftAtSubmit);
-    if (!orderDelivery && !willDefer && appliedPaidD.plus(heldD).lt(directFloorD)) {
-      const shortfall = round2(directFloorD.minus(appliedPaidD).minus(heldD));
+    const directShortfallD = round2(directFloorD.minus(appliedPaidD).minus(heldD));
+    const hasDirectShortfall = directShortfallD.gt(0);
+    const grandShortfallD = round2(effectiveGrandD.minus(appliedPaidD).minus(heldD));
+    const hasGrandShortfall = grandShortfallD.gt(0);
+
+    const canAuthorizeShortfall = deferred || isReserve || (customer.customerId != null && phoneResolution === "RESOLVED" && !orderDelivery && !draftAtSubmit);
+    if (!orderDelivery && !canAuthorizeShortfall && hasDirectShortfall) {
       notify.errBig(
-        `البضاعة الجاهزة تحتاج ${fmt(directFloorD.toFixed(2))} د.ع (ناقصٌ ${fmt(shortfall.toFixed(2))})`,
+        `البضاعة الجاهزة تحتاج ${fmt(directFloorD.toFixed(2))} د.ع (ناقصٌ ${fmt(directShortfallD.toFixed(2))})`,
         "اربط عميلاً لتسجيل الفاتورة على حسابه (آجل)، أو أَضِف توصيلاً، أو أَكمل المبلغ الآن.",
       );
       customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -1590,6 +1600,14 @@ export default function Reception() {
           }
         : undefined;
 
+      const checkoutPaymentMode: "PREPAID" | "COD" | "CREDIT" = !hasGrandShortfall
+        ? "PREPAID"
+        : (isReserve || orderDelivery)
+          ? "COD"
+          : "CREDIT";
+
+      const sendDeferredDirect = hasDirectShortfall && (deferred || isReserve || (customer.customerId != null && !orderDelivery));
+
       const directCheckoutPayload = {
         branchId,
         shiftId: shift.id,
@@ -1599,12 +1617,13 @@ export default function Reception() {
         paymentMethod: appliedPaidD.gt(0) ? method : undefined,
         paymentReference: appliedPaidD.gt(0) && method !== "CASH" ? paymentReference.trim() : undefined,
         paidAmount: round2(appliedPaidD).toFixed(2),
+        paymentMode: checkoutPaymentMode,
         cashRoundIQD: cashRoundActive,
         cashRoundingOverride: mixedRoundApplied ? mixedCarrier ?? undefined : undefined,
         deliveryFeeHeld: orderFeeHeldD.gt(0) && !routeDeliveryToWO ? orderFeeHeldD.toFixed(2) : undefined,
         delivery: deliveryPayload,
         openingSellUnavailableConfirmed: opts.openingConfirmed === true,
-        deferredDirect: willDefer,
+        deferredDirect: sendDeferredDirect,
         managerApproval: mgrCredsRef.current ?? undefined,
         clientRequestId: reqIdRef.current,
         priceTier: effectiveTier,
@@ -1785,54 +1804,46 @@ export default function Reception() {
       //     الأصليّة وفتح جديدة، `result.regularSale.shiftId` يحمل رقم الوردية الحقيقيّة للفاتورة.
       //     الرجوع لـ`shift?.id` احتياطاً لمسار الأمر الشغل الخالص (لا فاتورة).
       const receiptServerMeta = receptionCheckoutReceiptMeta(result, shift?.id);
+      const isCodSaleCarrier = Boolean(orderDelivery && printLines.length > 0 && regularLines.length > 0);
+      const regularPaidD = isCodSaleCarrier
+        ? round2(D(Math.min(Number(saleAmount), Math.max(0, appliedPaidD.minus(Number(printAmount)).toNumber()))))
+        : round2(D(Math.min(Number(saleAmount), Math.max(0, appliedPaidD.toNumber()))));
+      const regularCreditD = round2(D(saleAmount).minus(regularPaidD));
+      const printPaidD = isCodSaleCarrier
+        ? round2(D(Math.min(Number(printAmount), Math.max(0, appliedPaidD.toNumber()))))
+        : round2(D(Math.min(Number(printAmount), Math.max(0, appliedPaidD.minus(regularPaidD).toNumber()))));
+      const printCreditD = round2(D(printAmount).minus(printPaidD));
+      const resolveMethodLabel = (paidD: typeof regularPaidD) => paidD.gt(0) ? PAY_METHOD_LABEL[method] : (checkoutPaymentMode === "COD" ? "دفع عند الاستلام (COD)" : (checkoutPaymentMode === "CREDIT" ? "آجل (حساب آجل)" : null));
       const receiptHead = {
-        date: fmtDate(printedAt),
-        time: fmtTime(printedAt),
-        cashierName: me.data?.name ?? "موظف الخدمة",
-        customerName: receiptCustomerName,
-        paymentMethod: PAY_METHOD_LABEL[method],
-        shiftId: receiptServerMeta.shiftId,
-        heldDeposits: receiptServerMeta.heldDeposits,
+        date: fmtDate(printedAt), time: fmtTime(printedAt), cashierName: me.data?.name ?? "موظف الخدمة",
+        customerName: receiptCustomerName, shiftId: receiptServerMeta.shiftId, heldDeposits: receiptServerMeta.heldDeposits,
       };
       // ٨/٨ — إفصاح التوصيل على إيصال البيع المباشر: كان لا يُطبَع إطلاقاً («لم تظهر بالطباعة»).
       // يُوضَع على الفاتورة الحاملة للإرسالية (البضاعة إن وُجِدت وإلّا الطباعة). الأجرة تمريرٌ لا
       // إيراد ⇒ خارج الإجمالي؛ الإيصال يعرض «يدفع الزبون شاملاً التوصيل» شفافيةً.
-      const receiptDelivery = orderDelivery && hasCarrierInvoice
-        ? {
-            partyName: orderDelivery.partyName ?? "",
-            fee: round2(D(orderDelivery.fee || 0)).toFixed(2),
-            feeCollection: orderDelivery.feeCollection,
-            address: orderDelivery.address ?? null,
-          }
-        : null;
+      const receiptDelivery = orderDelivery && hasCarrierInvoice ? {
+        partyName: orderDelivery.partyName ?? "", fee: round2(D(orderDelivery.fee || 0)).toFixed(2),
+        feeCollection: orderDelivery.feeCollection, address: orderDelivery.address ?? null,
+      } : null;
       if (result.regularSale) {
         // ٢٣/٨ — Codex P1: خصمُ رأس الفاتورة يُطبع صراحةً على الإيصال. لولا هذا يظهر subtotal
         // = total (الصافي) بينما الأسطر تُظهر أسعارها الخام ⇒ الإيصال لا يُطابق حسابياً والزبون يسأل
         // عن الفارق. `subtotal` صار الخام (`regularSumRawD`)، `discount` يعلن الخصم، والصافي `total`.
         const regularGrossD = regularLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
         receiptsToPrint.push({
-          ...receiptHead,
-          receiptNumber: result.regularSale.invoiceNumber,
-          items: regularLines.map(receiptLine),
-          subtotal: round2(regularGrossD).toFixed(2),
-          discount: invoiceDiscountAmountD.gt(0) ? invoiceDiscountAmountD.toFixed(2) : null,
-          total: saleAmount,
-          paid: saleAmount,
-          // الفكّة تُطبع مرّةً واحدةً على أول إيصال (هي فكّة الطلب كله لا فكّة فاتورةٍ بعينها).
-          change: printedChange,
-          credit: printedCredit,
-          delivery: receiptDelivery,
+          ...receiptHead, receiptNumber: result.regularSale.invoiceNumber, items: regularLines.map(receiptLine),
+          subtotal: round2(regularGrossD).toFixed(2), discount: invoiceDiscountAmountD.gt(0) ? invoiceDiscountAmountD.toFixed(2) : null,
+          total: saleAmount, paid: regularPaidD.toFixed(2), change: printedChange,
+          credit: regularCreditD.gt(0) ? regularCreditD.toFixed(2) : null,
+          paymentMode: checkoutPaymentMode, paymentMethod: resolveMethodLabel(regularPaidD), delivery: receiptDelivery,
         });
       }
       if (result.printSale) {
         receiptsToPrint.push({
-          ...receiptHead,
-          receiptNumber: result.printSale.invoiceNumber,
-          items: printLines.map(receiptLine),
-          subtotal: printAmount, total: printAmount, paid: printAmount,
-          change: result.regularSale ? null : printedChange,
-          credit: result.regularSale ? null : printedCredit,
-          // الإرسالية على البضاعة إن وُجِدت؛ إيصال الطباعة يحمل التوصيل فقط حين لا بضاعة.
+          ...receiptHead, receiptNumber: result.printSale.invoiceNumber, items: printLines.map(receiptLine),
+          subtotal: printAmount, total: printAmount, paid: printPaidD.toFixed(2),
+          change: result.regularSale ? null : printedChange, credit: printCreditD.gt(0) ? printCreditD.toFixed(2) : null,
+          paymentMode: checkoutPaymentMode, paymentMethod: resolveMethodLabel(printPaidD),
           delivery: result.regularSale ? null : receiptDelivery,
         });
       }
@@ -1929,6 +1940,7 @@ export default function Reception() {
         totalStr: round2(effectiveGrandD).toFixed(2),
         changeStr: printedChange,
         creditStr: printedCredit,
+        paymentMode: checkoutPaymentMode,
         receipts: receiptsToPrint,
         workOrders: workOrdersToPrint,
         printFailures,
@@ -2401,25 +2413,20 @@ export default function Reception() {
 
         <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-3">
         <span className="shrink-0 text-xs font-extrabold">٢. أضف ما يريده العميل</span>
-        <div className="relative w-full flex-1 sm:max-w-[640px] sm:min-w-72">
+        <div ref={searchWrapRef} className="relative w-full flex-1 sm:max-w-[640px] sm:min-w-72">
           <Search aria-hidden className="pointer-events-none absolute inset-y-0 end-3 my-auto size-4 text-muted-foreground" />
           <input
             ref={searchRef}
             autoFocus
             id="reception-search"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            onFocus={() => setShowDrop(true)}
-            onBlur={() => setTimeout(() => setShowDrop(false), 160)}
+            onChange={(e) => { setSearch(e.target.value); setShowDrop(true); }}
+            onFocus={() => { if (search) setShowDrop(true); }}
             onKeyDown={(e) => {
-              // مطابقة الماسح بتوقيت الحرف + تطبيع اللوحة العربية أولاً (PR #501، لا تعتمد استقرار البحث).
               barcodeInput.handleKeyDown(e, setSearch);
               if (e.defaultPrevented) return;
-              // ش٠: searchSettled يمنع إضافة نتيجةٍ من استعلامٍ أقدم أثناء الكتابة/المسح السريع.
-              if (e.key === "Enter" && searchSettled && results[0]) {
-                e.preventDefault();
-                addRow(results[0]);
-              }
+              if (e.key === "Enter" && searchSettled && results[0]) { e.preventDefault(); addRow(results[0]); }
+              if (e.key === "Escape") { setSearch(""); setShowDrop(false); }
             }}
             placeholder="امسح الباركود أو ابحث بالاسم / SKU…  (F2)"
             className={cn("h-11 w-full rounded-xl border-[1.5px] px-4 pl-11 text-sm font-semibold outline-none focus:border-primary", barcodeSearchInputClass)}

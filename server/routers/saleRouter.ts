@@ -1435,6 +1435,7 @@ export const saleRouter = router({
             returnedTotal: invoices.returnedTotal,
             status: invoices.status,
             paymentMethod: invoices.paymentMethod,
+            paymentMode: invoices.paymentMode,
             // فاتورة COD لا تحمل العميل كطرف مدين، لكن نعرض عميل أمر الخدمة الأصلي
             // كي لا تختفي طلبات واتساب تحت «عميل نقدي». ١٠/٨ (بلاغ المالك «كلها تظهر نقدي»):
             // + الزبون العابر (contactName) ومستلم الإرسالية — فاتورة توصيلٍ هاتفية كانت
@@ -1708,6 +1709,7 @@ export const saleRouter = router({
           returnedTotal: invoices.returnedTotal,
           status: invoices.status,
           paymentMethod: invoices.paymentMethod,
+          paymentMode: invoices.paymentMode,
           notes: invoices.notes,
           createdBy: invoices.createdBy,
           salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,

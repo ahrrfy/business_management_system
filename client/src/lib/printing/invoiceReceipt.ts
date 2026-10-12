@@ -19,6 +19,7 @@ export interface InvoiceReceiptSource {
   paidAmount?: string | number | null;
   returnedTotal?: string | number | null;
   paymentMethod?: string | null;
+  paymentMode?: string | null;
   correctionAudit?: {
     originalInvoiceNumber: string;
     requestedBy?: number | null;
@@ -57,6 +58,12 @@ export interface InvoiceReceiptSource {
 export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
   const paid = D(d.paidAmount ?? 0);
   const credit = round2(D(d.total).minus(D(d.returnedTotal ?? 0)).minus(paid));
+  const isCod = d.paymentMode === "COD";
+  const paymentMethodDisplay = d.paymentMethod
+    ? paymentMethodLabel(d.paymentMethod)
+    : (isCod && credit.gt(0))
+      ? "دفع عند الاستلام (COD)"
+      : null;
 
   return {
     receiptNumber: d.invoiceNumber,
@@ -92,7 +99,8 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
     total: d.total,
     paid: paid.toString(),
     credit: credit.gt(0) ? credit.toString() : null,
-    paymentMethod: d.paymentMethod ? paymentMethodLabel(d.paymentMethod) : null,
+    paymentMode: d.paymentMode ?? null,
+    paymentMethod: paymentMethodDisplay,
     revision: d.correctionAudit ? {
       originalReceiptNumber: d.correctionAudit.originalInvoiceNumber,
       revisedAt: d.correctionAudit.requestedAt ? fmtDateTime(d.correctionAudit.requestedAt) : "غير موثّق",
