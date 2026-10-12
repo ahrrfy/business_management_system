@@ -52,6 +52,7 @@ export const PARCEL_STATUS: Record<string, string> = {
   DELIVERED: "وصل العميل",
   FAILED: "تعذر التوصيل",
   RETURNED: "مرتجع",
+  CANCELLED: "ملغى",
 };
 
 type CompanyConsignmentOptions = {
