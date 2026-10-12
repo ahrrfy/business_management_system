@@ -50,10 +50,10 @@
 
 **التفعيل وأول جلسة:** `SessionStart` يستدعي `ensureCoordDirs` ⇒ يُهيّئ السجلّ فيصبح إنفاذ `PreToolUse` فعّالاً من أول جلسة بعد دمج `.claude/settings.json` إلى `main`.
 
-**ورشة build-slice:** مهارة `.claude/skills/build-slice/SKILL.md` (بوّابة+ادّعاء+تشغيل+إغلاق) + `.claude/workflows/build-slice.js` (Contract→Build→Verify عبر `review-module`→Gap→Fix→Integrate). مخططات بنيوية للتسليم بين الوكلاء + بوّابة DoD تُحسب من أدلّة آلية (`pnpm check`/`pnpm test` + لقطة) لا من ادّعاء كاتب. الملفات الساخنة تُدمج أخيراً بيد القائد فقط (الذي يملك `_integration`).
+**ورشة build-slice:** مهارة `.claude/skills/build-slice/SKILL.md` (بوّابة+ادّعاء+تشغيل+إغلاق) مدمجة مع مهارة `.claude/skills/review-module/SKILL.md` (Contract→Build→Verify عبر `review-module`→Gap→Fix→Integrate). مخططات بنيوية للتسليم بين الوكلاء + بوّابة DoD تُحسب من أدلّة آلية (`pnpm check`/`pnpm test` + لقطة) لا من ادّعاء كاتب. الملفات الساخنة تُدمج أخيراً بيد القائد فقط (الذي يملك `_integration`).
 
 **استكشاف الأعطال:** لا تُنفَّذ الـ hooks؟ تأكّد أن جلسة **جديدة** بدأت بعد دمج `settings.json` إلى `main`، وأن `node` في PATH، وأن `%CLAUDE_PROJECT_DIR%` يتوسّع (وإلا فالسكربتات تُعيد حساب الجذر من git). رُفضت كتابة مشروعة؟ تأكّد أنك ادّعيت شريحتك (`coord:status`) وأنك على فرع جلسة لا `main`. قفل عالق بعد انهيار جلسة؟ `coord:reclaim` بعد انتهاء المهلة.
-- **Workflows محفوظة** في `.claude/workflows/`: `review-module` (موجود — مُحقِّقون+مكتشفو نواقص). يُنصح بإضافة `design-module` و`build-verify` لاحقاً.
+- **المهارات المتتبَّعة** في `.claude/skills/`: `build-slice`، و`review-module` (مُحقِّقون عدائيون + مكتشفو نواقص)، و`financial-integrity-audit-fresh` (تدقيق السلامة المالية من الكود فقط). وقد أُرشفَت ملفات workflows القديمة بصيغة `.js.bak`.
 - مثال مُطبَّق نجح: ورشة تصميم العمود الفقري (٤ عدسات) + مراجعته العدائية (٤ عدسات + محقّق) كشفت **٧ أخطاء مالية حقيقية** فأُصلحت + اختبارات انحدار.
 
 ## ٥. قواعد العربية/العراق (يلتزمها كل وكيل في كل مخرَج)

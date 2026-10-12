@@ -5,6 +5,7 @@
  * القيد والـsnapshot واعتماد الطلب والقفل ذرّية؛ وأي فشل يرجعها جميعاً.
  */
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "../../shared/errors";
 import {
   and,
   asc,
@@ -313,7 +314,11 @@ export async function closeYear(
   if (cycleStartedAt.getTime() > requiredCoverageStart.getTime()) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: `دورة الدفتر الحالية بدأت في ${cycleStartedAt.toISOString()} بعد بداية سنة ${year} في بغداد (${requiredCoverageStart.toISOString()})؛ لا يجوز تخمين أرصدة الإقفال`,
+      message: appErrorMessage({
+        what: `دورة الدفتر الحالية بدأت بعد بداية سنة ${year} في توقيت بغداد`,
+        why: `بدأت الدورة في ${cycleStartedAt.toISOString()} بينما بداية السنة في بغداد هي (${requiredCoverageStart.toISOString()})؛ لا يجوز تخمين أرصدة الإقفال السنوي`,
+        doThis: `اضبط بداية دورة اليومية لتغطي كامل السنة المالية من منتصف ليل 1/1 في بغداد`,
+      }),
     });
   }
 

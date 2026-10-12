@@ -42,7 +42,7 @@ import {
   recordIdempotencyKey,
 } from "./idempotency";
 import { postEntry } from "./ledgerService";
-import { getActiveLock } from "./periodLockService";
+import { assertPeriodOpen, getActiveLock } from "./periodLockService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
 import { assertCashOutAvailable, lockCashSourceForUpdate } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
@@ -235,7 +235,41 @@ function requiresExpenseApproval(
   );
 }
 
+const YMD_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+export function assertValidExpenseDate(expenseDate?: string | null): string {
+  if (!expenseDate || !expenseDate.trim()) {
+    return toDateStr();
+  }
+  const normalized = expenseDate.trim();
+  if (!YMD_DATE_RE.test(normalized)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل المصروف",
+        why: "صيغة تاريخ المصروف غير صالحة، الصيغة المطلوبة YYYY-MM-DD",
+        doThis: "أعد إدخال تاريخ المصروف بصيغة YYYY-MM-DD (مثلاً 2026-10-12)",
+      }),
+    });
+  }
+  const parsed = Date.parse(normalized);
+  if (Number.isNaN(parsed) || new Date(parsed).toISOString().slice(0, 10) !== normalized) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل المصروف",
+        why: "تاريخ المصروف غير صالح تقويمياً",
+        doThis: "تأكد من صحة اليوم والشهر والسنة في التاريخ المدخل",
+      }),
+    });
+  }
+  return normalized;
+}
+
 function assertExpenseFundingInput(input: CreateExpenseInput) {
+  if (input.expenseDate) {
+    assertValidExpenseDate(input.expenseDate);
+  }
   if (input.source === "ACCRUAL") {
     throw new TRPCError({ code: "FORBIDDEN", message: "مصدر ACCRUAL محجوز لمنتجي الاستحقاق النظاميين" });
   }
@@ -593,7 +627,7 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
       ? "expense.create.STOCK"
       : "expense.create.CASH";
   const payloadHash = expenseCreatePayloadHash(input, actor);
-  const resolvedExpenseDate = input.expenseDate?.trim() || toDateStr();
+  const resolvedExpenseDate = assertValidExpenseDate(input.expenseDate);
   try {
     const result = await withTx(async (tx) => {
       if ((input.source ?? "CASH") === "STOCK") {
@@ -617,6 +651,8 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
       )[0];
       if (!b)
         throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود" });
+
+      await assertPeriodOpen(tx, new Date(resolvedExpenseDate));
 
       // فئة المصروف المُدارة (هجرة 0203) — تُحلّ **قبل أي كتابة أو ترحيل**: حين تُمرَّر فئة
       // يُشتقّ الدلو منها ويُتجاهَل ما أرسله العميل، فيستحيل أن يفترق التصنيف عن الحساب الذي

@@ -26,6 +26,7 @@ import { escLike } from "../lib/sqlLike";
 import { money, toDbMoney } from "./money";
 import { withTx } from "./tx";
 import { utcTodayStart } from "./businessDay";
+import { MATERIALIZED_RECEIPT_STATUS_SQL } from "./cash/cashAvailability";
 
 /** تطبيع نتيجة db.execute الخام إلى مصفوفة صفوف (mysql2 يعيد [rows, fields]). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -60,7 +61,7 @@ export type CardAccountKind = "CARD" | "TELECOM";
 /** شرط SQL الأساس لكل صفوف الحساب المشتقّ (طريقة الدفع بنوع الحساب + معتمَد).
  *  ⚠️ اسم عمود DB لـapprovalStatus هو `receiptApprovalStatus` (mysqlEnum أوّل معامل = اسم العمود). */
 const accountWhere = (kind: CardAccountKind) =>
-  sql`r.paymentMethod = ${kind} AND r.receiptApprovalStatus = 'APPROVED'`;
+  sql`r.paymentMethod = ${kind} AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND r.receiptApprovalStatus = 'APPROVED'`;
 /** المبلغ الموقَّع (IN موجب، OUT سالب) — decimal(15,2) دقيق في SQL. */
 const SIGNED = sql`CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END`;
 
