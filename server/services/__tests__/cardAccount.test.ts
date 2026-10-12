@@ -259,4 +259,17 @@ describe("حساب البطاقة — المطابقة", () => {
     expect(rec.systemBalance).toBe("-500.00"); // 300 − 800
     expect(rec.difference).toBe("-20.00"); // −500 − (−480)
   });
+
+  it("GAP-17: يستبعد إيصالات البطاقة الفاشلة FAILED والمعلقة PENDING من رصيد البطاقة حتى لو وُسمت معتمدة", async () => {
+    await seedReceipt({ direction: "IN", amount: "500.00", paymentMethod: "CARD", status: "COMPLETED", approvalStatus: "APPROVED" });
+    await seedReceipt({ direction: "IN", amount: "300.00", paymentMethod: "CARD", status: "FAILED", approvalStatus: "APPROVED" });
+    await seedReceipt({ direction: "IN", amount: "200.00", paymentMethod: "CARD", status: "PENDING", approvalStatus: "APPROVED" });
+    await seedReceipt({ direction: "OUT", amount: "100.00", paymentMethod: "CARD", status: "FAILED", approvalStatus: "APPROVED" });
+
+    const sum = await getCardSummary({}, MGR1);
+    expect(sum.balance).toBe("500.00"); // فقط المكتمل (500)؛ الفاشل والمعلق استُبعدا تماماً
+    expect(sum.totalIn).toBe("500.00");
+    expect(sum.totalOut).toBe("0.00");
+    expect(sum.movementCount).toBe(1);
+  });
 });
