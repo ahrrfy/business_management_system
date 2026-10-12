@@ -296,6 +296,35 @@ export const shiftRouter = router({
       return elevated ? res : { ...res, treasuryBalanceAfter: null };
     }),
 
+  /** قائمة المديرين والمسؤولين المؤهلين لاعتماد فروقات الوردية في الفرع. */
+  eligibleVarianceApprovers: treasuryCashierProcedure.query(async ({ ctx }) => {
+    const db = getDb();
+    if (!db) return [];
+    const rows = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        role: users.role,
+        branchId: users.branchId,
+      })
+      .from(users)
+      .where(
+        and(
+          eq(users.isActive, true),
+          or(
+            eq(users.role, "admin"),
+            and(
+              eq(users.role, "manager"),
+              ctx.user.branchId != null
+                ? eq(users.branchId, Number(ctx.user.branchId))
+                : sql`TRUE`,
+            ),
+          ),
+        ),
+      );
+    return rows;
+  }),
+
   close: treasuryCashierProcedure
     .input(
       z.object({

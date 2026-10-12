@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -15,6 +16,11 @@ import { fmtDateTime } from "@/lib/date";
 import { fmt as fmtMoney } from "@/lib/money";
 import { Check } from "lucide-react";
 import type { Decimal } from "decimal.js";
+import {
+  SHIFT_VARIANCE_CODES,
+  SHIFT_VARIANCE_LABELS,
+  type ShiftVarianceCode,
+} from "@shared/shiftCashGovernance";
 
 const fmtDT = (d: string | number | Date | null | undefined) => fmtDateTime(d);
 
@@ -52,6 +58,8 @@ export interface ShiftCloseDialogProps {
     legacyEvidenceNote: string;
     legacyClientRequestId: string;
     closeCounted: string;
+    varianceReasonCode?: ShiftVarianceCode;
+    varianceReason?: string;
   }) => void;
 }
 
@@ -80,6 +88,8 @@ export function ShiftCloseDialog({
   onClose,
   onSubmit,
 }: ShiftCloseDialogProps) {
+  const [varianceReasonCode, setVarianceReasonCode] = useState<ShiftVarianceCode | "">("");
+  const [varianceReason, setVarianceReason] = useState("");
   return (
     <Dialog
       open={closingShiftId != null}
@@ -211,10 +221,39 @@ export function ShiftCloseDialog({
               </div>
             )}
             {!isLegacyNegative && closeHasVariance && (
-              <div className="rounded-xl border border-destructive/60 bg-destructive/10 p-3 text-xs font-bold text-destructive">
-                لا يمكن إغلاق الوردية: النقد المعدود لا يساوي الافتتاحي مضافاً
-                إليه صافي المبيعات النقدية المسجّلة. راجع الفواتير والمرتجعات
-                لهذه الوردية أولاً.
+              <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3.5 space-y-2.5">
+                <div>
+                  <p className="text-xs font-bold text-foreground">
+                    يوجد فرق نقدي ({closeDiff != null && closeDiff.gt(0) ? "زيادة" : "عجز"} بقيمة {closeDiff != null ? fmtMoney(closeDiff.abs().toNumber()) : 0} د.ع).
+                  </p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    يرجى تحديد سبب الفرق وكتابة التبرير لاعتماده وإغلاق الوردية وتصفير نقد الدرج.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold mb-1">سبب الفرق:</label>
+                  <select
+                    value={varianceReasonCode}
+                    onChange={(e) => setVarianceReasonCode(e.target.value as ShiftVarianceCode)}
+                    className="w-full h-8 rounded-md border border-input bg-background px-2.5 py-1 text-xs shadow-sm"
+                  >
+                    <option value="">-- اختر سبب الفرق --</option>
+                    {SHIFT_VARIANCE_CODES.map((code) => (
+                      <option key={code} value={code}>
+                        {SHIFT_VARIANCE_LABELS[code]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold mb-1">بيان وتبرير الفرق:</label>
+                  <Input
+                    value={varianceReason}
+                    onChange={(e) => setVarianceReason(e.target.value)}
+                    placeholder="اكتب توضيحاً تفصيلياً لسبب الفرق..."
+                    className="h-8 text-xs"
+                  />
+                </div>
               </div>
             )}
           </>
@@ -232,7 +271,7 @@ export function ShiftCloseDialog({
                   legacyEvidenceNote.trim().length < 20 ||
                   !legacyConfirmedZero ||
                   !legacyClientRequestId
-                : !closeCounted || closeHasVariance)
+                : !closeCounted || (closeHasVariance && (!varianceReasonCode || !varianceReason.trim())))
             }
             onClick={() => {
               if (closingShiftId == null || closeExpected == null) return;
@@ -244,6 +283,8 @@ export function ShiftCloseDialog({
                 legacyEvidenceNote,
                 legacyClientRequestId,
                 closeCounted,
+                varianceReasonCode: closeHasVariance && varianceReasonCode ? (varianceReasonCode as ShiftVarianceCode) : undefined,
+                varianceReason: closeHasVariance && varianceReason.trim() ? varianceReason.trim() : undefined,
               });
             }}
           >
@@ -251,7 +292,9 @@ export function ShiftCloseDialog({
               ? "جارٍ التنفيذ…"
               : isLegacyNegative
                 ? "تمويل من الخزنة وتصفير وإغلاق"
-                : "إغلاق"}
+                : closeHasVariance
+                  ? "إغلاق بالفرق المعتمد"
+                  : "إغلاق"}
           </Button>
         </DialogFooter>
       </DialogContent>

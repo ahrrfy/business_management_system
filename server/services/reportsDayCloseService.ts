@@ -1610,10 +1610,17 @@ export async function getDayCloseReconciliation(opts: {
               .select({
                 count: sql<number>`COALESCE(SUM(CASE WHEN
                   ${shifts.closedAt} IS NULL OR ${shifts.closedAt} >= ${endExclusive}
-                  OR ${shifts.reconciliationStatus} <> 'MATCHED'
-                  OR ${shifts.variance} IS NULL OR ${shifts.variance} <> 0
-                  OR ${shifts.expectedCash} IS NULL OR ${shifts.countedCash} IS NULL
-                  OR ${shifts.expectedCash} <> ${shifts.countedCash}
+                  OR (${shifts.reconciliationStatus} <> 'MATCHED' AND ${shifts.reconciliationStatus} <> 'MANAGER_APPROVED')
+                  OR (${shifts.reconciliationStatus} = 'MATCHED' AND (
+                    ${shifts.variance} IS NULL OR ${shifts.variance} <> 0
+                    OR ${shifts.expectedCash} IS NULL OR ${shifts.countedCash} IS NULL
+                    OR ${shifts.expectedCash} <> ${shifts.countedCash}
+                  ))
+                  OR (${shifts.reconciliationStatus} = 'MANAGER_APPROVED' AND (
+                    ${shifts.variance} IS NULL
+                    OR ${shifts.expectedCash} IS NULL
+                    OR ${shifts.countedCash} IS NULL
+                  ))
                   THEN 1 ELSE 0 END), 0)`,
               })
               .from(shifts)

@@ -8,6 +8,11 @@ import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { printShiftClose } from "@/lib/printing/print";
+import {
+  SHIFT_VARIANCE_CODES,
+  SHIFT_VARIANCE_LABELS,
+  type ShiftVarianceCode,
+} from "@shared/shiftCashGovernance";
 import { ShiftCashReconciliationMini } from "../pos/ShiftCashReconciliationMini";
 
 export interface ReceptionShiftCloseDialogProps {
@@ -30,6 +35,9 @@ export function ReceptionShiftCloseDialog({
   const utils = trpc.useUtils();
   const [counted, setCounted] = useState("");
   const [countEntered, setCountEntered] = useState(false);
+  const [varianceReasonCode, setVarianceReasonCode] = useState<ShiftVarianceCode | "">("");
+  const [varianceReason, setVarianceReason] = useState("");
+  const [managerApprovedByUserId, setManagerApprovedByUserId] = useState<number | "">("");
 
   // تقرير الوردية (Z) — يُحمَّل فقط عند فتح نافذة الإغلاق.
   const reportQ = trpc.shifts.report.useQuery(
@@ -80,14 +88,22 @@ export function ReceptionShiftCloseDialog({
     onError: (e) => notify.err(e),
   });
 
-  if (!open) return null;
-
   // رقم الخادم نفسه الذي يفرضه closeShift (DRAWER فقط)؛ لا نعيد تركيب المعادلة من تقرير طرق الدفع.
   const recExpected = Number(reportQ.data?.expectedCash ?? shift.openingBalance ?? 0);
   // فقدان التركيز من حقل المعدود يُثبّت انتهاء الإدخال ويكشف المطابقة تلقائياً بلا زر إضافي.
   const showRecExpected = isElevatedRole || countEntered;
   const recDiff = showRecExpected && counted ? Number(counted) - recExpected : null;
   const hasRecVariance = recDiff != null && Math.abs(recDiff) >= 0.01;
+
+  const approversQ = trpc.shifts.eligibleVarianceApprovers.useQuery(undefined, {
+    enabled: open && hasRecVariance && !isElevatedRole,
+  });
+
+  const canCloseWithVariance = isElevatedRole
+    ? !!(varianceReasonCode && varianceReason.trim())
+    : !!(varianceReasonCode && varianceReason.trim() && managerApprovedByUserId);
+
+  if (!open) return null;
 
   return (
     <div
@@ -205,13 +221,64 @@ export function ReceptionShiftCloseDialog({
               </div>
             )}
             {hasRecVariance && (
-              <div className="mt-4 space-y-2 rounded-xl border border-destructive/60 bg-destructive/10 p-3">
-                <p className="text-sm font-extrabold text-destructive">
-                  لا يمكن إنهاء الوردية لأن المبلغ المعدود لا يطابق المبلغ المسجّل في النظام.
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  أعد عدّ النقدية وراجع عمليات البيع والإرجاع. إذا بقي الفرق، اطلب من المدير المراجعة.
-                </p>
+              <div className="mt-4 space-y-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3.5">
+                <div>
+                  <p className="text-sm font-extrabold text-foreground">
+                    يوجد فرق نقدي ({recDiff != null && recDiff > 0 ? "زيادة" : "عجز"} بقيمة {recDiff != null ? fmt(Math.abs(recDiff)) : 0} د.ع)
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {isElevatedRole
+                      ? "بصفتك مديراً/مسؤولاً، يرجى تحديد سبب الفرق وكتابة التبرير لاعتماده وتصفير الدرج."
+                      : "إنهاء الوردية بفرق نقدي يتطلب توثيق السبب وبيانه واعتماده من مدير الفرع."}
+                  </p>
+                </div>
+
+                <div className="space-y-2.5">
+                  {!isElevatedRole && (
+                    <div>
+                      <label className="block text-xs font-bold mb-1">المدير المعتمد للفرق:</label>
+                      <select
+                        value={managerApprovedByUserId}
+                        onChange={(e) => setManagerApprovedByUserId(e.target.value ? Number(e.target.value) : "")}
+                        className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-xs shadow-sm"
+                      >
+                        <option value="">-- اختر مديراً للاعتماد --</option>
+                        {(approversQ.data ?? []).map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name} ({m.role === "admin" ? "إدارة عامة" : "مدير فرع"})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-bold mb-1">سبب الفرق:</label>
+                    <select
+                      value={varianceReasonCode}
+                      onChange={(e) => setVarianceReasonCode(e.target.value as ShiftVarianceCode)}
+                      className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-xs shadow-sm"
+                    >
+                      <option value="">-- اختر سبب الفرق --</option>
+                      {SHIFT_VARIANCE_CODES.map((code) => (
+                        <option key={code} value={code}>
+                          {SHIFT_VARIANCE_LABELS[code]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold mb-1">بيان وتبرير الفرق:</label>
+                    <input
+                      type="text"
+                      value={varianceReason}
+                      onChange={(e) => setVarianceReason(e.target.value)}
+                      placeholder="اكتب توضيحاً تفصيلياً لسبب الفرق..."
+                      className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-xs shadow-sm"
+                    />
+                  </div>
+                </div>
               </div>
             )}
             <div className="mt-5 flex gap-2.5">
@@ -220,18 +287,27 @@ export function ReceptionShiftCloseDialog({
               </Button>
               <Button
                 className="flex-1"
-                disabled={!counted || closeShiftM.isPending || hasRecVariance}
+                disabled={!counted || closeShiftM.isPending || (hasRecVariance && !canCloseWithVariance)}
                 onClick={() =>
                   closeShiftM.mutate({
                     shiftId: shift.id,
                     countedCash: counted,
+                    varianceReasonCode: hasRecVariance && varianceReasonCode ? (varianceReasonCode as ShiftVarianceCode) : undefined,
+                    varianceReason: hasRecVariance && varianceReason.trim() ? varianceReason.trim() : undefined,
+                    managerApprovedByUserId: hasRecVariance && !isElevatedRole && managerApprovedByUserId ? Number(managerApprovedByUserId) : undefined,
                   })
                 }
               >
                 {closeShiftM.isPending
                   ? "جارٍ الإنهاء…"
                   : hasRecVariance
-                  ? "لا يمكن الإنهاء قبل حل الفرق"
+                  ? canCloseWithVariance
+                    ? isElevatedRole
+                      ? "تأكيد الإنهاء المعتمد وطباعة الملخص"
+                      : "تأكيد الإنهاء باعتماد المدير وطباعة الملخص"
+                    : isElevatedRole
+                      ? "حدد سبب الفرق وتبريره"
+                      : "يتطلب اعتماد المدير وبيان السبب"
                   : "تأكيد الإنهاء وطباعة الملخص"}
               </Button>
             </div>

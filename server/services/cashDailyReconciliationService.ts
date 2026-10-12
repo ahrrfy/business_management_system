@@ -291,12 +291,18 @@ export async function buildDailyCashEvidenceTx(
   const unmatchedShiftCount = dayShifts.filter(
     (row) =>
       row.status !== "CLOSED" ||
-      row.reconciliationStatus !== "MATCHED" ||
-      row.variance == null ||
-      hasCashVariance(row.variance) ||
-      row.expectedCash == null ||
-      row.countedCash == null ||
-      !money(row.expectedCash).eq(money(row.countedCash)),
+      (row.reconciliationStatus !== "MATCHED" &&
+        row.reconciliationStatus !== "MANAGER_APPROVED") ||
+      (row.reconciliationStatus === "MATCHED" &&
+        (row.variance == null ||
+          hasCashVariance(row.variance) ||
+          row.expectedCash == null ||
+          row.countedCash == null ||
+          !money(row.expectedCash).eq(money(row.countedCash)))) ||
+      (row.reconciliationStatus === "MANAGER_APPROVED" &&
+        (row.expectedCash == null ||
+          row.countedCash == null ||
+          row.variance == null)),
   ).length;
 
   const pendingHash = createHash("sha256");

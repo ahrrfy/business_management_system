@@ -15,6 +15,11 @@ import { paymentMethodLabel, paymentMethodClass } from "@/lib/paymentMethod";
 import { POS_STATION_LABEL, type PosStation } from "@shared/permissions";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import {
+  SHIFT_VARIANCE_CODES,
+  SHIFT_VARIANCE_LABELS,
+  type ShiftVarianceCode,
+} from "@shared/shiftCashGovernance";
 import { type ShiftData, fmt, type PosColors as C } from "./posShared";
 import { useModalFocus } from "./useModalFocus";
 import { ShiftCashReconciliationMini } from "./ShiftCashReconciliationMini";
@@ -102,6 +107,10 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
     onError: (e) => notify.errBig(e),
   });
 
+  const [varianceReasonCode, setVarianceReasonCode] = useState<ShiftVarianceCode | "">("");
+  const [varianceReason, setVarianceReason] = useState("");
+  const [managerApprovedByUserId, setManagerApprovedByUserId] = useState<number | "">("");
+
   // النقد المتوقع يأتي من نفس مصدر حقيقة closeShift على الخادم (DRAWER حصراً).
   const openingD    = D(shift?.openingBalance ?? 0);
   // ش٤: النقد غير المُزامَن موجود فيزيائياً بالدرج ⇒ يدخل المتوقع المعروض للعدّ (الخادم عند
@@ -113,13 +122,28 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
   const showExpected = isElevatedRole || countEntered;
   const diffD       = showExpected && expectedD != null && countedD != null ? countedD.minus(expectedD) : null;
   const hasVariance = diffD != null && diffD.abs().gt("0.005");
-  const closeDisabled = !counted || closeShift.isPending || closeBlocked || hasVariance;
+
+  const approversQ = trpc.shifts.eligibleVarianceApprovers.useQuery(undefined, {
+    enabled: hasVariance && !isElevatedRole,
+  });
+
+  const canCloseWithVariance = isElevatedRole
+    ? !!(varianceReasonCode && varianceReason.trim())
+    : !!(varianceReasonCode && varianceReason.trim() && managerApprovedByUserId);
+
+  const closeDisabled = !counted || closeShift.isPending || closeBlocked || (hasVariance && !canCloseWithVariance);
   const closeLabel = closeShift.isPending
     ? ACTION_LABELS.closing
     : closeBlocked
       ? "أكمل المزامنة أولاً"
       : hasVariance
-        ? "الإغلاق مرفوض لوجود فرق"
+        ? canCloseWithVariance
+          ? isElevatedRole
+            ? "إغلاق معتمد وطباعة Z"
+            : "إغلاق باعتماد المدير وطباعة Z"
+          : isElevatedRole
+            ? "حدد سبب الفرق وبيانه"
+            : "يتطلب اعتماد المدير وبيان السبب"
         : "إغلاق وطباعة Z";
   // متغيّرات عددية للعرض ولتفادي تغييرات JSX الأكبر
   const openingBal  = openingD.toNumber();
@@ -221,12 +245,67 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
             </div>
 
             {hasVariance && (
-              <div style={{ marginTop: 14, padding: 12, border: `1.5px solid ${C.danger}`, borderRadius: 9, background: C.dangerSoft }}>
-                <div style={{ fontSize: 13, fontWeight: 800, color: C.danger }}>
-                  لا يمكن إغلاق الوردية: النقد المعدود لا يساوي الرصيد الافتتاحي مضافاً إليه صافي المبيعات النقدية المسجّلة.
+              <div style={{ marginTop: 14, padding: 12, border: `1.5px solid ${C.amber}`, borderRadius: 9, background: C.amberSoft }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: C.fg, marginBottom: 6 }}>
+                  يوجد فرق نقدي ({diffD != null && diffD.gt(0) ? "زيادة" : "عجز"} بقيمة {diffD != null ? fmt(diffD.abs().toNumber()) : 0} د.ع)
                 </div>
-                <div style={{ marginTop: 6, fontSize: 12.5, color: C.mutedFg }}>
-                  أعد العد، ثم راجع الفواتير والمرتجعات والمزامنة. إذا بقي الفرق فاستدعِ المدير لتصحيح العملية من وحدتها المختصة؛ لا يمكن اعتماد مال بلا مصدر من شاشة الإغلاق.
+                <div style={{ fontSize: 12, color: C.mutedFg, marginBottom: 10 }}>
+                  {isElevatedRole
+                    ? "بصفتك مديراً/مسؤولاً، يرجى تحديد سبب الفرق وكتابة التبرير لاعتماده وإغلاق الوردية وتصفير الدرج."
+                    : "إغلاق الوردية مع وجود فرق نقدي يتطلب توثيق سبب الفرق وبيانه وموافقة مدير الفرع."}
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {!isElevatedRole && (
+                    <div>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 700, marginBottom: 4, color: C.fg }}>
+                        المدير المعتمد للفرق:
+                      </label>
+                      <select
+                        value={managerApprovedByUserId}
+                        onChange={(e) => setManagerApprovedByUserId(e.target.value ? Number(e.target.value) : "")}
+                        style={{ width: "100%", height: 36, borderRadius: 6, border: `1px solid ${C.border}`, background: C.card, color: C.fg, padding: "0 8px", fontSize: 12.5 }}
+                      >
+                        <option value="">-- اختر مديراً للاعتماد --</option>
+                        {(approversQ.data ?? []).map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name} ({m.role === "admin" ? "إدارة عامة" : "مدير فرع"})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 700, marginBottom: 4, color: C.fg }}>
+                      سبب الفرق:
+                    </label>
+                    <select
+                      value={varianceReasonCode}
+                      onChange={(e) => setVarianceReasonCode(e.target.value as ShiftVarianceCode)}
+                      style={{ width: "100%", height: 36, borderRadius: 6, border: `1px solid ${C.border}`, background: C.card, color: C.fg, padding: "0 8px", fontSize: 12.5 }}
+                    >
+                      <option value="">-- اختر سبب الفرق --</option>
+                      {SHIFT_VARIANCE_CODES.map((code) => (
+                        <option key={code} value={code}>
+                          {SHIFT_VARIANCE_LABELS[code]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 700, marginBottom: 4, color: C.fg }}>
+                      بيان وتبرير الفرق:
+                    </label>
+                    <input
+                      type="text"
+                      value={varianceReason}
+                      onChange={(e) => setVarianceReason(e.target.value)}
+                      placeholder="اكتب توضيحاً تفصيلياً لسبب الفرق..."
+                      style={{ width: "100%", height: 36, borderRadius: 6, border: `1px solid ${C.border}`, background: C.card, color: C.fg, padding: "0 8px", fontSize: 12.5 }}
+                    />
+                  </div>
                 </div>
               </div>
             )}
@@ -256,6 +335,9 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
                 onClick={() => shift && closeShift.mutate({
                   shiftId: shift.id,
                   countedCash: counted,
+                  varianceReasonCode: hasVariance && varianceReasonCode ? (varianceReasonCode as ShiftVarianceCode) : undefined,
+                  varianceReason: hasVariance && varianceReason.trim() ? varianceReason.trim() : undefined,
+                  managerApprovedByUserId: hasVariance && !isElevatedRole && managerApprovedByUserId ? Number(managerApprovedByUserId) : undefined,
                 })}
                 style={{ flex: 1, height: 46, background: closeDisabled ? C.muted : C.danger, color: closeDisabled ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: closeDisabled ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
                 {closeLabel}

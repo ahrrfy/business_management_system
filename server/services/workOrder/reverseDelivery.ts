@@ -669,11 +669,11 @@ export async function reverseWorkOrderDeliveryInTx(
     }).where(eq(deliveryConsignments.id, Number(consignment.id)));
     if (consignment.partyId != null && money(consignment.codAmount ?? "0").gt(0)) {
       await appendDeliveryLedgerEntry(tx, {
-        eventKey: `CN:${Number(consignment.id)}:COD_RETURNED:WO_REVERSED:${invoiceId}`,
+        eventKey: `CN:${Number(consignment.id)}:COD_RELEASED:WO_REVERSED:${invoiceId}`,
         partyId: Number(consignment.partyId),
         consignmentId: Number(consignment.id),
         branchId: Number(consignment.branchId ?? wo.branchId),
-        entryType: "COD_RETURNED",
+        entryType: "COD_RELEASED",
         amount: toDbMoney(money(consignment.codAmount ?? "0")),
         notes: `عكس تسليم أمر الشغل #${workOrderId}: ${reason}`,
         actorUserId: actor.userId,
