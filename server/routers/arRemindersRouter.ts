@@ -2,6 +2,7 @@
 // كل الكتابات مُدقَّقة عبر logAudit. لا مبالغ فعلية تتحرّك — سجلّ فعلٍ يوميّ فقط (لا يمسّ الدفتر).
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { appErrorMessage } from "@shared/errors";
 import {
   getReminderHistory,
   getReminderQueue,
@@ -34,7 +35,9 @@ function scopedBranch(
   inputBranchId?: number,
 ): number {
   if (ctx.user.role === "admin") {
-    const resolved = inputBranchId ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+    const resolved =
+      inputBranchId ??
+      (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
     if (resolved == null) {
       throw new TRPCError({
         code: "FORBIDDEN",
@@ -44,11 +47,17 @@ function scopedBranch(
     return resolved;
   }
   if (ctx.user.branchId == null) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "لا فرع مُسنَد لهذا المستخدم",
+    });
   }
   const own = Number(ctx.user.branchId);
   if (inputBranchId !== undefined && inputBranchId !== own) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن قراءة بيانات فرع آخر" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "لا يمكن قراءة بيانات فرع آخر",
+    });
   }
   return own;
 }
@@ -64,9 +73,14 @@ function openingWriteBranch(
   inputBranchId?: number,
 ): number {
   if (ctx.user.role !== "admin") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "مدينو الرصيد الافتتاحي متاحون للأدمن فقط." });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "مدينو الرصيد الافتتاحي متاحون للأدمن فقط.",
+    });
   }
-  const resolved = inputBranchId ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+  const resolved =
+    inputBranchId ??
+    (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
   if (resolved == null) {
     throw new TRPCError({
       code: "FORBIDDEN",
@@ -78,13 +92,38 @@ function openingWriteBranch(
 
 export const arRemindersRouter = router({
   /** قائمة اليوم: عملاء بذمّة >٠ متأخّرة ≥٧ أيام، لم يُذكَّروا آخر ٧ أيام. admin يعبُر بـbranchId صريح.
+   *  `allBranches` (أدمن حصراً) ⇒ كل الفروع مجمّعة شاملاً مديني الرصيد الافتتاحي وفواتير النظام.
    *  `openingScope` (أدمن حصراً) ⇒ **مدينو الرصيد الافتتاحي فقط** مجمَّعين عبر الفروع (نطاق مستقلّ). */
   queue: collectionsManagerProcedure
-    .input(z.object({ branchId: optionalBranch, openingScope: z.boolean().optional() }).optional())
+    .input(
+      z
+        .object({
+          branchId: optionalBranch,
+          openingScope: z.boolean().optional(),
+          allBranches: z.boolean().optional(),
+        })
+        .optional(),
+    )
     .query(({ ctx, input }) => {
+      if (input?.allBranches) {
+        if (ctx.user.role !== "admin") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "عرض تذكيرات كل الفروع غير متاح",
+              why: "عرض تذكيرات كل الفروع متاح لحساب المدير العام فقط.",
+              doThis: "حدّد فرعاً معيناً لمراجعة تذكيرات الذمم الخاصة به.",
+            }),
+          });
+        }
+        return getReminderQueue({ branchId: null, includeOpening: true });
+      }
       if (input?.openingScope) {
         if (ctx.user.role !== "admin") {
-          throw new TRPCError({ code: "FORBIDDEN", message: "مدينو الرصيد الافتتاحي متاحون للأدمن فقط." });
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "مدينو الرصيد الافتتاحي متاحون للأدمن فقط.",
+          });
         }
         return getReminderQueue({ branchId: null, openingOnly: true });
       }
@@ -92,9 +131,9 @@ export const arRemindersRouter = router({
     }),
 
   /** سجلّ آخر ٣٠ يوماً من التذكيرات في فرع المستخدم (admin يعبُر بـbranchId صريح).
-   *  `openingScope` (أدمن حصراً) ⇒ سجلّ مجمَّع عبر كل الفروع — مرآة queue.openingScope. لا عمود
-   *  يُميِّز صفوف الرصيد الافتتاحي في `arReminders` (تُكتَب بفرع حقيقي عبر openingWriteBranch)،
-   *  فالتجميع الكامل هو أصدق تمثيل متاح لسياق «مراجعة مدينِي الافتتاحي» دون تضليل بفرع واحد فقط. */
+   *  `allBranches` أو `openingScope` (أدمن حصراً) ⇒ سجلّ مجمَّع عبر كل الفروع — مرآة queue.
+   *  لا عمود يُميِّز صفوف الرصيد الافتتاحي في `arReminders` (تُكتَب بفرع حقيقي عبر openingWriteBranch)،
+   *  فالتجميع الكامل هو أصدق تمثيل متاح لسياق «مراجعة كل الفروع/مدينِي الافتتاحي» دون تضليل بفرع واحد فقط. */
   history: collectionsManagerProcedure
     .input(
       z
@@ -102,17 +141,37 @@ export const arRemindersRouter = router({
           limit: z.number().int().positive().max(1000).optional(),
           branchId: optionalBranch,
           openingScope: z.boolean().optional(),
+          allBranches: z.boolean().optional(),
         })
         .optional(),
     )
     .query(({ ctx, input }) => {
-      if (input?.openingScope) {
+      if (input?.allBranches) {
         if (ctx.user.role !== "admin") {
-          throw new TRPCError({ code: "FORBIDDEN", message: "مدينو الرصيد الافتتاحي متاحون للأدمن فقط." });
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "عرض سجل تذكيرات كل الفروع غير متاح",
+              why: "عرض سجل تذكيرات كل الفروع متاح لحساب المدير العام فقط.",
+              doThis: "حدّد فرعاً معيناً لمراجعة سجل التذكيرات الخاص به.",
+            }),
+          });
         }
         return getReminderHistory({ branchId: null, limit: input?.limit });
       }
-      return getReminderHistory({ branchId: scopedBranch(ctx, input?.branchId), limit: input?.limit });
+      if (input?.openingScope) {
+        if (ctx.user.role !== "admin") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "مدينو الرصيد الافتتاحي متاحون للأدمن فقط.",
+          });
+        }
+        return getReminderHistory({ branchId: null, limit: input?.limit });
+      }
+      return getReminderHistory({
+        branchId: scopedBranch(ctx, input?.branchId),
+        limit: input?.limit,
+      });
     }),
 
   /** تسجيل تذكير أُرسِل — يستدعيه الزبون فور عودة المستخدم من فتح wa.me وتأكيده الإرسال. */
