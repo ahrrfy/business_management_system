@@ -4,6 +4,7 @@
 
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { hasOperationPolicy, operationDecision } from "@shared/operationPermissions";
 import {
   acceptPendingTreasuryReceipt,
   getCashFlowSeries,
@@ -217,6 +218,8 @@ export const treasuryRouter = router({
           role: ctx.user.role,
           userId: ctx.user.id,
           actorBranchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId),
+          operationPolicyEnabled: hasOperationPolicy(ctx.user),
+          canAcceptHandover: operationDecision(ctx.user, "treasury.acceptHandoverReceipt").allowed,
         },
       );
       return { rows: rows.slice(0, limit), hasMore: rows.length > limit };

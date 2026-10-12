@@ -43,6 +43,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { NextActionChip } from "@/components/nextAction/NextActionChip";
 import { hasModuleAccess } from "@shared/permissions";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { PurchaseOrderGovernance } from "./PurchaseOrderGovernance";
 import { QuickSupplierPaymentDialog } from "./QuickSupplierPaymentDialog";
 
@@ -144,16 +145,22 @@ export function PurchaseDetailDrawer({
   const [isApprovalOpen, setIsApprovalOpen] = useState(false);
   const [approvalReason, setApprovalReason] = useState("اعتماد واستلام البضاعة كاملة");
 
-  const canEdit = hasModuleAccess(
+  const legacyEdit = hasModuleAccess(
     me.data?.role ?? "",
     (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)?.permissionsOverride ?? null,
     "purchases",
     "FULL",
   );
+  const canEdit = canLifecycleOperation(me.data, "purchases.updateOrder", legacyEdit);
+  const canConfirm = canLifecycleOperation(me.data, "purchases.confirmOrder", legacyEdit);
+  const canDecide = canLifecycleOperation(me.data, "purchases.decideControl", legacyEdit);
+  const canRequestPayment = canLifecycleOperation(me.data, "supplierPayments.requestPayment", legacyEdit);
+  const canReturn = canLifecycleOperation(me.data, "purchaseReturns.create", legacyEdit);
+  const canSettleShipping = canLifecycleOperation(me.data, "purchases.settleShippingFromShift", legacyEdit);
 
   const pendingControls = trpc.purchases.pendingControls.useQuery(
     { limit: 200 },
-    { enabled: isOpen && canEdit },
+    { enabled: isOpen && canLifecycleOperation(me.data, "purchases.pendingControls", legacyEdit) },
   );
 
   const activeControlRequest = useMemo(() => {
@@ -261,7 +268,7 @@ export function PurchaseDetailDrawer({
         ].some((id) => id != null && Number(id) === Number(currentUserId))));
 
   const canApproveDirectly =
-    canEdit &&
+    (d?.status === "DRAFT" ? canConfirm : canDecide) &&
     d &&
     ((d.status === "SENT" && activeControlRequest != null && !violatesSod) ||
      (d.status === "DRAFT" && !hasPendingOrderControl));
@@ -403,7 +410,7 @@ export function PurchaseDetailDrawer({
                     </Button>
                   ) : null}
 
-                  {canEdit && d.status === "RECEIVED" && remaining != null && remaining.gt(0) && !costHidden ? (
+                  {canRequestPayment && d.status === "RECEIVED" && remaining != null && remaining.gt(0) && !costHidden ? (
                     <Button
                       size="sm"
                       variant="outline"
@@ -415,7 +422,7 @@ export function PurchaseDetailDrawer({
                     </Button>
                   ) : null}
 
-                  {canEdit && d.status === "RECEIVED" ? (
+                  {canReturn && d.status === "RECEIVED" ? (
                     <Button asChild size="sm" variant="outline">
                       <Link href={`/purchase-returns/new?po=${encodeURIComponent(d.poNumber)}`}>
                         <Undo2 aria-hidden className="size-4" />
@@ -516,7 +523,7 @@ export function PurchaseDetailDrawer({
                       </div>
                     </div>
 
-                    {canEdit && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
+                    {canSettleShipping && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
                       <div className="pt-2 border-t flex items-center justify-between gap-2 flex-wrap">
                         <span className="text-[11px] text-muted-foreground">صرف نقدي من الدرج المفتوح للوردية</span>
                         <Button

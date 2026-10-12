@@ -35,7 +35,10 @@ import {
   assertOperatorOwns,
   assertWorkOrderBranch,
   loadWorkOrder,
+  workOrderOperationScopeTx,
 } from "./helpers";
+import { assertOperationAuthorityTx, loadOperationUserTx } from "../authorization/operationAuthority";
+import { workOrderAssigneeAllowed } from "../authorization/operationRecipientEligibility";
 import { publishRealtimeEvent } from "../../realtime";
 import {
   REALTIME_EVENT_TYPES,
@@ -128,9 +131,10 @@ export async function startWorkOrder(
   actor: Actor & { role?: string },
 ) {
   const result = await withTx(async (tx) => {
+    const scope = await workOrderOperationScopeTx(tx, actor, "workOrders.start");
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
-    assertOperatorOwns(wo, actor);
+    assertOperatorOwns(wo, actor, scope);
     if (wo.status !== "RECEIVED")
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -498,6 +502,8 @@ export async function reassignWorkOrder(
   actor: Actor & { role?: string; isOwner?: boolean },
 ) {
   const result = await withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "workOrders.assign", true);
+    const assigneeProfile = input.assignedTo == null ? null : await loadOperationUserTx(tx, input.assignedTo);
     const wo = await loadWorkOrder(tx, input.workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.status === "DELIVERED" || wo.status === "CANCELLED") {
@@ -537,12 +543,12 @@ export async function reassignWorkOrder(
           message: "الموظف غير موجود أو معطّل",
         });
       if (
-        !hasModuleAccess(
+        !workOrderAssigneeAllowed(assigneeProfile!, hasModuleAccess(
           u.role,
           (u.permissionsOverride as never) ?? null,
           "workorders",
           "FULL",
-        )
+        ), Number(wo.branchId))
       ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -552,9 +558,9 @@ export async function reassignWorkOrder(
       }
       // عابرُ الفروع وحده يُستثنى (`canCrossBranches` لا شرطٌ منسوخ). الموظف بلا فرع مشترك.
       if (
-        !canCrossBranches({ role: u.role, isOwner: u.isOwner }) &&
-        u.branchId != null &&
-        Number(u.branchId) !== Number(wo.branchId)
+        !canCrossBranches(assigneeProfile) &&
+        assigneeProfile?.branchId != null &&
+        Number(assigneeProfile.branchId) !== Number(wo.branchId)
       ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -690,10 +696,11 @@ export async function markWorkOrderReady(
   actor?: Actor & { role?: string },
 ) {
   const result = await withTx(async (tx) => {
+    const scope = actor ? await workOrderOperationScopeTx(tx, actor, "workOrders.markReady") : null;
     const wo = await loadWorkOrder(tx, workOrderId);
     if (actor) {
       assertWorkOrderBranch(wo, actor);
-      assertOperatorOwns(wo, actor);
+      assertOperatorOwns(wo, actor, scope);
     }
     if (wo.status !== "IN_PROGRESS")
       throw new TRPCError({

@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { CopyInline } from "@/components/CopyButton";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { Button } from "@/components/ui/button";
@@ -76,19 +77,21 @@ function legacyCodeOf(r: { legacyCode?: string | null }): string | null {
 }
 
 export default function Customers() {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
   // للكاشير يُحجب سقف الائتمان خادمياً (maskCustomerSensitive ⇒ null) — فـnull عنده ليس «بلا حدّ»
   // بل «مخفي»؛ لذا لا نعرض «بلا حدّ» إلا للمدير/الإدمن حيث null=ائتمان غير محدود فعلاً.
   const me = trpc.auth.me.useQuery();
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
+  const usesOperations = can("customers.operations", isElevated);
   // ٢٤/٨ (Codex P2 على PR #744): كشف الحساب تحت `reports=READ` — البقيّة يُعاد توجيهها بلا نتيجة.
-  const canOpenStatement = !!me.data?.role && moduleAccessAllowed(
+  const canOpenStatement = can("reports.customerStatement", !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
     "reports",
     "READ",
     ["admin", "manager", "accountant", "auditor"],
-  );
+  ));
   // فلاتر الشاشة محفوظة في الرابط (useUrlFilters) — تعيش مع فتح التفاصيل والرجوع، وقابلة للمشاركة.
   // كل القيم نصوص (اتفاقية useUrlFilters)؛ نشتقّ الأنواع الفعلية أدناه ونُعرّف مُغلِّفات setters
   // بتوقيع مطابق لِـuseState القديم كي تبقى كل مواقع الاستدعاء أدناه بلا تغيير.
@@ -147,7 +150,7 @@ export default function Customers() {
   // الصامت على الفرع ١ (نمط PR #288 محظور — §٤ ق١١). لا يمسّ مستخدماً له فرع (يبقى فرعه).
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
   const needsBranchChoice = isElevated && me.data != null && me.data.branchId == null;
-  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: needsBranchChoice });
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: can("branches.list") && (needsBranchChoice) });
   const effectiveFollowUpBranchId = me.data?.branchId != null ? Number(me.data.branchId) : pickedBranch;
 
   // الميل الأخير للبحث الشامل: عند الوصول بـ?q=&focus= نبذر البحث (يُحمِّل العميل) ثمّ نُبرز صفّه.
@@ -182,9 +185,9 @@ export default function Customers() {
     }),
     [input, balanceFilter, collectionFilter, creditFilter, inactivityDays, sort],
   );
-  const basicList = trpc.customers.search.useQuery(input, { enabled: !isElevated });
-  const operations = trpc.customers.operations.useQuery(operationsInput, { enabled: isElevated });
-  const list = isElevated ? operations : basicList;
+  const basicList = trpc.customers.search.useQuery(input, { enabled: can("customers.search") && (!usesOperations) });
+  const operations = trpc.customers.operations.useQuery(operationsInput, { enabled: usesOperations });
+  const list = usesOperations ? operations : basicList;
   const invalidateCustomers = () => {
     void utils.customers.search.invalidate();
     void utils.customers.list.invalidate();
@@ -487,7 +490,7 @@ export default function Customers() {
         </div>
       ),
     },
-    ...(isElevated
+    ...(usesOperations
       ? [{
           id: "collection",
           header: "حالة التحصيل",
@@ -601,7 +604,7 @@ export default function Customers() {
                   label: "الملف الشامل 360°",
                   icon: User,
                   onSelect: () => setSelectedDossierCustomerId(id),
-                  gate: { module: "crm", level: "READ" },
+                  gate: { operations: ["customers.dossier360"], module: "crm", level: "READ" },
                 },
                 {
                   key: "gift",
@@ -609,7 +612,7 @@ export default function Customers() {
                   label: "إهداء كوبون فوري",
                   icon: Gift,
                   onSelect: () => setInstantGiftCustomer({ id, name: c.name ?? "", phone: c.phone }),
-                  gate: { roles: ["cashier", "manager", "sales_rep", "print_operator"], module: "crm", level: "FULL" },
+                  gate: { operations: ["customers.issueInstantGift"], roles: ["cashier", "manager", "sales_rep", "print_operator"], module: "crm", level: "FULL" },
                 },
                 {
                   key: "feedback",
@@ -617,14 +620,14 @@ export default function Customers() {
                   label: "تسجيل تقييم أو شكوى",
                   icon: MessageSquarePlus,
                   onSelect: () => setFeedbackCustomer({ id, name: c.name ?? "", phone: c.phone }),
-                  gate: { roles: ["cashier", "manager", "sales_rep", "print_operator"], module: "crm", level: "FULL" },
+                  gate: { operations: ["customers.createFeedback"], roles: ["cashier", "manager", "sales_rep", "print_operator"], module: "crm", level: "FULL" },
                 },
                 {
                   key: "edit",
                   kind: "edit",
                   label: "تعديل",
                   href: `/customers/${id}/edit`,
-                  gate: { roles: ["manager"], module: "crm", level: "FULL" },
+                  gate: { operations: ["customers.update"], roles: ["manager"], module: "crm", level: "FULL" },
                 },
                 // كشف الحساب يقرأ ?id= من URL (نمط CustomerStatement)
                 {
@@ -632,38 +635,38 @@ export default function Customers() {
                   kind: "view",
                   label: "كشف حساب",
                   href: `/customers-statement?id=${id}`,
-                  gate: { module: "crm", level: "READ" },
+                  gate: { operations: ["reports.customerStatement"], module: "crm", level: "READ" },
                 },
                 {
                   key: "receipt",
                   kind: "pay",
                   label: "تسجيل دفعة",
                   href: `/vouchers/receipt/new?customerId=${id}`,
-                  hidden: !isElevated,
-                  gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                  hidden: !can("vouchers.create", isElevated),
+                  gate: { operations: ["vouchers.create"], roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                 },
                 {
                   key: "follow",
                   kind: "create",
                   label: "تسجيل متابعة",
-                  hidden: !isElevated,
+                  hidden: !can("customerNotes.create", isElevated),
                   onSelect: () => setFollowTarget(c),
-                  gate: { roles: ["manager"], module: "crm", level: "FULL" },
+                  gate: { operations: ["customerNotes.create"], roles: ["manager"], module: "crm", level: "FULL" },
                 },
                 {
                   key: "notes",
                   kind: "view",
                   label: "سجل المتابعة",
                   href: `/crm?tab=followups&id=${id}`,
-                  gate: { module: "crm", level: "READ" },
+                  gate: { operations: ["customerNotes.list"], module: "crm", level: "READ" },
                 },
                 {
                   key: "reminder",
                   kind: "create",
                   label: "تذكير واتساب",
                   href: "/reports/ar-reminders",
-                  hidden: !isElevated,
-                  gate: { roles: ["manager", "accountant"], module: "collections", level: "FULL" },
+                  hidden: !can("arReminders.queue", isElevated),
+                  gate: { operations: ["arReminders.queue"], roles: ["manager", "accountant"], module: "collections", level: "FULL" },
                 },
                 {
                   key: "toggle",
@@ -673,7 +676,7 @@ export default function Customers() {
                   disabled: deactivate.isPending || activate.isPending,
                   disabledReason: "توجد عملية تحديث قيد التنفيذ",
                   onSelect: () => void toggle(id, isActive, c.name ?? ""),
-                  gate: { roles: ["manager"], module: "crm", level: "FULL" },
+                  gate: { operations: [isActive ? "customers.deactivate" : "customers.activate"], roles: ["manager"], module: "crm", level: "FULL" },
                 },
                 {
                   key: "delete",
@@ -682,9 +685,9 @@ export default function Customers() {
                   variant: "destructive",
                   disabled: del.isPending,
                   disabledReason: "توجد عملية حذف قيد التنفيذ",
-                  hidden: !isElevated,
+                  hidden: !can("customers.delete", isElevated),
                   onSelect: () => void remove(id, c.name ?? ""),
-                  gate: { managerOnly: true },
+                  gate: { operations: ["customers.delete"], managerOnly: true },
                 },
               ]}
             />
@@ -788,7 +791,7 @@ export default function Customers() {
                 </FilterField>
                 {/* فلتر مدينة — مدعوم خادمياً في customers.search فقط (المستخدم غير المرتفع)؛
                     لوحة العمليات (operations) للمرتفعين لا تدعمه فنُخفيه عنهم بدل عرض فلتر معطَّل. */}
-                {!isElevated && (
+                {!usesOperations && (
                   <FilterField label="المدينة">
                     <Input
                       value={city}
@@ -798,7 +801,7 @@ export default function Customers() {
                     />
                   </FilterField>
                 )}
-                {isElevated && (
+                {usesOperations && (
                   <>
                     <FilterField label="حالة الرصيد">
                       <AppSelect className="h-9" value={balanceFilter} onValueChange={(value) => { setBalanceFilter(value as typeof balanceFilter); setPage(0); }}>
@@ -872,7 +875,7 @@ export default function Customers() {
               fetchAll: () =>
                 fetchAllPaged<DisplayRow>(
                   (offset, limit) =>
-                    isElevated
+                    usesOperations
                       ? utils.customers.operations
                           .fetch({ ...operationsInput, limit, offset })
                           .then((r) => ({ rows: (r.rows ?? []) as DisplayRow[], total: r.total }))
@@ -904,9 +907,9 @@ export default function Customers() {
             onPrint={handlePrintCustomersPdf}
             printLabel="طباعة تقرير PDF"
             // imports.customers = managerProcedure خادمياً — زرّ الاستيراد للمدير/الأدمن فقط.
-            onImport={isElevated ? () => setImportOpen(true) : undefined}
+            onImport={can("imports.customers", isElevated) ? () => setImportOpen(true) : undefined}
             importLabel="استيراد Excel"
-            add={{ href: "/customers/new", label: "عميل جديد" }}
+            add={can("customers.create") ? { href: "/customers/new", label: "عميل جديد" } : undefined}
           />
         </CardHeader>
         <CardContent className="p-0">
@@ -928,7 +931,7 @@ export default function Customers() {
               isError: list.isError,
               message: list.error?.message,
               // `list` اتحادُ استعلامَين (المرتفع/العاديّ) — نُعيد الجلب على المُفعَّل منهما صراحةً.
-              onRetry: () => void (isElevated ? operations.refetch() : basicList.refetch()),
+              onRetry: () => void (usesOperations ? operations.refetch() : basicList.refetch()),
             }}
             getRowClassName={(c) =>
               [c.isActive ? "" : "opacity-60", rowProps(Number(c.id)).className].filter(Boolean).join(" ") || undefined
@@ -961,7 +964,7 @@ export default function Customers() {
       </Card>
 
 
-      {isElevated && (
+      {usesOperations && (
         <OperationsSummary
           title="ملخص العملاء والتحصيل"
           subtitle="جميع الصفحات وفق البحث والفلاتر الحالية. المتأخرات محسوبة من الاستحقاقات، ولا تساوي الرصيد الإجمالي بالضرورة."

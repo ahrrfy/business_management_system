@@ -20,6 +20,7 @@ import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { AlertTriangle, ArrowDownToLine, ArrowUpToLine, CheckCircle2, Edit3, Info, Plus, RotateCcw, Wrench } from "lucide-react";
@@ -64,10 +65,10 @@ const DIR_LABEL: Record<string, string> = {
 
 export default function VoucherCategories() {
   const utils = trpc.useUtils();
-  const list = trpc.voucherCategories.list.useQuery({ includeInactive: true });
-  const unclassified = trpc.voucherCategories.unclassifiedOther.useQuery();
   const me = trpc.auth.me.useQuery();
-  const canManage =
+  const list = trpc.voucherCategories.list.useQuery({ includeInactive: true }, { enabled: treasuryOperationAllowed(me.data, "voucherCategories.list", true) });
+  const unclassified = trpc.voucherCategories.unclassifiedOther.useQuery(undefined, { enabled: treasuryOperationAllowed(me.data, "voucherCategories.unclassifiedOther", true) });
+  const legacyCanManage =
     !!me.data?.role &&
     moduleAccessAllowed(
       me.data.role as RoleKey,
@@ -76,6 +77,8 @@ export default function VoucherCategories() {
       "FULL",
       ["manager", "accountant"],
     );
+  const can = (path: string) => treasuryOperationAllowed(me.data, `voucherCategories.${path}`, legacyCanManage);
+  const canManage = ["create", "update", "setActive", "restoreDefaults", "syncFromExpenseCategories", "syncFromRevenueCategories", "assignHistoricalCategory", "merge"].some(can);
   const [query, setQuery] = useState("");
   const rows = list.data ?? [];
   // أعمدة قائمة الفئات — داخل المكوّن لأنّها تستدعي إجراءات الشاشة (تعديل/تفعيل/دمج).
@@ -184,7 +187,7 @@ export default function VoucherCategories() {
                         label: "تعديل",
                         icon: Edit3,
                         onSelect: () => startEdit(r),
-                        gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                        gate: { operations: ["voucherCategories.update"], roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                       },
                       {
                         key: "toggle",
@@ -192,7 +195,7 @@ export default function VoucherCategories() {
                         label: r.isActive ? "تعطيل" : "تفعيل",
                         variant: r.isActive ? "destructive" : "default",
                         onSelect: () => void toggleActive(r),
-                        gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                        gate: { operations: ["voucherCategories.setActive"], roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                       },
                       {
                         key: "merge",
@@ -200,7 +203,7 @@ export default function VoucherCategories() {
                         label: "دمج",
                         hidden: !r.isActive,
                         onSelect: () => void doMerge(r),
-                        gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                        gate: { operations: ["voucherCategories.merge"], roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                       },
                     ]}
                   />
@@ -355,6 +358,7 @@ export default function VoucherCategories() {
   }
 
   function submitForm() {
+    if (!can(editing ? "update" : "create")) return;
     if (!name.trim()) {
       notify.err("الاسم مطلوب");
       return;
@@ -525,7 +529,7 @@ export default function VoucherCategories() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={restoreDefaults.isPending}
+                disabled={!can("restoreDefaults") || restoreDefaults.isPending}
                 onClick={() => void confirmRestoreDefaults()}
               >
                 <RotateCcw aria-hidden className="size-4 ms-1" />
@@ -536,7 +540,7 @@ export default function VoucherCategories() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={syncExpenses.isPending}
+                disabled={!can("syncFromExpenseCategories") || syncExpenses.isPending}
                 onClick={() => void confirmSyncExpenses()}
               >
                 <ArrowDownToLine aria-hidden className="size-4 ms-1" />
@@ -547,7 +551,7 @@ export default function VoucherCategories() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={syncRevenue.isPending}
+                disabled={!can("syncFromRevenueCategories") || syncRevenue.isPending}
                 onClick={() => void confirmSyncRevenue()}
               >
                 <ArrowUpToLine aria-hidden className="size-4 ms-1" />
@@ -560,6 +564,7 @@ export default function VoucherCategories() {
                   resetForm();
                   setShowForm(true);
                 }}
+                disabled={!can("create")}
                 className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)]"
               >
                 <Plus aria-hidden className="size-4 ms-1" /> فئة جديدة
@@ -683,7 +688,7 @@ export default function VoucherCategories() {
                               <Button
                                 size="sm"
                                 disabled={
-                                  !selected || assignHistorical.isPending
+                                  !can("assignHistoricalCategory") || !selected || assignHistorical.isPending
                                 }
                                 onClick={() =>
                                   assignHistorical.mutate({
@@ -799,7 +804,7 @@ export default function VoucherCategories() {
             <div className="md:col-span-2 flex gap-2">
               <Button
                 onClick={submitForm}
-                disabled={create.isPending || update.isPending}
+                disabled={!can(editing ? "update" : "create") || create.isPending || update.isPending}
                 className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)]"
               >
                 {editing ? "حفظ التَعديل" : "حفظ الفئة"}
@@ -927,7 +932,7 @@ export default function VoucherCategories() {
             </Button>
             <Button
               variant="destructive"
-              disabled={!mergeTargetId || merge.isPending}
+              disabled={!can("merge") || !mergeTargetId || merge.isPending}
               onClick={confirmMerge}
             >
               {merge.isPending ? "جارٍ الدمج…" : "دمج"}

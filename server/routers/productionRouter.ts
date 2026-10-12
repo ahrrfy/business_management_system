@@ -56,6 +56,7 @@ import { logAudit } from "../services/auditService";
 import { listMaterialsForRecipe } from "../services/catalog/productExtras";
 import { inventoryManagerProcedure, productsReadProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { canonicalOperationAllowed } from "../services/authorization/operationAuthority";
 
 const lineInput = z.object({
   variantId: z.number().int().positive(),
@@ -656,7 +657,7 @@ export const productionRouter = router({
       .input(substituteRecipeMaterialInputSchema)
       .mutation(async ({ input, ctx }) => {
         const userRole = String(ctx.user.role ?? "").toUpperCase();
-        if (!["ADMIN", "MANAGER"].includes(userRole)) {
+        if (!["ADMIN", "MANAGER"].includes(userRole) && canonicalOperationAllowed(ctx.user, "production.recipes.substituteMaterial") !== true) {
           throw new TRPCError({
             code: "FORBIDDEN",
             message: appErrorMessage({

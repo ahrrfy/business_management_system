@@ -1,3 +1,4 @@
+import { useDigitalGiftOperationAccess } from "@/lib/digitalGiftOperationAccess";
 // بطاقات رقمية داخل فاتورة بيع + مسار العكس (ش١٢).
 //
 // لماذا هنا لا في شاشة مستقلّة: المرتجع العام **يرفض** البنود الرقمية (حارس في returnService)،
@@ -35,21 +36,24 @@ const SETTLEMENT: Record<string, string> = {
 };
 
 export function InvoiceDigitalCards({ invoiceId }: { invoiceId: number }) {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const me = trpc.auth.me.useQuery();
   const role = (me.data?.role ?? "") as RoleKey;
   const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
 
   // مرآة `digitalCardsAdminReadProcedure` بالضبط (manager/accountant/auditor + منح صريح).
-  const canRead = !!me.data?.role &&
-    moduleAccessAllowed(role, override, "digital_cards", "READ", ["manager", "accountant", "auditor"]);
+  const canRead = digitalAccess.can("digitalCards.sales.saleDetails", !!me.data?.role &&
+    moduleAccessAllowed(role, override, "digital_cards", "READ", ["manager", "accountant", "auditor"]));
   // مرآة `digitalCardsManagerProcedure` (moduleProcedure(["manager"],…,"FULL")) — العكس قرارٌ مديريّ.
-  const canReverse = !!me.data?.role &&
-    moduleAccessAllowed(role, override, "digital_cards", "FULL", ["manager"]);
+  const legacyReverse = !!me.data?.role && moduleAccessAllowed(role, override, "digital_cards", "FULL", ["manager"]);
+  const canReverse = digitalAccess.can("digitalCards.reversal.reversible", legacyReverse) &&
+    ["approve", "requestLossRefund", "lossRefund", "rejectLossRefund"].some((action) => digitalAccess.can(`digitalCards.reversal.${action}`, legacyReverse));
+  const showCost = digitalAccess.costVisible();
 
-  const details = trpc.digitalCards.sales.saleDetails.useQuery(
+  const details = digitalAccess.query("digitalCards.sales.saleDetails", trpc.digitalCards.sales.saleDetails.useQuery(
     { invoiceId },
-    { enabled: Number.isFinite(invoiceId) && canRead, retry: false },
-  );
+    { enabled: digitalAccess.can("digitalCards.sales.saleDetails") && (Number.isFinite(invoiceId) && canRead), retry: false },
+  ));
 
   const [reversing, setReversing] = useState(false);
 
@@ -57,7 +61,7 @@ export function InvoiceDigitalCards({ invoiceId }: { invoiceId: number }) {
   // فاتورة بلا كروت: لا تُعرض البطاقة أصلاً كي لا تتغيّر شاشة الفواتير العادية.
   if (!canRead || (!details.isLoading && rows.length === 0)) return null;
 
-  const anyReversible = rows.some((r) => r.fulfillmentStatus === "ISSUED");
+  const anyReversible = rows.some((r) => r.fulfillmentStatus === "ISSUED" || r.fulfillmentStatus === "LOSS_REFUND_PENDING");
 
   return (
     <>
@@ -80,8 +84,8 @@ export function InvoiceDigitalCards({ invoiceId }: { invoiceId: number }) {
                   <th className="p-2 text-start">البطاقة / الاشتراك</th>
                   <th className="p-2 text-start">التسوية</th>
                   <th className="p-2 text-start">سعر البيع</th>
-                  <th className="p-2 text-start">حصة المزوّد</th>
-                  <th className="p-2 text-start">الربح</th>
+                  {showCost && <th className="p-2 text-start">حصة المزوّد</th>}
+                  {showCost && <th className="p-2 text-start">الربح</th>}
                   <th className="p-2 text-start">رقم العملية / الاشتراك</th>
                   <th className="p-2 text-start">الطالب</th>
                   <th className="p-2 text-start">هاتف الطالب</th>
@@ -94,8 +98,8 @@ export function InvoiceDigitalCards({ invoiceId }: { invoiceId: number }) {
                     <td className="p-2 font-medium">{r.offeringName}</td>
                     <td className="p-2 text-muted-foreground">{SETTLEMENT[r.settlementMode] ?? r.settlementMode}</td>
                     <td className="p-2 tabular-nums font-medium">{fmtAr(r.sellPrice)}</td>
-                    <td className="p-2 tabular-nums text-muted-foreground">{fmtAr(r.providerShare)}</td>
-                    <td className="p-2 tabular-nums">{fmtAr(r.profit)}</td>
+                    {showCost && <td className="p-2 tabular-nums text-muted-foreground">{fmtAr(r.providerShare)}</td>}
+                    {showCost && <td className="p-2 tabular-nums">{fmtAr(r.profit)}</td>}
                     <td className="p-2">
                       <span className="block text-xs text-muted-foreground">{digitalSaleReferenceLabel(r.offeringType)}</span>
                       <strong className="font-mono text-sm" dir="ltr">{r.providerReference || "—"}</strong>
@@ -111,7 +115,7 @@ export function InvoiceDigitalCards({ invoiceId }: { invoiceId: number }) {
                     </td>
                   </tr>
                 ))}
-                {details.isLoading && <tr><td colSpan={9}><LoadingState /></td></tr>}
+                {details.isLoading && <tr><td colSpan={showCost ? 9 : 7}><LoadingState /></td></tr>}
               </tbody>
             </table>
           </ScrollTableShell>
@@ -128,12 +132,13 @@ export function InvoiceDigitalCards({ invoiceId }: { invoiceId: number }) {
 function ReversalDialog({
   open, invoiceId, onClose,
 }: { open: boolean; invoiceId: number; onClose: () => void }) {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const [selected, setSelected] = useState<number[]>([]);
   const [reason, setReason] = useState("");
 
-  const q = trpc.digitalCards.reversal.reversible.useQuery({ invoiceId }, { enabled: open });
+  const q = digitalAccess.query("digitalCards.reversal.reversible", trpc.digitalCards.reversal.reversible.useQuery({ invoiceId }, { enabled: digitalAccess.can("digitalCards.reversal.reversible") && (open) }));
 
   function done(msg: string, detail?: string) {
     void utils.digitalCards.sales.saleDetails.invalidate({ invoiceId });
@@ -177,9 +182,10 @@ function ReversalDialog({
   /** مرآة حارس الخادم: لا يعتمد الطلبَ مَن قدّمه (admin مُستثنى). */
   const ownPendingSelected = selectedPending.length > 0 &&
     me.data?.role !== "admin" &&
-    selectedPending.every((r) => Number(r.lossRefundRequestedBy) === Number(me.data?.id));
+    selectedPending.some((r) => Number(r.lossRefundRequestedBy) === Number(me.data?.id));
 
   function submit(kind: "approve" | "requestLoss") {
+    if (!digitalAccess.can(`digitalCards.reversal.${kind === "approve" ? "approve" : "requestLossRefund"}`)) return;
     if (!selectedIssued.length) return notify.err("اختر بطاقةً صادرة واحدة على الأقل");
     if (reason.trim().length < 3) return notify.err("اكتب سبباً واضحاً");
     const detailIds = selectedIssued.map((r) => r.id);
@@ -282,14 +288,14 @@ function ReversalDialog({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={busy || ownPendingSelected}
+                disabled={!digitalAccess.can("digitalCards.reversal.rejectLossRefund") || (busy || ownPendingSelected)}
                 onClick={() => rejectLossMut.mutate({ invoiceId, detailIds: selectedPending.map((r) => r.id) })}
               >
                 رفض الطلب
               </Button>
               <Button
                 size="sm"
-                disabled={busy || ownPendingSelected}
+                disabled={!digitalAccess.can("digitalCards.reversal.lossRefund") || (busy || ownPendingSelected)}
                 onClick={() => lossMut.mutate({ invoiceId, detailIds: selectedPending.map((r) => r.id) })}
               >
                 {busy ? "جارٍ التنفيذ…" : "اعتماد ردّ الخسارة"}
@@ -300,14 +306,14 @@ function ReversalDialog({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={busy || selectedIssued.length === 0}
+                disabled={!digitalAccess.can("digitalCards.reversal.requestLossRefund") || busy || selectedIssued.length === 0}
                 onClick={() => submit("requestLoss")}
               >
                 لم يُعِد الحصة — طلب ردّ خسارة
               </Button>
               <Button
                 size="sm"
-                disabled={busy || selectedIssued.length === 0}
+                disabled={!digitalAccess.can("digitalCards.reversal.approve") || busy || selectedIssued.length === 0}
                 onClick={() => submit("approve")}
               >
                 {busy ? "جارٍ التنفيذ…" : "المزوّد أعاد الحصة (عكس مؤكَّد)"}

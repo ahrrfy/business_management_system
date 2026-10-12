@@ -10,6 +10,7 @@ import { StudioCampaignsPanel } from "@/components/product-studio/StudioCampaign
 import { StudioManualTaskCreator } from "@/components/product-studio/StudioManualTaskCreator";
 import { StudioTaskQueue } from "@/components/product-studio/StudioTaskQueue";
 import { trpc } from "@/lib/trpc";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import { notify } from "@/lib/notify";
 import { STUDIO_STORAGE_DISABLED_MESSAGE } from "@/pages/ProductImageStudio";
 import { studioOfflineCapabilities } from "@/lib/productStudio/coldOfflinePolicy";
@@ -23,6 +24,16 @@ export default function StudioManagerDashboard({
   offline: boolean;
   dashboardData: any;
 }) {
+  const canDiscover = useOperationPermission("productStudio.discoverImageGaps").allowed;
+  const canReadCounts = useOperationPermission("productStudio.imageHealthCounts").allowed;
+  const canReadCampaigns = useOperationPermission("productStudio.campaigns").allowed;
+  const canCreateCampaign = useOperationPermission("productStudio.createCampaign").allowed;
+  const canAssign = useOperationPermission("productStudio.assign").allowed;
+  const canBulkAssign = useOperationPermission("productStudio.bulkAssign").allowed;
+  const canReadTasks = useOperationPermission("productStudio.tasks").allowed;
+  const canReadImages = useOperationPermission("productStudio.managerImages").allowed;
+  const canExport = useOperationPermission("productStudio.authorizeExport").allowed;
+  const canQuickLookup = useOperationPermission("productStudio.quickBarcodeLookup").allowed;
   const utils = trpc.useUtils();
   const [prefilledProductIds, setPrefilledProductIds] = useState<number[]>([]);
   const [prefilledCategoryId, setPrefilledCategoryId] = useState<number | null>(null);
@@ -58,12 +69,12 @@ export default function StudioManagerDashboard({
       )}
 
       {/* حقل المسح والبحث بالباركود وكاميرا الهاتف للوصول السريع للمنتجات واعتمادها فورياً */}
-      <StudioQuickBarcodeSearch
+      {canQuickLookup && <StudioQuickBarcodeSearch
         offline={offline}
         onProductHandled={() => {
           utils.productStudio.invalidate();
         }}
-      />
+      />}
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="grid w-full grid-cols-3 lg:w-[600px]">
@@ -133,7 +144,7 @@ export default function StudioManagerDashboard({
             </CardContent>
           </Card>
 
-          {!offline && (
+          {!offline && (canDiscover || canReadCounts) && (
             <StudioImageDiscoveryPanel
               onCreateCampaignFromProducts={(productIds) => {
                 setPrefilledProductIds(productIds);
@@ -154,7 +165,7 @@ export default function StudioManagerDashboard({
         </TabsContent>
 
         <TabsContent value="campaigns" className="space-y-4">
-          <StudioCampaignsPanel
+          {(canReadCampaigns || canCreateCampaign) && <StudioCampaignsPanel
             offline={offline}
             branchId={dashboardData?.branchId}
             selectedCampaignId={selectedCampaignId}
@@ -164,19 +175,19 @@ export default function StudioManagerDashboard({
               setPrefilledProductIds([]);
               setPrefilledCategoryId(null);
             }}
-          />
-          <StudioManualTaskCreator offline={offline} storageActionsDisabled={storageActionsDisabled} />
-          <StudioTaskQueue 
+          />}
+          {(canAssign || canBulkAssign) && <StudioManualTaskCreator offline={offline} storageActionsDisabled={storageActionsDisabled} />}
+          {canReadTasks && <StudioTaskQueue
             offline={offline} 
             canManage={true} 
             initialSelectedCampaignId={selectedCampaignId}
             onCampaignSelect={setSelectedCampaignId}
-          />
+          />}
         </TabsContent>
 
         <TabsContent value="library" className="space-y-4">
-          {!offline && <StudioStandaloneImageManagerCard />}
-          {!offline && <StudioImageExportPanel categories={[]} />}
+          {!offline && canReadImages && <StudioStandaloneImageManagerCard />}
+          {!offline && canExport && <StudioImageExportPanel categories={[]} />}
         </TabsContent>
       </Tabs>
     </div>

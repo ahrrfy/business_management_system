@@ -37,12 +37,11 @@ describe("سجل وحدات التطبيق", () => {
   it("يغذّي القائمة والبطاقات من سجل الوحدات، ويُبقي الإجراءات اليومية من ملف العمل", () => {
     const layout = readFileSync("client/src/components/AppLayout.tsx", "utf8");
     const dashboard = readFileSync("client/src/pages/Dashboard.tsx", "utf8");
-    expect(layout).toContain("APPLICATION_MODULES as NAV_LINKS");
+    expect(layout).toMatch(/import\s*\{[^}]*\b(?:APPLICATION_MODULES|visibleApplicationModules)\b[^}]*\}\s*from "@\/lib\/moduleRegistry"/);
     expect(dashboard).toContain("resolveWorkspaceProfile({");
     expect(dashboard).toContain("profile.primaryNav");
     expect(dashboard).toContain("href={item.href}");
-    expect(dashboard).toContain("APPLICATION_MODULES.filter");
-    expect(dashboard).toContain("canSeeGate(module, role, permissionsOverride)");
+    expect(dashboard).toContain("visibleApplicationModules(role, permissionsOverride, operationPolicy)");
     expect(dashboard).toContain('aria-label="وحدات النظام"');
     expect(dashboard).toContain("<SystemModulesPanel");
     expect(dashboard).not.toContain("const CORE_MODULES");
@@ -61,7 +60,7 @@ describe("سجل وحدات التطبيق", () => {
       "utf8",
     );
     const resolveAt = dashboard.indexOf("const profile = resolveWorkspaceProfile({");
-    const cashierAt = dashboard.indexOf('me.data.role === "cashier" && cashierStation');
+    const cashierAt = dashboard.indexOf('me.data.role === "cashier" && !me.data.operationPolicyEnabled && !me.data.isOwner && cashierStation');
 
     expect(resolveAt).toBeGreaterThan(-1);
     expect(cashierAt).toBeGreaterThan(resolveAt);

@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { Boxes, Layers, Package, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -43,11 +44,12 @@ const TITLE: Record<ItemMode, string> = {
 };
 
 export default function ProductNew() {
+  const { can } = useCatalogPeopleOperationAccess();
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const branchesQ = trpc.branches.list.useQuery();
-  const categoriesQ = trpc.catalog.categories.useQuery();
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: can("branches.list") });
+  const categoriesQ = trpc.catalog.categories.useQuery(undefined, { enabled: can("catalog.categories") });
   // الافتراضي «بسيطة» لأنها الحالة الأشيَع في المكتبة (كتاب/ملزمة/دفتر مفرد).
   const [mode, setMode] = useState<ItemMode>("simple");
 
@@ -75,7 +77,7 @@ export default function ProductNew() {
   const debouncedCodes = useMemo(() => (debouncedKey ? debouncedKey.split("\n") : []), [debouncedKey]);
   const checkQ = trpc.catalog.checkBarcodes.useQuery(
     { codes: debouncedCodes },
-    { enabled: debouncedCodes.length > 0, staleTime: 10_000 },
+    { enabled: can("catalog.checkBarcodes") && (debouncedCodes.length > 0), staleTime: 10_000 },
   );
   const takenInDb = useMemo(() => new Set((checkQ.data ?? []).map((r) => r.code)), [checkQ.data]);
 
@@ -89,6 +91,7 @@ export default function ProductNew() {
   }, [leaveTo, isDirty, navigate]);
 
   async function save(): Promise<unknown> {
+    if (!can("catalog.createProduct")) throw new Error("العملية غير مفوضة لحسابك");
     // فحص أخير حاسم للباركود ضدّ القاعدة (لا نعتمد على توقيت الـdebounce) — يشمل البدائل.
     if (codes.length) {
       let taken: Array<{ code: string; takenBy: string }> = [];
@@ -164,7 +167,7 @@ export default function ProductNew() {
         <RecordForm
           mode="create"
           isDirty={isDirty}
-          blockedBy={blockedBy}
+          blockedBy={can("catalog.createProduct") ? blockedBy : [...blockedBy, "العملية غير مفوضة لحسابك"]}
           isPending={create.isPending}
           onSave={saveAndClose}
           onSaveAndNew={saveAndNew}

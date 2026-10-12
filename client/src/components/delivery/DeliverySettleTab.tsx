@@ -1,3 +1,4 @@
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearch } from "wouter";
 import { Truck, Wallet } from "lucide-react";
@@ -44,23 +45,25 @@ export function DeliverySettleTab() {
     { branchId, shiftType: "RECEPTION" },
     { enabled: branchId > 0 },
   );
-  const canRemit = !!me.data
+  const canRemit = lifecycleActionAllowed(me.data, "delivery.recordRemittance", !!me.data
     && moduleAccessAllowed(
       me.data.role as RoleKey,
       (me.data.permissionsOverride ?? null) as PermissionMap | null,
       "store",
       "FULL",
       ["cashier", "manager"],
-    );
-  const canReturn = !!me.data
+    ));
+  const canReturn = lifecycleActionAllowed(me.data, "delivery.returnConsignment", !!me.data
     && moduleAccessAllowed(
       me.data.role as RoleKey,
       (me.data.permissionsOverride ?? null) as PermissionMap | null,
       "store",
       "FULL",
       ["manager", "cashier", "sales_rep"],
-    );
+    ));
 
+  const canRecordStatement = lifecycleActionAllowed(me.data, "delivery.recordCompanyStatement", canRemit);
+  const canPayPartyFees = lifecycleActionAllowed(me.data, "delivery.payPartyFees", !!me.data);
   const settleSearch = useSearch();
   const [partyId, setPartyId] = useState<string>(() => new URLSearchParams(settleSearch).get("party") ?? "");
   const [returnTarget, setReturnTarget] = useState<ReturnConsignmentTarget | null>(null);
@@ -252,6 +255,7 @@ export function DeliverySettleTab() {
   }, [list, rows, statementMode, statementDeductions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = async () => {
+    if (!(statementMode ? canRecordStatement : canRemit)) { notify.err("صلاحية تسجيل الكشف أو التوريد غير ممنوحة لحسابك"); return; }
     if (listStillLoading) {
       notify.err("لا يمكن التسوية قبل اكتمال تحميل قائمة الإرساليات");
       return;
@@ -375,7 +379,7 @@ export function DeliverySettleTab() {
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={payPartyFees.isPending || !currentShift.data?.id}
+                  disabled={!canPayPartyFees || payPartyFees.isPending || !currentShift.data?.id}
                   title={!currentShift.data?.id ? "افتح وردية استقبال لصرف الأجور من درج موثَّق" : `صرف ${fmt(partyRow.feeDueTotal)} د.ع مستحقة`}
                   onClick={async () => {
                     const ok = await confirm({
@@ -539,7 +543,7 @@ export function DeliverySettleTab() {
             countedCash={countedCash}
             countedBreakdown={countedBreakdown}
             onCountedChange={(c, total) => { if (companyStatement.isPending || remit.isPending) return; setCountedBreakdown(c); setCountedCash(Number(total)); }}
-            canRemit={canRemit}
+            canRemit={statementMode ? canRecordStatement : canRemit}
             isPending={remit.isPending || companyStatement.isPending}
             listStillLoading={listStillLoading}
             statementMode={statementMode}

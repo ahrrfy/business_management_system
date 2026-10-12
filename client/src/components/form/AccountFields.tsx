@@ -5,12 +5,19 @@ import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/form/PasswordInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { PermissionMatrix } from "@/components/form/PermissionMatrix";
+import { OperationPermissionMatrix } from "@/components/form/OperationPermissionMatrix";
+import {
+  buildOperationPolicyFromLegacy,
+  resolveOperationPolicy,
+  type OperationPolicy,
+} from "@shared/operationPermissions";
 import { isStrongPassword, PASSWORD_POLICY_MSG, USERNAME_POLICY_MSG, USERNAME_REGEX } from "@shared/const";
 import {
   ROLES,
   PERMISSION_MODULES,
   ROLE_TEMPLATES,
   diffFromTemplate,
+  applyPermissionOverrides,
   resolvePermissions,
   type AccessLevel,
   type PermissionMap,
@@ -32,8 +39,7 @@ import { AlertTriangle, Check, Zap } from "lucide-react";
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-/** أدوار تشغيلية تستوجب تحديد فرع (تحذير عند «كل الفروع»). */
-const BRANCH_WARN_ROLES: RoleKey[] = ["cashier", "warehouse", "print_operator", "purchasing", "sales_rep"];
+
 
 export interface AccountFieldsValue {
   name: string;
@@ -49,6 +55,7 @@ export interface AccountFieldsValue {
   branchId: number | "";
   permsOverride: PermissionMap;
   mustChangePassword: boolean;
+  operationPolicy?: OperationPolicy | null;
 }
 
 /** قيمة ابتدائية فارغة لحساب جديد.
@@ -98,7 +105,13 @@ export function accountPermsPayload(v: AccountFieldsValue): Record<string, Acces
 }
 
 /** فروق الصلاحيات عن القالب — يُعرض في رأس المصفوفة. */
-function PermDiffSummary({ role, override }: { role: RoleKey; override: PermissionMap }) {
+function PermDiffSummary({
+  role,
+  override,
+}: {
+  role: RoleKey;
+  override: PermissionMap;
+}) {
   const entries = Object.entries(override);
   if (!entries.length) return null;
   const base = ROLE_TEMPLATES[role];
@@ -132,9 +145,20 @@ export interface AccountFieldsProps {
   autoSuggestSignal?: number;
   /** يُمرَّر إلى فحوص توفّر البريد/الاسم في التعديل (تجنّب التعارض مع الذات). */
   excludeUserId?: number;
+  /** Enable only for a caller whose create endpoint persists canonical operation overrides. */
+  operationEditor?: boolean;
 }
 
-export function AccountFields({ value, onChange, showName, showJobData, nameForSuggest, autoSuggestSignal, excludeUserId }: AccountFieldsProps) {
+export function AccountFields({
+  value,
+  onChange,
+  showName,
+  showJobData,
+  nameForSuggest,
+  autoSuggestSignal,
+  excludeUserId,
+  operationEditor,
+}: AccountFieldsProps) {
   const utils = trpc.useUtils();
   const [emailError, setEmailError] = useState("");
   const [emailChecked, setEmailChecked] = useState(false);
@@ -150,7 +174,31 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
     [value.role, value.permsOverride],
   );
   const roleInfo = ROLES.find((r) => r.key === value.role);
-  const branchWarn = BRANCH_WARN_ROLES.includes(value.role) && value.branchId === "";
+  const selectedCustomRole = value.customRoleId
+    ? customRoles.find((row) => row.id === value.customRoleId)
+    : null;
+  const inheritedOperationPolicy = useMemo(() => {
+    const base = (selectedCustomRole?.baseRole as RoleKey) ?? value.role;
+    const modules = applyPermissionOverrides(
+      ROLE_TEMPLATES[base],
+      selectedCustomRole?.permissions as PermissionMap | null,
+    );
+    return selectedCustomRole?.operationPolicy
+      ? resolveOperationPolicy(
+          base,
+          modules,
+          selectedCustomRole.operationPolicy,
+          null,
+          selectedCustomRole.permissions as PermissionMap | null,
+        )
+      : buildOperationPolicyFromLegacy(
+          base,
+          modules,
+          selectedCustomRole?.atomicPermissions as Record<string, boolean> | null | undefined,
+          selectedCustomRole?.permissions as PermissionMap | null,
+        );
+  }, [selectedCustomRole, value.role]);
+  const branchWarn = value.role !== "admin" && value.branchId === "";
   const customCount = Object.keys(value.permsOverride).length;
   const pwMismatch = value.passwordConfirm.length > 0 && value.password !== value.passwordConfirm;
   const suggestName = (nameForSuggest ?? value.name).trim();
@@ -217,9 +265,22 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
 
   function handleRoleChange(val: string) {
     if (val.startsWith("custom:")) {
-      onChange({ customRoleId: Number(val.slice(7)) });
+      const selected = customRoles.find(
+        (row) => row.id === Number(val.slice(7)),
+      );
+      onChange({
+        customRoleId: Number(val.slice(7)),
+        role: (selected?.baseRole as RoleKey) ?? "user",
+        permsOverride: {},
+        operationPolicy: null,
+      });
     } else {
-      onChange({ customRoleId: null, role: val as RoleKey, permsOverride: {} });
+      onChange({
+        customRoleId: null,
+        role: val as RoleKey,
+        permsOverride: {},
+        operationPolicy: null,
+      });
     }
   }
 
@@ -285,7 +346,10 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
             {usernameChecked && !usernameError && value.username.trim() && <p className="text-[11px] text-[var(--sem-pos)] inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" /> اسم المستخدم متاح</p>}
           </div>
           <div className="space-y-1">
-            <Label htmlFor="acc-email">البريد الإلكتروني <span className="text-muted-foreground font-normal">(اختياري)</span></Label>
+            <Label htmlFor="acc-email">
+              البريد الإلكتروني{" "}
+              <span className="text-muted-foreground font-normal">(اختياري)</span>
+            </Label>
             <Input
               id="acc-email" type="email" dir="ltr" autoComplete="off"
               value={value.email}
@@ -371,8 +435,10 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
             ) : roleInfo ? (
               <p className="text-[11px] text-muted-foreground">{roleInfo.description}</p>
             ) : null}
-            {/* معاينة حيّة للأثر الفعليّ (ش١ RBAC): «سيرى: تجزئة فقط» — قبل إنشاء الحساب. */}
-            <div className="pt-1">
+            {!operationEditor && (
+              <>
+                {/* معاينة حيّة للأثر الفعليّ (ش١ RBAC): «سيرى: تجزئة فقط» — قبل إنشاء الحساب. */}
+                <div className="pt-1">
               <EffectiveAccessForAssignment
                 role={value.role}
                 permsOverride={value.permsOverride}
@@ -381,6 +447,8 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
                 title="سيرى هذا الحساب:"
               />
             </div>
+              </>
+            )}
           </div>
           <div className="space-y-1">
             <Label htmlFor="acc-branch">الفرع</Label>
@@ -389,13 +457,15 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
               value={String(value.branchId)}
               onChange={(e) => onChange({ branchId: e.target.value === "" ? "" : Number(e.target.value) })}
             >
-              <option value="">— كل الفروع —</option>
+              <option value="">— بلا فرع —</option>
               {(branches.data ?? []).map((b: any) => (
                 <option key={b.id} value={b.id}>{b.name}</option>
               ))}
             </select>
             {branchWarn && (
-              <p className="text-[11px] text-[var(--sem-warn)] inline-flex items-center gap-1"><AlertTriangle aria-hidden className="size-3.5" /> هذا الدور يُنصح بتحديد فرع محدد لتجنّب الوصول لكل الفروع.</p>
+              <p className="text-[11px] text-[var(--sem-warn)] inline-flex items-center gap-1">
+                <AlertTriangle aria-hidden className="size-3.5" /> الحساب غير الإداري يجب أن يرتبط بفرع. اختر الفرع قبل الحفظ.
+              </p>
             )}
           </div>
         </CardContent>
@@ -412,7 +482,14 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {value.customRoleId ? (
+          {operationEditor ? (
+            <OperationPermissionMatrix
+              mode="user"
+              value={value.operationPolicy ?? null}
+              inherited={inheritedOperationPolicy}
+              onChange={(operationPolicy) => onChange({ operationPolicy })}
+            />
+          ) : value.customRoleId ? (
             <p className="text-sm text-muted-foreground">صلاحيات الدور المخصّص محفوظة في تعريفه — عدّلها من شاشة «الأدوار والصلاحيات».</p>
           ) : (
             <>

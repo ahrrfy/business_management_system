@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { canonicalOperationAllowed, storedOperationUser } from "./authorization/operationAuthority";
 import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
 import { refundDueAfterReturn } from "@shared/predicates/invoiceRemaining";
@@ -2682,6 +2683,7 @@ export async function returnSaleDirect(
         isActive: boolean;
         permissions: unknown;
         atomicPermissions: unknown;
+        operationPolicy: unknown;
       } | null = null;
       if (probe?.customRoleId != null) {
         const [rRow] = await tx
@@ -2690,6 +2692,7 @@ export async function returnSaleDirect(
             isActive: roles.isActive,
             permissions: roles.permissions,
             atomicPermissions: roles.atomicPermissions,
+            operationPolicy: roles.operationPolicy,
           })
           .from(roles)
           .where(eq(roles.id, probe.customRoleId))
@@ -2701,6 +2704,7 @@ export async function returnSaleDirect(
             isActive: Boolean(rRow.isActive),
             permissions: rRow.permissions,
             atomicPermissions: rRow.atomicPermissions,
+            operationPolicy: rRow.operationPolicy,
           };
         }
       }
@@ -2715,6 +2719,9 @@ export async function returnSaleDirect(
           customRoleId: users.customRoleId,
           permissionsOverride: users.permissionsOverride,
           atomicPermissions: users.atomicPermissions,
+          operationPolicy: users.operationPolicy,
+          accessExpiresAt: users.accessExpiresAt,
+          branchId: users.branchId,
         })
         .from(users)
         .where(eq(users.id, actor.userId))
@@ -2734,31 +2741,13 @@ export async function returnSaleDirect(
         });
       }
 
-      // إن تغيّر customRoleId بين الاستكشاف وقفل المستخدم، نقفل الدور الجديد
+      // تغيّر الإسناد يستدعي إعادة الطلب؛ قفل دور جديد بعد المستخدم يعكس ترتيب roles -> users.
       if (userRow.customRoleId !== probe?.customRoleId) {
-        if (userRow.customRoleId != null) {
-          const [rRow] = await tx
-            .select({
-              baseRole: roles.baseRole,
-              isActive: roles.isActive,
-              permissions: roles.permissions,
-              atomicPermissions: roles.atomicPermissions,
-            })
-            .from(roles)
-            .where(eq(roles.id, userRow.customRoleId))
-            .for("share")
-            .limit(1);
-          customRoleRow = rRow
-            ? {
-                baseRole: rRow.baseRole,
-                isActive: Boolean(rRow.isActive),
-                permissions: rRow.permissions,
-                atomicPermissions: rRow.atomicPermissions,
-              }
-            : null;
-        } else {
-          customRoleRow = null;
-        }
+        throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+          what: "تغيّر دور الحساب أثناء تنفيذ المرتجع",
+          why: "الإدارة حدّثت إسناد الدور قبل تثبيت صلاحية العملية",
+          doThis: "حدّث الصفحة وأعد تنفيذ المرتجع بصلاحيات الدور الجديد",
+        }) });
       }
 
       let effectiveRole = userRow.role;
@@ -2834,13 +2823,25 @@ export async function returnSaleDirect(
         effectiveRole === "print_operator" &&
         effectivePermissions.workorders === "FULL";
 
-      const isAuthorized =
+      const legacyAuthorized =
         isOwner ||
         isAdmin ||
         (!explicitAtomicRevoke &&
           (explicitAtomicGrant ||
             (!isSalesDenied &&
               (hasReceptionFull || (isCashierRole && hasSalesFull)))));
+
+      const isAuthorized = canonicalOperationAllowed(
+        storedOperationUser(userRow, customRoleRow), "returns.create",
+      ) ?? legacyAuthorized;
+
+      if (!isOwner && !isAdmin && Number(actor.branchId) !== Number(userRow.branchId)) {
+        throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+          what: "تغيّر فرع الحساب أثناء تنفيذ المرتجع",
+          why: "فرع الطلب المفتوح يختلف عن الفرع المسند حالياً للحساب",
+          doThis: "حدّث الصفحة وأعد تنفيذ المرتجع من فرعك الحالي",
+        }) });
+      }
 
       if (!isAuthorized) {
         throw new TRPCError({

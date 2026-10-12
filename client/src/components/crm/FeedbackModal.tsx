@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 /**
  * نموذج تسجيل تقييم الرضا والشكاوى التشغيلية (Feedback & Quality Complaint Modal).
  * يدعم تسجيل التقييم (1 إلى 5 نجوم) وتصنيف محطة الخلل ودورة حياة المعالجة.
@@ -90,6 +91,8 @@ export function FeedbackModal({
   onSuccess,
 }: FeedbackModalProps) {
   const modalOpen = open ?? isOpen ?? false;
+  const { can } = useCatalogPeopleOperationAccess();
+  const canSubmit = can(existingFeedback ? "customers.updateFeedbackStatus" : "customers.createFeedback");
   const [rating, setRating] = useState<number>(5);
   const [category, setCategory] = useState<string>("GENERAL");
   const [rootCauseStation, setRootCauseStation] = useState<string>("PRINTING");
@@ -146,6 +149,7 @@ export function FeedbackModal({
   });
 
   const handleSubmit = () => {
+    if (!canSubmit) return;
     if (existingFeedback) {
       updateMutation.mutate({
         feedbackId: existingFeedback.id,
@@ -360,7 +364,7 @@ export function FeedbackModal({
             type="button"
             size="sm"
             onClick={handleSubmit}
-            disabled={isPending}
+            disabled={!canSubmit || isPending}
             className="gap-1.5"
           >
             {isPending ? (

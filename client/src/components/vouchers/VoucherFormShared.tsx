@@ -29,6 +29,7 @@ import {
   reservePrintWindow,
 } from "@/lib/printing/brand";
 import { trpc } from "@/lib/trpc";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
@@ -101,6 +102,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   const direction: "IN" | "OUT" = isReceipt ? "IN" : "OUT";
 
   const me = trpc.auth.me.useQuery();
+  const canCreate = treasuryOperationAllowed(me.data, "vouchers.create", true);
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
 
   // الفرع: استنتاجٌ خادميّ عبر `<InferredBranchField>` (م٤ ق١) — تبدأ `null` عمداً: كان
@@ -172,7 +174,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     [categoryOptions, direction],
   );
   // مرآة بوّابة الخادم لفئات السندات (treasuryGlobalProcedure) — إخفاء بصريّ فقط، والإنفاذ خادميّ.
-  const canManageCategories =
+  const legacyManageCategories =
     !!me.data?.role &&
     moduleAccessAllowed(
       me.data.role as RoleKey,
@@ -181,6 +183,8 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       "FULL",
       ["manager", "accountant"],
     );
+  const canManageCategories = treasuryOperationAllowed(me.data, "voucherCategories.create", legacyManageCategories);
+  const canRestoreCategories = treasuryOperationAllowed(me.data, "voucherCategories.restoreDefaults", legacyManageCategories);
   const [showCategoryDialog, setShowCategoryDialog] = useState(false);
   const restoreDefaults = trpc.voucherCategories.restoreDefaults.useMutation({
     onSuccess: async (res) => {
@@ -510,6 +514,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   }, [partyType, customerData.data?.name, supplierData.data?.name, counterpartyName]);
 
   async function submit(printAfter: "thermal" | "a4" | null = null) {
+    if (!canCreate) return;
     setErr("");
     const v = validate();
     if (v) {
@@ -906,7 +911,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                     لا توجد فئة {isReceipt ? "قبض" : "صرف"} مهيأة محاسبياً — سند «أخرى» لا
                     يُحفظ بدونها.
                   </p>
-                  {canManageCategories && (
+                  {canRestoreCategories && (
                     <div className="flex flex-wrap gap-2">
                       <Button
                         type="button"
@@ -1269,7 +1274,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       <div className="flex flex-wrap items-center gap-2">
         <Button
           onClick={() => submit(null)}
-          disabled={create.isPending || hardBlock}
+          disabled={!canCreate || create.isPending || hardBlock}
           className={submitColor}
           title={hardBlock ? "افتح وردية قبل سند نقدي للكاشير" : "Ctrl+S"}
         >
@@ -1280,7 +1285,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             <Button
               variant="outline"
               onClick={() => submit("thermal")}
-              disabled={create.isPending || hardBlock}
+              disabled={!canCreate || create.isPending || hardBlock}
               title="Ctrl+Enter"
             >
               <Printer aria-hidden className="size-4 ms-1" />
@@ -1289,7 +1294,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             <Button
               variant="outline"
               onClick={() => submit("a4")}
-              disabled={create.isPending || hardBlock}
+              disabled={!canCreate || create.isPending || hardBlock}
             >
               <Printer aria-hidden className="size-4 ms-1" />
               حفظ + طباعة A4

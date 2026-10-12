@@ -71,7 +71,7 @@ describe("final operational UI cutover", () => {
       '<RequireRole module="workorders" level="READ"><WorkOrderDetail /></RequireRole>',
     );
     expect(app).toContain(
-      '<RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionNew /></RequireRole>',
+      '<RequireRole operations={["production.create"]} roles={["manager"]} module="inventory" level="FULL"><ProductionNew /></RequireRole>',
     );
     expect(app).toContain(
       '<RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionDetail /></RequireRole>',

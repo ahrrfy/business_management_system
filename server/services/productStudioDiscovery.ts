@@ -1,3 +1,4 @@
+import { assertStudioOperationBinding, isStudioManager } from "./authorization/studioOperationAuthority";
 /**
  * كاشفُ فجوات الصور — يُصنِّف كل منتجٍ نشطٍ في حالةٍ صحيّة، ويُعيد عدّاداتٍ وقوائم
  * قابلةً للتصفية والفعل.
@@ -46,7 +47,7 @@ export const IMAGE_HEALTH_STATES = [
 export type ImageHealthState = (typeof IMAGE_HEALTH_STATES)[number];
 
 function isManager(actor: ProductStudioActor): boolean {
-  return actor.role === "admin" || actor.role === "manager" || actor.isOwner === true;
+  return isStudioManager(actor);
 }
 
 /*
@@ -159,6 +160,7 @@ function healthCaseSql() {
  * استعلامٌ واحد يُنتج كل الأعداد دفعةً بلا جولاتٍ متعدّدة.
  */
 export async function getImageHealthCounts(actor: ProductStudioActor) {
+  assertStudioOperationBinding(actor, "productStudio.imageHealthCounts");
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const db = requireDb();
   // نحسب الحالةَ لكلّ منتجٍ في subquery داخليّ ثمّ نجمّع بالـalias في الخارج. **لا نجمّع مباشرةً
@@ -223,6 +225,7 @@ export interface DiscoveryFilters {
  * بالحالة الأخطر أوّلاً ثمّ باسم المنتج — كي يبدأ المدير من «الحرِج» طبيعياً.
  */
 export async function discoverImageGaps(actor: ProductStudioActor, input: DiscoveryFilters) {
+  assertStudioOperationBinding(actor, "productStudio.discoverImageGaps");
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const db = requireDb();
   const health = healthCaseSql();
@@ -344,6 +347,7 @@ export async function discoverImageGaps(actor: ProductStudioActor, input: Discov
  * التصنيف بمتوسّط سوء الحالة لكل فئة.
  */
 export async function getTopGapCategories(actor: ProductStudioActor, limit = 10) {
+  assertStudioOperationBinding(actor, "productStudio.topGapCategories");
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const db = requireDb();
   // نحسب حالةَ كلّ منتجٍ في subquery داخليّ ثمّ نجمّع بالفئة في الخارج — كي لا يقع أيُّ
@@ -395,6 +399,7 @@ export async function getGapProductIds(
   actor: ProductStudioActor,
   input: Omit<DiscoveryFilters, "limit" | "cursor"> & { maxLimit?: number },
 ): Promise<number[]> {
+  assertStudioOperationBinding(actor, "productStudio.gapProductIds");
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const db = requireDb();
   const maxLimit = Math.max(1, Math.min(input.maxLimit ?? 10_000, 20_000));

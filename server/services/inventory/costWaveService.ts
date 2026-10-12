@@ -66,6 +66,7 @@ import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import { buildVariantCatalogSearchWhere } from "../catalog/search";
 import { money, round2, toDbMoney } from "../money";
 import { enqueuePostCommit, type Actor, withTx } from "../tx";
+import { assertOperationAuthorityTx } from "../authorization/operationAuthority";
 import {
   assertCostRevaluationBranchAuthority,
   lockAndCheckCostRevaluationSnapshots,
@@ -707,7 +708,10 @@ export async function previewCostWave(
 ): Promise<CostWavePreview> {
   assertManagerActor(actor);
   assertCreationBranch(actor);
-  return withTx((tx) => computeCostWave(tx, input, actor, false), {
+  return withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "inventory.previewCostWave", true);
+    return computeCostWave(tx, input, actor, false);
+  }, {
     gate: "NONE",
   });
 }
@@ -1602,6 +1606,7 @@ export async function listCostWaves(
   assertManagerActor(actor);
   return withTx(
     async (tx) => {
+      await assertOperationAuthorityTx(tx, actor, "inventory.costWaves", true);
       const conditions: SQL[] = [];
       if (!canCrossBranches(actor)) {
         conditions.push(
@@ -1706,6 +1711,7 @@ export async function getCostWave(waveId: number, actor: Actor) {
   assertManagerActor(actor);
   return withTx(
     async (tx) => {
+      await assertOperationAuthorityTx(tx, actor, "inventory.costWave", true);
       const wave = (
         await tx
           .select({

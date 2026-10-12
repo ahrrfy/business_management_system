@@ -3,7 +3,74 @@
 // فتُظهر التبويب لكل الأدوار وإن رفضها الخادم بـ403؛ ولم تكن تستشير قالب الدور (المنح الصريح فقط).
 import { describe, expect, it } from "vitest";
 import { getMobileBottomNavItems } from "@/components/MobileBottomNav";
+import { OPERATION_PERMISSIONS, type OperationPolicy } from "@shared/operationPermissions";
+import { visibleApplicationModules } from "./moduleRegistry";
 import { canSeeGate, INVOICE_CORRECTION_GATE, RECONCILE_CONTROL_GATE } from "./navVisibility";
+
+describe("canonical operation navigation", () => {
+  const policy = (grants: Record<string, boolean>): OperationPolicy => ({ version: 1, grants });
+  it("shows individually delegated operations regardless of the old role template", () => {
+    expect(canSeeGate({ roles: ["manager"], module: "store", operations: ["delivery.dispatch"] }, "user", null,
+      policy({ "operation.delivery.dispatch": true }))).toBe(true);
+  });
+  it("denies the selected operation even when another operation in the same module is allowed", () => {
+    expect(canSeeGate({ module: "store", operations: ["delivery.dispatch"] }, "manager", null,
+      policy({ "operation.delivery.dispatch": false, "operation.delivery.manualProof": true }))).toBe(false);
+  });
+  it("a module does not reuse template grants after canonical delegation is enabled", () => {
+    expect(canSeeGate({ roles: ["manager"], module: "store" }, "manager", { store: "FULL" }, policy({}))).toBe(false);
+  });
+  it("keeps administration gates reserved", () => {
+    expect(canSeeGate({ adminOnly: true, operations: ["delivery.dispatch"] }, "user", null,
+      policy({ "operation.delivery.dispatch": true }))).toBe(false);
+  });
+  it("requires actual combined cost visibility before showing an unmasked query", () => {
+    const operation = OPERATION_PERMISSIONS.find((entry) => entry.delegable && entry.requiresCostVisibility);
+    expect(operation).toBeDefined();
+    const allowed = policy({ [operation!.key]: true });
+    expect(canSeeGate({ operations: [operation!.path] }, "manager", null, allowed)).toBe(false);
+    allowed.dataVisibility = { purchaseCost: true, profitMargin: true };
+    expect(canSeeGate({ operations: [operation!.path] }, "user", null, allowed)).toBe(true);
+  });
+  it("uses reader navigation metadata and lets a query open an old FULL shell", () => {
+    const operation = OPERATION_PERMISSIONS.find((entry) => entry.delegable && entry.kind === "query" && entry.navigationModule && entry.navigationModule !== entry.module)!;
+    expect(operation).toBeDefined();
+    expect(canSeeGate({ module: operation.navigationModule!, level: "FULL" }, "user", null,
+      { ...policy({ [operation.key]: true }), dataVisibility: { purchaseCost: true, profitMargin: true } })).toBe(true);
+  });
+  it("delegation bypasses focused cashier and courier sidebars without reusing template permissions", () => {
+    const allowed = policy({ "operation.assets.list": true });
+    for (const role of ["cashier", "courier"]) {
+      const hrefs = visibleApplicationModules(role, null, allowed, true).map((entry) => entry.href);
+      expect(hrefs).toContain("/assets");
+      expect(hrefs).not.toContain("/my-deliveries");
+    }
+  });
+  it("mobile generic candidates show independently delegated modules for focused base roles", () => {
+    for (const role of ["cashier", "courier"]) {
+      const hrefs = getMobileBottomNavItems(role, null, policy({ "operation.assets.list": true })).flatMap((entry) => entry.href ?? []);
+      expect(hrefs).toContain("/assets");
+      expect(hrefs).not.toContain("/my-deliveries");
+    }
+  });
+  it("audit delegation is visible in both menus without requiring the auditor template", () => {
+    const allowed = { ...policy({ "operation.audit.list": true, "operation.audit.facets": true }), dataVisibility: { purchaseCost: true, profitMargin: true } };
+    expect(visibleApplicationModules("user", null, allowed, true).map((entry) => entry.href)).toContain("/audit");
+    expect(getMobileBottomNavItems("courier", null, allowed).flatMap((entry) => entry.href ?? [])).toContain("/audit");
+    expect(visibleApplicationModules("user", null, policy({}), true).map((entry) => entry.href)).not.toContain("/audit");
+  });
+  it("prioritizes explicitly delegated pages before broad module links and public defaults when mobile slots are full", () => {
+    const allowed = {
+      ...policy({ "operation.audit.list": true, "operation.assets.list": true, "operation.delivery.inTransit": true }),
+      dataVisibility: { purchaseCost: true, profitMargin: true },
+    };
+    const hrefs = getMobileBottomNavItems("courier", null, allowed).flatMap((entry) => entry.href ?? []);
+    expect(hrefs).toHaveLength(4);
+    expect(hrefs[0]).toBe("/audit");
+    expect(hrefs).not.toContain("/");
+    expect(hrefs).not.toContain("/my-work");
+  });
+});
 
 function mobileHrefs(
   role: string,

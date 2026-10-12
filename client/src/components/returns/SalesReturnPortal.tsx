@@ -1,3 +1,4 @@
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 /**
  * SalesReturnPortal — المنفذ الأول: مرتجعات المبيعات (العملاء والتجزئة)
  *
@@ -77,6 +78,9 @@ export function SalesReturnPortal({
 }: SalesReturnPortalProps) {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
+  const operationPermission = useOperationPermission(
+    "returns.executeSalesReturnCart",
+  );
   const branches = trpc.branches.list.useQuery();
   const activeBranchId = me.data?.branchId
     ? Number(me.data.branchId)
@@ -161,8 +165,7 @@ export function SalesReturnPortal({
   const isOverInvoiceLimit = useMemo(() => {
     if (!inspectedInvoice) return false;
     const limit =
-      salesRefundMethod === "STORE_CREDIT" ||
-      salesRefundMethod === "CREDIT_OFFSET"
+      salesRefundMethod === "STORE_CREDIT" || salesRefundMethod === "CREDIT_OFFSET"
         ? Number(inspectedInvoice.remainingInvoiceTotal || 0)
         : Number(inspectedInvoice.maxRefundable || 0);
     return salesTotal > limit;
@@ -493,18 +496,18 @@ export function SalesReturnPortal({
             if (inspected) {
               applyInspected(inspected);
               const isFullyRet =
-                inspected.isDead ||
-                inspected.isFullyReturned ||
-                Number(inspected.remainingInvoiceTotal || 0) <= 0;
+              inspected.isDead ||
+              inspected.isFullyReturned ||
+              Number(inspected.remainingInvoiceTotal || 0) <= 0;
               if (inspected.isOtherBranch) {
-                notify.err(
-                  `الفاتورة #${inspected.invoiceNumber} صادرة من فرع آخر (فرع #${inspected.originBranchId}) ولا يمكن إرجاعها من هذا الفرع إلا بصلاحية مدير عام`,
-                );
-              } else if (isFullyRet) {
-                notify.warn(
-                  `الفاتورة #${inspected.invoiceNumber} مغلقة أو ملغاة أو مرجعة بالكامل ولا تقبل مرتجعات`,
-                );
-              } else {
+              notify.err(
+                `الفاتورة #${inspected.invoiceNumber} صادرة من فرع آخر (فرع #${inspected.originBranchId}) ولا يمكن إرجاعها من هذا الفرع إلا بصلاحية مدير عام`,
+              );
+            } else if (isFullyRet) {
+              notify.warn(
+                `الفاتورة #${inspected.invoiceNumber} مغلقة أو ملغاة أو مرجعة بالكامل ولا تقبل مرتجعات`,
+              );
+            } else {
                 notify.ok(`تم التعرف على الفاتورة #${inspected.invoiceNumber}`);
               }
               return;
@@ -527,14 +530,14 @@ export function SalesReturnPortal({
             if (inspected) {
               applyInspected(inspected);
               const isFullyRet =
-                inspected.isDead ||
-                inspected.isFullyReturned ||
-                Number(inspected.remainingInvoiceTotal || 0) <= 0;
+              inspected.isDead ||
+              inspected.isFullyReturned ||
+              Number(inspected.remainingInvoiceTotal || 0) <= 0;
               if (isFullyRet) {
-                notify.warn(
-                  `الفاتورة #${inspected.invoiceNumber} مغلقة أو ملغاة أو مرجعة بالكامل ولا تقبل مرتجعات`,
-                );
-              } else {
+              notify.warn(
+                `الفاتورة #${inspected.invoiceNumber} مغلقة أو ملغاة أو مرجعة بالكامل ولا تقبل مرتجعات`,
+              );
+            } else {
                 notify.ok(`تم التعرف على الفاتورة #${inspected.invoiceNumber}`);
               }
               return;
@@ -623,8 +626,8 @@ export function SalesReturnPortal({
     setSalesCart((prev) => {
       const existingIdx = prev.findIndex(
         (i) =>
-          i.invoiceItemId === item.invoiceItemId ||
-          (!i.invoiceItemId && i.variantId === item.variantId),
+            i.invoiceItemId === item.invoiceItemId ||
+            (!i.invoiceItemId && i.variantId === item.variantId),
       );
       if (existingIdx >= 0) {
         const target = prev[existingIdx];
@@ -751,6 +754,10 @@ export function SalesReturnPortal({
   const salesReturnMutation = trpc.returns.executeSalesReturnCart.useMutation();
 
   const handleExecuteSalesReturn = async () => {
+    if (!operationPermission.allowed) {
+      notify.err(operationPermission.reason);
+      return;
+    }
     if (salesCart.length === 0) {
       notify.warn("يرجى إضافة صنف واحد على الأقل للسلة");
       return;
@@ -1184,7 +1191,8 @@ export function SalesReturnPortal({
                   <div className="text-xs">
                     <span className="font-bold">تنبيه: تم إرجاع هذه الفاتورة بالكامل مسبقاً!</span>
                     <span className="block text-[11px] text-muted-foreground mt-0.5">
-                      لا يمكن إضافة بنود أو تنفيذ أي عمليات استرداد إضافية على هذه الفاتورة (إجمالي المرتجع: {fmt(inspectedInvoice.returnedTotal)} د.ع).
+                      لا يمكن إضافة بنود أو تنفيذ أي عمليات استرداد إضافية على هذه الفاتورة (إجمالي المرتجع: {" "}
+                      {fmt(inspectedInvoice.returnedTotal)} د.ع).
                     </span>
                   </div>
                 </div>
@@ -1514,7 +1522,8 @@ export function SalesReturnPortal({
                                 )}
                                 {item.maxAllowedQuantity != null && (
                                   <span className="text-[10px] text-muted-foreground font-mono">
-                                    (المتبقي بالفاتورة: {formatQuantity(item.maxAllowedQuantity)})
+                                    (المتبقي بالفاتورة:{" "}
+                                    {formatQuantity(item.maxAllowedQuantity)})
                                   </span>
                                 )}
                               </div>
@@ -1558,7 +1567,7 @@ export function SalesReturnPortal({
                                     ) {
                                       q = item.maxAllowedQuantity;
                                       notify.warn(
-                                        `الحد الأقصى المتاح للإرجاع من الفاتورة هو ${formatQuantity(item.maxAllowedQuantity)}`,
+                                        `الحد الأقصى المتاح للإرجاع من الفاتورة هو ${formatQuantity(item.maxAllowedQuantity)})`,
                                       );
                                     }
                                     setSalesCart((prev) =>
@@ -1574,7 +1583,7 @@ export function SalesReturnPortal({
                                   onClick={() => {
                                     if (
                                       item.maxAllowedQuantity != null &&
-                                      item.quantity >= item.maxAllowedQuantity
+                                    item.quantity >= item.maxAllowedQuantity
                                     ) {
                                       notify.warn(
                                         `لا يمكن تجاوز الكمية المتبقية في الفاتورة (${formatQuantity(item.maxAllowedQuantity)})`,
@@ -1700,7 +1709,7 @@ export function SalesReturnPortal({
               </div>
               <span className="text-[11px] text-muted-foreground">
                 إجمالي الأصناف: {salesCart.length} ({salesTotalPieces} قطعة)
-              </span>
+                                    </span>
             </div>
 
             {/* اختيار طريقة الاسترداد */}
@@ -1754,7 +1763,8 @@ export function SalesReturnPortal({
                       </span>
                       {inspectedInvoice?.customerBalance != null && (
                         <span className="text-[10px] text-muted-foreground font-mono">
-                          رصيد الذمة الحالي: {fmt(inspectedInvoice.customerBalance)} د.ع
+                          رصيد الذمة الحالي:{" "}
+                          {fmt(inspectedInvoice.customerBalance)} د.ع
                         </span>
                       )}
                     </div>
@@ -2061,6 +2071,7 @@ export function SalesReturnPortal({
               type="button"
               onClick={() => void handleExecuteSalesReturn()}
               disabled={
+                !operationPermission.allowed ||
                 salesReturnMutation.isPending ||
                 salesCart.length === 0 ||
                 salesTotal <= 0 ||

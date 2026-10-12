@@ -1,3 +1,4 @@
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Check, Clock, Package, Shuffle, Store, Truck, type LucideIcon } from "lucide-react";
@@ -40,11 +41,12 @@ type QueueRow = RouterOutputs["workOrders"]["list"][number];
 type PickupPayment = NonNullable<RouterInputs["workOrders"]["deliver"]["payment"]>;
 type PartialPickup = { row: QueueRow; payment?: PickupPayment; message: string; clientRequestId: string };
 
-// مرآة بوّابتي الخادم بالضبط (لا مفتاح وحدة صلاحيات منفصل لـ"delivery" — راجع server/trpc.ts):
+// بوابات التوافق القديمة؛ السياسة المحفوظة تفحص مسار كل عملية مستقلاً:
 //   workOrders.deliver / workOrders.setDeliveryMethod ⇐ workordersCashierProcedure (كاشير/مدير + وحدة workorders=FULL).
-//   delivery.dispatch ⇐ cashierProcedure الخام (كاشير/مدير بلا مفتاح وحدة).
-const FULFILL_GATE: RoleGate = { roles: ["cashier", "manager"], module: "workorders", level: "FULL" };
-const DISPATCH_GATE: RoleGate = { roles: ["cashier", "manager"] };
+//   delivery.dispatch ⇐ بوابة الإسناد القديمة؛ قراءة الجهات تبقى متطلباً مستقلاً للحوار.
+const FULFILL_GATE: RoleGate = { operations: ["workOrders.deliver"], roles: ["cashier", "manager"], module: "workorders", level: "FULL" };
+const RECLASSIFY_GATE: RoleGate = { ...FULFILL_GATE, operations: ["workOrders.setDeliveryMethod"] };
+const DISPATCH_GATE: RoleGate = { operations: ["delivery.dispatch"], roles: ["cashier", "manager"] };
 
 // صافرة الجاهزيّة استُخرجت إلى @/lib/notifyBeep — تُستعمل هنا وفي DeliveryHub معاً (Slice A، ٢٩/٨/٢٦).
 
@@ -59,18 +61,22 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role as RoleKey | undefined;
   const permissions = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  const canFulfill = !!role && moduleAccessAllowed(
+  const legacyCanFulfill = !!role && moduleAccessAllowed(
     role,
     permissions,
     "workorders",
     "FULL",
     ["cashier", "manager"],
   );
-  // dispatch لا يزال خلف cashierProcedure الخام، لكن بناء حواره يحتاج listParties المحروس بـstore:READ.
-  // نجمع العقدين كي لا نعرض إجراءً يتوقف دائماً عند استعلام جهاتٍ سيرفضه الخادم بـ403.
-  const canDispatch = canFulfill
+  // نحفظ سلوك الحساب القديم. في السياسة المحفوظة لا يفتح تسليم الطلب صلاحية الإسناد.
+  const legacyCanDispatch = legacyCanFulfill
     && canSeeGate(DISPATCH_GATE, role, permissions)
     && hasModuleAccess(role ?? "", permissions, "store", "READ");
+  const canFulfill = lifecycleActionAllowed(me.data, "workOrders.deliver", legacyCanFulfill);
+  const canReclassify = lifecycleActionAllowed(me.data, "workOrders.setDeliveryMethod", legacyCanFulfill);
+  const canDispatch = lifecycleActionAllowed(me.data, "delivery.dispatch", legacyCanDispatch);
+  const canReadParties = lifecycleActionAllowed(me.data, "delivery.listParties", legacyCanDispatch);
+  const canAutoAssign = lifecycleActionAllowed(me.data, "storeAdmin.orders.autoAssignRoundRobin", true);
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   // تم استبدال الـpolling ببث الأحداث اللحظية عبر SSE (الموجة 2).
@@ -84,7 +90,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
     { branchId, statuses: ["DELIVERED"], deliveredFrom: todayStr, deliveredTo: todayStr, limit: 100 },
     { refetchOnWindowFocus: true },
   );
-  const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: canDispatch });
+  const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: canDispatch && canReadParties });
 
   const autoAssignM = trpc.storeAdmin.orders.autoAssignRoundRobin.useMutation({
     onSuccess: (res) => {
@@ -276,7 +282,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
           type="button"
           variant="outline"
           size="sm"
-          disabled={autoAssignM.isPending}
+          disabled={!canAutoAssign || autoAssignM.isPending}
           onClick={() => autoAssignM.mutate({ branchId })}
           className="gap-2 text-xs font-bold shrink-0"
         >
@@ -306,8 +312,9 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
             rows={readyRows}
             emptyLabel="لا طلبات جاهزة حالياً."
             canFulfill={canFulfill}
+            canReclassify={canReclassify}
             canDispatch={canDispatch}
-            partiesReady={parties.isSuccess}
+            partiesReady={canReadParties && parties.isSuccess}
             onDispatch={setDispatchTarget}
             onPickup={setPickupTarget}
             onReclassify={setReclassifyTarget}
@@ -318,6 +325,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
             rows={inProgressRows}
             emptyLabel="لا طلبات قيد التنفيذ حالياً."
             canFulfill={canFulfill}
+            canReclassify={canReclassify}
             onReclassify={setReclassifyTarget}
           />
           {/* ش١ (٥/٨): طابور الفواتير صار **ورشةً مستقلّة** بتبويبها الخاص في المحطة (فلاتر
@@ -341,6 +349,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         pending={dispatch.isPending}
         onClose={() => setDispatchTarget(null)}
         onConfirm={async ({ partyId, fee, recipientName, recipientPhone, deliveryAddress, notes, assignedUserId, externalTrackingRef }) => {
+          if (!canDispatch || !canReadParties) return;
           const ord = dispatchTarget!;
           const party = (parties.data ?? []).find((p) => p.id === partyId);
           // نافذة الملصق تُفتح متزامنةً مع نقرة التأكيد (قبل await الإرسال) — نمط DeliveryHub بالضبط.
@@ -393,6 +402,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
           setPickupTarget(null);
         }}
         onConfirm={(payment, extra) => {
+          if (!canFulfill) return;
           const ord = pickupTarget!;
           deliver.mutate({
             workOrderId: ord.id,
@@ -409,7 +419,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         pending={deliver.isPending}
         onClose={() => { setPartialPickup(null); setPickupTarget(null); }}
         onConfirm={() => {
-          if (!partialPickup) return;
+          if (!partialPickup || !canFulfill) return;
           deliver.mutate({
             workOrderId: partialPickup.row.id,
             payment: partialPickup.payment,
@@ -424,6 +434,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         pending={setDeliveryMethod.isPending}
         onClose={() => setReclassifyTarget(null)}
         onConfirm={(payload) => {
+          if (!canReclassify) return;
           const ord = reclassifyTarget!;
           setDeliveryMethod.mutate({ workOrderId: ord.id, ...payload });
         }}
@@ -435,6 +446,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
           description="ردّ أمانة الأجرة النقديّة عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض يحتاج مديراً (تُفحص بياناته على الخادم وتُسجَّل باسمه)."
           onCancel={() => setReclassifyMgrAsk(null)}
           onApprove={(approval) => {
+            if (!canReclassify) return;
             const vars = reclassifyMgrAsk;
             setReclassifyMgrAsk(null);
             setDeliveryMethod.mutate({ ...vars, managerApproval: approval });
@@ -446,12 +458,13 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
 }
 
 // ───────────────────────── قسم القائمة ─────────────────────────
-function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canDispatch = false, partiesReady = true, loading = false, error = false, onRetry, onDispatch, onPickup, onReclassify }: {
+function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canReclassify = false, canDispatch = false, partiesReady = true, loading = false, error = false, onRetry, onDispatch, onPickup, onReclassify }: {
   title: string;
   icon: LucideIcon;
   rows: QueueRow[];
   emptyLabel: string;
   canFulfill: boolean;
+  canReclassify?: boolean;
   canDispatch?: boolean;
   partiesReady?: boolean;
   loading?: boolean;
@@ -478,7 +491,7 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canDisp
       ) : (
         <ul className="divide-y">
           {groups.map((group) => group.draftId == null ? (
-            <QueueRowItem key={group.rows[0]!.id} row={group.rows[0]!} canFulfill={canFulfill} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />
+            <QueueRowItem key={group.rows[0]!.id} row={group.rows[0]!} canFulfill={canFulfill} canReclassify={canReclassify} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />
           ) : (
             <li key={`draft-${group.draftId}`}>
               <div className="flex flex-wrap items-center gap-2 bg-muted/30 px-4 py-2 text-xs">
@@ -489,7 +502,7 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canDisp
                 {group.readyCount < group.totalCount && <span className="text-muted-foreground">لا يُسلَّم الجزء الجاهز إلا بإقرار صريح</span>}
               </div>
               <ul className="divide-y">
-                {group.rows.map((r: QueueRow) => <QueueRowItem key={r.id} row={r} canFulfill={canFulfill} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />)}
+                {group.rows.map((r: QueueRow) => <QueueRowItem key={r.id} row={r} canFulfill={canFulfill} canReclassify={canReclassify} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />)}
               </ul>
             </li>
           ))}
@@ -517,9 +530,10 @@ function groupQueueRows(rows: QueueRow[]) {
   return Array.from(groups.values());
 }
 
-function QueueRowItem({ row: r, canFulfill, canDispatch, partiesReady, onDispatch, onPickup, onReclassify }: {
+function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, partiesReady, onDispatch, onPickup, onReclassify }: {
   row: QueueRow;
   canFulfill: boolean;
+  canReclassify: boolean;
   canDispatch: boolean;
   partiesReady: boolean;
   onDispatch?: (r: QueueRow) => void;
@@ -546,7 +560,7 @@ function QueueRowItem({ row: r, canFulfill, canDispatch, partiesReady, onDispatc
       icon: Truck,
       hidden: !canDispatch,
       disabled: !partiesReady,
-      disabledReason: "جهات التوصيل لم تُحمّل بعد — أعد المحاولة أولاً",
+      disabledReason: "يلزم تفويض عرض جهات التوصيل واكتمال تحميلها قبل الإسناد",
       onSelect: () => onDispatch(r),
       gate: DISPATCH_GATE,
     });
@@ -555,7 +569,7 @@ function QueueRowItem({ row: r, canFulfill, canDispatch, partiesReady, onDispatc
     actions.push({ key: "pickup", kind: "approve", label: "تسليم مباشر", icon: Store, hidden: !canFulfill, onSelect: () => onPickup(r), gate: FULFILL_GATE });
   }
   if (!isFinal && onReclassify) {
-    actions.push({ key: "reclassify", kind: "edit", label: "تغيير الطريقة", hidden: !canFulfill, onSelect: () => onReclassify(r), gate: FULFILL_GATE });
+    actions.push({ key: "reclassify", kind: "edit", label: "تغيير الطريقة", hidden: !canReclassify, onSelect: () => onReclassify(r), gate: RECLASSIFY_GATE });
   }
   actions.push({ key: "open", kind: "view", label: "فتح", onSelect: () => window.open(`/work-orders/${r.id}`, "_blank", "noopener") });
 

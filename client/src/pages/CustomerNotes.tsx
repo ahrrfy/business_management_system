@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 // CustomerNotes — تبويب «متابعة العملاء» داخل hub العملاء (CustomersHub.tsx، ?tab=notes).
 // اختيار عميل (SmartCustomerInput المشترك) ثم عرض/إضافة/تعديل/إغلاق ملاحظات متابعته
 // (مكالمة، وعد بالدفع، متابعة تسليم) مع تاريخ متابعة اختياري وتمييز المتأخرة/اليوم بصرياً.
@@ -29,6 +30,7 @@ import { buildOperationalContactMessage } from "@/lib/whatsapp";
 const EMPTY_CUSTOMER: SmartCustomerValue = { customerId: null, name: "", phone: null, isNew: false };
 
 export default function CustomerNotes() {
+  const { can } = useCatalogPeopleOperationAccess();
   // الـURL مصدر الحقيقة لهوية العميل ⇒ رابط قابل للمشاركة يتبع نمط CustomerStatement.tsx.
   const [loc, navigate] = useLocation();
   const search = useSearch();
@@ -50,16 +52,21 @@ export default function CustomerNotes() {
   // بوّابتان بمرآة راوتر customerNotes بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية):
   // الكتابة (create/resolve) = customersCashierProcedure(["cashier","manager","sales_rep"], customers, FULL)
   // والإدارة (update/delete/dueToday) = customersManagerProcedure(["manager"], customers, FULL).
-  const canWrite =
+  const legacyWrite =
     !!role && moduleAccessAllowed(role as RoleKey, permsOverride, "customers", "FULL", ["cashier", "manager", "sales_rep"]);
-  const canManage = !!role && moduleAccessAllowed(role as RoleKey, permsOverride, "customers", "FULL", ["manager"]);
+  const legacyManage = !!role && moduleAccessAllowed(role as RoleKey, permsOverride, "customers", "FULL", ["manager"]);
+  const canWrite = can("customerNotes.create", legacyWrite);
+  const canResolve = can("customerNotes.resolve", legacyWrite);
+  const canUpdate = can("customerNotes.update", legacyManage);
+  const canDelete = can("customerNotes.delete", legacyManage);
+  const canManage = can("customerNotes.dueToday", legacyManage);
 
   // فرع كتابة الملاحظة: customerNoteRouter.create يكتب branchId فعلياً على الصفّ — الأدمن/المدير
   // بلا فرع مُسنَد يختار صراحةً بدل تثبيتٍ صامت (نمط PR #288). كاشير/مندوب مبيعات لهما فرع دائماً
   // (requireOwnBranch يفرضه) فلا تظهر لهما هذه اللافتة أصلاً.
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
   const needsBranchChoice = me.data != null && me.data.branchId == null && canWrite;
-  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: needsBranchChoice });
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: can("branches.list") && (needsBranchChoice) });
   const effectiveNoteBranchId = me.data?.branchId != null ? Number(me.data.branchId) : pickedBranch;
 
   function selectCustomer(v: SmartCustomerValue) {
@@ -78,7 +85,7 @@ export default function CustomerNotes() {
 
   const customerDetail = trpc.customers.get.useQuery(
     { customerId: effectiveCustomerId },
-    { enabled: effectiveCustomerId > 0 && (!customer.name || !customer.phone) },
+    { enabled: can("customers.get") && (effectiveCustomerId > 0 && (!customer.name || !customer.phone)) },
   );
 
   useEffect(() => {
@@ -104,9 +111,9 @@ export default function CustomerNotes() {
       limit: NOTES_LIMIT,
       offset,
     },
-    { enabled: effectiveCustomerId > 0 }
+    { enabled: can("customerNotes.list") && (effectiveCustomerId > 0) }
   );
-  const dueToday = trpc.customerNotes.dueToday.useQuery(undefined, { enabled: canManage });
+  const dueToday = trpc.customerNotes.dueToday.useQuery(undefined, { enabled: can("customerNotes.dueToday") && (canManage) });
 
   const invalidateList = () => {
     if (effectiveCustomerId > 0) {
@@ -353,7 +360,7 @@ export default function CustomerNotes() {
             </CardContent>
           </Card>
           {/* نموذج الإضافة/التعديل — مرآة بوّابة الكتابة الخادمية؛ دور القراءة يرى السجلّ بلا نموذج. */}
-          {canWrite && (
+          {(editing ? canUpdate : canWrite) && (
             <Card>
               <CardHeader><CardTitle className="text-base">{editing ? "تعديل الملاحظة" : "ملاحظة جديدة"}</CardTitle></CardHeader>
               <CardContent>
@@ -399,11 +406,11 @@ export default function CustomerNotes() {
                 <>
                   <CustomerNotesList
                     notes={notes}
-                    onToggleResolved={canWrite ? handleToggleResolved : undefined}
-                    onEdit={canManage ? setEditing : undefined}
-                    onDelete={canManage ? handleDelete : undefined}
+                    onToggleResolved={canResolve ? handleToggleResolved : undefined}
+                    onEdit={canUpdate ? setEditing : undefined}
+                    onDelete={canDelete ? handleDelete : undefined}
                     busyId={busyId}
-                    canManage={canManage}
+                    canManage={canUpdate || canDelete}
                   />
                   {notesPages > 1 && (
                     <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">

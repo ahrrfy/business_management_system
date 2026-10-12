@@ -32,6 +32,8 @@ import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { assertTelecomCollectAllowed } from "../reception/telecom";
 import { type Actor, withTx } from "../tx";
 import { nextWorkOrderNumber } from "./helpers";
+import { loadOperationUserTx } from "../authorization/operationAuthority";
+import { workOrderAssigneeAllowed } from "../authorization/operationRecipientEligibility";
 import type { CreateWorkOrderInput } from "./types";
 import type { Tx } from "../../db";
 import { paymentAssetRole } from "../sale/paymentPosting";
@@ -257,9 +259,10 @@ export async function createWorkOrderInTx(
       message: "العربون لا يمكن أن يتجاوز سعر البيع الإجمالي للأمر",
     });
 
-  // الإسناد عند الإنشاء تنفيذٌ تشغيلي، لا اختيار حساب عام: فني مطبعة فعّال من الفرع أو فني مشترك فقط.
+  // الإسناد تنفيذٌ تشغيلي: التفويض الجديد يلزم البدء والإنجاز، والأهلية القديمة تبقى للفني.
   // تركه null يضع الأمر في الطابور الوارد ليسحبه الفني من محطة التنفيذ.
   if (input.assignedTo != null) {
+    const assigneeProfile = await loadOperationUserTx(tx, input.assignedTo);
     const assignee = (
       await tx
         .select({
@@ -274,13 +277,13 @@ export async function createWorkOrderInTx(
     if (
       !assignee ||
       !assignee.isActive ||
-      assignee.role !== "print_operator" ||
-      (assignee.branchId != null &&
-        Number(assignee.branchId) !== Number(input.branchId))
+      !workOrderAssigneeAllowed(assigneeProfile, assignee.role === "print_operator", Number(input.branchId)) ||
+      (assigneeProfile.branchId != null &&
+        Number(assigneeProfile.branchId) !== Number(input.branchId))
     ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "يمكن إسناد أمر الشغل إلى فني مطبعة من الفرع فقط",
+        message: "اختر منفّذاً فعّالاً مخوّلاً ببدء أمر الشغل وإنجازه في الفرع",
       });
     }
   }

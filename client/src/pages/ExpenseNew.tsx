@@ -23,6 +23,8 @@ import {
   type ExpenseBucket,
 } from "@shared/expenseCategories";
 import { useEffect, useMemo, useState } from "react";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
+import { canViewOperationData } from "@shared/operationPermissions";
 import { Link, useLocation } from "wouter";
 import { Landmark } from "lucide-react";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
@@ -188,8 +190,11 @@ export default function ExpenseNew() {
     "CASH",
   );
   const isStock = source !== "CASH";
-  const canCreateStockExpense =
-    me.data?.role === "admin" || me.data?.role === "manager";
+  const canCreateExpense = treasuryOperationAllowed(me.data, "expenses.create", true);
+  const canViewCost = !!me.data && canViewOperationData(me.data, "purchaseCost");
+  const canCreateStockExpense = treasuryOperationAllowed(
+    me.data, "expenses.create", me.data?.role === "admin" || me.data?.role === "manager",
+  );
   const sourceTabs = canCreateStockExpense
     ? SOURCE_TABS
     : SOURCE_TABS.slice(0, 1);
@@ -244,6 +249,7 @@ export default function ExpenseNew() {
   });
 
   async function submit() {
+    if (!canCreateExpense) return;
     setError("");
     if (effectiveBranch == null || effectiveBranch <= 0) {
       return setError(
@@ -273,7 +279,7 @@ export default function ExpenseNew() {
           source === "WASTAGE"
             ? "تسجيل تلف من المخزون"
             : "تسجيل نثرية من المخزون",
-        description: `سيُخصَم ${items.length} منتج من المخزون ويُسجَّل ${source === "WASTAGE" ? "خسارةً" : "مصروفاً"} بقيمة ${fmt(itemsTotal.toString())} د.ع (لا يلمس الصندوق النقدي). متابعة؟`,
+        description: `سيُخصَم ${items.length} منتج من المخزون ويُسجَّل ${source === "WASTAGE" ? "خسارةً" : "مصروفاً"} ${canViewCost ? `بقيمة ${fmt(itemsTotal.toString())} د.ع` : "بالتكلفة المحسوبة في النظام"} (لا يلمس الصندوق النقدي). متابعة؟`,
         confirmText: source === "WASTAGE" ? "تسجيل التلف" : "تسجيل النثرية",
       });
       if (!ok) return;
@@ -686,7 +692,7 @@ export default function ExpenseNew() {
                     className="col-span-1 sm:col-span-2 text-start sm:text-left text-sm tabular-nums"
                     dir="ltr"
                   >
-                    {fmt(round2(D(l.costPriceBase).times(base)).toString())}
+                    {canViewCost ? fmt(round2(D(l.costPriceBase).times(base)).toString()) : "—"}
                   </div>
                   <div className="col-span-1 sm:col-span-1 text-end sm:text-left">
                     <button
@@ -726,7 +732,7 @@ export default function ExpenseNew() {
                 className="font-bold text-money-negative tabular-nums"
                 dir="ltr"
               >
-                {fmt(itemsTotal.toString())}
+                {canViewCost ? fmt(itemsTotal.toString()) : "—"}
               </span>
             </div>
           </CardContent>
@@ -827,7 +833,7 @@ export default function ExpenseNew() {
           <div className="flex gap-2">
             <Button
               onClick={submit}
-              disabled={create.isPending || cashNeedsShift}
+              disabled={!canCreateExpense || create.isPending || cashNeedsShift}
               title={
                 cashNeedsShift
                   ? "الصرف النقدي الصغير يتطلب وردية المنشئ"

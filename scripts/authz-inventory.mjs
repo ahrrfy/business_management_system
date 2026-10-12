@@ -77,6 +77,15 @@ const PROCEDURES = {
     roles: [],
     branch: false,
   },
+  // Explicit operation gate shared with the REST printer transport; the exact
+  // saved bridge grant is independent of invoice first-print/reprint grants.
+  directPrintBridgeProcedure: {
+    authority: "operation-gate",
+    module: "sales",
+    level: "READ",
+    roles: [],
+    branch: false,
+  },
   ownerProcedure: {
     authority: "owner",
     module: "ownership",
@@ -1482,6 +1491,8 @@ function computeInventory(root) {
         module: meta?.module ?? "",
         level: meta?.level ?? "",
         roles: roles.join("|"),
+        gateRoles: gateRoles.join("|"),
+        inheritedAuthority: meta?.inheritedAuthority ?? null,
         branch:
           meta?.branch === false ? "none" : String(meta?.branch ?? "unknown"),
         sensitivity: s.level,
@@ -1579,6 +1590,12 @@ function tallyFlags(rows) {
 function argVal(name) {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : undefined;
+}
+
+// Machine-readable, read-only metadata for the canonical mounted-operation catalog.
+if (process.argv.includes("--json")) {
+  process.stdout.write(JSON.stringify(computeInventory(argVal("--root") || ROOT)));
+  process.exit(0);
 }
 
 /* ─────────── وضع «بصمات الانتهاك» (يستهلكه حارس merge-base) ───────────

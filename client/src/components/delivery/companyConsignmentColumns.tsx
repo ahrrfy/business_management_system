@@ -1,3 +1,4 @@
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { Ban, Wallet } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -6,7 +7,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { fmtDate } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
-import { type RouterOutputs, type RouterInputs } from "@/lib/trpc";
+import { trpc, type RouterOutputs, type RouterInputs } from "@/lib/trpc";
 type ConsignmentRow = RouterOutputs["delivery"]["consignments"]["rows"][number];
 export function moneyCol<T>(
   id: string,
@@ -76,6 +77,7 @@ export function CompanyConsignmentActions({
   setTimelineId,
   setReturnTarget,
 }: CompanyConsignmentOptions & { c: ConsignmentRow }) {
+  const me = trpc.auth.me.useQuery();
   const remaining = D(c.remainingDue);
   const canRemit =
     c.parcelStatus === "DELIVERED" &&
@@ -98,7 +100,7 @@ export function CompanyConsignmentActions({
       >
         التفاصيل
       </Button>
-      {canEdit &&
+      {lifecycleActionAllowed(me.data, "delivery.returnConsignment", canEdit) &&
         ["DISPATCHED", "PARTIAL"].includes(c.status) &&
         (c.parcelStatus === "FAILED" || c.returnDeclaredAt != null) && (
           <Button
@@ -115,7 +117,7 @@ export function CompanyConsignmentActions({
             استلام المرتجع
           </Button>
         )}
-      {canSettle && canRemit && (
+      {lifecycleActionAllowed(me.data, "delivery.recordRemittance", canSettle) && canRemit && (
         <Button
           size="sm"
           variant="default"
@@ -126,7 +128,7 @@ export function CompanyConsignmentActions({
           <Wallet aria-hidden className="size-3" /> سجّل التحصيل
         </Button>
       )}
-      {canEdit && canCancel && (
+      {lifecycleActionAllowed(me.data, "delivery.cancelAssignment", canEdit) && canCancel && (
         <Button
           size="sm"
           variant="ghost"
@@ -153,13 +155,14 @@ export function CompanyConsignmentDriver({
   drivers,
   reassignM,
 }: CompanyConsignmentOptions & { c: ConsignmentRow }) {
+  const me = trpc.auth.me.useQuery();
   return (
     <div className="text-xs">
       <div className="mb-1">{c.assignedUserName ?? "طابور الشركة المشترك"}</div>
       {c.failureReason && (
         <div className="mb-1 text-destructive">{c.failureReason}</div>
       )}
-      {canEdit &&
+      {lifecycleActionAllowed(me.data, "delivery.reassignConsignment", canEdit) &&
         (c.parcelStatus === "ASSIGNED" ||
           c.parcelStatus === "OUT_FOR_DELIVERY" ||
           c.parcelStatus === "FAILED") && (

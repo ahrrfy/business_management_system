@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -57,19 +58,23 @@ const maintenanceColumns: ColumnDef<MaintenanceRow, unknown>[] = [
 ];
 
 export default function Assets() {
+  const { can } = useCatalogPeopleOperationAccess();
   const [, navigate] = useLocation();
-  const dash = trpc.assets.dashboard.useQuery();
+  const dash = trpc.assets.dashboard.useQuery(undefined, { enabled: can("assets.dashboard") });
   // مرآة الخادم: `assets.create` و`assets.postDepreciation` = `assetWrite` (assets:FULL) —
   // server/routers/assetsRouter.ts:133/192. الصفحة نفسها assets:READ ⇒ نُخفي إجراءات الكتابة
   // على من لا يستطيعها بدل زرٍّ يفتح ثمّ يُرفض (لا سيما ترحيل الإهلاك الذي يكتب في الدفتر).
   const me = trpc.auth.me.useQuery();
-  const canWrite = !!me.data?.role && moduleAccessAllowed(
+  const legacyWrite = !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
     "assets",
     "FULL",
     ["manager"],
   );
+  const canCreate = can("assets.create", legacyWrite);
+  const canImport = can("assets.import", legacyWrite);
+  const canDepreciate = can("assets.postDepreciation", legacyWrite);
   // #FI-02 (تدقيق التثبيت): postDepreciation endpoint كان يتيماً — الإهلاك الشهري لا يُرحَّل قطّ
   // ⇒ accumulatedDepreciation يبقى 0 والميزانية تعرض الأصول بقيمة الشراء والP&L يخلو من مصروف الإهلاك،
   // والربح مبالَغ كل فترة (حتى يقع التصرّف فيَنسف كامل المتراكم في شهر واحد عبر DEPR:id:DISP catch-up).
@@ -102,9 +107,53 @@ export default function Assets() {
     postDep.mutate({ year, month });
   }
 
-  if (dash.isLoading) return <LoadingState />;
+  const depreciationPanel = canDepreciate ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-1.5">
+              <CalendarClock aria-hidden className="size-4" />
+              ترحيل الإهلاك الشهري
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-col md:flex-row gap-3 md:items-end">
+              <div className="space-y-1">
+                <Label htmlFor="dep-period">الشهر</Label>
+                <Input
+                  id="dep-period"
+                  type="month"
+                  dir="ltr"
+                  value={depPeriod}
+                  min="2000-01"
+                  max="2200-12"
+                  onChange={(e) => setDepPeriod(e.target.value)}
+                  className="w-40"
+                />
+              </div>
+              <Button onClick={runDepreciation} disabled={!can("assets.postDepreciation") || (postDep.isPending)}>
+                {postDep.isPending ? "جارٍ الترحيل…" : "ترحيل إهلاك الشهر"}
+              </Button>
+              <p className="text-xs text-muted-foreground md:me-auto max-w-lg">
+                يُرحَّل مصروف الإهلاك لكل الأصول النشطة (القسط الثابت/المتناقص) على أساس التاريخ المطلوب. آمن للتكرار — لن يُنشئ قيداً مضاعفاً لشهر مُرحَّل.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+  ) : null;
+  if (me.isLoading || dash.isLoading) return <LoadingState />;
+  if (!can("assets.dashboard")) return (
+    <div className="space-y-4">
+      <PageHeader title="عمليات الأصول الثابتة" />
+      <div className="flex gap-2">
+        {canCreate && <Button size="sm" onClick={() => navigate("/assets/new")}>أصل جديد</Button>}
+        {canImport && <Link href="/assets/register"><Button variant="outline" size="sm">استيراد أصول</Button></Link>}
+      </div>
+      {depreciationPanel}
+    </div>
+  );
   if (dash.error) return <ErrorState message={`تعذّر تحميل لوحة الأصول: ${dash.error.message}`} onRetry={() => dash.refetch()} />;
-  const d = dash.data!;
+  if (!dash.data) return <LoadingState />;
+  const d = dash.data;
   const maxCat = Math.max(1, ...d.byCategory.map((c) => c.value));
 
   return (
@@ -114,12 +163,12 @@ export default function Assets() {
         actions={
           <div className="flex items-center gap-2">
             <Link href="/assets/register"><Button variant="outline" size="sm">سجلّ الأصول</Button></Link>
-            {canWrite && (
+            {(canCreate || canImport) && (
               <>
-                <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+                {canImport && <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
                   استيراد أصول
-                </Button>
-                <Button size="sm" onClick={() => navigate("/assets/new")}>+ أصل جديد</Button>
+                </Button>}
+                {canCreate && <Button size="sm" onClick={() => navigate("/assets/new")}>+ أصل جديد</Button>}
               </>
             )}
           </div>
@@ -171,39 +220,7 @@ export default function Assets() {
 
       {/* ترحيل الإهلاك الشهري — إكمال الشريحة الرأسية لـpostDepreciation (لا مُشغِّل قبل هذه الشاشة).
           البطاقة تُخفى عن مستعمِلي assets:READ (يستطيعون رؤية اللوحة لا الكتابة في الدفتر). */}
-      {canWrite && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-1.5">
-              <CalendarClock aria-hidden className="size-4" />
-              ترحيل الإهلاك الشهري
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-col md:flex-row gap-3 md:items-end">
-              <div className="space-y-1">
-                <Label htmlFor="dep-period">الشهر</Label>
-                <Input
-                  id="dep-period"
-                  type="month"
-                  dir="ltr"
-                  value={depPeriod}
-                  min="2000-01"
-                  max="2200-12"
-                  onChange={(e) => setDepPeriod(e.target.value)}
-                  className="w-40"
-                />
-              </div>
-              <Button onClick={runDepreciation} disabled={postDep.isPending}>
-                {postDep.isPending ? "جارٍ الترحيل…" : "ترحيل إهلاك الشهر"}
-              </Button>
-              <p className="text-xs text-muted-foreground md:me-auto max-w-lg">
-                يُرحَّل مصروف الإهلاك لكل الأصول النشطة (القسط الثابت/المتناقص) على أساس التاريخ المطلوب. آمن للتكرار — لن يُنشئ قيداً مضاعفاً لشهر مُرحَّل.
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {depreciationPanel}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* أحدث الصيانة */}

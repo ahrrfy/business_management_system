@@ -9,6 +9,7 @@
 
 import { useState } from "react";
 import { trpc } from "@/lib/trpc";
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { saveFileAs } from "@/lib/export";
 import { notify } from "@/lib/notify";
 import { buildBarcodePdfFilename } from "@shared/barcodeEncoding";
@@ -46,6 +47,8 @@ export function BarcodePdfButton({
   sku,
   className,
 }: BarcodePdfButtonProps) {
+  const { can } = useCatalogPeopleOperationAccess();
+  const canGenerate = can("catalog.generateBarcodePdf");
   const [isDownloading, setIsDownloading] = useState(false);
   const generatePdfMut = trpc.catalog.generateBarcodePdf.useMutation();
 
@@ -53,6 +56,7 @@ export function BarcodePdfButton({
   const hasBarcode = code.length > 0;
 
   const handleDownload = (preset: BarcodePdfPreset = "50x30") => {
+    if (!canGenerate) return;
     if (!hasBarcode) {
       notify.err("يرجى إدخال أو توليد باركود أولاً لتحميله بصيغة PDF");
       return;
@@ -122,7 +126,7 @@ export function BarcodePdfButton({
       <button
         type="button"
         onClick={() => handleDownload("50x30")}
-        disabled={!hasBarcode || isDownloading}
+        disabled={!canGenerate || !hasBarcode || isDownloading}
         title={mainTitle}
         aria-label="تحميل باركود PDF عالي الدقة"
         className="h-8 w-8 inline-flex items-center justify-center text-muted-foreground hover:text-primary disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
@@ -138,7 +142,7 @@ export function BarcodePdfButton({
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            disabled={!hasBarcode || isDownloading}
+            disabled={!canGenerate || !hasBarcode || isDownloading}
             title="خيارات ومقاسات ملصقات PDF للتصنيع"
             aria-label="خيارات ومقاسات ملصقات PDF"
             className="h-8 px-1 inline-flex items-center justify-center border-s text-muted-foreground hover:text-primary disabled:opacity-35 disabled:cursor-not-allowed transition-colors"

@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,8 +33,9 @@ export function EmployeePenaltiesTab({
   branchId?: number;
   currentUserId?: number;
 }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
-  const q = trpc.hrEnterprise.penalties.list.useQuery({ employeeId });
+  const q = trpc.hrEnterprise.penalties.list.useQuery({ employeeId }, { enabled: can("hrEnterprise.penalties.list") });
   const [open, setOpen] = useState(false);
 
   const [penaltyType, setPenaltyType] = useState<string>("SALARY_DEDUCTION");
@@ -119,7 +121,7 @@ export function EmployeePenaltiesTab({
             حوكمة الإجراءات التأديبية بموجب قانون العمل العراقي رقم 37 لسنة 2015 (المواد 138-142)، مع ربط الاستقطاع آلياً بالرواتب.
           </p>
         </div>
-        <Button size="sm" onClick={() => setOpen(true)} className="gap-1.5">
+        <Button size="sm" onClick={() => setOpen(true)} className="gap-1.5" disabled={!can("hrEnterprise.penalties.create")}>
           <Plus className="h-4 w-4" />
           إصدار عقوبة انضباطية
         </Button>
@@ -174,7 +176,7 @@ export function EmployeePenaltiesTab({
                           variant="ghost"
                           size="sm"
                           className="h-7 px-2 text-xs text-primary hover:bg-primary/10 gap-1"
-                          disabled={approveMut.isPending || p.createdById === currentUserId}
+                          disabled={!can("hrEnterprise.penalties.approve") || (approveMut.isPending || p.createdById === currentUserId)}
                           title={p.createdById === currentUserId ? "فصل المهام: لا يمكنك اعتماد قرار أنشأته بنفسك" : "اعتماد القرار"}
                           onClick={async () => {
                             const ok = await confirm({
@@ -193,7 +195,7 @@ export function EmployeePenaltiesTab({
                           variant="ghost"
                           size="sm"
                           className="h-7 px-2 text-xs text-destructive hover:bg-destructive/10"
-                          disabled={cancelMut.isPending}
+                          disabled={!can("hrEnterprise.penalties.cancel") || (cancelMut.isPending)}
                           onClick={async () => {
                             const ok = await confirm({
                               variant: "danger",
@@ -307,7 +309,7 @@ export function EmployeePenaltiesTab({
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 إلغاء
               </Button>
-              <Button type="submit" disabled={createMut.isPending}>
+              <Button type="submit" disabled={!can("hrEnterprise.penalties.create") || (createMut.isPending)}>
                 {createMut.isPending ? "جاري الحفظ..." : "إصدار القرار"}
               </Button>
             </DialogFooter>

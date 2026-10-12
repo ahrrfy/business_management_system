@@ -10,7 +10,8 @@
  * لذلك لا تغيير في requireModule والبوّابات (إضافيّ بالكامل).
  */
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
+import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import {
   ALL_PERMISSION_MODULE_KEYS,
   ALL_ROLES,
@@ -26,11 +27,23 @@ import {
   type AtomicPermissionsMap,
   type OperationalCaps,
 } from "@shared/atomicPermissions";
+import {
+  legacyOperationPolicy,
+  summarizeOperationModules,
+  type OperationPolicy,
+} from "@shared/operationPermissions";
 import { nanoid } from "nanoid";
 import { roles, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import {
+  assertOperationPolicyRevision,
+  auditOperationPolicyTx,
+  lockIdentityAdministrationTx,
+  normalizeOperationPolicy,
+  sameOperationPolicy,
+} from "./operationPolicyStorage";
 
 const ACCESS_VALUES: AccessLevel[] = ["FULL", "READ", "NONE"];
 // `customers` and `tasks` remain storage/API compatibility keys for existing custom roles.
@@ -52,6 +65,7 @@ export interface CreateRoleInput {
   permissions: RolePermissions;
   atomicPermissions?: AtomicPermissionsMap | null;
   operationalCaps?: OperationalCaps | null;
+  operationPolicy?: OperationPolicy | null;
 }
 
 export interface UpdateRoleInput {
@@ -62,6 +76,8 @@ export interface UpdateRoleInput {
   permissions?: RolePermissions;
   atomicPermissions?: AtomicPermissionsMap | null;
   operationalCaps?: OperationalCaps | null;
+  operationPolicy?: OperationPolicy | null;
+  expectedOperationPolicyRevision?: number;
 }
 
 /** يطبّع مفتاح الدور: لاتيني صغير + أرقام + شرطة سفلية، يبدأ بحرف. الأسماء العربية (بلا أحرف
@@ -136,6 +152,8 @@ export function builtinRoles() {
     canSeeCost: r.canSeeCost === true,
     isSystem: true as const,
     isActive: true as const,
+    operationPolicy: legacyOperationPolicy(r.key, ROLE_TEMPLATES[r.key]),
+    operationPolicyRevision: 0,
   }));
 }
 
@@ -165,6 +183,7 @@ export async function loadActiveCustomRole(id: number) {
 
 export async function createRole(input: CreateRoleInput, _actor: Actor) {
   return withTx(async (tx) => {
+    const { actor, assertAuthority } = await lockIdentityAdministrationTx(tx, _actor);
     const label = input.label?.trim();
     if (!label) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم الدور مطلوب." });
     if (label.length > 120) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم الدور طويل جداً." });
@@ -173,8 +192,12 @@ export async function createRole(input: CreateRoleInput, _actor: Actor) {
     if (BUILTIN_KEYS.has(key)) {
       throw new TRPCError({ code: "CONFLICT", message: "هذا المفتاح محجوز لدور مبني — اختر اسماً مختلفاً." });
     }
-    const permissions = normalizePermissions(input.permissions);
+    const operationPolicy = normalizeOperationPolicy(input.operationPolicy);
+    const permissions = operationPolicy
+      ? normalizePermissions(summarizeOperationModules(operationPolicy))
+      : normalizePermissions(input.permissions);
     try {
+      assertAuthority();
       const res = await tx.insert(roles).values({
         key,
         label,
@@ -183,11 +206,27 @@ export async function createRole(input: CreateRoleInput, _actor: Actor) {
         permissions,
         atomicPermissions: input.atomicPermissions ?? null,
         operationalCaps: input.operationalCaps ?? null,
+        operationPolicy,
+        operationPolicyRevision: operationPolicy ? 1 : 0,
         // رؤية التكلفة تتبع الفئة الأساسية (المدير/المحاسب يرونها؛ الكاشير/المخزن لا).
-        canSeeCost: builtinCanSeeCost(input.baseRole),
+        canSeeCost: operationPolicy
+          ? operationPolicy.dataVisibility?.purchaseCost === true
+          : builtinCanSeeCost(input.baseRole),
         isActive: true,
       });
-      return { id: extractInsertId(res), key };
+      const id = extractInsertId(res);
+      if (operationPolicy)
+        await auditOperationPolicyTx(
+          tx,
+          actor,
+          "role",
+          id,
+          null,
+          operationPolicy,
+          0,
+          1,
+        );
+      return { id, key, operationPolicyRevision: operationPolicy ? 1 : 0 };
     } catch (e) {
       rethrowDup(e);
     }
@@ -196,7 +235,11 @@ export async function createRole(input: CreateRoleInput, _actor: Actor) {
 
 export async function updateRole(input: UpdateRoleInput, _actor: Actor) {
   return withTx(async (tx) => {
-    const existing = (await tx.select().from(roles).where(eq(roles.id, input.id)).for("update").limit(1))[0];
+    const locked = await lockIdentityAdministrationTx(tx, _actor, {
+      roleIds: [input.id],
+      affectedRoleId: input.id,
+    });
+    const existing = locked.roles.get(input.id);
     if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "الدور غير موجود." });
     const patch: Record<string, unknown> = {};
     if (input.label !== undefined) {
@@ -218,11 +261,78 @@ export async function updateRole(input: UpdateRoleInput, _actor: Actor) {
     if (input.permissions !== undefined) patch.permissions = normalizePermissions(input.permissions);
     if (input.atomicPermissions !== undefined) patch.atomicPermissions = input.atomicPermissions;
     if (input.operationalCaps !== undefined) patch.operationalCaps = input.operationalCaps;
-    if (Object.keys(patch).length === 0) return { id: input.id, changed: false };
+    let operationPolicyRevision = existing.operationPolicyRevision;
+    let nextOperationPolicy =
+      existing.operationPolicy as OperationPolicy | null;
+    let policyChanged = false;
+    if (input.operationPolicy !== undefined) {
+      if (input.operationPolicy === null && existing.operationPolicy != null) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر إزالة مصفوفة تفويض الدور",
+            why: "إزالتها تعيد بوابات الصلاحيات القديمة وقد توسّع التفويض خارج اختياراتك",
+            doThis: "ألغِ تحديد جميع العمليات لحفظ دور بلا تفويض، أو عدّل العمليات المطلوبة",
+          }),
+        });
+      }
+      nextOperationPolicy = normalizeOperationPolicy(input.operationPolicy);
+      if (nextOperationPolicy && (input.baseRole ?? existing.baseRole) === "admin") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تحويل دور مدير النظام إلى تفويض تشغيلي",
+            why: "إدارة الهويات صلاحية إدارية محمية؛ فئة مدير النظام تمنح سلطات خارج المصفوفة",
+            doThis: "أنشئ دوراً تشغيلياً بفئة أساسية أدنى وحدّد العمليات المطلوبة له",
+          }),
+        });
+      }
+      policyChanged = !sameOperationPolicy(
+        existing.operationPolicy,
+        nextOperationPolicy,
+      );
+      if (policyChanged) {
+        assertOperationPolicyRevision(
+          operationPolicyRevision,
+          input.expectedOperationPolicyRevision,
+        );
+        patch.operationPolicy = nextOperationPolicy;
+        patch.operationPolicyRevision = ++operationPolicyRevision;
+      }
+    }
+    if (nextOperationPolicy) {
+      patch.permissions = normalizePermissions(
+        summarizeOperationModules(nextOperationPolicy),
+      );
+      patch.canSeeCost =
+        nextOperationPolicy.dataVisibility?.purchaseCost === true;
+    } else if (policyChanged) {
+      patch.canSeeCost = builtinCanSeeCost(
+        (input.baseRole ?? existing.baseRole) as RoleKey,
+      );
+    }
+    if (Object.keys(patch).length === 0)
+      return { id: input.id, changed: false, operationPolicyRevision };
+    locked.assertAuthority();
     await tx.update(roles).set(patch).where(eq(roles.id, input.id));
+    if (policyChanged)
+      await auditOperationPolicyTx(
+        tx,
+        locked.actor,
+        "role",
+        input.id,
+        existing.operationPolicy as OperationPolicy | null,
+        nextOperationPolicy,
+        existing.operationPolicyRevision,
+        operationPolicyRevision,
+      );
     // تغيير الدور يُبطل جلسات أصحابه (الصلاحيات/الفئة قد تغيّرت) كي يُعاد تحميل السياق.
-    await tx.update(users).set({ sessionsValidFrom: new Date() }).where(eq(users.customRoleId, input.id));
-    return { id: input.id, changed: true };
+    const affectedUserIds = Array.from(locked.users.values())
+      .filter((user) => user.customRoleId === input.id).map((user) => user.id);
+    if (affectedUserIds.length)
+      await tx.update(users).set({ sessionsValidFrom: new Date() })
+        .where(inArray(users.id, affectedUserIds));
+    return { id: input.id, changed: true, operationPolicyRevision };
   });
 }
 

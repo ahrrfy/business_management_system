@@ -127,7 +127,11 @@ describe("userService.updateUser", () => {
   });
 
   it("يمنع تخفيض آخر مدير نشط", async () => {
-    // فاعل مختلف يخفّض المدير الوحيد ⇒ يصطدم بحارس آخر مدير.
+    // مالك موثّق بفئة manager يستطيع الإدارة، لكنه لا يلغي حارس آخر مدير مخزّن.
+    await db().insert(s.users).values({
+      id: otherActor.userId, openId: "persisted_owner", name: "المالك", username: "owner",
+      role: "manager", isOwner: true, isActive: true, branchId: 1,
+    });
     await expect(updateUser({ userId: 1, role: "cashier" }, otherActor)).rejects.toThrow(/آخر مدير/);
   });
 

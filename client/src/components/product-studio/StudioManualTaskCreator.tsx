@@ -1,3 +1,4 @@
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import { useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
@@ -16,6 +17,12 @@ export function StudioManualTaskCreator({
   offline: boolean;
   storageActionsDisabled: boolean;
 }) {
+  const studioCan = {
+    assign: useOperationPermission("productStudio.assign").allowed,
+    assignees: useOperationPermission("productStudio.assignees").allowed,
+    bulkAssign: useOperationPermission("productStudio.bulkAssign").allowed,
+    productImages: useOperationPermission("productStudio.productImages").allowed,
+  };
   const [productId, setProductId] = useState("");
   const [bulkProductIds, setBulkProductIds] = useState<number[]>([]);
   const [sourceChoice, setSourceChoice] = useState("new");
@@ -24,8 +31,8 @@ export function StudioManualTaskCreator({
   const [assignmentDueAt, setAssignmentDueAt] = useState("");
 
   const utils = trpc.useUtils();
-  const assignees = trpc.productStudio.assignees.useQuery(undefined, { enabled: !offline });
-  const productImages = trpc.productStudio.productImages.useQuery({ productId: Number(productId) }, { enabled: !offline && Boolean(productId) && bulkProductIds.length <= 1 });
+  const assignees = trpc.productStudio.assignees.useQuery(undefined, { enabled: studioCan.assignees && (!offline) });
+  const productImages = trpc.productStudio.productImages.useQuery({ productId: Number(productId) }, { enabled: studioCan.productImages && (!offline && Boolean(productId) && bulkProductIds.length <= 1) });
 
   const assign = trpc.productStudio.assign.useMutation({
     onSuccess: async () => {
@@ -119,7 +126,7 @@ export function StudioManualTaskCreator({
         <div className="flex items-end">
           <Button
             className="w-full"
-            disabled={offline || storageActionsDisabled || !productId || !assigneeId || assign.isPending || bulkAssign.isPending}
+            disabled={(bulkProductIds.length > 1 ? !studioCan.bulkAssign : !studioCan.assign) || (offline || storageActionsDisabled || !productId || !assigneeId || assign.isPending || bulkAssign.isPending)}
             onClick={() => {
               const dueAt = assignmentDueAt ? new Date(assignmentDueAt) : null;
               if (bulkProductIds.length > 1) {

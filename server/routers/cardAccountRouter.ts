@@ -8,6 +8,7 @@ import { TRPCError } from "@trpc/server";
 import { reportViewerProcedure, requireAtomicPermission, router } from "../trpc";
 import { logAudit } from "../services/auditService";
 import { moneyString, ymdDate } from "../lib/schemas";
+import { canonicalOperationAllowed } from "../operationAuthorization";
 
 /** أدوار كتابة المطابقة: المدير/المحاسب (+admin). القراءة أوسع (تشمل المدقّق ومنح reports الصريحة)
  *  لكنّ الكتابة (سجلّ تدقيقيّ ماليّ) مقصورة على هؤلاء — لا يكفي منحُ «تقارير: قراءة» لدورٍ آخر. */
@@ -81,7 +82,7 @@ export const cardAccountRouter = router({
     .mutation(async ({ input, ctx }) => {
       // بوّابة كتابة صريحة: الإنشاء (سجلّ تدقيقيّ ماليّ) للمدير/المحاسب فقط — منحُ «تقارير: قراءة»
       // لدورٍ آخر (كاشير/مخزن عبر override) يُتيح القراءة لا الكتابة، والمدقّق قارئٌ فقط.
-      if (!RECON_WRITERS.has(ctx.user.role)) {
+      if (!canonicalOperationAllowed(ctx.user, "cardAccount.createReconciliation") && !RECON_WRITERS.has(ctx.user.role)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "إنشاء سجلّ المطابقة للمدير/المحاسب فقط — الوصول القرائيّ لا يكفي." });
       }
       const res = await createCardReconciliation(input, {

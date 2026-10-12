@@ -148,6 +148,7 @@ export default function GoodsReceiptReversalGovernance() {
         </div>
       ) : (
         <GoodsReceiptReversalGovernanceWorkspace
+          operationUser={me.data}
           receipts={receipts}
           pendingReversals={pendingReversals}
           currentUserId={me.data?.id}

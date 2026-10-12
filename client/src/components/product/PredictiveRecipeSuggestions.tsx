@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useState } from "react";
 import {
   Check,
@@ -22,11 +23,12 @@ export function PredictiveRecipeSuggestions({
   productId,
   onApplySuggestion,
 }: PredictiveRecipeSuggestionsProps) {
+  const { can } = useCatalogPeopleOperationAccess();
   const [expandedRecipeId, setExpandedRecipeId] = useState<number | null>(null);
 
   const suggestionsQ = trpc.production.recipes.suggestSimilar.useQuery(
     { productId, limit: 4 },
-    { enabled: Number.isFinite(productId) && productId > 0, staleTime: 60_000 },
+    { enabled: can("production.recipes.suggestSimilar") && (Number.isFinite(productId) && productId > 0), staleTime: 60_000 },
   );
 
   const suggestions = suggestionsQ.data ?? [];

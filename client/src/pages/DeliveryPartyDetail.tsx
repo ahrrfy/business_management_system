@@ -1,3 +1,4 @@
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { useEffect, useState } from "react";
 import { Banknote, Truck, Wallet, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -37,24 +38,24 @@ export default function DeliveryPartyDetail({
   // مرآة بوّابة الخادم deliveryManagerProcedure (store=FULL على manager) — لا قائمة أدوار خام:
   // مدير سُحبت منه store لا يرى لوحةً سيرفضها الخادم، ودورٌ مُنح store:FULL صراحةً يراها.
   const canManageParty =
-    !!me.data?.role &&
+    lifecycleActionAllowed(me.data, "delivery.updateParty", !!me.data?.role &&
     moduleAccessAllowed(
       me.data.role as RoleKey,
       (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined,
       "store",
       "FULL",
       ["manager"],
-    );
+    ));
   const canSettle =
-    !!me.data?.role &&
+    lifecycleActionAllowed(me.data, "delivery.recordRemittance", !!me.data?.role &&
     moduleAccessAllowed(
       me.data.role as RoleKey,
       (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined,
       "store",
       "FULL",
       ["cashier", "manager"],
-    );
-  const canRecover = canManageParty;
+    ));
+  const canRecover = lifecycleActionAllowed(me.data, "delivery.recoverWriteOff", canManageParty);
   const [tab, setTab] = useState<
     | "consignments"
     | "remittances"
@@ -237,8 +238,11 @@ export default function DeliveryPartyDetail({
 }
 
 function PartyMembersTab({ partyId, canEdit }: { partyId: number; canEdit: boolean }) {
+  const me = trpc.auth.me.useQuery();
+  const canAdd = lifecycleActionAllowed(me.data, "delivery.addPartyMember", canEdit);
+  const canRemove = lifecycleActionAllowed(me.data, "delivery.removePartyMember", canEdit);
   const members = trpc.delivery.partyMembers.useQuery({ partyId });
-  const accounts = trpc.delivery.courierAccounts.useQuery(undefined, { enabled: canEdit });
+  const accounts = trpc.delivery.courierAccounts.useQuery(undefined, { enabled: canAdd });
   const utils = trpc.useUtils();
   const [userId, setUserId] = useState("");
   const [memberRole, setMemberRole] = useState<"DRIVER" | "MANAGER" | "ACCOUNTANT">("DRIVER");
@@ -256,7 +260,7 @@ function PartyMembersTab({ partyId, canEdit }: { partyId: number; canEdit: boole
   });
   return (
     <div className="space-y-3">
-      {canEdit && (
+      {canAdd && (
         <div className="grid gap-2 rounded-xl border bg-card p-3 sm:grid-cols-[1fr_180px_auto]">
           <AppSelect value={userId} onValueChange={(next) => setUserId(next)} className="px-3 py-2 text-sm">
             <option value="">اختر حساب دخول نشطاً</option>
@@ -280,7 +284,7 @@ function PartyMembersTab({ partyId, canEdit }: { partyId: number; canEdit: boole
               <span className="ms-2 text-xs text-muted-foreground">{m.memberRole === "DRIVER" ? "سائق" : m.memberRole === "MANAGER" ? "مدير" : "محاسب"}</span>
               {!m.isActive && <span className="ms-2 text-xs text-destructive">موقوف</span>}
             </div>
-            {canEdit && m.isActive && <Button variant="outline" size="sm" disabled={removeM.isPending} onClick={() => removeM.mutate({ partyId, userId: Number(m.userId) })}>إزالة</Button>}
+            {canRemove && m.isActive && <Button variant="outline" size="sm" disabled={removeM.isPending} onClick={() => removeM.mutate({ partyId, userId: Number(m.userId) })}>إزالة</Button>}
           </div>
         ))}
         {!members.isLoading && (members.data?.length ?? 0) === 0 && <div className="p-6 text-center text-sm text-muted-foreground">لا توجد حسابات مرتبطة.</div>}
@@ -312,6 +316,10 @@ const RULE_TYPE_LABEL: Record<string, string> = {
   HYBRID: "ثابت + نسبة",
 };
 function CommissionRuleTab({ partyId, canEdit }: { partyId: number; canEdit: boolean }) {
+  const me = trpc.auth.me.useQuery();
+  const canUpdateParty = lifecycleActionAllowed(me.data, "delivery.updateParty", canEdit);
+  const canSaveRule = lifecycleActionAllowed(me.data, "delivery.saveCommissionRule", canEdit);
+  const canDeleteRule = lifecycleActionAllowed(me.data, "delivery.deleteCommissionRule", canEdit);
   const utils = trpc.useUtils();
   const list = trpc.delivery.listCommissionRules.useQuery({ partyId });
   // H2 (٢٩/٨/٢٦): علَم استبدال الأجرة بالعمولة عند التسوية — يُقرأ من getParty، ويُغيَّر بـupdateParty.
@@ -374,7 +382,7 @@ function CommissionRuleTab({ partyId, canEdit }: { partyId: number; canEdit: boo
     <div className="space-y-4">
       {/* H2 (٢٩/٨/٢٦): بطاقة تفعيل الاستبدال المحاسبيّ. تظهر فقط لمن يستطيع التعديل، ولا يُفعَّل
           إلّا حين تكون للجهة قاعدةٌ فعّالة (الخادم يرفض غير ذلك بلا لبس). */}
-      {canEdit && (
+      {canUpdateParty && (
         <div className={cn(
           "rounded-lg border p-4",
           useCommissionActive
@@ -454,9 +462,9 @@ function CommissionRuleTab({ partyId, canEdit }: { partyId: number; canEdit: boo
                       : <Badge variant="outline">معطلة</Badge>}
                   </TableCell>
                   <TableCell className="text-center">
-                    {canEdit && (
+                    {(canSaveRule || canDeleteRule) && (
                       <div className="flex justify-center gap-1">
-                        <Button size="sm" variant="outline" onClick={() => setForm({
+                        <Button size="sm" variant="outline" disabled={!canSaveRule} onClick={() => setForm({
                           id: Number(r.id),
                           ruleType: r.ruleType as never,
                           flatAmount: String(r.flatAmount ?? ""),
@@ -465,7 +473,7 @@ function CommissionRuleTab({ partyId, canEdit }: { partyId: number; canEdit: boo
                           maxCap: String(r.maxCap ?? ""),
                           notes: r.notes ?? "",
                         })}>تعديل</Button>
-                        <Button size="sm" variant="destructive" onClick={() => del.mutate({ id: Number(r.id) })} disabled={del.isPending}>حذف</Button>
+                        <Button size="sm" variant="destructive" onClick={() => del.mutate({ id: Number(r.id) })} disabled={!canDeleteRule || del.isPending}>حذف</Button>
                       </div>
                     )}
                   </TableCell>
@@ -507,7 +515,7 @@ function CommissionRuleTab({ partyId, canEdit }: { partyId: number; canEdit: boo
         </div>
       )}
 
-      {canEdit && (
+      {canSaveRule && (
         <div className="rounded-lg border p-4">
           <h4 className="mb-3 text-sm font-extrabold">{form.id ? "تعديل القاعدة" : "قاعدة جديدة"}</h4>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -563,6 +571,8 @@ function CommissionRuleTab({ partyId, canEdit }: { partyId: number; canEdit: boo
 
 // ───────────────────────── بيانات الجهة ─────────────────────────
 function SettingsTab({ party, canManage, canRecover, onChanged }: { party: PartyRow; canManage: boolean; canRecover: boolean; onChanged: () => void }) {
+  const me = trpc.auth.me.useQuery();
+  const canSetActive = lifecycleActionAllowed(me.data, "delivery.setPartyActive", canManage);
   const utils = trpc.useUtils();
   const full = trpc.delivery.getParty.useQuery({ id: party.id });
   const accounts = trpc.delivery.courierAccounts.useQuery(undefined, { enabled: canManage });
@@ -681,13 +691,10 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
                 maxOpenParcelAgeDays: form.maxOpenParcelAgeDays,
               })}
             >{update.isPending ? ACTION_LABELS.saving : "حفظ"}</Button>
-            <Button
-              variant="outline"
-              disabled={setActive.isPending}
-              onClick={() => setActive.mutate({ id: party.id, isActive: !party.isActive })}
-            >{party.isActive ? "تعطيل الجهة" : "تفعيل الجهة"}</Button>
+
           </div>
         </fieldset>
+        {canSetActive && <Button className="mt-3" variant="outline" disabled={setActive.isPending} onClick={() => setActive.mutate({ id: party.id, isActive: !party.isActive })}>{party.isActive ? "تعطيل الجهة" : "تفعيل الجهة"}</Button>}
       </div>
 
       {canRecover && (

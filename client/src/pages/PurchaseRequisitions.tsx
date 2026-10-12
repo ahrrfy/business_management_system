@@ -1,3 +1,4 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
@@ -260,6 +261,7 @@ export default function PurchaseRequisitions() {
   }
 
   function saveDraft() {
+    if (!canLifecycleOperation(me.data, editorId === "NEW" ? "purchases.createRequisition" : "purchases.updateRequisition", true)) return;
     const error = validateDraft();
     if (error) return notify.warn(error);
     const payload = {
@@ -290,6 +292,7 @@ export default function PurchaseRequisitions() {
   }
 
   async function submitForApproval(row: RequisitionRow) {
+    if (!canLifecycleOperation(me.data, "purchases.submitRequisition", true)) return;
     const ok = await confirm({
       variant: "info",
       title: "إرسال طلب الشراء للاعتماد",
@@ -309,11 +312,13 @@ export default function PurchaseRequisitions() {
   }
 
   function requestCancellation(row: RequisitionRow) {
+    if (!canLifecycleOperation(me.data, "purchases.requestRequisitionCancel", true)) return;
     setCancelReason("");
     setCancelTarget(row);
   }
 
   function submitCancellation() {
+    if (!canLifecycleOperation(me.data, "purchases.requestRequisitionCancel", true)) return;
     if (!cancelTarget || cancelReason.trim().length < 3) return;
     cancel.mutate({
       requisitionId: Number(cancelTarget.id),
@@ -386,11 +391,9 @@ export default function PurchaseRequisitions() {
                 <Button
                   size="sm"
                   onClick={() => void submitForApproval(value)}
-                  disabled={
-                    submit.isPending ||
+                  disabled={(submit.isPending ||
                     hasPendingControl ||
-                    controlStateUnavailable
-                  }
+                    controlStateUnavailable) || !canLifecycleOperation(me.data, "purchases.submitRequisition", true)}
                   title={
                     controlStateUnavailable
                       ? "تعذّر التحقق من الطلبات المعلّقة"
@@ -415,11 +418,9 @@ export default function PurchaseRequisitions() {
                   size="sm"
                   variant="destructive"
                   onClick={() => void requestCancellation(value)}
-                  disabled={
-                    cancel.isPending ||
+                  disabled={(cancel.isPending ||
                     hasPendingControl ||
-                    controlStateUnavailable
-                  }
+                    controlStateUnavailable) || !canLifecycleOperation(me.data, "purchases.requestRequisitionCancel", true)}
                   title={
                     controlStateUnavailable
                       ? "تعذّر التحقق من الطلبات المعلّقة"
@@ -517,7 +518,7 @@ export default function PurchaseRequisitions() {
             ) : null}
             <Button
               onClick={() => setEditorId("NEW")}
-              disabled={filterBranchId <= 0}
+              disabled={(filterBranchId <= 0) || !canLifecycleOperation(me.data, "purchases.createRequisition", true)}
             >
               <FilePlus2 aria-hidden className="size-4" /> طلب شراء جديد
             </Button>
@@ -824,7 +825,7 @@ export default function PurchaseRequisitions() {
               إغلاق
             </Button>
             {editingAllowed ? (
-              <Button onClick={saveDraft} disabled={saving}>
+              <Button onClick={saveDraft} disabled={(saving) || !canLifecycleOperation(me.data, editorId === "NEW" ? "purchases.createRequisition" : "purchases.updateRequisition", true)}>
                 {saving ? ACTION_LABELS.saving : "حفظ المسودة"}
               </Button>
             ) : null}

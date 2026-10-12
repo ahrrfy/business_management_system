@@ -60,20 +60,16 @@ describe("تماثل نموذجَي المستخدم (إضافة/تعديل)", (
   });
 
   it("تُنذر شاشة التعديل من «بلا فرع» بقاعدة الخادم لا بقائمة الأدوار الناقصة", () => {
-    // ⚠️ فارقٌ مقصود عن `BRANCH_WARN_ROLES` الخماسية في AccountFields: تفوت مدير الفرع
-    // والمحاسب والمدقّق والمندوب والمستخدم العام، ونصُّها يقول عكس ما ينفّذه الخادم.
-    //
-    // ⭐ **والمرجع قاعدةُ الحفظ لا قاعدةُ التشغيل** — وهذا ما أخطأته النسخةُ الأولى: كتبت
-    // `&& !isOwner` قياساً على `canCrossBranches` (وقتَ التشغيل)، بينما الذي يقع أوّلاً هو
-    // `assertUserBranchAssignmentTx` فيرفض **الحفظ** على `role !== "admin"` وحدها. فكان
-    // مديرٌ مُنِح صفةَ المالك ثمّ مُسِح فرعُه يرى صفر تحذيرٍ ثمّ يصطدم برفضٍ غير مُفسَّر.
+    // كلا النموذجين يطابقان شرط الحفظ الخادمي، بما في ذلك حسابات المالك غير المطبعة كـ admin.
     expect(editSource).toContain('return role !== "admin";');
     expect(editSource).not.toContain('role !== "admin" && !isOwner');
     // والنصُّ يقتبس رسالة الخادم التي سيراها فعلاً، لا رسالةَ حارسٍ آخر لا يبلغه.
     expect(editSource).toContain("الحساب غير الإداري يجب أن يرتبط بفرع");
     expect(userServiceSource).toContain("الحساب غير الإداري يجب أن يرتبط بفرع");
     // القياس على نسخِ القائمة لا على ذكرها — تعليقُ UserEdit يسمّيها عمداً ليشرح سببَ الاختلاف.
-    expect(accountFieldsSource).toContain("const BRANCH_WARN_ROLES: RoleKey[]");
+    expect(accountFieldsSource).not.toContain("const BRANCH_WARN_ROLES");
+    expect(accountFieldsSource).toContain('value.role !== "admin"');
+    expect(accountFieldsSource).toContain("الحساب غير الإداري يجب أن يرتبط بفرع");
     expect(editSource).not.toContain("const BRANCH_WARN_ROLES");
     expect(editSource).not.toContain('"print_operator", "purchasing", "sales_rep"');
     expect(editSource).not.toContain("لتجنّب الوصول لكل الفروع");

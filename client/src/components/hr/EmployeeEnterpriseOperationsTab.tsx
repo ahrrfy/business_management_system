@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,14 +32,15 @@ export function EmployeeEnterpriseOperationsTab({
   annualLeaveBalance?: number | null;
   currentUserId?: number;
 }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
   const [subTab, setSubTab] = useState("loans");
 
   // Queries
-  const loansQ = trpc.hrEnterprise.loans.list.useQuery({ employeeId });
-  const transfersQ = trpc.hrEnterprise.transfers.list.useQuery({ employeeId });
-  const spotBonusesQ = trpc.hrEnterprise.spotBonuses.list.useQuery({ employeeId });
-  const leaveEncashmentQ = trpc.hrEnterprise.leaveEncashment.preview.useQuery({ employeeId });
+  const loansQ = trpc.hrEnterprise.loans.list.useQuery({ employeeId }, { enabled: can("hrEnterprise.loans.list") });
+  const transfersQ = trpc.hrEnterprise.transfers.list.useQuery({ employeeId }, { enabled: can("hrEnterprise.transfers.list") });
+  const spotBonusesQ = trpc.hrEnterprise.spotBonuses.list.useQuery({ employeeId }, { enabled: can("hrEnterprise.spotBonuses.list") });
+  const leaveEncashmentQ = trpc.hrEnterprise.leaveEncashment.preview.useQuery({ employeeId }, { enabled: can("hrEnterprise.leaveEncashment.preview") });
 
   // Modal Dialogs
   const [openLoan, setOpenLoan] = useState(false);
@@ -174,7 +176,7 @@ export function EmployeeEnterpriseOperationsTab({
               <span className="text-xs text-muted-foreground">
                 المادة 51: لا يجوز أن يزيد إجمالي الاستقطاع الشهري للسداد عن 20% من راتب الموظف الأساسي.
               </span>
-              <Button size="sm" onClick={() => setOpenLoan(true)} className="gap-1">
+              <Button size="sm" onClick={() => setOpenLoan(true)} className="gap-1" disabled={!can("hrEnterprise.loans.request")}>
                 <Plus className="h-3.5 w-3.5" />
                 طلب سلفة
               </Button>
@@ -220,7 +222,7 @@ export function EmployeeEnterpriseOperationsTab({
                                 variant="ghost"
                                 size="sm"
                                 className="h-7 text-xs text-primary"
-                                disabled={reviewLoanMut.isPending}
+                                disabled={!can("hrEnterprise.loans.review") || (reviewLoanMut.isPending)}
                                 onClick={() => reviewLoanMut.mutate({ id: loan.id, action: "APPROVE" })}
                               >
                                 موافقة
@@ -229,7 +231,7 @@ export function EmployeeEnterpriseOperationsTab({
                                 variant="ghost"
                                 size="sm"
                                 className="h-7 text-xs text-destructive"
-                                disabled={reviewLoanMut.isPending}
+                                disabled={!can("hrEnterprise.loans.review") || (reviewLoanMut.isPending)}
                                 onClick={() => reviewLoanMut.mutate({ id: loan.id, action: "REJECT", rejectionReason: "تم الرفض من الإدارة" })}
                               >
                                 رفض
@@ -241,7 +243,7 @@ export function EmployeeEnterpriseOperationsTab({
                               variant="outline"
                               size="sm"
                               className="h-7 text-xs"
-                              disabled={disburseLoanMut.isPending}
+                              disabled={!can("hrEnterprise.loans.disburse") || (disburseLoanMut.isPending)}
                               onClick={async () => {
                                 const ok = await confirm({
                                   variant: "warning",
@@ -270,7 +272,7 @@ export function EmployeeEnterpriseOperationsTab({
               <span className="text-xs text-muted-foreground">
                 توثيق حركة التنقلات بين الفروع والأقسام مع حفظ كامل الأرشيف الوظيفي.
               </span>
-              <Button size="sm" onClick={() => setOpenTransfer(true)} className="gap-1">
+              <Button size="sm" onClick={() => setOpenTransfer(true)} className="gap-1" disabled={!can("hrEnterprise.transfers.request")}>
                 <Plus className="h-3.5 w-3.5" />
                 تسجيل قرار نقل
               </Button>
@@ -309,7 +311,7 @@ export function EmployeeEnterpriseOperationsTab({
                               variant="ghost"
                               size="sm"
                               className="h-7 text-xs text-primary"
-                              disabled={approveTransferMut.isPending}
+                              disabled={!can("hrEnterprise.transfers.approve") || (approveTransferMut.isPending)}
                               onClick={() => approveTransferMut.mutate({ id: t.id })}
                             >
                               اعتماد
@@ -330,7 +332,7 @@ export function EmployeeEnterpriseOperationsTab({
               <span className="text-xs text-muted-foreground">
                 المكافآت الفورية الاستثنائية للتميز أو الإنجازات الخاصة.
               </span>
-              <Button size="sm" onClick={() => setOpenSpotBonus(true)} className="gap-1">
+              <Button size="sm" onClick={() => setOpenSpotBonus(true)} className="gap-1" disabled={!can("hrEnterprise.spotBonuses.create")}>
                 <Plus className="h-3.5 w-3.5" />
                 منح مكافأة فورية
               </Button>
@@ -369,7 +371,7 @@ export function EmployeeEnterpriseOperationsTab({
                               variant="ghost"
                               size="sm"
                               className="h-7 text-xs text-primary"
-                              disabled={approveBonusMut.isPending}
+                              disabled={!can("hrEnterprise.spotBonuses.approve") || (approveBonusMut.isPending)}
                               onClick={() => approveBonusMut.mutate({ id: b.id })}
                             >
                               اعتماد
@@ -380,7 +382,7 @@ export function EmployeeEnterpriseOperationsTab({
                               variant="outline"
                               size="sm"
                               className="h-7 text-xs text-emerald-600 hover:text-emerald-700"
-                              disabled={payCashBonusMut.isPending}
+                              disabled={!can("hrEnterprise.spotBonuses.payCash") || (payCashBonusMut.isPending)}
                               onClick={async () => {
                                 const ok = await confirm({
                                   title: "صرف مكافأة استثنائية",
@@ -526,7 +528,7 @@ export function EmployeeEnterpriseOperationsTab({
               <Button type="button" variant="outline" onClick={() => setOpenLoan(false)}>
                 إلغاء
               </Button>
-              <Button type="submit" disabled={createLoanMut.isPending}>
+              <Button type="submit" disabled={!can("hrEnterprise.loans.request") || (createLoanMut.isPending)}>
                 {createLoanMut.isPending ? "جاري الإرسال..." : "إرسال الطلب"}
               </Button>
             </DialogFooter>
@@ -631,7 +633,7 @@ export function EmployeeEnterpriseOperationsTab({
               <Button type="button" variant="outline" onClick={() => setOpenTransfer(false)}>
                 إلغاء
               </Button>
-              <Button type="submit" disabled={createTransferMut.isPending}>
+              <Button type="submit" disabled={!can("hrEnterprise.transfers.request") || (createTransferMut.isPending)}>
                 {createTransferMut.isPending ? "جاري الحفظ..." : "تسجيل القرار"}
               </Button>
             </DialogFooter>
@@ -712,7 +714,7 @@ export function EmployeeEnterpriseOperationsTab({
               <Button type="button" variant="outline" onClick={() => setOpenSpotBonus(false)}>
                 إلغاء
               </Button>
-              <Button type="submit" disabled={createBonusMut.isPending}>
+              <Button type="submit" disabled={!can("hrEnterprise.spotBonuses.create") || (createBonusMut.isPending)}>
                 {createBonusMut.isPending ? "جاري الحفظ..." : "تسجيل المكافأة"}
               </Button>
             </DialogFooter>

@@ -6,6 +6,8 @@ import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmt } from "@/lib/money";
 import { FinancialCellProvenanceHover } from "@/components/financial";
 import { ExpenseTracePanel } from "./ExpenseTracePanel";
+import { trpc } from "@/lib/trpc";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import {
   expenseCategoryText,
   fundingDetail,
@@ -34,6 +36,7 @@ export function ExpenseMobileCard({
   onToggleTrace,
   actions,
 }: ExpenseMobileCardProps) {
+  const me = trpc.auth.me.useQuery();
   const expenseId = Number(r.id);
   const prov = (r as { provenance?: any }).provenance;
 
@@ -146,6 +149,7 @@ export function ExpenseMobileCard({
           variant="outline"
           size="sm"
           aria-expanded={traceExpanded}
+          disabled={!treasuryOperationAllowed(me.data, "expenses.trace", true)}
           onClick={() => onToggleTrace(expenseId)}
         >
           {traceExpanded ? (

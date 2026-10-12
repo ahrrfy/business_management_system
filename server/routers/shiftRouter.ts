@@ -4,7 +4,7 @@ import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
 import { z } from "zod";
 import { appErrorMessage } from "@shared/errors";
-import { branches, shifts, users } from "../../drizzle/schema";
+import { branches, roles, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
@@ -28,6 +28,8 @@ import {
   treasuryReadProcedure,
 } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
+import { storedOperationUser } from "../services/authorization/operationAuthority";
+import { cashHandoverRecipientAllowed } from "../services/authorization/operationRecipientEligibility";
 
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على openedAt).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
@@ -467,7 +469,7 @@ export const shiftRouter = router({
     }),
 
   // مستلمو السحب النقدي أثناء الوردية وإعادة إسناد العهد التشغيلية المعلّقة.
-  // المستلِم admin/manager نشط، أمّا القارئ فيشمل الكاشير والمدير والمحاسب
+  // المستلِم نشط ومفوّض بالقبول، أو admin/manager في السياسة القديمة؛ أمّا القارئ فيشمل الكاشير والمدير والمحاسب
   // والمنح الصريح. غير admin يرى مستلمي فرعه فقط؛ admin يعبر الفروع لمعالجة
   // الوردية في الفرع المختار.
   handoverRecipients: treasuryHandoverRecipientsProcedure.query(async ({ ctx }) => {
@@ -475,17 +477,34 @@ export const shiftRouter = router({
     if (!db) return [] as { id: number; name: string; branchId: number | null }[];
     const branchScope = ctx.user.role === "admin" ? null : Number(ctx.user.branchId);
     const rows = await db
-      .select({ id: users.id, name: users.name, branchId: users.branchId })
+      .select({
+        user: {
+          id: users.id, name: users.name, role: users.role, branchId: users.branchId,
+          isActive: users.isActive, isOwner: users.isOwner, customRoleId: users.customRoleId,
+          permissionsOverride: users.permissionsOverride, operationPolicy: users.operationPolicy,
+          accessExpiresAt: users.accessExpiresAt,
+        },
+        customRole: {
+          id: roles.id, baseRole: roles.baseRole, isActive: roles.isActive,
+          permissions: roles.permissions, operationPolicy: roles.operationPolicy, atomicPermissions: roles.atomicPermissions,
+        },
+      })
       .from(users)
+      .leftJoin(roles, eq(users.customRoleId, roles.id))
       .where(
         and(
           eq(users.isActive, true),
-          inArray(users.role, ["admin", "manager"]),
           branchScope == null ? undefined : eq(users.branchId, branchScope),
         ),
       )
       .orderBy(users.name);
-    return rows.map((r) => ({ id: r.id, name: r.name ?? `#${r.id}`, branchId: r.branchId == null ? null : Number(r.branchId) }));
+    return rows.filter(({ user, customRole }) => {
+      try {
+        return cashHandoverRecipientAllowed(storedOperationUser(user, customRole), user.role === "admin" || user.role === "manager");
+      } catch {
+        return false;
+      }
+    }).map(({ user }) => ({ id: user.id, name: user.name ?? `#${user.id}`, branchId: user.branchId == null ? null : Number(user.branchId) }));
   }),
 
   // §٧ IDOR: كان كاشير من فرع A يستطيع `report` لوردية فرع B بمعرفة shiftId.

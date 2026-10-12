@@ -22,6 +22,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { Link } from "wouter";
 import { RowActions } from "@/components/list";
 
@@ -99,6 +100,8 @@ export default function TreasuryTransfers() {
 
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
+  const canSend = treasuryOperationAllowed(me.data, "cashTransfers.send", true);
+  const canList = treasuryOperationAllowed(me.data, "cashTransfers.list", true);
   const branches = trpc.branches.list.useQuery();
   const list = trpc.cashTransfers.list.useQuery({
     direction:
@@ -106,7 +109,7 @@ export default function TreasuryTransfers() {
     status: status || undefined,
     limit: PAGE + 1,
     offset: page * PAGE,
-  });
+  }, { enabled: canList });
   const rows = ((list.data ?? []) as TransferRow[]).slice(0, PAGE);
   const hasMore = (list.data?.length ?? 0) > PAGE;
   useEffect(() => {
@@ -302,7 +305,9 @@ export default function TreasuryTransfers() {
                   label: "استلام",
                   icon: Check,
                   onSelect: () => setReceivingId(r.id),
+                  hidden: !isAdmin && (Number(me.data?.branchId) !== r.toBranchId || Number(me.data?.id) === r.sentBy),
                   gate: {
+                    operations: ["cashTransfers.receive"],
                     roles: ["manager", "accountant"],
                     module: "treasury",
                     level: "FULL",
@@ -315,7 +320,9 @@ export default function TreasuryTransfers() {
                   icon: X,
                   variant: "destructive",
                   onSelect: () => setCancellingId(r.id),
+                  hidden: !isAdmin && Number(me.data?.branchId) !== r.fromBranchId && Number(me.data?.id) !== r.sentBy,
                   gate: {
+                    operations: ["cashTransfers.cancel"],
                     roles: ["manager", "accountant"],
                     module: "treasury",
                     level: "FULL",
@@ -327,7 +334,7 @@ export default function TreasuryTransfers() {
         },
       },
     ],
-    [],
+    [isAdmin, me.data?.branchId, me.data?.id],
   );
 
   async function exportTransfers() {
@@ -459,6 +466,7 @@ export default function TreasuryTransfers() {
             </Button>
             <Button
               size="sm"
+              disabled={!canSend}
               onClick={() => setShowSendDialog(true)}
               className="gap-1.5"
             >
@@ -554,7 +562,7 @@ export default function TreasuryTransfers() {
       </Card>
 
       {/* Send Dialog */}
-      {showSendDialog && (
+      {showSendDialog && canSend && (
         <SendDialog
           branches={branches.data ?? []}
           userRole={userRole}

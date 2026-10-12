@@ -20,6 +20,7 @@ import { branchScopedProcedure, requireAtomicPermission, requireModule, router }
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import { publishRealtimeEvent } from "../realtime";
 import { REALTIME_EVENT_TYPES } from "../../shared/realtimeEvents";
+import { canonicalOperationAllowed } from "../operationAuthorization";
 
 const reservationsRead = branchScopedProcedure
   .use(requireModule("reservations", "READ"))
@@ -342,7 +343,7 @@ export const reservationsRouter = router({
     .use(requireAtomicPermission("inventory.reservation.edit"))
     .input(z.object({ id: z.number().int().positive(), hours: z.number().int().positive().max(72) }))
     .mutation(async ({ ctx, input }) => {
-      assertElevated(ctx.user.role);
+      if (!canonicalOperationAllowed(ctx.user, "reservations.extend")) assertElevated(ctx.user.role);
       const res = await extendReservation(input.id, input.hours, {
         userId: ctx.user.id,
         branchId: Number(ctx.user.branchId ?? 0),

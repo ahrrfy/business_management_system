@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -48,7 +49,8 @@ const unassignedColumns: ColumnDef<UnassignedAssetRow, unknown>[] = [
 ];
 
 export default function AssetCustodyReport() {
-  const q = trpc.assets.custodyReport.useQuery();
+  const { can } = useCatalogPeopleOperationAccess();
+  const q = trpc.assets.custodyReport.useQuery(undefined, { enabled: can("assets.custodyReport") });
   const [open, setOpen] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState("");
   const [branchId, setBranchId] = useState("");

@@ -1,3 +1,4 @@
+import { useDigitalGiftOperationAccess } from "@/lib/digitalGiftOperationAccess";
 // شاشة «أسعار الكروت اليوم» (ش٤). حقلان واضحان لكل صفّ: تكلفة المزوّد وسعر البيع.
 // الهامش وحراس الخسارة يأتيان **من الخادم** عبر معاينة مشتقّة من دالة النشر نفسها —
 // عمداً لا تُعاد قواعد القرار المالي هنا (§٧.٣ من وثيقة التصميم).
@@ -60,11 +61,12 @@ function positiveId(value: string | null): number | null {
 }
 
 export default function DigitalPricing() {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const utils = trpc.useUtils();
   const search = useSearch();
   const me = trpc.auth.me.useQuery();
-  const branches = trpc.branches.list.useQuery();
-  const providers = trpc.digitalCards.providers.list.useQuery();
+  const branches = digitalAccess.query("branches.list", trpc.branches.list.useQuery(undefined, { enabled: digitalAccess.can("branches.list") }));
+  const providers = digitalAccess.query("digitalCards.providers.list", trpc.digitalCards.providers.list.useQuery(undefined, { enabled: digitalAccess.can("digitalCards.providers.list") }));
 
   const [branchId, setBranchId] = useState<number | null>(null);
   const [providerId, setProviderId] = useState<number | null>(null);
@@ -125,13 +127,13 @@ export default function DigitalPricing() {
     ? { branchId: branchId!, providerId: providerId!, businessDate }
     : undefined;
 
-  const sheet = trpc.digitalCards.pricing.getMorningSheet.useQuery(scope!, {
-    enabled: scopeReady,
-  });
-  const reports = trpc.digitalCards.pricing.mismatchReports.useQuery(
+  const sheet = digitalAccess.query("digitalCards.pricing.getMorningSheet", trpc.digitalCards.pricing.getMorningSheet.useQuery(scope!, {
+    enabled: digitalAccess.can("digitalCards.pricing.getMorningSheet") && (scopeReady),
+  }));
+  const reports = digitalAccess.query("digitalCards.pricing.mismatchReports", trpc.digitalCards.pricing.mismatchReports.useQuery(
     { branchId: branchId ?? undefined, status: "OPEN" },
-    { enabled: branchId != null },
-  );
+    { enabled: digitalAccess.can("digitalCards.pricing.mismatchReports") && (branchId != null) },
+  ));
 
   // تحميل الحصص من المسوّدة/السعر المُرحَّل عند وصول الكشف.
   useEffect(() => {
@@ -175,10 +177,10 @@ export default function DigitalPricing() {
     return () => clearTimeout(t);
   }, [filledPriceLines, filledPriceLinesKey]);
 
-  const preview = trpc.digitalCards.pricing.preview.useQuery(
+  const preview = digitalAccess.query("digitalCards.pricing.preview", trpc.digitalCards.pricing.preview.useQuery(
     { branchId: branchId!, providerId: providerId!, lines: previewInput },
-    { enabled: scopeReady && previewInput.length > 0 },
-  );
+    { enabled: digitalAccess.can("digitalCards.pricing.preview") && (scopeReady && previewInput.length > 0) },
+  ));
   const previewById = useMemo(
     () => new Map((preview.data ?? []).map((p) => [p.offeringId, p])),
     [preview.data],
@@ -504,10 +506,10 @@ export default function DigitalPricing() {
       meta: { kind: "actions", width: "wide" },
       cell: ({ row }) => (
         <div className="flex justify-center gap-2">
-          <Button size="sm" disabled={approveMut.isPending} onClick={() => void approveMismatch(row.original)}>
+          <Button size="sm" disabled={!digitalAccess.can("digitalCards.pricing.approveMismatch") || (approveMut.isPending)} onClick={() => void approveMismatch(row.original)}>
             مراجعة واعتماد
           </Button>
-          <Button size="sm" variant="outline" disabled={rejectMut.isPending} onClick={() => rejectMut.mutate({ reportId: row.original.id })}>
+          <Button size="sm" variant="outline" disabled={!digitalAccess.can("digitalCards.pricing.rejectMismatch") || (rejectMut.isPending)} onClick={() => rejectMut.mutate({ reportId: row.original.id })}>
             رفض
           </Button>
         </div>
@@ -582,7 +584,7 @@ export default function DigitalPricing() {
               variant="outline"
               size="sm"
               className="w-full"
-              disabled={!scopeReady || busy}
+              disabled={!digitalAccess.can("digitalCards.pricing.copyPrevious") || (!scopeReady || busy)}
               onClick={() =>
                 scope &&
                 copyMut.mutate({
@@ -655,9 +657,9 @@ export default function DigitalPricing() {
                   <Button
                     size="sm"
                     disabled={
-                      !canApproveBig ||
+                      !digitalAccess.can("digitalCards.pricing.approveBigChange") || (!canApproveBig ||
                       approveBigMut.isPending ||
-                      draftBatchId == null
+                      draftBatchId == null)
                     }
                     title={
                       !canApproveBig
@@ -715,7 +717,7 @@ export default function DigitalPricing() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={busy}
+                disabled={!digitalAccess.can("digitalCards.pricing.cancelDraft") || (busy)}
                 onClick={() => void cancelDraft()}
               >
                 <Trash2 className="size-4" /> إلغاء المسوّدة
@@ -724,7 +726,7 @@ export default function DigitalPricing() {
             <Button
               variant="outline"
               size="sm"
-              disabled={!scopeReady || busy}
+              disabled={!digitalAccess.can("digitalCards.pricing.saveDraft") || (!scopeReady || busy)}
               onClick={saveDraft}
             >
               <Save className="size-4" /> حفظ مسوّدة
@@ -732,11 +734,11 @@ export default function DigitalPricing() {
             <Button
               size="sm"
               disabled={
-                !scopeReady ||
+                !digitalAccess.can("digitalCards.pricing.publish") || (!scopeReady ||
                 busy ||
                 rows.length === 0 ||
                 bigChangeBlocking ||
-                !previewReady
+                !previewReady)
               }
               title={publishBlockedReason}
               onClick={() => void publish()}

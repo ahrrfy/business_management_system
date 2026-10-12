@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { assertOperationAuthorityTx, hasServiceOperationAuthority } from "../authorization/operationAuthority";
 import { assertNotReturnDeclared } from "./declaredReturn";
 import { eq, sql } from "drizzle-orm";
 import { deliveryConsignments, onlineOrders } from "../../../drizzle/schema";
@@ -38,7 +39,8 @@ export async function cancelDeliveryAssignment(
       code: "BAD_REQUEST",
       message: "سبب إلغاء الإسناد أطول من الحد المسموح",
     });
-  if (actor.role !== "manager" && actor.role !== "admin" && actor.role !== "cashier") {
+  const legacyAllowed = actor.role === "manager" || actor.role === "admin" || actor.role === "cashier";
+  if (!legacyAllowed && !hasServiceOperationAuthority(actor.operationAuthority, actor.userId, "delivery.cancelAssignment")) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "إلغاء إسناد التوصيل صلاحية كاشير أو مدير",
@@ -51,6 +53,7 @@ export async function cancelDeliveryAssignment(
   });
 
   return withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "delivery.cancelAssignment", legacyAllowed, actor.operationAuthority);
     // افحص الفرع قبل إعادة نتيجة idempotent كي لا تتحول إعادة التشغيل إلى قناة IDOR.
     const scopedBranch =
       actor.role === "admin" ? null : (actor.branchId ?? null);

@@ -16,6 +16,7 @@ import {
   deliveryParties,
   productVariants,
   products,
+  roles,
   users,
   receptionDrafts,
   serviceTypes,
@@ -62,6 +63,8 @@ import { setWorkOrderDesign } from "../services/workOrder/design";
 import { maySeeDrawerCash as sharedMaySeeDrawerCash } from "@shared/workOrderControlAuthority";
 import { canSeeCostForUser, ownerProcedure, protectedProcedure, router, workordersCashierProcedure, workordersDirectCancelProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
 import { hasModuleAccess, type PermissionMap } from "@shared/permissions";
+import { storedOperationUser } from "../services/authorization/operationAuthority";
+import { workOrderAssigneeAllowed } from "../services/authorization/operationRecipientEligibility";
 import { invoiceBarcodeSet, onlineOrderLabelToken, workOrderBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
@@ -1557,27 +1560,21 @@ export const workOrderRouter = router({
     const branchCondition = targetBranch == null
       ? undefined
       : or(eq(users.branchId, targetBranch), isNull(users.branchId));
-    /**
-     * ش٣ (١٩/٨) — **إسنادٌ مستنير**: كانت القائمة اسماً ودوراً فقط، فيُسنِد المديرُ على العمياء
-     * لفنّيٍّ عليه عشرة أوامر متأخّرة أو غائبٍ اليوم. والحقائق الثلاث **كلّها مشتقّة، بلا عمود**:
-     *   · `openLoad`/`overdueLoad` — تجميعٌ على `workOrders` نفسها.
-     *   · `onShift` — من `shifts` المفتوحة لنفس الفرع؛ **مصدرٌ جاهزٌ لم يُستعمَل في أيّ مسار
-     *     إسناد قطّ** رغم أنّه يقول من هو على رأس العمل الآن.
-     *
-     * ⚠️ **تصويبٌ (١٩/٨، أمسكه `rbacTightening`)**: وسّعتُ الأهليّة أوّلاً إلى «كلّ من يملك
-     * `workorders:FULL`» ظنّاً أنّ فنّيّاً بدورٍ مخصّص كان محجوباً — **وهو ظنٌّ خاطئ**: الدور
-     * المخصّص يحمل `baseRole` الأساس (كما `reception_clerk` أساسُه `cashier`)، ففنّيٌّ مخصّص
-     * يبقى `print_operator`. والتوسيعُ فتح **الأدمن والمدير والكاشير منفّذين** — وهم يملكون
-     * الوحدة لأنّهم *يديرون* أوامر الشغل لا لأنّهم *ينفّذونها*.
-     * فالدورُ يبقى المرشِّح، والوحدةُ **تشديدٌ فوقه**: فنّيٌّ سُحبت وحدتُه لا يُسنَد إليه.
-     */
+    // الدور والسياسة يُقرآن مع المستخدم باستعلام واحد؛ المنفّذ المفوّض يلزمه البدء والإنجاز.
+    // الحسابات القديمة تحتفظ بمرشّح الفني ووحدة التنفيذ، والحمل والحضور يبقيان مشتقّين.
     const now = new Date();
     const rows = await db
       .select({
-        id: users.id,
-        name: users.name,
-        role: users.role,
-        permissionsOverride: users.permissionsOverride,
+        user: {
+          id: users.id, name: users.name, role: users.role, branchId: users.branchId,
+          isActive: users.isActive, isOwner: users.isOwner, customRoleId: users.customRoleId,
+          permissionsOverride: users.permissionsOverride, operationPolicy: users.operationPolicy,
+          accessExpiresAt: users.accessExpiresAt,
+        },
+        customRole: {
+          id: roles.id, baseRole: roles.baseRole, isActive: roles.isActive,
+          permissions: roles.permissions, operationPolicy: roles.operationPolicy, atomicPermissions: roles.atomicPermissions,
+        },
         openLoad: sql<number>`(
           SELECT COUNT(*) FROM ${workOrders} wo
           WHERE wo.assignedTo = ${users.id}
@@ -1595,15 +1592,26 @@ export const workOrderRouter = router({
         )`,
       })
       .from(users)
-      .where(and(eq(users.isActive, true), eq(users.role, "print_operator"), branchCondition))
+      .leftJoin(roles, eq(users.customRoleId, roles.id))
+      .where(and(eq(users.isActive, true), branchCondition))
       .orderBy(asc(users.name));
 
     return rows
-      .filter((u) => hasModuleAccess(u.role, (u.permissionsOverride as never) ?? null, "workorders", "FULL"))
+      .filter(({ user, customRole }) => {
+        try {
+          return workOrderAssigneeAllowed(
+            storedOperationUser(user, customRole),
+            user.role === "print_operator" && hasModuleAccess(user.role, (user.permissionsOverride as never) ?? null, "workorders", "FULL"),
+            targetBranch ?? undefined,
+          );
+        } catch {
+          return false; // الحساب المنتهي أو السياسة غير الصالحة لا يصلحان للإسناد.
+        }
+      })
       .map((u) => ({
-        id: u.id,
-        name: u.name,
-        role: u.role,
+        id: u.user.id,
+        name: u.user.name,
+        role: u.user.role,
         openLoad: Number(u.openLoad ?? 0),
         overdueLoad: Number(u.overdueLoad ?? 0),
         onShift: Number(u.onShift ?? 0) > 0,

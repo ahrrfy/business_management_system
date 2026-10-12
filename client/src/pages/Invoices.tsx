@@ -32,6 +32,7 @@ import { paymentMethodLabel, paymentMethodClass, POS_METHODS, type InvoiceFilter
 import { sourceTypeLabel, SOURCE_TYPE_AR } from "@/lib/labels";
 import { INVOICE_STATUSES, invoiceStatusLabel, invoiceStatusBadgeVariant } from "@shared/invoiceStatus";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { salesOperationAllowed, salesDigitalAllowed } from "@/lib/salesOperationAccess";
 import { MobileDataCard } from "@/components/ui/MobileDataCard";
 import { Calendar, CreditCard, Download, FileWarning, MapPin, Phone, Printer, Truck, User, X } from "lucide-react";
 import { downloadOfficialPdf } from "@/lib/exportPdf";
@@ -140,9 +141,10 @@ function CustomerFilter({ customerId, onChange }: { customerId: number | null; o
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  const selected = trpc.customers.get.useQuery({ customerId: customerId ?? 0 }, { enabled: customerId != null, staleTime: 60_000 });
+  const me = trpc.auth.me.useQuery();
+  const selected = trpc.customers.get.useQuery({ customerId: customerId ?? 0 }, { enabled: customerId != null && salesOperationAllowed(me.data, "customers.get", true), staleTime: 60_000 });
   const trimmed = q.trim();
-  const enabled = trimmed.length >= 2 && customerId == null;
+  const enabled = trimmed.length >= 2 && customerId == null && salesOperationAllowed(me.data, "customers.smartSearch", true);
   const search = trpc.customers.smartSearch.useQuery({ q: trimmed, limit: 8 }, { enabled, staleTime: 30_000 });
   const suggestions = search.data ?? [];
 
@@ -259,13 +261,13 @@ export default function Invoices() {
   // الرقم الضريبي للشركة (إعدادات النظام) — يُطبع على A4 بجانب رقم العميل الضريبي إن وُجد.
   const taxSettings = trpc.system.getTaxSettings.useQuery();
   const me = trpc.auth.me.useQuery();
-  const salespeople = trpc.sales.salespeople.useQuery();
+  const salespeople = trpc.sales.salespeople.useQuery(undefined, { enabled: salesOperationAllowed(me.data, "sales.salespeople", true) });
   // جهات التوصيل — لفلتر «جهة التوصيل». تُجلب فقط حين يُفعَّل فلتر توصيل (لا طلب زائد لكل فتح
   // شاشة)، وretry:false لأن بعض الأدوار بلا صلاحية store:READ (يُخفى المنتقي بدل خطأ متكرر).
   const deliveryParties = trpc.delivery.listParties.useQuery(
     {},
     {
-      enabled: !!f.delivery || !!f.deliveryPartyId,
+      enabled: (!!f.delivery || !!f.deliveryPartyId) && salesOperationAllowed(me.data, "delivery.listParties", true),
       retry: false,
       staleTime: 60_000,
     },
@@ -275,7 +277,7 @@ export default function Invoices() {
   // scopedBranchId الحاكم مقدَّم في buildSalesListConds، فالإخفاء هنا عرضيّ لا أمنيّ).
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
   const branches = trpc.branches.list.useQuery(undefined, {
-    enabled: isElevated,
+    enabled: isElevated && salesOperationAllowed(me.data, "branches.list", true),
   });
   const branchNames = useMemo(() => new Map((branches.data ?? []).map((b) => [b.id, b.name])), [branches.data]);
   // عمود «الفرع» يظهر فقط حين يعرض الجدول أكثر من فرع فعلاً (الفلتر على «كل الفروع»).
@@ -285,12 +287,12 @@ export default function Invoices() {
   // وتحترم `permissionsOverride` بكلا الاتجاهين: قالبٌ مسموحٌ مُنِح `sales=NONE` ⇒ يُخفى؛ ودورٌ آخر
   // مُنِح `sales:FULL` صراحةً ⇒ يظهر. الفحص الأمنيّ يبقى خادميّاً بأي حال (RequireRole + راوتر البيع).
   const canCreateSale =
-    !!me.data?.role && moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined, "sales", "FULL", ["admin", "manager", "cashier"]);
+    salesOperationAllowed(me.data, "sales.create", !!me.data?.role && moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined, "sales", "FULL", ["admin", "manager", "cashier"]));
   // ٢٤/٨ (Codex P2 على PR #744): `/customers-statement` تحت `reports=READ` — لغيرِهم يُعيد
   // التوجيه إلى تبويبٍ محذوف يختار PageTabs غيرَه صامتاً. نُخفي رابط الاسم عن الأدوار بلا الوصول.
   const canOpenStatement =
-    !!me.data?.role &&
-    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined, "reports", "READ", ["admin", "manager", "accountant", "auditor"]);
+    salesOperationAllowed(me.data, "reports.customerStatement", !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined, "reports", "READ", ["admin", "manager", "accountant", "auditor"]));
 
   // مدخلات الفلترة المشتركة (بلا limit/offset) — للقائمة وللمجاميع وللتصدير الشامل ⇒ الثلاثة
   // ترى نفس المجموعة حتماً (لا تصدير يخالف ما على الشاشة).
@@ -350,17 +352,19 @@ export default function Invoices() {
     ...filterInput,
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
-  });
-  const data = rows.data ?? [];
+  }, { enabled: salesOperationAllowed(me.data, "sales.list", true) });
+  const data = salesOperationAllowed(me.data, "sales.list", true) ? rows.data ?? [] : [];
 
   // مجاميع كل النتائج المطابقة للفلتر (خادمياً، لا الصفحة المعروضة فقط) — نفس قيم فلتر list حتماً.
   // count منها = إجمالي الترقيم (نفس buildSalesListConds ⇒ مطابقة مضمونة بالبناء).
-  const summary = trpc.sales.listSummary.useQuery(filterInput);
-  const total = summary.data?.count;
+  const summary = trpc.sales.listSummary.useQuery(filterInput, { enabled: salesOperationAllowed(me.data, "sales.listSummary", true) });
+  const total = salesOperationAllowed(me.data, "sales.listSummary", true) ? summary.data?.count : undefined;
 
   // طباعة A4 من القائمة: نجلب التفاصيل (sales.get) ثم نطبع بنفس قالب شاشة الفاتورة.
   async function printA4(invoiceId: number) {
+    if (!salesOperationAllowed(me.data, "sales.get", true) || !salesOperationAllowed(me.data, "invoicePrinting.requestPrint", true)) return notify.warn("طباعة الفاتورة غير مفوّضة لحسابك.");
     try {
+      await utils.client.invoicePrinting.requestPrint.mutate({ invoiceId, requestId: crypto.randomUUID(), purpose: "A4" });
       const d = await utils.sales.get.fetch({ invoiceId });
       if (!d) {
         notify.err("تعذّر جلب الفاتورة");
@@ -403,9 +407,11 @@ export default function Invoices() {
   }
 
   async function reprintThermal(invoiceId: number) {
+    if (!salesOperationAllowed(me.data, "sales.get", true) || !salesOperationAllowed(me.data, "invoicePrinting.requestReprint", true)) return notify.warn("إعادة طباعة الفاتورة غير مفوّضة لحسابك.");
     if (printingReceiptId != null) return;
     setPrintingReceiptId(invoiceId);
     try {
+      await utils.client.invoicePrinting.requestReprint.mutate({ invoiceId, requestId: crypto.randomUUID(), purpose: "THERMAL" });
       const d = await utils.sales.get.fetch({ invoiceId });
       if (!d) {
         notify.err("تعذّر جلب الفاتورة");
@@ -438,6 +444,7 @@ export default function Invoices() {
   // تاريخ الاستحقاق **لا يُنسخ** عمداً: النسخة بيعٌ جديد، واستحقاق الأصل قد يكون ماضياً
   // فيُعمِّر ذمّةً وليدةً متأخّرةً فوراً — يضبطه الموظّف من حقلٍ يظهر لأنّ الشروط صارت آجلة.
   async function duplicateInvoice(invoiceId: number) {
+    if (!canCreateSale || !salesOperationAllowed(me.data, "sales.get", true)) return notify.warn("نسخ الفاتورة وإنشاء بيع جديد غير مفوّض لحسابك.");
     try {
       const d = await utils.sales.get.fetch({ invoiceId });
       if (!d) {
@@ -516,7 +523,7 @@ export default function Invoices() {
               primaryTitle={n ?? undefined}
               secondary={r.invoiceNumber}
               secondaryTitle="معاينة تفاصيل الفاتورة"
-              onSecondaryClick={() => setDrawerInvoiceId(r.id)}
+              onSecondaryClick={salesOperationAllowed(me.data, "sales.get", true) ? () => setDrawerInvoiceId(r.id) : undefined}
               copyValue={r.invoiceNumber}
               copyTitle="نسخ رقم الفاتورة"
               secondaryBadge={
@@ -705,7 +712,7 @@ export default function Invoices() {
                   kind: "view",
                   label: "معاينة الفاتورة",
                   onSelect: () => setDrawerInvoiceId(r.id),
-                  gate: { module: "sales", level: "READ" },
+                  gate: {operations: ["sales.get"],  module: "sales", level: "READ" },
                 },
                 {
                   key: "thermal-print",
@@ -714,14 +721,16 @@ export default function Invoices() {
                   onSelect: () => void reprintThermal(r.id),
                   disabled: printingReceiptId != null,
                   disabledReason: "توجد عملية طباعة قيد التنفيذ",
-                  gate: { module: "sales", level: "READ" },
+                  hidden: !salesOperationAllowed(me.data, "sales.get", true),
+                  gate: {operations: ["invoicePrinting.requestReprint"], module: "sales", level: "READ" },
                 },
                 {
                   key: "print",
                   kind: "print",
                   label: "طباعة A4",
                   onSelect: () => void printA4(r.id),
-                  gate: { module: "sales", level: "READ" },
+                  hidden: !salesOperationAllowed(me.data, "sales.get", true),
+                  gate: {operations: ["invoicePrinting.requestPrint"], module: "sales", level: "READ" },
                 },
                 {
                   key: "download-pdf",
@@ -735,7 +744,7 @@ export default function Invoices() {
                       documentNumber: r.invoiceNumber,
                       fetcher: (params) => utils.client.documentDelivery.downloadPdf.mutate(params),
                     }),
-                  gate: { module: "sales", level: "READ" },
+                  gate: {operations: ["documentDelivery.downloadPdf"],  module: "sales", level: "READ" },
                 },
                 {
                   key: "correct",
@@ -744,6 +753,7 @@ export default function Invoices() {
                   label: "تعديل / استبدال موثّق",
                   href: `/invoices/${r.id}/correct`,
                   hidden:
+                    !salesOperationAllowed(me.data, "sales.get", true) ||
                     r.status === "CANCELLED" ||
                     r.status === "RETURNED" ||
                     r.status === "SUPERSEDED" ||
@@ -751,7 +761,7 @@ export default function Invoices() {
                     (!!r.consignmentStatus && r.consignmentStatus !== "CANCELLED") ||
                     !D(r.returnedTotal ?? "0").isZero() ||
                     !D(r.paidAmount ?? "0").isZero(),
-                  gate: { roles: ["manager"], module: "sales", level: "FULL" },
+                  gate: {operations: ["sales.reissue", "salesControl.requestExchange"],  roles: ["manager"], module: "sales", level: "FULL" },
                 },
                 {
                   key: "dispatch",
@@ -766,7 +776,7 @@ export default function Invoices() {
                     r.status === "SUPERSEDED" ||
                     r.sourceType === "ONLINE" ||
                     r.sourceType === "WORKORDER",
-                  gate: {
+                  gate: {operations: ["delivery.dispatchInvoice"],
                     roles: ["manager", "cashier"],
                     module: "store",
                     level: "FULL",
@@ -779,14 +789,15 @@ export default function Invoices() {
                   onSelect: () => setCancelDeliveryTarget(r),
                   variant: "destructive",
                   hidden: r.consignmentId == null || (r.consignmentParcelStatus !== "ASSIGNED" && r.consignmentParcelStatus !== "OUT_FOR_DELIVERY" && r.consignmentParcelStatus !== "FAILED"),
-                  gate: { roles: ["manager", "cashier"], module: "store", level: "FULL" },
+                  gate: {operations: ["delivery.cancelAssignment"],  roles: ["manager", "cashier"], module: "store", level: "FULL" },
                 },
                 {
                   key: "duplicate",
                   kind: "duplicate",
                   label: "نسخ لفاتورة جديدة",
                   onSelect: () => void duplicateInvoice(r.id),
-                  gate: {
+                  hidden: !salesOperationAllowed(me.data, "sales.get", true),
+                  gate: {operations: ["sales.create"],
                     roles: ["cashier", "manager"],
                     module: "sales",
                     level: "FULL",
@@ -798,7 +809,7 @@ export default function Invoices() {
                   label: "تسديد دفعة",
                   onSelect: () => setPayTarget(r),
                   hidden: settled,
-                  gate: {
+                  gate: {operations: ["sales.pay"],
                     roles: ["cashier", "manager"],
                     module: "sales",
                     level: "FULL",
@@ -810,7 +821,7 @@ export default function Invoices() {
                   label: "إرجاع فوري",
                   href: `/returns?portal=sales&invoice=${encodeURIComponent(r.invoiceNumber)}`,
                   hidden: !returnable,
-                  gate: { roles: ["cashier", "manager"], module: "sales", level: "FULL" },
+                  gate: {operations: ["returns.create"],  roles: ["cashier", "manager"], module: "sales", level: "FULL" },
                 },
               ]}
             />
@@ -818,7 +829,7 @@ export default function Invoices() {
         },
       },
     ],
-    [printingReceiptId, showBranchCol, branchNames, canOpenStatement],
+    [printingReceiptId, showBranchCol, branchNames, canOpenStatement, me.data],
   );
   const invoiceOperation = useMemo(() => ({
     getOperation: (invoice: Row) => ({
@@ -917,9 +928,9 @@ export default function Invoices() {
           fetchAll: () =>
             fetchAllPaged<Row>((offset, limit) => utils.sales.list.fetch({ ...filterInput, limit, offset }).then((result) => ({ rows: (result ?? []) as Row[] })), { pageSize: 500 }),
         }}
-        add={canCreateSale ? { onClick: () => navigate("/sales/new"), label: "فاتورة جديدة" } : undefined}
+        add={canCreateSale || salesDigitalAllowed(me.data) ? { onClick: () => navigate("/sales/new"), label: "فاتورة جديدة" } : undefined}
         secondaryActions={
-          me.data?.role === "admin" || me.data?.role === "manager"
+          salesOperationAllowed(me.data, "reports.salesByDimension", me.data?.role === "admin" || me.data?.role === "manager")
             ? [{ label: "تقرير الموظفين", onSelect: () => navigate("/reports/sales-by-dimension") }]
             : undefined
         }
@@ -1086,7 +1097,7 @@ export default function Invoices() {
           total,
         }}
         statusSummary={
-          summary.data ? (
+          salesOperationAllowed(me.data, "sales.listSummary", true) && summary.data ? (
             <>
               <span>
                 الفواتير: <b className="tabular-nums" dir="ltr">{summary.data.count.toLocaleString("ar-IQ-u-nu-latn")}</b>
@@ -1148,13 +1159,13 @@ export default function Invoices() {
                     ]
                   : []),
               ]}
-              onClick={() => navigate(`/invoices/${r.id}`)}
-              primaryAction={{
+              onClick={salesOperationAllowed(me.data, "sales.get", true) ? () => navigate(`/invoices/${r.id}`) : undefined}
+              primaryAction={salesOperationAllowed(me.data, "sales.get", true) && salesOperationAllowed(me.data, "invoicePrinting.requestReprint", true) ? {
                 label: "وصل",
                 icon: Printer,
                 disabled: printingReceiptId === r.id,
                 onClick: () => void reprintThermal(r.id),
-              }}
+              } : undefined}
             />
           );
         }}

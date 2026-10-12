@@ -1,3 +1,4 @@
+import { useDigitalGiftOperationAccess as useCommissionOperationAccess } from "@/lib/digitalGiftOperationAccess";
 // شاشة «خطط العمولات» — تبويب في hub الموارد البشرية (وحدة الأهداف والعمولات، S1).
 //
 // الخطة: نمط شرائح (بنسبة تحقيق الهدف أو بمبلغ المبيعات) + نسبة تُطبَّق على كامل الأساس
@@ -73,8 +74,9 @@ function tierSummary(p: PlanRow): string {
 }
 
 export default function CommissionPlans() {
+  const commissionAccess = useCommissionOperationAccess();
   const utils = trpc.useUtils();
-  const list = trpc.commissions.plans.list.useQuery();
+  const list = commissionAccess.query("commissions.plans.list", trpc.commissions.plans.list.useQuery(undefined, { enabled: commissionAccess.can("commissions.plans.list") }));
   const rows = list.data ?? [];
   const [query, setQuery] = useState("");
   const visibleRows = useMemo(() => {
@@ -88,7 +90,10 @@ export default function CommissionPlans() {
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "commissions", "FULL", ["manager"]);
   const isCompanyAuthority = me.data?.role === "admin" || me.data?.isOwner === true ||
     (me.data?.role === "accountant" && me.data?.branchId == null);
-  const canManageAssignments = hasFull && (isCompanyAuthority || (me.data?.role === "manager" && me.data?.branchId != null));
+  const legacyAssignments = hasFull && (isCompanyAuthority || (me.data?.role === "manager" && me.data?.branchId != null));
+  const canAssign = commissionAccess.can("commissions.plans.assign", legacyAssignments);
+  const canEndAssignment = commissionAccess.can("commissions.plans.endAssignment", legacyAssignments);
+  const canManageAssignments = canAssign || canEndAssignment;
   const canManagePlans = hasFull && isCompanyAuthority;
 
   /* ── حوار الخطة (إنشاء/تعديل) ── */
@@ -101,7 +106,7 @@ export default function CommissionPlans() {
 
   /* ── حوار الإسنادات ── */
   const [assignOpen, setAssignOpen] = useState(false);
-  const board = trpc.commissions.plans.assignmentBoard.useQuery(undefined, { enabled: assignOpen });
+  const board = commissionAccess.query("commissions.plans.assignmentBoard", trpc.commissions.plans.assignmentBoard.useQuery(undefined, { enabled: commissionAccess.can("commissions.plans.assignmentBoard") && (assignOpen) }));
   const [draftPlan, setDraftPlan] = useState<Record<number, string>>({});
   const [draftFrom, setDraftFrom] = useState<Record<number, string>>({});
 
@@ -211,6 +216,7 @@ export default function CommissionPlans() {
   }
 
   function assignRow(r: BoardRow) {
+    if (!canAssign) return;
     const planId = Number(draftPlan[r.employeeId] ?? "");
     const effectiveFrom = draftFrom[r.employeeId] ?? thisMonth();
     if (!planId) return notify.err("اختر خطة أولاً");
@@ -218,6 +224,7 @@ export default function CommissionPlans() {
   }
 
   async function endRow(r: BoardRow) {
+    if (!canEndAssignment) return;
     if (!r.assignment) return;
     const ok = await confirm({
       variant: "warning",
@@ -269,7 +276,7 @@ export default function CommissionPlans() {
         actions={
           <div className="flex items-center gap-2">
             {canManageAssignments && (
-              <Button size="sm" variant="outline" onClick={() => setAssignOpen(true)}>
+              <Button size="sm" variant="outline" onClick={() => setAssignOpen(true)} disabled={!commissionAccess.can("commissions.plans.assignmentBoard")}>
                 <Users className="size-4" /> ربط موظفي النطاق بالخطط
               </Button>
             )}
@@ -573,7 +580,7 @@ export default function CommissionPlans() {
                       )}
                     </td>
                     <td className="p-2">
-                      {canManageAssignments ? (
+                      {canAssign ? (
                         <AppSelect
                           value={draftPlan[r.employeeId] ?? ""}
                           onValueChange={(next) => setDraftPlan((prev) => ({ ...prev, [r.employeeId]: next }))}
@@ -590,7 +597,7 @@ export default function CommissionPlans() {
                       )}
                     </td>
                     <td className="p-2">
-                      {canManageAssignments ? (
+                      {canAssign ? (
                         <Input
                           type="month"
                           dir="ltr"
@@ -606,11 +613,11 @@ export default function CommissionPlans() {
                     <td className="p-2 text-center">
                       {canManageAssignments && (
                         <div className="flex items-center justify-center gap-1 whitespace-nowrap">
-                          <Button size="sm" variant="outline" disabled={assignMut.isPending} onClick={() => assignRow(r)}>
+                          <Button size="sm" variant="outline" disabled={!canAssign || assignMut.isPending} onClick={() => assignRow(r)}>
                             ربط
                           </Button>
                           {r.assignment && (
-                            <Button size="sm" variant="ghost" className="text-destructive" disabled={endMut.isPending} onClick={() => void endRow(r)}>
+                            <Button size="sm" variant="ghost" className="text-destructive" disabled={!canEndAssignment || endMut.isPending} onClick={() => void endRow(r)}>
                               فكّ الربط
                             </Button>
                           )}

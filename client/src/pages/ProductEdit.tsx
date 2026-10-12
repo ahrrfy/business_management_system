@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useParams } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -34,16 +35,17 @@ import {
  * مع RecordForm لإدارة اختصارات الحفظ وحارس المغادرة، وSimpleProductEditForm للمنتجات البسيطة.
  */
 export default function ProductEdit() {
+  const { can } = useCatalogPeopleOperationAccess();
   const params = useParams<{ id: string }>();
   const productId = Number(params.id);
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const branchesQ = trpc.branches.list.useQuery();
-  const categoriesQ = trpc.catalog.categories.useQuery();
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: can("branches.list") });
+  const categoriesQ = trpc.catalog.categories.useQuery(undefined, { enabled: can("catalog.categories") });
   const product = trpc.catalog.getForVariantEdit.useQuery(
     { productId },
-    { enabled: Number.isFinite(productId) && productId > 0 },
+    { enabled: can("catalog.getForVariantEdit") && (Number.isFinite(productId) && productId > 0) },
   );
 
   const [advanced, setAdvanced] = useState(false);
@@ -100,7 +102,7 @@ export default function ProductEdit() {
   const debouncedCodes = useMemo(() => (debouncedKey ? debouncedKey.split("\n") : []), [debouncedKey]);
   const checkQ = trpc.catalog.checkBarcodes.useQuery(
     { codes: debouncedCodes },
-    { enabled: debouncedCodes.length > 0, staleTime: 10_000 },
+    { enabled: can("catalog.checkBarcodes") && (debouncedCodes.length > 0), staleTime: 10_000 },
   );
   const takenInDb = useMemo(
     () => findTakenEditableBarcodeCodes(checkQ.data ?? [], barcodeFields, originalBarcodeCodes.current),
@@ -131,6 +133,7 @@ export default function ProductEdit() {
   const blockedBy = useMemo(() => validateProductForm(model), [model]);
 
   async function save(): Promise<unknown> {
+    if (!can("catalog.updateProductVariants")) throw new Error("العملية غير مفوضة لحسابك");
     if (allCodes.length) {
       let usages: StoredBarcodeUsage[] = [];
       try {
@@ -233,7 +236,7 @@ export default function ProductEdit() {
       <RecordForm
         mode="edit"
         isDirty={isDirty}
-        blockedBy={blockedBy}
+        blockedBy={can("catalog.updateProductVariants") ? blockedBy : [...blockedBy, "العملية غير مفوضة لحسابك"]}
         onSave={save}
         onSaveAndClose={saveAndClose}
         onCancel={() => navigate("/products")}

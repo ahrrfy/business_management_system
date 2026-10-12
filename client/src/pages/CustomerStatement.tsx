@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { CopyInline } from "@/components/CopyButton";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
@@ -333,6 +334,7 @@ function getStmtPaymentColumns(onDrilldown: (target: DrilldownTarget) => void): 
 }
 
 export default function CustomerStatement() {
+  const { can } = useCatalogPeopleOperationAccess();
   // الـURL مصدر الحقيقة لهوية العميل ⇒ رابط مستقلّ قابل للمشاركة + يتحدّث فوراً عند تغيّر ?id=
   // (يُصلح فقدان الاستقلالية: كان يُقرأ مرّة واحدة عند التركيب فلا يتبع تغيّر الرابط داخل الـhub).
   const [loc, navigate] = useLocation();
@@ -356,10 +358,10 @@ export default function CustomerStatement() {
   const setTo = (v: string) => setPeriodF({ to: v });
   const setInvoiceFilter = (v: string) => setPeriodF({ filter: v });
 
-  const index = trpc.reports.customersIndex.useQuery();
+  const index = trpc.reports.customersIndex.useQuery(undefined, { enabled: can("reports.customersIndex") });
   const stmt = trpc.reports.customerStatement.useQuery(
     { customerId: customerId || 0, from: from || undefined, to: to || undefined },
-    { enabled: !!customerId }
+    { enabled: can("reports.customerStatement") && (!!customerId) }
   );
   /**
    * Tier-3 #6 (٢٧/٨): تفصيلٌ محاسبيٌّ إضافيّ من `journalLines` (يحتاج SHADOW/ACTIVE
@@ -368,7 +370,7 @@ export default function CustomerStatement() {
    */
   const journal = trpc.reports.customerJournalBreakdown.useQuery(
     { customerId: customerId || 0, from: from || undefined, to: to || undefined },
-    { enabled: !!customerId }
+    { enabled: can("reports.customerJournalBreakdown") && (!!customerId) }
   );
   const utils = trpc.useUtils();
   const printAudit = usePrintAudit();
@@ -745,7 +747,7 @@ export default function CustomerStatement() {
                 <Button
                   size="sm"
                   className="shrink-0 gap-1.5"
-                  disabled={autoSettleM.isPending}
+                  disabled={!can("customers.autoSettle") || (autoSettleM.isPending)}
                   onClick={() => autoSettleM.mutate({ customerId })}
                 >
                   <RefreshCw className={`h-4 w-4 ${autoSettleM.isPending ? "animate-spin" : ""}`} />

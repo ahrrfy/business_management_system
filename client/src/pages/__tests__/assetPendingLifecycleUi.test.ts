@@ -24,7 +24,7 @@ describe("AssetDetail acquisition settlement disclosure", () => {
   it("keeps lifecycle and document actions available for a recognized asset", () => {
     expect(source).not.toContain("!isPaymentPending && a.status !== \"disposed\"");
     expect(source).not.toContain("رفع المستند غير متاح قبل اعتماد الدفع");
-    expect(source).toContain("{isLive && <Button variant=\"outline\" size=\"sm\" onClick={() => setOpenMaint(true)}>");
+    expect(source).toContain("{isLive && can(\"assets.addMaintenance\") && <Button variant=\"outline\" size=\"sm\" onClick={() => setOpenMaint(true)}>");
     expect(source).toContain("onClick={() => addDoc.mutate");
     expect(source).toContain("aria-label={`حذف المستند");
   });

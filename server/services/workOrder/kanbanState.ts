@@ -12,7 +12,7 @@ import {
 import { logAuditTx } from "../auditService";
 import { recordWorkOrderEvent } from "../workOrderEvents";
 import { type Actor, withTx } from "../tx";
-import { assertOperatorOwns, assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import { assertOperatorOwns, assertWorkOrderBranch, loadWorkOrder, workOrderOperationScopeTx } from "./helpers";
 
 export async function setWorkOrderKanbanState(
   input: {
@@ -42,9 +42,10 @@ export async function setWorkOrderKanbanState(
   }
 
   return withTx(async (tx) => {
+    const scope = await workOrderOperationScopeTx(tx, actor, "workOrders.setKanbanState");
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
-    assertOperatorOwns(wo, actor);
+    assertOperatorOwns(wo, actor, scope);
     // الإشارةُ ذاتُ معنى في الحالات النشطة فقط — الأمرُ المُسلَّم/الملغى نهايةٌ.
     if (!isKanbanStateApplicable(wo.status)) {
       throw new TRPCError({

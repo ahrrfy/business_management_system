@@ -51,7 +51,7 @@ import { notify } from "@/lib/notify";
 import { playReadyBeep } from "@/lib/notifyBeep";
 import { D, fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import { type ShortfallReason } from "@shared/shortfallReason";
 import { PARTY_EXPOSURE_LABEL_AR } from "@shared/partyExposure";
 import { DELIVERY_TERMS as DT } from "@shared/deliveryTerminology";
@@ -187,14 +187,8 @@ function DispatchTab() {
   const ready = trpc.delivery.readyForDispatch.useQuery(undefined, { refetchOnWindowFocus: true });
   const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { refetchOnWindowFocus: true });
   const me = trpc.auth.me.useQuery();
-  const canDispatch = !!me.data
-    && moduleAccessAllowed(
-      me.data.role as RoleKey,
-      (me.data.permissionsOverride ?? null) as PermissionMap | null,
-      "store",
-      "FULL",
-      ["cashier", "manager"],
-    );
+  const canDispatch = useOperationPermission("delivery.dispatch").allowed;
+  const canDispatchByBarcode = useOperationPermission("delivery.dispatchByBarcode").allowed;
   const [target, setTarget] = useState<ReadyOrder | null>(null);
   const [query, setQuery] = useState("");
   const [departureData, setDepartureData] = useState<DeliveryDepartureData | null>(null);
@@ -420,9 +414,21 @@ function DispatchTab() {
                   key: "dispatch",
                   kind: "approve",
                   label: "تسليم لمندوب",
-                  hidden: !canDispatch,
+                  hidden:
+                    o.sourceType === "ONLINE_ORDER"
+                      ? !canDispatchByBarcode
+                      : !canDispatch,
                   onSelect: () => setTarget(o),
-                  gate: { roles: ["cashier", "manager"], module: "store", level: "FULL" },
+                  gate: {
+                    roles: ["cashier", "manager"],
+                    module: "store",
+                    level: "FULL",
+                    operations: [
+                      o.sourceType === "ONLINE_ORDER"
+                        ? "delivery.dispatchByBarcode"
+                        : "delivery.dispatch",
+                    ],
+                  },
                 },
               ]}
             />
@@ -430,7 +436,7 @@ function DispatchTab() {
         },
       },
     ],
-    [canDispatch],
+    [canDispatch, canDispatchByBarcode],
   );
 
   const dispatchByBarcodeMutation = trpc.delivery.dispatchByBarcode.useMutation();
@@ -444,7 +450,7 @@ function DispatchTab() {
 
   return (
     <div className="space-y-4">
-      {canDispatch && (
+      {canDispatchByBarcode && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary/5 p-3.5 sm:px-4">
           <div className="flex items-center gap-2.5">
             <ScanBarcode className="size-5 text-primary shrink-0" aria-hidden />
@@ -499,10 +505,23 @@ function DispatchTab() {
           onClose={() => setTarget(null)}
           onConfirm={async ({ partyId, fee, recipientName, recipientPhone, deliveryAddress, notes, assignedUserId, externalTrackingRef }) => {
             const ord = target!;
+            if (
+              ord.sourceType === "ONLINE_ORDER"
+                ? !canDispatchByBarcode
+                : !canDispatch
+            ) {
+              notify.err("عملية إسناد التوصيل غير مفوضة لحسابك");
+              return;
+            }
             const party = (parties.data ?? []).find((p) => p.id === partyId);
             const labelWin = preopenShippingLabelWindow();
             try {
-              let r: { consignmentNumber: string; codAmount: string; invoiceNumber?: string | null; deliveryFee: string };
+              let r: {
+                consignmentNumber: string;
+                codAmount: string;
+                invoiceNumber?: string | null;
+                deliveryFee: string;
+              };
               if (ord.sourceType === "ONLINE_ORDER") {
                 const res = await dispatchByBarcodeMutation.mutateAsync({
                   barcode: ord.orderNumber,
@@ -601,37 +620,20 @@ function InTransitTab() {
   /** الطردُ المفتوحُ حوارُ إرجاعه — يحمل درجَ الردّ الذي كانت الشاشةُ عاجزةً عن تحديده. */
   const [returnTarget, setReturnTarget] = useState<ReturnConsignmentTarget | null>(null);
   const [collectTarget, setCollectTarget] = useState<InTransitRow | null>(null);
-  const [cancelTarget, setCancelTarget] = useState<{ id: number; number: string } | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<{
+    id: number;
+    number: string;
+  } | null>(null);
 
-  const canFulfil = !!me.data
-    && moduleAccessAllowed(
-      me.data.role as RoleKey,
-      (me.data.permissionsOverride ?? null) as PermissionMap | null,
-      "store",
-      "FULL",
-      ["manager", "cashier", "sales_rep"],
-    );
-  /**
-   * ٢٣/٨ (Codex P2 #3): `deliveryCashierProcedure` = `moduleProcedure(["cashier","manager"],"store","FULL")`
-   * — لا يشمل `sales_rep`. `canFulfil` أعلاه أوسع (يشمله). إظهارُ زرّ «تم التسليم» عليه
-   * كان يُنتج `FORBIDDEN` من الخادم على كل نقرة. مرآةُ بوّابة الخادم حرفياً هنا.
-   */
-  const canStaffConfirm = !!me.data
-    && moduleAccessAllowed(
-      me.data.role as RoleKey,
-      (me.data.permissionsOverride ?? null) as PermissionMap | null,
-      "store",
-      "FULL",
-      ["manager", "cashier"],
-    );
-  const isManager = !!me.data
-    && moduleAccessAllowed(
-      me.data.role as RoleKey,
-      (me.data.permissionsOverride ?? null) as PermissionMap | null,
-      "store",
-      "FULL",
-      ["manager"],
-    );
+  const canStaffHandover = useOperationPermission("delivery.staffHandover").allowed;
+  const canStaffConfirm = useOperationPermission("delivery.staffConfirm").allowed;
+  const canMarkFailed = useOperationPermission("delivery.staffMarkFailed").allowed;
+  const canCollect = useOperationPermission("delivery.recordRemittance").allowed;
+  const canCancelAssignment = useOperationPermission("delivery.cancelAssignment").allowed;
+  const canDeclareReturn = useOperationPermission("delivery.declareReturn").allowed;
+  const canReceiveReturn = useOperationPermission("delivery.returnConsignment").allowed;
+  const isManager = useOperationPermission("delivery.manualProof").allowed;
+  const canFulfil = canStaffHandover || canMarkFailed;
 
   // ── Mutations ──
   const invalidateAll = () => {
@@ -932,7 +934,8 @@ function InTransitTab() {
           return (
             <div className="flex flex-wrap items-center gap-1">
               {/* الإجراء التالي حسب الحالة */}
-              {canFulfil && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT") && (
+              {canStaffHandover &&
+                (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT") && (
                 <Button size="sm" variant="outline" title="سلّمتُه للمندوب — يبدأ رحلة التوصيل" disabled={staffHandover.isPending} onClick={() => void singleHandover(rowId)}>
                   <Send aria-hidden className="size-3" /> أعطيتُه للمندوب
                 </Button>
@@ -946,7 +949,8 @@ function InTransitTab() {
                   <CheckCircle2 aria-hidden className="size-3" /> تم التسليم
                 </Button>
               )}
-              {canFulfil && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "IN_TRANSIT") && (
+              {canMarkFailed &&
+                (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "IN_TRANSIT") && (
                 <Button size="sm" variant="outline" title="لم يستلمه الزبون — نحتاج إعادة محاولة أو إرجاع" disabled={staffMarkFailed.isPending} onClick={() => setFailTarget({ ids: [rowId] })}>
                   <XCircle aria-hidden className="size-3" /> لم يُسلَّم
                 </Button>
@@ -956,7 +960,7 @@ function InTransitTab() {
                 يفتح نافذة التحصيل والتوريد الفوري وتصفير الذمة مع إمكانية طباعة السند،
                 مع خيار الانتقال المباشر لتبويب التسوية.
               */}
-              {canFulfil && r.viewKey === "DELIVERED_AWAITING_REMIT" && (
+              {canCollect && r.viewKey === "DELIVERED_AWAITING_REMIT" && (
                 <>
                   <Button
                     size="sm"
@@ -975,7 +979,9 @@ function InTransitTab() {
                 </>
               )}
               {/* إلغاء إسناد الطرد قبل قبوله أو عند تعذّره لإعادته للمخزن أو إعادة التوجيه */}
-              {canStaffConfirm && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "IN_TRANSIT" || r.viewKey === "FAILED") && Number(r.collectedAmount ?? 0) === 0 && (
+              {canCancelAssignment &&
+                (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "IN_TRANSIT" || r.viewKey === "FAILED") &&
+                Number(r.collectedAmount ?? 0) === 0 && (
                 <Button
                   size="sm"
                   variant="ghost"
@@ -986,12 +992,15 @@ function InTransitTab() {
                   <Ban aria-hidden className="size-3" /> إلغاء الإسناد
                 </Button>
               )}
-              {canFulfil && r.viewKey === "FAILED" && r.returnDeclaredAt == null && (
+              {canDeclareReturn &&
+                r.viewKey === "FAILED" &&
+                r.returnDeclaredAt == null && (
                 <Button size="sm" variant="outline" title="الشركة أخبرتنا أنّ الطرد راجعٌ إلينا" disabled={declareReturn.isPending} onClick={() => void askDeclareReturn(r)}>
                   <Undo2 aria-hidden className="size-3" /> الشركة تُرجعه
                 </Button>
               )}
-              {canFulfil && (r.viewKey === "FAILED" || r.viewKey === "RETURN_DECLARED") && (
+              {canReceiveReturn &&
+                (r.viewKey === "FAILED" || r.viewKey === "RETURN_DECLARED") && (
                 <Button size="sm" variant="outline" title={r.returnDeclaredAt != null ? "وصلت البضاعة للمكتبة وفُحصت — أُعيدها للمخزون" : "وصلت البضاعة للمكتبة — أُعيدها للمخزون"} disabled={returnCn.isPending} onClick={() => void askReceiveReturn(r)}>
                   <RotateCcw aria-hidden className="size-3" /> استلمتُ الرجعة
                 </Button>
@@ -1041,7 +1050,23 @@ function InTransitTab() {
         },
       },
     ],
-    [canFulfil, canStaffConfirm, isManager, staffHandover.isPending, staffMarkFailed.isPending, staffConfirm.isPending, declareReturn.isPending, returnCn.isPending, manualProof.isPending],
+    [
+      canFulfil,
+      canStaffHandover,
+      canStaffConfirm,
+      canMarkFailed,
+      canCollect,
+      canCancelAssignment,
+      canDeclareReturn,
+      canReceiveReturn,
+      isManager,
+      staffHandover.isPending,
+      staffMarkFailed.isPending,
+      staffConfirm.isPending,
+      declareReturn.isPending,
+      returnCn.isPending,
+      manualProof.isPending,
+    ],
   );
 
   if (rows.isError) return <ErrorState onRetry={() => void rows.refetch()} />;
@@ -1061,7 +1086,8 @@ function InTransitTab() {
               stateFilter === "ALL" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
             )}
           >
-            الكل <span className="ms-1 tabular-nums opacity-70">{rowsWithView.length}</span>
+            الكل{" "}
+            <span className="ms-1 tabular-nums opacity-70">{rowsWithView.length}</span>
           </button>
           {CONSIGNMENT_VIEW_ORDER.filter((k) => k !== "CLOSED" && (counts.get(k) ?? 0) > 0).map((k) => (
             <button
@@ -1075,7 +1101,8 @@ function InTransitTab() {
                 stateFilter === k ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
               )}
             >
-              {CONSIGNMENT_VIEW_AR[k]} <span className="ms-1 tabular-nums opacity-70">{counts.get(k) ?? 0}</span>
+              {CONSIGNMENT_VIEW_AR[k]}{" "}
+              <span className="ms-1 tabular-nums opacity-70">{counts.get(k) ?? 0}</span>
             </button>
           ))}
         </div>
@@ -1091,10 +1118,14 @@ function InTransitTab() {
             طرود مفتوحة: <span className="tabular-nums">{list.length}</span>
           </span>
           <span className="rounded-md border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] px-2 py-1 font-bold text-[var(--sem-warn)]" title="مبالغُ COD المطلوب تحصيلها من العملاء (لا تشمل الأجور)">
-            قيد التحصيل من العملاء: <span className="tabular-nums" dir="ltr">{fmt(totals.codDue)}</span> د.ع
+            قيد التحصيل من العملاء:{" "}
+            <span className="tabular-nums" dir="ltr">{fmt(totals.codDue)}</span>{" "}
+            د.ع
           </span>
           <span className="rounded-md border border-[var(--sem-info)]/45 bg-[var(--sem-info-bg)] px-2 py-1 font-bold text-[var(--sem-info)]">
-            قيمة البضاعة المفتوحة: <span className="tabular-nums" dir="ltr">{fmt(totals.goodsValue)}</span> د.ع
+            قيمة البضاعة المفتوحة:{" "}
+            <span className="tabular-nums" dir="ltr">{fmt(totals.goodsValue)}</span>{" "}
+            د.ع
           </span>
         </div>
       </div>
@@ -1102,14 +1133,30 @@ function InTransitTab() {
       {/* ─── شريط الإجراءات الجماعية (يظهر حين يوجد محدَّد) ─── */}
       {selectedIds.size > 0 && canFulfil && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-primary/5 p-2 text-sm">
-          <span className="font-bold">المحدد المعروض: <span className="tabular-nums">{selectedList.length}</span> · المخفي المحفوظ: {selectedIds.size - selectedList.length}</span>
-          {eligibleForHandoverIds.filter((id) => selectedIds.has(id)).length > 0 && (
+          <span className="font-bold">
+            المحدد المعروض:{" "}
+            <span className="tabular-nums">{selectedList.length}</span> · المخفي
+            المحفوظ: {selectedIds.size - selectedList.length}
+          </span>
+          {canStaffHandover &&
+            eligibleForHandoverIds.filter((id) => selectedIds.has(id)).length > 0 && (
             <Button size="sm" variant="outline" disabled={staffHandover.isPending} onClick={bulkHandover}>
               <Send aria-hidden className="size-3.5" /> خرج مع المندوب ({selectedList.filter((r) => r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT").length})
             </Button>
           )}
-          <Button size="sm" variant="outline" disabled={staffMarkFailed.isPending || bulkFailurePending || selectedList.length === 0} onClick={() => setFailTarget({ ids: selectedList.map((row) => Number(row.id)) })}>
-            <XCircle aria-hidden className="size-3.5" /> علّم المعروض متعذّراً ({selectedList.length})
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={
+              !canMarkFailed ||
+              staffMarkFailed.isPending ||
+              bulkFailurePending ||
+              selectedList.length === 0
+            }
+            onClick={() => setFailTarget({ ids: selectedList.map((row) => Number(row.id)) })}
+          >
+            <XCircle aria-hidden className="size-3.5" /> علّم المعروض متعذّراً (
+            {selectedList.length})
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>مسح التحديد</Button>
         </div>

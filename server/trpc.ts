@@ -19,11 +19,14 @@ import {
   ATOMIC_PERMISSION_DEFINITIONS,
 } from "@shared/atomicPermissions";
 import { initTRPC, TRPCError } from "@trpc/server";
+import { canViewOperationData, hasOperationPolicy, operationRecordScope, type OperationUser } from "@shared/operationPermissions";
+import { assertOperationAuthorized, canonicalOperationAllowed } from "./operationAuthorization";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
 import { EXPO_SUPERAPP_CLIENT_ID } from "./auth/deviceProof";
 import { isCurrentNativeClient } from "./auth/deviceProof";
 import { isCryptoReady } from "./services/cryptoService";
+import { assertDirectPrintBridgeAuthorized } from "./services/invoicePrintAuthorization";
 import { canCrossBranches } from "./lib/branchAuthority";
 import { logger } from "./logger";
 import { isFinancialMutation } from "@shared/financialRealtime";
@@ -129,7 +132,18 @@ const auditMutationOperation = t.middleware(async ({ ctx, type, path, input, get
 });
 
 /** الجذر الوحيد لبناء الإجراءات؛ يحرسه اختبار عقدي كي لا تظهر mutation خارج التدقيق العام. */
-const auditedProcedure = t.procedure.use(auditMutationOperation);
+const auditedProcedure = t.procedure.use(auditMutationOperation).use(async ({ ctx, path, getRawInput, next }) => {
+  assertOperationAuthorized(ctx.user, path);
+  // A sale can compose delivery assignment in the same transaction. Its nested
+  // payload must not gain an independently revoked delivery operation.
+  if (path === "sales.create" && ctx.user && hasOperationPolicy(ctx.user)) {
+    const raw = await getRawInput();
+    if (raw && typeof raw === "object" && "delivery" in raw && raw.delivery != null) {
+      assertOperationAuthorized(ctx.user, "delivery.dispatchInvoice");
+    }
+  }
+  return next({ ctx });
+});
 
 export const publicProcedure = auditedProcedure;
 
@@ -210,6 +224,12 @@ const requireUser = t.middleware(async ({ ctx, next, path }) => {
 });
 
 export const protectedProcedure = auditedProcedure.use(requireUser);
+
+/** Hardware transport authority is independent of invoice print/reprint authority. */
+export const directPrintBridgeProcedure = protectedProcedure.use(({ ctx, next }) => {
+  assertDirectPrintBridgeAuthorized(ctx.user);
+  return next({ ctx });
+});
 
 /**
  * بوابة المالك الموثّق. هذه قراءة مبكرة لراية الجلسة لتحسين الرفض عند حدود API؛
@@ -312,10 +332,10 @@ const FORBIDDEN_MSG = "صلاحيات غير كافية لهذا الإجراء.
 // نُعيد تصديره هنا ليستورده كودُ الراوترات من "../trpc" كالمعتاد. قرار المالك ١٢/٨: عزل مدير الفرع.
 export { canCrossBranches };
 
-function requireRole(...allowed: string[]) {
+export function requireRole(...allowed: string[]) {
   return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
-    if (ctx.user.role !== "admin" && !allowed.includes(ctx.user.role)) {
+    if (!canonicalOperationAllowed(ctx.user, path) && ctx.user.role !== "admin" && !allowed.includes(ctx.user.role)) {
       throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
     }
     assertTwoFactorEnrolled(ctx.user, path);
@@ -381,6 +401,10 @@ function auditCapabilityShadow(
 export function requireAtomicPermission(key: AtomicPermissionKey) {
   return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    if (canonicalOperationAllowed(ctx.user, path)) {
+      assertTwoFactorEnrolled(ctx.user, path);
+      return next({ ctx: { ...ctx, user: ctx.user } });
+    }
     const atomic = (ctx.user as any).resolvedAtomicPermissions as AtomicPermissionsMap | undefined;
     if (atomic && atomic[key] === false) {
       throw new TRPCError({
@@ -442,6 +466,10 @@ export function requireAtomicPermission(key: AtomicPermissionKey) {
 export function requireModule(moduleKey: string, minLevel: AccessLevel) {
   return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    if (canonicalOperationAllowed(ctx.user, path)) {
+      assertTwoFactorEnrolled(ctx.user, path);
+      return next({ ctx: { ...ctx, user: ctx.user } });
+    }
     if (ctx.user.role === "admin") return next({ ctx: { ...ctx, user: ctx.user } });
 
     const override = (ctx.user as any).permissionsOverride as Record<string, AccessLevel> | null;
@@ -468,6 +496,10 @@ export function requireModule(moduleKey: string, minLevel: AccessLevel) {
 function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, minLevel: AccessLevel) {
   return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    if (canonicalOperationAllowed(ctx.user, path)) {
+      assertTwoFactorEnrolled(ctx.user, path);
+      return next({ ctx: { ...ctx, user: ctx.user } });
+    }
     if (ctx.user.role === "admin") {
       assertTwoFactorEnrolled(ctx.user, path);
       return next({ ctx: { ...ctx, user: ctx.user } });
@@ -579,7 +611,11 @@ export const canSeeCost = (role: string) => _canSeeCost(role);
  * القالب لا يرى ⇒ لا (كما هو)، وإن كان دوراً مخصّصاً (له override) فالرؤية مشروطة بأن صلاحية «التقارير»
  * (نطاق التكلفة/الربح) ليست NONE. الأدوار القالبية (بلا override) بلا تغيير.
  */
-export function canSeeCostForUser(user: { role: string; permissionsOverride?: unknown }): boolean {
+export function canSeeCostForUser(user: OperationUser): boolean {
+  if (user.isOwner === true) return true;
+  if (hasOperationPolicy(user)) {
+    return canViewOperationData(user, "purchaseCost") && canViewOperationData(user, "profitMargin");
+  }
   if (!_canSeeCost(user.role)) return false;
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
   if (!override) return true;
@@ -605,13 +641,15 @@ export function canViewReports(user: { role: string; permissionsOverride?: unkno
 // مستخدم غير-elevated الوصول وهو بلا فرع مُسنَد. كان `-1` يجعل الاستعلامات تُرجع
 // `[]` صامتاً (المستخدم يرى «لا بيانات» بدل «ممنوع») ⇒ لا أثر forensic + سلوك مضلّل.
 // الآن: المسار آمن، والـauthz failure يُسجَّل في pino عبر errorFormatter (F5).
-export const branchScopedProcedure = protectedProcedure.use(({ ctx, next }) => {
+export const branchScopedProcedure = protectedProcedure.use(({ ctx, next, path }) => {
   // قرار المالك (١٢/٨/٢٦): عزل مدير الفرع. **فصلُ مُسنَدَين** كانا مدموجَين في «elevated» واحد:
   //   • crossBranch (عبور الفروع) = المالك/الأدمن فقط ⇒ scopedBranchId=null (كلّ الفروع).
   //     كان المدير هنا ⇒ يرى كلّ الفروع؛ الآن يُقيَّد بفرعه المُسنَد (scopedBranchId=فرعه).
   //   • supervisor (يرى كلّ سجلّات فرعه لا ما أنشأه هو فقط) = المالك/الأدمن **والمدير**.
   const crossBranch = canCrossBranches(ctx.user);
-  const supervisor = crossBranch || ctx.user.role === "manager";
+  const supervisor = hasOperationPolicy(ctx.user) && !ctx.user.isOwner
+    ? operationRecordScope(ctx.user, path) === "BRANCH"
+    : crossBranch || ctx.user.role === "manager";
   if (!crossBranch && ctx.user.branchId == null) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
   }
@@ -656,7 +694,7 @@ export function returnOperationsAllowed(user: {
   if (user.role === "admin") return true;
   if (user.resolvedAtomicPermissions) {
     if (
-      user.resolvedAtomicPermissions["pos.refund.create"] === false &&
+      user.resolvedAtomicPermissions["pos.return.create"] === false &&
       user.resolvedAtomicPermissions["pos.invoice.void"] === false
     ) {
       return false;
@@ -677,6 +715,10 @@ export const returnsProcedure = auditedProcedure
   .use(
     t.middleware(async ({ ctx, next, path }) => {
       if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+      if (canonicalOperationAllowed(ctx.user, path)) {
+        assertTwoFactorEnrolled(ctx.user, path);
+        return next({ ctx: { ...ctx, user: ctx.user } });
+      }
       if (!returnOperationsAllowed(ctx.user)) {
         throw new TRPCError({
           code: "FORBIDDEN",
@@ -701,13 +743,13 @@ export const returnsProcedure = auditedProcedure
         }
         if (
           (path?.endsWith("create") || path?.includes("Refund") || path?.includes("Return")) &&
-          atomic["pos.refund.create"] === false
+          atomic["pos.return.create"] === false
         ) {
           throw new TRPCError({
             code: "FORBIDDEN",
             message: appErrorMessage({
               what: "إصدار المرتجع غير مصرّح به",
-              why: "تم حظر صلاحية إنشاء المرتجعات (pos.refund.create) لحسابك صراحة",
+              why: "تم حظر صلاحية إنشاء المرتجعات (pos.return.create) لحسابك صراحة",
               doThis: "راجع مسؤول النظام أو المشرف لإصدار المرتجع",
             }),
           });
@@ -745,7 +787,8 @@ export const salesCorrectionProcedure = branchScopedProcedure.use(
     const salesFull = map.sales === "FULL";
     const receptionFull = map.workorders === "FULL";
     const productsReadable = map.products === "READ" || map.products === "FULL";
-    if (ctx.user.role !== "admin" && (!productsReadable || (!salesFull && !receptionFull))) {
+    const delegated = canonicalOperationAllowed(ctx.user, path);
+    if (!delegated && ctx.user.role !== "admin" && (!productsReadable || (!salesFull && !receptionFull))) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({
@@ -760,7 +803,7 @@ export const salesCorrectionProcedure = branchScopedProcedure.use(
       ctx: {
         ...ctx,
         user: ctx.user,
-        invoiceCorrectionScope: salesFull || ctx.user.role === "admin" ? "sales" as const : "reception" as const,
+        invoiceCorrectionScope: delegated || salesFull || ctx.user.role === "admin" ? "sales" as const : "reception" as const,
       },
     });
   }),
@@ -777,7 +820,8 @@ export const salesCorrectionComparisonProcedure = branchScopedProcedure.use(
     const salesFull = map.sales === "FULL";
     const receptionWithCatalog = map.workorders === "FULL"
       && (map.products === "READ" || map.products === "FULL");
-    if (ctx.user.role !== "admin" && !salesFull && !receptionWithCatalog) {
+    const delegated = canonicalOperationAllowed(ctx.user, path);
+    if (!delegated && ctx.user.role !== "admin" && !salesFull && !receptionWithCatalog) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({
@@ -792,7 +836,7 @@ export const salesCorrectionComparisonProcedure = branchScopedProcedure.use(
       ctx: {
         ...ctx,
         user: ctx.user,
-        invoiceCorrectionScope: salesFull || ctx.user.role === "admin" ? "sales" as const : "reception" as const,
+        invoiceCorrectionScope: delegated || salesFull || ctx.user.role === "admin" ? "sales" as const : "reception" as const,
       },
     });
   }),
@@ -802,8 +846,10 @@ export const salesCorrectionComparisonProcedure = branchScopedProcedure.use(
 // المبيعات كاملةً (عروض الأسعار تبقى محميّة على salesReadProcedure). محميّة بالفرع (branchScoped +
 // فلتر الفرع داخل الاستعلام يُرجِع null لفاتورة فرعٍ آخر ⇒ لا IDOR). دورٌ-محايد: يعمل لأيّ دور استقبال.
 export function invoiceViewScopeForUser(
-  user: { role: string; permissionsOverride?: unknown },
+  user: OperationUser,
+  path = "sales.get",
 ): InvoiceScope | null {
+  if (hasOperationPolicy(user)) return canonicalOperationAllowed(user, path) ? "sales" : null;
   if (user.role === "admin") return "sales";
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
   const map = resolvePermissions(user.role as RoleKey, override);
@@ -835,18 +881,18 @@ export type InvoiceScope = "sales" | "reception" | "print";
  * (`quotationRouter` جالسٌ على `salesReadProcedure`) وهو تسريبٌ أُغلق عمداً.
  */
 export const invoiceListProcedure = branchScopedProcedure.use(
-  t.middleware(async ({ ctx, next }) => {
+  t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
-    const invoiceListScope = invoiceViewScopeForUser(ctx.user);
+    const invoiceListScope = invoiceViewScopeForUser(ctx.user, path);
     if (!invoiceListScope) throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
     return next({ ctx: { ...ctx, user: ctx.user, invoiceListScope } });
   }),
 );
 
 export const invoiceViewProcedure = branchScopedProcedure.use(
-  t.middleware(async ({ ctx, next }) => {
+  t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
-    if (!invoiceViewScopeForUser(ctx.user)) {
+    if (!invoiceViewScopeForUser(ctx.user, path)) {
       throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
     }
     return next({ ctx: { ...ctx, user: ctx.user } });
@@ -936,7 +982,7 @@ export function customerReadAllowed(user: {
 }
 
 export const customersReadProcedure = protectedProcedure.use(
-  t.middleware(async ({ ctx, next }) => {
+  t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) {
       throw new TRPCError({
         code: "UNAUTHORIZED",
@@ -947,7 +993,7 @@ export const customersReadProcedure = protectedProcedure.use(
         }),
       });
     }
-    if (!customerReadAllowed(ctx.user)) {
+    if (!canonicalOperationAllowed(ctx.user, path) && !customerReadAllowed(ctx.user)) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({
@@ -994,9 +1040,9 @@ export function customerReceptionCreateAllowed(user: {
 }
 
 export const customersReceptionCreateProcedure = branchScopedProcedure.use(
-  t.middleware(async ({ ctx, next }) => {
+  t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
-    if (!customerReceptionCreateAllowed(ctx.user)) {
+    if (!canonicalOperationAllowed(ctx.user, path) && !customerReceptionCreateAllowed(ctx.user)) {
       throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
     }
     return next({ ctx: { ...ctx, user: ctx.user } });

@@ -17,6 +17,7 @@ import * as TabsPrimitive from "@radix-ui/react-tabs";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import type { OperationPolicy } from "@shared/operationPermissions";
 
 export type HubTab = {
   /** معرّف التبويب (قيمة ?tab=). */
@@ -30,7 +31,9 @@ export type HubTab = {
 };
 
 function TabFallback() {
-  return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
+  return (
+    <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>
+  );
 }
 
 // ستايل زرّ التبويب: أوتلاين + تعبئة عند التنشيط + تأثيرات. ارتفاع ٤٤px (هدف اللمس).
@@ -62,13 +65,20 @@ export function PageTabs({
   const [loc, navigate] = useLocation();
   const search = useSearch();
   const me = trpc.auth.me.useQuery();
-  const role = me.data?.role;
-  const permsOverride = (me.data?.permissionsOverride ?? null) as
+  const role = me.data?.isOwner ? "admin" : me.data?.role;
+  const permsOverride = (me.data?.isOwner ? null : me.data?.permissionsOverride ?? null) as
     | import("@shared/permissions").PermissionMap
     | null;
 
   // تصفية حسب الدور + المنح الصريح — الإنفاذ الحقيقي خادمي؛ هذا إخفاء بصري + سقوط آمن للتبويب الأوّل.
-  const visible = tabs.filter((t) => canSeeGate(t.gate, role, permsOverride));
+  const operationPolicy = !me.data?.isOwner && (me.data as { operationPolicyEnabled?: boolean })
+    ?.operationPolicyEnabled
+    ? (me.data as { resolvedOperationPolicy?: OperationPolicy })
+        .resolvedOperationPolicy
+    : null;
+  const visible = tabs.filter((t) =>
+    canSeeGate(t.gate, role, permsOverride, operationPolicy),
+  );
   const requested = new URLSearchParams(search).get("tab");
   const active = visible.find((t) => t.value === requested) ?? visible[0];
   const activeTriggerRef = useRef<HTMLButtonElement>(null);

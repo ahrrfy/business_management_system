@@ -4,7 +4,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
-import { PermissionMatrix } from "@/components/form/PermissionMatrix";
+import {
+  OperationPermissionMatrix,
+  individualOperationOverrides,
+} from "@/components/form/OperationPermissionMatrix";
+import {
+  buildOperationPolicyFromLegacy,
+  resolveOperationPolicy,
+  type OperationPolicy,
+} from "@shared/operationPermissions";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { UsagePanel } from "@/components/UsagePanel";
 import { PageHeader } from "@/components/PageHeader";
@@ -23,13 +31,6 @@ import { printManagerBadge } from "@/lib/printing/managerBadge";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 import { ROLE_LABEL, ROLE_OPTIONS } from "@/lib/roles";
-import {
-  ROLE_DEFAULT_ATOMIC_PERMISSIONS,
-  ROLE_DEFAULT_OPERATIONAL_CAPS,
-  type AtomicPermissionsMap,
-  type OperationalCaps,
-} from "@shared/atomicPermissions";
-import { EffectiveAccessForAssignment } from "@/components/form/EffectiveAccessPreview";
 import { EffectivePermissionsPanel } from "@/components/form/EffectivePermissionsPanel";
 import {
   ROLES,
@@ -44,7 +45,6 @@ import {
   type RoleKey,
 } from "@/lib/permissionsModel";
 
-
 /** يحوّل تاريخاً قادماً من الخادم (Date عبر superjson أو سلسلة) إلى yyyy-mm-dd لحقل type=date. */
 function toDateInput(d: unknown): string {
   if (!d) return "";
@@ -56,46 +56,9 @@ function toDateInput(d: unknown): string {
   }
 }
 
-/**
- * هل يُعطِّل «بلا فرع» هذا الحساب فعلياً؟
- *
- * ⚠️ **عمداً لا يطابق `BRANCH_WARN_ROLES` في `AccountFields.tsx`** — وذاك خطأٌ لا مرجع:
- * نصُّه يَعِد بوصولٍ إلى كل الفروع بينما الخادم يمنع الوصولَ كلَّه، وقائمةُ الخمسة فيه تفوت
- * مدير الفرع والمحاسب والمدقّق ومندوب التوصيل والمستخدم العام. نُطابق هنا الخادمَ لا الشاشةَ
- * الأخرى: التطابق لا يُنسَخ به خطأ.
- *
- * ⭐ **والمرجع هو قاعدةُ الحفظ لا قاعدةُ التشغيل** — أمسكت المراجعة العدائية الخلطَ بينهما:
- * `assertUserBranchAssignmentTx` ([`userService.ts`](../../../server/services/userService.ts))
- * **يرفض الحفظ** بـ`BAD_REQUEST` على `role !== "admin"` وحدها، **بلا بند `isOwner`**. فإضافةُ
- * `&& !isOwner` هنا كانت تُسكِت التحذيرَ في حالةٍ قابلةٍ للبلوغ: `normalizeOwnerAuthority`
- * ([`server/context.ts`](../../../server/context.ts)) يرفع الدور إلى `admin` **في الذاكرة فقط**
- * ولا يكتبه في `users.role`. ⇒ مديرٌ مُنِح صفةَ «مالك النظام» ثمّ مُسِح فرعُه كان يرى **صفر
- * تحذير** ثمّ يصطدم برفضٍ غير مُفسَّر — وهو نفسُ صنف العلّة التي جاءت هذه الشريحة تُغلقه.
- */
+/** يطابق شرط حفظ الحساب في الخادم: كل حساب غير إداري يجب أن يرتبط بفرع. */
 function branchlessBreaksAccount(role: RoleKey): boolean {
   return role !== "admin";
-}
-
-/** فروق الصلاحيات عن قالب الدور — تُعرض فوق المصفوفة (مطابق لشاشة الإضافة). */
-function PermDiffSummary({ role, override }: { role: RoleKey; override: PermissionMap }) {
-  const entries = Object.entries(override);
-  if (!entries.length) return null;
-  const base = ROLE_TEMPLATES[role];
-  return (
-    <div className="flex flex-wrap gap-1 mb-2">
-      {entries.map(([k, v]) => {
-        const mod = PERMISSION_MODULES.find((m) => m.key === k);
-        const prev = base[k] ?? "NONE";
-        const label = v === "FULL" ? "كامل" : v === "READ" ? "قراءة" : "لا وصول";
-        const prevLabel = prev === "FULL" ? "كامل" : prev === "READ" ? "قراءة" : "لا وصول";
-        return (
-          <span key={k} className="text-[10px] rounded bg-primary/10 text-primary px-1.5 py-0.5">
-            {mod?.label ?? k}: {prevLabel} ← {label}
-          </span>
-        );
-      })}
-    </div>
-  );
 }
 
 export default function UserEdit() {
@@ -129,8 +92,12 @@ export default function UserEdit() {
   const [jobTitle, setJobTitle] = useState("");
   const [hiredAt, setHiredAt] = useState("");
   const [permsOverride, setPermsOverride] = useState<PermissionMap>({});
-  const [atomicPermissions, setAtomicPermissions] = useState<AtomicPermissionsMap>({});
-  const [operationalCaps, setOperationalCaps] = useState<OperationalCaps | null>(null);
+  const [operationPolicy, setOperationPolicy] =
+    useState<OperationPolicy | null>(null);
+  const [initialOperationPolicy, setInitialOperationPolicy] =
+    useState<OperationPolicy | null>(null);
+  const [policyEdited, setPolicyEdited] = useState(false);
+  const [operationPolicyRevision, setOperationPolicyRevision] = useState(0);
   const [isOwner, setIsOwner] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
@@ -160,32 +127,50 @@ export default function UserEdit() {
       setJobTitle((u as { jobTitle?: string | null }).jobTitle ?? "");
       setHiredAt(toDateInput((u as { hiredAt?: unknown }).hiredAt));
       setPermsOverride(((u as { permissionsOverride?: PermissionMap | null }).permissionsOverride as PermissionMap) ?? {});
-      const cRole = uRoleId ? customRoles.find((r) => r.id === uRoleId) : null;
-      const bRole = (cRole?.baseRole as RoleKey) ?? (u.role as RoleKey) ?? "cashier";
-      const uAtomic = (u as { atomicPermissions?: AtomicPermissionsMap | null }).atomicPermissions;
-      const uCaps = (u as { operationalCaps?: OperationalCaps | null }).operationalCaps;
-      const initAtomic = (uAtomic ?? cRole?.atomicPermissions ?? ROLE_DEFAULT_ATOMIC_PERMISSIONS[bRole] ?? {}) as AtomicPermissionsMap;
-      const initCaps = (uCaps ?? cRole?.operationalCaps ?? ROLE_DEFAULT_OPERATIONAL_CAPS[bRole] ?? null) as OperationalCaps | null;
-      setAtomicPermissions(initAtomic);
-      setOperationalCaps(initCaps);
+      const inherited = u.inheritedOperationPolicy;
+      const initOperationPolicy =
+        u.operationPolicy ??
+        (u.resolvedOperationPolicy && inherited
+          ? individualOperationOverrides(u.resolvedOperationPolicy, inherited)
+          : null);
+      setOperationPolicy(initOperationPolicy);
+      setInitialOperationPolicy(initOperationPolicy);
+      setOperationPolicyRevision(u.operationPolicyRevision ?? 0);
       setIsOwner(!!(u as { isOwner?: boolean }).isOwner);
       baselineRef.current = JSON.stringify({
-        name: u.name ?? "", email: u.email ?? "", username: (u as { username?: string | null }).username ?? "",
-        role: (u.role as RoleKey) ?? "cashier", customRoleId: (u as { customRoleId?: number | null }).customRoleId ?? null,
-        branchId: u.branchId ? String(u.branchId) : "", phone: (u as { phone?: string | null }).phone ?? "",
-        jobTitle: (u as { jobTitle?: string | null }).jobTitle ?? "", hiredAt: toDateInput((u as { hiredAt?: unknown }).hiredAt),
+        name: u.name ?? "",
+        email: u.email ?? "",
+        username: (u as { username?: string | null }).username ?? "",
+        role: (u.role as RoleKey) ?? "cashier",
+        customRoleId: (u as { customRoleId?: number | null }).customRoleId ?? null,
+        branchId: u.branchId ? String(u.branchId) : "",
+        phone: (u as { phone?: string | null }).phone ?? "",
+        jobTitle: (u as { jobTitle?: string | null }).jobTitle ?? "",
+        hiredAt: toDateInput((u as { hiredAt?: unknown }).hiredAt),
         permsOverride: ((u as { permissionsOverride?: PermissionMap | null }).permissionsOverride as PermissionMap) ?? {},
-        atomicPermissions: initAtomic,
-        operationalCaps: initCaps,
+        operationPolicy: initOperationPolicy,
         isOwner: !!(u as { isOwner?: boolean }).isOwner,
       });
       setLoaded(true);
     }
   }, [detail.data, loaded]);
 
-  const isDirty = loaded && JSON.stringify({
-    name, email, username, role, customRoleId, branchId, phone, jobTitle, hiredAt, permsOverride, atomicPermissions, operationalCaps, isOwner,
-  }) !== baselineRef.current;
+  const isDirty =
+    loaded &&
+    JSON.stringify({
+      name,
+      email,
+      username,
+      role,
+      customRoleId,
+      branchId,
+      phone,
+      jobTitle,
+      hiredAt,
+      permsOverride,
+      operationPolicy,
+      isOwner,
+    }) !== baselineRef.current;
   useUnsavedGuard(isDirty);
 
   function invalidate() {
@@ -197,9 +182,26 @@ export default function UserEdit() {
       setDone("تمّ حفظ التعديلات بنجاح.");
       // الحفظ نجح ⇒ الحالة الحالية هي الأساس الجديد (وإلا يبقى الحارس يُنذر بفقد بيانات محفوظة فعلاً).
       baselineRef.current = JSON.stringify({
-        name, email, username, role, customRoleId, branchId, phone, jobTitle, hiredAt, permsOverride, atomicPermissions, operationalCaps, isOwner,
+        name,
+        email,
+        username,
+        role,
+        customRoleId,
+        branchId,
+        phone,
+        jobTitle,
+        hiredAt,
+        permsOverride,
+        operationPolicy,
+        isOwner,
       });
       await invalidate();
+      setOperationPolicyRevision(
+        utils.users.get.getData({ userId })?.operationPolicyRevision ??
+          operationPolicyRevision,
+      );
+      setPolicyEdited(false);
+      setInitialOperationPolicy(operationPolicy);
     },
     onError: (e) => setError(e.message),
   });
@@ -255,52 +257,54 @@ export default function UserEdit() {
     [roleBasePerms, permsOverride]
   );
 
-  const roleBaseAtomic = useMemo(() => {
-    if (selectedCustomRole?.atomicPermissions && Object.keys(selectedCustomRole.atomicPermissions).length > 0) {
-      return selectedCustomRole.atomicPermissions as AtomicPermissionsMap;
-    }
-    return ROLE_DEFAULT_ATOMIC_PERMISSIONS[effectiveBaseRole] ?? {};
-  }, [selectedCustomRole, effectiveBaseRole]);
+  const inheritedOperationPolicy = useMemo(() => {
+    if (detail.data?.inheritedOperationPolicy && detail.data.customRoleId === customRoleId && detail.data.role === role) return detail.data.inheritedOperationPolicy;
+    if (!selectedCustomRole?.operationPolicy)
+      return buildOperationPolicyFromLegacy(
+        effectiveBaseRole,
+        roleBasePerms,
+        selectedCustomRole?.atomicPermissions as Record<string, boolean> | null | undefined,
+        selectedCustomRole?.permissions as PermissionMap | null,
+      );
+    return resolveOperationPolicy(
+      effectiveBaseRole,
+      roleBasePerms,
+      selectedCustomRole.operationPolicy,
+      null,
+      selectedCustomRole.permissions as PermissionMap | null,
+    );
+  }, [effectiveBaseRole, roleBasePerms, selectedCustomRole, detail.data, customRoleId, role]);
 
   // Ctrl/⌘+S ⇒ حفظ. بلا onCancel/Esc عمداً — الشاشة مكتظّة بقوائم منسدلة (الدور/الفرع) وEsc
   // يتعارض مع إغلاقها (تحذير الهوك نفسه).
   useSaveShortcuts({ onSave: () => submit(), enabled: !update.isPending });
 
   async function handleRoleChange(val: string) {
+    if (
+      Object.keys(operationPolicy?.grants ?? {}).length &&
+      !(await confirm({
+        variant: "warning",
+        title: "تغيير الدور",
+        description:
+          "سيُعاد هذا الحساب إلى وراثة الدور الجديد وتُزال استثناءاته الفردية الحالية. هل تتابع؟",
+        confirmText: "تغيير الدور",
+      }))
+    )
+      return;
     if (val.startsWith("custom:")) {
       const cid = Number(val.slice(7));
       setCustomRoleId(cid);
-      const cRole = customRoles.find((r) => r.id === cid);
-      if (cRole) {
-        const bRole = (cRole.baseRole as RoleKey) ?? "cashier";
-        setRole(bRole);
-        setAtomicPermissions((cRole.atomicPermissions ? { ...cRole.atomicPermissions } : (ROLE_DEFAULT_ATOMIC_PERMISSIONS[bRole] ?? {})) as AtomicPermissionsMap);
-        setOperationalCaps(cRole.operationalCaps ? { ...cRole.operationalCaps } : (ROLE_DEFAULT_OPERATIONAL_CAPS[bRole] ?? null));
-        setPermsOverride({});
-      }
+      setRole(
+        (customRoles.find((row) => row.id === cid)?.baseRole as RoleKey) ??
+          "user",
+      );
     } else {
-      if (Object.keys(permsOverride).length > 0 && !(await confirm({
-        variant: "warning",
-        title: "تغيير الدور الأساسي",
-        description: "سيُعاد ضبط الصلاحيات المخصَّصة الحالية لهذا الحساب إلى قالب الدور الجديد ويُفقَد أي تخصيص يدوي. هل تتابع؟",
-        confirmText: "تغيير الدور",
-      }))) return;
       setCustomRoleId(null);
       setRole(val as RoleKey);
-      setPermsOverride({});
-      setAtomicPermissions((ROLE_DEFAULT_ATOMIC_PERMISSIONS[val as RoleKey] ?? {}) as AtomicPermissionsMap);
-      setOperationalCaps(ROLE_DEFAULT_OPERATIONAL_CAPS[val as RoleKey] ?? null);
     }
-  }
-
-  function handlePermChange(moduleKey: string, level: AccessLevel) {
-    const newResolved = { ...resolvedPerms, [moduleKey]: level };
-    setPermsOverride(diffFromPermissions(roleBasePerms, newResolved) ?? {});
-  }
-
-  function handleBatchPermChange(updates: Record<string, AccessLevel>) {
-    const newResolved = { ...resolvedPerms, ...updates };
-    setPermsOverride(diffFromPermissions(roleBasePerms, newResolved) ?? {});
+    setPermsOverride({});
+    setOperationPolicy(null);
+    setPolicyEdited(true);
   }
 
   // Codex #958: عدّاداتُ تسلسلٍ لإسقاط الردودِ المتأخّرة. لو حرّرَ المستخدمُ الحقلَ من A إلى B
@@ -371,7 +375,8 @@ export default function UserEdit() {
   }
 
   function submit() {
-    setError(""); setDone("");
+    setError("");
+    setDone("");
     if (!name.trim()) return setError("الاسم مطلوب.");
     if (usernameError) return setError(usernameError);
     if (emailError) return setError(emailError);
@@ -397,8 +402,12 @@ export default function UserEdit() {
       // isOwner: يُرسَل فقط إن كان المستخدم الحالي مالكاً (وإلا يتجاهله الخادم بحارس FORBIDDEN).
       ...(meIsOwner ? { isOwner } : {}),
       permissionsOverride: override,
-      atomicPermissions: atomicPermissions,
-      operationalCaps: operationalCaps,
+      ...(policyEdited
+        ? {
+            operationPolicy,
+            expectedOperationPolicyRevision: operationPolicyRevision,
+          }
+        : {}),
     });
   }
 
@@ -440,7 +449,7 @@ export default function UserEdit() {
   }
 
   const roleInfo = ROLES.find((r) => r.key === role);
-  const customCount = Object.keys(permsOverride).length;
+  const customCount = Object.keys(operationPolicy?.grants ?? {}).length;
   // الدور المخصّص يحمل دوراً أساساً (baseRole) في العمود نفسه، والخادم يقيس عليه — فالفحص على
   // `role` صحيحٌ في الحالتين.
   /**
@@ -453,15 +462,21 @@ export default function UserEdit() {
    * أساساً ⇒ الحفظ يسقط بالرسالة نفسها التي تدّعي هذه الشاشة التنبّؤ بها.
    */
   const effectiveRole: RoleKey = customRoleId
-    ? ((customRoles.find((r: { id: number }) => Number(r.id) === customRoleId) as
-        | { baseRole?: string }
-        | undefined)?.baseRole as RoleKey) ?? role
+    ? (((
+        customRoles.find((r: { id: number }) => Number(r.id) === customRoleId) as { baseRole?: string } | undefined
+      )?.baseRole as RoleKey) ?? role)
     : role;
   const branchBlocks = branchId === "" && branchlessBreaksAccount(effectiveRole);
 
   if (!userId) return <div className="p-6 text-center text-muted-foreground">معرّف مستخدم غير صالح.</div>;
   if (detail.isLoading) return <LoadingState message="جارٍ تحميل بيانات المستخدم…" />;
-  if (!detail.data) return <div className="p-6 text-center text-muted-foreground">المستخدم غير موجود. <Link className="text-primary underline" href="/users">رجوع للقائمة</Link></div>;
+  if (!detail.data)
+    return (
+      <div className="p-6 text-center text-muted-foreground">
+        المستخدم غير موجود.{" "}
+        <Link className="text-primary underline" href="/users">رجوع للقائمة</Link>
+      </div>
+    );
 
   const u = detail.data;
   const isActive = !!u.isActive;
@@ -485,7 +500,10 @@ export default function UserEdit() {
             <div>
               {u.customRoleLabel ?? ROLE_LABEL[u.role] ?? u.role}
               {u.customRoleLabel ? (
-                <span className="text-muted-foreground text-xs"> (الفئة: {ROLE_LABEL[u.role] ?? u.role})</span>
+                <span className="text-muted-foreground text-xs">
+                  {" "}
+                  (الفئة: {ROLE_LABEL[u.role] ?? u.role})
+                </span>
               ) : null}
             </div>
           </div>
@@ -523,15 +541,15 @@ export default function UserEdit() {
           دلالة Enter-to-submit). لا يلفّ بطاقات الإجراءات المستقلة أسفله (إعادة تعيين كلمة المرور/
           إبطال الجلسات/2FA/الحذف) — لكلٍّ منها مطفَره الخاص. */}
       <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); submit(); }}>
-      <div className="grid gap-4 lg:grid-cols-2 items-start">
-      <Card>
-        <CardHeader><CardTitle className="text-base">البيانات الأساسية</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1">
+        <div className="grid gap-4 lg:grid-cols-2 items-start">
+          <Card>
+            <CardHeader><CardTitle className="text-base">البيانات الأساسية</CardTitle></CardHeader>
+            <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1">
             <Label htmlFor="name">الاسم *</Label>
             <Input id="name" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
-          <div className="space-y-1">
+              <div className="space-y-1">
             <div className="flex items-center justify-between">
               <Label htmlFor="username">اسم المستخدم (للدخول)</Label>
               {/* نظير زرّ شاشة الإضافة — حسابٌ قديم بلا اسم مستخدم كان يلزمه اختراعُ اسمٍ يدوياً
@@ -550,21 +568,24 @@ export default function UserEdit() {
             {usernameError && <p className="text-[11px] text-destructive">{usernameError}</p>}
             {usernameChecked && !usernameError && username.trim() && <p className="text-[11px] text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />اسم المستخدم متاح</p>}
           </div>
-          <div className="space-y-1">
-            <Label htmlFor="email">البريد الإلكتروني <span className="text-muted-foreground font-normal">(اختياري)</span></Label>
-            <Input
+              <div className="space-y-1">
+                <Label htmlFor="email">
+                  البريد الإلكتروني{" "}
+                  <span className="text-muted-foreground font-normal">(اختياري)</span>
+                </Label>
+                <Input
               id="email" dir="ltr" value={email}
               onChange={(e) => { setEmail(e.target.value); setEmailChecked(false); setEmailError(""); }}
               onBlur={() => void checkEmailFn()}
               placeholder="user@alroya.local"
               className={emailError ? "border-destructive" : emailChecked && !emailError ? "border-[var(--status-active)]" : ""}
             />
-            {emailError && <p className="text-[11px] text-destructive">{emailError}</p>}
-            {emailChecked && !emailError && email.trim() && <p className="text-[11px] text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />البريد متاح</p>}
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="role">الدور</Label>
-            <AppSelect
+                {emailError && <p className="text-[11px] text-destructive">{emailError}</p>}
+                {emailChecked && !emailError && email.trim() && <p className="text-[11px] text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />البريد متاح</p>}
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="role">الدور</Label>
+                <AppSelect
               id="role"
               value={customRoleId ? `custom:${customRoleId}` : role}
               onValueChange={(value) => void handleRoleChange(value)}
@@ -578,21 +599,11 @@ export default function UserEdit() {
                 </optgroup>
               )}
             </AppSelect>
-            {customRoleId ? (
+                {customRoleId ? (
               <p className="text-[11px] text-muted-foreground">دور مخصّص — صلاحياته تُدار من شاشة «الأدوار والصلاحيات».</p>
             ) : roleInfo ? <p className="text-[11px] text-muted-foreground">{roleInfo.description}</p> : null}
-            {/* معاينة حيّة للأثر الفعليّ (ش١ RBAC): «سيرى: تجزئة فقط» — تلتقط خطأ اختيار الدور قبل الحفظ. */}
-            <div className="pt-1">
-              <EffectiveAccessForAssignment
-                role={role}
-                permsOverride={permsOverride}
-                customRoleId={customRoleId}
-                customRoles={customRoles}
-                title="بعد الحفظ سيرى هذا الحساب:"
-              />
-            </div>
-          </div>
-          <div className="space-y-1">
+              </div>
+              <div className="space-y-1">
             <Label htmlFor="branch">الفرع</Label>
             <AppSelect
               id="branch"
@@ -610,29 +621,32 @@ export default function UserEdit() {
               </p>
             )}
           </div>
-          {/* مالك النظام (isOwner): يظهر فقط للمالك الحالي (حارس تصعيد الصلاحيات). المالك يتجاوز
+              {/* مالك النظام (isOwner): يظهر فقط للمالك الحالي (حارس تصعيد الصلاحيات). المالك يتجاوز
               كل اعتماد ثنائي على السندات ويحتفظ بدور admin. */}
-          {meIsOwner && (
-            <div className="space-y-1 md:col-span-2">
-              <Label className="flex items-center gap-2">
-                <input
+              {meIsOwner && (
+                <div className="space-y-1 md:col-span-2">
+                  <Label className="flex items-center gap-2">
+                    <input
                   type="checkbox"
                   className="size-4"
                   checked={isOwner}
                   onChange={(e) => setIsOwner(e.target.checked)}
                   disabled={userId === (me.data?.id as number | undefined) && isOwner}
                 />
-                <span>مالك النظام <span className="text-[11px] text-[var(--sem-warn)] bg-[var(--sem-warn-bg)] rounded px-1.5 py-0.5 mr-1">صلاحيات خاصة</span></span>
-              </Label>
-              <p className="text-[11px] text-muted-foreground">
+                    <span>
+                      مالك النظام{" "}
+                      <span className="text-[11px] text-[var(--sem-warn)] bg-[var(--sem-warn-bg)] rounded px-1.5 py-0.5 mr-1">صلاحيات خاصة</span>
+                    </span>
+                  </Label>
+                  <p className="text-[11px] text-muted-foreground">
                 يتجاوز كل اعتماد ثنائي على السندات (Maker-Checker + العتبات). لا يمكنك سحب الصفة عن نفسك.
               </p>
-            </div>
-          )}
+                </div>
+              )}
 
-          {/* حقلان يملكهما نموذج الإضافة ولا يقبلهما `users.update` — يُعرضان للقراءة بسببهما
+              {/* حقلان يملكهما نموذج الإضافة ولا يقبلهما `users.update` — يُعرضان للقراءة بسببهما
               المكتوب بدل أن يغيبا صامتَين، فالغياب الصامت هو ما يجعل الشاشة تبدو ناقصة. */}
-          <div className="space-y-1 md:col-span-2 border-t pt-3">
+              <div className="space-y-1 md:col-span-2 border-t pt-3">
             <Label className="flex items-center gap-2">
               <input
                 type="checkbox"
@@ -654,11 +668,11 @@ export default function UserEdit() {
               له رمزاً أحادي الاستخدام من البطاقة نفسها ويختارها المستخدم بنفسه.
             </p>
           </div>
-        </CardContent>
-      </Card>
+            </CardContent>
+          </Card>
 
-      {/* البيانات الوظيفية */}
-      <Card>
+          {/* البيانات الوظيفية */}
+          <Card>
         <CardHeader><CardTitle className="text-base">البيانات الوظيفية</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
@@ -675,11 +689,11 @@ export default function UserEdit() {
           </div>
         </CardContent>
       </Card>
-      </div>
+        </div>
 
-      {/* الصلاحيات */}
-      <Card>
-        <CardHeader>
+        {/* الصلاحيات */}
+        <Card>
+          <CardHeader>
           <CardTitle className="text-base">
             الصلاحيات
             {customCount > 0 && (
@@ -689,53 +703,54 @@ export default function UserEdit() {
             )}
           </CardTitle>
         </CardHeader>
-        <CardContent>
-          {customRoleId && (
-            <div className="text-xs text-muted-foreground mb-3 flex items-center justify-between gap-2 p-2.5 rounded-lg bg-muted/40 border border-border flex-wrap">
-              <div className="flex items-center gap-1.5">
-                <ShieldCheck aria-hidden="true" className="size-4 text-primary shrink-0" />
-                <span>
-                  يستند هذا الحساب إلى الدور المخصّص <strong>«{selectedCustomRole?.label || `#${customRoleId}`}»</strong>.
+          <CardContent>
+            {customRoleId && (
+              <div className="text-xs text-muted-foreground mb-3 flex items-center justify-between gap-2 p-2.5 rounded-lg bg-muted/40 border border-border flex-wrap">
+                <div className="flex items-center gap-1.5">
+                  <ShieldCheck aria-hidden="true" className="size-4 text-primary shrink-0" />
+                  <span>
+                    يستند هذا الحساب إلى الدور المخصّص{" "}
+                    <strong>«{selectedCustomRole?.label || `#${customRoleId}`}»</strong>
+                    .
                   المصفوفة أدناه تتيح لك تخصيص استثناءات فردية لهذا المستخدم (منح أو حجب).
                 </span>
-              </div>
-              <Link className="text-primary underline font-medium" href={`/roles/${customRoleId}/edit`}>
+                </div>
+                <Link className="text-primary underline font-medium" href={`/roles/${customRoleId}/edit`}>
                 تعديل قالب الدور الأصلي
               </Link>
-            </div>
-          )}
-          <PermDiffSummary role={effectiveBaseRole} override={permsOverride} />
-          <PermissionMatrix
-            role={effectiveBaseRole}
-            permissions={resolvedPerms}
-            onChange={handlePermChange}
-            onBatchChange={handleBatchPermChange}
-            onReset={() => {
-              setPermsOverride({});
-              const resetAtomic = (selectedCustomRole?.atomicPermissions
-                ? { ...selectedCustomRole.atomicPermissions }
-                : (ROLE_DEFAULT_ATOMIC_PERMISSIONS[effectiveBaseRole] ?? {})) as AtomicPermissionsMap;
-              setAtomicPermissions(resetAtomic);
-              const resetCaps = selectedCustomRole?.operationalCaps
-                ? { ...selectedCustomRole.operationalCaps }
-                : (ROLE_DEFAULT_OPERATIONAL_CAPS[effectiveBaseRole] ?? null);
-              setOperationalCaps(resetCaps);
-            }}
-            basePermissions={roleBasePerms}
-            baseAtomicPermissions={roleBaseAtomic}
-            atomicPermissions={atomicPermissions}
-            onAtomicChange={(key, granted) => setAtomicPermissions((p) => ({ ...p, [key]: granted }))}
-            onAtomicBulkChange={(updates) => setAtomicPermissions((p) => ({ ...p, ...updates }))}
-            caps={operationalCaps}
-            onCapsChange={setOperationalCaps}
-          />
-        </CardContent>
-      </Card>
+              </div>
+            )}
+            <OperationPermissionMatrix
+              mode="user"
+              value={operationPolicy}
+              inherited={inheritedOperationPolicy}
+              baseline={initialOperationPolicy}
+              onChange={(policy) => {
+                setOperationPolicy(policy);
+                setPolicyEdited(true);
+              }}
+              disabled={update.isPending}
+            />
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="mt-3"
+              onClick={() => {
+                setOperationPolicy(null);
+                setPermsOverride({});
+                setPolicyEdited(true);
+              }}
+            >
+              إزالة جميع الاستثناءات الفردية ووراثة الدور
+            </Button>
+          </CardContent>
+        </Card>
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      {done && <p className="text-sm text-money-positive">{done}</p>}
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        {done && <p className="text-sm text-money-positive">{done}</p>}
 
-      <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2">
         {/* type="submit" وبلا onClick مباشر — يعتمد على onSubmit في <form> وحده كمصدرٍ واحد
             (تفادياً لاستدعاء submit() مرّتين لو حمل الزرّ onClick أيضاً). */}
         <Button type="submit" disabled={update.isPending}>
@@ -763,26 +778,26 @@ export default function UserEdit() {
       </form>
 
       <div className="grid gap-4 lg:grid-cols-2 items-start">
-      {/* إصدار رمز استعادة — المدير لا يرى كلمة المرور التي يختارها المستخدم. */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">استعادة كلمة المرور</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          <p className="text-xs text-muted-foreground">
+        {/* إصدار رمز استعادة — المدير لا يرى كلمة المرور التي يختارها المستخدم. */}
+        <Card>
+          <CardHeader><CardTitle className="text-base">استعادة كلمة المرور</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-muted-foreground">
             أصدر رمزاً أحادي الاستخدام وأرسله للمستخدم عبر قناة موثوقة. يختار المستخدم كلمته
             الجديدة بنفسه من شاشة الدخول؛ لا يعرفها المدير. صلاحية الرمز 15 دقيقة.
           </p>
-          <Button type="button" variant="outline" onClick={() => void doIssueResetToken()} disabled={issueResetToken.isPending}>
+            <Button type="button" variant="outline" onClick={() => void doIssueResetToken()} disabled={issueResetToken.isPending}>
             {issueResetToken.isPending ? "جارٍ الإصدار…" : resetToken ? "إصدار رمز بديل" : "إصدار رمز استعادة"}
           </Button>
-          {resetMsg && (
+            {resetMsg && (
             <p role="status" className={`text-sm ${issueResetToken.isError ? "text-destructive" : "text-money-positive"}`}>
               {resetMsg}
             </p>
           )}
-          {resetToken && (
-            <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-              <Label htmlFor="passwordResetToken">الرمز — يظهر في هذه الجلسة فقط</Label>
-              <div className="flex gap-2">
+            {resetToken && (
+              <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+                <Label htmlFor="passwordResetToken">الرمز — يظهر في هذه الجلسة فقط</Label>
+                <div className="flex gap-2">
                 <Input id="passwordResetToken" readOnly dir="ltr" value={resetToken} className="font-mono text-xs" />
                 <Button
                   type="button"
@@ -801,19 +816,21 @@ export default function UserEdit() {
                   {resetCopied ? "نُسخ" : "نسخ"}
                 </Button>
               </div>
-              <p className="text-xs text-muted-foreground">
-                ينتهي {resetExpiresAt ? fmtDateTime(resetExpiresAt) : "خلال 15 دقيقة"}. إصدار رمز آخر يُبطل هذا الرمز فوراً.
+                <p className="text-xs text-muted-foreground">
+                  ينتهي{" "}
+                  {resetExpiresAt ? fmtDateTime(resetExpiresAt) : "خلال 15 دقيقة"}
+                  . إصدار رمز آخر يُبطل هذا الرمز فوراً.
               </p>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
-      {/* اعتماد المدير وشارة الباركود (نقطة البيع والاستقبال) */}
-      <UserManagerBadgeCard userId={userId} user={detail.data} branches={branches.data} />
+        {/* اعتماد المدير وشارة الباركود (نقطة البيع والاستقبال) */}
+        <UserManagerBadgeCard userId={userId} user={detail.data} branches={branches.data} />
 
-      {/* إبطال الجلسات النشطة */}
-      <Card>
+        {/* إبطال الجلسات النشطة */}
+        <Card>
         <CardHeader><CardTitle className="text-base">إبطال الجلسات النشطة</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <p className="text-xs text-muted-foreground">
@@ -849,30 +866,32 @@ export default function UserEdit() {
         </CardContent>
       </Card>
 
-      {/* الجلسات النشطة (فردياً) */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">الجلسات النشطة</CardTitle></CardHeader>
-        <CardContent className="space-y-2">
-          <p className="text-xs text-muted-foreground">
+        {/* الجلسات النشطة (فردياً) */}
+        <Card>
+          <CardHeader><CardTitle className="text-base">الجلسات النشطة</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-xs text-muted-foreground">
             أجهزة هذا المستخدم المسجَّل دخولها حالياً — يمكن إنهاء جهازٍ واحدٍ بعينه بدل كل الأجهزة.
           </p>
-          {userSessions.isLoading && <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>}
-          {!userSessions.isLoading && (userSessions.data?.length ?? 0) === 0 && (
+            {userSessions.isLoading && <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>}
+            {!userSessions.isLoading && (userSessions.data?.length ?? 0) === 0 && (
             <p className="text-sm text-muted-foreground">لا جلسات مسجَّلة (ربما دخل قبل تفعيل هذه الميزة).</p>
           )}
-          <div className="space-y-2">
-            {userSessions.data?.map((s) => (
-              <div key={s.id} className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm">
-                <div className="flex items-start gap-3 min-w-0">
-                  <Monitor aria-hidden className="size-4 mt-0.5 shrink-0 text-muted-foreground" />
-                  <div className="min-w-0">
-                    <div className="font-medium">{describeUserAgent(s.userAgent)}</div>
-                    <div className="text-xs text-muted-foreground" dir="ltr">
-                      {s.ipAddress ?? "—"} · آخر نشاط: {fmtDateTime(s.lastSeenAt)} · دخول: {fmtDateTime(s.createdAt)}
+            <div className="space-y-2">
+              {userSessions.data?.map((s) => (
+                <div key={s.id} className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm">
+                  <div className="flex items-start gap-3 min-w-0">
+                    <Monitor aria-hidden className="size-4 mt-0.5 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0">
+                      <div className="font-medium">{describeUserAgent(s.userAgent)}</div>
+                      <div className="text-xs text-muted-foreground" dir="ltr">
+                        {s.ipAddress ?? "—"} · آخر نشاط:{" "}
+                        {fmtDateTime(s.lastSeenAt)} · دخول:{" "}
+                        {fmtDateTime(s.createdAt)}
+                      </div>
                     </div>
                   </div>
-                </div>
-                <Button
+                  <Button
                   variant="outline"
                   size="sm"
                   className="shrink-0"
@@ -889,14 +908,14 @@ export default function UserEdit() {
                 >
                   إنهاء
                 </Button>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
 
-      {/* الحذف النهائي — للنظيف فقط */}
-      <Card className="border-destructive/40">
+        {/* الحذف النهائي — للنظيف فقط */}
+        <Card className="border-destructive/40">
         <CardHeader><CardTitle className="text-base text-destructive">الحذف النهائي</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <p className="text-xs text-muted-foreground">
@@ -919,7 +938,15 @@ export default function UserEdit() {
   );
 }
 
-function UserManagerBadgeCard({ userId, user, branches }: { userId: number; user: any; branches?: any[] }) {
+function UserManagerBadgeCard({
+  userId,
+  user,
+  branches,
+}: {
+  userId: number;
+  user: any;
+  branches?: any[];
+}) {
   const utils = trpc.useUtils();
   const [pinInput, setPinInput] = useState("");
   const setPinMut = trpc.users.setPin.useMutation({

@@ -1,3 +1,4 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 // لوحة فصل البدائل المدمجة (م٤) — يستهلكها Stocktakes.tsx.
 //
 // تسرد الوحدات التي تحمل باركوداً بديلاً، ويقرّر المدير لكلّ باركود: «دفعة — يبقى» (لا شيء)،
@@ -23,15 +24,23 @@ type Target = { productUnitId: number; aliasBarcode: string; productName: string
 
 export function SplitCandidatesPanel({ canManage }: { canManage: boolean }) {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const canRead = canLifecycleOperation(me.data, "stocktakes.splitCandidates", true);
+  const canScope = canLifecycleOperation(me.data, "stocktakes.alternativeReconciliationScope", true);
+  const canCreate = canLifecycleOperation(me.data, "stocktakes.create", canManage);
+  const canSplit = canLifecycleOperation(me.data, "stocktakes.splitAlternative", canManage);
   const [, navigate] = useLocation();
   const [open, setOpen] = useState(false);
-  const candidates = trpc.stocktakes.splitCandidates.useQuery(undefined, { enabled: open });
+  const candidates = trpc.stocktakes.splitCandidates.useQuery(undefined, { enabled: open && canRead });
+  const candidatesData = canRead ? candidates.data : undefined;
   // نطاق جرد التحقّق لفصل رصيد البدائل المنشأة (الأصل + البدائل لكل منتج له بديل).
-  const reconScope = trpc.stocktakes.alternativeReconciliationScope.useQuery(undefined, { enabled: open });
+  const reconScope = trpc.stocktakes.alternativeReconciliationScope.useQuery(undefined, { enabled: open && canScope });
+  const reconScopeData = canScope ? reconScope.data : undefined;
 
   /** يُنشئ جرد تحقّق يدويّاً يغطّي كل متغيّرات المنتجات ذات البدائل — يُمرَّر عبر sessionStorage (قد يكبر). */
   function createReconciliationStocktake() {
-    const ids = reconScope.data?.variantIds ?? [];
+    if (!canCreate || !canScope) return;
+    const ids = reconScopeData?.variantIds ?? [];
     if (!ids.length) return;
     const key = `stkReconPrefill:${ids.length}:${ids[0]}:${ids[ids.length - 1]}`;
     try {
@@ -70,7 +79,7 @@ export function SplitCandidatesPanel({ canManage }: { canManage: boolean }) {
     onError: (e) => notify.err(e),
   });
 
-  const rows = candidates.data ?? [];
+  const rows = candidatesData ?? [];
 
   return (
     <Card>
@@ -104,21 +113,21 @@ export function SplitCandidatesPanel({ canManage }: { canManage: boolean }) {
               <p className="mt-0.5 text-xs text-muted-foreground">
                 {reconScope.isLoading
                   ? "جارٍ الحساب…"
-                  : (reconScope.data?.alternativeCount ?? 0) > 0
-                    ? `${reconScope.data!.alternativeCount} بديلاً منشأً في ${reconScope.data!.productCount} منتجاً — أنشئ جرد تحقّقٍ يعدّ الأصل وبدائله معاً فيوزّع الرصيد الماديّ عليها.${reconScope.data!.truncated ? ` (النطاق كبير: يُنشأ لأوّل ${reconScope.data!.variantCount} صنف؛ كرّر للباقي.)` : ""}`
+                  : (reconScopeData?.alternativeCount ?? 0) > 0
+                    ? `${reconScopeData!.alternativeCount} بديلاً منشأً في ${reconScopeData!.productCount} منتجاً — أنشئ جرد تحقّقٍ يعدّ الأصل وبدائله معاً فيوزّع الرصيد الماديّ عليها.${reconScopeData!.truncated ? ` (النطاق كبير: يُنشأ لأوّل ${reconScopeData!.variantCount} صنف؛ كرّر للباقي.)` : ""}`
                     : "لا بدائل منشأة بعد — افصل بديلاً أولاً، ثم أنشئ جرد التحقّق."}
               </p>
             </div>
-            {canManage && (
+            {canCreate && (
               <Button
                 type="button"
                 size="sm"
                 className="shrink-0 gap-1.5"
-                disabled={reconScope.isLoading || (reconScope.data?.variantCount ?? 0) === 0}
+                disabled={!canScope || !canCreate || reconScope.isLoading || (reconScopeData?.variantCount ?? 0) === 0}
                 onClick={createReconciliationStocktake}
               >
                 <ClipboardCheck aria-hidden className="size-4" /> أنشئ جرد تحقّق
-                {(reconScope.data?.variantCount ?? 0) > 0 ? ` (${reconScope.data!.variantCount} صنف)` : ""}
+                {(reconScopeData?.variantCount ?? 0) > 0 ? ` (${reconScopeData!.variantCount} صنف)` : ""}
               </Button>
             )}
           </div>
@@ -160,7 +169,7 @@ export function SplitCandidatesPanel({ canManage }: { canManage: boolean }) {
                         <span className="ms-2 font-sans text-muted-foreground">{a.note}</span>
                       ) : null}
                     </span>
-                    {canManage && (
+                    {canSplit && (
                       <Button
                         type="button"
                         size="sm"
@@ -221,9 +230,9 @@ export function SplitCandidatesPanel({ canManage }: { canManage: boolean }) {
               إلغاء
             </Button>
             <Button
-              disabled={!name.trim() || split.isPending}
+              disabled={!canSplit || !name.trim() || split.isPending}
               onClick={() => {
-                if (!target) return;
+                if (!target || !canSplit) return;
                 split.mutate({
                   productUnitId: target.productUnitId,
                   aliasBarcode: target.aliasBarcode,
