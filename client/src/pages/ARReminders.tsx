@@ -4,6 +4,7 @@
 // كل تذكير مُرسَل يُسجَّل في `arReminders` مع snapshots اللحظية (مبلغ + أقدم فاتورة + نصّ الرسالة).
 // نافذة التبريد ٧ أيام تمنع تكرار العميل في القائمة قبل استحقاق تذكير جديد.
 import { useMemo, useState } from "react";
+import { normalizeSearchText } from "@shared/searchNormalize";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Landmark, Info, Bot, Printer, Download, Phone, UserCheck, FileText } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -122,27 +123,29 @@ export default function ARReminders() {
     () => dashboardActionBranchId(typeof window === "undefined" ? undefined : new URLSearchParams(window.location.search).get("branch")),
     [],
   );
-  // نطاق العرض: فرع محدَّد (رقم) | مدينو الرصيد الافتتاحي ("opening") | undefined (فرع المستخدم لغير الأدمن).
-  const [scope, setScope] = useState<number | "opening" | undefined>(undefined);
-  const effectiveScope: number | "opening" | undefined =
+  // نطاق العرض: فرع محدَّد (رقم) | مدينو الرصيد الافتتاحي ("opening") | كل الفروع ("all") | undefined (فرع المستخدم لغير الأدمن).
+  const [scope, setScope] = useState<number | "opening" | "all" | undefined>(undefined);
+  const effectiveScope: number | "opening" | "all" | undefined =
     scope ?? (isAdmin ? requestedBranchId ?? accountBranchId ?? branches.data?.[0]?.id : undefined);
   const queueInput =
-    effectiveScope === "opening"
-      ? { openingScope: true }
-      : typeof effectiveScope === "number"
-        ? { branchId: effectiveScope }
-        : undefined;
-  // فرع الكتابة: للنطاق الفرعيّ = الفرع نفسه (يطابق القراءة)؛ للنطاق الافتتاحي = undefined (الخادم يحلّه بلا عزل).
+    effectiveScope === "all"
+      ? { allBranches: true as const }
+      : effectiveScope === "opening"
+        ? { openingScope: true as const }
+        : typeof effectiveScope === "number"
+          ? { branchId: effectiveScope }
+          : undefined;
+  // فرع الكتابة: للنطاق الفرعيّ = الفرع نفسه (يطابق القراءة)؛ للكل أو الافتتاحي = undefined.
   const writeBranchId = typeof effectiveScope === "number" ? effectiveScope : undefined;
-  // السجلّ يتبع النطاق نفسه بدقّة (كان يسقط صامتاً لأوّل فرع نشط عند نطاق «الافتتاحي» — تحقّق
-  // عدائي ٥/٧): فرع محدَّد ⇒ سجلّ ذلك الفرع؛ نطاق الافتتاحي ⇒ openingScope (سجلّ مجمَّع)؛ غير الأدمن
-  // بلا نطاق محدَّد ⇒ undefined (الخادم يحلّه لفرعه).
+  // السجلّ يتبع النطاق نفسه بدقّة: كل الفروع ⇒ allBranches؛ فرع محدَّد ⇒ سجلّ ذلك الفرع؛ نطاق الافتتاحي ⇒ openingScope.
   const historyInput =
-    effectiveScope === "opening"
-      ? { openingScope: true as const }
-      : typeof effectiveScope === "number"
-        ? { branchId: effectiveScope }
-        : undefined;
+    effectiveScope === "all"
+      ? { allBranches: true as const }
+      : effectiveScope === "opening"
+        ? { openingScope: true as const }
+        : typeof effectiveScope === "number"
+          ? { branchId: effectiveScope }
+          : undefined;
 
   const queue = trpc.arReminders.queue.useQuery(queueInput, { staleTime: 30_000 });
   const history = trpc.arReminders.history.useQuery(historyInput, {
@@ -191,8 +194,12 @@ export default function ARReminders() {
   const filteredQueue = useMemo(() => {
     let list = queue.data ?? [];
     if (search.trim()) {
-      const s = search.trim().toLowerCase();
-      list = list.filter((r) => r.customerName.toLowerCase().includes(s) || (r.phone ?? "").includes(s));
+      const s = normalizeSearchText(search.trim());
+      list = list.filter((r) => {
+        const normName = normalizeSearchText(r.customerName);
+        const phone = r.phone ?? "";
+        return normName.includes(s) || phone.includes(search.trim()) || normalizeSearchText(phone).includes(s);
+      });
     }
     if (agingBracket) list = list.filter((r) => matchesAgingBracket(r.daysOverdue, agingBracket));
     return list;
@@ -250,6 +257,11 @@ export default function ARReminders() {
     // «قرَّرَ الإرسال» (تفتح النافذة)، لا أنّه ضغط زرّ الإرسال داخل واتساب — لكن هذا مقبول لأن
     // البديل (تأكيد لاحق) يفتح باب نسيان التسجيل مع التبريد المفقود ⇒ إغراق العميل بتذكيرات.
     openWhatsApp(row.phone, message);
+    const targetBranch = row.branchId ?? writeBranchId ?? accountBranchId ?? branches.data?.[0]?.id;
+    if (!targetBranch) {
+      notify.err("تعذّر تحديد الفرع — يُرجى تحديد فرع أو الانتظار حتى اكتمال تحميل الفروع.");
+      return;
+    }
     logSent.mutate({
       customerId: row.customerId,
       totalUnpaidSnapshot: row.totalUnpaid,
@@ -257,7 +269,7 @@ export default function ARReminders() {
       daysOverdue: row.daysOverdue,
       messageBody: message,
       isOpeningBalance: row.isOpeningBalance || undefined,
-      branchId: writeBranchId,
+      branchId: targetBranch,
     });
   }
 
@@ -266,13 +278,18 @@ export default function ARReminders() {
       notify.err("لا رقم هاتف مسجَّل لهذا العميل — أضف الهاتف من صفحة العميل أولاً.");
       return;
     }
+    const targetBranch = row.branchId ?? writeBranchId ?? accountBranchId ?? branches.data?.[0]?.id;
+    if (!targetBranch) {
+      notify.err("تعذّر تحديد الفرع — يُرجى تحديد فرع أو الانتظار حتى اكتمال تحميل الفروع.");
+      return;
+    }
     sendViaApi.mutate({
       customerId: row.customerId,
       totalUnpaidSnapshot: row.totalUnpaid,
       oldestInvoiceDate: row.oldestInvoiceDate,
       daysOverdue: row.daysOverdue,
       isOpeningBalance: row.isOpeningBalance || undefined,
-      branchId: writeBranchId,
+      branchId: targetBranch,
     });
   }
 
@@ -291,6 +308,11 @@ export default function ARReminders() {
         return;
       }
     }
+    const targetBranch = skipTarget.branchId ?? writeBranchId ?? accountBranchId ?? branches.data?.[0]?.id;
+    if (!targetBranch) {
+      notify.err("تعذّر تحديد الفرع — يُرجى تحديد فرع أو الانتظار حتى اكتمال تحميل الفروع.");
+      return;
+    }
     logSkipped.mutate({
       customerId: skipTarget.customerId,
       totalUnpaidSnapshot: skipTarget.totalUnpaid,
@@ -299,7 +321,7 @@ export default function ARReminders() {
       skipReason: skipReason.trim(),
       promisedDate: promise || null,
       isOpeningBalance: skipTarget.isOpeningBalance || undefined,
-      branchId: writeBranchId,
+      branchId: targetBranch,
     });
   }
 
@@ -310,30 +332,45 @@ export default function ARReminders() {
         description="قائمة العملاء المتأخّرين ≥٧ أيام. راجع، ثم أرسل تذكيراً عبر واتساب أو تخطَّ برأي مُوثَّق."
       />
 
-      {/* منتقي النطاق — للأدمن حصراً: عبور الفروع + نطاق مدينِي الرصيد الافتتاحي المجمَّع. */}
+      {/* منتقي النطاق — للأدمن حصراً: عبور الفروع + كل الفروع + نطاق مدينِي الرصيد الافتتاحي. */}
       {isAdmin && (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm text-muted-foreground">النطاق:</span>
           <AppSelect
-            value={effectiveScope === "opening" ? "opening" : String(effectiveScope ?? "")}
-            onValueChange={(value) => setScope(value === "opening" ? "opening" : Number(value))}
+            value={
+              effectiveScope === "all"
+                ? "all"
+                : effectiveScope === "opening"
+                  ? "opening"
+                  : String(effectiveScope ?? "")
+            }
+            onValueChange={(value) =>
+              setScope(value === "all" ? "all" : value === "opening" ? "opening" : Number(value))
+            }
             className="h-9 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
+            <option value="all">كل الفروع (شامل كل الذمم والافتتاحي)</option>
             {(branches.data ?? []).map((b) => (
               <option key={b.id} value={b.id}>{b.name}</option>
             ))}
-            <option value="opening">مدينو الرصيد الافتتاحي (كل الفروع)</option>
+            <option value="opening">مدينو الرصيد الافتتاحي فقط</option>
           </AppSelect>
+          {effectiveScope === "all" && (
+            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+              <Info className="size-3.5" aria-hidden />
+              عرض شامل لكل الفروع مع رصيد الذمم الافتتاحي المجمّع.
+            </span>
+          )}
           {effectiveScope === "opening" && (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
               <Landmark className="size-3.5" aria-hidden />
               أرصدة سابقة مُدوَّرة بلا فواتير نظام — للمتابعة والتحصيل.
             </span>
           )}
-          {scope === undefined && (
+          {typeof effectiveScope === "number" && (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
               <Info className="size-3.5" aria-hidden />
-              يبدأ العرض بفرع الحساب، أو أول فرع فعّال عند غياب التعيين.
+              عرض فواتير الفرع المحدد فقط.
             </span>
           )}
         </div>
@@ -345,7 +382,11 @@ export default function ARReminders() {
           <Card>
             <CardContent className="flex items-center justify-between p-4">
               <span className="text-sm text-muted-foreground">عملاء بحاجة تذكير</span>
-              <span className="text-xl font-bold tabular-nums">{queue.data.length}</span>
+              <span className="text-xl font-bold tabular-nums">
+                {filteredQueue.length === queue.data.length
+                  ? queue.data.length
+                  : `${filteredQueue.length} من ${queue.data.length}`}
+              </span>
             </CardContent>
           </Card>
           <Card>
@@ -357,7 +398,11 @@ export default function ARReminders() {
           <Card>
             <CardContent className="flex items-center justify-between p-4">
               <span className="text-sm text-muted-foreground">أقدم تأخّر</span>
-              <span className="text-xl font-bold tabular-nums">{queue.data[0]?.daysOverdue ?? 0} يوماً</span>
+              <span className="text-xl font-bold tabular-nums">
+                {filteredQueue.length > 0
+                  ? Math.max(...filteredQueue.map((r) => r.daysOverdue))
+                  : (queue.data && queue.data.length > 0 ? Math.max(...queue.data.map((r) => r.daysOverdue)) : 0)} يوماً
+              </span>
             </CardContent>
           </Card>
         </div>
@@ -732,8 +777,8 @@ function QueueTab({
             onValueChange={(v) => setAgingBracket(v as typeof agingBracket)}
             className="h-9 w-44"
             aria-label="شريحة التقادم"
-            placeholder="كل شرائح التقادم"
           >
+            <option value="">كل شرائح التقادم</option>
             <option value="7-30">7-30 يوماً</option>
             <option value="31-60">31-60 يوماً</option>
             <option value="61-90">61-90 يوماً</option>
