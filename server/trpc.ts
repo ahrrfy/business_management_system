@@ -381,11 +381,21 @@ function auditCapabilityShadow(
 export function requireAtomicPermission(key: AtomicPermissionKey) {
   return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    const atomic = (ctx.user as any).resolvedAtomicPermissions as AtomicPermissionsMap | undefined;
+    if (atomic && atomic[key] === false) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "إجراء غير مصرّح به",
+          why: `صلاحية المفتاح الذري (${key}) محظورة لحسابك`,
+          doThis: "راجع مسؤول النظام أو المشرف لتوسيع صلاحياتك",
+        }),
+      });
+    }
     if (ctx.user.role === "admin") {
       assertTwoFactorEnrolled(ctx.user, path);
       return next({ ctx: { ...ctx, user: ctx.user } });
     }
-    const atomic = (ctx.user as any).resolvedAtomicPermissions as AtomicPermissionsMap | undefined;
     if (atomic) {
       if (atomic[key] !== true) {
         throw new TRPCError({

@@ -18,7 +18,7 @@ import {
   updateExchangeHouse,
   withdrawFromExchange,
 } from "../services/exchangeHouseService";
-import { router, treasuryManagerProcedure, treasuryManagerReadProcedure } from "../trpc";
+import { requireAtomicPermission, router, treasuryManagerProcedure, treasuryManagerReadProcedure } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح (موجب، منزلتان كحدّ أقصى)");
@@ -41,6 +41,7 @@ function actorOf(ctx: any, branchId: number) {
 
 export const exchangeRouter = router({
   list: treasuryManagerReadProcedure
+    .use(requireAtomicPermission("treasury.exchange.view"))
     .input(
       z
         .object({
@@ -54,10 +55,12 @@ export const exchangeRouter = router({
     .query(async ({ input }) => listExchangeHouses(input ?? {})),
 
   get: treasuryManagerReadProcedure
+    .use(requireAtomicPermission("treasury.exchange.view"))
     .input(z.object({ id: z.number().int().positive() }))
     .query(async ({ input }) => getExchangeHouse(input.id)),
 
   create: treasuryManagerProcedure
+    .use(requireAtomicPermission("treasury.exchange.create"))
     .input(
       z.object({
         name: z.string().min(1).max(255),
@@ -197,6 +200,7 @@ export const exchangeRouter = router({
     }),
 
   settle: treasuryManagerProcedure
+    .use(requireAtomicPermission("treasury.exchange.settle"))
     .input(
       z.object({
         exchangeHouseId: z.number().int().positive(),
@@ -287,6 +291,7 @@ export const exchangeRouter = router({
     }),
 
   statement: treasuryManagerReadProcedure
+    .use(requireAtomicPermission("treasury.exchange.statement"))
     .input(z.object({ exchangeHouseId: z.number().int().positive(), from: ymd.optional(), to: ymd.optional() }))
     .query(async ({ input }) => getExchangeStatement(input)),
 

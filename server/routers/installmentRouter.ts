@@ -27,7 +27,7 @@ import {
   confirmExternalPaymentAttempt,
   initiateExternalPaymentAttempt,
 } from "../services/posExternalPayment";
-import { router, treasuryManagerProcedure, treasuryManagerReadProcedure } from "../trpc";
+import { requireAtomicPermission, router, treasuryManagerProcedure, treasuryManagerReadProcedure } from "../trpc";
 
 const moneyStr = z
   .string()
@@ -49,6 +49,7 @@ function restrictionFor(user: CtxUser): number | null {
 export const installmentRouter = router({
   /** طابور فرعي لمحاولات التحصيل التي تحتاج موظفاً مستقلاً للتأكيد والسداد. */
   pendingExternalPayments: treasuryManagerReadProcedure
+    .use(requireAtomicPermission("treasury.installment.view"))
     .input(
       z.object({
         branchId: z.number().int().positive().nullish(),
@@ -69,6 +70,7 @@ export const installmentRouter = router({
 
   /** إثبات مزوّد لتحصيل القسط غير النقدي — بلا إيصال أو أثر مالي حتى pay. */
   initiateExternalPayment: treasuryManagerProcedure
+    .use(requireAtomicPermission("treasury.installment.collect"))
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -102,6 +104,7 @@ export const installmentRouter = router({
 
   /** انتقال محاولة تحصيل القسط INITIATED→CONFIRMED؛ الاستهلاك يبقى داخل pay الذرّي. */
   confirmExternalPayment: treasuryManagerProcedure
+    .use(requireAtomicPermission("treasury.installment.collect"))
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -132,6 +135,7 @@ export const installmentRouter = router({
 
   /** إنشاء خطة أقساط — لا قيد محاسبي (جدولة تحصيل فوق الذمّة القائمة). */
   create: treasuryManagerProcedure
+    .use(requireAtomicPermission("treasury.installment.create"))
     .input(
       z.object({
         clientRequestId: z.string().uuid(),
@@ -185,6 +189,7 @@ export const installmentRouter = router({
 
   /** سداد قسط — يُنشئ سند قبض حقيقياً؛ قد يعود PENDING_APPROVAL (Maker-Checker) والقسط يبقى معلَّقاً. */
   pay: treasuryManagerProcedure
+    .use(requireAtomicPermission("treasury.installment.collect"))
     .input(
       z.object({
         lineId: z.number().int().positive(),
@@ -251,6 +256,7 @@ export const installmentRouter = router({
 
   /** ارتجاع شيك معلَّق — لا حركة مالية (الشيك لم يُحصَّل أصلاً). */
   bounce: treasuryManagerProcedure
+    .use(requireAtomicPermission("treasury.installment.cancel"))
     .input(z.object({ lineId: z.number().int().positive(), note: z.string().max(255).nullish() }))
     .mutation(async ({ input, ctx }) => {
       const res = await bounceCheck(
@@ -269,6 +275,7 @@ export const installmentRouter = router({
 
   /** إلغاء خطة بلا أي قسط مسدَّد. */
   cancel: treasuryManagerProcedure
+    .use(requireAtomicPermission("treasury.installment.cancel"))
     .input(z.object({
       planId: z.number().int().positive(),
       reason: z.string().max(500).nullish(),
@@ -296,6 +303,7 @@ export const installmentRouter = router({
    *  مقصود: بحثٌ محدود بأوّل ٢٠٠ خطة مطابقة للفلاتر الأساسية (كافٍ لحجم العمل الحاليّ؛ يتطلّب امتداد
    *  listPlans لحجمٍ أكبر). بلا q/from/to السلوك مطابق تماماً للسابق (تفويض مباشر لـlistPlans). */
   list: treasuryManagerReadProcedure
+    .use(requireAtomicPermission("treasury.installment.view"))
     .input(
       z
         .object({
@@ -353,11 +361,13 @@ export const installmentRouter = router({
 
   /** تفاصيل خطة بأقساطها — عزل فرع بنمط voucherRouter.get (داخل الخدمة). */
   get: treasuryManagerReadProcedure
+    .use(requireAtomicPermission("treasury.installment.view"))
     .input(z.object({ planId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => getPlan(input.planId, restrictionFor(ctx.user))),
 
   /** طابور التحصيل: أقساط معلَّقة مستحقّة خلال N أيام أو متأخّرة — الأشد تأخّراً أولاً. */
   dueSoon: treasuryManagerReadProcedure
+    .use(requireAtomicPermission("treasury.installment.view"))
     .input(
       z
         .object({

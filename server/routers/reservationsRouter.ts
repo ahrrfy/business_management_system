@@ -16,12 +16,14 @@ import {
 } from "../services/reservations";
 import { requireDb } from "../services/tx";
 import { logger } from "../logger";
-import { branchScopedProcedure, requireModule, router } from "../trpc";
+import { branchScopedProcedure, requireAtomicPermission, requireModule, router } from "../trpc";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import { publishRealtimeEvent } from "../realtime";
 import { REALTIME_EVENT_TYPES } from "../../shared/realtimeEvents";
 
-const reservationsRead = branchScopedProcedure.use(requireModule("reservations", "READ"));
+const reservationsRead = branchScopedProcedure
+  .use(requireModule("reservations", "READ"))
+  .use(requireAtomicPermission("inventory.reservation.view"));
 const reservationsWrite = branchScopedProcedure.use(requireModule("reservations", "FULL"));
 
 /**
@@ -281,6 +283,7 @@ export const reservationsRouter = router({
           .min(1),
       }),
     )
+    .use(requireAtomicPermission("inventory.reservation.create"))
     .mutation(async ({ ctx, input }) => {
       // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران؛ المدير يحجز بفرعه المُسنَد فقط.
       const elevated = ctx.user.role === "admin";
@@ -310,6 +313,7 @@ export const reservationsRouter = router({
     }),
 
   cancel: reservationsWrite
+    .use(requireAtomicPermission("inventory.reservation.cancel"))
     .input(z.object({ id: z.number().int().positive(), reason: z.string().max(300).nullish() }))
     .mutation(async ({ ctx, input }) => {
       const res = await cancelReservation(input.id, input.reason ?? null, {
@@ -335,6 +339,7 @@ export const reservationsRouter = router({
 
   // التمديد مديريّ (مراجعة Codex P1): بوّابة وحدة reservations (requireModule عبر reservationsWrite) + دور مدير.
   extend: reservationsWrite
+    .use(requireAtomicPermission("inventory.reservation.edit"))
     .input(z.object({ id: z.number().int().positive(), hours: z.number().int().positive().max(72) }))
     .mutation(async ({ ctx, input }) => {
       assertElevated(ctx.user.role);

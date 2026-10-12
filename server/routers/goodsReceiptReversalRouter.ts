@@ -6,7 +6,7 @@ import {
   listPendingGoodsReceiptReversals,
   requestGoodsReceiptReversal,
 } from "../services/purchase/goodsReceipts";
-import { purchasesManagerProcedure, purchasesReadProcedure, router } from "../trpc";
+import { purchasesManagerProcedure, purchasesReadProcedure, requireAtomicPermission, router } from "../trpc";
 
 const actor = (ctx: { user: { id: number; branchId?: number | null; role?: string } }) => ({
   userId: ctx.user.id,
@@ -18,6 +18,7 @@ const reason = z.string().trim().min(3).max(500);
 
 export const goodsReceiptReversalRouter = router({
   list: purchasesReadProcedure
+    .use(requireAtomicPermission("purchasing.goods_receipt_reversal.view"))
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -27,9 +28,11 @@ export const goodsReceiptReversalRouter = router({
     )
     .query(({ input, ctx }) => listGoodsReceipts(input, actor(ctx))),
   get: purchasesReadProcedure
+    .use(requireAtomicPermission("purchasing.goods_receipt_reversal.view"))
     .input(z.object({ goodsReceiptId: z.number().int().positive() }))
     .query(({ input, ctx }) => getGoodsReceipt(input.goodsReceiptId, actor(ctx))),
   requestReversal: purchasesManagerProcedure
+    .use(requireAtomicPermission("purchasing.goods_receipt_reversal.create"))
     .input(
       z.object({
         goodsReceiptId: z.number().int().positive(),
@@ -49,6 +52,7 @@ export const goodsReceiptReversalRouter = router({
     )
     .mutation(({ input, ctx }) => requestGoodsReceiptReversal(input, actor(ctx))),
   decideReversal: purchasesManagerProcedure
+    .use(requireAtomicPermission("purchasing.goods_receipt_reversal.approve"))
     .input(
       z.object({
         requestId: z.number().int().positive(),
@@ -59,6 +63,7 @@ export const goodsReceiptReversalRouter = router({
     )
     .mutation(({ input, ctx }) => decideGoodsReceiptReversal(input, actor(ctx))),
   pendingReversals: purchasesManagerProcedure
+    .use(requireAtomicPermission("purchasing.goods_receipt_reversal.view"))
     .input(z.object({ branchId: z.number().int().positive() }))
     .query(({ input, ctx }) => listPendingGoodsReceiptReversals(input.branchId, actor(ctx))),
 });
