@@ -194,6 +194,13 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
     enabled: canReadDelivery,
     refetchOnWindowFocus: true,
   });
+  const storeOrderCountsQ = trpc.storeAdmin.orders.counts.useQuery(undefined, {
+    enabled: canReadDelivery,
+    refetchOnWindowFocus: true,
+  });
+  const storeOrdersPendingCount =
+    (storeOrderCountsQ.data?.PENDING ?? 0) +
+    (storeOrderCountsQ.data?.CONFIRMED ?? 0);
 
   // الاستغناء عن الاستطلاع الدوري (Polling) لصالح الإبطال اللحظي المعتمد على الأحداث (Event-Driven)
   useRealtimeEvent(
@@ -233,6 +240,7 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
     () => {
       if (canReadDelivery) {
         void utils.delivery.readyForDispatchCount.invalidate();
+        void utils.storeAdmin.orders.counts.invalidate();
       }
     },
   );
@@ -383,6 +391,7 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
             onToggleFavorite={handleFavorite}
             workOrderReadyCount={workOrderReadyCount}
             deliveryReadyCount={deliveryReadyCount}
+            storeOrdersPendingCount={storeOrdersPendingCount}
           />
         </Suspense>
 

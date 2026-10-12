@@ -59,37 +59,39 @@ export function OrderSlaBadge({
     );
   }
 
-  // حساب المتبقي من مهلة حجز المخزون
+  // حساب المتبقي من مهلة حجز المخزون (فقط لطلبات PENDING المعلقة)
   let expiryLabel: string | null = null;
   let isExpired = false;
 
-  if (reservationExpiresAt) {
-    const expiryTime = new Date(reservationExpiresAt).getTime();
-    if (!isNaN(expiryTime)) {
-      const diffMs = expiryTime - now;
-      if (diffMs <= 0) {
+  if (status === "PENDING") {
+    if (reservationExpiresAt) {
+      const expiryTime = new Date(reservationExpiresAt).getTime();
+      if (!isNaN(expiryTime)) {
+        const diffMs = expiryTime - now;
+        if (diffMs <= 0) {
+          isExpired = true;
+          expiryLabel = "انتهت مهلة حجز المخزون!";
+        } else {
+          const remainingHours = Math.floor(diffMs / 3600000);
+          const remainingMins = Math.floor((diffMs % 3600000) / 60000);
+          expiryLabel =
+            remainingHours > 0
+              ? `باقي ${remainingHours} س للإلغاء`
+              : `باقي ${Math.max(1, remainingMins)} د للإلغاء`;
+        }
+      }
+    } else {
+      const remainingMins = Math.max(0, 24 * 60 - diffMinutes);
+      if (remainingMins <= 0) {
         isExpired = true;
-        expiryLabel = "انتهت مهلة حجز المخزون!";
+        expiryLabel = "تجاوزت مهلة الـ 24 ساعة!";
       } else {
-        const remainingHours = Math.floor(diffMs / 3600000);
-        const remainingMins = Math.floor((diffMs % 3600000) / 60000);
+        const remainingHours = Math.floor(remainingMins / 60);
         expiryLabel =
           remainingHours > 0
-            ? `باقي ${remainingHours} س للإلغاء`
-            : `باقي ${Math.max(1, remainingMins)} د للإلغاء`;
+            ? `حجز المخزون: باقي ${remainingHours} س`
+            : `حجز المخزون: باقي ${remainingMins} د`;
       }
-    }
-  } else if (status === "PENDING") {
-    const remainingMins = Math.max(0, 24 * 60 - diffMinutes);
-    if (remainingMins <= 0) {
-      isExpired = true;
-      expiryLabel = "تجاوزت مهلة الـ 24 ساعة!";
-    } else {
-      const remainingHours = Math.floor(remainingMins / 60);
-      expiryLabel =
-        remainingHours > 0
-          ? `حجز المخزون: باقي ${remainingHours} س`
-          : `حجز المخزون: باقي ${remainingMins} د`;
     }
   }
 
@@ -129,10 +131,11 @@ export function OrderSlaBadge({
   // عاجل جداً — أكثر من 45 دقيقة
   const hours = Math.floor(diffMinutes / 60);
   const displayTime = hours > 0 ? `${hours} س و ${diffMinutes % 60} د` : `${diffMinutes} دقيقة`;
+  const isUrgentPending = status === "PENDING";
 
   return (
     <div className="flex flex-col items-start gap-0.5">
-      <span className="inline-flex items-center gap-1 rounded-md border border-[var(--sem-neg)]/50 bg-[var(--sem-neg-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-neg)] animate-pulse" title="طلب حرج مهمل لأكثر من 45 دقيقة!">
+      <span className={`inline-flex items-center gap-1 rounded-md border border-[var(--sem-neg)]/50 bg-[var(--sem-neg-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-neg)] ${isUrgentPending ? "animate-pulse" : ""}`} title={isUrgentPending ? "طلب حرج مهمل لأكثر من 45 دقيقة!" : `قيد المعالجة منذ ${displayTime}`}>
         <Flame className="size-3 shrink-0" aria-hidden />
         <span>عاجل! منذ {displayTime}</span>
       </span>

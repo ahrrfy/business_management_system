@@ -23,6 +23,7 @@ import {
   productImages,
   products,
   promotions,
+  shifts,
   storeSettings as storeSettingsTable,
   users,
 } from "../../../drizzle/schema";
@@ -111,6 +112,8 @@ export async function listOnlineOrders(opts: {
   /** مؤشّر ترقيم — id آخر صفّ في الصفحة السابقة ⇒ يجلب ما هو أقدم منه. */
   cursor?: number;
   limit?: number;
+  claimedByUserId?: number | null;
+  unclaimedOnly?: boolean;
 }): Promise<OnlineOrderRow[]> {
   const db = getDb();
   if (!db) return [];
@@ -118,6 +121,8 @@ export async function listOnlineOrders(opts: {
   const conds = [];
   if (opts.scopedBranchId != null) conds.push(eq(onlineOrders.branchId, opts.scopedBranchId));
   if (opts.status) conds.push(eq(onlineOrders.status, opts.status as OnlineOrderStatus));
+  if (opts.claimedByUserId != null) conds.push(eq(onlineOrders.claimedByUserId, opts.claimedByUserId));
+  if (opts.unclaimedOnly) conds.push(sql`${onlineOrders.claimedByUserId} IS NULL`);
   if (opts.from) {
     const from = new Date(opts.from);
     if (!isNaN(from.getTime())) conds.push(gte(onlineOrders.createdAt, from));
@@ -440,12 +445,16 @@ export async function setOnlineOrderStatus(
         throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب أُرسِل وله فاتورة — لا يُلغى بتغيير الحالة. استعمل «تعذّر التسليم» (المندوب) أو إرجاع الفاتورة (المدير) لعكس البيع والمخزون." });
       }
     }
-    // نُثبِّت سبب الإلغاء (اختياريّ) عند CANCELLED فقط — كي لا يُطمَس سببٌ سبق أن سجّله المندوب في
-    // مسارٍ آخر عند انتقالات غير الإلغاء. الإلغاء اليدويّ هنا محصورٌ بطلبٍ قبل الإرسال (بلا فاتورة).
-    const patch =
-      input.status === "CANCELLED"
-        ? { status: input.status, cancelReason: input.cancelReason?.trim() ? input.cancelReason.trim().slice(0, 500) : null }
-        : { status: input.status };
+    const patch: Record<string, any> = { status: input.status };
+    if (input.status === "CANCELLED") {
+      patch.cancelReason = input.cancelReason?.trim() ? input.cancelReason.trim().slice(0, 500) : null;
+    } else if (input.status === "CONFIRMED") {
+      // من يثبت الطلب يستلمه تلقائياً للتجهيز إذا لم يكن مستلماً بالفعل لمنع تشتت المسؤولية
+      if (order.claimedByUserId == null && _actorUserId) {
+        patch.claimedByUserId = _actorUserId;
+        patch.claimedAt = sql`CURRENT_TIMESTAMP(3)`;
+      }
+    }
     await tx.update(onlineOrders).set(patch).where(eq(onlineOrders.id, input.id));
     if (input.status === "CANCELLED") {
       await releaseCouponReservationForOnlineOrder(
@@ -1078,10 +1087,223 @@ export async function claimOnlineOrder(
       })
       .where(eq(onlineOrders.id, input.id));
 
+    if (order.status === "PENDING") {
+      await enqueueStorefrontOrderStatusPush(tx, {
+        orderId: input.id,
+        orderNumber: order.orderNumber,
+        customerId: order.customerId == null ? null : Number(order.customerId),
+        status: "CONFIRMED",
+      });
+    }
+
     return {
       success: true,
       claimedByUserId: actor.userId,
       orderNumber: order.orderNumber,
+    };
+  });
+}
+
+/**
+ * إحياء وتأكيد طلب منتهي الحجز تلقائياً (Revive & Confirm):
+ * 1. فحص توفر المخزون الفعلي (ATP) في فرع التنفيذ لجميع بنود الطلب
+ * 2. احترام تريجر قاعدة البيانات trg_online_orders_expired_activation_bu عبر تحديث reservationExpiresAt
+ *    إلى المستقبل (24 ساعة إضافية) والطلب PENDING في خطوة أولى
+ * 3. نقل الحالة إلى CONFIRMED وإسناد استلام التجهيز للمستخدم الفاعل في خطوة ثانية
+ * 4. إعادة تثبيت قسيمة الخصم إن وُجدت
+ */
+export async function reviveAndConfirmOnlineOrder(
+  input: { id: number; scopedBranchId: number | null },
+  actor: { userId: number; role?: string }
+): Promise<{
+  success: boolean;
+  orderId: number;
+  orderNumber: string;
+  status: OnlineOrderStatus;
+  claimedByUserId: number;
+}> {
+  return await withTx(async (tx) => {
+    const order = (
+      await tx
+        .select()
+        .from(onlineOrders)
+        .where(eq(onlineOrders.id, input.id))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!order) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "الطلب غير موجود في النظام",
+          why: `لم يُعثر على سجل طلب متجر بالمعرّف ${input.id}`,
+          doThis: "تحقّق من رقم الطلب أو أعد تحديث قائمة الطلبات",
+        }),
+      });
+    }
+    if (input.scopedBranchId != null && Number(order.branchId) !== input.scopedBranchId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر إحياء الطلب",
+          why: "الطلب مسجّل على فرع آخر خارج نطاق صلاحيتك الحالية",
+          doThis: "تواصل مع مدير الفرع المعني أو بدّل الفرع في النظام",
+        }),
+      });
+    }
+
+    if (order.status !== "CANCELLED" && order.status !== "PENDING") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن إحياء الطلب في حالته الحالية",
+          why: `الطلب حالياً بحالة «${order.status}» وليس حجزاً ملغى أو منتهياً`,
+          doThis: "إحياء الطلب مخصص للطلبات التي انتهت مهلة حجزها التلقائي",
+        }),
+      });
+    }
+
+    if (order.invoiceId != null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إحياء الطلب",
+          why: "الطلب مرتبط بفاتورة مسبقة في النظام",
+          doThis: "راجع الفاتورة المرتبطة بالطلب أو قم بإنشاء طلب جديد للزبون",
+        }),
+      });
+    }
+
+    // 1. فحص توفر المخزون (ATP) لجميع بنود الطلب مع مراعاة الوحدات الأساس والعروض المركبة
+    const items = await tx
+      .select({
+        id: onlineOrderItems.id,
+        variantId: onlineOrderItems.variantId,
+        productUnitId: onlineOrderItems.productUnitId,
+        quantity: onlineOrderItems.quantity,
+        baseQuantity: onlineOrderItems.baseQuantity,
+      })
+      .from(onlineOrderItems)
+      .where(eq(onlineOrderItems.onlineOrderId, input.id));
+
+    if (items.length > 0) {
+      const itemVariantIds = Array.from(new Set(items.map((i) => Number(i.variantId))));
+      const recipes = itemVariantIds.length
+        ? await tx
+            .select({
+              bundleVariantId: bundleComponents.bundleVariantId,
+              componentVariantId: bundleComponents.componentVariantId,
+              componentBaseQuantity: bundleComponents.componentBaseQuantity,
+            })
+            .from(bundleComponents)
+            .where(inArray(bundleComponents.bundleVariantId, itemVariantIds))
+        : [];
+
+      const recipeByBundle = new Map<number, Array<{ componentVariantId: number; componentBaseQuantity: number }>>();
+      for (const row of recipes) {
+        const bId = Number(row.bundleVariantId);
+        const cur = recipeByBundle.get(bId) ?? [];
+        cur.push({
+          componentVariantId: Number(row.componentVariantId),
+          componentBaseQuantity: Number(row.componentBaseQuantity),
+        });
+        recipeByBundle.set(bId, cur);
+      }
+
+      const stockRequirements = new Map<number, number>();
+      for (const item of items) {
+        const vId = Number(item.variantId);
+        const baseQty = Number(item.baseQuantity ?? item.quantity);
+        const components = recipeByBundle.get(vId);
+        if (components && components.length > 0) {
+          for (const comp of components) {
+            const required = baseQty * comp.componentBaseQuantity;
+            stockRequirements.set(
+              comp.componentVariantId,
+              (stockRequirements.get(comp.componentVariantId) ?? 0) + required,
+            );
+          }
+        } else {
+          stockRequirements.set(
+            vId,
+            (stockRequirements.get(vId) ?? 0) + baseQty,
+          );
+        }
+      }
+
+      const requiredVariantIds = Array.from(stockRequirements.keys()).sort((a, b) => a - b);
+      const availability = await loadVariantAvailability(
+        tx,
+        Number(order.branchId),
+        requiredVariantIds,
+        { lock: true, excludeOnlineOrderId: order.id }
+      );
+
+      for (const [vId, reqQty] of Array.from(stockRequirements.entries())) {
+        const avail = availability.get(vId);
+        if (avail?.isService) continue;
+        if (!avail) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "أحد أصناف الطلب غير متاح في الفرع",
+              why: `الصنف #${vId} غير معرّف أو غير متاح في فرع التنفيذ`,
+              doThis: "تأكد من توفر الأصناف في الفرع أو حوّل الطلب لفرع آخر",
+            }),
+          });
+        }
+        if (reqQty > avail.availableBase) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "المخزون غير كافٍ لإحياء الطلب",
+              why: `الكمية المطلوبة (${reqQty}) من الصنف #${vId} تتجاوز الرصيد الحر المتاح في الفرع (${avail.availableBase})`,
+              doThis: "اطلب من الزبون تعديل الطلب أو قم بتوريد مخزون إضافي إلى الفرع",
+            }),
+          });
+        }
+      }
+    }
+
+    // 2. تحديث الخطوة الأولى (حارس التريجر trg_online_orders_expired_activation_bu):
+    // التريجر يفحص OLD.reservationExpiresAt <= CURRENT_TIMESTAMP(3) عند التحويل إلى CONFIRMED.
+    // لذلك يجب أولاً ضبط reservationExpiresAt في المستقبل بينما الطلب بحالة PENDING.
+    await tx
+      .update(onlineOrders)
+      .set({
+        status: "PENDING",
+        cancelReason: null,
+        reservationExpiresAt: sql`DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 24 HOUR)`,
+      })
+      .where(eq(onlineOrders.id, input.id));
+
+    // 3. الخطوة الثانية: نقل الحالة إلى CONFIRMED وإسناد التجهيز للفاعل
+    await tx
+      .update(onlineOrders)
+      .set({
+        status: "CONFIRMED",
+        claimedByUserId: actor.userId,
+        claimedAt: sql`CURRENT_TIMESTAMP(3)`,
+      })
+      .where(eq(onlineOrders.id, input.id));
+
+    // 4. إعادة تثبيت الكوبون إن وجد
+    await confirmCouponReservationForOnlineOrder(tx, input.id);
+
+    // 5. إشعار المتجر بتحديث الحالة
+    await enqueueStorefrontOrderStatusPush(tx, {
+      orderId: input.id,
+      orderNumber: order.orderNumber,
+      customerId: order.customerId == null ? null : Number(order.customerId),
+      status: "CONFIRMED",
+    });
+
+    return {
+      success: true,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      status: "CONFIRMED",
+      claimedByUserId: actor.userId,
     };
   });
 }
@@ -1164,16 +1386,31 @@ export async function updateOnlineOrderContact(
       await confirmCouponReservationForOnlineOrder(tx, input.id);
     }
 
+    const isConfirming = input.contactStatus === "CALLED_CONFIRMED" && order.status === "PENDING";
+    const nextStatus = isConfirming ? "CONFIRMED" : order.status;
+    const patch: Record<string, any> = {
+      contactStatus: input.contactStatus,
+      contactNotes: input.contactNotes !== undefined ? input.contactNotes : order.contactNotes,
+      status: nextStatus,
+    };
+    if (isConfirming && order.claimedByUserId == null) {
+      patch.claimedByUserId = actor.userId;
+      patch.claimedAt = sql`CURRENT_TIMESTAMP(3)`;
+    }
+
     await tx
       .update(onlineOrders)
-      .set({
-        contactStatus: input.contactStatus,
-        contactNotes: input.contactNotes !== undefined ? input.contactNotes : order.contactNotes,
-        status: input.contactStatus === "CALLED_CONFIRMED" && order.status === "PENDING" ? "CONFIRMED" : order.status,
-        claimedByUserId: order.claimedByUserId ?? actor.userId,
-        claimedAt: order.claimedAt ?? new Date(),
-      })
+      .set(patch)
       .where(eq(onlineOrders.id, input.id));
+
+    if (isConfirming) {
+      await enqueueStorefrontOrderStatusPush(tx, {
+        orderId: input.id,
+        orderNumber: order.orderNumber,
+        customerId: order.customerId == null ? null : Number(order.customerId),
+        status: "CONFIRMED",
+      });
+    }
 
     return { success: true, contactStatus: input.contactStatus };
   });
@@ -1378,10 +1615,11 @@ export async function autoAssignRoundRobinOnlineOrders(
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
 
   return await withTx(async (tx) => {
-    // 1. استرجاع الطلبات المعلقة غير المستلمة (PENDING + claimedByUserId IS NULL)
+    // 1. استرجاع الطلبات المعلقة غير المستلمة غير منتهية الحجز (PENDING + claimedByUserId IS NULL)
     const baseConds = [
       eq(onlineOrders.status, "PENDING"),
       sql`${onlineOrders.claimedByUserId} IS NULL`,
+      sql`COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR)) > CURRENT_TIMESTAMP(3)`,
     ];
     if (input.scopedBranchId != null) {
       baseConds.push(eq(onlineOrders.branchId, input.scopedBranchId));
@@ -1391,6 +1629,7 @@ export async function autoAssignRoundRobinOnlineOrders(
       .select({
         id: onlineOrders.id,
         orderNumber: onlineOrders.orderNumber,
+        customerId: onlineOrders.customerId,
         status: onlineOrders.status,
         branchId: onlineOrders.branchId,
         createdAt: onlineOrders.createdAt,
@@ -1404,44 +1643,54 @@ export async function autoAssignRoundRobinOnlineOrders(
       return { assignedCount: 0, assignments: [] };
     }
 
-    // 2. البحث عن موظفي الفرع المؤهلين النشطين
-    const userConds = [eq(users.isActive, true)];
+    // 2. التحقق من الموظفين أصحاب الورديات المفتوحة حصراً في الفرع (Shift-Aware)
+    const shiftConds = [
+      eq(shifts.status, "OPEN"),
+      eq(users.isActive, true),
+    ];
     if (input.scopedBranchId != null) {
-      userConds.push(eq(users.branchId, input.scopedBranchId));
+      shiftConds.push(eq(shifts.branchId, input.scopedBranchId));
     }
     const eligibleStaff = await tx
       .select({
         id: users.id,
         name: users.name,
+        branchId: shifts.branchId,
       })
-      .from(users)
-      .where(and(...userConds))
+      .from(shifts)
+      .innerJoin(users, eq(shifts.userId, users.id))
+      .where(and(...shiftConds))
+      .groupBy(users.id, users.name, shifts.branchId)
       .orderBy(asc(users.id));
 
     if (eligibleStaff.length === 0) {
-      eligibleStaff.push({ id: actor.userId, name: "المستخدم الحالي" });
+      return { assignedCount: 0, assignments: [] };
     }
 
-    // 3. تطبيق Round-Robin بالتناوب انطلاقاً من آخر إسناد
-    const lastClaimed = (
-      await tx
-        .select({ claimedByUserId: onlineOrders.claimedByUserId })
-        .from(onlineOrders)
-        .where(
-          and(
-            sql`${onlineOrders.claimedByUserId} IS NOT NULL`,
-            input.scopedBranchId != null ? eq(onlineOrders.branchId, input.scopedBranchId) : undefined,
-          )
-        )
-        .orderBy(desc(onlineOrders.claimedAt))
-        .limit(1)
-    )[0];
+    // 3. موازنة العبء الفعلي (Least-Loaded Workload Balancing):
+    // إحصاء الطلبات المفتوحة قيد التجهيز (CONFIRMED / PROCESSING) لكل موظف صاحب وردية مفتوحة
+    const staffLoads = new Map<number, number>();
+    for (const s of eligibleStaff) {
+      staffLoads.set(s.id, 0);
+    }
 
-    let startIdx = 0;
-    if (lastClaimed?.claimedByUserId) {
-      const lastIndex = eligibleStaff.findIndex((s) => s.id === lastClaimed.claimedByUserId);
-      if (lastIndex >= 0) {
-        startIdx = (lastIndex + 1) % eligibleStaff.length;
+    const loadRows = await tx
+      .select({
+        claimedByUserId: onlineOrders.claimedByUserId,
+        count: sql<number>`COUNT(*)`,
+      })
+      .from(onlineOrders)
+      .where(
+        and(
+          inArray(onlineOrders.status, ["CONFIRMED", "PROCESSING"]),
+          inArray(onlineOrders.claimedByUserId, eligibleStaff.map((s) => s.id)),
+        )
+      )
+      .groupBy(onlineOrders.claimedByUserId);
+
+    for (const row of loadRows) {
+      if (row.claimedByUserId != null) {
+        staffLoads.set(Number(row.claimedByUserId), Number(row.count));
       }
     }
 
@@ -1456,7 +1705,29 @@ export async function autoAssignRoundRobinOnlineOrders(
 
     for (let i = 0; i < unassignedOrders.length; i++) {
       const order = unassignedOrders[i];
-      const staff = eligibleStaff[(startIdx + i) % eligibleStaff.length];
+
+      // حصر الموظفين المتاحين في نفس فرع الطلب حصراً
+      const candidates = eligibleStaff.filter(
+        (s) => Number(s.branchId) === Number(order.branchId)
+      );
+      if (candidates.length === 0) {
+        continue;
+      }
+
+      // اختيار الموظف الأقل عبئاً في فرع الطلب لمنع الاحتكار والصيد الانتقائي (Cherry-picking)
+      let selectedStaff = candidates[0];
+      let minLoad = staffLoads.get(selectedStaff.id) ?? 0;
+
+      for (let j = 1; j < candidates.length; j++) {
+        const candidate = candidates[j];
+        const load = staffLoads.get(candidate.id) ?? 0;
+        if (load < minLoad) {
+          minLoad = load;
+          selectedStaff = candidate;
+        }
+      }
+
+      staffLoads.set(selectedStaff.id, minLoad + 1);
 
       if (order.status === "PENDING") {
         await confirmCouponReservationForOnlineOrder(tx, order.id);
@@ -1465,17 +1736,26 @@ export async function autoAssignRoundRobinOnlineOrders(
       await tx
         .update(onlineOrders)
         .set({
-          claimedByUserId: staff.id,
+          claimedByUserId: selectedStaff.id,
           claimedAt: assignTime,
           status: order.status === "PENDING" ? "CONFIRMED" : order.status,
         })
         .where(eq(onlineOrders.id, order.id));
 
+      if (order.status === "PENDING") {
+        await enqueueStorefrontOrderStatusPush(tx, {
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          customerId: order.customerId == null ? null : Number(order.customerId),
+          status: "CONFIRMED",
+        });
+      }
+
       assignments.push({
         orderId: order.id,
         orderNumber: order.orderNumber,
-        assignedToUserId: staff.id,
-        assignedToName: staff.name ?? "—",
+        assignedToUserId: selectedStaff.id,
+        assignedToName: selectedStaff.name ?? "—",
       });
     }
 

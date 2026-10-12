@@ -23,6 +23,7 @@ import {
   Pencil,
   Printer,
   ReceiptText,
+  RefreshCw,
   Store,
   Trophy,
   Truck,
@@ -270,6 +271,14 @@ export default function OrderFulfillment() {
     },
     onError: (e) => notify.err(e),
   });
+  const reactivateAndConfirmM = trpc.storeAdmin.orders.reactivateAndConfirm.useMutation({
+    onSuccess: (res) => {
+      notify.ok(`تم فحص التوفر وتأكيد الطلب #${res.orderNumber} بنجاح`);
+      void utils.storeAdmin.orders.list.invalidate();
+      void utils.storeAdmin.orders.counts.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
 
   const counts = countsQ.data ?? {};
   const orders = useMemo(() => (listQ.data?.pages ?? []).flatMap((p) => p), [listQ.data]);
@@ -448,6 +457,7 @@ export default function OrderFulfillment() {
         const st = normalizeOrderStatus(o.status);
         const isCancelled = st === "CANCELLED";
         const isDelivered = st === "DELIVERED";
+        const isShipped = st === "SHIPPED";
 
         if (o.preparedByUserId) {
           return (
@@ -472,7 +482,7 @@ export default function OrderFulfillment() {
                 <UserCheck className="size-3.5" />
                 استلمه: {o.claimedByName ?? "موظف"}
               </span>
-              {!isCancelled && !isDelivered && (
+              {!isCancelled && !isDelivered && !isShipped && (
                 <Button
                   size="sm"
                   variant="outline"
@@ -488,7 +498,7 @@ export default function OrderFulfillment() {
           );
         }
 
-        if (isCancelled || isDelivered) {
+        if (isCancelled || isDelivered || isShipped) {
           return <span className="text-xs text-muted-foreground">—</span>;
         }
 
@@ -514,11 +524,34 @@ export default function OrderFulfillment() {
       cell: ({ row }) => {
         const o = row.original;
         const st = normalizeOrderStatus(o.status);
+        const isAutoExpired =
+          st === "CANCELLED" &&
+          Boolean(o.cancelReason && o.cancelReason.includes("مهلة حجز"));
         return (
-          <div className="flex flex-col items-center gap-0.5">
-            <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${orderStatusChipClass(st)}`}>{orderStatusLabel(st)}</span>
-            {st === "CANCELLED" && o.cancelReason && (
-              <span className="max-w-[12rem] truncate text-[11px] text-muted-foreground" title={o.cancelReason}>{o.cancelReason}</span>
+          <div className="flex flex-col items-center gap-1">
+            {isAutoExpired ? (
+              <span className="inline-block rounded-full px-2.5 py-0.5 text-xs font-bold border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]">
+                حجز منتهي تلقائياً
+              </span>
+            ) : (
+              <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${orderStatusChipClass(st)}`}>{orderStatusLabel(st)}</span>
+            )}
+            {isAutoExpired ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 px-2 text-[10px] font-bold gap-1 text-[var(--sem-pos)] border-[var(--sem-pos)]/40 hover:bg-[var(--sem-pos-bg)]"
+                onClick={() => reactivateAndConfirmM.mutate({ id: o.id })}
+                disabled={reactivateAndConfirmM.isPending}
+                title="فحص توفر المخزون تلقائياً وإعادة تأكيد وحجز الطلب"
+              >
+                <RefreshCw className={`size-3 ${reactivateAndConfirmM.isPending ? "animate-spin" : ""}`} />
+                فحص التوفر وإحياء الطلب
+              </Button>
+            ) : (
+              st === "CANCELLED" && o.cancelReason && (
+                <span className="max-w-[12rem] truncate text-[11px] text-muted-foreground" title={o.cancelReason}>{o.cancelReason}</span>
+              )
             )}
           </div>
         );
@@ -554,6 +587,16 @@ export default function OrderFulfillment() {
               gate: { module: "store", level: "READ" },
             }}
             actions={[
+              {
+                key: "print-dual",
+                kind: "print",
+                label: printingId === o.id ? "جارٍ الطباعة المزدوجة…" : "طباعة مزدوجة (إيصال + ملصق)",
+                icon: printingId === o.id ? Loader2 : Printer,
+                gate: { module: "store", level: "READ" },
+                disabled: isBusy || st === "CANCELLED",
+                disabledReason: st === "CANCELLED" ? "لا يمكن الطباعة لطلب ملغى" : "هناك عملية جارية على الطلب",
+                onSelect: () => void printDualDocuments(o.id),
+              },
               {
                 key: "print-label",
                 kind: "print",
@@ -694,41 +737,33 @@ export default function OrderFulfillment() {
       await proceed();
     }
   }
+  function toShippingLabelPayload(d: NonNullable<RouterOutputs["storeAdmin"]["orders"]["detail"]>) {
+    return {
+      orderNumber: d.orderNumber,
+      customerName: d.customerName,
+      customerPhone: d.customerPhone,
+      governorate: d.governorate,
+      addressText: d.addressText,
+      latitude: d.latitude,
+      longitude: d.longitude,
+      total: d.total,
+      deliveryPartyName: d.deliveryPartyName,
+      createdAt: d.createdAt,
+      items: d.items.map((it) => ({ productName: [it.productName, it.variantLabel].filter(Boolean).join(" — "), unitName: it.unitName, quantity: it.quantity })),
+      qrUrl: `${storefrontUrl()}?order=${encodeURIComponent(d.orderNumber)}&token=${encodeURIComponent(d.labelToken)}`,
+    };
+  }
+
   async function printLabel(id: number) {
     setPrintingId(id);
-    // النافذة تُفتح متزامنةً مع النقرة (قبل await جلب التفاصيل) وإلا حجبها مانع النوافذ المتشدّد.
     const labelWin = preopenShippingLabelWindow();
     try {
       const d = await utils.storeAdmin.orders.detail.fetch({ id });
-      if (!d) {
-        labelWin?.close();
-        notify.err("تعذّر جلب تفاصيل الطلب");
-        return;
-      }
-      const res = await printShippingLabel(
-        {
-          orderNumber: d.orderNumber,
-          customerName: d.customerName,
-          customerPhone: d.customerPhone,
-          governorate: d.governorate,
-          addressText: d.addressText,
-          latitude: d.latitude,
-          longitude: d.longitude,
-          total: d.total,
-          deliveryPartyName: d.deliveryPartyName,
-          createdAt: d.createdAt,
-          items: d.items.map((it) => ({ productName: [it.productName, it.variantLabel].filter(Boolean).join(" — "), unitName: it.unitName, quantity: it.quantity })),
-          qrUrl: `${storefrontUrl()}?order=${encodeURIComponent(d.orderNumber)}&token=${encodeURIComponent(d.labelToken)}`,
-        },
-        { into: labelWin },
-      );
+      if (!d) { labelWin?.close(); notify.err("تعذّر جلب تفاصيل الطلب"); return; }
+      const res = await printShippingLabel(toShippingLabelPayload(d), { into: labelWin });
       notify.ok(res.ok ? "فُتحت نافذة طباعة ملصق الشحن" : "افسح مانع النوافذ المنبثقة لطباعة الملصق");
-    } catch (e) {
-      labelWin?.close();
-      notify.err(e);
-    } finally {
-      setPrintingId(null);
-    }
+    } catch (e) { labelWin?.close(); notify.err(e); }
+    finally { setPrintingId(null); }
   }
 
   async function printThermal(id: number) {
@@ -739,6 +774,19 @@ export default function OrderFulfillment() {
       await printOnlineOrderThermal(d);
       notify.ok("أُرسل الطلب إلى طابعة الإيصالات");
     } catch (e) { notify.err(e); }
+    finally { setPrintingId(null); }
+  }
+
+  async function printDualDocuments(id: number) {
+    setPrintingId(id);
+    const labelWin = preopenShippingLabelWindow();
+    try {
+      const d = await utils.storeAdmin.orders.detail.fetch({ id });
+      if (!d) { labelWin?.close(); notify.err("تعذّر جلب تفاصيل الطلب"); return; }
+      await printOnlineOrderThermal(d);
+      const res = await printShippingLabel(toShippingLabelPayload(d), { into: labelWin });
+      notify.ok(res.ok ? "تم إرسال الإيصال الحراري وفتح ملصق الشحن" : "أُرسل الإيصال الحراري — تحقّق من مانع النوافذ للملصق");
+    } catch (e) { labelWin?.close(); notify.err(e); }
     finally { setPrintingId(null); }
   }
 

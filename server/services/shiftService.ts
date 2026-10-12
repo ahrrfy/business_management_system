@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { hasCashVariance } from "@shared/cashDailyReconciliation";
 import { appErrorMessage } from "@shared/errors";
-import { and, desc, eq, gt, inArray, like, notExists, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, like, notExists, notInArray, or, sql } from "drizzle-orm";
 import {
   accountingEntries,
   accrualObligationEvents,
@@ -9,6 +9,7 @@ import {
   digitalSaleIntents,
   expenses,
   invoices,
+  onlineOrders,
   purchaseOrders,
   receipts,
   shifts,
@@ -621,6 +622,25 @@ export async function closeShift(
         varianceReviewedByUserId: hasVariance ? varianceApproverId : null,
       })
       .where(eq(shifts.id, input.shiftId));
+
+    // تحرير الطلبات الإلكترونية التي استلمها الموظف ولم يكتمل تجهيزها بعد (PENDING / CONFIRMED / PROCESSING)
+    // لكي لا تبقى معلقة أو مقفولة بحارس تعارض الاستلام على الموظف المغلق ورديته
+    await tx
+      .update(onlineOrders)
+      .set({
+        claimedByUserId: null,
+        claimedAt: null,
+        preparedByUserId: null,
+        status: sql`CASE WHEN ${onlineOrders.status} = 'PROCESSING' THEN 'CONFIRMED' ELSE ${onlineOrders.status} END`,
+      })
+      .where(
+        and(
+          eq(onlineOrders.claimedByUserId, sh.userId),
+          eq(onlineOrders.branchId, sh.branchId),
+          inArray(onlineOrders.status, ["PENDING", "CONFIRMED", "PROCESSING"]),
+          isNull(onlineOrders.preparedAt),
+        ),
+      );
 
     return {
       shiftId: input.shiftId,

@@ -20,6 +20,7 @@ import {
   listOnlineOrders,
   markOnlineOrderPrepared,
   onlineOrderStatusCounts,
+  reviveAndConfirmOnlineOrder,
   setOnlineOrderStatus,
   updateOnlineOrder,
   updateOnlineOrderContact,
@@ -146,9 +147,37 @@ const ordersRouter = router({
       to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صحيح").optional(),
       cursor: z.number().int().positive().optional(),
       limit: z.number().int().min(1).max(300).default(100),
+      claimedByUserId: z.number().int().positive().optional(),
+      unclaimedOnly: z.boolean().optional(),
     }))
     .query(({ input, ctx }) =>
-      listOnlineOrders({ scopedBranchId: ctx.scopedBranchId, status: input.status ?? null, from: input.from, to: input.to, cursor: input.cursor, limit: input.limit })
+      listOnlineOrders({
+        scopedBranchId: ctx.scopedBranchId,
+        status: input.status ?? null,
+        from: input.from,
+        to: input.to,
+        cursor: input.cursor,
+        limit: input.limit,
+        claimedByUserId: input.claimedByUserId,
+        unclaimedOnly: input.unclaimedOnly,
+      })
+    ),
+
+  /** الطلبات المسندة للموظف الحالي حصراً (لشريحة مهامي MyWork ومتابعة الإنجاز) */
+  myOrders: storeReadProcedure
+    .input(
+      z.object({
+        status: statusEnum.nullish(),
+        limit: z.number().int().min(1).max(100).default(50),
+      }).optional()
+    )
+    .query(({ input, ctx }) =>
+      listOnlineOrders({
+        scopedBranchId: ctx.scopedBranchId,
+        status: input?.status ?? null,
+        claimedByUserId: ctx.user.id,
+        limit: input?.limit ?? 50,
+      })
     ),
 
   /** عدّاد لكل حالة (بطاقات الإحصاء). */
@@ -218,6 +247,25 @@ const ordersRouter = router({
         entityId: input.id,
         oldValue: null,
         newValue: { claimedByUserId: ctx.user.id },
+      });
+      return res;
+    }),
+
+  /** فحص التوفر التلقائي وإحياء وتثبيت الطلب منتهي الحجز */
+  reactivateAndConfirm: storeFulfillProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const scopedBranchId = actorScopedBranch(ctx.user);
+      const res = await reviveAndConfirmOnlineOrder(
+        { id: input.id, scopedBranchId },
+        { userId: ctx.user.id, role: ctx.user.role }
+      );
+      await logAudit(ctx, {
+        action: "store.order.reactivateAndConfirm",
+        entityType: "onlineOrder",
+        entityId: input.id,
+        oldValue: null,
+        newValue: { status: res.status, claimedByUserId: res.claimedByUserId },
       });
       return res;
     }),

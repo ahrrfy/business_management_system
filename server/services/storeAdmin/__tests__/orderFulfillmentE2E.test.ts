@@ -345,7 +345,8 @@ describe("Tier 1: Feature Coverage (Isolation Happy Paths)", () => {
     const order = await getOrder(orderId);
     expect(order.contactStatus).toBe("WHATSAPP_SENT");
     expect(order.contactNotes).toBe("تم إرسال رسالة واتساب لتأكيد العنوان وموعد التسليم");
-    expect(order.claimedByUserId).toBe(2);
+    expect(order.claimedByUserId).toBeNull();
+    expect(order.status).toBe("PENDING");
   });
 
   it("T1.3: Feature 3 - Telephone Confirmation (CALLED_CONFIRMED auto-promotes PENDING to CONFIRMED)", async () => {
