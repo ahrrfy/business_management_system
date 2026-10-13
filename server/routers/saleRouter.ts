@@ -2608,7 +2608,8 @@ export const saleRouter = router({
         reason: input.reason,
         payload: {
           refundPaymentMethod: input.refundPaymentMethod,
-          reference: input.reference ?? null,
+          // مرجع البطاقة يثبته المراجع بعد قبول الطلب، لا منشئ الطلب قبل معرفة القرار.
+          reference: input.refundPaymentMethod === "CARD" ? null : input.reference ?? null,
         },
       };
       const controlReplay = input.clientRequestId
@@ -2632,10 +2633,20 @@ export const saleRouter = router({
         };
       }
       try {
-        if (input.refundPaymentMethod === "CARD" && !input.reference?.trim()) {
+        if (input.refundPaymentMethod === "CARD" && input.reference?.trim()) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذر قبول مرجع رد البطاقة من طالب الإلغاء",
+              why: "يجب تحديد الحاجة إلى الاعتماد قبل تنفيذ الرد على جهاز البطاقة",
+              doThis: "أعد إرسال طلب الإلغاء بلا مرجع؛ ينفذ المراجع المستقل رد البطاقة ويثبت مرجعه عند الاعتماد",
+            }),
+          });
+        }
+        if (input.refundPaymentMethod === "CARD") {
           throw new OperationalApprovalRequiredError({
             result: "APPROVAL_REQUIRED",
-            reason: "رد البطاقة يحتاج مرجع جهاز يثبته المراجع عند الاعتماد",
+            reason: "رد البطاقة ينفذه المراجع المستقل بعد قبول طلب الإلغاء",
             approvalOperation: "salesControl.requestCancel",
           });
         }

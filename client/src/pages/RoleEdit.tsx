@@ -373,6 +373,12 @@ export default function RoleEdit() {
               disabled={pending}
               dailyOperationPaths={dailyOperationPaths(String(detail.data?.key ?? baseRole), baseRole)}
               operationalCaps={operationalCaps}
+              inheritedOperationalCaps={resolveOperationalCaps(
+                String(detail.data?.key ?? baseRole),
+                null,
+                null,
+                baseRole,
+              )}
               onOperationalCapsChange={(caps) => {
                 setOperationalCaps(caps ?? {});
                 setCapsEdited(true);

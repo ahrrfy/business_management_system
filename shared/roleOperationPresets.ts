@@ -26,7 +26,8 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
   ],
   print_cashier: [
     "shifts.current", "shifts.open", "printPos.createSale", "sales.cancel", "returns.create",
-    "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers",
+    "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers", "returns.getInvoice",
+    "returns.inspectInvoiceForReturn",
     "invoicePrinting.requestPrint", "invoicePrinting.requestReprint", "shifts.close",
   ],
   reception_clerk: [

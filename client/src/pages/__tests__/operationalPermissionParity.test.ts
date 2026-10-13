@@ -156,7 +156,7 @@ describe("operational UI permission parity", () => {
     expect(action).toContain("إلغاء المستند (يعكس المخزون)");
   });
 
-  it("gates purchase-return links with the live execution or request operations", () => {
+  it("routes purchase-return executors and request-only users to their matching workflows", () => {
     const source =
       readPage("Purchases.tsx") +
       "\n" +
@@ -165,5 +165,13 @@ describe("operational UI permission parity", () => {
     expect(source).not.toContain('"purchaseReturns.create"');
     expect(source).toContain('"returns.executePurchaseReturnCart"');
     expect(source).toContain('"purchaseReturnGovernance.requestReturn"');
+    expect(source).toContain('"/purchases/returns-governance"');
+    expect(source).toContain("canExecutePurchaseReturn");
+    expect(source).toContain("canRequestPurchaseReturn");
+  });
+
+  it("shows the effective inherited refund cap in role operation rows", () => {
+    const source = readPage("RoleEdit.tsx");
+    expect(source).toContain("inheritedOperationalCaps={resolveOperationalCaps(");
   });
 });

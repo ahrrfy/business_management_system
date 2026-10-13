@@ -43,6 +43,8 @@ describe("role operation presets", () => {
     const printPolicy = buildDefaultRoleOperationPolicy(printRole.key, printRole.baseRole, printRole.permissions);
     expect(printPolicy.grants["operation.printPos.createSale"]).toBe(true);
     expect(printPolicy.grants["operation.sales.cancel"]).toBe(true);
+    expect(printPolicy.grants["operation.returns.getInvoice"]).toBe(true);
+    expect(printPolicy.grants["operation.returns.inspectInvoiceForReturn"]).toBe(true);
     expect(printPolicy.grants["operation.sales.create"]).toBe(false);
   });
 

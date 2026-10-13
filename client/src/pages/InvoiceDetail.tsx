@@ -11,7 +11,6 @@ import { AutoPrintOnce } from "@/components/AutoPrintOnce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { PaymentDeviceReferenceField } from "@/components/form/PaymentDeviceReferenceField";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Label } from "@/components/ui/label";
@@ -129,7 +128,6 @@ export default function InvoiceDetail() {
   const [cancelMethod, setCancelMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [cancelReason, setCancelReason] = useState("");
   const [cancelConfirmText, setCancelConfirmText] = useState("");
-  const [cancelReference, setCancelReference] = useState("");
   const [cancelRequestId, setCancelRequestId] = useState(() => crypto.randomUUID());
 
   // Default the payment amount to remaining balance once data loads.
@@ -178,7 +176,7 @@ export default function InvoiceDetail() {
       setError("");
       setCancelOpen(false);
       setCancelReason("");
-      setCancelConfirmText(""); setCancelReference("");
+      setCancelConfirmText("");
       await Promise.all(
         r.mode === "EXECUTED"
           ? [
@@ -786,7 +784,7 @@ export default function InvoiceDetail() {
               onClick={() => {
                 setCancelMethod((data.paymentMethod as (typeof METHODS)[number]["v"] | null) ?? "CASH");
                 setCancelReason("");
-                setCancelConfirmText(""); setCancelReference("");
+                setCancelConfirmText("");
                 setError("");
                 setCancelOpen(true);
               }}
@@ -1122,8 +1120,9 @@ export default function InvoiceDetail() {
               </div>
             )}
             {needsCardReference && (
-              <PaymentDeviceReferenceField id="cancel-card-ref" value={cancelReference} onChange={setCancelReference}
-                hint="اختياريّ هنا. إن نفّذت الاسترداد على الجهاز فعلاً أدخِل مرجعه — وإلا اتركه فارغاً؛ المُعتمِد المستقل يدخله أو يؤكّده لحظة الاعتماد، قبل أن يُنفَّذ أيّ أثرٍ فعليّ." />
+              <p className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
+                سيُنشأ طلب اعتماد أولاً. بعد قبوله ينفذ المراجع المستقل رد البطاقة على الجهاز ويثبت مرجعه؛ لا تنفذ الرد من هذه الشاشة.
+              </p>
             )}
             <div className="space-y-1">
               <Label htmlFor="cancel-reason">سبب الإلغاء *</Label>
@@ -1158,7 +1157,6 @@ export default function InvoiceDetail() {
                 if (cancelConfirmText.trim() !== data.invoiceNumber) return;
                 cancel.mutate({
                   invoiceId, refundPaymentMethod: cancelMethod,
-                  reference: needsCardReference && cancelReference.trim() ? cancelReference.trim() : undefined,
                   reason: cancelReason.trim(), clientRequestId: cancelRequestId,
                 });
               }}
