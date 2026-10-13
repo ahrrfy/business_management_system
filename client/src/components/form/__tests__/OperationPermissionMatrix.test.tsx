@@ -156,6 +156,23 @@ describe("Canonical operation delegation editor", () => {
     });
   }
 
+  it("resets the daily filter when the selected role has no daily tasks", () => {
+    let setDaily!: React.Dispatch<React.SetStateAction<string[]>>;
+    function Editor() {
+      const [daily, updateDaily] = useState(["delivery.dispatch"]);
+      setDaily = updateDaily;
+      return <OperationPermissionMatrix mode="role" value={base} baseline={base}
+        dailyOperationPaths={daily} onChange={() => undefined} />;
+    }
+    act(() => root.render(<Editor />));
+    expect(host.querySelector<HTMLSelectElement>('select[id$="-filter"]')?.value).toBe("daily");
+    expect(host.textContent).not.toContain("طلب مرتجع");
+
+    act(() => setDaily([]));
+    expect(host.querySelector<HTMLSelectElement>('select[id$="-filter"]')?.value).toBe("all");
+    expect(host.textContent).toContain("طلب مرتجع");
+  });
+
   it("filters by executable authority rather than a selected grant blocked by cost visibility", () => {
     render("role", {
       version: 1,

@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { OperationalCaps } from "@shared/atomicPermissions";
 import { type OperationPolicy } from "@shared/operationPermissions";
@@ -34,6 +34,9 @@ export function OperationPermissionMatrix({
   const [domain, setDomain] = useState("");
   const [stage, setStage] = useState("");
   const [filter, setFilter] = useState(daily.size ? "daily" : "all");
+  useEffect(() => {
+    if (!daily.size && filter === "daily") setFilter("all");
+  }, [daily.size, filter]);
   const visibilityAllowed = (policy: OperationPolicy | null | undefined) =>
     (policy?.dataVisibility?.purchaseCost ?? (mode === "user" ? inherited?.dataVisibility?.purchaseCost : false)) === true &&
     (policy?.dataVisibility?.profitMargin ?? (mode === "user" ? inherited?.dataVisibility?.profitMargin : false)) === true;
