@@ -116,7 +116,7 @@ export function waitForWorkerActivation(
     ) => void | (() => void);
   } = {},
 ): Promise<WorkerActivationResult> {
-  if (worker.state === "activated" || registration.active === worker) {
+  if (worker.state === "activated") {
     return Promise.resolve({ status: "activated", acknowledged: false });
   }
 
@@ -142,13 +142,16 @@ export function waitForWorkerActivation(
     };
 
     const inspect = () => {
-      if (registration.active === worker || worker.state === "activated") {
+      if (worker.state === "activated") {
         finish("activated");
         return;
       }
 
       // إن أصبح عامل آخر active أثناء المحاولة، فالغاية تحققت بإصدار أحدث.
-      if (registration.active && registration.active !== previousActive) {
+      if (
+        registration.active?.state === "activated" &&
+        registration.active !== previousActive
+      ) {
         finish("activated");
         return;
       }
@@ -163,7 +166,8 @@ export function waitForWorkerActivation(
         redundantTimer = setTimeout(() => {
           redundantTimer = undefined;
           if (registration.active && registration.active !== previousActive) {
-            finish("activated");
+            // active يُعيَّن قبل اكتمال activate؛ اترك polling ينتظر activated.
+            if (registration.active.state === "activated") finish("activated");
           } else if (registration.waiting && registration.waiting !== worker) {
             finish("superseded");
           } else {
@@ -216,7 +220,11 @@ export async function activateRegistrationUpdate(options: {
       return { status: "unavailable", attempts, acknowledged };
     }
 
-    const worker = registration.waiting;
+    const worker =
+      registration.waiting ??
+      (registration.active?.state === "activating"
+        ? registration.active
+        : null);
     if (!worker) {
       return { status: "no-waiting-worker", attempts, acknowledged };
     }
