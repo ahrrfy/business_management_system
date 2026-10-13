@@ -84,16 +84,14 @@ export function OperationPermissionRow(props: Props) {
             <MoneyInput aria-label={`سقف ${operation.label}`} disabled={disabled} value={ownCap ?? ""}
               placeholder={hasOwnCap && ownCap === null
                 ? "بلا سقف"
-                : mode === "user"
-                  ? inheritedCap === null
-                    ? "يرث: بلا سقف"
-                    : `يرث ${Number(inheritedCap ?? 0).toLocaleString("ar-IQ-u-nu-latn")}`
-                  : "0"}
-              onChange={(next) => setRefundCap(next || (mode === "user" ? undefined : "0.00"))}
+                : inheritedCap === null
+                  ? "يرث: بلا سقف"
+                  : `يرث ${Number(inheritedCap ?? 0).toLocaleString("ar-IQ-u-nu-latn")}`}
+              onChange={(next) => setRefundCap(next || undefined)}
               className="h-8 text-xs" />
             <div className="flex gap-2 text-[10px]">
               <button type="button" className="text-primary underline" disabled={disabled} onClick={() => setRefundCap(null)}>بلا سقف</button>
-              {mode === "user" && <button type="button" className="text-primary underline" disabled={disabled} onClick={() => setRefundCap(undefined)}>وراثة الدور</button>}
+              <button type="button" className="text-primary underline" disabled={disabled} onClick={() => setRefundCap(undefined)}>{mode === "user" ? "وراثة الدور" : "وراثة القالب"}</button>
             </div>
             <p className="text-[10px] text-muted-foreground">السقف المباشر؛ التجاوز ينتقل للاعتماد</p>
           </div>

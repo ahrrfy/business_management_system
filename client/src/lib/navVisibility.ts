@@ -67,6 +67,31 @@ export const SALE_CREATION_OPERATION_GATE: RoleGate = {
   ],
 };
 
+/** Each return workflow must include the reads its editor performs. */
+export const RETURNS_WORKSPACE_GATE: RoleGate = {
+  anyOf: [
+    { operations: ["returns.executeSalesReturnCart"] },
+    { operations: ["returns.executePurchaseReturnCart"] },
+    {
+      allOf: [
+        { operations: ["returns.getRequest"] },
+        { operations: ["returns.getInvoice"] },
+        { operations: ["returns.approveRequest"] },
+      ],
+    },
+  ],
+};
+
+/** A governance action is usable only with its matching source/queue read. */
+export const PURCHASE_RETURNS_GOVERNANCE_GATE: RoleGate = {
+  anyOf: [
+    { allOf: [{ operations: ["purchaseReturnGovernance.returnSources"] }, { operations: ["purchaseReturnGovernance.requestReturn"] }] },
+    { allOf: [{ operations: ["purchaseReturnGovernance.reversalSources"] }, { operations: ["purchaseReturnGovernance.requestReversal"] }] },
+    { allOf: [{ operations: ["purchaseReturnGovernance.pendingReturns"] }, { operations: ["purchaseReturnGovernance.decideReturn"] }] },
+    { allOf: [{ operations: ["purchaseReturnGovernance.pendingReversals"] }, { operations: ["purchaseReturnGovernance.decideReversal"] }] },
+  ],
+};
+
 /** Editors need their document read and at least one supported write action. */
 export const EDITOR_OPERATION_GATES = {
   product: { allOf: [{ operations: ["catalog.getForVariantEdit"] }, { operations: ["catalog.updateProductVariants"] }] },

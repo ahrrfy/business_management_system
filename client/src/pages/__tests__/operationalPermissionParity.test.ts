@@ -2,6 +2,11 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { APPLICATION_MODULES } from "@/lib/moduleRegistry";
 import { canSeeGate } from "@/lib/navVisibility";
+import {
+  PURCHASE_RETURNS_GOVERNANCE_GATE,
+  RETURNS_WORKSPACE_GATE,
+} from "@/lib/navVisibility";
+import type { OperationPolicy } from "@shared/operationPermissions";
 import { moduleAccessAllowed } from "@shared/permissions";
 
 const readPage = (name: string) =>
@@ -177,18 +182,42 @@ describe("operational UI permission parity", () => {
     expect(source).not.toContain("?? resolveOperationalCaps(roleKey");
   });
 
-  it("admits delegated reviewers and reversal operators to their workflow pages", () => {
+  it("requires every delegated workflow read before opening its page", () => {
     const app = readFileSync(new URL("../../App.tsx", import.meta.url), "utf8");
     const governance = readPage("PurchaseReturnsGovernance.tsx");
+    const operationPolicy = (paths: string[]): OperationPolicy => ({
+      version: 1,
+      grants: Object.fromEntries(paths.map((path) => [`operation.${path}`, true])),
+    });
 
-    for (const operation of [
+    expect(canSeeGate(RETURNS_WORKSPACE_GATE, "manager", null, operationPolicy([
       "returns.getRequest",
       "returns.approveRequest",
+    ]))).toBe(false);
+    expect(canSeeGate(RETURNS_WORKSPACE_GATE, "manager", null, operationPolicy([
+      "returns.getRequest",
+      "returns.getInvoice",
+      "returns.approveRequest",
+    ]))).toBe(true);
+    expect(canSeeGate(PURCHASE_RETURNS_GOVERNANCE_GATE, "purchasing", null, operationPolicy([
       "purchaseReturnGovernance.requestReversal",
-      "purchaseReturnGovernance.decideReversal",
-    ]) expect(app).toContain(`"${operation}"`);
+    ]))).toBe(false);
+    expect(canSeeGate(PURCHASE_RETURNS_GOVERNANCE_GATE, "purchasing", null, operationPolicy([
+      "purchaseReturnGovernance.reversalSources",
+      "purchaseReturnGovernance.requestReversal",
+    ]))).toBe(true);
 
+    expect(app).toContain("canonicalGate={RETURNS_WORKSPACE_GATE}");
+    expect(app).toContain("canonicalGate={PURCHASE_RETURNS_GOVERNANCE_GATE}");
+    expect(governance).toContain("enabled: enabled && canReadReversalSources");
     expect(governance).toContain('me.data?.role === "admin"');
     expect(governance).toContain("canChooseBranch ? (");
+  });
+
+  it("hides stock-expense tabs without the inventory adjustment operation", () => {
+    const source = readPage("ExpenseNew.tsx");
+    expect(source).toContain('"inventory.adjust"');
+    expect(source).toContain("canCreateExpense &&");
+    expect(source).toContain('setSource("CASH")');
   });
 });

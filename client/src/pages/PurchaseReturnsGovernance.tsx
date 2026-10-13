@@ -13,6 +13,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import { variantDisplayName } from "@shared/variantDisplay";
 
 export default function PurchaseReturnsGovernance() {
@@ -21,6 +22,18 @@ export default function PurchaseReturnsGovernance() {
   const branches = trpc.branches.list.useQuery();
   const suppliers = trpc.suppliers.list.useQuery();
   const [pickedBranchId, setPickedBranchId] = useState("");
+  const canReadReturnSources = useOperationPermission(
+    "purchaseReturnGovernance.returnSources",
+  ).allowed;
+  const canReadReversalSources = useOperationPermission(
+    "purchaseReturnGovernance.reversalSources",
+  ).allowed;
+  const canReadPendingReturns = useOperationPermission(
+    "purchaseReturnGovernance.pendingReturns",
+  ).allowed;
+  const canReadPendingReversals = useOperationPermission(
+    "purchaseReturnGovernance.pendingReversals",
+  ).allowed;
   const canChooseBranch =
     me.data?.isOwner === true ||
     me.data?.role === "admin" ||
@@ -44,21 +57,21 @@ export default function PurchaseReturnsGovernance() {
   const enabled = branchId != null && branchId > 0;
   const returnSourcesQuery =
     trpc.purchaseReturnGovernance.returnSources.useQuery(queryInput, {
-      enabled,
+      enabled: enabled && canReadReturnSources,
     });
   const reversalSourcesQuery =
     trpc.purchaseReturnGovernance.reversalSources.useQuery(queryInput, {
-      enabled,
+      enabled: enabled && canReadReversalSources,
     });
   const pendingReturnsQuery =
     trpc.purchaseReturnGovernance.pendingReturns.useQuery(
       { branchId: queryBranchId },
-      { enabled },
+      { enabled: enabled && canReadPendingReturns },
     );
   const pendingReversalsQuery =
     trpc.purchaseReturnGovernance.pendingReversals.useQuery(
       { branchId: queryBranchId },
-      { enabled },
+      { enabled: enabled && canReadPendingReversals },
     );
 
   const supplierNames = useMemo(
@@ -253,9 +266,13 @@ export default function PurchaseReturnsGovernance() {
           currentUserId={me.data?.id}
           isOwner={me.data?.isOwner === true}
           loadingSources={
-            returnSourcesQuery.isLoading || reversalSourcesQuery.isLoading
+            (canReadReturnSources && returnSourcesQuery.isLoading) ||
+            (canReadReversalSources && reversalSourcesQuery.isLoading)
           }
-          sourcesError={returnSourcesQuery.error ?? reversalSourcesQuery.error}
+          sourcesError={
+            (canReadReturnSources ? returnSourcesQuery.error : null) ??
+            (canReadReversalSources ? reversalSourcesQuery.error : null)
+          }
           onRetrySources={retrySources}
           requestPending={requestReturn.isPending || requestReversal.isPending}
           decisionPending={decideReturn.isPending || decideReversal.isPending}
@@ -263,10 +280,10 @@ export default function PurchaseReturnsGovernance() {
           onRequestReversal={(input) => requestReversal.mutateAsync(input)}
           onDecideReturn={(input) => decideReturn.mutateAsync(input)}
           onDecideReversal={(input) => decideReversal.mutateAsync(input)}
-          pendingReturnLoading={pendingReturnsQuery.isLoading}
-          pendingReversalLoading={pendingReversalsQuery.isLoading}
-          pendingReturnError={pendingReturnsQuery.error}
-          pendingReversalError={pendingReversalsQuery.error}
+          pendingReturnLoading={canReadPendingReturns && pendingReturnsQuery.isLoading}
+          pendingReversalLoading={canReadPendingReversals && pendingReversalsQuery.isLoading}
+          pendingReturnError={canReadPendingReturns ? pendingReturnsQuery.error : null}
+          pendingReversalError={canReadPendingReversals ? pendingReversalsQuery.error : null}
           onRetryPendingReturns={() => void pendingReturnsQuery.refetch()}
           onRetryPendingReversals={() => void pendingReversalsQuery.refetch()}
         />

@@ -3,6 +3,7 @@ import React, { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OperationPolicy } from "@shared/operationPermissions";
+import type { OperationalCaps } from "@shared/atomicPermissions";
 
 vi.mock("@shared/operationPermissions", () => ({
   OPERATION_PERMISSIONS: [
@@ -252,6 +253,41 @@ describe("Canonical operation delegation editor", () => {
     ));
     expect(host.textContent).toContain("ينفذ مباشرة بلا سقف");
     expect(host.textContent).not.toContain("يحتاج اعتماداً لأي مبلغ");
+  });
+
+  it("clearing a role refund cap restores template inheritance", () => {
+    let latestCaps: OperationalCaps | null = null;
+    function Editor() {
+      const [caps, setCaps] = useState<OperationalCaps>({
+        maxRefundAmountIqd: "5000.00",
+      });
+      return (
+        <OperationPermissionMatrix
+          mode="role"
+          value={{ version: 1, grants: { "operation.returns.create": true } }}
+          baseline={null}
+          inherited={base}
+          onChange={vi.fn()}
+          operationalCaps={caps}
+          inheritedOperationalCaps={{ maxRefundAmountIqd: "25000.00" }}
+          onOperationalCapsChange={(next) => {
+            latestCaps = next;
+            setCaps(next ?? {});
+          }}
+        />
+      );
+    }
+    act(() => root.render(<Editor />));
+    const field = host.querySelector<HTMLInputElement>(
+      'input[aria-label="سقف طلب مرتجع"]',
+    )!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!
+        .set!.call(field, "");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(latestCaps).toEqual({});
+    expect(field.placeholder).toContain("25,000");
   });
 
   it("bulk action only changes filtered results and omits protected operations", () => {
