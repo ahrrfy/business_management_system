@@ -1084,13 +1084,13 @@ export default function InvoiceDetail() {
             </DialogTitle>
             <DialogDescription className="space-y-2 pt-2 text-start">
               <div>
-                هذا طلب إلغاء صفري الأثر. بعد اعتماد مراجع مستقل يعكس النظام القيد المحاسبيّ ويعيد كامل البضاعة إلى المخزون
+                هذا إجراء إلغاء فعلي. إذا استوفت الفاتورة حدود صلاحيتك فسينفذ النظام الإلغاء فور التأكيد، ويعكس القيد المحاسبيّ ويعيد كامل البضاعة إلى المخزون
                 {paidAmountForRefund.gt(0) && (
                   <>
                     {" "}
                     ويُصدر <strong>سند صرفٍ</strong> باستردادِ {" "}
                     {fmt(paidAmountForRefund.toFixed(2))}</>
-                )}.
+                )}. وإذا تجاوزت العملية السقف أو شروط الوردية فسيُنشأ طلب اعتماد بلا أثر مالي أو مخزني حتى اعتماده.
               </div>
               {data.status !== "PENDING" && (
                 <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-xs text-[var(--sem-warn)]">
@@ -1161,7 +1161,7 @@ export default function InvoiceDetail() {
                 });
               }}
             >
-              {cancel.isPending ? ACTION_LABELS.sending : "إرسال طلب الإلغاء"}
+              {cancel.isPending ? ACTION_LABELS.processing : "تأكيد الإلغاء"}
             </Button>
           </DialogFooter>
         </DialogContent>

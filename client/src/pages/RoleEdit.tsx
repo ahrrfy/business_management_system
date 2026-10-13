@@ -67,6 +67,7 @@ export default function RoleEdit() {
   const [initialPolicy, setInitialPolicy] =
     useState<OperationPolicy>(emptyPolicy);
   const [operationalCaps, setOperationalCaps] = useState<OperationalCaps>(() => resolveOperationalCaps("user"));
+  const [capsEdited, setCapsEdited] = useState(false);
   const [policyEdited, setPolicyEdited] = useState(false);
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState("");
@@ -100,6 +101,7 @@ export default function RoleEdit() {
     setOperationPolicy(policy);
     setInitialPolicy(policy);
     setOperationalCaps(caps);
+    setCapsEdited(false);
     setRevision(row.operationPolicyRevision ?? 0);
     baseline.current = JSON.stringify({
       label: row.label ?? "",
@@ -143,6 +145,7 @@ export default function RoleEdit() {
         ),
       );
       setOperationalCaps(resolveOperationalCaps(base));
+      setCapsEdited(true);
       return;
     }
     const source = cloneRoles.find(
@@ -156,6 +159,7 @@ export default function RoleEdit() {
     );
     setBaseRole(base);
     setOperationalCaps((source.operationalCaps as OperationalCaps | null) ?? resolveOperationalCaps(String(source.key ?? base), null, null, base));
+    setCapsEdited(true);
     changePolicy(
       editableOperationPolicy(
         source.operationPolicy ??
@@ -217,7 +221,7 @@ export default function RoleEdit() {
       ...(persistPolicy
         ? { operationPolicy: editableOperationPolicy(operationPolicy) }
         : {}),
-      operationalCaps,
+      ...(!isEdit || capsEdited ? { operationalCaps } : {}),
     };
     if (isEdit)
       update.mutate({
@@ -283,6 +287,7 @@ export default function RoleEdit() {
                     setOperationPolicy(editableOperationPolicy(buildDefaultRoleOperationPolicy(selected, selected, ROLE_TEMPLATES[selected])));
                     setInitialPolicy(editableOperationPolicy(buildDefaultRoleOperationPolicy(selected, selected, ROLE_TEMPLATES[selected])));
                     setOperationalCaps(resolveOperationalCaps(selected));
+                    setCapsEdited(true);
                   }
                 }}
               >
@@ -364,11 +369,21 @@ export default function RoleEdit() {
               disabled={pending}
               dailyOperationPaths={dailyOperationPaths(String(detail.data?.key ?? baseRole), baseRole)}
               operationalCaps={operationalCaps}
-              onOperationalCapsChange={(caps) => setOperationalCaps(caps ?? {})}
+              onOperationalCapsChange={(caps) => {
+                setOperationalCaps(caps ?? {});
+                setCapsEdited(true);
+              }}
             />
           </CardContent>
         </Card>
-        <OperationalCapsPanel caps={operationalCaps} onChange={setOperationalCaps} disabled={pending} />
+        <OperationalCapsPanel
+          caps={operationalCaps}
+          onChange={(caps) => {
+            setOperationalCaps(caps);
+            setCapsEdited(true);
+          }}
+          disabled={pending}
+        />
         {error && (
           <p className="text-sm text-destructive" role="alert">
             {error}

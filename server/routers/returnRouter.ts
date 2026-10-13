@@ -2156,6 +2156,18 @@ export const returnRouter = router({
                 }),
               });
             }
+            const canonicalCartReturnAllowed = await assertOperationAuthorityTx(
+              tx,
+              {
+                userId: ctx.user.id,
+                branchId: actorBranchId,
+                role: ctx.user.role,
+              },
+              "returns.executeSalesReturnCart",
+              true,
+            );
+            const currentCartReturnAllowed =
+              canonicalCartReturnAllowed || !ctx.user.operationPolicyEnabled;
 
             await assertPeriodOpen(tx, new Date());
 
@@ -2466,7 +2478,7 @@ export const returnRouter = router({
                 ]),
               );
               const decision = evaluateRefundOperationalDecision({
-                operationAllowed: true,
+                operationAllowed: currentCartReturnAllowed,
                 sameBranch: Number(matchedInvoice.branchId) === actorBranchId,
                 ownsTransaction:
                   Number(matchedInvoice.createdBy) === Number(ctx.user.id),

@@ -5,12 +5,14 @@ const page = (name: string) => readFileSync(new URL(`../${name}`, import.meta.ur
 const server = (path: string) => readFileSync(new URL(`../../../../server/${path}`, import.meta.url), "utf8");
 
 describe("واجهة حوكمة عمليات البيع الحرجة", () => {
-  it("الإلغاء والمرتجع وإعادة الإصدار ترسل طلباً ولا تدّعي تنفيذ الأثر", () => {
+  it("الإلغاء يوضح التنفيذ المباشر أو طلب الاعتماد، وبقية المسارات لا تدّعي أثراً مبكراً", () => {
     const invoice = page("InvoiceDetail.tsx");
     const reissue = page("SalesInvoiceNew.tsx");
     const returns = readFileSync(new URL(`../../components/returns/ReturnComposer.tsx`, import.meta.url), "utf8");
     expect(invoice).toContain("أُرسل طلب الإلغاء");
     expect(invoice).toContain("لم يتغير المخزون أو المال بعد");
+    expect(invoice).toContain("فسينفذ النظام الإلغاء فور التأكيد");
+    expect(invoice).toContain("تأكيد الإلغاء");
     expect(invoice).not.toContain("أُلغيت الفاتورة ${r.invoiceNumber}");
     expect(reissue).toContain("أُرسل طلب إعادة الإصدار");
     expect(reissue).toContain("requestExchange");

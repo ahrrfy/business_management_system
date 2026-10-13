@@ -57,6 +57,7 @@ export async function loadCurrentOperationalAuthorityTx(
   const [user] = await tx
     .select({
       branchId: users.branchId,
+      accessExpiresAt: users.accessExpiresAt,
       customRoleId: users.customRoleId,
       isActive: users.isActive,
       isOwner: users.isOwner,
@@ -68,13 +69,19 @@ export async function loadCurrentOperationalAuthorityTx(
     .for("share")
     .limit(1);
 
-  if (!user || !user.isActive) {
+  if (
+    !user ||
+    !user.isActive ||
+    (user.accessExpiresAt != null && user.accessExpiresAt.getTime() <= Date.now())
+  ) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: appErrorMessage({
         what: "تعذر تثبيت تفويض العملية",
         why: user
-          ? "حساب منفذ العملية معطل حالياً"
+          ? user.accessExpiresAt != null && user.accessExpiresAt.getTime() <= Date.now()
+            ? "انتهت صلاحية الوصول الزمنية لحساب منفذ العملية"
+            : "حساب منفذ العملية معطل حالياً"
           : "حساب منفذ العملية غير موجود في سجل المستخدمين",
         doThis: "تحقق من تفعيل الحساب وإسناد دوره لدى مسؤول النظام ثم أعد المحاولة",
       }),
