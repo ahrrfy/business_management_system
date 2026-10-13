@@ -155,7 +155,9 @@ export function PurchaseDetailDrawer({
   const canConfirm = canLifecycleOperation(me.data, "purchases.confirmOrder", legacyEdit);
   const canDecide = canLifecycleOperation(me.data, "purchases.decideControl", legacyEdit);
   const canRequestPayment = canLifecycleOperation(me.data, "supplierPayments.requestPayment", legacyEdit);
-  const canReturn = canLifecycleOperation(me.data, "purchaseReturns.create", legacyEdit);
+  const canReturn =
+    canLifecycleOperation(me.data, "returns.executePurchaseReturnCart", legacyEdit) ||
+    canLifecycleOperation(me.data, "purchaseReturnGovernance.requestReturn", legacyEdit);
   const canSettleShipping = canLifecycleOperation(me.data, "purchases.settleShippingFromShift", legacyEdit);
 
   const pendingControls = trpc.purchases.pendingControls.useQuery(

@@ -155,4 +155,15 @@ describe("operational UI permission parity", () => {
     expect(action).toContain("onClick={onCancel}");
     expect(action).toContain("إلغاء المستند (يعكس المخزون)");
   });
+
+  it("gates purchase-return links with the live execution or request operations", () => {
+    const source =
+      readPage("Purchases.tsx") +
+      "\n" +
+      readComponent("purchases/PurchaseDetailDrawer.tsx");
+
+    expect(source).not.toContain('"purchaseReturns.create"');
+    expect(source).toContain('"returns.executePurchaseReturnCart"');
+    expect(source).toContain('"purchaseReturnGovernance.requestReturn"');
+  });
 });

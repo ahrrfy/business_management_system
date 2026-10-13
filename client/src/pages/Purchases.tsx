@@ -993,7 +993,12 @@ export default function Purchases() {
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
-                            level: "FULL", operations: ["purchaseReturns.create"] },
+                            level: "FULL",
+                            operations: [
+                              "returns.executePurchaseReturnCart",
+                              "purchaseReturnGovernance.requestReturn",
+                            ],
+                          },
                         },
                         {
                           key: "cancel",
