@@ -992,7 +992,17 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
 
     it("paySpotBonusCash:treasury_happy_path pays approved bonus from treasury and posts accounting entry", async () => {
       const { db } = await seedEmp({ employeeId: 9401, branchId: 101 });
-      const actor = { userId: 1, role: "admin", branchId: 101 } as any;
+      await db.insert(s.users).values({
+        id: 1,
+        openId: "test-owner-1",
+        name: "مالك تجريبي",
+        role: "admin",
+        branchId: 101,
+        isOwner: true,
+        isActive: true,
+      }).onDuplicateKeyUpdate({ set: { isOwner: true, isActive: true } });
+
+      const actor = { userId: 1, role: "admin", branchId: 101, isOwner: true } as any;
 
       await db.insert(s.receipts).values({
         id: 94011,
@@ -1028,6 +1038,61 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
       const [entry] = await db.select().from(s.accountingEntries).where(eq(s.accountingEntries.receiptId, payRes.receiptId));
       expect(entry).toBeDefined();
       expect(entry.entryType).toBe("PAYMENT_OUT");
+    });
+
+    it("paySpotBonusCash:non_owner_treasury_rejection rejects non-owner actor attempting treasury cash disbursement with FORBIDDEN", async () => {
+      const { db } = await seedEmp({ employeeId: 9402, branchId: 101 });
+      await db.insert(s.users).values([
+        {
+          id: 1,
+          openId: "test-admin-1",
+          name: "مدير أدمن",
+          role: "admin",
+          branchId: 101,
+          isOwner: true,
+          isActive: true,
+        },
+        {
+          id: 2,
+          openId: "test-manager-2",
+          name: "مدير فرع غير مالك",
+          role: "manager",
+          branchId: 101,
+          isOwner: false,
+          isActive: true,
+        },
+      ]).onDuplicateKeyUpdate({ set: { isActive: true } });
+
+      await db.insert(s.receipts).values({
+        id: 94012,
+        branchId: 101,
+        cashBucket: "TREASURY",
+        direction: "IN",
+        amount: "5000000.00",
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        approvedBy: 1,
+        approvedAt: new Date(),
+        createdBy: 1,
+      }).onDuplicateKeyUpdate({ set: { amount: "5000000.00" } });
+
+      const admin = { userId: 1, role: "admin", branchId: 101, isOwner: true } as any;
+      const nonOwner = { userId: 2, role: "manager", branchId: 101, isOwner: false } as any;
+
+      const bonus = await createSpotBonus(admin, {
+        employeeId: 9402,
+        amount: "120000.00",
+        reason: "مكافأة خزينة محاولة اختراق",
+        disbursementType: "CASH_TREASURY",
+      });
+      await approveSpotBonus(admin, bonus.id);
+
+      await expect(
+        paySpotBonusCash(nonOwner, { id: bonus.id, cashBucket: "TREASURY" }),
+      ).rejects.toMatchObject({
+        code: "FORBIDDEN",
+      });
     });
 
     it("paySpotBonusCash:drawer_happy_path pays approved bonus from open cashier drawer", async () => {

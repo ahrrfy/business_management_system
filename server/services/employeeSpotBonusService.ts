@@ -19,7 +19,11 @@ import {
   signedPostingLines,
   type PostingSourceComponents,
 } from "./accounting/postingEngine";
-import { assertCashOutAvailable } from "./cash/cashAvailability";
+import {
+  assertCashOutAvailable,
+  assertApprovedTreasuryOutAvailable,
+  authorizeExternalTreasuryDisbursement,
+} from "./cash/cashAvailability";
 
 function requireDb() {
   const db = getDb();
@@ -306,13 +310,36 @@ export async function paySpotBonusCash(
       }
     }
 
-    await assertCashOutAvailable(tx, {
-      branchId,
-      cashBucket,
-      shiftId,
-      amount: toDbMoney(bonusAmount),
-      operation: "صرف مكافأة استثنائية فورية",
-    });
+    if (cashBucket === "TREASURY") {
+      const treasuryApproval = await authorizeExternalTreasuryDisbursement(tx, {
+        actor: {
+          userId: actor.userId,
+          branchId: actor.branchId ?? branchId,
+          role: actor.role,
+          isOwner: actor.isOwner,
+        },
+        makerUserIds: [b.createdById],
+        branchIds: [branchId],
+        operation: "صرف مكافأة استثنائية فورية من الخزينة",
+      });
+      await assertApprovedTreasuryOutAvailable(
+        tx,
+        {
+          branchId,
+          amount: toDbMoney(bonusAmount),
+          operation: "صرف مكافأة استثنائية فورية",
+        },
+        treasuryApproval,
+      );
+    } else {
+      await assertCashOutAvailable(tx, {
+        branchId,
+        cashBucket: "DRAWER",
+        shiftId,
+        amount: toDbMoney(bonusAmount),
+        operation: "صرف مكافأة استثنائية فورية من الدرج",
+      });
+    }
 
     const [emp] = await tx
       .select({

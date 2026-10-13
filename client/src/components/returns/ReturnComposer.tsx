@@ -91,9 +91,9 @@ export function ReturnComposer({
 }: ReturnComposerProps) {
   const utils = trpc.useUtils();
   const detail = trpc.returns.getInvoice.useQuery({ invoiceId }, { enabled: invoiceId > 0 });
-  /** المالك والإداريون والكاشير ينفّذون المرتجع فوراً (محرك المرتجعات الفوري الذري) — الشاشة تعرف ذلك قبل التأكيد لا بعده. */
+  /** المالك وحده ينفّذ المرتجع فوراً (VULN-SQUAD1-01) — غير المالك يرسل طلباً للاعتماد. */
   const me = trpc.auth.me.useQuery();
-  const executesImmediately = me.data?.isOwner === true || ["admin", "manager", "cashier"].includes(me.data?.role ?? "");
+  const executesImmediately = me.data?.isOwner === true;
   /**
    * ⭐ في وضع الاعتماد نُحمّل **بنود الطلب** — هي التي سينفّذها الخادم، لا ما يُدخله المدير.
    * كان الجدول يُفتَح فارغاً فيُدخل المدير كمّياتٍ يُقسم بها حوارُ التأكيد ثمّ يتجاهلها

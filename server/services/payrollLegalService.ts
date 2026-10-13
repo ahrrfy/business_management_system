@@ -14,6 +14,7 @@
  *    الافتراضية صفر/معطَّلة (توضيحيّ لا معتمَد). كل المبالغ عبر decimal.js + money.ts (لا parseFloat).
  * ========================================================================== */
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
 import { eq } from "drizzle-orm";
 import { payrollLegalSettings, type IncomeTaxBracket } from "../../drizzle/schema";
@@ -247,6 +248,17 @@ export async function updatePayrollLegalSettings(
   input: UpdatePayrollLegalInput,
   actor: Actor,
 ): Promise<UpdatePayrollLegalResult> {
+  if (!actor.isOwner) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر تعديل الإعدادات القانونية للرواتب",
+        why: "تعديل إعدادات الرواتب القانونية السيادية محصور بحساب المالك",
+        doThis: "تواصل مع المالك لتعديل نسب وشرائح الرواتب القانونية",
+      }),
+    });
+  }
+
   // تحقّق دفاعيّ (الراوتر يتحقّق أيضاً بـzod — دفاع في العمق).
   assertPct(input.socialSecurityEmployeeRate, "نسبة حصّة الموظف");
   assertPct(input.socialSecurityEmployerRate, "نسبة حصّة رب العمل");

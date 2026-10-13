@@ -2747,7 +2747,7 @@ export async function returnSaleDirect(
       const isAuthorized =
         isOwner ||
         isAdmin ||
-        (["manager", "cashier"].includes(effectiveRole) && hasSalesFull) ||
+        (effectiveRole === "manager" && hasSalesFull) ||
         hasReceptionFull;
 
       if (!isAuthorized) {
@@ -2780,6 +2780,62 @@ export async function returnSaleDirect(
         }
       }
 
+      const [invRow] = await tx
+        .select({
+          branchId: invoices.branchId,
+          createdBy: invoices.createdBy,
+          workOrderCreatedBy: workOrders.createdBy,
+        })
+        .from(invoices)
+        .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
+        .where(eq(invoices.id, coreInput.invoiceId))
+        .limit(1);
+
+      if (!invRow) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: `الفاتورة #${coreInput.invoiceId} غير موجودة`,
+            doThis: "تحقّق من رقم الفاتورة ثم أعد المحاولة",
+          }),
+        });
+      }
+
+      // فصل المهام (SOD): لا يجوز لمنشئ الفاتورة إرجاعها وصرف نقدها مباشرة؛ يلزم اعتماد مراجع مستقل
+      if (
+        !isOwner &&
+        (invRow.createdBy === actor.userId ||
+          (invRow.workOrderCreatedBy != null &&
+            invRow.workOrderCreatedBy === actor.userId))
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر تنفيذ المرتجع المباشر",
+            why: "لا يجوز لمنشئ الفاتورة إرجاعها وصرف نقدها مباشرة؛ يلزم اعتماد مراجع مستقل",
+            doThis: "اطلب من مدير آخر أو المالك تنفيذ المرتجع أو اعتماده",
+          }),
+        });
+      }
+
+      // عزل الفروع: المنفذ لا ينفّذ مرتجعاً مباشراً لفاتورة فرع آخر ما لم يكن مالكاً أو مديراً عاماً
+      if (
+        !isOwner &&
+        !isAdmin &&
+        actor.branchId != null &&
+        Number(invRow.branchId) !== Number(actor.branchId)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر تنفيذ المرتجع المباشر",
+            why: "الفاتورة تنتمي إلى فرع آخر غير فرعك المسند",
+            doThis: "سجّل المرتجع من الفرع المصدر أو اطلب من الإدارة إتمامه",
+          }),
+        });
+      }
+
       const isCashierOrReception =
         effectiveRole === "cashier" || effectiveRole === "print_operator";
 
@@ -2787,18 +2843,8 @@ export async function returnSaleDirect(
         const directRefund = coreInput.resolution ?? coreInput.refund;
         const needsCashShift = directRefund?.method === "CASH"
           && money(directRefund.amount).gt(0);
-        const [invRow] = await tx
-          .select({
-            branchId: invoices.branchId,
-            createdBy: invoices.createdBy,
-            workOrderCreatedBy: workOrders.createdBy,
-          })
-          .from(invoices)
-          .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
-          .where(eq(invoices.id, coreInput.invoiceId))
-          .limit(1);
 
-        const targetBranchId = invRow?.branchId ?? actor.branchId;
+        const targetBranchId = invRow.branchId ?? actor.branchId;
         if (needsCashShift) {
           const openShiftId = await openShiftIdTx(
             tx,
@@ -2816,24 +2862,6 @@ export async function returnSaleDirect(
               }),
             });
           }
-        }
-
-        // عزل الفروع: كاشير لا ينفّذ مرتجعاً مباشراً لفاتورة فرع آخر
-        if (
-          !isOwner &&
-          !isAdmin &&
-          invRow &&
-          actor.branchId != null &&
-          Number(invRow.branchId) !== Number(actor.branchId)
-        ) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: appErrorMessage({
-              what: "تعذّر تنفيذ المرتجع المباشر",
-              why: "الفاتورة تنتمي إلى فرع آخر غير فرعك المسند",
-              doThis: "سجّل المرتجع من الفرع المصدر أو اطلب من الإدارة إتمامه",
-            }),
-          });
         }
       }
 

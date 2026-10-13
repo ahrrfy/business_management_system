@@ -32,6 +32,7 @@
 //    دائماً false، و`SET_MARGIN` كان **يتخطّاه بصمت**. الآن تُشتقّ تكلفته من وصفته عبر
 //    `loadBundleUnitCosts` (المصدر الحاكم)، وكل صفٍّ يسقط يعود في `skipped[]` بسببٍ مقروء.
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { createHash } from "node:crypto";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
@@ -101,8 +102,8 @@ export interface ApplyPriceWaveInput extends PreviewPriceWaveInput {
   description?: string | null;
   reason?: string | null;
   allowBelowCost?: boolean;
-  /** W7 — بصمة المعاينة التي أقرّها المدير؛ غيابها يعني «طبّق بلا مطابقة» (لا تستعمله الشاشة). */
-  expectedFingerprint?: string | null;
+  /** W7 — بصمة المعاينة التي أقرّها المدير؛ إلزامية لمنع تكرار التحديث أو انحراف الأسعار. */
+  expectedFingerprint: string;
   /** صفوفٌ استثناها المدير سطراً سطراً في المعاينة (مُعرِّفات فقط — لا أسعار ⇒ W1 محفوظ). */
   excluded?: PriceRowKey[] | null;
 }
@@ -538,18 +539,28 @@ export async function applyPriceWave(
 
   const computed = await computeAffectedRows(tx, input);
 
-  // W7 — بصمة المعاينة. الاختلاف يعني أنّ ما سيُطبَّق ليس ما أقرّه المدير: إمّا غيّر مديرٌ آخر
-  // سعراً، أو أنّ هذه **نقرةٌ ثانية** على زرّ التطبيق (النقرة الأولى غيّرت الأسعار فتغيّرت البصمة).
+  // W7 — بصمة المعاينة. غيابها أو فراغها مرفوض، والاختلاف يعني أنّ ما سيُطبَّق ليس ما أقرّه المدير:
+  // إمّا غيّر مديرٌ آخر سعراً، أو أنّ هذه **نقرةٌ ثانية** على زرّ التطبيق (النقرة الأولى غيّرت الأسعار فتغيّرت البصمة).
   // ⇒ هذا الحارس وحده يمنع «+١٠٪ مرّتين = +٢١٪» بلا أيّ مفتاح تكرارٍ ولا عمودٍ له.
-  if (
-    input.expectedFingerprint &&
-    input.expectedFingerprint !== computed.fingerprint
-  ) {
+  if (!input.expectedFingerprint || !input.expectedFingerprint.trim()) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تطبيق موجة الأسعار",
+        why: "بصمة المعاينة مطلوبة لتطبيق الموجة لضمان عدم تكرار التحديث أو انحراف الأسعار",
+        doThis: "أعد معاينة الموجة أولاً للحصول على بصمة حديثة قبل التطبيق",
+      }),
+    });
+  }
+
+  if (input.expectedFingerprint !== computed.fingerprint) {
     throw new TRPCError({
       code: "CONFLICT",
-      message:
-        "تغيّرت الأسعار أو نتيجة الفلاتر منذ معاينتك (مدير آخر عدّل سعراً، أو أنّ الموجة طُبِّقت بالفعل). " +
-        "أعِد المعاينة لترى الوضع الحاليّ قبل التطبيق.",
+      message: appErrorMessage({
+        what: "تعذّر تطبيق موجة الأسعار",
+        why: "تغيّرت الأسعار أو نتيجة الفلاتر منذ معاينتك (مدير آخر عدّل سعراً، أو أنّ الموجة طُبِّقت بالفعل)",
+        doThis: "أعِد المعاينة لترى الوضع الحاليّ قبل التطبيق",
+      }),
     });
   }
 

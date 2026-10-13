@@ -379,16 +379,15 @@ export const returnRouter = router({
       const rawReason = explicitReason || input.resolution?.reason;
 
       /**
-       * ⭐ **مسارُ التنفيذ الفوريّ الذريّ** (مالك، إداريّ، أو كاشير بوردية مفتوحة).
+       * ⭐ **مسارُ التنفيذ الفوريّ الذريّ للمالك فقط** (VULN-SQUAD1-01).
        *
-       * المالكُ ينفّذ مرتجعه مباشرةً، ومسؤولو النظام والمدراء والكاشير ينفّذون مباشرةً عبر
-       * `returnSaleDirect` افتراضياً (أو عند صراحة directExecution !== false).
-       * الأثرُ يمرّ بنفس `returnSaleInTx` بكلّ قيودها وحرّاسها. الاختصارُ في الحوكمة لا في المحاسبة.
+       * المالكُ الحقيقيّ ينفّذ مرتجعه مباشرةً عبر `returnSaleAsOwner`.
+       * جميع المستخدمين الآخرين (المدراء، مسؤولو النظام، الكاشير) يمرّون إلزامياً
+       * بمسار الصانع والمدقق (Maker-Checker) عبر `requestSalesControl` لإنشاء طلب تدقيق.
        *
        * ⚠️ **العائدُ نوعٌ مُميَّزٌ بـ`mode`**: كلّ مستهلكٍ يتفرّع على `mode` صراحةً.
        */
-      const shouldExecuteDirect =
-        ctx.user.isOwner === true || input.directExecution === true;
+      const shouldExecuteDirect = ctx.user.isOwner === true;
 
       if (shouldExecuteDirect && (!rawReason || rawReason.trim().length < 3)) {
         throw new TRPCError({

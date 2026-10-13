@@ -132,7 +132,10 @@ export const priceWavesRouter = router({
         reason: z.string().max(255).nullish(),
         allowBelowCost: z.boolean().optional(),
         /** W7 — بصمة المعاينة التي أقرّها المدير؛ الشاشة تُرسلها دائماً. */
-        expectedFingerprint: z.string().max(64).nullish(),
+        expectedFingerprint: z
+          .string({ message: "بصمة المعاينة مطلوبة لتطبيق الموجة" })
+          .min(1, "بصمة المعاينة مطلوبة لتطبيق الموجة")
+          .max(64),
         excluded: z.array(rowKeySchema).max(5000).nullish(),
       }),
     )
