@@ -1,6 +1,9 @@
 import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
-import { assertOperationAuthorityTx } from "../services/authorization/operationAuthority";
+import {
+  assertOperationAuthorityTx,
+  loadOperationUserTx,
+} from "../services/authorization/operationAuthority";
 import { appErrorMessage } from "@shared/errors";
 import {
   evaluateRefundOperationalDecision,
@@ -2128,22 +2131,23 @@ export const returnRouter = router({
               }
             }
 
-            const directLimitsApply = !(
-              canonicalOperationAllowed(ctx.user, "salesControl.approve") ||
-              (!ctx.user.operationPolicyEnabled &&
-                moduleAccessAllowed(
-                  ctx.user.role,
-                  ctx.user.permissionsOverride as PermissionMap | null,
-                  "sales",
-                  "FULL",
-                  ["manager", "admin"],
-                ))
+            const currentOperationUser = await loadOperationUserTx(tx, ctx.user.id);
+            const currentApprovalAllowed = currentOperationUser.isOwner === true || (
+              canonicalOperationAllowed(currentOperationUser, "salesControl.approve") ??
+              moduleAccessAllowed(
+                currentOperationUser.role,
+                currentOperationUser.permissionsOverride as PermissionMap | null,
+                "sales",
+                "FULL",
+                ["manager", "admin"],
+              )
             );
-            const currentOperationalAuthority = directLimitsApply
-              ? await loadCurrentOperationalAuthorityTx(tx, ctx.user.id)
-              : null;
+            const directLimitsApply = !currentApprovalAllowed;
+            const currentOperationalAuthority = await loadCurrentOperationalAuthorityTx(
+              tx,
+              ctx.user.id,
+            );
             if (
-              currentOperationalAuthority &&
               (currentOperationalAuthority.branchId !== actorBranchId ||
                 currentOperationalAuthority.role !== ctx.user.role)
             ) {
@@ -2156,6 +2160,28 @@ export const returnRouter = router({
                 }),
               });
             }
+            const legacyCartReturnAllowed =
+              moduleAccessAllowed(
+                currentOperationUser.role,
+                currentOperationUser.permissionsOverride as PermissionMap | null,
+                "sales",
+                "FULL",
+                ["cashier", "manager"],
+              ) ||
+              moduleAccessAllowed(
+                currentOperationUser.role,
+                currentOperationUser.permissionsOverride as PermissionMap | null,
+                "workorders",
+                "FULL",
+                ["cashier", "manager", "print_operator"],
+              ) ||
+              moduleAccessAllowed(
+                currentOperationUser.role,
+                currentOperationUser.permissionsOverride as PermissionMap | null,
+                "pos",
+                "FULL",
+                ["cashier", "manager", "print_operator"],
+              );
             const canonicalCartReturnAllowed = await assertOperationAuthorityTx(
               tx,
               {
@@ -2164,10 +2190,10 @@ export const returnRouter = router({
                 role: ctx.user.role,
               },
               "returns.executeSalesReturnCart",
-              true,
+              legacyCartReturnAllowed,
             );
             const currentCartReturnAllowed =
-              canonicalCartReturnAllowed || !ctx.user.operationPolicyEnabled;
+              canonicalCartReturnAllowed || legacyCartReturnAllowed;
 
             await assertPeriodOpen(tx, new Date());
 

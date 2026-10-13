@@ -2809,7 +2809,6 @@ export async function returnSaleDirect(
       const isOwner = Boolean(userRow.isOwner);
       const isAdmin = effectiveRole === "admin";
       const hasSalesFull = effectivePermissions.sales === "FULL";
-      const isSalesDenied = effectivePermissions.sales === "NONE";
 
       const explicitAtomicGrant =
         (userRow.atomicPermissions as AtomicPermissionsMap | null)?.[
@@ -2851,18 +2850,22 @@ export async function returnSaleDirect(
         isAdmin ||
         (!explicitAtomicRevoke &&
           (explicitAtomicGrant ||
-            (!isSalesDenied &&
+            (effectivePermissions.sales !== "NONE" &&
               (hasReceptionFull || (isCashierRole && hasSalesFull)))));
 
       const canonicalAuthorized = canonicalOperationAllowed(
         storedOperationUser(userRow, customRoleRow), "returns.create",
       );
-      // An explicit sales revocation remains a hard individual restriction for
-      // the direct sales-return service even though the catalog also maps the
-      // operation to reception workorders.
-      const isAuthorized = !isOwner && !isAdmin && isSalesDenied
-        ? false
-        : (canonicalAuthorized ?? legacyAuthorized);
+      // The canonical grant is the exact operation authority. This matters for
+      // reception/print presets whose broad sales module intentionally remains
+      // hidden. A direct user-level sales denial remains authoritative, while
+      // accounts without a canonical policy keep the legacy module decision.
+      const explicitUserSalesDenied =
+        (userRow.permissionsOverride as PermissionMap | null)?.sales === "NONE";
+      const isAuthorized =
+        !isOwner && !isAdmin && explicitUserSalesDenied
+          ? false
+          : canonicalAuthorized ?? legacyAuthorized;
 
       if (!isOwner && !isAdmin && Number(actor.branchId) !== Number(userRow.branchId)) {
         throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({

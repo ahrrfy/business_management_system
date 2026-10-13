@@ -21,6 +21,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
+import { ROLE_TEMPLATES } from "@shared/permissions";
 import { returnSale, returnSaleDirect } from "../returnService";
 import { createSale } from "../saleService";
 import { getShiftReport, resolveBranchCashShiftTx } from "../shiftService";
@@ -431,6 +432,44 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
     );
 
     expect(res.returnedTotal).toBe("10.00");
+  });
+
+  it("قالب كاشير الطباعة ينفّذ المرتجع المفوّض مع بقاء وحدة المبيعات محجوبة", async () => {
+    const roleRes = await db().insert(s.roles).values({
+      key: "print_cashier",
+      label: "كاشير طباعة",
+      baseRole: "cashier",
+      isActive: true,
+      permissions: {
+        ...ROLE_TEMPLATES.cashier,
+        sales: "NONE",
+        workorders: "NONE",
+      },
+    });
+    const roleId = extractInsertId(roleRes);
+    await db().insert(s.users).values({
+      id: 9,
+      openId: "print-cashier-return",
+      name: "كاشير طباعة مفوض",
+      role: "cashier",
+      customRoleId: roleId,
+      loginMethod: "local",
+      branchId: 1,
+    });
+
+    const shift = await openShiftFor(9, 1);
+    const { invoiceId, itemId } = await sellOneCash(shift, {
+      userId: 9,
+      branchId: 1,
+    });
+    await expect(returnSaleDirect({
+      invoiceId,
+      lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+      resolution: walkInCashResolution(shift),
+      operatorReason: "مرتجع كاشير الطباعة ضمن التفويض",
+    }, { userId: 9, branchId: 1 })).resolves.toMatchObject({
+      returnedTotal: "10.00",
+    });
   });
 
   it("دور مخصّص مجرّد من صلاحية المبيعات (sales: NONE) ⇒ يُرفض التنفيذ المباشر بـ FORBIDDEN", async () => {

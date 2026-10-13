@@ -1,4 +1,4 @@
-import { assertStudioOperationBinding, assertStudioOperationTx, canAutoApproveStudioTx, canStudioPhotographTx, hasStudioManagementOperationsTx, isStudioManager } from "./authorization/studioOperationAuthority";
+import { assertStudioOperationBinding, assertStudioOperationTx, canAutoApproveStudioTx, canStudioPhotographTx, hasStudioManagementOperationsTx, isStudioManager, STUDIO_PHOTOGRAPHER_OPERATIONS } from "./authorization/studioOperationAuthority";
 import { TRPCError } from "@trpc/server";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lt, lte, notInArray, or, sql } from "drizzle-orm";
@@ -62,7 +62,7 @@ const CYCLE_WINDOW_DAYS = 90;
 const CYCLE_SAMPLE_LIMIT = 500;
 
 import type { ServiceOperationAuthority } from "./authorization/operationAuthority";
-import { loadOperationUserTx } from "./authorization/operationAuthority";
+import { canonicalOperationAllowed, loadOperationUserTx } from "./authorization/operationAuthority";
 
 export interface ProductStudioActor {
   userId: number;
@@ -1323,15 +1323,17 @@ export async function grantStudioAccess(actor: ProductStudioActor, userId: numbe
     if (!canCrossBranches(actor) && (actor.branchId == null || Number(target.branchId) !== Number(actor.branchId))) {
       throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذّر منح صلاحية الاستوديو", why: "الموظّف يتبع فرعاً غير فرعك، ومنح الصلاحيات لا يعبر الفروع", doThis: "امنح الصلاحية لموظّفٍ من فرعك، أو اطلب من مدير النظام منحها لموظّفي الفروع الأخرى" }) });
     }
-    if (await canStudioPhotographTx(tx, userId)) {
+    const hasCompleteCanonicalWorkspace = STUDIO_PHOTOGRAPHER_OPERATIONS.every(
+      (path) => canonicalOperationAllowed(currentTarget, path) === true,
+    );
+    const alreadyAuthorized = currentTarget.operationPolicyEnabled
+      ? hasCompleteCanonicalWorkspace
+      : await canStudioPhotographTx(tx, userId);
+    if (alreadyAuthorized) {
       return { granted: false as const, name: target.name };
     }
     const priorPolicy: OperationPolicy = currentTarget.operationPolicy ?? { version: 1, grants: {} };
-    const studioPaths = [
-      "productStudio.tasks",
-      "productStudio.claimByBarcode",
-      "productStudio.submitCandidate",
-    ] as const;
+    const studioPaths = STUDIO_PHOTOGRAPHER_OPERATIONS;
     const nextPolicy: OperationPolicy = {
       ...priorPolicy,
       grants: {

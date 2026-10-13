@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
 import { appErrorMessage } from "@shared/errors";
+import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { paginateKeyset } from "../lib/paginateKeyset";
@@ -630,8 +631,34 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
   const resolvedExpenseDate = assertValidExpenseDate(input.expenseDate);
   try {
     const result = await withTx(async (tx) => {
+      await assertOperationAuthorityTx(
+        tx,
+        actor,
+        "expenses.create",
+        (current) => moduleAccessAllowed(
+          current.role ?? "user",
+          current.permissionsOverride as PermissionMap | null,
+          "expenses",
+          "FULL",
+          ["cashier", "manager", "accountant"],
+        ),
+      );
       if ((input.source ?? "CASH") === "STOCK") {
-        await assertOperationAuthorityTx(tx, actor, "expenses.create", actor.role === "admin" || actor.role === "manager");
+        // Stock consumption is a second authority beside recording an expense.
+        // Keeping it on expenses.create would either expose stock to cashiers or
+        // block their ordinary cash-expense routine.
+        await assertOperationAuthorityTx(
+          tx,
+          actor,
+          "inventory.adjust",
+          (current) => moduleAccessAllowed(
+            current.role ?? "user",
+            current.permissionsOverride as PermissionMap | null,
+            "inventory",
+            "FULL",
+            ["manager", "warehouse"],
+          ),
+        );
       }
       const replayId = await checkIdempotency(
         tx,

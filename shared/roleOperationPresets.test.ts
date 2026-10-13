@@ -46,6 +46,19 @@ describe("role operation presets", () => {
     expect(printPolicy.grants["operation.sales.create"]).toBe(false);
   });
 
+  it("keeps routine cash expense and own-drawer supplier source dependencies available", () => {
+    const cashier = buildDefaultRoleOperationPolicy("cashier", "cashier", ROLE_TEMPLATES.cashier);
+    expect(cashier.grants["operation.expenses.create"]).toBe(true);
+
+    const purchasing = buildDefaultRoleOperationPolicy(
+      "purchasing",
+      "purchasing",
+      ROLE_TEMPLATES.purchasing,
+    );
+    expect(purchasing.grants["operation.supplierPayments.cashSources"]).toBe(true);
+    expect(purchasing.grants["operation.supplierPayments.decidePayment"]).toBe(false);
+  });
+
   it("does not restore daily operations after their module is explicitly revoked", () => {
     const retail = SECTION_CASHIER_ROLES.find((item) => item.key === "retail_cashier")!;
     const modules = { ...retail.permissions, sales: "NONE" as const };

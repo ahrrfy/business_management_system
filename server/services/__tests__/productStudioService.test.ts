@@ -3194,8 +3194,12 @@ describe("product studio governed workflow", () => {
     expect(after).toMatchObject({ role: "cashier" });
     expect((after!.operationPolicy as { grants: Record<string, boolean> }).grants).toMatchObject({
       "operation.productStudio.tasks": true,
+      "operation.productStudio.myCampaigns": true,
+      "operation.productStudio.taskPreviousImages": true,
+      "operation.productStudio.nextPhotographerTask": true,
       "operation.productStudio.claimByBarcode": true,
       "operation.productStudio.submitCandidate": true,
+      "operation.productStudio.revert": true,
     });
     // ويصير قابلاً للإسناد فعلاً.
     await expect(createStudioCampaign(manager, { name: "حملة بعد المنح", status: "ACTIVE", assigneeIds: [plainId] })).resolves.toMatchObject({ assigneeIds: [plainId] });
