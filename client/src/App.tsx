@@ -451,7 +451,7 @@ export default function App() {
       <Route path="/customers"><Redirect to="/crm?tab=customers" /></Route>
       <Route path="/customers/new"><Shell><RequireRole module="customers" level="FULL" operations={["customers.create"]}><CustomerNew /></RequireRole></Shell></Route>
       <Route path="/customers/:id/edit"><Shell><RequireRole module="customers" level="FULL" canonicalGate={EDITOR_OPERATION_GATES.customer}><CustomerEdit /></RequireRole></Shell></Route>
-      <Route path="/returns"><Shell><RequireRole operations={["returns.executeSalesReturnCart", "returns.executePurchaseReturnCart"]} roles={["admin","manager","cashier","accountant","auditor"]} module="sales" level="READ"><Returns /></RequireRole></Shell></Route>
+      <Route path="/returns"><Shell><RequireRole operations={["returns.executeSalesReturnCart", "returns.executePurchaseReturnCart", "returns.getRequest", "returns.approveRequest"]} roles={["admin","manager","cashier","accountant","auditor"]} module="sales" level="READ"><Returns /></RequireRole></Shell></Route>
       <Route path="/sales-returns/new"><Redirect to="/returns?tab=sales" /></Route>
       <Route path="/sales-returns"><Redirect to="/returns?tab=sales" /></Route>
       <Route path="/purchase-returns/new"><Redirect to="/returns?tab=purchases" /></Route>
@@ -464,7 +464,7 @@ export default function App() {
       <Route path="/purchases/:id/edit"><Shell><RequireRole canonicalGate={EDITOR_OPERATION_GATES.purchase} roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseEdit /></RequireRole></Shell></Route>
       <Route path="/purchases/goods-receipts"><Redirect to="/purchases" /></Route>
       <Route path="/purchases/supplier-invoices"><Redirect to="/purchases" /></Route>
-      <Route path="/purchases/returns-governance"><Shell><RequireRole operations={["purchaseReturnGovernance.requestReturn", "purchaseReturnGovernance.decideReturn"]} roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnsGovernance /></RequireRole></Shell></Route>
+      <Route path="/purchases/returns-governance"><Shell><RequireRole operations={["purchaseReturnGovernance.requestReturn", "purchaseReturnGovernance.decideReturn", "purchaseReturnGovernance.requestReversal", "purchaseReturnGovernance.decideReversal"]} roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnsGovernance /></RequireRole></Shell></Route>
       <Route path="/purchase-requisitions"><Redirect to="/purchases?tab=requisitions" /></Route>
       <Route path="/purchases/supplier-payments"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><SupplierPaymentsGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/charges"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseChargesGovernance /></RequireRole></Shell></Route>

@@ -66,7 +66,7 @@ export default function RoleEdit() {
     useState<OperationPolicy>(emptyPolicy);
   const [initialPolicy, setInitialPolicy] =
     useState<OperationPolicy>(emptyPolicy);
-  const [operationalCaps, setOperationalCaps] = useState<OperationalCaps>(() => resolveOperationalCaps("user"));
+  const [operationalCaps, setOperationalCaps] = useState<OperationalCaps>({});
   const [capsEdited, setCapsEdited] = useState(false);
   const [policyEdited, setPolicyEdited] = useState(false);
   const [revision, setRevision] = useState(0);
@@ -94,7 +94,7 @@ export default function RoleEdit() {
           row.permissions as PermissionMap | null,
         )),
     );
-    const caps = (row.operationalCaps as OperationalCaps | null) ?? resolveOperationalCaps(roleKey, null, null, base);
+    const caps = (row.operationalCaps as OperationalCaps | null) ?? {};
     setLabel(row.label ?? "");
     setDescription(row.description ?? "");
     setBaseRole(base);
@@ -145,7 +145,7 @@ export default function RoleEdit() {
           buildDefaultRoleOperationPolicy(base, base, ROLE_TEMPLATES[base]),
         ),
       );
-      setOperationalCaps(resolveOperationalCaps(base));
+      setOperationalCaps({});
       setCapsEdited(true);
       return;
     }
@@ -159,7 +159,7 @@ export default function RoleEdit() {
       source.permissions as PermissionMap | null,
     );
     setBaseRole(base);
-    setOperationalCaps((source.operationalCaps as OperationalCaps | null) ?? resolveOperationalCaps(String(source.key ?? base), null, null, base));
+    setOperationalCaps((source.operationalCaps as OperationalCaps | null) ?? {});
     setCapsEdited(true);
     const sourceKey = String(source.key ?? base);
     changePolicy(
@@ -290,7 +290,7 @@ export default function RoleEdit() {
                   if (!isEdit && !policyEdited) {
                     setOperationPolicy(editableOperationPolicy(buildDefaultRoleOperationPolicy(selected, selected, ROLE_TEMPLATES[selected])));
                     setInitialPolicy(editableOperationPolicy(buildDefaultRoleOperationPolicy(selected, selected, ROLE_TEMPLATES[selected])));
-                    setOperationalCaps(resolveOperationalCaps(selected));
+                    setOperationalCaps({});
                     setCapsEdited(true);
                   }
                 }}

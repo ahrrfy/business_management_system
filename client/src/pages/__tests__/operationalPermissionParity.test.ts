@@ -173,5 +173,22 @@ describe("operational UI permission parity", () => {
   it("shows the effective inherited refund cap in role operation rows", () => {
     const source = readPage("RoleEdit.tsx");
     expect(source).toContain("inheritedOperationalCaps={resolveOperationalCaps(");
+    expect(source).toContain("const caps = (row.operationalCaps as OperationalCaps | null) ?? {};");
+    expect(source).not.toContain("?? resolveOperationalCaps(roleKey");
+  });
+
+  it("admits delegated reviewers and reversal operators to their workflow pages", () => {
+    const app = readFileSync(new URL("../../App.tsx", import.meta.url), "utf8");
+    const governance = readPage("PurchaseReturnsGovernance.tsx");
+
+    for (const operation of [
+      "returns.getRequest",
+      "returns.approveRequest",
+      "purchaseReturnGovernance.requestReversal",
+      "purchaseReturnGovernance.decideReversal",
+    ]) expect(app).toContain(`"${operation}"`);
+
+    expect(governance).toContain('me.data?.role === "admin"');
+    expect(governance).toContain("canChooseBranch ? (");
   });
 });

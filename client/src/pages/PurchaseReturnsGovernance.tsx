@@ -21,16 +21,23 @@ export default function PurchaseReturnsGovernance() {
   const branches = trpc.branches.list.useQuery();
   const suppliers = trpc.suppliers.list.useQuery();
   const [pickedBranchId, setPickedBranchId] = useState("");
+  const canChooseBranch =
+    me.data?.isOwner === true ||
+    me.data?.role === "admin" ||
+    me.data?.branchId == null;
 
   useEffect(() => {
-    if (me.data?.branchId != null) setPickedBranchId(String(me.data.branchId));
-  }, [me.data?.branchId]);
+    if (me.data?.branchId != null && !pickedBranchId)
+      setPickedBranchId(String(me.data.branchId));
+  }, [me.data?.branchId, pickedBranchId]);
 
   const branchId =
-    me.data?.branchId != null
-      ? Number(me.data.branchId)
-      : pickedBranchId
+    canChooseBranch
+      ? pickedBranchId
         ? Number(pickedBranchId)
+        : null
+      : me.data?.branchId != null
+        ? Number(me.data.branchId)
         : null;
   const queryBranchId = branchId === null ? 0 : branchId;
   const queryInput = { branchId: queryBranchId, limit: 200 };
@@ -210,7 +217,7 @@ export default function PurchaseReturnsGovernance() {
         backHref="/purchases"
         backLabel="المشتريات"
         actions={
-          me.data?.branchId == null ? (
+          canChooseBranch ? (
             <AppSelect
               value={pickedBranchId}
               onValueChange={setPickedBranchId}

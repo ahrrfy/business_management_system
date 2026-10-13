@@ -399,7 +399,7 @@ describe("cancelSale — ثابت ٣: استرداد بجهة صرف نقديّ 
 });
 
 describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار المالك ١٧/٨/٢٦، مطابقٌ لـreturnService)", () => {
-  it("الإلغاء التشغيلي غير النقدي لا يشترط درج وردية", async () => {
+  it("الإلغاء التشغيلي غير النقدي لأدمن بلا اعتماد لا يشترط درج وردية", async () => {
     await setStock(1, 1, 10);
     const sale = await createSale({
       branchId: 1,
@@ -407,10 +407,19 @@ describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار
       sourceType: "POS",
       lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
       payment: { amount: "1000.00", method: "CARD", reference: "CARD-IN-OP-1" },
-    }, manager);
+    }, admin);
     await db().update(s.users)
-      .set({ operationalCaps: { maxRefundAmountIqd: null } })
-      .where(eq(s.users.id, manager.userId));
+      .set({
+        operationalCaps: { maxRefundAmountIqd: null },
+        operationPolicy: {
+          version: 1,
+          grants: {
+            "operation.sales.cancel": true,
+            "operation.salesControl.approve": false,
+          },
+        },
+      })
+      .where(eq(s.users.id, admin.userId));
 
     const res = await cancelSale({
       invoiceId: sale.invoiceId,
@@ -418,7 +427,7 @@ describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار
       reference: "CARD-OUT-OP-1",
       reason: "إلغاء بطاقة ضمن يوم العمل",
       enforceOperationalDecision: true,
-    }, { ...manager, operationalCaps: resolveOperationalCaps("manager") });
+    }, { ...admin, operationalCaps: resolveOperationalCaps("admin") });
 
     expect(res.operationalDecision?.result).toBe("DIRECT");
     expect(res.refundAmount).toBe("1000.00");
@@ -451,7 +460,7 @@ describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار
       .not.toBe("CANCELLED");
   });
 
-  it("يعيد قراءة سقف الإلغاء المقفول ولا يستعمل سقف سياق طلب قديم", async () => {
+  it("يعيد قراءة سقف أدمن سُحبت منه صلاحية الاعتماد ولا يستعمل سياقاً قديماً", async () => {
     await setStock(1, 1, 10);
     const sale = await createSale({
       branchId: 1,
@@ -459,10 +468,19 @@ describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار
       sourceType: "POS",
       lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
       payment: { amount: "1000.00", method: "CARD", reference: "CARD-IN-STALE" },
-    }, manager);
+    }, admin);
     await db().update(s.users)
-      .set({ operationalCaps: { maxRefundAmountIqd: "0.00" } })
-      .where(eq(s.users.id, manager.userId));
+      .set({
+        operationalCaps: { maxRefundAmountIqd: "0.00" },
+        operationPolicy: {
+          version: 1,
+          grants: {
+            "operation.sales.cancel": true,
+            "operation.salesControl.approve": false,
+          },
+        },
+      })
+      .where(eq(s.users.id, admin.userId));
 
     await expect(cancelSale({
       invoiceId: sale.invoiceId,
@@ -470,7 +488,7 @@ describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار
       reference: "CARD-OUT-STALE",
       reason: "اختبار سحب التفويض أثناء الطلب",
       enforceOperationalDecision: true,
-    }, { ...manager, operationalCaps: resolveOperationalCaps("manager") }))
+    }, { ...admin, operationalCaps: resolveOperationalCaps("admin") }))
       .rejects.toThrow(/يتجاوز السقف 0.00/);
     expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status).not.toBe("CANCELLED");
   });

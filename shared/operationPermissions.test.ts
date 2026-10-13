@@ -33,6 +33,20 @@ vi.mock("./operationPermissionCatalog.generated", () => {
       },
       {
         ...metadata,
+        key: "operation.returns.getInvoice",
+        path: "returns.getInvoice",
+        kind: "query",
+        module: "sales|workorders",
+      },
+      {
+        ...metadata,
+        key: "operation.returns.inspectInvoiceForReturn",
+        path: "returns.inspectInvoiceForReturn",
+        kind: "query",
+        module: "sales|workorders",
+      },
+      {
+        ...metadata,
         key: "operation.returns.executeSalesReturnCart",
         path: "returns.executeSalesReturnCart",
         module: "sales|workorders",
@@ -357,6 +371,8 @@ describe("operation policies", () => {
       { permissionsOverride, inheritedModules },
     );
     expect(resolved.grants["operation.returns.create"]).toBe(true);
+    expect(resolved.grants["operation.returns.getInvoice"]).toBe(true);
+    expect(resolved.grants["operation.returns.inspectInvoiceForReturn"]).toBe(true);
     expect(resolved.grants["operation.returns.executeSalesReturnCart"]).toBe(true);
     expect(resolved.grants["operation.returns.getOpenRefundDrawers"]).toBe(true);
   });

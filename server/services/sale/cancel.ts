@@ -66,7 +66,11 @@ import {
   loadCurrentOperationalAuthorityTx,
   type CurrentOperationalAuthority,
 } from "../authorization/currentOperationalAuthority";
-import { assertOperationAuthorityTx } from "../authorization/operationAuthority";
+import {
+  assertOperationAuthorityTx,
+  loadOperationUserTx,
+  storedCanonicalOperationAllowed,
+} from "../authorization/operationAuthority";
 
 // ملاحظة: EXCHANGE ممنوع (مسار الصيرفة له خدمة مخصّصة كما في voucherService)، وWALLET/CHECK/
 // TRANSFER تُمرَّر بلا shift-guard إن غاب — النقد وحده يستوجب shiftIdForCashTx.
@@ -202,6 +206,7 @@ export async function cancelSaleInTx(
 
     let currentOperationalAuthority: CurrentOperationalAuthority | null = null;
     let currentCancellationAllowed = true;
+    let currentApprovalAllowed = false;
     if (input.enforceOperationalDecision) {
       currentOperationalAuthority = await loadCurrentOperationalAuthorityTx(
         tx,
@@ -257,6 +262,17 @@ export async function cancelSaleInTx(
       );
       currentCancellationAllowed =
         canonicalCancellationAllowed || legacyCancellationAllowed;
+      const currentOperationUser = await loadOperationUserTx(tx, actor.userId);
+      currentApprovalAllowed = currentOperationalAuthority.isOwner || (
+        storedCanonicalOperationAllowed(currentOperationUser, "salesControl.approve") ??
+        moduleAccessAllowed(
+          currentOperationUser.role,
+          currentOperationUser.permissionsOverride as PermissionMap | null,
+          "sales",
+          "FULL",
+          ["manager", "admin"],
+        )
+      );
     }
 
     // ترتيب الأقفال الحاكم: مصدر النقد قبل الفاتورة/مورّدي الأمانة. اعتماد سند مورد
@@ -304,8 +320,7 @@ export async function cancelSaleInTx(
       const directLimitsApply =
         input.enforceOperationalDecision === true &&
         currentOperationalAuthority != null &&
-        currentOperationalAuthority.role !== "admin" &&
-        !currentOperationalAuthority.isOwner;
+        !currentApprovalAllowed;
       if (directLimitsApply) {
         const shiftId = await openShiftIdTx(
           tx,
@@ -455,8 +470,7 @@ export async function cancelSaleInTx(
     if (
       input.enforceOperationalDecision &&
       currentOperationalAuthority != null &&
-      currentOperationalAuthority.role !== "admin" &&
-      !currentOperationalAuthority.isOwner
+      !currentApprovalAllowed
     ) {
       const pool = lockedPaidPool;
       const refundable = lockedRefundable;

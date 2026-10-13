@@ -363,6 +363,8 @@ export function applyLegacyIndividualOperationOverrides(
   if (rawModules?.pos === "FULL" && baseModules.pos !== "FULL") {
     for (const path of [
       "returns.create",
+      "returns.getInvoice",
+      "returns.inspectInvoiceForReturn",
       "returns.executeSalesReturnCart",
       "returns.getOpenRefundDrawers",
     ]) {
