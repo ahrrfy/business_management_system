@@ -391,7 +391,7 @@ describe("returns.executeSalesReturnCart — حوكمة البكجات وسقف 
         settlement: { method: "CASH", totalAmount: "50.00", shiftId },
         clientRequestId: "overflow-attempt-1",
       }),
-    ).rejects.toThrow(/مبلغ المرتجع يتجاوز القيمة المتبقية للفاتورة/);
+    ).rejects.toThrow(/مبلغ الاسترداد يتجاوز المدفوع الفعلي للفاتورة/);
   });
 
   it("⭐ حارس كمية البند: يرفض إرجاع كمية أكبر من الكمية المباعة المتبقية", async () => {

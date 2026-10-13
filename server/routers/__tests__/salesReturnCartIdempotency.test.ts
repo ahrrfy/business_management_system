@@ -487,11 +487,11 @@ describe.sequential("E2E Test Suite: Prevent Duplicate Invoice Returns & Cross-M
           settlement: { method: "CASH", totalAmount: "25.00", shiftId },
           clientRequestId: "req-t1-f10-err",
         });
-        expect.unreachable("كان يجب أن تفشل المعاملة بسبب تجاوز المتبقي");
+        expect.unreachable("كان يجب أن تفشل المعاملة بسبب تجاوز المدفوع فعلياً");
       } catch (e: any) {
         // التحقق من بنية appErrorMessage: ماذا حدث — لماذا. ماذا تفعل
         expect(e.message).toContain(" — ");
-        expect(e.message).toMatch(/(عدّل مبالغ وأصناف السلة|قلل الكمية|المتبقي)/);
+        expect(e.message).toMatch(/(عدّل مبالغ وأصناف السلة|قلل الكمية|استخدم معادلة الذمة)/);
       }
     });
   });
@@ -513,7 +513,7 @@ describe.sequential("E2E Test Suite: Prevent Duplicate Invoice Returns & Cross-M
       ).rejects.toThrow(/مبلغ المرتجع غير صالح|أكبر من صفر/);
     });
 
-    it("T2-2: رفض استرداد مبلغ يتجاوز القيمة المتبقية للفاتورة", async () => {
+    it("T2-2: رفض رد نقدي يتجاوز المدفوع فعلياً على الفاتورة", async () => {
       const shiftId = await openShift();
       const sale = await sellCashItems(shiftId, 1, [{ variantId: 1, qty: 2, unitPrice: "5.00" }]); // total = 10.00
       const caller = returnRouter.createCaller(cashierContext());
@@ -525,7 +525,7 @@ describe.sequential("E2E Test Suite: Prevent Duplicate Invoice Returns & Cross-M
           items: [{ variantId: 1, productName: "دفتر مذكرات", quantity: 1, unitPrice: "15.00" }],
           settlement: { method: "CASH", totalAmount: "15.00", shiftId },
         }),
-      ).rejects.toThrow(/مبلغ المرتجع يتجاوز القيمة المتبقية للفاتورة/);
+      ).rejects.toThrow(/مبلغ الاسترداد يتجاوز المدفوع الفعلي للفاتورة/);
     });
 
     it("T2-3: رفض استرداد نقد يفوق المدفوع الفعلي على الفاتورة", async () => {
