@@ -399,6 +399,7 @@ export function PurchaseDetailDrawer({
                 {!costHidden && D(settlement.returnedAmount).gt(0) ? (
                   <p className="text-xs text-muted-foreground">تخفيض الذمة: {fmt(settlement.returnedAmount)} {isUsd ? "$" : "د.ع"}</p>
                 ) : null}
+                {!costHidden && !D(settlement.invoiceTotalAmount).eq(D(isUsd ? d.usdTotal ?? 0 : d.total ?? 0)) ? <p className="text-xs text-muted-foreground">المفوتر بذمة المورد: {fmt(settlement.invoiceTotalAmount)} {isUsd ? "$" : "د.ع"}</p> : null}
                 {/* أشرطة الإجراءات المباشرة (استلام / سداد / مرتجع) */}
                 <div className="flex flex-wrap items-center gap-2 p-2.5 rounded-lg border bg-muted/30">
                   {canApproveDirectly ? (

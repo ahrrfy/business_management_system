@@ -1,4 +1,10 @@
 import { randomUUID } from "node:crypto";
+import {
+  GRNI_SUPPLIER_INVOICE_FORWARD_PREFIX,
+  GRNI_SUPPLIER_INVOICE_REVERSAL_PREFIX,
+} from "@shared/grniDedupe";
+import { openPurchaseIntegrityCase } from "../purchase/integrityCases";
+import { loadPurchaseSettlements } from "../purchase/settlementProjection";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -347,6 +353,168 @@ describe("native supplier AP payment guards", () => {
       code: "CONFLICT",
     });
     expect(await financialState()).toEqual(after);
+  });
+
+  it("allows payment of a posted portion of a larger purchase order", async () => {
+    await postedNativeInvoice();
+    await linkedNativeOrder();
+    await d()
+      .update(s.purchaseOrders)
+      .set({ subtotal: "200000.00", total: "200000.00" })
+      .where(eq(s.purchaseOrders.id, 1));
+    const requested = await requestSupplierPayment(paymentInput(), maker);
+    expect(requested.status).toBe("PENDING");
+    const order = (
+      await d()
+        .select()
+        .from(s.purchaseOrders)
+        .where(eq(s.purchaseOrders.id, 1))
+    )[0]!;
+    expect((await loadPurchaseSettlements(d(), [order])).get(1)).toMatchObject({
+      remainingAmountIqd: "100000.00",
+      requiresReview: false,
+    });
+  });
+
+  it("ignores reversed and voided document history when paying the active invoice", async () => {
+    await postedNativeInvoice();
+    await linkedNativeOrder();
+    const original = (
+      await d()
+        .select()
+        .from(s.supplierInvoices)
+        .where(eq(s.supplierInvoices.id, 1))
+    )[0]!;
+    const line = (await d().select().from(s.supplierInvoiceLines))[0]!;
+    const { id: _lineId, ...lineData } = line;
+    await d()
+      .insert(s.accountingEntries)
+      .values([
+        {
+          id: 970,
+          entryType: "ADJUST",
+          branchId: 1,
+          supplierId: 1,
+          purchaseOrderId: 1,
+          amount: "100000.00",
+          entryDate: "2026-01-01",
+          dedupeKey: `${GRNI_SUPPLIER_INVOICE_FORWARD_PREFIX}2`,
+        },
+        {
+          id: 971,
+          entryType: "ADJUST",
+          branchId: 1,
+          supplierId: 1,
+          purchaseOrderId: null,
+          amount: "100000.00",
+          entryDate: "2026-01-01",
+          dedupeKey: `${GRNI_SUPPLIER_INVOICE_REVERSAL_PREFIX}2`,
+        },
+      ]);
+    for (const [id, status, draftState] of [
+      [2, "REVERSED", "ACTIVE"],
+      [3, "DRAFT", "VOIDED"],
+    ] as const) {
+      await d()
+        .insert(s.supplierInvoices)
+        .values({
+          ...original,
+          id,
+          invoiceNumber: `ARCHIVED-${id}`,
+          clientRequestId: `ARCHIVED-${id}`,
+          status,
+          draftState,
+          externalInvoiceNumber: `ARCHIVED-${id}`,
+          externalNumberNorm: `ARCHIVED-${id}`,
+          postingEntryId: status === "REVERSED" ? 970 : null,
+          reversalEntryId: status === "REVERSED" ? 971 : null,
+          postedBy: status === "REVERSED" ? original.postedBy : null,
+          postedAt: status === "REVERSED" ? original.postedAt : null,
+          reversedBy: status === "REVERSED" ? 9 : null,
+          reversedAt: status === "REVERSED" ? new Date() : null,
+          reversalReason: status === "REVERSED" ? "عكس موثق واستبدال" : null,
+          voidedBy: draftState === "VOIDED" ? 9 : null,
+          voidedAt: draftState === "VOIDED" ? new Date() : null,
+          voidReason: draftState === "VOIDED" ? "إلغاء مسودة قديمة" : null,
+        });
+      await d()
+        .insert(s.supplierInvoiceLines)
+        .values({ ...lineData, supplierInvoiceId: id });
+    }
+    expect((await requestSupplierPayment(paymentInput(), maker)).status).toBe(
+      "PENDING",
+    );
+  });
+
+  it("quarantines unknown historical cash evidence without changing money", async () => {
+    await postedNativeInvoice();
+    await linkedNativeOrder();
+    await openPurchaseIntegrityCase(
+      {
+        caseKey: "UNKNOWN-CASH-1",
+        branchId: 1,
+        supplierId: 1,
+        purchaseOrderId: 1,
+        supplierInvoiceId: 1,
+        code: "LEGACY_PAYMENT_EVIDENCE_INVALID",
+        severity: "HIGH",
+        title: "السداد السابق غير محسوم",
+        description: "لا نعلم هل تم دفع هذه الفاتورة بالفعل",
+        evidence: { paymentKnown: false },
+        reason: "منع صرف مكرر إلى أن تكتمل المطابقة",
+      },
+      maker,
+    );
+    const before = await financialState();
+    await expect(
+      requestSupplierPayment(paymentInput(), maker),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await financialState()).toEqual(before);
+    const order = (
+      await d()
+        .select()
+        .from(s.purchaseOrders)
+        .where(eq(s.purchaseOrders.id, 1))
+    )[0]!;
+    expect(
+      (await loadPurchaseSettlements(d(), [order])).get(1)?.requiresReview,
+    ).toBe(true);
+  });
+
+  it("rechecks an unknown-payment quarantine before approving a pending request", async () => {
+    await postedNativeInvoice();
+    await linkedNativeOrder();
+    const requested = await requestSupplierPayment(paymentInput(), maker);
+    await openPurchaseIntegrityCase(
+      {
+        caseKey: "UNKNOWN-CASH-PENDING",
+        branchId: 1,
+        supplierId: 1,
+        purchaseOrderId: 1,
+        supplierInvoiceId: 1,
+        code: "LEGACY_PAYMENT_EVIDENCE_INVALID",
+        severity: "HIGH",
+        title: "السداد السابق غير محسوم",
+        description: "فُتحت المطابقة بعد طلب السداد وقبل الاعتماد",
+        evidence: { paymentKnown: false },
+        reason: "تعليق السداد إلى أن تكتمل المطابقة",
+      },
+      maker,
+    );
+    const before = await financialState();
+    await expect(
+      decideSupplierPayment(
+        {
+          requestId: requested.requestId,
+          decisionKey: randomUUID(),
+          action: "APPROVE",
+          reviewReason: "اعتماد طلب قائم",
+        },
+        owner,
+        SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await financialState()).toEqual(before);
   });
 
   it("rechecks historical projection integrity at native payment approval", async () => {

@@ -75,7 +75,7 @@ import {
 } from "@shared/approvalTriggers";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import { payloadHashMatches } from "../idempotency";
-import { loadPurchaseSettlements } from "./settlementProjection";
+import { loadPurchaseSettlements, loadPurchasePaymentEvidenceCases } from "./settlementProjection";
 
 type Method = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 type CashSourceInput = { mode: "DRAWER" | "TREASURY"; shiftId?: number | null };
@@ -420,6 +420,8 @@ async function assertNativePurchaseSettlementEvidence(
   tx: Tx,
   aggregate: Awaited<ReturnType<typeof lockPaymentAggregate>>,
 ): Promise<void> {
+  const evidenceCases = await loadPurchasePaymentEvidenceCases(tx, aggregate.orders.map((order) => Number(order.id)), aggregate.invoices.map((invoice) => Number(invoice.id)), true);
+  if (evidenceCases.length) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذر طلب أو اعتماد سداد المورد", why: `السداد السابق غير محسوم في قضية ${evidenceCases[0].caseNumber}`, doThis: "أكمل المطابقة المحكومة لسندات الدفع وكشف المورد قبل أي صرف جديد" }) });
   if (
     !aggregate.invoices.some(
       (invoice) => invoice.liabilityClass === "NATIVE_AP",

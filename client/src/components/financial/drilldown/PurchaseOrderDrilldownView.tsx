@@ -56,7 +56,7 @@ export function PurchaseOrderDrilldownView({ poId }: { poId: number }) {
 
       <div className="rounded-lg border bg-card p-4 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <span className="text-xs text-muted-foreground">إجمالي الفاتورة</span>
+          <span className="text-xs text-muted-foreground">إجمالي أمر الشراء</span>
           <p className="text-2xl font-bold tabular-nums" dir="ltr">{fmt(po.agreedCurrency === "USD" ? po.usdTotal : po.total)} {unit}</p>
         </div>
         <div>
@@ -70,6 +70,7 @@ export function PurchaseOrderDrilldownView({ poId }: { poId: number }) {
       </div>
 
       <p className="text-xs text-muted-foreground">{settlement.intentLabel}</p>
+      {!D(settlement.invoiceTotalAmount).eq(D(po.agreedCurrency === "USD" ? po.usdTotal ?? 0 : po.total ?? 0)) ? <p className="text-xs text-muted-foreground">المفوتر بذمة المورد: {fmt(settlement.invoiceTotalAmount)} {unit}</p> : null}
       {D(settlement.returnedAmount).gt(0) ? <p className="text-xs text-muted-foreground">تخفيض الذمة: {fmt(settlement.returnedAmount)} {unit}</p> : null}
       {settlement.requiresReview ? <p role="alert" className="text-sm text-money-negative">دليل السداد يحتاج مراجعة قبل طلب دفعة جديدة.</p> : null}
       {po.items && po.items.length > 0 && (

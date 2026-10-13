@@ -435,20 +435,41 @@ describe("purchase settlement evidence across list, detail and supplier statemen
     expect(current.get(poId)?.requiresReview).toBe(true);
   });
 
+  it("does not warn about missing receipt recognition before a confirmed order is received", async () => {
+    await db().insert(s.purchaseOrders).values({
+      id: 995,
+      poNumber: "UNRECEIVED-CONFIRMED",
+      supplierId: 1,
+      branchId: 1,
+      subtotal: "1000.00",
+      total: "1000.00",
+      paidAmount: "0.00",
+      status: "CONFIRMED",
+      settlementType: "CREDIT",
+    });
+    const order = (
+      await db()
+        .select()
+        .from(s.purchaseOrders)
+        .where(eq(s.purchaseOrders.id, 995))
+    )[0]!;
+    expect(
+      (await loadPurchaseSettlements(db(), [order])).get(995)?.requiresReview,
+    ).toBe(false);
+  });
+
   it("limits legacy partial-receipt liability to the recognized purchase", async () => {
-    await db()
-      .insert(s.purchaseOrders)
-      .values({
-        id: 996,
-        poNumber: "LEGACY-PARTIAL",
-        supplierId: 1,
-        branchId: 1,
-        subtotal: "1000.00",
-        total: "1000.00",
-        paidAmount: "0.00",
-        status: "CONFIRMED",
-        settlementType: "CREDIT",
-      });
+    await db().insert(s.purchaseOrders).values({
+      id: 996,
+      poNumber: "LEGACY-PARTIAL",
+      supplierId: 1,
+      branchId: 1,
+      subtotal: "1000.00",
+      total: "1000.00",
+      paidAmount: "0.00",
+      status: "CONFIRMED",
+      settlementType: "CREDIT",
+    });
     await db()
       .insert(s.accountingEntries)
       .values({
@@ -475,6 +496,54 @@ describe("purchase settlement evidence across list, detail and supplier statemen
     );
     expect(statement!.summary.aging.d0_30).toBe("500.00");
   });
+
+  it.each(["DRAFT", "ON_HOLD", "MATCHED"] as const)(
+    "preserves legacy liability when native history is unposted %s",
+    async (status) => {
+      const poId = await purchase();
+      const inv = await invoice();
+      await db()
+        .update(s.accountingEntries)
+        .set({ amount: "0.00" })
+        .where(eq(s.accountingEntries.id, Number(inv.postingEntryId)));
+      await db()
+        .update(s.supplierInvoices)
+        .set({
+          status,
+          draftState: status === "DRAFT" ? "VOIDED" : "ACTIVE",
+          postingEntryId: null,
+          postedBy: null,
+          postedAt: null,
+          voidedBy: status === "DRAFT" ? creator.userId : null,
+          voidedAt: status === "DRAFT" ? new Date() : null,
+          voidReason: status === "DRAFT" ? "مسودة ملغاة" : null,
+        })
+        .where(eq(s.supplierInvoices.id, Number(inv.id)));
+      await db()
+        .insert(s.accountingEntries)
+        .values({
+          entryType: "PURCHASE",
+          branchId: 1,
+          supplierId: 1,
+          purchaseOrderId: poId,
+          amount: "500.00",
+          entryDate: new Date().toISOString().slice(0, 10),
+        });
+      const order = (
+        await db()
+          .select()
+          .from(s.purchaseOrders)
+          .where(eq(s.purchaseOrders.id, poId))
+      )[0]!;
+      expect(
+        (await loadPurchaseSettlements(db(), [order])).get(poId),
+      ).toMatchObject({
+        remainingAmountIqd: "500.00",
+        paidAmountIqd: "0.00",
+        requiresReview: false,
+      });
+    },
+  );
 
   it("uses current ledger and refund evidence after a refund commits beyond an RR snapshot", async () => {
     const poId = await purchase();

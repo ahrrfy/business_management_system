@@ -1,5 +1,11 @@
 import Decimal from "decimal.js";
 
+export const PAYMENT_EVIDENCE_CASE_CODES = [
+  "LEGACY_PAYMENT_ALLOCATION_AMBIGUOUS",
+  "LEGACY_PAYMENT_EVIDENCE_INVALID",
+  "LEGACY_PAYMENT_EXCEEDS_INVOICE",
+] as const;
+
 export type PurchaseSettlementStatus =
   | "UNPAID"
   | "PARTIAL"
@@ -7,6 +13,8 @@ export type PurchaseSettlementStatus =
   | "CREDITED";
 
 export interface PurchaseSettlementEvidence {
+  recognizedAmountIqd?: string;
+  recognizedAmountCurrency?: string;
   paidAmountIqd: string;
   returnedAmountIqd: string;
   remainingAmountIqd: string;
@@ -77,6 +85,13 @@ export function getPurchaseSettlement(input: PurchaseSettlementInput) {
     CREDITED: "مقفلة بتخفيض الذمة",
   };
   return {
+    invoiceTotalAmount: new Decimal(
+      (usd
+        ? evidence?.recognizedAmountCurrency
+        : evidence?.recognizedAmountIqd) ??
+        (usd ? input.usdTotal : input.total) ??
+        0,
+    ).toFixed(2),
     paidAmount: paid.toFixed(2),
     returnedAmount: returned.toFixed(2),
     remainingAmount: remaining.toFixed(2),

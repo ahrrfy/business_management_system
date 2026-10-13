@@ -1,7 +1,8 @@
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import Decimal from "decimal.js";
 import { alias } from "drizzle-orm/mysql-core";
 import type { PurchaseSettlementEvidence } from "@shared/purchaseSettlement";
+import { PAYMENT_EVIDENCE_CASE_CODES } from "@shared/purchaseSettlement";
 import {
   accountingEntries,
   goodsReceiptItems,
@@ -10,6 +11,7 @@ import {
   purchaseOrderRevisions,
   purchaseReturnReversals,
   purchaseReturns,
+  purchaseIntegrityCases,
   supplierInvoiceLines,
   supplierInvoiceMatchAllocations,
   supplierInvoiceMatchRuns,
@@ -23,6 +25,42 @@ import { money, round2, toDbMoney } from "../money";
 import { GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP } from "../ledger/supplierApEffect";
 
 export type PurchaseSettlementProjection = PurchaseSettlementEvidence;
+
+export async function loadPurchasePaymentEvidenceCases(
+  db: DB | Tx,
+  orderIds: readonly number[],
+  invoiceIds: readonly number[],
+  currentRead = false,
+) {
+  if (!orderIds.length && !invoiceIds.length) return [];
+  const query = db
+    .select({
+      caseNumber: purchaseIntegrityCases.caseNumber,
+      poId: purchaseIntegrityCases.purchaseOrderId,
+      invoiceId: purchaseIntegrityCases.supplierInvoiceId,
+    })
+    .from(purchaseIntegrityCases)
+    .where(
+      and(
+        inArray(purchaseIntegrityCases.code, [...PAYMENT_EVIDENCE_CASE_CODES]),
+        inArray(purchaseIntegrityCases.status, [
+          "OPEN",
+          "IN_REVIEW",
+          "PENDING_RESOLUTION",
+        ]),
+        or(
+          orderIds.length
+            ? inArray(purchaseIntegrityCases.purchaseOrderId, [...orderIds])
+            : undefined,
+          invoiceIds.length
+            ? inArray(purchaseIntegrityCases.supplierInvoiceId, [...invoiceIds])
+            : undefined,
+        ),
+      ),
+    )
+    .orderBy(asc(purchaseIntegrityCases.id));
+  return currentRead ? query.for("share") : query;
+}
 
 export interface PurchaseSettlementOrder {
   id: number;
@@ -167,6 +205,7 @@ export async function loadPurchaseSettlements(
     reversals,
     ledger,
     orphanRefunds,
+    paymentEvidenceCases,
   ] = await Promise.all([
     invoiceIds.length
       ? db
@@ -282,6 +321,7 @@ export async function loadPurchaseSettlements(
         .groupBy(accountingEntries.purchaseOrderId);
       return options.currentRead ? query.for("share") : query;
     })(),
+    loadPurchasePaymentEvidenceCases(db, ids, invoiceIds, options.currentRead),
   ]);
   const links = new Map<number, Set<number>>();
   const link = (invoiceId: number, poId: number) => {
@@ -335,10 +375,24 @@ export async function loadPurchaseSettlements(
     if (gl) gl.paid = toDbMoney(money(gl.paid).minus(refund.amount));
   }
   for (const order of orders) {
-    const related = invoices.filter((invoice) =>
+    const relatedDocuments = invoices.filter((invoice) =>
       links.get(Number(invoice.id))?.has(Number(order.id)),
     );
-    const native = related.some((invoice) => invoice.origin === "NATIVE");
+    const related = relatedDocuments.filter(
+      (invoice) =>
+        invoice.status === "POSTED" && invoice.draftState !== "VOIDED",
+    );
+    const paymentEvidenceCase = paymentEvidenceCases.find(
+      (row) =>
+        Number(row.poId) === Number(order.id) ||
+        related.some((invoice) => Number(invoice.id) === Number(row.invoiceId)),
+    );
+    const paymentReviewReason = paymentEvidenceCase
+      ? `السداد السابق غير محسوم في قضية ${paymentEvidenceCase.caseNumber}؛ أكمل المطابقة قبل أي صرف جديد`
+      : undefined;
+    const native = relatedDocuments.some(
+      (invoice) => invoice.origin === "NATIVE" && (invoice.status === "POSTED" || invoice.status === "REVERSED"),
+    );
     const total = money(order.total);
     const currencyTotal =
       order.agreedCurrency === "USD" ? money(order.usdTotal) : total;
@@ -366,13 +420,8 @@ export async function loadPurchaseSettlements(
         currencyCredited = money(0);
       let recognized = money(0),
         currencyRecognized = money(0);
-      let reason: string | undefined;
+      let reason: string | undefined = paymentReviewReason;
       for (const invoice of related) {
-        if (invoice.status !== "POSTED") {
-          reason ??=
-            "فاتورة المورد غير مرحلة أو معكوسة؛ راجع حالة الالتزام قبل السداد";
-          continue;
-        }
         const allocated = paidByInvoice.get(Number(invoice.id));
         const legacy = invoice.legacySettlementEvidenceHash
           ? money(invoice.legacySettledAmount)
@@ -418,11 +467,8 @@ export async function loadPurchaseSettlements(
       if (money(ledgerByPo.get(Number(order.id))?.paid).gt(paid))
         reason ??=
           "قيود دفع مرتبطة بالأمر تتجاوز تخصيصات الفاتورة؛ يلزم مطابقة السداد التاريخي قبل دفع جديد";
-      if (recognized.gt(0) && !recognized.eq(total))
-        reason ??= "قيمة فواتير المورد المرحلة لا تطابق قيمة أمر الشراء";
-      result.set(
-        Number(order.id),
-        project(
+      result.set(Number(order.id), {
+        ...project(
           recognized,
           paid,
           credited,
@@ -431,7 +477,9 @@ export async function loadPurchaseSettlements(
           currencyCredited,
           reason,
         ),
-      );
+        recognizedAmountIqd: toDbMoney(recognized),
+        recognizedAmountCurrency: toDbMoney(currencyRecognized),
+      });
     } else {
       const gl = ledgerByPo.get(Number(order.id));
       const recognized = money(gl?.recognized);
@@ -441,20 +489,21 @@ export async function loadPurchaseSettlements(
       const paid = Decimal.max(provenPaid, money(order.paidAmount));
       const credited =
         creditByPo.get(Number(order.id)) ?? nonNegative(money(gl?.credited));
-      const reason = paid.gt(provenPaid)
-        ? "تخصيص إرثي محفوظ على الأمر بلا ربط دفع حتمي؛ راجع مستندات التسوية قبل سداد جديد"
-        : related.some((invoice) => invoice.liabilityClass === "LEGACY_UNKNOWN")
-          ? "تصنيف الالتزام الإرثي يحتاج مراجعة"
-          : !recognized.gt(0) &&
-              total.gt(0) &&
-              (order.status === "CONFIRMED" || order.status === "RECEIVED")
-            ? "لا يوجد قيد شراء مثبت للاستلام؛ راجع الالتزام قبل السداد"
-            : undefined;
+      const reason =
+        paymentReviewReason ??
+        (paid.gt(provenPaid)
+          ? "تخصيص إرثي محفوظ على الأمر بلا ربط دفع حتمي؛ راجع مستندات التسوية قبل سداد جديد"
+          : related.some(
+                (invoice) => invoice.liabilityClass === "LEGACY_UNKNOWN",
+              )
+            ? "تصنيف الالتزام الإرثي يحتاج مراجعة"
+            : !recognized.gt(0) && total.gt(0) && order.status === "RECEIVED"
+              ? "لا يوجد قيد شراء مثبت للاستلام؛ راجع الالتزام قبل السداد"
+              : undefined);
       const rate = money(order.agreedRate);
       const dollars = order.agreedCurrency === "USD";
-      result.set(
-        Number(order.id),
-        project(
+      result.set(Number(order.id), {
+        ...project(
           recognizedTotal,
           paid,
           credited,
@@ -475,7 +524,17 @@ export async function loadPurchaseSettlements(
             : credited,
           reason,
         ),
-      );
+        ...(recognized.gt(0)
+          ? {
+              recognizedAmountIqd: toDbMoney(recognized),
+              recognizedAmountCurrency: toDbMoney(
+                dollars && rate.gt(0)
+                  ? round2(recognized.div(rate))
+                  : recognized,
+              ),
+            }
+          : {}),
+      });
     }
   }
   return result;

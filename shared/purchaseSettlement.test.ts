@@ -2,6 +2,29 @@ import { describe, expect, it } from "vitest";
 import { getPurchaseSettlement } from "./purchaseSettlement";
 
 describe("purchase settlement display", () => {
+  it("shows the recognized partial invoice separately from the order total", () => {
+    expect(
+      getPurchaseSettlement({
+        total: "240000",
+        settlement: {
+          recognizedAmountIqd: "120000.00",
+          recognizedAmountCurrency: "120000.00",
+          paidAmountIqd: "0.00",
+          returnedAmountIqd: "0.00",
+          remainingAmountIqd: "120000.00",
+          paidAmountCurrency: "0.00",
+          returnedAmountCurrency: "0.00",
+          remainingAmountCurrency: "120000.00",
+          status: "UNPAID",
+          requiresReview: false,
+        },
+      }),
+    ).toMatchObject({
+      invoiceTotalAmount: "120000.00",
+      remainingAmount: "120000.00",
+      requiresReview: false,
+    });
+  });
   it("does not turn cash intent into payment", () => {
     expect(
       getPurchaseSettlement({

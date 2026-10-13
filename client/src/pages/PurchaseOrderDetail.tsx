@@ -406,9 +406,10 @@ export default function PurchaseOrderDetail() {
                   </Field>
                 )}
                 <Field label="الضريبة">{fmtAr(d.taxAmount)}</Field>
-                <Field label="الإجمالي (ذمّة المورّد)">
+                <Field label="إجمالي أمر الشراء">
                   <span className="font-bold">{fmtAr(d.total)}</span>
                 </Field>
+                {!D(settlementIqd.invoiceTotalAmount).eq(D(d.total ?? 0)) ? <Field label="المفوتر بذمة المورد (د.ع)">{fmtAr(settlementIqd.invoiceTotalAmount)}</Field> : null}
                 <Field label="طريقة السداد">{settlement.intentLabel}</Field>
                 <Field label="حالة السداد">{settlement.statusLabel}</Field>
                 <Field label="المدفوع (د.ع)">{fmtAr(settlementIqd.paidAmount)}</Field>

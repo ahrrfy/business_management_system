@@ -413,6 +413,7 @@ export interface PurchaseInvoiceV2Data {
   paidAmount?: string | number | null;
   remainingAmount?: string | number | null;
   returnedAmount?: string | number | null;
+  recognizedAmount?: string | number | null;
 
   supplierBalanceBefore?: string | number | null;
   supplierBalanceAfter?: string | number | null;
@@ -502,7 +503,7 @@ export function buildPurchaseInvoiceV2Html(d: PurchaseInvoiceV2Data): string {
       ...(Number(d.discountAmount ?? 0) > 0 ? [{ label: 'خصم المورّد', value: fmtIQD(d.discountAmount), color: B.orange, sign: '−' as const }] : []),
       ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: taxLabel(d.taxAmount, d.taxRate, d.subtotal, d.discountAmount), value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
     ],
-    grandTotal: { label: 'الإجمالي المستحق للمورّد', value: fmtIQD(d.total) },
+    grandTotal: { label: 'إجمالي أمر الشراء', value: fmtIQD(d.total) },
     paid: d.paidAmount != null ? { label: 'المدفوع', value: fmtIQD(d.paidAmount) } : null,
     remaining: remainingNum > 0 ? { label: 'المتبقّي', value: fmtIQD(remainingNum) } : null,
     balance: balAfter != null ? {
@@ -529,7 +530,9 @@ export function buildPurchaseInvoiceV2Html(d: PurchaseInvoiceV2Data): string {
 
   const reduction = new Decimal(d.returnedAmount ?? 0).gt(0)
     ? `<p style="font-size:11px;color:${B.ink};margin:8px 0">تخفيض الذمة بعد الشراء: ${esc(fmtIQD(d.returnedAmount))}</p>` : '';
-  const body = `${pageBodyOpen()}${header}${cards}${table}${totals}${reduction}${tafqit}${sig}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.invoiceNumber}` })}`;
+  const recognition = d.recognizedAmount != null && !new Decimal(d.recognizedAmount).eq(d.total)
+    ? `<p style="font-size:11px;color:${B.ink};margin:8px 0">المفوتر بذمة المورد: ${esc(fmtIQD(d.recognizedAmount))}</p>` : '';
+  const body = `${pageBodyOpen()}${header}${cards}${table}${totals}${reduction}${recognition}${tafqit}${sig}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.invoiceNumber}` })}`;
   return wrapA4Doc(`فاتورة مشتريات ${d.invoiceNumber}`, body);
 }
 

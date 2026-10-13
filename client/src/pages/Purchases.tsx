@@ -409,6 +409,7 @@ export default function Purchases() {
         paidAmount: settlement.paidAmount,
         remainingAmount: settlement.remainingAmount,
         returnedAmount: settlement.returnedAmount,
+        recognizedAmount: settlement.invoiceTotalAmount,
       });
     } catch (e) {
       notify.err(e);
@@ -727,7 +728,7 @@ export default function Purchases() {
                   return (
                     <span
                       className={`font-bold ${isSettled ? "text-money-positive" : ""}`}
-                      title="المتبقّي = الإجمالي − السداد المثبت − تخفيضات الذمة"
+                      title="المتبقي على فواتير المورد المرحلة بعد السداد المثبت وتخفيضات الذمة"
                     >
                       {isUsd
                         ? `${fmt(rem.toFixed(2))} $`
