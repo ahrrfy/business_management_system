@@ -221,6 +221,22 @@ describe("Canonical operation delegation editor", () => {
     expect(base.grants["operation.delivery.dispatch"]).toBe(true);
   });
 
+  it("renders an explicit null refund cap as unlimited instead of falling back to zero or inheritance", () => {
+    act(() => root.render(
+      <OperationPermissionMatrix
+        mode="user"
+        value={{ version: 1, grants: { "operation.returns.create": true } }}
+        inherited={base}
+        onChange={vi.fn()}
+        operationalCaps={{ maxRefundAmountIqd: null }}
+        inheritedOperationalCaps={{ maxRefundAmountIqd: "25000.00" }}
+        onOperationalCapsChange={vi.fn()}
+      />,
+    ));
+    expect(host.textContent).toContain("ينفذ مباشرة بلا سقف");
+    expect(host.textContent).not.toContain("يحتاج اعتماداً لأي مبلغ");
+  });
+
   it("bulk action only changes filtered results and omits protected operations", () => {
     render("role", { version: 1, grants: {} });
     expect(host.textContent).not.toContain("إدارة أدوار محجوزة");

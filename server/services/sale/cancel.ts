@@ -56,6 +56,10 @@ import {
   type OperationalDecision,
 } from "@shared/operationalDecision";
 import { todayUtcDate } from "../businessDay";
+import {
+  loadCurrentOperationalAuthorityTx,
+  type CurrentOperationalAuthority,
+} from "../authorization/currentOperationalAuthority";
 
 // ملاحظة: EXCHANGE ممنوع (مسار الصيرفة له خدمة مخصّصة كما في voucherService)، وWALLET/CHECK/
 // TRANSFER تُمرَّر بلا shift-guard إن غاب — النقد وحده يستوجب shiftIdForCashTx.
@@ -165,6 +169,27 @@ export async function cancelSaleInTx(
             : "0.00",
           idempotentReplay: true,
         };
+      }
+    }
+
+    let currentOperationalAuthority: CurrentOperationalAuthority | null = null;
+    if (input.enforceOperationalDecision) {
+      currentOperationalAuthority = await loadCurrentOperationalAuthorityTx(
+        tx,
+        actor.userId,
+      );
+      if (
+        currentOperationalAuthority.branchId !== actor.branchId ||
+        currentOperationalAuthority.role !== actor.role
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذر تثبيت تفويض إلغاء الفاتورة",
+            why: "تغير دور الحساب أو فرعه أثناء تنفيذ الإلغاء",
+            doThis: "حدث الصفحة وأعد الإلغاء بصلاحيات الحساب الحالية",
+          }),
+        });
       }
     }
 
@@ -317,7 +342,11 @@ export async function cancelSaleInTx(
       });
     }
     let directDecision: OperationalDecision | undefined;
-    if (input.enforceOperationalDecision && actor.role !== "admin" && !actor.isOwner) {
+    if (
+      input.enforceOperationalDecision &&
+      currentOperationalAuthority?.role !== "admin" &&
+      !currentOperationalAuthority?.isOwner
+    ) {
       const pool = await invoicePaidPool(tx, input.invoiceId);
       const refundable = pool.totalIn.minus(pool.outPrior);
       if (input.refundPaymentMethod === "CASH" && refundable.gt(0) && prelockedCashSource) {
@@ -344,7 +373,8 @@ export async function cancelSaleInTx(
         hasDownstreamEffects: false,
         hasSourceDocument: true,
         refundAmountIqd: refundable.toFixed(2),
-        maxRefundAmountIqd: actor.operationalCaps?.maxRefundAmountIqd ?? "0.00",
+        maxRefundAmountIqd:
+          currentOperationalAuthority?.caps.maxRefundAmountIqd ?? "0.00",
         refundMethod: input.refundPaymentMethod,
         originalPaymentMethods: Object.keys(pool.byMethod),
         drawerHasFunds: true,

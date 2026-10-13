@@ -2,7 +2,10 @@ import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { assertOperationAuthorityTx } from "../services/authorization/operationAuthority";
 import { appErrorMessage } from "@shared/errors";
-import { OperationalApprovalRequiredError } from "@shared/operationalDecision";
+import {
+  evaluateRefundOperationalDecision,
+  OperationalApprovalRequiredError,
+} from "@shared/operationalDecision";
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import {
   moduleAccessAllowed,
@@ -114,6 +117,8 @@ import { nonNegMoneyString } from "../lib/schemas";
 import { escLike } from "../lib/sqlLike";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { randomUUID } from "node:crypto";
+import { todayUtcDate } from "../services/businessDay";
+import { loadCurrentOperationalAuthorityTx } from "../services/authorization/currentOperationalAuthority";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const walkInResolution = z.object({
@@ -2123,6 +2128,35 @@ export const returnRouter = router({
               }
             }
 
+            const directLimitsApply = !(
+              canonicalOperationAllowed(ctx.user, "salesControl.approve") ||
+              (!ctx.user.operationPolicyEnabled &&
+                moduleAccessAllowed(
+                  ctx.user.role,
+                  ctx.user.permissionsOverride as PermissionMap | null,
+                  "sales",
+                  "FULL",
+                  ["manager", "admin"],
+                ))
+            );
+            const currentOperationalAuthority = directLimitsApply
+              ? await loadCurrentOperationalAuthorityTx(tx, ctx.user.id)
+              : null;
+            if (
+              currentOperationalAuthority &&
+              (currentOperationalAuthority.branchId !== actorBranchId ||
+                currentOperationalAuthority.role !== ctx.user.role)
+            ) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: appErrorMessage({
+                  what: "تعذر تثبيت تفويض المرتجع",
+                  why: "تغير دور الحساب أو فرعه أثناء تنفيذ المرتجع",
+                  doThis: "حدث الصفحة وأعد المرتجع بصلاحيات الحساب الحالية",
+                }),
+              });
+            }
+
             await assertPeriodOpen(tx, new Date());
 
           const now = new Date();
@@ -2152,17 +2186,6 @@ export const returnRouter = router({
           // تنفيذه لاحقاً. لذلك نفشل مغلقاً قبل أي حركة مخزون/نقد عند غياب
           // الفاتورة أو تجاوز السقف، ويستعمل الموظف مسار المرتجع المرتبط بالفاتورة
           // الذي ينشئ طلب SALES_RETURN قابلاً للاعتماد.
-          const directLimitsApply = !(
-            canonicalOperationAllowed(ctx.user, "salesControl.approve") ||
-            (!ctx.user.operationPolicyEnabled &&
-              moduleAccessAllowed(
-                ctx.user.role,
-                ctx.user.permissionsOverride as PermissionMap | null,
-                "sales",
-                "FULL",
-                ["manager", "admin"],
-              ))
-          );
           if (directLimitsApply && !input.invoiceNumber?.trim()) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
@@ -2174,28 +2197,6 @@ export const returnRouter = router({
               }),
             });
           }
-          const directRefundCap =
-            ctx.user.resolvedOperationalCaps?.maxRefundAmountIqd == null
-              ? null
-              : new Decimal(
-                  ctx.user.resolvedOperationalCaps.maxRefundAmountIqd,
-                );
-          if (
-            directLimitsApply &&
-            directRefundCap != null &&
-            returnTotalDec.gt(directRefundCap)
-          ) {
-            throw new TRPCError({
-              code: "PRECONDITION_FAILED",
-              message: appErrorMessage({
-                what: "يتطلب المرتجع موافقة المدير",
-                why: `مبلغ المرتجع (${returnTotalDec.toFixed(2)} د.ع) يتجاوز سقف الحساب (${directRefundCap.toFixed(2)} د.ع)`,
-                doThis:
-                  "أنشئ المرتجع من الفاتورة الأصلية ليُحال تلقائياً إلى اعتماد المدير",
-              }),
-            });
-          }
-
           // ٠) التحقق من الفاتورة الأصلية إن أدخلت وفرض الحوكمة المالية الصارمة
           let matchedInvoice: typeof invoices.$inferSelect | null = null;
           let matchedDeliveryPreview: {
@@ -2390,31 +2391,45 @@ export const returnRouter = router({
             matchedInvoice = found;
 
             if (directLimitsApply) {
-              if (Number(matchedInvoice.createdBy) !== Number(ctx.user.id)) {
+              const originalPaymentMethods = matchedInvoice.paymentMethod
+                ? [matchedInvoice.paymentMethod]
+                : money(matchedInvoice.paidAmount ?? "0").isZero()
+                  ? ["CREDIT_OFFSET"]
+                  : [];
+              const decision = evaluateRefundOperationalDecision({
+                operationAllowed: true,
+                sameBranch: Number(matchedInvoice.branchId) === actorBranchId,
+                ownsTransaction:
+                  Number(matchedInvoice.createdBy) === Number(ctx.user.id),
+                sameOpenShift:
+                  input.settlement.method !== "CASH" ||
+                  (matchedInvoice.shiftId != null &&
+                    input.settlement.shiftId != null &&
+                    Number(input.settlement.shiftId) ===
+                      Number(matchedInvoice.shiftId)),
+                sameBusinessDay:
+                  matchedInvoice.invoiceDate.toISOString().slice(0, 10) ===
+                  todayUtcDate(),
+                accountingPeriodOpen: true,
+                hasDownstreamEffects: false,
+                hasSourceDocument: true,
+                refundAmountIqd: returnTotalDec.toFixed(2),
+                maxRefundAmountIqd:
+                  currentOperationalAuthority?.caps.maxRefundAmountIqd ??
+                  "0.00",
+                refundMethod: input.settlement.method,
+                originalPaymentMethods,
+                drawerHasFunds: true,
+                approvalOperation: "salesControl.requestReturn",
+              });
+              if (decision.result !== "DIRECT") {
                 throw new TRPCError({
                   code: "PRECONDITION_FAILED",
                   message: appErrorMessage({
                     what: "يتطلب المرتجع موافقة المدير",
-                    why: "الفاتورة أنشأها موظف آخر",
+                    why: decision.reason,
                     doThis:
                       "أنشئ طلب المرتجع من شاشة الفاتورة ليُراجع ويُعتمد قبل التنفيذ",
-                  }),
-                });
-              }
-              if (
-                input.settlement.method === "CASH" &&
-                (matchedInvoice.shiftId == null ||
-                  input.settlement.shiftId == null ||
-                  Number(input.settlement.shiftId) !==
-                    Number(matchedInvoice.shiftId))
-              ) {
-                throw new TRPCError({
-                  code: "PRECONDITION_FAILED",
-                  message: appErrorMessage({
-                    what: "يتطلب الرد النقدي موافقة المدير",
-                    why: "الرد ليس من الوردية التي قبضت مبلغ الفاتورة",
-                    doThis:
-                      "اختر درج الوردية الأصلية إن كانت مفتوحة، أو أحِل المرتجع للمدير",
                   }),
                 });
               }

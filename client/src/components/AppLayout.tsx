@@ -281,7 +281,7 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   // المندوب (courier) شاشةٌ واحدة «توصيلاتي» فقط — نخفي بقية الروابط (كلها إمّا محجوبة خادمياً أو
   // بلا معنى له) بدل عرض جدارٍ من روابط ميتة (مراجعة عدائية ١٢/٧). العزل الحقيقي خادميّ؛ هذا تحسين UX.
   const operationPolicy = me.data?.operationPolicyEnabled && !me.data.isOwner ? me.data.resolvedOperationPolicy : null;
-  const isCourier = role === "courier" && !operationPolicy && !me.data?.isOwner;
+  const isCourier = (me.data?.courierShellOnly ?? (role === "courier" && !me.data?.operationPolicyEnabled)) && !me.data?.isOwner;
   // «مساحة العمل المركّزة» لفئة الكاشير (٢٤/٧، قرار المالك): موظف الوردية عمله فتح وردية ← بيع ←
   // إغلاق وتسليم — يرى أدوات منضدته فقط لا جدار وحدات النظام (تعميم نمط المندوب أعلاه). القائمة
   // البيضاء تُقاطَع مع canSeeGate ⇒ ما يظهر محكوم بصلاحيات دوره الفعلية (كاشير طباعة بلا store

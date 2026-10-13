@@ -412,6 +412,30 @@ describe("D7 — I17: الردّ بطريقة القبض حصراً وبسقف �
       CASHIER,
     )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
+
+  it("يسحب سقف رد العربون من الصف المقفول ويقبل التجاوز فقط باعتماد مدير", async () => {
+    await openReception();
+    const p = await promoteMixed();
+    const dep = await collectDeposit(
+      { draftId: p.draftId, amount: "5000.00", method: "CARD", reference: "CARD-CAP", clientRequestId: uuid("d7c-cap1") },
+      CASHIER,
+    );
+    await db().update(s.users)
+      .set({ operationalCaps: { maxRefundAmountIqd: "1000.00" } })
+      .where(eq(s.users.id, CASHIER.userId));
+
+    await expect(refundDeposit(
+      { paymentId: dep.paymentId, amount: "2000.00", reason: "رد أعلى من السقف الفردي", clientRequestId: uuid("d7r-cap1") },
+      { ...CASHIER, operationalCaps: { maxRefundAmountIqd: "50000.00" } } as never,
+    )).rejects.toThrow(/يتجاوز سقف حسابك 1000.00/);
+
+    const approved = await refundDeposit(
+      { paymentId: dep.paymentId, amount: "2000.00", reason: "رد مع اعتماد المدير", clientRequestId: uuid("d7r-cap2") },
+      CASHIER,
+      { authorizedByManager: true },
+    );
+    expect(approved.idempotentReplay).toBe(false);
+  });
 });
 
 describe("D8 — V12: وردية استقبالٍ مُلزَمة بنوعها", () => {

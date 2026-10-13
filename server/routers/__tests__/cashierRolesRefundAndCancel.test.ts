@@ -58,6 +58,7 @@ async function seed() {
     openId: "reception-user",
     name: "مشغل الاستقبال",
     role: "print_operator", // له workorders: "FULL" بالقالب
+    operationalCaps: { maxRefundAmountIqd: "25000.00" },
     branchId: 1,
     loginMethod: "local",
     isOwner: false,
@@ -70,6 +71,7 @@ async function seed() {
     name: "كاشير الطباعة",
     role: "user",
     permissionsOverride: { pos: "FULL" },
+    operationalCaps: { maxRefundAmountIqd: "25000.00" },
     branchId: 1,
     loginMethod: "local",
     isOwner: false,
@@ -311,6 +313,52 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       items: [{ variantId: 1, productName: "كارت شخصي", quantity: 1, unitPrice: "25.00" }],
       settlement: { method: "CASH", totalAmount: "25.00" },
     })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("٢ج. المرتجع المباشر يرفض فاتورة يوم سابق قبل أي صرف أو حركة", async () => {
+    const shiftId = await openShiftFor(12, "RETAIL");
+    const sale = await createSale({
+      branchId: 1,
+      shiftId,
+      customerId: 1,
+      sourceType: "POS",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      payment: { amount: "25.00", method: "CASH" },
+    }, { userId: 12, branchId: 1, role: "cashier" });
+    await db().update(s.invoices)
+      .set({ invoiceDate: new Date(Date.now() - 24 * 60 * 60 * 1000) })
+      .where(eq(s.invoices.id, sale.invoiceId));
+
+    const caller = returnRouter.createCaller(createContextFor({ id: 12, name: "كاشير التجزئة", role: "cashier" }));
+    await expect(caller.executeSalesReturnCart({
+      invoiceNumber: sale.invoiceNumber,
+      customer: { customerId: 1 },
+      items: [{ variantId: 1, productName: "كارت شخصي", quantity: 1, unitPrice: "25.00" }],
+      settlement: { method: "CASH", totalAmount: "25.00", shiftId },
+    })).rejects.toThrow(/ليس من يوم العمل الحالي/);
+    expect(await db().select().from(s.returnRequests)).toHaveLength(0);
+    expect((await db().select().from(s.receipts).where(and(eq(s.receipts.invoiceId, sale.invoiceId), eq(s.receipts.direction, "OUT"))))).toHaveLength(0);
+  });
+
+  it("٢د. المرتجع المباشر يرفض تحويل دفعة البطاقة إلى نقد", async () => {
+    const shiftId = await openShiftFor(12, "RETAIL");
+    const sale = await createSale({
+      branchId: 1,
+      shiftId,
+      customerId: 1,
+      sourceType: "POS",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      payment: { amount: "25.00", method: "CARD", reference: "CARD-IN-RAIL" },
+    }, { userId: 12, branchId: 1, role: "cashier" });
+
+    const caller = returnRouter.createCaller(createContextFor({ id: 12, name: "كاشير التجزئة", role: "cashier" }));
+    await expect(caller.executeSalesReturnCart({
+      invoiceNumber: sale.invoiceNumber,
+      customer: { customerId: 1 },
+      items: [{ variantId: 1, productName: "كارت شخصي", quantity: 1, unitPrice: "25.00" }],
+      settlement: { method: "CASH", totalAmount: "25.00", shiftId },
+    })).rejects.toThrow(/طريقة الرد لا تطابق طريقة الدفع الأصلية/);
+    expect((await db().select().from(s.receipts).where(and(eq(s.receipts.invoiceId, sale.invoiceId), eq(s.receipts.direction, "OUT"))))).toHaveLength(0);
   });
 
   it("٣. إلغاء طلب محجوز بعربون جزئي في كاشير الطباعة (cancelHeldSale) مع استرداد العربون نقداً من الوردية", async () => {

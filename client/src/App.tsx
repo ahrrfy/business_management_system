@@ -309,7 +309,9 @@ function RootRoute() {
   const storeHost = onPublicHost();
   const me = trpc.auth.me.useQuery(undefined, { retry: false });
   if (me.isLoading) return <RouteFallback />;
-  if (me.data?.role === "courier" && !me.data.operationPolicyEnabled && !me.data.isOwner) return <Redirect to="/my-deliveries" />;
+  const courierShellOnly = me.data?.courierShellOnly ??
+    (me.data?.role === "courier" && !me.data.operationPolicyEnabled);
+  if (courierShellOnly && !me.data?.isOwner) return <Redirect to="/my-deliveries" />;
   if (storeHost) return <Redirect to="/store" />; // زائر (أو موظف دخل خطأً) على الدومين العام ⇒ المتجر
   {/* الكاشير لا يُوجَّه بعيداً بل تُعرَض له «مساحة العمل المركّزة» داخل Dashboard نفسها —
       التوجيه الأعمى إلى /pos كان سيحبسه (زر «الرئيسية» في POS يعود إلى "/") بلا مسار

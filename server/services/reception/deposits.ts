@@ -44,6 +44,7 @@ import { assertTelecomCollectAllowed } from "./telecom";
 import { withTx, type Actor } from "../tx";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { appliedCollectionsForWorkOrder, heldNetOfDraft, type DepositMethod } from "../deposits";
+import { loadCurrentOperationalAuthorityTx } from "../authorization/currentOperationalAuthority";
 
 /**
  * @deprecated مسارٌ انتقاليّ: دفترُ المال المحتجَز (القراءة والتخصيص والربط) انتقل إلى نواة
@@ -138,6 +139,7 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
           doThis: "أدخل مبلغاً موجباً في حقل «مبلغ العربون» ثم أعد القبض",
         }),
       });
+
     if (input.method !== "CASH" && !input.reference?.trim()) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -362,6 +364,24 @@ export async function refundDeposit(
         }),
       });
 
+    const currentAuthority = await loadCurrentOperationalAuthorityTx(
+      tx,
+      actor.userId,
+    );
+    if (
+      currentAuthority.branchId !== actor.branchId ||
+      currentAuthority.role !== actor.role
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذر تثبيت تفويض رد العربون",
+          why: "تغير دور الحساب أو فرعه أثناء تنفيذ الرد",
+          doThis: "حدث الصفحة وأعد رد العربون بصلاحيات الحساب الحالية",
+        }),
+      });
+    }
+
     // قراءة استرشادية لمعرفة المسوّدة، ثم قفلٌ بالترتيب الموحَّد: مسوّدة ← الصفّ الماليّ.
     const probe = (
       await tx.select().from(orderPayments).where(eq(orderPayments.id, input.paymentId)).limit(1)
@@ -434,6 +454,28 @@ export async function refundDeposit(
           what: "مبلغ الردّ يتجاوز المتبقّي",
           why: `مبلغ الردّ المطلوب ${amountD.toFixed(2)} أكبر من الرصيد المتبقّي من هذا القبض (${refundable.toFixed(2)}) بعد ردوده السابقة`,
           doThis: `أنقص مبلغ الردّ إلى ${refundable.toFixed(2)} فأقلّ، أو اقسم على أكثر من قبض`,
+        }),
+      });
+    }
+
+    const refundCap = currentAuthority.caps.maxRefundAmountIqd;
+    const bypassDirectCap =
+      currentAuthority.isOwner ||
+      currentAuthority.role === "admin" ||
+      currentAuthority.role === "manager" ||
+      opts.authorizedByManager === true;
+    if (
+      !bypassDirectCap &&
+      refundCap != null &&
+      amountD.gt(money(refundCap))
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "يتطلب رد العربون موافقة المدير",
+          why: `مبلغ الرد ${amountD.toFixed(2)} د.ع يتجاوز سقف حسابك ${money(refundCap).toFixed(2)} د.ع`,
+          doThis:
+            "أدخل اعتماد المدير في نافذة الرد، أو خفّض المبلغ إلى السقف المباشر المسموح",
         }),
       });
     }

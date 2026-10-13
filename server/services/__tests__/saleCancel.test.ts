@@ -421,6 +421,30 @@ describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار
     expect(res.refundAmount).toBe("1000.00");
   });
 
+  it("يعيد قراءة سقف الإلغاء المقفول ولا يستعمل سقف سياق طلب قديم", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale({
+      branchId: 1,
+      shiftId: 1,
+      sourceType: "POS",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      payment: { amount: "1000.00", method: "CARD", reference: "CARD-IN-STALE" },
+    }, manager);
+    await db().update(s.users)
+      .set({ operationalCaps: { maxRefundAmountIqd: "0.00" } })
+      .where(eq(s.users.id, manager.userId));
+
+    await expect(cancelSale({
+      invoiceId: sale.invoiceId,
+      refundPaymentMethod: "CARD",
+      reference: "CARD-OUT-STALE",
+      reason: "اختبار سحب التفويض أثناء الطلب",
+      enforceOperationalDecision: true,
+    }, { ...manager, operationalCaps: resolveOperationalCaps("manager") }))
+      .rejects.toThrow(/يتجاوز السقف 0.00/);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status).not.toBe("CANCELLED");
+  });
+
   it("زبونٌ عابر (بلا عميل) مدفوعٌ بالبطاقة + مرجع جهاز صحيح ⇒ فوريّ، بلا اشتراط عميل", async () => {
     await setStock(1, 1, 10);
     const sale = await createSale(

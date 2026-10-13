@@ -41,6 +41,8 @@ export type AuthUser = User & {
   inheritedOperationPolicy?: OperationPolicy;
   inheritedOperationPolicyRevision?: number;
   roleOperationPolicy?: OperationPolicy | null;
+  /** Default courier profile keeps the historical one-screen delivery shell. */
+  courierShellOnly?: boolean;
 };
 
 export type TrpcContext = {
@@ -73,6 +75,7 @@ export function normalizeOwnerAuthority(user: AuthUser): AuthUser {
   user.resolvedSensitiveDataMasking = resolveSensitiveDataMasking("admin");
   user.operationPolicyEnabled = false;
   user.roleOperationPolicy = null;
+  user.courierShellOnly = false;
   user.resolvedOperationPolicy = buildOperationPolicyFromLegacy(
     "admin",
     resolvePermissions("admin", null),
@@ -118,6 +121,7 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
       user.permissionsOverride as PermissionMap | null,
     );
     const individualPolicy = user.operationPolicy == null ? null : operationPolicySchema.parse(user.operationPolicy);
+    user.courierShellOnly = baseRole === "courier" && individualPolicy == null;
     const inherited = hasRoleOperationPreset(baseRole)
       ? buildDefaultRoleOperationPolicy(
           baseRole,
@@ -175,6 +179,7 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
     user.resolvedSensitiveDataMasking = resolveSensitiveDataMasking("user");
     user.operationPolicyEnabled = true;
     user.roleOperationPolicy = { version: 1, grants: {} };
+    user.courierShellOnly = false;
     user.resolvedOperationPolicy = resolveOperationPolicy(
       "user",
       {},
@@ -219,6 +224,10 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
         : null)
     : operationPolicySchema.parse(role.operationPolicy);
   const individualPolicy = user.operationPolicy == null ? null : operationPolicySchema.parse(user.operationPolicy);
+  user.courierShellOnly =
+    baseRole === "courier" &&
+    role.operationPolicy == null &&
+    individualPolicy == null;
   const inherited =
     rolePolicy ??
     buildOperationPolicyFromLegacy(

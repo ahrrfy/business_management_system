@@ -33,13 +33,29 @@ export function OperationPermissionRow(props: Props) {
   const hasRefundCap = REFUND_CAP_PATHS.has(operation.path);
   const ownCap = props.operationalCaps?.maxRefundAmountIqd;
   const inheritedCap = props.inheritedOperationalCaps?.maxRefundAmountIqd;
-  const effectiveCap = ownCap ?? inheritedCap ?? "0.00";
+  const hasOwnCap =
+    props.operationalCaps != null &&
+    Object.prototype.hasOwnProperty.call(
+      props.operationalCaps,
+      "maxRefundAmountIqd",
+    );
+  const effectiveCap = hasOwnCap ? ownCap : inheritedCap ?? "0.00";
+  const unlimitedRefund = effectiveCap === null;
+  const setRefundCap = (next: string | null | undefined) => {
+    if (!props.onOperationalCapsChange) return;
+    const caps = { ...(props.operationalCaps ?? {}) };
+    if (next === undefined) delete caps.maxRefundAmountIqd;
+    else caps.maxRefundAmountIqd = next;
+    props.onOperationalCapsChange(caps);
+  };
   const decision = !allowed
     ? (requiresCost(operation) && effective(operation.key)
         ? "محجوبة حتى تفعيل عرض التكلفة"
         : "ممنوع")
     : hasRefundCap
-      ? Number(effectiveCap) > 0
+      ? unlimitedRefund
+        ? "ينفذ مباشرة بلا سقف؛ مع بقاء شروط الفرع والوردية والمستند"
+        : Number(effectiveCap) > 0
         ? `ينفذ مباشرة حتى ${Number(effectiveCap).toLocaleString("ar-IQ-u-nu-latn")} د.ع؛ وبعده يحتاج اعتماداً`
         : "يحتاج اعتماداً لأي مبلغ"
       : "ينفذ مباشرة ضمن شروط العملية";
@@ -64,11 +80,21 @@ export function OperationPermissionRow(props: Props) {
       <div className="space-y-1">
         <div className={allowed ? "text-money-positive" : "text-destructive"}>{decision}</div>
         {hasRefundCap && allowed && props.onOperationalCapsChange && (
-          <div>
+          <div className="space-y-1">
             <MoneyInput aria-label={`سقف ${operation.label}`} disabled={disabled} value={ownCap ?? ""}
-              placeholder={mode === "user" ? `يرث ${Number(inheritedCap ?? 0).toLocaleString("ar-IQ-u-nu-latn")}` : "0"}
-              onChange={(next) => props.onOperationalCapsChange?.({ ...(props.operationalCaps ?? {}), maxRefundAmountIqd: next || (mode === "user" ? undefined : "0.00") })}
+              placeholder={hasOwnCap && ownCap === null
+                ? "بلا سقف"
+                : mode === "user"
+                  ? inheritedCap === null
+                    ? "يرث: بلا سقف"
+                    : `يرث ${Number(inheritedCap ?? 0).toLocaleString("ar-IQ-u-nu-latn")}`
+                  : "0"}
+              onChange={(next) => setRefundCap(next || (mode === "user" ? undefined : "0.00"))}
               className="h-8 text-xs" />
+            <div className="flex gap-2 text-[10px]">
+              <button type="button" className="text-primary underline" disabled={disabled} onClick={() => setRefundCap(null)}>بلا سقف</button>
+              {mode === "user" && <button type="button" className="text-primary underline" disabled={disabled} onClick={() => setRefundCap(undefined)}>وراثة الدور</button>}
+            </div>
             <p className="text-[10px] text-muted-foreground">السقف المباشر؛ التجاوز ينتقل للاعتماد</p>
           </div>
         )}
