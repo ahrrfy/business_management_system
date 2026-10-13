@@ -765,6 +765,8 @@ export interface SalesControlCashRouting {
    * نيّتان مختلفتان، فلا تُمثَّلان بقيمةٍ واحدة.
    */
   clearShift?: boolean;
+  /** Explicit approved source for cancellation refunds. Treasury bypasses an underfunded reviewer drawer. */
+  cashBucket?: "DRAWER" | "TREASURY";
   /** مرجع عملية الاسترداد على جهاز الدفع — يُنفَّذ لحظة الاعتماد لا لحظة الطلب. */
   reference?: string | null;
   /** جهاز تنفيذ قبض الفرق غير النقدي وقت الاعتماد. */
@@ -828,8 +830,20 @@ function applyCancelCashRouting(
   // ⛔ `undefined` (المفتاح غائب) = لم يمسّه المُعتمِد، يبقى مرجع الطلب كما أُرسل. `null` صراحةً
   // = مسحه المُعتمِد عمداً (لا يطابق قسيمة الجهاز) — يُفرَض غيابه فعلياً فيرفضه cancelSaleInTx
   // حتماً لـCARD، لا رجوعٌ صامتٌ لِما أرسله الطالب (مراجعة Codex P1 على PR #997).
-  if (!routing || routing.reference === undefined) return payload;
-  return { ...payload, reference: routing.reference };
+  if (!routing) return payload;
+  const routesCash = payload.refundPaymentMethod === "CASH" && (
+    routing.cashBucket != null || routing.shiftId != null || routing.clearShift === true
+  );
+  return {
+    ...payload,
+    ...(routing.reference !== undefined ? { reference: routing.reference } : {}),
+    ...(routesCash ? {
+      refundCashBucket: routing.cashBucket ?? (routing.shiftId != null ? "DRAWER" : null),
+      refundShiftId: routing.clearShift || routing.cashBucket === "TREASURY"
+        ? null
+        : routing.shiftId ?? null,
+    } : {}),
+  };
 }
 
 /**

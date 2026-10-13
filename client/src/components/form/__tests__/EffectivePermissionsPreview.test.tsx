@@ -50,6 +50,23 @@ describe("actual permission preview", () => {
     expect(host.textContent).toContain("لا يرى التكلفة");
   });
 
+  it("synthesizes the seeded section-role preset when its stored policy is null", () => {
+    render(<EffectiveAccessForAssignment
+      role="cashier"
+      permsOverride={null}
+      customRoleId={8}
+      customRoles={[{
+        id: 8,
+        key: "print_cashier",
+        baseRole: "cashier",
+        permissions: { sales: "NONE", pos: "FULL", workorders: "NONE" },
+        operationPolicy: null,
+      }]}
+    />);
+    expect(host.textContent).toContain("خدمات طباعة فقط");
+    expect(host.textContent).not.toContain("تجزئة فقط");
+  });
+
   it("labels the saved operation policy as its source, not the base template", () => {
     query.data = {
       effectiveRole: "courier", customRoleInactive: false,

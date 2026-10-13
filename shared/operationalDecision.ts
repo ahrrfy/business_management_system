@@ -23,6 +23,8 @@ export interface RefundOperationalContext {
   maxRefundAmountIqd: string | null | undefined;
   refundMethod: string;
   originalPaymentMethods?: readonly string[];
+  /** Net refundable amount remaining on each original payment rail. */
+  originalPaymentAmounts?: Readonly<Record<string, string | number>>;
   drawerHasFunds?: boolean;
   approvalOperation: string;
 }
@@ -66,13 +68,23 @@ export function evaluateRefundOperationalDecision(
   const originalMethods = new Set(
     (input.originalPaymentMethods ?? []).map((method) => method.toUpperCase()),
   );
+  const selectedRail = input.refundMethod.toUpperCase();
+  const selectedRailAmount = input.originalPaymentAmounts == null
+    ? null
+    : new Decimal(
+        input.originalPaymentAmounts[selectedRail] ??
+        input.originalPaymentAmounts[input.refundMethod] ??
+        0,
+      );
   if (
     amount.gt(0) &&
-    originalMethods.size > 0 &&
-    !originalMethods.has(input.refundMethod.toUpperCase())
+    ((originalMethods.size > 0 && !originalMethods.has(selectedRail)) ||
+      (selectedRailAmount != null && selectedRailAmount.lt(amount)))
   )
     return approval(
-      "طريقة الرد لا تطابق طريقة الدفع الأصلية",
+      originalMethods.size > 0 && !originalMethods.has(selectedRail)
+        ? "طريقة الرد لا تطابق طريقة الدفع الأصلية"
+        : "مبلغ الرد يتجاوز المقبوض المتبقي على طريقة الدفع المختارة",
       input.approvalOperation,
     );
 

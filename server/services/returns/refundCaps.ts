@@ -135,6 +135,7 @@ function refundCapSnapshot(
       .filter(([, amount]) => amount.gt(0))
       .map(([shiftId]) => shiftId)
       .sort((a, b) => a - b),
+    cashNetByShift,
     unremittedDeliveryCustody: unremittedCustody,
     hasUnremittedDelivery: unremittedCustody.gt(0),
   };
@@ -159,6 +160,8 @@ export interface RefundCapSnapshot {
   capByMethod: Map<RefundMethod, Decimal>;
   /** الورديات التي ما زال لها قبض نقدي موجب على الفاتورة؛ تُستعمل لحصر الرد المباشر بدرج القبض. */
   cashReceiptShiftIds: number[];
+  /** صافي النقد المنسوب لكل وردية؛ الرد المباشر لا يتجاوز مساهمة الوردية المختارة. */
+  cashNetByShift: Map<number, Decimal>;
   /** عهدة المندوب غير المورّدة كما يثبتها دفتر التوصيل بعد التوريد/التحرير/الشطب الجزئي. */
   unremittedDeliveryCustody: Decimal;
   /** هل الفاتورة مرتبطة بعهدة توصيل غير مورّدة؟ */

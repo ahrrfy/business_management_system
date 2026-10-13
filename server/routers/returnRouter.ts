@@ -62,7 +62,11 @@ import {
   debitLine,
 } from "../services/accounting/postingEngine";
 import { money, round2, toDbMoney } from "../services/money";
-import { assertCashOutAvailable } from "../services/cash/cashAvailability";
+import {
+  assertCashOutAvailable,
+  computeDrawerCashBalance,
+  lockCashSourceForUpdate,
+} from "../services/cash/cashAvailability";
 import { getDb, type Tx } from "../db";
 import { logAudit } from "../services/auditService";
 import {
@@ -2495,6 +2499,23 @@ export const returnRouter = router({
             }
 
             if (directLimitsApply) {
+              let drawerHasFunds = true;
+              if (
+                input.settlement.method === "CASH" &&
+                input.settlement.shiftId != null &&
+                returnTotalDec.gt(0)
+              ) {
+                const lockedDrawer = await lockCashSourceForUpdate(tx, {
+                  branchId: Number(matchedInvoice.branchId),
+                  cashBucket: "DRAWER",
+                  shiftId: Number(input.settlement.shiftId),
+                });
+                drawerHasFunds = (await computeDrawerCashBalance(
+                  tx,
+                  Number(input.settlement.shiftId),
+                  lockedDrawer.openingBalance ?? "0",
+                )).gte(returnTotalDec);
+              }
               const lockedRefundCaps = await loadRefundCaps(
                 tx,
                 Number(matchedInvoice.id),
@@ -2508,6 +2529,14 @@ export const returnRouter = router({
                   ...(maxCreditOffsetAmount.gt(0) ? ["CREDIT_OFFSET"] : []),
                 ]),
               );
+              const originalPaymentAmounts = Object.fromEntries([
+                ...Array.from(lockedRefundCaps.netByMethod.entries())
+                  .filter(([, amount]) => amount.gt(0))
+                  .map(([method, amount]) => [method, amount.toFixed(2)] as const),
+                ...(maxCreditOffsetAmount.gt(0)
+                  ? [["CREDIT_OFFSET", maxCreditOffsetAmount.toFixed(2)] as const]
+                  : []),
+              ]);
               const decision = evaluateRefundOperationalDecision({
                 operationAllowed: currentCartReturnAllowed,
                 sameBranch: Number(matchedInvoice.branchId) === actorBranchId,
@@ -2516,9 +2545,8 @@ export const returnRouter = router({
                 sameOpenShift:
                   input.settlement.method !== "CASH" ||
                   (input.settlement.shiftId != null &&
-                    lockedRefundCaps.cashReceiptShiftIds.includes(
-                      Number(input.settlement.shiftId),
-                    )),
+                    (lockedRefundCaps.cashNetByShift.get(Number(input.settlement.shiftId)) ?? money(0))
+                      .gte(returnTotalDec)),
                 sameBusinessDay:
                   matchedInvoice.invoiceDate.toISOString().slice(0, 10) ===
                   todayUtcDate(),
@@ -2530,7 +2558,8 @@ export const returnRouter = router({
                   currentOperationalAuthority.caps.maxRefundAmountIqd,
                 refundMethod: input.settlement.method,
                 originalPaymentMethods,
-                drawerHasFunds: true,
+                originalPaymentAmounts,
+                drawerHasFunds,
                 approvalOperation: "salesControl.requestReturn",
               });
               if (decision.result !== "DIRECT") {

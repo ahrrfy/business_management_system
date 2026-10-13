@@ -14,6 +14,7 @@ const base = {
   maxRefundAmountIqd: "50000.00",
   refundMethod: "CASH",
   originalPaymentMethods: ["CASH"],
+  originalPaymentAmounts: { CASH: "50000.00" },
   drawerHasFunds: true,
   approvalOperation: "sales.cancel.approve",
 } as const;
@@ -45,6 +46,18 @@ describe("evaluateRefundOperationalDecision", () => {
     expect(
       evaluateRefundOperationalDecision({ ...base, refundMethod: "CARD" }),
     ).toMatchObject({ result: "APPROVAL_REQUIRED" });
+  });
+
+  it("routes an aggregate refund that exceeds the selected rail to approval", () => {
+    expect(evaluateRefundOperationalDecision({
+      ...base,
+      refundAmountIqd: "100.00",
+      originalPaymentMethods: ["CASH", "CARD"],
+      originalPaymentAmounts: { CASH: "10.00", CARD: "90.00" },
+    })).toMatchObject({
+      result: "APPROVAL_REQUIRED",
+      reason: "مبلغ الرد يتجاوز المقبوض المتبقي على طريقة الدفع المختارة",
+    });
   });
 
   it("reports an invalid payment rail before shift approval routing", () => {

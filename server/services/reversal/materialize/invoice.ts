@@ -69,6 +69,7 @@ export async function invoicePaidPool(tx: Tx, invoiceId: number): Promise<{
   outPrior: Decimal;
   byMethod: Record<string, string>;
   cashReceiptShiftIds: number[];
+  cashByShift: Record<string, string>;
 }> {
   const caps = await loadRefundCaps(tx, invoiceId, { lock: true });
   const byMethod: Record<string, string> = {};
@@ -78,6 +79,11 @@ export async function invoicePaidPool(tx: Tx, invoiceId: number): Promise<{
     outPrior: round2(caps.grossOut),
     byMethod,
     cashReceiptShiftIds: caps.cashReceiptShiftIds,
+    cashByShift: Object.fromEntries(
+      Array.from(caps.cashNetByShift.entries())
+        .filter(([, amount]) => amount.gt(0))
+        .map(([shiftId, amount]) => [String(shiftId), amount.toFixed(2)]),
+    ),
   };
 }
 

@@ -99,6 +99,7 @@ import {
   assertCashOutAvailable,
   assertNonPhysicalOutReceipt,
   assertTreasuryOutException,
+  computeDrawerCashBalance,
   lockCashSourceForUpdate,
 } from "./cash/cashAvailability";
 import {
@@ -2953,6 +2954,20 @@ export async function returnSaleDirect(
           });
         }
 
+        let drawerHasFunds = true;
+        if (needsCashShift && openShiftId != null) {
+          const lockedDrawer = await lockCashSourceForUpdate(tx, {
+            branchId: Number(targetBranchId),
+            cashBucket: "DRAWER",
+            shiftId: openShiftId,
+          });
+          drawerHasFunds = (await computeDrawerCashBalance(
+            tx,
+            openShiftId,
+            lockedDrawer.openingBalance ?? "0",
+          )).gte(money(directRefund?.amount ?? "0"));
+        }
+
         if (!invRow || actor.branchId == null || Number(invRow.branchId) !== Number(actor.branchId)) {
           throw new TRPCError({
             code: "FORBIDDEN",
@@ -2969,12 +2984,19 @@ export async function returnSaleDirect(
         const originalPaymentMethods = Array.from(lockedRefundCaps.netByMethod.entries())
           .filter(([, amount]) => amount.gt(0))
           .map(([method]) => method);
+        const originalPaymentAmounts = Object.fromEntries(
+          Array.from(lockedRefundCaps.netByMethod.entries())
+            .filter(([, amount]) => amount.gt(0))
+            .map(([method, amount]) => [method, amount.toFixed(2)]),
+        );
         const decision = evaluateRefundOperationalDecision({
           operationAllowed: isAuthorized,
           sameBranch: Number(invRow.branchId) === Number(actor.branchId),
           ownsTransaction: Number(invRow.createdBy) === Number(actor.userId),
           sameOpenShift: !needsCashShift || (
-            openShiftId != null && lockedRefundCaps.cashReceiptShiftIds.includes(Number(openShiftId))
+            openShiftId != null &&
+            (lockedRefundCaps.cashNetByShift.get(Number(openShiftId)) ?? money(0))
+              .gte(money(directRefund?.amount ?? "0"))
           ),
           sameBusinessDay: invRow.invoiceDate.toISOString().slice(0, 10) === todayUtcDate(),
           accountingPeriodOpen: true,
@@ -2984,7 +3006,8 @@ export async function returnSaleDirect(
           maxRefundAmountIqd: resolvedCaps.maxRefundAmountIqd,
           refundMethod: directRefund?.method ?? invRow.paymentMethod ?? "CASH",
           originalPaymentMethods,
-          drawerHasFunds: true,
+          originalPaymentAmounts,
+          drawerHasFunds,
           approvalOperation: "salesControl.requestReturn",
         });
         if (decision.result === "APPROVAL_REQUIRED")

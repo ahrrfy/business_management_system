@@ -53,7 +53,15 @@ describe("واجهة حوكمة عمليات البيع الحرجة", () => {
     const approvals = page("SalesControlApprovals.tsx");
     expect(approvals).toContain('returnMoney?.method === "CASH"');
     expect(approvals).toContain('D(returnMoney.amount ?? "0").gt(0)');
-    expect(approvals).toContain("canReview && returnNeedsCashRouting && !reviewerConflict");
+    expect(approvals).toContain("canReview && (returnNeedsCashRouting || cancelNeedsCashRouting) && !reviewerConflict");
+  });
+
+  it("يتيح للمراجع اختيار درج ممول أو خزينة الفرع لإلغاء نقدي", () => {
+    const approvals = page("SalesControlApprovals.tsx");
+    expect(approvals).toContain('request.requestType === "SALES_CANCEL"');
+    expect(approvals).toContain('refundPaymentMethod === "CASH"');
+    expect(approvals).toContain('routingUseTreasury ? "TREASURY"');
+    expect(approvals).toContain("خزينة الفرع");
   });
 
   it("يعرض تعديل الفاتورة كمقارنة كان/سيصبح ويطبع الحرارية وليبل الشحن بلا كتابة الرقم", () => {

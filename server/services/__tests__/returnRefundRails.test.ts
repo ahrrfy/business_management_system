@@ -125,6 +125,9 @@ describe("سقوف الردّ — الوعاء عابرٌ للطرق", () => {
     expect(caps.cashReceiptShiftIds).toEqual([collectingShift]);
     expect(batched?.cashReceiptShiftIds).toEqual([collectingShift]);
     expect(caps.cashReceiptShiftIds).not.toContain(invoiceShift);
+    expect(caps.cashNetByShift.get(collectingShift)?.toFixed(2)).toBe("10.00");
+    expect(batched?.cashNetByShift.get(collectingShift)?.toFixed(2)).toBe("10.00");
+    expect(caps.cashNetByShift.has(invoiceShift)).toBe(false);
   });
 
   it("فاتورةُ بطاقةٍ لزبونٍ عابر: سقف النقد = سقف البطاقة = المقبوض (كان صفراً ⇒ لا مسار)", async () => {

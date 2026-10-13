@@ -104,6 +104,42 @@ describe("حوكمة عمليات البيع الحرجة", () => {
     });
   });
 
+  it("اعتماد الإلغاء النقدي يستطيع توجيه الرد إلى خزينة الفرع", async () => {
+    const created = await sale();
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      cashBucket: "TREASURY",
+      direction: "IN",
+      amount: "5000.00",
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "TEST-CANCEL-TREASURY-FUND",
+      createdBy: MANAGER.userId,
+    });
+    const requested = await requestSalesControl({
+      requestKey: "cancel-cash-to-treasury",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_CANCEL",
+      reason: "رد معتمد من خزينة الفرع",
+      payload: { refundPaymentMethod: "CASH" },
+    }, CASHIER);
+
+    await approveSalesControlRequest(
+      Number(requested.id),
+      MANAGER,
+      null,
+      { cashBucket: "TREASURY" },
+    );
+
+    const [refund] = await db().select().from(s.receipts).where(sql`
+      ${s.receipts.invoiceId}=${created.invoiceId}
+      AND ${s.receipts.direction}='OUT'
+    `);
+    expect(refund.cashBucket).toBe("TREASURY");
+    expect(refund.shiftId).toBeNull();
+  });
+
   it("فصل المهام لا يملك استثناء admin ولا منشئ الفاتورة", async () => {
     const created = await sale();
     const request = await requestSalesControl({

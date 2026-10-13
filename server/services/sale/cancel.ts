@@ -40,11 +40,12 @@ import {
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { money, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
-import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
+import { openShiftIdTx, resolveBranchCashShiftTx, shiftIdForCashTx } from "../shiftService";
 import {
   assertCashOutAvailable,
   computeDrawerCashBalance,
   lockCashSourceForUpdate,
+  type CashBucket,
 } from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
 import { reverseInvoiceSaleInTx } from "../reversal/invoiceReversal";
@@ -80,6 +81,9 @@ export interface CancelSaleInput {
   refundPaymentMethod: CancelRefundMethod;
   /** مرجع عملية الاسترداد على جهاز الدفع — تفرضه الخدمة إلزامياً لِـCARD وحدها؛ نظير ReturnSaleInput.refund.reference. */
   reference?: string | null;
+  /** Internal reviewer-selected cash source; direct API requests cannot set it. */
+  refundShiftId?: number | null;
+  refundCashBucket?: CashBucket | null;
   /** سبب الإلغاء — يُخزَّن على قيد RETURN.notes للتدقيق. */
   reason?: string | null;
   /** idempotency: نفس المفتاح ⇒ إلغاءٌ واحد (لا استرداد/عكس مزدوج عند النقر المزدوج/إعادة الشبكة). */
@@ -280,6 +284,12 @@ export async function cancelSaleInTx(
         }),
       });
     }
+    if (input.refundCashBucket != null && input.controlExpectedSnapshot == null) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "توجيه مصدر رد الإلغاء محصور بمسار اعتماد طلب التحكم",
+      });
+    }
     let prelockedCashSource: Awaited<ReturnType<typeof shiftIdForCashTx>> | null = null;
     let prelockedCashAccount: Awaited<ReturnType<typeof lockCashSourceForUpdate>> | null = null;
     const previewRefundCaps =
@@ -305,6 +315,15 @@ export async function cancelSaleInTx(
         prelockedCashSource = shiftId == null
           ? null
           : { shiftId, cashBucket: "DRAWER" as const };
+      } else if (input.refundCashBucket === "TREASURY") {
+        prelockedCashSource = { shiftId: null, cashBucket: "TREASURY" };
+      } else if (input.refundShiftId != null) {
+        const resolved = await resolveBranchCashShiftTx(
+          tx,
+          Number(invPreview.branchId),
+          input.refundShiftId,
+        );
+        prelockedCashSource = { shiftId: resolved.shiftId, cashBucket: "DRAWER" };
       } else {
         prelockedCashSource = await shiftIdForCashTx(
           tx,
@@ -461,7 +480,7 @@ export async function cancelSaleInTx(
           input.refundPaymentMethod !== "CASH" ||
           (prelockedCashSource?.cashBucket === "DRAWER" &&
             prelockedCashSource.shiftId != null &&
-            lockedPaidPool.cashReceiptShiftIds.includes(Number(prelockedCashSource.shiftId))),
+            money(lockedPaidPool.cashByShift[String(prelockedCashSource.shiftId)] ?? "0").gte(refundable)),
         sameBusinessDay: inv.invoiceDate.toISOString().slice(0, 10) === todayUtcDate(),
         accountingPeriodOpen: true,
         hasDownstreamEffects: returnedTotalDec.gt(0),
@@ -470,6 +489,7 @@ export async function cancelSaleInTx(
         maxRefundAmountIqd: currentOperationalAuthority.caps.maxRefundAmountIqd,
         refundMethod: input.refundPaymentMethod,
         originalPaymentMethods: Object.keys(pool.byMethod),
+        originalPaymentAmounts: pool.byMethod,
         drawerHasFunds,
         approvalOperation: "salesControl.requestCancel",
       });
