@@ -67,6 +67,30 @@ describe("عرض سداد الشراء المثبت", () => {
       React.createElement(PurchaseOrderDrilldownView, { poId: 262 }),
     );
 
+  it.each([
+    ["IQD", "60,000", "120,000"],
+    ["USD", "40", "80"],
+  ])(
+    "يعرض سعر وإجمالي البنود من حقول الخادم بعملة %s",
+    (currency, price, total) => {
+      state.order.agreedCurrency = currency;
+      state.order.items = [
+        {
+          id: 1,
+          productName: "حبر",
+          quantity: "2",
+          unitPrice: "60000.00",
+          total: "120000.00",
+          usdUnitPrice: "40.00",
+          usdTotal: "80.00",
+        },
+      ];
+      const html = render();
+      expect(html).toMatch(new RegExp(`dir="ltr">${price}</span>`));
+      expect(html).toMatch(new RegExp(`dir="ltr">${total}</span>`));
+    },
+  );
+
   it("يعرض شراء نقدياً غير مسدد دون تحويل طريقة السداد إلى إثبات دفع", () => {
     state.order.settlement = evidence("0.00", "0.00", "240000.00", "UNPAID");
     const html = render();

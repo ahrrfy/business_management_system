@@ -84,12 +84,12 @@ export function PurchaseOrderDrilldownView({ poId }: { poId: number }) {
               <span className="col-span-2 text-end">الإجمالي</span>
             </div>
             <div className="divide-y max-h-48 overflow-y-auto">
-              {po.items.map((item: any, idx: number) => (
+              {po.items.map((item, idx) => (
                 <div key={item.id ?? idx} className="p-2 text-xs grid grid-cols-12 gap-2 items-center">
                   <span className="col-span-6 font-medium">{item.productName ?? `صنف #${item.productId}`}</span>
                   <span className="col-span-2 text-center tabular-nums">{formatQuantity(item.quantity)}</span>
-                  <span className="col-span-2 text-end tabular-nums" dir="ltr">{fmt(item.unitCost)}</span>
-                  <span className="col-span-2 text-end tabular-nums font-semibold" dir="ltr">{fmt(item.subtotal)}</span>
+                  <span className="col-span-2 text-end tabular-nums" dir="ltr">{(po.agreedCurrency === "USD" ? item.usdUnitPrice : item.unitPrice) == null ? "—" : fmt(po.agreedCurrency === "USD" ? item.usdUnitPrice : item.unitPrice)}</span>
+                  <span className="col-span-2 text-end tabular-nums font-semibold" dir="ltr">{(po.agreedCurrency === "USD" ? item.usdTotal : item.total) == null ? "—" : fmt(po.agreedCurrency === "USD" ? item.usdTotal : item.total)}</span>
                 </div>
               ))}
             </div>
