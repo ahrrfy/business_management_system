@@ -287,7 +287,7 @@ export default function RoleEdit() {
                 onValueChange={(next) => {
                   const selected = next as RoleKey;
                   setBaseRole(selected);
-                  if (!policyEdited) {
+                  if (!isEdit && !policyEdited) {
                     setOperationPolicy(editableOperationPolicy(buildDefaultRoleOperationPolicy(selected, selected, ROLE_TEMPLATES[selected])));
                     setInitialPolicy(editableOperationPolicy(buildDefaultRoleOperationPolicy(selected, selected, ROLE_TEMPLATES[selected])));
                     setOperationalCaps(resolveOperationalCaps(selected));

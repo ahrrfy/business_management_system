@@ -6,6 +6,8 @@ import {
 } from "./operationPermissions";
 import {
   levelSatisfies,
+  ROLE_TEMPLATES,
+  SECTION_CASHIER_ROLES,
   type PermissionMap,
   type RoleKey,
 } from "./permissions";
@@ -103,6 +105,9 @@ export function buildDefaultRoleOperationPolicy(
   const policy = legacyOperationPolicy(baseRole, modules);
   const grants = { ...policy.grants };
   const profileModule = DAILY_PROFILE_MODULE[roleKey];
+  const profileDefaults =
+    SECTION_CASHIER_ROLES.find((role) => role.key === roleKey)?.permissions ??
+    ROLE_TEMPLATES[baseRole];
   for (const path of dailyOperationPaths(roleKey, baseRole)) {
     const operation = getOperationPermission(path);
     const operationModules = operation?.module?.split("|") ?? [];
@@ -113,7 +118,21 @@ export function buildDefaultRoleOperationPolicy(
     const profileAllowed = profileModule
       ? levelSatisfies(modules[profileModule], "FULL")
       : moduleAllowed;
-    if (operation?.delegable && profileAllowed) {
+    // Some station presets intentionally bridge a daily operation through the
+    // station module (for example print POS cancellation while retail sales is
+    // hidden). Preserve that reviewed default, but never restore a module that
+    // an administrator lowered from this profile's own baseline.
+    const unchangedProfileBridge =
+      operationModules.length > 0 &&
+      operationModules.every((moduleKey) =>
+        levelSatisfies(modules[moduleKey], requiredLevel) ||
+        modules[moduleKey] === profileDefaults[moduleKey],
+      );
+    if (
+      operation?.delegable &&
+      profileAllowed &&
+      (moduleAllowed || unchangedProfileBridge)
+    ) {
       grants[operation.key] = true;
     }
   }

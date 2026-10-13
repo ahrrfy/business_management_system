@@ -310,21 +310,20 @@ export const receptionRouter = router({
         role: ctx.user.role,
       };
       // اعتماد المدير (اختياريّ): يُتحقَّق بالمُتحقِّق القانونيّ الوحيد verifyManagerApproval
-      // (حدّ معدّل + توقيت ثابت + SOD «لا اعتماد ذاتيّ» + عزل فرع). النجاح ⇒ authorizedByManager
-      // فتتجاوز الخدمة بوّابة «نقد عبر وردية». (الفاعل المرتفع أصلاً يمرّ عبر elevated داخلها.)
-      let authorizedByManager = false;
+      // (حدّ معدّل + توقيت ثابت + SOD «لا اعتماد ذاتيّ» + عزل فرع). تُمرّر الهوية للخدمة
+      // كي تعيد تثبيت نشاط المدير ودوره وفرعه وانتهاء حسابه داخل معاملة الرد نفسها.
+      let approvedByManagerId: number | null = null;
       if (input.managerApproval) {
-        await verifyManagerApproval(
+        approvedByManagerId = await verifyManagerApproval(
           input.managerApproval,
           ctx,
           ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,
         );
-        authorizedByManager = true;
       }
       const result = await retryOnDeadlock(() =>
         refundDeposit(input, actor as never, {
           refundShiftId: input.refundShiftId ?? null,
-          authorizedByManager,
+          approvedByManagerId,
         }),
       );
       if (!result.idempotentReplay) {
@@ -338,7 +337,7 @@ export const receptionRouter = router({
             reason: input.reason,
             refundReceiptId: result.refundReceiptId,
             refundShiftId: result.shiftId,
-            ...(authorizedByManager ? { authorizedByManager: true } : {}),
+            ...(approvedByManagerId != null ? { approvedByManagerId } : {}),
           },
         });
       }

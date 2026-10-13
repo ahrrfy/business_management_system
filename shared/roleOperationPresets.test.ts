@@ -70,5 +70,16 @@ describe("role operation presets", () => {
     expect(policy.grants["operation.sales.create"]).toBe(false);
     expect(policy.grants["operation.sales.cancel"]).toBe(false);
     expect(policy.grants["operation.returns.executeSalesReturnCart"]).toBe(false);
+
+    const reception = SECTION_CASHIER_ROLES.find((item) => item.key === "reception_clerk")!;
+    const receptionPolicy = buildDefaultRoleOperationPolicy(
+      reception.key,
+      reception.baseRole,
+      { ...reception.permissions, store: "NONE" },
+    );
+    expect(receptionPolicy.grants["operation.workOrders.assign"]).toBe(true);
+    expect(receptionPolicy.grants["operation.delivery.dispatchInvoice"]).toBe(false);
+    expect(receptionPolicy.grants["operation.delivery.cancelAssignment"]).toBe(false);
+    expect(receptionPolicy.grants["operation.delivery.settleDaily"]).toBe(false);
   });
 });

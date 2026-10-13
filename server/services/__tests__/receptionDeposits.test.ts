@@ -429,10 +429,22 @@ describe("D7 — I17: الردّ بطريقة القبض حصراً وبسقف �
       { ...CASHIER, operationalCaps: { maxRefundAmountIqd: "50000.00" } } as never,
     )).rejects.toThrow(/يتجاوز سقف حسابك 1000.00/);
 
-    const approved = await refundDeposit(
-      { paymentId: dep.paymentId, amount: "2000.00", reason: "رد مع اعتماد المدير", clientRequestId: uuid("d7r-cap2") },
+    await db().update(s.users)
+      .set({ accessExpiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(s.users.id, MANAGER.userId));
+    await expect(refundDeposit(
+      { paymentId: dep.paymentId, amount: "2000.00", reason: "اعتماد مدير منتهي", clientRequestId: uuid("d7r-cap2") },
       CASHIER,
-      { authorizedByManager: true },
+      { approvedByManagerId: MANAGER.userId },
+    )).rejects.toThrow(/لم يعد فعالاً أو مخولاً/);
+
+    await db().update(s.users)
+      .set({ accessExpiresAt: null })
+      .where(eq(s.users.id, MANAGER.userId));
+    const approved = await refundDeposit(
+      { paymentId: dep.paymentId, amount: "2000.00", reason: "رد مع اعتماد المدير", clientRequestId: uuid("d7r-cap3") },
+      CASHIER,
+      { approvedByManagerId: MANAGER.userId },
     );
     expect(approved.idempotentReplay).toBe(false);
   });
@@ -779,7 +791,7 @@ describe("DB — قرار المالك (ب): سلطة ردّ العربون ال
     expect(coll.status).toBe("REFUNDED");
   });
 
-  it("(ب+ج) نقديّ بكاشير آخر ووردية القبض ليست ورديته ⇒ FORBIDDEN بلا اعتماد؛ ويمرّ بنفسه مع authorizedByManager", async () => {
+  it("(ب+ج) نقديّ بكاشير آخر ووردية القبض ليست ورديته ⇒ FORBIDDEN بلا اعتماد؛ ويمرّ بهوية مدير مثبتة", async () => {
     // وردية القابض (cashier #2) تبقى مفتوحة وفيها النقد؛ الطالب كاشير آخر (userId=5).
     const shift = await openReception();
     const p = await promoteMixed();
@@ -805,7 +817,7 @@ describe("DB — قرار المالك (ب): سلطة ردّ العربون ال
     const done = await refundDeposit(
       { paymentId: dep.paymentId, amount: "10000.00", reason: "الزبون طلب الاسترداد لاحقاً", clientRequestId: rid },
       CASHIER2,
-      { authorizedByManager: true },
+      { approvedByManagerId: MANAGER.userId },
     );
     expect(done.idempotentReplay).toBe(false);
     const out = (await db().select().from(s.receipts).where(eq(s.receipts.id, done.refundReceiptId!)))[0];

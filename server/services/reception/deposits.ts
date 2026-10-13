@@ -23,6 +23,7 @@ import {
   receptionDrafts,
   receipts,
   shifts,
+  users,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
@@ -339,7 +340,7 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
 export async function refundDeposit(
   input: RefundDepositInput,
   actor: Actor & { role?: string },
-  opts: { refundShiftId?: number | null; authorizedByManager?: boolean } = {},
+  opts: { refundShiftId?: number | null; approvedByManagerId?: number | null } = {},
 ) {
   return withTx(async (tx) => {
     const existingId = await findIdempotentRefId(tx, "reception.refundDeposit", input.clientRequestId);
@@ -465,12 +466,51 @@ export async function refundDeposit(
       });
     }
 
+    let managerApprovalValidated = false;
+    if (opts.approvedByManagerId != null) {
+      const approver = (
+        await tx
+          .select({
+            id: users.id,
+            role: users.role,
+            branchId: users.branchId,
+            isActive: users.isActive,
+            isOwner: users.isOwner,
+            accessExpiresAt: users.accessExpiresAt,
+          })
+          .from(users)
+          .where(eq(users.id, opts.approvedByManagerId))
+          .for("update")
+          .limit(1)
+      )[0];
+      const expired =
+        approver?.accessExpiresAt != null && approver.accessExpiresAt.getTime() <= Date.now();
+      managerApprovalValidated = Boolean(
+        approver &&
+        approver.isActive !== false &&
+        !expired &&
+        (approver.role === "admin" || approver.role === "manager") &&
+        (approver.role === "admin" || Number(approver.branchId) === Number(draft.branchId)) &&
+        (approver.isOwner === true || Number(approver.id) !== Number(actor.userId)),
+      );
+      if (!managerApprovalValidated) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر تثبيت موافقة المدير على رد العربون",
+            why: "حساب المدير لم يعد فعالاً أو مخولاً لهذا الفرع عند تنفيذ الرد",
+            doThis: "أعد إدخال اعتماد مدير فعال ومخول للفرع ثم أعد المحاولة",
+          }),
+        });
+      }
+    }
+
     const refundCap = currentAuthority.caps.maxRefundAmountIqd;
     const bypassDirectCap =
       currentAuthority.isOwner ||
       currentAuthority.role === "admin" ||
       currentAuthority.role === "manager" ||
-      opts.authorizedByManager === true;
+      managerApprovalValidated;
     if (
       !bypassDirectCap &&
       refundCap != null &&
@@ -499,7 +539,7 @@ export async function refundDeposit(
     //  • نقد (ويشمل زين المردود نقداً): ذاتيّ فقط ضمن **وردية القبض نفسها وهي مفتوحة** (المال ما زال
     //    في درج القابض). عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض (المال عاد للخزينة بالعهدة الوسيطة)
     //    ⇒ اعتماد مدير — سطح الاحتيال النقديّ العابر للورديات أعلى. (admin/manager يمرّان ذاتياً.)
-    if (method === "CASH" && !elevated && opts.authorizedByManager !== true) {
+    if (method === "CASH" && !elevated && !managerApprovalValidated) {
       const collShiftId = payment.shiftId != null ? Number(payment.shiftId) : null;
       const collShift = collShiftId != null
         ? (await tx.select({ status: shifts.status, userId: shifts.userId }).from(shifts).where(eq(shifts.id, collShiftId)).limit(1))[0]
