@@ -1,5 +1,6 @@
 import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
+import { assertOperationAuthorityTx } from "../services/authorization/operationAuthority";
 import { appErrorMessage } from "@shared/errors";
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import {
@@ -3137,6 +3138,11 @@ export const returnRouter = router({
 
       return withTx(
         async (tx) => {
+          await assertOperationAuthorityTx(tx, {
+            userId: ctx.user.id, role: ctx.user.role, branchId: ctx.user.branchId,
+          }, "returns.executePurchaseReturnCart", (current) =>
+            moduleAccessAllowed(current.role ?? "user", current.permissionsOverride as PermissionMap | null,
+              "sales", "FULL", ["manager"]) && canSeeCostForUser(current));
           await assertPeriodOpen(tx, new Date());
 
           // التحقق من وجود المورد

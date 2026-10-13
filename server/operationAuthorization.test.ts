@@ -33,7 +33,7 @@ function context(grants: Record<string, boolean>, overrides: Record<string, unkn
 }
 
 const receptionCheckoutProcedure = workordersCashierProcedure
-  .input(z.object({ delivery: z.unknown().nullish() }).optional())
+  .input(z.object({ delivery: z.unknown().nullish(), regularSale: z.unknown().nullish(), printSale: z.unknown().nullish() }).optional())
   .mutation(({ ctx }) => ctx.user.id);
 
 const api = router({
@@ -44,7 +44,7 @@ const api = router({
     unregistered: salesCashierProcedure.mutation(() => "unclassified"),
   }),
   delivery: router({ dispatchInvoice: deliveryCashierProcedure.mutation(() => "assigned") }),
-  returns: router({ create: returnsProcedure.mutation(() => "returned") }),
+  returns: router({ create: returnsProcedure.mutation(() => "returned"), executePurchaseReturnCart: salesManagerProcedure.mutation(() => "purchase-returned") }),
   invoicePrinting: router({
     authorizeBridge: directPrintBridgeProcedure.query(() => true),
     requestPrint: invoiceViewProcedure.use(requireAtomicPermission("pos.invoice.print")).mutation(() => true),
@@ -79,7 +79,7 @@ describe("actual procedure delegation", () => {
     }
     await expect(api.createCaller(context(saved.grants, { role: "cashier" })).invoicePrinting.requestPrint()).resolves.toBe(true);
   });
-  it.each(["workOrders.receptionCheckout", "reception.draftCommit"] as const)(
+  it.each(["workOrders.receptionCheckout"] as const)(
     "requires independent delivery authority for %s", async (path) => {
       const caller = api.createCaller(context({
         [`operation.${path}`]: true,
@@ -87,10 +87,25 @@ describe("actual procedure delegation", () => {
       }, { permissionsOverride: { store: "FULL" } }));
       const checkout = path === "workOrders.receptionCheckout"
         ? caller.workOrders.receptionCheckout : caller.reception.draftCommit;
-      await expect(checkout({ delivery: { partyId: 4 } }))
+      await expect(checkout({ delivery: { partyId: 4 }, regularSale: { lines: [{}] } }))
         .rejects.toMatchObject({ code: "FORBIDDEN" });
     },
   );
+  it.each(["workOrders.receptionCheckout", "reception.draftCommit"] as const)(
+    "does not mistake work-order delivery metadata for invoice dispatch on %s", async (path) => {
+      const caller = api.createCaller(context({ [`operation.${path}`]: true, "operation.delivery.dispatchInvoice": false }));
+      const checkout = path === "workOrders.receptionCheckout" ? caller.workOrders.receptionCheckout : caller.reception.draftCommit;
+      await expect(checkout({ delivery: { partyId: 4 } })).resolves.toBe(17);
+    },
+  );
+  it("requires cost visibility on the purchase-return mutation, independently of its grant", async () => {
+    expect(getOperationPermission("returns.executePurchaseReturnCart")?.requiresCostVisibility).toBe(true);
+    await expect(api.createCaller(context({ "operation.returns.executePurchaseReturnCart": true })).returns.executePurchaseReturnCart())
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    const ctx = context({ "operation.returns.executePurchaseReturnCart": true });
+    ctx.user!.resolvedOperationPolicy!.dataVisibility = { purchaseCost: true, profitMargin: true };
+    await expect(api.createCaller(ctx).returns.executePurchaseReturnCart()).resolves.toBe("purchase-returned");
+  });
   it.each(["workOrders.receptionCheckout", "reception.draftCommit"] as const)(
     "permits independently granted delivery on %s", async (path) => {
       const caller = api.createCaller(context({

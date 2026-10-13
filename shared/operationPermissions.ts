@@ -450,7 +450,7 @@ export function operationDecision(
     allowed,
     key: operation.key,
     source,
-    reason: hiddenCost ? "هذه القراءة تتطلب تفويض عرض التكلفة والربح" : allowed ? "العملية مفوضة لحسابك" : "العملية غير مفوضة لحسابك",
+    reason: hiddenCost ? "هذه العملية تتطلب تفويض عرض التكلفة والربح" : allowed ? "العملية مفوضة لحسابك" : "العملية غير مفوضة لحسابك",
     ...(operation.supportsRecordScope === true
       ? { scope: policy.recordScopes?.[operation.key] ?? "OWN" }
       : {}),

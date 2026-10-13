@@ -151,7 +151,7 @@ export async function assertOperationAuthorityTx(
   tx: Tx,
   actor: { userId: number; role?: string; branchId?: number | null },
   path: string,
-  legacyAllowed: boolean,
+  legacyAllowed: boolean | ((current: StoredOperationSnapshot) => boolean),
   authority?: ServiceOperationAuthority,
 ): Promise<boolean> {
   if (authority && !hasServiceOperationAuthority(authority, actor.userId, path)) throw forbiddenOperation();
@@ -167,7 +167,8 @@ export async function assertOperationAuthorityTx(
     }) });
   }
   const canonical = canonicalOperationAllowed(current, path);
-  if (!(canonical ?? legacyAllowed)) throw forbiddenOperation();
+  const allowed = canonical ?? (typeof legacyAllowed === "function" ? legacyAllowed(current) : legacyAllowed);
+  if (!allowed) throw forbiddenOperation();
   return canonical === true;
 }
 

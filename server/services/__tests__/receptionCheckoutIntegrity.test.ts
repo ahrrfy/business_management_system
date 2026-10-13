@@ -209,6 +209,27 @@ describe("reception checkout — سلامة المبلغ الخادمي", () => 
     expect(result.dispatch).toBeNull();
     expect(await db().select().from(s.deliveryConsignments)).toHaveLength(0);
   });
+  it("saves work-order delivery metadata without invoice dispatch authority", async () => {
+    const shift = await openReception();
+    await db().update(s.users).set({ operationPolicy: { version: 1, grants: {
+      "operation.workOrders.receptionCheckout": true,
+      "operation.delivery.dispatchInvoice": false,
+    } } }).where(eq(s.users.id, CASHIER.userId));
+    const result = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId, paidAmount: "0",
+      clientRequestId: "reception-work-order-delivery-metadata",
+      workOrders: [{ baseVariantId: null, title: "خدمة طباعة", quantity: 1, salePrice: "100.00" }],
+      delivery: DELIVERY,
+    }, CASHIER);
+    expect(result.workOrders).toHaveLength(1);
+    expect(result.dispatch).toBeNull();
+    const orders = await db().select().from(s.workOrders);
+    expect(orders).toHaveLength(1);
+    expect(orders[0]).toMatchObject({ hasDelivery: true, deliveryAddress: DELIVERY.address, deliveryPhone: DELIVERY.recipientPhone });
+    expect(await db().select().from(s.deliveryConsignments)).toHaveLength(0);
+    expect(await db().select().from(s.deliveryLedgerEntries)).toHaveLength(0);
+  });
+
   it("يرفض regularSale.amount المخالف ويعيد كل آثار الفاتورة والمخزون والتوصيل", async () => {
     const shift = await openReception();
 

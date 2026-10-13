@@ -134,7 +134,6 @@ const auditMutationOperation = t.middleware(async ({ ctx, type, path, input, get
 const DELIVERY_PAYLOAD_OPERATION_PATHS = new Set([
   "sales.create",
   "workOrders.receptionCheckout",
-  "reception.draftCommit",
 ]);
 
 /** الجذر الوحيد لبناء الإجراءات؛ يحرسه اختبار عقدي كي لا تظهر mutation خارج التدقيق العام. */
@@ -145,7 +144,10 @@ const auditedProcedure = t.procedure.use(auditMutationOperation).use(async ({ ct
   if (DELIVERY_PAYLOAD_OPERATION_PATHS.has(path) && ctx.user && hasOperationPolicy(ctx.user)) {
     const raw = await getRawInput();
     if (raw && typeof raw === "object" && "delivery" in raw && raw.delivery != null) {
-      assertOperationAuthorized(ctx.user, "delivery.dispatchInvoice");
+      const hasCarrierSale = path === "sales.create" ||
+        ("regularSale" in raw && raw.regularSale != null) ||
+        ("printSale" in raw && raw.printSale != null);
+      if (hasCarrierSale) assertOperationAuthorized(ctx.user, "delivery.dispatchInvoice");
     }
   }
   return next({ ctx });

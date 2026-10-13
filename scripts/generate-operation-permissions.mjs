@@ -340,6 +340,7 @@ const EXACT_LABELS = {
 // These existing readers return unmasked accounting cost/profit facts. Granting
 // the operation also requires an explicit sensitive-data visibility decision.
 const COST_VISIBILITY_PATHS = new Set([
+  "returns.executePurchaseReturnCart",
   "catalogAnomalies.list",
   "catalogAnomalies.changeLog",
   "inventory.costRevaluationPreview",
