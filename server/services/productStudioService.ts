@@ -5,7 +5,7 @@ import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lt, lte, not
 import { appNotifications, auditLogs, categories, productImageObjectStaging, productImageJobs, productImages, productStudioCampaignAssignees, productStudioCampaignCategories, productStudioCampaignProducts, productStudioCampaigns, productUnitBarcodes, productUnits, productVariants, products, users } from "../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
 import type { PermissionMap } from "@shared/permissions";
-import { hasOperationPolicy } from "@shared/operationPermissions";
+import type { OperationPolicy } from "@shared/operationPermissions";
 import { hasModuleAccess, resolvePermissions } from "@shared/permissions";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize";
 import { foldDigitsSql } from "../lib/similarMatch";
@@ -1326,23 +1326,31 @@ export async function grantStudioAccess(actor: ProductStudioActor, userId: numbe
     if (await canStudioPhotographTx(tx, userId)) {
       return { granted: false as const, name: target.name };
     }
-    if (hasOperationPolicy(currentTarget)) {
-      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
-        what: "تعذّر منح الاستوديو من الاختصار القديم",
-        why: "الحساب يستخدم تفويض العمليات المستقل، وفتح الوحدة وحدها لا يفوّض دورة التصوير",
-        doThis: "افتح تعديل المستخدم وفوّض عرض المهام ومسح الباركود وإرسال المرشح حسب حاجة العمل",
-      }) });
-    }
-    const nextOverride: PermissionMap = { ...((target.permissionsOverride as PermissionMap | null) ?? {}), productStudio: "FULL" };
-    await tx.update(users).set({ permissionsOverride: nextOverride }).where(eq(users.id, userId));
+    const priorPolicy: OperationPolicy = currentTarget.operationPolicy ?? { version: 1, grants: {} };
+    const studioPaths = [
+      "productStudio.tasks",
+      "productStudio.claimByBarcode",
+      "productStudio.submitCandidate",
+    ] as const;
+    const nextPolicy: OperationPolicy = {
+      ...priorPolicy,
+      grants: {
+        ...priorPolicy.grants,
+        ...Object.fromEntries(studioPaths.map((path) => [`operation.${path}`, true])),
+      },
+    };
+    await tx.update(users).set({
+      operationPolicy: nextPolicy,
+      operationPolicyRevision: sql`${users.operationPolicyRevision} + 1`,
+    }).where(eq(users.id, userId));
     await tx.insert(auditLogs).values({
       userId: actor.userId,
       branchId: actor.branchId,
       action: "productStudio.grantAccess",
       entityType: "user",
       entityId: String(userId),
-      oldValue: { productStudio: hasModuleAccess(target.role, target.permissionsOverride as PermissionMap | null, "productStudio", "READ") ? "READ" : "NONE" },
-      newValue: { productStudio: "FULL" },
+      oldValue: { operations: studioPaths.filter((path) => priorPolicy.grants[`operation.${path}`] === true) },
+      newValue: { operations: studioPaths },
     });
     return { granted: true as const, name: target.name };
   });

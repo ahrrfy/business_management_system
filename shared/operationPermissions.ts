@@ -357,6 +357,19 @@ export function applyLegacyIndividualOperationOverrides(
       grants[operation.key] = true;
     }
   }
+  // Legacy print-cashier accounts were represented as role=user plus an
+  // individual pos:FULL override. Preserve their routine return workflow while
+  // the UI migrates them to the named print_cashier role/preset.
+  if (rawModules?.pos === "FULL" && baseModules.pos !== "FULL") {
+    for (const path of [
+      "returns.create",
+      "returns.executeSalesReturnCart",
+      "returns.getOpenRefundDrawers",
+    ]) {
+      const operation = getOperationPermission(path);
+      if (operation?.delegable) grants[operation.key] = true;
+    }
+  }
   return applyLegacyIndividualOperationDenials(
     { ...policy, grants },
     role,

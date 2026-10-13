@@ -2854,9 +2854,15 @@ export async function returnSaleDirect(
             (!isSalesDenied &&
               (hasReceptionFull || (isCashierRole && hasSalesFull)))));
 
-      const isAuthorized = canonicalOperationAllowed(
+      const canonicalAuthorized = canonicalOperationAllowed(
         storedOperationUser(userRow, customRoleRow), "returns.create",
-      ) ?? legacyAuthorized;
+      );
+      // An explicit sales revocation remains a hard individual restriction for
+      // the direct sales-return service even though the catalog also maps the
+      // operation to reception workorders.
+      const isAuthorized = !isOwner && !isAdmin && isSalesDenied
+        ? false
+        : (canonicalAuthorized ?? legacyAuthorized);
 
       if (!isOwner && !isAdmin && Number(actor.branchId) !== Number(userRow.branchId)) {
         throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({

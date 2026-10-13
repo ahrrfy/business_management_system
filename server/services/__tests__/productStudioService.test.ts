@@ -3192,7 +3192,11 @@ describe("product studio governed workflow", () => {
     // المنح لا يمسّ وحدةً أخرى ولا يرفع الدور.
     const [after] = await db().select().from(s.users).where(eq(s.users.id, plainId));
     expect(after).toMatchObject({ role: "cashier" });
-    expect((after!.permissionsOverride as Record<string, string>).productStudio).toBe("FULL");
+    expect((after!.operationPolicy as { grants: Record<string, boolean> }).grants).toMatchObject({
+      "operation.productStudio.tasks": true,
+      "operation.productStudio.claimByBarcode": true,
+      "operation.productStudio.submitCandidate": true,
+    });
     // ويصير قابلاً للإسناد فعلاً.
     await expect(createStudioCampaign(manager, { name: "حملة بعد المنح", status: "ACTIVE", assigneeIds: [plainId] })).resolves.toMatchObject({ assigneeIds: [plainId] });
     // وإعادة المنح لا تُكرّر شيئاً، ومديرُ فرعٍ آخر يُرفض.

@@ -312,7 +312,7 @@ describe("الاستبدال الدائم للوصفة substituteRecipeMaterial 
         },
         workerActor,
       ),
-    ).rejects.toThrow(/غير مصرح باعتماد تعديل الوصفة الدائم/);
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("ينفذ الاستبدال الدائم بنجاح لدور MANAGER مع 2PL وتحديث السطور والملاحظات", async () => {

@@ -55,24 +55,11 @@ export function evaluateRefundOperationalDecision(
     return approval("الفترة المحاسبية للمستند مقفلة", input.approvalOperation);
   if (input.hasDownstreamEffects)
     return approval("للمستند آثار تشغيلية أو مالية لاحقة", input.approvalOperation);
-  if (!input.ownsTransaction)
-    return approval("المستند أنشأه موظف آخر", input.approvalOperation);
-  if (!input.sameOpenShift)
-    return approval("الرد ليس من الوردية المفتوحة التي قبضت المبلغ", input.approvalOperation);
-  if (!input.sameBusinessDay)
-    return approval("المستند ليس من يوم العمل الحالي", input.approvalOperation);
 
+  // A manager approval cannot make an impossible payout rail valid. Validate
+  // the original payment method before same-maker/same-shift routing so the
+  // operator sees the actionable defect first.
   const amount = new Decimal(input.refundAmountIqd || 0);
-  const cap =
-    input.maxRefundAmountIqd == null
-      ? null
-      : new Decimal(input.maxRefundAmountIqd || 0);
-  if (cap != null && amount.gt(cap))
-    return approval(
-      `مبلغ الرد ${amount.toFixed(2)} د.ع يتجاوز السقف ${cap.toFixed(2)} د.ع`,
-      input.approvalOperation,
-    );
-
   const originalMethods = new Set(
     (input.originalPaymentMethods ?? []).map((method) => method.toUpperCase()),
   );
@@ -83,6 +70,23 @@ export function evaluateRefundOperationalDecision(
   )
     return approval(
       "طريقة الرد لا تطابق طريقة الدفع الأصلية",
+      input.approvalOperation,
+    );
+
+  if (!input.ownsTransaction)
+    return approval("المستند أنشأه موظف آخر", input.approvalOperation);
+  if (!input.sameOpenShift)
+    return approval("الرد ليس من الوردية المفتوحة التي قبضت المبلغ", input.approvalOperation);
+  if (!input.sameBusinessDay)
+    return approval("المستند ليس من يوم العمل الحالي", input.approvalOperation);
+
+  const cap =
+    input.maxRefundAmountIqd == null
+      ? null
+      : new Decimal(input.maxRefundAmountIqd || 0);
+  if (cap != null && amount.gt(cap))
+    return approval(
+      `مبلغ الرد ${amount.toFixed(2)} د.ع يتجاوز السقف ${cap.toFixed(2)} د.ع`,
       input.approvalOperation,
     );
 

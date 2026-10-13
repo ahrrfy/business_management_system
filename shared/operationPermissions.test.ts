@@ -33,6 +33,20 @@ vi.mock("./operationPermissionCatalog.generated", () => {
       },
       {
         ...metadata,
+        key: "operation.returns.executeSalesReturnCart",
+        path: "returns.executeSalesReturnCart",
+        module: "sales|workorders",
+        legacyAliases: ["pos.return.create"],
+      },
+      {
+        ...metadata,
+        key: "operation.returns.getOpenRefundDrawers",
+        path: "returns.getOpenRefundDrawers",
+        kind: "query",
+        module: "sales|workorders",
+      },
+      {
+        ...metadata,
         key: "operation.delivery.dispatch",
         path: "delivery.dispatch",
         module: "store",
@@ -329,6 +343,22 @@ describe("operation policies", () => {
     expect(resolved.grants["operation.purchases.fullLookup"]).toBe(true);
     expect(resolved.grants["operation.sales.create"]).toBe(true);
     expect(resolved.grants["operation.delivery.dispatch"]).toBe(false);
+  });
+
+  it("preserves the legacy user plus pos FULL print-cashier return workflow", () => {
+    const permissionsOverride = { pos: "FULL" as const };
+    const inheritedModules = resolvePermissions("user", null);
+    const resolved = resolveOperationPolicy(
+      "user",
+      resolvePermissions("user", permissionsOverride),
+      policy({}),
+      null,
+      permissionsOverride,
+      { permissionsOverride, inheritedModules },
+    );
+    expect(resolved.grants["operation.returns.create"]).toBe(true);
+    expect(resolved.grants["operation.returns.executeSalesReturnCart"]).toBe(true);
+    expect(resolved.grants["operation.returns.getOpenRefundDrawers"]).toBe(true);
   });
 
   it("inherits and overrides record scopes without allowing cross-branch scope", () => {

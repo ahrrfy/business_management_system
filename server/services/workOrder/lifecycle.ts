@@ -134,7 +134,9 @@ export async function startWorkOrder(
     const scope = await workOrderOperationScopeTx(tx, actor, "workOrders.start");
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
-    assertOperatorOwns(wo, actor, scope);
+    // Starting an unassigned order is the atomic claim. Assigned orders remain
+    // protected from being taken by another operator.
+    assertOperatorOwns(wo, actor, scope, true);
     if (wo.status !== "RECEIVED")
       throw new TRPCError({
         code: "BAD_REQUEST",

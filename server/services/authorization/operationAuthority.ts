@@ -95,13 +95,17 @@ function storedPolicy(value: unknown): OperationPolicy | null {
 }
 
 /** Same role/user precedence as request context; callers supply locked DB rows. */
-export type StoredOperationSnapshot = OperationUser & { branchId?: number | null };
+export type StoredOperationSnapshot = OperationUser & {
+  branchId?: number | null;
+  /** True only for a policy saved on the user or custom role, not a synthesized built-in preset. */
+  hasPersistedOperationPolicy?: boolean;
+};
 
 export function storedOperationUser(user: StoredUser, role?: StoredRole | null): StoredOperationSnapshot {
   if (!user.isActive || (user.accessExpiresAt != null && user.accessExpiresAt.getTime() <= Date.now())) throw forbiddenOperation();
-  if (user.isOwner) return { role: "admin", isOwner: true, branchId: user.branchId };
+  if (user.isOwner) return { role: "admin", isOwner: true, branchId: user.branchId, hasPersistedOperationPolicy: false };
   if (user.customRoleId != null && !role?.isActive) {
-    return { role: "user", branchId: user.branchId, operationPolicyEnabled: true, resolvedOperationPolicy: { version: 1, grants: {} } };
+    return { role: "user", branchId: user.branchId, operationPolicyEnabled: true, resolvedOperationPolicy: { version: 1, grants: {} }, hasPersistedOperationPolicy: false };
   }
   const effectiveRole = (role?.baseRole ?? user.role) as RoleKey;
   const roleModules = role
@@ -125,6 +129,7 @@ export function storedOperationUser(user: StoredUser, role?: StoredRole | null):
   return {
     role: effectiveRole,
     branchId: user.branchId,
+    hasPersistedOperationPolicy: Boolean(persistedRolePolicy || userPolicy),
     permissionsOverride: override,
     resolvedPermissions: modules,
     roleOperationPolicy: rolePolicy,

@@ -23,6 +23,7 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
   ],
   print_cashier: [
     "shifts.current", "shifts.open", "printPos.createSale", "sales.cancel", "returns.create",
+    "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers",
     "invoicePrinting.requestPrint", "invoicePrinting.requestReprint", "shifts.close",
   ],
   reception_clerk: [
@@ -128,6 +129,14 @@ export function buildDefaultRoleOperationPolicy(
         operation.path.startsWith("statutoryAccounting.")
       ) grants[operation.key] = false;
     }
+    // Cashiers may record their routine cash expense through its dedicated flow,
+    // but the stock-source branch is guarded by this exact service operation.
+    grants["operation.expenses.create"] = false;
+  }
+  if (roleKey === "purchasing") {
+    // Purchasing prepares supplier payment requests. Selecting treasury or a
+    // different employee's drawer remains an accounting/custody authority.
+    grants["operation.supplierPayments.cashSources"] = false;
   }
   return {
     ...policy,

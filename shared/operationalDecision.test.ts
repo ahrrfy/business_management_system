@@ -43,4 +43,13 @@ describe("evaluateRefundOperationalDecision", () => {
       evaluateRefundOperationalDecision({ ...base, refundMethod: "CARD" }),
     ).toMatchObject({ result: "APPROVAL_REQUIRED" });
   });
+
+  it("reports an invalid payment rail before shift approval routing", () => {
+    expect(
+      evaluateRefundOperationalDecision({ ...base, refundMethod: "CARD", sameOpenShift: false }),
+    ).toMatchObject({
+      result: "APPROVAL_REQUIRED",
+      reason: "طريقة الرد لا تطابق طريقة الدفع الأصلية",
+    });
+  });
 });

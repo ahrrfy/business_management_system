@@ -51,6 +51,8 @@ exports[`role operation presets > keeps a fixed snapshot for every role daily-ta
     "printPos.createSale",
     "sales.cancel",
     "returns.create",
+    "returns.executeSalesReturnCart",
+    "returns.getOpenRefundDrawers",
     "invoicePrinting.requestPrint",
     "invoicePrinting.requestReprint",
     "shifts.close",

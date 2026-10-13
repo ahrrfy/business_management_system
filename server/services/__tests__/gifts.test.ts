@@ -238,10 +238,10 @@ describe("G-م٢ الهدايا الصادرة", () => {
     expect((await ledger()).length).toBe(0);
   });
 
-  it("محاسب (غير مدير) ⇒ PENDING حتى تحت العتبة", async () => {
+  it("المحاسب يراجع الهدايا ولا ينشئ هدية صادرة", async () => {
     await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
-    const res = await createOutboundGift({ branchId: 1, customerId: 1, lines: [{ variantId: 1, productUnitId: 1, quantity: 5 }] }, acc);
-    expect(res.status).toBe("PENDING_APPROVAL");
+    await expect(createOutboundGift({ branchId: 1, customerId: 1, lines: [{ variantId: 1, productUnitId: 1, quantity: 5 }] }, acc))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(await stockOf(1)).toBe(1000);
   });
 
@@ -468,7 +468,7 @@ describe("G-م٧ حملات الهدايا (ربط + فرض ميزانيّة ب�
     await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
     const camp = await createGiftCampaign({ name: "حملة ز", budgetCost: "100000" }, actor);
     await createOutboundGift({ branchId: 1, customerId: 1, campaignId: camp.campaignId, lines: [{ variantId: 1, productUnitId: 1, quantity: 5 }] }, mgrA); // مُنجَز 500
-    await createOutboundGift({ branchId: 1, customerId: 1, campaignId: camp.campaignId, lines: [{ variantId: 1, productUnitId: 1, quantity: 3 }] }, { userId: 4, branchId: 1, role: "accountant" }); // محاسب ⇒ معلَّق 300
+    await createOutboundGift({ branchId: 1, customerId: 1, campaignId: camp.campaignId, lines: [{ variantId: 1, productUnitId: 1, quantity: 600 }] }, mgrB); // فوق العتبة ⇒ معلَّق 60000
     const list = await listGiftCampaigns({ status: "ACTIVE" });
     expect(Number(list[0].spent)).toBe(500); // 300 المعلَّق لا يُحتسَب
   });

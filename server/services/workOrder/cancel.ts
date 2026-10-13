@@ -274,7 +274,6 @@ export async function cancelWorkOrderInTx(
       || wo.invoiceId != null
       || money(wo.deposit ?? "0").gt(0)
       || appliedDepositsBeforeCancel.length > 0
-      || existingMaterials.length > 0
       || heldFeeBeforeCancel.gt(0);
     /**
      * **شرطُ الإلغاء المباشر لغير المدير** (فنّي المطبعة/الكاشير — قرار المالك ١/٩/٢٦):
