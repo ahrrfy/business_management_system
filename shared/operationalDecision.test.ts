@@ -32,10 +32,13 @@ describe("evaluateRefundOperationalDecision", () => {
     });
   });
 
-  it("denies cash output when the drawer cannot fund it", () => {
+  it("routes a short drawer to approval for a funded alternative source", () => {
     expect(
       evaluateRefundOperationalDecision({ ...base, drawerHasFunds: false }),
-    ).toMatchObject({ result: "DENY" });
+    ).toMatchObject({
+      result: "APPROVAL_REQUIRED",
+      approvalOperation: "sales.cancel.approve",
+    });
   });
 
   it("requires the original payment rail", () => {

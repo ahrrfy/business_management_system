@@ -164,6 +164,20 @@ export function canonicalOperationAllowed(user: OperationUser, path: string): bo
   return hasOperationPolicy(user) ? operationDecision(user, path).allowed : undefined;
 }
 
+/**
+ * A stored explicit policy or a named built-in preset may replace the legacy
+ * module gate. A synthesized compatibility policy remains tri-state so an
+ * un-migrated custom role keeps its existing module authority.
+ */
+export function storedCanonicalOperationAllowed(
+  user: StoredOperationSnapshot,
+  path: string,
+): boolean | undefined {
+  return user.hasPersistedOperationPolicy === true || user.roleOperationPolicy != null
+    ? canonicalOperationAllowed(user, path)
+    : undefined;
+}
+
 /** Re-read before the write; a router proof cannot survive an intervening revocation. */
 export async function assertOperationAuthorityTx(
   tx: Tx,
@@ -184,7 +198,7 @@ export async function assertOperationAuthorityTx(
       doThis: "حدّث الصفحة وأعد المحاولة بالدور والفرع الحاليين",
     }) });
   }
-  const canonical = canonicalOperationAllowed(current, path);
+  const canonical = storedCanonicalOperationAllowed(current, path);
   const allowed = canonical ?? (typeof legacyAllowed === "function" ? legacyAllowed(current) : legacyAllowed);
   if (!allowed) throw forbiddenOperation();
   return canonical === true;

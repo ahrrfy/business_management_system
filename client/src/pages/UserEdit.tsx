@@ -295,8 +295,12 @@ export default function UserEdit() {
     );
   }, [effectiveBaseRole, roleBasePerms, selectedCustomRole, detail.data, customRoleId, role]);
   const inheritedOperationalCaps = useMemo(
-    () => (selectedCustomRole?.operationalCaps as OperationalCaps | null) ??
-      resolveOperationalCaps(String(selectedCustomRole?.key ?? effectiveBaseRole), null, null, effectiveBaseRole),
+    () => resolveOperationalCaps(
+      String(selectedCustomRole?.key ?? effectiveBaseRole),
+      selectedCustomRole?.operationalCaps as OperationalCaps | null,
+      null,
+      effectiveBaseRole,
+    ),
     [selectedCustomRole, effectiveBaseRole],
   );
 

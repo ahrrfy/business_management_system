@@ -41,8 +41,11 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idem
 import { money, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
-import { lockCashSourceForUpdate } from "../cash/cashAvailability";
-import { assertCashOutAvailable } from "../cash/cashAvailability";
+import {
+  assertCashOutAvailable,
+  computeDrawerCashBalance,
+  lockCashSourceForUpdate,
+} from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
 import { reverseInvoiceSaleInTx } from "../reversal/invoiceReversal";
 import { invoicePaidPool } from "../reversal/materialize/invoice";
@@ -278,6 +281,7 @@ export async function cancelSaleInTx(
       });
     }
     let prelockedCashSource: Awaited<ReturnType<typeof shiftIdForCashTx>> | null = null;
+    let prelockedCashAccount: Awaited<ReturnType<typeof lockCashSourceForUpdate>> | null = null;
     const previewRefundCaps =
       input.refundPaymentMethod === "CASH"
         ? await loadRefundCaps(tx, input.invoiceId)
@@ -310,7 +314,7 @@ export async function cancelSaleInTx(
         );
       }
       if (prelockedCashSource) {
-        await lockCashSourceForUpdate(tx, {
+        prelockedCashAccount = await lockCashSourceForUpdate(tx, {
           branchId: Number(invPreview.branchId),
           cashBucket: prelockedCashSource.cashBucket,
           shiftId: prelockedCashSource.shiftId,
@@ -437,16 +441,17 @@ export async function cancelSaleInTx(
     ) {
       const pool = lockedPaidPool;
       const refundable = lockedRefundable;
-      if (input.refundPaymentMethod === "CASH" && refundable.gt(0) && prelockedCashSource) {
-        // يثبت الرصيد قبل أول كتابة؛ أي عجز يرمي ويرجع المعاملة كلها بلا تغيير للمستند أو المخزون.
-        await assertCashOutAvailable(tx, {
-          branchId: Number(inv.branchId),
-          cashBucket: prelockedCashSource.cashBucket,
-          shiftId: prelockedCashSource.shiftId,
-          amount: refundable,
-          operation: "رد إلغاء فاتورة من درج الوردية",
-        });
-      }
+      const drawerHasFunds =
+        input.refundPaymentMethod !== "CASH" ||
+        refundable.lte(0) ||
+        prelockedCashAccount == null ||
+        (prelockedCashAccount?.cashBucket === "DRAWER" &&
+          prelockedCashAccount.shiftId != null &&
+          (await computeDrawerCashBalance(
+            tx,
+            prelockedCashAccount.shiftId,
+            prelockedCashAccount.openingBalance ?? "0",
+          )).gte(refundable));
       directDecision = evaluateRefundOperationalDecision({
         operationAllowed: currentCancellationAllowed,
         sameBranch: Number(inv.branchId) === Number(actor.branchId),
@@ -465,7 +470,7 @@ export async function cancelSaleInTx(
         maxRefundAmountIqd: currentOperationalAuthority.caps.maxRefundAmountIqd,
         refundMethod: input.refundPaymentMethod,
         originalPaymentMethods: Object.keys(pool.byMethod),
-        drawerHasFunds: true,
+        drawerHasFunds,
         approvalOperation: "salesControl.requestCancel",
       });
       if (directDecision.result === "APPROVAL_REQUIRED")
@@ -479,6 +484,22 @@ export async function cancelSaleInTx(
       !prelockedCashSource
     ) {
       throw new CashRefundSourceChangedError();
+    }
+    if (
+      input.refundPaymentMethod === "CASH" &&
+      lockedRefundable.gt(0) &&
+      prelockedCashSource
+    ) {
+      // The final source is checked only after the direct/approval decision. A
+      // short cashier drawer therefore creates an approval request; an approved
+      // manager execution checks its newly selected drawer/treasury here.
+      await assertCashOutAvailable(tx, {
+        branchId: Number(inv.branchId),
+        cashBucket: prelockedCashSource.cashBucket,
+        shiftId: prelockedCashSource.shiftId,
+        amount: lockedRefundable,
+        operation: "رد إلغاء فاتورة من مصدر النقد المعتمد",
+      });
     }
     // فصل المهام (SOD): فاتورة بيع نهائية مكتملة أو أمر بيع مكتبي لا يُلغيه منشئه بنفسه؛
     // بينما الطلبات المحجوزة أو المعلقة بعربون جزئي في نقاط البيع (POS + PENDING / PARTIALLY_PAID)

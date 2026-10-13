@@ -48,7 +48,10 @@ export function evaluateRefundOperationalDecision(
   if (!input.sameBranch)
     return { result: "DENY", reason: "المستند يخص فرعاً آخر" };
   if (input.drawerHasFunds === false)
-    return { result: "DENY", reason: "رصيد درج الوردية لا يكفي للرد النقدي" };
+    return approval(
+      "رصيد درج الوردية لا يكفي للرد النقدي؛ يلزم اعتماد مصدر نقد بديل",
+      input.approvalOperation,
+    );
   if (input.hasSourceDocument === false)
     return approval("المرتجع بلا مستند بيع أصلي", input.approvalOperation);
   if (!input.accountingPeriodOpen)

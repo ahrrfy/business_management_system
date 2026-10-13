@@ -44,6 +44,16 @@ describe("تماثل نموذجَي المستخدم (إضافة/تعديل)", (
     expect(roleChange).toContain("operationalCaps != null");
   });
 
+  it("merges sparse custom-role caps with the role defaults before showing inheritance", () => {
+    const inheritedCaps = editSource.slice(
+      editSource.indexOf("const inheritedOperationalCaps"),
+      editSource.indexOf("// Ctrl/", editSource.indexOf("const inheritedOperationalCaps")),
+    );
+    expect(inheritedCaps).toContain("resolveOperationalCaps(");
+    expect(inheritedCaps).toContain("selectedCustomRole?.operationalCaps as OperationalCaps | null");
+    expect(inheritedCaps).not.toContain("operationalCaps as OperationalCaps | null) ??");
+  });
+
   it("treats a cap-only new role as unsaved work", () => {
     const start = roleEditSource.indexOf("const newBlank");
     const newBlank = roleEditSource.slice(

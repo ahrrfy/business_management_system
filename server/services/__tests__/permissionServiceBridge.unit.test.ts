@@ -7,6 +7,7 @@ import {
   hasServiceOperationAuthority,
   loadOperationUserTx,
   routeOperationAuthority,
+  storedCanonicalOperationAllowed,
   storedOperationUser,
   type ServiceOperationAuthority,
 } from "../authorization/operationAuthority";
@@ -61,6 +62,7 @@ describe("transactional operation service bridge", () => {
     const current = storedOperationUser(user, role);
     expect(current.operationPolicyEnabled).toBe(true);
     expect(canonicalOperationAllowed(current, "returns.create")).toBe(true);
+    expect(storedCanonicalOperationAllowed(current, "returns.create")).toBe(true);
     await expect(assertOperationAuthorityTx(
       fakeTx([[{ customRoleId: 9 }], [role], [user]]),
       { userId: 4, role: "cashier" },
@@ -122,6 +124,10 @@ describe("transactional operation service bridge", () => {
     const legacy = { ...account(), customRoleId: 9 };
     const legacyRole = { key: "legacy_warehouse", baseRole: "warehouse", isActive: true,
       permissions: resolvePermissions("warehouse", null), operationPolicy: null };
+    expect(storedCanonicalOperationAllowed(
+      storedOperationUser(legacy, legacyRole),
+      "salesControl.approve",
+    )).toBeUndefined();
     await expect(assertOperationAuthorityTx(fakeTx([[{ customRoleId: 9 }], [legacyRole], [legacy]]), { userId: 4 }, paths[0]!, true)).resolves.toBe(false);
     await expect(assertOperationAuthorityTx(fakeTx([[{ customRoleId: 9 }], [legacyRole], [legacy]]), { userId: 4 }, paths[0]!, false)).rejects.toMatchObject({ code: "FORBIDDEN" });
   });

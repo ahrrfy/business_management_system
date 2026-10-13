@@ -505,6 +505,44 @@ describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار
       .not.toBe("CANCELLED");
   });
 
+  it("يحيل عجز درج الكاشير إلى اعتماد مصدر نقد بديل بلا تغيير الفاتورة", async () => {
+    await setStock(1, 1, 10);
+    await db().update(s.users).set({ role: "cashier" }).where(eq(s.users.id, manager.userId));
+    const cashierActor = { userId: manager.userId, branchId: 1, role: "cashier" as const };
+    const sale = await createSale({
+      branchId: 1,
+      shiftId: 1,
+      sourceType: "POS",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      payment: { amount: "1000.00", method: "CASH" },
+    }, cashierActor);
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId: 1,
+      cashBucket: "DRAWER",
+      direction: "OUT",
+      amount: "1000.00",
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      referenceNumber: "TEST-DRAWER-DRAIN",
+      createdBy: manager.userId,
+    });
+
+    await expect(cancelSale({
+      invoiceId: sale.invoiceId,
+      refundPaymentMethod: "CASH",
+      reason: "إلغاء مع عجز درج الوردية",
+      enforceOperationalDecision: true,
+    }, cashierActor)).rejects.toMatchObject({
+      decision: {
+        result: "APPROVAL_REQUIRED",
+        reason: expect.stringContaining("رصيد درج الوردية"),
+      },
+    });
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status)
+      .not.toBe("CANCELLED");
+  });
+
   it("زبونٌ عابر (بلا عميل) مدفوعٌ بالبطاقة + مرجع جهاز صحيح ⇒ فوريّ، بلا اشتراط عميل", async () => {
     await setStock(1, 1, 10);
     const sale = await createSale(

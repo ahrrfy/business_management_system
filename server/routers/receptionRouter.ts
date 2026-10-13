@@ -317,7 +317,9 @@ export const receptionRouter = router({
         approvedByManagerId = await verifyManagerApproval(
           input.managerApproval,
           ctx,
-          ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,
+          ctx.user.role === "admin" || ctx.user.isOwner === true
+            ? undefined
+            : ctx.user.branchId != null ? Number(ctx.user.branchId) : undefined,
         );
       }
       const result = await retryOnDeadlock(() =>

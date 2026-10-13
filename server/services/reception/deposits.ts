@@ -48,8 +48,8 @@ import { appliedCollectionsForWorkOrder, heldNetOfDraft, type DepositMethod } fr
 import { loadCurrentOperationalAuthorityTx } from "../authorization/currentOperationalAuthority";
 import {
   assertOperationAuthorityTx,
-  canonicalOperationAllowed,
   loadOperationUserTx,
+  storedCanonicalOperationAllowed,
 } from "../authorization/operationAuthority";
 
 /**
@@ -395,7 +395,7 @@ export async function refundDeposit(
     );
     const currentActorOperationUser = await loadOperationUserTx(tx, actor.userId);
     const currentActorApprovalAllowed = currentAuthority.isOwner || (
-      canonicalOperationAllowed(currentActorOperationUser, "salesControl.approve") ??
+      storedCanonicalOperationAllowed(currentActorOperationUser, "salesControl.approve") ??
       moduleAccessAllowed(
         currentActorOperationUser.role,
         currentActorOperationUser.permissionsOverride as PermissionMap | null,
@@ -406,6 +406,12 @@ export async function refundDeposit(
     );
 
     let managerApprovalValidated = false;
+    let managerApprovalCandidate: {
+      branchId: number | null;
+      isOwner: boolean;
+      role: string;
+      canApprove: boolean;
+    } | null = null;
     if (opts.approvedByManagerId != null) {
       const approverAuthority = await loadCurrentOperationalAuthorityTx(
         tx,
@@ -416,7 +422,7 @@ export async function refundDeposit(
         opts.approvedByManagerId,
       );
       const approverCanApprove = approverAuthority.isOwner || (
-        canonicalOperationAllowed(approverOperationUser, "salesControl.approve") ??
+        storedCanonicalOperationAllowed(approverOperationUser, "salesControl.approve") ??
         moduleAccessAllowed(
           approverOperationUser.role,
           approverOperationUser.permissionsOverride as PermissionMap | null,
@@ -425,23 +431,12 @@ export async function refundDeposit(
           ["manager", "admin"],
         )
       );
-      managerApprovalValidated = Boolean(
-        approverCanApprove &&
-        (approverAuthority.isOwner ||
-          approverAuthority.role === "admin" ||
-          approverAuthority.branchId === Number(actor.branchId)) &&
-        (approverAuthority.isOwner || opts.approvedByManagerId !== actor.userId)
-      );
-      if (!managerApprovalValidated) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: appErrorMessage({
-            what: "تعذر تثبيت موافقة المدير على رد العربون",
-            why: "حساب المدير لم يعد فعالاً، أو سُحبت منه صلاحية اعتماد العمليات، أو لم يعد مخولاً لهذا الفرع",
-            doThis: "أعد إدخال اعتماد مدير فعال يملك صلاحية الاعتماد في هذا الفرع ثم أعد المحاولة",
-          }),
-        });
-      }
+      managerApprovalCandidate = {
+        branchId: approverAuthority.branchId,
+        isOwner: approverAuthority.isOwner,
+        role: approverAuthority.role,
+        canApprove: Boolean(approverCanApprove),
+      };
     }
 
     // قراءة استرشادية لمعرفة المسوّدة، ثم قفلٌ بالترتيب الموحَّد: مسوّدة ← الصفّ الماليّ.
@@ -470,6 +465,25 @@ export async function refundDeposit(
           doThis: "أعد تحميل قائمة الطلبات المحفوظة — الطلب قد يكون ثُبِّت أو أُلغي أو حُذف",
         }),
       });
+    if (managerApprovalCandidate) {
+      managerApprovalValidated = Boolean(
+        managerApprovalCandidate.canApprove &&
+        (managerApprovalCandidate.isOwner ||
+          managerApprovalCandidate.role === "admin" ||
+          managerApprovalCandidate.branchId === Number(draft.branchId)) &&
+        (managerApprovalCandidate.isOwner || opts.approvedByManagerId !== actor.userId)
+      );
+      if (!managerApprovalValidated) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر تثبيت موافقة المدير على رد العربون",
+            why: "حساب المدير لم يعد فعالاً، أو سُحبت منه صلاحية اعتماد العمليات، أو لم يعد مخولاً لفرع الطلب",
+            doThis: "أعد إدخال اعتماد مدير فعال يملك صلاحية الاعتماد في فرع الطلب ثم أعد المحاولة",
+          }),
+        });
+      }
+    }
     const payment = (
       await tx.select().from(orderPayments).where(eq(orderPayments.id, input.paymentId)).for("update").limit(1)
     )[0]!;

@@ -1,5 +1,9 @@
 import { TRPCError } from "@trpc/server";
-import { canonicalOperationAllowed, storedOperationUser } from "./authorization/operationAuthority";
+import {
+  canonicalOperationAllowed,
+  storedCanonicalOperationAllowed,
+  storedOperationUser,
+} from "./authorization/operationAuthority";
 import { appErrorMessage } from "@shared/errors";
 import {
   evaluateRefundOperationalDecision,
@@ -2910,7 +2914,7 @@ export async function returnSaleDirect(
       // limits. A sparse canonical grant must never turn a sales representative
       // or another custom delegate into an unlimited direct-refund actor.
       const currentApprovalAllowed = isOwner || (
-        canonicalOperationAllowed(currentOperationUser, "salesControl.approve") ??
+        storedCanonicalOperationAllowed(currentOperationUser, "salesControl.approve") ??
         moduleAccessAllowed(
           currentOperationUser.role,
           currentOperationUser.permissionsOverride as PermissionMap | null,

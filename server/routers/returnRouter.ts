@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import {
   assertOperationAuthorityTx,
   loadOperationUserTx,
+  storedCanonicalOperationAllowed,
 } from "../services/authorization/operationAuthority";
 import { appErrorMessage } from "@shared/errors";
 import {
@@ -15,7 +16,6 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
-import { canonicalOperationAllowed } from "../operationAuthorization";
 import { variantDescriptor } from "@shared/variantDisplay";
 import { z } from "zod";
 import {
@@ -2133,7 +2133,7 @@ export const returnRouter = router({
 
             const currentOperationUser = await loadOperationUserTx(tx, ctx.user.id);
             const currentApprovalAllowed = currentOperationUser.isOwner === true || (
-              canonicalOperationAllowed(currentOperationUser, "salesControl.approve") ??
+              storedCanonicalOperationAllowed(currentOperationUser, "salesControl.approve") ??
               moduleAccessAllowed(
                 currentOperationUser.role,
                 currentOperationUser.permissionsOverride as PermissionMap | null,

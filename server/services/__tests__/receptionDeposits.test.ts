@@ -474,6 +474,58 @@ describe("D7 — I17: الردّ بطريقة القبض حصراً وبسقف �
     );
     expect(approved.idempotentReplay).toBe(false);
   });
+
+  it("يربط اعتماد رد العربون بفرع الطلب المقفول لا بفرع المنفذ الإداري", async () => {
+    await db().insert(s.branches).values({ id: 2, name: "فرع ثانٍ", code: "B2", type: "SALES" });
+    await db().insert(s.users).values({
+      id: 9,
+      openId: "cross-admin",
+      name: "إداري عابر للفروع",
+      email: "cross-admin@t.test",
+      role: "admin",
+      loginMethod: "local",
+      branchId: 1,
+      operationalCaps: { maxRefundAmountIqd: "1000.00" },
+      operationPolicy: {
+        version: 1,
+        grants: {
+          "operation.reception.collectDeposit": true,
+          "operation.reception.refundDeposit": true,
+          "operation.salesControl.approve": false,
+        },
+      },
+    });
+    const crossAdmin = { userId: 9, branchId: 1, role: "admin" };
+    await openShift(
+      { branchId: 2, openingBalance: "0", shiftType: "RECEPTION" },
+      { userId: 9, branchId: 2 },
+    );
+    const draft = await promoteDraft(
+      { branchId: 2, header: { customerId: 1 }, lines: [CUSTOM_LINE] },
+      crossAdmin,
+    );
+    const deposit = await collectDeposit(
+      {
+        draftId: draft.draftId,
+        amount: "5000.00",
+        method: "CARD",
+        reference: "CARD-CROSS-BRANCH",
+        clientRequestId: uuid("d7-cross1"),
+      },
+      crossAdmin,
+    );
+
+    await expect(refundDeposit(
+      {
+        paymentId: deposit.paymentId,
+        amount: "2000.00",
+        reason: "اختبار اعتماد مدير من فرع المنفذ لا الطلب",
+        clientRequestId: uuid("d7-cross2"),
+      },
+      crossAdmin,
+      { approvedByManagerId: MANAGER.userId },
+    )).rejects.toThrow(/فرع الطلب/);
+  });
 });
 
 describe("D8 — V12: وردية استقبالٍ مُلزَمة بنوعها", () => {
