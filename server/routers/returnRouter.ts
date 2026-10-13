@@ -2527,8 +2527,7 @@ export const returnRouter = router({
                 hasSourceDocument: true,
                 refundAmountIqd: returnTotalDec.toFixed(2),
                 maxRefundAmountIqd:
-                  currentOperationalAuthority?.caps.maxRefundAmountIqd ??
-                  "0.00",
+                  currentOperationalAuthority.caps.maxRefundAmountIqd,
                 refundMethod: input.settlement.method,
                 originalPaymentMethods,
                 drawerHasFunds: true,

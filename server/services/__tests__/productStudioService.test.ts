@@ -3178,7 +3178,14 @@ describe("product studio governed workflow", () => {
     // الكاشير/المندوب كانوا يُحذفون من القائمة فيبدو الكادر ناقصاً بلا سبب ظاهر.
     expect(byId.has(worker.userId)).toBe(true);
     expect(byId.get(worker.userId)?.canStudio).toBe(true);
-    const [plain] = await db().insert(s.users).values({ openId: "studio-plain", name: "كاشير بلا صلاحية", role: "cashier", branchId: 1, isActive: true }).$returningId();
+    const [plain] = await db().insert(s.users).values({
+      openId: "studio-plain",
+      name: "كاشير بلا صلاحية",
+      role: "cashier",
+      permissionsOverride: { sales: "NONE" },
+      branchId: 1,
+      isActive: true,
+    }).$returningId();
     const plainId = Number(plain.id);
     const withPlain = new Map((await listStudioAssignees(manager)).map((u) => [u.id, u]));
     expect(withPlain.get(plainId)).toMatchObject({ canStudio: false });
@@ -3200,6 +3207,7 @@ describe("product studio governed workflow", () => {
       "operation.productStudio.claimByBarcode": true,
       "operation.productStudio.submitCandidate": true,
       "operation.productStudio.revert": true,
+      "operation.sales.create": false,
     });
     // ويصير قابلاً للإسناد فعلاً.
     await expect(createStudioCampaign(manager, { name: "حملة بعد المنح", status: "ACTIVE", assigneeIds: [plainId] })).resolves.toMatchObject({ assigneeIds: [plainId] });

@@ -1332,7 +1332,12 @@ export async function grantStudioAccess(actor: ProductStudioActor, userId: numbe
     if (alreadyAuthorized) {
       return { granted: false as const, name: target.name };
     }
-    const priorPolicy: OperationPolicy = currentTarget.operationPolicy ?? { version: 1, grants: {} };
+    // Starting a persisted user policy is an explicit legacy conversion. Seed
+    // it from the resolved effective policy so a studio-only grant cannot
+    // reactivate operations suppressed by legacy user restrictions.
+    const priorPolicy: OperationPolicy = currentTarget.operationPolicy ??
+      currentTarget.resolvedOperationPolicy ??
+      { version: 1, grants: {} };
     const studioPaths = STUDIO_PHOTOGRAPHER_OPERATIONS;
     const nextPolicy: OperationPolicy = {
       ...priorPolicy,

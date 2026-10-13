@@ -170,7 +170,9 @@ export default function InvoiceDetail() {
     onSuccess: async (r) => {
       setDone(
         r.mode === "EXECUTED"
-            ? `تم إلغاء الفاتورة ورد ${Number(r.refundAmount ?? 0).toLocaleString("ar-IQ-u-nu-latn")} د.ع ضمن صلاحية الوردية.`
+          ? Number(r.pendingRefundAmount ?? 0) > 0
+            ? `تم إلغاء الفاتورة وإنشاء طلب صرف ${Number(r.pendingRefundAmount).toLocaleString("ar-IQ-u-nu-latn")} د.ع${r.refundVoucherNumber ? ` برقم ${r.refundVoucherNumber}` : ""}.`
+            : `تم إلغاء الفاتورة ورد ${Number(r.refundAmount ?? 0).toLocaleString("ar-IQ-u-nu-latn")} د.ع ضمن صلاحية الوردية.`
           : `أُرسل طلب الإلغاء #${r.requestId} للاعتماد — لم يتغير المخزون أو المال بعد.`,
       );
       setError("");

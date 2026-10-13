@@ -25,6 +25,7 @@
 
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import { isDeadInvoice } from "@shared/predicates";
 import Decimal from "decimal.js";
 import { and, eq, sql } from "drizzle-orm";
@@ -61,6 +62,7 @@ import {
   loadCurrentOperationalAuthorityTx,
   type CurrentOperationalAuthority,
 } from "../authorization/currentOperationalAuthority";
+import { assertOperationAuthorityTx } from "../authorization/operationAuthority";
 
 // ملاحظة: EXCHANGE ممنوع (مسار الصيرفة له خدمة مخصّصة كما في voucherService)، وWALLET/CHECK/
 // TRANSFER تُمرَّر بلا shift-guard إن غاب — النقد وحده يستوجب shiftIdForCashTx.
@@ -192,14 +194,19 @@ export async function cancelSaleInTx(
     }
 
     let currentOperationalAuthority: CurrentOperationalAuthority | null = null;
+    let currentCancellationAllowed = true;
     if (input.enforceOperationalDecision) {
       currentOperationalAuthority = await loadCurrentOperationalAuthorityTx(
         tx,
         actor.userId,
       );
       if (
-        currentOperationalAuthority.branchId !== actor.branchId ||
-        currentOperationalAuthority.role !== actor.role
+        currentOperationalAuthority.role !== actor.role ||
+        (
+          currentOperationalAuthority.role !== "admin" &&
+          !currentOperationalAuthority.isOwner &&
+          currentOperationalAuthority.branchId !== actor.branchId
+        )
       ) {
         throw new TRPCError({
           code: "CONFLICT",
@@ -210,6 +217,39 @@ export async function cancelSaleInTx(
           }),
         });
       }
+      let legacyCancellationAllowed = false;
+      const canonicalCancellationAllowed = await assertOperationAuthorityTx(
+        tx,
+        actor,
+        "sales.cancel",
+        (current) => {
+          legacyCancellationAllowed =
+            moduleAccessAllowed(
+              current.role ?? "user",
+              current.permissionsOverride as PermissionMap | null,
+              "sales",
+              "FULL",
+              ["cashier", "manager"],
+            ) ||
+            moduleAccessAllowed(
+              current.role ?? "user",
+              current.permissionsOverride as PermissionMap | null,
+              "workorders",
+              "FULL",
+              ["cashier", "manager", "print_operator"],
+            ) ||
+            moduleAccessAllowed(
+              current.role ?? "user",
+              current.permissionsOverride as PermissionMap | null,
+              "pos",
+              "FULL",
+              ["cashier", "manager", "print_operator"],
+            );
+          return legacyCancellationAllowed;
+        },
+      );
+      currentCancellationAllowed =
+        canonicalCancellationAllowed || legacyCancellationAllowed;
     }
 
     // ترتيب الأقفال الحاكم: مصدر النقد قبل الفاتورة/مورّدي الأمانة. اعتماد سند مورد
@@ -381,8 +421,9 @@ export async function cancelSaleInTx(
     let directDecision: OperationalDecision | undefined;
     if (
       input.enforceOperationalDecision &&
-      currentOperationalAuthority?.role !== "admin" &&
-      !currentOperationalAuthority?.isOwner
+      currentOperationalAuthority != null &&
+      currentOperationalAuthority.role !== "admin" &&
+      !currentOperationalAuthority.isOwner
     ) {
       const pool = lockedPaidPool;
       const refundable = lockedRefundable;
@@ -397,7 +438,7 @@ export async function cancelSaleInTx(
         });
       }
       directDecision = evaluateRefundOperationalDecision({
-        operationAllowed: true,
+        operationAllowed: currentCancellationAllowed,
         sameBranch: Number(inv.branchId) === Number(actor.branchId),
         ownsTransaction: Number(inv.createdBy) === Number(actor.userId),
         sameOpenShift:
@@ -408,11 +449,10 @@ export async function cancelSaleInTx(
             lockedPaidPool.cashReceiptShiftIds.includes(Number(prelockedCashSource.shiftId))),
         sameBusinessDay: inv.invoiceDate.toISOString().slice(0, 10) === todayUtcDate(),
         accountingPeriodOpen: true,
-        hasDownstreamEffects: false,
+        hasDownstreamEffects: returnedTotalDec.gt(0),
         hasSourceDocument: true,
         refundAmountIqd: refundable.toFixed(2),
-        maxRefundAmountIqd:
-          currentOperationalAuthority?.caps.maxRefundAmountIqd ?? "0.00",
+        maxRefundAmountIqd: currentOperationalAuthority.caps.maxRefundAmountIqd,
         refundMethod: input.refundPaymentMethod,
         originalPaymentMethods: Object.keys(pool.byMethod),
         drawerHasFunds: true,

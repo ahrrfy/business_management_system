@@ -408,6 +408,9 @@ describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار
       lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
       payment: { amount: "1000.00", method: "CARD", reference: "CARD-IN-OP-1" },
     }, manager);
+    await db().update(s.users)
+      .set({ operationalCaps: { maxRefundAmountIqd: null } })
+      .where(eq(s.users.id, manager.userId));
 
     const res = await cancelSale({
       invoiceId: sale.invoiceId,
@@ -419,6 +422,33 @@ describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار
 
     expect(res.operationalDecision?.result).toBe("DIRECT");
     expect(res.refundAmount).toBe("1000.00");
+  });
+
+  it("يعيد فحص صلاحية الإلغاء داخل المعاملة بعد سحبها", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale({
+      branchId: 1,
+      shiftId: 1,
+      sourceType: "POS",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      payment: { amount: "1000.00", method: "CARD", reference: "CARD-IN-REVOKED" },
+    }, manager);
+    await db().update(s.users).set({
+      operationPolicy: {
+        version: 1,
+        grants: { "operation.sales.cancel": false },
+      },
+    }).where(eq(s.users.id, manager.userId));
+
+    await expect(cancelSale({
+      invoiceId: sale.invoiceId,
+      refundPaymentMethod: "CARD",
+      reference: "CARD-OUT-REVOKED",
+      reason: "سُحبت الصلاحية قبل تثبيت الإلغاء",
+      enforceOperationalDecision: true,
+    }, manager)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status)
+      .not.toBe("CANCELLED");
   });
 
   it("يعيد قراءة سقف الإلغاء المقفول ولا يستعمل سقف سياق طلب قديم", async () => {

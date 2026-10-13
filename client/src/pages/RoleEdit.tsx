@@ -382,6 +382,8 @@ export default function RoleEdit() {
         </Card>
         <OperationalCapsPanel
           caps={operationalCaps}
+          inheritOnClear
+          inheritedCaps={resolveOperationalCaps(baseRole)}
           onChange={(caps) => {
             setOperationalCaps(caps);
             setCapsEdited(true);

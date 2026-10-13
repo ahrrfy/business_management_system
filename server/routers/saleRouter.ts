@@ -64,7 +64,10 @@ import {
 } from "../services/accountAuthenticationLockout";
 import { logAudit, logAuditTx } from "../services/auditService";
 import { processPayment } from "../services/saleService";
-import { requestSalesControl } from "../services/sale/controlRequests";
+import {
+  replaySalesControlRequest,
+  requestSalesControl,
+} from "../services/sale/controlRequests";
 import { cancelSale } from "../services/sale/cancel";
 import { OperationalApprovalRequiredError } from "@shared/operationalDecision";
 import { RETURN_EXECUTED_AUDIT_ACTION } from "../services/returns/auditActions";
@@ -2598,7 +2601,44 @@ export const saleRouter = router({
         isOwner: ctx.user.isOwner,
         operationalCaps: ctx.user.resolvedOperationalCaps,
       };
+      const controlRequestInput = {
+        requestKey: input.clientRequestId ?? randomUUID(),
+        invoiceId: input.invoiceId,
+        requestType: "SALES_CANCEL" as const,
+        reason: input.reason,
+        payload: {
+          refundPaymentMethod: input.refundPaymentMethod,
+          reference: input.reference ?? null,
+        },
+      };
+      const controlReplay = input.clientRequestId
+        ? await replaySalesControlRequest(controlRequestInput, actor)
+        : null;
+      if (controlReplay) {
+        if (controlReplay.status === "APPROVED" && controlReplay.cancellation) {
+          return {
+            mode: "EXECUTED" as const,
+            status: "EXECUTED" as const,
+            requestId: controlReplay.id,
+            replayed: true,
+            ...controlReplay.cancellation,
+          };
+        }
+        return {
+          mode: "APPROVAL_REQUIRED" as const,
+          requestId: controlReplay.id,
+          status: controlReplay.status,
+          replayed: true,
+        };
+      }
       try {
+        if (input.refundPaymentMethod === "CARD" && !input.reference?.trim()) {
+          throw new OperationalApprovalRequiredError({
+            result: "APPROVAL_REQUIRED",
+            reason: "رد البطاقة يحتاج مرجع جهاز يثبته المراجع عند الاعتماد",
+            approvalOperation: "salesControl.requestCancel",
+          });
+        }
         const executed = await cancelSale(
           { ...input, enforceOperationalDecision: true },
           actor,
@@ -2620,23 +2660,13 @@ export const saleRouter = router({
           replayed: executed.idempotentReplay === true,
           invoiceId: executed.invoiceId,
           refundAmount: executed.refundAmount,
+          refundVoucherNumber: executed.refundVoucherNumber,
+          pendingRefundAmount: executed.pendingRefundAmount,
           decision: executed.operationalDecision,
         };
       } catch (error) {
         if (!(error instanceof OperationalApprovalRequiredError)) throw error;
-        const res = await requestSalesControl(
-          {
-            requestKey: input.clientRequestId ?? randomUUID(),
-            invoiceId: input.invoiceId,
-            requestType: "SALES_CANCEL",
-            reason: input.reason,
-            payload: {
-              refundPaymentMethod: input.refundPaymentMethod,
-              reference: input.reference ?? null,
-            },
-          },
-          actor,
-        );
+        const res = await requestSalesControl(controlRequestInput, actor);
         await logAudit(ctx, {
           action: "sale.cancel.request",
           entityType: "invoice",

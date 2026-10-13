@@ -10,6 +10,7 @@ import {
   claimSalesCorrectionPayment,
   rejectSalesControlRequest,
   releaseSalesCorrectionPaymentClaim,
+  replaySalesControlRequest,
   requestSalesControl,
   withdrawSalesControlRequest,
 } from "../sale/controlRequests";
@@ -90,6 +91,17 @@ describe("حوكمة عمليات البيع الحرجة", () => {
     await approveSalesControlRequest(Number(requested.id), MANAGER);
     expect((await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("CANCELLED");
     expect(Number((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity)).toBe(100);
+    await expect(replaySalesControlRequest({
+      requestKey: "cancel-one",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_CANCEL",
+      reason: "أدخل البائع فاتورة مكررة",
+      payload: { refundPaymentMethod: "CASH" },
+    }, CASHIER)).resolves.toMatchObject({
+      status: "APPROVED",
+      replayed: true,
+      cancellation: { invoiceId: created.invoiceId, refundAmount: "5000.00" },
+    });
   });
 
   it("فصل المهام لا يملك استثناء admin ولا منشئ الفاتورة", async () => {
