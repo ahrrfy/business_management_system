@@ -335,9 +335,10 @@ export async function cancelSaleInTx(
         sameBranch: Number(inv.branchId) === Number(actor.branchId),
         ownsTransaction: Number(inv.createdBy) === Number(actor.userId),
         sameOpenShift:
-          inv.shiftId != null &&
-          prelockedCashSource?.cashBucket === "DRAWER" &&
-          Number(prelockedCashSource.shiftId) === Number(inv.shiftId),
+          input.refundPaymentMethod !== "CASH" ||
+          (inv.shiftId != null &&
+            prelockedCashSource?.cashBucket === "DRAWER" &&
+            Number(prelockedCashSource.shiftId) === Number(inv.shiftId)),
         sameBusinessDay: inv.invoiceDate.toISOString().slice(0, 10) === todayUtcDate(),
         accountingPeriodOpen: true,
         hasDownstreamEffects: false,

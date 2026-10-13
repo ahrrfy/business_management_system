@@ -781,7 +781,13 @@ export default function UserEdit() {
                   وراثة جميع سقوف الدور
                 </Button>
               </div>
-              <OperationalCapsPanel caps={operationalCaps} onChange={(caps) => { setOperationalCaps(caps); setCapsEdited(true); }} disabled={update.isPending} />
+              <OperationalCapsPanel
+                caps={operationalCaps}
+                inheritedCaps={inheritedOperationalCaps}
+                inheritOnClear
+                onChange={(caps) => { setOperationalCaps(caps); setCapsEdited(true); }}
+                disabled={update.isPending}
+              />
             </div>
             <Button
               type="button"

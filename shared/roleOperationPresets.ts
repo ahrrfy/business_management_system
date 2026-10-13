@@ -18,7 +18,7 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
     "invoicePrinting.requestPrint", "invoicePrinting.requestReprint", "shifts.close",
   ],
   print_cashier: [
-    "shifts.current", "shifts.open", "sales.create", "sales.cancel", "returns.create",
+    "shifts.current", "shifts.open", "printPos.createSale", "sales.cancel", "returns.create",
     "invoicePrinting.requestPrint", "invoicePrinting.requestReprint", "shifts.close",
   ],
   reception_clerk: [
@@ -85,7 +85,11 @@ export function buildDefaultRoleOperationPolicy(
   baseRole: RoleKey,
   modules: PermissionMap,
 ): OperationPolicy {
-  const policy = legacyOperationPolicy(baseRole, modules, modules);
+  // Let the compatibility bridge derive only the real diff from the base-role
+  // template. Passing the full resolved map as an explicit override turns every
+  // template module into an intentional grant and can bypass an operation's
+  // role allowlist (for example cashier -> salesControl.approve).
+  const policy = legacyOperationPolicy(baseRole, modules);
   const grants = { ...policy.grants };
   for (const path of dailyOperationPaths(roleKey, baseRole)) {
     const operation = getOperationPermission(path);

@@ -29,6 +29,7 @@ import { createSale } from "../saleService";
 import { computeExpectedCash, getShiftReport, resolveBranchCashShiftTx } from "../shiftService";
 import { withTx } from "../tx";
 import { truncateTables } from "./__testUtils__";
+import { resolveOperationalCaps } from "@shared/atomicPermissions";
 
 const TABLES = [
   "idempotencyKeys",
@@ -335,6 +336,76 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
       decision: {
         result: "APPROVAL_REQUIRED",
         reason: "المستند أنشأه موظف آخر",
+      },
+    });
+  });
+
+  it("F2b: locked user cap overrides a stale higher request-context cap", async () => {
+    const shift1 = await openShift(CASHIER1_ID, 1);
+    const { invoiceId, itemId } = await createSaleInvoice({
+      shiftId: shift1,
+      actor: cashier1Actor,
+      paidAmount: "5000.00",
+    });
+    await db().update(s.users).set({ operationalCaps: { maxRefundAmountIqd: "1000.00" } })
+      .where(eq(s.users.id, CASHIER1_ID));
+
+    await expect(returnSaleDirect({
+      invoiceId,
+      lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "5000.00",
+        shiftId: shift1,
+        reason: "اختبار السقف المقفول",
+        disposition: "RESTOCK",
+      },
+      operatorReason: "اختبار إلغاء سقف قديم في سياق الطلب",
+    }, {
+      ...cashier1Actor,
+      operationalCaps: {
+        ...resolveOperationalCaps("cashier"),
+        maxRefundAmountIqd: "100000.00",
+      },
+    })).rejects.toMatchObject({
+      decision: {
+        result: "APPROVAL_REQUIRED",
+        reason: expect.stringContaining("1000.00"),
+      },
+    });
+  });
+
+  it("F2c: a delegated non-cashier remains subject to the zero refund cap", async () => {
+    await db().update(s.users).set({
+      role: "sales_rep",
+      operationPolicy: { version: 1, grants: { "operation.returns.create": true } },
+      operationalCaps: null,
+    }).where(eq(s.users.id, CASHIER1_ID));
+    const shift1 = await openShift(CASHIER1_ID, 1);
+    const salesRepActor = { userId: CASHIER1_ID, branchId: 1, role: "sales_rep" as const };
+    const { invoiceId, itemId } = await createSaleInvoice({
+      shiftId: shift1,
+      actor: salesRepActor,
+      paidAmount: "5000.00",
+    });
+
+    await expect(returnSaleDirect({
+      invoiceId,
+      lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "5000.00",
+        shiftId: shift1,
+        reason: "اختبار تفويض مندوب المبيعات",
+        disposition: "RESTOCK",
+      },
+      operatorReason: "التفويض لا يلغي سقف الدور",
+    }, salesRepActor)).rejects.toMatchObject({
+      decision: {
+        result: "APPROVAL_REQUIRED",
+        reason: expect.stringContaining("0.00"),
       },
     });
   });

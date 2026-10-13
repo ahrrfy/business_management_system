@@ -48,7 +48,7 @@ exports[`role operation presets > keeps a fixed snapshot for every role daily-ta
   "print_cashier": [
     "shifts.current",
     "shifts.open",
-    "sales.create",
+    "printPos.createSale",
     "sales.cancel",
     "returns.create",
     "invoicePrinting.requestPrint",

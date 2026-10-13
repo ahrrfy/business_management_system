@@ -2798,7 +2798,10 @@ export async function returnSaleDirect(
       );
       const resolvedCaps = resolveOperationalCaps(
         customRoleRow && userRow.customRoleId != null ? customRoleRow.key : effectiveRole,
-        (customRoleRow?.operationalCaps as OperationalCaps | null) ?? actor.operationalCaps ?? null,
+        // Recompute exclusively from the locked role/user rows. The request
+        // context can carry a cap that was revoked while this transaction was
+        // waiting for its locks.
+        (customRoleRow?.operationalCaps as OperationalCaps | null) ?? null,
         (userRow.operationalCaps as OperationalCaps | null) ?? null,
         effectiveRole,
       );
@@ -2893,10 +2896,13 @@ export async function returnSaleDirect(
         }
       }
 
-      const isCashierOrReception =
-        effectiveRole === "cashier" || effectiveRole === "print_operator";
+      // Every non-privileged delegate is subject to the same transaction
+      // limits. A sparse canonical grant must never turn a sales representative
+      // or another custom delegate into an unlimited direct-refund actor.
+      const requiresOperationalLimits =
+        !isOwner && !isAdmin && effectiveRole !== "manager";
 
-      if (isCashierOrReception) {
+      if (requiresOperationalLimits) {
         const directRefund = coreInput.resolution ?? coreInput.refund;
         const needsCashShift = directRefund?.method === "CASH" && money(directRefund.amount).gt(0);
         const [invRow] = await tx

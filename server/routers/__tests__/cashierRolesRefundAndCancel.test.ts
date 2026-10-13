@@ -290,6 +290,29 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
     expect(refundReceipt.referenceNumber).toBe("POS-REF-987654");
   });
 
+  it("٢ب. الرد النقدي لا يختار وردية جديدة عند إغفال وردية الفاتورة الأصلية", async () => {
+    const originalShiftId = await openShiftFor(12, "RETAIL");
+    const sale = await createSale({
+      branchId: 1,
+      shiftId: originalShiftId,
+      customerId: 1,
+      sourceType: "POS",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      payment: { amount: "25.00", method: "CASH" },
+    }, { userId: 12, branchId: 1, role: "cashier" });
+    await db().update(s.shifts).set({ status: "CLOSED", closedAt: new Date(), openGuard: null })
+      .where(eq(s.shifts.id, originalShiftId));
+    await openShiftFor(12, "RETAIL");
+
+    const caller = returnRouter.createCaller(createContextFor({ id: 12, name: "كاشير التجزئة", role: "cashier" }));
+    await expect(caller.executeSalesReturnCart({
+      invoiceNumber: sale.invoiceNumber,
+      customer: { customerId: 1 },
+      items: [{ variantId: 1, productName: "كارت شخصي", quantity: 1, unitPrice: "25.00" }],
+      settlement: { method: "CASH", totalAmount: "25.00" },
+    })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
   it("٣. إلغاء طلب محجوز بعربون جزئي في كاشير الطباعة (cancelHeldSale) مع استرداد العربون نقداً من الوردية", async () => {
     const printCtx = createContextFor({
       id: 11,

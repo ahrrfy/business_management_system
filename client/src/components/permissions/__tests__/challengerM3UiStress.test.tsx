@@ -513,6 +513,28 @@ describe("Challenger 1 Adversarial UI Stress Suite — Milestone 3 (R2)", () => 
       expect(handleCapsChange).toHaveBeenLastCalledWith(expect.objectContaining({ maxCreditSaleLimitIqd: null }));
     });
 
+    it("removes a cleared individual cap so the role value is inherited", () => {
+      const handleCapsChange = vi.fn();
+      act(() => {
+        root.render(
+          <OperationalCapsPanel
+            caps={{ maxDiscountPercent: 10, maxRefundAmountIqd: "50000.00" }}
+            inheritedCaps={{ maxDiscountPercent: 5, maxRefundAmountIqd: "25000.00" }}
+            inheritOnClear
+            onChange={handleCapsChange}
+          />,
+        );
+      });
+
+      const percentInput = host.querySelector('input[id="cap-discount-percent"]') as HTMLInputElement;
+      act(() => {
+        triggerReactInput(percentInput, "");
+      });
+
+      expect(handleCapsChange).toHaveBeenLastCalledWith({ maxRefundAmountIqd: "50000.00" });
+      expect(host.textContent).toContain("وراثة الدور");
+    });
+
     it("gracefully handles null and undefined props in Caps and Masking panels without crashing", () => {
       expect(() => {
         act(() => {

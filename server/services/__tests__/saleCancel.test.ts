@@ -18,6 +18,7 @@ import { returnSale } from "../returnService";
 import { createSale } from "../saleService";
 import { lockPeriod } from "../periodLockService";
 import { money } from "../money";
+import { resolveOperationalCaps } from "@shared/atomicPermissions";
 
 const admin = { userId: 1, branchId: 1, role: "admin" as const };
 const manager = { userId: 2, branchId: 1, role: "manager" as const };
@@ -398,6 +399,28 @@ describe("cancelSale — ثابت ٣: استرداد بجهة صرف نقديّ 
 });
 
 describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار المالك ١٧/٨/٢٦، مطابقٌ لـreturnService)", () => {
+  it("الإلغاء التشغيلي غير النقدي لا يشترط درج وردية", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale({
+      branchId: 1,
+      shiftId: 1,
+      sourceType: "POS",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      payment: { amount: "1000.00", method: "CARD", reference: "CARD-IN-OP-1" },
+    }, manager);
+
+    const res = await cancelSale({
+      invoiceId: sale.invoiceId,
+      refundPaymentMethod: "CARD",
+      reference: "CARD-OUT-OP-1",
+      reason: "إلغاء بطاقة ضمن يوم العمل",
+      enforceOperationalDecision: true,
+    }, { ...manager, operationalCaps: resolveOperationalCaps("manager") });
+
+    expect(res.operationalDecision?.result).toBe("DIRECT");
+    expect(res.refundAmount).toBe("1000.00");
+  });
+
   it("زبونٌ عابر (بلا عميل) مدفوعٌ بالبطاقة + مرجع جهاز صحيح ⇒ فوريّ، بلا اشتراط عميل", async () => {
     await setStock(1, 1, 10);
     const sale = await createSale(
