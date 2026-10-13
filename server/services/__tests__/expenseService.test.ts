@@ -383,6 +383,10 @@ describe("المصروفات اليومية", () => {
  */
 describe("إنفاذ وردية المُنشئ للنثرية النقدية", () => {
   it("الموظف المخوّل بلا وردية ممولة يُرفض بلا أثر مالي", async () => {
+    await db()
+      .update(s.users)
+      .set({ role: "cashier", branchId: 1 })
+      .where(eq(s.users.id, actor.userId));
     await expect(
       createExpense(
         {
