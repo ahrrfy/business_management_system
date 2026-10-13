@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
+import { assertNoNativeSupplierDebtForGenericPaymentTx } from "./supplierNativePaymentGuard";
 import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
 import { eq } from "drizzle-orm";
 import {
@@ -866,6 +867,11 @@ export async function createVoucherTx(
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: "لا يمكن إصدار سند لمورد مُعطَّل",
+      });
+    }
+    if (direction === "OUT" && !options?.systemRequest) {
+      await assertNoNativeSupplierDebtForGenericPaymentTx(tx, input.partyId, {
+        currentRead: false,
       });
     }
     // بضاعة الأمانة (ش٥): أيّ صرفٍ لمودِع أمانة يمرّ باعتمادٍ ثنائيّ **دائماً** مهما صغُر المبلغ

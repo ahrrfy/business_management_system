@@ -1203,7 +1203,13 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
       statement?.purchaseOrders.find((po) => po.id === highPoId),
     ).toMatchObject({
       total: "2000.00",
-      paidAmount: "2000.00",
+      paidAmount: "0.00",
+      settlement: {
+        paidAmountIqd: "0.00",
+        returnedAmountIqd: "2000.00",
+        remainingAmountIqd: "0.00",
+        status: "CREDITED",
+      },
     });
     const today = new Date().toISOString().slice(0, 10);
     const pl = await plSnapshot(today, today, 1);
