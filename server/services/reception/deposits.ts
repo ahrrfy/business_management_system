@@ -45,6 +45,7 @@ import { withTx, type Actor } from "../tx";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { appliedCollectionsForWorkOrder, heldNetOfDraft, type DepositMethod } from "../deposits";
 import { loadCurrentOperationalAuthorityTx } from "../authorization/currentOperationalAuthority";
+import { assertOperationAuthorityTx } from "../authorization/operationAuthority";
 
 /**
  * @deprecated مسارٌ انتقاليّ: دفترُ المال المحتجَز (القراءة والتخصيص والربط) انتقل إلى نواة
@@ -381,6 +382,12 @@ export async function refundDeposit(
         }),
       });
     }
+    await assertOperationAuthorityTx(
+      tx,
+      actor,
+      "reception.refundDeposit",
+      ["admin", "manager", "cashier"].includes(actor.role ?? ""),
+    );
 
     // قراءة استرشادية لمعرفة المسوّدة، ثم قفلٌ بالترتيب الموحَّد: مسوّدة ← الصفّ الماليّ.
     const probe = (

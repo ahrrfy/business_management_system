@@ -2941,6 +2941,12 @@ export async function returnSaleDirect(
             }),
           });
         }
+        const lockedRefundCaps = await loadRefundCaps(tx, coreInput.invoiceId, {
+          lock: true,
+        });
+        const originalPaymentMethods = Array.from(lockedRefundCaps.netByMethod.entries())
+          .filter(([, amount]) => amount.gt(0))
+          .map(([method]) => method);
         const decision = evaluateRefundOperationalDecision({
           operationAllowed: isAuthorized,
           sameBranch: Number(invRow.branchId) === Number(actor.branchId),
@@ -2953,7 +2959,7 @@ export async function returnSaleDirect(
           refundAmountIqd: directRefund?.amount ?? "0.00",
           maxRefundAmountIqd: resolvedCaps.maxRefundAmountIqd,
           refundMethod: directRefund?.method ?? invRow.paymentMethod ?? "CASH",
-          originalPaymentMethods: invRow.paymentMethod ? [invRow.paymentMethod] : [],
+          originalPaymentMethods,
           drawerHasFunds: true,
           approvalOperation: "salesControl.requestReturn",
         });

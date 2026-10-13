@@ -45,6 +45,7 @@ import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
 import { reverseInvoiceSaleInTx } from "../reversal/invoiceReversal";
 import { invoicePaidPool } from "../reversal/materialize/invoice";
+import { loadRefundCaps } from "../returns/refundCaps";
 import { userNameSnapshot } from "../userSnapshot";
 import { assertInvoiceCancellationDeliverySafeTx } from "./invoiceCancellationGuard";
 import type { Tx } from "../../db";
@@ -99,8 +100,26 @@ export interface CancelSaleResult {
   operationalDecision?: OperationalDecision;
 }
 
+class CashRefundSourceChangedError extends TRPCError {
+  constructor() {
+    super({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذر تثبيت مصدر رد إلغاء الفاتورة",
+        why: "سُجل قبض نقدي متزامن بعد فحص الفاتورة الأولي",
+        doThis: "أعد المحاولة كي يُقفل النظام درج القبض قبل تنفيذ الرد",
+      }),
+    });
+  }
+}
+
 export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<CancelSaleResult> {
-  return withTx((tx) => cancelSaleInTx(tx, input, actor));
+  try {
+    return await withTx((tx) => cancelSaleInTx(tx, input, actor));
+  } catch (error) {
+    if (!(error instanceof CashRefundSourceChangedError)) throw error;
+    return withTx((tx) => cancelSaleInTx(tx, input, actor));
+  }
 }
 
 /** جسم الإلغاء داخل معاملة قائمة؛ تستخدمه موافقة التحكم كي يكون التنفيذ وختم الطلب ذريَّين. */
@@ -219,7 +238,15 @@ export async function cancelSaleInTx(
       });
     }
     let prelockedCashSource: Awaited<ReturnType<typeof shiftIdForCashTx>> | null = null;
-    if (input.refundPaymentMethod === "CASH") {
+    const previewRefundCaps =
+      input.refundPaymentMethod === "CASH"
+        ? await loadRefundCaps(tx, input.invoiceId)
+        : null;
+    const expectsCashRefund =
+      input.refundPaymentMethod === "CASH" &&
+      previewRefundCaps != null &&
+      previewRefundCaps.pool.gt(0);
+    if (expectsCashRefund) {
       prelockedCashSource = await shiftIdForCashTx(
         tx,
         actor,
@@ -341,14 +368,24 @@ export async function cancelSaleInTx(
         }),
       });
     }
+    const lockedPaidPool = await invoicePaidPool(tx, input.invoiceId);
+    const lockedRefundable = lockedPaidPool.totalIn.minus(lockedPaidPool.outPrior);
+    if (
+      input.refundPaymentMethod === "CASH" &&
+      lockedRefundable.gt(0) &&
+      !prelockedCashSource
+    ) {
+      throw new CashRefundSourceChangedError();
+    }
+
     let directDecision: OperationalDecision | undefined;
     if (
       input.enforceOperationalDecision &&
       currentOperationalAuthority?.role !== "admin" &&
       !currentOperationalAuthority?.isOwner
     ) {
-      const pool = await invoicePaidPool(tx, input.invoiceId);
-      const refundable = pool.totalIn.minus(pool.outPrior);
+      const pool = lockedPaidPool;
+      const refundable = lockedRefundable;
       if (input.refundPaymentMethod === "CASH" && refundable.gt(0) && prelockedCashSource) {
         // يثبت الرصيد قبل أول كتابة؛ أي عجز يرمي ويرجع المعاملة كلها بلا تغيير للمستند أو المخزون.
         await assertCashOutAvailable(tx, {
@@ -364,6 +401,7 @@ export async function cancelSaleInTx(
         sameBranch: Number(inv.branchId) === Number(actor.branchId),
         ownsTransaction: Number(inv.createdBy) === Number(actor.userId),
         sameOpenShift:
+          refundable.lte(0) ||
           input.refundPaymentMethod !== "CASH" ||
           (inv.shiftId != null &&
             prelockedCashSource?.cashBucket === "DRAWER" &&
@@ -475,8 +513,7 @@ export async function cancelSaleInTx(
     // حسابنا البنكيّ بمستنده. منفّذُ الردّ في المحرّك يفرضه أيضاً لكلّ مستدعٍ؛ وهنا يُرفض مبكّراً
     // بلا تجسيدٍ ولا كتابة — والنصّ متعاقَدٌ عليه في `saleCancel.test.ts` (check:message-drift).
     if (input.refundPaymentMethod === "CARD" && !input.reference?.trim()) {
-      const pool = await invoicePaidPool(tx, input.invoiceId);
-      const refundable = pool.totalIn.minus(pool.outPrior);
+      const refundable = lockedRefundable;
       if (refundable.gt(0)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
