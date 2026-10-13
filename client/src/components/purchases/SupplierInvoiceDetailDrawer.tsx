@@ -32,6 +32,7 @@ import {
 import { Link } from "wouter";
 import { CopyInline } from "@/components/CopyButton";
 import { cn } from "@/lib/utils";
+import { getPurchaseSettlementIntentLabel } from "@shared/purchaseSettlement";
 
 type SupplierInvoiceDetailOutput = NonNullable<RouterOutputs["supplierInvoiceApproval"]["get"]>;
 type InvoiceLine = SupplierInvoiceDetailOutput["lines"][number];
@@ -53,12 +54,12 @@ const STATUS_CLASS: Record<string, string> = {
 };
 
 const SETTLEMENT_LABEL: Record<string, string> = {
-  CASH: "نقدي",
-  CREDIT: "آجل",
+  CASH: getPurchaseSettlementIntentLabel("CASH"),
+  CREDIT: getPurchaseSettlementIntentLabel("CREDIT"),
 };
 
 const SETTLEMENT_CLASS: Record<string, string> = {
-  CASH: "badge-status-active",
+  CASH: "badge-status-info",
   CREDIT: "badge-status-pending",
 };
 
@@ -158,7 +159,7 @@ export function SupplierInvoiceDetailDrawer({
               <Card>
                 <CardContent className="p-3.5 space-y-2 text-xs">
                   <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">طريقة السداد:</span>
+                    <span className="text-muted-foreground">طريقة السداد المتفق عليها:</span>
                     {inv.settlementType ? (
                       <span className={cn("px-2 py-0.5 rounded font-medium", SETTLEMENT_CLASS[inv.settlementType] ?? "bg-muted")}>
                         {SETTLEMENT_LABEL[inv.settlementType] ?? inv.settlementType}

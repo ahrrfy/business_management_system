@@ -592,6 +592,11 @@ export interface SupplierStmtPrintData {
     credit?: string | number | null;
     balance: string | number;
     actor?: string | null;
+    paymentStatusLabel?: string;
+    paymentReview?: boolean;
+    paidAmount?: string;
+    returnedAmount?: string;
+    remainingAmount?: string;
   }[];
   totalDebit: string | number;
   totalCredit: string | number;
@@ -631,7 +636,14 @@ export function printSupplierStmt(d: SupplierStmtPrintData): boolean {
         balance: Number(t.balance),
         typeLabel: label,
         typeColor: color,
-        details: t.description,
+        details: [
+          t.description,
+          t.paymentStatusLabel ? `حالة السداد: ${t.paymentStatusLabel}` : null,
+          t.paidAmount != null ? `المدفوع: ${fmt(t.paidAmount)} د.ع` : null,
+          t.returnedAmount != null ? `تخفيض الذمة: ${fmt(t.returnedAmount)} د.ع` : null,
+          t.remainingAmount != null ? `المتبقي: ${fmt(t.remainingAmount)} د.ع` : null,
+          t.paymentReview ? "يحتاج مراجعة دليل السداد" : null,
+        ].filter(Boolean).join(" · "),
         actor: t.actor,
       };
     }),

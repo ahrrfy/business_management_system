@@ -6,10 +6,11 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { fmtDate } from "@/lib/date";
-import { D, fmtAr, formatQuantity, positiveDiff } from "@/lib/money";
+import { D, fmtAr, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { hasModuleAccess } from "@shared/permissions";
+import { getPurchaseSettlement } from "@shared/purchaseSettlement";
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import {
   AlertTriangle,
@@ -237,16 +238,9 @@ export default function PurchaseOrderDetail() {
   const isUsd = d.agreedCurrency === "USD";
   // المتبقّي للمورّد بعملة الاتفاق: أمر الدولار تُتابَع ذمّته بـusdTotal−paidUsd−returnedUsd
   // (نفس حساب PurchaseReceive وخدمة التسوية) — عرض متبقّي الدينار وحده يُظهر رقماً مختلفاً مادّياً.
-  const remaining = costHidden
-    ? null
-    : isUsd
-      ? positiveDiff(
-          d.usdTotal,
-          D(d.paidUsd ?? 0)
-            .plus(D(d.returnedUsd ?? 0))
-            .toString(),
-        )
-      : positiveDiff(d.total, d.paidAmount);
+  const settlement = getPurchaseSettlement(d);
+  const settlementIqd = getPurchaseSettlement({ ...d, agreedCurrency: "IQD" });
+  const remaining = costHidden ? null : D(settlement.remainingAmount);
   // التعديل ممكن ما لم يبدأ الأثر الفعليّ: أمرٌ نهائيّ، أو استُلم منه سطر، أو حمل دفعة.
   // نفس حرّاس `updatePurchaseOrder` — والخادم هو الحكم النهائيّ.
   const openForEditing =
@@ -336,8 +330,14 @@ export default function PurchaseOrderDetail() {
       </Card>
 
       {/* بعد cutover، الدفع يُخصَّص إلى فاتورة مورد مرحّلة لا إلى أمر الشراء مباشرةً. */}
+      {settlement.requiresReview ? (
+        <p role="alert" className="border border-money-negative p-3 text-sm text-money-negative">
+          دليل السداد يحتاج مراجعة. طلب السداد متوقف حتى مطابقة المستندات.
+        </p>
+      ) : null}
       {canRequestPayment &&
       d.status !== "CANCELLED" &&
+      !settlement.requiresReview &&
       remaining != null &&
       remaining.gt(0) ? (
         <Card>
@@ -409,20 +409,23 @@ export default function PurchaseOrderDetail() {
                 <Field label="الإجمالي (ذمّة المورّد)">
                   <span className="font-bold">{fmtAr(d.total)}</span>
                 </Field>
-                <Field label="المدفوع">{fmtAr(d.paidAmount)}</Field>
+                <Field label="طريقة السداد">{settlement.intentLabel}</Field>
+                <Field label="حالة السداد">{settlement.statusLabel}</Field>
+                <Field label="المدفوع (د.ع)">{fmtAr(settlementIqd.paidAmount)}</Field>
+                {D(settlementIqd.returnedAmount).gt(0) ? <Field label="تخفيض الذمة (د.ع)">{fmtAr(settlementIqd.returnedAmount)}</Field> : null}
                 {isUsd ? (
                   <>
                     {/* مطابَقةٌ لا اشتقاق: منذ ضابط `supplierInvoiceTotal` يُرفض حفظ أمرٍ يخالف
                         قيمة فاتورة المورّد، فهذا الرقم هو رقم الورقة نفسه. */}
                     <Field label="فاتورة المورّد ($)">{fmtAr(d.usdTotal)}</Field>
-                    <Field label="المدفوع ($)">{fmtAr(d.paidUsd)}</Field>
-                    <Field label="المُرتجَع ($)">{fmtAr(d.returnedUsd)}</Field>
+                    <Field label="المدفوع ($)">{fmtAr(settlement.paidAmount)}</Field>
+                    <Field label="تخفيض الذمة ($)">{fmtAr(settlement.returnedAmount)}</Field>
                     <Field label="المتبقّي للمورّد ($)">
                       <span
                         className={`font-semibold ${remaining && remaining.lte(0) ? "text-money-positive" : ""}`}
                       >
                         {fmtAr(remaining?.toString())}
-                        {remaining && remaining.lte(0) ? " (مسدد)" : ""}
+                        {remaining && remaining.lte(0) ? ` (${settlement.statusLabel})` : ""}
                       </span>
                     </Field>
                   </>
@@ -432,7 +435,7 @@ export default function PurchaseOrderDetail() {
                       className={`font-semibold ${remaining && remaining.lte(0) ? "text-money-positive" : ""}`}
                     >
                       {fmtAr(remaining?.toString())}
-                      {remaining && remaining.lte(0) ? " (مسدد)" : ""}
+                      {remaining && remaining.lte(0) ? ` (${settlement.statusLabel})` : ""}
                     </span>
                   </Field>
                 )}

@@ -10,6 +10,7 @@
  */
 import { BRAND as B, esc, fmt, fmtC, openPrintWindow } from './brand';
 import { fmtQty } from '@shared/quantityFormat';
+import Decimal from 'decimal.js';
 import { docBarcode } from '@shared/documentNumber';
 import { fmtDate as formatDate } from '../date';
 import { productBarcodeSvg } from './barcode';
@@ -411,6 +412,7 @@ export interface PurchaseInvoiceV2Data {
   total: string | number;
   paidAmount?: string | number | null;
   remainingAmount?: string | number | null;
+  returnedAmount?: string | number | null;
 
   supplierBalanceBefore?: string | number | null;
   supplierBalanceAfter?: string | number | null;
@@ -525,7 +527,9 @@ export function buildPurchaseInvoiceV2Html(d: PurchaseInvoiceV2Data): string {
     ],
   });
 
-  const body = `${pageBodyOpen()}${header}${cards}${table}${totals}${tafqit}${sig}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.invoiceNumber}` })}`;
+  const reduction = new Decimal(d.returnedAmount ?? 0).gt(0)
+    ? `<p style="font-size:11px;color:${B.ink};margin:8px 0">تخفيض الذمة بعد الشراء: ${esc(fmtIQD(d.returnedAmount))}</p>` : '';
+  const body = `${pageBodyOpen()}${header}${cards}${table}${totals}${reduction}${tafqit}${sig}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.invoiceNumber}` })}`;
   return wrapA4Doc(`فاتورة مشتريات ${d.invoiceNumber}`, body);
 }
 

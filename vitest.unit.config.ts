@@ -12,6 +12,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "shared/purchaseSettlement.test.ts",
+      "client/src/pages/__tests__/purchaseSettlementDisplayUi.test.tsx",
       "client/src/pages/__tests__/cashierDashboardIsolation.test.tsx",
       "shared/cashierPermissionMigration.test.ts",
       "client/src/pages/Treasury.permissionCache.test.tsx",

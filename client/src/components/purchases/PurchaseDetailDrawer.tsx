@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import Decimal from "decimal.js";
+import { getPurchaseSettlement } from "@shared/purchaseSettlement";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -19,7 +19,7 @@ import { Label } from "@/components/ui/label";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { fmtDate } from "@/lib/date";
-import { D, fmt, fmtAr, formatQuantity, positiveDiff } from "@/lib/money";
+import { D, fmt, fmtAr, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import {
@@ -234,17 +234,10 @@ export function PurchaseDetailDrawer({
   const d = po.data;
   const isUsd = d?.agreedCurrency === "USD";
   const costHidden = d?.total === null;
-  const effectivePaid = d
-    ? Decimal.max(
-        D(d.paidAmount ?? 0),
-        D((d as { linkedCashPaidAmount?: string | null }).linkedCashPaidAmount ?? 0),
-      )
-    : D(0);
+  const settlement = getPurchaseSettlement(d ?? {});
   const remaining = costHidden || !d
     ? null
-    : isUsd
-      ? positiveDiff(d.usdTotal, D(d.paidUsd ?? 0).plus(D(d.returnedUsd ?? 0)).toString())
-      : positiveDiff(d.total, effectivePaid.toString());
+    : D(settlement.remainingAmount);
 
   const openForEditing =
     d?.status === "DRAFT" &&
@@ -363,12 +356,18 @@ export function PurchaseDetailDrawer({
                       <div>{d.agreedCurrency ?? "IQD"} {isUsd && d.agreedRate ? `(${fmt(d.agreedRate)})` : ""}</div>
                     </div>
                     <div>
-                      <div className="text-xs text-muted-foreground">التسوية</div>
-                      <div>{d.settlementType === "CASH" ? "نقدي" : "آجل"}</div>
+                      <div className="text-xs text-muted-foreground">طريقة السداد</div>
+                      <div>{settlement.intentLabel}</div>
+                      {!costHidden ? <div className="text-xs">{settlement.statusLabel}</div> : null}
                     </div>
                   </CardContent>
                 </Card>
 
+                {settlement.requiresReview ? (
+                  <p role="alert" className="border border-money-negative p-2 text-xs text-money-negative">
+                    دليل السداد يحتاج مراجعة. طلب السداد متوقف حتى مطابقة المستندات.
+                  </p>
+                ) : null}
                 {/* الأرقام المالية السريعة */}
                 {!costHidden ? (
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -381,7 +380,7 @@ export function PurchaseDetailDrawer({
                     <div className="rounded-lg border bg-card p-2 text-center">
                       <div className="text-xs text-muted-foreground">المدفوع</div>
                       <div className="font-bold text-sm text-money-positive tabular-nums">
-                        {isUsd ? `${fmt(d.paidUsd ?? "0")} $` : `${fmt(effectivePaid.toString())} د.ع`}
+                        {fmt(settlement.paidAmount)} {isUsd ? "$" : "د.ع"}
                       </div>
                     </div>
                     <div className="rounded-lg border bg-card p-2 text-center">
@@ -397,6 +396,9 @@ export function PurchaseDetailDrawer({
                   </div>
                 ) : null}
 
+                {!costHidden && D(settlement.returnedAmount).gt(0) ? (
+                  <p className="text-xs text-muted-foreground">تخفيض الذمة: {fmt(settlement.returnedAmount)} {isUsd ? "$" : "د.ع"}</p>
+                ) : null}
                 {/* أشرطة الإجراءات المباشرة (استلام / سداد / مرتجع) */}
                 <div className="flex flex-wrap items-center gap-2 p-2.5 rounded-lg border bg-muted/30">
                   {canApproveDirectly ? (
@@ -415,6 +417,7 @@ export function PurchaseDetailDrawer({
                       size="sm"
                       variant="outline"
                       onClick={() => setIsPaymentOpen(true)}
+                      disabled={settlement.requiresReview}
                       className="font-semibold text-primary border-primary/40 hover:bg-primary/5"
                     >
                       <HandCoins aria-hidden className="size-4" />
@@ -646,7 +649,7 @@ export function PurchaseDetailDrawer({
                 branchId={Number(d.branchId)}
                 currency={isUsd ? "USD" : "IQD"}
                 exchangeRate={d.agreedRate}
-                remainingAmount={remaining ? remaining.toFixed(2) : "0"}
+                remainingAmount={settlement.requiresReview ? "0" : settlement.remainingAmount}
                 onSuccess={() => void utils.purchases.get.invalidate({ purchaseOrderId: d.id })}
               />
             ) : null}

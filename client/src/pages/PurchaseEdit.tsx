@@ -524,6 +524,7 @@ export default function PurchaseEdit() {
     printPurchaseOrderDoc({
       docNum: state.invoiceNumber || null,
       statusLabel: PO_STATUS[data.status] ?? data.status,
+      paymentTerms: data.settlementType,
       docDate: data.orderDate,
       currency: state.currency,
       agreedRate: state.agreedRate,
