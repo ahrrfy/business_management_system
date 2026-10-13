@@ -4,6 +4,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { idempotencyHash } from "../idempotency";
 import { createSale } from "../saleService";
+import { returnSale } from "../returnService";
 import { confirmExternalPaymentAttempt, initiateExternalPaymentAttempt } from "../posExternalPayment";
 import {
   approveSalesControlRequest,
@@ -101,6 +102,47 @@ describe("حوكمة عمليات البيع الحرجة", () => {
       status: "APPROVED",
       replayed: true,
       cancellation: { invoiceId: created.invoiceId, refundAmount: "5000.00" },
+    });
+  });
+
+  it("إعادة طلب الإلغاء لا تنسب إيصال مرتجع سابق إلى الإلغاء الصفري", async () => {
+    const created = await createSale({
+      branchId: 1,
+      shiftId: 1,
+      sourceType: "POS",
+      customerId: 1,
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }],
+      payment: { amount: "2000.00", method: "CASH" },
+    }, CASHIER);
+    const item = (await db().select().from(s.invoiceItems)
+      .where(eq(s.invoiceItems.invoiceId, created.invoiceId)))[0];
+    await returnSale({
+      invoiceId: created.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 2 }],
+      refund: { amount: "2000.00", method: "CASH", shiftId: 1 },
+      restock: true,
+      clientRequestId: "partial-before-cancel",
+    }, MANAGER);
+
+    const input = {
+      requestKey: "cancel-after-refund",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_CANCEL" as const,
+      reason: "إلغاء الرصيد غير المدفوع بعد المرتجع",
+      payload: { refundPaymentMethod: "CASH" as const },
+    };
+    const requested = await requestSalesControl(input, CASHIER);
+    await approveSalesControlRequest(Number(requested.id), MANAGER);
+
+    await expect(replaySalesControlRequest(input, CASHIER)).resolves.toMatchObject({
+      status: "APPROVED",
+      replayed: true,
+      cancellation: {
+        invoiceId: created.invoiceId,
+        refundAmount: "0.00",
+        pendingRefundAmount: "0.00",
+        refundVoucherNumber: null,
+      },
     });
   });
 

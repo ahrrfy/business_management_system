@@ -183,6 +183,7 @@ export async function cancelSaleInTx(
               and(
                 eq(receipts.invoiceId, input.invoiceId),
                 eq(receipts.direction, "OUT"),
+                eq(receipts.description, `استرداد إلغاء فاتورة ${rInv.invoiceNumber}`),
               ),
             )
             .orderBy(sql`${receipts.id} DESC`)

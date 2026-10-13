@@ -307,6 +307,7 @@ export async function replaySalesControlRequest(
       .where(and(
         eq(receipts.invoiceId, Number(replay.invoiceId)),
         eq(receipts.direction, "OUT"),
+        eq(receipts.description, `استرداد إلغاء فاتورة ${invoice.invoiceNumber}`),
       ))
       .orderBy(desc(receipts.id))
       .limit(1);

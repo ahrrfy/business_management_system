@@ -152,8 +152,17 @@ export default function Purchases() {
   const canManagePurchases = canLifecycleOperation(me.data, "purchases.decideControl", legacyManagePurchases);
   const canCreateOrder = canLifecycleOperation(me.data, "purchases.createOrder", legacyManagePurchases);
   const canReadPendingControls = canLifecycleOperation(me.data, "purchases.pendingControls", legacyManagePurchases);
-  const canExecutePurchaseReturn = canLifecycleOperation(me.data, "returns.executePurchaseReturnCart", legacyManagePurchases);
-  const canRequestPurchaseReturn = canLifecycleOperation(me.data, "purchaseReturnGovernance.requestReturn", legacyManagePurchases);
+  const canExecutePurchaseReturn = [
+    "returns.executePurchaseReturnCart",
+    "returns.lookupItemForReturn",
+    "returns.getOpenRefundDrawers",
+    "suppliers.list",
+  ].every((path) => canLifecycleOperation(me.data, path, legacyManagePurchases));
+  const canRequestPurchaseReturn = [
+    "purchaseReturnGovernance.requestReturn",
+    "purchaseReturnGovernance.returnSources",
+    "suppliers.list",
+  ].every((path) => canLifecycleOperation(me.data, path, legacyManagePurchases));
   const pendingControls = trpc.purchases.pendingControls.useQuery(
     { limit: 200 },
     { enabled: canReadPendingControls },

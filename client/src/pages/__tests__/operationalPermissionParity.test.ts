@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { APPLICATION_MODULES } from "@/lib/moduleRegistry";
 import { canSeeGate } from "@/lib/navVisibility";
 import {
+  EDITOR_OPERATION_GATES,
   PURCHASE_RETURNS_GOVERNANCE_GATE,
   RETURNS_WORKSPACE_GATE,
 } from "@/lib/navVisibility";
@@ -173,6 +174,14 @@ describe("operational UI permission parity", () => {
     expect(source).toContain('"/purchases/returns-governance"');
     expect(source).toContain("canExecutePurchaseReturn");
     expect(source).toContain("canRequestPurchaseReturn");
+    for (const dependency of [
+      '"returns.lookupItemForReturn"',
+      '"returns.getOpenRefundDrawers"',
+      '"purchaseReturnGovernance.returnSources"',
+      '"suppliers.list"',
+    ]) {
+      expect(source).toContain(dependency);
+    }
   });
 
   it("shows the effective inherited refund cap in role operation rows", () => {
@@ -191,25 +200,50 @@ describe("operational UI permission parity", () => {
     });
 
     expect(canSeeGate(RETURNS_WORKSPACE_GATE, "manager", null, operationPolicy([
-      "returns.getRequest",
-      "returns.approveRequest",
+      "returns.executePurchaseReturnCart",
+      "suppliers.list",
     ]))).toBe(false);
     expect(canSeeGate(RETURNS_WORKSPACE_GATE, "manager", null, operationPolicy([
       "returns.getRequest",
       "returns.getInvoice",
       "returns.approveRequest",
+    ]))).toBe(false);
+    expect(canSeeGate(RETURNS_WORKSPACE_GATE, "manager", null, operationPolicy([
+      "returns.getRequest",
+      "returns.getInvoice",
+      "refundRails.preflight",
+      "returns.approveRequest",
     ]))).toBe(true);
     expect(canSeeGate(PURCHASE_RETURNS_GOVERNANCE_GATE, "purchasing", null, operationPolicy([
       "purchaseReturnGovernance.requestReversal",
     ]))).toBe(false);
     expect(canSeeGate(PURCHASE_RETURNS_GOVERNANCE_GATE, "purchasing", null, operationPolicy([
+      "suppliers.list",
       "purchaseReturnGovernance.reversalSources",
       "purchaseReturnGovernance.requestReversal",
+    ]))).toBe(true);
+    expect(canSeeGate(PURCHASE_RETURNS_GOVERNANCE_GATE, "purchasing", null, operationPolicy([
+      "purchaseReturnGovernance.pendingReturns",
+      "purchaseReturnGovernance.decideReturn",
+    ]))).toBe(true);
+    expect(canSeeGate(EDITOR_OPERATION_GATES.purchase, "purchasing", null, operationPolicy([
+      "purchases.get",
+      "purchases.updateOrder",
+    ]))).toBe(false);
+    expect(canSeeGate(EDITOR_OPERATION_GATES.purchase, "purchasing", null, operationPolicy([
+      "purchases.get",
+      "purchases.updateOrder",
+      "suppliers.get",
+      "suppliers.search",
     ]))).toBe(true);
 
     expect(app).toContain("canonicalGate={RETURNS_WORKSPACE_GATE}");
     expect(app).toContain("canonicalGate={PURCHASE_RETURNS_GOVERNANCE_GATE}");
     expect(governance).toContain("enabled: enabled && canReadReversalSources");
+    expect(governance).toContain("canReadReversalSources &&");
+    expect(governance).toContain("canRequestReversal={canRequestReversal}");
+    expect(governance).toContain("if (canReadReturnSources)");
+    expect(governance).toContain("enabled: canReadSuppliers");
     expect(governance).toContain('me.data?.role === "admin"');
     expect(governance).toContain("canChooseBranch ? (");
   });
@@ -218,6 +252,8 @@ describe("operational UI permission parity", () => {
     const source = readPage("ExpenseNew.tsx");
     expect(source).toContain('"inventory.adjust"');
     expect(source).toContain("canCreateExpense &&");
+    expect(source).toContain("moduleAccessAllowed(");
+    expect(source).toContain('me.data?.permissionsOverride ?? null');
     expect(source).toContain('setSource("CASH")');
   });
 });

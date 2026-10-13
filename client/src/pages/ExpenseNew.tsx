@@ -25,6 +25,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { canViewOperationData } from "@shared/operationPermissions";
+import { moduleAccessAllowed } from "@shared/permissions";
 import { Link, useLocation } from "wouter";
 import { Landmark } from "lucide-react";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
@@ -190,14 +191,30 @@ export default function ExpenseNew() {
     "CASH",
   );
   const isStock = source !== "CASH";
-  const canCreateExpense = treasuryOperationAllowed(me.data, "expenses.create", true);
+  const canCreateExpense = treasuryOperationAllowed(
+    me.data,
+    "expenses.create",
+    moduleAccessAllowed(
+      me.data?.role ?? "user",
+      me.data?.permissionsOverride ?? null,
+      "expenses",
+      "FULL",
+      ["cashier", "manager", "accountant"],
+    ),
+  );
   const canViewCost = !!me.data && canViewOperationData(me.data, "purchaseCost");
   const canCreateStockExpense =
     canCreateExpense &&
     treasuryOperationAllowed(
       me.data,
       "inventory.adjust",
-      me.data?.role === "admin" || me.data?.role === "manager",
+      moduleAccessAllowed(
+        me.data?.role ?? "user",
+        me.data?.permissionsOverride ?? null,
+        "inventory",
+        "FULL",
+        ["manager", "warehouse"],
+      ),
     );
   const sourceTabs = canCreateStockExpense
     ? SOURCE_TABS

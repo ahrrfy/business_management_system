@@ -19,9 +19,8 @@ import { variantDisplayName } from "@shared/variantDisplay";
 export default function PurchaseReturnsGovernance() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const branches = trpc.branches.list.useQuery();
-  const suppliers = trpc.suppliers.list.useQuery();
   const [pickedBranchId, setPickedBranchId] = useState("");
+  const canReadSuppliers = useOperationPermission("suppliers.list").allowed;
   const canReadReturnSources = useOperationPermission(
     "purchaseReturnGovernance.returnSources",
   ).allowed;
@@ -34,10 +33,34 @@ export default function PurchaseReturnsGovernance() {
   const canReadPendingReversals = useOperationPermission(
     "purchaseReturnGovernance.pendingReversals",
   ).allowed;
+  const canRequestReturnOperation = useOperationPermission(
+    "purchaseReturnGovernance.requestReturn",
+  ).allowed;
+  const canRequestReversalOperation = useOperationPermission(
+    "purchaseReturnGovernance.requestReversal",
+  ).allowed;
+  const canDecideReturnOperation = useOperationPermission(
+    "purchaseReturnGovernance.decideReturn",
+  ).allowed;
+  const canDecideReversalOperation = useOperationPermission(
+    "purchaseReturnGovernance.decideReversal",
+  ).allowed;
+  const canRequestReturn = canReadReturnSources && canRequestReturnOperation;
+  const canRequestReversal =
+    canReadReversalSources && canRequestReversalOperation;
+  const canDecideReturn = canReadPendingReturns && canDecideReturnOperation;
+  const canDecideReversal =
+    canReadPendingReversals && canDecideReversalOperation;
   const canChooseBranch =
     me.data?.isOwner === true ||
     me.data?.role === "admin" ||
     me.data?.branchId == null;
+  const branches = trpc.branches.list.useQuery(undefined, {
+    enabled: canChooseBranch,
+  });
+  const suppliers = trpc.suppliers.list.useQuery(undefined, {
+    enabled: canReadSuppliers,
+  });
 
   useEffect(() => {
     if (me.data?.branchId != null && !pickedBranchId)
@@ -215,11 +238,12 @@ export default function PurchaseReturnsGovernance() {
       onError: (error) => notify.err(error),
     });
 
-  const retrySources = () =>
-    void Promise.all([
-      returnSourcesQuery.refetch(),
-      reversalSourcesQuery.refetch(),
-    ]);
+  const retrySources = () => {
+    const retries: Array<Promise<unknown>> = [];
+    if (canReadReturnSources) retries.push(returnSourcesQuery.refetch());
+    if (canReadReversalSources) retries.push(reversalSourcesQuery.refetch());
+    void Promise.all(retries);
+  };
 
   return (
     <div className="space-y-4">
@@ -258,7 +282,10 @@ export default function PurchaseReturnsGovernance() {
         </div>
       ) : (
         <PurchaseReturnGovernanceWorkspace
-          operationUser={me.data}
+          canRequestReturn={canRequestReturn}
+          canRequestReversal={canRequestReversal}
+          canDecideReturn={canDecideReturn}
+          canDecideReversal={canDecideReversal}
           returnSources={returnSources}
           reversalSources={reversalSources}
           pendingReturns={pendingReturns}
@@ -284,8 +311,12 @@ export default function PurchaseReturnsGovernance() {
           pendingReversalLoading={canReadPendingReversals && pendingReversalsQuery.isLoading}
           pendingReturnError={canReadPendingReturns ? pendingReturnsQuery.error : null}
           pendingReversalError={canReadPendingReversals ? pendingReversalsQuery.error : null}
-          onRetryPendingReturns={() => void pendingReturnsQuery.refetch()}
-          onRetryPendingReversals={() => void pendingReversalsQuery.refetch()}
+          onRetryPendingReturns={() => {
+            if (canReadPendingReturns) void pendingReturnsQuery.refetch();
+          }}
+          onRetryPendingReversals={() => {
+            if (canReadPendingReversals) void pendingReversalsQuery.refetch();
+          }}
         />
       )}
     </div>

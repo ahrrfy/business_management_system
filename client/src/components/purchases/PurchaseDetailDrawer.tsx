@@ -155,16 +155,17 @@ export function PurchaseDetailDrawer({
   const canConfirm = canLifecycleOperation(me.data, "purchases.confirmOrder", legacyEdit);
   const canDecide = canLifecycleOperation(me.data, "purchases.decideControl", legacyEdit);
   const canRequestPayment = canLifecycleOperation(me.data, "supplierPayments.requestPayment", legacyEdit);
-  const canExecuteReturn = canLifecycleOperation(
-    me.data,
+  const canExecuteReturn = [
     "returns.executePurchaseReturnCart",
-    legacyEdit,
-  );
-  const canRequestReturn = canLifecycleOperation(
-    me.data,
+    "returns.lookupItemForReturn",
+    "returns.getOpenRefundDrawers",
+    "suppliers.list",
+  ].every((path) => canLifecycleOperation(me.data, path, legacyEdit));
+  const canRequestReturn = [
     "purchaseReturnGovernance.requestReturn",
-    legacyEdit,
-  );
+    "purchaseReturnGovernance.returnSources",
+    "suppliers.list",
+  ].every((path) => canLifecycleOperation(me.data, path, legacyEdit));
   const canSettleShipping = canLifecycleOperation(me.data, "purchases.settleShippingFromShift", legacyEdit);
 
   const pendingControls = trpc.purchases.pendingControls.useQuery(
