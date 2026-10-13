@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { logAuditTx } from "../auditService";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
+import { assertNoNativeSupplierDebtForGenericPaymentTx } from "./supplierNativePaymentGuard";
 import {
   autoSettleCustomerAccountTx,
   autoSettleSupplierAccountTx,
@@ -927,6 +928,14 @@ export async function approveVoucherTx(
       code: "CONFLICT",
       message: "السند ليس طلباً معلّقاً صالحاً للاعتماد",
     });
+  }
+  if (
+    r.direction === "OUT" &&
+    r.partyType === "SUPPLIER" &&
+    r.partyId &&
+    !systemRequest
+  ) {
+    await assertNoNativeSupplierDebtForGenericPaymentTx(tx, Number(r.partyId));
   }
   let cancellationOriginal: typeof r | null = null;
   let cancellationSourceRequest: SystemPaymentRequest | null = null;

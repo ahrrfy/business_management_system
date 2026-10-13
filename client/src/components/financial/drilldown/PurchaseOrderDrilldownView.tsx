@@ -1,10 +1,11 @@
 import { trpc } from "@/lib/trpc";
-import { fmt, D, formatQuantity, positiveDiff } from "@/lib/money";
+import { D, fmt, formatQuantity } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
 import { CheckCircle2, Clock, ExternalLink } from "lucide-react";
+import { getPurchaseSettlement } from "@shared/purchaseSettlement";
 
 export function PurchaseOrderDrilldownView({ poId }: { poId: number }) {
   const q = trpc.purchases.get.useQuery({ purchaseOrderId: poId });
@@ -15,8 +16,10 @@ export function PurchaseOrderDrilldownView({ poId }: { poId: number }) {
   const po = q.data;
   if (!po) return <p className="text-sm text-muted-foreground text-center py-4">تعذّر العثور على أمر الشراء.</p>;
 
-  const remaining = positiveDiff(po.total, po.paidAmount).toFixed(2);
-  const isPaid = D(remaining).lte(0);
+  const settlement = getPurchaseSettlement(po);
+  const remaining = settlement.remainingAmount;
+  const isPaid = settlement.status === "PAID" && !settlement.requiresReview;
+  const unit = po.agreedCurrency === "USD" ? "$" : "د.ع";
 
   return (
     <div className="space-y-4 pt-2 text-sm">
@@ -35,12 +38,12 @@ export function PurchaseOrderDrilldownView({ poId }: { poId: number }) {
             {isPaid ? (
               <span className="text-money-positive flex items-center gap-1">
                 <CheckCircle2 className="size-3.5" />
-                مسدد بالكامل
+                {settlement.statusLabel}
               </span>
             ) : (
               <span className="text-[var(--sem-warn)] flex items-center gap-1">
                 <Clock className="size-3.5" />
-                غير مسدد بالكامل
+                {settlement.statusLabel}
               </span>
             )}
           </p>
@@ -53,19 +56,23 @@ export function PurchaseOrderDrilldownView({ poId }: { poId: number }) {
 
       <div className="rounded-lg border bg-card p-4 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <span className="text-xs text-muted-foreground">إجمالي الفاتورة</span>
-          <p className="text-2xl font-bold tabular-nums" dir="ltr">{fmt(po.total)} د.ع</p>
+          <span className="text-xs text-muted-foreground">إجمالي أمر الشراء</span>
+          <p className="text-2xl font-bold tabular-nums" dir="ltr">{fmt(po.agreedCurrency === "USD" ? po.usdTotal : po.total)} {unit}</p>
         </div>
         <div>
           <span className="text-xs text-muted-foreground">المدفوع</span>
-          <p className="text-lg font-bold tabular-nums text-money-positive" dir="ltr">{fmt(po.paidAmount)} د.ع</p>
+          <p className="text-lg font-bold tabular-nums text-money-positive" dir="ltr">{fmt(settlement.paidAmount)} {unit}</p>
         </div>
         <div>
           <span className="text-xs text-muted-foreground">المتبقي</span>
-          <p className="text-lg font-bold tabular-nums text-money-negative" dir="ltr">{fmt(remaining)} د.ع</p>
+          <p className="text-lg font-bold tabular-nums text-money-negative" dir="ltr">{fmt(remaining)} {unit}</p>
         </div>
       </div>
 
+      <p className="text-xs text-muted-foreground">{settlement.intentLabel}</p>
+      {!D(settlement.invoiceTotalAmount).eq(D(po.agreedCurrency === "USD" ? po.usdTotal ?? 0 : po.total ?? 0)) ? <p className="text-xs text-muted-foreground">المفوتر بذمة المورد: {fmt(settlement.invoiceTotalAmount)} {unit}</p> : null}
+      {D(settlement.returnedAmount).gt(0) ? <p className="text-xs text-muted-foreground">تخفيض الذمة: {fmt(settlement.returnedAmount)} {unit}</p> : null}
+      {settlement.requiresReview ? <p role="alert" className="text-sm text-money-negative">دليل السداد يحتاج مراجعة قبل طلب دفعة جديدة.</p> : null}
       {po.items && po.items.length > 0 && (
         <div className="space-y-2">
           <span className="text-xs font-semibold text-muted-foreground">الأصناف المشتراة:</span>
@@ -77,12 +84,12 @@ export function PurchaseOrderDrilldownView({ poId }: { poId: number }) {
               <span className="col-span-2 text-end">الإجمالي</span>
             </div>
             <div className="divide-y max-h-48 overflow-y-auto">
-              {po.items.map((item: any, idx: number) => (
+              {po.items.map((item, idx) => (
                 <div key={item.id ?? idx} className="p-2 text-xs grid grid-cols-12 gap-2 items-center">
                   <span className="col-span-6 font-medium">{item.productName ?? `صنف #${item.productId}`}</span>
                   <span className="col-span-2 text-center tabular-nums">{formatQuantity(item.quantity)}</span>
-                  <span className="col-span-2 text-end tabular-nums" dir="ltr">{fmt(item.unitCost)}</span>
-                  <span className="col-span-2 text-end tabular-nums font-semibold" dir="ltr">{fmt(item.subtotal)}</span>
+                  <span className="col-span-2 text-end tabular-nums" dir="ltr">{(po.agreedCurrency === "USD" ? item.usdUnitPrice : item.unitPrice) == null ? "—" : fmt(po.agreedCurrency === "USD" ? item.usdUnitPrice : item.unitPrice)}</span>
+                  <span className="col-span-2 text-end tabular-nums font-semibold" dir="ltr">{(po.agreedCurrency === "USD" ? item.usdTotal : item.total) == null ? "—" : fmt(po.agreedCurrency === "USD" ? item.usdTotal : item.total)}</span>
                 </div>
               ))}
             </div>

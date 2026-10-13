@@ -1,5 +1,6 @@
 import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import type { OperationUser } from "@shared/operationPermissions";
+import { getPurchaseSettlementIntentLabel } from "@shared/purchaseSettlement";
 import { useMemo, useState } from "react";
 import { ExternalLink, Eye, FileWarning, RotateCcw } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -216,19 +217,19 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
       },
       {
         accessorKey: "settlementType",
-        header: "طريقة السداد",
+        header: "طريقة السداد المتفق عليها",
         cell: ({ row }) => {
           if (row.original.settlementType === "CASH") {
             return (
-              <span className="px-2 py-0.5 text-xs rounded-md font-medium badge-status-active">
-                نقدي
+              <span className="px-2 py-0.5 text-xs rounded-md font-medium badge-status-info">
+                {getPurchaseSettlementIntentLabel("CASH")}
               </span>
             );
           }
           if (row.original.settlementType === "CREDIT") {
             return (
               <span className="px-2 py-0.5 text-xs rounded-md font-medium badge-status-pending">
-                آجل
+                {getPurchaseSettlementIntentLabel("CREDIT")}
               </span>
             );
           }

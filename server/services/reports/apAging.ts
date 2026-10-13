@@ -25,6 +25,7 @@ import {
   supplierApEffectSql,
 } from "../ledger/supplierApEffect";
 import { classifyGrniApEntry } from "@shared/grniDedupe";
+import { loadPurchaseSettlements, type PurchaseSettlementProjection } from "../purchase/settlementProjection";
 import type {
   FinancialCellProvenancePayload,
   ProvenanceDocumentRef,
@@ -33,6 +34,8 @@ import type {
   ProvenanceSubItem,
 } from "@shared/financialProvenance";
 import { computeProvenanceReconciliation } from "@shared/financialProvenance";
+
+const nonNegativeStatementMoney = (value: Decimal) => Decimal.max(value, 0);
 
 /** أعمدة القيد بالاسم المستعار `ae` للاستعمال في استعلامات SQL الخام أدناه. */
 const AE = {
@@ -239,6 +242,9 @@ export interface SupplierStatementPO {
   paidAmount: string;
   status: string;
   settlementType?: "CASH" | "CREDIT";
+  agreedCurrency?: "IQD" | "USD";
+  usdTotal?: string | null;
+  settlement: PurchaseSettlementProjection;
   createdBy: number | null;
   createdByName: string | null;
   provenance?: FinancialCellProvenancePayload;
@@ -421,7 +427,15 @@ export async function getSupplierStatement(
       // رغم وجود القيد المرتبط، فكان صف الأمر وsummary.totalPaid يناقضان حركة الدفعة نفسها.
       // نبقي total من قيود PURCHASE لأنه يمثل المستلم فعلاً عند الاستلام الجزئي، بينما
       // paidAmount هو الحقل التراكمي المرجعي للأمر (والاسترداد يظهر كحركة PAYMENT_IN مستقلة).
+      total: purchaseOrders.total,
       paidAmount: purchaseOrders.paidAmount,
+      agreedCurrency: purchaseOrders.agreedCurrency,
+      usdTotal: purchaseOrders.usdTotal,
+      paidUsd: purchaseOrders.paidUsd,
+      returnedUsd: purchaseOrders.returnedUsd,
+      agreedRate: purchaseOrders.agreedRate,
+      supplierId: purchaseOrders.supplierId,
+      branchId: purchaseOrders.branchId,
       status: purchaseOrders.status,
       settlementType: purchaseOrders.settlementType,
       createdBy: purchaseOrders.createdBy,
@@ -450,6 +464,10 @@ export async function getSupplierStatement(
           total: sql<string>`COALESCE(SUM(CASE WHEN ${recognitionSql} THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
           periodTotal: sql<string>`COALESCE(SUM(CASE WHEN ${periodPurchasePredicate} THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
           balance: sql<string>`COALESCE(SUM(${supplierApEffectSql(ACCT, { includeOpening: false })}), 0)`,
+          linkedPaid: sql<string>`COALESCE(SUM(CASE
+            WHEN ${accountingEntries.entryType} IN ('PAYMENT_OUT','EXCHANGE_SETTLE') AND COALESCE(${accountingEntries.dedupeKey},'') NOT LIKE 'PURCHASE_RETURN_REVERSAL_PAYMENT:%' THEN ${accountingEntries.amount}
+            WHEN ${accountingEntries.entryType} = 'PAYMENT_IN' AND COALESCE(${accountingEntries.dedupeKey},'') NOT LIKE 'PURCHASE_RETURN_REFUND:%' THEN -${accountingEntries.amount}
+            ELSE 0 END),0)`,
           recognitionDate: sql<Date | null>`MIN(CASE WHEN ${recognitionSql} THEN ${accountingEntries.entryDate} END)`,
         })
         .from(accountingEntries)
@@ -467,29 +485,22 @@ export async function getSupplierStatement(
   const totalByPurchaseOrder = new Map(
     purchaseTotals.map((row) => [Number(row.purchaseOrderId), row]),
   );
+  const settlements = await loadPurchaseSettlements(db, pos);
   const posWithTotals = pos.flatMap((po) => {
     const gl = totalByPurchaseOrder.get(Number(po.id));
     if (!gl || !gl.recognitionDate) return [];
     if ((from || to) && money(gl.periodTotal).isZero()) return [];
     const total = money(gl.total);
-    const rawGlBalance = money(gl.balance).isPositive()
-      ? money(gl.balance)
+    const settlement = settlements.get(Number(po.id))!;
+    const effectivePaid = money(settlement.paidAmountIqd);
+    const openBalance = money(settlement.remainingAmountIqd);
+    const validGlPaid = money(gl.linkedPaid).gt(0)
+      ? money(gl.linkedPaid)
       : money(0);
-    const glPaid = total.minus(rawGlBalance);
-    const validGlPaid = glPaid.isPositive() ? glPaid : money(0);
-    const orderPaid = money(po.paidAmount ?? 0);
-    // القيمة الأعلى بين ما سُجِّل على أمر الشراء (كالتسوية التلقائية FIFO) وما هو مقيّد في الدفتر العام
-    const effectivePaid = orderPaid.gt(validGlPaid) ? orderPaid : validGlPaid;
-    // الرصيد المفتوح الفعلي للأمر بعد احتساب السداد الفعلي
-    const effectiveOpenBalance = total.minus(effectivePaid);
-    const openBalance = effectiveOpenBalance.isPositive()
-      ? effectiveOpenBalance
-      : money(0);
-    // المبلغ المسدد على هذا الأمر زيادةً عما هو مربوط في الدفتر العام (مستقطع من الدفعات غير المخصصة)
-    const cappedEffectivePaid = effectivePaid.gt(total) ? total : effectivePaid;
-    const settledBeyondGl = cappedEffectivePaid.gt(validGlPaid)
-      ? cappedEffectivePaid.minus(validGlPaid)
-      : money(0);
+    const cappedEffectivePaid = Decimal.min(effectivePaid, total);
+    const settledBeyondGl = nonNegativeStatementMoney(
+      cappedEffectivePaid.minus(validGlPaid),
+    );
 
     return [
       {
@@ -498,6 +509,7 @@ export async function getSupplierStatement(
         periodTotal: toDbMoney(gl.periodTotal),
         // «مسدّد/مخفّض» = القيمة الأعلى بين مدفوع أمر الشراء ومدفوع الدفتر العام؛ يضمن ظهور التسوية التلقائية FIFO.
         paidAmount: toDbMoney(effectivePaid),
+        settlement,
         // للاستعمال الداخلي فقط (أعمار الذمم وحساب الدفعات غير المخصصة) — لا يدخل الصفّ المُرسَل للواجهة.
         _openBalance: openBalance,
         _recognitionDate: gl.recognitionDate,
@@ -812,6 +824,10 @@ export async function getSupplierStatement(
           expectedDeliveryDate: p.expectedDeliveryDate,
           total: String(p.total),
           paidAmount: String(p.paidAmount),
+          settlement: p.settlement,
+          settlementType: p.settlementType,
+          agreedCurrency: p.agreedCurrency,
+          usdTotal: p.usdTotal,
           status: p.status,
           createdBy: p.createdBy ? Number(p.createdBy) : null,
           createdByName: p.createdByName,

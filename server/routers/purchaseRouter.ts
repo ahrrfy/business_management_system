@@ -1,10 +1,8 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
-import { alias } from "drizzle-orm/mysql-core";
+import { and, desc, eq, gte, inArray, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import { z } from "zod";
 import {
-  accountingEntries,
   accrualObligations,
   accrualObligationEvents,
   expenses,
@@ -16,8 +14,6 @@ import {
   purchaseOrderItems,
   purchaseOrders,
   receipts,
-  supplierPayments,
-  supplierPaymentRefunds,
   suppliers,
   users,
 } from "../../drizzle/schema";
@@ -37,6 +33,7 @@ import {
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { money, toDbMoney } from "../services/money";
+import { loadPurchaseSettlements } from "../services/purchase/settlementProjection";
 import {
   getPurchaseIntegrityReport,
   MAX_PURCHASE_INTEGRITY_LIMIT,
@@ -71,11 +68,6 @@ import {
   purchasesReadProcedure,
   router,
 } from "../trpc";
-
-const supplierPaymentRefundEntries = alias(
-  accountingEntries,
-  "supplierPaymentRefundEntries",
-);
 
 /**
  * دفعةُ المورّد **لحظة الاستلام**: نقديّة فقط — العقد الخادميّ يرفض غيرها منذ أوّل سطر في
@@ -1029,93 +1021,27 @@ export const purchaseRouter = router({
             .limit(lim)
             .offset(off),
       });
-      // Codex (P1، ٦/٩/٢٦): شارة «مُسدَّدٌ فعلاً» في الواجهة لا يجوز أن تُستنتَج من
-      // settlementType+status وحدهما — أمرٌ CASH وصل RECEIVED قبل هذا الإصلاح لم يُسدَّد
-      // آلياً قطّ وقد تبقى عليه ذمّةٌ حقيقية. الدليل الوحيد المقبول: قيدُ PAYMENT_OUT فعليّ
-      // مربوطٌ بهذا الأمر عبر accountingEntries.purchaseOrderId (نفس إشارة
-      // purchaseIntegrityService، بلا صافي المرتجعات هنا لأنها شارة قائمةٍ سريعة لا تدقيقاً).
-      const cashOrderIds = rows
-        .filter((row) => row.settlementType === "CASH")
-        .map((row) => Number(row.id));
-      const linkedCashPaidById = new Map<number, string>();
-      if (cashOrderIds.length) {
-        const [paidRows, refundRows] = await Promise.all([
-          db
-            .select({
-              purchaseOrderId: accountingEntries.purchaseOrderId,
-              paid: sql<string>`COALESCE(SUM(CASE WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN ${accountingEntries.amount} WHEN ${accountingEntries.entryType} = 'PAYMENT_IN' THEN -${accountingEntries.amount} ELSE 0 END), 0)`,
-            })
-            .from(accountingEntries)
-            .where(
-              and(
-                inArray(accountingEntries.purchaseOrderId, cashOrderIds),
-                sql`${accountingEntries.supplierId} IS NOT NULL`,
-                isNull(accountingEntries.deliveryPartyId),
-                sql`COALESCE(${accountingEntries.postingProfile}, '') NOT LIKE '%SHIPPING%'`,
-                sql`(${accountingEntries.purchaseLiabilityAccount} IS NULL OR ${accountingEntries.purchaseLiabilityAccount} IN ('AP', 'CASH_CLEARING'))`,
-                or(
-                  eq(accountingEntries.entryType, "PAYMENT_OUT"),
-                  and(
-                    eq(accountingEntries.entryType, "PAYMENT_IN"),
-                    sql`COALESCE(${accountingEntries.dedupeKey}, '') NOT LIKE 'PURCHASE_RETURN_REFUND:%'`,
-                  ),
-                ),
-              ),
-            )
-            .groupBy(accountingEntries.purchaseOrderId),
-          db
-            .select({
-              purchaseOrderId: accountingEntries.purchaseOrderId,
-              refunded: sql<string>`COALESCE(SUM(${supplierPaymentRefunds.amount}), 0)`,
-            })
-            .from(supplierPaymentRefunds)
-            .innerJoin(
-              supplierPayments,
-              eq(supplierPayments.id, supplierPaymentRefunds.supplierPaymentId),
-            )
-            .innerJoin(
-              accountingEntries,
-              eq(accountingEntries.id, supplierPayments.accountingEntryId),
-            )
-            .innerJoin(
-              supplierPaymentRefundEntries,
-              eq(
-                supplierPaymentRefundEntries.id,
-                supplierPaymentRefunds.accountingEntryId,
-              ),
-            )
-            .where(
-              and(
-                inArray(accountingEntries.purchaseOrderId, cashOrderIds),
-                sql`${accountingEntries.purchaseOrderId} IS NOT NULL`,
-                isNull(supplierPaymentRefundEntries.purchaseOrderId),
-              ),
-            )
-            .groupBy(accountingEntries.purchaseOrderId),
-        ]);
-        const refundMap = new Map<number, ReturnType<typeof money>>();
-        for (const r of refundRows) {
-          if (r.purchaseOrderId == null) continue;
-          refundMap.set(Number(r.purchaseOrderId), money(r.refunded));
-        }
-        for (const row of paidRows) {
-          if (row.purchaseOrderId == null) continue;
-          const poId = Number(row.purchaseOrderId);
-          const rawPaid = money(row.paid);
-          const refundAmount = refundMap.get(poId) ?? money(0);
-          const netPaid = rawPaid.minus(refundAmount);
-          linkedCashPaidById.set(
-            poId,
-            toDbMoney(netPaid.gt(0) ? netPaid : money(0)),
-          );
-        }
-      }
-      const withLinkedPaid = rows.map((row) => ({
-        ...row,
-        linkedCashPaidAmount: toDbMoney(
-          money(linkedCashPaidById.get(Number(row.id)) ?? 0),
-        ),
-      }));
+      const settlements = await loadPurchaseSettlements(db, rows);
+      const withLinkedPaid = rows.map((row) => {
+        const settlement = settlements.get(Number(row.id)) ?? null;
+        return {
+          ...row,
+          paidAmount: settlement?.paidAmountIqd ?? row.paidAmount,
+          paidUsd:
+            row.agreedCurrency === "USD"
+              ? (settlement?.paidAmountCurrency ?? row.paidUsd)
+              : row.paidUsd,
+          returnedUsd:
+            row.agreedCurrency === "USD"
+              ? (settlement?.returnedAmountCurrency ?? row.returnedUsd)
+              : row.returnedUsd,
+          settlement,
+          linkedCashPaidAmount:
+            row.settlementType === "CASH"
+              ? (settlement?.paidAmountIqd ?? "0.00")
+              : "0.00",
+        };
+      });
       // حجب التكلفة (total/paidAmount) عن غير المدير — نمط saleRouter.get:371.
       if (!canSeeCostForUser(ctx.user)) {
         return withLinkedPaid.map((row) => ({
@@ -1124,8 +1050,10 @@ export const purchaseRouter = router({
           paidAmount: null,
           usdTotal: null,
           paidUsd: null,
+          returnedUsd: null,
           agreedRate: null,
           linkedCashPaidAmount: null,
+          settlement: null,
         }));
       }
       return withLinkedPaid;
@@ -1300,73 +1228,18 @@ export const purchaseRouter = router({
             ? "STALE"
             : "NONE";
 
-      let linkedCashPaidAmount: string = "0.00";
-      if (po.settlementType === "CASH") {
-        const [paidRows, refundRows] = await Promise.all([
-          db
-            .select({
-              paid: sql<string>`COALESCE(SUM(CASE WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN ${accountingEntries.amount} WHEN ${accountingEntries.entryType} = 'PAYMENT_IN' THEN -${accountingEntries.amount} ELSE 0 END), 0)`,
-            })
-            .from(accountingEntries)
-            .where(
-              and(
-                eq(accountingEntries.purchaseOrderId, po.id),
-                sql`${accountingEntries.supplierId} IS NOT NULL`,
-                isNull(accountingEntries.deliveryPartyId),
-                sql`COALESCE(${accountingEntries.postingProfile}, '') NOT LIKE '%SHIPPING%'`,
-                sql`(${accountingEntries.purchaseLiabilityAccount} IS NULL OR ${accountingEntries.purchaseLiabilityAccount} IN ('AP', 'CASH_CLEARING'))`,
-                or(
-                  eq(accountingEntries.entryType, "PAYMENT_OUT"),
-                  and(
-                    eq(accountingEntries.entryType, "PAYMENT_IN"),
-                    sql`COALESCE(${accountingEntries.dedupeKey}, '') NOT LIKE 'PURCHASE_RETURN_REFUND:%'`,
-                  ),
-                ),
-              ),
-            ),
-          db
-            .select({
-              refunded: sql<string>`COALESCE(SUM(${supplierPaymentRefunds.amount}), 0)`,
-            })
-            .from(supplierPaymentRefunds)
-            .innerJoin(
-              supplierPayments,
-              eq(supplierPayments.id, supplierPaymentRefunds.supplierPaymentId),
-            )
-            .innerJoin(
-              accountingEntries,
-              eq(accountingEntries.id, supplierPayments.accountingEntryId),
-            )
-            .innerJoin(
-              supplierPaymentRefundEntries,
-              eq(
-                supplierPaymentRefundEntries.id,
-                supplierPaymentRefunds.accountingEntryId,
-              ),
-            )
-            .where(
-              and(
-                eq(accountingEntries.purchaseOrderId, po.id),
-                isNull(supplierPaymentRefundEntries.purchaseOrderId),
-              ),
-            ),
-        ]);
-        const rawPaid = money(paidRows[0]?.paid ?? 0);
-        const refundAmount = money(refundRows[0]?.refunded ?? 0);
-        const netPaid = rawPaid.minus(refundAmount);
-        linkedCashPaidAmount = toDbMoney(netPaid.gt(0) ? netPaid : money(0));
-      }
-
-      const totalDec = Number(po.total ?? 0);
-      const effectivePaidDec = Math.max(
-        Number(po.paidAmount ?? 0),
-        Number(linkedCashPaidAmount ?? 0),
-      );
+      const settlement = (await loadPurchaseSettlements(db, [po])).get(
+        Number(po.id),
+      )!;
+      const linkedCashPaidAmount =
+        po.settlementType === "CASH" ? settlement.paidAmountIqd : "0.00";
       const nextAction = derivePurchaseOrderNextActionFromRow({
         purchaseOrderId: po.id,
         status: po.status,
         currentRevisionId: po.currentRevisionId,
-        hasUnpaidBalance: Number.isFinite(totalDec) && Number.isFinite(effectivePaidDec) && totalDec - effectivePaidDec > 0,
+        hasUnpaidBalance:
+          money(settlement.remainingAmountIqd).gt(0) &&
+          !settlement.requiresReview,
         approvalRequest,
         requireRequisition: controlSetting?.requireRequisition,
         expectedDeliveryDate: po.expectedDeliveryDate,
@@ -1516,6 +1389,7 @@ export const purchaseRouter = router({
           invoiceDiscount: null,
           usdInvoiceDiscount: null,
           linkedCashPaidAmount: null,
+          settlement: null,
           shippingPayment: null,
         };
         // نحن داخل فرع «لا يرى التكلفة» (قرار canSeeCostForUser الكامل: يحترم المنح/الدور المخصّص) ⇒ نحجب
@@ -1535,6 +1409,23 @@ export const purchaseRouter = router({
         );
         return { ...poMasked, items: itemsMasked, nextAction, nextActionReason };
       }
-      return { ...po, linkedCashPaidAmount, shippingPayment, items, nextAction, nextActionReason };
+      return {
+        ...po,
+        paidAmount: settlement.paidAmountIqd,
+        paidUsd:
+          po.agreedCurrency === "USD"
+            ? settlement.paidAmountCurrency
+            : po.paidUsd,
+        returnedUsd:
+          po.agreedCurrency === "USD"
+            ? settlement.returnedAmountCurrency
+            : po.returnedUsd,
+        settlement,
+        linkedCashPaidAmount,
+        shippingPayment,
+        items,
+        nextAction,
+        nextActionReason,
+      };
     }),
 });
