@@ -82,4 +82,16 @@ describe("role operation presets", () => {
     expect(receptionPolicy.grants["operation.delivery.cancelAssignment"]).toBe(false);
     expect(receptionPolicy.grants["operation.delivery.settleDaily"]).toBe(false);
   });
+
+  it("keeps a station daily-operation bridge when its related module is broadened", () => {
+    const printRole = SECTION_CASHIER_ROLES.find((item) => item.key === "print_cashier")!;
+    const policy = buildDefaultRoleOperationPolicy(
+      printRole.key,
+      printRole.baseRole,
+      { ...printRole.permissions, sales: "READ" },
+    );
+
+    expect(policy.grants["operation.sales.cancel"]).toBe(true);
+    expect(policy.grants["operation.returns.executeSalesReturnCart"]).toBe(true);
+  });
 });

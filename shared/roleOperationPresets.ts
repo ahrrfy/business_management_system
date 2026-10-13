@@ -8,6 +8,7 @@ import {
   levelSatisfies,
   ROLE_TEMPLATES,
   SECTION_CASHIER_ROLES,
+  type AccessLevel,
   type PermissionMap,
   type RoleKey,
 } from "./permissions";
@@ -82,6 +83,12 @@ const DAILY_PROFILE_MODULE: Readonly<Record<string, string>> = {
   reception_clerk: "workorders",
 };
 
+const ACCESS_LEVEL_RANK: Readonly<Record<AccessLevel, number>> = {
+  NONE: 0,
+  READ: 1,
+  FULL: 2,
+};
+
 function existingDelegablePaths(paths: readonly string[]): string[] {
   return paths.filter((path) => getOperationPermission(path)?.delegable === true);
 }
@@ -126,7 +133,8 @@ export function buildDefaultRoleOperationPolicy(
       operationModules.length > 0 &&
       operationModules.every((moduleKey) =>
         levelSatisfies(modules[moduleKey], requiredLevel) ||
-        modules[moduleKey] === profileDefaults[moduleKey],
+        ACCESS_LEVEL_RANK[modules[moduleKey] ?? "NONE"] >=
+          ACCESS_LEVEL_RANK[profileDefaults[moduleKey] ?? "NONE"],
       );
     if (
       operation?.delegable &&

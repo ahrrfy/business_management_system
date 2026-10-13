@@ -519,7 +519,7 @@ export async function refundDeposit(
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({
-          what: "يتطلب رد العربون موافقة المدير",
+          what: "يتطلب رد العربون اعتماد مدير",
           why: `مبلغ الرد ${amountD.toFixed(2)} د.ع يتجاوز سقف حسابك ${money(refundCap).toFixed(2)} د.ع`,
           doThis:
             "أدخل اعتماد المدير في نافذة الرد، أو خفّض المبلغ إلى السقف المباشر المسموح",
