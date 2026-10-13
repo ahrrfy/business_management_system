@@ -160,15 +160,18 @@ export default function RoleEdit() {
     setBaseRole(base);
     setOperationalCaps((source.operationalCaps as OperationalCaps | null) ?? resolveOperationalCaps(String(source.key ?? base), null, null, base));
     setCapsEdited(true);
+    const sourceKey = String(source.key ?? base);
     changePolicy(
       editableOperationPolicy(
         source.operationPolicy ??
-          buildOperationPolicyFromLegacy(
-            base,
-            modules,
-            source.atomicPermissions as Record<string, boolean> | null,
-            source.permissions as PermissionMap | null,
-          ),
+          (hasRoleOperationPreset(sourceKey)
+            ? buildDefaultRoleOperationPolicy(sourceKey, base, modules)
+            : buildOperationPolicyFromLegacy(
+                base,
+                modules,
+                source.atomicPermissions as Record<string, boolean> | null,
+                source.permissions as PermissionMap | null,
+              )),
       ),
     );
   }

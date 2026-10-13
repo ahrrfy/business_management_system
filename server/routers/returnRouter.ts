@@ -2469,11 +2469,16 @@ export const returnRouter = router({
             }
 
             if (directLimitsApply) {
+              const lockedRefundCaps = await loadRefundCaps(
+                tx,
+                Number(matchedInvoice.id),
+                { lock: true },
+              );
               const originalPaymentMethods = Array.from(
                 new Set([
-                  ...(matchedInvoice.paymentMethod
-                    ? [matchedInvoice.paymentMethod]
-                    : []),
+                  ...Array.from(lockedRefundCaps.netByMethod.entries())
+                    .filter(([, amount]) => amount.gt(0))
+                    .map(([method]) => method),
                   ...(maxCreditOffsetAmount.gt(0) ? ["CREDIT_OFFSET"] : []),
                 ]),
               );

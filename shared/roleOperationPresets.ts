@@ -4,7 +4,11 @@ import {
   legacyOperationPolicy,
   type OperationPolicy,
 } from "./operationPermissions";
-import type { PermissionMap, RoleKey } from "./permissions";
+import {
+  levelSatisfies,
+  type PermissionMap,
+  type RoleKey,
+} from "./permissions";
 
 export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string[]>> = {
   cashier: [
@@ -68,6 +72,12 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
 };
 
 const CASHIER_PROFILE_KEYS = new Set(["cashier", "retail_cashier", "print_cashier", "reception_clerk"]);
+const DAILY_PROFILE_MODULE: Readonly<Record<string, string>> = {
+  cashier: "sales",
+  retail_cashier: "sales",
+  print_cashier: "pos",
+  reception_clerk: "workorders",
+};
 
 function existingDelegablePaths(paths: readonly string[]): string[] {
   return paths.filter((path) => getOperationPermission(path)?.delegable === true);
@@ -91,9 +101,20 @@ export function buildDefaultRoleOperationPolicy(
   // role allowlist (for example cashier -> salesControl.approve).
   const policy = legacyOperationPolicy(baseRole, modules);
   const grants = { ...policy.grants };
+  const profileModule = DAILY_PROFILE_MODULE[roleKey];
   for (const path of dailyOperationPaths(roleKey, baseRole)) {
     const operation = getOperationPermission(path);
-    if (operation?.delegable) grants[operation.key] = true;
+    const operationModules = operation?.module?.split("|") ?? [];
+    const requiredLevel = operation?.level === "READ" ? "READ" : "FULL";
+    const moduleAllowed = operationModules.some((moduleKey) =>
+      levelSatisfies(modules[moduleKey], requiredLevel),
+    );
+    const profileAllowed = profileModule
+      ? levelSatisfies(modules[profileModule], "FULL")
+      : moduleAllowed;
+    if (operation?.delegable && profileAllowed) {
+      grants[operation.key] = true;
+    }
   }
   if (CASHIER_PROFILE_KEYS.has(roleKey)) {
     for (const operation of OPERATION_PERMISSIONS) {

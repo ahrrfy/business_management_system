@@ -340,9 +340,13 @@ export function PurchaseReturnPortal({
     }
   };
 
-  if (!costVisible || !operationPermission.allowed) return (
+  if (!costVisible || !operationPermission.allowed || !canReadSuppliers) return (
     <Card><CardContent className="p-4 text-sm text-muted-foreground">
-      {!costVisible ? "مرتجع المورد يحتاج تفويض عرض التكلفة والربح إلى جانب تفويض عملية المرتجع." : operationPermission.reason}
+      {!costVisible
+        ? "مرتجع المورد يحتاج تفويض عرض التكلفة والربح إلى جانب تفويض عملية المرتجع."
+        : !operationPermission.allowed
+          ? operationPermission.reason
+          : "مرتجع المورد يحتاج صلاحية عرض قائمة الموردين لاختيار المورد المرتبط بالعملية."}
     </CardContent></Card>
   );
   return (

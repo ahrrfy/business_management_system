@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({
   visible: false,
+  suppliersAllowed: true,
   suppliers: vi.fn(),
   drawers: vi.fn(),
 }));
@@ -11,7 +12,10 @@ vi.mock("@/hooks/useOperationPermission", () => ({ useOperationPermission: () =>
 vi.mock("@/lib/trpc", () => ({ trpc: {
   useUtils: () => ({ suppliers: { list: { invalidate: vi.fn() } } }),
   auth: { me: { useQuery: () => ({ data: { role: "manager", operationPolicyEnabled: true, resolvedOperationPolicy: {
-    version: 1, grants: { "operation.returns.executePurchaseReturnCart": true },
+    version: 1, grants: {
+      "operation.returns.executePurchaseReturnCart": true,
+      "operation.suppliers.list": state.suppliersAllowed,
+    },
     dataVisibility: { purchaseCost: state.visible, profitMargin: state.visible },
   } } }) } },
   branches: { list: { useQuery: () => ({ data: [{ id: 2 }] }) } },
@@ -29,7 +33,7 @@ describe("purchase return financial surface", () => {
   let host: HTMLDivElement;
   let root: Root;
   beforeEach(() => {
-    state.visible = false; state.suppliers.mockClear(); state.drawers.mockClear();
+    state.visible = false; state.suppliersAllowed = true; state.suppliers.mockClear(); state.drawers.mockClear();
     host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host);
   });
   afterEach(() => { act(() => root.unmount()); host.remove(); });
@@ -48,5 +52,13 @@ describe("purchase return financial surface", () => {
     state.visible = false; render();
     expect(host.textContent).not.toContain("بحث تكلفة البضاعة");
     expect(host.textContent).not.toContain("خزينة الشركة");
+  });
+  it("fails closed when the supplier-list dependency is revoked", () => {
+    state.visible = true;
+    state.suppliersAllowed = false;
+    render();
+    expect(host.textContent).toContain("صلاحية عرض قائمة الموردين");
+    expect(host.textContent).not.toContain("بحث تكلفة البضاعة");
+    expect(state.suppliers).toHaveBeenLastCalledWith(undefined, expect.objectContaining({ enabled: false }));
   });
 });

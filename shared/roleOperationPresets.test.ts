@@ -42,6 +42,20 @@ describe("role operation presets", () => {
     const printRole = SECTION_CASHIER_ROLES.find((item) => item.key === "print_cashier")!;
     const printPolicy = buildDefaultRoleOperationPolicy(printRole.key, printRole.baseRole, printRole.permissions);
     expect(printPolicy.grants["operation.printPos.createSale"]).toBe(true);
+    expect(printPolicy.grants["operation.sales.cancel"]).toBe(true);
     expect(printPolicy.grants["operation.sales.create"]).toBe(false);
+  });
+
+  it("does not restore daily operations after their module is explicitly revoked", () => {
+    const retail = SECTION_CASHIER_ROLES.find((item) => item.key === "retail_cashier")!;
+    const modules = { ...retail.permissions, sales: "NONE" as const };
+    const policy = buildDefaultRoleOperationPolicy(
+      "retail_cashier",
+      "cashier",
+      modules,
+    );
+    expect(policy.grants["operation.sales.create"]).toBe(false);
+    expect(policy.grants["operation.sales.cancel"]).toBe(false);
+    expect(policy.grants["operation.returns.executeSalesReturnCart"]).toBe(false);
   });
 });

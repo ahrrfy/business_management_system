@@ -276,7 +276,7 @@ export async function cancelSaleInTx(
           clientRequestId: `sale-cancel-${input.clientRequestId?.trim() || input.invoiceId}`,
         },
         { userId: actor.userId, branchId: actor.branchId, role: actor.role },
-        { assertAuthority: false },
+        { assertAuthority: true },
       );
       // أثبت أن تحرير COD وإغلاق الإسناد اكتمل قبل لمس الفاتورة.
       await assertInvoiceCancellationDeliverySafeTx(tx, {
