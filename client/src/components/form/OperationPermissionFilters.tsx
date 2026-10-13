@@ -79,6 +79,7 @@ export function OperationPermissionFilters({
           <option value="all">كل العمليات</option>
           <option value="allow">المفوّضة فقط</option>
           <option value="deny">الممنوعة فقط</option>
+          <option value="blocked">مختارة ومحجوبة بإذن التكلفة</option>
           {mode === "user" && (
             <option value="overrides">الاستثناءات الفردية فقط</option>
           )}

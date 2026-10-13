@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { TrpcContext } from "./context";
 import { assertOperationAuthorized } from "./operationAuthorization";
-import { getOperationPermission, legacyOperationPolicy, type OperationPolicy } from "@shared/operationPermissions";
+import { getOperationPermission, legacyOperationPolicy, operationPolicySchema, type OperationPolicy } from "@shared/operationPermissions";
 import { resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 vi.mock("./services/auditService", () => ({
@@ -16,6 +16,7 @@ import {
   directPrintBridgeProcedure, invoiceViewProcedure, requireAtomicPermission, canViewReports,
   digitalCardsPosProcedure, receptionDuplicateReadProcedure,
   customerReadAllowed, customerReceptionCreateAllowed,
+  workordersCashierProcedure,
 } from "./trpc";
 
 function context(grants: Record<string, boolean>, overrides: Record<string, unknown> = {}): TrpcContext {
@@ -30,6 +31,10 @@ function context(grants: Record<string, boolean>, overrides: Record<string, unkn
     },
   } as unknown as TrpcContext;
 }
+
+const receptionCheckoutProcedure = workordersCashierProcedure
+  .input(z.object({ delivery: z.unknown().nullish() }).optional())
+  .mutation(({ ctx }) => ctx.user.id);
 
 const api = router({
   sales: router({
@@ -46,12 +51,84 @@ const api = router({
     requestReprint: invoiceViewProcedure.use(requireAtomicPermission("pos.invoice.reprint")).mutation(() => true),
   }),
   digitalCards: router({ sales: router({ prepare: digitalCardsPosProcedure.mutation(() => "prepared"), finalize: digitalCardsPosProcedure.mutation(() => "finalized") }) }),
-  reception: router({ duplicateOrders: receptionDuplicateReadProcedure.query(() => "checked") }),
+  workOrders: router({ receptionCheckout: receptionCheckoutProcedure }),
+  reception: router({
+    duplicateOrders: receptionDuplicateReadProcedure.query(() => "checked"),
+    draftCommit: receptionCheckoutProcedure,
+  }),
   roles: router({ create: adminProcedure.mutation(() => "reserved") }),
   auth: router({ login: publicProcedure.mutation(() => "public") }),
 });
 
 describe("actual procedure delegation", () => {
+  it.each([true, false])("retired purchase keys preserve old cashier print policies without opening company finance: %s", async (oldGrant) => {
+    const saved = operationPolicySchema.parse({
+      version: 1, grants: {
+        "operation.purchases.pay": oldGrant,
+        "operation.purchaseReturns.create": oldGrant,
+        "operation.invoicePrinting.requestPrint": true,
+      },
+      recordScopes: { "operation.purchases.pay": "BRANCH" },
+      dataVisibility: { purchaseCost: false, profitMargin: false },
+    });
+    expect(saved.grants).toEqual({ "operation.invoicePrinting.requestPrint": true });
+    expect(saved.recordScopes).toEqual({});
+    expect(saved.dataVisibility).toEqual({ purchaseCost: false, profitMargin: false });
+    for (const path of ["purchases.pay", "purchaseReturns.create"]) {
+      expect(getOperationPermission(path)).toMatchObject({ delegable: false, reservedKind: "RETIRED" });
+    }
+    await expect(api.createCaller(context(saved.grants, { role: "cashier" })).invoicePrinting.requestPrint()).resolves.toBe(true);
+  });
+  it.each(["workOrders.receptionCheckout", "reception.draftCommit"] as const)(
+    "requires independent delivery authority for %s", async (path) => {
+      const caller = api.createCaller(context({
+        [`operation.${path}`]: true,
+        "operation.delivery.dispatchInvoice": false,
+      }, { permissionsOverride: { store: "FULL" } }));
+      const checkout = path === "workOrders.receptionCheckout"
+        ? caller.workOrders.receptionCheckout : caller.reception.draftCommit;
+      await expect(checkout({ delivery: { partyId: 4 } }))
+        .rejects.toMatchObject({ code: "FORBIDDEN" });
+    },
+  );
+  it.each(["workOrders.receptionCheckout", "reception.draftCommit"] as const)(
+    "permits independently granted delivery on %s", async (path) => {
+      const caller = api.createCaller(context({
+        [`operation.${path}`]: true,
+        "operation.delivery.dispatchInvoice": true,
+      }));
+      const checkout = path === "workOrders.receptionCheckout"
+        ? caller.workOrders.receptionCheckout : caller.reception.draftCommit;
+      await expect(checkout({ delivery: { partyId: 4 } })).resolves.toBe(17);
+    },
+  );
+  it.each(["workOrders.receptionCheckout", "reception.draftCommit"] as const)(
+    "does not require delivery authority for null or absent delivery on %s", async (path) => {
+      const caller = api.createCaller(context({
+        [`operation.${path}`]: true,
+        "operation.delivery.dispatchInvoice": false,
+      }));
+      const checkout = path === "workOrders.receptionCheckout"
+        ? caller.workOrders.receptionCheckout : caller.reception.draftCommit;
+      await expect(checkout({ delivery: null })).resolves.toBe(17);
+      await expect(checkout({})).resolves.toBe(17);
+      await expect(checkout()).resolves.toBe(17);
+    },
+  );
+  it.each(["workOrders.receptionCheckout", "reception.draftCommit"] as const)(
+    "preserves legacy checkout and owner authority on %s", async (path) => {
+      for (const ctx of [
+        context({}, { role: "cashier", operationPolicyEnabled: false,
+          resolvedOperationPolicy: null, permissionsOverride: { workorders: "FULL", store: "NONE" } }),
+        context({}, { role: "admin", isOwner: true }),
+      ]) {
+        const caller = api.createCaller(ctx);
+        const checkout = path === "workOrders.receptionCheckout"
+          ? caller.workOrders.receptionCheckout : caller.reception.draftCommit;
+        await expect(checkout({ delivery: { partyId: 4 } })).resolves.toBe(17);
+      }
+    },
+  );
   it("does not derive financial payload access from a compatibility module summary", () => {
     expect(canViewReports(context({ "operation.shifts.current": true }, { role: "cashier", permissionsOverride: { reports: "FULL" } }).user!)).toBe(false);
     expect(canViewReports(context({ "operation.reports.treasurySummary": true }).user!)).toBe(true);

@@ -52,6 +52,9 @@ export function OperationPermissionRow({
           {mode === "user"
             ? ` · ${own === undefined ? "موروثة من الدور" : "استثناء فردي"}`
             : ""}
+          {mode === "user" && value?.recordScopes?.[operation.key] !== undefined
+            ? " · نطاق سجلات فردي"
+            : ""}
         </div>
       </div>
       {mode === "user" ? (

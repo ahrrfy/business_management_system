@@ -83,6 +83,7 @@ import {
 import { getOpenShifts } from "../services/treasury/openShifts";
 import { openShiftIdTx } from "../services/shiftService";
 import {
+  canSeeCostForUser,
   returnsProcedure,
   router,
   salesCashierProcedure,
@@ -1735,7 +1736,7 @@ export const returnRouter = router({
           barcode: baseUnit?.barcode ?? null,
           sku: skuVariant.sku ?? null,
           retailPrice,
-          costPrice,
+          costPrice: canSeeCostForUser(ctx.user) ? costPrice : null,
           lowestHistoricalPrice,
           currentStock: Number(stockRow?.quantity ?? 0),
         };
@@ -1802,7 +1803,7 @@ export const returnRouter = router({
         barcode: owner.primaryBarcode ?? code,
         sku: owner.sku ?? null,
         retailPrice,
-        costPrice,
+        costPrice: canSeeCostForUser(ctx.user) ? costPrice : null,
         lowestHistoricalPrice,
         currentStock: Number(stockRow?.quantity ?? 0),
       };

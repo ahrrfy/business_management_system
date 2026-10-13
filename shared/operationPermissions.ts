@@ -5,11 +5,14 @@ import {
   canSeeCost,
   canUseDigitalCardsSellingStation,
   diffFromTemplate,
+  deriveEffectiveAccess,
   levelSatisfies,
   moduleAccessAllowed,
   resolvePermissions,
   type AccessLevel,
+  type EffectiveAccessSummary,
   type PermissionMap,
+  type PosStation,
   type RoleKey,
 } from "./permissions";
 import { GENERATED_OPERATION_PERMISSIONS } from "./operationPermissionCatalog.generated";
@@ -33,7 +36,7 @@ export interface OperationPermission {
   delegable: boolean;
   requiresCostVisibility?: boolean;
   requiresLegacyReview?: boolean;
-  reservedKind?: "AUTHORITY" | "IDENTITY" | "PUBLIC" | "UNSUPPORTED" | null;
+  reservedKind?: "AUTHORITY" | "IDENTITY" | "PUBLIC" | "UNSUPPORTED" | "RETIRED" | null;
   /** The inherited legacy gate can require FULL even for a query. */
   level?: string | null;
   procedure?: string;
@@ -88,7 +91,16 @@ const policyShape = z
   .strict();
 
 /** Reject unknown paths and reserved authority; aliases are migration inputs only. */
-export const operationPolicySchema = policyShape.superRefine((policy, ctx) => {
+export const operationPolicySchema = policyShape.transform((policy) => {
+  const grants = { ...policy.grants };
+  const recordScopes = policy.recordScopes ? { ...policy.recordScopes } : undefined;
+  // Only explicitly retired catalog paths are safe to remove from persisted full maps.
+  for (const key of Object.keys(grants))
+    if (getOperationPermission(key)?.reservedKind === "RETIRED") delete grants[key];
+  for (const key of Object.keys(recordScopes ?? {}))
+    if (getOperationPermission(key)?.reservedKind === "RETIRED") delete recordScopes![key];
+  return { ...policy, grants, ...(recordScopes ? { recordScopes } : {}) };
+}).superRefine((policy, ctx) => {
   const visibility = policy.dataVisibility;
   if (visibility && visibility.purchaseCost !== visibility.profitMargin) {
     ctx.addIssue({
@@ -532,4 +544,37 @@ export function canViewOperationData(
 ): boolean {
   if (user.isOwner === true) return true;
   return effectivePolicy(user).dataVisibility?.[field] === true;
+}
+
+/** Selling stations depend on their own execution path, not another action in the same module. */
+export const OPERATION_STATION_PATHS: Readonly<Record<PosStation, string>> = Object.freeze({
+  RETAIL: "sales.create",
+  PRINT_SERVICES: "printPos.createSale",
+  RECEPTION: "workOrders.receptionCheckout",
+});
+
+/** Display the same decisions as execution; preserve the legacy and protected owner branches. */
+export function deriveOperationAccess(user: OperationUser): EffectiveAccessSummary {
+  if (user.isOwner === true)
+    return deriveEffectiveAccess("admin", null);
+  if (!hasOperationPolicy(user))
+    return {
+      ...deriveEffectiveAccess(user.role, user.permissionsOverride as PermissionMap | null),
+      canSeeCost: canViewOperationData(user, "purchaseCost") && canViewOperationData(user, "profitMargin"),
+    };
+  const policy = effectivePolicy(user);
+  const current = { ...user, resolvedOperationPolicy: policy };
+  const canSeeCost = canViewOperationData(current, "purchaseCost") &&
+    canViewOperationData(current, "profitMargin");
+  const grants = { ...policy.grants };
+  if (!canSeeCost) for (const operation of OPERATION_PERMISSIONS)
+    if (operation.requiresCostVisibility) grants[operation.key] = false;
+  const stations = (Object.keys(OPERATION_STATION_PATHS) as PosStation[])
+    .filter(station => operationDecision(current, OPERATION_STATION_PATHS[station]).allowed);
+  return {
+    resolved: summarizeOperationModules({ ...policy, grants }),
+    station: stations.length === 0 ? "NONE" : stations.length === 1 ? stations[0]! : "MULTI",
+    stations,
+    canSeeCost,
+  };
 }

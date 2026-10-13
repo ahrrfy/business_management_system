@@ -131,12 +131,18 @@ const auditMutationOperation = t.middleware(async ({ ctx, type, path, input, get
   return result;
 });
 
+const DELIVERY_PAYLOAD_OPERATION_PATHS = new Set([
+  "sales.create",
+  "workOrders.receptionCheckout",
+  "reception.draftCommit",
+]);
+
 /** الجذر الوحيد لبناء الإجراءات؛ يحرسه اختبار عقدي كي لا تظهر mutation خارج التدقيق العام. */
 const auditedProcedure = t.procedure.use(auditMutationOperation).use(async ({ ctx, path, getRawInput, next }) => {
   assertOperationAuthorized(ctx.user, path);
-  // A sale can compose delivery assignment in the same transaction. Its nested
+  // These sales and reception paths compose delivery assignment in the same transaction. Their nested
   // payload must not gain an independently revoked delivery operation.
-  if (path === "sales.create" && ctx.user && hasOperationPolicy(ctx.user)) {
+  if (DELIVERY_PAYLOAD_OPERATION_PATHS.has(path) && ctx.user && hasOperationPolicy(ctx.user)) {
     const raw = await getRawInput();
     if (raw && typeof raw === "object" && "delivery" in raw && raw.delivery != null) {
       assertOperationAuthorized(ctx.user, "delivery.dispatchInvoice");

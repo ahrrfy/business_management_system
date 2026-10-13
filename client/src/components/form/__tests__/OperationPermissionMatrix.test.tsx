@@ -148,6 +148,65 @@ describe("Canonical operation delegation editor", () => {
     act(() => button.click());
   }
 
+  function filter(value: string) {
+    const field = host.querySelector<HTMLSelectElement>('select[id$="-filter"]')!;
+    act(() => {
+      field.value = value;
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }
+
+  it("filters by executable authority rather than a selected grant blocked by cost visibility", () => {
+    render("role", {
+      version: 1,
+      grants: { "operation.reports.profit": true, "operation.delivery.dispatch": true },
+      dataVisibility: { purchaseCost: false, profitMargin: false },
+    });
+    filter("allow");
+    expect(host.textContent).not.toContain("تقرير الأرباح");
+    expect(host.textContent).toContain("إسناد التوصيل");
+    filter("deny");
+    expect(host.textContent).toContain("تقرير الأرباح");
+    filter("blocked");
+    expect(host.textContent).toContain("تقرير الأرباح");
+    expect(host.textContent).not.toContain("إسناد التوصيل");
+    click("منع النتائج المصفّاة");
+    expect(latest?.grants).toEqual({ "operation.reports.profit": false, "operation.delivery.dispatch": true });
+  });
+
+  it("shows scope-only user exceptions and restores only filtered rows to complete inheritance", () => {
+    render("user", {
+      version: 1,
+      grants: { "operation.returns.approve": true },
+      recordScopes: { "operation.delivery.dispatch": "BRANCH" },
+    });
+    filter("overrides");
+    expect(host.textContent).toContain("إسناد التوصيل");
+    expect(host.textContent).toContain("اعتماد مرتجع");
+    expect(host.textContent).not.toContain("طلب مرتجع");
+    const domain = host.querySelector<HTMLSelectElement>('select[id$="-domain"]')!;
+    act(() => {
+      domain.value = "delivery";
+      domain.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    click("إعادة النتائج إلى وراثة الدور");
+    expect(latest?.recordScopes).toEqual({});
+    expect(latest?.grants).toEqual({ "operation.returns.approve": true });
+    expect(base.recordScopes?.["operation.delivery.dispatch"]).toBe("OWN");
+  });
+
+  it("finds an exact operation key without broadening a filtered grant to sibling actions", () => {
+    render("role", { version: 1, grants: {} });
+    const field = host.querySelector<HTMLInputElement>('input[id$="-query"]')!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "operation.delivery.dispatch");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(host.textContent).toContain("إسناد التوصيل");
+    click("منح النتائج المصفّاة");
+    expect(latest?.grants).toEqual({ "operation.delivery.dispatch": true });
+  });
+
   it("individual denial and restoration preserve sparse inheritance and another operation", () => {
     render("user");
     select("تفويض إسناد التوصيل", "deny");

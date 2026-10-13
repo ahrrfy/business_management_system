@@ -187,7 +187,7 @@ export default function UserEdit() {
   useUnsavedGuard(isDirty);
 
   function invalidate() {
-    return Promise.all([utils.users.list.invalidate(), utils.users.get.invalidate({ userId })]);
+    return Promise.all([utils.users.list.invalidate(), utils.users.get.invalidate({ userId }), utils.users.effectivePermissions.invalidate({ userId })]);
   }
 
   const update = trpc.users.update.useMutation({

@@ -12,6 +12,10 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "server/routers/__tests__/returnItemCostVisibility.unit.test.ts",
+      "server/services/__tests__/deliveryFloatLimitPrivacy.unit.test.ts",
+      "client/src/components/form/__tests__/EffectivePermissionsPreview.test.tsx",
+      "client/src/components/returns/PurchaseReturnPortal.permission.test.tsx",
       "client/src/pages/__tests__/cashierDashboardIsolation.test.tsx",
       "shared/cashierPermissionMigration.test.ts",
       "client/src/pages/Treasury.permissionCache.test.tsx",

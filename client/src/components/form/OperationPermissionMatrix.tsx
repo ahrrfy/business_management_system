@@ -9,6 +9,7 @@ import {
   moduleLabel,
   operations,
   requiresCost,
+  stageLabel,
 } from "./operationPermissionMatrixHelpers";
 export {
   editableOperationPolicy,
@@ -64,18 +65,28 @@ export function OperationPermissionMatrix({
       ),
     [],
   );
+  const currentAllowed = (operation: (typeof operations)[number]) =>
+    effective(operation.key) && (!requiresCost(operation) || costAllowed);
+  const hasIndividualOverride = (key: string) =>
+    value?.grants[key] !== undefined || value?.recordScopes?.[key] !== undefined;
+  const individualOverrideCount = new Set([
+    ...Object.keys(value?.grants ?? {}),
+    ...Object.keys(value?.recordScopes ?? {}),
+  ]).size;
+  const term = query.trim().toLocaleLowerCase();
   const visible = operations.filter((operation) => {
     if (domain && operation.domain !== domain) return false;
     if (stage && operation.lifecycleStage !== stage) return false;
-    const granted = effective(operation.key);
+    const granted = currentAllowed(operation);
     if (filter === "allow" && !granted) return false;
     if (filter === "deny" && granted) return false;
-    if (filter === "overrides" && value?.grants[operation.key] === undefined)
+    if (filter === "blocked" && (!effective(operation.key) || granted))
       return false;
-    const term = query.trim().toLocaleLowerCase();
+    if (filter === "overrides" && !hasIndividualOverride(operation.key))
+      return false;
     return (
       !term ||
-      `${operation.label} ${operation.resource} ${operation.domain} ${operation.lifecycleStage}`
+      `${operation.label} ${operation.resource} ${moduleLabel(operation.domain)} ${stageLabel(operation.lifecycleStage)} ${operation.path} ${operation.key}`
         .toLocaleLowerCase()
         .includes(term)
     );
@@ -100,8 +111,6 @@ export function OperationPermissionMatrix({
   const costBlocked = visible.filter(
     (operation) => requiresCost(operation) && !costAllowed,
   ).length;
-  const currentAllowed = (operation: (typeof operations)[number]) =>
-    effective(operation.key) && (!requiresCost(operation) || costAllowed);
   const previousAllowed = (operation: (typeof operations)[number]) =>
     previous(operation.key) &&
     (!requiresCost(operation) || visibilityAllowed(baseline));
@@ -140,6 +149,15 @@ export function OperationPermissionMatrix({
     }
     onChange({ ...(value ?? { version: 1, grants: {} }), dataVisibility });
   }
+  function restoreInheritance(keys: string[]) {
+    const grants = { ...(value?.grants ?? {}) };
+    const recordScopes = { ...(value?.recordScopes ?? {}) };
+    for (const key of keys) {
+      delete grants[key];
+      delete recordScopes[key];
+    }
+    onChange({ ...(value ?? { version: 1 }), grants, recordScopes });
+  }
   function setScope(key: string, selection: string) {
     const recordScopes = { ...(value?.recordScopes ?? {}) };
     if (selection === "inherit") delete recordScopes[key];
@@ -174,7 +192,7 @@ export function OperationPermissionMatrix({
           أثر الحفظ: منح {added}، منع {removed}
         </span>
         {mode === "user" && (
-          <span>{Object.keys(value?.grants ?? {}).length} استثناء فردي</span>
+          <span>{individualOverrideCount} عملية بتخصيص فردي</span>
         )}
       </div>
       <OperationPermissionVisibility
@@ -240,12 +258,7 @@ export function OperationPermissionMatrix({
             size="sm"
             variant="outline"
             disabled={disabled || !visible.length}
-            onClick={() =>
-              setGrants(
-                visible.map((item) => item.key),
-                "inherit",
-              )
-            }
+            onClick={() => restoreInheritance(visible.map((item) => item.key))}
           >
             إعادة النتائج إلى وراثة الدور
           </Button>
