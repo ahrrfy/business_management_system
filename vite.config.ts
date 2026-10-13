@@ -12,6 +12,7 @@ import {
 } from "./scripts/vite-build-contract.mjs";
 import {
   STOREFRONT_SHELL_CHUNK_GLOB,
+  storefrontApiNetworkMatcher,
   storefrontPrivateImageNetworkMatcher,
   storefrontPublicImageCacheMatcher,
 } from "./scripts/storefront-pwa-contract.mjs";
@@ -132,7 +133,7 @@ export default defineConfig(({ mode }) => {
           },
           {
             // كل API آخر، بما فيه أي مسار صورة خاص جديد، شبكة فقط افتراضياً.
-            urlPattern: ({ url }) => url.pathname.startsWith("/api"),
+            urlPattern: storefrontApiNetworkMatcher,
             handler: "NetworkOnly",
             options: { cacheName: "api-no-cache" },
           },

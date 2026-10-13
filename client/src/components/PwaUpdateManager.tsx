@@ -423,6 +423,10 @@ export function PwaUpdateManager() {
       .then(({ registerSW }) => {
         registerSW({
           immediate: true,
+          onNeedReload() {
+            // Workbox قد يستعيد التحكم بعد timeout أو تحديث تبويب آخر؛ القرار
+            // يبقى لمسار الحفظ والتحقق أدناه، فلا يعيد فتح إدخالات جديدة تلقائياً.
+          },
           onNeedRefresh() {
             if (!disposed) {
               updateWasSignaledRef.current = true;
@@ -579,6 +583,15 @@ export function PwaUpdateManager() {
   }
 
   function reopenWithVerifiedUpdate(): void {
+    // قد يعدّل المستخدم حقلاً أثناء انتظار العامل؛ نحفظ آخر حالة في نفس مهمة إعادة الفتح.
+    if (!preserveUpdateDrafts()) {
+      markAttemptFailed();
+      const message =
+        "تعذّر حفظ آخر تعديلاتك محلياً؛ بقيت الصفحة مفتوحة. أعد المحاولة بعد مراجعة عملك.";
+      setUpdateError(message);
+      notify.err(message);
+      return;
+    }
     const version = autoAttemptVersionRef.current;
     if (
       version &&
@@ -611,6 +624,23 @@ export function PwaUpdateManager() {
     });
   }
 
+  function preserveUpdateDrafts(): boolean {
+    const interactionSaved = saveInteractionDraft();
+    const autosaves = flushAutosaves();
+    const storefrontSave = requestStorefrontPersistence();
+    const storefrontRequired = requiresStorefrontPersistence({
+      hostname: window.location.hostname,
+      pathname: pathnameRef.current,
+    });
+    return (
+      !(hasUnsavedInteraction() && !interactionSaved) &&
+      autosaves.ok &&
+      storefrontSave.ok &&
+      (!storefrontRequired ||
+        automaticStorefrontPersistenceIsSafe(storefrontSave))
+    );
+  }
+
   async function applyUpdate(): Promise<void> {
     if (applying) return;
     if (!("serviceWorker" in navigator)) {
@@ -624,20 +654,7 @@ export function PwaUpdateManager() {
       setUpdateError(null);
 
       // لقطة استرداد فورية قبل أي انتقال، حتى للنماذج القديمة غير المرتبطة بمسودة نوعية.
-      const interactionSaved = saveInteractionDraft();
-      const autosaves = flushAutosaves();
-      const storefrontSave = requestStorefrontPersistence();
-      const storefrontRequired = requiresStorefrontPersistence({
-        hostname: window.location.hostname,
-        pathname: pathnameRef.current,
-      });
-      if (
-        (hasUnsavedInteraction() && !interactionSaved) ||
-        !autosaves.ok ||
-        !storefrontSave.ok ||
-        (storefrontRequired &&
-          !automaticStorefrontPersistenceIsSafe(storefrontSave))
-      ) {
+      if (!preserveUpdateDrafts()) {
         markAttemptFailed();
         const message =
           "تعذّر حفظ السلة أو بيانات الطلب محلياً؛ لم نحدّث الصفحة. راجع طلبك ثم أعد المحاولة.";

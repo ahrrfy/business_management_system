@@ -11,7 +11,7 @@ import {
   stopRealtimeBridge,
   getBridgeStatus,
 } from "./bridge";
-import { sseManager } from "./sseManager";
+import { PWA_SSE_QUIESCE_EVENT, sseManager } from "./sseManager";
 import { realtimeRouter } from "./streamRouter";
 
 import { getCurrentCompanyId } from "../tenancy/context";
@@ -19,6 +19,10 @@ import { getCurrentCompanyId } from "../tenancy/context";
 // ربط الناقل الحلقي بمدير تدفق الـ SSE:
 // أي حدث يرد عبر الناقل (محلياً أو قادماً من عامل PM2 آخر) يُبث فوراً لكافة اتصالات SSE المؤهلة على هذا العامل.
 onBridgeEvent((event: RealtimeEvent) => {
+  if (event.type === PWA_SSE_QUIESCE_EVENT) {
+    sseManager.quiesceForPwa(event);
+    return;
+  }
   sseManager.broadcast(event);
 });
 

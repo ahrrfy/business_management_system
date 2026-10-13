@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import {
   activateRegistrationUpdate,
   decidePwaUpdateAction,
@@ -199,5 +201,119 @@ describe("PWA update lifecycle", () => {
         sendActivation: () => undefined,
       }),
     ).resolves.toMatchObject({ status: "activated" });
+  });
+});
+
+describe("waiting worker stream release protocol", () => {
+  function setup(fetchImpl: typeof fetch) {
+    const handlers: Array<(event: any) => void> = [];
+    const pending: Promise<unknown>[] = [];
+    const skipWaiting = vi.fn(async () => undefined);
+    runInNewContext(
+      readFileSync(
+        new URL("../../public/pwa-update-worker.js", import.meta.url),
+        "utf8",
+      ),
+      {
+        self: {
+          location: { origin: "https://erp.example" },
+          skipWaiting,
+          addEventListener: (_type: string, handler: any) =>
+            handlers.push(handler),
+        },
+        fetch: fetchImpl,
+        URL,
+        AbortController,
+        setTimeout,
+        clearTimeout,
+      },
+    );
+    return {
+      skipWaiting,
+      send(type: string, origin = "https://erp.example") {
+        const reply = vi.fn();
+        for (const handler of handlers)
+          handler({
+            data: { type, requestId: "test" },
+            source: { url: `${origin}/delivery` },
+            ports: [{ postMessage: reply }],
+            waitUntil: (promise: Promise<unknown>) => pending.push(promise),
+          });
+        return reply;
+      },
+      settle: () => Promise.all(pending),
+    };
+  }
+
+  it("releases the authenticated stream before requesting activation and coalesces legacy messages", async () => {
+    let release!: (value: Response) => void;
+    const transport = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const worker = setup(transport as typeof fetch);
+    const reply = worker.send("PWA_ACTIVATE");
+    worker.send("SKIP_WAITING");
+    expect(worker.skipWaiting).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(1));
+    expect(transport).toHaveBeenCalledWith(
+      "/api/realtime/pwa-quiesce",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "same-origin",
+        body: "{}",
+      }),
+    );
+    release({ ok: true } as Response);
+    await worker.settle();
+    expect(worker.skipWaiting).toHaveBeenCalledTimes(1);
+    expect(reply).toHaveBeenCalledWith({
+      type: "PWA_ACTIVATION_ACCEPTED",
+      requestId: "test",
+    });
+  });
+
+  it("supports a legacy SKIP_WAITING-only client", async () => {
+    const transport = vi.fn(async () => ({ ok: true }) as Response);
+    const worker = setup(transport as typeof fetch);
+    worker.send("SKIP_WAITING");
+    await worker.settle();
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(worker.skipWaiting).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries stream release after a failed POST while the first activation is still pending", async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({ ok: true });
+    const worker = setup(transport as typeof fetch);
+    worker.skipWaiting.mockImplementation(() => new Promise(() => undefined));
+    worker.send("PWA_ACTIVATE");
+    await vi.waitFor(() => expect(worker.skipWaiting).toHaveBeenCalledTimes(1));
+    worker.send("SKIP_WAITING");
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(2));
+  });
+
+  it("does not release streams for a cross-origin sender", async () => {
+    const transport = vi.fn(async () => ({ ok: true }) as Response);
+    const worker = setup(transport as typeof fetch);
+    worker.send("PWA_ACTIVATE", "https://other.example");
+    await worker.settle();
+    expect(transport).not.toHaveBeenCalled();
+    expect(worker.skipWaiting).not.toHaveBeenCalled();
+  });
+
+  it("still requests activation when an anonymous or offline release request fails", async () => {
+    const transport = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    const worker = setup(transport as typeof fetch);
+    worker.send("PWA_ACTIVATE");
+    await worker.settle();
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(worker.skipWaiting).toHaveBeenCalledTimes(1);
   });
 });

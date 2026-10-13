@@ -2,15 +2,59 @@
 // الإقرار يعني أن العامل المنتظر استلم الطلب وأن skipWaiting قُبل؛ العميل لا
 // يعيد فتح الصفحة إلا بعد أن يرى العامل نفسه active فعلياً.
 /* global self */
+let activationRequest = null;
+
+function activateAfterStreamRelease() {
+  if (activationRequest) return activationRequest;
+  const request = Promise.resolve().then(async () => {
+    // العامل القديم قد يحتجز جسماً متدفقاً عبر NetworkOnly. نحرر قناة هذا
+    // الحساب عبر العمال قبل التفعيل؛ لا نمس البيانات أو التسجيل أو التخزين.
+    const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(), 2_000);
+    try {
+      await fetch("/api/realtime/pwa-quiesce", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+        signal: abort.signal,
+      });
+    } catch {
+      // المتجر المجهول أو انقطاع الشبكة لا يمنع طلب التفعيل؛ العميل يثبت activated.
+    } finally {
+      clearTimeout(timeout);
+      // ندمج طلبات التحرير المتزامنة فقط؛ قد يبقى skipWaiting معلقاً،
+      // لذلك يجب أن تسمح المحاولة اللاحقة بطلب HTTP جديد بعد تعافي الشبكة.
+      if (activationRequest === request) activationRequest = null;
+    }
+    await self.skipWaiting();
+  });
+  activationRequest = request;
+  return request;
+}
+
 self.addEventListener("message", (event) => {
-  if (!event.data || event.data.type !== "PWA_ACTIVATE") return;
+  if (
+    !event.data ||
+    !["PWA_ACTIVATE", "SKIP_WAITING"].includes(event.data.type)
+  )
+    return;
+  try {
+    if (
+      !event.source?.url ||
+      new URL(event.source.url).origin !== self.location.origin
+    )
+      return;
+  } catch {
+    return;
+  }
 
   const requestId =
     typeof event.data.requestId === "string"
       ? event.data.requestId.slice(0, 128)
       : "";
   const replyPort = event.ports && event.ports[0];
-  const activation = self.skipWaiting();
+  const activation = activateAfterStreamRelease();
 
   event.waitUntil(
     activation

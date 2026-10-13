@@ -17,6 +17,7 @@ export default defineConfig({
       "client/src/components/PwaUpdateManager.test.ts",
       "client/src/components/InteractionDraftSafety.test.ts",
       "client/src/lib/interactionDraft.test.ts",
+      "server/realtime/__tests__/pwaQuiesceRouter.test.ts",
       "server/config/storefrontProductionReadiness.test.ts",
       "server/middleware/__tests__/storefrontPublicBatchGuard.test.ts",
       "server/services/__tests__/storefrontOrderGate.test.ts",

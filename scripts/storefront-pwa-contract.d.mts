@@ -12,3 +12,7 @@ export function storefrontPublicImageCacheMatcher(
 export function storefrontPrivateImageNetworkMatcher(
   input: WorkboxUrlMatchInput,
 ): boolean;
+
+export function storefrontApiNetworkMatcher(
+  input: WorkboxUrlMatchInput,
+): boolean;
