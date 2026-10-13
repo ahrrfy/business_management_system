@@ -586,7 +586,7 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
       createdBy: CASHIER1_ID,
     });
 
-    // Attempting to refund 5000 when drawer only has 1000 must fail
+    // Attempting to refund 5000 when drawer only has 1000 must route to approval
     await expect(
       returnSaleDirect(
         {
@@ -605,8 +605,11 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
         cashier1Actor,
       ),
     ).rejects.toMatchObject({
-      code: "PRECONDITION_FAILED",
-      message: expect.stringContaining("رصيد الدرج المتاح"),
+      decision: {
+        result: "APPROVAL_REQUIRED",
+        approvalOperation: "salesControl.requestReturn",
+        reason: expect.stringContaining("مصدر نقد بديل"),
+      },
     });
   });
 
@@ -940,7 +943,7 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
       createdBy: CASHIER1_ID,
     });
 
-    // Drawer is now at 0.00. Direct cash return is blocked by liquidity guard
+    // Drawer is now at 0.00. Direct cash return routes to approval for an alternate source
     await expect(
       returnSaleDirect(
         {
@@ -959,7 +962,10 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
         cashier1Actor,
       ),
     ).rejects.toMatchObject({
-      code: "PRECONDITION_FAILED",
+      decision: {
+        result: "APPROVAL_REQUIRED",
+        approvalOperation: "salesControl.requestReturn",
+      },
     });
 
     // Cashier routes operation to request queue for manager treasury approval

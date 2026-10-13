@@ -59,7 +59,7 @@ describe("final operational UI cutover", () => {
       "<RequireRole gate={INVOICE_LIST_GATE}><InvoiceDetail /></RequireRole>",
     );
     expect(app).toContain(
-      '<Route path="/returns"><Shell><RequireRole roles={["admin","manager","cashier","accountant","auditor"]} module="sales" level="READ"><Returns /></RequireRole></Shell></Route>',
+      '<Route path="/returns"><Shell><RequireRole operations={["returns.executeSalesReturnCart", "returns.executePurchaseReturnCart"]} roles={["admin","manager","cashier","accountant","auditor"]} module="sales" level="READ"><Returns /></RequireRole></Shell></Route>',
     );
     expect(app).toContain(
       '<Route path="/sales-returns/new"><Redirect to="/returns?tab=sales" /></Route>',
