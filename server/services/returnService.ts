@@ -2853,8 +2853,9 @@ export async function returnSaleDirect(
             (effectivePermissions.sales !== "NONE" &&
               (hasReceptionFull || (isCashierRole && hasSalesFull)))));
 
+      const currentOperationUser = storedOperationUser(userRow, customRoleRow);
       const canonicalAuthorized = canonicalOperationAllowed(
-        storedOperationUser(userRow, customRoleRow), "returns.create",
+        currentOperationUser, "returns.create",
       );
       // The canonical grant is the exact operation authority. This matters for
       // reception/print presets whose broad sales module intentionally remains
@@ -2908,8 +2909,17 @@ export async function returnSaleDirect(
       // Every non-privileged delegate is subject to the same transaction
       // limits. A sparse canonical grant must never turn a sales representative
       // or another custom delegate into an unlimited direct-refund actor.
-      const requiresOperationalLimits =
-        !isOwner && !isAdmin && effectiveRole !== "manager";
+      const currentApprovalAllowed = isOwner || (
+        canonicalOperationAllowed(currentOperationUser, "salesControl.approve") ??
+        moduleAccessAllowed(
+          currentOperationUser.role,
+          currentOperationUser.permissionsOverride as PermissionMap | null,
+          "sales",
+          "FULL",
+          ["manager", "admin"],
+        )
+      );
+      const requiresOperationalLimits = !currentApprovalAllowed;
 
       if (requiresOperationalLimits) {
         const directRefund = coreInput.resolution ?? coreInput.refund;

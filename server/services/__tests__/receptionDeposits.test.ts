@@ -528,7 +528,10 @@ describe("D11 — لا إلغاء وطلبٌ عليه محتجز؛ وبعد ال
     // moneyLocked لا يهبط ⇒ الإلغاء يبقى مديرياً حتى بعد الردّ الكامل.
     await expect(cancelDraft(
       { draftId: p.draftId, version: 0, reason: "محاولة كاشير" }, CASHIER,
-    )).rejects.toMatchObject({ code: "FORBIDDEN" });
+    )).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringContaining("اعتماد مدير"),
+    });
     const done = await cancelDraft(
       { draftId: p.draftId, version: 0, reason: "الزبون عدل عن الطلب — دُوّنت بنوده" }, MANAGER,
     );

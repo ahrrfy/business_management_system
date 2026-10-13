@@ -410,6 +410,44 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
     });
   });
 
+  it("F2d: a manager with approval authority revoked remains subject to the refund cap", async () => {
+    await db().update(s.users).set({
+      operationPolicy: {
+        version: 1,
+        grants: {
+          "operation.returns.create": true,
+          "operation.salesControl.approve": false,
+        },
+      },
+      operationalCaps: { maxRefundAmountIqd: "1000.00" },
+    }).where(eq(s.users.id, MGR_ID));
+    const shift = await openShift(MGR_ID, 1);
+    const { invoiceId, itemId } = await createSaleInvoice({
+      shiftId: shift,
+      actor: managerActor,
+      paidAmount: "5000.00",
+    });
+
+    await expect(returnSaleDirect({
+      invoiceId,
+      lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "5000.00",
+        shiftId: shift,
+        reason: "اختبار مدير سحبت منه صلاحية الاعتماد",
+        disposition: "RESTOCK",
+      },
+      operatorReason: "سحب صلاحية الاعتماد يفعّل سقف التنفيذ المباشر",
+    }, managerActor)).rejects.toMatchObject({
+      decision: {
+        result: "APPROVAL_REQUIRED",
+        reason: expect.stringContaining("1000.00"),
+      },
+    });
+  });
+
   it("F3: Cross-Branch Isolation Guard — Direct cashier access or return on invoice from Branch 2 is strictly FORBIDDEN", async () => {
     const shiftB2 = await openShift(CASHIER_B2_ID, 2);
     const { invoiceId, itemId } = await createSaleInvoice({
