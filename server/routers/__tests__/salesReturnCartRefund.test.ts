@@ -116,8 +116,13 @@ async function openShift(): Promise<number> {
   return Number((r as unknown as { insertId?: number }[])[0]?.insertId ?? 1);
 }
 
-/** بيعٌ نقديٌّ كامل لـ`qty` قطعة (١٠.٠٠ للقطعة) لعميلٍ مسجّل على الوردية — يموّل الدرج ويُنشئ فاتورة. */
-async function sellCashToCustomer(shiftId: number, customerId: number, qty: number) {
+/** بيعٌ كامل لـ`qty` قطعة (١٠.٠٠ للقطعة) لعميلٍ مسجّل على الوردية. */
+async function sellToCustomer(
+  shiftId: number,
+  customerId: number,
+  qty: number,
+  method: "CASH" | "CARD" = "CASH",
+) {
   const sale = await createSale(
     {
       branchId: 1,
@@ -125,7 +130,11 @@ async function sellCashToCustomer(shiftId: number, customerId: number, qty: numb
       customerId,
       sourceType: "POS",
       lines: [{ variantId: 1, productUnitId: 1, quantity: String(qty) }],
-      payment: { amount: (qty * 10).toFixed(2), method: "CASH" },
+      payment: {
+        amount: (qty * 10).toFixed(2),
+        method,
+        reference: method === "CARD" ? "SALE-CARD-REF" : undefined,
+      },
     },
     cashier,
   );
@@ -176,7 +185,7 @@ describe.sequential("returns.executeSalesReturnCart — suite", () => {
   describe.sequential("returns.executeSalesReturnCart — سلامة المسار الماليّ (فاتورةٌ مطابقة)", () => {
   it("⭐ CASH: إيصالُ صرفٍ (OUT/DRAWER) + قيد PAYMENT_OUT + reconcile نظيف + رصيد العميل صفر", async () => {
     const shiftId = await openShift();
-    const sale = await sellCashToCustomer(shiftId, 1, 3); // ٣٠.٠٠ نقداً في الدرج
+    const sale = await sellToCustomer(shiftId, 1, 3); // ٣٠.٠٠ نقداً في الدرج
     // خطُّ الأساس: بيعٌ نقديٌّ مسدَّدٌ كاملاً ⇒ لا انحراف ولا رصيد على العميل.
     expect(await reconcileCustomerBalances()).toEqual([]);
     expect(await customerBalance(1)).toBe("0.00");
@@ -232,7 +241,7 @@ describe.sequential("returns.executeSalesReturnCart — suite", () => {
 
   it("CARD: إيصالُ صرفٍ (OUT/بطاقة بلا درج) + قيد PAYMENT_OUT + reconcile نظيف + رصيد العميل صفر", async () => {
     const shiftId = await openShift();
-    const sale = await sellCashToCustomer(shiftId, 1, 3);
+    const sale = await sellToCustomer(shiftId, 1, 3, "CARD");
 
     const caller = returnRouter.createCaller(context());
     await caller.executeSalesReturnCart({
@@ -264,32 +273,38 @@ describe.sequential("returns.executeSalesReturnCart — suite", () => {
     expect(await customerBalance(1)).toBe("0.00");
   });
 
-  it("STORE_CREDIT: رصيد العميل يصير سالباً (رصيد متجر) + reconcile نظيف + بلا إيصالٍ نقديّ/بطاقة", async () => {
+  it("STORE_CREDIT لفاتورة نقدية يتطلب اعتماداً ولا يغيّر الرصيد أو المخزون", async () => {
     const shiftId = await openShift();
-    const sale = await sellCashToCustomer(shiftId, 1, 3);
+    const sale = await sellToCustomer(shiftId, 1, 3);
 
     const caller = returnRouter.createCaller(context());
-    await caller.executeSalesReturnCart({
-      invoiceNumber: sale.invoiceNumber,
-      customer: { customerId: 1, name: "زبون مسجّل" },
-      disposition: "RESTOCK",
-      items: cartItems,
-      settlement: { method: "STORE_CREDIT", totalAmount: "30.00" },
-      clientRequestId: "sr-cart-credit-1",
-    });
+    await expect(
+      caller.executeSalesReturnCart({
+        invoiceNumber: sale.invoiceNumber,
+        customer: { customerId: 1, name: "زبون مسجّل" },
+        disposition: "RESTOCK",
+        items: cartItems,
+        settlement: { method: "STORE_CREDIT", totalAmount: "30.00" },
+        clientRequestId: "sr-cart-credit-1",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
-    // إيداعُ رصيد متجرٍ لا يُحرّك نقداً ⇒ لا إيصال قبض/صرف ولا قيد PAYMENT_OUT.
+    // تغيير وسيلة الرد يحتاج اعتماداً؛ لا ينشأ أي أثر للمرتجع المباشر.
     expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toHaveLength(0);
     expect(await entriesOfType("PAYMENT_OUT")).toHaveLength(0);
-
-    // الرصيد سالبٌ بقيمة المرتجع (المتجر يدين للعميل)، والدفتر يطابقه.
-    expect(await customerBalance(1)).toBe("-30.00");
+    expect(await entriesOfType("RETURN")).toHaveLength(0);
+    expect(await customerBalance(1)).toBe("0.00");
+    const stock = await db()
+      .select({ q: s.branchStock.quantity })
+      .from(s.branchStock)
+      .where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)));
+    expect(Number(stock[0]?.q)).toBe(97);
     expect(await reconcileCustomerBalances()).toEqual([]);
   });
 });
 
 describe.sequential("returns.executeSalesReturnCart — عميلٌ مسجّلٌ بلا فاتورةٍ مطابقة (فجوة reconcile)", () => {
-  it("⭐ CASH + عميلٌ + بلا فاتورة: reconcile نظيف ولا انحراف يُنسَب للعميل", async () => {
+  it("⭐ CASH + عميلٌ + بلا فاتورة: يحتاج اعتماداً ولا يكتب أثراً", async () => {
     const shiftId = await openShift();
     // تمويلُ الدرج مباشرةً (بلا بيع) كي يتّسع للصرف — إيصالٌ بلا قيدٍ فلا يمسّ reconcile.
     await db().insert(s.receipts).values({
@@ -306,26 +321,20 @@ describe.sequential("returns.executeSalesReturnCart — عميلٌ مسجّلٌ 
     });
 
     const caller = returnRouter.createCaller(context());
-    await caller.executeSalesReturnCart({
-      // بلا invoiceNumber — الشاشة تُرسله undefined حين لا تُدخَل فاتورة.
-      customer: { customerId: 1, name: "زبون مسجّل" },
-      disposition: "RESTOCK",
-      items: cartItems,
-      settlement: { method: "CASH", totalAmount: "30.00", shiftId },
-      clientRequestId: "sr-cart-cash-noinv-1",
-    });
+    await expect(
+      caller.executeSalesReturnCart({
+        // بلا invoiceNumber — الشاشة تُرسله undefined حين لا تُدخَل فاتورة.
+        customer: { customerId: 1, name: "زبون مسجّل" },
+        disposition: "RESTOCK",
+        items: cartItems,
+        settlement: { method: "CASH", totalAmount: "30.00", shiftId },
+        clientRequestId: "sr-cart-cash-noinv-1",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
-    // ⭐ بلاغ Codex P1 — اتّساقُ رافدَي الردّ: قيدا RETURN و PAYMENT_OUT لعمليةٍ واحدة يجب أن
-    // يُنسَبا للعميل **بالطريقة نفسها**. بلا فاتورةٍ مطابقة يُستبعَد كلاهما (customerId=null) ⇒ لا
-    // يجمع أيُّ تقريرٍ (getARAging بنطاق الفرع · دفتر العميل المزدوج) قيدَ RETURN (−30) بلا مقابل
-    // PAYMENT_OUT (+30) فيُظهر رصيداً وهمياً. قبل الإصلاح كان RETURN يحمل customerId وحده — عدمُ
-    // اتّساقٍ لا يراه reconcileCustomerBalances لأنّه لا يجمع RETURN، فمرّ صامتاً.
-    expect(await refundLegCustomerIds()).toEqual({
-      returnLeg: null,
-      paymentLeg: null,
-    });
-
-    // لا فاتورةَ تنقص AR ولا رصيدَ تغيّر ⇒ reconcile نظيف، والرصيد صفرٌ (صرفٌ نقديٌّ محضٌ للزبون).
+    expect(await entriesOfType("RETURN")).toHaveLength(0);
+    expect(await entriesOfType("PAYMENT_OUT")).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
     expect(await reconcileCustomerBalances()).toEqual([]);
     expect(await customerBalance(1)).toBe("0.00");
   });
@@ -342,7 +351,7 @@ describe.sequential("returns.executeSalesReturnCart — عميلٌ مسجّلٌ 
         settlement: { method: "STORE_CREDIT", totalAmount: "30.00" },
         clientRequestId: "sr-cart-credit-noinv-1",
       }),
-    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     // صفر أثر (المعاملة ذرّية): الرصيد صفرٌ، لا حركة مخزون، لا قيود، وreconcile نظيف.
     expect(await customerBalance(1)).toBe("0.00");

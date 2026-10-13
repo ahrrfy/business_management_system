@@ -113,10 +113,10 @@ describe("getEffectivePermissions — المسار الخادميّ الكامل
     expect(eff?.access.station).toBe("NONE");
   });
 
-  it("admin ⇒ كل الوحدات مصدرها admin + station=MULTI", async () => {
+  it("admin غير المالك ⇒ قالب العمليات مصدره operationPolicy + station=MULTI", async () => {
     const eff = await getEffectivePermissions(1);
     expect(eff?.access.station).toBe("MULTI");
-    expect(eff?.modules.every((m) => m.source === "admin")).toBe(true);
+    expect(eff?.modules.every((m) => m.source === "operationPolicy")).toBe(true);
   });
 });
 

@@ -58,7 +58,7 @@ import {
   creditLine,
   debitLine,
 } from "../services/accounting/postingEngine";
-import { money, toDbMoney } from "../services/money";
+import { money, round2, toDbMoney } from "../services/money";
 import { assertCashOutAvailable } from "../services/cash/cashAvailability";
 import { getDb, type Tx } from "../db";
 import { logAudit } from "../services/auditService";
@@ -2390,12 +2390,81 @@ export const returnRouter = router({
 
             matchedInvoice = found;
 
+            const paidAmount = money(matchedInvoice.paidAmount ?? "0");
+            const remainingUnpaidAmount = Decimal.max(
+              0,
+              money(matchedInvoice.total)
+                .minus(money(matchedInvoice.returnedTotal ?? "0"))
+                .minus(paidAmount),
+            );
+            const unremittedDeliveryCustody = matchedDeliveryPreview
+              ? (
+                  await remainingUnremittedDeliveryCustody(
+                    tx,
+                    Number(matchedDeliveryPreview.id),
+                  )
+                ).total
+              : money(0);
+            const maxCreditOffsetAmount = round2(
+              remainingUnpaidAmount.plus(unremittedDeliveryCustody),
+            );
+
+            // Reject impossible settlement rails before approval routing. A manager may
+            // approve an exceptional workflow, but the cart executor must never pay out
+            // more than the invoice actually collected or offset more than its open debt.
+            if (
+              (input.settlement.method === "CASH" ||
+                input.settlement.method === "CARD") &&
+              returnTotalDec.gt(paidAmount)
+            ) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "مبلغ الاسترداد يتجاوز المدفوع الفعلي للفاتورة",
+                  why: `المبلغ المطلوب استرداده (${returnTotalDec.toFixed(2)} د.ع) أكبر من إجمالي المسدد فعلياً على الفاتورة (${paidAmount.toFixed(2)} د.ع)${paidAmount.lte(0) ? " — الفاتورة آجلة بالكامل ولم يُقبض منها أي مبلغ" : ""}`,
+                  doThis:
+                    "لا يمكن صرف مبلغ يفوق ما قبضه المحل؛ استخدم معادلة الذمة للجزء الآجل",
+                }),
+              });
+            }
+            if (input.settlement.method === "CREDIT_OFFSET") {
+              const effectiveCustomerId =
+                input.customer?.customerId ??
+                (matchedInvoice.customerId
+                  ? Number(matchedInvoice.customerId)
+                  : null);
+              if (!effectiveCustomerId) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: "تعذر تنفيذ معادلة الذمة",
+                    why: "طريقة معادلة الذمم تتطلب تحديد عميل مسجل في النظام لإسقاط المبلغ من حسابه الآجل",
+                    doThis: "اختر العميل من CRM أو اربط الفاتورة بعميل مسجل",
+                  }),
+                });
+              }
+              if (returnTotalDec.gt(maxCreditOffsetAmount)) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: "مبلغ معادلة الذمة يتجاوز الرصيد القابل للعكس",
+                    why: `المبلغ المطلوب (${returnTotalDec.toFixed(2)} د.ع) أكبر من مجموع الجزء الآجل والعهدة الحية غير الموردة (${maxCreditOffsetAmount.toFixed(2)} د.ع)`,
+                    doThis:
+                      "خفّض مبلغ معادلة الذمة إلى الرصيد القابل للعكس، وعالج أي جزء مدفوع بطريقة الدفع الأصلية",
+                  }),
+                });
+              }
+            }
+
             if (directLimitsApply) {
-              const originalPaymentMethods = matchedInvoice.paymentMethod
-                ? [matchedInvoice.paymentMethod]
-                : money(matchedInvoice.paidAmount ?? "0").isZero()
-                  ? ["CREDIT_OFFSET"]
-                  : [];
+              const originalPaymentMethods = Array.from(
+                new Set([
+                  ...(matchedInvoice.paymentMethod
+                    ? [matchedInvoice.paymentMethod]
+                    : []),
+                  ...(maxCreditOffsetAmount.gt(0) ? ["CREDIT_OFFSET"] : []),
+                ]),
+              );
               const decision = evaluateRefundOperationalDecision({
                 operationAllowed: true,
                 sameBranch: Number(matchedInvoice.branchId) === actorBranchId,
@@ -2463,42 +2532,6 @@ export const returnRouter = router({
                     "عدّل مبالغ وأصناف السلة لتكون ضمن حدود المتبقي الفعلي للفاتورة",
                 }),
               });
-            }
-
-            // 2) الاسترداد النقدي أو بالبطاقة لا يمكن أن يتجاوز المسدد فعلياً
-            if (
-              input.settlement.method === "CASH" ||
-              input.settlement.method === "CARD"
-            ) {
-              const paidDec = money(matchedInvoice.paidAmount ?? "0");
-              if (returnTotalDec.gt(paidDec)) {
-                throw new TRPCError({
-                  code: "BAD_REQUEST",
-                  message: appErrorMessage({
-                    what: "مبلغ الاسترداد يتجاوز المدفوع الفعلي للفاتورة",
-                    why: `المبلغ المطلوب استرداده نقداً (${returnTotalDec.toFixed(2)} د.ع) أكبر من إجمالي المسدد فعلياً على الفاتورة (${paidDec.toFixed(2)} د.ع)${paidDec.lte(0) ? " — الفاتورة آجلة بالكامل ولم يُقبض منها أي مبلغ نقدي" : ""}`,
-                    doThis:
-                      "لا يمكن صرف نقد أو بطاقة بمبلغ يفوق ما قبضه المحل؛ اختر طريقة «معادلة ذمم (إنقاص الذمة)» لتسوية المبلغ في حساب العميل دون سحب نقد من الصندوق",
-                  }),
-                });
-              }
-            }
-
-            // 3) التحقق من وجود عميل في حال معادلة الذمم CREDIT_OFFSET
-            if (input.settlement.method === "CREDIT_OFFSET") {
-              const effectiveCustomerId =
-                input.customer?.customerId ??
-                (matchedInvoice.customerId ? Number(matchedInvoice.customerId) : null);
-              if (!effectiveCustomerId) {
-                throw new TRPCError({
-                  code: "BAD_REQUEST",
-                  message: appErrorMessage({
-                    what: "تعذر تنفيذ معادلة الذمة",
-                    why: "طريقة معادلة الذمم تتطلب تحديد عميل مسجل في النظام لإسقاط المبلغ من حسابه الآجل",
-                    doThis: "اختر العميل من CRM أو اربط الفاتورة بعميل مسجل",
-                  }),
-                });
-              }
             }
 
             // 3) التحقق من بنود الفاتورة وكمياتها بالوحدة الأساس وحساب معاملات التحويل
