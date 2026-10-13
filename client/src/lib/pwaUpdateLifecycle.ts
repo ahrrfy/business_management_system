@@ -69,7 +69,6 @@ function requestActivation(
       port = channel.port1;
       port.onmessage = (event) => {
         if (event.data?.type === "PWA_ACTIVATION_ACCEPTED") {
-          if (retryTimer) clearTimeout(retryTimer);
           onAcknowledged();
         }
       };
@@ -85,15 +84,20 @@ function requestActivation(
 
   // العامل المنشور قبل إضافة بروتوكول الإقرار لا يعرف إلا رسالة Workbox هذه.
   worker.postMessage({ type: "SKIP_WAITING" });
-  // إعادة واحدة توقظ بعض WebViews التي جمّدت العامل فور انتقال التطبيق للخلفية.
-  retryTimer = setTimeout(() => {
+  // الإقرار لا يثبت activated؛ أعد تحرير التدفق حتى يثبت الانتظار التفعيل أو ينتهي.
+  let stopped = false;
+  const retry = () => {
+    if (stopped) return;
     try {
       worker.postMessage({ type: "SKIP_WAITING" });
     } catch {
       // الانتقال إلى activated/redundant قبل المؤقت يجعل الإرسال غير لازم.
     }
-  }, 3_000);
+    retryTimer = setTimeout(retry, 3_000);
+  };
+  retryTimer = setTimeout(retry, 3_000);
   return () => {
+    stopped = true;
     if (retryTimer) clearTimeout(retryTimer);
     port?.close();
   };

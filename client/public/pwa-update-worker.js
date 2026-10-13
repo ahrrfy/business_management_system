@@ -12,15 +12,19 @@ function activateAfterStreamRelease() {
     const abort = new AbortController();
     const timeout = setTimeout(() => abort.abort(), 2_000);
     try {
-      await fetch("/api/realtime/pwa-quiesce", {
+      const response = await fetch("/api/realtime/pwa-quiesce", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: "{}",
         signal: abort.signal,
       });
-    } catch {
-      // المتجر المجهول أو انقطاع الشبكة لا يمنع طلب التفعيل؛ العميل يثبت activated.
+      // 401 يؤكد المتجر المجهول؛ ليس له تدفق مصادق يمكن تحريره بهذه الجلسة.
+      if (!response.ok && response.status !== 401)
+        throw new Error("PWA_STREAM_RELEASE_FAILED");
+    } catch (error) {
+      // انقطاع المتصفح نفسه ينهي التدفقات؛ أما فشل الخادم العابر فيبقى قابلاً للإعادة.
+      if (self.navigator?.onLine !== false) throw error;
     } finally {
       clearTimeout(timeout);
       // ندمج طلبات التحرير المتزامنة فقط؛ قد يبقى skipWaiting معلقاً،
@@ -39,6 +43,8 @@ self.addEventListener("message", (event) => {
     !["PWA_ACTIVATE", "SKIP_WAITING"].includes(event.data.type)
   )
     return;
+  // importScripts يسبق مستمع Workbox المولّد؛ لا نسمح له بتجاوز حاجز التحرير.
+  event.stopImmediatePropagation();
   try {
     if (
       !event.source?.url ||

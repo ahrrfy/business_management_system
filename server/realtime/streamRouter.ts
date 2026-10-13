@@ -9,7 +9,7 @@ import { getSessionContext } from "../auth/session";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { PWA_SSE_QUIESCE_EVENT, sseManager } from "./sseManager";
-import { getBridgeStatus, publishToBridge } from "./bridge";
+import { getBridgeStatus, publishToBridgeConfirmed } from "./bridge";
 import { logger } from "../logger";
 import { csrfGuard } from "../middleware/csrf";
 
@@ -31,7 +31,7 @@ realtimeRouter.post(
         res.status(401).json({ error: "UNAUTHORIZED" });
         return;
       }
-      publishToBridge(
+      const released = await publishToBridgeConfirmed(
         createRealtimeEvent(
           PWA_SSE_QUIESCE_EVENT,
           {},
@@ -41,6 +41,12 @@ realtimeRouter.post(
           },
         ),
       );
+      if (!released) {
+        res
+          .status(503)
+          .json({ error: "PWA_RELEASE_UNCONFIRMED", retryable: true });
+        return;
+      }
       res.json({ ok: true });
     } catch (err) {
       logger.error({ err }, "realtime_sse.pwa_quiesce_error");

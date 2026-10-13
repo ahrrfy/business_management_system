@@ -13,7 +13,7 @@ import {
   vi,
 } from "vitest";
 import { COOKIE_NAME } from "@shared/const";
-import { onBridgeEvent } from "../bridge";
+import { onBridgeEvent, realtimeBridge } from "../bridge";
 import { realtimeRouter, sseManager } from "../index";
 import {
   createRealtimeEvent,
@@ -38,6 +38,7 @@ describe("POST realtime PWA quiescence", () => {
   let server: Server;
   let base: string;
   const received: RealtimeEvent[] = [];
+  const published: RealtimeEvent[] = [];
   let unsubscribe: () => void;
   beforeAll(async () => {
     const app = express();
@@ -50,15 +51,27 @@ describe("POST realtime PWA quiescence", () => {
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     unsubscribe = onBridgeEvent((event) => received.push(event));
   });
-  beforeEach(() => {
+  beforeEach(async () => {
+    await realtimeBridge.init({ inMemoryOnly: true, expectedWorkerCount: 1 });
+    published.length = 0;
+    const publishConfirmed =
+      realtimeBridge.publishConfirmed.bind(realtimeBridge);
+    vi.spyOn(realtimeBridge, "publishConfirmed").mockImplementation(
+      (event, timeoutMs) => {
+        published.push(event);
+        return publishConfirmed(event, timeoutMs);
+      },
+    );
     auth.companyId = 1;
     received.length = 0;
     auth.getSession
       .mockReset()
       .mockResolvedValue({ user: { id: 10, role: "cashier", branchId: 1 } });
   });
-  afterEach(() => {
+  afterEach(async () => {
     sseManager.closeAll();
+    vi.restoreAllMocks();
+    await realtimeBridge.stop();
   });
   afterAll(async () => {
     unsubscribe();
@@ -99,8 +112,9 @@ describe("POST realtime PWA quiescence", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
     expect(auth.getSession).toHaveBeenCalledOnce();
-    expect(received).toHaveLength(1);
-    expect(received[0]).toMatchObject({
+    expect(received).toHaveLength(0);
+    expect(published).toHaveLength(1);
+    expect(published[0]).toMatchObject({
       type: "PWA_SSE_QUIESCE",
       payload: {},
       scope: { userId: 10, companyId: 1 },
@@ -127,7 +141,7 @@ describe("POST realtime PWA quiescence", () => {
     const tenant = register("tenant", 10, 1);
     const response = await post({ Cookie: `${COOKIE_NAME}=valid-session` });
     expect(response.status).toBe(200);
-    expect(received[0].scope).toEqual({ userId: 10, companyId: null });
+    expect(published[0].scope).toEqual({ userId: 10, companyId: null });
     expect(own.end).toHaveBeenCalledOnce();
     expect(tenant.end).not.toHaveBeenCalled();
   });
@@ -173,7 +187,7 @@ describe("POST realtime PWA quiescence", () => {
       body: "{}",
     });
     expect(response.status).toBe(200);
-    expect(received).toHaveLength(1);
+    expect(published).toHaveLength(1);
   });
 
   it("rejects cookie requests without any CSRF source proof", async () => {
@@ -188,5 +202,21 @@ describe("POST realtime PWA quiescence", () => {
     expect(response.status).toBe(403);
     expect(auth.getSession).not.toHaveBeenCalled();
     expect(received).toHaveLength(0);
+  });
+
+  it("returns a retriable failure instead of claiming release when all-worker delivery is unproven", async () => {
+    const own = register("own", 10, 1);
+    await realtimeBridge.init({
+      inMemoryOnly: true,
+      isMultiWorker: true,
+      expectedWorkerCount: 3,
+    });
+    const response = await post({ Cookie: `${COOKIE_NAME}=valid-session` });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: "PWA_RELEASE_UNCONFIRMED",
+      retryable: true,
+    });
+    expect(own.end).not.toHaveBeenCalled();
   });
 });

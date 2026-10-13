@@ -10,11 +10,28 @@ import {
   onBridgeEvent,
   stopRealtimeBridge,
   getBridgeStatus,
+  setBridgeReleaseHandler,
 } from "./bridge";
 import { PWA_SSE_QUIESCE_EVENT, sseManager } from "./sseManager";
 import { realtimeRouter } from "./streamRouter";
 
 import { getCurrentCompanyId } from "../tenancy/context";
+
+setBridgeReleaseHandler((event) => {
+  const scope = event.scope;
+  if (
+    event.type !== PWA_SSE_QUIESCE_EVENT ||
+    typeof scope?.userId !== "number" ||
+    !Number.isSafeInteger(scope.userId) ||
+    scope.userId <= 0 ||
+    scope.companyId === undefined ||
+    (scope.companyId !== null &&
+      (!Number.isSafeInteger(scope.companyId) || scope.companyId <= 0))
+  )
+    return false;
+  sseManager.quiesceForPwa(event);
+  return true;
+});
 
 // ربط الناقل الحلقي بمدير تدفق الـ SSE:
 // أي حدث يرد عبر الناقل (محلياً أو قادماً من عامل PM2 آخر) يُبث فوراً لكافة اتصالات SSE المؤهلة على هذا العامل.

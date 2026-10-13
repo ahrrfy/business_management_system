@@ -35,6 +35,46 @@ function registrationStub(input: {
 }
 
 describe("PWA update lifecycle", () => {
+  it("continues activation retries after an early ACK until activated is independently observed", async () => {
+    vi.useFakeTimers();
+    let clientPort: any;
+    vi.stubGlobal(
+      "MessageChannel",
+      class {
+        port1 = (clientPort = { onmessage: null, close: vi.fn() });
+        port2 = {};
+      },
+    );
+    try {
+      const candidate = new WorkerStub();
+      const messages: string[] = [];
+      candidate.postMessage = ((data: { type: string }) => {
+        messages.push(data.type);
+        if (data.type === "PWA_ACTIVATE")
+          clientPort.onmessage({ data: { type: "PWA_ACTIVATION_ACCEPTED" } });
+      }) as typeof candidate.postMessage;
+      const pending = waitForWorkerActivation(
+        registrationStub({ waiting: candidate }),
+        candidate as unknown as ServiceWorker,
+        { timeoutMs: 10_000 },
+      );
+      await vi.advanceTimersByTimeAsync(6_100);
+      expect(messages.filter((type) => type === "SKIP_WAITING")).toHaveLength(
+        3,
+      );
+      candidate.moveTo("activated");
+      await expect(pending).resolves.toEqual({
+        status: "activated",
+        acknowledged: true,
+      });
+      const count = messages.length;
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(messages).toHaveLength(count);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
   it("يفعّل العامل المنتظر من الحالة الفعلية", () => {
     expect(
       decidePwaUpdateAction({
@@ -205,7 +245,7 @@ describe("PWA update lifecycle", () => {
 });
 
 describe("waiting worker stream release protocol", () => {
-  function setup(fetchImpl: typeof fetch) {
+  function setup(fetchImpl: typeof fetch, online = true) {
     const handlers: Array<(event: any) => void> = [];
     const pending: Promise<unknown>[] = [];
     const skipWaiting = vi.fn(async () => undefined);
@@ -217,6 +257,7 @@ describe("waiting worker stream release protocol", () => {
       {
         self: {
           location: { origin: "https://erp.example" },
+          navigator: { onLine: online },
           skipWaiting,
           addEventListener: (_type: string, handler: any) =>
             handlers.push(handler),
@@ -232,14 +273,16 @@ describe("waiting worker stream release protocol", () => {
       skipWaiting,
       send(type: string, origin = "https://erp.example") {
         const reply = vi.fn();
+        const stopImmediatePropagation = vi.fn();
         for (const handler of handlers)
           handler({
             data: { type, requestId: "test" },
             source: { url: `${origin}/delivery` },
             ports: [{ postMessage: reply }],
+            stopImmediatePropagation,
             waitUntil: (promise: Promise<unknown>) => pending.push(promise),
           });
-        return reply;
+        return Object.assign(reply, { stopImmediatePropagation });
       },
       settle: () => Promise.all(pending),
     };
@@ -273,6 +316,7 @@ describe("waiting worker stream release protocol", () => {
       type: "PWA_ACTIVATION_ACCEPTED",
       requestId: "test",
     });
+    expect(reply.stopImmediatePropagation).toHaveBeenCalledTimes(1);
   });
 
   it("supports a legacy SKIP_WAITING-only client", async () => {
@@ -284,17 +328,39 @@ describe("waiting worker stream release protocol", () => {
     expect(worker.skipWaiting).toHaveBeenCalledTimes(1);
   });
 
-  it("retries stream release after a failed POST while the first activation is still pending", async () => {
+  it("retries stream release after a failed POST even when skipWaiting resolves immediately", async () => {
     const transport = vi
       .fn()
       .mockResolvedValueOnce({ ok: false, status: 503 })
       .mockResolvedValueOnce({ ok: true });
     const worker = setup(transport as typeof fetch);
-    worker.skipWaiting.mockImplementation(() => new Promise(() => undefined));
     worker.send("PWA_ACTIVATE");
-    await vi.waitFor(() => expect(worker.skipWaiting).toHaveBeenCalledTimes(1));
+    await worker.settle();
+    expect(worker.skipWaiting).not.toHaveBeenCalled();
     worker.send("SKIP_WAITING");
     await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(2));
+    await worker.settle();
+    expect(worker.skipWaiting).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows an anonymous storefront and a genuinely offline browser to activate", async () => {
+    const anonymous = setup(
+      vi.fn(
+        async () => ({ ok: false, status: 401 }) as Response,
+      ) as typeof fetch,
+    );
+    anonymous.send("SKIP_WAITING");
+    await anonymous.settle();
+    expect(anonymous.skipWaiting).toHaveBeenCalledTimes(1);
+    const offline = setup(
+      vi.fn(async () => {
+        throw new Error("offline");
+      }) as typeof fetch,
+      false,
+    );
+    offline.send("SKIP_WAITING");
+    await offline.settle();
+    expect(offline.skipWaiting).toHaveBeenCalledTimes(1);
   });
 
   it("does not release streams for a cross-origin sender", async () => {
@@ -306,14 +372,18 @@ describe("waiting worker stream release protocol", () => {
     expect(worker.skipWaiting).not.toHaveBeenCalled();
   });
 
-  it("still requests activation when an anonymous or offline release request fails", async () => {
+  it("does not acknowledge or request activation after transient release failure", async () => {
     const transport = vi.fn(async () => {
       throw new Error("offline");
     });
     const worker = setup(transport as typeof fetch);
-    worker.send("PWA_ACTIVATE");
+    const reply = worker.send("PWA_ACTIVATE");
     await worker.settle();
     expect(transport).toHaveBeenCalledTimes(1);
-    expect(worker.skipWaiting).toHaveBeenCalledTimes(1);
+    expect(worker.skipWaiting).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith({
+      type: "PWA_ACTIVATION_REJECTED",
+      requestId: "test",
+    });
   });
 });
