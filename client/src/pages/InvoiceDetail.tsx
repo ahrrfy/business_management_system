@@ -168,14 +168,23 @@ export default function InvoiceDetail() {
 
   const cancel = trpc.sales.cancel.useMutation({
     onSuccess: async (r) => {
-      setDone(`أُرسل طلب الإلغاء #${r.requestId} للاعتماد — لم يتغير المخزون أو المال بعد.`);
+      setDone(
+        r.mode === "EXECUTED"
+            ? `تم إلغاء الفاتورة ورد ${Number(r.refundAmount ?? 0).toLocaleString("ar-IQ-u-nu-latn")} د.ع ضمن صلاحية الوردية.`
+          : `أُرسل طلب الإلغاء #${r.requestId} للاعتماد — لم يتغير المخزون أو المال بعد.`,
+      );
       setError("");
       setCancelOpen(false);
       setCancelReason("");
       setCancelConfirmText(""); setCancelReference("");
-      await Promise.all([
-        utils.salesControl.list.invalidate(),
-      ]);
+      await Promise.all(
+        r.mode === "EXECUTED"
+          ? [
+              utils.sales.get.invalidate({ invoiceId }),
+              utils.sales.list.invalidate(),
+            ]
+          : [utils.salesControl.list.invalidate()],
+      );
       setCancelRequestId(crypto.randomUUID());
     },
     onError: (e) => { setError(e.message); setDone(""); },

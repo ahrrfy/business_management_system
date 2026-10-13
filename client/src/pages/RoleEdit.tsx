@@ -13,6 +13,14 @@ import {
   summarizeOperationModules,
   type OperationPolicy,
 } from "@shared/operationPermissions";
+import type { OperationalCaps } from "@shared/atomicPermissions";
+import { resolveOperationalCaps } from "@shared/atomicPermissions";
+import {
+  buildDefaultRoleOperationPolicy,
+  dailyOperationPaths,
+  hasRoleOperationPreset,
+} from "@shared/roleOperationPresets";
+import { OperationalCapsPanel } from "@/components/permissions/OperationalCapsPanel";
 import {
   ROLE_TEMPLATES,
   ROLES,
@@ -58,6 +66,7 @@ export default function RoleEdit() {
     useState<OperationPolicy>(emptyPolicy);
   const [initialPolicy, setInitialPolicy] =
     useState<OperationPolicy>(emptyPolicy);
+  const [operationalCaps, setOperationalCaps] = useState<OperationalCaps>(() => resolveOperationalCaps("user"));
   const [policyEdited, setPolicyEdited] = useState(false);
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState("");
@@ -72,26 +81,32 @@ export default function RoleEdit() {
       ROLE_TEMPLATES[base],
       row.permissions as PermissionMap | null,
     );
+    const roleKey = String(row.key ?? base);
     const policy = editableOperationPolicy(
       row.operationPolicy ??
-        buildOperationPolicyFromLegacy(
+        (hasRoleOperationPreset(roleKey)
+          ? buildDefaultRoleOperationPolicy(roleKey, base, modules)
+          : buildOperationPolicyFromLegacy(
           base,
           modules,
           row.atomicPermissions as Record<string, boolean> | null,
           row.permissions as PermissionMap | null,
-        ),
+        )),
     );
+    const caps = (row.operationalCaps as OperationalCaps | null) ?? resolveOperationalCaps(roleKey, null, null, base);
     setLabel(row.label ?? "");
     setDescription(row.description ?? "");
     setBaseRole(base);
     setOperationPolicy(policy);
     setInitialPolicy(policy);
+    setOperationalCaps(caps);
     setRevision(row.operationPolicyRevision ?? 0);
     baseline.current = JSON.stringify({
       label: row.label ?? "",
       description: row.description ?? "",
       baseRole: base,
       operationPolicy: policy,
+      operationalCaps: caps,
     });
     setLoaded(true);
   }, [detail.data, isEdit, loaded]);
@@ -101,6 +116,7 @@ export default function RoleEdit() {
     description,
     baseRole,
     operationPolicy,
+    operationalCaps,
   });
   const newBlank =
     !label &&
@@ -123,9 +139,10 @@ export default function RoleEdit() {
       setBaseRole(base);
       changePolicy(
         editableOperationPolicy(
-          buildOperationPolicyFromLegacy(base, ROLE_TEMPLATES[base]),
+          buildDefaultRoleOperationPolicy(base, base, ROLE_TEMPLATES[base]),
         ),
       );
+      setOperationalCaps(resolveOperationalCaps(base));
       return;
     }
     const source = cloneRoles.find(
@@ -138,6 +155,7 @@ export default function RoleEdit() {
       source.permissions as PermissionMap | null,
     );
     setBaseRole(base);
+    setOperationalCaps((source.operationalCaps as OperationalCaps | null) ?? resolveOperationalCaps(String(source.key ?? base), null, null, base));
     changePolicy(
       editableOperationPolicy(
         source.operationPolicy ??
@@ -199,6 +217,7 @@ export default function RoleEdit() {
       ...(persistPolicy
         ? { operationPolicy: editableOperationPolicy(operationPolicy) }
         : {}),
+      operationalCaps,
     };
     if (isEdit)
       update.mutate({
@@ -257,7 +276,15 @@ export default function RoleEdit() {
               <AppSelect
                 id="role-base"
                 value={baseRole}
-                onValueChange={(next) => setBaseRole(next as RoleKey)}
+                onValueChange={(next) => {
+                  const selected = next as RoleKey;
+                  setBaseRole(selected);
+                  if (!policyEdited) {
+                    setOperationPolicy(editableOperationPolicy(buildDefaultRoleOperationPolicy(selected, selected, ROLE_TEMPLATES[selected])));
+                    setInitialPolicy(editableOperationPolicy(buildDefaultRoleOperationPolicy(selected, selected, ROLE_TEMPLATES[selected])));
+                    setOperationalCaps(resolveOperationalCaps(selected));
+                  }
+                }}
               >
                 {BASE_ROLE_OPTIONS.map((role) => (
                   <option key={role.key} value={role.key}>
@@ -335,9 +362,13 @@ export default function RoleEdit() {
               baseline={initialPolicy}
               onChange={changePolicy}
               disabled={pending}
+              dailyOperationPaths={dailyOperationPaths(String(detail.data?.key ?? baseRole), baseRole)}
+              operationalCaps={operationalCaps}
+              onOperationalCapsChange={(caps) => setOperationalCaps(caps ?? {})}
             />
           </CardContent>
         </Card>
+        <OperationalCapsPanel caps={operationalCaps} onChange={setOperationalCaps} disabled={pending} />
         {error && (
           <p className="text-sm text-destructive" role="alert">
             {error}

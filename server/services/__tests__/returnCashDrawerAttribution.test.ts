@@ -583,7 +583,7 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
     ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
-  it("كاشير بلا وردية مفتوحة في فرع الفاتورة ⇒ يُرفض التنفيذ المباشر بـ PRECONDITION_FAILED", async () => {
+  it("كاشير بلا وردية مفتوحة في فرع الفاتورة ⇒ تنتقل العملية إلى الاعتماد", async () => {
     // كاشير 2 أنشأ فاتورة على ورديته ثم أُغلقت الوردية
     const cashierShift = await openShiftFor(2, 1);
     const { invoiceId, itemId } = await sellOneCash(cashierShift, cashier);
@@ -600,8 +600,10 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
         { userId: 2, branchId: 1 },
       ),
     ).rejects.toMatchObject({
-      code: "PRECONDITION_FAILED",
-      message: expect.stringContaining("يوجد رد نقدي فعلي"),
+      decision: {
+        result: "APPROVAL_REQUIRED",
+        reason: "الرد النقدي ليس من وردية مفتوحة تخص منفذ المرتجع",
+      },
     });
   });
 
@@ -613,7 +615,7 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
       lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
       codDispatchPending: true,
       paymentMode: "COD",
-    }, manager);
+    }, cashier);
     const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
 
     const result = await returnSaleDirect({

@@ -14,6 +14,14 @@ import {
   resolveOperationPolicy,
   type OperationPolicy,
 } from "@shared/operationPermissions";
+import type { OperationalCaps } from "@shared/atomicPermissions";
+import { resolveOperationalCaps } from "@shared/atomicPermissions";
+import {
+  buildDefaultRoleOperationPolicy,
+  dailyOperationPaths,
+  hasRoleOperationPreset,
+} from "@shared/roleOperationPresets";
+import { OperationalCapsPanel } from "@/components/permissions/OperationalCapsPanel";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { UsagePanel } from "@/components/UsagePanel";
 import { PageHeader } from "@/components/PageHeader";
@@ -98,6 +106,8 @@ export default function UserEdit() {
   const [initialOperationPolicy, setInitialOperationPolicy] =
     useState<OperationPolicy | null>(null);
   const [policyEdited, setPolicyEdited] = useState(false);
+  const [operationalCaps, setOperationalCaps] = useState<OperationalCaps | null>(null);
+  const [capsEdited, setCapsEdited] = useState(false);
   const [operationPolicyRevision, setOperationPolicyRevision] = useState(0);
   const [isOwner, setIsOwner] = useState(false);
   const [error, setError] = useState("");
@@ -150,6 +160,8 @@ export default function UserEdit() {
       setOperationPolicy(initOperationPolicy);
       setInitialOperationPolicy(initOperationPolicy);
       setOperationPolicyRevision(u.operationPolicyRevision ?? 0);
+      const initCaps = (u.operationalCaps as OperationalCaps | null) ?? null;
+      setOperationalCaps(initCaps);
       setIsOwner(!!(u as { isOwner?: boolean }).isOwner);
       baselineRef.current = JSON.stringify({
         name: u.name ?? "",
@@ -163,6 +175,7 @@ export default function UserEdit() {
         hiredAt: toDateInput((u as { hiredAt?: unknown }).hiredAt),
         permsOverride: ((u as { permissionsOverride?: PermissionMap | null }).permissionsOverride as PermissionMap) ?? {},
         operationPolicy: initOperationPolicy,
+        operationalCaps: initCaps,
         isOwner: !!(u as { isOwner?: boolean }).isOwner,
       });
       setLoaded(true);
@@ -181,6 +194,7 @@ export default function UserEdit() {
       hiredAt,
       permsOverride,
       operationPolicy,
+      operationalCaps,
       isOwner,
     });
   const isDirty = loaded && snapshot !== baselineRef.current;
@@ -202,6 +216,7 @@ export default function UserEdit() {
         setPolicyEdited(false);
         setPermsOverride({});
       }
+      if (variables.operationalCaps !== undefined) setCapsEdited(false);
       await invalidate();
     },
     onError: (e) => setError(e.message),
@@ -260,13 +275,17 @@ export default function UserEdit() {
 
   const inheritedOperationPolicy = useMemo(() => {
     if (detail.data?.inheritedOperationPolicy && detail.data.customRoleId === customRoleId && detail.data.role === role) return detail.data.inheritedOperationPolicy;
-    if (!selectedCustomRole?.operationPolicy)
+    if (!selectedCustomRole?.operationPolicy) {
+      const roleKey = String(selectedCustomRole?.key ?? effectiveBaseRole);
+      if (hasRoleOperationPreset(roleKey))
+        return buildDefaultRoleOperationPolicy(roleKey, effectiveBaseRole, roleBasePerms);
       return buildOperationPolicyFromLegacy(
         effectiveBaseRole,
         roleBasePerms,
         selectedCustomRole?.atomicPermissions as Record<string, boolean> | null | undefined,
         selectedCustomRole?.permissions as PermissionMap | null,
       );
+    }
     return resolveOperationPolicy(
       effectiveBaseRole,
       roleBasePerms,
@@ -275,6 +294,11 @@ export default function UserEdit() {
       selectedCustomRole.permissions as PermissionMap | null,
     );
   }, [effectiveBaseRole, roleBasePerms, selectedCustomRole, detail.data, customRoleId, role]);
+  const inheritedOperationalCaps = useMemo(
+    () => (selectedCustomRole?.operationalCaps as OperationalCaps | null) ??
+      resolveOperationalCaps(String(selectedCustomRole?.key ?? effectiveBaseRole), null, null, effectiveBaseRole),
+    [selectedCustomRole, effectiveBaseRole],
+  );
 
   // Ctrl/⌘+S ⇒ حفظ. بلا onCancel/Esc عمداً — الشاشة مكتظّة بقوائم منسدلة (الدور/الفرع) وEsc
   // يتعارض مع إغلاقها (تحذير الهوك نفسه).
@@ -305,6 +329,8 @@ export default function UserEdit() {
     }
     setPermsOverride({});
     setOperationPolicy(null);
+    setOperationalCaps(null);
+    setCapsEdited(true);
     policyGenerationRef.current++;
     setPolicyEdited(true);
   }
@@ -415,6 +441,7 @@ export default function UserEdit() {
             expectedOperationPolicyRevision: operationPolicyRevision,
           }
         : {}),
+      ...(capsEdited ? { operationalCaps } : {}),
     });
   }
 
@@ -739,7 +766,23 @@ export default function UserEdit() {
                 setPolicyEdited(true);
               }}
               disabled={update.isPending}
+              dailyOperationPaths={dailyOperationPaths(String(selectedCustomRole?.key ?? effectiveBaseRole), effectiveBaseRole)}
+              operationalCaps={operationalCaps}
+              inheritedOperationalCaps={inheritedOperationalCaps}
+              onOperationalCapsChange={(caps) => {
+                setOperationalCaps(caps);
+                setCapsEdited(true);
+              }}
             />
+            <div className="mt-4 space-y-2 border-t pt-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-medium">السقوف الفردية</p>
+                <Button type="button" size="sm" variant="outline" disabled={update.isPending || operationalCaps == null} onClick={() => { setOperationalCaps(null); setCapsEdited(true); }}>
+                  وراثة جميع سقوف الدور
+                </Button>
+              </div>
+              <OperationalCapsPanel caps={operationalCaps} onChange={(caps) => { setOperationalCaps(caps); setCapsEdited(true); }} disabled={update.isPending} />
+            </div>
             <Button
               type="button"
               size="sm"

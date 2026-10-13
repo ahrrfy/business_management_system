@@ -2,12 +2,14 @@ import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { assertOperationAuthorityTx } from "../services/authorization/operationAuthority";
 import { appErrorMessage } from "@shared/errors";
+import { OperationalApprovalRequiredError } from "@shared/operationalDecision";
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import {
   moduleAccessAllowed,
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import { canonicalOperationAllowed } from "../operationAuthorization";
 import { variantDescriptor } from "@shared/variantDisplay";
 import { z } from "zod";
 import {
@@ -398,7 +400,7 @@ export const returnRouter = router({
        * ⚠️ **العائدُ نوعٌ مُميَّزٌ بـ`mode`**: كلّ مستهلكٍ يتفرّع على `mode` صراحةً.
        */
       const shouldExecuteDirect =
-        ctx.user.isOwner === true || input.directExecution === true;
+        ctx.user.isOwner === true || input.directExecution !== false;
 
       if (shouldExecuteDirect && (!rawReason || rawReason.trim().length < 3)) {
         throw new TRPCError({
@@ -465,7 +467,9 @@ export const returnRouter = router({
         });
       }
 
+      let approvalDecision: OperationalApprovalRequiredError["decision"] | null = null;
       if (shouldExecuteDirect) {
+        try {
         const executed =
           ctx.user.isOwner === true
             ? await returnSaleAsOwner(
@@ -494,6 +498,7 @@ export const returnRouter = router({
                     branchId: actorBranchId,
                     role: ctx.user.role,
                     isOwner: ctx.user.isOwner,
+                    operationalCaps: ctx.user.resolvedOperationalCaps,
                   },
                 ),
               );
@@ -520,6 +525,10 @@ export const returnRouter = router({
           });
         }
         return { ...executed, mode: "EXECUTED" as const, invoiceId };
+        } catch (error) {
+          if (!(error instanceof OperationalApprovalRequiredError)) throw error;
+          approvalDecision = error.decision;
+        }
       }
 
       const res = await requestSalesControl(
@@ -541,6 +550,7 @@ export const returnRouter = router({
           payloadHash: res.payloadHash,
           lines: input.lines.length,
           reason,
+          decision: approvalDecision,
         },
       });
       const isApproved = res.status === "APPROVED";
@@ -549,6 +559,7 @@ export const returnRouter = router({
         requestId: res.id,
         status: res.status,
         replayed: res.replayed,
+        decision: approvalDecision,
       };
     }),
 
@@ -2137,6 +2148,54 @@ export const returnRouter = router({
             });
           }
 
+          // المسار السريع لسلة المرتجع لا يملك مستند اعتماد مستقلاً يمكن للمدير
+          // تنفيذه لاحقاً. لذلك نفشل مغلقاً قبل أي حركة مخزون/نقد عند غياب
+          // الفاتورة أو تجاوز السقف، ويستعمل الموظف مسار المرتجع المرتبط بالفاتورة
+          // الذي ينشئ طلب SALES_RETURN قابلاً للاعتماد.
+          const directLimitsApply = !(
+            canonicalOperationAllowed(ctx.user, "salesControl.approve") ||
+            (!ctx.user.operationPolicyEnabled &&
+              moduleAccessAllowed(
+                ctx.user.role,
+                ctx.user.permissionsOverride as PermissionMap | null,
+                "sales",
+                "FULL",
+                ["manager", "admin"],
+              ))
+          );
+          if (directLimitsApply && !input.invoiceNumber?.trim()) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: appErrorMessage({
+                what: "يتطلب المرتجع موافقة المدير",
+                why: "لا يمكن للكاشير تنفيذ مرتجع مباشر بلا فاتورة أصلية",
+                doThis:
+                  "اربط المرتجع بالفاتورة الأصلية، أو أنشئ طلب مرتجع من مسار الفاتورة ليعتمده المدير",
+              }),
+            });
+          }
+          const directRefundCap =
+            ctx.user.resolvedOperationalCaps?.maxRefundAmountIqd == null
+              ? null
+              : new Decimal(
+                  ctx.user.resolvedOperationalCaps.maxRefundAmountIqd,
+                );
+          if (
+            directLimitsApply &&
+            directRefundCap != null &&
+            returnTotalDec.gt(directRefundCap)
+          ) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: appErrorMessage({
+                what: "يتطلب المرتجع موافقة المدير",
+                why: `مبلغ المرتجع (${returnTotalDec.toFixed(2)} د.ع) يتجاوز سقف الحساب (${directRefundCap.toFixed(2)} د.ع)`,
+                doThis:
+                  "أنشئ المرتجع من الفاتورة الأصلية ليُحال تلقائياً إلى اعتماد المدير",
+              }),
+            });
+          }
+
           // ٠) التحقق من الفاتورة الأصلية إن أدخلت وفرض الحوكمة المالية الصارمة
           let matchedInvoice: typeof invoices.$inferSelect | null = null;
           let matchedDeliveryPreview: {
@@ -2329,6 +2388,37 @@ export const returnRouter = router({
             }
 
             matchedInvoice = found;
+
+            if (directLimitsApply) {
+              if (Number(matchedInvoice.createdBy) !== Number(ctx.user.id)) {
+                throw new TRPCError({
+                  code: "PRECONDITION_FAILED",
+                  message: appErrorMessage({
+                    what: "يتطلب المرتجع موافقة المدير",
+                    why: "الفاتورة أنشأها موظف آخر",
+                    doThis:
+                      "أنشئ طلب المرتجع من شاشة الفاتورة ليُراجع ويُعتمد قبل التنفيذ",
+                  }),
+                });
+              }
+              if (
+                input.settlement.method === "CASH" &&
+                (matchedInvoice.shiftId == null ||
+                  (input.settlement.shiftId != null &&
+                    Number(input.settlement.shiftId) !==
+                      Number(matchedInvoice.shiftId)))
+              ) {
+                throw new TRPCError({
+                  code: "PRECONDITION_FAILED",
+                  message: appErrorMessage({
+                    what: "يتطلب الرد النقدي موافقة المدير",
+                    why: "الرد ليس من الوردية التي قبضت مبلغ الفاتورة",
+                    doThis:
+                      "اختر درج الوردية الأصلية إن كانت مفتوحة، أو أحِل المرتجع للمدير",
+                  }),
+                });
+              }
+            }
 
             // الحارس المالي الصارم لمنع تضخيم المرتجع فوق قيمة الفاتورة:
             // 1) الحد الأقصى لقيمة المرتجع لا يمكن أن يتجاوز (إجمالي الفاتورة - المرتجع سابقاً)
@@ -2652,6 +2742,21 @@ export const returnRouter = router({
                   why: "الوردية المحددة غير موجودة أو مغلقة حالياً",
                   doThis:
                     "اختر وردية مفتوحة سارية في الفرع أو افتح وردية جديدة للكاشير",
+                }),
+              });
+            }
+
+            if (
+              directLimitsApply &&
+              Number(targetShift.userId) !== Number(ctx.user.id)
+            ) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message: appErrorMessage({
+                  what: "يتطلب الرد النقدي موافقة المدير",
+                  why: "الدرج المحدد لا يخص وردية منفذ المرتجع",
+                  doThis:
+                    "اصرف الرد من ورديتك المفتوحة المرتبطة بالفاتورة أو أحِل المرتجع للمدير",
                 }),
               });
             }

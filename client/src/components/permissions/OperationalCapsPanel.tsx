@@ -44,7 +44,7 @@ export const OperationalCapsPanel = memo(function OperationalCapsPanel({
         <div className="flex items-center gap-2">
           <Sliders aria-hidden="true" className="size-4 text-primary" />
           <h4 className="text-sm font-semibold text-foreground">
-            السقوف الرقمية والحوكمة المالية (Operational Caps)
+            سقوف التنفيذ والاعتماد
           </h4>
         </div>
         <span className="text-[11px] text-muted-foreground">
@@ -166,8 +166,12 @@ export const OperationalCapsPanel = memo(function OperationalCapsPanel({
               ""
             }
             onChange={(val) => {
-              handleUpdate("maxExpenseVoucherAmountIqd", val || null);
-              handleUpdate("maxPaymentVoucherAmountIqd", val || null);
+              if (disabled) return;
+              onChange({
+                ...current,
+                maxExpenseVoucherAmountIqd: val || null,
+                maxPaymentVoucherAmountIqd: val || null,
+              });
             }}
             placeholder="مثال: 500,000"
             className="h-8 text-xs font-mono"

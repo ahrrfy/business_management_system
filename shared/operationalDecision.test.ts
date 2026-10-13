@@ -1,0 +1,46 @@
+import { describe, expect, it } from "vitest";
+import { evaluateRefundOperationalDecision } from "./operationalDecision";
+
+const base = {
+  operationAllowed: true,
+  sameBranch: true,
+  ownsTransaction: true,
+  sameOpenShift: true,
+  sameBusinessDay: true,
+  accountingPeriodOpen: true,
+  hasSourceDocument: true,
+  hasDownstreamEffects: false,
+  refundAmountIqd: "50000.00",
+  maxRefundAmountIqd: "50000.00",
+  refundMethod: "CASH",
+  originalPaymentMethods: ["CASH"],
+  drawerHasFunds: true,
+  approvalOperation: "sales.cancel.approve",
+} as const;
+
+describe("evaluateRefundOperationalDecision", () => {
+  it("executes a same-shift refund at the cap", () => {
+    expect(evaluateRefundOperationalDecision(base).result).toBe("DIRECT");
+  });
+
+  it("routes an over-cap refund to approval", () => {
+    expect(
+      evaluateRefundOperationalDecision({ ...base, refundAmountIqd: "50000.01" }),
+    ).toMatchObject({
+      result: "APPROVAL_REQUIRED",
+      approvalOperation: "sales.cancel.approve",
+    });
+  });
+
+  it("denies cash output when the drawer cannot fund it", () => {
+    expect(
+      evaluateRefundOperationalDecision({ ...base, drawerHasFunds: false }),
+    ).toMatchObject({ result: "DENY" });
+  });
+
+  it("requires the original payment rail", () => {
+    expect(
+      evaluateRefundOperationalDecision({ ...base, refundMethod: "CARD" }),
+    ).toMatchObject({ result: "APPROVAL_REQUIRED" });
+  });
+});

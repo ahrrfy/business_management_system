@@ -41,6 +41,7 @@ import { money, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { shiftIdForCashTx } from "../shiftService";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
+import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
 import { reverseInvoiceSaleInTx } from "../reversal/invoiceReversal";
 import { invoicePaidPool } from "../reversal/materialize/invoice";
@@ -48,6 +49,13 @@ import { userNameSnapshot } from "../userSnapshot";
 import { assertInvoiceCancellationDeliverySafeTx } from "./invoiceCancellationGuard";
 import type { Tx } from "../../db";
 import { assertLockedInvoiceControlSnapshotTx, type InvoiceControlSnapshot } from "./controlSnapshot";
+import { cancelDeliveryAssignmentInTx } from "../delivery/cancellation";
+import {
+  evaluateRefundOperationalDecision,
+  OperationalApprovalRequiredError,
+  type OperationalDecision,
+} from "@shared/operationalDecision";
+import { todayUtcDate } from "../businessDay";
 
 // ملاحظة: EXCHANGE ممنوع (مسار الصيرفة له خدمة مخصّصة كما في voucherService)، وWALLET/CHECK/
 // TRANSFER تُمرَّر بلا shift-guard إن غاب — النقد وحده يستوجب shiftIdForCashTx.
@@ -68,6 +76,8 @@ export interface CancelSaleInput {
   clientRequestId?: string | null;
   /** تفويض داخلي من طلب التحكم؛ يُطابَق بعد قفل الفاتورة وقبل أول أثر. */
   controlExpectedSnapshot?: InvoiceControlSnapshot | null;
+  /** يفعّل حدود التنفيذ المباشر لمسار API التشغيلي؛ اعتماد التحكم يستعمل الحراس السيادية القائمة. */
+  enforceOperationalDecision?: boolean;
 }
 
 export interface CancelSaleResult {
@@ -82,6 +92,7 @@ export interface CancelSaleResult {
   pendingRefundAmount?: string;
   /** true عند إعادة تشغيل idempotency لنفس المفتاح. */
   idempotentReplay?: true;
+  operationalDecision?: OperationalDecision;
 }
 
 export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<CancelSaleResult> {
@@ -199,10 +210,28 @@ export async function cancelSaleInTx(
 
     // بعد مصدر النقد، اقفل جهة التوصيل→الإرسالية/طلب المتجر قبل الفاتورة. الحارس لا يكتفي
     // بوسم CANCELLED: يثبت أيضاً انعدام الحيازة وCOD والتسوية المفتوحة تحت الأقفال نفسها.
-    await assertInvoiceCancellationDeliverySafeTx(tx, {
+    const deliveryGuard = await assertInvoiceCancellationDeliverySafeTx(tx, {
       invoiceId: input.invoiceId,
       expectedBranchId: Number(invPreview.branchId),
+      allowAssignedCancellation: input.enforceOperationalDecision === true || input.controlExpectedSnapshot != null,
     });
+    if (deliveryGuard.cancellableAssignmentId != null) {
+      await cancelDeliveryAssignmentInTx(
+        tx,
+        {
+          consignmentId: deliveryGuard.cancellableAssignmentId,
+          reason: input.reason?.trim() || "إلغاء الفاتورة قبل تسليم إسناد التوصيل",
+          clientRequestId: `sale-cancel-${input.clientRequestId?.trim() || input.invoiceId}`,
+        },
+        { userId: actor.userId, branchId: actor.branchId, role: actor.role },
+        { assertAuthority: false },
+      );
+      // أثبت أن تحرير COD وإغلاق الإسناد اكتمل قبل لمس الفاتورة.
+      await assertInvoiceCancellationDeliverySafeTx(tx, {
+        invoiceId: input.invoiceId,
+        expectedBranchId: Number(invPreview.branchId),
+      });
+    }
 
     // ═══ ١) قراءة الفاتورة تحت FOR UPDATE + الحراس ═══
     const invRows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
@@ -287,10 +316,49 @@ export async function cancelSaleInTx(
         }),
       });
     }
+    let directDecision: OperationalDecision | undefined;
+    if (input.enforceOperationalDecision && actor.role !== "admin" && !actor.isOwner) {
+      const pool = await invoicePaidPool(tx, input.invoiceId);
+      const refundable = pool.totalIn.minus(pool.outPrior);
+      if (input.refundPaymentMethod === "CASH" && refundable.gt(0) && prelockedCashSource) {
+        // يثبت الرصيد قبل أول كتابة؛ أي عجز يرمي ويرجع المعاملة كلها بلا تغيير للمستند أو المخزون.
+        await assertCashOutAvailable(tx, {
+          branchId: Number(inv.branchId),
+          cashBucket: prelockedCashSource.cashBucket,
+          shiftId: prelockedCashSource.shiftId,
+          amount: refundable,
+          operation: "رد إلغاء فاتورة من درج الوردية",
+        });
+      }
+      directDecision = evaluateRefundOperationalDecision({
+        operationAllowed: true,
+        sameBranch: Number(inv.branchId) === Number(actor.branchId),
+        ownsTransaction: Number(inv.createdBy) === Number(actor.userId),
+        sameOpenShift:
+          inv.shiftId != null &&
+          prelockedCashSource?.cashBucket === "DRAWER" &&
+          Number(prelockedCashSource.shiftId) === Number(inv.shiftId),
+        sameBusinessDay: inv.invoiceDate.toISOString().slice(0, 10) === todayUtcDate(),
+        accountingPeriodOpen: true,
+        hasDownstreamEffects: false,
+        hasSourceDocument: true,
+        refundAmountIqd: refundable.toFixed(2),
+        maxRefundAmountIqd: actor.operationalCaps?.maxRefundAmountIqd ?? "0.00",
+        refundMethod: input.refundPaymentMethod,
+        originalPaymentMethods: Object.keys(pool.byMethod),
+        drawerHasFunds: true,
+        approvalOperation: "salesControl.requestCancel",
+      });
+      if (directDecision.result === "APPROVAL_REQUIRED")
+        throw new OperationalApprovalRequiredError(directDecision);
+      if (directDecision.result === "DENY")
+        throw new TRPCError({ code: "FORBIDDEN", message: directDecision.reason });
+    }
     // فصل المهام (SOD): فاتورة بيع نهائية مكتملة أو أمر بيع مكتبي لا يُلغيه منشئه بنفسه؛
     // بينما الطلبات المحجوزة أو المعلقة بعربون جزئي في نقاط البيع (POS + PENDING / PARTIALLY_PAID)
     // يحق للكاشير إلغاؤها واسترداد العربون للعميل من ورديته المفتوحة مباشرة عند شباك الخدمة.
     if (
+      !input.enforceOperationalDecision &&
       actor.role !== "admin" &&
       !actor.isOwner &&
       !(inv.sourceType === "POS" && (inv.status === "PENDING" || inv.status === "PARTIALLY_PAID")) &&
@@ -455,5 +523,6 @@ export async function cancelSaleInTx(
       refundAmount: new Decimal(refundAmount).toFixed(2),
       refundVoucherNumber: pendingRefundVoucherNumber,
       pendingRefundAmount: new Decimal(pendingRefundAmount).toFixed(2),
+      ...(directDecision ? { operationalDecision: directDecision } : {}),
     };
 }

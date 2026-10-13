@@ -21,6 +21,10 @@ import {
   summarizeOperationModules,
   type OperationPolicy,
 } from "@shared/operationPermissions";
+import {
+  buildDefaultRoleOperationPolicy,
+  hasRoleOperationPreset,
+} from "@shared/roleOperationPresets";
 
 /** المستخدم المُحلّل: صفّ users + (للأدوار المخصّصة) تسمية/مفتاح الدور للعرض + الصلاحيات والسقوف المحلولة. */
 export type AuthUser = User & {
@@ -114,18 +118,24 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
       user.permissionsOverride as PermissionMap | null,
     );
     const individualPolicy = user.operationPolicy == null ? null : operationPolicySchema.parse(user.operationPolicy);
-    const inherited = buildOperationPolicyFromLegacy(
-      baseRole,
-      resolvePermissions(baseRole, null),
-    );
+    const inherited = hasRoleOperationPreset(baseRole)
+      ? buildDefaultRoleOperationPolicy(
+          baseRole,
+          baseRole,
+          resolvePermissions(baseRole, null),
+        )
+      : buildOperationPolicyFromLegacy(
+          baseRole,
+          resolvePermissions(baseRole, null),
+        );
     const legacyEffective = buildOperationPolicyFromLegacy(
       baseRole,
       modules,
       user.atomicPermissions as AtomicPermissionsMap | null,
       user.permissionsOverride as PermissionMap | null,
     );
-    user.operationPolicyEnabled = individualPolicy != null;
-    user.roleOperationPolicy = null;
+    user.operationPolicyEnabled = individualPolicy != null || hasRoleOperationPreset(baseRole);
+    user.roleOperationPolicy = hasRoleOperationPreset(baseRole) ? inherited : null;
     user.inheritedOperationPolicy = inherited;
     user.inheritedOperationPolicyRevision = 0;
     user.resolvedOperationPolicy = user.operationPolicyEnabled
@@ -190,16 +200,21 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
     user.atomicPermissions as AtomicPermissionsMap | null,
   );
   user.resolvedOperationalCaps = resolveOperationalCaps(
-    baseRole,
+    role.key,
     role.operationalCaps as OperationalCaps | null,
     user.operationalCaps as OperationalCaps | null,
+    baseRole,
   );
   user.resolvedSensitiveDataMasking = resolveSensitiveDataMasking(
     baseRole,
     null,
     null,
   );
-  const rolePolicy = role.operationPolicy == null ? null : operationPolicySchema.parse(role.operationPolicy);
+  const rolePolicy = role.operationPolicy == null
+    ? (hasRoleOperationPreset(role.key)
+        ? buildDefaultRoleOperationPolicy(role.key, baseRole, customPermissions)
+        : null)
+    : operationPolicySchema.parse(role.operationPolicy);
   const individualPolicy = user.operationPolicy == null ? null : operationPolicySchema.parse(user.operationPolicy);
   const inherited =
     rolePolicy ??
@@ -211,7 +226,7 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
     );
   user.roleOperationPolicy = rolePolicy;
   user.operationPolicyEnabled =
-    role.operationPolicy != null || user.operationPolicy != null;
+    rolePolicy != null || user.operationPolicy != null;
   user.inheritedOperationPolicy = inherited;
   user.inheritedOperationPolicyRevision = role.operationPolicyRevision;
   user.resolvedOperationPolicy = user.operationPolicyEnabled

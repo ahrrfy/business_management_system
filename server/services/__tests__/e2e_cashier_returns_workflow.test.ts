@@ -308,32 +308,35 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
     expect(inv?.branchId).toBe(1);
   });
 
-  it("F2: Same-Branch Peer Invoice Return — Cashier 2 can view and return invoice created by Colleague Cashier 1", async () => {
+  it("F2: Same-Branch Peer Invoice Return — colleague invoice requires approval", async () => {
     const shift1 = await openShift(CASHIER1_ID, 1);
     const { invoiceId, itemId } = await createSaleInvoice({ shiftId: shift1, actor: cashier1Actor, quantity: 2, paidAmount: "10000.00" });
 
     const shift2 = await openShift(CASHIER2_ID, 1, "50000.00");
 
-    // Cashier 2 executes return on Cashier 1's invoice
-    const result = await returnSaleDirect(
-      {
-        invoiceId,
-        lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
-        resolution: {
-          kind: "IMMEDIATE_REFUND",
-          method: "CASH",
-          amount: "5000.00",
-          shiftId: shift2,
-          reason: "إرجاع من كاشير المساء لفاتورة كاشير الصباح",
-          disposition: "RESTOCK",
+    await expect(
+      returnSaleDirect(
+        {
+          invoiceId,
+          lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+          resolution: {
+            kind: "IMMEDIATE_REFUND",
+            method: "CASH",
+            amount: "5000.00",
+            shiftId: shift2,
+            reason: "إرجاع من كاشير المساء لفاتورة كاشير الصباح",
+            disposition: "RESTOCK",
+          },
+          operatorReason: "مرتجع من كاشير زميل في نفس الفرع",
         },
-        operatorReason: "مرتجع من كاشير زميل في نفس الفرع",
+        cashier2Actor,
+      ),
+    ).rejects.toMatchObject({
+      decision: {
+        result: "APPROVAL_REQUIRED",
+        reason: "المستند أنشأه موظف آخر",
       },
-      cashier2Actor,
-    );
-
-    expect(result.invoiceId).toBe(invoiceId);
-    expect(Number(result.returnedTotal)).toBe(5000);
+    });
   });
 
   it("F3: Cross-Branch Isolation Guard — Direct cashier access or return on invoice from Branch 2 is strictly FORBIDDEN", async () => {
@@ -386,11 +389,10 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
     });
   });
 
-  it("F5: Cashier Drawer Attribution (DRAWER) — Cash refund creates OUT receipt assigned to executor's active drawer", async () => {
+  it("F5: Cashier Drawer Attribution (DRAWER) — own cash refund is assigned to the original active drawer", async () => {
     const shift1 = await openShift(CASHIER1_ID, 1);
     const { invoiceId, itemId } = await createSaleInvoice({ shiftId: shift1, actor: cashier1Actor, quantity: 1, paidAmount: "5000.00" });
 
-    const shift2 = await openShift(CASHIER2_ID, 1, "40000.00");
     await returnSaleDirect(
       {
         invoiceId,
@@ -399,13 +401,13 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
           kind: "IMMEDIATE_REFUND",
           method: "CASH",
           amount: "5000.00",
-          shiftId: shift2,
+          shiftId: shift1,
           reason: "إرجاع نقدي للدرج",
           disposition: "RESTOCK",
         },
         operatorReason: "إرجاع موثق بدرج المنفذ",
       },
-      cashier2Actor,
+      cashier1Actor,
     );
 
     const outReceipt = (
@@ -423,17 +425,17 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
 
     expect(outReceipt).toBeDefined();
     expect(outReceipt.cashBucket).toBe("DRAWER");
-    expect(outReceipt.shiftId).toBe(shift2);
+    expect(outReceipt.shiftId).toBe(shift1);
     expect(Number(outReceipt.amount)).toBe(5000);
     expect(outReceipt.status).toBe("COMPLETED");
   });
 
   it("F6: Treasury & Coworker Drawer Blocking — Cashier is blocked from coworker shift and treasury", async () => {
     const shift1 = await openShift(CASHIER1_ID, 1);
-    const { invoiceId, itemId } = await createSaleInvoice({ shiftId: shift1, actor: cashier1Actor, quantity: 1, paidAmount: "5000.00" });
+    const shift2 = await openShift(CASHIER2_ID, 1);
+    const { invoiceId, itemId } = await createSaleInvoice({ shiftId: shift2, actor: cashier2Actor, quantity: 1, paidAmount: "5000.00" });
 
     // Cashier 2 tries to disburse cash from Cashier 1's shift
-    await openShift(CASHIER2_ID, 1);
     await expect(
       returnSaleDirect(
         {
@@ -453,6 +455,7 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
       ),
     ).rejects.toMatchObject({
       code: "FORBIDDEN",
+      message: expect.stringContaining("درج وردية أخرى"),
     });
   });
 
@@ -1204,15 +1207,15 @@ describe("Tier 2: Boundary & Corner Cases", () => {
 // TIER 3: CROSS-FEATURE INTERACTIONS
 // ============================================================================
 describe("Tier 3: Cross-Feature Interactions", () => {
-  it("C1: Peer Invoice + Cash Refund + Z-Report: Cashier 2 returns Cashier 1 invoice, deducting strictly from Cashier 2's drawer and Z-Report", async () => {
-    // Cashier 1 opens shift and sells 1 item (5000 cash in)
+  it("C1: Own Invoice + Cash Refund + Z-Report: refund stays in the original cashier drawer", async () => {
+    // An unrelated cashier drawer remains untouched.
     const shift1 = await openShift(CASHIER1_ID, 1, "10000.00");
-    const { invoiceId, itemId } = await createSaleInvoice({ shiftId: shift1, actor: cashier1Actor, quantity: 1, paidAmount: "5000.00" });
 
-    // Cashier 2 opens shift with 20000.00
+    // Cashier 2 opens a shift and sells one item for 5000 cash.
     const shift2 = await openShift(CASHIER2_ID, 1, "20000.00");
+    const { invoiceId, itemId } = await createSaleInvoice({ shiftId: shift2, actor: cashier2Actor, quantity: 1, paidAmount: "5000.00" });
 
-    // Cashier 2 processes return for Cashier 1's invoice
+    // Cashier 2 returns their own invoice from the same drawer.
     await returnSaleDirect(
       {
         invoiceId,
@@ -1222,7 +1225,7 @@ describe("Tier 3: Cross-Feature Interactions", () => {
           method: "CASH",
           amount: "5000.00",
           shiftId: shift2,
-          reason: "مرتجع كاشير 2 على فاتورة كاشير 1",
+          reason: "مرتجع كاشير 2 على فاتورته",
           disposition: "RESTOCK",
         },
         operatorReason: "صرف من درج كاشير 2",
@@ -1235,33 +1238,31 @@ describe("Tier 3: Cross-Feature Interactions", () => {
     const cashOut2 = (report2?.payments ?? []).find((p) => p.method === "CASH" && p.direction === "OUT");
     expect(Number(cashOut2?.total ?? 0)).toBe(5000);
     const expectedCash2 = await withTx((tx) => computeExpectedCash(tx, shift2, "20000.00"));
-    expect(Number(expectedCash2)).toBe(15000); // 20000 - 5000 = 15000
+    expect(Number(expectedCash2)).toBe(20000); // 20000 + 5000 - 5000
 
     // Cashier 1's drawer is completely untouched
     const report1 = await getShiftReport(shift1);
     const cashOut1 = (report1?.payments ?? []).some((p) => p.method === "CASH" && p.direction === "OUT");
     expect(cashOut1).toBe(false);
     const expectedCash1 = await withTx((tx) => computeExpectedCash(tx, shift1, "10000.00"));
-    expect(Number(expectedCash1)).toBe(15000); // 10000 + 5000 = 15000
+    expect(Number(expectedCash1)).toBe(10000);
   });
 
-  it("C2: Peer Invoice + Credit Sale + Debt Reduction: Colleague returns unpaid credit invoice with 0 cash out and debt reduction", async () => {
-    const shift1 = await openShift(CASHIER1_ID, 1);
+  it("C2: Own Invoice + Credit Sale + Debt Reduction: creator returns unpaid credit invoice with 0 cash out", async () => {
+    const shift2 = await openShift(CASHIER2_ID, 1, "30000.00");
     const { invoiceId, itemId } = await createSaleInvoice({
-      shiftId: shift1,
-      actor: cashier1Actor,
+      shiftId: shift2,
+      actor: cashier2Actor,
       customerId: 1,
       quantity: 2, // 10000 debt
     });
 
-    const shift2 = await openShift(CASHIER2_ID, 1, "30000.00");
-
-    // Cashier 2 returns the unpaid credit invoice created by Cashier 1
+    // Cashier 2 returns their own unpaid credit invoice.
     await returnSaleDirect(
       {
         invoiceId,
         lines: [{ invoiceItemId: itemId, baseQuantity: 2 }],
-        operatorReason: "إرجاع كاشير 2 لفاتورة آجل أنشأها كاشير 1",
+        operatorReason: "إرجاع كاشير 2 لفاتورته الآجلة",
       },
       cashier2Actor,
     );
@@ -1313,7 +1314,7 @@ describe("Tier 3: Cross-Feature Interactions", () => {
 // TIER 4: REAL-WORLD APPLICATION SCENARIOS (Scenarios 1 to 7)
 // ============================================================================
 describe("Tier 4: Real-World Application Scenarios (TEST_INFRA.md 1 to 7)", () => {
-  it("Scenario 1: Evening Shift Cashier returns morning colleague invoice with cash refund (F1, F2, F5, F7, F8, F9, F13)", async () => {
+  it("Scenario 1: Evening cashier requires approval for a morning colleague invoice", async () => {
     // 1. Morning shift: Cashier 1 sells 1 stationery item for 5000 cash
     const morningShift = await openShift(CASHIER1_ID, 1, "10000.00");
     const { invoiceId, itemId } = await createSaleInvoice({
@@ -1326,33 +1327,38 @@ describe("Tier 4: Real-World Application Scenarios (TEST_INFRA.md 1 to 7)", () =
     // 2. Evening shift: Cashier 2 opens shift with 25000.00
     const eveningShift = await openShift(CASHIER2_ID, 1, "25000.00");
 
-    // 3. Evening cashier processes customer return for morning invoice
-    const ret = await returnSaleDirect(
-      {
-        invoiceId,
-        lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
-        resolution: {
-          kind: "IMMEDIATE_REFUND",
-          method: "CASH",
-          amount: "5000.00",
-          shiftId: eveningShift,
-          reason: "سيناريو 1: كاشير المساء يسترجع فاتورة الصباح نقداً",
-          disposition: "RESTOCK",
+    // 3. Direct execution is routed to approval before any financial write.
+    await expect(
+      returnSaleDirect(
+        {
+          invoiceId,
+          lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+          resolution: {
+            kind: "IMMEDIATE_REFUND",
+            method: "CASH",
+            amount: "5000.00",
+            shiftId: eveningShift,
+            reason: "سيناريو 1: كاشير المساء يسترجع فاتورة الصباح نقداً",
+            disposition: "RESTOCK",
+          },
+          operatorReason: "إرجاع مسائي لعميل الصباح",
         },
-        operatorReason: "إرجاع مسائي لعميل الصباح",
+        cashier2Actor,
+      ),
+    ).rejects.toMatchObject({
+      decision: {
+        result: "APPROVAL_REQUIRED",
+        reason: "المستند أنشأه موظف آخر",
       },
-      cashier2Actor,
-    );
+    });
 
-    expect(ret.fullyReturned).toBe(true);
-
-    // 4. Verify evening cashier drawer and Z-Report
+    // 4. No cash leaves the evening drawer.
     const eveningReport = await getShiftReport(eveningShift);
     const cashOut = (eveningReport?.payments ?? []).find((p) => p.method === "CASH" && p.direction === "OUT");
-    expect(Number(cashOut?.total ?? 0)).toBe(5000);
+    expect(cashOut).toBeUndefined();
 
     const expectedCash = await withTx((tx) => computeExpectedCash(tx, eveningShift, "25000.00"));
-    expect(Number(expectedCash)).toBe(20000); // 25000 - 5000
+    expect(Number(expectedCash)).toBe(25000);
 
     // 5. Verify morning cashier drawer is completely unaffected
     const morningExpected = await withTx((tx) => computeExpectedCash(tx, morningShift, "10000.00"));

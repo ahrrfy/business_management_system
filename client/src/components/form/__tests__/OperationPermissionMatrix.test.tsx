@@ -291,7 +291,7 @@ describe("Canonical operation delegation editor", () => {
       'input[id$="operation.reports.profit"]',
     )!;
     expect(query.disabled).toBe(true);
-    expect(host.textContent).toContain("تتطلب تفعيل عرض التكلفة والربح");
+    expect(host.textContent).toMatch(/تفعيل عرض التكلفة والربح/);
     const visibility = host.querySelector<HTMLInputElement>(
       'input[id$="-visibility"]',
     )!;

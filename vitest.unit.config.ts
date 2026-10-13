@@ -44,6 +44,8 @@ export default defineConfig({
       "server/services/__tests__/productStudioOperationAuthorization.unit.test.ts",
       "server/routes/__tests__/studioExportRouter.test.ts",
       "shared/operationPermissions.test.ts",
+      "shared/operationalDecision.test.ts",
+      "shared/roleOperationPresets.test.ts",
       "server/operationAuthorization.test.ts",
       "server/services/__tests__/invoicePrintAuthorization.test.ts",
       "server/routers/__tests__/invoicePrintingAuthorization.test.ts",

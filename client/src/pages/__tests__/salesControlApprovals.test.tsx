@@ -82,11 +82,13 @@ describe("واجهة حوكمة عمليات البيع الحرجة", () => {
     expect(approvals).toContain('requireText: "لم يتم الدفع"');
   });
 
-  it("الراوترات العامة لا تستدعي cancelSale/correctSale/returnSale مباشرة", () => {
+  it("الإلغاء المباشر يمر بقرار تشغيلي وتتحول الاستثناءات إلى طلب اعتماد", () => {
     const saleRouter = server("routers/saleRouter.ts");
     const returnRouter = server("routers/returnRouter.ts");
     expect(saleRouter).toContain("requestSalesControl");
-    expect(saleRouter).not.toMatch(/await\s+cancelSale\s*\(/);
+    expect(saleRouter).toContain("enforceOperationalDecision: true");
+    expect(saleRouter).toContain("OperationalApprovalRequiredError");
+    expect(saleRouter).toMatch(/await\s+cancelSale\s*\(/);
     expect(saleRouter).not.toMatch(/await\s+correctSale\s*\(/);
     expect(returnRouter).not.toMatch(/await\s+returnSale\s*\(/);
   });

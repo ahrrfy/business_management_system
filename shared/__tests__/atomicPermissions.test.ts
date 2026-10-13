@@ -364,6 +364,15 @@ describe("Resolution Engine (الاشتقاق والحل الهرمي)", () => {
     const resolvedUserCaps = resolveOperationalCaps("cashier", roleCaps, userCaps);
     expect(resolvedUserCaps.maxDiscountPercent).toBe(10);
     expect(resolvedUserCaps.maxCreditSaleLimitIqd).toBe("100000.00");
+
+    // الدور المخصص ذو المفتاح الحر يرث سقوف فئته الأساسية قبل استثناءاته.
+    const customCashierCaps = resolveOperationalCaps(
+      "front_desk_custom",
+      null,
+      null,
+      "cashier",
+    );
+    expect(customCashierCaps.maxRefundAmountIqd).toBe("25000.00");
   });
 
   it("resolveSensitiveDataMasking: يحل ضوابط حجب البيانات ويدمج الاستثناءات بدقة", () => {
