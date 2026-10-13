@@ -2908,7 +2908,6 @@ export async function returnSaleDirect(
         const [invRow] = await tx
           .select({
             branchId: invoices.branchId,
-            shiftId: invoices.shiftId,
             invoiceDate: invoices.invoiceDate,
             paymentMethod: invoices.paymentMethod,
             createdBy: invoices.createdBy,
@@ -2951,7 +2950,9 @@ export async function returnSaleDirect(
           operationAllowed: isAuthorized,
           sameBranch: Number(invRow.branchId) === Number(actor.branchId),
           ownsTransaction: Number(invRow.createdBy) === Number(actor.userId),
-          sameOpenShift: !needsCashShift || (invRow.shiftId != null && Number(invRow.shiftId) === Number(openShiftId)),
+          sameOpenShift: !needsCashShift || (
+            openShiftId != null && lockedRefundCaps.cashReceiptShiftIds.includes(Number(openShiftId))
+          ),
           sameBusinessDay: invRow.invoiceDate.toISOString().slice(0, 10) === todayUtcDate(),
           accountingPeriodOpen: true,
           hasDownstreamEffects: false,

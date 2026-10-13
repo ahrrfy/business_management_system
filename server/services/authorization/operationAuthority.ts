@@ -17,6 +17,10 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import {
+  buildDefaultRoleOperationPolicy,
+  hasRoleOperationPreset,
+} from "@shared/roleOperationPresets";
 import { appErrorMessage } from "@shared/errors";
 import { roles, users } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
@@ -67,6 +71,7 @@ interface StoredUser {
   branchId?: number | null;
 }
 interface StoredRole {
+  key?: string;
   baseRole: string;
   isActive: boolean;
   permissions: unknown;
@@ -104,7 +109,14 @@ export function storedOperationUser(user: StoredUser, role?: StoredRole | null):
     : resolvePermissions(effectiveRole, null);
   const modules = applyPermissionOverrides(roleModules, user.permissionsOverride as PermissionMap | null);
   const override = diffFromTemplate(effectiveRole, modules);
-  const rolePolicy = storedPolicy(role?.operationPolicy);
+  const persistedRolePolicy = storedPolicy(role?.operationPolicy);
+  const roleKey = role?.key ?? effectiveRole;
+  const hasPreset = role
+    ? role.key != null && hasRoleOperationPreset(role.key)
+    : hasRoleOperationPreset(roleKey);
+  const rolePolicy = persistedRolePolicy ?? (hasPreset
+    ? buildDefaultRoleOperationPolicy(roleKey, effectiveRole, roleModules)
+    : null);
   const userPolicy = storedPolicy(user.operationPolicy);
   const inheritedPolicy = rolePolicy ?? buildOperationPolicyFromLegacy(
     effectiveRole, roleModules, role?.atomicPermissions as Record<string, boolean> | null | undefined,

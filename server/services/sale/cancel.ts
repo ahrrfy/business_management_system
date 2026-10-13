@@ -403,9 +403,9 @@ export async function cancelSaleInTx(
         sameOpenShift:
           refundable.lte(0) ||
           input.refundPaymentMethod !== "CASH" ||
-          (inv.shiftId != null &&
-            prelockedCashSource?.cashBucket === "DRAWER" &&
-            Number(prelockedCashSource.shiftId) === Number(inv.shiftId)),
+          (prelockedCashSource?.cashBucket === "DRAWER" &&
+            prelockedCashSource.shiftId != null &&
+            lockedPaidPool.cashReceiptShiftIds.includes(Number(prelockedCashSource.shiftId))),
         sameBusinessDay: inv.invoiceDate.toISOString().slice(0, 10) === todayUtcDate(),
         accountingPeriodOpen: true,
         hasDownstreamEffects: false,

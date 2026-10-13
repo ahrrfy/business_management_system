@@ -64,11 +64,21 @@ async function reconcile(
  * يخرج دينارٌ من الدرج بينما الخدمة تقبل الطلب (R1 في `receptionDeposits.test.ts`: عجز −15,000).
  * مصدرٌ واحد للوعاء ⇒ ما يقبله السقف هو ما يُردّ فعلاً.
  */
-export async function invoicePaidPool(tx: Tx, invoiceId: number): Promise<{ totalIn: Decimal; outPrior: Decimal; byMethod: Record<string, string> }> {
+export async function invoicePaidPool(tx: Tx, invoiceId: number): Promise<{
+  totalIn: Decimal;
+  outPrior: Decimal;
+  byMethod: Record<string, string>;
+  cashReceiptShiftIds: number[];
+}> {
   const caps = await loadRefundCaps(tx, invoiceId, { lock: true });
   const byMethod: Record<string, string> = {};
   caps.netByMethod.forEach((v, m) => { if (v.gt(0)) byMethod[m] = v.toFixed(2); });
-  return { totalIn: round2(caps.grossIn), outPrior: round2(caps.grossOut), byMethod };
+  return {
+    totalIn: round2(caps.grossIn),
+    outPrior: round2(caps.grossOut),
+    byMethod,
+    cashReceiptShiftIds: caps.cashReceiptShiftIds,
+  };
 }
 
 /**

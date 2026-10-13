@@ -2489,10 +2489,10 @@ export const returnRouter = router({
                   Number(matchedInvoice.createdBy) === Number(ctx.user.id),
                 sameOpenShift:
                   input.settlement.method !== "CASH" ||
-                  (matchedInvoice.shiftId != null &&
-                    input.settlement.shiftId != null &&
-                    Number(input.settlement.shiftId) ===
-                      Number(matchedInvoice.shiftId)),
+                  (input.settlement.shiftId != null &&
+                    lockedRefundCaps.cashReceiptShiftIds.includes(
+                      Number(input.settlement.shiftId),
+                    )),
                 sameBusinessDay:
                   matchedInvoice.invoiceDate.toISOString().slice(0, 10) ===
                   todayUtcDate(),
