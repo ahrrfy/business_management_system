@@ -148,7 +148,10 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
           legacyIndividual,
         )
       : legacyEffective;
-    if (user.operationPolicyEnabled)
+    // القالب التشغيلي الافتراضي يفعّل التفويض الدقيق، لكنه لا يعيد كتابة
+    // إعدادات الوحدات المحفوظة لحساب قديم. لا نشتقّ خريطة توافق جديدة إلا
+    // عندما حفظت الإدارة سياسة فردية صريحة للمستخدم نفسه.
+    if (individualPolicy != null)
       user.permissionsOverride = diffFromTemplate(
         baseRole,
         summarizeOperationModules(user.resolvedOperationPolicy),

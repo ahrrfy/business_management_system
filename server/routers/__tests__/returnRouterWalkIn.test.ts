@@ -92,6 +92,7 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     const caller = returnRouter.createCaller(context());
     await caller.create({
       ...base,
+      directExecution: false,
       resolution: {
         kind: "IMMEDIATE_REFUND",
         method: "CASH",
@@ -160,6 +161,7 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     const caller = returnRouter.createCaller(context());
     await caller.create({
       ...base,
+      directExecution: false,
       refund: { amount: "10.00", method: "CASH", shiftId: 9 },
       restock: false,
       reason: "إرجاع عميل مسجل",

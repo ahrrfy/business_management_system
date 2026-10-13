@@ -280,7 +280,7 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
       }, actor,
     );
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
-    const input = { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" as const }, reason: "مرتجع بطلب رقابي", clientRequestId: "ret-key-1",
+    const input = { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" as const }, reason: "مرتجع بطلب رقابي", clientRequestId: "ret-key-1", directExecution: false,
     };
     await caller().returns.create(input);
     await caller().returns.create(input); // نقرة مزدوجة بنفس المفتاح

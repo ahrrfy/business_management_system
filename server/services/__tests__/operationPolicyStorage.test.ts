@@ -656,11 +656,12 @@ describe("canonical operation policy persistence and resolution", () => {
     expect(converted.resolvedOperationPolicy?.grants[returned]).toBe(true);
   });
 
-  it("untouched legacy user retains the old module contract without enabling canonical enforcement", async () => {
+  it("untouched cashier receives the daily-task preset without storing an individual policy", async () => {
     const { userId } = await makeUser();
     const user = await resolve(userId);
-    expect(user.operationPolicyEnabled).toBe(false);
+    expect(user.operationPolicyEnabled).toBe(true);
     expect(user.operationPolicy).toBeNull();
+    expect(user.roleOperationPolicy).not.toBeNull();
     expect(user.resolvedOperationPolicy?.grants[sale]).toBe(true);
   });
 
