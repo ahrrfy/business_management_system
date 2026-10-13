@@ -173,4 +173,45 @@ describe("interaction draft prompt with the actual notification subscriber", () 
     settle();
     expect(restoreButton()).toBeDefined();
   });
+
+  it("does not discard another page draft through a stale real toast cancel callback", () => {
+    const oldPath = route.location;
+    const original = seedDraft();
+    const nextPath = "/cancel-other-draft-test";
+    const nextDraft = seedDraft(nextPath, "مسودة الصفحة الأخرى");
+    render();
+    settle();
+    const prompt = toast
+      .getToasts()
+      .find(
+        (item) =>
+          "title" in item &&
+          item.title === "توجد إدخالات غير محفوظة من الجلسة السابقة",
+      );
+    const cancel = prompt && "cancel" in prompt ? prompt.cancel : undefined;
+    expect(cancel).toBeDefined();
+    const cancelAction = cancel as { onClick: () => void };
+    navigate(nextPath);
+    act(() => cancelAction.onClick());
+    expect(
+      sessionStorage.getItem(`alroya.interaction-draft.v1:${nextPath}`),
+    ).toBe(nextDraft);
+    expect(
+      sessionStorage.getItem(`alroya.interaction-draft.v1:${oldPath}`),
+    ).toBe(original);
+  });
+
+  it("allows the current toast cancel action to discard its own page draft", () => {
+    seedDraft();
+    render();
+    settle();
+    const cancelButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent === "تجاهل",
+    );
+    expect(cancelButton).toBeDefined();
+    act(() => cancelButton!.click());
+    expect(
+      sessionStorage.getItem(`alroya.interaction-draft.v1:${route.location}`),
+    ).toBeNull();
+  });
 });

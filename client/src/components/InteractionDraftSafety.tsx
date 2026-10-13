@@ -57,7 +57,12 @@ export function InteractionDraftSafety() {
             }, 0);
           },
         },
-        cancel: { label: "تجاهل", onClick: discardInteractionDraft },
+        cancel: {
+          label: "تجاهل",
+          onClick: () => {
+            if (!cancelled) discardInteractionDraft();
+          },
+        },
       });
     }, 0);
     return () => {
