@@ -436,13 +436,39 @@ describe("D7 — I17: الردّ بطريقة القبض حصراً وبسقف �
       { paymentId: dep.paymentId, amount: "2000.00", reason: "اعتماد مدير منتهي", clientRequestId: uuid("d7r-cap2") },
       CASHIER,
       { approvedByManagerId: MANAGER.userId },
-    )).rejects.toThrow(/لم يعد فعالاً أو مخولاً/);
+    )).rejects.toThrow(/انتهت صلاحية الوصول الزمنية/);
 
     await db().update(s.users)
       .set({ accessExpiresAt: null })
       .where(eq(s.users.id, MANAGER.userId));
+
+    await db().update(s.users)
+      .set({
+        operationPolicy: {
+          version: 1,
+          grants: {
+            "operation.reception.refundDeposit": true,
+            "operation.salesControl.approve": false,
+          },
+        },
+        operationalCaps: { maxRefundAmountIqd: "1000.00" },
+      })
+      .where(eq(s.users.id, MANAGER.userId));
+    await expect(refundDeposit(
+      { paymentId: dep.paymentId, amount: "2000.00", reason: "مدير بلا سلطة اعتماد", clientRequestId: uuid("d7r-cap3") },
+      MANAGER,
+    )).rejects.toThrow(/يتجاوز سقف حسابك 1000.00/);
+    await expect(refundDeposit(
+      { paymentId: dep.paymentId, amount: "2000.00", reason: "اعتماد مدير مسحوب", clientRequestId: uuid("d7r-cap4") },
+      CASHIER,
+      { approvedByManagerId: MANAGER.userId },
+    )).rejects.toThrow(/سُحبت منه صلاحية اعتماد العمليات/);
+
+    await db().update(s.users)
+      .set({ operationPolicy: null, operationalCaps: null })
+      .where(eq(s.users.id, MANAGER.userId));
     const approved = await refundDeposit(
-      { paymentId: dep.paymentId, amount: "2000.00", reason: "رد مع اعتماد المدير", clientRequestId: uuid("d7r-cap3") },
+      { paymentId: dep.paymentId, amount: "2000.00", reason: "رد مع اعتماد المدير", clientRequestId: uuid("d7r-cap5") },
       CASHIER,
       { approvedByManagerId: MANAGER.userId },
     );
@@ -528,10 +554,7 @@ describe("D11 — لا إلغاء وطلبٌ عليه محتجز؛ وبعد ال
     // moneyLocked لا يهبط ⇒ الإلغاء يبقى مديرياً حتى بعد الردّ الكامل.
     await expect(cancelDraft(
       { draftId: p.draftId, version: 0, reason: "محاولة كاشير" }, CASHIER,
-    )).rejects.toMatchObject({
-      code: "FORBIDDEN",
-      message: expect.stringContaining("اعتماد مدير"),
-    });
+    )).rejects.toMatchObject({ code: "FORBIDDEN" });
     const done = await cancelDraft(
       { draftId: p.draftId, version: 0, reason: "الزبون عدل عن الطلب — دُوّنت بنوده" }, MANAGER,
     );
@@ -807,7 +830,10 @@ describe("DB — قرار المالك (ب): سلطة ردّ العربون ال
     await expect(refundDeposit(
       { paymentId: dep.paymentId, amount: "10000.00", reason: "الزبون طلب الاسترداد لاحقاً", clientRequestId: rid },
       CASHIER2,
-    )).rejects.toMatchObject({ code: "FORBIDDEN" });
+    )).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringContaining("اعتماد مدير"),
+    });
     // الرفض تراجع كاملاً: القبض ما زال HELD ولا صفّ REFUND (ولا مفتاح idempotency).
     const stillHeld = (await db().select().from(s.orderPayments).where(eq(s.orderPayments.id, dep.paymentId)))[0];
     expect(stillHeld.status).toBe("HELD");

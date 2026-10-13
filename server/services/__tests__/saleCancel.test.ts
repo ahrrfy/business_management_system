@@ -475,6 +475,36 @@ describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار
     expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status).not.toBe("CANCELLED");
   });
 
+  it("يحيل الإلغاء النقدي بعد إغلاق وردية الكاشير إلى اعتماد المدير", async () => {
+    await setStock(1, 1, 10);
+    await db().update(s.users).set({ role: "cashier" }).where(eq(s.users.id, manager.userId));
+    const cashierActor = { userId: manager.userId, branchId: 1, role: "cashier" as const };
+    const sale = await createSale({
+      branchId: 1,
+      shiftId: 1,
+      sourceType: "POS",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      payment: { amount: "1000.00", method: "CASH" },
+    }, cashierActor);
+    await db().update(s.shifts)
+      .set({ status: "CLOSED", openGuard: null, closedAt: new Date() })
+      .where(eq(s.shifts.id, 1));
+
+    await expect(cancelSale({
+      invoiceId: sale.invoiceId,
+      refundPaymentMethod: "CASH",
+      reason: "إلغاء بعد إغلاق وردية الكاشير",
+      enforceOperationalDecision: true,
+    }, cashierActor)).rejects.toMatchObject({
+      decision: {
+        result: "APPROVAL_REQUIRED",
+        reason: expect.stringContaining("الوردية المفتوحة"),
+      },
+    });
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status)
+      .not.toBe("CANCELLED");
+  });
+
   it("زبونٌ عابر (بلا عميل) مدفوعٌ بالبطاقة + مرجع جهاز صحيح ⇒ فوريّ، بلا اشتراط عميل", async () => {
     await setStock(1, 1, 10);
     const sale = await createSale(

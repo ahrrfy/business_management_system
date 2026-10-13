@@ -40,7 +40,7 @@ import {
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { money, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
-import { shiftIdForCashTx } from "../shiftService";
+import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
@@ -287,17 +287,35 @@ export async function cancelSaleInTx(
       previewRefundCaps != null &&
       previewRefundCaps.pool.gt(0);
     if (expectsCashRefund) {
-      prelockedCashSource = await shiftIdForCashTx(
-        tx,
-        actor,
-        Number(invPreview.branchId),
-        "استرداد إلغاء فاتورة",
-      );
-      await lockCashSourceForUpdate(tx, {
-        branchId: Number(invPreview.branchId),
-        cashBucket: prelockedCashSource.cashBucket,
-        shiftId: prelockedCashSource.shiftId,
-      });
+      const directLimitsApply =
+        input.enforceOperationalDecision === true &&
+        currentOperationalAuthority != null &&
+        currentOperationalAuthority.role !== "admin" &&
+        !currentOperationalAuthority.isOwner;
+      if (directLimitsApply) {
+        const shiftId = await openShiftIdTx(
+          tx,
+          actor.userId,
+          Number(invPreview.branchId),
+        );
+        prelockedCashSource = shiftId == null
+          ? null
+          : { shiftId, cashBucket: "DRAWER" as const };
+      } else {
+        prelockedCashSource = await shiftIdForCashTx(
+          tx,
+          actor,
+          Number(invPreview.branchId),
+          "استرداد إلغاء فاتورة",
+        );
+      }
+      if (prelockedCashSource) {
+        await lockCashSourceForUpdate(tx, {
+          branchId: Number(invPreview.branchId),
+          cashBucket: prelockedCashSource.cashBucket,
+          shiftId: prelockedCashSource.shiftId,
+        });
+      }
     }
 
     // بعد مصدر النقد، اقفل جهة التوصيل→الإرسالية/طلب المتجر قبل الفاتورة. الحارس لا يكتفي
@@ -410,14 +428,6 @@ export async function cancelSaleInTx(
     }
     const lockedPaidPool = await invoicePaidPool(tx, input.invoiceId);
     const lockedRefundable = lockedPaidPool.totalIn.minus(lockedPaidPool.outPrior);
-    if (
-      input.refundPaymentMethod === "CASH" &&
-      lockedRefundable.gt(0) &&
-      !prelockedCashSource
-    ) {
-      throw new CashRefundSourceChangedError();
-    }
-
     let directDecision: OperationalDecision | undefined;
     if (
       input.enforceOperationalDecision &&
@@ -462,6 +472,13 @@ export async function cancelSaleInTx(
         throw new OperationalApprovalRequiredError(directDecision);
       if (directDecision.result === "DENY")
         throw new TRPCError({ code: "FORBIDDEN", message: directDecision.reason });
+    }
+    if (
+      input.refundPaymentMethod === "CASH" &&
+      lockedRefundable.gt(0) &&
+      !prelockedCashSource
+    ) {
+      throw new CashRefundSourceChangedError();
     }
     // فصل المهام (SOD): فاتورة بيع نهائية مكتملة أو أمر بيع مكتبي لا يُلغيه منشئه بنفسه؛
     // بينما الطلبات المحجوزة أو المعلقة بعربون جزئي في نقاط البيع (POS + PENDING / PARTIALLY_PAID)
