@@ -124,7 +124,8 @@ export default function RoleEdit() {
     !label &&
     !description &&
     baseRole === "user" &&
-    JSON.stringify(operationPolicy) === JSON.stringify(emptyPolicy());
+    JSON.stringify(operationPolicy) === JSON.stringify(emptyPolicy()) &&
+    !capsEdited;
   useUnsavedGuard(isEdit ? loaded && snapshot !== baseline.current : !newBlank);
   function changePolicy(policy: OperationPolicy) {
     setOperationPolicy(policy);

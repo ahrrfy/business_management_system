@@ -2,6 +2,7 @@ import { createMongoAbility } from "@casl/ability";
 import { z } from "zod";
 import {
   ALL_PERMISSION_MODULE_KEYS,
+  applyPermissionOverrides,
   canSeeCost,
   canUseDigitalCardsSellingStation,
   diffFromTemplate,
@@ -277,13 +278,20 @@ export function resolveOperationPolicy(
   legacyIndividual?: {
     permissionsOverride?: PermissionMap | null;
     atomicPermissions?: Record<string, boolean> | null;
+    inheritedModules?: PermissionMap;
   },
 ): OperationPolicy {
   const legacy = legacyOperationPolicy(role, modules, legacyOverride);
-  // Until this account is explicitly converted, preserve its own old revocations.
+  // Until this account is explicitly converted, preserve its own old grants and revocations.
   // A saved sparse user policy replaces the old individual matrix completely.
   const inherited = userPolicy == null && legacyIndividual
-    ? applyLegacyIndividualOperationDenials(rolePolicy ?? legacy, role, legacyIndividual.permissionsOverride, legacyIndividual.atomicPermissions)
+    ? applyLegacyIndividualOperationOverrides(
+        rolePolicy ?? legacy,
+        role,
+        legacyIndividual.inheritedModules,
+        legacyIndividual.permissionsOverride,
+        legacyIndividual.atomicPermissions,
+      )
     : rolePolicy ?? legacy;
   const grants: Record<string, boolean> = {};
   const recordScopes: Record<string, OperationRecordScope> = {};
@@ -317,6 +325,44 @@ export function resolveOperationPolicy(
       ...userPolicy?.dataVisibility,
     },
   };
+}
+
+/** Preserve explicit old module grants relative to the inherited role, then apply its revocations. */
+export function applyLegacyIndividualOperationOverrides(
+  policy: OperationPolicy,
+  role: string,
+  inheritedModules: PermissionMap | undefined,
+  rawModules?: PermissionMap | null,
+  rawAtomic?: Record<string, boolean> | null,
+): OperationPolicy {
+  const baseModules = inheritedModules ?? resolvePermissions(role as RoleKey, null);
+  const effectiveModules = applyPermissionOverrides(baseModules, rawModules ?? null);
+  const baseLegacy = legacyOperationPolicy(
+    role,
+    baseModules,
+    diffFromTemplate(role as RoleKey, baseModules),
+  );
+  const effectiveLegacy = legacyOperationPolicy(
+    role,
+    effectiveModules,
+    diffFromTemplate(role as RoleKey, effectiveModules),
+  );
+  const grants = { ...policy.grants };
+  for (const operation of OPERATION_PERMISSIONS) {
+    if (
+      operation.delegable &&
+      effectiveLegacy.grants[operation.key] === true &&
+      baseLegacy.grants[operation.key] !== true
+    ) {
+      grants[operation.key] = true;
+    }
+  }
+  return applyLegacyIndividualOperationDenials(
+    { ...policy, grants },
+    role,
+    rawModules,
+    rawAtomic,
+  );
 }
 
 /** Carry only explicit individual restrictions, never old template restrictions. */

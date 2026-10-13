@@ -305,8 +305,14 @@ export default function UserEdit() {
   useSaveShortcuts({ onSave: () => submit(), enabled: !update.isPending });
 
   async function handleRoleChange(val: string) {
+    const hasIndividualOverrides =
+      Object.keys(operationPolicy?.grants ?? {}).length > 0 ||
+      Object.keys(operationPolicy?.recordScopes ?? {}).length > 0 ||
+      Object.keys(operationPolicy?.dataVisibility ?? {}).length > 0 ||
+      Object.keys(permsOverride).length > 0 ||
+      operationalCaps != null;
     if (
-      Object.keys(operationPolicy?.grants ?? {}).length &&
+      hasIndividualOverrides &&
       !(await confirm({
         variant: "warning",
         title: "تغيير الدور",

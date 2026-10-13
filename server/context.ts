@@ -149,7 +149,10 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
           inherited,
           individualPolicy,
           user.permissionsOverride as PermissionMap | null,
-          legacyIndividual,
+          {
+            ...legacyIndividual,
+            inheritedModules: resolvePermissions(baseRole, null),
+          },
         )
       : legacyEffective;
     // القالب التشغيلي الافتراضي يفعّل التفويض الدقيق، لكنه لا يعيد كتابة
@@ -248,7 +251,10 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
         inherited,
         individualPolicy,
         user.permissionsOverride as PermissionMap | null,
-        legacyIndividual,
+        {
+          ...legacyIndividual,
+          inheritedModules: customPermissions,
+        },
       )
     : buildOperationPolicyFromLegacy(
         baseRole,

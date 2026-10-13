@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const newSource = readFileSync(new URL("../UserNew.tsx", import.meta.url), "utf8");
 const editSource = readFileSync(new URL("../UserEdit.tsx", import.meta.url), "utf8");
+const roleEditSource = readFileSync(new URL("../RoleEdit.tsx", import.meta.url), "utf8");
 const accountFieldsSource = readFileSync(
   new URL("../../components/form/AccountFields.tsx", import.meta.url),
   "utf8",
@@ -31,6 +32,27 @@ const passwordResetSource = readFileSync(
  * صامتاً فيبدو الإصلاح واقعاً وهو وهم. لذلك تُقاس الحمولةُ مقابل عقد `userRouter` نفسه أدناه.
  */
 describe("تماثل نموذجَي المستخدم (إضافة/تعديل)", () => {
+  it("warns before a role change clears any individual policy, module or cap override", () => {
+    const roleChange = editSource.slice(
+      editSource.indexOf("async function handleRoleChange"),
+      editSource.indexOf("// Codex #958"),
+    );
+    expect(roleChange).toContain("Object.keys(operationPolicy?.grants ?? {}).length");
+    expect(roleChange).toContain("Object.keys(operationPolicy?.recordScopes ?? {}).length");
+    expect(roleChange).toContain("Object.keys(operationPolicy?.dataVisibility ?? {}).length");
+    expect(roleChange).toContain("Object.keys(permsOverride).length");
+    expect(roleChange).toContain("operationalCaps != null");
+  });
+
+  it("treats a cap-only new role as unsaved work", () => {
+    const start = roleEditSource.indexOf("const newBlank");
+    const newBlank = roleEditSource.slice(
+      start,
+      roleEditSource.indexOf("useUnsavedGuard(", start),
+    );
+    expect(newBlank).toContain("!capsEdited");
+  });
+
   it("refreshes the separately cached actual-access panel after saving the account", () => {
     const invalidate = editSource.slice(editSource.indexOf("function invalidate()"), editSource.indexOf("const update ="));
     expect(invalidate).toContain("utils.users.effectivePermissions.invalidate({ userId })");

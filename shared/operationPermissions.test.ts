@@ -312,6 +312,25 @@ describe("operation policies", () => {
     expect(resolved.grants["operation.delivery.dispatch"]).toBe(true);
   });
 
+  it("preserves an explicit old module grant over a restrictive preset", () => {
+    const permissionsOverride = { purchases: "FULL" as const };
+    const resolved = resolveOperationPolicy(
+      "cashier",
+      resolvePermissions("cashier", permissionsOverride),
+      policy({
+        "operation.sales.create": true,
+        "operation.purchases.fullLookup": false,
+        "operation.delivery.dispatch": false,
+      }),
+      null,
+      permissionsOverride,
+      { permissionsOverride, inheritedModules: cashierModules },
+    );
+    expect(resolved.grants["operation.purchases.fullLookup"]).toBe(true);
+    expect(resolved.grants["operation.sales.create"]).toBe(true);
+    expect(resolved.grants["operation.delivery.dispatch"]).toBe(false);
+  });
+
   it("inherits and overrides record scopes without allowing cross-branch scope", () => {
     const rolePolicy: OperationPolicy = {
       ...policy({ "operation.sales.list": true }),

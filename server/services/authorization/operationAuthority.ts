@@ -133,6 +133,7 @@ export function storedOperationUser(user: StoredUser, role?: StoredRole | null):
     resolvedOperationPolicy: resolveOperationPolicy(effectiveRole, modules, inheritedPolicy, userPolicy, override, {
       permissionsOverride: user.permissionsOverride as PermissionMap | null,
       atomicPermissions: user.atomicPermissions as Record<string, boolean> | null | undefined,
+      inheritedModules: roleModules,
     }),
   };
 }

@@ -68,6 +68,18 @@ describe("transactional operation service bridge", () => {
       false,
     )).resolves.toBe(true);
   });
+
+  it("preserves an old positive user module override during the locked recheck", () => {
+    const user = {
+      ...account(),
+      role: "cashier",
+      permissionsOverride: { purchases: "FULL" as const },
+    };
+    const current = storedOperationUser(user);
+    expect(canonicalOperationAllowed(current, "purchases.createOrder")).toBe(true);
+    expect(canonicalOperationAllowed(current, "supplierPayments.cashSources")).toBe(false);
+  });
+
   it("delegates only the selected real operation, without expanding another action", () => {
     const user = storedOperationUser(account(policy(paths[0]!)));
     expect(canonicalOperationAllowed(user, paths[0]!)).toBe(true);
