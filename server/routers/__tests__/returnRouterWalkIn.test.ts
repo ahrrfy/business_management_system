@@ -4,9 +4,18 @@ import type { TrpcContext } from "../../context";
 
 const mocks = vi.hoisted(() => {
   let hasPending = false;
+  let hasLegacyReplay = false;
   return {
-    returnSaleInTx: vi.fn(),
-    returnSaleAsOwner: vi.fn(async () => ({ returnedTotal: "1250.00", fullyReturned: true })),
+    returnSaleInTx: vi.fn(async () => ({ returnedTotal: "1250.00", fullyReturned: true, idempotentReplay: true })),
+    returnSaleAsOwner: vi.fn(async () => {
+      if (hasPending) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "توجد معاملة رقابية معلّقة على هذه الفاتورة",
+        });
+      }
+      return { returnedTotal: "1250.00", fullyReturned: true };
+    }),
     returnSaleDirect: vi.fn(async () => {
       if (hasPending) {
         throw new TRPCError({
@@ -19,11 +28,15 @@ const mocks = vi.hoisted(() => {
     requestSalesControl: vi.fn(async () => ({ id: 101, status: "PENDING", payloadHash: "abc", replayed: false })),
     logAudit: vi.fn(async () => undefined),
     setHasPending: (val: boolean) => { hasPending = val; },
+    setHasLegacyReplay: (val: boolean) => { hasLegacyReplay = val; },
     withTx: vi.fn(async (fn: (tx: unknown) => unknown) => {
       const queryResult = (fields?: Record<string, unknown>) => ({
         limit: async () => {
           if (fields && "sourceType" in fields) {
             return [{ sourceType: "POS", branchId: 1, createdBy: 1, workOrderCreatedBy: null }];
+          }
+          if (fields && "refId" in fields) {
+            return hasLegacyReplay ? [{ refId: 77, payloadHash: null }] : [];
           }
           return hasPending ? [{ id: 999 }] : [];
         },
@@ -85,6 +98,7 @@ const base = {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.setHasPending(false);
+  mocks.setHasLegacyReplay(false);
 });
 
 describe("returns.create — طلب صفري الأثر للزبون العابر", () => {
@@ -173,8 +187,8 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     }), expect.anything());
   });
 
-  it("⭐ التنفيذ المباشر للإدارة (directExecution: true) ينفّذ فوراً بلا طلب تحكّم", async () => {
-    const caller = returnRouter.createCaller(context({ role: "manager" }));
+  it("⭐ التنفيذ المباشر للإدارة مقيّد: directExecution: true لا يتجاوز طلب التحكّم لغير المالك", async () => {
+    const caller = returnRouter.createCaller(context({ role: "manager", isOwner: false }));
     const res = await caller.create({
       ...base,
       refund: { amount: "1250.00", method: "CASH", shiftId: 9 },
@@ -183,16 +197,20 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
       directExecution: true,
     });
 
-    expect(mocks.requestSalesControl).not.toHaveBeenCalled();
-    expect(mocks.returnSaleDirect).toHaveBeenCalledWith(
-      expect.objectContaining({ invoiceId: 77, operatorReason: "تنفيذ المدير المباشر" }),
+    expect(mocks.returnSaleDirect).not.toHaveBeenCalled();
+    expect(mocks.requestSalesControl).toHaveBeenCalledWith(
+      expect.objectContaining({
+        invoiceId: 77,
+        requestType: "SALES_RETURN",
+        reason: "تنفيذ المدير المباشر",
+      }),
       expect.objectContaining({ userId: 1, role: "manager" }),
     );
-    expect(res).toMatchObject({ mode: "EXECUTED" });
+    expect(res).toMatchObject({ mode: "REQUESTED", requestId: 101 });
   });
 
-  it("⭐ التنفيذ المباشر للكاشير (directExecution: true) ينفّذ فوراً بلا طلب تحكّم", async () => {
-    const caller = returnRouter.createCaller(context({ role: "cashier" }));
+  it("⭐ التنفيذ المباشر للكاشير مقيّد: directExecution: true لا يتجاوز طلب التحكّم ويُنشئ طلباً رقابياً", async () => {
+    const caller = returnRouter.createCaller(context({ role: "cashier", isOwner: false }));
     const res = await caller.create({
       ...base,
       refund: { amount: "1250.00", method: "CASH", shiftId: 9 },
@@ -201,17 +219,39 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
       directExecution: true,
     });
 
-    expect(mocks.requestSalesControl).not.toHaveBeenCalled();
-    expect(mocks.returnSaleDirect).toHaveBeenCalledWith(
-      expect.objectContaining({ invoiceId: 77, operatorReason: "تنفيذ الكاشير المباشر" }),
+    expect(mocks.returnSaleDirect).not.toHaveBeenCalled();
+    expect(mocks.requestSalesControl).toHaveBeenCalledWith(
+      expect.objectContaining({
+        invoiceId: 77,
+        requestType: "SALES_RETURN",
+        reason: "تنفيذ الكاشير المباشر",
+      }),
       expect.objectContaining({ userId: 1, role: "cashier" }),
+    );
+    expect(res).toMatchObject({ mode: "REQUESTED", requestId: 101 });
+  });
+
+  it("⭐ التنفيذ المباشر للمالك (isOwner: true) ينفّذ فوراً بلا طلب تحكّم", async () => {
+    const caller = returnRouter.createCaller(ownerContext());
+    const res = await caller.create({
+      ...base,
+      refund: { amount: "1250.00", method: "CASH", shiftId: 9 },
+      restock: true,
+      reason: "تنفيذ المالك المباشر",
+      directExecution: true,
+    });
+
+    expect(mocks.requestSalesControl).not.toHaveBeenCalled();
+    expect(mocks.returnSaleAsOwner).toHaveBeenCalledWith(
+      expect.objectContaining({ invoiceId: 77, ownerReason: "تنفيذ المالك المباشر" }),
+      expect.objectContaining({ userId: 1, role: "admin" }),
     );
     expect(res).toMatchObject({ mode: "EXECUTED" });
   });
 
-  it("وجود طلب رقابي معلّق على الفاتورة يرفض التنفيذ المباشر بـ CONFLICT", async () => {
+  it("وجود طلب رقابي معلّق على الفاتورة يرفض التنفيذ المباشر للمالك بـ CONFLICT", async () => {
     mocks.setHasPending(true);
-    const caller = returnRouter.createCaller(context({ role: "manager" }));
+    const caller = returnRouter.createCaller(ownerContext());
     await expect(
       caller.create({
         ...base,
@@ -223,11 +263,11 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
-  it("التنفيذ المباشر المعاد (idempotentReplay) لا يكرّر كتابة سجل التدقيق", async () => {
-    mocks.returnSaleDirect.mockResolvedValueOnce({ returnedTotal: "1250.00", fullyReturned: true, idempotentReplay: true });
+  it("التنفيذ المباشر للمالك المعاد (idempotentReplay) لا يكرّر كتابة سجل التدقيق", async () => {
+    mocks.returnSaleAsOwner.mockResolvedValueOnce({ returnedTotal: "1250.00", fullyReturned: true, idempotentReplay: true });
     mocks.logAudit.mockClear();
 
-    const caller = returnRouter.createCaller(context({ role: "cashier" }));
+    const caller = returnRouter.createCaller(ownerContext());
     const res = await caller.create({
       ...base,
       refund: { amount: "1250.00", method: "CASH", shiftId: 9 },
@@ -236,6 +276,10 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
       directExecution: true,
     });
 
+    expect(mocks.returnSaleAsOwner).toHaveBeenCalledWith(
+      expect.objectContaining({ directExecution: true }),
+      expect.anything(),
+    );
     expect(mocks.logAudit).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: "return.execute" }),
@@ -243,7 +287,7 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     expect(res).toMatchObject({ mode: "EXECUTED" });
   });
 
-  it("يسمح بتنفيذ الكاشير المباشر لفاتورة أنشأها زميل في نفس الفرع", async () => {
+  it("الكاشير لا يستطيع تجاوز مسار الطلب الرقابي حتى لفاتورة زميل ويُنشئ طلب تحكّم", async () => {
     // كاشير بمعرّف 99 في نفس الفرع 1 يحاول إرجاع فاتورة أنشأها المستخدم 1
     const coworkerCaller = returnRouter.createCaller({
       req: { headers: {} } as TrpcContext["req"],
@@ -261,11 +305,16 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
       reason: "إرجاع فاتورة زميل في نفس الفرع",
       directExecution: true,
     });
-    expect(res).toMatchObject({ mode: "EXECUTED" });
-    expect(mocks.returnSaleDirect).toHaveBeenCalledWith(
-      expect.objectContaining({ invoiceId: 77, operatorReason: "إرجاع فاتورة زميل في نفس الفرع" }),
+    expect(res).toMatchObject({ mode: "REQUESTED", requestId: 101 });
+    expect(mocks.requestSalesControl).toHaveBeenCalledWith(
+      expect.objectContaining({
+        invoiceId: 77,
+        requestType: "SALES_RETURN",
+        reason: "إرجاع فاتورة زميل في نفس الفرع",
+      }),
       expect.objectContaining({ userId: 99, role: "cashier" }),
     );
+    expect(mocks.returnSaleDirect).not.toHaveBeenCalled();
   });
 
   it("يرفض تنفيذ الكاشير المباشر لفاتورة فرع آخر بـ FORBIDDEN", async () => {
@@ -290,5 +339,36 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(mocks.returnSaleDirect).not.toHaveBeenCalled();
   });
+
+  it("إعادة المحاولة لغير المالك بمعرّف clientRequestId مسجّل مسبقاً في sale.return تعيد نتيجة التنفيذ بلا إنشاء طلب رقابي جديد", async () => {
+    mocks.setHasLegacyReplay(true);
+    const caller = returnRouter.createCaller(context({ role: "manager", isOwner: false }));
+    const res = await caller.create({
+      ...base,
+      refund: { amount: "1250.00", method: "CASH", shiftId: 9 },
+      restock: true,
+      reason: "إعادة محاولة طلب نُفّذ سابقاً",
+      directExecution: true,
+    });
+
+    expect(mocks.requestSalesControl).not.toHaveBeenCalled();
+    expect(mocks.returnSaleInTx).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        invoiceId: 77,
+        directExecution: true,
+        operatorReason: "إعادة محاولة طلب نُفّذ سابقاً",
+      }),
+      expect.objectContaining({ userId: 1, role: "manager" }),
+    );
+    expect(res).toMatchObject({
+      mode: "EXECUTED",
+      invoiceId: 77,
+      returnedTotal: "1250.00",
+      fullyReturned: true,
+      idempotentReplay: true,
+    });
+  });
 });
+
 

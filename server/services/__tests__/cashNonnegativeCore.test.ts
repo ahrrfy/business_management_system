@@ -759,6 +759,7 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
       "exchange/deposit.ts",
       "digitalCards/walletOpsService.ts",
       "voucher/approval.ts",
+      "employeeSpotBonusService.ts",
     ];
     for (const relative of externalLifecycleFiles) {
       const source = readFileSync(path.join(root, relative), "utf8");

@@ -382,21 +382,21 @@ export const returnRouter = router({
         invoiceId,
         clientRequestId,
         reason: explicitReason,
+        directExecution: _directExecution,
         ...payload
       } = input;
       const rawReason = explicitReason || input.resolution?.reason;
 
       /**
-       * ⭐ **مسارُ التنفيذ الفوريّ الذريّ** (مالك، إداريّ، أو كاشير بوردية مفتوحة).
+       * ⭐ **مسارُ التنفيذ الفوريّ الذريّ للمالك فقط** (VULN-SQUAD1-01).
        *
-       * المالكُ ينفّذ مرتجعه مباشرةً، ومسؤولو النظام والمدراء والكاشير ينفّذون مباشرةً عبر
-       * `returnSaleDirect` افتراضياً (أو عند صراحة directExecution !== false).
-       * الأثرُ يمرّ بنفس `returnSaleInTx` بكلّ قيودها وحرّاسها. الاختصارُ في الحوكمة لا في المحاسبة.
+       * المالكُ الحقيقيّ ينفّذ مرتجعه مباشرةً عبر `returnSaleAsOwner`.
+       * جميع المستخدمين الآخرين (المدراء، مسؤولو النظام، الكاشير) يمرّون إلزامياً
+       * بمسار الصانع والمدقق (Maker-Checker) عبر `requestSalesControl` لإنشاء طلب تدقيق.
        *
        * ⚠️ **العائدُ نوعٌ مُميَّزٌ بـ`mode`**: كلّ مستهلكٍ يتفرّع على `mode` صراحةً.
        */
-      const shouldExecuteDirect =
-        ctx.user.isOwner === true || input.directExecution === true;
+      const shouldExecuteDirect = ctx.user.isOwner === true;
 
       if (shouldExecuteDirect && (!rawReason || rawReason.trim().length < 3)) {
         throw new TRPCError({
@@ -469,6 +469,9 @@ export const returnRouter = router({
             ? await returnSaleAsOwner(
                 {
                   ...payload,
+                  ...(_directExecution !== undefined
+                    ? { directExecution: _directExecution }
+                    : {}),
                   invoiceId,
                   ownerReason: reason,
                   clientRequestId: clientRequestId ?? randomUUID(),
@@ -518,6 +521,63 @@ export const returnRouter = router({
           });
         }
         return { ...executed, mode: "EXECUTED" as const, invoiceId };
+      }
+
+      // صون عدم التكرار عبر النشر المتدرّج: إن كان هذا المفتاح قد التزم سابقاً كمرتجعٍ مباشر
+      // (`sale.return`) وضاعت استجابته، نُعيد تشغيل نتيجة التنفيذ الأصلي بدل إنشاء طلب رقابي جديد.
+      if (clientRequestId) {
+        const normalizedReason = reason.replace(/\s+/g, " ");
+        const replayWithDirectFlag = {
+          ...payload,
+          directExecution: true,
+          invoiceId,
+          operatorReason: normalizedReason,
+          clientRequestId,
+        };
+        const replayWithoutDirectFlag = {
+          ...payload,
+          invoiceId,
+          operatorReason: normalizedReason,
+          clientRequestId,
+        };
+        const replayCandidates =
+          _directExecution === false
+            ? [
+                replayWithDirectFlag,
+                { ...replayWithoutDirectFlag, directExecution: false },
+                replayWithoutDirectFlag,
+              ]
+            : [replayWithDirectFlag, replayWithoutDirectFlag];
+        const legacyReplay = await withTx(async (tx) => {
+          let lastConflict: unknown = null;
+          for (const candidate of replayCandidates) {
+            try {
+              const existingRefId = await checkIdempotency(
+                tx,
+                "sale.return",
+                clientRequestId,
+                idempotencyHash(candidate),
+              );
+              if (existingRefId == null) return null;
+              return await returnSaleInTx(tx, candidate, {
+                userId: ctx.user.id,
+                branchId: actorBranchId,
+                role: ctx.user.role,
+              });
+            } catch (err) {
+              if (err instanceof TRPCError && err.code === "CONFLICT") {
+                lastConflict = err;
+                continue;
+              }
+              throw err;
+            }
+          }
+          if (lastConflict) throw lastConflict;
+          return null;
+        });
+        if (legacyReplay) {
+          return { ...legacyReplay, mode: "EXECUTED" as const, invoiceId };
+        }
       }
 
       const res = await requestSalesControl(

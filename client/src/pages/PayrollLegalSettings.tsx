@@ -27,8 +27,7 @@ type BracketRow = { upTo: string; rate: string };
 export default function PayrollLegalSettings() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const role = me.data?.role;
-  const canEdit = role === "admin" || role === "manager";
+  const canEdit = me.data?.isOwner === true;
 
   const settingsQ = trpc.payroll.legalSettings.useQuery();
 

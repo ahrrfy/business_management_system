@@ -133,6 +133,19 @@ describe("payroll accrual router authority", () => {
     await expect(
       caller.returnSalaryPayment({ accountingEventId: 1, reason: "سبب إعادة راتب" }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      caller.updateLegalSettings({
+        socialSecurityEnabled: false,
+        socialSecurityEmployeeRate: "0",
+        socialSecurityEmployerRate: "0",
+        socialSecurityBase: "basic",
+        incomeTaxEnabled: false,
+        incomeTaxBrackets: [],
+        incomeTaxExemption: "0",
+        endOfServiceEnabled: false,
+        endOfServiceDaysPerYear: "0",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("keeps obligations and remittance evidence behind hr READ", async () => {
