@@ -113,10 +113,12 @@ export default function HrHub() {
 
   // تعطيل الجسر سياسة تشغيلية صريحة، لا حالة تحميل: نخفي أدوات الأجهزة فقط عند false
   // المؤكدة، ونبقيها عند التحميل/خطأ الشبكة كي لا تتحول مشكلة اتصال إلى اختفاءٍ مضلّل.
+  const hideDevices = bridge.data?.enabled === false;
+  const hidePayrollLegal = me.data?.isOwner !== true;
   const visibleTabs = tabsWithCommissions.filter(
     (tab) =>
-      (bridge.data?.enabled !== false || tab.value !== "devices") &&
-      (tab.value !== "payroll-legal" || me.data?.isOwner === true),
+      (!hideDevices || tab.value !== "devices") &&
+      (!hidePayrollLegal || tab.value !== "payroll-legal"),
   );
   return <PageTabs tabs={visibleTabs} ariaLabel="أقسام الموارد البشرية" />;
 }
