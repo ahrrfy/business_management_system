@@ -109,7 +109,7 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
       baseRole === "print_operator" || baseRole === "user"
         ? modules.workorders === "FULL"
           ? "reception_clerk"
-          : modules.pos === "FULL"
+          : modules.pos === "FULL" || modules.sales === "FULL"
             ? "cashier"
             : baseRole
         : baseRole;

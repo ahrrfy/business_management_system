@@ -2823,13 +2823,14 @@ export async function returnSaleDirect(
       );
       const userOverride = userRow.permissionsOverride as PermissionMap | null;
       const fallbackCapRole =
-        effectiveRole === "print_operator" &&
-        effectivePermissions.workorders === "FULL"
-          ? "reception_clerk"
-          : (effectiveRole === "print_operator" || effectiveRole === "user") &&
-              (userOverride?.pos === "FULL" || userOverride?.sales === "FULL")
-            ? "cashier"
-            : effectiveRole;
+        effectiveRole === "print_operator" || effectiveRole === "user"
+          ? effectivePermissions.workorders === "FULL"
+            ? "reception_clerk"
+            : effectivePermissions.pos === "FULL" ||
+                effectivePermissions.sales === "FULL"
+              ? "cashier"
+              : effectiveRole
+          : effectiveRole;
       const resolvedCaps = resolveOperationalCaps(
         customRoleRow && userRow.customRoleId != null
           ? customRoleRow.key
@@ -2878,7 +2879,9 @@ export async function returnSaleDirect(
       ].includes(effectiveRole);
 
       const hasReceptionFull =
-        (effectiveRole === "print_operator" || isCashierRole) &&
+        (effectiveRole === "print_operator" ||
+          effectiveRole === "user" ||
+          isCashierRole) &&
         effectivePermissions.workorders === "FULL";
       const hasExplicitPrintPosFull =
         (effectiveRole === "print_operator" ||

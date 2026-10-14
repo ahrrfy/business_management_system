@@ -817,11 +817,40 @@ function StaffReturnRequestForm({ row, onClose,
 function ReturnRequestDialog({ row, canCreateReturn, onClose,
 }: { row: Row; canCreateReturn: boolean; onClose: () => void;
 }) {
+  const parsedWorkOrderId = (() => {
+    if (row.workOrderId != null) return Number(row.workOrderId);
+    const m = /^WO-(\d+)(?::R\d+)?$/.exec(String(row.sourceId ?? ""));
+    return m ? Number(m[1]) : null;
+  })();
+  const isWorkOrderInvoice =
+    row.sourceType === "WORKORDER" || parsedWorkOrderId != null;
+
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" dir="rtl" onClick={onClose}>
       <div className="w-full max-w-sm space-y-3 rounded-2xl bg-card p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <h3 className="text-sm font-extrabold">طلب إرجاع — {row.invoiceNumber}</h3>
-        {canCreateReturn ? (
+        {isWorkOrderInvoice ? (
+          <>
+            <p className="text-xs text-muted-foreground">
+              فاتورة أمر الشغل لا تمرّ بمرتجع المبيعات العام؛ تُعالَج عبر «طلب عكس التسليم» من شاشة أمر الشغل أو تفاصيل الفاتورة.
+            </p>
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
+              <a
+                href={
+                  parsedWorkOrderId != null
+                    ? `/work-orders/${parsedWorkOrderId}`
+                    : `/invoices/${row.id}`
+                }
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex flex-1 items-center justify-center rounded-md bg-primary px-3 text-sm font-bold text-primary-foreground hover:bg-primary/90"
+              >
+                {parsedWorkOrderId != null ? "فتح أمر الشغل" : "فتح تفاصيل الفاتورة"}
+              </a>
+            </div>
+          </>
+        ) : canCreateReturn ? (
           <>
             <p className="text-xs text-muted-foreground">
               الإرجاع يعكس مخزوناً وقيوداً ونقداً — تُنفّذه من شاشة المرتجعات بصلاحيتك.

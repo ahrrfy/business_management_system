@@ -4,6 +4,11 @@ import {
   resolveOperationalCaps,
   type OperationalCaps,
 } from "@shared/atomicPermissions";
+import {
+  resolvePermissions,
+  type PermissionMap,
+  type RoleKey,
+} from "@shared/permissions";
 import { roles, users } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { eq } from "drizzle-orm";
@@ -132,14 +137,18 @@ export async function loadCurrentOperationalAuthorityTx(
     };
   }
 
-  const override = user.permissionsOverride as Record<string, unknown> | null;
+  const effectiveModules = resolvePermissions(
+    (user.role as RoleKey) ?? "user",
+    user.permissionsOverride as PermissionMap | null,
+  );
   const fallbackCapRole =
-    user.role === "print_operator" && override?.workorders === "FULL"
-      ? "reception_clerk"
-      : (user.role === "print_operator" || user.role === "user") &&
-          (override?.pos === "FULL" || override?.sales === "FULL")
-        ? "cashier"
-        : user.role;
+    user.role === "print_operator" || user.role === "user"
+      ? effectiveModules.workorders === "FULL"
+        ? "reception_clerk"
+        : effectiveModules.pos === "FULL" || effectiveModules.sales === "FULL"
+          ? "cashier"
+          : user.role
+      : user.role;
 
   return {
     branchId: user.branchId == null ? null : Number(user.branchId),

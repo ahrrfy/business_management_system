@@ -478,7 +478,20 @@ export function SalesReturnPortal({
           }
           return;
         }
-      } catch {
+      } catch (err) {
+        if (
+          err &&
+          typeof err === "object" &&
+          ("data" in err &&
+            (err as { data?: { code?: string } }).data?.code ===
+              "PRECONDITION_FAILED" ||
+            ("message" in err &&
+              typeof (err as { message?: unknown }).message === "string" &&
+              (err as { message: string }).message.includes("أمر الشغل")))
+        ) {
+          if (!silent) notify.err(err);
+          return;
+        }
         // المتابعة للبحث البديل
       }
 

@@ -52,26 +52,24 @@ async function seed() {
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" });
 
-  // مستخدم كاشير استقبال (workorders: FULL)
+  // مستخدم كاشير استقبال (workorders: FULL بالقالب دون operationalCaps صريحة — يرث سقف reception_clerk)
   await d.insert(s.users).values({
     id: 10,
     openId: "reception-user",
     name: "مشغل الاستقبال",
     role: "print_operator", // له workorders: "FULL" بالقالب
-    operationalCaps: { maxRefundAmountIqd: "25000.00" },
     branchId: 1,
     loginMethod: "local",
     isOwner: false,
   });
 
-  // مستخدم كاشير طباعة (pos: FULL)
+  // مستخدم كاشير طباعة (pos: FULL دون operationalCaps صريحة — يرث سقف cashier)
   await d.insert(s.users).values({
     id: 11,
     openId: "print-user",
     name: "كاشير الطباعة",
     role: "user",
     permissionsOverride: { pos: "FULL" },
-    operationalCaps: { maxRefundAmountIqd: "25000.00" },
     branchId: 1,
     loginMethod: "local",
     isOwner: false,
@@ -566,5 +564,47 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       },
     });
     expect(receptionWalkIn.ok).toBe(true);
+
+    // فواتير أوامر الشغل (WORKORDER) تُرفض في inspectInvoiceForReturn و executeSalesReturnCart
+    await db().insert(s.invoices).values({
+      id: 901,
+      invoiceNumber: "INV-WO-901",
+      branchId: 1,
+      sourceType: "WORKORDER",
+      sourceId: "WO-901",
+      subtotal: "25.00",
+      discountAmount: "0.00",
+      taxAmount: "0.00",
+      total: "25.00",
+      paidAmount: "25.00",
+      returnedTotal: "0.00",
+      status: "PAID",
+      paymentMethod: "CASH",
+      createdBy: 10,
+      shiftId: receptionShiftId,
+    });
+
+    await expect(
+      receptionCaller.inspectInvoiceForReturn({ invoiceNumber: "INV-WO-901" }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    await expect(
+      receptionCaller.executeSalesReturnCart({
+        invoiceNumber: "INV-WO-901",
+        items: [
+          {
+            variantId: 1,
+            productName: "كارت شخصي",
+            quantity: 1,
+            unitPrice: "25.00",
+          },
+        ],
+        settlement: {
+          method: "CASH",
+          totalAmount: "25.00",
+          shiftId: receptionShiftId,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 });

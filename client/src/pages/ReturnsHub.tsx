@@ -68,6 +68,9 @@ export default function ReturnsHub() {
     "returns.executePurchaseReturnCart",
   ).allowed;
   const canListSalesReturns = useOperationPermission("returns.list").allowed;
+  const canListPurchaseReturns = useOperationPermission(
+    "purchaseReturns.list",
+  ).allowed;
 
   const urlParams = useMemo(() => new URLSearchParams(searchStr), [searchStr]);
   const requestIdParam = Number(urlParams.get("requestId"));
@@ -88,10 +91,15 @@ export default function ReturnsHub() {
   const [portalMode, setPortalMode] = useState<ReturnPortalMode>(initialMode);
   const initialInvoice = urlParams.get("invoice") || undefined;
   const initialPo = urlParams.get("po") || undefined;
+  const canViewActiveHistory =
+    portalMode === "purchases" ? canListPurchaseReturns : canListSalesReturns;
 
   const viewParam = urlParams.get("view");
   const [subTab, setSubTab] = useState<"create" | "history">(
-    (viewParam === "history" || viewParam === "ledger") && canListSalesReturns
+    (viewParam === "history" || viewParam === "ledger") &&
+      (initialMode === "purchases"
+        ? canListPurchaseReturns
+        : canListSalesReturns)
       ? "history"
       : "create"
   );
@@ -100,21 +108,27 @@ export default function ReturnsHub() {
     if (!canExecutePurchaseReturn && portalMode === "purchases") {
       setPortalMode("sales");
     }
-    if (!canListSalesReturns && subTab === "history") {
+    if (!canViewActiveHistory && subTab === "history") {
       setSubTab("create");
     }
-  }, [canExecutePurchaseReturn, canListSalesReturns, portalMode, subTab]);
+  }, [canExecutePurchaseReturn, canViewActiveHistory, portalMode, subTab]);
 
   const switchPortal = (mode: ReturnPortalMode) => {
     if (mode === "purchases" && !canExecutePurchaseReturn) return;
+    const canListTarget =
+      mode === "purchases" ? canListPurchaseReturns : canListSalesReturns;
     setPortalMode(mode);
     const p = new URLSearchParams(searchStr);
     p.set("portal", mode);
+    if (subTab === "history" && !canListTarget) {
+      setSubTab("create");
+      p.delete("view");
+    }
     setLocation(`/returns?${p.toString()}`);
   };
 
   const switchSubTab = (tab: "create" | "history") => {
-    if (tab === "history" && !canListSalesReturns) return;
+    if (tab === "history" && !canViewActiveHistory) return;
     setSubTab(tab);
     const p = new URLSearchParams(searchStr);
     if (tab === "history") {
@@ -350,7 +364,7 @@ export default function ReturnsHub() {
             <RotateCcw className="size-3.5" />
             <span>بوابة الإرجاع والتسوية الفورية</span>
           </Button>
-          {canListSalesReturns && (
+          {canViewActiveHistory && (
             <Button
               type="button"
               variant={subTab === "history" ? "default" : "outline"}

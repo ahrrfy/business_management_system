@@ -1382,6 +1382,7 @@ export const returnRouter = router({
           id: invoices.id,
           invoiceNumber: invoices.invoiceNumber,
           status: invoices.status,
+          sourceType: invoices.sourceType,
           branchId: invoices.branchId,
           customerId: invoices.customerId,
           customerName: customers.name,
@@ -1408,6 +1409,17 @@ export const returnRouter = router({
         .limit(1);
 
       if (!inv) return null;
+
+      if (inv.sourceType === "WORKORDER") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر تحميل تفاصيل الفاتورة للمرتجع",
+            why: "فاتورة أمر الشغل لا تقبل المرتجع المباشر من مسار المبيعات",
+            doThis: "توجّه إلى شاشة أمر الشغل ونفّذ عكس التسليم من هناك",
+          }),
+        });
+      }
 
       const isOtherBranch =
         !isAdmin &&
@@ -2420,6 +2432,7 @@ export const returnRouter = router({
                 id: invoices.id,
                 branchId: invoices.branchId,
                 status: invoices.status,
+                sourceType: invoices.sourceType,
               })
               .from(invoices)
               .where(
@@ -2438,6 +2451,17 @@ export const returnRouter = router({
                   what: "تعذر العثور على الفاتورة المحددة",
                   why: `لا توجد فاتورة بالرقم «${input.invoiceNumber.trim()}» مسجلة في النظام`,
                   doThis: "تأكد من صحة رقم الفاتورة أو رمز الباركود المدخل",
+                }),
+              });
+            }
+
+            if (invPreview.sourceType === "WORKORDER") {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message: appErrorMessage({
+                  what: "تعذّر تسجيل المرتجع",
+                  why: "فاتورة أمر الشغل لا تقبل المرتجع المباشر من مسار المبيعات",
+                  doThis: "توجّه إلى شاشة أمر الشغل ونفّذ عكس التسليم من هناك",
                 }),
               });
             }
@@ -2524,6 +2548,17 @@ export const returnRouter = router({
                   what: "تعذر العثور على الفاتورة المحددة",
                   why: `لا توجد فاتورة بالرقم «${input.invoiceNumber.trim()}» مسجلة في النظام`,
                   doThis: "تأكد من صحة رقم الفاتورة أو رمز الباركود المدخل",
+                }),
+              });
+            }
+
+            if (found.sourceType === "WORKORDER") {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message: appErrorMessage({
+                  what: "تعذّر تسجيل المرتجع",
+                  why: "فاتورة أمر الشغل لا تقبل المرتجع المباشر من مسار المبيعات",
+                  doThis: "توجّه إلى شاشة أمر الشغل ونفّذ عكس التسليم من هناك",
                 }),
               });
             }

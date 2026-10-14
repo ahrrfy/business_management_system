@@ -264,6 +264,7 @@ describe("operational UI permission parity", () => {
   it("enables sales returns for retail cashier, print cashier, and reception cashier while gating purchase returns and history", () => {
     const returnsHub = readPage("ReturnsHub.tsx");
     const requireRole = readComponent("RequireRole.tsx");
+    const receptionQueue = readComponent("reception/ReceptionInvoiceQueue.tsx");
     const operationPolicy = (paths: string[]): OperationPolicy => ({
       version: 1,
       grants: Object.fromEntries(paths.map((path) => [`operation.${path}`, true])),
@@ -272,8 +273,12 @@ describe("operational UI permission parity", () => {
 
     expect(returnsHub).toContain('"returns.executePurchaseReturnCart"');
     expect(returnsHub).toContain('useOperationPermission("returns.list").allowed');
+    expect(returnsHub).toContain('"purchaseReturns.list"');
     expect(returnsHub).toContain("{canExecutePurchaseReturn && (");
-    expect(returnsHub).toContain("{canListSalesReturns && (");
+    expect(returnsHub).toContain("{canViewActiveHistory && (");
+
+    expect(receptionQueue).toContain('row.sourceType === "WORKORDER" || parsedWorkOrderId != null');
+    expect(receptionQueue).toContain("`/work-orders/${parsedWorkOrderId}`");
 
     expect(requireRole).toContain("canonicalGate === RETURNS_WORKSPACE_GATE");
     expect(requireRole).toContain("canSeeGate(INVOICE_LIST_GATE, role, override, operationPolicy)");
