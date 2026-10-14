@@ -1730,7 +1730,7 @@ export const returnRouter = router({
           "returns.universalScan",
         ),
         canReadWorkOrders: operationDecision(ctx.user, "workOrders.list").allowed,
-        canReadDelivery: operationDecision(ctx.user, "delivery.list").allowed,
+        canReadDelivery: operationDecision(ctx.user, "delivery.listParties").allowed,
         canReadPurchaseReturns: operationDecision(ctx.user, "purchaseReturns.list").allowed,
       });
     }),
@@ -3189,6 +3189,36 @@ export const returnRouter = router({
             }
           }
 
+          const costLookupVariantIds = Array.from(
+            new Set([
+              ...allVariantIds,
+              ...Array.from(bundleDefs.values()).flatMap((defs: any[]) =>
+                defs.map((d) => Number(d.componentVariantId)),
+              ),
+              ...Array.from(snapshotByItem.values()).flatMap((snaps) =>
+                snaps.map((s) => Number(s.componentVariantId)),
+              ),
+            ]),
+          );
+          const costPriceByVariantId = new Map<number, Decimal>();
+          if (costLookupVariantIds.length > 0) {
+            const variantCostRows = await tx
+              .select({
+                id: productVariants.id,
+                costPrice: productVariants.costPrice,
+              })
+              .from(productVariants)
+              .where(inArray(productVariants.id, costLookupVariantIds));
+            for (const row of variantCostRows) {
+              costPriceByVariantId.set(
+                Number(row.id),
+                money(row.costPrice ?? "0"),
+              );
+            }
+          }
+
+          let restockedCostDec = new Decimal(0);
+
           for (const itm of input.items) {
             const kind = kindByVariant.get(itm.variantId) ?? "STOCKED";
 
@@ -3196,6 +3226,16 @@ export const returnRouter = router({
               // الخدمات لا مخزون لها إطلاقاً — لا نطبق أي حركة مخزون
               continue;
             }
+
+            const targetItem = matchedInvoice
+              ? itm.invoiceItemId
+                ? invoiceItemRows.find(
+                    (ii) =>
+                      ii.id === itm.invoiceItemId &&
+                      ii.variantId === itm.variantId,
+                  )
+                : invoiceItemRows.find((ii) => ii.variantId === itm.variantId)
+              : undefined;
 
             if (kind === "BUNDLE") {
               // بكج مركب: نحدد مكوناته
@@ -3241,6 +3281,55 @@ export const returnRouter = router({
                   resolvedBaseQtyByItem.get(itm) ??
                   (await resolveReturnBaseQuantity(tx, itm)).baseQuantity;
 
+                if (
+                  targetItem &&
+                  money(targetItem.lineCost ?? "0").gt(0) &&
+                  (targetItem.baseQuantity ?? 0) > 0
+                ) {
+                  restockedCostDec = restockedCostDec.plus(
+                    round2(
+                      money(targetItem.lineCost)
+                        .times(effectiveBaseQty)
+                        .dividedBy(targetItem.baseQuantity),
+                    ),
+                  );
+                } else if (
+                  targetItem &&
+                  money(targetItem.unitCost ?? "0").gt(0)
+                ) {
+                  restockedCostDec = restockedCostDec.plus(
+                    round2(money(targetItem.unitCost).times(effectiveBaseQty)),
+                  );
+                } else {
+                  for (const comp of components) {
+                    const compUnitCost =
+                      costPriceByVariantId.get(comp.componentVariantId) ??
+                      money(0);
+                    if (
+                      directLimitsApply &&
+                      !matchedInvoice &&
+                      compUnitCost.lte(0)
+                    ) {
+                      throw new TRPCError({
+                        code: "PRECONDITION_FAILED",
+                        message: appErrorMessage({
+                          what: "يتطلب المرتجع موافقة المدير",
+                          why: `مكوّن البكج «${itm.productName}» لا يملك كلفة شراء معتمدة في الكتالوج لتقييم إعادة المخزون في المرتجع العابر`,
+                          doThis:
+                            "اربط المرتجع بالفاتورة الأصلية أو اطلب اعتماد المدير لإرجاع الصنف إلى الرف",
+                        }),
+                      });
+                    }
+                    restockedCostDec = restockedCostDec.plus(
+                      round2(
+                        compUnitCost.times(
+                          comp.componentBaseQuantity * effectiveBaseQty,
+                        ),
+                      ),
+                    );
+                  }
+                }
+
                 for (const comp of components) {
                   const compBaseQty =
                     comp.componentBaseQuantity * effectiveBaseQty;
@@ -3261,6 +3350,48 @@ export const returnRouter = router({
                 const effectiveBaseQty =
                   resolvedBaseQtyByItem.get(itm) ??
                   (await resolveReturnBaseQuantity(tx, itm)).baseQuantity;
+
+                if (
+                  targetItem &&
+                  money(targetItem.lineCost ?? "0").gt(0) &&
+                  (targetItem.baseQuantity ?? 0) > 0
+                ) {
+                  restockedCostDec = restockedCostDec.plus(
+                    round2(
+                      money(targetItem.lineCost)
+                        .times(effectiveBaseQty)
+                        .dividedBy(targetItem.baseQuantity),
+                    ),
+                  );
+                } else if (
+                  targetItem &&
+                  money(targetItem.unitCost ?? "0").gt(0)
+                ) {
+                  restockedCostDec = restockedCostDec.plus(
+                    round2(money(targetItem.unitCost).times(effectiveBaseQty)),
+                  );
+                } else {
+                  const variantUnitCost =
+                    costPriceByVariantId.get(itm.variantId) ?? money(0);
+                  if (
+                    directLimitsApply &&
+                    !matchedInvoice &&
+                    variantUnitCost.lte(0)
+                  ) {
+                    throw new TRPCError({
+                      code: "PRECONDITION_FAILED",
+                      message: appErrorMessage({
+                        what: "يتطلب المرتجع موافقة المدير",
+                        why: `الصنف «${itm.productName}» لا يملك كلفة شراء معتمدة في الكتالوج لتقييم إعادة المخزون في المرتجع العابر`,
+                        doThis:
+                          "اربط المرتجع بالفاتورة الأصلية أو اطلب اعتماد المدير لإرجاع الصنف إلى الرف",
+                      }),
+                    });
+                  }
+                  restockedCostDec = restockedCostDec.plus(
+                    round2(variantUnitCost.times(effectiveBaseQty)),
+                  );
+                }
 
                 await applyMovement(tx, {
                   variantId: itm.variantId,
@@ -3477,16 +3608,20 @@ export const returnRouter = router({
 
           // ٣) توثيق قيد حدث المرتجع (RETURN) في دفتر الأستاذ العام
           // خالي تماماً من الأسطر الصفرية تجنباً لخطأ PostingIntent
+          const restockedCostRounded =
+            input.disposition === "RESTOCK"
+              ? round2(restockedCostDec)
+              : money(0);
           const salesReturnSource = {
             roleDebits: {
               SALES_STATIONERY: returnTotalDec,
               DELIVERY_REVENUE: money(0),
               TAX_PAYABLE: money(0),
-              INVENTORY: money(0),
+              INVENTORY: restockedCostRounded,
             },
             roleCredits: {
               AR: returnTotalDec,
-              COGS: money(0),
+              COGS: restockedCostRounded,
             },
           };
           const salesReturnIntent = createPostingIntent(
@@ -3495,6 +3630,12 @@ export const returnRouter = router({
             [
               debitLine("SALES_STATIONERY", returnTotalDec),
               creditLine("AR", returnTotalDec),
+              ...(restockedCostRounded.gt(0)
+                ? [
+                    debitLine("INVENTORY", restockedCostRounded),
+                    creditLine("COGS", restockedCostRounded),
+                  ]
+                : []),
             ],
             salesReturnSource,
           );
@@ -3509,8 +3650,8 @@ export const returnRouter = router({
             customerId: ledgerCustomerId,
             amount: returnTotalDec.neg(),
             revenue: returnTotalDec.neg(),
-            cost: new Decimal(0),
-            profit: returnTotalDec.neg(),
+            cost: restockedCostRounded.neg(),
+            profit: returnTotalDec.minus(restockedCostRounded).neg(),
             notes: `مرتجع مبيعات سلة [${returnNumber}] — ${customerName} (${
               input.settlement.method === "CASH"
                 ? `نقدي من درج #${input.settlement.shiftId}`

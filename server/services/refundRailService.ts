@@ -125,7 +125,7 @@ function saleReturnInvoiceScopeForActor(
   );
   const salesLevel: AccessLevel =
     actor.role === "user" ? (override?.sales ?? "NONE") : (map.sales ?? "NONE");
-  if (salesLevel === "FULL" || salesLevel === "READ") {
+  if (salesLevel === "FULL") {
     return "sales";
   }
   if (map.workorders === "FULL") {
@@ -133,6 +133,9 @@ function saleReturnInvoiceScopeForActor(
   }
   if (map.pos === "FULL") {
     return "print";
+  }
+  if (salesLevel === "READ") {
+    return "sales";
   }
   return "sales";
 }

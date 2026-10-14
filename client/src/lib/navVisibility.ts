@@ -94,11 +94,15 @@ export const RETURNS_WORKSPACE_GATE: RoleGate = {
         { operations: ["returns.approveRequest"] },
       ],
     },
-    { operations: ["returns.list"] },
     {
-      allOf: [
-        { operations: ["purchaseReturns.list"] },
-        { operations: ["suppliers.list"] },
+      anyOf: [
+        { operations: ["returns.list"] },
+        {
+          allOf: [
+            { operations: ["purchaseReturns.list"] },
+            { operations: ["suppliers.list"] },
+          ],
+        },
       ],
     },
   ],

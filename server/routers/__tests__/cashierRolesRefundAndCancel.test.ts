@@ -547,6 +547,17 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       },
     });
     expect(retailWalkIn.ok).toBe(true);
+    const [walkInReturnEntry] = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(
+        and(
+          eq(s.accountingEntries.entryType, "RETURN"),
+          eq(s.accountingEntries.receiptId, Number(retailWalkIn.receiptId)),
+        ),
+      );
+    expect(walkInReturnEntry?.cost).toBe("-5.00");
+    expect(walkInReturnEntry?.profit).toBe("-20.00");
 
     const receptionWalkIn = await receptionCaller.executeSalesReturnCart({
       items: [
@@ -722,7 +733,6 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       quantity: 1,
       salePrice: "100.00",
       deposit: "50.00",
-      status: "NEW",
       createdBy: 10,
     } as never);
     const woScanByPrint = await printCaller.universalScan({
