@@ -14,7 +14,6 @@ import {
   PERMISSION_MODULES,
   ROLE_TEMPLATES,
   applyPermissionOverrides,
-  deriveEffectiveAccess,
   diffFromTemplate,
   resolvePermissions,
   type AccessLevel,
@@ -28,6 +27,7 @@ import {
 } from "@shared/atomicPermissions";
 import {
   buildOperationPolicyFromLegacy,
+  deriveOperationAccess,
   resolveOperationPolicy,
   summarizeOperationModules,
   type OperationPolicy,
@@ -1131,11 +1131,8 @@ export async function getEffectivePermissions(
   const resolved = { ...row } as AuthUser;
   if (resolved.isOwner) normalizeOwnerAuthority(resolved);
   else await resolveCustomRole(resolved);
-  const access = deriveEffectiveAccess(
-    resolved.role,
-    resolved.permissionsOverride as PermissionMap | null,
-  );
-  const isAdmin = eff.role === "admin";
+  const access = deriveOperationAccess(resolved);
+  const isAdmin = resolved.role === "admin" && !resolved.operationPolicyEnabled;
   const base = ROLE_TEMPLATES[eff.role as RoleKey] ?? ROLE_TEMPLATES.user;
   const modules: EffectiveModuleRow[] = PERMISSION_MODULES.map((m) => {
     const level = (access.resolved[m.key] ?? "NONE") as AccessLevel;
@@ -1171,6 +1168,7 @@ export async function getEffectivePermissions(
 /** القسم الفعليّ لصفٍّ في القائمة (تجزئة/طباعة/استقبال/متعدّد/لا قسم) — يعكس منطق السياق مباشرةً. */
 function effectiveStationForRow(row: {
   role: string;
+  isOwner?: boolean;
   customRoleId: number | null;
   permissionsOverride: unknown;
   atomicPermissions: unknown;
@@ -1180,6 +1178,7 @@ function effectiveStationForRow(row: {
   roleOperationPolicy: unknown;
   roleAtomicPermissions: unknown;
 }): EffectiveAccessSummary["station"] {
+  if (row.isOwner) return deriveOperationAccess({ role: "admin", isOwner: true }).station;
   let role = row.role as RoleKey;
   let override: PermissionMap | null = (row.permissionsOverride as PermissionMap) ?? null;
   let inheritedModules = resolvePermissions(role, null);
@@ -1192,7 +1191,7 @@ function effectiveStationForRow(row: {
     override = diffFromTemplate(baseRole, applyPermissionOverrides(customPermissions, row.permissionsOverride as PermissionMap | null));
   } else if (row.customRoleId != null) {
     // Same fail-closed contract as context for a missing or inactive custom role.
-    return deriveEffectiveAccess("user", null).station;
+    return deriveOperationAccess({ role: "user", operationPolicyEnabled: true, resolvedOperationPolicy: { version: 1, grants: {} } }).station;
   }
   if (row.operationPolicy != null || row.roleOperationPolicy != null) {
     const inherited =
@@ -1213,12 +1212,9 @@ function effectiveStationForRow(row: {
         atomicPermissions: row.atomicPermissions as AtomicPermissionsMap | null,
       },
     );
-    override = diffFromTemplate(
-      role as RoleKey,
-      summarizeOperationModules(resolved),
-    );
+    return deriveOperationAccess({ role, operationPolicyEnabled: true, resolvedOperationPolicy: resolved }).station;
   }
-  return deriveEffectiveAccess(role, override).station;
+  return deriveOperationAccess({ role, permissionsOverride: override }).station;
 }
 
 export async function listUsers(input: ListUsersInput = {}) {
@@ -1267,6 +1263,7 @@ export async function listUsers(input: ListUsersInput = {}) {
       ...r,
       effectiveStation: effectiveStationForRow({
         role: r.role as string,
+        isOwner: r.isOwner,
         customRoleId: (r.customRoleId as number | null) ?? null,
         permissionsOverride: r.permissionsOverride,
         atomicPermissions: r.atomicPermissions,

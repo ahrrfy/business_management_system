@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OperationUser } from "@shared/operationPermissions";
-import { receptionInvoiceActions, receptionOperationAllowed } from "./receptionOperationAccess";
+import { receptionCheckoutPaths, receptionDeliveryAuthorityRequired, receptionInvoiceActions, receptionOperationAllowed } from "./receptionOperationAccess";
 
 function account(paths: string[], role = "manager"): OperationUser {
   return { role, operationPolicyEnabled: true, resolvedOperationPolicy: {
@@ -9,6 +9,20 @@ function account(paths: string[], role = "manager"): OperationUser {
   } };
 }
 describe("reception lifecycle delegation", () => {
+  it("requires separate dispatch authority only when checkout assigns delivery", () => {
+    const legacy = { role: "cashier", permissionsOverride: { workorders: "FULL", store: "NONE" } } as const;
+    expect(receptionDeliveryAuthorityRequired(legacy, true)).toBe(false);
+    expect(receptionDeliveryAuthorityRequired(account([]), true)).toBe(true);
+    expect(receptionDeliveryAuthorityRequired(account([]), false)).toBe(false);
+    expect(receptionCheckoutPaths(false, true, false, receptionDeliveryAuthorityRequired(legacy, true)).every((path) => receptionOperationAllowed(legacy, path))).toBe(true);
+    expect(receptionCheckoutPaths(false, false, false, true)).toEqual([
+      "workOrders.receptionCheckout", "delivery.dispatchInvoice",
+    ]);
+    expect(receptionCheckoutPaths(false, true, false, true)).toEqual([
+      "reception.draftSync", "reception.draftCommit", "delivery.dispatchInvoice",
+    ]);
+    expect(receptionCheckoutPaths(false, false, false)).toEqual(["workOrders.receptionCheckout"]);
+  });
   it("separates collection, dispatch and direct returns from the base role", () => {
     const collected = receptionInvoiceActions(account(["reception.collectOnInvoice"]));
     expect(collected.canCollect).toBe(true);

@@ -26,12 +26,16 @@ import {
 import {
   type AtomicPermissionsMap,
   type OperationalCaps,
+  resolveOperationalCaps,
 } from "@shared/atomicPermissions";
 import {
-  legacyOperationPolicy,
   summarizeOperationModules,
   type OperationPolicy,
 } from "@shared/operationPermissions";
+import {
+  buildDefaultRoleOperationPolicy,
+  dailyOperationPaths,
+} from "@shared/roleOperationPresets";
 import { nanoid } from "nanoid";
 import { roles, users } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -152,8 +156,10 @@ export function builtinRoles() {
     canSeeCost: r.canSeeCost === true,
     isSystem: true as const,
     isActive: true as const,
-    operationPolicy: legacyOperationPolicy(r.key, ROLE_TEMPLATES[r.key]),
+    operationPolicy: buildDefaultRoleOperationPolicy(r.key, r.key, ROLE_TEMPLATES[r.key]),
     operationPolicyRevision: 0,
+    operationalCaps: resolveOperationalCaps(r.key),
+    dailyOperationPaths: dailyOperationPaths(r.key),
   }));
 }
 

@@ -7,6 +7,7 @@ import { extractInsertId } from "../../lib/insertId";
 import {
   decideSupplierPayment,
   decideSupplierPaymentRefund,
+  listSupplierPaymentCashSources,
   listPendingSupplierPaymentRefundRequests,
   requestSupplierPayment,
   requestSupplierPaymentRefund,
@@ -171,6 +172,13 @@ beforeEach(async () => {
 });
 
 describe("supplier payment payer and refund receiver cash sources", () => {
+  it("lists only the purchaser's drawer without granting treasury custody", async () => {
+    await expect(listSupplierPaymentCashSources(1, payer)).resolves.toEqual({
+      drawers: [{ id: 100, shiftType: "RETAIL" }],
+      canUseTreasury: false,
+    });
+  });
+
   it("credits only the requester's receiving drawer when another drawer owner approves a refund", async () => {
     const requested = await requestSupplierPaymentRefund(
       await refundInput(),

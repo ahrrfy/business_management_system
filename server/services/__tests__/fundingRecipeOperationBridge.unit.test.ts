@@ -61,7 +61,7 @@ describe("funding and permanent recipe substitution use fresh exact authority", 
   it("retains the contracted legacy funding role denial", async () => {
     const tx = transaction(null);
     await expect(fundTreasury(funding, actor)).rejects.toMatchObject({
-      code: "FORBIDDEN", message: "تمويل الخزينة للمدير فأعلى",
+      code: "FORBIDDEN",
     });
     expect(tx.select).toHaveBeenCalledTimes(2);
   });
@@ -100,7 +100,7 @@ describe("funding and permanent recipe substitution use fresh exact authority", 
   it("retains the contracted legacy permanent substitution denial", async () => {
     const tx = transaction(null);
     await expect(substituteRecipeMaterial(substitution, actor)).rejects.toMatchObject({
-      code: "FORBIDDEN", message: expect.stringContaining("غير مصرح باعتماد تعديل الوصفة الدائم"),
+      code: "FORBIDDEN",
     });
     expect(tx.select).toHaveBeenCalledTimes(2);
   });

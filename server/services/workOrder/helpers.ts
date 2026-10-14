@@ -62,9 +62,11 @@ function assertOperatorOwns(
   wo: { assignedTo: number | string | null },
   actor: Actor & { role?: string },
   scope?: OperationRecordScope | null,
+  allowUnassignedClaim = false,
 ) {
   if (scope === "BRANCH") return;
   if (scope !== "OWN" && actor.role !== "print_operator") return;
+  if (allowUnassignedClaim && wo.assignedTo == null) return;
   if (wo.assignedTo == null || Number(wo.assignedTo) !== actor.userId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "اسحب الأمر إلى قائمتك أولاً لتنفيذه" });
   }

@@ -253,6 +253,7 @@ export const salesControlRouter = router({
         shiftId: z.number().int().positive().optional(),
         /** امسح الدرج المُجمَّد ليُعاد اشتقاق المصدر (درجٌ مفتوح وإلّا خزينةُ الفرع للإداريّ). */
         clearShift: z.boolean().optional(),
+        cashBucket: z.enum(["DRAWER", "TREASURY"]).optional(),
         // ⛔ `null` صراحةً (لا فقط الغياب) مقبولةٌ عمداً: مسحُ المُعتمِد مرجعاً معروضاً — لا
         // يطابق قسيمة الجهاز — يجب أن يصل الخدمة override إلى null فتُرفض CARD حتماً، لا أن
         // يُطوى بصمتٍ إلى «لم يُرسَل شيء» فيبقى مرجع الطلب الأصليّ نافذاً (Codex على PR #997).

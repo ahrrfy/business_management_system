@@ -5,7 +5,7 @@ export interface GeneratedOperationPermission {
   key: string; path: string; kind: "query" | "mutation"; module: string | null; navigationModule: string | null;
   roles: string[]; authority: string; inheritedAuthority: string | null; branch: boolean | string; label: string;
   domain: string; resource: string; lifecycleStage: string; legacyAliases: string[];
-  delegable: boolean; level: string | null; procedure: string; source: string; reservedReason: string | null; supportsRecordScope: boolean; requiresCostVisibility: boolean; requiresLegacyReview: boolean; reservedKind: "AUTHORITY" | "IDENTITY" | "PUBLIC" | "UNSUPPORTED" | null;
+  delegable: boolean; level: string | null; procedure: string; source: string; reservedReason: string | null; supportsRecordScope: boolean; requiresCostVisibility: boolean; requiresLegacyReview: boolean; reservedKind: "AUTHORITY" | "IDENTITY" | "PUBLIC" | "UNSUPPORTED" | "RETIRED" | null;
 }
 import { GENERATED_OPERATION_PERMISSIONS_PART_1 } from "./operationPermissionCatalog.part1.generated";
 import { GENERATED_OPERATION_PERMISSIONS_PART_2 } from "./operationPermissionCatalog.part2.generated";

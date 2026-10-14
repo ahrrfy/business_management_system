@@ -105,6 +105,31 @@ beforeEach(async () => {
 });
 
 describe("سقوف الردّ — الوعاء عابرٌ للطرق", () => {
+  it("يربط الرد المباشر بوردية إيصال القبض لا وردية إنشاء الفاتورة", async () => {
+    const invoiceShift = await openShiftFor(2, "1000.00");
+    const collectingShift = await openShiftFor(1, "1000.00");
+    const sale = await createSale(
+      {
+        branchId: 1, shiftId: invoiceShift, sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+        payment: { amount: "10.00", method: "CASH" },
+      },
+      cashier,
+    );
+    await db().update(s.receipts)
+      .set({ shiftId: collectingShift })
+      .where(and(eq(s.receipts.invoiceId, sale.invoiceId), eq(s.receipts.direction, "IN")));
+
+    const caps = await loadRefundCaps(db(), sale.invoiceId);
+    const batched = (await loadRefundCapsByInvoiceIds(db(), [sale.invoiceId])).get(sale.invoiceId);
+    expect(caps.cashReceiptShiftIds).toEqual([collectingShift]);
+    expect(batched?.cashReceiptShiftIds).toEqual([collectingShift]);
+    expect(caps.cashReceiptShiftIds).not.toContain(invoiceShift);
+    expect(caps.cashNetByShift.get(collectingShift)?.toFixed(2)).toBe("10.00");
+    expect(batched?.cashNetByShift.get(collectingShift)?.toFixed(2)).toBe("10.00");
+    expect(caps.cashNetByShift.has(invoiceShift)).toBe(false);
+  });
+
   it("فاتورةُ بطاقةٍ لزبونٍ عابر: سقف النقد = سقف البطاقة = المقبوض (كان صفراً ⇒ لا مسار)", async () => {
     const shift = await openShiftFor(2, "1000.00");
     const { invoiceId } = await sellPaidByCard(shift, 5); // 50.00 بالبطاقة

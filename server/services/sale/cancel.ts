@@ -25,6 +25,7 @@
 
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import { isDeadInvoice } from "@shared/predicates";
 import Decimal from "decimal.js";
 import { and, eq, sql } from "drizzle-orm";
@@ -39,15 +40,37 @@ import {
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { money, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
-import { shiftIdForCashTx } from "../shiftService";
-import { lockCashSourceForUpdate } from "../cash/cashAvailability";
+import { openShiftIdTx, resolveBranchCashShiftTx, shiftIdForCashTx } from "../shiftService";
+import {
+  assertCashOutAvailable,
+  computeDrawerCashBalance,
+  lockCashSourceForUpdate,
+  type CashBucket,
+} from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
 import { reverseInvoiceSaleInTx } from "../reversal/invoiceReversal";
 import { invoicePaidPool } from "../reversal/materialize/invoice";
+import { loadRefundCaps } from "../returns/refundCaps";
 import { userNameSnapshot } from "../userSnapshot";
 import { assertInvoiceCancellationDeliverySafeTx } from "./invoiceCancellationGuard";
 import type { Tx } from "../../db";
 import { assertLockedInvoiceControlSnapshotTx, type InvoiceControlSnapshot } from "./controlSnapshot";
+import { cancelDeliveryAssignmentInTx } from "../delivery/cancellation";
+import {
+  evaluateRefundOperationalDecision,
+  OperationalApprovalRequiredError,
+  type OperationalDecision,
+} from "@shared/operationalDecision";
+import { todayUtcDate } from "../businessDay";
+import {
+  loadCurrentOperationalAuthorityTx,
+  type CurrentOperationalAuthority,
+} from "../authorization/currentOperationalAuthority";
+import {
+  assertOperationAuthorityTx,
+  loadOperationUserTx,
+  storedCanonicalOperationAllowed,
+} from "../authorization/operationAuthority";
 
 // ملاحظة: EXCHANGE ممنوع (مسار الصيرفة له خدمة مخصّصة كما في voucherService)، وWALLET/CHECK/
 // TRANSFER تُمرَّر بلا shift-guard إن غاب — النقد وحده يستوجب shiftIdForCashTx.
@@ -62,12 +85,17 @@ export interface CancelSaleInput {
   refundPaymentMethod: CancelRefundMethod;
   /** مرجع عملية الاسترداد على جهاز الدفع — تفرضه الخدمة إلزامياً لِـCARD وحدها؛ نظير ReturnSaleInput.refund.reference. */
   reference?: string | null;
+  /** Internal reviewer-selected cash source; direct API requests cannot set it. */
+  refundShiftId?: number | null;
+  refundCashBucket?: CashBucket | null;
   /** سبب الإلغاء — يُخزَّن على قيد RETURN.notes للتدقيق. */
   reason?: string | null;
   /** idempotency: نفس المفتاح ⇒ إلغاءٌ واحد (لا استرداد/عكس مزدوج عند النقر المزدوج/إعادة الشبكة). */
   clientRequestId?: string | null;
   /** تفويض داخلي من طلب التحكم؛ يُطابَق بعد قفل الفاتورة وقبل أول أثر. */
   controlExpectedSnapshot?: InvoiceControlSnapshot | null;
+  /** يفعّل حدود التنفيذ المباشر لمسار API التشغيلي؛ اعتماد التحكم يستعمل الحراس السيادية القائمة. */
+  enforceOperationalDecision?: boolean;
 }
 
 export interface CancelSaleResult {
@@ -82,10 +110,29 @@ export interface CancelSaleResult {
   pendingRefundAmount?: string;
   /** true عند إعادة تشغيل idempotency لنفس المفتاح. */
   idempotentReplay?: true;
+  operationalDecision?: OperationalDecision;
+}
+
+class CashRefundSourceChangedError extends TRPCError {
+  constructor() {
+    super({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذر تثبيت مصدر رد إلغاء الفاتورة",
+        why: "سُجل قبض نقدي متزامن بعد فحص الفاتورة الأولي",
+        doThis: "أعد المحاولة كي يُقفل النظام درج القبض قبل تنفيذ الرد",
+      }),
+    });
+  }
 }
 
 export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<CancelSaleResult> {
-  return withTx((tx) => cancelSaleInTx(tx, input, actor));
+  try {
+    return await withTx((tx) => cancelSaleInTx(tx, input, actor));
+  } catch (error) {
+    if (!(error instanceof CashRefundSourceChangedError)) throw error;
+    return withTx((tx) => cancelSaleInTx(tx, input, actor));
+  }
 }
 
 /** جسم الإلغاء داخل معاملة قائمة؛ تستخدمه موافقة التحكم كي يكون التنفيذ وختم الطلب ذريَّين. */
@@ -136,6 +183,7 @@ export async function cancelSaleInTx(
               and(
                 eq(receipts.invoiceId, input.invoiceId),
                 eq(receipts.direction, "OUT"),
+                eq(receipts.description, `استرداد إلغاء فاتورة ${rInv.invoiceNumber}`),
               ),
             )
             .orderBy(sql`${receipts.id} DESC`)
@@ -155,6 +203,77 @@ export async function cancelSaleInTx(
           idempotentReplay: true,
         };
       }
+    }
+
+    let currentOperationalAuthority: CurrentOperationalAuthority | null = null;
+    let currentCancellationAllowed = true;
+    let currentApprovalAllowed = false;
+    if (input.enforceOperationalDecision) {
+      currentOperationalAuthority = await loadCurrentOperationalAuthorityTx(
+        tx,
+        actor.userId,
+      );
+      if (
+        currentOperationalAuthority.role !== actor.role ||
+        (
+          currentOperationalAuthority.role !== "admin" &&
+          !currentOperationalAuthority.isOwner &&
+          currentOperationalAuthority.branchId !== actor.branchId
+        )
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذر تثبيت تفويض إلغاء الفاتورة",
+            why: "تغير دور الحساب أو فرعه أثناء تنفيذ الإلغاء",
+            doThis: "حدث الصفحة وأعد الإلغاء بصلاحيات الحساب الحالية",
+          }),
+        });
+      }
+      let legacyCancellationAllowed = false;
+      const canonicalCancellationAllowed = await assertOperationAuthorityTx(
+        tx,
+        actor,
+        "sales.cancel",
+        (current) => {
+          legacyCancellationAllowed =
+            moduleAccessAllowed(
+              current.role ?? "user",
+              current.permissionsOverride as PermissionMap | null,
+              "sales",
+              "FULL",
+              ["cashier", "manager"],
+            ) ||
+            moduleAccessAllowed(
+              current.role ?? "user",
+              current.permissionsOverride as PermissionMap | null,
+              "workorders",
+              "FULL",
+              ["cashier", "manager", "print_operator"],
+            ) ||
+            moduleAccessAllowed(
+              current.role ?? "user",
+              current.permissionsOverride as PermissionMap | null,
+              "pos",
+              "FULL",
+              ["cashier", "manager", "print_operator"],
+            );
+          return legacyCancellationAllowed;
+        },
+      );
+      currentCancellationAllowed =
+        canonicalCancellationAllowed || legacyCancellationAllowed;
+      const currentOperationUser = await loadOperationUserTx(tx, actor.userId);
+      currentApprovalAllowed = currentOperationalAuthority.isOwner || (
+        storedCanonicalOperationAllowed(currentOperationUser, "salesControl.approve") ??
+        moduleAccessAllowed(
+          currentOperationUser.role,
+          currentOperationUser.permissionsOverride as PermissionMap | null,
+          "sales",
+          "FULL",
+          ["manager", "admin"],
+        )
+      );
     }
 
     // ترتيب الأقفال الحاكم: مصدر النقد قبل الفاتورة/مورّدي الأمانة. اعتماد سند مورد
@@ -182,28 +301,69 @@ export async function cancelSaleInTx(
         }),
       });
     }
-    let prelockedCashSource: Awaited<ReturnType<typeof shiftIdForCashTx>> | null = null;
-    if (input.refundPaymentMethod === "CASH") {
-      prelockedCashSource = await shiftIdForCashTx(
-        tx,
-        actor,
-        Number(invPreview.branchId),
-        "استرداد إلغاء فاتورة",
-      );
-      await lockCashSourceForUpdate(tx, {
-        branchId: Number(invPreview.branchId),
-        cashBucket: prelockedCashSource.cashBucket,
-        shiftId: prelockedCashSource.shiftId,
+    if (input.refundCashBucket != null && input.controlExpectedSnapshot == null) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "توجيه مصدر رد الإلغاء محصور بمسار اعتماد طلب التحكم",
       });
+    }
+    let prelockedCashSource: Awaited<ReturnType<typeof shiftIdForCashTx>> | null = null;
+    let prelockedCashAccount: Awaited<ReturnType<typeof lockCashSourceForUpdate>> | null = null;
+    const previewRefundCaps =
+      input.refundPaymentMethod === "CASH"
+        ? await loadRefundCaps(tx, input.invoiceId)
+        : null;
+    const expectsCashRefund =
+      input.refundPaymentMethod === "CASH" &&
+      previewRefundCaps != null &&
+      previewRefundCaps.pool.gt(0);
+    if (expectsCashRefund) {
+      const directLimitsApply =
+        input.enforceOperationalDecision === true &&
+        currentOperationalAuthority != null &&
+        !currentApprovalAllowed;
+      if (directLimitsApply) {
+        const shiftId = await openShiftIdTx(
+          tx,
+          actor.userId,
+          Number(invPreview.branchId),
+        );
+        prelockedCashSource = shiftId == null
+          ? null
+          : { shiftId, cashBucket: "DRAWER" as const };
+      } else if (input.refundCashBucket === "TREASURY") {
+        prelockedCashSource = { shiftId: null, cashBucket: "TREASURY" };
+      } else if (input.refundShiftId != null) {
+        const resolved = await resolveBranchCashShiftTx(
+          tx,
+          Number(invPreview.branchId),
+          input.refundShiftId,
+        );
+        prelockedCashSource = { shiftId: resolved.shiftId, cashBucket: "DRAWER" };
+      } else {
+        prelockedCashSource = await shiftIdForCashTx(
+          tx,
+          actor,
+          Number(invPreview.branchId),
+          "استرداد إلغاء فاتورة",
+        );
+      }
+      if (prelockedCashSource) {
+        prelockedCashAccount = await lockCashSourceForUpdate(tx, {
+          branchId: Number(invPreview.branchId),
+          cashBucket: prelockedCashSource.cashBucket,
+          shiftId: prelockedCashSource.shiftId,
+        });
+      }
     }
 
     // بعد مصدر النقد، اقفل جهة التوصيل→الإرسالية/طلب المتجر قبل الفاتورة. الحارس لا يكتفي
     // بوسم CANCELLED: يثبت أيضاً انعدام الحيازة وCOD والتسوية المفتوحة تحت الأقفال نفسها.
-    await assertInvoiceCancellationDeliverySafeTx(tx, {
+    const deliveryGuard = await assertInvoiceCancellationDeliverySafeTx(tx, {
       invoiceId: input.invoiceId,
       expectedBranchId: Number(invPreview.branchId),
+      allowAssignedCancellation: input.enforceOperationalDecision === true || input.controlExpectedSnapshot != null,
     });
-
     // ═══ ١) قراءة الفاتورة تحت FOR UPDATE + الحراس ═══
     const invRows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
     const inv = invRows[0];
@@ -287,10 +447,100 @@ export async function cancelSaleInTx(
         }),
       });
     }
+    const lockedPaidPool = await invoicePaidPool(tx, input.invoiceId);
+    const lockedRefundable = lockedPaidPool.totalIn.minus(lockedPaidPool.outPrior);
+    let directDecision: OperationalDecision | undefined;
+    if (
+      input.enforceOperationalDecision &&
+      currentOperationalAuthority != null &&
+      !currentApprovalAllowed
+    ) {
+      const pool = lockedPaidPool;
+      const refundable = lockedRefundable;
+      const drawerHasFunds =
+        input.refundPaymentMethod !== "CASH" ||
+        refundable.lte(0) ||
+        prelockedCashAccount == null ||
+        (prelockedCashAccount?.cashBucket === "DRAWER" &&
+          prelockedCashAccount.shiftId != null &&
+          (await computeDrawerCashBalance(
+            tx,
+            prelockedCashAccount.shiftId,
+            prelockedCashAccount.openingBalance ?? "0",
+          )).gte(refundable));
+      directDecision = evaluateRefundOperationalDecision({
+        operationAllowed: currentCancellationAllowed,
+        sameBranch: Number(inv.branchId) === Number(actor.branchId),
+        ownsTransaction: Number(inv.createdBy) === Number(actor.userId),
+        sameOpenShift:
+          refundable.lte(0) ||
+          input.refundPaymentMethod !== "CASH" ||
+          (prelockedCashSource?.cashBucket === "DRAWER" &&
+            prelockedCashSource.shiftId != null &&
+            money(lockedPaidPool.cashByShift[String(prelockedCashSource.shiftId)] ?? "0").gte(refundable)),
+        sameBusinessDay: inv.invoiceDate.toISOString().slice(0, 10) === todayUtcDate(),
+        accountingPeriodOpen: true,
+        hasDownstreamEffects: returnedTotalDec.gt(0),
+        hasSourceDocument: true,
+        refundAmountIqd: refundable.toFixed(2),
+        maxRefundAmountIqd: currentOperationalAuthority.caps.maxRefundAmountIqd,
+        refundMethod: input.refundPaymentMethod,
+        originalPaymentMethods: Object.keys(pool.byMethod),
+        originalPaymentAmounts: pool.byMethod,
+        drawerHasFunds,
+        approvalOperation: "salesControl.requestCancel",
+      });
+      if (directDecision.result === "APPROVAL_REQUIRED")
+        throw new OperationalApprovalRequiredError(directDecision);
+      if (directDecision.result === "DENY")
+        throw new TRPCError({ code: "FORBIDDEN", message: directDecision.reason });
+    }
+    if (deliveryGuard.cancellableAssignmentId != null) {
+      await cancelDeliveryAssignmentInTx(
+        tx,
+        {
+          consignmentId: deliveryGuard.cancellableAssignmentId,
+          reason: input.reason?.trim() || "إلغاء الفاتورة قبل تسليم إسناد التوصيل",
+          clientRequestId: `sale-cancel-${input.clientRequestId?.trim() || input.invoiceId}`,
+        },
+        { userId: actor.userId, branchId: actor.branchId, role: actor.role },
+        // هذا أثرٌ ذري تابع لإلغاء الفاتورة الذي تحقق من sales.cancel أعلاه؛
+        // صلاحية إلغاء الإسناد المستقل لا تُطلب لمسار الإلغاء المركب.
+        { assertAuthority: false },
+      );
+      await assertInvoiceCancellationDeliverySafeTx(tx, {
+        invoiceId: input.invoiceId,
+        expectedBranchId: Number(invPreview.branchId),
+      });
+    }
+    if (
+      input.refundPaymentMethod === "CASH" &&
+      lockedRefundable.gt(0) &&
+      !prelockedCashSource
+    ) {
+      throw new CashRefundSourceChangedError();
+    }
+    if (
+      input.refundPaymentMethod === "CASH" &&
+      lockedRefundable.gt(0) &&
+      prelockedCashSource
+    ) {
+      // The final source is checked only after the direct/approval decision. A
+      // short cashier drawer therefore creates an approval request; an approved
+      // manager execution checks its newly selected drawer/treasury here.
+      await assertCashOutAvailable(tx, {
+        branchId: Number(inv.branchId),
+        cashBucket: prelockedCashSource.cashBucket,
+        shiftId: prelockedCashSource.shiftId,
+        amount: lockedRefundable,
+        operation: "رد إلغاء فاتورة من مصدر النقد المعتمد",
+      });
+    }
     // فصل المهام (SOD): فاتورة بيع نهائية مكتملة أو أمر بيع مكتبي لا يُلغيه منشئه بنفسه؛
     // بينما الطلبات المحجوزة أو المعلقة بعربون جزئي في نقاط البيع (POS + PENDING / PARTIALLY_PAID)
     // يحق للكاشير إلغاؤها واسترداد العربون للعميل من ورديته المفتوحة مباشرة عند شباك الخدمة.
     if (
+      !input.enforceOperationalDecision &&
       actor.role !== "admin" &&
       !actor.isOwner &&
       !(inv.sourceType === "POS" && (inv.status === "PENDING" || inv.status === "PARTIALLY_PAID")) &&
@@ -376,8 +626,7 @@ export async function cancelSaleInTx(
     // حسابنا البنكيّ بمستنده. منفّذُ الردّ في المحرّك يفرضه أيضاً لكلّ مستدعٍ؛ وهنا يُرفض مبكّراً
     // بلا تجسيدٍ ولا كتابة — والنصّ متعاقَدٌ عليه في `saleCancel.test.ts` (check:message-drift).
     if (input.refundPaymentMethod === "CARD" && !input.reference?.trim()) {
-      const pool = await invoicePaidPool(tx, input.invoiceId);
-      const refundable = pool.totalIn.minus(pool.outPrior);
+      const refundable = lockedRefundable;
       if (refundable.gt(0)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -455,5 +704,6 @@ export async function cancelSaleInTx(
       refundAmount: new Decimal(refundAmount).toFixed(2),
       refundVoucherNumber: pendingRefundVoucherNumber,
       pendingRefundAmount: new Decimal(pendingRefundAmount).toFixed(2),
+      ...(directDecision ? { operationalDecision: directDecision } : {}),
     };
 }

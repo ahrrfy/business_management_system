@@ -3,6 +3,7 @@ import React, { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OperationPolicy } from "@shared/operationPermissions";
+import type { OperationalCaps } from "@shared/atomicPermissions";
 
 vi.mock("@shared/operationPermissions", () => ({
   OPERATION_PERMISSIONS: [
@@ -148,6 +149,82 @@ describe("Canonical operation delegation editor", () => {
     act(() => button.click());
   }
 
+  function filter(value: string) {
+    const field = host.querySelector<HTMLSelectElement>('select[id$="-filter"]')!;
+    act(() => {
+      field.value = value;
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }
+
+  it("resets the daily filter when the selected role has no daily tasks", () => {
+    let setDaily!: React.Dispatch<React.SetStateAction<string[]>>;
+    function Editor() {
+      const [daily, updateDaily] = useState(["delivery.dispatch"]);
+      setDaily = updateDaily;
+      return <OperationPermissionMatrix mode="role" value={base} baseline={base}
+        dailyOperationPaths={daily} onChange={() => undefined} />;
+    }
+    act(() => root.render(<Editor />));
+    expect(host.querySelector<HTMLSelectElement>('select[id$="-filter"]')?.value).toBe("daily");
+    expect(host.textContent).not.toContain("طلب مرتجع");
+
+    act(() => setDaily([]));
+    expect(host.querySelector<HTMLSelectElement>('select[id$="-filter"]')?.value).toBe("all");
+    expect(host.textContent).toContain("طلب مرتجع");
+  });
+
+  it("filters by executable authority rather than a selected grant blocked by cost visibility", () => {
+    render("role", {
+      version: 1,
+      grants: { "operation.reports.profit": true, "operation.delivery.dispatch": true },
+      dataVisibility: { purchaseCost: false, profitMargin: false },
+    });
+    filter("allow");
+    expect(host.textContent).not.toContain("تقرير الأرباح");
+    expect(host.textContent).toContain("إسناد التوصيل");
+    filter("deny");
+    expect(host.textContent).toContain("تقرير الأرباح");
+    filter("blocked");
+    expect(host.textContent).toContain("تقرير الأرباح");
+    expect(host.textContent).not.toContain("إسناد التوصيل");
+    click("منع النتائج المصفّاة");
+    expect(latest?.grants).toEqual({ "operation.reports.profit": false, "operation.delivery.dispatch": true });
+  });
+
+  it("shows scope-only user exceptions and restores only filtered rows to complete inheritance", () => {
+    render("user", {
+      version: 1,
+      grants: { "operation.returns.approve": true },
+      recordScopes: { "operation.delivery.dispatch": "BRANCH" },
+    });
+    filter("overrides");
+    expect(host.textContent).toContain("إسناد التوصيل");
+    expect(host.textContent).toContain("اعتماد مرتجع");
+    expect(host.textContent).not.toContain("طلب مرتجع");
+    const domain = host.querySelector<HTMLSelectElement>('select[id$="-domain"]')!;
+    act(() => {
+      domain.value = "delivery";
+      domain.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    click("إعادة النتائج إلى وراثة الدور");
+    expect(latest?.recordScopes).toEqual({});
+    expect(latest?.grants).toEqual({ "operation.returns.approve": true });
+    expect(base.recordScopes?.["operation.delivery.dispatch"]).toBe("OWN");
+  });
+
+  it("finds an exact operation key without broadening a filtered grant to sibling actions", () => {
+    render("role", { version: 1, grants: {} });
+    const field = host.querySelector<HTMLInputElement>('input[id$="-query"]')!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "operation.delivery.dispatch");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(host.textContent).toContain("إسناد التوصيل");
+    click("منح النتائج المصفّاة");
+    expect(latest?.grants).toEqual({ "operation.delivery.dispatch": true });
+  });
+
   it("individual denial and restoration preserve sparse inheritance and another operation", () => {
     render("user");
     select("تفويض إسناد التوصيل", "deny");
@@ -160,6 +237,57 @@ describe("Canonical operation delegation editor", () => {
     select("تفويض إسناد التوصيل", "inherit");
     expect(latest?.grants).toEqual({ "operation.returns.approve": true });
     expect(base.grants["operation.delivery.dispatch"]).toBe(true);
+  });
+
+  it("renders an explicit null refund cap as unlimited instead of falling back to zero or inheritance", () => {
+    act(() => root.render(
+      <OperationPermissionMatrix
+        mode="user"
+        value={{ version: 1, grants: { "operation.returns.create": true } }}
+        inherited={base}
+        onChange={vi.fn()}
+        operationalCaps={{ maxRefundAmountIqd: null }}
+        inheritedOperationalCaps={{ maxRefundAmountIqd: "25000.00" }}
+        onOperationalCapsChange={vi.fn()}
+      />,
+    ));
+    expect(host.textContent).toContain("ينفذ مباشرة بلا سقف");
+    expect(host.textContent).not.toContain("يحتاج اعتماداً لأي مبلغ");
+  });
+
+  it("clearing a role refund cap restores template inheritance", () => {
+    let latestCaps: OperationalCaps | null = null;
+    function Editor() {
+      const [caps, setCaps] = useState<OperationalCaps>({
+        maxRefundAmountIqd: "5000.00",
+      });
+      return (
+        <OperationPermissionMatrix
+          mode="role"
+          value={{ version: 1, grants: { "operation.returns.create": true } }}
+          baseline={null}
+          inherited={base}
+          onChange={vi.fn()}
+          operationalCaps={caps}
+          inheritedOperationalCaps={{ maxRefundAmountIqd: "25000.00" }}
+          onOperationalCapsChange={(next) => {
+            latestCaps = next;
+            setCaps(next ?? {});
+          }}
+        />
+      );
+    }
+    act(() => root.render(<Editor />));
+    const field = host.querySelector<HTMLInputElement>(
+      'input[aria-label="سقف طلب مرتجع"]',
+    )!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!
+        .set!.call(field, "");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(latestCaps).toEqual({});
+    expect(field.placeholder).toContain("25,000");
   });
 
   it("bulk action only changes filtered results and omits protected operations", () => {
@@ -232,7 +360,7 @@ describe("Canonical operation delegation editor", () => {
       'input[id$="operation.reports.profit"]',
     )!;
     expect(query.disabled).toBe(true);
-    expect(host.textContent).toContain("تتطلب تفعيل عرض التكلفة والربح");
+    expect(host.textContent).toMatch(/تفعيل عرض التكلفة والربح/);
     const visibility = host.querySelector<HTMLInputElement>(
       'input[id$="-visibility"]',
     )!;

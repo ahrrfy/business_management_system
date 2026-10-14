@@ -478,7 +478,12 @@ function cashSourceError(
 }
 
 async function treasurySourceAllowed(tx: Tx, actor: Actor): Promise<boolean> {
-  const canonical = canonicalOperationAllowed(await loadOperationUserTx(tx, actor.userId), "supplierPayments.cashSources");
+  // Listing the maker's own drawers is an input dependency, not treasury
+  // custody. Treasury remains tied to the independent approval operation.
+  const canonical = canonicalOperationAllowed(
+    await loadOperationUserTx(tx, actor.userId),
+    "supplierPayments.decidePayment",
+  );
   if (canonical !== undefined) return canonical;
   const [user] = await tx
     .select()
@@ -680,8 +685,16 @@ export async function listSupplierPaymentCashSources(
 ) {
   assertPurchaseBranch({ branchId }, actor);
   return withTx(
-    async (tx) => ({
-      drawers: await tx
+    async (tx) => {
+      const canonical = canonicalOperationAllowed(
+        await loadOperationUserTx(tx, actor.userId),
+        "supplierPayments.cashSources",
+      );
+      if (canonical === false) {
+        throw cashSourceError("لا تملك صلاحية عرض مصادر سداد المورد", "FORBIDDEN");
+      }
+      return {
+        drawers: await tx
         .select({ id: shifts.id, shiftType: shifts.shiftType })
         .from(shifts)
         .where(
@@ -692,8 +705,9 @@ export async function listSupplierPaymentCashSources(
           ),
         )
         .orderBy(asc(shifts.id)),
-      canUseTreasury: await treasurySourceAllowed(tx, actor),
-    }),
+        canUseTreasury: await treasurySourceAllowed(tx, actor),
+      };
+    },
     { gate: "NONE" },
   );
 }

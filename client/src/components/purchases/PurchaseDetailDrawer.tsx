@@ -155,7 +155,15 @@ export function PurchaseDetailDrawer({
   const canConfirm = canLifecycleOperation(me.data, "purchases.confirmOrder", legacyEdit);
   const canDecide = canLifecycleOperation(me.data, "purchases.decideControl", legacyEdit);
   const canRequestPayment = canLifecycleOperation(me.data, "supplierPayments.requestPayment", legacyEdit);
-  const canReturn = canLifecycleOperation(me.data, "purchaseReturns.create", legacyEdit);
+  const canExecuteReturn = [
+    "returns.executePurchaseReturnCart",
+    "returns.lookupItemForReturn",
+    "suppliers.list",
+  ].every((path) => canLifecycleOperation(me.data, path, legacyEdit));
+  const canRequestReturn = [
+    "purchaseReturnGovernance.requestReturn",
+    "purchaseReturnGovernance.returnSources",
+  ].every((path) => canLifecycleOperation(me.data, path, legacyEdit));
   const canSettleShipping = canLifecycleOperation(me.data, "purchases.settleShippingFromShift", legacyEdit);
 
   const pendingControls = trpc.purchases.pendingControls.useQuery(
@@ -426,11 +434,13 @@ export function PurchaseDetailDrawer({
                     </Button>
                   ) : null}
 
-                  {canReturn && d.status === "RECEIVED" ? (
+                  {(canExecuteReturn || canRequestReturn) && d.status === "RECEIVED" ? (
                     <Button asChild size="sm" variant="outline">
-                      <Link href={`/purchase-returns/new?po=${encodeURIComponent(d.poNumber)}`}>
+                      <Link href={canExecuteReturn
+                        ? `/returns?portal=purchases&po=${encodeURIComponent(d.poNumber)}`
+                        : "/purchases/returns-governance"}>
                         <Undo2 aria-hidden className="size-4" />
-                        مرتجع شراء
+                        {canExecuteReturn ? "مرتجع شراء" : "طلب مرتجع شراء"}
                       </Link>
                     </Button>
                   ) : null}

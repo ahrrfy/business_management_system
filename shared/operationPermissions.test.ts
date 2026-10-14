@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { resolvePermissions } from "./permissions";
+import { deriveEffectiveAccess, resolvePermissions } from "./permissions";
 
 vi.mock("./operationPermissionCatalog.generated", () => {
   const metadata = {
@@ -20,11 +20,44 @@ vi.mock("./operationPermissionCatalog.generated", () => {
   return {
     GENERATED_OPERATION_PERMISSIONS: [
       { ...metadata, key: "operation.sales.create", path: "sales.create" },
+      { ...metadata, key: "operation.printPos.createSale", path: "printPos.createSale", module: "pos" },
+      { ...metadata, key: "operation.workOrders.receptionCheckout", path: "workOrders.receptionCheckout", module: "workorders" },
+      { ...metadata, key: "operation.purchases.pay", path: "purchases.pay", delegable: false, reservedKind: "RETIRED" },
+      { ...metadata, key: "operation.purchaseReturns.create", path: "purchaseReturns.create", delegable: false, reservedKind: "RETIRED" },
+      { ...metadata, key: "operation.reports.costRead", path: "reports.costRead", kind: "query", module: "reports", level: "READ", requiresCostVisibility: true },
       {
         ...metadata,
         key: "operation.returns.create",
         path: "returns.create",
         legacyAliases: ["pos.return.create", "pos.refund.create"],
+      },
+      {
+        ...metadata,
+        key: "operation.returns.getInvoice",
+        path: "returns.getInvoice",
+        kind: "query",
+        module: "sales|workorders",
+      },
+      {
+        ...metadata,
+        key: "operation.returns.inspectInvoiceForReturn",
+        path: "returns.inspectInvoiceForReturn",
+        kind: "query",
+        module: "sales|workorders",
+      },
+      {
+        ...metadata,
+        key: "operation.returns.executeSalesReturnCart",
+        path: "returns.executeSalesReturnCart",
+        module: "sales|workorders",
+        legacyAliases: ["pos.return.create"],
+      },
+      {
+        ...metadata,
+        key: "operation.returns.getOpenRefundDrawers",
+        path: "returns.getOpenRefundDrawers",
+        kind: "query",
+        module: "sales|workorders",
       },
       {
         ...metadata,
@@ -103,6 +136,7 @@ import {
   applyLegacyOperationDenials,
   buildOperationPolicyFromLegacy,
   canViewOperationData,
+  deriveOperationAccess,
   getOperationPermission,
   hasOperationPolicy,
   legacyOperationPolicy,
@@ -121,7 +155,103 @@ const policy = (grants: Record<string, boolean>): OperationPolicy => ({
 const cashierModules = resolvePermissions("cashier", null);
 const managerModules = resolvePermissions("manager", null);
 
+describe("actual access preview", () => {
+  const canonical = (role: string, grants: Record<string, boolean>, cost = false) => ({
+    role,
+    operationPolicyEnabled: true,
+    resolvedOperationPolicy: {
+      ...policy(grants),
+      dataVisibility: { purchaseCost: cost, profitMargin: cost },
+    },
+  });
+
+  it("shows delegated cost visibility independently of the base category", () => {
+    for (const [role, visible] of [["courier", true], ["manager", false]] as const) {
+      const user = canonical(role, {}, visible);
+      expect(deriveOperationAccess(user).canSeeCost).toBe(canViewOperationData(user, "purchaseCost"));
+      expect(deriveOperationAccess(user).canSeeCost).toBe(visible);
+    }
+  });
+
+  it("requires the exact station operation, not another write in the same module", () => {
+    expect(deriveOperationAccess(canonical("manager", { "operation.returns.create": true })).stations).toEqual([]);
+    for (const [path, station] of [["sales.create", "RETAIL"], ["printPos.createSale", "PRINT_SERVICES"], ["workOrders.receptionCheckout", "RECEPTION"]] as const) {
+      const user = canonical("courier", { [`operation.${path}`]: true });
+      expect(deriveOperationAccess(user).stations).toEqual([station]);
+      expect(deriveOperationAccess(user).station).toBe(station);
+    }
+  });
+
+  it("does not restore admin or disabled-role authority over a saved deny policy", () => {
+    for (const role of ["admin", "user"])
+      expect(deriveOperationAccess(canonical(role, {}))).toMatchObject({ station: "NONE", stations: [], canSeeCost: false });
+  });
+
+  it("shows multiple explicitly delegated stations without granting the third", () => {
+    expect(deriveOperationAccess(canonical("courier", {
+      "operation.sales.create": true,
+      "operation.printPos.createSale": true,
+    }))).toMatchObject({ station: "MULTI", stations: ["RETAIL", "PRINT_SERVICES"] });
+  });
+
+  it("applies individual denials over an inherited role without changing that role", () => {
+    const rolePolicy = {
+      ...policy({ "operation.sales.create": true, "operation.printPos.createSale": true }),
+      dataVisibility: { purchaseCost: true, profitMargin: true },
+    };
+    const userPolicy = {
+      ...policy({ "operation.sales.create": false }),
+      dataVisibility: { purchaseCost: false, profitMargin: false },
+    };
+    expect(deriveOperationAccess({ role: "manager", roleOperationPolicy: rolePolicy, operationPolicy: userPolicy }))
+      .toMatchObject({ stations: ["PRINT_SERVICES"], canSeeCost: false });
+    expect(deriveOperationAccess({ role: "manager", roleOperationPolicy: rolePolicy }))
+      .toMatchObject({ stations: ["RETAIL", "PRINT_SERVICES"], canSeeCost: true });
+    expect(rolePolicy.grants["operation.sales.create"]).toBe(true);
+  });
+
+  it("keeps a selected cost read out of the effective module summary until visibility is allowed", () => {
+    const user = canonical("manager", { "operation.reports.costRead": true });
+    expect(deriveOperationAccess(user).resolved.reports).toBe("NONE");
+    expect(user.resolvedOperationPolicy.grants["operation.reports.costRead"]).toBe(true);
+    expect(deriveOperationAccess(canonical("courier", { "operation.reports.costRead": true }, true)).resolved.reports).toBe("READ");
+  });
+
+  it("preserves legacy previews and the protected owner authority", () => {
+    const override = { sales: "NONE" as const };
+    expect(deriveOperationAccess({ role: "cashier", permissionsOverride: override })).toEqual(deriveEffectiveAccess("cashier", override));
+    expect(deriveOperationAccess({ ...canonical("courier", {}), isOwner: true })).toEqual(deriveEffectiveAccess("admin", null));
+  });
+});
+
 describe("operation policies", () => {
+  it("removes only retired keys from old full policies without changing grants or visibility", () => {
+    for (const retiredGrant of [true, false]) {
+      const visibility = { purchaseCost: true, profitMargin: true };
+      const old = {
+        version: 1 as const,
+        grants: {
+          "operation.sales.create": true,
+          "operation.returns.create": false,
+          "operation.purchases.pay": retiredGrant,
+          "operation.purchaseReturns.create": !retiredGrant,
+        },
+        recordScopes: { "operation.sales.create": "OWN" as const, "operation.purchases.pay": "BRANCH" as const },
+        dataVisibility: visibility,
+      };
+      expect(operationPolicySchema.parse(old)).toEqual({
+        version: 1,
+        grants: { "operation.sales.create": true, "operation.returns.create": false },
+        recordScopes: { "operation.sales.create": "OWN" },
+        dataVisibility: visibility,
+      });
+      expect(old.grants["operation.purchases.pay"]).toBe(retiredGrant);
+      expect(old.recordScopes).toHaveProperty("operation.purchases.pay", "BRANCH");
+    }
+    for (const key of ["operation.unknown.path", "operation.users.create"])
+      expect(operationPolicySchema.safeParse(policy({ "operation.purchases.pay": true, [key]: true })).success).toBe(false);
+    expect(operationPolicySchema.safeParse({ ...policy({}), recordScopes: { "operation.unknown.path": "BRANCH" } }).success).toBe(false);
+  });
   it("maps only the canonical tRPC path and operation key", () => {
     expect(getOperationPermission("returns.create")?.key).toBe(
       "operation.returns.create",
@@ -208,6 +338,43 @@ describe("operation policies", () => {
     );
     expect(resolved.grants["operation.sales.create"]).toBe(true);
     expect(resolved.grants["operation.delivery.dispatch"]).toBe(true);
+  });
+
+  it("preserves an explicit old module grant over a restrictive preset", () => {
+    const permissionsOverride = { purchases: "FULL" as const };
+    const resolved = resolveOperationPolicy(
+      "cashier",
+      resolvePermissions("cashier", permissionsOverride),
+      policy({
+        "operation.sales.create": true,
+        "operation.purchases.fullLookup": false,
+        "operation.delivery.dispatch": false,
+      }),
+      null,
+      permissionsOverride,
+      { permissionsOverride, inheritedModules: cashierModules },
+    );
+    expect(resolved.grants["operation.purchases.fullLookup"]).toBe(true);
+    expect(resolved.grants["operation.sales.create"]).toBe(true);
+    expect(resolved.grants["operation.delivery.dispatch"]).toBe(false);
+  });
+
+  it("preserves the legacy user plus pos FULL print-cashier return workflow", () => {
+    const permissionsOverride = { pos: "FULL" as const };
+    const inheritedModules = resolvePermissions("user", null);
+    const resolved = resolveOperationPolicy(
+      "user",
+      resolvePermissions("user", permissionsOverride),
+      policy({}),
+      null,
+      permissionsOverride,
+      { permissionsOverride, inheritedModules },
+    );
+    expect(resolved.grants["operation.returns.create"]).toBe(true);
+    expect(resolved.grants["operation.returns.getInvoice"]).toBe(true);
+    expect(resolved.grants["operation.returns.inspectInvoiceForReturn"]).toBe(true);
+    expect(resolved.grants["operation.returns.executeSalesReturnCart"]).toBe(true);
+    expect(resolved.grants["operation.returns.getOpenRefundDrawers"]).toBe(true);
   });
 
   it("inherits and overrides record scopes without allowing cross-branch scope", () => {
@@ -501,6 +668,10 @@ describe("operation decision", () => {
         "ownership.approve",
       ),
     ).toMatchObject({ allowed: true, source: "owner" });
+  });
+
+  it("legacy access previews respect an explicit cost visibility revocation", () => {
+    expect(deriveOperationAccess({ role: "manager", permissionsOverride: { reports: "NONE" } }).canSeeCost).toBe(false);
   });
 
   it("distinguishes saved policies from the compatibility fallback", () => {

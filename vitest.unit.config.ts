@@ -12,6 +12,11 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "server/routers/__tests__/returnCartCostAuthority.unit.test.ts",
+      "server/routers/__tests__/returnItemCostVisibility.unit.test.ts",
+      "server/services/__tests__/deliveryFloatLimitPrivacy.unit.test.ts",
+      "client/src/components/form/__tests__/EffectivePermissionsPreview.test.tsx",
+      "client/src/components/returns/PurchaseReturnPortal.permission.test.tsx",
       "shared/purchaseSettlement.test.ts",
       "client/src/pages/__tests__/purchaseSettlementDisplayUi.test.tsx",
       "client/src/pages/__tests__/cashierDashboardIsolation.test.tsx",
@@ -41,6 +46,8 @@ export default defineConfig({
       "server/services/__tests__/productStudioOperationAuthorization.unit.test.ts",
       "server/routes/__tests__/studioExportRouter.test.ts",
       "shared/operationPermissions.test.ts",
+      "shared/operationalDecision.test.ts",
+      "shared/roleOperationPresets.test.ts",
       "server/operationAuthorization.test.ts",
       "server/services/__tests__/invoicePrintAuthorization.test.ts",
       "server/routers/__tests__/invoicePrintingAuthorization.test.ts",

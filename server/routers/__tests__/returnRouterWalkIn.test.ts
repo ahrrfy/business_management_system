@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TRPCError } from "@trpc/server";
 import type { TrpcContext } from "../../context";
+import { OperationalApprovalRequiredError } from "@shared/operationalDecision";
 
 const mocks = vi.hoisted(() => {
   let hasPending = false;
@@ -72,11 +73,7 @@ vi.mock("../../services/auditService", async (importOriginal) => ({
 
 import { returnRouter } from "../returnRouter";
 
-/**
- * ⚠️ **`isOwner` يقرّر المسار** (قرار المالك ١/٩/٢٦): المالكُ ينفّذ مرتجعه فوراً، وغيرُه
- * يُنشئ طلباً صفريّ الأثر. كان هذا الملفّ يستعمل سياقاً بـ`isOwner: true` ويتوقّع مسار
- * الطلب — فصار يختبر المسار الخطأ بعد إضافة تنفيذ المالك. السياقان مفصولان الآن.
- */
+/** المالك ينفّذ بمساره المحمي، والمفوّض يحاول التنفيذ المباشر ثم يُحال للاعتماد عند تجاوز الحدود. */
 function context(overrides?: { isOwner?: boolean; role?: string }): TrpcContext {
   return {
     req: { headers: {} } as TrpcContext["req"],
@@ -106,6 +103,7 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     const caller = returnRouter.createCaller(context());
     await caller.create({
       ...base,
+      directExecution: false,
       resolution: {
         kind: "IMMEDIATE_REFUND",
         method: "CASH",
@@ -174,6 +172,7 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     const caller = returnRouter.createCaller(context());
     await caller.create({
       ...base,
+      directExecution: false,
       refund: { amount: "10.00", method: "CASH", shiftId: 9 },
       restock: false,
       reason: "إرجاع عميل مسجل",
@@ -187,7 +186,7 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     }), expect.anything());
   });
 
-  it("⭐ التنفيذ المباشر للإدارة مقيّد: directExecution: true لا يتجاوز طلب التحكّم لغير المالك", async () => {
+  it("⭐ المدير المفوّض ينفّذ مباشرة عبر خدمة المرتجع المقيدة", async () => {
     const caller = returnRouter.createCaller(context({ role: "manager", isOwner: false }));
     const res = await caller.create({
       ...base,
@@ -197,19 +196,15 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
       directExecution: true,
     });
 
-    expect(mocks.returnSaleDirect).not.toHaveBeenCalled();
-    expect(mocks.requestSalesControl).toHaveBeenCalledWith(
-      expect.objectContaining({
-        invoiceId: 77,
-        requestType: "SALES_RETURN",
-        reason: "تنفيذ المدير المباشر",
-      }),
+    expect(mocks.returnSaleDirect).toHaveBeenCalledWith(
+      expect.objectContaining({ invoiceId: 77, operatorReason: "تنفيذ المدير المباشر" }),
       expect.objectContaining({ userId: 1, role: "manager" }),
     );
-    expect(res).toMatchObject({ mode: "REQUESTED", requestId: 101 });
+    expect(mocks.requestSalesControl).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ mode: "EXECUTED" });
   });
 
-  it("⭐ التنفيذ المباشر للكاشير مقيّد: directExecution: true لا يتجاوز طلب التحكّم ويُنشئ طلباً رقابياً", async () => {
+  it("⭐ الكاشير المفوّض يحاول التنفيذ المباشر عبر خدمة الحدود التشغيلية", async () => {
     const caller = returnRouter.createCaller(context({ role: "cashier", isOwner: false }));
     const res = await caller.create({
       ...base,
@@ -219,16 +214,12 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
       directExecution: true,
     });
 
-    expect(mocks.returnSaleDirect).not.toHaveBeenCalled();
-    expect(mocks.requestSalesControl).toHaveBeenCalledWith(
-      expect.objectContaining({
-        invoiceId: 77,
-        requestType: "SALES_RETURN",
-        reason: "تنفيذ الكاشير المباشر",
-      }),
+    expect(mocks.returnSaleDirect).toHaveBeenCalledWith(
+      expect.objectContaining({ invoiceId: 77, operatorReason: "تنفيذ الكاشير المباشر" }),
       expect.objectContaining({ userId: 1, role: "cashier" }),
     );
-    expect(res).toMatchObject({ mode: "REQUESTED", requestId: 101 });
+    expect(mocks.requestSalesControl).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ mode: "EXECUTED" });
   });
 
   it("⭐ التنفيذ المباشر للمالك (isOwner: true) ينفّذ فوراً بلا طلب تحكّم", async () => {
@@ -287,7 +278,7 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     expect(res).toMatchObject({ mode: "EXECUTED" });
   });
 
-  it("الكاشير لا يستطيع تجاوز مسار الطلب الرقابي حتى لفاتورة زميل ويُنشئ طلب تحكّم", async () => {
+  it("خدمة الحدود تحوّل مرتجع فاتورة الزميل إلى طلب تحكّم", async () => {
     // كاشير بمعرّف 99 في نفس الفرع 1 يحاول إرجاع فاتورة أنشأها المستخدم 1
     const coworkerCaller = returnRouter.createCaller({
       req: { headers: {} } as TrpcContext["req"],
@@ -298,6 +289,11 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
       } as TrpcContext["user"],
     });
 
+    mocks.returnSaleDirect.mockRejectedValueOnce(new OperationalApprovalRequiredError({
+      result: "APPROVAL_REQUIRED",
+      reason: "المستند أنشأه موظف آخر",
+      approvalOperation: "salesControl.requestReturn",
+    }));
     const res = await coworkerCaller.create({
       ...base,
       refund: { amount: "1250.00", method: "CASH", shiftId: 9 },
@@ -314,7 +310,7 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
       }),
       expect.objectContaining({ userId: 99, role: "cashier" }),
     );
-    expect(mocks.returnSaleDirect).not.toHaveBeenCalled();
+    expect(mocks.returnSaleDirect).toHaveBeenCalled();
   });
 
   it("يرفض تنفيذ الكاشير المباشر لفاتورة فرع آخر بـ FORBIDDEN", async () => {
@@ -348,7 +344,7 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
       refund: { amount: "1250.00", method: "CASH", shiftId: 9 },
       restock: true,
       reason: "إعادة محاولة طلب نُفّذ سابقاً",
-      directExecution: true,
+      directExecution: false,
     });
 
     expect(mocks.requestSalesControl).not.toHaveBeenCalled();

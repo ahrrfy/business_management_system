@@ -64,7 +64,12 @@ import {
 } from "../services/accountAuthenticationLockout";
 import { logAudit, logAuditTx } from "../services/auditService";
 import { processPayment } from "../services/saleService";
-import { requestSalesControl } from "../services/sale/controlRequests";
+import {
+  replaySalesControlRequest,
+  requestSalesControl,
+} from "../services/sale/controlRequests";
+import { cancelSale } from "../services/sale/cancel";
+import { OperationalApprovalRequiredError } from "@shared/operationalDecision";
 import { RETURN_EXECUTED_AUDIT_ACTION } from "../services/returns/auditActions";
 import { assertNoInTransitConsignment } from "../services/delivery/guards";
 import { registerCounterCollectionTx } from "../services/delivery/counterCollection";
@@ -2589,33 +2594,108 @@ export const saleRouter = router({
           }),
         });
       }
-      const res = await requestSalesControl(
-        {
-          requestKey: input.clientRequestId ?? randomUUID(),
-          invoiceId: input.invoiceId,
-          requestType: "SALES_CANCEL",
-          reason: input.reason,
-          payload: {
-            refundPaymentMethod: input.refundPaymentMethod,
-            reference: input.reference ?? null,
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+        operationalCaps: ctx.user.resolvedOperationalCaps,
+      };
+      const controlRequestInput = {
+        requestKey: input.clientRequestId ?? randomUUID(),
+        invoiceId: input.invoiceId,
+        requestType: "SALES_CANCEL" as const,
+        reason: input.reason,
+        payload: {
+          refundPaymentMethod: input.refundPaymentMethod,
+          // مرجع البطاقة يثبته المراجع بعد قبول الطلب، لا منشئ الطلب قبل معرفة القرار.
+          reference: input.refundPaymentMethod === "CARD" ? null : input.reference ?? null,
+        },
+      };
+      const controlReplay = input.clientRequestId
+        ? await replaySalesControlRequest(controlRequestInput, actor)
+        : null;
+      if (controlReplay) {
+        if (controlReplay.status === "APPROVED" && controlReplay.cancellation) {
+          return {
+            mode: "EXECUTED" as const,
+            status: "EXECUTED" as const,
+            requestId: controlReplay.id,
+            replayed: true,
+            ...controlReplay.cancellation,
+          };
+        }
+        return {
+          mode: "APPROVAL_REQUIRED" as const,
+          requestId: controlReplay.id,
+          status: controlReplay.status,
+          replayed: true,
+        };
+      }
+      try {
+        if (input.refundPaymentMethod === "CARD" && input.reference?.trim()) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذر قبول مرجع رد البطاقة من طالب الإلغاء",
+              why: "يجب تحديد الحاجة إلى الاعتماد قبل تنفيذ الرد على جهاز البطاقة",
+              doThis: "أعد إرسال طلب الإلغاء بلا مرجع؛ ينفذ المراجع المستقل رد البطاقة ويثبت مرجعه عند الاعتماد",
+            }),
+          });
+        }
+        if (input.refundPaymentMethod === "CARD") {
+          throw new OperationalApprovalRequiredError({
+            result: "APPROVAL_REQUIRED",
+            reason: "رد البطاقة ينفذه المراجع المستقل بعد قبول طلب الإلغاء",
+            approvalOperation: "salesControl.requestCancel",
+          });
+        }
+        const executed = await cancelSale(
+          { ...input, enforceOperationalDecision: true },
+          actor,
+        );
+        await logAudit(ctx, {
+          action: "sale.cancel.direct",
+          entityType: "invoice",
+          entityId: input.invoiceId,
+          newValue: {
+            refundAmount: executed.refundAmount,
+            reason: input.reason,
+            decision: executed.operationalDecision,
           },
-        },
-        {
-          userId: ctx.user.id,
-          branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,
-          role: ctx.user.role,
-        },
-      );
-      await logAudit(ctx, {
-        action: "sale.cancel.request",
-        entityType: "invoice",
-        entityId: input.invoiceId,
-        newValue: {
+        });
+        return {
+          mode: "EXECUTED" as const,
+          status: "EXECUTED" as const,
+          requestId: null,
+          replayed: executed.idempotentReplay === true,
+          invoiceId: executed.invoiceId,
+          refundAmount: executed.refundAmount,
+          refundVoucherNumber: executed.refundVoucherNumber,
+          pendingRefundAmount: executed.pendingRefundAmount,
+          decision: executed.operationalDecision,
+        };
+      } catch (error) {
+        if (!(error instanceof OperationalApprovalRequiredError)) throw error;
+        const res = await requestSalesControl(controlRequestInput, actor);
+        await logAudit(ctx, {
+          action: "sale.cancel.request",
+          entityType: "invoice",
+          entityId: input.invoiceId,
+          newValue: {
+            requestId: res.id,
+            payloadHash: res.payloadHash,
+            reason: input.reason,
+            decision: error.decision,
+          },
+        });
+        return {
+          mode: "APPROVAL_REQUIRED" as const,
           requestId: res.id,
-          payloadHash: res.payloadHash,
-          reason: input.reason,
-        },
-      });
-      return { requestId: res.id, status: res.status, replayed: res.replayed };
+          status: res.status,
+          replayed: res.replayed,
+          decision: error.decision,
+        };
+      }
     }),
 });

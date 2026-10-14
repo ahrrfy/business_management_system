@@ -152,6 +152,15 @@ export default function Purchases() {
   const canManagePurchases = canLifecycleOperation(me.data, "purchases.decideControl", legacyManagePurchases);
   const canCreateOrder = canLifecycleOperation(me.data, "purchases.createOrder", legacyManagePurchases);
   const canReadPendingControls = canLifecycleOperation(me.data, "purchases.pendingControls", legacyManagePurchases);
+  const canExecutePurchaseReturn = [
+    "returns.executePurchaseReturnCart",
+    "returns.lookupItemForReturn",
+    "suppliers.list",
+  ].every((path) => canLifecycleOperation(me.data, path, legacyManagePurchases));
+  const canRequestPurchaseReturn = [
+    "purchaseReturnGovernance.requestReturn",
+    "purchaseReturnGovernance.returnSources",
+  ].every((path) => canLifecycleOperation(me.data, path, legacyManagePurchases));
   const pendingControls = trpc.purchases.pendingControls.useQuery(
     { limit: 200 },
     { enabled: canReadPendingControls },
@@ -965,14 +974,20 @@ export default function Purchases() {
                         {
                           key: "preturn",
                           kind: "reverse",
-                          label: "مرتجع شراء",
-                          href: `/returns?portal=purchases&po=${encodeURIComponent(p.poNumber)}`,
+                          label: canExecutePurchaseReturn ? "مرتجع شراء" : "طلب مرتجع شراء",
+                          href: canExecutePurchaseReturn
+                            ? `/returns?portal=purchases&po=${encodeURIComponent(p.poNumber)}`
+                            : "/purchases/returns-governance",
                           // الإرجاع للمورد ممكن فقط بعد اعتماد الفاتورة وترحيلها.
-                          hidden: p.status !== "RECEIVED",
+                          hidden: p.status !== "RECEIVED" || (!canExecutePurchaseReturn && !canRequestPurchaseReturn),
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
-                            level: "FULL", operations: ["purchaseReturns.create"] },
+                            level: "FULL",
+                            operations: [canExecutePurchaseReturn
+                              ? "returns.executePurchaseReturnCart"
+                              : "purchaseReturnGovernance.requestReturn"],
+                          },
                         },
                         {
                           key: "cancel",

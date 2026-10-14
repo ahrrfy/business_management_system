@@ -7,6 +7,7 @@ import {
   hasServiceOperationAuthority,
   loadOperationUserTx,
   routeOperationAuthority,
+  storedCanonicalOperationAllowed,
   storedOperationUser,
   type ServiceOperationAuthority,
 } from "../authorization/operationAuthority";
@@ -51,6 +52,36 @@ describe("transactional operation service bridge", () => {
     await expect(assertOperationAuthorityTx(fakeTx([[{ customRoleId: 9 }], [role], [atomicDenied]]), { userId: 4 }, "returns.create", true, proof)).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(canonicalOperationAllowed(storedOperationUser({ ...atomicDenied, operationPolicy: policy() }, role), "returns.create")).toBe(true);
   });
+
+  it("rebuilds a seeded cashier preset during the locked service recheck", async () => {
+    const user = { ...account(), role: "cashier", customRoleId: 9 };
+    const role = {
+      key: "print_cashier", baseRole: "cashier", isActive: true,
+      permissions: resolvePermissions("cashier", null), operationPolicy: null,
+    };
+    const current = storedOperationUser(user, role);
+    expect(current.operationPolicyEnabled).toBe(true);
+    expect(canonicalOperationAllowed(current, "returns.create")).toBe(true);
+    expect(storedCanonicalOperationAllowed(current, "returns.create")).toBe(true);
+    await expect(assertOperationAuthorityTx(
+      fakeTx([[{ customRoleId: 9 }], [role], [user]]),
+      { userId: 4, role: "cashier" },
+      "returns.create",
+      false,
+    )).resolves.toBe(true);
+  });
+
+  it("preserves an old positive user module override during the locked recheck", () => {
+    const user = {
+      ...account(),
+      role: "cashier",
+      permissionsOverride: { purchases: "FULL" as const },
+    };
+    const current = storedOperationUser(user);
+    expect(canonicalOperationAllowed(current, "purchases.createOrder")).toBe(true);
+    expect(canonicalOperationAllowed(current, "supplierPayments.cashSources")).toBe(false);
+  });
+
   it("delegates only the selected real operation, without expanding another action", () => {
     const user = storedOperationUser(account(policy(paths[0]!)));
     expect(canonicalOperationAllowed(user, paths[0]!)).toBe(true);
@@ -67,8 +98,8 @@ describe("transactional operation service bridge", () => {
     expect(Object.isFrozen(authority)).toBe(true);
   });
 
-  it("does not mint a canonical bypass for an untouched legacy account", () => {
-    expect(routeOperationAuthority({ ...storedOperationUser(account()), id: 4 }, paths[0]!)).toBeUndefined();
+  it("fails closed when a default preset does not grant the requested operation", () => {
+    expect(() => routeOperationAuthority({ ...storedOperationUser(account()), id: 4 }, paths[0]!)).toThrow();
   });
 
   it("accepts a granted warehouse operation on fresh persisted policy", async () => {
@@ -90,8 +121,15 @@ describe("transactional operation service bridge", () => {
   });
 
   it("preserves legacy service authority without enabling canonical policy", async () => {
-    await expect(assertOperationAuthorityTx(fakeTx([[{ customRoleId: null }], [account()]]), { userId: 4 }, paths[0]!, true)).resolves.toBe(false);
-    await expect(assertOperationAuthorityTx(fakeTx([[{ customRoleId: null }], [account()]]), { userId: 4 }, paths[0]!, false)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const legacy = { ...account(), customRoleId: 9 };
+    const legacyRole = { key: "legacy_warehouse", baseRole: "warehouse", isActive: true,
+      permissions: resolvePermissions("warehouse", null), operationPolicy: null };
+    expect(storedCanonicalOperationAllowed(
+      storedOperationUser(legacy, legacyRole),
+      "salesControl.approve",
+    )).toBeUndefined();
+    await expect(assertOperationAuthorityTx(fakeTx([[{ customRoleId: 9 }], [legacyRole], [legacy]]), { userId: 4 }, paths[0]!, true)).resolves.toBe(false);
+    await expect(assertOperationAuthorityTx(fakeTx([[{ customRoleId: 9 }], [legacyRole], [legacy]]), { userId: 4 }, paths[0]!, false)).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("applies an individual deny without changing the shared role", () => {

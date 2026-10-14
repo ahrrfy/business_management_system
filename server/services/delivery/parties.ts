@@ -74,7 +74,8 @@ export async function assertFloatLimitTx(
       code: "PRECONDITION_FAILED",
       message: appErrorMessage({
         what: `تعذّر إسناد الطرد لجهة «${party.name}»`,
-        why: `التعرّض التشغيليّ للجهة سيبلغ ${after.toFixed(2)} ويتجاوز السقف المضبوط لها (${limit.toFixed(2)})`,
+        // Dispatch authority does not grant visibility of the company's financial exposure.
+        why: "التعرّض التشغيليّ للجهة يتجاوز السقف المضبوط لها",
         doThis: "ورِّد نقد الجهة من «تسوية المناديب»، أو أعد توزيع طرودها المفتوحة على جهةٍ أخرى قبل الإسناد الجديد",
       }),
     });

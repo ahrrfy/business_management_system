@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { assertOperationAuthorityTx } from "../authorization/operationAuthority";
+import { assertOperationAuthorityTx, canonicalOperationAllowed, loadOperationUserTx } from "../authorization/operationAuthority";
 import { and, desc, eq, getTableColumns, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
@@ -21,6 +21,7 @@ import {
   hasWorkOrderCommercialAuthority,
   maySeeDrawerCash,
   mayRequestWorkOrderControl,
+  workOrderControlDeniedMessage,
 } from "@shared/workOrderControlAuthority";
 import {
   REFUND_RAILS,
@@ -147,7 +148,21 @@ export async function requestWorkOrderControl(
   const reason = normalizedReason(input.reason, "الإجراء");
   const payloadHash = idempotencyHash(input.payload);
   const result = await retryOnDeadlock(() => withTx(async (tx) => {
-    await assertOperationAuthorityTx(tx, actor, "workOrders.requestControl", mayRequestWorkOrderControl(input.requestType, actor.role ?? "", (actor.permissionsOverride ?? null) as never));
+    const legacyMayRequest = mayRequestWorkOrderControl(
+      input.requestType,
+      actor.role ?? "",
+      (actor.permissionsOverride ?? null) as never,
+    );
+    const currentRequester = await loadOperationUserTx(tx, actor.userId);
+    const explicitlyDelegated = currentRequester.hasPersistedOperationPolicy === true &&
+      canonicalOperationAllowed(currentRequester, "workOrders.requestControl") === true;
+    if (!legacyMayRequest && !explicitlyDelegated) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: workOrderControlDeniedMessage(input.requestType),
+      });
+    }
+    await assertOperationAuthorityTx(tx, actor, "workOrders.requestControl", legacyMayRequest);
     const replay = await loadExistingByKey(tx, requestKey);
     if (replay) {
       assertRequestBranch(replay, actor);
@@ -572,7 +587,8 @@ export async function getWorkOrderControlPreflight(
   actor: WorkOrderControlActor,
 ) {
   return withTx(async (tx) => {
-    const canonicalPreflight = await assertOperationAuthorityTx(tx, actor, "workOrders.controlPreflight", true);
+    await assertOperationAuthorityTx(tx, actor, "workOrders.controlPreflight", true);
+    const currentRequester = await loadOperationUserTx(tx, actor.userId);
     const wo = (
       await tx.select().from(workOrders).where(eq(workOrders.id, workOrderId)).limit(1)
     )[0];
@@ -616,7 +632,10 @@ export async function getWorkOrderControlPreflight(
      * يملك طلبَ العكس أصلاً** (`mayRequestWorkOrderControl` يرفضه). سطحٌ ماليٌّ كامل بلا فعلٍ
      * يبرّره. والحسبةُ نفسها تُوفَّر: لا استعلامَ لمن لا يستفيد.
      */
-    const mayReverse = canonicalPreflight || hasWorkOrderCommercialAuthority(
+    const mayReverse = (
+      currentRequester.hasPersistedOperationPolicy === true &&
+      canonicalOperationAllowed(currentRequester, "workOrders.controlPreflight") === true
+    ) || hasWorkOrderCommercialAuthority(
       actor.role ?? "",
       (actor.permissionsOverride ?? null) as never,
     );
@@ -682,7 +701,7 @@ export async function getWorkOrderControlPreflight(
           money(wo.deposit ?? "0").gt(0) ||
           appliedDeposits.length > 0,
         materials: wo.status === "IN_PROGRESS" || wo.status === "READY",
-        cancel: wo.status !== "RECEIVED" || money(wo.deposit ?? "0").gt(0) || appliedDeposits.length > 0 || materialRows.length > 0 || feeHeld.gt(0),
+        cancel: wo.status !== "RECEIVED" || money(wo.deposit ?? "0").gt(0) || appliedDeposits.length > 0 || feeHeld.gt(0),
       },
       reverseDelivery,
       openReceptionShifts,

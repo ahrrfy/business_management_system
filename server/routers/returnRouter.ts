@@ -1,6 +1,15 @@
 import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
+import {
+  assertOperationAuthorityTx,
+  loadOperationUserTx,
+  storedCanonicalOperationAllowed,
+} from "../services/authorization/operationAuthority";
 import { appErrorMessage } from "@shared/errors";
+import {
+  evaluateRefundOperationalDecision,
+  OperationalApprovalRequiredError,
+} from "@shared/operationalDecision";
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import {
   moduleAccessAllowed,
@@ -52,8 +61,12 @@ import {
   creditLine,
   debitLine,
 } from "../services/accounting/postingEngine";
-import { money, toDbMoney } from "../services/money";
-import { assertCashOutAvailable } from "../services/cash/cashAvailability";
+import { money, round2, toDbMoney } from "../services/money";
+import {
+  assertCashOutAvailable,
+  computeDrawerCashBalance,
+  lockCashSourceForUpdate,
+} from "../services/cash/cashAvailability";
 import { getDb, type Tx } from "../db";
 import { logAudit } from "../services/auditService";
 import {
@@ -83,6 +96,7 @@ import {
 import { getOpenShifts } from "../services/treasury/openShifts";
 import { openShiftIdTx } from "../services/shiftService";
 import {
+  canSeeCostForUser,
   returnsProcedure,
   router,
   salesCashierProcedure,
@@ -110,6 +124,8 @@ import { nonNegMoneyString } from "../lib/schemas";
 import { escLike } from "../lib/sqlLike";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { randomUUID } from "node:crypto";
+import { todayUtcDate } from "../services/businessDay";
+import { loadCurrentOperationalAuthorityTx } from "../services/authorization/currentOperationalAuthority";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const walkInResolution = z.object({
@@ -388,15 +404,16 @@ export const returnRouter = router({
       const rawReason = explicitReason || input.resolution?.reason;
 
       /**
-       * ⭐ **مسارُ التنفيذ الفوريّ الذريّ للمالك فقط** (VULN-SQUAD1-01).
+       * ⭐ **مسارُ التنفيذ الفوريّ الذريّ بتفويضٍ وحدودٍ تشغيلية**.
        *
-       * المالكُ الحقيقيّ ينفّذ مرتجعه مباشرةً عبر `returnSaleAsOwner`.
-       * جميع المستخدمين الآخرين (المدراء، مسؤولو النظام، الكاشير) يمرّون إلزامياً
-       * بمسار الصانع والمدقق (Maker-Checker) عبر `requestSalesControl` لإنشاء طلب تدقيق.
+       * المالكُ ينفّذ عبر `returnSaleAsOwner`. أمّا المفوّضون فيمرّون عبر
+       * `returnSaleDirect` الذي يعيد تحميل صلاحياتهم وسقوفهم من الصفوف المقفلة،
+       * ويحوّل تجاوز شروط الفرع والمنشئ والوردية والسقف إلى طلب اعتماد.
        *
        * ⚠️ **العائدُ نوعٌ مُميَّزٌ بـ`mode`**: كلّ مستهلكٍ يتفرّع على `mode` صراحةً.
        */
-      const shouldExecuteDirect = ctx.user.isOwner === true;
+      const shouldExecuteDirect =
+        ctx.user.isOwner === true || input.directExecution !== false;
 
       if (shouldExecuteDirect && (!rawReason || rawReason.trim().length < 3)) {
         throw new TRPCError({
@@ -463,7 +480,9 @@ export const returnRouter = router({
         });
       }
 
+      let approvalDecision: OperationalApprovalRequiredError["decision"] | null = null;
       if (shouldExecuteDirect) {
+        try {
         const executed =
           ctx.user.isOwner === true
             ? await returnSaleAsOwner(
@@ -495,6 +514,7 @@ export const returnRouter = router({
                     branchId: actorBranchId,
                     role: ctx.user.role,
                     isOwner: ctx.user.isOwner,
+                    operationalCaps: ctx.user.resolvedOperationalCaps,
                   },
                 ),
               );
@@ -521,6 +541,10 @@ export const returnRouter = router({
           });
         }
         return { ...executed, mode: "EXECUTED" as const, invoiceId };
+        } catch (error) {
+          if (!(error instanceof OperationalApprovalRequiredError)) throw error;
+          approvalDecision = error.decision;
+        }
       }
 
       // صون عدم التكرار عبر النشر المتدرّج: إن كان هذا المفتاح قد التزم سابقاً كمرتجعٍ مباشر
@@ -599,6 +623,7 @@ export const returnRouter = router({
           payloadHash: res.payloadHash,
           lines: input.lines.length,
           reason,
+          decision: approvalDecision,
         },
       });
       const isApproved = res.status === "APPROVED";
@@ -607,6 +632,7 @@ export const returnRouter = router({
         requestId: res.id,
         status: res.status,
         replayed: res.replayed,
+        decision: approvalDecision,
       };
     }),
 
@@ -1795,7 +1821,7 @@ export const returnRouter = router({
           barcode: baseUnit?.barcode ?? null,
           sku: skuVariant.sku ?? null,
           retailPrice,
-          costPrice,
+          costPrice: canSeeCostForUser(ctx.user) ? costPrice : null,
           lowestHistoricalPrice,
           currentStock: Number(stockRow?.quantity ?? 0),
         };
@@ -1862,7 +1888,7 @@ export const returnRouter = router({
         barcode: owner.primaryBarcode ?? code,
         sku: owner.sku ?? null,
         retailPrice,
-        costPrice,
+        costPrice: canSeeCostForUser(ctx.user) ? costPrice : null,
         lowestHistoricalPrice,
         currentStock: Number(stockRow?.quantity ?? 0),
       };
@@ -2170,6 +2196,70 @@ export const returnRouter = router({
               }
             }
 
+            const currentOperationUser = await loadOperationUserTx(tx, ctx.user.id);
+            const currentApprovalAllowed = currentOperationUser.isOwner === true || (
+              storedCanonicalOperationAllowed(currentOperationUser, "salesControl.approve") ??
+              moduleAccessAllowed(
+                currentOperationUser.role,
+                currentOperationUser.permissionsOverride as PermissionMap | null,
+                "sales",
+                "FULL",
+                ["manager", "admin"],
+              )
+            );
+            const directLimitsApply = !currentApprovalAllowed;
+            const currentOperationalAuthority = await loadCurrentOperationalAuthorityTx(
+              tx,
+              ctx.user.id,
+            );
+            if (
+              (currentOperationalAuthority.branchId !== actorBranchId ||
+                currentOperationalAuthority.role !== ctx.user.role)
+            ) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: appErrorMessage({
+                  what: "تعذر تثبيت تفويض المرتجع",
+                  why: "تغير دور الحساب أو فرعه أثناء تنفيذ المرتجع",
+                  doThis: "حدث الصفحة وأعد المرتجع بصلاحيات الحساب الحالية",
+                }),
+              });
+            }
+            const legacyCartReturnAllowed =
+              moduleAccessAllowed(
+                currentOperationUser.role,
+                currentOperationUser.permissionsOverride as PermissionMap | null,
+                "sales",
+                "FULL",
+                ["cashier", "manager"],
+              ) ||
+              moduleAccessAllowed(
+                currentOperationUser.role,
+                currentOperationUser.permissionsOverride as PermissionMap | null,
+                "workorders",
+                "FULL",
+                ["cashier", "manager", "print_operator"],
+              ) ||
+              moduleAccessAllowed(
+                currentOperationUser.role,
+                currentOperationUser.permissionsOverride as PermissionMap | null,
+                "pos",
+                "FULL",
+                ["cashier", "manager", "print_operator"],
+              );
+            const canonicalCartReturnAllowed = await assertOperationAuthorityTx(
+              tx,
+              {
+                userId: ctx.user.id,
+                branchId: actorBranchId,
+                role: ctx.user.role,
+              },
+              "returns.executeSalesReturnCart",
+              legacyCartReturnAllowed,
+            );
+            const currentCartReturnAllowed =
+              canonicalCartReturnAllowed || legacyCartReturnAllowed;
+
             await assertPeriodOpen(tx, new Date());
 
           const now = new Date();
@@ -2195,6 +2285,21 @@ export const returnRouter = router({
             });
           }
 
+          // المسار السريع لسلة المرتجع لا يملك مستند اعتماد مستقلاً يمكن للمدير
+          // تنفيذه لاحقاً. لذلك نفشل مغلقاً قبل أي حركة مخزون/نقد عند غياب
+          // الفاتورة أو تجاوز السقف، ويستعمل الموظف مسار المرتجع المرتبط بالفاتورة
+          // الذي ينشئ طلب SALES_RETURN قابلاً للاعتماد.
+          if (directLimitsApply && !input.invoiceNumber?.trim()) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: appErrorMessage({
+                what: "يتطلب المرتجع موافقة المدير",
+                why: "لا يمكن للكاشير تنفيذ مرتجع مباشر بلا فاتورة أصلية",
+                doThis:
+                  "اربط المرتجع بالفاتورة الأصلية، أو أنشئ طلب مرتجع من مسار الفاتورة ليعتمده المدير",
+              }),
+            });
+          }
           // ٠) التحقق من الفاتورة الأصلية إن أدخلت وفرض الحوكمة المالية الصارمة
           let matchedInvoice: typeof invoices.$inferSelect | null = null;
           let matchedDeliveryPreview: {
@@ -2388,6 +2493,149 @@ export const returnRouter = router({
 
             matchedInvoice = found;
 
+            const paidAmount = money(matchedInvoice.paidAmount ?? "0");
+            const remainingUnpaidAmount = Decimal.max(
+              0,
+              money(matchedInvoice.total)
+                .minus(money(matchedInvoice.returnedTotal ?? "0"))
+                .minus(paidAmount),
+            );
+            const unremittedDeliveryCustody = matchedDeliveryPreview
+              ? (
+                  await remainingUnremittedDeliveryCustody(
+                    tx,
+                    Number(matchedDeliveryPreview.id),
+                  )
+                ).total
+              : money(0);
+            const maxCreditOffsetAmount = round2(
+              remainingUnpaidAmount.plus(unremittedDeliveryCustody),
+            );
+
+            // Reject impossible settlement rails before approval routing. A manager may
+            // approve an exceptional workflow, but the cart executor must never pay out
+            // more than the invoice actually collected or offset more than its open debt.
+            if (
+              (input.settlement.method === "CASH" ||
+                input.settlement.method === "CARD") &&
+              returnTotalDec.gt(paidAmount)
+            ) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "مبلغ الاسترداد يتجاوز المدفوع الفعلي للفاتورة",
+                  why: `المبلغ المطلوب استرداده (${returnTotalDec.toFixed(2)} د.ع) أكبر من إجمالي المسدد فعلياً على الفاتورة (${paidAmount.toFixed(2)} د.ع)${paidAmount.lte(0) ? " — الفاتورة آجلة بالكامل ولم يُقبض منها أي مبلغ" : ""}`,
+                  doThis:
+                    "لا يمكن صرف مبلغ يفوق ما قبضه المحل؛ استخدم معادلة الذمة للجزء الآجل",
+                }),
+              });
+            }
+            if (input.settlement.method === "CREDIT_OFFSET") {
+              const effectiveCustomerId =
+                input.customer?.customerId ??
+                (matchedInvoice.customerId
+                  ? Number(matchedInvoice.customerId)
+                  : null);
+              if (!effectiveCustomerId) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: "تعذر تنفيذ معادلة الذمة",
+                    why: "طريقة معادلة الذمم تتطلب تحديد عميل مسجل في النظام لإسقاط المبلغ من حسابه الآجل",
+                    doThis: "اختر العميل من CRM أو اربط الفاتورة بعميل مسجل",
+                  }),
+                });
+              }
+              if (returnTotalDec.gt(maxCreditOffsetAmount)) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: "مبلغ معادلة الذمة يتجاوز الرصيد القابل للعكس",
+                    why: `المبلغ المطلوب (${returnTotalDec.toFixed(2)} د.ع) أكبر من مجموع الجزء الآجل والعهدة الحية غير الموردة (${maxCreditOffsetAmount.toFixed(2)} د.ع)`,
+                    doThis:
+                      "خفّض مبلغ معادلة الذمة إلى الرصيد القابل للعكس، وعالج أي جزء مدفوع بطريقة الدفع الأصلية",
+                  }),
+                });
+              }
+            }
+
+            if (directLimitsApply) {
+              let drawerHasFunds = true;
+              if (
+                input.settlement.method === "CASH" &&
+                input.settlement.shiftId != null &&
+                returnTotalDec.gt(0)
+              ) {
+                const lockedDrawer = await lockCashSourceForUpdate(tx, {
+                  branchId: Number(matchedInvoice.branchId),
+                  cashBucket: "DRAWER",
+                  shiftId: Number(input.settlement.shiftId),
+                });
+                drawerHasFunds = (await computeDrawerCashBalance(
+                  tx,
+                  Number(input.settlement.shiftId),
+                  lockedDrawer.openingBalance ?? "0",
+                )).gte(returnTotalDec);
+              }
+              const lockedRefundCaps = await loadRefundCaps(
+                tx,
+                Number(matchedInvoice.id),
+                { lock: true },
+              );
+              const originalPaymentMethods = Array.from(
+                new Set([
+                  ...Array.from(lockedRefundCaps.netByMethod.entries())
+                    .filter(([, amount]) => amount.gt(0))
+                    .map(([method]) => method),
+                  ...(maxCreditOffsetAmount.gt(0) ? ["CREDIT_OFFSET"] : []),
+                ]),
+              );
+              const originalPaymentAmounts = Object.fromEntries([
+                ...Array.from(lockedRefundCaps.netByMethod.entries())
+                  .filter(([, amount]) => amount.gt(0))
+                  .map(([method, amount]) => [method, amount.toFixed(2)] as const),
+                ...(maxCreditOffsetAmount.gt(0)
+                  ? [["CREDIT_OFFSET", maxCreditOffsetAmount.toFixed(2)] as const]
+                  : []),
+              ]);
+              const decision = evaluateRefundOperationalDecision({
+                operationAllowed: currentCartReturnAllowed,
+                sameBranch: Number(matchedInvoice.branchId) === actorBranchId,
+                ownsTransaction:
+                  Number(matchedInvoice.createdBy) === Number(ctx.user.id),
+                sameOpenShift:
+                  input.settlement.method !== "CASH" ||
+                  (input.settlement.shiftId != null &&
+                    (lockedRefundCaps.cashNetByShift.get(Number(input.settlement.shiftId)) ?? money(0))
+                      .gte(returnTotalDec)),
+                sameBusinessDay:
+                  matchedInvoice.invoiceDate.toISOString().slice(0, 10) ===
+                  todayUtcDate(),
+                accountingPeriodOpen: true,
+                hasDownstreamEffects: false,
+                hasSourceDocument: true,
+                refundAmountIqd: returnTotalDec.toFixed(2),
+                maxRefundAmountIqd:
+                  currentOperationalAuthority.caps.maxRefundAmountIqd,
+                refundMethod: input.settlement.method,
+                originalPaymentMethods,
+                originalPaymentAmounts,
+                drawerHasFunds,
+                approvalOperation: "salesControl.requestReturn",
+              });
+              if (decision.result !== "DIRECT") {
+                throw new TRPCError({
+                  code: "PRECONDITION_FAILED",
+                  message: appErrorMessage({
+                    what: "يتطلب المرتجع موافقة المدير",
+                    why: decision.reason,
+                    doThis:
+                      "أنشئ طلب المرتجع من شاشة الفاتورة ليُراجع ويُعتمد قبل التنفيذ",
+                  }),
+                });
+              }
+            }
+
             // الحارس المالي الصارم لمنع تضخيم المرتجع فوق قيمة الفاتورة:
             // 1) الحد الأقصى لقيمة المرتجع لا يمكن أن يتجاوز (إجمالي الفاتورة - المرتجع سابقاً)
             const remainingInvoiceTotal = Decimal.max(
@@ -2416,42 +2664,6 @@ export const returnRouter = router({
                     "عدّل مبالغ وأصناف السلة لتكون ضمن حدود المتبقي الفعلي للفاتورة",
                 }),
               });
-            }
-
-            // 2) الاسترداد النقدي أو بالبطاقة لا يمكن أن يتجاوز المسدد فعلياً
-            if (
-              input.settlement.method === "CASH" ||
-              input.settlement.method === "CARD"
-            ) {
-              const paidDec = money(matchedInvoice.paidAmount ?? "0");
-              if (returnTotalDec.gt(paidDec)) {
-                throw new TRPCError({
-                  code: "BAD_REQUEST",
-                  message: appErrorMessage({
-                    what: "مبلغ الاسترداد يتجاوز المدفوع الفعلي للفاتورة",
-                    why: `المبلغ المطلوب استرداده نقداً (${returnTotalDec.toFixed(2)} د.ع) أكبر من إجمالي المسدد فعلياً على الفاتورة (${paidDec.toFixed(2)} د.ع)${paidDec.lte(0) ? " — الفاتورة آجلة بالكامل ولم يُقبض منها أي مبلغ نقدي" : ""}`,
-                    doThis:
-                      "لا يمكن صرف نقد أو بطاقة بمبلغ يفوق ما قبضه المحل؛ اختر طريقة «معادلة ذمم (إنقاص الذمة)» لتسوية المبلغ في حساب العميل دون سحب نقد من الصندوق",
-                  }),
-                });
-              }
-            }
-
-            // 3) التحقق من وجود عميل في حال معادلة الذمم CREDIT_OFFSET
-            if (input.settlement.method === "CREDIT_OFFSET") {
-              const effectiveCustomerId =
-                input.customer?.customerId ??
-                (matchedInvoice.customerId ? Number(matchedInvoice.customerId) : null);
-              if (!effectiveCustomerId) {
-                throw new TRPCError({
-                  code: "BAD_REQUEST",
-                  message: appErrorMessage({
-                    what: "تعذر تنفيذ معادلة الذمة",
-                    why: "طريقة معادلة الذمم تتطلب تحديد عميل مسجل في النظام لإسقاط المبلغ من حسابه الآجل",
-                    doThis: "اختر العميل من CRM أو اربط الفاتورة بعميل مسجل",
-                  }),
-                });
-              }
             }
 
             // 3) التحقق من بنود الفاتورة وكمياتها بالوحدة الأساس وحساب معاملات التحويل
@@ -2710,6 +2922,21 @@ export const returnRouter = router({
                   why: "الوردية المحددة غير موجودة أو مغلقة حالياً",
                   doThis:
                     "اختر وردية مفتوحة سارية في الفرع أو افتح وردية جديدة للكاشير",
+                }),
+              });
+            }
+
+            if (
+              directLimitsApply &&
+              Number(targetShift.userId) !== Number(ctx.user.id)
+            ) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message: appErrorMessage({
+                  what: "يتطلب الرد النقدي موافقة المدير",
+                  why: "الدرج المحدد لا يخص وردية منفذ المرتجع",
+                  doThis:
+                    "اصرف الرد من ورديتك المفتوحة المرتبطة بالفاتورة أو أحِل المرتجع للمدير",
                 }),
               });
             }
@@ -3196,6 +3423,11 @@ export const returnRouter = router({
 
       return withTx(
         async (tx) => {
+          await assertOperationAuthorityTx(tx, {
+            userId: ctx.user.id, role: ctx.user.role, branchId: ctx.user.branchId,
+          }, "returns.executePurchaseReturnCart", (current) =>
+            moduleAccessAllowed(current.role ?? "user", current.permissionsOverride as PermissionMap | null,
+              "sales", "FULL", ["manager"]) && canSeeCostForUser(current));
           await assertPeriodOpen(tx, new Date());
 
           // التحقق من وجود المورد

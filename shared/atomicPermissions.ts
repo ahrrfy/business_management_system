@@ -3846,9 +3846,12 @@ export function resolveOperationalCaps(
   role: string,
   roleCaps?: OperationalCaps | null,
   userCapsOverrides?: OperationalCaps | null,
+  fallbackRole?: string | null,
 ): Required<OperationalCaps> {
   const baseCaps =
-    ROLE_DEFAULT_OPERATIONAL_CAPS[role] ?? DEFAULT_ZERO_CAPS;
+    ROLE_DEFAULT_OPERATIONAL_CAPS[role] ??
+    (fallbackRole ? ROLE_DEFAULT_OPERATIONAL_CAPS[fallbackRole] : undefined) ??
+    DEFAULT_ZERO_CAPS;
   const resolved: Required<OperationalCaps> = { ...baseCaps };
 
   if (roleCaps && typeof roleCaps === "object") {

@@ -25,6 +25,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { canViewOperationData } from "@shared/operationPermissions";
+import { moduleAccessAllowed } from "@shared/permissions";
 import { Link, useLocation } from "wouter";
 import { Landmark } from "lucide-react";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
@@ -190,14 +191,52 @@ export default function ExpenseNew() {
     "CASH",
   );
   const isStock = source !== "CASH";
-  const canCreateExpense = treasuryOperationAllowed(me.data, "expenses.create", true);
-  const canViewCost = !!me.data && canViewOperationData(me.data, "purchaseCost");
-  const canCreateStockExpense = treasuryOperationAllowed(
-    me.data, "expenses.create", me.data?.role === "admin" || me.data?.role === "manager",
+  const canCreateExpense = treasuryOperationAllowed(
+    me.data,
+    "expenses.create",
+    moduleAccessAllowed(
+      me.data?.role ?? "user",
+      me.data?.permissionsOverride ?? null,
+      "expenses",
+      "FULL",
+      ["cashier", "manager", "accountant"],
+    ),
   );
+  const canViewCost = !!me.data && canViewOperationData(me.data, "purchaseCost");
+  const canLookupStockExpenseItems = treasuryOperationAllowed(
+    me.data,
+    "catalog.forPurchase",
+    canViewCost &&
+      !!me.data &&
+      canViewOperationData(me.data, "profitMargin") &&
+      moduleAccessAllowed(
+        me.data.role,
+        me.data.permissionsOverride ?? null,
+        "products",
+        "READ",
+        ["manager", "purchasing", "warehouse"],
+      ),
+  );
+  const canCreateStockExpense =
+    canCreateExpense &&
+    canLookupStockExpenseItems &&
+    treasuryOperationAllowed(
+      me.data,
+      "inventory.adjust",
+      moduleAccessAllowed(
+        me.data?.role ?? "user",
+        me.data?.permissionsOverride ?? null,
+        "inventory",
+        "FULL",
+        ["manager", "warehouse"],
+      ),
+    );
   const sourceTabs = canCreateStockExpense
     ? SOURCE_TABS
     : SOURCE_TABS.slice(0, 1);
+  useEffect(() => {
+    if (!canCreateStockExpense && source !== "CASH") setSource("CASH");
+  }, [canCreateStockExpense, source]);
   const [items, setItems] = useState<StockLine[]>([]);
   const itemsTotal = useMemo(
     () =>

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { loadRefundCapsByInvoiceIds } from "./refundCaps";
 
 describe("لقطات سقوف الاسترداد المجمعة", () => {
-  it("تقرأ الروافد بثلاثة استعلامات ثابتة وتفصل وعاء كل فاتورة", async () => {
+  it("تقرأ الروافد بأربعة استعلامات ثابتة وتفصل وعاء كل فاتورة", async () => {
     const execute = vi.fn()
       .mockResolvedValueOnce([[
         { invoiceId: 11, rail: "CARD", direction: "IN", amount: "60.00" },
@@ -14,11 +14,14 @@ describe("لقطات سقوف الاسترداد المجمعة", () => {
       ]])
       .mockResolvedValueOnce([[
         { invoiceId: 12, amount: "5.00" },
+      ]])
+      .mockResolvedValueOnce([[
+        { invoiceId: 12, shiftId: 91, amount: "5.00" },
       ]]);
 
     const result = await loadRefundCapsByInvoiceIds({ execute }, [11, 12, 11]);
 
-    expect(execute).toHaveBeenCalledTimes(3);
+    expect(execute).toHaveBeenCalledTimes(4);
     expect(result.size).toBe(2);
     expect(result.get(11)?.grossIn.toFixed(2)).toBe("80.00");
     expect(result.get(11)?.grossOut.toFixed(2)).toBe("10.00");

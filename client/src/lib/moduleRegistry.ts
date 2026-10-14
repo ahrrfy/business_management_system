@@ -5,7 +5,7 @@ import {
   Receipt, RotateCcw, ScanLine, Server, Settings, ShoppingCart, Sparkles, Store, Truck, Users, Wallet,
   WalletCards, BellRing,
 } from "lucide-react";
-import { AUDIT_LOGS_GATE, CASHIER_NAV_PATHS, CLOSING_ENTRY_GATE, INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import { AUDIT_LOGS_GATE, CASHIER_NAV_PATHS, CLOSING_ENTRY_GATE, INVOICE_LIST_GATE, RETURNS_WORKSPACE_GATE, WORK_ORDERS_HUB_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import type { PermissionMap } from "@shared/permissions";
 import type { OperationPolicy } from "@shared/operationPermissions";
 
@@ -50,8 +50,7 @@ export const APPLICATION_MODULES: readonly ApplicationModule[] = [
     description: "مرتجعات شاملة وتحرٍّ جنائي",
     section: 1,
     icon: RotateCcw,
-    roles: ["admin", "manager", "cashier", "accountant", "auditor"],
-    module: "sales",
+    ...RETURNS_WORKSPACE_GATE,
   },
   { id: "treasury", href: "/treasury", label: "الخزينة والمدفوعات", description: "أرصدة وسندات وتحويلات", section: 3, icon: Wallet, roles: ["manager", "accountant", "cashier", "auditor"], module: "treasury" },
   { id: "cardAccount", href: "/card-account", label: "حساب البطاقة/البنك", description: "أرصدة وتسويات البطاقة", section: 3, icon: CreditCard, operations: ["cardAccount.summary"], roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },

@@ -6,6 +6,7 @@ import {
   lockCompanyMonthCloseGate,
   lockFinancialPostingGate,
 } from "./reports/monthCloseGate";
+import type { OperationalCaps } from "@shared/atomicPermissions";
 
 /** Resolve the DB or throw a uniform tRPC error when DATABASE_URL is unset. */
 export function requireDb(): DB {
@@ -128,6 +129,8 @@ export type Actor = {
   branchId: number;
   role?: string;
   isOwner?: boolean;
+  /** السقوف المحلولة بعد دمج قالب الدور والاستثناء الفردي. */
+  operationalCaps?: Required<OperationalCaps> | null;
 };
 
 /** فاعل قد يكون مرتبطاً بفرع أو عاماً للمنشأة (كالمالك أو الإدارة العامة). */

@@ -265,6 +265,7 @@ export default function SalesControlApprovals() {
    */
   const [routingFor, setRoutingFor] = useState<number | null>(null);
   const [routingShiftId, setRoutingShiftId] = useState<string>("");
+  const [routingUseTreasury, setRoutingUseTreasury] = useState(false);
   /**
    * ⭐ مرجع استرداد البطاقة لحظة الاعتماد لا لحظة الطلب (مراجعة Codex على PR #988) — نظير
    * `routingShiftId` تماماً. الطالب قد يترك المرجع فارغاً (لم ينفّذ الاسترداد بعد)؛ المُعتمِد
@@ -509,9 +510,13 @@ export default function SalesControlApprovals() {
       return;
     }
     const deviceId = needsExternalCorrectionPayment ? routingDeviceId : undefined;
-    const cashRouting = shiftId != null || referenceOverride !== undefined || deviceId != null
+    const cashBucket = editingThis && type === "SALES_CANCEL"
+      ? routingUseTreasury ? "TREASURY" as const : shiftId != null ? "DRAWER" as const : undefined
+      : undefined;
+    const cashRouting = shiftId != null || referenceOverride !== undefined || deviceId != null || cashBucket != null
       ? {
           ...(shiftId != null ? { shiftId } : {}),
+          ...(cashBucket != null ? { cashBucket } : {}),
           ...(referenceOverride !== undefined ? { reference: referenceOverride } : {}),
           ...(deviceId != null ? { deviceId } : {}),
         }
@@ -548,6 +553,7 @@ export default function SalesControlApprovals() {
     setRoutingFor(requestId);
     setRoutingShiftId("");
     setRoutingReference("");
+    setRoutingUseTreasury(false);
   }
 
   async function beginCorrectionPaymentClaim(requestId: number) {
@@ -711,6 +717,9 @@ export default function SalesControlApprovals() {
           const returnNeedsCashRouting = request.requestType === "SALES_RETURN"
             && returnMoney?.method === "CASH"
             && D(returnMoney.amount ?? "0").gt(0);
+          const cancelNeedsCashRouting = request.requestType === "SALES_CANCEL"
+            && (request.payload as { refundPaymentMethod?: string } | null)?.refundPaymentMethod === "CASH";
+          const useTreasuryForThisRequest = routingFor === Number(request.id) && routingUseTreasury;
           return (
           <Card key={request.id} className={isPendingCorrection ? "xl:col-span-2" : undefined}>
             <CardHeader className="pb-2">
@@ -833,25 +842,41 @@ export default function SalesControlApprovals() {
                   لا يمكنك مراجعة هذا الطلب لأنك الطالب أو منشئ الفاتورة. يجب أن يحسمه مدير مستقل.
                 </div>
               )}
-              {canReview && returnNeedsCashRouting && !reviewerConflict && (
+              {canReview && (returnNeedsCashRouting || cancelNeedsCashRouting) && !reviewerConflict && (
                 <div className="space-y-1 rounded-md border border-dashed p-3">
                   <Label htmlFor={`routing-${request.id}`} className="text-xs">
-                    درج خروج النقد (اختياريّ — اتركه فارغاً لاستعمال الدرج المسجَّل في الطلب)
+                    مصدر خروج النقد المعتمد
                   </Label>
-                  <Input
-                    id={`routing-${request.id}`}
-                    dir="ltr"
-                    inputMode="numeric"
-                    className="h-8 w-32 tabular-nums"
-                    placeholder="رقم الوردية"
-                    value={routingFor === Number(request.id) ? routingShiftId : ""}
-                    onChange={(event) => {
-                      beginRouting(Number(request.id));
-                      setRoutingShiftId(event.target.value.replace(/[^\d]/g, ""));
-                    }}
-                  />
+                  {cancelNeedsCashRouting ? (
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" size="sm" variant={!useTreasuryForThisRequest ? "default" : "outline"} onClick={() => {
+                        beginRouting(Number(request.id));
+                        setRoutingUseTreasury(false);
+                      }}>درج وردية</Button>
+                      <Button type="button" size="sm" variant={useTreasuryForThisRequest ? "default" : "outline"} onClick={() => {
+                        beginRouting(Number(request.id));
+                        setRoutingUseTreasury(true);
+                        setRoutingShiftId("");
+                      }}>خزينة الفرع</Button>
+                    </div>
+                  ) : null}
+                  {!cancelNeedsCashRouting || !useTreasuryForThisRequest ? (
+                    <Input
+                      id={`routing-${request.id}`}
+                      dir="ltr"
+                      inputMode="numeric"
+                      className="h-8 w-32 tabular-nums"
+                      placeholder="رقم الوردية"
+                      value={routingFor === Number(request.id) ? routingShiftId : ""}
+                      onChange={(event) => {
+                        beginRouting(Number(request.id));
+                        setRoutingUseTreasury(false);
+                        setRoutingShiftId(event.target.value.replace(/[^\d]/g, ""));
+                      }}
+                    />
+                  ) : null}
                   <p className="text-[11px] text-muted-foreground">
-                    إن أُقفلت وردية الطلب فسيسقط التنفيذ — حدّد هنا وردية مفتوحة الآن. المبلغ والطريقة لا يتغيّران.
+                    حدّد درجاً مفتوحاً وممولاً، أو اختر خزينة الفرع عند اعتماد إلغاء لا يغطيه درج المراجع. المبلغ والطريقة لا يتغيّران.
                   </p>
                 </div>
               )}

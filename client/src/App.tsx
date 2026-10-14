@@ -32,7 +32,7 @@ import { trpc } from "@/lib/trpc";
 import { Redirect, Route, Switch, useLocation } from "wouter";
 import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
-import { AUDIT_LOGS_GATE, CLOSING_ENTRY_GATE, EDITOR_OPERATION_GATES, INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, RECEPTION_STATION_GATE, SALE_CREATION_OPERATION_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
+import { AUDIT_LOGS_GATE, CLOSING_ENTRY_GATE, EDITOR_OPERATION_GATES, INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, PURCHASE_RETURNS_GOVERNANCE_GATE, RECEPTION_STATION_GATE, RETURNS_WORKSPACE_GATE, SALE_CREATION_OPERATION_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
 import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
 import { QuranAudioProvider, pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 
@@ -113,6 +113,7 @@ const QuotationNew = lazy(() => import("@/pages/QuotationNew"));
 const QuotationDetail = lazy(() => import("@/pages/QuotationDetail"));
 const Returns = lazy(() => import("@/pages/Returns"));
 const PurchaseReturnDetail = lazy(() => import("@/pages/PurchaseReturnDetail"));
+const PurchaseReturnsGovernance = lazy(() => import("@/pages/PurchaseReturnsGovernance"));
 const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
 const ProductionNew = lazy(() => import("@/pages/ProductionNew"));
 const ProductionDetail = lazy(() => import("@/pages/ProductionDetail"));
@@ -309,7 +310,9 @@ function RootRoute() {
   const storeHost = onPublicHost();
   const me = trpc.auth.me.useQuery(undefined, { retry: false });
   if (me.isLoading) return <RouteFallback />;
-  if (me.data?.role === "courier" && !me.data.operationPolicyEnabled && !me.data.isOwner) return <Redirect to="/my-deliveries" />;
+  const courierShellOnly = me.data?.courierShellOnly ??
+    (me.data?.role === "courier" && !me.data.operationPolicyEnabled);
+  if (courierShellOnly && !me.data?.isOwner) return <Redirect to="/my-deliveries" />;
   if (storeHost) return <Redirect to="/store" />; // زائر (أو موظف دخل خطأً) على الدومين العام ⇒ المتجر
   {/* الكاشير لا يُوجَّه بعيداً بل تُعرَض له «مساحة العمل المركّزة» داخل Dashboard نفسها —
       التوجيه الأعمى إلى /pos كان سيحبسه (زر «الرئيسية» في POS يعود إلى "/") بلا مسار
@@ -448,7 +451,7 @@ export default function App() {
       <Route path="/customers"><Redirect to="/crm?tab=customers" /></Route>
       <Route path="/customers/new"><Shell><RequireRole module="customers" level="FULL" operations={["customers.create"]}><CustomerNew /></RequireRole></Shell></Route>
       <Route path="/customers/:id/edit"><Shell><RequireRole module="customers" level="FULL" canonicalGate={EDITOR_OPERATION_GATES.customer}><CustomerEdit /></RequireRole></Shell></Route>
-      <Route path="/returns"><Shell><RequireRole roles={["admin","manager","cashier","accountant","auditor"]} module="sales" level="READ"><Returns /></RequireRole></Shell></Route>
+      <Route path="/returns"><Shell><RequireRole canonicalGate={RETURNS_WORKSPACE_GATE} roles={["admin","manager","cashier","accountant","auditor"]} module="sales" level="READ"><Returns /></RequireRole></Shell></Route>
       <Route path="/sales-returns/new"><Redirect to="/returns?tab=sales" /></Route>
       <Route path="/sales-returns"><Redirect to="/returns?tab=sales" /></Route>
       <Route path="/purchase-returns/new"><Redirect to="/returns?tab=purchases" /></Route>
@@ -461,7 +464,7 @@ export default function App() {
       <Route path="/purchases/:id/edit"><Shell><RequireRole canonicalGate={EDITOR_OPERATION_GATES.purchase} roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseEdit /></RequireRole></Shell></Route>
       <Route path="/purchases/goods-receipts"><Redirect to="/purchases" /></Route>
       <Route path="/purchases/supplier-invoices"><Redirect to="/purchases" /></Route>
-      <Route path="/purchases/returns-governance"><Redirect to="/returns?tab=purchases" /></Route>
+      <Route path="/purchases/returns-governance"><Shell><RequireRole canonicalGate={PURCHASE_RETURNS_GOVERNANCE_GATE} roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnsGovernance /></RequireRole></Shell></Route>
       <Route path="/purchase-requisitions"><Redirect to="/purchases?tab=requisitions" /></Route>
       <Route path="/purchases/supplier-payments"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><SupplierPaymentsGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/charges"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseChargesGovernance /></RequireRole></Shell></Route>
