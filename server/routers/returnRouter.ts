@@ -97,6 +97,7 @@ import { getOpenShifts } from "../services/treasury/openShifts";
 import { openShiftIdTx } from "../services/shiftService";
 import {
   canSeeCostForUser,
+  returnInvoiceScopeForUser,
   returnsProcedure,
   router,
   salesCashierProcedure,
@@ -1214,7 +1215,10 @@ export const returnRouter = router({
         {},
         {
           scopedBranchId: Number(inv.branchId),
-          role: ctx.user.role,
+          role:
+            ctx.user.role === "admin" || ctx.user.role === "manager"
+              ? ctx.user.role
+              : "cashier",
           userId: ctx.user.id,
         },
       );
@@ -1677,6 +1681,10 @@ export const returnRouter = router({
         branchId:
           ctx.user.role === "admin" ? 0 : Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
+        invoiceScope: returnInvoiceScopeForUser(
+          ctx.user,
+          "returns.forensicTrace",
+        ),
       });
     }),
 
@@ -1691,6 +1699,10 @@ export const returnRouter = router({
         branchId:
           ctx.user.role === "admin" ? 0 : Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
+        invoiceScope: returnInvoiceScopeForUser(
+          ctx.user,
+          "returns.universalScan",
+        ),
       });
     }),
 
@@ -1706,7 +1718,10 @@ export const returnRouter = router({
       {},
       {
         scopedBranchId: actorBranchId,
-        role: ctx.user.role,
+        role:
+          ctx.user.role === "admin" || ctx.user.role === "manager"
+            ? ctx.user.role
+            : "cashier",
         userId: ctx.user.id,
       },
     );
@@ -2113,7 +2128,10 @@ export const returnRouter = router({
         { branchId: actorBranchId },
         {
           scopedBranchId: actorBranchId,
-          role: ctx.user.role,
+          role:
+            ctx.user.role === "admin" || ctx.user.role === "manager"
+              ? ctx.user.role
+              : "cashier",
           userId: ctx.user.id,
         },
       );

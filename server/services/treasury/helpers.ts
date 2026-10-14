@@ -15,7 +15,15 @@ const PAY_METHOD_AR: Record<string, string> = {
   TELECOM: "رصيد زين", // ش٥ — «زين حصراً» بنيوياً: لا حقل مزوّد، التسمية هي العقد (I24)
 };
 
-const isCashier = (role: string | null | undefined) => role === "cashier" || role === "warehouse" || role === "print_operator";
+const isCashier = (role: string | null | undefined) =>
+  role === "cashier" ||
+  role === "retail_cashier" ||
+  role === "print_cashier" ||
+  role === "reception_clerk" ||
+  role === "warehouse" ||
+  role === "print_operator" ||
+  role === "sales_rep" ||
+  role === "user";
 
 
 export { rowsOf, PAY_METHOD_AR, isCashier };

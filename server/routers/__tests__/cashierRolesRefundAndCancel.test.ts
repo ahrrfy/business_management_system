@@ -606,5 +606,78 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
         },
       }),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    // عزل الأدراج لحسابات الترحيل التوافقي (role="user" مع pos:FULL أو workorders:FULL)
+    const printShiftId = await openShiftFor(11, "PRINT_SERVICES");
+    const printCaller = returnRouter.createCaller(
+      createContextFor({
+        id: 11,
+        name: "كاشير الطباعة",
+        role: "user",
+        permissionsOverride: { pos: "FULL" },
+      }),
+    );
+    const printShifts = await printCaller.shifts();
+    expect(printShifts.map((s) => s.shiftId)).toEqual([printShiftId]);
+    const printDrawers = await printCaller.getOpenRefundDrawers();
+    expect(printDrawers.map((d) => d.shiftId)).toEqual([printShiftId]);
+
+    // عزل قنوات التحري (forensicTrace) والمسح الكوني (universalScan) حسب قناة الكاشير
+    const retailSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: retailShiftId,
+        customerId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+        payment: { amount: "25.00", method: "CASH" },
+      },
+      { userId: 12, branchId: 1, role: "cashier" },
+    );
+    const receptionSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: receptionShiftId,
+        customerId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+        payment: { amount: "25.00", method: "CASH" },
+      },
+      { userId: 10, branchId: 1, role: "print_operator" },
+    );
+    const printSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: printShiftId,
+        customerId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+        payment: { amount: "25.00", method: "CASH" },
+      },
+      { userId: 11, branchId: 1, role: "user" },
+    );
+
+    const receptionTrace = await receptionCaller.forensicTrace({
+      mode: "DATE_SHIFT",
+      query: "ALL",
+    });
+    const receptionTracedIds = receptionTrace.results.map((r) => r.invoiceId);
+    expect(receptionTracedIds).toContain(receptionSale.invoiceId);
+    expect(receptionTracedIds).not.toContain(retailSale.invoiceId);
+    expect(receptionTracedIds).not.toContain(printSale.invoiceId);
+
+    const printTrace = await printCaller.forensicTrace({
+      mode: "DATE_SHIFT",
+      query: "ALL",
+    });
+    const printTracedIds = printTrace.results.map((r) => r.invoiceId);
+    expect(printTracedIds).toContain(printSale.invoiceId);
+    expect(printTracedIds).not.toContain(retailSale.invoiceId);
+    expect(printTracedIds).not.toContain(receptionSale.invoiceId);
+
+    const retailScanByReception = await receptionCaller.universalScan({
+      barcode: retailSale.invoiceNumber,
+    });
+    expect(retailScanByReception.recognized).toBe(false);
   });
 });

@@ -875,6 +875,35 @@ export function invoiceViewScopeForUser(
 }
 
 /**
+ * نطاق قناة الفاتورة لعمليات التحري والمسح في المرتجعات:
+ * يحصر كاشير الاستقبال (`reception_clerk` أو `workorders:FULL` دون `sales:FULL`) في فواتير الاستقبال،
+ * وكاشير الطباعة (`print_cashier` أو `pos:FULL` دون `sales:FULL` و`workorders:FULL`) في فواتير الطباعة،
+ * فلا تُسرد فواتير التجزئة والقنوات الأخرى عبر `forensicTrace`.
+ */
+export function returnInvoiceScopeForUser(
+  user: OperationUser,
+  path = "returns.forensicTrace",
+): InvoiceScope | null {
+  if (user.role === "admin" || user.isOwner) return "sales";
+  if (hasOperationPolicy(user) && !canonicalOperationAllowed(user, path)) return null;
+  const customKey = (user as { customRoleKey?: string | null }).customRoleKey;
+  if (customKey === "reception_clerk") return "reception";
+  if (customKey === "print_cashier") return "print";
+  if (customKey === "retail_cashier") return "sales";
+  const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  if (moduleAccessAllowed(user.role, override, "sales", "FULL", ["cashier", "manager"])) {
+    return "sales";
+  }
+  if (moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"])) {
+    return "reception";
+  }
+  if (moduleAccessAllowed(user.role, override, "pos", "FULL", ["cashier", "manager", "print_operator"])) {
+    return "print";
+  }
+  return invoiceViewScopeForUser(user, path);
+}
+
+/**
  * نطاق رؤية الفواتير — ثلاثة أوجه لبابٍ واحد:
  *  · `sales`     — وحدة المبيعات (مدير/محاسب/كاشير تجزئة/موظف استقبال بعد 0148): بلا حصر قناة.
  *  · `reception` — صلاحية الاستقبال (`workorders:FULL`): فواتير وردية RECEPTION وحدها.
