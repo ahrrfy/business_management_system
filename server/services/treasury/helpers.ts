@@ -22,8 +22,7 @@ const isCashier = (role: string | null | undefined) =>
   role === "reception_clerk" ||
   role === "warehouse" ||
   role === "print_operator" ||
-  role === "sales_rep" ||
-  role === "user";
+  role === "sales_rep";
 
 
 export { rowsOf, PAY_METHOD_AR, isCashier };

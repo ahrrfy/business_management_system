@@ -712,29 +712,7 @@ export async function returnSaleInTx(
       actor.role !== "admin" && actor.role !== "manager";
     let explicitShiftId = refund.shiftId ?? null;
     if (explicitShiftId == null && isNonManagerCashier) {
-      const callerOpenShifts = await tx
-        .select({ id: shifts.id })
-        .from(shifts)
-        .where(
-          and(
-            eq(shifts.branchId, branchForRefund),
-            eq(shifts.userId, actor.userId),
-            eq(shifts.status, "OPEN"),
-          ),
-        );
-      if (callerOpenShifts.length === 1) {
-        explicitShiftId = Number(callerOpenShifts[0].id);
-      } else if (callerOpenShifts.length > 1) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: appErrorMessage({
-            what: "تعدّد أدراج الكاشير المفتوحة",
-            why: `لديك أكثر من وردية مفتوحة في هذا الفرع (${callerOpenShifts.length}) — حدّد درج الوردية المستهدف للاسترداد صراحةً`,
-            doThis:
-              "اختر الوردية التي سيخرج منها النقد فعلياً قبل تأكيد المرتجع",
-          }),
-        });
-      }
+      explicitShiftId = await openShiftIdTx(tx, actor.userId, branchForRefund);
     }
     const openShiftCount =
       explicitShiftId != null
@@ -3003,15 +2981,32 @@ export async function returnSaleDirect(
           .limit(1);
 
         const targetBranchId = invRow?.branchId ?? actor.branchId;
-        const openShiftId = needsCashShift
-          ? await openShiftIdTx(tx, actor.userId, targetBranchId)
-          : null;
-        if (
-          needsCashShift &&
-          (!openShiftId ||
-            (directRefund?.shiftId != null &&
-              Number(directRefund.shiftId) !== Number(openShiftId)))
-        ) {
+        let openShiftId: number | null = null;
+        if (needsCashShift) {
+          if (directRefund?.shiftId != null) {
+            const [selectedShift] = await tx
+              .select({
+                id: shifts.id,
+                userId: shifts.userId,
+                branchId: shifts.branchId,
+                status: shifts.status,
+              })
+              .from(shifts)
+              .where(eq(shifts.id, Number(directRefund.shiftId)))
+              .limit(1);
+            if (
+              selectedShift != null &&
+              selectedShift.status === "OPEN" &&
+              Number(selectedShift.userId) === Number(actor.userId) &&
+              Number(selectedShift.branchId) === Number(targetBranchId)
+            ) {
+              openShiftId = Number(selectedShift.id);
+            }
+          } else {
+            openShiftId = await openShiftIdTx(tx, actor.userId, targetBranchId);
+          }
+        }
+        if (needsCashShift && !openShiftId) {
           throw new OperationalApprovalRequiredError({
             result: "APPROVAL_REQUIRED",
             reason: "الرد النقدي ليس من وردية مفتوحة تخص منفذ المرتجع",

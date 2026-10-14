@@ -107,6 +107,7 @@ import {
   workordersExecProcedure,
 } from "../trpc";
 import {
+  buildInvoiceChannelCondition,
   forensicTraceInvoices,
   universalBarcodeScan,
 } from "../services/returns/forensicTraceService";
@@ -1754,6 +1755,19 @@ export const returnRouter = router({
         ctx.user.role === "admin" || !ctx.user.branchId
           ? 1
           : Number(ctx.user.branchId);
+      const scopedInvoiceBranchId =
+        ctx.user.role === "admin" || !ctx.user.branchId
+          ? null
+          : Number(ctx.user.branchId);
+      const invoiceScope = returnInvoiceScopeForUser(
+        ctx.user,
+        "returns.lookupItemForReturn",
+      );
+      const invoiceChannelCondition = buildInvoiceChannelCondition(invoiceScope);
+      const invoiceBranchCondition =
+        scopedInvoiceBranchId != null
+          ? eq(invoices.branchId, scopedInvoiceBranchId)
+          : sql`1=1`;
 
       if (!owner) {
         // إذا لم يُعثر عليه بالباركود، نحاول بالـ SKU
@@ -1822,10 +1836,13 @@ export const returnRouter = router({
           .select({ minPrice: sql<string>`MIN(${invoiceItems.unitPrice})` })
           .from(invoiceItems)
           .innerJoin(invoices, eq(invoiceItems.invoiceId, invoices.id))
+          .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
           .where(
             and(
               eq(invoiceItems.variantId, skuVariant.variantId),
               gte(invoices.createdAt, sixtyDaysAgo),
+              invoiceBranchCondition,
+              invoiceChannelCondition,
             ),
           );
 
@@ -1890,10 +1907,13 @@ export const returnRouter = router({
         .select({ minPrice: sql<string>`MIN(${invoiceItems.unitPrice})` })
         .from(invoiceItems)
         .innerJoin(invoices, eq(invoiceItems.invoiceId, invoices.id))
+        .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
         .where(
           and(
             eq(invoiceItems.variantId, owner.variantId),
             gte(invoices.createdAt, sixtyDaysAgo),
+            invoiceBranchCondition,
+            invoiceChannelCondition,
           ),
         );
 
@@ -2698,15 +2718,36 @@ export const returnRouter = router({
 
             if (directLimitsApply) {
               let drawerHasFunds = true;
-              const effectiveShiftId =
-                input.settlement.shiftId ??
-                (input.settlement.method === "CASH"
-                  ? await openShiftIdTx(
-                      tx,
-                      ctx.user.id,
-                      Number(matchedInvoice.branchId),
-                    )
-                  : null);
+              let effectiveShiftId: number | null = null;
+              if (input.settlement.method === "CASH") {
+                if (input.settlement.shiftId != null) {
+                  const [selectedShift] = await tx
+                    .select({
+                      id: shifts.id,
+                      userId: shifts.userId,
+                      branchId: shifts.branchId,
+                      status: shifts.status,
+                    })
+                    .from(shifts)
+                    .where(eq(shifts.id, Number(input.settlement.shiftId)))
+                    .limit(1);
+                  if (
+                    selectedShift != null &&
+                    selectedShift.status === "OPEN" &&
+                    Number(selectedShift.userId) === Number(ctx.user.id) &&
+                    Number(selectedShift.branchId) ===
+                      Number(matchedInvoice.branchId)
+                  ) {
+                    effectiveShiftId = Number(selectedShift.id);
+                  }
+                } else {
+                  effectiveShiftId = await openShiftIdTx(
+                    tx,
+                    ctx.user.id,
+                    Number(matchedInvoice.branchId),
+                  );
+                }
+              }
               if (
                 input.settlement.method === "CASH" &&
                 effectiveShiftId != null &&

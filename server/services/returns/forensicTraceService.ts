@@ -35,7 +35,7 @@ export type ForensicTraceActor = Actor & {
   invoiceScope?: ForensicInvoiceScope | null;
 };
 
-function buildInvoiceChannelCondition(
+export function buildInvoiceChannelCondition(
   invoiceScope: ForensicInvoiceScope | null | undefined,
 ) {
   if (invoiceScope === "reception") {
