@@ -16,6 +16,7 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import { operationDecision } from "@shared/operationPermissions";
 import { variantDescriptor } from "@shared/variantDisplay";
 import { z } from "zod";
 import {
@@ -1728,6 +1729,9 @@ export const returnRouter = router({
           ctx.user,
           "returns.universalScan",
         ),
+        canReadWorkOrders: operationDecision(ctx.user, "workOrders.list").allowed,
+        canReadDelivery: operationDecision(ctx.user, "delivery.list").allowed,
+        canReadPurchaseReturns: operationDecision(ctx.user, "purchaseReturns.list").allowed,
       });
     }),
 
@@ -2444,36 +2448,39 @@ export const returnRouter = router({
                         ),
                       )
                       .limit(1);
-              if (unitRow) {
-                const [retailPriceRow] = await tx
-                  .select({ price: productPrices.price })
-                  .from(productPrices)
-                  .where(
-                    and(
-                      eq(productPrices.productUnitId, unitRow.id),
-                      eq(productPrices.priceTier, "RETAIL"),
-                    ),
-                  )
-                  .limit(1);
-                const catalogRetailPrice =
-                  retailPriceRow?.price != null
-                    ? round2(money(retailPriceRow.price))
-                    : null;
-                if (
-                  catalogRetailPrice != null &&
-                  catalogRetailPrice.gt(0) &&
-                  !round2(itemUnitPrice).eq(catalogRetailPrice)
-                ) {
-                  throw new TRPCError({
-                    code: "PRECONDITION_FAILED",
-                    message: appErrorMessage({
-                      what: "يتطلب المرتجع موافقة المدير",
-                      why: `سعر الوحدة المدخل للصنف «${itm.productName}» (${round2(itemUnitPrice).toFixed(2)} د.ع) يختلف عن سعر البيع المعتمد (${catalogRetailPrice.toFixed(2)} د.ع) في المرتجع العابر بلا فاتورة`,
-                      doThis:
-                        "التزم بسعر البيع المعتمد للصنف في المرتجع العابر، أو اربط المرتجع بالفاتورة الأصلية ليعتمده المدير",
-                    }),
-                  });
-                }
+              const [retailPriceRow] = unitRow
+                ? await tx
+                    .select({ price: productPrices.price })
+                    .from(productPrices)
+                    .where(
+                      and(
+                        eq(productPrices.productUnitId, unitRow.id),
+                        eq(productPrices.priceTier, "RETAIL"),
+                      ),
+                    )
+                    .limit(1)
+                : [undefined];
+              const catalogRetailPrice =
+                retailPriceRow?.price != null
+                  ? round2(money(retailPriceRow.price))
+                  : null;
+              if (
+                catalogRetailPrice == null ||
+                catalogRetailPrice.lte(0) ||
+                !round2(itemUnitPrice).eq(catalogRetailPrice)
+              ) {
+                throw new TRPCError({
+                  code: "PRECONDITION_FAILED",
+                  message: appErrorMessage({
+                    what: "يتطلب المرتجع موافقة المدير",
+                    why:
+                      catalogRetailPrice == null || catalogRetailPrice.lte(0)
+                        ? `الصنف «${itm.productName}» لا يملك سعر بيع تجزئة معتمداً في الكتالوج للمرتجع العابر بلا فاتورة`
+                        : `سعر الوحدة المدخل للصنف «${itm.productName}» (${round2(itemUnitPrice).toFixed(2)} د.ع) يختلف عن سعر البيع المعتمد (${catalogRetailPrice.toFixed(2)} د.ع) في المرتجع العابر بلا فاتورة`,
+                    doThis:
+                      "التزم بسعر البيع المعتمد للصنف في المرتجع العابر، أو اربط المرتجع بالفاتورة الأصلية ليعتمده المدير",
+                  }),
+                });
               }
             }
             let walkInDrawerHasFunds = true;
@@ -3013,6 +3020,12 @@ export const returnRouter = router({
 
             // تتبع تراكم الكميات المرتجعة لكل بند في السلة نفسها لمنع الالتفاف بتكرار البند
             const accumulatedReturnedByItemId = new Map<number, number>();
+            const invSubtotalDec = money(matchedInvoice.subtotal ?? "0");
+            const invDiscountDec = money(matchedInvoice.discountAmount ?? "0");
+            const invDiscountRatio = invSubtotalDec.gt(0)
+              ? invDiscountDec.dividedBy(invSubtotalDec)
+              : new Decimal(0);
+            let expectedInvoiceReturnTotal = new Decimal(0);
 
             for (const itm of input.items) {
               const targetItem = itm.invoiceItemId
@@ -3066,6 +3079,50 @@ export const returnRouter = router({
                 targetItem.id,
                 priorReturned + effectiveBaseQty,
               );
+
+              const rawBaseUnitPrice =
+                (targetItem.baseQuantity ?? 0) > 0
+                  ? money(targetItem.total).dividedBy(targetItem.baseQuantity)
+                  : money(targetItem.unitPrice ?? "0");
+              const effectiveBaseUnitPrice = invDiscountRatio.gt(0)
+                ? rawBaseUnitPrice
+                    .times(new Decimal(1).minus(invDiscountRatio))
+                    .toDecimalPlaces(2)
+                : rawBaseUnitPrice;
+              const expectedLineTotal = round2(
+                effectiveBaseUnitPrice.times(effectiveBaseQty),
+              );
+              const submittedLineTotal = round2(
+                money(itm.unitPrice).times(itm.quantity),
+              );
+              if (!submittedLineTotal.eq(expectedLineTotal)) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: `سعر إرجاع الصنف «${itm.productName}» لا يطابق سعر الفاتورة المرجعية`,
+                    why: `قيمة البند المُدخلة (${submittedLineTotal.toFixed(2)} د.ع) تختلف عن القيمة الفعلية للبند في الفاتورة «${matchedInvoice.invoiceNumber}» (${expectedLineTotal.toFixed(2)} د.ع)`,
+                    doThis:
+                      "التزم بسعر البند الفعلي المسجّل في الفاتورة المرجعية وأعد احتساب السلة",
+                  }),
+                });
+              }
+              expectedInvoiceReturnTotal =
+                expectedInvoiceReturnTotal.plus(expectedLineTotal);
+            }
+
+            const roundedExpectedInvoiceReturnTotal = round2(
+              expectedInvoiceReturnTotal,
+            );
+            if (!round2(returnTotalDec).eq(roundedExpectedInvoiceReturnTotal)) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "مبلغ تسوية المرتجع غير مطابق لقيمة البنود المرتجعة من الفاتورة",
+                  why: `مبلغ التسوية (${round2(returnTotalDec).toFixed(2)} د.ع) لا يطابق مجموع قيمة البنود المرتجعة وفق أسعار الفاتورة المرجعية (${roundedExpectedInvoiceReturnTotal.toFixed(2)} د.ع)`,
+                  doThis:
+                    "أعد احتساب السلة وتأكد من تطابق إجمالي التسوية مع قيمة البنود المرتجعة من الفاتورة",
+                }),
+              });
             }
           }
 

@@ -160,6 +160,7 @@ describe("returns.getInvoice — عزل الفرع (IDOR قراءة)", () => {
 
   it("كاشير الاستقبال (workorders: FULL) في نفس الفرع يقرأ فاتورة الاستقبال؛ فرع آخر ⇒ FORBIDDEN", async () => {
     const { invoiceId } = await sellFive();
+    await db().update(s.invoices).set({ sourceType: "POS" }).where(eq(s.invoices.id, invoiceId));
     expect(await caller("print_operator", 1, 3).returns.getInvoice({ invoiceId })).toBeNull();
     await db().insert(s.shifts).values({
       id: 99,

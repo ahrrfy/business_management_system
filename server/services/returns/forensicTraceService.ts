@@ -33,6 +33,9 @@ export type ForensicSearchMode = "ITEM_BARCODE" | "CARD_LAST4" | "CUSTOMER_PHONE
 export type ForensicInvoiceScope = "sales" | "reception" | "print";
 export type ForensicTraceActor = Actor & {
   invoiceScope?: ForensicInvoiceScope | null;
+  canReadWorkOrders?: boolean;
+  canReadDelivery?: boolean;
+  canReadPurchaseReturns?: boolean;
 };
 
 export function buildInvoiceChannelCondition(
@@ -529,7 +532,10 @@ export async function universalBarcodeScan(
   }
 
   // ٢) هل هو أمر شغل مطبعة واستنساخ؟ (WO-XXXX)
-  if (trimmed.startsWith("WO-") || trimmed.includes("WO")) {
+  if (
+    (actor.role === "admin" || actor.canReadWorkOrders === true) &&
+    (trimmed.startsWith("WO-") || trimmed.includes("WO"))
+  ) {
     const wo = (
       await db
         .select({
@@ -562,7 +568,10 @@ export async function universalBarcodeScan(
   }
 
   // ٣) هل هو طرد شحن وتوصيل؟ (CN-XXXX أو DLV-XXXX)
-  if (trimmed.startsWith("CN-") || trimmed.startsWith("DLV-") || trimmed.startsWith("PK-")) {
+  if (
+    (actor.role === "admin" || actor.canReadDelivery === true) &&
+    (trimmed.startsWith("CN-") || trimmed.startsWith("DLV-") || trimmed.startsWith("PK-"))
+  ) {
     const cnRow = (
       await db
         .select({
@@ -593,7 +602,10 @@ export async function universalBarcodeScan(
   }
 
   // ٤) هل هو مرتجع شراء لمورد؟ (PR-XXXX)
-  if (trimmed.startsWith("PR-")) {
+  if (
+    (actor.role === "admin" || actor.canReadPurchaseReturns === true) &&
+    trimmed.startsWith("PR-")
+  ) {
     const pr = (
       await db
         .select({
@@ -602,7 +614,12 @@ export async function universalBarcodeScan(
           status: purchaseReturns.status,
         })
         .from(purchaseReturns)
-        .where(eq(purchaseReturns.returnNumber, trimmed))
+        .where(
+          and(
+            eq(purchaseReturns.returnNumber, trimmed),
+            scopedBranchId != null ? eq(purchaseReturns.branchId, scopedBranchId) : sql`1=1`
+          )
+        )
         .limit(1)
     )[0];
 

@@ -98,9 +98,8 @@ export default function ReturnsHub() {
     canLookupItemForReturn &&
     canListSuppliers;
   const canListSalesReturns = useOperationPermission("returns.list").allowed;
-  const canListPurchaseReturns = useOperationPermission(
-    "purchaseReturns.list",
-  ).allowed;
+  const canListPurchaseReturns =
+    useOperationPermission("purchaseReturns.list").allowed && canListSuppliers;
   const canAccessSalesPortal =
     canExecuteSalesReturn || canListSalesReturns;
   const canAccessPurchasePortal =

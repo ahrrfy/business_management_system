@@ -14,6 +14,7 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDate } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
@@ -34,6 +35,9 @@ const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function SalesReturns({ embedded = false }: { embedded?: boolean } = {}) {
+  const canReadPerformers = useOperationPermission("returns.performers").allowed;
+  const canReadSalesControl = useOperationPermission("salesControl.list").allowed;
+  const canSearchCustomers = useOperationPermission("customers.search").allowed;
   // فلاتر في querystring — تعيش مع فتح تفاصيل الفاتورة والرجوع، ويمكن مشاركتها رابطاً.
   // كل القيم نصوص؛ ""=افتراضي يُحذف من الـURL. Numeric filters تُحوَّل عند الاستخدام.
   const [filters, setFilters, resetFilters] = useUrlFilters({
@@ -71,7 +75,10 @@ export default function SalesReturns({ embedded = false }: { embedded?: boolean 
   const utils = trpc.useUtils();
   const branches = trpc.branches.list.useQuery();
   // منفّذو المرتجعات ضمن الفرع المُختار حالياً — يغذّي فلتر «منفّذ المرتجع» (لا دليل مستخدمين كامل).
-  const performers = trpc.returns.performers.useQuery({ branchId: branchId ? Number(branchId) : undefined });
+  const performers = trpc.returns.performers.useQuery(
+    { branchId: branchId ? Number(branchId) : undefined },
+    { enabled: canReadPerformers },
+  );
   // مدخلات الفلترة بلا limit/offset — مشتركة بين الاستعلام الصفحي وتصدير الكل.
   const filterInput = {
     customerId: customerId ? Number(customerId) : undefined,
@@ -95,9 +102,11 @@ export default function SalesReturns({ embedded = false }: { embedded?: boolean 
    */
   const pendingControls = trpc.salesControl.list.useQuery(
     { status: "PENDING" },
-    { refetchInterval: false, retry: false },
+    { enabled: canReadSalesControl, refetchInterval: false, retry: false },
   );
-  const pendingReturns = (pendingControls.data ?? []).filter((r) => r.requestType === "SALES_RETURN");
+  const pendingReturns = canReadSalesControl
+    ? (pendingControls.data ?? []).filter((r) => r.requestType === "SALES_RETURN")
+    : [];
 
   const branchName = useMemo(() => {
     const m = new Map((branches.data ?? []).map((b) => [Number(b.id), b.name]));
@@ -237,16 +246,18 @@ export default function SalesReturns({ embedded = false }: { embedded?: boolean 
               <>
                 {/* FilterField يُظهر التسمية دائماً — placeholder/title وحدهما يختفيان عند الاختيار
                     فيضيع معنى الحقل (نمط PR #559). */}
-                <FilterField label="العميل" className="min-w-[200px]">
-                  {/* بحث خادميّ بدل قائمة مقصوصة عند ٥٠٠ (العميل ٥٠١ كان غير قابل للاختيار). */}
-                  <EntityPicker
-                    type="SALE_RETURN"
-                    selectedId={customerId === "" ? null : Number(customerId)}
-                    onSelect={(id) => setCustomerId(id ?? "")}
-                    placeholder="— كل العملاء —"
-                    clearLabel="عرض كل العملاء"
-                  />
-                </FilterField>
+                {canSearchCustomers && (
+                  <FilterField label="العميل" className="min-w-[200px]">
+                    {/* بحث خادميّ بدل قائمة مقصوصة عند ٥٠٠ (العميل ٥٠١ كان غير قابل للاختيار). */}
+                    <EntityPicker
+                      type="SALE_RETURN"
+                      selectedId={customerId === "" ? null : Number(customerId)}
+                      onSelect={(id) => setCustomerId(id ?? "")}
+                      placeholder="— كل العملاء —"
+                      clearLabel="عرض كل العملاء"
+                    />
+                  </FilterField>
+                )}
                 <FilterField label="الفرع">
                   <AppSelect
                     className="h-9"
@@ -259,19 +270,21 @@ export default function SalesReturns({ embedded = false }: { embedded?: boolean 
                     ))}
                   </AppSelect>
                 </FilterField>
-                <FilterField label="منفّذ المرتجع">
-                  <AppSelect
-                    size="sm"
-                    className="h-8 w-44"
-                    value={createdBy === "" ? "ALL" : String(createdBy)}
-                    onValueChange={(v) => setCreatedBy(v === "ALL" ? "" : Number(v))}
-                  >
-                    <option value="ALL">— كل المنفّذين —</option>
-                    {(performers.data ?? []).map((p) => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
-                    ))}
-                  </AppSelect>
-                </FilterField>
+                {canReadPerformers && (
+                  <FilterField label="منفّذ المرتجع">
+                    <AppSelect
+                      size="sm"
+                      className="h-8 w-44"
+                      value={createdBy === "" ? "ALL" : String(createdBy)}
+                      onValueChange={(v) => setCreatedBy(v === "ALL" ? "" : Number(v))}
+                    >
+                      <option value="ALL">— كل المنفّذين —</option>
+                      {(performers.data ?? []).map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </AppSelect>
+                  </FilterField>
+                )}
                 <FilterField label="من تاريخ">
                   <Input type="date" dir="ltr" className="h-8 w-36" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
                 </FilterField>

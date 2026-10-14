@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDate } from "@/lib/date";
@@ -33,6 +34,7 @@ const selectCls =
 
 export default function PurchaseReturns({ embedded = false }: { embedded?: boolean } = {}) {
   const utils = trpc.useUtils();
+  const canReadSuppliers = useOperationPermission("suppliers.list").allowed;
   // فلاتر خادمية محفوظة في querystring (نمط Invoices.tsx/Purchases.tsx) — تعيش مع فتح
   // التفاصيل والرجوع، وتُشارَك رابطاً. أسماء from/to لفترة entryDate.
   const [f, setF, resetF] = useUrlFilters({ supplierId: "", branchId: "", from: "", to: "", q: "" });
@@ -53,7 +55,7 @@ export default function PurchaseReturns({ embedded = false }: { embedded?: boole
   // عدّاد الفلاتر المفعّلة (بلا حقل البحث — اتفاقية ListToolbar) لزرّ «مسح الفلاتر».
   const activeFilterCount = [f.supplierId, f.branchId, f.from || f.to].filter(Boolean).length;
 
-  const suppliers = trpc.suppliers.list.useQuery();
+  const suppliers = trpc.suppliers.list.useQuery(undefined, { enabled: canReadSuppliers });
   const supplierContacts = useMemo(
     () => new Map((suppliers.data ?? []).map((s) => [Number(s.id), s])),
     [suppliers.data],
@@ -236,19 +238,21 @@ export default function PurchaseReturns({ embedded = false }: { embedded?: boole
             onResetFilters={resetF}
             filters={
               <>
-                <AppSelect
-                  className="h-9"
-                  value={f.supplierId}
-                  onValueChange={(value) => setF({ supplierId: value })}
-                >
-                  <option value="">— كل الموردين —</option>
-                  {(suppliers.data ?? []).map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                      {balanceOptionText((s as { currentBalance?: string | null }).currentBalance, "supplier")}
-                    </option>
-                  ))}
-                </AppSelect>
+                {canReadSuppliers && (
+                  <AppSelect
+                    className="h-9"
+                    value={f.supplierId}
+                    onValueChange={(value) => setF({ supplierId: value })}
+                  >
+                    <option value="">— كل الموردين —</option>
+                    {(suppliers.data ?? []).map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                        {balanceOptionText((s as { currentBalance?: string | null }).currentBalance, "supplier")}
+                      </option>
+                    ))}
+                  </AppSelect>
+                )}
                 <AppSelect
                   className="h-9"
                   value={f.branchId}

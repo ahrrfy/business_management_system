@@ -711,5 +711,68 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
         },
       }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    // عزل المسح الكوني عن وحدات المستندات غير المفوضة (أوامر الشغل ومرتجعات الشراء)
+    await db().insert(s.workOrders).values({
+      id: 950,
+      orderNumber: "WO-SCAN-950",
+      branchId: 1,
+      customerId: 1,
+      title: "أمر شغل سري",
+      quantity: 1,
+      salePrice: "100.00",
+      deposit: "50.00",
+      status: "NEW",
+      createdBy: 10,
+    } as never);
+    const woScanByPrint = await printCaller.universalScan({
+      barcode: "WO-SCAN-950",
+    });
+    expect(woScanByPrint.recognized).toBe(false);
+    const woScanByReception = await receptionCaller.universalScan({
+      barcode: "WO-SCAN-950",
+    });
+    expect(woScanByReception.recognized).toBe(true);
+    expect(woScanByReception.kind).toBe("WORK_ORDER");
+
+    // رفض تعديل سعر البند أو إجمالي التسوية في المرتجع المرتبط بفاتورة
+    await expect(
+      receptionCaller.executeSalesReturnCart({
+        invoiceNumber: receptionSale.invoiceNumber,
+        items: [
+          {
+            variantId: 1,
+            productName: "كارت شخصي",
+            quantity: 1,
+            unitPrice: "1.00",
+          },
+        ],
+        settlement: {
+          method: "CASH",
+          totalAmount: "1.00",
+          shiftId: receptionShiftId,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    // رفض المرتجع العابر بلا فاتورة لصنف لا يملك سعر بيع تجزئة معتمداً في الكتالوج
+    await db().delete(s.productPrices).where(eq(s.productPrices.productUnitId, 1));
+    await expect(
+      retailCaller.executeSalesReturnCart({
+        items: [
+          {
+            variantId: 1,
+            productName: "كارت شخصي",
+            quantity: 1,
+            unitPrice: "25.00",
+          },
+        ],
+        settlement: {
+          method: "CASH",
+          totalAmount: "25.00",
+          shiftId: retailShiftId,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 });
