@@ -475,15 +475,20 @@ describe("Codex — تكلفة بكجٍ ناقصة لا تُعامَل كمحس�
 
 describe("Codex — التراجع يحرس التكلفة الحاليّة ويُبلّغ عن الصفوف المفقودة", () => {
   it("⭐ تكلفةٌ ارتفعت بعد الموجة ⇒ الاستعادة تحت التكلفة تُرفَض بلا إذن صريح", async () => {
+    const input = {
+      name: "رفع القلم",
+      filters: { scope: "SELECTED" as const, productIds: [1] },
+      changeType: "INCREASE_PERCENT" as const,
+      changeValue: "50",
+      roundToDenom: 0,
+    };
+    const pre = await withTx((tx) => previewPriceWave(tx, input));
     const wave = await withTx((tx) =>
       applyPriceWave(
         tx,
         {
-          name: "رفع القلم",
-          filters: { scope: "SELECTED", productIds: [1] },
-          changeType: "INCREASE_PERCENT",
-          changeValue: "50",
-          roundToDenom: 0,
+          ...input,
+          expectedFingerprint: pre.fingerprint,
         },
         1,
       ),
@@ -513,15 +518,20 @@ describe("Codex — التراجع يحرس التكلفة الحاليّة وي
   });
 
   it("ومع allowBelowCost يمرّ صراحةً", async () => {
+    const input = {
+      name: "رفع القلم",
+      filters: { scope: "SELECTED" as const, productIds: [1] },
+      changeType: "INCREASE_PERCENT" as const,
+      changeValue: "50",
+      roundToDenom: 0,
+    };
+    const pre = await withTx((tx) => previewPriceWave(tx, input));
     const wave = await withTx((tx) =>
       applyPriceWave(
         tx,
         {
-          name: "رفع القلم",
-          filters: { scope: "SELECTED", productIds: [1] },
-          changeType: "INCREASE_PERCENT",
-          changeValue: "50",
-          roundToDenom: 0,
+          ...input,
+          expectedFingerprint: pre.fingerprint,
         },
         1,
       ),
@@ -537,15 +547,20 @@ describe("Codex — التراجع يحرس التكلفة الحاليّة وي
   });
 
   it("⭐ صفُّ سعرٍ حُذف بعد الموجة يُبلَّغ كتعارضٍ لا يُتخطّى بصمت", async () => {
+    const input = {
+      name: "رفع القلم",
+      filters: { scope: "SELECTED" as const, productIds: [1] },
+      changeType: "INCREASE_PERCENT" as const,
+      changeValue: "10",
+      roundToDenom: 0,
+    };
+    const pre = await withTx((tx) => previewPriceWave(tx, input));
     const wave = await withTx((tx) =>
       applyPriceWave(
         tx,
         {
-          name: "رفع القلم",
-          filters: { scope: "SELECTED", productIds: [1] },
-          changeType: "INCREASE_PERCENT",
-          changeValue: "10",
-          roundToDenom: 0,
+          ...input,
+          expectedFingerprint: pre.fingerprint,
         },
         1,
       ),
@@ -817,7 +832,14 @@ describe("applyPriceWave — كتابة ذرّية + سجلّ", () => {
       before.map((r) => [`${r.productUnitId}-${r.priceTier}`, String(r.price)]),
     );
 
-    const res = await withTx((tx) => applyPriceWave(tx, applyInput, 1));
+    const pre = await withTx((tx) => previewPriceWave(tx, applyInput));
+    const res = await withTx((tx) =>
+      applyPriceWave(
+        tx,
+        { ...applyInput, expectedFingerprint: pre.fingerprint },
+        1,
+      ),
+    );
     expect(res.totalRows).toBeGreaterThan(0);
 
     const after = await db().select().from(s.productPrices);
@@ -854,16 +876,21 @@ describe("applyPriceWave — كتابة ذرّية + سجلّ", () => {
   });
 
   it("W3: صفوف تحت التكلفة بلا إذن ⇒ FORBIDDEN + rollback كامل", async () => {
+    const dangerInput = {
+      name: "تخفيض خطر",
+      filters: { scope: "SELECTED" as const, productIds: [1] },
+      changeType: "DECREASE_AMOUNT" as const,
+      changeValue: "7",
+      roundToDenom: 0,
+    };
+    const pre = await withTx((tx) => previewPriceWave(tx, dangerInput));
     await expect(
       withTx((tx) =>
         applyPriceWave(
           tx,
           {
-            name: "تخفيض خطر",
-            filters: { scope: "SELECTED", productIds: [1] },
-            changeType: "DECREASE_AMOUNT",
-            changeValue: "7",
-            roundToDenom: 0,
+            ...dangerInput,
+            expectedFingerprint: pre.fingerprint,
           },
           1,
         ),
@@ -885,16 +912,21 @@ describe("applyPriceWave — كتابة ذرّية + سجلّ", () => {
   });
 
   it("W3: مع allowBelowCost=true ⇒ يُطبَّق ويُسجَّل", async () => {
+    const allowInput = {
+      name: "تخفيض استثنائي",
+      filters: { scope: "SELECTED" as const, productIds: [1] },
+      changeType: "DECREASE_AMOUNT" as const,
+      changeValue: "7",
+      roundToDenom: 0,
+      allowBelowCost: true,
+    };
+    const pre = await withTx((tx) => previewPriceWave(tx, allowInput));
     const res = await withTx((tx) =>
       applyPriceWave(
         tx,
         {
-          name: "تخفيض استثنائي",
-          filters: { scope: "SELECTED", productIds: [1] },
-          changeType: "DECREASE_AMOUNT",
-          changeValue: "7",
-          roundToDenom: 0,
-          allowBelowCost: true,
+          ...allowInput,
+          expectedFingerprint: pre.fingerprint,
         },
         1,
       ),
@@ -913,14 +945,19 @@ describe("applyPriceWave — كتابة ذرّية + سجلّ", () => {
   });
 
   it("لا صفوف مطابقة ⇒ BAD_REQUEST، واسم فارغ مرفوض", async () => {
+    const emptyInput = {
+      name: "موجة فارغة",
+      filters: filtered({ productSearch: "لا يوجد xyz" }),
+      ...RULE,
+    };
+    const pre = await withTx((tx) => previewPriceWave(tx, emptyInput));
     await expect(
       withTx((tx) =>
         applyPriceWave(
           tx,
           {
-            name: "موجة فارغة",
-            filters: filtered({ productSearch: "لا يوجد xyz" }),
-            ...RULE,
+            ...emptyInput,
+            expectedFingerprint: pre.fingerprint,
           },
           1,
         ),
@@ -928,7 +965,11 @@ describe("applyPriceWave — كتابة ذرّية + سجلّ", () => {
     ).rejects.toThrow(/لا شيء/);
     await expect(
       withTx((tx) =>
-        applyPriceWave(tx, { name: "", filters: ALL, ...RULE }, 1),
+        applyPriceWave(
+          tx,
+          { name: "", filters: ALL, ...RULE, expectedFingerprint: "any" },
+          1,
+        ),
       ),
     ).rejects.toThrow(/اسم الموجة/);
   });
@@ -1028,6 +1069,55 @@ describe("applyPriceWave — كتابة ذرّية + سجلّ", () => {
     expect(res.totalRows).toBe(pre.rows.length);
   });
 
+  it("⭐ W7 = بصمة المعاينة إلزامية: تطبيقٌ بلا بصمة أو ببصمة فارغة ⇒ BAD_REQUEST", async () => {
+    await expect(
+      withTx((tx) =>
+        applyPriceWave(
+          tx,
+          {
+            name: "موجة بلا بصمة",
+            filters: ALL,
+            ...RULE,
+            expectedFingerprint: "",
+          },
+          1,
+        ),
+      ),
+    ).rejects.toThrow(/بصمة المعاينة مطلوبة/);
+
+    await expect(
+      withTx((tx) =>
+        applyPriceWave(
+          tx,
+          {
+            name: "موجة ببصمة مسافات",
+            filters: ALL,
+            ...RULE,
+            expectedFingerprint: "   ",
+          },
+          1,
+        ),
+      ),
+    ).rejects.toThrow(/بصمة المعاينة مطلوبة/);
+  });
+
+  it("⭐ W7 = بصمة المعاينة تطابق الحساب: بصمة مختلفة ⇒ CONFLICT مع نص الخطأ المتعاقد عليه", async () => {
+    await expect(
+      withTx((tx) =>
+        applyPriceWave(
+          tx,
+          {
+            name: "بصمة متضاربة",
+            filters: ALL,
+            ...RULE,
+            expectedFingerprint: "invalid_fingerprint_hash_12345",
+          },
+          1,
+        ),
+      ),
+    ).rejects.toThrow(/تغيّرت الأسعار أو نتيجة الفلاتر منذ معاينتك/);
+  });
+
   // ── الاستثناء السطريّ ──
   it("الاستثناء السطريّ يُنقص الصفوف فعلاً ولا يمسّ الباقي", async () => {
     const pre = await withTx((tx) =>
@@ -1098,14 +1188,19 @@ describe("applyPriceWave — كتابة ذرّية + سجلّ", () => {
   });
 
   it("استثناء صفٍّ ليس ضمن النتيجة ⇒ CONFLICT (لا تجاهلٌ صامت)", async () => {
+    const ghostInput = {
+      name: "استثناء شبح",
+      filters: { scope: "SELECTED" as const, productIds: [1] },
+      ...RULE,
+    };
+    const pre = await withTx((tx) => previewPriceWave(tx, ghostInput));
     await expect(
       withTx((tx) =>
         applyPriceWave(
           tx,
           {
-            name: "استثناء شبح",
-            filters: { scope: "SELECTED", productIds: [1] },
-            ...RULE,
+            ...ghostInput,
+            expectedFingerprint: pre.fingerprint,
             excluded: [{ productUnitId: 4, priceTier: "RETAIL" }],
           },
           1,
@@ -1118,8 +1213,15 @@ describe("applyPriceWave — كتابة ذرّية + سجلّ", () => {
 // ════════════════════ التراجع ════════════════════
 describe("revertPriceWave — استعادةٌ دقيقة لا «موجة عكسية»", () => {
   async function applyWave(name = "موجة") {
+    const pre = await withTx((tx) =>
+      previewPriceWave(tx, { filters: ALL, ...RULE }),
+    );
     return withTx((tx) =>
-      applyPriceWave(tx, { name, filters: ALL, ...RULE }, 1),
+      applyPriceWave(
+        tx,
+        { name, filters: ALL, ...RULE, expectedFingerprint: pre.fingerprint },
+        1,
+      ),
     );
   }
 
@@ -1263,18 +1365,30 @@ describe("revertPriceWave — استعادةٌ دقيقة لا «موجة عكس
 
 describe("listPriceWaves + getPriceUnitHistory", () => {
   it("قائمة الموجات: الأحدث أوّلاً", async () => {
-    await withTx((tx) =>
-      applyPriceWave(tx, { name: "موجة ١", filters: ALL, ...RULE }, 1),
+    const pre1 = await withTx((tx) =>
+      previewPriceWave(tx, { filters: ALL, ...RULE }),
     );
     await withTx((tx) =>
       applyPriceWave(
         tx,
+        { name: "موجة ١", filters: ALL, ...RULE, expectedFingerprint: pre1.fingerprint },
+        1,
+      ),
+    );
+    const input2 = {
+      name: "موجة ٢",
+      filters: ALL,
+      changeType: "DECREASE_PERCENT" as const,
+      changeValue: "2",
+      roundToDenom: 0,
+    };
+    const pre2 = await withTx((tx) => previewPriceWave(tx, input2));
+    await withTx((tx) =>
+      applyPriceWave(
+        tx,
         {
-          name: "موجة ٢",
-          filters: ALL,
-          changeType: "DECREASE_PERCENT",
-          changeValue: "2",
-          roundToDenom: 0,
+          ...input2,
+          expectedFingerprint: pre2.fingerprint,
         },
         1,
       ),
@@ -1285,18 +1399,30 @@ describe("listPriceWaves + getPriceUnitHistory", () => {
   });
 
   it("تاريخ سعر وحدة: يحصر السجلّ على productUnit واحد", async () => {
-    await withTx((tx) =>
-      applyPriceWave(tx, { name: "رفع", filters: ALL, ...RULE }, 1),
+    const pre1 = await withTx((tx) =>
+      previewPriceWave(tx, { filters: ALL, ...RULE }),
     );
     await withTx((tx) =>
       applyPriceWave(
         tx,
+        { name: "رفع", filters: ALL, ...RULE, expectedFingerprint: pre1.fingerprint },
+        1,
+      ),
+    );
+    const input2 = {
+      name: "خفض",
+      filters: filtered({ productSearch: "قلم" }),
+      changeType: "DECREASE_PERCENT" as const,
+      changeValue: "5",
+      roundToDenom: 0,
+    };
+    const pre2 = await withTx((tx) => previewPriceWave(tx, input2));
+    await withTx((tx) =>
+      applyPriceWave(
+        tx,
         {
-          name: "خفض",
-          filters: filtered({ productSearch: "قلم" }),
-          changeType: "DECREASE_PERCENT",
-          changeValue: "5",
-          roundToDenom: 0,
+          ...input2,
+          expectedFingerprint: pre2.fingerprint,
         },
         1,
       ),

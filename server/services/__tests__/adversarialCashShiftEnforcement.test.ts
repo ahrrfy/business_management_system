@@ -125,7 +125,7 @@ async function seedTestEnvironment() {
     total: "5000.00",
   });
 
-  // Create a PAID invoice for return tests
+  // Create a PAID invoice for return tests (created by cashier 99 so admin/manager returns obey SOD)
   await d.insert(s.invoices).values({
     id: 200,
     invoiceNumber: "INV-PAID-200",
@@ -138,7 +138,7 @@ async function seedTestEnvironment() {
     status: "PAID",
     paymentMode: "PREPAID",
     paymentMethod: "CASH",
-    createdBy: 1,
+    createdBy: 99,
   });
   await d.insert(s.invoiceItems).values({
     id: 200,

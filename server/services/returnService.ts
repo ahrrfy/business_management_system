@@ -2600,16 +2600,36 @@ export async function returnSaleAsOwner(
 
     // Idempotency: إعادة تشغيل مرتجع مُلتزم سابقاً لا تتعطّل بالطلبات المعلّقة
     if (coreInput.clientRequestId) {
-      const fingerprint = idempotencyHash(coreInput);
-      const existingRefId = await checkIdempotency(
-        tx,
-        "sale.return",
-        coreInput.clientRequestId,
-        fingerprint,
-      );
-      if (existingRefId != null) {
-        return returnSaleInTx(tx, coreInput, actor);
+      const { directExecution: _de, ...coreWithoutDirect } =
+        coreInput as ReturnSaleInput & { directExecution?: boolean };
+      const replayCandidates: ReturnSaleInput[] = [
+        coreInput,
+        { ...coreWithoutDirect, directExecution: true } as ReturnSaleInput,
+        coreWithoutDirect,
+      ];
+      let lastConflict: unknown = null;
+      for (const candidate of replayCandidates) {
+        try {
+          const existingRefId = await checkIdempotency(
+            tx,
+            "sale.return",
+            candidate.clientRequestId,
+            idempotencyHash(candidate),
+          );
+          if (existingRefId == null) {
+            lastConflict = null;
+            break;
+          }
+          return await returnSaleInTx(tx, candidate, actor);
+        } catch (err) {
+          if (err instanceof TRPCError && err.code === "CONFLICT") {
+            lastConflict = err;
+            continue;
+          }
+          throw err;
+        }
       }
+      if (lastConflict) throw lastConflict;
     }
 
     const [pendingControl] = await tx
@@ -2873,12 +2893,19 @@ export async function returnSaleDirect(
           ? false
           : canonicalAuthorized ?? legacyAuthorized;
 
-      if (!isOwner && !isAdmin && Number(actor.branchId) !== Number(userRow.branchId)) {
-        throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
-          what: "تغيّر فرع الحساب أثناء تنفيذ المرتجع",
-          why: "فرع الطلب المفتوح يختلف عن الفرع المسند حالياً للحساب",
-          doThis: "حدّث الصفحة وأعد تنفيذ المرتجع من فرعك الحالي",
-        }) });
+      if (
+        !isOwner &&
+        !isAdmin &&
+        Number(actor.branchId) !== Number(userRow.branchId)
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تغيّر فرع الحساب أثناء تنفيذ المرتجع",
+            why: "فرع الطلب المفتوح يختلف عن الفرع المسند حالياً للحساب",
+            doThis: "حدّث الصفحة وأعد تنفيذ المرتجع من فرعك الحالي",
+          }),
+        });
       }
 
       if (!isAuthorized) {

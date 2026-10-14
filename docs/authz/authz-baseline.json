@@ -70,7 +70,6 @@
     "kioskRouter.devices.rotate@server/routers/kioskRouter.ts",
     "kioskRouter.devices.setActive@server/routers/kioskRouter.ts",
     "kioskRouter.publicBranches@server/routers/kioskRouter.ts",
-    "payrollRouter.updateLegalSettings@server/routers/payrollRouter.ts",
     "periodLockRouter.unlock@server/routers/periodLockRouter.ts",
     "platformAdminRouter.login@server/routers/platformAdminRouter.ts",
     "platformAdminRouter.logout@server/routers/platformAdminRouter.ts",

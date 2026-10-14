@@ -77,6 +77,8 @@ export interface UseRefundDrawerArgs {
   emptyLabel: string;
   /** نوع المستند المصدر — لضبط قيود الورديات المخصوصة بالسياق (كتقييد كاشير مرتجع البيع بوردية نفسه دون إرجاع الأمانات) */
   sourceDocType?: RefundRailContext["sourceDocType"];
+  /** وضع إنشاء طلب صفري الأثر (لا صرف فوري الآن): اختيار الدرج اقتراحٌ غير حاجب. */
+  requestOnly?: boolean;
 }
 
 export interface RefundDrawerState {
@@ -94,7 +96,7 @@ export interface RefundDrawerState {
 
 /** حالةُ درج الاسترداد + الافتراضُ التلقائيّ (درجُ المنفِّذ إن كان مفتوحاً، وإلّا الوحيدُ المفتوح). */
 export function useRefundDrawer(args: UseRefundDrawerArgs): RefundDrawerState {
-  const { preflight, emptyLabel, sourceDocType } = args;
+  const { preflight, emptyLabel, sourceDocType, requestOnly = false } = args;
   const [refundShiftId, setRefundShiftId] = useState<number | null>(null);
 
   const needed = preflight?.needsCashDrawer === true;
@@ -103,9 +105,9 @@ export function useRefundDrawer(args: UseRefundDrawerArgs): RefundDrawerState {
   const userId = me.data?.id;
   const userRole = me.data?.role;
   const isCashier = userRole === "cashier";
-  // كاشير الصرف في مرتجع البيع مقيّد بوردية نفسه (returnSaleInTx) — لا يظهر له ولا يُختار له درج زميل.
+  // كاشير الصرف في مرتجع البيع مقيّد بوردية نفسه عند التنفيذ، أمّا في وضع الطلب الصفري الأثر فالدرج مجرّد اقتراح.
   // أمّا إرجاع الأمانات (CONSIGNMENT_RETURN) وباقي الحوارات فالخادم يقبل أيّ وردية مفتوحة بالفرع.
-  const restrictToOwnDrawer = isCashier && sourceDocType === "SALE_RETURN";
+  const restrictToOwnDrawer = isCashier && sourceDocType === "SALE_RETURN" && !requestOnly;
   const drawers = useMemo(() => {
     if (!restrictToOwnDrawer || !userId) return rawDrawers;
     return rawDrawers.filter((d) => d.userId === userId);
@@ -124,7 +126,9 @@ export function useRefundDrawer(args: UseRefundDrawerArgs): RefundDrawerState {
 
   return {
     refundShiftId: needed ? refundShiftId ?? undefined : undefined,
-    blockReason: refundDrawerBlockReason({ needed, drawers, selectedShiftId: refundShiftId, emptyLabel: effectiveEmptyLabel }),
+    blockReason: requestOnly
+      ? null
+      : refundDrawerBlockReason({ needed, drawers, selectedShiftId: refundShiftId, emptyLabel: effectiveEmptyLabel }),
     shortfall: drawerShortfallWarning({ drawers, selectedShiftId: refundShiftId, estimatedAmount: preflight?.estimatedCashOut ?? null }),
     drawers,
     setRefundShiftId,
@@ -244,6 +248,8 @@ export interface RefundRailPickerProps {
   drawerHint?: string;
   /** حالةُ العملية الأمّ (مثلاً `mutation.isPending`) — لتعطيل الأزرار عند التقدّم. */
   submitting?: boolean;
+  /** وضع إنشاء طلب صفري الأثر (لا صرف فوري الآن): اختيار الرافد والدرج والمرجع اقتراحٌ غير حاجب. */
+  requestOnly?: boolean;
 }
 
 export function RefundRailPicker({ context, ...rest }: RefundRailPickerProps) {
@@ -297,6 +303,7 @@ export function RefundRailPickerView({
   drawerLabel = "درج ردّ النقد",
   drawerHint,
   submitting = false,
+  requestOnly = false,
 }: RefundRailPickerProps & {
   preflight: RefundPreflight | RefundRailPreflightResult | null;
   loading: boolean;
@@ -312,6 +319,7 @@ export function RefundRailPickerView({
     preflight,
     emptyLabel: context.sourceDocType === "CONSIGNMENT_RETURN" || context.sourceDocType === "SALE_RETURN" ? "وردية مفتوحة" : "وردية استقبال",
     sourceDocType: context.sourceDocType,
+    requestOnly,
   });
 
   // Codex #960: يُعاد ضبطُ الاختيار عند تبدّل المستند — المنتقي مصمَّمٌ للاستمرار بلا remount.
@@ -360,6 +368,7 @@ export function RefundRailPickerView({
     rails,
     drawerBlockReason: drawer.blockReason,
     cardReference,
+    requestOnly,
   });
 
   const selection: RefundRailSelection | null = useMemo(() => {
@@ -595,8 +604,15 @@ export function computeBlockReason(args: {
   rails: RefundRailAvailabilityMap | null;
   drawerBlockReason: string | null;
   cardReference: string;
+  requestOnly?: boolean;
 }): string | null {
   if (!args.needsCash) return null;
+  if (args.requestOnly) {
+    if (args.rail === "CARD" && args.rails && !args.rails.CARD.available) {
+      return `${REFUND_RAIL_LABEL.CARD} غير متاح هنا — ${args.rails.CARD.reason ?? ""} اختر رافداً آخر.`;
+    }
+    return null;
+  }
   if (args.rails) {
     const open = availableRefundRails(args.rails);
     if (open.length === 0) {

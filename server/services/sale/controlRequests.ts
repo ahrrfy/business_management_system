@@ -242,6 +242,23 @@ async function loadByKey(tx: Tx, requestKey: string) {
   )[0];
 }
 
+function matchesSalesControlPayloadReplay(
+  row: typeof salesControlRequests.$inferSelect,
+  payload: SalesControlPayload,
+  payloadHash: string,
+): boolean {
+  if (payloadHashMatches(payloadHash, row.payloadHash)) return true;
+  if (row.requestType !== "SALES_RETURN" || !payload || typeof payload !== "object") {
+    return false;
+  }
+  const { directExecution: _ignored, ...withoutDirect } = payload as Record<string, unknown>;
+  return (
+    payloadHashMatches(idempotencyHash(withoutDirect), row.payloadHash)
+    || payloadHashMatches(idempotencyHash({ ...withoutDirect, directExecution: false }), row.payloadHash)
+    || payloadHashMatches(idempotencyHash({ ...withoutDirect, directExecution: true }), row.payloadHash)
+  );
+}
+
 function exactReplay(
   row: typeof salesControlRequests.$inferSelect,
   input: RequestSalesControlInput,
@@ -252,7 +269,7 @@ function exactReplay(
   return Number(row.invoiceId) === Number(input.invoiceId)
     && row.requestType === input.requestType
     && row.reason === reason
-    && payloadHashMatches(payloadHash, row.payloadHash)
+    && matchesSalesControlPayloadReplay(row, input.payload, payloadHash)
     && Number(row.requestedBy) === Number(actor.userId);
 }
 
@@ -1163,6 +1180,7 @@ export async function approveSalesControlRequest(
         // **المخزَّنة** لا المُنفَّذة) وقبل أوّل أثر. المبلغ والطريقة والأسطر كما أُقرّت.
         ...applyCashRouting(request.payload as unknown as SalesReturnControlPayload, cashRouting),
         invoiceId: Number(request.invoiceId),
+        operatorReason: request.reason,
         clientRequestId: `sales-control-${requestId}`,
         controlExpectedSnapshot: storedSnapshot,
       }, effectiveActor);

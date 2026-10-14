@@ -15,7 +15,12 @@ const hrRead = branchScopedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = branchScopedProcedure.use(requireModule("hr", "FULL"));
 
 function toActor(ctx: { user: { id: number; branchId: number | null; role: string; isOwner?: boolean }; scopedBranchId?: number | null }): MaybeScopedActor {
-  return { userId: ctx.user.id, branchId: ctx.scopedBranchId ?? ctx.user.branchId, role: ctx.user.role, isOwner: ctx.user.isOwner };
+  return {
+    userId: ctx.user.id,
+    branchId: ctx.scopedBranchId !== undefined ? ctx.scopedBranchId : ctx.user.branchId,
+    role: ctx.user.role,
+    isOwner: ctx.user.isOwner,
+  };
 }
 
 export const hrEnterpriseRouter = router({

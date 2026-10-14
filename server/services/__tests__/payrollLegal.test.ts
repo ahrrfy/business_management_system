@@ -27,6 +27,7 @@ import {
 } from "../payrollLegalService";
 
 const ACTOR = { userId: 1, branchId: 1 };
+const OWNER_ACTOR = { userId: 2, branchId: 1, isOwner: true };
 const APPROVER = { userId: 2, branchId: 1 };
 
 /* ═══════════════════════ القسم الأول: احتساب نقيّ (بلا DB) ═══════════════════════ */
@@ -143,6 +144,9 @@ function db() {
 }
 
 const TABLES = [
+  "payrollAccountingEvents",
+  "payrollObligations",
+  "payrollRemittanceRequests",
   "advanceSettlements",
   "employeeAdvances",
   "accountingEntries",
@@ -161,7 +165,7 @@ const TABLES = [
 async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
+  for (const t of TABLES) await d.execute(sql.raw(`DELETE FROM \`${t}\``));
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
 }
 
@@ -200,7 +204,7 @@ const BASE_INPUT: UpdatePayrollLegalInput = {
   endOfServiceDaysPerYear: "0",
 };
 async function setLegal(over: Partial<UpdatePayrollLegalInput>) {
-  await updatePayrollLegalSettings({ ...BASE_INPUT, ...over }, ACTOR);
+  await updatePayrollLegalSettings({ ...BASE_INPUT, ...over }, OWNER_ACTOR);
 }
 
 describe("payrollLegalService — الإعدادات (DB)", () => {
@@ -215,6 +219,21 @@ describe("payrollLegalService — الإعدادات (DB)", () => {
     expect(v.incomeTaxEnabled).toBe(false);
     expect(v.endOfServiceEnabled).toBe(false);
     expect(v.incomeTaxBrackets).toEqual([]);
+  });
+
+  it("يرفض تعديل الإعدادات من مستخدم غير مالك برمز FORBIDDEN", async () => {
+    const nonOwnerActor = { userId: 3, branchId: 1, isOwner: false };
+    await expect(
+      updatePayrollLegalSettings(BASE_INPUT, nonOwnerActor),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("يرفض تعديل الإعدادات إذا سُحبت صفة المالك في قاعدة البيانات حتى لو كانت actor.isOwner=true في الجلسة", async () => {
+    const d = getDb()!;
+    await d.update(s.users).set({ isOwner: false }).where(eq(s.users.id, 1));
+    await expect(
+      updatePayrollLegalSettings(BASE_INPUT, { userId: 1, branchId: 1, isOwner: true }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("التحديث يُثبِّت الإعدادات ويُرتّب الشرائح تصاعدياً", async () => {
@@ -353,7 +372,8 @@ describe("generatePayroll — المكوّنات القانونية (DB)", () =>
     expect(Number(it.net)).toBe(900000); // لا يؤثّر على الصافي
     expect(Number(run!.totalEndOfServiceAccrual)).toBe(52500);
     // التوليد لا يُنشئ أيّ قيد محاسبيّ للاستحقاق (عرضٌ فقط).
-    expect((await db().select().from(s.accountingEntries)).length).toBe(0);
+    const entriesBeforeApprove = await db().select().from(s.accountingEntries);
+    expect(entriesBeforeApprove.length).toBe(0);
 
     // الدفع يصرف net (900,000) لا net + الاستحقاق ⇒ الاستحقاق لا يُدفع عبر الرواتب (يُصرَف عند الفصل).
     await approveRun(run!.id, APPROVER);
