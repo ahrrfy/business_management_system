@@ -445,7 +445,7 @@ export function ReturnComposer({
     if (pending && !approvingRequestId) {
       return `على هذه الفاتورة طلبٌ معلّق #${pending.id} — احسمه أولاً (اعتماداً أو رفضاً) قبل إرسال طلبٍ جديد.`;
     }
-    if (!approvingRequestId && me.data?.role === "cashier" && method === "CASH" && refundD.gt(0)) {
+    if ((approvingRequestId || executesImmediately) && me.data?.role === "cashier" && method === "CASH" && refundD.gt(0)) {
       const cashierHasShift = inv?.refundShifts?.some((s) => s.isMine || Number(s.userId) === Number(me.data?.id));
       if (!cashierHasShift) {
         return "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لتنفيذ المرتجع.";
@@ -465,7 +465,7 @@ export function ReturnComposer({
     }
     if (reason.trim().length < 3) return "اكتب سبب المرتجع (٣ أحرف على الأقل) لتوثيق الطلب.";
     return null;
-  }, [isLocked, pending, approvingRequestId, requestDetail.data, invoiceId, lockedLines, me.data?.role, me.data?.id, inv?.refundShifts, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, method, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
+  }, [isLocked, pending, approvingRequestId, executesImmediately, requestDetail.data, invoiceId, lockedLines, me.data?.role, me.data?.id, inv?.refundShifts, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, method, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
 
   async function submit() {
     setError("");

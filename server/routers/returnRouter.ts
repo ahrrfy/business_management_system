@@ -469,6 +469,9 @@ export const returnRouter = router({
             ? await returnSaleAsOwner(
                 {
                   ...payload,
+                  ...(_directExecution !== undefined
+                    ? { directExecution: _directExecution }
+                    : {}),
                   invoiceId,
                   ownerReason: reason,
                   clientRequestId: clientRequestId ?? randomUUID(),

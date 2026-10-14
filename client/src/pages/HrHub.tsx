@@ -46,8 +46,8 @@ const TABS: HubTab[] = [
     Component: Attendance,
   },
   { value: "payroll", label: "الرواتب", gate: HR_GATE, Component: Payroll },
-  // المكوّنات القانونية (البند ④): إعدادات معطَّلة افتراضياً — محصورة بالمدير/الأدمن (بلا module ⇒
-  // لا تظهر لمحاسب/مدقّق؛ الخادم يفرض managerProcedure على الكتابة).
+  // المكوّنات القانونية (البند ④): إعدادات معطَّلة افتراضياً — محصورة بالمدير/الأدمن للعرض (بلا module ⇒
+  // لا تظهر لمحاسب/مدقّق؛ الخادم يفرض ownerHrWrite على الكتابة وتظهر للقراءة فقط لغير المالك).
   {
     value: "payroll-legal",
     label: "المكوّنات القانونية",
@@ -90,7 +90,6 @@ const TABS: HubTab[] = [
 export default function HrHub() {
   const search = useSearch();
   const requested = new URLSearchParams(search).get("tab");
-  const me = trpc.auth.me.useQuery();
   const bridge = trpc.hrDevices.bridgeStatus.useQuery();
 
   // توافق رجعي شفاف: عند طلب أي من روابط العمولات القديمة (commission-runs, commission-targets, commission-plans)
@@ -114,11 +113,8 @@ export default function HrHub() {
   // تعطيل الجسر سياسة تشغيلية صريحة، لا حالة تحميل: نخفي أدوات الأجهزة فقط عند false
   // المؤكدة، ونبقيها عند التحميل/خطأ الشبكة كي لا تتحول مشكلة اتصال إلى اختفاءٍ مضلّل.
   const hideDevices = bridge.data?.enabled === false;
-  const hidePayrollLegal = me.data?.isOwner !== true;
-  const visibleTabs = tabsWithCommissions.filter(
-    (tab) =>
-      (!hideDevices || tab.value !== "devices") &&
-      (!hidePayrollLegal || tab.value !== "payroll-legal"),
-  );
+  const visibleTabs = hideDevices
+    ? tabsWithCommissions.filter((tab) => tab.value !== "devices")
+    : tabsWithCommissions;
   return <PageTabs tabs={visibleTabs} ariaLabel="أقسام الموارد البشرية" />;
 }

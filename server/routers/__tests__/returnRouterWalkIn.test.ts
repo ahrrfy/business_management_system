@@ -276,6 +276,10 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
       directExecution: true,
     });
 
+    expect(mocks.returnSaleAsOwner).toHaveBeenCalledWith(
+      expect.objectContaining({ directExecution: true }),
+      expect.anything(),
+    );
     expect(mocks.logAudit).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: "return.execute" }),
