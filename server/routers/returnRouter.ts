@@ -1390,12 +1390,11 @@ export const returnRouter = router({
       );
       if (!invoiceScope) return null;
       const invoiceChannelCondition = buildInvoiceChannelCondition(invoiceScope);
-      const invoiceBranchCondition =
-        !isAdmin && invoiceScope !== "sales"
-          ? actorBranchId != null
-            ? eq(invoices.branchId, actorBranchId)
-            : sql`1=0`
-          : sql`1=1`;
+      const invoiceBranchCondition = !isAdmin
+        ? actorBranchId != null
+          ? eq(invoices.branchId, actorBranchId)
+          : sql`1=0`
+        : sql`1=1`;
 
       const rawNo = input.invoiceNumber.trim();
       const strippedNo = rawNo.replace(/^INV-/i, "");

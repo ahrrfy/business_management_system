@@ -37,7 +37,7 @@ const RETURNS_ARCHIVE_GATE: RoleGate = {
 const LEGACY_RETURNS_STATION_GATE: RoleGate = {
   anyOf: [
     { roles: ["cashier", "manager", "print_operator"], module: "workorders", level: "FULL" },
-    { roles: ["cashier", "manager", "print_operator"], module: "pos", level: "FULL" },
+    { roles: ["cashier", "manager"], module: "pos", level: "FULL" },
   ],
 };
 
