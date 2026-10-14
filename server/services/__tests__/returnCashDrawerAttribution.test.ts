@@ -398,7 +398,7 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("مستخدم بدور كاشير يحاول التنفيذ المباشر ⇒ يُرفض بـ FORBIDDEN (محصور بالإدارة والمالك)", async () => {
+  it("مستخدم بدور كاشير مخصص ينفّذ مرتجع فاتورته داخل ورديته", async () => {
     const roleRes = await db().insert(s.roles).values({
       key: "custom-promoted",
       label: "كاشير مخصص",
@@ -421,38 +421,33 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
     const shift = await openShiftFor(5, 1);
     const { invoiceId, itemId } = await sellOneCash(shift, { userId: 5, branchId: 1 });
 
-    await expect(
-      returnSaleDirect(
-        {
-          invoiceId,
-          lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
-          resolution: walkInCashResolution(shift),
-          operatorReason: "محاولة كاشير مرقى بنجاح",
-        },
-        { userId: 5, branchId: 1 },
-      ),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const result = await returnSaleDirect(
+      {
+        invoiceId,
+        lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+        resolution: walkInCashResolution(shift),
+        operatorReason: "مرتجع كاشير مخصص داخل ورديته",
+      },
+      { userId: 5, branchId: 1 },
+    );
+    expect(result).toMatchObject({ fullyReturned: true, returnedTotal: "10.00" });
   });
 
-  it("⭐ فصل المهام (SOD): مدير يحاول إرجاع فاتورة أنشأها بنفسه ⇒ يُرفض بـ FORBIDDEN", async () => {
+  it("المدير المخول ينفّذ مرتجع فاتورته ضمن سلطته التشغيلية", async () => {
     const mgrShift = await openShiftFor(1, 1);
     // المديرة (userId: 1) أنشأت الفاتورة بنفسها
     const { invoiceId, itemId } = await sellOneCash(mgrShift, manager);
 
-    await expect(
-      returnSaleDirect(
-        {
-          invoiceId,
-          lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
-          resolution: walkInCashResolution(mgrShift),
-          operatorReason: "محاولة المدير إرجاع فاتورته ذاتياً",
-        },
-        manager,
-      ),
-    ).rejects.toMatchObject({
-      code: "FORBIDDEN",
-      message: expect.stringContaining("لا يجوز لمنشئ الفاتورة إرجاعها وصرف نقدها مباشرة"),
-    });
+    const result = await returnSaleDirect(
+      {
+        invoiceId,
+        lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+        resolution: walkInCashResolution(mgrShift),
+        operatorReason: "مرتجع مدير مخول لفاتورته",
+      },
+      manager,
+    );
+    expect(result).toMatchObject({ fullyReturned: true, returnedTotal: "10.00" });
   });
 
   it("⭐ فصل المهام (SOD): مدير مستقل ينفّذ المرتجع المباشر لفاتورة أنشأها الكاشير بنجاح", async () => {
@@ -714,7 +709,7 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
     });
   });
 
-  it("كاشير يحاول إلغاء فاتورة دفع عند الاستلام مباشرة ⇒ يُرفض بـ FORBIDDEN؛ ومدير مستقل ينفّذها بلا وردية", async () => {
+  it("كاشير يلغي فاتورة دفع عند الاستلام غير المقبوضة بلا وردية أو رد نقدي", async () => {
     await setStock(1, 1, 10);
     // الفاتورة أنشأها الكاشير (userId: 2)
     const sale = await createSale({
@@ -726,22 +721,6 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
     }, cashier);
     const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
 
-    // الكاشير يحاول التنفيذ المباشر فيُرفض بـ FORBIDDEN
-    await expect(
-      returnSaleDirect({
-        invoiceId: sale.invoiceId,
-        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
-        resolution: {
-          ...walkInCashResolution(),
-          amount: "0.00",
-          reason: "إلغاء قبل الاستلام",
-        },
-        clientRequestId: "cashier-unpaid-cod-no-shift",
-        operatorReason: "إلغاء قبل الاستلام بلا قبض",
-      }, { userId: 2, branchId: 1 }),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
-
-    // المديرة المستقلة (userId: 1) تنفّذ المرتجع المباشر بنجاح بلا رد نقدي
     const result = await returnSaleDirect({
       invoiceId: sale.invoiceId,
       lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
@@ -750,9 +729,9 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
         amount: "0.00",
         reason: "إلغاء قبل الاستلام",
       },
-      clientRequestId: "mgr-unpaid-cod-no-shift",
+      clientRequestId: "cashier-unpaid-cod-no-shift",
       operatorReason: "إلغاء قبل الاستلام بلا قبض",
-    }, manager);
+    }, { userId: 2, branchId: 1 });
 
     expect(result).toMatchObject({ fullyReturned: true, returnedTotal: "10.00" });
     expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toHaveLength(0);

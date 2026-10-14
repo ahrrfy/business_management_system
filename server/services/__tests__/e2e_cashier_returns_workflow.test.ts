@@ -224,7 +224,7 @@ async function createSaleInvoice(opts: {
     const pastDate = new Date(Date.now() - opts.daysAgo * 86400000);
     await db()
       .update(s.invoices)
-      .set({ createdAt: pastDate })
+      .set({ createdAt: pastDate, invoiceDate: pastDate })
       .where(eq(s.invoices.id, sale.invoiceId));
   }
 
@@ -590,7 +590,7 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
       createdBy: CASHIER1_ID,
     });
 
-    // Attempting to refund 5000 when drawer only has 1000 must route to approval
+    // Attempting to refund 5000 when drawer only has 1000 must fail atomically.
     await expect(
       returnSaleDirect(
         {
@@ -609,11 +609,8 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
         managerActor,
       ),
     ).rejects.toMatchObject({
-      decision: {
-        result: "APPROVAL_REQUIRED",
-        approvalOperation: "salesControl.requestReturn",
-        reason: expect.stringContaining("مصدر نقد بديل"),
-      },
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("لا يجوز تسجيل صرف نقدي غير ممول"),
     });
   });
 
@@ -929,7 +926,7 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
     expect(pendingReq.length).toBeGreaterThan(0);
   });
 
-  it("F16: Treasury/Drawer Deficit Approval Trigger — Cash refund when drawer has deficit routes to manager control", async () => {
+  it("F16: Treasury/Drawer Deficit Guard — Direct cash refund fails and may be requested through manager control", async () => {
     // Cashier drawer with 0 opening cash
     const shift1 = await openShift(CASHIER1_ID, 1, "0.00");
     const { invoiceId, itemId } = await createSaleInvoice({ shiftId: shift1, actor: cashier1Actor, quantity: 1, paidAmount: "5000.00" });
@@ -947,7 +944,7 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
       createdBy: CASHIER1_ID,
     });
 
-    // Drawer is now at 0.00. Direct cash return routes to approval for an alternate source
+    // Drawer is now at 0.00. Direct cash return must fail without financial writes.
     await expect(
       returnSaleDirect(
         {
@@ -966,10 +963,8 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
         managerActor,
       ),
     ).rejects.toMatchObject({
-      decision: {
-        result: "APPROVAL_REQUIRED",
-        approvalOperation: "salesControl.requestReturn",
-      },
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("لا يجوز تسجيل صرف نقدي غير ممول"),
     });
 
     // Cashier routes operation to request queue for manager treasury approval
@@ -1016,7 +1011,7 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
     expect(inv?.id).toBe(invoiceId);
   });
 
-  it("F18: Open Return Window — Invoices of any age (no time limit) execute direct return by cashier without time restrictions", async () => {
+  it("F18: Return Window — Old cashier invoices route to approval while the owner may execute directly", async () => {
     const shift1 = await openShift(CASHIER1_ID, 1, "50000.00");
     // Sale made 60 days ago
     const { invoiceId, itemId } = await createSaleInvoice({
@@ -1032,7 +1027,7 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
     expect(ageDays).toBeGreaterThan(50);
 
     const cashier1Caller = createCaller({ id: CASHIER1_ID, branchId: 1, role: "cashier" });
-    // Cashier attempts direct return, but system restricts directExecution to owner; returns REQUESTED
+    // Cashier direct execution is limited to the current business day; old invoices route to approval.
     const reqRet = await cashier1Caller.returns.create({
       invoiceId,
       lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
@@ -1582,7 +1577,7 @@ describe("Tier 4: Real-World Application Scenarios (TEST_INFRA.md 1 to 7)", () =
     expect(outReceipts).toHaveLength(0);
   });
 
-  it("Scenario 4: Customer returns invoice of any age (e.g. 45 days old); executed directly by cashier without time barrier (F1, F15, F18)", async () => {
+  it("Scenario 4: A 45-day-old cashier return routes to approval; the owner may execute it directly (F1, F15, F18)", async () => {
     const shift1 = await openShift(CASHIER1_ID, 1, "50000.00");
     // Invoice 45 days old
     const { invoiceId, itemId } = await createSaleInvoice({
@@ -1595,7 +1590,7 @@ describe("Tier 4: Real-World Application Scenarios (TEST_INFRA.md 1 to 7)", () =
 
     const cashierCaller = createCaller({ id: CASHIER1_ID, branchId: 1, role: "cashier" });
 
-    // Cashier attempts direct return, but system restricts directExecution to owner; returns REQUESTED
+    // Cashier direct execution is limited to the current business day; this returns REQUESTED.
     const reqResult = await cashierCaller.returns.create({
       invoiceId,
       lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
