@@ -81,7 +81,6 @@ export const RETURNS_WORKSPACE_GATE: RoleGate = {
       allOf: [
         { operations: ["returns.executePurchaseReturnCart"] },
         { operations: ["returns.lookupItemForReturn"] },
-        { operations: ["returns.getOpenRefundDrawers"] },
         { operations: ["suppliers.list"] },
       ],
     },
@@ -99,8 +98,8 @@ export const RETURNS_WORKSPACE_GATE: RoleGate = {
 /** A governance action is usable only with its matching source/queue read. */
 export const PURCHASE_RETURNS_GOVERNANCE_GATE: RoleGate = {
   anyOf: [
-    { allOf: [{ operations: ["suppliers.list"] }, { operations: ["purchaseReturnGovernance.returnSources"] }, { operations: ["purchaseReturnGovernance.requestReturn"] }] },
-    { allOf: [{ operations: ["suppliers.list"] }, { operations: ["purchaseReturnGovernance.reversalSources"] }, { operations: ["purchaseReturnGovernance.requestReversal"] }] },
+    { allOf: [{ operations: ["purchaseReturnGovernance.returnSources"] }, { operations: ["purchaseReturnGovernance.requestReturn"] }] },
+    { allOf: [{ operations: ["purchaseReturnGovernance.reversalSources"] }, { operations: ["purchaseReturnGovernance.requestReversal"] }] },
     { allOf: [{ operations: ["purchaseReturnGovernance.pendingReturns"] }, { operations: ["purchaseReturnGovernance.decideReturn"] }] },
     { allOf: [{ operations: ["purchaseReturnGovernance.pendingReversals"] }, { operations: ["purchaseReturnGovernance.decideReversal"] }] },
   ],

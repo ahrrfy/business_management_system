@@ -203,8 +203,23 @@ export default function ExpenseNew() {
     ),
   );
   const canViewCost = !!me.data && canViewOperationData(me.data, "purchaseCost");
+  const canLookupStockExpenseItems = treasuryOperationAllowed(
+    me.data,
+    "catalog.forPurchase",
+    canViewCost &&
+      !!me.data &&
+      canViewOperationData(me.data, "profitMargin") &&
+      moduleAccessAllowed(
+        me.data.role,
+        me.data.permissionsOverride ?? null,
+        "products",
+        "READ",
+        ["manager", "purchasing", "warehouse"],
+      ),
+  );
   const canCreateStockExpense =
     canCreateExpense &&
+    canLookupStockExpenseItems &&
     treasuryOperationAllowed(
       me.data,
       "inventory.adjust",

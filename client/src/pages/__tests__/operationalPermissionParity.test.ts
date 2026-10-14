@@ -176,7 +176,6 @@ describe("operational UI permission parity", () => {
     expect(source).toContain("canRequestPurchaseReturn");
     for (const dependency of [
       '"returns.lookupItemForReturn"',
-      '"returns.getOpenRefundDrawers"',
       '"purchaseReturnGovernance.returnSources"',
       '"suppliers.list"',
     ]) {
@@ -197,12 +196,14 @@ describe("operational UI permission parity", () => {
     const operationPolicy = (paths: string[]): OperationPolicy => ({
       version: 1,
       grants: Object.fromEntries(paths.map((path) => [`operation.${path}`, true])),
+      dataVisibility: { purchaseCost: true, profitMargin: true },
     });
 
     expect(canSeeGate(RETURNS_WORKSPACE_GATE, "manager", null, operationPolicy([
       "returns.executePurchaseReturnCart",
+      "returns.lookupItemForReturn",
       "suppliers.list",
-    ]))).toBe(false);
+    ]))).toBe(true);
     expect(canSeeGate(RETURNS_WORKSPACE_GATE, "manager", null, operationPolicy([
       "returns.getRequest",
       "returns.getInvoice",
@@ -218,7 +219,6 @@ describe("operational UI permission parity", () => {
       "purchaseReturnGovernance.requestReversal",
     ]))).toBe(false);
     expect(canSeeGate(PURCHASE_RETURNS_GOVERNANCE_GATE, "purchasing", null, operationPolicy([
-      "suppliers.list",
       "purchaseReturnGovernance.reversalSources",
       "purchaseReturnGovernance.requestReversal",
     ]))).toBe(true);
@@ -251,7 +251,9 @@ describe("operational UI permission parity", () => {
   it("hides stock-expense tabs without the inventory adjustment operation", () => {
     const source = readPage("ExpenseNew.tsx");
     expect(source).toContain('"inventory.adjust"');
+    expect(source).toContain('"catalog.forPurchase"');
     expect(source).toContain("canCreateExpense &&");
+    expect(source).toContain("canLookupStockExpenseItems &&");
     expect(source).toContain("moduleAccessAllowed(");
     expect(source).toContain('me.data?.permissionsOverride ?? null');
     expect(source).toContain('setSource("CASH")');

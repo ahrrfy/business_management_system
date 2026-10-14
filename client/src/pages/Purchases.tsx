@@ -155,13 +155,11 @@ export default function Purchases() {
   const canExecutePurchaseReturn = [
     "returns.executePurchaseReturnCart",
     "returns.lookupItemForReturn",
-    "returns.getOpenRefundDrawers",
     "suppliers.list",
   ].every((path) => canLifecycleOperation(me.data, path, legacyManagePurchases));
   const canRequestPurchaseReturn = [
     "purchaseReturnGovernance.requestReturn",
     "purchaseReturnGovernance.returnSources",
-    "suppliers.list",
   ].every((path) => canLifecycleOperation(me.data, path, legacyManagePurchases));
   const pendingControls = trpc.purchases.pendingControls.useQuery(
     { limit: 200 },

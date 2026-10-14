@@ -158,13 +158,11 @@ export function PurchaseDetailDrawer({
   const canExecuteReturn = [
     "returns.executePurchaseReturnCart",
     "returns.lookupItemForReturn",
-    "returns.getOpenRefundDrawers",
     "suppliers.list",
   ].every((path) => canLifecycleOperation(me.data, path, legacyEdit));
   const canRequestReturn = [
     "purchaseReturnGovernance.requestReturn",
     "purchaseReturnGovernance.returnSources",
-    "suppliers.list",
   ].every((path) => canLifecycleOperation(me.data, path, legacyEdit));
   const canSettleShipping = canLifecycleOperation(me.data, "purchases.settleShippingFromShift", legacyEdit);
 
