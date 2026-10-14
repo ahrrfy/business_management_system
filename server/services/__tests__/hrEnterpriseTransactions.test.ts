@@ -1223,6 +1223,33 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
       expect(payRes.receiptId).toBeDefined();
     });
 
+    it("paySpotBonusCash:revoked_owner_cross_branch_drawer_rejection rejects stale owner session on cross-branch DRAWER payout", async () => {
+      const { db } = await seedEmp({ employeeId: 9404, branchId: 102, branchName: "فرع المنصور" });
+      await db.insert(s.users).values({
+        id: 1,
+        openId: "test-revoked-owner",
+        name: "مالك مسحوب الصلاحية",
+        role: "manager",
+        branchId: 101,
+        isOwner: false,
+        isActive: true,
+      }).onDuplicateKeyUpdate({ set: { isOwner: false, isActive: true, branchId: 101 } });
+
+      const admin = { userId: 1, role: "admin", branchId: 102, isOwner: true } as any;
+      const bonus = await createSpotBonus(admin, {
+        employeeId: 9404,
+        amount: "40000.00",
+        reason: "مكافأة درج فرع آخر",
+        disbursementType: "CASH_TREASURY",
+      });
+      await approveSpotBonus(admin, bonus.id);
+
+      const staleOwnerSession = { userId: 1, role: "manager", branchId: null, isOwner: true } as any;
+      await expect(
+        paySpotBonusCash(staleOwnerSession, { id: bonus.id, cashBucket: "DRAWER", shiftId: 94020 }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    });
+
     it("paySpotBonusCash:draft_guard rejects paying unapproved DRAFT bonus", async () => {
       await seedEmp({ employeeId: 9401, branchId: 101 });
       const admin = { userId: 1, role: "admin", branchId: 101 } as any;

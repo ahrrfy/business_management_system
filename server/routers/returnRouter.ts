@@ -524,25 +524,53 @@ export const returnRouter = router({
       // (`sale.return`) وضاعت استجابته، نُعيد تشغيل نتيجة التنفيذ الأصلي بدل إنشاء طلب رقابي جديد.
       if (clientRequestId) {
         const normalizedReason = reason.replace(/\s+/g, " ");
-        const replayCoreInput = {
+        const replayWithDirectFlag = {
+          ...payload,
+          directExecution: true,
+          invoiceId,
+          operatorReason: normalizedReason,
+          clientRequestId,
+        };
+        const replayWithoutDirectFlag = {
           ...payload,
           invoiceId,
           operatorReason: normalizedReason,
           clientRequestId,
         };
+        const replayCandidates =
+          _directExecution === false
+            ? [
+                replayWithDirectFlag,
+                { ...replayWithoutDirectFlag, directExecution: false },
+                replayWithoutDirectFlag,
+              ]
+            : [replayWithDirectFlag, replayWithoutDirectFlag];
         const legacyReplay = await withTx(async (tx) => {
-          const existingRefId = await checkIdempotency(
-            tx,
-            "sale.return",
-            clientRequestId,
-            idempotencyHash(replayCoreInput),
-          );
-          if (existingRefId == null) return null;
-          return returnSaleInTx(tx, replayCoreInput, {
-            userId: ctx.user.id,
-            branchId: actorBranchId,
-            role: ctx.user.role,
-          });
+          let lastConflict: unknown = null;
+          for (const candidate of replayCandidates) {
+            try {
+              const existingRefId = await checkIdempotency(
+                tx,
+                "sale.return",
+                clientRequestId,
+                idempotencyHash(candidate),
+              );
+              if (existingRefId == null) return null;
+              return await returnSaleInTx(tx, candidate, {
+                userId: ctx.user.id,
+                branchId: actorBranchId,
+                role: ctx.user.role,
+              });
+            } catch (err) {
+              if (err instanceof TRPCError && err.code === "CONFLICT") {
+                lastConflict = err;
+                continue;
+              }
+              throw err;
+            }
+          }
+          if (lastConflict) throw lastConflict;
+          return null;
         });
         if (legacyReplay) {
           return { ...legacyReplay, mode: "EXECUTED" as const, invoiceId };

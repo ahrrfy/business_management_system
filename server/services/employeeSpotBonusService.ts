@@ -7,6 +7,7 @@ import {
   employees,
   receipts,
   shifts,
+  users,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { withTx, type Actor, type MaybeScopedActor } from "./tx";
@@ -208,7 +209,28 @@ export async function paySpotBonusCash(
       });
     }
 
-    if (!actor.isOwner && actor.branchId != null && b.branchId !== actor.branchId) {
+    let effectiveBranchId = actor.branchId;
+    let isVerifiedOwner = false;
+    if (actor.isOwner || actor.branchId == null) {
+      const [userRow] = await tx
+        .select({
+          isActive: users.isActive,
+          isOwner: users.isOwner,
+          branchId: users.branchId,
+        })
+        .from(users)
+        .where(eq(users.id, actor.userId))
+        .for("share");
+      isVerifiedOwner = Boolean(userRow?.isActive && userRow?.isOwner);
+      if (!isVerifiedOwner) {
+        effectiveBranchId = userRow?.branchId ?? actor.branchId ?? null;
+      }
+    }
+
+    if (
+      !isVerifiedOwner &&
+      (effectiveBranchId == null || b.branchId !== effectiveBranchId)
+    ) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({
@@ -314,9 +336,9 @@ export async function paySpotBonusCash(
       const treasuryApproval = await authorizeExternalTreasuryDisbursement(tx, {
         actor: {
           userId: actor.userId,
-          branchId: actor.isOwner ? branchId : (actor.branchId ?? branchId),
+          branchId: isVerifiedOwner ? branchId : (effectiveBranchId ?? branchId),
           role: actor.role,
-          isOwner: actor.isOwner,
+          isOwner: isVerifiedOwner,
         },
         makerUserIds: [b.createdById],
         branchIds: [branchId],

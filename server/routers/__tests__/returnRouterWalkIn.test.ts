@@ -348,7 +348,15 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     });
 
     expect(mocks.requestSalesControl).not.toHaveBeenCalled();
-    expect(mocks.returnSaleInTx).toHaveBeenCalled();
+    expect(mocks.returnSaleInTx).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        invoiceId: 77,
+        directExecution: true,
+        operatorReason: "إعادة محاولة طلب نُفّذ سابقاً",
+      }),
+      expect.objectContaining({ userId: 1, role: "manager" }),
+    );
     expect(res).toMatchObject({
       mode: "EXECUTED",
       invoiceId: 77,
