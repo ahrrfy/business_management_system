@@ -274,7 +274,8 @@ describe("operational UI permission parity", () => {
     expect(returnsHub).toContain('"returns.executePurchaseReturnCart"');
     expect(returnsHub).toContain('useOperationPermission("returns.list").allowed');
     expect(returnsHub).toContain('"purchaseReturns.list"');
-    expect(returnsHub).toContain("{canExecutePurchaseReturn && (");
+    expect(returnsHub).toContain("{canAccessPurchasePortal && (");
+    expect(returnsHub).toContain("{canCreateActivePortal && (");
     expect(returnsHub).toContain("{canViewActiveHistory && (");
 
     expect(receptionQueue).toContain('row.sourceType === "WORKORDER" || parsedWorkOrderId != null');

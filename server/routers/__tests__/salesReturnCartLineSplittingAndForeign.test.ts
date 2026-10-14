@@ -427,13 +427,33 @@ describe("returns.executeSalesReturnCart — حوكمة تجميع البنود 
   });
 
   // -------------------------------------------------------------------------
-  // IT-INV-05: Walk-In Return Without Invoice Requires Approval
+  // IT-INV-05: Legitimate Walk-In Return Within Cap & Over-Cap Guard
   // -------------------------------------------------------------------------
-  it("IT-INV-05: المرتجع العابر بدون رقم فاتورة يفشل مغلقاً بلا أثر", async () => {
+  it("IT-INV-05: المرتجع العابر بدون رقم فاتورة ينفذ بنجاح ضمن السقف ويرفض ما تجاوزه", async () => {
     const shiftId = await openShift();
     const initialStock = await stockOf(1);
 
     const caller = returnRouter.createCaller(context());
+
+    // تنفيذ مرتجع بدون رقم فاتورة ضمن السقف (مرتجع زبون عابر)
+    const res = await caller.executeSalesReturnCart({
+      invoiceNumber: undefined,
+      customer: { name: "زبون عابر" },
+      disposition: "RESTOCK",
+      items: [
+        {
+          variantId: 1,
+          productName: "قلم حبر",
+          quantity: 2,
+          unitPrice: "10.00",
+        },
+      ],
+      settlement: { method: "CASH", totalAmount: "20.00", shiftId },
+      clientRequestId: "it-walkin-no-inv-1",
+    });
+
+    expect(res.returnNumber).toMatch(/^SR-/);
+    expect(await stockOf(1)).toBe(initialStock + 2);
 
     await expect(
       caller.executeSalesReturnCart({
@@ -444,18 +464,14 @@ describe("returns.executeSalesReturnCart — حوكمة تجميع البنود 
           {
             variantId: 1,
             productName: "قلم حبر",
-            quantity: 2,
+            quantity: 3000,
             unitPrice: "10.00",
           },
         ],
-        settlement: { method: "CASH", totalAmount: "20.00", shiftId },
-        clientRequestId: "it-walkin-no-inv-1",
+        settlement: { method: "CASH", totalAmount: "30000.00", shiftId },
+        clientRequestId: "it-walkin-no-inv-overcap",
       }),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
-
-    expect(await stockOf(1)).toBe(initialStock);
-    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
-    expect(await db().select().from(s.receipts)).toHaveLength(0);
   });
 
   // -------------------------------------------------------------------------

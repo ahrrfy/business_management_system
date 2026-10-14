@@ -82,11 +82,15 @@ function assertActorHasModuleAccess(
 ): void {
   // مالكٌ/أدمن يعبُر — نفس نمطُ `requireModule` في `server/trpc.ts`.
   if (actor.isOwner || actor.role === "admin") return;
+  const override = (actor.permissionsOverride ?? null) as PermissionMap | null;
   const map = resolvePermissions(
     (actor.role as RoleKey) ?? "user",
-    (actor.permissionsOverride ?? null) as PermissionMap | null,
+    override,
   );
-  const grantedLevel: AccessLevel = (map as unknown as Record<string, AccessLevel>)[moduleKey] ?? "NONE";
+  const grantedLevel: AccessLevel =
+    sourceDocType === "SALE_RETURN" && actor.role === "user"
+      ? (override?.sales ?? "NONE")
+      : ((map as unknown as Record<string, AccessLevel>)[moduleKey] ?? "NONE");
   const hasCashierOrReceptionReturnAccess =
     sourceDocType === "SALE_RETURN" &&
     (map.workorders === "FULL" || map.pos === "FULL");
@@ -113,17 +117,21 @@ function saleReturnInvoiceScopeForActor(
   if (actor.isOwner || actor.role === "admin" || actor.role === "manager") {
     return "sales";
   }
+  const override = (actor.permissionsOverride ?? null) as PermissionMap | null;
   const map = resolvePermissions(
     (actor.role as RoleKey) ?? "user",
-    (actor.permissionsOverride ?? null) as PermissionMap | null,
+    override,
   );
-  if (map.sales === "READ" || map.sales === "FULL") {
+  if (map.sales === "FULL" || override?.sales === "READ") {
     return "sales";
   }
   if (map.workorders === "FULL") {
     return "reception";
   }
-  return "print";
+  if (map.pos === "FULL") {
+    return "print";
+  }
+  return "sales";
 }
 
 export async function refundRailPreflight(

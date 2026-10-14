@@ -18,7 +18,7 @@ vi.mock("../../db", () => ({
       const chain: Record<string, unknown> = {
         then: (resolve: (value: unknown) => unknown) => Promise.resolve(rows).then(resolve),
       };
-      for (const key of ["from", "innerJoin", "where", "limit"]) chain[key] = () => chain;
+      for (const key of ["from", "innerJoin", "leftJoin", "where", "limit"]) chain[key] = () => chain;
       return chain;
     },
   }),

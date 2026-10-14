@@ -79,6 +79,8 @@ export default function ReturnsHub() {
   const canListPurchaseReturns = useOperationPermission(
     "purchaseReturns.list",
   ).allowed;
+  const canAccessPurchasePortal =
+    canExecutePurchaseReturn || canListPurchaseReturns;
 
   const urlParams = useMemo(() => new URLSearchParams(searchStr), [searchStr]);
   const requestIdParam = Number(urlParams.get("requestId"));
@@ -92,43 +94,71 @@ export default function ReturnsHub() {
   );
   const portalParam = urlParams.get("portal") || urlParams.get("tab");
   const initialMode = (
-    portalParam === "purchases" && canExecutePurchaseReturn
+    portalParam === "purchases" && canAccessPurchasePortal
       ? "purchases"
       : "sales"
   ) as ReturnPortalMode;
   const [portalMode, setPortalMode] = useState<ReturnPortalMode>(initialMode);
   const initialInvoice = urlParams.get("invoice") || undefined;
   const initialPo = urlParams.get("po") || undefined;
+  const canCreateActivePortal =
+    portalMode === "purchases" ? canExecutePurchaseReturn : true;
   const canViewActiveHistory =
     portalMode === "purchases" ? canListPurchaseReturns : canListSalesReturns;
 
   const viewParam = urlParams.get("view");
   const [subTab, setSubTab] = useState<"create" | "history">(
-    (viewParam === "history" || viewParam === "ledger") &&
-      (initialMode === "purchases"
-        ? canListPurchaseReturns
-        : canListSalesReturns)
+    initialMode === "purchases" &&
+      !canExecutePurchaseReturn &&
+      canListPurchaseReturns
       ? "history"
-      : "create"
+      : (viewParam === "history" || viewParam === "ledger") &&
+          (initialMode === "purchases"
+            ? canListPurchaseReturns
+            : canListSalesReturns)
+        ? "history"
+        : "create"
   );
 
   useEffect(() => {
-    if (!canExecutePurchaseReturn && portalMode === "purchases") {
+    if (!canAccessPurchasePortal && portalMode === "purchases") {
       setPortalMode("sales");
+      return;
+    }
+    if (
+      portalMode === "purchases" &&
+      !canExecutePurchaseReturn &&
+      canListPurchaseReturns &&
+      subTab === "create"
+    ) {
+      setSubTab("history");
+      return;
     }
     if (!canViewActiveHistory && subTab === "history") {
       setSubTab("create");
     }
-  }, [canExecutePurchaseReturn, canViewActiveHistory, portalMode, subTab]);
+  }, [
+    canAccessPurchasePortal,
+    canExecutePurchaseReturn,
+    canListPurchaseReturns,
+    canViewActiveHistory,
+    portalMode,
+    subTab,
+  ]);
 
   const switchPortal = (mode: ReturnPortalMode) => {
-    if (mode === "purchases" && !canExecutePurchaseReturn) return;
+    if (mode === "purchases" && !canAccessPurchasePortal) return;
     const canListTarget =
       mode === "purchases" ? canListPurchaseReturns : canListSalesReturns;
+    const canCreateTarget =
+      mode === "purchases" ? canExecutePurchaseReturn : true;
     setPortalMode(mode);
     const p = new URLSearchParams(searchStr);
     p.set("portal", mode);
-    if (subTab === "history" && !canListTarget) {
+    if (!canCreateTarget && canListTarget) {
+      setSubTab("history");
+      p.set("view", "history");
+    } else if (subTab === "history" && !canListTarget) {
       setSubTab("create");
       p.delete("view");
     }
@@ -136,6 +166,7 @@ export default function ReturnsHub() {
   };
 
   const switchSubTab = (tab: "create" | "history") => {
+    if (tab === "create" && !canCreateActivePortal) return;
     if (tab === "history" && !canViewActiveHistory) return;
     setSubTab(tab);
     const p = new URLSearchParams(searchStr);
@@ -317,7 +348,7 @@ export default function ReturnsHub() {
           </div>
         </button>
 
-        {canExecutePurchaseReturn && (
+        {canAccessPurchasePortal && (
           <button
             type="button"
             onClick={() => switchPortal("purchases")}
@@ -362,16 +393,18 @@ export default function ReturnsHub() {
       {/* ═════════════════════════════════════════════════════════════════════ */}
       <div className="flex items-center justify-between border-b pb-2 pt-1">
         <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant={subTab === "create" ? "default" : "outline"}
-            size="sm"
-            onClick={() => switchSubTab("create")}
-            className="text-xs h-8 gap-1.5"
-          >
-            <RotateCcw className="size-3.5" />
-            <span>بوابة الإرجاع والتسوية الفورية</span>
-          </Button>
+          {canCreateActivePortal && (
+            <Button
+              type="button"
+              variant={subTab === "create" ? "default" : "outline"}
+              size="sm"
+              onClick={() => switchSubTab("create")}
+              className="text-xs h-8 gap-1.5"
+            >
+              <RotateCcw className="size-3.5" />
+              <span>بوابة الإرجاع والتسوية الفورية</span>
+            </Button>
+          )}
           {canViewActiveHistory && (
             <Button
               type="button"
@@ -394,7 +427,7 @@ export default function ReturnsHub() {
       {/* ═════════════════════════════════════════════════════════════════════ */}
       {/* عرض المنفذ النشط أو السجل التاريخي                                   */}
       {/* ═════════════════════════════════════════════════════════════════════ */}
-      {subTab === "create" ? (
+      {subTab === "create" && canCreateActivePortal ? (
         <>
           {portalMode === "sales" ? (
             <SalesReturnPortal

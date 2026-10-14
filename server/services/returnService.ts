@@ -712,7 +712,29 @@ export async function returnSaleInTx(
       actor.role !== "admin" && actor.role !== "manager";
     let explicitShiftId = refund.shiftId ?? null;
     if (explicitShiftId == null && isNonManagerCashier) {
-      explicitShiftId = await openShiftIdTx(tx, actor.userId, branchForRefund);
+      const callerOpenShifts = await tx
+        .select({ id: shifts.id })
+        .from(shifts)
+        .where(
+          and(
+            eq(shifts.branchId, branchForRefund),
+            eq(shifts.userId, actor.userId),
+            eq(shifts.status, "OPEN"),
+          ),
+        );
+      if (callerOpenShifts.length === 1) {
+        explicitShiftId = Number(callerOpenShifts[0].id);
+      } else if (callerOpenShifts.length > 1) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعدّد أدراج الكاشير المفتوحة",
+            why: `لديك أكثر من وردية مفتوحة في هذا الفرع (${callerOpenShifts.length}) — حدّد درج الوردية المستهدف للاسترداد صراحةً`,
+            doThis:
+              "اختر الوردية التي سيخرج منها النقد فعلياً قبل تأكيد المرتجع",
+          }),
+        });
+      }
     }
     const openShiftCount =
       explicitShiftId != null
@@ -2864,22 +2886,30 @@ export async function returnSaleDirect(
 
       const roleOverride =
         (customRoleRow?.permissions as PermissionMap | null) ?? null;
-      const explicitSalesRevokedWithoutPosGrant =
-        (userOverride?.sales === "NONE" && userOverride?.pos !== "FULL") ||
-        (roleOverride?.sales === "NONE" &&
-          roleOverride?.pos !== "FULL" &&
-          userOverride?.pos !== "FULL");
+      const explicitUserSalesDenied =
+        userOverride?.sales === "NONE" &&
+        userOverride?.workorders !== "FULL" &&
+        userOverride?.pos !== "FULL";
+      const explicitRoleSalesDenied =
+        roleOverride?.sales === "NONE" &&
+        roleOverride?.workorders !== "FULL" &&
+        roleOverride?.pos !== "FULL" &&
+        userOverride?.workorders !== "FULL" &&
+        userOverride?.pos !== "FULL";
       const hasReceptionFull =
+        !explicitUserSalesDenied &&
+        !explicitRoleSalesDenied &&
         (effectiveRole === "print_operator" ||
           effectiveRole === "user" ||
-          isCashierRole) &&
+          customRoleRow?.key === "reception_clerk") &&
         effectivePermissions.workorders === "FULL";
       const hasExplicitPrintPosFull =
+        !explicitUserSalesDenied &&
+        !explicitRoleSalesDenied &&
         (effectiveRole === "print_operator" ||
           effectiveRole === "user" ||
-          isCashierRole) &&
-        effectivePermissions.pos === "FULL" &&
-        !explicitSalesRevokedWithoutPosGrant;
+          customRoleRow?.key === "print_cashier") &&
+        effectivePermissions.pos === "FULL";
 
       const legacyAuthorized =
         isOwner ||
@@ -2899,11 +2929,7 @@ export async function returnSaleDirect(
       // The canonical grant is the exact operation authority. This matters for
       // reception/print presets whose broad sales module intentionally remains
       // hidden. A direct user-level sales denial remains authoritative unless
-      // the user is authorized as a reception or POS cashier.
-      const explicitUserSalesDenied =
-        (userRow.permissionsOverride as PermissionMap | null)?.sales === "NONE" &&
-        !hasReceptionFull &&
-        !hasExplicitPrintPosFull;
+      // the user is explicitly granted reception or POS FULL in overrides.
       const isAuthorized =
         !isOwner && !isAdmin && explicitUserSalesDenied
           ? false
@@ -3002,6 +3028,21 @@ export async function returnSaleDirect(
               .from(shifts)
               .where(eq(shifts.id, Number(directRefund.shiftId)))
               .limit(1);
+            if (
+              selectedShift != null &&
+              Number(selectedShift.branchId) === Number(targetBranchId) &&
+              Number(selectedShift.userId) !== Number(actor.userId)
+            ) {
+              throw new TRPCError({
+                code: "FORBIDDEN",
+                message: appErrorMessage({
+                  what: "تعذّر صرف الاسترداد النقدي من درج وردية أخرى",
+                  why: "كاشير الصرف مقيّد بدرج ورديته المفتوحة ولا يمكنه صرف النقد من درج كاشير آخر",
+                  doThis:
+                    "اختر درج ورديتك المفتوحة الخاصة بك لصرف الاسترداد النقدي",
+                }),
+              });
+            }
             if (
               selectedShift != null &&
               selectedShift.status === "OPEN" &&

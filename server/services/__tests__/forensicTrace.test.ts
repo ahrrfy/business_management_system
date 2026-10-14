@@ -19,14 +19,14 @@ describe("عقد إجراءات التحري الجنائي والمسح الش�
   const routerSrc = readServer("routers/returnRouter.ts");
 
   it("returnRouter يصدّر forensicTrace و universalScan", () => {
-    expect(routerSrc).toContain("forensicTrace: salesReadProcedure");
-    expect(routerSrc).toContain("universalScan: salesReadProcedure");
+    expect(routerSrc).toContain("forensicTrace: returnsProcedure");
+    expect(routerSrc).toContain("universalScan: returnsProcedure");
     expect(routerSrc).toContain('from "../services/returns/forensicTraceService"');
   });
 
   it("البوّابة تسمح للكاشير والمدير بقراءة فواتير التحري الجنائي", () => {
-    // salesReadProcedure تتيح لـ cashier و manager و admin الوصول للاستعلام
-    expect(routerSrc).toMatch(/salesReadProcedure\s*\.input\(/);
+    // returnsProcedure تتيح لكاشير التجزئة وكاشير الاستقبال والمدير الوصول للاستعلام
+    expect(routerSrc).toMatch(/returnsProcedure\s*\.input\(/);
   });
 });
 

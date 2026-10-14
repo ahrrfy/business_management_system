@@ -366,27 +366,42 @@ describe.sequential("E2E Test Suite: Prevent Duplicate Invoice Returns & Cross-M
       expect(inspected?.items[0]?.returnedBaseQuantity).toBe(1);
     });
 
-    it("⭐ T1-F5: Walk-in Return Guard — مرتجع الكاشير بلا فاتورة يحتاج اعتماداً ويبقى صفري الأثر", async () => {
+    it("⭐ T1-F5: Walk-in Return Guard — مرتجع الكاشير بلا فاتورة ينفذ ضمن السقف ويرفض ما تجاوزه", async () => {
       const shiftId = await openShift();
       // تمويل الدرج أولاً ببيع نقدي بقيمة 20.00 د.ع
       await sellCashItems(shiftId, 1, [{ variantId: 1, qty: 4, unitPrice: "5.00" }]);
 
       const caller = returnRouter.createCaller(cashierContext());
 
-      const outBefore = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
-      const movementsBefore = await db().select().from(s.inventoryMovements);
-
-      await expect(caller.executeSalesReturnCart({
+      const res = await caller.executeSalesReturnCart({
         invoiceNumber: undefined,
         customer: { name: "زبون عابر متجر" },
         disposition: "RESTOCK",
         items: [{ variantId: 1, productName: "دفتر مذكرات", quantity: 2, unitPrice: "5.00" }],
         settlement: { method: "CASH", totalAmount: "10.00", shiftId },
         clientRequestId: "req-t1-f5-walkin",
-      })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      });
 
-      expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toHaveLength(outBefore.length);
-      expect(await db().select().from(s.inventoryMovements)).toHaveLength(movementsBefore.length);
+      expect(res.returnNumber).toMatch(/^SR-/);
+      expect(res.originalInvoiceNumber).toBeUndefined();
+
+      const outReceipts = await db()
+        .select()
+        .from(s.receipts)
+        .where(eq(s.receipts.direction, "OUT"));
+      expect(outReceipts).toHaveLength(1);
+      expect(outReceipts[0]?.amount).toBe("10.00");
+
+      await expect(
+        caller.executeSalesReturnCart({
+          invoiceNumber: undefined,
+          customer: { name: "زبون عابر متجر" },
+          disposition: "RESTOCK",
+          items: [{ variantId: 1, productName: "دفتر مذكرات", quantity: 6000, unitPrice: "5.00" }],
+          settlement: { method: "CASH", totalAmount: "30000.00", shiftId },
+          clientRequestId: "req-t1-f5-walkin-overcap",
+        }),
+      ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     });
 
     it("⭐ T1-F6: Atomic Cancellation Interlock — الفاتورة المسترجعة كلياً يُمنع إلغاؤها قطيعاً", async () => {
@@ -781,7 +796,7 @@ describe.sequential("E2E Test Suite: Prevent Duplicate Invoice Returns & Cross-M
       ).rejects.toThrow(/RETURNED|ملغاة أو مستبدلة أو مرجعة بالكامل مسبقاً/);
     });
 
-    it("T3-4: قفل فاتورة سابقة لا يتجاوز اعتماد المرتجع العابر", async () => {
+    it("T3-4: استقلالية المرتجع العابر ضمن السقف عند قفل الفاتورة السابقة مع بقاء حارس السقف", async () => {
       const shiftId = await openShift();
       // تمويل الدرج أولاً بمبيعات كافية (4 قطع = 20.00 د.ع)
       const sale = await sellCashItems(shiftId, 1, [{ variantId: 1, qty: 4, unitPrice: "5.00" }]);
@@ -798,19 +813,26 @@ describe.sequential("E2E Test Suite: Prevent Duplicate Invoice Returns & Cross-M
       // بيع جديد يمول الدرج بـ 15.00 د.ع
       await sellCashItems(shiftId, 1, [{ variantId: 1, qty: 3, unitPrice: "5.00" }]);
 
-      const outBefore = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
-      const movementsBefore = await db().select().from(s.inventoryMovements);
-
-      await expect(caller.executeSalesReturnCart({
+      const walkinRes = await caller.executeSalesReturnCart({
         invoiceNumber: undefined,
         customer: { name: "زبون عابر مستقل" },
         disposition: "RESTOCK",
         items: [{ variantId: 2, productName: "قلم حبر", quantity: 3, unitPrice: "2.00" }],
         settlement: { method: "CASH", totalAmount: "6.00", shiftId },
-      })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      });
 
-      expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toHaveLength(outBefore.length);
-      expect(await db().select().from(s.inventoryMovements)).toHaveLength(movementsBefore.length);
+      expect(walkinRes.returnNumber).toMatch(/^SR-/);
+      expect(Number(walkinRes.totalAmount)).toBe(6);
+
+      await expect(
+        caller.executeSalesReturnCart({
+          invoiceNumber: undefined,
+          customer: { name: "زبون عابر مستقل" },
+          disposition: "RESTOCK",
+          items: [{ variantId: 2, productName: "قلم حبر", quantity: 15000, unitPrice: "2.00" }],
+          settlement: { method: "CASH", totalAmount: "30000.00", shiftId },
+        }),
+      ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     });
 
     it("T3-5: حارس تكرار البند المقسم داخل السلة نفسها (Line Splitting Invariant)", async () => {
