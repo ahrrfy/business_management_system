@@ -98,7 +98,9 @@ export function RequireRole({
   const allowed =
     !!role &&
     (operationPolicy && canonicalGate
-      ? canSeeGate(canonicalGate, role, override, operationPolicy)
+      ? canSeeGate(canonicalGate, role, override, operationPolicy) ||
+        (canonicalGate === RETURNS_WORKSPACE_GATE &&
+          canSeeGate(INVOICE_LIST_GATE, role, override, operationPolicy))
       : operationPolicy && operations?.length
       ? canSeeGate({ operations }, role, override, operationPolicy)
       : gate

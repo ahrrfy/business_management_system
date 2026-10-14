@@ -2862,6 +2862,13 @@ export async function returnSaleDirect(
         "sales_rep",
       ].includes(effectiveRole);
 
+      const roleOverride =
+        (customRoleRow?.permissions as PermissionMap | null) ?? null;
+      const explicitSalesRevokedWithoutPosGrant =
+        (userOverride?.sales === "NONE" && userOverride?.pos !== "FULL") ||
+        (roleOverride?.sales === "NONE" &&
+          roleOverride?.pos !== "FULL" &&
+          userOverride?.pos !== "FULL");
       const hasReceptionFull =
         (effectiveRole === "print_operator" ||
           effectiveRole === "user" ||
@@ -2871,7 +2878,8 @@ export async function returnSaleDirect(
         (effectiveRole === "print_operator" ||
           effectiveRole === "user" ||
           isCashierRole) &&
-        userOverride?.pos === "FULL";
+        effectivePermissions.pos === "FULL" &&
+        !explicitSalesRevokedWithoutPosGrant;
 
       const legacyAuthorized =
         isOwner ||

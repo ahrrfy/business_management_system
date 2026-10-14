@@ -107,6 +107,25 @@ function actorMayDrawFromTreasury(actor: RefundRailActor): boolean {
   return actor.role === "admin" || actor.role === "manager" || actor.isOwner === true;
 }
 
+function saleReturnInvoiceScopeForActor(
+  actor: RefundRailActor,
+): "sales" | "reception" | "print" {
+  if (actor.isOwner || actor.role === "admin" || actor.role === "manager") {
+    return "sales";
+  }
+  const map = resolvePermissions(
+    (actor.role as RoleKey) ?? "user",
+    (actor.permissionsOverride ?? null) as PermissionMap | null,
+  );
+  if (map.sales === "READ" || map.sales === "FULL") {
+    return "sales";
+  }
+  if (map.workorders === "FULL") {
+    return "reception";
+  }
+  return "print";
+}
+
 export async function refundRailPreflight(
   tx: Tx,
   context: RefundRailContext,
@@ -116,7 +135,7 @@ export async function refundRailPreflight(
   const req = REQUIRED_MODULE_PER_TYPE[context.sourceDocType];
   assertActorHasModuleAccess(actor, req.module, req.level, context.sourceDocType);
   const exposeCash = maySeeDrawerCash(actor.role ?? "", (actor.permissionsOverride ?? null) as PermissionMap | null);
-  const raw = await dispatch(tx, context, exposeCash);
+  const raw = await dispatch(tx, context, exposeCash, actor);
   if (!raw) {
     throw new TRPCError({
       code: "NOT_FOUND",
@@ -159,12 +178,18 @@ async function dispatch(
   tx: Tx,
   ctx: RefundRailContext,
   exposeCash: boolean,
+  actor: RefundRailActor,
 ): Promise<RefundPreflight | null> {
   const handler = DISPATCHERS[ctx.sourceDocType];
-  return handler(tx, ctx, exposeCash);
+  return handler(tx, ctx, exposeCash, actor);
 }
 
-type Dispatcher = (tx: Tx, ctx: RefundRailContext, exposeCash: boolean) => Promise<RefundPreflight | null>;
+type Dispatcher = (
+  tx: Tx,
+  ctx: RefundRailContext,
+  exposeCash: boolean,
+  actor: RefundRailActor,
+) => Promise<RefundPreflight | null>;
 
 const DISPATCHERS = {
   WORKORDER_CANCEL: (tx, ctx, exposeCash) =>
@@ -173,7 +198,8 @@ const DISPATCHERS = {
     workOrderRefundPreflight(tx, ctx.sourceDocId, "REVERSE_DELIVERY", { exposeCash }),
   CONSIGNMENT_RETURN: (tx, ctx, exposeCash) =>
     consignmentReturnPreflight(tx, ctx.sourceDocId, { exposeCash }),
-  SALE_RETURN: (tx, ctx, exposeCash) => saleReturnPreflight(tx, ctx, exposeCash),
+  SALE_RETURN: (tx, ctx, exposeCash, actor) =>
+    saleReturnPreflight(tx, ctx, exposeCash, actor),
 } as const satisfies Record<RefundSourceDocType, Dispatcher>;
 
 /**
@@ -185,22 +211,72 @@ const DISPATCHERS = {
  * المبلغُ: ما أرسله الموظّف (`amount`) مقصوصاً بالوعاء، أو الوعاءُ كلُّه — الكفايةُ تُقاس به.
  * والبطاقةُ رافد ردّ فوريّ متاح للمسجّل والعابر حين يوجد سقفٌ لها، مع مرجع الجهاز عند التنفيذ.
  */
-async function saleReturnPreflight(tx: Tx, ctx: RefundRailContext, exposeCash: boolean): Promise<RefundPreflight | null> {
+async function saleReturnPreflight(
+  tx: Tx,
+  ctx: RefundRailContext,
+  exposeCash: boolean,
+  actor: RefundRailActor,
+): Promise<RefundPreflight | null> {
   const inv = (
     await tx
-      .select({ id: invoices.id, branchId: invoices.branchId, customerId: invoices.customerId })
+      .select({
+        id: invoices.id,
+        branchId: invoices.branchId,
+        customerId: invoices.customerId,
+        shiftId: invoices.shiftId,
+        sourceType: invoices.sourceType,
+        shiftType: shifts.shiftType,
+      })
       .from(invoices)
+      .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
       .where(eq(invoices.id, ctx.sourceDocId))
       .limit(1)
   )[0];
   if (!inv) return null;
   const branchId = Number(inv.branchId);
+  if (canCrossBranches(actor) || branchId === Number(actor.branchId)) {
+    const invoiceScope = saleReturnInvoiceScopeForActor(actor);
+    if (invoiceScope === "reception") {
+      const isReceptionInvoice =
+        inv.shiftType === "RECEPTION" ||
+        (inv.shiftId == null && inv.sourceType === "WORKORDER");
+      if (!isReceptionInvoice) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر الاستفتاء عن ردّ فاتورة المبيعات",
+            why: "صلاحيتك مقتصرة على فواتير محطة الاستقبال وأوامر الشغل ولا تشمل فواتير القنوات الأخرى",
+            doThis: "استخدم حساباً يملك صلاحية قراءة المبيعات أو راجع مدير الفرع",
+          }),
+        });
+      }
+    } else if (invoiceScope === "print") {
+      if (inv.shiftType !== "PRINT_SERVICES") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر الاستفتاء عن ردّ فاتورة المبيعات",
+            why: "صلاحيتك مقتصرة على فواتير محطة خدمات الطباعة ولا تشمل فواتير القنوات الأخرى",
+            doThis: "استخدم حساباً يملك صلاحية قراءة المبيعات أو راجع مدير الفرع",
+          }),
+        });
+      }
+    }
+  }
   const caps = await loadRefundCaps(tx, ctx.sourceDocId);
   const requested = ctx.amount != null ? money(ctx.amount) : caps.pool;
   const cashOut = round2(Decimal.min(requested, caps.pool));
   const needsCashDrawer = cashOut.gt(0);
   const cardCap = caps.capByMethod.get("CARD") ?? money(0);
-  const drawers = needsCashDrawer ? await openDrawers(tx, branchId, cashOut, exposeCash) : [];
+  const drawers = needsCashDrawer
+    ? await openDrawers(
+        tx,
+        branchId,
+        cashOut,
+        exposeCash,
+        actorMayDrawFromTreasury(actor) ? null : actor.userId,
+      )
+    : [];
   const treasury = needsCashDrawer
     ? await computeTreasuryCashBalance(tx, branchId)
     : money(0);
@@ -215,8 +291,14 @@ async function saleReturnPreflight(tx: Tx, ctx: RefundRailContext, exposeCash: b
   };
 }
 
-/** الأدراجُ المفتوحة بالفرع (أيُّ نوع) بنفس صيغة `assertCashOutAvailable` — الرقمُ لمن يملك الخزينة. */
-async function openDrawers(tx: Tx, branchId: number, needed: Decimal, exposeCash: boolean): Promise<RefundDrawerCandidate[]> {
+/** الأدراجُ المفتوحة بالفرع (أو درج المنفّذ وحده لغير الإداريّ) بنفس صيغة `assertCashOutAvailable` — الرقمُ لمن يملك الخزينة. */
+async function openDrawers(
+  tx: Tx,
+  branchId: number,
+  needed: Decimal,
+  exposeCash: boolean,
+  scopedUserId: number | null = null,
+): Promise<RefundDrawerCandidate[]> {
   const rows = await tx
     .select({
       shiftId: shifts.id,
@@ -227,7 +309,15 @@ async function openDrawers(tx: Tx, branchId: number, needed: Decimal, exposeCash
     })
     .from(shifts)
     .leftJoin(users, eq(users.id, shifts.userId))
-    .where(and(eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")));
+    .where(
+      scopedUserId != null
+        ? and(
+            eq(shifts.branchId, branchId),
+            eq(shifts.status, "OPEN"),
+            eq(shifts.userId, scopedUserId),
+          )
+        : and(eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")),
+    );
   const out: RefundDrawerCandidate[] = [];
   for (const r of rows) {
     const available = await computeDrawerCashBalance(tx, Number(r.shiftId), r.openingBalance ?? "0");
