@@ -2480,6 +2480,12 @@ export const returnRouter = router({
             const rawNo = input.invoiceNumber.trim();
             const strippedNo = rawNo.replace(/^INV-/i, "");
             const prefixedNo = `INV-${strippedNo}`;
+            const cartInvoiceScope = returnInvoiceScopeForUser(
+              currentOperationUser,
+              "returns.executeSalesReturnCart",
+            );
+            const cartInvoiceChannelCondition =
+              buildInvoiceChannelCondition(cartInvoiceScope);
 
             // ١) قراءة الفاتورة أولاً دون قفل لمعرفة المعرّف والإرسالية:
             const [invPreview] = await tx
@@ -2490,11 +2496,15 @@ export const returnRouter = router({
                 sourceType: invoices.sourceType,
               })
               .from(invoices)
+              .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
               .where(
-                or(
-                  eq(invoices.invoiceNumber, rawNo),
-                  eq(invoices.invoiceNumber, strippedNo),
-                  eq(invoices.invoiceNumber, prefixedNo),
+                and(
+                  or(
+                    eq(invoices.invoiceNumber, rawNo),
+                    eq(invoices.invoiceNumber, strippedNo),
+                    eq(invoices.invoiceNumber, prefixedNo),
+                  ),
+                  cartInvoiceScope ? cartInvoiceChannelCondition : sql`1=0`,
                 ),
               )
               .limit(1);
@@ -2605,6 +2615,32 @@ export const returnRouter = router({
                   doThis: "تأكد من صحة رقم الفاتورة أو رمز الباركود المدخل",
                 }),
               });
+            }
+
+            if (cartInvoiceScope === "reception" || cartInvoiceScope === "print") {
+              const [lockedShift] =
+                found.shiftId != null
+                  ? await tx
+                      .select({ shiftType: shifts.shiftType })
+                      .from(shifts)
+                      .where(eq(shifts.id, Number(found.shiftId)))
+                      .limit(1)
+                  : [];
+              const channelMatches =
+                cartInvoiceScope === "reception"
+                  ? lockedShift?.shiftType === "RECEPTION" ||
+                    (found.shiftId == null && found.sourceType === "WORKORDER")
+                  : lockedShift?.shiftType === "PRINT_SERVICES";
+              if (!channelMatches) {
+                throw new TRPCError({
+                  code: "NOT_FOUND",
+                  message: appErrorMessage({
+                    what: "تعذر العثور على الفاتورة المحددة",
+                    why: `لا توجد فاتورة بالرقم «${input.invoiceNumber.trim()}» مسجلة في النظام`,
+                    doThis: "تأكد من صحة رقم الفاتورة أو رمز الباركود المدخل",
+                  }),
+                });
+              }
             }
 
             if (found.sourceType === "WORKORDER") {

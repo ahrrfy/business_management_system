@@ -692,5 +692,24 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       invoiceNumber: receptionSale.invoiceNumber,
     });
     expect(receptionInspectByPrint).toBeNull();
+
+    await expect(
+      receptionCaller.executeSalesReturnCart({
+        invoiceNumber: retailSale.invoiceNumber,
+        items: [
+          {
+            variantId: 1,
+            productName: "كارت شخصي",
+            quantity: 1,
+            unitPrice: "25.00",
+          },
+        ],
+        settlement: {
+          method: "CASH",
+          totalAmount: "25.00",
+          shiftId: receptionShiftId,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });

@@ -22,7 +22,6 @@ import { trpc } from "@/lib/trpc";
 import { hasModuleAccess, moduleAccessAllowed, type AccessLevel, type PermissionMap, type RoleKey } from "@shared/permissions";
 import {
   canSeeGate,
-  INVOICE_LIST_GATE,
   RETURNS_WORKSPACE_GATE,
   type RoleGate,
 } from "@/lib/navVisibility";
@@ -30,6 +29,17 @@ import { Lock } from "lucide-react";
 import { useSyncExternalStore } from "react";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import type { OperationPolicy } from "@shared/operationPermissions";
+
+const RETURNS_ARCHIVE_GATE: RoleGate = {
+  operations: ["returns.list", "purchaseReturns.list"],
+};
+
+const LEGACY_RETURNS_STATION_GATE: RoleGate = {
+  anyOf: [
+    { roles: ["cashier", "manager", "print_operator"], module: "workorders", level: "FULL" },
+    { roles: ["cashier", "manager", "print_operator"], module: "pos", level: "FULL" },
+  ],
+};
 
 type Props = {
   /** Compound exact operation contract for alternative workflows in the same editor. */
@@ -100,7 +110,7 @@ export function RequireRole({
     (operationPolicy && canonicalGate
       ? canSeeGate(canonicalGate, role, override, operationPolicy) ||
         (canonicalGate === RETURNS_WORKSPACE_GATE &&
-          canSeeGate(INVOICE_LIST_GATE, role, override, operationPolicy))
+          canSeeGate(RETURNS_ARCHIVE_GATE, role, override, operationPolicy))
       : operationPolicy && operations?.length
       ? canSeeGate({ operations }, role, override, operationPolicy)
       : gate
@@ -108,7 +118,7 @@ export function RequireRole({
       : module
         ? canSeeGate({ roles, module, level }, role, override, operationPolicy) ||
           (canonicalGate === RETURNS_WORKSPACE_GATE &&
-            canSeeGate(INVOICE_LIST_GATE, role, override, operationPolicy))
+            canSeeGate(LEGACY_RETURNS_STATION_GATE, role, override, operationPolicy))
         : role === "admin" || !!roles?.includes(role));
   if (!allowed) {
     return <Forbidden />;

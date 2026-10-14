@@ -461,7 +461,7 @@ export default function ReturnsHub() {
             />
           )}
         </>
-      ) : (
+      ) : canViewActiveHistory ? (
         <Suspense fallback={<LoadingState />}>
           {portalMode === "sales" ? (
             <SalesReturns embedded />
@@ -469,7 +469,7 @@ export default function ReturnsHub() {
             <PurchaseReturns embedded />
           )}
         </Suspense>
-      )}
+      ) : null}
 
       {/* ═════════════════════════════════════════════════════════════════════ */}
       {/* قسم العمليات المنجزة حديثاً وإعادة الطباعة الحرارية                   */}
