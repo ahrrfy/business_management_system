@@ -708,8 +708,10 @@ export async function returnSaleInTx(
   } | null = null;
   if (refund?.method === "CASH" && money(refund.amount).gt(0)) {
     const branchForRefund = Number(invPreview.branchId);
+    const isNonManagerCashier =
+      actor.role !== "admin" && actor.role !== "manager";
     let explicitShiftId = refund.shiftId ?? null;
-    if (explicitShiftId == null && actor.role === "cashier") {
+    if (explicitShiftId == null && isNonManagerCashier) {
       const callerOpenShifts = await tx
         .select({ id: shifts.id })
         .from(shifts)
@@ -754,7 +756,7 @@ export async function returnSaleInTx(
         branchForRefund,
         explicitShiftId,
       );
-      if (actor.role === "cashier" && resolved.userId !== actor.userId) {
+      if (isNonManagerCashier && resolved.userId !== actor.userId) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: appErrorMessage({
@@ -773,7 +775,11 @@ export async function returnSaleInTx(
       // بلا ورديةٍ مفتوحة: `shiftIdForCashTx` يقرّر بالدور — خزينةٌ للإداريّ، ورفضٌ للكاشير.
       const routed = await shiftIdForCashTx(
         tx,
-        { userId: actor.userId, branchId: branchForRefund, role: actor.role },
+        {
+          userId: actor.userId,
+          branchId: branchForRefund,
+          role: isNonManagerCashier ? "cashier" : actor.role,
+        },
         branchForRefund,
         "استرداد مرتجع البيع نقداً",
       );
@@ -2944,24 +2950,6 @@ export async function returnSaleDirect(
         });
       }
 
-      // Idempotency: إعادة تشغيل مرتجع مُلتزم سابقاً لا تشترط بقاء الوردية مفتوحة
-      if (coreInput.clientRequestId) {
-        const fingerprint = idempotencyHash(coreInput);
-        const existingRefId = await checkIdempotency(
-          tx,
-          "sale.return",
-          coreInput.clientRequestId,
-          fingerprint,
-        );
-        if (existingRefId != null) {
-          return returnSaleInTx(tx, coreInput, {
-            userId: actor.userId,
-            branchId: actor.branchId,
-            role: effectiveRole,
-          });
-        }
-      }
-
       // Every non-privileged delegate is subject to the same transaction
       // limits. A sparse canonical grant must never turn a sales representative
       // or another custom delegate into an unlimited direct-refund actor.
@@ -2976,6 +2964,27 @@ export async function returnSaleDirect(
         )
       );
       const requiresOperationalLimits = !currentApprovalAllowed;
+      const effectiveReturnActorRole = requiresOperationalLimits
+        ? "cashier"
+        : effectiveRole;
+
+      // Idempotency: إعادة تشغيل مرتجع مُلتزم سابقاً لا تشترط بقاء الوردية مفتوحة
+      if (coreInput.clientRequestId) {
+        const fingerprint = idempotencyHash(coreInput);
+        const existingRefId = await checkIdempotency(
+          tx,
+          "sale.return",
+          coreInput.clientRequestId,
+          fingerprint,
+        );
+        if (existingRefId != null) {
+          return returnSaleInTx(tx, coreInput, {
+            userId: actor.userId,
+            branchId: actor.branchId,
+            role: effectiveReturnActorRole,
+          });
+        }
+      }
 
       if (requiresOperationalLimits) {
         const directRefund = coreInput.resolution ?? coreInput.refund;
@@ -2997,7 +3006,12 @@ export async function returnSaleDirect(
         const openShiftId = needsCashShift
           ? await openShiftIdTx(tx, actor.userId, targetBranchId)
           : null;
-        if (needsCashShift && !openShiftId) {
+        if (
+          needsCashShift &&
+          (!openShiftId ||
+            (directRefund?.shiftId != null &&
+              Number(directRefund.shiftId) !== Number(openShiftId)))
+        ) {
           throw new OperationalApprovalRequiredError({
             result: "APPROVAL_REQUIRED",
             reason: "الرد النقدي ليس من وردية مفتوحة تخص منفذ المرتجع",
@@ -3105,7 +3119,7 @@ export async function returnSaleDirect(
       return returnSaleInTx(tx, coreInput, {
         userId: actor.userId,
         branchId: actor.branchId,
-        role: effectiveRole,
+        role: effectiveReturnActorRole,
         operationalCaps: resolvedCaps,
       });
     }),

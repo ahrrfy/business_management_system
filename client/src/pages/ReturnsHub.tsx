@@ -64,9 +64,17 @@ interface RecentOp {
 export default function ReturnsHub() {
   const [, setLocation] = useLocation();
   const searchStr = useSearch();
-  const canExecutePurchaseReturn = useOperationPermission(
+  const canExecutePurchaseReturnCart = useOperationPermission(
     "returns.executePurchaseReturnCart",
   ).allowed;
+  const canLookupItemForReturn = useOperationPermission(
+    "returns.lookupItemForReturn",
+  ).allowed;
+  const canListSuppliers = useOperationPermission("suppliers.list").allowed;
+  const canExecutePurchaseReturn =
+    canExecutePurchaseReturnCart &&
+    canLookupItemForReturn &&
+    canListSuppliers;
   const canListSalesReturns = useOperationPermission("returns.list").allowed;
   const canListPurchaseReturns = useOperationPermission(
     "purchaseReturns.list",
