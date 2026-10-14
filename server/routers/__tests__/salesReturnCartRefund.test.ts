@@ -371,6 +371,47 @@ describe.sequential("returns.executeSalesReturnCart — عميلٌ مسجّلٌ 
     expect(await customerBalance(1)).toBe("0.00");
   });
 
+  it("⭐ CASH بلا فاتورة يرفض التلاعب بمبلغ التسوية أو سعر الوحدة لتضخيم المخزون تحت سقف الكاشير", async () => {
+    const shiftId = await openShift();
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId,
+      direction: "IN",
+      amount: "100.00",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      partyType: "OTHER",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      createdBy: 2,
+    });
+
+    const caller = returnRouter.createCaller(context());
+    await expect(
+      caller.executeSalesReturnCart({
+        customer: { customerId: 1, name: "زبون مسجّل" },
+        disposition: "RESTOCK",
+        items: [{ variantId: 1, productName: "قلم", quantity: 500, unitPrice: "10.00" }],
+        settlement: { method: "CASH", totalAmount: "1.00", shiftId },
+        clientRequestId: "sr-cart-cash-noinv-tampered-total",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await expect(
+      caller.executeSalesReturnCart({
+        customer: { customerId: 1, name: "زبون مسجّل" },
+        disposition: "RESTOCK",
+        items: [{ variantId: 1, productName: "قلم", quantity: 100, unitPrice: "0.01" }],
+        settlement: { method: "CASH", totalAmount: "1.00", shiftId },
+        clientRequestId: "sr-cart-cash-noinv-tampered-price",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    expect(await entriesOfType("RETURN")).toHaveLength(0);
+    expect(await entriesOfType("PAYMENT_OUT")).toHaveLength(0);
+  });
+
   it("STORE_CREDIT بلا فاتورة: يُرفَض (رصيد المتجر يلزمه بيعٌ موثَّق) + لا أثر ولا انحراف", async () => {
     const caller = returnRouter.createCaller(context());
     // رصيدُ المتجر التزامٌ دائمٌ ⇒ يجب أن يُسنَد لفاتورةٍ مُرتجَعة. بلا فاتورةٍ مطابقة يُرفَض صراحةً

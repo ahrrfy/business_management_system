@@ -48,6 +48,7 @@ import {
 } from "../services/idempotency";
 import { retryOnDup } from "../lib/retryDup";
 import { isDeadInvoice } from "@shared/predicates/isDeadInvoice";
+import { deriveInvoiceChannel } from "@shared/invoiceChannel";
 import { classifyVariants, getBundleDefinitions } from "../services/bundleService";
 import { canCrossBranches } from "../lib/branchAuthority";
 import {
@@ -2386,7 +2387,95 @@ export const returnRouter = router({
               }),
             });
           }
+          if (!input.invoiceNumber?.trim()) {
+            let computedWalkInTotal = money(0);
+            for (const itm of input.items) {
+              const itemUnitPrice = money(itm.unitPrice);
+              if (itemUnitPrice.lte(0)) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: "سعر الصنف المرتجع غير صالح",
+                    why: `يجب أن يكون سعر الوحدة للصنف «${itm.productName}» أكبر من صفر في المرتجع العابر`,
+                    doThis:
+                      "تحقق من سعر الصنف في سلة المرتجع أو اربط المرتجع بالفاتورة الأصلية",
+                  }),
+                });
+              }
+              computedWalkInTotal = computedWalkInTotal.plus(
+                itemUnitPrice.times(itm.quantity),
+              );
+            }
+            const roundedWalkInTotal = round2(computedWalkInTotal);
+            if (!round2(returnTotalDec).eq(roundedWalkInTotal)) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "مبلغ تسوية المرتجع غير مطابق لمجموع السلة",
+                  why: `مبلغ التسوية (${round2(returnTotalDec).toFixed(2)} د.ع) لا يطابق مجموع كميات وأسعار الأصناف في السلة (${roundedWalkInTotal.toFixed(2)} د.ع)`,
+                  doThis:
+                    "أعد احتساب السلة وتأكد من تطابق إجمالي التسوية مع مجموع البنود قبل تنفيذ المرتجع",
+                }),
+              });
+            }
+          }
           if (directLimitsApply && !input.invoiceNumber?.trim()) {
+            for (const itm of input.items) {
+              const itemUnitPrice = money(itm.unitPrice);
+              const [unitRow] =
+                itm.productUnitId != null
+                  ? await tx
+                      .select({ id: productUnits.id })
+                      .from(productUnits)
+                      .where(
+                        and(
+                          eq(productUnits.id, itm.productUnitId),
+                          eq(productUnits.variantId, itm.variantId),
+                        ),
+                      )
+                      .limit(1)
+                  : await tx
+                      .select({ id: productUnits.id })
+                      .from(productUnits)
+                      .where(
+                        and(
+                          eq(productUnits.variantId, itm.variantId),
+                          eq(productUnits.isBaseUnit, true),
+                        ),
+                      )
+                      .limit(1);
+              if (unitRow) {
+                const [retailPriceRow] = await tx
+                  .select({ price: productPrices.price })
+                  .from(productPrices)
+                  .where(
+                    and(
+                      eq(productPrices.productUnitId, unitRow.id),
+                      eq(productPrices.priceTier, "RETAIL"),
+                    ),
+                  )
+                  .limit(1);
+                const catalogRetailPrice =
+                  retailPriceRow?.price != null
+                    ? round2(money(retailPriceRow.price))
+                    : null;
+                if (
+                  catalogRetailPrice != null &&
+                  catalogRetailPrice.gt(0) &&
+                  !round2(itemUnitPrice).eq(catalogRetailPrice)
+                ) {
+                  throw new TRPCError({
+                    code: "PRECONDITION_FAILED",
+                    message: appErrorMessage({
+                      what: "يتطلب المرتجع موافقة المدير",
+                      why: `سعر الوحدة المدخل للصنف «${itm.productName}» (${round2(itemUnitPrice).toFixed(2)} د.ع) يختلف عن سعر البيع المعتمد (${catalogRetailPrice.toFixed(2)} د.ع) في المرتجع العابر بلا فاتورة`,
+                      doThis:
+                        "التزم بسعر البيع المعتمد للصنف في المرتجع العابر، أو اربط المرتجع بالفاتورة الأصلية ليعتمده المدير",
+                    }),
+                  });
+                }
+              }
+            }
             let walkInDrawerHasFunds = true;
             let walkInSameOpenShift = input.settlement.method !== "CASH";
             if (input.settlement.method === "CASH") {
@@ -2632,11 +2721,14 @@ export const returnRouter = router({
                       .where(eq(shifts.id, Number(found.shiftId)))
                       .limit(1)
                   : [];
+              const lockedChannel = deriveInvoiceChannel({
+                sourceType: found.sourceType,
+                shiftType: lockedShift?.shiftType,
+              });
               const channelMatches =
                 cartInvoiceScope === "reception"
-                  ? lockedShift?.shiftType === "RECEPTION" ||
-                    (found.shiftId == null && found.sourceType === "WORKORDER")
-                  : lockedShift?.shiftType === "PRINT_SERVICES";
+                  ? lockedChannel === "RECEPTION"
+                  : lockedChannel === "PRINT";
               if (!channelMatches) {
                 throw new TRPCError({
                   code: "NOT_FOUND",

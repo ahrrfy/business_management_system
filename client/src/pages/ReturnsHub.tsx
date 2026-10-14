@@ -340,42 +340,44 @@ export default function ReturnsHub() {
       {/* المنفذان الرئيسيان: أزرار واضحة وهوية بصرية دالة ومميزة               */}
       {/* ═════════════════════════════════════════════════════════════════════ */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-        <button
-          type="button"
-          onClick={() => switchPortal("sales")}
-          className={cn(
-            "relative p-2.5 rounded-xl border-2 text-right transition-all flex items-center gap-3 text-start cursor-pointer shadow-xs",
-            portalMode === "sales"
-              ? "border-primary bg-primary/5 dark:bg-primary/10 shadow-xs ring-2 ring-primary/20"
-              : "border-border hover:border-primary/40 bg-card hover:bg-muted/30 opacity-80 hover:opacity-100"
-          )}
-        >
-          <div
+        {canAccessSalesPortal && (
+          <button
+            type="button"
+            onClick={() => switchPortal("sales")}
             className={cn(
-              "p-2 rounded-lg shrink-0 transition-colors",
+              "relative p-2.5 rounded-xl border-2 text-right transition-all flex items-center gap-3 text-start cursor-pointer shadow-xs",
               portalMode === "sales"
-                ? "bg-primary text-primary-foreground shadow-xs"
-                : "bg-muted text-muted-foreground"
+                ? "border-primary bg-primary/5 dark:bg-primary/10 shadow-xs ring-2 ring-primary/20"
+                : "border-border hover:border-primary/40 bg-card hover:bg-muted/30 opacity-80 hover:opacity-100"
             )}
           >
-            <ShoppingCart className="size-5" aria-hidden />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-bold text-sm text-foreground">
-                مرتجعات المبيعات (العملاء والتجزئة)
-              </span>
-              {portalMode === "sales" && (
-                <Badge className="bg-primary text-primary-foreground text-[10px] px-1.5 py-0">
-                  المنفذ النشط
-                </Badge>
+            <div
+              className={cn(
+                "p-2 rounded-lg shrink-0 transition-colors",
+                portalMode === "sales"
+                  ? "bg-primary text-primary-foreground shadow-xs"
+                  : "bg-muted text-muted-foreground"
               )}
+            >
+              <ShoppingCart className="size-5" aria-hidden />
             </div>
-            <p className="text-[11px] text-muted-foreground truncate">
-              مسح الباركود، الفاتورة، العميل، فرز السليم والتالف، والاسترداد المالي
-            </p>
-          </div>
-        </button>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-sm text-foreground">
+                  مرتجعات المبيعات (العملاء والتجزئة)
+                </span>
+                {portalMode === "sales" && (
+                  <Badge className="bg-primary text-primary-foreground text-[10px] px-1.5 py-0">
+                    المنفذ النشط
+                  </Badge>
+                )}
+              </div>
+              <p className="text-[11px] text-muted-foreground truncate">
+                مسح الباركود، الفاتورة، العميل، فرز السليم والتالف، والاسترداد المالي
+              </p>
+            </div>
+          </button>
+        )}
 
         {canAccessPurchasePortal && (
           <button
