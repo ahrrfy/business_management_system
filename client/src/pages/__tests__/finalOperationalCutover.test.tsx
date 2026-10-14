@@ -107,7 +107,7 @@ describe("final operational UI cutover", () => {
     expect(dynamicPurchaseRoute).toBeGreaterThan(legacyReceiveRoute);
 
     expect(canSeeGate(INVOICE_LIST_GATE, "print_operator", null)).toBe(true);
-    expect(RETURNS_WORKSPACE_GATE.anyOf).toHaveLength(3);
+    expect(RETURNS_WORKSPACE_GATE.anyOf).toHaveLength(4);
     expect(
       canSeeGate(WORK_ORDERS_HUB_GATE, "accountant", { inventory: "FULL" }),
     ).toBe(true);

@@ -9,7 +9,7 @@
  *
  * بالإضافة إلى وظيفة المسح الكوني (universalBarcodeScan) لتحديد وجهة أي باركود ممسوح.
  */
-import { and, desc, eq, gte, inArray, isNotNull, isNull, like, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, like, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import {
   customers,
   deliveryConsignments,
@@ -40,12 +40,18 @@ export function buildInvoiceChannelCondition(
 ) {
   if (invoiceScope === "reception") {
     return or(
-      eq(shifts.shiftType, "RECEPTION"),
-      and(isNull(invoices.shiftId), eq(invoices.sourceType, "WORKORDER")),
+      inArray(invoices.sourceType, ["WORKORDER", "ORDER"]),
+      and(
+        ne(invoices.sourceType, "ONLINE"),
+        eq(shifts.shiftType, "RECEPTION"),
+      ),
     )!;
   }
   if (invoiceScope === "print") {
-    return eq(shifts.shiftType, "PRINT_SERVICES");
+    return and(
+      notInArray(invoices.sourceType, ["WORKORDER", "ORDER", "ONLINE"]),
+      eq(shifts.shiftType, "PRINT_SERVICES"),
+    )!;
   }
   return sql`1=1`;
 }

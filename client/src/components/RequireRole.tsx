@@ -30,10 +30,6 @@ import { useSyncExternalStore } from "react";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import type { OperationPolicy } from "@shared/operationPermissions";
 
-const RETURNS_ARCHIVE_GATE: RoleGate = {
-  operations: ["returns.list", "purchaseReturns.list"],
-};
-
 const LEGACY_RETURNS_STATION_GATE: RoleGate = {
   anyOf: [
     { roles: ["cashier", "manager", "print_operator"], module: "workorders", level: "FULL" },
@@ -108,9 +104,7 @@ export function RequireRole({
   const allowed =
     !!role &&
     (operationPolicy && canonicalGate
-      ? canSeeGate(canonicalGate, role, override, operationPolicy) ||
-        (canonicalGate === RETURNS_WORKSPACE_GATE &&
-          canSeeGate(RETURNS_ARCHIVE_GATE, role, override, operationPolicy))
+      ? canSeeGate(canonicalGate, role, override, operationPolicy)
       : operationPolicy && operations?.length
       ? canSeeGate({ operations }, role, override, operationPolicy)
       : gate

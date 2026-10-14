@@ -284,8 +284,15 @@ describe("operational UI permission parity", () => {
     expect(receptionQueue).toContain("`/work-orders/${parsedWorkOrderId}`");
 
     expect(requireRole).toContain("canonicalGate === RETURNS_WORKSPACE_GATE");
-    expect(requireRole).toContain("canSeeGate(RETURNS_ARCHIVE_GATE, role, override, operationPolicy)");
     expect(requireRole).toContain("canSeeGate(LEGACY_RETURNS_STATION_GATE, role, override, operationPolicy)");
+    expect(
+      canSeeGate(
+        RETURNS_WORKSPACE_GATE,
+        "auditor",
+        null,
+        operationPolicy(["returns.list"]),
+      ),
+    ).toBe(true);
 
     for (const role of ["cashier", "print_operator"] as const) {
       expect(

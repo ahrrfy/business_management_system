@@ -30,6 +30,7 @@ import type { Actor } from "./tx";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { maySeeDrawerCash } from "@shared/workOrderControlAuthority";
 import type { RefundDrawerCandidate, RefundPreflight } from "@shared/refundPreflight";
+import { deriveInvoiceChannel } from "@shared/invoiceChannel";
 import { resolvePermissions, type AccessLevel, type PermissionMap, type RoleKey } from "@shared/permissions";
 import {
   REFUND_SOURCE_DOC_LABEL,
@@ -247,11 +248,9 @@ async function saleReturnPreflight(
   const branchId = Number(inv.branchId);
   if (canCrossBranches(actor) || branchId === Number(actor.branchId)) {
     const invoiceScope = saleReturnInvoiceScopeForActor(actor);
+    const channel = deriveInvoiceChannel(inv);
     if (invoiceScope === "reception") {
-      const isReceptionInvoice =
-        inv.shiftType === "RECEPTION" ||
-        (inv.shiftId == null && inv.sourceType === "WORKORDER");
-      if (!isReceptionInvoice) {
+      if (channel !== "RECEPTION") {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: appErrorMessage({
@@ -262,7 +261,7 @@ async function saleReturnPreflight(
         });
       }
     } else if (invoiceScope === "print") {
-      if (inv.shiftType !== "PRINT_SERVICES") {
+      if (channel !== "PRINT") {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: appErrorMessage({
