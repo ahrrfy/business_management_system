@@ -88,7 +88,6 @@ export const RETURNS_WORKSPACE_GATE: RoleGate = {
       allOf: [
         { operations: ["returns.getRequest"] },
         { operations: ["returns.getInvoice"] },
-        { operations: ["refundRails.preflight"] },
         { operations: ["returns.approveRequest"] },
       ],
     },

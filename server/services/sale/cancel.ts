@@ -364,24 +364,6 @@ export async function cancelSaleInTx(
       expectedBranchId: Number(invPreview.branchId),
       allowAssignedCancellation: input.enforceOperationalDecision === true || input.controlExpectedSnapshot != null,
     });
-    if (deliveryGuard.cancellableAssignmentId != null) {
-      await cancelDeliveryAssignmentInTx(
-        tx,
-        {
-          consignmentId: deliveryGuard.cancellableAssignmentId,
-          reason: input.reason?.trim() || "إلغاء الفاتورة قبل تسليم إسناد التوصيل",
-          clientRequestId: `sale-cancel-${input.clientRequestId?.trim() || input.invoiceId}`,
-        },
-        { userId: actor.userId, branchId: actor.branchId, role: actor.role },
-        { assertAuthority: true },
-      );
-      // أثبت أن تحرير COD وإغلاق الإسناد اكتمل قبل لمس الفاتورة.
-      await assertInvoiceCancellationDeliverySafeTx(tx, {
-        invoiceId: input.invoiceId,
-        expectedBranchId: Number(invPreview.branchId),
-      });
-    }
-
     // ═══ ١) قراءة الفاتورة تحت FOR UPDATE + الحراس ═══
     const invRows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
     const inv = invRows[0];
@@ -512,6 +494,24 @@ export async function cancelSaleInTx(
         throw new OperationalApprovalRequiredError(directDecision);
       if (directDecision.result === "DENY")
         throw new TRPCError({ code: "FORBIDDEN", message: directDecision.reason });
+    }
+    if (deliveryGuard.cancellableAssignmentId != null) {
+      await cancelDeliveryAssignmentInTx(
+        tx,
+        {
+          consignmentId: deliveryGuard.cancellableAssignmentId,
+          reason: input.reason?.trim() || "إلغاء الفاتورة قبل تسليم إسناد التوصيل",
+          clientRequestId: `sale-cancel-${input.clientRequestId?.trim() || input.invoiceId}`,
+        },
+        { userId: actor.userId, branchId: actor.branchId, role: actor.role },
+        // هذا أثرٌ ذري تابع لإلغاء الفاتورة الذي تحقق من sales.cancel أعلاه؛
+        // صلاحية إلغاء الإسناد المستقل لا تُطلب لمسار الإلغاء المركب.
+        { assertAuthority: false },
+      );
+      await assertInvoiceCancellationDeliverySafeTx(tx, {
+        invoiceId: input.invoiceId,
+        expectedBranchId: Number(invPreview.branchId),
+      });
     }
     if (
       input.refundPaymentMethod === "CASH" &&

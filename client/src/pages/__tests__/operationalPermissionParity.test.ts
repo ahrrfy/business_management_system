@@ -208,12 +208,6 @@ describe("operational UI permission parity", () => {
       "returns.getRequest",
       "returns.getInvoice",
       "returns.approveRequest",
-    ]))).toBe(false);
-    expect(canSeeGate(RETURNS_WORKSPACE_GATE, "manager", null, operationPolicy([
-      "returns.getRequest",
-      "returns.getInvoice",
-      "refundRails.preflight",
-      "returns.approveRequest",
     ]))).toBe(true);
     expect(canSeeGate(PURCHASE_RETURNS_GOVERNANCE_GATE, "purchasing", null, operationPolicy([
       "purchaseReturnGovernance.requestReversal",
@@ -238,6 +232,8 @@ describe("operational UI permission parity", () => {
     ]))).toBe(true);
 
     expect(app).toContain("canonicalGate={RETURNS_WORKSPACE_GATE}");
+    expect(APPLICATION_MODULES.find((module) => module.id === "returns")?.anyOf)
+      .toEqual(RETURNS_WORKSPACE_GATE.anyOf);
     expect(app).toContain("canonicalGate={PURCHASE_RETURNS_GOVERNANCE_GATE}");
     expect(governance).toContain("enabled: enabled && canReadReversalSources");
     expect(governance).toContain("canReadReversalSources &&");
@@ -246,6 +242,12 @@ describe("operational UI permission parity", () => {
     expect(governance).toContain("enabled: canReadSuppliers");
     expect(governance).toContain('me.data?.role === "admin"');
     expect(governance).toContain("canChooseBranch ? (");
+
+    const returnComposer = readComponent("returns/ReturnComposer.tsx");
+    expect(returnComposer).toContain('useOperationPermission("returns.create")');
+    expect(returnComposer).toContain('useOperationPermission("refundRails.preflight")');
+    expect(returnComposer).toContain("directExecution: executesImmediately");
+    expect(returnComposer).toContain("refundRailPermission.allowed");
   });
 
   it("hides stock-expense tabs without the inventory adjustment operation", () => {

@@ -999,6 +999,74 @@ describe.sequential("cancelSale — إصلاحات مراجعة Codex (١٢/٨)"
 });
 
 describe.sequential("cancelSale — حارس التوصيل الموحّد", () => {
+  async function assignedCashierInvoice(suffix: string) {
+    await setStock(1, 1, 10);
+    await seedDeliveryParty();
+    await db().update(s.users).set({
+      role: "cashier",
+      operationPolicy: {
+        version: 1,
+        grants: {
+          "operation.sales.cancel": true,
+          "operation.salesControl.approve": false,
+          "operation.delivery.cancelAssignment": false,
+        },
+      },
+    }).where(eq(s.users.id, manager.userId));
+    const cashierActor = { userId: manager.userId, branchId: 1, role: "cashier" as const };
+    const sale = await createSale({
+      branchId: 1,
+      sourceType: "ORDER",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+    }, cashierActor);
+    const dispatched = await dispatchInvoice(sale.invoiceId, suffix);
+    await db().update(s.deliveryConsignments).set({
+      parcelStatus: "ASSIGNED",
+      custodyRecognizedAt: null,
+    }).where(eq(s.deliveryConsignments.id, dispatched.consignmentId));
+    return { sale, dispatched, cashierActor };
+  }
+
+  it("يلغي الكاشير فاتورة COD وإسنادها الآمن بذرة واحدة دون صلاحية إلغاء إسناد مستقلة", async () => {
+    const { sale, dispatched, cashierActor } = await assignedCashierInvoice("cashier-direct");
+
+    const result = await cancelSale({
+      invoiceId: sale.invoiceId,
+      refundPaymentMethod: "CASH",
+      reason: "إلغاء COD قبل استلام المندوب",
+      clientRequestId: "cashier-cancel-assigned-cod",
+      enforceOperationalDecision: true,
+    }, cashierActor);
+
+    expect(result.operationalDecision?.result).toBe("DIRECT");
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status)
+      .toBe("CANCELLED");
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, dispatched.consignmentId)))[0])
+      .toMatchObject({ status: "CANCELLED", parcelStatus: "CANCELLED", moneyStatus: "CANCELLED" });
+  });
+
+  it("يصنّف إلغاء COD القديم للاعتماد قبل تغيير الإسناد", async () => {
+    const { sale, dispatched, cashierActor } = await assignedCashierInvoice("cashier-approval");
+    await db().update(s.invoices)
+      .set({ invoiceDate: new Date(Date.now() - 86400000) })
+      .where(eq(s.invoices.id, sale.invoiceId));
+
+    await expect(cancelSale({
+      invoiceId: sale.invoiceId,
+      refundPaymentMethod: "CASH",
+      reason: "إلغاء COD قديم يحتاج اعتماداً",
+      clientRequestId: "cashier-request-assigned-cod",
+      enforceOperationalDecision: true,
+    }, cashierActor)).rejects.toMatchObject({
+      decision: { result: "APPROVAL_REQUIRED" },
+    });
+
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status)
+      .not.toBe("CANCELLED");
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, dispatched.consignmentId)))[0])
+      .toMatchObject({ status: "DISPATCHED", parcelStatus: "ASSIGNED", moneyStatus: "UNSETTLED" });
+  });
+
   it("يرفض إلغاء فاتورة ذات إرسالية حيّة بلا أي أثر جانبي", async () => {
     await setStock(1, 1, 10);
     await seedDeliveryParty();

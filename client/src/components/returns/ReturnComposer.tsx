@@ -93,12 +93,14 @@ export function ReturnComposer({
 }: ReturnComposerProps) {
   const utils = trpc.useUtils();
   const detail = trpc.returns.getInvoice.useQuery({ invoiceId }, { enabled: invoiceId > 0 });
-  /** المالك وحده ينفّذ المرتجع فوراً (VULN-SQUAD1-01) — غير المالك يرسل طلباً للاعتماد. */
+  /** التنفيذ المباشر تفويض مستقل؛ الخادم يحوّل تجاوز السقف/الوردية/اليوم إلى طلب اعتماد. */
   const me = trpc.auth.me.useQuery();
   const operationPermission = useOperationPermission(
     approvingRequestId ? "returns.approveRequest" : "returns.create",
   );
-  const executesImmediately = me.data?.isOwner === true;
+  const directReturnPermission = useOperationPermission("returns.create");
+  const refundRailPermission = useOperationPermission("refundRails.preflight");
+  const executesImmediately = me.data?.isOwner === true || directReturnPermission.allowed;
   /**
    * ⭐ في وضع الاعتماد نُحمّل **بنود الطلب** — هي التي سينفّذها الخادم، لا ما يُدخله المدير.
    * كان الجدول يُفتَح فارغاً فيُدخل المدير كمّياتٍ يُقسم بها حوارُ التأكيد ثمّ يتجاهلها
@@ -454,6 +456,9 @@ export function ReturnComposer({
     }
     if (!selectedLines.length) return "حدّد كمية إرجاع واحدة على الأقل.";
     if (isWalkIn && !returnValue.gt(0)) return "قيمة المرتجع صفر؛ لا يمكن إنشاء تسوية نقدية لزبون عابر.";
+    if (requiresExecutableRail && !noRefundNeeded && refundD.gt(0) && !refundRailPermission.allowed) {
+      return "لا تملك صلاحية التحقق من مصدر ردّ المبلغ؛ يمكنك اعتماد المرتجعات التي لا تتطلب صرفاً فقط.";
+    }
     // حجبُ الرافد يسري على ردٍّ **موجب** فقط — لا معنى لسقفٍ حين لا يخرج مال.
     if (!noRefundNeeded && activeOption?.blockedReason) return activeOption.blockedReason;
     if (overCap) return `المبلغ يتجاوز المسموح (${fmt(railCap.toFixed(2))} د.ع).`;
@@ -470,7 +475,7 @@ export function ReturnComposer({
     }
     if (reason.trim().length < 3) return "اكتب سبب المرتجع (٣ أحرف على الأقل) لتوثيق الطلب.";
     return null;
-  }, [isLocked, pending, approvingRequestId, requiresExecutableRail, requestDetail.data, invoiceId, lockedLines, me.data?.role, me.data?.id, inv?.refundShifts, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, method, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
+  }, [isLocked, pending, approvingRequestId, requiresExecutableRail, requestDetail.data, invoiceId, lockedLines, me.data?.role, me.data?.id, inv?.refundShifts, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, refundRailPermission.allowed, method, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
 
   async function submit() {
     setError("");
@@ -1117,7 +1122,7 @@ export function ReturnComposer({
                   )}
                 </div>
 
-                {refundD.gt(0) ? (
+                {refundD.gt(0) && refundRailPermission.allowed ? (
                   <RefundRailPicker
                     context={{
                       sourceDocType: "SALE_RETURN",
@@ -1131,6 +1136,10 @@ export function ReturnComposer({
                     drawerHint="النقد يخرج من الدرج المختار عند تنفيذ المرتجع، ويظهر في تسويته."
                     submitting={create.isPending || approve.isPending}
                   />
+                ) : refundD.gt(0) ? (
+                  <div className="rounded-lg border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] p-3 text-xs font-semibold text-[var(--sem-warn)]">
+                    هذا المرتجع يحتاج صرفاً مالياً؛ يلزم تفويض «التحقق من مصدر ردّ المبلغ» قبل اعتماده.
+                  </div>
                 ) : null}
               </CardContent>
             </Card>
