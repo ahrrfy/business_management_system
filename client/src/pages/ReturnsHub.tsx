@@ -64,6 +64,19 @@ interface RecentOp {
 export default function ReturnsHub() {
   const [, setLocation] = useLocation();
   const searchStr = useSearch();
+  const canExecuteSalesReturnCart = useOperationPermission(
+    "returns.executeSalesReturnCart",
+  ).allowed;
+  const canInspectInvoiceForReturn = useOperationPermission(
+    "returns.inspectInvoiceForReturn",
+  ).allowed;
+  const canGetOpenRefundDrawers = useOperationPermission(
+    "returns.getOpenRefundDrawers",
+  ).allowed;
+  const canExecuteSalesReturn =
+    canExecuteSalesReturnCart &&
+    canInspectInvoiceForReturn &&
+    canGetOpenRefundDrawers;
   const canExecutePurchaseReturnCart = useOperationPermission(
     "returns.executePurchaseReturnCart",
   ).allowed;
@@ -79,6 +92,8 @@ export default function ReturnsHub() {
   const canListPurchaseReturns = useOperationPermission(
     "purchaseReturns.list",
   ).allowed;
+  const canAccessSalesPortal =
+    canExecuteSalesReturn || canListSalesReturns;
   const canAccessPurchasePortal =
     canExecutePurchaseReturn || canListPurchaseReturns;
 
@@ -94,7 +109,8 @@ export default function ReturnsHub() {
   );
   const portalParam = urlParams.get("portal") || urlParams.get("tab");
   const initialMode = (
-    portalParam === "purchases" && canAccessPurchasePortal
+    (portalParam === "purchases" && canAccessPurchasePortal) ||
+    (!canAccessSalesPortal && canAccessPurchasePortal)
       ? "purchases"
       : "sales"
   ) as ReturnPortalMode;
@@ -102,15 +118,15 @@ export default function ReturnsHub() {
   const initialInvoice = urlParams.get("invoice") || undefined;
   const initialPo = urlParams.get("po") || undefined;
   const canCreateActivePortal =
-    portalMode === "purchases" ? canExecutePurchaseReturn : true;
+    portalMode === "purchases" ? canExecutePurchaseReturn : canExecuteSalesReturn;
   const canViewActiveHistory =
     portalMode === "purchases" ? canListPurchaseReturns : canListSalesReturns;
 
   const viewParam = urlParams.get("view");
   const [subTab, setSubTab] = useState<"create" | "history">(
-    initialMode === "purchases" &&
-      !canExecutePurchaseReturn &&
-      canListPurchaseReturns
+    (initialMode === "purchases"
+      ? !canExecutePurchaseReturn && canListPurchaseReturns
+      : !canExecuteSalesReturn && canListSalesReturns)
       ? "history"
       : (viewParam === "history" || viewParam === "ledger") &&
           (initialMode === "purchases"
@@ -125,10 +141,13 @@ export default function ReturnsHub() {
       setPortalMode("sales");
       return;
     }
+    if (!canAccessSalesPortal && canAccessPurchasePortal && portalMode === "sales") {
+      setPortalMode("purchases");
+      return;
+    }
     if (
-      portalMode === "purchases" &&
-      !canExecutePurchaseReturn &&
-      canListPurchaseReturns &&
+      !canCreateActivePortal &&
+      canViewActiveHistory &&
       subTab === "create"
     ) {
       setSubTab("history");
@@ -139,8 +158,8 @@ export default function ReturnsHub() {
     }
   }, [
     canAccessPurchasePortal,
-    canExecutePurchaseReturn,
-    canListPurchaseReturns,
+    canAccessSalesPortal,
+    canCreateActivePortal,
     canViewActiveHistory,
     portalMode,
     subTab,
@@ -148,10 +167,11 @@ export default function ReturnsHub() {
 
   const switchPortal = (mode: ReturnPortalMode) => {
     if (mode === "purchases" && !canAccessPurchasePortal) return;
+    if (mode === "sales" && !canAccessSalesPortal) return;
     const canListTarget =
       mode === "purchases" ? canListPurchaseReturns : canListSalesReturns;
     const canCreateTarget =
-      mode === "purchases" ? canExecutePurchaseReturn : true;
+      mode === "purchases" ? canExecutePurchaseReturn : canExecuteSalesReturn;
     setPortalMode(mode);
     const p = new URLSearchParams(searchStr);
     p.set("portal", mode);

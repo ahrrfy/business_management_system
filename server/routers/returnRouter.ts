@@ -1377,6 +1377,18 @@ export const returnRouter = router({
       const actorBranchId =
         ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
       const isAdmin = ctx.user.role === "admin";
+      const invoiceScope = returnInvoiceScopeForUser(
+        ctx.user,
+        "returns.inspectInvoiceForReturn",
+      );
+      if (!invoiceScope) return null;
+      const invoiceChannelCondition = buildInvoiceChannelCondition(invoiceScope);
+      const invoiceBranchCondition =
+        !isAdmin && invoiceScope !== "sales"
+          ? actorBranchId != null
+            ? eq(invoices.branchId, actorBranchId)
+            : sql`1=0`
+          : sql`1=1`;
 
       const rawNo = input.invoiceNumber.trim();
       const strippedNo = rawNo.replace(/^INV-/i, "");
@@ -1404,11 +1416,16 @@ export const returnRouter = router({
         })
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
         .where(
-          or(
-            eq(invoices.invoiceNumber, rawNo),
-            eq(invoices.invoiceNumber, strippedNo),
-            eq(invoices.invoiceNumber, prefixedNo),
+          and(
+            or(
+              eq(invoices.invoiceNumber, rawNo),
+              eq(invoices.invoiceNumber, strippedNo),
+              eq(invoices.invoiceNumber, prefixedNo),
+            ),
+            invoiceBranchCondition,
+            invoiceChannelCondition,
           ),
         )
         .limit(1);

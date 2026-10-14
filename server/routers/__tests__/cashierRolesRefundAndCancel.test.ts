@@ -679,5 +679,18 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       barcode: retailSale.invoiceNumber,
     });
     expect(retailScanByReception.recognized).toBe(false);
+
+    const retailInspectByReception = await receptionCaller.inspectInvoiceForReturn({
+      invoiceNumber: retailSale.invoiceNumber,
+    });
+    expect(retailInspectByReception).toBeNull();
+    const printInspectByReception = await receptionCaller.inspectInvoiceForReturn({
+      invoiceNumber: printSale.invoiceNumber,
+    });
+    expect(printInspectByReception).toBeNull();
+    const receptionInspectByPrint = await printCaller.inspectInvoiceForReturn({
+      invoiceNumber: receptionSale.invoiceNumber,
+    });
+    expect(receptionInspectByPrint).toBeNull();
   });
 });

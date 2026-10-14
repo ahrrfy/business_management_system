@@ -271,9 +271,11 @@ describe("operational UI permission parity", () => {
       dataVisibility: { purchaseCost: false, profitMargin: false },
     });
 
+    expect(returnsHub).toContain('"returns.executeSalesReturnCart"');
     expect(returnsHub).toContain('"returns.executePurchaseReturnCart"');
     expect(returnsHub).toContain('useOperationPermission("returns.list").allowed');
     expect(returnsHub).toContain('"purchaseReturns.list"');
+    expect(returnsHub).toContain("portalMode === \"purchases\" ? canExecutePurchaseReturn : canExecuteSalesReturn");
     expect(returnsHub).toContain("{canAccessPurchasePortal && (");
     expect(returnsHub).toContain("{canCreateActivePortal && (");
     expect(returnsHub).toContain("{canViewActiveHistory && (");

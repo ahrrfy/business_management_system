@@ -886,11 +886,11 @@ export function returnInvoiceScopeForUser(
 ): InvoiceScope | null {
   if (user.role === "admin" || user.isOwner) return "sales";
   if (hasOperationPolicy(user) && !canonicalOperationAllowed(user, path)) return null;
+  const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
   const customKey = (user as { customRoleKey?: string | null }).customRoleKey;
   if (customKey === "reception_clerk") return "reception";
   if (customKey === "print_cashier") return "print";
-  if (customKey === "retail_cashier") return "sales";
-  const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  if (customKey === "retail_cashier" && override?.sales !== "NONE") return "sales";
   if (moduleAccessAllowed(user.role, override, "sales", "FULL", ["cashier", "manager"])) {
     return "sales";
   }
