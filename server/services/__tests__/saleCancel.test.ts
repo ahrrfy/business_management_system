@@ -1016,6 +1016,7 @@ describe.sequential("cancelSale — حارس التوصيل الموحّد", () 
     const cashierActor = { userId: manager.userId, branchId: 1, role: "cashier" as const };
     const sale = await createSale({
       branchId: 1,
+      customerId: 1,
       sourceType: "ORDER",
       lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
     }, cashierActor);

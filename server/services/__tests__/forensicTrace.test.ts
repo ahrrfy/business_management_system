@@ -9,7 +9,7 @@
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { CASHIER_NAV_PATHS } from "../../../client/src/lib/navVisibility";
+import { CASHIER_NAV_PATHS, RETURNS_WORKSPACE_GATE } from "../../../client/src/lib/navVisibility";
 import { APPLICATION_MODULES } from "../../../client/src/lib/moduleRegistry";
 
 const readServer = (rel: string) =>
@@ -41,8 +41,6 @@ describe("تكامل بوابة المرتجعات في واجهة النظام"
     expect(returnsMod?.href).toBe("/returns");
     expect(returnsMod?.label).toBe("بوابة المرتجعات");
     expect(returnsMod?.section).toBe(1);
-    expect(returnsMod?.roles).toContain("cashier");
-    expect(returnsMod?.roles).toContain("manager");
-    expect(returnsMod?.roles).toContain("admin");
+    expect(returnsMod?.anyOf).toEqual(RETURNS_WORKSPACE_GATE.anyOf);
   });
 });
