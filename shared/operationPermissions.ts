@@ -378,9 +378,10 @@ export function applyLegacyIndividualOperationOverrides(
       "returns.shifts",
       "returns.executeSalesReturnCart",
       "returns.getOpenRefundDrawers",
-      "returns.request",
-      "returns.requests",
       "refundRails.preflight",
+      ...(rawModules?.workorders === "FULL"
+        ? ["returns.request", "returns.requests"]
+        : []),
     ]) {
       const operation = getOperationPermission(path);
       if (operation?.delegable) bridgedGrants[operation.key] = true;

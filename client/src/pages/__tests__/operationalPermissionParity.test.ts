@@ -297,6 +297,9 @@ describe("operational UI permission parity", () => {
             "returns.executeSalesReturnCart",
             "returns.inspectInvoiceForReturn",
             "returns.getOpenRefundDrawers",
+            "returns.lookupItemForReturn",
+            "returns.universalScan",
+            "returns.forensicTrace",
           ]),
         ),
       ).toBe(true);
@@ -309,6 +312,9 @@ describe("operational UI permission parity", () => {
             "returns.executeSalesReturnCart",
             "returns.inspectInvoiceForReturn",
             "returns.getOpenRefundDrawers",
+            "returns.lookupItemForReturn",
+            "returns.universalScan",
+            "returns.forensicTrace",
           ]),
         ),
       ).toBe(true);

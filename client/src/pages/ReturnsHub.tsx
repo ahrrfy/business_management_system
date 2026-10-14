@@ -73,15 +73,24 @@ export default function ReturnsHub() {
   const canGetOpenRefundDrawers = useOperationPermission(
     "returns.getOpenRefundDrawers",
   ).allowed;
+  const canLookupItemForReturn = useOperationPermission(
+    "returns.lookupItemForReturn",
+  ).allowed;
+  const canUniversalScan = useOperationPermission(
+    "returns.universalScan",
+  ).allowed;
+  const canForensicTrace = useOperationPermission(
+    "returns.forensicTrace",
+  ).allowed;
   const canExecuteSalesReturn =
     canExecuteSalesReturnCart &&
     canInspectInvoiceForReturn &&
-    canGetOpenRefundDrawers;
+    canGetOpenRefundDrawers &&
+    canLookupItemForReturn &&
+    canUniversalScan &&
+    canForensicTrace;
   const canExecutePurchaseReturnCart = useOperationPermission(
     "returns.executePurchaseReturnCart",
-  ).allowed;
-  const canLookupItemForReturn = useOperationPermission(
-    "returns.lookupItemForReturn",
   ).allowed;
   const canListSuppliers = useOperationPermission("suppliers.list").allowed;
   const canExecutePurchaseReturn =

@@ -27,7 +27,7 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
     "returns.create", "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers",
     "returns.getInvoice", "returns.inspectInvoiceForReturn", "returns.lookupItemForReturn",
     "returns.universalScan", "returns.forensicTrace", "returns.shifts",
-    "returns.request", "returns.requests", "refundRails.preflight",
+    "refundRails.preflight",
     "invoicePrinting.requestPrint", "invoicePrinting.requestReprint", "shifts.close",
   ],
   print_cashier: [
@@ -35,7 +35,7 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
     "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers", "returns.getInvoice",
     "returns.inspectInvoiceForReturn", "returns.lookupItemForReturn",
     "returns.universalScan", "returns.forensicTrace", "returns.shifts",
-    "returns.request", "returns.requests", "refundRails.preflight",
+    "refundRails.preflight",
     "invoicePrinting.requestPrint", "invoicePrinting.requestReprint", "shifts.close",
   ],
   reception_clerk: [

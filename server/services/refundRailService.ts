@@ -122,11 +122,14 @@ function saleReturnInvoiceScopeForActor(
     (actor.role as RoleKey) ?? "user",
     override,
   );
-  if (map.sales === "FULL" || override?.sales === "READ") {
+  if (map.sales === "FULL") {
     return "sales";
   }
   if (map.workorders === "FULL") {
     return "reception";
+  }
+  if (map.sales === "READ") {
+    return "sales";
   }
   if (map.pos === "FULL") {
     return "print";

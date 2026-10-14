@@ -75,6 +75,9 @@ export const RETURNS_WORKSPACE_GATE: RoleGate = {
         { operations: ["returns.executeSalesReturnCart"] },
         { operations: ["returns.inspectInvoiceForReturn"] },
         { operations: ["returns.getOpenRefundDrawers"] },
+        { operations: ["returns.lookupItemForReturn"] },
+        { operations: ["returns.universalScan"] },
+        { operations: ["returns.forensicTrace"] },
       ],
     },
     {

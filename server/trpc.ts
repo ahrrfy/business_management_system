@@ -897,6 +897,9 @@ export function returnInvoiceScopeForUser(
   if (moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"])) {
     return "reception";
   }
+  if (moduleAccessAllowed(user.role, override, "sales", "READ", ["cashier", "manager", "accountant"])) {
+    return "sales";
+  }
   if (moduleAccessAllowed(user.role, override, "pos", "FULL", ["cashier", "manager", "print_operator"])) {
     return "print";
   }

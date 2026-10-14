@@ -16,9 +16,12 @@ const REQUIRED_CASHIER_RETURN_OPERATIONS = [
   "returns.universalScan",
   "returns.forensicTrace",
   "returns.shifts",
+  "refundRails.preflight",
+] as const;
+
+const RECEPTION_RETURN_REQUEST_OPERATIONS = [
   "returns.request",
   "returns.requests",
-  "refundRails.preflight",
 ] as const;
 
 describe("role operation presets", () => {
@@ -42,9 +45,9 @@ describe("role operation presets", () => {
     ]) expect(policy.grants[`operation.${path}`], path).toBe(true);
   });
 
-  it("grants the full 12 sales return operations to retail cashier, print cashier, and reception cashier presets and legacy module overrides", () => {
+  it("grants sales return operations to retail cashier, print cashier, and reception cashier presets and legacy module overrides", () => {
     const cashier = buildDefaultRoleOperationPolicy("cashier", "cashier", ROLE_TEMPLATES.cashier);
-    for (const path of REQUIRED_CASHIER_RETURN_OPERATIONS) {
+    for (const path of [...REQUIRED_CASHIER_RETURN_OPERATIONS, ...RECEPTION_RETURN_REQUEST_OPERATIONS]) {
       expect(cashier.grants[`operation.${path}`], `cashier:${path}`).toBe(true);
     }
 
@@ -52,6 +55,11 @@ describe("role operation presets", () => {
       const policy = buildDefaultRoleOperationPolicy(role.key, role.baseRole, role.permissions);
       for (const path of REQUIRED_CASHIER_RETURN_OPERATIONS) {
         expect(policy.grants[`operation.${path}`], `${role.key}:${path}`).toBe(true);
+      }
+      for (const path of RECEPTION_RETURN_REQUEST_OPERATIONS) {
+        expect(policy.grants[`operation.${path}`], `${role.key}:${path}`).toBe(
+          role.key === "reception_clerk",
+        );
       }
       expect(policy.grants["operation.returns.executePurchaseReturnCart"]).toBe(false);
     }
@@ -78,6 +86,9 @@ describe("role operation presets", () => {
       for (const path of REQUIRED_CASHIER_RETURN_OPERATIONS) {
         expect(bridged.grants[`operation.${path}`], `legacy-print(${baseRole}):${path}`).toBe(true);
       }
+      for (const path of RECEPTION_RETURN_REQUEST_OPERATIONS) {
+        expect(bridged.grants[`operation.${path}`], `legacy-print(${baseRole}):${path}`).toBe(false);
+      }
     }
 
     // Legacy Reception Cashier (workorders: FULL, pos: READ, sales: NONE) on print_operator or cashier baseRole
@@ -99,7 +110,7 @@ describe("role operation presets", () => {
         },
         null,
       );
-      for (const path of REQUIRED_CASHIER_RETURN_OPERATIONS) {
+      for (const path of [...REQUIRED_CASHIER_RETURN_OPERATIONS, ...RECEPTION_RETURN_REQUEST_OPERATIONS]) {
         expect(bridged.grants[`operation.${path}`], `legacy-reception(${baseRole}):${path}`).toBe(true);
       }
     }

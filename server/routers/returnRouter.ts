@@ -1053,6 +1053,12 @@ export const returnRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return null;
+      const invoiceScope = returnInvoiceScopeForUser(
+        ctx.user,
+        "returns.getInvoice",
+      );
+      if (!invoiceScope) return null;
+      const invoiceChannelCondition = buildInvoiceChannelCondition(invoiceScope);
       const inv = (
         await db
           .select({
@@ -1077,7 +1083,8 @@ export const returnRouter = router({
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
           .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
-          .where(eq(invoices.id, input.invoiceId))
+          .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
+          .where(and(eq(invoices.id, input.invoiceId), invoiceChannelCondition))
           .limit(1)
       )[0];
       if (!inv) return null;
