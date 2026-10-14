@@ -87,7 +87,10 @@ function assertActorHasModuleAccess(
     (actor.permissionsOverride ?? null) as PermissionMap | null,
   );
   const grantedLevel: AccessLevel = (map as unknown as Record<string, AccessLevel>)[moduleKey] ?? "NONE";
-  if (LEVEL_RANK[grantedLevel] < LEVEL_RANK[minLevel]) {
+  const hasCashierOrReceptionReturnAccess =
+    sourceDocType === "SALE_RETURN" &&
+    (map.workorders === "FULL" || map.pos === "FULL");
+  if (!hasCashierOrReceptionReturnAccess && LEVEL_RANK[grantedLevel] < LEVEL_RANK[minLevel]) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: appErrorMessage({

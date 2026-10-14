@@ -260,4 +260,50 @@ describe("operational UI permission parity", () => {
     expect(source).toContain('me.data?.permissionsOverride ?? null');
     expect(source).toContain('setSource("CASH")');
   });
+
+  it("enables sales returns for retail cashier, print cashier, and reception cashier while gating purchase returns and history", () => {
+    const returnsHub = readPage("ReturnsHub.tsx");
+    const requireRole = readComponent("RequireRole.tsx");
+    const operationPolicy = (paths: string[]): OperationPolicy => ({
+      version: 1,
+      grants: Object.fromEntries(paths.map((path) => [`operation.${path}`, true])),
+      dataVisibility: { purchaseCost: false, profitMargin: false },
+    });
+
+    expect(returnsHub).toContain('"returns.executePurchaseReturnCart"');
+    expect(returnsHub).toContain('useOperationPermission("returns.list").allowed');
+    expect(returnsHub).toContain("{canExecutePurchaseReturn && (");
+    expect(returnsHub).toContain("{canListSalesReturns && (");
+
+    expect(requireRole).toContain("canonicalGate === RETURNS_WORKSPACE_GATE");
+    expect(requireRole).toContain("canSeeGate(INVOICE_LIST_GATE, role, override, operationPolicy)");
+
+    for (const role of ["cashier", "print_operator"] as const) {
+      expect(
+        canSeeGate(
+          RETURNS_WORKSPACE_GATE,
+          role,
+          { pos: "FULL", sales: "NONE", workorders: "NONE" },
+          operationPolicy([
+            "returns.executeSalesReturnCart",
+            "returns.inspectInvoiceForReturn",
+            "returns.getOpenRefundDrawers",
+          ]),
+        ),
+      ).toBe(true);
+      expect(
+        canSeeGate(
+          RETURNS_WORKSPACE_GATE,
+          role,
+          { workorders: "FULL", pos: "READ", sales: "NONE" },
+          operationPolicy([
+            "returns.executeSalesReturnCart",
+            "returns.inspectInvoiceForReturn",
+            "returns.getOpenRefundDrawers",
+          ]),
+        ),
+      ).toBe(true);
+    }
+  });
 });
+

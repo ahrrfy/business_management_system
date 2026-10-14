@@ -829,7 +829,7 @@ function ReturnRequestDialog({ row, canCreateReturn, onClose,
             <div className="flex gap-2">
               <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
               <a
-                href={`/returns?invoiceId=${row.id}`}
+                href={`/returns?portal=sales&invoice=${encodeURIComponent(row.invoiceNumber)}`}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex flex-1 items-center justify-center rounded-md bg-primary px-3 text-sm font-bold text-primary-foreground hover:bg-primary/90"

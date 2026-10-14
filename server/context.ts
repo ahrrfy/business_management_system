@@ -101,24 +101,32 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
   };
   if (!user.customRoleId) {
     const baseRole = user.role ?? "user";
+    const modules = resolvePermissions(
+      baseRole,
+      user.permissionsOverride as PermissionMap | null,
+    );
+    const effectiveCapsRole =
+      baseRole === "print_operator" || baseRole === "user"
+        ? modules.workorders === "FULL"
+          ? "reception_clerk"
+          : modules.pos === "FULL"
+            ? "cashier"
+            : baseRole
+        : baseRole;
     user.resolvedAtomicPermissions = resolveAtomicPermissions(
       baseRole,
       null,
       user.atomicPermissions as AtomicPermissionsMap | null,
     );
     user.resolvedOperationalCaps = resolveOperationalCaps(
-      baseRole,
+      effectiveCapsRole,
       null,
       user.operationalCaps as OperationalCaps | null,
     );
     user.resolvedSensitiveDataMasking = resolveSensitiveDataMasking(
-    baseRole,
-    null,
-    null,
-  );
-    const modules = resolvePermissions(
       baseRole,
-      user.permissionsOverride as PermissionMap | null,
+      null,
+      null,
     );
     const individualPolicy = user.operationPolicy == null ? null : operationPolicySchema.parse(user.operationPolicy);
     user.courierShellOnly = baseRole === "courier" && individualPolicy == null;

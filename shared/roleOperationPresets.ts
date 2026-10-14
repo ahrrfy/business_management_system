@@ -17,17 +17,25 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
   cashier: [
     "shifts.current", "shifts.open", "catalog.posList", "sales.create", "sales.cancel",
     "returns.create", "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers",
+    "returns.getInvoice", "returns.inspectInvoiceForReturn", "returns.lookupItemForReturn",
+    "returns.universalScan", "returns.forensicTrace", "returns.shifts",
+    "returns.request", "returns.requests", "refundRails.preflight",
     "invoicePrinting.requestPrint", "invoicePrinting.requestReprint", "shifts.close",
   ],
   retail_cashier: [
     "shifts.current", "shifts.open", "catalog.posList", "sales.create", "sales.cancel",
     "returns.create", "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers",
+    "returns.getInvoice", "returns.inspectInvoiceForReturn", "returns.lookupItemForReturn",
+    "returns.universalScan", "returns.forensicTrace", "returns.shifts",
+    "returns.request", "returns.requests", "refundRails.preflight",
     "invoicePrinting.requestPrint", "invoicePrinting.requestReprint", "shifts.close",
   ],
   print_cashier: [
     "shifts.current", "shifts.open", "printPos.createSale", "sales.cancel", "returns.create",
     "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers", "returns.getInvoice",
-    "returns.inspectInvoiceForReturn",
+    "returns.inspectInvoiceForReturn", "returns.lookupItemForReturn",
+    "returns.universalScan", "returns.forensicTrace", "returns.shifts",
+    "returns.request", "returns.requests", "refundRails.preflight",
     "invoicePrinting.requestPrint", "invoicePrinting.requestReprint", "shifts.close",
   ],
   reception_clerk: [
@@ -38,7 +46,10 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
     "delivery.reassignConsignment", "delivery.cancelAssignment", "delivery.settlementPreview",
     "delivery.settle", "delivery.settleDaily", "sales.cancel", "sales.correct", "sales.reissue",
     "returns.create", "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers",
-    "returns.inspectInvoiceForReturn", "invoicePrinting.requestPrint",
+    "returns.getInvoice", "returns.inspectInvoiceForReturn", "returns.lookupItemForReturn",
+    "returns.universalScan", "returns.forensicTrace", "returns.shifts",
+    "returns.request", "returns.requests", "refundRails.preflight",
+    "invoicePrinting.requestPrint",
     "invoicePrinting.requestReprint", "shifts.report", "shifts.handoverRecipients", "shifts.close",
   ],
   sales_rep: [

@@ -62,6 +62,7 @@ export async function loadCurrentOperationalAuthorityTx(
       isActive: users.isActive,
       isOwner: users.isOwner,
       operationalCaps: users.operationalCaps,
+      permissionsOverride: users.permissionsOverride,
       role: users.role,
     })
     .from(users)
@@ -131,13 +132,22 @@ export async function loadCurrentOperationalAuthorityTx(
     };
   }
 
+  const override = user.permissionsOverride as Record<string, unknown> | null;
+  const fallbackCapRole =
+    user.role === "print_operator" && override?.workorders === "FULL"
+      ? "reception_clerk"
+      : (user.role === "print_operator" || user.role === "user") &&
+          (override?.pos === "FULL" || override?.sales === "FULL")
+        ? "cashier"
+        : user.role;
+
   return {
     branchId: user.branchId == null ? null : Number(user.branchId),
     caps: resolveOperationalCaps(
-      user.role,
+      fallbackCapRole,
       null,
       user.operationalCaps as OperationalCaps | null,
-      user.role,
+      fallbackCapRole,
     ),
     isOwner: false,
     role: user.role,

@@ -1637,7 +1637,7 @@ export const returnRouter = router({
    * التحري والتقصي الجنائي للفواتير المفقودة بعدسات متعددة:
    * باركود الصنف / آخر ٤ أرقام من البطاقة / هاتف العميل / الوردية والتاريخ
    */
-  forensicTrace: salesReadProcedure
+  forensicTrace: returnsProcedure
     .input(
       z.object({
         query: z.string().trim().min(1, "أدخل نص البحث"),
@@ -1671,7 +1671,7 @@ export const returnRouter = router({
   /**
    * المسح الكوني للباركود — يتعرف تلقائياً على نوع المعاملة أو الصنف من الرمز الممسوح.
    */
-  universalScan: salesReadProcedure
+  universalScan: returnsProcedure
     .input(z.object({ barcode: z.string().trim().min(1, "امسح الباركود") }))
     .query(async ({ input, ctx }) => {
       return universalBarcodeScan(input.barcode, {
@@ -1685,7 +1685,7 @@ export const returnRouter = router({
   /**
    * الورديات المفتوحة للمستخدم أو الفرع (لإرجاع مالي أو دفع فرق استبدال في الدرج).
    */
-  shifts: salesReadProcedure.query(async ({ ctx }) => {
+  shifts: returnsProcedure.query(async ({ ctx }) => {
     const actorBranchId =
       ctx.user.role === "admin" || !ctx.user.branchId
         ? null
@@ -1711,7 +1711,7 @@ export const returnRouter = router({
   /**
    * جلب تفاصيل صنف بالباركود للإرجاع أو الاستبدال، شاملاً سعر التجزئة وأدنى سعر تاريخي (٦٠ يوماً) والرصيد المخزني.
    */
-  lookupItemForReturn: salesReadProcedure
+  lookupItemForReturn: returnsProcedure
     .input(z.object({ barcode: z.string().trim().min(1, "امسح الباركود") }))
     .query(async ({ input, ctx }) => {
       const db = getDb();
@@ -2285,20 +2285,104 @@ export const returnRouter = router({
             });
           }
 
-          // المسار السريع لسلة المرتجع لا يملك مستند اعتماد مستقلاً يمكن للمدير
-          // تنفيذه لاحقاً. لذلك نفشل مغلقاً قبل أي حركة مخزون/نقد عند غياب
-          // الفاتورة أو تجاوز السقف، ويستعمل الموظف مسار المرتجع المرتبط بالفاتورة
-          // الذي ينشئ طلب SALES_RETURN قابلاً للاعتماد.
-          if (directLimitsApply && !input.invoiceNumber?.trim()) {
+          if (
+            !input.invoiceNumber?.trim() &&
+            input.settlement.method === "STORE_CREDIT"
+          ) {
             throw new TRPCError({
-              code: "PRECONDITION_FAILED",
+              code: "BAD_REQUEST",
               message: appErrorMessage({
-                what: "يتطلب المرتجع موافقة المدير",
-                why: "لا يمكن للكاشير تنفيذ مرتجع مباشر بلا فاتورة أصلية",
+                what: "تعذر إيداع رصيد المتجر",
+                why: "إيداع رصيد المتجر يتطلّب ربطَ المرتجع بالفاتورة الأصليّة — لا يُنشأ رصيدٌ دائنٌ لعميلٍ بلا بيعٍ موثَّق",
                 doThis:
-                  "اربط المرتجع بالفاتورة الأصلية، أو أنشئ طلب مرتجع من مسار الفاتورة ليعتمده المدير",
+                  "أدخل رقم الفاتورة الأصليّة، أو اختر استرداداً نقدياً/بالبطاقة للمرتجع العابر",
               }),
             });
+          }
+          if (
+            !input.invoiceNumber?.trim() &&
+            input.settlement.method === "CREDIT_OFFSET"
+          ) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "تعذر تنفيذ معادلة الذمة",
+                why: "طريقة معادلة الذمم تتطلب ربط المرتجع بالفاتورة الأصلية الآجلة",
+                doThis:
+                  "أدخل رقم الفاتورة الأصلية، أو اختر استرداداً نقدياً/بالبطاقة للمرتجع العابر",
+              }),
+            });
+          }
+          if (directLimitsApply && !input.invoiceNumber?.trim()) {
+            let walkInDrawerHasFunds = true;
+            let walkInSameOpenShift = input.settlement.method !== "CASH";
+            if (input.settlement.method === "CASH") {
+              const walkInShiftId =
+                input.settlement.shiftId ??
+                (await openShiftIdTx(tx, ctx.user.id, actorBranchId));
+              if (walkInShiftId != null) {
+                const [walkInShift] = await tx
+                  .select()
+                  .from(shifts)
+                  .where(
+                    and(
+                      eq(shifts.id, Number(walkInShiftId)),
+                      eq(shifts.branchId, actorBranchId),
+                    ),
+                  )
+                  .for("update")
+                  .limit(1);
+                walkInSameOpenShift =
+                  walkInShift != null &&
+                  walkInShift.status === "OPEN" &&
+                  Number(walkInShift.userId) === Number(ctx.user.id);
+                if (walkInSameOpenShift && returnTotalDec.gt(0)) {
+                  const lockedDrawer = await lockCashSourceForUpdate(tx, {
+                    branchId: actorBranchId,
+                    cashBucket: "DRAWER",
+                    shiftId: Number(walkInShiftId),
+                  });
+                  walkInDrawerHasFunds = (
+                    await computeDrawerCashBalance(
+                      tx,
+                      Number(walkInShiftId),
+                      lockedDrawer.openingBalance ?? "0",
+                    )
+                  ).gte(returnTotalDec);
+                }
+              }
+            }
+            const walkInDecision = evaluateRefundOperationalDecision({
+              operationAllowed: currentCartReturnAllowed,
+              sameBranch: true,
+              ownsTransaction: true,
+              sameOpenShift: walkInSameOpenShift,
+              sameBusinessDay: true,
+              accountingPeriodOpen: true,
+              hasDownstreamEffects: false,
+              hasSourceDocument: true,
+              refundAmountIqd: returnTotalDec.toFixed(2),
+              maxRefundAmountIqd:
+                currentOperationalAuthority.caps.maxRefundAmountIqd,
+              refundMethod: input.settlement.method,
+              originalPaymentMethods: [input.settlement.method],
+              originalPaymentAmounts: {
+                [input.settlement.method]: returnTotalDec.toFixed(2),
+              },
+              drawerHasFunds: walkInDrawerHasFunds,
+              approvalOperation: "salesControl.requestReturn",
+            });
+            if (walkInDecision.result !== "DIRECT") {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message: appErrorMessage({
+                  what: "يتطلب المرتجع موافقة المدير",
+                  why: walkInDecision.reason,
+                  doThis:
+                    "تحقق من التزام المرتجع بسقف الاسترداد المسموح وتوفر النقد في درج ورديتك، أو اربط المرتجع بالفاتورة الأصلية ليعتمده المدير",
+                }),
+              });
+            }
           }
           // ٠) التحقق من الفاتورة الأصلية إن أدخلت وفرض الحوكمة المالية الصارمة
           let matchedInvoice: typeof invoices.$inferSelect | null = null;
@@ -2561,19 +2645,28 @@ export const returnRouter = router({
 
             if (directLimitsApply) {
               let drawerHasFunds = true;
+              const effectiveShiftId =
+                input.settlement.shiftId ??
+                (input.settlement.method === "CASH"
+                  ? await openShiftIdTx(
+                      tx,
+                      ctx.user.id,
+                      Number(matchedInvoice.branchId),
+                    )
+                  : null);
               if (
                 input.settlement.method === "CASH" &&
-                input.settlement.shiftId != null &&
+                effectiveShiftId != null &&
                 returnTotalDec.gt(0)
               ) {
                 const lockedDrawer = await lockCashSourceForUpdate(tx, {
                   branchId: Number(matchedInvoice.branchId),
                   cashBucket: "DRAWER",
-                  shiftId: Number(input.settlement.shiftId),
+                  shiftId: Number(effectiveShiftId),
                 });
                 drawerHasFunds = (await computeDrawerCashBalance(
                   tx,
-                  Number(input.settlement.shiftId),
+                  Number(effectiveShiftId),
                   lockedDrawer.openingBalance ?? "0",
                 )).gte(returnTotalDec);
               }
@@ -2605,8 +2698,8 @@ export const returnRouter = router({
                   Number(matchedInvoice.createdBy) === Number(ctx.user.id),
                 sameOpenShift:
                   input.settlement.method !== "CASH" ||
-                  (input.settlement.shiftId != null &&
-                    (lockedRefundCaps.cashNetByShift.get(Number(input.settlement.shiftId)) ?? money(0))
+                  (effectiveShiftId != null &&
+                    (lockedRefundCaps.cashNetByShift.get(Number(effectiveShiftId)) ?? money(0))
                       .gte(returnTotalDec)),
                 sameBusinessDay:
                   matchedInvoice.invoiceDate.toISOString().slice(0, 10) ===

@@ -357,27 +357,36 @@ export function applyLegacyIndividualOperationOverrides(
       grants[operation.key] = true;
     }
   }
-  // Legacy print-cashier accounts were represented as role=user plus an
-  // individual pos:FULL override. Preserve their routine return workflow while
-  // the UI migrates them to the named print_cashier role/preset.
-  if (rawModules?.pos === "FULL" && baseModules.pos !== "FULL") {
-    for (const path of [
-      "returns.create",
-      "returns.getInvoice",
-      "returns.inspectInvoiceForReturn",
-      "returns.executeSalesReturnCart",
-      "returns.getOpenRefundDrawers",
-    ]) {
-      const operation = getOperationPermission(path);
-      if (operation?.delegable) grants[operation.key] = true;
-    }
-  }
-  return applyLegacyIndividualOperationDenials(
+  const denied = applyLegacyIndividualOperationDenials(
     { ...policy, grants },
     role,
     rawModules,
     rawAtomic,
   );
+  const bridgedGrants = { ...denied.grants };
+  // Legacy print-cashier (pos:FULL) and reception-cashier (workorders:FULL)
+  // accounts preserve their routine return workflow while migrating to named presets,
+  // even when their legacy module map explicitly sets sales: "NONE".
+  if (rawModules?.pos === "FULL" || rawModules?.workorders === "FULL") {
+    for (const path of [
+      "returns.create",
+      "returns.getInvoice",
+      "returns.inspectInvoiceForReturn",
+      "returns.lookupItemForReturn",
+      "returns.universalScan",
+      "returns.forensicTrace",
+      "returns.shifts",
+      "returns.executeSalesReturnCart",
+      "returns.getOpenRefundDrawers",
+      "returns.request",
+      "returns.requests",
+      "refundRails.preflight",
+    ]) {
+      const operation = getOperationPermission(path);
+      if (operation?.delegable) bridgedGrants[operation.key] = true;
+    }
+  }
+  return applyLegacyOperationDenials({ ...denied, grants: bridgedGrants }, rawAtomic);
 }
 
 /** Carry only explicit individual restrictions, never old template restrictions. */

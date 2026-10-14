@@ -2821,14 +2821,25 @@ export async function returnSaleDirect(
         (customRoleRow?.atomicPermissions as AtomicPermissionsMap | null) ?? null,
         (userRow.atomicPermissions as AtomicPermissionsMap | null) ?? null,
       );
+      const userOverride = userRow.permissionsOverride as PermissionMap | null;
+      const fallbackCapRole =
+        effectiveRole === "print_operator" &&
+        effectivePermissions.workorders === "FULL"
+          ? "reception_clerk"
+          : (effectiveRole === "print_operator" || effectiveRole === "user") &&
+              (userOverride?.pos === "FULL" || userOverride?.sales === "FULL")
+            ? "cashier"
+            : effectiveRole;
       const resolvedCaps = resolveOperationalCaps(
-        customRoleRow && userRow.customRoleId != null ? customRoleRow.key : effectiveRole,
+        customRoleRow && userRow.customRoleId != null
+          ? customRoleRow.key
+          : fallbackCapRole,
         // Recompute exclusively from the locked role/user rows. The request
         // context can carry a cap that was revoked while this transaction was
         // waiting for its locks.
         (customRoleRow?.operationalCaps as OperationalCaps | null) ?? null,
         (userRow.operationalCaps as OperationalCaps | null) ?? null,
-        effectiveRole,
+        fallbackCapRole,
       );
 
       const isOwner = Boolean(userRow.isOwner);
@@ -2867,16 +2878,24 @@ export async function returnSaleDirect(
       ].includes(effectiveRole);
 
       const hasReceptionFull =
-        effectiveRole === "print_operator" &&
+        (effectiveRole === "print_operator" || isCashierRole) &&
         effectivePermissions.workorders === "FULL";
+      const hasExplicitPrintPosFull =
+        (effectiveRole === "print_operator" ||
+          effectiveRole === "user" ||
+          isCashierRole) &&
+        userOverride?.pos === "FULL";
 
       const legacyAuthorized =
         isOwner ||
         isAdmin ||
         (!explicitAtomicRevoke &&
           (explicitAtomicGrant ||
+            hasReceptionFull ||
+            hasExplicitPrintPosFull ||
             (effectivePermissions.sales !== "NONE" &&
-              (hasReceptionFull || (isCashierRole && hasSalesFull)))));
+              isCashierRole &&
+              hasSalesFull)));
 
       const currentOperationUser = storedOperationUser(userRow, customRoleRow);
       const canonicalAuthorized = canonicalOperationAllowed(
@@ -2884,10 +2903,12 @@ export async function returnSaleDirect(
       );
       // The canonical grant is the exact operation authority. This matters for
       // reception/print presets whose broad sales module intentionally remains
-      // hidden. A direct user-level sales denial remains authoritative, while
-      // accounts without a canonical policy keep the legacy module decision.
+      // hidden. A direct user-level sales denial remains authoritative unless
+      // the user is authorized as a reception or POS cashier.
       const explicitUserSalesDenied =
-        (userRow.permissionsOverride as PermissionMap | null)?.sales === "NONE";
+        (userRow.permissionsOverride as PermissionMap | null)?.sales === "NONE" &&
+        !hasReceptionFull &&
+        !hasExplicitPrintPosFull;
       const isAuthorized =
         !isOwner && !isAdmin && explicitUserSalesDenied
           ? false

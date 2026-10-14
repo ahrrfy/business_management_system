@@ -105,6 +105,7 @@ async function seed() {
     id: 1,
     variantId: 1,
     unitName: "علبة",
+    barcode: "BC-CARD-1",
     conversionFactor: "1",
     isBaseUnit: true,
   });
@@ -497,5 +498,73 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
     await expect(caller.getOpenRefundDrawers()).rejects.toThrow(
       /يتطلب صلاحية كاشير المبيعات أو مشغّل الاستقبال أو كاشير الطباعة/,
     );
+  });
+
+  it("٦. كاشير التجزئة وكاشير الاستقبال يفحصان الأصناف والورديات وينفذان مرتجع السلة ضمن الضوابط", async () => {
+    const retailCtx = createContextFor({
+      id: 12,
+      name: "كاشير التجزئة",
+      role: "cashier",
+    });
+    const receptionCtx = createContextFor({
+      id: 10,
+      name: "موظف الاستقبال",
+      role: "print_operator",
+      permissionsOverride: { workorders: "FULL" },
+    });
+
+    const retailShiftId = await openShiftFor(12, "RETAIL");
+    const receptionShiftId = await openShiftFor(10, "RECEPTION");
+
+    const retailCaller = returnRouter.createCaller(retailCtx);
+    const receptionCaller = returnRouter.createCaller(receptionCtx);
+
+    const retailLookup = await retailCaller.lookupItemForReturn({
+      barcode: "BC-CARD-1",
+    });
+    expect(retailLookup.variantId).toBe(1);
+
+    const receptionLookup = await receptionCaller.lookupItemForReturn({
+      barcode: "BC-CARD-1",
+    });
+    expect(receptionLookup.variantId).toBe(1);
+
+    const receptionShifts = await receptionCaller.shifts();
+    expect(receptionShifts.some((s) => s.shiftId === receptionShiftId && s.isMine)).toBe(true);
+
+    // مرتجع سلة نقدي عابر ضمن سقف الكاشير ومن درج ورديته المفتوحة المموّلة
+    const retailWalkIn = await retailCaller.executeSalesReturnCart({
+      items: [
+        {
+          variantId: 1,
+          productName: "كارت شخصي",
+          quantity: 1,
+          unitPrice: "25.00",
+        },
+      ],
+      settlement: {
+        method: "CASH",
+        totalAmount: "25.00",
+        shiftId: retailShiftId,
+      },
+    });
+    expect(retailWalkIn.ok).toBe(true);
+
+    const receptionWalkIn = await receptionCaller.executeSalesReturnCart({
+      items: [
+        {
+          variantId: 1,
+          productName: "كارت شخصي",
+          quantity: 1,
+          unitPrice: "25.00",
+        },
+      ],
+      settlement: {
+        method: "CASH",
+        totalAmount: "25.00",
+        shiftId: receptionShiftId,
+      },
+    });
+    expect(receptionWalkIn.ok).toBe(true);
   });
 });

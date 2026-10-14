@@ -304,7 +304,7 @@ describe.sequential("returns.executeSalesReturnCart — suite", () => {
 });
 
 describe.sequential("returns.executeSalesReturnCart — عميلٌ مسجّلٌ بلا فاتورةٍ مطابقة (فجوة reconcile)", () => {
-  it("⭐ CASH + عميلٌ + بلا فاتورة: يحتاج اعتماداً ولا يكتب أثراً", async () => {
+  it("⭐ CASH + عميلٌ + بلا فاتورة (ضمن السقف والدرج): reconcile نظيف ولا انحراف يُنسَب للعميل", async () => {
     const shiftId = await openShift();
     // تمويلُ الدرج مباشرةً (بلا بيع) كي يتّسع للصرف — إيصالٌ بلا قيدٍ فلا يمسّ reconcile.
     await db().insert(s.receipts).values({
@@ -321,14 +321,46 @@ describe.sequential("returns.executeSalesReturnCart — عميلٌ مسجّلٌ 
     });
 
     const caller = returnRouter.createCaller(context());
+    await caller.executeSalesReturnCart({
+      // بلا invoiceNumber — الشاشة تُرسله undefined حين لا تُدخَل فاتورة.
+      customer: { customerId: 1, name: "زبون مسجّل" },
+      disposition: "RESTOCK",
+      items: cartItems,
+      settlement: { method: "CASH", totalAmount: "30.00", shiftId },
+      clientRequestId: "sr-cart-cash-noinv-1",
+    });
+
+    expect(await refundLegCustomerIds()).toEqual({
+      returnLeg: null,
+      paymentLeg: null,
+    });
+    expect(await reconcileCustomerBalances()).toEqual([]);
+    expect(await customerBalance(1)).toBe("0.00");
+  });
+
+  it("⭐ CASH بلا فاتورة فوق سقف الكاشير: يحتاج اعتماداً ولا يكتب أثراً", async () => {
+    const shiftId = await openShift();
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId,
+      direction: "IN",
+      amount: "50000.00",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      partyType: "OTHER",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      createdBy: 2,
+    });
+
+    const caller = returnRouter.createCaller(context());
     await expect(
       caller.executeSalesReturnCart({
-        // بلا invoiceNumber — الشاشة تُرسله undefined حين لا تُدخَل فاتورة.
         customer: { customerId: 1, name: "زبون مسجّل" },
         disposition: "RESTOCK",
-        items: cartItems,
-        settlement: { method: "CASH", totalAmount: "30.00", shiftId },
-        clientRequestId: "sr-cart-cash-noinv-1",
+        items: [{ variantId: 1, productName: "قلم", quantity: 3000, unitPrice: "10.00" }],
+        settlement: { method: "CASH", totalAmount: "30000.00", shiftId },
+        clientRequestId: "sr-cart-cash-noinv-overcap",
       }),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
@@ -351,7 +383,7 @@ describe.sequential("returns.executeSalesReturnCart — عميلٌ مسجّلٌ 
         settlement: { method: "STORE_CREDIT", totalAmount: "30.00" },
         clientRequestId: "sr-cart-credit-noinv-1",
       }),
-    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     // صفر أثر (المعاملة ذرّية): الرصيد صفرٌ، لا حركة مخزون، لا قيود، وreconcile نظيف.
     expect(await customerBalance(1)).toBe("0.00");

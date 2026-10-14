@@ -20,7 +20,12 @@ import {
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { trpc } from "@/lib/trpc";
 import { hasModuleAccess, moduleAccessAllowed, type AccessLevel, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import {
+  canSeeGate,
+  INVOICE_LIST_GATE,
+  RETURNS_WORKSPACE_GATE,
+  type RoleGate,
+} from "@/lib/navVisibility";
 import { Lock } from "lucide-react";
 import { useSyncExternalStore } from "react";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -99,7 +104,9 @@ export function RequireRole({
       : gate
       ? canSeeGate(gate, role, override, operationPolicy)
       : module
-        ? canSeeGate({ roles, module, level }, role, override, operationPolicy)
+        ? canSeeGate({ roles, module, level }, role, override, operationPolicy) ||
+          (canonicalGate === RETURNS_WORKSPACE_GATE &&
+            canSeeGate(INVOICE_LIST_GATE, role, override, operationPolicy))
         : role === "admin" || !!roles?.includes(role));
   if (!allowed) {
     return <Forbidden />;
