@@ -382,6 +382,7 @@ export const returnRouter = router({
         invoiceId,
         clientRequestId,
         reason: explicitReason,
+        directExecution: _directExecution,
         ...payload
       } = input;
       const rawReason = explicitReason || input.resolution?.reason;
@@ -517,6 +518,35 @@ export const returnRouter = router({
           });
         }
         return { ...executed, mode: "EXECUTED" as const, invoiceId };
+      }
+
+      // صون عدم التكرار عبر النشر المتدرّج: إن كان هذا المفتاح قد التزم سابقاً كمرتجعٍ مباشر
+      // (`sale.return`) وضاعت استجابته، نُعيد تشغيل نتيجة التنفيذ الأصلي بدل إنشاء طلب رقابي جديد.
+      if (clientRequestId) {
+        const normalizedReason = reason.replace(/\s+/g, " ");
+        const replayCoreInput = {
+          ...payload,
+          invoiceId,
+          operatorReason: normalizedReason,
+          clientRequestId,
+        };
+        const legacyReplay = await withTx(async (tx) => {
+          const existingRefId = await checkIdempotency(
+            tx,
+            "sale.return",
+            clientRequestId,
+            idempotencyHash(replayCoreInput),
+          );
+          if (existingRefId == null) return null;
+          return returnSaleInTx(tx, replayCoreInput, {
+            userId: ctx.user.id,
+            branchId: actorBranchId,
+            role: ctx.user.role,
+          });
+        });
+        if (legacyReplay) {
+          return { ...legacyReplay, mode: "EXECUTED" as const, invoiceId };
+        }
       }
 
       const res = await requestSalesControl(

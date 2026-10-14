@@ -1182,6 +1182,47 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
       ).rejects.toThrow();
     });
 
+    it("paySpotBonusCash:owner_cross_branch_treasury allows owner assigned to branch 101 to pay TREASURY bonus of branch 102", async () => {
+      const { db } = await seedEmp({ employeeId: 9403, branchId: 102, branchName: "فرع المنصور" });
+      await db.insert(s.users).values({
+        id: 1,
+        openId: "test-owner-cross-branch",
+        name: "مالك عابر للفروع",
+        role: "admin",
+        branchId: 101,
+        isOwner: true,
+        isActive: true,
+      }).onDuplicateKeyUpdate({ set: { isOwner: true, isActive: true, branchId: 101 } });
+
+      await db.insert(s.receipts).values({
+        id: 94013,
+        branchId: 102,
+        cashBucket: "TREASURY",
+        direction: "IN",
+        amount: "5000000.00",
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        approvedBy: 1,
+        approvedAt: new Date(),
+        createdBy: 1,
+      }).onDuplicateKeyUpdate({ set: { amount: "5000000.00", branchId: 102 } });
+
+      const ownerAssignedTo101 = { userId: 1, role: "admin", branchId: 101, isOwner: true } as any;
+
+      const bonus = await createSpotBonus(ownerAssignedTo101, {
+        employeeId: 9403,
+        amount: "90000.00",
+        reason: "مكافأة فرع آخر للمالك",
+        disbursementType: "CASH_TREASURY",
+      });
+      await approveSpotBonus(ownerAssignedTo101, bonus.id);
+
+      const payRes = await paySpotBonusCash(ownerAssignedTo101, { id: bonus.id, cashBucket: "TREASURY" });
+      expect(payRes.status).toBe("PAID");
+      expect(payRes.receiptId).toBeDefined();
+    });
+
     it("paySpotBonusCash:draft_guard rejects paying unapproved DRAFT bonus", async () => {
       await seedEmp({ employeeId: 9401, branchId: 101 });
       const admin = { userId: 1, role: "admin", branchId: 101 } as any;

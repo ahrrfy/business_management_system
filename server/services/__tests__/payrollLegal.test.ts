@@ -228,6 +228,14 @@ describe("payrollLegalService — الإعدادات (DB)", () => {
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
+  it("يرفض تعديل الإعدادات إذا سُحبت صفة المالك في قاعدة البيانات حتى لو كانت actor.isOwner=true في الجلسة", async () => {
+    const d = getDb()!;
+    await d.update(s.users).set({ isOwner: false }).where(eq(s.users.id, 1));
+    await expect(
+      updatePayrollLegalSettings(BASE_INPUT, { userId: 1, branchId: 1, isOwner: true }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
   it("التحديث يُثبِّت الإعدادات ويُرتّب الشرائح تصاعدياً", async () => {
     await setLegal({
       socialSecurityEnabled: true,

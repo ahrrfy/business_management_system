@@ -208,7 +208,7 @@ export async function paySpotBonusCash(
       });
     }
 
-    if (actor.branchId != null && b.branchId !== actor.branchId) {
+    if (!actor.isOwner && actor.branchId != null && b.branchId !== actor.branchId) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({
@@ -314,7 +314,7 @@ export async function paySpotBonusCash(
       const treasuryApproval = await authorizeExternalTreasuryDisbursement(tx, {
         actor: {
           userId: actor.userId,
-          branchId: actor.branchId ?? branchId,
+          branchId: actor.isOwner ? branchId : (actor.branchId ?? branchId),
           role: actor.role,
           isOwner: actor.isOwner,
         },

@@ -4,8 +4,9 @@ import type { TrpcContext } from "../../context";
 
 const mocks = vi.hoisted(() => {
   let hasPending = false;
+  let hasLegacyReplay = false;
   return {
-    returnSaleInTx: vi.fn(),
+    returnSaleInTx: vi.fn(async () => ({ returnedTotal: "1250.00", fullyReturned: true, idempotentReplay: true })),
     returnSaleAsOwner: vi.fn(async () => {
       if (hasPending) {
         throw new TRPCError({
@@ -27,11 +28,15 @@ const mocks = vi.hoisted(() => {
     requestSalesControl: vi.fn(async () => ({ id: 101, status: "PENDING", payloadHash: "abc", replayed: false })),
     logAudit: vi.fn(async () => undefined),
     setHasPending: (val: boolean) => { hasPending = val; },
+    setHasLegacyReplay: (val: boolean) => { hasLegacyReplay = val; },
     withTx: vi.fn(async (fn: (tx: unknown) => unknown) => {
       const queryResult = (fields?: Record<string, unknown>) => ({
         limit: async () => {
           if (fields && "sourceType" in fields) {
             return [{ sourceType: "POS", branchId: 1, createdBy: 1, workOrderCreatedBy: null }];
+          }
+          if (fields && "refId" in fields) {
+            return hasLegacyReplay ? [{ refId: 77, payloadHash: null }] : [];
           }
           return hasPending ? [{ id: 999 }] : [];
         },
@@ -93,6 +98,7 @@ const base = {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.setHasPending(false);
+  mocks.setHasLegacyReplay(false);
 });
 
 describe("returns.create — طلب صفري الأثر للزبون العابر", () => {
@@ -329,5 +335,28 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(mocks.returnSaleDirect).not.toHaveBeenCalled();
   });
+
+  it("إعادة المحاولة لغير المالك بمعرّف clientRequestId مسجّل مسبقاً في sale.return تعيد نتيجة التنفيذ بلا إنشاء طلب رقابي جديد", async () => {
+    mocks.setHasLegacyReplay(true);
+    const caller = returnRouter.createCaller(context({ role: "manager", isOwner: false }));
+    const res = await caller.create({
+      ...base,
+      refund: { amount: "1250.00", method: "CASH", shiftId: 9 },
+      restock: true,
+      reason: "إعادة محاولة طلب نُفّذ سابقاً",
+      directExecution: true,
+    });
+
+    expect(mocks.requestSalesControl).not.toHaveBeenCalled();
+    expect(mocks.returnSaleInTx).toHaveBeenCalled();
+    expect(res).toMatchObject({
+      mode: "EXECUTED",
+      invoiceId: 77,
+      returnedTotal: "1250.00",
+      fullyReturned: true,
+      idempotentReplay: true,
+    });
+  });
 });
+
 

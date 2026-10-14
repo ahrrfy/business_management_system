@@ -90,6 +90,7 @@ const TABS: HubTab[] = [
 export default function HrHub() {
   const search = useSearch();
   const requested = new URLSearchParams(search).get("tab");
+  const me = trpc.auth.me.useQuery();
   const bridge = trpc.hrDevices.bridgeStatus.useQuery();
 
   // توافق رجعي شفاف: عند طلب أي من روابط العمولات القديمة (commission-runs, commission-targets, commission-plans)
@@ -112,9 +113,10 @@ export default function HrHub() {
 
   // تعطيل الجسر سياسة تشغيلية صريحة، لا حالة تحميل: نخفي أدوات الأجهزة فقط عند false
   // المؤكدة، ونبقيها عند التحميل/خطأ الشبكة كي لا تتحول مشكلة اتصال إلى اختفاءٍ مضلّل.
-  const visibleTabs =
-    bridge.data?.enabled === false
-      ? tabsWithCommissions.filter((tab) => tab.value !== "devices")
-      : tabsWithCommissions;
+  const visibleTabs = tabsWithCommissions.filter(
+    (tab) =>
+      (bridge.data?.enabled !== false || tab.value !== "devices") &&
+      (tab.value !== "payroll-legal" || me.data?.isOwner === true),
+  );
   return <PageTabs tabs={visibleTabs} ariaLabel="أقسام الموارد البشرية" />;
 }

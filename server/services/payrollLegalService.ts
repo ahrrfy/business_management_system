@@ -17,7 +17,7 @@ import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
 import { eq } from "drizzle-orm";
-import { payrollLegalSettings, type IncomeTaxBracket } from "../../drizzle/schema";
+import { payrollLegalSettings, users, type IncomeTaxBracket } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { money, round2 } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
@@ -274,6 +274,27 @@ export async function updatePayrollLegalSettings(
   const sortedBrackets = validateAndSortBrackets(input.incomeTaxBrackets, input.incomeTaxEnabled);
 
   return withTx(async (tx) => {
+    const [ownerRow] = await tx
+      .select({
+        id: users.id,
+        isActive: users.isActive,
+        isOwner: users.isOwner,
+      })
+      .from(users)
+      .where(eq(users.id, actor.userId))
+      .for("share")
+      .limit(1);
+    if (!ownerRow || !ownerRow.isActive || !ownerRow.isOwner) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر تعديل الإعدادات القانونية للرواتب",
+          why: "تعديل إعدادات الرواتب القانونية السيادية محصور بحساب المالك الفعّال",
+          doThis: "تواصل مع المالك لتعديل نسب وشرائح الرواتب القانونية",
+        }),
+      });
+    }
+
     // Establish and lock the singleton first. Approval takes the same row lock,
     // so a policy update and an accrual approval cannot both validate stale state.
     await tx
