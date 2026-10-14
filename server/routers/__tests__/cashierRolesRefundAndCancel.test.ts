@@ -547,6 +547,7 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       },
     });
     expect(retailWalkIn.ok).toBe(true);
+    expect(retailWalkIn.receiptId).toEqual(expect.any(Number));
     const [walkInReturnEntry] = await db()
       .select()
       .from(s.accountingEntries)

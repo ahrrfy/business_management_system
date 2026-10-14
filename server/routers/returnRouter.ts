@@ -63,6 +63,7 @@ import {
   creditLine,
   debitLine,
 } from "../services/accounting/postingEngine";
+import { allocateLineCost } from "../services/billing";
 import { money, round2, toDbMoney } from "../services/money";
 import {
   assertCashOutAvailable,
@@ -1507,10 +1508,13 @@ export const returnRouter = router({
           0,
           (r.baseQuantity ?? 0) - (r.returnedBaseQuantity ?? 0),
         );
-        const rawPrice = money(r.unitPrice ?? "0");
+        const rawPrice =
+          (r.baseQuantity ?? 0) > 0
+            ? money(r.total ?? "0").dividedBy(r.baseQuantity)
+            : money(r.unitPrice ?? "0");
         const effectivePrice = discountRatio.gt(0)
           ? rawPrice.times(new Decimal(1).minus(discountRatio)).toDecimalPlaces(2)
-          : rawPrice;
+          : rawPrice.toDecimalPlaces(2);
         return {
           invoiceItemId: Number(r.invoiceItemId),
           variantId: Number(r.variantId),
@@ -3088,7 +3092,7 @@ export const returnRouter = router({
                 ? rawBaseUnitPrice
                     .times(new Decimal(1).minus(invDiscountRatio))
                     .toDecimalPlaces(2)
-                : rawBaseUnitPrice;
+                : rawBaseUnitPrice.toDecimalPlaces(2);
               const expectedLineTotal = round2(
                 effectiveBaseUnitPrice.times(effectiveBaseQty),
               );
@@ -3218,6 +3222,7 @@ export const returnRouter = router({
           }
 
           let restockedCostDec = new Decimal(0);
+          const accumulatedRestockedByItemId = new Map<number, number>();
 
           for (const itm of input.items) {
             const kind = kindByVariant.get(itm.variantId) ?? "STOCKED";
@@ -3286,11 +3291,19 @@ export const returnRouter = router({
                   money(targetItem.lineCost ?? "0").gt(0) &&
                   (targetItem.baseQuantity ?? 0) > 0
                 ) {
+                  const priorRestocked =
+                    accumulatedRestockedByItemId.get(targetItem.id) ??
+                    Number(targetItem.returnedRestockedBaseQuantity ?? 0);
+                  accumulatedRestockedByItemId.set(
+                    targetItem.id,
+                    priorRestocked + effectiveBaseQty,
+                  );
                   restockedCostDec = restockedCostDec.plus(
-                    round2(
-                      money(targetItem.lineCost)
-                        .times(effectiveBaseQty)
-                        .dividedBy(targetItem.baseQuantity),
+                    allocateLineCost(
+                      targetItem.lineCost,
+                      Number(targetItem.baseQuantity),
+                      priorRestocked,
+                      effectiveBaseQty,
                     ),
                   );
                 } else if (
@@ -3356,11 +3369,19 @@ export const returnRouter = router({
                   money(targetItem.lineCost ?? "0").gt(0) &&
                   (targetItem.baseQuantity ?? 0) > 0
                 ) {
+                  const priorRestocked =
+                    accumulatedRestockedByItemId.get(targetItem.id) ??
+                    Number(targetItem.returnedRestockedBaseQuantity ?? 0);
+                  accumulatedRestockedByItemId.set(
+                    targetItem.id,
+                    priorRestocked + effectiveBaseQty,
+                  );
                   restockedCostDec = restockedCostDec.plus(
-                    round2(
-                      money(targetItem.lineCost)
-                        .times(effectiveBaseQty)
-                        .dividedBy(targetItem.baseQuantity),
+                    allocateLineCost(
+                      targetItem.lineCost,
+                      Number(targetItem.baseQuantity),
+                      priorRestocked,
+                      effectiveBaseQty,
                     ),
                   );
                 } else if (
@@ -3879,6 +3900,7 @@ export const returnRouter = router({
           return {
             ok: true as const,
             returnNumber,
+            receiptId: generatedReceiptId,
             customerName,
             customerPhone,
             originalInvoiceNumber: input.invoiceNumber,

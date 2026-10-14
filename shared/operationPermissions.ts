@@ -422,6 +422,7 @@ export interface OperationUser {
   /** A resolved compatibility snapshot alone must not enable canonical gate bypass. */
   operationPolicyEnabled?: boolean;
   permissionsOverride?: unknown;
+  atomicPermissions?: unknown;
   resolvedPermissions?: PermissionMap;
   resolvedOperationPolicy?: OperationPolicy | null;
   roleOperationPolicy?: OperationPolicy | null;
@@ -455,6 +456,7 @@ export function hasOperationPolicy(user: OperationUser): boolean {
 function effectivePolicy(user: OperationUser): OperationPolicy {
   if (user.resolvedOperationPolicy) return user.resolvedOperationPolicy;
   const override = user.permissionsOverride as PermissionMap | null | undefined;
+  const atomic = user.atomicPermissions as Record<string, boolean> | null | undefined;
   const modules =
     user.resolvedPermissions ??
     resolvePermissions(user.role as RoleKey, override);
@@ -464,6 +466,13 @@ function effectivePolicy(user: OperationUser): OperationPolicy {
     user.roleOperationPolicy,
     user.operationPolicy,
     override,
+    user.operationPolicy == null && (override != null || atomic != null)
+      ? {
+          permissionsOverride: override,
+          atomicPermissions: atomic,
+          inheritedModules: resolvePermissions(user.role as RoleKey, null),
+        }
+      : undefined,
   );
 }
 
@@ -569,8 +578,18 @@ export function buildOperationPolicyFromLegacy(
   explicitAtomicGrants?: Record<string, boolean> | null,
   explicitModuleOverride?: PermissionMap | null,
 ): OperationPolicy {
+  const basePolicy = legacyOperationPolicy(role, modules, explicitModuleOverride);
+  if (explicitModuleOverride != null) {
+    return applyLegacyIndividualOperationOverrides(
+      basePolicy,
+      role,
+      resolvePermissions(role as RoleKey, null),
+      explicitModuleOverride,
+      explicitAtomicGrants,
+    );
+  }
   return applyLegacyOperationDenials(
-    legacyOperationPolicy(role, modules, explicitModuleOverride),
+    basePolicy,
     explicitAtomicGrants,
   );
 }

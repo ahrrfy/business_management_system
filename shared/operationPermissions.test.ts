@@ -696,4 +696,30 @@ describe("operation decision", () => {
       operationDecision({ role: "cashier" }, "sales.create"),
     ).toMatchObject({ allowed: true, source: "legacy" });
   });
+
+  it("bridges legacy station accounts with pos or workorders FULL override into return operations unless explicitly revoked", () => {
+    expect(
+      operationDecision(
+        { role: "user", permissionsOverride: { pos: "FULL" } },
+        "returns.create",
+      ),
+    ).toMatchObject({ allowed: true, source: "legacy" });
+    expect(
+      operationDecision(
+        { role: "print_operator", permissionsOverride: { workorders: "FULL" } },
+        "returns.create",
+      ),
+    ).toMatchObject({ allowed: true, source: "legacy" });
+    expect(
+      operationDecision(
+        {
+          role: "user",
+          permissionsOverride: { pos: "FULL" },
+          atomicPermissions: { "pos.return.create": false },
+        },
+        "returns.create",
+      ),
+    ).toMatchObject({ allowed: false, source: "legacy" });
+  });
 });
+

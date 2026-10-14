@@ -701,22 +701,30 @@ export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL
 export function returnOperationsAllowed(user: {
   role: string;
   permissionsOverride?: unknown;
+  atomicPermissions?: unknown;
   resolvedAtomicPermissions?: AtomicPermissionsMap;
 }): boolean {
   if (user.role === "admin") return true;
-  if (user.resolvedAtomicPermissions) {
-    if (
-      user.resolvedAtomicPermissions["pos.return.create"] === false &&
-      user.resolvedAtomicPermissions["pos.invoice.void"] === false
-    ) {
-      return false;
-    }
-  }
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
   const salesAllowed = moduleAccessAllowed(user.role, override, "sales", "FULL", ["cashier", "manager"]);
   const receptionAllowed = moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
   const printPosAllowed = moduleAccessAllowed(user.role, override, "pos", "FULL", ["cashier", "manager", "print_operator"]);
-  return salesAllowed || receptionAllowed || printPosAllowed;
+  const moduleAllowed = salesAllowed || receptionAllowed || printPosAllowed;
+  if (user.resolvedAtomicPermissions) {
+    const rawAtomic = user.atomicPermissions as Record<string, boolean> | null | undefined;
+    const isBridgedLegacyStation =
+      (user.role === "user" || user.role === "print_operator") && moduleAllowed;
+    const returnRevoked = isBridgedLegacyStation
+      ? rawAtomic?.["pos.return.create"] === false
+      : user.resolvedAtomicPermissions["pos.return.create"] === false;
+    const voidRevoked = isBridgedLegacyStation
+      ? rawAtomic?.["pos.invoice.void"] === false
+      : user.resolvedAtomicPermissions["pos.invoice.void"] === false;
+    if (returnRevoked && voidRevoked) {
+      return false;
+    }
+  }
+  return moduleAllowed;
 }
 
 /**
@@ -742,8 +750,14 @@ export const returnsProcedure = auditedProcedure
         });
       }
       const atomic = (ctx.user as any).resolvedAtomicPermissions as AtomicPermissionsMap | undefined;
+      const rawAtomic = (ctx.user as any).atomicPermissions as Record<string, boolean> | null | undefined;
+      const isBridgedLegacyStation =
+        ctx.user.role === "user" || ctx.user.role === "print_operator";
       if (atomic) {
-        if (path?.endsWith("cancel") && atomic["pos.invoice.void"] === false) {
+        const voidRevoked = isBridgedLegacyStation
+          ? rawAtomic?.["pos.invoice.void"] === false
+          : atomic["pos.invoice.void"] === false;
+        if (path?.endsWith("cancel") && voidRevoked) {
           throw new TRPCError({
             code: "FORBIDDEN",
             message: appErrorMessage({
@@ -753,9 +767,12 @@ export const returnsProcedure = auditedProcedure
             }),
           });
         }
+        const returnRevoked = isBridgedLegacyStation
+          ? rawAtomic?.["pos.return.create"] === false
+          : atomic["pos.return.create"] === false;
         if (
           (path?.endsWith("create") || path?.includes("Refund") || path?.includes("Return")) &&
-          atomic["pos.return.create"] === false
+          returnRevoked
         ) {
           throw new TRPCError({
             code: "FORBIDDEN",
@@ -886,11 +903,21 @@ export function returnInvoiceScopeForUser(
 ): InvoiceScope | null {
   if (user.role === "admin" || user.isOwner) return "sales";
   if (hasOperationPolicy(user) && !canonicalOperationAllowed(user, path)) return null;
-  const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
-  if (moduleAccessAllowed(user.role, override, "sales", "FULL", ["cashier", "manager"])) {
+  const persistedHolder = user as {
+    persistedPermissionsOverride?: Record<string, AccessLevel> | null;
+    customRoleKey?: string | null;
+  };
+  const override =
+    persistedHolder.persistedPermissionsOverride !== undefined
+      ? persistedHolder.persistedPermissionsOverride
+      : (user.permissionsOverride as Record<string, AccessLevel> | null | undefined);
+  if (
+    moduleAccessAllowed(user.role, override, "sales", "FULL", ["cashier", "manager"]) ||
+    canonicalOperationAllowed(user, "sales.create")
+  ) {
     return "sales";
   }
-  const customKey = (user as { customRoleKey?: string | null }).customRoleKey;
+  const customKey = persistedHolder.customRoleKey;
   if (customKey === "reception_clerk") return "reception";
   if (customKey === "print_cashier") return "print";
   if (customKey === "retail_cashier" && override?.sales !== "NONE") return "sales";

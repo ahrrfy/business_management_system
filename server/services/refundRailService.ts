@@ -53,6 +53,8 @@ import {
  */
 export type RefundRailActor = Actor & {
   permissionsOverride?: PermissionMap | null;
+  customRoleKey?: string | null;
+  saleReturnInvoiceScope?: "sales" | "reception" | "print" | null;
 };
 
 /**
@@ -118,6 +120,9 @@ function saleReturnInvoiceScopeForActor(
   if (actor.isOwner || actor.role === "admin" || actor.role === "manager") {
     return "sales";
   }
+  if (actor.saleReturnInvoiceScope) {
+    return actor.saleReturnInvoiceScope;
+  }
   const override = (actor.permissionsOverride ?? null) as PermissionMap | null;
   const map = resolvePermissions(
     (actor.role as RoleKey) ?? "user",
@@ -128,14 +133,26 @@ function saleReturnInvoiceScopeForActor(
   if (salesLevel === "FULL") {
     return "sales";
   }
+  if (
+    actor.customRoleKey === "reception_clerk" ||
+    (map.workorders === "FULL" && map.pos === "NONE")
+  ) {
+    return "reception";
+  }
+  if (
+    actor.customRoleKey === "print_cashier" ||
+    (map.pos === "FULL" && map.workorders === "NONE" && salesLevel === "NONE")
+  ) {
+    return "print";
+  }
+  if (salesLevel === "READ") {
+    return "sales";
+  }
   if (map.workorders === "FULL") {
     return "reception";
   }
   if (map.pos === "FULL") {
     return "print";
-  }
-  if (salesLevel === "READ") {
-    return "sales";
   }
   return "sales";
 }
