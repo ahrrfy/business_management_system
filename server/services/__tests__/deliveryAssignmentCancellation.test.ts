@@ -9,6 +9,8 @@ import { listConsignmentsForParty } from "../delivery/queries";
 import { moduleAccessAllowed } from "@shared/permissions";
 
 const TABLES = [
+  "productPrices",
+  "shifts",
   "deliveryOutbox",
   "deliveryEvents",
   "deliveryLedgerEntries",
@@ -22,6 +24,8 @@ const TABLES = [
   "receipts",
   "invoiceItems",
   "invoices",
+  "onlineOrderItems",
+  "onlineOrders",
   "branchStock",
   "productUnits",
   "productVariants",
@@ -232,6 +236,29 @@ beforeEach(async () => {
 });
 
 describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", () => {
+  it("canonical sale and independent dispatch grants execute together with store NONE", async () => {
+    await db().insert(s.productPrices).values({ productUnitId: 1, priceTier: "RETAIL", price: "1000.00" });
+    await db().insert(s.shifts).values({ branchId: 1, userId: 6, shiftType: "RETAIL", openingBalance: "0.00", shiftStatus: "OPEN" });
+    const operationPolicy = { version: 1 as const, grants: { "operation.sales.create": true, "operation.delivery.dispatchInvoice": true } as Record<string, boolean> };
+    await db().update(s.users).set({ operationPolicy, permissionsOverride: { store: "NONE" } }).where(eq(s.users.id, 6));
+    const api = appRouter.createCaller({ req: { headers: {} }, res: {}, user: {
+      id: 6, role: "cashier", branchId: 1, permissionsOverride: { store: "NONE" }, operationPolicyEnabled: true, resolvedOperationPolicy: operationPolicy,
+    } } as never);
+    const result = await api.sales.create({ branchId: 1, customerId: 1, lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      delivery: { partyId: 1, fee: "0", recipientPhone: "07701234567" }, clientRequestId: "canonical-sale-dispatch-store-none" });
+    const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, result.invoiceId)))[0];
+    expect(invoice?.status).toBe("PENDING");
+    expect(invoice?.paymentMode).toBe("COD");
+    expect(Number(invoice?.total)).toBe(1000);
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, result.invoiceId))).length).toBe(1);
+    expect((await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, result.invoiceId))).length).toBe(0);
+    expect((await db().select().from(s.deliveryLedgerEntries)).filter((entry) => entry.entryType === "COD_ASSIGNED").map((entry) => Number(entry.amount))).toEqual([1000]);
+    expect(Number((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0]?.quantity)).toBe(24);
+    delete operationPolicy.grants["operation.delivery.dispatchInvoice"];
+    await expect(api.sales.create({ branchId: 1, lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      delivery: { partyId: 1, fee: "0" }, clientRequestId: "canonical-sale-dispatch-denied" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await db().select().from(s.invoices)).length).toBe(1);
+  });
   it.each(["OUT_FOR_DELIVERY", "FAILED"] as const)(
     "%s: يلغي الإسناد ويحرر COD بلا لمس الفاتورة أو المخزون أو الإيصالات",
     async (parcelStatus) => {
@@ -917,4 +944,139 @@ describe("توافق بوابات الواجهة مع صلاحيات كاشير 
     expect(moduleAccessAllowed("sales_rep", { store: "FULL" }, "store", "FULL", ["manager", "cashier"])).toBe(true);
   });
 });
+
+describe("إلغاء إسناد إرسالية مرتبطة بطلب متجر إلكتروني مضى على إنشائه أكثر من 24 ساعة (معالجة حارس حجز المخزون)", () => {
+  it("ينجح في إلغاء الإسناد عندما يكون مصدر الإرسالية ONLINE_ORDER ومضى على إنشائه أكثر من 24 ساعة", async () => {
+    const d = db();
+
+    const now = Date.now();
+    const orderDate = new Date(now - 36 * 3600 * 1000); // قبل 36 ساعة
+    const expiredReservation = new Date(now - 12 * 3600 * 1000); // انتهت قبل 12 ساعة
+
+    // فاتورة للطلب
+    await seedInvoice(301);
+
+    // طلب متجر إلكتروني تم شحنه سابقاً
+    await d.insert(s.onlineOrders).values({
+      id: 301,
+      orderNumber: "ORD-100301",
+      customerId: 1,
+      branchId: 1,
+      invoiceId: 301,
+      orderDate,
+      reservationExpiresAt: expiredReservation,
+      subtotal: "25000.00",
+      shippingCost: "5000.00",
+      taxAmount: "0.00",
+      total: "30000.00",
+      status: "SHIPPED",
+      deliveryPartyId: 1,
+    });
+
+    // إرسالية توصيل مرتبطة بالطلب
+    await d.insert(s.deliveryConsignments).values({
+      id: 301,
+      consignmentNumber: "CN-1-20261010-00301",
+      branchId: 1,
+      partyId: 1,
+      invoiceId: 301,
+      sourceType: "ONLINE_ORDER",
+      sourceId: 301,
+      codAmount: "30000.00",
+      collectedAmount: "0.00",
+      parcelStatus: "OUT_FOR_DELIVERY",
+      status: "DISPATCHED",
+      dispatchedBy: 6,
+    });
+
+    // إلغاء إسناد التوصيل بواسطة الكاشير
+    const result = await cancelDeliveryAssignment(
+      {
+        consignmentId: 301,
+        reason: "خطأ في الإسناد للمندوب",
+        clientRequestId: "cancel-online-ord-301",
+      },
+      CASHIER,
+    );
+
+    expect(result.consignmentId).toBe(301);
+
+    // التحقق من حالة الإرسالية
+    const updatedCn = (
+      await d.select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, 301)).limit(1)
+    )[0];
+    expect(updatedCn.status).toBe("CANCELLED");
+    expect(updatedCn.parcelStatus).toBe("CANCELLED");
+    expect(updatedCn.cancellationReason).toBe("خطأ في الإسناد للمندوب");
+
+    // التحقق من عودة الطلب الإلكتروني لحالة PROCESSING وتجديد مهلة الحجز
+    const updatedOrder = (
+      await d.select().from(s.onlineOrders).where(eq(s.onlineOrders.id, 301)).limit(1)
+    )[0];
+    expect(updatedOrder.status).toBe("PROCESSING");
+    expect(updatedOrder.deliveryPartyId).toBeNull();
+    expect(updatedOrder.reservationExpiresAt).toBeDefined();
+    expect(new Date(updatedOrder.reservationExpiresAt!).getTime()).toBeGreaterThan(now);
+  });
+
+  it("ينجح في إلغاء الإسناد عندما يكون مصدر الإرسالية INVOICE مرتبطة بطلب متجر إلكتروني منتهي الحجز", async () => {
+    const d = db();
+
+    const now = Date.now();
+    const orderDate = new Date(now - 48 * 3600 * 1000);
+    const expiredReservation = new Date(now - 24 * 3600 * 1000);
+
+    await seedInvoice(302);
+
+    await d.insert(s.onlineOrders).values({
+      id: 302,
+      orderNumber: "ORD-100302",
+      customerId: 1,
+      branchId: 1,
+      invoiceId: 302,
+      orderDate,
+      reservationExpiresAt: expiredReservation,
+      subtotal: "40000.00",
+      shippingCost: "5000.00",
+      taxAmount: "0.00",
+      total: "45000.00",
+      status: "SHIPPED",
+      deliveryPartyId: 1,
+    });
+
+    await d.insert(s.deliveryConsignments).values({
+      id: 302,
+      consignmentNumber: "CN-1-20261010-00302",
+      branchId: 1,
+      partyId: 1,
+      invoiceId: 302,
+      sourceType: "INVOICE",
+      sourceId: 302,
+      codAmount: "45000.00",
+      collectedAmount: "0.00",
+      parcelStatus: "ASSIGNED",
+      status: "DISPATCHED",
+      dispatchedBy: 6,
+    });
+
+    const result = await cancelDeliveryAssignment(
+      {
+        consignmentId: 302,
+        reason: "العميل يرغب بالاستلام من الفرع",
+        clientRequestId: "cancel-online-ord-302",
+      },
+      CASHIER,
+    );
+
+    expect(result.consignmentId).toBe(302);
+
+    const updatedOrder = (
+      await d.select().from(s.onlineOrders).where(eq(s.onlineOrders.id, 302)).limit(1)
+    )[0];
+    expect(updatedOrder.status).toBe("PROCESSING");
+    expect(updatedOrder.deliveryPartyId).toBeNull();
+    expect(new Date(updatedOrder.reservationExpiresAt!).getTime()).toBeGreaterThan(now);
+  });
+});
+
 

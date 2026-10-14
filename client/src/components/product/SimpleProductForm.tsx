@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { Package, X } from "lucide-react";
@@ -68,9 +69,10 @@ function SimpleNewCostCoach({
   brand: string;
   productType: string;
 }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const statsQ = trpc.catalog.categoryStats.useQuery(
     { categoryId, brand: brand.trim() || null, productType: productType.trim() || null },
-    { enabled: categoryId != null || !!brand.trim() || !!productType.trim(), staleTime: 5 * 60 * 1000 }
+    { enabled: can("catalog.categoryStats") && (categoryId != null || !!brand.trim() || !!productType.trim()), staleTime: 5 * 60 * 1000 }
   );
   return (
     <MoneyCoach
@@ -88,10 +90,11 @@ function SimpleNewCostCoach({
 }
 
 export default function SimpleProductForm() {
+  const { can } = useCatalogPeopleOperationAccess();
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
-  const branchesQ = trpc.branches.list.useQuery();
-  const categoriesQ = trpc.catalog.categories.useQuery();
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: can("branches.list") });
+  const categoriesQ = trpc.catalog.categories.useQuery(undefined, { enabled: can("catalog.categories") });
 
   // ── بيانات المنتج ──
   const [name, setName] = useState("");
@@ -184,7 +187,7 @@ export default function SimpleProductForm() {
   const debouncedCodes = useMemo(() => (debouncedKey ? debouncedKey.split("\n") : []), [debouncedKey]);
   const checkQ = trpc.catalog.checkBarcodes.useQuery(
     { codes: debouncedCodes },
-    { enabled: debouncedCodes.length > 0, staleTime: 10_000 }
+    { enabled: can("catalog.checkBarcodes") && (debouncedCodes.length > 0), staleTime: 10_000 }
   );
   const takenInDb = useMemo(() => new Set((checkQ.data ?? []).map((r) => r.code)), [checkQ.data]);
 
@@ -275,6 +278,7 @@ export default function SimpleProductForm() {
 
   /** يُرجع نتيجة الخادم أو يرمي — `RecordForm` يُصنّف المآل ويعرضه (SAVED/CONFLICT/FAILED). */
   async function save(): Promise<unknown> {
+    if (!can("catalog.createProduct")) throw new Error("العملية غير مفوضة لحسابك");
     const err = validate();
     if (err) throw new Error(err);
     // فحص أخير حاسم للباركود ضدّ القاعدة (لا نعتمد على توقيت الـdebounce) — يشمل البدائل.
@@ -355,7 +359,7 @@ export default function SimpleProductForm() {
       <RecordForm
         mode="create"
         isDirty={isDirty}
-        blockedBy={validationReason ? [validationReason] : []}
+        blockedBy={!can("catalog.createProduct") ? ["العملية غير مفوضة لحسابك"] : validationReason ? [validationReason] : []}
         isPending={create.isPending}
         onSave={save}
         onCancel={() => navigate("/products")}

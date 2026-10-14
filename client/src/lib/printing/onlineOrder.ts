@@ -83,8 +83,8 @@ export function buildOnlineOrderThermalDoc(d: OnlineOrderPrintData) {
       { label: "المبلغ كتابةً", value: formatArabicMoneyWords(d.total) },
     ],
     footer: mapPayload
-      ? "امسح رمز QR لموقع التوصيل المباشر على الخريطة · شكراً لتعاملكم مع مكتبة العربية"
-      : "طلب متجر — الدفع نقداً عند الاستلام · شكراً لتعاملكم مع مكتبة العربية",
+      ? `امسح رمز QR لموقع التوصيل المباشر على الخريطة · ${CO.footer}`
+      : `طلب متجر — الدفع نقداً عند الاستلام · ${CO.footer}`,
     barcodeSet: {
       barcode128: d.orderNumber,
       qrPayload: mapPayload || d.orderNumber,

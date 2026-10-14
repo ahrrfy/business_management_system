@@ -1,6 +1,6 @@
 {
   "include": ["client/src/**/*", "shared/**/*", "server/**/*", "drizzle/**/*"],
-  "exclude": ["node_modules", "build", "dist", "_legacy", "**/*.test.ts"],
+  "exclude": ["node_modules", "build", "dist", "_legacy", "**/*.test.ts", "**/*.test.tsx"],
   "compilerOptions": {
     "incremental": true,
     "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo",

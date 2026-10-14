@@ -1,3 +1,4 @@
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 /**
  * لوحةُ تصدير صور الاستوديو **المنشورة** — تُظهَر للمدير فقط.
  *
@@ -15,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { notify } from "@/lib/notify";
+import { trpc } from "@/lib/trpc";
 import { Download, Image as ImageIcon, Loader2 } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -26,6 +28,8 @@ interface CategoryOption {
 }
 
 export function StudioImageExportPanel({ categories }: { categories: CategoryOption[] }) {
+  const canExport = useOperationPermission("productStudio.authorizeExport").allowed;
+  const utils = trpc.useUtils();
   const [scope, setScope] = useState<ExportScope>("ALL");
   const [categoryId, setCategoryId] = useState("");
   const [productIdsInput, setProductIdsInput] = useState("");
@@ -45,7 +49,7 @@ export function StudioImageExportPanel({ categories }: { categories: CategoryOpt
     return null;
   }, [scope, categoryId, parsedProductIds]);
 
-  const canDownload = !!downloadUrl && !(scope === "PRODUCTS" && parsedProductIds.length > 500);
+  const canDownload = canExport && !!downloadUrl && !(scope === "PRODUCTS" && parsedProductIds.length > 500);
 
   // بلاغ المالك (٢٨/٨): «تنزيل صور الكتالوج يطلب مني كلمة المرور واسم المستخدم…».
   // الجذر: الملاحةُ المباشرة بـ`<a href download>` حين تنقص جلسةُ الكوكي، الخادمُ يعود بـ401
@@ -59,9 +63,10 @@ export function StudioImageExportPanel({ categories }: { categories: CategoryOpt
   // الأصيل الذي يبثّ الأرشيفَ من الشبكة إلى القرص مباشرةً بلا لمس ذاكرة JS. الفشلُ ما زال
   // يبقى داخل التطبيق كرسالةٍ عربية لأنّ الاستعلامَ المسبقَ يلتقط 401/403/400 قبل الملاحة.
   const beginDownload = async () => {
-    if (!downloadUrl || downloading) return;
+    if (!canExport || !downloadUrl || downloading) return;
     setDownloading(true);
     try {
+      await utils.productStudio.authorizeExport.fetch(undefined, { staleTime: 0 });
       const preflightUrl = `${downloadUrl}&preflight=1`;
       const check = await fetch(preflightUrl, { credentials: "include" });
       if (!check.ok) {

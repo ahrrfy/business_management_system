@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -36,8 +37,11 @@ export function MissedDailyCountExceptionPanel({
   businessDate,
   canManage,
 }: Props) {
+  const me = trpc.auth.me.useQuery();
+  const canRequest = treasuryOperationAllowed(me.data, "treasury.missedDailyCount.request", canManage);
+  const canDecide = treasuryOperationAllowed(me.data, "treasury.missedDailyCount.decide", canManage);
   const historical = businessDate < todayUtc();
-  const enabled = branchId > 0 && historical;
+  const enabled = branchId > 0 && historical && treasuryOperationAllowed(me.data, "treasury.missedDailyCount.context", true);
   const utils = trpc.useUtils();
   const contextQ = trpc.treasury.missedDailyCount.context.useQuery(
     { branchId, businessDate },
@@ -224,7 +228,7 @@ export function MissedDailyCountExceptionPanel({
           </div>
         )}
 
-        {context.actions.canRequest && context.carryForward && canManage && (
+        {context.actions.canRequest && context.carryForward && canRequest && (
           <div className="space-y-3 border-t pt-4">
             <Textarea
               value={reason}
@@ -326,7 +330,7 @@ export function MissedDailyCountExceptionPanel({
             )}
             {active.status === "PENDING" &&
               context.actions.canDecide &&
-              canManage && (
+              canDecide && (
                 <div className="space-y-2">
                   <Textarea
                     value={decisionNote}

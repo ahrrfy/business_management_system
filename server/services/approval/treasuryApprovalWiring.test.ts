@@ -304,7 +304,7 @@ const SOD_MESSAGES: Record<keyof typeof FILES, string[]> = {
  */
 const ALWAYS_ENFORCED: Record<keyof typeof FILES, string[]> = {
   voucher: ["اعتماد السندات محصور بحساب مالك نشط", "رفض السندات محصور بحساب مالك نشط"],
-  cashVariance: ["اعتماد فرق النقد محصور بالإدارة أو المحاسبة"],
+  cashVariance: ['assertOperationAuthorityTx(tx, actor, path, ["admin", "manager", "accountant"].includes(actor.role ?? ""))'],
   expense: ["اعتماد المصروف أو رفضه يتطلب حساب مالك نشطاً"],
 };
 
@@ -324,6 +324,16 @@ describe("الحارس النصي — الوصل كما هو في الشيفرة
     for (const message of ALWAYS_ENFORCED[key as keyof typeof FILES]) {
       expect(source, `${rel}: ${message}`).toContain(message);
       expect(blocks, `${rel}: ${message}`).not.toContain(message);
+    }
+  });
+
+  it("فرق النقد: تفويض العملية يسبق بوابة اعتماد كل قرار", () => {
+    const source = read(FILES.cashVariance);
+    for (const operation of ["approve", "reject"]) {
+      const authority = source.indexOf(`assertCashVarianceOperation(tx, actor, "treasury.cashVariance.${operation}")`);
+      expect(authority).toBeGreaterThan(-1);
+      const approval = source.indexOf("assertApprover(", authority);
+      expect(approval).toBeGreaterThan(authority);
     }
   });
 

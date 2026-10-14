@@ -45,7 +45,7 @@ export function triggerReceptionShippingLabel(
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const qrUrl = orderNum && origin ? `${origin}/verify?ref=${encodeURIComponent(orderNum)}` : null;
 
-  void printShippingLabel({
+  return printShippingLabel({
     orderNumber: orderNum,
     customerName: cName || null,
     customerPhone: cPhone || null,

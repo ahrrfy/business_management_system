@@ -25,6 +25,7 @@ export function ReceiptOverlay({
   onClose: () => void;
 }) {
   const isCredit = Boolean(lastSale.creditStr && Number(lastSale.creditStr) > 0);
+  const isCod = lastSale.paymentMode === "COD";
   const allItems = (lastSale.receipts ?? []).flatMap((r) => r.items ?? []);
   const now = new Date();
   const timeStr = fmtTime(now);
@@ -71,19 +72,19 @@ export function ReceiptOverlay({
             transition={{ delay: 0.28, type: "spring", stiffness: 220, damping: 14 }}
             className={cn(
               "pointer-events-none absolute top-4 left-4 flex items-center gap-1.5 rounded-lg border-2 px-2.5 py-0.5 text-xs font-black tracking-wider",
-              isCredit
+              isCredit && !isCod
                 ? "border-amber-600 bg-amber-50/90 text-amber-700"
-                : deliveryDeparture
+                : (isCredit && isCod) || deliveryDeparture
                   ? "border-sky-600 bg-sky-50/90 text-sky-700"
                   : "border-emerald-600 bg-emerald-50/90 text-emerald-700",
             )}
           >
-            {isCredit ? (
+            {isCredit && !isCod ? (
               <span>آجل • DEFERRED</span>
-            ) : deliveryDeparture ? (
+            ) : (isCredit && isCod) || deliveryDeparture ? (
               <>
                 <Truck size={13} strokeWidth={2.5} aria-hidden />
-                <span>طلب توصيل</span>
+                <span>دفع عند الاستلام • COD</span>
               </>
             ) : (
               <>
@@ -115,9 +116,14 @@ export function ReceiptOverlay({
 
           {/* المتبقّي آجل أو عند الاستلام إن وجد */}
           {lastSale.creditStr && (
-            <div className="rounded-xl border-2 border-amber-600/40 bg-amber-50 p-3 text-center">
-              <div className="text-xs font-bold text-amber-800">المتبقّي (آجل / عند الاستلام)</div>
-              <div className="text-3xl font-black tabular-nums text-amber-700" dir="ltr">
+            <div className={cn(
+              "rounded-xl border-2 p-3 text-center",
+              isCod ? "border-sky-600/40 bg-sky-50" : "border-amber-600/40 bg-amber-50"
+            )}>
+              <div className={cn("text-xs font-bold", isCod ? "text-sky-800" : "text-amber-800")}>
+                {isCod ? "المطلوب عند الاستلام (COD)" : "المتبقّي (حساب آجل)"}
+              </div>
+              <div className={cn("text-3xl font-black tabular-nums", isCod ? "text-sky-700" : "text-amber-700")} dir="ltr">
                 {fmt(lastSale.creditStr)}
               </div>
             </div>

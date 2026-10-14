@@ -25,6 +25,7 @@ import {
   Inbox as InboxIcon,
   Megaphone,
   RefreshCw,
+  ShoppingBag,
 } from "lucide-react";
 import { Link, useLocation, useSearch } from "wouter";
 import { DecisionRow } from "@/components/decision/DecisionRow";
@@ -34,8 +35,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { fmtDateTime } from "@/lib/date";
+import { fmtInt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { orderStatusLabel } from "@shared/onlineOrderStatus";
+import { hasModuleAccess, type PermissionMap } from "@shared/permissions";
 import {
   decisionSpec,
   type DecisionDecideResult,
@@ -210,6 +216,43 @@ export default function MyWork() {
     { limit: 20 },
     { enabled: updatesActive, staleTime: 30_000 },
   );
+  const me = trpc.auth?.me?.useQuery?.();
+  const role = me?.data?.role ?? "";
+  const override = (me?.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const canViewStore = Boolean(role && hasModuleAccess(role, override, "store", "READ"));
+
+  const myOrders = trpc.storeAdmin.orders.myOrders.useQuery(undefined, {
+    enabled: canViewStore,
+    staleTime: 30_000,
+  });
+  const assignedOrders = useMemo(() => {
+    return (myOrders.data ?? []).filter(
+      (o) => o.status === "PENDING" || o.status === "CONFIRMED" || o.status === "PROCESSING"
+    );
+  }, [myOrders.data]);
+  const utils = trpc.useUtils?.();
+
+  // تحديث فوري لطابور القرارات والإشعارات والإعلانات عند وقوع الأحداث اللحظية
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.PENDING_APPROVAL_CREATED,
+      REALTIME_EVENT_TYPES.APPROVAL_RESOLVED,
+      REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED,
+    ],
+    () => {
+      void utils?.decisions?.inbox?.invalidate?.();
+      void utils?.storeAdmin?.orders?.myOrders?.invalidate?.();
+    },
+  );
+
+  useRealtimeEvent(REALTIME_EVENT_TYPES.NOTIFICATION_INSERTED, () => {
+    void utils?.superApp?.notifications?.invalidate?.();
+  });
+
+  useRealtimeEvent(REALTIME_EVENT_TYPES.ANNOUNCEMENT_PUBLISHED, () => {
+    void utils?.announcements?.mine?.invalidate?.();
+  });
+
   const markRead = trpc.superApp.markNotificationRead.useMutation({
     onSuccess: () => void notifications.refetch(),
   });
@@ -304,6 +347,7 @@ export default function MyWork() {
   }
 
   function refetchActiveTab() {
+    if (canViewStore) void myOrders.refetch();
     if (decisionsActive) {
       void inbox.refetch();
       return;
@@ -378,6 +422,55 @@ export default function MyWork() {
               قيمة التبويب في الرابط غير صالحة؛ عُرض تبويب القرارات بدلاً منها
               ويمكنك اختيار تبويب آخر من الأعلى.
             </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* شريحة طلبات المتجر المسندة للموظف للتجهيز السريع */}
+      {canViewStore && assignedOrders.length > 0 && (
+        <Card className="mb-4 border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)]/20 shadow-xs">
+          <CardContent className="p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <ShoppingBag aria-hidden className="size-4 text-[var(--sem-pos)]" />
+                <span className="text-xs font-bold text-foreground">
+                  طلبات المتجر المسندة إليك للتجهيز ({assignedOrders.length.toLocaleString("ar-IQ-u-nu-latn")})
+                </span>
+              </div>
+              <Link
+                href="/store-admin?tab=orders"
+                className="inline-flex items-center gap-1 text-[11px] font-bold text-primary hover:underline"
+              >
+                <span>شاشة التجهيز الكاملة</span>
+                <ExternalLink aria-hidden className="size-3" />
+              </Link>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+              {assignedOrders.slice(0, 6).map((ord) => (
+                <Card
+                  key={ord.id}
+                  className="flex flex-row items-center justify-between gap-2 p-2.5 shadow-2xs"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 font-bold text-xs">
+                      <span>#{ord.orderNumber}</span>
+                      <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                        {orderStatusLabel(ord.status)}
+                      </span>
+                    </div>
+                    <div className="truncate text-[11px] text-muted-foreground mt-0.5">
+                      {ord.customerName ?? "عميل"} · {fmtInt(ord.total)} د.ع
+                    </div>
+                  </div>
+                  <Link
+                    href={`/store-admin?tab=orders&search=${encodeURIComponent(ord.orderNumber)}`}
+                    className="shrink-0 rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-[11px] font-bold text-primary hover:bg-primary/20"
+                  >
+                    تجهيز
+                  </Link>
+                </Card>
+              ))}
+            </div>
           </CardContent>
         </Card>
       )}

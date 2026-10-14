@@ -34,6 +34,7 @@ import {
   workOrders,
 } from "../../../drizzle/schema";
 import { money, round2 } from "../money";
+import { baghdadDayRangeUtc, baghdadToday } from "../businessDay";
 import { verifyPostingIntentEvidence } from "./postingEngine";
 
 /**
@@ -469,12 +470,8 @@ export function computeShadowOpeningHash(input: {
     .digest("hex");
 }
 
-async function databaseToday(db: DB): Promise<string> {
-  const result = await db.execute(
-    sql`SELECT DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+03:00'), '%Y-%m-%d') AS today`,
-  );
-  const row = (result as unknown as [Array<{ today: string }>])[0][0];
-  return String(row.today);
+async function databaseToday(_db?: DB): Promise<string> {
+  return baghdadToday();
 }
 
 /**
@@ -498,6 +495,8 @@ export async function readOperationalBalanceSnapshot(
       message: "تاريخ لقطة الافتتاح غير صالح.",
     });
   }
+
+  const asOfExclusiveUtc = baghdadDayRangeUtc(asOf, asOf).endExclusive;
 
   const blockers: ShadowOpeningBlocker[] = [];
   if (asOf !== snapshotDate) {
@@ -616,7 +615,7 @@ export async function readOperationalBalanceSnapshot(
       .from(receipts)
       .where(
         sql`${receipts.approvalStatus} = 'APPROVED'
-              AND ${receipts.createdAt} < CONVERT_TZ(DATE_ADD(${asOf}, INTERVAL 1 DAY), '+03:00', '+00:00')`,
+              AND ${receipts.createdAt} < ${asOfExclusiveUtc}`,
       ),
     db
       .select({
@@ -627,7 +626,7 @@ export async function readOperationalBalanceSnapshot(
       .from(shifts)
       .where(
         sql`${shifts.status} = 'OPEN'
-              AND ${shifts.openedAt} < CONVERT_TZ(DATE_ADD(${asOf}, INTERVAL 1 DAY), '+03:00', '+00:00')`,
+              AND ${shifts.openedAt} < ${asOfExclusiveUtc}`,
       ),
     db
       .select({
@@ -655,7 +654,7 @@ export async function readOperationalBalanceSnapshot(
       )
       .leftJoin(invoices, eq(invoices.id, deliveryConsignments.invoiceId))
       .where(
-        sql`${deliveryLedgerEntries.occurredAt} < CONVERT_TZ(DATE_ADD(${asOf}, INTERVAL 1 DAY), '+03:00', '+00:00')`,
+        sql`${deliveryLedgerEntries.occurredAt} < ${asOfExclusiveUtc}`,
       )
       .groupBy(deliveryLedgerEntries.branchId),
     db
@@ -685,7 +684,7 @@ export async function readOperationalBalanceSnapshot(
       )
       .where(
         sql`${deliveryConsignments.feeCollection} = 'SHOP'
-              AND ${deliveryLedgerEntries.occurredAt} < CONVERT_TZ(DATE_ADD(${asOf}, INTERVAL 1 DAY), '+03:00', '+00:00')`,
+              AND ${deliveryLedgerEntries.occurredAt} < ${asOfExclusiveUtc}`,
       )
       .groupBy(deliveryLedgerEntries.branchId),
     db
@@ -709,7 +708,7 @@ export async function readOperationalBalanceSnapshot(
         sql`${exchangeTransactions.status} = 'ACTIVE'
               AND ${exchangeTransactions.currency} = 'USD'
               AND ${exchangeTransactions.type} IN ('FX_BUY', 'WITHDRAW', 'DEPOSIT')
-              AND ${exchangeTransactions.createdAt} < CONVERT_TZ(DATE_ADD(${asOf}, INTERVAL 1 DAY), '+03:00', '+00:00')`,
+              AND ${exchangeTransactions.createdAt} < ${asOfExclusiveUtc}`,
       ),
     db
       .select({
@@ -746,7 +745,7 @@ export async function readOperationalBalanceSnapshot(
       .from(cashTransfers)
       .where(
         sql`${cashTransfers.status} IN ('IN_TRANSIT', 'RECEIVED')
-              AND ${cashTransfers.sentAt} < CONVERT_TZ(DATE_ADD(${asOf}, INTERVAL 1 DAY), '+03:00', '+00:00')`,
+              AND ${cashTransfers.sentAt} < ${asOfExclusiveUtc}`,
       ),
     db
       .select({
@@ -818,7 +817,7 @@ export async function readOperationalBalanceSnapshot(
       })
       .from(payrollObligations)
       .where(
-        sql`${payrollObligations.createdAt} < CONVERT_TZ(DATE_ADD(${asOf}, INTERVAL 1 DAY), '+03:00', '+00:00')`,
+        sql`${payrollObligations.createdAt} < ${asOfExclusiveUtc}`,
       ),
     db
       .select({
@@ -881,7 +880,7 @@ export async function readOperationalBalanceSnapshot(
       .from(receipts)
       .where(
         sql`${receipts.internalNote} LIKE '@SYSTEM_PAYMENT_REQUEST:%'
-              AND ${receipts.createdAt} < CONVERT_TZ(DATE_ADD(${asOf}, INTERVAL 1 DAY), '+03:00', '+00:00')`,
+              AND ${receipts.createdAt} < ${asOfExclusiveUtc}`,
       ),
     db
       .select({

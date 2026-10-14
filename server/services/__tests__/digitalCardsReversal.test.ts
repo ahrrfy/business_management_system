@@ -40,10 +40,10 @@ function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set
 async function seedBase() {
   await db().insert(s.branches).values({ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" });
   await db().insert(s.users).values([
-    { id: 1, openId: "u1", name: "كاشير", role: "cashier", loginMethod: "local" },
-    { id: 2, openId: "u2", name: "مدير", role: "manager", loginMethod: "local" },
-    { id: 3, openId: "u3", name: "مدير ثانٍ", role: "manager", loginMethod: "local" },
-    { id: 4, openId: "u4", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
+    { id: 1, openId: "u1", name: "كاشير", role: "cashier", branchId: 1, loginMethod: "local" },
+    { id: 2, openId: "u2", name: "مدير", role: "manager", branchId: 1, loginMethod: "local" },
+    { id: 3, openId: "u3", name: "مدير ثانٍ", role: "manager", branchId: 1, loginMethod: "local" },
+    { id: 4, openId: "u4", name: "المالك", role: "admin", branchId: 1, loginMethod: "local", isOwner: true },
   ]);
   await db().insert(s.customers).values({
     id: 1,
@@ -543,7 +543,7 @@ describe("ش١٢ — الحوكمة والذرّية", () => {
     const { sale, ids } = await issued();
     await expect(withTx((tx) => reversalService.approveReversal(tx, {
       invoiceId: sale.invoiceId, detailIds: ids, reason: "محاولة",
-    }, actor))).rejects.toThrow(/قرارٌ مديريّ/);
+    }, actor))).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("لا عكس مرّتين لنفس البند", async () => {

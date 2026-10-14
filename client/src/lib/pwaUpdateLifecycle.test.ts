@@ -150,4 +150,54 @@ describe("PWA update lifecycle", () => {
 
     expect(result.status).toBe("timeout");
   });
+
+  it("waits for activate to finish even after registration.active changes and ACK arrives", async () => {
+    const previous = new WorkerStub();
+    previous.state = "activated";
+    const candidate = new WorkerStub();
+    const registration = registrationStub({
+      active: previous,
+      waiting: candidate,
+    });
+    let finished = false;
+    const pending = waitForWorkerActivation(
+      registration,
+      candidate as unknown as ServiceWorker,
+      {
+        timeoutMs: 200,
+        pollIntervalMs: 2,
+        sendActivation: (_worker, acknowledge) => {
+          registration.waiting = null;
+          registration.active = candidate as unknown as ServiceWorker;
+          candidate.moveTo("activating");
+          acknowledge();
+        },
+      },
+    ).then((result) => {
+      finished = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(finished).toBe(false);
+    candidate.moveTo("activated");
+    await expect(pending).resolves.toEqual({
+      status: "activated",
+      acknowledged: true,
+    });
+  });
+
+  it("waits for an already activating worker when waiting has been cleared", async () => {
+    const candidate = new WorkerStub();
+    candidate.state = "activating";
+    const registration = registrationStub({ active: candidate });
+    setTimeout(() => candidate.moveTo("activated"), 10);
+    await expect(
+      activateRegistrationUpdate({
+        getRegistration: async () => registration,
+        timeoutMs: 200,
+        pollIntervalMs: 2,
+        sendActivation: () => undefined,
+      }),
+    ).resolves.toMatchObject({ status: "activated" });
+  });
 });

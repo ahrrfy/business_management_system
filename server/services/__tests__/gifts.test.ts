@@ -442,9 +442,9 @@ describe("G-م٧ حملات الهدايا (ربط + فرض ميزانيّة ب�
 
   it("حوكمة الحملة محصورة بمدير/أدمن — تُرفض لغير المدير (تدقيق Codex P1)", async () => {
     const acc = { userId: 4, branchId: 1, role: "accountant" };
-    await expect(createGiftCampaign({ name: "حملة محظورة" }, acc)).rejects.toThrow(/المدير/);
+    await expect(createGiftCampaign({ name: "حملة محظورة" }, acc)).rejects.toMatchObject({ code: "FORBIDDEN" });
     const camp = await createGiftCampaign({ name: "حملة ح" }, mgrA);
-    await expect(closeGiftCampaign(camp.campaignId, acc)).rejects.toThrow(/المدير/);
+    await expect(closeGiftCampaign(camp.campaignId, acc)).rejects.toMatchObject({ code: "FORBIDDEN" });
     await closeGiftCampaign(camp.campaignId, mgrA); // مدير حقيقيّ ⇒ ينجح
     const list = await listGiftCampaigns();
     expect(list.find((c) => c.id === camp.campaignId)?.status).toBe("CLOSED");

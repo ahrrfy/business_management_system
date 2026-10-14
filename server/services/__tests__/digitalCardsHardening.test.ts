@@ -41,9 +41,9 @@ async function seedBase() {
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
   await db().insert(s.users).values([
-    { id: 1, openId: "u1", name: "كاشير", role: "cashier", loginMethod: "local" },
-    { id: 2, openId: "u2", name: "مدير", role: "manager", loginMethod: "local" },
-    { id: 3, openId: "u3", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
+    { id: 1, openId: "u1", name: "كاشير", role: "cashier", branchId: 1, loginMethod: "local" },
+    { id: 2, openId: "u2", name: "مدير", role: "manager", branchId: 1, loginMethod: "local" },
+    { id: 3, openId: "u3", name: "المالك", role: "admin", branchId: 1, loginMethod: "local", isOwner: true },
   ]);
   await db().insert(s.receipts).values([
     {
@@ -69,6 +69,7 @@ async function setup(branchId = 1) {
   const { walletId } = await withTx((tx) => walletService.createWallet(tx, {
     providerId, branchId, code: `W${branchId}${Math.random().toString(36).slice(2, 5)}`, name: `محفظة ${branchId}`,
   }, { userId: 1, branchId: 1 }));
+  await db().update(s.users).set({ branchId }).where(eq(s.users.id, mgr.userId));
   const request = await withTx((tx) => walletOpsService.deposit(tx, {
     walletId, amount: "1000000", paymentMethod: "CASH", clientRequestId: `d-${Math.random().toString(36).slice(2, 12)}`,
   }, { ...mgr, branchId }));
@@ -119,10 +120,13 @@ describe("ش١٣ — عزل الفرع على كل قراءة", () => {
 
   it("النيّة لا تُعَدّ لفرعٍ غير فرعها، ووردية فرعٍ آخر مرفوضة", async () => {
     const b2 = await setup(2);
-    await expect(withTx((tx) => intentService.prepare(tx, {
-      clientRequestId: "cross-branch-1", branchId: 2, shiftId: 1, paymentMethod: "CASH", cartFingerprint: "fp",
+    const input = {
+      clientRequestId: "cross-branch-1", branchId: 2, shiftId: 1, paymentMethod: "CASH" as const, cartFingerprint: "fp",
       lines: [{ lineKey: "lk", offeringId: b2.offeringId, priceVersionId: b2.priceVersionId, expectedSellPrice: "14250.00", providerReference: "REF-CROSS-BRANCH" }],
-    }, actor))).rejects.toThrow(/تخصّ فرعاً آخر/);
+    };
+    await expect(withTx((tx) => intentService.prepare(tx, input, actor))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await db().update(s.users).set({ branchId: 2 }).where(eq(s.users.id, actor.userId));
+    await expect(withTx((tx) => intentService.prepare(tx, { ...input, clientRequestId: "cross-branch-2" }, { ...actor, branchId: 2 }))).rejects.toThrow(/تخصّ فرعاً آخر/);
   });
 });
 

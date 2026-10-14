@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
@@ -89,19 +90,20 @@ function Field({ label, value, dir }: { label: string; value: React.ReactNode; d
 }
 
 export default function AssetDetail() {
+  const { can } = useCatalogPeopleOperationAccess();
   const params = useParams();
   const id = Number(params.id);
   const utils = trpc.useUtils();
-  const q = trpc.assets.get.useQuery({ id }, { enabled: Number.isFinite(id) });
-  const opts = trpc.assets.formOptions.useQuery();
+  const q = trpc.assets.get.useQuery({ id }, { enabled: can("assets.get") && (Number.isFinite(id)) });
+  const opts = trpc.assets.formOptions.useQuery(undefined, { enabled: can("assets.formOptions") });
   const me = trpc.auth.me.useQuery();
   const acquisitionCorrections = trpc.assets.acquisitionCorrections.useQuery(
     { assetId: id, obligationId: Number(q.data?.accrualObligationId ?? 0) },
     {
       enabled:
-        Number.isFinite(id) &&
+        can("assets.acquisitionCorrections") && (Number.isFinite(id) &&
         Number(q.data?.accrualObligationId ?? 0) > 0 &&
-        q.data?.accrualObligationKind === "ASSET_ACQUISITION_CASH",
+        q.data?.accrualObligationKind === "ASSET_ACQUISITION_CASH"),
     },
   );
 
@@ -200,6 +202,7 @@ export default function AssetDetail() {
   const settlement = assetSettlementPresentation(a.settlementStatus);
   const pendingCorrection = acquisitionCorrections.data?.find((item) => item.status === "PENDING") ?? null;
   const canRequestCorrection =
+    can("assets.requestAcquisitionCorrection") &&
     a.accrualObligationKind === "ASSET_ACQUISITION_CASH" &&
     ["ACCRUED_UNPAID", "PAYMENT_PENDING", "PAID"].includes(a.settlementStatus ?? "") &&
     pendingCorrection == null;
@@ -242,15 +245,15 @@ export default function AssetDetail() {
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            {a.status !== "disposed" && <Link href={`/assets/${id}/edit`}><Button variant="outline" size="sm">تعديل</Button></Link>}
-            {a.settlementStatus === "PAYABLE_UNSETTLED" && <Button variant="outline" size="sm" disabled={requestSupplierSettlement.isPending} onClick={() => requestSupplierSettlement.mutate({ assetId: id, clientRequestId: supplierSettlementRequestId })}>طلب سداد ذمة المورد</Button>}
+            {a.status !== "disposed" && can("assets.update") && <Link href={`/assets/${id}/edit`}><Button variant="outline" size="sm">تعديل</Button></Link>}
+            {a.settlementStatus === "PAYABLE_UNSETTLED" && <Button variant="outline" size="sm" disabled={!can("assets.requestSupplierSettlement") || (requestSupplierSettlement.isPending)} onClick={() => requestSupplierSettlement.mutate({ assetId: id, clientRequestId: supplierSettlementRequestId })}>طلب سداد ذمة المورد</Button>}
             {canRequestCorrection && <Button variant="outline" size="sm" className="text-destructive" onClick={() => setOpenCorrection(true)}>طلب تصحيح الاقتناء</Button>}
             {canReclassifyToOpening && (
               <Button
                 variant="outline"
                 size="sm"
                 className="border-primary/40 text-primary hover:bg-primary/5"
-                disabled={reclassifyToOpening.isPending}
+                disabled={!can("assets.reclassifyToOpening") || (reclassifyToOpening.isPending)}
                 onClick={async () => {
                   const ok = await confirm({
                     variant: "warning",
@@ -274,7 +277,7 @@ export default function AssetDetail() {
               <QrCode className="size-3.5" />
               <span>ملصق الأصل / QR</span>
             </Button>
-            {isLive && (
+            {isLive && can("assets.transferBranch") && (
               <Button
                 variant="outline"
                 size="sm"
@@ -285,10 +288,10 @@ export default function AssetDetail() {
                 <span>مناقلة فرع</span>
               </Button>
             )}
-            {isLive && <Button variant="outline" size="sm" onClick={() => setOpenMaint(true)}>تسجيل صيانة</Button>}
-            {a.status === "maintenance" && <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "warning", title: "إعادة الأصل للخدمة", description: `إعادة الأصل «${a.name}» (${a.code}) من الصيانة إلى الخدمة؟`, confirmText: "إعادة للخدمة" }))) return; returnMaint.mutate({ assetId: id }); }} disabled={returnMaint.isPending}>إعادة للخدمة</Button>}
-            {isLive && <Button variant="outline" size="sm" onClick={() => setOpenHandover(true)}>تسليم عهدة</Button>}
-            {isLive && <Button variant="outline" size="sm" className="text-destructive" onClick={() => setOpenDispose(true)}>إخراج / استبعاد</Button>}
+            {isLive && can("assets.addMaintenance") && <Button variant="outline" size="sm" onClick={() => setOpenMaint(true)}>تسجيل صيانة</Button>}
+            {a.status === "maintenance" && <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "warning", title: "إعادة الأصل للخدمة", description: `إعادة الأصل «${a.name}» (${a.code}) من الصيانة إلى الخدمة؟`, confirmText: "إعادة للخدمة" }))) return; returnMaint.mutate({ assetId: id }); }} disabled={!can("assets.returnFromMaintenance") || (returnMaint.isPending)}>إعادة للخدمة</Button>}
+            {isLive && can("assets.handover") && <Button variant="outline" size="sm" onClick={() => setOpenHandover(true)}>تسليم عهدة</Button>}
+            {isLive && can("assets.dispose") && <Button variant="outline" size="sm" className="text-destructive" onClick={() => setOpenDispose(true)}>إخراج / استبعاد</Button>}
           </div>
         </CardContent>
       </Card>
@@ -309,7 +312,7 @@ export default function AssetDetail() {
                 variant="outline"
                 size="sm"
                 className="h-7 text-xs border-primary/40 text-primary hover:bg-primary/5"
-                disabled={reclassifyToOpening.isPending}
+                disabled={!can("assets.reclassifyToOpening") || (reclassifyToOpening.isPending)}
                 onClick={async () => {
                   const ok = await confirm({
                     variant: "warning",
@@ -354,11 +357,11 @@ export default function AssetDetail() {
                       <Label htmlFor={`correction-review-${item.id}`}>سبب الرفض عند الرفض</Label>
                       <Input id={`correction-review-${item.id}`} value={correctionReviewReason} onChange={(event) => setCorrectionReviewReason(event.target.value)} placeholder="يُترك فارغاً عند الاعتماد" />
                       <div className="flex gap-2">
-                        <Button size="sm" disabled={approveCorrection.isPending || rejectCorrection.isPending} onClick={async () => {
+                        <Button size="sm" disabled={!can("assets.approveAcquisitionCorrection") || (approveCorrection.isPending || rejectCorrection.isPending)} onClick={async () => {
                           if (!(await confirm({ variant: "warning", title: "اعتماد تصحيح الاقتناء", description: "سيُعكس قيد الاعتراف ويُغلق المصدر الأصلي. العملية append-only ولا تحذف الأثر السابق.", confirmText: "اعتماد التصحيح" }))) return;
                           approveCorrection.mutate({ assetId: id, correctionRequestId: Number(item.id) });
                         }}>اعتماد التصحيح</Button>
-                        <Button variant="destructive" size="sm" disabled={correctionReviewReason.trim().length < 3 || approveCorrection.isPending || rejectCorrection.isPending} onClick={() => rejectCorrection.mutate({ assetId: id, correctionRequestId: Number(item.id), reason: correctionReviewReason.trim() })}>رفض التصحيح</Button>
+                        <Button variant="destructive" size="sm" disabled={!can("assets.rejectAcquisitionCorrection") || (correctionReviewReason.trim().length < 3 || approveCorrection.isPending || rejectCorrection.isPending)} onClick={() => rejectCorrection.mutate({ assetId: id, correctionRequestId: Number(item.id), reason: correctionReviewReason.trim() })}>رفض التصحيح</Button>
                       </div>
                     </div>
                   )}
@@ -477,7 +480,7 @@ export default function AssetDetail() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle className="text-base">سجلّ الصيانة — الإجمالي {iqd(a.maintTotal)} د.ع</CardTitle>
-              {isLive && <Button size="sm" variant="outline" onClick={() => setOpenMaint(true)}>+ تسجيل صيانة</Button>}
+              {isLive && can("assets.addMaintenance") && <Button size="sm" variant="outline" onClick={() => setOpenMaint(true)}>+ تسجيل صيانة</Button>}
             </CardHeader>
             <CardContent className="p-0">
               <DataTable<MaintenanceRow>
@@ -522,7 +525,7 @@ export default function AssetDetail() {
                     </div>
                     <Button
                       type="button"
-                      disabled={!docTitle.trim() || !docImages[0]?.dataUrl || addDoc.isPending}
+                      disabled={!can("assets.addDocument") || (!docTitle.trim() || !docImages[0]?.dataUrl || addDoc.isPending)}
                       onClick={() => addDoc.mutate({ assetId: id, title: docTitle.trim(), dataUrl: docImages[0]!.dataUrl })}
                       className="gap-1.5"
                     >
@@ -559,7 +562,7 @@ export default function AssetDetail() {
                         )}
                         <button
                             type="button"
-                            disabled={delDoc.isPending}
+                            disabled={!can("assets.deleteDocument") || delDoc.isPending}
                             onClick={async () => {
                               if (await confirm({ variant: "danger", title: "حذف المستند؟", description: `«${doc.title}» — لا يمكن التراجع.`, confirmText: "حذف" })) {
                                 delDoc.mutate({ docId: doc.id });
@@ -642,12 +645,12 @@ export default function AssetDetail() {
             <Button
               variant="destructive"
               disabled={
-                requestCorrection.isPending ||
+                !can("assets.requestAcquisitionCorrection") || (requestCorrection.isPending ||
                 correctionReason.trim().length < 3 ||
                 !correctionEvidence.trim() ||
                 !correctionAttachment[0]?.dataUrl ||
                 (a.settlementStatus === "PAID" && correctionRefundMethod !== "CASH" && !correctionRefundReference.trim()) ||
-                (a.settlementStatus === "PAID" && correctionRefundMethod === "CARD" && !/^\d{4}$/.test(correctionRefundCardTail))
+                (a.settlementStatus === "PAID" && correctionRefundMethod === "CARD" && !/^\d{4}$/.test(correctionRefundCardTail)))
               }
               onClick={() => requestCorrection.mutate({
                 assetId: id,
@@ -684,7 +687,7 @@ export default function AssetDetail() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpenHandover(false)}>إلغاء</Button>
-            <Button disabled={!hEmp || handover.isPending} onClick={() => handover.mutate({ assetId: id, employeeId: Number(hEmp), note: hNote.trim() || undefined })}>{handover.isPending ? "جارٍ…" : "تسليم"}</Button>
+            <Button disabled={!can("assets.handover") || (!hEmp || handover.isPending)} onClick={() => handover.mutate({ assetId: id, employeeId: Number(hEmp), note: hNote.trim() || undefined })}>{handover.isPending ? "جارٍ…" : "تسليم"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -706,7 +709,7 @@ export default function AssetDetail() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpenMaint(false)}>إلغاء</Button>
-            <Button disabled={!mType.trim() || addMaint.isPending || (!!mCost.trim() && (!mEvidenceReference.trim() || (!mVendorSupplierId && !mVendor.trim())))} onClick={() => addMaint.mutate({ assetId: id, type: mType.trim(), vendor: mVendorSupplierId ? undefined : (mVendor.trim() || undefined), vendorSupplierId: mVendorSupplierId ? Number(mVendorSupplierId) : undefined, cost: mCost.trim() || undefined, evidenceReference: mEvidenceReference.trim() || undefined, clientRequestId: mClientRequestId, note: mNote.trim() || undefined, maintDate: mDate })}>{addMaint.isPending ? "جارٍ…" : "حفظ"}</Button>
+            <Button disabled={!can("assets.addMaintenance") || (!mType.trim() || addMaint.isPending || (!!mCost.trim() && (!mEvidenceReference.trim() || (!mVendorSupplierId && !mVendor.trim()))))} onClick={() => addMaint.mutate({ assetId: id, type: mType.trim(), vendor: mVendorSupplierId ? undefined : (mVendor.trim() || undefined), vendorSupplierId: mVendorSupplierId ? Number(mVendorSupplierId) : undefined, cost: mCost.trim() || undefined, evidenceReference: mEvidenceReference.trim() || undefined, clientRequestId: mClientRequestId, note: mNote.trim() || undefined, maintDate: mDate })}>{addMaint.isPending ? "جارٍ…" : "حفظ"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -762,7 +765,7 @@ export default function AssetDetail() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpenDispose(false)}>إلغاء</Button>
-            <Button className="bg-destructive text-white hover:bg-destructive/90" disabled={dispose.isPending || (dKind === "disposed" && !dValue.trim())} onClick={async () => { if (!(await confirm({ variant: "danger", title: dKind === "disposed" ? "استبعاد الأصل" : "إخراج الأصل من الخدمة", description: `الإخراج/الاستبعاد لا رجعة فيه — يُحذف الأصل «${a.name}» (${a.code}) من السجلّ النشط ويؤثّر على الدفتر. اكتب اسم الأصل للتأكيد.`, confirmText: dKind === "disposed" ? "استبعاد" : "إخراج", requireText: a.name }))) return; dispose.mutate({ assetId: id, kind: dKind, date: dDate, reason: dReason.trim() || undefined, value: dKind === "disposed" ? dValue.trim() : undefined }); }}>{dispose.isPending ? "جارٍ…" : "تأكيد"}</Button>
+            <Button className="bg-destructive text-white hover:bg-destructive/90" disabled={!can("assets.dispose") || (dispose.isPending || (dKind === "disposed" && !dValue.trim()))} onClick={async () => { if (!(await confirm({ variant: "danger", title: dKind === "disposed" ? "استبعاد الأصل" : "إخراج الأصل من الخدمة", description: `الإخراج/الاستبعاد لا رجعة فيه — يُحذف الأصل «${a.name}» (${a.code}) من السجلّ النشط ويؤثّر على الدفتر. اكتب اسم الأصل للتأكيد.`, confirmText: dKind === "disposed" ? "استبعاد" : "إخراج", requireText: a.name }))) return; dispose.mutate({ assetId: id, kind: dKind, date: dDate, reason: dReason.trim() || undefined, value: dKind === "disposed" ? dValue.trim() : undefined }); }}>{dispose.isPending ? "جارٍ…" : "تأكيد"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

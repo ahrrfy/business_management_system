@@ -14,13 +14,13 @@ import { trpc } from "@/lib/trpc";
 import ReceptionInvoiceQueue from "@/components/reception/ReceptionInvoiceQueue";
 import StationPageHeader from "@/components/StationPageHeader";
 import type { DispatchParty } from "@/components/delivery/DispatchDialog";
+import { receptionOperationAllowed } from "@/lib/receptionOperationAccess";
 
 export default function ReceptionInvoicesPage() {
   const me = trpc.auth.me.useQuery();
   const branchId = me.data?.branchId != null ? Number(me.data.branchId) : null;
-  const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
 
-  const branchesQ = trpc.branches.list.useQuery();
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: receptionOperationAllowed(me.data, "branches.list") });
   const branchName = useMemo(
     () => (branchesQ.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId ?? "—"}`,
     [branchesQ.data, branchId],
@@ -29,9 +29,9 @@ export default function ReceptionInvoicesPage() {
   // كما يعمل من السلّة تماماً (وغيابُها يُعلَن في الصفّ نفسه لا يُخفى).
   const shiftQ = trpc.shifts.current.useQuery(
     { branchId: branchId ?? 0, shiftType: "RECEPTION" },
-    { enabled: branchId != null },
+    { enabled: branchId != null && receptionOperationAllowed(me.data, "shifts.current") },
   );
-  const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { staleTime: 60_000 });
+  const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: receptionOperationAllowed(me.data, "delivery.listParties"), staleTime: 60_000 });
 
   return (
     <div className="mx-auto w-full max-w-[1180px] px-4 py-5">
@@ -48,8 +48,6 @@ export default function ReceptionInvoicesPage() {
         currentShiftId={shiftQ.data ? Number(shiftQ.data.id) : null}
         branchName={branchName}
         parties={(partiesQ.data ?? []) as DispatchParty[]}
-        canFulfill={me.data?.role === "cashier" || isElevatedRole}
-        isManager={isElevatedRole}
         defaultPayChip="UNSETTLED"
       />
       )}

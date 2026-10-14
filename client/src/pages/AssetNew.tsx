@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -41,8 +42,9 @@ function previewAnnual(cost: number, salvage: number, life: number, method: "sl"
 }
 
 export default function AssetNew() {
+  const { can } = useCatalogPeopleOperationAccess();
   const [, navigate] = useLocation();
-  const opts = trpc.assets.formOptions.useQuery();
+  const opts = trpc.assets.formOptions.useQuery(undefined, { enabled: can("assets.formOptions") });
   const [error, setError] = useState("");
   const [clientRequestId] = useState(() => crypto.randomUUID());
   const [acquisitionType, setAcquisitionType] = useState<AssetAcquisitionType>("OPENING");
@@ -77,6 +79,7 @@ export default function AssetNew() {
   });
 
   function submit() {
+    if (!can("assets.create")) { setError("العملية غير مفوضة لحسابك"); return; }
     setError("");
     if (!form.name.trim()) { setError("اسم الأصل مطلوب."); return; }
     if (!form.purchaseValue.trim()) { setError("قيمة الشراء مطلوبة."); return; }
@@ -351,7 +354,7 @@ export default function AssetNew() {
         </div>
       )}
       <div className="flex gap-2">
-        <Button onClick={submit} disabled={create.isPending}>{create.isPending ? ACTION_LABELS.saving : "حفظ الأصل"}</Button>
+        <Button onClick={submit} disabled={!can("assets.create") || (create.isPending)}>{create.isPending ? ACTION_LABELS.saving : "حفظ الأصل"}</Button>
         <Link href="/assets/register"><Button variant="outline">إلغاء</Button></Link>
       </div>
     </div>

@@ -4,6 +4,7 @@ import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmt } from "@/lib/money";
 import { expenseAuditDetail } from "@/lib/expenseUiPolicy";
 import { trpc } from "@/lib/trpc";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import {
   expenseCategoryText,
   fundingDetail,
@@ -17,7 +18,11 @@ import {
 
 /** لوحةُ مسار المصروف (المستند → الإيصال → القيد → أيّ إلغاء/عكس) — استُخرجت من Expenses.tsx. */
 export function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
-  const trace = trpc.expenses.trace.useQuery({ expenseId });
+  const me = trpc.auth.me.useQuery();
+  const canTrace = treasuryOperationAllowed(me.data, "expenses.trace", true);
+  const trace = trpc.expenses.trace.useQuery({ expenseId }, { enabled: canTrace });
+
+  if (!canTrace) return null;
 
   if (trace.isLoading) {
     return (

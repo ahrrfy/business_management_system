@@ -106,6 +106,8 @@ export interface DigitalCheckoutSnapshot {
   managerApprovedByUserId?: number | null;
   /** موافقة ائتمان محدّدة بالعميل والمبلغ، تُستهلك ذرّياً عند إنشاء الفاتورة. */
   creditApprovalId?: number | null;
+  /** Server-authored admission before irreversible provider issuance; no manager override. */
+  creditLimitPreflight?: { customerId: number; branchId: number; amount: string };
   sourceType?: "POS" | "INVOICE" | "RECEPTION";
   sourcePayload?: any;
 }

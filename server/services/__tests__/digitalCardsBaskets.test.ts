@@ -24,7 +24,7 @@ function db() { const value = getDb(); if (!value) throw new Error("Missing test
 beforeEach(async () => {
   await truncateTables(TABLES);
   await db().insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
-  await db().insert(s.users).values([1, 2, 3].map((id) => ({ id, openId: `basket-${id}`, name: `User ${id}`, role: id === 1 ? "cashier" as const : "manager" as const, loginMethod: "local" })));
+  await db().insert(s.users).values([1, 2, 3].map((id) => ({ id, openId: `basket-${id}`, name: `User ${id}`, role: id === 1 ? "cashier" as const : "manager" as const, branchId: 1, loginMethod: "local" })));
   await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, status: "OPEN", openingBalance: "0" });
 });
 

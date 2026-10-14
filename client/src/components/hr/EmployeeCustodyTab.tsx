@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,8 +24,9 @@ const CUSTODY_TYPE_LABELS: Record<string, string> = {
 };
 
 export function EmployeeCustodyTab({ employeeId, branchId }: { employeeId: number; branchId?: number }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
-  const q = trpc.hrEnterprise.custody.list.useQuery({ employeeId });
+  const q = trpc.hrEnterprise.custody.list.useQuery({ employeeId }, { enabled: can("hrEnterprise.custody.list") });
   const [openHandover, setOpenHandover] = useState(false);
   const [returnItem, setReturnItem] = useState<{ id: number; name: string } | null>(null);
 
@@ -128,7 +130,7 @@ export function EmployeeCustodyTab({ employeeId, branchId }: { employeeId: numbe
             حوكمة تسليم واسترجاع العهد والمعدات، وقفل براءة الذمة قبل إنهاء الخدمة لمنع التسريب.
           </p>
         </div>
-        <Button size="sm" onClick={() => setOpenHandover(true)} className="gap-1.5">
+        <Button size="sm" onClick={() => setOpenHandover(true)} className="gap-1.5" disabled={!can("hrEnterprise.custody.assign")}>
           <Plus className="h-4 w-4" />
           تسليم عهدة جديدة
         </Button>
@@ -183,7 +185,7 @@ export function EmployeeCustodyTab({ employeeId, branchId }: { employeeId: numbe
                         variant="outline"
                         size="sm"
                         className="h-7 text-xs gap-1"
-                        onClick={() => setReturnItem({ id: item.id, name: item.itemName })}
+                        onClick={() => setReturnItem({ id: item.id, name: item.itemName })} disabled={!can("hrEnterprise.custody.return")}
                       >
                         <RotateCcw className="h-3 w-3" />
                         استرجاع
@@ -300,7 +302,7 @@ export function EmployeeCustodyTab({ employeeId, branchId }: { employeeId: numbe
               <Button type="button" variant="outline" onClick={() => setOpenHandover(false)}>
                 إلغاء
               </Button>
-              <Button type="submit" disabled={assignMut.isPending}>
+              <Button type="submit" disabled={!can("hrEnterprise.custody.assign") || (assignMut.isPending)}>
                 {assignMut.isPending ? "جاري التسليم..." : "تسجيل وتثبيت العهدة"}
               </Button>
             </DialogFooter>
@@ -350,7 +352,7 @@ export function EmployeeCustodyTab({ employeeId, branchId }: { employeeId: numbe
               <Button type="button" variant="outline" onClick={() => setReturnItem(null)}>
                 إلغاء
               </Button>
-              <Button type="submit" disabled={returnMut.isPending}>
+              <Button type="submit" disabled={!can("hrEnterprise.custody.return") || (returnMut.isPending)}>
                 {returnMut.isPending ? "جاري التصفية..." : "تأكيد الاسترجاع وبراءة الذمة"}
               </Button>
             </DialogFooter>

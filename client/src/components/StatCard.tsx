@@ -3,6 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { LucideIcon } from "lucide-react";
 import { TONE_TEXT_CLASS, type Tone } from "@/lib/tone";
+import { LiveValue } from "@/components/financial/LiveValue";
 
 type StatCardProps = {
   label: React.ReactNode;
@@ -50,7 +51,7 @@ export function StatCard({ label, value, sub, icon: Icon, tone = "default", onCl
           <span className="truncate">{label}</span>
         </div>
         <div className={cn("text-xl font-bold tabular-nums", TONE_TEXT_CLASS[tone])} dir="auto">
-          {value}
+          {typeof value === "string" || typeof value === "number" ? <LiveValue value={value} /> : value}
         </div>
         {sub && <div className="mt-0.5 text-[11px] text-muted-foreground">{sub}</div>}
       </CardContent>

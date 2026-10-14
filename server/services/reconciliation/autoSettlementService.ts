@@ -43,6 +43,30 @@ export interface AutoSettleSupplierResult {
   settledOrderNumbers: string[];
 }
 
+/** A native invoice's allocations own its PO projection; FIFO must never guess it. */
+function withoutNativeSupplierInvoice() {
+  return sql`NOT EXISTS (
+    SELECT 1 FROM supplierInvoices si
+    WHERE si.liabilityClass = 'NATIVE_AP'
+      AND (
+        si.legacyPurchaseOrderId = ${purchaseOrders.id}
+        OR EXISTS (
+          SELECT 1 FROM supplierInvoiceLines sil
+          INNER JOIN purchaseOrderRevisionItems pori ON pori.id = sil.purchaseOrderRevisionItemId
+          INNER JOIN purchaseOrderRevisions por ON por.id = pori.revisionId
+          WHERE sil.supplierInvoiceId = si.id AND por.purchaseOrderId = ${purchaseOrders.id}
+        )
+        OR EXISTS (
+          SELECT 1 FROM supplierInvoiceMatchRuns simr
+          INNER JOIN supplierInvoiceMatchAllocations sima ON sima.matchRunId = simr.id
+          INNER JOIN goodsReceiptItems gri ON gri.id = sima.goodsReceiptItemId
+          INNER JOIN purchaseOrderItems poi ON poi.id = gri.purchaseOrderItemId
+          WHERE simr.supplierInvoiceId = si.id AND poi.purchaseOrderId = ${purchaseOrders.id}
+        )
+      )
+  )`;
+}
+
 /**
  * تسوية فواتير عميل تلقائياً بنظام FIFO مع أي رصيد دائن أو سداد غير مخصص.
  * - إذا كان رصيد العميل <= 0: يتم إقفال جميع فواتيره المفتوحة كـ PAID.
@@ -366,6 +390,7 @@ export async function autoSettleSupplierAccountTx(
         eq(purchaseOrders.supplierId, supplierId),
         sql`${purchaseOrders.status} IN ('CONFIRMED', 'RECEIVED')`,
         sql`${purchaseOrders.paidAmount} < ${purchaseOrders.total}`,
+        withoutNativeSupplierInvoice(),
       ),
     )
     .orderBy(asc(purchaseOrders.id))
@@ -615,6 +640,7 @@ export async function autoSettleAllSuppliersTx(
         eq(purchaseOrders.supplierId, suppliers.id),
         sql`${purchaseOrders.status} IN ('CONFIRMED', 'RECEIVED')`,
         sql`CAST(${purchaseOrders.paidAmount} AS DECIMAL(15,2)) < CAST(${purchaseOrders.total} AS DECIMAL(15,2))`,
+        withoutNativeSupplierInvoice(),
       ),
     )
     .groupBy(suppliers.id, suppliers.currentBalance)

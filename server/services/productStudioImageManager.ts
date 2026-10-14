@@ -1,3 +1,4 @@
+import { assertStudioOperationBinding, assertStudioOperationTx, isStudioManager } from "./authorization/studioOperationAuthority";
 /**
  * إدارةُ صور المنتج القائمة — حذف، ترتيب، تعيين رئيسيّة، وإرفاق بديل.
  *
@@ -21,7 +22,7 @@ import type { ProductStudioActor } from "./productStudioService";
 
 /** حرّاسٌ أساسيّة — نفس نمط productStudioService (كي لا يتسرّب فحص الصلاحية من مكانَين). */
 function isManager(actor: ProductStudioActor): boolean {
-  return actor.role === "admin" || actor.role === "manager" || actor.isOwner === true;
+  return isStudioManager(actor);
 }
 
 /**
@@ -30,6 +31,7 @@ function isManager(actor: ProductStudioActor): boolean {
  * تشمل الصور على مستوى الأمّ (`variantId=NULL`) والبدائل معاً — كل صفٍّ يعلن انتماءه.
  */
 export async function listProductImagesForManager(actor: ProductStudioActor, productId: number) {
+  assertStudioOperationBinding(actor, "productStudio.managerImages");
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const db = requireDb();
   const rows = await db
@@ -82,9 +84,11 @@ export async function deleteProductImage(
   actor: ProductStudioActor,
   input: { imageId: number; reason?: string | null },
 ) {
+  assertStudioOperationBinding(actor, "productStudio.deleteImage");
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const reason = input.reason?.trim() ?? null;
   return withTx(async (tx) => {
+    await assertStudioOperationTx(tx, actor, "productStudio.deleteImage");
     const [image] = await tx
       .select()
       .from(productImages)
@@ -151,8 +155,10 @@ export async function deleteProductImage(
  * هذا المسار يُوفّر تحكّماً يدوياً للمدير على الصور القائمة.)
  */
 export async function setPrimaryProductImage(actor: ProductStudioActor, imageId: number) {
+  assertStudioOperationBinding(actor, "productStudio.setImagePrimary");
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   return withTx(async (tx) => {
+    await assertStudioOperationTx(tx, actor, "productStudio.setImagePrimary");
     const [image] = await tx
       .select({ id: productImages.id, productId: productImages.productId, variantId: productImages.variantId, isPrimary: productImages.isPrimary })
       .from(productImages)
@@ -192,10 +198,12 @@ export async function reorderProductImages(
   actor: ProductStudioActor,
   input: { productId: number; orderedImageIds: number[] },
 ) {
+  assertStudioOperationBinding(actor, "productStudio.reorderImages");
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const ids = Array.from(new Set(input.orderedImageIds.map(Number).filter((n) => Number.isSafeInteger(n) && n > 0)));
   if (ids.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "قائمة الصور فارغة" });
   return withTx(async (tx) => {
+    await assertStudioOperationTx(tx, actor, "productStudio.reorderImages");
     const belonging = await tx
       .select({ id: productImages.id })
       .from(productImages)

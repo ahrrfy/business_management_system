@@ -20,6 +20,7 @@ export type LastSaleSummary = {
   totalStr: string;
   changeStr: string | null;
   creditStr: string | null;
+  paymentMode?: "PREPAID" | "COD" | "CREDIT" | null;
   receipts: ReceiptBrowserData[];
   workOrders: WorkOrderReceiptData[];
   printFailures: number;

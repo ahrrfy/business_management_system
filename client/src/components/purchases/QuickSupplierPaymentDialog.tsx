@@ -19,6 +19,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { D, fmt, moneyInput, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { paymentMethodCompact } from "@shared/terms";
 import { shiftTypeLabel } from "@/lib/labels";
 
@@ -87,6 +88,8 @@ export function QuickSupplierPaymentDialog({
   );
 
   // استعلام فواتير المورد المرحلة للبحث عن الفاتورة المرتبطة بهذا الأمر
+  const me = trpc.auth.me.useQuery();
+  const canRequestPayment = canLifecycleOperation(me.data, "supplierPayments.requestPayment", true);
   const paymentSourcesQuery = trpc.supplierPayments.paymentSources.useQuery(
     { branchId, supplierId, purchaseOrderId, limit: 100 },
     { enabled: open && supplierId > 0 && branchId > 0 },
@@ -186,7 +189,7 @@ export function QuickSupplierPaymentDialog({
     isEvidenceRefValid &&
     isReasonValid &&
     matchedInvoice != null &&
-    !requestPaymentMut.isPending;
+    !requestPaymentMut.isPending && canRequestPayment;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();

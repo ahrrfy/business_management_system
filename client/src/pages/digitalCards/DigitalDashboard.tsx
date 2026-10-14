@@ -1,3 +1,4 @@
+import { useDigitalGiftOperationAccess } from "@/lib/digitalGiftOperationAccess";
 // داشبورد البطاقات الرقمية (ش١١). كل الأرقام مُجمَّعة خادمياً على فترة **نصف مفتوحة**،
 // والحصة/الربح يظهران فقط لمن يملك رؤية التكلفة (الخادم يُصفّرهما لغيره — لا إخفاء بالعرض).
 import { PageHeader } from "@/components/PageHeader";
@@ -67,11 +68,12 @@ type TopColumn = ColumnDef<NonNullable<RouterOutputs["digitalCards"]["dashboard"
 type ModeColumn = ColumnDef<NonNullable<RouterOutputs["digitalCards"]["dashboard"]["summary"]["byMode"]>[number], unknown>;
 
 export default function DigitalDashboard() {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const [, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
   // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يختاران فرعاً (owner مُطبَّع ⇒ admin).
   const canPickBranch = me.data?.role === "admin";
-  const branches = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
+  const branches = digitalAccess.query("branches.list", trpc.branches.list.useQuery(undefined, { enabled: digitalAccess.can("branches.list") && (canPickBranch) }));
 
   const [range, setRange] = useState<RangeKey>("today");
   // مدى مخصّص: الحقلان يُدخَلان بمعنى «شامل» (نمط PeriodFilter) — يُحوَّل customTo إلى اليوم
@@ -100,16 +102,16 @@ export default function DigitalDashboard() {
       ? Number(me.data.branchId)
       : undefined;
 
-  const summary = trpc.digitalCards.dashboard.summary.useQuery({ ...period, branchId: branchArg });
-  const balances = trpc.digitalCards.dashboard.providerBalances.useQuery({ branchId: branchArg });
-  const dues = trpc.digitalCards.dashboard.postpaidDues.useQuery();
-  const health = trpc.digitalCards.dashboard.priceHealth.useQuery({ branchId: branchArg });
-  const pending = trpc.digitalCards.dashboard.pendingExecutions.useQuery({ branchId: branchArg });
-  const top = trpc.digitalCards.dashboard.topOfferings.useQuery({ ...period, branchId: branchArg, limit: 8 });
-  const recon = trpc.digitalCards.dashboard.reconciliationStatus.useQuery({ ...period, branchId: branchArg });
+  const summary = digitalAccess.query("digitalCards.dashboard.summary", trpc.digitalCards.dashboard.summary.useQuery({ ...period, branchId: branchArg }, { enabled: digitalAccess.can("digitalCards.dashboard.summary") }));
+  const balances = digitalAccess.query("digitalCards.dashboard.providerBalances", trpc.digitalCards.dashboard.providerBalances.useQuery({ branchId: branchArg }, { enabled: digitalAccess.can("digitalCards.dashboard.providerBalances") }));
+  const dues = digitalAccess.query("digitalCards.dashboard.postpaidDues", trpc.digitalCards.dashboard.postpaidDues.useQuery(undefined, { enabled: digitalAccess.can("digitalCards.dashboard.postpaidDues") }));
+  const health = digitalAccess.query("digitalCards.dashboard.priceHealth", trpc.digitalCards.dashboard.priceHealth.useQuery({ branchId: branchArg }, { enabled: digitalAccess.can("digitalCards.dashboard.priceHealth") }));
+  const pending = digitalAccess.query("digitalCards.dashboard.pendingExecutions", trpc.digitalCards.dashboard.pendingExecutions.useQuery({ branchId: branchArg }, { enabled: digitalAccess.can("digitalCards.dashboard.pendingExecutions") }));
+  const top = digitalAccess.query("digitalCards.dashboard.topOfferings", trpc.digitalCards.dashboard.topOfferings.useQuery({ ...period, branchId: branchArg, limit: 8 }, { enabled: digitalAccess.can("digitalCards.dashboard.topOfferings") }));
+  const recon = digitalAccess.query("digitalCards.dashboard.reconciliationStatus", trpc.digitalCards.dashboard.reconciliationStatus.useQuery({ ...period, branchId: branchArg }, { enabled: digitalAccess.can("digitalCards.dashboard.reconciliationStatus") }));
 
   const s = summary.data;
-  const showCost = s?.profit != null;
+  const showCost = digitalAccess.costVisible(s?.profit != null) && s?.profit != null;
 
   return (
     <div className="space-y-4">
@@ -326,7 +328,8 @@ export default function DigitalDashboard() {
                           key: "fix-readiness",
                           kind: "edit",
                           label: pricingIssue ? "فتح التسعير" : balanceIssue ? "فتح رصيد المزوّد" : "إصلاح الربط",
-                          gate: { module: "digital_cards", level: "READ" },
+                          hidden: !digitalAccess.can(`digitalCards.${pricingIssue ? "pricing.getMorningSheet" : balanceIssue ? "wallets.list" : "offerings.list"}`),
+                          gate: digitalAccess.canonical ? undefined : { module: "digital_cards", level: "READ" },
                           onSelect: () => {
                             const params = new URLSearchParams({ tab: pricingIssue ? "pricing" : balanceIssue ? "wallets" : "offerings" });
                             params.set("branchId", String(h.branchId));

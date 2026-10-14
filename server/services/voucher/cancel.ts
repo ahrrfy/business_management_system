@@ -202,10 +202,9 @@ export async function cancelVoucher(
     // (يبقى مبدأ العكس بقيد مؤرَّخ اليوم للحالات المفتوحة فقط — مطابق لدلالة assertPeriodOpen).
     const lock = await getActiveLock(tx);
     if (lock) {
-      // voucherDate عمود DATE: drizzle يُصنّفه string لكن mysql2 يعيد Date وقت التشغيل ⇒ new Date()
-      // يعمل للحالتين، ثم toISOString (UTC) مطابقاً لدلالة assertPeriodOpen.
-      const vDay = r.voucherDate
-        ? new Date(r.voucherDate).toISOString().slice(0, 10)
+      const rawDate = r.voucherDate ?? r.createdAt;
+      const vDay = rawDate
+        ? new Date(rawDate).toISOString().slice(0, 10)
         : "";
       if (vDay && vDay <= lock.cutoffDate) {
         throw new TRPCError({

@@ -17,6 +17,7 @@ import {
 import { trpc } from "@/lib/trpc";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import type { PermissionMap } from "@shared/permissions";
+import type { OperationPolicy } from "@shared/operationPermissions";
 import { openWhatsApp, preferredWhatsAppPhone } from "@/lib/whatsapp";
 
 export type RowActionKind =
@@ -88,8 +89,13 @@ export function RowActions({
   align = "end",
 }: RowActionsProps) {
   const me = trpc.auth.me.useQuery();
-  const role = me.data?.role;
-  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const role = me.data?.isOwner ? "admin" : me.data?.role;
+  const override = (me.data?.isOwner ? null : me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const operationPolicy = !me.data?.isOwner && (me.data as { operationPolicyEnabled?: boolean })
+    ?.operationPolicyEnabled
+    ? (me.data as { resolvedOperationPolicy?: OperationPolicy })
+        .resolvedOperationPolicy
+    : null;
   const contactPhone = contact
     ? preferredWhatsAppPhone(contact.whatsapp, contact.phone, ...(contact.alternativePhones ?? []))
     : null;
@@ -113,7 +119,10 @@ export function RowActions({
       ]
     : actions;
   const visible = allActions.filter(
-    (a) => !a.hidden && (!a.gate || (!me.isLoading && canSeeGate(a.gate, role, override))),
+    (a) =>
+      !a.hidden &&
+      (!a.gate ||
+        (!me.isLoading && canSeeGate(a.gate, role, override, operationPolicy))),
   );
   if (visible.length === 0) return null;
   const useMenu = mode === "menu" || (mode === "auto" && visible.length > 2);

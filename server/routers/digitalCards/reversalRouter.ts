@@ -1,3 +1,4 @@
+import { routeOperationAuthority } from "../../services/authorization/operationAuthority";
 // العكس والاستثناءات (ش١٢) — راوتر البطاقات الرقمية والاشتراكات.
 // المسار الوحيد لإرجاع كرتٍ رقميّ — المرتجع العام يرفضه (حارس في returnService).
 // قرارٌ مديريّ بحالتين: عكسٌ مؤكَّد (المزوّد أعاد الحصة) أو ردّ خسارة (لم يُعِدها).
@@ -22,7 +23,7 @@ export const reversalRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) =>
-      withTx((tx) => reversalService.approveReversal(tx, input, actorOf(ctx))),
+      withTx((tx) => reversalService.approveReversal(tx, input, { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.reversal.approve") })),
     ),
 
   /* ردّ الخسارة باعتمادٍ ثانٍ (قرار المالك ٣٠/٧): الطلب بلا أثرٍ ماليّ، وكلّ الأثر في
@@ -36,7 +37,7 @@ export const reversalRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) =>
-      withTx((tx) => reversalService.requestLossRefund(tx, input, actorOf(ctx))),
+      withTx((tx) => reversalService.requestLossRefund(tx, input, { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.reversal.requestLossRefund") })),
     ),
 
   lossRefund: digitalCardsManagerProcedure
@@ -47,7 +48,7 @@ export const reversalRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) =>
-      withTx((tx) => reversalService.lossRefund(tx, input, actorOf(ctx))),
+      withTx((tx) => reversalService.lossRefund(tx, input, { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.reversal.lossRefund") })),
     ),
 
   rejectLossRefund: digitalCardsManagerProcedure
@@ -59,6 +60,6 @@ export const reversalRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) =>
-      withTx((tx) => reversalService.rejectLossRefund(tx, input, actorOf(ctx))),
+      withTx((tx) => reversalService.rejectLossRefund(tx, input, { ...actorOf(ctx), operationAuthority: routeOperationAuthority(ctx.user, "digitalCards.reversal.rejectLossRefund") })),
     ),
 });

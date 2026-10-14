@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 // شاشة إدارة الفئات/التصنيفات — قائمة بعدد المنتجات لكل فئة + إضافة/تعديل/حذف (مع إعادة تخصيص
 // منتجات الفئة المحذوفة) + دمج عدّة فئات في واحدة. أقسام فرعية (٢٩/٧): كل فئة رئيسية قد تحوي
 // فئات فرعية (مستويان فقط) — تُدار من نفس الشاشة (زرّ «+ قسم فرعي» على صفّ الفئة الرئيسية)،
@@ -36,19 +37,20 @@ type CategoryRow = RouterOutputs["catalog"]["categoriesAdmin"][number];
 const num = (n: number) => n.toLocaleString("ar-IQ-u-nu-latn");
 
 export default function Categories() {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
   // مرآة الخادم: `catalog.createCategory/updateCategory/deleteCategory/mergeCategories` كلّها
   // `productsManagerProcedure(["manager"], "products", "FULL")` — server/trpc.ts:590. إخفاءُ زرّ
   // «إضافة فئة» على من لا يستطيع الحفظ (بدل زرٍّ يفتح ثمّ يُرفض عند submit).
   const me = trpc.auth.me.useQuery();
-  const canWrite = !!me.data?.role && moduleAccessAllowed(
+  const canWrite = can("catalog.createCategory", !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
     "products",
     "FULL",
     ["manager"],
-  );
-  const list = trpc.catalog.categoriesAdmin.useQuery();
+  ));
+  const list = trpc.catalog.categoriesAdmin.useQuery(undefined, { enabled: can("catalog.categoriesAdmin") });
   const rows = list.data ?? [];
   const sel = useRowSelection<number>();
 
@@ -147,6 +149,7 @@ export default function Categories() {
   }
   const editHasChildren = editId != null && childrenOf(editId).length > 0;
   function submitForm() {
+    if (!can(editId == null ? "catalog.createCategory" : "catalog.updateCategory")) return;
     const name = fName.trim();
     if (!name) { notify.err("اسم الفئة مطلوب"); return; }
     const parentId = fParentId === "" ? null : Number(fParentId);
@@ -273,7 +276,7 @@ export default function Categories() {
                 kind: "edit",
                 label: "تعديل",
                 onSelect: () => openEdit(c),
-                gate: { roles: ["manager"], module: "products", level: "FULL" },
+                gate: { operations: ["catalog.updateCategory"], roles: ["manager"], module: "products", level: "FULL" },
               },
               {
                 key: "addChild",
@@ -281,7 +284,7 @@ export default function Categories() {
                 label: "+ قسم فرعي",
                 onSelect: () => openAdd(c.id),
                 hidden: isChild,
-                gate: { roles: ["manager"], module: "products", level: "FULL" },
+                gate: { operations: ["catalog.createCategory"], roles: ["manager"], module: "products", level: "FULL" },
               },
               {
                 key: "products",
@@ -291,7 +294,7 @@ export default function Categories() {
                 // أصلي (App.tsx) — الرابط المباشر لتبويب المخزون يحافظ على فلتر الفئة.
                 href: `/inventory?tab=products&category=${c.id}`,
                 hidden: c.productCount === 0 && (isChild || kids.length === 0),
-                gate: { module: "products", level: "READ" },
+                gate: { operations: ["catalog.adminList"], module: "products", level: "READ" },
               },
               {
                 key: "delete",
@@ -299,7 +302,7 @@ export default function Categories() {
                 label: "حذف",
                 variant: "destructive",
                 onSelect: () => openDelete(c),
-                gate: { roles: ["manager"], module: "products", level: "FULL" },
+                gate: { operations: ["catalog.deleteCategory"], roles: ["manager"], module: "products", level: "FULL" },
               },
             ]}
           />
@@ -373,7 +376,7 @@ export default function Categories() {
         count={sel.count}
         onClear={sel.clear}
         actions={
-          <Button variant="outline" size="sm" onClick={openMerge} disabled={sel.count < 2}>
+          <Button variant="outline" size="sm" onClick={openMerge} disabled={!can("catalog.mergeCategories") || sel.count < 2}>
             دمج المحدَّد
           </Button>
         }
@@ -427,7 +430,7 @@ export default function Categories() {
           </div>
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setFormOpen(false)}>إلغاء</Button>
-            <Button size="sm" onClick={submitForm} disabled={createMut.isPending || updateMut.isPending}>
+            <Button size="sm" onClick={submitForm} disabled={!can(editId == null ? "catalog.createCategory" : "catalog.updateCategory") || createMut.isPending || updateMut.isPending}>
               {createMut.isPending || updateMut.isPending ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>
@@ -462,7 +465,7 @@ export default function Categories() {
           )}
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setDelTarget(null)}>إلغاء</Button>
-            <Button variant="destructive" size="sm" onClick={confirmDelete} disabled={deleteMut.isPending || delChildrenCount > 0}>
+            <Button variant="destructive" size="sm" onClick={confirmDelete} disabled={!can("catalog.deleteCategory") || (deleteMut.isPending || delChildrenCount > 0)}>
               {deleteMut.isPending ? ACTION_LABELS.deleting : "حذف الفئة"}
             </Button>
           </DialogFooter>
@@ -490,7 +493,7 @@ export default function Categories() {
           </div>
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setMergeOpen(false)}>إلغاء</Button>
-            <Button size="sm" onClick={confirmMerge} disabled={mergeMut.isPending}>
+            <Button size="sm" onClick={confirmMerge} disabled={!can("catalog.mergeCategories") || (mergeMut.isPending)}>
               {mergeMut.isPending ? "جارٍ الدمج…" : "دمج"}
             </Button>
           </DialogFooter>

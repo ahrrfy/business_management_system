@@ -69,6 +69,16 @@ export function decidePwaUpdateDelivery(input: {
   return "PROMPT";
 }
 
+export function requiresStorefrontPersistence(input: {
+  hostname: string;
+  pathname: string;
+}): boolean {
+  return (
+    isPublicHost(input.hostname) &&
+    (input.pathname === "/store" || input.pathname.startsWith("/store/"))
+  );
+}
+
 export function readPwaAutoAttempt(
   storage: AttemptStorage = localStorage,
 ): { ok: true; value: PwaAutoAttempt | null } | { ok: false; value: null } {
@@ -163,18 +173,17 @@ export function requestStorefrontPersistence(
   let attempted = 0;
   let ok = true;
   let inFlight = false;
-  const event = new CustomEvent<{ report: (saved: boolean, state?: { inFlight: boolean }) => void }>(
-    STOREFRONT_PERSIST_REQUEST_EVENT,
-    {
-      detail: {
-        report(saved, state) {
-          attempted += 1;
-          ok = saved && ok;
-          inFlight = inFlight || state?.inFlight === true;
-        },
+  const event = new CustomEvent<{
+    report: (saved: boolean, state?: { inFlight: boolean }) => void;
+  }>(STOREFRONT_PERSIST_REQUEST_EVENT, {
+    detail: {
+      report(saved, state) {
+        attempted += 1;
+        ok = saved && ok;
+        inFlight = inFlight || state?.inFlight === true;
       },
     },
-  );
+  });
   target.dispatchEvent(event);
   return { attempted, ok, inFlight };
 }
@@ -278,7 +287,12 @@ export function PwaUpdateManager() {
       return;
     }
     if (!("serviceWorker" in navigator)) return;
-    if (!(isPublicHost(window.location.hostname) && isStorefrontSurfacePath(pathname))) {
+    if (
+      !(
+        isPublicHost(window.location.hostname) &&
+        isStorefrontSurfacePath(pathname)
+      )
+    ) {
       setSwEnabled(true);
       return;
     }
@@ -376,13 +390,29 @@ export function PwaUpdateManager() {
       const resetKey = "storefront-preview-sw-reset-v2";
       if (sessionStorage.getItem(resetKey) !== "1") {
         sessionStorage.setItem(resetKey, "1");
-        const unregister = "serviceWorker" in navigator
-          ? navigator.serviceWorker.getRegistrations().then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
-          : Promise.resolve([]);
-        const clearCaches = "caches" in window
-          ? caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
-          : Promise.resolve([]);
-        void Promise.all([unregister, clearCaches]).then(() => window.location.reload());
+        const unregister =
+          "serviceWorker" in navigator
+            ? navigator.serviceWorker
+                .getRegistrations()
+                .then((registrations) =>
+                  Promise.all(
+                    registrations.map((registration) =>
+                      registration.unregister(),
+                    ),
+                  ),
+                )
+            : Promise.resolve([]);
+        const clearCaches =
+          "caches" in window
+            ? caches
+                .keys()
+                .then((keys) =>
+                  Promise.all(keys.map((key) => caches.delete(key))),
+                )
+            : Promise.resolve([]);
+        void Promise.all([unregister, clearCaches]).then(() =>
+          window.location.reload(),
+        );
       }
       return;
     }
@@ -396,12 +426,18 @@ export function PwaUpdateManager() {
           onNeedRefresh() {
             if (!disposed) {
               updateWasSignaledRef.current = true;
-              void navigator.serviceWorker.getRegistration().then((registration) => {
-                if (!disposed) revealUpdate(registration ?? null);
-              }).catch((error) => {
-                console.warn("[pwa] waiting registration lookup failed", error);
-                if (!disposed) revealUpdate();
-              });
+              void navigator.serviceWorker
+                .getRegistration()
+                .then((registration) => {
+                  if (!disposed) revealUpdate(registration ?? null);
+                })
+                .catch((error) => {
+                  console.warn(
+                    "[pwa] waiting registration lookup failed",
+                    error,
+                  );
+                  if (!disposed) revealUpdate();
+                });
             }
           },
           onOfflineReady() {
@@ -492,7 +528,7 @@ export function PwaUpdateManager() {
     if (autoApplyTicket === 0) return;
     // applyUpdate يحفظ لقطة الإدخالات ويفرغ autosaves قبل التفعيل؛ سلة المتجر ونموذج التوصيل
     // محفوظان أيضاً في localStorage داخل Storefront، لذلك returning profile ينتقل بأمان.
-    void applyUpdate({ automatic: true });
+    void applyUpdate();
     // التذكرة هي الحدث المقصود؛ إدراج applyUpdate يعيد الأثر كل render لأنه دالة محلية.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoApplyTicket]);
@@ -575,7 +611,7 @@ export function PwaUpdateManager() {
     });
   }
 
-  async function applyUpdate(options: { automatic?: boolean } = {}): Promise<void> {
+  async function applyUpdate(): Promise<void> {
     if (applying) return;
     if (!("serviceWorker" in navigator)) {
       notify.err("خدمة تحديث النظام غير متاحة في هذا المتصفح.");
@@ -591,10 +627,10 @@ export function PwaUpdateManager() {
       const interactionSaved = saveInteractionDraft();
       const autosaves = flushAutosaves();
       const storefrontSave = requestStorefrontPersistence();
-      const storefrontRequired =
-        options.automatic ||
-        (isPublicHost(window.location.hostname) &&
-          (pathnameRef.current === "/store" || pathnameRef.current.startsWith("/store/")));
+      const storefrontRequired = requiresStorefrontPersistence({
+        hostname: window.location.hostname,
+        pathname: pathnameRef.current,
+      });
       if (
         (hasUnsavedInteraction() && !interactionSaved) ||
         !autosaves.ok ||
@@ -645,13 +681,9 @@ export function PwaUpdateManager() {
         const previousActive = activeWorkerBeforeAttemptRef.current;
         const activationVerified =
           candidate?.state === "activated" ||
-          registration?.active === candidate ||
-          (!!registration?.active && registration.active !== previousActive);
-        if (
-          autoAttemptVersionRef.current &&
-          candidate &&
-          !activationVerified
-        ) {
+          (registration?.active?.state === "activated" &&
+            (!candidate || registration.active !== previousActive));
+        if (!activationVerified) {
           markAttemptFailed();
           const message =
             "اختفى عامل التحديث قبل إثبات تفعيله؛ لن نعيد فتح الصفحة تلقائياً. أعد المحاولة يدوياً.";
@@ -668,7 +700,7 @@ export function PwaUpdateManager() {
         if (
           autoAttemptVersionRef.current &&
           candidate &&
-          (candidate.state === "activated" || registration?.active === candidate)
+          candidate.state === "activated"
         ) {
           reopenWithVerifiedUpdate();
           return;
@@ -701,10 +733,7 @@ export function PwaUpdateManager() {
 
       // ربما أكمل تبويب آخر التفعيل بين آخر polling وهذه القراءة.
       const current = await getCurrentRegistration();
-      if (
-        candidateBefore?.state === "activated" ||
-        current?.active === candidateBefore
-      ) {
+      if (candidateBefore?.state === "activated") {
         reopenWithVerifiedUpdate();
         return;
       }
@@ -728,7 +757,8 @@ export function PwaUpdateManager() {
     } catch (error) {
       console.warn("[pwa] update application failed", error);
       markAttemptFailed();
-      const message = "تعذّر تطبيق التحديث الآن؛ بقي عملك محفوظاً ويمكنك إعادة المحاولة.";
+      const message =
+        "تعذّر تطبيق التحديث الآن؛ بقي عملك محفوظاً ويمكنك إعادة المحاولة.";
       setUpdateError(message);
       notify.err(message);
     } finally {
@@ -802,7 +832,10 @@ export function PwaUpdateManager() {
             <div className="min-w-0 flex-1">
               <p className="font-medium">تحديث آمن جاهز للتثبيت</p>
               {updateError ? (
-                <p className="mt-1 text-sm font-medium text-destructive" role="alert">
+                <p
+                  className="mt-1 text-sm font-medium text-destructive"
+                  role="alert"
+                >
                   {updateError}
                 </p>
               ) : (
@@ -840,9 +873,9 @@ export function PwaUpdateManager() {
                 ? "جارٍ التحديث…"
                 : updateError
                   ? "إعادة المحاولة بأمان"
-                : hasUnsavedInteraction()
-                  ? "حفظ وتحديث"
-                  : "تحديث الآن"}
+                  : hasUnsavedInteraction()
+                    ? "حفظ وتحديث"
+                    : "تحديث الآن"}
               <Download className="size-4" aria-hidden />
             </Button>
           </div>

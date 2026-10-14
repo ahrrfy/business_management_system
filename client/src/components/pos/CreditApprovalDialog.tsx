@@ -11,6 +11,9 @@ import { useModalFocus } from "./useModalFocus";
 import type { PosColors as C } from "./posShared";
 import type { ManagerApprovalInput } from "@shared/managerApproval";
 import { trpc } from "@/lib/trpc";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
+import { playAnnouncementChime } from "@/lib/notifyBeep";
 
 export interface CreditApprovalDialogProps {
   C: C;
@@ -23,6 +26,7 @@ export interface CreditApprovalDialogProps {
   onApprove: (approval?: ManagerApprovalInput) => void;
   onCancel: () => void;
   branchId?: number;
+  currentUserId?: number;
 }
 
 type TabType = "BARCODE" | "PIN" | "PASSWORD";
@@ -38,6 +42,7 @@ export function CreditApprovalDialog({
   onApprove,
   onCancel,
   branchId,
+  currentUserId,
 }: CreditApprovalDialogProps) {
   const modalRef = useModalFocus<HTMLDivElement>();
   const [activeTab, setActiveTab] = useState<TabType>("BARCODE");
@@ -79,6 +84,61 @@ export function CreditApprovalDialog({
       isSubmittingRef.current = false;
     }
   }, [isPending, verifyMutation.isPending]);
+
+  // الاستماع اللحظي لاعتماد المدير عن بُعد لفك حظر الكاشير وإكمال العملية فوراً
+  useRealtimeEvent(REALTIME_EVENT_TYPES.APPROVAL_RESOLVED, (event) => {
+    const payload = event.payload as {
+      entityType?: string;
+      decision?: string;
+      outcome?: string;
+      action?: string;
+      branchId?: number | null;
+      managerId?: number;
+      managerName?: string;
+      actorUserId?: number;
+    } | undefined;
+
+    if (!payload) return;
+
+    // حصر الاستجابة على اعتمادات نقاط البيع والمدير فقط دون باقي قطاعات النظام (كالسندات والتسويات)
+    const isPosEntity =
+      payload.entityType === "pos_manager_verification" ||
+      payload.entityType === "sales_control_request" ||
+      payload.entityType?.startsWith("sales.control");
+    if (!isPosEntity) return;
+
+    const isApproved =
+      payload.decision === "APPROVED" ||
+      payload.outcome === "APPROVED" ||
+      payload.action === "APPROVE";
+    if (!isApproved) return;
+
+    // مطابقة الفرع المالي إن حُدد
+    if (branchId != null && payload.branchId != null && payload.branchId !== branchId) {
+      return;
+    }
+
+    // منع التدافع والتكرار إذا كانت النافذة تُرسل الاعتماد محلياً بالفعل
+    if (isSubmittingRef.current || isPending || verifyMutation.isPending) {
+      return;
+    }
+
+    // إذا كان الحدث موجهاً لكاشير محدد، يجب التأكد من أنه يخص هذا المستخدم
+    if (currentUserId != null && payload.actorUserId != null && payload.actorUserId !== currentUserId) {
+      return;
+    }
+
+    setVerifiedManager({
+      id: payload.managerId ?? 1,
+      name: payload.managerName ?? "المدير (اعتماد لحظي)",
+    });
+    playAnnouncementChime("NORMAL");
+    const existingApproval: ManagerApprovalInput | undefined =
+      localEmail && localPwd
+        ? { method: "PASSWORD", email: localEmail, password: localPwd }
+        : undefined;
+    onApprove(existingApproval);
+  });
 
   const setEmail = (val: string) => {
     isSubmittingRef.current = false;

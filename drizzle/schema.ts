@@ -25,6 +25,7 @@ import {
 import { sql } from "drizzle-orm";
 import { barcodeIdentityColumn, barcodeIdentitySql } from "./barcodeIdentitySql";
 import type { DigitalCheckoutSnapshot } from "../shared/digitalSale";
+import type { OperationPolicy } from "../shared/operationPermissions";
 
 /** Raw binary storage for small, validated documents that must travel with DB backups. */
 const mediumblob = customType<{ data: Buffer; driverData: Buffer }>({
@@ -92,6 +93,10 @@ export const users = mysqlTable(
     jobTitle: varchar("jobTitle", { length: 120 }),
     hiredAt: date("hiredAt"),
     permissionsOverride: json("permissionsOverride"),
+    atomicPermissions: json("atomicPermissions"),
+    operationalCaps: json("operationalCaps"),
+    operationPolicy: json("operationPolicy").$type<OperationPolicy>(),
+    operationPolicyRevision: int("operationPolicyRevision").default(0).notNull(),
     // دور مخصّص (من جدول roles) — null ⇒ دور مبني (enum أعلاه). عند ضبطه: يُحلّ في context
     // إلى role=baseRole + permissionsOverride مشتقّ من خريطة الدور، فتعمل كل البوّابات بلا تغيير.
     customRoleId: bigint("customRoleId", { mode: "number" }),
@@ -161,6 +166,10 @@ export const roles = mysqlTable("roles", {
     .notNull(),
   // خريطة الصلاحيات الكاملة {moduleKey: FULL|READ|NONE}.
   permissions: json("permissions").notNull(),
+  atomicPermissions: json("atomicPermissions"),
+  operationalCaps: json("operationalCaps"),
+  operationPolicy: json("operationPolicy").$type<OperationPolicy>(),
+  operationPolicyRevision: int("operationPolicyRevision").default(0).notNull(),
   canSeeCost: boolean("canSeeCost").default(false).notNull(),
   isActive: boolean("isActive").default(true).notNull(),
   // RBAC ش٣: الأدوار القياسية المبذورة محميّة من الحذف/تغيير الفئة (قابلة للتحرير المُدقَّق).
@@ -2085,6 +2094,17 @@ export const invoices = mysqlTable(
     }),
     // معرّف محطة/جهاز نقطة البيع (يُرسل من العميل؛ ويُحفظ أيضاً لبيع الأوفلاين).
     posDeviceId: varchar("posDeviceId", { length: 64 }),
+    // إسناد بائع الصالة / الموظف المساعد التجاري (R2): يفك الارتباط الحصري بالكاشير `createdBy`.
+    // null = فاتورة كاشير مباشرة أو إرثية (تسقط تلقائياً إلى createdBy في احتساب العمولات).
+    salesRepId: int("salesRepId").references(() => users.id),
+    // نمط الإسناد التجاري للفاتورة: فردي مباشر (DIRECT)، مقسم (SPLIT)، أو تشاركي (POOL).
+    attributionMode: mysqlEnum("attributionMode", [
+      "DIRECT",
+      "SPLIT",
+      "POOL",
+    ])
+      .default("DIRECT")
+      .notNull(),
     createdBy: int("createdBy").references(() => users.id),
     // فواتير تاريخية/مستوردة قد تحمل CANCELLED؛ أي مسار إلغاء مستقبلي يملك حقول تدقيق صريحة.
     cancelledBy: int("cancelledBy").references(() => users.id, {
@@ -2156,6 +2176,11 @@ export const invoices = mysqlTable(
     ),
     salespersonDateIdx: index("idx_invoice_salesperson_date").on(
       table.createdBy,
+      table.invoiceDate,
+    ),
+    // فهرس إسناد المبيعات وتاريخ الفاتورة لتقارير أداء المندوبين ومسيرات العمولات الشهرية
+    salesRepDateIdx: index("idx_invoice_sales_rep_date").on(
+      table.salesRepId,
       table.invoiceDate,
     ),
     // ش٠ (٥/٨، V2): طابور الاستقبال يفلتر على shiftId ويرتّب/يقطع بـid (keyset) — كان تعليق
@@ -2294,6 +2319,86 @@ export type InvoiceItemServiceMaterial =
 export type InsertInvoiceItemServiceMaterial =
   typeof invoiceItemServiceMaterials.$inferInsert;
 
+/* ============================ إسناد مبيعات الفواتير (invoiceAttributions) ============================ */
+
+export const ATTRIBUTION_ROLES = [
+  "FLOOR_REP",
+  "RECEPTIONIST",
+  "CASHIER",
+  "FULFILLER",
+] as const;
+export type AttributionRole = (typeof ATTRIBUTION_ROLES)[number];
+
+export const ATTRIBUTION_MODES = [
+  "DIRECT",
+  "SPLIT",
+  "POOL",
+] as const;
+export type AttributionMode = (typeof ATTRIBUTION_MODES)[number];
+
+/**
+ * إسناد مبيعات الفاتورة (متعدد الأدوار ونسب التوزيع):
+ * يربط الفاتورة ببائع صالة العرض (FLOOR_REP)، موظف الاستقبال (RECEPTIONIST)،
+ * الكاشير (CASHIER)، أو مجهّز طلبات المتجر والزبائن (FULFILLER).
+ * يدعم التوزيع الفردي المباشر (DIRECT)، المقسّم (SPLIT)، والجماعي التشاركي (POOL).
+ * يحافظ على أثر التدقيق المستقل للكاشير في `invoices.createdBy`.
+ */
+export const invoiceAttributions = mysqlTable(
+  "invoiceAttributions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    invoiceId: bigint("invoiceId", { mode: "number" })
+      .notNull()
+      .references(() => invoices.id, { onDelete: "cascade" }),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id),
+    role: mysqlEnum("role", [
+      "FLOOR_REP",
+      "RECEPTIONIST",
+      "CASHIER",
+      "FULFILLER",
+    ]).notNull(),
+    attributionMode: mysqlEnum("attributionMode", [
+      "DIRECT",
+      "SPLIT",
+      "POOL",
+    ])
+      .default("DIRECT")
+      .notNull(),
+    // نسبة الإسناد ككسر عشري (0.0000 إلى 1.0000؛ 1.0000 = 100%، 0.7000 = 70%، 0.3000 = 30%)
+    sharePct: decimal("sharePct", { precision: 5, scale: 4 })
+      .default("1.0000")
+      .notNull(),
+    // المبلغ الأساس المسند بالدينار العراقي الخاضع للعمولة (صافي إيراد السطر أو الفاتورة × sharePct)
+    creditedBaseAmount: decimal("creditedBaseAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    // معرّف حوض الفريق في حال كان نمط الإسناد POOL (اختياري للعمولات الجماعية)
+    teamPoolId: bigint("teamPoolId", { mode: "number" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    branchInvoiceIdx: index("idx_inv_attr_branch_invoice").on(
+      table.branchId,
+      table.invoiceId,
+    ),
+    userCreatedAtIdx: index("idx_inv_attr_user_created_at").on(
+      table.userId,
+      table.createdAt,
+    ),
+    invoiceIdx: index("idx_inv_attr_invoice").on(table.invoiceId),
+  }),
+);
+
+export type InvoiceAttribution = typeof invoiceAttributions.$inferSelect;
+export type InsertInvoiceAttribution = typeof invoiceAttributions.$inferInsert;
+
 /* ============================ CRM — الحملات التجارية ============================ */
 
 /** الحملة هي المظلّة التجارية التي تربط الجمهور بالعروض والكوبونات والنتائج.
@@ -2396,6 +2501,14 @@ export const promotions = mysqlTable(
     ),
     // gstack B11: NOT NULL DEFAULT '0' (كان nullable ⇒ NULL يعطّل العرض بصمت مع lte).
     minLineAmount: decimal("minLineAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    maxDiscountAmount: decimal("maxDiscountAmount", { precision: 15, scale: 2 }),
+    minOrderSpend: decimal("minOrderSpend", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    freeShipping: boolean("freeShipping").default(false).notNull(),
+    shippingDiscountAmount: decimal("shippingDiscountAmount", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
     priority: int("priority").default(0).notNull(),
@@ -2501,6 +2614,11 @@ export const couponPrograms = mysqlTable(
     codePrefix: varchar("codePrefix", { length: 12 }).default("CRM").notNull(),
     // لقطة تصميم قابلة للإصدار؛ تغيير القالب لاحقاً لا يغيّر بطاقة سبق إصدارها.
     designJson: json("designJson"),
+    affiliateName: varchar("affiliateName", { length: 255 }),
+    affiliatePhone: varchar("affiliatePhone", { length: 32 }),
+    affiliateCommissionRate: decimal("affiliateCommissionRate", { precision: 5, scale: 2 })
+      .default("0.00")
+      .notNull(),
     createdBy: int("createdBy")
       .notNull()
       .references(() => users.id),
@@ -2577,6 +2695,12 @@ export const couponRedemptions = mysqlTable(
       precision: 15,
       scale: 2,
     }).notNull(),
+    affiliateCommissionAmount: decimal("affiliateCommissionAmount", {
+      precision: 15,
+      scale: 2,
+    })
+      .default("0.00")
+      .notNull(),
     redeemedBy: int("redeemedBy")
       .notNull()
       .references(() => users.id),
@@ -2599,6 +2723,63 @@ export const couponRedemptions = mysqlTable(
 export type CouponProgram = typeof couponPrograms.$inferSelect;
 export type Coupon = typeof coupons.$inferSelect;
 export type CouponRedemption = typeof couponRedemptions.$inferSelect;
+
+export const customerFeedback = mysqlTable(
+  "customerFeedback",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    customerId: bigint("customerId", { mode: "number" })
+      .notNull()
+      .references(() => customers.id),
+    branchId: bigint("branchId", { mode: "number" }).references(
+      () => branches.id,
+      { onDelete: "set null" },
+    ),
+    workOrderId: bigint("workOrderId", { mode: "number" }).references(
+      () => workOrders.id,
+      { onDelete: "set null" },
+    ),
+    invoiceId: bigint("invoiceId", { mode: "number" }).references(
+      () => invoices.id,
+      { onDelete: "set null" },
+    ),
+    rating: int("rating").notNull(),
+    category: varchar("category", { length: 64 }).notNull(),
+    sentiment: mysqlEnum("sentiment", ["POSITIVE", "NEUTRAL", "NEGATIVE"])
+      .default("NEUTRAL")
+      .notNull(),
+    comment: text("comment"),
+    issueStatus: mysqlEnum("issueStatus", ["NEW", "IN_PROGRESS", "RESOLVED", "CLOSED"])
+      .default("NEW")
+      .notNull(),
+    rootCauseStation: varchar("rootCauseStation", { length: 64 }),
+    resolutionAction: text("resolutionAction"),
+    resolvedBy: int("resolvedBy").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    resolvedAt: timestamp("resolvedAt"),
+    giftCouponId: bigint("giftCouponId", { mode: "number" }).references(
+      () => coupons.id,
+      { onDelete: "set null" },
+    ),
+    smartGuidance: text("smartGuidance"),
+    googleReviewInviteSent: boolean("googleReviewInviteSent").default(false).notNull(),
+    createdBy: int("createdBy")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    customerIdx: index("idx_cust_feedback_customer").on(table.customerId, table.createdAt),
+    statusIdx: index("idx_cust_feedback_status").on(table.issueStatus, table.createdAt),
+    branchIdx: index("idx_cust_feedback_branch").on(table.branchId, table.createdAt),
+    ratingIdx: index("idx_cust_feedback_rating").on(table.rating),
+  }),
+);
+
+export type CustomerFeedback = typeof customerFeedback.$inferSelect;
+export type InsertCustomerFeedback = typeof customerFeedback.$inferInsert;
 
 /** قفل دائمي لطلب كوبون أول طلب: برنامج واحد × عميل واحد، حتى مع الضغط المتزامن. */
 export const storefrontFirstOrderCouponClaims = mysqlTable(
@@ -4452,6 +4633,8 @@ export const receptionDrafts = mysqlTable(
     committedAt: timestamp("committedAt"),
     cancelledAt: timestamp("cancelledAt"),
     cancelReason: varchar("cancelReason", { length: 500 }),
+    // إسناد بائع الصالة / موظف الاستقبال الذي جهز المسودة للعميل قبل تحويلها للكاشير
+    salesRepId: int("salesRepId").references(() => users.id),
     createdBy: int("createdBy")
       .notNull()
       .references(() => users.id),
@@ -8169,10 +8352,29 @@ export const onlineOrders = mysqlTable(
     deliveryPartyId: bigint("deliveryPartyId", { mode: "number" }),
     // سبب الإلغاء — يملؤه المندوب عند «تعذّر التسليم» (رفض الزبون/عنوان خاطئ...) ليراه الموظّف. هجرة 0069.
     cancelReason: varchar("cancelReason", { length: 500 }),
+    // إسناد وتجهيز الطلب — تتبع الموظف المسؤول والمجهز وسرعة الإنجاز لحساب الحوافز والعمولات
+    claimedByUserId: int("claimedByUserId").references(() => users.id),
+    claimedAt: timestamp("claimedAt"),
+    preparedByUserId: int("preparedByUserId").references(() => users.id),
+    preparedAt: timestamp("preparedAt"),
+    fulfillmentDurationMinutes: int("fulfillmentDurationMinutes"),
+    // حالة التواصل والمراسلة مع العميل وتثبيت الطلب
+    contactStatus: mysqlEnum("contactStatus", [
+      "NOT_CONTACTED",
+      "WHATSAPP_SENT",
+      "CALLED_CONFIRMED",
+      "NO_ANSWER",
+      "RETRY",
+    ])
+      .default("NOT_CONTACTED")
+      .notNull(),
+    contactNotes: varchar("contactNotes", { length: 500 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => ({
+    claimedByUserIdx: index("idx_online_order_claimed_by").on(table.claimedByUserId),
+    preparedByUserIdx: index("idx_online_order_prepared_by").on(table.preparedByUserId),
     numberIdx: index("idx_order_number").on(table.orderNumber),
     customerIdx: index("idx_order_customer").on(table.customerId),
     statusIdx: index("idx_order_status").on(table.status),
@@ -8418,8 +8620,10 @@ export const storefrontProductReviews = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     productId: bigint("productId", { mode: "number" }).notNull().references(() => products.id, { onDelete: "cascade" }),
-    customerId: bigint("customerId", { mode: "number" }).notNull().references(() => customers.id, { onDelete: "cascade" }),
-    onlineOrderId: bigint("onlineOrderId", { mode: "number" }).notNull().references(() => onlineOrders.id, { onDelete: "cascade" }),
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id, { onDelete: "cascade" }),
+    onlineOrderId: bigint("onlineOrderId", { mode: "number" }).references(() => onlineOrders.id, { onDelete: "cascade" }),
+    reviewerName: varchar("reviewerName", { length: 255 }),
+    reviewerPhone: varchar("reviewerPhone", { length: 32 }),
     rating: int("rating").notNull(),
     comment: varchar("comment", { length: 1000 }).notNull(),
     status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED"]).default("PENDING").notNull(),
@@ -13773,6 +13977,30 @@ export const taxSettings = mysqlTable("taxSettings", {
 });
 export type TaxSettings = typeof taxSettings.$inferSelect;
 export type InsertTaxSettings = typeof taxSettings.$inferInsert;
+
+/** بيانات المنشأة وهويتها المؤسسية (صفّ مفرد singleton id=1، نمط taxSettings):
+ *  الاسم الرسمي، اسم الشهرة/العلامة التجارية، الاسم المختصر، الأرقام القانونية
+ *  (السجل التجاري، الرقم الضريبي، إجازة الغرفة)، المقر والعنوان، أرقام أقسام التواصل، ورابط الشعار.
+ *  يُنشأ الصف كسولاً (get-or-create) بالقيم الافتراضية من shared/companyIdentity.ts إن لم يكن موجوداً بعد. */
+export const companyProfile = mysqlTable("companyProfile", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 255 }).notNull(),
+  tradeName: varchar("tradeName", { length: 255 }),
+  shortName: varchar("shortName", { length: 100 }),
+  legalSubtitle: varchar("legalSubtitle", { length: 255 }),
+  commercialRegistry: varchar("commercialRegistry", { length: 100 }),
+  taxNumber: varchar("taxNumber", { length: 100 }),
+  chamberLicense: varchar("chamberLicense", { length: 100 }),
+  address: text("address"),
+  phones: json("phones").$type<{ label: string; number: string }[]>(),
+  logoUrl: text("logoUrl"),
+  footerText: text("footerText"),
+  updatedBy: int("updatedBy").references(() => users.id),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type CompanyProfile = typeof companyProfile.$inferSelect;
+export type InsertCompanyProfile = typeof companyProfile.$inferInsert;
 
 /** «وضع الافتتاح» المؤقّت (صفّ singleton واحد id=1، نمط taxSettings): أثناء إدخال النظام للخدمة يُسمح
  *  ببيع الصنف **غير المُفتتَح** (branchStock.openedAt IS NULL) بالسالب نقدياً حتى يُجرَد جرداً افتتاحياً.

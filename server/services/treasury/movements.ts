@@ -1,4 +1,6 @@
 import { eq, inArray, sql } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import { MATERIALIZED_RECEIPT_STATUS_SQL } from "../cash/cashAvailability";
@@ -71,9 +73,13 @@ export async function getRecentMovements(
   },
   scope: {
     scopedBranchId: number | null;
+    /** Server-authored: a user ID means OWN; explicit null means BRANCH. */
+    scopedOwnerId?: number | null;
     role: string;
     userId?: number;
     actorBranchId?: number | null;
+    operationPolicyEnabled?: boolean;
+    canAcceptHandover?: boolean;
   },
 ): Promise<MovementRow[]> {
   const db = getDb();
@@ -105,27 +111,42 @@ export async function getRecentMovements(
   const toFilterE = input.to
     ? sql`AND e.createdAt < DATE_ADD(${input.to}, INTERVAL 1 DAY)`
     : sql``;
-  // الكاشير لا يَرى TREASURY مطلقاً (IDOR + إخفاء معلومات إدارية).
-  // ⚠️ أسماء أعمدة DB الخام: receipts.cashBucket / expenses.expenseCashBucket / expenses.expensePaymentMethod.
-  const bucketFilterR = isCashier(scope.role)
+  // السياسة الجديدة توسّع النطاق بقرار BRANCH صريح، لا بمجرّد تفعيلها.
+  // عند غياب النطاق الداخلي نحتفظ بعزل المستخدم بدل فتح سجل الفرع.
+  const legacyCashier = scope.operationPolicyEnabled !== true && isCashier(scope.role);
+  const drawerOwnerId = scope.operationPolicyEnabled === true
+    ? scope.scopedOwnerId === undefined ? scope.userId : scope.scopedOwnerId
+    : legacyCashier ? scope.userId : null;
+  if (scope.operationPolicyEnabled === true && drawerOwnerId === undefined) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر تحديد نطاق سجل الحركات النقدية",
+        why: "لم تُحدّد هوية صاحب السجل أو صلاحية الاطلاع على الفرع",
+        doThis: "أعد تسجيل الدخول أو اطلب من الإدارة مراجعة نطاق صلاحيتك",
+      }),
+    });
+  }
+  const ownDrawer = legacyCashier || drawerOwnerId != null;
+  // ⚠️ أسماء أعمدة DB الخام: receipts.cashBucket / expenses.expenseCashBucket.
+  const bucketFilterR = ownDrawer
     ? sql`AND (r.cashBucket = 'DRAWER' OR r.cashBucket IS NULL)`
     : sql``;
-  const bucketFilterE = isCashier(scope.role)
+  const bucketFilterE = ownDrawer
     ? sql`AND (e.expenseCashBucket = 'DRAWER' OR e.expenseCashBucket IS NULL)`
     : sql``;
   // عزل درج الكاشير (تدقيق ١٧/٧): كان الكاشير يرى حركات دروج زملائه في الفرع نفسه (مبالغ + أرقام
   // سندات + مصروفات لم يُنشئها). درجُه = ورديّاتُه ⇒ نقصره على حركات ورديّةٍ يملكها هو (shiftId).
-  const isolateCashier = isCashier(scope.role) && scope.userId != null;
-  const ownShiftR = isolateCashier
-    ? sql`AND r.shiftId IN (SELECT s.id FROM shifts s WHERE s.userId = ${scope.userId})`
+  const ownShiftR = drawerOwnerId != null
+    ? sql`AND r.shiftId IN (SELECT s.id FROM shifts s WHERE s.userId = ${drawerOwnerId})`
     : sql``;
-  const ownShiftE = isolateCashier
-    ? sql`AND e.shiftId IN (SELECT s.id FROM shifts s WHERE s.userId = ${scope.userId})`
+  const ownShiftE = drawerOwnerId != null
+    ? sql`AND e.shiftId IN (SELECT s.id FROM shifts s WHERE s.userId = ${drawerOwnerId})`
     : sql``;
 
   // العد الأعمى P1: سند OUT المكتمل يحمل المبلغ نفسه والمرجع/الوردية اللذين يراهما
   // المستلم في طابور العهدة. لذلك إخفاء سند IN المعلّق وحده لا يكفي؛ يمكن ربط الصفين
-  // فوراً. نستبعد سند المصدر نفسه من سجل الحركات لكل مدير/إداري صالح للاستلام في الفرع
+  // فوراً. نستبعد سند المصدر نفسه من سجل الحركات لكل مستخدم صالح للاستلام في الفرع
   // إلى أن يُثبَّت أول cashCustodyCount (MATCHED أو VARIANCE_OPEN).
   const protectBlindCount =
     scope.userId != null &&
@@ -134,6 +155,8 @@ export async function getRecentMovements(
         userId: scope.userId,
         role: scope.role,
         branchId: scope.actorBranchId ?? null,
+        operationPolicyEnabled: scope.operationPolicyEnabled,
+        canAcceptHandover: scope.canAcceptHandover,
       },
       {
         branchId: scope.actorBranchId ?? null,

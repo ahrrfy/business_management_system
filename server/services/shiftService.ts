@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { hasCashVariance } from "@shared/cashDailyReconciliation";
 import { appErrorMessage } from "@shared/errors";
-import { and, desc, eq, gt, inArray, like, notExists, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, like, notExists, notInArray, or, sql } from "drizzle-orm";
 import {
   accountingEntries,
   accrualObligationEvents,
@@ -9,6 +9,7 @@ import {
   digitalSaleIntents,
   expenses,
   invoices,
+  onlineOrders,
   purchaseOrders,
   receipts,
   shifts,
@@ -20,7 +21,13 @@ import type { Tx } from "../db";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { isDupEntry } from "@shared/errorMap.ar";
-import { createPostingIntent, creditLine, debitLine } from "./accounting/postingEngine";
+import {
+  createPostingIntent,
+  creditLine,
+  debitLine,
+  signedPostingLines,
+  type PostingSourceComponents,
+} from "./accounting/postingEngine";
 import { postEntry } from "./ledgerService";
 import {
   assertCashOutAvailable,
@@ -426,10 +433,10 @@ export async function closeShift(
         ? actor.userId
         : (input.managerApprovedByUserId ?? null);
 
-    // العدّ يثبت الموجود مادياً فقط ولا ينشئ مصدراً نقدياً. بوابة API لا تسمح بإغلاق
-    // الوردية مع أي فرق، حتى بموافقة مدير: يجب تصحيح الفاتورة/المرتجع أو تسجيل الحركة
-    // النظامية من وحدتها المختصة أولاً، ثم يعاد احتساب المتوقع وتتم المطابقة.
+    // العدّ يثبت الموجود مادياً فقط ولا ينشئ مصدراً نقدياً.
+    // التحقق من صحة تفصيل الفئات إن وُجد
     validateCashBreakdown(input.countedBreakdown, counted);
+
     if (input.enforceCashGovernance && hasVariance) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
@@ -439,6 +446,131 @@ export async function closeShift(
           `والفرق ${variance.toFixed(2)} د.ع. العدّ لا ينشئ مالاً: راجع الرصيد الافتتاحي ` +
           `والمبيعات والمرتجعات النقدية، وسجّل أو صحّح العملية من وحدتها المختصة ثم أعد الإغلاق.`,
       });
+    }
+
+    if (hasVariance && varianceApproverId) {
+      if (!reasonCode || !reason) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر إغلاق الوردية بفرق نقدي معتمد",
+            why: "إغلاق الوردية مع وجود فرق نقدي معتمد يتطلب تحديد سبب الفرق وكتابة بيانه",
+            doThis: "حدد رمز سبب الفرق من القائمة واكتب التبرير التفصيلي",
+          }),
+        });
+      }
+      if (counted.gt(0) && (!input.countedBreakdown || Object.keys(input.countedBreakdown).length === 0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تفصيل فئات النقد مطلوب عند وجود فرق نقدي",
+            why: "إغلاق الوردية مع وجود فرق نقدي يتطلب توثيق عد الفئات النقدية الفعلية في الدرج كدليل مادي",
+            doThis: "أدخل تفصيل فئات النقد المعدود في شاشة إغلاق الوردية",
+          }),
+        });
+      }
+      validateCashBreakdown(input.countedBreakdown, counted, { requiredWhenPositive: true });
+    }
+
+    if (hasVariance && varianceApproverId) {
+
+      // توجيه فرق الوردية المعتمد محاسبياً:
+      // عند العجز (variance < 0): يُسجّل إيصال صرف من الدرج بذمة الموظف ويُرحّل إلى EMPLOYEE_ADVANCES،
+      // فيصبح الرصيد المتاح في الدرج مساوياً تماماً للنقد المعدود.
+      // عند الزيادة (variance > 0): يُسجّل إيصال قبض في الدرج كأمانات/التزامات أخرى ويُرحّل إلى OTHER_LIABILITY،
+      // فيصبح الرصيد المتاح في الدرج مساوياً تماماً للنقد المعدود.
+      // وفي الحالتين، يُعاد النقد المعدود بالكامل إلى الخزينة عبر settleShiftReturnTx ويصبح رصيد الدرج 0.00 تماماً.
+      if (variance.isNegative()) {
+        const shortageAmount = variance.abs();
+        await assertCashOutAvailable(tx, {
+          branchId: Number(sh.branchId),
+          cashBucket: "DRAWER",
+          shiftId: input.shiftId,
+          amount: shortageAmount,
+          operation: "تسجيل عجز وردية بذمة الموظف",
+        });
+
+        const outRes = await tx.insert(receipts).values({
+          branchId: Number(sh.branchId),
+          shiftId: input.shiftId,
+          direction: "OUT",
+          amount: toDbMoney(shortageAmount),
+          paymentMethod: "CASH",
+          cashBucket: "DRAWER",
+          referenceNumber: `SV-${input.shiftId}`,
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+          approvedBy: varianceApproverId,
+          partyType: "OTHER",
+          description: `تسوية عجز وردية #${input.shiftId} بذمة الموظف — معتمد من المدير (${reasonCode}: ${reason})`,
+          createdBy: actor.userId,
+        });
+        const outReceiptId = extractInsertId(outRes);
+
+        const sourceComponents: PostingSourceComponents = {
+          roleDebits: { EMPLOYEE_ADVANCES: shortageAmount },
+          roleCredits: { CASH: shortageAmount },
+        };
+        const postingIntent = createPostingIntent(
+          "PAYMENT_OUT_EMPLOYEE_ADVANCE",
+          "PAYMENT_OUT",
+          signedPostingLines("EMPLOYEE_ADVANCES", "CASH", shortageAmount),
+          sourceComponents,
+        );
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT",
+          branchId: Number(sh.branchId),
+          receiptId: outReceiptId,
+          amount: shortageAmount,
+          paymentMethod: "CASH",
+          postingIntent,
+          postingSourceComponents: sourceComponents,
+          createdBy: actor.userId,
+          dedupeKey: `SHIFT_VARIANCE_SHORTAGE:${input.shiftId}`,
+          notes: `عجز وردية #${input.shiftId} بذمة الموظف — معتمد من المدير (${reasonCode}: ${reason})`,
+        });
+      } else if (variance.isPositive()) {
+        const surplusAmount = variance;
+        const inRes = await tx.insert(receipts).values({
+          branchId: Number(sh.branchId),
+          shiftId: input.shiftId,
+          direction: "IN",
+          amount: toDbMoney(surplusAmount),
+          paymentMethod: "CASH",
+          cashBucket: "DRAWER",
+          referenceNumber: `SV-${input.shiftId}`,
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+          approvedBy: varianceApproverId,
+          partyType: "OTHER",
+          description: `تسجيل زيادة نقد وردية #${input.shiftId} كأمانات/التزامات أخرى — معتمد من المدير (${reasonCode}: ${reason})`,
+          createdBy: actor.userId,
+        });
+        const inReceiptId = extractInsertId(inRes);
+
+        const sourceComponents: PostingSourceComponents = {
+          roleDebits: { CASH: surplusAmount },
+          roleCredits: { OTHER_LIABILITY: surplusAmount },
+        };
+        const postingIntent = createPostingIntent(
+          "PAYMENT_IN_OTHER",
+          "PAYMENT_IN",
+          signedPostingLines("CASH", "OTHER_LIABILITY", surplusAmount),
+          sourceComponents,
+        );
+        await postEntry(tx, {
+          entryType: "PAYMENT_IN",
+          branchId: Number(sh.branchId),
+          receiptId: inReceiptId,
+          amount: surplusAmount,
+          paymentMethod: "CASH",
+          postingIntent,
+          postingSourceComponents: sourceComponents,
+          createdBy: actor.userId,
+          dedupeKey: `SHIFT_VARIANCE_SURPLUS:${input.shiftId}`,
+          notes: `زيادة وردية #${input.shiftId} كأمانات/التزامات أخرى — معتمد من المدير (${reasonCode}: ${reason})`,
+        });
+      }
     }
 
     // العهدة الوسيطة (imprest، قرار المالك ٢٨/٧/٢٦): يعود **كامل** النقد المعدود إلى الخزينة تلقائياً
@@ -490,6 +622,25 @@ export async function closeShift(
         varianceReviewedByUserId: hasVariance ? varianceApproverId : null,
       })
       .where(eq(shifts.id, input.shiftId));
+
+    // تحرير الطلبات الإلكترونية التي استلمها الموظف ولم يكتمل تجهيزها بعد (PENDING / CONFIRMED / PROCESSING)
+    // لكي لا تبقى معلقة أو مقفولة بحارس تعارض الاستلام على الموظف المغلق ورديته
+    await tx
+      .update(onlineOrders)
+      .set({
+        claimedByUserId: null,
+        claimedAt: null,
+        preparedByUserId: null,
+        status: sql`CASE WHEN ${onlineOrders.status} = 'PROCESSING' THEN 'CONFIRMED' ELSE ${onlineOrders.status} END`,
+      })
+      .where(
+        and(
+          eq(onlineOrders.claimedByUserId, sh.userId),
+          eq(onlineOrders.branchId, sh.branchId),
+          inArray(onlineOrders.status, ["PENDING", "CONFIRMED", "PROCESSING"]),
+          isNull(onlineOrders.preparedAt),
+        ),
+      );
 
     return {
       shiftId: input.shiftId,

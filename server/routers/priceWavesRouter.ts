@@ -22,7 +22,7 @@ import {
   revertPriceWave,
 } from "../services/priceWaveService";
 import { withTx } from "../services/tx";
-import { productsManagerProcedure, router } from "../trpc";
+import { productsManagerProcedure, requireAtomicPermission, router } from "../trpc";
 
 const tierSchema = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 
@@ -91,6 +91,7 @@ export const priceWavesRouter = router({
   /** عدّاد النطاق الحيّ — يُغذّي شارة «كم منتجاً/سعراً سيتأثّر» أثناء الكتابة في خطوة النطاق.
    *  query (لا mutation): نتيجةٌ قابلة للتخزين المؤقّت ولا أثر لها، وتُستدعى مع كل حرف. */
   scopeCount: productsManagerProcedure
+    .use(requireAtomicPermission("inventory.price_wave.view"))
     .input(z.object({ filters: filtersSchema }))
     .query(async ({ input }) =>
       withTx((tx) => countPriceWaveScope(tx, input.filters)),
@@ -99,6 +100,7 @@ export const priceWavesRouter = router({
   /** معاينة الموجة قبل الالتزام — الصفوف المتأثّرة + **الساقطة بأسبابها** + بصمة المجموعة.
    *  mutation لا query: لا تخزين مؤقّت (كل معاينة حسابٌ لحظيّ، والفلاتر متغيّرة كثيراً). */
   preview: productsManagerProcedure
+    .use(requireAtomicPermission("inventory.price_wave.preview"))
     .input(z.object(ruleSchema))
     .mutation(async ({ input }) => {
       const {
@@ -124,6 +126,7 @@ export const priceWavesRouter = router({
   /** تطبيق الموجة ذرّياً — يُنشئ رأس + سجلّ + يحدّث productPrices.
    *  NOTE: التسمية `applyWave` بدل `apply` لأنّ الأخيرة كلمة محجوزة في tRPC (تعارض مع Function.prototype.apply). */
   applyWave: productsManagerProcedure
+    .use(requireAtomicPermission("inventory.price_wave.apply"))
     .input(
       z.object({
         ...ruleSchema,
@@ -161,6 +164,7 @@ export const priceWavesRouter = router({
 
   /** التراجع عن موجة — استعادة `oldPrice` المسجَّل صفّاً صفّاً (لا «موجة عكسية» بنسبة مقلوبة). */
   revert: productsManagerProcedure
+    .use(requireAtomicPermission("inventory.price_wave.rollback"))
     .input(
       z.object({
         waveId: z.number().int().positive(),
@@ -195,6 +199,7 @@ export const priceWavesRouter = router({
 
   /** قائمة الموجات المطبَّقة (الأحدث أولاً) + وسم «مُتراجَعٌ عنها» بضمّةٍ واحدة. */
   list: productsManagerProcedure
+    .use(requireAtomicPermission("inventory.price_wave.view"))
     .input(
       z
         .object({ limit: z.number().int().positive().max(200).default(50) })
@@ -220,6 +225,7 @@ export const priceWavesRouter = router({
 
   /** تاريخ تغييرات سعر وحدة معيّنة (لعرضه في شاشة تعديل المنتج للمدير). */
   unitHistory: productsManagerProcedure
+    .use(requireAtomicPermission("inventory.price_wave.view"))
     .input(
       z.object({
         productUnitId: z.number().int().positive(),
@@ -264,6 +270,7 @@ export const priceWavesRouter = router({
   /** تفاصيل صفوف موجة مطبَّقة — كل priceChangeLog بهذا waveId مُثرًى بأسماء المنتج/الوحدة/SKU
    *  (البيانات مخزَّنة أصلاً منذ التطبيق عبر `priceChangeLog.waveId`). */
   waveDetails: productsManagerProcedure
+    .use(requireAtomicPermission("inventory.price_wave.view"))
     .input(z.object({ waveId: z.number().int().positive() }))
     .query(async ({ input }) => {
       return withTx(async (tx) => {

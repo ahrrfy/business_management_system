@@ -34,6 +34,7 @@ import { fmtDate } from "@/lib/date";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import {
   copyInvoiceItems,
@@ -698,6 +699,7 @@ export default function PurchaseNew() {
   }
 
   function handleSaveRequisition() {
+    if (!canLifecycleOperation(me.data, "purchases.createRequisition", true)) return notify.err("إنشاء طلب تأمين غير مفوض لهذا الحساب.");
     if (createRequisition.isPending) return;
     if (state.items.length === 0) {
       notify.warn("أضف منتجاً واحداً على الأقل لطلب التأمين.");
@@ -740,6 +742,7 @@ export default function PurchaseNew() {
   }
 
   function handleSubmit() {
+    if (!canLifecycleOperation(me.data, "purchases.createOrder", true)) return notify.err("إنشاء أمر شراء غير مفوض لهذا الحساب.");
     // ActionButtons (مشترك) لا يُعطِّل زرّ «مسوّدة» أثناء التحفّظ — حارس محلّي يمنع تضارب حفظَين
     // متزامنين (كلاهما يشترك clientRequestId ثابتاً؛ الخادم يمنع الازدواج، لكن قد يُربَك التوجيه بعد النجاح).
     if (create.isPending || createRequisition.isPending) return;
@@ -1100,7 +1103,7 @@ export default function PurchaseNew() {
               <Button
                 type="button"
                 className="w-full bg-[var(--sem-warn)] hover:bg-[var(--sem-warn)]/90 text-background font-semibold text-xs h-9 shadow-sm gap-1.5"
-                disabled={createRequisition.isPending}
+                disabled={!canLifecycleOperation(me.data, "purchases.createRequisition", true) || createRequisition.isPending}
                 onClick={handleSaveRequisition}
               >
                 <ClipboardList className="size-4" />
@@ -1114,7 +1117,7 @@ export default function PurchaseNew() {
             onAction={handleAction}
             saving={create.isPending || createRequisition.isPending}
             pasteAvailable={pasteAvailable}
-            availableActions={NEW_ACTIONS}
+            availableActions={canLifecycleOperation(me.data, "purchases.createOrder", true) ? NEW_ACTIONS : NEW_ACTIONS.filter((action) => action !== "save")}
             primaryLabel="حفظ المسودة"
           />
           <TermsAndNotes state={state} dispatch={dispatch} />

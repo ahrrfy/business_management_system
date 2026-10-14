@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,8 +23,9 @@ const CONTRACT_TYPE_LABELS: Record<string, string> = {
 };
 
 export function EmployeeContractsTab({ employeeId }: { employeeId: number }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
-  const q = trpc.hrEnterprise.contracts.list.useQuery({ employeeId });
+  const q = trpc.hrEnterprise.contracts.list.useQuery({ employeeId }, { enabled: can("hrEnterprise.contracts.list") });
   const [open, setOpen] = useState(false);
   const [renewOpen, setRenewOpen] = useState(false);
   const [terminateOpen, setTerminateOpen] = useState(false);
@@ -129,7 +131,7 @@ export function EmployeeContractsTab({ employeeId }: { employeeId: number }) {
             حوكمة عقود العمل وتتبع فترات التجربة القانونية (الحد الأقصى 3 أشهر بموجب المادة 33 من قانون العمل العراقي).
           </p>
         </div>
-        <Button size="sm" onClick={() => setOpen(true)} className="gap-1.5">
+        <Button size="sm" onClick={() => setOpen(true)} className="gap-1.5" disabled={!can("hrEnterprise.contracts.create")}>
           <Plus className="h-4 w-4" />
           تسجيل عقد جديد
         </Button>
@@ -184,7 +186,7 @@ export function EmployeeContractsTab({ employeeId }: { employeeId: number }) {
                           variant="outline"
                           size="sm"
                           className="h-7 text-xs"
-                          disabled={approveMut.isPending}
+                          disabled={!can("hrEnterprise.contracts.approve") || (approveMut.isPending)}
                           onClick={() => approveMut.mutate({ id: c.id })}
                         >
                           تفعيل
@@ -201,7 +203,7 @@ export function EmployeeContractsTab({ employeeId }: { employeeId: number }) {
                             setRenewBasicSalary(c.basicSalary || "");
                             setRenewJobTitle(c.jobTitle || "");
                             setRenewOpen(true);
-                          }}
+                          }} disabled={!can("hrEnterprise.contracts.renew")}
                         >
                           تجديد
                         </Button>
@@ -215,7 +217,7 @@ export function EmployeeContractsTab({ employeeId }: { employeeId: number }) {
                             setSelectedContract(c);
                             setTerminateReason("");
                             setTerminateOpen(true);
-                          }}
+                          }} disabled={!can("hrEnterprise.contracts.terminate")}
                         >
                           إنهاء
                         </Button>
@@ -328,7 +330,7 @@ export function EmployeeContractsTab({ employeeId }: { employeeId: number }) {
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
-              <Button type="submit" disabled={createMut.isPending}>{createMut.isPending ? "جاري الحفظ..." : "تسجيل العقد"}</Button>
+              <Button type="submit" disabled={!can("hrEnterprise.contracts.create") || (createMut.isPending)}>{createMut.isPending ? "جاري الحفظ..." : "تسجيل العقد"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -363,7 +365,7 @@ export function EmployeeContractsTab({ employeeId }: { employeeId: number }) {
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setRenewOpen(false)}>إلغاء</Button>
-              <Button type="submit" disabled={renewMut.isPending}>{renewMut.isPending ? "جاري التجديد..." : "تأكيد التجديد"}</Button>
+              <Button type="submit" disabled={!can("hrEnterprise.contracts.renew") || (renewMut.isPending)}>{renewMut.isPending ? "جاري التجديد..." : "تأكيد التجديد"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -386,7 +388,7 @@ export function EmployeeContractsTab({ employeeId }: { employeeId: number }) {
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setTerminateOpen(false)}>إلغاء</Button>
-              <Button type="submit" variant="destructive" disabled={terminateMut.isPending}>{terminateMut.isPending ? "جاري الإنهاء..." : "تأكيد إنهاء العقد"}</Button>
+              <Button type="submit" variant="destructive" disabled={!can("hrEnterprise.contracts.terminate") || (terminateMut.isPending)}>{terminateMut.isPending ? "جاري الإنهاء..." : "تأكيد إنهاء العقد"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>

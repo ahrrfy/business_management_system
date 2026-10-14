@@ -5,7 +5,7 @@
  * المُنشئ والمُقرِّر لا `isOwner` الحاليّ.
  */
 import { z } from "zod";
-import { ownerProcedure, router } from "../trpc";
+import { ownerProcedure, requireAtomicPermission, router } from "../trpc";
 import { listSelfApprovalRecords } from "../services/audit/selfApprovalReport";
 
 /** YYYY-MM-DD — نصّ صريح لا Date (يُمرَّر كما هو لمقارنات SQL بنمط DATE()). */
@@ -13,6 +13,7 @@ const ymdStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "صيغة التاريخ 
 
 export const selfApprovalAuditRouter = router({
   list: ownerProcedure
+    .use(requireAtomicPermission("governance.self_approval_audit.view"))
     .input(z.object({ from: ymdStr.optional(), to: ymdStr.optional() }).optional())
     .query(async ({ input }) => {
       return listSelfApprovalRecords({ from: input?.from, to: input?.to });

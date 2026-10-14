@@ -76,6 +76,23 @@ async function entriesOfType(entryType: string) {
 }
 
 describe("imprest — التمويل (fundTreasury)", () => {
+  it("يفوض التمويل وحده للكاشير ويحافظ على الفرع ويرفض إعادة الطلب بعد سحب التفويض", async () => {
+    const actor = { userId: CASHIER1, branchId: 1, role: "cashier" };
+    const input = { branchId: 1, amount: "1000", description: "تمويل مفوض موثق", clientRequestId: "delegated-funding" };
+    await db().update(s.users).set({ operationPolicy: { version: 1, grants: {
+      "operation.treasury.fundTreasury": true,
+    } } }).where(eq(s.users.id, CASHIER1));
+    await expect(fundTreasury({ ...input, branchId: 2 }, actor)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const result = await fundTreasury(input, actor);
+    expect(result.treasuryBalanceAfter).toBe("1000.00");
+    expect((await entriesOfType("TREASURY_FUNDING"))).toHaveLength(1);
+    await db().update(s.users).set({ operationPolicy: { version: 1, grants: {
+      "operation.treasury.fundTreasury": false,
+    } } }).where(eq(s.users.id, CASHIER1));
+    await expect(fundTreasury(input, actor)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await entriesOfType("TREASURY_FUNDING"))).toHaveLength(1);
+    expect((await dash(1)).treasury).toBe("1000.00");
+  });
   it("يرفع رصيد الخزينة + سند TF + قيد TREASURY_FUNDING محايد للربح", async () => {
     const r = await fundTreasury(
       { branchId: 1, amount: "200000", description: "رأس مال أوّليّ", clientRequestId: "fund-1" },

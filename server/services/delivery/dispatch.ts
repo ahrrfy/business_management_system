@@ -43,6 +43,8 @@ import {
   assertBaseProductUnitBinding,
   requireWorkOrderBaseSnapshot,
 } from "../workOrder/baseInventorySnapshot";
+import { publishRealtimeEvent } from "../../realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 
 // ═══════════════════════════ التحوّلات (محاسبة العهدة) ═══════════════════════════
 // ترتيب أقفال موحّد لمنع الجمود: الإرسالية → الجهة → الفاتورة → الوردية.
@@ -78,7 +80,7 @@ function reopenedConsignmentSourceId(wo: { id: number | string; version: number 
 
 export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTxActor) {
   try {
-    return await withTx(async (tx) => {
+    const result = await withTx(async (tx) => {
     const normalizedTrackingRef = normalizeExternalTrackingRef(input.externalTrackingRef);
     const payloadHash = idempotencyHash({
       workOrderId: Number(input.workOrderId),
@@ -588,8 +590,22 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     await tx.update(workOrders).set({ invoiceId }).where(eq(workOrders.id, Number(wo.id)));
     if (input.clientRequestId) await recordIdempotencyKey(tx, "delivery.dispatch", input.clientRequestId, consignmentId, payloadHash);
 
-    return { consignmentId, consignmentNumber, invoiceId, invoiceNumber, codAmount: codAmount.toFixed(2), deliveryFee: fee.toFixed(2) };
+    return { consignmentId, consignmentNumber, invoiceId, invoiceNumber, codAmount: codAmount.toFixed(2), deliveryFee: fee.toFixed(2), branchId: Number(wo.branchId) };
     });
+    publishRealtimeEvent(
+      REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+      {
+        deliveryId: result.consignmentId,
+        invoiceId: result.invoiceId,
+        orderId: input.workOrderId,
+        trackingNumber: result.consignmentNumber,
+        driverId: input.assignedUserId ?? input.partyId,
+        branchId: result.branchId,
+      },
+      { branchId: result.branchId },
+    );
+    const { branchId, ...ret } = result;
+    return ret;
   } catch (error) {
     rethrowExternalTrackingRefDuplicate(
       error,

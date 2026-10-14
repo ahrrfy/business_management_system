@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 
 import { customers, products, storefrontProductReviews } from "../../../drizzle/schema";
 import { appErrorMessage } from "../../../shared/errors";
@@ -14,7 +14,8 @@ export async function listStorefrontProductReviewsForAdmin(status: "PENDING" | "
       id: storefrontProductReviews.id,
       productId: storefrontProductReviews.productId,
       productName: products.name,
-      customerName: customers.name,
+      customerName: sql<string>`COALESCE(${customers.name}, ${storefrontProductReviews.reviewerName}, 'متسوق المتجر')`,
+      reviewerPhone: storefrontProductReviews.reviewerPhone,
       rating: storefrontProductReviews.rating,
       comment: storefrontProductReviews.comment,
       status: storefrontProductReviews.status,
@@ -22,7 +23,7 @@ export async function listStorefrontProductReviewsForAdmin(status: "PENDING" | "
     })
     .from(storefrontProductReviews)
     .innerJoin(products, eq(storefrontProductReviews.productId, products.id))
-    .innerJoin(customers, eq(storefrontProductReviews.customerId, customers.id))
+    .leftJoin(customers, eq(storefrontProductReviews.customerId, customers.id))
     .where(eq(storefrontProductReviews.status, status))
     .orderBy(desc(storefrontProductReviews.createdAt))
     .limit(100);

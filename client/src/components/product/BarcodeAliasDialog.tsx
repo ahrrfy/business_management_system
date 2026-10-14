@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useState } from "react";
 import { AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -26,8 +27,9 @@ export function BarcodeAliasDialog({
   label,
   onClose,
 }: BarcodeAliasDialogProps) {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
-  const unitIdQ = trpc.catalog.resolveProductUnitId.useQuery({ variantId, unitName }, { enabled: variantId > 0 });
+  const unitIdQ = trpc.catalog.resolveProductUnitId.useQuery({ variantId, unitName }, { enabled: can("catalog.resolveProductUnitId") && (variantId > 0) });
   const productUnitId = unitIdQ.data ?? null;
   const unitResolutionState = getProductUnitResolutionState({
     isLoading: unitIdQ.isLoading,
@@ -36,7 +38,7 @@ export function BarcodeAliasDialog({
   });
   const listQ = trpc.catalog.listUnitBarcodes.useQuery(
     { productUnitId: productUnitId ?? 0 },
-    { enabled: productUnitId != null },
+    { enabled: can("catalog.listUnitBarcodes") && (productUnitId != null) },
   );
   const [code, setCode] = useState("");
   const [note, setNote] = useState("");
@@ -107,7 +109,7 @@ export function BarcodeAliasDialog({
                   <div key={a.id} className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-sm">
                     <span className="whitespace-pre-wrap font-mono" dir="ltr">{a.barcode}</span>
                     <span className="flex-1 truncate text-xs text-muted-foreground">{a.note ?? ""}</span>
-                    <Button type="button" size="sm" variant="ghost" className="text-destructive" disabled={remove.isPending} onClick={() => remove.mutate({ id: a.id })}>
+                    <Button type="button" size="sm" variant="ghost" className="text-destructive" disabled={!can("catalog.removeUnitBarcodeAlias") || (remove.isPending)} onClick={() => remove.mutate({ id: a.id })}>
                       حذف
                     </Button>
                   </div>
@@ -125,7 +127,7 @@ export function BarcodeAliasDialog({
               </div>
               <Button
                 type="button"
-                disabled={!code.trim() || add.isPending}
+                disabled={!can("catalog.addUnitBarcodeAlias") || (!code.trim() || add.isPending)}
                 onClick={() => productUnitId && add.mutate({ productUnitId, barcode: code.trim(), note: note.trim() || undefined })}
               >
                 {add.isPending ? "جارٍ الإضافة…" : "إضافة"}

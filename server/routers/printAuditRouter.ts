@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   purchasesManagerProcedure,
   reportViewerProcedure,
+  requireAtomicPermission,
   router,
   treasuryManagerReadProcedure,
 } from "../trpc";
@@ -27,20 +28,25 @@ function actor(ctx: { user: { id: number; branchId?: number | null } }) {
 
 export const printAuditRouter = router({
   requestPurchase: purchasesManagerProcedure
+    .use(requireAtomicPermission("governance.print_audit.view"))
     .input(z.object({ ...commonRequest, documentType: z.literal("PURCHASE_RETURN") }))
     .mutation(({ input, ctx }) => requestDocumentPrint({ ...input, branchId: input.branchId ?? actor(ctx).branchId }, actor(ctx))),
   outcomePurchase: purchasesManagerProcedure
+    .use(requireAtomicPermission("governance.print_audit.view"))
     .input(outcomeInput)
     .mutation(({ input, ctx }) => recordDocumentPrintOutcome(input, actor(ctx))),
 
   requestTreasury: treasuryManagerReadProcedure
+    .use(requireAtomicPermission("governance.print_audit.view"))
     .input(z.object({ ...commonRequest, documentType: z.enum(["EXCHANGE_TRANSACTION", "VOUCHER"]) }))
     .mutation(({ input, ctx }) => requestDocumentPrint({ ...input, branchId: input.branchId ?? actor(ctx).branchId }, actor(ctx))),
   outcomeTreasury: treasuryManagerReadProcedure
+    .use(requireAtomicPermission("governance.print_audit.view"))
     .input(outcomeInput)
     .mutation(({ input, ctx }) => recordDocumentPrintOutcome(input, actor(ctx))),
 
   requestReport: reportViewerProcedure
+    .use(requireAtomicPermission("governance.print_audit.view"))
     .input(z.object({ ...commonRequest, documentType: z.enum(["CUSTOMER_STATEMENT", "SUPPLIER_STATEMENT"]) }))
     .mutation(({ input, ctx }) => {
       const canCrossBranches = ctx.user.role === "admin" || ctx.user.isOwner === true;
@@ -48,6 +54,7 @@ export const printAuditRouter = router({
       return requestDocumentPrint({ ...input, branchId }, actor(ctx));
     }),
   outcomeReport: reportViewerProcedure
+    .use(requireAtomicPermission("governance.print_audit.view"))
     .input(outcomeInput)
     .mutation(({ input, ctx }) => recordDocumentPrintOutcome(input, actor(ctx))),
 });

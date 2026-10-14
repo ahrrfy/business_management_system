@@ -382,6 +382,7 @@ export interface CompanySettings {
   footerLine?: string;
   /** يُعرض في يمين التذييل — REF <رقم> أو HASH <بصمة>. القيمة الجاهزة نصيّاً. */
   footerRef?: string;
+  logoUrl?: string | null;
 }
 
 function coFrom(cs?: CompanySettings) {
@@ -427,7 +428,7 @@ export interface DocHeaderMeta {
  */
 export function pageHeader(meta: DocHeaderMeta, cs?: CompanySettings): string {
   const c = coFrom(cs);
-  const logo = logoUrl();
+  const logo = cs?.logoUrl || logoUrl();
   const badgeColor = meta.badge?.color ?? B.orange;
 
   const rawBarcode = meta.barcode;
@@ -956,6 +957,7 @@ export function docHeader(
   extra?: { label: string; value: string }[],
   barcode?: DocHeaderBarcode | string | boolean | null,
   placement?: "beside" | "below",
+  cs?: CompanySettings,
 ): string {
   const fields: { label: string; value: string }[] = [];
   if (docNum) fields.push({ label: "رقم المستند", value: docNum });
@@ -1000,7 +1002,7 @@ export function docHeader(
     };
   }
 
-  return `${pageBodyOpen()}${pageHeader({ title, fields, barcode: resolvedBarcode })}`;
+  return `${pageBodyOpen()}${pageHeader({ title, fields, barcode: resolvedBarcode }, cs)}`;
 }
 
 /** توافق خلفي — بطاقات المعلومات القديمة (title+fields). */
@@ -1095,8 +1097,8 @@ export function docSummary(items: SummaryItem[], qrSvg?: string): string {
 }
 
 /** توافق خلفي — التذييل القديم كان يُدرَج ضمن `.page-body`؛ الآن يُدرَج مباشرةً في `.page` كتذييل مثبَّت. */
-export function docFooter(): string {
-  return `${pageBodyClose()}${pageFooter()}`;
+export function docFooter(cs?: CompanySettings): string {
+  return `${pageBodyClose()}${pageFooter(cs)}`;
 }
 
 /** توافق خلفي — أشرطة أعمار الذمم كما كانت (مستعملة في aging reports فقط). */

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalOperationAllowed, loadOperationUserTx } from "../authorization/operationAuthority";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
@@ -74,6 +75,7 @@ import {
 } from "@shared/approvalTriggers";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import { payloadHashMatches } from "../idempotency";
+import { loadPurchaseSettlements, loadPurchasePaymentEvidenceCases } from "./settlementProjection";
 
 type Method = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 type CashSourceInput = { mode: "DRAWER" | "TREASURY"; shiftId?: number | null };
@@ -331,7 +333,7 @@ async function resolveInvoicePurchaseOrderIds(
   tx: Tx,
   invoiceIds: number[],
 ): Promise<number[]> {
-  const [legacy, matched] = await Promise.all([
+  const [legacy, matched, declared] = await Promise.all([
     tx
       .select({ id: supplierInvoices.legacyPurchaseOrderId })
       .from(supplierInvoices)
@@ -358,10 +360,26 @@ async function resolveInvoicePurchaseOrderIds(
         eq(purchaseOrderItems.id, goodsReceiptItems.purchaseOrderItemId),
       )
       .where(inArray(supplierInvoiceMatchRuns.supplierInvoiceId, invoiceIds)),
+    tx
+      .select({ id: purchaseOrderRevisions.purchaseOrderId })
+      .from(supplierInvoiceLines)
+      .innerJoin(
+        purchaseOrderRevisionItems,
+        eq(
+          purchaseOrderRevisionItems.id,
+          supplierInvoiceLines.purchaseOrderRevisionItemId,
+        ),
+      )
+      .innerJoin(
+        purchaseOrderRevisions,
+        eq(purchaseOrderRevisions.id, purchaseOrderRevisionItems.revisionId),
+      )
+      .where(inArray(supplierInvoiceLines.supplierInvoiceId, invoiceIds)),
   ]);
   return sortedUniquePurchaseOrderIds([
     ...legacy.map((row) => Number(row.id ?? 0)),
     ...matched.map((row) => Number(row.id)),
+    ...declared.map((row) => Number(row.id)),
   ]);
 }
 
@@ -373,13 +391,14 @@ async function lockPaymentAggregate(
 ) {
   const sortedInvoiceIds = sortedUniquePurchaseOrderIds(invoiceIds);
   const poIds = await resolveInvoicePurchaseOrderIds(tx, sortedInvoiceIds);
-  if (poIds.length)
-    await tx
-      .select({ id: purchaseOrders.id })
-      .from(purchaseOrders)
-      .where(inArray(purchaseOrders.id, poIds))
-      .orderBy(asc(purchaseOrders.id))
-      .for("update");
+  const orders = poIds.length
+    ? await tx
+        .select()
+        .from(purchaseOrders)
+        .where(inArray(purchaseOrders.id, poIds))
+        .orderBy(asc(purchaseOrders.id))
+        .for("update")
+    : [];
   const supplier = (
     await tx
       .select()
@@ -394,7 +413,38 @@ async function lockPaymentAggregate(
     .where(inArray(supplierInvoices.id, sortedInvoiceIds))
     .orderBy(asc(supplierInvoices.id))
     .for("update");
-  return { supplier, invoices };
+  return { supplier, invoices, orders };
+}
+
+async function assertNativePurchaseSettlementEvidence(
+  tx: Tx,
+  aggregate: Awaited<ReturnType<typeof lockPaymentAggregate>>,
+): Promise<void> {
+  const evidenceCases = await loadPurchasePaymentEvidenceCases(tx, aggregate.orders.map((order) => Number(order.id)), aggregate.invoices.map((invoice) => Number(invoice.id)), true);
+  if (evidenceCases.length) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذر طلب أو اعتماد سداد المورد", why: `السداد السابق غير محسوم في قضية ${evidenceCases[0].caseNumber}`, doThis: "أكمل المطابقة المحكومة لسندات الدفع وكشف المورد قبل أي صرف جديد" }) });
+  if (
+    !aggregate.invoices.some(
+      (invoice) => invoice.liabilityClass === "NATIVE_AP",
+    )
+  )
+    return;
+  const settlements = await loadPurchaseSettlements(tx, aggregate.orders, {
+    currentRead: true,
+  });
+  const ambiguous = aggregate.orders.find(
+    (order) => settlements.get(Number(order.id))?.requiresReview,
+  );
+  if (ambiguous) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذر طلب أو اعتماد سداد المورد",
+        why: `دليل تسوية أمر الشراء ${ambiguous.poNumber} لا يطابق المدفوع المسجل أو لا يثبت تخصيصه`,
+        doThis:
+          "افتح قضية نزاهة شراء وأكمل المراجعة المحكومة لدليل الدفع قبل أي صرف جديد؛ لا تعِد الدفع لتصحيح العرض",
+      }),
+    });
+  }
 }
 
 async function accountingEntryId(tx: Tx, dedupeKey: string): Promise<number> {
@@ -428,6 +478,8 @@ function cashSourceError(
 }
 
 async function treasurySourceAllowed(tx: Tx, actor: Actor): Promise<boolean> {
+  const canonical = canonicalOperationAllowed(await loadOperationUserTx(tx, actor.userId), "supplierPayments.cashSources");
+  if (canonical !== undefined) return canonical;
   const [user] = await tx
     .select()
     .from(users)
@@ -909,11 +961,12 @@ export async function requestSupplierPaymentInTx(
   }
   assertPurchaseBranch({ branchId: input.branchId }, actor);
   const ids = normalized.map((row) => row.supplierInvoiceId);
-  const { supplier, invoices } = await lockPaymentAggregate(
+  const aggregate = await lockPaymentAggregate(
     tx,
     input.supplierId,
     ids,
   );
+  const { supplier, invoices } = aggregate;
   if (!supplier || !supplier.isActive)
     throw new TRPCError({
       code: "CONFLICT",
@@ -924,6 +977,7 @@ export async function requestSupplierPaymentInTx(
       code: "BAD_REQUEST",
       message: "بعض فواتير المورد غير موجودة",
     });
+  await assertNativePurchaseSettlementEvidence(tx, aggregate);
   const invoiceById = new Map(invoices.map((row) => [Number(row.id), row]));
   const reservations = await invoiceReservations(tx, ids);
   const rows = normalized.map((allocation) => {
@@ -1222,6 +1276,7 @@ export async function decideSupplierPaymentInTx(
       idempotent: false as const,
     };
   }
+  await assertNativePurchaseSettlementEvidence(tx, aggregate);
   for (const row of requested) {
     const invoice = invoiceById.get(Number(row.supplierInvoiceId));
     if (!invoice)

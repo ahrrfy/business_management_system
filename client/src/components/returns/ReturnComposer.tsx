@@ -1,3 +1,5 @@
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 /**
  * ReturnComposer — **المكوّن المرجعيّ الوحيد للمرتجع** (بلاغ المالك ١٧/٨/٢٦).
  *
@@ -93,6 +95,9 @@ export function ReturnComposer({
   const detail = trpc.returns.getInvoice.useQuery({ invoiceId }, { enabled: invoiceId > 0 });
   /** المالك وحده ينفّذ المرتجع فوراً (VULN-SQUAD1-01) — غير المالك يرسل طلباً للاعتماد. */
   const me = trpc.auth.me.useQuery();
+  const operationPermission = useOperationPermission(
+    approvingRequestId ? "returns.approveRequest" : "returns.create",
+  );
   const executesImmediately = me.data?.isOwner === true;
   /**
    * ⭐ في وضع الاعتماد نُحمّل **بنود الطلب** — هي التي سينفّذها الخادم، لا ما يُدخله المدير.
@@ -465,6 +470,10 @@ export function ReturnComposer({
   async function submit() {
     setError("");
     setDone("");
+    if (!operationPermission.allowed) {
+      setError(operationPermission.reason);
+      return;
+    }
     if (!inv || blockReason) return;
 
     const refund = !isWalkIn && refundD.gt(0)
@@ -727,7 +736,8 @@ export function ReturnComposer({
 
   return (
     <div className="space-y-4">
-      {approvingRequestId && requestDetail.data && (
+      {approvingRequestId &&
+      requestDetail.data && (
         <Card className="border-[var(--sem-info)]/45 bg-[var(--sem-info-bg)]/35">
           <CardContent className="flex items-start gap-2 p-4 text-sm">
             <Info aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-info)]" />
@@ -736,7 +746,9 @@ export function ReturnComposer({
                 مراجعة طلب الإرجاع #{requestDetail.data.id} — البنود والكميات والسبب مقفلة من الطلب الأصلي.
               </p>
               <p className="text-muted-foreground">
-                طلبه {requestDetail.data.createdByName ?? `المستخدم ${requestDetail.data.createdBy}`}؛ السبب: {requestDetail.data.reason}.
+                طلبه{" "}
+                {requestDetail.data.createdByName ?? `المستخدم ${requestDetail.data.createdBy}`}
+                ؛ السبب: {requestDetail.data.reason}.
               </p>
             </div>
           </CardContent>
@@ -752,7 +764,8 @@ export function ReturnComposer({
                 على هذه الفاتورة طلبٌ معلّق #{pending.id} بانتظار مراجعٍ مستقل — لم يتغيّر المخزون ولا المال بعد.
               </p>
               <p className="text-muted-foreground">
-                طلبه {pending.requestedByName ?? `المستخدم ${pending.requestedBy}`}
+                طلبه{" "}
+                {pending.requestedByName ?? `المستخدم ${pending.requestedBy}`}
                 {pending.isMine ? " (أنت)" : ""}؛ السبب: {pending.reason}.
               </p>
               <p className="text-muted-foreground">
@@ -778,7 +791,8 @@ export function ReturnComposer({
                   : "هذه الفاتورة ملغاة مسبقاً — لا يمكن تسجيل أي مرتجع جديد عليها."}
               </p>
               <p className="text-xs text-muted-foreground">
-                إجمالي ما أُرجع: {fmt(inv.returnedTotal ?? "0")} د.ع من أصل {fmt(inv.total)} د.ع.
+                إجمالي ما أُرجع: {fmt(inv.returnedTotal ?? "0")} د.ع من أصل{" "}
+                {fmt(inv.total)} د.ع.
               </p>
             </div>
           </CardContent>
@@ -893,7 +907,10 @@ export function ReturnComposer({
                           <div className="text-[11px] font-medium text-primary">يُرجع كبكج كامل؛ وعند إعادته للمخزون يعيد النظام مكوّناته تلقائياً</div>
                         )}
                         {it.conversionFactor > 1 && (
-                          <div className="text-[11px] text-muted-foreground">١ {it.unitName} = {it.conversionFactor} {it.baseUnitName}</div>
+                          <div className="text-[11px] text-muted-foreground">
+                            ١ {it.unitName} = {it.conversionFactor}{" "}
+                            {it.baseUnitName}
+                          </div>
                         )}
                       </td>
                       <td className="p-2 text-center">{returnQuantityLabel(it.baseQuantity, it.conversionFactor, it.unitName, it.baseUnitName)}</td>
@@ -1018,7 +1035,10 @@ export function ReturnComposer({
                         : "لم يُقبض من هذه الفاتورة ما يستوجب الرد — يُسجّل المرتجع بلا إخراج نقد وبلا وردية صرف."}
                     </div>
                     <div className="mt-1 text-[11px] font-normal">
-                      المرتجع {fmt(returnValue.toFixed(2))} د.ع · المقبوض القابل للرد {fmt(D(inv?.refundablePaidAmount ?? inv?.paidAmount ?? "0").toFixed(2))} د.ع
+                      المرتجع {fmt(returnValue.toFixed(2))} د.ع · المقبوض القابل
+                      للرد{" "}
+                      {fmt(D(inv?.refundablePaidAmount ?? inv?.paidAmount ?? "0").toFixed(2))}{" "}
+                      د.ع
                       {customerStillOwes.gt(0) ? ` · يبقى على العميل ${fmt(customerStillOwes.toFixed(2))} د.ع` : ""}
                     </div>
                   </div>
@@ -1037,7 +1057,10 @@ export function ReturnComposer({
                       {o.blockedReason ? (
                         <span> — {o.blockedReason}</span>
                       ) : (
-                        <span dir="ltr" className="ms-1 tabular-nums font-semibold"> حتى {fmt(o.cap)} د.ع</span>
+                        <span dir="ltr" className="ms-1 tabular-nums font-semibold">
+                          {" "}
+                          حتى {fmt(o.cap)} د.ع
+                        </span>
                       )}
                     </li>
                   ))}
@@ -1050,7 +1073,8 @@ export function ReturnComposer({
                       <span className="text-base sm:text-lg font-black tabular-nums text-primary" dir="ltr">{fmt(refundAmount || "0")}</span>
                       <span className="ms-1 text-xs font-bold">د.ع{pickedRail ? ` — ${REFUND_RAIL_LABEL[pickedRail]}` : ""}</span>
                       <div className="mt-0.5 text-[11px] text-muted-foreground">
-                        قيمة المرتجع {fmt(returnValue.toFixed(2))} · المسموح {fmt(railCap.toFixed(2))}
+                        قيمة المرتجع {fmt(returnValue.toFixed(2))} · المسموح{" "}
+                        {fmt(railCap.toFixed(2))}
                       </div>
                     </div>
                     {isDeliveryReversal ? (
@@ -1079,7 +1103,8 @@ export function ReturnComposer({
                   </div>
                   {overCap && (
                     <p className="mt-2 text-xs font-bold text-destructive">
-                      المبلغ يتجاوز المسموح — الحدّ {fmt(railCap.toFixed(2))} د.ع.
+                      المبلغ يتجاوز المسموح — الحدّ {fmt(railCap.toFixed(2))}{" "}
+                      د.ع.
                     </p>
                   )}
                 </div>
@@ -1112,7 +1137,12 @@ export function ReturnComposer({
       <div className="flex flex-wrap items-center gap-2 pt-1 border-t">
         <Button
           onClick={submit}
-          disabled={!!blockReason || create.isPending || approve.isPending}
+          disabled={
+            !operationPermission.allowed ||
+            !!blockReason ||
+            create.isPending ||
+            approve.isPending
+          }
           className="font-bold text-xs sm:text-sm gap-1.5"
         >
           <CheckCircle2 className="size-4" aria-hidden />

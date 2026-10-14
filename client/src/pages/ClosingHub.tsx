@@ -2,7 +2,7 @@
 // موافقات الائتمان + WIP + إقفال الفترات + الإقفال السنوي). مُركَّبة على مسار /closing.
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
-import { RECONCILE_CONTROL_GATE } from "@/lib/navVisibility";
+import { CREDIT_APPROVAL_CREATE_GATE, RECONCILE_CONTROL_GATE } from "@/lib/navVisibility";
 
 const MonthlyClosePack = lazy(() => import("@/pages/MonthlyClosePack"));
 const Reconcile = lazy(() => import("@/pages/Reconcile"));
@@ -16,12 +16,12 @@ const TABS: HubTab[] = [
   {
     value: "monthly",
     label: "الإقفال الشهري",
-    gate: { roles: ["manager", "accountant", "auditor"], module: "reports", level: "READ" },
+    gate: { operations: ["reports.monthlyClosePack"], roles: ["manager", "accountant", "auditor"], module: "reports", level: "READ" },
     Component: MonthlyClosePack,
   },
   { value: "reconcile", label: "تدقيق التوافق المالي", gate: RECONCILE_CONTROL_GATE, Component: Reconcile },
-  { value: "credit", label: "موافقات الائتمان", gate: { managerOnly: true }, Component: CreditApprovals },
-  { value: "wip", label: "الإنتاج تحت التنفيذ", gate: { managerOnly: true }, Component: WIPReport },
+  { value: "credit", label: "موافقات الائتمان", gate: CREDIT_APPROVAL_CREATE_GATE, Component: CreditApprovals },
+  { value: "wip", label: "الإنتاج تحت التنفيذ", gate: { operations: ["reports.wipReport"], managerOnly: true }, Component: WIPReport },
   { value: "period", label: "إقفال الفترات", gate: { adminOnly: true }, Component: PeriodLock },
   { value: "yearend", label: "الإقفال السنوي", gate: { adminOnly: true }, Component: YearEnd },
 ];

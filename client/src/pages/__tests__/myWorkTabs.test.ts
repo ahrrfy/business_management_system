@@ -190,6 +190,20 @@ vi.mock("@/lib/trpc", () => {
         markRead: { useMutation: mutation },
         acknowledge: { useMutation: mutation },
       },
+      storeAdmin: {
+        orders: {
+          myOrders: {
+            useQuery: (_input: unknown, options?: { enabled?: boolean }) =>
+              query("storeOrders", options),
+          },
+        },
+      },
+      auth: {
+        me: {
+          useQuery: (_input: unknown, options?: { enabled?: boolean }) =>
+            query("me", options),
+        },
+      },
     },
   };
 });
@@ -219,6 +233,11 @@ function ready(data: unknown) {
 
 function resetQueries() {
   harness.queries = {
+    me: ready({
+      id: 1,
+      role: "admin",
+      permissionsOverride: null,
+    }),
     branches: ready([]),
     decisions: ready({
       rows: [decisionRow],

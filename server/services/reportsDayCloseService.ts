@@ -1610,10 +1610,24 @@ export async function getDayCloseReconciliation(opts: {
               .select({
                 count: sql<number>`COALESCE(SUM(CASE WHEN
                   ${shifts.closedAt} IS NULL OR ${shifts.closedAt} >= ${endExclusive}
-                  OR ${shifts.reconciliationStatus} <> 'MATCHED'
-                  OR ${shifts.variance} IS NULL OR ${shifts.variance} <> 0
-                  OR ${shifts.expectedCash} IS NULL OR ${shifts.countedCash} IS NULL
-                  OR ${shifts.expectedCash} <> ${shifts.countedCash}
+                  OR (${shifts.reconciliationStatus} <> 'MATCHED' AND ${shifts.reconciliationStatus} <> 'MANAGER_APPROVED')
+                  OR (${shifts.reconciliationStatus} = 'MATCHED' AND (
+                    ${shifts.variance} IS NULL OR ${shifts.variance} <> 0
+                    OR ${shifts.expectedCash} IS NULL OR ${shifts.countedCash} IS NULL
+                    OR ${shifts.expectedCash} <> ${shifts.countedCash}
+                  ))
+                  OR (${shifts.reconciliationStatus} = 'MANAGER_APPROVED' AND (
+                    ${shifts.variance} IS NULL
+                    OR ${shifts.expectedCash} IS NULL
+                    OR ${shifts.countedCash} IS NULL
+                    OR (${shifts.variance} <> 0 AND NOT EXISTS (
+                      SELECT 1 FROM receipts sv
+                      WHERE sv.shiftId = ${shifts.id}
+                        AND sv.referenceNumber = CONCAT('SV-', ${shifts.id})
+                        AND sv.receiptStatus = 'COMPLETED'
+                        AND sv.amount = ABS(${shifts.variance})
+                    ))
+                  ))
                   THEN 1 ELSE 0 END), 0)`,
               })
               .from(shifts)

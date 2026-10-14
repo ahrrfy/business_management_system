@@ -357,6 +357,65 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint, onPrintLabel }:
               )}
             </div>
 
+            {"bounceBackCoupon" in receipt && receipt.bounceBackCoupon && (
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: "10px",
+                  border: "2px dashed #059669",
+                  borderRadius: 8,
+                  background: "#f0fdf4",
+                  textAlign: "center",
+                }}
+              >
+                <div style={{ fontSize: 11, fontWeight: 900, color: "#047857", marginBottom: 2 }}>
+                  {receipt.bounceBackCoupon.headline}
+                </div>
+                <div
+                  style={{
+                    background: "#059669",
+                    color: "#ffffff",
+                    borderRadius: 6,
+                    padding: "4px 10px",
+                    fontSize: 15,
+                    fontWeight: 900,
+                    margin: "4px auto",
+                    display: "inline-block",
+                  }}
+                >
+                  خصم {receipt.bounceBackCoupon.discountText}
+                </div>
+                <div
+                  style={{
+                    fontFamily: "ui-monospace, monospace",
+                    fontSize: 13,
+                    fontWeight: 900,
+                    letterSpacing: 1.5,
+                    background: "#ffffff",
+                    border: "1px dashed #059669",
+                    borderRadius: 4,
+                    padding: "2px 8px",
+                    margin: "4px auto",
+                    direction: "ltr",
+                    display: "inline-block",
+                  }}
+                >
+                  {receipt.bounceBackCoupon.code}
+                </div>
+                {receipt.bounceBackCoupon.minSpendText && (
+                  <div style={{ fontSize: 10, fontWeight: 700, color: "#065f46", marginTop: 2 }}>
+                    {receipt.bounceBackCoupon.minSpendText}
+                  </div>
+                )}
+                <div style={{ fontSize: 9.5, fontWeight: 700, color: "#047857", marginTop: 2 }}>
+                  {receipt.bounceBackCoupon.validToText}
+                </div>
+                <div style={{ fontSize: 9, fontWeight: 800, color: "#065f46", marginTop: 4 }}>
+                  تنبيه الكاشير: تم طباعة القسيمة في أسفل الإيصال — يُرجى تذكير الزبون بها!
+                </div>
+              </div>
+            )}
+
             {/* الحافة السفلية المسننة (Sawtooth Tear-off Edge) */}
             <div
               style={{

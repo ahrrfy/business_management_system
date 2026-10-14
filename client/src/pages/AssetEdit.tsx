@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,12 +28,13 @@ function previewAnnual(cost: number, salvage: number, life: number, method: "sl"
 }
 
 export default function AssetEdit() {
+  const { can } = useCatalogPeopleOperationAccess();
   const params = useParams();
   const id = Number(params.id);
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
-  const opts = trpc.assets.formOptions.useQuery();
-  const q = trpc.assets.get.useQuery({ id }, { enabled: Number.isFinite(id) });
+  const opts = trpc.assets.formOptions.useQuery(undefined, { enabled: can("assets.formOptions") });
+  const q = trpc.assets.get.useQuery({ id }, { enabled: can("assets.get") && (Number.isFinite(id)) });
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
   // لقطة ما حُمّل من الخادم — مرجع المقارنة الوحيد لحارس فقد البيانات أدناه.
@@ -91,6 +93,7 @@ export default function AssetEdit() {
   }
 
   function submit() {
+    if (!can("assets.update")) { setError("العملية غير مفوضة لحسابك"); return; }
     setError("");
     if (!form.name.trim()) { setError("اسم الأصل مطلوب."); return; }
     if (!form.purchaseValue.trim()) { setError("قيمة الشراء مطلوبة."); return; }
@@ -223,7 +226,7 @@ export default function AssetEdit() {
         </div>
       )}
       <div className="flex gap-2">
-        <Button onClick={submit} disabled={update.isPending}>{update.isPending ? ACTION_LABELS.saving : "حفظ التعديلات"}</Button>
+        <Button onClick={submit} disabled={!can("assets.update") || (update.isPending)}>{update.isPending ? ACTION_LABELS.saving : "حفظ التعديلات"}</Button>
         <Link href={`/assets/${id}`}><Button variant="outline">إلغاء</Button></Link>
       </div>
     </div>

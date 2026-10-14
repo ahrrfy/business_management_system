@@ -19,6 +19,8 @@ import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { pauseIfRetryableDbError } from "../lib/retryDup";
 import { confirmExternalPaymentAttempt, initiateExternalPaymentAttempt, type PosExternalPaymentMethod } from "../services/posExternalPayment";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
+import { publishRealtimeEvent } from "../realtime";
+import { REALTIME_EVENT_TYPES } from "../../shared/realtimeEvents";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"]);
@@ -144,6 +146,20 @@ export const printPosRouter = router({
           if (approvedBy != null) await logAudit(ctx, { action: "printPos.creditOverride", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { approvedByManagerId: approvedBy } });
           // SALES-01/02: أثر تدقيقي صريح للبيع تحت التكلفة على قناة الطباعة.
           if (res.priceOverride) await logAudit(ctx, { action: "printPos.priceOverride", entityType: "invoice", entityId: res.invoiceId, newValue: { approvedByUserId: priceOverrideApprovedBy, byRole: ctx.user.role } });
+          if (input.isReservation && (res as any)?.invoiceId) {
+            publishRealtimeEvent(
+              REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+              {
+                heldOrderId: (res as any).invoiceId,
+                branchId: effectiveBranchId,
+                action: "HELD",
+                lockedByUserId: null,
+              },
+              {
+                branchId: effectiveBranchId,
+              },
+            );
+          }
           return res;
         } catch (e: any) {
           if (attempt < 2 && (await pauseIfRetryableDbError(e, attempt))) continue;
@@ -404,6 +420,19 @@ export const printPosRouter = router({
         newValue: { refundAmount: res.refundAmount, reason: input.reason },
       });
 
+      publishRealtimeEvent(
+        REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+        {
+          heldOrderId: input.invoiceId,
+          branchId: effectiveBranchId,
+          action: "RELEASED",
+          lockedByUserId: null,
+        },
+        {
+          branchId: effectiveBranchId,
+        },
+      );
+
       return res;
     }),
 
@@ -502,6 +531,19 @@ export const printPosRouter = router({
         entityId: input.originalInvoiceId,
         newValue: { correctedInvoiceId: res.correctedInvoiceId, correctedInvoiceNumber: res.correctedInvoiceNumber, reason: input.reason },
       });
+
+      publishRealtimeEvent(
+        REALTIME_EVENT_TYPES.HELD_ORDER_UPDATED,
+        {
+          heldOrderId: input.originalInvoiceId,
+          branchId: effectiveBranchId,
+          action: "RESUMED",
+          lockedByUserId: null,
+        },
+        {
+          branchId: effectiveBranchId,
+        },
+      );
 
       return res;
     }),

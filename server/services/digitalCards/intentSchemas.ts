@@ -66,6 +66,7 @@ export const invoiceSourcePayloadSchema = z
     branchId: z.number().int().positive(),
     shiftId: z.number().int().positive(),
     customerId: z.number().int().positive().optional(),
+    salesRepId: z.number().int().positive().nullish(),
     priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]),
     lines: z.array(invoiceSourceLineSchema).min(1).max(150),
     deliveryFee: nonNegativeMoney.optional(),

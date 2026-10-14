@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { trpc } from "@/lib/trpc";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import { notify } from "@/lib/notify";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -30,8 +31,13 @@ export function StudioInstantCampaignLauncher({
   counts,
   onSuccess,
 }: StudioInstantCampaignLauncherProps) {
+  const canReadAssignees = useOperationPermission("productStudio.assignees").allowed;
+  const canReadGapIds = useOperationPermission("productStudio.gapProductIds").allowed;
+  const canCreateCampaign = useOperationPermission("productStudio.createCampaign").allowed;
+  const canDrainBacklog = useOperationPermission("productStudio.drainCampaignBacklog").allowed;
+  const canDistribute = useOperationPermission("productStudio.distributeCampaignTasks").allowed;
   const utils = trpc.useUtils();
-  const assigneesQuery = trpc.productStudio.assignees.useQuery(undefined, { enabled: open });
+  const assigneesQuery = trpc.productStudio.assignees.useQuery(undefined, { enabled: open && canReadAssignees });
 
   const [scopeType, setScopeType] = useState<"HIGH_VALUE" | "CURRENT_FILTER" | "SELECTED_ROWS">(defaultScope);
   const [campaignName, setCampaignName] = useState("");
@@ -89,6 +95,7 @@ export function StudioInstantCampaignLauncher({
   const drainBacklog = trpc.productStudio.drainCampaignBacklog.useMutation();
 
   const handleLaunch = async () => {
+    if (!canCreateCampaign || !canDrainBacklog || !canDistribute || !canReadAssignees || (scopeType !== "SELECTED_ROWS" && !canReadGapIds)) return;
     if (!campaignName.trim() || selectedAssigneeIds.length === 0 || targetCount === 0) {
       notify.err("يرجى التأكد من اسم الحملة واختيار مصور واحد على الأقل.");
       return;
@@ -394,6 +401,7 @@ export function StudioInstantCampaignLauncher({
               type="button"
               className="gap-2"
               disabled={
+                !canCreateCampaign || !canDrainBacklog || !canDistribute || !canReadAssignees || (scopeType !== "SELECTED_ROWS" && !canReadGapIds) ||
                 isLaunching ||
                 targetCount === 0 ||
                 selectedAssigneeIds.length === 0 ||

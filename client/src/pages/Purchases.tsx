@@ -1,4 +1,4 @@
-import Decimal from "decimal.js";
+import { getPurchaseSettlement, getPurchaseSettlementIntentLabel } from "@shared/purchaseSettlement";
 import { Link } from "wouter";
 import { balanceOptionText } from "@/components/BalanceBadge";
 import { allocateLineTax } from "@/components/invoice";
@@ -31,7 +31,7 @@ import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
-import { D, fmt, positiveDiff, round2 } from "@/lib/money";
+import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { CO } from "@/lib/printing/brand";
 import { printPurchaseInvoiceV2 } from "@/lib/printing/printTemplatesV2";
@@ -45,6 +45,7 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 
 // نوع صفّ أمر الشراء (يوحّد فرعَي الإخراج: المُقنَّع cost=null وغير المُقنَّع).
 type PurchaseRow = RouterOutputs["purchases"]["list"][number];
@@ -70,12 +71,12 @@ const PO_STATUS_CLASS: Record<string, string> = {
 };
 
 const SETTLEMENT_TYPE: Record<string, string> = {
-  CASH: "نقدي",
-  CREDIT: "آجل",
+  CASH: getPurchaseSettlementIntentLabel("CASH"),
+  CREDIT: getPurchaseSettlementIntentLabel("CREDIT"),
 };
 
 const SETTLEMENT_CLASS: Record<string, string> = {
-  CASH: "badge-status-active",
+  CASH: "badge-status-info",
   CREDIT: "badge-status-pending",
 };
 
@@ -139,7 +140,7 @@ export default function Purchases() {
     | undefined;
 
   const me = trpc.auth.me.useQuery();
-  const canManagePurchases =
+  const legacyManagePurchases =
     !!me.data?.role &&
     moduleAccessAllowed(
       me.data.role as RoleKey,
@@ -148,9 +149,12 @@ export default function Purchases() {
       "FULL",
       ["manager", "purchasing"],
     );
+  const canManagePurchases = canLifecycleOperation(me.data, "purchases.decideControl", legacyManagePurchases);
+  const canCreateOrder = canLifecycleOperation(me.data, "purchases.createOrder", legacyManagePurchases);
+  const canReadPendingControls = canLifecycleOperation(me.data, "purchases.pendingControls", legacyManagePurchases);
   const pendingControls = trpc.purchases.pendingControls.useQuery(
     { limit: 200 },
-    { enabled: canManagePurchases },
+    { enabled: canReadPendingControls },
   );
   const pendingOrderIds = useMemo(
     () =>
@@ -202,7 +206,7 @@ export default function Purchases() {
     onError: (err) => notify.err(err),
   });
   const controlStateUnavailable =
-    canManagePurchases &&
+    canReadPendingControls &&
     (pendingControls.isLoading || pendingControls.isError);
   // فلتر الفرع وعموده — للمرتفعين العابرين للفروع فقط (الخادم يتجاهل branchId لغيرهم أصلاً:
   // scopedBranchId الحاكم في buildPurchasesListConds، فالإخفاء هنا عرضيّ لا أمنيّ — نمط Invoices.tsx).
@@ -213,9 +217,8 @@ export default function Purchases() {
   // `reports:READ` صراحةً كان يرى الرابط ثمّ يُدفَع خارج التبويب. البوّابة الصحيحة الوحيدة
   // هنا: **الدور** (لا `moduleAccessAllowed`). حين يُحدَّث الوجهةُ لتحترم reports، ترجع
   // البوّابةُ إليها؛ إلى ذلك الحين نُطابق `managerOnly` بالحرف.
-  const canOpenSupplierStatement =
-    me.data?.role === "admin" || me.data?.role === "manager";
-  const canViewIntegrity = canManagePurchases;
+  const canOpenSupplierStatement = canLifecycleOperation(me.data, "reports.supplierStatement", me.data?.role === "admin" || me.data?.role === "manager");
+  const canViewIntegrity = canLifecycleOperation(me.data, "purchases.integrityReport", legacyManagePurchases);
   const integrityBranchId =
     me.data?.role === "admin"
       ? f.branchId
@@ -362,7 +365,7 @@ export default function Purchases() {
         notify.err("تعذّر جلب أمر الشراء");
         return;
       }
-      const remaining = positiveDiff(d.total, d.paidAmount);
+      const settlement = getPurchaseSettlement({ ...d, agreedCurrency: "IQD" });
       const taxShares = allocateLineTax(
         d.items.map((it) => ({ total: String(it.total ?? "0") })),
         String(d.taxAmount ?? "0"),
@@ -387,7 +390,7 @@ export default function Purchases() {
         qrSvg: qrSvg || null,
         invoiceNumber: d.poNumber,
         invoiceDate: d.orderDate as unknown as string | null,
-        statusLabel: `${PO_STATUS[d.status] ?? d.status} · ${SETTLEMENT_TYPE[d.settlementType] ?? d.settlementType}`,
+        statusLabel: `${PO_STATUS[d.status] ?? d.status} · ${settlement.intentLabel} · ${settlement.statusLabel}${settlement.requiresReview ? " · يحتاج مراجعة دليل السداد" : ""}`,
         statusColor,
         supplierName: d.supplierName,
         items: d.items.map((it, index) => ({
@@ -403,8 +406,10 @@ export default function Purchases() {
         taxAmount: d.taxAmount ?? "0",
         taxRate: Number(d.taxRatePercent ?? 0),
         total: d.total ?? "0",
-        paidAmount: d.paidAmount ?? "0",
-        remainingAmount: remaining.toFixed(2),
+        paidAmount: settlement.paidAmount,
+        remainingAmount: settlement.remainingAmount,
+        returnedAmount: settlement.returnedAmount,
+        recognizedAmount: settlement.invoiceTotalAmount,
       });
     } catch (e) {
       notify.err(e);
@@ -553,9 +558,14 @@ export default function Purchases() {
                 },
                 {
                   key: "paidAmount",
-                  header: "المدفوع",
-                  map: (r) => Number(r.paidAmount ?? 0),
+                  header: "المدفوع (عملة الفاتورة)",
+                  map: (r) => D(getPurchaseSettlement(r).paidAmount).toNumber(),
                 },
+                { key: "agreedCurrency", header: "عملة الفاتورة" },
+                { key: "remainingAmount", header: "المتبقي (عملة الفاتورة)", map: (r) => D(getPurchaseSettlement(r).remainingAmount).toNumber() },
+                { key: "returnedAmount", header: "تخفيض الذمة (عملة الفاتورة)", map: (r) => D(getPurchaseSettlement(r).returnedAmount).toNumber() },
+                { key: "paymentStatus", header: "حالة السداد", map: (r) => getPurchaseSettlement(r).statusLabel },
+                { key: "settlementReview", header: "مراجعة دليل السداد", map: (r) => getPurchaseSettlement(r).requiresReview ? "تحتاج مراجعة" : "" },
                 {
                   key: "settlementType",
                   header: "التسوية",
@@ -570,7 +580,7 @@ export default function Purchases() {
               ],
             }}
             add={
-              canManagePurchases
+              canCreateOrder
                 ? { href: "/purchases/new", label: "أمر شراء جديد" }
                 : undefined
             }
@@ -705,44 +715,25 @@ export default function Purchases() {
                 // مباشرةً) بينما كل عمود مالٍ مجاورٍ (الإجمالي/فاتورة المورد) يمرّ عبر fmt() — تناقضٌ بصريّ
                 // يكسر إيقاع الجدول (جولة بصرية ٣/٩). fmt() يلفّ نفس Decimal بتنسيق en-US الموحَّد.
                 accessorFn: (p) => {
-                  const effectivePaid = Decimal.max(
-                    D(p.paidAmount ?? 0),
-                    D(p.linkedCashPaidAmount ?? 0),
-                  );
-                  return p.agreedCurrency === "USD"
-                    ? `${fmt(
-                        D(p.usdTotal ?? 0)
-                          .minus(D(p.paidUsd ?? 0))
-                          .toFixed(2),
-                      )} $`
-                    : `${fmt(positiveDiff(p.total ?? 0, effectivePaid.toString()).toFixed(2))} د.ع`;
+                  const settlement = getPurchaseSettlement(p);
+                  return `${fmt(settlement.remainingAmount)} ${p.agreedCurrency === "USD" ? "$" : "د.ع"}`;
                 },
                 meta: { kind: "money" },
                 // ٢٤/٨ (تدقيق): `title` يشرح صيغة الرقم — «المتبقّي = الإجمالي − المدفوع».
                 cell: ({ row }) => {
                   const isUsd = row.original.agreedCurrency === "USD";
-                  const effectivePaid = Decimal.max(
-                    D(row.original.paidAmount ?? 0),
-                    D(row.original.linkedCashPaidAmount ?? 0),
-                  );
-                  const rem = isUsd
-                    ? D(row.original.usdTotal ?? 0).minus(
-                        D(row.original.paidUsd ?? 0),
-                      )
-                    : positiveDiff(
-                        row.original.total ?? 0,
-                        effectivePaid.toString(),
-                      );
+                  const settlement = getPurchaseSettlement(row.original);
+                  const rem = D(settlement.remainingAmount);
                   const isSettled = rem.lte(0);
                   return (
                     <span
                       className={`font-bold ${isSettled ? "text-money-positive" : ""}`}
-                      title="المتبقّي = الإجمالي − المدفوع"
+                      title="المتبقي على فواتير المورد المرحلة بعد السداد المثبت وتخفيضات الذمة"
                     >
                       {isUsd
                         ? `${fmt(rem.toFixed(2))} $`
                         : `${fmt(rem.toFixed(2))} د.ع`}
-                      {isSettled ? " (مسدد)" : ""}
+                      {isSettled ? ` (${settlement.statusLabel})` : ""}
                     </span>
                   );
                 },
@@ -754,14 +745,8 @@ export default function Purchases() {
                   `${PO_STATUS[p.status] ?? p.status} - ${SETTLEMENT_TYPE[p.settlementType] ?? p.settlementType}`,
                 meta: { kind: "status" },
                 cell: ({ row }) => {
-                  const total = D(row.original.total ?? 0);
-                  const paid = D(row.original.paidAmount ?? 0);
-                  const linkedPaid = D(row.original.linkedCashPaidAmount ?? 0);
-                  const effectivePaid = Decimal.max(paid, linkedPaid);
-                  const isFullyPaid =
-                    row.original.status === "RECEIVED" &&
-                    total.gt(0) &&
-                    effectivePaid.gte(total);
+                  const settlement = getPurchaseSettlement(row.original);
+                  const costHidden = row.original.total === null;
                   return (
                     <div className="flex flex-col items-center gap-1">
                       <span
@@ -776,15 +761,16 @@ export default function Purchases() {
                           {SETTLEMENT_TYPE[row.original.settlementType] ??
                             row.original.settlementType}
                         </span>
-                        {isFullyPaid && (
+                        {!costHidden && (
                           <div
-                            className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-money-positive"
-                            title="مسدد بالكامل — لا توجد ذمة متبقية على هذا الأمر"
+                            className={`inline-flex items-center gap-0.5 text-[10px] font-semibold ${settlement.status === "PAID" && !settlement.requiresReview ? "text-money-positive" : "text-muted-foreground"}`}
+                            title={settlement.status === "PAID" && !settlement.requiresReview ? "مسدد بالكامل — لا توجد ذمة متبقية على هذا الأمر" : settlement.statusLabel}
                           >
-                            <CheckCircle2 aria-hidden className="size-3" />
-                            مسدد بالكامل
+                            {settlement.status === "PAID" && !settlement.requiresReview ? <CheckCircle2 aria-hidden className="size-3" /> : null}
+                            {settlement.statusLabel}
                           </div>
                         )}
+                        {settlement.requiresReview ? <span className="text-[10px] text-money-negative">يحتاج مراجعة دليل السداد</span> : null}
                       </div>
                     </div>
                   );
@@ -818,14 +804,8 @@ export default function Purchases() {
                   const needsConfirmation = p.status === "DRAFT";
                   const awaitingApproval = p.status === "SENT";
                   const hasPendingControl = pendingOrderIds.has(Number(p.id));
-                  const isUsd = p.agreedCurrency === "USD";
-                  const effectivePaid = Decimal.max(
-                    D(p.paidAmount ?? 0),
-                    D(p.linkedCashPaidAmount ?? 0),
-                  );
-                  const rem = isUsd
-                    ? positiveDiff(p.usdTotal, D(p.paidUsd ?? 0).plus(D(p.returnedUsd ?? 0)).toString())
-                    : positiveDiff(p.total ?? 0, effectivePaid.toString());
+                  const settlement = getPurchaseSettlement(p);
+                  const rem = D(settlement.remainingAmount);
                   const isSettled = rem.lte(0);
                   const activeControl = pendingOrderControlMap.get(Number(p.id));
                   const currentUserId = me.data?.id;
@@ -896,20 +876,20 @@ export default function Purchases() {
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
-                            level: "FULL",
-                          },
+                            level: "FULL", operations: ["purchases.decideControl"] },
                         },
                         {
                           key: "quick-pay",
                           kind: "edit",
                           label: "سداد فوري للمورد",
                           hidden: p.status !== "RECEIVED" || isSettled,
+                          disabled: settlement.requiresReview,
+                          disabledReason: settlement.requiresReview ? "راجع دليل السداد قبل طلب دفعة جديدة" : undefined,
                           onSelect: () => setQuickPaymentTarget(p),
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
-                            level: "FULL",
-                          },
+                            level: "FULL", operations: ["supplierPayments.requestPayment"] },
                         },
                         {
                           key: "confirm",
@@ -935,8 +915,7 @@ export default function Purchases() {
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
-                            level: "FULL",
-                          },
+                            level: "FULL", operations: ["purchases.confirmOrder"] },
                         },
                         {
                           key: "edit",
@@ -952,29 +931,28 @@ export default function Purchases() {
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
-                            level: "FULL",
-                          },
+                            level: "FULL", operations: ["purchases.updateOrder"] },
                         },
                         {
                           key: "preview",
                           kind: "view",
                           label: "معاينة التفاصيل",
                           onSelect: () => setDrawerPoId(p.id),
-                          gate: { module: "purchases", level: "READ" },
+                          gate: { module: "purchases", level: "READ" , operations: ["purchases.get"] },
                         },
                         {
                           key: "receive",
                           kind: "view",
                           label: "عرض التفاصيل",
                           href: `/purchases/${p.id}`,
-                          gate: { module: "purchases", level: "READ" },
+                          gate: { module: "purchases", level: "READ" , operations: ["purchases.get"] },
                         },
                         {
                           key: "print",
                           kind: "print",
                           label: "طباعة أمر الشراء",
                           onSelect: () => void printOrder(p.id),
-                          gate: { module: "purchases", level: "READ" },
+                          gate: { module: "purchases", level: "READ" , operations: ["purchases.get"] },
                         },
                         {
                           key: "stmt",
@@ -982,7 +960,7 @@ export default function Purchases() {
                           label: "كشف حساب المورد",
                           href: `/suppliers-statement?id=${p.supplierId}`,
                           hidden: p.supplierId == null,
-                          gate: { module: "suppliers", level: "READ" },
+                          gate: { module: "suppliers", level: "READ" , operations: ["reports.supplierStatement"] },
                         },
                         {
                           key: "preturn",
@@ -994,8 +972,7 @@ export default function Purchases() {
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
-                            level: "FULL",
-                          },
+                            level: "FULL", operations: ["purchaseReturns.create"] },
                         },
                         {
                           key: "cancel",
@@ -1024,8 +1001,7 @@ export default function Purchases() {
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
-                            level: "FULL",
-                          },
+                            level: "FULL", operations: ["purchases.cancel"] },
                         },
                       ]}
                     />
@@ -1077,19 +1053,7 @@ export default function Purchases() {
           branchId={Number(quickPaymentTarget.branchId)}
           currency={quickPaymentTarget.agreedCurrency === "USD" ? "USD" : "IQD"}
           exchangeRate={quickPaymentTarget.agreedRate}
-          remainingAmount={
-            quickPaymentTarget.agreedCurrency === "USD"
-              ? D(quickPaymentTarget.usdTotal ?? 0)
-                  .minus(D(quickPaymentTarget.paidUsd ?? 0))
-                  .toFixed(2)
-              : positiveDiff(
-                  quickPaymentTarget.total ?? 0,
-                  Decimal.max(
-                    D(quickPaymentTarget.paidAmount ?? 0),
-                    D(quickPaymentTarget.linkedCashPaidAmount ?? 0),
-                  ).toString(),
-                ).toFixed(2)
-          }
+          remainingAmount={getPurchaseSettlement(quickPaymentTarget).remainingAmount}
           onSuccess={() => void utils.purchases.list.invalidate()}
         />
       ) : null}

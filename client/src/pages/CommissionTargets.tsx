@@ -1,3 +1,4 @@
+import { useDigitalGiftOperationAccess as useCommissionOperationAccess } from "@/lib/digitalGiftOperationAccess";
 // شاشة «الأهداف الشهرية» — تبويب في hub الموارد البشرية (وحدة الأهداف والعمولات، S2).
 //
 // شبكة قابلة للتحرير: هدف صافي مبيعات لكل موظف مؤهَّل (مرتبط بحساب، غير منتهي الخدمة) لشهر
@@ -25,6 +26,7 @@ import { CopyPlus, Save, Search, X } from "lucide-react";
 import { useMemo, useState } from "react";
 
 export default function CommissionTargets() {
+  const commissionAccess = useCommissionOperationAccess();
   const utils = trpc.useUtils();
   // مدير الفرع يحرر موظفي فرعه فقط؛ المالية المركزية/الأدمن يحرران الشركة عند FULL.
   const me = trpc.auth.me.useQuery();
@@ -32,9 +34,12 @@ export default function CommissionTargets() {
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "commissions", "FULL", ["manager"]);
   const isCompanyAuthority = me.data?.role === "admin" || me.data?.isOwner === true ||
     (me.data?.role === "accountant" && me.data?.branchId == null);
-  const canWrite = hasFull && (isCompanyAuthority || (me.data?.role === "manager" && me.data?.branchId != null));
+  const legacyWrite = hasFull && (isCompanyAuthority || (me.data?.role === "manager" && me.data?.branchId != null));
+  const canSave = commissionAccess.can("commissions.targets.saveAll", legacyWrite);
+  const canCopy = commissionAccess.can("commissions.targets.copyFromPrevious", legacyWrite);
+  const canWrite = canSave || canCopy;
   const [period, setPeriod] = useState<string>(thisMonth());
-  const grid = trpc.commissions.targets.grid.useQuery({ period });
+  const grid = commissionAccess.query("commissions.targets.grid", trpc.commissions.targets.grid.useQuery({ period }, { enabled: commissionAccess.can("commissions.targets.grid") }));
   const rows = grid.data ?? [];
 
   /** المسوّدة المحلية: القيم المعدَّلة فقط (مفتاحها employeeId). */
@@ -131,12 +136,12 @@ export default function CommissionTargets() {
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={copyPrev.isPending}
+                  disabled={!canCopy || copyPrev.isPending}
                   onClick={() => copyPrev.mutate({ period, overwrite: false })}
                 >
                   <CopyPlus className="size-4" aria-hidden /> نسخ من الشهر السابق
                 </Button>
-                <Button size="sm" disabled={dirtyRows.length === 0 || save.isPending} onClick={() => save.mutate({ period, rows: dirtyRows })}>
+                <Button size="sm" disabled={!canSave || dirtyRows.length === 0 || save.isPending} onClick={() => save.mutate({ period, rows: dirtyRows })}>
                   <Save className="size-4" aria-hidden />
                   {save.isPending ? ACTION_LABELS.saving : `حفظ الكل${dirtyRows.length ? ` (${dirtyRows.length})` : ""}`}
                 </Button>
@@ -200,7 +205,7 @@ export default function CommissionTargets() {
                         {iqd(r.lastMonthActual)}
                       </td>
                       <td className="p-2">
-                        {canWrite ? (
+                        {canSave ? (
                           <MoneyInput
                             value={value}
                             onChange={(raw) => setDraft((prev) => ({ ...prev, [r.employeeId]: raw }))}

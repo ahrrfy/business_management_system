@@ -11,6 +11,7 @@
  */
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import {
   middleware,
   publicProcedure,
@@ -48,7 +49,7 @@ import { createVerifiedStorefrontQuoteRequest } from "../services/storefrontQuot
 import { STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH } from "@shared/storefrontTurnstile";
 import { registerStorefrontPushDevice, trackStorefrontPushInteraction } from "../services/storeAdmin/storefrontPushCampaignService";
 import { claimFirebaseStorefrontCustomer, requireActiveStorefrontCustomer, storefrontCustomerBenefits, verifyStorefrontCustomerSession } from "../services/storefrontCustomerIdentityService";
-import { listStorefrontProductReviews, submitStorefrontProductReview } from "../services/storefrontProductReviewService";
+import { listStorefrontProductReviews, submitStorefrontProductReview, submitPublicStorefrontReview } from "../services/storefrontProductReviewService";
 import { requestStorefrontFirstOrderCoupon } from "../services/storefrontFirstOrderCouponService";
 import { createStorefrontWishlistShare, resolveStorefrontWishlistShare } from "../services/storefrontWishlistShareService";
 import { createStorefrontCartShare, resolveStorefrontCartShare } from "../services/storefrontCartShareService";
@@ -250,6 +251,41 @@ export const storefrontRouter = router({
       rating: input.rating,
       comment: input.comment,
     })),
+
+  /** يرسل زائر أو متسوق المتجر مراجعة وتقييماً بالنجوم؛ تدخل طابور الاعتماد بانتظار موافقة الإدارة. */
+  submitPublicProductReview: storefrontPublicWriteProcedure
+    .input(z.object({
+      productId: z.number().int().positive(),
+      rating: z.number().int().min(1).max(5),
+      reviewerName: z.string().trim().min(2).max(100),
+      reviewerPhone: z.string().trim().max(32).nullish(),
+      orderNumber: z.string().trim().max(50).nullish(),
+      comment: z.string().trim().min(8).max(1_000),
+      turnstileToken: z.string().trim().min(1).max(STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH).nullish(),
+    }))
+    .mutation(async ({ input }) => {
+      if (process.env.STOREFRONT_TURNSTILE_ENABLED === "1") {
+        if (!input.turnstileToken) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "رمز التحقق الأمني مطلوب",
+              why: "نظام حماية المتجر يتطلب إتمام فحص الأمان Turnstile قبل إرسال المراجعة",
+              doThis: "أعد تحميل الصفحة وأكمل اختبار الأمان ثم اضغط إرسال",
+            }),
+          });
+        }
+        await verifyStorefrontTurnstile(input.turnstileToken);
+      }
+      return submitPublicStorefrontReview({
+        productId: input.productId,
+        rating: input.rating,
+        reviewerName: input.reviewerName,
+        reviewerPhone: input.reviewerPhone ?? null,
+        orderNumber: input.orderNumber ?? null,
+        comment: input.comment,
+      });
+    }),
 
   /** ينشئ رابطاً عشوائياً قصير العمر لمعرّفات منتجات علنية فقط؛ الكتابة محمية بالحدود العامة. */
   createWishlistShare: storefrontPublicWriteProcedure

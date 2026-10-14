@@ -1,3 +1,4 @@
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 /**
  * معرضُ صور المنتج القائمة — للمدير فقط.
  *
@@ -20,9 +21,17 @@ import { ArrowDown, ArrowUp, Image as ImageIcon, Star, Trash2 } from "lucide-rea
 import { useMemo, useState } from "react";
 
 export function ProductImageGallery({ productId, onClose, readOnly = false }: { productId: number; onClose?: () => void; readOnly?: boolean }) {
+  const studioCan = {
+    deleteImage: useOperationPermission("productStudio.deleteImage").allowed,
+    managerImages: useOperationPermission("productStudio.managerImages").allowed,
+    productImages: useOperationPermission("productStudio.productImages").allowed,
+    reorderImages: useOperationPermission("productStudio.reorderImages").allowed,
+    setImagePrimary: useOperationPermission("productStudio.setImagePrimary").allowed,
+  };
+  readOnly = readOnly || !studioCan.managerImages;
   const utils = trpc.useUtils();
-  const managerImages = trpc.productStudio.managerImages.useQuery({ productId }, { staleTime: 30_000, enabled: !readOnly });
-  const viewerImages = trpc.productStudio.productImages.useQuery({ productId }, { staleTime: 30_000, enabled: readOnly });
+  const managerImages = trpc.productStudio.managerImages.useQuery({ productId }, { staleTime: 30_000, enabled: studioCan.managerImages && (!readOnly) });
+  const viewerImages = trpc.productStudio.productImages.useQuery({ productId }, { staleTime: 30_000, enabled: studioCan.productImages && (readOnly) });
   const images = readOnly ? viewerImages : managerImages;
 
   const [localOrder, setLocalOrder] = useState<number[] | null>(null);
@@ -139,14 +148,14 @@ export function ProductImageGallery({ productId, onClose, readOnly = false }: { 
                   </div>
                   {!readOnly && (
                     <div className="mt-2 flex flex-wrap gap-1">
-                      <Button type="button" size="sm" variant="ghost" className="min-h-10 px-2" title="حرّك لأعلى" disabled={index === 0} onClick={() => moveLocal(index, -1)}>
+                      <Button type="button" size="sm" variant="ghost" className="min-h-10 px-2" title="حرّك لأعلى" disabled={!studioCan.reorderImages || index === 0} onClick={() => moveLocal(index, -1)}>
                         <ArrowUp aria-hidden className="size-4" />
                       </Button>
-                      <Button type="button" size="sm" variant="ghost" className="min-h-10 px-2" title="حرّك لأسفل" disabled={index === displayImages.length - 1} onClick={() => moveLocal(index, 1)}>
+                      <Button type="button" size="sm" variant="ghost" className="min-h-10 px-2" title="حرّك لأسفل" disabled={!studioCan.reorderImages || index === displayImages.length - 1} onClick={() => moveLocal(index, 1)}>
                         <ArrowDown aria-hidden className="size-4" />
                       </Button>
                       {!img.isPrimary && (
-                        <Button type="button" size="sm" variant="outline" className="min-h-10" disabled={setPrimary.isPending} onClick={() => setPrimary.mutate({ imageId: img.id })}>
+                        <Button type="button" size="sm" variant="outline" className="min-h-10" disabled={!studioCan.setImagePrimary || (setPrimary.isPending)} onClick={() => setPrimary.mutate({ imageId: img.id })}>
                           <Star aria-hidden className="size-4" /> اجعلها رئيسيّة
                         </Button>
                       )}
@@ -155,7 +164,7 @@ export function ProductImageGallery({ productId, onClose, readOnly = false }: { 
                         size="sm"
                         variant="destructive"
                         className="min-h-10"
-                        disabled={deleteImg.isPending}
+                        disabled={!studioCan.deleteImage || (deleteImg.isPending)}
                         onClick={async () => {
                           // مربّع تأكيد التطبيق (بدل window.confirm) — الحرّاس تفرضه.
                           const ok = await confirm({
@@ -181,7 +190,7 @@ export function ProductImageGallery({ productId, onClose, readOnly = false }: { 
                   <Button
                     type="button"
                     className="min-h-11"
-                    disabled={!isDirty || reorder.isPending}
+                    disabled={!studioCan.reorderImages || (!isDirty || reorder.isPending)}
                     onClick={() => reorder.mutate({ productId, orderedImageIds: (localOrder ?? []).slice() })}
                   >
                     احفظ الترتيب الجديد

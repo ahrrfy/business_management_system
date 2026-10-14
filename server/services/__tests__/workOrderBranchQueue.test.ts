@@ -80,6 +80,21 @@ const numbers = (rows: unknown) =>
   (rows as { orderNumber: string }[]).map((r) => r.orderNumber).sort();
 
 describe("طابور الفرع", () => {
+  it("canonical OWN remains enforced for branch and unassigned queue flags and matching counts", async () => {
+    await db().update(s.workOrders).set({ assignedTo: 11 }).where(eq(s.workOrders.orderNumber, "WO-HIND"));
+    const ctx = ctxFor(10, RECEPTION_PERMS);
+    ctx.user!.operationPolicyEnabled = true;
+    ctx.user!.resolvedOperationPolicy = { version: 1, grants: { "operation.workOrders.list": true, "operation.workOrders.counts": true },
+      recordScopes: { "operation.workOrders.list": "OWN", "operation.workOrders.counts": "OWN" } };
+    const own = appRouter.createCaller(ctx);
+    expect(numbers(await own.workOrders.list({ branchQueue: true }))).toEqual(["WO-SARA"]);
+    expect(numbers(await own.workOrders.list({ unassignedOnly: true }))).toEqual(["WO-SARA"]);
+    expect((await own.workOrders.counts({ branchQueue: true })).received).toBe(1);
+    ctx.user!.resolvedOperationPolicy.recordScopes = { "operation.workOrders.list": "BRANCH", "operation.workOrders.counts": "BRANCH" };
+    const branch = appRouter.createCaller(ctx);
+    expect(numbers(await branch.workOrders.list({ branchQueue: true }))).toEqual(["WO-HIND", "WO-SARA"]);
+    expect((await branch.workOrders.counts({ branchQueue: true })).received).toBe(2);
+  });
   it("⭐ ① بلا العلم: سارة ترى ما أنشأته وحده", async () => {
     const rows = await caller(10, RECEPTION_PERMS).workOrders.list({} as never);
     expect(numbers(rows)).toEqual(["WO-SARA"]);

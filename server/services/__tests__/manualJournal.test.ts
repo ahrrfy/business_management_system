@@ -531,4 +531,26 @@ describe("manualJournalService — القيود اليومية اليدوية ا
     expect(listUnmatched.total).toBe(0);
     expect(listUnmatched.rows).toHaveLength(0);
   });
+
+  it("يرفض القيد الذي يسبب عدم توازن بعد التقريب لمنزلتين عشريتين", async () => {
+    await expect(
+      withTx((tx) =>
+        createManualJournal(
+          tx,
+          {
+            entryDate: "2026-10-01",
+            notes: "قيد كسور غير متوازن بعد التقريب",
+            branchId: 1,
+            lines: [
+              { accountId: 40, debit: "100.004", credit: "0.00" },
+              { accountId: 40, debit: "100.004", credit: "0.00" },
+              { accountId: 45, debit: "0.00", credit: "200.008" },
+            ],
+          },
+          mockActor,
+          mockAuditContext,
+        ),
+      ),
+    ).rejects.toThrow("القيد المحاسبي غير متوازن");
+  });
 });

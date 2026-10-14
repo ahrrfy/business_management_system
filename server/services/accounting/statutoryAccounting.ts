@@ -171,7 +171,9 @@ function validateImportedAccounts(rows: readonly ImportedStatutoryAccount[]) {
       });
     }
     const parentType = byCode.get(parentCode)?.type;
-    const isLiabilityFinancingException = parentType === "LIABILITY" && row.type === "EQUITY";
+    const isLiabilityFinancingException =
+      (parentType === "LIABILITY" && row.type === "EQUITY") ||
+      (parentType === "EQUITY" && row.type === "LIABILITY");
     if (parentType !== row.type && !isLiabilityFinancingException) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -284,7 +286,10 @@ export async function replaceStatutoryMappings(
         message: `الحساب النظامي ${item.statutoryAccountId} لا ينتمي للإصدار أو ليس حساب ترحيل.`,
       });
     }
-    if (internal.type !== statutory.type) {
+    const isFinancingCompatible =
+      (internal.type === "LIABILITY" && statutory.type === "EQUITY") ||
+      (internal.type === "EQUITY" && statutory.type === "LIABILITY");
+    if (internal.type !== statutory.type && !isFinancingCompatible) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: `لا يمكن ربط ${internal.code} (${internal.type}) بـ${statutory.code} (${statutory.type}).`,

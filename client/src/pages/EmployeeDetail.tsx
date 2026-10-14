@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { DeviceLinkCard } from "@/components/hr/DeviceLinkCard";
 import { EmployeeStatementCard } from "@/components/hr/EmployeeStatementCard";
@@ -43,12 +44,13 @@ function Field({ label, value, dir }: { label: string; value: React.ReactNode; d
 }
 
 export default function EmployeeDetail() {
+  const { can } = useCatalogPeopleOperationAccess();
   const params = useParams();
   const id = Number(params.id);
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
-  const q = trpc.employees.get.useQuery({ id }, { enabled: Number.isFinite(id) });
-  const usage = trpc.employees.usage.useQuery({ id }, { enabled: Number.isFinite(id) });
+  const q = trpc.employees.get.useQuery({ id }, { enabled: can("employees.get") && (Number.isFinite(id)) });
+  const usage = trpc.employees.usage.useQuery({ id }, { enabled: can("employees.usage") && (Number.isFinite(id)) });
   const me = trpc.auth.me.useQuery();
   const isAdmin = me.data?.role === "admin"; // شاشة تعديل المستخدم admin-only ⇒ لا نربطها لغير الإدارة
   const [tab, setTab] = useState("overview");
@@ -106,7 +108,7 @@ export default function EmployeeDetail() {
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <Link href={`/hr/employees/${id}/edit`}><Button variant="outline" size="sm">تعديل</Button></Link>
+            {can("employees.update") && <Link href={`/hr/employees/${id}/edit`}><Button variant="outline" size="sm">تعديل</Button></Link>}
             {/*
              * مبدّل الحالة **زوجٌ كامل** — لكل حالةٍ طريقُ رجوع. كان «إعادة للعمل» مشروطاً
              * بـ`isTerminated` وحده، فالموظف الموضوع على «في إجازة» يعلق فيها بلا أيّ مخرجٍ
@@ -125,7 +127,7 @@ export default function EmployeeDetail() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={setStatus.isPending}
+                disabled={!can("employees.setStatus") || (setStatus.isPending)}
                 onClick={async () => {
                   if (!(await confirm({
                     variant: "warning",
@@ -140,7 +142,7 @@ export default function EmployeeDetail() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={setStatus.isPending}
+                disabled={!can("employees.setStatus") || (setStatus.isPending)}
                 onClick={async () => {
                   if (!(await confirm({
                     variant: "info",
@@ -154,7 +156,7 @@ export default function EmployeeDetail() {
                 }}
               >إعادة للعمل</Button>
             )}
-            {!isTerminated && (
+            {!isTerminated && can("promotions.createTermination") && (
               // إنهاء الخدمة لا يُنفَّذ من بطاقة الموظف: `employees.setStatus` يرفض
               // `terminated` صراحةً، والمسار الرسميّ وحده يحمل Maker-Checker وتسوية
               // المستحقات النهائية. الزرّ يُحيل إليه بدل نافذةٍ تفشل عند كل ضغطة.
@@ -329,7 +331,7 @@ export default function EmployeeDetail() {
           <Button
             variant="outline"
             className="text-destructive border-destructive/50 hover:bg-destructive/10"
-            disabled={usage.isLoading || !usage.data?.clean || del.isPending}
+            disabled={!can("employees.delete") || (usage.isLoading || !usage.data?.clean || del.isPending)}
             onClick={() => void (async () => {
               if (!usage.data?.clean) return;
               if (!(await confirm({ variant: "danger", title: "حذف الموظف نهائياً", description: `سيُحذف «${e.fullName}» نهائياً من القاعدة ولا يمكن التراجع. (متاح لأنّه نظيف بلا نشاط.) هل تتابع؟`, confirmText: "حذف نهائياً" }))) return;

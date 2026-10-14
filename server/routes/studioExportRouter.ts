@@ -17,8 +17,11 @@
  *   4. دور من مجموعة المدراء + `productStudio: READ` على الأقلّ.
  */
 import { Router, type Request, type Response } from "express";
-import { getUserFromRequest } from "../auth/session";
-import { normalizeOwnerAuthority, resolveCustomRole, type AuthUser } from "../context";
+import { TRPCError } from "@trpc/server";
+import { createContext } from "../context";
+import { hasOperationPolicy, operationDecision, operationRecordScope } from "@shared/operationPermissions";
+import { routeOperationAuthority } from "../services/authorization/operationAuthority";
+import { canCrossBranches } from "../lib/branchAuthority";
 import { hasModuleAccess, type PermissionMap, type RoleKey } from "../../shared/permissions";
 import { twoFactorEnrollmentRequired } from "../trpc";
 import { logger } from "../logger";
@@ -58,14 +61,9 @@ export function studioExportRouter(): Router {
   const r = Router({ caseSensitive: true, strict: true });
 
   r.get("/export.zip", async (req: Request, res: Response) => {
-    const rawUser = await getUserFromRequest(req).catch(() => null);
-    if (!rawUser) return res.status(401).json({ error: "مصادقةٌ مطلوبة" });
-
-    // حلّ الدور الفعّال — أدوارٌ مخصّصة قد تُلغي وصول المدير الأساسيّ (الجذر: مراجعة Codex
-    // P1 على PR #811). النمطُ يتّبع `jobApplicantCvRouter` بالضبط.
-    const user = rawUser as AuthUser;
-    if (user.isOwner) normalizeOwnerAuthority(user);
-    else await resolveCustomRole(user);
+    const ctx = await createContext({ req, res }).catch(() => null);
+    const user = ctx?.user;
+    if (!user) return res.status(401).json({ error: "مصادقةٌ مطلوبة" });
 
     // إلزامُ 2FA حين تكون السياسة سارية — مسارُ REST كان يفلت منها لأنّه خارج tRPC
     // (الجذر: مراجعة Codex P1 على PR #811). tRPC procedures تفحصه في كل نداء.
@@ -75,8 +73,14 @@ export function studioExportRouter(): Router {
 
     // التصدير مسارٌ إداريّ (يكشف كامل الكتالوج) — مقصورٌ على المدير كما قائمة الحملات.
     const isManagerRole = user.role === "admin" || user.role === "manager" || user.isOwner === true;
-    if (!isManagerRole) return res.status(403).json({ error: "التصدير للمدير فقط" });
-    if (!hasModuleAccess(user.role as RoleKey, (user.permissionsOverride ?? null) as PermissionMap | null, "productStudio", "READ")) {
+    const canonical = hasOperationPolicy(user);
+    if (canonical ? !operationDecision(user, "productStudio.authorizeExport").allowed : !isManagerRole) {
+      return res.status(403).json({ error: "التصدير للمدير فقط" });
+    }
+    if (!canCrossBranches(user) && user.branchId == null) {
+      return res.status(403).json({ error: "يلزم إسناد فرع للحساب قبل تصدير الصور" });
+    }
+    if (!canonical && !hasModuleAccess(user.role as RoleKey, (user.permissionsOverride ?? null) as PermissionMap | null, "productStudio", "READ")) {
       return res.status(403).json({ error: "لا صلاحيةَ للاستوديو" });
     }
 
@@ -98,12 +102,14 @@ export function studioExportRouter(): Router {
       branchId: user.branchId == null ? null : Number(user.branchId),
       role: user.role,
       isOwner: user.isOwner === true,
+      operationAuthority: routeOperationAuthority(user, "productStudio.authorizeExport"),
+      scopedOwnerId: canonical && operationRecordScope(user, "productStudio.authorizeExport") === "OWN" ? user.id : null,
     };
     try {
       await streamStudioImageExport(actor, parsed.scope, res);
     } catch (err) {
       logger.error({ err, userId: actor.userId, scope: parsed.scope }, "studio-image-export: route error");
-      if (!res.headersSent) res.status(500).json({ error: "تعذّر تصدير الصور" });
+      if (!res.headersSent) res.status(err instanceof TRPCError && err.code === "FORBIDDEN" ? 403 : 500).json({ error: "تعذّر تصدير الصور" });
       else res.destroy(err as Error);
     }
   });

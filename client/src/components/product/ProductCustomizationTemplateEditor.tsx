@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -103,8 +104,9 @@ function DependencyValuesControl({ field, fields, onChange }: {
 }
 
 export function ProductCustomizationTemplateEditor({ productId, enabled }: { productId: number; enabled: boolean }) {
-  const query = trpc.catalog.customizationTemplate.useQuery({ productId }, { enabled });
-  const categoriesQ = trpc.catalog.categories.useQuery(undefined, { enabled });
+  const { can } = useCatalogPeopleOperationAccess();
+  const query = trpc.catalog.customizationTemplate.useQuery({ productId }, { enabled: can("catalog.customizationTemplate") && enabled });
+  const categoriesQ = trpc.catalog.categories.useQuery(undefined, { enabled: can("catalog.categories") && enabled });
   const [kind, setKind] = useState<CustomizationKind>("GENERAL");
   const [title, setTitle] = useState(KIND_DEFAULTS.GENERAL.title);
   const [description, setDescription] = useState(KIND_DEFAULTS.GENERAL.description);
@@ -127,11 +129,11 @@ export function ProductCustomizationTemplateEditor({ productId, enabled }: { pro
 
   const searchTargetsQ = trpc.catalog.searchCustomizationTargets.useQuery(
     { q: targetQuery.trim(), excludeProductId: productId, limit: 20 },
-    { enabled: enabled && copyOpen && copyScope === "PRODUCTS" && targetQuery.trim().length >= 1, staleTime: 30_000 },
+    { enabled: can("catalog.searchCustomizationTargets") && (enabled && copyOpen && copyScope === "PRODUCTS" && targetQuery.trim().length >= 1), staleTime: 30_000 },
   );
   const categoryPreviewQ = trpc.catalog.searchCustomizationTargets.useQuery(
     { categoryId: Number(targetCategoryId), excludeProductId: productId, limit: 1 },
-    { enabled: enabled && copyOpen && copyScope === "CATEGORY" && Number(targetCategoryId) > 0, staleTime: 30_000 },
+    { enabled: can("catalog.searchCustomizationTargets") && (enabled && copyOpen && copyScope === "CATEGORY" && Number(targetCategoryId) > 0), staleTime: 30_000 },
   );
   const save = trpc.catalog.saveCustomizationTemplate.useMutation({
     onSuccess: (result) => {
@@ -338,7 +340,7 @@ export function ProductCustomizationTemplateEditor({ productId, enabled }: { pro
       <CardHeader className="space-y-2">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div><CardTitle className="text-base">حقول يملؤها الزبون</CardTitle><CardDescription>اكتب اسم الحقل واختر نوعه. المفاتيح والترتيب تُدار تلقائياً.</CardDescription></div>
-          <label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={isActive} disabled={setActive.isPending} onChange={(event) => {
+          <label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={isActive} disabled={!can("catalog.setCustomizationTemplateActive") || setActive.isPending} onChange={(event) => {
             const active = event.target.checked;
             setIsActive(active);
             if (query.data && loadedTemplateId != null) setActive.mutate({ productId, expectedTemplateId: loadedTemplateId, isActive: active }); else markDirty();
@@ -412,11 +414,11 @@ export function ProductCustomizationTemplateEditor({ productId, enabled }: { pro
               {selectedTargets.length > 0 && <div className="flex flex-wrap gap-2">{selectedTargets.map((target) => <span key={target.productId} className="inline-flex min-h-11 items-center gap-1 rounded-md border bg-muted ps-3 text-sm">{target.productName}{target.hasTemplate && <b className="text-[var(--sem-warn)]">له قالب</b>}<button type="button" className="flex size-11 items-center justify-center" onClick={() => setSelectedTargets((current) => current.filter((item) => item.productId !== target.productId))} aria-label={`إزالة ${target.productName}`}><X className="size-4" /></button></span>)}</div>}
             </div> : <label className="block text-sm font-bold">الفئة المستهدفة<select value={targetCategoryId} onChange={(event) => setTargetCategoryId(event.target.value)} className="mt-1.5 h-9 w-full rounded-md border bg-background px-2 text-sm"><option value="">اختر الفئة</option>{(categoriesQ.data ?? []).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>{targetCategoryId && <span className="mt-2 block font-normal text-muted-foreground">سيُفحص {categoryPreviewQ.data?.total ?? "…"} منتج نشط غير المنتج الحالي، منها {categoryPreviewQ.data?.withTemplate ?? "…"} لديها قالب سابق.</span>}</label>}
             <label className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] p-3 text-sm"><input type="checkbox" checked={overwriteExisting} onChange={(event) => setOverwriteExisting(event.target.checked)} className="mt-0.5" /><span><b>استبدال القوالب الموجودة</b><br />اتركه غير محدد لحماية أي تخصيص أعدّه الموظفون سابقاً.</span></label>
-            <Button type="button" onClick={handleCopy} disabled={copyTemplate.isPending || categoryPreviewQ.isFetching || fields.length === 0 || (copyScope === "PRODUCTS" ? selectedTargets.length === 0 : !targetCategoryId || !categoryPreviewQ.isSuccess)}><Copy className="size-4" /> {copyTemplate.isPending ? "جارٍ الحفظ والنسخ…" : copyScope === "PRODUCTS" ? `حفظ ونسخ إلى ${selectedTargets.length} منتج` : "حفظ ونسخ إلى الفئة"}</Button>
+            <Button type="button" onClick={handleCopy} disabled={!can("catalog.copyCustomizationTemplate") || (copyTemplate.isPending || categoryPreviewQ.isFetching || fields.length === 0 || (copyScope === "PRODUCTS" ? selectedTargets.length === 0 : !targetCategoryId || !categoryPreviewQ.isSuccess))}><Copy className="size-4" /> {copyTemplate.isPending ? "جارٍ الحفظ والنسخ…" : copyScope === "PRODUCTS" ? `حفظ ونسخ إلى ${selectedTargets.length} منتج` : "حفظ ونسخ إلى الفئة"}</Button>
           </div>}
         </section>
 
-        <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-sm text-muted-foreground" role="status">{status}</span><Button type="button" onClick={handleSave} disabled={save.isPending || fields.length === 0}><Save className="size-4" /> {save.isPending ? "جارٍ الحفظ…" : "حفظ قالب التخصيص"}</Button></div>
+        <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-sm text-muted-foreground" role="status">{status}</span><Button type="button" onClick={handleSave} disabled={!can("catalog.saveCustomizationTemplate") || (save.isPending || fields.length === 0)}><Save className="size-4" /> {save.isPending ? "جارٍ الحفظ…" : "حفظ قالب التخصيص"}</Button></div>
       </CardContent>
     </Card>
   );

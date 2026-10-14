@@ -1,4 +1,6 @@
 import { trpc } from "@/lib/trpc";
+import { AUDIT_LOGS_GATE, canSeeGate } from "@/lib/navVisibility";
+import type { OperationPolicy } from "@shared/operationPermissions";
 import { History } from "lucide-react";
 import { Link, useLocation } from "wouter";
 
@@ -16,7 +18,10 @@ export function OperationAuditAccess() {
   const me = trpc.auth.me.useQuery();
   const [location] = useLocation();
   const screenPath = location.split("?", 1)[0] || "/";
-  const allowed = me.data?.role === "admin" || me.data?.role === "auditor";
+  const operationPolicy = !me.data?.isOwner && (me.data as { operationPolicyEnabled?: boolean })?.operationPolicyEnabled
+    ? (me.data as { resolvedOperationPolicy?: OperationPolicy }).resolvedOperationPolicy
+    : null;
+  const allowed = !!me.data && (me.data.isOwner === true || canSeeGate(AUDIT_LOGS_GATE, me.data.role, null, operationPolicy));
 
   if (!allowed || screenPath === "/audit") return null;
 

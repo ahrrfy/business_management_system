@@ -22,27 +22,29 @@ export interface HandoverResult {
 async function nextHandoverNumber(tx: Tx, branchId: number): Promise<string> {
   const ymd = toDateStr().replace(/-/g, "");
   const prefix = `CH-${branchId}-${ymd}-`;
-  const lockName = `cash_handover:${branchId}:${ymd}`;
-  const lockRes: any = await tx.execute(sql`SELECT GET_LOCK(${lockName}, 5) AS locked`);
-  const lockedRow = Array.isArray(lockRes) ? lockRes[0]?.[0] : lockRes?.rows?.[0];
-  if (!lockedRow || Number(lockedRow.locked) !== 1) {
-    throw new Error(`handover numbering lock timeout for ${lockName}`);
+  const counterKey = `cash_handover:${branchId}:${ymd}`;
+
+  const rows = await tx
+    .select({ n: receipts.referenceNumber })
+    .from(receipts)
+    .where(like(receipts.referenceNumber, `${prefix}%`));
+  let maxSeq = 0;
+  for (const row of rows) {
+    const suffix = String(row.n ?? "").slice(prefix.length);
+    if (!/^\d+$/.test(suffix)) continue;
+    const seq = Number.parseInt(suffix, 10);
+    if (Number.isSafeInteger(seq) && seq > maxSeq) maxSeq = seq;
   }
-  try {
-    const rows = await tx
-      .select({ n: receipts.referenceNumber })
-      .from(receipts)
-      .where(like(receipts.referenceNumber, `${prefix}%`));
-    let maxSeq = 0;
-    for (const row of rows) {
-      const suffix = String(row.n ?? "").slice(prefix.length);
-      if (!/^\d+$/.test(suffix)) continue;
-      maxSeq = Math.max(maxSeq, Number.parseInt(suffix, 10));
-    }
-    return prefix + String(maxSeq + 1).padStart(4, "0");
-  } finally {
-    await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
-  }
+
+  await tx.execute(sql`
+    INSERT INTO documentCounters (counterKey, lastValue)
+    VALUES (${counterKey}, LAST_INSERT_ID(${maxSeq + 1}))
+    ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(GREATEST(lastValue + 1, ${maxSeq + 1}))
+  `);
+  const res: any = await tx.execute(sql`SELECT LAST_INSERT_ID() AS v`);
+  const row = Array.isArray(res) ? res[0]?.[0] : res?.rows?.[0];
+  const seq = Number(row?.v ?? 1);
+  return prefix + String(seq).padStart(4, "0");
 }
 
 /** إرجاع كامل نقد الدرج إلى الخزينة فور إغلاق الوردية. */

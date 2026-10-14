@@ -11,23 +11,35 @@ const CommissionComparisonReport = lazy(() => import("@/pages/CommissionComparis
 const CourierPerformanceReport = lazy(() => import("@/pages/CourierPerformanceReport"));
 const DeliveryAgingReport = lazy(() => import("@/pages/DeliveryAgingReport"));
 
-const DELIVERY_ROLES = { roles: ["admin", "manager", "accountant", "cashier", "auditor"] as const };
-
 const TABS: HubTab[] = [
-  { value: "workflow", label: "سير العمل بالباركود (إسناد وتحصيل)", gate: { roles: [...DELIVERY_ROLES.roles] }, Component: ReceptionWorkflowPage },
-  { value: "dispatch", label: "إدارة التوصيل والمتابعة", gate: { roles: [...DELIVERY_ROLES.roles] }, Component: DeliveryHub },
-  { value: "parties", label: "جهات التوصيل", gate: { roles: [...DELIVERY_ROLES.roles] }, Component: DeliveryParties },
+  {
+    value: "workflow",
+    label: "سير العمل بالباركود (إسناد وتحصيل)",
+    gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "store" },
+    Component: ReceptionWorkflowPage,
+  },
+  { value: "dispatch", label: "إدارة التوصيل والمتابعة", gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "store" }, Component: DeliveryHub },
+  { value: "parties", label: "جهات التوصيل", gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "store" }, Component: DeliveryParties },
   // Slice I (٢٩/٨/٢٦): إدارة مناطق التسعير — للمدير فقط (deliveryManagerProcedure على الخادم).
-  { value: "pricing", label: "مناطق التسعير", gate: { roles: ["admin", "manager"] }, Component: DeliveryPricingZones },
+  {
+    value: "pricing",
+    label: "مناطق التسعير",
+    gate: {
+      roles: ["admin", "manager"],
+      module: "store",
+      operations: ["delivery.listZones", "delivery.listPricingRules"],
+    },
+    Component: DeliveryPricingZones,
+  },
   // Slice K (٢٩/٨/٢٦): مقارنةُ الأجرة المدفوعة بالعمولة التقديريّة — قرارُ تفعيل H2 يتّخذه المالك
   // بعد رؤية أرقامٍ حقيقيّة (بلاغه: «راقب الأرقام أسبوعين»). للمدير + المحاسب + المدقّق.
-  { value: "commission-comparison", label: "مقارنة العمولة", gate: { roles: ["admin", "manager", "accountant", "auditor"] }, Component: CommissionComparisonReport },
+  { value: "commission-comparison", label: "مقارنة العمولة", gate: { roles: ["admin", "manager", "accountant", "auditor"], module: "reports", operations: ["delivery.commissionComparison"] }, Component: CommissionComparisonReport },
   // أداء المناديب: تقريرٌ يكشف قيمة/تحصيل النقد ⇒ بوّابة التقارير (يُخفى عن الكاشير؛ الخادم يفرض reportViewerProcedure).
-  { value: "performance", label: "أداء المناديب", gate: { roles: ["admin", "manager", "accountant", "auditor"], module: "reports" }, Component: CourierPerformanceReport },
+  { value: "performance", label: "أداء المناديب", gate: { roles: ["admin", "manager", "accountant", "auditor"], module: "reports", operations: ["reports.courierPerformance"] }, Component: CourierPerformanceReport },
   // أعمار الإرساليات (١٠/٨): نظير أعمار الذمم لعُهد المناديب — نفس بوّابة التقارير.
-  { value: "aging", label: "أعمار الإرساليات", gate: { roles: ["admin", "manager", "accountant", "auditor"], module: "reports" }, Component: DeliveryAgingReport },
+  { value: "aging", label: "أعمار الإرساليات", gate: { roles: ["admin", "manager", "accountant", "auditor"], module: "reports", operations: ["reports.consignmentAging"] }, Component: DeliveryAgingReport },
 ];
 
 export default function DeliveryCenter() {
-  return <PageTabs tabs={TABS} ariaLabel="أقسام التوصيل" />;
+  return <PageTabs tabs={TABS} ariaLabel="أقسام التوصيل" tabAliases={{ settle: "dispatch", transit: "dispatch", board: "dispatch" }} />;
 }

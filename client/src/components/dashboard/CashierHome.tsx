@@ -13,6 +13,8 @@ import {
   type PermissionMap,
   type PosStation,
 } from "@shared/permissions";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import {
   BadgeDollarSign,
   Barcode,
@@ -219,6 +221,19 @@ export function CashierHome({
     staleTime: 30_000,
   });
 
+  const utils = trpc.useUtils?.();
+  useRealtimeEvent(REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED, () => {
+    void utils?.storeAdmin?.orders?.counts?.invalidate?.();
+  });
+
+  const storeOrderCountsQ = trpc.storeAdmin.orders.counts.useQuery(undefined, {
+    enabled: canViewStore,
+    staleTime: 30_000,
+  });
+  const pendingStoreOrders =
+    (storeOrderCountsQ.data?.PENDING ?? 0) +
+    (storeOrderCountsQ.data?.CONFIRMED ?? 0);
+
   const convs = trpc.conversations.list.useQuery(
     branchId != null ? { branchId, limit: 50 } : { limit: 50 },
     { enabled: isReception && can("channels") && branchId != null, staleTime: 30_000 },
@@ -309,6 +324,9 @@ export function CashierHome({
               href: "/store-admin?tab=orders",
               name: "طلبات الموقع",
               desc: "طلبات المتجر الإلكتروني — تثبيتها وإسنادها للمحطة",
+              badge: pendingStoreOrders > 0 ? pendingStoreOrders : undefined,
+              badgeHint: "طلبات متجر بانتظار التجهيز",
+              badgeVariant: "warn" as const,
               icon: ShoppingBag,
             }]
           : []),
@@ -453,6 +471,37 @@ export function CashierHome({
             )}
           </div>}
         </div>
+
+        {/* شريط تنبيه عاجل لطلبات المتجر الواردة */}
+        {canViewStore && pendingStoreOrders > 0 && (
+          <Link
+            href="/store-admin?tab=orders"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              padding: "12px 18px",
+              borderRadius: 12,
+              background: "var(--sem-warn-bg)",
+              border: "1px solid var(--sem-warn)",
+              color: "var(--sem-warn)",
+              textDecoration: "none",
+              fontSize: "0.875rem",
+              fontWeight: 700,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <ShoppingBag style={{ width: 18, height: 18, flexShrink: 0 }} />
+              <span>
+                تنبيه: يوجد {pendingStoreOrders.toLocaleString("ar-IQ-u-nu-latn")} طلب متجر إلكتروني بحاجة للمتابعة والتجهيز
+              </span>
+            </div>
+            <span style={{ fontSize: "0.8125rem", textDecoration: "underline" }}>
+              فتح شاشة التجهيز
+            </span>
+          </Link>
+        )}
 
         {/* بطاقة المحطة الرئيسية (Hero Card) */}
         <Link

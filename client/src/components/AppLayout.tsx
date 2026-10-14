@@ -8,8 +8,10 @@ import { BroadcastTicker } from "@/components/announcements/BroadcastTicker";
 import { PushNotificationPrompt } from "@/components/notifications/PushNotificationPrompt";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import { openSearch } from "@/lib/searchEvents";
 import { resetSessionForLogout } from "@/lib/offline/sessionBoundary";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
@@ -25,15 +27,15 @@ import {
   shouldSkipColdStudioAuth,
 } from "@/lib/productStudio/coldOfflinePolicy";
 import { usePrinterConnection } from "@/hooks/usePrinterConnection";
+import { setDynamicCompanyProfile } from "@/lib/printing/brand";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Menu, Search, Printer, UserCircle2, ChevronLeft, LogOut, Check,
 } from "lucide-react";
 import { Link, useLocation, useSearch } from "wouter";
-import { CASHIER_NAV_PATHS, canSeeGate } from "@/lib/navVisibility";
 import { hasModuleAccess } from "@shared/permissions";
 import { ROLE_LABEL } from "@/lib/roles";
-import { APPLICATION_MODULES as NAV_LINKS } from "@/lib/moduleRegistry";
+import { visibleApplicationModules } from "@/lib/moduleRegistry";
 import { resolveWorkspaceProfile } from "@/lib/workspaceProfiles";
 import {
   loadNavWorkspace,
@@ -129,10 +131,34 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   });
   const [coldProfile, setColdProfile] = useState<OfflineProfile | null>(null);
   const shellCapabilities = coldStudioShellCapabilities(coldStudio);
+  const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery(undefined, { enabled: !coldStudio });
+  const companyProfileQuery = trpc.system.getCompanyProfile.useQuery(undefined, {
+    enabled: !coldStudio && Boolean(me.data),
+    staleTime: 5 * 60_000,
+  });
+
+  useEffect(() => {
+    if (companyProfileQuery.data) {
+      const d = companyProfileQuery.data;
+      setDynamicCompanyProfile({
+        name: d.name,
+        sub: d.tradeName || d.name,
+        short: d.shortName || d.name,
+        subtitle: d.legalSubtitle || "",
+        footer: d.footerText || "",
+        address: d.address || "",
+        taxId: d.taxNumber || "",
+        commercialRegistry: d.commercialRegistry || "",
+        chamberLicense: d.chamberLicense || "",
+        phones: d.phones.map((p) => ({ l: p.label, n: p.number })),
+        logoUrl: d.logoUrl || null,
+      });
+    }
+  }, [companyProfileQuery.data]);
+
   const myStocktakes = trpc.count.mine.useQuery(undefined, {
     enabled: !coldStudio && Boolean(me.data),
-    refetchInterval: 30_000,
   });
   // ٢٩/٨ (بلاغ المالك): «الفنيّ حوّله لجاهز — لا شي يظهر ولا يلاحظه موظفو الاستقبال». Slice A كان
   // إشعاراً داخل شاشة الطابور فقط (يعمل حين تكون مفتوحة). هنا شارةٌ عالميّة على /work-orders
@@ -160,16 +186,64 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
     canBranchQueueWorkOrders ? { branchQueue: true } : {},
     {
       enabled: canReadWorkOrders,
-      refetchInterval: 20_000,
       refetchOnWindowFocus: true,
     },
   );
   // Codex P2 (٢٩/٨) — نستهلك عدّاداً خفيفاً بدل الصفوف الكاملة (شارة تحتاج `.length` فقط).
   const deliveryReadyCountQ = trpc.delivery.readyForDispatchCount.useQuery(undefined, {
     enabled: canReadDelivery,
-    refetchInterval: 20_000,
     refetchOnWindowFocus: true,
   });
+  const storeOrderCountsQ = trpc.storeAdmin.orders.counts.useQuery(undefined, {
+    enabled: canReadDelivery,
+    refetchOnWindowFocus: true,
+  });
+  const storeOrdersPendingCount =
+    (storeOrderCountsQ.data?.PENDING ?? 0) +
+    (storeOrderCountsQ.data?.CONFIRMED ?? 0);
+
+  // الاستغناء عن الاستطلاع الدوري (Polling) لصالح الإبطال اللحظي المعتمد على الأحداث (Event-Driven)
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.STOCKTAKE_PROGRESS,
+      REALTIME_EVENT_TYPES.BATCH_SALES_SYNCED,
+    ],
+    () => {
+      if (!coldStudio && me.data) {
+        void utils.count.mine.invalidate();
+      }
+    },
+  );
+
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.WORK_ORDER_CREATED,
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+      REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED,
+      REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+    ],
+    () => {
+      if (canReadWorkOrders) {
+        void utils.workOrders.counts.invalidate();
+      }
+    },
+  );
+
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED,
+      REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+      REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
+      REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED,
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+    ],
+    () => {
+      if (canReadDelivery) {
+        void utils.delivery.readyForDispatchCount.invalidate();
+        void utils.storeAdmin.orders.counts.invalidate();
+      }
+    },
+  );
   const workOrderReadyCount = woCounts.data?.ready ?? 0;
   const deliveryReadyCount = deliveryReadyCountQ.data ?? 0;
   const printer = usePrinterConnection();
@@ -206,13 +280,14 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
     | null;
   // المندوب (courier) شاشةٌ واحدة «توصيلاتي» فقط — نخفي بقية الروابط (كلها إمّا محجوبة خادمياً أو
   // بلا معنى له) بدل عرض جدارٍ من روابط ميتة (مراجعة عدائية ١٢/٧). العزل الحقيقي خادميّ؛ هذا تحسين UX.
-  const isCourier = role === "courier";
+  const operationPolicy = me.data?.operationPolicyEnabled && !me.data.isOwner ? me.data.resolvedOperationPolicy : null;
+  const isCourier = role === "courier" && !operationPolicy && !me.data?.isOwner;
   // «مساحة العمل المركّزة» لفئة الكاشير (٢٤/٧، قرار المالك): موظف الوردية عمله فتح وردية ← بيع ←
   // إغلاق وتسليم — يرى أدوات منضدته فقط لا جدار وحدات النظام (تعميم نمط المندوب أعلاه). القائمة
   // البيضاء تُقاطَع مع canSeeGate ⇒ ما يظهر محكوم بصلاحيات دوره الفعلية (كاشير طباعة بلا store
   // لا يرى «طلبات المتجر»)، وإطفاء وحدةٍ من شاشة «الأدوار» يُسقط بندها هنا فوراً. العزل الحقيقي
   // خادميّ كما هو؛ وبقية الشاشات المسموحة تبقى بلوغاً بالبحث (Ctrl+K) — تركيزٌ لا حجبٌ جديد.
-  const isCashier = role === "cashier";
+  const isCashier = role === "cashier" && !me.data?.isOwner;
   // طلبات المتجر التشغيلية والحجوزات والقنوات أصبحت داخل محطة الاستقبال؛ يبقى StoreHub
   // للإدارة (كتالوج/بنرات/إعدادات) ولا يُشتّت قائمة الكاشير اليومية.
   // «/delivery» (٩/٨): الكاشير هو منفِّذ توريد المناديب الطبيعي وكان مخوَّلاً بلا مدخل مرئي
@@ -223,21 +298,17 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   // محكوماً ببوّابته أدناه (`canSeeGate`)، فالإضافة هنا **إتاحةُ وصولٍ لا منحُ صلاحية**.
   // القائمة البيضاء صارت في `navVisibility.ts` بجوار البوّابة التي تُطبَّق معها — ويحرسها
   // اختبارُ تطابقٍ مع الخادم بعد أن أخفت مدخلاً مسموحاً (بلاغ ٢٠/٨).
-  const CASHIER_NAV = CASHIER_NAV_PATHS;
   // `coldStudio` (من main): شلٌّ كاملٌ للتنقّل في وضع الاستوديو البارد — يبقى **قبل** كلّ
   // فرعٍ آخر، فالإضافةُ أعلاه لا تفتح مدخلاً في وضعٍ صُمّم ليكون بلا مداخل.
   const visibleNav = coldStudio || !me.data
     ? []
-    : isCourier
-    ? NAV_LINKS.filter((m) => m.roles?.includes("courier"))
-    : isCashier
-      ? NAV_LINKS.filter((m) => CASHIER_NAV.includes(m.href) && canSeeGate(m, role, permsOverride))
-      : NAV_LINKS.filter((m) => canSeeGate(m, role, permsOverride));
+    : visibleApplicationModules(me.data.isOwner ? "admin" : role, me.data.isOwner ? null : permsOverride, operationPolicy, true);
   const workspaceProfile = resolveWorkspaceProfile({
     role: role ?? null,
     permissionsOverride: permsOverride,
+    operationPolicy,
   });
-  const primaryNav = workspaceProfile.primaryNav;
+  const primaryNav = operationPolicy && !isCashier ? workspaceProfile.primaryNav.filter((item) => visibleNav.some((allowed) => item.activePath === allowed.href || item.activePath.startsWith(allowed.href + "/"))) : workspaceProfile.primaryNav;
   const hasMyStocktake = (myStocktakes.data?.length ?? 0) > 0;
   const allowedNavPaths = visibleNav.map((item) => item.href);
   const allowedNavPathsKey = allowedNavPaths.join("|");
@@ -320,6 +391,7 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
             onToggleFavorite={handleFavorite}
             workOrderReadyCount={workOrderReadyCount}
             deliveryReadyCount={deliveryReadyCount}
+            storeOrdersPendingCount={storeOrdersPendingCount}
           />
         </Suspense>
 
@@ -421,14 +493,15 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
         <div className="px-3 pt-3 md:px-6 md:pt-4 empty:hidden">
           <PushNotificationPrompt />
         </div>
-        <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 pb-24 lg:pb-6 overflow-auto outline-none">{children}</main>
+        <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 pb-24 md:pb-24 lg:pb-6 overflow-auto outline-none">{children}</main>
       </div>
 
       {/* شريط التنقل السريع للهاتف أسفل الشاشة (<lg) */}
       {shellCapabilities.mountMobileBottomNav && (
         <MobileBottomNav
-          role={role}
-          permsOverride={permsOverride}
+          role={me.data?.isOwner ? "admin" : role}
+          permsOverride={me.data?.isOwner ? null : permsOverride}
+          operationPolicy={operationPolicy}
           onOpenMenu={() => setNavOpen(true)}
           // Codex P2 (٢٩/٨) — الشارات على الجوال أيضاً: القائمة الجانبية مخفيّة أقلَّ من lg،
           // فبلا هذا لا يرى موظّفو الاستقبال على الهاتف/التابلت أيَّ إعلانٍ للجاهز.

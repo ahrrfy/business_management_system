@@ -14,13 +14,94 @@ import type { WorkspaceNavItem } from "@/lib/workspaceProfiles";
 import {
   ChevronDown,
   ClipboardCheck,
+  HeartHandshake,
   History,
   Home,
+  LayoutDashboard,
+  Megaphone,
   Menu,
   Star,
+  TrendingUp,
+  Wallet,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "wouter";
+
+export const CRM_WINGS = [
+  {
+    id: "overview",
+    href: "/crm?wing=overview",
+    label: "نظرة عامة",
+    description: "لوحة المتابعة العامة",
+    icon: LayoutDashboard,
+  },
+  {
+    id: "care",
+    href: "/crm?wing=care",
+    label: "خدمة ورعاية الزبائن",
+    description: "الزبائن والشكاوى والمتابعات",
+    icon: HeartHandshake,
+  },
+  {
+    id: "sales",
+    href: "/crm?wing=sales",
+    label: "المبيعات وعروض الأسعار",
+    description: "عروض الأسعار والصفقات والعقود",
+    icon: TrendingUp,
+  },
+  {
+    id: "marketing",
+    href: "/crm?wing=marketing",
+    label: "التسويق والكوبونات والولاء",
+    description: "الحملات والرسائل والكوبونات",
+    icon: Megaphone,
+  },
+  {
+    id: "finance",
+    href: "/crm?wing=finance",
+    label: "الحسابات والديون والتحصيل",
+    description: "كشوفات الحساب والتحصيل والأقساط",
+    icon: Wallet,
+  },
+] as const;
+
+export function isCrmWingActive(
+  currentPath: string,
+  currentSearch: string,
+  wingId: string,
+): boolean {
+  if (currentPath !== "/crm" && !currentPath.startsWith("/crm/")) return false;
+  const search = new URLSearchParams(
+    currentSearch.startsWith("?") ? currentSearch.slice(1) : currentSearch,
+  );
+  const tab = search.get("tab");
+  const wing = search.get("wing");
+
+  if (tab) {
+    let tabWing: string | null = null;
+    if (["customers", "complaints", "followups", "contacts", "inbox"].includes(tab)) {
+      tabWing = "care";
+    } else if (["quotations", "pipeline", "contracts"].includes(tab)) {
+      tabWing = "sales";
+    } else if (["campaigns", "broadcasts", "offers", "coupons"].includes(tab)) {
+      tabWing = "marketing";
+    } else if (["statement", "collections", "aging", "installments"].includes(tab)) {
+      tabWing = "finance";
+    } else if (tab === "overview") {
+      tabWing = "overview";
+    }
+    if (tabWing) {
+      return wingId === tabWing;
+    }
+  }
+
+  if (wing) {
+    return wing === wingId;
+  }
+
+  return wingId === "overview";
+}
+
 
 type HybridSidebarNavProps = Readonly<{
   currentPath: string;
@@ -33,25 +114,39 @@ type HybridSidebarNavProps = Readonly<{
   onToggleFavorite: (path: string) => void;
   workOrderReadyCount: number;
   deliveryReadyCount: number;
+  storeOrdersPendingCount?: number;
 }>;
 
 function routeBadge(
   href: string,
   workOrderReadyCount: number,
   deliveryReadyCount: number,
+  storeOrdersPendingCount?: number,
 ): number {
   if (href === "/work-orders") return workOrderReadyCount;
   if (href === "/delivery") return deliveryReadyCount;
+  if (href === "/store-admin") return storeOrdersPendingCount ?? 0;
   return 0;
 }
 
 function NavBadge({ href, count }: { href: string; count: number }) {
   if (count <= 0) return null;
-  const delivery = href === "/delivery";
+  const isDelivery = href === "/delivery";
+  const isStore = href === "/store-admin";
+  const label = isDelivery
+    ? `${count} إرسالية جاهزة`
+    : isStore
+      ? `${count} طلب متجر بانتظار التجهيز`
+      : `${count} أمر جاهز`;
+  const title = isDelivery
+    ? `${count} إرسالية جاهزة للتوصيل`
+    : isStore
+      ? `${count} طلب متجر جديد أو قيد التجهيز`
+      : `${count} أمر شغل جاهز للتسليم`;
   return (
     <span
-      aria-label={delivery ? `${count} إرسالية جاهزة` : `${count} أمر جاهز`}
-      title={delivery ? `${count} إرسالية جاهزة للتوصيل` : `${count} أمر شغل جاهز للتسليم`}
+      aria-label={label}
+      title={title}
       className="ms-auto inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-[var(--sem-warn)] px-1.5 py-0.5 text-[10px] font-black text-background tabular-nums"
     >
       {count > 99 ? "99+" : String(count)}
@@ -70,6 +165,7 @@ export function HybridSidebarNav({
   onToggleFavorite,
   workOrderReadyCount,
   deliveryReadyCount,
+  storeOrdersPendingCount,
 }: HybridSidebarNavProps) {
   const [allModulesOpen, setAllModulesOpen] = useState(false);
   const groupedNav = groupSidebarModules(visibleModules);
@@ -83,9 +179,17 @@ export function HybridSidebarNav({
     isSidebarHrefActive(currentPath, currentSearch, item.href),
   );
 
+  const isCrmRouteActive =
+    currentPath === "/crm" || currentPath.startsWith("/crm/");
+  const [crmOpen, setCrmOpen] = useState(isCrmRouteActive);
+
   useEffect(() => {
     if (secondaryRouteActive && !primaryRouteActive) setAllModulesOpen(true);
   }, [primaryRouteActive, secondaryRouteActive]);
+
+  useEffect(() => {
+    if (isCrmRouteActive) setCrmOpen(true);
+  }, [isCrmRouteActive]);
 
   const navByPath = new Map(
     visibleModules.map((item) => [item.href, item] as const),
@@ -133,6 +237,7 @@ export function HybridSidebarNav({
               item.activePath,
               workOrderReadyCount,
               deliveryReadyCount,
+              storeOrdersPendingCount,
             );
             return (
               <Link
@@ -248,7 +353,107 @@ export function HybridSidebarNav({
                     module.href,
                     workOrderReadyCount,
                     deliveryReadyCount,
+                    storeOrdersPendingCount,
                   );
+                  if (module.id === "crm") {
+                    return (
+                      <Collapsible
+                        key={module.href}
+                        open={crmOpen}
+                        onOpenChange={setCrmOpen}
+                        className="mb-1"
+                      >
+                        <div className="group relative flex items-center">
+                          <Link
+                            href={module.href}
+                            title={module.label}
+                            aria-current={isCrmRouteActive ? "page" : undefined}
+                            className={cn(
+                              "flex flex-1 items-center gap-2 mb-0.5 px-3 pe-20 py-2 min-h-[40px] text-sm transition",
+                              isCrmRouteActive ? "sb-active font-semibold" : "sb-item rounded-md mx-2",
+                            )}
+                          >
+                            <Icon className="size-4 shrink-0" aria-hidden />
+                            <span className="truncate">{module.label}</span>
+                            <NavBadge href={module.href} count={badge} />
+                          </Link>
+                          <div className="absolute left-1.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
+                            <CollapsibleTrigger
+                              className="flex size-7 items-center justify-center rounded-md opacity-70 transition hover:bg-accent hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              aria-label={
+                                crmOpen
+                                  ? "طي أجنحة العملاء والعمليات"
+                                  : "توسيع أجنحة العملاء والعمليات"
+                              }
+                              title={crmOpen ? "طي الأجنحة" : "توسيع الأجنحة"}
+                            >
+                              <ChevronDown
+                                className={cn(
+                                  "size-3.5 transition-transform duration-200",
+                                  crmOpen && "rotate-180",
+                                )}
+                                aria-hidden
+                              />
+                            </CollapsibleTrigger>
+                            <button
+                              type="button"
+                              onClick={() => onToggleFavorite(module.href)}
+                              aria-disabled={!favorite && favoritesFull ? true : undefined}
+                              aria-pressed={favorite}
+                              aria-label={
+                                favorite
+                                  ? `إزالة ${module.label} من المفضلة`
+                                  : favoritesFull
+                                    ? `لا يمكن إضافة ${module.label} إلى المفضلة؛ بلغت الحد الأقصى`
+                                    : `إضافة ${module.label} إلى المفضلة`
+                              }
+                              title={
+                                favorite
+                                  ? "إزالة من المفضلة"
+                                  : favoritesFull
+                                    ? `بلغت الحد (${NAV_FAVORITES_LIMIT})`
+                                    : "إضافة إلى المفضلة"
+                              }
+                              className={cn(
+                                "flex size-7 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                                favorite ? "text-primary" : "opacity-55 hover:bg-accent hover:opacity-100",
+                                !favorite && favoritesFull && "cursor-not-allowed opacity-30 hover:bg-transparent hover:opacity-30",
+                              )}
+                            >
+                              <Star className={cn("size-3.5", favorite && "fill-current")} aria-hidden />
+                            </button>
+                          </div>
+                        </div>
+                        <CollapsibleContent className="space-y-0.5 ps-5 pe-2 pt-0.5">
+                          {CRM_WINGS.map((wing) => {
+                            const WingIcon = wing.icon;
+                            const wingActive = isCrmWingActive(
+                              currentPath,
+                              currentSearch,
+                              wing.id,
+                            );
+                            return (
+                              <Link
+                                key={wing.id}
+                                href={wing.href}
+                                title={`${wing.label} — ${wing.description}`}
+                                aria-current={wingActive ? "page" : undefined}
+                                className={cn(
+                                  "flex min-h-[34px] items-center gap-2 rounded-md px-2.5 py-1 text-xs transition",
+                                  wingActive
+                                    ? "sb-active font-semibold shadow-xs"
+                                    : "sb-item opacity-85 hover:opacity-100",
+                                )}
+                              >
+                                <WingIcon className="size-3.5 shrink-0" aria-hidden />
+                                <span className="truncate">{wing.label}</span>
+                              </Link>
+                            );
+                          })}
+                        </CollapsibleContent>
+                      </Collapsible>
+                    );
+                  }
                   return (
                     <div key={module.href} className="group relative">
                       <Link

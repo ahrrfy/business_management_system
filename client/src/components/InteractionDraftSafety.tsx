@@ -35,23 +35,42 @@ export function InteractionDraftSafety() {
     const path = location;
     beginInteractionScope(path);
     if (promptedPath.current === path || !hasRecoverableInteractionDraft()) return;
-    promptedPath.current = path;
-    playAudioFeedback("notification");
-    const id = toast("توجد إدخالات غير محفوظة من الجلسة السابقة", {
-      duration: Infinity,
-      action: {
-        label: "استعادة",
-        onClick: () => {
-          // ننتظر اكتمال تركيب الصفحة الحالية؛ صفحات React المضبوطة تحتاج أحداث input.
-          window.setTimeout(() => {
-            if (restoreInteractionDraft()) notify.ok("تمت استعادة الإدخالات غير المحفوظة");
-            else notify.err("تعذّرت مطابقة المسودة مع النموذج الحالي");
-          }, 0);
+    let id: string | number | undefined;
+    let restoreTimer: number | undefined;
+    let cancelled = false;
+    // Toaster يأتي بعد هذا المكوّن في main؛ ننشر بعد تركيب اشتراك التنبيهات
+    // كي لا يضيع إشعار الاستعادة عند إعادة فتح التطبيق.
+    const promptTimer = window.setTimeout(() => {
+      promptedPath.current = path;
+      playAudioFeedback("notification");
+      id = toast("توجد إدخالات غير محفوظة من الجلسة السابقة", {
+        duration: Infinity,
+        action: {
+          label: "استعادة",
+          onClick: () => {
+            if (cancelled) return;
+            // ننتظر اكتمال تركيب الصفحة الحالية؛ صفحات React المضبوطة تحتاج أحداث input.
+            restoreTimer = window.setTimeout(() => {
+              if (cancelled) return;
+              if (restoreInteractionDraft()) notify.ok("تمت استعادة الإدخالات غير المحفوظة");
+              else notify.err("تعذّرت مطابقة المسودة مع النموذج الحالي");
+            }, 0);
+          },
         },
-      },
-      cancel: { label: "تجاهل", onClick: discardInteractionDraft },
-    });
-    return () => { toast.dismiss(id); };
+        cancel: {
+          label: "تجاهل",
+          onClick: () => {
+            if (!cancelled) discardInteractionDraft();
+          },
+        },
+      });
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(promptTimer);
+      if (restoreTimer !== undefined) window.clearTimeout(restoreTimer);
+      if (id !== undefined) toast.dismiss(id);
+    };
   }, [location]);
 
   return null;

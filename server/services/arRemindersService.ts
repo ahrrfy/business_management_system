@@ -10,8 +10,15 @@
 // الخدمة تعتمد getARAging الموجودة (server/services/reports/arAging.ts) لحساب أعمار الذمم
 // وأقدم فاتورة لكل عميل ⇒ لا نكرّر منطق التعمير.
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
-import { accountingEntries, arReminders, customers, invoices } from "../../drizzle/schema";
+import { appErrorMessage } from "@shared/errors";
+import { and, asc, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import {
+  accountingEntries,
+  arReminders,
+  branches,
+  customers,
+  invoices,
+} from "../../drizzle/schema";
 import { requireDb } from "./tx";
 import { getARAging } from "./reports/arAging";
 import { money, toDbMoney } from "./money";
@@ -50,6 +57,11 @@ export interface ReminderQueueRow {
   /** `true` حين الصفّ مدينٌ برصيد افتتاحي/مُدوَّر فقط (بلا فاتورة نظام) — قرار المالك (٥/٧): يظهر في
    *  العرض المجمَّع (branchId=null) فقط، مؤرَّخاً من قيد OPENING، والمبلغ = كامل الرصيد الجاري. الواجهة تُبرزه بشارة. */
   isOpeningBalance: boolean;
+  /**
+   * معرّف الفرع المسند للذمّة (null للمدينين بالرصيد الافتتاحي المجمَّع على مستوى الشركة).
+   * يضمن دقة نسبة التذكير لفرعه وتفادي خطأ «لا فرع مسند».
+   */
+  branchId: number | null;
 }
 
 /** حساب أيام التأخّر بين تاريخين UTC نقيّاً (لا Date، لا مناطق زمنية). */
@@ -78,13 +90,17 @@ export async function getReminderQueue(opts: {
   /** `true` ⇒ **مدينو الرصيد الافتتاحي فقط** (بلا فواتير نظام)، مجمَّعين عبر الفروع. نطاق مستقلّ
    *  للأدمن في الشاشة، معزول عن طابور الفواتير الفرعيّ (يتجنّب حاصر «قراءة مجمَّعة + كتابة فرعيّة»). */
   openingOnly?: boolean;
+  /** `true` ⇒ شمول مديني الرصيد الافتتاحي مع فواتير النظام في العرض الموحَّد الشامل. */
+  includeOpening?: boolean;
+  /** حل فروع الفواتير في العرض المجمّع (افتراضياً: مفعّل عند includeOpening فقط لتفادي إثقال لوحة التحكم) */
+  resolveBranchIds?: boolean;
 }): Promise<ReminderQueueRow[]> {
   const db = requireDb();
-  // نطاق «مدينو الافتتاحي فقط» يجمع بلا فلتر فرع دائماً (بلا انتماء فرعيّ أصلاً) — فلترة aging بفرع
-  // هنا كانت ستُصنِّف خطأً عميلاً له فواتير في فرعٍ آخر كأنه «مدين افتتاحي بحت» (LEFT JOIN مقيَّد
-  // يُخفي فواتيره الفعلية فتظهر unpaidTotal=0/oldestInvoiceDate=null زوراً لهذا الفرع فقط).
+  // نطاق «مدينو الافتتاحي فقط» أو العرض الموحَّد يجمع بلا فلتر فرع دائماً (بلا انتماء فرعيّ أصلاً)
   const aging = await getARAging(
-    opts.openingOnly || opts.branchId == null ? {} : { branchId: opts.branchId },
+    opts.openingOnly || opts.includeOpening || opts.branchId == null
+      ? {}
+      : { branchId: opts.branchId },
   );
   const today = todayUTC();
 
@@ -97,89 +113,230 @@ export async function getReminderQueue(opts: {
   // الافتتاحي الدائن (PR #125) يجعل currentBalance ≤ 0 رغم بقاء فواتير PENDING. الذمم الحاكمة =
   // currentBalance (§٥) ⇒ يُستبعَد كل عميل currentBalance ≤ 0 (سدّد أو دائن — لا مطالبة)، والمبلغ
   // المعروض/المُرسَل = min(unpaidTotal, currentBalance) — لا نطالب بأكثر من الذمّة الجارية.
-  // مسار (أ) — الفواتير النظامية: عميل بذمّة جارية >0 وأقدم فاتورة مستحقّة متأخّرة ≥٧ أيام.
-  // (يُتخطّى كلياً في نطاق «مدينو الافتتاحي فقط».)
-  const invoiceEligible = opts.openingOnly
-    ? []
-    : aging
-    .filter(
-      (r) => money(r.unpaidTotal).gt(0) && money(r.currentBalance).gt(0) && r.oldestInvoiceDate,
-    )
-    .map((r) => {
-      const unpaid = money(r.unpaidTotal);
-      const balance = money(r.currentBalance);
-      return {
-        row: r,
-        dueAmount: toDbMoney(unpaid.lt(balance) ? unpaid : balance),
-        oldestInvoiceDate: r.oldestInvoiceDate!,
-        daysOverdue: daysBetween(r.oldestInvoiceDate!, today),
-        isOpeningBalance: false,
-      };
-    })
-    .filter((x) => x.daysOverdue >= REMINDER_MIN_DAYS_OVERDUE);
+  // جلب قيود OPENING الموجبة إن طُلب الرصيد الافتتاحي (سواء openingOnly أو includeOpening)
+  const openedOnMap = new Map<number, string>();
+  const openBranchMap = new Map<number, number | null>();
 
-  // مسار (ب) — مدينو الرصيد الافتتاحي/المُدوَّر فقط (بلا فاتورة نظام) — قرار المالك (٥/٧): يُدرَجون
-  // **فقط عند طلب صريح `openingOnly`** (لا بمجرّد branchId=null) — نطاق مقصودٌ للأدمن حصراً عبر
-  // الراوتر (arRemindersRouter.queue بـopeningScope). ⚠️ تحقّق عدائي (٥/٧) كشف أن الشرط السابق
-  // (`branchId==null || openingOnly`) كان يُسرِّب هؤلاء المدينين إلى تجميع `dashboard.ts` العادي —
-  // الذي يستدعي branchId=null لأي مدير مرتفع (لا الأدمن حصراً)، فيظهرون في «برنامج اليوم» لكل مدير
-  // بلا علمه رغم أن الراوتر يمنعه صراحةً من رؤيتهم مباشرةً. الشرط الآن صريح لا يتفعّل صدفةً.
-  let openingEligible: typeof invoiceEligible = [];
-  if (opts.openingOnly) {
-    const openingCandidates = aging.filter(
-      (r) => !r.oldestInvoiceDate && money(r.currentBalance).gt(0),
-    );
-    if (openingCandidates.length) {
-      const ids = openingCandidates.map((r) => r.customerId);
+  if (opts.openingOnly || opts.includeOpening) {
+    const candidateIds = aging
+      .filter((r) => money(r.currentBalance).gt(0))
+      .map((r) => r.customerId);
+    if (candidateIds.length > 0) {
       const openRows = await db
         .select({
           customerId: accountingEntries.customerId,
           openedOn: sql<string>`DATE_FORMAT(MIN(${accountingEntries.entryDate}), '%Y-%m-%d')`,
+          branchId: sql<number | null>`MIN(${accountingEntries.branchId})`,
         })
         .from(accountingEntries)
         .where(
           and(
             eq(accountingEntries.entryType, "OPENING"),
-            sql`${accountingEntries.customerId} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`,
+            sql`${accountingEntries.customerId} IN (${sql.join(
+              candidateIds.map((id) => sql`${id}`),
+              sql`, `,
+            )})`,
           ),
         )
         .groupBy(accountingEntries.customerId)
         // ب-١ (١٦/٨): التصحيح صار قيد فرقٍ إلحاقيّاً ⇒ **وجود صفّ** لم يعد يعني «مدين افتتاحيّ»:
         // رصيدٌ افتتاحيّ صُحِّح إلى صفرٍ (أو انقلب دائناً) يُبقي صفّيه في الجدول. المعيار الصحيح
         // هو مجموع القيود موجباً — وإلّا طُولب عميلٌ بمبلغٍ سبق أن أُلغي.
-        .having(sql`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0) > 0`);
-      const openedOn = new Map<number, string>();
-      for (const r of openRows) if (r.openedOn) openedOn.set(Number(r.customerId), r.openedOn);
-      openingEligible = openingCandidates
-        // نشترط قيد OPENING فعليّاً (تعريف «مدين افتتاحي») — رصيد موجب من مصدر آخر بلا OPENING يُستبعَد.
-        .filter((r) => openedOn.has(r.customerId))
-        .map((r) => {
-          const openingDate = openedOn.get(r.customerId)!;
-          return {
-            row: r,
-            dueAmount: toDbMoney(money(r.currentBalance)),
-            oldestInvoiceDate: openingDate,
-            daysOverdue: daysBetween(openingDate, today),
-            isOpeningBalance: true,
-          };
-        })
-        .filter((x) => x.daysOverdue >= REMINDER_MIN_DAYS_OVERDUE);
+        .having(
+          sql`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0) > 0`,
+        );
+
+      for (const r of openRows) {
+        if (r.openedOn) openedOnMap.set(Number(r.customerId), r.openedOn);
+        if (r.branchId != null)
+          openBranchMap.set(Number(r.customerId), Number(r.branchId));
+      }
     }
   }
 
-  const eligible = [...invoiceEligible, ...openingEligible];
+  type EligibleItem = {
+    row: (typeof aging)[0];
+    dueAmount: string;
+    oldestInvoiceDate: string;
+    daysOverdue: number;
+    isOpeningBalance: boolean;
+    branchId: number | null;
+  };
+
+  const eligible: EligibleItem[] = [];
+
+  for (const r of aging) {
+    const balance = money(r.currentBalance);
+    // §٥: الذمم الحاكمة = currentBalance — لا مطالبة لمن رصيده صفراً أو دائناً
+    if (balance.lte(0)) continue;
+
+    const hasInvoice = Boolean(
+      r.oldestInvoiceDate && money(r.unpaidTotal).gt(0),
+    );
+    const openedOn = openedOnMap.get(r.customerId);
+    const hasOpening = Boolean(openedOn);
+    // تدقيق مراجعة كودكس: ثبوت الرصيد الافتتاحي المتبقي فعلياً من واقع unbucketed > 0
+    // فوجود قيد تاريخي لا يعني بقاء الدين إن كانت هناك مقاصات أو دفعات لاحقة غطته
+    const hasOutstandingOpening =
+      hasOpening && Boolean(openedOn) && money(r.unbucketed).gt(0);
+
+    if (opts.openingOnly) {
+      // نطاق «الافتتاحي فقط»: عملاء بلا فاتورة نظام ولديهم رصيد افتتاحي مستحق
+      if (!hasInvoice && hasOutstandingOpening && openedOn) {
+        const days = daysBetween(openedOn, today);
+        if (days >= REMINDER_MIN_DAYS_OVERDUE) {
+          eligible.push({
+            row: r,
+            dueAmount: toDbMoney(balance),
+            oldestInvoiceDate: openedOn,
+            daysOverdue: days,
+            isOpeningBalance: true,
+            branchId: openBranchMap.get(r.customerId) ?? null,
+          });
+        }
+      }
+      continue;
+    }
+
+    if (opts.includeOpening) {
+      // العرض الشامل المدمج (كل الفروع): فواتير + رصيد افتتاحي + عميل هجين
+      if (hasInvoice && hasOutstandingOpening && openedOn && r.oldestInvoiceDate) {
+        // عميل هجين: لديه فواتير ورصيد افتتاحي متبقٍّ فعلياً (unbucketed > 0)
+        // تاريخ التأخر الأقدم بينهما لمنع الحجب
+        const effectiveOldestDate =
+          openedOn < r.oldestInvoiceDate ? openedOn : r.oldestInvoiceDate;
+        const days = daysBetween(effectiveOldestDate, today);
+        if (days >= REMINDER_MIN_DAYS_OVERDUE) {
+          eligible.push({
+            row: r,
+            dueAmount: toDbMoney(balance), // كامل الذمة الجارية الحاكمة
+            oldestInvoiceDate: effectiveOldestDate,
+            daysOverdue: days,
+            isOpeningBalance: false, // لديه فواتير نظام فيعامل بفرع فواتيره
+            branchId: opts.branchId ?? null,
+          });
+        }
+      } else if (hasInvoice && r.oldestInvoiceDate) {
+        // عميل فواتير بحت (أو عميل كان لديه رصيد افتتاحي وسُدّد بالكامل وبقيت الفواتير فقط)
+        const unpaid = money(r.unpaidTotal);
+        const days = daysBetween(r.oldestInvoiceDate, today);
+        if (days >= REMINDER_MIN_DAYS_OVERDUE) {
+          eligible.push({
+            row: r,
+            dueAmount: toDbMoney(unpaid.lt(balance) ? unpaid : balance),
+            oldestInvoiceDate: r.oldestInvoiceDate,
+            daysOverdue: days,
+            isOpeningBalance: false,
+            branchId: opts.branchId ?? null,
+          });
+        }
+      } else if (hasOutstandingOpening && openedOn) {
+        // عميل رصيد افتتاحي بحت (أو فواتيره سُدّدت وبقي رصيد افتتاحي مستحق)
+        const days = daysBetween(openedOn, today);
+        if (days >= REMINDER_MIN_DAYS_OVERDUE) {
+          eligible.push({
+            row: r,
+            dueAmount: toDbMoney(balance),
+            oldestInvoiceDate: openedOn,
+            daysOverdue: days,
+            isOpeningBalance: true,
+            branchId: openBranchMap.get(r.customerId) ?? null,
+          });
+        }
+      }
+    } else {
+      // العرض العادي (فرع محدد أو استدعاء بلا includeOpening)
+      if (hasInvoice && r.oldestInvoiceDate) {
+        const unpaid = money(r.unpaidTotal);
+        const days = daysBetween(r.oldestInvoiceDate, today);
+        if (days >= REMINDER_MIN_DAYS_OVERDUE) {
+          eligible.push({
+            row: r,
+            dueAmount: toDbMoney(unpaid.lt(balance) ? unpaid : balance),
+            oldestInvoiceDate: r.oldestInvoiceDate,
+            daysOverdue: days,
+            isOpeningBalance: false,
+            branchId: opts.branchId ?? null,
+          });
+        }
+      }
+    }
+  }
+
+  // حل فروع الفواتير في العرض المجمّع (branchId == null) للعملاء غير الافتتاحيين
+  // يتم فقط عند includeOpening أو طلب صريح لتفادي أي عبء إضافي على لوحة التحكم
+  const shouldResolveBranches =
+    opts.resolveBranchIds ?? Boolean(opts.includeOpening);
+  if (shouldResolveBranches && opts.branchId == null) {
+    const invCustIds = eligible
+      .filter((x) => !x.isOpeningBalance)
+      .map((x) => x.row.customerId);
+    if (invCustIds.length > 0) {
+      const oldestInvBranches = await db
+        .select({
+          customerId: invoices.customerId,
+          branchId: invoices.branchId,
+        })
+        .from(invoices)
+        .where(
+          and(
+            sql`${invoices.customerId} IN (${sql.join(
+              invCustIds.map((id) => sql`${id}`),
+              sql`, `,
+            )})`,
+            inArray(invoices.status, ["PENDING", "PARTIALLY_PAID"]),
+          ),
+        )
+        .orderBy(
+          asc(sql`COALESCE(${invoices.dueDate}, ${invoices.invoiceDate})`),
+        );
+      const branchSetByCustomer = new Map<number, Set<number>>();
+      const singleBranchByCustomer = new Map<number, number>();
+      for (const r of oldestInvBranches) {
+        if (r.customerId && r.branchId) {
+          let s = branchSetByCustomer.get(r.customerId);
+          if (!s) {
+            s = new Set();
+            branchSetByCustomer.set(r.customerId, s);
+          }
+          s.add(r.branchId);
+          if (!singleBranchByCustomer.has(r.customerId)) {
+            singleBranchByCustomer.set(r.customerId, r.branchId);
+          }
+        }
+      }
+      for (const item of eligible) {
+        if (!item.isOpeningBalance) {
+          const branches = branchSetByCustomer.get(item.row.customerId);
+          // إذا كانت فواتير العميل محصورة في فرع واحد فقط، يُسند لهذا الفرع
+          // أما إذا تعددت فروعه، فيبقى null صراحةً للحفاظ على النطاق الشامل المجمّع
+          if (branches && branches.size === 1) {
+            item.branchId = singleBranchByCustomer.get(item.row.customerId) ?? null;
+          } else {
+            item.branchId = null;
+          }
+        }
+      }
+    }
+  }
+
   if (eligible.length === 0) return [];
 
   // آخر تذكير لكل عميل مع تاريخ الوعد (لكل عميل، ONLY latest row) — استعلام subquery داخلي
   // بأحدث id لكل customerId (id = AUTO_INCREMENT ⇒ ترتيب زمني موثوق أدقّ من MAX(createdAt)
   // مع تعادل الثانية)، ثم JOIN لجلب `promisedDate` من نفس الصفّ. استعلام واحد لا N+1.
   const customerIds = eligible.map((x) => x.row.customerId);
-  // عند فرع محدَّد: آخر تذكير للعميل **في هذا الفرع** (التبريد فرعيّ — عميل مشترك بين فرعين قد
-  // يُذكَّر من كليهما في نفس اليوم؛ سلوك سابق للتغيير، توحيده قرار متابعة). عند null (تجميع):
-  // آخر تذكير له في **أي** فرع — تبريد/وعد موحَّدان عبر الفروع في القراءة المجمَّعة.
+  // قراءة آخر تذكير لكل عميل:
+  // - عند تحديد فرع معين: نأخذ آخر تذكير مسجل لهذا الفرع أو أي تذكير شامل لكافة الفروع [ALL_BRANCHES]
+  //   لمنع تكرار الاتصال بالعميل إن كانت الإدارة العامة قد ذكرته، مع صون استقلالية تذكير فروع أخرى لم تُذكر بعد.
+  // - عند العرض الشامل المجمّع: نأخذ آخر تذكير للعميل في أي فرع.
   const lastRows = await db
     .select({
+      id: arReminders.id,
       customerId: arReminders.customerId,
+      branchId: arReminders.branchId,
+      messageBody: arReminders.messageBody,
+      skipReason: arReminders.skipReason,
       lastAt: arReminders.createdAt,
       lastStatus: arReminders.status,
       lastPromisedDate: arReminders.promisedDate,
@@ -187,30 +344,42 @@ export async function getReminderQueue(opts: {
     .from(arReminders)
     .where(
       and(
-        sql`${arReminders.customerId} IN (${sql.join(customerIds.map((id) => sql`${id}`), sql`, `)})`,
-        ...(opts.branchId != null ? [eq(arReminders.branchId, opts.branchId)] : []),
-        opts.branchId != null
-          ? sql`${arReminders.id} = (
-              SELECT MAX(inner_r.id) FROM ${arReminders} AS inner_r
-              WHERE inner_r.customerId = ${arReminders.customerId}
-                AND inner_r.branchId = ${arReminders.branchId}
-            )`
-          : sql`${arReminders.id} = (
-              SELECT MAX(inner_r.id) FROM ${arReminders} AS inner_r
-              WHERE inner_r.customerId = ${arReminders.customerId}
-            )`,
+        sql`${arReminders.customerId} IN (${sql.join(
+          customerIds.map((id) => sql`${id}`),
+          sql`, `,
+        )})`,
+        sql`${arReminders.id} = (
+          SELECT MAX(inner_r.id) FROM ${arReminders} AS inner_r
+          WHERE inner_r.customerId = ${arReminders.customerId}
+            ${
+              opts.branchId != null
+                ? sql`AND (inner_r.branchId = ${opts.branchId} OR COALESCE(inner_r.messageBody, '') LIKE '[ALL_BRANCHES]%' OR COALESCE(inner_r.skipReason, '') LIKE '[ALL_BRANCHES]%')`
+                : sql``
+            }
+        )`,
       ),
     );
 
   const lastByCustomer = new Map<
     number,
-    { at: Date; status: "SENT" | "SKIPPED"; promisedDate: string | null }
+    {
+      at: Date;
+      status: "SENT" | "SKIPPED";
+      promisedDate: string | null;
+      isAllBranches: boolean;
+      branchId: number;
+    }
   >();
   for (const r of lastRows) {
+    const isAllBranches =
+      Boolean(r.messageBody?.startsWith("[ALL_BRANCHES]")) ||
+      Boolean(r.skipReason?.startsWith("[ALL_BRANCHES]"));
     lastByCustomer.set(Number(r.customerId), {
       at: new Date(r.lastAt),
       status: r.lastStatus,
       promisedDate: r.lastPromisedDate ?? null,
+      isAllBranches,
+      branchId: Number(r.branchId),
     });
   }
 
@@ -221,14 +390,31 @@ export async function getReminderQueue(opts: {
   const nowMs = Date.now();
   const cooldownMs = REMINDER_COOLDOWN_DAYS * 86_400_000;
   const queue: ReminderQueueRow[] = [];
-  for (const { row, dueAmount, oldestInvoiceDate, daysOverdue, isOpeningBalance } of eligible) {
+  for (const {
+    row,
+    dueAmount,
+    oldestInvoiceDate,
+    daysOverdue,
+    isOpeningBalance,
+    branchId,
+  } of eligible) {
     const last = lastByCustomer.get(row.customerId);
-    const isPromiseDue = !!(last && last.promisedDate && last.promisedDate <= today);
-    const isFuturePromise = !!(last && last.promisedDate && last.promisedDate > today);
+    const isPromiseDue = !!(
+      last &&
+      last.promisedDate &&
+      last.promisedDate <= today
+    );
+    const isFuturePromise = !!(
+      last &&
+      last.promisedDate &&
+      last.promisedDate > today
+    );
     // وعد المستقبل ⇒ استبعاد فوري (متابعة مؤجَّلة بقرار موظف).
     if (isFuturePromise) continue;
-    // ليس وعداً مستحقّاً + في نافذة التبريد ⇒ استبعاد اعتيادي.
-    if (!isPromiseDue && last && nowMs - last.at.getTime() < cooldownMs) continue;
+    // ليس وعداً مستحقّاً + في نافذة التبريد (التبريد الموحَّد عبر الفروع يمنع إزعاج العميل مجدداً):
+    if (!isPromiseDue && last && nowMs - last.at.getTime() < cooldownMs) {
+      continue;
+    }
     queue.push({
       customerId: row.customerId,
       customerName: row.customerName,
@@ -241,6 +427,7 @@ export async function getReminderQueue(opts: {
       promisedDate: last?.promisedDate ?? null,
       isPromiseDue,
       isOpeningBalance,
+      branchId,
     });
   }
 
@@ -261,6 +448,8 @@ export interface LogReminderInput {
   messageBody: string;
   /** مدين رصيد افتتاحي (بلا فاتورة فرعيّة) ⇒ يُتحقَّق بقيد OPENING بدل الفاتورة الفرعيّة. */
   isOpeningBalance?: boolean;
+  /** نطاق شامل لكل الفروع (للإدارة العامة حصراً) ⇒ يوثق كـ[ALL_BRANCHES] ويحمي التبريد عبر الفروع. */
+  isAllBranches?: boolean;
   /** وسيلة الإرسال: MANUAL (زرّ wa.me اليدوي القائم) أو API (T4.2، قالب Meta معتمَد عبر Cloud API).
    *  الترك بلا تمرير (undefined) يبقي السلوك القديم تماماً — يُخزَّن null (لا تغيير رجعي). */
   sentVia?: "MANUAL" | "API";
@@ -268,7 +457,10 @@ export interface LogReminderInput {
 
 /** حماية IDOR: العميل «يخصّ الفرع» إن كانت له فاتورة (مؤكَّدة/غير ملغاة) في هذا الفرع.
  *  (العملاء ليس لهم branchId — يشتركون عبر الفروع، والعزل يتمّ عبر الفواتير.) */
-async function assertCustomerHasBranchInvoice(customerId: number, branchId: number): Promise<void> {
+async function assertCustomerHasBranchInvoice(
+  customerId: number,
+  branchId: number,
+): Promise<void> {
   const db = requireDb();
   const rows = await db
     .select({ id: invoices.id })
@@ -277,12 +469,20 @@ async function assertCustomerHasBranchInvoice(customerId: number, branchId: numb
       and(
         eq(invoices.customerId, customerId),
         eq(invoices.branchId, branchId),
-        inArray(invoices.status, ["PENDING", "PARTIALLY_PAID", "PAID", "CONFIRMED"]),
+        inArray(invoices.status, [
+          "PENDING",
+          "PARTIALLY_PAID",
+          "PAID",
+          "CONFIRMED",
+        ]),
       ),
     )
     .limit(1);
   if (rows.length === 0) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "لا فواتير لهذا العميل في فرعك — لا يجوز تسجيل تذكير عنه." });
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "لا فواتير لهذا العميل في فرعك — لا يجوز تسجيل تذكير عنه.",
+    });
   }
 }
 
@@ -305,8 +505,36 @@ async function assertOpeningBalanceDebtor(customerId: number): Promise<void> {
         sql`CAST(${customers.currentBalance} AS DECIMAL(15,2)) > 0`,
       ),
     );
-  if (!(money(rows[0]?.total ?? "0").gt(0))) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "لا رصيد افتتاحيّ مستحقّ لهذا العميل — لا يجوز تسجيل تذكير عنه." });
+  if (!money(rows[0]?.total ?? "0").gt(0)) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "لا رصيد افتتاحيّ مستحقّ لهذا العميل — لا يجوز تسجيل تذكير عنه.",
+    });
+  }
+}
+
+/** حماية العميل على مستوى الشركة (تذكير كل الفروع / مدين متعدد الفروع أو افتتاحي) */
+async function assertCustomerBelongsToCompany(customerId: number): Promise<void> {
+  const db = requireDb();
+  const rows = await db
+    .select({ id: customers.id })
+    .from(customers)
+    .where(
+      and(
+        eq(customers.id, customerId),
+        sql`CAST(${customers.currentBalance} AS DECIMAL(15,2)) > 0`,
+      ),
+    )
+    .limit(1);
+  if (rows.length === 0) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "العميل غير مؤهل لتسجيل تذكير عام",
+        why: "العميل غير موجود أو ليس لديه رصيد مدين مستحق في سجلات الشركة.",
+        doThis: "تأكد من اختيار عميل ذي ذمة مالية موجبة في النظام.",
+      }),
+    });
   }
 }
 
@@ -316,22 +544,38 @@ export async function logReminderSent(
   actor: { userId: number; branchId: number },
 ): Promise<{ id: number }> {
   if (money(input.totalUnpaidSnapshot).lte(0)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الرصيد الآجل يجب أن يكون موجباً." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "الرصيد الآجل يجب أن يكون موجباً.",
+    });
   }
   if (input.daysOverdue < 0) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "أيام التأخّر لا تصحّ أن تكون سالبة." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "أيام التأخّر لا تصحّ أن تكون سالبة.",
+    });
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.oldestInvoiceDate)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ أقدم فاتورة غير صالح." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "تاريخ أقدم فاتورة غير صالح.",
+    });
   }
   if (!input.messageBody.trim()) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "نص الرسالة فارغ." });
   }
-  if (input.isOpeningBalance) {
+  if (input.isAllBranches) {
+    await assertCustomerBelongsToCompany(input.customerId);
+  } else if (input.isOpeningBalance) {
     await assertOpeningBalanceDebtor(input.customerId);
   } else {
     await assertCustomerHasBranchInvoice(input.customerId, actor.branchId);
   }
+
+  const finalMessageBody =
+    input.isAllBranches && !input.messageBody.startsWith("[ALL_BRANCHES]")
+      ? `[ALL_BRANCHES] ${input.messageBody}`
+      : input.messageBody;
 
   const db = requireDb();
   const res = await db.insert(arReminders).values({
@@ -340,7 +584,7 @@ export async function logReminderSent(
     totalUnpaidSnapshot: money(input.totalUnpaidSnapshot).toFixed(2),
     oldestInvoiceDate: input.oldestInvoiceDate,
     daysOverdue: input.daysOverdue,
-    messageBody: input.messageBody,
+    messageBody: finalMessageBody,
     status: "SENT",
     skipReason: null,
     sentVia: input.sentVia ?? null,
@@ -367,9 +611,12 @@ export interface SendViaApiInput {
   oldestInvoiceDate: string;
   daysOverdue: number;
   isOpeningBalance?: boolean;
+  isAllBranches?: boolean;
 }
 
-export type SendViaApiResult = { sent: true; reminderId: number } | { sent: false; reason: string };
+export type SendViaApiResult =
+  | { sent: true; reminderId: number }
+  | { sent: false; reason: string };
 
 /**
  * إرسال تذكير عبر قالب Meta معتمَد (`payment_reminder`) بدل فتح wa.me يدوياً — يمرّ حصراً عبر
@@ -383,10 +630,16 @@ export async function sendViaApi(
 ): Promise<SendViaApiResult> {
   const db = requireDb();
   const cust = (
-    await db.select({ name: customers.name, phone: customers.phone }).from(customers).where(eq(customers.id, input.customerId)).limit(1)
+    await db
+      .select({ name: customers.name, phone: customers.phone })
+      .from(customers)
+      .where(eq(customers.id, input.customerId))
+      .limit(1)
   )[0];
-  if (!cust) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود." });
-  if (!cust.phone) return { sent: false, reason: "لا رقم هاتف مسجَّل لهذا العميل." };
+  if (!cust)
+    throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود." });
+  if (!cust.phone)
+    return { sent: false, reason: "لا رقم هاتف مسجَّل لهذا العميل." };
 
   const result = await flowNotify({
     flowKey: "flowArReminder",
@@ -394,7 +647,11 @@ export async function sendViaApi(
     toPhoneE164: cust.phone,
     customerId: input.customerId,
     templateName: "payment_reminder",
-    bodyParams: [cust.name, formatIQD(input.totalUnpaidSnapshot), COMPANY_NAME_AR],
+    bodyParams: [
+      cust.name,
+      formatIQD(input.totalUnpaidSnapshot),
+      COMPANY_NAME_AR,
+    ],
     dedupeKey: `AR:${input.customerId}:${todayUTC().replace(/-/g, "")}`,
   });
   if (!("queued" in result)) {
@@ -409,6 +666,7 @@ export async function sendViaApi(
       daysOverdue: input.daysOverdue,
       messageBody: `[API] payment_reminder — ${formatIQD(input.totalUnpaidSnapshot)}`,
       isOpeningBalance: input.isOpeningBalance,
+      isAllBranches: input.isAllBranches,
       sentVia: "API",
     },
     actor,
@@ -428,6 +686,8 @@ export interface SkipReminderInput {
   promisedDate?: string | null;
   /** مدين رصيد افتتاحي (بلا فاتورة فرعيّة) ⇒ يُتحقَّق بقيد OPENING بدل الفاتورة الفرعيّة. */
   isOpeningBalance?: boolean;
+  /** نطاق شامل لكل الفروع (للإدارة العامة حصراً) ⇒ يوثق كـ[ALL_BRANCHES] ويحمي التبريد عبر الفروع. */
+  isAllBranches?: boolean;
 }
 
 /** تسجيل تخطٍّ لتذكير عميل — يمنع ظهوره في القائمة اليومية بقية أيام التبريد. */
@@ -439,29 +699,51 @@ export async function logReminderSkipped(
     throw new TRPCError({ code: "BAD_REQUEST", message: "سبب التخطّي مطلوب." });
   }
   if (input.skipReason.length > 255) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "سبب التخطّي أطول من ٢٥٥ حرفاً." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "سبب التخطّي أطول من ٢٥٥ حرفاً.",
+    });
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.oldestInvoiceDate)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ أقدم فاتورة غير صالح." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "تاريخ أقدم فاتورة غير صالح.",
+    });
   }
   if (input.daysOverdue < 0) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "أيام التأخّر لا تصحّ أن تكون سالبة." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "أيام التأخّر لا تصحّ أن تكون سالبة.",
+    });
   }
   const promisedDate = input.promisedDate?.trim() || null;
   if (promisedDate) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(promisedDate)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ الوعد غير صالح." });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "تاريخ الوعد غير صالح.",
+      });
     }
     // وعد في الماضي = لا معنى له (المتابعة يجب أن تكون مستقبلاً).
     if (promisedDate < todayUTC()) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ الوعد يجب ألّا يكون في الماضي." });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "تاريخ الوعد يجب ألّا يكون في الماضي.",
+      });
     }
   }
-  if (input.isOpeningBalance) {
+  if (input.isAllBranches) {
+    await assertCustomerBelongsToCompany(input.customerId);
+  } else if (input.isOpeningBalance) {
     await assertOpeningBalanceDebtor(input.customerId);
   } else {
     await assertCustomerHasBranchInvoice(input.customerId, actor.branchId);
   }
+
+  const finalSkipReason =
+    input.isAllBranches && !input.skipReason.startsWith("[ALL_BRANCHES]")
+      ? `[ALL_BRANCHES] ${input.skipReason.trim()}`
+      : input.skipReason.trim();
 
   const db = requireDb();
   const res = await db.insert(arReminders).values({
@@ -472,7 +754,7 @@ export async function logReminderSkipped(
     daysOverdue: input.daysOverdue,
     messageBody: "",
     status: "SKIPPED",
-    skipReason: input.skipReason.trim(),
+    skipReason: finalSkipReason,
     promisedDate,
     createdBy: actor.userId,
   });
@@ -485,6 +767,10 @@ export interface ReminderHistoryRow {
   id: number;
   customerId: number;
   customerName: string;
+  branchId: number;
+  branchName: string | null;
+  /** تذكير مسجل بنطاق شامل لكافة الفروع */
+  isAllBranches: boolean;
   totalUnpaidSnapshot: string;
   daysOverdue: number;
   status: "SENT" | "SKIPPED";
@@ -510,6 +796,9 @@ export async function getReminderHistory(opts: {
       id: arReminders.id,
       customerId: arReminders.customerId,
       customerName: customers.name,
+      branchId: arReminders.branchId,
+      branchName: branches.name,
+      messageBody: arReminders.messageBody,
       totalUnpaidSnapshot: arReminders.totalUnpaidSnapshot,
       daysOverdue: arReminders.daysOverdue,
       status: arReminders.status,
@@ -520,9 +809,17 @@ export async function getReminderHistory(opts: {
     })
     .from(arReminders)
     .innerJoin(customers, eq(customers.id, arReminders.customerId))
+    .leftJoin(branches, eq(branches.id, arReminders.branchId))
     .where(
       and(
-        ...(opts.branchId != null ? [eq(arReminders.branchId, opts.branchId)] : []),
+        ...(opts.branchId != null
+          ? [
+              // في سجل فرع معين: استبعاد التذكيرات العامة المجمعة [ALL_BRANCHES]
+              // كي لا تتشوه أرقام وسجلات الفرع المحلي بذمم فروع أخرى
+              eq(arReminders.branchId, opts.branchId),
+              sql`COALESCE(${arReminders.messageBody}, '') NOT LIKE '[ALL_BRANCHES]%' AND COALESCE(${arReminders.skipReason}, '') NOT LIKE '[ALL_BRANCHES]%'`,
+            ]
+          : []),
         gte(arReminders.createdAt, thirtyDaysAgo),
       ),
     )
@@ -531,16 +828,25 @@ export async function getReminderHistory(opts: {
     .orderBy(desc(arReminders.createdAt), desc(arReminders.id))
     .limit(limit);
 
-  return rows.map((r) => ({
-    id: Number(r.id),
-    customerId: Number(r.customerId),
-    customerName: r.customerName,
-    totalUnpaidSnapshot: r.totalUnpaidSnapshot,
-    daysOverdue: r.daysOverdue,
-    status: r.status,
-    skipReason: r.skipReason,
-    promisedDate: r.promisedDate ?? null,
-    createdBy: r.createdBy,
-    createdAt: r.createdAt.toISOString(),
-  }));
+  return rows.map((r) => {
+    const isAllBranches =
+      Boolean(r.messageBody?.startsWith("[ALL_BRANCHES]")) ||
+      Boolean(r.skipReason?.startsWith("[ALL_BRANCHES]"));
+    const cleanSkipReason = r.skipReason?.replace(/^\[ALL_BRANCHES\]\s*/, "") ?? null;
+    return {
+      id: Number(r.id),
+      customerId: Number(r.customerId),
+      customerName: r.customerName,
+      branchId: Number(r.branchId),
+      branchName: r.branchName ?? null,
+      isAllBranches,
+      totalUnpaidSnapshot: r.totalUnpaidSnapshot,
+      daysOverdue: r.daysOverdue,
+      status: r.status,
+      skipReason: cleanSkipReason,
+      promisedDate: r.promisedDate ?? null,
+      createdBy: r.createdBy,
+      createdAt: r.createdAt.toISOString(),
+    };
+  });
 }
