@@ -580,6 +580,13 @@ export async function updateOnlineOrder(
         .where(eq(customers.id, currentCustomerId))
         .limit(1);
 
+      const normalizeOrderPhone = (raw: string): string =>
+        normalizeIraqPhoneE164(
+          raw
+            .replace(/[٠-٩]/g, (digit) => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
+            .replace(/[۰-۹]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit))),
+        );
+
       const existingPhones = existingCustomer
         ? [
             existingCustomer.phone,
@@ -590,7 +597,7 @@ export async function updateOnlineOrder(
             .filter((p): p is string => Boolean(p && p.trim()))
             .map((p) => {
               try {
-                return normalizeIraqPhoneE164(p.trim());
+                return normalizeOrderPhone(p.trim());
               } catch {
                 return p.trim();
               }
@@ -599,7 +606,7 @@ export async function updateOnlineOrder(
 
       const trimmedNewName = input.customerName?.trim() || "";
       const rawNewPhone = input.customerPhone?.trim() || "";
-      const normalizedPhone = rawNewPhone ? normalizeIraqPhoneE164(rawNewPhone) : null;
+      const normalizedPhone = rawNewPhone ? normalizeOrderPhone(rawNewPhone) : null;
 
       if (normalizedPhone && !existingPhones.includes(normalizedPhone)) {
         if (order.couponCode != null) {
@@ -658,10 +665,21 @@ export async function updateOnlineOrder(
             ].filter(Boolean),
           ),
         );
-        const digitSqlList = sql.join(
-          digitVariants.map((d) => sql`${d}`),
-          sql`, `,
-        );
+        const digitPredicates =
+          digitVariants.length > 0
+            ? (() => {
+                const digitSqlList = sql.join(
+                  digitVariants.map((d) => sql`${d}`),
+                  sql`, `,
+                );
+                return [
+                  sql`REGEXP_REPLACE(COALESCE(${customers.phone}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                  sql`REGEXP_REPLACE(COALESCE(${customers.phone2}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                  sql`REGEXP_REPLACE(COALESCE(${customers.phone3}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                  sql`REGEXP_REPLACE(COALESCE(${customers.whatsapp}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                ];
+              })()
+            : [];
         const candidateCustomers = await tx
           .select({
             id: customers.id,
@@ -678,10 +696,7 @@ export async function updateOnlineOrder(
               inArray(customers.phone2, phoneVariants),
               inArray(customers.phone3, phoneVariants),
               inArray(customers.whatsapp, phoneVariants),
-              sql`REGEXP_REPLACE(COALESCE(${customers.phone}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-              sql`REGEXP_REPLACE(COALESCE(${customers.phone2}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-              sql`REGEXP_REPLACE(COALESCE(${customers.phone3}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-              sql`REGEXP_REPLACE(COALESCE(${customers.whatsapp}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+              ...digitPredicates,
             ),
           )
           .orderBy(desc(customers.isActive), desc(customers.id))
@@ -690,7 +705,7 @@ export async function updateOnlineOrder(
           [c.phone, c.phone2, c.phone3, c.whatsapp].some((p) => {
             if (!p || !p.trim()) return false;
             try {
-              return normalizeIraqPhoneE164(p.trim()) === normalizedPhone;
+              return normalizeOrderPhone(p.trim()) === normalizedPhone;
             } catch {
               return false;
             }

@@ -56,7 +56,7 @@ export async function revokePlatformAdminSession(
   const nowMs = Date.now();
   pruneRevokedPlatformTokens(nowMs);
   const rawToken = extractPlatformTokenFromRequest(req);
-  const tokenHash = rawToken ? hashPlatformToken(rawToken) : null;
+  let verifiedTokenHash: string | null = null;
   let resolvedAdminId =
     typeof adminId === "number" && Number.isInteger(adminId) && adminId > 0
       ? adminId
@@ -68,59 +68,65 @@ export async function revokePlatformAdminSession(
         algorithms: ["HS256"],
         clockTolerance: 60,
       });
-      if (typeof payload.iatMs === "number" && Number.isFinite(payload.iatMs)) {
-        tokenIatMs = payload.iatMs;
-      }
-      const parsedPid = Number(payload.pid);
-      if (
-        !resolvedAdminId &&
-        payload.kind === "platform_admin" &&
-        Number.isInteger(parsedPid) &&
-        parsedPid > 0
-      ) {
-        resolvedAdminId = parsedPid;
+      if (payload.kind === "platform_admin") {
+        verifiedTokenHash = hashPlatformToken(rawToken);
+        if (typeof payload.iatMs === "number" && Number.isFinite(payload.iatMs)) {
+          tokenIatMs = payload.iatMs;
+        }
+        const parsedPid = Number(payload.pid);
+        if (
+          !resolvedAdminId &&
+          Number.isInteger(parsedPid) &&
+          parsedPid > 0
+        ) {
+          resolvedAdminId = parsedPid;
+        }
       }
     } catch {
       // Ignore malformed/expired token during best-effort revocation.
     }
+  }
+  const tokenHash =
+    verifiedTokenHash ??
+    (resolvedAdminId && rawToken ? hashPlatformToken(rawToken) : null);
+  if (!resolvedAdminId && !tokenHash) {
+    return;
   }
   const priorRevokedAtMs = resolvedAdminId
     ? await resolveLatestPlatformRevokedAtMs(resolvedAdminId)
     : 0;
   const effectiveRevokedAtMs = Math.max(nowMs, tokenIatMs, priorRevokedAtMs);
 
-  if (resolvedAdminId || tokenHash) {
-    const db = getControlDb();
-    const canInsert = Boolean(
-      db && typeof (db as { insert?: unknown }).insert === "function",
-    );
-    if (!canInsert) {
-      if (
-        process.env.NODE_ENV === "production" ||
-        Boolean(process.env.CONTROL_DATABASE_URL?.trim())
-      ) {
-        throw new Error(
-          "Control database unavailable for platform session revocation",
-        );
-      }
-    } else {
-      const row = {
-        platformAdminId: resolvedAdminId,
-        actorEmail: null,
-        action: "session.revoke",
-        success: true,
-        companyId: null,
-        details: {
-          tokenHash,
-          revokedAtMs: effectiveRevokedAtMs,
-        },
-        ipAddress: null,
-      };
-      try {
-        await db!.insert(platformAuditLogs).values(row);
-      } catch {
-        await db!.insert(platformAuditLogs).values(row);
-      }
+  const db = getControlDb();
+  const canInsert = Boolean(
+    db && typeof (db as { insert?: unknown }).insert === "function",
+  );
+  if (!canInsert) {
+    if (
+      process.env.NODE_ENV === "production" ||
+      Boolean(process.env.CONTROL_DATABASE_URL?.trim())
+    ) {
+      throw new Error(
+        "Control database unavailable for platform session revocation",
+      );
+    }
+  } else {
+    const row = {
+      platformAdminId: resolvedAdminId,
+      actorEmail: null,
+      action: "session.revoke",
+      success: true,
+      companyId: null,
+      details: {
+        tokenHash,
+        revokedAtMs: effectiveRevokedAtMs,
+      },
+      ipAddress: null,
+    };
+    try {
+      await db!.insert(platformAuditLogs).values(row);
+    } catch {
+      await db!.insert(platformAuditLogs).values(row);
     }
   }
 

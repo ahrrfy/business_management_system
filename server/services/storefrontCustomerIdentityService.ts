@@ -107,10 +107,21 @@ async function resolveCustomer(phone: string, name: string, firebaseUid: string)
           ].filter(Boolean),
         ),
       );
-      const digitSqlList = sql.join(
-        digitVariants.map((d) => sql`${d}`),
-        sql`, `,
-      );
+      const digitPredicates =
+        digitVariants.length > 0
+          ? (() => {
+              const digitSqlList = sql.join(
+                digitVariants.map((d) => sql`${d}`),
+                sql`, `,
+              );
+              return [
+                sql`REGEXP_REPLACE(COALESCE(${customers.phone}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                sql`REGEXP_REPLACE(COALESCE(${customers.phone2}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                sql`REGEXP_REPLACE(COALESCE(${customers.phone3}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                sql`REGEXP_REPLACE(COALESCE(${customers.whatsapp}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+              ];
+            })()
+          : [];
       const candidates = await tx
         .select({
           id: customers.id,
@@ -128,10 +139,7 @@ async function resolveCustomer(phone: string, name: string, firebaseUid: string)
             inArray(customers.phone2, phoneVariants),
             inArray(customers.phone3, phoneVariants),
             inArray(customers.whatsapp, phoneVariants),
-            sql`REGEXP_REPLACE(COALESCE(${customers.phone}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-            sql`REGEXP_REPLACE(COALESCE(${customers.phone2}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-            sql`REGEXP_REPLACE(COALESCE(${customers.phone3}, ''), '[^0-9]', '') IN (${digitSqlList})`,
-            sql`REGEXP_REPLACE(COALESCE(${customers.whatsapp}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+            ...digitPredicates,
           ),
         )
         .orderBy(desc(customers.isActive), desc(customers.id))

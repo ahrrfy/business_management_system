@@ -72,12 +72,36 @@ async function validateDumpTarget() {
   }
   let sawTargetDirective = false;
 
-  function inspectStatement(rawStmt) {
+  const SAFE_SQL_MODE_VALUE_RE =
+    /^(?:NO_AUTO_VALUE_ON_ZERO|ONLY_FULL_GROUP_BY|STRICT_TRANS_TABLES|STRICT_ALL_TABLES|NO_ZERO_IN_DATE|NO_ZERO_DATE|ERROR_FOR_DIVISION_BY_ZERO|NO_ENGINE_SUBSTITUTION|TRADITIONAL|\s|,)*$/i;
+
+  function inspectStatement(rawStmt, stmtLiterals = [], literalsTruncated = false) {
     const stmt = rawStmt.replace(/\s+/g, " ").trim();
     if (!stmt) return;
 
     if (/^(?:DELIMITER|SYSTEM)\b|\bDELIMITER\b|\\!|\\[gG]\b/i.test(stmt)) {
       fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+    }
+
+    if (
+      /''\s*\.\s*(?:''|`[^`]+`|[A-Za-z0-9_$-]+)|(?:`[^`]+`|[A-Za-z0-9_$-]+)\s*\.\s*''/.test(
+        stmt,
+      )
+    ) {
+      fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+    }
+
+    if (/\bSQL_MODE\b|@OLD_SQL_MODE\b/i.test(stmt)) {
+      const isAllowedSqlModeSet =
+        /^SET\s+(?:SESSION\s+|LOCAL\s+)?(?:@OLD_SQL_MODE\s*:?=\s*@@(?:SESSION\.|LOCAL\.)?SQL_MODE\s*,\s*)?(?:@@(?:SESSION\.|LOCAL\.)?)?SQL_MODE\s*:?=\s*(?:''|@OLD_SQL_MODE|IFNULL\s*\(\s*@OLD_SQL_MODE\s*,\s*''\s*\))$/i.test(
+          stmt,
+        );
+      const allLiteralsSafe =
+        !literalsTruncated &&
+        stmtLiterals.every((lit) => SAFE_SQL_MODE_VALUE_RE.test(lit));
+      if (!isAllowedSqlModeSet || !allLiteralsSafe) {
+        fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+      }
     }
 
     if (/^USE\b/i.test(stmt)) {
@@ -162,6 +186,9 @@ async function validateDumpTarget() {
   let inRegularComment = false;
   let versionedCommentDepth = 0;
   let quote = null;
+  let currentLiteralBuffer = "";
+  let statementLiterals = [];
+  let statementLiteralsTruncated = false;
   let currentDelimiter = ";";
   let statementBuffer = "";
 
@@ -202,20 +229,47 @@ async function validateDumpTarget() {
 
       if (quote !== null) {
         if (ch === "\\") {
+          if (quote !== "`") {
+            if (currentLiteralBuffer.length < 512) {
+              currentLiteralBuffer += next ?? "";
+            } else {
+              statementLiteralsTruncated = true;
+            }
+          }
           i += 2;
           continue;
         }
         if (ch === quote) {
           if (next === quote) {
+            if (quote !== "`") {
+              if (currentLiteralBuffer.length < 512) {
+                currentLiteralBuffer += quote;
+              } else {
+                statementLiteralsTruncated = true;
+              }
+            }
             i += 2;
             continue;
           }
-          if (quote === "`") statementBuffer += "`";
+          if (quote === "`") {
+            statementBuffer += "`";
+          } else if (statementLiterals.length < 32) {
+            statementLiterals.push(currentLiteralBuffer);
+          } else {
+            statementLiteralsTruncated = true;
+          }
+          currentLiteralBuffer = "";
           quote = null;
           i += 1;
           continue;
         }
-        if (quote === "`") statementBuffer += ch;
+        if (quote === "`") {
+          statementBuffer += ch;
+        } else if (currentLiteralBuffer.length < 512) {
+          currentLiteralBuffer += ch;
+        } else {
+          statementLiteralsTruncated = true;
+        }
         i += 1;
         continue;
       }
@@ -255,6 +309,7 @@ async function validateDumpTarget() {
 
       if (ch === "'" || ch === '"' || ch === "`") {
         quote = ch;
+        currentLiteralBuffer = "";
         if (ch === "`") statementBuffer += "`";
         else statementBuffer += "''";
         i += 1;
@@ -266,13 +321,15 @@ async function validateDumpTarget() {
       }
 
       if (line.startsWith(currentDelimiter, i)) {
-        inspectStatement(statementBuffer);
+        inspectStatement(statementBuffer, statementLiterals, statementLiteralsTruncated);
         if (currentDelimiter !== ";") {
           for (const subStmt of statementBuffer.split(";")) {
-            inspectStatement(subStmt);
+            inspectStatement(subStmt, statementLiterals, statementLiteralsTruncated);
           }
         }
         statementBuffer = "";
+        statementLiterals = [];
+        statementLiteralsTruncated = false;
         i += currentDelimiter.length;
         continue;
       }
@@ -294,6 +351,12 @@ async function validateDumpTarget() {
       if (statementBuffer.length > 32 * 1024 * 1024) {
         fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
       }
+    } else if (quote !== null && quote !== "`") {
+      if (currentLiteralBuffer.length < 512) {
+        currentLiteralBuffer += "\n";
+      } else {
+        statementLiteralsTruncated = true;
+      }
     }
   }
 
@@ -301,7 +364,7 @@ async function validateDumpTarget() {
     fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
   }
   if (statementBuffer.trim()) {
-    inspectStatement(statementBuffer);
+    inspectStatement(statementBuffer, statementLiterals, statementLiteralsTruncated);
   }
   if (!marker && !sawTargetDirective) fail("نسخة قديمة بلا هوية قاعدة مؤكدة؛ أعد إنشاء النسخة بالأداة الحالية.");
 }
