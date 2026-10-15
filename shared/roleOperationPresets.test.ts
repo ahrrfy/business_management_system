@@ -3,6 +3,7 @@ import { ROLE_TEMPLATES, SECTION_CASHIER_ROLES } from "./permissions";
 import {
   applyLegacyIndividualOperationOverrides,
   getOperationPermission,
+  resolveOperationPolicy,
 } from "./operationPermissions";
 import { buildDefaultRoleOperationPolicy, dailyOperationPaths, ROLE_DAILY_OPERATION_PATHS } from "./roleOperationPresets";
 
@@ -187,6 +188,87 @@ describe("role operation presets", () => {
 
     expect(policy.grants["operation.sales.cancel"]).toBe(true);
     expect(policy.grants["operation.returns.executeSalesReturnCart"]).toBe(true);
+  });
+
+  it("grants full work-order station visibility, claiming, execution, stage movement, and ready-marking to print_operator", () => {
+    const policy = buildDefaultRoleOperationPolicy(
+      "print_operator",
+      "print_operator",
+      ROLE_TEMPLATES.print_operator,
+    );
+    for (const path of [
+      "workOrders.list",
+      "workOrders.counts",
+      "workOrders.get",
+      "workOrders.getByNumber",
+      "workOrders.claim",
+      "workOrders.release",
+      "workOrders.start",
+      "workOrders.setMaterials",
+      "workOrders.setKanbanState",
+      "workOrders.markReady",
+      "workOrders.timeline",
+      "workOrders.eventTimeline",
+      "workOrders.controlPreflight",
+      "workOrders.requestControl",
+      "workOrders.cancel",
+      "workOrders.refundPreflight",
+      "workOrders.cancellationRefundStatus",
+      "workOrderDesignApproval.getCurrent",
+      "workOrderDesignApproval.request",
+    ]) {
+      expect(policy.grants[`operation.${path}`], `print_operator:${path}`).toBe(true);
+    }
+  });
+
+  it("bridges already-saved print_operator policies that only stored start and markReady into full station companion operations", () => {
+    const staleRolePolicy = {
+      version: 1 as const,
+      grants: {
+        "operation.workOrders.start": true,
+        "operation.workOrders.markReady": true,
+        "operation.workOrderDesignApproval.request": true,
+        "operation.inventory.list": true,
+        "operation.products.list": true,
+      },
+    };
+    const resolved = resolveOperationPolicy(
+      "print_operator",
+      ROLE_TEMPLATES.print_operator,
+      staleRolePolicy,
+    );
+    for (const path of [
+      "workOrders.list",
+      "workOrders.counts",
+      "workOrders.get",
+      "workOrders.getByNumber",
+      "workOrders.claim",
+      "workOrders.release",
+      "workOrders.setKanbanState",
+      "workOrders.timeline",
+      "workOrders.eventTimeline",
+    ]) {
+      expect(resolved.grants[`operation.${path}`], `bridged:${path}`).toBe(true);
+    }
+
+    const withExplicitUserRevoke = resolveOperationPolicy(
+      "print_operator",
+      ROLE_TEMPLATES.print_operator,
+      {
+        ...staleRolePolicy,
+        grants: {
+          ...staleRolePolicy.grants,
+          "operation.workOrders.claim": true,
+        },
+      },
+      {
+        version: 1 as const,
+        grants: {
+          "operation.workOrders.claim": false,
+        },
+      },
+    );
+    expect(withExplicitUserRevoke.grants["operation.workOrders.claim"]).toBe(false);
   });
 });
 

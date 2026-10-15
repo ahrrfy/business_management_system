@@ -117,6 +117,8 @@ export default function WorkOrders() {
   const legacyExec = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
   const canSetKanban = canLifecycleOperation(me.data, "workOrders.setKanbanState", legacyExec);
+  const canClaim = canLifecycleOperation(me.data, "workOrders.claim", legacyExec);
+  const canRelease = canLifecycleOperation(me.data, "workOrders.release", legacyExec);
   const canStart = canLifecycleOperation(me.data, "workOrders.start", legacyExec);
   const canMarkReady = canLifecycleOperation(me.data, "workOrders.markReady", legacyExec);
   const canReadOrders = canLifecycleOperation(me.data, "workOrders.list", true);
@@ -202,6 +204,14 @@ export default function WorkOrders() {
   const optimisticMove = (id: number, to: Status) =>
     utils.workOrders.list.setData(activeInput, (old) => old?.map((o) => (o.id === id ? { ...o, status: to } : o)));
 
+  const claim = trpc.workOrders.claim.useMutation({
+    onSuccess: () => { notify.ok("سُحب الأمر إلى قائمتك"); invalidateAll(); },
+    onError: (e) => { notify.err(e); invalidateAll(); },
+  });
+  const release = trpc.workOrders.release.useMutation({
+    onSuccess: () => { notify.ok("أُعيد الأمر إلى الطابور المشترك"); invalidateAll(); },
+    onError: (e) => { notify.err(e); invalidateAll(); },
+  });
   const start = trpc.workOrders.start.useMutation({
     onSuccess: () => { notify.warn("بدأ التنفيذ", "خُصمت المواد من المخزون تلقائياً."); invalidateAll(); },
     onError: (e) => { notify.err(e); invalidateAll(); },
@@ -286,7 +296,7 @@ export default function WorkOrders() {
     });
   };
 
-  const busy = start.isPending || markReady.isPending || deliver.isPending || assign.isPending || autoClearReady.isPending;
+  const busy = claim.isPending || release.isPending || start.isPending || markReady.isPending || deliver.isPending || assign.isPending || autoClearReady.isPending;
 
   const operation = useMemo(() => ({
     getOperation: (order: WO) => ({
@@ -531,7 +541,10 @@ export default function WorkOrders() {
   }
 
   function onCardPointerDown(e: React.PointerEvent, order: WO) {
-    if (!canLifecycleOperation(me.data, order.status === "RECEIVED" ? "workOrders.start" : order.status === "IN_PROGRESS" ? "workOrders.markReady" : "workOrders.deliver", true)) return;
+    const canDragOrder = order.status === "RECEIVED"
+      ? (canStart || (order.assignedTo == null ? canClaim : canRelease))
+      : canLifecycleOperation(me.data, order.status === "IN_PROGRESS" ? "workOrders.markReady" : "workOrders.deliver", true);
+    if (!canDragOrder) return;
     if (e.button !== 0) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     dragRef.current = { order, startX: e.clientX, startY: e.clientY, ox: e.clientX - rect.left, oy: e.clientY - rect.top, moved: false };
@@ -566,7 +579,14 @@ export default function WorkOrders() {
       if (!dr) return;
       if (!dr.moved) { setSel(dr.order.id); return; }
       const overKey = hitCol(ev.clientX, ev.clientY);
-      // overKey هو مفتاح العمود الافتراضي؛ نحوّله لحالة DB المستهدفة (مسحوب↔وارد = نفس الحالة ⇒ لا نقل).
+      if (dr.order.status === "RECEIVED" && dr.order.assignedTo == null && overKey === "CLAIMED" && canClaim) {
+        claim.mutate({ workOrderId: dr.order.id });
+        return;
+      }
+      if (dr.order.status === "RECEIVED" && dr.order.assignedTo != null && overKey === "INBOX" && canRelease) {
+        release.mutate({ workOrderId: dr.order.id });
+        return;
+      }
       const col = COLUMNS.find((c) => c.key === overKey);
       if (col && col.status !== dr.order.status) attemptMove(dr.order, col.status);
     };
@@ -834,6 +854,8 @@ export default function WorkOrders() {
           onEdit={setEditTarget}
           onAdvance={attemptMove}
           onCancel={onCancelOrder}
+          onClaim={canClaim ? (id) => claim.mutate({ workOrderId: id }) : undefined}
+          onRelease={canRelease ? (id) => release.mutate({ workOrderId: id }) : undefined}
         />
       ) : (
       <div className="wob-board-wrap">
@@ -845,7 +867,11 @@ export default function WorkOrders() {
               const list = byCol[s.key] ?? [];
               // D&D يعمل فقط في «حسب المرحلة» (`groupBy=stage`): الأخرى تحتاج mutations
               // مختلفة (assign/update) لم يُبنَ لها بعد جسر D&D — يبقى العرض قراءةً فقط.
-              const isOver = dndEnabled && drag && drag.overCol === s.key && WO_NEXT_STATUS[drag.order.status as WorkOrderStatus] === s.status;
+              const isOver = dndEnabled && !!drag && drag.overCol === s.key && (
+                WO_NEXT_STATUS[drag.order.status as WorkOrderStatus] === s.status ||
+                (drag.order.status === "RECEIVED" && drag.order.assignedTo == null && s.key === "CLAIMED" && canClaim) ||
+                (drag.order.status === "RECEIVED" && drag.order.assignedTo != null && s.key === "INBOX" && canRelease)
+              );
               // إحصائيات رأس العمود مشتقة حتمياً من بطاقات العمود نفسه (Single Source of Truth)
               // لتطابق العين الأرقام 100% وتفصل «طابور وارد» عن «مسحوب»، وتصمد أمام الفلاتر والتجميع.
               const colStats = colStatsMap[s.key] ?? { totalValue: "0", late: 0, blocked: 0 };
@@ -937,6 +963,9 @@ export default function WorkOrders() {
                         }
                         staff={s.key === "INBOX" && canAssign ? assignableStaff.data : undefined}
                         assignPending={assign.isPending}
+                        onClaim={canClaim ? (orderId) => claim.mutate({ workOrderId: orderId }) : undefined}
+                        onRelease={canRelease ? (orderId) => release.mutate({ workOrderId: orderId }) : undefined}
+                        claimPending={claim.isPending || release.isPending}
                         onOpenCustomer={canReadCustomerContext ? setCustomerContextId : undefined}
                         // Codex #6: النقطة تفاعليّة لمن يستطيع الكتابة فقط؛ لغيرهم تُعرض قراءةً
                         // (عرضاً غير-NORMAL فقط — بلا زرّ يفشل بـFORBIDDEN).
@@ -972,6 +1001,8 @@ export default function WorkOrders() {
           canRequestCancel={canRequestCancel}
           canDeliver={canDeliver}
           busy={busy}
+          onClaim={canClaim ? (id) => claim.mutate({ workOrderId: id }) : undefined}
+          onRelease={canRelease ? (id) => release.mutate({ workOrderId: id }) : undefined}
           onAdvance={async (id, to) => {
             if (!canLifecycleOperation(me.data, to === "IN_PROGRESS" ? "workOrders.start" : to === "READY" ? "workOrders.markReady" : "workOrders.deliver", true)) return;
             if (to === "IN_PROGRESS") {

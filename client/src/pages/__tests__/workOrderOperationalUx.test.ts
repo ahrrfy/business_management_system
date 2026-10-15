@@ -141,4 +141,48 @@ describe("عقد صلاحيات وفشل واجهات أوامر الشغل ال
     expect(board).toContain('<bdi dir="ltr" aria-hidden="true">');
     expect(board).toContain("wob-curr");
   });
+
+  it("⭐ يحرس ظهور أوامر الشغل لفني المطبعة والمنفذ وإتاحة السحب والإعادة للطابور والانتقال بين المراحل", async () => {
+    const { workOrderDetailOperationAccess } = await import("@/lib/workOrderDetailOperationAccess");
+    const { ROLE_TEMPLATES } = await import("@shared/permissions");
+    const { buildDefaultRoleOperationPolicy } = await import("@shared/roleOperationPresets");
+
+    const printOpPolicy = buildDefaultRoleOperationPolicy(
+      "print_operator",
+      "print_operator",
+      ROLE_TEMPLATES.print_operator,
+    );
+    const printOpUser: OperationUser = {
+      role: "print_operator",
+      operationPolicyEnabled: true,
+      resolvedOperationPolicy: printOpPolicy,
+    };
+    const access = workOrderDetailOperationAccess(printOpUser);
+    expect(access.canClaimWorkOrder).toBe(true);
+    expect(access.canReleaseWorkOrder).toBe(true);
+    expect(access.canStartWorkOrder).toBe(true);
+    expect(access.canMarkReady).toBe(true);
+    expect(access.canDeliverWorkOrder).toBe(false);
+
+    const board = readPage("WorkOrders.tsx");
+    const detail = readPage("WorkOrderDetail.tsx");
+    const station = readPage("WorkOrderStation.tsx");
+    const receptionQueue = readReceptionQueue();
+    const kanbanCard = readFileSync(new URL("../../components/workOrders/WorkOrderKanbanCard.tsx", import.meta.url), "utf8");
+    const previewDrawer = readFileSync(new URL("../../components/workOrders/WorkOrderPreviewDrawer.tsx", import.meta.url), "utf8");
+    const table = readFileSync(new URL("../../components/workOrders/WorkOrdersTable.tsx", import.meta.url), "utf8");
+
+    expect(board).toContain('canLifecycleOperation(me.data, "workOrders.claim", legacyExec)');
+    expect(board).toContain('canLifecycleOperation(me.data, "workOrders.release", legacyExec)');
+    expect(board).toContain("trpc.workOrders.claim.useMutation");
+    expect(board).toContain("trpc.workOrders.release.useMutation");
+    expect(detail).toContain("trpc.workOrders.claim.useMutation");
+    expect(detail).toContain("trpc.workOrders.release.useMutation");
+    expect(station).toContain('canLifecycleOperation(me.data, "workOrders.claim", canOperateWorkOrders)');
+    expect(station).toContain("سحب الأمر إلى قائمتي");
+    expect(kanbanCard).toContain("سحب الأمر");
+    expect(previewDrawer).toContain("سحب الأمر");
+    expect(table).toContain("سحب الأمر");
+    expect(receptionQueue).toContain("branchQueue: true");
+  });
 });

@@ -310,6 +310,34 @@ export function resolveOperationPolicy(
           : (legacy.recordScopes?.[operation.key] ?? "OWN"));
     }
   }
+  if (
+    grants["operation.workOrders.start"] === true &&
+    grants["operation.workOrders.markReady"] === true
+  ) {
+    for (const companionPath of [
+      "workOrders.list",
+      "workOrders.counts",
+      "workOrders.get",
+      "workOrders.getByNumber",
+      "workOrders.claim",
+      "workOrders.release",
+      "workOrders.setKanbanState",
+      "workOrders.timeline",
+      "workOrders.eventTimeline",
+    ]) {
+      const companion = getOperationPermission(companionPath);
+      if (!companion?.delegable) continue;
+      const explicitlyRevokedOverRole =
+        userPolicy != null &&
+        rolePolicy != null &&
+        own(userPolicy.grants, companion.key) &&
+        userPolicy.grants[companion.key] === false &&
+        rolePolicy.grants[companion.key] === true;
+      if (!explicitlyRevokedOverRole) {
+        grants[companion.key] = true;
+      }
+    }
+  }
   return {
     version: 1,
     grants,

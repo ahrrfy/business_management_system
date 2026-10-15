@@ -68,15 +68,7 @@ type PendingCancelAttempt =
   | { kind: "CONTROL_REQUEST"; input: CancelControlInput };
 
 /** حقل وصفي: عنوان صغير + قيمة (محمي ضد الاقتطاع غير المقصود). */
-function Field({
-  label,
-  children,
-  truncate = false,
-}: {
-  label: string;
-  children: ReactNode;
-  truncate?: boolean;
-}) {
+function Field({ label, children, truncate = false }: { label: string; children: ReactNode; truncate?: boolean }) {
   return (
     <div className="space-y-0.5 min-w-0">
       <div className="text-xs text-muted-foreground">{label}</div>
@@ -86,32 +78,11 @@ function Field({
 }
 
 /** سطر في لوحة الملخّص المالي: تسمية يميناً + مبلغ يساراً (LTR، محمي ضد الاقتطاع). */
-function SummaryRow({
-  label,
-  value,
-  strong,
-}: {
-  label: string;
-  value: string;
-  strong?: boolean;
-}) {
+function SummaryRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
   return (
     <div className="flex items-center justify-between gap-3 min-w-0 py-0.5">
-      <span
-        className={cn(
-          "text-muted-foreground shrink-0",
-          strong && "font-semibold text-foreground",
-        )}
-      >
-        {label}
-      </span>
-      <span
-        dir="ltr"
-        className={cn(
-          "tabular-nums shrink-0 whitespace-nowrap text-end",
-          strong ? "text-base sm:text-lg font-bold" : "text-sm font-medium",
-        )}
-      >
+      <span className={cn("text-muted-foreground shrink-0", strong && "font-semibold text-foreground")}>{label}</span>
+      <span dir="ltr" className={cn("tabular-nums shrink-0 whitespace-nowrap text-end", strong ? "text-base sm:text-lg font-bold" : "text-sm font-medium")}>
         {fmtAr(value)}
       </span>
     </div>
@@ -133,6 +104,8 @@ export default function WorkOrderDetail() {
     showCost,
     role,
     permissions,
+    canClaimWorkOrder,
+    canReleaseWorkOrder,
     canStartWorkOrder,
     canMarkReady,
     canDeliverWorkOrder,
@@ -253,6 +226,14 @@ export default function WorkOrderDetail() {
     ]);
   };
 
+  const claim = trpc.workOrders.claim.useMutation({
+    onSuccess: async () => { setDone("تم سحب الأمر وإسناده إليك."); setAwaitingOwnerRefund(false); setError(""); await refresh(); },
+    onError: (e) => setError(e.message),
+  });
+  const release = trpc.workOrders.release.useMutation({
+    onSuccess: async () => { setDone("أعيد الأمر إلى الطابور العام."); setAwaitingOwnerRefund(false); setError(""); await refresh(); },
+    onError: (e) => setError(e.message),
+  });
   const start = trpc.workOrders.start.useMutation({
     onSuccess: async () => { setDone("بدأ التنفيذ — تم خصم المواد من المخزون."); setAwaitingOwnerRefund(false); setError(""); await refresh(); },
     onError: (e) => setError(e.message),
@@ -1029,6 +1010,16 @@ export default function WorkOrderDetail() {
       )}
 
       <div className="flex gap-2 flex-wrap">
+        {canClaimWorkOrder && data.status === "RECEIVED" && data.assignedTo == null && (
+          <Button variant="secondary" onClick={() => claim.mutate({ workOrderId })} disabled={claim.isPending || start.isPending}>
+            {claim.isPending ? "جارٍ…" : "سحب الأمر"}
+          </Button>
+        )}
+        {canReleaseWorkOrder && data.status === "RECEIVED" && data.assignedTo != null && (
+          <Button variant="outline" onClick={() => release.mutate({ workOrderId })} disabled={release.isPending || start.isPending}>
+            {release.isPending ? "جارٍ…" : "أعد إلى الطابور"}
+          </Button>
+        )}
         {canStartWorkOrder && data.status === "RECEIVED" && (
           <Button
             onClick={async () => {

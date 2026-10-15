@@ -146,4 +146,74 @@ describe("طابور الفرع", () => {
     const all = branch.received + branch.inProgress + branch.ready + branch.delivered + branch.cancelled;
     expect(all).toBe(2); // …ولا يُحصى منها إلا فرعُها
   });
+
+  it("فني المطبعة والمنفذ في مصفوفة الصلاحيات الموحدة يرى الطابور ويسحب وينفذ وينقل للمراحل ويجهز للتسليم", async () => {
+    await db().insert(s.users).values([
+      {
+        id: 20,
+        openId: "tech1",
+        name: "فني المطبعة",
+        email: "tech1@t.test",
+        role: "print_operator",
+        loginMethod: "local",
+        branchId: 1,
+      },
+    ]);
+    const { resolveOperationPolicy } = await import("@shared/operationPermissions");
+    const resolvedPolicy = resolveOperationPolicy(
+      "print_operator",
+      ROLE_TEMPLATES.print_operator,
+      {
+        version: 1,
+        grants: {
+          "operation.workOrders.start": true,
+          "operation.workOrders.markReady": true,
+        },
+        recordScopes: {
+          "operation.workOrders.list": "OWN",
+          "operation.workOrders.counts": "OWN",
+        },
+      },
+    );
+    const techCtx: TrpcContext = {
+      req: { headers: {} } as unknown as TrpcContext["req"],
+      res: {} as unknown as TrpcContext["res"],
+      user: {
+        id: 20,
+        role: "print_operator",
+        branchId: 1,
+        name: "فني المطبعة",
+        email: "tech1@t.test",
+        isActive: true,
+        operationPolicyEnabled: true,
+        resolvedOperationPolicy: resolvedPolicy,
+      } as unknown as TrpcContext["user"],
+    };
+    const tech = appRouter.createCaller(techCtx);
+
+    // 1. يرى كل طلبات الفرع في لوحة أوامر الشغل وعبر الطابور المشترك في محطة فني المطبعة
+    expect(numbers(await tech.workOrders.list({ branchQueue: true }))).toEqual(["WO-HIND", "WO-SARA"]);
+    expect(numbers(await tech.workOrders.list({ unassignedOnly: true }))).toEqual(["WO-HIND", "WO-SARA"]);
+    expect((await tech.workOrders.counts({ branchQueue: true })).received).toBe(2);
+
+    // 2. تبويب «طلباتي» فارغ قبل السحب لأنه لم ينشئ ولم يُسند إليه شيء بعد
+    expect(numbers(await tech.workOrders.list({}))).toEqual([]);
+
+    // 3. يسحب الطلب WO-SARA من الطابور المشترك
+    const saraRow = (await tech.workOrders.list({ unassignedOnly: true })).find((r) => r.orderNumber === "WO-SARA")!;
+    await tech.workOrders.claim({ workOrderId: saraRow.id });
+
+    // 4. بعد السحب يظهر في «طلباتي» ويختفي من «غير المسند»
+    expect(numbers(await tech.workOrders.list({}))).toEqual(["WO-SARA"]);
+    expect(numbers(await tech.workOrders.list({ unassignedOnly: true }))).toEqual(["WO-HIND"]);
+
+    // 5. يبدأ التنفيذ، يغير إشارة المرحلة (الكانبان)، ويجهز الطلب للتسليم
+    await tech.workOrders.start({ workOrderId: saraRow.id });
+    await tech.workOrders.setKanbanState({ workOrderId: saraRow.id, kanbanState: "READY" });
+    await tech.workOrders.markReady({ workOrderId: saraRow.id });
+
+    const updated = await tech.workOrders.get({ workOrderId: saraRow.id });
+    expect(updated.status).toBe("READY");
+    expect(updated.assignedTo).toBe(20);
+  });
 });

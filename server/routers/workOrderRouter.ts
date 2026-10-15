@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { hasOperationPolicy } from "@shared/operationPermissions";
+import { hasOperationPolicy, operationRecordScope, summarizeOperationModules, type OperationUser } from "@shared/operationPermissions";
 import { failOpaque } from "../lib/opaqueFailure";
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
@@ -455,16 +455,16 @@ function canSeeDeliveryForUser(user: { role: string; permissionsOverride?: unkno
   // النطاق هنا **معلومةٌ مضمّنة** (حالة/جهة/رقم الإرسالية) لا شاشةُ DeliveryHub وتسوياتها؛
   // فتحُها لمن يشغّل الإسناد يوافق الحاجة بلا توسيع وحدة المتجر. قالب `print_operator` بلا
   // مفتاح `store` إطلاقاً وكان يسقط إلى NONE صامتاً.
-  return hasModuleAccess(user.role, override, "workorders", "FULL");
+  return workOrdersFullAccess(user);
 }
 
 /**
  * مشغّلُ المحطّة فعلاً (`workorders:FULL`) — بوّابةُ «طابور الفرع». دالّةٌ مستقلّة عن
- * `canSeeDeliveryForUser` عمداً رغم تطابقهما اليوم: هذه تُجيب «هل يعمل في المحطّة؟»
- * وتلك تُجيب «هل يرى حالة التوصيل؟» — ودمجُهما يجعل توسيعَ إحداهما يفتح الأخرى صامتاً.
+ * `canSeeDeliveryForUser` عمداً: هذه تُجيب «هل يعمل في المحطّة؟» وتلك تُجيب «هل يرى حالة التوصيل؟».
  */
-function workOrdersFullAccess(user: { role: string; permissionsOverride?: unknown }): boolean {
-  if (user.role === "admin") return true;
+function workOrdersFullAccess(user: OperationUser, scopePath = "workOrders.list"): boolean {
+  if (user.role === "admin" || user.isOwner) return true;
+  if (hasOperationPolicy(user)) return operationRecordScope(user, scopePath) === "BRANCH" || (!!user.resolvedOperationPolicy && summarizeOperationModules(user.resolvedOperationPolicy).workorders === "FULL");
   return hasModuleAccess(user.role, (user.permissionsOverride as never) ?? null, "workorders", "FULL");
 }
 
@@ -645,12 +645,12 @@ export const workOrderRouter = router({
       // العطل صامت (طابور فارغ يبدو «لا عمل» لا «عملٌ محجوب»). الاستثناء ضيّق عمداً: يسري فقط
       // حين unassignedOnly=true ⇒ لا يكشف سجلَّ أيّ موظفٍ آخر (الأمر بلا مالك بحكم التعريف).
       // سياسة عزل سجلّات الموظف (٢٤/٦) تبقى كما هي لكل ما عداه.
-      const sharedQueue = input?.unassignedOnly === true;
       const canonical = hasOperationPolicy(ctx.user);
-      // طابور الفرع: يلزمه `workorders:FULL` صراحةً — لا يكفي أن يطلبه العميل.
-      const branchQueue = input?.branchQueue === true && workOrdersFullAccess(ctx.user);
+      const fullStationAccess = workOrdersFullAccess(ctx.user, "workOrders.list");
+      const sharedQueue = input?.unassignedOnly === true && (!canonical || fullStationAccess);
+      const branchQueue = input?.branchQueue === true && fullStationAccess;
       const ownerCond =
-        ctx.scopedOwnerId != null && (canonical || (!sharedQueue && !branchQueue))
+        ctx.scopedOwnerId != null && !sharedQueue && !branchQueue
           ? or(eq(workOrders.createdBy, ctx.scopedOwnerId), eq(workOrders.assignedTo, ctx.scopedOwnerId))
           : undefined;
       const extra = [
@@ -825,7 +825,7 @@ export const workOrderRouter = router({
       const effectiveBranchId = ctx.scopedBranchId ?? input?.branchId;
       const branchCond = effectiveBranchId != null ? eq(workOrders.branchId, effectiveBranchId) : undefined;
       const ownerCond =
-        ctx.scopedOwnerId != null && (hasOperationPolicy(ctx.user) || !(input?.branchQueue === true && workOrdersFullAccess(ctx.user)))
+        ctx.scopedOwnerId != null && !(input?.branchQueue === true && workOrdersFullAccess(ctx.user, "workOrders.counts"))
           ? or(eq(workOrders.createdBy, ctx.scopedOwnerId), eq(workOrders.assignedTo, ctx.scopedOwnerId))
           : undefined;
       const allConds = [branchCond, ownerCond, ...buildWoFilterConds(input)].filter(Boolean) as SQL[];
@@ -1603,9 +1603,9 @@ export const workOrderRouter = router({
     return rows
       .filter(({ user, customRole }) => {
         try {
+          const snapshot = storedOperationUser(user, customRole);
           return workOrderAssigneeAllowed(
-            storedOperationUser(user, customRole),
-            user.role === "print_operator" && hasModuleAccess(user.role, (user.permissionsOverride as never) ?? null, "workorders", "FULL"),
+            snapshot, snapshot.role === "print_operator" && hasModuleAccess(snapshot.role, (snapshot.permissionsOverride as never) ?? null, "workorders", "FULL"),
             targetBranch ?? undefined,
           );
         } catch {
