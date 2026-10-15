@@ -1108,6 +1108,25 @@ describe.sequential("cancelSale — حارس التوصيل الموحّد", () 
     expect(Number(cancellationReturns[0]?.n ?? 0)).toBe(1);
   });
 
+  it.each([
+    { status: "DELIVERED" as const, parcelStatus: "DELIVERED" as const },
+    { status: "PARTIAL" as const, parcelStatus: "DELIVERED" as const },
+    { status: "DISPATCHED" as const, parcelStatus: "DELIVERED" as const },
+  ])("يرفض إلغاء الطرد المسلم دون إثبات عودته: $status", async (state) => {
+    await setStock(1, 1, 10);
+    await seedDeliveryParty();
+    const sale = await createSale({ branchId: 1, customerId: 1, sourceType: "ORDER",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }] }, admin);
+    const dispatched = await dispatchInvoice(sale.invoiceId, `physical-proof-${state.status}`);
+    await db().update(s.deliveryConsignments).set(state).where(eq(s.deliveryConsignments.id, dispatched.consignmentId));
+    await expect(cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "CASH",
+      clientRequestId: `no-proof-${state.status}` }, admin)).rejects.toThrow(/أعد الطرد/);
+    expect(await stockOf(1, 1)).toBe(9);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status).toBe("PENDING");
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, dispatched.consignmentId)))[0].status).toBe(state.status);
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId))).toHaveLength(0);
+  });
+
   it("يلغي الإسناد الذري مرة واحدة ويعيد replay دون تحرير COD أو المخزون ثانية", async () => {
     await setStock(1, 1, 10);
     await seedDeliveryParty();

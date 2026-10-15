@@ -294,10 +294,11 @@ export default function InvoiceDetail() {
     (data.consignmentParcelStatus === "ASSIGNED" || data.consignmentParcelStatus === "OUT_FOR_DELIVERY" || data.consignmentParcelStatus === "FAILED");
   // Active COD is reconciled by the same cancellation transaction. Terminal
   // write-offs/returned parcels keep their dedicated delivery workflow.
-  const deliveryCancellationBlockReason = data.consignmentId != null &&
-    (data.consignmentStatus === "WRITTEN_OFF" || data.consignmentStatus === "RETURNED")
-    ? "للإرسالية عكس أو شطب سابق؛ راجع مستند التوصيل قبل إلغاء الفاتورة."
-    : null;
+  const deliveryCancellationBlockReason = data.consignmentId == null ? null
+    : data.consignmentStatus === "DELIVERED" || data.consignmentStatus === "PARTIAL" || data.consignmentParcelStatus === "DELIVERED"
+      ? "الطرد مُسلّم؛ سجّل عودته من مسار المرتجعات قبل إعادة البضاعة إلى المخزون."
+      : data.consignmentStatus === "WRITTEN_OFF" || data.consignmentStatus === "RETURNED"
+        ? "للإرسالية عكس أو شطب سابق؛ راجع مستند التوصيل قبل إلغاء الفاتورة." : null;
   const isCancellable =
     data.status !== "CANCELLED" &&
     data.status !== "RETURNED" &&
@@ -1117,7 +1118,8 @@ export default function InvoiceDetail() {
               <FileWarning aria-hidden className="size-5" />
               إلغاء الفاتورة {data.invoiceNumber}
             </DialogTitle>
-            <DialogDescription className="space-y-2 pt-2 text-start">
+            <DialogDescription asChild className="space-y-2 pt-2 text-start">
+              <div>
               <div>
                 هذا إجراء إلغاء فعلي. إذا استوفت الفاتورة حدود صلاحيتك فسينفذ النظام الإلغاء فور التأكيد، ويعكس القيد المحاسبيّ ويعيد كامل البضاعة إلى المخزون
                 {paidAmountForRefund.gt(0) && (
@@ -1133,6 +1135,7 @@ export default function InvoiceDetail() {
                   <strong>{invoiceStatusLabel(data.status)}</strong> — يُلغى ما تبقّى غير مُرتجَع.
                 </div>
               )}
+              </div>
             </DialogDescription>
           </DialogHeader>
 

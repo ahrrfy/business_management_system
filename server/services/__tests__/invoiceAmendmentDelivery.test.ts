@@ -10,6 +10,11 @@ import { getDeliveryFinancialSummary } from "../delivery/lifecycle";
 import { recordDeliveryRemittance } from "../delivery/remittance";
 import { openShift } from "../shiftService";
 import { money } from "../money";
+import { withTx } from "../tx";
+import { postEntry } from "../ledgerService";
+import { createPostingIntent, debitLine, creditLine } from "../accounting/postingEngine";
+import { extractInsertId } from "../../lib/insertId";
+import { loadRefundCaps } from "../returns/refundCaps";
 
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
 const db = () => getDb()!;
@@ -252,10 +257,11 @@ describe("atomic invoice amendment with courier custody", () => {
     expect(await db().select().from(s.receipts)).toHaveLength(0);
   });
 
-  it("cancels delivered unremitted money without a fabricated drawer refund", async () => {
+  it("rejects delivered unremitted cancellation until physical return without changing money", async () => {
     const original = await sale();
     await delivered(original.consignmentId!);
-    const result = await cancelSale(
+    const before = await Promise.all([invoice(original.invoiceId), consignment(original.consignmentId!), db().select().from(s.deliveryLedgerEntries), db().select().from(s.branchStock)]);
+    await expect(cancelSale(
       {
         invoiceId: original.invoiceId,
         reason: "إلغاء الطلب",
@@ -264,11 +270,11 @@ describe("atomic invoice amendment with courier custody", () => {
         enforceOperationalDecision: true,
       },
       actor,
-    );
-    expect(result.refundAmount).toBe("0.00");
-    expect((await party()).currentBalance).toBe("0.00");
+    )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await Promise.all([invoice(original.invoiceId), consignment(original.consignmentId!), db().select().from(s.deliveryLedgerEntries), db().select().from(s.branchStock)])).toEqual(before);
+    expect((await party()).currentBalance).toBe("10000.00");
     expect((await customer()).currentBalance).toBe("0.00");
-    expect((await getDeliveryFinancialSummary(1)).cashInCustody).toBe("0.00");
+    expect((await getDeliveryFinancialSummary(1)).cashInCustody).toBe("10000.00");
     expect(await db().select().from(s.receipts)).toHaveLength(0);
   });
 
@@ -294,11 +300,12 @@ describe("atomic invoice amendment with courier custody", () => {
     expect((await customer()).currentBalance).toBe("0.00");
   });
 
-  it("refunds fully remitted paid invoices from the actual receiving drawer", async () => {
+  it("rejects fully remitted delivered cancellation until physical return with receipts unchanged", async () => {
     const original = await sale();
     await delivered(original.consignmentId!);
     await remit(original.consignmentId!, "10000");
-    const result = await cancelSale(
+    const before = await Promise.all([invoice(original.invoiceId), consignment(original.consignmentId!), db().select().from(s.receipts), db().select().from(s.deliveryRemittanceLines), db().select().from(s.branchStock)]);
+    await expect(cancelSale(
       {
         invoiceId: original.invoiceId,
         reason: "رجوع الطلب",
@@ -307,14 +314,13 @@ describe("atomic invoice amendment with courier custody", () => {
         enforceOperationalDecision: true,
       },
       actor,
-    );
-    expect(result.refundAmount).toBe("10000.00");
+    )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await Promise.all([invoice(original.invoiceId), consignment(original.consignmentId!), db().select().from(s.receipts), db().select().from(s.deliveryRemittanceLines), db().select().from(s.branchStock)])).toEqual(before);
     expect((await party()).currentBalance).toBe("0.00");
     expect((await customer()).currentBalance).toBe("0.00");
     const receipts = await db().select().from(s.receipts);
     expect(receipts.map((r) => [r.direction, r.amount])).toEqual([
       ["IN", "10000.00"],
-      ["OUT", "10000.00"],
     ]);
   });
 
@@ -528,6 +534,150 @@ describe("atomic invoice amendment with courier custody", () => {
     );
     expect((await party()).currentBalance).toBe("0.00");
     expect((await customer()).currentBalance).toBe("1000.00");
+  });
+
+  describe("refund source proof", () => {
+    it("rejects a refund exceeding the proved pool before changing any invoice or receipt", async () => {
+      const shift = (await db().select().from(s.shifts))[0];
+      const original = await createSale({ branchId: 1, shiftId: Number(shift.id), sourceType: "POS", customerId: 1, lines: [line("10")], payment: { method: "CASH", amount: "10000" }, clientRequestId: "unproved-rail-sale" }, actor);
+      // Inconsistent legacy import: the refund exceeds all proved inbound money.
+      await db().insert(s.receipts).values({ invoiceId: original.invoiceId, branchId: 1, direction: "OUT", amount: "12000", paymentMethod: "CARD", referenceNumber: "legacy-refund", status: "COMPLETED", approvalStatus: "APPROVED", createdBy: 1 });
+      await db().update(s.invoices).set({ paidAmount: "8000" }).where(eq(s.invoices.id, original.invoiceId));
+      const before = await Promise.all([invoice(original.invoiceId), db().select().from(s.receipts), db().select().from(s.branchStock), db().select().from(s.accountingEntries)]);
+      await expect(correct(original.invoiceId, "8", "unproved-rail-correct")).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      expect(await Promise.all([invoice(original.invoiceId), db().select().from(s.receipts), db().select().from(s.branchStock), db().select().from(s.accountingEntries)])).toEqual(before);
+    });
+
+    it("carries CASH after an actual CARD roundtrip when the customer changes", async () => {
+      await db().insert(s.doubleEntrySettings).values({ id: 1, mode: "SHADOW", shadowCycleId: "refund-rails" });
+      await db().update(s.customers).set({ creditLimit: "10000" }).where(eq(s.customers.id, 1));
+      await db().insert(s.customers).values({ id: 2, name: "العميل الصحيح", currentBalance: "0", creditLimit: "0" });
+      const shift = (await db().select().from(s.shifts))[0];
+      const original = await createSale({ branchId: 1, shiftId: Number(shift.id), sourceType: "POS", customerId: 1, lines: [line("10")], payment: { method: "CASH", amount: "5000" }, clientRequestId: "rail-sale" }, actor);
+      // Historical confirmed processor receipt and refund; their net is zero.
+      await withTx(async tx => {
+        for (const direction of ["IN", "OUT"] as const) {
+          const id = extractInsertId(await tx.insert(s.receipts).values({ invoiceId: original.invoiceId, branchId: 1, shiftId: Number(shift.id), cashBucket: null, direction, amount: "5000", paymentMethod: "CARD", referenceNumber: `processor-${direction}`, cardLastFour: "1234", status: "COMPLETED", approvalStatus: "APPROVED", createdBy: 1 }));
+          const amount = money("5000");
+          const source = direction === "IN" ? { roleDebits: { CARD_BANK: amount }, roleCredits: { AR: amount } } : { roleDebits: { AR: amount }, roleCredits: { CARD_BANK: amount } };
+          await postEntry(tx, { entryType: direction === "IN" ? "PAYMENT_IN" : "PAYMENT_OUT", branchId: 1, invoiceId: original.invoiceId, receiptId: id, customerId: 1, amount, postingIntent: createPostingIntent(direction === "IN" ? "PAYMENT_IN_CUSTOMER" : "PAYMENT_OUT_CUSTOMER_REFUND", direction === "IN" ? "PAYMENT_IN" : "PAYMENT_OUT", direction === "IN" ? [debitLine("CARD_BANK", amount), creditLine("AR", amount)] : [debitLine("AR", amount), creditLine("CARD_BANK", amount)], source), postingSourceComponents: source });
+        }
+      });
+      const history = await db().select().from(s.receipts);
+      const corrected = await correctSale({ originalInvoiceId: original.invoiceId, customerId: 2, priorPaymentReceivedAmount: "5000", lines: [line("5")], clientRequestId: "rail-reassign" }, actor);
+      const after = await db().select().from(s.receipts);
+      expect(after.filter(row => row.invoiceId === corrected.correctedInvoiceId).map(row => [row.direction, row.paymentMethod, row.amount, row.shiftId, row.cashBucket])).toEqual([["IN", "CASH", "5000.00", Number(shift.id), "DRAWER"]]);
+      for (const old of history) expect(after.find(row => row.id === old.id)).toMatchObject({ amount: old.amount, paymentMethod: old.paymentMethod, shiftId: old.shiftId, cashBucket: old.cashBucket, referenceNumber: old.referenceNumber, cardLastFour: old.cardLastFour });
+      expect(after.filter(row => row.internalNote?.startsWith("SALE_CORRECTION_REVERSAL:")).map(row => [row.paymentMethod, row.amount])).toEqual([["CASH", "5000.00"]]);
+      for (const customerId of [1, 2]) {
+        const rows = await db().select().from(s.journalLines).where(and(eq(s.journalLines.role, "AR"), eq(s.journalLines.customerId, customerId)));
+        expect(rows.reduce((total, row) => total.plus(money(row.debit)).minus(money(row.credit)), money(0)).toFixed(2)).toBe("0.00");
+      }
+    });
+
+    it("carries refunded store advance with a consignment and zero courier collection", async () => {
+      const shift = (await db().select().from(s.shifts))[0];
+      const original = await createSale({ branchId: 1, shiftId: Number(shift.id), sourceType: "POS", customerId: 1, lines: [line("10")], payment: { method: "CASH", amount: "10000" }, delivery: { partyId: 1, fee: "0", feeCollection: "COURIER", recipientPhone: "07701234567", externalTrackingRef: "advance-zero" }, clientRequestId: "advance-zero-sale" }, actor);
+      const first = await correctSale({ originalInvoiceId: original.invoiceId, lines: [line("8")], clientRequestId: "advance-zero-first", overpayHandling: "CASH_REFUND" }, actor);
+      const second = await correctSale({ originalInvoiceId: first.correctedInvoiceId, lines: [line("6")], clientRequestId: "advance-zero-second", overpayHandling: "CASH_REFUND" }, actor);
+      expect(await invoice(second.correctedInvoiceId)).toMatchObject({ paidAmount: "6000.00", total: "6000.00" });
+      expect((await db().select().from(s.receipts)).map(row => [row.direction, row.amount])).toEqual([["IN", "10000.00"], ["OUT", "2000.00"], ["OUT", "2000.00"]]);
+      expect((await party()).currentBalance).toBe("0.00");
+      expect((await consignment(original.consignmentId!)).codAmount).toBe("0.00");
+    });
+
+    it("preserves pooled CASH refunds of CARD receipts on their original rails when reassigned", async () => {
+      await db().insert(s.doubleEntrySettings).values({ id: 1, mode: "SHADOW", shadowCycleId: "pooled-refund" });
+      await db().update(s.customers).set({ creditLimit: "10000" }).where(eq(s.customers.id, 1));
+      await db().insert(s.customers).values({ id: 2, name: "العميل الصحيح", currentBalance: "0", creditLimit: "0" });
+      const shift = (await db().select().from(s.shifts))[0];
+      await db().update(s.shifts).set({ openingBalance: "2000" }).where(eq(s.shifts.id, Number(shift.id)));
+      const original = await createSale({ branchId: 1, shiftId: Number(shift.id), sourceType: "POS", customerId: 1, lines: [line("10")], clientRequestId: "pooled-card-sale" }, actor);
+      await withTx(async tx => {
+        const receiptId = extractInsertId(await tx.insert(s.receipts).values({ invoiceId: original.invoiceId, branchId: 1, shiftId: Number(shift.id), direction: "IN", amount: "10000", paymentMethod: "CARD", referenceNumber: "confirmed-card-only", status: "COMPLETED", approvalStatus: "APPROVED", createdBy: 1 }));
+        const amount = money("10000");
+        const source = { roleDebits: { CARD_BANK: amount }, roleCredits: { AR: amount } };
+        await postEntry(tx, { entryType: "PAYMENT_IN", invoiceId: original.invoiceId, receiptId, branchId: 1, customerId: 1, amount, postingIntent: createPostingIntent("PAYMENT_IN_CUSTOMER", "PAYMENT_IN", [debitLine("CARD_BANK", amount), creditLine("AR", amount)], source), postingSourceComponents: source });
+        await tx.update(s.invoices).set({ paidAmount: "10000", status: "PAID", paymentMethod: "CARD" }).where(eq(s.invoices.id, original.invoiceId));
+        await tx.update(s.customers).set({ currentBalance: "0" }).where(eq(s.customers.id, 1));
+      });
+      const first = await correctSale({ originalInvoiceId: original.invoiceId, lines: [line("8")], overpayHandling: "CASH_REFUND", clientRequestId: "pooled-cash-refund" }, actor);
+      const physicalRefund = (await db().select().from(s.receipts)).find(row => row.direction === "OUT")!;
+      const reassigned = await correctSale({ originalInvoiceId: first.correctedInvoiceId, customerId: 2, priorPaymentReceivedAmount: "8000", lines: [line("8")], clientRequestId: "pooled-reassign" }, actor);
+      const after = await db().select().from(s.receipts);
+      expect(after.find(row => row.id === physicalRefund.id)).toEqual(physicalRefund);
+      expect(after.filter(row => row.invoiceId === reassigned.correctedInvoiceId).map(row => [row.direction, row.paymentMethod, row.amount])).toEqual([["IN", "CARD", "8000.00"]]);
+      expect(after.filter(row => row.internalNote?.startsWith("SALE_CORRECTION_REVERSAL:")).map(row => [row.direction, row.paymentMethod, row.amount])).toEqual([["OUT", "CARD", "8000.00"]]);
+      for (const customerId of [1, 2]) {
+        const rows = await db().select().from(s.journalLines).where(and(eq(s.journalLines.role, "AR"), eq(s.journalLines.customerId, customerId)));
+        expect(rows.reduce((total, row) => total.plus(money(row.debit)).minus(money(row.credit)), money(0)).toFixed(2)).toBe("0.00");
+      }
+    });
+
+    it("keeps a single actual refund spanning store and courier in one paid pool", async () => {
+      const shift = (await db().select().from(s.shifts))[0];
+      await db().insert(s.customers).values({ id: 2, name: "العميل الصحيح", currentBalance: "0", creditLimit: "0" });
+      const original = await createSale({ branchId: 1, shiftId: Number(shift.id), sourceType: "POS", customerId: 1, lines: [line("13")], payment: { method: "CASH", amount: "3000" }, delivery: { partyId: 1, fee: "0", feeCollection: "COURIER", recipientPhone: "07701234567", externalTrackingRef: "spanning-refund" }, clientRequestId: "spanning-sale" }, actor);
+      await delivered(original.consignmentId!);
+      await remit(original.consignmentId!, "10000");
+      const first = await correctSale({ originalInvoiceId: original.invoiceId, lines: [line("8")], overpayHandling: "CASH_REFUND", clientRequestId: "spanning-refund-first" }, actor);
+      const physicalRefund = (await db().select().from(s.receipts)).find(row => row.direction === "OUT")!;
+      const reassigned = await correctSale({ originalInvoiceId: first.correctedInvoiceId, customerId: 2, priorPaymentReceivedAmount: "8000", lines: [line("8")], clientRequestId: "spanning-reassign" }, actor);
+      const repeated = await correct(reassigned.correctedInvoiceId, "8", "spanning-repeat");
+      expect(await invoice(repeated.correctedInvoiceId)).toMatchObject({ paidAmount: "8000.00", customerId: 2 });
+      const rows = await db().select().from(s.receipts);
+      expect(rows.filter(row => row.direction === "OUT")).toHaveLength(1);
+      expect(rows.find(row => row.id === physicalRefund.id)).toEqual({ ...physicalRefund, invoiceId: repeated.correctedInvoiceId });
+      expect(rows.filter(row => row.invoiceId === repeated.correctedInvoiceId).map(row => [row.direction, row.amount])).toEqual([["IN", "3000.00"], ["OUT", "5000.00"]]);
+      expect((await loadRefundCaps(db(), repeated.correctedInvoiceId)).pool.toFixed(2)).toBe("8000.00");
+      expect((await party()).currentBalance).toBe("0.00");
+    });
+
+    it("rejects unrepresentable split-refund reassignment before any invoice stock or AR mutation", async () => {
+      await db().insert(s.doubleEntrySettings).values({ id: 1, mode: "SHADOW", shadowCycleId: "split-refund-boundary" });
+      await db().insert(s.customers).values({ id: 2, name: "العميل الصحيح", currentBalance: "0", creditLimit: "0" });
+      const shift = (await db().select().from(s.shifts))[0];
+      const receiptIds: number[] = [];
+      for (const [method, amount] of [["CASH", "3000"], ["CARD", "2000"]] as const) {
+        receiptIds.push(extractInsertId(await db().insert(s.receipts).values({ branchId: 1, shiftId: Number(shift.id), cashBucket: method === "CASH" ? "DRAWER" : null, direction: "IN", amount, paymentMethod: method, referenceNumber: `confirmed-${method}`, status: "COMPLETED", approvalStatus: "APPROVED", createdBy: 1 })));
+      }
+      const original = await createSale({ branchId: 1, shiftId: Number(shift.id), sourceType: "POS", customerId: 1, lines: [line("15")], preCollected: { amount: "5000", receiptIds }, delivery: { partyId: 1, fee: "0", feeCollection: "COURIER", recipientPhone: "07701234567", externalTrackingRef: "split-source-proof" }, clientRequestId: "split-source-sale" }, actor);
+      await withTx(async tx => {
+        for (const [index, role, amountText] of [[0, "CASH", "3000"], [1, "CARD_BANK", "2000"]] as const) {
+          const amount = money(amountText);
+          const source = { roleDebits: { [role]: amount }, roleCredits: { AR: amount } };
+          await postEntry(tx, { entryType: "PAYMENT_IN", branchId: 1, invoiceId: original.invoiceId, receiptId: receiptIds[index], customerId: 1, amount, postingIntent: createPostingIntent("PAYMENT_IN_CUSTOMER", "PAYMENT_IN", [debitLine(role, amount), creditLine("AR", amount)], source), postingSourceComponents: source });
+        }
+      });
+      await delivered(original.consignmentId!);
+      await remit(original.consignmentId!, "10000");
+      const first = await correctSale({ originalInvoiceId: original.invoiceId, lines: [line("10")], overpayHandling: "CASH_REFUND", clientRequestId: "split-source-refund" }, actor);
+      const snapshot = () => Promise.all([db().select().from(s.invoices), db().select().from(s.receipts), db().select().from(s.branchStock), db().select().from(s.accountingEntries), db().select().from(s.journalLines), db().select().from(s.customers), db().select().from(s.deliveryConsignments), db().select().from(s.deliveryLedgerEntries)]);
+      const before = await snapshot();
+      await expect(correctSale({ originalInvoiceId: first.correctedInvoiceId, customerId: 2, priorPaymentReceivedAmount: "10000", lines: [line("10")], clientRequestId: "split-source-reassign" }, actor)).rejects.toThrow(/طابق توزيع مستند الاسترداد بين المصدرين/);
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("attributes a mixed store and remitted courier refund once across customer reassignment", async () => {
+      await db().insert(s.doubleEntrySettings).values({ id: 1, mode: "SHADOW", shadowCycleId: "mixed-refund" });
+      await db().insert(s.customers).values({ id: 2, name: "العميل الصحيح", currentBalance: "0", creditLimit: "0" });
+      const shift = (await db().select().from(s.shifts))[0];
+      const original = await createSale({ branchId: 1, shiftId: Number(shift.id), sourceType: "POS", customerId: 1, lines: [line("10")], payment: { method: "CASH", amount: "4000" }, delivery: { partyId: 1, fee: "0", feeCollection: "COURIER", recipientPhone: "07701234567", externalTrackingRef: "mixed-advance" }, clientRequestId: "mixed-advance-sale" }, actor);
+      await recordStaffDeliveryConfirmation({ consignmentId: original.consignmentId!, collectedAmount: "6000", evidence: "تحصيل الشركة", clientRequestId: "mixed-delivery" }, actor);
+      await remit(original.consignmentId!, "6000");
+      const first = await correctSale({ originalInvoiceId: original.invoiceId, lines: [line("8")], clientRequestId: "mixed-refund-first", overpayHandling: "CASH_REFUND" }, actor);
+      const actualRefund = (await db().select().from(s.receipts)).find(row => row.direction === "OUT")!;
+      const reassigned = await correctSale({ originalInvoiceId: first.correctedInvoiceId, customerId: 2, priorPaymentReceivedAmount: "8000", lines: [line("8")], clientRequestId: "mixed-reassign" }, actor);
+      const repeated = await correct(reassigned.correctedInvoiceId, "8", "mixed-repeat");
+      expect(await invoice(repeated.correctedInvoiceId)).toMatchObject({ paidAmount: "8000.00", customerId: 2 });
+      expect((await db().select().from(s.receipts).where(eq(s.receipts.id, Number(actualRefund.id))))[0]).toEqual(actualRefund);
+      expect((await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, repeated.correctedInvoiceId))).map(row => [row.direction, row.amount])).toEqual([["IN", "2000.00"]]);
+      for (const customerId of [1, 2]) {
+        const rows = await db().select().from(s.journalLines).where(and(eq(s.journalLines.role, "AR"), eq(s.journalLines.customerId, customerId)));
+        expect(rows.reduce((total, row) => total.plus(money(row.debit)).minus(money(row.credit)), money(0)).toFixed(2)).toBe("0.00");
+      }
+      expect((await party()).currentBalance).toBe("0.00");
+    });
   });
 
   it("carries net ordinary CASH across two reductions and cancels only the remaining paid pool", async () => {

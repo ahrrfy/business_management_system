@@ -160,6 +160,10 @@ export async function assertInvoiceReversalDeliverySafeTx(
     const atomicAmendment = input.allowAtomicAmendment === true
       && consignment.status !== "WRITTEN_OFF"
       && consignment.status !== "RETURNED"
+      && (input.mode !== "CANCEL" || (
+        consignment.status !== "DELIVERED" && consignment.status !== "PARTIAL"
+        && consignment.parcelStatus !== "DELIVERED"
+      ))
       && consignment.returnDeclaredAt == null;
     const cancellableAssignment =
       input.mode === "CANCEL" &&

@@ -15,6 +15,7 @@ import { money, round2, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 import { deliveryCustodyReturnIntent } from "./posting";
+import { allocateCorrectionRefunds } from "../sale/correctionReceiptSettlement";
 import {
   createPostingIntent,
   signedPostingLines,
@@ -83,13 +84,12 @@ export async function invoiceDeliveryAmendmentTx(tx: Tx, invoiceId: number) {
       .where(eq(invoices.id, invoiceId))
       .limit(1)
   )[0];
-  const priorRefunds = await tx
-    .select({ amount: receipts.amount })
+  const materializedReceipts = await tx
+    .select()
     .from(receipts)
     .where(
       and(
         eq(receipts.invoiceId, invoiceId),
-        eq(receipts.direction, "OUT"),
         eq(receipts.status, "COMPLETED"),
         eq(receipts.approvalStatus, "APPROVED"),
         sql`(${receipts.internalNote} IS NULL OR ${receipts.internalNote} NOT LIKE 'SALE_CORRECTION_REVERSAL:%')`,
@@ -97,16 +97,13 @@ export async function invoiceDeliveryAmendmentTx(tx: Tx, invoiceId: number) {
       ),
     )
     .for("update");
-  const refunded = round2(
-    priorRefunds.reduce(
-      (total, row) => total.plus(money(row.amount)),
-      money(0),
-    ),
-  );
+  const allocation = allocateCorrectionRefunds(materializedReceipts.filter(row => row.direction === "IN"),
+    materializedReceipts.filter(row => row.direction === "OUT"), grossSettled);
   return {
     cn,
     customerId: invoice?.customerId == null ? null : Number(invoice.customerId),
-    settled: round2(Decimal.max(0, grossSettled.minus(refunded))),
+    grossSettled,
+    settled: round2(grossSettled.minus(allocation.courierRefundAmount)),
     custody,
     shortfall: round2(
       Decimal.min(
@@ -201,6 +198,7 @@ export async function rebindCorrectedInvoiceDeliveryTx(
   invoiceId: number,
   actor: Actor,
   key: string,
+  retainedRefundIds: number[] = [],
 ) {
   const invoice = (
     await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1)
@@ -289,6 +287,7 @@ export async function rebindCorrectedInvoiceDeliveryTx(
         eq(receipts.direction, "OUT"),
         eq(receipts.status, "COMPLETED"),
         eq(receipts.approvalStatus, "APPROVED"),
+      retainedRefundIds.length ? sql`${receipts.id} NOT IN (${sql.join(retainedRefundIds.map(id => sql`${id}`), sql`, `)})` : undefined,
         sql`(${receipts.internalNote} IS NULL OR ${receipts.internalNote} NOT LIKE 'SALE_CORRECTION_REVERSAL:%')`,
         sql`NOT EXISTS (SELECT 1 FROM accountingEntries ae WHERE ae.receiptId=${receipts.id} AND ae.entryType='DELIVERY_FEE_HELD')`,
       ),

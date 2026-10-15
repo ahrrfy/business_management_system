@@ -62,6 +62,7 @@ import { assertPeriodOpen } from "../periodLockService";
 import type { Tx } from "../../db";
 import { assertLockedInvoiceControlSnapshotTx, type InvoiceControlSnapshot } from "./controlSnapshot";
 import {
+  allocateCorrectionRefunds,
   lockPriorPaymentShiftsTx,
   postReRecordedPaymentsTx,
   settlePriorPaymentsTx,
@@ -474,22 +475,24 @@ export async function correctSaleInTx(
     //    reception/deposits.ts + returnService.ts). حينها detachedSum < paidAmount، فيُعيد
     //    الترحيلُ تحميلَ الفرق ذمّةً وهميّةً على العميل. الحلّ: لا نُصحّح إن اختلّ المجموع — بل
     //    نوجّه لإلغاءٍ كامل ثمّ إعادة بيع. (المجموع محسوبٌ قبل أيّ تعديل ⇒ رفضٌ فاشلٌ نظيف.)
-    const payRcpts = await tx.select({ id: receipts.id, amount: receipts.amount }).from(receipts).where(and(
+    const payRcpts = await tx.select().from(receipts).where(and(
       eq(receipts.invoiceId, input.originalInvoiceId),
       eq(receipts.direction, "IN"),
       eq(receipts.status, "COMPLETED"),
+      eq(receipts.approvalStatus, "APPROVED"),
       sql`NOT EXISTS (SELECT 1 FROM accountingEntries ae WHERE ae.receiptId = ${receipts.id} AND ae.entryType = 'DELIVERY_FEE_HELD')`,
     ),
-      );
+      ).for("update");
     const detachedIds = payRcpts.map((r) => Number(r.id));
-    const priorRefunds = deliveryAmendment ? [] : await tx.select({ id: receipts.id, amount: receipts.amount })
+    const priorRefunds = await tx.select()
       .from(receipts).where(and(
         eq(receipts.invoiceId, input.originalInvoiceId), eq(receipts.direction, "OUT"),
         eq(receipts.status, "COMPLETED"), eq(receipts.approvalStatus, "APPROVED"),
         sql`(${receipts.internalNote} IS NULL OR ${receipts.internalNote} NOT LIKE 'SALE_CORRECTION_REVERSAL:%')`,
         sql`NOT EXISTS (SELECT 1 FROM accountingEntries ae WHERE ae.receiptId=${receipts.id} AND ae.entryType='DELIVERY_FEE_HELD')`,
       )).for("update");
-    const priorRefundAmount = round2(priorRefunds.reduce((sum, row) => sum.plus(money(row.amount)), money(0)));
+    const refundAllocation = allocateCorrectionRefunds(payRcpts, priorRefunds, deliveryAmendment?.grossSettled ?? money(0));
+    const priorRefundAmount = refundAllocation.receiptRefundAmount;
     // Historical IN/OUT keep their amounts, shifts and actors. Only their net
     // paid pool is carried; a previous actual refund must never be paid twice.
     const detachedSum = round2(payRcpts.reduce((s, r) => s.plus(money(r.amount)), money(0)).minus(priorRefundAmount));
@@ -538,6 +541,20 @@ export async function correctSaleInTx(
       customerChanged
       || receivedPrior.minus(deliveryPaid).lt(detachedSum)
     );
+    // A physical OUT cannot be split or reassigned as two invented receipts.
+    // Retain store refunds with their original IN/compensation; only wholly
+    // courier-funded refunds follow the collection's consignment.
+    const retainedRefundIds = needsSettlement ? priorRefunds.filter(row => {
+      const courierPortion = refundAllocation.courierRefunds.get(Number(row.id)) ?? money(0);
+      if (courierPortion.gt(0) && courierPortion.lt(money(row.amount))) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+          what: "تعذّر نقل مقبوض الفاتورة إلى عميل آخر",
+          why: `إيصال الاسترداد ${row.id} يجمع قبض المتجر وتحصيل التوصيل في مستند واحد`,
+          doThis: "طابق توزيع مستند الاسترداد بين المصدرين قبل إعادة التخصيص؛ لم يتغير المال أو المخزون",
+        }) });
+      }
+      return courierPortion.isZero();
+    }).map(row => Number(row.id)) : [];
     if (needsSettlement && !mayNeedSettlement) {
       // المعاينة قبل القفل لم تتوقّع التسوية (تغيّرت الفاتورة بين القراءتين) ⇒ ورديات غير مقفلة.
       throw new TRPCError({
@@ -587,6 +604,7 @@ export async function correctSaleInTx(
         targetCustomerId,
         recordedAmount: detachedSum,
         priorRefundAmount,
+        priorRefundByReceiptId: refundAllocation.receiptRefunds,
         receivedAmount: receivedPrior.minus(deliveryPaid),
         lockedShiftIds: lockedPriorShiftIds,
       }, actor);
@@ -845,7 +863,7 @@ export async function correctSaleInTx(
 
     if (deliveryAmendment) {
       await rebindCorrectedInvoiceDeliveryTx(tx, deliveryAmendment, newId, actor,
-        input.clientRequestId ?? `correct-${input.originalInvoiceId}`);
+        input.clientRequestId ?? `correct-${input.originalInvoiceId}`, retainedRefundIds);
     }
 
     // ── ١٠) تسجيل مفتاح idempotency (refId = الفاتورة الجديدة) ──
