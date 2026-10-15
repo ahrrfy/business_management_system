@@ -296,6 +296,16 @@ export async function consignmentBalancesReport(branchId?: number) {
             FROM accountingEntries ae
             WHERE ae.supplierId = s.id
               AND ae.branchId = ${branchId}
+          ), 0)
+          + COALESCE((
+            SELECT SUM(jl.credit - jl.debit)
+            FROM journalLines jl
+            JOIN journalEntries je ON je.id = jl.journalId
+            WHERE jl.supplierId = s.id
+              AND jl.branchId = ${branchId}
+              AND jl.role IN ('AP', 'ACCOUNTS_PAYABLE')
+              AND je.status = 'POSTED'
+              AND je.postingProfile = 'MANUAL_JOURNAL'
           ), 0),
           2
         ) AS CHAR
@@ -327,6 +337,16 @@ export async function consignmentBalancesReport(branchId?: number) {
           SELECT 1
           FROM accountingEntries ae
           WHERE ae.supplierId = s.id AND ae.branchId = ${branchId}
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM journalLines jl
+          JOIN journalEntries je ON je.id = jl.journalId
+          WHERE jl.supplierId = s.id
+            AND jl.branchId = ${branchId}
+            AND jl.role IN ('AP', 'ACCOUNTS_PAYABLE')
+            AND je.status = 'POSTED'
+            AND je.postingProfile = 'MANUAL_JOURNAL'
         )
         OR EXISTS (
           SELECT 1
@@ -560,6 +580,16 @@ export async function consignmentSettlementStatement(input: {
           )
           OR EXISTS (
             SELECT 1
+            FROM journalLines jl
+            JOIN journalEntries je ON je.id = jl.journalId
+            WHERE jl.supplierId = ${input.consignorId}
+              AND jl.branchId = ${input.branchId}
+              AND jl.role IN ('AP', 'ACCOUNTS_PAYABLE')
+              AND je.status = 'POSTED'
+              AND je.postingProfile = 'MANUAL_JOURNAL'
+          )
+          OR EXISTS (
+            SELECT 1
             FROM receipts r
             WHERE r.partyType = 'SUPPLIER' AND r.partyId = ${input.consignorId} AND r.branchId = ${input.branchId}
           )
@@ -571,6 +601,16 @@ export async function consignmentSettlementStatement(input: {
               FROM accountingEntries ae
               WHERE ae.supplierId = ${input.consignorId}
                 AND ae.branchId = ${input.branchId}
+            ), 0)
+            + COALESCE((
+              SELECT SUM(jl.credit - jl.debit)
+              FROM journalLines jl
+              JOIN journalEntries je ON je.id = jl.journalId
+              WHERE jl.supplierId = ${input.consignorId}
+                AND jl.branchId = ${input.branchId}
+                AND jl.role IN ('AP', 'ACCOUNTS_PAYABLE')
+                AND je.status = 'POSTED'
+                AND je.postingProfile = 'MANUAL_JOURNAL'
             ), 0),
             2
           ) AS CHAR

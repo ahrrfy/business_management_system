@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { createRemoteJWKSet, jwtVerify, SignJWT } from "jose";
 
 import {
@@ -71,7 +71,7 @@ async function verifyFirebasePhoneToken(idToken: string): Promise<FirebaseClaims
 
 async function resolveCustomer(phone: string, name: string, firebaseUid: string) {
   return withTx(async (tx) => {
-    const lockName = `storefront-firebase-customer:${phone}`;
+    const lockName = `online-customer:${phone}`;
     const lockResult = (await tx.execute(sql`SELECT GET_LOCK(${lockName}, 5) AS locked`)) as unknown;
     const row = Array.isArray(lockResult)
       ? (lockResult[0] as Array<{ locked?: number }> | undefined)?.[0]
@@ -80,15 +80,30 @@ async function resolveCustomer(phone: string, name: string, firebaseUid: string)
       throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذر تأمين ملف العميل، أعد المحاولة" });
     }
     try {
+      const phoneVariants = Array.from(
+        new Set(
+          [
+            phone,
+            ...(phone.startsWith("+964")
+              ? [
+                  `0${phone.slice(4)}`,
+                  `964${phone.slice(4)}`,
+                  `00964${phone.slice(4)}`,
+                  phone.slice(4),
+                ]
+              : []),
+          ].filter(Boolean),
+        ),
+      );
       const existing = (
         await tx
           .select({ id: customers.id, name: customers.name, isActive: customers.isActive })
           .from(customers)
           .where(or(
-            eq(customers.phone, phone),
-            eq(customers.phone2, phone),
-            eq(customers.phone3, phone),
-            eq(customers.whatsapp, phone),
+            inArray(customers.phone, phoneVariants),
+            inArray(customers.phone2, phoneVariants),
+            inArray(customers.phone3, phoneVariants),
+            inArray(customers.whatsapp, phoneVariants),
           ))
           .orderBy(desc(customers.isActive), desc(customers.id))
           .for("update")

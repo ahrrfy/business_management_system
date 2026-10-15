@@ -847,7 +847,7 @@ export const authRouter = router({
           message: "كلمة المرور أو رمز التحقق غير صحيح",
         });
       }
-      await disableTwoFactor(fresh.id);
+      await reissueCurrentUserSession(ctx, (await disableTwoFactor(fresh.id)).validFrom);
       await logAudit(ctx, {
         action: "auth.2fa.disabled",
         entityType: "user",
@@ -1149,3 +1149,79 @@ export const authRouter = router({
       return { success: true, userId: r.userId };
     }),
 });
+
+async function reissueCurrentUserSession(
+  ctx: {
+    user: { id: number };
+    sessionId?: number | null;
+    req: Parameters<typeof getSessionCookieOptions>[0];
+    res: { cookie: (name: string, val: string, opts: Record<string, unknown>) => void };
+  },
+  validFrom: Date,
+): Promise<void> {
+  const db = getDb();
+  let preservedProofCounter = 0;
+  if (db && ctx.sessionId != null) {
+    const [existingSession] = await db
+      .select({ userAgent: userSessions.userAgent })
+      .from(userSessions)
+      .where(
+        and(
+          eq(userSessions.id, ctx.sessionId),
+          eq(userSessions.userId, ctx.user.id),
+        ),
+      )
+      .limit(1);
+    preservedProofCounter =
+      parseNativeSessionMarker(existingSession?.userAgent) ?? 0;
+  }
+  const headerCounterRaw = (
+    ctx.req as { headers?: Record<string, unknown> } | undefined
+  )?.headers?.["x-alrueya-device-counter"];
+  if (
+    typeof headerCounterRaw === "string" &&
+    /^\d{1,16}$/.test(headerCounterRaw)
+  ) {
+    const parsedHeaderCounter = Number(headerCounterRaw);
+    if (
+      Number.isSafeInteger(parsedHeaderCounter) &&
+      parsedHeaderCounter > preservedProofCounter
+    ) {
+      preservedProofCounter = parsedHeaderCounter;
+    }
+  }
+  const reissueIatSec = Math.floor(validFrom.getTime() / 1000);
+  const nativeDeviceThumbprint = inheritedNativeDeviceThumbprint(ctx.req);
+  const nativeClientId = nativeDeviceThumbprint
+    ? (nativeClientIdFromRequest(
+        ctx.req as { headers?: Record<string, unknown> },
+      ) ?? undefined)
+    : undefined;
+  const sessionId = await createUserSessionRecord({
+    userId: ctx.user.id,
+    userAgent: sessionClientMarker(
+      ctx.req,
+      nativeDeviceThumbprint,
+      nativeClientId,
+      preservedProofCounter,
+    ),
+    ipAddress: getClientIp(ctx.req),
+    expiresAt: new Date(Date.now() + SESSION_DEFAULT_MS),
+    createdAt: new Date(reissueIatSec * 1000),
+  });
+  const token = await signSession(
+    ctx.user.id,
+    SESSION_DEFAULT_MS,
+    ctx.req,
+    reissueIatSec,
+    getCurrentCompanyId() ?? undefined,
+    sessionId,
+    nativeDeviceThumbprint ?? undefined,
+    nativeClientId,
+  );
+  ctx.res.cookie(COOKIE_NAME, token, {
+    ...getSessionCookieOptions(ctx.req),
+    maxAge: SESSION_DEFAULT_MS,
+  });
+}
+
