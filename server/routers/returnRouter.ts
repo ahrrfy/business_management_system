@@ -3972,9 +3972,24 @@ export const returnRouter = router({
           );
           let stationeryRevenue = money(0);
           let printRevenue = money(0);
+          const returnClasses = new Set<
+            "SERVICE" | "CONSIGNMENT" | "INVENTORY"
+          >();
           for (const itm of input.items) {
             const kind = kindByVariant.get(Number(itm.variantId)) ?? "STOCK";
-            const itemRev = resolvedRevenueByItem.get(itm) ?? money(0);
+            const isConsign = consignByVariant.has(Number(itm.variantId));
+            returnClasses.add(
+              kind === "SERVICE"
+                ? "SERVICE"
+                : isConsign
+                  ? "CONSIGNMENT"
+                  : "INVENTORY",
+            );
+            const itemRev =
+              resolvedRevenueByItem.get(itm) ??
+              (!matchedInvoice
+                ? round2(money(itm.unitPrice).times(itm.quantity))
+                : money(0));
             if (kind === "SERVICE") {
               printRevenue = round2(printRevenue.plus(itemRev));
             } else {
@@ -3984,7 +3999,7 @@ export const returnRouter = router({
           const revenueSum = round2(stationeryRevenue.plus(printRevenue));
           if (!revenueSum.eq(returnedRevenueDec)) {
             const diff = round2(returnedRevenueDec.minus(revenueSum));
-            if (stationeryRevenue.gt(0)) {
+            if (stationeryRevenue.gt(0) || !returnClasses.has("SERVICE")) {
               stationeryRevenue = round2(
                 Decimal.max(0, stationeryRevenue.plus(diff)),
               );
@@ -3997,17 +4012,18 @@ export const returnRouter = router({
           const hasOwnedReturn = input.items.some(
             (itm) => !consignByVariant.has(Number(itm.variantId)),
           );
-          const salesReturnProfile: PostingProfile = hasConsignmentReturn
-            ? hasOwnedReturn || ownedReversedCost.gt(0)
+          const salesReturnProfile: PostingProfile =
+            returnClasses.size > 1 ||
+            (hasConsignmentReturn &&
+              (hasOwnedReturn || ownedReversedCost.gt(0))) ||
+            (printRevenue.gt(0) &&
+              (stationeryRevenue.gt(0) || ownedReversedCost.gt(0)))
               ? "RETURN_SALE_MIXED"
-              : "RETURN_SALE_CONSIGNMENT"
-            : printRevenue.gt(0) &&
-                stationeryRevenue.eq(0) &&
-                ownedReversedCost.eq(0)
-              ? "RETURN_SALE_SERVICE"
-              : printRevenue.gt(0) && stationeryRevenue.gt(0)
-                ? "RETURN_SALE_MIXED"
-                : "RETURN_SALE_INVENTORY";
+              : hasConsignmentReturn
+                ? "RETURN_SALE_CONSIGNMENT"
+                : printRevenue.gt(0)
+                  ? "RETURN_SALE_SERVICE"
+                  : "RETURN_SALE_INVENTORY";
 
           const salesReturnSource = {
             roleDebits: {

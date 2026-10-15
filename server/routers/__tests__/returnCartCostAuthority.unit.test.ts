@@ -28,6 +28,17 @@ vi.mock("../../services/tx", () => ({
         };
         return query;
       },
+      insert: () => {
+        const ins = {
+          values: () => ins,
+          onDuplicateKeyUpdate: async () => [{ insertId: 901 }],
+          then: (
+            resolve: (v: unknown) => unknown,
+            reject?: (e: unknown) => unknown,
+          ) => Promise.resolve([{ insertId: 901 }]).then(resolve, reject),
+        };
+        return ins;
+      },
       update: () => ({
         set: (values: Record<string, unknown>) => ({
           where: async () => {
@@ -506,5 +517,92 @@ describe("purchase-return fresh transaction authority", () => {
       ),
     ).toBe("0.00");
     expect(state.updates[0]).not.toHaveProperty("returnedRestockedBaseQuantity");
+  });
+
+  it("allocates walk-in stocked return revenue to SALES_STATIONERY and selects RETURN_SALE_INVENTORY", async () => {
+    const managerUserRow = {
+      id: 4,
+      role: "manager",
+      branchId: 2,
+      isActive: true,
+      isOwner: false,
+      customRoleId: null,
+      permissionsOverride: null,
+      operationPolicy: {
+        version: 1 as const,
+        grants: {
+          "operation.returns.create": true,
+          "operation.returns.executeSalesReturnCart": true,
+          "operation.salesControl.approve": true,
+        },
+      },
+    };
+    const managerCtx = {
+      ...ctx,
+      user: {
+        ...managerUserRow,
+        totpEnabledAt: new Date(),
+        operationPolicyEnabled: true,
+        resolvedOperationPolicy: managerUserRow.operationPolicy,
+      },
+    } as unknown as TrpcContext;
+    state.rows = [
+      [{ customRoleId: null }],
+      [managerUserRow],
+      [{ customRoleId: null }],
+      [managerUserRow],
+      [{ customRoleId: null }],
+      [managerUserRow],
+      [], // digitalProductRows
+      [{ variantId: 2, isService: false, isBundle: false }], // classifyVariants
+      [], // consignByVariant
+      [{ id: 2, costPrice: "5.00" }], // variantCostRows
+      [{ id: 3, variantId: 2, unitName: "قطعة", conversionFactor: "1", factor: "1" }], // resolveReturnBaseQuantity productUnits
+      [{ id: 9, variantId: 2, branchId: 2, quantity: 10 }], // applyMovement branchStock lock
+    ];
+    const result = await api
+      .createCaller(managerCtx)
+      .returns.executeSalesReturnCart({
+        disposition: "RESTOCK",
+        customer: { name: "زبون عابر" },
+        items: [
+          {
+            variantId: 2,
+            productUnitId: 3,
+            productName: "دفتر جامعي",
+            quantity: 2,
+            unitPrice: "20.00",
+          },
+        ],
+        settlement: {
+          method: "CARD",
+          totalAmount: "40.00",
+          reference: "POS-REF-900",
+        },
+      });
+    expect(result.ok).toBe(true);
+    const returnCall = state.postEntry.mock.calls.find(
+      (call: unknown[]) => (call[1] as Record<string, any>)?.entryType === "RETURN",
+    );
+    expect(returnCall).toBeDefined();
+    const [, postedPayload] = returnCall as unknown as [
+      unknown,
+      Record<string, any>,
+    ];
+    expect(postedPayload.postingIntent.profile).toBe("RETURN_SALE_INVENTORY");
+    expect(
+      postedPayload.postingSourceComponents.roleDebits.SALES_STATIONERY.toFixed(
+        2,
+      ),
+    ).toBe("40.00");
+    expect(
+      postedPayload.postingSourceComponents.roleDebits.SALES_PRINT.toFixed(2),
+    ).toBe("0.00");
+    expect(
+      postedPayload.postingSourceComponents.roleDebits.INVENTORY.toFixed(2),
+    ).toBe("10.00");
+    expect(
+      postedPayload.postingSourceComponents.roleCredits.COGS.toFixed(2),
+    ).toBe("10.00");
   });
 });
