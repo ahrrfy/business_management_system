@@ -227,7 +227,7 @@ export function WorkOrdersTable({
         if (o.status === "RECEIVED" && o.assignedTo == null && onClaim) {
           actions.push({ key: "claim", kind: "approve", label: "سحب الأمر", onSelect: () => onClaim(o.id) });
         }
-        if (o.status === "RECEIVED" && o.assignedTo != null && onRelease) {
+        if (o.status === "RECEIVED" && o.assignedTo != null && Number(o.assignedTo) === Number(me.data?.id) && onRelease) {
           actions.push({ key: "release", kind: "edit", label: "أعد إلى الطابور", onSelect: () => onRelease(o.id) });
         }
         if (next === ("DELIVERED" as ColKey) && o.hasDelivery && canLifecycleOperation(me.data, "delivery.dispatch", canDeliver)) {

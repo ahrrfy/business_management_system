@@ -20,7 +20,7 @@ vi.mock("../ledgerService", async (importOriginal) => ({
 import { storedOperationUser } from "../authorization/operationAuthority";
 import { cashHandoverRecipientAllowed, workOrderAssigneeAllowed } from "../authorization/operationRecipientEligibility";
 import { assertOperatorOwns, assertWorkOrderBranch } from "../workOrder/helpers";
-import { startWorkOrder, markWorkOrderReady, reassignWorkOrder } from "../workOrder/lifecycle";
+import { claimWorkOrder, startWorkOrder, markWorkOrderReady, reassignWorkOrder, releaseWorkOrder } from "../workOrder/lifecycle";
 import { createWorkOrderInTx } from "../workOrder/create";
 import { setWorkOrderKanbanState } from "../workOrder/kanbanState";
 import { createCashDrop } from "../cashDropService";
@@ -100,6 +100,17 @@ describe("execution scope and recipient eligibility", () => {
   it.each(executionPaths)("rechecks %s before reading the work order or writing stock", async (path) => {
     const tx = transaction(profileRows(account()));
     await expect(execute[path]()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(tx.select).toHaveBeenCalledTimes(2);
+    expect(tx.insert).not.toHaveBeenCalled();
+    expect(tx.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["workOrders.claim", () => claimWorkOrder(42, actor)],
+    ["workOrders.release", () => releaseWorkOrder(42, actor)],
+  ] as const)("rechecks %s before locking or mutating the work order", async (_path, invoke) => {
+    const tx = transaction(profileRows(account()));
+    await expect(invoke()).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(tx.select).toHaveBeenCalledTimes(2);
     expect(tx.insert).not.toHaveBeenCalled();
     expect(tx.update).not.toHaveBeenCalled();

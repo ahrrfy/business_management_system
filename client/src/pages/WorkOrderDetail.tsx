@@ -1015,7 +1015,7 @@ export default function WorkOrderDetail() {
             {claim.isPending ? "جارٍ…" : "سحب الأمر"}
           </Button>
         )}
-        {canReleaseWorkOrder && data.status === "RECEIVED" && data.assignedTo != null && (
+        {canReleaseWorkOrder && data.status === "RECEIVED" && data.assignedTo != null && Number(data.assignedTo) === Number(me.data?.id) && (
           <Button variant="outline" onClick={() => release.mutate({ workOrderId })} disabled={release.isPending || start.isPending}>
             {release.isPending ? "جارٍ…" : "أعد إلى الطابور"}
           </Button>

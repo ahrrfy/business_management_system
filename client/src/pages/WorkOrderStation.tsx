@@ -593,7 +593,7 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
                 <ChevronRight aria-hidden className="size-4 me-1" /> "بدء التنفيذ (خصم المواد)"
               </Button>}
               {/* ش٣: المخرجُ المشروع قبل البدء — بعده يرفضه الخادم ويُوجّه إلى النقل بسبب. */}
-              {canRelease && d.assignedTo != null && (
+              {canRelease && d.assignedTo != null && Number(d.assignedTo) === Number(me.data?.id) && (
                 <Button
                   variant="outline"
                   className="w-full"

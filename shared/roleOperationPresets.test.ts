@@ -254,13 +254,7 @@ describe("role operation presets", () => {
     const withExplicitUserRevoke = resolveOperationPolicy(
       "print_operator",
       ROLE_TEMPLATES.print_operator,
-      {
-        ...staleRolePolicy,
-        grants: {
-          ...staleRolePolicy.grants,
-          "operation.workOrders.claim": true,
-        },
-      },
+      staleRolePolicy,
       {
         version: 1 as const,
         grants: {
@@ -269,6 +263,21 @@ describe("role operation presets", () => {
       },
     );
     expect(withExplicitUserRevoke.grants["operation.workOrders.claim"]).toBe(false);
+    expect(withExplicitUserRevoke.grants["operation.workOrders.release"]).toBe(true);
+
+    const withUserRevokeOverLegacy = resolveOperationPolicy(
+      "print_operator",
+      ROLE_TEMPLATES.print_operator,
+      null,
+      {
+        version: 1 as const,
+        grants: {
+          "operation.workOrders.claim": false,
+        },
+      },
+    );
+    expect(withUserRevokeOverLegacy.grants["operation.workOrders.claim"]).toBe(false);
+    expect(withUserRevokeOverLegacy.grants["operation.workOrders.release"]).toBe(true);
   });
 });
 

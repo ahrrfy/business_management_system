@@ -540,12 +540,14 @@ export default function WorkOrders() {
     return null;
   }
 
+  const canReleaseOrder = (o: Pick<WO, "status" | "assignedTo">) =>
+    canRelease && o.status === "RECEIVED" && o.assignedTo != null && Number(o.assignedTo) === Number(me.data?.id);
+
   function onCardPointerDown(e: React.PointerEvent, order: WO) {
-    const canDragOrder = order.status === "RECEIVED"
-      ? (canStart || (order.assignedTo == null ? canClaim : canRelease))
-      : canLifecycleOperation(me.data, order.status === "IN_PROGRESS" ? "workOrders.markReady" : "workOrders.deliver", true);
-    if (!canDragOrder) return;
     if (e.button !== 0) return;
+    const canDragOrder = order.status === "RECEIVED"
+      ? (canStart || (order.assignedTo == null ? canClaim : canReleaseOrder(order)))
+      : canLifecycleOperation(me.data, order.status === "IN_PROGRESS" ? "workOrders.markReady" : "workOrders.deliver", true);
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     dragRef.current = { order, startX: e.clientX, startY: e.clientY, ox: e.clientX - rect.left, oy: e.clientY - rect.top, moved: false };
     const move = (ev: PointerEvent) => {
@@ -555,7 +557,7 @@ export default function WorkOrders() {
       // على البطاقات في تجميعاتٍ غير stage — حركةٌ لمسٍ طفيفة (>6px) تنتج pointerup
       // بحالة `moved=true` فلا يُفتح Drawer، ولا نقلٍ يحدث لأنّ مفاتيح `tech:*` ليست في
       // COLUMNS ⇒ نقرةٌ ضائعة. الحلّ: نتخطّى في تجميعاتٍ غير stage قبل الوسم.
-      if (!dndEnabled) return;
+      if (!dndEnabled || !canDragOrder) return;
       dr.moved = true;
       document.body.style.userSelect = "none";
       setDrag({ order: dr.order, x: ev.clientX - dr.ox, y: ev.clientY - dr.oy, overCol: hitCol(ev.clientX, ev.clientY) });
@@ -583,7 +585,7 @@ export default function WorkOrders() {
         claim.mutate({ workOrderId: dr.order.id });
         return;
       }
-      if (dr.order.status === "RECEIVED" && dr.order.assignedTo != null && overKey === "INBOX" && canRelease) {
+      if (overKey === "INBOX" && canReleaseOrder(dr.order)) {
         release.mutate({ workOrderId: dr.order.id });
         return;
       }
@@ -870,7 +872,7 @@ export default function WorkOrders() {
               const isOver = dndEnabled && !!drag && drag.overCol === s.key && (
                 WO_NEXT_STATUS[drag.order.status as WorkOrderStatus] === s.status ||
                 (drag.order.status === "RECEIVED" && drag.order.assignedTo == null && s.key === "CLAIMED" && canClaim) ||
-                (drag.order.status === "RECEIVED" && drag.order.assignedTo != null && s.key === "INBOX" && canRelease)
+                (s.key === "INBOX" && canReleaseOrder(drag.order))
               );
               // إحصائيات رأس العمود مشتقة حتمياً من بطاقات العمود نفسه (Single Source of Truth)
               // لتطابق العين الأرقام 100% وتفصل «طابور وارد» عن «مسحوب»، وتصمد أمام الفلاتر والتجميع.
@@ -964,7 +966,7 @@ export default function WorkOrders() {
                         staff={s.key === "INBOX" && canAssign ? assignableStaff.data : undefined}
                         assignPending={assign.isPending}
                         onClaim={canClaim ? (orderId) => claim.mutate({ workOrderId: orderId }) : undefined}
-                        onRelease={canRelease ? (orderId) => release.mutate({ workOrderId: orderId }) : undefined}
+                        onRelease={canReleaseOrder(o) ? (orderId) => release.mutate({ workOrderId: orderId }) : undefined}
                         claimPending={claim.isPending || release.isPending}
                         onOpenCustomer={canReadCustomerContext ? setCustomerContextId : undefined}
                         // Codex #6: النقطة تفاعليّة لمن يستطيع الكتابة فقط؛ لغيرهم تُعرض قراءةً
