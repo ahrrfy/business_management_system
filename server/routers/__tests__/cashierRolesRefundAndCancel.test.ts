@@ -790,7 +790,7 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
         shiftId: retailShiftId,
         customerId: 1,
         sourceType: "POS",
-        discountAmount: "1.00",
+        invoiceDiscount: "1.00",
         lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }],
         payment: { amount: "74.00", method: "CASH" },
       },
@@ -817,7 +817,7 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       ],
       settlement: {
         method: "CASH",
-        totalAmount: "49.33",
+        totalAmount: "49.34",
         shiftId: retailShiftId,
       },
     });
@@ -827,8 +827,8 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       invoiceNumber: fractionalSale.invoiceNumber,
     });
     expect(inspectedFractional2?.items[0]?.remainingQuantity).toBe(1);
-    expect(inspectedFractional2?.items[0]?.effectiveUnitPrice).toBe("24.67");
-    expect(inspectedFractional2?.items[0]?.remainingLineTotal).toBe("24.67");
+    expect(inspectedFractional2?.items[0]?.effectiveUnitPrice).toBe("24.66");
+    expect(inspectedFractional2?.items[0]?.remainingLineTotal).toBe("24.66");
 
     const fracFinalReturn = await retailCaller.executeSalesReturnCart({
       invoiceNumber: fractionalSale.invoiceNumber,
@@ -839,16 +839,105 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
           productUnitId: inspectedFractional2?.items[0]?.productUnitId ?? undefined,
           productName: "كارت شخصي",
           quantity: 1,
-          unitPrice: inspectedFractional2?.items[0]?.effectiveUnitPrice ?? "24.67",
+          unitPrice: inspectedFractional2?.items[0]?.effectiveUnitPrice ?? "24.66",
         },
       ],
       settlement: {
         method: "CASH",
-        totalAmount: inspectedFractional2?.items[0]?.remainingLineTotal ?? "24.67",
+        totalAmount: inspectedFractional2?.items[0]?.remainingLineTotal ?? "24.66",
         shiftId: retailShiftId,
       },
     });
     expect(fracFinalReturn.ok).toBe(true);
+
+    // توزيع الضريبة وعكس TAX_PAYABLE وحفظ اللقطة الصفرية للكلفة وعكس GIFT_OUT في سلة المرتجع
+    const taxedSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: retailShiftId,
+        customerId: 1,
+        sourceType: "POS",
+        taxRatePercent: "10",
+        lines: [
+          { variantId: 1, productUnitId: 1, quantity: "2" },
+          { variantId: 1, productUnitId: 1, quantity: "1", isGift: true },
+        ],
+        payment: { amount: "55.00", method: "CASH" },
+      },
+      { userId: 12, branchId: 1, role: "cashier" },
+    );
+    // تصفير اللقطة التاريخية للكلفة على البند المدفوع لاختبار عدم السقوط إلى الكلفة الحية في الكتالوج
+    await db()
+      .update(s.invoiceItems)
+      .set({ unitCost: "0.00", lineCost: "0.00" })
+      .where(
+        and(
+          eq(s.invoiceItems.invoiceId, taxedSale.invoiceId),
+          eq(s.invoiceItems.isGift, false),
+        ),
+      );
+
+    const inspectedTaxed = await retailCaller.inspectInvoiceForReturn({
+      invoiceNumber: taxedSale.invoiceNumber,
+    });
+    const paidTaxedItem = inspectedTaxed?.items.find((i) => !i.isGift);
+    const giftTaxedItem = inspectedTaxed?.items.find((i) => i.isGift);
+    expect(paidTaxedItem?.effectiveUnitPrice).toBe("27.50");
+    expect(paidTaxedItem?.remainingLineTotal).toBe("55.00");
+    expect(giftTaxedItem?.effectiveUnitPrice).toBe("0.00");
+    expect(giftTaxedItem?.remainingLineTotal).toBe("0.00");
+
+    const taxedReturn = await retailCaller.executeSalesReturnCart({
+      invoiceNumber: taxedSale.invoiceNumber,
+      items: [
+        {
+          variantId: 1,
+          invoiceItemId: paidTaxedItem?.invoiceItemId,
+          productUnitId: 1,
+          productName: "كارت شخصي",
+          quantity: 2,
+          unitPrice: "27.50",
+        },
+        {
+          variantId: 1,
+          invoiceItemId: giftTaxedItem?.invoiceItemId,
+          productUnitId: 1,
+          productName: "كارت شخصي",
+          quantity: 1,
+          unitPrice: "0.00",
+        },
+      ],
+      settlement: {
+        method: "CASH",
+        totalAmount: "55.00",
+        shiftId: retailShiftId,
+      },
+    });
+    expect(taxedReturn.ok).toBe(true);
+    const [taxedReturnEntry] = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(
+        and(
+          eq(s.accountingEntries.invoiceId, taxedSale.invoiceId),
+          eq(s.accountingEntries.entryType, "RETURN"),
+        ),
+      );
+    expect(taxedReturnEntry?.amount).toBe("-55.00");
+    expect(taxedReturnEntry?.revenue).toBe("-50.00");
+    expect(taxedReturnEntry?.taxAmount).toBe("-5.00");
+    expect(taxedReturnEntry?.cost).toBe("0.00");
+
+    const giftEntries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(
+        and(
+          eq(s.accountingEntries.invoiceId, taxedSale.invoiceId),
+          eq(s.accountingEntries.entryType, "GIFT_OUT"),
+        ),
+      );
+    expect(giftEntries.some((e) => e.amount === "-5.00" && e.cost === "-5.00")).toBe(true);
 
     // تطبيع وحدات البيع المركبة (conversionFactor > 1) إلى الوحدة الأساسية عند الفحص والمرتجع
     await db().insert(s.productUnits).values({

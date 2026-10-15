@@ -372,14 +372,11 @@ export function SalesReturnPortal({
           const scanRes = await utils.returns.universalScan.fetch({
             barcode: raw,
           });
-          if (scanRes?.recognized && scanRes.kind === "INVOICE" && scanRes.id) {
-            const invData = await utils.sales.get.fetch({ invoiceId: scanRes.id });
-            if (invData?.invoiceNumber) {
-              setSalesBarcode("");
-              setSalesInvoiceNo(invData.invoiceNumber);
-              await handleLookupInvoice(invData.invoiceNumber);
-              return;
-            }
+          if (scanRes?.recognized && scanRes.kind === "INVOICE" && scanRes.number) {
+            setSalesBarcode("");
+            setSalesInvoiceNo(scanRes.number);
+            await handleLookupInvoice(scanRes.number);
+            return;
           }
         } catch {
           // تجاهل
@@ -554,19 +551,17 @@ export function SalesReturnPortal({
         const scanRes = await utils.returns.universalScan.fetch({
           barcode: raw,
         });
-        if (scanRes.recognized && scanRes.kind === "INVOICE" && scanRes.id) {
-          const invData = await utils.sales.get.fetch({ invoiceId: scanRes.id });
-          if (invData?.invoiceNumber) {
-            const inspected = await utils.returns.inspectInvoiceForReturn.fetch({
-              invoiceNumber: invData.invoiceNumber,
-            });
-            if (inspected) {
-              applyInspected(inspected);
-              const isFullyRet =
+        if (scanRes.recognized && scanRes.kind === "INVOICE" && scanRes.number) {
+          const inspected = await utils.returns.inspectInvoiceForReturn.fetch({
+            invoiceNumber: scanRes.number,
+          });
+          if (inspected) {
+            applyInspected(inspected);
+            const isFullyRet =
               inspected.isDead ||
               inspected.isFullyReturned ||
               Number(inspected.remainingInvoiceTotal || 0) <= 0;
-              if (inspected.isOtherBranch) {
+            if (inspected.isOtherBranch) {
               notify.err(
                 `الفاتورة #${inspected.invoiceNumber} صادرة من فرع آخر (فرع #${inspected.originBranchId}) ولا يمكن إرجاعها من هذا الفرع إلا بصلاحية مدير عام`,
               );
@@ -575,10 +570,9 @@ export function SalesReturnPortal({
                 `الفاتورة #${inspected.invoiceNumber} مغلقة أو ملغاة أو مرجعة بالكامل ولا تقبل مرتجعات`,
               );
             } else {
-                notify.ok(`تم التعرف على الفاتورة #${inspected.invoiceNumber}`);
-              }
-              return;
+              notify.ok(`تم التعرف على الفاتورة #${inspected.invoiceNumber}`);
             }
+            return;
           }
         }
       } catch {
@@ -589,22 +583,28 @@ export function SalesReturnPortal({
       const invId = parseInt(raw.replace(/\D/g, ""), 10);
       if (invId) {
         try {
-          const invData = await utils.sales.get.fetch({ invoiceId: invId });
-          if (invData?.invoiceNumber) {
+          const scanById = await utils.returns.universalScan.fetch({
+            barcode: String(invId),
+          });
+          if (
+            scanById.recognized &&
+            scanById.kind === "INVOICE" &&
+            scanById.number
+          ) {
             const inspected = await utils.returns.inspectInvoiceForReturn.fetch({
-              invoiceNumber: invData.invoiceNumber,
+              invoiceNumber: scanById.number,
             });
             if (inspected) {
               applyInspected(inspected);
               const isFullyRet =
-              inspected.isDead ||
-              inspected.isFullyReturned ||
-              Number(inspected.remainingInvoiceTotal || 0) <= 0;
+                inspected.isDead ||
+                inspected.isFullyReturned ||
+                Number(inspected.remainingInvoiceTotal || 0) <= 0;
               if (isFullyRet) {
-              notify.warn(
-                `الفاتورة #${inspected.invoiceNumber} مغلقة أو ملغاة أو مرجعة بالكامل ولا تقبل مرتجعات`,
-              );
-            } else {
+                notify.warn(
+                  `الفاتورة #${inspected.invoiceNumber} مغلقة أو ملغاة أو مرجعة بالكامل ولا تقبل مرتجعات`,
+                );
+              } else {
                 notify.ok(`تم التعرف على الفاتورة #${inspected.invoiceNumber}`);
               }
               return;

@@ -62,7 +62,10 @@ import {
   createPostingIntent,
   creditLine,
   debitLine,
+  signedPostingLines,
+  type PostingProfile,
 } from "../services/accounting/postingEngine";
+import { classifyGiftPosting } from "../services/sale/giftPosting";
 import { allocateLineCost } from "../services/billing";
 import { money, round2, toDbMoney } from "../services/money";
 import {
@@ -1468,9 +1471,10 @@ export const returnRouter = router({
       const unpaidAmount = Decimal.max(0, remainingInvoiceTotal.minus(paidDec));
       const subtotalDec = money(inv.subtotal ?? "0");
       const discountDec = money(inv.discountAmount ?? "0");
-      const discountRatio = subtotalDec.gt(0)
-        ? discountDec.dividedBy(subtotalDec)
-        : new Decimal(0);
+      const taxDec = money(inv.taxAmount ?? "0");
+      const invoiceMerchandiseRevenue = round2(
+        Decimal.max(0, subtotalDec.minus(discountDec)),
+      );
 
       const itemRows = await db
         .select({
@@ -1480,6 +1484,7 @@ export const returnRouter = router({
           productName: products.name,
           isBundle: products.isBundle,
           isService: products.isService,
+          isGift: invoiceItems.isGift,
           variantName: productVariants.variantName,
           color: productVariants.color,
           colorHex: productVariants.colorHex,
@@ -1502,6 +1507,41 @@ export const returnRouter = router({
         .innerJoin(products, eq(productVariants.productId, products.id))
         .leftJoin(productUnits, eq(invoiceItems.productUnitId, productUnits.id))
         .where(eq(invoiceItems.invoiceId, inv.id));
+
+      const revenueItems = itemRows
+        .filter((item) => !item.isGift && money(item.total ?? "0").gt(0))
+        .sort((a, b) => Number(a.invoiceItemId) - Number(b.invoiceItemId));
+      const itemRevenueBasis = revenueItems.reduce(
+        (sum, item) => sum.plus(money(item.total ?? "0")),
+        money(0),
+      );
+      const netRevenueByItemId = new Map<number, Decimal>();
+      const netTaxByItemId = new Map<number, Decimal>();
+      let allocatedInvoiceRevenue = money(0);
+      let allocatedInvoiceTax = money(0);
+      for (let index = 0; index < revenueItems.length; index++) {
+        const item = revenueItems[index]!;
+        const lineRevenue =
+          index === revenueItems.length - 1
+            ? round2(invoiceMerchandiseRevenue.minus(allocatedInvoiceRevenue))
+            : round2(
+                invoiceMerchandiseRevenue
+                  .times(money(item.total ?? "0"))
+                  .div(itemRevenueBasis),
+              );
+        const lineTax =
+          index === revenueItems.length - 1
+            ? round2(taxDec.minus(allocatedInvoiceTax))
+            : round2(
+                taxDec
+                  .times(money(item.total ?? "0"))
+                  .div(itemRevenueBasis),
+              );
+        allocatedInvoiceRevenue = allocatedInvoiceRevenue.plus(lineRevenue);
+        allocatedInvoiceTax = allocatedInvoiceTax.plus(lineTax);
+        netRevenueByItemId.set(Number(item.invoiceItemId), lineRevenue);
+        netTaxByItemId.set(Number(item.invoiceItemId), lineTax);
+      }
 
       const variantIds = Array.from(
         new Set(itemRows.map((r) => Number(r.variantId))),
@@ -1531,17 +1571,21 @@ export const returnRouter = router({
         const totalBaseQty = Number(r.baseQuantity ?? 0);
         const priorReturned = Number(r.returnedBaseQuantity ?? 0);
         const remainingQuantity = Math.max(0, totalBaseQty - priorReturned);
-        const rawItemTotal = round2(money(r.total ?? "0"));
-        const effectiveItemTotal = discountRatio.gt(0)
-          ? round2(rawItemTotal.times(new Decimal(1).minus(discountRatio)))
-          : rawItemTotal;
+        const effectiveItemRevenue =
+          netRevenueByItemId.get(Number(r.invoiceItemId)) ?? money(0);
+        const effectiveItemTax =
+          netTaxByItemId.get(Number(r.invoiceItemId)) ?? money(0);
+        const effectiveItemTotal = round2(
+          effectiveItemRevenue.plus(effectiveItemTax),
+        );
         const rawPrice =
           totalBaseQty > 0
             ? money(r.total ?? "0").dividedBy(totalBaseQty)
             : money(r.unitPrice ?? "0");
-        const baseEffectiveUnitPrice = discountRatio.gt(0)
-          ? rawPrice.times(new Decimal(1).minus(discountRatio)).toDecimalPlaces(2)
-          : rawPrice.toDecimalPlaces(2);
+        const baseEffectiveUnitPrice =
+          totalBaseQty > 0
+            ? effectiveItemTotal.dividedBy(totalBaseQty).toDecimalPlaces(2)
+            : money(0);
         const cumulativeValue = (returnedQty: number): Decimal => {
           if (totalBaseQty <= 0) {
             return round2(baseEffectiveUnitPrice.times(returnedQty));
@@ -1575,6 +1619,7 @@ export const returnRouter = router({
           productName: r.productName,
           isBundle: r.isBundle === true,
           isService: r.isService === true,
+          isGift: r.isGift === true,
           barcode: baseUnit?.barcode ?? r.barcode ?? null,
           sku: r.sku ?? null,
           unitName: baseUnit?.unitName ?? (r.isBundle ? "بكج" : "قطعة"),
@@ -2639,6 +2684,7 @@ export const returnRouter = router({
           } | null = null;
           let invoiceItemRows: Array<typeof invoiceItems.$inferSelect> = [];
           const resolvedBaseQtyByItem = new Map<any, number>();
+          let returnedTaxDec = money(0);
           if (input.invoiceNumber?.trim()) {
             const rawNo = input.invoiceNumber.trim();
             const strippedNo = rawNo.replace(/^INV-/i, "");
@@ -3083,9 +3129,46 @@ export const returnRouter = router({
             const accumulatedReturnedByItemId = new Map<number, number>();
             const invSubtotalDec = money(matchedInvoice.subtotal ?? "0");
             const invDiscountDec = money(matchedInvoice.discountAmount ?? "0");
-            const invDiscountRatio = invSubtotalDec.gt(0)
-              ? invDiscountDec.dividedBy(invSubtotalDec)
-              : new Decimal(0);
+            const invTaxDec = money(matchedInvoice.taxAmount ?? "0");
+            const invoiceMerchandiseRevenue = round2(
+              Decimal.max(0, invSubtotalDec.minus(invDiscountDec)),
+            );
+            const revenueItems = invoiceItemRows
+              .filter((item) => !item.isGift && money(item.total ?? "0").gt(0))
+              .sort((a, b) => Number(a.id) - Number(b.id));
+            const itemRevenueBasis = revenueItems.reduce(
+              (sum, item) => sum.plus(money(item.total ?? "0")),
+              money(0),
+            );
+            const netRevenueByItemId = new Map<number, Decimal>();
+            const netTaxByItemId = new Map<number, Decimal>();
+            let allocatedInvoiceRevenue = money(0);
+            let allocatedInvoiceTax = money(0);
+            for (let index = 0; index < revenueItems.length; index++) {
+              const item = revenueItems[index]!;
+              const lineRevenue =
+                index === revenueItems.length - 1
+                  ? round2(
+                      invoiceMerchandiseRevenue.minus(allocatedInvoiceRevenue),
+                    )
+                  : round2(
+                      invoiceMerchandiseRevenue
+                        .times(money(item.total ?? "0"))
+                        .div(itemRevenueBasis),
+                    );
+              const lineTax =
+                index === revenueItems.length - 1
+                  ? round2(invTaxDec.minus(allocatedInvoiceTax))
+                  : round2(
+                      invTaxDec
+                        .times(money(item.total ?? "0"))
+                        .div(itemRevenueBasis),
+                    );
+              allocatedInvoiceRevenue = allocatedInvoiceRevenue.plus(lineRevenue);
+              allocatedInvoiceTax = allocatedInvoiceTax.plus(lineTax);
+              netRevenueByItemId.set(Number(item.id), lineRevenue);
+              netTaxByItemId.set(Number(item.id), lineTax);
+            }
             let expectedInvoiceReturnTotal = new Decimal(0);
 
             for (const itm of input.items) {
@@ -3110,37 +3193,31 @@ export const returnRouter = router({
               }
 
               const totalBaseQty = Number(targetItem.baseQuantity ?? 0);
-              const rawItemTotal = round2(money(targetItem.total ?? "0"));
-              const effectiveItemTotal = invDiscountRatio.gt(0)
-                ? round2(
-                    rawItemTotal.times(
-                      new Decimal(1).minus(invDiscountRatio),
-                    ),
-                  )
-                : rawItemTotal;
-              const rawBaseUnitPrice =
+              const effectiveItemRevenue =
+                netRevenueByItemId.get(Number(targetItem.id)) ?? money(0);
+              const effectiveItemTax =
+                netTaxByItemId.get(Number(targetItem.id)) ?? money(0);
+              const effectiveItemTotal = round2(
+                effectiveItemRevenue.plus(effectiveItemTax),
+              );
+              const effectiveBaseUnitPrice =
                 totalBaseQty > 0
-                  ? money(targetItem.total).dividedBy(totalBaseQty)
+                  ? effectiveItemTotal
+                      .dividedBy(totalBaseQty)
+                      .toDecimalPlaces(2)
+                  : money(0);
+              const soldUnitEffectivePrice =
+                Number(targetItem.quantity ?? 0) > 0
+                  ? round2(
+                      effectiveItemTotal.dividedBy(Number(targetItem.quantity)),
+                    )
                   : money(targetItem.unitPrice ?? "0");
-              const effectiveBaseUnitPrice = invDiscountRatio.gt(0)
-                ? rawBaseUnitPrice
-                    .times(new Decimal(1).minus(invDiscountRatio))
-                    .toDecimalPlaces(2)
-                : rawBaseUnitPrice.toDecimalPlaces(2);
               const submittedUnitPrice = round2(money(itm.unitPrice));
               const fallbackUnitId =
                 itm.productUnitId != null
                   ? itm.productUnitId
                   : totalBaseQty > Number(targetItem.quantity ?? 0) &&
-                      submittedUnitPrice.lt(
-                        round2(
-                          money(targetItem.unitPrice ?? "0").times(
-                            invDiscountRatio.gt(0)
-                              ? new Decimal(1).minus(invDiscountRatio)
-                              : 1,
-                          ),
-                        ),
-                      )
+                      submittedUnitPrice.lt(soldUnitEffectivePrice)
                     ? null
                     : targetItem.productUnitId;
               const { baseQuantity: effectiveBaseQty, conversionFactor } =
@@ -3229,6 +3306,16 @@ export const returnRouter = router({
               const matchedLineTotal = submittedLineTotal.eq(allocatedSliceTotal)
                 ? allocatedSliceTotal
                 : expectedLineTotal;
+              const lineTax =
+                totalBaseQty > 0 && effectiveItemTax.gt(0)
+                  ? allocateLineCost(
+                      effectiveItemTax,
+                      totalBaseQty,
+                      priorReturned,
+                      effectiveBaseQty,
+                    )
+                  : money(0);
+              returnedTaxDec = round2(returnedTaxDec.plus(lineTax));
               expectedInvoiceReturnTotal =
                 expectedInvoiceReturnTotal.plus(matchedLineTotal);
             }
@@ -3263,6 +3350,24 @@ export const returnRouter = router({
             new Set(input.items.map((i) => i.variantId)),
           );
           const kindByVariant = await classifyVariants(tx, allVariantIds);
+
+          const consignByVariant = new Map<number, number>();
+          if (allVariantIds.length > 0) {
+            const crows = await tx
+              .select({
+                vid: productVariants.id,
+                isConsign: products.isConsignment,
+                cId: products.consignorId,
+              })
+              .from(productVariants)
+              .innerJoin(products, eq(productVariants.productId, products.id))
+              .where(inArray(productVariants.id, allVariantIds));
+            for (const row of crows) {
+              if (row.isConsign && row.cId != null) {
+                consignByVariant.set(Number(row.vid), Number(row.cId));
+              }
+            }
+          }
 
           const bundleVariantIds = allVariantIds.filter(
             (id) => kindByVariant.get(id) === "BUNDLE",
@@ -3340,16 +3445,15 @@ export const returnRouter = router({
             }
           }
 
-          let restockedCostDec = new Decimal(0);
-          const accumulatedRestockedByItemId = new Map<number, number>();
+          let returnedCost = new Decimal(0);
+          let returnedGiftCost = new Decimal(0);
+          let nonRestoredServicePaidCost = new Decimal(0);
+          let nonRestoredServiceGiftCost = new Decimal(0);
+          const byConsignor = new Map<number, { paid: Decimal; gift: Decimal }>();
+          const accumulatedCostReturnedByItemId = new Map<number, number>();
 
           for (const itm of input.items) {
             const kind = kindByVariant.get(itm.variantId) ?? "STOCKED";
-
-            if (kind === "SERVICE") {
-              // الخدمات لا مخزون لها إطلاقاً — لا نطبق أي حركة مخزون
-              continue;
-            }
 
             const targetItem = matchedInvoice
               ? itm.invoiceItemId
@@ -3361,13 +3465,17 @@ export const returnRouter = router({
                 : invoiceItemRows.find((ii) => ii.variantId === itm.variantId)
               : undefined;
 
-            if (kind === "BUNDLE") {
-              // بكج مركب: نحدد مكوناته
-              let components: Array<{
-                componentVariantId: number;
-                componentBaseQuantity: number;
-              }> = [];
+            const isGiftLine = Boolean(targetItem?.isGift);
+            const effectiveBaseQty =
+              resolvedBaseQtyByItem.get(itm) ??
+              (await resolveReturnBaseQuantity(tx, itm)).baseQuantity;
 
+            let components: Array<{
+              componentVariantId: number;
+              componentBaseQuantity: number;
+            }> = [];
+
+            if (kind === "BUNDLE") {
               if (itm.invoiceItemId && snapshotByItem.has(itm.invoiceItemId)) {
                 components = snapshotByItem.get(itm.invoiceItemId)!;
               } else if (matchedInvoice) {
@@ -3398,151 +3506,138 @@ export const returnRouter = router({
                   }),
                 });
               }
+            }
 
-              // عند الإرجاع للرف، نرجع كل مكوّن بحسب كميته المضاعفة بكمية الأساس للبند
-              if (input.disposition === "RESTOCK") {
-                const effectiveBaseQty =
-                  resolvedBaseQtyByItem.get(itm) ??
-                  (await resolveReturnBaseQuantity(tx, itm)).baseQuantity;
-
+            let lineCostShare = money(0);
+            if (targetItem) {
+              const priorCostReturned =
+                accumulatedCostReturnedByItemId.get(targetItem.id) ??
+                Number(targetItem.returnedBaseQuantity ?? 0);
+              accumulatedCostReturnedByItemId.set(
+                targetItem.id,
+                priorCostReturned + effectiveBaseQty,
+              );
+              if (
+                money(targetItem.lineCost ?? "0").gt(0) &&
+                (targetItem.baseQuantity ?? 0) > 0
+              ) {
+                lineCostShare = allocateLineCost(
+                  targetItem.lineCost,
+                  Number(targetItem.baseQuantity),
+                  priorCostReturned,
+                  effectiveBaseQty,
+                );
+              } else if (money(targetItem.unitCost ?? "0").gt(0)) {
+                lineCostShare = round2(
+                  money(targetItem.unitCost).times(effectiveBaseQty),
+                );
+              } else {
+                lineCostShare = money(0);
+              }
+            } else if (kind === "BUNDLE") {
+              for (const comp of components) {
+                const compUnitCost =
+                  costPriceByVariantId.get(comp.componentVariantId) ??
+                  money(0);
                 if (
-                  targetItem &&
-                  money(targetItem.lineCost ?? "0").gt(0) &&
-                  (targetItem.baseQuantity ?? 0) > 0
+                  input.disposition === "RESTOCK" &&
+                  directLimitsApply &&
+                  !matchedInvoice &&
+                  compUnitCost.lte(0)
                 ) {
-                  const priorRestocked =
-                    accumulatedRestockedByItemId.get(targetItem.id) ??
-                    Number(targetItem.returnedRestockedBaseQuantity ?? 0);
-                  accumulatedRestockedByItemId.set(
-                    targetItem.id,
-                    priorRestocked + effectiveBaseQty,
-                  );
-                  restockedCostDec = restockedCostDec.plus(
-                    allocateLineCost(
-                      targetItem.lineCost,
-                      Number(targetItem.baseQuantity),
-                      priorRestocked,
-                      effectiveBaseQty,
-                    ),
-                  );
-                } else if (
-                  targetItem &&
-                  money(targetItem.unitCost ?? "0").gt(0)
-                ) {
-                  restockedCostDec = restockedCostDec.plus(
-                    round2(money(targetItem.unitCost).times(effectiveBaseQty)),
-                  );
-                } else {
-                  for (const comp of components) {
-                    const compUnitCost =
-                      costPriceByVariantId.get(comp.componentVariantId) ??
-                      money(0);
-                    if (
-                      directLimitsApply &&
-                      !matchedInvoice &&
-                      compUnitCost.lte(0)
-                    ) {
-                      throw new TRPCError({
-                        code: "PRECONDITION_FAILED",
-                        message: appErrorMessage({
-                          what: "يتطلب المرتجع موافقة المدير",
-                          why: `مكوّن البكج «${itm.productName}» لا يملك كلفة شراء معتمدة في الكتالوج لتقييم إعادة المخزون في المرتجع العابر`,
-                          doThis:
-                            "اربط المرتجع بالفاتورة الأصلية أو اطلب اعتماد المدير لإرجاع الصنف إلى الرف",
-                        }),
-                      });
-                    }
-                    restockedCostDec = restockedCostDec.plus(
-                      round2(
-                        compUnitCost.times(
-                          comp.componentBaseQuantity * effectiveBaseQty,
-                        ),
-                      ),
-                    );
-                  }
-                }
-
-                for (const comp of components) {
-                  const compBaseQty =
-                    comp.componentBaseQuantity * effectiveBaseQty;
-                  await applyMovement(tx, {
-                    variantId: comp.componentVariantId,
-                    branchId: actorBranchId,
-                    baseQuantity: compBaseQty,
-                    movementType: "RETURN",
-                    referenceType: "SALES_RETURN",
-                    notes: `إرجاع مكوّن بكج للرف [${returnNumber}] — مكوّن من «${itm.productName}» (${customerName})`,
-                    createdBy: ctx.user.id,
+                  throw new TRPCError({
+                    code: "PRECONDITION_FAILED",
+                    message: appErrorMessage({
+                      what: "يتطلب المرتجع موافقة المدير",
+                      why: `مكوّن البكج «${itm.productName}» لا يملك كلفة شراء معتمدة في الكتالوج لتقييم إعادة المخزون في المرتجع العابر`,
+                      doThis:
+                        "اربط المرتجع بالفاتورة الأصلية أو اطلب اعتماد المدير لإرجاع الصنف إلى الرف",
+                    }),
                   });
                 }
-              }
-            } else {
-              // صنف مخزني عادي STOCKED
-              if (input.disposition === "RESTOCK") {
-                const effectiveBaseQty =
-                  resolvedBaseQtyByItem.get(itm) ??
-                  (await resolveReturnBaseQuantity(tx, itm)).baseQuantity;
-
-                if (
-                  targetItem &&
-                  money(targetItem.lineCost ?? "0").gt(0) &&
-                  (targetItem.baseQuantity ?? 0) > 0
-                ) {
-                  const priorRestocked =
-                    accumulatedRestockedByItemId.get(targetItem.id) ??
-                    Number(targetItem.returnedRestockedBaseQuantity ?? 0);
-                  accumulatedRestockedByItemId.set(
-                    targetItem.id,
-                    priorRestocked + effectiveBaseQty,
-                  );
-                  restockedCostDec = restockedCostDec.plus(
-                    allocateLineCost(
-                      targetItem.lineCost,
-                      Number(targetItem.baseQuantity),
-                      priorRestocked,
-                      effectiveBaseQty,
+                lineCostShare = lineCostShare.plus(
+                  round2(
+                    compUnitCost.times(
+                      comp.componentBaseQuantity * effectiveBaseQty,
                     ),
-                  );
-                } else if (
-                  targetItem &&
-                  money(targetItem.unitCost ?? "0").gt(0)
-                ) {
-                  restockedCostDec = restockedCostDec.plus(
-                    round2(money(targetItem.unitCost).times(effectiveBaseQty)),
-                  );
-                } else {
-                  const variantUnitCost =
-                    costPriceByVariantId.get(itm.variantId) ?? money(0);
-                  if (
-                    directLimitsApply &&
-                    !matchedInvoice &&
-                    variantUnitCost.lte(0)
-                  ) {
-                    throw new TRPCError({
-                      code: "PRECONDITION_FAILED",
-                      message: appErrorMessage({
-                        what: "يتطلب المرتجع موافقة المدير",
-                        why: `الصنف «${itm.productName}» لا يملك كلفة شراء معتمدة في الكتالوج لتقييم إعادة المخزون في المرتجع العابر`,
-                        doThis:
-                          "اربط المرتجع بالفاتورة الأصلية أو اطلب اعتماد المدير لإرجاع الصنف إلى الرف",
-                      }),
-                    });
-                  }
-                  restockedCostDec = restockedCostDec.plus(
-                    round2(variantUnitCost.times(effectiveBaseQty)),
-                  );
-                }
+                  ),
+                );
+              }
+            } else if (kind !== "SERVICE") {
+              const variantUnitCost =
+                costPriceByVariantId.get(itm.variantId) ?? money(0);
+              if (
+                input.disposition === "RESTOCK" &&
+                directLimitsApply &&
+                !matchedInvoice &&
+                variantUnitCost.lte(0)
+              ) {
+                throw new TRPCError({
+                  code: "PRECONDITION_FAILED",
+                  message: appErrorMessage({
+                    what: "يتطلب المرتجع موافقة المدير",
+                    why: `الصنف «${itm.productName}» لا يملك كلفة شراء معتمدة في الكتالوج لتقييم إعادة المخزون في المرتجع العابر`,
+                    doThis:
+                      "اربط المرتجع بالفاتورة الأصلية أو اطلب اعتماد المدير لإرجاع الصنف إلى الرف",
+                  }),
+                });
+              }
+              lineCostShare = round2(variantUnitCost.times(effectiveBaseQty));
+            }
 
+            if (isGiftLine) {
+              returnedGiftCost = returnedGiftCost.plus(lineCostShare);
+            } else {
+              returnedCost = returnedCost.plus(lineCostShare);
+            }
+
+            const cId = consignByVariant.get(Number(itm.variantId));
+            if (cId != null) {
+              const current = byConsignor.get(cId) ?? {
+                paid: new Decimal(0),
+                gift: new Decimal(0),
+              };
+              if (isGiftLine) current.gift = current.gift.plus(lineCostShare);
+              else current.paid = current.paid.plus(lineCostShare);
+              byConsignor.set(cId, current);
+            } else if (kind === "SERVICE") {
+              if (isGiftLine) {
+                nonRestoredServiceGiftCost =
+                  nonRestoredServiceGiftCost.plus(lineCostShare);
+              } else {
+                nonRestoredServicePaidCost =
+                  nonRestoredServicePaidCost.plus(lineCostShare);
+              }
+            }
+
+            if (kind === "SERVICE" || input.disposition !== "RESTOCK") {
+              continue;
+            }
+
+            if (kind === "BUNDLE") {
+              for (const comp of components) {
+                const compBaseQty =
+                  comp.componentBaseQuantity * effectiveBaseQty;
                 await applyMovement(tx, {
-                  variantId: itm.variantId,
+                  variantId: comp.componentVariantId,
                   branchId: actorBranchId,
-                  baseQuantity: effectiveBaseQty,
+                  baseQuantity: compBaseQty,
                   movementType: "RETURN",
                   referenceType: "SALES_RETURN",
-                  notes: `إرجاع للرف [${returnNumber}] — ${itm.productName} (${customerName})`,
+                  notes: `إرجاع مكوّن بكج للرف [${returnNumber}] — مكوّن من «${itm.productName}» (${customerName})`,
                   createdBy: ctx.user.id,
                 });
               }
+            } else {
+              await applyMovement(tx, {
+                variantId: itm.variantId,
+                branchId: actorBranchId,
+                baseQuantity: effectiveBaseQty,
+                movementType: "RETURN",
+                referenceType: "SALES_RETURN",
+                notes: `إرجاع للرف [${returnNumber}] — ${itm.productName} (${customerName})`,
+                createdBy: ctx.user.id,
+              });
             }
           }
 
@@ -3748,32 +3843,99 @@ export const returnRouter = router({
 
           // ٣) توثيق قيد حدث المرتجع (RETURN) في دفتر الأستاذ العام
           // خالي تماماً من الأسطر الصفرية تجنباً لخطأ PostingIntent
-          const restockedCostRounded =
-            input.disposition === "RESTOCK"
-              ? round2(restockedCostDec)
-              : money(0);
+          const restock = input.disposition === "RESTOCK";
+          returnedCost = round2(returnedCost);
+          returnedGiftCost = round2(returnedGiftCost);
+          const reversedCost = restock ? returnedCost : new Decimal(0);
+          const reversedGiftCost = restock ? returnedGiftCost : new Decimal(0);
+          const consignmentPaidShare = round2(
+            Array.from(byConsignor.values()).reduce(
+              (sum, split) => sum.plus(split.paid),
+              new Decimal(0),
+            ),
+          );
+          const consignmentGiftShare = round2(
+            Array.from(byConsignor.values()).reduce(
+              (sum, split) => sum.plus(split.gift),
+              new Decimal(0),
+            ),
+          );
+          nonRestoredServicePaidCost = round2(nonRestoredServicePaidCost);
+          nonRestoredServiceGiftCost = round2(nonRestoredServiceGiftCost);
+          const ownedReversedCost = restock
+            ? round2(
+                Decimal.max(
+                  new Decimal(0),
+                  reversedCost
+                    .minus(consignmentPaidShare)
+                    .minus(nonRestoredServicePaidCost),
+                ),
+              )
+            : new Decimal(0);
+          const ownedReversedGiftCost = restock
+            ? round2(
+                Decimal.max(
+                  new Decimal(0),
+                  reversedGiftCost
+                    .minus(consignmentGiftShare)
+                    .minus(nonRestoredServiceGiftCost),
+                ),
+              )
+            : new Decimal(0);
+          const financiallyReversedGiftCost = restock
+            ? round2(
+                Decimal.max(
+                  new Decimal(0),
+                  reversedGiftCost.minus(nonRestoredServiceGiftCost),
+                ),
+              )
+            : new Decimal(0);
+
+          const returnedRevenueDec = round2(
+            returnTotalDec.minus(returnedTaxDec),
+          );
+          const hasConsignmentReturn = byConsignor.size > 0;
+          const hasOwnedReturn = input.items.some(
+            (itm) => !consignByVariant.has(Number(itm.variantId)),
+          );
+          const salesReturnProfile: PostingProfile = hasConsignmentReturn
+            ? hasOwnedReturn || ownedReversedCost.gt(0)
+              ? "RETURN_SALE_MIXED"
+              : "RETURN_SALE_CONSIGNMENT"
+            : "RETURN_SALE_INVENTORY";
+
           const salesReturnSource = {
             roleDebits: {
-              SALES_STATIONERY: returnTotalDec,
+              SALES_STATIONERY: returnedRevenueDec,
+              SALES_PRINT: money(0),
+              SALES_FLEX: money(0),
+              OTHER_REVENUE: money(0),
               DELIVERY_REVENUE: money(0),
-              TAX_PAYABLE: money(0),
-              INVENTORY: restockedCostRounded,
+              TAX_PAYABLE: returnedTaxDec,
+              INVENTORY: ownedReversedCost,
             },
             roleCredits: {
               AR: returnTotalDec,
-              COGS: restockedCostRounded,
+              COGS: ownedReversedCost,
             },
           };
           const salesReturnIntent = createPostingIntent(
-            "RETURN_SALE_INVENTORY",
+            salesReturnProfile,
             "RETURN",
             [
-              debitLine("SALES_STATIONERY", returnTotalDec),
-              creditLine("AR", returnTotalDec),
-              ...(restockedCostRounded.gt(0)
+              ...(returnedRevenueDec.gt(0)
+                ? [debitLine("SALES_STATIONERY", returnedRevenueDec)]
+                : []),
+              ...(returnedTaxDec.gt(0)
+                ? [debitLine("TAX_PAYABLE", returnedTaxDec)]
+                : []),
+              ...(returnTotalDec.gt(0)
+                ? [creditLine("AR", returnTotalDec)]
+                : []),
+              ...(ownedReversedCost.gt(0)
                 ? [
-                    debitLine("INVENTORY", restockedCostRounded),
-                    creditLine("COGS", restockedCostRounded),
+                    debitLine("INVENTORY", ownedReversedCost),
+                    creditLine("COGS", ownedReversedCost),
                   ]
                 : []),
             ],
@@ -3789,9 +3951,10 @@ export const returnRouter = router({
             // يُستبعَد كلاهما من دفتر العميل معاً، فلا يجمع تقريرٌ قيدَ RETURN بلا مقابله (بلاغ Codex P1).
             customerId: ledgerCustomerId,
             amount: returnTotalDec.neg(),
-            revenue: returnTotalDec.neg(),
-            cost: restockedCostRounded.neg(),
-            profit: returnTotalDec.minus(restockedCostRounded).neg(),
+            revenue: returnedRevenueDec.neg(),
+            taxAmount: returnedTaxDec.neg(),
+            cost: ownedReversedCost.neg(),
+            profit: returnedRevenueDec.minus(ownedReversedCost).neg(),
             notes: `مرتجع مبيعات سلة [${returnNumber}] — ${customerName} (${
               input.settlement.method === "CASH"
                 ? `نقدي من درج #${input.settlement.shiftId}`
@@ -3806,6 +3969,115 @@ export const returnRouter = router({
             postingIntent: salesReturnIntent,
             postingSourceComponents: salesReturnSource,
           });
+
+          if (financiallyReversedGiftCost.gt(0)) {
+            const giftPosting = classifyGiftPosting(
+              financiallyReversedGiftCost,
+              ownedReversedGiftCost,
+              -1,
+            );
+            await postEntry(tx, {
+              entryType: "GIFT_OUT",
+              branchId: actorBranchId,
+              invoiceId: matchedInvoice?.id ?? null,
+              customerId: ledgerCustomerId,
+              revenue: new Decimal(0),
+              cost: financiallyReversedGiftCost.neg(),
+              profit: financiallyReversedGiftCost,
+              amount: financiallyReversedGiftCost.neg(),
+              createdBy: ctx.user.id,
+              createdByNameSnapshot: ctx.user.name ?? "كاشير",
+              notes: `عكس هدايا ضمن مرتجع مبيعات سلة [${returnNumber}]؛ consignmentRemainder=${toDbMoney(giftPosting.consignmentRemainder)}`,
+              postingIntent: giftPosting.intent,
+              postingSourceComponents: giftPosting.sourceComponents,
+            });
+          }
+
+          if (consignByVariant.size > 0) {
+            for (const cId of Array.from(byConsignor.keys()).sort((a, b) => a - b)) {
+              const split = byConsignor.get(cId)!;
+              const paidShare = round2(split.paid);
+              const giftShare = round2(split.gift);
+              const share = round2(paidShare.plus(giftShare));
+              if (share.lte(0)) continue;
+              await postEntry(tx, {
+                entryType: "PURCHASE",
+                supplierId: cId,
+                invoiceId: matchedInvoice?.id ?? null,
+                branchId: actorBranchId,
+                amount: share.neg(),
+                cost: paidShare.neg(),
+                profit: paidShare,
+                createdBy: ctx.user.id,
+                createdByNameSnapshot: ctx.user.name ?? "كاشير",
+                notes: `عكس استحقاق أمانة — مرتجع سلة [${returnNumber}]؛ COGS مبسّط=${toDbMoney(paidShare.neg())}`,
+                postingIntent: createPostingIntent(
+                  "PURCHASE_CONSIGNMENT",
+                  "PURCHASE",
+                  [
+                    ...signedPostingLines(
+                      "COGS",
+                      "CONSIGNMENT_PAYABLE",
+                      paidShare.neg(),
+                    ),
+                    ...signedPostingLines(
+                      "GIFTS_PROMO",
+                      "CONSIGNMENT_PAYABLE",
+                      giftShare.neg(),
+                    ),
+                  ],
+                  {
+                    roleDebits: { CONSIGNMENT_PAYABLE: share },
+                    roleCredits: { COGS: paidShare, GIFTS_PROMO: giftShare },
+                  },
+                ),
+                postingSourceComponents: {
+                  roleDebits: { CONSIGNMENT_PAYABLE: share },
+                  roleCredits: { COGS: paidShare, GIFTS_PROMO: giftShare },
+                },
+              });
+              await adjustSupplierBalance(tx, cId, share.neg());
+              if (!restock) {
+                await postEntry(tx, {
+                  entryType: "PURCHASE",
+                  supplierId: cId,
+                  invoiceId: null,
+                  branchId: actorBranchId,
+                  amount: share,
+                  cost: paidShare,
+                  profit: paidShare.neg(),
+                  createdBy: ctx.user.id,
+                  createdByNameSnapshot: ctx.user.name ?? "كاشير",
+                  notes: `استحقاق تلف مرتجع أمانة [${returnNumber}]؛ COGS مبسّط=${toDbMoney(paidShare)}`,
+                  postingIntent: createPostingIntent(
+                    "PURCHASE_CONSIGNMENT",
+                    "PURCHASE",
+                    [
+                      ...signedPostingLines(
+                        "COGS",
+                        "CONSIGNMENT_PAYABLE",
+                        paidShare,
+                      ),
+                      ...signedPostingLines(
+                        "GIFTS_PROMO",
+                        "CONSIGNMENT_PAYABLE",
+                        giftShare,
+                      ),
+                    ],
+                    {
+                      roleDebits: { COGS: paidShare, GIFTS_PROMO: giftShare },
+                      roleCredits: { CONSIGNMENT_PAYABLE: share },
+                    },
+                  ),
+                  postingSourceComponents: {
+                    roleDebits: { COGS: paidShare, GIFTS_PROMO: giftShare },
+                    roleCredits: { CONSIGNMENT_PAYABLE: share },
+                  },
+                });
+                await adjustSupplierBalance(tx, cId, share);
+              }
+            }
+          }
 
           // ٤) تحديث بيانات الفاتورة الأصلية وبنودها بالكميات الأساس المحسوبة
           if (matchedInvoice) {
