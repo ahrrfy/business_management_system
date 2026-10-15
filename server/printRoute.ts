@@ -4,12 +4,11 @@
 //   POST /api/print/raw     { bytesB64 }  → يطبع بايتات ESC/POS مرسَلة base64
 //   POST /api/print/test    → يطبع تذكرة اختبار ASCII من الخادم مباشرة
 import { Router, type Request, type Response } from "express";
-import type { User } from "../drizzle/schema";
 import { getUserFromRequest } from "./auth/session";
+import { normalizeOwnerAuthority, resolveCustomRole, type AuthUser } from "./context";
 import {
   getConfiguredTarget, describeTarget, isBridgeEnabled, sendToPrinter, buildTestTicket,
 } from "./services/printService";
-import { getOpenShift } from "./services/shiftService";
 import { logAudit } from "./services/auditService";
 import { logger } from "./logger";
 
@@ -17,24 +16,56 @@ import { logger } from "./logger";
 // متّسق مع حدّ /api/print/raw في server/index.ts ⇒ يُرفض كلاهما قبل تشكيل Buffer.
 const MAX_PRINT_B64_CHARS = 14_000_000;
 
-async function requireAuth(req: Request, res: Response): Promise<User | null> {
-  try {
-    const user = await getUserFromRequest(req);
-    if (user) return user;
-  } catch { /* يسقط للرفض */ }
-  res.status(401).json({ ok: false, error: "يلزم تسجيل الدخول." });
-  return null;
-}
+const ALLOWED_PRINT_ROLES = new Set([
+  "admin",
+  "manager",
+  "cashier",
+  "sales_rep",
+  "print_operator",
+  "warehouse",
+  "accountant",
+  "purchasing",
+]);
 
-// يسمح بالطباعة لجميع كوادر النظام المسجّلين (كاشير، محاسب، أمين مخزن، فني، مدير)
-// دون اشتراط وردية مفتوحة، لأن الطباعة تشمل إغلاق الوردية، وسندات التسليم، ومحاضر الشحن، والكشوف.
-async function requirePrintAuthorized(user: User, res: Response): Promise<boolean> {
-  if (user.role === "admin" || user.role === "manager") return true;
-  if (user.role === "courier") {
-    res.status(403).json({ ok: false, error: "غير مخوّل بالطباعة المباشرة على طابعة المتجر." });
-    return false;
+// يسمح بالطباعة لكوادر النظام الفعلية المسجّلين (كاشير، محاسب، أمين مخزن، مسؤول مشتريات، فني، مندوب مبيعات، مدير)
+// بعد حلّ الأدوار المخصّصة وتطبيع المالك، مع حظر المندوب الميداني (courier) والمدقّق (auditor) والدور العامّ/المعطَّل (user).
+export async function resolveAuthorizedPrintUser(
+  req: Request,
+  res: Response,
+): Promise<AuthUser | null> {
+  let rawUser: Awaited<ReturnType<typeof getUserFromRequest>> = null;
+  try {
+    rawUser = await getUserFromRequest(req);
+  } catch {
+    rawUser = null;
   }
-  return true;
+  if (!rawUser) {
+    res.status(401).json({ ok: false, error: "يلزم تسجيل الدخول." });
+    return null;
+  }
+
+  const user = rawUser as AuthUser;
+  const hadCustomRoleId = Boolean(rawUser.customRoleId);
+  if (user.isOwner) {
+    normalizeOwnerAuthority(user);
+    return user;
+  }
+
+  await resolveCustomRole(user);
+
+  if (
+    user.roleLockedByInactiveCustomRole ||
+    (hadCustomRoleId && !user.customRoleKey) ||
+    user.role === "courier" ||
+    user.role === "auditor" ||
+    user.role === "user" ||
+    !ALLOWED_PRINT_ROLES.has(user.role)
+  ) {
+    res.status(403).json({ ok: false, error: "غير مخوّل بالطباعة المباشرة على طابعة المتجر." });
+    return null;
+  }
+
+  return user;
 }
 
 export function printRouter(): Router {
@@ -42,16 +73,16 @@ export function printRouter(): Router {
 
   // حالة الجسر — يستعملها العميل ليقرّر: جسر الخادم أم WebUSB أم حوار المتصفّح.
   r.get("/status", async (req, res) => {
-    if (!(await requireAuth(req, res))) return;
+    const user = await resolveAuthorizedPrintUser(req, res);
+    if (!user) return;
     const target = getConfiguredTarget();
     res.json({ ok: true, enabled: target != null, description: describeTarget(target) });
   });
 
   // طباعة بايتات ESC/POS خام (base64). العميل يولّد النقطية (raster) فالعربية تُرسَّم على Canvas لديه.
   r.post("/raw", async (req, res) => {
-    const user = await requireAuth(req, res);
+    const user = await resolveAuthorizedPrintUser(req, res);
     if (!user) return;
-    if (!(await requirePrintAuthorized(user, res))) return;
     if (!isBridgeEnabled()) {
       return res.status(501).json({ ok: false, error: "جسر الطباعة غير مفعّل على الخادم (PRINT_TARGET غير مضبوط)." });
     }
@@ -103,9 +134,8 @@ export function printRouter(): Router {
 
   // تذكرة اختبار (ASCII) — للتحقق من سلامة المسار والقاطع.
   r.post("/test", async (req, res) => {
-    const user = await requireAuth(req, res);
+    const user = await resolveAuthorizedPrintUser(req, res);
     if (!user) return;
-    if (!(await requirePrintAuthorized(user, res))) return;
     if (!isBridgeEnabled()) {
       return res.status(501).json({ ok: false, error: "جسر الطباعة غير مفعّل على الخادم (PRINT_TARGET غير مضبوط)." });
     }
