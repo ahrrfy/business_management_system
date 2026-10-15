@@ -496,13 +496,14 @@ async function startServer() {
   );
 
   // حدّ صارم على التحقق الثنائي (/api/trpc/auth.twoFactorVerify) لمنع تخمين رموز OTP/الاسترداد.
+  // لا نفعّل skipSuccessfulRequests هنا لأن دفعات tRPC (?batch=1) قد تعيد HTTP 207/200 مع فشل داخلي.
   const authTwoFactorLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     limit: Number(process.env.TWO_FACTOR_RATE_LIMIT_MAX ?? 15),
     standardHeaders: "draft-7",
     legacyHeaders: false,
     skip: (req) => !req.path.includes("auth.twoFactorVerify"),
-    skipSuccessfulRequests: true,
+    skipSuccessfulRequests: false,
     handler: rateLimitHandler(
       "محاولات تحقق ثنائي كثيرة، انتظر ١٥ دقيقة ثم أعد المحاولة.",
     ),

@@ -10,10 +10,18 @@ import { escLike } from "../../lib/sqlLike";
 import { localDayStart, localNextDayStart } from "../dateRange";
 import { logger } from "../../logger";
 import { applyMovement, convertToBaseQuantity } from "../inventoryService";
+import { supplierApEffectSql } from "../ledger/supplierApEffect";
 import { money, round2 } from "../money";
 import { nextConsignmentNumber } from "../numbering";
 import { withTx, type Actor } from "../tx";
 import { flowNotify } from "../whatsapp";
+
+const AE = {
+  entryType: sql`ae.entryType`,
+  amount: sql`ae.amount`,
+  liabilityAccount: sql`ae.purchaseLiabilityAccount`,
+  dedupeKey: sql`ae.dedupeKey`,
+} as const;
 
 export type ConsignmentNoteType = "DEPOSIT" | "WITHDRAW" | "EXCHANGE";
 export interface ConsignmentNoteLineInput {
@@ -284,24 +292,10 @@ export async function consignmentBalancesReport(branchId?: number) {
     ? sql`CAST(
         ROUND(
           COALESCE((
-            SELECT SUM(ii.lineCost - ROUND(ii.lineCost * ii.returnedBaseQuantity / ii.baseQuantity, 2))
-            FROM invoiceItems ii
-            JOIN invoices inv ON inv.id = ii.invoiceId
-            JOIN productVariants pv2 ON pv2.id = ii.variantId
-            JOIN products p2 ON p2.id = pv2.productId
-            WHERE p2.consignorId = s.id
-              AND p2.isConsignment = true
-              AND ii.baseQuantity > 0
-              AND inv.status <> 'CANCELLED'
-              AND inv.branchId = ${branchId}
-          ), 0) - COALESCE((
-            SELECT SUM(r.amount)
-            FROM receipts r
-            WHERE r.partyType = 'SUPPLIER'
-              AND r.partyId = s.id
-              AND r.voucherType = 'PAYMENT'
-              AND r.status = 'POSTED'
-              AND r.branchId = ${branchId}
+            SELECT SUM(${supplierApEffectSql(AE)})
+            FROM accountingEntries ae
+            WHERE ae.supplierId = s.id
+              AND ae.branchId = ${branchId}
           ), 0),
           2
         ) AS CHAR
@@ -328,6 +322,11 @@ export async function consignmentBalancesReport(branchId?: number) {
           JOIN productVariants pv2 ON pv2.id = ii.variantId
           JOIN products p2 ON p2.id = pv2.productId
           WHERE p2.consignorId = s.id AND p2.isConsignment = true AND inv.branchId = ${branchId}
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM accountingEntries ae
+          WHERE ae.supplierId = s.id AND ae.branchId = ${branchId}
         )
         OR EXISTS (
           SELECT 1
@@ -556,6 +555,11 @@ export async function consignmentSettlementStatement(input: {
           )
           OR EXISTS (
             SELECT 1
+            FROM accountingEntries ae
+            WHERE ae.supplierId = ${input.consignorId} AND ae.branchId = ${input.branchId}
+          )
+          OR EXISTS (
+            SELECT 1
             FROM receipts r
             WHERE r.partyType = 'SUPPLIER' AND r.partyId = ${input.consignorId} AND r.branchId = ${input.branchId}
           )
@@ -563,24 +567,10 @@ export async function consignmentSettlementStatement(input: {
         CAST(
           ROUND(
             COALESCE((
-              SELECT SUM(ii.lineCost - ROUND(ii.lineCost * ii.returnedBaseQuantity / ii.baseQuantity, 2))
-              FROM invoiceItems ii
-              JOIN invoices inv ON inv.id = ii.invoiceId
-              JOIN productVariants pv2 ON pv2.id = ii.variantId
-              JOIN products p2 ON p2.id = pv2.productId
-              WHERE p2.consignorId = ${input.consignorId}
-                AND p2.isConsignment = true
-                AND ii.baseQuantity > 0
-                AND inv.status <> 'CANCELLED'
-                AND inv.branchId = ${input.branchId}
-            ), 0) - COALESCE((
-              SELECT SUM(r.amount)
-              FROM receipts r
-              WHERE r.partyType = 'SUPPLIER'
-                AND r.partyId = ${input.consignorId}
-                AND r.voucherType = 'PAYMENT'
-                AND r.status = 'POSTED'
-                AND r.branchId = ${input.branchId}
+              SELECT SUM(${supplierApEffectSql(AE)})
+              FROM accountingEntries ae
+              WHERE ae.supplierId = ${input.consignorId}
+                AND ae.branchId = ${input.branchId}
             ), 0),
             2
           ) AS CHAR

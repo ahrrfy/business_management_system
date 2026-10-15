@@ -105,17 +105,42 @@ async function validateDumpTarget() {
       sawTargetDirective = true;
     }
 
+    const sanitizedTableClauseStmt = stmt.replace(
+      /(?:\bON|[A-Za-z0-9_$`])\s*\((?![^()]*\b(?:SELECT|FROM|JOIN|TABLE|TABLES)\b)[^()]*\)/gi,
+      "()",
+    );
+    const tableListClauses = [
+      ...sanitizedTableClauseStmt.matchAll(
+        /\b(?:FROM|USING|UPDATE|DELETE|TABLE|TABLES)\b[\s\S]*?(?=\b(?:SELECT|WHERE|GROUP|HAVING|ORDER|LIMIT|WINDOW|UNION|EXCEPT|INTERSECT|FOR|LOCK|INTO|SET|VALUES|VALUE)\b|$)/gi,
+      ),
+    ].map((m) => m[0]);
+
     const crossDbMatches = [
       ...stmt.matchAll(
-        /\b(?:INTO|INSERT|REPLACE|TRUNCATE|UPDATE|DELETE|FROM|JOIN|STRAIGHT_JOIN|TABLE|TABLES|TO|REFERENCES|LIKE|CALL|VIEW|TRIGGER|PROCEDURE|FUNCTION|EVENT|INDEX|DESCRIBE|DESC|EXPLAIN|SHOW|ANALYZE|CHECK|OPTIMIZE|REPAIR|HANDLER)\s+(?:(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY|IGNORE|QUICK|EXTENDED|LOCAL|NO_WRITE_TO_BINLOG)\s+)*(?:IF\s+(?:NOT\s+)?EXISTS\s+)?(?:TABLE\s+)?(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
+        /\b(?:INTO|INSERT|REPLACE|TRUNCATE|UPDATE|DELETE|FROM|JOIN|STRAIGHT_JOIN|TABLE|TABLES|TO|USING|REFERENCES|LIKE|CALL|VIEW|TRIGGER|PROCEDURE|FUNCTION|EVENT|INDEX|DESCRIBE|DESC|EXPLAIN|SHOW|ANALYZE|CHECK|OPTIMIZE|REPAIR|HANDLER)\s+(?:(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY|IGNORE|QUICK|EXTENDED|LOCAL|TEMPORARY|NO_WRITE_TO_BINLOG)\s+)*(?:IF\s+(?:NOT\s+)?EXISTS\s+)?(?:(?:TABLE|TABLES)\s+)?(?![0-9]+\s*\.\s*[0-9]+\b)(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
       ),
       ...(
         /\b(?:INDEX|TRIGGER)\b/i.test(stmt)
           ? stmt.matchAll(
-              /\bON\s+(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
+              /\bON\s+(?![0-9]+\s*\.\s*[0-9]+\b)(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
             )
           : []
       ),
+      ...(
+        /^(?:DROP|RENAME|LOCK|TRUNCATE|ANALYZE|CHECK|OPTIMIZE|REPAIR)\b/i.test(stmt)
+          ? stmt.matchAll(
+              /(?![0-9]+\s*\.\s*[0-9]+\b)(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
+            )
+          : []
+      ),
+      ...stmt.matchAll(
+        /(?![0-9]+\s*\.\s*[0-9]+\b)(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)\s*\.\s*(?:\*|`[^`]+`|[A-Za-z0-9_$-]+)/gi,
+      ),
+      ...tableListClauses.flatMap((clause) => [
+        ...clause.matchAll(
+          /(?:^|,|\(|\b(?:FROM|USING|UPDATE|DELETE|TABLE|TABLES|JOIN|STRAIGHT_JOIN|TO)\b)\s*(?:(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY|IGNORE|QUICK|EXTENDED|LOCAL|TEMPORARY|NO_WRITE_TO_BINLOG)\s+)*(?:IF\s+(?:NOT\s+)?EXISTS\s+)?(?:(?:TABLE|TABLES)\s+)?(?![0-9]+\s*\.\s*[0-9]+\b)(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
+        ),
+      ]),
     ];
     for (const match of crossDbMatches) {
       const refDb = match[1] ?? match[2] ?? "";
