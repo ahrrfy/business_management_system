@@ -1,6 +1,6 @@
 import { COOKIE_NAME, SESSION_DEFAULT_MS } from "@shared/const";
 import { parse as parseCookie } from "cookie";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt } from "drizzle-orm";
 import type { Request } from "express";
 import { SignJWT, jwtVerify } from "jose";
 import { createHash } from "node:crypto";
@@ -27,8 +27,10 @@ import { logger } from "../logger";
 /** لا كتابة على كل طلب — نحدّث `lastSeenAt` فقط إن كانت أقدم من هذه المهلة. */
 const LAST_SEEN_TOUCH_MS = 5 * 60 * 1000;
 const NATIVE_PROOF_REPLAY_TTL_MS = 2 * 60 * 1000;
+const NATIVE_PROOF_DB_PRUNE_INTERVAL_MS = 30 * 1000;
 const consumedNativeProofNonces = new Map<string, number>();
 const lastNativeProofCounterByToken = new Map<string, number>();
+let lastNativeProofDbPruneMs = 0;
 
 async function consumeNativeProofReplayToken(
   db: ReturnType<typeof getDb>,
@@ -68,6 +70,25 @@ async function consumeNativeProofReplayToken(
   }
   if (db && typeof (db as { insert?: unknown }).insert === "function") {
     try {
+      if (
+        typeof (db as { delete?: unknown }).delete === "function" &&
+        nowMs - lastNativeProofDbPruneMs >= NATIVE_PROOF_DB_PRUNE_INTERVAL_MS
+      ) {
+        lastNativeProofDbPruneMs = nowMs;
+        const cutoff = new Date(nowMs - NATIVE_PROOF_REPLAY_TTL_MS);
+        await db
+          .delete(idempotencyKeys)
+          .where(
+            and(
+              inArray(idempotencyKeys.operation, [
+                "native.proof.counter",
+                "native.proof.nonce",
+              ]),
+              lt(idempotencyKeys.createdAt, cutoff),
+            ),
+          )
+          .catch(() => undefined);
+      }
       const tokenPrefix = tokenHash.slice(0, 24);
       const rowsToInsert: Array<{
         operation: string;

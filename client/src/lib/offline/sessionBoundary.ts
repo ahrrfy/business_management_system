@@ -78,6 +78,10 @@ export async function resetSessionForLogout(
   await Promise.resolve().then(() => dependencies.purgeReceptionSnapshots()).catch(() => undefined);
   await dependencies.purgeStudioDrafts().catch(() => undefined);
   try {
+    const preservedDeviceMeta = await Promise.all([
+      offlineDb.meta.get("offlineSaleEnabled").catch(() => undefined),
+      offlineDb.meta.get("storagePersisted").catch(() => undefined),
+    ]);
     await Promise.allSettled([
       offlineDb.profile.clear(),
       offlineDb.catalog.clear(),
@@ -85,6 +89,11 @@ export async function resetSessionForLogout(
       offlineDb.customers.clear(),
       offlineDb.stock.clear(),
     ]);
+    for (const row of preservedDeviceMeta) {
+      if (row && typeof row.key === "string" && typeof row.value === "string") {
+        await offlineDb.meta.put(row).catch(() => undefined);
+      }
+    }
   } catch {
     // Ignore when IndexedDB is unavailable (e.g. non-browser test runners).
   }
