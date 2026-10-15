@@ -33,6 +33,8 @@ export interface UnifiedProductSearchProps {
   autoFocus?: boolean;
   size?: "default" | "compact" | "lg";
   variant?: "default" | "pos";
+  /** اتجاه فتح القائمة المنسدلة (لأعلى عند وجود الحقل في أسفل نافذة حوار) */
+  dropDirection?: "down" | "up";
   className?: string;
   inputClassName?: string;
   branchName?: string;
@@ -47,6 +49,7 @@ export function UnifiedProductSearch({
   autoFocus = false,
   size = "default",
   variant = "pos",
+  dropDirection = "down",
   className,
   inputClassName,
   branchName = "الفرع الحالي",
@@ -80,6 +83,7 @@ export function UnifiedProductSearch({
   }, [mode, posQuery.data]);
 
   const searching = posQuery.isFetching;
+  const searchSettled = search.trim() === debouncedSearch.trim() && !searching;
 
   // إغلاق القائمة المنسدلة عند النقر خارج المكون
   React.useEffect(() => {
@@ -97,13 +101,14 @@ export function UnifiedProductSearch({
     setSelectedIndex(-1);
   }, [results]);
 
-  // دالة البحث المباشر بالباركود عند المسح
+  // دالة البحث المباشر بالباركود عند المسح أو الضغط الفوري على Enter
   const handleBarcodeScan = React.useCallback(
     async (code: string) => {
-      if (!code) return;
+      const trimmed = code.trim();
+      if (!trimmed) return;
       try {
         const item = await utils.catalog.byBarcode.fetch({
-          barcode: code,
+          barcode: trimmed,
           branchId,
           tier,
         });
@@ -111,14 +116,31 @@ export function UnifiedProductSearch({
           onSelect(item as PosProductRow);
           setSearch("");
           setShowDrop(false);
+          return;
         }
+        if (mode === "sale" && trimmed.length >= 2) {
+          const list = await utils.catalog.posList.fetch({
+            branchId,
+            tier,
+            query: trimmed,
+            limit: 20,
+          });
+          if (list.length === 1) {
+            onSelect(list[0] as PosProductRow);
+            setSearch("");
+            setShowDrop(false);
+            return;
+          }
+        }
+        setSearch(trimmed);
+        setShowDrop(true);
       } catch {
         // في حال عدم العثور، يُترك الكود في البحث ليراه المستخدم
-        setSearch(code);
+        setSearch(trimmed);
         setShowDrop(true);
       }
     },
-    [branchId, tier, utils, onSelect],
+    [branchId, mode, tier, utils, onSelect],
   );
 
   // لون شارة المخزون (أحمر < 5، برتقالي < 15، رمادي ≥ 15) كالكاشير
@@ -136,7 +158,7 @@ export function UnifiedProductSearch({
     inputRef.current?.focus();
   };
 
-  // ملاحة لوحة المفاتيح
+  // ملاحة لوحة المفاتيح (السهمين والإغلاق فقط؛ Enter يُعالج في onSubmit بعد مرور كاشف الباركود)
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (!showDrop || results.length === 0) {
       if (e.key === "ArrowDown" && results.length > 0) {
@@ -153,12 +175,6 @@ export function UnifiedProductSearch({
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setSelectedIndex((prev) => (prev > 0 ? prev - 1 : results.length - 1));
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      const target = selectedIndex >= 0 ? results[selectedIndex] : results[0];
-      if (target) {
-        handlePick(target);
-      }
     } else if (e.key === "Escape") {
       setShowDrop(false);
     }
@@ -169,17 +185,23 @@ export function UnifiedProductSearch({
       <UnifiedSearchInput
         ref={inputRef}
         value={search}
+        debounceMs={0}
         onChange={(v) => {
           setSearch(v);
-          if (v.trim()) setShowDrop(true);
-        }}
-        onImmediateChange={(v) => {
-          if (v.trim()) setShowDrop(true);
+          setShowDrop(Boolean(v.trim()));
         }}
         onScan={handleBarcodeScan}
-        onSubmit={() => {
-          if (results.length > 0) {
+        onSubmit={(raw) => {
+          if (showDrop && selectedIndex >= 0 && results[selectedIndex]) {
+            handlePick(results[selectedIndex]);
+            return;
+          }
+          if (showDrop && searchSettled && results.length > 0 && results[0]) {
             handlePick(results[0]);
+            return;
+          }
+          if (raw.trim()) {
+            void handleBarcodeScan(raw.trim());
           }
         }}
         placeholder={placeholder ?? "ابحث بالاسم أو SKU أو امسح الباركود… (F2)"}
@@ -196,12 +218,15 @@ export function UnifiedProductSearch({
       {showDrop && search.trim().length > 0 && (
         <div
           role="listbox"
-          className="absolute top-[calc(100%+6px)] right-0 left-0 bg-popover text-popover-foreground border border-border rounded-xl shadow-2xl z-50 max-h-[60vh] overflow-y-auto divide-y divide-border/60 animate-in fade-in-50 zoom-in-95 duration-100"
+          className={cn(
+            "absolute right-0 left-0 bg-popover text-popover-foreground border border-border rounded-xl shadow-2xl z-50 max-h-72 overflow-y-auto divide-y divide-border/60 animate-in fade-in-50 zoom-in-95 duration-100",
+            dropDirection === "up" ? "bottom-[calc(100%+6px)]" : "top-[calc(100%+6px)]",
+          )}
         >
           {results.length === 0 && (
             <div className="p-4 text-xs text-muted-foreground text-center">
               {search.trim().length < 2
-                ? "اكتب حرفين فأكثر للبحث…"
+                ? "اكتب حرفين فأكثر للبحث أو امسح الباركود…"
                 : searching
                   ? "جارٍ البحث في الأصناف والمخزون…"
                   : `لا نتائج لـ «${search.trim()}» — جرّب كلمة أقصر أو امسح الباركود`}
@@ -211,12 +236,25 @@ export function UnifiedProductSearch({
           {results.map((p, idx) => {
             const isSelected = idx === selectedIndex;
             const available = p.availableBase ?? p.stockBase;
+            const variantLabel = Array.from(
+              new Set(
+                [p.variantName, p.color, p.size]
+                  .map((v) => v?.trim())
+                  .filter((v): v is string => Boolean(v) && v !== p.productName.trim()),
+              ),
+            ).join(" · ");
+            const effectivePrice = p.promotionEffectivePrice ?? p.price;
+            const hasPromo =
+              p.promotionEffectivePrice != null &&
+              p.price != null &&
+              Number(p.promotionEffectivePrice) < Number(p.price);
 
             return (
               <div
                 key={p.productUnitId}
                 role="option"
                 aria-selected={isSelected}
+                onMouseDown={(e) => e.preventDefault()}
                 onClick={() => handlePick(p)}
                 onMouseEnter={() => setSelectedIndex(idx)}
                 className={cn(
@@ -224,12 +262,18 @@ export function UnifiedProductSearch({
                   isSelected ? "bg-accent/80" : "hover:bg-muted/50",
                 )}
               >
-                {/* التفاصيل اليمينية: الاسم، الشارات، SKU، وتفصيل المخزون */}
+                {/* التفاصيل اليمينية: الاسم، المتغير، الشارات، SKU، وتفصيل المخزون */}
                 <div className="space-y-1 min-w-0 pr-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-bold text-sm text-foreground leading-snug">
                       {p.productName}
                     </span>
+
+                    {variantLabel && (
+                      <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-muted text-foreground/85">
+                        {variantLabel}
+                      </span>
+                    )}
 
                     {p.isService && (
                       <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[var(--sem-info-bg,#e0f2fe)] text-[var(--sem-info,#0369a1)]">
@@ -242,12 +286,18 @@ export function UnifiedProductSearch({
                         أمانة
                       </span>
                     )}
+
+                    {p.isBundle && (
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+                        بكج
+                      </span>
+                    )}
                   </div>
 
                   <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
                     <span className="font-mono">{p.sku}</span>
                     <span>·</span>
-                    <span>{p.unitName}</span>
+                    <span className="font-medium text-foreground/80">{p.unitName}</span>
                     {!p.isService && (
                       <>
                         <span>·</span>
@@ -261,14 +311,19 @@ export function UnifiedProductSearch({
 
                 {/* السعر في الجانب المقابل (اليسار في RTL) */}
                 <div className="text-left shrink-0 pl-2">
-                  {p.price == null ? (
+                  {effectivePrice == null ? (
                     <span className="text-xs text-destructive font-medium">بلا سعر</span>
                   ) : (
                     <div className="flex flex-col items-end">
                       <span className="font-extrabold text-base text-primary font-mono tracking-tight" dir="ltr">
-                        {fmtAr(Number(p.price))}
+                        {fmtAr(Number(effectivePrice))}
                       </span>
-                      <span className="text-[10px] text-muted-foreground -mt-1">د.ع</span>
+                      {hasPromo && (
+                        <span className="text-[10px] text-muted-foreground line-through font-mono" dir="ltr">
+                          {fmtAr(Number(p.price))}
+                        </span>
+                      )}
+                      <span className="text-[10px] text-muted-foreground -mt-0.5">د.ع</span>
                     </div>
                   )}
                 </div>

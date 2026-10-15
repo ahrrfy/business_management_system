@@ -3,6 +3,9 @@ import { and, eq, notInArray } from "drizzle-orm";
 import { deliveryConsignments, workOrders } from "../../../drizzle/schema";
 import { nextCounterValue } from "../numbering";
 import type { Actor } from "../tx";
+import type { Tx } from "../../db";
+import { operationDecision, operationRecordScope, type OperationRecordScope } from "@shared/operationPermissions";
+import { assertOperationAuthorityTx, loadOperationUserTx } from "../authorization/operationAuthority";
 
 /**
  * رقم أمر الشغل — **عددٌ تسلسليّ قصير** يبدأ من 5001 (طلب المالك ١٨/٨؛ نطاقٌ متباعدٌ عن
@@ -52,18 +55,34 @@ function assertWorkOrderBranch(wo: { branchId: number | string }, actor: Actor &
 /**
  * عزل المحطة: فني المطبعة (print_operator) ينفّذ أوامره المُسنَدة إليه فقط — لا أوامر زملائه.
  * الكاشير/المدير/الأدمن (مكتب الاستقبال) يُنفّذون أي أمر في فرعهم (مرونة تشغيلية). يُستدعى بعد
- * فحص الفرع في start/markReady. السحب (claim) هو ما يجعل أمراً «أمري» قبل التنفيذ.
+ * هذا هو السلوك القديم عند غياب سياسة العمليات. السياسة الجديدة تثبّت OWN/BRANCH
+ * من تفويض العملية نفسها، مع بقاء فحص الفرع مستقلاً. السحب يجعل الأمر «أمري» قبل التنفيذ.
  */
 function assertOperatorOwns(
   wo: { assignedTo: number | string | null },
   actor: Actor & { role?: string },
+  scope?: OperationRecordScope | null,
+  allowUnassignedClaim = false,
 ) {
-  if (actor.role !== "print_operator") return;
+  if (scope === "BRANCH") return;
+  if (scope !== "OWN" && actor.role !== "print_operator") return;
+  if (allowUnassignedClaim && wo.assignedTo == null) return;
   if (wo.assignedTo == null || Number(wo.assignedTo) !== actor.userId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "اسحب الأمر إلى قائمتك أولاً لتنفيذه" });
   }
 }
 
+/** Freeze the selected mutation's current authority/scope before the work-order lock. */
+async function workOrderOperationScopeTx(
+  tx: Tx,
+  actor: Actor & { role?: string },
+  path: "workOrders.start" | "workOrders.markReady" | "workOrders.setKanbanState",
+): Promise<OperationRecordScope | null> {
+  const canonical = await assertOperationAuthorityTx(tx, actor, path, true);
+  if (!canonical) return null;
+  const current = await loadOperationUserTx(tx, actor.userId);
+  return operationDecision(current, path).scope ?? operationRecordScope(current, path);
+}
 
 /**
  * حارس **الإرسالية الحيّة** (١٨/٨) — يمنع كل عمليةٍ تفترض أنّ البضاعة ما زالت في المكتبة
@@ -128,4 +147,4 @@ async function assertNoBlockingTask(
   // no-op: tasks unit eradicated
 }
 
-export { nextWorkOrderNumber, loadWorkOrder, workOrderInvoiceSourceId, assertWorkOrderBranch, assertOperatorOwns, assertNoLiveConsignment, assertNoBlockingTask };
+export { nextWorkOrderNumber, loadWorkOrder, workOrderInvoiceSourceId, assertWorkOrderBranch, assertOperatorOwns, workOrderOperationScopeTx, assertNoLiveConsignment, assertNoBlockingTask };

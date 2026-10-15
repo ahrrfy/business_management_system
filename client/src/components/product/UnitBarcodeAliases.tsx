@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { useState } from "react";
 import { AlertCircle, Barcode, Plus, Tag, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -31,6 +32,7 @@ export interface UnitBarcodeAliasesProps {
 }
 
 export function UnitBarcodeAliases({ productUnitId: unitIdProp, variantId, unitName, variantLabel, disabled, localAliases, onLocalChange }: UnitBarcodeAliasesProps) {
+  const { can } = useCatalogPeopleOperationAccess();
   const isLocal = !!onLocalChange;
   const [open, setOpen] = useState(false);
   const [newCode, setNewCode] = useState("");
@@ -43,20 +45,20 @@ export function UnitBarcodeAliases({ productUnitId: unitIdProp, variantId, unitN
   const shouldResolve = !isLocal && !unitIdProp && !!variantId;
   const resolveQ = trpc.catalog.resolveProductUnitId.useQuery(
     { variantId: Number(variantId), unitName },
-    { enabled: shouldResolve, staleTime: 30_000 },
+    { enabled: can("catalog.resolveProductUnitId") && (shouldResolve), staleTime: 30_000 },
   );
   const productUnitId = unitIdProp ?? resolveQ.data ?? null;
 
   const enabled = !isLocal && !!productUnitId && open;
   const listQ = trpc.catalog.listUnitBarcodes.useQuery(
     { productUnitId: Number(productUnitId) },
-    { enabled, staleTime: 5_000 },
+    { enabled: can("catalog.listUnitBarcodes") && enabled, staleTime: 5_000 },
   );
 
   // العدد للشارة على الزرّ — يعمل بمجرّد توفّر productUnitId (خادميّ) أو من المصفوفة المحلّية.
   const countQ = trpc.catalog.listUnitBarcodes.useQuery(
     { productUnitId: Number(productUnitId) },
-    { enabled: !isLocal && !!productUnitId, staleTime: 30_000 },
+    { enabled: can("catalog.listUnitBarcodes") && (!isLocal && !!productUnitId), staleTime: 30_000 },
   );
   const aliasCount = isLocal ? (localAliases?.length ?? 0) : (countQ.data?.aliases.length ?? 0);
 
@@ -226,7 +228,7 @@ export function UnitBarcodeAliases({ productUnitId: unitIdProp, variantId, unitN
                         variant="ghost"
                         size="icon"
                         className="size-7 text-muted-foreground hover:text-destructive"
-                        disabled={busy}
+                        disabled={!can("catalog.removeUnitBarcodeAlias") || (busy)}
                         onClick={() => removeMut.mutate({ id: a.id })}
                         aria-label={`حذف الباركود ${a.barcode}`}
                         title="حذف"
@@ -268,7 +270,7 @@ export function UnitBarcodeAliases({ productUnitId: unitIdProp, variantId, unitN
                 <Button
                   type="button"
                   onClick={submitAdd}
-                  disabled={busy || !newCode.trim()}
+                  disabled={!can("catalog.addUnitBarcodeAlias") || (busy || !newCode.trim())}
                   className="whitespace-nowrap"
                 >
                   <Plus aria-hidden className="size-4 me-1" />

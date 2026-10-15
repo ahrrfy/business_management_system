@@ -69,6 +69,7 @@ type RefundInputRow = {
   rail?: unknown;
   direction?: unknown;
   amount?: unknown;
+  shiftId?: unknown;
 };
 
 function refundCapSnapshot(
@@ -76,24 +77,37 @@ function refundCapSnapshot(
   applicationRows: RefundInputRow[],
   remittedAmount: unknown,
   unremittedAmount?: unknown,
+  remittanceRows: RefundInputRow[] = [],
 ): RefundCapSnapshot {
   const inByMethod = new Map<RefundMethod, Decimal>();
   const outByMethod = new Map<RefundMethod, Decimal>();
+  const cashNetByShift = new Map<number, Decimal>();
   const add = (target: Map<RefundMethod, Decimal>, m: RefundMethod, v: Decimal) =>
     target.set(m, (target.get(m) ?? money(0)).plus(v));
+  const addCashShift = (row: RefundInputRow, amount: Decimal) => {
+    const shiftId = Number(row.shiftId);
+    if (!Number.isSafeInteger(shiftId) || shiftId <= 0) return;
+    cashNetByShift.set(shiftId, (cashNetByShift.get(shiftId) ?? money(0)).plus(amount));
+  };
 
   for (const r of receiptRows) {
     const m = railToRefundMethod(String(r.rail ?? "") as InboundRail);
     if (!m) continue;
-    add(r.direction === "IN" ? inByMethod : outByMethod, m, money(String(r.amount ?? "0")));
+    const amount = money(String(r.amount ?? "0"));
+    const isIn = r.direction === "IN";
+    add(isIn ? inByMethod : outByMethod, m, amount);
+    if (m === "CASH") addCashShift(r, isIn ? amount : amount.negated());
   }
   for (const r of applicationRows) {
     const m = railToRefundMethod(String(r.rail ?? "") as InboundRail);
     if (!m) continue;
-    add(inByMethod, m, money(String(r.amount ?? "0")));
+    const amount = money(String(r.amount ?? "0"));
+    add(inByMethod, m, amount);
+    if (m === "CASH") addCashShift(r, amount);
   }
   // النقد المورّد فعلاً إلى الخزينة/الدرج عبر توريد معتمد (remittanceId IS NOT NULL)
   add(inByMethod, "CASH", money(String(remittedAmount ?? "0")));
+  for (const r of remittanceRows) addCashShift(r, money(String(r.amount ?? "0")));
 
   const unremittedCustody = money(String(unremittedAmount ?? "0"));
 
@@ -117,6 +131,11 @@ function refundCapSnapshot(
     grossOut: totalOut,
     netByMethod,
     capByMethod,
+    cashReceiptShiftIds: Array.from(cashNetByShift.entries())
+      .filter(([, amount]) => amount.gt(0))
+      .map(([shiftId]) => shiftId)
+      .sort((a, b) => a - b),
+    cashNetByShift,
     unremittedDeliveryCustody: unremittedCustody,
     hasUnremittedDelivery: unremittedCustody.gt(0),
   };
@@ -139,6 +158,10 @@ export interface RefundCapSnapshot {
   netByMethod: Map<RefundMethod, Decimal>;
   /** السقف الأقصى لكل طريقة **قبل** قصّه بقيمة المرتجع الجاري. */
   capByMethod: Map<RefundMethod, Decimal>;
+  /** الورديات التي ما زال لها قبض نقدي موجب على الفاتورة؛ تُستعمل لحصر الرد المباشر بدرج القبض. */
+  cashReceiptShiftIds: number[];
+  /** صافي النقد المنسوب لكل وردية؛ الرد المباشر لا يتجاوز مساهمة الوردية المختارة. */
+  cashNetByShift: Map<number, Decimal>;
   /** عهدة المندوب غير المورّدة كما يثبتها دفتر التوصيل بعد التوريد/التحرير/الشطب الجزئي. */
   unremittedDeliveryCustody: Decimal;
   /** هل الفاتورة مرتبطة بعهدة توصيل غير مورّدة؟ */
@@ -170,6 +193,7 @@ export async function loadRefundCaps(
     await exec.execute(sql`
       SELECT ${receipts.paymentMethod} AS rail,
              ${receipts.direction} AS direction,
+             ${receipts.shiftId} AS shiftId,
              CAST(${receipts.amount} AS CHAR) AS amount
       FROM ${receipts}
       WHERE ${receipts.invoiceId} = ${invoiceId}
@@ -187,7 +211,8 @@ export async function loadRefundCaps(
   //    نستبعد ما إيصال أمّه مختومٌ بهذه الفاتورة (محسوبٌ في ① سلفاً — لا ازدواج).
   const applicationRows = rowsOf(
     await exec.execute(sql`
-      SELECT coll.orderPayMethod AS rail, CAST(COALESCE(SUM(app.amount), 0) AS CHAR) AS amount
+      SELECT coll.orderPayMethod AS rail, pr.shiftId AS shiftId,
+             CAST(COALESCE(SUM(app.amount), 0) AS CHAR) AS amount
       FROM orderPayments app
       JOIN orderPayments coll ON coll.id = app.parentPaymentId
       LEFT JOIN receipts pr ON pr.id = coll.receiptId
@@ -199,7 +224,7 @@ export async function loadRefundCaps(
           ))
         )
         AND (pr.id IS NULL OR pr.invoiceId IS NULL OR pr.invoiceId <> ${invoiceId})
-      GROUP BY coll.orderPayMethod
+      GROUP BY coll.orderPayMethod, pr.shiftId
     `),
   );
 
@@ -226,12 +251,26 @@ export async function loadRefundCaps(
       ) x
     `),
   );
+  const remittanceRows = rowsOf(
+    await exec.execute(sql`
+      SELECT dr.shiftId AS shiftId,
+             CAST(COALESCE(SUM(dle.amount), 0) AS CHAR) AS amount
+      FROM deliveryConsignments cn
+      JOIN deliveryLedgerEntries dle ON dle.consignmentId = cn.id
+      JOIN deliveryRemittances dr ON dr.id = dle.remittanceId
+      WHERE cn.invoiceId = ${invoiceId}
+        AND dle.entryType = 'COD_REMITTED'
+        AND dr.shiftId IS NOT NULL
+      GROUP BY dr.shiftId
+    `),
+  );
 
   return refundCapSnapshot(
     receiptRows,
     applicationRows,
     deliveryRows[0]?.remittedAmount,
     deliveryRows[0]?.unremittedAmount,
+    remittanceRows,
   );
 }
 
@@ -253,6 +292,7 @@ export async function loadRefundCapsByInvoiceIds(
       SELECT ${receipts.invoiceId} AS invoiceId,
              ${receipts.paymentMethod} AS rail,
              ${receipts.direction} AS direction,
+             ${receipts.shiftId} AS shiftId,
              CAST(COALESCE(SUM(${receipts.amount}), 0) AS CHAR) AS amount
       FROM ${receipts}
       WHERE ${receipts.invoiceId} IN (${idList})
@@ -262,7 +302,7 @@ export async function loadRefundCapsByInvoiceIds(
           SELECT 1 FROM accountingEntries ae
           WHERE ae.receiptId = ${receipts.id} AND ae.entryType = 'DELIVERY_FEE_HELD'
         )
-      GROUP BY ${receipts.invoiceId}, ${receipts.paymentMethod}, ${receipts.direction}
+      GROUP BY ${receipts.invoiceId}, ${receipts.paymentMethod}, ${receipts.direction}, ${receipts.shiftId}
     `),
     exec.execute(sql`
       SELECT CASE
@@ -270,6 +310,7 @@ export async function loadRefundCapsByInvoiceIds(
                ELSE wo.invoiceId
              END AS invoiceId,
              coll.orderPayMethod AS rail,
+             pr.shiftId AS shiftId,
              CAST(COALESCE(SUM(app.amount), 0) AS CHAR) AS amount
       FROM orderPayments app
       JOIN orderPayments coll ON coll.id = app.parentPaymentId
@@ -285,7 +326,7 @@ export async function loadRefundCapsByInvoiceIds(
           pr.id IS NULL OR pr.invoiceId IS NULL OR pr.invoiceId <>
             CASE WHEN app.orderPayAppliedKind = 'INVOICE' THEN app.appliedId ELSE wo.invoiceId END
         )
-      GROUP BY invoiceId, coll.orderPayMethod
+      GROUP BY invoiceId, coll.orderPayMethod, pr.shiftId
     `),
     exec.execute(sql`
       SELECT x.invoiceId,
@@ -306,13 +347,26 @@ export async function loadRefundCapsByInvoiceIds(
       ) x
       GROUP BY x.invoiceId
     `),
+    exec.execute(sql`
+      SELECT cn.invoiceId, dr.shiftId AS shiftId,
+             CAST(COALESCE(SUM(dle.amount), 0) AS CHAR) AS amount
+      FROM deliveryConsignments cn
+      JOIN deliveryLedgerEntries dle ON dle.consignmentId = cn.id
+      JOIN deliveryRemittances dr ON dr.id = dle.remittanceId
+      WHERE cn.invoiceId IN (${idList})
+        AND dle.entryType = 'COD_REMITTED'
+        AND dr.shiftId IS NOT NULL
+      GROUP BY cn.invoiceId, dr.shiftId
+    `),
   ]);
   const receiptRows = rowsOf(rawRows[0]);
   const applicationRows = rowsOf(rawRows[1]);
   const deliveryRows = rowsOf(rawRows[2]);
+  const remittanceRows = rowsOf(rawRows[3]);
 
   const groupedReceipts = new Map<number, RefundInputRow[]>();
   const groupedApplications = new Map<number, RefundInputRow[]>();
+  const groupedRemittances = new Map<number, RefundInputRow[]>();
   const remittedByInvoice = new Map<number, unknown>();
   const unremittedByInvoice = new Map<number, unknown>();
   const append = (target: Map<number, RefundInputRow[]>, row: any) => {
@@ -324,6 +378,7 @@ export async function loadRefundCapsByInvoiceIds(
   };
   receiptRows.forEach((row) => append(groupedReceipts, row));
   applicationRows.forEach((row) => append(groupedApplications, row));
+  remittanceRows.forEach((row) => append(groupedRemittances, row));
   for (const row of deliveryRows) {
     const invoiceId = Number(row.invoiceId);
     if (Number.isSafeInteger(invoiceId)) {
@@ -342,6 +397,7 @@ export async function loadRefundCapsByInvoiceIds(
       groupedApplications.get(invoiceId) ?? [],
       remittedByInvoice.get(invoiceId) ?? "0",
       unremittedByInvoice.get(invoiceId) ?? "0",
+      groupedRemittances.get(invoiceId) ?? [],
     ),
   ]));
 }

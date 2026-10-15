@@ -31,6 +31,8 @@ import {
   requireExternalTrackingRef,
   rethrowExternalTrackingRefDuplicate,
 } from "./trackingRefPolicy";
+import { publishRealtimeEvent } from "../../realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 
 export interface DispatchInvoiceInput {
   invoiceId: number;
@@ -64,7 +66,21 @@ export interface DispatchInvoiceInput {
 }
 
 export async function dispatchInvoiceToDelivery(input: DispatchInvoiceInput, actor: DeliveryTxActor) {
-  return withTx((tx) => dispatchInvoiceInTx(tx, input, actor));
+  const result = await withTx((tx) => dispatchInvoiceInTx(tx, input, actor));
+  publishRealtimeEvent(
+    REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+    {
+      deliveryId: result.consignmentId,
+      invoiceId: result.invoiceId,
+      orderId: input.onlineOrderId ? Number(input.onlineOrderId) : undefined,
+      trackingNumber: result.consignmentNumber,
+      driverId: input.assignedUserId ?? input.partyId,
+      branchId: result.branchId,
+    },
+    { branchId: result.branchId },
+  );
+  const { branchId, ...ret } = result;
+  return ret;
 }
 
 /**
@@ -399,6 +415,7 @@ export async function dispatchInvoiceInTx(
       codAmount: codAmount.toFixed(2),
       deliveryFee: fee.toFixed(2),
       reactivated: already != null,
+      branchId: Number(inv.branchId),
     };
   } catch (error) {
     rethrowExternalTrackingRefDuplicate(

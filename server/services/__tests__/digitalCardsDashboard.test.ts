@@ -44,9 +44,9 @@ async function seedBase() {
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
   await db().insert(s.users).values([
-    { id: 1, openId: "u1", name: "كاشير", role: "cashier", loginMethod: "local" },
-    { id: 2, openId: "u2", name: "مدير", role: "manager", loginMethod: "local" },
-    { id: 3, openId: "u3", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
+    { id: 1, openId: "u1", name: "كاشير", role: "cashier", branchId: 1, loginMethod: "local" },
+    { id: 2, openId: "u2", name: "مدير", role: "manager", branchId: 1, loginMethod: "local" },
+    { id: 3, openId: "u3", name: "المالك", role: "admin", branchId: 1, loginMethod: "local", isOwner: true },
   ]);
   await db().insert(s.receipts).values({
     branchId: 1, direction: "IN", amount: "100000000", paymentMethod: "CASH",

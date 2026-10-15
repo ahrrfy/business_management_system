@@ -391,7 +391,7 @@ describe("returns.executeSalesReturnCart — حوكمة البكجات وسقف 
         settlement: { method: "CASH", totalAmount: "50.00", shiftId },
         clientRequestId: "overflow-attempt-1",
       }),
-    ).rejects.toThrow(/مبلغ المرتجع يتجاوز القيمة المتبقية للفاتورة/);
+    ).rejects.toThrow(/مبلغ الاسترداد يتجاوز المدفوع الفعلي للفاتورة/);
   });
 
   it("⭐ حارس كمية البند: يرفض إرجاع كمية أكبر من الكمية المباعة المتبقية", async () => {
@@ -573,15 +573,12 @@ describe("returns.executeSalesReturnCart — حوكمة البكجات وسقف 
     const shiftId = await openShift();
     const callerBranch1 = returnRouter.createCaller(context()); // user is cashier at branch 1
 
-    // 1) inspectInvoiceForReturn: يجلب الفاتورة ويكشف أنها لفرع آخر
+    // 1) inspectInvoiceForReturn: يحجب فاتورة الفرع الآخر عن الكاشير غير المخوّل عبر الفروع
     const inspected = await callerBranch1.inspectInvoiceForReturn({
       invoiceNumber: "INV-BRANCH2-001",
     });
 
-    expect(inspected).not.toBeNull();
-    expect(inspected?.invoiceNumber).toBe("INV-BRANCH2-001");
-    expect(inspected?.isOtherBranch).toBe(true);
-    expect(inspected?.originBranchId).toBe(2);
+    expect(inspected).toBeNull();
 
     // 2) executeSalesReturnCart: يرفض تنفيذ المرتجع من الكاشير في الفرع 1 ويمنع تكرار الصرف
     await expect(

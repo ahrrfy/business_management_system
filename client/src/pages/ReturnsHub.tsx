@@ -40,6 +40,7 @@ import {
 import { SalesReturnPortal } from "@/components/returns/SalesReturnPortal";
 import { PurchaseReturnPortal } from "@/components/returns/PurchaseReturnPortal";
 import { ReturnComposer } from "@/components/returns/ReturnComposer";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import { trpc } from "@/lib/trpc";
 
 const SalesReturns = lazy(() => import("@/pages/SalesReturns"));
@@ -63,6 +64,46 @@ interface RecentOp {
 export default function ReturnsHub() {
   const [, setLocation] = useLocation();
   const searchStr = useSearch();
+  const canExecuteSalesReturnCart = useOperationPermission(
+    "returns.executeSalesReturnCart",
+  ).allowed;
+  const canInspectInvoiceForReturn = useOperationPermission(
+    "returns.inspectInvoiceForReturn",
+  ).allowed;
+  const canGetOpenRefundDrawers = useOperationPermission(
+    "returns.getOpenRefundDrawers",
+  ).allowed;
+  const canLookupItemForReturn = useOperationPermission(
+    "returns.lookupItemForReturn",
+  ).allowed;
+  const canUniversalScan = useOperationPermission(
+    "returns.universalScan",
+  ).allowed;
+  const canForensicTrace = useOperationPermission(
+    "returns.forensicTrace",
+  ).allowed;
+  const canExecuteSalesReturn =
+    canExecuteSalesReturnCart &&
+    canInspectInvoiceForReturn &&
+    canGetOpenRefundDrawers &&
+    canLookupItemForReturn &&
+    canUniversalScan &&
+    canForensicTrace;
+  const canExecutePurchaseReturnCart = useOperationPermission(
+    "returns.executePurchaseReturnCart",
+  ).allowed;
+  const canListSuppliers = useOperationPermission("suppliers.list").allowed;
+  const canExecutePurchaseReturn =
+    canExecutePurchaseReturnCart &&
+    canLookupItemForReturn &&
+    canListSuppliers;
+  const canListSalesReturns = useOperationPermission("returns.list").allowed;
+  const canListPurchaseReturns =
+    useOperationPermission("purchaseReturns.list").allowed && canListSuppliers;
+  const canAccessSalesPortal =
+    canExecuteSalesReturn || canListSalesReturns;
+  const canAccessPurchasePortal =
+    canExecutePurchaseReturn || canListPurchaseReturns;
 
   const urlParams = useMemo(() => new URLSearchParams(searchStr), [searchStr]);
   const requestIdParam = Number(urlParams.get("requestId"));
@@ -75,24 +116,92 @@ export default function ReturnsHub() {
     { enabled: approvingRequestId != null },
   );
   const portalParam = urlParams.get("portal") || urlParams.get("tab");
-  const initialMode = (portalParam === "purchases" ? "purchases" : "sales") as ReturnPortalMode;
+  const initialMode = (
+    (portalParam === "purchases" && canAccessPurchasePortal) ||
+    (!canAccessSalesPortal && canAccessPurchasePortal)
+      ? "purchases"
+      : "sales"
+  ) as ReturnPortalMode;
   const [portalMode, setPortalMode] = useState<ReturnPortalMode>(initialMode);
   const initialInvoice = urlParams.get("invoice") || undefined;
+  const initialReturnMode =
+    urlParams.get("mode") === "FULL"
+      ? ("FULL" as const)
+      : urlParams.get("mode") === "PARTIAL"
+        ? ("PARTIAL" as const)
+        : undefined;
   const initialPo = urlParams.get("po") || undefined;
+  const canCreateActivePortal =
+    portalMode === "purchases" ? canExecutePurchaseReturn : canExecuteSalesReturn;
+  const canViewActiveHistory =
+    portalMode === "purchases" ? canListPurchaseReturns : canListSalesReturns;
 
   const viewParam = urlParams.get("view");
   const [subTab, setSubTab] = useState<"create" | "history">(
-    viewParam === "history" || viewParam === "ledger" ? "history" : "create"
+    (initialMode === "purchases"
+      ? !canExecutePurchaseReturn && canListPurchaseReturns
+      : !canExecuteSalesReturn && canListSalesReturns)
+      ? "history"
+      : (viewParam === "history" || viewParam === "ledger") &&
+          (initialMode === "purchases"
+            ? canListPurchaseReturns
+            : canListSalesReturns)
+        ? "history"
+        : "create"
   );
 
+  useEffect(() => {
+    if (!canAccessPurchasePortal && portalMode === "purchases") {
+      setPortalMode("sales");
+      return;
+    }
+    if (!canAccessSalesPortal && canAccessPurchasePortal && portalMode === "sales") {
+      setPortalMode("purchases");
+      return;
+    }
+    if (
+      !canCreateActivePortal &&
+      canViewActiveHistory &&
+      subTab === "create"
+    ) {
+      setSubTab("history");
+      return;
+    }
+    if (!canViewActiveHistory && subTab === "history") {
+      setSubTab("create");
+    }
+  }, [
+    canAccessPurchasePortal,
+    canAccessSalesPortal,
+    canCreateActivePortal,
+    canViewActiveHistory,
+    portalMode,
+    subTab,
+  ]);
+
   const switchPortal = (mode: ReturnPortalMode) => {
+    if (mode === "purchases" && !canAccessPurchasePortal) return;
+    if (mode === "sales" && !canAccessSalesPortal) return;
+    const canListTarget =
+      mode === "purchases" ? canListPurchaseReturns : canListSalesReturns;
+    const canCreateTarget =
+      mode === "purchases" ? canExecutePurchaseReturn : canExecuteSalesReturn;
     setPortalMode(mode);
     const p = new URLSearchParams(searchStr);
     p.set("portal", mode);
+    if (!canCreateTarget && canListTarget) {
+      setSubTab("history");
+      p.set("view", "history");
+    } else if (subTab === "history" && !canListTarget) {
+      setSubTab("create");
+      p.delete("view");
+    }
     setLocation(`/returns?${p.toString()}`);
   };
 
   const switchSubTab = (tab: "create" | "history") => {
+    if (tab === "create" && !canCreateActivePortal) return;
+    if (tab === "history" && !canViewActiveHistory) return;
     setSubTab(tab);
     const p = new URLSearchParams(searchStr);
     if (tab === "history") {
@@ -132,7 +241,14 @@ export default function ReturnsHub() {
         docNumber: data.returnNumber,
         partyName: data.customerName,
         amount: data.totalAmount,
-        method: data.method === "CASH" ? "نقدي" : data.method === "CARD" ? "بطاقة" : "رصيد متجر",
+        method:
+          data.method === "CASH"
+            ? "نقدي"
+            : data.method === "CARD"
+              ? "بطاقة"
+              : data.method === "CREDIT_OFFSET"
+                ? "معادلة ذمم"
+                : "رصيد متجر",
         date: `${dateStr} ${timeStr}`,
         itemsCount: data.items.reduce((sum, itm) => sum + itm.quantity, 0),
         rawSalesData: data,
@@ -236,79 +352,83 @@ export default function ReturnsHub() {
       {/* المنفذان الرئيسيان: أزرار واضحة وهوية بصرية دالة ومميزة               */}
       {/* ═════════════════════════════════════════════════════════════════════ */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-        <button
-          type="button"
-          onClick={() => switchPortal("sales")}
-          className={cn(
-            "relative p-2.5 rounded-xl border-2 text-right transition-all flex items-center gap-3 text-start cursor-pointer shadow-xs",
-            portalMode === "sales"
-              ? "border-primary bg-primary/5 dark:bg-primary/10 shadow-xs ring-2 ring-primary/20"
-              : "border-border hover:border-primary/40 bg-card hover:bg-muted/30 opacity-80 hover:opacity-100"
-          )}
-        >
-          <div
+        {canAccessSalesPortal && (
+          <button
+            type="button"
+            onClick={() => switchPortal("sales")}
             className={cn(
-              "p-2 rounded-lg shrink-0 transition-colors",
+              "relative p-2.5 rounded-xl border-2 text-right transition-all flex items-center gap-3 text-start cursor-pointer shadow-xs",
               portalMode === "sales"
-                ? "bg-primary text-primary-foreground shadow-xs"
-                : "bg-muted text-muted-foreground"
+                ? "border-primary bg-primary/5 dark:bg-primary/10 shadow-xs ring-2 ring-primary/20"
+                : "border-border hover:border-primary/40 bg-card hover:bg-muted/30 opacity-80 hover:opacity-100"
             )}
           >
-            <ShoppingCart className="size-5" aria-hidden />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-bold text-sm text-foreground">
-                مرتجعات المبيعات (العملاء والتجزئة)
-              </span>
-              {portalMode === "sales" && (
-                <Badge className="bg-primary text-primary-foreground text-[10px] px-1.5 py-0">
-                  المنفذ النشط
-                </Badge>
+            <div
+              className={cn(
+                "p-2 rounded-lg shrink-0 transition-colors",
+                portalMode === "sales"
+                  ? "bg-primary text-primary-foreground shadow-xs"
+                  : "bg-muted text-muted-foreground"
               )}
+            >
+              <ShoppingCart className="size-5" aria-hidden />
             </div>
-            <p className="text-[11px] text-muted-foreground truncate">
-              مسح الباركود، الفاتورة، العميل، فرز السليم والتالف، والاسترداد المالي
-            </p>
-          </div>
-        </button>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-sm text-foreground">
+                  مرتجعات المبيعات (العملاء والتجزئة)
+                </span>
+                {portalMode === "sales" && (
+                  <Badge className="bg-primary text-primary-foreground text-[10px] px-1.5 py-0">
+                    المنفذ النشط
+                  </Badge>
+                )}
+              </div>
+              <p className="text-[11px] text-muted-foreground truncate">
+                مسح الباركود، الفاتورة، العميل، فرز السليم والتالف، والاسترداد المالي
+              </p>
+            </div>
+          </button>
+        )}
 
-        <button
-          type="button"
-          onClick={() => switchPortal("purchases")}
-          className={cn(
-            "relative p-2.5 rounded-xl border-2 text-right transition-all flex items-center gap-3 text-start cursor-pointer shadow-xs",
-            portalMode === "purchases"
-              ? "border-blue-500 bg-blue-50/50 dark:bg-blue-950/20 shadow-xs ring-2 ring-blue-500/20"
-              : "border-border hover:border-blue-300/80 bg-card hover:bg-muted/30 opacity-80 hover:opacity-100"
-          )}
-        >
-          <div
+        {canAccessPurchasePortal && (
+          <button
+            type="button"
+            onClick={() => switchPortal("purchases")}
             className={cn(
-              "p-2 rounded-lg shrink-0 transition-colors",
+              "relative p-2.5 rounded-xl border-2 text-right transition-all flex items-center gap-3 text-start cursor-pointer shadow-xs",
               portalMode === "purchases"
-                ? "bg-blue-600 text-white shadow-xs"
-                : "bg-muted text-muted-foreground"
+                ? "border-blue-500 bg-blue-50/50 dark:bg-blue-950/20 shadow-xs ring-2 ring-blue-500/20"
+                : "border-border hover:border-blue-300/80 bg-card hover:bg-muted/30 opacity-80 hover:opacity-100"
             )}
           >
-            <Building2 className="size-5" aria-hidden />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-bold text-sm text-foreground">
-                مرتجعات الشراء (الموردين والشركات)
-              </span>
-              {portalMode === "purchases" && (
-                <Badge className="bg-blue-600 text-white hover:bg-blue-700 text-[10px] px-1.5 py-0">
-                  المنفذ النشط
-                </Badge>
+            <div
+              className={cn(
+                "p-2 rounded-lg shrink-0 transition-colors",
+                portalMode === "purchases"
+                  ? "bg-blue-600 text-white shadow-xs"
+                  : "bg-muted text-muted-foreground"
               )}
+            >
+              <Building2 className="size-5" aria-hidden />
             </div>
-            <p className="text-[11px] text-muted-foreground truncate">
-              المورد وكشف الرصيد، سلة التكلفة بالباركود، ومعادلة الذمم أو النقد
-            </p>
-          </div>
-        </button>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-sm text-foreground">
+                  مرتجعات الشراء (الموردين والشركات)
+                </span>
+                {portalMode === "purchases" && (
+                  <Badge className="bg-blue-600 text-white hover:bg-blue-700 text-[10px] px-1.5 py-0">
+                    المنفذ النشط
+                  </Badge>
+                )}
+              </div>
+              <p className="text-[11px] text-muted-foreground truncate">
+                المورد وكشف الرصيد، سلة التكلفة بالباركود، ومعادلة الذمم أو النقد
+              </p>
+            </div>
+          </button>
+        )}
       </div>
 
       {/* ═════════════════════════════════════════════════════════════════════ */}
@@ -316,41 +436,46 @@ export default function ReturnsHub() {
       {/* ═════════════════════════════════════════════════════════════════════ */}
       <div className="flex items-center justify-between border-b pb-2 pt-1">
         <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant={subTab === "create" ? "default" : "outline"}
-            size="sm"
-            onClick={() => switchSubTab("create")}
-            className="text-xs h-8 gap-1.5"
-          >
-            <RotateCcw className="size-3.5" />
-            <span>بوابة الإرجاع والتسوية الفورية</span>
-          </Button>
-          <Button
-            type="button"
-            variant={subTab === "history" ? "default" : "outline"}
-            size="sm"
-            onClick={() => switchSubTab("history")}
-            className="text-xs h-8 gap-1.5"
-          >
-            <History className="size-3.5" />
-            <span>
-              {portalMode === "sales"
-                ? "سجل وأرشيف مرتجعات المبيعات"
-                : "سجل وأرشيف مرتجعات المشتريات"}
-            </span>
-          </Button>
+          {canCreateActivePortal && (
+            <Button
+              type="button"
+              variant={subTab === "create" ? "default" : "outline"}
+              size="sm"
+              onClick={() => switchSubTab("create")}
+              className="text-xs h-8 gap-1.5"
+            >
+              <RotateCcw className="size-3.5" />
+              <span>بوابة الإرجاع والتسوية الفورية</span>
+            </Button>
+          )}
+          {canViewActiveHistory && (
+            <Button
+              type="button"
+              variant={subTab === "history" ? "default" : "outline"}
+              size="sm"
+              onClick={() => switchSubTab("history")}
+              className="text-xs h-8 gap-1.5"
+            >
+              <History className="size-3.5" />
+              <span>
+                {portalMode === "sales"
+                  ? "سجل وأرشيف مرتجعات المبيعات"
+                  : "سجل وأرشيف مرتجعات المشتريات"}
+              </span>
+            </Button>
+          )}
         </div>
       </div>
 
       {/* ═════════════════════════════════════════════════════════════════════ */}
       {/* عرض المنفذ النشط أو السجل التاريخي                                   */}
       {/* ═════════════════════════════════════════════════════════════════════ */}
-      {subTab === "create" ? (
+      {subTab === "create" && canCreateActivePortal ? (
         <>
           {portalMode === "sales" ? (
             <SalesReturnPortal
               initialInvoiceNo={initialInvoice}
+              initialMode={initialReturnMode}
               onReturnSuccess={handleSalesSuccess}
             />
           ) : (
@@ -360,7 +485,7 @@ export default function ReturnsHub() {
             />
           )}
         </>
-      ) : (
+      ) : canViewActiveHistory ? (
         <Suspense fallback={<LoadingState />}>
           {portalMode === "sales" ? (
             <SalesReturns embedded />
@@ -368,7 +493,7 @@ export default function ReturnsHub() {
             <PurchaseReturns embedded />
           )}
         </Suspense>
-      )}
+      ) : null}
 
       {/* ═════════════════════════════════════════════════════════════════════ */}
       {/* قسم العمليات المنجزة حديثاً وإعادة الطباعة الحرارية                   */}

@@ -34,6 +34,19 @@ function requestRow(requestedBy = 21): PendingWorkOrderControl {
 }
 
 describe("واجهة المراجعة الإدارية لطلبات تحكم أوامر الشغل", () => {
+  it("يمنح قراءة طلب المراجعة دون أزرار اعتماد أو رفض، ويفصل تفويض كل قرار", () => {
+    const readOnly = renderToStaticMarkup(createElement(WorkOrderControlApprovalRow, {
+      row: requestRow(21), currentUserId: 99, onApprove: vi.fn(), onReject: vi.fn(), canApprove: false, canReject: false,
+    }));
+    expect(readOnly).toContain("إلغاء أمر الشغل");
+    expect(readOnly).not.toContain("اعتماد وتطبيق");
+    expect(readOnly).not.toContain(">رفض<");
+    const rejectOnly = renderToStaticMarkup(createElement(WorkOrderControlApprovalRow, {
+      row: requestRow(21), currentUserId: 99, onApprove: vi.fn(), onReject: vi.fn(), canApprove: false, canReject: true,
+    }));
+    expect(rejectOnly).not.toContain("اعتماد وتطبيق");
+    expect(rejectOnly).toContain("رفض");
+  });
   it("يربط الصفحة بعقود القائمة والتفاصيل والاعتماد والرفض دون تركيبها لغير المشرف", () => {
     const component = readFileSync(new URL("./WorkOrderControlApprovals.tsx", import.meta.url), "utf8");
     const page = readFileSync(new URL("../../pages/WorkOrders.tsx", import.meta.url), "utf8");

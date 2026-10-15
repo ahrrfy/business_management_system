@@ -4,12 +4,14 @@ import { RotateCcw } from "lucide-react";
 
 export interface SalesReturnDrawerProps {
   invoiceId: number | null;
+  initialMode?: "FULL" | "PARTIAL";
   onClose: () => void;
   onSuccess?: () => void;
 }
 
 export function SalesReturnDrawer({
   invoiceId,
+  initialMode,
   onClose,
   onSuccess,
 }: SalesReturnDrawerProps) {
@@ -25,13 +27,18 @@ export function SalesReturnDrawer({
         <SheetHeader className="border-b pb-3">
           <SheetTitle className="flex items-center gap-2 text-base">
             <RotateCcw aria-hidden className="size-5 text-primary" />
-            <span>إرجاع مبيعات — الفاتورة #{invoiceId ?? ""}</span>
+            <span>
+              {initialMode === "FULL"
+                ? `مرتجع كامل للمبيعات — الفاتورة #${invoiceId ?? ""}`
+                : `إرجاع مبيعات — الفاتورة #${invoiceId ?? ""}`}
+            </span>
           </SheetTitle>
         </SheetHeader>
 
         {invoiceId ? (
           <ReturnComposer
             invoiceId={invoiceId}
+            initialMode={initialMode}
             onDone={() => {
               onSuccess?.();
               onClose();

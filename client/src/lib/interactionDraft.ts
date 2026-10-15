@@ -28,24 +28,64 @@ function storageKey(path = window.location.pathname): string {
   return PREFIX + path;
 }
 
-function isSafeField(el: Element): el is HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement {
-  if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement || el instanceof HTMLElement)) return false;
+function isSafeField(
+  el: Element,
+): el is
+  | HTMLInputElement
+  | HTMLTextAreaElement
+  | HTMLSelectElement
+  | HTMLElement {
+  if (
+    !(
+      el instanceof HTMLInputElement ||
+      el instanceof HTMLTextAreaElement ||
+      el instanceof HTMLSelectElement ||
+      el instanceof HTMLElement
+    )
+  )
+    return false;
   if (el.closest("[data-no-draft]")) return false;
   if (el instanceof HTMLInputElement) {
     const type = el.type.toLowerCase();
-    if (["password", "file", "hidden", "submit", "button", "reset", "image"].includes(type)) return false;
-    if (["current-password", "new-password", "one-time-code"].includes(el.autocomplete)) return false;
+    if (
+      [
+        "password",
+        "file",
+        "hidden",
+        "submit",
+        "button",
+        "reset",
+        "image",
+      ].includes(type)
+    )
+      return false;
+    if (
+      ["current-password", "new-password", "one-time-code"].includes(
+        el.autocomplete,
+      )
+    )
+      return false;
   }
-  return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement || el.getAttribute("contenteditable") === "true";
+  return (
+    el instanceof HTMLInputElement ||
+    el instanceof HTMLTextAreaElement ||
+    el instanceof HTMLSelectElement ||
+    el.getAttribute("contenteditable") === "true"
+  );
 }
 
 function fieldKey(el: Element, index: number): string {
-  const identified = el.getAttribute("data-draft-key") || (el as HTMLInputElement).name || el.id;
+  const identified =
+    el.getAttribute("data-draft-key") || (el as HTMLInputElement).name || el.id;
   return identified ? `id:${identified}` : `position:${index}`;
 }
 
 function editableFields(): Element[] {
-  return Array.from(document.querySelectorAll("input, textarea, select, [contenteditable='true']")).filter(isSafeField);
+  return Array.from(
+    document.querySelectorAll(
+      "input, textarea, select, [contenteditable='true']",
+    ),
+  ).filter(isSafeField);
 }
 
 /** تسجل أن المستخدم عدّل إدخالاً؛ تستعملها واجهة التحديث لتفادي أي إنعاش صامت. */
@@ -71,14 +111,26 @@ export function saveInteractionDraft(): boolean {
   if (typeof window === "undefined") return false;
   const fields = editableFields().map((el, index): FieldSnapshot => {
     const key = fieldKey(el, index);
-    if (el instanceof HTMLInputElement) return { key, kind: "input", inputType: el.type, value: el.value, checked: el.checked };
-    if (el instanceof HTMLTextAreaElement) return { key, kind: "textarea", value: el.value };
-    if (el instanceof HTMLSelectElement) return { key, kind: "select", value: el.value };
+    if (el instanceof HTMLInputElement)
+      return {
+        key,
+        kind: "input",
+        inputType: el.type,
+        value: el.value,
+        checked: el.checked,
+      };
+    if (el instanceof HTMLTextAreaElement)
+      return { key, kind: "textarea", value: el.value };
+    if (el instanceof HTMLSelectElement)
+      return { key, kind: "select", value: el.value };
     return { key, kind: "contenteditable", value: el.textContent ?? "" };
   });
   if (!fields.length) return false;
   try {
-    sessionStorage.setItem(storageKey(), JSON.stringify({ savedAt: Date.now(), fields } satisfies DraftSnapshot));
+    sessionStorage.setItem(
+      storageKey(),
+      JSON.stringify({ savedAt: Date.now(), fields } satisfies DraftSnapshot),
+    );
     return true;
   } catch {
     return false;
@@ -90,7 +142,12 @@ function readDraft(): DraftSnapshot | null {
     const raw = sessionStorage.getItem(storageKey());
     if (!raw) return null;
     const parsed = JSON.parse(raw) as DraftSnapshot;
-    if (!parsed || !Array.isArray(parsed.fields) || !Number.isFinite(parsed.savedAt) || Date.now() - parsed.savedAt > MAX_AGE_MS) {
+    if (
+      !parsed ||
+      !Array.isArray(parsed.fields) ||
+      !Number.isFinite(parsed.savedAt) ||
+      Date.now() - parsed.savedAt > MAX_AGE_MS
+    ) {
       sessionStorage.removeItem(storageKey());
       return null;
     }
@@ -105,7 +162,11 @@ export function hasRecoverableInteractionDraft(): boolean {
 }
 
 export function discardInteractionDraft(): void {
-  try { sessionStorage.removeItem(storageKey()); } catch { /* مساحة المتصفح غير متاحة */ }
+  try {
+    sessionStorage.removeItem(storageKey());
+  } catch {
+    /* مساحة المتصفح غير متاحة */
+  }
 }
 
 /** يعيد إدخال DOM ثم يطلق input/change كي تحدّث React حالتها أيضاً. */
@@ -115,14 +176,46 @@ export function restoreInteractionDraft(): boolean {
   const elements = editableFields();
   let restored = 0;
   for (const field of draft.fields) {
-    const element = elements.find((el, index) => fieldKey(el, index) === field.key);
+    const element = elements.find(
+      (el, index) =>
+        fieldKey(el, index) === field.key &&
+        // أفراد radio/checkbox قد يشتركون في name؛ قيمة الخيار تميز كل فرد
+        // دون تغيير مفاتيح المسودات المحفوظة قبل هذا الإصلاح.
+        (!(el instanceof HTMLInputElement) ||
+          !["checkbox", "radio"].includes(field.inputType ?? "") ||
+          el.value === field.value),
+    );
     if (!element) continue;
     if (element instanceof HTMLInputElement) {
       if (field.inputType && element.type !== field.inputType) continue;
-      if (field.inputType === "checkbox" || field.inputType === "radio") element.checked = !!field.checked;
-      else element.value = field.value;
-    } else if (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
-      element.value = field.value;
+      const checkable = element.type === "checkbox" || element.type === "radio";
+      // setter الأصلي لا يحدّث متعقب React قبل الحدث؛ الكتابة عبر .value أو
+      // .checked مباشرة تجعل React تظن أن القيمة لم تتغير وتترك الحالة قديمة.
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        checkable ? "checked" : "value",
+      )?.set;
+      if (!setter) continue;
+      setter.call(element, checkable ? !!field.checked : field.value);
+      if (
+        element.type === "checkbox" ||
+        (element.type === "radio" && field.checked)
+      ) {
+        // React يستمع إلى click للحقول الاختيارية. Event عادي لا ينفذ تبديل
+        // المتصفح الافتراضي الذي يرافق MouseEvent أو element.click().
+        element.dispatchEvent(new Event("click", { bubbles: true }));
+      }
+    } else if (
+      element instanceof HTMLTextAreaElement ||
+      element instanceof HTMLSelectElement
+    ) {
+      const prototype =
+        element instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLSelectElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+      if (!setter) continue;
+      setter.call(element, field.value);
     } else {
       element.textContent = field.value;
     }

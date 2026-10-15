@@ -45,6 +45,10 @@ async function seedBase() {
     { id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" },
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
+  await db().insert(s.users).values([
+    { id: 1, openId: "employee_admin", username: "admin", name: "الإداري", role: "admin", branchId: 1, isActive: true },
+    { id: 2, openId: "employee_manager", username: "manager", name: "المدير", role: "manager", branchId: 1, isActive: true, permissionsOverride: { hr: "FULL" } },
+  ]);
 }
 async function counts() {
   const [e] = await db().select({ n: sql<number>`count(*)` }).from(s.employees);
@@ -63,7 +67,7 @@ describe("createEmployeeWithAccount — الأوضاع الثلاثة", () => {
     const e = await getEmployee(employeeId);
     expect(e!.userId).toBeNull();
     expect(e!.linkedUser).toBeNull();
-    expect((await counts()).users).toBe(0);
+    expect((await counts()).users).toBe(2);
   });
 
   it("new: ينشئ مستخدماً مرتبطاً ذرّياً مع تعبئة من بيانات الموظف", async () => {
@@ -210,7 +214,7 @@ describe("بوّابة admin على employees.createWithAccount (الراوتر)
     return {
       req: { headers: {} } as unknown as TrpcContext["req"],
       res: {} as unknown as TrpcContext["res"],
-      user: { id: 1, role, branchId: 1, name: "t", email: "t@t", isActive: true, permissionsOverride: override } as unknown as TrpcContext["user"],
+      user: { id: role === "admin" ? 1 : 2, role, branchId: 1, name: "t", email: "t@t", isActive: true, permissionsOverride: override } as unknown as TrpcContext["user"],
     };
   }
   const caller = (role: string, override: Record<string, string> | null = null) => appRouter.createCaller(ctxWith(role, override));

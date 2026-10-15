@@ -205,14 +205,13 @@ export async function getDashboard(
     `),
   );
 
-  // تحويلات واردة «بالطريق» للفرع (تدقيق ١٧/٧: كان صفراً ثابتاً رغم اكتمال وحدة التحويلات ⇒ المدير
-  // المستلِم لا يرى تنبيهاً بنقدٍ/بضاعةٍ في الطريق إليه). العمود transferStatus (mysqlEnum) + فهرس
-  // idx_transfer_to_status. admin بلا فرع يرى الكل بالطريق.
+  // تحويلات نقدية واردة «بالطريق» للفرع (GAP-16: قراءة cashTransfers بدلاً من stockTransfers).
+  // العمود status (mysqlEnum) + toBranchId. admin بلا فرع يرى كل النقد بالطريق.
   const pendingTransfers = rowsOf(
     await db.execute(sql`
       SELECT COUNT(*) AS cnt
-      FROM stockTransfers
-      WHERE transferStatus = 'IN_TRANSIT'
+      FROM cashTransfers
+      WHERE cashTransferStatus = 'IN_TRANSIT'
         ${effectiveBranch != null ? sql`AND toBranchId = ${effectiveBranch}` : sql``}
     `),
   );

@@ -5,13 +5,29 @@ import { auditLogs, branches, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { protectedProcedure, router } from "../trpc";
+import { canonicalOperationAllowed } from "../operationAuthorization";
+import { hasOperationPolicy, type OperationUser } from "@shared/operationPermissions";
+import { canCrossBranches } from "../lib/branchAuthority";
+import { appErrorMessage } from "@shared/errors";
 
-const auditReadProcedure = protectedProcedure.use(({ ctx, next }) => {
-  if (ctx.user.role !== "admin" && ctx.user.role !== "auditor") {
+const auditReadProcedure = protectedProcedure.use(({ ctx, path, next }) => {
+  if (!canonicalOperationAllowed(ctx.user, path) && ctx.user.role !== "admin" && ctx.user.role !== "auditor") {
     throw new TRPCError({ code: "FORBIDDEN", message: "سجل التدقيق متاح للأدمن والمدقق المستقل فقط" });
   }
+  auditBranch(ctx.user);
   return next({ ctx });
 });
+
+/** Legacy auditor access stays intact; delegated access is bound to the assigned branch. */
+function auditBranch(user: OperationUser & { branchId?: number | null }): number | null {
+  if (!hasOperationPolicy(user) || canCrossBranches(user)) return null;
+  if (!user.branchId) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
+    what: "تعذر فتح سجل التدقيق",
+    why: "الحساب المفوض لا يرتبط بفرع",
+    doThis: "اطلب من مسؤول المستخدمين إسناد فرع للحساب ثم افتح السجل",
+  }) });
+  return Number(user.branchId);
+}
 
 const escLike = (s: string) => s.replace(/[!%_]/g, "!$&");
 
@@ -38,16 +54,24 @@ export const auditRouter = router({
         })
         .optional()
     )
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return { rows: [], total: 0, hasMore: false, nextCursor: null as number | null };
       const i = input ?? ({} as NonNullable<typeof input>);
       const conds: SQL[] = [];
+      const branchId = auditBranch(ctx.user);
+      if (branchId != null && i.branchId != null && i.branchId !== branchId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
+          what: "تعذر عرض سجل الفرع المحدد",
+          why: "تفويض الحساب محصور بفرعه المسند",
+          doThis: "اختر فرع حسابك أو اطلب من الإدارة تفويض الوصول عبر الفروع",
+        }) });
+      }
       if (i.userId) conds.push(eq(auditLogs.userId, i.userId));
       if (i.entityType) conds.push(eq(auditLogs.entityType, i.entityType));
       if (i.entityId) conds.push(eq(auditLogs.entityId, i.entityId));
       if (i.screenPath) conds.push(eq(auditLogs.screenPath, i.screenPath));
-      if (i.branchId) conds.push(eq(auditLogs.branchId, i.branchId));
+      if (branchId ?? i.branchId) conds.push(eq(auditLogs.branchId, (branchId ?? i.branchId)!));
       if (i.action?.trim()) {
         const pat = `%${escLike(i.action.trim())}%`;
         conds.push(sql`${auditLogs.action} LIKE ${pat} ESCAPE '!'`);
@@ -131,7 +155,7 @@ export const auditRouter = router({
     }),
 
   /** قيم مميّزة للفلاتر (أنواع الكيانات + الأفعال + المستخدمون الذين نفّذوا فعلاً ما). */
-  facets: auditReadProcedure.query(async () => {
+  facets: auditReadProcedure.query(async ({ ctx }) => {
     const db = getDb();
     if (!db) return { entityTypes: [], actions: [], users: [] };
     // PERF-03 (تدقيق ٢٠/٦): SELECT DISTINCT بلا حدّ = مسح كامل لجدول auditLogs (ينمو بلا سقف)
@@ -141,14 +165,18 @@ export const auditRouter = router({
     // idx_audit_action، أمّا entityType فلا فهرس مخصّص له ⇒ DISTINCT عليه يبقى مسحاً (مقبول عند
     // هذا الحجم؛ يُضاف فهرس إن كبر الجدول كثيراً).
     const FACET_LIMIT = 200;
+    const branchId = auditBranch(ctx.user);
+    const where = branchId == null ? undefined : eq(auditLogs.branchId, branchId);
     const ets = await db
       .selectDistinct({ v: auditLogs.entityType })
       .from(auditLogs)
+      .where(where)
       .orderBy(auditLogs.entityType)
       .limit(FACET_LIMIT);
     const acts = await db
       .selectDistinct({ v: auditLogs.action })
       .from(auditLogs)
+      .where(where)
       .orderBy(auditLogs.action)
       .limit(FACET_LIMIT);
     // المستخدمون الذين ظهر اسمهم في السجلّ — قائمة قصيرة لقائمة منسدلة (لا كل المستخدمين).
@@ -156,6 +184,7 @@ export const auditRouter = router({
       .selectDistinct({ id: auditLogs.userId, name: users.name })
       .from(auditLogs)
       .leftJoin(users, eq(auditLogs.userId, users.id))
+      .where(where)
       .orderBy(auditLogs.userId)
       .limit(FACET_LIMIT);
     return {

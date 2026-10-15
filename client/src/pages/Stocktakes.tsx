@@ -1,3 +1,5 @@
+import { hasOperationPolicy, canViewOperationData } from "@shared/operationPermissions";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 /**
  * Stocktakes — قائمة جلسات الجرد والتسوية (/stocktakes).
  *
@@ -200,14 +202,25 @@ export default function Stocktakes() {
   const limit = 50;
 
   const me = trpc.auth.me.useQuery();
+  const canOperation = (path: string) => canLifecycleOperation(me.data, path, true);
   const role = me.data?.role ?? "";
   /** warehouseProcedure = admin + manager + warehouse. */
-  const canCreate = role === "admin" || role === "manager" || role === "warehouse";
-  const isManagerPlus = role === "admin" || role === "manager";
+  const legacyWarehouse = role === "admin" || role === "manager" || role === "warehouse";
+  const canCreate = canLifecycleOperation(me.data, "stocktakes.create", legacyWarehouse);
+  const canReadList = canLifecycleOperation(me.data, "stocktakes.list", legacyWarehouse);
+  const canReadStats = canLifecycleOperation(me.data, "stocktakes.stats", legacyWarehouse);
+  const canReadCycle = canLifecycleOperation(me.data, "stocktakes.cycleSuggestions", legacyWarehouse);
+  const legacyManager = role === "admin" || role === "manager";
+  const canReview = canLifecycleOperation(me.data, "stocktakes.review", legacyManager);
+  const canReport = canLifecycleOperation(me.data, "stocktakes.report", legacyManager);
+  const canReadIra = canLifecycleOperation(me.data, "stocktakes.ira", legacyManager);
+  const canReadQuality = canLifecycleOperation(me.data, "stocktakes.counterQuality", legacyManager);
+  const isManagerPlus = legacyManager;
   const isAdmin = role === "admin";
 
   const branches = trpc.branches.list.useQuery(undefined, { enabled: isAdmin });
-  const statsQ = trpc.stocktakes.stats.useQuery(undefined, { enabled: canCreate });
+  const statsQ = trpc.stocktakes.stats.useQuery(undefined, { enabled: (canReadStats) && canOperation("stocktakes.stats") });
+  const statsQData = canOperation("stocktakes.stats") ? statsQ.data : undefined;
   const listQ = trpc.stocktakes.list.useQuery(
     {
       status: status || undefined,
@@ -215,24 +228,28 @@ export default function Stocktakes() {
       limit,
       offset: page * limit,
     },
-    { enabled: canCreate }
+    { enabled: canReadList }
   );
+  const listQData = canOperation("stocktakes.list") ? listQ.data : undefined;
   const cycleQ = trpc.stocktakes.cycleSuggestions.useQuery(
     { branchId: branchId || undefined },
-    { enabled: canCreate }
+    { enabled: canReadCycle }
   );
-  const iraQ = trpc.stocktakes.ira.useQuery(undefined, { enabled: isManagerPlus });
-  const cqQ = trpc.stocktakes.counterQuality.useQuery(undefined, { enabled: isManagerPlus });
+  const cycleQData = canOperation("stocktakes.cycleSuggestions") ? cycleQ.data : undefined;
+  const iraQ = trpc.stocktakes.ira.useQuery(undefined, { enabled: (canReadIra) && canOperation("stocktakes.ira") });
+  const iraQData = canOperation("stocktakes.ira") ? iraQ.data : undefined;
+  const cqQ = trpc.stocktakes.counterQuality.useQuery(undefined, { enabled: (canReadQuality) && canOperation("stocktakes.counterQuality") });
+  const cqQData = canOperation("stocktakes.counterQuality") ? cqQ.data : undefined;
   // فحص التوافق المالي — adminProcedure؛ لغير المدير لا نستدعيه (نعرض الإحالة فقط).
   const reconQ = trpc.reports.reconcile.useQuery(undefined, { enabled: isAdmin });
 
-  const rows = useMemo(() => asArray<SessionRow>(listQ.data), [listQ.data]);
-  const stats = (statsQ.data ?? {}) as { counting?: number; review?: number };
+  const rows = useMemo(() => asArray<SessionRow>(listQData), [listQData]);
+  const stats = (statsQData ?? {}) as { counting?: number; review?: number };
   const due = useMemo(() => {
-    const list = asArray<CycleRow>(cycleQ.data);
+    const list = asArray<CycleRow>(cycleQData);
     // الأقدم تأخيراً أولاً؛ «لم يُجرد بعد» (null) في المقدمة — نفس ترتيب النموذج المرجعي.
     return [...list].sort((a, b) => (b.daysOver ?? 9999) - (a.daysOver ?? 9999));
-  }, [cycleQ.data]);
+  }, [cycleQData]);
 
   const lastApproved = useMemo(() => {
     let best: SessionRow | null = null;
@@ -361,11 +378,11 @@ export default function Stocktakes() {
           s.status === "COUNTING"
             ? { label: "متابعة العدّ", href: `/stocktakes/${s.id}`, primary: false }
             : s.status === "REVIEW"
-              ? isManagerPlus
+              ? canReview
                 ? { label: "مراجعة واعتماد", href: `/stocktakes/${s.id}/review`, primary: true }
                 : { label: "متابعة", href: `/stocktakes/${s.id}`, primary: false }
               : s.status === "APPROVED"
-                ? isManagerPlus
+                ? canReport
                   ? { label: "التقرير", href: `/stocktakes/${s.id}/report`, primary: false }
                   : { label: "عرض", href: `/stocktakes/${s.id}`, primary: false }
                 : { label: "عرض", href: `/stocktakes/${s.id}`, primary: false };
@@ -377,7 +394,7 @@ export default function Stocktakes() {
                 key: "preview",
                 kind: "view",
                 label: "معاينة سريعة",
-                gate: { roles: ["warehouse", "manager"] },
+                gate: { roles: ["warehouse", "manager"], operations: ["stocktakes.get"] },
                 onSelect: () => setPreviewSessionId(s.id),
               },
               {
@@ -385,25 +402,25 @@ export default function Stocktakes() {
                 kind: action.primary ? "approve" : "view",
                 label: action.label,
                 href: action.href,
-                gate: action.primary || (s.status === "APPROVED" && isManagerPlus)
-                  ? { roles: ["manager"] }
-                  : { roles: ["warehouse", "manager"] },
+                gate: action.primary || (s.status === "APPROVED" && canReport)
+                  ? { roles: ["manager"], operations: [action.primary ? "stocktakes.review" : "stocktakes.report"] }
+                  : { roles: ["warehouse", "manager"], operations: ["stocktakes.monitor"] },
               },
             ]}
           />
         );
       },
     },
-  ], [isManagerPlus, setPreviewSessionId]);
+  ], [canReview, canReport, setPreviewSessionId, me.data]);
 
   /* غير مخوَّل (كاشير/مستخدم عام): الخادم يرفض أصلاً — نعرض توجيهاً واضحاً بدل أخطاء. */
-  if (me.data && !canCreate) {
+  if (me.data && !canReadList) {
     return (
       <div className="space-y-4">
         <PageHeader title="الجرد والتسوية" />
         <Card>
           <CardContent className="p-8 text-center text-sm text-muted-foreground">
-            وحدة الجرد والتسوية متاحة لأدوار المخزن والإدارة فقط.
+            يتطلب عرض جلسات الجرد تفويض عرض قائمة الجرد.
           </CardContent>
         </Card>
       </div>
@@ -460,8 +477,8 @@ export default function Stocktakes() {
 
       {/* المؤشرات */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="جلسات قيد العدّ الآن" value={statsQ.isLoading ? "…" : fmtInt(stats.counting)} tone="blue" />
-        <Stat label="بانتظار المراجعة والاعتماد" value={statsQ.isLoading ? "…" : fmtInt(stats.review)} tone="amber" />
+        <Stat label="جلسات قيد العدّ الآن" value={!canReadStats ? "—" : statsQ.isLoading ? "…" : fmtInt(stats.counting)} tone="blue" />
+        <Stat label="بانتظار المراجعة والاعتماد" value={!canReadStats ? "—" : statsQ.isLoading ? "…" : fmtInt(stats.review)} tone="amber" />
         <Stat
           label="آخر جرد معتمد"
           value={lastApproved ? fmtDate(lastApproved.approvedAt) : "—"}
@@ -469,14 +486,14 @@ export default function Stocktakes() {
         />
         <Stat
           label="منتجات مستحقة للجرد الدوري"
-          value={cycleQ.isLoading ? "…" : fmtInt(due.length)}
+          value={!canReadCycle ? "—" : cycleQ.isLoading ? "…" : fmtInt(due.length)}
           sub="حسب تصنيف ABC ودوريّاته"
         />
       </div>
 
       {/* فصل البدائل المدمجة (م٤) — للمدير */}
-      {isManagerPlus && <SplitCandidatesPanel canManage={isManagerPlus} />}
-      {isManagerPlus && <AlternativeStockReportPanel />}
+      {canLifecycleOperation(me.data, "stocktakes.splitCandidates", legacyManager) && <SplitCandidatesPanel canManage={canLifecycleOperation(me.data, "stocktakes.splitAlternative", legacyManager)} />}
+      {canLifecycleOperation(me.data, "stocktakes.alternativeStockBreakdown", legacyManager) && <AlternativeStockReportPanel />}
 
       {/* جدول الجلسات */}
       <Card>
@@ -589,7 +606,7 @@ export default function Stocktakes() {
           due={due}
           loading={cycleQ.isLoading}
           canCreate={canCreate}
-          isManagerPlus={isManagerPlus}
+          isManagerPlus={!!me.data && canViewOperationData(me.data, "purchaseCost")}
           onCreate={() => {
             const ids = due.map((d) => d.variantId);
             const name = `جرد دوري مجدول — ${fmtDate(new Date())}`;
@@ -597,8 +614,8 @@ export default function Stocktakes() {
           }}
         />
         <div className="space-y-4">
-          {isManagerPlus && <IraCard data={(iraQ.data ?? null) as IraData | null} loading={iraQ.isLoading} />}
-          {isManagerPlus && <CounterQualityCard data={cqQ.data ?? null} loading={cqQ.isLoading} />}
+          {canReadIra && <IraCard data={(iraQData ?? null) as IraData | null} loading={iraQ.isLoading} />}
+          {canReadQuality && <CounterQualityCard data={cqQData ?? null} loading={cqQ.isLoading} />}
           {isManagerPlus && (
             <ReconDriftCard
               isAdmin={isAdmin}
@@ -614,7 +631,7 @@ export default function Stocktakes() {
       </div>
 
       {/* الصلاحيات والتحكمات الإدارية */}
-      <Card>
+      {me.data && hasOperationPolicy(me.data) ? <p className="text-sm text-muted-foreground">تُحدّد العمليات المسموحة لهذا الحساب من تفويضات الدور والمستخدم.</p> : <Card>
         <CardHeader>
           <p className="text-base font-semibold">الصلاحيات والتحكمات الإدارية</p>
           <p className="text-xs text-muted-foreground">
@@ -633,7 +650,7 @@ export default function Stocktakes() {
             emptyText="لا صلاحيات معرّفة."
           />
         </CardContent>
-      </Card>
+      </Card>}
 
       <StocktakeDetailDrawer
         sessionId={previewSessionId}

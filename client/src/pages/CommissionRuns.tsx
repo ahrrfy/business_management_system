@@ -1,3 +1,4 @@
+import { useDigitalGiftOperationAccess as useCommissionOperationAccess } from "@/lib/digitalGiftOperationAccess";
 /* ============================================================================
  * شاشة «تشغيلات العمولة» — وحدة الأهداف والعمولات (S3). مرآة UX شاشة الرواتب.
  *
@@ -79,6 +80,7 @@ type RunDetail = NonNullable<RouterOutputs["commissions"]["runs"]["get"]>;
 type RunLine = RunDetail["lines"][number];
 
 export default function CommissionRuns() {
+  const commissionAccess = useCommissionOperationAccess();
   const utils = trpc.useUtils();
   // FULL يفتح احتساب الفرع لمديره، لكنه لا يمنح اعتماد/إلغاء/حذف كشف الشركة.
   // سلطة الشركة = owner/admin أو مالية مركزية بلا فرع وممنوحة commissions=FULL.
@@ -87,13 +89,15 @@ export default function CommissionRuns() {
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "commissions", "FULL", ["manager"]);
   const isCompanyAuthority = me.data?.role === "admin" || me.data?.isOwner === true ||
     (me.data?.role === "accountant" && me.data?.branchId == null);
-  const canCompute = hasFull && (isCompanyAuthority || (me.data?.role === "manager" && me.data?.branchId != null));
+  const legacyCompute = hasFull && (isCompanyAuthority || (me.data?.role === "manager" && me.data?.branchId != null));
+  const canCompute = commissionAccess.can("commissions.runs.compute", legacyCompute);
+  const canRequestApproval = commissionAccess.can("commissions.runs.approve", legacyCompute);
   const canApproveCompany = hasFull && isCompanyAuthority;
-  const runsQ = trpc.commissions.runs.list.useQuery();
+  const runsQ = commissionAccess.query("commissions.runs.list", trpc.commissions.runs.list.useQuery(undefined, { enabled: commissionAccess.can("commissions.runs.list") }));
   const runs = runsQ.data ?? [];
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const effectiveId = selectedId ?? (runs.length ? Number(runs[0].id) : null);
-  const runQ = trpc.commissions.runs.get.useQuery({ id: effectiveId ?? 0 }, { enabled: effectiveId != null });
+  const runQ = commissionAccess.query("commissions.runs.get", trpc.commissions.runs.get.useQuery({ id: effectiveId ?? 0 }, { enabled: commissionAccess.can("commissions.runs.get") && (effectiveId != null) }));
   const run = runQ.data ?? null;
 
   const [computeOpen, setComputeOpen] = useState(false);
@@ -409,12 +413,12 @@ export default function CommissionRuns() {
           <Button variant="outline" size="sm" onClick={exportExcel} disabled={lines.length === 0}>
             <FileDown className="size-4" /> Excel
           </Button>
-          {isDraft && canCompute && (
+          {isDraft && (canCompute || canRequestApproval || canApproveCompany) && (
             <>
               <Button
                 variant="outline"
                 size="sm"
-                disabled={busy}
+                disabled={!canCompute || busy}
                 onClick={async () => {
                   if (!(await confirm({ variant: "warning", title: `إعادة احتساب عمولات ${run.period}`, description: `${canApproveCompany ? "ستُستبدل كل أسطر الشركة" : "ستُستبدل أسطر فرعك فقط"} بأرقام المبيعات والخطط والأهداف كما هي الآن. متابعة؟`, confirmText: "إعادة الاحتساب" }))) return;
                   compute.mutate({ period: run.period });
@@ -430,7 +434,7 @@ export default function CommissionRuns() {
               />
               <Button
                 size="sm"
-                disabled={busy || approvalReason.trim().length < 3}
+                disabled={!canRequestApproval || busy || approvalReason.trim().length < 3}
                 onClick={async () => {
                   const scopeLabel = canApproveCompany ? "الشركة" : "الفرع";
                   if (!(await confirm({
@@ -504,7 +508,7 @@ export default function CommissionRuns() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setComputeOpen(false)}>إلغاء</Button>
-            <Button onClick={() => compute.mutate({ period: computePeriod })} disabled={compute.isPending}>
+            <Button onClick={() => compute.mutate({ period: computePeriod })} disabled={!canCompute || compute.isPending}>
               {compute.isPending ? "جارٍ الاحتساب…" : "احتساب"}
             </Button>
           </DialogFooter>
@@ -559,7 +563,8 @@ export default function CommissionRuns() {
 }
 
 function CommissionApprovalQueue({ userId, onChanged }: { userId: number; onChanged: () => Promise<void> }) {
-  const pending = trpc.commissions.runs.approvalRequests.useQuery({ status: "PENDING" });
+  const commissionAccess = useCommissionOperationAccess();
+  const pending = commissionAccess.query("commissions.runs.approvalRequests", trpc.commissions.runs.approvalRequests.useQuery({ status: "PENDING" }, { enabled: commissionAccess.can("commissions.runs.approvalRequests") }));
   const [rejectReasons, setRejectReasons] = useState<Record<number, string>>({});
   const approve = trpc.commissions.runs.approveRequest.useMutation({
     onSuccess: async (result) => {

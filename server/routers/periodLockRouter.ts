@@ -36,6 +36,7 @@ import {
   ownerProcedure,
   reportsAdminProcedure,
   reportsManagerProcedure,
+  requireAtomicPermission,
   router,
 } from "../trpc";
 
@@ -199,6 +200,7 @@ export const periodLockRouter = router({
     }),
 
   unlock: adminProcedure
+    .use(requireAtomicPermission("treasury.period.reopen"))
     .input(
       z.object({
         expectedPeriodId: z.number().int().positive(),

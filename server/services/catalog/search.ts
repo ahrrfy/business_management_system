@@ -84,6 +84,8 @@ function searchableCols(): SQL[] {
     sql`coalesce(${products.searchNorm}, '')`,
     foldedCol(productVariants.sku),
     foldedCol(productVariants.variantName),
+    foldedCol(productVariants.color),
+    foldedCol(productVariants.size),
     foldedCol(productUnits.barcode),
   ];
 }
@@ -176,6 +178,8 @@ function buildVariantCatalogSearchWhere(query: string | undefined): SQL | null {
     sql`coalesce(${products.searchNorm}, '')`,
     foldedCol(productVariants.sku),
     foldedCol(productVariants.variantName),
+    foldedCol(productVariants.color),
+    foldedCol(productVariants.size),
   ];
   const perToken = tokens.map((token) => {
     const pattern = `%${escLike(token)}%`;

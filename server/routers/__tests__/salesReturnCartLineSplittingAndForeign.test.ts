@@ -4,7 +4,7 @@
  *   2) منع استغلال تكرار الإرجاع بعد استنفاد الحصة (Anti-Double-Refund Quota Protection)
  *   3) رفض الأصناف الأجنبية غير الموجودة في الفاتورة المرجعية (Foreign Item Rejection)
  *   4) التراجع الذري التام عند وجود صنف أجنبي ضمن سلة مختلطة (Atomic Rollback on Foreign Item)
- *   5) استمرار عمل المرتجع العابر بدون فاتورة كمرتجع حر (Walk-in Return Compatibility)
+ *   5) المرتجع العابر بدون فاتورة يتطلب اعتماداً ولا يغيّر المخزون
  *   6) معالجة المرتجع التالف (DAMAGED) المقسم دون إعادة للرف
  */
 import { and, eq, sql } from "drizzle-orm";
@@ -427,15 +427,15 @@ describe("returns.executeSalesReturnCart — حوكمة تجميع البنود 
   });
 
   // -------------------------------------------------------------------------
-  // IT-INV-05: Legitimate Walk-In Return Without Invoice
+  // IT-INV-05: Legitimate Walk-In Return Within Cap & Over-Cap Guard
   // -------------------------------------------------------------------------
-  it("IT-INV-05: المرتجع العابر بدون رقم فاتورة ينفذ بنجاح كمرتجع حر", async () => {
+  it("IT-INV-05: المرتجع العابر بدون رقم فاتورة ينفذ بنجاح ضمن السقف ويرفض ما تجاوزه", async () => {
     const shiftId = await openShift();
     const initialStock = await stockOf(1);
 
     const caller = returnRouter.createCaller(context());
 
-    // تنفيذ مرتجع بدون رقم فاتورة (مرتجع زبون عابر)
+    // تنفيذ مرتجع بدون رقم فاتورة ضمن السقف (مرتجع زبون عابر)
     const res = await caller.executeSalesReturnCart({
       invoiceNumber: undefined,
       customer: { name: "زبون عابر" },
@@ -454,6 +454,24 @@ describe("returns.executeSalesReturnCart — حوكمة تجميع البنود 
 
     expect(res.returnNumber).toMatch(/^SR-/);
     expect(await stockOf(1)).toBe(initialStock + 2);
+
+    await expect(
+      caller.executeSalesReturnCart({
+        invoiceNumber: undefined,
+        customer: { name: "زبون عابر" },
+        disposition: "RESTOCK",
+        items: [
+          {
+            variantId: 1,
+            productName: "قلم حبر",
+            quantity: 3000,
+            unitPrice: "10.00",
+          },
+        ],
+        settlement: { method: "CASH", totalAmount: "30000.00", shiftId },
+        clientRequestId: "it-walkin-no-inv-overcap",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 
   // -------------------------------------------------------------------------

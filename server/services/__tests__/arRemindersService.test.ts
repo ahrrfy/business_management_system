@@ -649,6 +649,41 @@ describe("arRemindersService - logReminderSent / logReminderSkipped", () => {
     expect(history[1].status).toBe("SENT");
     expect(history[0].customerName).toBe("عميل اختبار");
   });
+
+  it("سجلّ التاريخ: عزل التذكيرات الشاملة [ALL_BRANCHES] عن سجل الفرع وتضمينها في السجل العام", async () => {
+    // تذكير محلي للفرع 1 (SENT)
+    await logReminderSent(
+      { customerId: 200, totalUnpaidSnapshot: "100000", oldestInvoiceDate: daysAgo(15), daysOverdue: 15, messageBody: "محلي فرع 1" },
+      { userId: 1, branchId: 1 },
+    );
+    // تذكير شامل لكافة الفروع من الإدارة العامة (isAllBranches: true)
+    await logReminderSent(
+      { customerId: 200, totalUnpaidSnapshot: "100000", oldestInvoiceDate: daysAgo(15), daysOverdue: 15, messageBody: "تذكير إداري شامل", isAllBranches: true },
+      { userId: 1, branchId: 1 },
+    );
+    await logReminderSkipped(
+      { customerId: 200, totalUnpaidSnapshot: "100000", oldestInvoiceDate: daysAgo(15), daysOverdue: 15, skipReason: "تخطي إداري شامل", isAllBranches: true },
+      { userId: 1, branchId: 1 },
+    );
+
+    // استعلام سجل الفرع 1: يجب استبعاد التذكيرات الموسومة بـ [ALL_BRANCHES]
+    const branch1History = await getReminderHistory({ branchId: 1 });
+    const b1AllBranches = branch1History.filter((h) => h.isAllBranches);
+    expect(b1AllBranches).toHaveLength(0);
+    expect(branch1History.some((h) => h.status === "SENT" && h.customerId === 200)).toBe(true);
+
+    // استعلام السجل العام المجمّع (branchId: null): يجب أن يتضمن كل التذكيرات مع تمييز isAllBranches
+    const allHistory = await getReminderHistory({ branchId: null });
+    const generalSent = allHistory.find((h) => h.status === "SENT" && h.isAllBranches);
+    expect(generalSent).toBeDefined();
+    expect(generalSent?.isAllBranches).toBe(true);
+
+    const generalSkipped = allHistory.find((h) => h.status === "SKIPPED" && h.isAllBranches);
+    expect(generalSkipped).toBeDefined();
+    expect(generalSkipped?.isAllBranches).toBe(true);
+    // التحقق من تنظيف شارة [ALL_BRANCHES] من skipReason المعروض
+    expect(generalSkipped?.skipReason).toBe("تخطي إداري شامل");
+  });
 });
 
 /** عميل بذمّة من قيد OPENING فقط (بلا أي فاتورة نظام) — يحاكي أحد الـ٣٢٥ عميلاً المستوردين. */

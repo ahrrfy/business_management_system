@@ -219,15 +219,9 @@ describe("طلبات التحكم بأوامر الشغل", () => {
     expect(await listPendingWorkOrderControls(BRANCH_2_MANAGER)).toHaveLength(0);
   });
 
-  it("الإلغاء ذو المواد لا يمر مباشرة، ويعرض preflight نسخة ودرج الاسترداد", async () => {
+  it("الخامات المخططة لا تمنع الإلغاء قبل التنفيذ، والتمهيد يطابق القرار", async () => {
     const workOrderId = await createOrder();
     const current = await order(workOrderId);
-    await expect(cancelWorkOrder(workOrderId, MANAGER, {
-      expectedVersion: Number(current.version),
-      reason: "إلغاء مباشر خطر",
-    })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
-    expect((await order(workOrderId)).status).toBe("RECEIVED");
-
     await db().insert(s.shifts).values({
       id: 10,
       branchId: 1,
@@ -240,9 +234,14 @@ describe("طلبات التحكم بأوامر الشغل", () => {
     });
     const preflight = await getWorkOrderControlPreflight(workOrderId, MAKER);
     expect(preflight.version).toBe(Number(current.version));
-    expect(preflight.controlRequired.cancel).toBe(true);
+    expect(preflight.controlRequired.cancel).toBe(false);
     expect(preflight.openReceptionShifts).toEqual([
       expect.objectContaining({ id: 10, userId: 2, userName: "منشئ", expectedCash: "25000.00" }),
     ]);
+    await expect(cancelWorkOrder(workOrderId, MANAGER, {
+      expectedVersion: Number(current.version),
+      reason: "إلغاء قبل بدء التنفيذ",
+    })).resolves.toMatchObject({ status: "CANCELLED" });
+    expect((await order(workOrderId)).status).toBe("CANCELLED");
   });
 });

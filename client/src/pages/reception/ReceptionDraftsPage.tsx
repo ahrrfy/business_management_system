@@ -23,7 +23,7 @@ import {
   User,
   X,
 } from "lucide-react";
-import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import StationPageHeader from "@/components/StationPageHeader";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -36,8 +36,11 @@ import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { useSearch } from "wouter";
+import { ReceptionDuplicateAlert } from "@/components/reception/ReceptionDuplicateAlert";
+import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 
 type DraftItem = RouterOutputs["reception"]["draftList"]["rows"][number];
+type RefundVars = RouterInputs["reception"]["refundDeposit"];
 
 export default function ReceptionDraftsPage() {
   const me = trpc.auth.me.useQuery();
@@ -346,6 +349,7 @@ export function DraftDetailsModal({
   const [refundPaymentId, setRefundPaymentId] = useState<number | null>(null);
   const [refundAmount, setRefundAmount] = useState("");
   const [refundReason, setRefundReason] = useState("");
+  const [managerApprovalAsk, setManagerApprovalAsk] = useState<RefundVars | null>(null);
 
   const refundM = trpc.reception.refundDeposit.useMutation({
     onSuccess: () => {
@@ -353,12 +357,20 @@ export function DraftDetailsModal({
       setRefundPaymentId(null);
       setRefundAmount("");
       setRefundReason("");
+      setManagerApprovalAsk(null);
       void paymentsQ.refetch();
       void draftQ.refetch();
       void utils.reception.draftList.invalidate();
       onActionSuccess();
     },
-    onError: (e) => notify.err(e),
+    onError: (e, variables) => {
+      const code = (e as { data?: { code?: string } }).data?.code;
+      if (code === "FORBIDDEN" && /(?:اعتماد|موافقة) (?:ال)?مدير/.test(e.message)) {
+        setManagerApprovalAsk(variables);
+        return;
+      }
+      notify.err(e);
+    },
   });
 
   const cancelM = trpc.reception.draftCancel.useMutation({
@@ -447,6 +459,12 @@ export function DraftDetailsModal({
             <div className="p-8 text-center text-destructive">تعذر العثور على الطلب المطلوب.</div>
           ) : (
             <>
+              {draft.status === "OPEN" && (
+                <ReceptionDuplicateAlert input={{
+                  branchId: Number(draft.branchId),
+                  reference: { kind: "DRAFT", id: draftId },
+                }} />
+              )}
               {/* بطاقة ملخص العميل والمال */}
               <Card className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3.5 shadow-xs">
                 <div>
@@ -643,6 +661,18 @@ export function DraftDetailsModal({
           </div>
         )}
       </div>
+      {managerApprovalAsk && (
+        <ManagerApprovalDialog
+          title="اعتماد مدير — ردّ عربون"
+          description="يتجاوز الرد حدود التنفيذ المباشر لهذا الحساب. أدخل اعتماد مدير مخول للفرع لإعادة المحاولة بنفس الطلب دون تكرار الأثر المالي."
+          onCancel={() => setManagerApprovalAsk(null)}
+          onApprove={(approval) => {
+            const variables = managerApprovalAsk;
+            setManagerApprovalAsk(null);
+            refundM.mutate({ ...variables, managerApproval: approval });
+          }}
+        />
+      )}
     </div>
   );
 }

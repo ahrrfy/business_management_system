@@ -2,7 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { cancelExpense, createExpense } from "../expenseService";
+import { assertValidExpenseDate, cancelExpense, createExpense } from "../expenseService";
 import { closeShift, openShift } from "../shiftService";
 
 const actor = { userId: 1, branchId: 1 };
@@ -383,6 +383,10 @@ describe("المصروفات اليومية", () => {
  */
 describe("إنفاذ وردية المُنشئ للنثرية النقدية", () => {
   it("الموظف المخوّل بلا وردية ممولة يُرفض بلا أثر مالي", async () => {
+    await db()
+      .update(s.users)
+      .set({ role: "cashier", branchId: 1 })
+      .where(eq(s.users.id, actor.userId));
     await expect(
       createExpense(
         {
@@ -645,4 +649,44 @@ describe("طلبات الخزينة وفصلها عن الدرج", () => {
     expect(closed.expectedCash).toBe("500000.00");
     expect(closed.variance).toBe("0.00");
   });
+
+  describe("التحقق من صحة تاريخ المصروف (assertValidExpenseDate)", () => {
+    it("يقبل تاريخاً صالحاً بصيغة YYYY-MM-DD", () => {
+      expect(assertValidExpenseDate("2026-10-12")).toBe("2026-10-12");
+    });
+
+    it("يُعيد تاريخ اليوم عند غياب التاريخ أو تمريره فارغاً", () => {
+      const today = new Date().toISOString().slice(0, 10);
+      expect(assertValidExpenseDate(null)).toBe(today);
+      expect(assertValidExpenseDate("")).toBe(today);
+      expect(assertValidExpenseDate("   ")).toBe(today);
+    });
+
+    it("يرفض التواريخ غير المطابقة للصيغة (malformed) برمز BAD_REQUEST", () => {
+      expect(() => assertValidExpenseDate("not-a-date")).toThrowError(/صيغة تاريخ المصروف غير صالحة/);
+      expect(() => assertValidExpenseDate("12-10-2026")).toThrowError(/صيغة تاريخ المصروف غير صالحة/);
+      expect(() => assertValidExpenseDate("2026/10/12")).toThrowError(/صيغة تاريخ المصروف غير صالحة/);
+    });
+
+    it("يرفض التواريخ المستحيلة تقويمياً برمز BAD_REQUEST", () => {
+      expect(() => assertValidExpenseDate("2026-02-31")).toThrowError(/غير صالح تقويمياً/);
+      expect(() => assertValidExpenseDate("2026-04-31")).toThrowError(/غير صالح تقويمياً/);
+    });
+
+    it("createExpense يرفض التاريخ المشوّه بـ BAD_REQUEST قبل الدخول في المعاملة أو فحص قفل الفترة", async () => {
+      await expect(
+        createExpense(
+          {
+            branchId: 1,
+            category: "RENT",
+            amount: "50000",
+            paymentMethod: "CASH",
+            expenseDate: "invalid-date-string",
+          },
+          actor,
+        ),
+      ).rejects.toThrowError(/صيغة تاريخ المصروف غير صالحة/);
+    });
+  });
 });
+

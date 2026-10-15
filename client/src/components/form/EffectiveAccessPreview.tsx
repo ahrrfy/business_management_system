@@ -8,6 +8,11 @@ import {
   type PosStation,
   type RoleKey,
 } from "@shared/permissions";
+import { deriveOperationAccess, resolveOperationPolicy, type OperationPolicy } from "@shared/operationPermissions";
+import {
+  buildDefaultRoleOperationPolicy,
+  hasRoleOperationPreset,
+} from "@shared/roleOperationPresets";
 import { ShoppingCart, Printer, Palette, Eye, EyeOff, Lock } from "lucide-react";
 
 /**
@@ -43,7 +48,7 @@ export function EffectiveAccessPreview({
   title?: string;
 }) {
   const eff = summary ?? deriveEffectiveAccess(role, override ?? null);
-  const isAdmin = role === "admin";
+  const isAdmin = role === "admin" && summary === undefined;
 
   return (
     <div className="rounded-lg border bg-muted/20 p-3 space-y-2" role="status" aria-live="polite">
@@ -95,7 +100,7 @@ export function EffectiveAccessForAssignment({
   role: RoleKey | string;
   permsOverride: PermissionMap | null | undefined;
   customRoleId: number | null;
-  customRoles: { id: number | string; baseRole?: string; permissions?: unknown }[];
+  customRoles: { id: number | string; key?: string; baseRole?: string; permissions?: unknown; operationPolicy?: OperationPolicy | null }[];
   title?: string;
 }) {
   if (customRoleId != null) {
@@ -107,6 +112,22 @@ export function EffectiveAccessForAssignment({
     const customPermissions = (cr.permissions as PermissionMap) ?? {};
     const effectivePermissions = applyPermissionOverrides(customPermissions, permsOverride ?? null);
     const override = diffFromTemplate(base, effectivePermissions);
+    const inheritedOperationPolicy = cr.operationPolicy ?? (
+      cr.key && hasRoleOperationPreset(cr.key)
+        ? buildDefaultRoleOperationPolicy(cr.key, base, effectivePermissions)
+        : null
+    );
+    if (inheritedOperationPolicy) {
+      const summary = deriveOperationAccess({
+        role: base,
+        operationPolicyEnabled: true,
+        resolvedOperationPolicy: resolveOperationPolicy(
+          base, effectivePermissions, inheritedOperationPolicy, null, override,
+          { permissionsOverride: permsOverride },
+        ),
+      });
+      return <EffectiveAccessPreview role={base} summary={summary} title={title} />;
+    }
     return <EffectiveAccessPreview role={base} override={override} title={title} />;
   }
   return <EffectiveAccessPreview role={role} override={permsOverride ?? null} title={title} />;

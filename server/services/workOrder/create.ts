@@ -32,6 +32,9 @@ import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { assertTelecomCollectAllowed } from "../reception/telecom";
 import { type Actor, withTx } from "../tx";
 import { nextWorkOrderNumber } from "./helpers";
+import { loadOperationUserTx } from "../authorization/operationAuthority";
+import { hasModuleAccess } from "@shared/permissions";
+import { workOrderAssigneeAllowed } from "../authorization/operationRecipientEligibility";
 import type { CreateWorkOrderInput } from "./types";
 import type { Tx } from "../../db";
 import { paymentAssetRole } from "../sale/paymentPosting";
@@ -42,6 +45,12 @@ import {
   createWorkOrderDesignRevisionTx,
   normalizeDesignContentImages,
 } from "./designApproval";
+import { publishRealtimeEvent } from "../../realtime";
+import {
+  REALTIME_EVENT_TYPES,
+  type WorkOrderCreatedPayload,
+  type ReceptionQueueUpdatedPayload,
+} from "@shared/realtimeEvents";
 
 async function recipeMaterialScopeIds(
   tx: Tx,
@@ -251,9 +260,10 @@ export async function createWorkOrderInTx(
       message: "العربون لا يمكن أن يتجاوز سعر البيع الإجمالي للأمر",
     });
 
-  // الإسناد عند الإنشاء تنفيذٌ تشغيلي، لا اختيار حساب عام: فني مطبعة فعّال من الفرع أو فني مشترك فقط.
+  // الإسناد تنفيذٌ تشغيلي: التفويض الجديد يلزم البدء والإنجاز، والأهلية القديمة تبقى للفني.
   // تركه null يضع الأمر في الطابور الوارد ليسحبه الفني من محطة التنفيذ.
   if (input.assignedTo != null) {
+    const assigneeProfile = await loadOperationUserTx(tx, input.assignedTo);
     const assignee = (
       await tx
         .select({
@@ -268,13 +278,13 @@ export async function createWorkOrderInTx(
     if (
       !assignee ||
       !assignee.isActive ||
-      assignee.role !== "print_operator" ||
-      (assignee.branchId != null &&
-        Number(assignee.branchId) !== Number(input.branchId))
+      !workOrderAssigneeAllowed(assigneeProfile, assigneeProfile.role === "print_operator" && hasModuleAccess(assigneeProfile.role, (assigneeProfile.permissionsOverride as never) ?? null, "workorders", "FULL"), Number(input.branchId)) ||
+      (assigneeProfile.branchId != null &&
+        Number(assigneeProfile.branchId) !== Number(input.branchId))
     ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "يمكن إسناد أمر الشغل إلى فني مطبعة من الفرع فقط",
+        message: "اختر منفّذاً فعّالاً مخوّلاً ببدء أمر الشغل وإنجازه في الفرع",
       });
     }
   }
@@ -809,5 +819,34 @@ export async function createWorkOrder(
   input: CreateWorkOrderInput,
   actor: Actor,
 ) {
-  return withTx((tx) => createWorkOrderInTx(tx, input, actor));
+  const result = await withTx((tx) => createWorkOrderInTx(tx, input, actor));
+  try {
+    publishRealtimeEvent<WorkOrderCreatedPayload>(
+      REALTIME_EVENT_TYPES.WORK_ORDER_CREATED,
+      {
+        workOrderId: result.workOrderId,
+        orderNumber: result.orderNumber,
+        branchId: input.branchId,
+        title: input.customizationText?.slice(0, 100) || `أمر شغل #${result.orderNumber}`,
+        status: "RECEIVED",
+        customerName: input.contactName ?? undefined,
+      },
+      { branchId: input.branchId },
+    );
+    publishRealtimeEvent<ReceptionQueueUpdatedPayload>(
+      REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+      {
+        orderId: result.workOrderId,
+        orderNumber: result.orderNumber,
+        branchId: input.branchId,
+        status: "RECEIVED",
+        customerName: input.contactName ?? undefined,
+        readyForPickup: false,
+      },
+      { branchId: input.branchId },
+    );
+  } catch {
+    // fail-safe
+  }
+  return result;
 }

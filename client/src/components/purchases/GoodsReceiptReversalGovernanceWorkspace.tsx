@@ -1,3 +1,5 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
+import type { OperationUser } from "@shared/operationPermissions";
 import { useEffect, useMemo, useState } from "react";
 import { PackageMinus, RotateCcw } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -51,6 +53,7 @@ const STATUS_LABEL: Record<GoodsReceiptListRow["status"], string> = {
 };
 
 export function GoodsReceiptReversalGovernanceWorkspace({
+  operationUser,
   receipts,
   pendingReversals,
   currentUserId,
@@ -70,6 +73,7 @@ export function GoodsReceiptReversalGovernanceWorkspace({
   onRequestReversal,
   onDecideReversal,
 }: {
+  operationUser?: OperationUser | null;
   receipts: GoodsReceiptListRow[];
   pendingReversals: GovernanceQueueRow[];
   currentUserId: number | null | undefined;
@@ -95,8 +99,11 @@ export function GoodsReceiptReversalGovernanceWorkspace({
   }) => Promise<unknown>;
   onDecideReversal: Parameters<typeof GovernanceApprovalQueue>[0]["onDecide"];
 }) {
+  const can = (path: string) =>
+    operationUser == null || canLifecycleOperation(operationUser, path, true);
   const [reason, setReason] = useState("");
-  const selectedReceipt = receipts.find((row) => row.id === selectedReceiptId) ?? null;
+  const selectedReceipt =
+    receipts.find((row) => row.id === selectedReceiptId) ?? null;
 
   useEffect(() => {
     if (!selectedReceiptId) setReason("");
@@ -113,12 +120,15 @@ export function GoodsReceiptReversalGovernanceWorkspace({
         .map((item) => ({
           goodsReceiptItemId: item.id,
           baseQuantity:
-            item.acceptedBaseQuantity - item.reversedBaseQuantity - item.returnedBaseQuantity,
+            item.acceptedBaseQuantity -
+            item.reversedBaseQuantity -
+            item.returnedBaseQuantity,
         }))
         .filter((line) => line.baseQuantity > 0),
     [detailItems],
   );
-  const requestValid = selectedReceipt != null && lines.length > 0 && reason.trim().length >= 3;
+  const requestValid =
+    selectedReceipt != null && lines.length > 0 && reason.trim().length >= 3;
 
   function close() {
     if (requestPending) return;
@@ -126,6 +136,7 @@ export function GoodsReceiptReversalGovernanceWorkspace({
   }
 
   async function submit() {
+    if (!can("goodsReceiptReversal.requestReversal")) return;
     if (!requestValid || !selectedReceipt) return;
     try {
       await onRequestReversal({
@@ -179,6 +190,7 @@ export function GoodsReceiptReversalGovernanceWorkspace({
               size="sm"
               variant="outline"
               onClick={() => onSelectReceipt(row.original.id)}
+              disabled={!can("goodsReceiptReversal.requestReversal")}
             >
               طلب عكس
             </Button>
@@ -211,9 +223,10 @@ export function GoodsReceiptReversalGovernanceWorkspace({
         </CardHeader>
         <CardContent className="space-y-3">
           <GovernanceRequestNotice>
-            عكس الاستلام يُخرج مخزوناً أُدخل ويمحو التزام GRNI — طلبٌ يحتاج اعتماداً مستقلاً
-            قبل أي أثر، ولا يُتاح لبنودٍ سبق ربطها بفاتورة مورّد مطابَقة أو مرتجعٍ سابق.
-            العكسُ يشمل الإذن بالكامل دائماً — لا عكس جزئيّ.
+            عكس الاستلام يُخرج مخزوناً أُدخل ويمحو التزام GRNI — طلبٌ يحتاج
+            اعتماداً مستقلاً قبل أي أثر، ولا يُتاح لبنودٍ سبق ربطها بفاتورة
+            مورّد مطابَقة أو مرتجعٍ سابق. العكسُ يشمل الإذن بالكامل دائماً — لا
+            عكس جزئيّ.
           </GovernanceRequestNotice>
           {documentsError ? (
             <p role="alert" className="text-sm text-destructive">
@@ -232,6 +245,7 @@ export function GoodsReceiptReversalGovernanceWorkspace({
       </Card>
 
       <GovernanceApprovalQueue
+        reviewAllowed={can("goodsReceiptReversal.decideReversal")}
         title="طلبات عكس الاستلام"
         scope="goods-receipt-reversal"
         rows={pendingReversals}
@@ -244,18 +258,25 @@ export function GoodsReceiptReversalGovernanceWorkspace({
         onDecide={onDecideReversal}
       />
 
-      <Dialog open={selectedReceiptId != null} onOpenChange={(open) => !open && close()}>
+      <Dialog
+        open={selectedReceiptId != null}
+        onOpenChange={(open) => !open && close()}
+      >
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>طلب عكس إذن الاستلام {selectedReceipt?.receiptNumber}</DialogTitle>
+            <DialogTitle>
+              طلب عكس إذن الاستلام {selectedReceipt?.receiptNumber}
+            </DialogTitle>
             <DialogDescription>
-              يعكس الطلب الإذن بالكامل — كل بندٍ بكامل كمّيته المتاحة. الطلب لا يغيّر
-              المخزون أو القيود حتى يعتمده مستخدمٌ مستقل.
+              يعكس الطلب الإذن بالكامل — كل بندٍ بكامل كمّيته المتاحة. الطلب لا
+              يغيّر المخزون أو القيود حتى يعتمده مستخدمٌ مستقل.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             {detailLoading ? (
-              <p className="text-sm text-muted-foreground">جارٍ تحميل بنود الإذن…</p>
+              <p className="text-sm text-muted-foreground">
+                جارٍ تحميل بنود الإذن…
+              </p>
             ) : (
               <div className="space-y-2 rounded-md border p-3">
                 {detailItems.map((item) => {
@@ -282,15 +303,17 @@ export function GoodsReceiptReversalGovernanceWorkspace({
                             : "text-muted-foreground line-through"
                         }
                       >
-                        {available > 0 ? `يُعكَس بالكامل: ${available}` : "لا شيء متاحٌ للعكس"}
+                        {available > 0
+                          ? `يُعكَس بالكامل: ${available}`
+                          : "لا شيء متاحٌ للعكس"}
                       </span>
                     </div>
                   );
                 })}
                 {!detailLoading && lines.length === 0 ? (
                   <p role="alert" className="text-sm text-destructive">
-                    لا كمّيةَ متاحةً للعكس على هذا الإذن — كلّ بنودها مربوطةٌ بفاتورة مورّدٍ
-                    مطابَقة أو مرتجعٍ سابق.
+                    لا كمّيةَ متاحةً للعكس على هذا الإذن — كلّ بنودها مربوطةٌ
+                    بفاتورة مورّدٍ مطابَقة أو مرتجعٍ سابق.
                   </p>
                 ) : null}
               </div>
@@ -307,14 +330,21 @@ export function GoodsReceiptReversalGovernanceWorkspace({
             </div>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" disabled={requestPending} onClick={close}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={requestPending}
+              onClick={close}
+            >
               تراجع
             </Button>
             <SubmitButton
               type="button"
               pending={requestPending}
               pendingText={ACTION_LABELS.sending}
-              disabled={!requestValid}
+              disabled={
+                !requestValid || !can("goodsReceiptReversal.requestReversal")
+              }
               onClick={() => void submit()}
             >
               إرسال طلب عكس الإذن كاملاً للاعتماد

@@ -30,7 +30,7 @@ function db() {
 beforeEach(async () => {
   await truncateTables([
     "accountingEntries", "inventoryMovements", "branchStock", "productImages",
-    "productPrices", "productUnits", "productVariants", "products", "categories", "branches", "users",
+    "productUnitBarcodes", "productPrices", "productUnits", "productVariants", "products", "categories", "branches", "users",
   ]);
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
@@ -200,6 +200,46 @@ describe("listStoreCatalog — الفلاتر", () => {
   it("البحث بالاسم (q) ⇒ المطابق فقط", async () => {
     const { rows } = await listStoreCatalog({ branchId: 1, q: "دفتر" });
     expect(rows.map((r) => r.productId)).toEqual([1]);
+  });
+
+  it("البحث بالباركود الأساسي للوحدة أو الباركود الإضافي أو SKU أو اللون متعدّد الكلمات ⇒ يعيد المنتج المطابق", async () => {
+    const d = db();
+    await d
+      .update(s.productUnits)
+      .set({ barcode: "4007817131404" })
+      .where(eq(s.productUnits.id, 1));
+    await d.insert(s.productUnitBarcodes).values({
+      productUnitId: 2,
+      barcode: "6291100998877",
+    });
+    await d
+      .update(s.productVariants)
+      .set({ color: "أحمر", variantName: "Schneider JOP" })
+      .where(eq(s.productVariants.id, 2));
+
+    // ١) البحث بالباركود الأساسي (كما في لقطة المستخدم 4007817131404)
+    const byPrimaryBarcode = await listStoreCatalog({ branchId: 1, q: "4007817131404" });
+    expect(byPrimaryBarcode.rows.map((r) => r.productId)).toEqual([1]);
+
+    // ٢) البحث بالباركود الإضافي
+    const bySecondaryBarcode = await listStoreCatalog({ branchId: 1, q: "6291100998877" });
+    expect(bySecondaryBarcode.rows.map((r) => r.productId)).toEqual([2]);
+
+    // ٣) البحث برمز SKU للمتغيّر
+    const bySku = await listStoreCatalog({ branchId: 1, q: "V3" });
+    expect(bySku.rows.map((r) => r.productId)).toEqual([3]);
+
+    // ٤) البحث المركّب متعدّد الكلمات عبر اسم المنتج ولون المتغيّر مع التطبيع العربي (احمر ⇔ أحمر)
+    const byTokens = await listStoreCatalog({ branchId: 1, q: "قلم احمر" });
+    expect(byTokens.rows.map((r) => r.productId)).toEqual([2]);
+
+    // ٥) البحث بكلمة واحدة مطبّعة عربياً في اسم المنتج (هديه ⇔ هدية)
+    const bySingleFoldedName = await listStoreCatalog({ branchId: 1, q: "هديه" });
+    expect(bySingleFoldedName.rows.map((r) => r.productId)).toEqual([3]);
+
+    // ٦) البحث المركّب من اسم المنتج وجزء من الباركود (دفتر 4007)
+    const byNameAndBarcode = await listStoreCatalog({ branchId: 1, q: "دفتر 4007" });
+    expect(byNameAndBarcode.rows.map((r) => r.productId)).toEqual([1]);
   });
 });
 

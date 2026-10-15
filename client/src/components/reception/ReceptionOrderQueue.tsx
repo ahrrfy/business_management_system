@@ -1,6 +1,7 @@
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Check, Clock, Package, Store, Truck, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Check, Clock, Package, Shuffle, Store, Truck, type LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +16,8 @@ import { DispatchDialog, type DispatchParty } from "@/components/delivery/Dispat
 import { DeliveryDepartureOverlay, type DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
 import { MarkPickedUpDialog } from "@/components/delivery/MarkPickedUpDialog";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import { ReceptionCommandAlert } from "@/components/reception/ReceptionCommandAlert";
+import { LiveCelebrationOverlay } from "@/components/commission/LiveCelebrationOverlay";
 import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
@@ -27,16 +30,23 @@ import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { computeStateAgeMinutes, formatAgeShort, slaLevel, slaLevelChipClass } from "@shared/orderSla";
 import { cn } from "@/lib/utils";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { useRealtimeEvent } from "@/lib/realtime";
+import {
+  REALTIME_EVENT_TYPES,
+  type ReceptionQueueUpdatedPayload,
+  type WorkOrderStatusChangedPayload,
+} from "@shared/realtimeEvents";
 
 type QueueRow = RouterOutputs["workOrders"]["list"][number];
 type PickupPayment = NonNullable<RouterInputs["workOrders"]["deliver"]["payment"]>;
 type PartialPickup = { row: QueueRow; payment?: PickupPayment; message: string; clientRequestId: string };
 
-// مرآة بوّابتي الخادم بالضبط (لا مفتاح وحدة صلاحيات منفصل لـ"delivery" — راجع server/trpc.ts):
+// بوابات التوافق القديمة؛ السياسة المحفوظة تفحص مسار كل عملية مستقلاً:
 //   workOrders.deliver / workOrders.setDeliveryMethod ⇐ workordersCashierProcedure (كاشير/مدير + وحدة workorders=FULL).
-//   delivery.dispatch ⇐ cashierProcedure الخام (كاشير/مدير بلا مفتاح وحدة).
-const FULFILL_GATE: RoleGate = { roles: ["cashier", "manager"], module: "workorders", level: "FULL" };
-const DISPATCH_GATE: RoleGate = { roles: ["cashier", "manager"] };
+//   delivery.dispatch ⇐ بوابة الإسناد القديمة؛ قراءة الجهات تبقى متطلباً مستقلاً للحوار.
+const FULFILL_GATE: RoleGate = { operations: ["workOrders.deliver"], roles: ["cashier", "manager"], module: "workorders", level: "FULL" };
+const RECLASSIFY_GATE: RoleGate = { ...FULFILL_GATE, operations: ["workOrders.setDeliveryMethod"] };
+const DISPATCH_GATE: RoleGate = { operations: ["delivery.dispatch"], roles: ["cashier", "manager"] };
 
 // صافرة الجاهزيّة استُخرجت إلى @/lib/notifyBeep — تُستعمل هنا وفي DeliveryHub معاً (Slice A، ٢٩/٨/٢٦).
 
@@ -51,36 +61,88 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role as RoleKey | undefined;
   const permissions = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  const canFulfill = !!role && moduleAccessAllowed(
+  const legacyCanFulfill = !!role && moduleAccessAllowed(
     role,
     permissions,
     "workorders",
     "FULL",
     ["cashier", "manager"],
   );
-  // dispatch لا يزال خلف cashierProcedure الخام، لكن بناء حواره يحتاج listParties المحروس بـstore:READ.
-  // نجمع العقدين كي لا نعرض إجراءً يتوقف دائماً عند استعلام جهاتٍ سيرفضه الخادم بـ403.
-  const canDispatch = canFulfill
+  // نحفظ سلوك الحساب القديم. في السياسة المحفوظة لا يفتح تسليم الطلب صلاحية الإسناد.
+  const legacyCanDispatch = legacyCanFulfill
     && canSeeGate(DISPATCH_GATE, role, permissions)
     && hasModuleAccess(role ?? "", permissions, "store", "READ");
+  const canFulfill = lifecycleActionAllowed(me.data, "workOrders.deliver", legacyCanFulfill);
+  const canReclassify = lifecycleActionAllowed(me.data, "workOrders.setDeliveryMethod", legacyCanFulfill);
+  const canDispatch = lifecycleActionAllowed(me.data, "delivery.dispatch", legacyCanDispatch);
+  const canReadParties = lifecycleActionAllowed(me.data, "delivery.listParties", legacyCanDispatch);
+  const canAutoAssign = lifecycleActionAllowed(me.data, "storeAdmin.orders.autoAssignRoundRobin", true);
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
-  // Polling كل ١٥ث + على استعادة التركيز: بلاغ المالك ٢٨/٨/٢٦ («الطلب يتيه — الاستقبال لا يرى»).
-  // كان `useQuery` بلا refetchInterval إطلاقاً — لا يحدَّث الطابور إلا بإعادة تحميلٍ يدويٍّ أو
-  // بـinvalidate من إجراءِ هذه الشاشة نفسها. إشعارُ «طلبك جاهز» يذهب للعميل بواتساب، والموظّف
-  // لا يعلم حتى يفتح الشاشة (T4 من تدقيق ٢٨/٨). refetchInterval ثابتٌ لا يتغيّر بتغيّر البيانات
-  // (كي لا تُتَخذ الشاشة نفسها ذريعةً لتوقّف polling حين تصفر النتائج).
+  // تم استبدال الـpolling ببث الأحداث اللحظية عبر SSE (الموجة 2).
   const active = trpc.workOrders.list.useQuery(
-    { branchId, statuses: ["RECEIVED", "IN_PROGRESS", "READY"], limit: 200 },
-    { refetchInterval: 15_000, refetchOnWindowFocus: true },
+    { branchId, branchQueue: true, statuses: ["RECEIVED", "IN_PROGRESS", "READY"], limit: 200 },
+    { refetchOnWindowFocus: true },
   );
   // مُتَسلَّم اليوم بصرف النظر عن تاريخ إنشاء الأمر (قد يكون أمس) — deliveredFrom/deliveredTo
   // يفلتران على workOrders.deliveredAt، لا from/to (تاريخ الإنشاء، يُخفي أوامر أُنشئت أمس وسُلِّمت اليوم).
   const deliveredToday = trpc.workOrders.list.useQuery(
-    { branchId, statuses: ["DELIVERED"], deliveredFrom: todayStr, deliveredTo: todayStr, limit: 100 },
-    { refetchInterval: 30_000, refetchOnWindowFocus: true },
+    { branchId, branchQueue: true, statuses: ["DELIVERED"], deliveredFrom: todayStr, deliveredTo: todayStr, limit: 100 },
+    { refetchOnWindowFocus: true },
   );
-  const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: canDispatch });
+  const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: canDispatch && canReadParties });
+
+  const autoAssignM = trpc.storeAdmin.orders.autoAssignRoundRobin.useMutation({
+    onSuccess: (res) => {
+      notify.ok(
+        res.assignedCount > 0
+          ? `تم توزيع ${res.assignedCount} طلبات معلقة بالتناوب الآلي العادل (Round-Robin).`
+          : "لا توجد طلبات معلقة بانتظار التوزيع حالياً."
+      );
+      utils.storeAdmin.orders.list.invalidate();
+      utils.workOrders.list.invalidate();
+    },
+    onError: (err) => {
+      notify.err(err.message || "تعذر إتمام التوزيع التلقائي.");
+    },
+  });
+
+  useRealtimeEvent<ReceptionQueueUpdatedPayload>(
+    REALTIME_EVENT_TYPES.RECEPTION_QUEUE_UPDATED,
+    (ev) => {
+      void active.refetch();
+      if (ev.payload.status === "DELIVERED") {
+        void deliveredToday.refetch();
+      }
+      if (ev.payload.readyForPickup || ev.payload.status === "READY") {
+        playReadyBeep();
+        notify.info(
+          `طلب جاهز للتسليم: ${ev.payload.orderNumber ?? `#${ev.payload.orderId}`}`,
+          ev.payload.customerName ? `العميل: ${ev.payload.customerName}` : undefined,
+        );
+      }
+    },
+  );
+
+  useRealtimeEvent<WorkOrderStatusChangedPayload>(
+    REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+    (ev) => {
+      void active.refetch();
+      if (ev.payload.newStatus === "DELIVERED") {
+        void deliveredToday.refetch();
+      }
+      if (ev.payload.newStatus === "READY") {
+        playReadyBeep();
+        notify.info(
+          `طلب جاهز للتسليم: ${ev.payload.orderNumber ?? `#${ev.payload.workOrderId}`}`,
+        );
+      }
+    },
+  );
+
+  useRealtimeEvent(REALTIME_EVENT_TYPES.WORK_ORDER_CREATED, () => {
+    void active.refetch();
+  });
 
   // كشف READY الجدد بين استعلامَين متتاليَين — يُشعِر الموظّف بجاهزيّة أمر شغل خرج من المطبعة
   // للتوّ (بلاغ ٢٨/٨/٢٦). يقارن Set<workOrderId> بالسابق: النقلة تفلترها ورشة الطلب لا الاستعلام
@@ -208,9 +270,25 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 pb-8">
-      <div className="mb-1 rounded-xl border bg-card p-3">
-        <h1 className="font-extrabold">طابور الطلبات والتوصيل</h1>
-        <p className="text-xs text-muted-foreground">من الاستلام حتى التسليم — استلام مباشر أو إسناد لمندوب/شركة توصيل.</p>
+      <LiveCelebrationOverlay branchId={branchId} />
+      <ReceptionCommandAlert branchId={branchId} />
+
+      <div className="mb-1 flex flex-col gap-3 rounded-xl border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="font-extrabold">طابور الطلبات والتوصيل</h1>
+          <p className="text-xs text-muted-foreground">من الاستلام حتى التسليم — استلام مباشر أو إسناد لمندوب/شركة توصيل.</p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={!canAutoAssign || autoAssignM.isPending}
+          onClick={() => autoAssignM.mutate({ branchId })}
+          className="gap-2 text-xs font-bold shrink-0"
+        >
+          <Shuffle className="size-3.5" />
+          <span>توزيع إجباري عادل (Round-Robin)</span>
+        </Button>
       </div>
 
       {canDispatch && parties.isLoading && (
@@ -234,8 +312,9 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
             rows={readyRows}
             emptyLabel="لا طلبات جاهزة حالياً."
             canFulfill={canFulfill}
+            canReclassify={canReclassify}
             canDispatch={canDispatch}
-            partiesReady={parties.isSuccess}
+            partiesReady={canReadParties && parties.isSuccess}
             onDispatch={setDispatchTarget}
             onPickup={setPickupTarget}
             onReclassify={setReclassifyTarget}
@@ -246,6 +325,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
             rows={inProgressRows}
             emptyLabel="لا طلبات قيد التنفيذ حالياً."
             canFulfill={canFulfill}
+            canReclassify={canReclassify}
             onReclassify={setReclassifyTarget}
           />
           {/* ش١ (٥/٨): طابور الفواتير صار **ورشةً مستقلّة** بتبويبها الخاص في المحطة (فلاتر
@@ -269,6 +349,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         pending={dispatch.isPending}
         onClose={() => setDispatchTarget(null)}
         onConfirm={async ({ partyId, fee, recipientName, recipientPhone, deliveryAddress, notes, assignedUserId, externalTrackingRef }) => {
+          if (!canDispatch || !canReadParties) return;
           const ord = dispatchTarget!;
           const party = (parties.data ?? []).find((p) => p.id === partyId);
           // نافذة الملصق تُفتح متزامنةً مع نقرة التأكيد (قبل await الإرسال) — نمط DeliveryHub بالضبط.
@@ -321,6 +402,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
           setPickupTarget(null);
         }}
         onConfirm={(payment, extra) => {
+          if (!canFulfill) return;
           const ord = pickupTarget!;
           deliver.mutate({
             workOrderId: ord.id,
@@ -337,7 +419,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         pending={deliver.isPending}
         onClose={() => { setPartialPickup(null); setPickupTarget(null); }}
         onConfirm={() => {
-          if (!partialPickup) return;
+          if (!partialPickup || !canFulfill) return;
           deliver.mutate({
             workOrderId: partialPickup.row.id,
             payment: partialPickup.payment,
@@ -352,6 +434,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         pending={setDeliveryMethod.isPending}
         onClose={() => setReclassifyTarget(null)}
         onConfirm={(payload) => {
+          if (!canReclassify) return;
           const ord = reclassifyTarget!;
           setDeliveryMethod.mutate({ workOrderId: ord.id, ...payload });
         }}
@@ -363,6 +446,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
           description="ردّ أمانة الأجرة النقديّة عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض يحتاج مديراً (تُفحص بياناته على الخادم وتُسجَّل باسمه)."
           onCancel={() => setReclassifyMgrAsk(null)}
           onApprove={(approval) => {
+            if (!canReclassify) return;
             const vars = reclassifyMgrAsk;
             setReclassifyMgrAsk(null);
             setDeliveryMethod.mutate({ ...vars, managerApproval: approval });
@@ -374,12 +458,13 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
 }
 
 // ───────────────────────── قسم القائمة ─────────────────────────
-function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canDispatch = false, partiesReady = true, loading = false, error = false, onRetry, onDispatch, onPickup, onReclassify }: {
+function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canReclassify = false, canDispatch = false, partiesReady = true, loading = false, error = false, onRetry, onDispatch, onPickup, onReclassify }: {
   title: string;
   icon: LucideIcon;
   rows: QueueRow[];
   emptyLabel: string;
   canFulfill: boolean;
+  canReclassify?: boolean;
   canDispatch?: boolean;
   partiesReady?: boolean;
   loading?: boolean;
@@ -406,7 +491,7 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canDisp
       ) : (
         <ul className="divide-y">
           {groups.map((group) => group.draftId == null ? (
-            <QueueRowItem key={group.rows[0]!.id} row={group.rows[0]!} canFulfill={canFulfill} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />
+            <QueueRowItem key={group.rows[0]!.id} row={group.rows[0]!} canFulfill={canFulfill} canReclassify={canReclassify} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />
           ) : (
             <li key={`draft-${group.draftId}`}>
               <div className="flex flex-wrap items-center gap-2 bg-muted/30 px-4 py-2 text-xs">
@@ -417,7 +502,7 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canDisp
                 {group.readyCount < group.totalCount && <span className="text-muted-foreground">لا يُسلَّم الجزء الجاهز إلا بإقرار صريح</span>}
               </div>
               <ul className="divide-y">
-                {group.rows.map((r: QueueRow) => <QueueRowItem key={r.id} row={r} canFulfill={canFulfill} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />)}
+                {group.rows.map((r: QueueRow) => <QueueRowItem key={r.id} row={r} canFulfill={canFulfill} canReclassify={canReclassify} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />)}
               </ul>
             </li>
           ))}
@@ -445,9 +530,10 @@ function groupQueueRows(rows: QueueRow[]) {
   return Array.from(groups.values());
 }
 
-function QueueRowItem({ row: r, canFulfill, canDispatch, partiesReady, onDispatch, onPickup, onReclassify }: {
+function QueueRowItem({ row: r, canFulfill, canReclassify, canDispatch, partiesReady, onDispatch, onPickup, onReclassify }: {
   row: QueueRow;
   canFulfill: boolean;
+  canReclassify: boolean;
   canDispatch: boolean;
   partiesReady: boolean;
   onDispatch?: (r: QueueRow) => void;
@@ -474,7 +560,7 @@ function QueueRowItem({ row: r, canFulfill, canDispatch, partiesReady, onDispatc
       icon: Truck,
       hidden: !canDispatch,
       disabled: !partiesReady,
-      disabledReason: "جهات التوصيل لم تُحمّل بعد — أعد المحاولة أولاً",
+      disabledReason: "يلزم تفويض عرض جهات التوصيل واكتمال تحميلها قبل الإسناد",
       onSelect: () => onDispatch(r),
       gate: DISPATCH_GATE,
     });
@@ -483,7 +569,7 @@ function QueueRowItem({ row: r, canFulfill, canDispatch, partiesReady, onDispatc
     actions.push({ key: "pickup", kind: "approve", label: "تسليم مباشر", icon: Store, hidden: !canFulfill, onSelect: () => onPickup(r), gate: FULFILL_GATE });
   }
   if (!isFinal && onReclassify) {
-    actions.push({ key: "reclassify", kind: "edit", label: "تغيير الطريقة", hidden: !canFulfill, onSelect: () => onReclassify(r), gate: FULFILL_GATE });
+    actions.push({ key: "reclassify", kind: "edit", label: "تغيير الطريقة", hidden: !canReclassify, onSelect: () => onReclassify(r), gate: RECLASSIFY_GATE });
   }
   actions.push({ key: "open", kind: "view", label: "فتح", onSelect: () => window.open(`/work-orders/${r.id}`, "_blank", "noopener") });
 

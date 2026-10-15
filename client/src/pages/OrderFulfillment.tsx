@@ -6,11 +6,51 @@
  * حقيقية + يُخصم المخزون + قيد دفتر عبر orders.dispatch) ← تُسلَّم. عزل الفرع خادمياً.
  * الإرسال مديريّ فقط (يُقرّ ائتمان COD المؤقّت للزبون النقدي) — يُخفى زرّه عن غير المدير.
  */
-import { Suspense, lazy, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, ClipboardList, FileText, Loader2, MapPin, Package, Pencil, Printer, ReceiptText, Store, Truck, X } from "lucide-react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { useSearch } from "wouter";
+import {
+  AlertTriangle,
+  Bell,
+  Check,
+  CheckCircle2,
+  ClipboardList,
+  Eye,
+  FileText,
+  Loader2,
+  MapPin,
+  Package,
+  PackageCheck,
+  Pencil,
+  Printer,
+  ReceiptText,
+  RefreshCw,
+  Store,
+  Trophy,
+  Truck,
+  UserCheck,
+  Volume2,
+  VolumeX,
+  X,
+} from "lucide-react";
+import { ReceptionCommandAlert } from "@/components/reception/ReceptionCommandAlert";
+import { ReceptionDuplicateAlertView } from "@/components/reception/ReceptionDuplicateAlert";
+import { canCheckReceptionDuplicates, type ReceptionDuplicateResult } from "@shared/receptionDuplicateOrders";
+import { resolveOnlineDuplicateReference } from "@/lib/receptionDuplicatePreflight";
+import { StrictCancelOrderDialog } from "@/components/store/StrictCancelOrderDialog";
 const EditOnlineOrderDialog = lazy(() =>
   import("@/components/store/EditOnlineOrderDialog").then((m) => ({ default: m.EditOnlineOrderDialog }))
 );
+import { OrderSlaBadge } from "@/components/store/OrderSlaBadge";
+import { OrderContactCell, type ContactStatus } from "@/components/store/OrderContactCell";
+import { OrderQuickViewDrawer } from "@/components/store/OrderQuickViewDrawer";
+import { OrderLeaderboardModal } from "@/components/store/OrderLeaderboardModal";
+import {
+  AUDIO_FEEDBACK_CHANGE_EVENT,
+  isAudioFeedbackEnabled,
+  playAudioFeedback,
+  setAudioFeedbackEnabled,
+} from "@/lib/audioFeedback";
+import { Button } from "@/components/ui/button";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { D, fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -40,6 +80,8 @@ import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/b
 import { printOnlineOrderPreparationA4, printOnlineOrderThermal, printOnlineOrderInvoiceA4 } from "@/lib/printing/onlineOrder";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { storefrontUrl } from "@/lib/siteHosts";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES, type StorefrontOrderPlacedPayload } from "@shared/realtimeEvents";
 
 // حالات الطلب + خرائط العرض/الانتقال ⇐ shared/onlineOrderStatus.ts (مصدر الحقيقة الوحيد).
 // كانت مُعرَّفةً محلياً هنا (وفي Storefront/StoreDashboard/StoreAnalytics) بألوانٍ متفاوتة —
@@ -77,29 +119,114 @@ type Row = RouterOutputs["storeAdmin"]["orders"]["list"][number];
 const PAGE_SIZE = 200;
 
 export default function OrderFulfillment() {
+  const search = useSearch();
+  const linkedOrderId = Number(new URLSearchParams(search).get("orderId"));
   const [filter, setFilter] = useState<OnlineOrderStatus | null>(null);
   const [query, setQuery] = useState("");
   // مدى تاريخ الطلب (إنشاء الطلب) — محفوظ في querystring (يعيش مع الرجوع من التفاصيل، يُشارَك رابطاً).
   const [f, setF, resetF] = useUrlFilters({ from: "", to: "" });
   const [printingId, setPrintingId] = useState<number | null>(null);
   const [dispatchTarget, setDispatchTarget] = useState<OrderRow | null>(null);
-  const [cancelTarget, setCancelTarget] = useState<{ id: number; orderNumber: string } | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<{
+    id: number;
+    orderNumber: string;
+    customerName?: string | null;
+    customerPhone?: string | null;
+  } | null>(null);
   const [editOrderId, setEditOrderId] = useState<number | null>(null);
+  const [quickViewOrderId, setQuickViewOrderId] = useState<number | null>(
+    Number.isSafeInteger(linkedOrderId) && linkedOrderId > 0 ? linkedOrderId : null,
+  );
+  const [duplicateReview, setDuplicateReview] = useState<{
+    orderId: number; result: ReceptionDuplicateResult | null;
+  } | null>(null);
+  const duplicateReviewRef = useRef<HTMLElement | null>(null);
+  const [checkingDuplicateId, setCheckingDuplicateId] = useState<number | null>(null);
+  const duplicateActionRef = useRef<(() => void) | null>(null);
+  const duplicateCheckEpoch = useRef(0);
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(() => isAudioFeedbackEnabled());
+  const [myOrdersOnly, setMyOrdersOnly] = useState(false);
+  const prevUnclaimedCountRef = useRef(0);
   const utils = trpc.useUtils();
+  useEffect(() => {
+    if (Number.isSafeInteger(linkedOrderId) && linkedOrderId > 0) setQuickViewOrderId(linkedOrderId);
+  }, [linkedOrderId]);
+  useEffect(() => {
+    if (!duplicateReview) return;
+    duplicateReviewRef.current?.scrollIntoView({ block: "nearest" });
+    duplicateReviewRef.current?.focus({ preventScroll: true });
+  }, [duplicateReview]);
+
+  useRealtimeEvent<StorefrontOrderPlacedPayload>(
+    REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED,
+    (event) => {
+      void utils.storeAdmin.orders.list.invalidate();
+      void utils.storeAdmin.orders.counts.invalidate();
+      playAudioFeedback("notification");
+      const p = event.payload as StorefrontOrderPlacedPayload;
+      notify.info(`طلب متجر جديد: ${p?.orderNumber ?? ""} بمبلغ ${money(p?.totalAmount)} د.ع`);
+    },
+  );
 
   const me = trpc.auth.me.useQuery();
   // الإرسال مديريّ فقط — يعكس storeManagerProcedure خادمياً (admin يعبُر داخل moduleAccessAllowed).
   const canDispatch =
     !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL", ["manager"]);
+  const canCheckDuplicates = !!me.data?.role && canCheckReceptionDuplicates(
+    me.data.role,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+  );
 
-  const countsQ = trpc.storeAdmin.orders.counts.useQuery();
+  async function reviewBeforePreparation(orderId: number, proceed: () => void) {
+    if (!canCheckDuplicates) { proceed(); return true; }
+    const epoch = ++duplicateCheckEpoch.current;
+    setCheckingDuplicateId(orderId);
+    setDuplicateReview(null);
+    duplicateActionRef.current = null;
+    try {
+      const reference = await resolveOnlineDuplicateReference(orderId,
+        () => utils.storeAdmin.orders.detail.fetch({ id: orderId }));
+      const result = await utils.reception.duplicateOrders.fetch(reference, { staleTime: 0 });
+      if (epoch !== duplicateCheckEpoch.current) return false;
+      if (result.matches.length || result.truncated) {
+        duplicateActionRef.current = proceed;
+        setDuplicateReview({ orderId, result });
+        return false;
+      }
+      proceed();
+      return true;
+    } catch {
+      if (epoch !== duplicateCheckEpoch.current) return false;
+      duplicateActionRef.current = proceed;
+      setDuplicateReview({ orderId, result: null });
+      return false;
+    } finally {
+      if (epoch === duplicateCheckEpoch.current) setCheckingDuplicateId(null);
+    }
+  }
+
+  function continueAfterDuplicateReview() {
+    const proceed = duplicateActionRef.current;
+    duplicateActionRef.current = null;
+    setDuplicateReview(null);
+    proceed?.();
+  }
+
+  const countsQ = trpc.storeAdmin.orders.counts.useQuery(undefined, {
+    refetchInterval: 30_000,
+  });
   // ترقيم حقيقي بالمؤشّر (كان يُحمَّل ٢٠٠ صفّاً فقط بلا مؤشّر ولا لافتة — اقتطاعٌ صامت). orders.list
   // يبقى مصفوفة مسطّحة (عقدٌ يشاركه StoreDashboard.tsx خارج نطاق هذه الشاشة) ⇒ hasMore heuristic
   // بطول الصفحة (نمط BoardColumn في TasksHub.tsx)، لا حقل hasMore صريح من الخادم.
   const listQ = trpc.storeAdmin.orders.list.useInfiniteQuery(
     { status: filter, from: f.from || undefined, to: f.to || undefined, limit: PAGE_SIZE },
-    { getNextPageParam: (last) => (last.length === PAGE_SIZE ? last[last.length - 1]?.id : undefined) },
+    {
+      getNextPageParam: (last) => (last.length === PAGE_SIZE ? last[last.length - 1]?.id : undefined),
+      refetchInterval: 30_000,
+      refetchOnWindowFocus: true,
+    },
   );
   const setStatusM = trpc.storeAdmin.orders.setStatus.useMutation({
     onSuccess: (res) => {
@@ -119,25 +246,138 @@ export default function OrderFulfillment() {
     },
     onError: (e) => notify.err(e),
   });
+  const claimM = trpc.storeAdmin.orders.claim.useMutation({
+    onSuccess: () => {
+      notify.ok("تم استلام الطلب وتثبيت اسمك مسؤولاً عن تجهيزه");
+      void utils.storeAdmin.orders.list.invalidate();
+      void utils.storeAdmin.orders.counts.invalidate();
+      void utils.storeAdmin.orders.leaderboard.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const updateContactM = trpc.storeAdmin.orders.updateContact.useMutation({
+    onSuccess: () => {
+      notify.ok("تم تحديث حالة التواصل مع العميل");
+      void utils.storeAdmin.orders.list.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const markPreparedM = trpc.storeAdmin.orders.markPrepared.useMutation({
+    onSuccess: () => {
+      notify.ok("تم إتمام تجهيز الطلب واحتساب نقاط وسرعة الإنجاز");
+      void utils.storeAdmin.orders.list.invalidate();
+      void utils.storeAdmin.orders.counts.invalidate();
+      void utils.storeAdmin.orders.leaderboard.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const reactivateAndConfirmM = trpc.storeAdmin.orders.reactivateAndConfirm.useMutation({
+    onSuccess: (res) => {
+      notify.ok(`تم فحص التوفر وتأكيد الطلب #${res.orderNumber} بنجاح`);
+      void utils.storeAdmin.orders.list.invalidate();
+      void utils.storeAdmin.orders.counts.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
 
   const counts = countsQ.data ?? {};
   const orders = useMemo(() => (listQ.data?.pages ?? []).flatMap((p) => p), [listQ.data]);
-  const visibleOrders = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase("ar");
-    if (!needle) return orders;
-    return orders.filter((order) =>
-      [order.orderNumber, order.customerName, order.customerPhone, order.governorate]
-        .some((value) => String(value ?? "").toLocaleLowerCase("ar").includes(needle)),
-    );
-  }, [orders, query]);
 
-  const activeFilterCount = (filter ? 1 : 0) + (f.from || f.to ? 1 : 0);
+  // الطلبات الواردة غير المستلمة — تُطلق تنبيهاً صوتياً وتشغيلياً عاجلاً
+  const unclaimedPendingOrders = useMemo(() => {
+    return orders.filter((o) => normalizeOrderStatus(o.status) === "PENDING" && !o.claimedByUserId);
+  }, [orders]);
+
+  useEffect(() => {
+    const onAudioPrefChange = (e: Event) => {
+      const detail = (e as CustomEvent<boolean>).detail;
+      setSoundEnabled(detail ?? isAudioFeedbackEnabled());
+    };
+    window.addEventListener(AUDIO_FEEDBACK_CHANGE_EVENT, onAudioPrefChange);
+    return () => window.removeEventListener(AUDIO_FEEDBACK_CHANGE_EVENT, onAudioPrefChange);
+  }, []);
+
+  useEffect(() => {
+    if (!soundEnabled || unclaimedPendingOrders.length === 0) {
+      prevUnclaimedCountRef.current = unclaimedPendingOrders.length;
+      return;
+    }
+
+    // رنين فوري فقط عند وصول طلب جديد (زيادة في عدد الطلبات غير المستلمة)
+    if (unclaimedPendingOrders.length > prevUnclaimedCountRef.current) {
+      playAudioFeedback("order_alert");
+    }
+    prevUnclaimedCountRef.current = unclaimedPendingOrders.length;
+
+    // تذكير صوتي دوري هادئ كل 45 ثانية إذا استمر وجود طلبات لم يستلمها أحد
+    const interval = setInterval(() => {
+      playAudioFeedback("order_alert");
+    }, 45000);
+    return () => clearInterval(interval);
+  }, [soundEnabled, unclaimedPendingOrders.length]);
+
+  const currentUserId = me.data?.id;
+  const visibleOrders = useMemo(() => {
+    let filtered = orders;
+    if (myOrdersOnly && currentUserId) {
+      filtered = filtered.filter((o) => o.claimedByUserId === currentUserId || o.preparedByUserId === currentUserId);
+    }
+    const needle = query.trim().toLocaleLowerCase("ar");
+    if (!needle) return filtered;
+    return filtered.filter((order) =>
+      [
+        order.orderNumber,
+        order.customerName,
+        order.customerPhone,
+        order.governorate,
+        order.claimedByName,
+        order.preparedByName,
+      ].some((value) => String(value ?? "").toLocaleLowerCase("ar").includes(needle)),
+    );
+  }, [orders, query, myOrdersOnly, currentUserId]);
+
+  const activeFilterCount = (filter ? 1 : 0) + (f.from || f.to ? 1 : 0) + (myOrdersOnly ? 1 : 0);
 
   // أعمدة الطلبات — داخل المكوّن لأنّ عمود الإجراءات يستدعي الطباعة والطفرات وحالة الصلاحية.
   const orderColumns = useMemo<ColumnDef<Row, unknown>[]>(() => [
-    { id: "orderNumber", header: "رقم الطلب", accessorFn: (o) => o.orderNumber, meta: { kind: "code", width: "id" }, cell: ({ row }) => <span className="font-bold tracking-wider">{row.original.orderNumber}</span> },
-    { id: "customerName", header: "العميل", accessorFn: (o) => o.customerName ?? "—", cell: ({ row }) => row.original.customerName ?? "—" },
-    { id: "customerPhone", header: "الهاتف", accessorFn: (o) => o.customerPhone ?? "—", meta: { kind: "phone" }, cell: ({ row }) => row.original.customerPhone ?? "—" },
+    {
+      id: "orderNumber",
+      header: "رقم الطلب والتوقيت",
+      accessorFn: (o) => o.orderNumber,
+      meta: { kind: "code", width: "id" },
+      cell: ({ row }) => {
+        const o = row.original;
+        const st = normalizeOrderStatus(o.status);
+        return (
+          <div className="flex flex-col items-start gap-1">
+            <span className="font-bold tracking-wider">{o.orderNumber}</span>
+            <OrderSlaBadge
+              createdAt={o.createdAt}
+              status={st}
+              reservationExpiresAt={o.reservationExpiresAt}
+              fulfillmentDurationMinutes={o.fulfillmentDurationMinutes}
+            />
+          </div>
+        );
+      },
+    },
+    {
+      id: "customer",
+      header: "العميل والتواصل",
+      accessorFn: (o) => o.customerName ?? "—",
+      cell: ({ row }) => {
+        const o = row.original;
+        return (
+          <OrderContactCell
+            order={o}
+            onUpdateContact={async (status: ContactStatus, notes?: string) => {
+              await updateContactM.mutateAsync({ id: o.id, contactStatus: status, contactNotes: notes });
+            }}
+            isUpdating={updateContactM.isPending}
+          />
+        );
+      },
+    },
     {
       id: "governorate",
       header: "المحافظة والعنوان",
@@ -163,7 +403,26 @@ export default function OrderFulfillment() {
         );
       },
     },
-    { id: "itemCount", header: "أصناف", accessorFn: (o) => o.itemCount, meta: { kind: "number", align: "center" }, cell: ({ row }) => row.original.itemCount },
+    {
+      id: "itemCount",
+      header: "الأصناف",
+      accessorFn: (o) => o.itemCount,
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => {
+        const o = row.original;
+        return (
+          <button
+            type="button"
+            onClick={() => setQuickViewOrderId(o.id)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs font-semibold hover:bg-accent transition"
+            title="معاينة تفاصيل وأصناف الطلب"
+          >
+            <Eye className="size-3.5 text-muted-foreground" />
+            <span>{o.itemCount} صنف</span>
+          </button>
+        );
+      },
+    },
     {
       id: "total",
       header: "الإجمالي (COD)",
@@ -190,6 +449,74 @@ export default function OrderFulfillment() {
       },
     },
     {
+      id: "fulfillment",
+      header: "مسؤولية التجهيز",
+      accessorFn: (o) => o.preparedByName ?? o.claimedByName ?? "غير مستلم",
+      cell: ({ row }) => {
+        const o = row.original;
+        const st = normalizeOrderStatus(o.status);
+        const isCancelled = st === "CANCELLED";
+        const isDelivered = st === "DELIVERED";
+        const isShipped = st === "SHIPPED";
+
+        if (o.preparedByUserId) {
+          return (
+            <div className="flex flex-col items-start gap-1">
+              <span className="inline-flex items-center gap-1 text-xs font-bold text-[var(--sem-pos)]">
+                <CheckCircle2 className="size-3.5" />
+                جهّزه: {o.preparedByName ?? "موظف"}
+              </span>
+              {o.fulfillmentDurationMinutes != null && (
+                <span className="text-[10px] text-muted-foreground">
+                  استغرق {o.fulfillmentDurationMinutes} دقيقة
+                </span>
+              )}
+            </div>
+          );
+        }
+
+        if (o.claimedByUserId) {
+          return (
+            <div className="flex flex-col items-start gap-1.5">
+              <span className="inline-flex items-center gap-1 text-xs font-medium text-primary">
+                <UserCheck className="size-3.5" />
+                استلمه: {o.claimedByName ?? "موظف"}
+              </span>
+              {!isCancelled && !isDelivered && !isShipped && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-[11px] font-bold text-[var(--sem-pos)] border-[var(--sem-pos)]/40 hover:bg-[var(--sem-pos-bg)] gap-1"
+                  onClick={() => void reviewBeforePreparation(o.id, () => markPreparedM.mutate({ id: o.id }))}
+                  disabled={markPreparedM.isPending || checkingDuplicateId === o.id}
+                >
+                  <PackageCheck className="size-3.5" />
+                  إتمام التجهيز
+                </Button>
+              )}
+            </div>
+          );
+        }
+
+        if (isCancelled || isDelivered || isShipped) {
+          return <span className="text-xs text-muted-foreground">—</span>;
+        }
+
+        return (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-2.5 text-xs font-bold gap-1 text-[var(--sem-warn)] border-[var(--sem-warn)]/40 hover:bg-[var(--sem-warn-bg)]"
+            onClick={() => claimM.mutate({ id: o.id })}
+            disabled={claimM.isPending}
+          >
+            <UserCheck className="size-3.5" />
+            استلام الطلب
+          </Button>
+        );
+      },
+    },
+    {
       id: "status",
       header: "الحالة",
       accessorFn: (o) => orderStatusLabel(normalizeOrderStatus(o.status)),
@@ -197,11 +524,34 @@ export default function OrderFulfillment() {
       cell: ({ row }) => {
         const o = row.original;
         const st = normalizeOrderStatus(o.status);
+        const isAutoExpired =
+          st === "CANCELLED" &&
+          Boolean(o.cancelReason && o.cancelReason.includes("مهلة حجز"));
         return (
-          <div className="flex flex-col items-center gap-0.5">
-            <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${orderStatusChipClass(st)}`}>{orderStatusLabel(st)}</span>
-            {st === "CANCELLED" && o.cancelReason && (
-              <span className="max-w-[12rem] truncate text-[11px] text-muted-foreground" title={o.cancelReason}>{o.cancelReason}</span>
+          <div className="flex flex-col items-center gap-1">
+            {isAutoExpired ? (
+              <span className="inline-block rounded-full px-2.5 py-0.5 text-xs font-bold border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]">
+                حجز منتهي تلقائياً
+              </span>
+            ) : (
+              <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${orderStatusChipClass(st)}`}>{orderStatusLabel(st)}</span>
+            )}
+            {isAutoExpired ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 px-2 text-[10px] font-bold gap-1 text-[var(--sem-pos)] border-[var(--sem-pos)]/40 hover:bg-[var(--sem-pos-bg)]"
+                onClick={() => reactivateAndConfirmM.mutate({ id: o.id })}
+                disabled={reactivateAndConfirmM.isPending}
+                title="فحص توفر المخزون تلقائياً وإعادة تأكيد وحجز الطلب"
+              >
+                <RefreshCw className={`size-3 ${reactivateAndConfirmM.isPending ? "animate-spin" : ""}`} />
+                فحص التوفر وإحياء الطلب
+              </Button>
+            ) : (
+              st === "CANCELLED" && o.cancelReason && (
+                <span className="max-w-[12rem] truncate text-[11px] text-muted-foreground" title={o.cancelReason}>{o.cancelReason}</span>
+              )
             )}
           </div>
         );
@@ -221,7 +571,7 @@ export default function OrderFulfillment() {
         const next = courierShipped ? undefined : ORDER_NEXT_STEP[st];
         const canPrintPreparation = st === "CONFIRMED" || st === "PROCESSING";
         const canPrintInvoice = st !== "PENDING" && st !== "CANCELLED";
-        const isBusy = setStatusM.isPending || printingId === o.id;
+        const isBusy = setStatusM.isPending || printingId === o.id || checkingDuplicateId === o.id;
         return (
           <RowActions
             mode="menu"
@@ -237,6 +587,16 @@ export default function OrderFulfillment() {
               gate: { module: "store", level: "READ" },
             }}
             actions={[
+              {
+                key: "print-dual",
+                kind: "print",
+                label: printingId === o.id ? "جارٍ الطباعة المزدوجة…" : "طباعة مزدوجة (إيصال + ملصق)",
+                icon: printingId === o.id ? Loader2 : Printer,
+                gate: { module: "store", level: "READ" },
+                disabled: isBusy || st === "CANCELLED",
+                disabledReason: st === "CANCELLED" ? "لا يمكن الطباعة لطلب ملغى" : "هناك عملية جارية على الطلب",
+                onSelect: () => void printDualDocuments(o.id),
+              },
               {
                 key: "print-label",
                 kind: "print",
@@ -333,23 +693,30 @@ export default function OrderFulfillment() {
                 gate: { module: "store", level: "FULL" },
                 disabled: isBusy,
                 disabledReason: "هناك عملية جارية على الطلب",
-                onSelect: () => setCancelTarget({ id: o.id, orderNumber: o.orderNumber }),
+                onSelect: () => setCancelTarget({
+                  id: o.id,
+                  orderNumber: o.orderNumber,
+                  customerName: o.customerName,
+                  customerPhone: o.customerPhone,
+                }),
               },
             ]}
           />
         );
       },
     },
-  ], [canDispatch, printingId, setStatusM.isPending, dispatchM.isPending]);
+  ], [canDispatch, printingId, setStatusM.isPending, dispatchM.isPending, claimM.isPending, updateContactM.isPending, markPreparedM.isPending, checkingDuplicateId, canCheckDuplicates]);
 
-  // تصدير/طباعة «الكل»: نمشي بمؤشّر id (لا offset — عقد orders.list) حتى تنضب الصفحات المطابقة
-  // لفلاتر الحالة/المدى الحاليّة، بصرف النظر عمّا حُمِّل على الشاشة أو نطاق البحث المحلي.
+  // تصدير/طباعة «الكل»: نمشي بمؤشّر id حتى تنضب الصفحات المطابقة للفلاتر
   async function fetchAllOrders(): Promise<Row[]> {
     const out: Row[] = [];
     let cursor: number | undefined;
     for (let i = 0; i < 100; i++) { // صمّام أمان: حتى ٣٠ ألف طلب
       const page = await utils.storeAdmin.orders.list.fetch({ status: filter, from: f.from || undefined, to: f.to || undefined, cursor, limit: 300 });
-      out.push(...page);
+      const matched = (myOrdersOnly && currentUserId)
+        ? page.filter((o) => o.claimedByUserId === currentUserId || o.preparedByUserId === currentUserId)
+        : page;
+      out.push(...matched);
       if (page.length < 300) break;
       const lastId = page[page.length - 1]?.id;
       if (lastId == null) break;
@@ -360,44 +727,43 @@ export default function OrderFulfillment() {
 
   // نصّ التأكيد يستعمل رقم الطلب الظاهر للمستخدم (orderNumber) لا معرّفه الداخلي (id).
   async function advance(order: { id: number; orderNumber: string }, to: OnlineOrderStatus, label: string) {
-    const ok = await confirm({ title: `${label}؟`, description: `الطلب رقم ${order.orderNumber}` });
-    if (ok) setStatusM.mutate({ id: order.id, status: to });
+    const proceed = async () => {
+      const ok = await confirm({ title: `${label}؟`, description: `الطلب رقم ${order.orderNumber}` });
+      if (ok) setStatusM.mutate({ id: order.id, status: to });
+    };
+    if (to === "CONFIRMED" || to === "PROCESSING") {
+      await reviewBeforePreparation(order.id, () => void proceed());
+    } else {
+      await proceed();
+    }
   }
+  function toShippingLabelPayload(d: NonNullable<RouterOutputs["storeAdmin"]["orders"]["detail"]>) {
+    return {
+      orderNumber: d.orderNumber,
+      customerName: d.customerName,
+      customerPhone: d.customerPhone,
+      governorate: d.governorate,
+      addressText: d.addressText,
+      latitude: d.latitude,
+      longitude: d.longitude,
+      total: d.total,
+      deliveryPartyName: d.deliveryPartyName,
+      createdAt: d.createdAt,
+      items: d.items.map((it) => ({ productName: [it.productName, it.variantLabel].filter(Boolean).join(" — "), unitName: it.unitName, quantity: it.quantity })),
+      qrUrl: `${storefrontUrl()}?order=${encodeURIComponent(d.orderNumber)}&token=${encodeURIComponent(d.labelToken)}`,
+    };
+  }
+
   async function printLabel(id: number) {
     setPrintingId(id);
-    // النافذة تُفتح متزامنةً مع النقرة (قبل await جلب التفاصيل) وإلا حجبها مانع النوافذ المتشدّد.
     const labelWin = preopenShippingLabelWindow();
     try {
       const d = await utils.storeAdmin.orders.detail.fetch({ id });
-      if (!d) {
-        labelWin?.close();
-        notify.err("تعذّر جلب تفاصيل الطلب");
-        return;
-      }
-      const res = await printShippingLabel(
-        {
-          orderNumber: d.orderNumber,
-          customerName: d.customerName,
-          customerPhone: d.customerPhone,
-          governorate: d.governorate,
-          addressText: d.addressText,
-          latitude: d.latitude,
-          longitude: d.longitude,
-          total: d.total,
-          deliveryPartyName: d.deliveryPartyName,
-          createdAt: d.createdAt,
-          items: d.items.map((it) => ({ productName: [it.productName, it.variantLabel].filter(Boolean).join(" — "), unitName: it.unitName, quantity: it.quantity })),
-          qrUrl: `${storefrontUrl()}?order=${encodeURIComponent(d.orderNumber)}&token=${encodeURIComponent(d.labelToken)}`,
-        },
-        { into: labelWin },
-      );
+      if (!d) { labelWin?.close(); notify.err("تعذّر جلب تفاصيل الطلب"); return; }
+      const res = await printShippingLabel(toShippingLabelPayload(d), { into: labelWin });
       notify.ok(res.ok ? "فُتحت نافذة طباعة ملصق الشحن" : "افسح مانع النوافذ المنبثقة لطباعة الملصق");
-    } catch (e) {
-      labelWin?.close();
-      notify.err(e);
-    } finally {
-      setPrintingId(null);
-    }
+    } catch (e) { labelWin?.close(); notify.err(e); }
+    finally { setPrintingId(null); }
   }
 
   async function printThermal(id: number) {
@@ -411,7 +777,20 @@ export default function OrderFulfillment() {
     finally { setPrintingId(null); }
   }
 
-  async function printPreparationA4(id: number) {
+  async function printDualDocuments(id: number) {
+    setPrintingId(id);
+    const labelWin = preopenShippingLabelWindow();
+    try {
+      const d = await utils.storeAdmin.orders.detail.fetch({ id });
+      if (!d) { labelWin?.close(); notify.err("تعذّر جلب تفاصيل الطلب"); return; }
+      await printOnlineOrderThermal(d);
+      const res = await printShippingLabel(toShippingLabelPayload(d), { into: labelWin });
+      notify.ok(res.ok ? "تم إرسال الإيصال الحراري وفتح ملصق الشحن" : "أُرسل الإيصال الحراري — تحقّق من مانع النوافذ للملصق");
+    } catch (e) { labelWin?.close(); notify.err(e); }
+    finally { setPrintingId(null); }
+  }
+
+  async function printPreparationA4(id: number, reviewed = false) {
     if (!reservePrintWindow()) return notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
     setPrintingId(id);
     try {
@@ -421,7 +800,27 @@ export default function OrderFulfillment() {
         notify.err("تعذر جلب تفاصيل الطلب");
         return;
       }
-      printOnlineOrderPreparationA4(d);
+      if (d.status !== "CONFIRMED" && d.status !== "PROCESSING") {
+        releaseReservedPrintWindow();
+        notify.warn("تغيّرت حالة الطلب", "راجع الحالة الحالية قبل طباعة ورقة التجهيز.");
+        return;
+      }
+      if (reviewed) {
+        printOnlineOrderPreparationA4(d);
+        return;
+      }
+      let deferred = false;
+      const proceeded = await reviewBeforePreparation(id, () => {
+        if (deferred) {
+          void printPreparationA4(id, true);
+          return;
+        }
+        printOnlineOrderPreparationA4(d);
+      });
+      if (!proceeded) {
+        releaseReservedPrintWindow();
+        deferred = true;
+      }
     } catch (e) {
       releaseReservedPrintWindow();
       notify.err(e);
@@ -496,8 +895,70 @@ export default function OrderFulfillment() {
         title="طلبات الموقع"
         description="راجع الطلبات الواردة، ثبّتها وجهّزها للتوصيل"
         icon={<Store aria-hidden className="size-5" />}
-        actions={<ShippingLabelSizeSelect />}
+        actions={
+          <div className="flex items-center gap-2">
+            <Button
+              variant={soundEnabled ? "outline" : "ghost"}
+              size="sm"
+              onClick={() => {
+                const next = !soundEnabled;
+                setSoundEnabled(next);
+                setAudioFeedbackEnabled(next);
+                if (next) playAudioFeedback("order_alert");
+              }}
+              className="gap-1.5 text-xs font-semibold"
+              title={soundEnabled ? "كتم التنبيهات الصوتية للطلبات الواردة" : "تفعيل التنبيهات الصوتية للطلبات الواردة"}
+            >
+              {soundEnabled ? <Volume2 className="size-4 text-primary" /> : <VolumeX className="size-4 text-muted-foreground" />}
+              <span className="hidden sm:inline">{soundEnabled ? "صوت التنبيه مفعّل" : "الصوت مكتوم"}</span>
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setLeaderboardOpen(true)}
+              className="gap-1.5 text-xs font-semibold text-primary border-primary/30 hover:bg-primary/10"
+              title="لوحة أبطال التجهيز ومنافسة الموظفين"
+            >
+              <Trophy className="size-4 text-primary" />
+              <span>أبطال التجهيز</span>
+            </Button>
+
+            <ShippingLabelSizeSelect />
+          </div>
+        }
       />
+
+      <ReceptionCommandAlert />
+      {duplicateReview && (
+        <section ref={duplicateReviewRef} tabIndex={-1} className="space-y-2" aria-label="مراجعة تشابه الطلب قبل التجهيز">
+          <p className="text-sm font-bold">
+            مراجعة {visibleOrders.find((order) => order.id === duplicateReview.orderId)?.orderNumber ?? `طلب #${duplicateReview.orderId}`}
+          </p>
+          {duplicateReview.result ? (
+            <ReceptionDuplicateAlertView
+              result={duplicateReview.result}
+              inputKey={String(duplicateReview.orderId)}
+              onContinue={continueAfterDuplicateReview}
+              onVerify={() => {
+                duplicateActionRef.current = null;
+                setQuickViewOrderId(duplicateReview.orderId);
+                setDuplicateReview(null);
+              }}
+            />
+          ) : (
+            <div role="status" className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] p-3 text-sm">
+              <span>تعذّر فحص التشابه. اختر المتابعة أو التأكد من الطلب أولاً.</span>
+              <Button type="button" size="sm" onClick={continueAfterDuplicateReview}>إكمال التجهيز</Button>
+              <Button type="button" size="sm" variant="outline" onClick={() => {
+                duplicateActionRef.current = null;
+                setQuickViewOrderId(duplicateReview.orderId);
+                setDuplicateReview(null);
+              }}>التأكد أولاً</Button>
+            </div>
+          )}
+        </section>
+      )}
 
       <div role="note" className="flex gap-2 rounded-lg border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)] px-3 py-2 text-xs leading-relaxed text-muted-foreground">
         <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-info)]" />
@@ -521,7 +982,7 @@ export default function OrderFulfillment() {
         loading={listQ.isLoading}
         search={{ value: query, onChange: setQuery, placeholder: "رقم الطلب، العميل، الهاتف أو المحافظة…" }}
         activeFilterCount={activeFilterCount}
-        onResetFilters={() => { setQuery(""); setFilter(null); resetF(); }}
+        onResetFilters={() => { setQuery(""); setFilter(null); resetF(); setMyOrdersOnly(false); }}
         onRefresh={() => { void listQ.refetch(); void countsQ.refetch(); }}
         refreshing={listQ.isFetching || countsQ.isFetching}
         onPrint={printOrdersList}
@@ -539,6 +1000,8 @@ export default function OrderFulfillment() {
             { key: "governorate", header: "المحافظة" },
             { key: "itemCount", header: "عدد الأصناف" },
             { key: "total", header: "الإجمالي", money: true },
+            { key: "claimedByName", header: "المستلم" },
+            { key: "preparedByName", header: "المجهّز" },
             { key: "status", header: "الحالة", map: (r) => orderStatusLabel(r.status) },
           ],
         }}
@@ -556,6 +1019,17 @@ export default function OrderFulfillment() {
                   {opt.label}
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={() => setMyOrdersOnly((v) => !v)}
+                className={`rounded-full px-3 py-1.5 text-xs font-bold transition flex items-center gap-1.5 ${
+                  myOrdersOnly ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"
+                }`}
+                title="تصفية الطلبات التي استلمتها أو جهزتها بنفسك"
+              >
+                <UserCheck className="size-3.5" />
+                طلباتي فقط
+              </button>
             </div>
             <div className="flex items-center gap-1">
               <Input type="date" value={f.from} onChange={(e) => setF({ from: e.target.value })} className="h-8 w-[8.5rem]" aria-label="من تاريخ الطلب" max={f.to || undefined} />
@@ -611,11 +1085,18 @@ export default function OrderFulfillment() {
       )}
 
       {cancelTarget && (
-        <CancelModal
+        <StrictCancelOrderDialog
           order={cancelTarget}
           pending={setStatusM.isPending}
           onClose={() => !setStatusM.isPending && setCancelTarget(null)}
-          onConfirm={(reason) => setStatusM.mutate({ id: cancelTarget.id, status: "CANCELLED", cancelReason: reason || undefined })}
+          onConfirm={(reason, approval) =>
+            setStatusM.mutate({
+              id: cancelTarget.id,
+              status: "CANCELLED",
+              cancelReason: reason || undefined,
+              managerApproval: approval,
+            })
+          }
         />
       )}
 
@@ -626,91 +1107,25 @@ export default function OrderFulfillment() {
           onOpenChange={(open) => !open && setEditOrderId(null)}
         />
       </Suspense>
-    </div>
-  );
-}
 
-/** حوار إلغاء طلب المتجر — سببٌ اختياريّ (يظهر لاحقاً في صفّ الطلب الملغى وسجلّ التدقيق). محصورٌ
- *  بطلبٍ قبل الإرسال (بلا فاتورة) — الإلغاء بعده يكون بإرجاع الفاتورة أو «تعذّر التسليم». */
-const CANCEL_REASONS = ["نفد المخزون", "تعذّر التواصل مع العميل", "طلب مكرَّر", "رفض العميل الطلب", "خارج نطاق التوصيل"];
-function CancelModal({
-  order,
-  pending,
-  onClose,
-  onConfirm,
-}: {
-  order: { id: number; orderNumber: string };
-  pending: boolean;
-  onClose: () => void;
-  onConfirm: (reason: string) => void;
-}) {
-  const [reason, setReason] = useState("");
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !pending) onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [pending, onClose]);
+      <OrderQuickViewDrawer
+        orderId={quickViewOrderId}
+        open={quickViewOrderId != null}
+        onOpenChange={(open) => !open && setQuickViewOrderId(null)}
+        onDispatch={(o) => {
+          setQuickViewOrderId(null);
+          setDispatchTarget(o);
+        }}
+        onPrintLabel={(id) => void printLabel(id)}
+        onPrintThermal={(id) => void printThermal(id)}
+        onPrintPreparationA4={(id) => void printPreparationA4(id)}
+        canDispatch={canDispatch}
+      />
 
-  return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="إلغاء الطلب"
-      onClick={onClose}
-    >
-      <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-1 flex items-center gap-2 text-base font-bold text-[var(--sem-neg)]">
-          <X aria-hidden className="size-5" />
-          إلغاء الطلب <span dir="ltr" className="tracking-wider text-foreground">{order.orderNumber}</span>
-        </div>
-        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-          لا يمكن التراجع. اذكر سبب الإلغاء (اختياريّ) — يُحفَظ ويظهر في صفّ الطلب وسجلّ التدقيق.
-        </p>
-
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {CANCEL_REASONS.map((r) => (
-            <button
-              key={r}
-              type="button"
-              onClick={() => setReason(r)}
-              className={`rounded-full px-2.5 py-1 text-xs font-bold transition ${
-                reason === r ? "bg-[var(--sem-neg)] text-background hover:bg-[var(--sem-neg)]/90" : "bg-muted text-muted-foreground hover:bg-accent"
-              }`}
-            >
-              {r}
-            </button>
-          ))}
-        </div>
-        <textarea
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-          maxLength={500}
-          rows={2}
-          placeholder="سبب الإلغاء…"
-          className="mb-3 w-full rounded-lg border border-input bg-transparent px-3 py-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        />
-
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={pending}
-            className="rounded-lg border border-border px-3.5 py-1.5 text-xs font-bold transition hover:bg-accent disabled:opacity-50"
-          >
-            تراجع
-          </button>
-          <button
-            type="button"
-            onClick={() => onConfirm(reason.trim())}
-            disabled={pending}
-            className="flex items-center gap-1 rounded-lg bg-[var(--sem-neg)] px-3.5 py-1.5 text-xs font-bold text-background transition hover:bg-[var(--sem-neg)]/90 disabled:opacity-50"
-          >
-            {pending ? <Loader2 aria-hidden className="size-3.5 animate-spin" /> : <X aria-hidden className="size-3.5" />}
-            تأكيد الإلغاء
-          </button>
-        </div>
-      </div>
+      <OrderLeaderboardModal
+        open={leaderboardOpen}
+        onOpenChange={setLeaderboardOpen}
+      />
     </div>
   );
 }
@@ -828,31 +1243,16 @@ function DispatchModal({
             <label htmlFor="store-dispatch-tracking" className="text-xs font-bold">
               رقم تتبّع / بوليصة الشركة <span className="text-destructive">*</span>
             </label>
-            <Input
-              id="store-dispatch-tracking"
-              value={externalTrackingRef}
-              onChange={(event) => setExternalTrackingRef(event.target.value)}
-              placeholder="امسح باركود بوليصة الشركة أو أدخل الرقم"
-              maxLength={100}
-              dir="ltr"
-              className="font-mono"
-            />
+            <Input id="store-dispatch-tracking" value={externalTrackingRef} onChange={(event) => setExternalTrackingRef(event.target.value)} placeholder="امسح باركود بوليصة الشركة أو أدخل الرقم" maxLength={100} dir="ltr" className="font-mono" />
           </div>
         )}
 
         <div className="mt-4 flex items-center justify-end gap-2">
-          <button
-            onClick={onCancel}
-            disabled={pending}
-            className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition hover:bg-accent disabled:opacity-50"
-          >
+          <button onClick={onCancel} disabled={pending} className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition hover:bg-accent disabled:opacity-50">
             إلغاء
           </button>
           <button
-            onClick={() => partyId != null && onConfirm({
-              partyId,
-              externalTrackingRef: externalTrackingRef.trim() || undefined,
-            })}
+            onClick={() => partyId != null && onConfirm({ partyId, externalTrackingRef: externalTrackingRef.trim() || undefined })}
             disabled={pending || partyId == null || parties.length === 0 || (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim())}
             className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:opacity-50"
           >

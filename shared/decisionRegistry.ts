@@ -1742,6 +1742,46 @@ export interface DecisionSla {
   breached: boolean;
 }
 
+export interface DecisionOperationalFact {
+  label: string;
+  value: string;
+  badge?: string | null;
+  tone?: "default" | "info" | "warn" | "success" | "danger";
+}
+
+export interface DecisionOperationalContext {
+  /** شارة نوع المعاملة التشغيلية (مثال: تسوية شحن وتخليص مشتريات، سداد مورد، شراء أصل) */
+  badgeLabel?: string | null;
+  /** المستند المرتبط: نوعه ورقمه ورابطه وإجماليه (مثال: أمر الشراء PO-1-20261008-00002) */
+  sourceDocument?: {
+    type: string;
+    number: string;
+    href?: string | null;
+    date?: string | null;
+    totalAmount?: string | null;
+    currency?: "IQD" | "USD";
+  } | null;
+  /** الطرف المرتبط الحقيقي (المورد الأصلي أو العميل) حين يكون طرف السند وسيطاً أو غير محدد */
+  underlyingParty?: {
+    type: "SUPPLIER" | "CUSTOMER" | "EMPLOYEE" | "CARRIER" | "OTHER";
+    name: string;
+    role?: string | null;
+  } | null;
+  /** مصدر النقد أو الحساب المتأثر بالصرف */
+  fundingSource?: {
+    mode: "DRAWER" | "TREASURY" | "BANK" | "WALLET" | "EXCHANGE";
+    label: string;
+    shiftId?: number | null;
+  } | null;
+  /** قائمة حقائق تشغيلية رئيسية واضحة */
+  facts?: DecisionOperationalFact[];
+  /** تنبيه أو إرشاد ذكي للمعتمد */
+  smartNotice?: {
+    tone: "info" | "warn" | "tip";
+    text: string;
+  } | null;
+}
+
 /**
  * صفُّ الصندوق الموحّد — **يعرض ما يُقرَّر عليه** لا معرّفاً قاعدياً.
  *
@@ -1799,6 +1839,8 @@ export interface DecisionRowModel {
    */
   approveVariants: Array<{ key: string; label: string }>;
   trigger: DecisionTrigger | null;
+  /** الذكاء التشغيلي والوظيفي: بيانات المستند الأصلي، الطرف الحقيقي، مصدر النقد، وتنبيهات التحقق للمعتمد. */
+  operationalContext?: DecisionOperationalContext | null;
 }
 
 /**

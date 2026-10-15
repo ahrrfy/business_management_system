@@ -1,6 +1,8 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
+import { assertOperationAuthorityTx, hasServiceOperationAuthority } from "../authorization/operationAuthority";
 import { assertNotReturnDeclared } from "./declaredReturn";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { deliveryConsignments, onlineOrders } from "../../../drizzle/schema";
 import {
   checkIdempotency,
@@ -11,6 +13,7 @@ import { money, round2, toDbMoney } from "../money";
 import { withTx } from "../tx";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import type { DeliveryTxActor } from "./types";
+import type { Tx } from "../../db";
 
 export interface CancelDeliveryAssignmentInput {
   consignmentId: number;
@@ -38,19 +41,43 @@ export async function cancelDeliveryAssignment(
       code: "BAD_REQUEST",
       message: "سبب إلغاء الإسناد أطول من الحد المسموح",
     });
-  if (actor.role !== "manager" && actor.role !== "admin" && actor.role !== "cashier") {
+  const legacyAllowed = actor.role === "manager" || actor.role === "admin" || actor.role === "cashier";
+  if (!legacyAllowed && !hasServiceOperationAuthority(actor.operationAuthority, actor.userId, "delivery.cancelAssignment")) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "إلغاء إسناد التوصيل صلاحية كاشير أو مدير",
     });
   }
 
-  const payloadHash = idempotencyHash({
-    consignmentId: Number(input.consignmentId),
-    reason,
-  });
+  return withTx((tx) =>
+    cancelDeliveryAssignmentInTx(tx, input, actor, { assertAuthority: true }),
+  );
+}
 
-  return withTx(async (tx) => {
+/** جسم الإلغاء داخل معاملة قائمة؛ يستعمله إلغاء فاتورة COD كي تكون العمليتان ذرة واحدة. */
+export async function cancelDeliveryAssignmentInTx(
+  tx: Tx,
+  input: CancelDeliveryAssignmentInput,
+  actor: DeliveryTxActor,
+  options: { assertAuthority?: boolean } = {},
+) {
+    const reason = input.reason.trim();
+    if (!reason || reason.length > 500)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذر إلغاء إسناد التوصيل",
+          why: "سبب الإلغاء إلزامي ويجب ألا يتجاوز 500 حرف",
+          doThis: "اكتب سبباً مختصراً وواضحاً ثم أعد تنفيذ الإلغاء",
+        }),
+      });
+    const legacyAllowed = actor.role === "manager" || actor.role === "admin" || actor.role === "cashier";
+    if (options.assertAuthority !== false)
+      await assertOperationAuthorityTx(tx, actor, "delivery.cancelAssignment", legacyAllowed, actor.operationAuthority);
+    const payloadHash = idempotencyHash({
+      consignmentId: Number(input.consignmentId),
+      reason,
+    });
     // افحص الفرع قبل إعادة نتيجة idempotent كي لا تتحول إعادة التشغيل إلى قناة IDOR.
     const scopedBranch =
       actor.role === "admin" ? null : (actor.branchId ?? null);
@@ -189,6 +216,16 @@ export async function cancelDeliveryAssignment(
       .where(eq(deliveryConsignments.id, Number(cn.id)));
 
       if (cn.sourceType === "ONLINE_ORDER" && cn.sourceId != null) {
+        // حارس القاعدة trg_online_orders_expired_activation_bu يمنع الانتقال إلى PROCESSING
+        // إذا كان OLD.orderStatus هو SHIPPED ومضى أكثر من 24 ساعة على إنشاء الطلب (reservationExpiresAt في الماضي).
+        // نجدد مهلة الحجز لـ 24 ساعة قادمة بينما الطلب لا يزال في حالته الحالية (SHIPPED) قبل تحويله إلى PROCESSING،
+        // فيعبر الحارس بنجاح وتعود الإرسالية لحالة التجهيز بأمان.
+        await tx
+          .update(onlineOrders)
+          .set({
+            reservationExpiresAt: sql`DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 24 HOUR)`,
+          })
+          .where(eq(onlineOrders.id, Number(cn.sourceId)));
         await tx
           .update(onlineOrders)
           .set({ deliveryPartyId: null, status: "PROCESSING" })
@@ -196,9 +233,15 @@ export async function cancelDeliveryAssignment(
       } else if (cn.invoiceId != null) {
         await tx
           .update(onlineOrders)
+          .set({
+            reservationExpiresAt: sql`DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 24 HOUR)`,
+          })
+          .where(eq(onlineOrders.invoiceId, Number(cn.invoiceId)));
+        await tx
+          .update(onlineOrders)
           .set({ deliveryPartyId: null, status: "PROCESSING" })
           .where(eq(onlineOrders.invoiceId, Number(cn.invoiceId)));
-    }
+      }
 
     await appendDeliveryEvent(tx, {
       eventKey: `CN:${cn.id}:ASSIGNMENT_CANCELLED:${input.clientRequestId}`,
@@ -226,5 +269,4 @@ export async function cancelDeliveryAssignment(
       payloadHash,
     );
     return { consignmentId: Number(cn.id), idempotentReplay: false as const };
-  });
 }

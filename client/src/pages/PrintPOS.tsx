@@ -9,7 +9,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { D, roundCashIQD, formatIqd } from "@/lib/money";
 import {
-  printShiftOpen, printReceipt, openCashDrawer, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
+  printShiftOpen, openCashDrawer, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
   getServerBridgeStatus, serverPrintTest,
 } from "@/lib/printing/print";
 import { printShippingLabel } from "@/lib/printing/shippingLabel";
@@ -43,7 +43,7 @@ import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
 import { ReceiptOverlay } from "@/components/pos/ReceiptOverlay";
 import { CreditApprovalDialog } from "@/components/pos/CreditApprovalDialog";
 import type { ManagerApprovalInput } from "@shared/managerApproval";
-import { buildBrandedReceipt, type Receipt, POS_COLORS } from "@/components/pos/posShared";
+import { type Receipt, POS_COLORS } from "@/components/pos/posShared";
 import { ShiftCloseDialog } from "@/components/pos/ShiftCloseDialog";
 import { PrintCartLine as CartLine } from "@/components/printPos/PrintCartList";
 import { PrintServiceGrid } from "@/components/printPos/PrintServiceGrid";
@@ -53,6 +53,7 @@ import { PrintPosHeader, PrintPosHeaderActions } from "@/components/print-pos/Pr
 import { CheckoutColumn, type PaymentMethod, type EditingInvoiceInfo } from "@/components/print-pos/PrintPosCheckout";
 import { PrintBottomToolbar } from "@/components/print-pos/PrintBottomToolbar";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { useInvoiceReceiptPrinter } from "@/hooks/useInvoiceReceiptPrinter";
 import { createPortal } from "react-dom";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -145,6 +146,7 @@ export default function PrintPOS() {
   const C: C = dark ? DARK : LIGHT;
 
   const me = trpc.auth.me.useQuery();
+  const { printAuthorizedReceipt, printAuthorizedDocument } = useInvoiceReceiptPrinter(me.data, me.data?.id);
   const branches = trpc.branches.list.useQuery();
   // الأدمن/المدير بلا فرع مُسنَد: اختيار الفرع صريحاً قبل فتح الوردية بدل الإسناد الصامت للفرع ١
   // (نظريّ — الأدمن المبذور مُسنَد لفرع). لا يمسّ مستخدماً له فرع (الشرط يسقط فيبقى branchId=فرعه).
@@ -243,7 +245,7 @@ export default function PrintPOS() {
   const [heldDrawerOpen, setHeldDrawerOpen] = useState(false);
   const heldSalesQ = trpc.printPos.listHeldSales.useQuery(
     { branchId },
-    { refetchInterval: 15_000 },
+    { refetchInterval: false },
   );
   const heldCount = heldSalesQ.data?.length ?? 0;
 
@@ -448,11 +450,11 @@ export default function PrintPOS() {
       setLastInv({ num: r.invoiceNumber, total: p?.cashTotal ?? 0 });
       setCart([]); setPayInput(""); patch({ selUid: null, paymentRef: "", externalPayment: null });
       setClientRequestId(crypto.randomUUID());
-      const printed = await printReceipt(buildBrandedReceipt(rec));
+      const printed = await printAuthorizedReceipt(rec).catch((error) => { notify.err(error); return { ok: false as const, via: "browser" as const }; });
       setMessage({
         kind: !printed.ok ? "err" : printed.via === "browser" ? "warn" : "ok",
         text: !printed.ok
-          ? `تمّ البيع، لكن حجب المتصفح نافذة الطباعة — اسمح بالنوافذ المنبثقة وأعد طباعة الفاتورة ${r.invoiceNumber}`
+          ? `تمّ البيع وتعذّرت الطباعة؛ راجع صلاحية الطباعة والطابعة للفاتورة ${r.invoiceNumber}`
           : printed.via === "server"
           ? `تمّ البيع والطباعة المباشرة — فاتورة ${r.invoiceNumber}`
           : printed.via === "thermal"
@@ -576,7 +578,7 @@ export default function PrintPOS() {
         externalPayment: null,
       });
       setClientRequestId(crypto.randomUUID());
-      const printed = await printReceipt(buildBrandedReceipt(rec));
+      const printed = await printAuthorizedReceipt(rec).catch((error) => { notify.err(error); return { ok: false as const, via: "browser" as const }; });
       setMessage({
         kind: "ok",
         text: `تم تعديل الفاتورة بنجاح وإصدار الفاتورة البديلة ${r.correctedInvoiceNumber}${!printed.ok ? " (فشلت الطباعة المباشرة)" : ""}`,
@@ -765,7 +767,7 @@ export default function PrintPOS() {
       kind: "ok",
       text: `بيع دون اتصال — إيصال مؤقّت ${receiptNumber}. الرقم الرسميّ يصدر تلقائياً عند عودة الاتصال.`,
     });
-    void printReceipt(buildBrandedReceipt(rec)).then((printed) => {
+    void printAuthorizedReceipt(rec).then((printed) => {
       if (!printed.ok) setMessage({ kind: "err", text: `حُفظ الإيصال المؤقت ${receiptNumber}، لكن حجب المتصفح نافذة الطباعة` });
     }).catch(() => { /* فشل الطابعة لا يُلغي التقاطاً التزم محلياً */ });
     return true;
@@ -1152,7 +1154,7 @@ export default function PrintPOS() {
             setTimeout(() => searchRef.current?.focus(), 0);
           }}
           onPrint={() => {
-            void printReceipt(buildBrandedReceipt(receipt)).then((printed) => {
+            void printAuthorizedReceipt(receipt, true).then((printed) => {
               if (!printed.ok) setMessage({ kind: "err", text: "تم الإصدار ولكن فشلت الطباعة الحرارية." });
             }).catch((error) => setMessage({ kind: "err", text: error instanceof Error ? error.message : "فشلت الطباعة" }));
           }}
@@ -1160,7 +1162,8 @@ export default function PrintPOS() {
             const origin = typeof window !== "undefined" ? window.location.origin : "";
             const orderRef = receipt.invoiceNumber || receipt.num || "";
             const deliveryFee = receipt.delivery?.fee ? String(receipt.delivery.fee) : null;
-            void printShippingLabel({
+            void printAuthorizedDocument(receipt.invoiceId ?? 0, "SHIPPING_LABEL", true, async () => {
+              const result = await printShippingLabel({
               orderNumber: orderRef,
               customerName: receipt.customerName || tab.contactName || null,
               customerPhone: tab.contactPhone || null,
@@ -1171,7 +1174,9 @@ export default function PrintPOS() {
               shippingFee: deliveryFee && Number(deliveryFee) > 0 ? deliveryFee : null,
               qrUrl: orderRef && origin ? `${origin}/verify?ref=${encodeURIComponent(orderRef)}` : null,
               items: receipt.lines.map(line => ({ productName: line.name, unitName: line.unit, quantity: String(line.qty) })),
-            }).then(r => { if (!r.ok) setMessage({ kind: "err", text: "فشل طباعة الليبل" }); });
+              });
+              return result.ok ? { ok: true, via: "browser" } : { ok: false, via: "browser", reason: "popup-blocked" };
+            }).then(r => { if (!r.ok) setMessage({ kind: "err", text: "فشل طباعة الليبل" }); }).catch((error) => notify.err(error));
           }}
         />
       )}
@@ -1192,7 +1197,7 @@ export default function PrintPOS() {
       )}
       {creditPrompt && (
         <CreditApprovalDialog C={C as any} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail} mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}
-          isPending={sale.isPending} branchId={branchId} onApprove={(appr) => submit(false, appr ?? (mgrEmail && mgrPwd ? { email: mgrEmail, password: mgrPwd } : undefined))} onCancel={() => setCreditPrompt(null)} />
+          isPending={sale.isPending} branchId={branchId} currentUserId={me.data?.id} onApprove={(appr) => submit(false, appr ?? (mgrEmail && mgrPwd ? { email: mgrEmail, password: mgrPwd } : undefined))} onCancel={() => setCreditPrompt(null)} />
       )}
       <HeldOrdersDrawer
         open={heldDrawerOpen}

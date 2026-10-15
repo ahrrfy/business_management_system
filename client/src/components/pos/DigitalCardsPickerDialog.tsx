@@ -1,3 +1,4 @@
+import { useDigitalGiftOperationAccess } from "@/lib/digitalGiftOperationAccess";
 // سلة مزوّد واحدة؛ مرجع واحد مع بقاء كل بطاقة مثيلاً مستقلاً.
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -32,6 +33,7 @@ export function DigitalCardsPickerDialog({ open, branchId, offline, onClose, onP
   existingReferences?: { providerId: number; providerReference: string }[];
   existingCardCount?: number;
 }) {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const [providerId, setProviderId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState<DraftLine[]>([]);
@@ -56,8 +58,8 @@ export function DigitalCardsPickerDialog({ open, branchId, offline, onClose, onP
   useEffect(() => {
     if (offline) { requestRef.current += 1; busyRef.current = false; setPicking(false); setAwaitingStudent(null); }
   }, [offline]);
-  const list = trpc.digitalCards.pos.listCards.useQuery({ branchId, category: "ALL" },
-    { enabled: open && !offline, staleTime: 0, refetchOnMount: "always", refetchOnWindowFocus: true });
+  const list = digitalAccess.query("digitalCards.pos.listCards", trpc.digitalCards.pos.listCards.useQuery({ branchId, category: "ALL" },
+    { enabled: digitalAccess.can("digitalCards.pos.listCards") && (open && !offline), staleTime: 0, refetchOnMount: "always", refetchOnWindowFocus: true }));
   const providers = useMemo(() => {
     const seen = new Map<number, string>();
     for (const card of list.data ?? []) seen.set(card.providerId, card.providerName);
@@ -74,6 +76,7 @@ export function DigitalCardsPickerDialog({ open, branchId, offline, onClose, onP
     requestRef.current += 1; busyRef.current = false; setPicking(false); setAwaitingStudent(null); onClose();
   }
   function add(card: PosCard, student?: StudentSnapshot) {
+    if (!digitalAccess.can("digitalCards.pos.listCards")) return;
     if (busyRef.current || offline || quantity + existingCardCount >= 50 || card.providerId !== providerId || card.availability !== "READY") return;
     if (card.requiresStudentData && !student) { setAwaitingStudent(card); return; }
     setDraft((previous) => {
@@ -84,6 +87,7 @@ export function DigitalCardsPickerDialog({ open, branchId, offline, onClose, onP
     });
   }
   async function addBasket() {
+    if (!digitalAccess.can("digitalCards.pos.confirmCard") || !digitalAccess.can("digitalCards.pos.validateReference")) return;
     if (busyRef.current || offline || !draft.length || providerId == null) return;
     const reference = normalizeDigitalSaleReference(providerReference);
     if (!reference) return notify.err("رقم عملية المزوّد مطلوب قبل إضافة السلة");
@@ -133,7 +137,7 @@ export function DigitalCardsPickerDialog({ open, branchId, offline, onClose, onP
             <strong>{card.name}</strong><small>{digitalOfferingDescription(card)}</small>
             <span>{card.sellPrice == null ? "لا سعر منشور" : `${fmtAr(card.sellPrice)} د.ع`}</span>
             <button style={primary} disabled={picking || quantity + existingCardCount >= 50 || card.availability !== "READY"} onClick={() => add(card)}>{card.availability === "READY" ? "إضافة" : card.availability === "NO_PRICE" ? "لا سعر منشور" : "السعر يحتاج تحديثاً"}</button>
-            <button style={{ ...button, minHeight: 30, padding: 4, fontSize: 12 }} onClick={() => { setReporting(card); setReportShare(""); setReportNotes(""); }}>سعر الجهاز مختلف؟</button>
+            <button style={{ ...button, minHeight: 30, padding: 4, fontSize: 12 }} disabled={!digitalAccess.can("digitalCards.pricing.reportMismatch")} onClick={() => { setReporting(card); setReportShare(""); setReportNotes(""); }}>سعر الجهاز مختلف؟</button>
           </div>)}
           {!cards.length && <p style={{ color: C.mutedFg }}>{providerId == null ? "اختر المزوّد لعرض بطاقاته واشتراكاته." : "لا بطاقات مطابقة متاحة لهذا المزوّد."}</p>}
         </div>}
@@ -156,14 +160,14 @@ export function DigitalCardsPickerDialog({ open, branchId, offline, onClose, onP
           <small style={{ color: C.mutedFg }}>مرجع واحد لجميع بطاقات السلة، للمطابقة مع جهاز المزوّد. لا يوجد تحقق من منصته.</small>
         </label>
         <small style={{ color: C.mutedFg }}>الحد الأقصى 50 بطاقة في الفاتورة؛ المضاف سابقاً: {formatQuantity(existingCardCount)}.</small>
-        <footer style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}><strong style={{ flex: 1 }}>{formatQuantity(quantity)} بطاقة · الإجمالي {fmtAr(total.toFixed(2))} د.ع</strong><button style={button} onClick={close}>إلغاء</button><button style={primary} disabled={picking || !draft.length || !providerReference.trim()} onClick={() => void addBasket()}>{picking ? ACTION_LABELS.verifying : "إضافة السلة إلى الفاتورة"}</button></footer>
+        <footer style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}><strong style={{ flex: 1 }}>{formatQuantity(quantity)} بطاقة · الإجمالي {fmtAr(total.toFixed(2))} د.ع</strong><button style={button} onClick={close}>إلغاء</button><button style={primary} disabled={!digitalAccess.can("digitalCards.pos.confirmCard") || !digitalAccess.can("digitalCards.pos.validateReference") || picking || !draft.length || !providerReference.trim()} onClick={() => void addBasket()}>{picking ? ACTION_LABELS.verifying : "إضافة السلة إلى الفاتورة"}</button></footer>
       </div>}
     </div>
     {reporting && <div role="dialog" aria-modal="true" aria-label="بلاغ تغيّر سعر المزوّد" style={{ position: "fixed", inset: 0, zIndex: 62, background: C.overlay, display: "grid", placeItems: "center", padding: 16 }}>
       <div style={{ width: "min(440px, 100%)", background: C.bg, color: C.fg, padding: 20, borderRadius: 8, display: "grid", gap: 12 }}>
         <strong>بلاغ تغيّر سعر المزوّد — {reporting.name}</strong><p>أدخل المبلغ الذي يخصمه جهاز المزوّد. البلاغ لا يغيّر سعر البيع حتى يعتمد المدير السعر.</p>
         <label>حصة المزوّد على الجهاز<MoneyInput value={reportShare} onChange={setReportShare} style={field} /></label><label>ملاحظة (اختياري)<input value={reportNotes} onChange={(event) => setReportNotes(event.target.value)} style={{ ...field, width: "100%" }} /></label>
-        <div style={{ display: "flex", gap: 8 }}><button style={button} onClick={() => setReporting(null)}>إلغاء</button><button style={primary} disabled={reportMut.isPending} onClick={() => {
+        <div style={{ display: "flex", gap: 8 }}><button style={button} onClick={() => setReporting(null)}>إلغاء</button><button style={primary} disabled={!digitalAccess.can("digitalCards.pricing.reportMismatch") || (reportMut.isPending)} onClick={() => {
           if (!moneyInput(reportShare).gt(0)) return notify.err("أدخل المبلغ الظاهر على الجهاز");
           reportMut.mutate({ branchId, offeringId: reporting.offeringId, reportedProviderShare: reportShare, notes: reportNotes.trim() || null });
         }}>{reportMut.isPending ? ACTION_LABELS.sending : "إرسال البلاغ"}</button></div>

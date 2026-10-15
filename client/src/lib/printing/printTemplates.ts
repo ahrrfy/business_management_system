@@ -133,9 +133,11 @@ export interface InvoicePrintData {
   barcode?: DocHeaderBarcode | string | boolean | null;
   /** موضع الباركود: بجانب الرقم أو تحته (الافتراضي "beside") */
   barcodePlacement?: 'beside' | 'below';
+  /** نمط الدفع (PREPAID/COD/CREDIT) — يميّز فواتير الدفع عند الاستلام عن الفواتير الآجلة. */
+  paymentMode?: string | null;
 }
 
-export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
+export async function printInvoiceA4(d: InvoicePrintData): Promise<boolean> {
   // hifi-redesign (٥/٧/٢٦): ينفَّذ عبر printSalesInvoiceV2 بالتصميم المرجعي. الحقول الوصفية (customerTaxId/
   // companyTaxId/notes) لم تعُد تظهر بالترويسة الجديدة (الأرقام القانونية تُقرأ من إعدادات الشركة).
   const date = fmtDate(d.invoiceDate ?? new Date());
@@ -148,10 +150,11 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
   const qrSvg = await qrCodeSvg(qrTarget, { size: 88, margin: 1 }).catch(() => '');
 
   const remainingNum = Math.max(Number(d.total) - Number(d.paidAmount ?? 0), 0);
+  const isCod = d.paymentMode === 'COD';
   const statusLabel = remainingNum <= 0.001
     ? 'مدفوعة'
-    : (Number(d.paidAmount ?? 0) > 0 ? 'مدفوعة جزئياً' : 'آجلة');
-  const statusColor = remainingNum <= 0.001 ? '#0D6B52' : (Number(d.paidAmount ?? 0) > 0 ? '#92400E' : '#8A1F11');
+    : (isCod ? 'دفع عند الاستلام (COD)' : (Number(d.paidAmount ?? 0) > 0 ? 'مدفوعة جزئياً' : 'آجلة'));
+  const statusColor = remainingNum <= 0.001 ? '#0D6B52' : (isCod ? '#0284C7' : (Number(d.paidAmount ?? 0) > 0 ? '#92400E' : '#8A1F11'));
 
   // حساب الرصيد السابق والرصيد النهائي (الذمة الكلية) من دفتر الأستاذ الفعلي
   let balAfter = d.customerBalanceAfter != null ? Number(d.customerBalanceAfter) : null;
@@ -163,7 +166,7 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
     }
   }
 
-  printSalesInvoiceV2({
+  return printSalesInvoiceV2({
     invoiceNumber: d.invoiceNumber,
     invoiceDate: d.invoiceDate,
     barcode: d.barcode,
@@ -206,7 +209,6 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
       chamberLicense: COMPANY_SETTINGS.chamberLicense,
     },
   });
-  return;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -590,6 +592,11 @@ export interface SupplierStmtPrintData {
     credit?: string | number | null;
     balance: string | number;
     actor?: string | null;
+    paymentStatusLabel?: string;
+    paymentReview?: boolean;
+    paidAmount?: string;
+    returnedAmount?: string;
+    remainingAmount?: string;
   }[];
   totalDebit: string | number;
   totalCredit: string | number;
@@ -629,7 +636,14 @@ export function printSupplierStmt(d: SupplierStmtPrintData): boolean {
         balance: Number(t.balance),
         typeLabel: label,
         typeColor: color,
-        details: t.description,
+        details: [
+          t.description,
+          t.paymentStatusLabel ? `حالة السداد: ${t.paymentStatusLabel}` : null,
+          t.paidAmount != null ? `المدفوع: ${fmt(t.paidAmount)} د.ع` : null,
+          t.returnedAmount != null ? `تخفيض الذمة: ${fmt(t.returnedAmount)} د.ع` : null,
+          t.remainingAmount != null ? `المتبقي: ${fmt(t.remainingAmount)} د.ع` : null,
+          t.paymentReview ? "يحتاج مراجعة دليل السداد" : null,
+        ].filter(Boolean).join(" · "),
         actor: t.actor,
       };
     }),
@@ -933,6 +947,7 @@ export function printProductionDoc(d: ProductionDocData, mode: 'order' | 'docume
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export interface ReceiptBrowserData {
+  invoiceId?: number;
   receiptNumber: string;
   date: string;
   time?: string | null;
@@ -963,6 +978,8 @@ export interface ReceiptBrowserData {
   change?: string | number | null;
   /** مبلغ الآجل/الذمة في البيع الآجل (يظهر صفّاً بارزاً بعد المدفوع) */
   credit?: string | number | null;
+  /** نمط الدفع (PREPAID/COD/CREDIT) — للتمييز بين المتبقي الآجل والمطلوب عند الاستلام (COD) */
+  paymentMode?: string | null;
   /** طريقة الدفع كنصّ جاهز للعرض (نقدي/بطاقة/تحويل/محفظة/صك) — تظهر في كتلة الإجماليات */
   paymentMethod?: string | null;
   /** البطاقات الرقمية (ش١٠): تفاصيل كل كرت — بلا أيّ حقلٍ ماليّ داخليّ (§١٢.٢). */
@@ -983,6 +1000,14 @@ export interface ReceiptBrowserData {
   /** G3: مجموع العرابين المحتجزة على أوامر شغلٍ مرتبطة بهذه الفاتورة — إفصاحٌ منفصلٌ في كتلة
    *  الإجماليات كي يعرف الزبون أنّ لديه رصيداً محجوزاً سيُخصم عند التسليم. */
   heldDeposits?: string | number | null;
+  /** قسيمة عودة تلقائية (Bounce-Back Coupon) تُطبع بأسفل الإيصال الحراري */
+  bounceBackCoupon?: {
+    code: string;
+    headline: string;
+    discountText: string;
+    minSpendText?: string | null;
+    validToText: string;
+  } | null;
 }
 
 export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
@@ -1102,8 +1127,8 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
   const body = `
   <div style="text-align:center;margin-bottom:2mm;">
     <img src="${logo}" style="width:18mm;height:18mm;object-fit:contain;filter:grayscale(100%) contrast(1000%);" alt="" onerror="this.style.display='none'">
-    <div style="font-size:18px;font-weight:900;margin-top:1mm;color:#000;">مكتبة العربية</div>
-    <div style="font-size:12.5px;font-weight:900;margin-top:0.3mm;color:#000;">للطباعة والقرطاسية</div>
+    <div style="font-size:18px;font-weight:900;margin-top:1mm;color:#000;">${esc(CO.short || CO.sub)}</div>
+    <div style="font-size:12.5px;font-weight:900;margin-top:0.3mm;color:#000;">${esc(CO.subtitle)}</div>
     <div style="font-size:9.5px;font-weight:800;color:#000;margin-top:0.3mm;">${esc(CO.name)}</div>
   </div>
 
@@ -1158,7 +1183,7 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
       ${d.paid != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المدفوع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.paid)}</td></tr>` : ''}
       ${d.change != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المتبقي (الفكة)</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.change)}</td></tr>` : ''}
       ${Number(d.heldDeposits ?? 0) > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">عربون محتجز</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.heldDeposits)}</td></tr>` : ''}
-      ${Number(d.credit ?? 0) > 0 ? `<tr style="border:2px solid #000;"><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;">متبقٍّ (حساب آجل)</td><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.credit)} د.ع</td></tr>` : ''}
+      ${Number(d.credit ?? 0) > 0 ? `<tr style="border:2px solid #000;"><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;">${d.paymentMode === "COD" ? "المطلوب عند الاستلام (COD)" : "متبقٍّ (حساب آجل)"}</td><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.credit)} د.ع</td></tr>` : ''}
     </tbody>
   </table>
 
@@ -1186,7 +1211,27 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
   <div style="text-align:center;margin:2mm 0;padding:2mm;border:1.5px solid #000;font-size:10px;font-weight:900;line-height:1.5;color:#000;">
     نعتذر عن قبول الاسترجاع — والاستبدال متاح<br>
     خلال 48 ساعة بشرط سلامة المنتج بـ100%
-  </div>`;
+  </div>
+  ${d.bounceBackCoupon ? `
+  <div style="margin-top:3.5mm;padding-top:2.5mm;border-top:1.5px dashed #000;text-align:center;color:#000;">
+    <div style="font-size:9.5px;font-weight:900;letter-spacing:1px;margin-bottom:1.5mm;">[ --- قسيمة هديتك للزيارة القادمة --- ]</div>
+    <div style="border:1.5px solid #000;padding:2mm;background:#f9f9f9;border-radius:1.5mm;">
+      <div style="font-size:12px;font-weight:900;margin-bottom:1mm;color:#000;">${esc(d.bounceBackCoupon.headline)}</div>
+      <div style="font-size:16px;font-weight:900;margin:1.5mm 0;padding:1.2mm;background:#000;color:#fff;border-radius:1mm;letter-spacing:1px;">
+        خصم ${esc(d.bounceBackCoupon.discountText)}
+      </div>
+      <div style="font-size:12px;font-weight:900;margin:1.5mm 0;letter-spacing:1.5px;direction:ltr;background:#fff;padding:1mm;border:1px dashed #000;">
+        ${esc(d.bounceBackCoupon.code)}
+      </div>
+      ${d.bounceBackCoupon.minSpendText ? `<div style="font-size:9.5px;font-weight:800;color:#222;margin-top:0.8mm;">${esc(d.bounceBackCoupon.minSpendText)}</div>` : ''}
+      <div style="font-size:9px;font-weight:800;color:#333;margin-top:0.8mm;">
+        ${esc(d.bounceBackCoupon.validToText)}
+      </div>
+      <div style="font-size:8.5px;font-weight:900;margin-top:1.2mm;color:#000;">
+        احتفظ بهذه القسيمة وقدّمها للكاشير في زيارتك القادمة
+      </div>
+    </div>
+  </div>` : ''}`;
 
   return wrapReceiptDoc(`إيصال ${d.receiptNumber}`, body);
 }
@@ -1257,8 +1302,8 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
 
   <div style="text-align:center;margin-bottom:3mm;">
     ${logo ? `<img src="${logo}" style="height:40px;margin-bottom:1.5mm;" onerror="this.style.display='none'">` : ''}
-    <div style="font-size:14px;font-weight:900;">مكتبة العربية</div>
-    <div style="font-size:11px;font-weight:800;">للطباعة والقرطاسية</div>
+    <div style="font-size:14px;font-weight:900;">${esc(CO.short || CO.sub)}</div>
+    <div style="font-size:11px;font-weight:800;">${esc(CO.subtitle)}</div>
   </div>
 
   ${barSvg ? `<div style="text-align:center;margin:2mm 0;">${barSvg}</div>` : ''}
@@ -1325,7 +1370,7 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
   </div>
 
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
-  <div style="text-align:center;font-size:10px;font-weight:700;margin:1.5mm 0;">شكراً لتعاملكم مع مكتبة العربية</div>
+  <div style="text-align:center;font-size:10px;font-weight:700;margin:1.5mm 0;">${esc(CO.footer)}</div>
   <table style="width:100%;font-size:9px;border-collapse:collapse;margin:1mm 0;">
     <tbody>${contactRows}</tbody>
   </table>
@@ -1453,8 +1498,8 @@ export function buildShiftOpenHtml(d: ShiftOpenData): string {
   <div style="text-align:center;padding:2mm 0;">
     <img src="${logo}" style="width:40px;height:40px;object-fit:contain;margin-bottom:2px;filter:grayscale(100%) contrast(1000%);"
          alt="" onerror="this.style.display='none'">
-    <div style="font-size:17px;font-weight:900;color:#000;">مكتبة العربية</div>
-    <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">للطباعة والقرطاسية</div>
+    <div style="font-size:17px;font-weight:900;color:#000;">${esc(CO.short || CO.sub)}</div>
+    <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">${esc(CO.subtitle)}</div>
     <div style="font-size:9.5px;font-weight:800;margin-top:2px;line-height:1.3;color:#000;">
       ${esc(CO.name)}<br>${esc(CO.address)}
     </div>
@@ -1616,8 +1661,8 @@ export function buildShiftCloseHtml(d: ShiftCloseData): string {
   <div style="text-align:center;padding:2mm 0;">
     <img src="${logo}" style="width:40px;height:40px;object-fit:contain;margin-bottom:2px;filter:grayscale(100%) contrast(1000%);"
          alt="" onerror="this.style.display='none'">
-    <div style="font-size:17px;font-weight:900;color:#000;">مكتبة العربية</div>
-    <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">للطباعة والقرطاسية</div>
+    <div style="font-size:17px;font-weight:900;color:#000;">${esc(CO.short || CO.sub)}</div>
+    <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">${esc(CO.subtitle)}</div>
     <div style="font-size:9.5px;font-weight:800;margin-top:2px;line-height:1.3;color:#000;">
       ${esc(CO.name)}<br>${esc(CO.address)}
     </div>

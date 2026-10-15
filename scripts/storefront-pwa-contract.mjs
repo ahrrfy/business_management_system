@@ -1,14 +1,26 @@
 export const STOREFRONT_SHELL_CHUNK_GLOB =
-  "assets/{Storefront,framework,data-client,ui-vendor,icons,observability,offline-store,charts,motion,onlineOrderStatus,money,governorates,whatsapp,TurnstileWidget,IntlPhoneInput,date,invoiceStatus,intlPhone,numberNormalize,storefrontSearchNormalize,quantityFormat,variantDisplay}-*.js";
+  "assets/{Storefront,authorization-vendor,validation-vendor,operation-catalog-1,operation-catalog-2,badge,framework,data-client,ui-vendor,icons,observability,offline-store,charts,motion,onlineOrderStatus,money,governorates,whatsapp,TurnstileWidget,IntlPhoneInput,date,invoiceStatus,intlPhone,numberNormalize,storefrontSearchNormalize,quantityFormat,variantDisplay}-*.js";
+
+/** Let the browser own endless SSE bodies so they cannot retain an outgoing worker. */
+export function storefrontApiNetworkMatcher({ url }) {
+  // Workbox serializes this function: do not reference outer variables.
+  return (
+    url.pathname.startsWith("/api") &&
+    !/^\/api\/realtime\/stream\/?$/.test(url.pathname)
+  );
+}
 
 /** Workbox CacheFirst is allowed only for server routes whose response is public. */
 export function storefrontPublicImageCacheMatcher({ request, url }) {
   // Keep the matcher self-contained: Workbox serializes this function into sw.js.
-  return request?.method === "GET" && [
-    /^\/api\/img\/banner\/[^/]+\/[^/]+$/,
-    /^\/api\/img\/product\/[^/]+$/,
-    /^\/api\/img\/company\/[^/]+\/product\/[^/]+$/,
-  ].some((pattern) => pattern.test(url.pathname));
+  return (
+    request?.method === "GET" &&
+    [
+      /^\/api\/img\/banner\/[^/]+\/[^/]+$/,
+      /^\/api\/img\/product\/[^/]+$/,
+      /^\/api\/img\/company\/[^/]+\/product\/[^/]+$/,
+    ].some((pattern) => pattern.test(url.pathname))
+  );
 }
 
 /** Auth-derived image responses must always reach the server and its current authorization gate. */

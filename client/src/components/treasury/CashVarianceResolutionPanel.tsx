@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import {
   CASH_VARIANCE_EVIDENCE_MAX_BYTES,
   CASH_VARIANCE_EVIDENCE_MIME_TYPES,
@@ -51,6 +52,12 @@ export default function CashVarianceResolutionPanel() {
   const [decisionNote, setDecisionNote] = useState("");
   const branchesQ = trpc.branches.list.useQuery();
   const meQ = trpc.auth.me.useQuery();
+  const canList = treasuryOperationAllowed(meQ.data, "treasury.cashVariance.list", true);
+  const canGet = treasuryOperationAllowed(meQ.data, "treasury.cashVariance.get", true);
+  const canPropose = treasuryOperationAllowed(meQ.data, "treasury.cashVariance.propose", true);
+  const canRegisterEvidence = treasuryOperationAllowed(meQ.data, "treasury.cashVariance.registerEvidence", true);
+  const canApprove = treasuryOperationAllowed(meQ.data, "treasury.cashVariance.approve", true);
+  const canReject = treasuryOperationAllowed(meQ.data, "treasury.cashVariance.reject", true);
   const utils = trpc.useUtils();
 
   useEffect(() => {
@@ -68,7 +75,7 @@ export default function CashVarianceResolutionPanel() {
   const listQ = trpc.treasury.cashVariance.list.useInfiniteQuery(
     { branchId: filterBranchId, status: status === "ALL" ? undefined : status, limit: 50 },
     {
-      enabled: filterBranchId > 0,
+      enabled: canList && filterBranchId > 0,
       getNextPageParam: (last) => last.nextCursor ?? undefined,
     },
   );
@@ -79,7 +86,7 @@ export default function CashVarianceResolutionPanel() {
   const varianceTotal = listQ.data?.pages[0]?.total ?? 0;
   const detailQ = trpc.treasury.cashVariance.get.useQuery(
     { caseId: selectedCaseId ?? 0 },
-    { enabled: selectedCaseId != null },
+    { enabled: canGet && selectedCaseId != null },
   );
 
   const refresh = async () => {
@@ -150,7 +157,7 @@ export default function CashVarianceResolutionPanel() {
         </p>
       </div>
 
-      <Card>
+      {canPropose && <Card>
         <CardHeader><CardTitle className="text-base">اقتراح حالة</CardTitle></CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-3">
           <label className="space-y-1 text-sm">
@@ -190,7 +197,7 @@ export default function CashVarianceResolutionPanel() {
             <Input
               type="file"
               accept={CASH_VARIANCE_EVIDENCE_MIME_TYPES.join(",")}
-              disabled={registerEvidenceM.isPending || filterBranchId <= 0}
+              disabled={!canRegisterEvidence || registerEvidenceM.isPending || filterBranchId <= 0}
               onChange={(event) => {
                 const file = event.target.files?.[0];
                 setEvidenceDocumentId(null);
@@ -249,9 +256,9 @@ export default function CashVarianceResolutionPanel() {
             >{proposeM.isPending ? "جارٍ الحفظ…" : "حفظ الاقتراح"}</Button>
           </div>
         </CardContent>
-      </Card>
+      </Card>}
 
-      <Card>
+      {canList && <Card>
         <CardHeader className="flex-row items-center justify-between gap-3">
           <CardTitle className="text-base">سجل الحالات</CardTitle>
           <div className="flex flex-wrap gap-2">
@@ -286,7 +293,7 @@ export default function CashVarianceResolutionPanel() {
                       <td className="p-2 tabular-nums">{formatIqd(row.expectedAmount)}</td>
                       <td className="p-2 tabular-nums">{formatIqd(row.actualAmount)}</td>
                       <td className="p-2 tabular-nums">{formatIqd(row.variance)}</td>
-                      <td className="p-2"><Button size="sm" variant="outline" onClick={() => setSelectedCaseId(Number(row.id))}>عرض</Button></td>
+                      <td className="p-2"><Button size="sm" variant="outline" disabled={!canGet} onClick={() => setSelectedCaseId(Number(row.id))}>عرض</Button></td>
                     </tr>
                   ))}
                   {!varianceCases.length && <TableEmptyRow colSpan={6} message="لا توجد حالات ضمن المرشح الحالي." />}
@@ -309,9 +316,9 @@ export default function CashVarianceResolutionPanel() {
             </div>
           )}
         </CardContent>
-      </Card>
+      </Card>}
 
-      {selectedCaseId != null && (
+      {canGet && selectedCaseId != null && (
         <Card>
           <CardHeader><CardTitle className="text-base">تفاصيل الحالة #{selectedCaseId}</CardTitle></CardHeader>
           <CardContent className="space-y-3">
@@ -330,11 +337,11 @@ export default function CashVarianceResolutionPanel() {
                 </dl>
                 {selected.status === "PROPOSED" && (
                   <div className="space-y-2 border-t pt-3">
-                    {selected.decisionPolicy.canDecide ? (
+                    {selected.decisionPolicy.canDecide && (canApprove || canReject) ? (
                       <>
                         <Textarea value={decisionNote} onChange={(event) => setDecisionNote(event.target.value)} rows={2} placeholder="ملاحظة المراجع؛ إلزامية عند الرفض" />
                         <div className="flex gap-2">
-                          <Button disabled={deciding} onClick={async () => {
+                          <Button disabled={!canApprove || deciding} onClick={async () => {
                             const accepted = await confirm({
                               variant: "danger",
                               title: `اعتماد فرق النقد #${selectedCaseId}`,
@@ -344,7 +351,7 @@ export default function CashVarianceResolutionPanel() {
                             if (!accepted) return;
                             approveM.mutate({ caseId: selectedCaseId, expectedVersion: selected.version, clientRequestId: newClientRequestId(), note: decisionNote || null });
                           }}>اعتماد وترحيل</Button>
-                          <Button variant="destructive" disabled={deciding || decisionNote.trim().length < 10} onClick={() => rejectM.mutate({ caseId: selectedCaseId, expectedVersion: selected.version, clientRequestId: newClientRequestId(), reason: decisionNote })}>رفض الاقتراح</Button>
+                          <Button variant="destructive" disabled={!canReject || deciding || decisionNote.trim().length < 10} onClick={() => rejectM.mutate({ caseId: selectedCaseId, expectedVersion: selected.version, clientRequestId: newClientRequestId(), reason: decisionNote })}>رفض الاقتراح</Button>
                         </div>
                       </>
                     ) : (

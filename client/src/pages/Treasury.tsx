@@ -11,6 +11,7 @@ import { FinancialCellProvenanceHover, FinancialSourceBadge } from "@/components
 import type { FinancialCellProvenancePayload } from "@shared/financialProvenance";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { moduleAccessAllowed } from "@shared/permissions";
+import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -130,7 +131,7 @@ const MOVEMENT_WARNING_LABEL: Record<string, string> = {
 
 const MOV_PAGE = 20;
 
-export default function Treasury() {
+export default function Treasury({ operationalOnly = false }: { operationalOnly?: boolean } = {}) {
   const [branchId, setBranchId] = useState<number | "">("");
   const [period, setPeriod] = useState<Period>("today");
   // فلتر مدى تاريخ + ترقيم لجدول «آخر الحركات النقدية» — كان مثبَّتاً على آخر ٢٠ حركة صامتاً
@@ -147,19 +148,19 @@ export default function Treasury() {
   const branches = trpc.branches.list.useQuery();
   const dashboard = trpc.treasury.getDashboard.useQuery(
     { branchId: branchId ? Number(branchId) : undefined },
-    { refetchInterval: 30_000 },
+    { refetchInterval: false, enabled: !operationalOnly && treasuryOperationAllowed(me.data, "treasury.getDashboard", true) },
   );
   const trends = trpc.treasury.getKpiTrends.useQuery(
     { branchId: branchId ? Number(branchId) : undefined },
-    { staleTime: 60_000 },
+    { staleTime: 60_000, enabled: !operationalOnly && treasuryOperationAllowed(me.data, "treasury.getKpiTrends", true) },
   );
   const cashFlow = trpc.treasury.getCashFlowSeries.useQuery(
     { days: 30, branchId: branchId ? Number(branchId) : undefined },
-    { staleTime: 5 * 60_000 },
+    { staleTime: 5 * 60_000, enabled: !operationalOnly && treasuryOperationAllowed(me.data, "treasury.getCashFlowSeries", true) },
   );
   const breakdown = trpc.treasury.getPaymentMethodBreakdown.useQuery(
     { period, branchId: branchId ? Number(branchId) : undefined },
-    { staleTime: 5 * 60_000 },
+    { staleTime: 5 * 60_000, enabled: !operationalOnly && treasuryOperationAllowed(me.data, "treasury.getPaymentMethodBreakdown", true) },
   );
   const movements = trpc.treasury.getRecentMovements.useQuery(
     {
@@ -169,7 +170,7 @@ export default function Treasury() {
       from: movFrom || undefined,
       to: movTo || undefined,
     },
-    { refetchInterval: 30_000 },
+    { refetchInterval: false, enabled: !operationalOnly && treasuryOperationAllowed(me.data, "treasury.getRecentMovements", true) },
   );
   // أي تغيير في فلاتر جدول الحركات يعيدنا للصفحة الأولى (وإلا بقي offset قديماً على مجموعة أصغر).
   useEffect(() => {
@@ -177,11 +178,11 @@ export default function Treasury() {
   }, [branchId, movFrom, movTo]);
   const openShifts = trpc.treasury.getOpenShifts.useQuery(
     { branchId: branchId ? Number(branchId) : undefined },
-    { refetchInterval: 30_000 },
+    { refetchInterval: false, enabled: !operationalOnly && treasuryOperationAllowed(me.data, "treasury.getOpenShifts", true) },
   );
   const pendingHandovers = trpc.treasury.pendingHandoverReceipts.useQuery(
     undefined,
-    { refetchInterval: 15_000 },
+    { refetchInterval: false, enabled: treasuryOperationAllowed(me.data, "treasury.pendingHandoverReceipts", true) },
   );
   const [acceptTarget, setAcceptTarget] = useState<PendingHandover | null>(null);
   const [acceptBreakdown, setAcceptBreakdown] = useState<Record<number, number>>({});
@@ -212,6 +213,15 @@ export default function Treasury() {
     onError: (error) => notify.err(error),
   });
 
+  // A disabled query retains cached data; display authority must be checked on every render.
+  const dashboardData = !operationalOnly && treasuryOperationAllowed(me.data, "treasury.getDashboard", true) ? dashboard.data : undefined;
+  const trendsData = !operationalOnly && treasuryOperationAllowed(me.data, "treasury.getKpiTrends", true) ? trends.data : undefined;
+  const cashFlowData = !operationalOnly && treasuryOperationAllowed(me.data, "treasury.getCashFlowSeries", true) ? cashFlow.data : undefined;
+  const breakdownData = !operationalOnly && treasuryOperationAllowed(me.data, "treasury.getPaymentMethodBreakdown", true) ? breakdown.data : undefined;
+  const movementsData = !operationalOnly && treasuryOperationAllowed(me.data, "treasury.getRecentMovements", true) ? movements.data : undefined;
+  const openShiftsData = !operationalOnly && treasuryOperationAllowed(me.data, "treasury.getOpenShifts", true) ? openShifts.data : undefined;
+  const pendingHandoversData = treasuryOperationAllowed(me.data, "treasury.pendingHandoverReceipts", true) ? pendingHandovers.data : undefined;
+
   const userRole = me.data?.role ?? "";
   const isAdmin = userRole === "admin";
   const isManager = userRole === "manager";
@@ -220,7 +230,7 @@ export default function Treasury() {
   // بدونه يبقى نقدُ مستلمٍ غائب خارج رصيد الخزينة بلا أن يراه أحد (٥٠٬٠٠٠ د.ع ظلّت أربعة أيام).
   // بوّابة الشاشة تُطابق بوّابة الخادم (خريطة الصلاحيات: treasury=FULL) لا دوراً خاماً —
   // وإلّا صار المنح الصريح معلَناً في جرد الصلاحيات وغير قابلٍ للاستعمال فعلياً.
-  const canGovernHandovers = moduleAccessAllowed(
+  const legacyGovernHandovers = moduleAccessAllowed(
     userRole,
     (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)
       ?.permissionsOverride ?? null,
@@ -228,9 +238,12 @@ export default function Treasury() {
     "FULL",
     ["manager", "accountant"],
   );
+  const canGovernHandovers = treasuryOperationAllowed(me.data, "treasury.pendingHandoverQueue", legacyGovernHandovers);
+  const canReassignHandovers = treasuryOperationAllowed(me.data, "treasury.reassignHandoverReceipt", legacyGovernHandovers);
+  const canAcceptHandover = treasuryOperationAllowed(me.data, "treasury.acceptHandoverReceipt", true);
   const pendingQueue = trpc.treasury.pendingHandoverQueue.useQuery(undefined, {
     enabled: canGovernHandovers,
-    refetchInterval: 30_000,
+    refetchInterval: false,
   });
   const reassignHandover = trpc.treasury.reassignHandoverReceipt.useMutation({
     onSuccess: (result) => {
@@ -244,11 +257,11 @@ export default function Treasury() {
     onError: (error) => notify.err(error),
   });
   const handoverRecipients = trpc.shifts.handoverRecipients.useQuery(undefined, {
-    enabled: canGovernHandovers && (pendingQueue.data?.length ?? 0) > 0,
+    enabled: canGovernHandovers && canReassignHandovers && treasuryOperationAllowed(me.data, "shifts.handoverRecipients", true) && (pendingQueue.data?.length ?? 0) > 0,
   });
   const canChooseBranch = isAdmin || isManager;
-  const canAccessTransfers = isAdmin || moduleAccessAllowed(userRole, (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)?.permissionsOverride ?? null, "treasury", "READ", ["manager", "accountant"]);
-  const hideTreasury = dashboard.data?.hideTreasury ?? false;
+  const canAccessTransfers = treasuryOperationAllowed(me.data, "cashTransfers.list", isAdmin || moduleAccessAllowed(userRole, (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)?.permissionsOverride ?? null, "treasury", "READ", ["manager", "accountant"]));
+  const hideTreasury = dashboardData?.hideTreasury ?? false;
 
   const refreshAll = () => {
     void utils.treasury.getDashboard.invalidate();
@@ -619,29 +632,29 @@ export default function Treasury() {
 
   const totalDrawerAll = useMemo(
     () =>
-      dashboard.data?.drawerBalances.reduce(
+      dashboardData?.drawerBalances.reduce(
         (s, r) => s + Number(r.expectedCash),
         0,
       ) ?? 0,
-    [dashboard.data],
+    [dashboardData],
   );
   const totalTreasuryAll = useMemo(
-    () => sum(dashboard.data?.treasuryBalances.map((r) => r.balance) ?? []),
-    [dashboard.data],
+    () => sum(dashboardData?.treasuryBalances.map((r) => r.balance) ?? []),
+    [dashboardData],
   );
 
   const comparisonRows = useMemo(() => {
-    if (!dashboard.data) return [];
+    if (!dashboardData) return [];
     const t = new Map<number, number>();
-    for (const r of dashboard.data.treasuryBalances)
+    for (const r of dashboardData.treasuryBalances)
       t.set(r.branchId, Number(r.balance));
-    return dashboard.data.drawerBalances.map((r) => ({
+    return dashboardData.drawerBalances.map((r) => ({
       branchId: r.branchId,
       branchName: r.branchName,
       drawer: Number(r.expectedCash),
       treasury: t.get(r.branchId) ?? 0,
     }));
-  }, [dashboard.data]);
+  }, [dashboardData]);
 
   return (
     <div className="mx-auto max-w-[1600px] space-y-4" dir="rtl">
@@ -660,11 +673,11 @@ export default function Treasury() {
           داخل المكوّن الموحّد، وهو عين ما يُلغيه العقد. */}
       <PageHeader
         icon={<Vault aria-hidden className="h-5 w-5 text-primary" />}
-        title="لوحة الخزينة"
+        title={operationalOnly ? "العهدة والتمويل" : "لوحة الخزينة"}
         description={
-          dashboard.data?.generatedAt ? (
+          dashboardData?.generatedAt ? (
             <span className="tabular-nums" dir="ltr">
-              آخر تحديث: {fmtRelativeShort(dashboard.data.generatedAt)}
+              آخر تحديث: {fmtRelativeShort(dashboardData.generatedAt)}
             </span>
           ) : undefined
         }
@@ -686,7 +699,7 @@ export default function Treasury() {
                 ))}
               </AppSelect>
             )}
-            <AppSelect
+            {!operationalOnly && <AppSelect
               className="h-9"
               value={period}
               onValueChange={(value) => setPeriod(value as Period)}
@@ -696,7 +709,7 @@ export default function Treasury() {
                   {PERIOD_AR[p]}
                 </option>
               ))}
-            </AppSelect>
+            </AppSelect>}
             <Button
               size="sm"
               variant="outline"
@@ -712,24 +725,24 @@ export default function Treasury() {
 
       {/* ═══ شريط أزرار سريعة ═══ */}
       <div className="flex flex-wrap gap-2">
-        <Link href="/vouchers/receipt/new">
+        {!operationalOnly && <Link href="/vouchers/receipt/new">
           <Button size="sm" variant="default" className="gap-1.5"><ArrowDownLeft className="h-4 w-4" />سند قبض</Button>
-        </Link>
-        <Link href="/vouchers/payment/new">
+        </Link>}
+        {!operationalOnly && <Link href="/vouchers/payment/new">
           <Button size="sm" variant="outline" className="gap-1.5"><ArrowUpRight className="h-4 w-4" />سند صرف</Button>
-        </Link>
-        <Link href="/expenses/new">
+        </Link>}
+        {!operationalOnly && <Link href="/expenses/new">
           <Button size="sm" variant="outline" className="gap-1.5"><ReceiptIcon className="h-4 w-4" />مصروف يومي</Button>
-        </Link>
-        {canAccessTransfers && (
+        </Link>}
+        {!operationalOnly && canAccessTransfers && (
           <Link href="/treasury?tab=transfers">
             <Button size="sm" variant="outline" className="gap-1.5"><Send className="h-4 w-4" />تحويل بين الخزائن</Button>
           </Link>
         )}
-        <Link href="/shifts">
+        {!operationalOnly && <Link href="/shifts">
           <Button size="sm" variant="ghost" className="gap-1.5"><Layers className="h-4 w-4" />الورديات<ArrowRight className="h-3 w-3" /></Button>
-        </Link>
-        {(isAdmin || isManager) && (
+        </Link>}
+        {treasuryOperationAllowed(me.data, "treasury.fundTreasury", isAdmin || isManager) && (
           <Button
             size="sm"
             variant="outline"
@@ -743,18 +756,19 @@ export default function Treasury() {
         )}
       </div>
 
-      <DeliveryCustodyCard branchId={branchId !== "" ? Number(branchId) : undefined} />
+      {!operationalOnly && treasuryOperationAllowed(me.data, "delivery.partyBoard", true) && treasuryOperationAllowed(me.data, "delivery.deliveryUiFlags", true) && <DeliveryCustodyCard branchId={branchId !== "" ? Number(branchId) : undefined} />}
 
       <PendingHandoversSection
         canGovernHandovers={canGovernHandovers}
-        pendingQueue={pendingQueue}
-        handoverRecipients={handoverRecipients}
+        canReassignHandovers={canReassignHandovers && treasuryOperationAllowed(me.data, "shifts.handoverRecipients", true)}
+        pendingQueue={{ ...pendingQueue, data: canGovernHandovers ? pendingQueue.data : undefined }}
+        handoverRecipients={{ ...handoverRecipients, data: canGovernHandovers && canReassignHandovers && treasuryOperationAllowed(me.data, "shifts.handoverRecipients", true) ? handoverRecipients.data : undefined }}
         reassignHandover={reassignHandover}
       />
 
       {(pendingHandovers.isLoading ||
         pendingHandovers.isError ||
-        (pendingHandovers.data?.length ?? 0) > 0) && (
+        (pendingHandoversData?.length ?? 0) > 0) && (
         <section className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn)]/5 p-4">
           <div className="mb-3 flex items-center gap-2">
             <Clock3 className="h-4 w-4 text-[var(--sem-warn)]" />
@@ -774,7 +788,7 @@ export default function Treasury() {
           />
           {!pendingHandovers.isLoading && !pendingHandovers.isError && (
             <div className="grid gap-2">
-              {pendingHandovers.data?.map((handover) => {
+              {pendingHandoversData?.map((handover) => {
                 const accepting =
                   acceptHandover.isPending &&
                   acceptHandover.variables?.receiptId === handover.id;
@@ -820,7 +834,7 @@ export default function Treasury() {
                         setAcceptCounted("0.00");
                         setAcceptRequestId(newClientRequestId());
                       }}
-                      disabled={acceptHandover.isPending}
+                      disabled={!canAcceptHandover || acceptHandover.isPending}
                       className="gap-1.5"
                     >
                       <CheckCircle2 className="h-4 w-4" />
@@ -834,7 +848,7 @@ export default function Treasury() {
         </section>
       )}
 
-      <Dialog open={acceptTarget != null} onOpenChange={(open) => { if (!open && !acceptHandover.isPending) setAcceptTarget(null); }}>
+      <Dialog open={canAcceptHandover && treasuryOperationAllowed(me.data, "treasury.pendingHandoverReceipts", true) && acceptTarget != null} onOpenChange={(open) => { if (!open && !acceptHandover.isPending) setAcceptTarget(null); }}>
         <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>عدّ عهدة النقد {acceptTarget?.referenceNumber}</DialogTitle>
@@ -853,7 +867,7 @@ export default function Treasury() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setAcceptTarget(null)} disabled={acceptHandover.isPending}>إلغاء</Button>
             <Button
-              disabled={!acceptTarget || !acceptRequestId || acceptHandover.isPending}
+              disabled={!canAcceptHandover || !acceptTarget || !acceptRequestId || acceptHandover.isPending}
               onClick={() => {
                 if (!acceptTarget) return;
                 acceptHandover.mutate({
@@ -871,12 +885,12 @@ export default function Treasury() {
       </Dialog>
 
       {/* ═══ صف ١: KPI cards ═══ */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+      {!operationalOnly && treasuryOperationAllowed(me.data, "treasury.getDashboard", true) && <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
         <TreasuryKpiCard
           icon={Wallet}
           label="النقد في الدروج"
           value={String(totalDrawerAll)}
-          deltaPct={trends.data?.drawerTotal.deltaPct ?? null}
+          deltaPct={trendsData?.drawerTotal.deltaPct ?? null}
           deltaLabel="عن أمس"
           accent="green"
           loading={dashboard.isLoading || trends.isLoading}
@@ -892,7 +906,7 @@ export default function Treasury() {
                   : "النقد في خزينة فرعك"
             }
             value={totalTreasuryAll}
-            deltaPct={trends.data?.treasuryTotal.deltaPct ?? null}
+            deltaPct={trendsData?.treasuryTotal.deltaPct ?? null}
             deltaLabel="مقابل قبل اليوم"
             accent="purple"
             loading={dashboard.isLoading || trends.isLoading}
@@ -901,9 +915,9 @@ export default function Treasury() {
         <TreasuryKpiCard
           icon={Layers}
           label="ورديات مفتوحة"
-          value={String(dashboard.data?.openShiftsCount ?? 0)}
+          value={String(dashboardData?.openShiftsCount ?? 0)}
           rawNumeric
-          deltaPct={trends.data?.openShifts.deltaPct ?? null}
+          deltaPct={trendsData?.openShifts.deltaPct ?? null}
           deltaLabel="مقابل أمس"
           accent="blue"
           suffix="وردية"
@@ -912,44 +926,44 @@ export default function Treasury() {
         <TreasuryKpiCard
           icon={ArrowDownLeft}
           label="مقبوضات اليوم"
-          value={dashboard.data?.todayReceiptsTotal ?? "0"}
-          deltaPct={trends.data?.todayReceipts.deltaPct ?? null}
+          value={dashboardData?.todayReceiptsTotal ?? "0"}
+          deltaPct={trendsData?.todayReceipts.deltaPct ?? null}
           deltaLabel="عن أمس"
           accent="green"
-          sparkline={trends.data?.todayReceipts.sparkline}
+          sparkline={trendsData?.todayReceipts.sparkline}
           loading={dashboard.isLoading || trends.isLoading}
         />
         <TreasuryKpiCard
           icon={ArrowUpRight}
           label="مصروفات اليوم"
-          value={dashboard.data?.todayExpensesTotal ?? "0"}
-          deltaPct={trends.data?.todayExpenses.deltaPct ?? null}
+          value={dashboardData?.todayExpensesTotal ?? "0"}
+          deltaPct={trendsData?.todayExpenses.deltaPct ?? null}
           deltaLabel="عن أمس"
           accent="red"
-          sparkline={trends.data?.todayExpenses.sparkline}
+          sparkline={trendsData?.todayExpenses.sparkline}
           loading={dashboard.isLoading || trends.isLoading}
         />
-      </div>
+      </div>}
 
       {/* ═══ صف ٢: المخطّط الزمني + الدونات ═══ */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-        <div className="lg:col-span-2">
+        {!operationalOnly && treasuryOperationAllowed(me.data, "treasury.getCashFlowSeries", true) && <div className="lg:col-span-2">
           <CashFlowChart
-            data={cashFlow.data ?? []}
+            data={cashFlowData ?? []}
             loading={cashFlow.isLoading}
           />
-        </div>
-        <div>
+        </div>}
+        {!operationalOnly && treasuryOperationAllowed(me.data, "treasury.getPaymentMethodBreakdown", true) && <div>
           <PaymentMethodDonut
-            data={breakdown.data ?? []}
+            data={breakdownData ?? []}
             loading={breakdown.isLoading}
             direction="in"
           />
-        </div>
+        </div>}
       </div>
 
       {/* ═══ صف ٣: بطاقات الفروع ═══ */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {!operationalOnly && treasuryOperationAllowed(me.data, "treasury.getDashboard", true) && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {dashboard.isLoading
           ? [1, 2].map((i) => (
               <div key={i} className="rounded-md border p-5 animate-pulse">
@@ -958,8 +972,8 @@ export default function Treasury() {
                 <div className="h-16 bg-muted rounded" />
               </div>
             ))
-          : (dashboard.data?.drawerBalances ?? []).map((dr) => {
-              const tr = dashboard.data?.treasuryBalances.find(
+          : (dashboardData?.drawerBalances ?? []).map((dr) => {
+              const tr = dashboardData?.treasuryBalances.find(
                 (t) => t.branchId === dr.branchId,
               );
               const branchType = (branches.data?.find(
@@ -999,10 +1013,10 @@ export default function Treasury() {
                 />
               );
             })}
-      </div>
+      </div>}
 
       {/* ═══ صف ٤: مقارنة الفروع ═══ */}
-      {comparisonRows.length >= 2 && (
+      {!operationalOnly && treasuryOperationAllowed(me.data, "treasury.getDashboard", true) && comparisonRows.length >= 2 && (
         <BranchComparisonChart
           data={comparisonRows}
           showTreasury={!hideTreasury}
@@ -1012,7 +1026,7 @@ export default function Treasury() {
 
       {/* ═══ صف ٥: جدول الحركات + الورديات ═══ */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
-        <div className="rounded-md border bg-card p-4 lg:col-span-8">
+        {!operationalOnly && treasuryOperationAllowed(me.data, "treasury.getRecentMovements", true) && <div className="rounded-md border bg-card p-4 lg:col-span-8">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <h3 className="text-sm font-semibold">آخر الحركات النقدية</h3>
             <span className="text-xs text-muted-foreground">
@@ -1074,14 +1088,14 @@ export default function Treasury() {
               variant="outline"
               size="sm"
               className="mr-auto"
-              disabled={movExporting || !movements.data?.rows.length}
+              disabled={movExporting || !movementsData?.rows.length}
               onClick={() => void exportMovements()}
             >
               {movExporting ? "جارٍ التحضير…" : "تصدير Excel"}
             </Button>
           </div>
           <DataTable
-            data={movements.data?.rows ?? []}
+            data={movementsData?.rows ?? []}
             columns={movementCols}
             loading={movements.isLoading}
             emptyText="لا حركات بعد."
@@ -1091,7 +1105,7 @@ export default function Treasury() {
           <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
             <span dir="ltr">
               {movPage * MOV_PAGE + 1}–
-              {movPage * MOV_PAGE + (movements.data?.rows.length ?? 0)}
+              {movPage * MOV_PAGE + (movementsData?.rows.length ?? 0)}
             </span>
             <div className="flex gap-2">
               <Button
@@ -1105,24 +1119,24 @@ export default function Treasury() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={!movements.data?.hasMore}
+                disabled={!movementsData?.hasMore}
                 onClick={() => setMovPage((p) => p + 1)}
               >
                 التالي
               </Button>
             </div>
           </div>
-        </div>
-        <div className="lg:col-span-4">
+        </div>}
+        {!operationalOnly && treasuryOperationAllowed(me.data, "treasury.getOpenShifts", true) && <div className="lg:col-span-4">
           <OpenShiftsPanel
-            shifts={openShifts.data ?? []}
+            shifts={openShiftsData ?? []}
             loading={openShifts.isLoading}
           />
-        </div>
+        </div>}
       </div>
 
       <FundTreasuryDialog
-        open={fundOpen}
+        open={fundOpen && treasuryOperationAllowed(me.data, "treasury.fundTreasury", isAdmin || isManager)}
         onOpenChange={setFundOpen}
         defaultBranchId={
           branchId !== ""

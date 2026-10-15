@@ -227,6 +227,30 @@ export async function plSnapshot(
     `),
   );
 
+  // GAP-01: مصاريف سندات الصرف (PAYMENT_OUT) المباشرة (partyType = 'OTHER' أو ملف صرف تصنيف/مصروف)
+  // التي سُجلت عبر واجهة السندات دون صف في جدول expenses.
+  const voucherExpenseRows = rowsOf(
+    await db.execute(sql`
+      SELECT
+        COALESCE(vc.name, r.description, ae.notes, 'مصروفات سندات متنوعة') AS category,
+        CAST(COALESCE(SUM(ae.amount), 0) AS CHAR) AS amount
+      FROM accountingEntries ae
+      INNER JOIN receipts r ON r.id = ae.receiptId
+      LEFT JOIN voucherCategories vc ON vc.id = r.voucherCategoryId
+      WHERE ae.entryType = 'PAYMENT_OUT'
+        AND (
+          ae.postingProfile IN ('PAYMENT_OUT_OTHER', 'PAYMENT_OUT_CATEGORY', 'PAYMENT_OUT_EXPENSE')
+          OR r.voucherPartyType = 'OTHER'
+        )
+        AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        AND r.receiptApprovalStatus = 'APPROVED'
+        AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
+        ${branchAe}
+      GROUP BY COALESCE(vc.name, r.description, ae.notes, 'مصروفات سندات متنوعة')
+      ORDER BY SUM(ae.amount) DESC
+    `),
+  );
+
   // الرواتب على أساس الاستحقاق: حدث الاعتماد يحمل الأجر المكتسب + حصة الشركة في الضمان +
   // استحقاق نهاية الخدمة، ويُؤرَّخ بنهاية فترة الخدمة. إعادة المسيّر للمسودة تنشئ ACCRUAL_REVERSAL
   // سالباً **بتاريخ الاستحقاق نفسه لا بيوم الضغط** ([`payroll/obligations.ts`](payroll/obligations.ts)
@@ -421,6 +445,19 @@ export async function plSnapshot(
     (acc, r) => acc.add(money(r.amount ?? 0)),
     money(0),
   );
+
+  for (const vr of voucherExpenseRows) {
+    const amt = money(vr.amount ?? 0);
+    if (!amt.isZero()) {
+      const cat = String(vr.category);
+      expenseLines.push({
+        key: `VOUCHER:${cat}`,
+        label: EXPENSE_CATEGORY_AR[cat] ?? cat,
+        amount: toDbMoney(amt),
+      });
+      totalExpenses = totalExpenses.add(amt);
+    }
+  }
 
   const payroll = money(pr.amount ?? 0);
   // العكس في فترة لاحقة يجب أن يظهر كتخفيض مصروف، لا أن يختفي لأن صافي الفترة سالب.

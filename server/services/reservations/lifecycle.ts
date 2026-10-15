@@ -34,10 +34,12 @@ export async function cancelReservation(id: number, reason: string | null, actor
   return withTx(async (tx) => {
     const res = await loadReservation(tx, id);
     assertReservationBranch(res, actor);
-    if (!CLOSEABLE.includes(res.status)) {
+    if (!CLOSEABLE.includes(res.status) && res.status !== "EXPIRED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: `لا يمكن إلغاء حجز حالته ${res.status}` });
     }
-    await releaseRemaining(tx, id, Number(res.branchId));
+    if (res.status !== "EXPIRED") {
+      await releaseRemaining(tx, id, Number(res.branchId));
+    }
     await tx.update(reservations).set({ status: "CANCELLED", cancelReason: reason ?? null }).where(eq(reservations.id, id));
     await tx.insert(reservationEvents).values({
       reservationId: id, eventType: "CANCEL", fromStatus: res.status, toStatus: "CANCELLED", note: reason ?? null, userId: actor.userId,

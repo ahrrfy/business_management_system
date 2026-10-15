@@ -1,3 +1,6 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
+import type { OperationUser } from "@shared/operationPermissions";
+import { getPurchaseSettlementIntentLabel } from "@shared/purchaseSettlement";
 import { useMemo, useState } from "react";
 import { ExternalLink, Eye, FileWarning, RotateCcw } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -71,6 +74,7 @@ const STATUS_CLASS: Record<SupplierInvoiceListRow["status"], string> = {
 };
 
 export function SupplierInvoiceApprovalGovernanceWorkspace({
+  operationUser,
   invoices,
   pendingApprovals,
   currentUserId,
@@ -86,6 +90,7 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
   onRequestReversal,
   onDecideApproval,
 }: {
+  operationUser?: OperationUser | null;
   invoices: SupplierInvoiceListRow[];
   pendingApprovals: GovernanceQueueRow[];
   currentUserId: number | null | undefined;
@@ -107,6 +112,8 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
   }) => Promise<unknown>;
   onDecideApproval: Parameters<typeof GovernanceApprovalQueue>[0]["onDecide"];
 }) {
+  const can = (path: string) =>
+    operationUser == null || canLifecycleOperation(operationUser, path, true);
   const [target, setTarget] = useState<SupplierInvoiceListRow | null>(null);
   const [detailInvoiceId, setDetailInvoiceId] = useState<number | null>(null);
   const [evidenceReference, setEvidenceReference] = useState("");
@@ -115,7 +122,9 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
   const [settlementFilter, setSettlementFilter] = useState<string>("ALL");
 
   const requestValid =
-    target != null && evidenceReference.trim().length > 0 && reason.trim().length >= 3;
+    target != null &&
+    evidenceReference.trim().length > 0 &&
+    reason.trim().length >= 3;
 
   function close() {
     if (requestPending) return;
@@ -125,6 +134,7 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
   }
 
   async function submit() {
+    if (!can("supplierInvoiceApproval.requestApproval")) return;
     if (!requestValid || !target) return;
     try {
       await onRequestReversal({
@@ -143,7 +153,8 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
   const filteredInvoices = useMemo(() => {
     return invoices.filter((row) => {
       if (statusFilter !== "ALL" && row.status !== statusFilter) return false;
-      if (settlementFilter !== "ALL" && row.settlementType !== settlementFilter) return false;
+      if (settlementFilter !== "ALL" && row.settlementType !== settlementFilter)
+        return false;
       return true;
     });
   }, [invoices, statusFilter, settlementFilter]);
@@ -159,7 +170,10 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
               {row.original.invoiceNumber}
             </div>
             {row.original.externalInvoiceNumber && (
-              <div className="text-[11px] text-muted-foreground font-mono" dir="ltr">
+              <div
+                className="text-[11px] text-muted-foreground font-mono"
+                dir="ltr"
+              >
                 فاتورة المورد: {row.original.externalInvoiceNumber}
               </div>
             )}
@@ -171,9 +185,14 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
         header: "المورد",
         cell: ({ row }) => (
           <div className="space-y-0.5">
-            <div className="font-medium text-foreground">{row.original.supplierName ?? "—"}</div>
+            <div className="font-medium text-foreground">
+              {row.original.supplierName ?? "—"}
+            </div>
             {row.original.supplierPhone && (
-              <div className="text-[11px] text-muted-foreground font-mono" dir="ltr">
+              <div
+                className="text-[11px] text-muted-foreground font-mono"
+                dir="ltr"
+              >
                 {row.original.supplierPhone}
               </div>
             )}
@@ -198,19 +217,19 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
       },
       {
         accessorKey: "settlementType",
-        header: "طريقة السداد",
+        header: "طريقة السداد المتفق عليها",
         cell: ({ row }) => {
           if (row.original.settlementType === "CASH") {
             return (
-              <span className="px-2 py-0.5 text-xs rounded-md font-medium badge-status-active">
-                نقدي
+              <span className="px-2 py-0.5 text-xs rounded-md font-medium badge-status-info">
+                {getPurchaseSettlementIntentLabel("CASH")}
               </span>
             );
           }
           if (row.original.settlementType === "CREDIT") {
             return (
               <span className="px-2 py-0.5 text-xs rounded-md font-medium badge-status-pending">
-                آجل
+                {getPurchaseSettlementIntentLabel("CREDIT")}
               </span>
             );
           }
@@ -236,7 +255,8 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
         header: "المبلغ",
         cell: ({ row }) => (
           <span dir="ltr" className="font-mono font-semibold">
-            {fmt(row.original.totalAmount)} {row.original.currency === "USD" ? "$" : "د.ع"}
+            {fmt(row.original.totalAmount)}{" "}
+            {row.original.currency === "USD" ? "$" : "د.ع"}
           </span>
         ),
       },
@@ -290,6 +310,7 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
                 variant="outline"
                 className="h-8 px-2 text-xs"
                 onClick={() => setTarget(row.original)}
+                disabled={!can("supplierInvoiceApproval.requestApproval")}
               >
                 طلب عكس
               </Button>
@@ -324,14 +345,17 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
         </CardHeader>
         <CardContent className="space-y-3">
           <GovernanceRequestNotice>
-            الترحيل الاعتيادي يتم تلقائياً عند اعتماد أمر الشراء المكتمل الاستلام والمطابق. هذه
-            الشاشة تمكنك من استعراض تفاصيل الفواتير، وفحص القيود، أو طلب عكس فاتورة مرحلة لاعتمادها
-            بشكل ذري ومستقل.
+            الترحيل الاعتيادي يتم تلقائياً عند اعتماد أمر الشراء المكتمل
+            الاستلام والمطابق. هذه الشاشة تمكنك من استعراض تفاصيل الفواتير، وفحص
+            القيود، أو طلب عكس فاتورة مرحلة لاعتمادها بشكل ذري ومستقل.
           </GovernanceRequestNotice>
 
           <div className="flex flex-wrap items-center gap-3 pt-1 pb-1">
             <div className="flex items-center gap-2">
-              <Label htmlFor="filter-status" className="text-xs text-muted-foreground whitespace-nowrap">
+              <Label
+                htmlFor="filter-status"
+                className="text-xs text-muted-foreground whitespace-nowrap"
+              >
                 الحالة:
               </Label>
               <AppSelect
@@ -349,7 +373,10 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
               </AppSelect>
             </div>
             <div className="flex items-center gap-2">
-              <Label htmlFor="filter-settlement" className="text-xs text-muted-foreground whitespace-nowrap">
+              <Label
+                htmlFor="filter-settlement"
+                className="text-xs text-muted-foreground whitespace-nowrap"
+              >
                 طريقة السداد:
               </Label>
               <AppSelect
@@ -382,6 +409,7 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
       </Card>
 
       <GovernanceApprovalQueue
+        reviewAllowed={can("supplierInvoiceApproval.decideApproval")}
         title="طلبات عكس فواتير الموردين"
         scope="supplier-invoice-reversal"
         rows={pendingApprovals}
@@ -398,32 +426,36 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
         supplierInvoiceId={detailInvoiceId}
         open={detailInvoiceId != null}
         onClose={() => setDetailInvoiceId(null)}
-        onRequestReversal={(invoice) => {
-          setDetailInvoiceId(null);
-          setTarget({
-            id: Number(invoice.id),
-            invoiceNumber: invoice.invoiceNumber,
-            externalInvoiceNumber: invoice.externalInvoiceNumber,
-            version: Number(invoice.version),
-            status: invoice.status as any,
-            supplierId: Number(invoice.supplierId),
-            supplierName: invoice.supplierName,
-            supplierPhone: invoice.supplierPhone,
-            purchaseOrderId: invoice.purchaseOrderId,
-            purchaseOrderNumber: invoice.purchaseOrderNumber,
-            settlementType: invoice.settlementType,
-            createdByName: invoice.createdByName,
-            postedByName: invoice.postedByName,
-            postedAt: invoice.postedAt,
-            totalAmount: invoice.totalAmount,
-            subtotal: invoice.subtotal,
-            discountAmount: invoice.discountAmount,
-            taxAmount: invoice.taxAmount,
-            currency: invoice.currency,
-            dueDate: invoice.dueDate,
-            invoiceDate: invoice.invoiceDate,
-          });
-        }}
+        onRequestReversal={
+          can("supplierInvoiceApproval.requestApproval")
+            ? (invoice) => {
+                setDetailInvoiceId(null);
+                setTarget({
+                  id: Number(invoice.id),
+                  invoiceNumber: invoice.invoiceNumber,
+                  externalInvoiceNumber: invoice.externalInvoiceNumber,
+                  version: Number(invoice.version),
+                  status: invoice.status as any,
+                  supplierId: Number(invoice.supplierId),
+                  supplierName: invoice.supplierName,
+                  supplierPhone: invoice.supplierPhone,
+                  purchaseOrderId: invoice.purchaseOrderId,
+                  purchaseOrderNumber: invoice.purchaseOrderNumber,
+                  settlementType: invoice.settlementType,
+                  createdByName: invoice.createdByName,
+                  postedByName: invoice.postedByName,
+                  postedAt: invoice.postedAt,
+                  totalAmount: invoice.totalAmount,
+                  subtotal: invoice.subtotal,
+                  discountAmount: invoice.discountAmount,
+                  taxAmount: invoice.taxAmount,
+                  currency: invoice.currency,
+                  dueDate: invoice.dueDate,
+                  invoiceDate: invoice.invoiceDate,
+                });
+              }
+            : undefined
+        }
       />
 
       <Dialog open={target != null} onOpenChange={(open) => !open && close()}>
@@ -436,7 +468,9 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-2">
-              <Label htmlFor="supplier-invoice-reversal-evidence">مرجع الدليل</Label>
+              <Label htmlFor="supplier-invoice-reversal-evidence">
+                مرجع الدليل
+              </Label>
               <Input
                 id="supplier-invoice-reversal-evidence"
                 value={evidenceReference}
@@ -456,14 +490,21 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
             </div>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" disabled={requestPending} onClick={close}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={requestPending}
+              onClick={close}
+            >
               تراجع
             </Button>
             <SubmitButton
               type="button"
               pending={requestPending}
               pendingText={ACTION_LABELS.sending}
-              disabled={!requestValid}
+              disabled={
+                !requestValid || !can("supplierInvoiceApproval.requestApproval")
+              }
               onClick={() => void submit()}
             >
               إرسال طلب العكس للاعتماد

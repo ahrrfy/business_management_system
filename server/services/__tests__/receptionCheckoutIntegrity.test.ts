@@ -4,6 +4,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { checkoutReception } from "../receptionCheckoutService";
 import { openShift } from "../shiftService";
+import { routeOperationAuthority, storedOperationUser } from "../authorization/operationAuthority";
 
 const TABLES = [
   "deliveryOutbox",
@@ -164,6 +165,71 @@ beforeEach(async () => {
 });
 
 describe("reception checkout — سلامة المبلغ الخادمي", () => {
+  it("rechecks delivery revocation after request authorization and rolls back the whole checkout", async () => {
+    const shift = await openReception();
+    const granted = { version: 1 as const, grants: { "operation.delivery.dispatchInvoice": true } };
+    await db().update(s.users).set({ operationPolicy: granted }).where(eq(s.users.id, CASHIER.userId));
+    const [authorizedAccount] = await db().select().from(s.users).where(eq(s.users.id, CASHIER.userId));
+    const proof = routeOperationAuthority({ ...storedOperationUser(authorizedAccount!), id: CASHIER.userId }, "delivery.dispatchInvoice");
+    expect(proof).toBeDefined();
+    await db().update(s.users).set({ operationPolicy: { version: 1, grants: { "operation.delivery.dispatchInvoice": false } } })
+      .where(eq(s.users.id, CASHIER.userId));
+
+    await expect(checkoutReception({
+      branchId: 1, shiftId: shift.shiftId, paidAmount: "0",
+      clientRequestId: "reception-delivery-revoked",
+      regularSale: { lines: [REGULAR_LINE], amount: "2000.00" }, delivery: DELIVERY,
+    }, CASHIER)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expectNoCheckoutEffects();
+  });
+
+  it("dispatches only with the currently granted delivery operation", async () => {
+    const shift = await openReception();
+    await db().update(s.users).set({ operationPolicy: { version: 1, grants: { "operation.delivery.dispatchInvoice": true } } })
+      .where(eq(s.users.id, CASHIER.userId));
+    const result = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId, paidAmount: "0",
+      clientRequestId: "reception-delivery-granted",
+      regularSale: { lines: [REGULAR_LINE], amount: "2000.00" }, delivery: DELIVERY,
+    }, CASHIER);
+    expect(result.dispatch?.consignmentId).toEqual(expect.any(Number));
+    expect(await db().select().from(s.deliveryConsignments)).toHaveLength(1);
+  });
+
+  it("does not require delivery authority for a checkout without delivery", async () => {
+    const shift = await openReception();
+    await db().update(s.users).set({ operationPolicy: { version: 1, grants: { "operation.delivery.dispatchInvoice": false } } })
+      .where(eq(s.users.id, CASHIER.userId));
+    const result = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId, paymentMethod: "CASH", paidAmount: "2000.00",
+      clientRequestId: "reception-without-delivery",
+      regularSale: { lines: [REGULAR_LINE], amount: "2000.00" }, delivery: null,
+    }, CASHIER);
+    expect(result.regularSale?.invoiceId).toEqual(expect.any(Number));
+    expect(result.dispatch).toBeNull();
+    expect(await db().select().from(s.deliveryConsignments)).toHaveLength(0);
+  });
+  it("saves work-order delivery metadata without invoice dispatch authority", async () => {
+    const shift = await openReception();
+    await db().update(s.users).set({ operationPolicy: { version: 1, grants: {
+      "operation.workOrders.receptionCheckout": true,
+      "operation.delivery.dispatchInvoice": false,
+    } } }).where(eq(s.users.id, CASHIER.userId));
+    const result = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId, paidAmount: "0",
+      clientRequestId: "reception-work-order-delivery-metadata",
+      workOrders: [{ baseVariantId: null, title: "خدمة طباعة", quantity: 1, salePrice: "100.00" }],
+      delivery: DELIVERY,
+    }, CASHIER);
+    expect(result.workOrders).toHaveLength(1);
+    expect(result.dispatch).toBeNull();
+    const orders = await db().select().from(s.workOrders);
+    expect(orders).toHaveLength(1);
+    expect(orders[0]).toMatchObject({ hasDelivery: true, deliveryAddress: DELIVERY.address, deliveryPhone: DELIVERY.recipientPhone });
+    expect(await db().select().from(s.deliveryConsignments)).toHaveLength(0);
+    expect(await db().select().from(s.deliveryLedgerEntries)).toHaveLength(0);
+  });
+
   it("يرفض regularSale.amount المخالف ويعيد كل آثار الفاتورة والمخزون والتوصيل", async () => {
     const shift = await openReception();
 

@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
+import { hasOperationPolicy, operationDecision, type OperationUser } from "@shared/operationPermissions";
+import { routeOperationAuthority } from "../services/authorization/operationAuthority";
 import { eq } from "drizzle-orm";
 import { SALES_CONTROL_STATUSES } from "@shared/salesControl";
 import { appErrorMessage } from "@shared/errors";
@@ -65,10 +67,14 @@ const correctionPayload = z.object({
 });
 
 function actor(ctx: {
-  user: { id: number; branchId?: number | null; role: string; isOwner?: boolean | null };
+  user: OperationUser & { id: number; branchId?: number | null; role: string; isOwner?: boolean | null };
   scopedOwnerId?: number | null;
   invoiceCorrectionScope?: "sales" | "reception";
-}) {
+}, path?: string) {
+  const canonical = hasOperationPolicy(ctx.user);
+  const reviewerPath = canonical && operationDecision(ctx.user, "salesControl.approve").allowed
+    ? "salesControl.approve"
+    : canonical && operationDecision(ctx.user, "salesControl.reject").allowed ? "salesControl.reject" : null;
   return {
     userId: ctx.user.id,
     branchId: Number(ctx.user.branchId ?? 0),
@@ -77,6 +83,9 @@ function actor(ctx: {
     isOwner: ctx.user.isOwner === true,
     scopedOwnerId: ctx.scopedOwnerId,
     invoiceScope: ctx.invoiceCorrectionScope,
+    operationPolicyEnabled: canonical,
+    operationAuthority: path ? routeOperationAuthority(ctx.user, path) : undefined,
+    reviewAuthority: reviewerPath ? routeOperationAuthority(ctx.user, reviewerPath) : undefined,
   };
 }
 
@@ -196,7 +205,9 @@ export const salesControlRouter = router({
       mine: z.boolean().optional(),
     }).optional())
     .query(({ input, ctx }) => {
-      const canReview = moduleAccessAllowed(
+      const canReview = hasOperationPolicy(ctx.user)
+        ? operationDecision(ctx.user, "salesControl.approve").allowed || operationDecision(ctx.user, "salesControl.reject").allowed
+        : moduleAccessAllowed(
         ctx.user.role as RoleKey,
         (ctx.user.permissionsOverride ?? null) as PermissionMap | null,
         "sales",
@@ -212,7 +223,7 @@ export const salesControlRouter = router({
   /** يحجز طلب فرق البطاقة لمراجع واحد قبل توجيهه إلى جهاز الدفع؛ لا أثر مالي هنا. */
   claimCorrectionPayment: salesManagerProcedure
     .input(z.object({ requestId: z.number().int().positive() }))
-    .mutation(({ input, ctx }) => claimSalesCorrectionPayment(input.requestId, actor(ctx))),
+    .mutation(({ input, ctx }) => claimSalesCorrectionPayment(input.requestId, actor(ctx, "salesControl.claimCorrectionPayment"))),
 
   /** تحرير الحجز مسموح قبل وجود دليل قبض مؤكد فقط. */
   releaseCorrectionPaymentClaim: salesManagerProcedure
@@ -222,7 +233,7 @@ export const salesControlRouter = router({
     }))
     .mutation(({ input, ctx }) => releaseSalesCorrectionPaymentClaim(
       input.requestId,
-      actor(ctx),
+      actor(ctx, "salesControl.releaseCorrectionPaymentClaim"),
       input.confirmation,
     )),
 
@@ -242,6 +253,7 @@ export const salesControlRouter = router({
         shiftId: z.number().int().positive().optional(),
         /** امسح الدرج المُجمَّد ليُعاد اشتقاق المصدر (درجٌ مفتوح وإلّا خزينةُ الفرع للإداريّ). */
         clearShift: z.boolean().optional(),
+        cashBucket: z.enum(["DRAWER", "TREASURY"]).optional(),
         // ⛔ `null` صراحةً (لا فقط الغياب) مقبولةٌ عمداً: مسحُ المُعتمِد مرجعاً معروضاً — لا
         // يطابق قسيمة الجهاز — يجب أن يصل الخدمة override إلى null فتُرفض CARD حتماً، لا أن
         // يُطوى بصمتٍ إلى «لم يُرسَل شيء» فيبقى مرجع الطلب الأصليّ نافذاً (Codex على PR #997).
@@ -252,7 +264,7 @@ export const salesControlRouter = router({
     .mutation(async ({ input, ctx }) => {
       const result = await approveSalesControlRequest(
         input.requestId,
-        actor(ctx),
+        actor(ctx, "salesControl.approve"),
         input.reviewNote,
         input.cashRouting ?? null,
       );
@@ -277,7 +289,7 @@ export const salesControlRouter = router({
     .mutation(({ input, ctx }) => rejectSalesControlRequest(
       input.requestId,
       input.reason,
-      actor(ctx),
+      actor(ctx, "salesControl.reject"),
     )),
 
   /**

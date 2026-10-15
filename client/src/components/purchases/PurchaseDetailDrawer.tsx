@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import Decimal from "decimal.js";
+import { getPurchaseSettlement } from "@shared/purchaseSettlement";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -19,7 +19,7 @@ import { Label } from "@/components/ui/label";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { fmtDate } from "@/lib/date";
-import { D, fmt, fmtAr, formatQuantity, positiveDiff } from "@/lib/money";
+import { D, fmt, fmtAr, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import {
@@ -43,6 +43,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { NextActionChip } from "@/components/nextAction/NextActionChip";
 import { hasModuleAccess } from "@shared/permissions";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { PurchaseOrderGovernance } from "./PurchaseOrderGovernance";
 import { QuickSupplierPaymentDialog } from "./QuickSupplierPaymentDialog";
 
@@ -144,16 +145,30 @@ export function PurchaseDetailDrawer({
   const [isApprovalOpen, setIsApprovalOpen] = useState(false);
   const [approvalReason, setApprovalReason] = useState("اعتماد واستلام البضاعة كاملة");
 
-  const canEdit = hasModuleAccess(
+  const legacyEdit = hasModuleAccess(
     me.data?.role ?? "",
     (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)?.permissionsOverride ?? null,
     "purchases",
     "FULL",
   );
+  const canEdit = canLifecycleOperation(me.data, "purchases.updateOrder", legacyEdit);
+  const canConfirm = canLifecycleOperation(me.data, "purchases.confirmOrder", legacyEdit);
+  const canDecide = canLifecycleOperation(me.data, "purchases.decideControl", legacyEdit);
+  const canRequestPayment = canLifecycleOperation(me.data, "supplierPayments.requestPayment", legacyEdit);
+  const canExecuteReturn = [
+    "returns.executePurchaseReturnCart",
+    "returns.lookupItemForReturn",
+    "suppliers.list",
+  ].every((path) => canLifecycleOperation(me.data, path, legacyEdit));
+  const canRequestReturn = [
+    "purchaseReturnGovernance.requestReturn",
+    "purchaseReturnGovernance.returnSources",
+  ].every((path) => canLifecycleOperation(me.data, path, legacyEdit));
+  const canSettleShipping = canLifecycleOperation(me.data, "purchases.settleShippingFromShift", legacyEdit);
 
   const pendingControls = trpc.purchases.pendingControls.useQuery(
     { limit: 200 },
-    { enabled: isOpen && canEdit },
+    { enabled: isOpen && canLifecycleOperation(me.data, "purchases.pendingControls", legacyEdit) },
   );
 
   const activeControlRequest = useMemo(() => {
@@ -227,17 +242,10 @@ export function PurchaseDetailDrawer({
   const d = po.data;
   const isUsd = d?.agreedCurrency === "USD";
   const costHidden = d?.total === null;
-  const effectivePaid = d
-    ? Decimal.max(
-        D(d.paidAmount ?? 0),
-        D((d as { linkedCashPaidAmount?: string | null }).linkedCashPaidAmount ?? 0),
-      )
-    : D(0);
+  const settlement = getPurchaseSettlement(d ?? {});
   const remaining = costHidden || !d
     ? null
-    : isUsd
-      ? positiveDiff(d.usdTotal, D(d.paidUsd ?? 0).plus(D(d.returnedUsd ?? 0)).toString())
-      : positiveDiff(d.total, effectivePaid.toString());
+    : D(settlement.remainingAmount);
 
   const openForEditing =
     d?.status === "DRAFT" &&
@@ -261,7 +269,7 @@ export function PurchaseDetailDrawer({
         ].some((id) => id != null && Number(id) === Number(currentUserId))));
 
   const canApproveDirectly =
-    canEdit &&
+    (d?.status === "DRAFT" ? canConfirm : canDecide) &&
     d &&
     ((d.status === "SENT" && activeControlRequest != null && !violatesSod) ||
      (d.status === "DRAFT" && !hasPendingOrderControl));
@@ -356,12 +364,18 @@ export function PurchaseDetailDrawer({
                       <div>{d.agreedCurrency ?? "IQD"} {isUsd && d.agreedRate ? `(${fmt(d.agreedRate)})` : ""}</div>
                     </div>
                     <div>
-                      <div className="text-xs text-muted-foreground">التسوية</div>
-                      <div>{d.settlementType === "CASH" ? "نقدي" : "آجل"}</div>
+                      <div className="text-xs text-muted-foreground">طريقة السداد</div>
+                      <div>{settlement.intentLabel}</div>
+                      {!costHidden ? <div className="text-xs">{settlement.statusLabel}</div> : null}
                     </div>
                   </CardContent>
                 </Card>
 
+                {settlement.requiresReview ? (
+                  <p role="alert" className="border border-money-negative p-2 text-xs text-money-negative">
+                    دليل السداد يحتاج مراجعة. طلب السداد متوقف حتى مطابقة المستندات.
+                  </p>
+                ) : null}
                 {/* الأرقام المالية السريعة */}
                 {!costHidden ? (
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -374,7 +388,7 @@ export function PurchaseDetailDrawer({
                     <div className="rounded-lg border bg-card p-2 text-center">
                       <div className="text-xs text-muted-foreground">المدفوع</div>
                       <div className="font-bold text-sm text-money-positive tabular-nums">
-                        {isUsd ? `${fmt(d.paidUsd ?? "0")} $` : `${fmt(effectivePaid.toString())} د.ع`}
+                        {fmt(settlement.paidAmount)} {isUsd ? "$" : "د.ع"}
                       </div>
                     </div>
                     <div className="rounded-lg border bg-card p-2 text-center">
@@ -390,6 +404,10 @@ export function PurchaseDetailDrawer({
                   </div>
                 ) : null}
 
+                {!costHidden && D(settlement.returnedAmount).gt(0) ? (
+                  <p className="text-xs text-muted-foreground">تخفيض الذمة: {fmt(settlement.returnedAmount)} {isUsd ? "$" : "د.ع"}</p>
+                ) : null}
+                {!costHidden && !D(settlement.invoiceTotalAmount).eq(D(isUsd ? d.usdTotal ?? 0 : d.total ?? 0)) ? <p className="text-xs text-muted-foreground">المفوتر بذمة المورد: {fmt(settlement.invoiceTotalAmount)} {isUsd ? "$" : "د.ع"}</p> : null}
                 {/* أشرطة الإجراءات المباشرة (استلام / سداد / مرتجع) */}
                 <div className="flex flex-wrap items-center gap-2 p-2.5 rounded-lg border bg-muted/30">
                   {canApproveDirectly ? (
@@ -403,11 +421,12 @@ export function PurchaseDetailDrawer({
                     </Button>
                   ) : null}
 
-                  {canEdit && d.status === "RECEIVED" && remaining != null && remaining.gt(0) && !costHidden ? (
+                  {canRequestPayment && d.status === "RECEIVED" && remaining != null && remaining.gt(0) && !costHidden ? (
                     <Button
                       size="sm"
                       variant="outline"
                       onClick={() => setIsPaymentOpen(true)}
+                      disabled={settlement.requiresReview}
                       className="font-semibold text-primary border-primary/40 hover:bg-primary/5"
                     >
                       <HandCoins aria-hidden className="size-4" />
@@ -415,11 +434,13 @@ export function PurchaseDetailDrawer({
                     </Button>
                   ) : null}
 
-                  {canEdit && d.status === "RECEIVED" ? (
+                  {(canExecuteReturn || canRequestReturn) && d.status === "RECEIVED" ? (
                     <Button asChild size="sm" variant="outline">
-                      <Link href={`/purchase-returns/new?po=${encodeURIComponent(d.poNumber)}`}>
+                      <Link href={canExecuteReturn
+                        ? `/returns?portal=purchases&po=${encodeURIComponent(d.poNumber)}`
+                        : "/purchases/returns-governance"}>
                         <Undo2 aria-hidden className="size-4" />
-                        مرتجع شراء
+                        {canExecuteReturn ? "مرتجع شراء" : "طلب مرتجع شراء"}
                       </Link>
                     </Button>
                   ) : null}
@@ -516,7 +537,7 @@ export function PurchaseDetailDrawer({
                       </div>
                     </div>
 
-                    {canEdit && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
+                    {canSettleShipping && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
                       <div className="pt-2 border-t flex items-center justify-between gap-2 flex-wrap">
                         <span className="text-[11px] text-muted-foreground">صرف نقدي من الدرج المفتوح للوردية</span>
                         <Button
@@ -639,7 +660,7 @@ export function PurchaseDetailDrawer({
                 branchId={Number(d.branchId)}
                 currency={isUsd ? "USD" : "IQD"}
                 exchangeRate={d.agreedRate}
-                remainingAmount={remaining ? remaining.toFixed(2) : "0"}
+                remainingAmount={settlement.requiresReview ? "0" : settlement.remainingAmount}
                 onSuccess={() => void utils.purchases.get.invalidate({ purchaseOrderId: d.id })}
               />
             ) : null}

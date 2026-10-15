@@ -6,6 +6,7 @@
  * المعاملة نفسها: تحرير الحجز، أو إنشاء الفاتورة، أو إثبات الخسارة.
  */
 import { TRPCError } from "@trpc/server";
+import { assertServiceOperationTx, type ServiceOperationActor } from "../authorization/operationAuthority";
 import { appErrorMessage } from "../../../shared/errors";
 import { and, asc, eq, notInArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
@@ -44,12 +45,6 @@ export interface ReviewResolutionItemInput {
   intentItemId: number;
   outcome: ReviewItemOutcome;
   providerReference?: string | null;
-}
-
-function assertManager(actor: Actor): void {
-  if (actor.role !== "admin" && actor.role !== "manager") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "معالجة العملية تحتاج صلاحية مدير" });
-  }
 }
 
 function assertBranch(branchId: number, actor: Actor): void {
@@ -247,9 +242,9 @@ async function normalizeAndValidateItems(
 export async function requestResolution(
   tx: Tx,
   input: { intentId: number; decision: ReviewDecision; reason: string; items: ReviewResolutionItemInput[] },
-  actor: Actor,
+  actor: Actor & ServiceOperationActor,
 ): Promise<{ resolutionId: number }> {
-  assertManager(actor);
+  await assertServiceOperationTx(tx, actor, "digitalCards.sales.requestReviewResolution");
   const reason = input.reason.trim();
   if (reason.length < 5) throw new TRPCError({ code: "BAD_REQUEST", message: "اكتب نتيجة المطابقة وسبب القرار بوضوح" });
 
@@ -328,9 +323,9 @@ export async function requestResolution(
 export async function approveResolution(
   tx: Tx,
   input: { intentId: number },
-  actor: Actor,
+  actor: Actor & ServiceOperationActor,
 ): Promise<{ decision: ReviewDecision; invoiceId?: number; loss?: string }> {
-  assertManager(actor);
+  await assertServiceOperationTx(tx, actor, "digitalCards.sales.approveReviewResolution");
   const intent = await lockIntent(tx, input.intentId);
   assertBranch(Number(intent.branchId), actor);
   if (intent.status !== "NEEDS_REVIEW") {
@@ -440,9 +435,9 @@ export async function approveResolution(
 export async function rejectResolution(
   tx: Tx,
   input: { intentId: number; reason: string },
-  actor: Actor,
+  actor: Actor & ServiceOperationActor,
 ): Promise<void> {
-  assertManager(actor);
+  await assertServiceOperationTx(tx, actor, "digitalCards.sales.rejectReviewResolution");
   const reason = input.reason.trim();
   if (reason.length < 3) throw new TRPCError({ code: "BAD_REQUEST", message: "اكتب سبب رفض القرار" });
   const intent = await lockIntent(tx, input.intentId);

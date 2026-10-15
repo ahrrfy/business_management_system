@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { AlertTriangle, CheckCircle2, ImagePlus, Loader2, Sparkles, X } from "lucide-react";
 import { useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
@@ -48,6 +49,7 @@ function parseDataUrl(dataUrl: string): { mime: AcceptedMime; base64: string } |
 }
 
 export function ImageFirstProductAssistant({ currentFields, onApply }: Props) {
+  const { can } = useCatalogPeopleOperationAccess();
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewSizeKB, setPreviewSizeKB] = useState<number>(0);
   const [pendingUpload, setPendingUpload] = useState(false);
@@ -239,7 +241,7 @@ export function ImageFirstProductAssistant({ currentFields, onApply }: Props) {
                   type="button"
                   size="sm"
                   onClick={runExtract}
-                  disabled={extract.isPending}
+                  disabled={!can("catalog.extractFactsFromImage") || (extract.isPending)}
                 >
                   {extract.isPending ? (
                     <Loader2 aria-hidden className="size-4 animate-spin" />

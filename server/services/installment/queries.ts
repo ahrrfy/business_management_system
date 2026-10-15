@@ -123,7 +123,12 @@ export async function getPlan(planId: number, restrictToBranchId: BranchRestrict
 }
 
 /** طابور التحصيل: أقساط PENDING مستحقّة خلال N أيام أو متأخّرة — الأشد تأخّراً أولاً. */
-export async function dueSoon(filter: { branchId?: number | null; days?: number }) {
+export async function dueSoon(filter: {
+  branchId?: number | null;
+  days?: number;
+  limit?: number;
+  offset?: number;
+}) {
   const db = requireDb();
   const days = Math.min(Math.max(filter.days ?? 7, 0), 90);
   const today = toDateStr();
@@ -135,6 +140,9 @@ export async function dueSoon(filter: { branchId?: number | null; days?: number 
     lte(installmentLines.dueDate, horizon),
   ];
   if (filter.branchId != null) wheres.push(eq(installmentPlans.branchId, filter.branchId));
+
+  const limitVal = filter.limit != null ? Math.min(Math.max(filter.limit, 1), 5000) : 200;
+  const offsetVal = Math.max(filter.offset ?? 0, 0);
 
   const rows = await db
     .select({
@@ -150,7 +158,8 @@ export async function dueSoon(filter: { branchId?: number | null; days?: number 
     .innerJoin(customers, eq(installmentPlans.customerId, customers.id))
     .where(and(...wheres))
     .orderBy(asc(installmentLines.dueDate), asc(installmentLines.id))
-    .limit(200);
+    .limit(limitVal)
+    .offset(offsetVal);
 
   return rows.map((r) => {
     const overdueMs = new Date(`${today}T00:00:00Z`).getTime() - new Date(`${r.line.dueDate}T00:00:00Z`).getTime();

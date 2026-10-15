@@ -3,6 +3,7 @@ import { fmtDate, type DateInput } from "@/lib/date";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { calcLineTotal, type InvoiceLine } from "@/components/invoice";
 import { priceDecimalsFor, type PriceCurrency } from "@shared/moneyPrecision";
+import { getPurchaseSettlementIntentLabel } from "@shared/purchaseSettlement";
 import { notify } from "@/lib/notify";
 import { safeMoney, type PurchaseLandedCostResult } from "./PurchaseShippingCard";
 
@@ -145,10 +146,7 @@ export function printPurchaseOrderDoc({
       ? [
           {
             label: "التسوية",
-            value:
-              paymentTerms === "CASH"
-                ? "نقدي عند كل استلام"
-                : "آجل على المورّد",
+            value: getPurchaseSettlementIntentLabel(paymentTerms),
           },
         ]
       : []),

@@ -4,10 +4,11 @@ import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
 import { z } from "zod";
 import { appErrorMessage } from "@shared/errors";
-import { branches, shifts, users } from "../../drizzle/schema";
+import { branches, roles, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
+import { SHIFT_VARIANCE_CODES } from "@shared/shiftCashGovernance";
 import { closeShift, enrichShiftListProvenance, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
 import { remediateAndCloseLegacyNegativeShifts } from "../services/legacyNegativeShiftService";
 import { createCashDrop } from "../services/cashDropService";
@@ -28,13 +29,15 @@ import {
   treasuryReadProcedure,
 } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
+import { storedOperationUser } from "../services/authorization/operationAuthority";
+import { cashHandoverRecipientAllowed } from "../services/authorization/operationRecipientEligibility";
 
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على openedAt).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
 export const shiftRouter = router({
-  // سجلّ الورديات — قائمة مُصفّحة branch-scoped (IDOR كـreport): الكاشير يرى ورديات فرعه فقط،
-  // المرتفعون يرون الكل أو يفلترون بفرع. تُغذّي شاشة /shifts وإعادة طباعة Z-report.
+  // سجلّ الورديات: نطاق الموظف يقيّد المالك، ونطاق المشرف يقيّد الفرع.
+  // تُغذّي شاشة /shifts وإعادة طباعة Z-report.
   list: treasuryReadProcedure
     .input(
       z
@@ -60,6 +63,7 @@ export const shiftRouter = router({
       const conds: SQL[] = [];
       const effectiveBranchId = ctx.scopedBranchId ?? i.branchId;
       if (effectiveBranchId != null) conds.push(eq(shifts.branchId, effectiveBranchId));
+      if (ctx.scopedOwnerId != null) conds.push(eq(shifts.userId, ctx.scopedOwnerId));
       if (i.status) conds.push(eq(shifts.status, i.status));
       if (i.shiftType) conds.push(eq(shifts.shiftType, i.shiftType));
       if (i.varianceState === "WITH_VARIANCE") {
@@ -295,6 +299,35 @@ export const shiftRouter = router({
       return elevated ? res : { ...res, treasuryBalanceAfter: null };
     }),
 
+  /** قائمة المديرين والمسؤولين المؤهلين لاعتماد فروقات الوردية في الفرع. */
+  eligibleVarianceApprovers: treasuryCashierProcedure.query(async ({ ctx }) => {
+    const db = getDb();
+    if (!db) return [];
+    const rows = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        role: users.role,
+        branchId: users.branchId,
+      })
+      .from(users)
+      .where(
+        and(
+          eq(users.isActive, true),
+          or(
+            eq(users.role, "admin"),
+            and(
+              eq(users.role, "manager"),
+              ctx.user.branchId != null
+                ? eq(users.branchId, Number(ctx.user.branchId))
+                : sql`TRUE`,
+            ),
+          ),
+        ),
+      );
+    return rows;
+  }),
+
   close: treasuryCashierProcedure
     .input(
       z.object({
@@ -303,8 +336,11 @@ export const shiftRouter = router({
         countedCash: z.string().regex(/^\d+(\.\d{1,2})?$/, "النقد المعدود مبلغ غير سالب"),
         // treasury-stage2: snapshot عدّاد الفئات (اختياري).
         countedBreakdown: z.record(z.string(), z.number().int().min(0).max(10000)).nullish(),
+        varianceReasonCode: z.enum(SHIFT_VARIANCE_CODES).nullish(),
+        varianceReason: z.string().trim().max(500).nullish(),
+        managerApprovedByUserId: z.number().int().positive().nullish(),
         // مسار مالك استثنائي لورديات سالبة سبقت تفعيل الحارس. لا يَقبل مبلغ تمويل من العميل؛
-        // الخدمة تعيد حساب العجز وتضيف خزينة→درج بالقيمة الدقيقة ثم تغلق بصفر.
+        // الخدمة تعيد حساب العجز وتضيف خزينة←درج بالقيمة الدقيقة ثم تغلق بصفر.
         legacyNegativeRemediation: z
           .object({
             expectedCash: z.string().regex(/^-\d+(\.\d{1,2})?$/, "لقطة الرصيد السالب غير صالحة"),
@@ -372,13 +408,57 @@ export const shiftRouter = router({
       if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       }
+
+      let verifiedManagerId: number | null = null;
+      if (ctx.user.role === "admin" || ctx.user.role === "manager") {
+        verifiedManagerId = ctx.user.id;
+      } else if (input.managerApprovedByUserId) {
+        const db = getDb();
+        if (!db) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+        }
+        const approver = (
+          await db
+            .select({ id: users.id, role: users.role, branchId: users.branchId, isActive: users.isActive })
+            .from(users)
+            .where(eq(users.id, input.managerApprovedByUserId))
+            .limit(1)
+        )[0];
+        if (!approver || approver.isActive === false || (approver.role !== "admin" && approver.role !== "manager")) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر اعتماد إغلاق الوردية بفرق نقدي",
+              why: "المعتمد المحدد ليس مديراً أو مسؤولاً نشطاً مصرحاً له بالاعتماد",
+              doThis: "اختر مديراً نشطاً مصرحاً له لاعتماد فرق النقدية",
+            }),
+          });
+        }
+        if (approver.role !== "admin" && ctx.user.branchId != null && approver.branchId !== ctx.user.branchId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر اعتماد إغلاق الوردية من هذا الحساب",
+              why: "المدير المعتمد يتبع فرعاً آخر غير فرع الوردية",
+              doThis: "اطلب اعتماد فرق الوردية من مدير فرعك أو من الإدارة العامة",
+            }),
+          });
+        }
+        verifiedManagerId = approver.id;
+      }
+
       // NUMBERING-RACE (تدقيق ٢/٧): ترقيم سند التسليم (CH) يحرّر GET_LOCK قبل الالتزام ⇒ إغلاقان
       // متزامنان لنفس الفرع/اليوم قد يحسبان نفس الرقم؛ القيد الفريد يرفض الثاني. نعيد المحاولة على
       // التصادم (closeShift ذرّية داخل withTx فتتراجع المحاولة الفاشلة كاملةً).
       const res = await retryOnDup(() =>
         closeShift({
-          ...input,
-          enforceCashGovernance: true,
+          shiftId: input.shiftId,
+          countedCash: input.countedCash,
+          countedBreakdown: input.countedBreakdown,
+          varianceReasonCode: input.varianceReasonCode,
+          varianceReason: input.varianceReason,
+          managerApprovedByUserId: verifiedManagerId,
+          enforceCashGovernance: !verifiedManagerId,
         }, {
           userId: ctx.user.id,
           branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
@@ -467,7 +547,7 @@ export const shiftRouter = router({
     }),
 
   // مستلمو السحب النقدي أثناء الوردية وإعادة إسناد العهد التشغيلية المعلّقة.
-  // المستلِم admin/manager نشط، أمّا القارئ فيشمل الكاشير والمدير والمحاسب
+  // المستلِم نشط ومفوّض بالقبول، أو admin/manager في السياسة القديمة؛ أمّا القارئ فيشمل الكاشير والمدير والمحاسب
   // والمنح الصريح. غير admin يرى مستلمي فرعه فقط؛ admin يعبر الفروع لمعالجة
   // الوردية في الفرع المختار.
   handoverRecipients: treasuryHandoverRecipientsProcedure.query(async ({ ctx }) => {
@@ -475,17 +555,34 @@ export const shiftRouter = router({
     if (!db) return [] as { id: number; name: string; branchId: number | null }[];
     const branchScope = ctx.user.role === "admin" ? null : Number(ctx.user.branchId);
     const rows = await db
-      .select({ id: users.id, name: users.name, branchId: users.branchId })
+      .select({
+        user: {
+          id: users.id, name: users.name, role: users.role, branchId: users.branchId,
+          isActive: users.isActive, isOwner: users.isOwner, customRoleId: users.customRoleId,
+          permissionsOverride: users.permissionsOverride, operationPolicy: users.operationPolicy,
+          accessExpiresAt: users.accessExpiresAt,
+        },
+        customRole: {
+          id: roles.id, baseRole: roles.baseRole, isActive: roles.isActive,
+          permissions: roles.permissions, operationPolicy: roles.operationPolicy, atomicPermissions: roles.atomicPermissions,
+        },
+      })
       .from(users)
+      .leftJoin(roles, eq(users.customRoleId, roles.id))
       .where(
         and(
           eq(users.isActive, true),
-          inArray(users.role, ["admin", "manager"]),
           branchScope == null ? undefined : eq(users.branchId, branchScope),
         ),
       )
       .orderBy(users.name);
-    return rows.map((r) => ({ id: r.id, name: r.name ?? `#${r.id}`, branchId: r.branchId == null ? null : Number(r.branchId) }));
+    return rows.filter(({ user, customRole }) => {
+      try {
+        return cashHandoverRecipientAllowed(storedOperationUser(user, customRole), user.role === "admin" || user.role === "manager");
+      } catch {
+        return false;
+      }
+    }).map(({ user }) => ({ id: user.id, name: user.name ?? `#${user.id}`, branchId: user.branchId == null ? null : Number(user.branchId) }));
   }),
 
   // §٧ IDOR: كان كاشير من فرع A يستطيع `report` لوردية فرع B بمعرفة shiftId.
@@ -495,14 +592,23 @@ export const shiftRouter = router({
     .query(async ({ input, ctx }) => {
       const report = await getShiftReport(input.shiftId);
       if (!report) return null;
-      // ctx.scopedBranchId == null للمرتفعين (admin/manager): مرور حر.
-      // ctx.scopedBranchId == number لغيرهم: فرض المطابقة.
+      // نطاق الفرع يُفرض حتى على المشرف؛ null محصور بالعابرين المفوّضين.
       // إصلاح تدقيق ٢٧/٧: فرعُ الوردية مُعشَّشٌ تحت report.shift لا في جذر report — كان القالب
       // `(report as { branchId? })` يقرأ undefined دائماً فيُبطِل الحارس صامتاً (IDOR ماليّ عابر
       // للفروع). المسار الصحيح مُنمَّطٌ الآن فيمتنع تكرار الخطأ (لا cast).
       const sBranchId = report.shift.branchId;
-      if (ctx.scopedBranchId != null && sBranchId != null && Number(sBranchId) !== ctx.scopedBranchId) {
+      if (ctx.scopedBranchId != null && Number(sBranchId) !== ctx.scopedBranchId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "ليس لك صلاحية على ورديات هذا الفرع" });
+      }
+      if (ctx.scopedOwnerId != null && Number(report.shift.userId) !== ctx.scopedOwnerId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "ليس لك صلاحية على وردية موظف آخر",
+            why: "نطاق صلاحيتك يقتصر على وردياتك",
+            doThis: "اختر ورديتك أو اطلب من الإدارة تفويض الاطلاع على ورديات الفرع",
+          }),
+        });
       }
       return report;
     }),

@@ -1,3 +1,5 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
+import type { OperationUser } from "@shared/operationPermissions";
 import { useMemo, useState } from "react";
 import { ReceiptText, RotateCcw } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -77,6 +79,7 @@ const TYPE_LABEL: Record<string, string> = {
 };
 
 export function PurchaseChargesGovernanceWorkspace({
+  operationUser,
   branchId,
   sources,
   charges,
@@ -93,6 +96,7 @@ export function PurchaseChargesGovernanceWorkspace({
   onRequestControl,
   onDecideControl,
 }: {
+  operationUser?: OperationUser | null;
   branchId: number;
   sources: PurchaseChargeSource[];
   charges: PurchaseChargeListRow[];
@@ -139,6 +143,8 @@ export function PurchaseChargesGovernanceWorkspace({
   }) => Promise<unknown>;
   onDecideControl: Parameters<typeof GovernanceApprovalQueue>[0]["onDecide"];
 }) {
+  const can = (path: string) =>
+    operationUser == null || canLifecycleOperation(operationUser, path, true);
   const [createOpen, setCreateOpen] = useState(false);
   const [control, setControl] = useState<{
     row: PurchaseChargeListRow;
@@ -230,6 +236,7 @@ export function PurchaseChargesGovernanceWorkspace({
                   kind: row.original.status === "DRAFT" ? "POST" : "REVERSE",
                 })
               }
+              disabled={!can("purchaseCharges.requestControl")}
             >
               {row.original.status === "DRAFT" ? "طلب ترحيل" : "طلب عكس"}
             </Button>
@@ -253,6 +260,7 @@ export function PurchaseChargesGovernanceWorkspace({
   }
 
   async function submitCreate() {
+    if (!can("purchaseCharges.create")) return;
     if (!createValid) return;
     const clientRequestId = newGovernanceKey("purchase-charge");
     try {
@@ -292,6 +300,7 @@ export function PurchaseChargesGovernanceWorkspace({
   }
 
   async function submitControl() {
+    if (!can("purchaseCharges.requestControl")) return;
     if (
       !control ||
       reason.trim().length < 3 ||
@@ -331,6 +340,7 @@ export function PurchaseChargesGovernanceWorkspace({
                 type="button"
                 size="sm"
                 onClick={() => setCreateOpen(true)}
+                disabled={!can("purchaseCharges.create")}
               >
                 مصروف جديد
               </Button>
@@ -369,6 +379,7 @@ export function PurchaseChargesGovernanceWorkspace({
       </Card>
 
       <GovernanceApprovalQueue
+        reviewAllowed={can("purchaseCharges.decideControl")}
         title="طلبات ترحيل أو عكس المصاريف"
         scope="purchase-charge-control"
         rows={pendingControls}
@@ -429,7 +440,8 @@ export function PurchaseChargesGovernanceWorkspace({
                   disabled
                 />
                 <p className="text-xs text-muted-foreground">
-                  المصروف الآجل متوقف احترازياً حتى اكتمال دورة التزام وصرف مستقلة؛ لا يُنشأ التزام بلا مسار تسوية.
+                  المصروف الآجل متوقف احترازياً حتى اكتمال دورة التزام وصرف
+                  مستقلة؛ لا يُنشأ التزام بلا مسار تسوية.
                 </p>
               </div>
               <div className="space-y-2">
@@ -555,7 +567,7 @@ export function PurchaseChargesGovernanceWorkspace({
               type="button"
               pending={requestPending}
               pendingText={ACTION_LABELS.sending}
-              disabled={!createValid}
+              disabled={!createValid || !can("purchaseCharges.create")}
               onClick={() => void submitCreate()}
             >
               حفظ مسودة وإرسال الترحيل للاعتماد
@@ -612,7 +624,9 @@ export function PurchaseChargesGovernanceWorkspace({
             <Button
               type="button"
               variant="outline"
-              disabled={requestPending}
+              disabled={
+                requestPending || !can("purchaseCharges.requestControl")
+              }
               onClick={() => setControl(null)}
             >
               تراجع
@@ -623,7 +637,8 @@ export function PurchaseChargesGovernanceWorkspace({
               pendingText={ACTION_LABELS.sending}
               disabled={
                 reason.trim().length < 3 ||
-                evidenceReference.trim().length === 0
+                evidenceReference.trim().length === 0 ||
+                !can("purchaseCharges.requestControl")
               }
               onClick={() => void submitControl()}
             >

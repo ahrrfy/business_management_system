@@ -35,6 +35,9 @@ export interface CompanyStatementBoxProps {
   lines: StatementReconcileLine[];
   onSelectAll: () => void;
   onClearSelection: () => void;
+displayedCount?: number;
+  selectionDisabled?: boolean;
+  disabled?: boolean;
 }
 
 const VERDICT_CLS: Record<StatementLineVerdict, string> = {
@@ -48,6 +51,9 @@ export function CompanyStatementBox({
   required = false,
   statementNumber, onStatementNumberChange, statementDate, onStatementDateChange, deductions, onDeductionsChange,
   notes, onNotesChange, lines, onSelectAll, onClearSelection,
+  displayedCount = lines.length,
+  selectionDisabled = false,
+  disabled = false,
 }: CompanyStatementBoxProps) {
   const statementMode = statementNumber.trim().length > 0;
   const rec = useMemo(() => (statementMode ? reconcileCompanyStatement(lines) : null), [statementMode, lines]);
@@ -63,8 +69,12 @@ export function CompanyStatementBox({
         {statementMode && (
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="rounded bg-card px-2 py-1 font-bold">المحدَّد: <span className="tabular-nums">{selectedCount}</span> من {lines.length}</span>
-            <Button size="sm" variant="outline" onClick={onSelectAll}>تحديد الكل</Button>
-            <Button size="sm" variant="ghost" onClick={onClearSelection}>مسح التحديد</Button>
+            <Button size="sm" variant="outline" disabled={selectionDisabled || displayedCount === 0}
+              onClick={onSelectAll}>تحديد النتائج المعروضة ({displayedCount})
+            </Button>
+            <Button size="sm" variant="ghost" disabled={selectionDisabled}
+              onClick={onClearSelection}>مسح تحديد النتائج المعروضة
+            </Button>
           </div>
         )}
       </div>
@@ -72,21 +82,25 @@ export function CompanyStatementBox({
         <div className="space-y-1">
           <Label htmlFor="stmt-no" className="text-xs">رقم الكشف {required && <span className="text-destructive">*</span>}</Label>
           <Input id="stmt-no" value={statementNumber} maxLength={64} dir="ltr"
+            disabled={disabled}
             onChange={(e) => onStatementNumberChange(e.target.value)} placeholder="STMT-…" className="h-9" />
         </div>
         <div className="space-y-1">
           <Label htmlFor="stmt-date" className="text-xs">تاريخ الكشف</Label>
           <Input id="stmt-date" type="date" value={statementDate}
+            disabled={disabled}
             onChange={(e) => onStatementDateChange(e.target.value)} className="h-9" />
         </div>
         <div className="space-y-1">
           <Label htmlFor="stmt-deduct" className="text-xs">استقطاعات الشركة (إفصاح)</Label>
           <MoneyInput id="stmt-deduct" value={String(deductions || "")}
+            disabled={disabled}
             onChange={(v) => onDeductionsChange(Number(v) || 0)} ariaLabel="استقطاعات الشركة" />
         </div>
         <div className="space-y-1">
           <Label htmlFor="stmt-notes" className="text-xs">ملاحظة</Label>
           <Input id="stmt-notes" value={notes} maxLength={500}
+            disabled={disabled}
             onChange={(e) => onNotesChange(e.target.value)} placeholder="سبب الفرق مثلاً…" className="h-9" />
         </div>
       </div>

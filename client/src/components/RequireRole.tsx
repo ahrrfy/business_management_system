@@ -20,12 +20,28 @@ import {
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { trpc } from "@/lib/trpc";
 import { hasModuleAccess, moduleAccessAllowed, type AccessLevel, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import {
+  canSeeGate,
+  RETURNS_WORKSPACE_GATE,
+  type RoleGate,
+} from "@/lib/navVisibility";
 import { Lock } from "lucide-react";
 import { useSyncExternalStore } from "react";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import type { OperationPolicy } from "@shared/operationPermissions";
+
+const LEGACY_RETURNS_STATION_GATE: RoleGate = {
+  anyOf: [
+    { roles: ["cashier", "manager", "print_operator"], module: "workorders", level: "FULL" },
+    { roles: ["cashier", "manager"], module: "pos", level: "FULL" },
+  ],
+};
 
 type Props = {
+  /** Compound exact operation contract for alternative workflows in the same editor. */
+  canonicalGate?: RoleGate;
+  /** Exact canonical actions needed to open this editor; legacy gates remain below. */
+  operations?: string[];
   /** الأدوار المسموح لها بالوصول. لا تقبل قائمة فارغة. */
   roles?: RoleKey[];
   /** بوابة مركبة (anyOf/allOf) للمسارات التي لا تختزل في وحدة واحدة. */
@@ -43,6 +59,8 @@ type Props = {
 };
 
 export function RequireRole({
+  canonicalGate,
+  operations,
   roles,
   gate,
   module,
@@ -74,15 +92,28 @@ export function RequireRole({
     );
   }
 
-  const role = (localActor?.role ?? me.data?.role) as RoleKey | undefined;
-  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  const allowed = !!role && (gate
-    ? canSeeGate(gate, role, override)
-    : module
-      ? roles?.length
-        ? moduleAccessAllowed(role, override, module, level ?? "READ", roles)
-        : hasModuleAccess(role, override, module, level ?? "READ")
-      : role === "admin" || !!roles?.includes(role));
+  const role = (localActor?.role ?? (me.data?.isOwner ? "admin" : me.data?.role)) as RoleKey | undefined;
+  const override = (me.data?.isOwner ? null : me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const operationPolicy =
+    !localActor &&
+    !me.data?.isOwner &&
+    (me.data as { operationPolicyEnabled?: boolean })?.operationPolicyEnabled
+      ? (me.data as { resolvedOperationPolicy?: OperationPolicy })
+          .resolvedOperationPolicy
+      : null;
+  const allowed =
+    !!role &&
+    (operationPolicy && canonicalGate
+      ? canSeeGate(canonicalGate, role, override, operationPolicy)
+      : operationPolicy && operations?.length
+      ? canSeeGate({ operations }, role, override, operationPolicy)
+      : gate
+      ? canSeeGate(gate, role, override, operationPolicy)
+      : module
+        ? canSeeGate({ roles, module, level }, role, override, operationPolicy) ||
+          (canonicalGate === RETURNS_WORKSPACE_GATE &&
+            canSeeGate(LEGACY_RETURNS_STATION_GATE, role, override, operationPolicy))
+        : role === "admin" || !!roles?.includes(role));
   if (!allowed) {
     return <Forbidden />;
   }

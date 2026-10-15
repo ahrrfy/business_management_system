@@ -2,6 +2,7 @@
 // (انظر lockCampaignAndCheckBudget في outbound.ts). قراءة/إنشاء/إغلاق فقط — لا تعديل للحملات القائمة
 // (نمط append-only للحوكمة: إغلاق نظيف بدل تحرير رجعيّ يُربك تتبّع الإنفاق التاريخيّ).
 import { TRPCError } from "@trpc/server";
+import { assertOperationAuthorityTx } from "../authorization/operationAuthority";
 import { desc, eq, sql } from "drizzle-orm";
 import { giftCampaigns, giftVouchers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
@@ -19,16 +20,8 @@ export interface CreateCampaignResult {
   campaignId: number;
 }
 
-/** حوكمة الحملة (تحديد ميزانية/إغلاق) قرارٌ سياسيّ لا عمليّاتيّ — مدير/أدمن فقط (تدقيق Codex P1):
- *  المخزن يملك gifts=FULL (عمليّاتيّ: استلام/منح) لكنه لا يُقرَّر بميزانيّات عامّة أو يُغلق حملات الغير. */
-function assertCampaignGovernance(actor: Actor): void {
-  if (actor.role !== "admin" && actor.role !== "manager") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "إدارة حملات الهدايا (إنشاء/إغلاق) من صلاحية المدير فقط" });
-  }
-}
-
+/** حوكمة الحملة تحتاج إذن الإجراء الصريح؛ الحسابات القديمة تحتفظ ببوابة المدير/الأدمن. */
 export async function createGiftCampaign(input: CreateCampaignInput, actor: Actor): Promise<CreateCampaignResult> {
-  assertCampaignGovernance(actor);
   const name = input.name?.trim();
   if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم الحملة مطلوب" });
   if (input.startDate && input.endDate && input.endDate < input.startDate) {
@@ -42,6 +35,7 @@ export async function createGiftCampaign(input: CreateCampaignInput, actor: Acto
   }
 
   return withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "gifts.campaignCreate", actor.role === "admin" || actor.role === "manager");
     const res = await tx.insert(giftCampaigns).values({
       name,
       reason: input.reason?.trim() || null,
@@ -84,8 +78,8 @@ export async function listGiftCampaigns(filter: ListCampaignsFilter = {}) {
 
 /** إغلاق حملة (نهائيّ — لا إعادة فتح): بعده يرفض outbound.ts أيّ هدية جديدة تُربَط بها. */
 export async function closeGiftCampaign(campaignId: number, actor: Actor): Promise<void> {
-  assertCampaignGovernance(actor);
   return withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "gifts.campaignClose", actor.role === "admin" || actor.role === "manager");
     const camp = (await tx.select({ status: giftCampaigns.status }).from(giftCampaigns).where(eq(giftCampaigns.id, campaignId)).for("update").limit(1))[0];
     if (!camp) throw new TRPCError({ code: "NOT_FOUND", message: "الحملة غير موجودة" });
     if (camp.status === "CLOSED") throw new TRPCError({ code: "BAD_REQUEST", message: "الحملة مغلقة مسبقاً" });

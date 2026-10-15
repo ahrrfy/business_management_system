@@ -22,7 +22,7 @@ import {
 } from "../services/accounting/statutoryReports";
 import { companyBranchScope } from "../services/companyBranchScope";
 import { withTx } from "../services/tx";
-import { reportViewerProcedure, reportsAdminProcedure, router } from "../trpc";
+import { reportViewerProcedure, reportsAdminProcedure, requireAtomicPermission, router } from "../trpc";
 
 const ymd = z
   .string()
@@ -101,22 +101,30 @@ export function requireCompleteExport<
 }
 
 export const statutoryAccountingRouter = router({
-  readiness: reportViewerProcedure.query(() => getStatutoryActivationReadiness()),
-  profiles: reportViewerProcedure.query(() => listStatutoryProfiles()),
+  readiness: reportViewerProcedure
+    .use(requireAtomicPermission("treasury.statutory_accounting.view"))
+    .query(() => getStatutoryActivationReadiness()),
+  profiles: reportViewerProcedure
+    .use(requireAtomicPermission("treasury.statutory_accounting.view"))
+    .query(() => listStatutoryProfiles()),
   detail: reportViewerProcedure
+    .use(requireAtomicPermission("treasury.statutory_accounting.view"))
     .input(z.object({ profileId: z.number().int().positive() }))
     .query(({ input }) => getStatutoryProfileDetail(input.profileId)),
   trialBalance: reportViewerProcedure
+    .use(requireAtomicPermission("treasury.statutory_accounting.trial_balance"))
     .input(reportPeriod)
     .query(({ input, ctx }) =>
       getStatutoryTrialBalance({ ...input, branchId: companyBranchScope(ctx.user).branchId }),
     ),
   incomeStatement: reportViewerProcedure
+    .use(requireAtomicPermission("treasury.statutory_accounting.income_statement"))
     .input(reportPeriod)
     .query(({ input, ctx }) =>
       getStatutoryIncomeStatement({ ...input, branchId: companyBranchScope(ctx.user).branchId }),
     ),
   balanceSheet: reportViewerProcedure
+    .use(requireAtomicPermission("treasury.statutory_accounting.balance_sheet"))
     .input(
       z.object({
         asOf: ymd,
@@ -131,6 +139,7 @@ export const statutoryAccountingRouter = router({
       getStatutoryBalanceSheet({ ...input, branchId: companyBranchScope(ctx.user).branchId }),
     ),
   accountLedger: reportViewerProcedure
+    .use(requireAtomicPermission("treasury.statutory_accounting.view"))
     .input(
       z.intersection(accountLedgerPeriod, z.object({
         limit: z.number().int().min(1).max(500).optional(),
@@ -141,6 +150,7 @@ export const statutoryAccountingRouter = router({
       getStatutoryAccountLedger({ ...input, branchId: companyBranchScope(ctx.user).branchId }),
     ),
   accountLedgerExport: reportViewerProcedure
+    .use(requireAtomicPermission("treasury.statutory_accounting.export"))
     .input(accountLedgerPeriod)
     .query(async ({ input, ctx }) => {
       const report = await getStatutoryAccountLedgerExport({
@@ -151,6 +161,7 @@ export const statutoryAccountingRouter = router({
       return requireCompleteExport(report, "كشف الحساب");
     }),
   generalJournal: reportViewerProcedure
+    .use(requireAtomicPermission("treasury.statutory_accounting.view"))
     .input(
       z.intersection(journalPeriod, z.object({
         limit: z.number().int().min(1).max(500).optional(),
@@ -161,6 +172,7 @@ export const statutoryAccountingRouter = router({
       getStatutoryGeneralJournal({ ...input, branchId: companyBranchScope(ctx.user).branchId }),
     ),
   accountantPack: reportViewerProcedure
+    .use(requireAtomicPermission("treasury.statutory_accounting.export"))
     .input(
       z.object({ from: ymd, to: ymd }).refine((value) => value.from <= value.to, {
         path: ["to"],
@@ -175,6 +187,7 @@ export const statutoryAccountingRouter = router({
     ),
 
   createProfile: reportsAdminProcedure
+    .use(requireAtomicPermission("treasury.statutory_accounting.create_account"))
     .input(
       z.object({
         profileKey: z.string().trim().min(2).max(64),
@@ -197,7 +210,9 @@ export const statutoryAccountingRouter = router({
       }),
     ),
 
-  seedIraqiUnified: reportsAdminProcedure.mutation(({ ctx }) =>
+  seedIraqiUnified: reportsAdminProcedure
+    .use(requireAtomicPermission("treasury.statutory_accounting.create_account"))
+    .mutation(({ ctx }) =>
     withTx(async (tx) => {
       const result = await seedIraqiUnifiedProfile(tx, ctx.user.id);
       await logAuditTx(tx, ctx, {
@@ -211,6 +226,7 @@ export const statutoryAccountingRouter = router({
   ),
 
   replaceAccounts: reportsAdminProcedure
+    .use(requireAtomicPermission("treasury.statutory_accounting.edit_account"))
     .input(
       z.object({
         profileId: z.number().int().positive(),
@@ -245,6 +261,7 @@ export const statutoryAccountingRouter = router({
     ),
 
   replaceMappings: reportsAdminProcedure
+    .use(requireAtomicPermission("treasury.statutory_accounting.edit_account"))
     .input(
       z.object({
         profileId: z.number().int().positive(),
@@ -278,6 +295,7 @@ export const statutoryAccountingRouter = router({
     ),
 
   approveProfile: reportsAdminProcedure
+    .use(requireAtomicPermission("treasury.statutory_accounting.create_account"))
     .input(
       z.object({
         profileId: z.number().int().positive(),

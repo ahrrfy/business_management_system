@@ -1,3 +1,4 @@
+import { useDigitalGiftOperationAccess } from "@/lib/digitalGiftOperationAccess";
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/data-table/DataTable";
 // شاشة الهدايا والمجانيات — G-م١ الوارد (استلام مجّانيّ من مورّد، صفر تكلفة) + G-م٢ الصادر (منح للعميل،
@@ -66,13 +67,20 @@ type CampaignRow = RouterOutputs["gifts"]["campaignList"][number];
 type CampaignColumn = ColumnDef<CampaignRow, unknown>;
 
 export default function GiftsHub() {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
   const override = (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)?.permissionsOverride ?? null;
   const elevated = role === "admin" || role === "manager";
-  const canWrite = hasModuleAccess(role, override, "gifts", "FULL");
-  const canApprove = role === "admin" || role === "manager";
+  const legacyWrite = hasModuleAccess(role, override, "gifts", "FULL");
+  const canReceive = digitalAccess.can("gifts.receiveInbound", legacyWrite);
+  const canGive = digitalAccess.can("gifts.createOutbound", legacyWrite);
+  const canWrite = canReceive || canGive;
+  const canApprove = digitalAccess.can("gifts.approveGift", elevated) && digitalAccess.can("gifts.get");
+  const canCampaigns = digitalAccess.can("gifts.campaignList", legacyWrite);
+  const canCreateCampaign = digitalAccess.can("gifts.campaignCreate", elevated);
+  const canCloseCampaign = digitalAccess.can("gifts.campaignClose", elevated);
 
   const [mode, setMode] = useState<Mode>("list");
 
@@ -108,7 +116,7 @@ export default function GiftsHub() {
   // ── حالة النموذج (مشتركة بين الوارد والصادر) ──
   const [formBranchId, setFormBranchId] = useState<number | null>(null);
   const branchId = elevated ? formBranchId : me.data?.branchId ?? null;
-  const branches = trpc.branches.list.useQuery(undefined, { enabled: elevated });
+  const branches = digitalAccess.query("branches.list", trpc.branches.list.useQuery(undefined, { enabled: digitalAccess.can("branches.list") && (elevated) }));
   const [supplierId, setSupplierId] = useState<number | null>(null); // وارد
   const [customerId, setCustomerId] = useState<number | null>(null); // صادر
   const [giftType, setGiftType] = useState("");
@@ -134,13 +142,13 @@ export default function GiftsHub() {
     }),
     [dirFilter, statusFilter, elevated, listBranchId, listFrom, listTo, qDebounced],
   );
-  const list = trpc.gifts.list.useQuery({ ...listInput, limit: PAGE_SIZE, offset: page * PAGE_SIZE });
+  const list = digitalAccess.query("gifts.list", trpc.gifts.list.useQuery({ ...listInput, limit: PAGE_SIZE, offset: page * PAGE_SIZE }, { enabled: digitalAccess.can("gifts.list") }));
   const listRows = list.data?.rows ?? [];
   const listTotal = list.data?.total ?? 0;
 
   // حملات الهدايا (G-م٧): للاختيار في نموذج الصادر (النشطة فقط) ولإدارتها في وضع «الحملات».
-  const activeCampaigns = trpc.gifts.campaignList.useQuery({ status: "ACTIVE" }, { enabled: canWrite });
-  const allCampaigns = trpc.gifts.campaignList.useQuery(undefined, { enabled: mode === "campaigns" });
+  const activeCampaigns = digitalAccess.query("gifts.campaignList", trpc.gifts.campaignList.useQuery({ status: "ACTIVE" }, { enabled: digitalAccess.can("gifts.campaignList") && (canWrite) }));
+  const allCampaigns = digitalAccess.query("gifts.campaignList", trpc.gifts.campaignList.useQuery(undefined, { enabled: digitalAccess.can("gifts.campaignList") && (mode === "campaigns") }));
   const [campName, setCampName] = useState("");
   const [campBudget, setCampBudget] = useState("");
   const [campStart, setCampStart] = useState("");
@@ -165,11 +173,11 @@ export default function GiftsHub() {
   });
 
   // تقرير الهدايا (خلف بوّابة التقارير) — كشف إساءة + أثر ماليّ.
-  const canReports = hasModuleAccess(role, override, "reports", "READ");
+  const canReports = digitalAccess.can("gifts.report", hasModuleAccess(role, override, "reports", "READ"));
   const todayStr = new Date().toISOString().slice(0, 10);
   const [repFrom, setRepFrom] = useState(`${todayStr.slice(0, 8)}01`);
   const [repTo, setRepTo] = useState(todayStr);
-  const report = trpc.gifts.report.useQuery({ from: repFrom, to: repTo }, { enabled: mode === "report" && canReports });
+  const report = digitalAccess.query("gifts.report", trpc.gifts.report.useQuery({ from: repFrom, to: repTo }, { enabled: digitalAccess.can("gifts.report") && (mode === "report" && canReports) }));
   /**
    * جداولُ تبويب التقرير الأربعة تتشارك هذا البناء: عمودُ تسميةٍ ثمّ أعمدةٌ رقمية.
    * تحويلُه هنا وحدَه يوحّد المواضعَ الأربعة (٢/٩/٢٦، موجة الجداول ٧).
@@ -239,7 +247,7 @@ export default function GiftsHub() {
   // حوار «عرض قبل الاعتماد» — يعرض بنود السند للمعتمِد قبل تنفيذ الاعتماد الفعليّ (بلا تكلفة، نفس
   // نطاق gifts.get المستعمَل للطباعة/الإشعار — سند الهدية لا يحمل حقول تكلفة أصلاً).
   const [approvingId, setApprovingId] = useState<number | null>(null);
-  const approvePreviewQ = trpc.gifts.get.useQuery({ giftId: approvingId! }, { enabled: approvingId != null });
+  const approvePreviewQ = digitalAccess.query("gifts.get", trpc.gifts.get.useQuery({ giftId: approvingId! }, { enabled: digitalAccess.can("gifts.get") && (approvingId != null) }));
   // و-١: إلغاء طلبٍ معلَّق — المخرج الثاني الذي كان مفقوداً (كان الاعتماد وحده). صفر أثرٍ ماليّ.
   const cancelGift = trpc.gifts.cancelGift.useMutation({
     onSuccess: () => {
@@ -309,7 +317,7 @@ export default function GiftsHub() {
   const removeLine = (key: number) => setLines((prev) => prev.filter((x) => x.key !== key));
 
   const busy = inbound.isPending || outbound.isPending;
-  const canSubmit = canWrite && branchId != null && lines.length > 0 && lines.every((l) => Number(l.quantity) > 0) && !busy;
+  const canSubmit = (mode === "in" ? canReceive : canGive) && branchId != null && lines.length > 0 && lines.every((l) => Number(l.quantity) > 0) && !busy;
   const linePayload = () => lines.map((l) => ({ variantId: l.variantId, productUnitId: l.productUnitId, quantity: Number(l.quantity), refSalePrice: null }));
 
   function submitInbound() {
@@ -341,7 +349,7 @@ export default function GiftsHub() {
     });
   }
   function submitCampaign() {
-    if (!campName.trim()) return;
+    if (!canCreateCampaign || !campName.trim()) return;
     createCampaign.mutate({
       name: campName.trim(),
       budgetCost: campBudget.trim() || undefined,
@@ -397,11 +405,11 @@ export default function GiftsHub() {
             <div className="flex gap-2">
               {canWrite ? (
                 <>
-                  <Button size="sm" onClick={() => openForm("in")}>
+                  <Button size="sm" onClick={() => openForm("in")} disabled={!canReceive}>
                     <ArrowDownToLine aria-hidden className="me-1 size-4" />
                     استلام وارد
                   </Button>
-                  <Button size="sm" variant="secondary" onClick={() => openForm("out")}>
+                  <Button size="sm" variant="secondary" onClick={() => openForm("out")} disabled={!canGive}>
                     <ArrowUpFromLine aria-hidden className="me-1 size-4" />
                     منح هدية صادرة
                   </Button>
@@ -413,7 +421,7 @@ export default function GiftsHub() {
                   تقرير الهدايا
                 </Button>
               ) : null}
-              {canWrite ? (
+              {canCampaigns || canCreateCampaign || canCloseCampaign ? (
                 <Button size="sm" variant="outline" onClick={() => setMode("campaigns")}>
                   <Megaphone aria-hidden className="me-1 size-4" />
                   الحملات
@@ -548,8 +556,8 @@ export default function GiftsHub() {
                           kind: "approve",
                           label: "اعتماد",
                           icon: Check,
-                          hidden: r.direction !== "OUT" || r.status !== "PENDING_APPROVAL" || !canApprove,
-                          gate: { roles: ["manager"], module: "gifts", level: "FULL" },
+                          hidden: !digitalAccess.can("gifts.approveGift") || (r.direction !== "OUT" || r.status !== "PENDING_APPROVAL" || !canApprove),
+                          gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "gifts", level: "FULL" },
                           disabled: approve.isPending,
                           disabledReason: `${ACTION_LABELS.approving} — السند`,
                           // يفتح حواراً يعرض بنود السند أوّلاً — لا اعتماد مباشر بلا مراجعة.
@@ -561,8 +569,8 @@ export default function GiftsHub() {
                           label: "إلغاء الطلب",
                           icon: X,
                           // المعلَّق فقط: المُنجَز يُعالَج بعكسٍ محاسبيّ لا بإلغاء حالة.
-                          hidden: r.direction !== "OUT" || r.status !== "PENDING_APPROVAL",
-                          gate: { module: "gifts", level: "FULL" },
+                          hidden: !digitalAccess.can("gifts.cancelGift") || (r.direction !== "OUT" || r.status !== "PENDING_APPROVAL"),
+                          gate: digitalAccess.canonical ? undefined : { module: "gifts", level: "FULL" },
                           disabled: cancelGift.isPending,
                           disabledReason: ACTION_LABELS.cancelling,
                           onSelect: async () => {
@@ -578,8 +586,9 @@ export default function GiftsHub() {
                             cancelGift.mutate({ giftId: Number(r.id) });
                           },
                         },
-                        { key: "print", kind: "print", label: "طباعة السند", icon: Printer, gate: { module: "gifts", level: "READ" }, onSelect: () => printGift(Number(r.id)) },
-                        { key: "share", kind: "other", label: "إشعار واتساب", icon: MessageCircle, hidden: !r.supplierName && !r.customerName, gate: { module: "gifts", level: "READ" }, onSelect: () => shareGift(Number(r.id)) },
+                        { key: "print", kind: "print", label: "طباعة السند", icon: Printer, hidden: !digitalAccess.can("gifts.get"),
+                        gate: digitalAccess.canonical ? undefined : { module: "gifts", level: "READ" }, onSelect: () => printGift(Number(r.id)) },
+                        { key: "share", kind: "other", label: "إشعار واتساب", icon: MessageCircle, hidden: !digitalAccess.can("gifts.get") || (!r.supplierName && !r.customerName), gate: digitalAccess.canonical ? undefined : { module: "gifts", level: "READ" }, onSelect: () => shareGift(Number(r.id)) },
                       ]}
                     />
                   );
@@ -629,7 +638,7 @@ export default function GiftsHub() {
               )}
               <DialogFooter>
                 <Button variant="outline" onClick={() => setApprovingId(null)} disabled={approve.isPending}>إلغاء</Button>
-                <Button onClick={() => approvingId != null && approve.mutate({ giftId: approvingId })} disabled={approve.isPending || !approvePreviewQ.data}>
+                <Button onClick={() => approvingId != null && approve.mutate({ giftId: approvingId })} disabled={!digitalAccess.can("gifts.approveGift") || (approve.isPending || !approvePreviewQ.data)}>
                   {/* القاموس الموحَّد بدل نصٍّ يدويّ — «جارٍ» بألف واحدة وشرطة عمودية عربية في مكانٍ واحد. */}
                   {approve.isPending ? ACTION_LABELS.approving : "اعتماد السند"}
                 </Button>
@@ -651,7 +660,7 @@ export default function GiftsHub() {
           </div>
           {report.isLoading ? (
             <div className="py-6 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>
-          ) : report.data ? (
+          ) : report.data && canReports && digitalAccess.costVisible() ? (
             <div className="grid gap-4 md:grid-cols-2">
               {reportTable("الملخّص (مُنجَز)", ["الاتجاه", "عدد", "التكلفة"], report.data.summary.map((x) => [x.direction === "IN" ? "وارد" : "صادر", String(x.count), fmt(x.totalCost)]))}
               {reportTable("حسب النوع/السبب (صادر)", ["النوع", "عدد", "التكلفة"], report.data.byType.map((x) => [x.giftType || "—", String(x.count), fmt(x.totalCost)]))}
@@ -667,9 +676,7 @@ export default function GiftsHub() {
             حملة بميزانيّة (اختياريّة) تُفرَض تلقائياً: تجاوزها يُعلِّق الهدية لاعتماد مدير آخر حتى لو كان المُنشئ مديراً.
           </div>
 
-          {elevated ? (
-            // إنشاء/إغلاق الحملة سياسة عامّة (ميزانيّات/إغلاق يؤثّر على الجميع) — مدير/أدمن فقط
-            // (تدقيق Codex P1)؛ الخادم يفرضها فعلياً — هذا حجبٌ واجهيّ مطابق فقط. القراءة تبقى لكل gifts≥FULL.
+          {canCreateCampaign ? (
             <div className="grid gap-3 sm:grid-cols-4">
               <div className="space-y-1 sm:col-span-2">
                 <Label>اسم الحملة *</Label>
@@ -688,7 +695,7 @@ export default function GiftsHub() {
                 <Input type="date" value={campEnd} onChange={(e) => setCampEnd(e.target.value)} />
               </div>
               <div className="flex items-end">
-                <Button size="sm" onClick={submitCampaign} disabled={!campName.trim() || createCampaign.isPending}>
+                <Button size="sm" onClick={submitCampaign} disabled={!digitalAccess.can("gifts.campaignCreate") || (!campName.trim() || createCampaign.isPending)}>
                   <Plus aria-hidden className="me-1 size-4" />
                   إنشاء حملة
                 </Button>
@@ -734,12 +741,12 @@ export default function GiftsHub() {
                 meta: { kind: "money" },
                 // budgetCost/spent يُحجَبان (null) خادمياً عمّن لا يرى التكلفة — نمط بقية الشاشة.
                 cell: ({ row }) =>
-                  row.original.spent == null
+                  !digitalAccess.costVisible() || row.original.spent == null
                     ? "—"
                     : `${fmt(row.original.spent)}${row.original.budgetCost ? ` / ${fmt(row.original.budgetCost)}` : " (بلا سقف)"}`,
               },
               // عمود الإجراء لمن يملك الصلاحية وحده — كما كان `elevated ? <td/> : null`.
-              ...(elevated
+              ...(canCloseCampaign
                 ? [{
                     id: "actions",
                     header: "إجراء",
@@ -753,8 +760,8 @@ export default function GiftsHub() {
                           kind: "edit",
                           label: "إغلاق",
                           icon: X,
-                          hidden: row.original.status !== "ACTIVE",
-                          gate: { roles: ["manager"], module: "gifts", level: "FULL" },
+                          hidden: !digitalAccess.can("gifts.campaignClose") || (row.original.status !== "ACTIVE"),
+                          gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "gifts", level: "FULL" },
                           disabled: closeCampaign.isPending,
                           disabledReason: `${ACTION_LABELS.closing} — الحملة`,
                           onSelect: () => closeCampaign.mutate({ campaignId: Number(row.original.id) }),
@@ -841,7 +848,7 @@ export default function GiftsHub() {
                   {(activeCampaigns.data ?? []).map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
-                      {c.budgetCost ? ` (${fmt(c.spent)}/${fmt(c.budgetCost)} د.ع)` : ""}
+                      {digitalAccess.costVisible() && c.budgetCost ? ` (${fmt(c.spent)}/${fmt(c.budgetCost)} د.ع)` : ""}
                     </option>
                   ))}
                 </AppSelect>

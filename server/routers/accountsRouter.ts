@@ -15,8 +15,8 @@ import type { RoleKey } from "@shared/permissions";
 
 const manualJournalLineSchema = z.object({
   accountId: z.number().int().positive(),
-  debit: z.string().regex(/^\d+(\.\d{1,4})?$/, "مبلغ المدين غير صالح"),
-  credit: z.string().regex(/^\d+(\.\d{1,4})?$/, "مبلغ الدائن غير صالح"),
+  debit: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ المدين غير صالح: الحد الأقصى منزلتان عشريتان"),
+  credit: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ الدائن غير صالح: الحد الأقصى منزلتان عشريتان"),
   customerId: z.number().int().positive().nullish(),
   supplierId: z.number().int().positive().nullish(),
 });
@@ -105,9 +105,9 @@ export const accountsRouter = router({
           throw new TRPCError({
             code: "FORBIDDEN",
             message: appErrorMessage({
-              what: "لا يمكن تسجيل قيد يدوي لفرع آخر",
-              why: "صلاحيتك المحاسبية مقيّدة بفرعك المسند ولا تخوّلك الترحيل على فرع آخر.",
-              doThis: "سجّل القيد على فرعك الحالي أو راجع الإدارة العامة.",
+              what: "ترحيل القيد اليدوي على فرع آخر محظور",
+              why: "حساب المستخدم مسند إلى فرع محدد ولا يملك صلاحية إدارة عامة لترحيل قيود على دفاتر الفروع الأخرى.",
+              doThis: "اختر الفرع المسند إليك أو اطلب من المدير العام تنفيذ القيد بين الفروع.",
             }),
           });
         }

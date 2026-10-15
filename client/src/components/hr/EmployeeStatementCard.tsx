@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 /* ============================================================================
  * كشف حضور الموظف — بطاقة في صفحته (client/src/components/hr/EmployeeStatementCard.tsx)
  *
@@ -50,6 +51,7 @@ function recentMonths(count = 12): string[] {
 }
 
 export function EmployeeStatementCard({ employeeId, phone }: { employeeId: number; phone?: string | null }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
   const [period, setPeriod] = useState(() => new Date().toISOString().slice(0, 7));
   const [fix, setFix] = useState<{ date: string; checkIn: string; checkOut: string; hours: string } | null>(null);
@@ -74,7 +76,7 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
     ? attendanceHoursViolation({ checkIn: fix.checkIn, checkOut: fix.checkOut, hours: Number(fix.hours), isPaidStatus: true })
     : null;
 
-  const q = trpc.attendance.employeeStatement.useQuery({ employeeId, period });
+  const q = trpc.attendance.employeeStatement.useQuery({ employeeId, period }, { enabled: can("attendance.employeeStatement") });
   const d = q.data;
 
   const correct = trpc.attendance.record.useMutation({
@@ -378,7 +380,7 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
           <DialogFooter>
             <Button variant="outline" onClick={() => setFix(null)}>إلغاء</Button>
             <Button
-              disabled={correct.isPending || !fix || !!fixError}
+              disabled={!can("attendance.record") || (correct.isPending || !fix || !!fixError)}
               onClick={() => fix && correct.mutate({
                 employeeId,
                 attendanceDate: fix.date,

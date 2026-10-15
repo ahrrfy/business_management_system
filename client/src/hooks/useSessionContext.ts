@@ -16,7 +16,7 @@
  *      يحرسه `check:branch`).
  *   ٣) **يبطل عند تغيّر الجلسة أو الفرع**: مفتاحُ الاستعلام واحدٌ لكلّ الشاشات (بلا مُدخَل — الخادم
  *      لا يقبل معرّفَ مستخدمٍ من العميل)، فتُراقَب هويّةُ `auth.me` (المستخدم · الفرع · الدور ·
- *      الملكية) ويُبطَل السياقُ المخبَّأ حين تتبدّل، ويُمسَح عند الخروج كي لا يقرأ الداخلُ
+ *      الملكية · نسختا الصلاحيات المباشرة والموروثة) ويُبطَل السياقُ المخبَّأ حين تتبدّل، ويُمسَح عند الخروج كي لا يقرأ الداخلُ
  *      التالي سياقَ سلفه.
  *   ٤) **الإنفاذُ النهائيّ خادميّ** (§٢): هذا الملفّ يقرأ للعرض ولإزالة إغراء الاختراع فقط؛
  *      `branchScopedProcedure` يحقن `scopedBranchId` بنفسه ويرفض ما لا يُطابقه.
@@ -60,12 +60,19 @@ const UNASSIGNED_MESSAGE =
 /** بصمةُ الجلسة التي يُبطَل السياقُ عند تبدّلها — لا تحمل قيمةً تُعرض، بل تُقارَن فقط. */
 function identityOf(
   me:
-    | { id: number; branchId?: number | null; role?: string | null; isOwner?: boolean | null }
+    | {
+        id: number;
+        branchId?: number | null;
+        role?: string | null;
+        isOwner?: boolean | null;
+        operationPolicyRevision?: number | null;
+        inheritedOperationPolicyRevision?: number | null;
+      }
     | null
     | undefined,
 ): string | null {
   if (!me) return null;
-  return `${me.id}:${me.branchId ?? "-"}:${me.role ?? "-"}:${me.isOwner ? 1 : 0}`;
+  return `${me.id}:${me.branchId ?? "-"}:${me.role ?? "-"}:${me.isOwner ? 1 : 0}:${me.operationPolicyRevision ?? "-"}:${me.inheritedOperationPolicyRevision ?? "-"}`;
 }
 
 /**
@@ -121,19 +128,24 @@ export function useSessionContext(): SessionContextState {
   // (٣) الإبطالُ عند تبدّل الهويّة — يُقارَن بالهويّة **السابقة** لا بالتركيب الأوّل: إبطالٌ عند كلّ
   // تركيبٍ كان سيُلغي الجلبَ الجاري ويُعيده (طلبان لكلّ شاشة) ويُبطل `staleTime`.
   const previousIdentity = useRef<string | null>(identity);
+  const awaitingContextUpdatedAt = useRef<number | null>(null);
+  // Invalidation preserves data: quarantine the previous authority until a new response arrives.
+  const contextIsCurrent = (previousIdentity.current == null || previousIdentity.current === identity)
+    && (awaitingContextUpdatedAt.current == null || contextQuery.dataUpdatedAt !== awaitingContextUpdatedAt.current);
   useEffect(() => {
     const previous = previousIdentity.current;
     if (previous === identity) return;
     previousIdentity.current = identity;
     // أوّلُ وصولٍ للهويّة: الاستعلامُ يُفعَّل ويُجلَب طبيعياً — لا إبطال.
-    if (previous == null) return;
-    if (identity == null) {
-      // خروج: يُمسَح كي لا يقرأ الداخلُ التالي سياقَ سلفه من الذاكرة.
-      void utils.sessionContext.get.reset();
-    } else {
-      void utils.sessionContext.get.invalidate();
+    if (previous == null) {
+      awaitingContextUpdatedAt.current = null;
+      return;
     }
-  }, [identity, utils]);
+    awaitingContextUpdatedAt.current = contextQuery.dataUpdatedAt;
+    // Reset shared data, including newly mounted consumers; invalidation retains old authority.
+    // Active observers refetch automatically after the reset.
+    void utils.sessionContext.get.reset();
+  }, [identity, utils, contextQuery.dataUpdatedAt]);
 
   const refetch = contextQuery.refetch;
   const meRefetch = me.refetch;
@@ -169,6 +181,7 @@ export function useSessionContext(): SessionContextState {
     if (meError || !signedIn) return failed(SIGN_IN_MESSAGE);
     if (isPending) return loading;
     if (isError) return failed(describeContextError(error));
+    if (!contextIsCurrent) return loading;
 
     // (١) يفشل مغلقاً: حمولةٌ لا يقبلها العقدُ المشترك لا تصير سياقاً نصفُه مخترَع.
     const context = readSessionContext(data.context);
@@ -181,7 +194,7 @@ export function useSessionContext(): SessionContextState {
       message: null,
       retry,
     };
-  }, [meLoading, meError, signedIn, isPending, isError, error, data, refetch, meRefetch]);
+  }, [meLoading, meError, signedIn, isPending, isError, error, data, refetch, meRefetch, contextIsCurrent]);
 }
 
 /**

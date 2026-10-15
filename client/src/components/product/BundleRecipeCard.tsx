@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 // gstack B12 (٧/٧/٢٦): تبويب/قسم تعديل وصفة البكج داخل ProductEdit — كان endpoints
 // `bundles.setComponents/getComponents/previewImpact/searchComponents` موجودة بلا مستهلك.
 // يعرض المكوّنات الحاليّة + زر حذف + منتقي بحث لإضافة مكوّن + تنبيه أثر التعديل.
@@ -21,9 +22,10 @@ type Component = {
 };
 
 export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId: number }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
-  const compQ = trpc.bundles.getComponents.useQuery({ bundleVariantId });
-  const impactQ = trpc.bundles.previewImpact.useQuery({ bundleVariantId });
+  const compQ = trpc.bundles.getComponents.useQuery({ bundleVariantId }, { enabled: can("bundles.getComponents") });
+  const impactQ = trpc.bundles.previewImpact.useQuery({ bundleVariantId }, { enabled: can("bundles.previewImpact") });
 
   const [editing, setEditing] = useState<Component[] | null>(null);
   const [picker, setPicker] = useState("");
@@ -51,7 +53,7 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
   const pickerDeb = useDebouncedValue(picker, 300);
   const searchQ = trpc.bundles.searchComponents.useQuery(
     { q: pickerDeb, limit: 20 },
-    { enabled: !!editing && pickerDeb.trim().length >= 2, staleTime: 5_000 },
+    { enabled: can("bundles.searchComponents") && (!!editing && pickerDeb.trim().length >= 2), staleTime: 5_000 },
   );
 
   const setMut = trpc.bundles.setComponents.useMutation({
@@ -121,7 +123,7 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
         ) : (
           <div className="flex gap-2">
             <Button size="sm" variant="ghost" onClick={cancelEdit}>إلغاء</Button>
-            <Button size="sm" onClick={save} disabled={setMut.isPending}>
+            <Button size="sm" onClick={save} disabled={!can("bundles.setComponents") || (setMut.isPending)}>
               <Save aria-hidden className="size-4" />
               {setMut.isPending ? "جارٍ الحفظ…" : "حفظ"}
             </Button>

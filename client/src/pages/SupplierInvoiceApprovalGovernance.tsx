@@ -165,6 +165,7 @@ export default function SupplierInvoiceApprovalGovernance() {
         </div>
       ) : (
         <SupplierInvoiceApprovalGovernanceWorkspace
+          operationUser={me.data}
           invoices={invoices}
           pendingApprovals={pendingApprovals}
           currentUserId={me.data?.id}

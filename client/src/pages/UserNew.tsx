@@ -86,7 +86,10 @@ export default function UserNew() {
     setError("");
     if (!account.name.trim()) { setError("الاسم مطلوب."); return; }
     const v = validateAccount(account);
-    if (v) { setError(v); return; }
+    if (v) {
+      setError(v);
+      return;
+    }
     // النجاح يعرض بطاقة المشاركة (CredentialsShare) عبر onSuccess — لا تنقّل هنا (يُخفي البطاقة).
     create.mutate({
       email: account.email.trim().toLowerCase() || undefined,
@@ -101,6 +104,7 @@ export default function UserNew() {
       hiredAt: account.hiredAt || null,
       permissionsOverride: accountPermsPayload(account),
       mustChangePassword: account.mustChangePassword,
+      operationPolicy: account.operationPolicy ?? null,
     });
   }
 
@@ -143,7 +147,13 @@ export default function UserNew() {
           دلالة Enter-to-submit، نمط UserEdit.tsx). AccountFields مكوّن مشترك خارج ملكيتي (يُستعمله
           أيضاً EmployeeNew) فيُلَفّ من هنا لا يُعدَّل هو نفسه. */}
       <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); buildAndSubmit(); }}>
-        <AccountFields value={account} onChange={patch} showName showJobData />
+        <AccountFields
+          value={account}
+          onChange={patch}
+          showName
+          showJobData
+          operationEditor
+        />
 
         {/* ما تملكه شاشة التعديل ولا تملكه هذه — يُسمّى بدل أن يغيب صامتاً.
             الغياب الصامت هو ما يجعل المُنشئ يظنّ الشاشة ناقصة، فيبحث عن الحقل حيث لا وجود له. */}
@@ -160,19 +170,23 @@ export default function UserNew() {
                 يمنحها مالكٌ قائم وحده من شاشة التعديل، فلا يستطيع مديرٌ أن يصنع مالكاً جديداً بنموذجٍ واحد.
               </li>
               <li>
-                <span className="text-foreground">إصدار رمز استعادة كلمة المرور:</span> كلمة المرور هنا
+                <span className="text-foreground">إصدار رمز استعادة كلمة المرور:</span>{" "}
+                كلمة المرور هنا
                 تُسلَّم مباشرةً في بطاقة المشاركة بعد الحفظ؛ الرمز لاحقاً لمن نسيها.
               </li>
               <li>
-                <span className="text-foreground">إبطال الجلسات وتصفير المصادقة الثنائية:</span> لا جلسات
+                <span className="text-foreground">إبطال الجلسات وتصفير المصادقة الثنائية:</span>{" "}
+                لا جلسات
                 ولا مصادقة ثنائية لحسابٍ لم يدخل بعد.
               </li>
               <li>
-                <span className="text-foreground">تعطيل الحساب أو حذفه نهائياً:</span> يُنشأ الحساب مفعّلاً،
+                <span className="text-foreground">تعطيل الحساب أو حذفه نهائياً:</span>{" "}
+                يُنشأ الحساب مفعّلاً،
                 والحذف مشروطٌ بخلوّه من أي نشاط.
               </li>
               <li>
-                <span className="text-foreground">لوحة «الأثر الفعليّ» لهذا الحساب:</span> تُقرأ من الحساب
+                <span className="text-foreground">لوحة «الأثر الفعليّ» لهذا الحساب:</span>{" "}
+                تُقرأ من الحساب
                 المحفوظ. وقبل الحفظ تكفي معاينة «سيرى هذا الحساب» في بطاقة الدور أعلاه.
               </li>
             </ul>

@@ -44,7 +44,15 @@ import {
   consumeConfirmedExternalPaymentAttemptTx,
 } from "./posExternalPayment";
 
-type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
+export type QuotationPaymentMethod =
+  | "CASH"
+  | "CARD"
+  | "CHECK"
+  | "TRANSFER"
+  | "WALLET"
+  | "TELECOM";
+
+type PaymentMethod = QuotationPaymentMethod;
 
 export interface QuotationLineInput {
   variantId: number;

@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { AlertTriangle, CheckCircle2, Loader2, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
@@ -61,6 +62,7 @@ export function AiProductContentAssistant({
   onApply,
   productId,
 }: Props) {
+  const { can } = useCatalogPeopleOperationAccess();
   const [draft, setDraft] = useState<AiProductDraft | null>(null);
   const [validation, setValidation] = useState<DraftValidation | null>(null);
   const [needsValidation, setNeedsValidation] = useState(false);
@@ -83,7 +85,7 @@ export function AiProductContentAssistant({
   }, [factsFingerprint, sourceFingerprint]);
   const draftsQuery = trpc.catalog.listContentDrafts.useQuery(
     { productId: productId ?? 0, limit: 10 },
-    { enabled: !!productId },
+    { enabled: can("catalog.listContentDrafts") && (!!productId) },
   );
   const decideDraft = trpc.catalog.decideContentDraft.useMutation({
     onSuccess: () => draftsQuery.refetch(),
@@ -200,7 +202,7 @@ export function AiProductContentAssistant({
           variant="outline"
           size="sm"
           onClick={() => generateDraft(Boolean(draft))}
-          disabled={generate.isPending}
+          disabled={!can("catalog.generateContentDraft") || (generate.isPending)}
         >
           {generate.isPending ? (
             <Loader2 aria-hidden className="size-4 animate-spin" />
@@ -235,7 +237,7 @@ export function AiProductContentAssistant({
                   variant="outline"
                   className="mt-1"
                   onClick={() => generateDraft(Boolean(draft))}
-                  disabled={generate.isPending}
+                  disabled={!can("catalog.generateContentDraft") || (generate.isPending)}
                 >
                   إعادة المحاولة
                 </Button>
@@ -357,7 +359,7 @@ export function AiProductContentAssistant({
                             type="button"
                             size="sm"
                             variant="outline"
-                            disabled={decideDraft.isPending}
+                            disabled={!can("catalog.decideContentDraft") || (decideDraft.isPending)}
                             onClick={() =>
                               decideDraft.mutate({
                                 draftId: Number(saved.id),
@@ -372,7 +374,7 @@ export function AiProductContentAssistant({
                             type="button"
                             size="sm"
                             disabled={
-                              decideDraft.isPending || !saved.validation.ok
+                              !can("catalog.decideContentDraft") || (decideDraft.isPending || !saved.validation.ok)
                             }
                             onClick={() =>
                               decideDraft.mutate({
@@ -428,7 +430,7 @@ export function AiProductContentAssistant({
                   variant="outline"
                   size="sm"
                   onClick={validateDraft}
-                  disabled={validate.isPending}
+                  disabled={!can("catalog.validateContentDraft") || (validate.isPending)}
                 >
                   {validate.isPending ? "جارٍ التحقق…" : "إعادة التحقق"}
                 </Button>

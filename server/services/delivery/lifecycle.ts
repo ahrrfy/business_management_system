@@ -7,12 +7,17 @@ import {
   deliveryOutbox,
   deliveryParties,
   deliveryPartyMembers,
+  deliveryRemittances,
+  deliveryRemittanceLines,
+  receipts,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import type { DeliveryConsignmentStatus } from "@shared/deliveryStatuses";
 import { appErrorMessage } from "@shared/errors";
+import { money, round2 } from "../money";
+import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
 
 export type ParcelStatus =
   | "ASSIGNED"
@@ -234,7 +239,7 @@ export async function appendDeliveryEvent(
 }
 
 const allowed: Record<ParcelStatus, ParcelStatus[]> = {
-  ASSIGNED: ["ACCEPTED", "OUT_FOR_DELIVERY", "FAILED"],
+  ASSIGNED: ["ACCEPTED", "OUT_FOR_DELIVERY", "FAILED", "CANCELLED", "RETURNED"],
   ACCEPTED: ["PICKED_UP", "FAILED"],
   PICKED_UP: ["OUT_FOR_DELIVERY", "FAILED"],
   OUT_FOR_DELIVERY: ["ACCEPTED", "PICKED_UP", "DELIVERED", "FAILED", "CANCELLED", "RETURNED"],
@@ -329,7 +334,9 @@ export function assertMemberCanUseConsignment(
 }
 
 /** Aggregates are derived from the immutable ledger, never currentBalance. */
-export async function getDeliveryFinancialSummary(partyId: number, assignedUserId?: number) {
+export async function getDeliveryFinancialSummary(partyId: number, assignedUserId?: number,
+  scopedBranchId?: number | null,
+) {
   const db = getDb();
   if (!db) {
     return {
@@ -347,6 +354,11 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
       feePaid: "0.00",
       feeDue: "0.00",
       feeDueRaw: "0.00",
+      cashReceived: "0.00",
+      grossSettled: "0.00",
+      shortfallAssigned: "0.00",
+      shortfallAssignedTotal: "0.00",
+      remainingSettlement: "0.00",
       hasFinancialAnomaly: false,
     };
   }
@@ -361,6 +373,8 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
         codWrittenOff: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'COD_WRITTEN_OFF' THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
         codRecovered: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'COD_RECOVERED' THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
         deliveryShortfallAssigned: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'SHORTFALL_ASSIGNED' AND ${deliveryLedgerEntries.consignmentId} IS NOT NULL THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
+        shortfallAssignedTotal: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'SHORTFALL_ASSIGNED' THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
+        shortfallSettled: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'SHORTFALL_SETTLED' THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
         feeEarned: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'FEE_EARNED' THEN ${deliveryLedgerEntries.amount} WHEN ${deliveryLedgerEntries.entryType} = 'FEE_REFUNDED' THEN -${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
         feePaid: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_PAID','FEE_OFFSET') THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
       })
@@ -368,10 +382,73 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
       .leftJoin(deliveryConsignments, eq(deliveryConsignments.id, deliveryLedgerEntries.consignmentId))
       .where(and(
         eq(deliveryLedgerEntries.partyId, partyId),
+          scopedBranchId == null
+            ? undefined
+            : eq(deliveryLedgerEntries.branchId, scopedBranchId),
         assignedUserId == null ? undefined : eq(deliveryConsignments.assignedUserId, assignedUserId),
       ))
   )[0];
-  const n = (v: unknown) => Number(v ?? 0);
+  const received =
+    assignedUserId == null
+      ? (
+          await db
+            .select({
+              cashReceived: sql<string>`COALESCE(SUM(COALESCE(${receipts.amount}, (SELECT SUM(drl.cashReceived) FROM deliveryRemittanceLines drl WHERE drl.remittanceId = deliveryRemittances.id), 0)),0)`,
+              grossSettled: sql<string>`COALESCE(SUM(${deliveryRemittances.collectedTotal}),0)`,
+            })
+            .from(deliveryRemittances)
+            .leftJoin(
+              receipts,
+              eq(receipts.id, deliveryRemittances.receiptInId),
+            )
+            .where(
+              and(
+                eq(deliveryRemittances.partyId, partyId),
+                scopedBranchId == null
+                  ? undefined
+                  : eq(deliveryRemittances.branchId, scopedBranchId),
+              ),
+            )
+        )[0]
+      : (
+          await db
+            .select({
+              cashReceived: sql<string>`COALESCE(SUM(${deliveryRemittanceLines.cashReceived}),0)`,
+              grossSettled: sql<string>`COALESCE(SUM(${deliveryRemittanceLines.grossApplied}),0)`,
+            })
+            .from(deliveryRemittanceLines)
+            .innerJoin(
+              deliveryConsignments,
+              eq(
+                deliveryConsignments.id,
+                deliveryRemittanceLines.consignmentId,
+              ),
+            )
+            .where(
+              and(
+                eq(deliveryConsignments.partyId, partyId),
+                eq(deliveryConsignments.assignedUserId, assignedUserId),
+                scopedBranchId == null
+                  ? undefined
+                  : eq(deliveryConsignments.branchId, scopedBranchId),
+              ),
+            )
+  )[0];
+  const n = (v: string | null | undefined) => money(v ?? "0");
+  const actualReceipts = assignedUserId == null ? (await db.select({ amount: sql<string>`COALESCE(SUM(${receipts.amount}),0)` })
+    .from(receipts).where(and(
+      eq(receipts.direction, "IN"), eq(receipts.status, "COMPLETED"), eq(receipts.paymentMethod, "CASH"),
+      or(isNull(receipts.approvalStatus), eq(receipts.approvalStatus, "APPROVED")),
+      scopedBranchId == null ? undefined : eq(receipts.branchId, scopedBranchId),
+      sql`(EXISTS (SELECT 1 FROM accountingEntries ae WHERE ae.receiptId = receipts.id AND ae.deliveryPartyId = ${partyId} AND ae.entryType = 'DELIVERY_REMIT') OR EXISTS (SELECT 1 FROM deliveryRemittances dr WHERE dr.receiptInId = receipts.id AND dr.partyId = ${partyId}))`,
+    )))[0] : undefined;
+  const remaining = (await db.select({ amount: sql<string>`COALESCE(SUM(GREATEST(${deliveryConsignments.codAmount} - ${deliveryConsignments.collectedAmount} - ${deliveryConsignments.counterSettledAmount} - ${consignmentShortfallAssignedSql},0)),0)` })
+    .from(deliveryConsignments).where(and(
+      eq(deliveryConsignments.partyId, partyId),
+      sql`${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`, isNull(deliveryConsignments.returnDeclaredAt),
+      scopedBranchId == null ? undefined : eq(deliveryConsignments.branchId, scopedBranchId),
+      assignedUserId == null ? undefined : eq(deliveryConsignments.assignedUserId, assignedUserId),
+    )))[0];
   const assigned = n(row?.codAssigned);
   const collected = n(row?.codCollected);
   const remitted = n(row?.codRemitted);
@@ -382,9 +459,12 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
   const deliveryShortfallAssigned = n(row?.deliveryShortfallAssigned);
   const earned = n(row?.feeEarned);
   const paid = n(row?.feePaid);
-  const outstandingRaw = assigned - collected - deliveryShortfallAssigned - released;
-  const custody = collected - remitted - returned - writtenOff;
-  const feeDueRaw = earned - paid;
+  const outstandingRaw = assigned
+    .minus(collected)
+    .minus(deliveryShortfallAssigned)
+    .minus(released);
+  const custody = collected.minus(remitted).minus(returned).minus(writtenOff);
+  const feeDueRaw = earned.minus(paid);
   /**
    * Slice DFP2 (٣١/٨/٢٦): قصّ `feeDue` عند صفر — أُبلغ عنه على الإنتاج (٣١/٨):
    * «أجرة مستحقة −1,000 د.ع» على مودال ابراهيم احمد. السالب يعني `feePaid > feeEarned` — أي دفعنا
@@ -394,7 +474,7 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
    * القرار: قصّ صريح عند صفر (كما في listPartyObligations.feeDueTotal) + إبقاء `feeDueRaw` للتنبيه.
    * التقارير التاريخيّة تستعمل الخام؛ الشاشة اليومية تستعمل المقصوص.
    */
-  const feeDue = Math.max(0, feeDueRaw);
+  const feeDue = feeDueRaw.isNegative() ? money(0) : feeDueRaw;
   return {
     codAssigned: assigned.toFixed(2),
     codCollected: collected.toFixed(2),
@@ -403,7 +483,10 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
     codReleased: released.toFixed(2),
     codWrittenOff: writtenOff.toFixed(2),
     codRecovered: recovered.toFixed(2),
-    codOutstanding: Math.max(outstandingRaw, 0).toFixed(2),
+    codOutstanding: (outstandingRaw.isNegative()
+      ? money(0)
+      : outstandingRaw
+    ).toFixed(2),
     codOutstandingRaw: outstandingRaw.toFixed(2),
     cashInCustody: custody.toFixed(2),
     feeEarned: earned.toFixed(2),
@@ -411,7 +494,12 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
     feeDue: feeDue.toFixed(2),
     /** Slice DFP2: القيمة الخام قبل القصّ — للتنبيه ولا تُعرَض عادةً. */
     feeDueRaw: feeDueRaw.toFixed(2),
-    hasFinancialAnomaly: outstandingRaw < 0 || custody < 0 || feeDueRaw < 0,
+    cashReceived: round2(actualReceipts?.amount ?? received?.cashReceived ?? "0").toFixed(2),
+    grossSettled: round2(received?.grossSettled ?? "0").toFixed(2),
+    shortfallAssigned: round2(n(row?.shortfallAssignedTotal).minus(n(row?.shortfallSettled))).toFixed(2),
+    shortfallAssignedTotal: n(row?.shortfallAssignedTotal).toFixed(2),
+    remainingSettlement: round2(remaining?.amount ?? "0").toFixed(2),
+    hasFinancialAnomaly: outstandingRaw.isNegative() || custody.isNegative() || feeDueRaw.isNegative(),
   };
 }
 

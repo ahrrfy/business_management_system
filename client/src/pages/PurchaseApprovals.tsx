@@ -5,6 +5,7 @@ export default function PurchaseApprovals() {
   const me = trpc.auth.me.useQuery();
   return (
     <PurchaseApprovalQueue
+      operationUser={me.data}
       currentUserId={me.data?.id}
       isOwner={me.data?.isOwner === true}
     />

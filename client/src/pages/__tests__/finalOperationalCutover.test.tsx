@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   INVOICE_LIST_GATE,
+  RETURNS_WORKSPACE_GATE,
   WORK_ORDERS_HUB_GATE,
   canSeeGate,
   type RoleGate,
@@ -59,7 +60,7 @@ describe("final operational UI cutover", () => {
       "<RequireRole gate={INVOICE_LIST_GATE}><InvoiceDetail /></RequireRole>",
     );
     expect(app).toContain(
-      '<Route path="/returns"><Shell><RequireRole roles={["admin","manager","cashier","accountant","auditor"]} module="sales" level="READ"><Returns /></RequireRole></Shell></Route>',
+      '<Route path="/returns"><Shell><RequireRole canonicalGate={RETURNS_WORKSPACE_GATE} roles={["admin","manager","cashier","accountant","auditor"]} module="sales" level="READ"><Returns /></RequireRole></Shell></Route>',
     );
     expect(app).toContain(
       '<Route path="/sales-returns/new"><Redirect to="/returns?tab=sales" /></Route>',
@@ -71,7 +72,7 @@ describe("final operational UI cutover", () => {
       '<RequireRole module="workorders" level="READ"><WorkOrderDetail /></RequireRole>',
     );
     expect(app).toContain(
-      '<RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionNew /></RequireRole>',
+      '<RequireRole operations={["production.create"]} roles={["manager"]} module="inventory" level="FULL"><ProductionNew /></RequireRole>',
     );
     expect(app).toContain(
       '<RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionDetail /></RequireRole>',
@@ -106,6 +107,7 @@ describe("final operational UI cutover", () => {
     expect(dynamicPurchaseRoute).toBeGreaterThan(legacyReceiveRoute);
 
     expect(canSeeGate(INVOICE_LIST_GATE, "print_operator", null)).toBe(true);
+    expect(RETURNS_WORKSPACE_GATE.anyOf).toHaveLength(4);
     expect(
       canSeeGate(WORK_ORDERS_HUB_GATE, "accountant", { inventory: "FULL" }),
     ).toBe(true);

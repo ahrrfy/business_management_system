@@ -56,7 +56,7 @@ function db() {
 async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
+  for (const t of TABLES) await d.execute(sql.raw(`DELETE FROM \`${t}\``));
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
 }
 async function seed() {

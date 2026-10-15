@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { assertOperationAuthorityTx, canonicalOperationAllowed, loadOperationUserTx } from "../authorization/operationAuthority";
 import { and, desc, eq, getTableColumns, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
@@ -21,7 +22,6 @@ import {
   maySeeDrawerCash,
   mayRequestWorkOrderControl,
   workOrderControlDeniedMessage,
-  type WorkOrderControlTypeKey,
 } from "@shared/workOrderControlAuthority";
 import {
   REFUND_RAILS,
@@ -104,25 +104,6 @@ export type WorkOrderControlActor = Actor & {
   permissionsOverride?: unknown;
 };
 
-/**
- * بوّابةُ نوع الطلب (١/٩/٢٦): الإلغاءُ وحده مفتوحٌ لفنّي المطبعة، وما سواه على كاشير/مدير.
- * تُفرَض هنا لا في الراوتر وحده — الخدمةُ قد تُستدعى من قناةٍ أخرى (أوفلاين/أندرويد).
- */
-function assertControlRequestAuthority(
-  requestType: WorkOrderControlTypeKey,
-  actor: WorkOrderControlActor,
-): void {
-  if (!mayRequestWorkOrderControl(requestType, actor.role ?? "", (actor.permissionsOverride ?? null) as never)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: workOrderControlDeniedMessage(requestType) });
-  }
-}
-
-function assertManager(actor: Actor): void {
-  if (actor.role !== "manager" && actor.role !== "admin") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "مراجعة طلبات التحكم محصورة بمدير أو أدمن" });
-  }
-}
-
 function assertRequestBranch(row: { branchId: number | string }, actor: Actor): void {
   if (actor.role !== "admin" && Number(row.branchId) !== actor.branchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "طلب التحكم لا يخصّ فرعك" });
@@ -157,7 +138,6 @@ export async function requestWorkOrderControl(
   input: RequestWorkOrderControlInput,
   actor: WorkOrderControlActor,
 ) {
-  assertControlRequestAuthority(input.requestType, actor);
   const requestKey = input.requestKey.trim();
   if (!requestKey || requestKey.length > 120) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "مفتاح طلب التحكم مطلوب وبحد أقصى 120 محرفاً" });
@@ -168,6 +148,21 @@ export async function requestWorkOrderControl(
   const reason = normalizedReason(input.reason, "الإجراء");
   const payloadHash = idempotencyHash(input.payload);
   const result = await retryOnDeadlock(() => withTx(async (tx) => {
+    const legacyMayRequest = mayRequestWorkOrderControl(
+      input.requestType,
+      actor.role ?? "",
+      (actor.permissionsOverride ?? null) as never,
+    );
+    const currentRequester = await loadOperationUserTx(tx, actor.userId);
+    const explicitlyDelegated = currentRequester.hasPersistedOperationPolicy === true &&
+      canonicalOperationAllowed(currentRequester, "workOrders.requestControl") === true;
+    if (!legacyMayRequest && !explicitlyDelegated) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: workOrderControlDeniedMessage(input.requestType),
+      });
+    }
+    await assertOperationAuthorityTx(tx, actor, "workOrders.requestControl", legacyMayRequest);
     const replay = await loadExistingByKey(tx, requestKey);
     if (replay) {
       assertRequestBranch(replay, actor);
@@ -386,13 +381,13 @@ export async function approveWorkOrderControlRequest(
   reviewNote?: string | null,
   refundOverride?: ControlApprovalRefundOverride,
 ) {
-  assertManager(actor);
   const note = reviewNote?.trim() || null;
   if (note && note.length > 500) throw new TRPCError({ code: "BAD_REQUEST", message: "ملاحظة الاعتماد أطول من 500 محرف" });
 
   // الاعتماد ذرّي ومُعرَّف بمفتاح الطلب نفسه؛ إذا اختاره InnoDB ضحيةً لتعارضٍ
   // مؤقت، فإعادة المعاملة كاملةً آمنة: إمّا تطبق مرةً، أو ترى APPROVED وتعيد replay.
   const result = await retryOnDeadlock(() => withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "workOrders.approveControl", actor.role === "admin" || actor.role === "manager");
     const requestSnapshot = (
       await tx.select().from(workOrderControlRequests)
         .where(eq(workOrderControlRequests.id, id)).limit(1)
@@ -552,9 +547,9 @@ export async function rejectWorkOrderControlRequest(
   actor: Actor & { role?: string },
   reason: string,
 ) {
-  assertManager(actor);
   const note = normalizedReason(reason, "الرفض");
   return withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "workOrders.rejectControl", actor.role === "admin" || actor.role === "manager");
     const request = (
       await tx.select().from(workOrderControlRequests)
         .where(eq(workOrderControlRequests.id, id)).for("update").limit(1)
@@ -592,6 +587,8 @@ export async function getWorkOrderControlPreflight(
   actor: WorkOrderControlActor,
 ) {
   return withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "workOrders.controlPreflight", true);
+    const currentRequester = await loadOperationUserTx(tx, actor.userId);
     const wo = (
       await tx.select().from(workOrders).where(eq(workOrders.id, workOrderId)).limit(1)
     )[0];
@@ -635,7 +632,10 @@ export async function getWorkOrderControlPreflight(
      * يملك طلبَ العكس أصلاً** (`mayRequestWorkOrderControl` يرفضه). سطحٌ ماليٌّ كامل بلا فعلٍ
      * يبرّره. والحسبةُ نفسها تُوفَّر: لا استعلامَ لمن لا يستفيد.
      */
-    const mayReverse = hasWorkOrderCommercialAuthority(
+    const mayReverse = (
+      currentRequester.hasPersistedOperationPolicy === true &&
+      canonicalOperationAllowed(currentRequester, "workOrders.controlPreflight") === true
+    ) || hasWorkOrderCommercialAuthority(
       actor.role ?? "",
       (actor.permissionsOverride ?? null) as never,
     );
@@ -701,7 +701,7 @@ export async function getWorkOrderControlPreflight(
           money(wo.deposit ?? "0").gt(0) ||
           appliedDeposits.length > 0,
         materials: wo.status === "IN_PROGRESS" || wo.status === "READY",
-        cancel: wo.status !== "RECEIVED" || money(wo.deposit ?? "0").gt(0) || appliedDeposits.length > 0 || materialRows.length > 0 || feeHeld.gt(0),
+        cancel: wo.status !== "RECEIVED" || money(wo.deposit ?? "0").gt(0) || appliedDeposits.length > 0 || feeHeld.gt(0),
       },
       reverseDelivery,
       openReceptionShifts,

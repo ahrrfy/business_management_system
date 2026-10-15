@@ -17,6 +17,7 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { assertNotReturnDeclared } from "./declaredReturn";
+import { computeOrderDeliveryOtp } from "../onlineOrderService";
 import Decimal from "decimal.js";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
@@ -38,6 +39,7 @@ import {
   postEntry,
 } from "../ledgerService";
 import { returnSale } from "../returnService";
+import { awardDeliveredOnlineOrderPoints } from "../storeAdmin/loyaltyService";
 import { withTx } from "../tx";
 import {
   checkIdempotency,
@@ -68,7 +70,8 @@ import {
   SHORTFALL_REASON_LABEL_AR,
 } from "@shared/shortfallReason";
 import { enqueueStorefrontOrderStatusPush } from "../storeAdmin/storefrontPushCampaignService";
-import { awardDeliveredOnlineOrderPoints } from "../storeAdmin/loyaltyService";
+import { publishRealtimeEvent } from "../../realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 
 /** يحلّ جهة التوصيل المرتبطة بحساب المستخدم (المندوب). null إن لم يُربط الحساب بجهة نشطة. */
 export async function resolveCourierPartyId(
@@ -391,7 +394,7 @@ export interface ConfirmDeliveryResult {
 
 /** تأكيد تسليم طلب متجر + تحصيل COD كاملاً. ذرّي: فاتورة تُسدَّد + ذمّة عميل↓ + عهدة المندوب↑. */
 export async function confirmCourierDelivery(
-  input: { onlineOrderId: number },
+  input: { onlineOrderId: number; handshakeOtp?: string | null },
   actor: { userId: number },
 ): Promise<ConfirmDeliveryResult> {
   const membership = await resolveDeliveryMembership(actor.userId);
@@ -468,6 +471,21 @@ export async function confirmCourierDelivery(
           doThis: "اطلب من المدير نقلَ إسناد الطلب إليك قبل الختم؛ وإن كنتَ سلّمتَ فعلاً فسلّم النقد لكاشير الاستقبال ليُثبِت التسليم بمستند",
         }),
       });
+    }
+
+    // التحقق من رمز التسليم السري للعميل (Delivery Handshake OTP)
+    if (input.handshakeOtp != null && input.handshakeOtp.trim() !== "") {
+      const expectedOtp = computeOrderDeliveryOtp(order.orderNumber, order.createdAt);
+      if (input.handshakeOtp.trim() !== expectedOtp) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: `تعذّر إتمام تسليم الطلب ${order.orderNumber}`,
+            why: "رمز تسليم العميل (Handshake OTP) غير متطابق مع الرمز الصادر للطلب",
+            doThis: "تأكد من إدخال رمز التحقق المكون من 4 أرقام من العميل يداً بيد",
+          }),
+        });
+      }
     }
     // يجب أن يكون مُرسَلاً (SHIPPED) أو مُسلَّماً (DELIVERED — استرداد idempotent). غيرهما: لم يُجهَّز بعد.
     if (order.status !== "SHIPPED" && order.status !== "DELIVERED") {
@@ -636,13 +654,25 @@ export async function confirmCourierDelivery(
       status: "DELIVERED",
     });
 
-    return {
+    const ret = {
       orderId: order.id,
       orderNumber: order.orderNumber,
       collected: toDbMoney(collected),
       custodyAfter: toDbMoney(custodyAfter),
       alreadyDelivered: wasDelivered && collected.isZero(),
     };
+    publishRealtimeEvent(
+      REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
+      {
+        deliveryId: order.id,
+        invoiceId: Number(inv.id),
+        driverId: Number(partyId),
+        branchId: Number(inv.branchId),
+        collectedAmount: toDbMoney(collected),
+      },
+      { branchId: Number(inv.branchId) },
+    );
+    return ret;
   });
 }
 
@@ -835,6 +865,8 @@ export async function confirmConsignmentDelivery(
     }
 
     const deliveredAt = new Date();
+    let recordedShortfallReason: string | null = null;
+    let recordedShortageAmount: string | null = null;
     const codRemaining = round2(
       money(cn.codAmount).minus(money(cn.collectedAmount ?? "0")),
     );
@@ -1011,6 +1043,10 @@ export async function confirmConsignmentDelivery(
         }
       }
       const shortfallReason = booksShortfall ? declaredReason! : null;
+      if (shortfallReason) {
+        recordedShortfallReason = shortfallReason;
+        recordedShortageAmount = toDbMoney(shortage);
+      }
 
       if (cn.custodyRecognizedAt == null) {
         // نُصعِّد عهدةَ المندوب بـ**مجموع** ما يتحمّله (نقدٌ قبضه + عجزٌ يتحمّله):
@@ -1187,6 +1223,31 @@ export async function confirmConsignmentDelivery(
       clientRequestId,
       Number(cn.id),
       payloadHash,
+    );
+
+    if (recordedShortfallReason && recordedShortageAmount) {
+      publishRealtimeEvent(
+        REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED,
+        {
+          deliveryId: Number(cn.id),
+          driverId: Number(cn.assignedUserId ?? membership.partyId),
+          amount: recordedShortageAmount,
+          reason: recordedShortfallReason,
+          branchId: Number(cn.branchId),
+        },
+        { branchId: Number(cn.branchId) },
+      );
+    }
+    publishRealtimeEvent(
+      REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
+      {
+        deliveryId: Number(cn.id),
+        invoiceId: Number(cn.invoiceId),
+        driverId: Number(cn.assignedUserId ?? membership.partyId),
+        branchId: Number(cn.branchId),
+        collectedAmount: toDbMoney(cod),
+      },
+      { branchId: Number(cn.branchId) },
     );
 
     return {

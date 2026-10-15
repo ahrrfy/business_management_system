@@ -262,14 +262,14 @@ describe("إغلاق ثغرة الأصناف اليتيمة (workOrderItems)", (
 });
 
 describe("السحب الذاتي (claim) + منع سرقة أمر زميل", () => {
-  it("الإنشاء يرفض إسناد الأمر إلى حساب غير فني", async () => {
+  it("الإنشاء يرفض إسناد الأمر إلى حساب غير مخوّل بالتنفيذ", async () => {
     await expect(createWorkOrder({
       branchId: 1,
       baseVariantId: 1,
       title: "إسناد غير صالح",
       salePrice: "30.00",
       assignedTo: 1,
-    }, actor)).rejects.toThrow(/فني مطبعة/);
+    }, actor)).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("فنّي يسحب أمراً واردًا غير مُسنَد ⇒ assignedTo = هو؛ وزميله لا يستطيع سحبه", async () => {

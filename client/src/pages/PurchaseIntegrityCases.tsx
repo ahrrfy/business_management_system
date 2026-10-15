@@ -192,6 +192,7 @@ export default function PurchaseIntegrityCases() {
         </div>
       ) : (
         <PurchaseIntegrityWorkspace
+          operationUser={me.data}
           branchId={branchId}
           rows={rows}
           blockers={blockersQuery.data ?? []}

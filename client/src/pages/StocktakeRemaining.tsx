@@ -1,3 +1,4 @@
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 /** كشف تشغيلي للمنتجات غير المعدودة — شاشة توجيه العمال والطباعة والتصدير. */
 import { useDeferredValue, useEffect, useState } from "react";
 import { FilterField } from "@/components/list";
@@ -81,6 +82,8 @@ export default function StocktakeRemaining() {
   const sessionId = Number(params.id);
   const enabled = Number.isFinite(sessionId) && sessionId > 0;
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const canOperation = (path: string) => canLifecycleOperation(me.data, path, true);
   const [q, setQ] = useState("");
   const qDeferred = useDeferredValue(q.trim());
   const [assignmentId, setAssignmentId] = useState("");
@@ -88,8 +91,9 @@ export default function StocktakeRemaining() {
 
   const monitor = trpc.stocktakes.monitor.useQuery(
     { sessionId },
-    { enabled, refetchInterval: 10_000 },
+    { enabled: enabled && canOperation("stocktakes.monitor"), refetchInterval: 10_000 },
   );
+  const monitorData = canOperation("stocktakes.monitor") ? monitor.data : undefined;
   const remaining = trpc.stocktakes.remaining.useQuery(
     {
       sessionId,
@@ -98,30 +102,33 @@ export default function StocktakeRemaining() {
       limit: PAGE,
       offset: page * PAGE,
     },
-    { enabled, refetchInterval: 10_000 },
+    { enabled: enabled && canOperation("stocktakes.remaining"), refetchInterval: 10_000 },
   );
+  const remainingData = canOperation("stocktakes.remaining") ? remaining.data : undefined;
 
   useEffect(() => setPage(0), [qDeferred, assignmentId]);
   useEffect(() => {
-    const totalRows = remaining.data?.total;
+    const totalRows = remainingData?.total;
     if (totalRows == null || totalRows === 0) return;
     const lastPage = Math.max(0, Math.ceil(totalRows / PAGE) - 1);
     if (page > lastPage) setPage(lastPage);
-  }, [page, remaining.data?.total]);
+  }, [page, remainingData?.total]);
 
   if (!enabled) return <ErrorState message="معرّف جلسة الجرد غير صالح." />;
-  if ((monitor.isLoading || remaining.isLoading) && !remaining.data) {
+  if (me.isLoading) return <LoadingState />;
+  if (!canOperation("stocktakes.remaining")) return <ErrorState message="يتطلب العرض تفويض كشف المنتجات المتبقية." />;
+  if ((remaining.isLoading || (canOperation("stocktakes.monitor") && monitor.isLoading)) && !remainingData) {
     return <LoadingState message="جارٍ إعداد كشف المنتجات المتبقية…" />;
   }
   if (remaining.error) {
     return <ErrorState message={remaining.error.message} onRetry={() => void remaining.refetch()} />;
   }
-  if (!remaining.data) return <ErrorState message="تعذّر تحميل كشف المنتجات المتبقية." />;
+  if (!remainingData) return <ErrorState message="تعذّر تحميل كشف المنتجات المتبقية." />;
 
-  const { session, total, items } = remaining.data;
-  const assignments = monitor.data?.assignments ?? [];
+  const { session, total, items } = remainingData;
+  const assignments = monitorData?.assignments ?? [];
   const generatedAt = new Date();
-  const progress = monitor.data?.progress;
+  const progress = monitorData?.progress;
 
   async function fetchAll() {
     const all: typeof items = [];

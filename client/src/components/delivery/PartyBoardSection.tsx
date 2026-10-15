@@ -1,3 +1,4 @@
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 /**
  * الغلاف المتّصل للوحة الخمسة أعمدة (م١ PR-C): يجلب `delivery.partyBoard`، يفتح «سوِّ اليوم» بمعاينة
  * `delivery.settlementPreview` وينفّذ `delivery.settleDaily` ثمّ يُبطل الاستعلامات كي تصفر الأعمدة.
@@ -15,6 +16,8 @@ import { PartyBoard } from "./PartyBoard";
 import { DailySettlementDialog } from "./DailySettlementDialog";
 import { partyDetailLinkFor, type PartyBoardRow } from "./partyBoardModel";
 import type { SettleDailyPayload } from "./dailySettlement";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 
 export interface PartyBoardSectionProps {
   outstandingOnly?: boolean;
@@ -32,7 +35,7 @@ export function PartyBoardSection({ outstandingOnly = false, shiftType = "RECEPT
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role as RoleKey | undefined;
   const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  const hasSettleRole = !!role && moduleAccessAllowed(role, override, "store", "FULL", ["cashier", "manager"]);
+  const hasSettleRole = lifecycleActionAllowed(me.data, "delivery.settleDaily", !!role && moduleAccessAllowed(role, override, "store", "FULL", ["cashier", "manager"]));
   // فرعُ التسوية = فرعُ الفاعل المُسنَد. غيابُه (أدمن/مالك عابرُ الفروع) ⇒ اللوحةُ مجمَّعةٌ لكلّ الفروع بينما
   // النقدُ يدخل درجَ فرعٍ بعينه: نحجب «سوِّ اليوم» حتى لا تُفتَح معاينةٌ فرعُها ≠ فرعُ صفوف اللوحة (Codex #1012 P2).
   const settleBranchId = me.data?.branchId ?? null;
@@ -40,7 +43,18 @@ export function PartyBoardSection({ outstandingOnly = false, shiftType = "RECEPT
   // علَما الطرح التدريجيّ (مصدر الحقيقة: الخادم): يحكمان عرضَ «نقد بيده» في اللوحة (المصدر الفعّال).
   const uiFlags = trpc.delivery.deliveryUiFlags.useQuery(undefined, { staleTime: 5 * 60_000 });
   const ledgerDerived = uiFlags.data?.courierLedgerDerived ?? false;
-  const board = trpc.delivery.partyBoard.useQuery(undefined, { refetchInterval: 30_000 });
+  const board = trpc.delivery.partyBoard.useQuery(undefined);
+
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.SHORTFALL_ASSIGNED,
+      REALTIME_EVENT_TYPES.DELIVERY_COMPLETED,
+      REALTIME_EVENT_TYPES.DELIVERY_DISPATCHED,
+    ],
+    () => {
+      void board.refetch();
+    },
+  );
   const [settleFor, setSettleFor] = useState<PartyBoardRow | null>(null);
   const effectiveBranchId = settleBranchId ?? undefined;
   const preview = trpc.delivery.settlementPreview.useQuery(

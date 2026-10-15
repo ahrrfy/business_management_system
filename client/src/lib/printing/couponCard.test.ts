@@ -36,4 +36,38 @@ describe("coupon card printing", () => {
     expect(html).not.toContain('<img src=x onerror="alert(1)">');
     expect(html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
   });
+
+  it("formats validity cleanly without duplicating prefix when validTo is omitted", async () => {
+    const htmlWithoutDate = await couponCardsHtml([{ code: "OPEN-1" }]);
+    expect(htmlWithoutDate).toContain('<div class="valid">صالح حتى نفاد/انتهاء الحملة</div>');
+    expect(htmlWithoutDate).not.toContain("صالح لغاية حتى");
+
+    const htmlWithDate = await couponCardsHtml([{ code: "EXPIRE-1", validTo: "2026-12-31" }]);
+    expect(htmlWithDate).toContain('<div class="valid">صالح لغاية');
+    expect(htmlWithDate).not.toContain("حتى نفاد");
+  });
+
+  it("renders discount cap on printed card when specified", async () => {
+    const htmlWithCap = await couponCardsHtml([{
+      code: "CAP-1",
+      heroDiscount: "خصم 20٪",
+      discountCap: "سقف التوفير: 25,000 د.ع",
+      minSpend: "للطلبات بقيمة 50,000 د.ع فأكثر",
+    }]);
+    expect(htmlWithCap).toContain('<div class="hero-discount">خصم 20٪</div>');
+    expect(htmlWithCap).toContain('<div class="discount-cap">سقف التوفير: 25,000 د.ع</div>');
+    expect(htmlWithCap).toContain('<div class="min-spend">للطلبات بقيمة 50,000 د.ع فأكثر</div>');
+  });
+
+  it("renders full terms with adaptive sizing without fixed height clipping", async () => {
+    const longTerms = "هذا الكوبون يخضع لجميع شروط وضوابط الحملة الترويجية لشركة الرؤية العربية. يُستخدم لمرة واحدة فقط لكل عميل ولا يمكن دمجه مع أي عروض أخرى أو فواتير تعاقدية خاصة.";
+    const htmlWithTerms = await couponCardsHtml([{
+      code: "TERMS-1",
+      terms: longTerms,
+    }]);
+    expect(htmlWithTerms).toContain(longTerms);
+    expect(htmlWithTerms).toContain("font-size:1.25mm");
+    expect(htmlWithTerms).not.toContain("max-height:7mm");
+  });
 });
+

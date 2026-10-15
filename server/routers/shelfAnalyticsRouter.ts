@@ -10,7 +10,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { appErrorMessage } from "@shared/errors";
 import { canCrossBranches } from "../lib/branchAuthority";
-import { router, storeManagerProcedure } from "../trpc";
+import { requireAtomicPermission, router, storeManagerProcedure } from "../trpc";
 import {
   getShelfBeneficiariesStats,
   purgeShelfLookupLogs,
@@ -22,6 +22,7 @@ export const shelfAnalyticsRouter = router({
    * جلب إحصائيات المستفيدين من خدمة الرفوف والمسح بالباركود.
    */
   getStats: storeManagerProcedure
+    .use(requireAtomicPermission("inventory.shelf_analytics.view"))
     .input(
       z
         .object({
@@ -68,25 +69,27 @@ export const shelfAnalyticsRouter = router({
   /**
    * مسح وتصفير كافة سجلات استعلامات الرفوف والبيانات الوهمية والبدء من الصفر.
    */
-  purgeLogs: storeManagerProcedure.mutation(async ({ ctx }) => {
-    const canCross =
-      (ctx as { canCrossBranches?: boolean }).canCrossBranches ?? canCrossBranches(ctx.user);
-    const userBranchId =
-      (ctx as { scopedBranchId?: number | null }).scopedBranchId ??
-      (ctx.user.branchId != null ? Number(ctx.user.branchId) : undefined);
-    if (!canCross && !userBranchId) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: appErrorMessage({
-          what: "تعذر مسح سجلات استعلامات الرفوف",
-          why: "لا يوجد فرع مسند لحسابك لتحديد نطاق التصفير.",
-          doThis: "تواصل مع مدير النظام لإسناد الفرع لحسابك.",
-        }),
+  purgeLogs: storeManagerProcedure
+    .use(requireAtomicPermission("inventory.shelf_analytics.optimize"))
+    .mutation(async ({ ctx }) => {
+      const canCross =
+        (ctx as { canCrossBranches?: boolean }).canCrossBranches ?? canCrossBranches(ctx.user);
+      const userBranchId =
+        (ctx as { scopedBranchId?: number | null }).scopedBranchId ??
+        (ctx.user.branchId != null ? Number(ctx.user.branchId) : undefined);
+      if (!canCross && !userBranchId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر مسح سجلات استعلامات الرفوف",
+            why: "لا يوجد فرع مسند لحسابك لتحديد نطاق التصفير.",
+            doThis: "تواصل مع مدير النظام لإسناد الفرع لحسابك.",
+          }),
+        });
+      }
+      const deletedCount = await purgeShelfLookupLogs({
+        branchId: canCross ? undefined : userBranchId,
       });
-    }
-    const deletedCount = await purgeShelfLookupLogs({
-      branchId: canCross ? undefined : userBranchId,
-    });
-    return { success: true, count: deletedCount };
-  }),
+      return { success: true, count: deletedCount };
+    }),
 });

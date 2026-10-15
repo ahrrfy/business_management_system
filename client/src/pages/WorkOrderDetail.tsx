@@ -41,7 +41,7 @@ import { WorkOrderDeliverySection } from "@/components/delivery/WorkOrderDeliver
 import { workOrderStatusHue } from "@shared/workOrderStatus";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { deriveWorkOrderCopyRemaining, formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
-import { canSeeCost, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { workOrderDetailOperationAccess, workOrderDirectCancellationAllowed } from "@/lib/workOrderDetailOperationAccess";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
@@ -49,12 +49,6 @@ import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/p
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { newClientRequestId } from "@/lib/countQueue";
 import { cancellationRefundNotice, durableRefundStatusNotice } from "@/lib/workOrderRefundPolicy";
-import {
-  hasWorkOrderCommercialAuthority,
-  hasWorkOrderExecAuthority,
-  mayCancelWorkOrderWithoutApproval,
-  mayRequestWorkOrderControl,
-} from "@shared/workOrderControlAuthority";
 import { ErrorState, LoadingState } from "@/components/PageState";
 import { NextActionChip } from "@/components/nextAction/NextActionChip";
 import { serverAnsweredDeterministically } from "@/lib/refundDrawer";
@@ -74,15 +68,7 @@ type PendingCancelAttempt =
   | { kind: "CONTROL_REQUEST"; input: CancelControlInput };
 
 /** حقل وصفي: عنوان صغير + قيمة (محمي ضد الاقتطاع غير المقصود). */
-function Field({
-  label,
-  children,
-  truncate = false,
-}: {
-  label: string;
-  children: ReactNode;
-  truncate?: boolean;
-}) {
+function Field({ label, children, truncate = false }: { label: string; children: ReactNode; truncate?: boolean }) {
   return (
     <div className="space-y-0.5 min-w-0">
       <div className="text-xs text-muted-foreground">{label}</div>
@@ -92,32 +78,11 @@ function Field({
 }
 
 /** سطر في لوحة الملخّص المالي: تسمية يميناً + مبلغ يساراً (LTR، محمي ضد الاقتطاع). */
-function SummaryRow({
-  label,
-  value,
-  strong,
-}: {
-  label: string;
-  value: string;
-  strong?: boolean;
-}) {
+function SummaryRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
   return (
     <div className="flex items-center justify-between gap-3 min-w-0 py-0.5">
-      <span
-        className={cn(
-          "text-muted-foreground shrink-0",
-          strong && "font-semibold text-foreground",
-        )}
-      >
-        {label}
-      </span>
-      <span
-        dir="ltr"
-        className={cn(
-          "tabular-nums shrink-0 whitespace-nowrap text-end",
-          strong ? "text-base sm:text-lg font-bold" : "text-sm font-medium",
-        )}
-      >
+      <span className={cn("text-muted-foreground shrink-0", strong && "font-semibold text-foreground")}>{label}</span>
+      <span dir="ltr" className={cn("tabular-nums shrink-0 whitespace-nowrap text-end", strong ? "text-base sm:text-lg font-bold" : "text-sm font-medium")}>
         {fmtAr(value)}
       </span>
     </div>
@@ -135,33 +100,28 @@ export default function WorkOrderDetail() {
     { enabled: Number.isFinite(workOrderId) },
   );
   const qs = useSearch();
-  // حجب التكلفة بـcanSeeCost (نفس دالة الخادم/الشاشات الأخرى، لا مقارنة دور خام) — الخادم يُخفي
-  // materialsCost/laborCost/unitCost بالفعل (null) لغير المخوَّلين، والواجهة تُخفي الصفوف/الأعمدة
-  // كاملةً بدل عرضها فارغة («—») بلا داعٍ.
-  const showCost = me.data ? canSeeCost(me.data.role) : true;
-  const role = me.data?.role as RoleKey | undefined;
-  const permissions = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  // مرايا بوابات الخادم نفسها: التنفيذ = كاشير/مدير/فني، والمال/التعديل = كاشير/مدير.
-  const canExecuteWorkOrder = hasWorkOrderExecAuthority(role, permissions);
-  const canDeliverWorkOrder = hasWorkOrderCommercialAuthority(role, permissions);
-  /**
-   * **طلبُ الإلغاء صار من حقّ فنّي المطبعة** (قرار المالك ١/٩/٢٦): هو أوّلُ من يتحدّث مع
-   * العميل وإليه يتّصل ليُلغي. أمّا التعديلُ التجاريّ وعكسُ التسليم فيبقيان على كاشير/مدير —
-   * فالمصدرُ الواحد `mayRequestWorkOrderControl` يفرّق بينهما، والخادمُ يُنفّذ الفرق نفسه.
-   */
-  const canRequestCancel = mayRequestWorkOrderControl("CANCEL", role, permissions);
-  /**
-   * **إسنادُ المندوب يقرأ بوّابةَ التوصيل لا بوّابةَ أمر الشغل** (مراجعة Codex P2): الحوارُ
-   * يستعلم `delivery.listParties` (`store:READ`) وينفّذ `delivery.dispatch` (`store:FULL` +
-   * كاشير/مدير). ودورٌ مخصّصٌ بـ`workorders:FULL` و`store:NONE` كان يرى الزرَّ ثمّ يصطدم
-   * بـFORBIDDEN. مرآةُ `canDispatch` في `DeliveryHub` حرفياً.
-   */
-  const canDispatchDelivery = !!role && moduleAccessAllowed(role, permissions, "store", "FULL", ["cashier", "manager"]);
-  const canRequestCommercialControl = mayRequestWorkOrderControl("COMMERCIAL_EDIT", role, permissions);
-  const canEditWorkOrder = canDeliverWorkOrder;
+  const {
+    showCost,
+    role,
+    permissions,
+    canClaimWorkOrder,
+    canReleaseWorkOrder,
+    canStartWorkOrder,
+    canMarkReady,
+    canDeliverWorkOrder,
+    canSetDesign,
+    canSetDeliveryMethod,
+    canSetMaterials,
+    canReadControlPreflight,
+    canRequestCancel,
+    canDispatchDelivery,
+    canRequestCommercialControl,
+    canCancelDirectly,
+    canOpenCancellation,
+  } = workOrderDetailOperationAccess(me.data);
   const controlPreflight = trpc.workOrders.controlPreflight.useQuery(
     { workOrderId },
-    { enabled: Number.isFinite(workOrderId) && canRequestCancel },
+    { enabled: Number.isFinite(workOrderId) && canReadControlPreflight && (canOpenCancellation || canRequestCommercialControl) },
   );
 
   const [error, setError] = useState("");
@@ -266,6 +226,14 @@ export default function WorkOrderDetail() {
     ]);
   };
 
+  const claim = trpc.workOrders.claim.useMutation({
+    onSuccess: async () => { setDone("تم سحب الأمر وإسناده إليك."); setAwaitingOwnerRefund(false); setError(""); await refresh(); },
+    onError: (e) => setError(e.message),
+  });
+  const release = trpc.workOrders.release.useMutation({
+    onSuccess: async () => { setDone("أعيد الأمر إلى الطابور العام."); setAwaitingOwnerRefund(false); setError(""); await refresh(); },
+    onError: (e) => setError(e.message),
+  });
   const start = trpc.workOrders.start.useMutation({
     onSuccess: async () => { setDone("بدأ التنفيذ — تم خصم المواد من المخزون."); setAwaitingOwnerRefund(false); setError(""); await refresh(); },
     onError: (e) => setError(e.message),
@@ -322,11 +290,11 @@ export default function WorkOrderDetail() {
   });
   const cancelDeepLinkOpenedRef = useRef(false);
   useEffect(() => {
-    if (cancelDeepLinkOpenedRef.current || !wo.data || !canRequestCancel) return;
+    if (cancelDeepLinkOpenedRef.current || !wo.data || !canOpenCancellation) return;
     if (new URLSearchParams(qs || "").get("cancel") !== "1") return;
     cancelDeepLinkOpenedRef.current = true;
     setCancelOpen(true);
-  }, [canRequestCancel, qs, wo.data]);
+  }, [canOpenCancellation, qs, wo.data]);
   // Slice C (٢٩/٨/٢٦) — الإسناد المتأخّر: زرّ «تغيير طريقة التسليم» يظهر قبل التسليم/الإرسال ⇒
   // موظّف الاستقبال يقلب استلاماً⇄توصيلاً من هذه الشاشة نفسها بلا العودة للطابور (بلاغ المالك:
   // «الإسناد يحتوي على مشكلة، يسند الطلب منذ البداية ولا نعلم هل الشركة أم المندوب»). المكوّن
@@ -435,15 +403,7 @@ export default function WorkOrderDetail() {
    * حرفياً. الدورُ وحده كان يكذب في الاتجاهين: يَعِد المديرَ بإلغاءٍ مباشر لأمرٍ فيه عربون،
    * ويحجب عن الفنّي إلغاءً لا أثرَ له إطلاقاً.
    */
-  const cancelDirectAllowed =
-    controlPreflight.data != null &&
-    mayCancelWorkOrderWithoutApproval({
-      role,
-      override: permissions,
-      status: controlPreflight.data.status,
-      moneyAtStake: controlPreflight.data.cancelMoneyAtStake,
-      managerControlRequired: controlPreflight.data.controlRequired.cancel,
-    });
+  const cancelDirectAllowed = workOrderDirectCancellationAllowed(me.data, controlPreflight.data, canCancelDirectly);
   const cancellationRequiresApproval = !cancelDirectAllowed;
   /**
    * مسارُ الاعتماد يُركّب تمهيدَه من `controlPreflight` (المتاح لفاعل الطلب)؛ والمسارُ المباشر
@@ -860,7 +820,7 @@ export default function WorkOrderDetail() {
           {/* **ملفّ التصميم** — كان الخادم يُرسل `images` والشاشة تُهملها كلّياً (صفر استعمال
               في ٦٨٣ سطراً)، فيقف الفنّيّ أمام أمرٍ لا يرى تصميمه. النسخةُ العليا أوّلاً،
               والسابقةُ تُعرَض مطويّةً — سجلٌّ بلا حذف. */}
-          <DesignFileCard images={(data.images ?? []) as never} workOrderId={Number(data.id)} canEdit={canEditWorkOrder && data.status !== "DELIVERED" && data.status !== "CANCELLED"} />
+          <DesignFileCard images={(data.images ?? []) as never} workOrderId={Number(data.id)} canEdit={canSetDesign && data.status !== "DELIVERED" && data.status !== "CANCELLED"} />
         </CardContent>
       </Card>
 
@@ -902,7 +862,7 @@ export default function WorkOrderDetail() {
         <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
           <CardTitle className="text-base">المواد</CardTitle>
           {/* التعديل متاحٌ ما لم يُسلَّم الأمر أو يُلغَ — نفس ما يفرضه الخادم، فلا زرٌّ يقود لرفض. */}
-          {canEditWorkOrder && data.status !== "DELIVERED" && data.status !== "CANCELLED" && (
+          {(data.status === "RECEIVED" ? canSetMaterials : canRequestCommercialControl) && data.status !== "DELIVERED" && data.status !== "CANCELLED" && (
             <Button size="sm" variant="outline" onClick={() => setEditingMaterials(true)}>
               تعديل البنود
             </Button>
@@ -1050,7 +1010,17 @@ export default function WorkOrderDetail() {
       )}
 
       <div className="flex gap-2 flex-wrap">
-        {canExecuteWorkOrder && data.status === "RECEIVED" && (
+        {canClaimWorkOrder && data.status === "RECEIVED" && data.assignedTo == null && (
+          <Button variant="secondary" onClick={() => claim.mutate({ workOrderId })} disabled={claim.isPending || start.isPending}>
+            {claim.isPending ? "جارٍ…" : "سحب الأمر"}
+          </Button>
+        )}
+        {canReleaseWorkOrder && data.status === "RECEIVED" && data.assignedTo != null && Number(data.assignedTo) === Number(me.data?.id) && (
+          <Button variant="outline" onClick={() => release.mutate({ workOrderId })} disabled={release.isPending || start.isPending}>
+            {release.isPending ? "جارٍ…" : "أعد إلى الطابور"}
+          </Button>
+        )}
+        {canStartWorkOrder && data.status === "RECEIVED" && (
           <Button
             onClick={async () => {
               if (!(await confirm({
@@ -1066,7 +1036,7 @@ export default function WorkOrderDetail() {
             {start.isPending ? "جارٍ…" : "بدء التنفيذ (خصم المواد)"}
           </Button>
         )}
-        {canExecuteWorkOrder && data.status === "IN_PROGRESS" && (
+        {canMarkReady && data.status === "IN_PROGRESS" && (
           <Button
             onClick={async () => {
               if (!(await confirm({
@@ -1143,13 +1113,13 @@ export default function WorkOrderDetail() {
         )}
         {/* Slice C: زرّ «تغيير طريقة التسليم» يظهر لكاشير/مدير قبل التسليم/الإرسال (لا إرسالية حيّة).
             إذا كان الطلب مسنَداً لمندوب فعلياً (consignmentId) يُخفى — التحويل يمرّ من إلغاء الإسناد أوّلاً. */}
-        {canDeliverWorkOrder && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && !data.consignmentId && (
+        {canSetDeliveryMethod && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && !data.consignmentId && (
           <Button variant="outline" onClick={() => setReclassifyOpen(true)} disabled={setDeliveryMethodMut.isPending}>
             <Truck aria-hidden className="me-1 size-4" />
             {data.hasDelivery ? "تحويل لاستلامٍ مباشر" : "تحويل إلى توصيل"}
           </Button>
         )}
-        {canRequestCancel && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
+        {(cancelDirectAllowed || canRequestCancel) && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
           <Button
             variant="outline"
             onClick={() => setCancelOpen(true)}
@@ -1299,13 +1269,9 @@ export default function WorkOrderDetail() {
             setError("لا يمكن تنفيذ الإلغاء قبل اكتمال التحقق من نسخة الأمر والنقد والورديات.");
             return;
           }
-          const requiresApproval = !mayCancelWorkOrderWithoutApproval({
-            role,
-            override: permissions,
-            status: preflight.status,
-            moneyAtStake: preflight.cancelMoneyAtStake,
-            managerControlRequired: preflight.controlRequired.cancel,
-          });
+          const requiresApproval = !workOrderDirectCancellationAllowed(
+            me.data, preflight, canCancelDirectly,
+          );
           if (requiresApproval) {
             const input: CancelControlInput = {
               requestType: "CANCEL",

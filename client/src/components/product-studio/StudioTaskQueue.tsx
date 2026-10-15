@@ -1,3 +1,4 @@
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import { useState, useMemo, useEffect, lazy, Suspense } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
@@ -48,6 +49,21 @@ export function StudioTaskQueue({
   initialSelectedCampaignId: number | null;
   onCampaignSelect?: (id: number | null) => void;
 }) {
+  const studioCan = {
+    approve: useOperationPermission("productStudio.approve").allowed,
+    assign: useOperationPermission("productStudio.assign").allowed,
+    assignees: useOperationPermission("productStudio.assignees").allowed,
+    bulkReassign: useOperationPermission("productStudio.bulkReassign").allowed,
+    bulkSetPriority: useOperationPermission("productStudio.bulkSetPriority").allowed,
+    cancel: useOperationPermission("productStudio.cancel").allowed,
+    candidatePreview: useOperationPermission("productStudio.candidatePreview").allowed,
+    claimByBarcode: useOperationPermission("productStudio.claimByBarcode").allowed,
+    reassign: useOperationPermission("productStudio.reassign").allowed,
+    reject: useOperationPermission("productStudio.reject").allowed,
+    revert: useOperationPermission("productStudio.revert").allowed,
+    tasks: useOperationPermission("productStudio.tasks").allowed,
+    updateSchedule: useOperationPermission("productStudio.updateSchedule").allowed,
+  };
   const utils = trpc.useUtils();
   
   // Tabs and Filters
@@ -91,7 +107,7 @@ export function StudioTaskQueue({
   const [taskScannerOpen, setTaskScannerOpen] = useState(false);
 
   // Queries
-  const assignees = trpc.productStudio.assignees.useQuery(undefined, { enabled: !offline });
+  const assignees = trpc.productStudio.assignees.useQuery(undefined, { enabled: studioCan.assignees && (!offline) });
   const tasks = trpc.productStudio.tasks.useInfiniteQuery(
     {
       scope,
@@ -105,7 +121,7 @@ export function StudioTaskQueue({
       hideClosedCampaigns,
     },
     {
-      enabled: !offline,
+      enabled: studioCan.tasks && (!offline),
       getNextPageParam: (lastPage) => lastPage.nextCursor,
     }
   );
@@ -120,7 +136,7 @@ export function StudioTaskQueue({
   }, [selectedId, tasks.data]);
 
   const preview = trpc.productStudio.candidatePreview.useQuery({ taskId: selectedId ?? 0 }, {
-    enabled: !offline && selectedId != null && selected?.hasCandidate === true,
+    enabled: studioCan.candidatePreview && (!offline && selectedId != null && selected?.hasCandidate === true),
   });
 
   const mobilePanel = mobileStudioPanel(selectedId);
@@ -362,7 +378,7 @@ export function StudioTaskQueue({
                             </AppSelect>
                           </div>
                           <Button
-                            type="button" className="min-h-11" disabled={offline || bulkReassign.isPending || !bulkAssigneeId}
+                            type="button" className="min-h-11" disabled={!studioCan.bulkReassign || (offline || bulkReassign.isPending || !bulkAssigneeId)}
                             onClick={() => {
                               const queuedSelected = queuedTaskIds.filter((id) => selectedTaskIds.has(id)).slice(0, BULK_ASSIGN_MAX);
                               bulkReassign.mutate({ taskIds: queuedSelected, newAssigneeId: Number(bulkAssigneeId) });
@@ -384,7 +400,7 @@ export function StudioTaskQueue({
                             </AppSelect>
                           </div>
                           <Button
-                            type="button" variant="outline" className="min-h-11" disabled={offline || bulkReassign.isPending}
+                            type="button" variant="outline" className="min-h-11" disabled={!studioCan.bulkReassign || (offline || bulkReassign.isPending)}
                             onClick={() => {
                               bulkReassign.mutate({
                                 taskIds: selectedAssignedTaskIds.slice(0, BULK_ASSIGN_MAX),
@@ -408,7 +424,7 @@ export function StudioTaskQueue({
                             </AppSelect>
                           </div>
                           <Button
-                            type="button" variant="outline" className="min-h-11" disabled={offline || bulkSetPriority.isPending}
+                            type="button" variant="outline" className="min-h-11" disabled={!studioCan.bulkSetPriority || (offline || bulkSetPriority.isPending)}
                             onClick={() => bulkSetPriority.mutate({ taskIds: selectedActiveTaskIds.slice(0, BULK_ASSIGN_MAX), priority: bulkPriorityValue })}
                           >
                             ضبط أولوية {selectedActiveTaskIds.length} مهمّة
@@ -498,7 +514,7 @@ export function StudioTaskQueue({
                             </AppSelect>
                           </div>
                           <Button
-                            type="button" className="min-h-11 self-end" disabled={offline || reassign.isPending || !inlineAssigneeId}
+                            type="button" className="min-h-11 self-end" disabled={!studioCan.reassign || !studioCan.updateSchedule || (offline || reassign.isPending || !inlineAssigneeId)}
                             onClick={async () => {
                               try {
                                 await reassign.mutateAsync({
@@ -538,7 +554,7 @@ export function StudioTaskQueue({
                             <Input id="studio-selected-due-at" type="datetime-local" value={selectedDueAt} onChange={(event) => setSelectedDueAt(event.target.value)} />
                           </div>
                           <Button
-                            type="button" variant="outline" className="min-h-11 self-end" disabled={offline || updateSchedule.isPending}
+                            type="button" variant="outline" className="min-h-11 self-end" disabled={!studioCan.updateSchedule || (offline || updateSchedule.isPending)}
                             onClick={() => updateSchedule.mutate({ taskId: Number(selected.id), expectedRevision: selected.revision, priority: selectedPriority, dueAt: selectedDueAt ? new Date(selectedDueAt) : null })}
                           >
                             حفظ الأولوية والموعد
@@ -557,7 +573,7 @@ export function StudioTaskQueue({
                               ))}
                             </AppSelect>
                             <Button
-                              type="button" className="min-h-11" disabled={offline || reassign.isPending || (selected.campaignId == null && !reassignAssigneeId)}
+                              type="button" className="min-h-11" disabled={!studioCan.reassign || (offline || reassign.isPending || (selected.campaignId == null && !reassignAssigneeId))}
                               onClick={() => reassign.mutate({ taskId: Number(selected.id), expectedRevision: selected.revision, newAssigneeId: reassignAssigneeId ? Number(reassignAssigneeId) : null, reason: reassignReason.trim() || undefined })}
                             >
                               <UserCheck aria-hidden className="size-4" /> إعادة إسناد
@@ -573,7 +589,7 @@ export function StudioTaskQueue({
                           <p className="text-xs text-muted-foreground">تُنقل إلى السجلّ بحالة «ملغاة»، ويعود المنتج قابلاً لمهمة جديدة.</p>
                           <Textarea rows={2} maxLength={500} value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} placeholder="سبب الإلغاء (٥ أحرف على الأقل)" />
                           <Button
-                            type="button" variant="destructive" className="min-h-11" disabled={offline || cancelTask.isPending || cancelReason.trim().length < 5}
+                            type="button" variant="destructive" className="min-h-11" disabled={!studioCan.cancel || (offline || cancelTask.isPending || cancelReason.trim().length < 5)}
                             onClick={() => cancelTask.mutate({ taskId: Number(selected.id), expectedRevision: selected.revision, reason: cancelReason })}
                           >
                             <XCircle aria-hidden className="size-4" /> إلغاء المهمة
@@ -627,14 +643,14 @@ export function StudioTaskQueue({
                             <div className="flex flex-wrap gap-2 pt-2">
                               <Button
                                 className="min-h-11 flex-1"
-                                disabled={offline || approve.isPending || reject.isPending || !preview.data}
+                                disabled={!studioCan.approve || (offline || approve.isPending || reject.isPending || !preview.data)}
                                 onClick={() => approve.mutate({ taskId: Number(selected.id), expectedRevision: selected.revision })}
                               >
                                 <CheckCircle2 aria-hidden className="size-4" /> اعتماد ونشر
                               </Button>
                               <Button
                                 className="min-h-11 flex-1" variant="destructive"
-                                disabled={offline || approve.isPending || reject.isPending || rejectReason.trim().length < 5}
+                                disabled={!studioCan.reject || (offline || approve.isPending || reject.isPending || rejectReason.trim().length < 5)}
                                 onClick={() => reject.mutate({ taskId: Number(selected.id), expectedRevision: selected.revision, reason: rejectReason })}
                               >
                                 <XCircle aria-hidden className="size-4" /> إعادة للتعديل
@@ -644,7 +660,7 @@ export function StudioTaskQueue({
                         )}
                         
                         {canManage && selected.status === "APPROVED" && (
-                          <Button variant="outline" disabled={offline || revert.isPending} onClick={() => revert.mutate({ taskId: Number(selected.id), expectedRevision: selected.revision })}>
+                          <Button variant="outline" disabled={!studioCan.revert || (offline || revert.isPending)} onClick={() => revert.mutate({ taskId: Number(selected.id), expectedRevision: selected.revision })}>
                             <RotateCcw aria-hidden className="size-4" /> استرجاع الأصل
                           </Button>
                         )}

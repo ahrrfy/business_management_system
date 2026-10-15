@@ -188,7 +188,7 @@ describe("إلغاء الطلب بيد فنّي المطبعة", () => {
       baseVersion,
       reason: "رفع السعر بطلب العميل",
       payload: { salePrice: "20000.00" },
-    }, TECH)).rejects.toThrow(/كاشير أو مدير/);
+    }, TECH)).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     await expect(requestWorkOrderControl({
       requestKey: "wo-tech-mat-1",
@@ -197,7 +197,7 @@ describe("إلغاء الطلب بيد فنّي المطبعة", () => {
       baseVersion,
       reason: "زيادة كمية الورق",
       payload: { materials: [{ variantId: 1, baseQuantity: 8 }] },
-    }, TECH)).rejects.toThrow(/كاشير أو مدير/);
+    }, TECH)).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     await expect(requestWorkOrderControl({
       requestKey: "wo-tech-rev-1",
@@ -206,7 +206,7 @@ describe("إلغاء الطلب بيد فنّي المطبعة", () => {
       baseVersion,
       reason: "عكس تسليم",
       payload: { expectedVersion: baseVersion, reopen: false, refundSources: [] },
-    }, TECH)).rejects.toThrow(/كاشير أو مدير/);
+    }, TECH)).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     // ولا صفَّ طلبٍ واحد نشأ من المحاولات الثلاث.
     expect(await db().select().from(s.workOrderControlRequests)).toHaveLength(0);
@@ -217,9 +217,9 @@ describe("تمهيدُ التحكّم كما يراه الفنّي", () => {
   it("⭐ يفصل «فيه مال» عن بوّابة المدير المتشدّدة", async () => {
     const clean = await createOrder();
     const cleanPre = await getWorkOrderControlPreflight(clean, TECH);
-    // أسطرُ الخامة تُشعل بوّابةَ المدير القائمة…
-    expect(cleanPre.controlRequired.cancel).toBe(true);
-    // …ولا تُشعل شرطَ المال، وهو وحده ما يحكم الفنّي.
+    // الخامة المخططة لم تُستهلك، لذلك يطابق التمهيد التنفيذ المباشر.
+    expect(cleanPre.controlRequired.cancel).toBe(false);
+    // شرطُ المال يبقى مستقلاً ويحوّل الإلغاء إلى اعتماد عند وجود قبض.
     expect(cleanPre.cancelMoneyAtStake).toBe(false);
 
     await openReceptionShift();

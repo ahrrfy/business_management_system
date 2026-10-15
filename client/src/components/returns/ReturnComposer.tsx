@@ -1,3 +1,5 @@
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 /**
  * ReturnComposer — **المكوّن المرجعيّ الوحيد للمرتجع** (بلاغ المالك ١٧/٨/٢٦).
  *
@@ -65,6 +67,8 @@ export function returnQuantityLabel(
 
 export interface ReturnComposerProps {
   invoiceId: number;
+  /** وضع الفتح المبدئي: مرتجع كامل يملأ كافة البنود تلقائياً، أو جزئي */
+  initialMode?: "FULL" | "PARTIAL";
   /**
    * اعتمادُ **طلب إرجاعٍ** من موظّف المحطة بدل مرتجعٍ مباشر (١٩/٨).
    * الفارق كلّه في الإجراء المُستدعى: `approveRequest` يفرض فصل المهام واللقطة التفاؤلية
@@ -83,6 +87,7 @@ export interface ReturnComposerProps {
 
 export function ReturnComposer({
   invoiceId,
+  initialMode,
   approvingRequestId,
   scannedBarcode,
   onBarcodeHandled,
@@ -91,9 +96,14 @@ export function ReturnComposer({
 }: ReturnComposerProps) {
   const utils = trpc.useUtils();
   const detail = trpc.returns.getInvoice.useQuery({ invoiceId }, { enabled: invoiceId > 0 });
-  /** المالك والإداريون والكاشير ينفّذون المرتجع فوراً (محرك المرتجعات الفوري الذري) — الشاشة تعرف ذلك قبل التأكيد لا بعده. */
+  /** التنفيذ المباشر تفويض مستقل؛ الخادم يحوّل تجاوز السقف/الوردية/اليوم إلى طلب اعتماد. */
   const me = trpc.auth.me.useQuery();
-  const executesImmediately = me.data?.isOwner === true || ["admin", "manager", "cashier"].includes(me.data?.role ?? "");
+  const operationPermission = useOperationPermission(
+    approvingRequestId ? "returns.approveRequest" : "returns.create",
+  );
+  const directReturnPermission = useOperationPermission("returns.create");
+  const refundRailPermission = useOperationPermission("refundRails.preflight");
+  const executesImmediately = me.data?.isOwner === true || directReturnPermission.allowed;
   /**
    * ⭐ في وضع الاعتماد نُحمّل **بنود الطلب** — هي التي سينفّذها الخادم، لا ما يُدخله المدير.
    * كان الجدول يُفتَح فارغاً فيُدخل المدير كمّياتٍ يُقسم بها حوارُ التأكيد ثمّ يتجاهلها
@@ -149,6 +159,26 @@ export function ReturnComposer({
   const isWalkIn = !!inv?.walkInResolutionPolicy;
   const isDeliveryReversal = !!inv?.walkInResolutionPolicy?.deliveryCustodyReversal;
   const items = inv?.items ?? [];
+
+  useEffect(() => {
+    if (
+      initialMode !== "FULL" ||
+      approvingRequestId ||
+      !inv ||
+      inv.status === "RETURNED" ||
+      inv.status === "CANCELLED"
+    ) {
+      return;
+    }
+    const eligible = inv.items.filter((it) => it.remaining > 0);
+    if (eligible.length === 0) return;
+    const next: Record<number, number> = {};
+    for (const it of eligible) {
+      next[it.invoiceItemId] = it.remaining;
+    }
+    setQty(next);
+    setReason((prev) => prev.trim() || "إرجاع كامل الفاتورة");
+  }, [initialMode, approvingRequestId, inv?.id]);
   const itemsById = useMemo(
     () => new Map((inv?.items ?? []).map((item) => [item.invoiceItemId, item])),
     [inv?.items],
@@ -423,6 +453,7 @@ export function ReturnComposer({
    * «النظام يجبرني على اختيار درجٍ لردّ نقودٍ لم تُقبض».
    */
   const noRefundNeeded = refundD.lte(0);
+  const requiresExecutableRail = Boolean(approvingRequestId || executesImmediately);
 
   /** سببُ تعطيل الحفظ — نصٌّ واحدٌ يُعرَض دائماً بدل رفضٍ متأخّر من الخادم. */
   const blockReason = useMemo(() => {
@@ -440,7 +471,14 @@ export function ReturnComposer({
     if (pending && !approvingRequestId) {
       return `على هذه الفاتورة طلبٌ معلّق #${pending.id} — احسمه أولاً (اعتماداً أو رفضاً) قبل إرسال طلبٍ جديد.`;
     }
-    if (!approvingRequestId && me.data?.role === "cashier" && method === "CASH" && refundD.gt(0)) {
+    if (
+      requiresExecutableRail &&
+      me.data?.role &&
+      me.data.role !== "admin" &&
+      me.data.role !== "manager" &&
+      method === "CASH" &&
+      refundD.gt(0)
+    ) {
       const cashierHasShift = inv?.refundShifts?.some((s) => s.isMine || Number(s.userId) === Number(me.data?.id));
       if (!cashierHasShift) {
         return "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لتنفيذ المرتجع.";
@@ -448,23 +486,34 @@ export function ReturnComposer({
     }
     if (!selectedLines.length) return "حدّد كمية إرجاع واحدة على الأقل.";
     if (isWalkIn && !returnValue.gt(0)) return "قيمة المرتجع صفر؛ لا يمكن إنشاء تسوية نقدية لزبون عابر.";
+    if (requiresExecutableRail && !noRefundNeeded && refundD.gt(0) && !refundRailPermission.allowed) {
+      return "لا تملك صلاحية التحقق من مصدر ردّ المبلغ؛ يمكنك اعتماد المرتجعات التي لا تتطلب صرفاً فقط.";
+    }
     // حجبُ الرافد يسري على ردٍّ **موجب** فقط — لا معنى لسقفٍ حين لا يخرج مال.
     if (!noRefundNeeded && activeOption?.blockedReason) return activeOption.blockedReason;
     if (overCap) return `المبلغ يتجاوز المسموح (${fmt(railCap.toFixed(2))} د.ع).`;
-    // مالٌ يخرج ⇒ الرافدُ والدرجُ والمرجعُ من المنتقي الموحَّد — سببُ حجبه مقروءٌ من الخادم.
+    // مالٌ يخرج ⇒ الرافدُ والدرجُ والمرجعُ من المنتقي الموحَّد (عند التنفيذ/الاعتماد الفعلي).
     if (!noRefundNeeded && refundD.gt(0)) {
-      if (railState == null || railState.loading) return "جارٍ التحقق من روافد الردّ والأدراج المفتوحة…";
-      if (railState.error) return `تعذّر التحقق من روافد الردّ — ${railState.error}`;
-      if (railState.blockReason) return railState.blockReason;
-      if (!railState.selection) return "حدّد من أين يخرج المال.";
+      if (requiresExecutableRail) {
+        if (railState == null || railState.loading) return "جارٍ التحقق من روافد الردّ والأدراج المفتوحة…";
+        if (railState.error) return `تعذّر التحقق من روافد الردّ — ${railState.error}`;
+        if (railState.blockReason) return railState.blockReason;
+        if (!railState.selection) return "حدّد من أين يخرج المال.";
+      } else if (railState?.blockReason) {
+        return railState.blockReason;
+      }
     }
     if (reason.trim().length < 3) return "اكتب سبب المرتجع (٣ أحرف على الأقل) لتوثيق الطلب.";
     return null;
-  }, [isLocked, pending, approvingRequestId, requestDetail.data, invoiceId, lockedLines, me.data?.role, me.data?.id, inv?.refundShifts, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, method, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
+  }, [isLocked, pending, approvingRequestId, requiresExecutableRail, requestDetail.data, invoiceId, lockedLines, me.data?.role, me.data?.id, inv?.refundShifts, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, refundRailPermission.allowed, method, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
 
   async function submit() {
     setError("");
     setDone("");
+    if (!operationPermission.allowed) {
+      setError(operationPermission.reason);
+      return;
+    }
     if (!inv || blockReason) return;
 
     const refund = !isWalkIn && refundD.gt(0)
@@ -472,7 +521,7 @@ export function ReturnComposer({
           amount: round2(refundD).toFixed(2),
           method,
           ...(method === "CASH" && shiftId != null ? { shiftId } : {}),
-          ...(method === "CARD" ? { reference: cardReference.trim() } : {}),
+          ...(method === "CARD" && cardReference.trim() ? { reference: cardReference.trim() } : {}),
         }
       : undefined;
     const resolution = isWalkIn
@@ -481,7 +530,7 @@ export function ReturnComposer({
           method,
           amount: round2(refundD).toFixed(2),
           ...(method === "CASH" && shiftId != null && !noRefundNeeded ? { shiftId } : {}),
-          ...(method === "CARD" && refundD.gt(0) ? { reference: cardReference.trim() } : {}),
+          ...(method === "CARD" && refundD.gt(0) && cardReference.trim() ? { reference: cardReference.trim() } : {}),
           reason: reason.trim(),
           disposition: restock ? "RESTOCK" as const : "DAMAGED" as const,
         }
@@ -606,15 +655,15 @@ export function ReturnComposer({
       : "0.00";
     const fullRefundD = D(fullRefundAmount);
 
-    if (fullRefundD.gt(0)) {
+    if (fullRefundD.gt(0) && requiresExecutableRail) {
       if (changedToFullSelection) {
-        notify.err("جُهّز كامل المرتجع؛ اختر مصدر ردّ المبلغ ثم اضغط الإرجاع الكامل مرةً أخرى.");
+        notify.info("تم تجهيز كامل بنود الفاتورة وتحديث مصدر الصرف — اضغط التأكيد للتنفيذ الفوري.");
         return;
       }
       const preparedAmount = railState?.preflight?.estimatedCashOut;
       const railPreparedForFullAmount = preparedAmount != null && D(preparedAmount).eq(fullRefundD);
       if (railState == null || !railPreparedForFullAmount || railState.loading) {
-        notify.err("اختر مصدر ردّ المبلغ الظاهر، ثم اضغط الإرجاع الكامل مرةً أخرى.");
+        notify.info("اختر مصدر ردّ المبلغ الظاهر، ثم اضغط الإرجاع الكامل مرةً أخرى.");
         return;
       }
       if (railState.error) {
@@ -625,6 +674,9 @@ export function ReturnComposer({
         notify.err(railState.blockReason ?? "حدّد من أين يخرج مبلغ الردّ.");
         return;
       }
+    } else if (fullRefundD.gt(0) && railState?.blockReason) {
+      notify.err(railState.blockReason);
+      return;
     }
 
     const linesToSubmit = eligible.map((it) => ({
@@ -637,7 +689,7 @@ export function ReturnComposer({
           amount: round2(fullRefundD).toFixed(2),
           method,
           ...(method === "CASH" && shiftId != null ? { shiftId } : {}),
-          ...(method === "CARD" ? { reference: cardReference.trim() } : {}),
+          ...(method === "CARD" && cardReference.trim() ? { reference: cardReference.trim() } : {}),
         }
       : undefined;
 
@@ -647,7 +699,7 @@ export function ReturnComposer({
           method,
           amount: round2(fullRefundD).toFixed(2),
           ...(method === "CASH" && shiftId != null && fullRefundD.gt(0) ? { shiftId } : {}),
-          ...(method === "CARD" && fullRefundD.gt(0) ? { reference: cardReference.trim() } : {}),
+          ...(method === "CARD" && fullRefundD.gt(0) && cardReference.trim() ? { reference: cardReference.trim() } : {}),
           reason: effectiveReason,
           disposition: restock ? ("RESTOCK" as const) : ("DAMAGED" as const),
         }
@@ -727,7 +779,8 @@ export function ReturnComposer({
 
   return (
     <div className="space-y-4">
-      {approvingRequestId && requestDetail.data && (
+      {approvingRequestId &&
+      requestDetail.data && (
         <Card className="border-[var(--sem-info)]/45 bg-[var(--sem-info-bg)]/35">
           <CardContent className="flex items-start gap-2 p-4 text-sm">
             <Info aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-info)]" />
@@ -736,7 +789,9 @@ export function ReturnComposer({
                 مراجعة طلب الإرجاع #{requestDetail.data.id} — البنود والكميات والسبب مقفلة من الطلب الأصلي.
               </p>
               <p className="text-muted-foreground">
-                طلبه {requestDetail.data.createdByName ?? `المستخدم ${requestDetail.data.createdBy}`}؛ السبب: {requestDetail.data.reason}.
+                طلبه{" "}
+                {requestDetail.data.createdByName ?? `المستخدم ${requestDetail.data.createdBy}`}
+                ؛ السبب: {requestDetail.data.reason}.
               </p>
             </div>
           </CardContent>
@@ -752,7 +807,8 @@ export function ReturnComposer({
                 على هذه الفاتورة طلبٌ معلّق #{pending.id} بانتظار مراجعٍ مستقل — لم يتغيّر المخزون ولا المال بعد.
               </p>
               <p className="text-muted-foreground">
-                طلبه {pending.requestedByName ?? `المستخدم ${pending.requestedBy}`}
+                طلبه{" "}
+                {pending.requestedByName ?? `المستخدم ${pending.requestedBy}`}
                 {pending.isMine ? " (أنت)" : ""}؛ السبب: {pending.reason}.
               </p>
               <p className="text-muted-foreground">
@@ -778,7 +834,8 @@ export function ReturnComposer({
                   : "هذه الفاتورة ملغاة مسبقاً — لا يمكن تسجيل أي مرتجع جديد عليها."}
               </p>
               <p className="text-xs text-muted-foreground">
-                إجمالي ما أُرجع: {fmt(inv.returnedTotal ?? "0")} د.ع من أصل {fmt(inv.total)} د.ع.
+                إجمالي ما أُرجع: {fmt(inv.returnedTotal ?? "0")} د.ع من أصل{" "}
+                {fmt(inv.total)} د.ع.
               </p>
             </div>
           </CardContent>
@@ -807,6 +864,60 @@ export function ReturnComposer({
           </div>
         </CardContent>
       </Card>
+
+      {/* شريط وضع المرتجع: كامل مقابل جزئي */}
+      {!approvingRequestId && !isLocked && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-xl border bg-muted/30 p-1.5">
+          <button
+            type="button"
+            disabled={qtyLocked || items.every((it) => it.remaining <= 0)}
+            onClick={() => {
+              fillAll();
+              setReason((prev) => prev.trim() || "إرجاع كامل الفاتورة");
+            }}
+            className={cn(
+              "flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs sm:text-sm font-bold transition-all cursor-pointer",
+              items.some((it) => it.remaining > 0) &&
+                items
+                  .filter((it) => it.remaining > 0)
+                  .every((it) => qty[it.invoiceItemId] === it.remaining)
+                ? "bg-primary text-primary-foreground shadow-xs"
+                : "bg-background hover:bg-muted text-foreground border",
+            )}
+          >
+            <Zap className="size-4" aria-hidden />
+            <span>مرتجع كامل للفاتورة (تحديد كافة البنود)</span>
+          </button>
+          <button
+            type="button"
+            disabled={qtyLocked}
+            onClick={() => {
+              const allSelected =
+                items.some((it) => it.remaining > 0) &&
+                items
+                  .filter((it) => it.remaining > 0)
+                  .every((it) => qty[it.invoiceItemId] === it.remaining);
+              if (allSelected) {
+                setQty({});
+              }
+            }}
+            className={cn(
+              "flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs sm:text-sm font-bold transition-all cursor-pointer",
+              !(
+                items.some((it) => it.remaining > 0) &&
+                items
+                  .filter((it) => it.remaining > 0)
+                  .every((it) => qty[it.invoiceItemId] === it.remaining)
+              )
+                ? "bg-primary text-primary-foreground shadow-xs"
+                : "bg-background hover:bg-muted text-foreground border",
+            )}
+          >
+            <RotateCcw className="size-4" aria-hidden />
+            <span>مرتجع جزئي (تحديد الأصناف والكميات)</span>
+          </button>
+        </div>
+      )}
 
       {/* ② بنود الفاتورة مع مسح الباركود السريع وأزرار الإرجاع الذكي */}
       <Card>
@@ -893,7 +1004,10 @@ export function ReturnComposer({
                           <div className="text-[11px] font-medium text-primary">يُرجع كبكج كامل؛ وعند إعادته للمخزون يعيد النظام مكوّناته تلقائياً</div>
                         )}
                         {it.conversionFactor > 1 && (
-                          <div className="text-[11px] text-muted-foreground">١ {it.unitName} = {it.conversionFactor} {it.baseUnitName}</div>
+                          <div className="text-[11px] text-muted-foreground">
+                            ١ {it.unitName} = {it.conversionFactor}{" "}
+                            {it.baseUnitName}
+                          </div>
                         )}
                       </td>
                       <td className="p-2 text-center">{returnQuantityLabel(it.baseQuantity, it.conversionFactor, it.unitName, it.baseUnitName)}</td>
@@ -1008,21 +1122,37 @@ export function ReturnComposer({
           {noRefundNeeded ? (
             <Card>
               <CardHeader className="p-3 pb-2"><CardTitle className="text-sm font-bold">لا يوجد استرداد مالي</CardTitle></CardHeader>
-              <CardContent className="p-3 pt-0">
+              <CardContent className="p-3 pt-0 space-y-2.5">
                 <div className="flex items-start gap-2 rounded-lg border border-[var(--sem-info)]/45 bg-[var(--sem-info-bg)] p-3 text-xs font-semibold text-[var(--sem-info)]">
                   <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
                   <div>
                     <div>
                       {isDeliveryReversal
                         ? "لا يوجد لدى المتجر مبلغ يستوجب الرد — تُعكس عهدة التوصيل آلياً بلا إخراج نقد وبلا وردية صرف."
-                        : "لم يُقبض من هذه الفاتورة ما يستوجب الرد — يُسجّل المرتجع بلا إخراج نقد وبلا وردية صرف."}
+                        : !isWalkIn && suggestedRefund.gt(0) && manualAmount !== null
+                          ? "تم اختيار تقييد كامل مبلغ المرتجع في حساب العميل (رصيد دائن / موازنة ذمم) دون صرف نقد من الدرج."
+                          : "لم يُقبض من هذه الفاتورة ما يستوجب الرد — يُسجّل المرتجع بلا إخراج نقد وبلا وردية صرف."}
                     </div>
                     <div className="mt-1 text-[11px] font-normal">
-                      المرتجع {fmt(returnValue.toFixed(2))} د.ع · المقبوض القابل للرد {fmt(D(inv?.refundablePaidAmount ?? inv?.paidAmount ?? "0").toFixed(2))} د.ع
+                      المرتجع {fmt(returnValue.toFixed(2))} د.ع · المقبوض القابل
+                      للرد{" "}
+                      {fmt(D(inv?.refundablePaidAmount ?? inv?.paidAmount ?? "0").toFixed(2))}{" "}
+                      د.ع
                       {customerStillOwes.gt(0) ? ` · يبقى على العميل ${fmt(customerStillOwes.toFixed(2))} د.ع` : ""}
                     </div>
                   </div>
                 </div>
+                {!isWalkIn && !isDeliveryReversal && suggestedRefund.gt(0) && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setManualAmount(null)}
+                    className="h-8 text-xs font-bold"
+                  >
+                    استرداد المبلغ نقداً / بطاقة ({fmt(suggestedRefund.toFixed(2))} د.ع) بدلاً من تقييده بالذمة
+                  </Button>
+                )}
               </CardContent>
             </Card>
           ) : (
@@ -1037,11 +1167,45 @@ export function ReturnComposer({
                       {o.blockedReason ? (
                         <span> — {o.blockedReason}</span>
                       ) : (
-                        <span dir="ltr" className="ms-1 tabular-nums font-semibold"> حتى {fmt(o.cap)} د.ع</span>
+                        <span dir="ltr" className="ms-1 tabular-nums font-semibold">
+                          {" "}
+                          حتى {fmt(o.cap)} د.ع
+                        </span>
                       )}
                     </li>
                   ))}
                 </ul>
+
+                {!isWalkIn && !isDeliveryReversal && suggestedRefund.gt(0) && (
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      disabled={isLocked}
+                      onClick={() => setManualAmount(null)}
+                      className={cn(
+                        "rounded-md border px-2.5 py-1 text-xs font-semibold transition-colors cursor-pointer",
+                        manualAmount === null
+                          ? "border-primary bg-primary/10 text-primary font-bold"
+                          : "bg-background hover:bg-muted text-muted-foreground",
+                      )}
+                    >
+                      ردّ الصافي للعميل ({fmt(suggestedRefund.toFixed(2))} د.ع)
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isLocked}
+                      onClick={() => setManualAmount("0")}
+                      className={cn(
+                        "rounded-md border px-2.5 py-1 text-xs font-semibold transition-colors cursor-pointer",
+                        manualAmount === "0"
+                          ? "border-primary bg-primary/10 text-primary font-bold"
+                          : "bg-background hover:bg-muted text-muted-foreground",
+                      )}
+                    >
+                      تقييد كامل المرتجع بحساب العميل / موازنة ذمم (0 د.ع نقد)
+                    </button>
+                  </div>
+                )}
 
                 <div className="rounded-lg border bg-muted/20 p-2.5">
                   <div className="flex flex-wrap items-end justify-between gap-3">
@@ -1050,8 +1214,14 @@ export function ReturnComposer({
                       <span className="text-base sm:text-lg font-black tabular-nums text-primary" dir="ltr">{fmt(refundAmount || "0")}</span>
                       <span className="ms-1 text-xs font-bold">د.ع{pickedRail ? ` — ${REFUND_RAIL_LABEL[pickedRail]}` : ""}</span>
                       <div className="mt-0.5 text-[11px] text-muted-foreground">
-                        قيمة المرتجع {fmt(returnValue.toFixed(2))} · المسموح {fmt(railCap.toFixed(2))}
+                        قيمة المرتجع {fmt(returnValue.toFixed(2))} · المسموح{" "}
+                        {fmt(railCap.toFixed(2))}
                       </div>
+                      {!isWalkIn && returnValue.gt(refundD) && refundD.gt(0) && (
+                        <div className="mt-1 text-[11px] font-semibold text-primary">
+                          تسوية مركبة: يُسقط {fmt(returnValue.minus(refundD).toFixed(2))} د.ع من ذمة العميل + يُردّ {fmt(refundD.toFixed(2))} د.ع
+                        </div>
+                      )}
                     </div>
                     {isDeliveryReversal ? (
                       <div className="rounded-md border border-[var(--sem-pos)]/35 bg-[var(--sem-pos-bg)] px-2.5 py-1.5 text-xs font-bold text-[var(--sem-pos)]">
@@ -1079,12 +1249,13 @@ export function ReturnComposer({
                   </div>
                   {overCap && (
                     <p className="mt-2 text-xs font-bold text-destructive">
-                      المبلغ يتجاوز المسموح — الحدّ {fmt(railCap.toFixed(2))} د.ع.
+                      المبلغ يتجاوز المسموح — الحدّ {fmt(railCap.toFixed(2))}{" "}
+                      د.ع.
                     </p>
                   )}
                 </div>
 
-                {refundD.gt(0) ? (
+                {refundD.gt(0) && refundRailPermission.allowed ? (
                   <RefundRailPicker
                     context={{
                       sourceDocType: "SALE_RETURN",
@@ -1092,11 +1263,16 @@ export function ReturnComposer({
                       amount: round2(refundD).toFixed(2),
                     }}
                     mode="embedded"
+                    requestOnly={!requiresExecutableRail}
                     onStateChange={setRailState}
                     drawerLabel="من أيّ درج يخرج النقد؟"
                     drawerHint="النقد يخرج من الدرج المختار عند تنفيذ المرتجع، ويظهر في تسويته."
                     submitting={create.isPending || approve.isPending}
                   />
+                ) : refundD.gt(0) ? (
+                  <div className="rounded-lg border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] p-3 text-xs font-semibold text-[var(--sem-warn)]">
+                    هذا المرتجع يحتاج صرفاً مالياً؛ يلزم تفويض «التحقق من مصدر ردّ المبلغ» قبل اعتماده.
+                  </div>
                 ) : null}
               </CardContent>
             </Card>
@@ -1112,7 +1288,12 @@ export function ReturnComposer({
       <div className="flex flex-wrap items-center gap-2 pt-1 border-t">
         <Button
           onClick={submit}
-          disabled={!!blockReason || create.isPending || approve.isPending}
+          disabled={
+            !operationPermission.allowed ||
+            !!blockReason ||
+            create.isPending ||
+            approve.isPending
+          }
           className="font-bold text-xs sm:text-sm gap-1.5"
         >
           <CheckCircle2 className="size-4" aria-hidden />

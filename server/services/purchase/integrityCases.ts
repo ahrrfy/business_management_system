@@ -1,6 +1,8 @@
 import { TRPCError } from "@trpc/server";
+import { PAYMENT_EVIDENCE_CASE_CODES } from "@shared/purchaseSettlement";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import {
+  branches,
   goodsReceipts,
   purchaseCharges,
   purchaseIntegrityCaseEvents,
@@ -9,6 +11,7 @@ import {
   purchaseReturns,
   supplierInvoices,
   supplierPayments,
+  suppliers,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
@@ -108,6 +111,14 @@ export async function openPurchaseIntegrityCase(input: OpenPurchaseIntegrityCase
   return withTx(async (tx) => {
     const replay = (await tx.select().from(purchaseIntegrityCases).where(eq(purchaseIntegrityCases.caseKey, caseKey)).limit(1))[0];
     if (replay) { assertPurchaseBranch(replay, actor); if (replay.evidenceHash !== evidenceHash) throw new TRPCError({ code: "CONFLICT", message: "مفتاح القضية مستعمل بدليل مختلف" }); return { caseId: Number(replay.id), status: replay.status, idempotent: true as const }; }
+    // Same branch -> PO -> supplier -> invoice lock order as cash payment. Once the
+    // evidence hold commits, a waiting payment must observe it before writing cash.
+    if (PAYMENT_EVIDENCE_CASE_CODES.some((code) => code === input.code)) {
+      await tx.select({ id: branches.id }).from(branches).where(eq(branches.id, input.branchId)).for("share");
+      if (input.purchaseOrderId != null) await tx.select({ id: purchaseOrders.id }).from(purchaseOrders).where(eq(purchaseOrders.id, input.purchaseOrderId)).for("update");
+      if (input.supplierId != null) await tx.select({ id: suppliers.id }).from(suppliers).where(eq(suppliers.id, input.supplierId)).for("update");
+      if (input.supplierInvoiceId != null) await tx.select({ id: supplierInvoices.id }).from(supplierInvoices).where(eq(supplierInvoices.id, input.supplierInvoiceId)).for("update");
+    }
     await assertLinkedBranches(tx, input);
     const caseNumber = `PIC-${input.branchId}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${sha256(caseKey).slice(0, 16).toUpperCase()}`;
     const inserted = await tx.insert(purchaseIntegrityCases).values({ caseNumber, caseKey, openGuard: `OPEN:${caseKey}`, branchId: input.branchId, supplierId: input.supplierId ?? null, purchaseOrderId: input.purchaseOrderId ?? null, goodsReceiptId: input.goodsReceiptId ?? null, supplierInvoiceId: input.supplierInvoiceId ?? null, purchaseReturnId: input.purchaseReturnId ?? null, supplierPaymentId: input.supplierPaymentId ?? null, purchaseChargeId: input.purchaseChargeId ?? null, code: input.code, severity: input.severity, status: "OPEN", title, description, detectedAmount, evidenceSnapshot, evidenceHash, openedBy: actor.userId });

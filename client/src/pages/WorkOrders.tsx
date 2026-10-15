@@ -44,6 +44,7 @@ import { newClientRequestId } from "@/lib/countQueue";
 import { canCancelWorkOrder } from "@/lib/workOrderRefundPolicy";
 import { EditWorkOrderDialog } from "@/components/workOrders/EditWorkOrderDialog";
 import { mayRequestWorkOrderControl } from "@shared/workOrderControlAuthority";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { ErrorState, LoadingState } from "@/components/PageState";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -65,6 +66,8 @@ import { WorkOrderPreviewDrawer } from "@/components/workOrders/WorkOrderPreview
 import { WorkOrdersTable } from "@/components/workOrders/WorkOrdersTable";
 import { WorkOrderBlockedReasonDialog } from "@/components/workOrders/WorkOrderBlockedReasonDialog";
 import { WorkOrderDeliverDialog } from "@/components/workOrders/WorkOrderDeliverDialog";
+import { useRealtimeEvent } from "@/lib/realtime";
+import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 
 // الحالات النشطة — مرآة WO_ACTIVE_STATUSES في workOrderRouter (الحالات غير النهائية).
 const ACTIVE_STATUSES = ["RECEIVED", "IN_PROGRESS", "READY"] as const;
@@ -80,40 +83,52 @@ export default function WorkOrders() {
   // والمنح الصريح حسب moduleAccessAllowed. لا مقارنة أدوار خام قد تحجب دوراً مخصّصاً أو
   // تُظهر زرّاً سيرفضه الخادم بسبب override مُقيِّد.
   const canCancel = canCancelWorkOrder(me.data?.role, me.data?.permissionsOverride ?? null);
-  const isManager = canCancel;
+  const isManager = canLifecycleOperation(me.data, "workOrders.update", canCancel);
+  const canAssign = canLifecycleOperation(me.data, "workOrders.assign", canCancel);
+  const canReadStaff = canLifecycleOperation(me.data, "workOrders.assignableStaff", canCancel);
   const isOwner = me.data?.isOwner === true;
   const canCrossBranches = me.data?.role === "admin";
   // مرآة workordersManagerProcedure حرفياً، بما فيها المنح الصريح لدور مخصّص.
-  const canReviewWorkOrderControls = !!me.data?.role && moduleAccessAllowed(
+  const legacyReviewControls = !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
     "workorders",
     "FULL",
     ["manager"],
   );
+  const canReviewWorkOrderControls = canLifecycleOperation(me.data, "workOrders.pendingControlRequests", legacyReviewControls);
   // المشرف (أدمن/مالك/مدير) نطاقُه كلُّ الفرع بحكم `scopedOwnerId=null` — فالرقاقة بلا أثرٍ له.
   const isSupervisor = me.data?.role === "admin" || me.data?.role === "manager" || !!me.data?.isOwner;
   // مرآة بوّابة الخادم: deliver = workordersCashierProcedure(["cashier","manager"], "workorders", "FULL") —
   // فنّي المطبعة (workordersExecProcedure) يقدّم المراحل لكن التسليم/الفوترة مال ونقد (كاشير/مدير أو منح صريح).
   // بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
-  const canDeliver = !!me.data?.role &&
+  const legacyDeliver = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "workorders", "FULL", ["cashier", "manager"]);
-  const canRequestControl = canDeliver;
+  const canDeliver = canLifecycleOperation(me.data, "workOrders.deliver", legacyDeliver);
+  const canAutoClear = canLifecycleOperation(me.data, "workOrders.autoClearReady", legacyDeliver);
+  const canRequestControl = canLifecycleOperation(me.data, "workOrders.requestControl", legacyDeliver) || isManager;
   /**
    * **طلبُ الإلغاء لفنّي المطبعة** (قرار المالك ١/٩/٢٦): مصدرُه القاموس المشترك نفسه الذي
    * يُنفّذه الخادم، لا قائمةُ أدوارٍ ثانية. التعديلُ التجاريّ يبقى على `canRequestControl`.
    */
-  const canRequestCancel = mayRequestWorkOrderControl("CANCEL", me.data?.role, (me.data?.permissionsOverride ?? null) as PermissionMap | null);
+  const canRequestCancel = canLifecycleOperation(me.data, "workOrders.requestControl", mayRequestWorkOrderControl("CANCEL", me.data?.role, (me.data?.permissionsOverride ?? null) as PermissionMap | null)) || canLifecycleOperation(me.data, "workOrders.cancel", false);
   // مرآة workordersExecProcedure الخادميّة: workorders/FULL + roles=[cashier|manager|print_operator].
   // إشارة الكانبان (setKanbanState) تحته ⇒ لا نُظهر زرّاً سيفشل بـFORBIDDEN لمستخدم READ (Codex #6).
-  const canSetKanban = !!me.data?.role &&
+  const legacyExec = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
+  const canSetKanban = canLifecycleOperation(me.data, "workOrders.setKanbanState", legacyExec);
+  const canClaim = canLifecycleOperation(me.data, "workOrders.claim", legacyExec);
+  const canRelease = canLifecycleOperation(me.data, "workOrders.release", legacyExec);
+  const canStart = canLifecycleOperation(me.data, "workOrders.start", legacyExec);
+  const canMarkReady = canLifecycleOperation(me.data, "workOrders.markReady", legacyExec);
+  const canReadOrders = canLifecycleOperation(me.data, "workOrders.list", true);
+  const canReadCounts = canLifecycleOperation(me.data, "workOrders.counts", true);
   const canReadCustomerContext = !!me.data?.role &&
     hasModuleAccess(me.data.role, (me.data.permissionsOverride ?? null) as PermissionMap | null, "crm", "READ");
   // قائمة الموظَّفين القابِلين للإسناد — مَرفوعة لصَفحة WorkOrders كَي تُستعمَل
   // في الإسناد inline على بطاقات «طابور وارد» (بَدل فَتح الـDrawer لِكل أَمر).
   // مَفعَّلة لِلمَدير فَقط لِتَوافق صَلاحية `assignableStaff` على الخادم.
-  const assignableStaff = trpc.workOrders.assignableStaff.useQuery(undefined, { enabled: isManager });
+  const assignableStaff = trpc.workOrders.assignableStaff.useQuery(undefined, { enabled: canReadStaff });
   // عبور الفروع للأدمن فقط؛ مدير الفرع مقيَّد بفرعه في الواجهة والخادم.
   const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: canCrossBranches });
 
@@ -159,9 +174,9 @@ export default function WorkOrders() {
   // النشطة كاملةً (مجموعة صغيرة بطبيعتها) و«مُسلَّم» محدودة بالأحدث.
   const activeInput = { statuses: [...ACTIVE_STATUSES], limit: 500, ...serverFilters };
   const deliveredInput = { statuses: ["DELIVERED" as const], limit: DELIVERED_LIMIT, ...serverFilters };
-  const activeQ = trpc.workOrders.list.useQuery(activeInput, { enabled: me.data != null });
-  const deliveredQ = trpc.workOrders.list.useQuery(deliveredInput, { enabled: me.data != null });
-  const countsQ = trpc.workOrders.counts.useQuery(serverFilters, { enabled: me.data != null });
+  const activeQ = trpc.workOrders.list.useQuery(activeInput, { enabled: canReadOrders });
+  const deliveredQ = trpc.workOrders.list.useQuery(deliveredInput, { enabled: canReadOrders });
+  const countsQ = trpc.workOrders.counts.useQuery(serverFilters, { enabled: canReadCounts });
   const serverCounts = countsQ.data;
 
   const invalidateAll = () => Promise.all([
@@ -174,10 +189,29 @@ export default function WorkOrders() {
     utils.inventory.movements.invalidate(),
     utils.delivery.readyForDispatch.invalidate(),
   ]);
+
+  useRealtimeEvent(
+    [
+      REALTIME_EVENT_TYPES.WORK_ORDER_CREATED,
+      REALTIME_EVENT_TYPES.WORK_ORDER_STATUS_CHANGED,
+      REALTIME_EVENT_TYPES.WORK_ORDER_CLAIMED,
+    ],
+    () => {
+      void invalidateAll();
+    },
+  );
   // التفاؤل على استعلام النشطة فقط — الانتقال إلى «مُسلَّم» يمرّ بحوار التسليم ثم invalidateAll.
   const optimisticMove = (id: number, to: Status) =>
     utils.workOrders.list.setData(activeInput, (old) => old?.map((o) => (o.id === id ? { ...o, status: to } : o)));
 
+  const claim = trpc.workOrders.claim.useMutation({
+    onSuccess: () => { notify.ok("سُحب الأمر إلى قائمتك"); invalidateAll(); },
+    onError: (e) => { notify.err(e); invalidateAll(); },
+  });
+  const release = trpc.workOrders.release.useMutation({
+    onSuccess: () => { notify.ok("أُعيد الأمر إلى الطابور المشترك"); invalidateAll(); },
+    onError: (e) => { notify.err(e); invalidateAll(); },
+  });
   const start = trpc.workOrders.start.useMutation({
     onSuccess: () => { notify.warn("بدأ التنفيذ", "خُصمت المواد من المخزون تلقائياً."); invalidateAll(); },
     onError: (e) => { notify.err(e); invalidateAll(); },
@@ -262,7 +296,7 @@ export default function WorkOrders() {
     });
   };
 
-  const busy = start.isPending || markReady.isPending || deliver.isPending || assign.isPending || autoClearReady.isPending;
+  const busy = claim.isPending || release.isPending || start.isPending || markReady.isPending || deliver.isPending || assign.isPending || autoClearReady.isPending;
 
   const operation = useMemo(() => ({
     getOperation: (order: WO) => ({
@@ -464,10 +498,12 @@ export default function WorkOrders() {
       return;
     }
     if (to === "IN_PROGRESS") {
+      if (!canStart) return;
       if (!(await confirm({ variant: "warning", title: "بدء تنفيذ طلب الخدمة", description: `بدء تنفيذ «${order.title}» (${order.orderNumber}) يخصم المواد المطلوبة من المخزون تلقائياً. متابعة؟`, confirmText: "بدء التنفيذ", cancelText: "تراجع" }))) return;
       optimisticMove(order.id, "IN_PROGRESS"); start.mutate({ workOrderId: order.id });
     }
     else if (to === "READY") {
+      if (!canMarkReady) return;
       if (!(await confirm({ variant: "info", title: "وضع علامة: جاهز للتسليم", description: `وضع «${order.title}» (${order.orderNumber}) في حالة «جاهز للتسليم». متابعة؟`, confirmText: "جاهز للتسليم", cancelText: "تراجع" }))) return;
       optimisticMove(order.id, "READY"); markReady.mutate({ workOrderId: order.id });
     }
@@ -504,8 +540,14 @@ export default function WorkOrders() {
     return null;
   }
 
+  const canReleaseOrder = (o: Pick<WO, "status" | "assignedTo">) =>
+    canRelease && o.status === "RECEIVED" && o.assignedTo != null && Number(o.assignedTo) === Number(me.data?.id);
+
   function onCardPointerDown(e: React.PointerEvent, order: WO) {
     if (e.button !== 0) return;
+    const canDragOrder = order.status === "RECEIVED"
+      ? (canStart || (order.assignedTo == null ? canClaim : canReleaseOrder(order)))
+      : canLifecycleOperation(me.data, order.status === "IN_PROGRESS" ? "workOrders.markReady" : "workOrders.deliver", true);
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     dragRef.current = { order, startX: e.clientX, startY: e.clientY, ox: e.clientX - rect.left, oy: e.clientY - rect.top, moved: false };
     const move = (ev: PointerEvent) => {
@@ -515,7 +557,7 @@ export default function WorkOrders() {
       // على البطاقات في تجميعاتٍ غير stage — حركةٌ لمسٍ طفيفة (>6px) تنتج pointerup
       // بحالة `moved=true` فلا يُفتح Drawer، ولا نقلٍ يحدث لأنّ مفاتيح `tech:*` ليست في
       // COLUMNS ⇒ نقرةٌ ضائعة. الحلّ: نتخطّى في تجميعاتٍ غير stage قبل الوسم.
-      if (!dndEnabled) return;
+      if (!dndEnabled || !canDragOrder) return;
       dr.moved = true;
       document.body.style.userSelect = "none";
       setDrag({ order: dr.order, x: ev.clientX - dr.ox, y: ev.clientY - dr.oy, overCol: hitCol(ev.clientX, ev.clientY) });
@@ -539,7 +581,14 @@ export default function WorkOrders() {
       if (!dr) return;
       if (!dr.moved) { setSel(dr.order.id); return; }
       const overKey = hitCol(ev.clientX, ev.clientY);
-      // overKey هو مفتاح العمود الافتراضي؛ نحوّله لحالة DB المستهدفة (مسحوب↔وارد = نفس الحالة ⇒ لا نقل).
+      if (dr.order.status === "RECEIVED" && dr.order.assignedTo == null && overKey === "CLAIMED" && canClaim) {
+        claim.mutate({ workOrderId: dr.order.id });
+        return;
+      }
+      if (overKey === "INBOX" && canReleaseOrder(dr.order)) {
+        release.mutate({ workOrderId: dr.order.id });
+        return;
+      }
       const col = COLUMNS.find((c) => c.key === overKey);
       if (col && col.status !== dr.order.status) attemptMove(dr.order, col.status);
     };
@@ -557,7 +606,7 @@ export default function WorkOrders() {
   const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch" || f.late === "1" || f.unassigned === "1" || f.dueToday === "1" || f.blocked === "1" || f.deliv === "1";
   const boardEmpty = filtered.length === 0;
   const boardLoading = activeQ.isLoading || deliveredQ.isLoading;
-  const boardError = activeQ.isError || deliveredQ.isError || countsQ.isError;
+  const boardError = activeQ.isError || deliveredQ.isError || (canReadCounts && countsQ.isError);
 
   return (
     <div className="wob">
@@ -752,7 +801,7 @@ export default function WorkOrders() {
           <option value="all">كل القنوات</option>
           {receptionChannelOptions(WORK_ORDER_CHANNELS).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
         </AppSelect>
-        {isManager && (assignableStaff.data?.length ?? 0) > 0 && (
+        {canReadStaff && (assignableStaff.data?.length ?? 0) > 0 && (
           <AppSelect value={f.tech} onValueChange={(v) => setF({ tech: v })} className="w-auto min-w-32" aria-label="فلتر الفنّي">
             <option value="all">كل الفنّيين</option>
             {(assignableStaff.data ?? []).map((s) => (
@@ -792,7 +841,7 @@ export default function WorkOrders() {
           onRetry={() => {
             void activeQ.refetch();
             void deliveredQ.refetch();
-            void countsQ.refetch();
+            if (canReadCounts) void countsQ.refetch();
           }}
         />
       ) : view === "list" ? (
@@ -807,6 +856,8 @@ export default function WorkOrders() {
           onEdit={setEditTarget}
           onAdvance={attemptMove}
           onCancel={onCancelOrder}
+          onClaim={canClaim ? (id) => claim.mutate({ workOrderId: id }) : undefined}
+          onRelease={canRelease ? (id) => release.mutate({ workOrderId: id }) : undefined}
         />
       ) : (
       <div className="wob-board-wrap">
@@ -818,7 +869,11 @@ export default function WorkOrders() {
               const list = byCol[s.key] ?? [];
               // D&D يعمل فقط في «حسب المرحلة» (`groupBy=stage`): الأخرى تحتاج mutations
               // مختلفة (assign/update) لم يُبنَ لها بعد جسر D&D — يبقى العرض قراءةً فقط.
-              const isOver = dndEnabled && drag && drag.overCol === s.key && WO_NEXT_STATUS[drag.order.status as WorkOrderStatus] === s.status;
+              const isOver = dndEnabled && !!drag && drag.overCol === s.key && (
+                WO_NEXT_STATUS[drag.order.status as WorkOrderStatus] === s.status ||
+                (drag.order.status === "RECEIVED" && drag.order.assignedTo == null && s.key === "CLAIMED" && canClaim) ||
+                (s.key === "INBOX" && canReleaseOrder(drag.order))
+              );
               // إحصائيات رأس العمود مشتقة حتمياً من بطاقات العمود نفسه (Single Source of Truth)
               // لتطابق العين الأرقام 100% وتفصل «طابور وارد» عن «مسحوب»، وتصمد أمام الفلاتر والتجميع.
               const colStats = colStatsMap[s.key] ?? { totalValue: "0", late: 0, blocked: 0 };
@@ -865,7 +920,7 @@ export default function WorkOrders() {
                           )}
                         </div>
                       )}
-                      {s.key === "READY" && canDeliver && list.length > 0 && (
+                      {s.key === "READY" && canAutoClear && list.length > 0 && (
                         <div className="mt-1.5">
                           <button
                             type="button"
@@ -901,21 +956,24 @@ export default function WorkOrders() {
                         onPointerDown={(e) => onCardPointerDown(e, o)}
                         // إسناد inline لعَمود INBOX فَقط (مَدير + بَيانات الفنّيين جاهزة) per README §5.2.
                         inboxAssign={
-                          s.key === "INBOX" && isManager && (assignableStaff.data?.length ?? 0) > 0
+                          s.key === "INBOX" && canAssign && (assignableStaff.data?.length ?? 0) > 0
                             ? (orderId, staffId) => {
                                 // بلا تأكيد — العَملية رَخيصة وعَكسية (يُمكن إعادة الإسناد بَعدها).
                                 assign.mutate({ workOrderId: orderId, assignedTo: staffId });
                               }
                             : undefined
                         }
-                        staff={s.key === "INBOX" && isManager ? assignableStaff.data : undefined}
+                        staff={s.key === "INBOX" && canAssign ? assignableStaff.data : undefined}
                         assignPending={assign.isPending}
+                        onClaim={canClaim ? (orderId) => claim.mutate({ workOrderId: orderId }) : undefined}
+                        onRelease={canReleaseOrder(o) ? (orderId) => release.mutate({ workOrderId: orderId }) : undefined}
+                        claimPending={claim.isPending || release.isPending}
                         onOpenCustomer={canReadCustomerContext ? setCustomerContextId : undefined}
                         // Codex #6: النقطة تفاعليّة لمن يستطيع الكتابة فقط؛ لغيرهم تُعرض قراءةً
                         // (عرضاً غير-NORMAL فقط — بلا زرّ يفشل بـFORBIDDEN).
                         onCycleKanban={canSetKanban ? ((orderId, current) => onCycleKanbanState(orderId, current)) : undefined}
                         kanbanBusy={setKanban.isPending}
-                        onQuickDispatch={canDeliver ? onQuickDispatch : undefined}
+                        onQuickDispatch={canAutoClear ? onQuickDispatch : undefined}
                         onQuickDeliver={canDeliver ? onQuickDeliver : undefined}
                         quickActionPending={autoClearReady.isPending || deliver.isPending}
                       />
@@ -945,7 +1003,10 @@ export default function WorkOrders() {
           canRequestCancel={canRequestCancel}
           canDeliver={canDeliver}
           busy={busy}
+          onClaim={canClaim ? (id) => claim.mutate({ workOrderId: id }) : undefined}
+          onRelease={canRelease ? (id) => release.mutate({ workOrderId: id }) : undefined}
           onAdvance={async (id, to) => {
+            if (!canLifecycleOperation(me.data, to === "IN_PROGRESS" ? "workOrders.start" : to === "READY" ? "workOrders.markReady" : "workOrders.deliver", true)) return;
             if (to === "IN_PROGRESS") {
               if (!(await confirm({ variant: "warning", title: "بدء تنفيذ طلب الخدمة", description: "بدء التنفيذ يخصم المواد المطلوبة من المخزون تلقائياً. متابعة؟", confirmText: "بدء التنفيذ", cancelText: "تراجع" }))) return;
               optimisticMove(id, "IN_PROGRESS"); start.mutate({ workOrderId: id });

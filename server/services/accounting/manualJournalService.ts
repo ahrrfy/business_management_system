@@ -15,7 +15,7 @@ import {
 } from "../../../drizzle/schema";
 import { getDb, type Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
-import { money, toDbMoney } from "../money";
+import { money, round2, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { lockFinancialPostingGate } from "../reports/monthCloseGate";
 import { getDoubleEntryRuntime } from "./journalStore";
@@ -250,8 +250,8 @@ export async function createManualJournal(
   for (let idx = 0; idx < input.lines.length; idx++) {
     const line = input.lines[idx];
     const acc = accountMap.get(line.accountId)!;
-    const debit = money(line.debit || 0);
-    const credit = money(line.credit || 0);
+    const debit = round2(money(line.debit || 0));
+    const credit = round2(money(line.credit || 0));
 
     if (debit.isNegative() || credit.isNegative()) {
       throw new TRPCError({
@@ -382,8 +382,8 @@ export async function createManualJournal(
       return {
         role: acc.systemRole!,
         accountId: acc.id,
-        debit: money(l.debit || 0).toFixed(2),
-        credit: money(l.credit || 0).toFixed(2),
+        debit: toDbMoney(round2(money(l.debit || 0))),
+        credit: toDbMoney(round2(money(l.credit || 0))),
         customerId: l.customerId ?? null,
         supplierId: l.supplierId ?? null,
       };
@@ -479,8 +479,8 @@ export async function createManualJournal(
   // 9. إدراج سطور اليومية المزدوجة وتحديث الذمم الفرعية (AR/AP)
   for (const line of input.lines) {
     const acc = accountMap.get(line.accountId)!;
-    const debit = money(line.debit || 0);
-    const credit = money(line.credit || 0);
+    const debit = round2(money(line.debit || 0));
+    const credit = round2(money(line.credit || 0));
     const statutoryAccountId = statutoryMappingMap.get(acc.id) ?? null;
 
     await tx.insert(journalLines).values({

@@ -1,6 +1,6 @@
 // Offers.tsx (٨/٧/٢٦): إدارة العروض والخصومات على المبيعات (بعد gstack-review PR #163).
 // RBAC: مدير+ فقط (productsManagerProcedure).
-import { AlertCircle, FileEdit, Plus, RotateCcw, Search, TriangleAlert, X } from "lucide-react";
+import { AlertCircle, Download, FileEdit, Plus, RotateCcw, Search, TriangleAlert, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { canSeeGate } from "@/lib/navVisibility";
 import { D, fmtAr, formatIqd } from "@/lib/money";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { exportRows } from "@/lib/export";
 
 /** صفُّ العرض — مشتقٌّ من عقد `salesPromotions.list` فلا ينجرف عن الخادم. */
 type OfferRow = RouterOutputs["salesPromotions"]["list"][number];
@@ -53,11 +54,11 @@ function toYmd(v: unknown): string {
 const CHANNEL_LABEL: Record<string, string> = { POS: "نقطة البيع", STORE: "المتجر الإلكتروني" };
 const APPLICATION_LABEL: Record<string, string> = { AUTO: "تلقائي", COUPON: "بكوبون" };
 function offerActivationState(offer: OfferRow, today: string) {
-  if (!offer.isActive) return { label:"معطَّل", variant:"secondary" as const, note:"لا يُطبّق" };
+  if (!offer.isActive) return { label:"معطَّل", className:"bg-muted text-muted-foreground border-border", note:"لا يُطبّق" };
   const startsOn = toYmd(offer.effectiveFrom); const endsOn = offer.effectiveTo ? toYmd(offer.effectiveTo) : "";
-  if (startsOn > today) return { label:"يبدأ لاحقاً", variant:"secondary" as const, note:`من ${startsOn}` };
-  if (endsOn && endsOn < today) return { label:"انتهى تاريخياً", variant:"destructive" as const, note:`انتهى في ${endsOn}` };
-  return { label:"سارٍ الآن", variant:"default" as const, note:"مفعل وضمن نافذته" };
+  if (startsOn > today) return { label:"يبدأ لاحقاً", className:"bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]/30", note:`من ${startsOn}` };
+  if (endsOn && endsOn < today) return { label:"انتهى تاريخياً", className:"bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] border-[var(--sem-neg)]/30", note:`انتهى في ${endsOn}` };
+  return { label:"سارٍ الآن", className:"bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30", note:"مفعل وضمن نافذته" };
 }
 
 function Kpi({ label, value, note }: { label: string; value: string | number; note?: string }) {
@@ -276,6 +277,27 @@ export default function Offers() {
     return D(performance?.grossProfit).div(performance?.netSales ?? 1).times(100).toDecimalPlaces(1).toString();
   };
 
+  const handleExport = (format: "xlsx" | "csv") => {
+    exportRows(list, {
+      filename: `العروض_والتخفيضات_${today}`,
+      format,
+      title: "سجل العروض والتخفيضات",
+      columns: [
+        { key: "name", header: "اسم العرض" },
+        { key: "type", header: "نوع الخصم", map: (r) => r.type === "PERCENT" ? `${r.discountPercent}٪` : `${fmtAr(r.discountAmount)} د.ع` },
+        { key: "scope", header: "النطاق", map: (r) => r.scope === "ALL" ? "جميع المنتجات" : r.scope === "CATEGORIES" ? "فئات محددة" : "منتجات محددة" },
+        { key: "channel", header: "القناة", map: (r) => r.isStoreManaged ? "المتجر الإلكتروني" : "نقطة البيع" },
+        { key: "applicationMode", header: "طريقة التطبيق", map: (r) => r.applicationMode === "COUPON" ? "بكوبون" : "تلقائي" },
+        { key: "effectiveFrom", header: "سارٍ من", map: (r) => toYmd(r.effectiveFrom) },
+        { key: "effectiveTo", header: "سارٍ إلى", map: (r) => r.effectiveTo ? toYmd(r.effectiveTo) : "مستمر" },
+        { key: "status", header: "الحالة", map: (r) => offerActivationState(r, today).label },
+        { key: "invoiceCount", header: "الفواتير المرتبطة", map: (r) => performanceById.get(r.id)?.invoiceCount ?? 0 },
+        { key: "netSales", header: "المبيعات المرتبطة", money: true, map: (r) => D(performanceById.get(r.id)?.netSales ?? "0").toNumber() },
+        { key: "margin", header: "الهامش", map: (r) => marginOf(r.id) != null ? `${marginOf(r.id)}٪` : "—" },
+      ],
+    });
+  };
+
   /** عمودُ الإجراءات — يُضاف فقط لمن يملك الصلاحية (كما كان محتواه محجوباً بـ`canManage`). */
   const offerActionsColumn: ColumnDef<OfferRow, unknown> = {
     id: "actions",
@@ -433,7 +455,7 @@ export default function Offers() {
         header: "الحالة",
         accessorFn: (p) => offerActivationState(p, today).label,
         meta: { kind: "status" },
-        cell: ({ row }) => { const state = offerActivationState(row.original, today); return <div><Badge variant={state.variant}>{state.label}</Badge><div className="mt-1 text-xs text-muted-foreground">{state.note}</div></div>; },
+        cell: ({ row }) => { const state = offerActivationState(row.original, today); return <div><Badge variant="outline" className={state.className}>{state.label}</Badge><div className="mt-1 text-xs text-muted-foreground">{state.note}</div></div>; },
       },
       // عمودُ الأفعال مشروطٌ بالصلاحية — كان محتواه محجوباً بـ`canManage` في الجدول الخامّ.
       ...(canManage ? [offerActionsColumn] : []),
@@ -445,7 +467,7 @@ export default function Offers() {
   return (
     <div className="max-w-7xl mx-auto space-y-4 pb-8">
       <PageHeader
-        title="العروض والخصومات"
+        title="العروض والتخفيضات"
         description="محرك موحّد لعروض نقطة البيع والمتجر والكوبونات، مرتبط بالحملة وقابل للتدقيق. السعر التعاقدي يفوز دائماً."
         actions={canManage ?
           <Button onClick={() => { if (showForm) { setShowForm(false); resetForm(); } else { resetForm(); setShowForm(true); } }}>
@@ -633,6 +655,14 @@ export default function Offers() {
               <input type="checkbox" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} />
               تضمين المعطَّلة
             </label>
+            <div className="flex items-center gap-1.5">
+              <Button size="sm" variant="outline" onClick={() => handleExport("xlsx")} className="gap-1.5 h-8">
+                <Download aria-hidden className="size-3.5" /> Excel
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => handleExport("csv")} className="gap-1.5 h-8">
+                <Download aria-hidden className="size-3.5" /> CSV
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>

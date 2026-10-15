@@ -1,3 +1,4 @@
+import { useDigitalGiftOperationAccess } from "@/lib/digitalGiftOperationAccess";
 // محافظ المزوّدين مسبقي الدفع: رصيد الشركة لدى جهاز/حساب المزوّد لكل فرع.
 // الإيداع والسحب والتسوية ليست هنا (شريحة لاحقة) — هذه الشاشة تُعرّف المحفظة وتعرض رصيدها.
 import { PageHeader } from "@/components/PageHeader";
@@ -30,10 +31,11 @@ import {
 type WalletRow = RouterOutputs["digitalCards"]["wallets"]["list"][number];
 
 export default function DigitalWallets() {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const utils = trpc.useUtils();
-  const list = trpc.digitalCards.wallets.list.useQuery();
-  const providers = trpc.digitalCards.providers.list.useQuery();
-  const branches = trpc.branches.list.useQuery();
+  const list = digitalAccess.query("digitalCards.wallets.list", trpc.digitalCards.wallets.list.useQuery(undefined, { enabled: digitalAccess.can("digitalCards.wallets.list") }));
+  const providers = digitalAccess.query("digitalCards.providers.list", trpc.digitalCards.providers.list.useQuery(undefined, { enabled: digitalAccess.can("digitalCards.providers.list") }));
+  const branches = digitalAccess.query("branches.list", trpc.branches.list.useQuery(undefined, { enabled: digitalAccess.can("branches.list") }));
   const rows = list.data ?? [];
   const [query, setQuery] = useState("");
   const visibleRows = useMemo(() => {
@@ -50,7 +52,7 @@ export default function DigitalWallets() {
   const [reconciling, setReconciling] = useState<WalletRow | null>(null);
   const [viewing, setViewing] = useState<WalletRow | null>(null);
 
-  const lowBalance = trpc.digitalCards.wallets.lowBalance.useQuery();
+  const lowBalance = digitalAccess.query("digitalCards.wallets.lowBalance", trpc.digitalCards.wallets.lowBalance.useQuery(undefined, { enabled: digitalAccess.can("digitalCards.wallets.lowBalance") }));
 
   const [formOpen, setFormOpen] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
@@ -90,6 +92,7 @@ export default function DigitalWallets() {
   }
 
   function submitForm() {
+    if (!digitalAccess.can(`digitalCards.wallets.${editId != null ? "update" : "create"}`)) return;
     const name = fName.trim();
     if (!name) return notify.err("اسم المحفظة مطلوب");
     if (editId != null) { updateMut.mutate({ id: editId, name }); return; }
@@ -165,7 +168,7 @@ export default function DigitalWallets() {
         title="أرصدة أجهزة المزوّدين"
         description="يعرض ما دفعناه مسبقاً لكل جهاز مزوّد، وما عُلّق لعمليات بيع لم تكتمل، وما يمكن البيع به الآن."
         actions={
-          <Button size="sm" onClick={openAdd} disabled={prepaidProviders.length === 0}>
+          <Button size="sm" onClick={openAdd} disabled={!digitalAccess.can("digitalCards.wallets.create") || prepaidProviders.length === 0}>
             <Plus className="size-4" /> محفظة جديدة
           </Button>
         }
@@ -284,7 +287,8 @@ export default function DigitalWallets() {
                           disabled: !w.isActive,
                           disabledReason: "المحفظة معطّلة",
                           onSelect: () => setMoving({ wallet: w, mode: "deposit" }),
-                          gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                          hidden: !digitalAccess.can("digitalCards.wallets.deposit"),
+                          gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "digital_cards", level: "FULL" },
                         },
                         {
                           key: "withdraw",
@@ -293,14 +297,16 @@ export default function DigitalWallets() {
                           disabled: !w.isActive,
                           disabledReason: "المحفظة معطّلة",
                           onSelect: () => setMoving({ wallet: w, mode: "withdraw" }),
-                          gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                          hidden: !digitalAccess.can("digitalCards.wallets.withdraw"),
+                          gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "digital_cards", level: "FULL" },
                         },
                         {
                           key: "statement",
                           kind: "view",
                           label: "كشف الحساب",
                           onSelect: () => setViewing(w),
-                          gate: { roles: ["manager", "accountant", "auditor"], module: "digital_cards", level: "READ" },
+                          hidden: !digitalAccess.can("digitalCards.wallets.statement"),
+                          gate: digitalAccess.canonical ? undefined : { roles: ["manager", "accountant", "auditor"], module: "digital_cards", level: "READ" },
                         },
                         {
                           key: "reconcile",
@@ -309,7 +315,8 @@ export default function DigitalWallets() {
                           disabled: !w.isActive,
                           disabledReason: "المحفظة معطّلة؛ كشف الحساب متاح للقراءة",
                           onSelect: () => setReconciling(w),
-                          gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                          hidden: !digitalAccess.can("digitalCards.wallets.reconcile"),
+                          gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "digital_cards", level: "FULL" },
                         },
                         {
                           key: "adjust",
@@ -318,14 +325,16 @@ export default function DigitalWallets() {
                           disabled: !w.isActive,
                           disabledReason: "المحفظة معطّلة",
                           onSelect: () => setAdjusting(w),
-                          gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                          hidden: !digitalAccess.can("digitalCards.wallets.requestAdjustment"),
+                          gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "digital_cards", level: "FULL" },
                         },
                         {
                           key: "edit",
                           kind: "edit",
                           label: "تعديل البيانات",
                           onSelect: () => openEdit(w),
-                          gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                          hidden: !digitalAccess.can("digitalCards.wallets.update"),
+                          gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "digital_cards", level: "FULL" },
                         },
                         {
                           key: "toggle",
@@ -337,7 +346,8 @@ export default function DigitalWallets() {
                             ? "توجد عملية تحديث قيد التنفيذ"
                             : "صفّر الرصيد وأنهِ الحجوزات أولاً",
                           onSelect: () => void toggle(w),
-                          gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                          hidden: !digitalAccess.can("digitalCards.wallets.update"),
+                          gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "digital_cards", level: "FULL" },
                         },
                       ]}
                     />
@@ -409,7 +419,7 @@ export default function DigitalWallets() {
           </div>
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setFormOpen(false)}>إلغاء</Button>
-            <Button size="sm" onClick={submitForm} disabled={saving}>
+            <Button size="sm" onClick={submitForm} disabled={!digitalAccess.can(`digitalCards.wallets.${editing ? "update" : "create"}`) || saving}>
               {saving ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>

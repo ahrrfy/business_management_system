@@ -1,10 +1,10 @@
 import {
-  deriveEffectiveAccess,
   type AccessLevel,
   type PermissionMap,
   type PosStation,
   type RoleKey,
 } from "@shared/permissions";
+import { deriveOperationAccess, type OperationPolicy } from "@shared/operationPermissions";
 import {
   INVOICE_LIST_GATE,
   WORK_ORDERS_HUB_GATE,
@@ -66,6 +66,7 @@ export type WorkspaceProfileInput = Readonly<{
   role: RoleKey | null | undefined;
   /** فرق الصلاحيات الخام القادم من auth.me، لا الخريطة المحلولة. */
   permissionsOverride?: PermissionMap | null;
+  operationPolicy?: OperationPolicy | null;
 }>;
 
 export type ResolvedWorkspaceProfile = Readonly<{
@@ -473,13 +474,14 @@ function allowed(
   role: RoleKey,
   permissionsOverride: PermissionMap | null,
   stations: readonly PosStation[],
+  operationPolicy?: OperationPolicy | null,
 ): boolean {
   switch (access.kind) {
     case "PUBLIC":
     case "AUTHENTICATED":
       return true;
     case "GATE":
-      return canSeeGate(access.gate, role, permissionsOverride);
+      return canSeeGate(access.gate, role, permissionsOverride, operationPolicy);
     case "STATION":
       return stations.includes(access.station);
   }
@@ -501,13 +503,18 @@ export function resolveWorkspaceProfile(
 
   const role = input.role;
   const permissionsOverride = input.permissionsOverride ?? null;
-  const access = deriveEffectiveAccess(role, permissionsOverride);
-  const id = chooseProfile(role, access.stations);
+  const { stations } = deriveOperationAccess({
+    role,
+    permissionsOverride,
+    operationPolicyEnabled: input.operationPolicy != null,
+    resolvedOperationPolicy: input.operationPolicy,
+  });
+  const id = chooseProfile(role, stations);
   const definition = PROFILES[id];
   const seen = new Set<string>();
   const primaryNav = definition.primaryNav
     .filter((item) =>
-      allowed(item.access, role, permissionsOverride, access.stations),
+      allowed(item.access, role, permissionsOverride, stations, input.operationPolicy),
     )
     .filter((item) => !seen.has(item.id) && seen.add(item.id))
     .slice(0, MAX_PRIMARY_NAV);
@@ -517,13 +524,13 @@ export function resolveWorkspaceProfile(
     null;
   const queues = definition.queues
     .filter((item) =>
-      allowed(item.access, role, permissionsOverride, access.stations),
+      allowed(item.access, role, permissionsOverride, stations, input.operationPolicy),
     )
     .map((item) => item.id);
 
   return Object.freeze({
     id,
-    stations: Object.freeze([...access.stations]),
+    stations: Object.freeze([...stations]),
     homeVariant: id,
     defaultAction,
     primaryNav: Object.freeze(primaryNav),

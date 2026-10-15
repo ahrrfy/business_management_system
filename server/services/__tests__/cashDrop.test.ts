@@ -295,7 +295,7 @@ describe("createCashDrop — الحراسات", () => {
         { shiftId, amount: "1000", dropTo: DISABLED_MANAGER },
         { userId: CASHIER1, branchId: 1, role: "cashier" },
       ),
-    ).rejects.toThrow(/غير موجود أو معطّل/);
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
     // بلا مستلِم ⇒ مرفوض؛ لا يجوز للكاشير إنشاء استلام خزينة من طرف واحد.
     await expect(
       createCashDrop(

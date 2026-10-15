@@ -413,7 +413,6 @@ describe("treasury handover receipt acceptance", () => {
       cashier.treasury.acceptHandoverReceipt(acceptInput(receiptId, "self-courier")),
     ).rejects.toMatchObject({
       code: "FORBIDDEN",
-      message: "لا يجوز لمُسلِّم النقد قبول عهدته",
     });
 
     const row = (

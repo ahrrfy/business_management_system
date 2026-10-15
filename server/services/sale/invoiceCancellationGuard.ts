@@ -13,6 +13,8 @@ import { money, round2 } from "../money";
 export interface InvoiceCancellationGuardInput {
   invoiceId: number;
   expectedBranchId: number;
+  /** يسمح لمسار إلغاء الفاتورة نفسه بإلغاء إسناد ما زال ASSIGNED ولم يدخل حيازة أو تسوية. */
+  allowAssignedCancellation?: boolean;
 }
 
 export type InvoiceReversalMode = "CANCEL" | "CORRECT";
@@ -24,6 +26,7 @@ export interface InvoiceReversalDeliveryGuardInput extends InvoiceCancellationGu
 export interface InvoiceCancellationGuardResult {
   consignmentId: number | null;
   onlineOrderId: number | null;
+  cancellableAssignmentId: number | null;
 }
 
 const PARCEL_STATUS_AR: Record<string, string> = {
@@ -152,7 +155,17 @@ export async function assertInvoiceReversalDeliverySafeTx(
       consignment.status === "CANCELLED"
       && consignment.parcelStatus === "CANCELLED"
       && consignment.moneyStatus === "CANCELLED";
-    if (!terminalCancellation) {
+    const cancellableAssignment =
+      input.mode === "CANCEL" &&
+      input.allowAssignedCancellation === true &&
+      consignment.status === "DISPATCHED" &&
+      consignment.parcelStatus === "ASSIGNED" &&
+      consignment.remittanceId == null &&
+      consignment.custodyRecognizedAt == null &&
+      consignment.returnDeclaredAt == null &&
+      round2(money(consignment.collectedAmount ?? "0")).isZero() &&
+      round2(money(consignment.counterSettledAmount ?? "0")).isZero();
+    if (!terminalCancellation && !cancellableAssignment) {
       const parcelLabel = PARCEL_STATUS_AR[consignment.parcelStatus] ?? consignment.parcelStatus;
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
@@ -180,8 +193,17 @@ export async function assertInvoiceReversalDeliverySafeTx(
     const cashInCustody = round2(collected.minus(money(ledger?.remitted ?? "0")).minus(money(ledger?.writtenOff ?? "0")));
     const feeOpen = round2(money(ledger?.feeEarned ?? "0").minus(money(ledger?.feePaid ?? "0")));
     const codAmount = round2(money(consignment.codAmount ?? "0"));
-    const unsafeFinancialState =
-      !round2(money(consignment.collectedAmount ?? "0")).isZero()
+    const unsafeFinancialState = cancellableAssignment
+      ? !round2(money(consignment.collectedAmount ?? "0")).isZero()
+        || !round2(money(consignment.counterSettledAmount ?? "0")).isZero()
+        || consignment.remittanceId != null
+        || consignment.custodyRecognizedAt != null
+        || consignment.returnDeclaredAt != null
+        || !cashInCustody.isZero()
+        || !feeOpen.isZero()
+        || !round2(money(ledger?.released ?? "0")).isZero()
+        || !assigned.equals(codAmount)
+      : !round2(money(consignment.collectedAmount ?? "0")).isZero()
       || !round2(money(consignment.counterSettledAmount ?? "0")).isZero()
       || consignment.remittanceId != null
       || consignment.custodyRecognizedAt != null
@@ -211,7 +233,8 @@ export async function assertInvoiceReversalDeliverySafeTx(
       && consignment.sourceType === "ONLINE_ORDER"
       && Number(consignment.sourceId) === Number(onlineOrder.id);
     const safeOrderStatus = onlineOrder.status === "CANCELLED"
-      || (input.mode === "CANCEL" && linkedToSafeConsignment && onlineOrder.status === "SHIPPED");
+      || (input.mode === "CANCEL" && linkedToSafeConsignment && onlineOrder.status === "SHIPPED")
+      || (onlineOrder.status === "PROCESSING" && (consignment == null || consignment.status === "CANCELLED"));
     if (!safeOrderStatus) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
@@ -261,6 +284,14 @@ export async function assertInvoiceReversalDeliverySafeTx(
   return {
     consignmentId: consignment == null ? null : Number(consignment.id),
     onlineOrderId: onlineOrder == null ? null : Number(onlineOrder.id),
+    cancellableAssignmentId:
+      consignment != null &&
+      input.mode === "CANCEL" &&
+      input.allowAssignedCancellation === true &&
+      consignment.status === "DISPATCHED" &&
+      consignment.parcelStatus === "ASSIGNED"
+        ? Number(consignment.id)
+        : null,
   };
 }
 

@@ -9,6 +9,7 @@
  *  - طباعة سند إرجاع مشتريات حراري 80مم/58مم
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import {
   AlertTriangle,
   Building2,
@@ -41,6 +42,8 @@ import {
 } from "./printThermalReturnReceipt";
 import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import type { InvoiceLine } from "@/components/invoice/types";
+import { canViewOperationData } from "@shared/operationPermissions";
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 
 export interface PurchaseCartItem {
   id: string;
@@ -65,6 +68,10 @@ export function PurchaseReturnPortal({
 }: PurchaseReturnPortalProps) {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
+  const operationPermission = useOperationPermission("returns.executePurchaseReturnCart");
+  const costVisible = !!me.data && canViewOperationData(me.data, "purchaseCost") && canViewOperationData(me.data, "profitMargin");
+  const canReadSuppliers = costVisible && lifecycleActionAllowed(me.data, "suppliers.list", true);
+  const canReadDrawers = costVisible && lifecycleActionAllowed(me.data, "returns.getOpenRefundDrawers", true);
   const branches = trpc.branches.list.useQuery();
   const activeBranchId = me.data?.branchId
     ? Number(me.data.branchId)
@@ -89,9 +96,10 @@ export function PurchaseReturnPortal({
   >("CREDIT_OFFSET");
 
   const openDrawersQ = trpc.returns.getOpenRefundDrawers.useQuery(undefined, {
-    refetchInterval: 30_000,
+    enabled: canReadDrawers,
+    refetchInterval: false,
   });
-  const openDrawers = openDrawersQ.data ?? [];
+  const openDrawers = canReadDrawers ? (openDrawersQ.data ?? []) : [];
   const [selectedShiftId, setSelectedShiftId] = useState<number | null>(null);
 
   useEffect(() => {
@@ -111,11 +119,12 @@ export function PurchaseReturnPortal({
 
   const purchaseBarcodeRef = useRef<HTMLInputElement>(null);
 
-  const suppliersQuery = trpc.suppliers.list.useQuery();
+  const suppliersQuery = trpc.suppliers.list.useQuery(undefined, { enabled: canReadSuppliers });
+  const suppliers = canReadSuppliers ? (suppliersQuery.data ?? []) : [];
   const selectedSupplier = useMemo(() => {
-    if (!selectedSupplierId || !suppliersQuery.data) return null;
-    return suppliersQuery.data.find((s) => s.id === selectedSupplierId) ?? null;
-  }, [selectedSupplierId, suppliersQuery.data]);
+    if (!selectedSupplierId || !canReadSuppliers) return null;
+    return suppliers.find((s) => s.id === selectedSupplierId) ?? null;
+  }, [selectedSupplierId, suppliersQuery.data, canReadSuppliers]);
 
   const purchaseTotal = useMemo(() => {
     return purchaseCart.reduce(
@@ -143,6 +152,7 @@ export function PurchaseReturnPortal({
   }, []);
 
   const handleAddProductFromSearch = (line: InvoiceLine) => {
+    if (!costVisible) return notify.warn("هذه العملية تحتاج تفويض عرض التكلفة والربح");
     const variantId = line.variantId;
     const factor = Math.max(1, Number(line.conversionFactor) || 1);
     const costStr = String(line.price || line.costBase || "0");
@@ -181,6 +191,7 @@ export function PurchaseReturnPortal({
 
   const [purchaseScanPending, setPurchaseScanPending] = useState(false);
   const handlePurchaseScan = async (barcodeToScan?: string) => {
+    if (!costVisible) return notify.warn("هذه العملية تحتاج تفويض عرض التكلفة والربح");
     const raw = (barcodeToScan ?? purchaseBarcode).trim();
     if (!raw) return;
     setPurchaseScanPending(true);
@@ -192,6 +203,7 @@ export function PurchaseReturnPortal({
         notify.warn(`لم يتم العثور على منتج بالباركود: ${raw}`);
         return;
       }
+      if (res.costPrice == null) return notify.warn("سعر التكلفة محجوب؛ لا يمكن إدراج الصنف بتكلفة صفر");
       const variantId = res.variantId;
       const costStr = String(res.costPrice || "0");
 
@@ -235,6 +247,8 @@ export function PurchaseReturnPortal({
     trpc.returns.executePurchaseReturnCart.useMutation();
 
   const handleExecutePurchaseReturn = async () => {
+    if (!costVisible) return notify.warn("هذه العملية تحتاج تفويض عرض التكلفة والربح");
+    if (!operationPermission.allowed) { notify.err(operationPermission.reason); return; }
     if (!selectedSupplierId || !selectedSupplier) {
       notify.warn("يرجى اختيار المورد أولاً");
       return;
@@ -326,6 +340,15 @@ export function PurchaseReturnPortal({
     }
   };
 
+  if (!costVisible || !operationPermission.allowed || !canReadSuppliers) return (
+    <Card><CardContent className="p-4 text-sm text-muted-foreground">
+      {!costVisible
+        ? "مرتجع المورد يحتاج تفويض عرض التكلفة والربح إلى جانب تفويض عملية المرتجع."
+        : !operationPermission.allowed
+          ? operationPermission.reason
+          : "مرتجع المورد يحتاج صلاحية عرض قائمة الموردين لاختيار المورد المرتبط بالعملية."}
+    </CardContent></Card>
+  );
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5">
       {/* العمود الرئيسي: المورد وسلة مرتجع الشراء */}
@@ -362,7 +385,7 @@ export function PurchaseReturnPortal({
                   placeholder="اختر المورد..."
                 >
                   <option value="">-- اختر المورد --</option>
-                  {(suppliersQuery.data ?? []).map((s) => (
+                  {suppliers.map((s) => (
                     <option key={s.id} value={String(s.id)}>
                       {s.name} {s.phone ? `(${s.phone})` : ""}
                     </option>
@@ -823,6 +846,7 @@ export function PurchaseReturnPortal({
               type="button"
               onClick={() => void handleExecutePurchaseReturn()}
               disabled={
+                !operationPermission.allowed ||
                 purchaseReturnMutation.isPending ||
                 !selectedSupplierId ||
                 purchaseCart.length === 0 ||

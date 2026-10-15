@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { TRPCError } from "@trpc/server";
+import { OperationalApprovalRequiredError } from "@shared/operationalDecision";
 import * as s from "../../../drizzle/schema";
 import mysql from "mysql2/promise";
 import { closeDb, getDb } from "../../db";
@@ -124,7 +125,7 @@ async function seedTestEnvironment() {
     total: "5000.00",
   });
 
-  // Create a PAID invoice for return tests
+  // Create a PAID invoice for return tests (created by cashier 99 so admin/manager returns obey SOD)
   await d.insert(s.invoices).values({
     id: 200,
     invoiceNumber: "INV-PAID-200",
@@ -137,7 +138,7 @@ async function seedTestEnvironment() {
     status: "PAID",
     paymentMode: "PREPAID",
     paymentMethod: "CASH",
-    createdBy: 1,
+    createdBy: 99,
   });
   await d.insert(s.invoiceItems).values({
     id: 200,
@@ -348,8 +349,15 @@ describe.sequential("Adversarial Cash Shift Enforcement (R2: Strict No-Shift Cas
             err = e;
           }
 
-          expect(err).toBeInstanceOf(TRPCError);
-          expect(["PRECONDITION_FAILED", "FORBIDDEN"]).toContain((err as TRPCError).code);
+          if (err instanceof OperationalApprovalRequiredError) {
+            expect(err.decision).toMatchObject({
+              result: "APPROVAL_REQUIRED",
+              reason: expect.stringContaining("وردية مفتوحة"),
+            });
+          } else {
+            expect(err).toBeInstanceOf(TRPCError);
+            expect(["PRECONDITION_FAILED", "FORBIDDEN"]).toContain((err as TRPCError).code);
+          }
 
           const rcAfter = (await db().select().from(s.receipts)).length;
           const entAfter = (await db().select().from(s.accountingEntries)).length;

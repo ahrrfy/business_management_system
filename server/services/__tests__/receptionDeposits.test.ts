@@ -412,6 +412,120 @@ describe("D7 — I17: الردّ بطريقة القبض حصراً وبسقف �
       CASHIER,
     )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
+
+  it("يسحب سقف رد العربون من الصف المقفول ويقبل التجاوز فقط باعتماد مدير", async () => {
+    await openReception();
+    const p = await promoteMixed();
+    const dep = await collectDeposit(
+      { draftId: p.draftId, amount: "5000.00", method: "CARD", reference: "CARD-CAP", clientRequestId: uuid("d7c-cap1") },
+      CASHIER,
+    );
+    await db().update(s.users)
+      .set({ operationalCaps: { maxRefundAmountIqd: "1000.00" } })
+      .where(eq(s.users.id, CASHIER.userId));
+
+    await expect(refundDeposit(
+      { paymentId: dep.paymentId, amount: "2000.00", reason: "رد أعلى من السقف الفردي", clientRequestId: uuid("d7r-cap1") },
+      { ...CASHIER, operationalCaps: { maxRefundAmountIqd: "50000.00" } } as never,
+    )).rejects.toThrow(/يتجاوز سقف حسابك 1000.00/);
+
+    await db().update(s.users)
+      .set({ accessExpiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(s.users.id, MANAGER.userId));
+    await expect(refundDeposit(
+      { paymentId: dep.paymentId, amount: "2000.00", reason: "اعتماد مدير منتهي", clientRequestId: uuid("d7r-cap2") },
+      CASHIER,
+      { approvedByManagerId: MANAGER.userId },
+    )).rejects.toThrow(/انتهت صلاحية الوصول الزمنية/);
+
+    await db().update(s.users)
+      .set({ accessExpiresAt: null })
+      .where(eq(s.users.id, MANAGER.userId));
+
+    await db().update(s.users)
+      .set({
+        operationPolicy: {
+          version: 1,
+          grants: {
+            "operation.reception.refundDeposit": true,
+            "operation.salesControl.approve": false,
+          },
+        },
+        operationalCaps: { maxRefundAmountIqd: "1000.00" },
+      })
+      .where(eq(s.users.id, MANAGER.userId));
+    await expect(refundDeposit(
+      { paymentId: dep.paymentId, amount: "2000.00", reason: "مدير بلا سلطة اعتماد", clientRequestId: uuid("d7r-cap3") },
+      MANAGER,
+    )).rejects.toThrow(/يتجاوز سقف حسابك 1000.00/);
+    await expect(refundDeposit(
+      { paymentId: dep.paymentId, amount: "2000.00", reason: "اعتماد مدير مسحوب", clientRequestId: uuid("d7r-cap4") },
+      CASHIER,
+      { approvedByManagerId: MANAGER.userId },
+    )).rejects.toThrow(/سُحبت منه صلاحية اعتماد العمليات/);
+
+    await db().update(s.users)
+      .set({ operationPolicy: null, operationalCaps: null })
+      .where(eq(s.users.id, MANAGER.userId));
+    const approved = await refundDeposit(
+      { paymentId: dep.paymentId, amount: "2000.00", reason: "رد مع اعتماد المدير", clientRequestId: uuid("d7r-cap5") },
+      CASHIER,
+      { approvedByManagerId: MANAGER.userId },
+    );
+    expect(approved.idempotentReplay).toBe(false);
+  });
+
+  it("يربط اعتماد رد العربون بفرع الطلب المقفول لا بفرع المنفذ الإداري", async () => {
+    await db().insert(s.branches).values({ id: 2, name: "فرع ثانٍ", code: "B2", type: "SALES" });
+    await db().insert(s.users).values({
+      id: 9,
+      openId: "cross-admin",
+      name: "إداري عابر للفروع",
+      email: "cross-admin@t.test",
+      role: "admin",
+      loginMethod: "local",
+      branchId: 1,
+      operationalCaps: { maxRefundAmountIqd: "1000.00" },
+      operationPolicy: {
+        version: 1,
+        grants: {
+          "operation.reception.collectDeposit": true,
+          "operation.reception.refundDeposit": true,
+          "operation.salesControl.approve": false,
+        },
+      },
+    });
+    const crossAdmin = { userId: 9, branchId: 1, role: "admin" };
+    await openShift(
+      { branchId: 2, openingBalance: "0", shiftType: "RECEPTION" },
+      { userId: 9, branchId: 2 },
+    );
+    const draft = await promoteDraft(
+      { branchId: 2, header: { customerId: 1 }, lines: [CUSTOM_LINE] },
+      crossAdmin,
+    );
+    const deposit = await collectDeposit(
+      {
+        draftId: draft.draftId,
+        amount: "5000.00",
+        method: "CARD",
+        reference: "CARD-CROSS-BRANCH",
+        clientRequestId: uuid("d7-cross1"),
+      },
+      crossAdmin,
+    );
+
+    await expect(refundDeposit(
+      {
+        paymentId: deposit.paymentId,
+        amount: "2000.00",
+        reason: "اختبار اعتماد مدير من فرع المنفذ لا الطلب",
+        clientRequestId: uuid("d7-cross2"),
+      },
+      crossAdmin,
+      { approvedByManagerId: MANAGER.userId },
+    )).rejects.toThrow(/فرع الطلب/);
+  });
 });
 
 describe("D8 — V12: وردية استقبالٍ مُلزَمة بنوعها", () => {
@@ -755,7 +869,7 @@ describe("DB — قرار المالك (ب): سلطة ردّ العربون ال
     expect(coll.status).toBe("REFUNDED");
   });
 
-  it("(ب+ج) نقديّ بكاشير آخر ووردية القبض ليست ورديته ⇒ FORBIDDEN بلا اعتماد؛ ويمرّ بنفسه مع authorizedByManager", async () => {
+  it("(ب+ج) نقديّ بكاشير آخر ووردية القبض ليست ورديته ⇒ FORBIDDEN بلا اعتماد؛ ويمرّ بهوية مدير مثبتة", async () => {
     // وردية القابض (cashier #2) تبقى مفتوحة وفيها النقد؛ الطالب كاشير آخر (userId=5).
     const shift = await openReception();
     const p = await promoteMixed();
@@ -768,7 +882,10 @@ describe("DB — قرار المالك (ب): سلطة ردّ العربون ال
     await expect(refundDeposit(
       { paymentId: dep.paymentId, amount: "10000.00", reason: "الزبون طلب الاسترداد لاحقاً", clientRequestId: rid },
       CASHIER2,
-    )).rejects.toMatchObject({ code: "FORBIDDEN" });
+    )).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringContaining("اعتماد مدير"),
+    });
     // الرفض تراجع كاملاً: القبض ما زال HELD ولا صفّ REFUND (ولا مفتاح idempotency).
     const stillHeld = (await db().select().from(s.orderPayments).where(eq(s.orderPayments.id, dep.paymentId)))[0];
     expect(stillHeld.status).toBe("HELD");
@@ -781,7 +898,7 @@ describe("DB — قرار المالك (ب): سلطة ردّ العربون ال
     const done = await refundDeposit(
       { paymentId: dep.paymentId, amount: "10000.00", reason: "الزبون طلب الاسترداد لاحقاً", clientRequestId: rid },
       CASHIER2,
-      { authorizedByManager: true },
+      { approvedByManagerId: MANAGER.userId },
     );
     expect(done.idempotentReplay).toBe(false);
     const out = (await db().select().from(s.receipts).where(eq(s.receipts.id, done.refundReceiptId!)))[0];

@@ -38,6 +38,18 @@ export async function resetSessionQueryCache(
   queryClient.removeQueries();
 }
 
+export function purgeRecipeClipboard(): void {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") return;
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (key && (key.startsWith("alroya_recipe_clipboard") || key === "alroya_recipe_clipboard_v1")) {
+        localStorage.removeItem(key);
+      }
+    }
+  } catch {}
+}
+
 /** يحافظ على مسودات النطاق نفسه فقط؛ الشركة والمستخدم معاً هما حد الهوية. */
 export async function resetSessionForLogin(
   queryClient: QueryClient,
@@ -47,7 +59,10 @@ export async function resetSessionForLogin(
   await resetSessionQueryCache(queryClient);
   await Promise.resolve().then(() => dependencies.purgeReceptionSnapshots()).catch(() => undefined);
   const previousIdentity = await dependencies.loadStudioIdentity().catch(() => null);
-  if (!sameStudioTenantScope(previousIdentity, nextScope)) await dependencies.purgeStudioDrafts().catch(() => undefined);
+  if (!sameStudioTenantScope(previousIdentity, nextScope)) {
+    await dependencies.purgeStudioDrafts().catch(() => undefined);
+    purgeRecipeClipboard();
+  }
 }
 
 /** تسجيل الخروج الصريح حد أمنيّ يمحو كل المسودات والهوية المحلية ويوقف الصوت. */
@@ -58,6 +73,7 @@ export async function resetSessionForLogout(
   pauseGlobalQuranAudio();
   void clearNotificationBadge();
   lockOfflineSession();
+  purgeRecipeClipboard();
   await resetSessionQueryCache(queryClient);
   await Promise.resolve().then(() => dependencies.purgeReceptionSnapshots()).catch(() => undefined);
   await dependencies.purgeStudioDrafts().catch(() => undefined);

@@ -1,3 +1,4 @@
+import { useDigitalGiftOperationAccess } from "@/lib/digitalGiftOperationAccess";
 // تعريف البطاقات والاشتراكات المعروضة للبيع. كل بطاقة تُنشئ منتجاً خدمياً تلقائياً (بلا مخزون)
 // وتُربط بفرع أو أكثر. قواعد الهامش هنا تُستعمل لاحقاً لاشتقاق سعر اليوم — البطاقة لا تظهر
 // في الكاشير قبل نشر سعر لها في شاشة أسعار اليوم.
@@ -168,11 +169,12 @@ function OfferingAssignmentsCell({
 }
 
 export default function DigitalOfferings() {
+  const digitalAccess = useDigitalGiftOperationAccess();
   const utils = trpc.useUtils();
-  const list = trpc.digitalCards.offerings.list.useQuery();
-  const providers = trpc.digitalCards.providers.list.useQuery();
-  const branches = trpc.branches.list.useQuery();
-  const wallets = trpc.digitalCards.wallets.list.useQuery({ isActive: true });
+  const list = digitalAccess.query("digitalCards.offerings.list", trpc.digitalCards.offerings.list.useQuery(undefined, { enabled: digitalAccess.can("digitalCards.offerings.list") }));
+  const providers = digitalAccess.query("digitalCards.providers.list", trpc.digitalCards.providers.list.useQuery(undefined, { enabled: digitalAccess.can("digitalCards.providers.list") }));
+  const branches = digitalAccess.query("branches.list", trpc.branches.list.useQuery(undefined, { enabled: digitalAccess.can("branches.list") }));
+  const wallets = digitalAccess.query("digitalCards.wallets.list", trpc.digitalCards.wallets.list.useQuery({ isActive: true }, { enabled: digitalAccess.can("digitalCards.wallets.list") }));
   const rows = list.data ?? [];
   const [query, setQuery] = useState("");
   const [visibleColumns, setVisibleColumns] = useState<OfferingColumnVisibility>(loadColumnVisibility);
@@ -262,10 +264,10 @@ export default function DigitalOfferings() {
     onError: (e) => notify.err(e),
   });
 
-  const detail = trpc.digitalCards.offerings.get.useQuery(
+  const detail = digitalAccess.query("digitalCards.offerings.get", trpc.digitalCards.offerings.get.useQuery(
     { id: editId ?? 0 },
-    { enabled: formOpen && editId != null },
-  );
+    { enabled: digitalAccess.can("digitalCards.offerings.get") && (formOpen && editId != null) },
+  ));
 
   function openAdd() {
     setEditId(null);
@@ -328,6 +330,7 @@ export default function DigitalOfferings() {
   }
 
   function submitForm() {
+    if (!digitalAccess.can(`digitalCards.offerings.${editId != null ? "update" : "create"}`) || (editId == null && !digitalAccess.can("digitalCards.pricing.saveDraft"))) return;
     const name = fName.trim();
     if (!name) return notify.err("اسم البطاقة مطلوب");
     if (fBranchIds.length === 0)
@@ -586,7 +589,8 @@ export default function DigitalOfferings() {
               kind: "edit",
               label: "تعديل",
               onSelect: () => openEdit(row.original),
-              gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+              hidden: !digitalAccess.can("digitalCards.offerings.update"),
+              gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "digital_cards", level: "FULL" },
             },
             {
               key: "toggle",
@@ -596,7 +600,8 @@ export default function DigitalOfferings() {
               disabled: toggleMut.isPending,
               disabledReason: "توجد عملية تحديث قيد التنفيذ",
               onSelect: () => void toggle(row.original),
-              gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+              hidden: !digitalAccess.can("digitalCards.offerings.toggle"),
+              gate: digitalAccess.canonical ? undefined : { roles: ["manager"], module: "digital_cards", level: "FULL" },
             },
           ]}
         />
@@ -613,7 +618,7 @@ export default function DigitalOfferings() {
           <Button
             size="sm"
             onClick={openAdd}
-            disabled={activeProviders.length === 0}
+            disabled={!digitalAccess.can("digitalCards.offerings.create") || !digitalAccess.can("digitalCards.pricing.saveDraft") || activeProviders.length === 0}
           >
             <Plus className="size-4" /> بطاقة جديدة
           </Button>
@@ -920,7 +925,7 @@ export default function DigitalOfferings() {
             >
               إلغاء
             </Button>
-            <Button size="sm" onClick={submitForm} disabled={saving}>
+            <Button size="sm" onClick={submitForm} disabled={!digitalAccess.can(`digitalCards.offerings.${editing ? "update" : "create"}`) || (!editing && !digitalAccess.can("digitalCards.pricing.saveDraft")) || saving}>
               {saving ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>

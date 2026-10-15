@@ -21,6 +21,8 @@ import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { postEntry } from "../ledgerService";
 import { money } from "../money";
 import { requireDb, withTx, type Actor } from "../tx";
+import { assertOperationAuthorityTx, loadOperationUserTx } from "../authorization/operationAuthority";
+import { cashHandoverRecipientAllowed } from "../authorization/operationRecipientEligibility";
 
 export interface PendingTreasuryReceipt {
   id: number;
@@ -353,7 +355,7 @@ export async function listPendingTreasuryQueue(actor: Actor): Promise<PendingTre
  * تُغيّر **من يملك قبوله** فقط. القبول يبقى فعلاً صريحاً من المستلم الجديد بهويته
  * (سلسلة الحيازة محفوظة)، والأثر التدقيقيّ يحمل الطرفين فلا تضيع المسؤولية.
  *
- * الشروط مرآةٌ لِـ`createCashDrop`: المستلم مديرٌ أو إداريّ، نشط، من فرع العهدة نفسه.
+ * الشروط مرآةٌ لِـ`createCashDrop`: مستلمٌ مفوّض ونشط من فرع العهدة نفسه.
  */
 export async function reassignPendingTreasuryReceipt(
   receiptId: number,
@@ -365,6 +367,8 @@ export async function reassignPendingTreasuryReceipt(
   // treasury=FULL تحترم المنح الصريح). فحصٌ خامّ في الخدمة كان يُبطل ما تُعلنه البوّابة —
   // محاسبٌ قالبه treasury=FULL يعبُر الحدّ ثم يُصَدّ هنا: عيب «مُنِحت الصلاحية ولم تُطبَّق» نفسه.
   return withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "treasury.reassignHandoverReceipt", true);
+    const targetProfile = await loadOperationUserTx(tx, toUserId);
     const row = (
       await tx.select().from(receipts).where(eq(receipts.id, receiptId)).for("update").limit(1)
     )[0];
@@ -396,10 +400,10 @@ export async function reassignPendingTreasuryReceipt(
     if (!target || !target.isActive) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "المستلِم غير موجود أو معطّل" });
     }
-    if (target.role !== "admin" && target.role !== "manager") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "مستلِم النقد يجب أن يكون مديراً أو إدارياً" });
+    if (!cashHandoverRecipientAllowed(targetProfile, target.role === "admin" || target.role === "manager")) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مستلِم النقد لا يملك صلاحية قبول عهدة التسليم" });
     }
-    if (target.branchId == null || Number(target.branchId) !== Number(row.branchId)) {
+    if (targetProfile.branchId == null || Number(targetProfile.branchId) !== Number(row.branchId)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "مستلِم النقد يجب أن يكون من فرع العهدة نفسه" });
     }
     // فصل المُسلِّم عن المستلم — الثابت الذي يفرضه `createCashDrop` عند الإنشاء
@@ -496,6 +500,7 @@ export async function acceptPendingTreasuryReceipt(
   },
 ) {
   return withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "treasury.acceptHandoverReceipt", true);
     const candidate = (
       await tx
         .select({ branchId: receipts.branchId })

@@ -44,8 +44,8 @@ export default function OfflineSalesReport() {
   // و-٤ (ورقة الإصلاحات ١٦/٨): مبيعاتٌ نقدية قُبض ثمنها وخرجت بضاعتها، رفضها الخادم لأنّ
   // ورديتها أُغلقت ⇒ خارج الدفتر تماماً. هذا الطابور هو مسار إعادتها إليه.
   const utils = trpc.useUtils();
-  const recovery = trpc.offline.recoveryQueue.useQuery(undefined, { refetchInterval: 60_000 });
-  const openShifts = trpc.treasury.getOpenShifts.useQuery(undefined, { refetchInterval: 60_000 });
+  const recovery = trpc.offline.recoveryQueue.useQuery(undefined, { refetchInterval: false });
+  const openShifts = trpc.treasury.getOpenShifts.useQuery(undefined, { refetchInterval: false });
   // الإهمال مسارٌ نادرٌ وخطِر (إسقاط بيعٍ مدفوع) ⇒ لا زرَّ فوريّاً: يُفتح حقلُ سببٍ إلزاميّ أولاً.
   const [discardFor, setDiscardFor] = useState<number | null>(null);
   const [discardReason, setDiscardReason] = useState("");

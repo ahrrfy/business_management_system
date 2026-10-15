@@ -5,6 +5,13 @@ function page(name: string) {
   return readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 }
 
+function serverRouter(name: string) {
+  return readFileSync(
+    new URL(`../../../../server/routers/${name}`, import.meta.url),
+    "utf8",
+  );
+}
+
 describe("إثبات القبض غير النقدي في شاشات المبيعات", () => {
   it("InvoiceDetail لا يرسل sales.pay قبل محاولة SALES_COLLECTION مؤكدة", () => {
     const source = page("InvoiceDetail.tsx");
@@ -38,5 +45,15 @@ describe("إثبات القبض غير النقدي في شاشات المبيع
     expect(approvals).toContain("claimCorrectionPayment");
     expect(approvals).toContain("reference: referenceOverride");
     expect(approvals).toContain("deviceId");
+  });
+
+  it("إلغاء البطاقة يطلب الاعتماد قبل تنفيذ الرد على الجهاز", () => {
+    const invoice = page("InvoiceDetail.tsx");
+    const sales = serverRouter("saleRouter.ts");
+    expect(invoice).not.toContain("cancelReference");
+    expect(invoice).toContain("سيُنشأ طلب اعتماد أولاً");
+    expect(invoice).toContain("لا تنفذ الرد من هذه الشاشة");
+    expect(sales).toContain('input.refundPaymentMethod === "CARD" && input.reference?.trim()');
+    expect(sales).toContain("رد البطاقة ينفذه المراجع المستقل بعد قبول طلب الإلغاء");
   });
 });

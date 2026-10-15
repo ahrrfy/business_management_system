@@ -17,6 +17,8 @@ import {
 } from "lucide-react";
 import { visibleStations, type PermissionMap } from "@shared/permissions";
 import { INVOICE_LIST_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import { visibleApplicationModules } from "@/lib/moduleRegistry";
+import type { OperationPolicy } from "@shared/operationPermissions";
 
 export interface BottomNavItem {
   href?: string;
@@ -31,6 +33,7 @@ export interface BottomNavItem {
 interface MobileBottomNavProps {
   role?: string;
   permsOverride?: PermissionMap | null;
+  operationPolicy?: OperationPolicy | null;
   onOpenMenu: () => void;
   /** Codex P2 (٢٩/٨): شارات الجاهز على الجوال — نفس شارات القائمة الجانبية (Slice J). */
   workOrderReadyCount?: number;
@@ -68,7 +71,20 @@ function visibleItems(
 export function getMobileBottomNavItems(
   role: string | null | undefined,
   permsOverride?: PermissionMap | null,
+  operationPolicy?: OperationPolicy | null,
 ): BottomNavItem[] {
+  if (operationPolicy) {
+    // Exact operation pages take precedence over broad module links; self/home defaults fill remaining slots.
+    const priority = (gate?: RoleGate) => gate?.operations?.length ? 0
+      : gate?.module || gate?.anyOf?.length || gate?.allOf?.length ? 1 : 2;
+    const candidates: BottomNavItem[] = visibleApplicationModules(role, permsOverride, operationPolicy, role === "cashier")
+      .map((module) => ({
+        href: module.href, label: module.label, icon: module.icon, gate: module,
+      }))
+      .sort((a, b) => priority(a.gate) - priority(b.gate));
+    candidates.push({ href: "/", label: "الرئيسية", icon: Home });
+    return [...candidates.slice(0, 4), MENU_ITEM];
+  }
   if (role === "courier") {
     const candidates: BottomNavItem[] = [
       {
@@ -173,9 +189,9 @@ function triggerHaptic() {
   }
 }
 
-export function MobileBottomNav({ role, permsOverride, onOpenMenu, workOrderReadyCount = 0, deliveryReadyCount = 0 }: MobileBottomNavProps) {
+export function MobileBottomNav({ role, permsOverride, operationPolicy, onOpenMenu, workOrderReadyCount = 0, deliveryReadyCount = 0 }: MobileBottomNavProps) {
   const [loc] = useLocation();
-  const items = getMobileBottomNavItems(role, permsOverride);
+  const items = getMobileBottomNavItems(role, permsOverride, operationPolicy);
   // Codex P2 (٢٩/٨) — badge per item (نفس منطق الشريط الجانبي).
   const badgeFor = (href: string | undefined): number => {
     if (href === "/work-orders") return workOrderReadyCount;

@@ -90,6 +90,40 @@ describe("البحث الذكي — كلمات مستقلة (AND عبر الأع
     const rows = await listForPos(1, "RETAIL", "قلم مستحيل");
     expect(rows).toHaveLength(0);
   });
+
+  it("كلمتان من اسم المنتج ولون/حجم المتغيّر (color/size) تتقاطعان مع التطبيع العربي حتى لو كان variantName فارغاً", async () => {
+    const d = db();
+    await d.insert(s.products).values({ id: 7, name: "قلم رصاص مدرسي" });
+    await d.insert(s.productVariants).values({
+      id: 7,
+      productId: 7,
+      sku: "PENCIL-RED-L",
+      color: "أحمر",
+      size: "كبير",
+      costPrice: "0.00",
+    });
+    await d.insert(s.productUnits).values({
+      id: 7,
+      variantId: 7,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    });
+    await d.insert(s.productPrices).values({
+      productUnitId: 7,
+      priceTier: "RETAIL",
+      price: "250.00",
+    });
+
+    const byColor = await listForPos(1, "RETAIL", "رصاص احمر");
+    expect(names(byColor)).toEqual(["قلم رصاص مدرسي"]);
+
+    const bySize = await listForPos(1, "RETAIL", "رصاص كبير");
+    expect(names(bySize)).toEqual(["قلم رصاص مدرسي"]);
+
+    const byPurchase = await listForPurchase(1, "رصاص احمر كبير");
+    expect(byPurchase.map((r) => r.productName)).toEqual(["قلم رصاص مدرسي"]);
+  });
 });
 
 describe("البحث الذكي — الترتيب بالملاءمة", () => {

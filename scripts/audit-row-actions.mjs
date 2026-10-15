@@ -7,8 +7,10 @@ const routersDir = path.join(root, "server", "routers");
 
 function walk(dir, extensions) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.name === "__tests__" || entry.name === "node_modules") return [];
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) return walk(full, extensions);
+    if (/\.test\.[cm]?[jt]sx?$/.test(entry.name)) return [];
     return extensions.some((ext) => entry.name.endsWith(ext)) ? [full] : [];
   });
 }

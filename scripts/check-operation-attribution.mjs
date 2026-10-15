@@ -20,6 +20,52 @@ const filesUnder = (dir, extension) => {
   return out;
 };
 
+const exactStringList = (source, expected) => {
+  if (!/^\s*["'][^"']+["'](?:\s*,\s*["'][^"']+["'])*\s*,?\s*$/.test(source ?? "")) return false;
+  const values = [...source.matchAll(/["']([^"']+)["']/g)].map((match) => match[1]).sort();
+  return JSON.stringify(values) === JSON.stringify([...expected].sort());
+};
+
+/** Check the audit route itself; a role declaration elsewhere cannot protect an unwrapped page. */
+const auditRouteProtected = (app, navigation) => {
+  const route = app.match(/<Route\b[^>]*\bpath\s*=\s*["']\/audit["'][^>]*>([\s\S]*?)<\/Route>/)?.[1];
+  const wrapper = route?.match(/<RequireRole\b([^>]*)>([\s\S]*?)<\/RequireRole>/);
+  if (!wrapper || !/<AuditLogs\b/.test(wrapper[2])) return false;
+  if (!/\bgate\s*=/.test(wrapper[1])) {
+    return !/\bmodule\s*=/.test(wrapper[1]) && exactStringList(
+      wrapper[1].match(/\broles\s*=\s*\{\s*\[([^\]]*)\]\s*\}/)?.[1], ["admin", "auditor"],
+    );
+  }
+  if (!/\bgate\s*=\s*\{\s*AUDIT_LOGS_GATE\s*\}/.test(wrapper[1]) ||
+      !/import\s*\{[^}]*\bAUDIT_LOGS_GATE\b[^}]*\}\s*from\s*["']@\/lib\/navVisibility["']/.test(app)) return false;
+  const gate = navigation.match(/export\s+const\s+AUDIT_LOGS_GATE(?:\s*:\s*RoleGate)?\s*=\s*\{([^}]*)\}/)?.[1];
+  return !!gate && !/\b(?:module|managerOnly|anyOf|allOf)\s*:/.test(gate) &&
+    exactStringList(gate.match(/\broles\s*:\s*\[([^\]]*)\]/)?.[1], ["admin", "auditor"]) &&
+    exactStringList(gate.match(/\boperations\s*:\s*\[([^\]]*)\]/)?.[1], ["audit.list", "audit.facets"]);
+};
+
+const auditGateSelfTest = () => {
+  const route = (props) => `<Route path="/audit"><Shell><RequireRole ${props}><AuditLogs /></RequireRole></Shell></Route>`;
+  const imported = 'import { AUDIT_LOGS_GATE } from "@/lib/navVisibility";';
+  const gate = 'export const AUDIT_LOGS_GATE: RoleGate = { roles: ["admin", "auditor"], operations: ["audit.list", "audit.facets"] };';
+  const cases = [
+    [route('roles={["admin","auditor"]}'), "", true],
+    [imported + route("gate={AUDIT_LOGS_GATE}"), gate, true],
+    ['<Route path="/audit"><AuditLogs /></Route>' + route('roles={["admin","auditor"]}').replace('/audit', '/other'), gate, false],
+    [imported + route("gate={AUDIT_LOGS_GATE}"), gate.replace('"audit.facets"', '"audit.export"'), false],
+    [imported + route("gate={AUDIT_LOGS_GATE}"), gate.replace('"auditor"', '"cashier"'), false],
+    [route('roles={["admin","auditor"]} gate={OTHER_GATE}'), gate, false],
+  ];
+  for (const [app, navigation, expected] of cases) {
+    if (auditRouteProtected(app, navigation) !== expected) throw new Error("اختبار حارس بوابة سجل الحركات فشل.");
+  }
+};
+auditGateSelfTest();
+if (process.argv.includes("--selftest")) {
+  console.log("✓ الاختبار الذاتي لبوابة سجل الحركات: legacy + canonical + رفض المسار غير المحمي.");
+  process.exit(0);
+}
+
 const trpc = read("server/trpc.ts");
 const procedureRoots = trpc.match(/t\.procedure/g) ?? [];
 if (procedureRoots.length !== 1) fail(`يجب أن يبقى t.procedure بجذر واحد مدقّق؛ الموجود ${procedureRoots.length}.`);
@@ -122,7 +168,7 @@ const shellStart = app.indexOf("function Shell(");
 const shellEnd = app.indexOf("function StudioRouteAccess", shellStart);
 const shell = app.slice(shellStart, shellEnd);
 if (!shell.includes("<OperationAuditAccess />")) fail("مدخل سجل الحركات غير مركّب في Shell لكل الشاشات المحمية.");
-if (!app.includes('path="/audit"') || !app.includes('roles={["admin","auditor"]}')) fail("مسار سجل الحركات المستقل أو صلاحياته ناقصة.");
+if (!auditRouteProtected(app, read("client/src/lib/navVisibility.ts"))) fail("مسار سجل الحركات المستقل أو صلاحياته ناقصة.");
 
 const auditPage = read("client/src/pages/AuditLogs.tsx");
 for (const contract of ['mode: "columns" as const', "screenPath", "auditOperationMeta", "محاولة فاشلة"]) {

@@ -1,3 +1,4 @@
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { useEffect, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { ShieldCheck, Truck, XCircle } from "lucide-react";
@@ -32,17 +33,17 @@ export default function DeliveryParties() {
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role as RoleKey | undefined;
   const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  const isManager = !!role && moduleAccessAllowed(role, override, "store", "FULL", ["manager"]);
-  const canRequestWriteOff = role === "admin";
-  const canReviewWriteOff = !!role && moduleAccessAllowed(
+  const isManager = lifecycleActionAllowed(me.data, "delivery.createParty", !!role && moduleAccessAllowed(role, override, "store", "FULL", ["manager"]));
+  const canRequestWriteOff = lifecycleActionAllowed(me.data, "delivery.writeOff", role === "admin");
+  const canReviewWriteOff = lifecycleActionAllowed(me.data, "delivery.listWriteOffRequests", !!role && moduleAccessAllowed(
     role,
     override,
     "store",
     "FULL",
     ["manager"],
-  );
+  ));
   // مرآة deliveryCashierProcedure بما فيها المنح الصريح.
-  const canSettle = !!role && moduleAccessAllowed(role, override, "store", "FULL", ["cashier", "manager"]);
+  const canSettle = lifecycleActionAllowed(me.data, "delivery.settle", !!role && moduleAccessAllowed(role, override, "store", "FULL", ["cashier", "manager"]));
   const utils = trpc.useUtils();
   const list = trpc.delivery.listParties.useQuery({});
   const [showCreate, setShowCreate] = useState(false);
@@ -335,6 +336,9 @@ function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () 
 }
 
 function WriteOffApprovalQueue({ userId, onChanged }: { userId: number; onChanged: () => void }) {
+  const me = trpc.auth.me.useQuery();
+  const canApprove = lifecycleActionAllowed(me.data, "delivery.approveWriteOffRequest", true);
+  const canReject = lifecycleActionAllowed(me.data, "delivery.rejectWriteOffRequest", true);
   const pending = trpc.delivery.listWriteOffRequests.useQuery({ status: "PENDING" });
   const [rejectReasons, setRejectReasons] = useState<Record<number, string>>({});
   const approve = trpc.delivery.approveWriteOffRequest.useMutation({
@@ -386,7 +390,7 @@ function WriteOffApprovalQueue({ userId, onChanged }: { userId: number; onChange
                   />
                   <Button
                     size="sm"
-                    disabled={own || approve.isPending || reject.isPending}
+                    disabled={!canApprove || own || approve.isPending || reject.isPending}
                     onClick={async () => {
                       const ok = await confirm({
                         variant: "danger",
@@ -407,7 +411,7 @@ function WriteOffApprovalQueue({ userId, onChanged }: { userId: number; onChange
                     size="sm"
                     variant="outline"
                     className="text-destructive"
-                    disabled={own || reason.trim().length < 3 || approve.isPending || reject.isPending}
+                    disabled={!canReject || own || reason.trim().length < 3 || approve.isPending || reject.isPending}
                     onClick={() => reject.mutate({
                       id: Number(row.id),
                       expectedVersion: Number(row.basePartyVersion),

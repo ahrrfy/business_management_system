@@ -1,6 +1,27 @@
 import { useMemo, useState } from "react";
-import { Columns3, List, Plus, Search, UserPlus, X } from "lucide-react";
 import {
+  CalendarClock,
+  ChevronLeft,
+  CircleDollarSign,
+  Columns3,
+  Download,
+  FileSpreadsheet,
+  History,
+  List,
+  Pencil,
+  Phone,
+  Plus,
+  Search,
+  User,
+  UserPlus,
+  UserRound,
+  X,
+} from "lucide-react";
+import {
+  LEAD_ALLOWED_TRANSITIONS,
+  OPPORTUNITY_ALLOWED_TRANSITIONS,
+  SALES_LEAD_SOURCES,
+  SALES_LEAD_SOURCE_LABELS,
   SALES_LEAD_STATUSES,
   SALES_LEAD_STATUS_LABELS,
   SALES_OPPORTUNITY_STAGES,
@@ -15,7 +36,7 @@ import {
   type RoleKey,
 } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
-import { ErrorState, LoadingState } from "@/components/PageState";
+import { EmptyState, ErrorState, LoadingState } from "@/components/PageState";
 import {
   LeadFormDialog,
   OpportunityFormDialog,
@@ -24,10 +45,6 @@ import {
   type LeadFormValue,
   type OpportunityFormValue,
 } from "@/components/salesPipeline/PipelineDialogs";
-import {
-  LeadsBoard,
-  OpportunitiesBoard,
-} from "@/components/salesPipeline/PipelineBoard";
 import { PipelineSummary } from "@/components/salesPipeline/PipelineSummary";
 import type {
   DashboardData,
@@ -42,6 +59,370 @@ import { Input } from "@/components/ui/input";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { formatIqd } from "@/lib/money";
+import { fmtDate } from "@/lib/date";
+import { exportRows } from "@/lib/export";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { CustomerDossierDrawer } from "@/components/crm/CustomerDossierDrawer";
+import {
+  isLeadOverdue,
+  isOpportunityOverdue,
+  pipelineDate,
+} from "@/components/salesPipeline/policy";
+
+function EnhancedLeadCard({
+  lead,
+  canWrite,
+  actions,
+  onOpenDossier,
+}: {
+  lead: LeadRow;
+  canWrite: boolean;
+  actions: {
+    onEdit: (lead: LeadRow) => void;
+    onTransition: (lead: LeadRow, toStatus: SalesLeadStatus) => void;
+    onConvert: (lead: LeadRow) => void;
+    onHistory: (lead: LeadRow) => void;
+  };
+  onOpenDossier: (customerId: number) => void;
+}) {
+  const overdue = isLeadOverdue(lead.status, lead.nextFollowUpAt);
+  const statusStyles: Record<SalesLeadStatus, string> = {
+    NEW: "border-[var(--sem-info)]/30 bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
+    CONTACTED: "border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
+    QUALIFIED: "border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
+    DISQUALIFIED: "border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]",
+    CONVERTED: "border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
+  };
+
+  return (
+    <Card className="rounded-md shadow-none border">
+      <CardContent className="space-y-3 p-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="truncate font-semibold">{lead.contactName}</p>
+            <p className="mt-0.5 text-2xs text-muted-foreground" dir="ltr">{lead.leadNumber}</p>
+          </div>
+          <span className={`inline-block rounded-full border px-2 py-0.5 text-xs font-medium ${statusStyles[lead.status] ?? "border-border bg-muted/40 text-muted-foreground"}`}>
+            {SALES_LEAD_STATUS_LABELS[lead.status]}
+          </span>
+        </div>
+
+        <div className="space-y-1.5 text-xs text-muted-foreground">
+          <p>{SALES_LEAD_SOURCE_LABELS[lead.source]}{lead.companyName ? ` · ${lead.companyName}` : ""}</p>
+          <p className="flex items-center gap-1.5"><UserRound aria-hidden className="size-3.5" />{lead.ownerName || "غير مسمّى"}</p>
+          {lead.phone && (
+            <p className="flex items-center gap-1.5" dir="ltr"><Phone aria-hidden className="size-3.5 text-[var(--sem-pos)]" />{lead.phone}</p>
+          )}
+          <p className={`flex items-center gap-1.5 ${overdue ? "font-semibold text-[var(--sem-neg)]" : ""}`}>
+            <CalendarClock aria-hidden className="size-3.5" />المتابعة: {pipelineDate(lead.nextFollowUpAt)}
+          </p>
+        </div>
+
+        {/* أدوات تشغيلية سريعة: ملف شامل 360، اتصال، وواتساب */}
+        <div className="flex flex-wrap items-center gap-1.5 border-t pt-2">
+          {lead.customerId && (
+            <Button type="button" variant="ghost" size="icon-sm" className="size-7 text-primary hover:bg-primary/10" onClick={() => onOpenDossier(lead.customerId!)} title="الملف الشامل 360°" aria-label={`الملف الشامل 360° للعميل ${lead.contactName}`}>
+              <User className="size-3.5" aria-hidden />
+            </Button>
+          )}
+          {lead.phone && (
+            <Button asChild variant="ghost" size="icon-sm" className="size-7 text-[var(--sem-pos)] hover:bg-accent" title={`اتصال: ${lead.phone}`} aria-label={`اتصال بالعميل ${lead.contactName}`}>
+              <a href={`tel:${lead.phone}`}><Phone className="size-3.5" aria-hidden /></a>
+            </Button>
+          )}
+          {lead.phone && (
+            <WhatsAppShare phone={lead.phone} message={buildOperationalContactMessage({ partyName: lead.contactName, entityLabel: "طلب استفسار ومتابعة", nextAction: "نتواصل معكم لمتابعة تفاصيل الطلب وتزويدكم بالأسعار المناسبة." })} iconOnly size="icon-sm" className="size-7" label={`واتساب ${lead.contactName}`} />
+          )}
+
+          <div className="ms-auto flex flex-wrap gap-1.5">
+            <Button size="sm" variant="ghost" onClick={() => actions.onHistory(lead)} title="سجل الحركات">
+              <History aria-hidden className="size-3.5" />السجل
+            </Button>
+            {canWrite && lead.status !== "CONVERTED" && (
+              <Button size="sm" variant="outline" onClick={() => actions.onEdit(lead)} title="تعديل البيانات">
+                <Pencil aria-hidden className="size-3.5" />تعديل
+              </Button>
+            )}
+            {canWrite && LEAD_ALLOWED_TRANSITIONS[lead.status].map((status) => (
+              <Button key={status} size="sm" variant={status === "DISQUALIFIED" ? "destructive" : "outline"} onClick={() => actions.onTransition(lead, status)}>
+                <ChevronLeft aria-hidden className="size-3.5" />{SALES_LEAD_STATUS_LABELS[status]}
+              </Button>
+            ))}
+            {canWrite && lead.status === "QUALIFIED" && (
+              <Button size="sm" onClick={() => actions.onConvert(lead)}>تحويل إلى صفقة</Button>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function EnhancedOpportunityCard({
+  opportunity,
+  options,
+  canWrite,
+  actions,
+  onOpenDossier,
+}: {
+  opportunity: OpportunityRow;
+  options: PipelineOptions;
+  canWrite: boolean;
+  actions: {
+    onEdit: (opportunity: OpportunityRow) => void;
+    onTransition: (opportunity: OpportunityRow, toStage: SalesOpportunityStage) => void;
+    onHistory: (opportunity: OpportunityRow) => void;
+  };
+  onOpenDossier: (customerId: number) => void;
+}) {
+  const overdue = isOpportunityOverdue(opportunity.stage, opportunity.expectedCloseDate);
+  const customer = options.customers.find((c) => c.id === opportunity.customerId);
+  const customerPhone = customer?.phone;
+
+  const stageStyles: Record<SalesOpportunityStage, string> = {
+    DISCOVERY: "border-[var(--sem-info)]/30 bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
+    PROPOSAL: "border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
+    NEGOTIATION: "border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
+    WON: "border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
+    LOST: "border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]",
+  };
+
+  return (
+    <Card className="rounded-md shadow-none border">
+      <CardContent className="space-y-3 p-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="truncate font-semibold">{opportunity.title}</p>
+            <p className="mt-0.5 text-2xs text-muted-foreground" dir="ltr">{opportunity.opportunityNumber}</p>
+          </div>
+          <span className={`inline-block rounded-full border px-2 py-0.5 text-xs font-medium ${stageStyles[opportunity.stage] ?? "border-border bg-muted/40 text-muted-foreground"}`}>
+            {SALES_OPPORTUNITY_STAGE_LABELS[opportunity.stage]}
+          </span>
+        </div>
+
+        <div className="space-y-1.5 text-xs text-muted-foreground">
+          <p>{opportunity.customerName || opportunity.leadName || "جهة غير مسمّاة"}</p>
+          <p className="flex items-center gap-1.5"><UserRound aria-hidden className="size-3.5" />{opportunity.ownerName || "غير مسمّى"}</p>
+          <p className="flex items-center gap-1.5 font-medium text-foreground">
+            <CircleDollarSign aria-hidden className="size-3.5 text-[var(--sem-pos)]" />
+            {formatIqd(opportunity.expectedValue)} · احتمال {opportunity.probability}%
+          </p>
+          {customerPhone && (
+            <p className="flex items-center gap-1.5" dir="ltr"><Phone aria-hidden className="size-3.5 text-[var(--sem-pos)]" />{customerPhone}</p>
+          )}
+          <p className={`flex items-center gap-1.5 ${overdue ? "font-semibold text-[var(--sem-neg)]" : ""}`}>
+            <CalendarClock aria-hidden className="size-3.5" />الإغلاق المتوقع: {pipelineDate(opportunity.expectedCloseDate)}
+          </p>
+        </div>
+
+        {/* أدوات تشغيلية ميدانية سريعة */}
+        <div className="flex flex-wrap items-center gap-1.5 border-t pt-2">
+          {opportunity.customerId && (
+            <Button type="button" variant="ghost" size="icon-sm" className="size-7 text-primary hover:bg-primary/10" onClick={() => onOpenDossier(opportunity.customerId!)} title="الملف الشامل 360° للزبون" aria-label={`الملف الشامل 360° للزبون ${opportunity.customerName ?? ""}`}>
+              <User className="size-3.5" aria-hidden />
+            </Button>
+          )}
+          {customerPhone && (
+            <Button asChild variant="ghost" size="icon-sm" className="size-7 text-[var(--sem-pos)] hover:bg-accent" title={`اتصال مباشر: ${customerPhone}`} aria-label={`اتصال بالزبون ${opportunity.customerName ?? ""}`}>
+              <a href={`tel:${customerPhone}`}><Phone className="size-3.5" aria-hidden /></a>
+            </Button>
+          )}
+          {customerPhone && (
+            <WhatsAppShare phone={customerPhone} message={buildOperationalContactMessage({ partyName: opportunity.customerName ?? "الزبون", entityLabel: `صفقة ${opportunity.title}`, nextAction: "نتواصل معكم لمتابعة تفاصيل العرض والاتفاق وموعد التنفيذ." })} iconOnly size="icon-sm" className="size-7" label={`واتساب ${opportunity.customerName ?? "الزبون"}`} />
+          )}
+
+          <div className="ms-auto flex flex-wrap gap-1.5">
+            <Button size="sm" variant="ghost" onClick={() => actions.onHistory(opportunity)} title="سجل الحركات">
+              <History aria-hidden className="size-3.5" />السجل
+            </Button>
+            {canWrite && opportunity.stage !== "WON" && opportunity.stage !== "LOST" && (
+              <Button size="sm" variant="outline" onClick={() => actions.onEdit(opportunity)}>
+                <Pencil aria-hidden className="size-3.5" />تعديل
+              </Button>
+            )}
+            {canWrite && OPPORTUNITY_ALLOWED_TRANSITIONS[opportunity.stage].map((stage) => (
+              <Button key={stage} size="sm" variant={stage === "LOST" ? "destructive" : stage === "WON" ? "default" : "outline"} onClick={() => actions.onTransition(opportunity, stage)}>
+                <ChevronLeft aria-hidden className="size-3.5" />{SALES_OPPORTUNITY_STAGE_LABELS[stage]}
+              </Button>
+            ))}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function EnhancedLeadsBoard({
+  rows,
+  view,
+  canWrite,
+  actions,
+  onOpenDossier,
+}: {
+  rows: LeadRow[];
+  view: "BOARD" | "LIST";
+  canWrite: boolean;
+  actions: {
+    onEdit: (lead: LeadRow) => void;
+    onTransition: (lead: LeadRow, toStatus: SalesLeadStatus) => void;
+    onConvert: (lead: LeadRow) => void;
+    onHistory: (lead: LeadRow) => void;
+  };
+  onOpenDossier: (customerId: number) => void;
+}) {
+  if (!rows.length)
+    return (
+      <EmptyState
+        resourceKey="customers"
+        reason="NO_MATCH_FILTER"
+        title="لا يوجد عملاء محتملون مطابقون"
+      />
+    );
+
+  if (view === "LIST")
+    return (
+      <div className="grid gap-2 lg:grid-cols-2">
+        {rows.map((lead) => (
+          <EnhancedLeadCard
+            key={lead.id}
+            lead={lead}
+            canWrite={canWrite}
+            actions={actions}
+            onOpenDossier={onOpenDossier}
+          />
+        ))}
+      </div>
+    );
+
+  return (
+    <div className="grid items-start gap-3 xl:grid-cols-5">
+      {SALES_LEAD_STATUSES.map((status) => {
+        const statusRows = rows.filter((row) => row.status === status);
+        return (
+          <section
+            key={status}
+            className="min-w-0 rounded-md border bg-muted/20 p-2"
+          >
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold">
+                {SALES_LEAD_STATUS_LABELS[status]}
+              </h2>
+              <span className="inline-block rounded-full border px-1.5 py-0.5 text-2xs font-semibold">
+                {statusRows.length.toLocaleString("ar-IQ-u-nu-latn")}
+              </span>
+            </div>
+            <div className="space-y-2">
+              {statusRows.map((lead) => (
+                <EnhancedLeadCard
+                  key={lead.id}
+                  lead={lead}
+                  canWrite={canWrite}
+                  actions={actions}
+                  onOpenDossier={onOpenDossier}
+                />
+              ))}
+              {!statusRows.length && (
+                <p className="py-8 text-center text-xs text-muted-foreground">
+                  لا سجلات
+                </p>
+              )}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function EnhancedOpportunitiesBoard({
+  rows,
+  options,
+  view,
+  canWrite,
+  actions,
+  onOpenDossier,
+}: {
+  rows: OpportunityRow[];
+  options: PipelineOptions;
+  view: "BOARD" | "LIST";
+  canWrite: boolean;
+  actions: {
+    onEdit: (opportunity: OpportunityRow) => void;
+    onTransition: (
+      opportunity: OpportunityRow,
+      toStage: SalesOpportunityStage,
+    ) => void;
+    onHistory: (opportunity: OpportunityRow) => void;
+  };
+  onOpenDossier: (customerId: number) => void;
+}) {
+  if (!rows.length)
+    return (
+      <EmptyState
+        resourceKey="generic"
+        reason="NO_MATCH_FILTER"
+        title="لا توجد صفقات مطابقة"
+      />
+    );
+
+  if (view === "LIST")
+    return (
+      <div className="grid gap-2 lg:grid-cols-2">
+        {rows.map((opportunity) => (
+          <EnhancedOpportunityCard
+            key={opportunity.id}
+            opportunity={opportunity}
+            options={options}
+            canWrite={canWrite}
+            actions={actions}
+            onOpenDossier={onOpenDossier}
+          />
+        ))}
+      </div>
+    );
+
+  return (
+    <div className="grid items-start gap-3 xl:grid-cols-5">
+      {SALES_OPPORTUNITY_STAGES.map((stage) => {
+        const stageRows = rows.filter((row) => row.stage === stage);
+        return (
+          <section
+            key={stage}
+            className="min-w-0 rounded-md border bg-muted/20 p-2"
+          >
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold truncate">
+                {SALES_OPPORTUNITY_STAGE_LABELS[stage]}
+              </h2>
+              <span className="inline-block rounded-full border px-1.5 py-0.5 text-2xs font-semibold">
+                {stageRows.length.toLocaleString("ar-IQ-u-nu-latn")}
+              </span>
+            </div>
+            <div className="space-y-2">
+              {stageRows.map((opportunity) => (
+                <EnhancedOpportunityCard
+                  key={opportunity.id}
+                  opportunity={opportunity}
+                  options={options}
+                  canWrite={canWrite}
+                  actions={actions}
+                  onOpenDossier={onOpenDossier}
+                />
+              ))}
+              {!stageRows.length && (
+                <p className="py-8 text-center text-xs text-muted-foreground">
+                  لا سجلات
+                </p>
+              )}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
 
 type LeadFormState = { initial: LeadRow | null; requestKey: string } | null;
 type OpportunityFormState = {
@@ -75,6 +456,8 @@ function requestKey(): string {
 
 export default function SalesPipeline() {
   const utils = trpc.useUtils();
+  const [selectedDossierCustomerId, setSelectedDossierCustomerId] =
+    useState<number | null>(null);
   const me = trpc.auth.me.useQuery();
   const canWrite =
     !!me.data?.role &&
@@ -322,11 +705,53 @@ export default function SalesPipeline() {
     }
   };
 
+  const handleExport = (format: "xlsx" | "csv") => {
+    if (section === "OPPORTUNITIES") {
+      if (opportunities.length === 0) {
+        notify.err("لا توجد صفقات لتصديرها");
+        return;
+      }
+      void exportRows<OpportunityRow>(opportunities, {
+        filename: `متابعة-الصفقات-والطلبات-${fmtDate(new Date())}`,
+        format,
+        columns: [
+          { key: "opportunityNumber", header: "رقم الطلب/الصفقة", map: (r) => r.opportunityNumber },
+          { key: "title", header: "عنوان الصفقة", map: (r) => r.title },
+          { key: "customerName", header: "الزبون", map: (r) => r.customerName ?? r.leadName ?? "—" },
+          { key: "ownerName", header: "المسؤول", map: (r) => r.ownerName ?? "—" },
+          { key: "stage", header: "المرحلة", map: (r) => SALES_OPPORTUNITY_STAGE_LABELS[r.stage] ?? r.stage },
+          { key: "expectedValue", header: "القيمة التقديرية (د.ع)", money: true, map: (r) => Number(r.expectedValue) },
+          { key: "probability", header: "نسبة الاحتمال", map: (r) => `${r.probability}%` },
+          { key: "expectedCloseDate", header: "تاريخ الإغلاق المتوقع", map: (r) => pipelineDate(r.expectedCloseDate) },
+        ],
+      });
+    } else {
+      if (leads.length === 0) {
+        notify.err("لا يوجد عملاء محتملون لتصديرهم");
+        return;
+      }
+      void exportRows<LeadRow>(leads, {
+        filename: `العملاء-المحتملون-${fmtDate(new Date())}`,
+        format,
+        columns: [
+          { key: "leadNumber", header: "رقم السجل", map: (r) => r.leadNumber },
+          { key: "contactName", header: "جهة الاتصال", map: (r) => r.contactName },
+          { key: "companyName", header: "الشركة", map: (r) => r.companyName ?? "—" },
+          { key: "phone", header: "الهاتف", map: (r) => r.phone ?? "—" },
+          { key: "source", header: "المصدر", map: (r) => SALES_LEAD_SOURCE_LABELS[r.source] ?? r.source },
+          { key: "ownerName", header: "المسؤول", map: (r) => r.ownerName ?? "—" },
+          { key: "status", header: "الحالة", map: (r) => SALES_LEAD_STATUS_LABELS[r.status] ?? r.status },
+          { key: "nextFollowUpAt", header: "موعد المتابعة", map: (r) => pipelineDate(r.nextFollowUpAt) },
+        ],
+      });
+    }
+  };
+
   return (
     <div className="mx-auto max-w-[1800px] space-y-4 pb-8">
       <PageHeader
-        title="مسار المبيعات"
-        description="متابعة العملاء المحتملين والفرص من أول اتصال حتى فاتورة الفوز، مع مسؤول وموعد وأثر لكل انتقال."
+        title="متابعة الصفقات والطلبات"
+        description="متابعة مسار صفقات وطلبات الزبائن والعملاء المحتملين من أول تواصل حتى إتمام البيع وفاتورة الفوز."
         actions={
           canWrite ? (
             <>
@@ -374,7 +799,7 @@ export default function SalesPipeline() {
               variant={section === "OPPORTUNITIES" ? "default" : "ghost"}
               onClick={() => setSection("OPPORTUNITIES")}
             >
-              الفرص
+              الفرص والطلبات
             </Button>
           </div>
           <UnifiedSearchInput
@@ -438,6 +863,28 @@ export default function SalesPipeline() {
               <List aria-hidden className="size-4" />
             </Button>
           </div>
+          <div className="flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => handleExport("xlsx")}
+              title="تصدير Excel"
+              aria-label="تصدير Excel"
+            >
+              <FileSpreadsheet aria-hidden className="size-3.5" />
+              Excel
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => handleExport("csv")}
+              title="تصدير CSV"
+              aria-label="تصدير CSV"
+            >
+              <Download aria-hidden className="size-3.5" />
+              CSV
+            </Button>
+          </div>
           {filterActive && (
             <Button
               size="sm"
@@ -460,7 +907,7 @@ export default function SalesPipeline() {
       </Card>
       {initialError ? (
         <ErrorState
-          message="تعذّر تحميل مسار المبيعات."
+          message="تعذّر تحميل متابعة الصفقات والطلبات."
           onRetry={() => {
             void dashboardQ.refetch();
             void optionsQ.refetch();
@@ -471,7 +918,7 @@ export default function SalesPipeline() {
       ) : initialLoading ? (
         <LoadingState message={ACTION_LABELS.loading} />
       ) : section === "LEADS" ? (
-        <LeadsBoard
+        <EnhancedLeadsBoard
           rows={leads}
           view={view}
           canWrite={canWrite}
@@ -494,10 +941,12 @@ export default function SalesPipeline() {
             onHistory: (row) =>
               setHistory({ kind: "LEAD", id: row.id, title: row.contactName }),
           }}
+          onOpenDossier={setSelectedDossierCustomerId}
         />
       ) : (
-        <OpportunitiesBoard
+        <EnhancedOpportunitiesBoard
           rows={opportunities}
+          options={options}
           view={view}
           canWrite={canWrite}
           actions={{
@@ -517,6 +966,7 @@ export default function SalesPipeline() {
             onHistory: (row) =>
               setHistory({ kind: "OPPORTUNITY", id: row.id, title: row.title }),
           }}
+          onOpenDossier={setSelectedDossierCustomerId}
         />
       )}
 
@@ -627,6 +1077,12 @@ export default function SalesPipeline() {
           else void opportunityHistoryQ.refetch();
         }}
         events={historyEvents}
+      />
+
+      <CustomerDossierDrawer
+        customerId={selectedDossierCustomerId}
+        open={selectedDossierCustomerId != null}
+        onClose={() => setSelectedDossierCustomerId(null)}
       />
     </div>
   );

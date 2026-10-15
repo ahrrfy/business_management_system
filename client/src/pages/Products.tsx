@@ -1,3 +1,4 @@
+import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 // شاشة إدارة المنتجات — قائمة خادمية كاملة (بحث ذكي + تقسيم صفحات + إظهار المعطّل)
 // على نمط Customers.tsx. تستبدل posList (INNER JOIN يخفي الناقص + حدّ 500) بـadminList
 // التي تعرض كل منتجات المالك (~9413) حتى الناقصة بلا متغيّرات/وحدات.
@@ -99,19 +100,20 @@ function rowKey(r: Row): string {
 const FOCUS_ANCHOR_CLASS = "product-focus-anchor";
 
 export default function Products() {
+  const { can, canViewCost } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   // imports.products = managerProcedure خادمياً — زرّ الاستيراد للمدير/الأدمن فقط (مرآة requireRole).
-  const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
+  const isElevated = canViewCost(me.data?.role === "admin" || me.data?.role === "manager");
   // ٢٤/٨ (Codex P2 على PR #746): بوّابة تحرير المنتج على `products:FULL` صراحةً — مديرٌ
   // بـpermissionsOverride إلى READ لا يجب أن يرى رابطَ التحرير (المسار سيرفض المحاولة بأي حال).
-  const canEditProduct = !!me.data?.role && moduleAccessAllowed(
+  const canEditProduct = can("catalog.updateProductVariants", !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
     "products",
     "FULL",
     ["admin", "manager"],
-  );
+  ));
   // سياسة العزل الحديثة: الأدمن وحده يعبر الفروع؛ المدير مثبت على فرعه كالكاشير.
   const canPickBranch = me.data?.role === "admin";
 
@@ -137,7 +139,7 @@ export default function Products() {
 
   // منتقي فرع صريح (نمط PR #288): افتراضي فرع المستخدم إن مُسنَد؛ وإلا يلزم اختياراً صريحاً
   // (لا `?? 1` صامت) — أثره هنا على عمود «المخزون» المعروض فقط (المنتجات/الأسعار عابرة للفروع).
-  const branchesQ = trpc.branches.list.useQuery();
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: can("branches.list") });
   const pickedBranch = canPickBranch && f.branch !== "" ? Number(f.branch) : null;
   const branchId = pickedBranch ?? (me.data?.branchId != null ? Number(me.data.branchId) : null);
   const setPickedBranch = (v: number | "") => setF({ branch: v === "" ? "" : String(v) });
@@ -149,7 +151,7 @@ export default function Products() {
   // توزيع مخزون البدائل: التفصيل المفتوح في الحوار (يُملأ من إجراء الصفّ).
   const [breakdownProduct, setBreakdownProduct] = useState<AltBreakdown | null>(null);
   const importMut = trpc.imports.products.useMutation();
-  const categoriesQ = trpc.catalog.categories.useQuery();
+  const categoriesQ = trpc.catalog.categories.useQuery(undefined, { enabled: can("catalog.categories") });
   const dq = useDebouncedValue(q, 200);
   const sel = useRowSelection<string>();
   const { copy } = useClipboard({ successMessage: null });
@@ -175,7 +177,7 @@ export default function Products() {
       limit,
       offset: page * limit,
     },
-    { enabled: branchId != null },
+    { enabled: can("catalog.adminList") && (branchId != null) },
   );
   const rows = list.data?.rows ?? [];
   const total = list.data?.total ?? 0;
@@ -196,7 +198,7 @@ export default function Products() {
   );
   const altBreakdownQ = trpc.stocktakes.alternativeStockBreakdown.useQuery(
     { productIds: visibleProductIds, branchId: branchId ?? undefined },
-    { enabled: branchId != null && visibleProductIds.length > 0 },
+    { enabled: can("stocktakes.alternativeStockBreakdown") && (branchId != null && visibleProductIds.length > 0) },
   );
   const altByProduct = useMemo(
     () => new Map((altBreakdownQ.data ?? []).map((p) => [Number(p.productId), p])),
@@ -507,9 +509,9 @@ export default function Products() {
                 { key: "availableBase", header: "المتاح للبيع بوحدة الأساس", map: (r) => Number(r.availableBase ?? 0) },
               ],
             }}
-            onImport={isElevated ? () => setImportOpen(true) : undefined}
+            onImport={can("imports.products", me.data?.role === "admin" || me.data?.role === "manager") ? () => setImportOpen(true) : undefined}
             importLabel="استيراد Excel"
-            add={{ href: "/products/new", label: "إضافة منتج" }}
+            add={can("catalog.createProduct") ? { href: "/products/new", label: "إضافة منتج" } : undefined}
           />
         </CardHeader>
         <CardContent className="p-0">
@@ -719,7 +721,7 @@ export default function Products() {
                           kind: "edit",
                           label: "تعديل",
                           href: `/products/${r.productId}/edit`,
-                          gate: { roles: ["manager"], module: "products", level: "FULL" },
+                          gate: { operations: ["catalog.updateProductVariants"], roles: ["manager"], module: "products", level: "FULL" },
                         },
                         {
                           key: "label",
@@ -735,7 +737,7 @@ export default function Products() {
                                 barcode: r.barcode ?? "",
                               },
                             ]),
-                          gate: { module: "products", level: "READ" },
+                          gate: { operations: ["catalog.adminList"], module: "products", level: "READ" },
                         },
                         {
                           key: "moves",
@@ -744,7 +746,7 @@ export default function Products() {
                           hidden: !r.sku,
                           // شاشة الحركات تقرأ ?q= من URL (نمط CustomerStatement) فتفتح مفلترة على SKU.
                           href: `/inventory-movements?q=${encodeURIComponent(r.sku ?? "")}`,
-                          gate: { module: "inventory", level: "READ" },
+                          gate: { operations: ["inventory.movementsRich"], module: "inventory", level: "READ" },
                         },
                         {
                           key: "altBreakdown",
@@ -753,7 +755,7 @@ export default function Products() {
                           // يظهر فقط للمنتجات التي لها بدائل حقيقية (من خريطة التوزيع).
                           hidden: !altByProduct.has(r.productId),
                           onSelect: () => setBreakdownProduct(altByProduct.get(r.productId) ?? null),
-                          gate: { module: "inventory", level: "READ" },
+                          gate: { operations: ["stocktakes.alternativeStockBreakdown"], module: "inventory", level: "READ" },
                         },
                         {
                           key: "toggle",
@@ -763,7 +765,7 @@ export default function Products() {
                           disabled: setActive.isPending,
                           disabledReason: "توجد عملية تحديث قيد التنفيذ",
                           onSelect: () => void toggle(r.productId, r.productIsActive, r.productName),
-                          gate: { roles: ["manager"], module: "products", level: "FULL" },
+                          gate: { operations: ["catalog.setProductActive"], roles: ["manager"], module: "products", level: "FULL" },
                         },
                         {
                           key: "delete",
@@ -771,7 +773,7 @@ export default function Products() {
                           label: "حذف نهائي",
                           variant: "destructive",
                           onSelect: () => setDeleteFor({ productId: r.productId, name: r.productName }),
-                          gate: { roles: ["manager"], module: "products", level: "FULL" },
+                          gate: { operations: ["catalog.delete"], roles: ["manager"], module: "products", level: "FULL" },
                         },
                       ]}
                     />
@@ -804,7 +806,7 @@ export default function Products() {
         exportLabel="نَسخ TSV"
         printLabel="طِباعة مُلصَقات"
         actions={
-          <Button variant="outline" size="sm" onClick={openMove}>
+          <Button variant="outline" size="sm" onClick={openMove} disabled={!can("catalog.reassignProducts")}>
             نقل إلى فئة
           </Button>
         }
@@ -831,7 +833,7 @@ export default function Products() {
           </div>
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setMoveOpen(false)}>إلغاء</Button>
-            <Button size="sm" onClick={confirmMove} disabled={reassignMut.isPending}>
+            <Button size="sm" onClick={confirmMove} disabled={!can("catalog.reassignProducts") || (reassignMut.isPending)}>
               {reassignMut.isPending ? "جارٍ النقل…" : "نقل"}
             </Button>
           </DialogFooter>
@@ -860,8 +862,9 @@ function DeleteProductDialog({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const { can } = useCatalogPeopleOperationAccess();
   const utils = trpc.useUtils();
-  const usage = trpc.catalog.usage.useQuery({ productId: target?.productId ?? 0 }, { enabled: !!target });
+  const usage = trpc.catalog.usage.useQuery({ productId: target?.productId ?? 0 }, { enabled: can("catalog.usage") && (!!target) });
   const del = trpc.catalog.delete.useMutation({
     onSuccess: () => {
       notify.ok("حُذف المنتج نهائياً");
@@ -888,7 +891,7 @@ function DeleteProductDialog({
           <Button
             variant="destructive"
             size="sm"
-            disabled={usage.isLoading || !usage.data?.clean || del.isPending}
+            disabled={!can("catalog.delete") || (usage.isLoading || !usage.data?.clean || del.isPending)}
             onClick={() => target && del.mutate({ productId: target.productId })}
           >
             {del.isPending ? ACTION_LABELS.deleting : "حذف نهائياً"}

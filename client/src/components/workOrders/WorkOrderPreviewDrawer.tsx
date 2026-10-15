@@ -32,6 +32,7 @@ import { formatQuantity } from "@/lib/money";
 import { fmtAr, fmtInt, D, positiveDiff } from "@/lib/money";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import {
   type WorkOrderStatus,
@@ -61,7 +62,7 @@ import {
 } from "./workOrderTypes";
 
 export function WorkOrderPreviewDrawer({
-  id, onClose, isManager, canRequestControl, canRequestCancel, canDeliver, onAdvance, onCancel, onDeliver, onAssign, onEdit, onOpenCustomer, busy,
+  id, onClose, isManager, canRequestControl, canRequestCancel, canDeliver, onAdvance, onCancel, onDeliver, onAssign, onEdit, onOpenCustomer, onClaim, onRelease, busy,
 }: {
   id: number; onClose: () => void; isManager: boolean; canRequestControl: boolean;
   /** طلبُ الإلغاء أوسعُ من التعديل التجاريّ: يشمل فنّي المطبعة (قرار المالك ١/٩/٢٦). */
@@ -70,10 +71,14 @@ export function WorkOrderPreviewDrawer({
   onDeliver: (d: Detail) => void; onAssign: (id: number, staffId: number | null) => void;
   onEdit: (id: number) => void; busy: boolean;
   onOpenCustomer?: (customerId: number) => void;
+  onClaim?: (id: number) => void;
+  onRelease?: (id: number) => void;
 }) {
+  const me = trpc.auth.me.useQuery();
+  const canAssign = canLifecycleOperation(me.data, "workOrders.assign", isManager);
   const detail = trpc.workOrders.get.useQuery({ workOrderId: id });
   const timeline = trpc.workOrders.timeline.useQuery({ workOrderId: id });
-  const staff = trpc.workOrders.assignableStaff.useQuery(undefined, { enabled: isManager });
+  const staff = trpc.workOrders.assignableStaff.useQuery(undefined, { enabled: canLifecycleOperation(me.data, "workOrders.assignableStaff", isManager) });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -184,7 +189,7 @@ export function WorkOrderPreviewDrawer({
                   {d.laborCost != null && <div><div className="wob-k">كلفة العمالة</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.laborCost)} د.ع</div></div>}
                   <div style={{ gridColumn: "1 / -1" }}>
                     <div className="wob-k">الموظف المسؤول</div>
-                    {isManager ? (
+                    {canAssign ? (
                       /* contentClassName="z-[60]" إلزاميّ هنا لا تجميل: `.wob-drawer` لوحةٌ يدويّة
                          بـ`z-index: 51` (WorkOrders.board.css)، وpopup الـRadix يُبوَّب إلى body
                          بغلافٍ يرث z-index المحتوى — أي **50** — فيُدفَن تحت الدرج. والـ<select>
@@ -330,11 +335,21 @@ export function WorkOrderPreviewDrawer({
                 appearance="solid"
                 className="wob-wa-lg"
               />
-              {next === ("DELIVERED" as ColKey) && d.hasDelivery && canDeliver ? (
+              {d.status === "RECEIVED" && d.assignedTo == null && onClaim && (
+                <button className="wob-btn wob-btn-ghost" disabled={busy} onClick={() => onClaim(d.id)}>
+                  سحب الأمر
+                </button>
+              )}
+              {d.status === "RECEIVED" && d.assignedTo != null && Number(d.assignedTo) === Number(me.data?.id) && onRelease && (
+                <button className="wob-btn wob-btn-ghost" disabled={busy} onClick={() => onRelease(d.id)}>
+                  أعد إلى الطابور
+                </button>
+              )}
+              {next === ("DELIVERED" as ColKey) && d.hasDelivery && canLifecycleOperation(me.data, "delivery.dispatch", canDeliver) ? (
                 <Link href="/delivery" className="wob-btn wob-btn-primary" style={{ flex: 1 }}>
                   <Truck aria-hidden className="size-4 inline-block align-text-bottom me-1" /> إسناد للتوصيل
                 </Link>
-              ) : next ? (next !== "DELIVERED" || canDeliver) && (
+              ) : next ? canLifecycleOperation(me.data, next === "IN_PROGRESS" ? "workOrders.start" : next === "READY" ? "workOrders.markReady" : "workOrders.deliver", next !== "DELIVERED" || canDeliver) && (
                 <button className="wob-btn wob-btn-primary" style={{ flex: 1 }} disabled={busy}
                   onClick={() => (next === ("DELIVERED" as ColKey) ? onDeliver(d) : onAdvance(d.id, next))}>{ADV_LABEL[next]}</button>
               ) : (

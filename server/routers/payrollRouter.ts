@@ -477,12 +477,10 @@ export const payrollRouter = router({
   /** قراءة إعدادات المكوّنات القانونية (ضمان/ضريبة/نهاية خدمة). hr/READ — القيم غير حسّاسة للاطلاع. */
   legalSettings: hrRead.query(() => legal.getPayrollLegalSettings()),
 
-  /** تحديث الإعدادات — محصور بالمدير/الأدمن **و** يلزمه منح وحدة hr=FULL خادمياً (Codex P2):
-   *  managerProcedure وحده يتجاهل منع hr الصريح (permissionsOverride=NONE) فيَعبُر مديرٌ حُجِبت عنه
-   *  وحدة hr ويغيّر النِّسب القانونية عبر tRPC مباشرةً؛ تركيب requireModule("hr","FULL") يُنفِذ الحجب
-   *  الصريح (مثل بقية كتابات hr). كل مكوّن بمفتاح تفعيل مستقلّ. يُدقَّق كامل (logAudit). */
-  updateLegalSettings: managerProcedure
-    .use(requireModule("hr", "FULL"))
+  /** تحديث الإعدادات — محصور بالمالك **و** يلزمه منح وحدة hr=FULL خادمياً:
+   *  إعدادات الرواتب القانونية السيادية (id=1) تشمل الضمان الاجتماعي وضريبة الدخل ومكافأة نهاية الخدمة
+   *  لكل فروع الشركة. تركيب ownerHrWrite يحصر التعديل بالمالك حصراً ويمنع مديري الفروع. يُدقَّق كامل (logAudit). */
+  updateLegalSettings: ownerHrWrite
     .input(
       z.object({
         socialSecurityEnabled: z.boolean(),
@@ -503,6 +501,8 @@ export const payrollRouter = router({
       const { before, after } = await legal.updatePayrollLegalSettings(input, {
         userId: ctx.user.id,
         branchId: ctx.user.branchId ?? 0,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
       });
       await logAudit(ctx, {
         action: "payroll.updateLegalSettings",

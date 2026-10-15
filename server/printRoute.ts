@@ -4,11 +4,15 @@
 //   POST /api/print/raw     { bytesB64 }  → يطبع بايتات ESC/POS مرسَلة base64
 //   POST /api/print/test    → يطبع تذكرة اختبار ASCII من الخادم مباشرة
 import { Router, type Request, type Response } from "express";
-import { getUserFromRequest } from "./auth/session";
-import { normalizeOwnerAuthority, resolveCustomRole, type AuthUser } from "./context";
+import { createContext, normalizeOwnerAuthority, resolveCustomRole, type AuthUser } from "./context";
 import {
-  getConfiguredTarget, describeTarget, isBridgeEnabled, sendToPrinter, buildTestTicket,
+  getConfiguredTarget,
+  describeTarget,
+  isBridgeEnabled,
+  sendToPrinter,
+  buildTestTicket,
 } from "./services/printService";
+import { assertDirectPrintBridgeAuthorized } from "./services/invoicePrintAuthorization";
 import { logAudit } from "./services/auditService";
 import { logger } from "./logger";
 
@@ -28,14 +32,17 @@ const ALLOWED_PRINT_ROLES = new Set([
 ]);
 
 // يسمح بالطباعة لكوادر النظام الفعلية المسجّلين (كاشير، محاسب، أمين مخزن، مسؤول مشتريات، فني، مندوب مبيعات، مدير)
-// بعد حلّ الأدوار المخصّصة وتطبيع المالك، مع حظر المندوب الميداني (courier) والمدقّق (auditor) والدور العامّ/المعطَّل (user).
+// بعد حلّ الأدوار المخصّصة وتطبيع المالك وفحص سياسة العمليات، مع حظر المندوب الميداني (courier) والمدقّق (auditor) والدور العامّ/المعطَّل (user).
 export async function resolveAuthorizedPrintUser(
   req: Request,
   res: Response,
 ): Promise<AuthUser | null> {
-  let rawUser: Awaited<ReturnType<typeof getUserFromRequest>> = null;
+  let rawUser: AuthUser | null = null;
   try {
-    rawUser = await getUserFromRequest(req);
+    const ctx = await createContext({ req, res } as Parameters<
+      typeof createContext
+    >[0]);
+    rawUser = ctx.user;
   } catch {
     rawUser = null;
   }
@@ -44,14 +51,36 @@ export async function resolveAuthorizedPrintUser(
     return null;
   }
 
-  const user = rawUser as AuthUser;
-  const hadCustomRoleId = Boolean(rawUser.customRoleId);
+  const user = rawUser;
+  const hadCustomRoleId = Boolean(user.customRoleId);
   if (user.isOwner) {
     normalizeOwnerAuthority(user);
     return user;
   }
 
   await resolveCustomRole(user);
+
+  try {
+    assertDirectPrintBridgeAuthorized(user);
+  } catch (error) {
+    await logAudit(
+      { user, req },
+      {
+        action: "print.authorization",
+        entityType: "printer",
+        outcome: "FAILURE",
+        newValue: { operation: "invoicePrinting.authorizeBridge" },
+      },
+    );
+    res.status(403).json({
+      ok: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "غير مخوّل بالطباعة المباشرة على طابعة المتجر.",
+    });
+    return null;
+  }
 
   if (
     user.roleLockedByInactiveCustomRole ||
@@ -61,6 +90,15 @@ export async function resolveAuthorizedPrintUser(
     user.role === "user" ||
     !ALLOWED_PRINT_ROLES.has(user.role)
   ) {
+    await logAudit(
+      { user, req },
+      {
+        action: "print.authorization",
+        entityType: "printer",
+        outcome: "FAILURE",
+        newValue: { operation: "invoicePrinting.authorizeBridge" },
+      },
+    );
     res.status(403).json({ ok: false, error: "غير مخوّل بالطباعة المباشرة على طابعة المتجر." });
     return null;
   }
@@ -76,7 +114,11 @@ export function printRouter(): Router {
     const user = await resolveAuthorizedPrintUser(req, res);
     if (!user) return;
     const target = getConfiguredTarget();
-    res.json({ ok: true, enabled: target != null, description: describeTarget(target) });
+    res.json({
+      ok: true,
+      enabled: target != null,
+      description: describeTarget(target),
+    });
   });
 
   // طباعة بايتات ESC/POS خام (base64). العميل يولّد النقطية (raster) فالعربية تُرسَّم على Canvas لديه.
@@ -84,24 +126,35 @@ export function printRouter(): Router {
     const user = await resolveAuthorizedPrintUser(req, res);
     if (!user) return;
     if (!isBridgeEnabled()) {
-      return res.status(501).json({ ok: false, error: "جسر الطباعة غير مفعّل على الخادم (PRINT_TARGET غير مضبوط)." });
+      return res.status(501).json({
+        ok: false,
+        error: "جسر الطباعة غير مفعّل على الخادم (PRINT_TARGET غير مضبوط).",
+      });
     }
     const b64 = (req.body?.bytesB64 ?? "") as string;
     if (typeof b64 !== "string" || b64.length === 0) {
-      return res.status(400).json({ ok: false, error: "حقل bytesB64 مطلوب (base64)." });
+      return res
+        .status(400)
+        .json({ ok: false, error: "حقل bytesB64 مطلوب (base64)." });
     }
     // سقف صريح قبل تشكيل Buffer (طبقة دفاع فوق حدّ ١٠mb على مستوى Express).
     if (b64.length > MAX_PRINT_B64_CHARS) {
-      return res.status(413).json({ ok: false, error: "حجم بيانات الطباعة يتجاوز الحدّ المسموح." });
+      return res
+        .status(413)
+        .json({ ok: false, error: "حجم بيانات الطباعة يتجاوز الحدّ المسموح." });
     }
     let bytes: Buffer;
     try {
       bytes = Buffer.from(b64, "base64");
     } catch {
-      return res.status(400).json({ ok: false, error: "تعذّر فكّ ترميز base64." });
+      return res
+        .status(400)
+        .json({ ok: false, error: "تعذّر فكّ ترميز base64." });
     }
     if (bytes.length === 0) {
-      return res.status(400).json({ ok: false, error: "بيانات الطباعة فارغة." });
+      return res
+        .status(400)
+        .json({ ok: false, error: "بيانات الطباعة فارغة." });
     }
     try {
       const target = await sendToPrinter(bytes);
@@ -114,7 +167,12 @@ export function printRouter(): Router {
           newValue: { bytes: bytes.length },
         },
       );
-      res.json({ ok: true, via: "server", target: target.kind, bytes: bytes.length });
+      res.json({
+        ok: true,
+        via: "server",
+        target: target.kind,
+        bytes: bytes.length,
+      });
     } catch (e) {
       await logAudit(
         { user, req },
@@ -137,7 +195,10 @@ export function printRouter(): Router {
     const user = await resolveAuthorizedPrintUser(req, res);
     if (!user) return;
     if (!isBridgeEnabled()) {
-      return res.status(501).json({ ok: false, error: "جسر الطباعة غير مفعّل على الخادم (PRINT_TARGET غير مضبوط)." });
+      return res.status(501).json({
+        ok: false,
+        error: "جسر الطباعة غير مفعّل على الخادم (PRINT_TARGET غير مضبوط).",
+      });
     }
     try {
       const target = await sendToPrinter(buildTestTicket());

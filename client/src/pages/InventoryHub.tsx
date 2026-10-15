@@ -7,6 +7,7 @@ import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
 import { fmtInt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
+import { canLifecycleOperation } from "@/lib/lifecycleOperationAccess";
 import { AlertTriangle, GraduationCap } from "lucide-react";
 import { Link, useLocation } from "wouter";
 
@@ -57,7 +58,7 @@ function PlanningIndicator() {
   const [loc] = useLocation();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
-  const canSee = role === "admin" || role === "manager" || role === "warehouse";
+  const canSee = canLifecycleOperation(me.data, "inventory.planningSummary", role === "admin" || role === "manager" || role === "warehouse");
   const summary = trpc.inventory.planningSummary.useQuery(undefined, { enabled: canSee });
   if (!canSee || !summary.data) return null;
   const { reorderCount, seasonBelowTargetCount } = summary.data;

@@ -1,3 +1,4 @@
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 /**
  * لوحةُ كشف فجوات الصور — للمدير فقط.
  *
@@ -114,6 +115,13 @@ export function StudioImageDiscoveryPanel({
   onCreateCampaignFromProducts: (productIds: number[]) => void;
   onCreateCampaignFromCategory: (categoryId: number) => void;
 }) {
+  const studioCan = {
+    assignees: useOperationPermission("productStudio.assignees").allowed,
+    bulkAssign: useOperationPermission("productStudio.bulkAssign").allowed,
+    discoverImageGaps: useOperationPermission("productStudio.discoverImageGaps").allowed,
+    imageHealthCounts: useOperationPermission("productStudio.imageHealthCounts").allowed,
+    topGapCategories: useOperationPermission("productStudio.topGapCategories").allowed,
+  };
   const utils = trpc.useUtils();
   const initialFilters = useMemo(() => loadPersistedFilters(), []);
   const [selectedStates, setSelectedStates] = useState<Health[]>(initialFilters.states);
@@ -158,9 +166,9 @@ export function StudioImageDiscoveryPanel({
     setPage(1);
   };
 
-  const counts = trpc.productStudio.imageHealthCounts.useQuery(undefined, { staleTime: 60_000 });
-  const topCategories = trpc.productStudio.topGapCategories.useQuery({ limit: 8 }, { staleTime: 120_000 });
-  const assignees = trpc.productStudio.assignees.useQuery(undefined, { staleTime: 120_000 });
+  const counts = trpc.productStudio.imageHealthCounts.useQuery(undefined, { enabled: studioCan.imageHealthCounts,  staleTime: 60_000 });
+  const topCategories = trpc.productStudio.topGapCategories.useQuery({ limit: 8 }, { enabled: studioCan.topGapCategories,  staleTime: 120_000 });
+  const assignees = trpc.productStudio.assignees.useQuery(undefined, { enabled: studioCan.assignees,  staleTime: 120_000 });
 
   const bulkAssignMutation = trpc.productStudio.bulkAssign.useMutation({
     onSuccess: async (res) => {
@@ -199,7 +207,7 @@ export function StudioImageDiscoveryPanel({
       cursor: (page - 1) * pageSize,
       sort,
     },
-    { staleTime: 30_000, placeholderData: (prev) => prev },
+    { enabled: studioCan.discoverImageGaps,  staleTime: 30_000, placeholderData: (prev) => prev },
   );
 
   const items = gaps.data?.items ?? [];
@@ -469,7 +477,7 @@ export function StudioImageDiscoveryPanel({
                     type="button"
                     size="sm"
                     className="min-h-9"
-                    disabled={!bulkAssigneeId || bulkAssignMutation.isPending}
+                    disabled={!studioCan.bulkAssign || (!bulkAssigneeId || bulkAssignMutation.isPending)}
                     onClick={() => {
                       const ids = Array.from(selectedIds).slice(0, 100);
                       bulkAssignMutation.mutate({

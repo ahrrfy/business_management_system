@@ -3,6 +3,7 @@
 // الأمان: قفل ثنائي على cashTransfers بـ.for("update") + IDOR (الـreceiver في toBranchId).
 
 import { TRPCError } from "@trpc/server";
+import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
 import { and, desc, eq, gte, inArray, like, lte, or, sql } from "drizzle-orm";
 import { branches, cashTransfers, receipts, users } from "../../drizzle/schema";
 import { getDb, type Tx } from "../db";
@@ -44,36 +45,33 @@ async function nextTransferNumber(
 ): Promise<string> {
   const ymd = toDateStr().replace(/-/g, "");
   const prefix = `CT-${fromBranchId}-${ymd}-`;
-  const lockName = `cash_transfer:${fromBranchId}:${ymd}`;
-  const lockRes: any = await tx.execute(
-    sql`SELECT GET_LOCK(${lockName}, 5) AS locked`,
-  );
-  const lockedRow = Array.isArray(lockRes)
-    ? lockRes[0]?.[0]
-    : lockRes?.rows?.[0];
-  if (!lockedRow || Number(lockedRow.locked) !== 1) {
-    throw new Error(`transfer numbering lock timeout for ${lockName}`);
-  }
-  try {
-    // لا تعتمد على آخر id: قد تحتوي البيانات التاريخية على مرجع حر يبدأ
-    // بالبادئة نفسها ولا ينتهي برقم. parseInt عندها يعطي NaN ويعطّل كل
-    // التحويلات اللاحقة لذلك اليوم. نأخذ أعلى لاحقة رقمية صالحة فقط.
-    const rows = await tx
-      .select({ n: cashTransfers.transferNumber })
-      .from(cashTransfers)
-      .where(like(cashTransfers.transferNumber, `${prefix}%`));
-    let maxSeq = 0;
-    for (const row of rows) {
-      const suffix = String(row.n ?? "").slice(prefix.length);
-      if (/^\d+$/.test(suffix)) {
-        const seq = Number(suffix);
-        if (Number.isSafeInteger(seq) && seq > maxSeq) maxSeq = seq;
-      }
+  const counterKey = `cash_transfer:${fromBranchId}:${ymd}`;
+
+  // لا تعتمد على آخر id: قد تحتوي البيانات التاريخية على مرجع حر يبدأ
+  // بالبادئة نفسها ولا ينتهي برقم. parseInt عندها يعطي NaN ويعطّل كل
+  // التحويلات اللاحقة لذلك اليوم. نأخذ أعلى لاحقة رقمية صالحة فقط كأرضية للعدّاد.
+  const rows = await tx
+    .select({ n: cashTransfers.transferNumber })
+    .from(cashTransfers)
+    .where(like(cashTransfers.transferNumber, `${prefix}%`));
+  let maxSeq = 0;
+  for (const row of rows) {
+    const suffix = String(row.n ?? "").slice(prefix.length);
+    if (/^\d+$/.test(suffix)) {
+      const seq = Number(suffix);
+      if (Number.isSafeInteger(seq) && seq > maxSeq) maxSeq = seq;
     }
-    return prefix + String(maxSeq + 1).padStart(5, "0");
-  } finally {
-    await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
   }
+
+  await tx.execute(sql`
+    INSERT INTO documentCounters (counterKey, lastValue)
+    VALUES (${counterKey}, LAST_INSERT_ID(${maxSeq + 1}))
+    ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(GREATEST(lastValue + 1, ${maxSeq + 1}))
+  `);
+  const res: any = await tx.execute(sql`SELECT LAST_INSERT_ID() AS v`);
+  const row = Array.isArray(res) ? res[0]?.[0] : res?.rows?.[0];
+  const seq = Number(row?.v ?? 1);
+  return prefix + String(seq).padStart(5, "0");
 }
 
 /** يَحسب رصيد TREASURY الحالي لفرع معيّن. تَكلفة استعلام واحد. */
@@ -90,6 +88,7 @@ export async function sendTransfer(
   actor: Actor,
 ): Promise<SendTransferResult> {
   return withTx(async (tx) => {
+    const canonicalAuthorized = await assertOperationAuthorityTx(tx, actor, "cashTransfers.send", actor.role === "admin" || actor.role === "manager");
     // 1. Idempotency — مع فحص بصمة الكيان (تدقيق ٢٣/٦/٢٦):
     //    البصمة كانت قاصرة على clientRequestId ⇒ مدير يُعيد استعمال المفتاح لتحويل جديد فيتلقّى
     //    تأكيد التحويل القديم بينما الجديد لم يُنفَّذ ⇒ مال لا يصل لوجهته مع رسالة «نُقل بنجاح».
@@ -169,7 +168,7 @@ export async function sendTransfer(
 
     // 3. الصلاحية: admin/manager فقط + admin له صلاحية cross-branch.
     if (actor.role !== "admin") {
-      if (actor.role !== "manager") {
+      if (actor.role !== "manager" && !canonicalAuthorized) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "إرسال التحويل النقدي للمدير فأعلى",
@@ -269,6 +268,7 @@ export async function receiveTransfer(
   actor: Actor,
 ): Promise<{ transferId: number; receivedReceiptId: number }> {
   return withTx(async (tx) => {
+    const canonicalAuthorized = await assertOperationAuthorityTx(tx, actor, "cashTransfers.receive", actor.role === "admin" || actor.role === "manager");
     // 1. قفل الصف ضدّ سباق استلامين متزامنَين.
     const rows = await tx
       .select()
@@ -288,7 +288,7 @@ export async function receiveTransfer(
 
     // 2. الصلاحية + IDOR.
     if (actor.role !== "admin") {
-      if (actor.role !== "manager") {
+      if (actor.role !== "manager" && !canonicalAuthorized) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "الاستلام للمدير فأعلى",
@@ -394,6 +394,8 @@ export async function cancelTransfer(
   actor: Actor,
 ): Promise<{ transferId: number; reversalReceiptId: number }> {
   return withTx(async (tx) => {
+    // Sender/source-branch rules below remain required in legacy mode.
+    const canonicalAuthorized = await assertOperationAuthorityTx(tx, actor, "cashTransfers.cancel", true);
     const rows = await tx
       .select()
       .from(cashTransfers)
@@ -420,7 +422,7 @@ export async function cancelTransfer(
     // الصلاحية: المُرسِل نفسه أو admin، أو manager في فرع الإرسال.
     if (actor.role !== "admin") {
       const isManagerOfSource =
-        actor.role === "manager" &&
+        (actor.role === "manager" || canonicalAuthorized) &&
         Number(actor.branchId) === Number(t.fromBranchId);
       const isSender = actor.userId === Number(t.sentBy);
       if (!isManagerOfSource && !isSender) {

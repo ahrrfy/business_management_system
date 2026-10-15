@@ -12,6 +12,7 @@ import {
 } from "./scripts/vite-build-contract.mjs";
 import {
   STOREFRONT_SHELL_CHUNK_GLOB,
+  storefrontApiNetworkMatcher,
   storefrontPrivateImageNetworkMatcher,
   storefrontPublicImageCacheMatcher,
 } from "./scripts/storefront-pwa-contract.mjs";
@@ -132,7 +133,7 @@ export default defineConfig(({ mode }) => {
           },
           {
             // كل API آخر، بما فيه أي مسار صورة خاص جديد، شبكة فقط افتراضياً.
-            urlPattern: ({ url }) => url.pathname.startsWith("/api"),
+            urlPattern: storefrontApiNetworkMatcher,
             handler: "NetworkOnly",
             options: { cacheName: "api-no-cache" },
           },
@@ -219,6 +220,17 @@ export default defineConfig(({ mode }) => {
         // (مثل مكتبة ماسح الباركود) لمجرد تشابه الاسم.
         entryFileNames: "assets/app-[hash].js",
         manualChunks(id) {
+          // Legacy permission dictionaries remain needed for untouched roles, but do not
+          // belong in the account-sharing or application entry chunks.
+          if (id.includes("/shared/atomicPermissionExtensions.ts")) return "permission-extensions";
+          if (id.includes("/shared/atomicPermissions.ts")) return "legacy-permissions";
+          // The ERP shell is reused by every operational page; isolate its common
+          // dependencies instead of accumulating them in the SPA entry.
+          if (id.includes("/client/src/components/AppLayout.tsx")) return "app-shell";
+          if (id.includes("/shared/operationPermissionCatalog.part1.generated")) return "operation-catalog-1";
+          if (id.includes("/shared/operationPermissionCatalog.part2.generated")) return "operation-catalog-2";
+          if (id.includes("/node_modules/@casl/") || id.includes("/node_modules/sift/")) return "authorization-vendor";
+          if (id.includes("/node_modules/zod/")) return "validation-vendor";
           // كل أيقونات lucide في حُزمة واحدة بدل ~٨٠ ملفاً صغيراً. كان كل أيقونة حُزمةً
           // منفصلة ⇒ كل صفحة تطلب عشرات ملفات الأصول دفعةً واحدة، فتُشبع خادم الأصول
           // (Express + compression على threadpool ٤ خيوط) وتتعلّق الطلبات على «جار التحميل».

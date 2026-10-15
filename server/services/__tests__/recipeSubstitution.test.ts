@@ -8,9 +8,9 @@ import { createProduction, runPreview } from "../productionService";
 import { createRecipe, substituteRecipeMaterial } from "../recipeService";
 import { materialSubstitutionItemSchema } from "../../../shared/recipeSubstitutionTypes";
 
-const adminActor = { userId: 1, branchId: 1, role: "ADMIN" };
-const managerActor = { userId: 2, branchId: 1, role: "MANAGER" };
-const workerActor = { userId: 3, branchId: 1, role: "WORKER" };
+const adminActor = { userId: 1, branchId: 1, role: "admin" };
+const managerActor = { userId: 2, branchId: 1, role: "manager" };
+const workerActor = { userId: 3, branchId: 1, role: "cashier" };
 
 function makeCtx(user: any) {
   return {
@@ -277,6 +277,27 @@ describe("الاستبدال المؤقت (Ad-hoc) في معاينة وترحي�
 });
 
 describe("الاستبدال الدائم للوصفة substituteRecipeMaterial والحوكمة والذرية ومزامنة البكجات", () => {
+  it("يفوض استبدال الوصفة للموظف بدقة ويسحب التفويض قبل التغيير التالي", async () => {
+    const recipeId = await createTestRecipe();
+    await db().update(s.users).set({ operationPolicy: { version: 1, grants: {
+      "operation.production.recipes.substituteMaterial": true,
+    } } }).where(eq(s.users.id, workerActor.userId));
+    const result = await substituteRecipeMaterial({ recipeId, originalVariantId: 1,
+      substituteVariantId: 2, qtyPerOutputBase: "48.0000", reason: "استبدال مفوض للعمل" }, workerActor);
+    expect(result.success).toBe(true);
+    const lines = await db().select().from(s.productionRecipeLines).where(eq(s.productionRecipeLines.recipeId, recipeId));
+    expect(lines.some((line) => line.inputVariantId === 2)).toBe(true);
+    expect(lines.some((line) => line.inputVariantId === 1)).toBe(false);
+    await db().update(s.users).set({ operationPolicy: { version: 1, grants: {
+      "operation.production.recipes.substituteMaterial": false,
+    } } }).where(eq(s.users.id, workerActor.userId));
+    await expect(substituteRecipeMaterial({ recipeId, originalVariantId: 2,
+      substituteVariantId: 1, qtyPerOutputBase: "50.0000", reason: "طلب بعد سحب التفويض" }, workerActor))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    const unchanged = await db().select().from(s.productionRecipeLines).where(eq(s.productionRecipeLines.recipeId, recipeId));
+    expect(unchanged.some((line) => line.inputVariantId === 2)).toBe(true);
+    expect(unchanged.some((line) => line.inputVariantId === 1)).toBe(false);
+  });
   it("يرفض الاستبدال الدائم لغير المديرين (دور WORKER)", async () => {
     const recipeId = await createTestRecipe();
 
@@ -291,7 +312,7 @@ describe("الاستبدال الدائم للوصفة substituteRecipeMaterial 
         },
         workerActor,
       ),
-    ).rejects.toThrow(/غير مصرح باعتماد تعديل الوصفة الدائم/);
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("ينفذ الاستبدال الدائم بنجاح لدور MANAGER مع 2PL وتحديث السطور والملاحظات", async () => {
