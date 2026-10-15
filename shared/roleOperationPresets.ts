@@ -39,7 +39,12 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
     "invoicePrinting.requestPrint", "invoicePrinting.requestReprint", "shifts.close",
   ],
   reception_clerk: [
-    "shifts.current", "shifts.open", "workOrders.assignableStaff", "workOrders.assign",
+    "shifts.current", "shifts.open", "workOrders.list", "workOrders.counts",
+    "workOrders.get", "workOrders.getByNumber", "workOrders.assignableStaff", "workOrders.assign",
+    "workOrders.receptionCheckout", "workOrders.create", "workOrders.claim", "workOrders.release",
+    "workOrders.start", "workOrders.markReady", "workOrders.setKanbanState", "workOrders.deliver",
+    "workOrders.autoClearReady", "workOrders.setDeliveryMethod", "workOrders.setDesign",
+    "workOrders.setMaterials", "workOrders.timeline", "workOrders.eventTimeline",
     "reception.draftList", "reception.draftGet", "reception.draftSync", "reception.draftCommit",
     "reception.collectDeposit", "reception.collectOnInvoice", "reception.refundDeposit",
     "delivery.listParties", "delivery.dispatch", "delivery.dispatchInvoice",
@@ -65,8 +70,12 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
     "stocktakes.countSheets", "stocktakes.firstSign",
   ],
   print_operator: [
-    "workOrders.list", "workOrders.get", "workOrders.start", "workOrders.setMaterials",
-    "workOrders.markReady",
+    "workOrders.list", "workOrders.counts", "workOrders.get", "workOrders.getByNumber",
+    "workOrders.claim", "workOrders.release", "workOrders.start", "workOrders.setMaterials",
+    "workOrders.setKanbanState", "workOrders.markReady", "workOrders.timeline",
+    "workOrders.eventTimeline", "workOrders.controlPreflight", "workOrders.requestControl",
+    "workOrders.cancel", "workOrders.refundPreflight", "workOrders.cancellationRefundStatus",
+    "workOrderDesignApproval.getCurrent", "workOrderDesignApproval.request",
   ],
   courier: [
     "delivery.consignments", "delivery.staffHandover", "delivery.staffConfirm",

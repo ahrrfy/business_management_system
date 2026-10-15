@@ -62,7 +62,7 @@ import {
 } from "./workOrderTypes";
 
 export function WorkOrderPreviewDrawer({
-  id, onClose, isManager, canRequestControl, canRequestCancel, canDeliver, onAdvance, onCancel, onDeliver, onAssign, onEdit, onOpenCustomer, busy,
+  id, onClose, isManager, canRequestControl, canRequestCancel, canDeliver, onAdvance, onCancel, onDeliver, onAssign, onEdit, onOpenCustomer, onClaim, onRelease, busy,
 }: {
   id: number; onClose: () => void; isManager: boolean; canRequestControl: boolean;
   /** طلبُ الإلغاء أوسعُ من التعديل التجاريّ: يشمل فنّي المطبعة (قرار المالك ١/٩/٢٦). */
@@ -71,6 +71,8 @@ export function WorkOrderPreviewDrawer({
   onDeliver: (d: Detail) => void; onAssign: (id: number, staffId: number | null) => void;
   onEdit: (id: number) => void; busy: boolean;
   onOpenCustomer?: (customerId: number) => void;
+  onClaim?: (id: number) => void;
+  onRelease?: (id: number) => void;
 }) {
   const me = trpc.auth.me.useQuery();
   const canAssign = canLifecycleOperation(me.data, "workOrders.assign", isManager);
@@ -333,6 +335,16 @@ export function WorkOrderPreviewDrawer({
                 appearance="solid"
                 className="wob-wa-lg"
               />
+              {d.status === "RECEIVED" && d.assignedTo == null && onClaim && (
+                <button className="wob-btn wob-btn-ghost" disabled={busy} onClick={() => onClaim(d.id)}>
+                  سحب الأمر
+                </button>
+              )}
+              {d.status === "RECEIVED" && d.assignedTo != null && onRelease && (
+                <button className="wob-btn wob-btn-ghost" disabled={busy} onClick={() => onRelease(d.id)}>
+                  أعد إلى الطابور
+                </button>
+              )}
               {next === ("DELIVERED" as ColKey) && d.hasDelivery && canLifecycleOperation(me.data, "delivery.dispatch", canDeliver) ? (
                 <Link href="/delivery" className="wob-btn wob-btn-primary" style={{ flex: 1 }}>
                   <Truck aria-hidden className="size-4 inline-block align-text-bottom me-1" /> إسناد للتوصيل

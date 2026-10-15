@@ -33,6 +33,7 @@ import { assertTelecomCollectAllowed } from "../reception/telecom";
 import { type Actor, withTx } from "../tx";
 import { nextWorkOrderNumber } from "./helpers";
 import { loadOperationUserTx } from "../authorization/operationAuthority";
+import { hasModuleAccess } from "@shared/permissions";
 import { workOrderAssigneeAllowed } from "../authorization/operationRecipientEligibility";
 import type { CreateWorkOrderInput } from "./types";
 import type { Tx } from "../../db";
@@ -277,7 +278,7 @@ export async function createWorkOrderInTx(
     if (
       !assignee ||
       !assignee.isActive ||
-      !workOrderAssigneeAllowed(assigneeProfile, assignee.role === "print_operator", Number(input.branchId)) ||
+      !workOrderAssigneeAllowed(assigneeProfile, assigneeProfile.role === "print_operator" && hasModuleAccess(assigneeProfile.role, (assigneeProfile.permissionsOverride as never) ?? null, "workorders", "FULL"), Number(input.branchId)) ||
       (assigneeProfile.branchId != null &&
         Number(assigneeProfile.branchId) !== Number(input.branchId))
     ) {

@@ -30,6 +30,16 @@ export function workOrderDetailOperationAccess(
   // مرايا بوابات الخادم نفسها: التنفيذ = كاشير/مدير/فني، والمال/التعديل = كاشير/مدير.
   const legacyExec = hasWorkOrderExecAuthority(role, permissions);
   const legacyCommercial = hasWorkOrderCommercialAuthority(role, permissions);
+  const canClaimWorkOrder = canLifecycleOperation(
+    user,
+    "workOrders.claim",
+    legacyExec,
+  );
+  const canReleaseWorkOrder = canLifecycleOperation(
+    user,
+    "workOrders.release",
+    legacyExec,
+  );
   const canStartWorkOrder = canLifecycleOperation(
     user,
     "workOrders.start",
@@ -111,6 +121,8 @@ export function workOrderDetailOperationAccess(
     showCost,
     role,
     permissions,
+    canClaimWorkOrder,
+    canReleaseWorkOrder,
     canStartWorkOrder,
     canMarkReady,
     canDeliverWorkOrder,

@@ -546,8 +546,8 @@ export async function reassignWorkOrder(
         });
       if (
         !workOrderAssigneeAllowed(assigneeProfile!, hasModuleAccess(
-          u.role,
-          (u.permissionsOverride as never) ?? null,
+          assigneeProfile!.role,
+          (assigneeProfile!.permissionsOverride as never) ?? null,
           "workorders",
           "FULL",
         ), Number(wo.branchId))

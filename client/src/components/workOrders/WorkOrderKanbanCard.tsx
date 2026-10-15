@@ -45,6 +45,9 @@ export function WorkOrderKanbanCard({
   onQuickDeliver,
   onQuickDispatch,
   quickActionPending,
+  onClaim,
+  onRelease,
+  claimPending,
 }: {
   o: WO;
   onPointerDown?: (e: React.PointerEvent) => void;
@@ -64,6 +67,9 @@ export function WorkOrderKanbanCard({
   /** تصريف سريع: إسناد وإرسال للتوصيل */
   onQuickDispatch?: (o: WO) => void;
   quickActionPending?: boolean;
+  onClaim?: (orderId: number) => void;
+  onRelease?: (orderId: number) => void;
+  claimPending?: boolean;
 }) {
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -156,6 +162,18 @@ export function WorkOrderKanbanCard({
                 gate: { module: "workorders", level: "READ" },
               }}
               actions={[
+                ...(o.status === "RECEIVED" && o.assignedTo == null && onClaim ? [{
+                  key: "claim",
+                  kind: "approve" as const,
+                  label: "سحب الأمر",
+                  onSelect: () => onClaim(o.id),
+                }] : []),
+                ...(o.status === "RECEIVED" && o.assignedTo != null && onRelease ? [{
+                  key: "release",
+                  kind: "edit" as const,
+                  label: "أعد إلى الطابور",
+                  onSelect: () => onRelease(o.id),
+                }] : []),
                 ...(o.customerId && onOpenCustomer ? [{
                   key: "customer-360",
                   kind: "view" as const,
@@ -364,6 +382,19 @@ export function WorkOrderKanbanCard({
             title="إسناد الأمر للفنّي المُختار"
           >
             <ChevronRight aria-hidden className="size-3.5" /> إسناد
+          </button>
+        </div>
+      )}
+      {!inboxAssign && onClaim && !ghost && o.status === "RECEIVED" && o.assignedTo == null && (
+        <div className="wob-inbox-assign" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+          <button
+            type="button"
+            className="wob-btn wob-btn-primary wob-inbox-btn w-full justify-center"
+            disabled={claimPending}
+            onClick={() => onClaim(o.id)}
+            title="سحب الأمر إلى قائمتك"
+          >
+            <ChevronRight aria-hidden className="size-3.5" /> سحب الأمر
           </button>
         </div>
       )}

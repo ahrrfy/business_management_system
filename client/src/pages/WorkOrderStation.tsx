@@ -186,6 +186,7 @@ function OrderRow({ o, active, onClick, mine }: { o: WO; active: boolean; onClic
 
 function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; onChanged: () => void; canOperateWorkOrders: boolean }) {
   const me = trpc.auth.me.useQuery();
+  const canClaim = canLifecycleOperation(me.data, "workOrders.claim", canOperateWorkOrders);
   const canStart = canLifecycleOperation(me.data, "workOrders.start", canOperateWorkOrders);
   const canMarkReady = canLifecycleOperation(me.data, "workOrders.markReady", canOperateWorkOrders);
   const canRelease = canLifecycleOperation(me.data, "workOrders.release", canOperateWorkOrders);
@@ -204,6 +205,10 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
     utils.delivery.readyForDispatch.invalidate(),
   ]).then(onChanged);
 
+  const claim = trpc.workOrders.claim.useMutation({
+    onSuccess: () => { notify.ok("تم سحب الأمر", "أضيف إلى قائمة «أوامري» — يمكنك البدء بتنفيذه الآن."); invalidate(); },
+    onError: (e) => notify.err(e),
+  });
   const start = trpc.workOrders.start.useMutation({
     onSuccess: () => { notify.warn("بدأ التنفيذ", "خُصمت المواد المطلوبة من المخزون."); invalidate(); },
     onError: (e) => notify.err(e),
@@ -230,7 +235,7 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
     },
     onError: (e) => notify.err(e),
   });
-  const busy = start.isPending || markReady.isPending;
+  const busy = claim.isPending || start.isPending || markReady.isPending;
 
   const d = detail.data ?? null;
 
@@ -577,8 +582,13 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
           </div>
 
           {/* زر الإجراء المتدرّج */}
-          {(canStart || canRelease) && d.status === "RECEIVED" && (
+          {(canClaim || canStart || canRelease) && d.status === "RECEIVED" && (
             <div className="space-y-2">
+              {canClaim && d.assignedTo == null && (
+                <Button variant="secondary" className="w-full h-11 text-base" disabled={busy} onClick={() => claim.mutate({ workOrderId: Number(d.id) })}>
+                  سحب الأمر إلى قائمتي
+                </Button>
+              )}
               {canStart && <Button className="w-full h-12 text-base" disabled={busy} onClick={doStart}>
                 <ChevronRight aria-hidden className="size-4 me-1" /> "بدء التنفيذ (خصم المواد)"
               </Button>}

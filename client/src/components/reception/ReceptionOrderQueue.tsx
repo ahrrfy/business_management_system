@@ -81,13 +81,13 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
 
   // تم استبدال الـpolling ببث الأحداث اللحظية عبر SSE (الموجة 2).
   const active = trpc.workOrders.list.useQuery(
-    { branchId, statuses: ["RECEIVED", "IN_PROGRESS", "READY"], limit: 200 },
+    { branchId, branchQueue: true, statuses: ["RECEIVED", "IN_PROGRESS", "READY"], limit: 200 },
     { refetchOnWindowFocus: true },
   );
   // مُتَسلَّم اليوم بصرف النظر عن تاريخ إنشاء الأمر (قد يكون أمس) — deliveredFrom/deliveredTo
   // يفلتران على workOrders.deliveredAt، لا from/to (تاريخ الإنشاء، يُخفي أوامر أُنشئت أمس وسُلِّمت اليوم).
   const deliveredToday = trpc.workOrders.list.useQuery(
-    { branchId, statuses: ["DELIVERED"], deliveredFrom: todayStr, deliveredTo: todayStr, limit: 100 },
+    { branchId, branchQueue: true, statuses: ["DELIVERED"], deliveredFrom: todayStr, deliveredTo: todayStr, limit: 100 },
     { refetchOnWindowFocus: true },
   );
   const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: canDispatch && canReadParties });

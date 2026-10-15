@@ -48,6 +48,8 @@ export function WorkOrdersTable({
   onEdit,
   onAdvance,
   onCancel,
+  onClaim,
+  onRelease,
   operation: customOperation,
 }: {
   rows: WO[];
@@ -59,6 +61,8 @@ export function WorkOrdersTable({
   onEdit: (id: number) => void;
   onAdvance: (order: WO, to: Status) => void;
   onCancel: (order: Pick<WO, "id" | "title" | "orderNumber">) => void;
+  onClaim?: (id: number) => void;
+  onRelease?: (id: number) => void;
   operation?: any;
 }) {
   const me = trpc.auth.me.useQuery();
@@ -220,6 +224,12 @@ export function WorkOrdersTable({
           { key: "print-thermal", kind: "print", label: "طباعة حرارية (80مم)", onSelect: () => printWoThermalFromCard(o) },
           { key: "print-label", kind: "print", label: "ملصق شحن", onSelect: () => printWoShippingLabel(o) },
         ];
+        if (o.status === "RECEIVED" && o.assignedTo == null && onClaim) {
+          actions.push({ key: "claim", kind: "approve", label: "سحب الأمر", onSelect: () => onClaim(o.id) });
+        }
+        if (o.status === "RECEIVED" && o.assignedTo != null && onRelease) {
+          actions.push({ key: "release", kind: "edit", label: "أعد إلى الطابور", onSelect: () => onRelease(o.id) });
+        }
         if (next === ("DELIVERED" as ColKey) && o.hasDelivery && canLifecycleOperation(me.data, "delivery.dispatch", canDeliver)) {
           actions.push({ key: "dispatch", kind: "approve", label: "إسناد للتوصيل", icon: Truck, href: "/delivery" });
         } else if (next && canLifecycleOperation(me.data, next === "IN_PROGRESS" ? "workOrders.start" : next === "READY" ? "workOrders.markReady" : "workOrders.deliver", next !== "DELIVERED" || canDeliver)) {
@@ -244,7 +254,7 @@ export function WorkOrdersTable({
         );
       },
     },
-  ], [me.data, isManager, canRequestControl, canRequestCancel, canDeliver, onOpen, onEdit, onAdvance, onCancel]);
+  ], [me.data, isManager, canRequestControl, canRequestCancel, canDeliver, onOpen, onEdit, onAdvance, onCancel, onClaim, onRelease]);
 
   const defaultOperation = useMemo(() => ({
     getOperation: (order: WO) => ({
