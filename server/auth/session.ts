@@ -30,7 +30,7 @@ const NATIVE_PROOF_REPLAY_TTL_MS = 2 * 60 * 1000;
 const NATIVE_PROOF_DB_PRUNE_INTERVAL_MS = 30 * 1000;
 const consumedNativeProofNonces = new Map<string, number>();
 const lastNativeProofCounterByToken = new Map<string, number>();
-let lastNativeProofDbPruneMs = 0;
+const lastNativeProofDbPruneByDb = new WeakMap<object, number>();
 
 async function consumeNativeProofReplayToken(
   db: ReturnType<typeof getDb>,
@@ -70,11 +70,13 @@ async function consumeNativeProofReplayToken(
   }
   if (db && typeof (db as { insert?: unknown }).insert === "function") {
     try {
+      const dbKey = db as object;
+      const lastPruneMs = lastNativeProofDbPruneByDb.get(dbKey) ?? 0;
       if (
         typeof (db as { delete?: unknown }).delete === "function" &&
-        nowMs - lastNativeProofDbPruneMs >= NATIVE_PROOF_DB_PRUNE_INTERVAL_MS
+        nowMs - lastPruneMs >= NATIVE_PROOF_DB_PRUNE_INTERVAL_MS
       ) {
-        lastNativeProofDbPruneMs = nowMs;
+        lastNativeProofDbPruneByDb.set(dbKey, nowMs);
         const cutoff = new Date(nowMs - NATIVE_PROOF_REPLAY_TTL_MS);
         await db
           .delete(idempotencyKeys)

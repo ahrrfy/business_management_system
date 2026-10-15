@@ -65,6 +65,19 @@ export async function resetSessionForLogin(
   }
 }
 
+function isMissingIndexedDbError(err: unknown): boolean {
+  const candidate = err as {
+    name?: string;
+    message?: string;
+    inner?: { name?: string; message?: string } | null;
+  } | null;
+  return (
+    candidate?.name === "MissingAPIError" ||
+    candidate?.inner?.name === "MissingAPIError" ||
+    Boolean(candidate?.message?.includes("MissingAPIError"))
+  );
+}
+
 /** تسجيل الخروج الصريح حد أمنيّ يمحو كل المسودات والهوية المحلية ويوقف الصوت. */
 export async function resetSessionForLogout(
   queryClient: QueryClient,
@@ -76,25 +89,42 @@ export async function resetSessionForLogout(
   purgeRecipeClipboard();
   await resetSessionQueryCache(queryClient);
   await Promise.resolve().then(() => dependencies.purgeReceptionSnapshots()).catch(() => undefined);
-  await dependencies.purgeStudioDrafts().catch(() => undefined);
   try {
-    const preservedDeviceMeta = await Promise.all([
-      offlineDb.meta.get("offlineSaleEnabled").catch(() => undefined),
-      offlineDb.meta.get("storagePersisted").catch(() => undefined),
-    ]);
-    await Promise.allSettled([
-      offlineDb.profile.clear(),
-      offlineDb.catalog.clear(),
-      offlineDb.meta.clear(),
-      offlineDb.customers.clear(),
-      offlineDb.stock.clear(),
-    ]);
-    for (const row of preservedDeviceMeta) {
-      if (row && typeof row.key === "string" && typeof row.value === "string") {
-        await offlineDb.meta.put(row).catch(() => undefined);
-      }
+    await dependencies.purgeStudioDrafts();
+  } catch (err) {
+    if (!isMissingIndexedDbError(err)) {
+      await dependencies.purgeStudioDrafts();
     }
-  } catch {
-    // Ignore when IndexedDB is unavailable (e.g. non-browser test runners).
+  }
+  const preservedDeviceMeta = await Promise.all([
+    offlineDb.meta.get("offlineSaleEnabled").catch(() => undefined),
+    offlineDb.meta.get("storagePersisted").catch(() => undefined),
+  ]);
+  const clearTasks: Array<() => Promise<unknown>> = [
+    () => offlineDb.profile.clear(),
+    () => offlineDb.catalog.clear(),
+    () => offlineDb.meta.clear(),
+    () => offlineDb.customers.clear(),
+    () => offlineDb.stock.clear(),
+  ];
+  const firstPass = await Promise.allSettled(clearTasks.map((fn) => fn()));
+  const failedTasks = clearTasks.filter((_, idx) => {
+    const res = firstPass[idx];
+    return res.status === "rejected" && !isMissingIndexedDbError(res.reason);
+  });
+  if (failedTasks.length > 0) {
+    const retryPass = await Promise.allSettled(failedTasks.map((fn) => fn()));
+    const firstRetryFailure = retryPass.find(
+      (res): res is PromiseRejectedResult =>
+        res.status === "rejected" && !isMissingIndexedDbError(res.reason),
+    );
+    if (firstRetryFailure) {
+      throw firstRetryFailure.reason;
+    }
+  }
+  for (const row of preservedDeviceMeta) {
+    if (row && typeof row.key === "string" && typeof row.value === "string") {
+      await offlineDb.meta.put(row).catch(() => undefined);
+    }
   }
 }
