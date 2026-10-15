@@ -45,12 +45,34 @@ export async function getOrCreateAesKey(): Promise<CryptoKey | null> {
 
 export interface EncryptedEnvelope {
   enc: true;
+  v?: 1;
   iv: Uint8Array;
   data: Uint8Array;
 }
 
 export function isEncryptedEnvelope(v: unknown): v is EncryptedEnvelope {
   return typeof v === "object" && v !== null && (v as { enc?: unknown }).enc === true;
+}
+
+/**
+ * تحقّق من مغلّف التوافق الرجعي السابق للترقية (كتبَته النُسخ الأقدم عند غياب مفتاح الجهاز بـ`iv` بطول صفر ودون `v: 1`).
+ * أيّ مغلّف حديث (`v === 1` أو `iv.byteLength > 0`) يخضع لإلزام `iv` ذي ١٢ بايت ومصادقة AES-GCM الكاملة بلا أي سقوط لنصّ صريح.
+ */
+export function isLegacyZeroIvEnvelope(envelope: EncryptedEnvelope): boolean {
+  return (
+    envelope.enc === true &&
+    envelope.v === undefined &&
+    envelope.iv instanceof Uint8Array &&
+    envelope.iv.byteLength === 0 &&
+    envelope.data instanceof Uint8Array
+  );
+}
+
+export function decodeLegacyZeroIvEnvelope<T>(envelope: EncryptedEnvelope): T {
+  if (!isLegacyZeroIvEnvelope(envelope)) {
+    throw new Error("ليس مغلّف توافقٍ رجعيّ صالحاً");
+  }
+  return JSON.parse(new TextDecoder().decode(envelope.data)) as T;
 }
 
 export async function encryptJson(value: unknown): Promise<EncryptedEnvelope> {
@@ -65,6 +87,9 @@ export async function encryptJson(value: unknown): Promise<EncryptedEnvelope> {
 }
 
 export async function decryptJson<T>(envelope: EncryptedEnvelope): Promise<T> {
+  if (isLegacyZeroIvEnvelope(envelope)) {
+    return decodeLegacyZeroIvEnvelope<T>(envelope);
+  }
   if (!isWebCryptoAvailable()) {
     throw new Error("WebCrypto غير متاح لفك تشفير البيانات المحلية");
   }
@@ -87,7 +112,7 @@ export async function encryptJsonWithKey(value: unknown, key: CryptoKey): Promis
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const plaintext = new TextEncoder().encode(JSON.stringify(value));
   const data = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext));
-  return { enc: true, iv, data };
+  return { enc: true, v: 1, iv, data };
 }
 
 export async function decryptJsonWithKey<T>(envelope: EncryptedEnvelope, key: CryptoKey): Promise<T> {

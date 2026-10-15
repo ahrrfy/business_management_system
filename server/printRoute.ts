@@ -5,6 +5,7 @@
 //   POST /api/print/test    → يطبع تذكرة اختبار ASCII من الخادم مباشرة
 import { Router, type Request, type Response } from "express";
 import { createContext, type AuthUser } from "./context";
+import { twoFactorEnrollmentRequired } from "./trpc";
 import { hasOperationPolicy } from "../shared/operationPermissions";
 import {
   getConfiguredTarget,
@@ -54,6 +55,23 @@ export async function resolveAuthorizedPrintUser(
 
   const user = rawUser;
   const hadCustomRoleId = Boolean(user.customRoleId);
+  if (twoFactorEnrollmentRequired(user)) {
+    await logAudit(
+      { user, req },
+      {
+        action: "print.authorization",
+        entityType: "printer",
+        outcome: "FAILURE",
+        newValue: { operation: "invoicePrinting.authorizeBridge" },
+      },
+    );
+    res.status(403).json({
+      ok: false,
+      error: "يجب تفعيل المصادقة الثنائية (2FA) لحسابك قبل استخدام النظام.",
+    });
+    return null;
+  }
+
   if (user.isOwner) {
     return user;
   }

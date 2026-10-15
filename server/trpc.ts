@@ -626,9 +626,9 @@ export const reportViewerProcedure = auditedProcedure
         },
       });
     }
-    const raw = (await getRawInput()) as { branchId?: number | string } | undefined;
+    const raw = (await getRawInput()) as { branchId?: number | string | null } | undefined;
     const requestedBranch = raw?.branchId;
-    if (requestedBranch !== undefined && Number(requestedBranch) !== Number(ctx.user.branchId)) {
+    if (requestedBranch != null && Number(requestedBranch) !== Number(ctx.user.branchId)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن قراءة بيانات فرع آخر" });
     }
     return next({
@@ -645,9 +645,9 @@ export const managerBranchScopedProcedure = managerProcedure.use(async ({ ctx, g
   // يُسجَّل قبل `.input()` ⇒ `input` كان `undefined` دائماً والفحص يَمرّ صامتاً ⇒ المدير يَطلب
   // فرع آخر فيُعاد له بيانات فرعه (لا تَسريب فعلي بفضل scopedBranchId في الـhandler، لكن لا
   // FORBIDDEN forensic). `getRawInput()` يَصل للحمولة الخام قبل التحليل ⇒ الفحص يَعمل بحقّ.
-  const raw = (await getRawInput()) as { branchId?: number | string } | undefined;
+  const raw = (await getRawInput()) as { branchId?: number | string | null } | undefined;
   const requestedBranch = raw?.branchId;
-  if (requestedBranch !== undefined && Number(requestedBranch) !== Number(ctx.user.branchId)) {
+  if (requestedBranch != null && Number(requestedBranch) !== Number(ctx.user.branchId)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "مدير الفرع لا يَستطيع قراءة بيانات فرع آخر" });
   }
   return next({ ctx });
