@@ -866,10 +866,10 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       },
       { userId: 12, branchId: 1, role: "cashier" },
     );
-    // تصفير اللقطة التاريخية للكلفة على البند المدفوع لاختبار عدم السقوط إلى الكلفة الحية في الكتالوج
+    // تصفير اللقطة التاريخية لـ lineCost فقط مع بقاء unitCost موجبة لاختبار عدم السقوط إلى unitCost أو الكلفة الحية
     await db()
       .update(s.invoiceItems)
-      .set({ unitCost: "0.00", lineCost: "0.00" })
+      .set({ unitCost: "5.00", lineCost: "0.00" })
       .where(
         and(
           eq(s.invoiceItems.invoiceId, taxedSale.invoiceId),
@@ -1003,6 +1003,135 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       .from(s.branchStock)
       .where(and(eq(s.branchStock.branchId, 1), eq(s.branchStock.variantId, 1)));
     expect(Number(stockAfterCartonReturn.quantity) - Number(stockBeforeCartonReturn.quantity)).toBe(2);
+
+    // مرتجع صنف خدمي (SERVICE): يرحل على SALES_PRINT / RETURN_SALE_SERVICE ولا يزيد returnedRestockedBaseQuantity
+    await db().insert(s.products).values({
+      id: 2,
+      name: "خدمة تصميم وطباعة",
+      isService: true,
+      productType: "SERVICE",
+    });
+    await db().insert(s.productVariants).values({
+      id: 2,
+      productId: 2,
+      sku: "SRV-PRINT-1",
+      costPrice: "0.00",
+    });
+    await db().insert(s.productUnits).values({
+      id: 3,
+      variantId: 2,
+      unitName: "خدمة",
+      barcode: "BC-SRV-1",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    });
+    await db().insert(s.productPrices).values({
+      productUnitId: 3,
+      priceTier: "RETAIL",
+      price: "30.00",
+    });
+    const serviceSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: retailShiftId,
+        customerId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 2, productUnitId: 3, quantity: "1" }],
+        payment: { amount: "30.00", method: "CASH" },
+      },
+      { userId: 12, branchId: 1, role: "cashier" },
+    );
+    const inspectedService = await retailCaller.inspectInvoiceForReturn({
+      invoiceNumber: serviceSale.invoiceNumber,
+    });
+    const serviceReturn = await retailCaller.executeSalesReturnCart({
+      invoiceNumber: serviceSale.invoiceNumber,
+      disposition: "RESTOCK",
+      items: [
+        {
+          variantId: 2,
+          invoiceItemId: inspectedService?.items[0]?.invoiceItemId,
+          productUnitId: 3,
+          productName: "خدمة تصميم وطباعة",
+          quantity: 1,
+          unitPrice: "30.00",
+        },
+      ],
+      settlement: {
+        method: "CASH",
+        totalAmount: "30.00",
+        shiftId: retailShiftId,
+      },
+    });
+    expect(serviceReturn.ok).toBe(true);
+    const [serviceReturnEntry] = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(
+        and(
+          eq(s.accountingEntries.invoiceId, serviceSale.invoiceId),
+          eq(s.accountingEntries.entryType, "RETURN"),
+        ),
+      );
+    expect(serviceReturnEntry?.revenue).toBe("-30.00");
+    expect(serviceReturnEntry?.cost).toBe("0.00");
+    expect(serviceReturnEntry?.profit).toBe("-30.00");
+    expect(serviceReturnEntry?.amount).toBe("-30.00");
+    const [serviceInvoiceItemAfter] = await db()
+      .select()
+      .from(s.invoiceItems)
+      .where(eq(s.invoiceItems.invoiceId, serviceSale.invoiceId));
+    expect(serviceInvoiceItemAfter?.returnedBaseQuantity).toBe(1);
+    expect(serviceInvoiceItemAfter?.returnedRestockedBaseQuantity ?? 0).toBe(0);
+
+    // رفض مرتجع البطاقات الرقمية (DIGITAL_CARD) عبر سلة المرتجع
+    await db().insert(s.products).values({
+      id: 3,
+      name: "بطاقة شحن رقمية",
+      productType: "DIGITAL_CARD",
+    });
+    await db().insert(s.productVariants).values({
+      id: 3,
+      productId: 3,
+      sku: "DIG-CARD-1",
+      costPrice: "10.00",
+    });
+    await db().insert(s.productUnits).values({
+      id: 4,
+      variantId: 3,
+      unitName: "بطاقة",
+      barcode: "BC-DIG-1",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    });
+    await db().insert(s.productPrices).values({
+      productUnitId: 4,
+      priceTier: "RETAIL",
+      price: "15.00",
+    });
+    await expect(
+      retailCaller.executeSalesReturnCart({
+        items: [
+          {
+            variantId: 3,
+            productUnitId: 4,
+            productName: "بطاقة شحن رقمية",
+            quantity: 1,
+            unitPrice: "15.00",
+          },
+        ],
+        settlement: {
+          method: "CASH",
+          totalAmount: "15.00",
+          shiftId: retailShiftId,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    // عزل الفروع في getOpenRefundDrawers: منع مستخدم الفرع 1 من استعلام صناديق الفرع 2
+    await expect(
+      retailCaller.getOpenRefundDrawers({ branchId: 2 }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     // رفض المرتجع العابر بلا فاتورة لصنف لا يملك سعر بيع تجزئة معتمداً في الكتالوج
     await db().delete(s.productPrices).where(eq(s.productPrices.productUnitId, 1));
