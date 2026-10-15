@@ -7,6 +7,7 @@
 // أوسع من الشاشة). المخزون مقيَّد بفرع المستخدم غير المرتفع (نفس حارس IDOR في posList).
 
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { z } from "zod";
 import { logger } from "../logger";
@@ -35,6 +36,7 @@ import {
 } from "../services/offline/recovery";
 import { verifyManagerApproval } from "./saleRouter";
 import { managerApprovalSchema } from "@shared/managerApproval";
+import { canCrossBranches } from "../lib/branchAuthority";
 import {
   customersReadProcedure,
   posCashierProcedure,
@@ -47,8 +49,8 @@ import {
 } from "../trpc";
 
 /** نفس حارس IDOR في catalogRouter: غير المرتفعين محصورون بفرعهم المُسنَد. */
-function scopeBranch(ctx: { user: { role: string; branchId?: number | null } }, requested: number): number {
-  const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
+function scopeBranch(ctx: { user: { role: string; branchId?: number | null; isOwner?: boolean | null } }, requested: number): number {
+  const elevated = canCrossBranches(ctx.user); // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
   if (elevated) return requested;
   return ctx.user.branchId != null ? Number(ctx.user.branchId) : requested;
 }
@@ -57,12 +59,12 @@ function scopeBranch(ctx: { user: { role: string; branchId?: number | null } }, 
  *  على فرعه المُسنَد ولا يُصدَّق `branchId` القادم من العميل. مشتركٌ بين مسارات الترحيل الثلاثة
  *  كي لا ينجرف حارسُ أحدها عن الآخرين. */
 function scopeActor(
-  ctx: { user: { id: number; role: string; branchId?: number | null } },
+  ctx: { user: { id: number; role: string; branchId?: number | null; isOwner?: boolean | null } },
   requestedBranchId: number,
 ) {
   // عزل مدير الفرع (قرار المالك ١٢/٨): عبور الفروع للمالك/الأدمن فقط. **فصلٌ عن السلطة** (P2 Codex):
   // canApprove (سلطة اعتماد التسعير تحت التكلفة) تبقى للمدير — لا الفرع.
-  const crossBranch = ctx.user.role === "admin";
+  const crossBranch = canCrossBranches(ctx.user);
   let effectiveBranchId = requestedBranchId;
   if (!crossBranch) {
     if (ctx.user.branchId == null) {
@@ -175,7 +177,23 @@ export const offlineRouter = router({
         branchId: z.number().int().positive().optional(),
       }),
     )
-    .query(({ input }) => buildOfflineSalesReport(input)),
+    .query(({ input, ctx }) => {
+      const canCross = ctx.canCrossBranches ?? canCrossBranches(ctx.user);
+      const branchId = canCross
+        ? input.branchId
+        : (ctx.scopedBranchId ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : undefined));
+      if (!canCross && branchId == null) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "لا فرع مُسنَد لهذا المستخدم",
+            why: "حسابك غير مرتبط بفرع محدّد ولا يملك صلاحية استعراض كافة الفروع",
+            doThis: "اطلب من مدير النظام إسناد حسابك إلى الفرع الصحيح من شاشة المستخدمين",
+          }),
+        });
+      }
+      return buildOfflineSalesReport({ ...input, branchId });
+    }),
 
   /**
    * إعادة تشغيل بيعٍ التُقط دون اتصال (ش٣) — غلاف idempotent حول createSale (نفس sourceType

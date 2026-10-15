@@ -97,22 +97,40 @@ export const middleware = t.middleware;
  * آمن إن لم تكتب سجلاً متخصصاً. رفض الطلب العام قبل المصادقة يبقى في سجلّ الأمن المحدود المعدّل
  * ولا يتحول إلى INSERT لكل عنصر batch؛ مسارات الدخول والقنوات العامة الحساسة تسجل رفضها صراحةً.
  */
+const PUBLIC_AUTH_ENTRY_PATHS = new Set<string>([
+  "auth.login",
+  "auth.loginNative",
+  "auth.twoFactorVerify",
+  "auth.verify2FA",
+  "auth.verify2FANative",
+  "auth.resetPasswordWithToken",
+  "auth.completePasswordReset",
+  "auth.requestPasswordReset",
+  "auth.forgotPassword",
+  "auth.registerDevice",
+]);
+
 const auditMutationOperation = t.middleware(async ({ ctx, type, path, input, getRawInput, next }) => {
   if (type !== "mutation" || path.startsWith("platformAdmin.")) return next();
 
   // الجذر يسبق محلّل input في سلسلة tRPC؛ نقرأ الخام المخبّأ كي لا نفقد معرّف هدف update/delete.
   const auditInput = input === undefined ? await getRawInput() : input;
   const { value: result, specializedAuditWritten } = await withMutationAuditScope(() => next());
+  const isPublicAuthEntry = PUBLIC_AUTH_ENTRY_PATHS.has(path);
   // فشل المستخدم الموثّق يُسجّل دائماً: قد يكون logAuditTx قد عُلّم ثم تراجعت معاملته.
   // الفشل غير الموثّق لا يكتب سطراً عاماً كي لا يتحول رفض batch رخيص إلى تضخيم I/O عن بُعد.
-  const shouldWriteAutomatic = result.ok ? !specializedAuditWritten : ctx.user != null;
+  const shouldWriteAutomatic = result.ok ? !specializedAuditWritten : ctx.user != null && !isPublicAuthEntry;
   if (shouldWriteAutomatic) {
     const outcome = result.ok ? "SUCCESS" : "FAILURE";
+    const actorId = isPublicAuthEntry ? null : (ctx.user?.id ?? null);
+    const auditCtx = isPublicAuthEntry || actorId == null ? { ...ctx, user: null } : ctx;
     await logAudit(
-      ctx,
+      auditCtx,
       buildAutomaticAuditData(path, auditInput, result.ok ? result.data : undefined, {
         outcome,
-        actor: automaticActorForProcedure(path, ctx.user != null),
+        actor: isPublicAuthEntry
+          ? automaticActorForProcedure(path, false)
+          : automaticActorForProcedure(path, ctx.user != null),
       }),
     );
   }
@@ -175,17 +193,37 @@ const TWO_FACTOR_EXEMPT_PATHS = new Set<string>([
   "auth.twoFactorStatus",
 ]);
 
+function isTwoFactorEnforcementActive(): boolean {
+  const raw = process.env.TWO_FACTOR_ENFORCEMENT?.trim().toLowerCase();
+  if (raw === "off" || raw === "0" || raw === "false") return false; // بوّابة إنقاذ ٣
+  if (raw === "on" || raw === "1" || raw === "true") return true;
+  if (process.env.NODE_ENV === "test" && !isCryptoReady()) return false;
+  return true;
+}
+
 /** هل يجب على هذا المستخدم تفعيل 2FA قبل استعمال النظام؟ (يطابق `mustEnroll2FA` في authRouter.me). */
 export function twoFactorEnrollmentRequired(user: { role: string; totpEnabledAt?: Date | string | null }): boolean {
-  if (process.env.TWO_FACTOR_ENFORCEMENT === "off") return false; // بوّابة إنقاذ ٣
-  if (!isCryptoReady()) return false; // بوّابة إنقاذ ٢
+  if (!isTwoFactorEnforcementActive()) return false;
   if (!TWO_FACTOR_REQUIRED_ROLES.includes(user.role)) return false;
+  if (!isCryptoReady()) return true;
   return !user.totpEnabledAt;
 }
 
 /** يرمي FORBIDDEN إن كان الإجراء غير مُستثنى ودورُ المستخدم مُلزَمٌ بـ2FA ولم يُفعّلها. */
 function assertTwoFactorEnrolled(user: { role: string; totpEnabledAt?: Date | string | null }, path: string): void {
   if (TWO_FACTOR_EXEMPT_PATHS.has(path)) return; // بوّابة إنقاذ ١
+  if (!isTwoFactorEnforcementActive()) return;
+  if (!TWO_FACTOR_REQUIRED_ROLES.includes(user.role)) return;
+  if (!isCryptoReady()) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "خدمة المصادقة الثنائية (2FA) غير مهيأة تشفيرياً",
+        why: "مفتاح التشفير (INTEGRATIONS_ENCRYPTION_KEY) غير مضبوط بينما سياسة المصادقة الثنائية إلزامية لهذا الدور.",
+        doThis: "اضبط INTEGRATIONS_ENCRYPTION_KEY في بيئة الخادم لإتمام التحقق من المصادقة الثنائية.",
+      }),
+    });
+  }
   if (twoFactorEnrollmentRequired(user)) {
     throw new TRPCError({
       code: "FORBIDDEN",
@@ -368,7 +406,10 @@ function auditCapabilityShadow(
 export function requireModule(moduleKey: string, minLevel: AccessLevel) {
   return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
-    if (ctx.user.role === "admin") return next({ ctx: { ...ctx, user: ctx.user } });
+    if (ctx.user.role === "admin") {
+      assertTwoFactorEnrolled(ctx.user, path);
+      return next({ ctx: { ...ctx, user: ctx.user } });
+    }
     const override = (ctx.user as any).permissionsOverride as Record<string, AccessLevel> | null;
     const map = resolvePermissions(ctx.user.role as RoleKey, override);
     const level = map[moduleKey] ?? "NONE";
@@ -376,6 +417,7 @@ export function requireModule(moduleKey: string, minLevel: AccessLevel) {
     // م٨: تحقّق القدرات الظِلّيّ في وضع الظلّ الموثَّق (AUTHZ_ENGINE=shadow) — لا يغيّر `allowed` (صفر انحدار).
     if (capabilityShadowEnabled()) auditCapabilityShadow(ctx, "requireModule", moduleKey, minLevel, map, allowed, path);
     if (!allowed) throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
+    assertTwoFactorEnrolled(ctx.user, path);
     return next({ ctx: { ...ctx, user: ctx.user } });
   });
 }
@@ -440,13 +482,28 @@ export const reportViewerProcedure = auditedProcedure
   .use(async ({ ctx, getRawInput, next }) => {
     // عزل الفرع: المالك/الأدمن يعبُران أي فرع؛ غير العابر (بما فيه مدير الفرع) يُرفَض إن طلب فرعاً
     // غير فرعه (أثر forensic صريح بدل قصٍّ صامت) — مرآةٌ لِمنطق managerBranchScopedProcedure.
-    if (!ctx.user || canCrossBranches(ctx.user)) return next({ ctx });
+    const canCross = Boolean(ctx.user && canCrossBranches(ctx.user));
+    if (!ctx.user || canCross) {
+      return next({
+        ctx: {
+          ...ctx,
+          canCrossBranches: true,
+          scopedBranchId: undefined as number | undefined,
+        },
+      });
+    }
     const raw = (await getRawInput()) as { branchId?: number | string } | undefined;
     const requestedBranch = raw?.branchId;
     if (requestedBranch !== undefined && Number(requestedBranch) !== Number(ctx.user.branchId)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن قراءة بيانات فرع آخر" });
     }
-    return next({ ctx });
+    return next({
+      ctx: {
+        ...ctx,
+        canCrossBranches: false,
+        scopedBranchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : undefined,
+      },
+    });
   });
 export const managerBranchScopedProcedure = managerProcedure.use(async ({ ctx, getRawInput, next }) => {
   if (canCrossBranches(ctx.user)) return next({ ctx });
@@ -764,9 +821,15 @@ export const reportsAdminProcedure = reportsManagerProcedure.use(requireAdmin);
 /** إنشاء القيود اليومية اليدوية والتسويات: مدير أو محاسب ذو reports:FULL. */
 export const journalWriteProcedure = protectedProcedure
   .use(requireModuleGate(["manager", "accountant"], "reports", "FULL"))
-  .use(async ({ ctx, next }) => {
-    if (ctx.user.role === "admin" || ctx.user.role === "manager" || ctx.user.role === "accountant") {
-      return next({ ctx });
+  .use(async ({ ctx, getRawInput, next }) => {
+    if (canCrossBranches(ctx.user)) {
+      return next({
+        ctx: {
+          ...ctx,
+          canCrossBranches: true,
+          scopedBranchId: undefined as number | undefined,
+        },
+      });
     }
     if (ctx.user.branchId == null) {
       throw new TRPCError({
@@ -778,7 +841,26 @@ export const journalWriteProcedure = protectedProcedure
         }),
       });
     }
-    return next({ ctx });
+    const userBranchId = Number(ctx.user.branchId);
+    const raw = (await getRawInput()) as { branchId?: number | string | null } | undefined;
+    const requestedBranch = raw?.branchId;
+    if (requestedBranch != null && Number(requestedBranch) !== userBranchId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "لا يمكن تسجيل قيد يدوي لفرع آخر",
+          why: "صلاحيتك المحاسبية مقيّدة بفرعك المسند ولا تخوّلك الترحيل على فرع آخر.",
+          doThis: "سجّل القيد على فرعك الحالي أو راجع الإدارة العامة.",
+        }),
+      });
+    }
+    return next({
+      ctx: {
+        ...ctx,
+        canCrossBranches: false,
+        scopedBranchId: userBranchId,
+      },
+    });
   });
 // أسماء توافقية للراوترات القائمة؛ قراءة ملفات وبحث العملاء متاحة لـ CRM ومحطات نقاط البيع والمبيعات.
 /**

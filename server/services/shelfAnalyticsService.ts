@@ -289,7 +289,7 @@ export async function getShelfBeneficiariesStats(options?: {
     })
     .from(shelfLookupLogs)
     .leftJoin(branches, eq(shelfLookupLogs.branchId, branches.id))
-    .where(startDate ? gte(shelfLookupLogs.createdAt, startDate) : undefined)
+    .where(mainFilter)
     .groupBy(shelfLookupLogs.branchId, branches.name, branches.code);
 
   const branchBreakdown = branchRows.map((r) => ({
@@ -505,15 +505,26 @@ function createEmptyStats(): ShelfBeneficiariesStats {
 /**
  * مسح وتصفير كافة سجلات استعلامات الرفوف والبيانات الوهمية للبدء من الصفر بحركات حقيقية فقط.
  */
-export async function purgeShelfLookupLogs(): Promise<number> {
+export async function purgeShelfLookupLogs(
+  opts?: { branchId?: number | null } | number | null,
+): Promise<number> {
   const db = getDb();
   if (!db) return 0;
 
+  const branchId =
+    typeof opts === "number" ? opts : opts && typeof opts === "object" ? opts.branchId : null;
+
   try {
-    const [res] = await db.execute(sql`DELETE FROM ${shelfLookupLogs}`);
+    const query =
+      branchId != null
+        ? sql`DELETE FROM ${shelfLookupLogs} WHERE ${shelfLookupLogs.branchId} = ${branchId}`
+        : sql`DELETE FROM ${shelfLookupLogs}`;
+    const [res] = await db.execute(query);
     return Number((res as any)?.affectedRows ?? 0);
   } catch (err) {
     logger.error({ err }, "shelf.lookup.purge_failed");
     throw err;
   }
 }
+
+export const purgeOldLogs = purgeShelfLookupLogs;

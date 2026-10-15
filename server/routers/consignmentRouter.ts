@@ -1,6 +1,8 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { z } from "zod";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { canCrossBranches } from "../lib/branchAuthority";
 import { positiveMoneyString, positiveQtyString } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
 import {
@@ -44,7 +46,7 @@ export const consignmentRouter = router({
     // عزل الفرع (تدقيق ٢٥/٧ + عزل مدير الفرع ١٢/٨): غير العابر يرى سندات فرعه فقط — يُحسَب من ctx.user
     // مباشرةً. المالك/الأدمن وحدهما يعبُران الفروع (يحترمان branchId المُرسَل)؛ مدير الفرع صار مقيَّداً بفرعه.
     .query(({ input, ctx }) => {
-      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
+      const elevated = canCrossBranches(ctx.user); // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
       const branchId = elevated ? input?.branchId : Number(ctx.user.branchId);
       return listConsignmentNotes({ ...(input ?? {}), branchId });
     }),
@@ -54,7 +56,7 @@ export const consignmentRouter = router({
     .query(async ({ input, ctx }) => {
       const note = await getConsignmentNote(input.noteId);
       // عزل الفرع (IDOR، تدقيق ٢٥/٧): غير المرتفع لا يرى سند فرعٍ آخر — NOT_FOUND كي لا نكشف وجوده.
-      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
+      const elevated = canCrossBranches(ctx.user); // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
       if (note && !elevated && Number(note.branchId) !== Number(ctx.user.branchId)) {
         throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
       }
@@ -65,7 +67,7 @@ export const consignmentRouter = router({
     .input(z.object({ consignorId: z.number().int().positive(), branchId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       // عزل الفرع (تدقيق ٣/٨): غير المرتفع يستعلم بفرعه فقط — مطابقةً لـlist/get (كان branchId مُتجاهَلاً).
-      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
+      const elevated = canCrossBranches(ctx.user); // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
       if (!elevated && Number(input.branchId) !== Number(ctx.user.branchId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن قراءة بيانات فرع آخر" });
       }
@@ -80,7 +82,23 @@ export const consignmentRouter = router({
   // تقرير أرصدة بضاعة الأمانة — خلف بوّابة التقارير الحمراء (قيمة بالتكلفة/الحصة). §١١.
   balancesReport: reportViewerProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
-    .query(({ input }) => consignmentBalancesReport(input?.branchId)),
+    .query(({ input, ctx }) => {
+      const canCross = ctx.canCrossBranches ?? canCrossBranches(ctx.user);
+      const branchId = canCross
+        ? input?.branchId
+        : (ctx.scopedBranchId ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : undefined));
+      if (!canCross && branchId == null) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "لا فرع مُسنَد لهذا المستخدم",
+            why: "حسابك غير مرتبط بفرع محدّد ولا يملك صلاحية استعراض كافة الفروع",
+            doThis: "اطلب من مدير النظام إسناد حسابك إلى الفرع الصحيح من شاشة المستخدمين",
+          }),
+        });
+      }
+      return consignmentBalancesReport(branchId);
+    }),
 
   // تقرير هوامش الأمانة — ربح المكتبة المُحقَّق من بيع بضاعة كل مودِع خلال فترة (قراءة فقط، بوّابة التقارير).
   marginsReport: reportViewerProcedure
@@ -89,7 +107,23 @@ export const consignmentRouter = router({
       endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "التاريخ بصيغة YYYY-MM-DD"),
       branchId: z.number().int().positive().optional(),
     }))
-    .query(({ input }) => consignmentMarginsReport(input)),
+    .query(({ input, ctx }) => {
+      const canCross = ctx.canCrossBranches ?? canCrossBranches(ctx.user);
+      const branchId = canCross
+        ? input.branchId
+        : (ctx.scopedBranchId ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : undefined));
+      if (!canCross && branchId == null) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "لا فرع مُسنَد لهذا المستخدم",
+            why: "حسابك غير مرتبط بفرع محدّد ولا يملك صلاحية استعراض كافة الفروع",
+            doThis: "اطلب من مدير النظام إسناد حسابك إلى الفرع الصحيح من شاشة المستخدمين",
+          }),
+        });
+      }
+      return consignmentMarginsReport({ ...input, branchId });
+    }),
 
   // كشف تسوية مودِع — تفصيل نشاط الفترة (بيع/حصة/هامش + المتبقّي) للمعاينة/الطباعة (قراءة فقط، بوّابة التقارير).
   settlementStatement: reportViewerProcedure
@@ -99,7 +133,23 @@ export const consignmentRouter = router({
       endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "التاريخ بصيغة YYYY-MM-DD"),
       branchId: z.number().int().positive().optional(),
     }))
-    .query(({ input }) => consignmentSettlementStatement(input)),
+    .query(({ input, ctx }) => {
+      const canCross = ctx.canCrossBranches ?? canCrossBranches(ctx.user);
+      const branchId = canCross
+        ? input.branchId
+        : (ctx.scopedBranchId ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : undefined));
+      if (!canCross && branchId == null) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "لا فرع مُسنَد لهذا المستخدم",
+            why: "حسابك غير مرتبط بفرع محدّد ولا يملك صلاحية استعراض كافة الفروع",
+            doThis: "اطلب من مدير النظام إسناد حسابك إلى الفرع الصحيح من شاشة المستخدمين",
+          }),
+        });
+      }
+      return consignmentSettlementStatement({ ...input, branchId });
+    }),
 
   // بضاعة الأمانة (ش٥): تسوية مودِع = سند صرف على مستحقّه. مديريّ (treasury) ويُنشأ PENDING **دائماً**
   // (حارس createVoucher لمودِع أمانة) + سقف ≤ المستحق يُعاد فحصه عند الاعتماد. الفصل محفوظ (اعتماد مدير آخر).
@@ -116,7 +166,7 @@ export const consignmentRouter = router({
       description: z.string().max(500).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      const branchId = ctx.user.role === "admin" ? input.branchId : (ctx.user.branchId ?? input.branchId);
+      const branchId = canCrossBranches(ctx.user) ? input.branchId : (ctx.user.branchId ?? input.branchId);
       const res = await createVoucher({
         voucherType: "PAYMENT", branchId, amount: input.amount, paymentMethod: input.paymentMethod,
         partyType: "SUPPLIER", partyId: input.consignorId,
@@ -141,7 +191,7 @@ export const consignmentRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع: غير admin مقصور بفرعه المُسنَد (البوّابة تفرض requireOwnBranch، ونثبّت branchId هنا أيضاً).
-      const branchId = ctx.user.role === "admin" ? input.branchId : (ctx.user.branchId ?? input.branchId);
+      const branchId = canCrossBranches(ctx.user) ? input.branchId : (ctx.user.branchId ?? input.branchId);
       // إعادة محاولة على تصادم رقم السند (uq_consign_note_number) — نمط idempotency البيع.
       const attempt = () =>
         createConsignmentNote({ ...input, branchId }, { userId: ctx.user.id, branchId });
