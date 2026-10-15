@@ -715,6 +715,15 @@ export async function updateOnlineOrder(
             .update(customers)
             .set({ name: trimmedNewName })
             .where(eq(customers.id, currentCustomerId));
+        } else {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "لا يمكن تعديل اسم سجل عميل مشترك أو موثّق من شاشة الطلب",
+              why: "سجل العميل مرتبط بطلبات أو فواتير أخرى أو بحساب متجر موثّق، وتعديل اسمه هنا يغيّر اسم العميل في كافة السجلات",
+              doThis: "عدّل بيانات العميل من شاشة إدارة العملاء إن لزم، أو أضف اسم المستلم البديل في حقل ملاحظات التوصيل",
+            }),
+          });
         }
       }
     }
