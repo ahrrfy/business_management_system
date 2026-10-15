@@ -27,6 +27,7 @@ import {
   deliveryConsignments,
   deliveryLedgerEntries,
   deliveryParties,
+  digitalSaleDetails,
   invoiceItemBundleComponents,
   invoiceItems,
   invoices,
@@ -119,6 +120,7 @@ import {
 } from "../services/returns/forensicTraceService";
 import { applyMovement, convertToBaseQuantity } from "../services/inventoryService";
 import { assertPeriodOpen } from "../services/periodLockService";
+import { assertNoActiveInstallmentPlanAfterInvoiceLockTx } from "../services/installment/guards";
 import { resolveBarcodeOwner } from "../services/catalog/barcodeAliases";
 import {
   createReturnRequest,
@@ -2272,9 +2274,24 @@ export const returnRouter = router({
           }),
         });
       }
-      const actorBranchId =
-        input?.branchId ??
-        (ctx.user.branchId ? Number(ctx.user.branchId) : undefined);
+      if (
+        !canCrossBranches(ctx.user) &&
+        input?.branchId != null &&
+        Number(input.branchId) !== Number(ctx.user.branchId)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر استعراض أدراج النقدية المفتوحة",
+            why: "لا يمكن قراءة أدراج فرع آخر غير فرعك المسند",
+            doThis: "استعرض الأدراج المفتوحة ضمن فرعك المسند فقط",
+          }),
+        });
+      }
+      const actorBranchId = canCrossBranches(ctx.user)
+        ? (input?.branchId ??
+            (ctx.user.branchId ? Number(ctx.user.branchId) : undefined))
+        : (ctx.user.branchId ? Number(ctx.user.branchId) : undefined);
       if (!actorBranchId) {
         return [];
       }
@@ -2497,6 +2514,35 @@ export const returnRouter = router({
               }),
             });
           }
+          const cartVariantIds = Array.from(
+            new Set(input.items.map((i) => Number(i.variantId))),
+          );
+          if (cartVariantIds.length > 0) {
+            const digitalProductRows = await tx
+              .select({
+                variantId: productVariants.id,
+                productName: products.name,
+              })
+              .from(productVariants)
+              .innerJoin(products, eq(productVariants.productId, products.id))
+              .where(
+                and(
+                  inArray(productVariants.id, cartVariantIds),
+                  eq(products.productType, "DIGITAL_CARD"),
+                ),
+              );
+            if (digitalProductRows.length > 0) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "تعذّر تسجيل المرتجع",
+                  why: `السلة تحوي ${digitalProductRows.length} صنفاً من الكروت الرقمية، والكرت يصدر من جهاز المزوّد وقد يكون استُهلك — فإعادته عكسٌ ماليّ يحتاج تأكيد المزوّد لا إعادةَ بضاعةٍ إلى الرفّ`,
+                  doThis:
+                    "أزِل بنود الكروت من هذا المرتجع وأرجِع بقيّة الأصناف؛ ثمّ افتح شاشة «عكس بيع الكروت» ليقرّرها المدير مع المزوّد",
+                }),
+              });
+            }
+          }
           if (!input.invoiceNumber?.trim()) {
             let computedWalkInTotal = money(0);
             for (const itm of input.items) {
@@ -2684,6 +2730,7 @@ export const returnRouter = router({
           } | null = null;
           let invoiceItemRows: Array<typeof invoiceItems.$inferSelect> = [];
           const resolvedBaseQtyByItem = new Map<any, number>();
+          const resolvedRevenueByItem = new Map<any, Decimal>();
           let returnedTaxDec = money(0);
           if (input.invoiceNumber?.trim()) {
             const rawNo = input.invoiceNumber.trim();
@@ -2914,6 +2961,11 @@ export const returnRouter = router({
             }
 
             matchedInvoice = found;
+            await assertPeriodOpen(tx, matchedInvoice.invoiceDate);
+            await assertNoActiveInstallmentPlanAfterInvoiceLockTx(tx, {
+              invoiceId: Number(matchedInvoice.id),
+              operationLabel: "إرجاع الفاتورة كلياً أو جزئياً",
+            });
 
             const paidAmount = money(matchedInvoice.paidAmount ?? "0");
             const remainingUnpaidAmount = Decimal.max(
@@ -3125,6 +3177,14 @@ export const returnRouter = router({
               .where(eq(invoiceItems.invoiceId, matchedInvoice.id))
               .for("update");
 
+            const digitalRows = await tx
+              .select({ invoiceItemId: digitalSaleDetails.invoiceItemId })
+              .from(digitalSaleDetails)
+              .where(eq(digitalSaleDetails.invoiceId, matchedInvoice.id));
+            const digitalItemIds = new Set(
+              digitalRows.map((r) => Number(r.invoiceItemId)),
+            );
+
             // تتبع تراكم الكميات المرتجعة لكل بند في السلة نفسها لمنع الالتفاف بتكرار البند
             const accumulatedReturnedByItemId = new Map<number, number>();
             const invSubtotalDec = money(matchedInvoice.subtotal ?? "0");
@@ -3188,6 +3248,18 @@ export const returnRouter = router({
                     why: `الصنف «${itm.productName}» (معرّف ${itm.variantId}) غير مدرج ضمن بنود الفاتورة المرجعية «${matchedInvoice.invoiceNumber}»`,
                     doThis:
                       "تحقق من الصنف الممسوح وتطابقه مع بنود الفاتورة المرجعية",
+                  }),
+                });
+              }
+
+              if (digitalItemIds.has(Number(targetItem.id))) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: "تعذّر تسجيل المرتجع",
+                    why: "الفاتورة تحوي بنداً من الكروت الرقمية، والكرت يصدر من جهاز المزوّد وقد يكون استُهلك — فإعادته عكسٌ ماليّ يحتاج تأكيد المزوّد لا إعادةَ بضاعةٍ إلى الرفّ",
+                    doThis:
+                      "أزِل بنود الكروت من هذا المرتجع وأرجِع بقيّة الأصناف؛ ثمّ افتح شاشة «عكس بيع الكروت» ليقرّرها المدير مع المزوّد",
                   }),
                 });
               }
@@ -3315,6 +3387,10 @@ export const returnRouter = router({
                       effectiveBaseQty,
                     )
                   : money(0);
+              resolvedRevenueByItem.set(
+                itm,
+                round2(Decimal.max(0, matchedLineTotal.minus(lineTax))),
+              );
               returnedTaxDec = round2(returnedTaxDec.plus(lineTax));
               expectedInvoiceReturnTotal =
                 expectedInvoiceReturnTotal.plus(matchedLineTotal);
@@ -3518,7 +3594,7 @@ export const returnRouter = router({
                 priorCostReturned + effectiveBaseQty,
               );
               if (
-                money(targetItem.lineCost ?? "0").gt(0) &&
+                targetItem.lineCost != null &&
                 (targetItem.baseQuantity ?? 0) > 0
               ) {
                 lineCostShare = allocateLineCost(
@@ -3894,6 +3970,29 @@ export const returnRouter = router({
           const returnedRevenueDec = round2(
             returnTotalDec.minus(returnedTaxDec),
           );
+          let stationeryRevenue = money(0);
+          let printRevenue = money(0);
+          for (const itm of input.items) {
+            const kind = kindByVariant.get(Number(itm.variantId)) ?? "STOCK";
+            const itemRev = resolvedRevenueByItem.get(itm) ?? money(0);
+            if (kind === "SERVICE") {
+              printRevenue = round2(printRevenue.plus(itemRev));
+            } else {
+              stationeryRevenue = round2(stationeryRevenue.plus(itemRev));
+            }
+          }
+          const revenueSum = round2(stationeryRevenue.plus(printRevenue));
+          if (!revenueSum.eq(returnedRevenueDec)) {
+            const diff = round2(returnedRevenueDec.minus(revenueSum));
+            if (stationeryRevenue.gt(0)) {
+              stationeryRevenue = round2(
+                Decimal.max(0, stationeryRevenue.plus(diff)),
+              );
+            } else {
+              printRevenue = round2(Decimal.max(0, printRevenue.plus(diff)));
+            }
+          }
+
           const hasConsignmentReturn = byConsignor.size > 0;
           const hasOwnedReturn = input.items.some(
             (itm) => !consignByVariant.has(Number(itm.variantId)),
@@ -3902,12 +4001,18 @@ export const returnRouter = router({
             ? hasOwnedReturn || ownedReversedCost.gt(0)
               ? "RETURN_SALE_MIXED"
               : "RETURN_SALE_CONSIGNMENT"
-            : "RETURN_SALE_INVENTORY";
+            : printRevenue.gt(0) &&
+                stationeryRevenue.eq(0) &&
+                ownedReversedCost.eq(0)
+              ? "RETURN_SALE_SERVICE"
+              : printRevenue.gt(0) && stationeryRevenue.gt(0)
+                ? "RETURN_SALE_MIXED"
+                : "RETURN_SALE_INVENTORY";
 
           const salesReturnSource = {
             roleDebits: {
-              SALES_STATIONERY: returnedRevenueDec,
-              SALES_PRINT: money(0),
+              SALES_STATIONERY: stationeryRevenue,
+              SALES_PRINT: printRevenue,
               SALES_FLEX: money(0),
               OTHER_REVENUE: money(0),
               DELIVERY_REVENUE: money(0),
@@ -3923,8 +4028,11 @@ export const returnRouter = router({
             salesReturnProfile,
             "RETURN",
             [
-              ...(returnedRevenueDec.gt(0)
-                ? [debitLine("SALES_STATIONERY", returnedRevenueDec)]
+              ...(stationeryRevenue.gt(0)
+                ? [debitLine("SALES_STATIONERY", stationeryRevenue)]
+                : []),
+              ...(printRevenue.gt(0)
+                ? [debitLine("SALES_PRINT", printRevenue)]
                 : []),
               ...(returnedTaxDec.gt(0)
                 ? [debitLine("TAX_PAYABLE", returnedTaxDec)]
@@ -4109,6 +4217,8 @@ export const returnRouter = router({
                       targetItem.productUnitId,
                     )
                   ).baseQuantity;
+                const kind =
+                  kindByVariant.get(Number(itm.variantId)) ?? "STOCK";
 
                 const delta = deltaByInvoiceItemId.get(targetItem.id) ?? {
                   targetItem,
@@ -4116,7 +4226,7 @@ export const returnRouter = router({
                   totalRestockBaseQty: 0,
                 };
                 delta.totalEffectiveBaseQty += effectiveBaseQty;
-                if (input.disposition === "RESTOCK") {
+                if (input.disposition === "RESTOCK" && kind !== "SERVICE") {
                   delta.totalRestockBaseQty += effectiveBaseQty;
                 }
                 deltaByInvoiceItemId.set(targetItem.id, delta);
@@ -4128,7 +4238,7 @@ export const returnRouter = router({
                 .update(invoiceItems)
                 .set({
                   returnedBaseQuantity: sql`COALESCE(${invoiceItems.returnedBaseQuantity}, 0) + ${delta.totalEffectiveBaseQty}`,
-                  ...(input.disposition === "RESTOCK"
+                  ...(delta.totalRestockBaseQty > 0
                     ? {
                         returnedRestockedBaseQuantity: sql`COALESCE(${invoiceItems.returnedRestockedBaseQuantity}, 0) + ${delta.totalRestockBaseQty}`,
                       }
@@ -4140,7 +4250,7 @@ export const returnRouter = router({
               delta.targetItem.returnedBaseQuantity =
                 (delta.targetItem.returnedBaseQuantity ?? 0) +
                 delta.totalEffectiveBaseQty;
-              if (input.disposition === "RESTOCK") {
+              if (delta.totalRestockBaseQty > 0) {
                 delta.targetItem.returnedRestockedBaseQuantity =
                   (delta.targetItem.returnedRestockedBaseQuantity ?? 0) +
                   delta.totalRestockBaseQty;
