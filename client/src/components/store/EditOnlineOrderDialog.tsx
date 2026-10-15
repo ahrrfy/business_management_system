@@ -31,6 +31,7 @@ interface EditableLineItem {
   lineTotal: number;
   hasCustomization: boolean;
   customizationSummary: string | null;
+  maxOrderQty?: number;
 }
 
 export function EditOnlineOrderDialog({
@@ -52,6 +53,7 @@ export function EditOnlineOrderDialog({
   const [shippingAddress, setShippingAddress] = useState("");
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState<EditableLineItem[]>([]);
+  const [qtyDrafts, setQtyDrafts] = useState<Record<number, string>>({});
 
   // Settings for free shipping threshold
   const settingsQ = trpc.storeAdmin.settings.get.useQuery(undefined, { enabled: open });
@@ -82,6 +84,7 @@ export function EditOnlineOrderDialog({
         };
       });
       setItems(initialItems);
+      setQtyDrafts({});
     }
   }, [detailQ.data]);
 
@@ -126,72 +129,118 @@ export function EditOnlineOrderDialog({
   // Grand total is subtotal + delivery fee.
   const grandTotal = Math.max(0, subtotal + finalDeliveryFee);
 
-  function handleQuantityChange(index: number, newQty: number) {
+  function handleQuantityChange(index: number, newQty: number, fromDraft = false) {
     if (!Number.isFinite(newQty) || newQty <= 0) return;
+    const item = items[index];
+    if (!item) return;
+    let updatedQty = Math.max(1, Math.floor(newQty));
+    if (item.maxOrderQty !== undefined && updatedQty > item.maxOrderQty) {
+      notify.err(
+        `الكمية المطلوبة من «${item.productName}» تتجاوز المتاح في المخزون (${item.maxOrderQty} ${item.unitName})`,
+      );
+      updatedQty = Math.max(1, item.maxOrderQty);
+      if (fromDraft) {
+        setQtyDrafts((prev) => ({ ...prev, [index]: String(updatedQty) }));
+      }
+    }
+    if (!fromDraft) {
+      setQtyDrafts((prev) => {
+        if (!(index in prev)) return prev;
+        const copy = { ...prev };
+        delete copy[index];
+        return copy;
+      });
+    }
     setItems((prev) => {
       const next = [...prev];
-      const item = next[index];
-      if (!item) return prev;
-      const updatedQty = Math.max(1, Math.floor(newQty));
+      const current = next[index];
+      if (!current) return prev;
       next[index] = {
-        ...item,
+        ...current,
         quantity: updatedQty,
-        lineTotal: item.unitPrice * updatedQty,
+        lineTotal: current.unitPrice * updatedQty,
       };
       return next;
     });
   }
 
   function handleRemoveItem(index: number) {
+    setQtyDrafts({});
     setItems((prev) => prev.filter((_, i) => i !== index));
   }
 
-  const handleAddProductFromSearch = useCallback((product: PosProductRow) => {
-    const effectivePriceStr = product.promotionEffectivePrice ?? product.price;
-    const unitPrice = effectivePriceStr != null ? Number(effectivePriceStr) : NaN;
-    if (!Number.isFinite(unitPrice) || unitPrice < 0) {
-      notify.err(`الصنف «${product.productName}» ليس له سعر مفرد محدد في الكتالوج`);
-      return;
-    }
-
-    const variantParts = Array.from(
-      new Set(
-        [product.variantName, product.color, product.size]
-          .map((v) => v?.trim())
-          .filter((v): v is string => Boolean(v) && v !== product.productName.trim()),
-      ),
-    );
-    const variantLabel = variantParts.join(" — ") || product.sku;
-
-    setItems((prev) => {
-      const existingIndex = prev.findIndex((it) => it.productUnitId === product.productUnitId);
-      if (existingIndex >= 0) {
-        const next = [...prev];
-        const current = next[existingIndex]!;
-        const updatedQty = current.quantity + 1;
-        next[existingIndex] = {
-          ...current,
-          quantity: updatedQty,
-          lineTotal: current.unitPrice * updatedQty,
-        };
-        return next;
+  const handleAddProductFromSearch = useCallback(
+    (product: PosProductRow) => {
+      const effectivePriceStr = product.promotionEffectivePrice ?? product.price;
+      const unitPrice = effectivePriceStr != null ? Number(effectivePriceStr) : NaN;
+      if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+        notify.err(`الصنف «${product.productName}» ليس له سعر مفرد محدد في الكتالوج`);
+        return;
       }
-      return [
-        ...prev,
-        {
-          productUnitId: product.productUnitId,
-          productName: product.productName,
-          variantLabel,
-          unitName: product.unitName,
-          unitPrice,
-          quantity: 1,
-          lineTotal: unitPrice,
-          hasCustomization: false,
-          customizationSummary: null,
-        },
-      ];
-    });
-  }, []);
+
+      const factor = Math.max(1, Number(product.conversionFactor) || 1);
+      const initialQtyForUnit = (detailQ.data?.items ?? [])
+        .filter((i) => i.productUnitId === product.productUnitId)
+        .reduce((acc, i) => acc + (Math.floor(Number(i.quantity)) || 0), 0);
+      const freeBase = Math.max(0, Number(product.availableBase ?? product.stockBase ?? 0));
+      const maxOrderQty = product.isService
+        ? undefined
+        : initialQtyForUnit + Math.floor(freeBase / factor);
+
+      const existingIndex = items.findIndex((it) => it.productUnitId === product.productUnitId);
+      const targetQty = existingIndex >= 0 ? items[existingIndex]!.quantity + 1 : 1;
+      if (maxOrderQty !== undefined && targetQty > maxOrderQty) {
+        notify.err(
+          maxOrderQty <= 0
+            ? `الصنف «${product.productName}» نافد حالياً من مخزون الفرع (المتاح للبيع: 0)`
+            : `الكمية المطلوبة من «${product.productName}» تتجاوز المتاح في المخزون (${maxOrderQty} ${product.unitName})`,
+        );
+        return;
+      }
+
+      const variantParts = Array.from(
+        new Set(
+          [product.variantName, product.color, product.size]
+            .map((v) => v?.trim())
+            .filter((v): v is string => Boolean(v) && v !== product.productName.trim()),
+        ),
+      );
+      const variantLabel = variantParts.join(" — ") || product.sku;
+
+      setQtyDrafts({});
+      setItems((prev) => {
+        const idx = prev.findIndex((it) => it.productUnitId === product.productUnitId);
+        if (idx >= 0) {
+          const next = [...prev];
+          const current = next[idx]!;
+          const updatedQty = current.quantity + 1;
+          next[idx] = {
+            ...current,
+            quantity: updatedQty,
+            lineTotal: current.unitPrice * updatedQty,
+            maxOrderQty,
+          };
+          return next;
+        }
+        return [
+          ...prev,
+          {
+            productUnitId: product.productUnitId,
+            productName: product.productName,
+            variantLabel,
+            unitName: product.unitName,
+            unitPrice,
+            quantity: 1,
+            lineTotal: unitPrice,
+            hasCustomization: false,
+            customizationSummary: null,
+            maxOrderQty,
+          },
+        ];
+      });
+    },
+    [detailQ.data?.items, items],
+  );
 
   function handleSave() {
     if (!orderId) return;
@@ -370,14 +419,25 @@ export function EditOnlineOrderDialog({
                             <input
                               type="number"
                               min={1}
+                              max={it.maxOrderQty}
                               data-no-draft
                               disabled={itemsLocked}
-                              value={it.quantity}
+                              value={qtyDrafts[idx] ?? String(it.quantity)}
                               onChange={(e) => {
-                                const parsed = parseInt(e.target.value, 10);
+                                const raw = e.target.value;
+                                setQtyDrafts((prev) => ({ ...prev, [idx]: raw }));
+                                const parsed = parseInt(raw, 10);
                                 if (Number.isFinite(parsed) && parsed >= 1) {
-                                  handleQuantityChange(idx, parsed);
+                                  handleQuantityChange(idx, parsed, true);
                                 }
+                              }}
+                              onBlur={() => {
+                                setQtyDrafts((prev) => {
+                                  if (!(idx in prev)) return prev;
+                                  const copy = { ...prev };
+                                  delete copy[idx];
+                                  return copy;
+                                });
                               }}
                               className="w-12 text-center font-bold text-sm bg-transparent border-0 focus:outline-none focus:ring-1 focus:ring-primary rounded [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                               aria-label={`كمية ${it.productName}`}
@@ -388,7 +448,10 @@ export function EditOnlineOrderDialog({
                               size="sm"
                               className="size-6 p-0 h-6"
                               onClick={() => handleQuantityChange(idx, it.quantity + 1)}
-                              disabled={itemsLocked}
+                              disabled={
+                                itemsLocked ||
+                                (it.maxOrderQty !== undefined && it.quantity >= it.maxOrderQty)
+                              }
                             >
                               +
                             </Button>

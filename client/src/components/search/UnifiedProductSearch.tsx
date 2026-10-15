@@ -83,6 +83,7 @@ export function UnifiedProductSearch({
   }, [mode, posQuery.data]);
 
   const searching = posQuery.isFetching;
+  const searchSettled = search.trim() === debouncedSearch.trim() && !searching;
 
   // إغلاق القائمة المنسدلة عند النقر خارج المكون
   React.useEffect(() => {
@@ -157,7 +158,7 @@ export function UnifiedProductSearch({
     inputRef.current?.focus();
   };
 
-  // ملاحة لوحة المفاتيح
+  // ملاحة لوحة المفاتيح (السهمين والإغلاق فقط؛ Enter يُعالج في onSubmit بعد مرور كاشف الباركود)
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (!showDrop || results.length === 0) {
       if (e.key === "ArrowDown" && results.length > 0) {
@@ -174,12 +175,6 @@ export function UnifiedProductSearch({
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setSelectedIndex((prev) => (prev > 0 ? prev - 1 : results.length - 1));
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      const target = selectedIndex >= 0 ? results[selectedIndex] : results[0];
-      if (target) {
-        handlePick(target);
-      }
     } else if (e.key === "Escape") {
       setShowDrop(false);
     }
@@ -190,21 +185,20 @@ export function UnifiedProductSearch({
       <UnifiedSearchInput
         ref={inputRef}
         value={search}
+        debounceMs={0}
         onChange={(v) => {
           setSearch(v);
-          if (v.trim()) setShowDrop(true);
-        }}
-        onImmediateChange={(v) => {
-          if (v.trim()) setShowDrop(true);
+          setShowDrop(Boolean(v.trim()));
         }}
         onScan={handleBarcodeScan}
         onSubmit={(raw) => {
-          if (results.length > 0) {
-            const target = selectedIndex >= 0 ? results[selectedIndex] : results[0];
-            if (target) {
-              handlePick(target);
-              return;
-            }
+          if (showDrop && selectedIndex >= 0 && results[selectedIndex]) {
+            handlePick(results[selectedIndex]);
+            return;
+          }
+          if (showDrop && searchSettled && results.length > 0 && results[0]) {
+            handlePick(results[0]);
+            return;
           }
           if (raw.trim()) {
             void handleBarcodeScan(raw.trim());
@@ -290,6 +284,12 @@ export function UnifiedProductSearch({
                     {p.isConsignment && (
                       <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[var(--sem-warn-bg,#fef3c7)] text-[var(--sem-warn,#b45309)]">
                         أمانة
+                      </span>
+                    )}
+
+                    {p.isBundle && (
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+                        بكج
                       </span>
                     )}
                   </div>

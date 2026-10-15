@@ -689,37 +689,40 @@ export async function updateOnlineOrder(
         });
       }
 
-      // Normalize items
-      const lines = input.items.map((it) => ({
-        productUnitId: Number(it.productUnitId),
-        quantity: Math.floor(Number(it.quantity)),
-      }));
-
-      for (const line of lines) {
-        if (!Number.isSafeInteger(line.productUnitId) || line.productUnitId <= 0) {
+      // Normalize and merge duplicate productUnitId items
+      const mergedByUnit = new Map<number, number>();
+      for (const it of input.items) {
+        const productUnitId = Number(it.productUnitId);
+        const quantity = Math.floor(Number(it.quantity));
+        if (!Number.isSafeInteger(productUnitId) || productUnitId <= 0) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: appErrorMessage({
               what: "وحدة الصنف غير صحيحة",
-              why: `رقم وحدة الصنف ${line.productUnitId} غير صالح`,
+              why: `رقم وحدة الصنف ${productUnitId} غير صالح`,
               doThis: "اختر وحدة صحيحة من قائمة المنتجات المتاحة",
             }),
           });
         }
-        if (!Number.isSafeInteger(line.quantity) || line.quantity <= 0) {
+        if (!Number.isSafeInteger(quantity) || quantity <= 0) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: appErrorMessage({
               what: "كمية الصنف غير صحيحة",
-              why: `الكمية المدخلة (${line.quantity}) ليست عدداً صحيحاً موجباً`,
+              why: `الكمية المدخلة (${quantity}) ليست عدداً صحيحاً موجباً`,
               doThis: "أدخل كمية صحيحة أكبر من صفر لكل صنف في الطلب",
             }),
           });
         }
+        mergedByUnit.set(productUnitId, (mergedByUnit.get(productUnitId) ?? 0) + quantity);
       }
+      const lines = Array.from(mergedByUnit.entries()).map(([productUnitId, quantity]) => ({
+        productUnitId,
+        quantity,
+      }));
 
       // Unit locks in ascending order
-      const unitIds = Array.from(new Set(lines.map((l) => l.productUnitId))).sort((a, b) => a - b);
+      const unitIds = Array.from(mergedByUnit.keys()).sort((a, b) => a - b);
       await lockProductUnitsForOnlineAllocation(tx, unitIds);
 
       // Price lines using official online order engine (staff edits can include any active catalog unit)
