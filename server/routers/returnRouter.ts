@@ -1750,8 +1750,11 @@ export const returnRouter = router({
         };
       });
 
+      const hasRemainingItems = items.some((i) => i.remainingQuantity > 0);
       const isFullyReturned =
-        inv.status === "RETURNED" || isDead || remainingInvoiceTotal.lte(0);
+        inv.status === "RETURNED" ||
+        isDead ||
+        (remainingInvoiceTotal.lte(0) && !hasRemainingItems);
 
       return {
         id: Number(inv.id),
@@ -3445,6 +3448,18 @@ export const returnRouter = router({
             }
           }
 
+          if (!matchedInvoice && consignByVariant.size > 0) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "تعذر تنفيذ مرتجع عابر لصنف أمانة",
+                why: "أصناف الأمانة ترتبط باستحقاق مالي للمودِع على الفاتورة الأصلية ولا يمكن عكسها بدون مرجع البيع الأصلي",
+                doThis:
+                  "أدخل رقم الفاتورة الأصلية لتنفيذ مرتجع صنف الأمانة بدقة",
+              }),
+            });
+          }
+
           const bundleVariantIds = allVariantIds.filter(
             (id) => kindByVariant.get(id) === "BUNDLE",
           );
@@ -3976,6 +3991,12 @@ export const returnRouter = router({
             "SERVICE" | "CONSIGNMENT" | "INVENTORY"
           >();
           for (const itm of input.items) {
+            const itemRev =
+              resolvedRevenueByItem.get(itm) ??
+              (!matchedInvoice
+                ? round2(money(itm.unitPrice).times(itm.quantity))
+                : money(0));
+            if (itemRev.lte(0)) continue;
             const kind = kindByVariant.get(Number(itm.variantId)) ?? "STOCK";
             const isConsign = consignByVariant.has(Number(itm.variantId));
             returnClasses.add(
@@ -3985,11 +4006,6 @@ export const returnRouter = router({
                   ? "CONSIGNMENT"
                   : "INVENTORY",
             );
-            const itemRev =
-              resolvedRevenueByItem.get(itm) ??
-              (!matchedInvoice
-                ? round2(money(itm.unitPrice).times(itm.quantity))
-                : money(0));
             if (kind === "SERVICE") {
               printRevenue = round2(printRevenue.plus(itemRev));
             } else {
@@ -4008,14 +4024,10 @@ export const returnRouter = router({
             }
           }
 
-          const hasConsignmentReturn = byConsignor.size > 0;
-          const hasOwnedReturn = input.items.some(
-            (itm) => !consignByVariant.has(Number(itm.variantId)),
-          );
+          const hasConsignmentReturn = returnClasses.has("CONSIGNMENT");
           const salesReturnProfile: PostingProfile =
             returnClasses.size > 1 ||
-            (hasConsignmentReturn &&
-              (hasOwnedReturn || ownedReversedCost.gt(0))) ||
+            (hasConsignmentReturn && ownedReversedCost.gt(0)) ||
             (printRevenue.gt(0) &&
               (stationeryRevenue.gt(0) || ownedReversedCost.gt(0)))
               ? "RETURN_SALE_MIXED"
@@ -4276,9 +4288,16 @@ export const returnRouter = router({
             const newReturnedTotal = money(
               matchedInvoice.returnedTotal ?? "0",
             ).plus(returnTotalDec);
-            const isFullyReturned = newReturnedTotal.gte(
-              money(matchedInvoice.total),
-            );
+            const allItemsReturned =
+              invoiceItemRows.length === 0 ||
+              invoiceItemRows.every(
+                (ii) =>
+                  Number(ii.returnedBaseQuantity ?? 0) >=
+                  Number(ii.baseQuantity ?? 0),
+              );
+            const isFullyReturned =
+              newReturnedTotal.gte(money(matchedInvoice.total)) &&
+              allItemsReturned;
 
             // تسوية إرسالية التوصيل المرتبطة بالفاتورة:
             // فحص ما إذا كانت الإرسالية لديها عهدة مسلّمة غير مورّدة (unremitted custody)
