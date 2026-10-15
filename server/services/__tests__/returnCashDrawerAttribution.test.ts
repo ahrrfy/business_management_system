@@ -21,6 +21,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
+import { ROLE_TEMPLATES } from "@shared/permissions";
 import { returnSale, returnSaleDirect } from "../returnService";
 import { createSale } from "../saleService";
 import { getShiftReport, resolveBranchCashShiftTx } from "../shiftService";
@@ -397,7 +398,7 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("مستخدم بدور مخصّص نشط ككاشير ورول راكد كـuser ⇒ يُقبل التنفيذ المباشر", async () => {
+  it("مستخدم بدور كاشير مخصص ينفّذ مرتجع فاتورته داخل ورديته", async () => {
     const roleRes = await db().insert(s.roles).values({
       key: "custom-promoted",
       label: "كاشير مخصص",
@@ -420,17 +421,118 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
     const shift = await openShiftFor(5, 1);
     const { invoiceId, itemId } = await sellOneCash(shift, { userId: 5, branchId: 1 });
 
-    const res = await returnSaleDirect(
+    const result = await returnSaleDirect(
       {
         invoiceId,
         lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
         resolution: walkInCashResolution(shift),
-        operatorReason: "تنفيذ كاشير مرقى بنجاح",
+        operatorReason: "مرتجع كاشير مخصص داخل ورديته",
       },
       { userId: 5, branchId: 1 },
     );
+    expect(result).toMatchObject({ fullyReturned: true, returnedTotal: "10.00" });
+  });
+
+  it("المدير المخول ينفّذ مرتجع فاتورته ضمن سلطته التشغيلية", async () => {
+    const mgrShift = await openShiftFor(1, 1);
+    // المديرة (userId: 1) أنشأت الفاتورة بنفسها
+    const { invoiceId, itemId } = await sellOneCash(mgrShift, manager);
+
+    const result = await returnSaleDirect(
+      {
+        invoiceId,
+        lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+        resolution: walkInCashResolution(mgrShift),
+        operatorReason: "مرتجع مدير مخول لفاتورته",
+      },
+      manager,
+    );
+    expect(result).toMatchObject({ fullyReturned: true, returnedTotal: "10.00" });
+  });
+
+  it("⭐ فصل المهام (SOD): مدير مستقل ينفّذ المرتجع المباشر لفاتورة أنشأها الكاشير بنجاح", async () => {
+    const cashierShift = await openShiftFor(2, 1);
+    // الكاشير (userId: 2) أنشأ الفاتورة
+    const { invoiceId, itemId } = await sellOneCash(cashierShift, cashier);
+
+    // المديرة المستقلة (userId: 1) تنفّذ المرتجع المباشر
+    const res = await returnSaleDirect(
+      {
+        invoiceId,
+        lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+        resolution: walkInCashResolution(cashierShift),
+        operatorReason: "تنفيذ مدير مستقل لفاتورة الكاشير",
+      },
+      manager,
+    );
 
     expect(res.returnedTotal).toBe("10.00");
+    expect(res.fullyReturned).toBe(true);
+  });
+
+  it("⭐ المالك معفى من قيود SOD وينفّذ المرتجع المباشر فوراً حتى لفاتورته", async () => {
+    await db().insert(s.users).values({
+      id: 7,
+      openId: "owner7",
+      name: "المالك",
+      role: "admin",
+      isOwner: true,
+      loginMethod: "local",
+      branchId: 1,
+    });
+    const ownerShift = await openShiftFor(7, 1);
+    const { invoiceId, itemId } = await sellOneCash(ownerShift, { userId: 7, branchId: 1, role: "admin" });
+
+    const res = await returnSaleDirect(
+      {
+        invoiceId,
+        lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+        resolution: walkInCashResolution(ownerShift),
+        operatorReason: "تنفيذ المالك المباشر لفاتورته",
+      },
+      { userId: 7, branchId: 1, role: "admin", isOwner: true },
+    );
+
+    expect(res.returnedTotal).toBe("10.00");
+    expect(res.fullyReturned).toBe(true);
+  });
+
+  it("قالب كاشير الطباعة ينفّذ المرتجع المفوّض مع بقاء وحدة المبيعات محجوبة", async () => {
+    const roleRes = await db().insert(s.roles).values({
+      key: "print_cashier",
+      label: "كاشير طباعة",
+      baseRole: "cashier",
+      isActive: true,
+      permissions: {
+        ...ROLE_TEMPLATES.cashier,
+        sales: "NONE",
+        workorders: "NONE",
+      },
+    });
+    const roleId = extractInsertId(roleRes);
+    await db().insert(s.users).values({
+      id: 9,
+      openId: "print-cashier-return",
+      name: "كاشير طباعة مفوض",
+      role: "cashier",
+      customRoleId: roleId,
+      loginMethod: "local",
+      branchId: 1,
+    });
+
+    const shift = await openShiftFor(9, 1);
+    const { invoiceId, itemId } = await sellOneCash(shift, {
+      userId: 9,
+      branchId: 1,
+    });
+    await expect(returnSaleDirect({
+      invoiceId,
+      lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+      resolution: walkInCashResolution(shift),
+      operatorReason: "مرتجع كاشير الطباعة ضمن التفويض",
+    }, { userId: 9, branchId: 1 })).resolves.toMatchObject({
+      returnedTotal: "10.00",
+    });
   });
 
   it("دور مخصّص مجرّد من صلاحية المبيعات (sales: NONE) ⇒ يُرفض التنفيذ المباشر بـ FORBIDDEN", async () => {
@@ -583,7 +685,7 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
     ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
-  it("كاشير بلا وردية مفتوحة في فرع الفاتورة ⇒ يُرفض التنفيذ المباشر بـ PRECONDITION_FAILED", async () => {
+  it("كاشير بلا وردية مفتوحة في فرع الفاتورة ⇒ تنتقل العملية إلى الاعتماد", async () => {
     // كاشير 2 أنشأ فاتورة على ورديته ثم أُغلقت الوردية
     const cashierShift = await openShiftFor(2, 1);
     const { invoiceId, itemId } = await sellOneCash(cashierShift, cashier);
@@ -595,25 +697,28 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
           invoiceId,
           lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
           resolution: walkInCashResolution(),
-          operatorReason: "محاولة كاشير بلا وردية",
+          operatorReason: "محاولة كاشير للتنفيذ المباشر",
         },
         { userId: 2, branchId: 1 },
       ),
     ).rejects.toMatchObject({
-      code: "PRECONDITION_FAILED",
-      message: expect.stringContaining("يوجد رد نقدي فعلي"),
+      decision: {
+        result: "APPROVAL_REQUIRED",
+        reason: "الرد النقدي ليس من وردية مفتوحة تخص منفذ المرتجع",
+      },
     });
   });
 
-  it("كاشير بلا وردية يلغي فاتورة دفع عند الاستلام غير مدفوعة بلا صرف نقد", async () => {
+  it("كاشير يلغي فاتورة دفع عند الاستلام غير المقبوضة بلا وردية أو رد نقدي", async () => {
     await setStock(1, 1, 10);
+    // الفاتورة أنشأها الكاشير (userId: 2)
     const sale = await createSale({
       branchId: 1,
       sourceType: "ORDER",
       lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
       codDispatchPending: true,
       paymentMode: "COD",
-    }, manager);
+    }, cashier);
     const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
 
     const result = await returnSaleDirect({

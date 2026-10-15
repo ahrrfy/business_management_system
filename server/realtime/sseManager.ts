@@ -153,10 +153,7 @@ export class SseManager {
    * مطابقة العميل مع نطاق الحدث للتحقق من الأهلية والعزل الأمني للفروع.
    */
   shouldDeliver(client: SseClient, event: RealtimeEvent): boolean {
-    if (
-      event.scope?.excludeConnectionId &&
-      client.id === event.scope.excludeConnectionId
-    ) {
+    if (event.scope?.excludeConnectionId && client.id === event.scope.excludeConnectionId) {
       return false;
     }
 
@@ -171,10 +168,7 @@ export class SseManager {
     // عزل الشركة الصارم (Multi-tenancy Company Isolation):
     // الحدث الموجه لشركة لا يُسلَّم إطلاقاً إلا لعميلٍ ينتمي لنفس الشركة حتماً (Fail-closed).
     if (event.scope?.companyId != null) {
-      if (
-        client.companyId == null ||
-        client.companyId !== event.scope.companyId
-      ) {
+      if (client.companyId == null || client.companyId !== event.scope.companyId) {
         return false;
       }
     }
@@ -182,10 +176,7 @@ export class SseManager {
     // عزل الفرع الصارم (Branch Isolation):
     // إذا كان الحدث موجهاً لفرع محدد، وكان العميل مقيداً بفرع محدد، فيجب تطابقهما حتماً.
     if (event.scope?.branchId != null) {
-      if (
-        client.scopedBranchId != null &&
-        client.scopedBranchId !== event.scope.branchId
-      ) {
+      if (client.scopedBranchId != null && client.scopedBranchId !== event.scope.branchId) {
         return false;
       }
     }

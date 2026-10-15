@@ -158,8 +158,19 @@ describe("returns.getInvoice — عزل الفرع (IDOR قراءة)", () => {
     await expect(caller("cashier", 2, 2).returns.getInvoice({ invoiceId })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("كاشير الاستقبال (workorders: FULL) في نفس الفرع يقرأ الفاتورة؛ فرع آخر ⇒ FORBIDDEN", async () => {
+  it("كاشير الاستقبال (workorders: FULL) في نفس الفرع يقرأ فاتورة الاستقبال؛ فرع آخر ⇒ FORBIDDEN", async () => {
     const { invoiceId } = await sellFive();
+    await db().update(s.invoices).set({ sourceType: "POS" }).where(eq(s.invoices.id, invoiceId));
+    expect(await caller("print_operator", 1, 3).returns.getInvoice({ invoiceId })).toBeNull();
+    await db().insert(s.shifts).values({
+      id: 99,
+      branchId: 1,
+      userId: 1,
+      openingBalance: "0",
+      status: "OPEN",
+      shiftType: "RECEPTION",
+    });
+    await db().update(s.invoices).set({ shiftId: 99 }).where(eq(s.invoices.id, invoiceId));
     const asReception = await caller("print_operator", 1, 3).returns.getInvoice({ invoiceId });
     expect(asReception?.id).toBe(invoiceId);
     await expect(caller("print_operator", 2, 3).returns.getInvoice({ invoiceId })).rejects.toMatchObject({ code: "FORBIDDEN" });

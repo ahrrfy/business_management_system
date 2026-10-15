@@ -5,14 +5,14 @@ type WorkboxUrlMatchInput = {
   url: Pick<URL, "pathname">;
 };
 
+export function storefrontApiNetworkMatcher(
+  input: WorkboxUrlMatchInput,
+): boolean;
+
 export function storefrontPublicImageCacheMatcher(
   input: WorkboxUrlMatchInput,
 ): boolean;
 
 export function storefrontPrivateImageNetworkMatcher(
-  input: WorkboxUrlMatchInput,
-): boolean;
-
-export function storefrontApiNetworkMatcher(
   input: WorkboxUrlMatchInput,
 ): boolean;

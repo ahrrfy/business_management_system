@@ -94,7 +94,7 @@ describe("DFIR-M4 Master PoC — Section 1 (VULN-INV-01): Return Cart Invariants
       { id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" },
     ]);
     await d.insert(s.users).values([
-      { id: 1, openId: "cashier-1", name: "كاشير", role: "cashier", loginMethod: "local", branchId: 1, isOwner: false },
+      { id: 1, openId: "cashier-1", name: "كاشير", role: "cashier", loginMethod: "local", branchId: 1, isOwner: false, operationalCaps: { maxRefundAmountIqd: "100000.00" } },
     ]);
     await d.insert(s.products).values([
       { id: 1, name: "منتج أساسي" },

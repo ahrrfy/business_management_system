@@ -23,11 +23,11 @@ import { phoneSuffix10 } from "../lib/phone";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled,
 } from "@shared/posPaymentPolicy";
 
-const cashPaymentMethod = z
+const quotationPaymentMethodSchema = z
   .enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"])
-  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE,
-  })
-  .transform((value) => value as "CASH");
+  .refine(isPosPaymentMethodEnabled, {
+    message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE,
+  });
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على createdAt).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
@@ -266,7 +266,7 @@ export const quotationRouter = router({
         quotationId: z.number().int().positive(),
         payment: z.object({
           amount: positiveMoneyString,
-          method: cashPaymentMethod,
+          method: quotationPaymentMethodSchema,
               // المرجع يُستخدم لإنشاء المحاولة فقط؛ الكاتب المالي يشتق المرجع من المحاولة المؤكدة.
               reference: z.string().trim().max(100).nullish(),
               externalPaymentAttemptId: z.number().int().positive().nullish(),

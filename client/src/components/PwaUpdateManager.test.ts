@@ -3,6 +3,8 @@ import {
   automaticStorefrontPersistenceIsSafe,
   clearPwaAutoAttempt,
   decidePwaUpdateDelivery,
+  PWA_FAILED_AUTO_RETRY_COOLDOWN_MS,
+  pwaActivationTimeoutMessage,
   pwaOfflineReadyMessage,
   readPwaAutoAttempt,
   requestStorefrontPersistence,
@@ -10,6 +12,7 @@ import {
   resolveWaitingWorkerVersion,
   shouldAutoApplyWaitingVersion,
   shouldClearPwaAutoAttempt,
+  shouldReloadAfterActivationTimeout,
   writePwaAutoAttempt,
 } from "./PwaUpdateManager";
 
@@ -242,6 +245,83 @@ describe("PWA automatic attempt persistence", () => {
       ),
     ).toBe(false);
   });
+
+  it("reloads on manual timeout only when the worker acknowledged skipWaiting or entered activating", () => {
+    expect(
+      shouldReloadAfterActivationTimeout({
+        manual: false,
+        acknowledged: true,
+        activeWorkerState: "activating",
+      }),
+    ).toBe(false);
+    expect(
+      shouldReloadAfterActivationTimeout({
+        manual: true,
+        acknowledged: true,
+        activeWorkerState: "activated",
+      }),
+    ).toBe(true);
+    expect(
+      shouldReloadAfterActivationTimeout({
+        manual: true,
+        acknowledged: false,
+        activeWorkerState: "activating",
+      }),
+    ).toBe(true);
+    expect(
+      shouldReloadAfterActivationTimeout({
+        manual: true,
+        acknowledged: false,
+        activeWorkerState: "activated",
+      }),
+    ).toBe(false);
+  });
+
+  it("uses surface-aware wording when activation times out", () => {
+    expect(
+      pwaActivationTimeoutMessage({
+        hostname: "alarabiya.online",
+        pathname: "/store",
+      }),
+    ).toContain("ولم يُفقد طلبك");
+    expect(
+      pwaActivationTimeoutMessage({
+        hostname: "srv1548487.hstgr.cloud",
+        pathname: "/pos",
+      }),
+    ).toContain("وبقي عملك محفوظاً");
+  });
+
+  it("allows unattended kiosks to retry a FAILED version after the cooldown without looping RELOADING", () => {
+    const failed = {
+      version: "/sw.js|etag:v1",
+      status: "FAILED" as const,
+      attemptedAt: 1_000,
+    };
+    expect(shouldAutoApplyWaitingVersion(failed.version, failed)).toBe(false);
+    expect(
+      shouldAutoApplyWaitingVersion(failed.version, failed, {
+        unattended: true,
+        now: 1_000 + PWA_FAILED_AUTO_RETRY_COOLDOWN_MS - 1,
+      }),
+    ).toBe(false);
+    expect(
+      shouldAutoApplyWaitingVersion(failed.version, failed, {
+        unattended: true,
+        now: 1_000 + PWA_FAILED_AUTO_RETRY_COOLDOWN_MS,
+      }),
+    ).toBe(true);
+    expect(
+      shouldAutoApplyWaitingVersion(
+        failed.version,
+        { ...failed, status: "RELOADING" },
+        {
+          unattended: true,
+          now: 1_000 + PWA_FAILED_AUTO_RETRY_COOLDOWN_MS * 10,
+        },
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("storefront save handshake", () => {
@@ -302,3 +382,4 @@ describe("storefront save handshake", () => {
     expect(automaticStorefrontPersistenceIsSafe(result)).toBe(false);
   });
 });
+

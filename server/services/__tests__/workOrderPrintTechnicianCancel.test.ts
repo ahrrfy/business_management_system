@@ -217,9 +217,9 @@ describe("تمهيدُ التحكّم كما يراه الفنّي", () => {
   it("⭐ يفصل «فيه مال» عن بوّابة المدير المتشدّدة", async () => {
     const clean = await createOrder();
     const cleanPre = await getWorkOrderControlPreflight(clean, TECH);
-    // أسطرُ الخامة تُشعل بوّابةَ المدير القائمة…
-    expect(cleanPre.controlRequired.cancel).toBe(true);
-    // …ولا تُشعل شرطَ المال، وهو وحده ما يحكم الفنّي.
+    // الخامة المخططة لم تُستهلك، لذلك يطابق التمهيد التنفيذ المباشر.
+    expect(cleanPre.controlRequired.cancel).toBe(false);
+    // شرطُ المال يبقى مستقلاً ويحوّل الإلغاء إلى اعتماد عند وجود قبض.
     expect(cleanPre.cancelMoneyAtStake).toBe(false);
 
     await openReceptionShift();

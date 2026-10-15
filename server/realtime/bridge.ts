@@ -8,7 +8,11 @@ import {
   createRealtimeEvent,
   type RealtimeEvent,
 } from "@shared/realtimeEvents";
-import { isBackgroundJobRunner, isMultiWorker } from "../lib/clusterRole";
+import {
+  isBackgroundJobRunner,
+  isClustered,
+  isMultiWorker,
+} from "../lib/clusterRole";
 import { logger } from "../logger";
 
 export type BridgeMode = "hub" | "client" | "in_memory";
@@ -25,11 +29,13 @@ export interface BridgeOptions {
 
 type ReleaseFrame = {
   kind:
+    | "pwa-release-hello"
     | "pwa-release-request"
     | "pwa-release-apply"
     | "pwa-release-ack"
     | "pwa-release-result";
   id: string;
+  workerId?: string;
   event?: RealtimeEvent;
   ok?: boolean;
   expectedWorkerCount?: number;
@@ -52,7 +58,9 @@ export class RealtimeBridgeManager {
   private server: net.Server | null = null;
   private clientSocket: net.Socket | null = null;
   private connectedSockets = new Set<net.Socket>();
+  private socketWorkerIds = new Map<net.Socket, string>();
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private hubRetryTimer: NodeJS.Timeout | null = null;
   private isStopping = false;
   private host = REALTIME_BRIDGE_HOST;
   private port = REALTIME_BRIDGE_PORT;
@@ -91,6 +99,10 @@ export class RealtimeBridgeManager {
    */
   async init(options?: BridgeOptions): Promise<BridgeMode> {
     this.isStopping = false;
+    if (this.hubRetryTimer) {
+      clearTimeout(this.hubRetryTimer);
+      this.hubRetryTimer = null;
+    }
     this.host = options?.host ?? REALTIME_BRIDGE_HOST;
     this.port = options?.port ?? REALTIME_BRIDGE_PORT;
     if (options?.workerId) {
@@ -101,7 +113,12 @@ export class RealtimeBridgeManager {
     const multi = options?.isMultiWorker ?? isMultiWorker();
     const isHub = options?.isHub ?? isBackgroundJobRunner();
     const expected =
-      options?.expectedWorkerCount ?? Number(process.env.WEB_INSTANCES);
+      options?.expectedWorkerCount ??
+      (process.env.WEB_INSTANCES
+        ? Number(process.env.WEB_INSTANCES)
+        : !forceInMemory && !multi && !isClustered()
+          ? 1
+          : NaN);
     this.expectedWorkerCount =
       Number.isSafeInteger(expected) && expected > 0 ? expected : null;
 
@@ -171,11 +188,13 @@ export class RealtimeBridgeManager {
         socket.on("error", (err) => {
           logger.warn({ err: err.message }, "realtime_bridge.hub.socket_error");
           this.connectedSockets.delete(socket);
+          this.socketWorkerIds.delete(socket);
           this.invalidateReleaseMember(socket);
         });
 
         socket.on("close", () => {
           this.connectedSockets.delete(socket);
+          this.socketWorkerIds.delete(socket);
           this.invalidateReleaseMember(socket);
         });
       });
@@ -187,10 +206,22 @@ export class RealtimeBridgeManager {
         );
         this.mode = "in_memory";
         this.server = null;
+        if (err.code === "EADDRINUSE" && !this.isStopping) {
+          this.scheduleHubRetry();
+        }
         resolve("in_memory");
       });
 
       srv.listen(this.port, this.host, () => {
+        if (this.hubRetryTimer) {
+          clearTimeout(this.hubRetryTimer);
+          this.hubRetryTimer = null;
+        }
+        if (this.isStopping) {
+          srv.close();
+          resolve("in_memory");
+          return;
+        }
         this.mode = "hub";
         this.server = srv;
         logger.info(
@@ -200,6 +231,19 @@ export class RealtimeBridgeManager {
         resolve("hub");
       });
     });
+  }
+
+  private scheduleHubRetry(): void {
+    if (this.hubRetryTimer || this.isStopping) return;
+    this.hubRetryTimer = setTimeout(() => {
+      this.hubRetryTimer = null;
+      if (!this.isStopping && this.mode === "in_memory" && !this.server) {
+        void this.startHub();
+      }
+    }, 1500);
+    if (typeof this.hubRetryTimer.unref === "function") {
+      this.hubRetryTimer.unref();
+    }
   }
 
   private startClient(): Promise<BridgeMode> {
@@ -219,6 +263,11 @@ export class RealtimeBridgeManager {
           return;
         }
         this.isConnectedToHub = true;
+        this.sendReleaseFrame(socket, {
+          kind: "pwa-release-hello",
+          id: this.workerId,
+          workerId: this.workerId,
+        });
         logger.info(
           { host: this.host, port: this.port },
           "realtime_bridge.client_connected_to_hub",
@@ -262,7 +311,7 @@ export class RealtimeBridgeManager {
       }
     });
 
-    socket.on("error", (err) => {
+    socket.on("error", () => {
       this.needsResync = true;
       this.isConnectedToHub = false;
       this.clientSocket = null;
@@ -401,6 +450,7 @@ export class RealtimeBridgeManager {
         !this.sendReleaseFrame(this.clientSocket!, {
           kind: "pwa-release-request",
           id,
+          workerId: this.workerId,
           event,
           expiresAt,
           expectedWorkerCount: this.expectedWorkerCount!,
@@ -432,6 +482,31 @@ export class RealtimeBridgeManager {
     }
   }
 
+  private registerSocketWorkerId(
+    socket: net.Socket,
+    rawWorkerId: unknown,
+  ): boolean {
+    if (typeof rawWorkerId !== "string") return false;
+    const workerId = rawWorkerId.trim();
+    if (!workerId || workerId.length > 128) return false;
+    const existing = this.socketWorkerIds.get(socket);
+    if (existing && existing !== workerId) return false;
+    this.socketWorkerIds.set(socket, workerId);
+    return true;
+  }
+
+  private hasDistinctMemberIdentities(members: Set<net.Socket>): boolean {
+    const seen = new Set<string>([this.workerId]);
+    for (const socket of Array.from(members)) {
+      const workerId = this.socketWorkerIds.get(socket);
+      if (!workerId || seen.has(workerId)) {
+        return false;
+      }
+      seen.add(workerId);
+    }
+    return true;
+  }
+
   private handleReleaseFrame(
     frame: Partial<ReleaseFrame>,
     socket: net.Socket,
@@ -445,7 +520,22 @@ export class RealtimeBridgeManager {
     if (typeof frame.id !== "string" || frame.id.length > 128) return true;
     const id = frame.id;
     if (fromHub && socket !== this.clientSocket) return true;
+    if (frame.kind === "pwa-release-hello" && !fromHub) {
+      this.registerSocketWorkerId(socket, frame.workerId ?? frame.id);
+      return true;
+    }
     if (frame.kind === "pwa-release-request" && !fromHub && frame.event) {
+      if (
+        frame.workerId !== undefined &&
+        !this.registerSocketWorkerId(socket, frame.workerId)
+      ) {
+        this.sendReleaseFrame(socket, {
+          kind: "pwa-release-result",
+          id,
+          ok: false,
+        });
+        return true;
+      }
       this.startReleaseBarrier(
         id,
         frame.event,
@@ -461,12 +551,22 @@ export class RealtimeBridgeManager {
       void (
         valid ? this.applyRelease(frame.event) : Promise.resolve(false)
       ).then((ok) => {
-        this.sendReleaseFrame(socket, { kind: "pwa-release-ack", id, ok });
+        this.sendReleaseFrame(socket, {
+          kind: "pwa-release-ack",
+          id,
+          workerId: this.workerId,
+          ok,
+        });
       });
     } else if (frame.kind === "pwa-release-ack" && !fromHub) {
       const barrier = this.releaseBarriers.get(id);
       if (barrier?.waiting.has(socket)) {
-        if (frame.ok !== true) this.finishReleaseBarrier(id, false);
+        const expectedWorkerId = this.socketWorkerIds.get(socket);
+        const workerIdMatches =
+          !frame.workerId ||
+          (!!expectedWorkerId && frame.workerId.trim() === expectedWorkerId);
+        if (frame.ok !== true || !workerIdMatches)
+          this.finishReleaseBarrier(id, false);
         else {
           barrier.waiting.delete(socket);
           this.completeReleaseBarrier(id);
@@ -506,6 +606,7 @@ export class RealtimeBridgeManager {
       expectedWorkerCount !== this.expectedWorkerCount ||
       this.expectedWorkerCount !== members.size + 1 ||
       (requester && !members.has(requester)) ||
+      !this.hasDistinctMemberIdentities(members) ||
       this.releaseBarriers.has(id)
     ) {
       replyFailure();
@@ -621,6 +722,10 @@ export class RealtimeBridgeManager {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    if (this.hubRetryTimer) {
+      clearTimeout(this.hubRetryTimer);
+      this.hubRetryTimer = null;
+    }
 
     this.pendingOutbound = [];
 
@@ -634,6 +739,7 @@ export class RealtimeBridgeManager {
       socket.destroy();
     });
     this.connectedSockets.clear();
+    this.socketWorkerIds.clear();
 
     if (this.server) {
       await new Promise<void>((resolve) => {
@@ -643,7 +749,6 @@ export class RealtimeBridgeManager {
     }
 
     this.mode = "in_memory";
-    this.isStopping = false;
   }
 }
 

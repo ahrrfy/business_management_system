@@ -627,7 +627,7 @@ describe.sequential("Adversarial Empirical Challenge: Cross-Module Cancellation 
       expect(caughtError.message).not.toMatch(/ER_|errno|sqlState/i);
     });
 
-    it("6.3: رفض محاولة تنفيذ مرتجع بمبلغ أكبر من المتبقي برمز BAD_REQUEST وعقد appErrorMessage", async () => {
+    it("6.3: رفض محاولة رد نقدي أكبر من المدفوع فعلياً برمز BAD_REQUEST وعقد appErrorMessage", async () => {
       const shiftId = await openShift();
       const sale = await sellCashItems(shiftId, 1, [{ variantId: 1, qty: 1, unitPrice: "5.00" }]);
 
@@ -647,7 +647,7 @@ describe.sequential("Adversarial Empirical Challenge: Cross-Module Cancellation 
       expect(caughtError).toBeInstanceOf(TRPCError);
       expect(caughtError.code).toBe("BAD_REQUEST");
       expect(caughtError.message).toContain(" — ");
-      expect(caughtError.message).toMatch(/يتجاوز القيمة المتبقية للفاتورة/);
+      expect(caughtError.message).toMatch(/يتجاوز المدفوع الفعلي للفاتورة/);
       expect(caughtError.message).not.toMatch(/ER_|errno|sqlState/i);
     });
 

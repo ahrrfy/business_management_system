@@ -13,6 +13,7 @@ interface OperationPermissionFiltersProps {
   filter: string;
   domains: string[];
   stages: string[];
+  hasDailyTasks?: boolean;
   setQuery: (next: string) => void;
   setDomain: (next: string) => void;
   setStage: (next: string) => void;
@@ -28,6 +29,7 @@ export function OperationPermissionFilters({
   filter,
   domains,
   stages,
+  hasDailyTasks,
   setQuery,
   setDomain,
   setStage,
@@ -77,8 +79,10 @@ export function OperationPermissionFilters({
         <Label htmlFor={`${id}-filter`}>حالة التفويض</Label>
         <AppSelect id={`${id}-filter`} value={filter} onValueChange={setFilter}>
           <option value="all">كل العمليات</option>
+          {hasDailyTasks && <option value="daily">المهام اليومية الافتراضية</option>}
           <option value="allow">المفوّضة فقط</option>
           <option value="deny">الممنوعة فقط</option>
+          <option value="blocked">مختارة ومحجوبة بإذن التكلفة</option>
           {mode === "user" && (
             <option value="overrides">الاستثناءات الفردية فقط</option>
           )}

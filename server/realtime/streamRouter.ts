@@ -69,8 +69,7 @@ realtimeRouter.get("/stream", async (req: Request, res: Response) => {
     // 1. استخراج التوكن من الكوكي أو query أو Authorization
     const cookies = parseCookie(req.headers.cookie ?? "");
     const cookieToken = cookies[COOKIE_NAME];
-    const queryToken =
-      typeof req.query.token === "string" ? req.query.token : undefined;
+    const queryToken = typeof req.query.token === "string" ? req.query.token : undefined;
     const authHeader = req.headers.authorization;
     const bearerToken = authHeader?.startsWith("Bearer ")
       ? authHeader.slice(7).trim()

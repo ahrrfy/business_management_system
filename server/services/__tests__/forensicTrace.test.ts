@@ -9,7 +9,7 @@
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { CASHIER_NAV_PATHS } from "../../../client/src/lib/navVisibility";
+import { CASHIER_NAV_PATHS, RETURNS_WORKSPACE_GATE } from "../../../client/src/lib/navVisibility";
 import { APPLICATION_MODULES } from "../../../client/src/lib/moduleRegistry";
 
 const readServer = (rel: string) =>
@@ -19,14 +19,14 @@ describe("عقد إجراءات التحري الجنائي والمسح الش�
   const routerSrc = readServer("routers/returnRouter.ts");
 
   it("returnRouter يصدّر forensicTrace و universalScan", () => {
-    expect(routerSrc).toContain("forensicTrace: salesReadProcedure");
-    expect(routerSrc).toContain("universalScan: salesReadProcedure");
+    expect(routerSrc).toContain("forensicTrace: returnsProcedure");
+    expect(routerSrc).toContain("universalScan: returnsProcedure");
     expect(routerSrc).toContain('from "../services/returns/forensicTraceService"');
   });
 
   it("البوّابة تسمح للكاشير والمدير بقراءة فواتير التحري الجنائي", () => {
-    // salesReadProcedure تتيح لـ cashier و manager و admin الوصول للاستعلام
-    expect(routerSrc).toMatch(/salesReadProcedure\s*\.input\(/);
+    // returnsProcedure تتيح لكاشير التجزئة وكاشير الاستقبال والمدير الوصول للاستعلام
+    expect(routerSrc).toMatch(/returnsProcedure\s*\.input\(/);
   });
 });
 
@@ -41,8 +41,6 @@ describe("تكامل بوابة المرتجعات في واجهة النظام"
     expect(returnsMod?.href).toBe("/returns");
     expect(returnsMod?.label).toBe("بوابة المرتجعات");
     expect(returnsMod?.section).toBe(1);
-    expect(returnsMod?.roles).toContain("cashier");
-    expect(returnsMod?.roles).toContain("manager");
-    expect(returnsMod?.roles).toContain("admin");
+    expect(returnsMod?.anyOf).toEqual(RETURNS_WORKSPACE_GATE.anyOf);
   });
 });

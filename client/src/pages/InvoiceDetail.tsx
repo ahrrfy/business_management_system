@@ -11,7 +11,6 @@ import { AutoPrintOnce } from "@/components/AutoPrintOnce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { PaymentDeviceReferenceField } from "@/components/form/PaymentDeviceReferenceField";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Label } from "@/components/ui/label";
@@ -129,7 +128,6 @@ export default function InvoiceDetail() {
   const [cancelMethod, setCancelMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [cancelReason, setCancelReason] = useState("");
   const [cancelConfirmText, setCancelConfirmText] = useState("");
-  const [cancelReference, setCancelReference] = useState("");
   const [cancelRequestId, setCancelRequestId] = useState(() => crypto.randomUUID());
 
   // Default the payment amount to remaining balance once data loads.
@@ -168,14 +166,25 @@ export default function InvoiceDetail() {
 
   const cancel = trpc.sales.cancel.useMutation({
     onSuccess: async (r) => {
-      setDone(`أُرسل طلب الإلغاء #${r.requestId} للاعتماد — لم يتغير المخزون أو المال بعد.`);
+      setDone(
+        r.mode === "EXECUTED"
+          ? Number(r.pendingRefundAmount ?? 0) > 0
+            ? `تم إلغاء الفاتورة وإنشاء طلب صرف ${Number(r.pendingRefundAmount).toLocaleString("ar-IQ-u-nu-latn")} د.ع${r.refundVoucherNumber ? ` برقم ${r.refundVoucherNumber}` : ""}.`
+            : `تم إلغاء الفاتورة ورد ${Number(r.refundAmount ?? 0).toLocaleString("ar-IQ-u-nu-latn")} د.ع ضمن صلاحية الوردية.`
+          : `أُرسل طلب الإلغاء #${r.requestId} للاعتماد — لم يتغير المخزون أو المال بعد.`,
+      );
       setError("");
       setCancelOpen(false);
       setCancelReason("");
-      setCancelConfirmText(""); setCancelReference("");
-      await Promise.all([
-        utils.salesControl.list.invalidate(),
-      ]);
+      setCancelConfirmText("");
+      await Promise.all(
+        r.mode === "EXECUTED"
+          ? [
+              utils.sales.get.invalidate({ invoiceId }),
+              utils.sales.list.invalidate(),
+            ]
+          : [utils.salesControl.list.invalidate()],
+      );
       setCancelRequestId(crypto.randomUUID());
     },
     onError: (e) => { setError(e.message); setDone(""); },
@@ -775,7 +784,7 @@ export default function InvoiceDetail() {
               onClick={() => {
                 setCancelMethod((data.paymentMethod as (typeof METHODS)[number]["v"] | null) ?? "CASH");
                 setCancelReason("");
-                setCancelConfirmText(""); setCancelReference("");
+                setCancelConfirmText("");
                 setError("");
                 setCancelOpen(true);
               }}
@@ -1075,13 +1084,13 @@ export default function InvoiceDetail() {
             </DialogTitle>
             <DialogDescription className="space-y-2 pt-2 text-start">
               <div>
-                هذا طلب إلغاء صفري الأثر. بعد اعتماد مراجع مستقل يعكس النظام القيد المحاسبيّ ويعيد كامل البضاعة إلى المخزون
+                هذا إجراء إلغاء فعلي. إذا استوفت الفاتورة حدود صلاحيتك فسينفذ النظام الإلغاء فور التأكيد، ويعكس القيد المحاسبيّ ويعيد كامل البضاعة إلى المخزون
                 {paidAmountForRefund.gt(0) && (
                   <>
                     {" "}
                     ويُصدر <strong>سند صرفٍ</strong> باستردادِ {" "}
                     {fmt(paidAmountForRefund.toFixed(2))}</>
-                )}.
+                )}. وإذا تجاوزت العملية السقف أو شروط الوردية فسيُنشأ طلب اعتماد بلا أثر مالي أو مخزني حتى اعتماده.
               </div>
               {data.status !== "PENDING" && (
                 <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-xs text-[var(--sem-warn)]">
@@ -1111,8 +1120,9 @@ export default function InvoiceDetail() {
               </div>
             )}
             {needsCardReference && (
-              <PaymentDeviceReferenceField id="cancel-card-ref" value={cancelReference} onChange={setCancelReference}
-                hint="اختياريّ هنا. إن نفّذت الاسترداد على الجهاز فعلاً أدخِل مرجعه — وإلا اتركه فارغاً؛ المُعتمِد المستقل يدخله أو يؤكّده لحظة الاعتماد، قبل أن يُنفَّذ أيّ أثرٍ فعليّ." />
+              <p className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
+                سيُنشأ طلب اعتماد أولاً. بعد قبوله ينفذ المراجع المستقل رد البطاقة على الجهاز ويثبت مرجعه؛ لا تنفذ الرد من هذه الشاشة.
+              </p>
             )}
             <div className="space-y-1">
               <Label htmlFor="cancel-reason">سبب الإلغاء *</Label>
@@ -1147,12 +1157,11 @@ export default function InvoiceDetail() {
                 if (cancelConfirmText.trim() !== data.invoiceNumber) return;
                 cancel.mutate({
                   invoiceId, refundPaymentMethod: cancelMethod,
-                  reference: needsCardReference && cancelReference.trim() ? cancelReference.trim() : undefined,
                   reason: cancelReason.trim(), clientRequestId: cancelRequestId,
                 });
               }}
             >
-              {cancel.isPending ? ACTION_LABELS.sending : "إرسال طلب الإلغاء"}
+              {cancel.isPending ? ACTION_LABELS.processing : "تأكيد الإلغاء"}
             </Button>
           </DialogFooter>
         </DialogContent>

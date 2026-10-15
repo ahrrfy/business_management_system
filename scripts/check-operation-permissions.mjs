@@ -182,6 +182,26 @@ if (process.argv.includes("--selftest")) {
       "UNSUPPORTED",
       "Reviewed override is exact: no whole-family role bypass",
     );
+    write("server/services/purchase/governanceCutover.ts", `export function assertLegacyPurchaseWritePathDisabled() { throw new Error("retired"); }`);
+    write("server/routers/retiredFixture.ts", `import {router,purchasesManagerProcedure} from "../trpc";
+import {assertLegacyPurchaseWritePathDisabled,assertLegacyPurchaseWritePathDisabled as retiredWritePath} from "../services/purchase/governanceCutover";
+export const purchasesRouter = router({
+  pay: purchasesManagerProcedure.mutation(() => assertLegacyPurchaseWritePathDisabled("purchases.pay")),
+  list: purchasesManagerProcedure.query(() => { /* assertLegacyPurchaseWritePathDisabled("purchases.list") */ return []; }),
+});
+export const purchaseReturnsRouter = router({
+  create: purchasesManagerProcedure.mutation(() => { return retiredWritePath("purchaseReturns.create"); }),
+});`);
+    write("server/routers.ts", `import {router} from "./trpc"; import {purchasesRouter,purchaseReturnsRouter} from "./routers/retiredFixture";
+export const appRouter = router({purchases:purchasesRouter,purchaseReturns:purchaseReturnsRouter});`);
+    generate();
+    const retired = readOperations();
+    for (const path of ["purchases.pay", "purchaseReturns.create"]) {
+      const entry = retired.find((operation) => operation.path === path);
+      assert.equal(entry.delegable, false, "An unconditionally retired handler must not advertise a grant");
+      assert.equal(entry.reservedKind, "RETIRED");
+    }
+    assert.equal(retired.find((entry) => entry.path === "purchases.list").delegable, true, "A comment cannot retire a live handler");
     // The real inventory exceeds a pipe buffer. Immediate process.exit used to
     // truncate --json on Linux while passing Windows-only catalog validation.
     const bulkCount = 400;
@@ -205,6 +225,11 @@ if (process.argv.includes("--selftest")) {
   process.exit(0);
 }
 const entries = generateOperationPermissions();
+for (const path of ["purchases.pay", "purchaseReturns.create"]) {
+  const entry = entries.find((operation) => operation.path === path);
+  assert.equal(entry?.reservedKind, "RETIRED", `${path} is a disabled legacy write, not a selectable permission`);
+  assert.equal(entry.delegable, false);
+}
 const companyStoreSettings = entries.filter((entry) => entry.procedure === "storeGlobalAdminProcedure");
 assert.equal(companyStoreSettings.length, 25, "Review any change to the fixed company-store administration surface");
 assert.ok(companyStoreSettings.every((entry) => !entry.delegable && entry.reservedKind === "AUTHORITY" && entry.authority === "admin"), "Company-store governance must not advertise ineffective operational grants");

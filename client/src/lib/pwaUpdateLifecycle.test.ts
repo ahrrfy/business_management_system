@@ -75,11 +75,24 @@ describe("PWA update lifecycle", () => {
       vi.unstubAllGlobals();
     }
   });
+
   it("يفعّل العامل المنتظر من الحالة الفعلية", () => {
     expect(
       decidePwaUpdateAction({
         hasRegistration: true,
         hasWaitingWorker: true,
+        hasActiveWorker: true,
+        updateWasSignaled: true,
+      }),
+    ).toBe("ACTIVATE_WAITING");
+  });
+
+  it("يتابع انتظار العامل الذي دخل حالة activating بعد تفريغ waiting بدلاً من الفشل المبكر في RELOAD_ACTIVE", () => {
+    expect(
+      decidePwaUpdateAction({
+        hasRegistration: true,
+        hasWaitingWorker: false,
+        hasActivatingWorker: true,
         hasActiveWorker: true,
         updateWasSignaled: true,
       }),
@@ -328,19 +341,25 @@ describe("waiting worker stream release protocol", () => {
     expect(worker.skipWaiting).toHaveBeenCalledTimes(1);
   });
 
-  it("retries stream release after a failed POST even when skipWaiting resolves immediately", async () => {
+  it("arms skipWaiting resiliently even when pwa-quiesce returns 503 or throws, and retries release on subsequent SKIP_WAITING", async () => {
     const transport = vi
       .fn()
       .mockResolvedValueOnce({ ok: false, status: 503 })
-      .mockResolvedValueOnce({ ok: true });
+      .mockRejectedValueOnce(new Error("network transient"));
     const worker = setup(transport as typeof fetch);
-    worker.send("PWA_ACTIVATE");
+    const firstReply = worker.send("PWA_ACTIVATE");
     await worker.settle();
-    expect(worker.skipWaiting).not.toHaveBeenCalled();
-    worker.send("SKIP_WAITING");
-    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(2));
-    await worker.settle();
+    expect(transport).toHaveBeenCalledTimes(1);
     expect(worker.skipWaiting).toHaveBeenCalledTimes(1);
+    expect(firstReply).toHaveBeenCalledWith({
+      type: "PWA_ACTIVATION_ACCEPTED",
+      requestId: "test",
+    });
+
+    worker.send("SKIP_WAITING");
+    await worker.settle();
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(worker.skipWaiting).toHaveBeenCalledTimes(2);
   });
 
   it("allows an anonymous storefront and a genuinely offline browser to activate", async () => {
@@ -366,24 +385,11 @@ describe("waiting worker stream release protocol", () => {
   it("does not release streams for a cross-origin sender", async () => {
     const transport = vi.fn(async () => ({ ok: true }) as Response);
     const worker = setup(transport as typeof fetch);
-    worker.send("PWA_ACTIVATE", "https://other.example");
+    const reply = worker.send("PWA_ACTIVATE", "https://other.example");
     await worker.settle();
     expect(transport).not.toHaveBeenCalled();
     expect(worker.skipWaiting).not.toHaveBeenCalled();
-  });
-
-  it("does not acknowledge or request activation after transient release failure", async () => {
-    const transport = vi.fn(async () => {
-      throw new Error("offline");
-    });
-    const worker = setup(transport as typeof fetch);
-    const reply = worker.send("PWA_ACTIVATE");
-    await worker.settle();
-    expect(transport).toHaveBeenCalledTimes(1);
-    expect(worker.skipWaiting).not.toHaveBeenCalled();
-    expect(reply).toHaveBeenCalledWith({
-      type: "PWA_ACTIVATION_REJECTED",
-      requestId: "test",
-    });
+    expect(reply.stopImmediatePropagation).not.toHaveBeenCalled();
   });
 });
+

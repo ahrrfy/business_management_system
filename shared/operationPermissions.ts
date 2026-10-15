@@ -2,14 +2,18 @@ import { createMongoAbility } from "@casl/ability";
 import { z } from "zod";
 import {
   ALL_PERMISSION_MODULE_KEYS,
+  applyPermissionOverrides,
   canSeeCost,
   canUseDigitalCardsSellingStation,
   diffFromTemplate,
+  deriveEffectiveAccess,
   levelSatisfies,
   moduleAccessAllowed,
   resolvePermissions,
   type AccessLevel,
+  type EffectiveAccessSummary,
   type PermissionMap,
+  type PosStation,
   type RoleKey,
 } from "./permissions";
 import { GENERATED_OPERATION_PERMISSIONS } from "./operationPermissionCatalog.generated";
@@ -33,7 +37,7 @@ export interface OperationPermission {
   delegable: boolean;
   requiresCostVisibility?: boolean;
   requiresLegacyReview?: boolean;
-  reservedKind?: "AUTHORITY" | "IDENTITY" | "PUBLIC" | "UNSUPPORTED" | null;
+  reservedKind?: "AUTHORITY" | "IDENTITY" | "PUBLIC" | "UNSUPPORTED" | "RETIRED" | null;
   /** The inherited legacy gate can require FULL even for a query. */
   level?: string | null;
   procedure?: string;
@@ -88,7 +92,16 @@ const policyShape = z
   .strict();
 
 /** Reject unknown paths and reserved authority; aliases are migration inputs only. */
-export const operationPolicySchema = policyShape.superRefine((policy, ctx) => {
+export const operationPolicySchema = policyShape.transform((policy) => {
+  const grants = { ...policy.grants };
+  const recordScopes = policy.recordScopes ? { ...policy.recordScopes } : undefined;
+  // Only explicitly retired catalog paths are safe to remove from persisted full maps.
+  for (const key of Object.keys(grants))
+    if (getOperationPermission(key)?.reservedKind === "RETIRED") delete grants[key];
+  for (const key of Object.keys(recordScopes ?? {}))
+    if (getOperationPermission(key)?.reservedKind === "RETIRED") delete recordScopes![key];
+  return { ...policy, grants, ...(recordScopes ? { recordScopes } : {}) };
+}).superRefine((policy, ctx) => {
   const visibility = policy.dataVisibility;
   if (visibility && visibility.purchaseCost !== visibility.profitMargin) {
     ctx.addIssue({
@@ -265,13 +278,20 @@ export function resolveOperationPolicy(
   legacyIndividual?: {
     permissionsOverride?: PermissionMap | null;
     atomicPermissions?: Record<string, boolean> | null;
+    inheritedModules?: PermissionMap;
   },
 ): OperationPolicy {
   const legacy = legacyOperationPolicy(role, modules, legacyOverride);
-  // Until this account is explicitly converted, preserve its own old revocations.
+  // Until this account is explicitly converted, preserve its own old grants and revocations.
   // A saved sparse user policy replaces the old individual matrix completely.
   const inherited = userPolicy == null && legacyIndividual
-    ? applyLegacyIndividualOperationDenials(rolePolicy ?? legacy, role, legacyIndividual.permissionsOverride, legacyIndividual.atomicPermissions)
+    ? applyLegacyIndividualOperationOverrides(
+        rolePolicy ?? legacy,
+        role,
+        legacyIndividual.inheritedModules,
+        legacyIndividual.permissionsOverride,
+        legacyIndividual.atomicPermissions,
+      )
     : rolePolicy ?? legacy;
   const grants: Record<string, boolean> = {};
   const recordScopes: Record<string, OperationRecordScope> = {};
@@ -307,6 +327,75 @@ export function resolveOperationPolicy(
   };
 }
 
+/** Preserve explicit old module grants relative to the inherited role, then apply its revocations. */
+export function applyLegacyIndividualOperationOverrides(
+  policy: OperationPolicy,
+  role: string,
+  inheritedModules: PermissionMap | undefined,
+  rawModules?: PermissionMap | null,
+  rawAtomic?: Record<string, boolean> | null,
+): OperationPolicy {
+  const baseModules = inheritedModules ?? resolvePermissions(role as RoleKey, null);
+  const effectiveModules = applyPermissionOverrides(baseModules, rawModules ?? null);
+  const baseLegacy = legacyOperationPolicy(
+    role,
+    baseModules,
+    diffFromTemplate(role as RoleKey, baseModules),
+  );
+  const effectiveLegacy = legacyOperationPolicy(
+    role,
+    effectiveModules,
+    diffFromTemplate(role as RoleKey, effectiveModules),
+  );
+  const grants = { ...policy.grants };
+  for (const operation of OPERATION_PERMISSIONS) {
+    if (
+      operation.delegable &&
+      effectiveLegacy.grants[operation.key] === true &&
+      baseLegacy.grants[operation.key] !== true
+    ) {
+      grants[operation.key] = true;
+    }
+  }
+  const denied = applyLegacyIndividualOperationDenials(
+    { ...policy, grants },
+    role,
+    rawModules,
+    rawAtomic,
+  );
+  const bridgedGrants = { ...denied.grants };
+  const bothReturnAndVoidRevoked =
+    rawAtomic?.["pos.return.create"] === false &&
+    rawAtomic?.["pos.invoice.void"] === false;
+  // Legacy print-cashier (pos:FULL) and reception-cashier (workorders:FULL)
+  // accounts preserve their routine return workflow while migrating to named presets,
+  // even when their legacy module map explicitly sets sales: "NONE".
+  if (
+    !bothReturnAndVoidRevoked &&
+    (rawModules?.pos === "FULL" || rawModules?.workorders === "FULL")
+  ) {
+    for (const path of [
+      "returns.create",
+      "returns.getInvoice",
+      "returns.inspectInvoiceForReturn",
+      "returns.lookupItemForReturn",
+      "returns.universalScan",
+      "returns.forensicTrace",
+      "returns.shifts",
+      "returns.executeSalesReturnCart",
+      "returns.getOpenRefundDrawers",
+      "refundRails.preflight",
+      ...(rawModules?.workorders === "FULL"
+        ? ["returns.request", "returns.requests"]
+        : []),
+    ]) {
+      const operation = getOperationPermission(path);
+      if (operation?.delegable) bridgedGrants[operation.key] = true;
+    }
+  }
+  return applyLegacyOperationDenials({ ...denied, grants: bridgedGrants }, rawAtomic);
+}
+
 /** Carry only explicit individual restrictions, never old template restrictions. */
 export function applyLegacyIndividualOperationDenials(
   policy: OperationPolicy,
@@ -339,6 +428,7 @@ export interface OperationUser {
   /** A resolved compatibility snapshot alone must not enable canonical gate bypass. */
   operationPolicyEnabled?: boolean;
   permissionsOverride?: unknown;
+  atomicPermissions?: unknown;
   resolvedPermissions?: PermissionMap;
   resolvedOperationPolicy?: OperationPolicy | null;
   roleOperationPolicy?: OperationPolicy | null;
@@ -372,6 +462,7 @@ export function hasOperationPolicy(user: OperationUser): boolean {
 function effectivePolicy(user: OperationUser): OperationPolicy {
   if (user.resolvedOperationPolicy) return user.resolvedOperationPolicy;
   const override = user.permissionsOverride as PermissionMap | null | undefined;
+  const atomic = user.atomicPermissions as Record<string, boolean> | null | undefined;
   const modules =
     user.resolvedPermissions ??
     resolvePermissions(user.role as RoleKey, override);
@@ -381,6 +472,13 @@ function effectivePolicy(user: OperationUser): OperationPolicy {
     user.roleOperationPolicy,
     user.operationPolicy,
     override,
+    user.operationPolicy == null && (override != null || atomic != null)
+      ? {
+          permissionsOverride: override,
+          atomicPermissions: atomic,
+          inheritedModules: resolvePermissions(user.role as RoleKey, null),
+        }
+      : undefined,
   );
 }
 
@@ -438,7 +536,7 @@ export function operationDecision(
     allowed,
     key: operation.key,
     source,
-    reason: hiddenCost ? "هذه القراءة تتطلب تفويض عرض التكلفة والربح" : allowed ? "العملية مفوضة لحسابك" : "العملية غير مفوضة لحسابك",
+    reason: hiddenCost ? "هذه العملية تتطلب تفويض عرض التكلفة والربح" : allowed ? "العملية مفوضة لحسابك" : "العملية غير مفوضة لحسابك",
     ...(operation.supportsRecordScope === true
       ? { scope: policy.recordScopes?.[operation.key] ?? "OWN" }
       : {}),
@@ -486,8 +584,18 @@ export function buildOperationPolicyFromLegacy(
   explicitAtomicGrants?: Record<string, boolean> | null,
   explicitModuleOverride?: PermissionMap | null,
 ): OperationPolicy {
+  const basePolicy = legacyOperationPolicy(role, modules, explicitModuleOverride);
+  if (explicitModuleOverride != null) {
+    return applyLegacyIndividualOperationOverrides(
+      basePolicy,
+      role,
+      resolvePermissions(role as RoleKey, null),
+      explicitModuleOverride,
+      explicitAtomicGrants,
+    );
+  }
   return applyLegacyOperationDenials(
-    legacyOperationPolicy(role, modules, explicitModuleOverride),
+    basePolicy,
     explicitAtomicGrants,
   );
 }
@@ -532,4 +640,37 @@ export function canViewOperationData(
 ): boolean {
   if (user.isOwner === true) return true;
   return effectivePolicy(user).dataVisibility?.[field] === true;
+}
+
+/** Selling stations depend on their own execution path, not another action in the same module. */
+export const OPERATION_STATION_PATHS: Readonly<Record<PosStation, string>> = Object.freeze({
+  RETAIL: "sales.create",
+  PRINT_SERVICES: "printPos.createSale",
+  RECEPTION: "workOrders.receptionCheckout",
+});
+
+/** Display the same decisions as execution; preserve the legacy and protected owner branches. */
+export function deriveOperationAccess(user: OperationUser): EffectiveAccessSummary {
+  if (user.isOwner === true)
+    return deriveEffectiveAccess("admin", null);
+  if (!hasOperationPolicy(user))
+    return {
+      ...deriveEffectiveAccess(user.role, user.permissionsOverride as PermissionMap | null),
+      canSeeCost: canViewOperationData(user, "purchaseCost") && canViewOperationData(user, "profitMargin"),
+    };
+  const policy = effectivePolicy(user);
+  const current = { ...user, resolvedOperationPolicy: policy };
+  const canSeeCost = canViewOperationData(current, "purchaseCost") &&
+    canViewOperationData(current, "profitMargin");
+  const grants = { ...policy.grants };
+  if (!canSeeCost) for (const operation of OPERATION_PERMISSIONS)
+    if (operation.requiresCostVisibility) grants[operation.key] = false;
+  const stations = (Object.keys(OPERATION_STATION_PATHS) as PosStation[])
+    .filter(station => operationDecision(current, OPERATION_STATION_PATHS[station]).allowed);
+  return {
+    resolved: summarizeOperationModules({ ...policy, grants }),
+    station: stations.length === 0 ? "NONE" : stations.length === 1 ? stations[0]! : "MULTI",
+    stations,
+    canSeeCost,
+  };
 }

@@ -43,7 +43,7 @@ async function resolve(userId: number) {
 
 async function makeRole(
   grants: Record<string, boolean>,
-  baseRole: "cashier" | "user" | "manager" = "user",
+  baseRole: "cashier" | "courier" | "user" | "manager" = "user",
 ) {
   return createRole(
     {
@@ -656,12 +656,39 @@ describe("canonical operation policy persistence and resolution", () => {
     expect(converted.resolvedOperationPolicy?.grants[returned]).toBe(true);
   });
 
-  it("untouched legacy user retains the old module contract without enabling canonical enforcement", async () => {
+  it("untouched cashier receives the daily-task preset without storing an individual policy", async () => {
     const { userId } = await makeUser();
     const user = await resolve(userId);
-    expect(user.operationPolicyEnabled).toBe(false);
+    expect(user.operationPolicyEnabled).toBe(true);
     expect(user.operationPolicy).toBeNull();
+    expect(user.roleOperationPolicy).not.toBeNull();
     expect(user.resolvedOperationPolicy?.grants[sale]).toBe(true);
+  });
+
+  it("keeps an untouched courier in the one-screen shell despite the default operation preset", async () => {
+    await db().insert(s.users).values({
+      openId: "courier-default",
+      username: "courier-default",
+      name: "مندوب افتراضي",
+      role: "courier",
+      branchId: 1,
+    });
+    const [row] = await db().select({ id: s.users.id }).from(s.users).where(eq(s.users.username, "courier-default"));
+    const user = await resolve(Number(row.id));
+    expect(user.operationPolicyEnabled).toBe(true);
+    expect(user.courierShellOnly).toBe(true);
+    expect(user.operationPolicy).toBeNull();
+  });
+
+  it("lets an explicitly configured courier role leave the one-screen default shell", async () => {
+    const role = await makeRole(
+      { "operation.courier.myDeliveries": true },
+      "courier",
+    );
+    const { userId } = await makeUser(role.id);
+    const user = await resolve(userId);
+    expect(user.role).toBe("courier");
+    expect(user.courierShellOnly).toBe(false);
   });
 
   it("validates keys at the service boundary as well as router input", async () => {

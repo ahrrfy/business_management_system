@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { assertOperationAuthorityTx, hasServiceOperationAuthority } from "../authorization/operationAuthority";
 import { assertNotReturnDeclared } from "./declaredReturn";
 import { eq, sql } from "drizzle-orm";
@@ -12,6 +13,7 @@ import { money, round2, toDbMoney } from "../money";
 import { withTx } from "../tx";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import type { DeliveryTxActor } from "./types";
+import type { Tx } from "../../db";
 
 export interface CancelDeliveryAssignmentInput {
   consignmentId: number;
@@ -47,13 +49,35 @@ export async function cancelDeliveryAssignment(
     });
   }
 
-  const payloadHash = idempotencyHash({
-    consignmentId: Number(input.consignmentId),
-    reason,
-  });
+  return withTx((tx) =>
+    cancelDeliveryAssignmentInTx(tx, input, actor, { assertAuthority: true }),
+  );
+}
 
-  return withTx(async (tx) => {
-    await assertOperationAuthorityTx(tx, actor, "delivery.cancelAssignment", legacyAllowed, actor.operationAuthority);
+/** جسم الإلغاء داخل معاملة قائمة؛ يستعمله إلغاء فاتورة COD كي تكون العمليتان ذرة واحدة. */
+export async function cancelDeliveryAssignmentInTx(
+  tx: Tx,
+  input: CancelDeliveryAssignmentInput,
+  actor: DeliveryTxActor,
+  options: { assertAuthority?: boolean } = {},
+) {
+    const reason = input.reason.trim();
+    if (!reason || reason.length > 500)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذر إلغاء إسناد التوصيل",
+          why: "سبب الإلغاء إلزامي ويجب ألا يتجاوز 500 حرف",
+          doThis: "اكتب سبباً مختصراً وواضحاً ثم أعد تنفيذ الإلغاء",
+        }),
+      });
+    const legacyAllowed = actor.role === "manager" || actor.role === "admin" || actor.role === "cashier";
+    if (options.assertAuthority !== false)
+      await assertOperationAuthorityTx(tx, actor, "delivery.cancelAssignment", legacyAllowed, actor.operationAuthority);
+    const payloadHash = idempotencyHash({
+      consignmentId: Number(input.consignmentId),
+      reason,
+    });
     // افحص الفرع قبل إعادة نتيجة idempotent كي لا تتحول إعادة التشغيل إلى قناة IDOR.
     const scopedBranch =
       actor.role === "admin" ? null : (actor.branchId ?? null);
@@ -245,5 +269,4 @@ export async function cancelDeliveryAssignment(
       payloadHash,
     );
     return { consignmentId: Number(cn.id), idempotentReplay: false as const };
-  });
 }

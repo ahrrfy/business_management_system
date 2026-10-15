@@ -66,7 +66,7 @@ async function seedDb() {
     { id: 2, name: "فرع الكرخ", code: "KARKH", type: "SALES" },
   ]);
   await d.insert(s.users).values([
-    { id: 1, openId: "cashier-1", name: "كاشير", role: "cashier", loginMethod: "local", branchId: 1, isOwner: false },
+    { id: 1, openId: "cashier-1", name: "كاشير", role: "cashier", loginMethod: "local", branchId: 1, isOwner: false, operationalCaps: { maxRefundAmountIqd: "100000.00" } },
     { id: 2, openId: "owner-2", name: "المالك المعتمد", role: "manager", loginMethod: "local", branchId: 1, isOwner: true, isActive: true },
     { id: 10, openId: "cashier-10", name: "كاشير 10", role: "cashier", loginMethod: "local", branchId: 1, isOwner: false, isActive: true },
     { id: 20, openId: "admin-2", name: "أدمن 2", role: "admin", loginMethod: "local", branchId: 2, isOwner: false, isActive: true },

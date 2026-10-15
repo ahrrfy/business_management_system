@@ -36,7 +36,7 @@ import { useCustomerByPhone } from "@/components/customer/useCustomerByPhone";
 import { CustomizationDialog, type CustomizationData, composeCustomizationText, emptyCustomization } from "@/components/CustomizationDialog";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useInvoiceReceiptPrinter } from "@/hooks/useInvoiceReceiptPrinter";
-import { receptionOperationAllowed, receptionCheckoutPaths } from "@/lib/receptionOperationAccess";
+import { receptionOperationAllowed, receptionCheckoutPaths, receptionDeliveryAuthorityRequired } from "@/lib/receptionOperationAccess";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -496,7 +496,8 @@ export default function Reception() {
   // ───── حسابات هجينة ───────────────────────────────────────────────────────
   const cartCount = cart.reduce((s, c) => s + c.qty, 0);
   const hasDigitalCards = cart.some((line) => line.digital);
-  const submitAllowed = receptionCheckoutPaths(hasDigitalCards, !!activeDraft, offline).every(canAction);
+  const assignsDelivery = receptionDeliveryAuthorityRequired(me.data, orderDelivery != null && cart.some((line) => !isCustomKind(line) && !line.digital));
+  const submitAllowed = receptionCheckoutPaths(hasDigitalCards, !!activeDraft, offline, assignsDelivery).every(canAction);
   const sumDirectD = cart.filter((c) => !isCustomKind(c)).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
   // ٢٣/٨ — البيع الخالص (لا طباعة ولا تخصيص) هو وحده وعاء خصم رأس الفاتورة: عقد الخادم
   // (workOrderRouter.receptionCheckout.regularSale.invoiceDiscount) يمرّره لـcreateSaleInTx
@@ -1247,7 +1248,7 @@ export default function Reception() {
   }
 
   async function handleSubmit(opts: { quickFullPay: boolean; openingConfirmed?: boolean; isReservation?: boolean }) {
-    if (!receptionCheckoutPaths(hasDigitalCards, !!activeDraftRef.current, offline).every(canActionRef.current)) return notify.err("تفويضات تنفيذ هذه العملية غير مكتملة");
+    if (!receptionCheckoutPaths(hasDigitalCards, !!activeDraftRef.current, offline, assignsDelivery).every(canActionRef.current)) return notify.err("تفويضات تنفيذ هذه العملية غير مكتملة");
     if (draftTransitionPending || draftPromotionFlightRef.current) return; if (draftPromotionPending) { notify.warn("نتيجة حفظ الطلب غير محسومة", "أعد الضغط على حفظ الطلب للتحقق قبل أي تثبيت."); return; } if (detachedRecoveryPending) { notify.warn("لا تثبّت نسخة الاسترداد مباشرةً", "راجعها ثم احفظها كطلب محفوظ جديد؛ هذا يمنع تكرار طلب ربما وصلت بعض تعديلاته إلى الخادم."); return; }
     const draftAtSubmit = activeDraftRef.current ?? activeDraft;
     if (draftAtSubmit && couponCode) { notify.warn("لا تثبّت طلباً محفوظاً مع كوبون", "أزل الكوبون؛ الطلب المحفوظ لا يملك عقد استهلاك كوبون ذرياً."); return; }

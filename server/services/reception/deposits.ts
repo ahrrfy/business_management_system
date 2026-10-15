@@ -16,6 +16,7 @@
 // ومعيارُ خروج م٣ «صفر تعديلٍ في أيّ اختبار».
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import { and, eq, sql } from "drizzle-orm";
 import {
   orderPayments,
@@ -44,6 +45,12 @@ import { assertTelecomCollectAllowed } from "./telecom";
 import { withTx, type Actor } from "../tx";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { appliedCollectionsForWorkOrder, heldNetOfDraft, type DepositMethod } from "../deposits";
+import { loadCurrentOperationalAuthorityTx } from "../authorization/currentOperationalAuthority";
+import {
+  assertOperationAuthorityTx,
+  loadOperationUserTx,
+  storedCanonicalOperationAllowed,
+} from "../authorization/operationAuthority";
 
 /**
  * @deprecated مسارٌ انتقاليّ: دفترُ المال المحتجَز (القراءة والتخصيص والربط) انتقل إلى نواة
@@ -138,6 +145,7 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
           doThis: "أدخل مبلغاً موجباً في حقل «مبلغ العربون» ثم أعد القبض",
         }),
       });
+
     if (input.method !== "CASH" && !input.reference?.trim()) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -336,7 +344,7 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
 export async function refundDeposit(
   input: RefundDepositInput,
   actor: Actor & { role?: string },
-  opts: { refundShiftId?: number | null; authorizedByManager?: boolean } = {},
+  opts: { refundShiftId?: number | null; approvedByManagerId?: number | null } = {},
 ) {
   return withTx(async (tx) => {
     const existingId = await findIdempotentRefId(tx, "reception.refundDeposit", input.clientRequestId);
@@ -361,6 +369,75 @@ export async function refundDeposit(
           doThis: "أدخل مبلغاً موجباً في حقل «مبلغ الردّ» ثم أعد المحاولة",
         }),
       });
+
+    const currentAuthority = await loadCurrentOperationalAuthorityTx(
+      tx,
+      actor.userId,
+    );
+    if (
+      currentAuthority.branchId !== actor.branchId ||
+      currentAuthority.role !== actor.role
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذر تثبيت تفويض رد العربون",
+          why: "تغير دور الحساب أو فرعه أثناء تنفيذ الرد",
+          doThis: "حدث الصفحة وأعد رد العربون بصلاحيات الحساب الحالية",
+        }),
+      });
+    }
+    await assertOperationAuthorityTx(
+      tx,
+      actor,
+      "reception.refundDeposit",
+      ["admin", "manager", "cashier"].includes(actor.role ?? ""),
+    );
+    const currentActorOperationUser = await loadOperationUserTx(tx, actor.userId);
+    const currentActorApprovalAllowed = currentAuthority.isOwner || (
+      storedCanonicalOperationAllowed(currentActorOperationUser, "salesControl.approve") ??
+      moduleAccessAllowed(
+        currentActorOperationUser.role,
+        currentActorOperationUser.permissionsOverride as PermissionMap | null,
+        "sales",
+        "FULL",
+        ["manager", "admin"],
+      )
+    );
+
+    let managerApprovalValidated = false;
+    let managerApprovalCandidate: {
+      branchId: number | null;
+      isOwner: boolean;
+      role: string;
+      canApprove: boolean;
+    } | null = null;
+    if (opts.approvedByManagerId != null) {
+      const approverAuthority = await loadCurrentOperationalAuthorityTx(
+        tx,
+        opts.approvedByManagerId,
+      );
+      const approverOperationUser = await loadOperationUserTx(
+        tx,
+        opts.approvedByManagerId,
+      );
+      const approverCanApprove = approverAuthority.isOwner || (
+        storedCanonicalOperationAllowed(approverOperationUser, "salesControl.approve") ??
+        moduleAccessAllowed(
+          approverOperationUser.role,
+          approverOperationUser.permissionsOverride as PermissionMap | null,
+          "sales",
+          "FULL",
+          ["manager", "admin"],
+        )
+      );
+      managerApprovalCandidate = {
+        branchId: approverAuthority.branchId,
+        isOwner: approverAuthority.isOwner,
+        role: approverAuthority.role,
+        canApprove: Boolean(approverCanApprove),
+      };
+    }
 
     // قراءة استرشادية لمعرفة المسوّدة، ثم قفلٌ بالترتيب الموحَّد: مسوّدة ← الصفّ الماليّ.
     const probe = (
@@ -388,6 +465,25 @@ export async function refundDeposit(
           doThis: "أعد تحميل قائمة الطلبات المحفوظة — الطلب قد يكون ثُبِّت أو أُلغي أو حُذف",
         }),
       });
+    if (managerApprovalCandidate) {
+      managerApprovalValidated = Boolean(
+        managerApprovalCandidate.canApprove &&
+        (managerApprovalCandidate.isOwner ||
+          managerApprovalCandidate.role === "admin" ||
+          managerApprovalCandidate.branchId === Number(draft.branchId)) &&
+        (managerApprovalCandidate.isOwner || opts.approvedByManagerId !== actor.userId)
+      );
+      if (!managerApprovalValidated) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر تثبيت موافقة المدير على رد العربون",
+            why: "حساب المدير لم يعد فعالاً، أو سُحبت منه صلاحية اعتماد العمليات، أو لم يعد مخولاً لفرع الطلب",
+            doThis: "أعد إدخال اعتماد مدير فعال يملك صلاحية الاعتماد في فرع الطلب ثم أعد المحاولة",
+          }),
+        });
+      }
+    }
     const payment = (
       await tx.select().from(orderPayments).where(eq(orderPayments.id, input.paymentId)).for("update").limit(1)
     )[0]!;
@@ -438,6 +534,26 @@ export async function refundDeposit(
       });
     }
 
+    const refundCap = currentAuthority.caps.maxRefundAmountIqd;
+    const bypassDirectCap =
+      currentActorApprovalAllowed ||
+      managerApprovalValidated;
+    if (
+      !bypassDirectCap &&
+      refundCap != null &&
+      amountD.gt(money(refundCap))
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "يتطلب رد العربون اعتماد مدير",
+          why: `مبلغ الرد ${amountD.toFixed(2)} د.ع يتجاوز سقف حسابك ${money(refundCap).toFixed(2)} د.ع`,
+          doThis:
+            "أدخل اعتماد المدير في نافذة الرد، أو خفّض المبلغ إلى السقف المباشر المسموح",
+        }),
+      });
+    }
+
     // بطريقة القبض حتماً — لا «قُبض بطاقةً ورُدّ نقداً» (I17 + اختبار ش٤ الصريح).
     // **استثناء رصيد زين** (مراجعة عدائية ٦/٨): لا سكّة ردٍّ فيزيائية له — الكارت شُحن ولا
     // يُعاد شحنه للزبون؛ إيصال OUT بTELECOM كان يُنقص الحساب المشتقّ بينما رصيد زين الحقيقي
@@ -450,7 +566,7 @@ export async function refundDeposit(
     //  • نقد (ويشمل زين المردود نقداً): ذاتيّ فقط ضمن **وردية القبض نفسها وهي مفتوحة** (المال ما زال
     //    في درج القابض). عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض (المال عاد للخزينة بالعهدة الوسيطة)
     //    ⇒ اعتماد مدير — سطح الاحتيال النقديّ العابر للورديات أعلى. (admin/manager يمرّان ذاتياً.)
-    if (method === "CASH" && !elevated && opts.authorizedByManager !== true) {
+    if (method === "CASH" && !currentActorApprovalAllowed && !managerApprovalValidated) {
       const collShiftId = payment.shiftId != null ? Number(payment.shiftId) : null;
       const collShift = collShiftId != null
         ? (await tx.select({ status: shifts.status, userId: shifts.userId }).from(shifts).where(eq(shifts.id, collShiftId)).limit(1))[0]
@@ -460,9 +576,9 @@ export async function refundDeposit(
         throw new TRPCError({
           code: "FORBIDDEN",
           message: appErrorMessage({
-            what: "لا يمكنك ردّ هذا العربون النقدي بنفسك",
+            what: "يتطلب ردّ هذا العربون النقدي اعتماد مدير",
             why: `العربون قُبض على وردية #${collShiftId ?? "?"} وهي مغلقة الآن أو ليست ورديتك — المال عاد إلى الخزينة، وسطح الاحتيال النقديّ العابر للورديات أعلى`,
-            doThis: "اطلب من مدير اعتماد الردّ من قائمة اعتمادات المدير، أو ردّه من نفس وردية القبض قبل إغلاقها (ردّ البطاقة ذاتيٌّ في أيّ وقت)",
+            doThis: "أدخل اعتماد مدير في نافذة الرد، أو ردّه من نفس وردية القبض قبل إغلاقها (ردّ البطاقة ذاتيٌّ في أيّ وقت)",
           }),
         });
       }

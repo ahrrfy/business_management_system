@@ -75,7 +75,7 @@ export default function DraftPaymentsDialog({
       // ردّ نقديّ عابر للوردية يلزمه مدير: نطلب اعتماده ونعيد المحاولة بدل رسالة خطأ عابرة.
       // (نميّزه عن FORBIDDEN عزل الفرع بوسم الرسالة «اعتماد مدير».)
       const code = (e as { data?: { code?: string } }).data?.code;
-      if (code === "FORBIDDEN" && /اعتماد مدير/.test(e.message)) {
+      if (code === "FORBIDDEN" && /(?:اعتماد|موافقة) (?:ال)?مدير/.test(e.message)) {
         setMgrAsk(vars);
         return;
       }
@@ -206,8 +206,8 @@ export default function DraftPaymentsDialog({
       </div>
       {mgrAsk && (
         <ManagerApprovalDialog
-          title="اعتماد مدير — ردّ عربون نقديّ"
-          description="ردّ العربون النقديّ عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض يحتاج مديراً (تُفحص بياناته على الخادم وتُسجَّل باسمه)."
+          title="اعتماد مدير — ردّ عربون"
+          description="تجاوز سقف الرد المباشر أو الرد النقدي عبر وردية أخرى أو بعد إغلاق وردية القبض يحتاج اعتماد مدير؛ تُفحص هويته على الخادم وتُسجّل باسمه."
           onCancel={() => setMgrAsk(null)}
           onApprove={(approval) => {
             const vars = mgrAsk;

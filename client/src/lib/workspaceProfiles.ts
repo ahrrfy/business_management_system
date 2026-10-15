@@ -1,11 +1,10 @@
 import {
-  deriveEffectiveAccess,
   type AccessLevel,
   type PermissionMap,
   type PosStation,
   type RoleKey,
 } from "@shared/permissions";
-import type { OperationPolicy } from "@shared/operationPermissions";
+import { deriveOperationAccess, type OperationPolicy } from "@shared/operationPermissions";
 import {
   INVOICE_LIST_GATE,
   WORK_ORDERS_HUB_GATE,
@@ -504,15 +503,12 @@ export function resolveWorkspaceProfile(
 
   const role = input.role;
   const permissionsOverride = input.permissionsOverride ?? null;
-  const access = deriveEffectiveAccess(role, permissionsOverride);
-  const stationOperations: Record<PosStation, string> = {
-    RETAIL: "sales.create",
-    PRINT_SERVICES: "printPos.createSale",
-    RECEPTION: "workOrders.receptionCheckout",
-  };
-  const stations = input.operationPolicy
-    ? (Object.keys(stationOperations) as PosStation[]).filter(station => input.operationPolicy!.grants[`operation.${stationOperations[station]}`] === true)
-    : access.stations;
+  const { stations } = deriveOperationAccess({
+    role,
+    permissionsOverride,
+    operationPolicyEnabled: input.operationPolicy != null,
+    resolvedOperationPolicy: input.operationPolicy,
+  });
   const id = chooseProfile(role, stations);
   const definition = PROFILES[id];
   const seen = new Set<string>();

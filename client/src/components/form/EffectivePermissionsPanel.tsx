@@ -14,6 +14,7 @@ const SOURCE_LABEL: Record<string, { label: string; cls: string }> = {
   template: { label: "قالب الفئة", cls: "bg-muted text-muted-foreground" },
   customRole: { label: "دور مخصّص", cls: "bg-indigo-100 text-indigo-700" },
   individual: { label: "تخصيص فرديّ", cls: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" },
+  operationPolicy: { label: "تفويض العمليات", cls: "bg-muted text-muted-foreground" },
   admin: { label: "مدير النظام", cls: "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]" },
 };
 const LEVEL_CLS: Record<string, string> = {
@@ -36,7 +37,7 @@ export function EffectivePermissionsPanel({ userId }: { userId: number }) {
       {data.customRoleInactive && (
         <div className="flex items-start gap-2 rounded-md border border-[var(--stock-low)] badge-stock-low p-2 text-xs">
           <AlertTriangle aria-hidden className="size-4 mt-0.5 shrink-0" />
-          <span>دور هذا الحساب المخصّص <b>مُعطَّل</b> — يعمل حالياً بصلاحيات فئته الأساس الكاملة. فعّل الدور أو أسنِد دوراً آخر.</span>
+          <span>دور هذا الحساب المخصّص <b>مُعطَّل أو غير متاح</b> — تفويض العمليات محجوب حتى تفعيل الدور أو إسناد دور آخر.</span>
         </div>
       )}
 

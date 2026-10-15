@@ -13,6 +13,7 @@ import {
   invoices,
   externalPaymentAttempts,
   idempotencyKeys,
+  receipts,
   returnRequests,
   salesControlRequests,
   salesExchangeCommands,
@@ -241,6 +242,23 @@ async function loadByKey(tx: Tx, requestKey: string) {
   )[0];
 }
 
+function matchesSalesControlPayloadReplay(
+  row: typeof salesControlRequests.$inferSelect,
+  payload: SalesControlPayload,
+  payloadHash: string,
+): boolean {
+  if (payloadHashMatches(payloadHash, row.payloadHash)) return true;
+  if (row.requestType !== "SALES_RETURN" || !payload || typeof payload !== "object") {
+    return false;
+  }
+  const { directExecution: _ignored, ...withoutDirect } = payload as Record<string, unknown>;
+  return (
+    payloadHashMatches(idempotencyHash(withoutDirect), row.payloadHash)
+    || payloadHashMatches(idempotencyHash({ ...withoutDirect, directExecution: false }), row.payloadHash)
+    || payloadHashMatches(idempotencyHash({ ...withoutDirect, directExecution: true }), row.payloadHash)
+  );
+}
+
 function exactReplay(
   row: typeof salesControlRequests.$inferSelect,
   input: RequestSalesControlInput,
@@ -251,8 +269,83 @@ function exactReplay(
   return Number(row.invoiceId) === Number(input.invoiceId)
     && row.requestType === input.requestType
     && row.reason === reason
-    && payloadHashMatches(payloadHash, row.payloadHash)
+    && matchesSalesControlPayloadReplay(row, input.payload, payloadHash)
     && Number(row.requestedBy) === Number(actor.userId);
+}
+
+/** Read-only replay probe used before a direct financial attempt. */
+export async function replaySalesControlRequest(
+  input: RequestSalesControlInput,
+  actor: RequestSalesControlActor,
+) {
+  const requestKey = normalizeRequestKey(input.requestKey);
+  const reason = normalizeReason(input.reason);
+  const payloadHash = idempotencyHash(input.payload);
+  return withTx(async (tx) => {
+    const replay = await loadByKey(tx, requestKey);
+    if (!replay) return null;
+    assertBranch(Number(replay.branchId), actor);
+    if (!exactReplay(replay, input, reason, payloadHash, actor)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذرت إعادة محاولة طلب إلغاء الفاتورة",
+          why: "مفتاح الطلب مستخدم لعملية أو بيانات مختلفة",
+          doThis: "حدّث الفاتورة وأعد الإلغاء بطلب جديد",
+        }),
+      });
+    }
+    if (replay.requestType !== "SALES_CANCEL" || replay.status !== "APPROVED") {
+      return { ...replay, replayed: true as const, cancellation: null };
+    }
+    const [invoice] = await tx
+      .select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber })
+      .from(invoices)
+      .where(eq(invoices.id, Number(replay.invoiceId)))
+      .limit(1);
+    if (!invoice) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذرت إعادة نتيجة إلغاء الفاتورة",
+          why: "الفاتورة المرتبطة بطلب الإلغاء غير موجودة",
+          doThis: "حدّث الشاشة وأبلغ مسؤول النظام برقم طلب الإلغاء",
+        }),
+      });
+    }
+    const [refund] = await tx
+      .select({
+        amount: receipts.amount,
+        approvalStatus: receipts.approvalStatus,
+        status: receipts.status,
+        voucherNumber: receipts.voucherNumber,
+      })
+      .from(receipts)
+      .where(and(
+        eq(receipts.invoiceId, Number(replay.invoiceId)),
+        eq(receipts.direction, "OUT"),
+        eq(receipts.description, `استرداد إلغاء فاتورة ${invoice.invoiceNumber}`),
+      ))
+      .orderBy(desc(receipts.id))
+      .limit(1);
+    return {
+      ...replay,
+      replayed: true as const,
+      cancellation: {
+        invoiceId: Number(invoice.id),
+        invoiceNumber: invoice.invoiceNumber,
+        refundAmount:
+          refund?.status === "COMPLETED" && refund.approvalStatus === "APPROVED"
+            ? money(refund.amount).toFixed(2)
+            : "0.00",
+        refundVoucherNumber: refund?.voucherNumber ?? null,
+        pendingRefundAmount:
+          refund?.status === "PENDING" && refund.approvalStatus === "PENDING_APPROVAL"
+            ? money(refund.amount).toFixed(2)
+            : "0.00",
+      },
+    };
+  }, { gate: "NONE" });
 }
 
 async function notifySalesControlPending(
@@ -690,6 +783,8 @@ export interface SalesControlCashRouting {
    * نيّتان مختلفتان، فلا تُمثَّلان بقيمةٍ واحدة.
    */
   clearShift?: boolean;
+  /** Explicit approved source for cancellation refunds. Treasury bypasses an underfunded reviewer drawer. */
+  cashBucket?: "DRAWER" | "TREASURY";
   /** مرجع عملية الاسترداد على جهاز الدفع — يُنفَّذ لحظة الاعتماد لا لحظة الطلب. */
   reference?: string | null;
   /** جهاز تنفيذ قبض الفرق غير النقدي وقت الاعتماد. */
@@ -753,8 +848,20 @@ function applyCancelCashRouting(
   // ⛔ `undefined` (المفتاح غائب) = لم يمسّه المُعتمِد، يبقى مرجع الطلب كما أُرسل. `null` صراحةً
   // = مسحه المُعتمِد عمداً (لا يطابق قسيمة الجهاز) — يُفرَض غيابه فعلياً فيرفضه cancelSaleInTx
   // حتماً لـCARD، لا رجوعٌ صامتٌ لِما أرسله الطالب (مراجعة Codex P1 على PR #997).
-  if (!routing || routing.reference === undefined) return payload;
-  return { ...payload, reference: routing.reference };
+  if (!routing) return payload;
+  const routesCash = payload.refundPaymentMethod === "CASH" && (
+    routing.cashBucket != null || routing.shiftId != null || routing.clearShift === true
+  );
+  return {
+    ...payload,
+    ...(routing.reference !== undefined ? { reference: routing.reference } : {}),
+    ...(routesCash ? {
+      refundCashBucket: routing.cashBucket ?? (routing.shiftId != null ? "DRAWER" : null),
+      refundShiftId: routing.clearShift || routing.cashBucket === "TREASURY"
+        ? null
+        : routing.shiftId ?? null,
+    } : {}),
+  };
 }
 
 /**
@@ -1073,6 +1180,7 @@ export async function approveSalesControlRequest(
         // **المخزَّنة** لا المُنفَّذة) وقبل أوّل أثر. المبلغ والطريقة والأسطر كما أُقرّت.
         ...applyCashRouting(request.payload as unknown as SalesReturnControlPayload, cashRouting),
         invoiceId: Number(request.invoiceId),
+        operatorReason: request.reason,
         clientRequestId: `sales-control-${requestId}`,
         controlExpectedSnapshot: storedSnapshot,
       }, effectiveActor);

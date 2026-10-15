@@ -106,6 +106,17 @@ export const STUDIO_TASK_MANAGEMENT_OPERATIONS = new Set([
   "productStudio.cancelCampaignBacklog",
 ]);
 
+/** Complete RPC surface used by StudioPhotographerWorkspace. */
+export const STUDIO_PHOTOGRAPHER_OPERATIONS = [
+  "productStudio.tasks",
+  "productStudio.myCampaigns",
+  "productStudio.taskPreviousImages",
+  "productStudio.nextPhotographerTask",
+  "productStudio.claimByBarcode",
+  "productStudio.submitCandidate",
+  "productStudio.revert",
+] as const;
+
 /** A proof for approving cannot be reused for cancelling or provisioning accounts. */
 export function assertStudioOperationBinding(
   actor: StudioOperationActor,

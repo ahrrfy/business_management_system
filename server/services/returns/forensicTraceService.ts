@@ -9,7 +9,7 @@
  *
  * بالإضافة إلى وظيفة المسح الكوني (universalBarcodeScan) لتحديد وجهة أي باركود ممسوح.
  */
-import { and, desc, eq, gte, inArray, isNotNull, like, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, like, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import {
   customers,
   deliveryConsignments,
@@ -21,6 +21,7 @@ import {
   products,
   purchaseReturns,
   receipts,
+  shifts,
   users,
   workOrders,
 } from "../../../drizzle/schema";
@@ -29,6 +30,34 @@ import { normalizedMatchAny } from "../catalog/barcodeAliases";
 import type { Actor } from "../tx";
 
 export type ForensicSearchMode = "ITEM_BARCODE" | "CARD_LAST4" | "CUSTOMER_PHONE" | "DATE_SHIFT";
+export type ForensicInvoiceScope = "sales" | "reception" | "print";
+export type ForensicTraceActor = Actor & {
+  invoiceScope?: ForensicInvoiceScope | null;
+  canReadWorkOrders?: boolean;
+  canReadDelivery?: boolean;
+  canReadPurchaseReturns?: boolean;
+};
+
+export function buildInvoiceChannelCondition(
+  invoiceScope: ForensicInvoiceScope | null | undefined,
+) {
+  if (invoiceScope === "reception") {
+    return or(
+      inArray(invoices.sourceType, ["WORKORDER", "ORDER"]),
+      and(
+        ne(invoices.sourceType, "ONLINE"),
+        eq(shifts.shiftType, "RECEPTION"),
+      ),
+    )!;
+  }
+  if (invoiceScope === "print") {
+    return and(
+      notInArray(invoices.sourceType, ["WORKORDER", "ORDER", "ONLINE"]),
+      eq(shifts.shiftType, "PRINT_SERVICES"),
+    )!;
+  }
+  return sql`1=1`;
+}
 
 export interface ForensicTraceInput {
   query: string;
@@ -90,10 +119,10 @@ export interface UniversalScanResult {
 
 export async function forensicTraceInvoices(
   input: ForensicTraceInput,
-  actor: Actor
+  actor: ForensicTraceActor
 ): Promise<ForensicTraceOutput> {
   const db = getDb();
-  if (!db) {
+  if (!db || actor.invoiceScope === null) {
     return { mode: input.mode, query: input.query, results: [] };
   }
 
@@ -101,6 +130,7 @@ export async function forensicTraceInvoices(
   const cutoffDate = new Date(Date.now() - days * 86_400_000);
 
   const scopedBranchId = actor.role === "admin" || !actor.branchId ? null : actor.branchId;
+  const channelCond = buildInvoiceChannelCondition(actor.invoiceScope);
   const q = input.query.trim();
 
   // ═════════════════════════════════════════════════════════════════════
@@ -152,11 +182,13 @@ export async function forensicTraceInvoices(
       })
       .from(invoiceItems)
       .innerJoin(invoices, eq(invoiceItems.invoiceId, invoices.id))
+      .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
       .where(
         and(
           inArray(invoiceItems.variantId, variantIds),
           gte(invoices.createdAt, sixtyDaysAgo),
-          scopedBranchId != null ? eq(invoices.branchId, scopedBranchId) : sql`1=1`
+          scopedBranchId != null ? eq(invoices.branchId, scopedBranchId) : sql`1=1`,
+          channelCond
         )
       );
 
@@ -181,13 +213,15 @@ export async function forensicTraceInvoices(
       })
       .from(invoiceItems)
       .innerJoin(invoices, eq(invoiceItems.invoiceId, invoices.id))
+      .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
       .leftJoin(customers, eq(invoices.customerId, customers.id))
       .leftJoin(users, eq(invoices.createdBy, users.id))
       .where(
         and(
           inArray(invoiceItems.variantId, variantIds),
           gte(invoices.createdAt, cutoffDate),
-          scopedBranchId != null ? eq(invoices.branchId, scopedBranchId) : sql`1=1`
+          scopedBranchId != null ? eq(invoices.branchId, scopedBranchId) : sql`1=1`,
+          channelCond
         )
       )
       .orderBy(desc(invoices.createdAt))
@@ -298,9 +332,16 @@ export async function forensicTraceInvoices(
         cashierName: users.name,
       })
       .from(invoices)
+      .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
       .leftJoin(customers, eq(invoices.customerId, customers.id))
       .leftJoin(users, eq(invoices.createdBy, users.id))
-      .where(inArray(invoices.id, candidateInvoiceIds))
+      .where(
+        and(
+          inArray(invoices.id, candidateInvoiceIds),
+          scopedBranchId != null ? eq(invoices.branchId, scopedBranchId) : sql`1=1`,
+          channelCond
+        )
+      )
       .orderBy(desc(invoices.createdAt));
 
     return {
@@ -339,13 +380,15 @@ export async function forensicTraceInvoices(
         cashierName: users.name,
       })
       .from(invoices)
+      .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
       .innerJoin(customers, eq(invoices.customerId, customers.id))
       .leftJoin(users, eq(invoices.createdBy, users.id))
       .where(
         and(
           or(like(customers.phone, `%${q}%`), like(customers.name, `%${q}%`)),
           gte(invoices.createdAt, cutoffDate),
-          scopedBranchId != null ? eq(invoices.branchId, scopedBranchId) : sql`1=1`
+          scopedBranchId != null ? eq(invoices.branchId, scopedBranchId) : sql`1=1`,
+          channelCond
         )
       )
       .orderBy(desc(invoices.createdAt))
@@ -391,6 +434,7 @@ export async function forensicTraceInvoices(
         cashierName: users.name,
       })
       .from(invoices)
+      .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
       .leftJoin(customers, eq(invoices.customerId, customers.id))
       .leftJoin(users, eq(invoices.createdBy, users.id))
       .where(
@@ -398,7 +442,8 @@ export async function forensicTraceInvoices(
           shiftId ? eq(invoices.shiftId, shiftId) : sql`1=1`,
           gte(invoices.createdAt, dateFrom),
           lte(invoices.createdAt, dateTo),
-          scopedBranchId != null ? eq(invoices.branchId, scopedBranchId) : sql`1=1`
+          scopedBranchId != null ? eq(invoices.branchId, scopedBranchId) : sql`1=1`,
+          channelCond
         )
       )
       .orderBy(desc(invoices.createdAt))
@@ -431,7 +476,7 @@ export async function forensicTraceInvoices(
  */
 export async function universalBarcodeScan(
   rawBarcode: string,
-  actor: Actor
+  actor: ForensicTraceActor
 ): Promise<UniversalScanResult> {
   const db = getDb();
   if (!db) {
@@ -444,9 +489,13 @@ export async function universalBarcodeScan(
   }
 
   const scopedBranchId = actor.role === "admin" || !actor.branchId ? null : actor.branchId;
+  const channelCond = buildInvoiceChannelCondition(actor.invoiceScope);
 
   // ١) هل هي فاتورة بيع؟ (INV-XXXX أو رقم مباشر)
-  if (trimmed.startsWith("INV-") || (/^\d+$/.test(trimmed) && trimmed.length <= 8)) {
+  if (
+    actor.invoiceScope !== null &&
+    (trimmed.startsWith("INV-") || (/^\d+$/.test(trimmed) && trimmed.length <= 8))
+  ) {
     const inv = (
       await db
         .select({
@@ -456,13 +505,15 @@ export async function universalBarcodeScan(
           status: invoices.status,
         })
         .from(invoices)
+        .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
         .where(
           and(
             or(
               eq(invoices.invoiceNumber, trimmed),
               /^\d+$/.test(trimmed) ? eq(invoices.id, Number(trimmed)) : sql`1=0`
             ),
-            scopedBranchId != null ? eq(invoices.branchId, scopedBranchId) : sql`1=1`
+            scopedBranchId != null ? eq(invoices.branchId, scopedBranchId) : sql`1=1`,
+            channelCond
           )
         )
         .limit(1)
@@ -481,7 +532,10 @@ export async function universalBarcodeScan(
   }
 
   // ٢) هل هو أمر شغل مطبعة واستنساخ؟ (WO-XXXX)
-  if (trimmed.startsWith("WO-") || trimmed.includes("WO")) {
+  if (
+    (actor.role === "admin" || actor.canReadWorkOrders === true) &&
+    (trimmed.startsWith("WO-") || trimmed.includes("WO"))
+  ) {
     const wo = (
       await db
         .select({
@@ -514,7 +568,10 @@ export async function universalBarcodeScan(
   }
 
   // ٣) هل هو طرد شحن وتوصيل؟ (CN-XXXX أو DLV-XXXX)
-  if (trimmed.startsWith("CN-") || trimmed.startsWith("DLV-") || trimmed.startsWith("PK-")) {
+  if (
+    (actor.role === "admin" || actor.canReadDelivery === true) &&
+    (trimmed.startsWith("CN-") || trimmed.startsWith("DLV-") || trimmed.startsWith("PK-"))
+  ) {
     const cnRow = (
       await db
         .select({
@@ -545,7 +602,10 @@ export async function universalBarcodeScan(
   }
 
   // ٤) هل هو مرتجع شراء لمورد؟ (PR-XXXX)
-  if (trimmed.startsWith("PR-")) {
+  if (
+    (actor.role === "admin" || actor.canReadPurchaseReturns === true) &&
+    trimmed.startsWith("PR-")
+  ) {
     const pr = (
       await db
         .select({
@@ -554,7 +614,12 @@ export async function universalBarcodeScan(
           status: purchaseReturns.status,
         })
         .from(purchaseReturns)
-        .where(eq(purchaseReturns.returnNumber, trimmed))
+        .where(
+          and(
+            eq(purchaseReturns.returnNumber, trimmed),
+            scopedBranchId != null ? eq(purchaseReturns.branchId, scopedBranchId) : sql`1=1`
+          )
+        )
         .limit(1)
     )[0];
 

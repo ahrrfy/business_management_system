@@ -93,12 +93,14 @@ export function ReturnComposer({
 }: ReturnComposerProps) {
   const utils = trpc.useUtils();
   const detail = trpc.returns.getInvoice.useQuery({ invoiceId }, { enabled: invoiceId > 0 });
-  /** المالك والإداريون والكاشير ينفّذون المرتجع فوراً (محرك المرتجعات الفوري الذري) — الشاشة تعرف ذلك قبل التأكيد لا بعده. */
+  /** التنفيذ المباشر تفويض مستقل؛ الخادم يحوّل تجاوز السقف/الوردية/اليوم إلى طلب اعتماد. */
   const me = trpc.auth.me.useQuery();
   const operationPermission = useOperationPermission(
     approvingRequestId ? "returns.approveRequest" : "returns.create",
   );
-  const executesImmediately = lifecycleActionAllowed(me.data, "returns.create", me.data?.isOwner === true || ["admin", "manager", "cashier"].includes(me.data?.role ?? ""));
+  const directReturnPermission = useOperationPermission("returns.create");
+  const refundRailPermission = useOperationPermission("refundRails.preflight");
+  const executesImmediately = me.data?.isOwner === true || directReturnPermission.allowed;
   /**
    * ⭐ في وضع الاعتماد نُحمّل **بنود الطلب** — هي التي سينفّذها الخادم، لا ما يُدخله المدير.
    * كان الجدول يُفتَح فارغاً فيُدخل المدير كمّياتٍ يُقسم بها حوارُ التأكيد ثمّ يتجاهلها
@@ -428,6 +430,7 @@ export function ReturnComposer({
    * «النظام يجبرني على اختيار درجٍ لردّ نقودٍ لم تُقبض».
    */
   const noRefundNeeded = refundD.lte(0);
+  const requiresExecutableRail = Boolean(approvingRequestId || executesImmediately);
 
   /** سببُ تعطيل الحفظ — نصٌّ واحدٌ يُعرَض دائماً بدل رفضٍ متأخّر من الخادم. */
   const blockReason = useMemo(() => {
@@ -445,7 +448,7 @@ export function ReturnComposer({
     if (pending && !approvingRequestId) {
       return `على هذه الفاتورة طلبٌ معلّق #${pending.id} — احسمه أولاً (اعتماداً أو رفضاً) قبل إرسال طلبٍ جديد.`;
     }
-    if (!approvingRequestId && me.data?.role === "cashier" && method === "CASH" && refundD.gt(0)) {
+    if (requiresExecutableRail && me.data?.role === "cashier" && method === "CASH" && refundD.gt(0)) {
       const cashierHasShift = inv?.refundShifts?.some((s) => s.isMine || Number(s.userId) === Number(me.data?.id));
       if (!cashierHasShift) {
         return "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لتنفيذ المرتجع.";
@@ -453,19 +456,26 @@ export function ReturnComposer({
     }
     if (!selectedLines.length) return "حدّد كمية إرجاع واحدة على الأقل.";
     if (isWalkIn && !returnValue.gt(0)) return "قيمة المرتجع صفر؛ لا يمكن إنشاء تسوية نقدية لزبون عابر.";
+    if (requiresExecutableRail && !noRefundNeeded && refundD.gt(0) && !refundRailPermission.allowed) {
+      return "لا تملك صلاحية التحقق من مصدر ردّ المبلغ؛ يمكنك اعتماد المرتجعات التي لا تتطلب صرفاً فقط.";
+    }
     // حجبُ الرافد يسري على ردٍّ **موجب** فقط — لا معنى لسقفٍ حين لا يخرج مال.
     if (!noRefundNeeded && activeOption?.blockedReason) return activeOption.blockedReason;
     if (overCap) return `المبلغ يتجاوز المسموح (${fmt(railCap.toFixed(2))} د.ع).`;
-    // مالٌ يخرج ⇒ الرافدُ والدرجُ والمرجعُ من المنتقي الموحَّد — سببُ حجبه مقروءٌ من الخادم.
+    // مالٌ يخرج ⇒ الرافدُ والدرجُ والمرجعُ من المنتقي الموحَّد (عند التنفيذ/الاعتماد الفعلي).
     if (!noRefundNeeded && refundD.gt(0)) {
-      if (railState == null || railState.loading) return "جارٍ التحقق من روافد الردّ والأدراج المفتوحة…";
-      if (railState.error) return `تعذّر التحقق من روافد الردّ — ${railState.error}`;
-      if (railState.blockReason) return railState.blockReason;
-      if (!railState.selection) return "حدّد من أين يخرج المال.";
+      if (requiresExecutableRail) {
+        if (railState == null || railState.loading) return "جارٍ التحقق من روافد الردّ والأدراج المفتوحة…";
+        if (railState.error) return `تعذّر التحقق من روافد الردّ — ${railState.error}`;
+        if (railState.blockReason) return railState.blockReason;
+        if (!railState.selection) return "حدّد من أين يخرج المال.";
+      } else if (railState?.blockReason) {
+        return railState.blockReason;
+      }
     }
     if (reason.trim().length < 3) return "اكتب سبب المرتجع (٣ أحرف على الأقل) لتوثيق الطلب.";
     return null;
-  }, [isLocked, pending, approvingRequestId, requestDetail.data, invoiceId, lockedLines, me.data?.role, me.data?.id, inv?.refundShifts, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, method, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
+  }, [isLocked, pending, approvingRequestId, requiresExecutableRail, requestDetail.data, invoiceId, lockedLines, me.data?.role, me.data?.id, inv?.refundShifts, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, refundRailPermission.allowed, method, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
 
   async function submit() {
     setError("");
@@ -481,7 +491,7 @@ export function ReturnComposer({
           amount: round2(refundD).toFixed(2),
           method,
           ...(method === "CASH" && shiftId != null ? { shiftId } : {}),
-          ...(method === "CARD" ? { reference: cardReference.trim() } : {}),
+          ...(method === "CARD" && cardReference.trim() ? { reference: cardReference.trim() } : {}),
         }
       : undefined;
     const resolution = isWalkIn
@@ -490,7 +500,7 @@ export function ReturnComposer({
           method,
           amount: round2(refundD).toFixed(2),
           ...(method === "CASH" && shiftId != null && !noRefundNeeded ? { shiftId } : {}),
-          ...(method === "CARD" && refundD.gt(0) ? { reference: cardReference.trim() } : {}),
+          ...(method === "CARD" && refundD.gt(0) && cardReference.trim() ? { reference: cardReference.trim() } : {}),
           reason: reason.trim(),
           disposition: restock ? "RESTOCK" as const : "DAMAGED" as const,
         }
@@ -615,7 +625,7 @@ export function ReturnComposer({
       : "0.00";
     const fullRefundD = D(fullRefundAmount);
 
-    if (fullRefundD.gt(0)) {
+    if (fullRefundD.gt(0) && requiresExecutableRail) {
       if (changedToFullSelection) {
         notify.err("جُهّز كامل المرتجع؛ اختر مصدر ردّ المبلغ ثم اضغط الإرجاع الكامل مرةً أخرى.");
         return;
@@ -634,6 +644,9 @@ export function ReturnComposer({
         notify.err(railState.blockReason ?? "حدّد من أين يخرج مبلغ الردّ.");
         return;
       }
+    } else if (fullRefundD.gt(0) && railState?.blockReason) {
+      notify.err(railState.blockReason);
+      return;
     }
 
     const linesToSubmit = eligible.map((it) => ({
@@ -646,7 +659,7 @@ export function ReturnComposer({
           amount: round2(fullRefundD).toFixed(2),
           method,
           ...(method === "CASH" && shiftId != null ? { shiftId } : {}),
-          ...(method === "CARD" ? { reference: cardReference.trim() } : {}),
+          ...(method === "CARD" && cardReference.trim() ? { reference: cardReference.trim() } : {}),
         }
       : undefined;
 
@@ -656,7 +669,7 @@ export function ReturnComposer({
           method,
           amount: round2(fullRefundD).toFixed(2),
           ...(method === "CASH" && shiftId != null && fullRefundD.gt(0) ? { shiftId } : {}),
-          ...(method === "CARD" && fullRefundD.gt(0) ? { reference: cardReference.trim() } : {}),
+          ...(method === "CARD" && fullRefundD.gt(0) && cardReference.trim() ? { reference: cardReference.trim() } : {}),
           reason: effectiveReason,
           disposition: restock ? ("RESTOCK" as const) : ("DAMAGED" as const),
         }
@@ -1109,7 +1122,7 @@ export function ReturnComposer({
                   )}
                 </div>
 
-                {refundD.gt(0) ? (
+                {refundD.gt(0) && refundRailPermission.allowed ? (
                   <RefundRailPicker
                     context={{
                       sourceDocType: "SALE_RETURN",
@@ -1117,11 +1130,16 @@ export function ReturnComposer({
                       amount: round2(refundD).toFixed(2),
                     }}
                     mode="embedded"
+                    requestOnly={!requiresExecutableRail}
                     onStateChange={setRailState}
                     drawerLabel="من أيّ درج يخرج النقد؟"
                     drawerHint="النقد يخرج من الدرج المختار عند تنفيذ المرتجع، ويظهر في تسويته."
                     submitting={create.isPending || approve.isPending}
                   />
+                ) : refundD.gt(0) ? (
+                  <div className="rounded-lg border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] p-3 text-xs font-semibold text-[var(--sem-warn)]">
+                    هذا المرتجع يحتاج صرفاً مالياً؛ يلزم تفويض «التحقق من مصدر ردّ المبلغ» قبل اعتماده.
+                  </div>
                 ) : null}
               </CardContent>
             </Card>

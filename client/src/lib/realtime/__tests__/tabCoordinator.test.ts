@@ -264,4 +264,59 @@ describe("RealtimeManager & TabCoordinator — تنسيق التبويبات ا�
     expect(cfdReceivedByTab2[0].payload.total).toBe("4500.00");
     expect(cfdReceivedByTab2[0].payload.lines[0].name).toBe("دفتر تجارب مدرسي");
   });
+
+  it("يعلّق اتصال SSE في التبويب القائد عبر BroadcastChannel عند بدء تحديث PWA في تبويب تابع ثم يستأنفه", async () => {
+    const originalWindow = (globalThis as any).window;
+    const originalEventSource = (globalThis as any).EventSource;
+    const closedSockets: number[] = [];
+    let socketCounter = 0;
+
+    (globalThis as any).window = { location: { pathname: "/dashboard" } };
+    (globalThis as any).EventSource = vi.fn().mockImplementation(function () {
+      const id = ++socketCounter;
+      const es = {
+        onopen: null as any,
+        onmessage: null as any,
+        onerror: null as any,
+        close: vi.fn(() => {
+          closedSockets.push(id);
+        }),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      };
+      setTimeout(() => es.onopen?.(), 5);
+      return es;
+    });
+
+    try {
+      tab1 = new RealtimeManager("tab_leader_pwa");
+      tab2 = new RealtimeManager("tab_follower_pwa");
+
+      tab1.start();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(tab1.getIsLeader()).toBe(true);
+      expect(tab1.getStatus()).toBe("connected");
+
+      tab2.start();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(tab2.getIsLeader()).toBe(false);
+
+      // التبويب التابع يطلب تعليق SSE لتفعيل تحديث PWA
+      const resume = tab2.suspendForPwaUpdate(5_000);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      expect(closedSockets.length).toBeGreaterThanOrEqual(1);
+      expect(tab1.getStatus()).toBe("disconnected");
+      expect(tab2.getStatus()).toBe("disconnected");
+
+      // استئناف الاتصال بعد انتهاء نافذة التفعيل
+      resume();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(tab1.getStatus()).toBe("connected");
+    } finally {
+      (globalThis as any).window = originalWindow;
+      (globalThis as any).EventSource = originalEventSource;
+    }
+  });
 });
+

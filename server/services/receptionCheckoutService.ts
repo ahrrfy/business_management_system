@@ -36,6 +36,7 @@ import { money, round2 } from "./money";
 import { assertTelecomCollectAllowed } from "./reception/telecom";
 import { canonicalIraqiMobile } from "../lib/phone";
 import { lockMaterializedCashReceiptSourceForWrite } from "./cash/cashAvailability";
+import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
 
 export interface ReceptionCheckoutInput {
   branchId: number;
@@ -876,6 +877,9 @@ export async function checkoutReceptionInTx(
       const carrierInvoiceId =
         regularSale?.invoiceId ?? printSale?.invoiceId ?? null;
       if (carrierInvoiceId != null) {
+        // Re-read the stored grant before assignment; revocation rolls back the whole checkout.
+        // Untouched legacy accounts retain their existing reception delivery behavior.
+        await assertOperationAuthorityTx(tx, actor, "delivery.dispatchInvoice", true);
         dispatch = await dispatchInvoiceInTx(
           tx,
           {

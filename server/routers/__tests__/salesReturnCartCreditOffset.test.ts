@@ -315,6 +315,28 @@ describe.sequential("returns.executeSalesReturnCart — الحوكمة المح�
 
     const item = inspected!.items[0];
 
+    // لا يجوز إسقاط أكثر من الجزء الآجل (30 د.ع) حتى لو بقيت قيمة فاتورة أعلى.
+    await expect(
+      caller.executeSalesReturnCart({
+        invoiceNumber: sale.invoiceNumber,
+        customer: { customerId: 1, name: "عميل آجل" },
+        disposition: "RESTOCK",
+        items: [
+          {
+            variantId: item.variantId,
+            productUnitId: item.productUnitId,
+            invoiceItemId: item.invoiceItemId,
+            productName: item.productName,
+            quantity: 4,
+            unitPrice: item.unitPrice,
+          },
+        ],
+        settlement: { method: "CREDIT_OFFSET", totalAmount: "40.00" },
+        clientRequestId: "test-partial-credit-offset-over-open-debt",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await customerBalance(1)).toBe("30.00");
+
     // إرجاع 3 قطع (30 د.ع) بمعادلة الذمم
     await caller.executeSalesReturnCart({
       invoiceNumber: sale.invoiceNumber,
@@ -351,7 +373,7 @@ describe.sequential("returns.executeSalesReturnCart — الحوكمة المح�
     expect(await reconcileCustomerBalances()).toEqual([]);
   });
 
-  it("٥) معادلة الذمم تتطلب وجود عميل مسجل: رفض المرتجع العابر بدون عميل بطريقة CREDIT_OFFSET", async () => {
+  it("٥) معادلة الذمم تتطلب وجود عميل مسجل وفاتورة أصلية: رفض المرتجع العابر بدون فاتورة بطريقة CREDIT_OFFSET", async () => {
     const caller = returnRouter.createCaller(context());
     await expect(
       caller.executeSalesReturnCart({

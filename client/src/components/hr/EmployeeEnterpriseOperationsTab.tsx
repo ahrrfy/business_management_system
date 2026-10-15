@@ -33,6 +33,7 @@ export function EmployeeEnterpriseOperationsTab({
   currentUserId?: number;
 }) {
   const { can } = useCatalogPeopleOperationAccess();
+  const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
   const [subTab, setSubTab] = useState("loans");
 
@@ -384,17 +385,16 @@ export function EmployeeEnterpriseOperationsTab({
                               className="h-7 text-xs text-emerald-600 hover:text-emerald-700"
                               disabled={!can("hrEnterprise.spotBonuses.payCash") || (payCashBonusMut.isPending)}
                               onClick={async () => {
+                                const cashBucket = me.data?.isOwner === true ? "TREASURY" : "DRAWER";
                                 const ok = await confirm({
                                   title: "صرف مكافأة استثنائية",
-                                  description: `هل أنت متأكد من صرف المكافأة #${b.id} نقداً بمبلغ ${iqd(b.amount)} د.ع؟`,
-                                  confirmText: "صرف نقدي",
+                                  description: `هل أنت متأكد من صرف المكافأة #${b.id} نقداً (${cashBucket === "TREASURY" ? "من الخزينة" : "من الدرج"}) بمبلغ ${iqd(b.amount)} د.ع؟`,
+                                  confirmText: cashBucket === "TREASURY" ? "صرف من الخزينة" : "صرف من الدرج",
                                 });
-                                if (ok) {
-                                  payCashBonusMut.mutate({ id: b.id });
-                                }
+                                if (ok) payCashBonusMut.mutate({ id: b.id, cashBucket });
                               }}
                             >
-                              صرف نقدي
+                              {me.data?.isOwner === true ? "صرف من الخزينة" : "صرف من الدرج"}
                             </Button>
                           )}
                         </div>

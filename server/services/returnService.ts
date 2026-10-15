@@ -1,6 +1,14 @@
 import { TRPCError } from "@trpc/server";
-import { canonicalOperationAllowed, storedOperationUser } from "./authorization/operationAuthority";
+import {
+  canonicalOperationAllowed,
+  storedCanonicalOperationAllowed,
+  storedOperationUser,
+} from "./authorization/operationAuthority";
 import { appErrorMessage } from "@shared/errors";
+import {
+  evaluateRefundOperationalDecision,
+  OperationalApprovalRequiredError,
+} from "@shared/operationalDecision";
 import { isDeadInvoice } from "@shared/predicates";
 import { refundDueAfterReturn } from "@shared/predicates/invoiceRemaining";
 import Decimal from "decimal.js";
@@ -49,7 +57,9 @@ import {
 } from "@shared/permissions";
 import {
   resolveAtomicPermissions,
+  resolveOperationalCaps,
   type AtomicPermissionsMap,
+  type OperationalCaps,
 } from "@shared/atomicPermissions";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
@@ -89,6 +99,7 @@ import {
   assertCashOutAvailable,
   assertNonPhysicalOutReceipt,
   assertTreasuryOutException,
+  computeDrawerCashBalance,
   lockCashSourceForUpdate,
 } from "./cash/cashAvailability";
 import {
@@ -108,6 +119,7 @@ import { paymentAssetRole } from "./sale/paymentPosting";
 import { nextVoucherNumber } from "./voucher/helpers";
 import { assertNoActiveInstallmentPlanAfterInvoiceLockTx } from "./installment/guards";
 import { assertPeriodOpen } from "./periodLockService";
+import { todayUtcDate } from "./businessDay";
 import {
   assertLockedInvoiceControlSnapshotTx,
   type InvoiceControlSnapshot,
@@ -696,8 +708,10 @@ export async function returnSaleInTx(
   } | null = null;
   if (refund?.method === "CASH" && money(refund.amount).gt(0)) {
     const branchForRefund = Number(invPreview.branchId);
+    const isNonManagerCashier =
+      actor.role !== "admin" && actor.role !== "manager";
     let explicitShiftId = refund.shiftId ?? null;
-    if (explicitShiftId == null && actor.role === "cashier") {
+    if (explicitShiftId == null && isNonManagerCashier) {
       const callerOpenShifts = await tx
         .select({ id: shifts.id })
         .from(shifts)
@@ -742,7 +756,7 @@ export async function returnSaleInTx(
         branchForRefund,
         explicitShiftId,
       );
-      if (actor.role === "cashier" && resolved.userId !== actor.userId) {
+      if (isNonManagerCashier && resolved.userId !== actor.userId) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: appErrorMessage({
@@ -761,7 +775,11 @@ export async function returnSaleInTx(
       // بلا ورديةٍ مفتوحة: `shiftIdForCashTx` يقرّر بالدور — خزينةٌ للإداريّ، ورفضٌ للكاشير.
       const routed = await shiftIdForCashTx(
         tx,
-        { userId: actor.userId, branchId: branchForRefund, role: actor.role },
+        {
+          userId: actor.userId,
+          branchId: branchForRefund,
+          role: isNonManagerCashier ? "cashier" : actor.role,
+        },
         branchForRefund,
         "استرداد مرتجع البيع نقداً",
       );
@@ -2588,16 +2606,36 @@ export async function returnSaleAsOwner(
 
     // Idempotency: إعادة تشغيل مرتجع مُلتزم سابقاً لا تتعطّل بالطلبات المعلّقة
     if (coreInput.clientRequestId) {
-      const fingerprint = idempotencyHash(coreInput);
-      const existingRefId = await checkIdempotency(
-        tx,
-        "sale.return",
-        coreInput.clientRequestId,
-        fingerprint,
-      );
-      if (existingRefId != null) {
-        return returnSaleInTx(tx, coreInput, actor);
+      const { directExecution: _de, ...coreWithoutDirect } =
+        coreInput as ReturnSaleInput & { directExecution?: boolean };
+      const replayCandidates: ReturnSaleInput[] = [
+        coreInput,
+        { ...coreWithoutDirect, directExecution: true } as ReturnSaleInput,
+        coreWithoutDirect,
+      ];
+      let lastConflict: unknown = null;
+      for (const candidate of replayCandidates) {
+        try {
+          const existingRefId = await checkIdempotency(
+            tx,
+            "sale.return",
+            candidate.clientRequestId,
+            idempotencyHash(candidate),
+          );
+          if (existingRefId == null) {
+            lastConflict = null;
+            break;
+          }
+          return await returnSaleInTx(tx, candidate, actor);
+        } catch (err) {
+          if (err instanceof TRPCError && err.code === "CONFLICT") {
+            lastConflict = err;
+            continue;
+          }
+          throw err;
+        }
       }
+      if (lastConflict) throw lastConflict;
     }
 
     const [pendingControl] = await tx
@@ -2679,19 +2717,23 @@ export async function returnSaleDirect(
 
       // 2. قفل جدول الأدوار أولاً (إن وجد دور مخصّص) بحماية FOR SHARE
       let customRoleRow: {
+        key: string;
         baseRole: string;
         isActive: boolean;
         permissions: unknown;
         atomicPermissions: unknown;
+        operationalCaps: unknown;
         operationPolicy: unknown;
       } | null = null;
       if (probe?.customRoleId != null) {
         const [rRow] = await tx
           .select({
+            key: roles.key,
             baseRole: roles.baseRole,
             isActive: roles.isActive,
             permissions: roles.permissions,
             atomicPermissions: roles.atomicPermissions,
+            operationalCaps: roles.operationalCaps,
             operationPolicy: roles.operationPolicy,
           })
           .from(roles)
@@ -2700,10 +2742,12 @@ export async function returnSaleDirect(
           .limit(1);
         if (rRow) {
           customRoleRow = {
+            key: rRow.key,
             baseRole: rRow.baseRole,
             isActive: Boolean(rRow.isActive),
             permissions: rRow.permissions,
             atomicPermissions: rRow.atomicPermissions,
+            operationalCaps: rRow.operationalCaps,
             operationPolicy: rRow.operationPolicy,
           };
         }
@@ -2719,6 +2763,7 @@ export async function returnSaleDirect(
           customRoleId: users.customRoleId,
           permissionsOverride: users.permissionsOverride,
           atomicPermissions: users.atomicPermissions,
+          operationalCaps: users.operationalCaps,
           operationPolicy: users.operationPolicy,
           accessExpiresAt: users.accessExpiresAt,
           branchId: users.branchId,
@@ -2782,11 +2827,31 @@ export async function returnSaleDirect(
         (customRoleRow?.atomicPermissions as AtomicPermissionsMap | null) ?? null,
         (userRow.atomicPermissions as AtomicPermissionsMap | null) ?? null,
       );
+      const userOverride = userRow.permissionsOverride as PermissionMap | null;
+      const fallbackCapRole =
+        effectiveRole === "print_operator" || effectiveRole === "user"
+          ? effectivePermissions.workorders === "FULL"
+            ? "reception_clerk"
+            : effectivePermissions.pos === "FULL" ||
+                effectivePermissions.sales === "FULL"
+              ? "cashier"
+              : effectiveRole
+          : effectiveRole;
+      const resolvedCaps = resolveOperationalCaps(
+        customRoleRow && userRow.customRoleId != null
+          ? customRoleRow.key
+          : fallbackCapRole,
+        // Recompute exclusively from the locked role/user rows. The request
+        // context can carry a cap that was revoked while this transaction was
+        // waiting for its locks.
+        (customRoleRow?.operationalCaps as OperationalCaps | null) ?? null,
+        (userRow.operationalCaps as OperationalCaps | null) ?? null,
+        fallbackCapRole,
+      );
 
       const isOwner = Boolean(userRow.isOwner);
       const isAdmin = effectiveRole === "admin";
       const hasSalesFull = effectivePermissions.sales === "FULL";
-      const isSalesDenied = effectivePermissions.sales === "NONE";
 
       const explicitAtomicGrant =
         (userRow.atomicPermissions as AtomicPermissionsMap | null)?.[
@@ -2819,28 +2884,70 @@ export async function returnSaleDirect(
         "sales_rep",
       ].includes(effectiveRole);
 
+      const roleOverride =
+        (customRoleRow?.permissions as PermissionMap | null) ?? null;
+      const explicitUserSalesDenied =
+        userOverride?.sales === "NONE" &&
+        userOverride?.workorders !== "FULL" &&
+        userOverride?.pos !== "FULL";
+      const explicitRoleSalesDenied =
+        roleOverride?.sales === "NONE" &&
+        roleOverride?.workorders !== "FULL" &&
+        roleOverride?.pos !== "FULL" &&
+        userOverride?.workorders !== "FULL" &&
+        userOverride?.pos !== "FULL";
       const hasReceptionFull =
-        effectiveRole === "print_operator" &&
+        !explicitUserSalesDenied &&
+        !explicitRoleSalesDenied &&
+        (effectiveRole === "print_operator" ||
+          effectiveRole === "user" ||
+          customRoleRow?.key === "reception_clerk") &&
         effectivePermissions.workorders === "FULL";
+      const hasExplicitPrintPosFull =
+        !explicitUserSalesDenied &&
+        !explicitRoleSalesDenied &&
+        (effectiveRole === "print_operator" ||
+          effectiveRole === "user" ||
+          customRoleRow?.key === "print_cashier") &&
+        effectivePermissions.pos === "FULL";
 
       const legacyAuthorized =
         isOwner ||
         isAdmin ||
         (!explicitAtomicRevoke &&
           (explicitAtomicGrant ||
-            (!isSalesDenied &&
-              (hasReceptionFull || (isCashierRole && hasSalesFull)))));
+            hasReceptionFull ||
+            hasExplicitPrintPosFull ||
+            (effectivePermissions.sales !== "NONE" &&
+              isCashierRole &&
+              hasSalesFull)));
 
-      const isAuthorized = canonicalOperationAllowed(
-        storedOperationUser(userRow, customRoleRow), "returns.create",
-      ) ?? legacyAuthorized;
+      const currentOperationUser = storedOperationUser(userRow, customRoleRow);
+      const canonicalAuthorized = canonicalOperationAllowed(
+        currentOperationUser, "returns.create",
+      );
+      // The canonical grant is the exact operation authority. This matters for
+      // reception/print presets whose broad sales module intentionally remains
+      // hidden. A direct user-level sales denial remains authoritative unless
+      // the user is explicitly granted reception or POS FULL in overrides.
+      const isAuthorized =
+        !isOwner && !isAdmin && explicitUserSalesDenied
+          ? false
+          : canonicalAuthorized ?? legacyAuthorized;
 
-      if (!isOwner && !isAdmin && Number(actor.branchId) !== Number(userRow.branchId)) {
-        throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
-          what: "تغيّر فرع الحساب أثناء تنفيذ المرتجع",
-          why: "فرع الطلب المفتوح يختلف عن الفرع المسند حالياً للحساب",
-          doThis: "حدّث الصفحة وأعد تنفيذ المرتجع من فرعك الحالي",
-        }) });
+      if (
+        !isOwner &&
+        !isAdmin &&
+        Number(actor.branchId) !== Number(userRow.branchId)
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تغيّر فرع الحساب أثناء تنفيذ المرتجع",
+            why: "فرع الطلب المفتوح يختلف عن الفرع المسند حالياً للحساب",
+            doThis: "حدّث الصفحة وأعد تنفيذ المرتجع من فرعك الحالي",
+          }),
+        });
       }
 
       if (!isAuthorized) {
@@ -2855,6 +2962,24 @@ export async function returnSaleDirect(
         });
       }
 
+      // Every non-privileged delegate is subject to the same transaction
+      // limits. A sparse canonical grant must never turn a sales representative
+      // or another custom delegate into an unlimited direct-refund actor.
+      const currentApprovalAllowed = isOwner || (
+        storedCanonicalOperationAllowed(currentOperationUser, "salesControl.approve") ??
+        moduleAccessAllowed(
+          currentOperationUser.role,
+          currentOperationUser.permissionsOverride as PermissionMap | null,
+          "sales",
+          "FULL",
+          ["manager", "admin"],
+        )
+      );
+      const requiresOperationalLimits = !currentApprovalAllowed;
+      const effectiveReturnActorRole = requiresOperationalLimits
+        ? "cashier"
+        : effectiveRole;
+
       // Idempotency: إعادة تشغيل مرتجع مُلتزم سابقاً لا تشترط بقاء الوردية مفتوحة
       if (coreInput.clientRequestId) {
         const fingerprint = idempotencyHash(coreInput);
@@ -2868,21 +2993,19 @@ export async function returnSaleDirect(
           return returnSaleInTx(tx, coreInput, {
             userId: actor.userId,
             branchId: actor.branchId,
-            role: effectiveRole,
+            role: effectiveReturnActorRole,
           });
         }
       }
 
-      const isCashierOrReception =
-        effectiveRole === "cashier" || effectiveRole === "print_operator";
-
-      if (isCashierOrReception) {
+      if (requiresOperationalLimits) {
         const directRefund = coreInput.resolution ?? coreInput.refund;
-        const needsCashShift = directRefund?.method === "CASH"
-          && money(directRefund.amount).gt(0);
+        const needsCashShift = directRefund?.method === "CASH" && money(directRefund.amount).gt(0);
         const [invRow] = await tx
           .select({
             branchId: invoices.branchId,
+            invoiceDate: invoices.invoiceDate,
+            paymentMethod: invoices.paymentMethod,
             createdBy: invoices.createdBy,
             workOrderCreatedBy: workOrders.createdBy,
           })
@@ -2892,42 +3015,114 @@ export async function returnSaleDirect(
           .limit(1);
 
         const targetBranchId = invRow?.branchId ?? actor.branchId;
+        let openShiftId: number | null = null;
         if (needsCashShift) {
-          const openShiftId = await openShiftIdTx(
-            tx,
-            actor.userId,
-            targetBranchId,
-          );
-          if (!openShiftId) {
-            throw new TRPCError({
-              code: "PRECONDITION_FAILED",
-              message: appErrorMessage({
-                what: "تعذّر تنفيذ المرتجع المباشر",
-                why: "يوجد رد نقدي فعلي، لذلك يلزم درج وردية مفتوح في فرع الفاتورة",
-                doThis:
-                  "افتح وردية في فرع الفاتورة أو اجعل مديراً يصرف الرد من الخزينة؛ المرتجع بلا رد نقدي لا يحتاج وردية صرف",
-              }),
-            });
+          if (directRefund?.shiftId != null) {
+            const [selectedShift] = await tx
+              .select({
+                id: shifts.id,
+                userId: shifts.userId,
+                branchId: shifts.branchId,
+                status: shifts.status,
+              })
+              .from(shifts)
+              .where(eq(shifts.id, Number(directRefund.shiftId)))
+              .limit(1);
+            if (
+              selectedShift != null &&
+              Number(selectedShift.branchId) === Number(targetBranchId) &&
+              Number(selectedShift.userId) !== Number(actor.userId)
+            ) {
+              throw new TRPCError({
+                code: "FORBIDDEN",
+                message: appErrorMessage({
+                  what: "تعذّر صرف الاسترداد النقدي من درج وردية أخرى",
+                  why: "كاشير الصرف مقيّد بدرج ورديته المفتوحة ولا يمكنه صرف النقد من درج كاشير آخر",
+                  doThis:
+                    "اختر درج ورديتك المفتوحة الخاصة بك لصرف الاسترداد النقدي",
+                }),
+              });
+            }
+            if (
+              selectedShift != null &&
+              selectedShift.status === "OPEN" &&
+              Number(selectedShift.userId) === Number(actor.userId) &&
+              Number(selectedShift.branchId) === Number(targetBranchId)
+            ) {
+              openShiftId = Number(selectedShift.id);
+            }
+          } else {
+            openShiftId = await openShiftIdTx(tx, actor.userId, targetBranchId);
           }
         }
+        if (needsCashShift && !openShiftId) {
+          throw new OperationalApprovalRequiredError({
+            result: "APPROVAL_REQUIRED",
+            reason: "الرد النقدي ليس من وردية مفتوحة تخص منفذ المرتجع",
+            approvalOperation: "salesControl.requestReturn",
+          });
+        }
 
-        // عزل الفروع: كاشير لا ينفّذ مرتجعاً مباشراً لفاتورة فرع آخر
-        if (
-          !isOwner &&
-          !isAdmin &&
-          invRow &&
-          actor.branchId != null &&
-          Number(invRow.branchId) !== Number(actor.branchId)
-        ) {
+        let drawerHasFunds = true;
+        if (needsCashShift && openShiftId != null) {
+          const lockedDrawer = await lockCashSourceForUpdate(tx, {
+            branchId: Number(targetBranchId),
+            cashBucket: "DRAWER",
+            shiftId: openShiftId,
+          });
+          drawerHasFunds = (await computeDrawerCashBalance(
+            tx,
+            openShiftId,
+            lockedDrawer.openingBalance ?? "0",
+          )).gte(money(directRefund?.amount ?? "0"));
+        }
+
+        if (!invRow || actor.branchId == null || Number(invRow.branchId) !== Number(actor.branchId)) {
           throw new TRPCError({
             code: "FORBIDDEN",
             message: appErrorMessage({
-              what: "تعذّر تنفيذ المرتجع المباشر",
+              what: "تعذر تنفيذ المرتجع المباشر",
               why: "الفاتورة تنتمي إلى فرع آخر غير فرعك المسند",
-              doThis: "سجّل المرتجع من الفرع المصدر أو اطلب من الإدارة إتمامه",
+              doThis: "نفذ المرتجع من الفرع المصدر أو أحله إلى مدير مخول",
             }),
           });
         }
+        const lockedRefundCaps = await loadRefundCaps(tx, coreInput.invoiceId, {
+          lock: true,
+        });
+        const originalPaymentMethods = Array.from(lockedRefundCaps.netByMethod.entries())
+          .filter(([, amount]) => amount.gt(0))
+          .map(([method]) => method);
+        const originalPaymentAmounts = Object.fromEntries(
+          Array.from(lockedRefundCaps.netByMethod.entries())
+            .filter(([, amount]) => amount.gt(0))
+            .map(([method, amount]) => [method, amount.toFixed(2)]),
+        );
+        const decision = evaluateRefundOperationalDecision({
+          operationAllowed: isAuthorized,
+          sameBranch: Number(invRow.branchId) === Number(actor.branchId),
+          ownsTransaction: Number(invRow.createdBy) === Number(actor.userId),
+          sameOpenShift: !needsCashShift || (
+            openShiftId != null &&
+            (lockedRefundCaps.cashNetByShift.get(Number(openShiftId)) ?? money(0))
+              .gte(money(directRefund?.amount ?? "0"))
+          ),
+          sameBusinessDay: invRow.invoiceDate.toISOString().slice(0, 10) === todayUtcDate(),
+          accountingPeriodOpen: true,
+          hasDownstreamEffects: false,
+          hasSourceDocument: true,
+          refundAmountIqd: directRefund?.amount ?? "0.00",
+          maxRefundAmountIqd: resolvedCaps.maxRefundAmountIqd,
+          refundMethod: directRefund?.method ?? invRow.paymentMethod ?? "CASH",
+          originalPaymentMethods,
+          originalPaymentAmounts,
+          drawerHasFunds,
+          approvalOperation: "salesControl.requestReturn",
+        });
+        if (decision.result === "APPROVAL_REQUIRED")
+          throw new OperationalApprovalRequiredError(decision);
+        if (decision.result === "DENY")
+          throw new TRPCError({ code: "FORBIDDEN", message: decision.reason });
       }
 
       const [pendingControl] = await tx
@@ -2968,7 +3163,8 @@ export async function returnSaleDirect(
       return returnSaleInTx(tx, coreInput, {
         userId: actor.userId,
         branchId: actor.branchId,
-        role: effectiveRole,
+        role: effectiveReturnActorRole,
+        operationalCaps: resolvedCaps,
       });
     }),
   );

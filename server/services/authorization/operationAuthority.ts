@@ -17,6 +17,10 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import {
+  buildDefaultRoleOperationPolicy,
+  hasRoleOperationPreset,
+} from "@shared/roleOperationPresets";
 import { appErrorMessage } from "@shared/errors";
 import { roles, users } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
@@ -67,6 +71,7 @@ interface StoredUser {
   branchId?: number | null;
 }
 interface StoredRole {
+  key?: string;
   baseRole: string;
   isActive: boolean;
   permissions: unknown;
@@ -90,13 +95,19 @@ function storedPolicy(value: unknown): OperationPolicy | null {
 }
 
 /** Same role/user precedence as request context; callers supply locked DB rows. */
-export type StoredOperationSnapshot = OperationUser & { branchId?: number | null };
+export type StoredOperationSnapshot = OperationUser & {
+  branchId?: number | null;
+  customRoleKey?: string | null;
+  persistedPermissionsOverride?: PermissionMap | null;
+  /** True only for a policy saved on the user or custom role, not a synthesized built-in preset. */
+  hasPersistedOperationPolicy?: boolean;
+};
 
 export function storedOperationUser(user: StoredUser, role?: StoredRole | null): StoredOperationSnapshot {
   if (!user.isActive || (user.accessExpiresAt != null && user.accessExpiresAt.getTime() <= Date.now())) throw forbiddenOperation();
-  if (user.isOwner) return { role: "admin", isOwner: true, branchId: user.branchId };
+  if (user.isOwner) return { role: "admin", isOwner: true, branchId: user.branchId, hasPersistedOperationPolicy: false };
   if (user.customRoleId != null && !role?.isActive) {
-    return { role: "user", branchId: user.branchId, operationPolicyEnabled: true, resolvedOperationPolicy: { version: 1, grants: {} } };
+    return { role: "user", branchId: user.branchId, operationPolicyEnabled: true, resolvedOperationPolicy: { version: 1, grants: {} }, hasPersistedOperationPolicy: false };
   }
   const effectiveRole = (role?.baseRole ?? user.role) as RoleKey;
   const roleModules = role
@@ -104,7 +115,14 @@ export function storedOperationUser(user: StoredUser, role?: StoredRole | null):
     : resolvePermissions(effectiveRole, null);
   const modules = applyPermissionOverrides(roleModules, user.permissionsOverride as PermissionMap | null);
   const override = diffFromTemplate(effectiveRole, modules);
-  const rolePolicy = storedPolicy(role?.operationPolicy);
+  const persistedRolePolicy = storedPolicy(role?.operationPolicy);
+  const roleKey = role?.key ?? effectiveRole;
+  const hasPreset = role
+    ? role.key != null && hasRoleOperationPreset(role.key)
+    : hasRoleOperationPreset(roleKey);
+  const rolePolicy = persistedRolePolicy ?? (hasPreset
+    ? buildDefaultRoleOperationPolicy(roleKey, effectiveRole, roleModules)
+    : null);
   const userPolicy = storedPolicy(user.operationPolicy);
   const inheritedPolicy = rolePolicy ?? buildOperationPolicyFromLegacy(
     effectiveRole, roleModules, role?.atomicPermissions as Record<string, boolean> | null | undefined,
@@ -113,7 +131,10 @@ export function storedOperationUser(user: StoredUser, role?: StoredRole | null):
   return {
     role: effectiveRole,
     branchId: user.branchId,
+    customRoleKey: role?.key ?? null,
+    hasPersistedOperationPolicy: Boolean(persistedRolePolicy || userPolicy),
     permissionsOverride: override,
+    persistedPermissionsOverride: override,
     resolvedPermissions: modules,
     roleOperationPolicy: rolePolicy,
     operationPolicy: userPolicy,
@@ -121,6 +142,7 @@ export function storedOperationUser(user: StoredUser, role?: StoredRole | null):
     resolvedOperationPolicy: resolveOperationPolicy(effectiveRole, modules, inheritedPolicy, userPolicy, override, {
       permissionsOverride: user.permissionsOverride as PermissionMap | null,
       atomicPermissions: user.atomicPermissions as Record<string, boolean> | null | undefined,
+      inheritedModules: roleModules,
     }),
   };
 }
@@ -146,12 +168,26 @@ export function canonicalOperationAllowed(user: OperationUser, path: string): bo
   return hasOperationPolicy(user) ? operationDecision(user, path).allowed : undefined;
 }
 
+/**
+ * A stored explicit policy or a named built-in preset may replace the legacy
+ * module gate. A synthesized compatibility policy remains tri-state so an
+ * un-migrated custom role keeps its existing module authority.
+ */
+export function storedCanonicalOperationAllowed(
+  user: StoredOperationSnapshot,
+  path: string,
+): boolean | undefined {
+  return user.hasPersistedOperationPolicy === true || user.roleOperationPolicy != null
+    ? canonicalOperationAllowed(user, path)
+    : undefined;
+}
+
 /** Re-read before the write; a router proof cannot survive an intervening revocation. */
 export async function assertOperationAuthorityTx(
   tx: Tx,
   actor: { userId: number; role?: string; branchId?: number | null },
   path: string,
-  legacyAllowed: boolean,
+  legacyAllowed: boolean | ((current: StoredOperationSnapshot) => boolean),
   authority?: ServiceOperationAuthority,
 ): Promise<boolean> {
   if (authority && !hasServiceOperationAuthority(authority, actor.userId, path)) throw forbiddenOperation();
@@ -166,8 +202,9 @@ export async function assertOperationAuthorityTx(
       doThis: "حدّث الصفحة وأعد المحاولة بالدور والفرع الحاليين",
     }) });
   }
-  const canonical = canonicalOperationAllowed(current, path);
-  if (!(canonical ?? legacyAllowed)) throw forbiddenOperation();
+  const canonical = storedCanonicalOperationAllowed(current, path);
+  const allowed = canonical ?? (typeof legacyAllowed === "function" ? legacyAllowed(current) : legacyAllowed);
+  if (!allowed) throw forbiddenOperation();
   return canonical === true;
 }
 

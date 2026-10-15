@@ -19,9 +19,16 @@ export type RealtimeConnectionStatus =
   | "idle_disconnected";
 
 export interface RealtimeMessageBusPayload {
-  type: "REALTIME_EVENT" | "LEADER_HEARTBEAT" | "LEADER_CLAIM" | "LEADER_RESIGN";
+  type:
+    | "REALTIME_EVENT"
+    | "LEADER_HEARTBEAT"
+    | "LEADER_CLAIM"
+    | "LEADER_RESIGN"
+    | "PWA_SUSPEND"
+    | "PWA_RESUME";
   tabId: string;
   timestamp: number;
+  durationMs?: number;
   event?: RealtimeEvent;
 }
 
@@ -47,6 +54,8 @@ export class RealtimeManager {
   private batchSalesTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingBatchSales: BatchSalesSyncedPayload | null = null;
   private pendingBatchScope?: RealtimeEvent["scope"];
+  private pwaSuspendedUntil = 0;
+  private pwaResumeTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(tabId?: string) {
     this.tabId =
@@ -122,6 +131,20 @@ export class RealtimeManager {
         if (this.isLeader && data.tabId < this.tabId) {
           this.stepDownFromLeader("usurped");
         }
+        break;
+
+      case "PWA_SUSPEND":
+        this.applyPwaSuspension(
+          typeof data.durationMs === "number" &&
+            Number.isFinite(data.durationMs) &&
+            data.durationMs > 0
+            ? data.durationMs
+            : 15_000,
+        );
+        break;
+
+      case "PWA_RESUME":
+        this.applyPwaResume();
         break;
     }
   }
@@ -246,12 +269,17 @@ export class RealtimeManager {
     return true;
   }
 
+  private isPwaSuspended(): boolean {
+    return Date.now() < this.pwaSuspendedUntil;
+  }
+
   /**
    * إنشاء اتصال Server-Sent Events على التبويب القائد فقط.
    */
   private connectEventSource(): void {
     if (
       !this.isLeader ||
+      this.isPwaSuspended() ||
       this.status === "offline" ||
       this.status === "idle_disconnected" ||
       !this.shouldConnect()
@@ -437,7 +465,13 @@ export class RealtimeManager {
    */
   private scheduleReconnect(): void {
     if (this.reconnectTimer || !this.isLeader || !this.isStarted) return;
-    if (this.status === "offline" || this.status === "idle_disconnected") return;
+    if (
+      this.isPwaSuspended() ||
+      this.status === "offline" ||
+      this.status === "idle_disconnected"
+    ) {
+      return;
+    }
 
     this.reconnectAttempts++;
     const base = Math.min(30000, 1000 * 2 ** Math.min(this.reconnectAttempts, 5));
@@ -446,10 +480,84 @@ export class RealtimeManager {
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      if (this.isLeader && this.status !== "offline" && this.status !== "idle_disconnected") {
+      if (
+        this.isLeader &&
+        !this.isPwaSuspended() &&
+        this.status !== "offline" &&
+        this.status !== "idle_disconnected"
+      ) {
         this.connectEventSource();
       }
     }, delay);
+  }
+
+  /**
+   * تعليق مقبس الـ SSE مؤقتاً في هذا التبويب وفي كافة التبويبات المفتوحة عبر BroadcastChannel
+   * لتحرير العامل القديم (Service Worker) من أي FetchEvent مفتوح أثناء تفعيل تحديث PWA.
+   */
+  suspendForPwaUpdate(durationMs = 15_000): () => void {
+    const safeDuration =
+      Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 15_000;
+    this.applyPwaSuspension(safeDuration);
+    this.postBusMessage({
+      type: "PWA_SUSPEND",
+      tabId: this.tabId,
+      timestamp: Date.now(),
+      durationMs: safeDuration,
+    });
+    return () => {
+      this.resumeFromPwaUpdate();
+    };
+  }
+
+  resumeFromPwaUpdate(): void {
+    this.applyPwaResume();
+    this.postBusMessage({
+      type: "PWA_RESUME",
+      tabId: this.tabId,
+      timestamp: Date.now(),
+    });
+  }
+
+  private applyPwaSuspension(durationMs: number): void {
+    this.pwaSuspendedUntil = Math.max(
+      this.pwaSuspendedUntil,
+      Date.now() + durationMs,
+    );
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.closeEventSource();
+    if (this.status === "connected" || this.status === "connecting") {
+      this.setStatus("disconnected");
+    }
+    if (this.pwaResumeTimer) {
+      clearTimeout(this.pwaResumeTimer);
+    }
+    const remaining = Math.max(0, this.pwaSuspendedUntil - Date.now());
+    this.pwaResumeTimer = setTimeout(() => {
+      this.pwaResumeTimer = null;
+      this.applyPwaResume();
+    }, remaining);
+  }
+
+  private applyPwaResume(): void {
+    this.pwaSuspendedUntil = 0;
+    if (this.pwaResumeTimer) {
+      clearTimeout(this.pwaResumeTimer);
+      this.pwaResumeTimer = null;
+    }
+    if (
+      this.isStarted &&
+      this.isLeader &&
+      this.status !== "offline" &&
+      this.status !== "idle_disconnected" &&
+      !this.eventSource
+    ) {
+      this.reconnectAttempts = 0;
+      this.connectEventSource();
+    }
   }
 
   /**
@@ -647,6 +755,11 @@ export class RealtimeManager {
    */
   stop(): void {
     this.isStarted = false;
+    this.pwaSuspendedUntil = 0;
+    if (this.pwaResumeTimer) {
+      clearTimeout(this.pwaResumeTimer);
+      this.pwaResumeTimer = null;
+    }
     this.stepDownFromLeader("stopped");
     this.disarmIdleTimer();
 

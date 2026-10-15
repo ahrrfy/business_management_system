@@ -114,6 +114,8 @@ export async function listReceptionInvoices(input: ReceptionInvoiceQueueInput) {
           id: invoices.id,
           invoiceNumber: invoices.invoiceNumber,
           invoiceDate: invoices.invoiceDate,
+          sourceType: invoices.sourceType,
+          sourceId: invoices.sourceId,
           total: invoices.total,
           paidAmount: invoices.paidAmount,
           returnedTotal: invoices.returnedTotal,

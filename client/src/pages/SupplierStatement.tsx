@@ -24,6 +24,7 @@ import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatte
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { classifyGrniApEntry } from "@shared/grniDedupe";
+import { getPurchaseSettlement } from "@shared/purchaseSettlement";
 import { AlertCircle, ExternalLink, Info, RefreshCw } from "lucide-react";
 import { AccountLedgerDrilldownDialog, type DrilldownTarget } from "@/components/financial/AccountLedgerDrilldownDialog";
 import { FinancialCellProvenanceHover } from "@/components/financial";
@@ -76,7 +77,12 @@ interface LedgerRow {
   balance: string;
   filterGroup: LedgerFilterGroup;
   openHref?: string;
-  paymentStatus?: "PAID" | "PARTIAL" | "UNPAID";
+  paymentStatus?: ReturnType<typeof getPurchaseSettlement>["status"];
+  paymentStatusLabel?: string;
+  paymentReview?: boolean;
+  paidAmount?: string;
+  returnedAmount?: string;
+  remainingAmount?: string;
   poId?: number;
   receiptId?: number;
   provenance?: FinancialCellProvenancePayload;
@@ -90,15 +96,11 @@ const FILTER_GROUP_LABEL: Record<"all" | LedgerFilterGroup, string> = {
   other: "أخرى",
 };
 
-const PAYMENT_STATUS_LABEL: Record<"PAID" | "PARTIAL" | "UNPAID", string> = {
-  PAID: "مسدَّد",
-  PARTIAL: "جزئي",
-  UNPAID: "غير مسدَّد",
-};
-const PAYMENT_STATUS_CLS: Record<"PAID" | "PARTIAL" | "UNPAID", string> = {
+const PAYMENT_STATUS_CLS: Record<NonNullable<LedgerRow["paymentStatus"]>, string> = {
   PAID: "badge-status-active",
   PARTIAL: "badge-status-pending",
   UNPAID: "badge-stock-out",
+  CREDITED: "badge-status-info",
 };
 
 /** جمعُ عمود مدين/دائن بدقّة Decimal (§٥) — يتجاهل الخلايا الفارغة (—). */
@@ -255,12 +257,13 @@ function getLedgerColumns(onDrilldown: (target: DrilldownTarget) => void): Colum
     {
       id: "paymentStatus",
       header: "الحالة",
-      accessorFn: (r) => (r.paymentStatus ? PAYMENT_STATUS_LABEL[r.paymentStatus] : "—"),
+      accessorFn: (r) => r.paymentStatusLabel ?? "—",
       meta: { kind: "status" },
       cell: ({ row }) =>
         row.original.paymentStatus ? (
-          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${PAYMENT_STATUS_CLS[row.original.paymentStatus]}`}>
-            {PAYMENT_STATUS_LABEL[row.original.paymentStatus]}
+          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.paymentReview ? "badge-status-pending" : PAYMENT_STATUS_CLS[row.original.paymentStatus]}`}>
+            {row.original.paymentStatusLabel}
+            {row.original.paymentReview ? " — يحتاج مراجعة دليل السداد" : ""}
           </span>
         ) : (
           <span className="text-xs text-muted-foreground">—</span>
@@ -324,7 +327,7 @@ export default function SupplierStatement() {
 
   const openOrdersCount = useMemo(() => {
     return (stmt.data?.purchaseOrders ?? []).filter((p) => {
-      const remaining = D(p.total).minus(D(p.paidAmount));
+      const remaining = D(getPurchaseSettlement({ ...p, agreedCurrency: "IQD" }).remainingAmount);
       return p.status !== "CANCELLED" && remaining.gt(0);
     }).length;
   }, [stmt.data?.purchaseOrders]);
@@ -343,22 +346,22 @@ export default function SupplierStatement() {
     if (!stmt.data) return null;
     const d = stmt.data;
     const poTxs = d.purchaseOrders.map((p) => {
-      const poPaid = D(p.paidAmount);
-      const poTotal = D(p.total);
-      const paymentStatus: LedgerRow["paymentStatus"] = poTotal.gt(0) && poPaid.gte(poTotal) ? "PAID" : poPaid.gt(0) ? "PARTIAL" : "UNPAID";
+      const settlement = getPurchaseSettlement({ ...p, agreedCurrency: "IQD" });
       return {
         t: new Date(p.orderDate).getTime(),
         date: fmtDate(p.orderDate),
         ref: p.poNumber,
-        description:
-          p.settlementType === "CASH"
-            ? "فاتورة شراء نقدية — بضاعة"
-            : "فاتورة شراء — بضاعة",
+        description: `فاتورة شراء — بضاعة · ${settlement.intentLabel}`,
         actor: p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق"),
         debit: null as string | null, credit: p.total as string | null,
         filterGroup: "buy" as const,
         openHref: `/purchases/${p.id}`,
-        paymentStatus,
+        paymentStatus: settlement.status,
+        paymentStatusLabel: settlement.statusLabel,
+        paymentReview: settlement.requiresReview,
+        paidAmount: settlement.paidAmount,
+        returnedAmount: settlement.returnedAmount,
+        remainingAmount: settlement.remainingAmount,
         poId: Number(p.id),
         provenance: (p as any).provenance,
       };
@@ -494,7 +497,7 @@ export default function SupplierStatement() {
       entityType: "supplier",
       lines: ledger.rows.map((r) => ({
         date: r.date,
-        doc: `${r.ref} — ${r.description}`,
+        doc: `${r.ref} — ${r.description}${r.paymentStatusLabel ? ` · ${r.paymentStatusLabel}` : ""}${r.paymentReview ? " · يحتاج مراجعة دليل السداد" : ""}`,
         debit: r.debit,
         credit: r.credit,
         balance: r.balance,
@@ -503,7 +506,7 @@ export default function SupplierStatement() {
       asOfDate: to || undefined,
     });
     const tsv = formatTableAsTSV(
-      ["التاريخ", "المرجع", "البيان", "المنفذ", "مدين", "دائن", "الرصيد"],
+      ["التاريخ", "المرجع", "البيان", "المنفذ", "مدين", "دائن", "الرصيد", "حالة السداد", "المدفوع", "تخفيض الذمة", "المتبقي"],
       ledger.rows.map((r) => ({
         "التاريخ": r.date,
         "المرجع": r.ref,
@@ -512,6 +515,10 @@ export default function SupplierStatement() {
         "مدين": r.debit == null ? "" : r.debit,
         "دائن": r.credit == null ? "" : r.credit,
         "الرصيد": r.balance,
+        "حالة السداد": `${r.paymentStatusLabel ?? ""}${r.paymentReview ? " — يحتاج مراجعة" : ""}`,
+        "المدفوع": r.paidAmount ?? "",
+        "تخفيض الذمة": r.returnedAmount ?? "",
+        "المتبقي": r.remainingAmount ?? "",
       })),
     );
     return { plain, whatsapp, tsv };
@@ -559,6 +566,11 @@ export default function SupplierStatement() {
         { key: "debit", header: "مدين", map: (r) => (r.debit == null ? null : Number(r.debit)) },
         { key: "credit", header: "دائن", map: (r) => (r.credit == null ? null : Number(r.credit)) },
         { key: "balance", header: "الرصيد", map: (r) => Number(r.balance) },
+        { key: "paymentStatusLabel", header: "حالة السداد" },
+        { key: "paymentReview", header: "مراجعة دليل السداد", map: (r) => r.paymentReview ? "تحتاج مراجعة" : "" },
+        { key: "paidAmount", header: "المدفوع (د.ع)", map: (r) => r.paidAmount == null ? null : D(r.paidAmount).toNumber() },
+        { key: "returnedAmount", header: "تخفيض الذمة (د.ع)", map: (r) => r.returnedAmount == null ? null : D(r.returnedAmount).toNumber() },
+        { key: "remainingAmount", header: "المتبقي (د.ع)", map: (r) => r.remainingAmount == null ? null : D(r.remainingAmount).toNumber() },
       ],
     });
   };

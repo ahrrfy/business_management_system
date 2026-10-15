@@ -12,23 +12,21 @@ function activateAfterStreamRelease() {
     const abort = new AbortController();
     const timeout = setTimeout(() => abort.abort(), 2_000);
     try {
-      const response = await fetch("/api/realtime/pwa-quiesce", {
+      await fetch("/api/realtime/pwa-quiesce", {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-erp-csrf": "1",
+        },
         body: "{}",
         signal: abort.signal,
       });
-      // 401 يؤكد المتجر المجهول؛ ليس له تدفق مصادق يمكن تحريره بهذه الجلسة.
-      if (!response.ok && response.status !== 401)
-        throw new Error("PWA_STREAM_RELEASE_FAILED");
-    } catch (error) {
-      // انقطاع المتصفح نفسه ينهي التدفقات؛ أما فشل الخادم العابر فيبقى قابلاً للإعادة.
-      if (self.navigator?.onLine !== false) throw error;
+    } catch {
+      // تحرير الخادم مسرِّع مساعد إلى جانب تعليق العميل المحلي؛ أي فشل عابر
+      // أثناء إعادة تشغيل الخادم لا يجوز أن يمنع skipWaiting من التسلّح.
     } finally {
       clearTimeout(timeout);
-      // ندمج طلبات التحرير المتزامنة فقط؛ قد يبقى skipWaiting معلقاً،
-      // لذلك يجب أن تسمح المحاولة اللاحقة بطلب HTTP جديد بعد تعافي الشبكة.
       if (activationRequest === request) activationRequest = null;
     }
     await self.skipWaiting();
@@ -43,17 +41,17 @@ self.addEventListener("message", (event) => {
     !["PWA_ACTIVATE", "SKIP_WAITING"].includes(event.data.type)
   )
     return;
-  // importScripts يسبق مستمع Workbox المولّد؛ لا نسمح له بتجاوز حاجز التحرير.
-  event.stopImmediatePropagation();
   try {
     if (
-      !event.source?.url ||
+      event.source?.url &&
       new URL(event.source.url).origin !== self.location.origin
     )
       return;
   } catch {
     return;
   }
+  // importScripts يسبق مستمع Workbox المولّد؛ ننسق التحرير قبل skipWaiting.
+  event.stopImmediatePropagation();
 
   const requestId =
     typeof event.data.requestId === "string"

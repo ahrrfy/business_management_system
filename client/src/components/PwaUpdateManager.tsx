@@ -1,38 +1,43 @@
 import { Button } from "@/components/ui/button";
 import { flushAutosaves } from "@/lib/autosave";
+import { hasUnsavedInteraction, saveInteractionDraft } from "@/lib/interactionDraft";
 import {
-  hasUnsavedInteraction,
-  saveInteractionDraft,
-} from "@/lib/interactionDraft";
-import {
-  activateRegistrationUpdate,
-  decidePwaUpdateAction,
+  activateRegistrationUpdate, automaticStorefrontPersistenceIsSafe, clearPwaAutoAttempt,
+  decidePwaUpdateAction, PWA_FAILED_AUTO_RETRY_COOLDOWN_MS, type PwaAutoAttempt, readPwaAutoAttempt,
+  requestStorefrontPersistence, resolveWaitingWorkerVersion, shouldAutoApplyWaitingVersion,
+  shouldClearPwaAutoAttempt, shouldReloadAfterActivationTimeout, writePwaAutoAttempt,
 } from "@/lib/pwaUpdateLifecycle";
-import {
-  setPwaUpdatePending,
-  subscribePwaUpdateOpen,
-} from "@/lib/pwaUpdateStatus";
+import { setPwaUpdatePending, subscribePwaUpdateOpen } from "@/lib/pwaUpdateStatus";
+import { realtimeManager } from "@/lib/realtime/realtimeManager";
 import { isPublicHost } from "@/lib/siteHosts";
 import { Download, RefreshCw, ShieldCheck } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { notify } from "@/lib/notify";
 import { useLocation } from "wouter";
 
+export {
+  automaticStorefrontPersistenceIsSafe, clearPwaAutoAttempt, PWA_FAILED_AUTO_RETRY_COOLDOWN_MS,
+  type PwaAutoAttempt, readPwaAutoAttempt, requestStorefrontPersistence, resolveWaitingWorkerVersion,
+  shouldAutoApplyWaitingVersion, shouldClearPwaAutoAttempt, shouldReloadAfterActivationTimeout,
+  writePwaAutoAttempt,
+};
+
 const UPDATE_CHECK_TIMEOUT_MS = 8_000;
 const UPDATE_ACTIVATION_TIMEOUT_MS = 12_000;
 const RELOAD_MARKER_KEY = "alroya.pwa-update.reload-requested";
 const RELOAD_MARKER_MAX_AGE_MS = 2 * 60 * 1_000;
-const AUTO_ATTEMPT_KEY = "alroya.pwa-update.auto-attempt.v1";
-const STOREFRONT_PERSIST_REQUEST_EVENT = "alroya:storefront-persist-request";
 
 type UpdatePhase = "saving" | "activating" | "reopening";
 export type PwaUpdateDelivery = "AUTO_APPLY" | "PROMPT" | "NONE";
-export type PwaAutoAttempt = {
-  version: string;
-  status: "ATTEMPTING" | "FAILED" | "RELOADING";
-  attemptedAt: number;
-};
-type AttemptStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+function isKioskRoute(pathname: string): boolean {
+  return (
+    pathname === "/kiosk" ||
+    pathname.startsWith("/kiosk/") ||
+    pathname === "/price-checker" ||
+    pathname.startsWith("/price-checker/")
+  );
+}
 
 export function pwaOfflineReadyMessage(input: {
   hostname: string;
@@ -57,12 +62,7 @@ export function decidePwaUpdateDelivery(input: {
   hasWaitingWorker: boolean;
 }): PwaUpdateDelivery {
   if (!input.hasWaitingWorker) return "NONE";
-  const isKioskPath =
-    input.pathname === "/kiosk" ||
-    input.pathname.startsWith("/kiosk/") ||
-    input.pathname === "/price-checker" ||
-    input.pathname.startsWith("/price-checker/");
-  if (isKioskPath) return "AUTO_APPLY";
+  if (isKioskRoute(input.pathname)) return "AUTO_APPLY";
   const storefrontPath =
     input.pathname === "/store" || input.pathname.startsWith("/store/");
   if (isPublicHost(input.hostname) && storefrontPath) return "AUTO_APPLY";
@@ -79,121 +79,14 @@ export function requiresStorefrontPersistence(input: {
   );
 }
 
-export function readPwaAutoAttempt(
-  storage: AttemptStorage = localStorage,
-): { ok: true; value: PwaAutoAttempt | null } | { ok: false; value: null } {
-  try {
-    const raw = storage.getItem(AUTO_ATTEMPT_KEY);
-    if (!raw) return { ok: true, value: null };
-    const parsed = JSON.parse(raw) as Partial<PwaAutoAttempt>;
-    if (
-      typeof parsed.version !== "string" ||
-      !["ATTEMPTING", "FAILED", "RELOADING"].includes(parsed.status ?? "") ||
-      typeof parsed.attemptedAt !== "number"
-    ) {
-      storage.removeItem(AUTO_ATTEMPT_KEY);
-      return { ok: true, value: null };
-    }
-    return { ok: true, value: parsed as PwaAutoAttempt };
-  } catch {
-    return { ok: false, value: null };
+export function pwaActivationTimeoutMessage(input: {
+  hostname: string;
+  pathname: string;
+}): string {
+  if (requiresStorefrontPersistence(input)) {
+    return "لم يكتمل التفعيل ولم يُفقد طلبك. لن نعيد فتح الصفحة تلقائياً؛ أعد المحاولة يدوياً.";
   }
-}
-
-export function writePwaAutoAttempt(
-  attempt: PwaAutoAttempt,
-  storage: AttemptStorage = localStorage,
-): boolean {
-  try {
-    storage.setItem(AUTO_ATTEMPT_KEY, JSON.stringify(attempt));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function clearPwaAutoAttempt(
-  storage: AttemptStorage = localStorage,
-): boolean {
-  try {
-    storage.removeItem(AUTO_ATTEMPT_KEY);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function shouldAutoApplyWaitingVersion(
-  version: string,
-  attempt: PwaAutoAttempt | null,
-): boolean {
-  return attempt?.version !== version;
-}
-
-export function shouldClearPwaAutoAttempt(input: {
-  hasWaitingWorker: boolean;
-  activeWorkerState?: ServiceWorkerState;
-  activationVerified: boolean;
-}): boolean {
-  return (
-    input.activationVerified &&
-    !input.hasWaitingWorker &&
-    input.activeWorkerState === "activated"
-  );
-}
-
-function hashWorkerScript(source: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < source.length; index += 1) {
-    hash ^= source.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(36);
-}
-
-export async function resolveWaitingWorkerVersion(
-  worker: Pick<ServiceWorker, "scriptURL">,
-  fetcher: typeof fetch = fetch,
-): Promise<string | null> {
-  try {
-    const response = await fetcher(worker.scriptURL, { cache: "no-store" });
-    if (!response.ok) return null;
-    const etag = response.headers.get("etag");
-    if (etag) return `${worker.scriptURL}|etag:${etag}`;
-    return `${worker.scriptURL}|hash:${hashWorkerScript(await response.text())}`;
-  } catch {
-    // بلا بصمة نسخة موثوقة لا نغامر بمحاولة صامتة قد تتكرر بعد إعادة التحميل.
-    return null;
-  }
-}
-
-export function requestStorefrontPersistence(
-  target: Pick<Window, "dispatchEvent"> = window,
-): { attempted: number; ok: boolean; inFlight: boolean } {
-  let attempted = 0;
-  let ok = true;
-  let inFlight = false;
-  const event = new CustomEvent<{
-    report: (saved: boolean, state?: { inFlight: boolean }) => void;
-  }>(STOREFRONT_PERSIST_REQUEST_EVENT, {
-    detail: {
-      report(saved, state) {
-        attempted += 1;
-        ok = saved && ok;
-        inFlight = inFlight || state?.inFlight === true;
-      },
-    },
-  });
-  target.dispatchEvent(event);
-  return { attempted, ok, inFlight };
-}
-
-export function automaticStorefrontPersistenceIsSafe(result: {
-  attempted: number;
-  ok: boolean;
-  inFlight: boolean;
-}): boolean {
-  return result.attempted > 0 && result.ok && !result.inFlight;
+  return "لم يكتمل التفعيل وبقي عملك محفوظاً. لن نعيد فتح الصفحة تلقائياً؛ أعد المحاولة يدوياً.";
 }
 
 function phaseMessage(phase: UpdatePhase): string {
@@ -340,7 +233,11 @@ export function PwaUpdateManager() {
       );
       return;
     }
-    if (!shouldAutoApplyWaitingVersion(version, persisted.value)) {
+    if (
+      !shouldAutoApplyWaitingVersion(version, persisted.value, {
+        unattended: isKioskRoute(pathnameRef.current),
+      })
+    ) {
       setUpdateError(
         "لم يكتمل التحديث التلقائي السابق. لن نعيد فتح الصفحة تلقائياً؛ اضغط إعادة المحاولة بعد مراجعة طلبك.",
       );
@@ -582,46 +479,16 @@ export function PwaUpdateManager() {
     return registration;
   }
 
-  function reopenWithVerifiedUpdate(): void {
-    // قد يعدّل المستخدم حقلاً أثناء انتظار العامل؛ نحفظ آخر حالة في نفس مهمة إعادة الفتح.
-    if (!preserveUpdateDrafts()) {
-      markAttemptFailed();
-      const message =
-        "تعذّر حفظ آخر تعديلاتك محلياً؛ بقيت الصفحة مفتوحة. أعد المحاولة بعد مراجعة عملك.";
-      setUpdateError(message);
-      notify.err(message);
-      return;
+  function reportUpdateError(
+    message: string,
+    level: "err" | "warn" = "err",
+  ): void {
+    setUpdateError(message);
+    // البطاقة السفلية تعرض الخطأ بوضوح (role="alert") على الشاشات التفاعلية؛
+    // نكتفي بـ toast على شاشات الكشك المخفي فيها الشريط السفلي منعاً لتكرار الرسالة مرتين.
+    if (isKioskRoute(pathnameRef.current)) {
+      notify[level](message);
     }
-    const version = autoAttemptVersionRef.current;
-    if (
-      version &&
-      !writePwaAutoAttempt({
-        version,
-        status: "RELOADING",
-        attemptedAt: Date.now(),
-      })
-    ) {
-      const message =
-        "اكتمل تفعيل النسخة، لكن تعذّر تأمين سجل إعادة الفتح؛ أعد تحميل الصفحة يدوياً لحماية طلبك.";
-      setUpdateError(message);
-      notify.warn(message);
-      return;
-    }
-    setPhase("reopening");
-    setPwaUpdatePending(false);
-    setReady(false);
-    rememberVerifiedActivation();
-    window.location.reload();
-  }
-
-  function markAttemptFailed(): void {
-    const version = autoAttemptVersionRef.current;
-    if (!version) return;
-    writePwaAutoAttempt({
-      version,
-      status: "FAILED",
-      attemptedAt: Date.now(),
-    });
   }
 
   function preserveUpdateDrafts(): boolean {
@@ -641,13 +508,63 @@ export function PwaUpdateManager() {
     );
   }
 
-  async function applyUpdate(): Promise<void> {
+  function reopenWithVerifiedUpdate(): boolean {
+    // قد يعدّل المستخدم حقلاً أثناء انتظار العامل؛ نحفظ آخر حالة في نفس مهمة إعادة الفتح.
+    if (!preserveUpdateDrafts()) {
+      markAttemptFailed();
+      reportUpdateError(
+        "تعذّر حفظ آخر تعديلاتك محلياً؛ بقيت الصفحة مفتوحة. أعد المحاولة بعد مراجعة عملك.",
+      );
+      return false;
+    }
+    const version = autoAttemptVersionRef.current;
+    if (
+      version &&
+      !writePwaAutoAttempt({
+        version,
+        status: "RELOADING",
+        attemptedAt: Date.now(),
+      })
+    ) {
+      reportUpdateError(
+        "اكتمل تفعيل النسخة، لكن تعذّر تأمين سجل إعادة الفتح؛ أعد تحميل الصفحة يدوياً لحماية طلبك.",
+        "warn",
+      );
+      return false;
+    }
+    setPhase("reopening");
+    setPwaUpdatePending(false);
+    setReady(false);
+    rememberVerifiedActivation();
+    window.location.reload();
+    return true;
+  }
+
+  function markAttemptFailed(): void {
+    const version = autoAttemptVersionRef.current;
+    if (!version) return;
+    writePwaAutoAttempt({
+      version,
+      status: "FAILED",
+      attemptedAt: Date.now(),
+    });
+    if (isKioskRoute(pathnameRef.current) && typeof window !== "undefined") {
+      window.setTimeout(() => {
+        autoAttemptedWorkerRef.current = null;
+        revealUpdate();
+      }, PWA_FAILED_AUTO_RETRY_COOLDOWN_MS);
+    }
+  }
+
+  async function applyUpdate(options?: { manual?: boolean }): Promise<void> {
     if (applying) return;
     if (!("serviceWorker" in navigator)) {
       notify.err("خدمة تحديث النظام غير متاحة في هذا المتصفح.");
       return;
     }
 
+    let resumeRealtime: (() => void) | null = null;
+    let reloading = false;
     try {
       setApplying(true);
       setPhase("saving");
@@ -656,10 +573,9 @@ export function PwaUpdateManager() {
       // لقطة استرداد فورية قبل أي انتقال، حتى للنماذج القديمة غير المرتبطة بمسودة نوعية.
       if (!preserveUpdateDrafts()) {
         markAttemptFailed();
-        const message =
-          "تعذّر حفظ السلة أو بيانات الطلب محلياً؛ لم نحدّث الصفحة. راجع طلبك ثم أعد المحاولة.";
-        setUpdateError(message);
-        notify.err(message);
+        reportUpdateError(
+          "تعذّر حفظ السلة أو بيانات الطلب محلياً؛ لم نحدّث الصفحة. راجع طلبك ثم أعد المحاولة.",
+        );
         return;
       }
 
@@ -668,6 +584,7 @@ export function PwaUpdateManager() {
       let action = decidePwaUpdateAction({
         hasRegistration: !!registration,
         hasWaitingWorker: !!registration?.waiting,
+        hasActivatingWorker: registration?.active?.state === "activating",
         hasActiveWorker: !!registration?.active,
         updateWasSignaled: updateWasSignaledRef.current,
       });
@@ -682,6 +599,7 @@ export function PwaUpdateManager() {
         action = decidePwaUpdateAction({
           hasRegistration: !!registration,
           hasWaitingWorker: !!registration?.waiting,
+          hasActivatingWorker: registration?.active?.state === "activating",
           hasActiveWorker: !!registration?.active,
           updateWasSignaled: updateWasSignaledRef.current,
         });
@@ -702,13 +620,12 @@ export function PwaUpdateManager() {
             (!candidate || registration.active !== previousActive));
         if (!activationVerified) {
           markAttemptFailed();
-          const message =
-            "اختفى عامل التحديث قبل إثبات تفعيله؛ لن نعيد فتح الصفحة تلقائياً. أعد المحاولة يدوياً.";
-          setUpdateError(message);
-          notify.err(message);
+          reportUpdateError(
+            "اختفى عامل التحديث قبل إثبات تفعيله؛ لن نعيد فتح الصفحة تلقائياً. أعد المحاولة يدوياً.",
+          );
           return;
         }
-        reopenWithVerifiedUpdate();
+        reloading = reopenWithVerifiedUpdate();
         return;
       }
 
@@ -719,15 +636,14 @@ export function PwaUpdateManager() {
           candidate &&
           candidate.state === "activated"
         ) {
-          reopenWithVerifiedUpdate();
+          reloading = reopenWithVerifiedUpdate();
           return;
         }
         if (autoAttemptVersionRef.current) {
           markAttemptFailed();
-          const message =
-            "لم يعد عامل التحديث متاحاً ولم نثبت تفعيله؛ بقيت الصفحة كما هي ويمكنك إعادة المحاولة.";
-          setUpdateError(message);
-          notify.err(message);
+          reportUpdateError(
+            "لم يعد عامل التحديث متاحاً ولم نثبت تفعيله؛ بقيت الصفحة كما هي ويمكنك إعادة المحاولة.",
+          );
           return;
         }
         setPwaUpdatePending(false);
@@ -737,21 +653,50 @@ export function PwaUpdateManager() {
       }
 
       setPhase("activating");
-      const candidateBefore = registration?.waiting ?? null;
+      // علّق تدفق SSE محلياً وعبر التبويبات وحرّره على الخادم حتى لو كان العامل المنتظر من بناء سابق.
+      resumeRealtime = realtimeManager.suspendForPwaUpdate(
+        UPDATE_ACTIVATION_TIMEOUT_MS + 3_000,
+      );
+      void fetch("/api/realtime/pwa-quiesce", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "x-erp-csrf": "1",
+        },
+        body: "{}",
+      }).catch(() => {});
+
+      const candidateBefore =
+        registration?.waiting ??
+        (registration?.active?.state === "activating"
+          ? registration.active
+          : null);
       const activation = await activateRegistrationUpdate({
         getRegistration: getCurrentRegistration,
         timeoutMs: UPDATE_ACTIVATION_TIMEOUT_MS,
       });
 
       if (activation.status === "activated") {
-        reopenWithVerifiedUpdate();
+        reloading = reopenWithVerifiedUpdate();
         return;
       }
 
       // ربما أكمل تبويب آخر التفعيل بين آخر polling وهذه القراءة.
       const current = await getCurrentRegistration();
       if (candidateBefore?.state === "activated") {
-        reopenWithVerifiedUpdate();
+        reloading = reopenWithVerifiedUpdate();
+        return;
+      }
+
+      if (
+        shouldReloadAfterActivationTimeout({
+          manual: options?.manual === true,
+          acknowledged: activation.acknowledged,
+          activeWorkerState: current?.active?.state,
+        })
+      ) {
+        reloading = reopenWithVerifiedUpdate();
         return;
       }
 
@@ -764,21 +709,25 @@ export function PwaUpdateManager() {
         activeState: current?.active?.state,
       });
 
-      // لا نعيد فتح الصفحة عند timeout أو بقاء waiting: ذلك كان يعيد تشغيل AUTO_APPLY بعد كل
+      // لا نعيد فتح الصفحة عند timeout في التحديث التلقائي: ذلك كان يعيد تشغيل AUTO_APPLY بعد كل
       // تحميل فيصنع حلقة. العلامة الدائمة تمنع المحاولة الصامتة التالية، والزر يبقى لإعادة يدوية.
       markAttemptFailed();
-      const message =
-        "لم يكتمل التفعيل ولم يُفقد طلبك. لن نعيد فتح الصفحة تلقائياً؛ أعد المحاولة يدوياً.";
-      setUpdateError(message);
-      notify.err(message);
+      reportUpdateError(
+        pwaActivationTimeoutMessage({
+          hostname: window.location.hostname,
+          pathname: pathnameRef.current,
+        }),
+      );
     } catch (error) {
       console.warn("[pwa] update application failed", error);
       markAttemptFailed();
-      const message =
-        "تعذّر تطبيق التحديث الآن؛ بقي عملك محفوظاً ويمكنك إعادة المحاولة.";
-      setUpdateError(message);
-      notify.err(message);
+      reportUpdateError(
+        "تعذّر تطبيق التحديث الآن؛ بقي عملك محفوظاً ويمكنك إعادة المحاولة.",
+      );
     } finally {
+      if (!reloading && resumeRealtime) {
+        resumeRealtime();
+      }
       setApplying(false);
     }
   }
@@ -795,39 +744,26 @@ export function PwaUpdateManager() {
       {applying && (
         <div
           className="fixed inset-0 z-[200] grid place-items-center bg-background/65 p-4 backdrop-blur-md supports-[backdrop-filter]:bg-background/55 motion-safe:animate-in motion-safe:fade-in-0"
-          dir="rtl"
-          role="status"
-          aria-live="assertive"
-          aria-label={phaseMessage(phase)}
+          dir="rtl" role="status" aria-live="assertive" aria-label={phaseMessage(phase)}
         >
           <div className="w-full max-w-sm rounded-2xl border bg-card/95 p-7 text-center shadow-2xl backdrop-blur motion-safe:animate-in motion-safe:zoom-in-95 motion-safe:slide-in-from-bottom-2">
             <div className="relative mx-auto grid size-20 place-items-center rounded-full bg-primary/10 text-primary">
-              <span
-                className="absolute inset-1 rounded-full border-2 border-primary/30 motion-safe:animate-ping"
-                aria-hidden
-              />
-              <RefreshCw
-                className="size-9 motion-safe:animate-spin"
-                aria-hidden
-              />
+              <span className="absolute inset-1 rounded-full border-2 border-primary/30 motion-safe:animate-ping" aria-hidden />
+              <RefreshCw className="size-9 motion-safe:animate-spin" aria-hidden />
             </div>
-            <p className="mt-5 text-lg font-bold text-foreground">
-              {phaseMessage(phase)}
-            </p>
+            <p className="mt-5 text-lg font-bold text-foreground">{phaseMessage(phase)}</p>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
               لن تُغلق الصفحة قبل اكتمال التفعيل والتحقق منه.
             </p>
-            <div
-              className="mt-5 h-1.5 overflow-hidden rounded-full bg-muted"
-              aria-hidden
-            >
+            <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden>
               {/* شريط غير محدَّد صادق: قطعة تنزلق عرضياً = «جارٍ العمل»، لا نسبةً ثابتةً مضلِّلة. */}
               <div className="pwa-update-bar h-full w-1/3 rounded-full bg-primary" />
             </div>
             <style>{`
               @keyframes pwaUpdateSlide { 0% { transform: translateX(-130%); } 100% { transform: translateX(400%); } }
+              @keyframes pwaUpdatePulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
               .pwa-update-bar { animation: pwaUpdateSlide 1.15s ease-in-out infinite; }
-              @media (prefers-reduced-motion: reduce) { .pwa-update-bar { animation: none; width: 100%; } }
+              @media (prefers-reduced-motion: reduce) { .pwa-update-bar { animation: pwaUpdatePulse 1.8s ease-in-out infinite; width: 100%; } }
             `}</style>
           </div>
         </div>
@@ -836,56 +772,35 @@ export function PwaUpdateManager() {
       {!isKioskSurface && (
         <aside
           className="fixed inset-x-3 bottom-3 z-[100] mx-auto max-w-xl rounded-lg border bg-background p-3 shadow-xl"
-          dir="rtl"
-          role="status"
-          aria-live="polite"
-          aria-busy={applying}
+          dir="rtl" role="status" aria-live="polite" aria-busy={applying}
         >
           <div className="flex items-start gap-3">
-            <ShieldCheck
-              className="mt-0.5 size-5 shrink-0 text-primary"
-              aria-hidden
-            />
+            <ShieldCheck className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden />
             <div className="min-w-0 flex-1">
               <p className="font-medium">تحديث آمن جاهز للتثبيت</p>
               {updateError ? (
-                <p
-                  className="mt-1 text-sm font-medium text-destructive"
-                  role="alert"
-                >
+                <p className="mt-1 text-sm font-medium text-destructive" role="alert">
                   {updateError}
                 </p>
               ) : (
                 <p className="mt-0.5 text-sm text-muted-foreground">
-                  سيُحفظ العمل محلياً ثم يُعاد فتح النظام بعد التحقق من النسخة
-                  الجديدة.
+                  سيُحفظ العمل محلياً ثم يُعاد فتح النظام بعد التحقق من النسخة الجديدة.
                 </p>
               )}
             </div>
           </div>
           <div className="mt-3 flex flex-wrap justify-end gap-2">
             <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={applying}
-              onClick={() => {
-                setPwaUpdatePending(false);
-                setReady(false);
-              }}
+              type="button" variant="ghost" size="sm" disabled={applying}
+              onClick={() => { setPwaUpdatePending(false); setReady(false); }}
             >
               لاحقاً
             </Button>
             <Button
-              type="button"
-              size="sm"
-              disabled={applying}
-              onClick={() => void applyUpdate()}
+              type="button" size="sm" disabled={applying}
+              onClick={() => void applyUpdate({ manual: true })}
             >
-              <RefreshCw
-                className={`size-4 ${applying ? "motion-safe:animate-spin" : ""}`}
-                aria-hidden
-              />
+              <RefreshCw className={`size-4 ${applying ? "motion-safe:animate-spin" : ""}`} aria-hidden />
               {applying
                 ? "جارٍ التحديث…"
                 : updateError

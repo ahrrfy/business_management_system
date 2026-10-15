@@ -113,11 +113,13 @@ describe("٤. تدقيق إزالة التشتت وتوحيد الروابط ف�
     expect(invoicesSrc).not.toContain("<SalesReturnDrawer");
   });
 
-  it("إجراء مرتجع الشراء في المشتريات يقود إلى بوابة المرتجعات مع رقم أمر الشراء", () => {
+  it("يوجه منفذ مرتجع الشراء للبوابة المباشرة وطالب الاعتماد لمسار الحوكمة", () => {
     expect(purchasesSrc).toContain('key: "preturn"');
+    expect(purchasesSrc).toContain("href: canExecutePurchaseReturn");
     expect(purchasesSrc).toContain(
-      "href: `/returns?portal=purchases&po=${encodeURIComponent(p.poNumber)}`",
+      "`/returns?portal=purchases&po=${encodeURIComponent(p.poNumber)}`",
     );
+    expect(purchasesSrc).toContain('"/purchases/returns-governance"');
   });
 
   it("بوابة المرتجعات ReturnsHub هي المنفذ المركزي المستقل دون تحويلات مشتتة", () => {
