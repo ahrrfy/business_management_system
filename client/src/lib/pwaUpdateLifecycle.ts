@@ -7,6 +7,7 @@ export type PwaUpdateAction =
 export type PwaRegistrationState = {
   hasRegistration: boolean;
   hasWaitingWorker: boolean;
+  hasActivatingWorker?: boolean;
   hasActiveWorker: boolean;
   updateWasSignaled: boolean;
 };
@@ -39,7 +40,9 @@ export function decidePwaUpdateAction(
   state: PwaRegistrationState,
 ): PwaUpdateAction {
   if (!state.hasRegistration) return "UNAVAILABLE";
-  if (state.hasWaitingWorker) return "ACTIVATE_WAITING";
+  if (state.hasWaitingWorker || state.hasActivatingWorker) {
+    return "ACTIVATE_WAITING";
+  }
   if (state.updateWasSignaled && state.hasActiveWorker) return "RELOAD_ACTIVE";
   return "CHECK_AGAIN";
 }
@@ -69,7 +72,6 @@ function requestActivation(
       port = channel.port1;
       port.onmessage = (event) => {
         if (event.data?.type === "PWA_ACTIVATION_ACCEPTED") {
-          if (retryTimer) clearTimeout(retryTimer);
           onAcknowledged();
         }
       };
@@ -85,15 +87,20 @@ function requestActivation(
 
   // العامل المنشور قبل إضافة بروتوكول الإقرار لا يعرف إلا رسالة Workbox هذه.
   worker.postMessage({ type: "SKIP_WAITING" });
-  // إعادة واحدة توقظ بعض WebViews التي جمّدت العامل فور انتقال التطبيق للخلفية.
-  retryTimer = setTimeout(() => {
+  // الإقرار لا يثبت activated؛ أعد تحرير التدفق حتى يثبت الانتظار التفعيل أو ينتهي.
+  let stopped = false;
+  const retry = () => {
+    if (stopped) return;
     try {
       worker.postMessage({ type: "SKIP_WAITING" });
     } catch {
       // الانتقال إلى activated/redundant قبل المؤقت يجعل الإرسال غير لازم.
     }
-  }, 3_000);
+    retryTimer = setTimeout(retry, 3_000);
+  };
+  retryTimer = setTimeout(retry, 3_000);
   return () => {
+    stopped = true;
     if (retryTimer) clearTimeout(retryTimer);
     port?.close();
   };
@@ -250,3 +257,160 @@ export async function activateRegistrationUpdate(options: {
 
   return { status: "failed", attempts: maxAttempts, acknowledged };
 }
+
+const AUTO_ATTEMPT_KEY = "alroya.pwa-update.auto-attempt.v1";
+const STOREFRONT_PERSIST_REQUEST_EVENT = "alroya:storefront-persist-request";
+
+export type PwaAutoAttempt = {
+  version: string;
+  status: "ATTEMPTING" | "FAILED" | "RELOADING";
+  attemptedAt: number;
+};
+
+type AttemptStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+export function readPwaAutoAttempt(
+  storage: AttemptStorage = localStorage,
+): { ok: true; value: PwaAutoAttempt | null } | { ok: false; value: null } {
+  try {
+    const raw = storage.getItem(AUTO_ATTEMPT_KEY);
+    if (!raw) return { ok: true, value: null };
+    const parsed = JSON.parse(raw) as Partial<PwaAutoAttempt>;
+    if (
+      typeof parsed.version !== "string" ||
+      !["ATTEMPTING", "FAILED", "RELOADING"].includes(parsed.status ?? "") ||
+      typeof parsed.attemptedAt !== "number"
+    ) {
+      storage.removeItem(AUTO_ATTEMPT_KEY);
+      return { ok: true, value: null };
+    }
+    return { ok: true, value: parsed as PwaAutoAttempt };
+  } catch {
+    return { ok: false, value: null };
+  }
+}
+
+export function writePwaAutoAttempt(
+  attempt: PwaAutoAttempt,
+  storage: AttemptStorage = localStorage,
+): boolean {
+  try {
+    storage.setItem(AUTO_ATTEMPT_KEY, JSON.stringify(attempt));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearPwaAutoAttempt(
+  storage: AttemptStorage = localStorage,
+): boolean {
+  try {
+    storage.removeItem(AUTO_ATTEMPT_KEY);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const PWA_FAILED_AUTO_RETRY_COOLDOWN_MS = 60_000;
+
+export function shouldAutoApplyWaitingVersion(
+  version: string,
+  attempt: PwaAutoAttempt | null,
+  options?: {
+    unattended?: boolean;
+    now?: number;
+    retryCooldownMs?: number;
+  },
+): boolean {
+  if (attempt?.version !== version) return true;
+  if (!options?.unattended || attempt.status !== "FAILED") return false;
+  const now = options.now ?? Date.now();
+  const cooldownMs =
+    options.retryCooldownMs ?? PWA_FAILED_AUTO_RETRY_COOLDOWN_MS;
+  return now - attempt.attemptedAt >= cooldownMs;
+}
+
+export function shouldClearPwaAutoAttempt(input: {
+  hasWaitingWorker: boolean;
+  activeWorkerState?: ServiceWorkerState;
+  activationVerified: boolean;
+}): boolean {
+  return (
+    input.activationVerified &&
+    !input.hasWaitingWorker &&
+    input.activeWorkerState === "activated"
+  );
+}
+
+function hashWorkerScript(source: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+export async function resolveWaitingWorkerVersion(
+  worker: Pick<ServiceWorker, "scriptURL">,
+  fetcher: typeof fetch = fetch,
+): Promise<string | null> {
+  try {
+    const response = await fetcher(worker.scriptURL, { cache: "no-store" });
+    if (!response.ok) return null;
+    const etag = response.headers.get("etag");
+    if (etag) return `${worker.scriptURL}|etag:${etag}`;
+    return `${worker.scriptURL}|hash:${hashWorkerScript(await response.text())}`;
+  } catch {
+    // بلا بصمة نسخة موثوقة لا نغامر بمحاولة صامتة قد تتكرر بعد إعادة التحميل.
+    return null;
+  }
+}
+
+export function requestStorefrontPersistence(
+  target: Pick<Window, "dispatchEvent"> = window,
+): { attempted: number; ok: boolean; inFlight: boolean } {
+  let attempted = 0;
+  let ok = true;
+  let inFlight = false;
+  const event = new CustomEvent<{
+    report: (saved: boolean, state?: { inFlight: boolean }) => void;
+  }>(STOREFRONT_PERSIST_REQUEST_EVENT, {
+    detail: {
+      report(saved, state) {
+        attempted += 1;
+        ok = saved && ok;
+        inFlight = inFlight || state?.inFlight === true;
+      },
+    },
+  });
+  target.dispatchEvent(event);
+  return { attempted, ok, inFlight};
+}
+
+export function automaticStorefrontPersistenceIsSafe(result: {
+  attempted: number;
+  ok: boolean;
+  inFlight: boolean;
+}): boolean {
+  return result.attempted > 0 && result.ok && !result.inFlight;
+}
+
+/**
+ * عند نقر المستخدم يدوياً على «تحديث الآن» أو «إعادة المحاولة بأمان»، إذا أقرّ
+ * العامل استلام skipWaiting أو دخل حالة activating لكن الصفحة الحالية ما زالت
+ * تحتجز العامل القديم، فإن إعادة فتح الصفحة تحرر العميل القديم ليكتمل الانتقال
+ * دون إغراق المستخدم في حلقة فشل يدوية. أما التحديث التلقائي الصامت فلا يعيد
+ * التحميل عند انتهاء المهلة منعاً لحلقات التحميل التلقائية.
+ */
+export function shouldReloadAfterActivationTimeout(input: {
+  manual: boolean;
+  acknowledged: boolean;
+  activeWorkerState?: ServiceWorkerState;
+}): boolean {
+  if (!input.manual) return false;
+  return input.acknowledged || input.activeWorkerState === "activating";
+}
+

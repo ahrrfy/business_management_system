@@ -286,3 +286,325 @@ describe("realtimeBridge — ناقل الحلقات الداخلي بين عم�
     }
   });
 });
+
+describe("PWA release confirmation barrier", () => {
+  const releaseEvent = (userId = 10) =>
+    createRealtimeEvent("PWA_SSE_QUIESCE", {}, { userId, companyId: 1 });
+  const makeManager = () => {
+    const manager = new RealtimeBridgeManager();
+    expect(typeof manager.publishConfirmed).toBe("function");
+    manager.setReleaseHandler(() => true);
+    return manager;
+  };
+  const close = async (managers: RealtimeBridgeManager[]) => {
+    await Promise.all(managers.map((manager) => manager.stop()));
+  };
+  const cluster = async () => {
+    const managers = [makeManager(), makeManager(), makeManager()];
+    const port = 46000 + Math.floor(Math.random() * 1000);
+    await managers[0].init({
+      port,
+      isHub: true,
+      isMultiWorker: true,
+      expectedWorkerCount: 3,
+      workerId: "release-hub",
+    });
+    await managers[1].init({
+      port,
+      isHub: false,
+      isMultiWorker: true,
+      expectedWorkerCount: 3,
+      workerId: "release-source",
+    });
+    await managers[2].init({
+      port,
+      isHub: false,
+      isMultiWorker: true,
+      expectedWorkerCount: 3,
+      workerId: "release-peer",
+    });
+    await vi.waitFor(() =>
+      expect(
+        managers
+          .slice(1)
+          .every((manager) => manager.getStatus().isConnectedToHub),
+      ).toBe(true),
+    );
+    return managers;
+  };
+
+  it("rejects mismatched worker counts between the source and hub before releasing streams", async () => {
+    const hub = makeManager();
+    const source = makeManager();
+    const handler = vi.fn(() => true);
+    hub.setReleaseHandler(handler);
+    source.setReleaseHandler(handler);
+    const port = 49000 + Math.floor(Math.random() * 500);
+    try {
+      await hub.init({
+        port,
+        isHub: true,
+        isMultiWorker: true,
+        expectedWorkerCount: 2,
+      });
+      await source.init({
+        port,
+        isHub: false,
+        isMultiWorker: true,
+        expectedWorkerCount: 3,
+      });
+      await vi.waitFor(() =>
+        expect(source.getStatus().isConnectedToHub).toBe(true),
+      );
+      expect(await source.publishConfirmed(releaseEvent(), 200)).toBe(false);
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      await close([source, hub]);
+    }
+  });
+
+  it("never replays an expired release request delivered late over TCP", async () => {
+    const hub = makeManager();
+    const handler = vi.fn(() => true);
+    hub.setReleaseHandler(handler);
+    const port = 49500 + Math.floor(Math.random() * 500);
+    let socket: net.Socket | undefined;
+    try {
+      await hub.init({
+        port,
+        isHub: true,
+        isMultiWorker: true,
+        expectedWorkerCount: 2,
+      });
+      socket = net.createConnection({ host: "127.0.0.1", port });
+      await new Promise<void>((resolve) => socket!.once("connect", resolve));
+      const result = new Promise<boolean>((resolve) => {
+        let buffer = "";
+        socket!.on("data", (chunk) => {
+          buffer += chunk.toString();
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines.filter(Boolean)) {
+            const frame = JSON.parse(line);
+            if (frame.kind === "pwa-release-apply")
+              socket!.write(
+                JSON.stringify({
+                  kind: "pwa-release-ack",
+                  id: frame.id,
+                  ok: true,
+                }) + "\n",
+              );
+            if (frame.kind === "pwa-release-result") resolve(frame.ok);
+          }
+        });
+      });
+      socket.write(
+        JSON.stringify({
+          kind: "pwa-release-request",
+          id: "expired-request",
+          event: releaseEvent(),
+          expectedWorkerCount: 2,
+          expiresAt: Date.now() - 1_000,
+        }) + "\n",
+      );
+      expect(await result).toBe(false);
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      socket?.destroy();
+      await hub.stop();
+    }
+  });
+
+  it("confirms explicit single-worker local release and fails closed with unknown or multi-worker in-memory membership", async () => {
+    const manager = makeManager();
+    const handler = vi.fn(() => true);
+    manager.setReleaseHandler(handler);
+    try {
+      await manager.init({ inMemoryOnly: true, expectedWorkerCount: 1 });
+      expect(await manager.publishConfirmed(releaseEvent(), 100)).toBe(true);
+      expect(handler).toHaveBeenCalledOnce();
+      await manager.init({
+        inMemoryOnly: true,
+        isMultiWorker: true,
+        expectedWorkerCount: 3,
+      });
+      expect(await manager.publishConfirmed(releaseEvent(), 100)).toBe(false);
+      vi.stubEnv("WEB_INSTANCES", "");
+      await manager.init({ inMemoryOnly: true });
+      expect(await manager.publishConfirmed(releaseEvent(), 100)).toBe(false);
+      expect(handler).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllEnvs();
+      await manager.stop();
+    }
+  });
+
+  it("recovers hub mode automatically after EADDRINUSE when the old PM2 worker releases the port", async () => {
+    const port = 48500 + Math.floor(Math.random() * 400);
+    const blocker = net.createServer();
+    await new Promise<void>((resolve) =>
+      blocker.listen(port, "127.0.0.1", () => resolve()),
+    );
+    const hub = makeManager();
+    const peer = makeManager();
+    try {
+      const initialMode = await hub.init({
+        port,
+        host: "127.0.0.1",
+        isHub: true,
+        isMultiWorker: true,
+        expectedWorkerCount: 2,
+      });
+      expect(initialMode).toBe("in_memory");
+      expect(await hub.publishConfirmed(releaseEvent(), 100)).toBe(false);
+
+      // إغلاق العامل القديم وتحرير المنفذ أثناء pm2 reload
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+      await peer.init({
+        port,
+        host: "127.0.0.1",
+        isHub: false,
+        isMultiWorker: true,
+        expectedWorkerCount: 2,
+      });
+
+      await vi.waitFor(
+        () => {
+          expect(hub.getStatus().mode).toBe("hub");
+          expect(peer.getStatus().isConnectedToHub).toBe(true);
+        },
+        { timeout: 4000 },
+      );
+      expect(await peer.publishConfirmed(releaseEvent(), 300)).toBe(true);
+    } finally {
+      await close([peer, hub]);
+    }
+  });
+
+  it("waits for local plus both remote release handlers, including a delayed ACK", async () => {
+    const managers = await cluster();
+    const seen = managers.map(() => [] as number[]);
+    let acknowledgeLate: (() => void) | undefined;
+    managers.forEach((manager, index) =>
+      manager.setReleaseHandler((event) => {
+        seen[index].push(event.scope!.userId!);
+        if (index === 2)
+          return new Promise<boolean>((resolve) => {
+            acknowledgeLate = () => resolve(true);
+          });
+        return true;
+      }),
+    );
+    try {
+      let settled = false;
+      const confirmed = managers[1]
+        .publishConfirmed(releaseEvent(10), 500)
+        .then((ok) => {
+          settled = true;
+          return ok;
+        });
+      await vi.waitFor(() => expect(acknowledgeLate).toBeDefined());
+      expect(settled).toBe(false);
+      expect(seen).toEqual([[10], [10], [10]]);
+      acknowledgeLate!();
+      expect(await confirmed).toBe(true);
+    } finally {
+      await close(managers);
+    }
+  });
+
+  it("rejects absent members and a disconnected source without queuing or replaying releases", async () => {
+    const hub = makeManager();
+    const source = makeManager();
+    const port = 47000 + Math.floor(Math.random() * 1000);
+    const handler = vi.fn(() => true);
+    source.setReleaseHandler(handler);
+    try {
+      await source.init({
+        port,
+        isHub: false,
+        isMultiWorker: true,
+        expectedWorkerCount: 3,
+      });
+      expect(await source.publishConfirmed(releaseEvent(), 100)).toBe(false);
+      expect(source.getStatus().pendingOutbound).toBe(0);
+      await hub.init({
+        port,
+        isHub: true,
+        isMultiWorker: true,
+        expectedWorkerCount: 3,
+      });
+      await vi.waitFor(
+        () => expect(source.getStatus().isConnectedToHub).toBe(true),
+        { timeout: 2500 },
+      );
+      expect(await source.publishConfirmed(releaseEvent(), 100)).toBe(false);
+      expect(handler).not.toHaveBeenCalled();
+      expect(source.getStatus().pendingOutbound).toBe(0);
+    } finally {
+      await close([source, hub]);
+    }
+  });
+
+  it("fails when a pinned worker disconnects before release completion", async () => {
+    const managers = await cluster();
+    let entered = false;
+    managers[2].setReleaseHandler(() => {
+      entered = true;
+      return new Promise<boolean>(() => {});
+    });
+    try {
+      const confirmed = managers[1].publishConfirmed(releaseEvent(), 500);
+      await vi.waitFor(() => expect(entered).toBe(true));
+      await managers[2].stop();
+      expect(await confirmed).toBe(false);
+    } finally {
+      await close(managers);
+    }
+  });
+
+  it("rejects release confirmation when connected sockets share a duplicate workerId", async () => {
+    const hub = makeManager();
+    const peerA = makeManager();
+    const peerB = makeManager();
+    const handler = vi.fn(() => true);
+    hub.setReleaseHandler(handler);
+    peerA.setReleaseHandler(handler);
+    peerB.setReleaseHandler(handler);
+    const port = 49100 + Math.floor(Math.random() * 300);
+    try {
+      await hub.init({
+        port,
+        isHub: true,
+        isMultiWorker: true,
+        expectedWorkerCount: 3,
+        workerId: "hub-worker",
+      });
+      await peerA.init({
+        port,
+        isHub: false,
+        isMultiWorker: true,
+        expectedWorkerCount: 3,
+        workerId: "duplicate-worker",
+      });
+      await peerB.init({
+        port,
+        isHub: false,
+        isMultiWorker: true,
+        expectedWorkerCount: 3,
+        workerId: "duplicate-worker",
+      });
+      await vi.waitFor(() =>
+        expect(
+          peerA.getStatus().isConnectedToHub &&
+            peerB.getStatus().isConnectedToHub,
+        ).toBe(true),
+      );
+      expect(await peerA.publishConfirmed(releaseEvent(), 200)).toBe(false);
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      await close([peerA, peerB, hub]);
+    }
+  });
+});
+

@@ -5,6 +5,9 @@ import {
 } from "@shared/realtimeEvents";
 import { logger } from "../logger";
 
+/** حدث تحكم داخلي بين العمال؛ لا يُبث إلى المتصفحات. */
+export const PWA_SSE_QUIESCE_EVENT = "PWA_SSE_QUIESCE";
+
 export interface SseClient {
   id: string;
   userId: number;
@@ -112,7 +115,38 @@ export class SseManager {
       // تجاهل أخطاء الإغلاق إن كان المقبس مقطوعاً
     }
 
-    logger.info({ id, remaining: this.clients.size }, "realtime_sse.client_disconnected");
+    logger.info(
+      { id, remaining: this.clients.size },
+      "realtime_sse.client_disconnected",
+    );
+  }
+
+  /** يحرر تدفقات الفاعل وحده كي لا تحجز استجابة SSE العامل القديم أثناء تحديث PWA. */
+  quiesceForPwa(event: RealtimeEvent): number {
+    const scope = event.scope;
+    if (
+      event.type !== PWA_SSE_QUIESCE_EVENT ||
+      typeof scope?.userId !== "number" ||
+      !Number.isSafeInteger(scope.userId) ||
+      scope.userId <= 0 ||
+      scope.companyId === undefined ||
+      (scope.companyId !== null &&
+        (!Number.isSafeInteger(scope.companyId) || scope.companyId <= 0))
+    )
+      return 0;
+
+    let closed = 0;
+    for (const [id, client] of Array.from(this.clients)) {
+      // null هنا سياق الشركة الأساسي الصريح، وليس إذناً بالعبور إلى كل الشركات.
+      if (
+        client.userId === scope.userId &&
+        client.companyId === scope.companyId
+      ) {
+        this.removeClient(id);
+        closed += 1;
+      }
+    }
+    return closed;
   }
 
   /**

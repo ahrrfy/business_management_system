@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import "./storefront-pwa-contract.test.mjs";
 import {
   storefrontPublicImageCacheMatcher,
   storefrontPrivateImageNetworkMatcher,

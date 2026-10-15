@@ -5,6 +5,10 @@ type WorkboxUrlMatchInput = {
   url: Pick<URL, "pathname">;
 };
 
+export function storefrontApiNetworkMatcher(
+  input: WorkboxUrlMatchInput,
+): boolean;
+
 export function storefrontPublicImageCacheMatcher(
   input: WorkboxUrlMatchInput,
 ): boolean;

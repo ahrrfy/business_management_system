@@ -8,11 +8,52 @@ import {
 import { getSessionContext } from "../auth/session";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { getCurrentCompanyId } from "../tenancy/context";
-import { sseManager } from "./sseManager";
-import { getBridgeStatus } from "./bridge";
+import { PWA_SSE_QUIESCE_EVENT, sseManager } from "./sseManager";
+import { getBridgeStatus, publishToBridgeConfirmed } from "./bridge";
 import { logger } from "../logger";
+import { csrfGuard } from "../middleware/csrf";
 
 export const realtimeRouter = Router();
+
+/** يحرر تدفقات الجلسة المصادقة فقط؛ إعادة الاتصال العادية تستأنفها دون تغيير أي بيانات. */
+realtimeRouter.post(
+  "/pwa-quiesce",
+  csrfGuard,
+  async (req: Request, res: Response) => {
+    try {
+      const cookies = parseCookie(req.headers.cookie ?? "");
+      if (!cookies[COOKIE_NAME]) {
+        res.status(401).json({ error: "UNAUTHORIZED" });
+        return;
+      }
+      const { user } = await getSessionContext(req);
+      if (!user) {
+        res.status(401).json({ error: "UNAUTHORIZED" });
+        return;
+      }
+      const released = await publishToBridgeConfirmed(
+        createRealtimeEvent(
+          PWA_SSE_QUIESCE_EVENT,
+          {},
+          {
+            userId: user.id,
+            companyId: getCurrentCompanyId(),
+          },
+        ),
+      );
+      if (!released) {
+        res
+          .status(503)
+          .json({ error: "PWA_RELEASE_UNCONFIRMED", retryable: true });
+        return;
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      logger.error({ err }, "realtime_sse.pwa_quiesce_error");
+      res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
+    }
+  },
+);
 
 /**
  * نقطة تدفق الـ SSE الرئيسية: GET /api/realtime/stream

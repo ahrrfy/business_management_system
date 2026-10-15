@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { SseManager } from "../sseManager";
-import { createRealtimeEvent, REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
+import {
+  createRealtimeEvent,
+  REALTIME_EVENT_TYPES,
+} from "@shared/realtimeEvents";
 import { EventEmitter } from "node:events";
+import { RealtimeBridgeManager } from "../bridge";
 
 function createMockReqRes() {
   const req = new EventEmitter() as any;
@@ -243,4 +247,170 @@ describe("sseManager — إدارة تدفق SSE ونبضات الـ Heartbeat �
     );
     expect(company2Client.res.write).not.toHaveBeenCalled();
   });
+
+  it("quiesces only the authenticated actor's streams in the exact company across branches", () => {
+    const fixtures = [
+      { id: "own-1", userId: 10, companyId: 1, branch: 1 },
+      { id: "own-2", userId: 10, companyId: 1, branch: 2 },
+      { id: "other-user", userId: 11, companyId: 1, branch: 1 },
+      { id: "other-company", userId: 10, companyId: 2, branch: 1 },
+      { id: "primary", userId: 10, companyId: null, branch: 1 },
+    ].map((scope) => {
+      const pair = createMockReqRes();
+      manager.registerClient({
+        ...scope,
+        scopedBranchId: scope.branch,
+        role: "cashier",
+        ...pair,
+      });
+      return { ...scope, ...pair };
+    });
+    expect(typeof manager.quiesceForPwa).toBe("function");
+    expect(
+      manager.quiesceForPwa(
+        createRealtimeEvent(
+          "PWA_SSE_QUIESCE",
+          {},
+          { userId: 10, companyId: 1 },
+        ),
+      ),
+    ).toBe(2);
+    expect(fixtures.slice(0, 2).every(({ res }) => res.writableEnded)).toBe(
+      true,
+    );
+    expect(fixtures.slice(2).every(({ res }) => !res.writableEnded)).toBe(true);
+    expect(fixtures.every(({ res }) => res.writtenData.length === 0)).toBe(
+      true,
+    );
+    expect(manager.activeCount).toBe(3);
+  });
+
+  it("treats explicit primary-company null as a strict target rather than a global scope", () => {
+    const targets = [null, 1, undefined].map((companyId, index) => {
+      const pair = createMockReqRes();
+      manager.registerClient({
+        id: `company-${index}`,
+        userId: 10,
+        role: "cashier",
+        scopedBranchId: 1,
+        companyId,
+        ...pair,
+      });
+      return pair;
+    });
+    expect(typeof manager.quiesceForPwa).toBe("function");
+    expect(
+      manager.quiesceForPwa(
+        createRealtimeEvent(
+          "PWA_SSE_QUIESCE",
+          {},
+          { userId: 10, companyId: null },
+        ),
+      ),
+    ).toBe(1);
+    expect(targets[0].res.writableEnded).toBe(true);
+    expect(targets[1].res.writableEnded).toBe(false);
+    expect(targets[2].res.writableEnded).toBe(false);
+  });
+
+  it.each([
+    {},
+    { userId: 10 },
+    { companyId: 1 },
+    { userId: 0, companyId: 1 },
+    { userId: 10, companyId: 0 },
+  ])("rejects incomplete or invalid PWA bridge scopes %j", (scope) => {
+    const pair = createMockReqRes();
+    manager.registerClient({
+      id: "safe",
+      userId: 10,
+      companyId: 1,
+      role: "cashier",
+      scopedBranchId: 1,
+      ...pair,
+    });
+    expect(typeof manager.quiesceForPwa).toBe("function");
+    expect(
+      manager.quiesceForPwa(createRealtimeEvent("PWA_SSE_QUIESCE", {}, scope)),
+    ).toBe(0);
+    expect(pair.res.writableEnded).toBe(false);
+  });
+
+  it("distributes actor-scoped quiescence through the existing real TCP bridge across three workers", async () => {
+    const bridges = [
+      new RealtimeBridgeManager(),
+      new RealtimeBridgeManager(),
+      new RealtimeBridgeManager(),
+    ];
+    const managers = bridges.map(() => new SseManager());
+    const targets = managers.map((workerManager, index) => {
+      const own = createMockReqRes();
+      const other = createMockReqRes();
+      workerManager.registerClient({
+        id: `own-${index}`,
+        userId: 10,
+        companyId: 1,
+        role: "cashier",
+        scopedBranchId: 1,
+        ...own,
+      });
+      workerManager.registerClient({
+        id: `other-${index}`,
+        userId: 10,
+        companyId: 2,
+        role: "cashier",
+        scopedBranchId: 1,
+        ...other,
+      });
+      expect(typeof workerManager.quiesceForPwa).toBe("function");
+      bridges[index].subscribe((event) => workerManager.quiesceForPwa(event));
+      return { own, other };
+    });
+    const port = 44000 + Math.floor(Math.random() * 1000);
+    try {
+      await bridges[0].init({
+        port,
+        isHub: true,
+        isMultiWorker: true,
+        workerId: "pwa-hub",
+      });
+      await bridges[1].init({
+        port,
+        isHub: false,
+        isMultiWorker: true,
+        workerId: "pwa-worker-1",
+      });
+      await bridges[2].init({
+        port,
+        isHub: false,
+        isMultiWorker: true,
+        workerId: "pwa-worker-2",
+      });
+      await vi.waitFor(() =>
+        expect(
+          bridges
+            .slice(1)
+            .every((bridge) => bridge.getStatus().isConnectedToHub),
+        ).toBe(true),
+      );
+      bridges[1].publish(
+        createRealtimeEvent(
+          "PWA_SSE_QUIESCE",
+          {},
+          { userId: 10, companyId: 1 },
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(targets.every(({ own }) => own.res.writableEnded)).toBe(true),
+      );
+      expect(targets.every(({ other }) => !other.res.writableEnded)).toBe(true);
+      expect(
+        managers.every((workerManager) => workerManager.activeCount === 1),
+      ).toBe(true);
+    } finally {
+      managers.forEach((workerManager) => workerManager.closeAll());
+      await Promise.all(bridges.map((bridge) => bridge.stop()));
+    }
+  });
 });
+
