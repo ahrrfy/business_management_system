@@ -1128,10 +1128,175 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
-    // عزل الفروع في getOpenRefundDrawers: منع مستخدم الفرع 1 من استعلام صناديق الفرع 2
+    // عزل الفروع في getOpenRefundDrawers و executeSalesReturnCart: منع مستخدم الفرع 1 من استعلام صناديق أو إرجاع فواتير الفرع 2
     await expect(
       retailCaller.getOpenRefundDrawers({ branchId: 2 }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    await db().insert(s.branches).values({
+      id: 2,
+      name: "فرع الكرادة",
+      code: "BR2",
+      type: "SALES",
+    });
+    await db().insert(s.invoices).values({
+      id: 902,
+      invoiceNumber: "INV-BR2-902",
+      branchId: 2,
+      sourceType: "POS",
+      subtotal: "25.00",
+      discountAmount: "0.00",
+      taxAmount: "0.00",
+      total: "25.00",
+      paidAmount: "25.00",
+      returnedTotal: "0.00",
+      status: "PAID",
+      paymentMethod: "CASH",
+      createdBy: 12,
+      shiftId: retailShiftId,
+    });
+    await expect(
+      retailCaller.executeSalesReturnCart({
+        invoiceNumber: "INV-BR2-902",
+        items: [
+          {
+            variantId: 1,
+            productName: "كارت شخصي",
+            quantity: 1,
+            unitPrice: "25.00",
+          },
+        ],
+        settlement: {
+          method: "CASH",
+          totalAmount: "25.00",
+          shiftId: retailShiftId,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // رفض المرتجع العابر لصنف أمانة بلا فاتورة، وترحيل مرتجع السلة المختلط (مخزني + خدمي + أمانة)
+    await db().insert(s.suppliers).values({
+      id: 50,
+      name: "مودع أمانة",
+      supplierKind: "CONSIGNOR",
+      currentBalance: "0.00",
+    });
+    await db().insert(s.products).values({
+      id: 4,
+      name: "ملزمة أمانة",
+      isConsignment: true,
+      consignorId: 50,
+    });
+    await db().insert(s.productVariants).values({
+      id: 4,
+      productId: 4,
+      sku: "CONSIGN-MLZ-1",
+      costPrice: "15.00",
+    });
+    await db().insert(s.productUnits).values({
+      id: 5,
+      variantId: 4,
+      unitName: "نسخة",
+      barcode: "BC-CONSIGN-1",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    });
+    await db().insert(s.productPrices).values({
+      productUnitId: 5,
+      priceTier: "RETAIL",
+      price: "20.00",
+    });
+    await db().insert(s.branchStock).values({
+      variantId: 4,
+      branchId: 1,
+      quantity: 50,
+    });
+
+    await expect(
+      retailCaller.executeSalesReturnCart({
+        items: [
+          {
+            variantId: 4,
+            productUnitId: 5,
+            productName: "ملزمة أمانة",
+            quantity: 1,
+            unitPrice: "20.00",
+          },
+        ],
+        settlement: {
+          method: "CASH",
+          totalAmount: "20.00",
+          shiftId: retailShiftId,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const mixedSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: retailShiftId,
+        customerId: 1,
+        sourceType: "POS",
+        lines: [
+          { variantId: 1, productUnitId: 1, quantity: "1" }, // 25.00 (cost 5.00)
+          { variantId: 2, productUnitId: 3, quantity: "1" }, // 30.00 (service cost 0.00)
+          { variantId: 4, productUnitId: 5, quantity: "1" }, // 20.00 (consignment share 15.00)
+        ],
+        payment: { amount: "75.00", method: "CASH" },
+      },
+      { userId: 12, branchId: 1, role: "cashier" },
+    );
+    const inspectedMixed = await retailCaller.inspectInvoiceForReturn({
+      invoiceNumber: mixedSale.invoiceNumber,
+    });
+    const mixedReturn = await retailCaller.executeSalesReturnCart({
+      invoiceNumber: mixedSale.invoiceNumber,
+      disposition: "RESTOCK",
+      items: (inspectedMixed?.items ?? []).map((i) => ({
+        variantId: i.variantId,
+        invoiceItemId: i.invoiceItemId,
+        productUnitId: i.productUnitId ?? undefined,
+        productName: i.productName,
+        quantity: i.remainingQuantity,
+        unitPrice: i.effectiveUnitPrice,
+      })),
+      settlement: {
+        method: "CASH",
+        totalAmount: "75.00",
+        shiftId: retailShiftId,
+      },
+    });
+    expect(mixedReturn.ok).toBe(true);
+    const [mixedReturnEntry] = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(
+        and(
+          eq(s.accountingEntries.invoiceId, mixedSale.invoiceId),
+          eq(s.accountingEntries.entryType, "RETURN"),
+        ),
+      );
+    expect(mixedReturnEntry?.revenue).toBe("-75.00");
+    expect(mixedReturnEntry?.cost).toBe("-5.00");
+    expect(mixedReturnEntry?.profit).toBe("-70.00");
+    expect(mixedReturnEntry?.amount).toBe("-75.00");
+
+    const mixedConsignEntries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(
+        and(
+          eq(s.accountingEntries.invoiceId, mixedSale.invoiceId),
+          eq(s.accountingEntries.entryType, "PURCHASE"),
+          eq(s.accountingEntries.supplierId, 50),
+        ),
+      );
+    expect(mixedConsignEntries.some((e) => e.amount === "-15.00" && e.cost === "-15.00" && e.profit === "15.00")).toBe(true);
+    const [consignorAfterMixedReturn] = await db()
+      .select()
+      .from(s.suppliers)
+      .where(eq(s.suppliers.id, 50));
+    expect(consignorAfterMixedReturn?.currentBalance).toBe("0.00");
 
     // رفض المرتجع العابر بلا فاتورة لصنف لا يملك سعر بيع تجزئة معتمداً في الكتالوج
     await db().delete(s.productPrices).where(eq(s.productPrices.productUnitId, 1));
