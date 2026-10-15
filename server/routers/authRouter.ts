@@ -8,15 +8,16 @@ import {
 } from "@shared/const";
 import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
-import { users } from "../../drizzle/schema";
+import { userSessions, users } from "../../drizzle/schema";
 import { DUMMY_STORED, verifyPassword } from "../auth/password";
 import {
   createNativeSessionMarker,
   issueNativeDeviceChallenge,
   nativeClientIdFromRequest,
   nativeSessionDisplayName,
+  parseNativeSessionMarker,
   verifiedNativeKeyThumbprint,
   verifyNativeDeviceRegistration,
   type NativeDeviceRegistration,
@@ -135,9 +136,10 @@ function sessionClientMarker(
   req: unknown,
   deviceKeyThumbprint: string | null,
   clientId?: NativeDeviceRegistration["clientId"],
+  initialCounter = 0,
 ): string | null {
   return deviceKeyThumbprint
-    ? createNativeSessionMarker(0, clientId)
+    ? createNativeSessionMarker(initialCounter, clientId)
     : getClientUserAgent(req);
 }
 
@@ -892,10 +894,20 @@ export const authRouter = router({
       // وهو السلوك الأأمن، ومقبولٌ لعدد مستخدمي المتجر المحدود.
       const db = getDb();
       if (db) {
+        const now = new Date();
         await db
           .update(users)
-          .set({ sessionsValidFrom: new Date() })
+          .set({ sessionsValidFrom: now })
           .where(eq(users.id, ctx.user.id));
+        await db
+          .update(userSessions)
+          .set({ revokedAt: now })
+          .where(
+            and(
+              eq(userSessions.userId, ctx.user.id),
+              isNull(userSessions.revokedAt),
+            ),
+          );
       }
       // The session is no longer usable after logout, so its Expo device must
       // not continue receiving even generic lock-screen prompts.
@@ -926,25 +938,50 @@ export const authRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      let preservedProofCounter = 0;
+      if (db && ctx.sessionId != null) {
+        const [existingSession] = await db
+          .select({ userAgent: userSessions.userAgent })
+          .from(userSessions)
+          .where(
+            and(
+              eq(userSessions.id, ctx.sessionId),
+              eq(userSessions.userId, ctx.user.id),
+            ),
+          )
+          .limit(1);
+        preservedProofCounter =
+          parseNativeSessionMarker(existingSession?.userAgent) ?? 0;
+      }
+      const headerCounterRaw = (
+        ctx.req as { headers?: Record<string, unknown> } | undefined
+      )?.headers?.["x-alrueya-device-counter"];
+      if (
+        typeof headerCounterRaw === "string" &&
+        /^\d{1,16}$/.test(headerCounterRaw)
+      ) {
+        const parsedHeaderCounter = Number(headerCounterRaw);
+        if (
+          Number.isSafeInteger(parsedHeaderCounter) &&
+          parsedHeaderCounter > preservedProofCounter
+        ) {
+          preservedProofCounter = parsedHeaderCounter;
+        }
+      }
+
       const { validFrom } = await changePasswordSvc(
         ctx.user.id,
         input.oldPassword,
         input.newPassword,
       );
-      // أُبطِلت كل الجلسات (sessionsValidFrom=now) ⇒ نُصدر كوكياً جديداً كي لا يُطرَد صاحبها.
+      // أُبطِلت كل الجلسات (sessionsValidFrom=nowSec-1، وتحديث userSessions.revokedAt) ⇒ نُصدر كوكياً جديداً كي لا يُطرَد صاحبها.
       // نمرّر ctx.req ⇒ التوكن الجديد يحمل بصمة الجهاز الحالي.
-      // AUTH-02: الإبطال يرفض `iat <= validFromSec`؛ لذا نُثبّت iat الكوكي الجديد أكبر
-      // تماماً من حدّ الإبطال فيبقى صالحاً، بينما يُرفض أيّ توكنٍ أجنبيٍّ صُكّ في نفس الثانية
-      // (يسدّ النافذة العمياء دون السماح القديم).
-      // ⚠️ عمود TIMESTAMP يُقرِّب (يجبر) أجزاء الثانية لأقرب ثانية عند التخزين ⇒ قد يقفز
-      // validFromSec المخزَّن ثانيةً واحدةً للأعلى مقابل floor(validFrom). لذا نضيف +2 (لا +1)
-      // كي يبقى iat أكبر تماماً حتى بعد التقريب لأعلى (أمانٌ حاسمٌ ضدّ طرد صاحب الجلسة).
-      const reissueIatSec = Math.floor(validFrom.getTime() / 1000) + 2;
-      // سطر جلسة فردية جديد (AUTH-03) — createdAt صريح = نفس هامش +٢ث المستعمَل لـreissueIatSec
-      // (راجع تعليق CreateUserSessionInput.createdAt: قراءتا `new Date()` مستقلّتان في نفس
-      // الطلب قد ينعكس ترتيبهما بعد تقريب TIMESTAMP فيسقط السطر الجديد من الشاشة خطأً بلا هذا).
-      // تظهر فوراً في شاشة «الجلسات النشطة»؛ الصفوف القديمة تختفي منها تلقائياً (بلا كتابة
-      // عليها) لأن listUserSessions يُصفّي createdAt >= sessionsValidFrom.
+      // AUTH-02 / CF-09: الإبطال يرفض `iat <= validFromSec`؛ وبما أنّ validFrom مضبوطٌ على حدّ الثانية
+      // الكاملة السابقة (دون أجزاء ثانية تُقرَّب للأعلى في TIMESTAMP)، فإنّ `reissueIatSec = validFromSec + 1`
+      // يساوي الثانية الحالية تماماً (بلا إزاحة +٢ث في المستقبل) ⇒ يبقى التوكن الجديد صالحاً فوراً، بينما
+      // يُبطَل فوراً بأيّ تسجيل خروج أو إبطال جلسات لاحق حتى في نفس الثانية.
+      const reissueIatSec = Math.floor(validFrom.getTime() / 1000) + 1;
       const nativeDeviceThumbprint = inheritedNativeDeviceThumbprint(ctx.req);
       const nativeClientId = nativeDeviceThumbprint
         ? (nativeClientIdFromRequest(
@@ -957,10 +994,11 @@ export const authRouter = router({
           ctx.req,
           nativeDeviceThumbprint,
           nativeClientId,
+          preservedProofCounter,
         ),
         ipAddress: getClientIp(ctx.req),
         expiresAt: new Date(Date.now() + SESSION_DEFAULT_MS),
-        createdAt: new Date(validFrom.getTime() + 2000),
+        createdAt: new Date(reissueIatSec * 1000),
       });
       // نمرّر companyId الحالي (إن وُجد) ⇒ الكوكي المُعاد إصداره يحمل نفس هوية الشركة، وإلا
       // فسيَفقد الوسيط في server/index.ts سياق الشركة في الطلب التالي (مراجعة عدائية حسمت هذا).
@@ -989,10 +1027,20 @@ export const authRouter = router({
   /** إبطال كل جلسات المستخدم الحالي (تسجيل خروج من كل الأجهزة). */
   revokeMySessions: protectedProcedure.mutation(async ({ ctx }) => {
     await withTx(async (tx) => {
+      const now = new Date();
       await tx
         .update(users)
-        .set({ sessionsValidFrom: new Date() })
+        .set({ sessionsValidFrom: now })
         .where(eq(users.id, ctx.user.id));
+      await tx
+        .update(userSessions)
+        .set({ revokedAt: now })
+        .where(
+          and(
+            eq(userSessions.userId, ctx.user.id),
+            isNull(userSessions.revokedAt),
+          ),
+        );
     });
     await Promise.allSettled([
       revokeAllNativePushDevicesForUser(ctx.user.id),

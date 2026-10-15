@@ -25,6 +25,36 @@ import { logger } from "../logger";
 
 /** لا كتابة على كل طلب — نحدّث `lastSeenAt` فقط إن كانت أقدم من هذه المهلة. */
 const LAST_SEEN_TOUCH_MS = 5 * 60 * 1000;
+const NATIVE_PROOF_REPLAY_TTL_MS = 2 * 60 * 1000;
+const consumedNativeProofNonces = new Map<string, number>();
+const lastNativeProofCounterByToken = new Map<string, number>();
+
+function consumeNativeProofReplayToken(
+  sessionId: number,
+  sessionToken: string,
+  req: { headers?: Record<string, unknown> },
+  counter: number,
+): boolean {
+  const nowMs = Date.now();
+  consumedNativeProofNonces.forEach((expiresAtMs, key) => {
+    if (expiresAtMs <= nowMs) consumedNativeProofNonces.delete(key);
+  });
+  const tokenHash = createHash("sha256").update(sessionToken).digest("hex");
+  const tokenKey = `${sessionId}:${tokenHash}`;
+  const prevCounter = lastNativeProofCounterByToken.get(tokenKey);
+  if (prevCounter != null && counter <= prevCounter) {
+    return false;
+  }
+  const rawNonce = req.headers?.["x-alrueya-device-nonce"];
+  const nonce = typeof rawNonce === "string" ? rawNonce : Array.isArray(rawNonce) ? String(rawNonce[0] ?? "") : "";
+  const nonceKey = `${tokenKey}:${counter}:${nonce}`;
+  if (consumedNativeProofNonces.has(nonceKey)) {
+    return false;
+  }
+  consumedNativeProofNonces.set(nonceKey, nowMs + NATIVE_PROOF_REPLAY_TTL_MS);
+  lastNativeProofCounterByToken.set(tokenKey, counter);
+  return true;
+}
 
 function getSecret(): Uint8Array {
   const secret = process.env.JWT_SECRET;
@@ -424,37 +454,36 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
       const currentMarker = srow.userAgent;
       if (!currentMarker)
         return { user: null, sessionId: null, nativeClientId: null };
+      const rawSessionToken = cookies[COOKIE_NAME]!;
       let proof: { counter: number; nextMarker: string };
       try {
         proof = verifyNativeRequestProof({
           req,
-          sessionToken: cookies[COOKIE_NAME]!,
+          sessionToken: rawSessionToken,
           expectedKeyThumbprint: session.dpk,
           currentMarker,
         });
       } catch {
         return { user: null, sessionId: null, nativeClientId: null };
       }
-      // Queries are integrity-bound but do not consume counters. Mutations atomically advance
-      // the session marker so a duplicate side-effect loses the compare-and-swap and is rejected.
-      if (
-        req.method.toUpperCase() !== "GET" &&
-        req.method.toUpperCase() !== "HEAD"
-      ) {
-        const updateResult = await db
-          .update(userSessions)
-          .set({ userAgent: proof.nextMarker })
-          .where(
-            and(
-              eq(userSessions.id, srow.id),
-              eq(userSessions.userId, user.id),
-              eq(userSessions.userAgent, currentMarker),
-              isNull(userSessions.revokedAt),
-            ),
-          );
-        if (extractAffectedRows(updateResult) !== 1) {
-          return { user: null, sessionId: null, nativeClientId: null };
-        }
+      if (!consumeNativeProofReplayToken(srow.id, rawSessionToken, req, proof.counter)) {
+        return { user: null, sessionId: null, nativeClientId: null };
+      }
+      // CF-12: Both queries (GET/HEAD) and mutations atomically advance the session marker
+      // so native GET proofs cannot be replayed within the 60s clock-skew window.
+      const updateResult = await db
+        .update(userSessions)
+        .set({ userAgent: proof.nextMarker })
+        .where(
+          and(
+            eq(userSessions.id, srow.id),
+            eq(userSessions.userId, user.id),
+            eq(userSessions.userAgent, currentMarker),
+            isNull(userSessions.revokedAt),
+          ),
+        );
+      if (extractAffectedRows(updateResult) !== 1) {
+        return { user: null, sessionId: null, nativeClientId: null };
       }
     }
     // لمسة last-seen مُلطَّفة (best-effort، لا تُعطِّل الطلب إن فشلت) — لا كتابة على كل طلب.

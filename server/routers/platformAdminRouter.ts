@@ -8,7 +8,10 @@ import {
   getProvisionRequestStatus,
   listRecentProvisionRequests,
 } from "../tenancy/provisionRequests";
-import { signPlatformSession } from "../tenancy/platformAuth";
+import {
+  revokePlatformAdminSession,
+  signPlatformSession,
+} from "../tenancy/platformAuth";
 import { verifyPlatformAdminCredentials } from "../tenancy/platformAdminService";
 import { listPlatformAudit, logPlatformAudit } from "../tenancy/platformAudit";
 import { platformAdminProcedure, publicProcedure, router } from "../trpc";
@@ -53,6 +56,7 @@ export const platformAdminRouter = router({
     if (ctx.platformAdmin) {
       await logPlatformAudit(ctx, { action: "logout", success: true, platformAdminId: ctx.platformAdmin.id, actorEmail: ctx.platformAdmin.email });
     }
+    revokePlatformAdminSession(ctx.req, ctx.platformAdmin?.id);
     ctx.res.clearCookie(PLATFORM_ADMIN_COOKIE_NAME, getSessionCookieOptions(ctx.req));
     return { success: true } as const;
   }),

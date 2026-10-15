@@ -430,6 +430,12 @@ export async function updateUser(input: UpdateUserInput, actor: MaybeScopedActor
     try {
       await tx.update(users).set(patch).where(eq(users.id, input.userId));
     } catch (e) { rethrowDup(e); }
+    if (patch.sessionsValidFrom instanceof Date) {
+      await tx
+        .update(userSessions)
+        .set({ revokedAt: patch.sessionsValidFrom })
+        .where(and(eq(userSessions.userId, input.userId), isNull(userSessions.revokedAt)));
+    }
     return { userId: input.userId, changed: true };
   });
 }
@@ -480,6 +486,10 @@ export async function setUserActive(userId: number, isActive: boolean, actor: Ac
       assertCanAdministerUser(actor, u);
       const now = new Date();
       await tx.update(users).set({ isActive: false, sessionsValidFrom: now }).where(eq(users.id, userId));
+      await tx
+        .update(userSessions)
+        .set({ revokedAt: now })
+        .where(and(eq(userSessions.userId, userId), isNull(userSessions.revokedAt)));
       await tx
         .update(passwordResetTokens)
         .set({ invalidatedAt: now })
@@ -547,6 +557,10 @@ export async function resetUserPassword(
       lastFailedLoginAt: null,
     }).where(eq(users.id, userId));
     await tx
+      .update(userSessions)
+      .set({ revokedAt: now })
+      .where(and(eq(userSessions.userId, userId), isNull(userSessions.revokedAt)));
+    await tx
       .update(passwordResetTokens)
       .set({ invalidatedAt: now })
       .where(
@@ -581,7 +595,9 @@ export async function changePassword(userId: number, oldPassword: string, newPas
     if (oldPassword === newPassword) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "كلمة المرور الجديدة يجب أن تختلف عن الحالية." });
     }
-    const validFrom = new Date();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const validFrom = new Date((nowSec - 1) * 1000);
+    const revokedAt = new Date(nowSec * 1000);
     await tx.update(users).set({
       passwordHash: await hashPassword(newPassword),
       sessionsValidFrom: validFrom,
@@ -589,8 +605,12 @@ export async function changePassword(userId: number, oldPassword: string, newPas
       tempPasswordExpiresAt: null,
     }).where(eq(users.id, userId));
     await tx
+      .update(userSessions)
+      .set({ revokedAt })
+      .where(and(eq(userSessions.userId, userId), isNull(userSessions.revokedAt)));
+    await tx
       .update(passwordResetTokens)
-      .set({ invalidatedAt: validFrom })
+      .set({ invalidatedAt: revokedAt })
       .where(
         and(
           eq(passwordResetTokens.userId, userId),

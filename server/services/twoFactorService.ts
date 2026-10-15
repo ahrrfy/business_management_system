@@ -13,7 +13,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNull } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
-import { userRecoveryCodes, users, type User } from "../../drizzle/schema";
+import { userRecoveryCodes, userSessions, users, type User } from "../../drizzle/schema";
 import { hashPassword, verifyPassword } from "../auth/password";
 import {
   buildOtpauthUri,
@@ -272,11 +272,21 @@ export async function consumeFreshSecondFactor(
 /** تعطيل 2FA بالكامل + حذف رموز الاسترداد (يستعمله المستخدم بعد تحقّق الراوتر، والأدمن للإنقاذ). */
 export async function disableTwoFactor(userId: number): Promise<void> {
   await withTx(async (tx) => {
+    const now = new Date();
     await tx
       .update(users)
-      .set({ totpSecretEncrypted: null, totpEnabledAt: null, totpLastUsedStep: null })
+      .set({
+        totpSecretEncrypted: null,
+        totpEnabledAt: null,
+        totpLastUsedStep: null,
+        sessionsValidFrom: now,
+      })
       .where(eq(users.id, userId));
     await tx.delete(userRecoveryCodes).where(eq(userRecoveryCodes.userId, userId));
+    await tx
+      .update(userSessions)
+      .set({ revokedAt: now })
+      .where(and(eq(userSessions.userId, userId), isNull(userSessions.revokedAt)));
   });
 }
 
