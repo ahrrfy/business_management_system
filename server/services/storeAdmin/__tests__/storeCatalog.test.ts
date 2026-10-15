@@ -232,6 +232,14 @@ describe("listStoreCatalog — الفلاتر", () => {
     // ٤) البحث المركّب متعدّد الكلمات عبر اسم المنتج ولون المتغيّر مع التطبيع العربي (احمر ⇔ أحمر)
     const byTokens = await listStoreCatalog({ branchId: 1, q: "قلم احمر" });
     expect(byTokens.rows.map((r) => r.productId)).toEqual([2]);
+
+    // ٥) البحث بكلمة واحدة مطبّعة عربياً في اسم المنتج (هديه ⇔ هدية)
+    const bySingleFoldedName = await listStoreCatalog({ branchId: 1, q: "هديه" });
+    expect(bySingleFoldedName.rows.map((r) => r.productId)).toEqual([3]);
+
+    // ٦) البحث المركّب من اسم المنتج وجزء من الباركود (دفتر 4007)
+    const byNameAndBarcode = await listStoreCatalog({ branchId: 1, q: "دفتر 4007" });
+    expect(byNameAndBarcode.rows.map((r) => r.productId)).toEqual([1]);
   });
 });
 

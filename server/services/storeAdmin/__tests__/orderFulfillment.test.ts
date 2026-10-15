@@ -970,6 +970,26 @@ describe("updateOnlineOrder — إضافة صنف جديد وتحديث الطل
         1,
       ),
     ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    // ٤) تكرار نفس productUnitId في المصفوفة يُدمج في بند واحد (2 + 2 = 4 <= 5)
+    const mergedRes = await updateOnlineOrder(
+      {
+        id: orderId,
+        scopedBranchId: null,
+        items: [
+          { productUnitId: 304, quantity: 2 },
+          { productUnitId: 304, quantity: 2 },
+        ],
+      },
+      1,
+    );
+    expect(Number(mergedRes.subtotal)).toBe(4800);
+    const mergedItems = await d
+      .select()
+      .from(s.onlineOrderItems)
+      .where(eq(s.onlineOrderItems.onlineOrderId, orderId));
+    expect(mergedItems).toHaveLength(1);
+    expect(Number(mergedItems[0]!.quantity)).toBe(4);
   });
 });
 

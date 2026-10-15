@@ -86,6 +86,7 @@ function buildStoreCatalogSearchCondition(q: string | undefined): SQL | undefine
   const directMatch = sql`(
     ${products.name} LIKE ${qPat} ESCAPE '!'
     OR ${products.searchNorm} LIKE ${qNormPat} ESCAPE '!'
+    OR ${foldedCol(products.name)} LIKE ${qNormPat} ESCAPE '!'
     OR EXISTS (
       SELECT 1 FROM ${productVariants}
       WHERE ${productVariants.productId} = ${products.id}
@@ -139,6 +140,25 @@ function buildStoreCatalogSearchCondition(q: string | undefined): SQL | undefine
             OR ${foldedCol(productVariants.variantName)} LIKE ${tPat} ESCAPE '!'
             OR ${foldedCol(productVariants.color)} LIKE ${tPat} ESCAPE '!'
             OR ${foldedCol(productVariants.size)} LIKE ${tPat} ESCAPE '!'
+          )
+      )
+      OR EXISTS (
+        SELECT 1 FROM ${productVariants}
+        INNER JOIN ${productUnits} ON ${productUnits.variantId} = ${productVariants.id}
+        WHERE ${productVariants.productId} = ${products.id}
+          AND (
+            ${foldedCol(productUnits.barcode)} LIKE ${tPat} ESCAPE '!'
+            OR ${productUnits.barcodeNormalized} LIKE ${tPat} ESCAPE '!'
+          )
+      )
+      OR EXISTS (
+        SELECT 1 FROM ${productVariants}
+        INNER JOIN ${productUnits} ON ${productUnits.variantId} = ${productVariants.id}
+        INNER JOIN ${productUnitBarcodes} ON ${productUnitBarcodes.productUnitId} = ${productUnits.id}
+        WHERE ${productVariants.productId} = ${products.id}
+          AND (
+            ${foldedCol(productUnitBarcodes.barcode)} LIKE ${tPat} ESCAPE '!'
+            OR ${productUnitBarcodes.barcodeNormalized} LIKE ${tPat} ESCAPE '!'
           )
       )
     )`;
