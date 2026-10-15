@@ -722,16 +722,25 @@ export function returnOperationsAllowed(user: {
   const receptionAllowed = moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
   const printPosAllowed = moduleAccessAllowed(user.role, override, "pos", "FULL", ["cashier", "manager", "print_operator"]);
   const moduleAllowed = salesAllowed || receptionAllowed || printPosAllowed;
-  if (user.resolvedAtomicPermissions) {
+  const atomic =
+    user.resolvedAtomicPermissions ??
+    (user.atomicPermissions as Record<string, boolean> | null | undefined);
+  if (atomic) {
     const rawAtomic = user.atomicPermissions as Record<string, boolean> | null | undefined;
+    const hasCustomRole = Boolean(
+      (user as { customRoleKey?: string | null; customRoleId?: number | null }).customRoleKey ||
+        (user as { customRoleId?: number | null }).customRoleId,
+    );
     const isBridgedLegacyStation =
-      (user.role === "user" || user.role === "print_operator") && moduleAllowed;
+      !hasCustomRole &&
+      (user.role === "user" || user.role === "print_operator") &&
+      moduleAllowed;
     const returnRevoked = isBridgedLegacyStation
       ? rawAtomic?.["pos.return.create"] === false
-      : user.resolvedAtomicPermissions["pos.return.create"] === false;
+      : atomic["pos.return.create"] === false;
     const voidRevoked = isBridgedLegacyStation
       ? rawAtomic?.["pos.invoice.void"] === false
-      : user.resolvedAtomicPermissions["pos.invoice.void"] === false;
+      : atomic["pos.invoice.void"] === false;
     if (returnRevoked && voidRevoked) {
       return false;
     }
@@ -761,10 +770,17 @@ export const returnsProcedure = auditedProcedure
           }),
         });
       }
-      const atomic = (ctx.user as any).resolvedAtomicPermissions as AtomicPermissionsMap | undefined;
+      const atomic =
+        ((ctx.user as any).resolvedAtomicPermissions as AtomicPermissionsMap | undefined) ??
+        ((ctx.user as any).atomicPermissions as Record<string, boolean> | null | undefined);
       const rawAtomic = (ctx.user as any).atomicPermissions as Record<string, boolean> | null | undefined;
+      const hasCustomRole = Boolean(
+        (ctx.user as { customRoleKey?: string | null; customRoleId?: number | null }).customRoleKey ||
+          (ctx.user as { customRoleId?: number | null }).customRoleId,
+      );
       const isBridgedLegacyStation =
-        ctx.user.role === "user" || ctx.user.role === "print_operator";
+        !hasCustomRole &&
+        (ctx.user.role === "user" || ctx.user.role === "print_operator");
       if (atomic) {
         const voidRevoked = isBridgedLegacyStation
           ? rawAtomic?.["pos.invoice.void"] === false

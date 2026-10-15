@@ -777,11 +777,11 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       }),
     );
     const printPreflight = await printRailsCaller.preflight({
-      kind: "INVOICE_CANCEL",
-      invoiceId: printSale.invoiceId,
+      sourceDocType: "SALE_RETURN",
+      sourceDocId: printSale.invoiceId,
       amount: "25.00",
     });
-    expect(printPreflight.rails.length).toBeGreaterThan(0);
+    expect(printPreflight.rails.DRAWER.available).toBe(true);
 
     // دعم المرتجع الكامل والجزئي للفواتير ذات الخصم الكسري غير القابل للقسمة (3 × 25 - خصم 1.00 = 74.00)
     const fractionalSale = await createSale(
