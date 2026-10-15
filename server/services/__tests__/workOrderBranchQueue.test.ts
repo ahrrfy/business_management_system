@@ -215,5 +215,21 @@ describe("طابور الفرع", () => {
     const updated = await tech.workOrders.get({ workOrderId: saraRow.id });
     expect(updated.status).toBe("READY");
     expect(updated.assignedTo).toBe(20);
+
+    // 6. سحب صلاحية السحب/الإعادة في القاعدة بعد إنشاء الجلسة يُرفض داخل المعاملة (assertOperationAuthorityTx)
+    const hindRow = (await tech.workOrders.list({ unassignedOnly: true })).find((r) => r.orderNumber === "WO-HIND")!;
+    await db()
+      .update(s.users)
+      .set({
+        operationPolicy: {
+          version: 1,
+          grants: {
+            "operation.workOrders.claim": false,
+            "operation.workOrders.release": false,
+          },
+        },
+      })
+      .where(eq(s.users.id, 20));
+    await expect(tech.workOrders.claim({ workOrderId: hindRow.id })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 });

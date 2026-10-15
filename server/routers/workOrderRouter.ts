@@ -1572,11 +1572,11 @@ export const workOrderRouter = router({
         user: {
           id: users.id, name: users.name, role: users.role, branchId: users.branchId,
           isActive: users.isActive, isOwner: users.isOwner, customRoleId: users.customRoleId,
-          permissionsOverride: users.permissionsOverride, operationPolicy: users.operationPolicy,
-          accessExpiresAt: users.accessExpiresAt,
+          permissionsOverride: users.permissionsOverride, atomicPermissions: users.atomicPermissions,
+          operationPolicy: users.operationPolicy, accessExpiresAt: users.accessExpiresAt,
         },
         customRole: {
-          id: roles.id, baseRole: roles.baseRole, isActive: roles.isActive,
+          id: roles.id, key: roles.key, baseRole: roles.baseRole, isActive: roles.isActive,
           permissions: roles.permissions, operationPolicy: roles.operationPolicy, atomicPermissions: roles.atomicPermissions,
         },
         openLoad: sql<number>`(
@@ -1603,7 +1603,7 @@ export const workOrderRouter = router({
     return rows
       .filter(({ user, customRole }) => {
         try {
-          const snapshot = storedOperationUser(user, customRole);
+          const snapshot = storedOperationUser(user, customRole?.id != null ? customRole : null);
           return workOrderAssigneeAllowed(
             snapshot, snapshot.role === "print_operator" && hasModuleAccess(snapshot.role, (snapshot.permissionsOverride as never) ?? null, "workorders", "FULL"),
             targetBranch ?? undefined,

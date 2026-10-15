@@ -57,6 +57,7 @@ export async function claimWorkOrder(
   actor: Actor & { role?: string },
 ) {
   const result = await withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "workOrders.claim", true);
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.status !== "RECEIVED")
@@ -631,6 +632,7 @@ export async function releaseWorkOrder(
   actor: Actor & { role?: string },
 ) {
   const result = await withTx(async (tx) => {
+    await assertOperationAuthorityTx(tx, actor, "workOrders.release", true);
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.assignedTo == null)

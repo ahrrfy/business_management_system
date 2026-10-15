@@ -340,7 +340,7 @@ export function WorkOrderPreviewDrawer({
                   سحب الأمر
                 </button>
               )}
-              {d.status === "RECEIVED" && d.assignedTo != null && onRelease && (
+              {d.status === "RECEIVED" && d.assignedTo != null && Number(d.assignedTo) === Number(me.data?.id) && onRelease && (
                 <button className="wob-btn wob-btn-ghost" disabled={busy} onClick={() => onRelease(d.id)}>
                   أعد إلى الطابور
                 </button>

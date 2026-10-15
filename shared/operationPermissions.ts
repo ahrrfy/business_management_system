@@ -314,6 +314,12 @@ export function resolveOperationPolicy(
     grants["operation.workOrders.start"] === true &&
     grants["operation.workOrders.markReady"] === true
   ) {
+    const isFullLegacyUserSnapshot =
+      userPolicy != null &&
+      Object.keys(userPolicy.grants).length >= 50 &&
+      userPolicy.grants["operation.workOrders.claim"] === false &&
+      userPolicy.grants["operation.workOrders.release"] === false &&
+      userPolicy.grants["operation.workOrders.setKanbanState"] === false;
     for (const companionPath of [
       "workOrders.list",
       "workOrders.counts",
@@ -327,13 +333,12 @@ export function resolveOperationPolicy(
     ]) {
       const companion = getOperationPermission(companionPath);
       if (!companion?.delegable) continue;
-      const explicitlyRevokedOverRole =
+      const explicitlyRevokedByUser =
         userPolicy != null &&
-        rolePolicy != null &&
         own(userPolicy.grants, companion.key) &&
         userPolicy.grants[companion.key] === false &&
-        rolePolicy.grants[companion.key] === true;
-      if (!explicitlyRevokedOverRole) {
+        (!isFullLegacyUserSnapshot || inherited.grants[companion.key] === true);
+      if (!explicitlyRevokedByUser) {
         grants[companion.key] = true;
       }
     }

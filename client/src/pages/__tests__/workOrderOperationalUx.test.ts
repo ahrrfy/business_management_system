@@ -164,6 +164,19 @@ describe("عقد صلاحيات وفشل واجهات أوامر الشغل ال
     expect(access.canMarkReady).toBe(true);
     expect(access.canDeliverWorkOrder).toBe(false);
 
+    const revokedClaimAccess = workOrderDetailOperationAccess({
+      role: "print_operator",
+      operationPolicyEnabled: true,
+      operationPolicy: {
+        version: 1,
+        grants: { "operation.workOrders.claim": false },
+      },
+    });
+    expect(revokedClaimAccess.canClaimWorkOrder).toBe(false);
+    expect(revokedClaimAccess.canReleaseWorkOrder).toBe(true);
+    expect(revokedClaimAccess.canStartWorkOrder).toBe(true);
+    expect(revokedClaimAccess.canMarkReady).toBe(true);
+
     const board = readPage("WorkOrders.tsx");
     const detail = readPage("WorkOrderDetail.tsx");
     const station = readPage("WorkOrderStation.tsx");
@@ -176,13 +189,19 @@ describe("عقد صلاحيات وفشل واجهات أوامر الشغل ال
     expect(board).toContain('canLifecycleOperation(me.data, "workOrders.release", legacyExec)');
     expect(board).toContain("trpc.workOrders.claim.useMutation");
     expect(board).toContain("trpc.workOrders.release.useMutation");
+    expect(board).toContain("if (!dndEnabled || !canDragOrder) return;");
+    expect(board).toContain("Number(o.assignedTo) === Number(me.data?.id)");
     expect(detail).toContain("trpc.workOrders.claim.useMutation");
     expect(detail).toContain("trpc.workOrders.release.useMutation");
+    expect(detail).toContain("Number(data.assignedTo) === Number(me.data?.id)");
     expect(station).toContain('canLifecycleOperation(me.data, "workOrders.claim", canOperateWorkOrders)');
     expect(station).toContain("سحب الأمر إلى قائمتي");
+    expect(station).toContain("Number(d.assignedTo) === Number(me.data?.id)");
     expect(kanbanCard).toContain("سحب الأمر");
     expect(previewDrawer).toContain("سحب الأمر");
+    expect(previewDrawer).toContain("Number(d.assignedTo) === Number(me.data?.id)");
     expect(table).toContain("سحب الأمر");
+    expect(table).toContain("Number(o.assignedTo) === Number(me.data?.id)");
     expect(receptionQueue).toContain("branchQueue: true");
   });
 });
