@@ -68,6 +68,7 @@ import {
   SHORTFALL_REASON_LABEL_AR,
 } from "@shared/shortfallReason";
 import { enqueueStorefrontOrderStatusPush } from "../storeAdmin/storefrontPushCampaignService";
+import { awardDeliveredOnlineOrderPoints } from "../storeAdmin/loyaltyService";
 
 /** يحلّ جهة التوصيل المرتبطة بحساب المستخدم (المندوب). null إن لم يُربط الحساب بجهة نشطة. */
 export async function resolveCourierPartyId(
@@ -552,11 +553,19 @@ export async function confirmCourierDelivery(
     const net = money(inv.total).minus(money(inv.returnedTotal ?? "0"));
     const collected = Decimal.max(net.minus(money(inv.paidAmount ?? "0")), 0);
 
-    if (!wasDelivered)
+    if (!wasDelivered) {
       await tx
         .update(onlineOrders)
         .set({ status: "DELIVERED" })
         .where(eq(onlineOrders.id, order.id));
+      if (order.customerId != null) {
+        await awardDeliveredOnlineOrderPoints(tx, {
+          onlineOrderId: Number(order.id),
+          customerId: Number(order.customerId),
+          total: String(order.total ?? "0"),
+        });
+      }
+    }
 
     let custodyAfter = money(partyRow.balance ?? "0");
     if (collected.gt(0)) {
@@ -732,36 +741,6 @@ export async function confirmConsignmentDelivery(
     input.clientRequestId ?? `confirm-consignment-${input.consignmentId}`;
   const payloadHash = idempotencyHash({ consignmentId: input.consignmentId });
   const run = async (tx: Tx): Promise<ConfirmConsignmentResult> => {
-    const replay = await checkIdempotency(
-      tx,
-      "courier.confirmConsignment",
-      clientRequestId,
-      payloadHash,
-    );
-    if (replay != null) {
-      const existing = (
-        await tx
-          .select()
-          .from(deliveryConsignments)
-          .where(eq(deliveryConsignments.id, replay))
-          .limit(1)
-      )[0];
-      if (!existing?.courierDeliveredAt)
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: appErrorMessage({
-            what: "تعذّر ختم التسليم",
-            why: "مفتاح هذه العملية مسجَّلٌ على إرساليةٍ لم يكتمل ختمُ تسليمها — إعادةُ الإرسال بالمفتاح نفسه لا تُكملها",
-            doThis: "اسحب قائمة «توصيلاتي» للتحديث ثمّ اختم من بطاقة الإرسالية من جديد؛ فإن تكرّر الرفض فأبلِغ كاشير الاستقبال برقم الإرسالية",
-          }),
-        });
-      return {
-        consignmentId: Number(existing.id),
-        consignmentNumber: existing.consignmentNumber,
-        deliveredAt: existing.courierDeliveredAt,
-        alreadyDelivered: true,
-      };
-    }
     // Every money-bearing delivery flow locks party → consignment → invoice.
     // Keeping one order prevents confirm/remittance deadlocks under load.
     const lockedParty = (
@@ -798,6 +777,7 @@ export async function confirmConsignmentDelivery(
           doThis: "اسحب قائمة «توصيلاتي» للتحديث ثمّ اختم من بطاقة الإرسالية الصحيحة",
         }),
       });
+    assertMemberCanUseConsignment(membership, cn);
     const replayAfterLock = await checkIdempotency(
       tx,
       "courier.confirmConsignment",
@@ -822,7 +802,6 @@ export async function confirmConsignmentDelivery(
         alreadyDelivered: true,
       };
     }
-    assertMemberCanUseConsignment(membership, cn);
     if (cn.parcelStatus === "DELIVERED" && cn.courierDeliveredAt) {
       return {
         consignmentId: Number(cn.id),
@@ -1166,10 +1145,40 @@ export async function confirmConsignmentDelivery(
         .where(eq(workOrders.id, Number(cn.workOrderId)));
     }
     if (cn.sourceType === "ONLINE_ORDER") {
+      const prevOnline = (
+        await tx
+          .select({
+            id: onlineOrders.id,
+            orderNumber: onlineOrders.orderNumber,
+            customerId: onlineOrders.customerId,
+            total: onlineOrders.total,
+            status: onlineOrders.status,
+          })
+          .from(onlineOrders)
+          .where(eq(onlineOrders.id, Number(cn.sourceId)))
+          .for("update")
+          .limit(1)
+      )[0];
       await tx
         .update(onlineOrders)
         .set({ status: "DELIVERED" })
         .where(eq(onlineOrders.id, Number(cn.sourceId)));
+      if (prevOnline && prevOnline.status !== "DELIVERED") {
+        if (prevOnline.customerId != null) {
+          await awardDeliveredOnlineOrderPoints(tx, {
+            onlineOrderId: Number(prevOnline.id),
+            customerId: Number(prevOnline.customerId),
+            total: String(prevOnline.total ?? "0"),
+          });
+        }
+        await enqueueStorefrontOrderStatusPush(tx, {
+          orderId: Number(prevOnline.id),
+          orderNumber: prevOnline.orderNumber,
+          customerId:
+            prevOnline.customerId == null ? null : Number(prevOnline.customerId),
+          status: "DELIVERED",
+        });
+      }
     }
 
     await recordIdempotencyKey(
@@ -1215,13 +1224,6 @@ export async function transitionConsignmentParcel(
   }
   const payloadHash = idempotencyHash(input);
   return withTx(async (tx) => {
-    const replay = await checkIdempotency(
-      tx,
-      "courier.parcelTransition",
-      input.clientRequestId,
-      payloadHash,
-    );
-    if (replay != null) return { consignmentId: replay, replay: true };
     const cn = (
       await tx
         .select()
@@ -1239,6 +1241,7 @@ export async function transitionConsignmentParcel(
           doThis: "اسحب قائمة «توصيلاتي» للتحديث ثمّ أعِد الحركة من بطاقة الطرد الصحيحة",
         }),
       });
+    assertMemberCanUseConsignment(membership, cn);
     const replayAfterLock = await checkIdempotency(
       tx,
       "courier.parcelTransition",
@@ -1247,7 +1250,6 @@ export async function transitionConsignmentParcel(
     );
     if (replayAfterLock != null)
       return { consignmentId: replayAfterLock, replay: true };
-    assertMemberCanUseConsignment(membership, cn);
     assertParcelTransition(cn.parcelStatus, input.toStatus);
     const now = new Date();
     const reason = input.reason?.trim() || null;

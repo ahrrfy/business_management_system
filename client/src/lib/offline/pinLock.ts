@@ -162,6 +162,12 @@ export function markOfflineUnlocked(
   listeners.forEach((cb) => cb());
 }
 
+export function lockOfflineSession(): void {
+  unlocked = false;
+  unlockedProfile = null;
+  listeners.forEach((cb) => cb());
+}
+
 /** ملف جلسة PIN عابر للذاكرة؛ لا يكفي وحده لفتح Studio بلا مطابقة هوية المسودة. */
 export function getOfflineUnlockedProfile(): Pick<
   OfflineProfile,

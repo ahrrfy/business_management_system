@@ -8,6 +8,8 @@ import { sameStudioTenantScope, type StudioTenantScope } from "@/lib/productStud
 import { pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 import { clearNotificationBadge } from "@/lib/push";
 import { markReceptionWorkspaceBoundaryBlocked, purgeReceptionWorkspaceSnapshots } from "@/lib/receptionWorkspaceState";
+import { offlineDb } from "./db";
+import { lockOfflineSession } from "./pinLock";
 
 type SessionBoundaryDependencies = {
   loadStudioIdentity: () => Promise<StudioDraftIdentity | null>;
@@ -55,7 +57,19 @@ export async function resetSessionForLogout(
 ): Promise<void> {
   pauseGlobalQuranAudio();
   void clearNotificationBadge();
+  lockOfflineSession();
   await resetSessionQueryCache(queryClient);
   await Promise.resolve().then(() => dependencies.purgeReceptionSnapshots()).catch(() => undefined);
   await dependencies.purgeStudioDrafts().catch(() => undefined);
+  try {
+    await Promise.allSettled([
+      offlineDb.profile.clear(),
+      offlineDb.catalog.clear(),
+      offlineDb.meta.clear(),
+      offlineDb.customers.clear(),
+      offlineDb.stock.clear(),
+    ]);
+  } catch {
+    // Ignore when IndexedDB is unavailable (e.g. non-browser test runners).
+  }
 }

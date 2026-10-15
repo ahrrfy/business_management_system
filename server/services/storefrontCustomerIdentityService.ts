@@ -205,11 +205,24 @@ export async function storefrontCustomerBenefits(session: { customerId: number; 
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة بيانات المتجر غير متاحة" });
 
   const customer = (await db
-    .select({ id: customers.id, name: customers.name, phone: customers.phone, isActive: customers.isActive })
+    .select({
+      id: customers.id,
+      name: customers.name,
+      phone: customers.phone,
+      phone2: customers.phone2,
+      phone3: customers.phone3,
+      whatsapp: customers.whatsapp,
+      isActive: customers.isActive,
+    })
     .from(customers)
     .where(eq(customers.id, session.customerId))
     .limit(1))[0];
-  if (!customer || customer.isActive === false || canonicalIraqiMobile(customer.phone) !== session.phone) {
+  const phoneCandidates = customer
+    ? [customer.phone, customer.phone2, customer.phone3, customer.whatsapp]
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+        .map(canonicalIraqiMobile)
+    : [];
+  if (!customer || customer.isActive === false || !phoneCandidates.includes(session.phone)) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "لم تعد جلسة العميل صالحة؛ أعد تحقق الهاتف" });
   }
 

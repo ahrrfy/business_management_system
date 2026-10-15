@@ -1,5 +1,6 @@
 import { requireOptionalNativeModule } from "expo";
 import { Platform } from "react-native";
+import { isNativeSecureTransportAvailable } from "@/lib/secureTransport";
 
 type NativeDeviceProofStatus = Readonly<{
   keyExists: boolean;
@@ -72,11 +73,19 @@ export async function getDeviceProofRuntimeStatus(): Promise<DeviceProofRuntimeS
  * session cookies remain inside the native module and never enter JavaScript.
  */
 export async function getSecureTransportRuntimeStatus(): Promise<SecureTransportRuntimeStatus> {
-  if (deviceProof?.getSecureTransportStatus) {
+  const nativeAvailable =
+    typeof isNativeSecureTransportAvailable === "function"
+      ? isNativeSecureTransportAvailable()
+      : Boolean(deviceProof);
+  if (deviceProof?.getSecureTransportStatus && nativeAvailable) {
     const status = await deviceProof.getSecureTransportStatus();
     return { kind: "available", ...status };
   }
-  if (Platform.OS === "web" || !deviceProof) {
+  if (
+    Platform.OS === "web" ||
+    process.env.NODE_ENV === "test" ||
+    process.env.EXPO_PUBLIC_ALLOW_WEB_TRANSPORT_FALLBACK === "1"
+  ) {
     const hasStorage =
       typeof window !== "undefined" &&
       (window.sessionStorage?.getItem("alrueya_superapp_web_session") === "active" ||

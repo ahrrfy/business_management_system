@@ -692,7 +692,7 @@ const thematicCollectionsRouter = router({
   preview: storeReadProcedure.query(async ({ ctx }) => {
     return computeAlgorithmicThematicCollections(ctx.scopedBranchId);
   }),
-  update: storeManagerProcedure
+  update: storeGlobalAdminProcedure
     .input(z.object({
       mode: z.enum(["AUTO", "CUSTOM"]),
       customCards: z.array(z.object({
