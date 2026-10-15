@@ -722,12 +722,12 @@ export async function updateOnlineOrder(
       const unitIds = Array.from(new Set(lines.map((l) => l.productUnitId))).sort((a, b) => a - b);
       await lockProductUnitsForOnlineAllocation(tx, unitIds);
 
-      // Price lines using official online order engine
+      // Price lines using official online order engine (staff edits can include any active catalog unit)
       const pricing = await priceOnlineOrderLines(
         tx,
         Number(order.branchId),
         lines,
-        { lock: true }
+        { lock: true, allowStaffCatalogUnits: true }
       );
 
       // Bundle recipe resolution

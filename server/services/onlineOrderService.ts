@@ -727,6 +727,7 @@ async function resolveOnlineOrderCustomization(
     isCustomizable: boolean | null;
   },
   customization: OnlineOrderCustomizationInput | null | undefined,
+  options?: { allowWithoutCustomization?: boolean },
 ): Promise<{ snapshot: OnlineOrderCustomizationSnapshot | null; priceDelta: ReturnType<typeof money> }> {
   if (product.isCustomizable !== true) {
     if (customization != null) {
@@ -735,6 +736,9 @@ async function resolveOnlineOrderCustomization(
     return { snapshot: null, priceDelta: money(0) };
   }
   if (customization == null) {
+    if (options?.allowWithoutCustomization) {
+      return { snapshot: null, priceDelta: money(0) };
+    }
     throw customizationInputError("BAD_REQUEST", `تفاصيل «${product.productName}» ناقصة`, "الصنف قابل للتخصيص ولم تصل معه تفاصيل الزبون", "افتح صفحة المنتج وأكمل حقول التخصيص قبل إضافته إلى الطلب");
   }
   const template = (await tx.select({
@@ -939,6 +943,7 @@ export async function priceOnlineOrderLines(
     lock: boolean;
     coupon?: LockedCoupon | null;
     deliveryContext?: OnlineOrderDeliveryContext | null;
+    allowStaffCatalogUnits?: boolean;
   },
 ): Promise<PricedOnlineOrderLines> {
   const unitIds = Array.from(
@@ -1002,18 +1007,21 @@ export async function priceOnlineOrderLines(
   for (const line of lines) {
     const quantity = Math.floor(line.quantity);
     const row = byUnit.get(Number(line.productUnitId));
+    const storefrontVisibilityFailed =
+      !options.allowStaffCatalogUnits &&
+      (!row?.showInStore ||
+        (row.categoryId != null &&
+          (!row.categoryActive || !row.categoryShowInStore)) ||
+        !row.unitAvailableInStore);
     if (
       !Number.isSafeInteger(quantity) ||
       quantity <= 0 ||
       !row ||
       !row.productActive ||
-      !row.showInStore ||
-      (row.categoryId != null &&
-        (!row.categoryActive || !row.categoryShowInStore)) ||
       !row.variantActive ||
       !row.unitActive ||
-      !row.unitAvailableInStore ||
-      row.price == null
+      row.price == null ||
+      storefrontVisibilityFailed
     ) {
       throw new TRPCError({
         code: options.lock ? "CONFLICT" : "BAD_REQUEST",
@@ -1025,12 +1033,17 @@ export async function priceOnlineOrderLines(
         }),
       });
     }
-    const resolvedCustomization = await resolveOnlineOrderCustomization(tx, {
-      productId: Number(row.productId),
-      productName: row.productName,
-      productType: row.productType ?? null,
-      isCustomizable: row.isCustomizable,
-    }, line.customization);
+    const resolvedCustomization = await resolveOnlineOrderCustomization(
+      tx,
+      {
+        productId: Number(row.productId),
+        productName: row.productName,
+        productType: row.productType ?? null,
+        isCustomizable: row.isCustomizable,
+      },
+      line.customization,
+      { allowWithoutCustomization: options.allowStaffCatalogUnits },
+    );
     const base = money(quantity).times(row.conversionFactor ?? 1);
     if (!base.isInteger() || !base.gt(0)) {
       throw new TRPCError({

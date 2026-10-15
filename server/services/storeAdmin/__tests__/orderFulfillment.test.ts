@@ -30,6 +30,7 @@ import {
   markOnlineOrderPrepared,
   reviveAndConfirmOnlineOrder,
   setOnlineOrderStatus,
+  updateOnlineOrder,
   updateOnlineOrderContact,
 } from "../orderFulfillmentService";
 import { closeShift, openShift } from "../../shiftService";
@@ -97,6 +98,11 @@ beforeEach(async () => {
     "storefrontPushDevices",
     "onlineOrderItems",
     "onlineOrders",
+    "branchStock",
+    "productPrices",
+    "productUnits",
+    "productVariants",
+    "products",
     "shifts",
   ]);
   await db()
@@ -849,6 +855,121 @@ describe("closeShift — تحرير الطلبات غير المكتملة عن�
     expect(prepRow.preparedAt).not.toBeNull();
 
     expect(sRow.claimedByUserId).toBe(2);
+  });
+});
+
+describe("updateOnlineOrder — إضافة صنف جديد وتحديث الطلب من لوحة المتجر", () => {
+  it("يسمح للموظف بإضافة صنف من الكتالوج الموحّد (حتى لو لم يكن معروضاً علناً في المتجر) ويعيد تسعير الطلب بدقة", async () => {
+    const d = db();
+    await d.insert(s.products).values([
+      { id: 101, name: "هايلايت Schneider JOP برتقالي", showInStore: true, isActive: true },
+      { id: 102, name: "قلم تحديد باركود 4007817131404", showInStore: false, isActive: true },
+    ]);
+    await d.insert(s.productVariants).values([
+      { id: 201, productId: 101, sku: "HL-ORG", color: "برتقالي", costPrice: "500.00", isActive: true },
+      { id: 202, productId: 102, sku: "HL-4007", color: "أصفر", costPrice: "500.00", isActive: true },
+    ]);
+    await d.insert(s.productUnits).values([
+      { id: 301, variantId: 201, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, isActive: true },
+      { id: 302, variantId: 202, unitName: "قطعة", barcode: "4007817131404", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: false, isActive: true },
+    ]);
+    await d.insert(s.productPrices).values([
+      { productUnitId: 301, priceTier: "RETAIL", price: "1000.00" },
+      { productUnitId: 302, priceTier: "RETAIL", price: "1500.00" },
+    ]);
+    await d.insert(s.branchStock).values([
+      { variantId: 201, branchId: 1, quantity: 20 },
+      { variantId: 202, branchId: 1, quantity: 15 },
+    ]);
+
+    const orderId = await seedOrder("CONFIRMED");
+    await d.insert(s.onlineOrderItems).values({
+      onlineOrderId: orderId,
+      variantId: 201,
+      productUnitId: 301,
+      quantity: "1.00",
+      baseQuantity: 1,
+      unitPrice: "1000.00",
+      total: "1000.00",
+    });
+
+    const res = await updateOnlineOrder(
+      {
+        id: orderId,
+        scopedBranchId: null,
+        governorate: "baghdad",
+        items: [
+          { productUnitId: 301, quantity: 2 },
+          { productUnitId: 302, quantity: 1 },
+        ],
+      },
+      1,
+    );
+
+    expect(res.id).toBe(orderId);
+    // 2 * 1000 + 1 * 1500 = 3500 + أجرة توصيل بغداد 5000 = 8500
+    expect(Number(res.subtotal)).toBe(3500);
+    expect(Number(res.total)).toBe(8500);
+
+    const savedItems = await d
+      .select()
+      .from(s.onlineOrderItems)
+      .where(eq(s.onlineOrderItems.onlineOrderId, orderId));
+    expect(savedItems).toHaveLength(2);
+    expect(savedItems.map((i) => [i.productUnitId, Number(i.quantity)])).toEqual([
+      [301, 2],
+      [302, 1],
+    ]);
+  });
+
+  it("يرفض إضافة صنف معطّل أو وحدة بلا سعر مفرد أو كمية تتجاوز الرصيد المتاح", async () => {
+    const d = db();
+    await d.insert(s.products).values([
+      { id: 103, name: "صنف معطّل", showInStore: true, isActive: false },
+      { id: 104, name: "صنف بلا سعر", showInStore: true, isActive: true },
+    ]);
+    await d.insert(s.productVariants).values([
+      { id: 203, productId: 103, sku: "INACT-1", costPrice: "500.00", isActive: true },
+      { id: 204, productId: 104, sku: "NOPRICE-1", costPrice: "500.00", isActive: true },
+    ]);
+    await d.insert(s.productUnits).values([
+      { id: 303, variantId: 203, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, isActive: true },
+      { id: 304, variantId: 204, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, isActive: true },
+    ]);
+    await d.insert(s.productPrices).values([
+      { productUnitId: 303, priceTier: "RETAIL", price: "1000.00" },
+    ]);
+    await d.insert(s.branchStock).values([
+      { variantId: 203, branchId: 1, quantity: 10 },
+      { variantId: 204, branchId: 1, quantity: 5 },
+    ]);
+
+    const orderId = await seedOrder("CONFIRMED");
+
+    // ١) صنف معطّل ⇒ CONFLICT
+    await expect(
+      updateOnlineOrder(
+        { id: orderId, scopedBranchId: null, items: [{ productUnitId: 303, quantity: 1 }] },
+        1,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    // ٢) وحدة بلا سعر مفرد ⇒ CONFLICT
+    await expect(
+      updateOnlineOrder(
+        { id: orderId, scopedBranchId: null, items: [{ productUnitId: 304, quantity: 1 }] },
+        1,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    // ٣) بعد إضافة السعر، طلب كمية تتجاوز الرصيد (10 > 5) ⇒ CONFLICT
+    await d.insert(s.productPrices).values({ productUnitId: 304, priceTier: "RETAIL", price: "1200.00" });
+    await expect(
+      updateOnlineOrder(
+        { id: orderId, scopedBranchId: null, items: [{ productUnitId: 304, quantity: 10 }] },
+        1,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 });
 

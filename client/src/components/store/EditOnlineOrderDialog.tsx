@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,11 +6,12 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
-import { GOVERNORATES, deliveryFeeFor } from "@shared/governorates";
+import { UnifiedProductSearch, type PosProductRow } from "@/components/search/UnifiedProductSearch";
+import { GOVERNORATES, deliveryFeeFor, isBaghdadGovernorate } from "@shared/governorates";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
-import { fmtInt, formatQuantity } from "@/lib/money";
-import { Loader2, Plus, Trash2, ShoppingCart, Search, AlertCircle, Package } from "lucide-react";
+import { fmtInt } from "@/lib/money";
+import { Loader2, Trash2, ShoppingCart, AlertCircle, Package } from "lucide-react";
 
 export interface EditOnlineOrderDialogProps {
   orderId: number | null;
@@ -51,15 +52,6 @@ export function EditOnlineOrderDialog({
   const [shippingAddress, setShippingAddress] = useState("");
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState<EditableLineItem[]>([]);
-
-  // Product search state
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedProductUnitId, setSelectedProductUnitId] = useState<string>("");
-
-  const catalogQ = trpc.storeAdmin.catalog.list.useQuery(
-    { q: searchQuery.trim(), limit: 20 },
-    { enabled: open && searchQuery.trim().length > 1 }
-  );
 
   // Settings for free shipping threshold
   const settingsQ = trpc.storeAdmin.settings.get.useQuery(undefined, { enabled: open });
@@ -115,9 +107,11 @@ export function EditOnlineOrderDialog({
   }, [governorate]);
 
   const freeShippingThreshold = useMemo(() => {
-    const raw = settingsQ.data?.freeShippingThreshold;
+    const raw = isBaghdadGovernorate(governorate)
+      ? settingsQ.data?.freeShippingThreshold
+      : (settingsQ.data?.freeShippingThresholdGovernorates ?? settingsQ.data?.freeShippingThreshold);
     return raw ? Number(raw) : null;
-  }, [settingsQ.data]);
+  }, [governorate, settingsQ.data]);
 
   const isFreeDelivery = useMemo(() => {
     return freeShippingThreshold != null && freeShippingThreshold > 0 && subtotal >= freeShippingThreshold;
@@ -132,44 +126,13 @@ export function EditOnlineOrderDialog({
   // Grand total is subtotal + delivery fee.
   const grandTotal = Math.max(0, subtotal + finalDeliveryFee);
 
-  // Available selectable units from catalog search
-  const availableSearchUnits = useMemo(() => {
-    if (!catalogQ.data?.rows) return [];
-    const units: Array<{
-      productUnitId: number;
-      productName: string;
-      variantLabel: string;
-      unitName: string;
-      price: number;
-      stock: number;
-    }> = [];
-
-    for (const product of catalogQ.data.rows) {
-      for (const variant of product.variants ?? []) {
-        for (const unit of variant.units ?? []) {
-          if (unit.isActive && unit.isStoreSaleUnit && unit.retailPrice) {
-            units.push({
-              productUnitId: unit.productUnitId,
-              productName: product.name,
-              variantLabel: variant.label || variant.sku,
-              unitName: unit.unitName,
-              price: Number(unit.retailPrice),
-              stock: unit.availableUnits,
-            });
-          }
-        }
-      }
-    }
-    return units;
-  }, [catalogQ.data]);
-
   function handleQuantityChange(index: number, newQty: number) {
-    if (newQty <= 0) return;
+    if (!Number.isFinite(newQty) || newQty <= 0) return;
     setItems((prev) => {
       const next = [...prev];
       const item = next[index];
       if (!item) return prev;
-      const updatedQty = Math.floor(newQty);
+      const updatedQty = Math.max(1, Math.floor(newQty));
       next[index] = {
         ...item,
         quantity: updatedQty,
@@ -183,34 +146,52 @@ export function EditOnlineOrderDialog({
     setItems((prev) => prev.filter((_, i) => i !== index));
   }
 
-  function handleAddSelectedUnit() {
-    const unitId = Number(selectedProductUnitId);
-    if (!unitId) return;
-    const target = availableSearchUnits.find((u) => u.productUnitId === unitId);
-    if (!target) return;
+  const handleAddProductFromSearch = useCallback((product: PosProductRow) => {
+    const effectivePriceStr = product.promotionEffectivePrice ?? product.price;
+    const unitPrice = effectivePriceStr != null ? Number(effectivePriceStr) : NaN;
+    if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+      notify.err(`الصنف «${product.productName}» ليس له سعر مفرد محدد في الكتالوج`);
+      return;
+    }
 
-    // Check if already in items
-    const existingIndex = items.findIndex((it) => it.productUnitId === target.productUnitId);
-    if (existingIndex >= 0) {
-      handleQuantityChange(existingIndex, items[existingIndex].quantity + 1);
-    } else {
-      setItems((prev) => [
+    const variantParts = Array.from(
+      new Set(
+        [product.variantName, product.color, product.size]
+          .map((v) => v?.trim())
+          .filter((v): v is string => Boolean(v) && v !== product.productName.trim()),
+      ),
+    );
+    const variantLabel = variantParts.join(" — ") || product.sku;
+
+    setItems((prev) => {
+      const existingIndex = prev.findIndex((it) => it.productUnitId === product.productUnitId);
+      if (existingIndex >= 0) {
+        const next = [...prev];
+        const current = next[existingIndex]!;
+        const updatedQty = current.quantity + 1;
+        next[existingIndex] = {
+          ...current,
+          quantity: updatedQty,
+          lineTotal: current.unitPrice * updatedQty,
+        };
+        return next;
+      }
+      return [
         ...prev,
         {
-          productUnitId: target.productUnitId,
-          productName: target.productName,
-          variantLabel: target.variantLabel,
-          unitName: target.unitName,
-          unitPrice: target.price,
+          productUnitId: product.productUnitId,
+          productName: product.productName,
+          variantLabel,
+          unitName: product.unitName,
+          unitPrice,
           quantity: 1,
-          lineTotal: target.price,
+          lineTotal: unitPrice,
           hasCustomization: false,
           customizationSummary: null,
         },
-      ]);
-    }
-    setSelectedProductUnitId("");
-  }
+      ];
+    });
+  }, []);
 
   function handleSave() {
     if (!orderId) return;
@@ -242,10 +223,11 @@ export function EditOnlineOrderDialog({
   }
 
   const isLoading = detailQ.isLoading;
+  const orderBranchId = detailQ.data?.branchId ?? null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto" dir="rtl">
+      <DialogContent data-no-draft className="sm:max-w-3xl max-h-[90vh] overflow-y-auto" dir="rtl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-xl font-bold">
             <Package className="size-5 text-primary" />
@@ -364,7 +346,7 @@ export function EditOnlineOrderDialog({
                   </thead>
                   <tbody className="divide-y">
                     {items.map((it, idx) => (
-                      <tr key={idx} className="hover:bg-muted/40 transition">
+                      <tr key={`${it.productUnitId}-${idx}`} className="hover:bg-muted/40 transition">
                         <td className="p-2.5">
                           <div className="font-medium text-foreground">{it.productName}</div>
                           <div className="text-xs text-muted-foreground">
@@ -385,7 +367,21 @@ export function EditOnlineOrderDialog({
                             >
                               -
                             </Button>
-                            <span className="w-8 text-center font-bold text-sm">{formatQuantity(it.quantity)}</span>
+                            <input
+                              type="number"
+                              min={1}
+                              data-no-draft
+                              disabled={itemsLocked}
+                              value={it.quantity}
+                              onChange={(e) => {
+                                const parsed = parseInt(e.target.value, 10);
+                                if (Number.isFinite(parsed) && parsed >= 1) {
+                                  handleQuantityChange(idx, parsed);
+                                }
+                              }}
+                              className="w-12 text-center font-bold text-sm bg-transparent border-0 focus:outline-none focus:ring-1 focus:ring-primary rounded [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                              aria-label={`كمية ${it.productName}`}
+                            />
                             <Button
                               type="button"
                               variant="ghost"
@@ -418,57 +414,21 @@ export function EditOnlineOrderDialog({
                 </table>
               </div>
 
-              {/* Add Product Search */}
-              {!itemsLocked && (
+              {/* Add Product Search — Unified POS & Barcode Component */}
+              {!itemsLocked && orderBranchId != null && (
                 <div className="pt-2 border-t space-y-2">
                   <Label className="text-xs font-semibold text-muted-foreground">
-                    إضافة صنف جديد للطلب من الكتالوج
+                    إضافة صنف جديد للطلب من الكتالوج (يدعم البحث الفوري بالاسم أو SKU أو مسح الباركود المباشر)
                   </Label>
-                  <div className="flex flex-col md:flex-row gap-2">
-                    <div className="relative flex-1">
-                      <Search className="absolute right-2.5 top-2.5 size-4 text-muted-foreground" />
-                      <Input
-                        className="pr-8"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="ابحث عن منتج بالاسم أو الباركود..."
-                      />
-                    </div>
-
-                    <div className="flex-1">
-                      <AppSelect
-                        value={selectedProductUnitId}
-                        onValueChange={setSelectedProductUnitId}
-                        placeholder={
-                          catalogQ.isLoading
-                            ? "جاري البحث..."
-                            : availableSearchUnits.length > 0
-                            ? "اختر الوحدة للإضافة"
-                            : searchQuery.trim().length > 1
-                            ? "لا توجد نتائج مطابقة"
-                            : "اكتب اسم المنتج للبحث"
-                        }
-                        disabled={availableSearchUnits.length === 0}
-                      >
-                        {availableSearchUnits.map((u) => (
-                          <option key={u.productUnitId} value={String(u.productUnitId)}>
-                            {u.productName} ({u.variantLabel}) - {fmtInt(u.price)} د.ع [متاح: {formatQuantity(u.stock)}]
-                          </option>
-                        ))}
-                      </AppSelect>
-                    </div>
-
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      className="gap-1.5 shrink-0"
-                      onClick={handleAddSelectedUnit}
-                      disabled={!selectedProductUnitId}
-                    >
-                      <Plus className="size-4" />
-                      إضافة للطلب
-                    </Button>
-                  </div>
+                  <UnifiedProductSearch
+                    branchId={orderBranchId}
+                    mode="sale"
+                    tier="RETAIL"
+                    dropDirection="up"
+                    branchName="فرع المتجر"
+                    placeholder="ابحث عن منتج بالاسم أو SKU أو امسح الباركود للإضافة الفورية…"
+                    onSelect={handleAddProductFromSearch}
+                  />
                 </div>
               )}
             </div>

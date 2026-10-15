@@ -5,10 +5,18 @@
  */
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, isNull, sql, type SQL } from "drizzle-orm";
-import { categories, productImages, products } from "../../../drizzle/schema";
+import type { MySqlColumn } from "drizzle-orm/mysql-core";
+import {
+  categories,
+  productImages,
+  productUnitBarcodes,
+  productUnits,
+  productVariants,
+  products,
+} from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
-import { normalizeSearchText } from "../../../shared/searchNormalize";
+import { ARABIC_FOLD_PAIRS, normalizeSearchText, tokenizeSearchQuery } from "../../../shared/searchNormalize";
 import { withTx, type Actor } from "../tx";
 import { requestStockAdjustment } from "../inventory/adjustmentApproval";
 import { rejectLegacyCatalogMediaWrite } from "../catalog/mediaWriteGuard";
@@ -51,6 +59,94 @@ export interface StoreCatalogListInput {
   offset?: number;
 }
 
+function foldedCol(col: MySqlColumn): SQL {
+  let expr = sql`lower(coalesce(${col}, ''))`;
+  for (const [from, to] of ARABIC_FOLD_PAIRS) {
+    expr = sql`replace(${expr}, ${from}, ${to})`;
+  }
+  return expr;
+}
+
+/**
+ * يبني شرط بحث موحّد لكتالوج المتجر يدعم:
+ * - اسم المنتج والنص المطبَّع (`products.name`, `products.searchNorm`)
+ * - المتغيّر (`sku`, `variantName`, `color`, `size`) مع التطبيع العربي
+ * - باركود وحدة المنتج الأساسي (`productUnits.barcode`, `productUnits.barcodeNormalized`)
+ * - الباركودات الإضافية للوحدة (`productUnitBarcodes.barcode`, `productUnitBarcodes.barcodeNormalized`)
+ * - البحث متعدّد الكلمات المطبَّع (`tokenizeSearchQuery`)
+ */
+function buildStoreCatalogSearchCondition(q: string | undefined): SQL | undefined {
+  const raw = q?.trim();
+  if (!raw) return undefined;
+  const qNorm = normalizeSearchText(raw);
+  // تدقيق ٣/٨: تهريب `%`/`_` (escLike + ESCAPE '!') — اتساقٌ مع مسارات البحث (القيمة مربوطة، لا حقن).
+  const qPat = `%${escLike(raw)}%`;
+  const qNormPat = qNorm ? `%${escLike(qNorm)}%` : qPat;
+
+  const directMatch = sql`(
+    ${products.name} LIKE ${qPat} ESCAPE '!'
+    OR ${products.searchNorm} LIKE ${qNormPat} ESCAPE '!'
+    OR EXISTS (
+      SELECT 1 FROM ${productVariants}
+      WHERE ${productVariants.productId} = ${products.id}
+        AND (
+          ${foldedCol(productVariants.sku)} LIKE ${qNormPat} ESCAPE '!'
+          OR ${foldedCol(productVariants.variantName)} LIKE ${qNormPat} ESCAPE '!'
+          OR ${foldedCol(productVariants.color)} LIKE ${qNormPat} ESCAPE '!'
+          OR ${foldedCol(productVariants.size)} LIKE ${qNormPat} ESCAPE '!'
+        )
+    )
+    OR EXISTS (
+      SELECT 1 FROM ${productVariants}
+      INNER JOIN ${productUnits} ON ${productUnits.variantId} = ${productVariants.id}
+      WHERE ${productVariants.productId} = ${products.id}
+        AND (
+          ${productUnits.barcode} = ${raw}
+          OR ${productUnits.barcodeNormalized} = ${qNorm || raw}
+          OR ${productUnits.barcode} LIKE ${qPat} ESCAPE '!'
+          OR ${productUnits.barcodeNormalized} LIKE ${qNormPat} ESCAPE '!'
+        )
+    )
+    OR EXISTS (
+      SELECT 1 FROM ${productVariants}
+      INNER JOIN ${productUnits} ON ${productUnits.variantId} = ${productVariants.id}
+      INNER JOIN ${productUnitBarcodes} ON ${productUnitBarcodes.productUnitId} = ${productUnits.id}
+      WHERE ${productVariants.productId} = ${products.id}
+        AND (
+          ${productUnitBarcodes.barcode} = ${raw}
+          OR ${productUnitBarcodes.barcodeNormalized} = ${qNorm || raw}
+          OR ${productUnitBarcodes.barcode} LIKE ${qPat} ESCAPE '!'
+          OR ${productUnitBarcodes.barcodeNormalized} LIKE ${qNormPat} ESCAPE '!'
+        )
+    )
+  )`;
+
+  const tokens = tokenizeSearchQuery(raw);
+  if (tokens.length <= 1) {
+    return directMatch;
+  }
+
+  const tokenClauses = tokens.map((token) => {
+    const tPat = `%${escLike(token)}%`;
+    return sql`(
+      ${products.searchNorm} LIKE ${tPat} ESCAPE '!'
+      OR ${foldedCol(products.name)} LIKE ${tPat} ESCAPE '!'
+      OR EXISTS (
+        SELECT 1 FROM ${productVariants}
+        WHERE ${productVariants.productId} = ${products.id}
+          AND (
+            ${foldedCol(productVariants.sku)} LIKE ${tPat} ESCAPE '!'
+            OR ${foldedCol(productVariants.variantName)} LIKE ${tPat} ESCAPE '!'
+            OR ${foldedCol(productVariants.color)} LIKE ${tPat} ESCAPE '!'
+            OR ${foldedCol(productVariants.size)} LIKE ${tPat} ESCAPE '!'
+          )
+      )
+    )`;
+  });
+
+  return sql`(${directMatch} OR (${sql.join(tokenClauses, sql` AND `)}))`;
+}
+
 /**
  * قائمة منتجات المتجر بحبيبة المنتج (تجميع على products.id) + حالة المخزون/الصورة/الأعلام.
  *
@@ -67,19 +163,11 @@ export async function listStoreCatalog(
   const limit = Math.min(input.limit ?? 50, 200);
   const offset = Math.max(input.offset ?? 0, 0);
 
-  const conds = [];
+  const conds: SQL[] = [];
   if (input.categoryId === 0 || input.categoryId === null) conds.push(isNull(products.categoryId));
   else if (input.categoryId != null) conds.push(eq(products.categoryId, input.categoryId));
-  const q = input.q?.trim();
-  const qNorm = q ? normalizeSearchText(q) : "";
-  // تدقيق ٣/٨: تهريب `%`/`_` (escLike + ESCAPE '!') — اتساقٌ مع مسارات البحث (القيمة مربوطة، لا حقن).
-  const qPat = q ? `%${escLike(q)}%` : null;
-  const qNormPat = qNorm ? `%${escLike(qNorm)}%` : null;
-  if (qPat && qNormPat) {
-    conds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qNormPat} ESCAPE '!')`);
-  } else if (qPat) {
-    conds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qPat} ESCAPE '!')`);
-  }
+  const searchCond = buildStoreCatalogSearchCondition(input.q);
+  if (searchCond) conds.push(searchCond);
   if (input.featuredOnly) conds.push(eq(products.isFeatured, true));
   if (input.hiddenOnly) conds.push(eq(products.showInStore, false));
   if (input.missingImageOnly) conds.push(isNull(productImages.id));
@@ -158,11 +246,7 @@ export async function listStoreCatalog(
   const eligibilityConds: SQL[] = [];
   if (input.categoryId === 0 || input.categoryId === null) eligibilityConds.push(isNull(products.categoryId));
   else if (input.categoryId != null) eligibilityConds.push(eq(products.categoryId, input.categoryId));
-  if (qPat && qNormPat) {
-    eligibilityConds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qNormPat} ESCAPE '!')`);
-  } else if (qPat) {
-    eligibilityConds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qPat} ESCAPE '!')`);
-  }
+  if (searchCond) eligibilityConds.push(searchCond);
   const eligibilityProducts = await db
     .selectDistinct({ productId: products.id })
     .from(products)
