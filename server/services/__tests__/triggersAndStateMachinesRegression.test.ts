@@ -709,7 +709,7 @@ describe("Triggers, State Machines & Operational Lifecycles Regression Suite", (
       expect(reason).toBeNull();
     });
 
-    it("F8: correctionLookupBlockReason directly blocks correction when consignment is active", () => {
+    it("F8: active consignment eligibility defers to the atomic correction engine", () => {
       const reason = correctionLookupBlockReason({
         ...baseFacts,
         onlineOrderStatus: "PROCESSING",
@@ -717,7 +717,8 @@ describe("Triggers, State Machines & Operational Lifecycles Regression Suite", (
         consignmentParcelStatus: "ASSIGNED",
         consignmentMoneyStatus: "UNSETTLED",
       });
-      expect(reason).toMatch(/ألغِ إسناد التوصيل/);
+      expect(reason).toBeNull();
+      expect(correctContent).toMatch(/mode:\s*"CORRECT",\s*allowAtomicAmendment:\s*true/);
     });
 
     it("F8: correctionLookupBlockReason directly blocks correction when online order is in SHIPPED or CONFIRMED status", () => {

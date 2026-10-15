@@ -23,7 +23,7 @@ describe("مسار تعديل الفاتورة من الاستقبال", () => {
     const correct = readServer("services/sale/correct.ts");
     expect(router).toContain("lookupForCorrection: salesCorrectionProcedure");
     expect(lookup).toContain("eq(invoices.invoiceNumber, number)");
-    expect(lookup).toContain('actor.role === "admin" ? undefined : eq(invoices.branchId, actor.branchId)');
+    expect(lookup.replace(/\s+/g, " ")).toContain('actor.role === "admin" ? undefined : eq(invoices.branchId, actor.branchId)');
     expect(correct).toContain("assertInvoiceReversalDeliverySafeTx");
     expect(correct).toContain("assertNoActiveInstallmentPlanAfterInvoiceLockTx");
   });
