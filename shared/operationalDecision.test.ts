@@ -20,6 +20,36 @@ const base = {
 } as const;
 
 describe("evaluateRefundOperationalDecision", () => {
+  it("executes an actually unpaid return across shifts and days without a cash approval", () => {
+    expect(evaluateRefundOperationalDecision({
+      ...base,
+      sourcePaidAmountIqd: "0.00",
+      refundAmountIqd: "0.00",
+      ownsTransaction: false,
+      sameOpenShift: false,
+      sameBusinessDay: false,
+      hasDownstreamEffects: true,
+      drawerHasFunds: false,
+    })).toMatchObject({ result: "DIRECT" });
+  });
+
+  it.each([undefined, "50000.00"])("does not infer an unpaid source from a zero payout (%s)", (sourcePaidAmountIqd) => {
+    expect(evaluateRefundOperationalDecision({
+      ...base, sourcePaidAmountIqd, refundAmountIqd: "0.00", sameOpenShift: false,
+    }).result).toBe("APPROVAL_REQUIRED");
+  });
+
+  it.each([
+    { operationAllowed: false },
+    { sameBranch: false },
+    { accountingPeriodOpen: false },
+    { hasSourceDocument: false },
+  ])("preserves authority and document guards for an unpaid source (%j)", (guard) => {
+    expect(evaluateRefundOperationalDecision({
+      ...base, sourcePaidAmountIqd: "0", refundAmountIqd: "0", ...guard,
+    }).result).not.toBe("DIRECT");
+  });
+
   it("executes a same-shift refund at the cap", () => {
     expect(evaluateRefundOperationalDecision(base).result).toBe("DIRECT");
   });

@@ -22,10 +22,12 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { ROLE_TEMPLATES } from "@shared/permissions";
-import { returnSale, returnSaleDirect } from "../returnService";
+import { returnSale, returnSaleDirect, returnSaleInTx } from "../returnService";
 import { createSale } from "../saleService";
 import { getShiftReport, resolveBranchCashShiftTx } from "../shiftService";
 import { withTx } from "../tx";
+import { returnRouter } from "../../routers/returnRouter";
+import type { TrpcContext } from "../../context";
 import { truncateTables } from "./__testUtils__";
 
 const manager = { userId: 1, branchId: 1, role: "manager" };
@@ -361,6 +363,41 @@ describe("resolveBranchCashShiftTx", () => {
 });
 
 describe("returnSaleDirect — حلّ الدور المخصّص ديناميكياً", () => {
+  it("قراءة رقم الفاتورة القديمة تعرض البديل الحالي وتفحص فرع كل حلقة", async () => {
+    const shift = await openShiftFor(1, 1);
+    const original = await sellOneCash(shift, manager);
+    const replacement = await createSale({
+      branchId: 1, shiftId: shift, sourceType: "POS",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+      payment: { amount: "20.00", method: "CASH" },
+    }, manager);
+    await db().update(s.invoices).set({ status: "SUPERSEDED", correctedByInvoiceId: replacement.invoiceId })
+      .where(eq(s.invoices.id, original.invoiceId));
+    const caller = returnRouter.createCaller({
+      req: { headers: {} }, res: {},
+      user: { id: 1, role: "manager", branchId: 1, isActive: true, name: "مدير" },
+    } as TrpcContext);
+    const resolved = await caller.getInvoice({ invoiceId: original.invoiceId });
+    expect(resolved).toMatchObject({ id: replacement.invoiceId, total: "20.00", scannedInvoiceId: original.invoiceId });
+    expect(resolved?.items[0].baseQuantity).toBe(2);
+    await db().insert(s.salesControlRequests).values({
+      requestKey: "owner-pending-preview", invoiceId: replacement.invoiceId, branchId: 1,
+      requestType: "SALES_RETURN", requestedBy: 1, reason: "مرتجع ينتظر المالك", payload: {},
+      payloadHash: "preview", invoiceSnapshot: {}, snapshotHash: "preview",
+    });
+    await db().update(s.users).set({ isOwner: true }).where(eq(s.users.id, 1));
+    const ownerCaller = returnRouter.createCaller({
+      req: { headers: {} }, res: {},
+      user: { id: 1, role: "manager", isOwner: true, branchId: 1, isActive: true, name: "المالك" },
+    } as TrpcContext);
+    expect((await ownerCaller.getInvoice({ invoiceId: original.invoiceId }))?.pendingRequest?.canReviewIt).toBe(true);
+    await db().update(s.invoices).set({ branchId: 2 }).where(eq(s.invoices.id, replacement.invoiceId));
+    await expect(caller.getInvoice({ invoiceId: original.invoiceId })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    // A cycle must fail closed, never hang a scanning request.
+    await db().update(s.invoices).set({ branchId: 1, status: "SUPERSEDED", correctedByInvoiceId: original.invoiceId })
+      .where(eq(s.invoices.id, replacement.invoiceId));
+    await expect(caller.getInvoice({ invoiceId: original.invoiceId })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
   it("مستخدم بدور مخصّص تم تنزيله إلى مستخدم عادي ⇒ يُرفَض التنفيذ المباشر", async () => {
     const roleRes = await db().insert(s.roles).values({
       key: "custom-demoted",
@@ -735,5 +772,57 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
 
     expect(result).toMatchObject({ fullyReturned: true, returnedTotal: "10.00" });
     expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toHaveLength(0);
+  });
+
+  it("يرجع الكاشير فاتورة COD غير مقبوضة لموظف آخر ومن يوم سابق دون اعتماد أو درج", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale({
+      branchId: 1, sourceType: "ORDER", codDispatchPending: true, paymentMode: "COD",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+    }, manager);
+    await db().update(s.invoices).set({ invoiceDate: new Date("2026-10-01T12:00:00Z") })
+      .where(eq(s.invoices.id, sale.invoiceId));
+    const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
+    for (const index of [0, 1]) {
+      const result = await returnSaleDirect({
+        invoiceId: sale.invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+        resolution: { ...walkInCashResolution(), amount: "0.00" },
+        operatorReason: "مرتجع طلب لم يدفع العميل عليه شيئاً",
+        clientRequestId: `unpaid-other-maker-${index}`,
+      }, { userId: 2, branchId: 1 });
+      expect(result).toMatchObject({ returnedTotal: "10.00", fullyReturned: index === 1 });
+    }
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect((await db().select().from(s.branchStock))[0].quantity).toBe(10);
+    expect((await db().select().from(s.invoices))[0]).toMatchObject({ paidAmount: "0.00", returnedTotal: "20.00", status: "RETURNED" });
+    expect(await db().select().from(s.customers)).toHaveLength(0);
+  });
+
+  it("صفر الرد لا يمنح استثناء غير المقبوض على فاتورة عميل دفع فعلاً", async () => {
+    await db().insert(s.customers).values({ id: 1, name: "عميل دفع", creditLimit: null });
+    await setStock(1, 1, 10);
+    const shift = await openShiftFor(1, 1);
+    const sale = await createSale({
+      branchId: 1, shiftId: shift, sourceType: "POS", customerId: 1,
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+      payment: { amount: "20.00", method: "CASH" },
+    }, manager);
+    const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
+    await expect(returnSaleDirect({
+      invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      restock: true, operatorReason: "رد بلا نقد على فاتورة مقبوضة",
+    }, { userId: 2, branchId: 1 })).rejects.toMatchObject({
+      decision: { result: "APPROVAL_REQUIRED", reason: "المستند أنشأه موظف آخر" },
+    });
+    // A source that became paid after the unpaid-only preflight must be
+    // rejected again under the core invoice lock before creating credit.
+    await expect(withTx((tx) => returnSaleInTx(tx, {
+      invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], restock: true,
+    }, cashier, { requireUnpaidSource: true }))).rejects.toMatchObject({
+      decision: { result: "APPROVAL_REQUIRED", reason: expect.stringMatching(/تغيّر المقبوض/) },
+    });
+    expect((await db().select().from(s.customers))[0].currentBalance).toBe("0.00");
+    expect((await db().select().from(s.invoices))[0].returnedTotal).toBe("0.00");
   });
 });

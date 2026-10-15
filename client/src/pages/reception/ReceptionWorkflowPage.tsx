@@ -742,7 +742,7 @@ export default function DeliveryWorkflowPage() {
                     تعديل الفاتورة
                   </Button>
                   <p className="text-center text-xs text-muted-foreground">
-                    يُفتح محرر الفاتورة الأصلي، ولا يتغير المال أو المخزون حتى يعتمد مدير آخر المقارنة النهائية.
+                    يُفتح محرر الفاتورة الحالية. عند عدم وجود مبلغ مقبوض لا يوجد استرداد مالي؛ يحدّد الخادم مسار الحفظ حسب حالة الفاتورة.
                   </p>
                 </div>
               </Card>

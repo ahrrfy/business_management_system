@@ -1,4 +1,4 @@
-import { and, eq, ne, or, sql } from "drizzle-orm";
+import { and, eq, or, sql, type SQL } from "drizzle-orm";
 import { stripDocPrefix } from "@shared/documentNumber";
 import {
   customers,
@@ -30,28 +30,33 @@ export interface CorrectionLookupFacts {
 }
 
 /** تحذير تمهيدي فقط؛ محرك التصحيح يعيد جميع الحراس تحت الأقفال وقت الاعتماد. */
-export function correctionLookupBlockReason(facts: CorrectionLookupFacts): string | null {
+export function correctionLookupBlockReason(
+  facts: CorrectionLookupFacts,
+): string | null {
   if (["CANCELLED", "RETURNED", "SUPERSEDED"].includes(facts.status)) {
     return "الفاتورة ملغاة أو مرتجعة أو استُبدلت بتعديل سابق";
   }
-  if (facts.correctedByInvoiceId != null) return "لهذه الفاتورة نسخة معدلة بالفعل";
-  if (facts.sourceType === "WORKORDER") return "فاتورة أمر الشغل تُعدّل من مسار أمر الشغل";
-  if (Number(facts.returnedTotal ?? 0) > 0) return "على الفاتورة مرتجع سابق؛ عالجها من شاشة المرتجعات";
+  if (facts.correctedByInvoiceId != null)
+    return "لهذه الفاتورة نسخة معدلة بالفعل";
+  if (facts.sourceType === "WORKORDER")
+    return "فاتورة أمر الشغل تُعدّل من مسار أمر الشغل";
+  if (Number(facts.returnedTotal ?? 0) > 0)
+    return "على الفاتورة مرتجع سابق؛ عالجها من شاشة المرتجعات";
   if (facts.itemCount < 1) return "الفاتورة بلا بنود قابلة للتعديل";
-  if (facts.hasDigitalCards) return "الفاتورة تحتوي بطاقات رقمية؛ استخدم مسار عكس البطاقات";
+  if (facts.hasDigitalCards)
+    return "الفاتورة تحتوي بطاقات رقمية؛ استخدم مسار عكس البطاقات";
   if (facts.hasActiveInstallmentPlan) return "الفاتورة مرتبطة بخطة أقساط نشطة";
-  const noActiveConsignment = facts.consignmentStatus == null || (
-    facts.consignmentStatus === "CANCELLED"
-    && facts.consignmentParcelStatus === "CANCELLED"
-    && facts.consignmentMoneyStatus === "CANCELLED"
-  );
-  if (facts.consignmentStatus != null && !noActiveConsignment) {
-    return "ألغِ إسناد التوصيل وسوِّ عهدته قبل تعديل الفاتورة";
+  if (
+    facts.consignmentStatus === "RETURNED" ||
+    facts.consignmentStatus === "WRITTEN_OFF"
+  ) {
+    return "الإرسالية مرتجعة أو مشطوبة؛ راجع مستند الإرجاع أو الشطب قبل تعديل الفاتورة";
   }
   const safeOnlineStatus =
-    facts.onlineOrderStatus == null
-    || facts.onlineOrderStatus === "CANCELLED"
-    || (facts.onlineOrderStatus === "PROCESSING" && noActiveConsignment);
+    facts.onlineOrderStatus == null ||
+    facts.onlineOrderStatus === "CANCELLED" ||
+    facts.consignmentStatus != null ||
+    facts.onlineOrderStatus === "PROCESSING";
   if (!safeOnlineStatus) {
     return "ألغِ طلب المتجر المرتبط قبل تعديل الفاتورة";
   }
@@ -83,10 +88,7 @@ export async function correctionRequestBlockReasonTx(
       .from(invoices)
       .leftJoin(
         deliveryConsignments,
-        and(
-          eq(deliveryConsignments.invoiceId, invoices.id),
-          ne(deliveryConsignments.status, "CANCELLED"),
-        ),
+        eq(deliveryConsignments.invoiceId, invoices.id),
       )
       .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
       .where(eq(invoices.id, Number(invoice.id)))
@@ -97,12 +99,14 @@ export async function correctionRequestBlockReasonTx(
     status: invoice.status,
     sourceType: invoice.sourceType,
     returnedTotal: invoice.returnedTotal,
-    correctedByInvoiceId: invoice.correctedByInvoiceId == null
-      ? null
-      : Number(invoice.correctedByInvoiceId),
+    correctedByInvoiceId:
+      invoice.correctedByInvoiceId == null
+        ? null
+        : Number(invoice.correctedByInvoiceId),
     itemCount: Number(related?.itemCount ?? 0),
     hasDigitalCards: Number(related?.hasDigitalCards ?? 0) === 1,
-    hasActiveInstallmentPlan: Number(related?.hasActiveInstallmentPlan ?? 0) === 1,
+    hasActiveInstallmentPlan:
+      Number(related?.hasActiveInstallmentPlan ?? 0) === 1,
     consignmentStatus: related?.consignmentStatus ?? null,
     consignmentParcelStatus: related?.consignmentParcelStatus ?? null,
     consignmentMoneyStatus: related?.consignmentMoneyStatus ?? null,
@@ -123,8 +127,8 @@ export async function lookupInvoiceForCorrection(
   if (!db) return null;
   const raw = rawNumber.trim();
   const number = stripDocPrefix(raw);
-  const row = (
-    await db
+  const load = (filter: SQL) =>
+    db
       .select({
         id: invoices.id,
         invoiceNumber: invoices.invoiceNumber,
@@ -137,9 +141,15 @@ export async function lookupInvoiceForCorrection(
         paidAmount: invoices.paidAmount,
         returnedTotal: invoices.returnedTotal,
         paymentMethod: invoices.paymentMethod,
-        customerName: sql<string | null>`COALESCE(${customers.name}, NULLIF(${invoices.contactName}, ''), NULLIF(${deliveryConsignments.recipientName}, ''))`,
-        customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${invoices.contactPhone}, ''), NULLIF(${deliveryConsignments.recipientPhone}, ''))`,
-        salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
+        customerName: sql<
+          string | null
+        >`COALESCE(${customers.name}, NULLIF(${invoices.contactName}, ''), NULLIF(${deliveryConsignments.recipientName}, ''))`,
+        customerPhone: sql<
+          string | null
+        >`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${invoices.contactPhone}, ''), NULLIF(${deliveryConsignments.recipientPhone}, ''))`,
+        salespersonName: sql<
+          string | null
+        >`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
         shiftType: shifts.shiftType,
         correctedByInvoiceId: invoices.correctedByInvoiceId,
         itemCount: sql<number>`(SELECT COUNT(*) FROM ${invoiceItems} ii WHERE ii.invoiceId = ${invoices.id})`,
@@ -155,40 +165,72 @@ export async function lookupInvoiceForCorrection(
       .leftJoin(shifts, eq(shifts.id, invoices.shiftId))
       .leftJoin(
         deliveryConsignments,
-        and(
-          eq(deliveryConsignments.invoiceId, invoices.id),
-          ne(deliveryConsignments.status, "CANCELLED"),
-        ),
+        eq(deliveryConsignments.invoiceId, invoices.id),
       )
       .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
-      .where(and(
-        actor.role === "admin" ? undefined : eq(invoices.branchId, actor.branchId),
-        actor.scopedOwnerId == null ? undefined : eq(invoices.createdBy, actor.scopedOwnerId),
-        actor.invoiceScope === "reception" ? eq(shifts.shiftType, "RECEPTION") : undefined,
-        or(
-          eq(invoices.invoiceNumber, number),
-          eq(invoices.invoiceNumber, raw),
-          eq(invoices.offlineReceiptNumber, raw),
+      .where(
+        and(
+          actor.role === "admin"
+            ? undefined
+            : eq(invoices.branchId, actor.branchId),
+          actor.scopedOwnerId == null
+            ? undefined
+            : eq(invoices.createdBy, actor.scopedOwnerId),
+          actor.invoiceScope === "reception"
+            ? eq(shifts.shiftType, "RECEPTION")
+            : undefined,
+          filter,
         ),
-      ))
-      .limit(1)
+      )
+      .limit(1);
+  let row = (
+    await load(
+      or(
+        eq(invoices.invoiceNumber, number),
+        eq(invoices.invoiceNumber, raw),
+        eq(invoices.offlineReceiptNumber, raw),
+      )!,
+    )
   )[0];
   if (!row) return null;
+  const scannedInvoiceId = Number(row.id);
+  const visited = new Set<number>();
+  while (row.correctedByInvoiceId != null && visited.size < 16) {
+    if (visited.has(Number(row.id))) return null;
+    visited.add(Number(row.id));
+    const next = (
+      await load(eq(invoices.id, Number(row.correctedByInvoiceId)))
+    )[0];
+    if (!next) return null;
+    row = next;
+  }
+  if (row.correctedByInvoiceId != null) return null;
 
   const [digital, activePlan] = await Promise.all([
-    db.select({ id: digitalSaleDetails.id }).from(digitalSaleDetails)
-      .where(eq(digitalSaleDetails.invoiceId, Number(row.id))).limit(1),
-    db.select({ id: installmentPlans.id }).from(installmentPlans)
-      .where(and(
-        eq(installmentPlans.invoiceId, Number(row.id)),
-        eq(installmentPlans.status, "ACTIVE"),
-      )).limit(1),
+    db
+      .select({ id: digitalSaleDetails.id })
+      .from(digitalSaleDetails)
+      .where(eq(digitalSaleDetails.invoiceId, Number(row.id)))
+      .limit(1),
+    db
+      .select({ id: installmentPlans.id })
+      .from(installmentPlans)
+      .where(
+        and(
+          eq(installmentPlans.invoiceId, Number(row.id)),
+          eq(installmentPlans.status, "ACTIVE"),
+        ),
+      )
+      .limit(1),
   ]);
   const blockReason = correctionLookupBlockReason({
     status: row.status,
     sourceType: row.sourceType,
     returnedTotal: row.returnedTotal,
-    correctedByInvoiceId: row.correctedByInvoiceId == null ? null : Number(row.correctedByInvoiceId),
+    correctedByInvoiceId:
+      row.correctedByInvoiceId == null
+        ? null
+        : Number(row.correctedByInvoiceId),
     itemCount: Number(row.itemCount),
     hasDigitalCards: digital.length > 0,
     hasActiveInstallmentPlan: activePlan.length > 0,
@@ -197,5 +239,11 @@ export async function lookupInvoiceForCorrection(
     consignmentMoneyStatus: row.consignmentMoneyStatus,
     onlineOrderStatus: row.onlineOrderStatus,
   });
-  return { ...row, itemCount: Number(row.itemCount), canCorrect: blockReason == null, blockReason };
+  return {
+    ...row,
+    itemCount: Number(row.itemCount),
+    canCorrect: blockReason == null,
+    blockReason,
+    scannedOriginalNumber: Number(row.id) === scannedInvoiceId ? null : raw,
+  };
 }

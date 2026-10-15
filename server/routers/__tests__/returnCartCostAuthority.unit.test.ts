@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getTableName } from "drizzle-orm";
 import type { TrpcContext } from "../../context";
 const state = vi.hoisted(() => ({
   rows: [] as unknown[][],
@@ -13,9 +14,17 @@ vi.mock("../../services/tx", () => ({
     let offset = 0;
     const tx = {
       select: () => {
-        const rows = state.rows[offset++] ?? [];
+        let rows: unknown[] = [];
         const query = {
-          from: () => query,
+          from: (table: Parameters<typeof getTableName>[0]) => {
+            // These posting fixtures have no live approval intents. Keep those
+            // added safety reads separate from the original business rows.
+            const name = getTableName(table);
+            rows = name === "returnRequests" || name === "salesControlRequests"
+              ? []
+              : state.rows[offset++] ?? [];
+            return query;
+          },
           innerJoin: () => query,
           leftJoin: () => query,
           where: () => query,
@@ -29,6 +38,9 @@ vi.mock("../../services/tx", () => ({
         };
         return query;
       },
+      // No receipt, deposit application, remittance, or custody in these fixtures.
+      // Actual source-paid/custody behavior is covered by the DB router suites.
+      execute: async () => [[]],
       insert: () => {
         const ins = {
           values: () => ins,

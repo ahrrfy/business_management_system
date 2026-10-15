@@ -193,7 +193,7 @@ export const salesControlRouter = router({
     }, actor(ctx))),
 
   requestExchange: salesCorrectionProcedure
-    .input(requestIdentity.extend({ payload: correctionPayload }))
+    .input(requestIdentity.extend({ payload: correctionPayload, requestReview: z.boolean().optional() }))
     .mutation(({ input, ctx }) => requestSalesControl({
       ...input,
       requestType: "SALES_EXCHANGE",

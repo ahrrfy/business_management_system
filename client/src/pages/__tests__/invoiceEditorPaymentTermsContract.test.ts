@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { derivePaymentTerms } from "@/components/invoice/paymentTerms";
+import { isPendingCodCorrection, correctionOutstandingBlockReason } from "@/components/invoice/SalesCorrectionPanel";
 import {
   INVOICE_STATUS_AR,
   INVOICE_STATUSES,
@@ -11,6 +12,39 @@ import {
 const readPage = (name: string) => readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 const readInvoiceModule = (name: string) =>
   readFileSync(new URL(`../../components/invoice/${name}`, import.meta.url), "utf8");
+
+describe("تصحيح COD ومسار المراجعة المستقلة", () => {
+  it("يبقي المبلغ للتحصيل بالتوصيل بلا فرض حساب عميل عند وجود مرجع إرسالية COD", () => {
+    const pendingCod = isPendingCodCorrection({ paymentMode: "COD", consignmentId: 44 });
+    expect(pendingCod).toBe(true);
+    expect(correctionOutstandingBlockReason("2000", false, pendingCod)).toBeNull();
+    expect(correctionOutstandingBlockReason("2000", false, false)).toContain("اختر عميلاً");
+    expect(correctionOutstandingBlockReason("0", false, false)).toBeNull();
+    expect(correctionOutstandingBlockReason("2000", true, false)).toBeNull();
+  });
+
+  it("لا يعفي COD بلا مرجع إرسالية ولا الفاتورة الآجلة من حساب العميل", () => {
+    expect(isPendingCodCorrection({ paymentMode: "COD", consignmentId: null })).toBe(false);
+    expect(isPendingCodCorrection({ paymentMode: "CREDIT", consignmentId: 44 })).toBe(false);
+  });
+
+  it("يرسل استثناء التصحيح للمراجعة دون جمع بيانات مدير أو تمرير علم مالي داخل الحمولة", () => {
+    const page = readPage("SalesInvoiceNew.tsx");
+    const approve = page.slice(page.indexOf("function handleApprove"), page.indexOf("function closeApprovalPrompt"));
+    expect(approve).toContain("if (isCorrection)");
+    expect(approve).toContain("handleSubmit(undefined, true)");
+    expect(approve.indexOf("handleSubmit(undefined, true)")).toBeLessThan(approve.indexOf("mgrEmail.trim()"));
+    expect(page).toContain("!isCorrection && <div");
+    expect(page).toContain("إرسال إلى مراجع مستقل");
+    expect(page).toContain("reissue.mutate({ ...correction, requestReview })");
+    const exchange = page.slice(page.indexOf("exchange.mutate({"), page.indexOf("} else {", page.indexOf("exchange.mutate({")));
+    expect(exchange).toContain("requestReview,");
+    expect(exchange).toMatch(/requestReview,[\s\S]*payload,/);
+    expect(page).toContain("correctionOutstandingBlockReason(diff.minus(collect).toFixed(2), state.entityId != null, pendingCodCorrection)");
+    const panel = readInvoiceModule("SalesCorrectionPanel.tsx");
+    expect(panel).toContain("يبقى المبلغ مطلوباً عند التسليم عبر التوصيل؛ لا يُسجّل ذمّة على زبون عابر.");
+  });
+});
 
 /**
  * العقد الحاكم لمحرّر الفواتير حين يُحمَّل من فاتورةٍ قائمة (نسخٌ أو تصحيح):

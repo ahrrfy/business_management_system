@@ -16,6 +16,7 @@ import {
   withdrawSalesControlRequest,
 } from "../sale/controlRequests";
 import { ensureFinancialPostingGate } from "../reports/monthCloseGate";
+import { listReceptionInvoices } from "../reception/queries";
 
 const TABLES = [
   "salesExchangeCommands", "salesControlRequests", "returnRequests", "digitalSaleDetails",
@@ -71,6 +72,93 @@ async function sale() {
     payment: { amount: "5000.00", method: "CASH" },
   }, CASHIER);
 }
+
+describe("التعديل الفوري للفاتورة غير المقبوضة", () => {
+  async function unpaidSale() {
+    await db().update(s.customers).set({ creditLimit: "1000000.00" }).where(eq(s.customers.id, 1));
+    await db().update(s.shifts).set({ shiftType: "RECEPTION" }).where(eq(s.shifts.id, 1));
+    return createSale({ branchId: 1, shiftId: 1, sourceType: "POS", customerId: 1,
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }], payment: null,
+    }, CASHIER);
+  }
+
+  it("ينفذ التعديل والطلب ذرياً ويعرض النسخة الحالية فقط دون قبض أو استرداد", async () => {
+    const created = await unpaidSale();
+    const input = { requestKey: "unpaid-direct-correction", invoiceId: created.invoiceId,
+      requestType: "SALES_REISSUE" as const, reason: "تعديل طلب محجوز غير مقبوض",
+      payload: { lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }] },
+    };
+    const result = await requestSalesControl(input, { ...CASHIER, scopedOwnerId: 2 });
+    expect(result.status).toBe("APPROVED");
+    expect(result).toHaveProperty("resultInvoiceId");
+    const currentId = Number((result as { resultInvoiceId: number }).resultInvoiceId);
+    const [old] = await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId));
+    const [current] = await db().select().from(s.invoices).where(eq(s.invoices.id, currentId));
+    expect(old).toMatchObject({ status: "SUPERSEDED", correctedByInvoiceId: currentId });
+    expect(current).toMatchObject({ total: "3000.00", paidAmount: "0.00", status: "PENDING" });
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect((await db().select().from(s.customers))[0].currentBalance).toBe("3000.00");
+    expect((await db().select().from(s.branchStock))[0].quantity).toBe(97);
+    const [history] = await db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "sale.reissue"));
+    expect(history?.newValue).toMatchObject({ correctedInvoiceId: currentId, total: "3000.00", reason: input.reason });
+    const queue = await listReceptionInvoices({ branchId: 1, paymentState: "ALL" });
+    expect(queue.rows.map(row => Number(row.id))).toEqual([currentId]);
+    const replay = await requestSalesControl(input, CASHIER);
+    expect(replay).toMatchObject({ status: "APPROVED", replayed: true, resultInvoiceId: currentId });
+    expect(await db().select().from(s.invoices)).toHaveLength(2);
+  });
+
+  it("يتراجع فشل الترحيل عن الطلب والمخزون والذمة معاً ولا يترك طلباً معلّقاً", async () => {
+    const created = await unpaidSale();
+    await db().update(s.customers).set({ creditLimit: "5000.00" }).where(eq(s.customers.id, 1));
+    await expect(requestSalesControl({ requestKey: "unpaid-failed-correction", invoiceId: created.invoiceId,
+      requestType: "SALES_REISSUE", reason: "زيادة الطلب فوق سقف العميل",
+      payload: { lines: [{ variantId: 1, productUnitId: 1, quantity: "10" }] },
+    }, CASHIER)).rejects.toThrow();
+    expect(await db().select().from(s.salesControlRequests)).toHaveLength(0);
+    expect((await db().select().from(s.invoices))[0]).toMatchObject({ status: "PENDING", total: "5000.00" });
+    expect((await db().select().from(s.branchStock))[0].quantity).toBe(95);
+    expect((await db().select().from(s.customers))[0].currentBalance).toBe("5000.00");
+  });
+
+  it("لا يحوّل تصحيحاً يتضمن قبضاً جديداً إلى تنفيذ غير معتمد", async () => {
+    const created = await unpaidSale();
+    const result = await requestSalesControl({ requestKey: "unpaid-with-new-cash", invoiceId: created.invoiceId,
+      requestType: "SALES_REISSUE", reason: "تعديل مع قبض نقدي جديد",
+      payload: { lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }],
+        additionalPayment: { amount: "1000.00", method: "CASH", shiftId: 1 } },
+    }, CASHIER);
+    expect(result.status).toBe("PENDING");
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+  });
+
+  it("ينفذ الاستبدال بصلاحية مساره دون طلب تفويض إعادة الإصدار", async () => {
+    const created = await unpaidSale();
+    await db().update(s.users).set({ operationPolicy: { version: 1, grants: {
+      "operation.salesControl.requestExchange": true, "operation.sales.reissue": false,
+    } } }).where(eq(s.users.id, CASHIER.userId));
+    const result = await requestSalesControl({ requestKey: "unpaid-exchange-authority", invoiceId: created.invoiceId,
+      requestType: "SALES_EXCHANGE", reason: "استبدال قبل قبض أي مبلغ",
+      payload: { lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }] },
+    }, CASHIER);
+    expect(result.status).toBe("APPROVED");
+    expect(await db().select().from(s.salesExchangeCommands)).toHaveLength(1);
+  });
+
+  it("يتيح إحالة استثناء التسعير للمراجع دون تكرار التنفيذ المباشر الفاشل", async () => {
+    const created = await unpaidSale();
+    const input = { requestKey: "unpaid-price-review", invoiceId: created.invoiceId,
+      requestType: "SALES_REISSUE" as const, reason: "طلب خصم يحتاج موافقة مستقلة",
+      payload: { lines: [{ variantId: 1, productUnitId: 1, quantity: "3", unitPriceOverride: "500.00" }] },
+    };
+    await expect(requestSalesControl(input, CASHIER)).rejects.toThrow(/موافقة مدير/);
+    expect(await db().select().from(s.salesControlRequests)).toHaveLength(0);
+    const pending = await requestSalesControl({ ...input, requestReview: true }, CASHIER);
+    expect(pending.status).toBe("PENDING");
+    await approveSalesControlRequest(Number(pending.id), MANAGER);
+    expect((await db().select().from(s.salesControlRequests))[0].status).toBe("APPROVED");
+  });
+});
 
 describe("حوكمة عمليات البيع الحرجة", () => {
   it("طلب الإلغاء صفري الأثر والاعتماد وحده ينفذه", async () => {

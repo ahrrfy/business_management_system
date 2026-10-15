@@ -23,6 +23,8 @@ import { useOperationPermission } from "@/hooks/useOperationPermission";
  */
 import { AlertTriangle, CheckCircle2, Clock, Info, RotateCcw, ScanLine, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { LoadingState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -42,6 +44,8 @@ import { cn } from "@/lib/utils";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { REFUND_RAIL_LABEL } from "@shared/refundRails";
 import { refundDueAfterReturn } from "@shared/predicates/invoiceRemaining";
+import { invalidateFinancialQueries } from "@/lib/realtime/financialQueries";
+import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 
 /** خيارات الأسباب السريعة الذكية لتقليص الطباعة اليدوية والنقرات */
 const QUICK_REASONS = [
@@ -94,7 +98,7 @@ export function ReturnComposer({
   onDone,
   footer,
 }: ReturnComposerProps) {
-  const utils = trpc.useUtils();
+  const queryClient = useQueryClient();
   const detail = trpc.returns.getInvoice.useQuery({ invoiceId }, { enabled: invoiceId > 0 });
   /** التنفيذ المباشر تفويض مستقل؛ الخادم يحوّل تجاوز السقف/الوردية/اليوم إلى طلب اعتماد. */
   const me = trpc.auth.me.useQuery();
@@ -103,6 +107,8 @@ export function ReturnComposer({
   );
   const directReturnPermission = useOperationPermission("returns.create");
   const refundRailPermission = useOperationPermission("refundRails.preflight");
+  const withdrawControlPermission = useOperationPermission("salesControl.withdraw");
+  const withdrawLegacyPermission = useOperationPermission("returns.withdrawRequest");
   const executesImmediately = me.data?.isOwner === true || directReturnPermission.allowed;
   /**
    * ⭐ في وضع الاعتماد نُحمّل **بنود الطلب** — هي التي سينفّذها الخادم، لا ما يُدخله المدير.
@@ -268,11 +274,7 @@ export function ReturnComposer({
       setManualAmount(null);
       setReason("");
       setClientRequestId(crypto.randomUUID());
-      await Promise.all([
-        utils.returns.requests.invalidate(),
-        utils.returns.getInvoice.invalidate({ invoiceId }),
-        utils.decisions.inbox.invalidate(),
-      ]);
+      await invalidateFinancialQueries(queryClient, inv?.branchId);
       onDone?.({ fullyReturned: !!res.fullyReturned, returnedTotal: String(res.returnedTotal ?? "0") });
     },
     onError: (e) => setError(e.message),
@@ -348,7 +350,7 @@ export function ReturnComposer({
       const isExecuted = res.mode === "EXECUTED" || (res as { status?: string }).status === "APPROVED";
       if (isExecuted) {
         const total = "returnedTotal" in res && res.returnedTotal ? ` بقيمة ${fmt(String(res.returnedTotal))} د.ع` : "";
-        setDone(`نُفِّذ المرتجع فعلاً${total} — تحرّك المخزون والمال.`);
+        setDone(`نُفِّذ المرتجع فعلاً${total} واكتمل تحديث الفاتورة وآثاره.`);
       } else {
         setDone(`أُرسل طلب المرتجع #${res.requestId} للاعتماد — لم يتغيّر المخزون أو المال بعد.`);
       }
@@ -356,10 +358,7 @@ export function ReturnComposer({
       setManualAmount(null);
       setReason("");
       setClientRequestId(crypto.randomUUID());
-      await Promise.all([
-        utils.returns.getInvoice.invalidate({ invoiceId }),
-        utils.salesControl.list.invalidate(),
-      ]);
+      await invalidateFinancialQueries(queryClient, inv?.branchId);
       if (isExecuted) {
         onDone?.({
           fullyReturned: "fullyReturned" in res ? !!res.fullyReturned : false,
@@ -380,6 +379,29 @@ export function ReturnComposer({
       setError(e.message);
     },
   });
+
+  async function afterWithdrawal() {
+    // Withdrawal starts a new intent; never reuse the bound key of the withdrawn request.
+    setClientRequestId(crypto.randomUUID());
+    setRailState(null);
+    setError("");
+    setDone("سُحب طلبك السابق — راجع البنود ثم نفّذ المرتجع الجديد.");
+    await invalidateFinancialQueries(queryClient, inv?.branchId);
+  }
+  const withdrawControl = trpc.salesControl.withdraw.useMutation({ onSuccess: afterWithdrawal, onError: (e) => setError(e.message) });
+  const withdrawLegacy = trpc.returns.withdrawRequest.useMutation({ onSuccess: afterWithdrawal, onError: (e) => setError(e.message) });
+
+  async function withdrawPending() {
+    if (!pending?.isMine || !canWithdrawPending) return;
+    if (!(await confirm({
+      variant: "warning", title: `سحب طلبي #${pending.id}`,
+      description: "يُغلق طلبك السابق بلا حركة مخزون أو مال. تبقى اختياراتك الحالية للمراجعة قبل إرسال مرتجع جديد.",
+      confirmText: "سحب طلبي",
+    }))) return;
+    const mutation = pending.source === "CONTROL" ? withdrawControl : withdrawLegacy;
+    try { await mutation.mutateAsync({ requestId: pending.id, reason: "سحب الطالب لإعادة إعداد المرتجع" }); }
+    catch { /* The mutation displays the server reason and leaves the pending request intact. */ }
+  }
 
   function setQtyClamped(itemId: number, next: number, remaining: number) {
     const v = Math.max(0, Math.min(remaining, Math.trunc(next)));
@@ -442,9 +464,11 @@ export function ReturnComposer({
 
   /** الكمّيات غير قابلة للتعديل في وضع الاعتماد: الخادم ينفّذ بنود الطلب لا إدخال المدير. */
   const qtyLocked = !!approvingRequestId;
-  const isLocked = inv?.status === "RETURNED" || inv?.status === "CANCELLED";
+  const isLocked = isDeadInvoiceStatus(inv?.status);
   /** الطلب المعلّق على هذه الفاتورة (الحوكميّ أو القديم) — الخادم مصدرُه، لا اشتقاقٌ في الشاشة. */
   const pending = inv?.pendingRequest ?? null;
+  const canWithdrawPending = !!pending?.isMine && (pending.source === "CONTROL" ? withdrawControlPermission.allowed : withdrawLegacyPermission.allowed);
+  const withdrawing = withdrawControl.isPending || withdrawLegacy.isPending;
   /**
    * مرتجعٌ بلا ردّ نقديّ (بلاغ المالك ١٨/٨) — فاتورةٌ لم يُقبض عليها دينار (آجلة/COD/عربونٌ
    * أقلّ) أو قيمةُ المرتجع تُغطّيها الذمّة: **لا مال يخرج**، فلا رافدَ ولا درجَ ولا مرجع.
@@ -469,21 +493,12 @@ export function ReturnComposer({
     if (approvingRequestId && !lockedLines) return "جارٍ تحميل بنود الطلب المطلوب اعتماده…";
     // طلبٌ معلّقٌ قائم ⇒ الخادم يرفض الثاني بالفهرس الفريد. نقولها هنا بدل خطأٍ خامّ بعد الملء.
     if (pending && !approvingRequestId) {
-      return `على هذه الفاتورة طلبٌ معلّق #${pending.id} — احسمه أولاً (اعتماداً أو رفضاً) قبل إرسال طلبٍ جديد.`;
+      return pending.isMine
+        ? `طلبك #${pending.id} لم يُنفّذ؛ اسحبه من البطاقة أعلاه قبل إعداد طلب جديد.`
+        : `على هذه الفاتورة طلبٌ معلّق #${pending.id} — راجعه من طلبات العمليات قبل إرسال طلبٍ جديد.`;
     }
-    if (
-      requiresExecutableRail &&
-      me.data?.role &&
-      me.data.role !== "admin" &&
-      me.data.role !== "manager" &&
-      method === "CASH" &&
-      refundD.gt(0)
-    ) {
-      const cashierHasShift = inv?.refundShifts?.some((s) => s.isMine || Number(s.userId) === Number(me.data?.id));
-      if (!cashierHasShift) {
-        return "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لتنفيذ المرتجع.";
-      }
-    }
+    // The server preflight authorizes the selected drawer/treasury; a base-role check
+    // here would reject owners and permitted alternative drawers before that decision.
     if (!selectedLines.length) return "حدّد كمية إرجاع واحدة على الأقل.";
     if (isWalkIn && !returnValue.gt(0)) return "قيمة المرتجع صفر؛ لا يمكن إنشاء تسوية نقدية لزبون عابر.";
     if (requiresExecutableRail && !noRefundNeeded && refundD.gt(0) && !refundRailPermission.allowed) {
@@ -505,7 +520,7 @@ export function ReturnComposer({
     }
     if (reason.trim().length < 3) return "اكتب سبب المرتجع (٣ أحرف على الأقل) لتوثيق الطلب.";
     return null;
-  }, [isLocked, pending, approvingRequestId, requiresExecutableRail, requestDetail.data, invoiceId, lockedLines, me.data?.role, me.data?.id, inv?.refundShifts, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, refundRailPermission.allowed, method, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
+  }, [isLocked, pending, approvingRequestId, requiresExecutableRail, requestDetail.data, invoiceId, lockedLines, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, refundRailPermission.allowed, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
 
   async function submit() {
     setError("");
@@ -612,6 +627,10 @@ export function ReturnComposer({
    * يملأ كافة البنود، يضع سبباً نظامياً تلقائياً، يحسب التسوية الذرية ويعرض تأكيداً واحداً شاملاً.
    */
   async function triggerExpressReturn() {
+    if (!operationPermission.allowed || pending) {
+      notify.err(!operationPermission.allowed ? operationPermission.reason : "يوجد طلب معلّق على الفاتورة؛ عالجه أولاً من البطاقة أعلاه.");
+      return;
+    }
     if (isLocked) {
       notify.err("هذه الفاتورة مقفلة أو مرتجعة بالكامل.");
       return;
@@ -811,13 +830,16 @@ export function ReturnComposer({
                 {pending.requestedByName ?? `المستخدم ${pending.requestedBy}`}
                 {pending.isMine ? " (أنت)" : ""}؛ السبب: {pending.reason}.
               </p>
-              <p className="text-muted-foreground">
-                {pending.canReviewIt
-                  ? "تستطيع اعتماده من تبويب «طلبات العمليات» في المبيعات."
-                  : pending.isMine
-                    ? "لا تعتمد طلبك بنفسك (فصل المهام) — يعتمده مديرٌ آخر لم يُنشئ الفاتورة."
-                    : "أنت منشئ هذه الفاتورة فلا تراجع إرجاعها — يعتمده مديرٌ آخر."}
-              </p>
+              <p className="text-muted-foreground">{pending.isMine
+                ? "اسحب طلبك السابق صراحةً لإعادة إعداد المرتجع. السحب لا ينفّذ المرتجع ولا يصرف مالاً."
+                : "يبقى الطلب محفوظاً لصاحبه ومراجعه؛ لا يُستبدل تلقائياً بمرتجع آخر."}</p>
+              <div className="flex flex-wrap gap-2 pt-1">
+                {canWithdrawPending && <Button type="button" size="sm" variant="outline" onClick={() => void withdrawPending()} disabled={withdrawing || create.isPending || approve.isPending}>
+                  {withdrawing ? ACTION_LABELS.sending : "سحب طلبي وإعادة إعداد المرتجع"}
+                </Button>}
+                {pending.canReviewIt && <Button asChild type="button" size="sm" variant="outline"><Link href={pending.source === "CONTROL" ? "/invoices?tab=controls" : `/returns?requestId=${pending.id}`}>مراجعة الطلب</Link></Button>}
+                <Button type="button" size="sm" variant="ghost" onClick={() => void detail.refetch()} disabled={detail.isFetching}>{ACTION_LABELS.refresh}</Button>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -1257,9 +1279,10 @@ export function ReturnComposer({
 
                 {refundD.gt(0) && refundRailPermission.allowed ? (
                   <RefundRailPicker
+                  key={clientRequestId}
                     context={{
                       sourceDocType: "SALE_RETURN",
-                      sourceDocId: invoiceId,
+                      sourceDocId: inv.id,
                       amount: round2(refundD).toFixed(2),
                     }}
                     mode="embedded"
@@ -1291,6 +1314,7 @@ export function ReturnComposer({
           disabled={
             !operationPermission.allowed ||
             !!blockReason ||
+            withdrawing ||
             create.isPending ||
             approve.isPending
           }
@@ -1305,7 +1329,7 @@ export function ReturnComposer({
         <Button
           variant="secondary"
           onClick={triggerExpressReturn}
-          disabled={qtyLocked || isLocked || items.every((it) => it.remaining <= 0) || create.isPending || approve.isPending}
+          disabled={!operationPermission.allowed || !!pending || withdrawing || qtyLocked || isLocked || items.every((it) => it.remaining <= 0) || create.isPending || approve.isPending}
           className="font-bold text-xs sm:text-sm gap-1.5"
         >
           <Zap className="size-4" aria-hidden />

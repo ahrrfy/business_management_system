@@ -20,6 +20,8 @@ export interface RefundOperationalContext {
   hasDownstreamEffects?: boolean;
   hasSourceDocument?: boolean;
   refundAmountIqd: string | number;
+  /** Server-verified paid pool including deposits and courier custody; omission keeps approval guards. */
+  sourcePaidAmountIqd?: string | number;
   maxRefundAmountIqd: string | null | undefined;
   refundMethod: string;
   originalPaymentMethods?: readonly string[];
@@ -49,6 +51,15 @@ export function evaluateRefundOperationalDecision(
     return { result: "DENY", reason: "العملية غير مفوضة لهذا الحساب" };
   if (!input.sameBranch)
     return { result: "DENY", reason: "المستند يخص فرعاً آخر" };
+  if (
+    input.sourcePaidAmountIqd != null &&
+    new Decimal(input.sourcePaidAmountIqd).isZero() &&
+    new Decimal(input.refundAmountIqd || 0).isZero() &&
+    input.hasSourceDocument !== false &&
+    input.accountingPeriodOpen
+  ) {
+    return { result: "DIRECT", reason: "لا يوجد مبلغ مقبوض يحتاج إلى رد" };
+  }
   if (input.drawerHasFunds === false)
     return approval(
       "رصيد درج الوردية لا يكفي للرد النقدي؛ يلزم اعتماد مصدر نقد بديل",

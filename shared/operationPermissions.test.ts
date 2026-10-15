@@ -33,6 +33,14 @@ vi.mock("./operationPermissionCatalog.generated", () => {
       },
       {
         ...metadata,
+        key: "operation.returns.withdrawRequest",
+        path: "returns.withdrawRequest",
+        module: "sales|workorders",
+        supportsRecordScope: false,
+        legacyAliases: ["pos.return.create"],
+      },
+      {
+        ...metadata,
         key: "operation.returns.getInvoice",
         path: "returns.getInvoice",
         kind: "query",
@@ -633,6 +641,19 @@ describe("legacy compatibility and migration", () => {
 });
 
 describe("operation decision", () => {
+  it("grants own-request withdrawal as a return companion while preserving explicit denials", () => {
+    const rolePolicy = policy({ "operation.returns.create": true });
+    expect(operationDecision({ role: "cashier", roleOperationPolicy: rolePolicy }, "returns.withdrawRequest").allowed).toBe(true);
+    expect(operationDecision({ role: "cashier", roleOperationPolicy: rolePolicy,
+      operationPolicy: policy({ "operation.returns.create": false, "operation.returns.withdrawRequest": true }),
+    }, "returns.withdrawRequest").allowed).toBe(false);
+    expect(operationDecision({ role: "cashier", roleOperationPolicy: rolePolicy,
+      operationPolicy: policy({ "operation.returns.withdrawRequest": false }),
+    }, "returns.withdrawRequest").allowed).toBe(false);
+    expect(operationDecision({ role: "user", permissionsOverride: { pos: "FULL" },
+      atomicPermissions: { "pos.return.create": false },
+    }, "returns.withdrawRequest").allowed).toBe(false);
+  });
   it("uses the same exact grant for visible choice and CASL evaluation", () => {
     const rolePolicy = policy({ "operation.delivery.dispatch": true });
     const user = { role: "cashier", roleOperationPolicy: rolePolicy };

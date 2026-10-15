@@ -10,7 +10,7 @@ vi.mock("../realtimeManager", () => ({ realtimeManager: {
     return () => bus.delete(type);
   },
 } }));
-import { installFinancialQueryRefresh } from "../financialQueries";
+import { installFinancialQueryRefresh, invalidateFinancialQueries } from "../financialQueries";
 import { REALTIME_EVENT_TYPES as E, createRealtimeEvent } from "@shared/realtimeEvents";
 
 let client: QueryClient;
@@ -38,6 +38,20 @@ beforeEach(() => {
 afterEach(() => { stop(); subscriptions.forEach((off) => off()); client.clear(); bus.clear(); vi.useRealTimers(); });
 
 describe("event-driven financial queries", () => {
+  it("refreshes current invoice, lists and delivery once after a local mutation while marking inactive caches stale", async () => {
+    const detail = read("sales", undefined, true, "get");
+    const list = read("sales", 2, true, "listPage");
+    const delivery = read("delivery", 2);
+    const reception = read("reception", 2, false, "invoiceQueue");
+    const other = read("sales", 3);
+    const catalog = read("catalog", 2);
+    const heavy = read("reports", 2, true, "managementAlerts");
+    await invalidateFinancialQueries(client, 2);
+    for (const q of [detail, list, delivery]) expect(q.queryFn).toHaveBeenCalledOnce();
+    for (const q of [reception, other, catalog, heavy]) expect(q.queryFn).not.toHaveBeenCalled();
+    expect(client.getQueryState(reception.queryKey)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(heavy.queryKey)?.isInvalidated).toBe(true);
+  });
   it("refreshes heavy alerts automatically after one snapshot window and keeps money KPIs immediate", async () => {
     const heavy = read("reports", undefined, true, "managementAlerts");
     const executive = read("executive", undefined, true, "commandCenter");

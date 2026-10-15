@@ -69,6 +69,7 @@ import {
   requestSalesControl,
 } from "../services/sale/controlRequests";
 import { cancelSale } from "../services/sale/cancel";
+import { loadRefundCaps } from "../services/returns/refundCaps";
 import { OperationalApprovalRequiredError } from "@shared/operationalDecision";
 import { RETURN_EXECUTED_AUDIT_ACTION } from "../services/returns/auditActions";
 import { assertNoInTransitConsignment } from "../services/delivery/guards";
@@ -813,6 +814,7 @@ export function buildSalesListConds(
   if (input?.to)
     conds.push(lt(invoices.invoiceDate, localNextDayStart(input.to)));
   if (input?.status) conds.push(eq(invoices.status, input.status));
+  else conds.push(ne(invoices.status, "SUPERSEDED"));
   if (input?.sourceType) conds.push(eq(invoices.sourceType, input.sourceType));
   // فلتر القناة (١٩/٨) — مرآة `deriveInvoiceChannel` المشتركة حرفيّاً. يُطبّق خادميّاً
   // لا في الصفحة وحدها، وإلّا كذب العدّاد والمجاميع (يرشّح ما في الصفحة لا ما في المدى).
@@ -1682,6 +1684,7 @@ export const saleRouter = router({
         overpayHandling: z.enum(["CREDIT", "CASH_REFUND"]).optional(),
         // كم استُلم فعلاً من المقبوض المسجَّل (غيابه = كله). الأقل يُعكَس من وردية الأصل.
         priorPaymentReceivedAmount: nonNegMoneyString.nullish(),
+        requestReview: z.boolean().optional(),
         reason: z.string().trim().min(3, "اكتب سبب التصحيح").max(500),
         clientRequestId: z.string().min(1).max(80).optional(),
         // موافقة مدير لتجاوز حدّ الائتمان أو البيع تحت التكلفة في السطور المصحّحة.
@@ -1703,6 +1706,7 @@ export const saleRouter = router({
         reason,
         clientRequestId,
         originalInvoiceId,
+        requestReview,
         ...payload
       } = input;
       const res = await requestSalesControl(
@@ -1712,6 +1716,7 @@ export const saleRouter = router({
           requestType: "SALES_REISSUE",
           reason,
           payload,
+          requestReview,
         },
         actor,
       );
@@ -2520,6 +2525,8 @@ export const saleRouter = router({
       // حقل تفويض داخلي للاستعلام فقط؛ لا يكون جزءاً من عقد تفاصيل الفاتورة.
       const { workOrderCreatedBy: _workOrderCreatedBy, ...invoiceForView } =
         inv;
+      const refundCaps = await loadRefundCaps(db, Number(inv.id));
+      const refundPreview = { refundablePaidAmount: refundCaps.pool.toFixed(2) };
 
       /**
        * م٢ ق١١ — «الخطوة التالية»: حقلٌ اختياريٌّ يُلحَق بالردّ فتعرضه رقاقةُ الرأس بدل أن
@@ -2545,6 +2552,7 @@ export const saleRouter = router({
         const itemsNoCost = items.map(({ unitCost: _u, ...rest }) => rest);
         return {
           ...invNoCost,
+          ...refundPreview,
           items: itemsNoCost,
           payments,
           returns,
@@ -2556,6 +2564,7 @@ export const saleRouter = router({
       }
       return {
         ...invoiceForView,
+        ...refundPreview,
         items,
         payments,
         returns,

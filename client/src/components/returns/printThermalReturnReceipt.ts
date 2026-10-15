@@ -1,9 +1,13 @@
-import { fmt, fmtQty } from "@/lib/money";
+import { D, fmt, fmtQty } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 import { printDoc, type PrintDoc } from "@/lib/printing/print";
 import type { PrintItemBlock } from "@/lib/printing/render";
 
 export interface PrintSalesReturnData {
+  /** Invoice relief without a customer account or any cash payout. */
+  noCashNoAccount?: boolean;
+  payoutAmount?: string;
+  debtOffsetAmount?: string;
   returnNumber: string;
   originalInvoiceNumber?: string | null;
   customerName: string;
@@ -40,7 +44,7 @@ export interface PrintPurchaseReturnData {
  */
 export async function printSalesReturnReceipt(data: PrintSalesReturnData) {
   const methodLabel =
-    data.method === "CASH"
+    data.noCashNoAccount ? "تخفيض المتبقي على الفاتورة — بلا استرداد مالي" : data.method === "CASH"
       ? "استرداد نقدي"
       : data.method === "CARD"
       ? "استرداد بالبطاقة"
@@ -66,7 +70,9 @@ export async function printSalesReturnReceipt(data: PrintSalesReturnData) {
   }));
 
   const totals = [
-    { label: "إجمالي المرتجع المسترد", value: `${fmt(data.totalAmount)} د.ع` },
+    { label: "قيمة المرتجع", value: `${fmt(data.totalAmount)} د.ع` },
+    ...(data.payoutAmount != null ? [{ label: "المبلغ المدفوع للزبون", value: `${fmt(data.payoutAmount)} د.ع` }] : []),
+    ...(data.debtOffsetAmount != null && D(data.debtOffsetAmount).gt(0) ? [{ label: "تخفيض المتبقي على الفاتورة", value: `${fmt(data.debtOffsetAmount)} د.ع` }] : []),
     { label: "طريقة الاسترداد", value: methodLabel },
     ...(data.reference ? [{ label: "رقم المرجع", value: data.reference }] : []),
   ];

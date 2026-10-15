@@ -26,6 +26,10 @@ import { isDeadInvoice } from "@shared/predicates";
 import { money, round2 } from "../money";
 import { withTx, type Actor } from "../tx";
 import type { Tx } from "../../db";
+import { appErrorMessage } from "@shared/errors";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { assertOperationAuthorityTx } from "../authorization/operationAuthority";
+import { logAuditTx } from "../auditService";
 
 export interface ReturnRequestLine {
   invoiceItemId: number;
@@ -399,6 +403,71 @@ export async function markRequestApproved(requestId: number, actorUserId: number
       message: "تغيّرت حالة طلب الإرجاع قبل ختم الاعتماد",
     });
   }
+}
+
+/**
+ * The legacy enum has no WITHDRAWN value. A maker withdrawal uses REJECTED
+ * without a reviewer/result and an explicit reason/audit, never an approval.
+ */
+export async function withdrawReturnRequest(
+  requestId: number,
+  reason: string,
+  actor: Actor,
+) {
+  const note = reason.trim().replace(/\s+/g, " ");
+  if (note.length < 3 || note.length > 480) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+      what: "تعذر سحب طلب المرتجع",
+      why: "سبب السحب مطلوب بين 3 و480 محرفاً",
+      doThis: "اكتب سبب سحب الطلب قبل إعادة اختيار الأصناف والتسوية",
+    }) });
+  }
+  const rejectionReason = `سحب الطالب: ${note}`;
+  return withTx(async (tx) => {
+    // Withdrawal is part of the already granted return operation; re-read the
+    // actor so revocation or branch reassignment cannot survive an open page.
+    await assertOperationAuthorityTx(tx, actor, "returns.withdrawRequest", (current) =>
+      current.isOwner === true || current.role === "admin" ||
+      moduleAccessAllowed(current.role as RoleKey, current.permissionsOverride as PermissionMap | null,
+        "sales", "FULL", ["cashier", "manager"]) ||
+      moduleAccessAllowed(current.role as RoleKey, current.permissionsOverride as PermissionMap | null,
+        "workorders", "FULL", ["cashier", "manager", "print_operator"]),
+    );
+    const [request] = await tx.select().from(returnRequests)
+      .where(eq(returnRequests.id, requestId)).for("update").limit(1);
+    if (!request) {
+      throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
+        what: "تعذر سحب طلب المرتجع", why: "الطلب غير موجود",
+        doThis: "حدّث بيانات الفاتورة ثم اختر طلبها المعلّق",
+      }) });
+    }
+    if (Number(request.createdBy) !== Number(actor.userId) ||
+      (actor.role !== "admin" && Number(request.branchId) !== Number(actor.branchId))) {
+      throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
+        what: "تعذر سحب طلب المرتجع",
+        why: "السحب لصاحب الطلب وحده ومن فرعه المسند",
+        doThis: "اطلب من منشئ الطلب سحبه أو من مراجع مستقل رفضه",
+      }) });
+    }
+    if (request.status === "REJECTED" && request.approvedBy == null && request.rejectionReason === rejectionReason) {
+      return { requestId, status: "REJECTED" as const, withdrawn: true as const, replayed: true as const };
+    }
+    if (request.status !== "PENDING_APPROVAL" || request.resultReturnInvoiceId != null || request.approvedBy != null) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تعذر سحب طلب المرتجع", why: "الطلب حُسم قبل السحب",
+        doThis: "حدّث الفاتورة وراجع نتيجة الطلب قبل محاولة جديدة",
+      }) });
+    }
+    await tx.update(returnRequests).set({
+      status: "REJECTED", approvedBy: null, approvedAt: new Date(), rejectionReason,
+    }).where(and(eq(returnRequests.id, requestId), eq(returnRequests.status, "PENDING_APPROVAL")));
+    await logAuditTx(tx, { userId: actor.userId, branchId: Number(request.branchId) }, {
+      action: "return.request.withdraw", entityType: "return_request", entityId: requestId,
+      oldValue: { status: request.status },
+      newValue: { status: "REJECTED", withdrawn: true, reason: note, invoiceId: Number(request.invoiceId) },
+    });
+    return { requestId, status: "REJECTED" as const, withdrawn: true as const, replayed: false as const };
+  }, { gate: "NONE" });
 }
 
 /** يرفض الطلب بسببٍ إلزاميّ — الموظّف يرى لماذا. */

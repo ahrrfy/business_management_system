@@ -51,7 +51,7 @@ describe("مسار اعتماد طلبات مرتجع البيع القديمة"
   });
 
   it("ينعش صندوق القرارات قبل الرجوع إليه بعد الاعتماد", () => {
-    expect(composer).toContain("utils.decisions.inbox.invalidate()");
+    expect(composer).toContain("await invalidateFinancialQueries(queryClient, inv?.branchId)");
   });
 
   it("يعرض وقت إنشاء الفاتورة بصيغة محلية لا كنص تقني", () => {

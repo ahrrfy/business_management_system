@@ -24,13 +24,13 @@ describe("correctionLookupBlockReason", () => {
     expect(correctionLookupBlockReason({ ...eligible, hasActiveInstallmentPlan: true })).toMatch(/أقساط/);
   });
 
-  it("لا يسمح بالتعديل أثناء عهدة التوصيل ويسمح بعد إلغائها نهائياً", () => {
+  it("يسمح بالتعديل الذري أثناء التوصيل وبعد إلغاء إسناده", () => {
     expect(correctionLookupBlockReason({
       ...eligible,
       consignmentStatus: "DISPATCHED",
       consignmentParcelStatus: "OUT_FOR_DELIVERY",
       consignmentMoneyStatus: "UNSETTLED",
-    })).toMatch(/التوصيل/);
+    })).toBeNull();
     expect(correctionLookupBlockReason({
       ...eligible,
       consignmentStatus: "CANCELLED",

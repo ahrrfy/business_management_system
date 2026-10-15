@@ -44,6 +44,8 @@ import { invoiceDetailPrintData } from "@/lib/printing/invoiceDetailPrintData";
 import { D, fmt, round2 } from "@/lib/money";
 import { DataTable } from "@/components/data-table/DataTable";
 import { trpc } from "@/lib/trpc";
+import { useQueryClient } from "@tanstack/react-query";
+import { invalidateFinancialQueries } from "@/lib/realtime/financialQueries";
 import { variantDisplayName } from "@shared/variantDisplay";
 import { InvoiceDigitalCards } from "@/components/digitalCards/InvoiceDigitalCards";
 import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDialog";
@@ -95,6 +97,7 @@ export default function InvoiceDetail() {
   const [, navigate] = useLocation();
   const invoiceId = Number(params.id);
   const utils = trpc.useUtils();
+  const queryClient = useQueryClient();
   const requestPrint = trpc.invoicePrinting.requestPrint.useMutation();
   const requestReprint = trpc.invoicePrinting.requestReprint.useMutation();
   const inv = trpc.sales.get.useQuery(
@@ -172,7 +175,9 @@ export default function InvoiceDetail() {
         r.mode === "EXECUTED"
           ? Number(r.pendingRefundAmount ?? 0) > 0
             ? `تم إلغاء الفاتورة وإنشاء طلب صرف ${Number(r.pendingRefundAmount).toLocaleString("ar-IQ-u-nu-latn")} د.ع${r.refundVoucherNumber ? ` برقم ${r.refundVoucherNumber}` : ""}.`
-            : `تم إلغاء الفاتورة ورد ${Number(r.refundAmount ?? 0).toLocaleString("ar-IQ-u-nu-latn")} د.ع ضمن صلاحية الوردية.`
+            : Number(r.refundAmount ?? 0) > 0
+              ? `تم إلغاء الفاتورة ورد ${Number(r.refundAmount).toLocaleString("ar-IQ-u-nu-latn")} د.ع ضمن صلاحية الوردية.`
+              : "تم إلغاء الفاتورة وتسوية آثارها بلا صرف نقد."
           : `أُرسل طلب الإلغاء #${r.requestId} للاعتماد — لم يتغير المخزون أو المال بعد.`,
       );
       setError("");
@@ -183,7 +188,7 @@ export default function InvoiceDetail() {
         r.mode === "EXECUTED"
           ? [
               utils.sales.get.invalidate({ invoiceId }),
-              utils.sales.list.invalidate(),
+              invalidateFinancialQueries(queryClient, inv.data?.branchId),
             ]
           : [utils.salesControl.list.invalidate()],
       );
@@ -287,24 +292,16 @@ export default function InvoiceDetail() {
     canCancelAssignment &&
     data.consignmentId != null &&
     (data.consignmentParcelStatus === "ASSIGNED" || data.consignmentParcelStatus === "OUT_FOR_DELIVERY" || data.consignmentParcelStatus === "FAILED");
-  const hasDeliveryLifecycle =
-    data.consignmentId != null || data.consignmentStatus != null || data.deliveryPartyId != null;
-  // مرآة بصرية للحارس الخادمي: الإرسالية الحديثة لا تصبح آمنة إلا بعد CANCELLED النهائي.
-  // طلب المتجر القديم الملغى يُعرض موحّداً كـRETURNED (saleRouter)، وهو الاستثناء الآمن بلا consignmentId.
-  const deliveryCancellationResolved =
-    data.consignmentId != null
-      ? data.consignmentStatus === "CANCELLED"
-      : data.sourceType === "ONLINE" && data.consignmentStatus === "RETURNED";
-  const deliveryCancellationBlockReason = !hasDeliveryLifecycle || deliveryCancellationResolved
-    ? null
-    : canCancelDelivery
-      ? "ألغِ إسناد التوصيل أولاً، ثم ألغِ الفاتورة. لا يجوز إعادة المخزون والطرد ما زال مسنداً."
-      : data.consignmentStatus === "DISPATCHED" || data.consignmentStatus === "PARTIAL"
-        ? "لا يمكن إلغاء الفاتورة والطرد أو تحصيل COD ما زال في دورة التوصيل. أعد الطرد وسوِّ العهدة من مركز التوصيل أولاً."
-        : "لا يمكن إلغاء الفاتورة بعد تسليم الطرد أو وجود تسوية توصيل. استخدم الإرجاع الموثق أو عالج العهدة من مركز التوصيل.";
+  // Active COD is reconciled by the same cancellation transaction. Terminal
+  // write-offs/returned parcels keep their dedicated delivery workflow.
+  const deliveryCancellationBlockReason = data.consignmentId != null &&
+    (data.consignmentStatus === "WRITTEN_OFF" || data.consignmentStatus === "RETURNED")
+    ? "للإرسالية عكس أو شطب سابق؛ راجع مستند التوصيل قبل إلغاء الفاتورة."
+    : null;
   const isCancellable =
     data.status !== "CANCELLED" &&
     data.status !== "RETURNED" &&
+    data.status !== "SUPERSEDED" &&
     data.sourceType !== "WORKORDER" &&
     deliveryCancellationBlockReason == null;
   /** فاتورة أمر الشغل الحيّة لا تمرّ بإلغاء البيع أو مرتجعه العام؛ مخرجها طلب عكس محكوم. */
@@ -319,7 +316,7 @@ export default function InvoiceDetail() {
     data.status !== "RETURNED" &&
     data.status !== "SUPERSEDED" &&
     canReverseWorkOrder;
-  const paidAmountForRefund = round2(D(data.paidAmount ?? "0"));
+  const paidAmountForRefund = round2(D(data.refundablePaidAmount ?? "0"));
   // مرجع جهاز الدفع إلزاميّ لِـCARD وحدها (تفرضه الخدمة) — ومقصورٌ على حالة وجود استردادٍ فعليّ
   // كي لا يحجب فاتورةً بلا استرداد بسبب طريقةٍ متبقّية من فتحةٍ سابقة للحوار.
   const needsCardReference = paidAmountForRefund.gt(0) && cancelMethod === "CARD";
@@ -784,8 +781,7 @@ export default function InvoiceDetail() {
             data.status !== "CANCELLED" &&
             data.status !== "RETURNED" &&
             data.status !== "SUPERSEDED" &&
-            data.sourceType !== "WORKORDER" &&
-            deliveryCancellationBlockReason == null && (
+            data.sourceType !== "WORKORDER" && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" size="sm">
@@ -1195,7 +1191,7 @@ export default function InvoiceDetail() {
               onClick={() => {
                 if (cancelConfirmText.trim() !== data.invoiceNumber) return;
                 cancel.mutate({
-                  invoiceId, refundPaymentMethod: cancelMethod,
+                  invoiceId, refundPaymentMethod: paidAmountForRefund.isZero() ? "CASH" : cancelMethod,
                   reason: cancelReason.trim(), clientRequestId: cancelRequestId,
                 });
               }}

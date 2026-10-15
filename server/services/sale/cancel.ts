@@ -55,7 +55,8 @@ import { userNameSnapshot } from "../userSnapshot";
 import { assertInvoiceCancellationDeliverySafeTx } from "./invoiceCancellationGuard";
 import type { Tx } from "../../db";
 import { assertLockedInvoiceControlSnapshotTx, type InvoiceControlSnapshot } from "./controlSnapshot";
-import { cancelDeliveryAssignmentInTx } from "../delivery/cancellation";
+import { cancelInvoiceDeliveryTx, invoiceDeliveryAmendmentTx } from "../delivery/invoiceAmendment";
+import { adjustCustomerBalance } from "../ledgerService";
 import {
   evaluateRefundOperationalDecision,
   OperationalApprovalRequiredError,
@@ -359,10 +360,11 @@ export async function cancelSaleInTx(
 
     // بعد مصدر النقد، اقفل جهة التوصيل→الإرسالية/طلب المتجر قبل الفاتورة. الحارس لا يكتفي
     // بوسم CANCELLED: يثبت أيضاً انعدام الحيازة وCOD والتسوية المفتوحة تحت الأقفال نفسها.
-    const deliveryGuard = await assertInvoiceCancellationDeliverySafeTx(tx, {
+    await assertInvoiceCancellationDeliverySafeTx(tx, {
       invoiceId: input.invoiceId,
       expectedBranchId: Number(invPreview.branchId),
       allowAssignedCancellation: input.enforceOperationalDecision === true || input.controlExpectedSnapshot != null,
+      allowAtomicAmendment: true,
     });
     // ═══ ١) قراءة الفاتورة تحت FOR UPDATE + الحراس ═══
     const invRows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
@@ -448,6 +450,7 @@ export async function cancelSaleInTx(
       });
     }
     const lockedPaidPool = await invoicePaidPool(tx, input.invoiceId);
+    const deliveryAmendment = await invoiceDeliveryAmendmentTx(tx, input.invoiceId);
     const lockedRefundable = lockedPaidPool.totalIn.minus(lockedPaidPool.outPrior);
     let directDecision: OperationalDecision | undefined;
     if (
@@ -483,6 +486,7 @@ export async function cancelSaleInTx(
         hasDownstreamEffects: returnedTotalDec.gt(0),
         hasSourceDocument: true,
         refundAmountIqd: refundable.toFixed(2),
+        sourcePaidAmountIqd: Decimal.max(money(inv.paidAmount), refundable, deliveryAmendment?.custody ?? money(0)).toFixed(2),
         maxRefundAmountIqd: currentOperationalAuthority.caps.maxRefundAmountIqd,
         refundMethod: input.refundPaymentMethod,
         originalPaymentMethods: Object.keys(pool.byMethod),
@@ -494,24 +498,6 @@ export async function cancelSaleInTx(
         throw new OperationalApprovalRequiredError(directDecision);
       if (directDecision.result === "DENY")
         throw new TRPCError({ code: "FORBIDDEN", message: directDecision.reason });
-    }
-    if (deliveryGuard.cancellableAssignmentId != null) {
-      await cancelDeliveryAssignmentInTx(
-        tx,
-        {
-          consignmentId: deliveryGuard.cancellableAssignmentId,
-          reason: input.reason?.trim() || "إلغاء الفاتورة قبل تسليم إسناد التوصيل",
-          clientRequestId: `sale-cancel-${input.clientRequestId?.trim() || input.invoiceId}`,
-        },
-        { userId: actor.userId, branchId: actor.branchId, role: actor.role },
-        // هذا أثرٌ ذري تابع لإلغاء الفاتورة الذي تحقق من sales.cancel أعلاه؛
-        // صلاحية إلغاء الإسناد المستقل لا تُطلب لمسار الإلغاء المركب.
-        { assertAuthority: false },
-      );
-      await assertInvoiceCancellationDeliverySafeTx(tx, {
-        invoiceId: input.invoiceId,
-        expectedBranchId: Number(invPreview.branchId),
-      });
     }
     if (
       input.refundPaymentMethod === "CASH" &&
@@ -642,6 +628,15 @@ export async function cancelSaleInTx(
     // ═══ ٣) الأثرُ كلُّه عبر محرّك العكس (ق٧): مخزون · أمانة · قيد · هدايا · تقريب · ردّ مال · ذمّة · كوبون ═══
     const cancelOperatorName = await userNameSnapshot(tx, actor.userId);
     const reasonNote = input.reason?.trim() || null;
+    if (deliveryAmendment) {
+      const reversedCustody = await cancelInvoiceDeliveryTx(tx, deliveryAmendment, actor,
+        input.clientRequestId ?? `cancel-${input.invoiceId}`, reasonNote ?? "إلغاء الفاتورة");
+      // Courier credit had already settled this customer; reversing custody is
+      // not a drawer refund. Restore only that credit before invoice reversal.
+      if (inv.customerId != null && reversedCustody.gt(0)) {
+        await adjustCustomerBalance(tx, Number(inv.customerId), reversedCustody);
+      }
+    }
     const summary = await reverseInvoiceSaleInTx(
       tx,
       {

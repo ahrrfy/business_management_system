@@ -50,6 +50,7 @@ import type { PriceTier } from "../pricing";
 import type { SaleLineInput } from "./types";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { assertInvoiceReversalDeliverySafeTx } from "./invoiceCancellationGuard";
+import { invoiceDeliveryAmendmentTx, rebindCorrectedInvoiceDeliveryTx, reverseInvoiceDeliveryExcessTx } from "../delivery/invoiceAmendment";
 import {
   assertExternalPaymentReplay,
   consumeConfirmedExternalPaymentAttemptTx,
@@ -396,14 +397,14 @@ export async function correctSaleInTx(
       ? await lockPriorPaymentShiftsTx(tx, input.originalInvoiceId)
       : new Set<number>();
 
-    // بعد مصدر النقد، اقفل جهة التوصيل→الإرسالية/طلب المتجر قبل الفاتورة. التصحيح عكسٌ كامل
-    // مثل الإلغاء؛ لذلك لا يكفي غياب DISPATCHED/PARTIAL: DELIVERED+SETTLED وWRITTEN_OFF
-    // يحملان حقيقةً تشغيلية/مالية نهائية لا يجوز محوها بإعادة الإصدار. السماح للحالة الملغاة
-    // الثلاثية الآمنة فقط، تحت نفس gap/row locks، يغلق أيضاً سباق الإسناد مع التصحيح.
+    // Preserve delivery history under party→consignment→invoice locks. The
+    // composite amendment carries proved collections and adjusts only live COD;
+    // returns/write-offs still require their own governed document route.
     await assertInvoiceReversalDeliverySafeTx(tx, {
       invoiceId: input.originalInvoiceId,
       expectedBranchId: Number(invPreview.branchId),
       mode: "CORRECT",
+      allowAtomicAmendment: true,
     });
 
     // ── ١) تحميل الأصل تحت قفل الصفّ + الحرّاس ──
@@ -450,6 +451,8 @@ export async function correctSaleInTx(
     }
 
     const originalPaid = round2(money(inv.paidAmount));
+    const deliveryAmendment = await invoiceDeliveryAmendmentTx(tx, input.originalInvoiceId);
+    const deliveryPaid = deliveryAmendment?.settled ?? money(0);
     // ⭐ قرار المالك (١٧/٨/٢٦): **المقبوض يُنتقل للفاتورة المصحّحة كما هو**.
     //
     // كان هنا حظرٌ شاملٌ لأي فاتورةٍ عليها مقبوضات، بحجّة أنّ «نقل سند قبضٍ مكتمل يعيد كتابة
@@ -479,9 +482,18 @@ export async function correctSaleInTx(
     ),
       );
     const detachedIds = payRcpts.map((r) => Number(r.id));
-    const detachedSum = round2(payRcpts.reduce((s, r) => s.plus(money(r.amount)), new Decimal(0)),
-    );
-    if (!detachedSum.equals(originalPaid)) {
+    const priorRefunds = deliveryAmendment ? [] : await tx.select({ id: receipts.id, amount: receipts.amount })
+      .from(receipts).where(and(
+        eq(receipts.invoiceId, input.originalInvoiceId), eq(receipts.direction, "OUT"),
+        eq(receipts.status, "COMPLETED"), eq(receipts.approvalStatus, "APPROVED"),
+        sql`(${receipts.internalNote} IS NULL OR ${receipts.internalNote} NOT LIKE 'SALE_CORRECTION_REVERSAL:%')`,
+        sql`NOT EXISTS (SELECT 1 FROM accountingEntries ae WHERE ae.receiptId=${receipts.id} AND ae.entryType='DELIVERY_FEE_HELD')`,
+      )).for("update");
+    const priorRefundAmount = round2(priorRefunds.reduce((sum, row) => sum.plus(money(row.amount)), money(0)));
+    // Historical IN/OUT keep their amounts, shifts and actors. Only their net
+    // paid pool is carried; a previous actual refund must never be paid twice.
+    const detachedSum = round2(payRcpts.reduce((s, r) => s.plus(money(r.amount)), money(0)).minus(priorRefundAmount));
+    if (!detachedSum.plus(deliveryPaid).equals(originalPaid)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: `تعذّر التصحيح: المدفوع المسجَّل (${originalPaid.toFixed(2)}) لا يطابق إيصالات القبض القابلة للنقل (${detachedSum.toFixed(2)}) — قد يكون بعضه من عربونٍ مرتبطٍ بغير هذه الفاتورة. عالِجها بإلغاءٍ كامل ثمّ إعادة بيع.`,
@@ -497,14 +509,14 @@ export async function correctSaleInTx(
     //   · REASSIGN — تغيّر العميل أو لم يُستلم المسجَّل كاملاً ⇒ عكسٌ بإيصالات تعويضية على الوردية
     //     الأصلية + إعادة قيد المستلَم فعلاً باسم الطرف الجديد (correctionReceiptSettlement.ts).
     const receivedPrior = input.priorPaymentReceivedAmount == null
-      ? detachedSum
+      ? originalPaid
       : round2(money(input.priorPaymentReceivedAmount));
-    if (receivedPrior.lt(0) || receivedPrior.gt(detachedSum)) {
+    if (receivedPrior.lt(deliveryPaid) || receivedPrior.gt(originalPaid)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
           what: "تعذّر تنفيذ تعديل الفاتورة",
-          why: `المبلغ المستلَم فعلاً (${receivedPrior.toFixed(2)}) خارج المقبوض المسجَّل (${detachedSum.toFixed(2)})`,
+          why: `المبلغ المستلَم فعلاً (${receivedPrior.toFixed(2)}) خارج المقبوض المسجَّل (${originalPaid.toFixed(2)}) أو أقل من تحصيل التوصيل الموثق (${deliveryPaid.toFixed(2)})`,
           doThis: "حدّث شاشة التعديل ليُعاد احتساب المقبوض ثم أعد الحفظ",
         }),
       });
@@ -512,7 +524,7 @@ export async function correctSaleInTx(
     const customerChanged = Number(targetCustomerId ?? 0) !== Number(originalCustomerId ?? 0);
     // نقل مقبوضٍ إلى عميلٍ آخر قرارٌ ماليّ لا يُستنتَج من الصمت: المستدعي (الشاشة/الطلب) يجب أن
     // يُعلن المستلَم فعلاً. بلا إعلان يبقى الحظر التاريخيّ — لا نفترض أنّ المال استُلم ولا العكس.
-    if (detachedSum.gt(0) && customerChanged && input.priorPaymentReceivedAmount == null) {
+    if (originalPaid.gt(0) && customerChanged && input.priorPaymentReceivedAmount == null) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -524,7 +536,7 @@ export async function correctSaleInTx(
     }
     const needsSettlement = detachedSum.gt(0) && (
       customerChanged
-      || receivedPrior.lt(detachedSum)
+      || receivedPrior.minus(deliveryPaid).lt(detachedSum)
     );
     if (needsSettlement && !mayNeedSettlement) {
       // المعاينة قبل القفل لم تتوقّع التسوية (تغيّرت الفاتورة بين القراءتين) ⇒ ورديات غير مقفلة.
@@ -564,8 +576,8 @@ export async function correctSaleInTx(
     //    في المسارين يبقى ③ صحيحاً: KEEP ينقل القبض للجديدة، وREASSIGN يكتب PAYMENT_OUT بطرف الأصل
     //    بالمبلغ نفسه (المال «يُعاد» للأصل دفترياً ثم يُقيَّد المستلَم فعلاً على الطرف الجديد).
     let settlement: SettlementResult | null = null;
-    let carriedIds: number[] = detachedIds;
-    let carriedSum = detachedSum;
+    let carriedIds: number[] = [...detachedIds, ...priorRefunds.map(row => Number(row.id))];
+    let carriedSum = detachedSum.plus(deliveryPaid);
     if (needsSettlement) {
       settlement = await settlePriorPaymentsTx(tx, {
         invoiceId: input.originalInvoiceId,
@@ -574,13 +586,14 @@ export async function correctSaleInTx(
         originalCustomerId,
         targetCustomerId,
         recordedAmount: detachedSum,
-        receivedAmount: receivedPrior,
+        priorRefundAmount,
+        receivedAmount: receivedPrior.minus(deliveryPaid),
         lockedShiftIds: lockedPriorShiftIds,
       }, actor);
       carriedIds = settlement.reRecorded.map((r) => r.receiptId);
-      carriedSum = settlement.carriedAmount;
-    } else if (detachedIds.length) {
-      await tx.update(receipts).set({ invoiceId: null }).where(inArray(receipts.id, detachedIds));
+      carriedSum = settlement.carriedAmount.plus(deliveryPaid);
+    } else if (carriedIds.length) {
+      await tx.update(receipts).set({ invoiceId: null }).where(inArray(receipts.id, carriedIds));
     }
 
     // ── ٥) وسم الأصل SUPERSEDED وتصفيره (لم يُرتجَع، بل استُبدِل) ──
@@ -614,8 +627,11 @@ export async function correctSaleInTx(
                 null,
             }
           : null,
-        preCollected: carriedSum.gt(0) ? { amount: carriedSum.toFixed(2), receiptIds: carriedIds } : null,
+        preCollected: carriedSum.gt(0) || carriedIds.length > 0 ? { amount: carriedSum.toFixed(2), receiptIds: carriedIds } : null,
       allowPreCollectedOverpay: true,
+      ...(deliveryAmendment
+        ? { codDispatchPending: true, paymentMode: "COD" as const }
+        : {}),
       // نسبةُ البيع تبقى للبائع الأصليّ لا للمدير المصحِّح: وعاء العمولة يُجمَّع بـ
       // `invoices.createdBy` (commissions/base.ts) وقيدُ RETURN العكسيّ يُخصَم من الأصليّ ⇒
       // بلا هذا السطر كان تصحيحُ سطرٍ واحد ينقل بيعاً كاملاً من وعاء الكاشير إلى وعاء المدير.
@@ -630,6 +646,12 @@ export async function correctSaleInTx(
     );
     const newId = repost.invoiceId;
     const newTotal = round2(money(repost.total));
+    if (deliveryAmendment) {
+      const reversedExcess = await reverseInvoiceDeliveryExcessTx(tx, deliveryAmendment,
+        round2(Decimal.max(0, carriedSum.minus(newTotal))), actor,
+        input.clientRequestId ?? `correct-${input.originalInvoiceId}`);
+      carriedSum = round2(carriedSum.minus(reversedExcess));
+    }
     if (settlement && settlement.reRecorded.length) {
       await postReRecordedPaymentsTx(tx, {
         reRecorded: settlement.reRecorded,
@@ -727,7 +749,7 @@ export async function correctSaleInTx(
       .orderBy(receipts.id);
     const displayedPaymentMethod = transferredPaymentMethods.reduce<string | null>(
       (current, row) => mixedAwarePaymentMethod(current, row.method),
-      null,
+      deliveryPaid.gt(0) ? "CASH" : null,
     );
     await tx.update(invoices).set({ paymentMethod: displayedPaymentMethod }).where(eq(invoices.id, newId));
 
@@ -819,6 +841,11 @@ export async function correctSaleInTx(
         // لا `adjustCustomerBalance` هنا: المال خرج فعلاً فلا يبقى له رصيدٌ دائن (وإلّا استفاد مرّتين).
         overpayHandled = "CASH_REFUND";
       }
+    }
+
+    if (deliveryAmendment) {
+      await rebindCorrectedInvoiceDeliveryTx(tx, deliveryAmendment, newId, actor,
+        input.clientRequestId ?? `correct-${input.originalInvoiceId}`);
     }
 
     // ── ١٠) تسجيل مفتاح idempotency (refId = الفاتورة الجديدة) ──

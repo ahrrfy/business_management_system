@@ -79,6 +79,8 @@ export interface SettlementInput {
   targetCustomerId: number | null;
   /** المسجَّل الكلّي المتحقَّق = paidAmount. */
   recordedAmount: Decimal;
+  /** Actual earlier refunds already deducted from recordedAmount. Originals remain immutable. */
+  priorRefundAmount?: Decimal;
   /** ما استُلم فعلاً من المسجَّل (0..المسجَّل). */
   receivedAmount: Decimal;
   lockedShiftIds: ReadonlySet<number>;
@@ -146,7 +148,8 @@ export async function settlePriorPaymentsTx(
     .orderBy(asc(receipts.id))
     .for("update");
   const sum = round2(rows.reduce((s, r) => s.plus(money(r.amount)), new Decimal(0)));
-  if (!sum.eq(recorded)) {
+  const priorRefund = round2(input.priorRefundAmount ?? money(0));
+  if (priorRefund.lt(0) || priorRefund.gt(sum) || !sum.minus(priorRefund).eq(recorded)) {
     fail(
       "CONFLICT",
       "تغيّرت مقبوضات الفاتورة أثناء التعديل",
@@ -195,6 +198,12 @@ export async function settlePriorPaymentsTx(
   }
 
   // ── ① عكس كل الأصول بإيصالٍ تعويضي (الأصل يبقى للتدقيق) ──
+  let refundRemaining = priorRefund;
+  const netRows = rows.map(row => {
+    const appliedRefund = Decimal.min(money(row.amount), refundRemaining);
+    refundRemaining = refundRemaining.minus(appliedRefund);
+    return { ...row, amount: toDbMoney(money(row.amount).minus(appliedRefund)) };
+  }).filter(row => money(row.amount).gt(0));
   const reversedIds = rows.map((r) => Number(r.id));
   if (reversedIds.length) {
     const upd = await tx
@@ -212,7 +221,7 @@ export async function settlePriorPaymentsTx(
     const key = Number(r.shiftId);
     cashDeltaByShift.set(key, (cashDeltaByShift.get(key) ?? new Decimal(0)).plus(amount));
   };
-  for (const r of rows) {
+  for (const r of netRows) {
     const amount = round2(money(r.amount));
     if (r.paymentMethod === "CASH" && r.cashBucket === "DRAWER" && r.shiftId != null) {
       const sh = shiftById.get(Number(r.shiftId));
@@ -272,7 +281,7 @@ export async function settlePriorPaymentsTx(
   // ── ② إعادة قيد المستلَم فعلاً باسم الطرف الجديد على الوردية/الطريقة نفسها ──
   const reRecorded: ReRecordedReceipt[] = [];
   let remaining = received;
-  for (const r of rows) {
+  for (const r of netRows) {
     if (remaining.lte(0)) break;
     const amount = round2(Decimal.min(money(r.amount), remaining));
     remaining = remaining.minus(amount);
