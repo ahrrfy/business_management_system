@@ -628,20 +628,47 @@ export async function updateOnlineOrder(
           });
         }
         try {
-          const [matchedCustomer] = await tx
-            .select({ id: customers.id, isActive: customers.isActive })
+          const phoneVariants = Array.from(
+            new Set(
+              [
+                normalizedPhone,
+                rawNewPhone,
+                ...(normalizedPhone.startsWith("+964")
+                  ? [
+                      `0${normalizedPhone.slice(4)}`,
+                      `964${normalizedPhone.slice(4)}`,
+                      `00964${normalizedPhone.slice(4)}`,
+                      normalizedPhone.slice(4),
+                    ]
+                  : []),
+              ].filter(Boolean),
+            ),
+          );
+          const candidateCustomers = await tx
+            .select({
+              id: customers.id,
+              isActive: customers.isActive,
+              phone: customers.phone,
+              phone2: customers.phone2,
+              phone3: customers.phone3,
+              whatsapp: customers.whatsapp,
+            })
             .from(customers)
             .where(
               or(
-                eq(customers.phone, normalizedPhone),
-                eq(customers.phone2, normalizedPhone),
-                eq(customers.phone3, normalizedPhone),
-                eq(customers.whatsapp, normalizedPhone),
+                inArray(customers.phone, phoneVariants),
+                inArray(customers.phone2, phoneVariants),
+                inArray(customers.phone3, phoneVariants),
+                inArray(customers.whatsapp, phoneVariants),
               ),
             )
             .orderBy(desc(customers.isActive), desc(customers.id))
-            .for("update")
-            .limit(1);
+            .for("update");
+          const matchedCustomer = candidateCustomers.find((c) =>
+            [c.phone, c.phone2, c.phone3, c.whatsapp].some(
+              (p) => Boolean(p && p.trim()) && normalizeIraqPhoneE164(p!.trim()) === normalizedPhone,
+            ),
+          );
           if (matchedCustomer) {
             if (matchedCustomer.isActive === false) {
               throw new TRPCError({

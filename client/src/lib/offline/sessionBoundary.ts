@@ -96,16 +96,16 @@ export async function resetSessionForLogout(
       await dependencies.purgeStudioDrafts();
     }
   }
-  const preservedDeviceMeta = await Promise.all([
-    offlineDb.meta.get("offlineSaleEnabled").catch(() => undefined),
-    offlineDb.meta.get("storagePersisted").catch(() => undefined),
-    offlineDb.meta.get("deviceCode").catch(() => undefined),
-    offlineDb.meta.get("offlineReceiptSeq").catch(() => undefined),
-  ]);
+  const PRESERVED_DEVICE_META_KEYS = [
+    "offlineSaleEnabled",
+    "storagePersisted",
+    "deviceCode",
+    "offlineReceiptSeq",
+  ];
   const clearTasks: Array<() => Promise<unknown>> = [
     () => offlineDb.profile.clear(),
     () => offlineDb.catalog.clear(),
-    () => offlineDb.meta.clear(),
+    () => offlineDb.meta.where("key").noneOf(PRESERVED_DEVICE_META_KEYS).delete(),
     () => offlineDb.customers.clear(),
     () => offlineDb.stock.clear(),
   ];
@@ -122,11 +122,6 @@ export async function resetSessionForLogout(
     );
     if (firstRetryFailure) {
       throw firstRetryFailure.reason;
-    }
-  }
-  for (const row of preservedDeviceMeta) {
-    if (row && typeof row.key === "string" && typeof row.value === "string") {
-      await offlineDb.meta.put(row).catch(() => undefined);
     }
   }
 }
