@@ -117,7 +117,7 @@ async function validateDumpTarget() {
 
     const crossDbMatches = [
       ...stmt.matchAll(
-        /\b(?:INTO|INSERT|REPLACE|TRUNCATE|UPDATE|DELETE|FROM|JOIN|STRAIGHT_JOIN|TABLE|TABLES|TO|USING|REFERENCES|LIKE|CALL|VIEW|TRIGGER|PROCEDURE|FUNCTION|EVENT|INDEX|DESCRIBE|DESC|EXPLAIN|SHOW|ANALYZE|CHECK|OPTIMIZE|REPAIR|HANDLER)\s+(?:(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY|IGNORE|QUICK|EXTENDED|LOCAL|TEMPORARY|NO_WRITE_TO_BINLOG)\s+)*(?:IF\s+(?:NOT\s+)?EXISTS\s+)?(?:(?:TABLE|TABLES)\s+)?(?![0-9]+\s*\.\s*[0-9]+\b)(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
+        /\b(?:INTO|INSERT|REPLACE|TRUNCATE|UPDATE|DELETE|FROM|JOIN|STRAIGHT_JOIN|TABLE|TABLES|RENAME(?:\s+(?:TO|AS))?|TO|USING|REFERENCES|LIKE|CALL|VIEW|TRIGGER|PROCEDURE|FUNCTION|EVENT|INDEX|DESCRIBE|DESC|EXPLAIN|SHOW|ANALYZE|CHECK|OPTIMIZE|REPAIR|HANDLER)\s+(?:(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY|IGNORE|QUICK|EXTENDED|LOCAL|TEMPORARY|NO_WRITE_TO_BINLOG)\s+)*(?:IF\s+(?:NOT\s+)?EXISTS\s+)?(?:(?:TABLE|TABLES)\s+)?(?![0-9]+\s*\.\s*[0-9]+\b)(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
       ),
       ...(
         /\b(?:INDEX|TRIGGER)\b/i.test(stmt)
@@ -127,7 +127,7 @@ async function validateDumpTarget() {
           : []
       ),
       ...(
-        /^(?:DROP|RENAME|LOCK|TRUNCATE|ANALYZE|CHECK|OPTIMIZE|REPAIR)\b/i.test(stmt)
+        /^(?:ALTER|DROP|RENAME|LOCK|TRUNCATE|ANALYZE|CHECK|OPTIMIZE|REPAIR)\b/i.test(stmt)
           ? stmt.matchAll(
               /(?![0-9]+\s*\.\s*[0-9]+\b)(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
             )

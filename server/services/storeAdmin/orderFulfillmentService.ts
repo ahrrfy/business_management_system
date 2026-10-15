@@ -561,6 +561,8 @@ export async function updateOnlineOrder(
     }
 
     // 4. Resolve or update customer details if provided (CF-05: never mutate shared CRM phone/phone2/phone3 across orders; rebind order to matching/new customer record when phone changes)
+    let heldCustLock: string | null = null;
+    try {
     let targetCustomerId: number | undefined = order.customerId != null ? Number(order.customerId) : undefined;
     if (order.customerId != null && (input.customerName != null || input.customerPhone != null)) {
       const currentCustomerId = Number(order.customerId);
@@ -627,74 +629,96 @@ export async function updateOnlineOrder(
             }),
           });
         }
-        try {
-          const phoneVariants = Array.from(
-            new Set(
-              [
-                normalizedPhone,
-                rawNewPhone,
-                ...(normalizedPhone.startsWith("+964")
-                  ? [
-                      `0${normalizedPhone.slice(4)}`,
-                      `964${normalizedPhone.slice(4)}`,
-                      `00964${normalizedPhone.slice(4)}`,
-                      normalizedPhone.slice(4),
-                    ]
-                  : []),
-              ].filter(Boolean),
+        heldCustLock = custLock;
+        const phoneVariants = Array.from(
+          new Set(
+            [
+              normalizedPhone,
+              rawNewPhone,
+              ...(normalizedPhone.startsWith("+964")
+                ? [
+                    `0${normalizedPhone.slice(4)}`,
+                    `964${normalizedPhone.slice(4)}`,
+                    `00964${normalizedPhone.slice(4)}`,
+                    normalizedPhone.slice(4),
+                  ]
+                : []),
+            ].filter(Boolean),
+          ),
+        );
+        const normDigits = normalizedPhone.replace(/\D/g, "");
+        const digitVariants = Array.from(
+          new Set(
+            [
+              normDigits,
+              normDigits ? `00${normDigits}` : "",
+              ...(normalizedPhone.startsWith("+964")
+                ? [`0${normalizedPhone.slice(4)}`, normalizedPhone.slice(4)]
+                : []),
+            ].filter(Boolean),
+          ),
+        );
+        const digitSqlList = sql.join(
+          digitVariants.map((d) => sql`${d}`),
+          sql`, `,
+        );
+        const candidateCustomers = await tx
+          .select({
+            id: customers.id,
+            isActive: customers.isActive,
+            phone: customers.phone,
+            phone2: customers.phone2,
+            phone3: customers.phone3,
+            whatsapp: customers.whatsapp,
+          })
+          .from(customers)
+          .where(
+            or(
+              inArray(customers.phone, phoneVariants),
+              inArray(customers.phone2, phoneVariants),
+              inArray(customers.phone3, phoneVariants),
+              inArray(customers.whatsapp, phoneVariants),
+              sql`REGEXP_REPLACE(COALESCE(${customers.phone}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+              sql`REGEXP_REPLACE(COALESCE(${customers.phone2}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+              sql`REGEXP_REPLACE(COALESCE(${customers.phone3}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+              sql`REGEXP_REPLACE(COALESCE(${customers.whatsapp}, ''), '[^0-9]', '') IN (${digitSqlList})`,
             ),
-          );
-          const candidateCustomers = await tx
-            .select({
-              id: customers.id,
-              isActive: customers.isActive,
-              phone: customers.phone,
-              phone2: customers.phone2,
-              phone3: customers.phone3,
-              whatsapp: customers.whatsapp,
-            })
-            .from(customers)
-            .where(
-              or(
-                inArray(customers.phone, phoneVariants),
-                inArray(customers.phone2, phoneVariants),
-                inArray(customers.phone3, phoneVariants),
-                inArray(customers.whatsapp, phoneVariants),
-              ),
-            )
-            .orderBy(desc(customers.isActive), desc(customers.id))
-            .for("update");
-          const matchedCustomer = candidateCustomers.find((c) =>
-            [c.phone, c.phone2, c.phone3, c.whatsapp].some(
-              (p) => Boolean(p && p.trim()) && normalizeIraqPhoneE164(p!.trim()) === normalizedPhone,
-            ),
-          );
-          if (matchedCustomer) {
-            if (matchedCustomer.isActive === false) {
-              throw new TRPCError({
-                code: "FORBIDDEN",
-                message: appErrorMessage({
-                  what: "هذا الرقم مرتبط بعميل معطّل",
-                  why: "سجل العميل المرتبط برقم الهاتف الجديد غير نشط حالياً",
-                  doThis: "أعد تفعيل حساب العميل أولاً من شاشة العملاء أو تحقق من رقم الهاتف المدخل",
-                }),
-              });
+          )
+          .orderBy(desc(customers.isActive), desc(customers.id))
+          .for("update");
+        const matchedCustomer = candidateCustomers.find((c) =>
+          [c.phone, c.phone2, c.phone3, c.whatsapp].some((p) => {
+            if (!p || !p.trim()) return false;
+            try {
+              return normalizeIraqPhoneE164(p.trim()) === normalizedPhone;
+            } catch {
+              return false;
             }
-            targetCustomerId = Number(matchedCustomer.id);
-          } else {
-            const [inserted] = await tx.insert(customers).values({
-              name: trimmedNewName || existingCustomer?.name || "عميل متجر",
-              phone: normalizedPhone,
-              customerType: "فرد",
-              defaultPriceTier: "RETAIL",
-              creditLimit: "0",
-              currentBalance: "0",
-              isActive: true,
+          }),
+        );
+        if (matchedCustomer) {
+          if (matchedCustomer.isActive === false) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: appErrorMessage({
+                what: "هذا الرقم مرتبط بعميل معطّل",
+                why: "سجل العميل المرتبط برقم الهاتف الجديد غير نشط حالياً",
+                doThis: "أعد تفعيل حساب العميل أولاً من شاشة العملاء أو تحقق من رقم الهاتف المدخل",
+              }),
             });
-            targetCustomerId = Number((inserted as { insertId?: number })?.insertId ?? currentCustomerId);
           }
-        } finally {
-          await tx.execute(sql`SELECT RELEASE_LOCK(${custLock})`);
+          targetCustomerId = Number(matchedCustomer.id);
+        } else {
+          const [inserted] = await tx.insert(customers).values({
+            name: trimmedNewName || existingCustomer?.name || "عميل متجر",
+            phone: normalizedPhone,
+            customerType: "فرد",
+            defaultPriceTier: "RETAIL",
+            creditLimit: "0",
+            currentBalance: "0",
+            isActive: true,
+          });
+          targetCustomerId = Number((inserted as { insertId?: number })?.insertId ?? currentCustomerId);
         }
       } else if (existingCustomer && trimmedNewName && trimmedNewName !== existingCustomer.name) {
         const isVerifiedStorefrontAccount = Boolean(
@@ -1066,6 +1090,9 @@ export async function updateOnlineOrder(
         })
         .where(eq(onlineOrders.id, order.id));
 
+      if (heldCustLock) {
+        await tx.execute(sql`COMMIT`);
+      }
       return {
         id: order.id,
         total: grandTotal.toFixed(2),
@@ -1137,12 +1164,25 @@ export async function updateOnlineOrder(
         })
         .where(eq(onlineOrders.id, order.id));
 
+      if (heldCustLock) {
+        await tx.execute(sql`COMMIT`);
+      }
       return {
         id: order.id,
         total: grandTotal.toFixed(2),
         subtotal: String(order.subtotal),
         deliveryFee: quoteTotals.deliveryFee,
       };
+    }
+    } catch (err) {
+      if (heldCustLock) {
+        await tx.execute(sql`ROLLBACK`).catch(() => {});
+      }
+      throw err;
+    } finally {
+      if (heldCustLock) {
+        await tx.execute(sql`SELECT RELEASE_LOCK(${heldCustLock})`).catch(() => {});
+      }
     }
   });
 }

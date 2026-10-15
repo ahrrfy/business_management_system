@@ -95,24 +95,57 @@ async function resolveCustomer(phone: string, name: string, firebaseUid: string)
           ].filter(Boolean),
         ),
       );
-      const existing = (
-        await tx
-          .select({ id: customers.id, name: customers.name, isActive: customers.isActive })
-          .from(customers)
-          .where(or(
+      const normDigits = phone.replace(/\D/g, "");
+      const digitVariants = Array.from(
+        new Set(
+          [
+            normDigits,
+            normDigits ? `00${normDigits}` : "",
+            ...(phone.startsWith("+964")
+              ? [`0${phone.slice(4)}`, phone.slice(4)]
+              : []),
+          ].filter(Boolean),
+        ),
+      );
+      const digitSqlList = sql.join(
+        digitVariants.map((d) => sql`${d}`),
+        sql`, `,
+      );
+      const candidates = await tx
+        .select({
+          id: customers.id,
+          name: customers.name,
+          isActive: customers.isActive,
+          phone: customers.phone,
+          phone2: customers.phone2,
+          phone3: customers.phone3,
+          whatsapp: customers.whatsapp,
+        })
+        .from(customers)
+        .where(
+          or(
             inArray(customers.phone, phoneVariants),
             inArray(customers.phone2, phoneVariants),
             inArray(customers.phone3, phoneVariants),
             inArray(customers.whatsapp, phoneVariants),
-          ))
-          .orderBy(desc(customers.isActive), desc(customers.id))
-          .for("update")
-          .limit(1)
-      )[0];
+            sql`REGEXP_REPLACE(COALESCE(${customers.phone}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+            sql`REGEXP_REPLACE(COALESCE(${customers.phone2}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+            sql`REGEXP_REPLACE(COALESCE(${customers.phone3}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+            sql`REGEXP_REPLACE(COALESCE(${customers.whatsapp}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+          ),
+        )
+        .orderBy(desc(customers.isActive), desc(customers.id))
+        .for("update");
+      const existing = candidates.find((c) =>
+        [c.phone, c.phone2, c.phone3, c.whatsapp].some(
+          (p) => Boolean(p && p.trim()) && canonicalIraqiMobile(p!.trim()) === phone,
+        ),
+      );
       if (existing) {
         if (existing.isActive === false) {
           throw new TRPCError({ code: "FORBIDDEN", message: "هذا الرقم مرتبط بعميل معطّل؛ تواصل مع المكتبة" });
         }
+        await tx.execute(sql`COMMIT`);
         return { id: Number(existing.id), name: existing.name, phone };
       }
 
@@ -126,9 +159,14 @@ async function resolveCustomer(phone: string, name: string, firebaseUid: string)
         isActive: true,
         clientRequestId: `firebase-phone:${firebaseUid}`,
       });
-      return { id: extractInsertId(inserted), name, phone };
+      const resolved = { id: extractInsertId(inserted), name, phone };
+      await tx.execute(sql`COMMIT`);
+      return resolved;
+    } catch (err) {
+      await tx.execute(sql`ROLLBACK`).catch(() => {});
+      throw err;
     } finally {
-      await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
+      await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`).catch(() => {});
     }
   });
 }
