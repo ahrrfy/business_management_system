@@ -1745,9 +1745,12 @@ function readWebHealthEnvironment(dotenvConfig) {
 
 export function normalizeWebHealthEnvironment(parsed) {
   const port = Number(parsed.PORT || 3000);
-  const requireSecret =
-    parsed.REQUIRE_INTERNAL_PROXY_SECRET === "1" ? "1" : "0";
   const secret = parsed.INTERNAL_PROXY_SECRET?.trim() ?? "";
+  const rawRequireSecret = parsed.REQUIRE_INTERNAL_PROXY_SECRET?.trim();
+  const requireSecret =
+    rawRequireSecret === "1" || (!rawRequireSecret && Boolean(secret))
+      ? "1"
+      : "0";
   const previousSecret =
     parsed.INTERNAL_PROXY_SECRET_PREVIOUS?.trim() ?? "";
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {

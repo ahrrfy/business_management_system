@@ -52,7 +52,10 @@ import {
   hasOverfilledPublicSensitiveBatch,
   parseCanonicalTrpcProcedures,
 } from "./middleware/publicSensitiveBatch";
-import { publicStorefrontHostBoundary } from "./middleware/publicStorefrontHost";
+import {
+  isPublicStorefrontRequest,
+  publicStorefrontHostBoundary,
+} from "./middleware/publicStorefrontHost";
 import { isBackgroundJobRunner, isClustered } from "./lib/clusterRole";
 import {
   createOverloadGuard,
@@ -166,17 +169,24 @@ async function startServer() {
   // (count.auth PIN، auth.login، platformAdmin.login) بتدوير الترويسة في كل طلب — و
   // express-rate-limit يفهرس بـreq.ip. مع `1` يُطابق nginx واحداً ⇒ req.ip = IP العميل الحقيقي
   // كما يسجّله البروكسي ويُتجاهَل أي XFF محقون. (كانت 1 ثم صارت true بالخطأ في b757623.)
-  const trustProxy =
-    process.env.TRUST_PROXY === "1" || isLoopbackHost(host) ? 1 : false;
-  app.set("trust proxy", trustProxy);
-  const workerInstanceId = nanoid(16);
-
   // على VPS مشترك لا يكفي loopback وحده: أي عملية محلية تستطيع الاتصال بـ:3000 وتزوير
   // XFF متجاوزةً عدادات nginx. سرّ hop داخلي يثبت أن الطلب مرّ فعلاً عبر nginx.
   // حتى healthz يمرّ بالسر؛ nginx هو عميل الإنتاج الوحيد، وفحوص PM2 تستعمل النطاق العام.
+  const requireInternalProxySecret =
+    process.env.REQUIRE_INTERNAL_PROXY_SECRET ||
+    (process.env.INTERNAL_PROXY_SECRET?.trim() ? "1" : "0");
+  const trustProxy =
+    process.env.TRUST_PROXY === "1" ||
+    (isLoopbackHost(host) &&
+      (process.env.NODE_ENV !== "production" || requireInternalProxySecret === "1"))
+      ? 1
+      : false;
+  app.set("trust proxy", trustProxy);
+  const workerInstanceId = nanoid(16);
+
   if (
     process.env.NODE_ENV === "production" &&
-    process.env.REQUIRE_INTERNAL_PROXY_SECRET === "1"
+    requireInternalProxySecret === "1"
   ) {
     if (!isLoopbackHost(host)) {
       throw new Error(
@@ -369,7 +379,10 @@ async function startServer() {
         req.path.startsWith("/assets/") ||
         req.path.startsWith("/api/webhooks"),
       thresholdFor: (req) => {
-        const lane = classifyRequestLane(req.path, req.hostname);
+        const effectiveHost = isPublicStorefrontRequest(req)
+          ? "alarabiya.online"
+          : req.hostname;
+        const lane = classifyRequestLane(req.path, effectiveHost);
         if (lane === "critical") return criticalMaxLagMs;
         if (lane === "storefront") return storefrontMaxLagMs;
         return maxLagMs;
@@ -379,11 +392,14 @@ async function startServer() {
         const now = Date.now();
         if (now - lastShedLogAt > 5000) {
           lastShedLogAt = now;
+          const effectiveHost = isPublicStorefrontRequest(req)
+            ? "alarabiya.online"
+            : req.hostname;
           logger.warn(
             {
               lagMs: Math.round(lagMonitor.lagMs()),
               path: req.path,
-              lane: classifyRequestLane(req.path, req.hostname),
+              lane: classifyRequestLane(req.path, effectiveHost),
             },
             "حماية الحِمل الزائد: تشبّع حلقة الأحداث — تنازلٌ عن طلبات (503).",
           );
@@ -460,6 +476,33 @@ async function startServer() {
       ),
     }),
   );
+
+  // حدّ صارم على التحقق الثنائي (/api/trpc/auth.twoFactorVerify) لمنع تخمين رموز OTP/الاسترداد.
+  const authTwoFactorLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: Number(process.env.TWO_FACTOR_RATE_LIMIT_MAX ?? 15),
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    skip: (req) => !req.path.includes("auth.twoFactorVerify"),
+    skipSuccessfulRequests: true,
+    handler: rateLimitHandler(
+      "محاولات تحقق ثنائي كثيرة، انتظر ١٥ دقيقة ثم أعد المحاولة.",
+    ),
+  });
+  app.use("/api/trpc", authTwoFactorLimiter);
+
+  // حدّ صارم على استهلاك رمز استعادة كلمة المرور (/api/trpc/auth.resetPasswordWithToken).
+  const authPasswordRecoveryLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: Number(process.env.PASSWORD_RECOVERY_RATE_LIMIT_MAX ?? 10),
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    skip: (req) => !req.path.includes("auth.resetPasswordWithToken"),
+    handler: rateLimitHandler(
+      "محاولات استعادة كلمة المرور كثيرة، انتظر ١٥ دقيقة ثم أعد المحاولة.",
+    ),
+  });
+  app.use("/api/trpc", authPasswordRecoveryLimiter);
 
   // مؤشرات البنرات/التحويل عامة وبلا هوية، لكنها كتابة؛ حدّ مستقل يمنع تضخيم
   // لوحة التسويق حتى مع دفعات tRPC أو سكربتات خارجية، من دون تعطيل التصفح الطبيعي.

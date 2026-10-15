@@ -185,7 +185,8 @@ module.exports = {
         HOST: process.env.HOST || "127.0.0.1",
         ALLOW_PUBLIC_BIND: process.env.ALLOW_PUBLIC_BIND || "0",
         REQUIRE_INTERNAL_PROXY_SECRET:
-          process.env.REQUIRE_INTERNAL_PROXY_SECRET || "0",
+          process.env.REQUIRE_INTERNAL_PROXY_SECRET ||
+          (process.env.INTERNAL_PROXY_SECRET ? "1" : "0"),
         INTERNAL_PROXY_SECRET: process.env.INTERNAL_PROXY_SECRET,
         INTERNAL_PROXY_SECRET_PREVIOUS:
           process.env.INTERNAL_PROXY_SECRET_PREVIOUS ?? "",

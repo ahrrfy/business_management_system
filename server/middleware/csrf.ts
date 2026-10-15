@@ -1,6 +1,12 @@
 import type { NextFunction, Request, Response } from "express";
 import { isCurrentNativeClient } from "../auth/deviceProof";
+import { isPublicStorefrontHostname } from "./publicStorefrontHost";
 import { sendTrpcError } from "./trpcError";
+
+function extractHostOnly(rawHost: string | undefined): string {
+  if (!rawHost) return "";
+  return rawHost.split(",")[0]?.trim().replace(/:\d+$/, "").toLowerCase() ?? "";
+}
 
 /**
  * Origin check CSRF guard (defense-in-depth on top of sameSite:"strict").
@@ -25,6 +31,21 @@ export function csrfGuard(req: Request, res: Response, next: NextFunction): void
   const safe = ["GET", "HEAD", "OPTIONS"];
   if (safe.includes(req.method)) {
     next();
+    return;
+  }
+
+  const rawHostHeader = extractHostOnly(req.get("host"));
+  const rawForwardedHost = extractHostOnly(
+    typeof req.headers["x-forwarded-host"] === "string"
+      ? req.headers["x-forwarded-host"]
+      : undefined,
+  );
+  if (
+    rawForwardedHost &&
+    rawHostHeader &&
+    isPublicStorefrontHostname(rawForwardedHost) !== isPublicStorefrontHostname(rawHostHeader)
+  ) {
+    deny(req, res, "CSRF: مصدر الطلب غير مصرَّح");
     return;
   }
 

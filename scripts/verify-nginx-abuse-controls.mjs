@@ -123,6 +123,7 @@ export function verifyNginxConfiguration(input) {
 
   for (const [pattern, message] of [
     [/proxy_set_header\s+Host\s+\$host;/, "shared proxy contract must preserve Host"],
+    [/proxy_set_header\s+X-Forwarded-Host\s+\$host;/, "shared proxy contract must overwrite X-Forwarded-Host"],
     [/proxy_set_header\s+X-Forwarded-Proto\s+\$scheme;/, "shared proxy contract must preserve HTTPS scheme"],
     [/proxy_set_header\s+X-Internal-Proxy-Secret\s+\$alroya_proxy_secret;/, "shared proxy contract must attach the internal hop secret"],
     [/proxy_set_header\s+X-Alroya-Worker-Probe\s+"";/, "shared proxy contract must strip the internal worker probe header"],
@@ -159,6 +160,8 @@ export function verifyNginxConfiguration(input) {
   requireMatch(errors, appLocations, /limit_req\s+zone=alroya_restore\s+burst=2\s+nodelay;/, "restore limiter must use alroya_restore");
   requireMatch(errors, appLocations, /location\s+~\s+"\^\/api\/webhooks/, "missing webhook route location");
   requireMatch(errors, appLocations, /limit_req\s+zone=alroya_webhooks\s+burst=60\s+nodelay;/, "webhooks must use shared zone");
+  requireMatch(errors, publicSite, /limit_req\s+zone=alroya_auth\s+burst=30\s+nodelay;/, "public vhost auth limiter must use alroya_auth");
+  requireMatch(errors, publicSite, /limit_req\s+zone=alroya_password_recovery\s+burst=3\s+nodelay;/, "public vhost recovery limiter must use alroya_password_recovery");
 
   const authLocation = /^\/api\/trpc\/(?:[^/?]+,)*(?:auth\.login|auth\.twoFactorVerify|platformAdmin\.login)(?:,|$)/;
   const passwordRecoveryLocation = /^\/api\/trpc\/(?:[^/?]+,)*auth\.resetPasswordWithToken(?:,|$)/;
