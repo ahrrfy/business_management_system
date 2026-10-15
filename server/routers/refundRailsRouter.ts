@@ -13,7 +13,7 @@
  * الكاشير عندهم `treasury:READ` بالسياسة القائمة. عزلُ الفرع + حجبُ الرصيد يظلّان في
  * الخدمة كضبطٍ ثانٍ مختبَر (`refundRailService.test.ts`).
  */
-import { protectedProcedure, requireModule, router } from "../trpc";
+import { protectedProcedure, requireModule, returnInvoiceScopeForUser, router } from "../trpc";
 import { withTx } from "../services/tx";
 import { refundRailPreflight } from "../services/refundRailService";
 import { RefundRailContextSchema } from "@shared/refundRails";
@@ -37,6 +37,8 @@ export const refundRailsRouter = router({
           role: ctx.user.role,
           isOwner: ctx.user.isOwner === true,
           permissionsOverride: (ctx.user.permissionsOverride ?? null) as PermissionMap | null,
+          customRoleKey: (ctx.user as { customRoleKey?: string | null }).customRoleKey ?? null,
+          saleReturnInvoiceScope: returnInvoiceScopeForUser(ctx.user, "refundRails.preflight"),
         }),
       ),
     ),

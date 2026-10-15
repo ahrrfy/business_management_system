@@ -1,7 +1,28 @@
 import { describe, expect, it } from "vitest";
 import { ROLE_TEMPLATES, SECTION_CASHIER_ROLES } from "./permissions";
-import { getOperationPermission } from "./operationPermissions";
+import {
+  applyLegacyIndividualOperationOverrides,
+  getOperationPermission,
+} from "./operationPermissions";
 import { buildDefaultRoleOperationPolicy, dailyOperationPaths, ROLE_DAILY_OPERATION_PATHS } from "./roleOperationPresets";
+
+const REQUIRED_CASHIER_RETURN_OPERATIONS = [
+  "returns.create",
+  "returns.executeSalesReturnCart",
+  "returns.getOpenRefundDrawers",
+  "returns.getInvoice",
+  "returns.inspectInvoiceForReturn",
+  "returns.lookupItemForReturn",
+  "returns.universalScan",
+  "returns.forensicTrace",
+  "returns.shifts",
+  "refundRails.preflight",
+] as const;
+
+const RECEPTION_RETURN_REQUEST_OPERATIONS = [
+  "returns.request",
+  "returns.requests",
+] as const;
 
 describe("role operation presets", () => {
   it("keeps a fixed snapshot for every role daily-task template", () => {
@@ -24,6 +45,77 @@ describe("role operation presets", () => {
     ]) expect(policy.grants[`operation.${path}`], path).toBe(true);
   });
 
+  it("grants sales return operations to retail cashier, print cashier, and reception cashier presets and legacy module overrides", () => {
+    const cashier = buildDefaultRoleOperationPolicy("cashier", "cashier", ROLE_TEMPLATES.cashier);
+    for (const path of [...REQUIRED_CASHIER_RETURN_OPERATIONS, ...RECEPTION_RETURN_REQUEST_OPERATIONS]) {
+      expect(cashier.grants[`operation.${path}`], `cashier:${path}`).toBe(true);
+    }
+
+    for (const role of SECTION_CASHIER_ROLES) {
+      const policy = buildDefaultRoleOperationPolicy(role.key, role.baseRole, role.permissions);
+      for (const path of REQUIRED_CASHIER_RETURN_OPERATIONS) {
+        expect(policy.grants[`operation.${path}`], `${role.key}:${path}`).toBe(true);
+      }
+      for (const path of RECEPTION_RETURN_REQUEST_OPERATIONS) {
+        expect(policy.grants[`operation.${path}`], `${role.key}:${path}`).toBe(
+          role.key === "reception_clerk",
+        );
+      }
+      expect(policy.grants["operation.returns.executePurchaseReturnCart"]).toBe(false);
+    }
+
+    // Legacy Print Cashier (pos: FULL, sales: NONE, workorders: NONE) on print_operator or cashier baseRole
+    for (const baseRole of ["print_operator", "cashier"] as const) {
+      const inherited = buildDefaultRoleOperationPolicy(
+        baseRole,
+        baseRole,
+        ROLE_TEMPLATES[baseRole],
+      );
+      const bridged = applyLegacyIndividualOperationOverrides(
+        inherited,
+        baseRole,
+        ROLE_TEMPLATES[baseRole],
+        {
+          ...ROLE_TEMPLATES[baseRole],
+          pos: "FULL",
+          sales: "NONE",
+          workorders: "NONE",
+        },
+        null,
+      );
+      for (const path of REQUIRED_CASHIER_RETURN_OPERATIONS) {
+        expect(bridged.grants[`operation.${path}`], `legacy-print(${baseRole}):${path}`).toBe(true);
+      }
+      for (const path of RECEPTION_RETURN_REQUEST_OPERATIONS) {
+        expect(bridged.grants[`operation.${path}`], `legacy-print(${baseRole}):${path}`).toBe(false);
+      }
+    }
+
+    // Legacy Reception Cashier (workorders: FULL, pos: READ, sales: NONE) on print_operator or cashier baseRole
+    for (const baseRole of ["print_operator", "cashier"] as const) {
+      const inherited = buildDefaultRoleOperationPolicy(
+        baseRole,
+        baseRole,
+        ROLE_TEMPLATES[baseRole],
+      );
+      const bridged = applyLegacyIndividualOperationOverrides(
+        inherited,
+        baseRole,
+        ROLE_TEMPLATES[baseRole],
+        {
+          ...ROLE_TEMPLATES[baseRole],
+          workorders: "FULL",
+          pos: "READ",
+          sales: "NONE",
+        },
+        null,
+      );
+      for (const path of [...REQUIRED_CASHIER_RETURN_OPERATIONS, ...RECEPTION_RETURN_REQUEST_OPERATIONS]) {
+        expect(bridged.grants[`operation.${path}`], `legacy-reception(${baseRole}):${path}`).toBe(true);
+      }
+    }
+  });
+
   it("does not expose purchases, supplier payments, cost or profit to cashier profiles", () => {
     for (const role of SECTION_CASHIER_ROLES) {
       const policy = buildDefaultRoleOperationPolicy(role.key, role.baseRole, role.permissions);
@@ -40,7 +132,7 @@ describe("role operation presets", () => {
     expect(cashier.grants["operation.sales.correct"]).toBe(false);
 
     const printRole = SECTION_CASHIER_ROLES.find((item) => item.key === "print_cashier")!;
-    const printPolicy = buildDefaultRoleOperationPolicy(printRole.key, printRole.baseRole, printRole.permissions);
+    const printPolicy = buildDefaultRoleOperationPolicy(printRole.key, printRole.baseRole, rolePermissions(printRole));
     expect(printPolicy.grants["operation.printPos.createSale"]).toBe(true);
     expect(printPolicy.grants["operation.sales.cancel"]).toBe(true);
     expect(printPolicy.grants["operation.returns.getInvoice"]).toBe(true);
@@ -97,3 +189,7 @@ describe("role operation presets", () => {
     expect(policy.grants["operation.returns.executeSalesReturnCart"]).toBe(true);
   });
 });
+
+function rolePermissions(role: (typeof SECTION_CASHIER_ROLES)[number]) {
+  return role.permissions;
+}

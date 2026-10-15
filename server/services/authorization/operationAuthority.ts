@@ -97,6 +97,8 @@ function storedPolicy(value: unknown): OperationPolicy | null {
 /** Same role/user precedence as request context; callers supply locked DB rows. */
 export type StoredOperationSnapshot = OperationUser & {
   branchId?: number | null;
+  customRoleKey?: string | null;
+  persistedPermissionsOverride?: PermissionMap | null;
   /** True only for a policy saved on the user or custom role, not a synthesized built-in preset. */
   hasPersistedOperationPolicy?: boolean;
 };
@@ -129,8 +131,10 @@ export function storedOperationUser(user: StoredUser, role?: StoredRole | null):
   return {
     role: effectiveRole,
     branchId: user.branchId,
+    customRoleKey: role?.key ?? null,
     hasPersistedOperationPolicy: Boolean(persistedRolePolicy || userPolicy),
     permissionsOverride: override,
+    persistedPermissionsOverride: override,
     resolvedPermissions: modules,
     roleOperationPolicy: rolePolicy,
     operationPolicy: userPolicy,

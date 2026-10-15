@@ -474,7 +474,16 @@ export function requireAtomicPermission(key: AtomicPermissionKey) {
 export function requireModule(moduleKey: string, minLevel: AccessLevel) {
   return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
-    if (canonicalOperationAllowed(ctx.user, path)) {
+    const isRefundRailPreflight =
+      moduleKey === "treasury" &&
+      minLevel === "READ" &&
+      (path === "refundRails.preflight" || path === "preflight");
+    if (
+      canonicalOperationAllowed(
+        ctx.user,
+        isRefundRailPreflight ? "refundRails.preflight" : path,
+      )
+    ) {
       assertTwoFactorEnrolled(ctx.user, path);
       return next({ ctx: { ...ctx, user: ctx.user } });
     }
@@ -483,7 +492,10 @@ export function requireModule(moduleKey: string, minLevel: AccessLevel) {
     const override = (ctx.user as any).permissionsOverride as Record<string, AccessLevel> | null;
     const map = resolvePermissions(ctx.user.role as RoleKey, override);
     const level = map[moduleKey] ?? "NONE";
-    const allowed = level === "FULL" || (minLevel === "READ" && level === "READ");
+    const allowed =
+      level === "FULL" ||
+      (minLevel === "READ" && level === "READ") ||
+      (isRefundRailPreflight && returnOperationsAllowed(ctx.user));
     // م٨: تحقّق القدرات الظِلّيّ في وضع الظلّ الموثَّق (AUTHZ_ENGINE=shadow) — لا يغيّر `allowed` (صفر انحدار).
     if (capabilityShadowEnabled()) auditCapabilityShadow(ctx, "requireModule", moduleKey, minLevel, map, allowed, path);
     if (!allowed) throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
@@ -701,22 +713,39 @@ export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL
 export function returnOperationsAllowed(user: {
   role: string;
   permissionsOverride?: unknown;
+  atomicPermissions?: unknown;
   resolvedAtomicPermissions?: AtomicPermissionsMap;
 }): boolean {
   if (user.role === "admin") return true;
-  if (user.resolvedAtomicPermissions) {
-    if (
-      user.resolvedAtomicPermissions["pos.return.create"] === false &&
-      user.resolvedAtomicPermissions["pos.invoice.void"] === false
-    ) {
-      return false;
-    }
-  }
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
   const salesAllowed = moduleAccessAllowed(user.role, override, "sales", "FULL", ["cashier", "manager"]);
   const receptionAllowed = moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
   const printPosAllowed = moduleAccessAllowed(user.role, override, "pos", "FULL", ["cashier", "manager", "print_operator"]);
-  return salesAllowed || receptionAllowed || printPosAllowed;
+  const moduleAllowed = salesAllowed || receptionAllowed || printPosAllowed;
+  const atomic =
+    user.resolvedAtomicPermissions ??
+    (user.atomicPermissions as Record<string, boolean> | null | undefined);
+  if (atomic) {
+    const rawAtomic = user.atomicPermissions as Record<string, boolean> | null | undefined;
+    const hasCustomRole = Boolean(
+      (user as { customRoleKey?: string | null; customRoleId?: number | null }).customRoleKey ||
+        (user as { customRoleId?: number | null }).customRoleId,
+    );
+    const isBridgedLegacyStation =
+      !hasCustomRole &&
+      (user.role === "user" || user.role === "print_operator") &&
+      moduleAllowed;
+    const returnRevoked = isBridgedLegacyStation
+      ? rawAtomic?.["pos.return.create"] === false
+      : atomic["pos.return.create"] === false;
+    const voidRevoked = isBridgedLegacyStation
+      ? rawAtomic?.["pos.invoice.void"] === false
+      : atomic["pos.invoice.void"] === false;
+    if (returnRevoked && voidRevoked) {
+      return false;
+    }
+  }
+  return moduleAllowed;
 }
 
 /**
@@ -741,9 +770,22 @@ export const returnsProcedure = auditedProcedure
           }),
         });
       }
-      const atomic = (ctx.user as any).resolvedAtomicPermissions as AtomicPermissionsMap | undefined;
+      const atomic =
+        ((ctx.user as any).resolvedAtomicPermissions as AtomicPermissionsMap | undefined) ??
+        ((ctx.user as any).atomicPermissions as Record<string, boolean> | null | undefined);
+      const rawAtomic = (ctx.user as any).atomicPermissions as Record<string, boolean> | null | undefined;
+      const hasCustomRole = Boolean(
+        (ctx.user as { customRoleKey?: string | null; customRoleId?: number | null }).customRoleKey ||
+          (ctx.user as { customRoleId?: number | null }).customRoleId,
+      );
+      const isBridgedLegacyStation =
+        !hasCustomRole &&
+        (ctx.user.role === "user" || ctx.user.role === "print_operator");
       if (atomic) {
-        if (path?.endsWith("cancel") && atomic["pos.invoice.void"] === false) {
+        const voidRevoked = isBridgedLegacyStation
+          ? rawAtomic?.["pos.invoice.void"] === false
+          : atomic["pos.invoice.void"] === false;
+        if (path?.endsWith("cancel") && voidRevoked) {
           throw new TRPCError({
             code: "FORBIDDEN",
             message: appErrorMessage({
@@ -753,9 +795,12 @@ export const returnsProcedure = auditedProcedure
             }),
           });
         }
+        const returnRevoked = isBridgedLegacyStation
+          ? rawAtomic?.["pos.return.create"] === false
+          : atomic["pos.return.create"] === false;
         if (
           (path?.endsWith("create") || path?.includes("Refund") || path?.includes("Return")) &&
-          atomic["pos.return.create"] === false
+          returnRevoked
         ) {
           throw new TRPCError({
             code: "FORBIDDEN",
@@ -872,6 +917,48 @@ export function invoiceViewScopeForUser(
   // بابٌ على مبيعات التجزئة ولا على عروض الأسعار (تبقى على salesReadProcedure).
   if (map.pos === "FULL") return "print";
   return null;
+}
+
+/**
+ * نطاق قناة الفاتورة لعمليات التحري والمسح في المرتجعات:
+ * يحصر كاشير الاستقبال (`reception_clerk` أو `workorders:FULL` دون `sales:FULL`) في فواتير الاستقبال،
+ * وكاشير الطباعة (`print_cashier` أو `pos:FULL` دون `sales:FULL` و`workorders:FULL`) في فواتير الطباعة،
+ * فلا تُسرد فواتير التجزئة والقنوات الأخرى عبر `forensicTrace`.
+ */
+export function returnInvoiceScopeForUser(
+  user: OperationUser,
+  path = "returns.forensicTrace",
+): InvoiceScope | null {
+  if (user.role === "admin" || user.isOwner) return "sales";
+  if (hasOperationPolicy(user) && !canonicalOperationAllowed(user, path)) return null;
+  const persistedHolder = user as {
+    persistedPermissionsOverride?: Record<string, AccessLevel> | null;
+    customRoleKey?: string | null;
+  };
+  const override =
+    persistedHolder.persistedPermissionsOverride !== undefined
+      ? persistedHolder.persistedPermissionsOverride
+      : (user.permissionsOverride as Record<string, AccessLevel> | null | undefined);
+  if (
+    moduleAccessAllowed(user.role, override, "sales", "FULL", ["cashier", "manager"]) ||
+    canonicalOperationAllowed(user, "sales.create")
+  ) {
+    return "sales";
+  }
+  const customKey = persistedHolder.customRoleKey;
+  if (customKey === "reception_clerk") return "reception";
+  if (customKey === "print_cashier") return "print";
+  if (customKey === "retail_cashier" && override?.sales !== "NONE") return "sales";
+  if (moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"])) {
+    return "reception";
+  }
+  if (moduleAccessAllowed(user.role, override, "sales", "READ", ["cashier", "manager", "accountant"])) {
+    return "sales";
+  }
+  if (moduleAccessAllowed(user.role, override, "pos", "FULL", ["cashier", "manager", "print_operator"])) {
+    return "print";
+  }
+  return invoiceViewScopeForUser(user, path);
 }
 
 /**

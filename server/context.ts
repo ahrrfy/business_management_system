@@ -31,6 +31,7 @@ export type AuthUser = User & {
   operationPolicy: OperationPolicy | null;
   customRoleLabel?: string | null;
   customRoleKey?: string | null;
+  persistedPermissionsOverride?: PermissionMap | null;
   /** ش٢: دورٌ مخصّص مُسنَد لكنه معطَّل/محذوف ⇒ هبط الحساب فشلاً مغلقاً إلى «user» (لا الفئة الكاملة). */
   roleLockedByInactiveCustomRole?: boolean;
   resolvedAtomicPermissions?: AtomicPermissionsMap;
@@ -66,6 +67,7 @@ export function normalizeOwnerAuthority(user: AuthUser): AuthUser {
   if (!user.isOwner) return user;
   user.role = "admin" as User["role"];
   user.permissionsOverride = null;
+  user.persistedPermissionsOverride = null;
   user.operationPolicy = null;
   user.customRoleLabel = null;
   user.customRoleKey = null;
@@ -101,24 +103,40 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
   };
   if (!user.customRoleId) {
     const baseRole = user.role ?? "user";
-    user.resolvedAtomicPermissions = resolveAtomicPermissions(
+    const modules = resolvePermissions(
       baseRole,
+      user.permissionsOverride as PermissionMap | null,
+    );
+    const effectiveCapsRole =
+      baseRole === "print_operator" || baseRole === "user"
+        ? modules.workorders === "FULL"
+          ? "reception_clerk"
+          : modules.pos === "FULL" || modules.sales === "FULL"
+            ? "cashier"
+            : baseRole
+        : baseRole;
+    const effectiveAtomicRole =
+      baseRole === "print_operator" || baseRole === "user"
+        ? modules.workorders === "FULL" ||
+          modules.pos === "FULL" ||
+          modules.sales === "FULL"
+          ? "cashier"
+          : baseRole
+        : baseRole;
+    user.resolvedAtomicPermissions = resolveAtomicPermissions(
+      effectiveAtomicRole,
       null,
       user.atomicPermissions as AtomicPermissionsMap | null,
     );
     user.resolvedOperationalCaps = resolveOperationalCaps(
-      baseRole,
+      effectiveCapsRole,
       null,
       user.operationalCaps as OperationalCaps | null,
     );
     user.resolvedSensitiveDataMasking = resolveSensitiveDataMasking(
-    baseRole,
-    null,
-    null,
-  );
-    const modules = resolvePermissions(
       baseRole,
-      user.permissionsOverride as PermissionMap | null,
+      null,
+      null,
     );
     const individualPolicy = user.operationPolicy == null ? null : operationPolicySchema.parse(user.operationPolicy);
     user.courierShellOnly = baseRole === "courier" && individualPolicy == null;
@@ -158,6 +176,7 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
     // القالب التشغيلي الافتراضي يفعّل التفويض الدقيق، لكنه لا يعيد كتابة
     // إعدادات الوحدات المحفوظة لحساب قديم. لا نشتقّ خريطة توافق جديدة إلا
     // عندما حفظت الإدارة سياسة فردية صريحة للمستخدم نفسه.
+    user.persistedPermissionsOverride = (user.permissionsOverride ?? null) as PermissionMap | null;
     if (individualPolicy != null)
       user.permissionsOverride = diffFromTemplate(
         baseRole,
@@ -174,6 +193,7 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
     // مستخدمون، فهذا المسار دفاعٌ في العمق نادر البلوغ — لكنه يفشل بأمان لا باتّساع.)
     user.role = "user" as User["role"];
     user.permissionsOverride = null;
+    user.persistedPermissionsOverride = null;
     user.customRoleLabel = null;
     user.customRoleKey = null;
     user.roleLockedByInactiveCustomRole = true;
@@ -203,10 +223,19 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
     user.permissionsOverride as PermissionMap | null,
   );
   user.permissionsOverride = diffFromTemplate(baseRole, effectivePermissions);
+  user.persistedPermissionsOverride = user.permissionsOverride as PermissionMap | null;
   user.customRoleLabel = role.label;
   user.customRoleKey = role.key;
+  const effectiveCustomAtomicRole: RoleKey =
+    baseRole === "print_operator" || baseRole === "user"
+      ? effectivePermissions.workorders === "FULL" ||
+        effectivePermissions.pos === "FULL" ||
+        effectivePermissions.sales === "FULL"
+        ? "cashier"
+        : baseRole
+      : baseRole;
   user.resolvedAtomicPermissions = resolveAtomicPermissions(
-    baseRole,
+    effectiveCustomAtomicRole,
     role.atomicPermissions as AtomicPermissionsMap | null,
     user.atomicPermissions as AtomicPermissionsMap | null,
   );

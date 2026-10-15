@@ -20,11 +20,22 @@ import {
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { trpc } from "@/lib/trpc";
 import { hasModuleAccess, moduleAccessAllowed, type AccessLevel, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import {
+  canSeeGate,
+  RETURNS_WORKSPACE_GATE,
+  type RoleGate,
+} from "@/lib/navVisibility";
 import { Lock } from "lucide-react";
 import { useSyncExternalStore } from "react";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import type { OperationPolicy } from "@shared/operationPermissions";
+
+const LEGACY_RETURNS_STATION_GATE: RoleGate = {
+  anyOf: [
+    { roles: ["cashier", "manager", "print_operator"], module: "workorders", level: "FULL" },
+    { roles: ["cashier", "manager"], module: "pos", level: "FULL" },
+  ],
+};
 
 type Props = {
   /** Compound exact operation contract for alternative workflows in the same editor. */
@@ -99,7 +110,9 @@ export function RequireRole({
       : gate
       ? canSeeGate(gate, role, override, operationPolicy)
       : module
-        ? canSeeGate({ roles, module, level }, role, override, operationPolicy)
+        ? canSeeGate({ roles, module, level }, role, override, operationPolicy) ||
+          (canonicalGate === RETURNS_WORKSPACE_GATE &&
+            canSeeGate(LEGACY_RETURNS_STATION_GATE, role, override, operationPolicy))
         : role === "admin" || !!roles?.includes(role));
   if (!allowed) {
     return <Forbidden />;

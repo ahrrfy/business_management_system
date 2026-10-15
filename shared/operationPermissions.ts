@@ -357,27 +357,43 @@ export function applyLegacyIndividualOperationOverrides(
       grants[operation.key] = true;
     }
   }
-  // Legacy print-cashier accounts were represented as role=user plus an
-  // individual pos:FULL override. Preserve their routine return workflow while
-  // the UI migrates them to the named print_cashier role/preset.
-  if (rawModules?.pos === "FULL" && baseModules.pos !== "FULL") {
-    for (const path of [
-      "returns.create",
-      "returns.getInvoice",
-      "returns.inspectInvoiceForReturn",
-      "returns.executeSalesReturnCart",
-      "returns.getOpenRefundDrawers",
-    ]) {
-      const operation = getOperationPermission(path);
-      if (operation?.delegable) grants[operation.key] = true;
-    }
-  }
-  return applyLegacyIndividualOperationDenials(
+  const denied = applyLegacyIndividualOperationDenials(
     { ...policy, grants },
     role,
     rawModules,
     rawAtomic,
   );
+  const bridgedGrants = { ...denied.grants };
+  const bothReturnAndVoidRevoked =
+    rawAtomic?.["pos.return.create"] === false &&
+    rawAtomic?.["pos.invoice.void"] === false;
+  // Legacy print-cashier (pos:FULL) and reception-cashier (workorders:FULL)
+  // accounts preserve their routine return workflow while migrating to named presets,
+  // even when their legacy module map explicitly sets sales: "NONE".
+  if (
+    !bothReturnAndVoidRevoked &&
+    (rawModules?.pos === "FULL" || rawModules?.workorders === "FULL")
+  ) {
+    for (const path of [
+      "returns.create",
+      "returns.getInvoice",
+      "returns.inspectInvoiceForReturn",
+      "returns.lookupItemForReturn",
+      "returns.universalScan",
+      "returns.forensicTrace",
+      "returns.shifts",
+      "returns.executeSalesReturnCart",
+      "returns.getOpenRefundDrawers",
+      "refundRails.preflight",
+      ...(rawModules?.workorders === "FULL"
+        ? ["returns.request", "returns.requests"]
+        : []),
+    ]) {
+      const operation = getOperationPermission(path);
+      if (operation?.delegable) bridgedGrants[operation.key] = true;
+    }
+  }
+  return applyLegacyOperationDenials({ ...denied, grants: bridgedGrants }, rawAtomic);
 }
 
 /** Carry only explicit individual restrictions, never old template restrictions. */
@@ -412,6 +428,7 @@ export interface OperationUser {
   /** A resolved compatibility snapshot alone must not enable canonical gate bypass. */
   operationPolicyEnabled?: boolean;
   permissionsOverride?: unknown;
+  atomicPermissions?: unknown;
   resolvedPermissions?: PermissionMap;
   resolvedOperationPolicy?: OperationPolicy | null;
   roleOperationPolicy?: OperationPolicy | null;
@@ -445,6 +462,7 @@ export function hasOperationPolicy(user: OperationUser): boolean {
 function effectivePolicy(user: OperationUser): OperationPolicy {
   if (user.resolvedOperationPolicy) return user.resolvedOperationPolicy;
   const override = user.permissionsOverride as PermissionMap | null | undefined;
+  const atomic = user.atomicPermissions as Record<string, boolean> | null | undefined;
   const modules =
     user.resolvedPermissions ??
     resolvePermissions(user.role as RoleKey, override);
@@ -454,6 +472,13 @@ function effectivePolicy(user: OperationUser): OperationPolicy {
     user.roleOperationPolicy,
     user.operationPolicy,
     override,
+    user.operationPolicy == null && (override != null || atomic != null)
+      ? {
+          permissionsOverride: override,
+          atomicPermissions: atomic,
+          inheritedModules: resolvePermissions(user.role as RoleKey, null),
+        }
+      : undefined,
   );
 }
 
@@ -559,8 +584,18 @@ export function buildOperationPolicyFromLegacy(
   explicitAtomicGrants?: Record<string, boolean> | null,
   explicitModuleOverride?: PermissionMap | null,
 ): OperationPolicy {
+  const basePolicy = legacyOperationPolicy(role, modules, explicitModuleOverride);
+  if (explicitModuleOverride != null) {
+    return applyLegacyIndividualOperationOverrides(
+      basePolicy,
+      role,
+      resolvePermissions(role as RoleKey, null),
+      explicitModuleOverride,
+      explicitAtomicGrants,
+    );
+  }
   return applyLegacyOperationDenials(
-    legacyOperationPolicy(role, modules, explicitModuleOverride),
+    basePolicy,
     explicitAtomicGrants,
   );
 }

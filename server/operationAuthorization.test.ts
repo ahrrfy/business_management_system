@@ -279,4 +279,26 @@ describe("actual procedure delegation", () => {
     ownCtx.user!.resolvedOperationPolicy!.recordScopes = { "operation.sales.list": "BRANCH" };
     expect(await api.createCaller(ownCtx).sales.list()).toEqual({ branch: 2, owner: null });
   });
+  it("enforces role-level atomic revocations on custom roles based on user or print_operator", async () => {
+    const customRoleRevokedCtx = context(
+      {},
+      {
+        role: "user",
+        customRoleKey: "custom_print_station",
+        customRoleId: 9,
+        operationPolicyEnabled: false,
+        resolvedOperationPolicy: null,
+        permissionsOverride: { pos: "FULL" },
+        atomicPermissions: null,
+        resolvedAtomicPermissions: {
+          "pos.return.create": false,
+          "pos.invoice.void": false,
+        },
+      },
+    );
+    await expect(api.createCaller(customRoleRevokedCtx).returns.create()).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+  });
 });
+

@@ -16,6 +16,7 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import { operationDecision } from "@shared/operationPermissions";
 import { variantDescriptor } from "@shared/variantDisplay";
 import { z } from "zod";
 import {
@@ -48,6 +49,7 @@ import {
 } from "../services/idempotency";
 import { retryOnDup } from "../lib/retryDup";
 import { isDeadInvoice } from "@shared/predicates/isDeadInvoice";
+import { deriveInvoiceChannel } from "@shared/invoiceChannel";
 import { classifyVariants, getBundleDefinitions } from "../services/bundleService";
 import { canCrossBranches } from "../lib/branchAuthority";
 import {
@@ -60,7 +62,11 @@ import {
   createPostingIntent,
   creditLine,
   debitLine,
+  signedPostingLines,
+  type PostingProfile,
 } from "../services/accounting/postingEngine";
+import { classifyGiftPosting } from "../services/sale/giftPosting";
+import { allocateLineCost } from "../services/billing";
 import { money, round2, toDbMoney } from "../services/money";
 import {
   assertCashOutAvailable,
@@ -97,6 +103,7 @@ import { getOpenShifts } from "../services/treasury/openShifts";
 import { openShiftIdTx } from "../services/shiftService";
 import {
   canSeeCostForUser,
+  returnInvoiceScopeForUser,
   returnsProcedure,
   router,
   salesCashierProcedure,
@@ -106,6 +113,7 @@ import {
   workordersExecProcedure,
 } from "../trpc";
 import {
+  buildInvoiceChannelCondition,
   forensicTraceInvoices,
   universalBarcodeScan,
 } from "../services/returns/forensicTraceService";
@@ -1051,6 +1059,12 @@ export const returnRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return null;
+      const invoiceScope = returnInvoiceScopeForUser(
+        ctx.user,
+        "returns.getInvoice",
+      );
+      if (!invoiceScope) return null;
+      const invoiceChannelCondition = buildInvoiceChannelCondition(invoiceScope);
       const inv = (
         await db
           .select({
@@ -1075,7 +1089,8 @@ export const returnRouter = router({
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
           .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
-          .where(eq(invoices.id, input.invoiceId))
+          .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
+          .where(and(eq(invoices.id, input.invoiceId), invoiceChannelCondition))
           .limit(1)
       )[0];
       if (!inv) return null;
@@ -1214,7 +1229,10 @@ export const returnRouter = router({
         {},
         {
           scopedBranchId: Number(inv.branchId),
-          role: ctx.user.role,
+          role:
+            ctx.user.role === "admin" || ctx.user.role === "manager"
+              ? ctx.user.role
+              : "cashier",
           userId: ctx.user.id,
         },
       );
@@ -1372,6 +1390,17 @@ export const returnRouter = router({
       const actorBranchId =
         ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
       const isAdmin = ctx.user.role === "admin";
+      const invoiceScope = returnInvoiceScopeForUser(
+        ctx.user,
+        "returns.inspectInvoiceForReturn",
+      );
+      if (!invoiceScope) return null;
+      const invoiceChannelCondition = buildInvoiceChannelCondition(invoiceScope);
+      const invoiceBranchCondition = !isAdmin
+        ? actorBranchId != null
+          ? eq(invoices.branchId, actorBranchId)
+          : sql`1=0`
+        : sql`1=1`;
 
       const rawNo = input.invoiceNumber.trim();
       const strippedNo = rawNo.replace(/^INV-/i, "");
@@ -1382,6 +1411,7 @@ export const returnRouter = router({
           id: invoices.id,
           invoiceNumber: invoices.invoiceNumber,
           status: invoices.status,
+          sourceType: invoices.sourceType,
           branchId: invoices.branchId,
           customerId: invoices.customerId,
           customerName: customers.name,
@@ -1398,16 +1428,32 @@ export const returnRouter = router({
         })
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
         .where(
-          or(
-            eq(invoices.invoiceNumber, rawNo),
-            eq(invoices.invoiceNumber, strippedNo),
-            eq(invoices.invoiceNumber, prefixedNo),
+          and(
+            or(
+              eq(invoices.invoiceNumber, rawNo),
+              eq(invoices.invoiceNumber, strippedNo),
+              eq(invoices.invoiceNumber, prefixedNo),
+            ),
+            invoiceBranchCondition,
+            invoiceChannelCondition,
           ),
         )
         .limit(1);
 
       if (!inv) return null;
+
+      if (inv.sourceType === "WORKORDER") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر تحميل تفاصيل الفاتورة للمرتجع",
+            why: "فاتورة أمر الشغل لا تقبل المرتجع المباشر من مسار المبيعات",
+            doThis: "توجّه إلى شاشة أمر الشغل ونفّذ عكس التسليم من هناك",
+          }),
+        });
+      }
 
       const isOtherBranch =
         !isAdmin &&
@@ -1425,9 +1471,10 @@ export const returnRouter = router({
       const unpaidAmount = Decimal.max(0, remainingInvoiceTotal.minus(paidDec));
       const subtotalDec = money(inv.subtotal ?? "0");
       const discountDec = money(inv.discountAmount ?? "0");
-      const discountRatio = subtotalDec.gt(0)
-        ? discountDec.dividedBy(subtotalDec)
-        : new Decimal(0);
+      const taxDec = money(inv.taxAmount ?? "0");
+      const invoiceMerchandiseRevenue = round2(
+        Decimal.max(0, subtotalDec.minus(discountDec)),
+      );
 
       const itemRows = await db
         .select({
@@ -1437,6 +1484,7 @@ export const returnRouter = router({
           productName: products.name,
           isBundle: products.isBundle,
           isService: products.isService,
+          isGift: invoiceItems.isGift,
           variantName: productVariants.variantName,
           color: productVariants.color,
           colorHex: productVariants.colorHex,
@@ -1460,31 +1508,128 @@ export const returnRouter = router({
         .leftJoin(productUnits, eq(invoiceItems.productUnitId, productUnits.id))
         .where(eq(invoiceItems.invoiceId, inv.id));
 
+      const revenueItems = itemRows
+        .filter((item) => !item.isGift && money(item.total ?? "0").gt(0))
+        .sort((a, b) => Number(a.invoiceItemId) - Number(b.invoiceItemId));
+      const itemRevenueBasis = revenueItems.reduce(
+        (sum, item) => sum.plus(money(item.total ?? "0")),
+        money(0),
+      );
+      const netRevenueByItemId = new Map<number, Decimal>();
+      const netTaxByItemId = new Map<number, Decimal>();
+      let allocatedInvoiceRevenue = money(0);
+      let allocatedInvoiceTax = money(0);
+      for (let index = 0; index < revenueItems.length; index++) {
+        const item = revenueItems[index]!;
+        const lineRevenue =
+          index === revenueItems.length - 1
+            ? round2(invoiceMerchandiseRevenue.minus(allocatedInvoiceRevenue))
+            : round2(
+                invoiceMerchandiseRevenue
+                  .times(money(item.total ?? "0"))
+                  .div(itemRevenueBasis),
+              );
+        const lineTax =
+          index === revenueItems.length - 1
+            ? round2(taxDec.minus(allocatedInvoiceTax))
+            : round2(
+                taxDec
+                  .times(money(item.total ?? "0"))
+                  .div(itemRevenueBasis),
+              );
+        allocatedInvoiceRevenue = allocatedInvoiceRevenue.plus(lineRevenue);
+        allocatedInvoiceTax = allocatedInvoiceTax.plus(lineTax);
+        netRevenueByItemId.set(Number(item.invoiceItemId), lineRevenue);
+        netTaxByItemId.set(Number(item.invoiceItemId), lineTax);
+      }
+
+      const variantIds = Array.from(
+        new Set(itemRows.map((r) => Number(r.variantId))),
+      );
+      const baseUnitRows =
+        variantIds.length > 0
+          ? await db
+              .select({
+                id: productUnits.id,
+                variantId: productUnits.variantId,
+                unitName: productUnits.unitName,
+                barcode: productUnits.barcode,
+              })
+              .from(productUnits)
+              .where(
+                and(
+                  inArray(productUnits.variantId, variantIds),
+                  eq(productUnits.isBaseUnit, true),
+                ),
+              )
+          : [];
+      const baseUnitByVariantId = new Map(
+        baseUnitRows.map((u) => [Number(u.variantId), u]),
+      );
+
       const items = itemRows.map((r) => {
-        const remainingQuantity = Math.max(
-          0,
-          (r.baseQuantity ?? 0) - (r.returnedBaseQuantity ?? 0),
+        const totalBaseQty = Number(r.baseQuantity ?? 0);
+        const priorReturned = Number(r.returnedBaseQuantity ?? 0);
+        const remainingQuantity = Math.max(0, totalBaseQty - priorReturned);
+        const effectiveItemRevenue =
+          netRevenueByItemId.get(Number(r.invoiceItemId)) ?? money(0);
+        const effectiveItemTax =
+          netTaxByItemId.get(Number(r.invoiceItemId)) ?? money(0);
+        const effectiveItemTotal = round2(
+          effectiveItemRevenue.plus(effectiveItemTax),
         );
-        const rawPrice = money(r.unitPrice ?? "0");
-        const effectivePrice = discountRatio.gt(0)
-          ? rawPrice.times(new Decimal(1).minus(discountRatio)).toDecimalPlaces(2)
-          : rawPrice;
+        const rawPrice =
+          totalBaseQty > 0
+            ? money(r.total ?? "0").dividedBy(totalBaseQty)
+            : money(r.unitPrice ?? "0");
+        const baseEffectiveUnitPrice =
+          totalBaseQty > 0
+            ? effectiveItemTotal.dividedBy(totalBaseQty).toDecimalPlaces(2)
+            : money(0);
+        const cumulativeValue = (returnedQty: number): Decimal => {
+          if (totalBaseQty <= 0) {
+            return round2(baseEffectiveUnitPrice.times(returnedQty));
+          }
+          if (returnedQty >= totalBaseQty) {
+            return effectiveItemTotal;
+          }
+          return round2(baseEffectiveUnitPrice.times(returnedQty));
+        };
+        const remainingLineTotal =
+          remainingQuantity > 0
+            ? round2(
+                cumulativeValue(priorReturned + remainingQuantity).minus(
+                  cumulativeValue(priorReturned),
+                ),
+              )
+            : new Decimal(0);
+        const nextUnitEffectivePrice =
+          remainingQuantity > 0
+            ? round2(
+                cumulativeValue(priorReturned + 1).minus(
+                  cumulativeValue(priorReturned),
+                ),
+              )
+            : baseEffectiveUnitPrice;
+        const baseUnit = baseUnitByVariantId.get(Number(r.variantId));
         return {
           invoiceItemId: Number(r.invoiceItemId),
           variantId: Number(r.variantId),
-          productUnitId: r.productUnitId ? Number(r.productUnitId) : undefined,
+          productUnitId: baseUnit ? Number(baseUnit.id) : undefined,
           productName: r.productName,
           isBundle: r.isBundle === true,
           isService: r.isService === true,
-          barcode: r.barcode ?? null,
+          isGift: r.isGift === true,
+          barcode: baseUnit?.barcode ?? r.barcode ?? null,
           sku: r.sku ?? null,
-          unitName: r.unitName ?? (r.isBundle ? "بكج" : "قطعة"),
-          conversionFactor: Number(r.conversionFactor ?? 1) || 1,
-          baseQuantity: Number(r.baseQuantity),
-          returnedBaseQuantity: Number(r.returnedBaseQuantity ?? 0),
+          unitName: baseUnit?.unitName ?? (r.isBundle ? "بكج" : "قطعة"),
+          conversionFactor: 1,
+          baseQuantity: totalBaseQty,
+          returnedBaseQuantity: priorReturned,
           remainingQuantity,
-          unitPrice: String(r.unitPrice),
-          effectiveUnitPrice: effectivePrice.toFixed(2),
+          unitPrice: rawPrice.toDecimalPlaces(2).toFixed(2),
+          effectiveUnitPrice: nextUnitEffectivePrice.toFixed(2),
+          remainingLineTotal: remainingLineTotal.toFixed(2),
           total: String(r.total),
         };
       });
@@ -1637,7 +1782,7 @@ export const returnRouter = router({
    * التحري والتقصي الجنائي للفواتير المفقودة بعدسات متعددة:
    * باركود الصنف / آخر ٤ أرقام من البطاقة / هاتف العميل / الوردية والتاريخ
    */
-  forensicTrace: salesReadProcedure
+  forensicTrace: returnsProcedure
     .input(
       z.object({
         query: z.string().trim().min(1, "أدخل نص البحث"),
@@ -1665,27 +1810,41 @@ export const returnRouter = router({
         branchId:
           ctx.user.role === "admin" ? 0 : Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
+        invoiceScope: returnInvoiceScopeForUser(
+          ctx.user,
+          "returns.forensicTrace",
+        ),
       });
     }),
 
   /**
    * المسح الكوني للباركود — يتعرف تلقائياً على نوع المعاملة أو الصنف من الرمز الممسوح.
    */
-  universalScan: salesReadProcedure
+  universalScan: returnsProcedure
     .input(z.object({ barcode: z.string().trim().min(1, "امسح الباركود") }))
     .query(async ({ input, ctx }) => {
+      const invoiceScope = returnInvoiceScopeForUser(
+        ctx.user,
+        "returns.universalScan",
+      );
       return universalBarcodeScan(input.barcode, {
         userId: ctx.user.id,
         branchId:
           ctx.user.role === "admin" ? 0 : Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
+        invoiceScope,
+        canReadWorkOrders:
+          invoiceScope !== "print" &&
+          operationDecision(ctx.user, "workOrders.list").allowed,
+        canReadDelivery: operationDecision(ctx.user, "delivery.listParties").allowed,
+        canReadPurchaseReturns: operationDecision(ctx.user, "purchaseReturns.list").allowed,
       });
     }),
 
   /**
    * الورديات المفتوحة للمستخدم أو الفرع (لإرجاع مالي أو دفع فرق استبدال في الدرج).
    */
-  shifts: salesReadProcedure.query(async ({ ctx }) => {
+  shifts: returnsProcedure.query(async ({ ctx }) => {
     const actorBranchId =
       ctx.user.role === "admin" || !ctx.user.branchId
         ? null
@@ -1694,7 +1853,10 @@ export const returnRouter = router({
       {},
       {
         scopedBranchId: actorBranchId,
-        role: ctx.user.role,
+        role:
+          ctx.user.role === "admin" || ctx.user.role === "manager"
+            ? ctx.user.role
+            : "cashier",
         userId: ctx.user.id,
       },
     );
@@ -1711,7 +1873,7 @@ export const returnRouter = router({
   /**
    * جلب تفاصيل صنف بالباركود للإرجاع أو الاستبدال، شاملاً سعر التجزئة وأدنى سعر تاريخي (٦٠ يوماً) والرصيد المخزني.
    */
-  lookupItemForReturn: salesReadProcedure
+  lookupItemForReturn: returnsProcedure
     .input(z.object({ barcode: z.string().trim().min(1, "امسح الباركود") }))
     .query(async ({ input, ctx }) => {
       const db = getDb();
@@ -1727,6 +1889,19 @@ export const returnRouter = router({
         ctx.user.role === "admin" || !ctx.user.branchId
           ? 1
           : Number(ctx.user.branchId);
+      const scopedInvoiceBranchId =
+        ctx.user.role === "admin" || !ctx.user.branchId
+          ? null
+          : Number(ctx.user.branchId);
+      const invoiceScope = returnInvoiceScopeForUser(
+        ctx.user,
+        "returns.lookupItemForReturn",
+      );
+      const invoiceChannelCondition = buildInvoiceChannelCondition(invoiceScope);
+      const invoiceBranchCondition =
+        scopedInvoiceBranchId != null
+          ? eq(invoices.branchId, scopedInvoiceBranchId)
+          : sql`1=1`;
 
       if (!owner) {
         // إذا لم يُعثر عليه بالباركود، نحاول بالـ SKU
@@ -1795,10 +1970,13 @@ export const returnRouter = router({
           .select({ minPrice: sql<string>`MIN(${invoiceItems.unitPrice})` })
           .from(invoiceItems)
           .innerJoin(invoices, eq(invoiceItems.invoiceId, invoices.id))
+          .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
           .where(
             and(
               eq(invoiceItems.variantId, skuVariant.variantId),
               gte(invoices.createdAt, sixtyDaysAgo),
+              invoiceBranchCondition,
+              invoiceChannelCondition,
             ),
           );
 
@@ -1863,10 +2041,13 @@ export const returnRouter = router({
         .select({ minPrice: sql<string>`MIN(${invoiceItems.unitPrice})` })
         .from(invoiceItems)
         .innerJoin(invoices, eq(invoiceItems.invoiceId, invoices.id))
+        .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
         .where(
           and(
             eq(invoiceItems.variantId, owner.variantId),
             gte(invoices.createdAt, sixtyDaysAgo),
+            invoiceBranchCondition,
+            invoiceChannelCondition,
           ),
         );
 
@@ -2101,7 +2282,10 @@ export const returnRouter = router({
         { branchId: actorBranchId },
         {
           scopedBranchId: actorBranchId,
-          role: ctx.user.role,
+          role:
+            ctx.user.role === "admin" || ctx.user.role === "manager"
+              ? ctx.user.role
+              : "cashier",
           userId: ctx.user.id,
         },
       );
@@ -2285,20 +2469,195 @@ export const returnRouter = router({
             });
           }
 
-          // المسار السريع لسلة المرتجع لا يملك مستند اعتماد مستقلاً يمكن للمدير
-          // تنفيذه لاحقاً. لذلك نفشل مغلقاً قبل أي حركة مخزون/نقد عند غياب
-          // الفاتورة أو تجاوز السقف، ويستعمل الموظف مسار المرتجع المرتبط بالفاتورة
-          // الذي ينشئ طلب SALES_RETURN قابلاً للاعتماد.
-          if (directLimitsApply && !input.invoiceNumber?.trim()) {
+          if (
+            !input.invoiceNumber?.trim() &&
+            input.settlement.method === "STORE_CREDIT"
+          ) {
             throw new TRPCError({
-              code: "PRECONDITION_FAILED",
+              code: "BAD_REQUEST",
               message: appErrorMessage({
-                what: "يتطلب المرتجع موافقة المدير",
-                why: "لا يمكن للكاشير تنفيذ مرتجع مباشر بلا فاتورة أصلية",
+                what: "تعذر إيداع رصيد المتجر",
+                why: "إيداع رصيد المتجر يتطلّب ربطَ المرتجع بالفاتورة الأصليّة — لا يُنشأ رصيدٌ دائنٌ لعميلٍ بلا بيعٍ موثَّق",
                 doThis:
-                  "اربط المرتجع بالفاتورة الأصلية، أو أنشئ طلب مرتجع من مسار الفاتورة ليعتمده المدير",
+                  "أدخل رقم الفاتورة الأصليّة، أو اختر استرداداً نقدياً/بالبطاقة للمرتجع العابر",
               }),
             });
+          }
+          if (
+            !input.invoiceNumber?.trim() &&
+            input.settlement.method === "CREDIT_OFFSET"
+          ) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "تعذر تنفيذ معادلة الذمة",
+                why: "طريقة معادلة الذمم تتطلب ربط المرتجع بالفاتورة الأصلية الآجلة",
+                doThis:
+                  "أدخل رقم الفاتورة الأصلية، أو اختر استرداداً نقدياً/بالبطاقة للمرتجع العابر",
+              }),
+            });
+          }
+          if (!input.invoiceNumber?.trim()) {
+            let computedWalkInTotal = money(0);
+            for (const itm of input.items) {
+              const itemUnitPrice = money(itm.unitPrice);
+              if (itemUnitPrice.lte(0)) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: "سعر الصنف المرتجع غير صالح",
+                    why: `يجب أن يكون سعر الوحدة للصنف «${itm.productName}» أكبر من صفر في المرتجع العابر`,
+                    doThis:
+                      "تحقق من سعر الصنف في سلة المرتجع أو اربط المرتجع بالفاتورة الأصلية",
+                  }),
+                });
+              }
+              computedWalkInTotal = computedWalkInTotal.plus(
+                itemUnitPrice.times(itm.quantity),
+              );
+            }
+            const roundedWalkInTotal = round2(computedWalkInTotal);
+            if (!round2(returnTotalDec).eq(roundedWalkInTotal)) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "مبلغ تسوية المرتجع غير مطابق لمجموع السلة",
+                  why: `مبلغ التسوية (${round2(returnTotalDec).toFixed(2)} د.ع) لا يطابق مجموع كميات وأسعار الأصناف في السلة (${roundedWalkInTotal.toFixed(2)} د.ع)`,
+                  doThis:
+                    "أعد احتساب السلة وتأكد من تطابق إجمالي التسوية مع مجموع البنود قبل تنفيذ المرتجع",
+                }),
+              });
+            }
+          }
+          if (directLimitsApply && !input.invoiceNumber?.trim()) {
+            for (const itm of input.items) {
+              const itemUnitPrice = money(itm.unitPrice);
+              const [unitRow] =
+                itm.productUnitId != null
+                  ? await tx
+                      .select({ id: productUnits.id })
+                      .from(productUnits)
+                      .where(
+                        and(
+                          eq(productUnits.id, itm.productUnitId),
+                          eq(productUnits.variantId, itm.variantId),
+                        ),
+                      )
+                      .limit(1)
+                  : await tx
+                      .select({ id: productUnits.id })
+                      .from(productUnits)
+                      .where(
+                        and(
+                          eq(productUnits.variantId, itm.variantId),
+                          eq(productUnits.isBaseUnit, true),
+                        ),
+                      )
+                      .limit(1);
+              const [retailPriceRow] = unitRow
+                ? await tx
+                    .select({ price: productPrices.price })
+                    .from(productPrices)
+                    .where(
+                      and(
+                        eq(productPrices.productUnitId, unitRow.id),
+                        eq(productPrices.priceTier, "RETAIL"),
+                      ),
+                    )
+                    .limit(1)
+                : [undefined];
+              const catalogRetailPrice =
+                retailPriceRow?.price != null
+                  ? round2(money(retailPriceRow.price))
+                  : null;
+              if (
+                catalogRetailPrice == null ||
+                catalogRetailPrice.lte(0) ||
+                !round2(itemUnitPrice).eq(catalogRetailPrice)
+              ) {
+                throw new TRPCError({
+                  code: "PRECONDITION_FAILED",
+                  message: appErrorMessage({
+                    what: "يتطلب المرتجع موافقة المدير",
+                    why:
+                      catalogRetailPrice == null || catalogRetailPrice.lte(0)
+                        ? `الصنف «${itm.productName}» لا يملك سعر بيع تجزئة معتمداً في الكتالوج للمرتجع العابر بلا فاتورة`
+                        : `سعر الوحدة المدخل للصنف «${itm.productName}» (${round2(itemUnitPrice).toFixed(2)} د.ع) يختلف عن سعر البيع المعتمد (${catalogRetailPrice.toFixed(2)} د.ع) في المرتجع العابر بلا فاتورة`,
+                    doThis:
+                      "التزم بسعر البيع المعتمد للصنف في المرتجع العابر، أو اربط المرتجع بالفاتورة الأصلية ليعتمده المدير",
+                  }),
+                });
+              }
+            }
+            let walkInDrawerHasFunds = true;
+            let walkInSameOpenShift = input.settlement.method !== "CASH";
+            if (input.settlement.method === "CASH") {
+              const walkInShiftId =
+                input.settlement.shiftId ??
+                (await openShiftIdTx(tx, ctx.user.id, actorBranchId));
+              if (walkInShiftId != null) {
+                const [walkInShift] = await tx
+                  .select()
+                  .from(shifts)
+                  .where(
+                    and(
+                      eq(shifts.id, Number(walkInShiftId)),
+                      eq(shifts.branchId, actorBranchId),
+                    ),
+                  )
+                  .for("update")
+                  .limit(1);
+                walkInSameOpenShift =
+                  walkInShift != null &&
+                  walkInShift.status === "OPEN" &&
+                  Number(walkInShift.userId) === Number(ctx.user.id);
+                if (walkInSameOpenShift && returnTotalDec.gt(0)) {
+                  const lockedDrawer = await lockCashSourceForUpdate(tx, {
+                    branchId: actorBranchId,
+                    cashBucket: "DRAWER",
+                    shiftId: Number(walkInShiftId),
+                  });
+                  walkInDrawerHasFunds = (
+                    await computeDrawerCashBalance(
+                      tx,
+                      Number(walkInShiftId),
+                      lockedDrawer.openingBalance ?? "0",
+                    )
+                  ).gte(returnTotalDec);
+                }
+              }
+            }
+            const walkInDecision = evaluateRefundOperationalDecision({
+              operationAllowed: currentCartReturnAllowed,
+              sameBranch: true,
+              ownsTransaction: true,
+              sameOpenShift: walkInSameOpenShift,
+              sameBusinessDay: true,
+              accountingPeriodOpen: true,
+              hasDownstreamEffects: false,
+              hasSourceDocument: true,
+              refundAmountIqd: returnTotalDec.toFixed(2),
+              maxRefundAmountIqd:
+                currentOperationalAuthority.caps.maxRefundAmountIqd,
+              refundMethod: input.settlement.method,
+              originalPaymentMethods: [input.settlement.method],
+              originalPaymentAmounts: {
+                [input.settlement.method]: returnTotalDec.toFixed(2),
+              },
+              drawerHasFunds: walkInDrawerHasFunds,
+              approvalOperation: "salesControl.requestReturn",
+            });
+            if (walkInDecision.result !== "DIRECT") {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message: appErrorMessage({
+                  what: "يتطلب المرتجع موافقة المدير",
+                  why: walkInDecision.reason,
+                  doThis:
+                    "تحقق من التزام المرتجع بسقف الاسترداد المسموح وتوفر النقد في درج ورديتك، أو اربط المرتجع بالفاتورة الأصلية ليعتمده المدير",
+                }),
+              });
+            }
           }
           // ٠) التحقق من الفاتورة الأصلية إن أدخلت وفرض الحوكمة المالية الصارمة
           let matchedInvoice: typeof invoices.$inferSelect | null = null;
@@ -2325,10 +2684,17 @@ export const returnRouter = router({
           } | null = null;
           let invoiceItemRows: Array<typeof invoiceItems.$inferSelect> = [];
           const resolvedBaseQtyByItem = new Map<any, number>();
+          let returnedTaxDec = money(0);
           if (input.invoiceNumber?.trim()) {
             const rawNo = input.invoiceNumber.trim();
             const strippedNo = rawNo.replace(/^INV-/i, "");
             const prefixedNo = `INV-${strippedNo}`;
+            const cartInvoiceScope = returnInvoiceScopeForUser(
+              currentOperationUser,
+              "returns.executeSalesReturnCart",
+            );
+            const cartInvoiceChannelCondition =
+              buildInvoiceChannelCondition(cartInvoiceScope);
 
             // ١) قراءة الفاتورة أولاً دون قفل لمعرفة المعرّف والإرسالية:
             const [invPreview] = await tx
@@ -2336,13 +2702,18 @@ export const returnRouter = router({
                 id: invoices.id,
                 branchId: invoices.branchId,
                 status: invoices.status,
+                sourceType: invoices.sourceType,
               })
               .from(invoices)
+              .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
               .where(
-                or(
-                  eq(invoices.invoiceNumber, rawNo),
-                  eq(invoices.invoiceNumber, strippedNo),
-                  eq(invoices.invoiceNumber, prefixedNo),
+                and(
+                  or(
+                    eq(invoices.invoiceNumber, rawNo),
+                    eq(invoices.invoiceNumber, strippedNo),
+                    eq(invoices.invoiceNumber, prefixedNo),
+                  ),
+                  cartInvoiceScope ? cartInvoiceChannelCondition : sql`1=0`,
                 ),
               )
               .limit(1);
@@ -2354,6 +2725,17 @@ export const returnRouter = router({
                   what: "تعذر العثور على الفاتورة المحددة",
                   why: `لا توجد فاتورة بالرقم «${input.invoiceNumber.trim()}» مسجلة في النظام`,
                   doThis: "تأكد من صحة رقم الفاتورة أو رمز الباركود المدخل",
+                }),
+              });
+            }
+
+            if (invPreview.sourceType === "WORKORDER") {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message: appErrorMessage({
+                  what: "تعذّر تسجيل المرتجع",
+                  why: "فاتورة أمر الشغل لا تقبل المرتجع المباشر من مسار المبيعات",
+                  doThis: "توجّه إلى شاشة أمر الشغل ونفّذ عكس التسليم من هناك",
                 }),
               });
             }
@@ -2440,6 +2822,46 @@ export const returnRouter = router({
                   what: "تعذر العثور على الفاتورة المحددة",
                   why: `لا توجد فاتورة بالرقم «${input.invoiceNumber.trim()}» مسجلة في النظام`,
                   doThis: "تأكد من صحة رقم الفاتورة أو رمز الباركود المدخل",
+                }),
+              });
+            }
+
+            if (cartInvoiceScope === "reception" || cartInvoiceScope === "print") {
+              const [lockedShift] =
+                found.shiftId != null
+                  ? await tx
+                      .select({ shiftType: shifts.shiftType })
+                      .from(shifts)
+                      .where(eq(shifts.id, Number(found.shiftId)))
+                      .limit(1)
+                  : [];
+              const lockedChannel = deriveInvoiceChannel({
+                sourceType: found.sourceType,
+                shiftType: lockedShift?.shiftType,
+              });
+              const channelMatches =
+                cartInvoiceScope === "reception"
+                  ? lockedChannel === "RECEPTION"
+                  : lockedChannel === "PRINT";
+              if (!channelMatches) {
+                throw new TRPCError({
+                  code: "NOT_FOUND",
+                  message: appErrorMessage({
+                    what: "تعذر العثور على الفاتورة المحددة",
+                    why: `لا توجد فاتورة بالرقم «${input.invoiceNumber.trim()}» مسجلة في النظام`,
+                    doThis: "تأكد من صحة رقم الفاتورة أو رمز الباركود المدخل",
+                  }),
+                });
+              }
+            }
+
+            if (found.sourceType === "WORKORDER") {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message: appErrorMessage({
+                  what: "تعذّر تسجيل المرتجع",
+                  why: "فاتورة أمر الشغل لا تقبل المرتجع المباشر من مسار المبيعات",
+                  doThis: "توجّه إلى شاشة أمر الشغل ونفّذ عكس التسليم من هناك",
                 }),
               });
             }
@@ -2561,19 +2983,49 @@ export const returnRouter = router({
 
             if (directLimitsApply) {
               let drawerHasFunds = true;
+              let effectiveShiftId: number | null = null;
+              if (input.settlement.method === "CASH") {
+                if (input.settlement.shiftId != null) {
+                  const [selectedShift] = await tx
+                    .select({
+                      id: shifts.id,
+                      userId: shifts.userId,
+                      branchId: shifts.branchId,
+                      status: shifts.status,
+                    })
+                    .from(shifts)
+                    .where(eq(shifts.id, Number(input.settlement.shiftId)))
+                    .limit(1);
+                  if (
+                    selectedShift != null &&
+                    selectedShift.status === "OPEN" &&
+                    Number(selectedShift.userId) === Number(ctx.user.id) &&
+                    Number(selectedShift.branchId) ===
+                      Number(matchedInvoice.branchId)
+                  ) {
+                    effectiveShiftId = Number(selectedShift.id);
+                  }
+                } else {
+                  effectiveShiftId = await openShiftIdTx(
+                    tx,
+                    ctx.user.id,
+                    Number(matchedInvoice.branchId),
+                  );
+                }
+              }
               if (
                 input.settlement.method === "CASH" &&
-                input.settlement.shiftId != null &&
+                effectiveShiftId != null &&
                 returnTotalDec.gt(0)
               ) {
                 const lockedDrawer = await lockCashSourceForUpdate(tx, {
                   branchId: Number(matchedInvoice.branchId),
                   cashBucket: "DRAWER",
-                  shiftId: Number(input.settlement.shiftId),
+                  shiftId: Number(effectiveShiftId),
                 });
                 drawerHasFunds = (await computeDrawerCashBalance(
                   tx,
-                  Number(input.settlement.shiftId),
+                  Number(effectiveShiftId),
                   lockedDrawer.openingBalance ?? "0",
                 )).gte(returnTotalDec);
               }
@@ -2605,8 +3057,8 @@ export const returnRouter = router({
                   Number(matchedInvoice.createdBy) === Number(ctx.user.id),
                 sameOpenShift:
                   input.settlement.method !== "CASH" ||
-                  (input.settlement.shiftId != null &&
-                    (lockedRefundCaps.cashNetByShift.get(Number(input.settlement.shiftId)) ?? money(0))
+                  (effectiveShiftId != null &&
+                    (lockedRefundCaps.cashNetByShift.get(Number(effectiveShiftId)) ?? money(0))
                       .gte(returnTotalDec)),
                 sameBusinessDay:
                   matchedInvoice.invoiceDate.toISOString().slice(0, 10) ===
@@ -2675,6 +3127,49 @@ export const returnRouter = router({
 
             // تتبع تراكم الكميات المرتجعة لكل بند في السلة نفسها لمنع الالتفاف بتكرار البند
             const accumulatedReturnedByItemId = new Map<number, number>();
+            const invSubtotalDec = money(matchedInvoice.subtotal ?? "0");
+            const invDiscountDec = money(matchedInvoice.discountAmount ?? "0");
+            const invTaxDec = money(matchedInvoice.taxAmount ?? "0");
+            const invoiceMerchandiseRevenue = round2(
+              Decimal.max(0, invSubtotalDec.minus(invDiscountDec)),
+            );
+            const revenueItems = invoiceItemRows
+              .filter((item) => !item.isGift && money(item.total ?? "0").gt(0))
+              .sort((a, b) => Number(a.id) - Number(b.id));
+            const itemRevenueBasis = revenueItems.reduce(
+              (sum, item) => sum.plus(money(item.total ?? "0")),
+              money(0),
+            );
+            const netRevenueByItemId = new Map<number, Decimal>();
+            const netTaxByItemId = new Map<number, Decimal>();
+            let allocatedInvoiceRevenue = money(0);
+            let allocatedInvoiceTax = money(0);
+            for (let index = 0; index < revenueItems.length; index++) {
+              const item = revenueItems[index]!;
+              const lineRevenue =
+                index === revenueItems.length - 1
+                  ? round2(
+                      invoiceMerchandiseRevenue.minus(allocatedInvoiceRevenue),
+                    )
+                  : round2(
+                      invoiceMerchandiseRevenue
+                        .times(money(item.total ?? "0"))
+                        .div(itemRevenueBasis),
+                    );
+              const lineTax =
+                index === revenueItems.length - 1
+                  ? round2(invTaxDec.minus(allocatedInvoiceTax))
+                  : round2(
+                      invTaxDec
+                        .times(money(item.total ?? "0"))
+                        .div(itemRevenueBasis),
+                    );
+              allocatedInvoiceRevenue = allocatedInvoiceRevenue.plus(lineRevenue);
+              allocatedInvoiceTax = allocatedInvoiceTax.plus(lineTax);
+              netRevenueByItemId.set(Number(item.id), lineRevenue);
+              netTaxByItemId.set(Number(item.id), lineTax);
+            }
+            let expectedInvoiceReturnTotal = new Decimal(0);
 
             for (const itm of input.items) {
               const targetItem = itm.invoiceItemId
@@ -2697,11 +3192,39 @@ export const returnRouter = router({
                 });
               }
 
+              const totalBaseQty = Number(targetItem.baseQuantity ?? 0);
+              const effectiveItemRevenue =
+                netRevenueByItemId.get(Number(targetItem.id)) ?? money(0);
+              const effectiveItemTax =
+                netTaxByItemId.get(Number(targetItem.id)) ?? money(0);
+              const effectiveItemTotal = round2(
+                effectiveItemRevenue.plus(effectiveItemTax),
+              );
+              const effectiveBaseUnitPrice =
+                totalBaseQty > 0
+                  ? effectiveItemTotal
+                      .dividedBy(totalBaseQty)
+                      .toDecimalPlaces(2)
+                  : money(0);
+              const soldUnitEffectivePrice =
+                Number(targetItem.quantity ?? 0) > 0
+                  ? round2(
+                      effectiveItemTotal.dividedBy(Number(targetItem.quantity)),
+                    )
+                  : money(targetItem.unitPrice ?? "0");
+              const submittedUnitPrice = round2(money(itm.unitPrice));
+              const fallbackUnitId =
+                itm.productUnitId != null
+                  ? itm.productUnitId
+                  : totalBaseQty > Number(targetItem.quantity ?? 0) &&
+                      submittedUnitPrice.lt(soldUnitEffectivePrice)
+                    ? null
+                    : targetItem.productUnitId;
               const { baseQuantity: effectiveBaseQty, conversionFactor } =
                 await resolveReturnBaseQuantity(
                   tx,
                   itm,
-                  targetItem.productUnitId,
+                  fallbackUnitId,
                 );
 
               // حفظ الكمية المحسوبة لإعادة استخدامها في حركات المخزون وتحديث الفاتورة
@@ -2728,6 +3251,88 @@ export const returnRouter = router({
                 targetItem.id,
                 priorReturned + effectiveBaseQty,
               );
+
+              const cumulativeReturnedValue = (returnedQty: number): Decimal => {
+                if (totalBaseQty <= 0) {
+                  return round2(effectiveBaseUnitPrice.times(returnedQty));
+                }
+                if (returnedQty >= totalBaseQty) {
+                  return effectiveItemTotal;
+                }
+                return round2(effectiveBaseUnitPrice.times(returnedQty));
+              };
+              const expectedLineTotal = round2(
+                cumulativeReturnedValue(priorReturned + effectiveBaseQty).minus(
+                  cumulativeReturnedValue(priorReturned),
+                ),
+              );
+              const allocatedSliceTotal =
+                totalBaseQty > 0
+                  ? allocateLineCost(
+                      effectiveItemTotal,
+                      totalBaseQty,
+                      priorReturned,
+                      effectiveBaseQty,
+                    )
+                  : expectedLineTotal;
+              const submittedLineTotal = round2(
+                money(itm.unitPrice).times(itm.quantity),
+              );
+              const expectedSubmittedUnitPrice = round2(
+                expectedLineTotal.dividedBy(itm.quantity),
+              );
+              const allocatedSubmittedUnitPrice = round2(
+                allocatedSliceTotal.dividedBy(itm.quantity),
+              );
+              const linePriceMatches =
+                submittedLineTotal.eq(expectedLineTotal) ||
+                submittedLineTotal.eq(allocatedSliceTotal) ||
+                submittedUnitPrice.eq(expectedSubmittedUnitPrice) ||
+                submittedUnitPrice.eq(allocatedSubmittedUnitPrice) ||
+                (priorReturned + effectiveBaseQty >= totalBaseQty &&
+                  conversionFactor === 1 &&
+                  submittedUnitPrice.eq(effectiveBaseUnitPrice));
+              if (!linePriceMatches) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: `سعر إرجاع الصنف «${itm.productName}» لا يطابق سعر الفاتورة المرجعية`,
+                    why: `قيمة البند المُدخلة (${submittedLineTotal.toFixed(2)} د.ع) تختلف عن القيمة الفعلية للبند في الفاتورة «${matchedInvoice.invoiceNumber}» (${expectedLineTotal.toFixed(2)} د.ع)`,
+                    doThis:
+                      "التزم بسعر البند الفعلي المسجّل في الفاتورة المرجعية وأعد احتساب السلة",
+                  }),
+                });
+              }
+              const matchedLineTotal = submittedLineTotal.eq(allocatedSliceTotal)
+                ? allocatedSliceTotal
+                : expectedLineTotal;
+              const lineTax =
+                totalBaseQty > 0 && effectiveItemTax.gt(0)
+                  ? allocateLineCost(
+                      effectiveItemTax,
+                      totalBaseQty,
+                      priorReturned,
+                      effectiveBaseQty,
+                    )
+                  : money(0);
+              returnedTaxDec = round2(returnedTaxDec.plus(lineTax));
+              expectedInvoiceReturnTotal =
+                expectedInvoiceReturnTotal.plus(matchedLineTotal);
+            }
+
+            const roundedExpectedInvoiceReturnTotal = round2(
+              expectedInvoiceReturnTotal,
+            );
+            if (!round2(returnTotalDec).eq(roundedExpectedInvoiceReturnTotal)) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "مبلغ تسوية المرتجع غير مطابق لقيمة البنود المرتجعة من الفاتورة",
+                  why: `مبلغ التسوية (${round2(returnTotalDec).toFixed(2)} د.ع) لا يطابق مجموع قيمة البنود المرتجعة وفق أسعار الفاتورة المرجعية (${roundedExpectedInvoiceReturnTotal.toFixed(2)} د.ع)`,
+                  doThis:
+                    "أعد احتساب السلة وتأكد من تطابق إجمالي التسوية مع قيمة البنود المرتجعة من الفاتورة",
+                }),
+              });
             }
           }
 
@@ -2745,6 +3350,24 @@ export const returnRouter = router({
             new Set(input.items.map((i) => i.variantId)),
           );
           const kindByVariant = await classifyVariants(tx, allVariantIds);
+
+          const consignByVariant = new Map<number, number>();
+          if (allVariantIds.length > 0) {
+            const crows = await tx
+              .select({
+                vid: productVariants.id,
+                isConsign: products.isConsignment,
+                cId: products.consignorId,
+              })
+              .from(productVariants)
+              .innerJoin(products, eq(productVariants.productId, products.id))
+              .where(inArray(productVariants.id, allVariantIds));
+            for (const row of crows) {
+              if (row.isConsign && row.cId != null) {
+                consignByVariant.set(Number(row.vid), Number(row.cId));
+              }
+            }
+          }
 
           const bundleVariantIds = allVariantIds.filter(
             (id) => kindByVariant.get(id) === "BUNDLE",
@@ -2794,21 +3417,65 @@ export const returnRouter = router({
             }
           }
 
+          const costLookupVariantIds = Array.from(
+            new Set([
+              ...allVariantIds,
+              ...Array.from(bundleDefs.values()).flatMap((defs: any[]) =>
+                defs.map((d) => Number(d.componentVariantId)),
+              ),
+              ...Array.from(snapshotByItem.values()).flatMap((snaps) =>
+                snaps.map((s) => Number(s.componentVariantId)),
+              ),
+            ]),
+          );
+          const costPriceByVariantId = new Map<number, Decimal>();
+          if (costLookupVariantIds.length > 0) {
+            const variantCostRows = await tx
+              .select({
+                id: productVariants.id,
+                costPrice: productVariants.costPrice,
+              })
+              .from(productVariants)
+              .where(inArray(productVariants.id, costLookupVariantIds));
+            for (const row of variantCostRows) {
+              costPriceByVariantId.set(
+                Number(row.id),
+                money(row.costPrice ?? "0"),
+              );
+            }
+          }
+
+          let returnedCost = new Decimal(0);
+          let returnedGiftCost = new Decimal(0);
+          let nonRestoredServicePaidCost = new Decimal(0);
+          let nonRestoredServiceGiftCost = new Decimal(0);
+          const byConsignor = new Map<number, { paid: Decimal; gift: Decimal }>();
+          const accumulatedCostReturnedByItemId = new Map<number, number>();
+
           for (const itm of input.items) {
             const kind = kindByVariant.get(itm.variantId) ?? "STOCKED";
 
-            if (kind === "SERVICE") {
-              // الخدمات لا مخزون لها إطلاقاً — لا نطبق أي حركة مخزون
-              continue;
-            }
+            const targetItem = matchedInvoice
+              ? itm.invoiceItemId
+                ? invoiceItemRows.find(
+                    (ii) =>
+                      ii.id === itm.invoiceItemId &&
+                      ii.variantId === itm.variantId,
+                  )
+                : invoiceItemRows.find((ii) => ii.variantId === itm.variantId)
+              : undefined;
+
+            const isGiftLine = Boolean(targetItem?.isGift);
+            const effectiveBaseQty =
+              resolvedBaseQtyByItem.get(itm) ??
+              (await resolveReturnBaseQuantity(tx, itm)).baseQuantity;
+
+            let components: Array<{
+              componentVariantId: number;
+              componentBaseQuantity: number;
+            }> = [];
 
             if (kind === "BUNDLE") {
-              // بكج مركب: نحدد مكوناته
-              let components: Array<{
-                componentVariantId: number;
-                componentBaseQuantity: number;
-              }> = [];
-
               if (itm.invoiceItemId && snapshotByItem.has(itm.invoiceItemId)) {
                 components = snapshotByItem.get(itm.invoiceItemId)!;
               } else if (matchedInvoice) {
@@ -2839,44 +3506,138 @@ export const returnRouter = router({
                   }),
                 });
               }
+            }
 
-              // عند الإرجاع للرف، نرجع كل مكوّن بحسب كميته المضاعفة بكمية الأساس للبند
-              if (input.disposition === "RESTOCK") {
-                const effectiveBaseQty =
-                  resolvedBaseQtyByItem.get(itm) ??
-                  (await resolveReturnBaseQuantity(tx, itm)).baseQuantity;
-
-                for (const comp of components) {
-                  const compBaseQty =
-                    comp.componentBaseQuantity * effectiveBaseQty;
-                  await applyMovement(tx, {
-                    variantId: comp.componentVariantId,
-                    branchId: actorBranchId,
-                    baseQuantity: compBaseQty,
-                    movementType: "RETURN",
-                    referenceType: "SALES_RETURN",
-                    notes: `إرجاع مكوّن بكج للرف [${returnNumber}] — مكوّن من «${itm.productName}» (${customerName})`,
-                    createdBy: ctx.user.id,
+            let lineCostShare = money(0);
+            if (targetItem) {
+              const priorCostReturned =
+                accumulatedCostReturnedByItemId.get(targetItem.id) ??
+                Number(targetItem.returnedBaseQuantity ?? 0);
+              accumulatedCostReturnedByItemId.set(
+                targetItem.id,
+                priorCostReturned + effectiveBaseQty,
+              );
+              if (
+                money(targetItem.lineCost ?? "0").gt(0) &&
+                (targetItem.baseQuantity ?? 0) > 0
+              ) {
+                lineCostShare = allocateLineCost(
+                  targetItem.lineCost,
+                  Number(targetItem.baseQuantity),
+                  priorCostReturned,
+                  effectiveBaseQty,
+                );
+              } else if (money(targetItem.unitCost ?? "0").gt(0)) {
+                lineCostShare = round2(
+                  money(targetItem.unitCost).times(effectiveBaseQty),
+                );
+              } else {
+                lineCostShare = money(0);
+              }
+            } else if (kind === "BUNDLE") {
+              for (const comp of components) {
+                const compUnitCost =
+                  costPriceByVariantId.get(comp.componentVariantId) ??
+                  money(0);
+                if (
+                  input.disposition === "RESTOCK" &&
+                  directLimitsApply &&
+                  !matchedInvoice &&
+                  compUnitCost.lte(0)
+                ) {
+                  throw new TRPCError({
+                    code: "PRECONDITION_FAILED",
+                    message: appErrorMessage({
+                      what: "يتطلب المرتجع موافقة المدير",
+                      why: `مكوّن البكج «${itm.productName}» لا يملك كلفة شراء معتمدة في الكتالوج لتقييم إعادة المخزون في المرتجع العابر`,
+                      doThis:
+                        "اربط المرتجع بالفاتورة الأصلية أو اطلب اعتماد المدير لإرجاع الصنف إلى الرف",
+                    }),
                   });
                 }
+                lineCostShare = lineCostShare.plus(
+                  round2(
+                    compUnitCost.times(
+                      comp.componentBaseQuantity * effectiveBaseQty,
+                    ),
+                  ),
+                );
               }
-            } else {
-              // صنف مخزني عادي STOCKED
-              if (input.disposition === "RESTOCK") {
-                const effectiveBaseQty =
-                  resolvedBaseQtyByItem.get(itm) ??
-                  (await resolveReturnBaseQuantity(tx, itm)).baseQuantity;
+            } else if (kind !== "SERVICE") {
+              const variantUnitCost =
+                costPriceByVariantId.get(itm.variantId) ?? money(0);
+              if (
+                input.disposition === "RESTOCK" &&
+                directLimitsApply &&
+                !matchedInvoice &&
+                variantUnitCost.lte(0)
+              ) {
+                throw new TRPCError({
+                  code: "PRECONDITION_FAILED",
+                  message: appErrorMessage({
+                    what: "يتطلب المرتجع موافقة المدير",
+                    why: `الصنف «${itm.productName}» لا يملك كلفة شراء معتمدة في الكتالوج لتقييم إعادة المخزون في المرتجع العابر`,
+                    doThis:
+                      "اربط المرتجع بالفاتورة الأصلية أو اطلب اعتماد المدير لإرجاع الصنف إلى الرف",
+                  }),
+                });
+              }
+              lineCostShare = round2(variantUnitCost.times(effectiveBaseQty));
+            }
 
+            if (isGiftLine) {
+              returnedGiftCost = returnedGiftCost.plus(lineCostShare);
+            } else {
+              returnedCost = returnedCost.plus(lineCostShare);
+            }
+
+            const cId = consignByVariant.get(Number(itm.variantId));
+            if (cId != null) {
+              const current = byConsignor.get(cId) ?? {
+                paid: new Decimal(0),
+                gift: new Decimal(0),
+              };
+              if (isGiftLine) current.gift = current.gift.plus(lineCostShare);
+              else current.paid = current.paid.plus(lineCostShare);
+              byConsignor.set(cId, current);
+            } else if (kind === "SERVICE") {
+              if (isGiftLine) {
+                nonRestoredServiceGiftCost =
+                  nonRestoredServiceGiftCost.plus(lineCostShare);
+              } else {
+                nonRestoredServicePaidCost =
+                  nonRestoredServicePaidCost.plus(lineCostShare);
+              }
+            }
+
+            if (kind === "SERVICE" || input.disposition !== "RESTOCK") {
+              continue;
+            }
+
+            if (kind === "BUNDLE") {
+              for (const comp of components) {
+                const compBaseQty =
+                  comp.componentBaseQuantity * effectiveBaseQty;
                 await applyMovement(tx, {
-                  variantId: itm.variantId,
+                  variantId: comp.componentVariantId,
                   branchId: actorBranchId,
-                  baseQuantity: effectiveBaseQty,
+                  baseQuantity: compBaseQty,
                   movementType: "RETURN",
                   referenceType: "SALES_RETURN",
-                  notes: `إرجاع للرف [${returnNumber}] — ${itm.productName} (${customerName})`,
+                  notes: `إرجاع مكوّن بكج للرف [${returnNumber}] — مكوّن من «${itm.productName}» (${customerName})`,
                   createdBy: ctx.user.id,
                 });
               }
+            } else {
+              await applyMovement(tx, {
+                variantId: itm.variantId,
+                branchId: actorBranchId,
+                baseQuantity: effectiveBaseQty,
+                movementType: "RETURN",
+                referenceType: "SALES_RETURN",
+                notes: `إرجاع للرف [${returnNumber}] — ${itm.productName} (${customerName})`,
+                createdBy: ctx.user.id,
+              });
             }
           }
 
@@ -3082,24 +3843,101 @@ export const returnRouter = router({
 
           // ٣) توثيق قيد حدث المرتجع (RETURN) في دفتر الأستاذ العام
           // خالي تماماً من الأسطر الصفرية تجنباً لخطأ PostingIntent
+          const restock = input.disposition === "RESTOCK";
+          returnedCost = round2(returnedCost);
+          returnedGiftCost = round2(returnedGiftCost);
+          const reversedCost = restock ? returnedCost : new Decimal(0);
+          const reversedGiftCost = restock ? returnedGiftCost : new Decimal(0);
+          const consignmentPaidShare = round2(
+            Array.from(byConsignor.values()).reduce(
+              (sum, split) => sum.plus(split.paid),
+              new Decimal(0),
+            ),
+          );
+          const consignmentGiftShare = round2(
+            Array.from(byConsignor.values()).reduce(
+              (sum, split) => sum.plus(split.gift),
+              new Decimal(0),
+            ),
+          );
+          nonRestoredServicePaidCost = round2(nonRestoredServicePaidCost);
+          nonRestoredServiceGiftCost = round2(nonRestoredServiceGiftCost);
+          const ownedReversedCost = restock
+            ? round2(
+                Decimal.max(
+                  new Decimal(0),
+                  reversedCost
+                    .minus(consignmentPaidShare)
+                    .minus(nonRestoredServicePaidCost),
+                ),
+              )
+            : new Decimal(0);
+          const ownedReversedGiftCost = restock
+            ? round2(
+                Decimal.max(
+                  new Decimal(0),
+                  reversedGiftCost
+                    .minus(consignmentGiftShare)
+                    .minus(nonRestoredServiceGiftCost),
+                ),
+              )
+            : new Decimal(0);
+          const financiallyReversedGiftCost = restock
+            ? round2(
+                Decimal.max(
+                  new Decimal(0),
+                  reversedGiftCost.minus(nonRestoredServiceGiftCost),
+                ),
+              )
+            : new Decimal(0);
+
+          const returnedRevenueDec = round2(
+            returnTotalDec.minus(returnedTaxDec),
+          );
+          const hasConsignmentReturn = byConsignor.size > 0;
+          const hasOwnedReturn = input.items.some(
+            (itm) => !consignByVariant.has(Number(itm.variantId)),
+          );
+          const salesReturnProfile: PostingProfile = hasConsignmentReturn
+            ? hasOwnedReturn || ownedReversedCost.gt(0)
+              ? "RETURN_SALE_MIXED"
+              : "RETURN_SALE_CONSIGNMENT"
+            : "RETURN_SALE_INVENTORY";
+
           const salesReturnSource = {
             roleDebits: {
-              SALES_STATIONERY: returnTotalDec,
+              SALES_STATIONERY: returnedRevenueDec,
+              SALES_PRINT: money(0),
+              SALES_FLEX: money(0),
+              OTHER_REVENUE: money(0),
               DELIVERY_REVENUE: money(0),
-              TAX_PAYABLE: money(0),
-              INVENTORY: money(0),
+              TAX_PAYABLE: returnedTaxDec,
+              INVENTORY: ownedReversedCost,
             },
             roleCredits: {
               AR: returnTotalDec,
-              COGS: money(0),
+              COGS: ownedReversedCost,
             },
           };
           const salesReturnIntent = createPostingIntent(
-            "RETURN_SALE_INVENTORY",
+            salesReturnProfile,
             "RETURN",
             [
-              debitLine("SALES_STATIONERY", returnTotalDec),
-              creditLine("AR", returnTotalDec),
+              ...(returnedRevenueDec.gt(0)
+                ? [debitLine("SALES_STATIONERY", returnedRevenueDec)]
+                : []),
+              ...(returnedTaxDec.gt(0)
+                ? [debitLine("TAX_PAYABLE", returnedTaxDec)]
+                : []),
+              ...(returnTotalDec.gt(0)
+                ? [creditLine("AR", returnTotalDec)]
+                : []),
+              ...(ownedReversedCost.gt(0)
+                ? [
+                    debitLine("INVENTORY", ownedReversedCost),
+                    creditLine("COGS", ownedReversedCost),
+                  ]
+                : []),
             ],
             salesReturnSource,
           );
@@ -3113,9 +3951,10 @@ export const returnRouter = router({
             // يُستبعَد كلاهما من دفتر العميل معاً، فلا يجمع تقريرٌ قيدَ RETURN بلا مقابله (بلاغ Codex P1).
             customerId: ledgerCustomerId,
             amount: returnTotalDec.neg(),
-            revenue: returnTotalDec.neg(),
-            cost: new Decimal(0),
-            profit: returnTotalDec.neg(),
+            revenue: returnedRevenueDec.neg(),
+            taxAmount: returnedTaxDec.neg(),
+            cost: ownedReversedCost.neg(),
+            profit: returnedRevenueDec.minus(ownedReversedCost).neg(),
             notes: `مرتجع مبيعات سلة [${returnNumber}] — ${customerName} (${
               input.settlement.method === "CASH"
                 ? `نقدي من درج #${input.settlement.shiftId}`
@@ -3130,6 +3969,115 @@ export const returnRouter = router({
             postingIntent: salesReturnIntent,
             postingSourceComponents: salesReturnSource,
           });
+
+          if (financiallyReversedGiftCost.gt(0)) {
+            const giftPosting = classifyGiftPosting(
+              financiallyReversedGiftCost,
+              ownedReversedGiftCost,
+              -1,
+            );
+            await postEntry(tx, {
+              entryType: "GIFT_OUT",
+              branchId: actorBranchId,
+              invoiceId: matchedInvoice?.id ?? null,
+              customerId: ledgerCustomerId,
+              revenue: new Decimal(0),
+              cost: financiallyReversedGiftCost.neg(),
+              profit: financiallyReversedGiftCost,
+              amount: financiallyReversedGiftCost.neg(),
+              createdBy: ctx.user.id,
+              createdByNameSnapshot: ctx.user.name ?? "كاشير",
+              notes: `عكس هدايا ضمن مرتجع مبيعات سلة [${returnNumber}]؛ consignmentRemainder=${toDbMoney(giftPosting.consignmentRemainder)}`,
+              postingIntent: giftPosting.intent,
+              postingSourceComponents: giftPosting.sourceComponents,
+            });
+          }
+
+          if (consignByVariant.size > 0) {
+            for (const cId of Array.from(byConsignor.keys()).sort((a, b) => a - b)) {
+              const split = byConsignor.get(cId)!;
+              const paidShare = round2(split.paid);
+              const giftShare = round2(split.gift);
+              const share = round2(paidShare.plus(giftShare));
+              if (share.lte(0)) continue;
+              await postEntry(tx, {
+                entryType: "PURCHASE",
+                supplierId: cId,
+                invoiceId: matchedInvoice?.id ?? null,
+                branchId: actorBranchId,
+                amount: share.neg(),
+                cost: paidShare.neg(),
+                profit: paidShare,
+                createdBy: ctx.user.id,
+                createdByNameSnapshot: ctx.user.name ?? "كاشير",
+                notes: `عكس استحقاق أمانة — مرتجع سلة [${returnNumber}]؛ COGS مبسّط=${toDbMoney(paidShare.neg())}`,
+                postingIntent: createPostingIntent(
+                  "PURCHASE_CONSIGNMENT",
+                  "PURCHASE",
+                  [
+                    ...signedPostingLines(
+                      "COGS",
+                      "CONSIGNMENT_PAYABLE",
+                      paidShare.neg(),
+                    ),
+                    ...signedPostingLines(
+                      "GIFTS_PROMO",
+                      "CONSIGNMENT_PAYABLE",
+                      giftShare.neg(),
+                    ),
+                  ],
+                  {
+                    roleDebits: { CONSIGNMENT_PAYABLE: share },
+                    roleCredits: { COGS: paidShare, GIFTS_PROMO: giftShare },
+                  },
+                ),
+                postingSourceComponents: {
+                  roleDebits: { CONSIGNMENT_PAYABLE: share },
+                  roleCredits: { COGS: paidShare, GIFTS_PROMO: giftShare },
+                },
+              });
+              await adjustSupplierBalance(tx, cId, share.neg());
+              if (!restock) {
+                await postEntry(tx, {
+                  entryType: "PURCHASE",
+                  supplierId: cId,
+                  invoiceId: null,
+                  branchId: actorBranchId,
+                  amount: share,
+                  cost: paidShare,
+                  profit: paidShare.neg(),
+                  createdBy: ctx.user.id,
+                  createdByNameSnapshot: ctx.user.name ?? "كاشير",
+                  notes: `استحقاق تلف مرتجع أمانة [${returnNumber}]؛ COGS مبسّط=${toDbMoney(paidShare)}`,
+                  postingIntent: createPostingIntent(
+                    "PURCHASE_CONSIGNMENT",
+                    "PURCHASE",
+                    [
+                      ...signedPostingLines(
+                        "COGS",
+                        "CONSIGNMENT_PAYABLE",
+                        paidShare,
+                      ),
+                      ...signedPostingLines(
+                        "GIFTS_PROMO",
+                        "CONSIGNMENT_PAYABLE",
+                        giftShare,
+                      ),
+                    ],
+                    {
+                      roleDebits: { COGS: paidShare, GIFTS_PROMO: giftShare },
+                      roleCredits: { CONSIGNMENT_PAYABLE: share },
+                    },
+                  ),
+                  postingSourceComponents: {
+                    roleDebits: { COGS: paidShare, GIFTS_PROMO: giftShare },
+                    roleCredits: { CONSIGNMENT_PAYABLE: share },
+                  },
+                });
+                await adjustSupplierBalance(tx, cId, share);
+              }
+            }
+          }
 
           // ٤) تحديث بيانات الفاتورة الأصلية وبنودها بالكميات الأساس المحسوبة
           if (matchedInvoice) {
@@ -3343,6 +4291,7 @@ export const returnRouter = router({
           return {
             ok: true as const,
             returnNumber,
+            receiptId: generatedReceiptId,
             customerName,
             customerPhone,
             originalInvoiceNumber: input.invoiceNumber,

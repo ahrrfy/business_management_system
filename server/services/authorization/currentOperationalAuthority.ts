@@ -4,6 +4,13 @@ import {
   resolveOperationalCaps,
   type OperationalCaps,
 } from "@shared/atomicPermissions";
+import {
+  applyPermissionOverrides,
+  ROLE_TEMPLATES,
+  resolvePermissions,
+  type PermissionMap,
+  type RoleKey,
+} from "@shared/permissions";
 import { roles, users } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { eq } from "drizzle-orm";
@@ -38,6 +45,7 @@ export async function loadCurrentOperationalAuthorityTx(
     isActive: boolean;
     key: string;
     operationalCaps: unknown;
+    permissions: unknown;
   } | null = null;
   if (probe?.customRoleId != null) {
     const [row] = await tx
@@ -46,6 +54,7 @@ export async function loadCurrentOperationalAuthorityTx(
         isActive: roles.isActive,
         key: roles.key,
         operationalCaps: roles.operationalCaps,
+        permissions: roles.permissions,
       })
       .from(roles)
       .where(eq(roles.id, probe.customRoleId))
@@ -62,6 +71,7 @@ export async function loadCurrentOperationalAuthorityTx(
       isActive: users.isActive,
       isOwner: users.isOwner,
       operationalCaps: users.operationalCaps,
+      permissionsOverride: users.permissionsOverride,
       role: users.role,
     })
     .from(users)
@@ -118,26 +128,58 @@ export async function loadCurrentOperationalAuthorityTx(
         role: "user",
       };
     }
+    const customBasePermissions =
+      ROLE_TEMPLATES[customRole.baseRole as RoleKey] ?? ROLE_TEMPLATES.user;
+    const customRolePermissions = applyPermissionOverrides(
+      customBasePermissions,
+      customRole.permissions as PermissionMap | null,
+    );
+    const effectiveCustomModules = applyPermissionOverrides(
+      customRolePermissions,
+      user.permissionsOverride as PermissionMap | null,
+    );
+    const customFallbackCapRole =
+      customRole.baseRole === "print_operator" || customRole.baseRole === "user"
+        ? effectiveCustomModules.workorders === "FULL"
+          ? "reception_clerk"
+          : effectiveCustomModules.pos === "FULL" ||
+              effectiveCustomModules.sales === "FULL"
+            ? "cashier"
+            : customRole.baseRole
+        : customRole.baseRole;
     return {
       branchId: user.branchId == null ? null : Number(user.branchId),
       caps: resolveOperationalCaps(
         customRole.key,
         customRole.operationalCaps as OperationalCaps | null,
         user.operationalCaps as OperationalCaps | null,
-        customRole.baseRole,
+        customFallbackCapRole,
       ),
       isOwner: false,
       role: customRole.baseRole,
     };
   }
 
+  const effectiveModules = resolvePermissions(
+    (user.role as RoleKey) ?? "user",
+    user.permissionsOverride as PermissionMap | null,
+  );
+  const fallbackCapRole =
+    user.role === "print_operator" || user.role === "user"
+      ? effectiveModules.workorders === "FULL"
+        ? "reception_clerk"
+        : effectiveModules.pos === "FULL" || effectiveModules.sales === "FULL"
+          ? "cashier"
+          : user.role
+      : user.role;
+
   return {
     branchId: user.branchId == null ? null : Number(user.branchId),
     caps: resolveOperationalCaps(
-      user.role,
+      fallbackCapRole,
       null,
       user.operationalCaps as OperationalCaps | null,
-      user.role,
+      fallbackCapRole,
     ),
     isOwner: false,
     role: user.role,

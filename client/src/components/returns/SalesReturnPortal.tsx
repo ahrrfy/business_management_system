@@ -140,11 +140,32 @@ export function SalesReturnPortal({
     useState<InspectedInvoice | null>(null);
 
   const salesTotal = useMemo(() => {
-    return salesCart.reduce(
-      (sum, item) => sum + item.quantity * Number(item.unitPrice || 0),
-      0,
+    return Number(
+      salesCart
+        .reduce((sum, item) => {
+          const matchedInvItem = inspectedInvoice?.items.find((it) =>
+            item.invoiceItemId
+              ? it.invoiceItemId === item.invoiceItemId
+              : it.variantId === item.variantId,
+          );
+          if (
+            matchedInvItem &&
+            item.quantity === matchedInvItem.remainingQuantity &&
+            matchedInvItem.remainingLineTotal != null &&
+            Number(item.unitPrice || 0) ===
+              Number(
+                matchedInvItem.effectiveUnitPrice ||
+                  matchedInvItem.unitPrice ||
+                  0,
+              )
+          ) {
+            return sum + Number(matchedInvItem.remainingLineTotal);
+          }
+          return sum + item.quantity * Number(item.unitPrice || 0);
+        }, 0)
+        .toFixed(2),
     );
-  }, [salesCart]);
+  }, [salesCart, inspectedInvoice]);
 
   const salesTotalPieces = useMemo(() => {
     return salesCart.reduce((sum, item) => sum + item.quantity, 0);
@@ -235,6 +256,9 @@ export function SalesReturnPortal({
     const maxQty = matchedInvItem
       ? matchedInvItem.remainingQuantity
       : undefined;
+    const addStep = matchedInvItem
+      ? (line.qty || 1) * factor
+      : (line.qty || 1);
 
     setSalesCart((prev) => {
       const existingIdx = prev.findIndex((i) =>
@@ -245,7 +269,7 @@ export function SalesReturnPortal({
       if (existingIdx >= 0) {
         const target = prev[existingIdx];
         const updated = [...prev];
-        let newQty = target.quantity + (line.qty || 1);
+        let newQty = target.quantity + addStep;
         if (maxQty != null && newQty > maxQty) {
           notify.warn(
             `الكمية المطلوبة تتجاوز المتبقي في الفاتورة (${formatQuantity(maxQty)})`,
@@ -253,18 +277,30 @@ export function SalesReturnPortal({
           newQty = maxQty;
         }
         const [moved] = updated.splice(existingIdx, 1);
-        const itemToPlace = { ...moved, quantity: newQty };
+        const itemToPlace = {
+          ...moved,
+          ...(matchedInvItem
+            ? {
+                productUnitId: matchedInvItem.productUnitId,
+                unit: matchedInvItem.unitName,
+                conversionFactor: 1,
+              }
+            : {}),
+          quantity: newQty,
+        };
         setLastAddedId(itemToPlace.id);
         return [itemToPlace, ...updated];
       }
       const newId = `${variantId}-${Date.now()}`;
       setLastAddedId(newId);
-      const initialQty = Math.min(line.qty || 1, maxQty ?? (line.qty || 1));
+      const initialQty = Math.min(addStep, maxQty ?? addStep);
       return [
         {
           id: newId,
           variantId,
-          productUnitId: line.productUnitId,
+          productUnitId: matchedInvItem
+            ? matchedInvItem.productUnitId
+            : line.productUnitId,
           invoiceItemId: matchedInvItem?.invoiceItemId,
           isBundle: matchedInvItem?.isBundle,
           productName: line.name,
@@ -275,8 +311,8 @@ export function SalesReturnPortal({
           originalUnitPrice: matchedInvItem
             ? (matchedInvItem.effectiveUnitPrice || matchedInvItem.unitPrice)
             : undefined,
-          unit: line.unit || "قطعة",
-          conversionFactor: factor,
+          unit: matchedInvItem ? matchedInvItem.unitName : (line.unit || "قطعة"),
+          conversionFactor: matchedInvItem ? 1 : factor,
         },
         ...prev,
       ];
@@ -336,14 +372,11 @@ export function SalesReturnPortal({
           const scanRes = await utils.returns.universalScan.fetch({
             barcode: raw,
           });
-          if (scanRes?.recognized && scanRes.kind === "INVOICE" && scanRes.id) {
-            const invData = await utils.sales.get.fetch({ invoiceId: scanRes.id });
-            if (invData?.invoiceNumber) {
-              setSalesBarcode("");
-              setSalesInvoiceNo(invData.invoiceNumber);
-              await handleLookupInvoice(invData.invoiceNumber);
-              return;
-            }
+          if (scanRes?.recognized && scanRes.kind === "INVOICE" && scanRes.number) {
+            setSalesBarcode("");
+            setSalesInvoiceNo(scanRes.number);
+            await handleLookupInvoice(scanRes.number);
+            return;
           }
         } catch {
           // تجاهل
@@ -392,7 +425,17 @@ export function SalesReturnPortal({
             newQty = maxQty;
           }
           const [moved] = updated.splice(existingIdx, 1);
-          const itemToPlace = { ...moved, quantity: newQty };
+          const itemToPlace = {
+            ...moved,
+            ...(matchedInvItem
+              ? {
+                  productUnitId: matchedInvItem.productUnitId,
+                  unit: matchedInvItem.unitName,
+                  conversionFactor: 1,
+                }
+              : {}),
+            quantity: newQty,
+          };
           setLastAddedId(itemToPlace.id);
           return [itemToPlace, ...updated];
         }
@@ -402,7 +445,9 @@ export function SalesReturnPortal({
           {
             id: newId,
             variantId,
-            productUnitId: res.productUnitId,
+            productUnitId: matchedInvItem
+              ? matchedInvItem.productUnitId
+              : res.productUnitId,
             invoiceItemId: matchedInvItem?.invoiceItemId,
             isBundle: matchedInvItem?.isBundle,
             productName: res.productName,
@@ -413,6 +458,12 @@ export function SalesReturnPortal({
             originalUnitPrice: matchedInvItem
               ? (matchedInvItem.effectiveUnitPrice || matchedInvItem.unitPrice)
               : undefined,
+            ...(matchedInvItem
+              ? {
+                  unit: matchedInvItem.unitName,
+                  conversionFactor: 1,
+                }
+              : {}),
           },
           ...prev,
         ];
@@ -478,7 +529,20 @@ export function SalesReturnPortal({
           }
           return;
         }
-      } catch {
+      } catch (err) {
+        if (
+          err &&
+          typeof err === "object" &&
+          ("data" in err &&
+            (err as { data?: { code?: string } }).data?.code ===
+              "PRECONDITION_FAILED" ||
+            ("message" in err &&
+              typeof (err as { message?: unknown }).message === "string" &&
+              (err as { message: string }).message.includes("أمر الشغل")))
+        ) {
+          if (!silent) notify.err(err);
+          return;
+        }
         // المتابعة للبحث البديل
       }
 
@@ -487,19 +551,17 @@ export function SalesReturnPortal({
         const scanRes = await utils.returns.universalScan.fetch({
           barcode: raw,
         });
-        if (scanRes.recognized && scanRes.kind === "INVOICE" && scanRes.id) {
-          const invData = await utils.sales.get.fetch({ invoiceId: scanRes.id });
-          if (invData?.invoiceNumber) {
-            const inspected = await utils.returns.inspectInvoiceForReturn.fetch({
-              invoiceNumber: invData.invoiceNumber,
-            });
-            if (inspected) {
-              applyInspected(inspected);
-              const isFullyRet =
+        if (scanRes.recognized && scanRes.kind === "INVOICE" && scanRes.number) {
+          const inspected = await utils.returns.inspectInvoiceForReturn.fetch({
+            invoiceNumber: scanRes.number,
+          });
+          if (inspected) {
+            applyInspected(inspected);
+            const isFullyRet =
               inspected.isDead ||
               inspected.isFullyReturned ||
               Number(inspected.remainingInvoiceTotal || 0) <= 0;
-              if (inspected.isOtherBranch) {
+            if (inspected.isOtherBranch) {
               notify.err(
                 `الفاتورة #${inspected.invoiceNumber} صادرة من فرع آخر (فرع #${inspected.originBranchId}) ولا يمكن إرجاعها من هذا الفرع إلا بصلاحية مدير عام`,
               );
@@ -508,10 +570,9 @@ export function SalesReturnPortal({
                 `الفاتورة #${inspected.invoiceNumber} مغلقة أو ملغاة أو مرجعة بالكامل ولا تقبل مرتجعات`,
               );
             } else {
-                notify.ok(`تم التعرف على الفاتورة #${inspected.invoiceNumber}`);
-              }
-              return;
+              notify.ok(`تم التعرف على الفاتورة #${inspected.invoiceNumber}`);
             }
+            return;
           }
         }
       } catch {
@@ -522,22 +583,28 @@ export function SalesReturnPortal({
       const invId = parseInt(raw.replace(/\D/g, ""), 10);
       if (invId) {
         try {
-          const invData = await utils.sales.get.fetch({ invoiceId: invId });
-          if (invData?.invoiceNumber) {
+          const scanById = await utils.returns.universalScan.fetch({
+            barcode: String(invId),
+          });
+          if (
+            scanById.recognized &&
+            scanById.kind === "INVOICE" &&
+            scanById.number
+          ) {
             const inspected = await utils.returns.inspectInvoiceForReturn.fetch({
-              invoiceNumber: invData.invoiceNumber,
+              invoiceNumber: scanById.number,
             });
             if (inspected) {
               applyInspected(inspected);
               const isFullyRet =
-              inspected.isDead ||
-              inspected.isFullyReturned ||
-              Number(inspected.remainingInvoiceTotal || 0) <= 0;
+                inspected.isDead ||
+                inspected.isFullyReturned ||
+                Number(inspected.remainingInvoiceTotal || 0) <= 0;
               if (isFullyRet) {
-              notify.warn(
-                `الفاتورة #${inspected.invoiceNumber} مغلقة أو ملغاة أو مرجعة بالكامل ولا تقبل مرتجعات`,
-              );
-            } else {
+                notify.warn(
+                  `الفاتورة #${inspected.invoiceNumber} مغلقة أو ملغاة أو مرجعة بالكامل ولا تقبل مرتجعات`,
+                );
+              } else {
                 notify.ok(`تم التعرف على الفاتورة #${inspected.invoiceNumber}`);
               }
               return;
@@ -701,6 +768,10 @@ export function SalesReturnPortal({
         if (existingIdx >= 0) {
           nextCart[existingIdx] = {
             ...nextCart[existingIdx],
+            productUnitId: item.productUnitId,
+            invoiceItemId: item.invoiceItemId,
+            unit: item.unitName,
+            conversionFactor: item.conversionFactor,
             quantity: item.remainingQuantity,
             maxAllowedQuantity: item.remainingQuantity,
             unitPrice: item.effectiveUnitPrice || item.unitPrice,

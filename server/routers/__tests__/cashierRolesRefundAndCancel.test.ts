@@ -10,6 +10,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { returnRouter } from "../returnRouter";
 import { printPosRouter } from "../printPosRouter";
+import { refundRailsRouter } from "../refundRailsRouter";
 import { createSale } from "../../services/saleService";
 
 const TABLES = [
@@ -52,26 +53,24 @@ async function seed() {
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" });
 
-  // مستخدم كاشير استقبال (workorders: FULL)
+  // مستخدم كاشير استقبال (workorders: FULL بالقالب دون operationalCaps صريحة — يرث سقف reception_clerk)
   await d.insert(s.users).values({
     id: 10,
     openId: "reception-user",
     name: "مشغل الاستقبال",
     role: "print_operator", // له workorders: "FULL" بالقالب
-    operationalCaps: { maxRefundAmountIqd: "25000.00" },
     branchId: 1,
     loginMethod: "local",
     isOwner: false,
   });
 
-  // مستخدم كاشير طباعة (pos: FULL)
+  // مستخدم كاشير طباعة (pos: FULL دون operationalCaps صريحة — يرث سقف cashier)
   await d.insert(s.users).values({
     id: 11,
     openId: "print-user",
     name: "كاشير الطباعة",
     role: "user",
     permissionsOverride: { pos: "FULL" },
-    operationalCaps: { maxRefundAmountIqd: "25000.00" },
     branchId: 1,
     loginMethod: "local",
     isOwner: false,
@@ -105,6 +104,7 @@ async function seed() {
     id: 1,
     variantId: 1,
     unitName: "علبة",
+    barcode: "BC-CARD-1",
     conversionFactor: "1",
     isBaseUnit: true,
   });
@@ -498,4 +498,532 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       /يتطلب صلاحية كاشير المبيعات أو مشغّل الاستقبال أو كاشير الطباعة/,
     );
   });
+
+  it("٦. كاشير التجزئة وكاشير الاستقبال يفحصان الأصناف والورديات وينفذان مرتجع السلة ضمن الضوابط", async () => {
+    const retailCtx = createContextFor({
+      id: 12,
+      name: "كاشير التجزئة",
+      role: "cashier",
+    });
+    const receptionCtx = createContextFor({
+      id: 10,
+      name: "موظف الاستقبال",
+      role: "print_operator",
+      permissionsOverride: { workorders: "FULL" },
+    });
+
+    const retailShiftId = await openShiftFor(12, "RETAIL");
+    const receptionShiftId = await openShiftFor(10, "RECEPTION");
+
+    const retailCaller = returnRouter.createCaller(retailCtx);
+    const receptionCaller = returnRouter.createCaller(receptionCtx);
+
+    const retailLookup = await retailCaller.lookupItemForReturn({
+      barcode: "BC-CARD-1",
+    });
+    expect(retailLookup.variantId).toBe(1);
+
+    const receptionLookup = await receptionCaller.lookupItemForReturn({
+      barcode: "BC-CARD-1",
+    });
+    expect(receptionLookup.variantId).toBe(1);
+
+    const receptionShifts = await receptionCaller.shifts();
+    expect(receptionShifts.some((s) => s.shiftId === receptionShiftId && s.isMine)).toBe(true);
+
+    // مرتجع سلة نقدي عابر ضمن سقف الكاشير ومن درج ورديته المفتوحة المموّلة
+    const retailWalkIn = await retailCaller.executeSalesReturnCart({
+      items: [
+        {
+          variantId: 1,
+          productName: "كارت شخصي",
+          quantity: 1,
+          unitPrice: "25.00",
+        },
+      ],
+      settlement: {
+        method: "CASH",
+        totalAmount: "25.00",
+        shiftId: retailShiftId,
+      },
+    });
+    expect(retailWalkIn.ok).toBe(true);
+    expect(retailWalkIn.receiptId).toEqual(expect.any(Number));
+    const [walkInReturnEntry] = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(
+        and(
+          eq(s.accountingEntries.entryType, "RETURN"),
+          eq(s.accountingEntries.receiptId, Number(retailWalkIn.receiptId)),
+        ),
+      );
+    expect(walkInReturnEntry?.cost).toBe("-5.00");
+    expect(walkInReturnEntry?.profit).toBe("-20.00");
+
+    const receptionWalkIn = await receptionCaller.executeSalesReturnCart({
+      items: [
+        {
+          variantId: 1,
+          productName: "كارت شخصي",
+          quantity: 1,
+          unitPrice: "25.00",
+        },
+      ],
+      settlement: {
+        method: "CASH",
+        totalAmount: "25.00",
+        shiftId: receptionShiftId,
+      },
+    });
+    expect(receptionWalkIn.ok).toBe(true);
+
+    // فواتير أوامر الشغل (WORKORDER) تُرفض في inspectInvoiceForReturn و executeSalesReturnCart
+    await db().insert(s.invoices).values({
+      id: 901,
+      invoiceNumber: "INV-WO-901",
+      branchId: 1,
+      sourceType: "WORKORDER",
+      sourceId: "WO-901",
+      subtotal: "25.00",
+      discountAmount: "0.00",
+      taxAmount: "0.00",
+      total: "25.00",
+      paidAmount: "25.00",
+      returnedTotal: "0.00",
+      status: "PAID",
+      paymentMethod: "CASH",
+      createdBy: 10,
+      shiftId: receptionShiftId,
+    });
+
+    await expect(
+      receptionCaller.inspectInvoiceForReturn({ invoiceNumber: "INV-WO-901" }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    await expect(
+      receptionCaller.executeSalesReturnCart({
+        invoiceNumber: "INV-WO-901",
+        items: [
+          {
+            variantId: 1,
+            productName: "كارت شخصي",
+            quantity: 1,
+            unitPrice: "25.00",
+          },
+        ],
+        settlement: {
+          method: "CASH",
+          totalAmount: "25.00",
+          shiftId: receptionShiftId,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    // عزل الأدراج لحسابات الترحيل التوافقي (role="user" مع pos:FULL أو workorders:FULL)
+    const printShiftId = await openShiftFor(11, "PRINT_SERVICES");
+    const printCaller = returnRouter.createCaller(
+      createContextFor({
+        id: 11,
+        name: "كاشير الطباعة",
+        role: "user",
+        permissionsOverride: { pos: "FULL" },
+      }),
+    );
+    const printShifts = await printCaller.shifts();
+    expect(printShifts.map((s) => s.shiftId)).toEqual([printShiftId]);
+    const printDrawers = await printCaller.getOpenRefundDrawers();
+    expect(printDrawers.map((d) => d.shiftId)).toEqual([printShiftId]);
+
+    // عزل قنوات التحري (forensicTrace) والمسح الكوني (universalScan) حسب قناة الكاشير
+    const retailSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: retailShiftId,
+        customerId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+        payment: { amount: "25.00", method: "CASH" },
+      },
+      { userId: 12, branchId: 1, role: "cashier" },
+    );
+    const receptionSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: receptionShiftId,
+        customerId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+        payment: { amount: "25.00", method: "CASH" },
+      },
+      { userId: 10, branchId: 1, role: "print_operator" },
+    );
+    const printSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: printShiftId,
+        customerId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+        payment: { amount: "25.00", method: "CASH" },
+      },
+      { userId: 11, branchId: 1, role: "user" },
+    );
+
+    const receptionTrace = await receptionCaller.forensicTrace({
+      mode: "DATE_SHIFT",
+      query: "ALL",
+    });
+    const receptionTracedIds = receptionTrace.results.map((r) => r.invoiceId);
+    expect(receptionTracedIds).toContain(receptionSale.invoiceId);
+    expect(receptionTracedIds).not.toContain(retailSale.invoiceId);
+    expect(receptionTracedIds).not.toContain(printSale.invoiceId);
+
+    const printTrace = await printCaller.forensicTrace({
+      mode: "DATE_SHIFT",
+      query: "ALL",
+    });
+    const printTracedIds = printTrace.results.map((r) => r.invoiceId);
+    expect(printTracedIds).toContain(printSale.invoiceId);
+    expect(printTracedIds).not.toContain(retailSale.invoiceId);
+    expect(printTracedIds).not.toContain(receptionSale.invoiceId);
+
+    const retailScanByReception = await receptionCaller.universalScan({
+      barcode: retailSale.invoiceNumber,
+    });
+    expect(retailScanByReception.recognized).toBe(false);
+
+    const retailInspectByReception = await receptionCaller.inspectInvoiceForReturn({
+      invoiceNumber: retailSale.invoiceNumber,
+    });
+    expect(retailInspectByReception).toBeNull();
+    const printInspectByReception = await receptionCaller.inspectInvoiceForReturn({
+      invoiceNumber: printSale.invoiceNumber,
+    });
+    expect(printInspectByReception).toBeNull();
+    const receptionInspectByPrint = await printCaller.inspectInvoiceForReturn({
+      invoiceNumber: receptionSale.invoiceNumber,
+    });
+    expect(receptionInspectByPrint).toBeNull();
+
+    await expect(
+      receptionCaller.executeSalesReturnCart({
+        invoiceNumber: retailSale.invoiceNumber,
+        items: [
+          {
+            variantId: 1,
+            productName: "كارت شخصي",
+            quantity: 1,
+            unitPrice: "25.00",
+          },
+        ],
+        settlement: {
+          method: "CASH",
+          totalAmount: "25.00",
+          shiftId: receptionShiftId,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    // عزل المسح الكوني عن وحدات المستندات غير المفوضة (أوامر الشغل ومرتجعات الشراء)
+    await db().insert(s.workOrders).values({
+      id: 950,
+      orderNumber: "WO-SCAN-950",
+      branchId: 1,
+      customerId: 1,
+      title: "أمر شغل سري",
+      quantity: 1,
+      salePrice: "100.00",
+      deposit: "50.00",
+      createdBy: 10,
+    } as never);
+    const woScanByPrint = await printCaller.universalScan({
+      barcode: "WO-SCAN-950",
+    });
+    expect(woScanByPrint.recognized).toBe(false);
+    const woScanByReception = await receptionCaller.universalScan({
+      barcode: "WO-SCAN-950",
+    });
+    expect(woScanByReception.recognized).toBe(true);
+    expect(woScanByReception.kind).toBe("WORK_ORDER");
+
+    // رفض تعديل سعر البند أو إجمالي التسوية في المرتجع المرتبط بفاتورة
+    await expect(
+      receptionCaller.executeSalesReturnCart({
+        invoiceNumber: receptionSale.invoiceNumber,
+        items: [
+          {
+            variantId: 1,
+            productName: "كارت شخصي",
+            quantity: 1,
+            unitPrice: "1.00",
+          },
+        ],
+        settlement: {
+          method: "CASH",
+          totalAmount: "1.00",
+          shiftId: receptionShiftId,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    // السماح لحسابات الترحيل التوافقي (role="user" مع pos:FULL) باستفتاء refundRails.preflight ضمن نطاق قناتها
+    const printRailsCaller = refundRailsRouter.createCaller(
+      createContextFor({
+        id: 11,
+        name: "كاشير الطباعة",
+        role: "user",
+        permissionsOverride: { pos: "FULL" },
+      }),
+    );
+    const printPreflight = await printRailsCaller.preflight({
+      sourceDocType: "SALE_RETURN",
+      sourceDocId: printSale.invoiceId,
+      amount: "25.00",
+    });
+    expect(printPreflight.rails.DRAWER.available).toBe(true);
+
+    // دعم المرتجع الكامل والجزئي للفواتير ذات الخصم الكسري غير القابل للقسمة (3 × 25 - خصم 1.00 = 74.00)
+    const fractionalSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: retailShiftId,
+        customerId: 1,
+        sourceType: "POS",
+        invoiceDiscount: "1.00",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }],
+        payment: { amount: "74.00", method: "CASH" },
+      },
+      { userId: 12, branchId: 1, role: "cashier" },
+    );
+    const inspectedFractional1 = await retailCaller.inspectInvoiceForReturn({
+      invoiceNumber: fractionalSale.invoiceNumber,
+    });
+    expect(inspectedFractional1?.items[0]?.remainingQuantity).toBe(3);
+    expect(inspectedFractional1?.items[0]?.effectiveUnitPrice).toBe("24.67");
+    expect(inspectedFractional1?.items[0]?.remainingLineTotal).toBe("74.00");
+
+    const fracPartialReturn = await retailCaller.executeSalesReturnCart({
+      invoiceNumber: fractionalSale.invoiceNumber,
+      items: [
+        {
+          variantId: 1,
+          invoiceItemId: inspectedFractional1?.items[0]?.invoiceItemId,
+          productUnitId: inspectedFractional1?.items[0]?.productUnitId ?? undefined,
+          productName: "كارت شخصي",
+          quantity: 2,
+          unitPrice: inspectedFractional1?.items[0]?.effectiveUnitPrice ?? "24.67",
+        },
+      ],
+      settlement: {
+        method: "CASH",
+        totalAmount: "49.34",
+        shiftId: retailShiftId,
+      },
+    });
+    expect(fracPartialReturn.ok).toBe(true);
+
+    const inspectedFractional2 = await retailCaller.inspectInvoiceForReturn({
+      invoiceNumber: fractionalSale.invoiceNumber,
+    });
+    expect(inspectedFractional2?.items[0]?.remainingQuantity).toBe(1);
+    expect(inspectedFractional2?.items[0]?.effectiveUnitPrice).toBe("24.66");
+    expect(inspectedFractional2?.items[0]?.remainingLineTotal).toBe("24.66");
+
+    const fracFinalReturn = await retailCaller.executeSalesReturnCart({
+      invoiceNumber: fractionalSale.invoiceNumber,
+      items: [
+        {
+          variantId: 1,
+          invoiceItemId: inspectedFractional2?.items[0]?.invoiceItemId,
+          productUnitId: inspectedFractional2?.items[0]?.productUnitId ?? undefined,
+          productName: "كارت شخصي",
+          quantity: 1,
+          unitPrice: inspectedFractional2?.items[0]?.effectiveUnitPrice ?? "24.66",
+        },
+      ],
+      settlement: {
+        method: "CASH",
+        totalAmount: inspectedFractional2?.items[0]?.remainingLineTotal ?? "24.66",
+        shiftId: retailShiftId,
+      },
+    });
+    expect(fracFinalReturn.ok).toBe(true);
+
+    // توزيع الضريبة وعكس TAX_PAYABLE وحفظ اللقطة الصفرية للكلفة وعكس GIFT_OUT في سلة المرتجع
+    const taxedSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: retailShiftId,
+        customerId: 1,
+        sourceType: "POS",
+        taxRatePercent: "10",
+        lines: [
+          { variantId: 1, productUnitId: 1, quantity: "2" },
+          { variantId: 1, productUnitId: 1, quantity: "1", isGift: true },
+        ],
+        payment: { amount: "55.00", method: "CASH" },
+      },
+      { userId: 12, branchId: 1, role: "cashier" },
+    );
+    // تصفير اللقطة التاريخية للكلفة على البند المدفوع لاختبار عدم السقوط إلى الكلفة الحية في الكتالوج
+    await db()
+      .update(s.invoiceItems)
+      .set({ unitCost: "0.00", lineCost: "0.00" })
+      .where(
+        and(
+          eq(s.invoiceItems.invoiceId, taxedSale.invoiceId),
+          eq(s.invoiceItems.isGift, false),
+        ),
+      );
+
+    const inspectedTaxed = await retailCaller.inspectInvoiceForReturn({
+      invoiceNumber: taxedSale.invoiceNumber,
+    });
+    const paidTaxedItem = inspectedTaxed?.items.find((i) => !i.isGift);
+    const giftTaxedItem = inspectedTaxed?.items.find((i) => i.isGift);
+    expect(paidTaxedItem?.effectiveUnitPrice).toBe("27.50");
+    expect(paidTaxedItem?.remainingLineTotal).toBe("55.00");
+    expect(giftTaxedItem?.effectiveUnitPrice).toBe("0.00");
+    expect(giftTaxedItem?.remainingLineTotal).toBe("0.00");
+
+    const taxedReturn = await retailCaller.executeSalesReturnCart({
+      invoiceNumber: taxedSale.invoiceNumber,
+      items: [
+        {
+          variantId: 1,
+          invoiceItemId: paidTaxedItem?.invoiceItemId,
+          productUnitId: 1,
+          productName: "كارت شخصي",
+          quantity: 2,
+          unitPrice: "27.50",
+        },
+        {
+          variantId: 1,
+          invoiceItemId: giftTaxedItem?.invoiceItemId,
+          productUnitId: 1,
+          productName: "كارت شخصي",
+          quantity: 1,
+          unitPrice: "0.00",
+        },
+      ],
+      settlement: {
+        method: "CASH",
+        totalAmount: "55.00",
+        shiftId: retailShiftId,
+      },
+    });
+    expect(taxedReturn.ok).toBe(true);
+    const [taxedReturnEntry] = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(
+        and(
+          eq(s.accountingEntries.invoiceId, taxedSale.invoiceId),
+          eq(s.accountingEntries.entryType, "RETURN"),
+        ),
+      );
+    expect(taxedReturnEntry?.amount).toBe("-55.00");
+    expect(taxedReturnEntry?.revenue).toBe("-50.00");
+    expect(taxedReturnEntry?.taxAmount).toBe("-5.00");
+    expect(taxedReturnEntry?.cost).toBe("0.00");
+
+    const giftEntries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(
+        and(
+          eq(s.accountingEntries.invoiceId, taxedSale.invoiceId),
+          eq(s.accountingEntries.entryType, "GIFT_OUT"),
+        ),
+      );
+    expect(giftEntries.some((e) => e.amount === "-5.00" && e.cost === "-5.00")).toBe(true);
+
+    // تطبيع وحدات البيع المركبة (conversionFactor > 1) إلى الوحدة الأساسية عند الفحص والمرتجع
+    await db().insert(s.productUnits).values({
+      id: 2,
+      variantId: 1,
+      unitName: "كرتونة",
+      barcode: "BC-CARD-CARTON",
+      conversionFactor: "10",
+      isBaseUnit: false,
+    });
+    await db().insert(s.productPrices).values({
+      productUnitId: 2,
+      priceTier: "RETAIL",
+      price: "200.00",
+    });
+    const cartonSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: retailShiftId,
+        customerId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+        payment: { amount: "200.00", method: "CASH" },
+      },
+      { userId: 12, branchId: 1, role: "cashier" },
+    );
+    const inspectedCarton = await retailCaller.inspectInvoiceForReturn({
+      invoiceNumber: cartonSale.invoiceNumber,
+    });
+    expect(inspectedCarton?.items[0]?.productUnitId).toBe(1);
+    expect(inspectedCarton?.items[0]?.conversionFactor).toBe(1);
+    expect(inspectedCarton?.items[0]?.remainingQuantity).toBe(10);
+    expect(inspectedCarton?.items[0]?.unitPrice).toBe("20.00");
+    expect(inspectedCarton?.items[0]?.effectiveUnitPrice).toBe("20.00");
+
+    const [stockBeforeCartonReturn] = await db()
+      .select()
+      .from(s.branchStock)
+      .where(and(eq(s.branchStock.branchId, 1), eq(s.branchStock.variantId, 1)));
+
+    const cartonPartialReturn = await retailCaller.executeSalesReturnCart({
+      invoiceNumber: cartonSale.invoiceNumber,
+      items: [
+        {
+          variantId: 1,
+          invoiceItemId: inspectedCarton?.items[0]?.invoiceItemId,
+          productUnitId: inspectedCarton?.items[0]?.productUnitId ?? undefined,
+          productName: "كارت شخصي",
+          quantity: 2,
+          unitPrice: inspectedCarton?.items[0]?.effectiveUnitPrice ?? "20.00",
+        },
+      ],
+      settlement: {
+        method: "CASH",
+        totalAmount: "40.00",
+        shiftId: retailShiftId,
+      },
+    });
+    expect(cartonPartialReturn.ok).toBe(true);
+
+    const [stockAfterCartonReturn] = await db()
+      .select()
+      .from(s.branchStock)
+      .where(and(eq(s.branchStock.branchId, 1), eq(s.branchStock.variantId, 1)));
+    expect(Number(stockAfterCartonReturn.quantity) - Number(stockBeforeCartonReturn.quantity)).toBe(2);
+
+    // رفض المرتجع العابر بلا فاتورة لصنف لا يملك سعر بيع تجزئة معتمداً في الكتالوج
+    await db().delete(s.productPrices).where(eq(s.productPrices.productUnitId, 1));
+    await db().delete(s.productPrices).where(eq(s.productPrices.productUnitId, 2));
+    await expect(
+      retailCaller.executeSalesReturnCart({
+        items: [
+          {
+            variantId: 1,
+            productName: "كارت شخصي",
+            quantity: 1,
+            unitPrice: "25.00",
+          },
+        ],
+        settlement: {
+          method: "CASH",
+          totalAmount: "25.00",
+          shiftId: retailShiftId,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
 });
+

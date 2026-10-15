@@ -373,7 +373,7 @@ describe.sequential("returns.executeSalesReturnCart — الحوكمة المح�
     expect(await reconcileCustomerBalances()).toEqual([]);
   });
 
-  it("٥) المرتجع العابر بلا فاتورة لا ينفذ مباشرة حتى لو اختيرت معادلة الذمة", async () => {
+  it("٥) معادلة الذمم تتطلب وجود عميل مسجل وفاتورة أصلية: رفض المرتجع العابر بدون فاتورة بطريقة CREDIT_OFFSET", async () => {
     const caller = returnRouter.createCaller(context());
     await expect(
       caller.executeSalesReturnCart({
@@ -395,7 +395,7 @@ describe.sequential("returns.executeSalesReturnCart — الحوكمة المح�
         clientRequestId: "test-credit-offset-no-customer",
       }),
     ).rejects.toMatchObject({
-      code: "PRECONDITION_FAILED",
+      code: "BAD_REQUEST",
     });
   });
 

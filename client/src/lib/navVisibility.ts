@@ -75,6 +75,9 @@ export const RETURNS_WORKSPACE_GATE: RoleGate = {
         { operations: ["returns.executeSalesReturnCart"] },
         { operations: ["returns.inspectInvoiceForReturn"] },
         { operations: ["returns.getOpenRefundDrawers"] },
+        { operations: ["returns.lookupItemForReturn"] },
+        { operations: ["returns.universalScan"] },
+        { operations: ["returns.forensicTrace"] },
       ],
     },
     {
@@ -89,6 +92,17 @@ export const RETURNS_WORKSPACE_GATE: RoleGate = {
         { operations: ["returns.getRequest"] },
         { operations: ["returns.getInvoice"] },
         { operations: ["returns.approveRequest"] },
+      ],
+    },
+    {
+      anyOf: [
+        { operations: ["returns.list"] },
+        {
+          allOf: [
+            { operations: ["purchaseReturns.list"] },
+            { operations: ["suppliers.list"] },
+          ],
+        },
       ],
     },
   ],
