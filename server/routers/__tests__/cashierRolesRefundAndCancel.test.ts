@@ -1073,17 +1073,10 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
           eq(s.accountingEntries.entryType, "RETURN"),
         ),
       );
-    expect((serviceReturnEntry?.postingIntent as any)?.profile).toBe(
-      "RETURN_SALE_SERVICE",
-    );
-    expect(
-      (serviceReturnEntry?.postingSourceComponents as any)?.roleDebits
-        ?.SALES_PRINT,
-    ).toBe("30.00");
-    expect(
-      (serviceReturnEntry?.postingSourceComponents as any)?.roleDebits
-        ?.SALES_STATIONERY,
-    ).toBe("0.00");
+    expect(serviceReturnEntry?.revenue).toBe("-30.00");
+    expect(serviceReturnEntry?.cost).toBe("0.00");
+    expect(serviceReturnEntry?.profit).toBe("-30.00");
+    expect(serviceReturnEntry?.amount).toBe("-30.00");
     const [serviceInvoiceItemAfter] = await db()
       .select()
       .from(s.invoiceItems)
