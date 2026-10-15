@@ -364,10 +364,16 @@ export function applyLegacyIndividualOperationOverrides(
     rawAtomic,
   );
   const bridgedGrants = { ...denied.grants };
+  const bothReturnAndVoidRevoked =
+    rawAtomic?.["pos.return.create"] === false &&
+    rawAtomic?.["pos.invoice.void"] === false;
   // Legacy print-cashier (pos:FULL) and reception-cashier (workorders:FULL)
   // accounts preserve their routine return workflow while migrating to named presets,
   // even when their legacy module map explicitly sets sales: "NONE".
-  if (rawModules?.pos === "FULL" || rawModules?.workorders === "FULL") {
+  if (
+    !bothReturnAndVoidRevoked &&
+    (rawModules?.pos === "FULL" || rawModules?.workorders === "FULL")
+  ) {
     for (const path of [
       "returns.create",
       "returns.getInvoice",

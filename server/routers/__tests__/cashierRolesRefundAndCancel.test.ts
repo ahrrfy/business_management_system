@@ -10,6 +10,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { returnRouter } from "../returnRouter";
 import { printPosRouter } from "../printPosRouter";
+import { refundRailsRouter } from "../refundRailsRouter";
 import { createSale } from "../../services/saleService";
 
 const TABLES = [
@@ -766,8 +767,157 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
+    // السماح لحسابات الترحيل التوافقي (role="user" مع pos:FULL) باستفتاء refundRails.preflight ضمن نطاق قناتها
+    const printRailsCaller = refundRailsRouter.createCaller(
+      createContextFor({
+        id: 11,
+        name: "كاشير الطباعة",
+        role: "user",
+        permissionsOverride: { pos: "FULL" },
+      }),
+    );
+    const printPreflight = await printRailsCaller.preflight({
+      kind: "INVOICE_CANCEL",
+      invoiceId: printSale.invoiceId,
+      amount: "25.00",
+    });
+    expect(printPreflight.rails.length).toBeGreaterThan(0);
+
+    // دعم المرتجع الكامل والجزئي للفواتير ذات الخصم الكسري غير القابل للقسمة (3 × 25 - خصم 1.00 = 74.00)
+    const fractionalSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: retailShiftId,
+        customerId: 1,
+        sourceType: "POS",
+        discountAmount: "1.00",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }],
+        payment: { amount: "74.00", method: "CASH" },
+      },
+      { userId: 12, branchId: 1, role: "cashier" },
+    );
+    const inspectedFractional1 = await retailCaller.inspectInvoiceForReturn({
+      invoiceNumber: fractionalSale.invoiceNumber,
+    });
+    expect(inspectedFractional1?.items[0]?.remainingQuantity).toBe(3);
+    expect(inspectedFractional1?.items[0]?.effectiveUnitPrice).toBe("24.67");
+    expect(inspectedFractional1?.items[0]?.remainingLineTotal).toBe("74.00");
+
+    const fracPartialReturn = await retailCaller.executeSalesReturnCart({
+      invoiceNumber: fractionalSale.invoiceNumber,
+      items: [
+        {
+          variantId: 1,
+          invoiceItemId: inspectedFractional1?.items[0]?.invoiceItemId,
+          productUnitId: inspectedFractional1?.items[0]?.productUnitId ?? undefined,
+          productName: "كارت شخصي",
+          quantity: 2,
+          unitPrice: inspectedFractional1?.items[0]?.effectiveUnitPrice ?? "24.67",
+        },
+      ],
+      settlement: {
+        method: "CASH",
+        totalAmount: "49.33",
+        shiftId: retailShiftId,
+      },
+    });
+    expect(fracPartialReturn.ok).toBe(true);
+
+    const inspectedFractional2 = await retailCaller.inspectInvoiceForReturn({
+      invoiceNumber: fractionalSale.invoiceNumber,
+    });
+    expect(inspectedFractional2?.items[0]?.remainingQuantity).toBe(1);
+    expect(inspectedFractional2?.items[0]?.effectiveUnitPrice).toBe("24.67");
+    expect(inspectedFractional2?.items[0]?.remainingLineTotal).toBe("24.67");
+
+    const fracFinalReturn = await retailCaller.executeSalesReturnCart({
+      invoiceNumber: fractionalSale.invoiceNumber,
+      items: [
+        {
+          variantId: 1,
+          invoiceItemId: inspectedFractional2?.items[0]?.invoiceItemId,
+          productUnitId: inspectedFractional2?.items[0]?.productUnitId ?? undefined,
+          productName: "كارت شخصي",
+          quantity: 1,
+          unitPrice: inspectedFractional2?.items[0]?.effectiveUnitPrice ?? "24.67",
+        },
+      ],
+      settlement: {
+        method: "CASH",
+        totalAmount: inspectedFractional2?.items[0]?.remainingLineTotal ?? "24.67",
+        shiftId: retailShiftId,
+      },
+    });
+    expect(fracFinalReturn.ok).toBe(true);
+
+    // تطبيع وحدات البيع المركبة (conversionFactor > 1) إلى الوحدة الأساسية عند الفحص والمرتجع
+    await db().insert(s.productUnits).values({
+      id: 2,
+      variantId: 1,
+      unitName: "كرتونة",
+      barcode: "BC-CARD-CARTON",
+      conversionFactor: "10",
+      isBaseUnit: false,
+    });
+    await db().insert(s.productPrices).values({
+      productUnitId: 2,
+      priceTier: "RETAIL",
+      price: "200.00",
+    });
+    const cartonSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: retailShiftId,
+        customerId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+        payment: { amount: "200.00", method: "CASH" },
+      },
+      { userId: 12, branchId: 1, role: "cashier" },
+    );
+    const inspectedCarton = await retailCaller.inspectInvoiceForReturn({
+      invoiceNumber: cartonSale.invoiceNumber,
+    });
+    expect(inspectedCarton?.items[0]?.productUnitId).toBe(1);
+    expect(inspectedCarton?.items[0]?.conversionFactor).toBe(1);
+    expect(inspectedCarton?.items[0]?.remainingQuantity).toBe(10);
+    expect(inspectedCarton?.items[0]?.unitPrice).toBe("20.00");
+    expect(inspectedCarton?.items[0]?.effectiveUnitPrice).toBe("20.00");
+
+    const [stockBeforeCartonReturn] = await db()
+      .select()
+      .from(s.branchStock)
+      .where(and(eq(s.branchStock.branchId, 1), eq(s.branchStock.variantId, 1)));
+
+    const cartonPartialReturn = await retailCaller.executeSalesReturnCart({
+      invoiceNumber: cartonSale.invoiceNumber,
+      items: [
+        {
+          variantId: 1,
+          invoiceItemId: inspectedCarton?.items[0]?.invoiceItemId,
+          productUnitId: inspectedCarton?.items[0]?.productUnitId ?? undefined,
+          productName: "كارت شخصي",
+          quantity: 2,
+          unitPrice: inspectedCarton?.items[0]?.effectiveUnitPrice ?? "20.00",
+        },
+      ],
+      settlement: {
+        method: "CASH",
+        totalAmount: "40.00",
+        shiftId: retailShiftId,
+      },
+    });
+    expect(cartonPartialReturn.ok).toBe(true);
+
+    const [stockAfterCartonReturn] = await db()
+      .select()
+      .from(s.branchStock)
+      .where(and(eq(s.branchStock.branchId, 1), eq(s.branchStock.variantId, 1)));
+    expect(Number(stockAfterCartonReturn.quantity) - Number(stockBeforeCartonReturn.quantity)).toBe(2);
+
     // رفض المرتجع العابر بلا فاتورة لصنف لا يملك سعر بيع تجزئة معتمداً في الكتالوج
     await db().delete(s.productPrices).where(eq(s.productPrices.productUnitId, 1));
+    await db().delete(s.productPrices).where(eq(s.productPrices.productUnitId, 2));
     await expect(
       retailCaller.executeSalesReturnCart({
         items: [
@@ -787,3 +937,4 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 });
+

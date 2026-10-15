@@ -61,6 +61,14 @@ vi.mock("./operationPermissionCatalog.generated", () => {
       },
       {
         ...metadata,
+        key: "operation.refundRails.preflight",
+        path: "refundRails.preflight",
+        kind: "query",
+        module: "treasury",
+        level: "READ",
+      },
+      {
+        ...metadata,
         key: "operation.delivery.dispatch",
         path: "delivery.dispatch",
         module: "store",
@@ -706,8 +714,20 @@ describe("operation decision", () => {
     ).toMatchObject({ allowed: true, source: "legacy" });
     expect(
       operationDecision(
+        { role: "user", permissionsOverride: { pos: "FULL" } },
+        "refundRails.preflight",
+      ),
+    ).toMatchObject({ allowed: true, source: "legacy" });
+    expect(
+      operationDecision(
         { role: "print_operator", permissionsOverride: { workorders: "FULL" } },
         "returns.create",
+      ),
+    ).toMatchObject({ allowed: true, source: "legacy" });
+    expect(
+      operationDecision(
+        { role: "print_operator", permissionsOverride: { workorders: "FULL" } },
+        "refundRails.preflight",
       ),
     ).toMatchObject({ allowed: true, source: "legacy" });
     expect(
@@ -720,6 +740,20 @@ describe("operation decision", () => {
         "returns.create",
       ),
     ).toMatchObject({ allowed: false, source: "legacy" });
+    expect(
+      operationDecision(
+        {
+          role: "user",
+          permissionsOverride: { pos: "FULL" },
+          atomicPermissions: {
+            "pos.return.create": false,
+            "pos.invoice.void": false,
+          },
+        },
+        "refundRails.preflight",
+      ),
+    ).toMatchObject({ allowed: false, source: "legacy" });
   });
 });
+
 

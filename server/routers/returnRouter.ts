@@ -1503,34 +1503,88 @@ export const returnRouter = router({
         .leftJoin(productUnits, eq(invoiceItems.productUnitId, productUnits.id))
         .where(eq(invoiceItems.invoiceId, inv.id));
 
+      const variantIds = Array.from(
+        new Set(itemRows.map((r) => Number(r.variantId))),
+      );
+      const baseUnitRows =
+        variantIds.length > 0
+          ? await db
+              .select({
+                id: productUnits.id,
+                variantId: productUnits.variantId,
+                unitName: productUnits.unitName,
+                barcode: productUnits.barcode,
+              })
+              .from(productUnits)
+              .where(
+                and(
+                  inArray(productUnits.variantId, variantIds),
+                  eq(productUnits.isBaseUnit, true),
+                ),
+              )
+          : [];
+      const baseUnitByVariantId = new Map(
+        baseUnitRows.map((u) => [Number(u.variantId), u]),
+      );
+
       const items = itemRows.map((r) => {
-        const remainingQuantity = Math.max(
-          0,
-          (r.baseQuantity ?? 0) - (r.returnedBaseQuantity ?? 0),
-        );
+        const totalBaseQty = Number(r.baseQuantity ?? 0);
+        const priorReturned = Number(r.returnedBaseQuantity ?? 0);
+        const remainingQuantity = Math.max(0, totalBaseQty - priorReturned);
+        const rawItemTotal = round2(money(r.total ?? "0"));
+        const effectiveItemTotal = discountRatio.gt(0)
+          ? round2(rawItemTotal.times(new Decimal(1).minus(discountRatio)))
+          : rawItemTotal;
         const rawPrice =
-          (r.baseQuantity ?? 0) > 0
-            ? money(r.total ?? "0").dividedBy(r.baseQuantity)
+          totalBaseQty > 0
+            ? money(r.total ?? "0").dividedBy(totalBaseQty)
             : money(r.unitPrice ?? "0");
-        const effectivePrice = discountRatio.gt(0)
+        const baseEffectiveUnitPrice = discountRatio.gt(0)
           ? rawPrice.times(new Decimal(1).minus(discountRatio)).toDecimalPlaces(2)
           : rawPrice.toDecimalPlaces(2);
+        const cumulativeValue = (returnedQty: number): Decimal => {
+          if (totalBaseQty <= 0) {
+            return round2(baseEffectiveUnitPrice.times(returnedQty));
+          }
+          if (returnedQty >= totalBaseQty) {
+            return effectiveItemTotal;
+          }
+          return round2(baseEffectiveUnitPrice.times(returnedQty));
+        };
+        const remainingLineTotal =
+          remainingQuantity > 0
+            ? round2(
+                cumulativeValue(priorReturned + remainingQuantity).minus(
+                  cumulativeValue(priorReturned),
+                ),
+              )
+            : new Decimal(0);
+        const nextUnitEffectivePrice =
+          remainingQuantity > 0
+            ? round2(
+                cumulativeValue(priorReturned + 1).minus(
+                  cumulativeValue(priorReturned),
+                ),
+              )
+            : baseEffectiveUnitPrice;
+        const baseUnit = baseUnitByVariantId.get(Number(r.variantId));
         return {
           invoiceItemId: Number(r.invoiceItemId),
           variantId: Number(r.variantId),
-          productUnitId: r.productUnitId ? Number(r.productUnitId) : undefined,
+          productUnitId: baseUnit ? Number(baseUnit.id) : undefined,
           productName: r.productName,
           isBundle: r.isBundle === true,
           isService: r.isService === true,
-          barcode: r.barcode ?? null,
+          barcode: baseUnit?.barcode ?? r.barcode ?? null,
           sku: r.sku ?? null,
-          unitName: r.unitName ?? (r.isBundle ? "بكج" : "قطعة"),
-          conversionFactor: Number(r.conversionFactor ?? 1) || 1,
-          baseQuantity: Number(r.baseQuantity),
-          returnedBaseQuantity: Number(r.returnedBaseQuantity ?? 0),
+          unitName: baseUnit?.unitName ?? (r.isBundle ? "بكج" : "قطعة"),
+          conversionFactor: 1,
+          baseQuantity: totalBaseQty,
+          returnedBaseQuantity: priorReturned,
           remainingQuantity,
-          unitPrice: String(r.unitPrice),
-          effectiveUnitPrice: effectivePrice.toFixed(2),
+          unitPrice: rawPrice.toDecimalPlaces(2).toFixed(2),
+          effectiveUnitPrice: nextUnitEffectivePrice.toFixed(2),
+          remainingLineTotal: remainingLineTotal.toFixed(2),
           total: String(r.total),
         };
       });
@@ -1724,16 +1778,19 @@ export const returnRouter = router({
   universalScan: returnsProcedure
     .input(z.object({ barcode: z.string().trim().min(1, "امسح الباركود") }))
     .query(async ({ input, ctx }) => {
+      const invoiceScope = returnInvoiceScopeForUser(
+        ctx.user,
+        "returns.universalScan",
+      );
       return universalBarcodeScan(input.barcode, {
         userId: ctx.user.id,
         branchId:
           ctx.user.role === "admin" ? 0 : Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
-        invoiceScope: returnInvoiceScopeForUser(
-          ctx.user,
-          "returns.universalScan",
-        ),
-        canReadWorkOrders: operationDecision(ctx.user, "workOrders.list").allowed,
+        invoiceScope,
+        canReadWorkOrders:
+          invoiceScope !== "print" &&
+          operationDecision(ctx.user, "workOrders.list").allowed,
         canReadDelivery: operationDecision(ctx.user, "delivery.listParties").allowed,
         canReadPurchaseReturns: operationDecision(ctx.user, "purchaseReturns.list").allowed,
       });
@@ -3052,11 +3109,45 @@ export const returnRouter = router({
                 });
               }
 
+              const totalBaseQty = Number(targetItem.baseQuantity ?? 0);
+              const rawItemTotal = round2(money(targetItem.total ?? "0"));
+              const effectiveItemTotal = invDiscountRatio.gt(0)
+                ? round2(
+                    rawItemTotal.times(
+                      new Decimal(1).minus(invDiscountRatio),
+                    ),
+                  )
+                : rawItemTotal;
+              const rawBaseUnitPrice =
+                totalBaseQty > 0
+                  ? money(targetItem.total).dividedBy(totalBaseQty)
+                  : money(targetItem.unitPrice ?? "0");
+              const effectiveBaseUnitPrice = invDiscountRatio.gt(0)
+                ? rawBaseUnitPrice
+                    .times(new Decimal(1).minus(invDiscountRatio))
+                    .toDecimalPlaces(2)
+                : rawBaseUnitPrice.toDecimalPlaces(2);
+              const submittedUnitPrice = round2(money(itm.unitPrice));
+              const fallbackUnitId =
+                itm.productUnitId != null
+                  ? itm.productUnitId
+                  : totalBaseQty > Number(targetItem.quantity ?? 0) &&
+                      submittedUnitPrice.lt(
+                        round2(
+                          money(targetItem.unitPrice ?? "0").times(
+                            invDiscountRatio.gt(0)
+                              ? new Decimal(1).minus(invDiscountRatio)
+                              : 1,
+                          ),
+                        ),
+                      )
+                    ? null
+                    : targetItem.productUnitId;
               const { baseQuantity: effectiveBaseQty, conversionFactor } =
                 await resolveReturnBaseQuantity(
                   tx,
                   itm,
-                  targetItem.productUnitId,
+                  fallbackUnitId,
                 );
 
               // حفظ الكمية المحسوبة لإعادة استخدامها في حركات المخزون وتحديث الفاتورة
@@ -3084,22 +3175,47 @@ export const returnRouter = router({
                 priorReturned + effectiveBaseQty,
               );
 
-              const rawBaseUnitPrice =
-                (targetItem.baseQuantity ?? 0) > 0
-                  ? money(targetItem.total).dividedBy(targetItem.baseQuantity)
-                  : money(targetItem.unitPrice ?? "0");
-              const effectiveBaseUnitPrice = invDiscountRatio.gt(0)
-                ? rawBaseUnitPrice
-                    .times(new Decimal(1).minus(invDiscountRatio))
-                    .toDecimalPlaces(2)
-                : rawBaseUnitPrice.toDecimalPlaces(2);
+              const cumulativeReturnedValue = (returnedQty: number): Decimal => {
+                if (totalBaseQty <= 0) {
+                  return round2(effectiveBaseUnitPrice.times(returnedQty));
+                }
+                if (returnedQty >= totalBaseQty) {
+                  return effectiveItemTotal;
+                }
+                return round2(effectiveBaseUnitPrice.times(returnedQty));
+              };
               const expectedLineTotal = round2(
-                effectiveBaseUnitPrice.times(effectiveBaseQty),
+                cumulativeReturnedValue(priorReturned + effectiveBaseQty).minus(
+                  cumulativeReturnedValue(priorReturned),
+                ),
               );
+              const allocatedSliceTotal =
+                totalBaseQty > 0
+                  ? allocateLineCost(
+                      effectiveItemTotal,
+                      totalBaseQty,
+                      priorReturned,
+                      effectiveBaseQty,
+                    )
+                  : expectedLineTotal;
               const submittedLineTotal = round2(
                 money(itm.unitPrice).times(itm.quantity),
               );
-              if (!submittedLineTotal.eq(expectedLineTotal)) {
+              const expectedSubmittedUnitPrice = round2(
+                expectedLineTotal.dividedBy(itm.quantity),
+              );
+              const allocatedSubmittedUnitPrice = round2(
+                allocatedSliceTotal.dividedBy(itm.quantity),
+              );
+              const linePriceMatches =
+                submittedLineTotal.eq(expectedLineTotal) ||
+                submittedLineTotal.eq(allocatedSliceTotal) ||
+                submittedUnitPrice.eq(expectedSubmittedUnitPrice) ||
+                submittedUnitPrice.eq(allocatedSubmittedUnitPrice) ||
+                (priorReturned + effectiveBaseQty >= totalBaseQty &&
+                  conversionFactor === 1 &&
+                  submittedUnitPrice.eq(effectiveBaseUnitPrice));
+              if (!linePriceMatches) {
                 throw new TRPCError({
                   code: "BAD_REQUEST",
                   message: appErrorMessage({
@@ -3110,8 +3226,11 @@ export const returnRouter = router({
                   }),
                 });
               }
+              const matchedLineTotal = submittedLineTotal.eq(allocatedSliceTotal)
+                ? allocatedSliceTotal
+                : expectedLineTotal;
               expectedInvoiceReturnTotal =
-                expectedInvoiceReturnTotal.plus(expectedLineTotal);
+                expectedInvoiceReturnTotal.plus(matchedLineTotal);
             }
 
             const roundedExpectedInvoiceReturnTotal = round2(

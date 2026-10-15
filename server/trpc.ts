@@ -474,7 +474,16 @@ export function requireAtomicPermission(key: AtomicPermissionKey) {
 export function requireModule(moduleKey: string, minLevel: AccessLevel) {
   return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
-    if (canonicalOperationAllowed(ctx.user, path)) {
+    const isRefundRailPreflight =
+      moduleKey === "treasury" &&
+      minLevel === "READ" &&
+      (path === "refundRails.preflight" || path === "preflight");
+    if (
+      canonicalOperationAllowed(
+        ctx.user,
+        isRefundRailPreflight ? "refundRails.preflight" : path,
+      )
+    ) {
       assertTwoFactorEnrolled(ctx.user, path);
       return next({ ctx: { ...ctx, user: ctx.user } });
     }
@@ -483,7 +492,10 @@ export function requireModule(moduleKey: string, minLevel: AccessLevel) {
     const override = (ctx.user as any).permissionsOverride as Record<string, AccessLevel> | null;
     const map = resolvePermissions(ctx.user.role as RoleKey, override);
     const level = map[moduleKey] ?? "NONE";
-    const allowed = level === "FULL" || (minLevel === "READ" && level === "READ");
+    const allowed =
+      level === "FULL" ||
+      (minLevel === "READ" && level === "READ") ||
+      (isRefundRailPreflight && returnOperationsAllowed(ctx.user));
     // م٨: تحقّق القدرات الظِلّيّ في وضع الظلّ الموثَّق (AUTHZ_ENGINE=shadow) — لا يغيّر `allowed` (صفر انحدار).
     if (capabilityShadowEnabled()) auditCapabilityShadow(ctx, "requireModule", moduleKey, minLevel, map, allowed, path);
     if (!allowed) throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
