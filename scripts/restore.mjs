@@ -243,15 +243,22 @@ async function validateDumpTarget() {
         continue;
       }
 
-      statementBuffer += ch;
+      if (ch.charCodeAt(0) <= 0x20) {
+        if (statementBuffer.length > 0 && !statementBuffer.endsWith(" ")) {
+          statementBuffer += " ";
+        }
+      } else {
+        statementBuffer += ch;
+      }
       i += 1;
     }
 
     if (!inRegularComment && quote === null) {
-      statementBuffer += " ";
-      if (statementBuffer.length > 8192) {
-        inspectStatement(statementBuffer);
-        statementBuffer = statementBuffer.slice(-512);
+      if (statementBuffer.length > 0 && !statementBuffer.endsWith(" ")) {
+        statementBuffer += " ";
+      }
+      if (statementBuffer.length > 32 * 1024 * 1024) {
+        fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
       }
     }
   }

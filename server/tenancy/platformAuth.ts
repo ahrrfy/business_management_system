@@ -3,7 +3,7 @@ import { parse as parseCookie } from "cookie";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Request } from "express";
 import { SignJWT, jwtVerify } from "jose";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { computeSessionFingerprint } from "../auth/session";
 import { getControlDb } from "./controlDb";
 import { platformAdmins, platformAuditLogs, type PlatformAdmin } from "./controlSchema";
@@ -19,7 +19,6 @@ const PLATFORM_SESSION_MS = 1000 * 60 * 60 * 8; // ٨ ساعات — جلسة ع
 const revokedPlatformTokenHashes = new Map<string, number>();
 const platformAdminRevokedBeforeMs = new Map<number, number>();
 const platformAdminRevokedBeforeSec = new Map<number, number>();
-const platformAdminSessionGen = new Map<number, number>();
 
 function hashPlatformToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -58,21 +57,23 @@ export async function revokePlatformAdminSession(
   pruneRevokedPlatformTokens(nowMs);
   const rawToken = extractPlatformTokenFromRequest(req);
   const tokenHash = rawToken ? hashPlatformToken(rawToken) : null;
-  if (tokenHash) {
-    revokedPlatformTokenHashes.set(tokenHash, nowMs + PLATFORM_SESSION_MS);
-  }
   let resolvedAdminId =
     typeof adminId === "number" && Number.isInteger(adminId) && adminId > 0
       ? adminId
       : null;
-  if (!resolvedAdminId && rawToken) {
+  let tokenIatMs = 0;
+  if (rawToken) {
     try {
       const { payload } = await jwtVerify(rawToken, getSecret(), {
         algorithms: ["HS256"],
         clockTolerance: 60,
       });
+      if (typeof payload.iatMs === "number" && Number.isFinite(payload.iatMs)) {
+        tokenIatMs = payload.iatMs;
+      }
       const parsedPid = Number(payload.pid);
       if (
+        !resolvedAdminId &&
         payload.kind === "platform_admin" &&
         Number.isInteger(parsedPid) &&
         parsedPid > 0
@@ -83,18 +84,27 @@ export async function revokePlatformAdminSession(
       // Ignore malformed/expired token during best-effort revocation.
     }
   }
-  if (resolvedAdminId) {
-    platformAdminRevokedBeforeMs.set(resolvedAdminId, nowMs);
-    platformAdminRevokedBeforeSec.set(resolvedAdminId, Math.floor(nowMs / 1000));
-    platformAdminSessionGen.set(
-      resolvedAdminId,
-      (platformAdminSessionGen.get(resolvedAdminId) ?? 0) + 1,
-    );
-  }
-  try {
+  const priorRevokedAtMs = resolvedAdminId
+    ? await resolveLatestPlatformRevokedAtMs(resolvedAdminId)
+    : 0;
+  const effectiveRevokedAtMs = Math.max(nowMs, tokenIatMs, priorRevokedAtMs);
+
+  if (resolvedAdminId || tokenHash) {
     const db = getControlDb();
-    if (db && (resolvedAdminId || tokenHash)) {
-      await db.insert(platformAuditLogs).values({
+    const canInsert = Boolean(
+      db && typeof (db as { insert?: unknown }).insert === "function",
+    );
+    if (!canInsert) {
+      if (
+        process.env.NODE_ENV === "production" ||
+        Boolean(process.env.CONTROL_DATABASE_URL?.trim())
+      ) {
+        throw new Error(
+          "Control database unavailable for platform session revocation",
+        );
+      }
+    } else {
+      const row = {
         platformAdminId: resolvedAdminId,
         actorEmail: null,
         action: "session.revoke",
@@ -102,13 +112,30 @@ export async function revokePlatformAdminSession(
         companyId: null,
         details: {
           tokenHash,
-          revokedAtMs: nowMs,
+          revokedAtMs: effectiveRevokedAtMs,
         },
         ipAddress: null,
-      });
+      };
+      try {
+        await db!.insert(platformAuditLogs).values(row);
+      } catch {
+        await db!.insert(platformAuditLogs).values(row);
+      }
     }
-  } catch {
-    // Fall back to in-memory revocation when control DB is unavailable in unit tests.
+  }
+
+  if (tokenHash) {
+    revokedPlatformTokenHashes.set(
+      tokenHash,
+      effectiveRevokedAtMs + PLATFORM_SESSION_MS,
+    );
+  }
+  if (resolvedAdminId) {
+    platformAdminRevokedBeforeMs.set(resolvedAdminId, effectiveRevokedAtMs);
+    platformAdminRevokedBeforeSec.set(
+      resolvedAdminId,
+      Math.floor(effectiveRevokedAtMs / 1000),
+    );
   }
 }
 
@@ -118,16 +145,60 @@ function getSecret(): Uint8Array {
   return new TextEncoder().encode(secret);
 }
 
+async function resolveLatestPlatformRevokedAtMs(
+  adminId: number,
+  failClosed = process.env.NODE_ENV === "production",
+): Promise<number> {
+  let latestMs = platformAdminRevokedBeforeMs.get(adminId) ?? 0;
+  const db = getControlDb();
+  if (db && typeof (db as { select?: unknown }).select === "function") {
+    try {
+      const rows = await db
+        .select({
+          details: platformAuditLogs.details,
+          createdAt: platformAuditLogs.createdAt,
+        })
+        .from(platformAuditLogs)
+        .where(
+          and(
+            eq(platformAuditLogs.platformAdminId, adminId),
+            inArray(platformAuditLogs.action, ["logout", "session.revoke"]),
+          ),
+        )
+        .orderBy(desc(platformAuditLogs.id))
+        .limit(5);
+      for (const row of rows) {
+        const details =
+          row.details && typeof row.details === "object"
+            ? (row.details as { revokedAtMs?: unknown })
+            : null;
+        const candidateMs =
+          typeof details?.revokedAtMs === "number"
+            ? details.revokedAtMs
+            : row.createdAt instanceof Date
+              ? row.createdAt.getTime()
+              : 0;
+        if (candidateMs > latestMs) {
+          latestMs = candidateMs;
+        }
+      }
+    } catch (err) {
+      if (failClosed) throw err;
+    }
+  }
+  return latestMs;
+}
+
 export async function signPlatformSession(adminId: number, req?: Request | null): Promise<string> {
-  const nowMs = Date.now();
+  const latestRevokedAtMs = await resolveLatestPlatformRevokedAtMs(adminId);
+  const nowMs = Math.max(Date.now(), latestRevokedAtMs + 1);
   const issuedAtSeconds = Math.floor(nowMs / 1000);
   const expirationSeconds = issuedAtSeconds + Math.floor(PLATFORM_SESSION_MS / 1000);
-  const gen = platformAdminSessionGen.get(adminId) ?? 0;
   const claims: Record<string, unknown> = {
     pid: adminId,
     kind: "platform_admin",
     iatMs: nowMs,
-    gen,
+    jti: randomBytes(16).toString("hex"),
   };
   // تدقيق ٣/٨: بصمة الجهاز (كجلسة المستخدم) — تمنع إعادة استعمال توكن مدير المنصّة المسروق من
   // جهاز آخر. الاستدعاء بلا req (اختبارات) يُصدر توكناً بلا fp ويُعامَل legacy (لا مقارنة).
@@ -164,18 +235,18 @@ async function verifyPlatformSession(
     if (payload.kind !== "platform_admin") return null;
     const pid = Number(payload.pid);
     if (!Number.isInteger(pid) || pid <= 0) return null;
-    const currentGen = platformAdminSessionGen.get(pid) ?? 0;
-    if (typeof payload.gen === "number") {
-      if (payload.gen < currentGen) return null;
-    } else {
-      const revokedBeforeMs = platformAdminRevokedBeforeMs.get(pid);
-      const revokedBeforeSec = platformAdminRevokedBeforeSec.get(pid);
-      if (typeof payload.iatMs === "number" && revokedBeforeMs != null && payload.iatMs <= revokedBeforeMs) {
+    const revokedBeforeMs = platformAdminRevokedBeforeMs.get(pid);
+    const revokedBeforeSec = platformAdminRevokedBeforeSec.get(pid);
+    if (typeof payload.iatMs === "number") {
+      if (revokedBeforeMs != null && payload.iatMs <= revokedBeforeMs) {
         return null;
       }
-      if (typeof payload.iat === "number" && revokedBeforeSec != null && payload.iat <= revokedBeforeSec) {
-        return null;
-      }
+    } else if (
+      typeof payload.iat === "number" &&
+      revokedBeforeSec != null &&
+      payload.iat <= revokedBeforeSec
+    ) {
+      return null;
     }
     // تدقيق ٣/٨: إن مُرّر طلب، ألزم تطابق بصمة الجهاز. توكن legacy بلا fp عند تمرير req ⇒ يُرفض
     // (re-login إجباري مرّة واحدة بعد الترقية) — لا توكنات مدير منصّة قائمة في النشر الأحادي الحالي.
