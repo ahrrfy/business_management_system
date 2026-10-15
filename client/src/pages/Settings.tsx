@@ -60,6 +60,7 @@ export default function Settings() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const isAdmin = me.data?.role === "admin";
+  const isOwner = me.data?.isOwner === true;
   // #31B (تدقيق التثبيت): systemInfo/listBackups إجراءان adminProcedure — كانا يُطلَقان للمدير
   // (يفتح تبويب الإعدادات) فيرجعان 403 يظهر كخطأ اتصال كاذب. نُعطّلهما لغير الأدمن (مرآة الخادم).
   const info = trpc.system.systemInfo.useQuery(undefined, { enabled: isAdmin });
@@ -328,7 +329,20 @@ export default function Settings() {
                           mode="menu"
                           actions={[
                             { key: "download", kind: "export", label: "تنزيل", icon: Download, gate: { adminOnly: true }, onSelect: () => downloadBackup(b.name) },
-                            { key: "restore", kind: "reverse", label: "استعادة", icon: RotateCcw, gate: { adminOnly: true }, disabled: !onlineMaintenanceEnabled, disabledReason: "الاستعادة عبر الويب معطّلة إنتاجياً؛ استخدم نافذة الصيانة", onSelect: () => setDanger({ kind: "restore-server", name: b.name }) },
+                            ...(isOwner
+                              ? [
+                                  {
+                                    key: "restore",
+                                    kind: "reverse" as const,
+                                    label: "استعادة",
+                                    icon: RotateCcw,
+                                    gate: { adminOnly: true },
+                                    disabled: !onlineMaintenanceEnabled,
+                                    disabledReason: "الاستعادة عبر الويب معطّلة إنتاجياً؛ استخدم نافذة الصيانة",
+                                    onSelect: () => setDanger({ kind: "restore-server", name: b.name }),
+                                  },
+                                ]
+                              : []),
                             {
                               key: "delete",
                               kind: "delete",
@@ -377,8 +391,8 @@ export default function Settings() {
                 الاستعادة عبر الويب معطّلة في الإنتاج. أوقف عمال الويب ونفّذها من سطر الأوامر داخل نافذة صيانة.
               </p>
             )}
-            <input ref={fileRef} type="file" accept=".sql" onChange={onPickFile} className="hidden" />
-            <Button variant="outline" disabled={!onlineMaintenanceEnabled} onClick={() => fileRef.current?.click()}>اختر ملف .sql للاستعادة…</Button>
+            <input ref={fileRef} type="file" accept=".sql" onChange={onPickFile} className="hidden" disabled={!isOwner || !onlineMaintenanceEnabled} />
+            <Button variant="outline" disabled={!isOwner || !onlineMaintenanceEnabled} onClick={() => fileRef.current?.click()}>اختر ملف .sql للاستعادة…</Button>
           </CardContent>
         </Card>
 

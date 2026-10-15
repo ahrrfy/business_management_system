@@ -629,7 +629,7 @@ export async function updateOnlineOrder(
         }
         try {
           const [matchedCustomer] = await tx
-            .select({ id: customers.id })
+            .select({ id: customers.id, isActive: customers.isActive })
             .from(customers)
             .where(
               or(
@@ -639,9 +639,20 @@ export async function updateOnlineOrder(
                 eq(customers.whatsapp, normalizedPhone),
               ),
             )
+            .orderBy(desc(customers.isActive), desc(customers.id))
             .for("update")
             .limit(1);
           if (matchedCustomer) {
+            if (matchedCustomer.isActive === false) {
+              throw new TRPCError({
+                code: "FORBIDDEN",
+                message: appErrorMessage({
+                  what: "هذا الرقم مرتبط بعميل معطّل",
+                  why: "سجل العميل المرتبط برقم الهاتف الجديد غير نشط حالياً",
+                  doThis: "أعد تفعيل حساب العميل أولاً من شاشة العملاء أو تحقق من رقم الهاتف المدخل",
+                }),
+              });
+            }
             targetCustomerId = Number(matchedCustomer.id);
           } else {
             const [inserted] = await tx.insert(customers).values({

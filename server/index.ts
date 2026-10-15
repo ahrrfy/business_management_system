@@ -186,11 +186,7 @@ async function startServer() {
     process.env.REQUIRE_INTERNAL_PROXY_SECRET ||
     (process.env.INTERNAL_PROXY_SECRET?.trim() ? "1" : "0");
   const trustProxy =
-    process.env.TRUST_PROXY === "1" ||
-    (isLoopbackHost(host) &&
-      (process.env.NODE_ENV !== "production" || requireInternalProxySecret === "1"))
-      ? 1
-      : false;
+    process.env.TRUST_PROXY === "1" || isLoopbackHost(host) ? 1 : false;
   app.set("trust proxy", trustProxy);
   const workerInstanceId = nanoid(16);
 

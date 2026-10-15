@@ -258,7 +258,7 @@ export async function getPlatformAdminFromRequest(req: Request): Promise<Platfor
       }
     }
   } catch {
-    // Keep working if audit table is mocked without select support in isolated unit tests.
+    return null;
   }
 
   return admin;

@@ -5,6 +5,7 @@ import type { Request } from "express";
 import { SignJWT, jwtVerify } from "jose";
 import { createHash } from "node:crypto";
 import {
+  idempotencyKeys,
   userSessions,
   users,
   type User,
@@ -29,12 +30,13 @@ const NATIVE_PROOF_REPLAY_TTL_MS = 2 * 60 * 1000;
 const consumedNativeProofNonces = new Map<string, number>();
 const lastNativeProofCounterByToken = new Map<string, number>();
 
-function consumeNativeProofReplayToken(
+async function consumeNativeProofReplayToken(
+  db: ReturnType<typeof getDb>,
   sessionId: number,
   sessionToken: string,
   req: { method?: string; headers?: Record<string, unknown> },
   counter: number,
-): boolean {
+): Promise<boolean> {
   const nowMs = Date.now();
   consumedNativeProofNonces.forEach((expiresAtMs, key) => {
     if (expiresAtMs <= nowMs) consumedNativeProofNonces.delete(key);
@@ -63,6 +65,37 @@ function consumeNativeProofReplayToken(
   const nonceKey = nonce ? `${tokenKey}:n:${nonce}` : null;
   if (nonceKey && consumedNativeProofNonces.has(nonceKey)) {
     return false;
+  }
+  if (db && typeof (db as { insert?: unknown }).insert === "function") {
+    try {
+      const tokenPrefix = tokenHash.slice(0, 24);
+      const rowsToInsert: Array<{
+        operation: string;
+        clientRequestId: string;
+        refId: number;
+        payloadHash: string | null;
+      }> = [
+        {
+          operation: "native.proof.counter",
+          clientRequestId: `${sessionId}:${tokenPrefix}:c:${counter}`,
+          refId: sessionId,
+          payloadHash: nonce
+            ? createHash("sha256").update(nonce).digest("hex")
+            : null,
+        },
+      ];
+      if (nonce) {
+        rowsToInsert.push({
+          operation: "native.proof.nonce",
+          clientRequestId: `${sessionId}:${tokenPrefix}:n:${nonce}`,
+          refId: sessionId,
+          payloadHash: String(counter),
+        });
+      }
+      await db.insert(idempotencyKeys).values(rowsToInsert);
+    } catch {
+      return false;
+    }
   }
   consumedNativeProofNonces.set(counterKey, nowMs + NATIVE_PROOF_REPLAY_TTL_MS);
   if (nonceKey) {
@@ -507,7 +540,15 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
       } catch {
         return { user: null, sessionId: null, nativeClientId: null };
       }
-      if (!consumeNativeProofReplayToken(srow.id, rawSessionToken, req, proof.counter)) {
+      if (
+        !(await consumeNativeProofReplayToken(
+          db,
+          srow.id,
+          rawSessionToken,
+          req,
+          proof.counter,
+        ))
+      ) {
         return { user: null, sessionId: null, nativeClientId: null };
       }
       const method = (req.method || "GET").toUpperCase();
