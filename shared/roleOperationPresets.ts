@@ -16,7 +16,7 @@ import {
 export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string[]>> = {
   cashier: [
     "shifts.current", "shifts.open", "catalog.posList", "sales.create", "sales.cancel",
-    "returns.create", "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers",
+    "returns.create", "returns.withdrawRequest", "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers",
     "returns.getInvoice", "returns.inspectInvoiceForReturn", "returns.lookupItemForReturn",
     "returns.universalScan", "returns.forensicTrace", "returns.shifts",
     "returns.request", "returns.requests", "refundRails.preflight",
@@ -24,14 +24,14 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
   ],
   retail_cashier: [
     "shifts.current", "shifts.open", "catalog.posList", "sales.create", "sales.cancel",
-    "returns.create", "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers",
+    "returns.create", "returns.withdrawRequest", "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers",
     "returns.getInvoice", "returns.inspectInvoiceForReturn", "returns.lookupItemForReturn",
     "returns.universalScan", "returns.forensicTrace", "returns.shifts",
     "refundRails.preflight",
     "invoicePrinting.requestPrint", "invoicePrinting.requestReprint", "shifts.close",
   ],
   print_cashier: [
-    "shifts.current", "shifts.open", "printPos.createSale", "sales.cancel", "returns.create",
+    "shifts.current", "shifts.open", "printPos.createSale", "sales.cancel", "returns.create", "returns.withdrawRequest",
     "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers", "returns.getInvoice",
     "returns.inspectInvoiceForReturn", "returns.lookupItemForReturn",
     "returns.universalScan", "returns.forensicTrace", "returns.shifts",
@@ -50,7 +50,7 @@ export const ROLE_DAILY_OPERATION_PATHS: Readonly<Record<string, readonly string
     "delivery.listParties", "delivery.dispatch", "delivery.dispatchInvoice",
     "delivery.reassignConsignment", "delivery.cancelAssignment", "delivery.settlementPreview",
     "delivery.settle", "delivery.settleDaily", "sales.cancel", "sales.correct", "sales.reissue",
-    "returns.create", "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers",
+    "returns.create", "returns.withdrawRequest", "returns.executeSalesReturnCart", "returns.getOpenRefundDrawers",
     "returns.getInvoice", "returns.inspectInvoiceForReturn", "returns.lookupItemForReturn",
     "returns.universalScan", "returns.forensicTrace", "returns.shifts",
     "returns.request", "returns.requests", "refundRails.preflight",

@@ -187,7 +187,7 @@ describe("٥. تدقيق ربط الأدراج النقدية والمطابقة
       "openDrawersQ = trpc.returns.getOpenRefundDrawers.useQuery",
     );
     expect(salesPortalSrc).toContain("اختيار درج النقدية للصرف (الوردية)");
-    expect(salesPortalSrc).toMatch(/shiftId:\s*salesRefundMethod === "CASH"/);
+    expect(salesPortalSrc).toMatch(/shiftId:\s*settlementMethod === "CASH" && effectiveCashOrCardRefund > 0/);
 
     expect(purchasePortalSrc).toContain(
       "openDrawersQ = trpc.returns.getOpenRefundDrawers.useQuery",

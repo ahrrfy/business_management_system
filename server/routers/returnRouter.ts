@@ -75,7 +75,7 @@ import {
   lockCashSourceForUpdate,
 } from "../services/cash/cashAvailability";
 import { getDb, type Tx } from "../db";
-import { logAudit } from "../services/auditService";
+import { logAudit, logAuditTx } from "../services/auditService";
 import {
   allocateReturnAgainstInvoice,
   postPurchaseReturnCartCardRefund,
@@ -129,6 +129,7 @@ import {
   loadApprovableRequestTx,
   markRequestApprovedTx,
   rejectReturnRequest,
+  withdrawReturnRequest,
 } from "../services/returns/requests";
 import { nonNegMoneyString } from "../lib/schemas";
 import { escLike } from "../lib/sqlLike";
@@ -284,6 +285,10 @@ async function replaySalesReturnCartResult(
   dateStr: string;
   timeStr: string;
   idempotentReplay: true;
+  noCashNoAccount: boolean;
+  receiptId: number | null;
+  payoutAmount: string;
+  debtOffsetAmount: string;
 }> {
   // جلب سجل القيد المحاسبي المرتبط بالمرتجع الأصلي
   const [entry] = await tx
@@ -291,6 +296,8 @@ async function replaySalesReturnCartResult(
       id: accountingEntries.id,
       branchId: accountingEntries.branchId,
       invoiceId: accountingEntries.invoiceId,
+      customerId: accountingEntries.customerId,
+      receiptId: accountingEntries.receiptId,
       notes: accountingEntries.notes,
       createdAt: accountingEntries.createdAt,
     })
@@ -325,10 +332,33 @@ async function replaySalesReturnCartResult(
   const match = entry.notes?.match(/\[(SR-[^\]]+)\]/);
   const returnNumber = match ? match[1] : `SR-REPLAY-${refId}`;
   const recordDate = entry.createdAt;
+  const [cartAudit] = await tx.select({ value: auditLogs.newValue }).from(auditLogs)
+    .where(and(eq(auditLogs.action, "sale.return_cart"), eq(auditLogs.entityType, "sale"),
+      eq(auditLogs.entityId, String(entry.invoiceId)),
+      sql`JSON_UNQUOTE(JSON_EXTRACT(${auditLogs.newValue}, '$.returnNumber')) = ${returnNumber}`))
+    .orderBy(desc(auditLogs.id)).limit(1);
+  const recordedResult = cartAudit?.value as { receiptId?: unknown; payoutAmount?: string; debtOffsetAmount?: string } | null;
+  const recordedReceiptId = recordedResult?.receiptId;
+  const receiptId = recordedReceiptId == null ? entry.receiptId : Number(recordedReceiptId);
+  const cashOrCard = input.settlement.method === "CASH" || input.settlement.method === "CARD";
+  // Older cart audits lack the split. Recover physical payout from its original
+  // receipt, never from the invoice's current paid amount or refund caps.
+  const [originalReceipt] = cashOrCard && recordedResult?.payoutAmount == null && receiptId != null
+    ? await tx.select({ amount: receipts.amount }).from(receipts)
+      .where(and(eq(receipts.id, Number(receiptId)), eq(receipts.direction, "OUT"))).limit(1)
+    : [];
+  const payoutAmount = money(recordedResult?.payoutAmount ?? originalReceipt?.amount ?? "0").toFixed(2);
+  const debtOffsetAmount = money(recordedResult?.debtOffsetAmount ?? (
+    input.settlement.method === "CREDIT_OFFSET" ? input.settlement.totalAmount
+      : cashOrCard ? Decimal.max(0, money(input.settlement.totalAmount).minus(payoutAmount)).toFixed(2) : "0"
+  )).toFixed(2);
 
   return {
     ok: true as const,
     returnNumber,
+    receiptId: receiptId == null ? null : Number(receiptId),
+    payoutAmount,
+    debtOffsetAmount,
     customerName: input.customer?.name?.trim() || "زبون عابر",
     customerPhone: input.customer?.phone?.trim() || null,
     originalInvoiceNumber: input.invoiceNumber,
@@ -353,6 +383,7 @@ async function replaySalesReturnCartResult(
       minute: "2-digit",
     }),
     idempotentReplay: true as const,
+    noCashNoAccount: input.settlement.method === "CREDIT_OFFSET" && entry.customerId == null,
   };
 }
 
@@ -715,6 +746,18 @@ export const returnRouter = router({
       });
     }),
 
+  /** Withdrawal closes only the maker's unexecuted legacy intent. */
+  withdrawRequest: returnsProcedure
+    .input(z.object({
+      requestId: z.number().int().positive(),
+      reason: z.string().trim().min(3).max(480),
+    }))
+    .mutation(({ input, ctx }) => withdrawReturnRequest(input.requestId, input.reason, {
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId == null ? 0 : Number(ctx.user.branchId),
+      role: ctx.user.role,
+    })),
+
   /**
    * ⭐ بنود الطلب المعلَّق — **الكمّيات التي سيُنفّذها الخادم فعلاً** (تدقيق ١/٩/٢٦).
    *
@@ -1067,61 +1110,83 @@ export const returnRouter = router({
       );
       if (!invoiceScope) return null;
       const invoiceChannelCondition = buildInvoiceChannelCondition(invoiceScope);
-      const inv = (
-        await db
-          .select({
-            id: invoices.id,
-            invoiceNumber: invoices.invoiceNumber,
-            status: invoices.status,
-            branchId: invoices.branchId,
-            sourceType: invoices.sourceType,
-            /** منشئ الفاتورة — تحتاجه الشاشة لتعرف مسبقاً أنّ هذا المستخدم محجوبٌ عن اعتماد إرجاعها. */
-            createdBy: invoices.createdBy,
-            workOrderCreatedBy: workOrders.createdBy,
-            customerId: invoices.customerId,
-            customerName: customers.name,
-            subtotal: invoices.subtotal,
-            discountAmount: invoices.discountAmount,
-            taxAmount: invoices.taxAmount,
-            total: invoices.total,
-            paidAmount: invoices.paidAmount,
-            returnedTotal: invoices.returnedTotal,
-            paymentMethod: invoices.paymentMethod,
-          })
-          .from(invoices)
-          .leftJoin(customers, eq(invoices.customerId, customers.id))
-          .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
-          .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
-          .where(and(eq(invoices.id, input.invoiceId), invoiceChannelCondition))
-          .limit(1)
-      )[0];
-      if (!inv) return null;
-      // عزل الفرع (IDOR قراءة): مدير فرعٍ لا يقرأ تفاصيل فاتورة فرعٍ آخر (بنود/عميل/مبالغ).
-      // مرآةٌ لفحص ملكية الفرع في returnSale.create؛ admin يتجاوز، وغياب الفرع للمدير ⇒ منع.
-      if (
-        ctx.user.role !== "admin" &&
-        Number(inv.branchId) !== Number(ctx.user.branchId)
-      ) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: appErrorMessage({
-            what: "تعذّر قراءة تفاصيل الفاتورة",
-            why: "الفاتورة تنتمي إلى فرع آخر غير فرعك المسند",
-            doThis: "افتح الفاتورة من فرعها الأصلي أو عبر حساب إداري",
-          }),
-        });
-      }
+      const loadScopedInvoice = async (invoiceId: number) => {
+        const inv = (
+          await db
+            .select({
+              id: invoices.id,
+              invoiceNumber: invoices.invoiceNumber,
+              status: invoices.status,
+              branchId: invoices.branchId,
+              sourceType: invoices.sourceType,
+              /** منشئ الفاتورة — تحتاجه الشاشة لتعرف مسبقاً أنّ هذا المستخدم محجوبٌ عن اعتماد إرجاعها. */
+              createdBy: invoices.createdBy,
+              workOrderCreatedBy: workOrders.createdBy,
+              customerId: invoices.customerId,
+              customerName: customers.name,
+              subtotal: invoices.subtotal,
+              discountAmount: invoices.discountAmount,
+              taxAmount: invoices.taxAmount,
+              total: invoices.total,
+              paidAmount: invoices.paidAmount,
+              correctedByInvoiceId: invoices.correctedByInvoiceId,
+              returnedTotal: invoices.returnedTotal,
+              paymentMethod: invoices.paymentMethod,
+            })
+            .from(invoices)
+            .leftJoin(customers, eq(invoices.customerId, customers.id))
+            .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
+            .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
+            .where(and(eq(invoices.id, invoiceId), invoiceChannelCondition))
+            .limit(1)
+        )[0];
+        if (!inv) return null;
+        // عزل الفرع (IDOR قراءة): مدير فرعٍ لا يقرأ تفاصيل فاتورة فرعٍ آخر (بنود/عميل/مبالغ).
+        // مرآةٌ لفحص ملكية الفرع في returnSale.create؛ admin يتجاوز، وغياب الفرع للمدير ⇒ منع.
+        if (
+          ctx.user.role !== "admin" &&
+          Number(inv.branchId) !== Number(ctx.user.branchId)
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر قراءة تفاصيل الفاتورة",
+              why: "الفاتورة تنتمي إلى فرع آخر غير فرعك المسند",
+              doThis: "افتح الفاتورة من فرعها الأصلي أو عبر حساب إداري",
+            }),
+          });
+        }
 
-      // عزل أوامر الشغل: فواتير WORKORDER تُعالَج من شاشة أمر الشغل (عكس التسليم) — لا من مسار المرتجع
-      if (inv.sourceType === "WORKORDER") {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: appErrorMessage({
-            what: "تعذّر تحميل تفاصيل الفاتورة للمرتجع",
-            why: "فاتورة أمر الشغل لا تقبل المرتجع المباشر من مسار المبيعات",
-            doThis: "توجّه إلى شاشة أمر الشغل ونفّذ عكس التسليم من هناك",
-          }),
-        });
+        // عزل أوامر الشغل: فواتير WORKORDER تُعالَج من شاشة أمر الشغل (عكس التسليم) — لا من مسار المرتجع
+        if (inv.sourceType === "WORKORDER") {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذّر تحميل تفاصيل الفاتورة للمرتجع",
+              why: "فاتورة أمر الشغل لا تقبل المرتجع المباشر من مسار المبيعات",
+              doThis: "توجّه إلى شاشة أمر الشغل ونفّذ عكس التسليم من هناك",
+            }),
+          });
+        }
+        return inv;
+      };
+      const scanned = await loadScopedInvoice(input.invoiceId);
+      if (!scanned) return null;
+      let inv = scanned;
+      const visited = new Set<number>([Number(inv.id)]);
+      while (inv.status === "SUPERSEDED") {
+        const nextId = Number(inv.correctedByInvoiceId);
+        if (!Number.isSafeInteger(nextId) || nextId <= 0 || visited.has(nextId) || visited.size >= 32) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+            what: "تعذر تحميل الفاتورة الحالية للمرتجع",
+            why: "رابط الفاتورة المصححة غير صالح أو يحتوي حلقة",
+            doThis: "افتح سجل الفاتورة وراجع الإدارة لتحديد آخر فاتورة صحيحة قبل الإرجاع",
+          }) });
+        }
+        visited.add(nextId);
+        const next = await loadScopedInvoice(nextId);
+        if (!next) return null;
+        inv = next;
       }
 
       const rows = await db
@@ -1150,7 +1215,7 @@ export const returnRouter = router({
         )
         .innerJoin(products, eq(productVariants.productId, products.id))
         .leftJoin(productUnits, eq(invoiceItems.productUnitId, productUnits.id))
-        .where(eq(invoiceItems.invoiceId, input.invoiceId));
+        .where(eq(invoiceItems.invoiceId, Number(inv.id)));
 
       const items = rows.map((r) => {
         const desc = variantDescriptor({
@@ -1196,7 +1261,7 @@ export const returnRouter = router({
       // سقوف الاسترداد — **نفس دالّة الخادم التي ستحكم على الطلب** (`loadRefundCaps`) لا نسخةٌ
       // مقارِبة. كانت الشاشة تحسبها بنفسها فتعرض خياراً يرفضه الخادم بعد ملء كل شيء (بلاغ المالك
       // ١٧/٨). الآن: ما تعرضه الشاشة = ما يقبله الخادم، بالتعريف.
-      const caps = await loadRefundCaps(db, input.invoiceId);
+      const caps = await loadRefundCaps(db, Number(inv.id));
       const paidByMethod: Array<{ method: string; amount: string }> = [];
       caps.netByMethod.forEach((v, m) => {
         if (v.gt(0)) paidByMethod.push({ method: m, amount: v.toFixed(2) });
@@ -1270,7 +1335,7 @@ export const returnRouter = router({
         .leftJoin(users, eq(salesControlRequests.requestedBy, users.id))
         .where(
           and(
-            eq(salesControlRequests.invoiceId, input.invoiceId),
+            eq(salesControlRequests.invoiceId, Number(inv.id)),
             eq(salesControlRequests.status, "PENDING"),
           ),
         )
@@ -1287,13 +1352,14 @@ export const returnRouter = router({
         .leftJoin(users, eq(returnRequests.createdBy, users.id))
         .where(
           and(
-            eq(returnRequests.invoiceId, input.invoiceId),
+            eq(returnRequests.invoiceId, Number(inv.id)),
             eq(returnRequests.status, "PENDING_APPROVAL"),
           ),
         )
         .limit(1);
 
       const canReviewRole =
+        ctx.user.isOwner === true ||
         ctx.user.role === "admin" ||
         moduleAccessAllowed(
           ctx.user.role as RoleKey,
@@ -1325,9 +1391,9 @@ export const returnRouter = router({
               isMine:
                 Number(governedPending.requestedBy) === Number(ctx.user.id),
               canReviewIt:
-                canReviewRole &&
+                ctx.user.isOwner === true || (canReviewRole &&
                 Number(governedPending.requestedBy) !== Number(ctx.user.id) &&
-                Number(invoiceCreatedBy ?? -1) !== Number(ctx.user.id),
+                Number(invoiceCreatedBy ?? -1) !== Number(ctx.user.id)),
             }
           : legacyPending
             ? {
@@ -1359,6 +1425,8 @@ export const returnRouter = router({
             }
           : null,
         id: Number(inv.id),
+        scannedInvoiceId: input.invoiceId,
+        scannedInvoiceNumber: scanned.invoiceNumber,
         invoiceNumber: inv.invoiceNumber,
         status: inv.status,
         branchId: Number(inv.branchId),
@@ -1371,6 +1439,8 @@ export const returnRouter = router({
         paidAmount: inv.paidAmount,
         /** المقبوض الموجود فعلاً لدى المتجر؛ يستبعد عهدة المندوب غير المورّدة. */
         refundablePaidAmount: caps.pool.toFixed(2),
+        /** Any recorded payment/courier custody prevents the unpaid-only shortcut. */
+        sourcePaidAmountIqd: Decimal.max(money(inv.paidAmount), caps.pool, caps.unremittedDeliveryCustody).toFixed(2),
         /** ما أُرجِع سابقاً — تحتاجه الشاشة لتحسب «المستحقّ للزبون» فلا تُعبّئ ردّاً لمدين. */
         returnedTotal: inv.returnedTotal ?? "0",
         paymentMethod: inv.paymentMethod,
@@ -1408,7 +1478,7 @@ export const returnRouter = router({
       const strippedNo = rawNo.replace(/^INV-/i, "");
       const prefixedNo = `INV-${strippedNo}`;
 
-      const [inv] = await db
+      const loadScopedInvoice = (condition: ReturnType<typeof eq>) => db
         .select({
           id: invoices.id,
           invoiceNumber: invoices.invoiceNumber,
@@ -1427,24 +1497,42 @@ export const returnRouter = router({
           returnedTotal: invoices.returnedTotal,
           paymentMethod: invoices.paymentMethod,
           createdAt: invoices.createdAt,
+          correctedByInvoiceId: invoices.correctedByInvoiceId,
         })
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))
         .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
         .where(
           and(
-            or(
-              eq(invoices.invoiceNumber, rawNo),
-              eq(invoices.invoiceNumber, strippedNo),
-              eq(invoices.invoiceNumber, prefixedNo),
-            ),
+            condition,
             invoiceBranchCondition,
             invoiceChannelCondition,
           ),
         )
         .limit(1);
+      let [inv] = await loadScopedInvoice(or(
+              eq(invoices.invoiceNumber, rawNo),
+              eq(invoices.invoiceNumber, strippedNo),
+              eq(invoices.invoiceNumber, prefixedNo),
+      )!);
 
       if (!inv) return null;
+      const scannedInvoiceNumber = inv.invoiceNumber;
+      const visited = new Set<number>([Number(inv.id)]);
+      while (inv.status === "SUPERSEDED") {
+        const nextId = Number(inv.correctedByInvoiceId);
+        if (inv.sourceType === "WORKORDER" || !Number.isSafeInteger(nextId) || nextId <= 0 || visited.has(nextId) || visited.size >= 32) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+            what: "تعذر تحميل الفاتورة الحالية للمرتجع",
+            why: "رابط الفاتورة المصححة غير صالح أو خارج مسار مرتجع المبيعات",
+            doThis: "افتح سجل الفاتورة وحدد آخر فاتورة صحيحة قبل الإرجاع",
+          }) });
+        }
+        visited.add(nextId);
+        const [next] = await loadScopedInvoice(eq(invoices.id, nextId));
+        if (!next) return null;
+        inv = next;
+      }
 
       if (inv.sourceType === "WORKORDER") {
         throw new TRPCError({
@@ -1469,8 +1557,10 @@ export const returnRouter = router({
         money(inv.total).minus(money(inv.returnedTotal ?? "0")),
       );
       const paidDec = money(inv.paidAmount ?? "0");
-      const maxRefundable = Decimal.min(remainingInvoiceTotal, paidDec);
+      const caps = await loadRefundCaps(db, Number(inv.id));
+      const maxRefundable = Decimal.min(remainingInvoiceTotal, caps.pool);
       const unpaidAmount = Decimal.max(0, remainingInvoiceTotal.minus(paidDec));
+      const maxCreditOffsetAmount = round2(unpaidAmount.plus(caps.unremittedDeliveryCustody));
       const subtotalDec = money(inv.subtotal ?? "0");
       const discountDec = money(inv.discountAmount ?? "0");
       const taxDec = money(inv.taxAmount ?? "0");
@@ -1780,6 +1870,11 @@ export const returnRouter = router({
         createdAt: inv.createdAt,
         items,
         previousReturns,
+        scannedInvoiceNumber,
+        refundablePaidAmount: caps.pool.toFixed(2),
+        maxCreditOffsetAmount: maxCreditOffsetAmount.toFixed(2),
+        sourcePaidAmountIqd: Decimal.max(paidDec, caps.pool, caps.unremittedDeliveryCustody).toFixed(2),
+        fullReturnTotal: remainingInvoiceTotal.toFixed(2),
       };
     }),
 
@@ -2735,6 +2830,13 @@ export const returnRouter = router({
           const resolvedBaseQtyByItem = new Map<any, number>();
           const resolvedRevenueByItem = new Map<any, Decimal>();
           let returnedTaxDec = money(0);
+          let matchedSourcePaid = money(0);
+          let matchedDebtAndCustodyCap = money(0);
+          let matchedActualPayout = money(0);
+          let useInvoiceReturnCore = false;
+          let coreLines: Array<{ invoiceItemId: number; baseQuantity: number }> = [];
+          let generatedReceiptId: number | null = null;
+          let returnLedgerEntryId = 0;
           if (input.invoiceNumber?.trim()) {
             const rawNo = input.invoiceNumber.trim();
             const strippedNo = rawNo.replace(/^INV-/i, "");
@@ -2964,6 +3066,31 @@ export const returnRouter = router({
             }
 
             matchedInvoice = found;
+            if (input.customer?.customerId != null && Number(input.customer.customerId) !== Number(found.customerId ?? 0)) {
+              throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+                what: "عميل المرتجع لا يطابق الفاتورة",
+                why: "تسوية المرتجع تتبع صاحب الفاتورة المسجل ولا تنتقل إلى حساب آخر",
+                doThis: "اترك الزبون العابر بلا حساب أو استخدم عميل الفاتورة نفسها",
+              }) });
+            }
+            const [pendingControl] = await tx.select({ id: salesControlRequests.id }).from(salesControlRequests)
+              .where(and(eq(salesControlRequests.invoiceId, found.id), eq(salesControlRequests.status, "PENDING"))).for("update").limit(1);
+            const [pendingLegacy] = await tx.select({ id: returnRequests.id }).from(returnRequests)
+              .where(and(eq(returnRequests.invoiceId, found.id), eq(returnRequests.status, "PENDING_APPROVAL"))).for("update").limit(1);
+            if (pendingControl || pendingLegacy) {
+              throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+                what: "توجد معاملة رقابية معلّقة على هذه الفاتورة",
+                why: "لا ينفذ مرتجع جديد قبل حسم الطلب السابق",
+                doThis: "اسحب طلبك السابق صراحة أو افتحه لمراجعته ثم أعد تحميل الفاتورة",
+              }) });
+            }
+            if (input.settlement.method === "STORE_CREDIT" && !input.customer?.customerId) {
+              throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+                what: "تعذر إيداع رصيد المتجر",
+                why: "طريقة استرداد رصيد المتجر تتطلب تحديد عميل مسجل في النظام لإيداع الرصيد في حسابه",
+                doThis: "اختر عميل الفاتورة المسجل أو حدد طريقة استرداد نقدي",
+              }) });
+            }
             await assertPeriodOpen(tx, matchedInvoice.invoiceDate);
             await assertNoActiveInstallmentPlanAfterInvoiceLockTx(tx, {
               invoiceId: Number(matchedInvoice.id),
@@ -2988,16 +3115,21 @@ export const returnRouter = router({
             const maxCreditOffsetAmount = round2(
               remainingUnpaidAmount.plus(unremittedDeliveryCustody),
             );
+            matchedDebtAndCustodyCap = maxCreditOffsetAmount;
+            const lockedRefundCaps = await loadRefundCaps(tx, Number(matchedInvoice.id), { lock: true });
+            matchedSourcePaid = Decimal.max(paidAmount, lockedRefundCaps.pool, unremittedDeliveryCustody);
             const debtOffsetPortionDec =
               input.settlement.method === "CASH" ||
               input.settlement.method === "CARD"
-                ? Decimal.min(returnTotalDec, remainingUnpaidAmount)
+                ? Decimal.min(returnTotalDec, maxCreditOffsetAmount)
                 : money(0);
             const actualRefundPayoutDec =
               input.settlement.method === "CASH" ||
               input.settlement.method === "CARD"
                 ? round2(returnTotalDec.minus(debtOffsetPortionDec))
-                : returnTotalDec;
+                : input.settlement.method === "CREDIT_OFFSET" ? money(0) : returnTotalDec;
+            matchedActualPayout = (input.settlement.method === "CASH" || input.settlement.method === "CARD")
+              ? actualRefundPayoutDec : money(0);
 
             // Reject impossible settlement rails before approval routing. A manager may
             // approve an exceptional workflow, but the cart executor must never pay out
@@ -3006,7 +3138,7 @@ export const returnRouter = router({
               (input.settlement.method === "CASH" ||
                 input.settlement.method === "CARD") &&
               (actualRefundPayoutDec.lte(0) ||
-                actualRefundPayoutDec.gt(paidAmount))
+                actualRefundPayoutDec.gt(lockedRefundCaps.pool))
             ) {
               throw new TRPCError({
                 code: "BAD_REQUEST",
@@ -3019,21 +3151,6 @@ export const returnRouter = router({
               });
             }
             if (input.settlement.method === "CREDIT_OFFSET") {
-              const effectiveCustomerId =
-                input.customer?.customerId ??
-                (matchedInvoice.customerId
-                  ? Number(matchedInvoice.customerId)
-                  : null);
-              if (!effectiveCustomerId) {
-                throw new TRPCError({
-                  code: "BAD_REQUEST",
-                  message: appErrorMessage({
-                    what: "تعذر تنفيذ معادلة الذمة",
-                    why: "طريقة معادلة الذمم تتطلب تحديد عميل مسجل في النظام لإسقاط المبلغ من حسابه الآجل",
-                    doThis: "اختر العميل من CRM أو اربط الفاتورة بعميل مسجل",
-                  }),
-                });
-              }
               if (returnTotalDec.gt(maxCreditOffsetAmount)) {
                 throw new TRPCError({
                   code: "BAD_REQUEST",
@@ -3095,11 +3212,6 @@ export const returnRouter = router({
                   lockedDrawer.openingBalance ?? "0",
                 )).gte(actualRefundPayoutDec);
               }
-              const lockedRefundCaps = await loadRefundCaps(
-                tx,
-                Number(matchedInvoice.id),
-                { lock: true },
-              );
               const originalPaymentMethods = Array.from(
                 new Set([
                   ...Array.from(lockedRefundCaps.netByMethod.entries())
@@ -3136,7 +3248,8 @@ export const returnRouter = router({
                   input.settlement.method === "CASH" ||
                   input.settlement.method === "CARD"
                     ? actualRefundPayoutDec.toFixed(2)
-                    : returnTotalDec.toFixed(2),
+                    : input.settlement.method === "CREDIT_OFFSET" ? "0.00" : returnTotalDec.toFixed(2),
+                sourcePaidAmountIqd: matchedSourcePaid.toFixed(2),
                 maxRefundAmountIqd:
                   currentOperationalAuthority.caps.maxRefundAmountIqd,
                 refundMethod: input.settlement.method,
@@ -3414,9 +3527,12 @@ export const returnRouter = router({
                 expectedInvoiceReturnTotal.plus(matchedLineTotal);
             }
 
-            const roundedExpectedInvoiceReturnTotal = round2(
-              expectedInvoiceReturnTotal,
-            );
+            const isFullSelection = invoiceItemRows.every((item) =>
+              (accumulatedReturnedByItemId.get(Number(item.id)) ?? Number(item.returnedBaseQuantity ?? 0)) >= Number(item.baseQuantity));
+            const itemExpectedTotal = round2(expectedInvoiceReturnTotal);
+            const roundedExpectedInvoiceReturnTotal = isFullSelection
+              ? round2(money(matchedInvoice.total).minus(money(matchedInvoice.returnedTotal ?? "0")))
+              : itemExpectedTotal;
             if (!round2(returnTotalDec).eq(roundedExpectedInvoiceReturnTotal)) {
               throw new TRPCError({
                 code: "BAD_REQUEST",
@@ -3428,15 +3544,56 @@ export const returnRouter = router({
                 }),
               });
             }
+            coreLines = invoiceItemRows.map((item) => ({
+              invoiceItemId: Number(item.id),
+              baseQuantity: (accumulatedReturnedByItemId.get(Number(item.id)) ?? Number(item.returnedBaseQuantity ?? 0)) - Number(item.returnedBaseQuantity ?? 0),
+            })).filter((line) => line.baseQuantity > 0);
+            useInvoiceReturnCore = (isFullSelection && !roundedExpectedInvoiceReturnTotal.eq(itemExpectedTotal)) ||
+              (input.settlement.method === "CREDIT_OFFSET" && matchedInvoice.customerId == null);
           }
 
+          if (useInvoiceReturnCore && matchedInvoice) {
+            const coreReason = `${returnReason.slice(0, 430)} [${returnNumber}]`;
+            const cashOrCard = input.settlement.method === "CASH" || input.settlement.method === "CARD";
+            const refund = cashOrCard && matchedActualPayout.gt(0) ? {
+              amount: matchedActualPayout.toFixed(2), method: input.settlement.method as "CASH" | "CARD",
+              shiftId: input.settlement.shiftId ?? null, reference: input.settlement.reference ?? null,
+            } : undefined;
+            await returnSaleInTx(tx, {
+              invoiceId: Number(matchedInvoice.id), lines: coreLines, restock: input.disposition === "RESTOCK",
+              operatorReason: coreReason,
+              ...(matchedInvoice.customerId == null ? { resolution: {
+                kind: "IMMEDIATE_REFUND" as const, amount: matchedActualPayout.toFixed(2),
+                method: cashOrCard ? input.settlement.method as "CASH" | "CARD" : "CASH" as const,
+                shiftId: input.settlement.shiftId ?? null, reference: input.settlement.reference ?? null,
+                reason: coreReason, disposition: input.disposition,
+              } } : { refund }),
+            }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role },
+            { requireUnpaidSource: directLimitsApply && matchedSourcePaid.isZero() });
+            const [entry] = await tx.select({ id: accountingEntries.id }).from(accountingEntries)
+              .where(and(eq(accountingEntries.invoiceId, matchedInvoice.id), eq(accountingEntries.entryType, "RETURN")))
+              .orderBy(desc(accountingEntries.id)).limit(1);
+            if (!entry) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: appErrorMessage({
+              what: "تعذر إتمام المرتجع", why: "لم يكتب المرتجع قيده المرجعي",
+              doThis: "حدّث الفاتورة وأعد العملية؛ تراجعت جميع آثار هذه المحاولة",
+            }) });
+            returnLedgerEntryId = Number(entry.id);
+            if (matchedActualPayout.gt(0)) {
+              const [out] = await tx.select({ id: receipts.id }).from(receipts)
+                .where(and(eq(receipts.invoiceId, matchedInvoice.id), eq(receipts.direction, "OUT")))
+                .orderBy(desc(receipts.id)).limit(1);
+              generatedReceiptId = out ? Number(out.id) : null;
+            }
+          } else {
+          // Keep the existing paid/independent-cart posting path; invoice core
+          // execution above already owns all of its stock and financial effects.
           // ⭐ نسبةُ العميل في **الدفتر** (accountingEntries.customerId) لقيد صرف الاسترداد مشروطةٌ
           // بفاتورةٍ مطابقة: عندئذٍ يحمل القيدُ invoiceId فيُستبعَد من voucherSum في
           // reconcileCustomerBalances. بلا فاتورةٍ مطابقة، قيدُ PAYMENT_OUT بـcustomerId وinvoiceId=NULL
           // يُقرأ «سندَ صرفٍ يرفع AR» بينما لا رصيدَ يتحرّك ⇒ انحرافُ reconcile بقيمة المرتجع. النسبةُ
           // للعميل تبقى على **الإيصال** (partyId) لسلامة المسار (§٥). يحرسه salesReturnCartRefund.test.ts.
           const ledgerCustomerId = matchedInvoice
-            ? (input.customer?.customerId ?? (matchedInvoice.customerId ? Number(matchedInvoice.customerId) : null))
+            ? (matchedInvoice.customerId ? Number(matchedInvoice.customerId) : null)
             : null;
 
           // ١) تنفيذ حركة المخزون لكل بند مع التوسيع الذري للبكجات وتفادي الخدمات
@@ -3748,23 +3905,11 @@ export const returnRouter = router({
           }
 
           // ٢) معالجة التسوية المالية وحركة الصندوق/الدرج/البطاقة/رصيد المتجر
-          let generatedReceiptId: number | null = null;
-          const matchedPaidAmount = matchedInvoice
-            ? money(matchedInvoice.paidAmount ?? "0")
-            : returnTotalDec;
-          const matchedRemainingUnpaid = matchedInvoice
-            ? Decimal.max(
-                0,
-                money(matchedInvoice.total)
-                  .minus(money(matchedInvoice.returnedTotal ?? "0"))
-                  .minus(matchedPaidAmount),
-              )
-            : money(0);
           const splitDebtOffsetDec =
             matchedInvoice &&
             (input.settlement.method === "CASH" ||
               input.settlement.method === "CARD")
-              ? Decimal.min(returnTotalDec, matchedRemainingUnpaid)
+              ? Decimal.min(returnTotalDec, matchedDebtAndCustodyCap)
               : money(0);
           const effectivePayoutDec =
             matchedInvoice &&
@@ -4152,7 +4297,7 @@ export const returnRouter = router({
             salesReturnSource,
           );
 
-          const returnLedgerEntryId = await postEntry(tx, {
+          returnLedgerEntryId = await postEntry(tx, {
             entryType: "RETURN",
             branchId: actorBranchId,
             invoiceId: matchedInvoice?.id ?? null,
@@ -4469,6 +4614,13 @@ export const returnRouter = router({
               })
               .where(eq(invoices.id, matchedInvoice.id));
           }
+          }
+
+          const cashOrCardResult = input.settlement.method === "CASH" || input.settlement.method === "CARD";
+          const payoutAmount = cashOrCardResult
+            ? (matchedInvoice ? matchedActualPayout : returnTotalDec).toFixed(2) : "0.00";
+          const debtOffsetAmount = matchedInvoice
+            ? Decimal.min(returnTotalDec, matchedDebtAndCustodyCap).toFixed(2) : "0.00";
 
           // تسجيل مفتاح الـ Idempotency ذرياً داخل المعاملة نفسها
           if (clientRequestId) {
@@ -4482,7 +4634,7 @@ export const returnRouter = router({
           }
 
           // ٥) توثيق التدقيق الرقابي
-          await logAudit(ctx, {
+          await logAuditTx(tx, ctx, {
             action: "sale.return_cart",
             entityType: "sale",
             entityId: matchedInvoice?.id ?? null,
@@ -4496,6 +4648,8 @@ export const returnRouter = router({
               method: input.settlement.method,
               shiftId: input.settlement.shiftId,
               receiptId: generatedReceiptId,
+              payoutAmount,
+              debtOffsetAmount,
               itemsCount: input.items.length,
               reason: returnReason,
               items: input.items.map((i) => ({
@@ -4511,12 +4665,15 @@ export const returnRouter = router({
             ok: true as const,
             returnNumber,
             receiptId: generatedReceiptId,
+            payoutAmount,
+            debtOffsetAmount,
             customerName,
             customerPhone,
             originalInvoiceNumber: input.invoiceNumber,
             disposition: input.disposition,
             totalAmount: input.settlement.totalAmount,
             method: input.settlement.method,
+            noCashNoAccount: input.settlement.method === "CREDIT_OFFSET" && matchedInvoice?.customerId == null,
             reference: input.settlement.reference,
             itemsCount: input.items.length,
             items: input.items.map((i) => ({

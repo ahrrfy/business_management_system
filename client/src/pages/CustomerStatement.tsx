@@ -130,6 +130,7 @@ const STATEMENT_ROW_KIND_LABEL: Record<string, string> = {
   COD: "تحصيل مندوب",
   RETURN: "مرتجع",
   OPENING_ADJ: "تصحيح افتتاحي",
+  INVOICE_ADJUSTMENT: "تسوية ذمة الفاتورة",
 };
 function statementMethodLabel(v: string | null | undefined): string {
   if (v && STATEMENT_ROW_KIND_LABEL[v]) return STATEMENT_ROW_KIND_LABEL[v];
@@ -440,7 +441,9 @@ export default function CustomerStatement() {
       description:
         // ب-١: قيد تصحيح الرصيد الافتتاحيّ يظهر حركةً داخل فترته (isStandalone صحيح لكنه ليس
         // سنداً) — بلا هذا الفرع يُعرَض «سند صرف مستقل» فيبحث المحاسب عن سندٍ لا وجود له.
-        p.paymentMethod === "OPENING_ADJ"
+        p.paymentMethod === "INVOICE_ADJUSTMENT"
+        ? "تسوية ذمة الفاتورة دون حركة نقدية"
+        : p.paymentMethod === "OPENING_ADJ"
         ? "تصحيح رصيد افتتاحي"
         : p.isStandalone
         ? (p.direction === "IN" ? "سند قبض مستقل" : "سند صرف مستقل")

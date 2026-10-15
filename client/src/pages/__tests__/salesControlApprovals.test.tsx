@@ -16,10 +16,11 @@ describe("واجهة حوكمة عمليات البيع الحرجة", () => {
     expect(invoice).not.toContain("أُلغيت الفاتورة ${r.invoiceNumber}");
     expect(reissue).toContain("أُرسل طلب إعادة الإصدار");
     expect(reissue).toContain("requestExchange");
-    expect(reissue).toContain("إرسال طلب الاستبدال");
+    expect(reissue).toContain('primaryLabel={isCorrection ? "حفظ التعديل" : undefined}');
+    expect(reissue).toContain("أُرسل طلب الاستبدال");
     expect(reissue).toContain("لم تتغيّر الفاتورة أو المخزون أو المال بعد");
     expect(returns).toContain("إرسال طلب المرتجع");
-    expect(returns).toContain("utils.salesControl.list.invalidate");
+    expect(returns).toContain("invalidateFinancialQueries(queryClient, inv?.branchId)");
   });
 
   it("طابور الاعتماد يبرز السبب والبصمة وفصل المهام", () => {

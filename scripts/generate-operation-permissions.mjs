@@ -310,6 +310,7 @@ const EXACT_LABELS = {
   "sales.cancel": "إلغاء فاتورة مبيعات وعكس أثرها",
   "sales.pay": "تحصيل فاتورة مبيعات",
   "returns.create": "إنشاء طلب مرتجع مبيعات أو تنفيذ مرتجع مباشر",
+  "returns.withdrawRequest": "سحب طلب مرتجع قديم قبل التنفيذ",
   "returns.executeSalesReturnCart": "تنفيذ سلة مرتجع المبيعات",
   "delivery.dispatch": "إسناد طلب متجر إلى جهة التوصيل",
   "delivery.dispatchInvoice": "إسناد فاتورة إلى جهة التوصيل",
@@ -557,6 +558,11 @@ bindServiceRoles(
   ["returns.create"],
   "server/services/returnService.ts",
   "canonicalOperationAllowed",
+);
+bindServiceRoles(
+  ["returns.withdrawRequest"],
+  "server/services/returns/requests.ts",
+  "assertOperationAuthorityTx",
 );
 const STUDIO_PROTECTED_ACCOUNT_PATHS = new Set([
   "productStudio.grantStudioAccess",
@@ -1770,6 +1776,7 @@ function aliasesOf(ep, meta, knownKeys, procedureAliases) {
     "sales.correct": ["pos.invoice.edit"],
     "sales.cancel": ["pos.invoice.void"],
     "returns.create": ["pos.return.create"],
+    "returns.withdrawRequest": ["pos.return.create"],
     "returns.executeSalesReturnCart": ["pos.return.create"],
   };
   const aliases = [

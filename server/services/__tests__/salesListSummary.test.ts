@@ -98,6 +98,20 @@ async function backdateInvoice(invoiceId: number, ymd: string) {
 }
 
 describe("sales.listSummary — مجاميع الفلترة", () => {
+  it("تعرض القوائم والمجاميع النسخة الحالية مع إبقاء الأصل متاحاً بفلتر السجل", async () => {
+    const old = await sale("4");
+    const replacement = await sale("2");
+    await db().update(s.invoices).set({ status: "SUPERSEDED", correctedByInvoiceId: replacement.invoiceId })
+      .where(eq(s.invoices.id, old.invoiceId));
+    await db().update(s.invoices).set({ correctionOfInvoiceId: old.invoiceId })
+      .where(eq(s.invoices.id, replacement.invoiceId));
+    const c = caller();
+    expect((await c.sales.list({})).map(row => Number(row.id))).toEqual([replacement.invoiceId]);
+    expect((await c.sales.listPage({})).rows.map(row => Number(row.id))).toEqual([replacement.invoiceId]);
+    expect(await c.sales.listSummary({})).toMatchObject({ count: 1, totalAmount: "20.00" });
+    expect((await c.sales.list({ status: "SUPERSEDED" })).map(row => Number(row.id))).toEqual([old.invoiceId]);
+  });
+
   it("٣ فواتير (PAID/PARTIALLY_PAID/PENDING) ⇒ count=3 والمجاميع تساوي جمع Decimal", async () => {
     await sale("3", "30.00"); // 30.00 مدفوعة كاملة ⇒ PAID
     await sale("5", "20.00"); // 50.00 مدفوع 20 ⇒ PARTIALLY_PAID
@@ -178,7 +192,7 @@ describe("sales.listSummary — مجاميع الفلترة", () => {
     await db().update(s.invoices).set({ status: "SUPERSEDED" }).where(eq(s.invoices.id, d3.invoiceId));
 
     const sum = await caller().sales.listSummary({});
-    expect(sum.count).toBe(3);
+    expect(sum.count).toBe(2);
     // الإجمالي يبقي الملغاة تاريخياً، ويستبعد الأصل المستبدل حتى لا يتكرر مع البديلة.
     expect(round2s(sum.totalAmount)).toBe("60.00");
     expect(round2s(sum.paidAmount)).toBe("0.00");

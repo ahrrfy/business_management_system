@@ -15,7 +15,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
-import { returnSale } from "../returnService";
+import { returnSale, returnSaleInTx } from "../returnService";
+import { withTx } from "../tx";
 import { createSale } from "../saleService";
 import { truncateTables } from "./__testUtils__";
 
@@ -91,6 +92,32 @@ beforeEach(async () => {
 });
 
 describe("مرتجع بلا ردّ — فاتورة غير مدفوعة", () => {
+  it.each([1, 2])("عكس التصحيح الداخلي (%i قطعة) لا يحرر عهدة الإرسالية أو يغير حالتها", async (quantity) => {
+    const shift = await openShiftFor(2);
+    const { invoiceId, itemId } = await sellOnCredit(shift, 2);
+    await db().update(s.invoices).set({ paidAmount: "20.00", status: "PAID" }).where(eq(s.invoices.id, invoiceId));
+    await db().update(s.customers).set({ currentBalance: "0.00" }).where(eq(s.customers.id, 1));
+    await db().insert(s.deliveryParties).values({ id: 1, partyType: "COMPANY", name: "شركة توصيل", branchId: 1, currentBalance: "20.00" });
+    await db().insert(s.deliveryConsignments).values({
+      id: 1, consignmentNumber: `CN-CORRECTION-${quantity}`, invoiceId, sourceId: invoiceId,
+      partyId: 1, branchId: 1, codAmount: "20.00", collectedAmount: "20.00",
+      status: "DELIVERED", parcelStatus: "DELIVERED", moneyStatus: "UNSETTLED", custodyRecognizedAt: new Date(),
+    });
+    await db().insert(s.deliveryLedgerEntries).values({
+      eventKey: `correction-custody-${quantity}`, consignmentId: 1, partyId: 1, branchId: 1,
+      entryType: "COD_COLLECTED", amount: "20.00", createdBy: 1,
+    });
+    const [before] = await db().select().from(s.deliveryConsignments);
+    const ledgerBefore = await db().select().from(s.deliveryLedgerEntries);
+    await withTx((tx) => returnSaleInTx(tx, {
+      invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: quantity }],
+      internalCorrectionReversal: true, restock: true,
+    }, manager));
+    expect(await db().select().from(s.deliveryConsignments)).toEqual([before]);
+    expect(await db().select().from(s.deliveryLedgerEntries)).toEqual(ledgerBefore);
+    expect((await db().select().from(s.deliveryParties))[0].currentBalance).toBe("20.00");
+    expect(await outReceipts(invoiceId)).toHaveLength(0);
+  });
   it("فاتورة آجلة بصفر مقبوض: مرتجعٌ كامل بلا ردّ ⇒ يمرّ، ويُسقط الذمّة، بلا إيصال صرف ولا درج", async () => {
     const shift = await openShiftFor(2, "1000.00");
     const { invoiceId, itemId } = await sellOnCredit(shift, 5); // 50.00 ذمّة

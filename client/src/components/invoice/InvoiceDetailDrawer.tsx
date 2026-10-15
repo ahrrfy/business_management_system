@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
@@ -17,7 +17,7 @@ import {
   type InvoiceItemRow,
   type InvoiceReturnRow,
 } from "./InvoiceDetailComponents";
-import { invoiceStatusBadgeVariant, invoiceStatusLabel } from "@shared/invoiceStatus";
+import { invoiceStatusBadgeVariant, invoiceStatusLabel, isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { sourceTypeLabel } from "@/lib/labels";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { QuickSalesPaymentDialog } from "./QuickSalesPaymentDialog";
@@ -39,9 +39,16 @@ export function InvoiceDetailDrawer({
   onPrintThermal,
   onPrintA4,
 }: InvoiceDetailDrawerProps) {
+  const utils = trpc.useUtils();
+  const sourceInvoiceId = useRef(invoiceId);
+  sourceInvoiceId.current = invoiceId;
+  const [currentInvoiceId, setCurrentInvoiceId] = useState<number | null>(null);
+  const [openingCurrent, setOpeningCurrent] = useState(false);
+  const [currentError, setCurrentError] = useState("");
+  useEffect(() => { setCurrentInvoiceId(null); setCurrentError(""); }, [invoiceId]);
   const isOpen = invoiceId != null && invoiceId > 0;
   const q = trpc.sales.get.useQuery(
-    { invoiceId: invoiceId ?? 0 },
+    { invoiceId: currentInvoiceId ?? invoiceId ?? 0 },
     { enabled: isOpen },
   );
 
@@ -49,7 +56,7 @@ export function InvoiceDetailDrawer({
   const total = inv ? D(inv.total) : D(0);
   const paid = inv ? D(inv.paidAmount) : D(0);
   const returned = inv ? D(inv.returnedTotal ?? "0") : D(0);
-  const remaining = total.minus(paid).minus(returned);
+  const remaining = isDeadInvoiceStatus(inv?.status) ? D(0) : total.minus(paid).minus(returned);
 
   const me = trpc.auth.me.useQuery();
   const canWriteSales = hasModuleAccess(
@@ -83,6 +90,28 @@ export function InvoiceDetailDrawer({
     remaining.gt(0);
 
   const [payOpen, setPayOpen] = useState(false);
+
+  async function openCurrentInvoice() {
+    if (!inv?.correctedByInvoiceId || openingCurrent) return;
+    const openedFromInvoiceId = invoiceId;
+    setOpeningCurrent(true); setCurrentError("");
+    try {
+      let nextId: number | null = Number(inv.correctedByInvoiceId);
+      const seen = new Set([inv.id]);
+      while (nextId != null) {
+        if (seen.has(nextId) || seen.size >= 32) throw new Error("تعذّر تتبّع سلسلة التعديل؛ أعد تحميل الفاتورة أو راجع المسؤول.");
+        seen.add(nextId);
+        const current = await utils.sales.get.fetch({ invoiceId: nextId });
+        if (!current) throw new Error("الفاتورة البديلة غير متاحة في فرعك.");
+        if (current.correctedByInvoiceId == null) {
+          if (sourceInvoiceId.current === openedFromInvoiceId) setCurrentInvoiceId(current.id);
+          return;
+        }
+        nextId = Number(current.correctedByInvoiceId);
+      }
+    } catch (error) { setCurrentError(error instanceof Error ? error.message : "تعذّر فتح الفاتورة الحالية."); }
+    finally { setOpeningCurrent(false); }
+  }
 
   return (
     <Sheet open={isOpen} onOpenChange={(open) => !open && onClose()}>
@@ -123,6 +152,15 @@ export function InvoiceDetailDrawer({
 
         {inv ? (
           <div className="space-y-4">
+            {inv.correctedByInvoiceId != null && (
+              <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-sm">
+                <p className="font-semibold">نسخة تاريخية قبل التعديل — المبالغ أدناه تخصّ هذه النسخة.</p>
+                <Button type="button" size="sm" variant="outline" onClick={() => void openCurrentInvoice()} disabled={openingCurrent}>
+                  فتح الفاتورة الحالية
+                </Button>
+                {currentError && <p role="alert" className="text-xs text-destructive">{currentError}</p>}
+              </div>
+            )}
             {/* بطاقة العميل والمصدر */}
             <Card>
               <CardContent className="p-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">

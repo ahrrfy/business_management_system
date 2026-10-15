@@ -18,6 +18,8 @@
  * لا تستخدم parseFloat/Number على الأموال (الجمع داخل calcTotals + decimal.js).
  */
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { invalidateFinancialQueries } from "@/lib/realtime/financialQueries";
 import { Link, useLocation, useRoute, useSearch } from "wouter";
 
 import { trpc } from "@/lib/trpc";
@@ -79,7 +81,7 @@ import {
   type PriceTier,
 } from "@/components/invoice";
 import { createPricingIntentEpoch } from "@/components/invoice/productSearchResolution"; import { ACTION_LABELS } from "@shared/actionLabels";
-import { SalesCorrectionPanel, resolvePriorReceipt, type PriorReceiptMode } from "@/components/invoice/SalesCorrectionPanel";
+import { SalesCorrectionPanel, resolvePriorReceipt, isPendingCodCorrection, correctionOutstandingBlockReason, type PriorReceiptMode } from "@/components/invoice/SalesCorrectionPanel";
 import { salesRepresentativeOptions } from "@/components/invoice/salesRepresentatives";
 import { salesOperationAllowed, salesCostVisible, salesCorrectionKinds, salesEditorActions, salesDigitalAllowed, salesExternalPaymentAllowed, salesEditorShortcuts } from "@/lib/salesOperationAccess";
 
@@ -96,6 +98,7 @@ export default function SalesInvoice() {
   const [, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
+  const queryClient = useQueryClient();
   const defaultBranchId = me.data?.branchId ? Number(me.data.branchId) : 0;
   const employeesQ = trpc.employees.list.useQuery({ status: "active", limit: 200 }, { enabled: salesOperationAllowed(me.data, "employees.list", true) });
   const salesReps = useMemo(() => salesRepresentativeOptions(employeesQ.data?.rows ?? []), [employeesQ.data?.rows]);
@@ -140,6 +143,7 @@ export default function SalesInvoice() {
   const [receiptMode, setReceiptMode] = useState<PriorReceiptMode>("AUTO");
   const originalTerms = useMemo(() => (original.data ? derivePaymentTerms(original.data) : "CASH"), [original.data]);
   const ownerExecutes = me.data?.isOwner === true;
+  const pendingCodCorrection = isPendingCodCorrection(original.data);
   const priorReceipt = resolvePriorReceipt({ recordedPaid: originalPaid.toFixed(2), originalTerms, targetTerms: state.paymentTerms, mode: receiptMode });
   const receivedPrior = D(priorReceipt.amount ?? "0");
   const customerChanged = isCorrection && !!original.data && (original.data.customerId ?? null) !== (state.entityId ?? null);
@@ -515,9 +519,9 @@ export default function SalesInvoice() {
 
   // إعادة الإصدار تبدأ بطلب صفر الأثر؛ مراجعٌ مستقل ينفّذ العكس+الإصدار ذرّياً من طابور التحكم.
   // المالك النشط استثناء: الخادم ينفّذ طلبه فوراً (status=APPROVED) ⇒ ننتقل للفاتورة البديلة.
-  function finishOwnerCorrection(resultInvoiceId: number | null | undefined): boolean {
+  async function finishOwnerCorrection(resultInvoiceId: number | null | undefined): Promise<boolean> {
     if (resultInvoiceId == null || !(Number(resultInvoiceId) > 0)) return false;
-    utils.sales.get.invalidate(); utils.salesControl.list.invalidate();
+    await invalidateFinancialQueries(queryClient, original.data?.branchId);
     notify.ok("نُفّذ التصحيح", "عُكس الأصل وصدرت الفاتورة البديلة وسوّيت الأموال في معاملة واحدة.");
     setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
     bypassUnsavedGuard();
@@ -525,8 +529,8 @@ export default function SalesInvoice() {
     return true;
   }
   const reissue = trpc.sales.reissue.useMutation({
-    onSuccess: (r) => {
-      if (r.status === "APPROVED" && finishOwnerCorrection(r.resultInvoiceId)) return;
+    onSuccess: async (r) => {
+      if (r.status === "APPROVED" && await finishOwnerCorrection(r.resultInvoiceId)) return;
       utils.salesControl.list.invalidate();
       notify.ok(
         "أُرسل طلب إعادة الإصدار",
@@ -536,17 +540,11 @@ export default function SalesInvoice() {
       bypassUnsavedGuard();
       navigate(correctionFromReception ? "/reception/workflow?section=edit" : `/invoices/${correctInvoiceId}`);
     },
-    onError: (e) => {
-      if (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة") || e.message.includes("موافقة مدير"))) {
-        setCreditPrompt(e.message);
-        return;
-      }
-      notify.err(e);
-    },
+    onError: handleCorrectionError,
   });
   const exchange = trpc.salesControl.requestExchange.useMutation({
-    onSuccess: (result) => {
-      if (result.status === "APPROVED" && finishOwnerCorrection("resultInvoiceId" in result ? (result.resultInvoiceId as number | null) : null)) return;
+    onSuccess: async (result) => {
+      if (result.status === "APPROVED" && await finishOwnerCorrection("resultInvoiceId" in result ? (result.resultInvoiceId as number | null) : null)) return;
       utils.salesControl.list.invalidate();
       notify.ok(
         "أُرسل طلب الاستبدال",
@@ -556,8 +554,16 @@ export default function SalesInvoice() {
       bypassUnsavedGuard();
       navigate(correctionFromReception ? "/reception/workflow?section=edit" : `/invoices/${correctInvoiceId}`);
     },
-    onError: (cause) => notify.err(cause),
+    onError: handleCorrectionError,
   });
+
+  function handleCorrectionError(error: { message?: string }) {
+    if (error.message && (error.message.includes("حدّ الائتمان") || error.message.includes("بأقل من التكلفة") || error.message.includes("موافقة مدير"))) {
+      setCreditPrompt(error.message);
+      return;
+    }
+    notify.err(error);
+  }
 
   /**
    * المبلغ المدفوع نقداً وفق شروط الدفع:
@@ -697,7 +703,8 @@ export default function SalesInvoice() {
     const collect = D(collectNow.trim() || "0");
     if (diff.gt(0)) {
       if (collect.gt(diff)) return `التحصيل المقترح (${collect.toFixed(2)}) يتجاوز الفرق المستحقّ (${diff.toFixed(2)}).`;
-      if (diff.minus(collect).gt(0) && !state.entityId) return "المتبقّي بعد التحصيل المقترح ذمّة — اختر عميلاً أو اقترح تحصيل الفرق كاملاً.";
+      const outstandingError = correctionOutstandingBlockReason(diff.minus(collect).toFixed(2), state.entityId != null, pendingCodCorrection);
+      if (outstandingError) return outstandingError;
     }
     if (diff.lt(0) && overpayHandling === "CREDIT" && !state.entityId) return "الرصيد الدائن يتطلّب عميلاً — اختر عميلاً أو اختر استرداداً نقدياً.";
     return null;
@@ -788,7 +795,7 @@ export default function SalesInvoice() {
     });
   }
 
-  function handleSubmit(approval?: Approval) {
+  function handleSubmit(approval?: Approval, requestReview = false) {
     // قيمة مالية غير رقمية (في المدفوع/الخصم) تجعل decimal.js يرمي — نلتقطها برسالة واضحة بدل تعطّل صامت.
     let err: string | null;
     try {
@@ -824,10 +831,11 @@ export default function SalesInvoice() {
             requestKey,
             invoiceId: originalInvoiceId,
             reason: exchangeReason,
+            requestReview,
             payload,
           });
         } else {
-          reissue.mutate(correction);
+          reissue.mutate({ ...correction, requestReview });
         }
       } else {
         if (state.items.some((c) => !!c.digital)) {
@@ -853,6 +861,11 @@ export default function SalesInvoice() {
   }
 
   function handleApprove() {
+    if (isCorrection) {
+      // The failed direct transaction rolled back; the same intent/key now requests review only.
+      handleSubmit(undefined, true);
+      return;
+    }
     if (!mgrEmail.trim() || !mgrPwd.trim()) {
       notify.warn("أدخل بريد المدير وكلمة المرور للاعتماد.");
       return;
@@ -1223,6 +1236,7 @@ export default function SalesInvoice() {
               overpayHandling={overpayHandling}
               setOverpayHandling={setOverpayHandling}
               hasCustomer={state.entityId != null}
+              pendingCod={pendingCodCorrection}
             />
           )}
           <ActionButtons
@@ -1231,7 +1245,7 @@ export default function SalesInvoice() {
             saving={submitPending}
             pasteAvailable={pasteAvailable}
             availableActions={availableActions}
-            primaryLabel={isCorrection ? ownerExecutes ? "تنفيذ التصحيح" : correctionKind === "EXCHANGE" ? "إرسال طلب الاستبدال" : "إرسال طلب إعادة الإصدار" : undefined}
+            primaryLabel={isCorrection ? "حفظ التعديل" : undefined}
             onAction={handleAction}
           />
           <TermsAndNotes state={state} dispatch={dispatch} />
@@ -1246,13 +1260,15 @@ export default function SalesInvoice() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-destructive">
               <Lock aria-hidden className="size-5" />
-              موافقة مدير مطلوبة
+              {isCorrection ? "مراجعة مستقلة مطلوبة" : "موافقة مدير مطلوبة"}
             </DialogTitle>
             <DialogDescription className="text-right">
-              {creditPrompt ?? "تجاوز حدّ الائتمان — يلزم اعتماد مدير لإتمام البيع الآجل."}
+              {isCorrection
+                ? `${creditPrompt ?? "التعديل يحتاج مراجعة"} أرسل الطلب إلى مراجع مستقل؛ لا يتغيّر المال أو المخزون حتى اعتماده.`
+                : creditPrompt ?? "تجاوز حدّ الائتمان — يلزم اعتماد مدير لإتمام البيع الآجل."}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3 py-2">
+          {!isCorrection && <div className="space-y-3 py-2">
             <div className="space-y-1.5">
               <Label className="text-xs">بريد المدير</Label>
               <Input
@@ -1275,7 +1291,7 @@ export default function SalesInvoice() {
                 placeholder="••••••••"
               />
             </div>
-          </div>
+          </div>}
           <DialogFooter className="gap-2 sm:gap-2">
             <Button type="button" variant="outline" onClick={closeApprovalPrompt}>
               إلغاء
@@ -1287,9 +1303,9 @@ export default function SalesInvoice() {
               onClick={handleApprove}
             >
               {(isCorrection ? reissue.isPending || exchange.isPending : create.isPending)
-                ? ACTION_LABELS.approving
+                ? isCorrection ? ACTION_LABELS.sending : ACTION_LABELS.approving
                 : isCorrection
-                  ? "اعتماد وإتمام التصحيح"
+                  ? "إرسال إلى مراجع مستقل"
                   : "اعتماد وإتمام البيع"}
             </Button>
           </DialogFooter>

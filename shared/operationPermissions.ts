@@ -343,6 +343,12 @@ export function resolveOperationPolicy(
       }
     }
   }
+  const withdrawal = getOperationPermission("returns.withdrawRequest");
+  if (withdrawal?.delegable) {
+    const explicitlyDenied = userPolicy?.grants[withdrawal.key] === false ||
+      (userPolicy?.grants[withdrawal.key] !== true && rolePolicy?.grants[withdrawal.key] === false);
+    grants[withdrawal.key] = grants["operation.returns.create"] === true && !explicitlyDenied;
+  }
   return {
     version: 1,
     grants,
@@ -409,6 +415,7 @@ export function applyLegacyIndividualOperationOverrides(
   ) {
     for (const path of [
       "returns.create",
+      "returns.withdrawRequest",
       "returns.getInvoice",
       "returns.inspectInvoiceForReturn",
       "returns.lookupItemForReturn",

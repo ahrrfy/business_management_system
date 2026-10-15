@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { hasOperationPolicy, operationDecision } from "@shared/operationPermissions";
+import { resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { resolveCustomRole, type AuthUser } from "../../context";
 import {
   assertOperationAuthorityTx,
@@ -47,6 +48,7 @@ import {
 } from "./controlSnapshot";
 import { createConfirmedExternalPaymentAttemptTx } from "../posExternalPayment";
 import { correctionRequestBlockReasonTx } from "./correctionLookup";
+import { loadRefundCaps } from "../returns/refundCaps";
 import { createAppNotification } from "../appNotificationService";
 import { publishRealtimeEvent } from "../../realtime";
 import {
@@ -88,6 +90,8 @@ export interface RequestSalesControlInput {
   requestType: SalesControlType;
   reason: string;
   payload: SalesControlPayload;
+  /** Explicit deferral after a pricing/credit guard; grants no execution authority. */
+  requestReview?: boolean;
 }
 
 type RequestSalesControlActor = Actor & {
@@ -411,7 +415,7 @@ async function notifySalesControlPending(
   }
 }
 
-/** ينشئ مستند نيّة فقط: لا قيد ولا إيصال ولا حركة مخزون ولا تغيير فاتورة. */
+/** المقابضات تستلزم المراجعة؛ التصحيح الخالي من أي قبض ينفّذ مع مستنده في المعاملة نفسها. */
 export async function requestSalesControl(
   input: RequestSalesControlInput,
   actor: RequestSalesControlActor,
@@ -590,6 +594,55 @@ export async function requestSalesControl(
         message: "يوجد طلب معلّق لهذه الفاتورة أو استُهلك المفتاح بحمولة أخرى",
       });
     }
+    if (
+      (input.requestType === "SALES_REISSUE" || input.requestType === "SALES_EXCHANGE") &&
+      !input.requestReview &&
+      money(invoice.paidAmount ?? "0").isZero()
+    ) {
+      const payload = input.payload as SalesReissueControlPayload;
+      const caps = await loadRefundCaps(tx, input.invoiceId);
+      if (
+        caps.pool.isZero() && caps.unremittedDeliveryCustody.isZero() &&
+        !payload.additionalPayment &&
+        (payload.priorPaymentReceivedAmount == null || money(payload.priorPaymentReceivedAmount).isZero())
+      ) {
+        const operationPath = input.requestType === "SALES_EXCHANGE" ? "salesControl.requestExchange" : "sales.reissue";
+        await assertOperationAuthorityTx(tx, actor, operationPath, (current) => {
+          const permissions = resolvePermissions(current.role as RoleKey, current.permissionsOverride as PermissionMap | null);
+          return current.isOwner === true || current.role === "admin" || (
+            (permissions.products === "READ" || permissions.products === "FULL") &&
+            (permissions.sales === "FULL" || permissions.workorders === "FULL")
+          );
+        });
+        // The engine locks the invoice and verifies this snapshot again. A concurrent
+        // collection invalidates it before any reversal or replacement can commit.
+        const corrected = await correctSaleInTx(tx, {
+          ...payload,
+          originalInvoiceId: input.invoiceId,
+          clientRequestId: `sales-control-${id}`,
+          controlExpectedSnapshot: snapshot,
+        }, { ...actor, branchId: Number(invoice.branchId) });
+        const now = new Date();
+        await tx.update(salesControlRequests).set({
+          status: "APPROVED", reviewedBy: actor.userId, reviewedAt: now, appliedAt: now,
+          reviewNote: "تنفيذ فوري: لا مقبوضات ولا استرداد", resultInvoiceId: corrected.correctedInvoiceId,
+        }).where(eq(salesControlRequests.id, id));
+        if (input.requestType === "SALES_EXCHANGE") {
+          const [request] = await tx.select().from(salesControlRequests).where(eq(salesControlRequests.id, id));
+          await recordExchangeTx(tx, request, snapshot, corrected, payload, actor);
+        }
+        await tx.insert(auditLogs).values({
+          userId: actor.userId, branchId: Number(invoice.branchId), action: "sale.reissue",
+          entityType: "invoice", entityId: String(input.invoiceId),
+          oldValue: { invoiceId: input.invoiceId, snapshotHash },
+          newValue: { ...corrected, requestId: id, reason, execution: "UNPAID_DIRECT", paidAmount: "0.00" },
+        });
+        return { id, requestKey, invoiceId: input.invoiceId, branchId: Number(invoice.branchId),
+          requestType: input.requestType, status: "APPROVED" as const, payloadHash, snapshotHash,
+          reason, requestedBy: actor.userId, resultInvoiceId: corrected.correctedInvoiceId,
+          replayed: false as const };
+      }
+    }
     return {
       id,
       requestKey,
@@ -603,7 +656,7 @@ export async function requestSalesControl(
       requestedBy: actor.userId,
       replayed: false as const,
     };
-  }, { gate: "NONE" });
+  });
   // التصحيح والاستبدال يمران دائماً بشاشة «كان/أصبح»: قد يلزم اختيار درج مفتوح أو
   // تنفيذ بطاقة وإدخال مرجعها وقت الاعتماد، فلا يصح حسمهما تلقائياً بلا تلك المدخلات.
   // استثناء المالك (قرار ٣/١٠/٢٦): المالك صاحب التصحيح ينفّذه فوراً بمحرّك الاعتماد نفسه —
@@ -612,12 +665,10 @@ export async function requestSalesControl(
     || input.requestType === "SALES_EXCHANGE";
   if (needsCorrectionReview) {
     if (result.replayed || result.status !== "PENDING") return result;
-    const executed = await executeCorrectionAsActiveOwner(Number(result.id), actor, reason);
-    return executed
-      ? { ...result, status: "APPROVED" as const, resultInvoiceId: executed.resultInvoiceId, ownerExecuted: true as const }
-      : result;
+    const executed = input.requestReview ? null : await executeCorrectionAsActiveOwner(Number(result.id), actor, reason);
+    if (executed) return { ...result, status: "APPROVED" as const, resultInvoiceId: executed.resultInvoiceId, ownerExecuted: true as const };
   }
-  const approved = await autoDecideForActiveOwner(actor, {
+  const approved = !needsCorrectionReview && await autoDecideForActiveOwner(actor, {
     kind: "sales.control.approve",
     id: Number(result.id),
     reason,
@@ -1238,6 +1289,12 @@ export async function approveSalesControlRequest(
       }, effectiveActor);
       effect = corrected;
       resultInvoiceId = corrected.correctedInvoiceId;
+      await tx.insert(auditLogs).values({
+        userId: actor.userId, branchId: Number(request.branchId), action: "sale.reissue",
+        entityType: "invoice", entityId: String(request.invoiceId),
+        oldValue: { invoiceId: Number(request.invoiceId), snapshotHash: request.snapshotHash },
+        newValue: { ...corrected, requestId, reason: request.reason, execution: "GOVERNED_APPROVAL" },
+      });
       if (request.requestType === "SALES_EXCHANGE") {
         exchangeCommandId = await recordExchangeTx(
           tx,

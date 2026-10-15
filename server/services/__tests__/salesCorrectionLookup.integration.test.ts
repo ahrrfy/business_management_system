@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -54,6 +55,21 @@ beforeEach(async () => {
 });
 
 describe("lookupInvoiceForCorrection — عزل المسح التشغيلي", () => {
+  it("يتبع الرقم الأصلي إلى أحدث نسخة مع حفظ عزل المالك والفرع", async () => {
+    await db().update(s.invoices).set({ status: "SUPERSEDED", correctedByInvoiceId: 103 }).where(eq(s.invoices.id, 101));
+    const manager = { userId: 3, branchId: 1, role: "manager" };
+    expect(await lookupInvoiceForCorrection("OFF-101", manager)).toMatchObject({ id: 103, scannedOriginalNumber: "OFF-101", canCorrect: true });
+    expect(await lookupInvoiceForCorrection("101", { ...manager, scopedOwnerId: 1 })).toBeNull();
+    await db().update(s.invoices).set({ correctedByInvoiceId: 104 }).where(eq(s.invoices.id, 103));
+    expect(await lookupInvoiceForCorrection("101", manager)).toBeNull();
+  });
+
+  it("يفشل مغلقاً إذا دارت سلسلة الاستبدال", async () => {
+    await db().update(s.invoices).set({ correctedByInvoiceId: 103 }).where(eq(s.invoices.id, 101));
+    await db().update(s.invoices).set({ correctedByInvoiceId: 101 }).where(eq(s.invoices.id, 103));
+    expect(await lookupInvoiceForCorrection("101", { userId: 3, branchId: 1, role: "manager" })).toBeNull();
+  });
+
   it("يقصر الاستقبال على فاتورته وقناته ويتيح للمدير فرعه فقط", async () => {
     const reception = { userId: 1, branchId: 1, role: "print_operator", scopedOwnerId: 1, invoiceScope: "reception" as const };
     expect(await lookupInvoiceForCorrection(" INV-101 ", reception)).toMatchObject({ id: 101, canCorrect: true });

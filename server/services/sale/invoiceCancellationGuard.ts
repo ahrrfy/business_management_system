@@ -15,6 +15,8 @@ export interface InvoiceCancellationGuardInput {
   expectedBranchId: number;
   /** يسمح لمسار إلغاء الفاتورة نفسه بإلغاء إسناد ما زال ASSIGNED ولم يدخل حيازة أو تسوية. */
   allowAssignedCancellation?: boolean;
+  /** Composite invoice operation settles proven exposure/custody in this transaction. */
+  allowAtomicAmendment?: boolean;
 }
 
 export type InvoiceReversalMode = "CANCEL" | "CORRECT";
@@ -155,6 +157,14 @@ export async function assertInvoiceReversalDeliverySafeTx(
       consignment.status === "CANCELLED"
       && consignment.parcelStatus === "CANCELLED"
       && consignment.moneyStatus === "CANCELLED";
+    const atomicAmendment = input.allowAtomicAmendment === true
+      && consignment.status !== "WRITTEN_OFF"
+      && consignment.status !== "RETURNED"
+      && (input.mode !== "CANCEL" || (
+        consignment.status !== "DELIVERED" && consignment.status !== "PARTIAL"
+        && consignment.parcelStatus !== "DELIVERED"
+      ))
+      && consignment.returnDeclaredAt == null;
     const cancellableAssignment =
       input.mode === "CANCEL" &&
       input.allowAssignedCancellation === true &&
@@ -165,7 +175,7 @@ export async function assertInvoiceReversalDeliverySafeTx(
       consignment.returnDeclaredAt == null &&
       round2(money(consignment.collectedAmount ?? "0")).isZero() &&
       round2(money(consignment.counterSettledAmount ?? "0")).isZero();
-    if (!terminalCancellation && !cancellableAssignment) {
+    if (!terminalCancellation && !cancellableAssignment && !atomicAmendment) {
       const parcelLabel = PARCEL_STATUS_AR[consignment.parcelStatus] ?? consignment.parcelStatus;
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
@@ -181,6 +191,9 @@ export async function assertInvoiceReversalDeliverySafeTx(
           remitted: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'COD_REMITTED' THEN ${deliveryLedgerEntries.amount} ELSE 0 END), 0)`,
           released: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'COD_RELEASED' THEN ${deliveryLedgerEntries.amount} ELSE 0 END), 0)`,
           writtenOff: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'COD_WRITTEN_OFF' THEN ${deliveryLedgerEntries.amount} ELSE 0 END), 0)`,
+          returned: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'COD_RETURNED' THEN ${deliveryLedgerEntries.amount} ELSE 0 END), 0)`,
+          shortfallAssigned: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'SHORTFALL_ASSIGNED' THEN ${deliveryLedgerEntries.amount} ELSE 0 END), 0)`,
+          shortfallSettled: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'SHORTFALL_SETTLED' THEN ${deliveryLedgerEntries.amount} ELSE 0 END), 0)`,
           feeEarned: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'FEE_EARNED' THEN ${deliveryLedgerEntries.amount} WHEN ${deliveryLedgerEntries.entryType} = 'FEE_REFUNDED' THEN -${deliveryLedgerEntries.amount} ELSE 0 END), 0)`,
           feePaid: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_PAID','FEE_OFFSET') THEN ${deliveryLedgerEntries.amount} ELSE 0 END), 0)`,
         })
@@ -189,11 +202,17 @@ export async function assertInvoiceReversalDeliverySafeTx(
     )[0];
     const assigned = round2(money(ledger?.assigned ?? "0"));
     const collected = round2(money(ledger?.collected ?? "0"));
-    const codOutstanding = round2(assigned.minus(collected).minus(money(ledger?.released ?? "0")));
-    const cashInCustody = round2(collected.minus(money(ledger?.remitted ?? "0")).minus(money(ledger?.writtenOff ?? "0")));
+    const codOutstanding = round2(assigned.minus(collected).minus(money(ledger?.shortfallAssigned ?? "0")).minus(money(ledger?.released ?? "0")));
+    const cashInCustody = round2(collected.plus(money(ledger?.shortfallAssigned ?? "0"))
+      .minus(money(ledger?.remitted ?? "0")).minus(money(ledger?.writtenOff ?? "0"))
+      .minus(money(ledger?.returned ?? "0")).minus(money(ledger?.shortfallSettled ?? "0")));
     const feeOpen = round2(money(ledger?.feeEarned ?? "0").minus(money(ledger?.feePaid ?? "0")));
     const codAmount = round2(money(consignment.codAmount ?? "0"));
-    const unsafeFinancialState = cancellableAssignment
+    const unsafeFinancialState = atomicAmendment
+      ? codOutstanding.lt(0) || cashInCustody.lt(0)
+        || money(consignment.collectedAmount ?? "0").gt(collected.plus(money(ledger?.remitted ?? "0")))
+        || (input.mode === "CORRECT" && terminalCancellation && cashInCustody.gt(0))
+      : cancellableAssignment
       ? !round2(money(consignment.collectedAmount ?? "0")).isZero()
         || !round2(money(consignment.counterSettledAmount ?? "0")).isZero()
         || consignment.remittanceId != null
@@ -232,7 +251,8 @@ export async function assertInvoiceReversalDeliverySafeTx(
     const linkedToSafeConsignment = consignment != null
       && consignment.sourceType === "ONLINE_ORDER"
       && Number(consignment.sourceId) === Number(onlineOrder.id);
-    const safeOrderStatus = onlineOrder.status === "CANCELLED"
+    const safeOrderStatus = input.allowAtomicAmendment === true && consignment != null
+      || onlineOrder.status === "CANCELLED"
       || (input.mode === "CANCEL" && linkedToSafeConsignment && onlineOrder.status === "SHIPPED")
       || (onlineOrder.status === "PROCESSING" && (consignment == null || consignment.status === "CANCELLED"));
     if (!safeOrderStatus) {
@@ -273,7 +293,7 @@ export async function assertInvoiceReversalDeliverySafeTx(
           isNotNull(accountingEntries.deliveryPartyId),
         ))
     )[0];
-    if (Number(legacyCod?.n ?? 0) > 0 || Number(legacyCustodyPosting?.n ?? 0) > 0) {
+    if (!(input.allowAtomicAmendment && consignment != null) && (Number(legacyCod?.n ?? 0) > 0 || Number(legacyCustodyPosting?.n ?? 0) > 0)) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: `طلب المتجر ${onlineOrder.orderNumber} ملغى، لكنه يحمل تحصيل COD أو عهدة مندوب سابقة. سوِّ العهدة من مركز التوصيل واستعمل مسار الإرجاع الموثق.`,

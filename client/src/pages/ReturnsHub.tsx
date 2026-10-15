@@ -242,7 +242,9 @@ export default function ReturnsHub() {
         partyName: data.customerName,
         amount: data.totalAmount,
         method:
-          data.method === "CASH"
+          data.noCashNoAccount
+            ? "تخفيض المتبقي — بلا استرداد"
+            : data.method === "CASH"
             ? "نقدي"
             : data.method === "CARD"
               ? "بطاقة"

@@ -426,6 +426,7 @@ export async function returnSaleInTx(
   tx: Tx,
   input: ReturnSaleInput,
   actor: Actor,
+  options: { requireUnpaidSource?: boolean } = {},
 ) {
   // `refund` يبقى عقد العملاء المسجّلين كما هو. أمّا العابر فـresolution هو مصدر الحقيقة
   // ويُحوَّل داخلياً إلى نفس مسار الإيصال/القيد، فلا ننشئ سكّة مالية ثانية.
@@ -873,6 +874,7 @@ export async function returnSaleInTx(
         ))
         .limit(1))[0]);
   const isUnremittedDelivery =
+    !input.internalCorrectionReversal &&
     deliveryPreview != null &&
     (["DELIVERED", "PARTIAL"].includes(deliveryPreview.status) ||
       ["DELIVERED", "PARTIAL"].includes(deliveryPreview.parcelStatus)) &&
@@ -963,6 +965,19 @@ export async function returnSaleInTx(
     invoiceId: input.invoiceId,
     operationLabel: "إرجاع الفاتورة كلياً أو جزئياً",
   });
+  // The zero-money delegation exception is proved again after the core source
+  // locks. A collection that arrived after the initial decision must not turn
+  // an unpaid cancellation into an unreviewed customer credit.
+  if (options.requireUnpaidSource) {
+    const caps = await loadRefundCaps(tx, input.invoiceId, { lock: true });
+    if (Decimal.max(money(inv.paidAmount), caps.pool, caps.unremittedDeliveryCustody).gt(0)) {
+      throw new OperationalApprovalRequiredError({
+        result: "APPROVAL_REQUIRED",
+        reason: "تغيّر المقبوض على الفاتورة؛ أعد تحديد تسوية المرتجع بعد تحديثها",
+        approvalOperation: "salesControl.requestReturn",
+      });
+    }
+  }
   const isWalkInReturn =
     inv.customerId == null && !input.internalCorrectionReversal;
   if (isWalkInReturn) {
@@ -1462,7 +1477,7 @@ export async function returnSaleInTx(
           ),
         );
     }
-    if (!isUnremittedDelivery) {
+    if (!input.internalCorrectionReversal && !isUnremittedDelivery) {
       await reconcileDeliveryOnReturnTx(tx, {
         invoiceId: input.invoiceId,
         returnedTotal: returnedTotalFull,
@@ -2497,7 +2512,7 @@ export async function returnSaleInTx(
   }
 
   // تسوية إرسالية التوصيل النشطة إن وُجدت (R1 & R2).
-  if (!isUnremittedDelivery) {
+  if (!input.internalCorrectionReversal && !isUnremittedDelivery) {
     await reconcileDeliveryOnReturnTx(tx, {
       invoiceId: input.invoiceId,
       returnedTotal,
@@ -2998,6 +3013,7 @@ export async function returnSaleDirect(
         }
       }
 
+      let requireUnpaidSource = false;
       if (requiresOperationalLimits) {
         const directRefund = coreInput.resolution ?? coreInput.refund;
         const needsCashShift = directRefund?.method === "CASH" && money(directRefund.amount).gt(0);
@@ -3006,6 +3022,7 @@ export async function returnSaleDirect(
             branchId: invoices.branchId,
             invoiceDate: invoices.invoiceDate,
             paymentMethod: invoices.paymentMethod,
+            paidAmount: invoices.paidAmount,
             createdBy: invoices.createdBy,
             workOrderCreatedBy: workOrders.createdBy,
           })
@@ -3098,7 +3115,11 @@ export async function returnSaleDirect(
             .filter(([, amount]) => amount.gt(0))
             .map(([method, amount]) => [method, amount.toFixed(2)]),
         );
-        const decision = evaluateRefundOperationalDecision({
+        const sourcePaidAmount = Decimal.max(
+          money(invRow.paidAmount), lockedRefundCaps.pool,
+          lockedRefundCaps.unremittedDeliveryCustody,
+        );
+        const operationalContext = {
           operationAllowed: isAuthorized,
           sameBranch: Number(invRow.branchId) === Number(actor.branchId),
           ownsTransaction: Number(invRow.createdBy) === Number(actor.userId),
@@ -3112,17 +3133,20 @@ export async function returnSaleDirect(
           hasDownstreamEffects: false,
           hasSourceDocument: true,
           refundAmountIqd: directRefund?.amount ?? "0.00",
+          sourcePaidAmountIqd: sourcePaidAmount.toFixed(2),
           maxRefundAmountIqd: resolvedCaps.maxRefundAmountIqd,
           refundMethod: directRefund?.method ?? invRow.paymentMethod ?? "CASH",
           originalPaymentMethods,
           originalPaymentAmounts,
           drawerHasFunds,
           approvalOperation: "salesControl.requestReturn",
-        });
+        };
+        const decision = evaluateRefundOperationalDecision(operationalContext);
         if (decision.result === "APPROVAL_REQUIRED")
           throw new OperationalApprovalRequiredError(decision);
         if (decision.result === "DENY")
           throw new TRPCError({ code: "FORBIDDEN", message: decision.reason });
+        requireUnpaidSource = sourcePaidAmount.isZero() && money(directRefund?.amount ?? "0").isZero();
       }
 
       const [pendingControl] = await tx
@@ -3165,7 +3189,7 @@ export async function returnSaleDirect(
         branchId: actor.branchId,
         role: effectiveReturnActorRole,
         operationalCaps: resolvedCaps,
-      });
+      }, { requireUnpaidSource });
     }),
   );
 }

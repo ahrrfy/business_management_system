@@ -5,7 +5,7 @@
  *   ثابت ٣ (استرداد بجهة صرف): PAYMENT_OUT بمبلغ paidAmount + receipt.direction=OUT بطريقةٍ مُصرَّحة.
  *   ثابت ٤ (حراس): خارج الفترة/لغير المدير على فرع آخر/فاتورة ملغاة أو مرتجعة/كروت رقمية/أمر شغل ⇒ رفض.
  */
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb, closeDb } from "../../db";
@@ -1046,29 +1046,29 @@ describe.sequential("cancelSale — حارس التوصيل الموحّد", () 
       .toMatchObject({ status: "CANCELLED", parcelStatus: "CANCELLED", moneyStatus: "CANCELLED" });
   });
 
-  it("يصنّف إلغاء COD القديم للاعتماد قبل تغيير الإسناد", async () => {
+  it("يلغي COD القديم غير المدفوع مباشرة مع إسناده دون رد نقدي", async () => {
     const { sale, dispatched, cashierActor } = await assignedCashierInvoice("cashier-approval");
     await db().update(s.invoices)
       .set({ invoiceDate: new Date(Date.now() - 86400000) })
       .where(eq(s.invoices.id, sale.invoiceId));
 
-    await expect(cancelSale({
+    const result = await cancelSale({
       invoiceId: sale.invoiceId,
       refundPaymentMethod: "CASH",
       reason: "إلغاء COD قديم يحتاج اعتماداً",
       clientRequestId: "cashier-request-assigned-cod",
       enforceOperationalDecision: true,
-    }, cashierActor)).rejects.toMatchObject({
-      decision: { result: "APPROVAL_REQUIRED" },
-    });
+    }, cashierActor);
+    expect(result.operationalDecision?.result).toBe("DIRECT");
+    expect(result.refundAmount).toBe("0.00");
 
     expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status)
-      .not.toBe("CANCELLED");
+      .toBe("CANCELLED");
     expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, dispatched.consignmentId)))[0])
-      .toMatchObject({ status: "DISPATCHED", parcelStatus: "ASSIGNED", moneyStatus: "UNSETTLED" });
+      .toMatchObject({ status: "CANCELLED", parcelStatus: "CANCELLED", moneyStatus: "CANCELLED" });
   });
 
-  it("يرفض إلغاء فاتورة ذات إرسالية حيّة بلا أي أثر جانبي", async () => {
+  it("يلغي الفاتورة وإرساليتها الحية بذرة واحدة ويعيد المخزون", async () => {
     await setStock(1, 1, 10);
     await seedDeliveryParty();
     const sale = await createSale(
@@ -1082,34 +1082,52 @@ describe.sequential("cancelSale — حارس التوصيل الموحّد", () 
     );
     const dispatched = await dispatchInvoice(sale.invoiceId, "live");
 
-    await expect(
-      cancelSale(
+    const result = await cancelSale(
         {
           invoiceId: sale.invoiceId,
           refundPaymentMethod: "TRANSFER",
           clientRequestId: "cancel-live-consignment",
         },
         admin,
-      ),
-    ).rejects.toThrow(/الإرسالية.*حيّة|ألغِ إسناد التوصيل أولاً/);
+      );
+    expect(result.refundAmount).toBe("0.00");
 
     const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
     const consignment = (
       await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, dispatched.consignmentId))
     )[0];
-    expect(invoice.status).not.toBe("CANCELLED");
-    expect(consignment.status).toBe("DISPATCHED");
-    expect(consignment.parcelStatus).toBe("OUT_FOR_DELIVERY");
-    expect(consignment.moneyStatus).toBe("UNSETTLED");
-    expect(await stockOf(1, 1)).toBe(9);
+    expect(invoice.status).toBe("CANCELLED");
+    expect(consignment.status).toBe("CANCELLED");
+    expect(consignment.parcelStatus).toBe("CANCELLED");
+    expect(consignment.moneyStatus).toBe("CANCELLED");
+    expect(await stockOf(1, 1)).toBe(10);
     const cancellationReturns = await db()
       .select({ n: sql<number>`COUNT(*)` })
       .from(s.accountingEntries)
       .where(sql`${s.accountingEntries.invoiceId}=${sale.invoiceId} AND ${s.accountingEntries.entryType}='RETURN'`);
-    expect(Number(cancellationReturns[0]?.n ?? 0)).toBe(0);
+    expect(Number(cancellationReturns[0]?.n ?? 0)).toBe(1);
   });
 
-  it("لا يستهلك مفتاح idempotency عند المنع، ثم يسمح بعد إلغاء الإسناد الآمن ويعيد replay", async () => {
+  it.each([
+    { status: "DELIVERED" as const, parcelStatus: "DELIVERED" as const },
+    { status: "PARTIAL" as const, parcelStatus: "DELIVERED" as const },
+    { status: "DISPATCHED" as const, parcelStatus: "DELIVERED" as const },
+  ])("يرفض إلغاء الطرد المسلم دون إثبات عودته: $status", async (state) => {
+    await setStock(1, 1, 10);
+    await seedDeliveryParty();
+    const sale = await createSale({ branchId: 1, customerId: 1, sourceType: "ORDER",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }] }, admin);
+    const dispatched = await dispatchInvoice(sale.invoiceId, `physical-proof-${state.status}`);
+    await db().update(s.deliveryConsignments).set(state).where(eq(s.deliveryConsignments.id, dispatched.consignmentId));
+    await expect(cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "CASH",
+      clientRequestId: `no-proof-${state.status}` }, admin)).rejects.toThrow(/أعد الطرد/);
+    expect(await stockOf(1, 1)).toBe(9);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status).toBe("PENDING");
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, dispatched.consignmentId)))[0].status).toBe(state.status);
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId))).toHaveLength(0);
+  });
+
+  it("يلغي الإسناد الذري مرة واحدة ويعيد replay دون تحرير COD أو المخزون ثانية", async () => {
     await setStock(1, 1, 10);
     await seedDeliveryParty();
     const sale = await createSale(
@@ -1124,19 +1142,6 @@ describe.sequential("cancelSale — حارس التوصيل الموحّد", () 
     const dispatched = await dispatchInvoice(sale.invoiceId, "idempotency");
     const key = "cancel-after-delivery-release";
 
-    await expect(
-      cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "TRANSFER", clientRequestId: key }, admin),
-    ).rejects.toThrow(/الإرسالية.*حيّة|ألغِ إسناد التوصيل أولاً/);
-
-    await cancelDeliveryAssignment(
-      {
-        consignmentId: dispatched.consignmentId,
-        reason: "إلغاء الإسناد قبل إلغاء الفاتورة",
-        clientRequestId: "release-before-sale-cancel",
-      },
-      admin,
-    );
-
     const first = await cancelSale(
       { invoiceId: sale.invoiceId, refundPaymentMethod: "TRANSFER", clientRequestId: key },
       admin,
@@ -1150,6 +1155,11 @@ describe.sequential("cancelSale — حارس التوصيل الموحّد", () 
     expect(replay.idempotentReplay).toBe(true);
     expect(stockAfterFirst).toBe(10);
     expect(await stockOf(1, 1)).toBe(stockAfterFirst);
+    const releases = await db().select().from(s.deliveryLedgerEntries).where(and(
+      eq(s.deliveryLedgerEntries.consignmentId, dispatched.consignmentId),
+      eq(s.deliveryLedgerEntries.entryType, "COD_RELEASED"),
+    ));
+    expect(releases).toHaveLength(1);
   });
 
   it("يرفض إرسالية موسومة CANCELLED إذا بقي عليها تحصيل أو تعرض مالي", async () => {
@@ -1206,7 +1216,7 @@ describe.sequential("cancelSale — حارس التوصيل الموحّد", () 
       ),
       dispatchInvoice(sale.invoiceId, "race"),
     ]);
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.some((result) => result.status === "fulfilled")).toBe(true);
 
     const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
     const consignment = (
@@ -1331,7 +1341,7 @@ describe.sequential("cancelSale — حارس التوصيل الموحّد", () 
       parcelStatus: "DELIVERED" as const,
       moneyStatus: "WRITTEN_OFF" as const,
     },
-  ])("correctSale يرفض إرسالية $label بلا أي عكس أو إعادة إصدار", async (deliveryState) => {
+  ])("correctSale يرفض بيانات $label المصطنعة بلا دليل تحصيل أو إعادة إصدار", async (deliveryState) => {
     await setStock(1, 1, 10);
     await seedDeliveryParty();
     const sale = await createSale(
@@ -1381,7 +1391,7 @@ describe.sequential("cancelSale — حارس التوصيل الموحّد", () 
     expect(Number(reversalEntries[0]?.n ?? 0)).toBe(0);
   });
 
-  it("correctSale يسمح فقط بعد وصول الإرسالية إلى الإلغاء الثلاثي الآمن", async () => {
+  it("correctSale يحفظ الإسناد الملغى دون إعادة فتح تعرض COD", async () => {
     await setStock(1, 1, 10);
     await seedDeliveryParty();
     const sale = await createSale(
@@ -1417,6 +1427,9 @@ describe.sequential("cancelSale — حارس التوصيل الموحّد", () 
       .toMatchObject({ status: "CANCELLED", parcelStatus: "CANCELLED", moneyStatus: "CANCELLED" });
     expect(corrected.correctedInvoiceId).toBeGreaterThan(sale.invoiceId);
     expect(await stockOf(1, 1)).toBe(9);
+    const exposure = (await db().select({ amount: sql<string>`SUM(CASE WHEN ${s.deliveryLedgerEntries.entryType}='COD_ASSIGNED' THEN ${s.deliveryLedgerEntries.amount} WHEN ${s.deliveryLedgerEntries.entryType}='COD_RELEASED' THEN -${s.deliveryLedgerEntries.amount} ELSE 0 END)` }).from(s.deliveryLedgerEntries)
+      .where(eq(s.deliveryLedgerEntries.consignmentId, dispatched.consignmentId)))[0];
+    expect(money(exposure.amount).toFixed(2)).toBe("0.00");
   });
 
   it("correctSale يرفض طلب متجر قديم SHIPPED بلا عكس أو استهلاك idempotency", async () => {
@@ -1484,7 +1497,7 @@ describe.sequential("cancelSale — حارس التوصيل الموحّد", () 
       ),
       dispatchInvoice(sale.invoiceId, "correct-race"),
     ]);
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.some((result) => result.status === "fulfilled")).toBe(true);
 
     const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
     const consignment = (

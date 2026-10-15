@@ -22,6 +22,21 @@ export function isFinancialQuery(query: Query, branchIds: ReadonlySet<number> | 
   return input?.branchId == null || branchIds.has(input.branchId as number);
 }
 
+/** Local mutation completion also repairs inactive invoice/list caches when SSE is unavailable. */
+export async function invalidateFinancialQueries(queryClient: QueryClient, branchId?: number): Promise<void> {
+  const branches = branchId == null ? null : new Set([branchId]);
+  await Promise.all([
+    queryClient.invalidateQueries({
+      predicate: (query) => isFinancialQuery(query, branches) && !includesHeavyAlerts(query),
+      refetchType: "active",
+    }),
+    queryClient.invalidateQueries({
+      predicate: (query) => isFinancialQuery(query, branches) && includesHeavyAlerts(query),
+      refetchType: "none",
+    }),
+  ]);
+}
+
 /** One installation per QueryClient; no polling, extra sockets or per-cell subscriptions. */
 export function installFinancialQueryRefresh(queryClient: QueryClient): () => void {
   let pending = false;

@@ -12,6 +12,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "client/src/components/returns/ReturnComposer.recovery.test.tsx",
+      "client/src/components/returns/SalesReturnPortal.unpaid.test.tsx",
+      "client/src/components/invoice/InvoiceDetailDrawer.current.test.tsx",
       "server/routers/__tests__/returnCartCostAuthority.unit.test.ts",
       "server/routers/__tests__/returnItemCostVisibility.unit.test.ts",
       "server/services/__tests__/deliveryFloatLimitPrivacy.unit.test.ts",

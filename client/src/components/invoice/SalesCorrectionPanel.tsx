@@ -19,6 +19,17 @@ import type { PriorReceiptMode } from "./priorReceipt";
 
 export { resolvePriorReceipt, type PriorReceiptMode } from "./priorReceipt";
 
+/** Preview only; the server revalidates the linked delivery state before replacing the invoice. */
+export function isPendingCodCorrection(invoice: { paymentMode?: string | null; consignmentId?: number | null } | null | undefined): boolean {
+  return invoice?.paymentMode === "COD" && invoice.consignmentId != null;
+}
+
+export function correctionOutstandingBlockReason(remaining: string, hasCustomer: boolean, pendingCod: boolean): string | null {
+  return D(remaining).gt(0) && !hasCustomer && !pendingCod
+    ? "المتبقّي بعد التحصيل المقترح ذمّة — اختر عميلاً أو اقترح تحصيل الفرق كاملاً."
+    : null;
+}
+
 function CorrRow({ label, value, className }: { label: string; value: string; className?: string }) {
   return (
     <div className="flex items-center justify-between gap-2">
@@ -57,6 +68,7 @@ export interface SalesCorrectionPanelProps {
   overpayHandling: "CREDIT" | "CASH_REFUND";
   setOverpayHandling: (v: "CREDIT" | "CASH_REFUND") => void;
   hasCustomer: boolean;
+  pendingCod?: boolean;
 }
 
 export function SalesCorrectionPanel(p: SalesCorrectionPanelProps) {
@@ -77,7 +89,9 @@ export function SalesCorrectionPanel(p: SalesCorrectionPanelProps) {
       <p className="text-xs leading-relaxed text-muted-foreground">
         {p.ownerExecutes
           ? "بصفتك المالك يُنفَّذ التصحيح عند الحفظ مباشرة: يُعكس الأصل وتصدر الفاتورة البديلة وتسوى الفروق في معاملة واحدة."
-          : "الطلب لا يغيّر شيئاً الآن. عند الاعتماد يُعكس الأصل وتصدر الفاتورة البديلة وتسوى الفروق في معاملة واحدة، ثم تصبح البديلة جاهزة للطباعة."}
+          : !hasPrior
+            ? "لا يوجد مبلغ مقبوض على الأصل؛ لا استرداد مالي. يتحقّق الخادم عند الحفظ من أهلية التعديل المباشر، وتظهر الفاتورة الحالية بعد نجاحه."
+            : "يحفظ النظام التعديل حسب صلاحيتك وحالة الفاتورة. إن احتاج اعتماداً يظهر رقم الطلب بوضوح، ولا يتحرك المال أو المخزون قبل تنفيذه."}
       </p>
 
       <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="نوع العملية">
@@ -101,7 +115,7 @@ export function SalesCorrectionPanel(p: SalesCorrectionPanelProps) {
 
       {/* ملخّص كان/أصبح — للقراءة فقط؛ كلّ ما فيه مستنتَجٌ من تعديلات الفاتورة نفسها. */}
       <Card className="space-y-1 p-2 text-xs">
-        <CorrRow label="شروط الدفع" value={p.originalTerms === p.targetTerms
+        <CorrRow label="شروط الدفع" value={p.pendingCod ? "عند الاستلام (COD)" : p.originalTerms === p.targetTerms
           ? termLabel(p.targetTerms)
           : `${termLabel(p.originalTerms)} ← ${termLabel(p.targetTerms)}`} className="font-semibold" />
         {p.customerChanged && <CorrRow label="العميل" value="تغيّر — يُنقل الحساب للعميل الجديد" className="font-semibold" />}
@@ -118,7 +132,7 @@ export function SalesCorrectionPanel(p: SalesCorrectionPanelProps) {
         {diff.isZero() ? (
           <div className="font-semibold text-money-positive">لا فرق ماليّ — التصحيح متوازن.</div>
         ) : isShort ? (
-          <CorrRow label="فرقٌ مستحقّ (نقص)" value={fmt(diff.toString())} className="font-bold tabular-nums text-money-negative" />
+          <CorrRow label={hasPrior ? "فرقٌ مستحقّ (نقص)" : "المطلوب من العميل بعد التعديل"} value={fmt(diff.toString())} className="font-bold tabular-nums text-money-negative" />
         ) : (
           <CorrRow label="فائضٌ للزبون" value={fmt(diff.abs().toString())} className="font-bold tabular-nums text-money-positive" />
         )}
@@ -149,8 +163,8 @@ export function SalesCorrectionPanel(p: SalesCorrectionPanelProps) {
 
       {isShort && (
         <div className="space-y-1">
-          <Label className="text-xs font-semibold">المبلغ المقترح تحصيله عند الاعتماد</Label>
-          <MoneyInput value={p.collectNow} onChange={p.setCollectNow} placeholder="0" ariaLabel="المبلغ المقترح تحصيله عند الاعتماد" />
+          <Label className="text-xs font-semibold">قبض مبلغ مع التعديل (اختياري)</Label>
+          <MoneyInput value={p.collectNow} onChange={p.setCollectNow} placeholder="0" ariaLabel="قبض مبلغ مع التعديل" />
           {collect.gt(0) && (
             <div className="space-y-1 pt-1">
               <Label className="text-xs font-semibold">طريقة القبض</Label>
@@ -172,8 +186,10 @@ export function SalesCorrectionPanel(p: SalesCorrectionPanelProps) {
             </div>
           )}
           {remainingCredit.gt(0) && (
-            <p className={`text-xs ${p.hasCustomer ? "text-muted-foreground" : "text-destructive"}`}>
-              {p.hasCustomer
+            <p className={`text-xs ${p.hasCustomer || p.pendingCod ? "text-muted-foreground" : "text-destructive"}`}>
+              {p.pendingCod
+                ? "يبقى المبلغ مطلوباً عند التسليم عبر التوصيل؛ لا يُسجّل ذمّة على زبون عابر."
+                : p.hasCustomer
                 ? `المتبقّي ${fmt(remainingCredit.toString())} يُسجَّل ذمّةً على العميل.`
                 : `المتبقّي ${fmt(remainingCredit.toString())} ذمّة — اختر عميلاً أو حصِّل الفرق كاملاً.`}
             </p>

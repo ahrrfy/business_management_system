@@ -25,6 +25,7 @@ import {
   markRequestApproved,
   markRequestApprovedTx,
   rejectReturnRequest,
+  withdrawReturnRequest,
 } from "../returns/requests";
 import { ensureFinancialPostingGate } from "../reports/monthCloseGate";
 import { withTx } from "../tx";
@@ -96,6 +97,46 @@ const stock = async () =>
   );
 
 describe("طلب الإرجاع — مستند نيّةٍ لا مال", () => {
+  it("سحب الطالب طلبه القديم يحرر الفاتورة بلا حركة مالية وبأثر تدقيق ذري", async () => {
+    const sale = await cashSale();
+    const item = await firstItem(sale.invoiceId);
+    const requested = await createReturnRequest({
+      invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      reason: "طلب قديم قبل اختيار الرد",
+    }, CLERK);
+    const receiptsBefore = await db().select().from(s.receipts);
+    const entriesBefore = await db().select().from(s.accountingEntries);
+    const reason = "تصحيح اختيار الأصناف قبل التنفيذ";
+    const result = await withdrawReturnRequest(requested.requestId, reason, CLERK);
+    expect(result).toMatchObject({ requestId: requested.requestId, status: "REJECTED", withdrawn: true, replayed: false });
+    expect(await withdrawReturnRequest(requested.requestId, reason, CLERK)).toMatchObject({ replayed: true });
+    const [stored] = await db().select().from(s.returnRequests).where(eq(s.returnRequests.id, requested.requestId));
+    expect(stored).toMatchObject({ approvedBy: null, resultReturnInvoiceId: null, rejectionReason: `سحب الطالب: ${reason}` });
+    expect(await db().select().from(s.receipts)).toEqual(receiptsBefore);
+    expect(await db().select().from(s.accountingEntries)).toEqual(entriesBefore);
+    expect(await stock()).toBe(95);
+    expect((await db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "return.request.withdraw")))).toHaveLength(1);
+    await expect(createReturnRequest({
+      invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 2 }], reason: "طلب مصحح جديد",
+    }, CLERK)).resolves.toMatchObject({ status: "PENDING_APPROVAL" });
+  });
+
+  it("لا يسحب شخص طلب غيره ولا طلباً محسوم الأثر", async () => {
+    const sale = await cashSale();
+    const item = await firstItem(sale.invoiceId);
+    const { requestId } = await createReturnRequest({ invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], reason: "طلب إرجاع العميل",
+    }, CLERK);
+    await expect(withdrawReturnRequest(requestId, "طلب ليس لي", MANAGER_A)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await db().update(s.users).set({ operationPolicy: { version: 1, grants: {
+      "operation.returns.create": true, "operation.returns.withdrawRequest": false,
+    } } }).where(eq(s.users.id, CLERK.userId));
+    await expect(withdrawReturnRequest(requestId, "السحب سُحبت صلاحيته", CLERK)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await db().update(s.users).set({ operationPolicy: null }).where(eq(s.users.id, CLERK.userId));
+    await db().update(s.returnRequests).set({ status: "APPROVED", approvedBy: 3, approvedAt: new Date() })
+      .where(eq(s.returnRequests.id, requestId));
+    await expect(withdrawReturnRequest(requestId, "إلغاء بعد الاعتماد", CLERK)).rejects.toMatchObject({ code: "CONFLICT" });
+  });
   it("⭐ طلبُ موظّفٍ لا يمسّ مالاً ولا مخزوناً ولا فاتورةً", async () => {
     const sale = await cashSale();
     const item = await firstItem(sale.invoiceId);

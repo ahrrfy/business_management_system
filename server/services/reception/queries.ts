@@ -38,6 +38,7 @@ export async function listReceptionInvoices(input: ReceptionInvoiceQueueInput) {
 
   const baseConds: SQL[] = [
     eq(invoices.branchId, input.branchId),
+    ne(invoices.status, "SUPERSEDED"),
     // ٢٠/٨ — **تسامحٌ لا إجبار**: فاتورةُ تسليمٍ تُنشأ بلا وردية RECEPTION مفتوحة (مديرٌ
     // يُسلّم، أو إسنادٌ من الإدارة) تُختَم `shiftId = NULL`، فكان `innerJoin` يُسقطها من
     // الطابور نهائياً: فاتورةٌ حقيقيّةٌ بذمّةٍ قائمة لا تُرى في المكان الذي يعمل فيه الموظّف

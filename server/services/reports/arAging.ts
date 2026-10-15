@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql, type SQLWrapper } from "drizzle-orm";
 import Decimal from "decimal.js";
 import { alias } from "drizzle-orm/mysql-core";
 import { openBalanceExpr, openBalanceOf } from "@shared/predicates/openBalance";
@@ -25,6 +25,17 @@ import type {
   ProvenanceSubItem,
 } from "@shared/financialProvenance";
 import { computeProvenanceReconciliation } from "@shared/financialProvenance";
+
+/** Signed AR effects without a receipt; other ADJUST/DELIVERY_REMIT entries stay excluded. */
+function invoiceCorrectionArMovement(
+  entryType: SQLWrapper = accountingEntries.entryType,
+  dedupeKey: SQLWrapper = accountingEntries.dedupeKey,
+) {
+  const reclass = "INVOICE_CORRECTION_CUSTOMER_RECLASS:";
+  const custody = "INVOICE_AMEND_CUSTODY:";
+  return sql`((${entryType} = 'ADJUST' AND LEFT(${dedupeKey}, ${reclass.length}) = ${reclass})
+    OR (${entryType} = 'DELIVERY_REMIT' AND LEFT(${dedupeKey}, ${custody.length}) = ${custody}))`;
+}
 
 export interface ARAgingRow {
   customerId: number;
@@ -70,11 +81,13 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
             WHEN ae.entryType IN ('SALE','RETURN','OPENING') THEN ae.amount
             WHEN ae.entryType = 'PAYMENT_IN' THEN -ae.amount
             WHEN ae.entryType = 'PAYMENT_OUT' THEN ae.amount
+            WHEN ${invoiceCorrectionArMovement(sql`ae.entryType`, sql`ae.dedupeKey`)} THEN ae.amount
             ELSE 0 END) AS balance
         FROM accountingEntries ae
         WHERE ae.customerId IS NOT NULL
           AND ae.branchId = ${opts.branchId}
-          AND ae.entryType IN ('SALE','RETURN','OPENING','PAYMENT_IN','PAYMENT_OUT')
+          AND (ae.entryType IN ('SALE','RETURN','OPENING','PAYMENT_IN','PAYMENT_OUT')
+            OR ${invoiceCorrectionArMovement(sql`ae.entryType`, sql`ae.dedupeKey`)})
         GROUP BY ae.customerId
       ) cb ON cb.customerId = c.id`
     : sql``;
@@ -382,10 +395,16 @@ async function customerOpeningBalance(customerId: number, from?: string) {
         sql`${accountingEntries.entryDate} < ${fromTs}`
       )
     );
+  const correctionRow = await db.select({ v: sql<string>`COALESCE(SUM(${accountingEntries.amount}), 0)` })
+    .from(accountingEntries).where(and(
+      eq(accountingEntries.customerId, customerId), invoiceCorrectionArMovement(),
+      sql`${accountingEntries.entryDate} < ${fromTs}`,
+    ));
   return opening
     .plus(money(invRow[0]?.v ?? 0))
     .minus(money(payRow[0]?.v ?? 0))
     .minus(money(codPayRow[0]?.v ?? 0))
+    .plus(money(correctionRow[0]?.v ?? 0))
     .plus(money(retRow[0]?.v ?? 0));
 }
 
@@ -510,6 +529,16 @@ export async function getCustomerStatement(
     .from(accountingEntries)
     .where(and(...returnConds));
 
+  const correctionConds = [eq(accountingEntries.customerId, customerId), invoiceCorrectionArMovement()];
+  if (from) correctionConds.push(sql`${accountingEntries.entryDate} >= ${`${from} 00:00:00`}`);
+  if (to) correctionConds.push(sql`${accountingEntries.entryDate} < ${`${nextDayStr(to)} 00:00:00`}`);
+  if (branchId) correctionConds.push(eq(accountingEntries.branchId, branchId));
+  const correctionMovements = await db.select({
+    id: accountingEntries.id, invoiceId: accountingEntries.invoiceId, amount: accountingEntries.amount,
+    createdAt: accountingEntries.entryDate, notes: accountingEntries.notes,
+    createdBy: accountingEntries.createdBy, createdByName: accountingEntries.createdByNameSnapshot,
+  }).from(accountingEntries).where(and(...correctionConds));
+
   // ب-١ (١٦/٨): قيود تصحيح الرصيد الافتتاحيّ **الواقعة داخل الفترة** حركةٌ في الكشف لا رصيدٌ
   // مُرحَّل (المُرحَّل صار مقصوراً على ما قبل `from`). بدون هذا السطر يفقد الكشف اتزانه:
   // المُرحَّل يستبعدها والحركة لا تعرضها ⇒ الختاميّ ≠ الرصيد الجاري بمقدار التصحيح.
@@ -630,9 +659,12 @@ export async function getCustomerStatement(
     const isRet = p.paymentMethod === "RETURN";
     const isCod = p.paymentMethod === "COD";
     const isOpening = p.paymentMethod === "OPENING_ADJ";
+    const isInvoiceAdjustment = p.paymentMethod === "INVOICE_ADJUSTMENT";
 
     let movementType: ProvenanceMovementType = "collection";
-    if (p.direction === "OUT") {
+    if (isInvoiceAdjustment) {
+      movementType = "difference";
+    } else if (p.direction === "OUT") {
       movementType = "delivery";
     } else if (isRet) {
       movementType = "difference";
@@ -670,7 +702,7 @@ export async function getCustomerStatement(
         id: `pay-${p.id}`,
         label: p.description || (isRet ? "مرتجع مبيعات" : isCod ? "تحصيل مندوب توصيل" : "سداد دفعة عميل"),
         amount: pAmount,
-        type: isRet ? "adjustment" : "item",
+        type: isRet || isInvoiceAdjustment ? "adjustment" : "item",
       },
     ];
 
@@ -806,6 +838,17 @@ export async function getCustomerStatement(
       };
     }),
     payments: [
+      ...correctionMovements.map((e) => {
+        const item = {
+          id: -3_000_000_000 - Number(e.id), invoiceId: e.invoiceId == null ? null : Number(e.invoiceId),
+          direction: (money(e.amount).isNegative() ? "IN" : "OUT") as "IN" | "OUT",
+          amount: money(e.amount).abs().toFixed(2), paymentMethod: "INVOICE_ADJUSTMENT",
+          status: "COMPLETED", createdAt: e.createdAt, isStandalone: false, voucherNumber: null,
+          description: e.notes ?? "تسوية ذمة الفاتورة دون حركة نقدية",
+          createdBy: e.createdBy == null ? null : Number(e.createdBy), createdByName: e.createdByName,
+        };
+        return { ...item, provenance: buildPaymentProvenance(item) };
+      }),
       ...payments.map((p) => {
         const item = {
           id: Number(p.id),

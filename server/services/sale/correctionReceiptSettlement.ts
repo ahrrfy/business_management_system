@@ -38,9 +38,64 @@ import { postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { paymentAssetRole } from "./paymentPosting";
+import { SURFACED_REFUND_METHODS } from "../returns/refundCaps";
 
 const SETTLEABLE_METHODS = new Set(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const WHAT = "تعذّر تنفيذ تعديل الفاتورة";
+
+type RefundSourceReceipt = Pick<typeof receipts.$inferSelect, "id" | "amount" | "paymentMethod" | "shiftId" | "cashBucket">;
+
+/** Reserve exact rail/source matches, then apply the existing CASH/CARD pooled-refund policy. */
+export function allocateCorrectionRefunds(
+  incoming: RefundSourceReceipt[], refunds: RefundSourceReceipt[], courierCash: Decimal = money(0),
+) {
+  const receiptRefunds = new Map<number, Decimal>();
+  const courierRefunds = new Map<number, Decimal>();
+  let courierAvailable = round2(courierCash);
+  const orderedRefunds = [...refunds].sort((a, b) => Number(a.id) - Number(b.id));
+  const remainingByRefund = new Map<number, Decimal>();
+  const applyIncoming = (refund: RefundSourceReceipt, remaining: Decimal, sameRailOnly: boolean) => {
+    const candidates = incoming.filter(row => !sameRailOnly || row.paymentMethod === refund.paymentMethod).sort((a, b) => {
+      const sameSource = (row: RefundSourceReceipt) => row.cashBucket === refund.cashBucket && row.shiftId === refund.shiftId ? 0 : 1;
+      return sameSource(a) - sameSource(b) || Number(a.id) - Number(b.id);
+    });
+    for (const row of candidates) {
+      const old = receiptRefunds.get(Number(row.id)) ?? money(0);
+      const applied = Decimal.min(Decimal.max(0, money(row.amount).minus(old)), remaining);
+      receiptRefunds.set(Number(row.id), old.plus(applied));
+      remaining = remaining.minus(applied);
+    }
+    return remaining;
+  };
+  const applyCourier = (refund: RefundSourceReceipt, remaining: Decimal) => {
+    if (remaining.gt(0)) {
+      const applied = Decimal.min(courierAvailable, remaining);
+      courierRefunds.set(Number(refund.id), (courierRefunds.get(Number(refund.id)) ?? money(0)).plus(applied));
+      courierAvailable = courierAvailable.minus(applied);
+      remaining = remaining.minus(applied);
+    }
+    return remaining;
+  };
+  for (const refund of orderedRefunds) {
+    let remaining = applyIncoming(refund, round2(money(refund.amount)), true);
+    if (refund.paymentMethod === "CASH") remaining = applyCourier(refund, remaining);
+    remainingByRefund.set(Number(refund.id), remaining);
+  }
+  for (const refund of orderedRefunds) {
+    let remaining = remainingByRefund.get(Number(refund.id))!;
+    if (SURFACED_REFUND_METHODS.some(method => method === refund.paymentMethod)) {
+      remaining = applyIncoming(refund, remaining, false);
+      remaining = applyCourier(refund, remaining);
+    }
+    if (remaining.gt(0)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: WHAT, why: `استرداد الإيصال ${refund.id} بطريقة ${refund.paymentMethod} يتجاوز وعاء القبض المثبت المسموح لهذه الطريقة`,
+      doThis: "راجع مرجع الاسترداد ورافد القبض الأصلي وطابق مستنداتهما قبل التصحيح؛ لم يتغير المال أو المخزون",
+    }) });
+  }
+  const receiptRefundAmount = round2(Array.from(receiptRefunds.values()).reduce((sum, value) => sum.plus(value), money(0)));
+  const courierRefundAmount = round2(Array.from(courierRefunds.values()).reduce((sum, value) => sum.plus(value), money(0)));
+  return { receiptRefunds, courierRefunds, receiptRefundAmount, courierRefundAmount };
+}
 
 /** مقبوضات الفاتورة القابلة للنقل (IN مكتمل، عدا أمانة أجرة التوصيل) — نفس تعريف correct.ts. */
 function transferableReceiptConds(invoiceId: number) {
@@ -79,6 +134,9 @@ export interface SettlementInput {
   targetCustomerId: number | null;
   /** المسجَّل الكلّي المتحقَّق = paidAmount. */
   recordedAmount: Decimal;
+  /** Actual earlier refunds already deducted from recordedAmount. Originals remain immutable. */
+  priorRefundAmount?: Decimal;
+  priorRefundByReceiptId?: ReadonlyMap<number, Decimal>;
   /** ما استُلم فعلاً من المسجَّل (0..المسجَّل). */
   receivedAmount: Decimal;
   lockedShiftIds: ReadonlySet<number>;
@@ -146,7 +204,8 @@ export async function settlePriorPaymentsTx(
     .orderBy(asc(receipts.id))
     .for("update");
   const sum = round2(rows.reduce((s, r) => s.plus(money(r.amount)), new Decimal(0)));
-  if (!sum.eq(recorded)) {
+  const priorRefund = round2(input.priorRefundAmount ?? money(0));
+  if (priorRefund.lt(0) || priorRefund.gt(sum) || !sum.minus(priorRefund).eq(recorded)) {
     fail(
       "CONFLICT",
       "تغيّرت مقبوضات الفاتورة أثناء التعديل",
@@ -195,6 +254,14 @@ export async function settlePriorPaymentsTx(
   }
 
   // ── ① عكس كل الأصول بإيصالٍ تعويضي (الأصل يبقى للتدقيق) ──
+  const netRows = rows.map(row => {
+    const appliedRefund = input.priorRefundByReceiptId?.get(Number(row.id)) ?? money(0);
+    if (appliedRefund.lt(0) || appliedRefund.gt(money(row.amount))) fail("CONFLICT", "تغيّر تخصيص الاسترداد بين روافد القبض", "حدّث الفاتورة ثم أعد التصحيح");
+    return { ...row, amount: toDbMoney(money(row.amount).minus(appliedRefund)) };
+  }).filter(row => money(row.amount).gt(0));
+  if (!sum.minus(netRows.reduce((total, row) => total.plus(money(row.amount)), money(0))).eq(priorRefund)) {
+    fail("CONFLICT", "تخصيص الاسترداد لا يطابق رافد القبض الأصلي", "راجع مطابقة الاسترداد ثم أعد التصحيح");
+  }
   const reversedIds = rows.map((r) => Number(r.id));
   if (reversedIds.length) {
     const upd = await tx
@@ -212,7 +279,7 @@ export async function settlePriorPaymentsTx(
     const key = Number(r.shiftId);
     cashDeltaByShift.set(key, (cashDeltaByShift.get(key) ?? new Decimal(0)).plus(amount));
   };
-  for (const r of rows) {
+  for (const r of netRows) {
     const amount = round2(money(r.amount));
     if (r.paymentMethod === "CASH" && r.cashBucket === "DRAWER" && r.shiftId != null) {
       const sh = shiftById.get(Number(r.shiftId));
@@ -272,7 +339,7 @@ export async function settlePriorPaymentsTx(
   // ── ② إعادة قيد المستلَم فعلاً باسم الطرف الجديد على الوردية/الطريقة نفسها ──
   const reRecorded: ReRecordedReceipt[] = [];
   let remaining = received;
-  for (const r of rows) {
+  for (const r of netRows) {
     if (remaining.lte(0)) break;
     const amount = round2(Decimal.min(money(r.amount), remaining));
     remaining = remaining.minus(amount);
