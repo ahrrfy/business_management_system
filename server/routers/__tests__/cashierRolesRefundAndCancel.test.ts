@@ -1140,7 +1140,6 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       type: "SALES",
     });
     await db().insert(s.invoices).values({
-      id: 902,
       invoiceNumber: "INV-BR2-902",
       branchId: 2,
       sourceType: "POS",
