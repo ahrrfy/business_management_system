@@ -59,8 +59,10 @@ import {
   Package,
   Pencil,
   Printer,
+  RotateCcw,
   Truck,
 } from "lucide-react";
+import { SalesReturnDrawer } from "@/components/invoice/SalesReturnDrawer";
 import { downloadOfficialPdf } from "@/lib/exportPdf";
 import { notify } from "@/lib/notify";
 import { getDeviceCode } from "@/lib/offline/outbox";
@@ -194,7 +196,8 @@ export default function InvoiceDetail() {
   // نُخفي لوحة «تسديد دفعة» عمّن يرفضه الخادم (محاسب/مدقّق/مندوب: sales=READ) بدل عرض نموذج يفشل
   // بـ403 — بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
   const me = trpc.auth.me.useQuery();
-  const { canFirstPrint, canReprint, canOpenStatement, canOpenVouchers, canCorrectInvoice, canReadCorrectionHistory, canLookupFullCorrection, canFullReissue, canRecordPayment, canInitiatePayment, canConfirmPayment, canReadDigital, canCancelInvoice, canDispatch, canCancelAssignment, canReverseWorkOrder, canRequestDueDateChange, canDownloadPdf } = useInvoiceActionPermissions(me.data);
+  const { canFirstPrint, canReprint, canOpenStatement, canOpenVouchers, canCorrectInvoice, canReadCorrectionHistory, canLookupFullCorrection, canFullReissue, canRecordPayment, canInitiatePayment, canConfirmPayment, canReadDigital, canCancelInvoice, canDispatch, canCancelAssignment, canReverseWorkOrder, canRequestDueDateChange, canReturnInvoice, canDownloadPdf } = useInvoiceActionPermissions(me.data);
+  const [returnDrawerMode, setReturnDrawerMode] = useState<"FULL" | "PARTIAL" | null>(null);
   const canRetryA4 = canReprint || (canFirstPrint && hasPendingFirstInvoicePrint(me.data?.id, invoiceId, "A4"));
   const canRetryThermal = canReprint || (canFirstPrint && hasPendingFirstInvoicePrint(me.data?.id, invoiceId, "THERMAL"));
   async function authorizePrintAttempt(purpose: InvoicePrintPurpose, reprint = true) {
@@ -777,6 +780,42 @@ export default function InvoiceDetail() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          {canReturnInvoice &&
+            data.status !== "CANCELLED" &&
+            data.status !== "RETURNED" &&
+            data.status !== "SUPERSEDED" &&
+            data.sourceType !== "WORKORDER" &&
+            deliveryCancellationBlockReason == null && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    <RotateCcw aria-hidden className="size-4" />
+                    تسجيل مرتجع
+                    <ChevronDown aria-hidden className="size-3 ms-1 opacity-60" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => setReturnDrawerMode("FULL")}>
+                    <RotateCcw aria-hidden className="size-4 text-destructive" />
+                    مرتجع كامل للفاتورة (كافة البنود المتبقية)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setReturnDrawerMode("PARTIAL")}>
+                    <RotateCcw aria-hidden className="size-4 text-primary" />
+                    مرتجع جزئي (تحديد أصناف وكميات)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() =>
+                      navigate(
+                        `/returns?portal=sales&invoice=${encodeURIComponent(data.invoiceNumber)}&mode=FULL`,
+                      )
+                    }
+                  >
+                    <FileText aria-hidden className="size-4" />
+                    فتح في بوابة المرتجعات الكاملة
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           {canCancelInvoice && isCancellable && (
             <Button
               variant="destructive"
@@ -1186,6 +1225,18 @@ export default function InvoiceDetail() {
           id: data.consignmentId,
           number: data.consignmentNumber ?? `#${data.consignmentId}`,
         } : null}
+      />
+      <SalesReturnDrawer
+        invoiceId={returnDrawerMode ? invoiceId : null}
+        initialMode={returnDrawerMode ?? undefined}
+        onClose={() => setReturnDrawerMode(null)}
+        onSuccess={() => {
+          setReturnDrawerMode(null);
+          void inv.refetch();
+          void utils.sales.list.invalidate();
+          void utils.sales.listPage.invalidate();
+          void utils.sales.listSummary.invalidate();
+        }}
       />
     </div>
   );

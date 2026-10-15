@@ -587,4 +587,83 @@ describe.sequential("returns.executeSalesReturnCart — الحوكمة المح�
     expect(await customerBalance(1)).toBe("0.00");
     expect(await reconcileCustomerBalances()).toEqual([]);
   });
+
+  it("٨) مرتجع كامل لفاتورة مسدّدة جزئياً مع استرداد نقدي (التسوية الذرية المركبة): موازنة الذمة غير المسددة تلقائياً وردّ صافي المدفوع فقط نقداً من الدرج", async () => {
+    const shiftId = await openShift();
+    // فاتورة بقيمة 30 د.ع (3 قطع × 10 د.ع)، دفع منها العميل 10 د.ع نقداً وبقي 20 د.ع في ذمته (AR = 20.00)
+    const sale = await createSale(
+      {
+        branchId: 1,
+        shiftId,
+        customerId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }],
+        payment: { amount: "10.00", method: "CASH" },
+      },
+      cashier,
+    );
+
+    expect(await customerBalance(1)).toBe("20.00");
+
+    const caller = returnRouter.createCaller(context());
+    const inspected = await caller.inspectInvoiceForReturn({
+      invoiceNumber: sale.invoiceNumber,
+    });
+    expect(inspected?.total).toBe("30.00");
+    expect(inspected?.paidAmount).toBe("10.00");
+    expect(inspected?.unpaidAmount).toBe("20.00");
+    expect(inspected?.maxRefundable).toBe("10.00");
+
+    const item = inspected!.items[0];
+
+    // الكاشير ينفّذ مرتجعاً كاملاً للفاتورة (3 قطع = 30.00 د.ع) بطريقة CASH
+    const result = await caller.executeSalesReturnCart({
+      invoiceNumber: sale.invoiceNumber,
+      customer: { customerId: 1, name: "عميل آجل" },
+      disposition: "RESTOCK",
+      items: [
+        {
+          variantId: item.variantId,
+          productUnitId: item.productUnitId,
+          invoiceItemId: item.invoiceItemId,
+          productName: item.productName,
+          quantity: 3,
+          unitPrice: item.unitPrice,
+        },
+      ],
+      settlement: {
+        method: "CASH",
+        totalAmount: "30.00",
+        shiftId,
+      },
+      clientRequestId: "test-full-return-partial-paid-split-settlement",
+    });
+
+    expect(result.returnNumber).toMatch(/^SR-/);
+    expect(result.method).toBe("CASH");
+    expect(result.totalAmount).toBe("30.00");
+
+    // ١) ذمة العميل أصبحت 0.00 (أُسقطت الـ 20.00 غير المسددة، وردّت الـ 10.00 المسددة نقداً)
+    expect(await customerBalance(1)).toBe("0.00");
+
+    // ٢) إيصال الصرف من درج الوردية خرج بمبلغ المدفوع فقط (10.00 د.ع) وليس 30.00 د.ع!
+    const outReceipts = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.direction, "OUT"));
+    expect(outReceipts).toHaveLength(1);
+    expect(outReceipts[0].amount).toBe("10.00");
+
+    // ٣) حالة الفاتورة أصبحت RETURNED بالكامل، والمدفوع المتبقي 0.00
+    const [invRow] = await db()
+      .select()
+      .from(s.invoices)
+      .where(eq(s.invoices.id, sale.invoiceId));
+    expect(invRow.status).toBe("RETURNED");
+    expect(invRow.returnedTotal).toBe("30.00");
+    expect(invRow.paidAmount).toBe("0.00");
+
+    // ٤) مطابقة دفاتر الذمم بصفر انحراف
+    expect(await reconcileCustomerBalances()).toEqual([]);
+  });
 });

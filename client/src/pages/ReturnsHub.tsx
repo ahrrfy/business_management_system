@@ -124,6 +124,12 @@ export default function ReturnsHub() {
   ) as ReturnPortalMode;
   const [portalMode, setPortalMode] = useState<ReturnPortalMode>(initialMode);
   const initialInvoice = urlParams.get("invoice") || undefined;
+  const initialReturnMode =
+    urlParams.get("mode") === "FULL"
+      ? ("FULL" as const)
+      : urlParams.get("mode") === "PARTIAL"
+        ? ("PARTIAL" as const)
+        : undefined;
   const initialPo = urlParams.get("po") || undefined;
   const canCreateActivePortal =
     portalMode === "purchases" ? canExecutePurchaseReturn : canExecuteSalesReturn;
@@ -235,7 +241,14 @@ export default function ReturnsHub() {
         docNumber: data.returnNumber,
         partyName: data.customerName,
         amount: data.totalAmount,
-        method: data.method === "CASH" ? "نقدي" : data.method === "CARD" ? "بطاقة" : "رصيد متجر",
+        method:
+          data.method === "CASH"
+            ? "نقدي"
+            : data.method === "CARD"
+              ? "بطاقة"
+              : data.method === "CREDIT_OFFSET"
+                ? "معادلة ذمم"
+                : "رصيد متجر",
         date: `${dateStr} ${timeStr}`,
         itemsCount: data.items.reduce((sum, itm) => sum + itm.quantity, 0),
         rawSalesData: data,
@@ -462,6 +475,7 @@ export default function ReturnsHub() {
           {portalMode === "sales" ? (
             <SalesReturnPortal
               initialInvoiceNo={initialInvoice}
+              initialMode={initialReturnMode}
               onReturnSuccess={handleSalesSuccess}
             />
           ) : (

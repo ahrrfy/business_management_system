@@ -104,7 +104,9 @@ export function useRefundDrawer(args: UseRefundDrawerArgs): RefundDrawerState {
   const rawDrawers = preflight?.drawers ?? [];
   const userId = me.data?.id;
   const userRole = me.data?.role;
-  const isCashier = userRole === "cashier";
+  const isCashier = Boolean(
+    userRole && userRole !== "admin" && userRole !== "manager",
+  );
   // كاشير الصرف في مرتجع البيع مقيّد بوردية نفسه عند التنفيذ، أمّا في وضع الطلب الصفري الأثر فالدرج مجرّد اقتراح.
   // أمّا إرجاع الأمانات (CONSIGNMENT_RETURN) وباقي الحوارات فالخادم يقبل أيّ وردية مفتوحة بالفرع.
   const restrictToOwnDrawer = isCashier && sourceDocType === "SALE_RETURN" && !requestOnly;

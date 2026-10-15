@@ -69,11 +69,13 @@ export interface SalesCartItem {
 
 interface SalesReturnPortalProps {
   initialInvoiceNo?: string;
+  initialMode?: "FULL" | "PARTIAL";
   onReturnSuccess: (data: PrintSalesReturnData) => void;
 }
 
 export function SalesReturnPortal({
   initialInvoiceNo,
+  initialMode,
   onReturnSuccess,
 }: SalesReturnPortalProps) {
   const utils = trpc.useUtils();
@@ -175,22 +177,49 @@ export function SalesReturnPortal({
     return openDrawers.find((d) => d.shiftId === selectedShiftId) ?? null;
   }, [openDrawers, selectedShiftId]);
 
+  const autoDebtOffsetPortion = useMemo(() => {
+    if (!inspectedInvoice) return 0;
+    const unpaid = Math.max(0, Number(inspectedInvoice.unpaidAmount || 0));
+    return Number(Math.min(salesTotal, unpaid).toFixed(2));
+  }, [inspectedInvoice, salesTotal]);
+
+  const effectiveCashOrCardRefund = useMemo(() => {
+    if (!inspectedInvoice) return salesTotal;
+    return Number(Math.max(0, salesTotal - autoDebtOffsetPortion).toFixed(2));
+  }, [inspectedInvoice, salesTotal, autoDebtOffsetPortion]);
+
   const isInsufficientCash = useMemo(() => {
     return (
       salesRefundMethod === "CASH" &&
       selectedDrawer != null &&
-      Number(selectedDrawer.expectedCash || 0) < salesTotal
+      Number(selectedDrawer.expectedCash || 0) < effectiveCashOrCardRefund
     );
-  }, [salesRefundMethod, selectedDrawer, salesTotal]);
+  }, [salesRefundMethod, selectedDrawer, effectiveCashOrCardRefund]);
 
   const isOverInvoiceLimit = useMemo(() => {
     if (!inspectedInvoice) return false;
-    const limit =
-      salesRefundMethod === "STORE_CREDIT" || salesRefundMethod === "CREDIT_OFFSET"
-        ? Number(inspectedInvoice.remainingInvoiceTotal || 0)
-        : Number(inspectedInvoice.maxRefundable || 0);
-    return salesTotal > limit;
-  }, [inspectedInvoice, salesTotal, salesRefundMethod]);
+    if (salesRefundMethod === "STORE_CREDIT") {
+      return salesTotal > Number(inspectedInvoice.remainingInvoiceTotal || 0);
+    }
+    if (salesRefundMethod === "CREDIT_OFFSET") {
+      return salesTotal > Number(inspectedInvoice.unpaidAmount || 0);
+    }
+    if (Number(inspectedInvoice.paidAmount || 0) <= 0) {
+      return salesTotal > 0;
+    }
+    if (salesTotal > 0 && effectiveCashOrCardRefund <= 0) {
+      return true;
+    }
+    return (
+      salesTotal > Number(inspectedInvoice.remainingInvoiceTotal || 0) ||
+      effectiveCashOrCardRefund > Number(inspectedInvoice.maxRefundable || 0)
+    );
+  }, [
+    inspectedInvoice,
+    salesTotal,
+    salesRefundMethod,
+    effectiveCashOrCardRefund,
+  ]);
 
   const isInvoiceFullyReturned = useMemo(() => {
     if (!inspectedInvoice) return false;
@@ -493,6 +522,35 @@ export function SalesReturnPortal({
       setSalesInvoiceNo(inv.invoiceNumber);
       if (Number(inv.paidAmount || 0) <= 0) {
         setSalesRefundMethod("CREDIT_OFFSET");
+      }
+      if (
+        initialMode === "FULL" &&
+        !inv.isOtherBranch &&
+        !inv.isDead &&
+        !inv.isFullyReturned &&
+        Number(inv.remainingInvoiceTotal || 0) > 0
+      ) {
+        const availableItems = inv.items.filter((i) => i.remainingQuantity > 0);
+        if (availableItems.length > 0) {
+          setSalesCart(
+            availableItems.map((item) => ({
+              id: `${item.variantId}-${Date.now()}-${Math.random()}`,
+              variantId: item.variantId,
+              productUnitId: item.productUnitId,
+              invoiceItemId: item.invoiceItemId,
+              isBundle: item.isBundle,
+              productName: item.productName,
+              barcode: item.barcode,
+              quantity: item.remainingQuantity,
+              maxAllowedQuantity: item.remainingQuantity,
+              unitPrice: item.effectiveUnitPrice || item.unitPrice,
+              originalUnitPrice: item.effectiveUnitPrice || item.unitPrice,
+              unit: item.unitName,
+              conversionFactor: item.conversionFactor,
+            })),
+          );
+          setSalesReason((prev) => prev.trim() || "إرجاع كامل الفاتورة");
+        }
       }
     };
 
@@ -853,9 +911,13 @@ export function SalesReturnPortal({
       }
       if (isOverInvoiceLimit) {
         notify.warn(
-          salesRefundMethod === "STORE_CREDIT" || salesRefundMethod === "CREDIT_OFFSET"
+          salesRefundMethod === "STORE_CREDIT"
             ? `إجمالي مبلغ المرتجع (${fmt(String(salesTotal))} د.ع) يتجاوز القيمة المتبقية للفاتورة (${fmt(inspectedInvoice.remainingInvoiceTotal)} د.ع)`
-            : `إجمالي مبلغ المرتجع (${fmt(String(salesTotal))} د.ع) يتجاوز سقف الاسترداد المتبقي للفاتورة (${fmt(inspectedInvoice.maxRefundable)} د.ع)`,
+            : salesRefundMethod === "CREDIT_OFFSET"
+              ? `إجمالي معادلة الذمم (${fmt(String(salesTotal))} د.ع) يتجاوز الرصيد الآجل المتبقي للفاتورة (${fmt(inspectedInvoice.unpaidAmount)} د.ع)`
+              : salesTotal > 0 && effectiveCashOrCardRefund <= 0
+                ? "قيمة المرتجع تقع ضمن الجزء الآجل غير المسدد من الفاتورة — اختر [معادلة ذمم] لتسويته من حساب العميل دون صرف نقد"
+                : `صافي الاسترداد المطلوب (${fmt(String(effectiveCashOrCardRefund))} د.ع) يتجاوز سقف الاسترداد المدفوع للفاتورة (${fmt(inspectedInvoice.maxRefundable)} د.ع)`,
         );
         return;
       }
@@ -876,7 +938,7 @@ export function SalesReturnPortal({
       }
       if (isInsufficientCash) {
         notify.err(
-          `رصيد الدرج المتاح (${fmt(selectedDrawer?.expectedCash || "0")} د.ع) غير كافٍ لصرف مبلغ المرتجع (${fmt(String(salesTotal))} د.ع). يرجى تغذية الدرج بنقدية أو اختيار طريقة استرداد أخرى.`,
+          `رصيد الدرج المتاح (${fmt(selectedDrawer?.expectedCash || "0")} د.ع) غير كافٍ لصرف صافي مبلغ المرتجع (${fmt(String(effectiveCashOrCardRefund))} د.ع). يرجى تغذية الدرج بنقدية أو اختيار طريقة استرداد أخرى.`,
         );
         return;
       }
@@ -920,9 +982,16 @@ export function SalesReturnPortal({
             ? "إيداع رصيد متجر بحساب العميل"
             : "معادلة ذمم وإنقاص حساب العميل الآجل";
 
+    const splitSummaryText =
+      (salesRefundMethod === "CASH" || salesRefundMethod === "CARD") &&
+      autoDebtOffsetPortion > 0 &&
+      effectiveCashOrCardRefund > 0
+        ? ` (تسوية ذرية مركبة: إسقاط ذمة آجلة بقيمة ${fmt(String(autoDebtOffsetPortion))} د.ع + صرف صافي ${fmt(String(effectiveCashOrCardRefund))} د.ع بطريقة [${drawerNotice}])`
+        : ` بطريقة [${drawerNotice}]`;
+
     const ok = await confirm({
       title: "تأكيد تنفيذ مرتجع المبيعات",
-      description: `سيتم إرجاع ${salesTotalPieces} قطعة بإجمالي ${fmt(String(salesTotal))} د.ع بطريقة [${drawerNotice}]. هل تؤكد التنفيذ الذري فوراً؟`,
+      description: `سيتم إرجاع ${salesTotalPieces} قطعة بإجمالي ${fmt(String(salesTotal))} د.ع${splitSummaryText}. هل تؤكد التنفيذ الذري فوراً؟`,
       confirmText: "تأكيد وطباعة الإيصال",
       variant: "info",
     });
@@ -1213,22 +1282,40 @@ export function SalesReturnPortal({
                   </span>
                 )}
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 flex-wrap">
                 {!isInvoiceFullyReturned &&
                   !inspectedInvoice.isOtherBranch &&
                   inspectedInvoice.items.some(
                     (i) => i.remainingQuantity > 0,
                   ) && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={handleAddAllRemainingItems}
-                      className="h-7 text-xs px-2.5 bg-background text-emerald-700 dark:text-emerald-300 border-emerald-500/30 hover:bg-emerald-50"
-                    >
-                      <Plus className="size-3 ml-1" />
-                      إرجاع كافة البنود المتبقية
-                    </Button>
+                    <>
+                      <Button
+                        type="button"
+                        variant="default"
+                        size="sm"
+                        onClick={() => {
+                          handleAddAllRemainingItems();
+                          setSalesReason(
+                            (prev) => prev.trim() || "إرجاع كامل الفاتورة",
+                          );
+                        }}
+                        className="h-7 text-xs px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs"
+                      >
+                        <RotateCcw className="size-3 ml-1" />
+                        مرتجع كامل للفاتورة (إرجاع كافة البنود المتبقية)
+                      </Button>
+                      {salesCart.length > 0 && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setSalesCart([])}
+                          className="h-7 text-xs px-2 bg-background border-border"
+                        >
+                          تصفير لتحديد مرتجع جزئي
+                        </Button>
+                      )}
+                    </>
                   )}
                 <Button
                   type="button"
@@ -1780,7 +1867,40 @@ export function SalesReturnPortal({
               </div>
               <span className="text-[11px] text-muted-foreground">
                 إجمالي الأصناف: {salesCart.length} ({salesTotalPieces} قطعة)
-                                    </span>
+              </span>
+              {(salesRefundMethod === "CASH" || salesRefundMethod === "CARD") &&
+                autoDebtOffsetPortion > 0 &&
+                effectiveCashOrCardRefund > 0 && (
+                  <div className="mt-2 pt-2 border-t border-emerald-500/20 text-right space-y-1 text-[11px]">
+                    <div className="font-bold text-emerald-900 dark:text-emerald-200 flex items-center justify-between">
+                      <span>تفصيل التسوية الذرية المركبة:</span>
+                      <Badge
+                        variant="outline"
+                        className="text-[9px] px-1 py-0 border-emerald-600 text-emerald-700"
+                      >
+                        تلقائي 100%
+                      </Badge>
+                    </div>
+                    <div className="flex items-center justify-between text-muted-foreground">
+                      <span>• إسقاط مديونية آجلة من ذمة العميل:</span>
+                      <span className="font-mono font-bold text-amber-700 dark:text-amber-400">
+                        {fmt(String(autoDebtOffsetPortion))} د.ع
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-emerald-800 dark:text-emerald-300 font-bold">
+                      <span>
+                        • صافي المسترد للعميل (
+                        {salesRefundMethod === "CASH"
+                          ? "نقداً من الدرج"
+                          : "بالبطاقة"}
+                        ):
+                      </span>
+                      <span className="font-mono font-black text-xs">
+                        {fmt(String(effectiveCashOrCardRefund))} د.ع
+                      </span>
+                    </div>
+                  </div>
+                )}
             </div>
 
             {/* اختيار طريقة الاسترداد */}
@@ -1935,7 +2055,8 @@ export function SalesReturnPortal({
                         {openDrawers.map((dr) => {
                           const isSelected = dr.shiftId === selectedShiftId;
                           const isLow =
-                            Number(dr.expectedCash || 0) < salesTotal;
+                            Number(dr.expectedCash || 0) <
+                            effectiveCashOrCardRefund;
                           const shiftTypeLabel =
                             dr.shiftType === "RETAIL"
                               ? "تجزئة"
@@ -1995,8 +2116,8 @@ export function SalesReturnPortal({
                                 <div className="text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
                                   <AlertCircle className="size-3 shrink-0" />
                                   <span>
-                                    تنبيه: النقد بالدرج أقل من مبلغ المرتجع (
-                                    {fmt(String(salesTotal))} د.ع)
+                                    تنبيه: النقد بالدرج أقل من صافي مبلغ المرتجع (
+                                    {fmt(String(effectiveCashOrCardRefund))} د.ع)
                                   </span>
                                 </div>
                               )}
@@ -2090,10 +2211,11 @@ export function SalesReturnPortal({
                   </span>
                   <span className="font-mono font-black text-sm">
                     {fmt(
-                      salesRefundMethod === "CREDIT_OFFSET" ||
-                        salesRefundMethod === "STORE_CREDIT"
-                        ? inspectedInvoice.remainingInvoiceTotal
-                        : inspectedInvoice.maxRefundable,
+                      salesRefundMethod === "CREDIT_OFFSET"
+                        ? inspectedInvoice.unpaidAmount
+                        : salesRefundMethod === "STORE_CREDIT"
+                          ? inspectedInvoice.remainingInvoiceTotal
+                          : inspectedInvoice.maxRefundable,
                     )}{" "}
                     د.ع
                   </span>
@@ -2119,8 +2241,12 @@ export function SalesReturnPortal({
                       {salesRefundMethod === "CASH" || salesRefundMethod === "CARD"
                         ? Number(inspectedInvoice.paidAmount || 0) <= 0
                           ? "الفاتورة آجلة بالكامل ولم يُدفع منها نقد — يرجى اختيار [معادلة ذمم] لتسوية الحساب دون صرف نقد"
-                          : `تجاوز سقف الاسترداد النقدي بمقدار (${fmt(String(salesTotal - Number(inspectedInvoice.maxRefundable || 0)))} د.ع)`
-                        : `تجاوز سقف الفاتورة المتبقي بمقدار (${fmt(String(salesTotal - Number(inspectedInvoice.remainingInvoiceTotal || 0)))} د.ع)`}
+                          : salesTotal > 0 && effectiveCashOrCardRefund <= 0
+                            ? "قيمة المرتجع تقع بالكامل ضمن الجزء الآجل — اختر [معادلة ذمم] لإسقاطها من ذمة العميل"
+                            : `تجاوز سقف الاسترداد النقدي بمقدار (${fmt(String(effectiveCashOrCardRefund - Number(inspectedInvoice.maxRefundable || 0)))} د.ع)`
+                        : salesRefundMethod === "CREDIT_OFFSET"
+                          ? `تجاوز الرصيد الآجل القابل للمعادلة بمقدار (${fmt(String(salesTotal - Number(inspectedInvoice.unpaidAmount || 0)))} د.ع) — اختر [صرف نقدي / بطاقة] لتسوية الجزء الآجل وصرف المدفوع معاً`
+                          : `تجاوز سقف الفاتورة المتبقي بمقدار (${fmt(String(salesTotal - Number(inspectedInvoice.remainingInvoiceTotal || 0)))} د.ع)`}
                     </span>
                   </div>
                 ) : (

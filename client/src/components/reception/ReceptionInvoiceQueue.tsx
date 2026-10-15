@@ -853,18 +853,28 @@ function ReturnRequestDialog({ row, canCreateReturn, onClose,
         ) : canCreateReturn ? (
           <>
             <p className="text-xs text-muted-foreground">
-              الإرجاع يعكس مخزوناً وقيوداً ونقداً — تُنفّذه من شاشة المرتجعات بصلاحيتك.
+              اختر نوع المرتجع لتنفيذه مباشرةً بصلاحيتك (عكس المخزون والقيود وتسوية المدفوع أو موازنة الذمم):
             </p>
-            <div className="flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <a
-                href={`/returns?portal=sales&invoice=${encodeURIComponent(row.invoiceNumber)}`}
+                href={`/returns?portal=sales&invoice=${encodeURIComponent(row.invoiceNumber)}&mode=FULL`}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex flex-1 items-center justify-center rounded-md bg-primary px-3 text-sm font-bold text-primary-foreground hover:bg-primary/90"
+                className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-3 text-xs font-extrabold text-destructive-foreground hover:bg-destructive/90"
               >
-                فتح شاشة المرتجعات
+                مرتجع كامل للفاتورة
               </a>
+              <a
+                href={`/returns?portal=sales&invoice=${encodeURIComponent(row.invoiceNumber)}&mode=PARTIAL`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-3 text-xs font-extrabold text-primary-foreground hover:bg-primary/90"
+              >
+                مرتجع جزئي (تحديد بنود)
+              </a>
+            </div>
+            <div className="flex justify-end pt-1">
+              <Button variant="outline" size="sm" className="w-full" onClick={onClose}>إغلاق</Button>
             </div>
           </>
         ) : (

@@ -839,6 +839,7 @@ export default function DeliveryWorkflowPage() {
                 )}
                 <ReturnComposer
                   invoiceId={returnScanned.id}
+                  initialMode={returnType}
                   onDone={() => {
                     notify.ok("تم تسجيل المرتجع بنجاح");
                     setReturnScanned(null);
