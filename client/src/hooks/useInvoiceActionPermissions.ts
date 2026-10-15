@@ -55,6 +55,9 @@ export function useInvoiceActionPermissions(
       "salesControl.requestDueDateChange",
       manager,
     ),
+    canReturnInvoice:
+      allowed("returns.create", cashier) ||
+      allowed("returns.executeSalesReturnCart", cashier),
     canDownloadPdf: allowed("documentDelivery.downloadPdf", !!user),
   };
 }

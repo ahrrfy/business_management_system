@@ -1741,4 +1741,149 @@ describe("Tier 4: Real-World Application Scenarios (TEST_INFRA.md 1 to 7)", () =
       message: expect.stringContaining("عكس التسليم"),
     });
   });
+
+  it("Scenario 8: All cashier roles (retail_cashier, print_cashier, reception_clerk, cashier) execute FULL multi-unit returns smoothly via both ReturnComposer (returns.create) and SalesReturnPortal (executeSalesReturnCart)", async () => {
+    const d = db();
+    await d.insert(s.roles).values([
+      {
+        id: 11,
+        key: "retail_cashier",
+        label: "كاشير مبيعات عامة",
+        baseRole: "cashier",
+        permissions: { pos: "FULL", sales: "FULL", treasury: "READ" },
+        isActive: true,
+        isSystem: true,
+      },
+      {
+        id: 12,
+        key: "print_cashier",
+        label: "كاشير مطبعة",
+        baseRole: "print_operator",
+        permissions: { pos: "FULL", sales: "FULL", workorders: "FULL", treasury: "READ" },
+        isActive: true,
+        isSystem: true,
+      },
+      {
+        id: 13,
+        key: "reception_clerk",
+        label: "موظف استعلامات",
+        baseRole: "print_operator",
+        permissions: { pos: "FULL", sales: "FULL", workorders: "FULL", crm: "FULL", treasury: "READ" },
+        isActive: true,
+        isSystem: true,
+      },
+    ]);
+    await d.insert(s.users).values([
+      {
+        id: 101,
+        openId: "rc_101",
+        name: "كاشير مبيعات عامة",
+        role: "cashier",
+        customRoleId: 11,
+        permissionsOverride: { pos: "FULL", sales: "FULL", treasury: "READ" },
+        loginMethod: "local",
+        branchId: 1,
+      },
+      {
+        id: 102,
+        openId: "pc_102",
+        name: "كاشير مطبعة",
+        role: "print_operator",
+        customRoleId: 12,
+        permissionsOverride: { pos: "FULL", sales: "FULL", workorders: "FULL", treasury: "READ" },
+        loginMethod: "local",
+        branchId: 1,
+      },
+      {
+        id: 103,
+        openId: "rec_103",
+        name: "موظف استعلامات",
+        role: "print_operator",
+        customRoleId: 13,
+        permissionsOverride: { pos: "FULL", sales: "FULL", workorders: "FULL", crm: "FULL", treasury: "READ" },
+        loginMethod: "local",
+        branchId: 1,
+      },
+    ]);
+
+    for (const [idx, profile] of [
+      { id: 101, role: "cashier", label: "retail_cashier", permissionsOverride: { pos: "FULL", sales: "FULL", treasury: "READ" } },
+      { id: 102, role: "print_operator", label: "print_cashier", permissionsOverride: { pos: "FULL", sales: "FULL", workorders: "FULL", treasury: "READ" } },
+      { id: 103, role: "print_operator", label: "reception_clerk", permissionsOverride: { pos: "FULL", sales: "FULL", workorders: "FULL", crm: "FULL", treasury: "READ" } },
+      { id: CASHIER1_ID, role: "cashier", label: "cashier", permissionsOverride: undefined },
+    ].entries()) {
+      const shiftId = await openShift(profile.id, 1, "100000.00");
+      const caller = createCaller({
+        id: profile.id,
+        branchId: 1,
+        role: profile.role,
+        permissionsOverride: profile.permissionsOverride,
+      });
+
+      // 1) Full Return via returns.create (ReturnComposer / Reception / InvoiceDetail drawer)
+      const saleA = await createSaleInvoice({
+        branchId: 1,
+        shiftId,
+        actor: { userId: profile.id, branchId: 1, role: profile.role },
+        quantity: 3,
+        paidAmount: "15000.00",
+      });
+      const resA = await caller.returns.create({
+        invoiceId: saleA.invoiceId,
+        lines: [{ invoiceItemId: saleA.itemId, baseQuantity: 3 }],
+        directExecution: true,
+        resolution: {
+          kind: "IMMEDIATE_REFUND",
+          method: "CASH",
+          amount: "15000.00",
+          shiftId,
+          reason: `مرتجع كامل مباشر — دور ${profile.label}`,
+          disposition: "RESTOCK",
+        },
+        restock: true,
+        reason: `مرتجع كامل مباشر — دور ${profile.label}`,
+      });
+      expect(resA.mode).toBe("EXECUTED");
+      const [invA] = await d.select().from(s.invoices).where(eq(s.invoices.id, saleA.invoiceId));
+      expect(invA.status).toBe("RETURNED");
+      expect(invA.returnedTotal).toBe("15000.00");
+
+      // 2) Full Return via returns.executeSalesReturnCart (SalesReturnPortal)
+      const saleB = await createSaleInvoice({
+        branchId: 1,
+        shiftId,
+        actor: { userId: profile.id, branchId: 1, role: profile.role },
+        quantity: 2,
+        paidAmount: "10000.00",
+      });
+      const [invBBefore] = await d.select().from(s.invoices).where(eq(s.invoices.id, saleB.invoiceId));
+      const inspectedB = await caller.returns.inspectInvoiceForReturn({
+        invoiceNumber: invBBefore.invoiceNumber,
+      });
+      expect(inspectedB).not.toBeNull();
+      const cartRes = await caller.returns.executeSalesReturnCart({
+        invoiceNumber: invBBefore.invoiceNumber,
+        disposition: "RESTOCK",
+        items: inspectedB!.items.map((it) => ({
+          variantId: it.variantId,
+          productUnitId: it.productUnitId,
+          invoiceItemId: it.invoiceItemId,
+          productName: it.productName,
+          quantity: it.remainingQuantity,
+          unitPrice: it.unitPrice,
+        })),
+        settlement: {
+          method: "CASH",
+          totalAmount: inspectedB!.remainingInvoiceTotal,
+          shiftId,
+        },
+        clientRequestId: `full-cart-return-${profile.label}-${idx}`,
+      });
+      expect(cartRes.returnNumber).toMatch(/^SR-/);
+      expect(cartRes.totalAmount).toBe("10000.00");
+      const [invBAfter] = await d.select().from(s.invoices).where(eq(s.invoices.id, saleB.invoiceId));
+      expect(invBAfter.status).toBe("RETURNED");
+      expect(invBAfter.returnedTotal).toBe("10000.00");
+    }
+  });
 });

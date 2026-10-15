@@ -2988,6 +2988,16 @@ export const returnRouter = router({
             const maxCreditOffsetAmount = round2(
               remainingUnpaidAmount.plus(unremittedDeliveryCustody),
             );
+            const debtOffsetPortionDec =
+              input.settlement.method === "CASH" ||
+              input.settlement.method === "CARD"
+                ? Decimal.min(returnTotalDec, remainingUnpaidAmount)
+                : money(0);
+            const actualRefundPayoutDec =
+              input.settlement.method === "CASH" ||
+              input.settlement.method === "CARD"
+                ? round2(returnTotalDec.minus(debtOffsetPortionDec))
+                : returnTotalDec;
 
             // Reject impossible settlement rails before approval routing. A manager may
             // approve an exceptional workflow, but the cart executor must never pay out
@@ -2995,7 +3005,8 @@ export const returnRouter = router({
             if (
               (input.settlement.method === "CASH" ||
                 input.settlement.method === "CARD") &&
-              returnTotalDec.gt(paidAmount)
+              (actualRefundPayoutDec.lte(0) ||
+                actualRefundPayoutDec.gt(paidAmount))
             ) {
               throw new TRPCError({
                 code: "BAD_REQUEST",
@@ -3071,7 +3082,7 @@ export const returnRouter = router({
               if (
                 input.settlement.method === "CASH" &&
                 effectiveShiftId != null &&
-                returnTotalDec.gt(0)
+                actualRefundPayoutDec.gt(0)
               ) {
                 const lockedDrawer = await lockCashSourceForUpdate(tx, {
                   branchId: Number(matchedInvoice.branchId),
@@ -3082,7 +3093,7 @@ export const returnRouter = router({
                   tx,
                   Number(effectiveShiftId),
                   lockedDrawer.openingBalance ?? "0",
-                )).gte(returnTotalDec);
+                )).gte(actualRefundPayoutDec);
               }
               const lockedRefundCaps = await loadRefundCaps(
                 tx,
@@ -3114,14 +3125,18 @@ export const returnRouter = router({
                   input.settlement.method !== "CASH" ||
                   (effectiveShiftId != null &&
                     (lockedRefundCaps.cashNetByShift.get(Number(effectiveShiftId)) ?? money(0))
-                      .gte(returnTotalDec)),
+                      .gte(actualRefundPayoutDec)),
                 sameBusinessDay:
                   matchedInvoice.invoiceDate.toISOString().slice(0, 10) ===
                   todayUtcDate(),
                 accountingPeriodOpen: true,
                 hasDownstreamEffects: false,
                 hasSourceDocument: true,
-                refundAmountIqd: returnTotalDec.toFixed(2),
+                refundAmountIqd:
+                  input.settlement.method === "CASH" ||
+                  input.settlement.method === "CARD"
+                    ? actualRefundPayoutDec.toFixed(2)
+                    : returnTotalDec.toFixed(2),
                 maxRefundAmountIqd:
                   currentOperationalAuthority.caps.maxRefundAmountIqd,
                 refundMethod: input.settlement.method,
@@ -3734,6 +3749,29 @@ export const returnRouter = router({
 
           // ٢) معالجة التسوية المالية وحركة الصندوق/الدرج/البطاقة/رصيد المتجر
           let generatedReceiptId: number | null = null;
+          const matchedPaidAmount = matchedInvoice
+            ? money(matchedInvoice.paidAmount ?? "0")
+            : returnTotalDec;
+          const matchedRemainingUnpaid = matchedInvoice
+            ? Decimal.max(
+                0,
+                money(matchedInvoice.total)
+                  .minus(money(matchedInvoice.returnedTotal ?? "0"))
+                  .minus(matchedPaidAmount),
+              )
+            : money(0);
+          const splitDebtOffsetDec =
+            matchedInvoice &&
+            (input.settlement.method === "CASH" ||
+              input.settlement.method === "CARD")
+              ? Decimal.min(returnTotalDec, matchedRemainingUnpaid)
+              : money(0);
+          const effectivePayoutDec =
+            matchedInvoice &&
+            (input.settlement.method === "CASH" ||
+              input.settlement.method === "CARD")
+              ? round2(returnTotalDec.minus(splitDebtOffsetDec))
+              : returnTotalDec;
 
           if (input.settlement.method === "CASH") {
             let targetShiftId = input.settlement.shiftId;
@@ -3798,7 +3836,7 @@ export const returnRouter = router({
               branchId: actorBranchId,
               cashBucket: "DRAWER",
               shiftId: targetShiftId,
-              amount: returnTotalDec,
+              amount: effectivePayoutDec,
               operation: `استرداد نقدي لمرتجع مبيعات [${returnNumber}]`,
             });
 
@@ -3806,7 +3844,7 @@ export const returnRouter = router({
             generatedReceiptId = await recordSalesReturnCartReceipt(tx, {
               branchId: actorBranchId,
               shiftId: targetShiftId,
-              amount: returnTotalDec,
+              amount: effectivePayoutDec,
               returnNumber,
               customerName,
               customerId: input.customer?.customerId,
@@ -3815,17 +3853,22 @@ export const returnRouter = router({
             });
 
             // قيد صرف النقد من الخزينة/الدرج في الأستاذ العام
-            const refundPostingSource = {
-              roleDebits: { AR: returnTotalDec },
-              roleCredits: { CASH: returnTotalDec },
-            };
+            const refundPostingSource = splitDebtOffsetDec.isZero()
+              ? {
+                  roleDebits: { AR: returnTotalDec },
+                  roleCredits: { CASH: returnTotalDec },
+                }
+              : {
+                  roleDebits: { AR: effectivePayoutDec },
+                  roleCredits: { CASH: effectivePayoutDec },
+                };
             await postEntry(tx, {
               entryType: "PAYMENT_OUT",
               branchId: actorBranchId,
               invoiceId: matchedInvoice?.id ?? null,
               receiptId: generatedReceiptId,
               customerId: ledgerCustomerId,
-              amount: returnTotalDec,
+              amount: effectivePayoutDec,
               notes: `صرف نقدي لمرتجع مبيعات [${returnNumber}] من درج #${targetShiftId}`,
               createdBy: ctx.user.id,
               createdByNameSnapshot: ctx.user.name ?? "كاشير",
@@ -3833,17 +3876,30 @@ export const returnRouter = router({
                 "PAYMENT_OUT_CUSTOMER_REFUND",
                 "PAYMENT_OUT",
                 [
-                  debitLine("AR", returnTotalDec),
-                  creditLine("CASH", returnTotalDec),
+                  debitLine("AR", effectivePayoutDec),
+                  creditLine("CASH", effectivePayoutDec),
                 ],
                 refundPostingSource,
               ),
               postingSourceComponents: refundPostingSource,
             });
+
+            if (splitDebtOffsetDec.gt(0)) {
+              const effectiveCustomerId = Number(
+                input.customer?.customerId ?? matchedInvoice?.customerId,
+              );
+              if (effectiveCustomerId) {
+                await adjustCustomerBalance(
+                  tx,
+                  effectiveCustomerId,
+                  splitDebtOffsetDec.neg(),
+                );
+              }
+            }
           } else if (input.settlement.method === "CARD") {
             generatedReceiptId = await recordSalesReturnCartCardReceipt(tx, {
               branchId: actorBranchId,
-              amount: returnTotalDec,
+              amount: effectivePayoutDec,
               returnNumber,
               customerName,
               customerId: input.customer?.customerId,
@@ -3852,17 +3908,22 @@ export const returnRouter = router({
               userId: ctx.user.id,
             });
 
-            const refundPostingSource = {
-              roleDebits: { AR: returnTotalDec },
-              roleCredits: { CARD_BANK: returnTotalDec },
-            };
+            const refundPostingSource = splitDebtOffsetDec.isZero()
+              ? {
+                  roleDebits: { AR: returnTotalDec },
+                  roleCredits: { CARD_BANK: returnTotalDec },
+                }
+              : {
+                  roleDebits: { AR: effectivePayoutDec },
+                  roleCredits: { CARD_BANK: effectivePayoutDec },
+                };
             await postEntry(tx, {
               entryType: "PAYMENT_OUT",
               branchId: actorBranchId,
               invoiceId: matchedInvoice?.id ?? null,
               receiptId: generatedReceiptId,
               customerId: ledgerCustomerId,
-              amount: returnTotalDec,
+              amount: effectivePayoutDec,
               notes: `استرداد بطاقة لمرتجع مبيعات [${returnNumber}]`,
               createdBy: ctx.user.id,
               createdByNameSnapshot: ctx.user.name ?? "كاشير",
@@ -3870,13 +3931,26 @@ export const returnRouter = router({
                 "PAYMENT_OUT_CUSTOMER_REFUND",
                 "PAYMENT_OUT",
                 [
-                  debitLine("AR", returnTotalDec),
-                  creditLine("CARD_BANK", returnTotalDec),
+                  debitLine("AR", effectivePayoutDec),
+                  creditLine("CARD_BANK", effectivePayoutDec),
                 ],
                 refundPostingSource,
               ),
               postingSourceComponents: refundPostingSource,
             });
+
+            if (splitDebtOffsetDec.gt(0)) {
+              const effectiveCustomerId = Number(
+                input.customer?.customerId ?? matchedInvoice?.customerId,
+              );
+              if (effectiveCustomerId) {
+                await adjustCustomerBalance(
+                  tx,
+                  effectiveCustomerId,
+                  splitDebtOffsetDec.neg(),
+                );
+              }
+            }
           } else if (input.settlement.method === "CREDIT_OFFSET") {
             const effectiveCustomerId = Number(
               input.customer?.customerId ?? matchedInvoice?.customerId,
@@ -4327,7 +4401,7 @@ export const returnRouter = router({
                 returnTotalDec,
               );
               const refundAmountForCustody = (input.settlement.method === "CASH" || input.settlement.method === "CARD")
-                ? money(input.settlement.totalAmount)
+                ? effectivePayoutDec
                 : money(0);
               const deliveryReversal = await reverseUnremittedDeliveryConsignment(
                 tx,
@@ -4372,7 +4446,7 @@ export const returnRouter = router({
               input.settlement.method === "CASH" ||
               input.settlement.method === "CARD"
             ) {
-              const paidMinusRefund = newPaid.minus(returnTotalDec);
+              const paidMinusRefund = newPaid.minus(effectivePayoutDec);
               newPaid = paidMinusRefund.lt(0) ? money(0) : paidMinusRefund;
             }
             if (reversedDeliveryCustody.gt(0)) {
