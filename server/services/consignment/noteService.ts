@@ -280,9 +280,65 @@ export async function consignmentBalancesReport(branchId?: number) {
   const db = getDb();
   if (!db) return [];
   const branchCond = branchId ? sql`AND bs.branchId = ${branchId}` : sql``;
+  const owedExpr = branchId
+    ? sql`CAST(
+        ROUND(
+          COALESCE((
+            SELECT SUM(ii.lineCost - ROUND(ii.lineCost * ii.returnedBaseQuantity / ii.baseQuantity, 2))
+            FROM invoiceItems ii
+            JOIN invoices inv ON inv.id = ii.invoiceId
+            JOIN productVariants pv2 ON pv2.id = ii.variantId
+            JOIN products p2 ON p2.id = pv2.productId
+            WHERE p2.consignorId = s.id
+              AND p2.isConsignment = true
+              AND ii.baseQuantity > 0
+              AND inv.status <> 'CANCELLED'
+              AND inv.branchId = ${branchId}
+          ), 0) - COALESCE((
+            SELECT SUM(r.amount)
+            FROM receipts r
+            WHERE r.partyType = 'SUPPLIER'
+              AND r.partyId = s.id
+              AND r.voucherType = 'PAYMENT'
+              AND r.status = 'POSTED'
+              AND r.branchId = ${branchId}
+          ), 0),
+          2
+        ) AS CHAR
+      )`
+    : sql`s.currentBalance`;
+  const branchActivityCond = branchId
+    ? sql`AND (
+        EXISTS (
+          SELECT 1
+          FROM branchStock bs2
+          JOIN productVariants pv2 ON pv2.id = bs2.variantId
+          JOIN products p2 ON p2.id = pv2.productId
+          WHERE p2.consignorId = s.id AND p2.isConsignment = true AND bs2.branchId = ${branchId}
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM consignmentNotes cn
+          WHERE cn.consignorId = s.id AND cn.branchId = ${branchId}
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM invoiceItems ii
+          JOIN invoices inv ON inv.id = ii.invoiceId
+          JOIN productVariants pv2 ON pv2.id = ii.variantId
+          JOIN products p2 ON p2.id = pv2.productId
+          WHERE p2.consignorId = s.id AND p2.isConsignment = true AND inv.branchId = ${branchId}
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM receipts r
+          WHERE r.partyType = 'SUPPLIER' AND r.partyId = s.id AND r.branchId = ${branchId}
+        )
+      )`
+    : sql``;
   const rows: any = await db.execute(sql`
     SELECT
-      s.id AS consignorId, s.name AS consignorName, s.currentBalance AS owed,
+      s.id AS consignorId, s.name AS consignorName, ${owedExpr} AS owed,
       COUNT(DISTINCT bs.variantId) AS variantCount,
       CAST(COALESCE(SUM(bs.quantity), 0) AS CHAR) AS remainingQty,
       CAST(COALESCE(SUM(bs.quantity * pv.costPrice), 0) AS CHAR) AS remainingValueByShare
@@ -291,6 +347,7 @@ export async function consignmentBalancesReport(branchId?: number) {
       JOIN productVariants pv ON pv.productId = p.id
       LEFT JOIN branchStock bs ON bs.variantId = pv.id ${branchCond}
     WHERE s.supplierKind = 'CONSIGNOR'
+      ${branchActivityCond}
     GROUP BY s.id, s.name, s.currentBalance
     ORDER BY s.name
   `);
@@ -472,10 +529,77 @@ export async function consignmentSettlementStatement(input: {
   `);
   const rem = (Array.isArray(remRows) ? (remRows[0] ?? remRows) : remRows?.rows ?? [])[0] ?? {};
 
+  let currentOwedStr = round2(money(sup.owed ?? "0")).toFixed(2);
+  if (input.branchId) {
+    const branchSummaryRows: any = await db.execute(sql`
+      SELECT
+        (
+          EXISTS (
+            SELECT 1
+            FROM branchStock bs2
+            JOIN productVariants pv2 ON pv2.id = bs2.variantId
+            JOIN products p2 ON p2.id = pv2.productId
+            WHERE p2.consignorId = ${input.consignorId} AND p2.isConsignment = true AND bs2.branchId = ${input.branchId}
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM consignmentNotes cn
+            WHERE cn.consignorId = ${input.consignorId} AND cn.branchId = ${input.branchId}
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM invoiceItems ii
+            JOIN invoices inv ON inv.id = ii.invoiceId
+            JOIN productVariants pv2 ON pv2.id = ii.variantId
+            JOIN products p2 ON p2.id = pv2.productId
+            WHERE p2.consignorId = ${input.consignorId} AND p2.isConsignment = true AND inv.branchId = ${input.branchId}
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM receipts r
+            WHERE r.partyType = 'SUPPLIER' AND r.partyId = ${input.consignorId} AND r.branchId = ${input.branchId}
+          )
+        ) AS hasBranchActivity,
+        CAST(
+          ROUND(
+            COALESCE((
+              SELECT SUM(ii.lineCost - ROUND(ii.lineCost * ii.returnedBaseQuantity / ii.baseQuantity, 2))
+              FROM invoiceItems ii
+              JOIN invoices inv ON inv.id = ii.invoiceId
+              JOIN productVariants pv2 ON pv2.id = ii.variantId
+              JOIN products p2 ON p2.id = pv2.productId
+              WHERE p2.consignorId = ${input.consignorId}
+                AND p2.isConsignment = true
+                AND ii.baseQuantity > 0
+                AND inv.status <> 'CANCELLED'
+                AND inv.branchId = ${input.branchId}
+            ), 0) - COALESCE((
+              SELECT SUM(r.amount)
+              FROM receipts r
+              WHERE r.partyType = 'SUPPLIER'
+                AND r.partyId = ${input.consignorId}
+                AND r.voucherType = 'PAYMENT'
+                AND r.status = 'POSTED'
+                AND r.branchId = ${input.branchId}
+            ), 0),
+            2
+          ) AS CHAR
+        ) AS branchOwed
+    `);
+    const branchSummary =
+      (Array.isArray(branchSummaryRows)
+        ? (branchSummaryRows[0] ?? branchSummaryRows)
+        : branchSummaryRows?.rows ?? [])[0] ?? {};
+    if (!Number(branchSummary.hasBranchActivity ?? 0)) {
+      return null;
+    }
+    currentOwedStr = round2(money(branchSummary.branchOwed ?? "0")).toFixed(2);
+  }
+
   return {
     consignorId: Number(sup.id),
     consignorName: String(sup.name),
-    currentOwed: round2(money(sup.owed ?? "0")).toFixed(2),
+    currentOwed: currentOwedStr,
     period: {
       startDate: input.startDate, endDate: input.endDate, soldQty: pQty,
       soldValue: round2(pSold).toFixed(2), share: round2(pShare).toFixed(2),

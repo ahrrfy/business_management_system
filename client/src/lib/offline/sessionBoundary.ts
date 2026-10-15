@@ -99,6 +99,8 @@ export async function resetSessionForLogout(
   const preservedDeviceMeta = await Promise.all([
     offlineDb.meta.get("offlineSaleEnabled").catch(() => undefined),
     offlineDb.meta.get("storagePersisted").catch(() => undefined),
+    offlineDb.meta.get("deviceCode").catch(() => undefined),
+    offlineDb.meta.get("offlineReceiptSeq").catch(() => undefined),
   ]);
   const clearTasks: Array<() => Promise<unknown>> = [
     () => offlineDb.profile.clear(),

@@ -255,7 +255,7 @@ export function sendTcp(
 
 let tmpCounter = 0;
 
-export const SAFE_PRINTER_NAME = /^[a-zA-Z0-9 _.,\-()/#]+$/;
+export const SAFE_PRINTER_NAME = /^[a-zA-Z0-9 _.,\-()/#$]+$/;
 
 export function validatePrinterName(name: string): boolean {
   return Boolean(name) && SAFE_PRINTER_NAME.test(name);

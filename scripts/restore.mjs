@@ -105,9 +105,18 @@ async function validateDumpTarget() {
       sawTargetDirective = true;
     }
 
-    const crossDbMatches = stmt.matchAll(
-      /\b(?:INTO|INSERT|REPLACE|TRUNCATE|UPDATE|FROM|JOIN|TABLE|TO|LIKE|CALL|VIEW|TRIGGER|PROCEDURE|FUNCTION|EVENT)\s+(?:(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY|IGNORE)\s+)*(?:IF\s+(?:NOT\s+)?EXISTS\s+)?(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
-    );
+    const crossDbMatches = [
+      ...stmt.matchAll(
+        /\b(?:INTO|INSERT|REPLACE|TRUNCATE|UPDATE|DELETE|FROM|JOIN|STRAIGHT_JOIN|TABLE|TABLES|TO|REFERENCES|LIKE|CALL|VIEW|TRIGGER|PROCEDURE|FUNCTION|EVENT|INDEX|DESCRIBE|DESC|EXPLAIN|SHOW|ANALYZE|CHECK|OPTIMIZE|REPAIR|HANDLER)\s+(?:(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY|IGNORE|QUICK|EXTENDED|LOCAL|NO_WRITE_TO_BINLOG)\s+)*(?:IF\s+(?:NOT\s+)?EXISTS\s+)?(?:TABLE\s+)?(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
+      ),
+      ...(
+        /\b(?:INDEX|TRIGGER)\b/i.test(stmt)
+          ? stmt.matchAll(
+              /\bON\s+(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
+            )
+          : []
+      ),
+    ];
     for (const match of crossDbMatches) {
       const refDb = match[1] ?? match[2] ?? "";
       if (
