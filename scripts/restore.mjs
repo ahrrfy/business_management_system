@@ -58,10 +58,9 @@ const DANGEROUS_SQL_PATTERN = new RegExp(
     String.raw`\bSET\s+(?:GLOBAL|PERSIST|PERSIST_ONLY)\b`,
     String.raw`@@(?:GLOBAL|PERSIST|PERSIST_ONLY)\s*\.`,
     String.raw`\b(?:INSTALL|UNINSTALL)\s+(?:PLUGIN|COMPONENT)\b`,
-    String.raw`\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:DEFINER\s*=\s*[^\s]+(?:\s*@\s*[^\s]+)?\s+)?(?:AGGREGATE\s+)?FUNCTION\b`,
+    String.raw`\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:DEFINER\s*=\s*[^\s]+(?:\s*@\s*[^\s]+)?\s+)?(?:AGGREGATE\s+)?FUNCTION\b[\s\S]*?\bSONAME\b`,
     String.raw`\b(?:PREPARE|EXECUTE|DEALLOCATE\s+PREPARE)\b`,
     String.raw`\b(?:SHUTDOWN|RESET\s+(?:MASTER|SLAVE|REPLICA|PERSIST)|CHANGE\s+(?:MASTER|REPLICATION)|(?:START|STOP)\s+(?:SLAVE|REPLICA|GROUP_REPLICATION)|PURGE\s+BINARY\s+LOGS|BINLOG)\b`,
-    String.raw`\bDELIMITER\b`,
   ].join("|"),
   "i",
 );
@@ -129,12 +128,26 @@ async function validateDumpTarget() {
   let inRegularComment = false;
   let versionedCommentDepth = 0;
   let quote = null;
+  let currentDelimiter = ";";
   let statementBuffer = "";
 
   const lines = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
   for await (const line of lines) {
-    if (!inRegularComment && quote === null && /^\s*(?:DELIMITER\b|\\!|system\s+)/i.test(line)) {
-      fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+    if (!inRegularComment && quote === null && versionedCommentDepth === 0) {
+      if (/^\s*(?:\\!|system\s+)/i.test(line)) {
+        fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+      }
+      if (/^\s*DELIMITER(?:\s|$)/i.test(line)) {
+        if (statementBuffer.trim() !== "") {
+          fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+        }
+        const delimMatch = line.match(/^\s*DELIMITER\s+([;/$|!~^:]{1,16})\s*$/i);
+        if (!delimMatch) {
+          fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+        }
+        currentDelimiter = delimMatch[1];
+        continue;
+      }
     }
     let i = 0;
     const len = line.length;
@@ -218,10 +231,15 @@ async function validateDumpTarget() {
         fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
       }
 
-      if (ch === ";") {
+      if (line.startsWith(currentDelimiter, i)) {
         inspectStatement(statementBuffer);
+        if (currentDelimiter !== ";") {
+          for (const subStmt of statementBuffer.split(";")) {
+            inspectStatement(subStmt);
+          }
+        }
         statementBuffer = "";
-        i += 1;
+        i += currentDelimiter.length;
         continue;
       }
 
@@ -238,7 +256,7 @@ async function validateDumpTarget() {
     }
   }
 
-  if (inRegularComment || versionedCommentDepth > 0 || quote !== null) {
+  if (inRegularComment || versionedCommentDepth > 0 || quote !== null || currentDelimiter !== ";") {
     fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
   }
   if (statementBuffer.trim()) {

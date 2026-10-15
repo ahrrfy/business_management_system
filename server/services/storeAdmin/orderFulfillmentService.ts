@@ -611,7 +611,22 @@ export async function updateOnlineOrder(
           });
         }
         const custLock = `online-customer:${normalizedPhone}`;
-        await tx.execute(sql`SELECT GET_LOCK(${custLock}, 5) AS locked`);
+        const lockResult = (await tx.execute(
+          sql`SELECT GET_LOCK(${custLock}, 5) AS locked`,
+        )) as unknown;
+        const lockRow = Array.isArray(lockResult)
+          ? (lockResult[0] as Array<{ locked?: number }> | undefined)?.[0]
+          : (lockResult as { rows?: Array<{ locked?: number }> })?.rows?.[0];
+        if (Number(lockRow?.locked) !== 1) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "تعذّر تأمين سجل الزبون",
+              why: "تزامن تعديل آخر على نفس رقم الهاتف حالياً",
+              doThis: "أعد المحاولة بعد لحظات",
+            }),
+          });
+        }
         try {
           const [matchedCustomer] = await tx
             .select({ id: customers.id })

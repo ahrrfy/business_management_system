@@ -1,12 +1,12 @@
 import { PLATFORM_ADMIN_COOKIE_NAME } from "@shared/const";
 import { parse as parseCookie } from "cookie";
-import { eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Request } from "express";
 import { SignJWT, jwtVerify } from "jose";
 import { createHash } from "node:crypto";
 import { computeSessionFingerprint } from "../auth/session";
 import { getControlDb } from "./controlDb";
-import { platformAdmins, type PlatformAdmin } from "./controlSchema";
+import { platformAdmins, platformAuditLogs, type PlatformAdmin } from "./controlSchema";
 
 /**
  * جلسة مدير المنصّة — JWT + كوكي منفصلان تماماً عن `server/auth/session.ts` (جلسة
@@ -50,26 +50,65 @@ function extractPlatformTokenFromRequest(
   return null;
 }
 
-export function revokePlatformAdminSession(
+export async function revokePlatformAdminSession(
   req?: Request | { headers?: Record<string, unknown> } | null,
   adminId?: number | null,
-): void {
+): Promise<void> {
   const nowMs = Date.now();
   pruneRevokedPlatformTokens(nowMs);
   const rawToken = extractPlatformTokenFromRequest(req);
-  if (rawToken) {
-    revokedPlatformTokenHashes.set(
-      hashPlatformToken(rawToken),
-      nowMs + PLATFORM_SESSION_MS,
+  const tokenHash = rawToken ? hashPlatformToken(rawToken) : null;
+  if (tokenHash) {
+    revokedPlatformTokenHashes.set(tokenHash, nowMs + PLATFORM_SESSION_MS);
+  }
+  let resolvedAdminId =
+    typeof adminId === "number" && Number.isInteger(adminId) && adminId > 0
+      ? adminId
+      : null;
+  if (!resolvedAdminId && rawToken) {
+    try {
+      const { payload } = await jwtVerify(rawToken, getSecret(), {
+        algorithms: ["HS256"],
+        clockTolerance: 60,
+      });
+      const parsedPid = Number(payload.pid);
+      if (
+        payload.kind === "platform_admin" &&
+        Number.isInteger(parsedPid) &&
+        parsedPid > 0
+      ) {
+        resolvedAdminId = parsedPid;
+      }
+    } catch {
+      // Ignore malformed/expired token during best-effort revocation.
+    }
+  }
+  if (resolvedAdminId) {
+    platformAdminRevokedBeforeMs.set(resolvedAdminId, nowMs);
+    platformAdminRevokedBeforeSec.set(resolvedAdminId, Math.floor(nowMs / 1000));
+    platformAdminSessionGen.set(
+      resolvedAdminId,
+      (platformAdminSessionGen.get(resolvedAdminId) ?? 0) + 1,
     );
   }
-  if (typeof adminId === "number" && Number.isInteger(adminId) && adminId > 0) {
-    platformAdminRevokedBeforeMs.set(adminId, nowMs);
-    platformAdminRevokedBeforeSec.set(adminId, Math.floor(nowMs / 1000));
-    platformAdminSessionGen.set(
-      adminId,
-      (platformAdminSessionGen.get(adminId) ?? 0) + 1,
-    );
+  try {
+    const db = getControlDb();
+    if (db && (resolvedAdminId || tokenHash)) {
+      await db.insert(platformAuditLogs).values({
+        platformAdminId: resolvedAdminId,
+        actorEmail: null,
+        action: "session.revoke",
+        success: true,
+        companyId: null,
+        details: {
+          tokenHash,
+          revokedAtMs: nowMs,
+        },
+        ipAddress: null,
+      });
+    }
+  } catch {
+    // Fall back to in-memory revocation when control DB is unavailable in unit tests.
   }
 }
 
@@ -101,10 +140,21 @@ export async function signPlatformSession(adminId: number, req?: Request | null)
     .sign(getSecret());
 }
 
-async function verifyPlatformSession(token: string | undefined | null, req?: Request | null): Promise<number | null> {
+type VerifiedPlatformToken = {
+  pid: number;
+  tokenHash: string;
+  iatMs: number | null;
+  iatSec: number | null;
+};
+
+async function verifyPlatformSession(
+  token: string | undefined | null,
+  req?: Request | null,
+): Promise<VerifiedPlatformToken | null> {
   if (!token) return null;
   pruneRevokedPlatformTokens();
-  if (revokedPlatformTokenHashes.has(hashPlatformToken(token))) {
+  const tokenHash = hashPlatformToken(token);
+  if (revokedPlatformTokenHashes.has(tokenHash)) {
     return null;
   }
   try {
@@ -133,7 +183,12 @@ async function verifyPlatformSession(token: string | undefined | null, req?: Req
       const fp = typeof payload.fp === "string" ? payload.fp : undefined;
       if (!fp || fp !== computeSessionFingerprint(req)) return null;
     }
-    return pid;
+    return {
+      pid,
+      tokenHash,
+      iatMs: typeof payload.iatMs === "number" ? payload.iatMs : null,
+      iatSec: typeof payload.iat === "number" ? payload.iat : null,
+    };
   } catch {
     return null;
   }
@@ -142,14 +197,69 @@ async function verifyPlatformSession(token: string | undefined | null, req?: Req
 /** يحلّ مدير المنصّة الحالي من كوكي الطلب، أو null. */
 export async function getPlatformAdminFromRequest(req: Request): Promise<PlatformAdmin | null> {
   const rawToken = extractPlatformTokenFromRequest(req);
-  const pid = await verifyPlatformSession(rawToken, req);
-  if (!pid) return null;
+  const verified = await verifyPlatformSession(rawToken, req);
+  if (!verified) return null;
 
   const db = getControlDb();
   if (!db) return null;
 
-  const rows = await db.select().from(platformAdmins).where(eq(platformAdmins.id, pid)).limit(1);
+  const rows = await db
+    .select()
+    .from(platformAdmins)
+    .where(eq(platformAdmins.id, verified.pid))
+    .limit(1);
   const admin = rows[0];
   if (!admin || !admin.isActive) return null;
+
+  try {
+    const revocations = await db
+      .select({
+        action: platformAuditLogs.action,
+        details: platformAuditLogs.details,
+        createdAt: platformAuditLogs.createdAt,
+      })
+      .from(platformAuditLogs)
+      .where(
+        and(
+          eq(platformAuditLogs.platformAdminId, verified.pid),
+          inArray(platformAuditLogs.action, ["logout", "session.revoke"]),
+        ),
+      )
+      .orderBy(desc(platformAuditLogs.id))
+      .limit(10);
+
+    for (const row of revocations) {
+      const details =
+        row.details && typeof row.details === "object"
+          ? (row.details as { tokenHash?: unknown; revokedAtMs?: unknown })
+          : null;
+      if (details?.tokenHash === verified.tokenHash) {
+        revokedPlatformTokenHashes.set(
+          verified.tokenHash,
+          Date.now() + PLATFORM_SESSION_MS,
+        );
+        return null;
+      }
+      const revokedAtMs =
+        typeof details?.revokedAtMs === "number"
+          ? details.revokedAtMs
+          : row.createdAt instanceof Date
+            ? row.createdAt.getTime()
+            : null;
+      if (revokedAtMs != null) {
+        if (verified.iatMs != null) {
+          if (verified.iatMs <= revokedAtMs) return null;
+        } else if (
+          verified.iatSec != null &&
+          verified.iatSec <= Math.floor(revokedAtMs / 1000)
+        ) {
+          return null;
+        }
+      }
+    }
+  } catch {
+    // Keep working if audit table is mocked without select support in isolated unit tests.
+  }
+
   return admin;
 }

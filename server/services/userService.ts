@@ -594,14 +594,14 @@ export async function updateUser(
       return { userId: input.userId, changed: false, operationPolicyRevision };
     try {
       locked.assertAuthority();
+      if (patch.sessionsValidFrom instanceof Date) {
+        await tx
+          .update(userSessions)
+          .set({ revokedAt: patch.sessionsValidFrom })
+          .where(and(eq(userSessions.userId, input.userId), isNull(userSessions.revokedAt)));
+      }
       await tx.update(users).set(patch).where(eq(users.id, input.userId));
     } catch (e) { rethrowDup(e); }
-    if (patch.sessionsValidFrom instanceof Date) {
-      await tx
-        .update(userSessions)
-        .set({ revokedAt: patch.sessionsValidFrom })
-        .where(and(eq(userSessions.userId, input.userId), isNull(userSessions.revokedAt)));
-    }
     if (policyChanged)
       await auditOperationPolicyTx(
         tx,
@@ -760,7 +760,7 @@ export async function resetUserPassword(
 /**
  * تغيير كلمة مرور المستخدم بنفسه — يصفّر إلزام التغيير وانتهاء الصلاحية.
  * يُعيد `validFrom` (لحظة إبطال الجلسات) كي يُعيد الراوتر إصدار كوكي صاحب الجلسة
- * بـ`iat` أكبر تماماً منها فلا يُطرَد (انظر getUserFromRequest: `iat <= validFromSec` يُرفض).
+ * بـ`iat` يطابقها مع سطر جلسة حيّ وعلامة إعادة إصدار فلا يُطرَد.
  */
 export async function changePassword(userId: number, oldPassword: string, newPassword: string) {
   const result = await withTx(async (tx) => {
@@ -774,8 +774,7 @@ export async function changePassword(userId: number, oldPassword: string, newPas
       throw new TRPCError({ code: "BAD_REQUEST", message: "كلمة المرور الجديدة يجب أن تختلف عن الحالية." });
     }
     const nowSec = Math.floor(Date.now() / 1000);
-    const validFrom = new Date((nowSec - 1) * 1000);
-    const revokedAt = new Date(nowSec * 1000);
+    const validFrom = new Date(nowSec * 1000);
     await tx.update(users).set({
       passwordHash: await hashPassword(newPassword),
       sessionsValidFrom: validFrom,
@@ -784,11 +783,11 @@ export async function changePassword(userId: number, oldPassword: string, newPas
     }).where(eq(users.id, userId));
     await tx
       .update(userSessions)
-      .set({ revokedAt })
+      .set({ revokedAt: validFrom })
       .where(and(eq(userSessions.userId, userId), isNull(userSessions.revokedAt)));
     await tx
       .update(passwordResetTokens)
-      .set({ invalidatedAt: revokedAt })
+      .set({ invalidatedAt: validFrom })
       .where(
         and(
           eq(passwordResetTokens.userId, userId),

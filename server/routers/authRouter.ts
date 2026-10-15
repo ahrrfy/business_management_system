@@ -997,13 +997,13 @@ export const authRouter = router({
         input.oldPassword,
         input.newPassword,
       );
-      // أُبطِلت كل الجلسات (sessionsValidFrom=nowSec-1، وتحديث userSessions.revokedAt) ⇒ نُصدر كوكياً جديداً كي لا يُطرَد صاحبها.
+      // أُبطِلت كل الجلسات (sessionsValidFrom=nowSec، وتحديث userSessions.revokedAt) ⇒ نُصدر كوكياً جديداً كي لا يُطرَد صاحبها.
       // نمرّر ctx.req ⇒ التوكن الجديد يحمل بصمة الجهاز الحالي.
-      // AUTH-02 / CF-09: الإبطال يرفض `iat <= validFromSec`؛ وبما أنّ validFrom مضبوطٌ على حدّ الثانية
-      // الكاملة السابقة (دون أجزاء ثانية تُقرَّب للأعلى في TIMESTAMP)، فإنّ `reissueIatSec = validFromSec + 1`
-      // يساوي الثانية الحالية تماماً (بلا إزاحة +٢ث في المستقبل) ⇒ يبقى التوكن الجديد صالحاً فوراً، بينما
-      // يُبطَل فوراً بأيّ تسجيل خروج أو إبطال جلسات لاحق حتى في نفس الثانية.
-      const reissueIatSec = Math.floor(validFrom.getTime() / 1000) + 1;
+      // AUTH-02 / CF-09: يبقى validFrom مضبوطاً على الثانية الحالية تماماً (nowSec) لإبطال أي توكن قديم بلا sid صُكّ
+      // في نفس الثانية، ويصدر الكوكي الجديد بنفس الثانية (reissueIatSec = validFromSec) مع سطر userSessions جديد حيّ
+      // وعلامة rvw === validFromSec (بلا تقديم iat في المستقبل) ⇒ يبقى التوكن الجديد صالحاً فوراً، بينما يُبطَل
+      // فوراً بأيّ تسجيل خروج أو إبطال جلسات لاحق حتى في نفس الثانية.
+      const reissueIatSec = Math.floor(validFrom.getTime() / 1000);
       const nativeDeviceThumbprint = inheritedNativeDeviceThumbprint(ctx.req);
       const nativeClientId = nativeDeviceThumbprint
         ? (nativeClientIdFromRequest(

@@ -113,7 +113,6 @@ export const accountsRouter = router({
         }
       }
       const effectiveBranchId = canCross ? (input.branchId ?? userBranchId ?? null) : userBranchId;
-      const actorBranchId = effectiveBranchId ?? (userBranchId ?? 0);
       return withTx(async (tx) => {
         return createManualJournal(
           tx,
@@ -126,7 +125,7 @@ export const accountsRouter = router({
           },
           {
             userId: ctx.user.id,
-            branchId: actorBranchId,
+            branchId: effectiveBranchId,
             role: ctx.user.role as RoleKey,
             isOwner: ctx.user.role === "admin" || (ctx.user as { isOwner?: boolean }).isOwner === true,
           },

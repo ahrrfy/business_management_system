@@ -32,7 +32,7 @@ const lastNativeProofCounterByToken = new Map<string, number>();
 function consumeNativeProofReplayToken(
   sessionId: number,
   sessionToken: string,
-  req: { headers?: Record<string, unknown> },
+  req: { method?: string; headers?: Record<string, unknown> },
   counter: number,
 ): boolean {
   const nowMs = Date.now();
@@ -41,18 +41,39 @@ function consumeNativeProofReplayToken(
   });
   const tokenHash = createHash("sha256").update(sessionToken).digest("hex");
   const tokenKey = `${sessionId}:${tokenHash}`;
-  const prevCounter = lastNativeProofCounterByToken.get(tokenKey);
-  if (prevCounter != null && counter <= prevCounter) {
+  const method = (req.method || "GET").toUpperCase();
+  const isMutation = method !== "GET" && method !== "HEAD";
+  if (isMutation) {
+    const prevCounter = lastNativeProofCounterByToken.get(tokenKey);
+    if (prevCounter != null && counter <= prevCounter) {
+      return false;
+    }
+  }
+  const counterKey = `${tokenKey}:c:${counter}`;
+  if (consumedNativeProofNonces.has(counterKey)) {
     return false;
   }
   const rawNonce = req.headers?.["x-alrueya-device-nonce"];
-  const nonce = typeof rawNonce === "string" ? rawNonce : Array.isArray(rawNonce) ? String(rawNonce[0] ?? "") : "";
-  const nonceKey = `${tokenKey}:${counter}:${nonce}`;
-  if (consumedNativeProofNonces.has(nonceKey)) {
+  const nonce =
+    typeof rawNonce === "string"
+      ? rawNonce
+      : Array.isArray(rawNonce)
+        ? String(rawNonce[0] ?? "")
+        : "";
+  const nonceKey = nonce ? `${tokenKey}:n:${nonce}` : null;
+  if (nonceKey && consumedNativeProofNonces.has(nonceKey)) {
     return false;
   }
-  consumedNativeProofNonces.set(nonceKey, nowMs + NATIVE_PROOF_REPLAY_TTL_MS);
-  lastNativeProofCounterByToken.set(tokenKey, counter);
+  consumedNativeProofNonces.set(counterKey, nowMs + NATIVE_PROOF_REPLAY_TTL_MS);
+  if (nonceKey) {
+    consumedNativeProofNonces.set(nonceKey, nowMs + NATIVE_PROOF_REPLAY_TTL_MS);
+  }
+  if (isMutation) {
+    const prevCounter = lastNativeProofCounterByToken.get(tokenKey) ?? 0;
+    if (counter > prevCounter) {
+      lastNativeProofCounterByToken.set(tokenKey, counter);
+    }
+  }
   return true;
 }
 
@@ -149,6 +170,8 @@ export type SessionPayload = {
   fp?: string;
   companyId?: number;
   sid?: number;
+  /** Explicit reissue watermark matching users.sessionsValidFrom (seconds) on self password change. */
+  rvw?: number;
   /** SHA-256 thumbprint of the native app's non-exportable EC public key. */
   dpk?: string;
   /** Versioned allow-listed native client bound to a newly issued device session. */
@@ -157,13 +180,6 @@ export type SessionPayload = {
 
 /**
  * Sign a session JWT for a local user.
- *
- * **`iatSec` (اختياري):** يثبّت وقت الإصدار (بالثواني) صراحةً بدل ساعة النظام. يُستعمل عند
- * **إعادة إصدار** كوكي صاحب الجلسة فور تغييرٍ يُبطل الجلسات (تغيير كلمة المرور بنفسه):
- * نُبطل بـ`sessionsValidFrom = now` ثم نُعيد إصدار التوكن بـ`iat = validFromSec + 1` كي يكون
- * **أكبر تماماً** من حدّ الإبطال ⇒ يجتاز فحص `iat <= validFromSec` (انظر getUserFromRequest)
- * فلا يُطرَد صاحبها، بينما يُرفض أي توكنٍ أجنبيٍّ صُكّ في نفس الثانية (iat <= validFromSec).
- * القيمة محدودة بثانيةٍ واحدةٍ في المستقبل ⇒ تبقى ضمن هامش clock-skew في verifySession.
  */
 export async function signSession(
   uid: number,
@@ -182,10 +198,11 @@ export async function signSession(
   deviceKeyThumbprint?: string,
   nativeClientId?: NativeClientId,
 ): Promise<string> {
-  const issuedAtSeconds =
-    typeof iatSec === "number" && Number.isInteger(iatSec) && iatSec > 0
-      ? iatSec
-      : Math.floor(Date.now() / 1000);
+  const hasExplicitIat =
+    typeof iatSec === "number" && Number.isInteger(iatSec) && iatSec > 0;
+  const issuedAtSeconds = hasExplicitIat
+    ? iatSec
+    : Math.floor(Date.now() / 1000);
   const expirationSeconds =
     Math.floor(Date.now() / 1000) + Math.floor(expiresInMs / 1000);
   const claims: Record<string, unknown> = { uid };
@@ -219,6 +236,9 @@ export async function signSession(
   // (اختبارات وحدة/مسارات لا تُنشئ سطر جلسة) تُصدر توكناً بلا تتبّع فردي، سلوك legacy.
   if (typeof sid === "number" && Number.isInteger(sid) && sid > 0) {
     claims.sid = sid;
+    if (hasExplicitIat) {
+      claims.rvw = issuedAtSeconds;
+    }
   }
   return (
     new SignJWT(claims)
@@ -286,6 +306,12 @@ export async function verifySession(
       payload.sid > 0
         ? payload.sid
         : undefined;
+    const rvw =
+      typeof payload.rvw === "number" &&
+      Number.isInteger(payload.rvw) &&
+      payload.rvw > 0
+        ? payload.rvw
+        : undefined;
     const dpk =
       typeof payload.dpk === "string" && /^[A-Za-z0-9_-]{43}$/.test(payload.dpk)
         ? payload.dpk
@@ -316,7 +342,7 @@ export async function verifySession(
       }
     }
 
-    return { uid, iat, fp, companyId, sid, dpk, dpc };
+    return { uid, iat, fp, companyId, sid, rvw, dpk, dpc };
   } catch {
     return null;
   }
@@ -429,27 +455,42 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
   if (!validateUserForSession(user, (session as any).tokenVersion))
     return { user: null, sessionId: null, nativeClientId: null };
 
-  // إبطال الجلسات (AUTH-02): أيّ توكن iat <= sessionsValidFrom (بالثواني) يُرفض —
-  // بما فيه ما صُكّ في **نفس ثانية** الإبطال (يسدّ النافذة العمياء دون الثانية). صاحب
-  // الجلسة في تغيير كلمة المرور لا يُطرَد لأنّ الراوتر يُعيد إصدار كوكيه بـiat = validFromSec+1.
-  const validFromSec = user.sessionsValidFrom
-    ? Math.floor(new Date(user.sessionsValidFrom).getTime() / 1000)
-    : 0;
-  if (isSessionRevokedByTimestamp(session.iat, validFromSec))
-    return { user: null, sessionId: null, nativeClientId: null };
-
   // إبطال فردي (AUTH-03): توكن يحمل sid ⇒ يجب أن يقابل سطراً حيّاً (غير مُبطَل/منتهٍ)
-  // في userSessions. مكمِّل لا بديل لفحص sessionsValidFrom أعلاه — يتيح طرد جهازٍ واحدٍ
+  // في userSessions. مكمِّل لا بديل لفحص sessionsValidFrom أدناه — يتيح طرد جهازٍ واحدٍ
   // بعينه (revokeSession) بلا مسّ بقية جلسات المستخدم.
   let sessionId: number | null = null;
+  const srow = hasSid ? srows[0] : undefined;
   if (hasSid) {
-    const srow = srows[0];
     const expired =
       !srow || srow.revokedAt != null || srow.expiresAt.getTime() < Date.now();
     if (!srow || srow.userId !== user.id || expired) {
       return { user: null, sessionId: null, nativeClientId: null };
     }
     sessionId = srow.id;
+  }
+
+  // إبطال الجلسات (AUTH-02 / CF-09): أيّ توكن iat <= sessionsValidFrom (بالثواني) يُرفض —
+  // بما فيه ما صُكّ في **نفس ثانية** الإبطال (يسدّ النافذة العمياء دون الثانية للتوكنات القديمة بلا sid).
+  // الاستثناء الوحيد هو كوكي إعادة الإصدار الذاتي في auth.changePassword الذي يحمل sid حيّاً غير مُبطَل
+  // وعلامة rvw === validFromSec في نفس الثانية (بلا تقديم iat في المستقبل).
+  const validFromSec = user.sessionsValidFrom
+    ? Math.floor(new Date(user.sessionsValidFrom).getTime() / 1000)
+    : 0;
+  const isCurrentPasswordReissue =
+    hasSid &&
+    srow != null &&
+    srow.revokedAt == null &&
+    session.rvw != null &&
+    session.rvw === validFromSec &&
+    session.iat === validFromSec;
+  if (
+    !isCurrentPasswordReissue &&
+    isSessionRevokedByTimestamp(session.iat, validFromSec)
+  ) {
+    return { user: null, sessionId: null, nativeClientId: null };
+  }
+
+  if (hasSid && srow) {
     if (session.dpk) {
       const currentMarker = srow.userAgent;
       if (!currentMarker)
@@ -469,21 +510,22 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
       if (!consumeNativeProofReplayToken(srow.id, rawSessionToken, req, proof.counter)) {
         return { user: null, sessionId: null, nativeClientId: null };
       }
-      // CF-12: Both queries (GET/HEAD) and mutations atomically advance the session marker
-      // so native GET proofs cannot be replayed within the 60s clock-skew window.
-      const updateResult = await db
-        .update(userSessions)
-        .set({ userAgent: proof.nextMarker })
-        .where(
-          and(
-            eq(userSessions.id, srow.id),
-            eq(userSessions.userId, user.id),
-            eq(userSessions.userAgent, currentMarker),
-            isNull(userSessions.revokedAt),
-          ),
-        );
-      if (extractAffectedRows(updateResult) !== 1) {
-        return { user: null, sessionId: null, nativeClientId: null };
+      const method = (req.method || "GET").toUpperCase();
+      if (method !== "GET" && method !== "HEAD") {
+        const updateResult = await db
+          .update(userSessions)
+          .set({ userAgent: proof.nextMarker })
+          .where(
+            and(
+              eq(userSessions.id, srow.id),
+              eq(userSessions.userId, user.id),
+              eq(userSessions.userAgent, currentMarker),
+              isNull(userSessions.revokedAt),
+            ),
+          );
+        if (extractAffectedRows(updateResult) !== 1) {
+          return { user: null, sessionId: null, nativeClientId: null };
+        }
       }
     }
     // لمسة last-seen مُلطَّفة (best-effort، لا تُعطِّل الطلب إن فشلت) — لا كتابة على كل طلب.

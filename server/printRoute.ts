@@ -4,7 +4,8 @@
 //   POST /api/print/raw     { bytesB64 }  → يطبع بايتات ESC/POS مرسَلة base64
 //   POST /api/print/test    → يطبع تذكرة اختبار ASCII من الخادم مباشرة
 import { Router, type Request, type Response } from "express";
-import { createContext, normalizeOwnerAuthority, resolveCustomRole, type AuthUser } from "./context";
+import { createContext, type AuthUser } from "./context";
+import { hasOperationPolicy } from "../shared/operationPermissions";
 import {
   getConfiguredTarget,
   describeTarget,
@@ -54,11 +55,25 @@ export async function resolveAuthorizedPrintUser(
   const user = rawUser;
   const hadCustomRoleId = Boolean(user.customRoleId);
   if (user.isOwner) {
-    normalizeOwnerAuthority(user);
     return user;
   }
 
-  await resolveCustomRole(user);
+  if (
+    user.roleLockedByInactiveCustomRole ||
+    (hadCustomRoleId && !user.customRoleKey)
+  ) {
+    await logAudit(
+      { user, req },
+      {
+        action: "print.authorization",
+        entityType: "printer",
+        outcome: "FAILURE",
+        newValue: { operation: "invoicePrinting.authorizeBridge" },
+      },
+    );
+    res.status(403).json({ ok: false, error: "غير مخوّل بالطباعة المباشرة على طابعة المتجر." });
+    return null;
+  }
 
   try {
     assertDirectPrintBridgeAuthorized(user);
@@ -83,12 +98,11 @@ export async function resolveAuthorizedPrintUser(
   }
 
   if (
-    user.roleLockedByInactiveCustomRole ||
-    (hadCustomRoleId && !user.customRoleKey) ||
-    user.role === "courier" ||
-    user.role === "auditor" ||
-    user.role === "user" ||
-    !ALLOWED_PRINT_ROLES.has(user.role)
+    !hasOperationPolicy(user) &&
+    (user.role === "courier" ||
+      user.role === "auditor" ||
+      user.role === "user" ||
+      !ALLOWED_PRINT_ROLES.has(user.role))
   ) {
     await logAudit(
       { user, req },

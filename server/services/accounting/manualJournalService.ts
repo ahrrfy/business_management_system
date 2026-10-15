@@ -95,7 +95,7 @@ export interface ManualJournalDetail {
 export async function createManualJournal(
   tx: Tx,
   input: CreateManualJournalInput,
-  actor: Actor,
+  actor: Omit<Actor, "branchId"> & { branchId?: number | null },
   auditContext: AuditContext,
 ): Promise<{ journalId: number; entryId: number; amount: string }> {
   const notes = input.notes.trim();
@@ -372,7 +372,9 @@ export async function createManualJournal(
     });
   }
 
-  const effectiveBranchId = input.branchId ?? actor.branchId ?? null;
+  const rawBranchId = input.branchId !== undefined ? input.branchId : actor.branchId;
+  const effectiveBranchId =
+    rawBranchId != null && rawBranchId > 0 ? rawBranchId : null;
   const runtime = await getDoubleEntryRuntime(tx);
 
   // 5. بناء نية الترحيل المعيارية والتوقيع المشفر (Evidence Hash)

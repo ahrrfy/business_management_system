@@ -228,7 +228,7 @@ function isTwoFactorEnforcementActive(): boolean {
   const raw = process.env.TWO_FACTOR_ENFORCEMENT?.trim().toLowerCase();
   if (raw === "off" || raw === "0" || raw === "false") return false; // بوّابة إنقاذ ٣
   if (raw === "on" || raw === "1" || raw === "true") return true;
-  if (process.env.NODE_ENV === "test" && !isCryptoReady()) return false;
+  if (!isCryptoReady()) return false; // بوّابة إنقاذ ٢: لا مفتاح تشفير مضبوط ولا إلزام صريح ⇒ لا إنفاذ يمنع التفعيل
   return true;
 }
 
