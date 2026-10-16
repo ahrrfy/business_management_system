@@ -158,6 +158,7 @@ import {
   legacyOperationPolicy,
   operationDecision,
   operationPolicySchema,
+  storedOperationPolicySchema,
   operationRecordScope,
   resolveOperationPolicy,
   summarizeOperationModules,
@@ -241,6 +242,35 @@ describe("actual access preview", () => {
 });
 
 describe("operation policies", () => {
+  it("reads reclassified stored authority without granting it or weakening policy writes", () => {
+    for (const protectedGrant of [true, false]) {
+      const old: OperationPolicy = {
+        ...policy({ "operation.sales.create": true, "operation.returns.create": false, "operation.users.create": protectedGrant }),
+        recordScopes: { "operation.sales.create": "OWN", "operation.users.create": "BRANCH" },
+        dataVisibility: { purchaseCost: false, profitMargin: false },
+      };
+      const normalized = storedOperationPolicySchema.parse(old);
+      expect(normalized).toEqual({
+        ...policy({ "operation.sales.create": true, "operation.returns.create": false }),
+        recordScopes: { "operation.sales.create": "OWN" },
+        dataVisibility: { purchaseCost: false, profitMargin: false },
+      });
+      expect(operationPolicySchema.safeParse(old).success).toBe(false);
+      expect(old.grants["operation.users.create"]).toBe(protectedGrant);
+      expect(old.recordScopes!["operation.users.create"]).toBe("BRANCH");
+    }
+  });
+
+  it("keeps malformed, unknown, and unsupported stored policies fail closed", () => {
+    for (const input of [
+      policy({ "operation.unknown.path": true }),
+      { ...policy({}), grants: { "operation.users.create": "true" } },
+      { ...policy({}), recordScopes: { "operation.unknown.path": "BRANCH" } },
+      { ...policy({}), dataVisibility: { purchaseCost: true, profitMargin: false } },
+      { ...policy({}), version: 2 },
+    ]) expect(storedOperationPolicySchema.safeParse(input).success).toBe(false);
+  });
+
   it("removes only retired keys from old full policies without changing grants or visibility", () => {
     for (const retiredGrant of [true, false]) {
       const visibility = { purchaseCost: true, profitMargin: true };

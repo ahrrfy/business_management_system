@@ -5,7 +5,7 @@ import {
   buildOperationPolicyFromLegacy,
   getOperationPermission,
   operationDecision,
-  operationPolicySchema,
+  storedOperationPolicySchema,
   resolveOperationPolicy,
   type OperationPolicy,
   type OperationUser,
@@ -89,7 +89,7 @@ function forbiddenOperation(): TRPCError {
 
 function storedPolicy(value: unknown): OperationPolicy | null {
   if (value == null) return null;
-  const parsed = operationPolicySchema.safeParse(value);
+  const parsed = storedOperationPolicySchema.safeParse(value);
   if (!parsed.success) throw forbiddenOperation();
   return parsed.data;
 }

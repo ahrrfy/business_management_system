@@ -135,6 +135,23 @@ export const operationPolicySchema = policyShape.transform((policy) => {
   }
 });
 
+/**
+ * Stored full maps can outlive a catalog change that protects an operation.
+ * Remove only known nondelegable keys on read; their authority is enforced by
+ * operationDecision. Preserve every other grant, denial, scope and visibility
+ * setting, and keep unknown/malformed input fail closed. Writes stay strict.
+ */
+export const storedOperationPolicySchema = policyShape.transform((policy) => {
+  const keep = ([key]: [string, unknown]) => operationByKey.get(key)?.delegable !== false;
+  return {
+    ...policy,
+    grants: Object.fromEntries(Object.entries(policy.grants).filter(keep)),
+    ...(policy.recordScopes ? {
+      recordScopes: Object.fromEntries(Object.entries(policy.recordScopes).filter(keep)),
+    } : {}),
+  };
+}).pipe(operationPolicySchema);
+
 export function getOperationPermission(
   pathOrKey: string,
 ): OperationPermission | undefined {
