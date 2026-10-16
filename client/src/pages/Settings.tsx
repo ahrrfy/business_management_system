@@ -15,7 +15,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { screenAttributionHeaders } from "@/lib/screenAttribution";
 import { getServerBridgeStatus, serverPrintTest } from "@/lib/printing/print";
-import { saveFileAs } from "@/lib/export";
+import { saveBackupToDevice, type BackupDownloadFile, type BackupDownloadProgress } from "@/lib/backupDownload";
 import { fmtDateTime } from "@/lib/date";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { Download, RotateCcw, Trash2 } from "lucide-react";
@@ -24,19 +24,7 @@ import { useEffect, useRef, useState } from "react";
 function fmtKb(kb: number): string {
   return kb >= 1024 ? `${(kb / 1024).toFixed(1)} م.ب` : `${kb} ك.ب`;
 }
-const SQL_SAVE = { description: "نسخة قاعدة SQL", mime: "application/sql" } as const;
 const MAX_RESTORE_UPLOAD_BYTES = 200 * 1024 * 1024;
-
-async function fetchBackupBlob(name: string): Promise<Blob> {
-  const res = await fetch(`/api/backups/download?name=${encodeURIComponent(name)}`);
-  if (!res.ok) throw new Error(`تعذّر تنزيل النسخة الاحتياطية (${res.status})`);
-  return res.blob();
-}
-
-/** تنزيل نسخة قائمة بحوار «حفظ باسم» — يُستدعى متزامناً داخل النقرة (قيد transient activation). */
-function downloadBackup(name: string) {
-  saveFileAs(() => fetchBackupBlob(name), { filename: name, ...SQL_SAVE });
-}
 
 type DangerAction =
   | { kind: "restore-server"; name: string }
@@ -70,6 +58,9 @@ export default function Settings() {
   const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });
   // حدّ عرض جدول النسخ الاحتياطية — السجلّ يكبر تلقائياً مع النسخ اليومي (٠٢:٠٠)؛ "عرض المزيد" يوسّعه تدريجياً.
   const [backupsVisible, setBackupsVisible] = useState(BACKUPS_VISIBLE_STEP);
+  const [backupDownload, setBackupDownload] = useState<BackupDownloadProgress | null>(null);
+  const backupDownloadAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => backupDownloadAbort.current?.abort(), []);
 
   useEffect(() => { getServerBridgeStatus().then(setBridge).catch(() => {}); }, []);
 
@@ -184,15 +175,37 @@ export default function Settings() {
   const confirmToken = info.data?.confirmToken ?? info.data?.db.name ?? "";
   const onlineMaintenanceEnabled = info.data?.onlineMaintenanceEnabled === true;
 
+  async function startBackupDownload(
+    source: () => Promise<BackupDownloadFile | null>,
+    suggestedName: string,
+  ) {
+    if (backupDownloadAbort.current) return;
+    const controller = new AbortController();
+    backupDownloadAbort.current = controller;
+    setBackupDownload({ phase: "preparing", receivedBytes: 0, totalBytes: 0 });
+    try {
+      const result = await saveBackupToDevice(source, {
+        suggestedName,
+        signal: controller.signal,
+        onProgress: setBackupDownload,
+      });
+      if (result === "saved") notify.ok("حُفظت النسخة كاملة على جهازك");
+      else if (result === "started")
+        notify.ok("بدأ التنزيل؛ تابع اكتماله من قائمة تنزيلات المتصفح");
+    } catch (error) {
+      if (!controller.signal.aborted)
+        notify.err(error, "لم يكتمل الحفظ؛ أعد محاولة التنزيل.");
+    } finally {
+      backupDownloadAbort.current = null;
+      setBackupDownload(null);
+    }
+  }
   function backupAndDownload() {
-    // حوار «حفظ باسم» يُفتح فوراً داخل النقرة باسم متوقَّع (نمط تسمية الخادم UTC) بينما تجري
-    // النسخة بالتوازي؛ الاسم الفعلي من الخادم يصحّح مسار السقوط التقليدي والتوست.
     const suggested = `erp-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.sql`;
-    saveFileAs(async () => {
+    void startBackupDownload(async () => {
       const r = await backupNow.mutateAsync().catch(() => null); // toast من onError
-      if (!r?.created) return null;
-      return { blob: await fetchBackupBlob(r.created.name), filename: r.created.name };
-    }, { filename: suggested, ...SQL_SAVE });
+      return r?.created ?? null;
+    }, suggested);
   }
   async function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -291,10 +304,10 @@ export default function Settings() {
         <CardHeader className="flex flex-row items-center justify-between gap-2 flex-wrap">
           <CardTitle className="text-base">النسخ الاحتياطي</CardTitle>
           <div className="flex gap-2">
-            <Button variant="outline" onClick={() => backupNow.mutate()} disabled={backupNow.isPending}>
+            <Button variant="outline" onClick={() => backupNow.mutate()} disabled={backupNow.isPending || backupDownload !== null}>
               {backupNow.isPending ? "جارٍ…" : "نسخة الآن"}
             </Button>
-            <Button onClick={backupAndDownload} disabled={backupNow.isPending}>
+            <Button onClick={backupAndDownload} disabled={backupNow.isPending || backupDownload !== null}>
               نسخة + تنزيل للجهاز
             </Button>
           </div>
@@ -303,6 +316,40 @@ export default function Settings() {
           <p className="text-xs text-muted-foreground">
             نسخة كاملة (mysqldump ذرّي) تطابق قاعدة الإنتاج. التنزيل يحفظ الملف على جهازك. النسخ اليومي 02:00 تلقائي.
           </p>
+          {backupDownload && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="space-y-2 rounded border p-3 text-sm"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span>
+                  {backupDownload.phase === "preparing"
+                    ? "تحضير النسخة للتنزيل"
+                    : backupDownload.phase === "saving"
+                      ? "إتمام حفظ النسخة"
+                      : `تنزيل النسخة: ${Math.floor((backupDownload.receivedBytes / backupDownload.totalBytes) * 100)}% — ${fmtKb(Math.round(backupDownload.receivedBytes / 1024))} من ${fmtKb(Math.round(backupDownload.totalBytes / 1024))}`}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={backupDownload.phase === "saving"}
+                  onClick={() => backupDownloadAbort.current?.abort()}
+                >
+                  إلغاء التنزيل
+                </Button>
+              </div>
+              {backupDownload.totalBytes > 0 && (
+                <progress
+                  className="h-2 w-full"
+                  max={backupDownload.totalBytes}
+                  value={backupDownload.receivedBytes}
+                  aria-label="تقدم تنزيل النسخة"
+                />
+              )}
+              <p className="text-xs text-muted-foreground">قد يظهر حجم الملف صفراً أثناء التنزيل؛ يُحفظ نهائياً عند اكتماله.</p>
+            </div>
+          )}
           {backups.isLoading ? (
             <LoadingState />
           ) : list.length === 0 ? (
@@ -328,7 +375,7 @@ export default function Settings() {
                         <RowActions
                           mode="menu"
                           actions={[
-                            { key: "download", kind: "export", label: "تنزيل", icon: Download, gate: { adminOnly: true }, onSelect: () => downloadBackup(b.name) },
+                            { key: "download", kind: "export", label: "تنزيل", icon: Download, gate: { adminOnly: true }, disabled: backupDownload !== null, onSelect: () => { void startBackupDownload(async () => b, b.name); } },
                             ...(isOwner
                               ? [
                                   {
