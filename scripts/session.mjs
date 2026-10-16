@@ -3,17 +3,18 @@
 //   pnpm session:new <اسم> [--from <فرع-الأساس>] [--port <n>] [--no-install] [--no-db]
 //        إنشاء فرع session/<اسم> + شجرة عمل معزولة + قاعدة/منفذ/‎.env مستقلّين + تسجيل في سجلّ التنسيق
 //   pnpm session:list                                عرض كل أشجار العمل وفروعها
-//   pnpm session:remove <اسم> [--keep-branch]         إزالة شجرة العمل (والفرع ما لم يُطلب إبقاؤه)
+//   pnpm session:remove <اسم>                        إرشاد إلى التنظيف المحروس؛ لا إزالة قسرية ولا حذف فرع
 // كل شجرة عمل = مجلّد مستقل بفهرس git خاص + قاعدة بيانات + منفذ ⇒ عزل حقيقي (انظر CLAUDE.md §٧ + coord).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import {
   coordRootFor, sessionKeyFor, ensureCoordDirs, sessionsDir, writeJson, readJson,
 } from "./coord-core.mjs";
 import { TEST_DB_BASE } from "./lib/test-db-name.mjs";
+import { sessionHome, registeredWorktrees } from "./session-cleanup.mjs";
 
 function git(args, { capture = true } = {}) {
   return execFileSync("git", args, { encoding: "utf8", stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit" });
@@ -40,9 +41,8 @@ const root = repoRoot.out;
 // الجذر الأساسي للمشروع = أب الـ .git المشترك ⇒ مفتاح تنسيق موحّد حتى لو نُفّذ الأمر من worktree.
 const commonDir = tryGit(["rev-parse", "--git-common-dir"]);
 const projectRoot = commonDir.ok ? path.dirname(path.resolve(root, commonDir.out)) : root;
-const parent = path.dirname(root);
-const base = path.basename(root);
-const wtPath = (n) => path.join(parent, `${base}__${n}`);
+const parent = sessionHome(projectRoot);
+const wtPath = (n) => path.join(parent, n);
 const validName = (n) => /^[a-z0-9][a-z0-9-]*$/.test(n);
 
 function branchExists(branch) {
@@ -71,9 +71,8 @@ function withDb(url, db) {
 function usedSiblingPorts() {
   const used = new Set([3000]); // 3000 محجوز للجلسة الرئيسية على main
   try {
-    for (const entry of readdirSync(parent)) {
-      if (!entry.startsWith(`${base}__`)) continue;
-      const envFile = path.join(parent, entry, ".env");
+    for (const entry of registeredWorktrees(projectRoot)) {
+      const envFile = path.join(entry.worktree, ".env");
       if (!existsSync(envFile)) continue;
       const p = parseEnv(readFileSync(envFile, "utf8")).get("PORT");
       if (p) used.add(Number(p));
@@ -384,19 +383,11 @@ function cmdList() {
 function cmdRemove() {
   if (!name) fail("الاسم مطلوب: pnpm session:remove <اسم>");
   const branch = `session/${name}`;
-  const dir = wtPath(name);
-  const res = tryGit(["worktree", "remove", dir]);
-  if (!res.ok) {
-    console.error("✗ تعذّرت الإزالة (قد تكون فيها تغييرات غير ملتزمة). للإزالة القسرية:");
-    console.error(`  git worktree remove --force "${dir}"`);
-    process.exit(1);
-  }
-  console.log(`✓ أُزيلت شجرة العمل: ${dir}`);
-  if (!flags.has("--keep-branch")) {
-    const del = tryGit(["branch", "-d", branch]);
-    console.log(del.ok ? `✓ حُذف الفرع ${branch}` : `• أُبقي الفرع ${branch} (غير مدموج؟ احذفه بـ git branch -D ${branch}).`);
-  }
-  console.log(`تذكير: حرّر ادّعاء الشريحة إن لم تفعل — pnpm coord:release ${name}`);
+  const tree = registeredWorktrees(projectRoot).find((t) => t.branch === `refs/heads/${branch}`);
+  if (!tree) fail(`لا توجد شجرة مسجلة للفرع ${branch}`);
+  console.log(`• أُبقيت ${tree.worktree} وفرعها. الإزالة أصبحت عبر التنظيف المحروس فقط.`);
+  console.log(`حرّر ادّعاءاتك عند انتهاء المهمة: pnpm coord:release ${name}`);
+  console.log("تُنظَّف الجلسة بعد إثبات دمج الرأس، ونظافة العمل، ومرور 7 أيام دون نشاط، وصورة نشاط حديثة؛ انظر docs/session-maintenance.md.");
 }
 
 switch (sub) {
