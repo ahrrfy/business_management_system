@@ -328,6 +328,8 @@ export default function Settings() {
                     ? "تحضير النسخة للتنزيل"
                     : backupDownload.phase === "saving"
                       ? "إتمام حفظ النسخة"
+                      : backupDownload.phase === "retrying"
+                        ? `انقطع الاتصال؛ جارٍ استئناف تنزيل النسخة من ${Math.floor((backupDownload.receivedBytes / (backupDownload.totalBytes || 1)) * 100)}%…`
                       : `تنزيل النسخة: ${Math.floor((backupDownload.receivedBytes / backupDownload.totalBytes) * 100)}% — ${fmtKb(Math.round(backupDownload.receivedBytes / 1024))} من ${fmtKb(Math.round(backupDownload.totalBytes / 1024))}`}
                 </span>
                 <Button
