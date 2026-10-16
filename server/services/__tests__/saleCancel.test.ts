@@ -493,7 +493,7 @@ describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار
     expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status).not.toBe("CANCELLED");
   });
 
-  it("يحيل الإلغاء النقدي بعد إغلاق وردية الكاشير إلى اعتماد المدير", async () => {
+  it("يحيل غياب درج نقد مفتوح للكاشير إلى اعتماد المدير", async () => {
     await setStock(1, 1, 10);
     await db().update(s.users).set({ role: "cashier" }).where(eq(s.users.id, manager.userId));
     const cashierActor = { userId: manager.userId, branchId: 1, role: "cashier" as const };
@@ -516,7 +516,7 @@ describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار
     }, cashierActor)).rejects.toMatchObject({
       decision: {
         result: "APPROVAL_REQUIRED",
-        reason: expect.stringContaining("الوردية المفتوحة"),
+        reason: expect.stringContaining("يخص منفذ العملية"),
       },
     });
     expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status)
