@@ -1716,7 +1716,7 @@ export const saleRouter = router({
           requestType: "SALES_REISSUE",
           reason,
           payload,
-          requestReview,
+          requestReview: requestReview ?? false,
         },
         actor,
       );

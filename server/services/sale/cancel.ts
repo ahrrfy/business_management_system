@@ -36,6 +36,7 @@ import {
   invoices,
   onlineOrders,
   receipts,
+  shifts,
 } from "../../../drizzle/schema";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { money, toDbMoney } from "../money";
@@ -313,7 +314,9 @@ export async function cancelSaleInTx(
     // ترتيب الأقفال الحاكم: مصدر النقد قبل الفاتورة/مورّدي الأمانة. اعتماد سند مورد
     // نقدي يسلك source→supplier؛ تأخير المصدر هنا كان يصنع المسار المعاكس.
     const invPreview = (
-      await tx.select({ branchId: invoices.branchId }).from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1)
+      await tx.select({ branchId: invoices.branchId, shiftType: shifts.shiftType })
+        .from(invoices).leftJoin(shifts, eq(shifts.id, invoices.shiftId))
+        .where(eq(invoices.id, input.invoiceId)).limit(1)
     )[0];
     if (!invPreview) {
       throw new TRPCError({
@@ -362,6 +365,7 @@ export async function cancelSaleInTx(
           tx,
           actor.userId,
           Number(invPreview.branchId),
+          invPreview.shiftType ?? "RETAIL",
         );
         prelockedCashSource = shiftId == null
           ? null
@@ -523,6 +527,8 @@ export async function cancelSaleInTx(
         operationAllowed: currentCancellationAllowed,
         sameBranch: Number(inv.branchId) === Number(actor.branchId),
         ownsTransaction: Number(inv.createdBy) === Number(actor.userId),
+        cashSourceReady: refundable.lte(0) || input.refundPaymentMethod !== "CASH" ||
+          (prelockedCashSource?.cashBucket === "DRAWER" && prelockedCashSource.shiftId != null),
         sameOpenShift:
           refundable.lte(0) ||
           input.refundPaymentMethod !== "CASH" ||

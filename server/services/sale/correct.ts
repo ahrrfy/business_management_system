@@ -19,6 +19,8 @@
 // v1 (مؤجَّلٌ صريحاً، يُرفَض بأمان): المُرتجَعة (كلياً/جزئياً)، منشأ WORKORDER، الرقمية، التوصيل النشط.
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { evaluateRefundOperationalDecision, OperationalApprovalRequiredError } from "@shared/operationalDecision";
 import Decimal from "decimal.js";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
@@ -35,13 +37,16 @@ import {
 } from "../../../drizzle/schema";
 import { createPostingIntent, creditLine, debitLine,
 } from "../accounting/postingEngine";
-import { assertCashOutAvailable, lockCashSourceForUpdate,
+import { assertCashOutAvailable, computeDrawerCashBalance, lockCashSourceForUpdate,
 } from "../cash/cashAvailability";
+import { loadCurrentOperationalAuthorityTx } from "../authorization/currentOperationalAuthority";
+import { assertOperationAuthorityTx } from "../authorization/operationAuthority";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { returnSaleInTx } from "../returnService";
-import { resolveBranchCashShiftTx } from "../shiftService";
+import { openShiftIdTx, resolveBranchCashShiftTx } from "../shiftService";
+import { loadRefundCaps } from "../returns/refundCaps";
 import { withTx, type Actor } from "../tx";
 import { extractInsertId } from "../../lib/insertId";
 import { createSaleInTx } from "./create";
@@ -112,6 +117,8 @@ export interface CorrectSaleInput {
   clientRequestId?: string | null;
   /** لقطة طلب التحكم؛ لا تُقبل من الراوتر العام وتُطابَق بعد قفل الأصل. */
   controlExpectedSnapshot?: InvoiceControlSnapshot | null;
+  /** Server-only: enforce current cashier authority, refund limits and own drawer. */
+  enforceOperationalDecision?: boolean;
 }
 
 export interface CorrectSaleResult {
@@ -176,6 +183,26 @@ export async function correctSaleInTx(
         why: "الطلب جمع بين تحصيل فرق إضافي ومعالجة مبلغ زائد",
         doThis: "حدّث المقارنة واختر معالجة واحدة مطابقة للفرق النهائي",
       }),
+    });
+  }
+
+  const currentOperationalAuthority = input.enforceOperationalDecision
+    ? await loadCurrentOperationalAuthorityTx(tx, actor.userId)
+    : null;
+  if (currentOperationalAuthority) {
+    if (currentOperationalAuthority.role !== actor.role ||
+      Number(currentOperationalAuthority.branchId) !== Number(actor.branchId)) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تعذر تثبيت تفويض تعديل الفاتورة", why: "تغير دور الحساب أو فرعه أثناء التنفيذ",
+        doThis: "حدث الصفحة وأعد التعديل بصلاحيات الحساب الحالية",
+      }) });
+    }
+    await assertOperationAuthorityTx(tx, actor, "sales.reissue", (current) => {
+      const permissions = resolvePermissions(current.role as RoleKey, current.permissionsOverride as PermissionMap | null);
+      return current.isOwner === true || current.role === "admin" || (
+        (permissions.products === "READ" || permissions.products === "FULL") &&
+        (permissions.sales === "FULL" || permissions.workorders === "FULL")
+      );
     });
   }
 
@@ -258,15 +285,19 @@ export async function correctSaleInTx(
     //    تحتاج درجاً، والزبون العابر الذي لم يحدد المخرج يُرفض لاحقاً ذرّياً إن ظهر فائض.
     const invPreview = (
       await tx.select({ branchId: invoices.branchId, shiftId: invoices.shiftId,
-          customerId: invoices.customerId, paidAmount: invoices.paidAmount,
+          customerId: invoices.customerId, paidAmount: invoices.paidAmount, shiftType: shifts.shiftType,
         })
-        .from(invoices).where(eq(invoices.id, input.originalInvoiceId)).limit(1)
+        .from(invoices).leftJoin(shifts, eq(shifts.id, invoices.shiftId))
+        .where(eq(invoices.id, input.originalInvoiceId)).limit(1)
     )[0];
     if (!invPreview) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة",
       });
     if (
-      actor.role !== "admin" &&
-      Number(invPreview.branchId) !== Number(actor.branchId)
+      (actor.role !== "admin" && Number(invPreview.branchId) !== Number(actor.branchId)) ||
+      (currentOperationalAuthority != null && (
+        currentOperationalAuthority.branchId == null ||
+        Number(invPreview.branchId) !== Number(currentOperationalAuthority.branchId)
+      ))
     ) {
       throw new TRPCError({
         code: "FORBIDDEN",
@@ -276,17 +307,32 @@ export async function correctSaleInTx(
     const mayNeedCashRefund = !input.additionalPayment
       && input.overpayHandling === "CASH_REFUND";
     let prelockedOverpayShift: { shiftId: number } | null = null;
+    let prelockedOverpayAccount: Awaited<ReturnType<typeof lockCashSourceForUpdate>> | null = null;
     if (mayNeedCashRefund) {
-      prelockedOverpayShift = await resolveBranchCashShiftTx(
-        tx,
-        Number(invPreview.branchId),
-        input.overpayRefundShiftId ?? null,
-      );
-      await lockCashSourceForUpdate(tx, {
-        branchId: Number(invPreview.branchId),
-        cashBucket: "DRAWER",
-        shiftId: prelockedOverpayShift.shiftId,
-      });
+      if (currentOperationalAuthority) {
+        const shiftId = await openShiftIdTx(tx, actor.userId, Number(invPreview.branchId), invPreview.shiftType ?? "RETAIL");
+        if (shiftId != null) {
+          const [ownShift] = await tx.select({ userId: shifts.userId, branchId: shifts.branchId, status: shifts.status })
+            .from(shifts).where(eq(shifts.id, shiftId)).limit(1);
+          if (ownShift?.status === "OPEN" && Number(ownShift.userId) === Number(actor.userId) &&
+            Number(ownShift.branchId) === Number(invPreview.branchId)) {
+            prelockedOverpayShift = { shiftId };
+          }
+        }
+      } else {
+        prelockedOverpayShift = await resolveBranchCashShiftTx(
+          tx,
+          Number(invPreview.branchId),
+          input.overpayRefundShiftId ?? null,
+        );
+      }
+      if (prelockedOverpayShift) {
+        prelockedOverpayAccount = await lockCashSourceForUpdate(tx, {
+          branchId: Number(invPreview.branchId),
+          cashBucket: "DRAWER",
+          shiftId: prelockedOverpayShift.shiftId,
+        });
+      }
     }
 
     // درج فرق التصحيح يُقفَل قبل جهة التوصيل والفاتورة، ويأتي من الوردية التي حدّدها
@@ -325,14 +371,16 @@ export async function correctSaleInTx(
     // الوردية المغلقة حدٌّ محاسبي: ننتقل إلى أحدث وردية مفتوحة من النوع نفسه.
     let channelShiftId: number | null = null;
     if (invPreview.shiftId != null) {
-      const originalShift = (
-        await tx
-          .select({ id: shifts.id, branchId: shifts.branchId, status: shifts.status, shiftType: shifts.shiftType })
+      const sourceShiftQuery = tx
+          .select({ id: shifts.id, branchId: shifts.branchId, userId: shifts.userId, status: shifts.status, shiftType: shifts.shiftType })
           .from(shifts)
           .where(eq(shifts.id, Number(invPreview.shiftId)))
-          .for("update")
-          .limit(1)
-      )[0];
+          .limit(1);
+      // Direct cashier corrections only read the source channel. Locking a peer's
+      // historical drawer after our own can invert concurrent cashier lock order.
+      const originalShift = (await (currentOperationalAuthority
+        ? sourceShiftQuery
+        : sourceShiftQuery.for("update")))[0];
       if (originalShift && Number(originalShift.branchId) === Number(invPreview.branchId)) {
         if (addPayShiftId != null) {
           const paymentShift = (
@@ -351,7 +399,7 @@ export async function correctSaleInTx(
               }),
             });
           }
-        } else if (originalShift.status === "OPEN") {
+        } else if (originalShift.status === "OPEN" && !currentOperationalAuthority) {
           channelShiftId = Number(originalShift.id);
         } else {
           const currentSameChannel = (
@@ -362,13 +410,21 @@ export async function correctSaleInTx(
                 eq(shifts.branchId, Number(invPreview.branchId)),
                 eq(shifts.shiftType, originalShift.shiftType),
                 eq(shifts.status, "OPEN"),
+                currentOperationalAuthority ? eq(shifts.userId, actor.userId) : undefined,
               ))
               .orderBy(desc(shifts.id))
               .for("update")
               .limit(1)
           )[0];
-          if (!currentSameChannel && originalShift.shiftType === "RECEPTION") {
-            throw new TRPCError({
+          if (!currentSameChannel) {
+            if (currentOperationalAuthority) {
+              throw new OperationalApprovalRequiredError({
+                result: "APPROVAL_REQUIRED",
+                reason: "التعديل يحتاج وردية مفتوحة من قناة الأصل تخص منفذ العملية",
+                approvalOperation: "salesControl.requestReissue",
+              });
+            }
+            if (originalShift.shiftType === "RECEPTION") throw new TRPCError({
               code: "PRECONDITION_FAILED",
               message: appErrorMessage({
                 what: "تعذّر تنفيذ تعديل الفاتورة",
@@ -502,6 +558,10 @@ export async function correctSaleInTx(
         message: `تعذّر التصحيح: المدفوع المسجَّل (${originalPaid.toFixed(2)}) لا يطابق إيصالات القبض القابلة للنقل (${detachedSum.toFixed(2)}) — قد يكون بعضه من عربونٍ مرتبطٍ بغير هذه الفاتورة. عالِجها بإلغاءٍ كامل ثمّ إعادة بيع.`,
       });
     }
+    // Capture the proven remaining rails before reversal/rebinding moves receipts.
+    const operationalRefundCaps = currentOperationalAuthority
+      ? await loadRefundCaps(tx, input.originalInvoiceId, { lock: true })
+      : null;
     // ⚠️ `undefined` = «الحقل لم يُرسَل ⇒ بلا تغيير»، بخلاف `null` = «أزِل العميل صراحةً».
     //    نُطابق الاشتقاق حرفياً لما تمرّره خطوة ⑦ لإعادة الترحيل.
     const targetCustomerId = input.customerId === undefined
@@ -670,6 +730,20 @@ export async function correctSaleInTx(
         input.clientRequestId ?? `correct-${input.originalInvoiceId}`);
       carriedSum = round2(carriedSum.minus(reversedExcess));
     }
+    if (currentOperationalAuthority && targetCustomerId != null && !deliveryAmendment) {
+      const originalOutstanding = Decimal.max(0, money(inv.total).minus(originalPaid));
+      const replacementOutstanding = Decimal.max(0, newTotal.minus(carriedSum).minus(money(input.additionalPayment?.amount ?? "0")));
+      const creditCap = currentOperationalAuthority.caps.maxCreditSaleLimitIqd;
+      // Reducing an existing debt is allowed. New credit must fit today's cashier
+      // authority even though the carried receipt used the preCollected path.
+      if (replacementOutstanding.gt(originalOutstanding) && creditCap != null && replacementOutstanding.gt(money(creditCap))) {
+        throw new OperationalApprovalRequiredError({
+          result: "APPROVAL_REQUIRED",
+          reason: `ذمة الفاتورة بعد التعديل ${replacementOutstanding.toFixed(2)} د.ع تتجاوز سقف البيع الآجل ${money(creditCap).toFixed(2)} د.ع`,
+          approvalOperation: "salesControl.requestReissue",
+        });
+      }
+    }
     if (settlement && settlement.reRecorded.length) {
       await postReRecordedPaymentsTx(tx, {
         reRecorded: settlement.reRecorded,
@@ -807,6 +881,31 @@ export async function correctSaleInTx(
         overpayHandled = "CREDIT";
       } else {
         // استردادٌ نقديّ من الدرج المُقفَل سلفاً (خطوة ٠.٥) — الترتيب المصدر←المستند محفوظ.
+        if (currentOperationalAuthority && operationalRefundCaps) {
+          const drawerHasFunds = prelockedOverpayShift != null && prelockedOverpayAccount != null &&
+            (await computeDrawerCashBalance(tx, prelockedOverpayShift.shiftId,
+              prelockedOverpayAccount.openingBalance ?? "0")).gte(overpay);
+          const decision = evaluateRefundOperationalDecision({
+            operationAllowed: true,
+            sameBranch: Number(inv.branchId) === Number(currentOperationalAuthority.branchId),
+            cashSourceReady: prelockedOverpayShift != null,
+            accountingPeriodOpen: true,
+            hasDownstreamEffects: false,
+            hasSourceDocument: true,
+            refundAmountIqd: overpay.toFixed(2),
+            sourcePaidAmountIqd: operationalRefundCaps.pool.toFixed(2),
+            maxRefundAmountIqd: currentOperationalAuthority.caps.maxRefundAmountIqd,
+            refundMethod: "CASH",
+            originalPaymentMethods: Array.from(operationalRefundCaps.netByMethod.entries())
+              .filter(([, amount]) => amount.gt(0)).map(([method]) => method),
+            originalPaymentAmounts: Object.fromEntries(Array.from(operationalRefundCaps.netByMethod.entries())
+              .map(([method, amount]) => [method, Decimal.min(operationalRefundCaps.pool, amount).toFixed(2)])),
+            drawerHasFunds,
+            approvalOperation: "sales.reissue",
+          });
+          if (decision.result === "APPROVAL_REQUIRED") throw new OperationalApprovalRequiredError(decision);
+          if (decision.result === "DENY") throw new TRPCError({ code: "FORBIDDEN", message: decision.reason });
+        }
         if (!prelockedOverpayShift) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",

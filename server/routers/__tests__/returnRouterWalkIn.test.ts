@@ -278,7 +278,7 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     expect(res).toMatchObject({ mode: "EXECUTED" });
   });
 
-  it("خدمة الحدود تحوّل مرتجع فاتورة الزميل إلى طلب تحكّم", async () => {
+  it("خدمة الحدود تحوّل الاسترداد المتجاوز للسقف إلى طلب تحكّم", async () => {
     // كاشير بمعرّف 99 في نفس الفرع 1 يحاول إرجاع فاتورة أنشأها المستخدم 1
     const coworkerCaller = returnRouter.createCaller({
       req: { headers: {} } as TrpcContext["req"],
@@ -291,7 +291,7 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
 
     mocks.returnSaleDirect.mockRejectedValueOnce(new OperationalApprovalRequiredError({
       result: "APPROVAL_REQUIRED",
-      reason: "المستند أنشأه موظف آخر",
+      reason: "مبلغ الرد يتجاوز سقف الاسترداد",
       approvalOperation: "salesControl.requestReturn",
     }));
     const res = await coworkerCaller.create({

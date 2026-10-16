@@ -1091,7 +1091,7 @@ export default function SalesInvoice() {
       {isCorrection && (
         <div className="flex items-center gap-2 rounded-md border-2 border-[var(--sem-warn)]/60 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-xs font-extrabold text-[var(--sem-warn)]">
           <AlertTriangle aria-hidden className="size-4 shrink-0" />
-          <span>وضع تصحيح — سيُعكس الأصل ({original.data?.invoiceNumber ?? "…"}) ويُصدَر بديل مرتبط به بعد الاعتماد.</span>
+          <span>وضع تصحيح — سيُعكس الأصل ({original.data?.invoiceNumber ?? "…"}) ويُصدَر بديل مرتبط به عند التنفيذ حسب صلاحيتك وسقف الاسترداد.</span>
         </div>
       )}
       {/* شريط العنوان */}
