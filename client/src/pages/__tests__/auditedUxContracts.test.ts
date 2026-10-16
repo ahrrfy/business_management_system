@@ -81,12 +81,21 @@ describe("audited public UX contracts", () => {
 
   it("locks restore controls once a destructive upload starts", () => {
     const source = readPage("Settings.tsx");
+    const start = source.indexOf("async function handleDangerConfirm(");
+    const end = source.indexOf("  const c = info.data?.counts;", start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const restoreHandler = source.slice(start, end);
 
-    expect(source).not.toContain("AbortController");
+    // A cancellable read-only backup download shares this page. Destructive
+    // restore uploads must still run to completion once the server starts.
+    expect(restoreHandler).not.toContain("AbortController");
+    expect(restoreHandler).not.toContain("AbortSignal");
+    expect(restoreHandler).not.toMatch(/\bsignal\s*:/);
     expect(source).not.toContain("cancelRestoreUpload");
     expect(source).not.toContain("onCancelPending=");
-    expect(source).toContain("setRestoreUploadStreaming(true)");
-    expect(source).toContain("setRestoreUploadStreaming(false)");
+    expect(restoreHandler).toContain("setRestoreUploadStreaming(true)");
+    expect(restoreHandler).toContain("setRestoreUploadStreaming(false)");
   });
 
   it("keeps today's actionable reminder count in the same branch scope as its queue", () => {
