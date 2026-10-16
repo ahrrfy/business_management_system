@@ -45,6 +45,7 @@ export function useInvoiceActionPermissions(
       !!user?.role && hasModuleAccess(role, override, "digital_cards", "READ"),
     ),
     canCancelInvoice: allowed("sales.cancel", cashier),
+    canCancelUnpaidCodInvoice: allowed("sales.cancelUnpaidCod", false),
     canDispatch: allowed("delivery.dispatchInvoice", delivery),
     canCancelAssignment: allowed("delivery.cancelAssignment", delivery),
     canReverseWorkOrder: allowed(

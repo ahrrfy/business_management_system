@@ -13,6 +13,15 @@ const canonical = (
 });
 
 describe("lifecycle UI follows independent operation grants", () => {
+  it("shows limited COD cancellation without enabling general cancellation or refund actions", () => {
+    const user = canonical({ "operation.sales.cancelUnpaidCod": true, "operation.sales.cancel": false }, "cashier");
+    const actions = useInvoiceActionPermissions(user);
+    expect(actions.canCancelUnpaidCodInvoice).toBe(true);
+    expect(actions.canCancelInvoice).toBe(false);
+    expect(actions.canReturnInvoice).toBe(false);
+    expect(lifecycleActionAllowed(user, "salesControl.approve", false)).toBe(false);
+  });
+
   it("does not let a broad legacy module grant bypass a saved operation denial", () => {
     const user = {
       ...canonical({}, "manager"),

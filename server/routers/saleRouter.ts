@@ -68,7 +68,7 @@ import {
   replaySalesControlRequest,
   requestSalesControl,
 } from "../services/sale/controlRequests";
-import { cancelSale } from "../services/sale/cancel";
+import { cancelSale, isUnpaidCodCancellationSource } from "../services/sale/cancel";
 import { loadRefundCaps } from "../services/returns/refundCaps";
 import { OperationalApprovalRequiredError } from "@shared/operationalDecision";
 import { RETURN_EXECUTED_AUDIT_ACTION } from "../services/returns/auditActions";
@@ -2526,7 +2526,12 @@ export const saleRouter = router({
       const { workOrderCreatedBy: _workOrderCreatedBy, ...invoiceForView } =
         inv;
       const refundCaps = await loadRefundCaps(db, Number(inv.id));
-      const refundPreview = { refundablePaidAmount: refundCaps.pool.toFixed(2) };
+      const refundPreview = {
+        refundablePaidAmount: refundCaps.pool.toFixed(2),
+        unpaidCodCancellationEligible: Number(inv.branchId) === Number(ctx.user.branchId) &&
+          isUnpaidCodCancellationSource(inv, refundCaps.grossIn, refundCaps.grossOut,
+            refundCaps.unremittedDeliveryCustody, payments),
+      };
 
       /**
        * م٢ ق١١ — «الخطوة التالية»: حقلٌ اختياريٌّ يُلحَق بالردّ فتعرضه رقاقةُ الرأس بدل أن
@@ -2573,6 +2578,21 @@ export const saleRouter = router({
         nextAction,
         nextActionReason,
       };
+    }),
+
+  /** صلاحية مستقلة لا تتيح أي رافد استرداد أو إحالة إلى اعتماد نقدي. */
+  cancelUnpaidCod: returnsProcedure
+    .input(z.object({
+      invoiceId: z.number().int().positive(),
+      reason: z.string().trim().min(3).max(500),
+      clientRequestId: z.string().trim().min(1).max(80),
+    }).strict())
+    .mutation(async ({ input, ctx }) => {
+      const executed = await cancelSale({ ...input, refundPaymentMethod: "CASH",
+        enforceOperationalDecision: true, unpaidCodOnly: true }, {
+        userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role,
+      });
+      return { ...executed, mode: "EXECUTED" as const };
     }),
 
   // إلغاء فاتورة بيع كاملاً (قرار مالك ١٢/٨) — عكسٌ كامل + إرجاع مخزون + استرداد بجهة صرفٍ مُصرَّحة.

@@ -197,11 +197,21 @@ export default function InvoiceDetail() {
     onError: (e) => { setError(e.message); setDone(""); },
   });
 
+  const cancelUnpaidCod = trpc.sales.cancelUnpaidCod.useMutation({
+    onSuccess: async () => {
+      setDone("تم إلغاء فاتورة الدفع عند الاستلام وتسوية آثارها بلا صرف نقدي.");
+      setError(""); setCancelOpen(false); setCancelReason(""); setCancelConfirmText("");
+      await Promise.all([utils.sales.get.invalidate({ invoiceId }), invalidateFinancialQueries(queryClient, inv.data?.branchId)]);
+      setCancelRequestId(crypto.randomUUID());
+    },
+    onError: (e) => { setError(e.message); setDone(""); },
+  });
+
   // #28 (تدقيق التثبيت): تسجيل الدفعة = salesCashierProcedure(["cashier","manager"],"sales","FULL").
   // نُخفي لوحة «تسديد دفعة» عمّن يرفضه الخادم (محاسب/مدقّق/مندوب: sales=READ) بدل عرض نموذج يفشل
   // بـ403 — بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
   const me = trpc.auth.me.useQuery();
-  const { canFirstPrint, canReprint, canOpenStatement, canOpenVouchers, canCorrectInvoice, canReadCorrectionHistory, canLookupFullCorrection, canFullReissue, canRecordPayment, canInitiatePayment, canConfirmPayment, canReadDigital, canCancelInvoice, canDispatch, canCancelAssignment, canReverseWorkOrder, canRequestDueDateChange, canReturnInvoice, canDownloadPdf } = useInvoiceActionPermissions(me.data);
+  const { canFirstPrint, canReprint, canOpenStatement, canOpenVouchers, canCorrectInvoice, canReadCorrectionHistory, canLookupFullCorrection, canFullReissue, canRecordPayment, canInitiatePayment, canConfirmPayment, canReadDigital, canCancelInvoice, canCancelUnpaidCodInvoice, canDispatch, canCancelAssignment, canReverseWorkOrder, canRequestDueDateChange, canReturnInvoice, canDownloadPdf } = useInvoiceActionPermissions(me.data);
   const [returnDrawerMode, setReturnDrawerMode] = useState<"FULL" | "PARTIAL" | null>(null);
   const canRetryA4 = canReprint || (canFirstPrint && hasPendingFirstInvoicePrint(me.data?.id, invoiceId, "A4"));
   const canRetryThermal = canReprint || (canFirstPrint && hasPendingFirstInvoicePrint(me.data?.id, invoiceId, "THERMAL"));
@@ -318,6 +328,9 @@ export default function InvoiceDetail() {
     data.status !== "SUPERSEDED" &&
     canReverseWorkOrder;
   const paidAmountForRefund = round2(D(data.refundablePaidAmount ?? "0"));
+  const useLimitedCancellation = !canCancelInvoice && canCancelUnpaidCodInvoice && data.unpaidCodCancellationEligible;
+  const canCancelCurrentInvoice = canCancelInvoice || useLimitedCancellation;
+  const cancellationPending = cancel.isPending || cancelUnpaidCod.isPending;
   // مرجع جهاز الدفع إلزاميّ لِـCARD وحدها (تفرضه الخدمة) — ومقصورٌ على حالة وجود استردادٍ فعليّ
   // كي لا يحجب فاتورةً بلا استرداد بسبب طريقةٍ متبقّية من فتحةٍ سابقة للحوار.
   const needsCardReference = paidAmountForRefund.gt(0) && cancelMethod === "CARD";
@@ -813,7 +826,7 @@ export default function InvoiceDetail() {
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
-          {canCancelInvoice && isCancellable && (
+          {canCancelCurrentInvoice && isCancellable && (
             <Button
               variant="destructive"
               size="sm"
@@ -826,7 +839,7 @@ export default function InvoiceDetail() {
               }}
             >
               <FileWarning aria-hidden className="size-4" />
-              إلغاء الفاتورة
+              {useLimitedCancellation ? "إلغاء COD دون قبض" : "إلغاء الفاتورة"}
             </Button>
           )}
           {/* كل فواتير أمر الشغل، ذات البنود والصفرية، تمرّ من طلب تحكم واحد صفري الأثر.
@@ -854,7 +867,7 @@ export default function InvoiceDetail() {
         terminalReason={data.nextActionReason ?? null}
       />
 
-      {canCancelInvoice && deliveryCancellationBlockReason && (
+      {canCancelCurrentInvoice && deliveryCancellationBlockReason && (
         <div
           role="status"
           className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2 text-sm text-[var(--sem-warn)]"
@@ -1120,7 +1133,9 @@ export default function InvoiceDetail() {
             </DialogTitle>
             <DialogDescription asChild className="space-y-2 pt-2 text-start">
               <div>
-              <div>
+              {useLimitedCancellation ? <div>
+                إلغاء مباشر لفاتورة الدفع عند الاستلام غير المقبوضة: يعكس المتبقي من المخزون والذمم دون صرف نقدي أو طلب اعتماد. إذا ظهر قبض أو عهدة تحصيل يرفض النظام هذا المسار.
+              </div> : <div>
                 هذا إجراء إلغاء فعلي. إذا استوفت الفاتورة حدود صلاحيتك فسينفذ النظام الإلغاء فور التأكيد، ويعكس القيد المحاسبيّ ويعيد كامل البضاعة إلى المخزون
                 {paidAmountForRefund.gt(0) && (
                   <>
@@ -1128,7 +1143,7 @@ export default function InvoiceDetail() {
                     ويُصدر <strong>سند صرفٍ</strong> باستردادِ {" "}
                     {fmt(paidAmountForRefund.toFixed(2))}</>
                 )}. وإذا تجاوزت العملية السقف أو شروط الوردية فسيُنشأ طلب اعتماد بلا أثر مالي أو مخزني حتى اعتماده.
-              </div>
+              </div>}
               {data.status !== "PENDING" && (
                 <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-xs text-[var(--sem-warn)]">
                   حالة الفاتورة حالياً:{" "}
@@ -1190,16 +1205,20 @@ export default function InvoiceDetail() {
           <DialogFooter className="gap-2 sm:justify-between">
             <Button variant="outline" onClick={() => setCancelOpen(false)}>رجوع</Button>
             <Button variant="destructive"
-              disabled={cancel.isPending || cancelConfirmText.trim() !== data.invoiceNumber || cancelReason.trim().length < 3}
+              disabled={cancellationPending || cancelConfirmText.trim() !== data.invoiceNumber || cancelReason.trim().length < 3}
               onClick={() => {
                 if (cancelConfirmText.trim() !== data.invoiceNumber) return;
+                if (useLimitedCancellation) {
+                  cancelUnpaidCod.mutate({ invoiceId, reason: cancelReason.trim(), clientRequestId: cancelRequestId });
+                  return;
+                }
                 cancel.mutate({
                   invoiceId, refundPaymentMethod: paidAmountForRefund.isZero() ? "CASH" : cancelMethod,
                   reason: cancelReason.trim(), clientRequestId: cancelRequestId,
                 });
               }}
             >
-              {cancel.isPending ? ACTION_LABELS.processing : "تأكيد الإلغاء"}
+              {cancellationPending ? ACTION_LABELS.processing : "تأكيد الإلغاء"}
             </Button>
           </DialogFooter>
         </DialogContent>

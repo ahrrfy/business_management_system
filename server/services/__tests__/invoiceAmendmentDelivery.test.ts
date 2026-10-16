@@ -15,6 +15,12 @@ import { postEntry } from "../ledgerService";
 import { createPostingIntent, debitLine, creditLine } from "../accounting/postingEngine";
 import { extractInsertId } from "../../lib/insertId";
 import { loadRefundCaps } from "../returns/refundCaps";
+import { saleRouter } from "../../routers/saleRouter";
+import { returnRouter } from "../../routers/returnRouter";
+import { router } from "../../trpc";
+import { resolveCustomRole, type AuthUser, type TrpcContext } from "../../context";
+import { SECTION_CASHIER_ROLES } from "@shared/permissions";
+import { buildDefaultRoleOperationPolicy } from "@shared/roleOperationPresets";
 
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
 const db = () => getDb()!;
@@ -136,6 +142,166 @@ const remit = (consignmentId: number, amount: string) =>
   );
 
 describe("atomic invoice amendment with courier custody", () => {
+  describe("limited unpaid COD cancellation", () => {
+    const cashier = { userId: 2, branchId: 1, role: "cashier" as const };
+    const limited = (invoiceId: number) => ({ invoiceId, refundPaymentMethod: "CASH" as const,
+      reason: "تراجع العميل عن الشراء", clientRequestId: `limited-cod-${invoiceId}`,
+      enforceOperationalDecision: true, unpaidCodOnly: true });
+    async function ownSale() {
+      await db().insert(s.users).values({ id: 2, openId: "limited-reception", name: "استقبال", role: "cashier", branchId: 1,
+        operationPolicy: { version: 1, grants: { "operation.sales.cancelUnpaidCod": true, "operation.sales.cancel": false,
+          "operation.sales.get": true, "operation.returns.create": true }, recordScopes: { "operation.sales.get": "BRANCH" } } });
+      const original = await sale();
+      await db().update(s.invoices).set({ createdBy: 2 }).where(eq(s.invoices.id, original.invoiceId));
+      return original;
+    }
+    async function api() {
+      const [user] = await db().select().from(s.users).where(eq(s.users.id, 2));
+      await resolveCustomRole(user as AuthUser);
+      return router({ sales: saleRouter, returns: returnRouter }).createCaller({ user, req: { headers: {} }, res: {}, sessionId: null,
+        nativeClientId: null, platformAdmin: null } as unknown as TrpcContext);
+    }
+    const snapshot = async () => Promise.all([db().select().from(s.invoices), db().select().from(s.branchStock),
+      db().select().from(s.deliveryConsignments), db().select().from(s.deliveryLedgerEntries),
+      db().select().from(s.accountingEntries), db().select().from(s.receipts)]);
+
+    it("atomically cancels own unpaid COD without a shift, approval or receipt, then replays once", async () => {
+      const original = await ownSale();
+      expect(await cancelSale(limited(original.invoiceId), cashier)).toMatchObject({ refundAmount: "0.00", pendingRefundAmount: "0.00" });
+      expect(await invoice(original.invoiceId)).toMatchObject({ status: "CANCELLED", paidAmount: "0.00" });
+      expect((await customer()).currentBalance).toBe("0.00");
+      expect((await party()).currentBalance).toBe("0.00");
+      expect((await db().select().from(s.branchStock))[0].quantity).toBe(100);
+      expect((await getDeliveryFinancialSummary(1)).codOutstandingRaw).toBe("0.00");
+      expect(await db().select().from(s.receipts)).toHaveLength(0);
+      expect(await db().select().from(s.salesControlRequests)).toHaveLength(0);
+      const before = await snapshot();
+      expect(await cancelSale(limited(original.invoiceId), cashier)).toMatchObject({ idempotentReplay: true, refundAmount: "0.00" });
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it.each(["paid", "receipt", "custody", "non-COD"])("rejects %s before any cancellation effect", async (kind) => {
+      const original = await ownSale();
+      if (kind === "paid") await db().update(s.invoices).set({ paidAmount: "1000" }).where(eq(s.invoices.id, original.invoiceId));
+      if (kind === "receipt") await db().insert(s.receipts).values({ invoiceId: original.invoiceId, branchId: 1,
+        direction: "IN", amount: "1000", paymentMethod: "CASH", cashBucket: "TREASURY", createdBy: 1 });
+      if (kind === "custody") await delivered(original.consignmentId!);
+      if (kind === "non-COD") await db().update(s.invoices).set({ paymentMode: "PREPAID" }).where(eq(s.invoices.id, original.invoiceId));
+      const before = await snapshot();
+      await expect(cancelSale(limited(original.invoiceId), cashier)).rejects.toBeDefined();
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("cancels another employee's unpaid COD after their shift closes", async () => {
+      const original = await ownSale();
+      await db().update(s.invoices).set({ createdBy: 1 }).where(eq(s.invoices.id, original.invoiceId));
+      await db().update(s.shifts).set({ status: "CLOSED", closedAt: new Date() }).where(eq(s.shifts.userId, 1));
+      await expect((await api()).sales.get({ invoiceId: original.invoiceId })).resolves.toMatchObject({
+        unpaidCodCancellationEligible: true });
+      await expect(cancelSale(limited(original.invoiceId), cashier)).resolves.toMatchObject({ refundAmount: "0.00" });
+      expect((await invoice(original.invoiceId)).status).toBe("CANCELLED");
+      expect((await customer()).currentBalance).toBe("0.00");
+      expect((await getDeliveryFinancialSummary(1)).codOutstandingRaw).toBe("0.00");
+      expect((await db().select().from(s.branchStock))[0].quantity).toBe(100);
+      expect(await db().select().from(s.receipts)).toHaveLength(0);
+      expect(await db().select().from(s.salesControlRequests)).toHaveLength(0);
+    });
+
+    it.each(SECTION_CASHIER_ROLES)("$key partially then fully returns another employee's unpaid COD after their shift closes", async profile => {
+      const original = await ownSale();
+      const policy = buildDefaultRoleOperationPolicy(profile.key, profile.baseRole, profile.permissions);
+      policy.grants["operation.sales.get"] = true;
+      policy.recordScopes = { ...policy.recordScopes, "operation.sales.get": "BRANCH" };
+      await db().insert(s.roles).values({ id: 10, key: profile.key, label: profile.label, baseRole: profile.baseRole,
+        permissions: profile.permissions, operationPolicy: policy });
+      await db().update(s.users).set({ customRoleId: 10, operationPolicy: null }).where(eq(s.users.id, 2));
+      await db().update(s.invoices).set({ createdBy: 1 }).where(eq(s.invoices.id, original.invoiceId));
+      await db().update(s.shifts).set({ status: "CLOSED", closedAt: new Date() }).where(eq(s.shifts.userId, 1));
+      const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, original.invoiceId));
+      const caller = await api();
+      await expect(caller.sales.get({ invoiceId: original.invoiceId })).resolves.toMatchObject({ id: original.invoiceId });
+      await expect(caller.returns.getInvoice({ invoiceId: original.invoiceId })).resolves.toMatchObject({ id: original.invoiceId });
+      await caller.returns.create({ invoiceId: original.invoiceId, lines: [{ invoiceItemId: item.id, baseQuantity: 2 }],
+        restock: true, reason: "مرتجع جزئي للزبون", clientRequestId: "cross-maker-partial" });
+      expect((await invoice(original.invoiceId)).returnedTotal).toBe("2000.00");
+      expect((await customer()).currentBalance).toBe("8000.00");
+      expect((await getDeliveryFinancialSummary(1)).codOutstandingRaw).toBe("8000.00");
+      await caller.returns.create({ invoiceId: original.invoiceId, lines: [{ invoiceItemId: item.id, baseQuantity: 8 }],
+        restock: true, reason: "إكمال مرتجع الزبون", clientRequestId: "cross-maker-full" });
+      expect((await invoice(original.invoiceId)).status).toBe("RETURNED");
+      expect((await customer()).currentBalance).toBe("0.00");
+      expect((await getDeliveryFinancialSummary(1)).codOutstandingRaw).toBe("0.00");
+      expect((await db().select().from(s.branchStock))[0].quantity).toBe(100);
+      expect(await db().select().from(s.receipts)).toHaveLength(0);
+      expect(await db().select().from(s.salesControlRequests)).toHaveLength(0);
+    });
+
+    it("does not grant general cancellation or let a revoked permission replay", async () => {
+      const original = await ownSale();
+      const { unpaidCodOnly: _restricted, ...general } = limited(original.invoiceId);
+      await expect(cancelSale(general, cashier)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await cancelSale(limited(original.invoiceId), cashier);
+      await db().update(s.users).set({ operationPolicy: { version: 1, grants: { "operation.sales.cancelUnpaidCod": false } } }).where(eq(s.users.id, 2));
+      const before = await snapshot();
+      await expect(cancelSale(limited(original.invoiceId), cashier)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("executes the dedicated API and writes its zero-refund audit atomically", async () => {
+      const original = await ownSale();
+      const caller = await api();
+      await expect(caller.sales.cancelUnpaidCod({ invoiceId: original.invoiceId,
+        reason: "تراجع العميل", clientRequestId: "limited-api" })).resolves.toMatchObject({ mode: "EXECUTED", refundAmount: "0.00" });
+      const audits = await db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "sale.cancel.unpaidCod"));
+      expect(audits).toHaveLength(1);
+      expect(audits[0].userId).toBe(2);
+      expect(await db().select().from(s.receipts)).toHaveLength(0);
+    });
+
+    it.each([{ refundPaymentMethod: "CARD" }, { reference: "card-proof" }, { refundShiftId: 1 }, { refundAmount: "1000" }])(
+      "rejects injected refund fields at the dedicated API boundary: %j", async (extra) => {
+        const original = await ownSale();
+        const before = await snapshot();
+        await expect((await api()).sales.cancelUnpaidCod({ invoiceId: original.invoiceId, reason: "تراجع العميل",
+          clientRequestId: "limited-injected", ...extra })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+        expect(await snapshot()).toEqual(before);
+      });
+
+    it("rejects historically refunded money even when the net paid cache is zero", async () => {
+      const original = await ownSale();
+      await db().insert(s.receipts).values((["IN", "OUT"] as const).map(direction => ({ invoiceId: original.invoiceId,
+        branchId: 1, direction, amount: "1000", paymentMethod: "CASH" as const, cashBucket: "TREASURY" as const, createdBy: 1 })));
+      const before = await snapshot();
+      await expect(cancelSale(limited(original.invoiceId), cashier)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("rejects a COD sale with a separately collected counter delivery fee", async () => {
+      await ownSale();
+      const [shift] = await db().select().from(s.shifts).where(eq(s.shifts.status, "OPEN"));
+      const original = await createSale({ branchId: 1, shiftId: shift.id, sourceType: "POS", customerId: 1,
+        lines: [line("10")], deliveryFeeHeld: "1000",
+        delivery: { partyId: 1, fee: "1000", feeCollection: "COUNTER", recipientPhone: "07701234567",
+          externalTrackingRef: "limited-counter-fee" }, clientRequestId: "limited-counter-fee" }, actor);
+      await db().update(s.invoices).set({ createdBy: 2 }).where(eq(s.invoices.id, original.invoiceId));
+      expect(await invoice(original.invoiceId)).toMatchObject({ paymentMode: "COD", paidAmount: "0.00" });
+      await expect((await api()).sales.get({ invoiceId: original.invoiceId })).resolves.toMatchObject({
+        refundablePaidAmount: "0.00", unpaidCodCancellationEligible: false });
+      const before = await snapshot();
+      await expect(cancelSale(limited(original.invoiceId), cashier)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("rejects a cashier from another branch before any effect", async () => {
+      const original = await ownSale();
+      await db().insert(s.branches).values({ id: 2, name: "فرع ثان", code: "SECOND", type: "SALES" });
+      await db().update(s.users).set({ branchId: 2 }).where(eq(s.users.id, 2));
+      const before = await snapshot();
+      await expect(cancelSale(limited(original.invoiceId), { ...cashier, branchId: 2 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(await snapshot()).toEqual(before);
+    });
+  });
+
   it("corrects walk-in unpaid COD without requiring a registered customer", async () => {
     const original = await sale(null);
     const corrected = await correct(original.invoiceId, "8");

@@ -48,6 +48,7 @@ import {
   type CashBucket,
 } from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
+import { logAuditTx } from "../auditService";
 import { reverseInvoiceSaleInTx } from "../reversal/invoiceReversal";
 import { invoicePaidPool } from "../reversal/materialize/invoice";
 import { loadRefundCaps } from "../returns/refundCaps";
@@ -97,6 +98,19 @@ export interface CancelSaleInput {
   controlExpectedSnapshot?: InvoiceControlSnapshot | null;
   /** يفعّل حدود التنفيذ المباشر لمسار API التشغيلي؛ اعتماد التحكم يستعمل الحراس السيادية القائمة. */
   enforceOperationalDecision?: boolean;
+  /** Server-only restriction: separate authority, same branch invoice, no paid funds of any kind. */
+  unpaidCodOnly?: boolean;
+}
+
+export function isUnpaidCodCancellationSource(
+  invoice: { paymentMode: string | null; paidAmount: string },
+  grossIn: Decimal, grossOut: Decimal, custody: Decimal,
+  invoiceReceipts: readonly { amount: string; status: string }[],
+): boolean {
+  return invoice.paymentMode === "COD" && money(invoice.paidAmount).isZero() &&
+    grossIn.isZero() && grossOut.isZero() && custody.isZero() &&
+    !invoiceReceipts.some(receipt => money(receipt.amount).gt(0) &&
+      receipt.status !== "FAILED" && receipt.status !== "REVERSED");
 }
 
 export interface CancelSaleResult {
@@ -142,6 +156,21 @@ export async function cancelSaleInTx(
   input: CancelSaleInput,
   actor: Actor,
 ): Promise<CancelSaleResult> {
+    let currentOperationalAuthority: CurrentOperationalAuthority | null = null;
+    if (input.unpaidCodOnly) {
+      currentOperationalAuthority = await loadCurrentOperationalAuthorityTx(tx, actor.userId);
+      if (currentOperationalAuthority.role !== actor.role ||
+        (!currentOperationalAuthority.isOwner && currentOperationalAuthority.branchId !== actor.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذر تثبيت إلغاء COD دون قبض",
+          why: "تغير دور الحساب أو فرعه", doThis: "حدث الصفحة وأعد المحاولة بصلاحيات الحساب الحالية" }) });
+      }
+      // Even a replay must use the currently saved restricted authority.
+      await assertOperationAuthorityTx(tx, actor, "sales.cancelUnpaidCod", false);
+      if (input.refundPaymentMethod !== "CASH" || input.reference != null || input.refundShiftId != null || input.refundCashBucket != null) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذر إلغاء COD دون قبض",
+          why: "هذا المسار لا يقبل أي بيانات استرداد", doThis: "أرسل سبب الإلغاء ورقم الفاتورة فقط" }) });
+      }
+    }
     const requestFingerprint = input.clientRequestId?.trim() ? idempotencyHash(input) : null;
     // ═══ Idempotency: تكرار المفتاح ⇒ إرجاع نتيجة الإلغاء الأول (لا استرداد/عكس مزدوج) ═══
     // Codex P2 (١٢/٨): نُعيد بناء تفاصيل الاسترداد الحقيقية من الإيصال الذي كُتب — لا صفراً وهمياً.
@@ -168,6 +197,11 @@ export async function cancelSaleInTx(
               doThis: "تحقق من صحة معرّف الفاتورة",
             }),
           });
+        }
+        if (input.unpaidCodOnly && (Number(rInv.branchId) !== actor.branchId ||
+          rInv.paymentMode !== "COD" || !money(rInv.paidAmount).isZero())) {
+          throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذر إعادة طلب إلغاء COD",
+            why: "الفاتورة لا تطابق نطاق الإلغاء دون قبض", doThis: "افتح فاتورة في فرعك وأعد المحاولة" }) });
         }
         // أحدث خروج قد يكون نقداً منفذاً أو طلب سند غير نقدي ما زال معلقاً.
         const priorRefund = (
@@ -206,11 +240,10 @@ export async function cancelSaleInTx(
       }
     }
 
-    let currentOperationalAuthority: CurrentOperationalAuthority | null = null;
     let currentCancellationAllowed = true;
     let currentApprovalAllowed = false;
-    if (input.enforceOperationalDecision) {
-      currentOperationalAuthority = await loadCurrentOperationalAuthorityTx(
+    if (input.enforceOperationalDecision || input.unpaidCodOnly) {
+      currentOperationalAuthority ??= await loadCurrentOperationalAuthorityTx(
         tx,
         actor.userId,
       );
@@ -232,7 +265,7 @@ export async function cancelSaleInTx(
         });
       }
       let legacyCancellationAllowed = false;
-      const canonicalCancellationAllowed = await assertOperationAuthorityTx(
+      const canonicalCancellationAllowed = input.unpaidCodOnly ? true : await assertOperationAuthorityTx(
         tx,
         actor,
         "sales.cancel",
@@ -315,6 +348,7 @@ export async function cancelSaleInTx(
         ? await loadRefundCaps(tx, input.invoiceId)
         : null;
     const expectsCashRefund =
+      !input.unpaidCodOnly &&
       input.refundPaymentMethod === "CASH" &&
       previewRefundCaps != null &&
       previewRefundCaps.pool.gt(0);
@@ -451,10 +485,24 @@ export async function cancelSaleInTx(
     }
     const lockedPaidPool = await invoicePaidPool(tx, input.invoiceId);
     const deliveryAmendment = await invoiceDeliveryAmendmentTx(tx, input.invoiceId);
+    // Refund caps intentionally exclude held delivery fees and unsupported rails.
+    // This authority allows no collected funds, including pending money documents.
+    const cancellationReceipts = input.unpaidCodOnly ? await tx
+      .select({ amount: receipts.amount, status: receipts.status })
+      .from(receipts).where(eq(receipts.invoiceId, input.invoiceId)).for("update") : [];
+    if (input.unpaidCodOnly && (
+      Number(inv.branchId) !== Number(actor.branchId) ||
+      !isUnpaidCodCancellationSource(inv, lockedPaidPool.totalIn, lockedPaidPool.outPrior,
+        deliveryAmendment?.custody ?? money(0), cancellationReceipts)
+    )) {
+      throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذر إلغاء COD دون قبض",
+        why: "يلزم أن تكون الفاتورة في فرعك، وبلا عربون أو قبض أو عهدة تحصيل",
+        doThis: "حدث الفاتورة؛ أحل الفاتورة المقبوضة إلى موظف مخول بالاسترداد" }) });
+    }
     const lockedRefundable = lockedPaidPool.totalIn.minus(lockedPaidPool.outPrior);
     let directDecision: OperationalDecision | undefined;
     if (
-      input.enforceOperationalDecision &&
+      (input.enforceOperationalDecision || input.unpaidCodOnly) &&
       currentOperationalAuthority != null &&
       !currentApprovalAllowed
     ) {
@@ -691,6 +739,12 @@ export async function cancelSaleInTx(
       // recordIdempotencyKey ذرّي: INSERT وحيد يرمي ER_DUP_ENTRY عند ازدواج (سباقٌ نظيف).
       await recordIdempotencyKey(tx, "sale.cancel", input.clientRequestId, input.invoiceId, requestFingerprint);
     }
+
+    if (input.unpaidCodOnly) await logAuditTx(tx, actor, {
+      action: "sale.cancel.unpaidCod", entityType: "invoice", entityId: input.invoiceId,
+      oldValue: { status: inv.status, paymentMode: inv.paymentMode, paidAmount: inv.paidAmount },
+      newValue: { status: "CANCELLED", refundAmount: "0.00", reason: input.reason },
+    });
 
     return {
       invoiceId: input.invoiceId,
