@@ -1,12 +1,12 @@
 // مسار تنزيل النسخ الاحتياطية إلى جهاز المدير (GET stream). محمي: مدير فقط + مسار آمن داخل backups.
 //   GET /api/backups/download?name=<file.sql>
 import { Router, type Request, type Response } from "express";
-import { stat } from "node:fs/promises";
 import compression from "compression";
 import path from "node:path";
 import { getSessionContext, getUserFromRequest } from "./auth/session";
 import {
   acquireRestoreLock,
+  backupsDir,
   cleanupTmp,
   consumeRestoreUploadTicket,
   currentDbName,
@@ -18,6 +18,8 @@ import {
 } from "./services/maintenanceService";
 import { logAudit } from "./services/auditService";
 import { logger } from "./logger";
+import { getCurrentCompanyId } from "./tenancy/context";
+import { BackupDownloadError, getBackupDownload } from "./services/backupDownloadService";
 
 export function backupRouter(): Router {
   // يجب أن يطابق canonical Nginx location حرفياً؛ Router الافتراضي غير حساس للحالة
@@ -38,28 +40,29 @@ export function backupRouter(): Router {
     }
     const name = String(req.query.name ?? "");
     try {
-      const abs = await resolveBackupFile(name);
-      if (!abs)
+      const downloadId = String(req.query.downloadId ?? "");
+      const abs = downloadId ? undefined : await resolveBackupFile(name);
+      if (!downloadId && !abs)
         return res
           .status(400)
           .json({ error: "اسم نسخة غير صالح أو غير موجود." });
-      const file = await stat(abs);
-      if (file.size === 0)
-        return res
-          .status(500)
-          .json({
-            error: "النسخة على الخادم فارغة؛ أنشئ نسخة جديدة قبل التنزيل.",
-          });
+      const file = await getBackupDownload({ directory: backupsDir(), sourcePath: abs ?? undefined, name, userId: user.id, companyId: getCurrentCompanyId(), downloadId: downloadId || undefined });
+      // The final URL pins native browser retries as well as streamed saves.
+      if (!downloadId) {
+        res.setHeader("Cache-Control", "no-store");
+        return res.redirect(307, `${req.baseUrl}/download?name=${encodeURIComponent(name)}&downloadId=${file.id}`);
+      }
       res.setHeader("Content-Type", "application/sql");
       res.setHeader("Cache-Control", "no-store");
       res.setHeader("X-Backup-Size", String(file.size));
+      res.setHeader("X-Backup-Download-Id", file.id);
       res.setHeader("X-Accel-Buffering", "no");
       // Express supplies the exact Content-Length, byte ranges and validators.
       // The browser can detect a cut-off response and resume its native download.
       res.download(
-        abs,
+        file.path,
         path.basename(name),
-        { cacheControl: false },
+        { cacheControl: false, dotfiles: "allow" },
         (error) => {
           if (!error) return;
           logger.error(
@@ -78,7 +81,7 @@ export function backupRouter(): Router {
     } catch (error) {
       logger.error({ err: error, backup: name }, "backup download failed");
       if (!res.headersSent)
-        res.status(500).json({ error: "تعذّر قراءة النسخة؛ أعد المحاولة." });
+        res.status(error instanceof BackupDownloadError ? error.status : 500).json({ error: error instanceof BackupDownloadError ? error.message : "تعذّر قراءة النسخة؛ أعد المحاولة." });
       else res.destroy();
     }
   });

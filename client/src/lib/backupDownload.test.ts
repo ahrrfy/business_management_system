@@ -120,4 +120,131 @@ describe("saving a backup to the device", () => {
     expect(writer.close).not.toHaveBeenCalled();
     expect(writer.abort).toHaveBeenCalledOnce();
   });
+
+  it("resumes the pinned snapshot at the successfully written offset", async () => {
+    const headers = {
+      "X-Backup-Size": "8",
+      "X-Backup-Download-Id": "snapshot-1",
+      ETag: 'W/"same-file"',
+      "Last-Modified": "Fri, 16 Oct 2026 20:00:00 GMT",
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(new Uint8Array([1, 2, 3, 4]), { headers }),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(new Uint8Array([5, 6, 7, 8]), {
+        status: 206,
+        headers: {
+          ...headers,
+          "Content-Range": "bytes 4-7/8",
+          "Content-Length": "4",
+        },
+      }),
+    );
+    const source = vi.fn(async () => file);
+    await expect(
+      saveBackupToDevice(source, { suggestedName: file.name }),
+    ).resolves.toBe("saved");
+    expect(source).toHaveBeenCalledOnce();
+    expect(createWritable).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[1][0]).toContain("downloadId=snapshot-1");
+    expect(fetchMock.mock.calls[1][1].headers).toMatchObject({
+      Range: "bytes=4-",
+      "If-Range": headers["Last-Modified"],
+    });
+    expect(writer.write.mock.calls.map((call) => [...call[0]])).toEqual([
+      [1, 2, 3, 4],
+      [5, 6, 7, 8],
+    ]);
+    expect(writer.close).toHaveBeenCalledOnce();
+  });
+  it.each([
+    { status: 200, range: "bytes 4-7/8" },
+    { status: 206, range: "bytes 3-6/8" },
+    { status: 206, range: "bytes 4-7/9" },
+    { status: 206, range: "bytes 4-7/8", id: "another-snapshot" },
+    { status: 206, range: "bytes 4-7/8", etag: '"changed"' },
+    { status: 206, range: "bytes 4-7/8", encoding: "gzip" },
+  ])("never appends an unverified resumed response: %j", async (bad) => {
+    const headers = {
+      "X-Backup-Size": "8",
+      "X-Backup-Download-Id": "snapshot-1",
+      ETag: '"same"',
+      "Last-Modified": "Fri, 16 Oct 2026 20:00:00 GMT",
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(new Uint8Array([1, 2, 3, 4]), { headers }),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(new Uint8Array([5, 6, 7, 8]), {
+        status: bad.status,
+        headers: {
+          ...headers,
+          "Content-Range": bad.range,
+          "Content-Length": "4",
+          ...(bad.id ? { "X-Backup-Download-Id": bad.id } : {}),
+          ...(bad.etag ? { ETag: bad.etag } : {}),
+          ...(bad.encoding ? { "Content-Encoding": bad.encoding } : {}),
+        },
+      }),
+    );
+    await expect(
+      saveBackupToDevice(async () => file, { suggestedName: file.name }),
+    ).rejects.toThrow(/هوية|استئناف/);
+    expect(writer.write).toHaveBeenCalledOnce();
+    expect(writer.abort).toHaveBeenCalledOnce();
+    expect(writer.close).not.toHaveBeenCalled();
+  });
+  it("cancels retry backoff immediately without another request", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(new Uint8Array([1]), {
+        headers: {
+          "X-Backup-Size": "8",
+          "X-Backup-Download-Id": "snapshot-1",
+          "Last-Modified": "Fri, 16 Oct 2026 20:00:00 GMT",
+        },
+      }),
+    );
+    const controller = new AbortController();
+    await expect(
+      saveBackupToDevice(async () => file, {
+        suggestedName: file.name,
+        signal: controller.signal,
+        onProgress: (progress) => {
+          if (progress.phase === "retrying") controller.abort();
+        },
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(writer.abort).toHaveBeenCalledOnce();
+  });
+  it("does not retry or advance the offset after a disk error", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(new Uint8Array([1]), {
+        headers: {
+          "X-Backup-Size": "8",
+          "X-Backup-Download-Id": "snapshot-1",
+          "Last-Modified": "Fri, 16 Oct 2026 20:00:00 GMT",
+        },
+      }),
+    );
+    writer.write.mockRejectedValueOnce(new Error("disk full"));
+    await expect(
+      saveBackupToDevice(async () => file, { suggestedName: file.name }),
+    ).rejects.toThrow("disk full");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(writer.close).not.toHaveBeenCalled();
+  });
+  it("bounds transient network retries", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockRejectedValue(new TypeError("network unavailable"));
+    const result = saveBackupToDevice(async () => file, {
+      suggestedName: file.name,
+    }).catch((error) => error);
+    await vi.runAllTimersAsync();
+    expect(await result).toBeInstanceOf(Error);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(createWritable).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
 });
