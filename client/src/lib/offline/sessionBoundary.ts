@@ -70,11 +70,16 @@ function isMissingIndexedDbError(err: unknown): boolean {
     name?: string;
     message?: string;
     inner?: { name?: string; message?: string } | null;
+    cause?: { name?: string; message?: string } | null;
   } | null;
   return (
     candidate?.name === "MissingAPIError" ||
     candidate?.inner?.name === "MissingAPIError" ||
-    Boolean(candidate?.message?.includes("MissingAPIError"))
+    candidate?.cause?.name === "MissingAPIError" ||
+    Boolean(candidate?.message?.includes("MissingAPIError")) ||
+    Boolean(candidate?.message?.includes("IndexedDB API missing")) ||
+    Boolean(candidate?.inner?.message?.includes("IndexedDB API missing")) ||
+    Boolean(candidate?.cause?.message?.includes("IndexedDB API missing"))
   );
 }
 
@@ -109,13 +114,17 @@ export async function resetSessionForLogout(
     () => offlineDb.customers.clear(),
     () => offlineDb.stock.clear(),
   ];
-  const firstPass = await Promise.allSettled(clearTasks.map((fn) => fn()));
+  const firstPass = await Promise.allSettled(
+    clearTasks.map((fn) => Promise.resolve().then(fn)),
+  );
   const failedTasks = clearTasks.filter((_, idx) => {
     const res = firstPass[idx];
     return res.status === "rejected" && !isMissingIndexedDbError(res.reason);
   });
   if (failedTasks.length > 0) {
-    const retryPass = await Promise.allSettled(failedTasks.map((fn) => fn()));
+    const retryPass = await Promise.allSettled(
+      failedTasks.map((fn) => Promise.resolve().then(fn)),
+    );
     const firstRetryFailure = retryPass.find(
       (res): res is PromiseRejectedResult =>
         res.status === "rejected" && !isMissingIndexedDbError(res.reason),
