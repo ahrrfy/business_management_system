@@ -13,9 +13,12 @@ export type OperationalDecision =
 export interface RefundOperationalContext {
   operationAllowed: boolean;
   sameBranch: boolean;
-  ownsTransaction: boolean;
-  sameOpenShift: boolean;
-  sameBusinessDay: boolean;
+  /** Historical provenance is retained for audit callers, never as payout authority. */
+  ownsTransaction?: boolean;
+  sameOpenShift?: boolean;
+  sameBusinessDay?: boolean;
+  /** Server-proved current payout source, independent of the original collecting shift. */
+  cashSourceReady: boolean;
   accountingPeriodOpen: boolean;
   hasDownstreamEffects?: boolean;
   hasSourceDocument?: boolean;
@@ -65,6 +68,8 @@ export function evaluateRefundOperationalDecision(
       "رصيد درج الوردية لا يكفي للرد النقدي؛ يلزم اعتماد مصدر نقد بديل",
       input.approvalOperation,
     );
+  if (!input.cashSourceReady)
+    return approval("الرد النقدي يحتاج درجاً مفتوحاً يخص منفذ العملية", input.approvalOperation);
   if (input.hasSourceDocument === false)
     return approval("المرتجع بلا مستند بيع أصلي", input.approvalOperation);
   if (!input.accountingPeriodOpen)
@@ -73,7 +78,7 @@ export function evaluateRefundOperationalDecision(
     return approval("للمستند آثار تشغيلية أو مالية لاحقة", input.approvalOperation);
 
   // A manager approval cannot make an impossible payout rail valid. Validate
-  // the original payment method before same-maker/same-shift routing so the
+  // the original payment method before payout routing so the
   // operator sees the actionable defect first.
   const amount = new Decimal(input.refundAmountIqd || 0);
   const originalMethods = new Set(
@@ -98,13 +103,6 @@ export function evaluateRefundOperationalDecision(
         : "مبلغ الرد يتجاوز المقبوض المتبقي على طريقة الدفع المختارة",
       input.approvalOperation,
     );
-
-  if (!input.ownsTransaction)
-    return approval("المستند أنشأه موظف آخر", input.approvalOperation);
-  if (!input.sameOpenShift)
-    return approval("الرد ليس من الوردية المفتوحة التي قبضت المبلغ", input.approvalOperation);
-  if (!input.sameBusinessDay)
-    return approval("المستند ليس من يوم العمل الحالي", input.approvalOperation);
 
   const cap =
     input.maxRefundAmountIqd == null

@@ -523,6 +523,8 @@ export async function cancelSaleInTx(
         operationAllowed: currentCancellationAllowed,
         sameBranch: Number(inv.branchId) === Number(actor.branchId),
         ownsTransaction: Number(inv.createdBy) === Number(actor.userId),
+        cashSourceReady: refundable.lte(0) || input.refundPaymentMethod !== "CASH" ||
+          (prelockedCashSource?.cashBucket === "DRAWER" && prelockedCashSource.shiftId != null),
         sameOpenShift:
           refundable.lte(0) ||
           input.refundPaymentMethod !== "CASH" ||

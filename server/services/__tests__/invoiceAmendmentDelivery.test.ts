@@ -142,6 +142,79 @@ const remit = (consignmentId: number, amount: string) =>
   );
 
 describe("atomic invoice amendment with courier custody", () => {
+  describe("paid cashier lifecycle across creators and closed source shifts", () => {
+    const scenarios = [
+      ...SECTION_CASHIER_ROLES.flatMap(profile => ["4000", "10000"].flatMap(paid =>
+        (["RETURN", "CANCEL", "EDIT"] as const).map(action => ({ profile, paid, action })))),
+      ...(["CAP", "FUNDS", "NO_DRAWER"] as const).map(action => ({ profile: SECTION_CASHIER_ROLES[0], paid: "10000", action })),
+    ];
+    it.each(scenarios)("$profile.key $action with proved paid $paid", async ({ profile, paid, action }) => {
+      await db().update(s.customers).set({ creditLimit: "100000.00" }).where(eq(s.customers.id, 1));
+      const [sourceShift] = await db().select().from(s.shifts);
+      const original = await createSale({ branchId: 1, shiftId: sourceShift.id, sourceType: "POS", customerId: 1,
+        lines: [line("10")], payment: { amount: paid, method: "CASH" } }, actor);
+      await db().update(s.shifts).set({ status: "CLOSED", closedAt: new Date() }).where(eq(s.shifts.id, sourceShift.id));
+      const [closedSource] = await db().select().from(s.shifts).where(eq(s.shifts.id, sourceShift.id));
+      const originalReceipts = await db().select().from(s.receipts);
+      const policy = buildDefaultRoleOperationPolicy(profile.key, profile.baseRole, profile.permissions);
+      for (const path of ["sales.get", "sales.lookupForCorrection", "sales.reissue", "sales.cancel"]) {
+        policy.grants[`operation.${path}`] = true;
+        if (path !== "sales.cancel") policy.recordScopes = { ...policy.recordScopes, [`operation.${path}`]: "BRANCH" };
+      }
+      await db().insert(s.roles).values({ id: 10, key: profile.key, label: profile.label, baseRole: profile.baseRole,
+        permissions: profile.permissions, operationPolicy: policy, operationalCaps: { maxRefundAmountIqd: "25000.00" } });
+      await db().insert(s.users).values({ id: 2, openId: "paid-peer", name: "كاشير لاحق", role: profile.baseRole,
+        branchId: 1, customRoleId: 10 });
+      const [raw] = await db().select().from(s.users).where(eq(s.users.id, 2));
+      const user = raw as AuthUser;
+      await resolveCustomRole(user);
+      const current = { id: extractInsertId(await db().insert(s.shifts).values({ userId: 2, branchId: 1,
+        openingBalance: "20000", status: "OPEN", shiftType: "RECEPTION", openGuard: "2:1:RECEPTION" })) };
+      const api = router({ sales: saleRouter, returns: returnRouter }).createCaller({ user,
+        req: { headers: {} }, res: {}, sessionId: null, nativeClientId: null, platformAdmin: null } as unknown as TrpcContext);
+      const needsReview = action === "CAP" || action === "FUNDS" || action === "NO_DRAWER";
+      if (action === "CAP") await db().update(s.roles).set({ operationalCaps: { maxRefundAmountIqd: "1000.00" } }).where(eq(s.roles.id, 10));
+      if (action === "FUNDS") await db().update(s.shifts).set({ openingBalance: "100.00" }).where(eq(s.shifts.id, current.id));
+      if (action === "NO_DRAWER") await db().update(s.shifts).set({ status: "CLOSED", closedAt: new Date(), openGuard: null }).where(eq(s.shifts.id, current.id));
+      if (action === "RETURN") {
+        const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, original.invoiceId));
+        const refund = (baseQuantity: number, amount: string, key: string) => api.returns.create({
+          invoiceId: original.invoiceId, lines: [{ invoiceItemId: item.id, baseQuantity }],
+          refund: { method: "CASH", amount, shiftId: current.id }, restock: true,
+          reason: "مرتجع من الكاشير الحالي", clientRequestId: key,
+        });
+        expect(await refund(2, "2000", "paid-peer-partial")).toMatchObject({ mode: "EXECUTED" });
+        expect(await refund(8, money(paid).minus(2000).toFixed(2), "paid-peer-full")).toMatchObject({ mode: "EXECUTED" });
+        expect(await refund(2, "2000", "paid-peer-partial")).toMatchObject({ mode: "EXECUTED" });
+        expect((await invoice(original.invoiceId)).status).toBe("RETURNED");
+      } else if (action === "CANCEL") {
+        expect(await api.sales.cancel({ invoiceId: original.invoiceId, refundPaymentMethod: "CASH", reason: "إلغاء فاتورة موظف سابق",
+          clientRequestId: "paid-peer-cancel" })).toMatchObject({ mode: "EXECUTED", refundAmount: money(paid).toFixed(2) });
+      } else {
+        const result = await api.sales.reissue({ originalInvoiceId: original.invoiceId, lines: [line("2")],
+          reason: "تصحيح فاتورة موظف سابق", overpayHandling: "CASH_REFUND", clientRequestId: "paid-peer-edit" });
+        expect(result.status).toBe(needsReview ? "PENDING" : "APPROVED");
+        if (needsReview) {
+          expect(await invoice(original.invoiceId)).toMatchObject({ status: "PAID", paidAmount: "10000.00", correctedByInvoiceId: null });
+          expect(await db().select().from(s.invoices)).toHaveLength(1);
+        } else {
+          expect(result.resultInvoiceId).toBeTruthy();
+          expect(await invoice(Number(result.resultInvoiceId))).toMatchObject({ total: "2000.00", paidAmount: "2000.00" });
+        }
+      }
+      const receipts = await db().select().from(s.receipts);
+      const refunds = receipts.filter(r => r.direction === "OUT");
+      const expectedRefund = needsReview ? money(0) : action === "EDIT" ? money(paid).minus(2000) : money(paid);
+      expect(refunds.reduce((total, r) => total.plus(money(r.amount)), money(0)).toFixed(2)).toBe(expectedRefund.toFixed(2));
+      for (const r of refunds) expect(r).toMatchObject({ shiftId: current.id, createdBy: 2, cashBucket: "DRAWER" });
+      for (const r of originalReceipts) expect(receipts.find(next => next.id === r.id)).toMatchObject({
+        amount: r.amount, shiftId: r.shiftId, createdBy: r.createdBy, cashBucket: r.cashBucket, paymentMethod: r.paymentMethod });
+      expect((await db().select().from(s.shifts).where(eq(s.shifts.id, sourceShift.id)))[0]).toEqual(closedSource);
+      expect((await customer()).currentBalance).toBe("0.00");
+      expect((await db().select().from(s.branchStock))[0].quantity).toBe(needsReview ? 90 : action === "EDIT" ? 98 : 100);
+      expect((await party()).currentBalance).toBe("0.00");
+    });
+  });
   describe("limited unpaid COD cancellation", () => {
     const cashier = { userId: 2, branchId: 1, role: "cashier" as const };
     const limited = (invoiceId: number) => ({ invoiceId, refundPaymentMethod: "CASH" as const,

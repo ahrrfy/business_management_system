@@ -3123,6 +3123,7 @@ export async function returnSaleDirect(
           operationAllowed: isAuthorized,
           sameBranch: Number(invRow.branchId) === Number(actor.branchId),
           ownsTransaction: Number(invRow.createdBy) === Number(actor.userId),
+          cashSourceReady: !needsCashShift || openShiftId != null,
           sameOpenShift: !needsCashShift || (
             openShiftId != null &&
             (lockedRefundCaps.cashNetByShift.get(Number(openShiftId)) ?? money(0))

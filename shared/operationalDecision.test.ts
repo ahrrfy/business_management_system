@@ -3,6 +3,7 @@ import { evaluateRefundOperationalDecision } from "./operationalDecision";
 
 const base = {
   operationAllowed: true,
+  cashSourceReady: true,
   sameBranch: true,
   ownsTransaction: true,
   sameOpenShift: true,
@@ -20,6 +21,12 @@ const base = {
 } as const;
 
 describe("evaluateRefundOperationalDecision", () => {
+  it("pays a proved pool from the current cashier drawer across creators, closed source shifts and days", () => {
+    expect(evaluateRefundOperationalDecision({
+      ...base, sourcePaidAmountIqd: "50000.00", cashSourceReady: true,
+      ownsTransaction: false, sameOpenShift: false, sameBusinessDay: false,
+    }).result).toBe("DIRECT");
+  });
   it("executes an actually unpaid return across shifts and days without a cash approval", () => {
     expect(evaluateRefundOperationalDecision({
       ...base,
@@ -35,7 +42,7 @@ describe("evaluateRefundOperationalDecision", () => {
 
   it.each([undefined, "50000.00"])("does not infer an unpaid source from a zero payout (%s)", (sourcePaidAmountIqd) => {
     expect(evaluateRefundOperationalDecision({
-      ...base, sourcePaidAmountIqd, refundAmountIqd: "0.00", sameOpenShift: false,
+      ...base, sourcePaidAmountIqd, refundAmountIqd: "0.00", cashSourceReady: false,
     }).result).toBe("APPROVAL_REQUIRED");
   });
 

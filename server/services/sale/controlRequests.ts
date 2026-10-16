@@ -49,6 +49,10 @@ import {
 import { createConfirmedExternalPaymentAttemptTx } from "../posExternalPayment";
 import { correctionRequestBlockReasonTx } from "./correctionLookup";
 import { loadRefundCaps } from "../returns/refundCaps";
+import { loadCurrentOperationalAuthorityTx } from "../authorization/currentOperationalAuthority";
+import { OperationalApprovalRequiredError } from "@shared/operationalDecision";
+import { openShiftIdTx } from "../shiftService";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { createAppNotification } from "../appNotificationService";
 import { publishRealtimeEvent } from "../../realtime";
 import {
@@ -74,6 +78,7 @@ export type SalesReissueControlPayload = Omit<
   | "managerOverrideByUserId"
   | "priceOverrideApproved"
   | "controlExpectedSnapshot"
+  | "enforceOperationalDecision"
 >;
 export interface SalesDueDateChangeControlPayload {
   dueDate: string | null;
@@ -423,7 +428,8 @@ export async function requestSalesControl(
   const requestKey = normalizeRequestKey(input.requestKey);
   const reason = normalizeReason(input.reason);
   const payloadHash = idempotencyHash(input.payload);
-  const result = await withTx(async (tx) => {
+  let requestReview = input.requestReview === true;
+  const writeRequest = () => withTx(async (tx) => {
     const replay = await loadByKey(tx, requestKey);
     if (replay) {
       assertBranch(Number(replay.branchId), actor);
@@ -433,6 +439,17 @@ export async function requestSalesControl(
       return { ...replay, replayed: true as const };
     }
 
+    // A direct paid correction can refund from the actor's drawer. Acquire that
+    // source before snapshot materialization and the engine's invoice locks.
+    const correctionCandidate = !requestReview &&
+      (input.requestType === "SALES_REISSUE" || input.requestType === "SALES_EXCHANGE") &&
+      !(input.payload as SalesReissueControlPayload).additionalPayment;
+    if (correctionCandidate && (input.payload as SalesReissueControlPayload).overpayHandling === "CASH_REFUND" && actor.branchId != null) {
+      const shiftId = await openShiftIdTx(tx, actor.userId, Number(actor.branchId));
+      if (shiftId != null) await lockCashSourceForUpdate(tx, {
+        branchId: Number(actor.branchId), cashBucket: "DRAWER", shiftId,
+      });
+    }
     const { invoice, snapshot, hash: snapshotHash } = await loadInvoiceControlSnapshotTx(
       tx,
       input.invoiceId,
@@ -594,18 +611,18 @@ export async function requestSalesControl(
         message: "يوجد طلب معلّق لهذه الفاتورة أو استُهلك المفتاح بحمولة أخرى",
       });
     }
-    if (
-      (input.requestType === "SALES_REISSUE" || input.requestType === "SALES_EXCHANGE") &&
-      !input.requestReview &&
-      money(invoice.paidAmount ?? "0").isZero()
-    ) {
+    if (correctionCandidate) {
       const payload = input.payload as SalesReissueControlPayload;
       const caps = await loadRefundCaps(tx, input.invoiceId);
-      if (
+      const unpaid = money(invoice.paidAmount ?? "0").isZero() &&
         caps.pool.isZero() && caps.unremittedDeliveryCustody.isZero() &&
         !payload.additionalPayment &&
-        (payload.priorPaymentReceivedAmount == null || money(payload.priorPaymentReceivedAmount).isZero())
-      ) {
+        (payload.priorPaymentReceivedAmount == null || money(payload.priorPaymentReceivedAmount).isZero());
+      const current = await loadCurrentOperationalAuthorityTx(tx, actor.userId);
+      const paidCashier = input.requestReview === false && !current.isOwner && current.role !== "admin" && current.role !== "manager" &&
+        (payload.customerId === undefined || Number(payload.customerId ?? 0) === Number(invoice.customerId ?? 0)) &&
+        (payload.priorPaymentReceivedAmount == null || money(payload.priorPaymentReceivedAmount).eq(money(invoice.paidAmount)));
+      if (unpaid || paidCashier) {
         const operationPath = input.requestType === "SALES_EXCHANGE" ? "salesControl.requestExchange" : "sales.reissue";
         await assertOperationAuthorityTx(tx, actor, operationPath, (current) => {
           const permissions = resolvePermissions(current.role as RoleKey, current.permissionsOverride as PermissionMap | null);
@@ -621,11 +638,12 @@ export async function requestSalesControl(
           originalInvoiceId: input.invoiceId,
           clientRequestId: `sales-control-${id}`,
           controlExpectedSnapshot: snapshot,
+          enforceOperationalDecision: !unpaid,
         }, { ...actor, branchId: Number(invoice.branchId) });
         const now = new Date();
         await tx.update(salesControlRequests).set({
           status: "APPROVED", reviewedBy: actor.userId, reviewedAt: now, appliedAt: now,
-          reviewNote: "تنفيذ فوري: لا مقبوضات ولا استرداد", resultInvoiceId: corrected.correctedInvoiceId,
+          reviewNote: unpaid ? "تنفيذ فوري: لا مقبوضات ولا استرداد" : "تنفيذ مباشر ضمن تفويض الكاشير وسقف الاسترداد", resultInvoiceId: corrected.correctedInvoiceId,
         }).where(eq(salesControlRequests.id, id));
         if (input.requestType === "SALES_EXCHANGE") {
           const [request] = await tx.select().from(salesControlRequests).where(eq(salesControlRequests.id, id));
@@ -635,7 +653,7 @@ export async function requestSalesControl(
           userId: actor.userId, branchId: Number(invoice.branchId), action: "sale.reissue",
           entityType: "invoice", entityId: String(input.invoiceId),
           oldValue: { invoiceId: input.invoiceId, snapshotHash },
-          newValue: { ...corrected, requestId: id, reason, execution: "UNPAID_DIRECT", paidAmount: "0.00" },
+          newValue: { ...corrected, requestId: id, reason, execution: unpaid ? "UNPAID_DIRECT" : "PAID_DIRECT", paidAmount: invoice.paidAmount },
         });
         return { id, requestKey, invoiceId: input.invoiceId, branchId: Number(invoice.branchId),
           requestType: input.requestType, status: "APPROVED" as const, payloadHash, snapshotHash,
@@ -657,7 +675,17 @@ export async function requestSalesControl(
       replayed: false as const,
     };
   });
-  // التصحيح والاستبدال يمران دائماً بشاشة «كان/أصبح»: قد يلزم اختيار درج مفتوح أو
+  let result: Awaited<ReturnType<typeof writeRequest>>;
+  try {
+    result = await writeRequest();
+  } catch (error) {
+    if (!(error instanceof OperationalApprovalRequiredError) || requestReview) throw error;
+    // The entire direct attempt rolled back before a zero-effect review request
+    // is created. Never catch a payout failure inside a partially written tx.
+    requestReview = true;
+    result = await writeRequest();
+  }
+  // التصحيح والاستبدال قد يحتاجان شاشة «كان/أصبح»: قد يلزم اختيار درج مفتوح أو
   // تنفيذ بطاقة وإدخال مرجعها وقت الاعتماد، فلا يصح حسمهما تلقائياً بلا تلك المدخلات.
   // استثناء المالك (قرار ٣/١٠/٢٦): المالك صاحب التصحيح ينفّذه فوراً بمحرّك الاعتماد نفسه —
   // ما لم يحمل فرقاً غير نقديّ يلزمه تمرير جهاز الدفع من شاشة الاعتماد.
@@ -665,7 +693,7 @@ export async function requestSalesControl(
     || input.requestType === "SALES_EXCHANGE";
   if (needsCorrectionReview) {
     if (result.replayed || result.status !== "PENDING") return result;
-    const executed = input.requestReview ? null : await executeCorrectionAsActiveOwner(Number(result.id), actor, reason);
+    const executed = requestReview ? null : await executeCorrectionAsActiveOwner(Number(result.id), actor, reason);
     if (executed) return { ...result, status: "APPROVED" as const, resultInvoiceId: executed.resultInvoiceId, ownerExecuted: true as const };
   }
   const approved = !needsCorrectionReview && await autoDecideForActiveOwner(actor, {
