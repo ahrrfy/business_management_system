@@ -81,7 +81,7 @@ describe("financial refresh publication", () => {
     expect(state.publish).not.toHaveBeenCalled();
   });
   it("includes financial lifecycle and payroll changes without triggering for unrelated mutations", () => {
-    for (const path of ["treasury.reassignHandoverReceipt", "shifts.open", "accounts.createManualJournal", "hrEnterprise.approveContract", "attendance.correct", "leaves.approve", "offline.sync"])
+    for (const path of ["treasury.reassignHandoverReceipt", "shifts.open", "accounts.createManualJournal", "hrEnterprise.approveContract", "attendance.correct", "leaves.approve", "offline.sync", "returns.create", "returns.executeSalesReturnCart", "inventory.adjust"])
       expect(isFinancialMutation(path)).toBe(true);
     for (const path of ["auth.login", "productStudio.generate", "conversations.send", "push.subscribe"])
       expect(isFinancialMutation(path)).toBe(false);

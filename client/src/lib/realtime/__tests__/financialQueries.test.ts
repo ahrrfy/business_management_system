@@ -38,6 +38,25 @@ beforeEach(() => {
 afterEach(() => { stop(); subscriptions.forEach((off) => off()); client.clear(); bus.clear(); vi.useRealTimers(); });
 
 describe("event-driven financial queries", () => {
+  it.each(["local", "remote"])("refreshes return effects including branch stock and cashier quantities after a %s commit", async source => {
+    const dependent = [
+      read("sales", 2, true, "get"), read("returns", 2), read("customers", 2),
+      read("delivery", 2), read("treasury", 2), read("inventory", 2, true, "onHand"),
+      read("inventory", 2, true, "movementsRich"),
+      ...["posList", "stockByUnitIds", "byUnitIds", "byProductIds", "adminList", "byBarcode", "forPurchase"]
+        .map(procedure => read("catalog", 2, true, procedure)),
+    ];
+    const inactiveStock = read("inventory", 2, false, "movements");
+    const otherBranch = read("catalog", 3, true, "stockByUnitIds");
+    const referenceData = read("catalog", 2, true, "variantUnits");
+    if (source === "local") await invalidateFinancialQueries(client, 2);
+    else { emit([2]); await vi.advanceTimersByTimeAsync(750); }
+    for (const query of dependent) expect(query.queryFn).toHaveBeenCalledOnce();
+    expect(client.getQueryState(inactiveStock.queryKey)?.isInvalidated).toBe(true);
+    for (const query of [inactiveStock, otherBranch, referenceData]) expect(query.queryFn).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60_000);
+    for (const query of dependent) expect(query.queryFn).toHaveBeenCalledOnce();
+  });
   it("refreshes current invoice, lists and delivery once after a local mutation while marking inactive caches stale", async () => {
     const detail = read("sales", undefined, true, "get");
     const list = read("sales", 2, true, "listPage");
