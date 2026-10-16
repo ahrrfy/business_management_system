@@ -20,7 +20,8 @@ import { trpc } from "@/lib/trpc";
 import { paymentMethodCompact } from "@shared/terms";
 import { getDeviceCode } from "@/lib/offline/outbox";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
-import { invoiceStatusLabel } from "@shared/invoiceStatus";
+import { invoiceStatusLabel, isDeadInvoiceStatus } from "@shared/invoiceStatus";
+import { invoiceRemaining } from "@shared/predicates/invoiceRemaining";
 
 import {
   INBOUND_ENABLED_PAYMENT_METHODS,
@@ -63,8 +64,10 @@ export function QuickSalesPaymentDialog({
   const inv = invoiceQuery.data;
   const total = inv ? D(inv.total) : D(totalAmount || "0");
   const paid = inv ? D(inv.paidAmount) : D(paidAmount || "0");
-  const returned = inv ? D(inv.returnedTotal ?? "0") : D(0);
-  const liveRemaining = round2(total.minus(paid).minus(returned)).toFixed(2);
+  const isInvoiceDead = isDeadInvoiceStatus(inv?.status);
+  const liveRemaining = isInvoiceDead ? "0.00" : round2(invoiceRemaining(inv ?? {
+    total: total.toString(), paidAmount: paid.toString(),
+  })).toFixed(2);
   const effectiveRemaining = inv ? liveRemaining : remainingAmount;
 
   const [amount, setAmount] = useState(effectiveRemaining);
@@ -141,17 +144,18 @@ export function QuickSalesPaymentDialog({
       notify.err("تحديث الفاتورة", "يرجى الانتظار حتى اكتمال تحميل أحدث بيانات الفاتورة.");
       return;
     }
+    if (isInvoiceDead) {
+      notify.err("فاتورة مقفلة", "لا يمكن تسجيل دفعة على فاتورة ملغاة أو مرتجعة أو مستبدلة.");
+      return;
+    }
     try {
       const fresh = await utils.sales.get.fetch({ invoiceId });
       if (fresh) {
-        const freshTotal = D(fresh.total);
-        const freshPaid = D(fresh.paidAmount);
-        const freshReturned = D(fresh.returnedTotal ?? "0");
-        currentLiveRemaining = round2(freshTotal.minus(freshPaid).minus(freshReturned));
-        if (fresh.status === "CANCELLED" || fresh.status === "RETURNED" || fresh.status === "SUPERSEDED") {
-          notify.err("فاتورة مقفلة", "لا يمكن سداد فاتورة ملغاة أو مرتجعة بالكامل.");
+        if (isDeadInvoiceStatus(fresh.status)) {
+          notify.err("فاتورة مقفلة", "لا يمكن تسجيل دفعة على فاتورة ملغاة أو مرتجعة أو مستبدلة.");
           return;
         }
+        currentLiveRemaining = round2(invoiceRemaining(fresh));
       }
     } catch {
       // الاعتماد على الحالة المحلية إذا تعذّر الاستعلام
@@ -256,8 +260,8 @@ export function QuickSalesPaymentDialog({
       notify.err("تحديث الفاتورة", "يرجى الانتظار حتى اكتمال تحميل أحدث بيانات الفاتورة.");
       return;
     }
-    if (inv && (inv.status === "CANCELLED" || inv.status === "RETURNED" || inv.status === "SUPERSEDED")) {
-      notify.err("فاتورة مقفلة", "لا يمكن سداد فاتورة ملغاة أو مرتجعة بالكامل.");
+    if (isInvoiceDead) {
+      notify.err("فاتورة مقفلة", "لا يمكن تسجيل دفعة على فاتورة ملغاة أو مرتجعة أو مستبدلة.");
       return;
     }
     if (amt.gt(D(effectiveRemaining))) {
@@ -332,12 +336,16 @@ export function QuickSalesPaymentDialog({
             ) : null}
           </div>
 
+          {isInvoiceDead && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/5 p-2.5 text-sm text-destructive">
+            حالة الفاتورة: {invoiceStatusLabel(inv?.status)}. لا يمكن تسجيل دفعة على هذا المستند.
+          </p>}
+
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label htmlFor="sales-pay-method" className="text-xs">طريقة القبض</Label>
               <AppSelect
                 value={method}
-                disabled={cannotClose}
+                disabled={cannotClose || isInvoiceDead}
                 onValueChange={(v) => {
                   if (cannotClose) return;
                   setMethod(v as Method);
@@ -359,7 +367,7 @@ export function QuickSalesPaymentDialog({
                 id="sales-pay-amount"
                 value={amount}
                 onChange={setAmount}
-                disabled={cannotClose}
+                disabled={cannotClose || isInvoiceDead}
                 placeholder="0.00"
                 ariaLabel="المبلغ المقبوض"
                 className="font-mono text-sm"
@@ -367,7 +375,7 @@ export function QuickSalesPaymentDialog({
             </div>
           </div>
 
-          {method !== "CASH" ? (
+          {method !== "CASH" && !isInvoiceDead ? (
             <div className="rounded-md border bg-card p-2.5">
               <PaymentReferenceField
                 value={reference}
@@ -411,6 +419,7 @@ export function QuickSalesPaymentDialog({
                 (method !== "CASH" && !externalConfirmed) ||
                 isBusy ||
                 isInvoiceRefreshing ||
+                isInvoiceDead ||
                 (inv != null && D(liveRemaining).lte(0))
               }
             >

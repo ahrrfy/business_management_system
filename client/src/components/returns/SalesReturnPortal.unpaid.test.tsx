@@ -16,6 +16,7 @@ vi.mock("@/lib/trpc", () => ({ trpc: {
   branches: { list: { useQuery: () => ({ data: [{ id: 2 }] }) } },
   customers: { smartSearch: { useQuery: () => ({ data: [] }) } },
   returns: {
+    inspectInvoiceForReturn: { useQuery: ({ invoiceNumber }: any) => ({ data: state.invoices[invoiceNumber] }) },
     getOpenRefundDrawers: { useQuery: () => ({ data: [], refetch: state.refetch }) },
     getInvoice: { useQuery: ({ invoiceId }: any) => ({ data: state.policies[invoiceId], refetch: state.refetch }) },
     executeSalesReturnCart: { useMutation: () => ({ isPending: false, mutateAsync: state.execute }) },
@@ -49,7 +50,7 @@ describe("main return portal unpaid invoices", () => {
   afterEach(() => { act(() => root.unmount()); host.remove(); client.clear(); });
   async function render(invoiceNumber = "INV-11") { await act(async () => root.render(<QueryClientProvider client={client}><SalesReturnPortal initialInvoiceNo={invoiceNumber} initialMode="FULL" onReturnSuccess={vi.fn()} /></QueryClientProvider>)); }
   const button = (text: string) => [...host.querySelectorAll("button")].find((element) => element.textContent?.includes(text)) as HTMLButtonElement | undefined;
-  async function execute() { await act(async () => button("تأكيد المرتجع وطباعة الإيصال")!.click()); }
+  async function execute() { await act(async () => (button("استعادة نتيجة المرتجع السابق") ?? button("تأكيد المرتجع وطباعة الإيصال"))!.click()); }
 
   it("returns an unpaid walk-in invoice without a drawer or invented customer and preserves printing", async () => {
     await render(); await execute();
@@ -58,10 +59,37 @@ describe("main return portal unpaid invoices", () => {
     expect(state.execute.mock.calls[0][0].customer.customerId).toBeUndefined();
     expect(state.printed).toHaveBeenCalledWith(expect.objectContaining({ noCashNoAccount: true, payoutAmount: "0.00", debtOffsetAmount: "1000.00" }));
   });
+  it("refreshes the inspected total after an external invoice change without recreating the cart", async () => {
+    await render();
+    state.invoices["INV-11"] = { ...state.invoices["INV-11"], remainingInvoiceTotal: "1200", unpaidAmount: "1200", maxCreditOffsetAmount: "1200" };
+    await render(); await execute();
+    expect(state.execute.mock.calls[0][0].settlement.totalAmount).toBe("1200");
+  });
+  it("blocks a cart whose quantities were returned by another device until it is reviewed", async () => {
+    await render();
+    const previous = state.invoices["INV-11"];
+    state.invoices["INV-11"] = { ...previous, returnedTotal: "500", remainingInvoiceTotal: "500", maxCreditOffsetAmount: "500", items: [{ ...previous.items[0], remainingQuantity: 1, remainingLineTotal: "500" }] };
+    await render();
+    expect(button("تأكيد المرتجع وطباعة الإيصال")!.disabled).toBe(true);
+    expect(host.textContent).toContain("تغيّرت بنود الفاتورة");
+    expect(state.execute).not.toHaveBeenCalled();
+  });
   it("reuses the same intent key after a transport error", async () => {
     state.execute.mockRejectedValueOnce(new Error("Failed to fetch")); await render(); await execute(); await execute();
     expect(state.execute).toHaveBeenCalledTimes(2);
     expect(state.execute.mock.calls[0][0].clientRequestId).toBe(state.execute.mock.calls[1][0].clientRequestId);
+  });
+  it("recovers a committed return after a lost reply and live full-return refresh using the exact intent", async () => {
+    state.execute.mockRejectedValueOnce(new Error("Failed to fetch"));
+    await render(); await execute();
+    const intent = state.execute.mock.calls[0][0];
+    state.invoices["INV-11"] = { ...state.invoices["INV-11"], status: "RETURNED", isDead: true, isFullyReturned: true, remainingInvoiceTotal: "0", maxCreditOffsetAmount: "0", items: [] };
+    await render();
+    expect(button("تأكيد المرتجع وطباعة الإيصال")).toBeUndefined();
+    await execute();
+    expect(state.execute).toHaveBeenCalledTimes(2);
+    expect(state.execute.mock.calls[1][0]).toEqual(intent);
+    expect(state.printed).toHaveBeenCalledOnce();
   });
   it("clears a committed cart while background financial refresh is slow", async () => {
     vi.spyOn(client, "invalidateQueries").mockImplementation(() => new Promise(() => {}));

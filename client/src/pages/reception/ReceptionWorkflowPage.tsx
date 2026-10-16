@@ -5,7 +5,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 
-import type { RouterOutputs } from "@/lib/trpc";
 import { AlertTriangle, BadgeDollarSign, Ban, BarChart3, Building2, CheckCircle2, CheckSquare, Clock, FilePenLine, FileText, Info, Package, Printer, RefreshCcw, ScanLine, Square, Truck, User, Wallet } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/ui/card";
@@ -39,7 +38,6 @@ import { fmtDateTime } from "@/lib/date";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 
 type Section = "dispatch" | "collect" | "edit" | "return" | "cancelAssignment";
-type CorrectionLookup = NonNullable<RouterOutputs["sales"]["lookupForCorrection"]>;
 
 interface ScannedOrder {
   id: number;
@@ -83,7 +81,7 @@ export default function DeliveryWorkflowPage() {
   const [deliveryNotes, setDeliveryNotes] = useState("");
   const [externalTrackingRef, setExternalTrackingRef] = useState("");
   const [collectScannedCode, setCollectScannedCode] = useState<string | null>(null);
-  const [editScanned, setEditScanned] = useState<CorrectionLookup | null>(null);
+  const [editInvoiceNumber, setEditInvoiceNumber] = useState<string | null>(null);
   const [editBarcodeInput, setEditBarcodeInput] = useState("");
   const [returnScanned, setReturnScanned] = useState<ScannedOrder | null>(null);
   const [returnBarcodeInput, setReturnBarcodeInput] = useState("");
@@ -94,6 +92,16 @@ export default function DeliveryWorkflowPage() {
   const editRef = useRef<HTMLInputElement>(null);
   const returnRef = useRef<HTMLInputElement>(null);
   const utils = trpc.useUtils();
+  // Keep the scanned key, not a copy of the result: financial events refresh these observers.
+  const editPreview = trpc.sales.lookupForCorrection.useQuery(
+    { invoiceNumber: editInvoiceNumber ?? "" }, { enabled: editInvoiceNumber != null },
+  );
+  const editScanned = editPreview.data;
+  const returnPreview = trpc.returns.getInvoice.useQuery(
+    { invoiceId: returnScanned?.kind === "invoice" ? returnScanned.id : 0 },
+    { enabled: returnScanned?.kind === "invoice" },
+  );
+  const returnInvoice = returnPreview.data;
   const me = trpc.auth.me.useQuery();
   const branchId = me.data?.branchId;
   // enabled: !!branchId يمنع الاستعلام حتى يصل me.data — لا سقوط صامت على فرع افتراضي (§ G3)
@@ -177,7 +185,7 @@ export default function DeliveryWorkflowPage() {
         notify.err(`لم توجد فاتورة بهذا الرقم في فرعك: ${invoiceNumber}`);
         return;
       }
-      setEditScanned(invoice);
+      setEditInvoiceNumber(invoiceNumber);
       setEditBarcodeInput("");
     } catch (error) {
       notify.err(error, "تعذّر جلب الفاتورة");
@@ -196,7 +204,7 @@ export default function DeliveryWorkflowPage() {
   const cancelAssignmentEnabled = activeSection === "cancelAssignment";
   const returnEnabled = activeSection === "return" && !returnScanned;
   const collectEnabled = activeSection === "collect";
-  const editEnabled = activeSection === "edit" && !editScanned;
+  const editEnabled = activeSection === "edit" && !editInvoiceNumber;
 
   useBarcodeScanner(
     useCallback(async (raw: string) => {
@@ -654,7 +662,7 @@ export default function DeliveryWorkflowPage() {
 
         {activeSection === "edit" && (
           <div className="mx-auto max-w-2xl space-y-4">
-            {!editScanned && (
+            {!editInvoiceNumber && (
               <div className="rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5 p-6 text-center">
                 <ScanLine aria-hidden className="mx-auto size-10 text-primary/60" />
                 <p className="mt-2 text-base font-extrabold text-primary">امسح باركود الفاتورة للتعديل</p>
@@ -680,7 +688,14 @@ export default function DeliveryWorkflowPage() {
               </div>
             )}
 
-            {editScanned && (
+            {editInvoiceNumber && (!editScanned || editPreview.error) && (
+              <Card className="space-y-3 p-4" role="status">
+                <p className="text-sm">{editPreview.error?.message ?? (editPreview.isFetching ? "جارٍ تحميل الفاتورة الحالية…" : "الفاتورة غير متاحة حالياً. أعد مسحها للتحقق من حالتها.")}</p>
+                <Button variant="outline" onClick={() => { setEditInvoiceNumber(null); setEditBarcodeInput(""); }}>مسح فاتورة أخرى</Button>
+              </Card>
+            )}
+
+            {editScanned && !editPreview.error && (
               <Card className="overflow-hidden gap-0 py-0 shadow-sm">
                 <div className="flex items-start justify-between border-b bg-muted/30 p-4">
                   <div>
@@ -695,7 +710,7 @@ export default function DeliveryWorkflowPage() {
                       أُنشئت {fmtDateTime(editScanned.invoiceDate)} · آخر تحديث {fmtDateTime(editScanned.updatedAt)}
                     </p>
                   </div>
-                  <Button variant="ghost" size="sm" onClick={() => { setEditScanned(null); setEditBarcodeInput(""); }}>
+                  <Button variant="ghost" size="sm" onClick={() => { setEditInvoiceNumber(null); setEditBarcodeInput(""); }}>
                     مسح فاتورة أخرى
                   </Button>
                 </div>
@@ -735,7 +750,7 @@ export default function DeliveryWorkflowPage() {
 
                   <Button
                     className="w-full py-6 text-base font-extrabold"
-                    disabled={!editScanned.canCorrect}
+                    disabled={!editScanned.canCorrect || editPreview.isFetching}
                     onClick={() => navigate(`/invoices/${editScanned.id}/correct?from=reception-edit`)}
                   >
                     <FilePenLine aria-hidden className="size-5" />
@@ -795,22 +810,23 @@ export default function DeliveryWorkflowPage() {
                     <Package aria-hidden className="size-5 text-primary" />
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-extrabold text-base">فاتورة بيع #{returnScanned.orderNumber}</span>
-                        {returnScanned.status && (
-                          <Badge variant={invoiceStatusBadgeVariant(returnScanned.status)} className="font-bold">
-                            {invoiceStatusLabel(returnScanned.status)}
+                        <span className="font-extrabold text-base">فاتورة بيع #{returnInvoice?.invoiceNumber}</span>
+                        {returnInvoice?.status && (
+                          <Badge variant={invoiceStatusBadgeVariant(returnInvoice.status)} className="font-bold">
+                            {invoiceStatusLabel(returnInvoice.status)}
                           </Badge>
                         )}
-                        {returnScanned.branchId && branchId && returnScanned.branchId !== branchId && (
-                          <Badge variant="outline" className="border-primary text-primary font-bold">فرع #{returnScanned.branchId}</Badge>
+                        {returnInvoice?.branchId && branchId && returnInvoice.branchId !== branchId && (
+                          <Badge variant="outline" className="border-primary text-primary font-bold">فرع #{returnInvoice.branchId}</Badge>
                         )}
                       </div>
-                      <p className="text-xs text-muted-foreground">العميل: {returnScanned.customerName || "زبون نقدي"}</p>
+                      {returnInvoice && <p className="text-xs text-muted-foreground">العميل: {returnInvoice.customerName || "زبون نقدي"}</p>}
                     </div>
                   </div>
                   <Button variant="ghost" size="sm" onClick={() => { setReturnScanned(null); setReturnBarcodeInput(""); }}>مسح فاتورة أخرى</Button>
                 </div>
-                {returnScanned.status === "RETURNED" && (
+                {(!returnInvoice || returnPreview.error) && <p role="status" className="text-sm">{returnPreview.error?.message ?? (returnPreview.isFetching ? "جارٍ تحميل الفاتورة الحالية…" : "الفاتورة غير متاحة حالياً. أعد مسحها للتحقق من حالتها.")}</p>}
+                {returnInvoice?.status === "RETURNED" && (
                   <div className="rounded-xl border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/30 p-3 flex items-start gap-2.5">
                     <AlertTriangle aria-hidden className="size-4 shrink-0 text-[var(--sem-warn)] mt-0.5" />
                     <div>
@@ -819,7 +835,7 @@ export default function DeliveryWorkflowPage() {
                     </div>
                   </div>
                 )}
-                {returnScanned.status === "CANCELLED" && (
+                {returnInvoice?.status === "CANCELLED" && (
                   <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 flex items-start gap-2.5">
                     <Ban aria-hidden className="size-4 shrink-0 text-destructive mt-0.5" />
                     <div>
@@ -828,11 +844,11 @@ export default function DeliveryWorkflowPage() {
                     </div>
                   </div>
                 )}
-                {returnScanned.branchId && branchId && returnScanned.branchId !== branchId && (
+                {returnInvoice?.branchId && branchId && returnInvoice.branchId !== branchId && (
                   <div className="rounded-xl border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)]/20 p-3 flex items-start gap-2.5">
                     <Info aria-hidden className="size-4 shrink-0 text-[var(--sem-info)] mt-0.5" />
                     <div>
-                      <p className="text-xs font-bold text-[var(--sem-info)]">الفاتورة تنتمي لفرع آخر (فرع #{returnScanned.branchId})</p>
+                      <p className="text-xs font-bold text-[var(--sem-info)]">الفاتورة تنتمي لفرع آخر (فرع #{returnInvoice.branchId})</p>
                       <p className="text-[11px] text-muted-foreground mt-0.5">أنت تعمل حالياً في فرع #{branchId}. يتطلب إرجاعها التواجد في فرعها الأصلي أو صلاحيات إدارية.</p>
                     </div>
                   </div>

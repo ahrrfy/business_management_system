@@ -1,5 +1,5 @@
 import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Banknote,
@@ -26,7 +26,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { trpc, type RouterInputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, fmt } from "@/lib/money";
 import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
@@ -60,6 +60,11 @@ export interface CollectConsignmentDialogProps {
   onCompleted?: () => void;
 }
 
+type SubmittedRemittance = {
+  payload: RouterInputs["delivery"]["recordRemittance"];
+  partyLabel: string;
+};
+
 export function CollectConsignmentDialog({
   consignment,
   partyId,
@@ -72,10 +77,15 @@ export function CollectConsignmentDialog({
   const effectivePartyId = consignment?.partyId ?? partyId ?? null;
 
   // استعلام الطرود المفتوحة للجهة لمعرفة كل ما بذمتها
-  const openCn = trpc.delivery.openConsignments.useQuery(
-    { partyId: effectivePartyId ?? 0 },
-    { enabled: open && effectivePartyId != null && effectivePartyId > 0, staleTime: 0 },
+  const openCn = trpc.delivery.openConsignments.useInfiniteQuery(
+    { partyId: effectivePartyId ?? 0, limit: 500 },
+    { enabled: open && effectivePartyId != null && effectivePartyId > 0, staleTime: 0,
+      getNextPageParam: last => last.nextCursor ?? undefined },
   );
+  useEffect(() => {
+    if (open && openCn.hasNextPage && !openCn.isFetching && !openCn.isError) void openCn.fetchNextPage();
+  }, [open, openCn.hasNextPage, openCn.isFetching, openCn.isError, openCn.fetchNextPage]);
+  const obligationsLoading = !openCn.data || openCn.isFetching || openCn.hasNextPage || openCn.isError;
 
   // استعلام بيانات الفاعل
   const me = trpc.auth.me.useQuery(undefined, { enabled: open });
@@ -98,6 +108,9 @@ export function CollectConsignmentDialog({
   const [shortfallNotes, setShortfallNotes] = useState("");
   const [shiftType, setShiftType] = useState<"RECEPTION" | "RETAIL">("RECEPTION");
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  const [submittedRemittance, setSubmittedRemittance] = useState<SubmittedRemittance | null>(null);
+  const [submittingRemittance, setSubmittingRemittance] = useState(false);
+  const remittanceInFlight = useRef(false);
 
   // استعلام بيانات الجهة لمعرفة فرعها
   const partyQ = trpc.delivery.getParty.useQuery(
@@ -127,7 +140,7 @@ export function CollectConsignmentDialog({
 
   // الطرود القابلة للتوريد: المسلَّمة والتي لم تُورَّد بالكامل بعد
   const remittableRows = useMemo(() => {
-    const rows = openCn.data?.rows ?? [];
+    const rows = (openCn.data?.pages ?? []).flatMap(page => page.rows);
     return rows
       .map((r) => {
         const cod = Number(r.codAmount || 0);
@@ -142,19 +155,12 @@ export function CollectConsignmentDialog({
       })
       .filter((r) => r.remainingDue > 0);
   }, [openCn.data]);
+  const currentConsignment = consignment ? remittableRows.find(row => row.id === consignment.id) : null;
 
   // حساب المتبقي للطرد الفردي المستهدف
   const singleRemainingDue = useMemo(() => {
-    if (!consignment) return 0;
-    if (consignment.codDue != null && Number(consignment.codDue) > 0) {
-      return Number(consignment.codDue);
-    }
-    const match = remittableRows.find((r) => r.id === consignment.id);
-    if (match) return match.remainingDue;
-    const cod = Number(consignment.codAmount || 0);
-    const collected = Number(consignment.collectedAmount || 0);
-    return Math.max(0, cod - collected);
-  }, [consignment, remittableRows]);
+    return currentConsignment?.remainingDue ?? 0;
+  }, [currentConsignment]);
 
   // إجمالي المتبقي على جميع طرود الجهة
   const allPartyRemainingDue = useMemo(() => {
@@ -171,20 +177,20 @@ export function CollectConsignmentDialog({
 
   // إعادة الضبط عند الفتح
   useEffect(() => {
-    if (!open) return;
+    if (!open || submittedRemittance) return;
     const initialScope = consignment ? "SINGLE" : "ALL_PARTY";
     setSettleScope(initialScope);
     setConfirmDeliveryFirst(Boolean(consignment && consignment.parcelStatus !== "DELIVERED"));
     setShortfallReason("");
     setShortfallNotes("");
     setClientRequestId(crypto.randomUUID());
-  }, [open, consignment?.id]);
+  }, [open, consignment?.id, submittedRemittance]);
 
   // تحديث النقد المعدود تلقائياً ليتطابق مع المبلغ المتوقع
   useEffect(() => {
-    if (!open) return;
+    if (!open || submittedRemittance) return;
     setCountedCash(String(expectedTotal));
-  }, [open, expectedTotal]);
+  }, [open, expectedTotal, submittedRemittance]);
 
   // حساب الفرق والعجز
   const countedNum = Number(countedCash || "0");
@@ -196,16 +202,60 @@ export function CollectConsignmentDialog({
   const staffConfirm = trpc.delivery.staffConfirm.useMutation();
 
   // طفرة تسجيل التوريد المالي
-  const recordRemittance = trpc.delivery.recordRemittance.useMutation({
-    onError: (err) => {
-      notify.err(err);
-    },
-  });
+  const recordRemittance = trpc.delivery.recordRemittance.useMutation();
 
-  const isPending = staffConfirm.isPending || recordRemittance.isPending;
+  const isPending = staffConfirm.isPending || recordRemittance.isPending || submittingRemittance;
+  const intentLocked = isPending || submittedRemittance != null;
+
+  // A committed remittance can disappear from the live obligations before its response arrives.
+  // Recovery must replay this exact payload/key, without delivery confirmation or fresh amounts.
+  const submitRemittance = async (submitted: SubmittedRemittance) => {
+    if (remittanceInFlight.current) return;
+    remittanceInFlight.current = true;
+    setSubmittingRemittance(true);
+    setSubmittedRemittance(submitted);
+    try {
+      const res = await recordRemittance.mutateAsync(submitted.payload);
+      notify.ok(
+        "تم تسجيل التوريد وقبض النقد بنجاح",
+        `سند التوريد #${res.remittanceNumber ?? res.remittanceId} — دخل الدرج ${fmt(res.netRemitted)} د.ع${
+          Number(res.shortfallTotal) > 0 ? ` (عجز: ${fmt(res.shortfallTotal)} د.ع)` : ""
+        }`,
+      );
+      try {
+        printRemittanceReceipt(submitted.partyLabel, res);
+      } catch {
+        // Printing does not change the acknowledged financial result.
+      }
+      setSubmittedRemittance(null);
+      setClientRequestId(crypto.randomUUID());
+      onOpenChange(false);
+      onCompleted?.();
+      void Promise.all([
+        utils.delivery.invalidate(),
+        utils.shifts.invalidate(),
+        utils.treasury.invalidate(),
+        utils.sales.invalidate(),
+        utils.workOrders.invalidate(),
+      ]).catch(() => {});
+    } catch (err: unknown) {
+      const status = (err as { data?: { httpStatus?: number } } | null)?.data?.httpStatus;
+      // A definite rejection permits correction; timeouts/transport/5xx keep the original intent.
+      if (status != null && status >= 400 && status < 500 && status !== 408 && status !== 499) {
+        setSubmittedRemittance(null);
+        setClientRequestId(crypto.randomUUID());
+      }
+      notify.err(err);
+    } finally {
+      remittanceInFlight.current = false;
+      setSubmittingRemittance(false);
+    }
+  };
 
   const handleSettle = async () => {
-    if (!canRemit || (settleScope === "SINGLE" && confirmDeliveryFirst && consignment?.parcelStatus !== "DELIVERED" && !canConfirmDelivery)) { notify.err("صلاحية تنفيذ التحصيل أو تأكيد التسليم غير ممنوحة لحسابك"); return; }
+    if (intentLocked) return;
+    if (obligationsLoading || expectedTotal <= 0) { notify.err("انتظر تحميل الذمة الحالية قبل تأكيد التوريد"); return; }
+    if (!canRemit || (settleScope === "SINGLE" && confirmDeliveryFirst && currentConsignment?.parcelStatus !== "DELIVERED" && !canConfirmDelivery)) { notify.err("صلاحية تنفيذ التحصيل أو تأكيد التسليم غير ممنوحة لحسابك"); return; }
     if (effectivePartyId == null) {
       notify.err("لم يتم تحديد جهة التوصيل");
       return;
@@ -223,9 +273,9 @@ export function CollectConsignmentDialog({
 
     try {
       // 1. إذا كان الطرد الفردي غير مسلّم وطُلب تأكيد تسليمه أولاً:
-      if (settleScope === "SINGLE" && consignment && confirmDeliveryFirst && consignment.parcelStatus !== "DELIVERED") {
+      if (settleScope === "SINGLE" && currentConsignment && confirmDeliveryFirst && currentConsignment.parcelStatus !== "DELIVERED") {
         await staffConfirm.mutateAsync({
-          consignmentId: consignment.id,
+          consignmentId: currentConsignment.id,
           collectedAmount: String(countedNum),
           evidence: "تسليم وتحصيل مباشر بالكاونتر",
           clientRequestId: crypto.randomUUID(),
@@ -285,7 +335,7 @@ export function CollectConsignmentDialog({
       }
 
       // 3. تنفيذ التوريد المالي الذري
-      const res = await recordRemittance.mutateAsync({
+      await submitRemittance({ payload: {
         partyId: effectivePartyId,
         shiftType,
         lines: activeLines,
@@ -297,44 +347,17 @@ export function CollectConsignmentDialog({
             }
           : null,
         clientRequestId,
-      });
-
-      notify.ok(
-        "تم تسجيل التوريد وقبض النقد بنجاح",
-        `سند التوريد #${res.remittanceNumber ?? res.remittanceId} — دخل الدرج ${fmt(res.netRemitted)} د.ع${
-          Number(res.shortfallTotal) > 0 ? ` (عجز: ${fmt(res.shortfallTotal)} د.ع)` : ""
-        }`,
-      );
-
-      // تحديث جميع الكاشات التشغيلية
-      await Promise.all([
-        utils.delivery.invalidate(),
-        utils.shifts.invalidate(),
-        utils.treasury.invalidate(),
-        utils.sales.invalidate(),
-        utils.workOrders.invalidate(),
-      ]);
-
-      // طباعة السند تلقائياً أو إشعار الطباعة
-      try {
-        const partyLabel = consignment?.partyName ?? partyName ?? (openCn.data?.rows?.[0] as { partyName?: string })?.partyName ?? "جهة التوصيل";
-        printRemittanceReceipt(partyLabel, res);
-      } catch {
-        // عدم حجب نجاح العملية إذا منعت نافذة الطباعة
-      }
-
-      onOpenChange(false);
-      onCompleted?.();
+      }, partyLabel: consignment?.partyName ?? partyName ?? "جهة التوصيل" });
     } catch (err: unknown) {
       notify.err(err);
     }
   };
 
-  const displayName = consignment?.partyName ?? partyName ?? (openCn.data?.rows?.[0] as { partyName?: string })?.partyName ?? "المندوب";
+  const displayName = consignment?.partyName ?? partyName ?? "المندوب";
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent dir="rtl" className="sm:max-w-xl">
+    <Dialog open={open} onOpenChange={next => { if (!next && intentLocked) return; onOpenChange(next); }}>
+      <DialogContent dir="rtl" className="sm:max-w-xl" showCloseButton={!intentLocked}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-xl font-black">
             <Wallet aria-hidden className="size-6 text-emerald-600" />
@@ -346,6 +369,9 @@ export function CollectConsignmentDialog({
         </DialogHeader>
 
         <div className="space-y-4">
+          {submittedRemittance && <div role="alert" className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/30 p-3 text-sm">
+            أُرسل طلب توريد بقيمة {fmt(submittedRemittance.payload.countedCash)} د.ع. استعد نتيجته بنفس الطلب قبل إجراء تحصيل آخر؛ قد تكون الذمة الحالية تغيّرت بعد تسجيله.
+          </div>}
           {/* بطاقة معلومات المندوب */}
           <div className="rounded-xl border bg-muted/40 p-3.5 space-y-2">
             <div className="flex items-center justify-between">
@@ -385,6 +411,7 @@ export function CollectConsignmentDialog({
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
+                disabled={intentLocked}
                 className={`flex flex-col items-start p-3 rounded-xl border text-start transition-all ${
                   settleScope === "SINGLE"
                     ? "border-emerald-600 bg-emerald-50/50 dark:bg-emerald-950/20 shadow-sm"
@@ -403,6 +430,7 @@ export function CollectConsignmentDialog({
 
               <button
                 type="button"
+                disabled={intentLocked}
                 className={`flex flex-col items-start p-3 rounded-xl border text-start transition-all ${
                   settleScope === "ALL_PARTY"
                     ? "border-emerald-600 bg-emerald-50/50 dark:bg-emerald-950/20 shadow-sm"
@@ -422,13 +450,13 @@ export function CollectConsignmentDialog({
           )}
 
           {/* تأكيد التسليم المسبق إذا لم يكن مسلماً بعد */}
-          {consignment && consignment.parcelStatus !== "DELIVERED" && (
+          {currentConsignment && currentConsignment.parcelStatus !== "DELIVERED" && (
             <div className="flex items-start gap-2.5 rounded-xl border border-amber-500/30 bg-amber-50/50 dark:bg-amber-950/20 p-3 text-xs">
               <input
                 type="checkbox"
                 id="confirm-first-check"
                 checked={confirmDeliveryFirst}
-                disabled={!canConfirmDelivery}
+                disabled={!canConfirmDelivery || intentLocked}
                 onChange={(e) => setConfirmDeliveryFirst(e.target.checked)}
                 className="mt-0.5 rounded border-amber-500"
               />
@@ -444,6 +472,7 @@ export function CollectConsignmentDialog({
               <Label className="text-xs font-bold mb-1 block">وردية إيداع النقد</Label>
               <AppSelect
                 value={shiftType}
+                disabled={intentLocked}
                 onValueChange={(val) => setShiftType(val as "RECEPTION" | "RETAIL")}
                 className="h-10 text-sm"
               >
@@ -483,13 +512,14 @@ export function CollectConsignmentDialog({
             <MoneyInput
               id="counted-cash-input"
               value={countedCash}
+              disabled={intentLocked}
               onChange={setCountedCash}
               className="h-12 text-lg font-black text-end tabular-nums border-2 border-emerald-600/30 focus-visible:border-emerald-600"
               ariaLabel="المبلغ المقبوض"
             />
 
             {/* تنبيه العجز */}
-            {isShortfall && (
+            {isShortfall && !submittedRemittance && (
               <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 space-y-2 mt-2">
                 <div className="flex items-center gap-2 text-xs font-black text-destructive">
                   <AlertTriangle className="size-4 shrink-0" />
@@ -500,6 +530,7 @@ export function CollectConsignmentDialog({
                   <Label className="text-xs font-bold text-destructive">سبب العجز المالي *</Label>
                   <AppSelect
                     value={shortfallReason}
+                    disabled={intentLocked}
                     onValueChange={(val) => setShortfallReason(val as ShortfallReason)}
                     className="h-9 text-xs border-destructive/40"
                   >
@@ -513,6 +544,7 @@ export function CollectConsignmentDialog({
                   <Input
                     placeholder="ملاحظات تفصيلية حول سبب العجز (اختياري)..."
                     value={shortfallNotes}
+                    disabled={intentLocked}
                     onChange={(e) => setShortfallNotes(e.target.value)}
                     className="h-8 text-xs mt-1"
                     maxLength={500}
@@ -521,7 +553,7 @@ export function CollectConsignmentDialog({
               </div>
             )}
 
-            {isExcess && (
+            {isExcess && !submittedRemittance && (
               <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-2.5 text-xs text-destructive font-bold flex items-center gap-1.5">
                 <AlertTriangle className="size-4 shrink-0" />
                 المبلغ المقبوض أكبر من الصافي المطلوب ({fmt(expectedTotal)} د.ع)؛ لا يقبل قبض زيادة عن الذمة.
@@ -531,7 +563,7 @@ export function CollectConsignmentDialog({
         </div>
 
         <DialogFooter className="gap-2 sm:justify-start pt-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={intentLocked}>
             إلغاء
           </Button>
 
@@ -539,7 +571,9 @@ export function CollectConsignmentDialog({
             className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-black px-6"
             disabled={
               !canRemit ||
-              (settleScope === "SINGLE" && confirmDeliveryFirst && consignment?.parcelStatus !== "DELIVERED" && !canConfirmDelivery) ||
+              submittedRemittance != null ||
+              obligationsLoading ||
+              (settleScope === "SINGLE" && confirmDeliveryFirst && currentConsignment?.parcelStatus !== "DELIVERED" && !canConfirmDelivery) ||
               isPending ||
               countedNum <= 0 ||
               isExcess ||
@@ -557,6 +591,9 @@ export function CollectConsignmentDialog({
               </>
             )}
           </Button>
+          {submittedRemittance && <Button disabled={!canRemit || isPending} onClick={() => void submitRemittance(submittedRemittance)}>
+            {isPending ? "جارٍ التحقق من نتيجة التوريد…" : "استعادة نتيجة التوريد"}
+          </Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>

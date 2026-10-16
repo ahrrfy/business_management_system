@@ -2,6 +2,7 @@ import { and, asc, desc, eq, inArray, isNull, ne, or, sql, type SQLWrapper } fro
 import Decimal from "decimal.js";
 import { alias } from "drizzle-orm/mysql-core";
 import { openBalanceExpr, openBalanceOf } from "@shared/predicates/openBalance";
+import { isDeadInvoiceStatus, isVoidedInvoiceStatus } from "@shared/invoiceStatus";
 import {
   accountingEntries,
   customers,
@@ -234,6 +235,9 @@ export interface CustomerStatementInvoice {
   invoiceDate: Date;
   dueDate: Date | null;
   total: string;
+  /** Current obligation; original total remains immutable statement evidence. */
+  currentTotal: string;
+  remainingAmount: string;
   paidAmount: string;
   // REP-06: إجمالي المُرتجَع على الفاتورة — يلزم لحساب المتبقّي الصحيح في الواجهة
   // (total − paidAmount − returnedTotal). إغفاله كان يُظهر متبقّياً موجباً لفاتورة سُدِّد صافيها.
@@ -593,12 +597,12 @@ export async function getCustomerStatement(
   }
 
   // أموال بدقّة decimal.js (§٥) — لا Number/toFixed على الأموال.
-  // REP-01: الإجماليات المالية تُحسَب على غير الملغاة فقط، اتّساقاً مع customerOpeningBalance الذي
-  // يستثني CANCELLED (التزامها أُلغي) ⇒ totalSales/totalPaid لا يخالفان الرصيد المُرحَّل. الصفوف
-  // المعروضة تبقى شاملةً كل الفواتير (بما فيها CANCELLED) للعرض. لا يُطرَح RETURNED من totalSales.
-  const nonCancelled = invs.filter((i) => i.status !== "CANCELLED");
-  const totalSales = sumMoney(nonCancelled.map((i) => i.total ?? 0));
-  const totalPaid = sumMoney(nonCancelled.map((i) => i.paidAmount ?? 0));
+  // Current sales exclude voided originals and returned goods. Historical rows and
+  // their compensating movements remain unchanged in the chronological ledger.
+  const currentTotalOf = (i: (typeof invs)[number]) => isVoidedInvoiceStatus(i.status)
+    ? money(0) : Decimal.max(0, money(i.total).minus(money(i.returnedTotal)));
+  const totalSales = sumMoney(invs.map(currentTotalOf));
+  const totalPaid = sumMoney(invs.filter(i => !isVoidedInvoiceStatus(i.status)).map(i => i.paidAmount));
   // REP-06: المتبقّي على الفاتورة المستحقّة = total − paidAmount − returnedTotal (مقصوص ≥ 0)؛
   // إغفال returnedTotal كان يضخّم المتبقّي بعد مرتجع جزئي على فاتورة آجلة.
   // `openBalanceOf` هو النظيرُ الحسابيّ لِـ`openBalance` أعلاه بنفس الوضع — يُثبت اختبارُ
@@ -828,6 +832,8 @@ export async function getCustomerStatement(
         invoiceDate: i.invoiceDate,
         dueDate: i.dueDate,
         total: String(i.total),
+        currentTotal: toDbMoney(currentTotalOf(i)),
+        remainingAmount: isDeadInvoiceStatus(i.status) ? "0.00" : toDbMoney(openBalanceOf(i, "COLLECTIBLE")),
         paidAmount: String(i.paidAmount),
         returnedTotal: String(i.returnedTotal ?? "0"),
         status: i.status,

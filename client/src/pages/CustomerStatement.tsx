@@ -20,7 +20,7 @@ import { buildStatementMessage, toIraqiIntl } from "@/lib/whatsapp";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printCustomerStmt } from "@/lib/printing/printTemplates";
-import { D, fmt, positiveDiff } from "@/lib/money";
+import { D, fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -143,7 +143,7 @@ function statementMethodLabel(v: string | null | undefined): string {
  * إغفال returnedTotal كان يُظهر متبقّياً موجباً لفاتورة مُرتجَعة جزئياً سُدِّد صافيها.
  */
 const invoiceRemaining = (i: StmtInvoiceRow) =>
-  positiveDiff(i.total, D(i.paidAmount).plus(i.returnedTotal).toFixed(2)).toFixed(2);
+  i.remainingAmount;
 
 /** عربونٌ مقبوضٌ على طلب/أمر شغل ما زال له باقٍ مستحق — يُلوَّن صفُّه ويُوسَم. */
 const isDepositDue = (i: StmtInvoiceRow) =>
@@ -193,8 +193,8 @@ function getStmtInvoiceColumns(onDrilldown: (target: DrilldownTarget) => void): 
     },
     stmtMoneyCol<StmtInvoiceRow>(
       "total",
-      "الإجمالي (مدين)",
-      (i) => i.total,
+      "الصافي الحالي",
+      (i) => i.currentTotal,
       undefined,
       "font-semibold",
       (i) => onDrilldown({ type: "INVOICE", invoiceId: i.id }),
@@ -401,7 +401,7 @@ export default function CustomerStatement() {
 
   const openInvoicesCount = useMemo(() => {
     return (stmt.data?.invoices ?? []).filter((i) => {
-      const remaining = D(i.total).minus(D(i.paidAmount)).minus(D(i.returnedTotal ?? "0"));
+      const remaining = D(i.remainingAmount);
       const active = !isDeadInvoice(i.status);
       return active && remaining.gt(0);
     }).length;
@@ -415,7 +415,7 @@ export default function CustomerStatement() {
   }, [stmt.data, openInvoicesCount]);
 
   const shownInvoices = useMemo(() => (stmt.data?.invoices ?? []).filter((i) => {
-    const remaining = D(i.total).minus(D(i.paidAmount)).minus(D(i.returnedTotal ?? "0"));
+    const remaining = D(i.remainingAmount);
     const active = !isDeadInvoice(i.status);
     if (invoiceFilter === "DEPOSIT_DUE") return active && (i.sourceType === "ORDER" || i.sourceType === "WORKORDER") && D(i.paidAmount).gt(0) && remaining.gt(0);
     if (invoiceFilter === "OUTSTANDING") return active && remaining.gt(0);
@@ -702,7 +702,7 @@ export default function CustomerStatement() {
                   </div>
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
-                  <Stat label="إجمالي المبيعات" value={stmt.data.summary.totalSales} />
+                  <Stat label="صافي المبيعات الحالية" value={stmt.data.summary.totalSales} />
                   <Stat label="إجمالي المدفوع" value={stmt.data.summary.totalPaid} />
                   <Stat label="غير مدفوع" value={stmt.data.summary.unpaid} emphasis />
                   {/* عقد import-integration §٦: رصيد غير مفوتر = الرصيد الجاري − غير المدفوع (Decimal لا parseFloat) — يشمل الافتتاحي المستورد. */}

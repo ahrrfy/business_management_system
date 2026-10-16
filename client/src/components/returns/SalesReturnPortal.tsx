@@ -44,7 +44,7 @@ import { fmtDateTime } from "@/lib/date";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterInputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { cn } from "@/lib/utils";
 import {
@@ -145,8 +145,13 @@ export function SalesReturnPortal({
   type InspectedInvoice = NonNullable<
     Awaited<ReturnType<typeof utils.returns.inspectInvoiceForReturn.fetch>>
   >;
-  const [inspectedInvoice, setInspectedInvoice] =
+  const [inspectionSelection, setInspectedInvoice] =
     useState<InspectedInvoice | null>(null);
+  const currentInspection = trpc.returns.inspectInvoiceForReturn.useQuery(
+    { invoiceNumber: inspectionSelection?.invoiceNumber ?? "" },
+    { enabled: inspectionSelection != null },
+  );
+  const inspectedInvoice = inspectionSelection ? currentInspection.data ?? inspectionSelection : null;
   const invoiceState = trpc.returns.getInvoice.useQuery(
     { invoiceId: inspectedInvoice?.id ?? 0 }, { enabled: inspectedInvoice != null },
   );
@@ -157,6 +162,15 @@ export function SalesReturnPortal({
   const withdrawing = withdrawControl.isPending || withdrawLegacy.isPending;
   const canWithdraw = pending?.isMine && (pending.source === "CONTROL" ? controlWithdrawPermission.allowed : legacyWithdrawPermission.allowed);
   const invoiceStateBlockReason = !inspectedInvoice ? null
+    : currentInspection.error ? currentInspection.error.message
+    : !currentInspection.data ? "جارٍ التحقق من قيم الفاتورة الحالية…"
+    : inspectionSelection?.id !== inspectedInvoice.id ? "تغيّرت نسخة الفاتورة؛ أعد فحصها لتحميل البنود الحالية."
+    : salesCart.some(line => {
+        const item = inspectedInvoice.items.find(item => item.invoiceItemId === line.invoiceItemId);
+        const selectedItem = inspectionSelection?.items.find(item => item.invoiceItemId === line.invoiceItemId);
+        return !item || line.quantity > item.remainingQuantity || !selectedItem ||
+          !D(selectedItem.effectiveUnitPrice || selectedItem.unitPrice).eq(item.effectiveUnitPrice || item.unitPrice);
+      }) ? "تغيّرت بنود الفاتورة؛ أعد فحصها وراجع الكميات والأسعار قبل تأكيد المرتجع."
     : !invoiceState.data ? invoiceState.error?.message ?? "جارٍ التحقق من حالة الفاتورة وطلباتها…"
     : invoiceState.data.id !== inspectedInvoice.id ? "تغيّرت نسخة الفاتورة؛ أعد فحصها لتحميل البنود الحالية."
     : pending ? `يوجد طلب معلّق #${pending.id}؛ عالجه قبل تنفيذ مرتجع جديد.` : null;
@@ -927,12 +941,15 @@ export function SalesReturnPortal({
   }, [debouncedInvoiceNo, inspectedInvoice?.invoiceNumber]);
 
   const salesReturnMutation = trpc.returns.executeSalesReturnCart.useMutation();
+  type ReturnSubmission = RouterInputs["returns"]["executeSalesReturnCart"];
+  const [pendingReturn, setPendingReturn] = useState<ReturnSubmission | null>(null);
 
   const handleExecuteSalesReturn = async () => {
     if (!operationPermission.allowed) {
       notify.err(operationPermission.reason);
       return;
     }
+    if (pendingReturn) { await submitSalesReturn(pendingReturn); return; }
     if (invoiceStateBlockReason) { notify.warn(invoiceStateBlockReason); return; }
     if (salesCart.length === 0) {
       notify.warn("يرجى إضافة صنف واحد على الأقل للسلة");
@@ -1044,8 +1061,7 @@ export function SalesReturnPortal({
     });
     if (!ok) return;
 
-    try {
-      const res = await salesReturnMutation.mutateAsync({
+    await submitSalesReturn({
         clientRequestId,
         invoiceNumber: inspectedInvoice?.invoiceNumber ?? (salesInvoiceNo.trim() || undefined),
         customer: {
@@ -1073,7 +1089,13 @@ export function SalesReturnPortal({
           reference: salesCardRef.trim() || undefined,
         },
         reason: salesReason.trim() || undefined,
-      });
+    });
+  };
+
+  async function submitSalesReturn(submission: ReturnSubmission) {
+    try {
+      const res = await salesReturnMutation.mutateAsync(submission);
+      setPendingReturn(null);
 
       notify.ok(`تم تنفيذ مرتجع المبيعات بنجاح: ${res.returnNumber}`);
 
@@ -1107,12 +1129,20 @@ export function SalesReturnPortal({
       salesBarcodeRef.current?.focus();
       await invalidateFinancialQueries(queryClient, inspectedInvoice?.branchId ?? activeBranchId);
     } catch (e: any) {
+      // A lost reply may follow a committed return. Replay the exact submitted
+      // intent before validating a new cart against the now-updated invoice.
+      if (!e?.data?.code || ["INTERNAL_SERVER_ERROR", "TIMEOUT"].includes(e.data.code)) setPendingReturn(submission);
+      else setPendingReturn(null);
       notify.err(e.message || "تعذر تنفيذ المرتجع");
     }
-  };
+  }
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5">
+      {pendingReturn && <Card className="lg:col-span-12"><CardContent className="space-y-2 p-3 text-sm">
+        <p>تعذرت معرفة نتيجة المرتجع السابق. استعد نتيجته بنفس الطلب قبل إنشاء مرتجع آخر.</p>
+        <Button type="button" onClick={() => void handleExecuteSalesReturn()} disabled={!operationPermission.allowed || salesReturnMutation.isPending}>استعادة نتيجة المرتجع السابق</Button>
+      </CardContent></Card>}
       {invoiceStateBlockReason && <Card className="lg:col-span-12"><CardContent className="space-y-2 p-3 text-sm">
         <p>{invoiceStateBlockReason}</p>
         {pending && <p className="text-xs text-muted-foreground">السبب: {pending.reason} · الطلب لم يُنفّذ، ولا يتغيّر المال أو المخزون بسحبه.</p>}
@@ -2331,7 +2361,7 @@ export function SalesReturnPortal({
               onClick={() => void handleExecuteSalesReturn()}
               disabled={
                 !operationPermission.allowed ||
-                !!invoiceStateBlockReason || withdrawing ||
+                !!pendingReturn || !!invoiceStateBlockReason || withdrawing ||
                 salesReturnMutation.isPending ||
                 salesCart.length === 0 ||
                 salesTotal <= 0 ||

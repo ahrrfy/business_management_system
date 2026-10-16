@@ -27,4 +27,19 @@ describe("مسار تعديل الفاتورة من الاستقبال", () => {
     expect(correct).toContain("assertInvoiceReversalDeliverySafeTx");
     expect(correct).toContain("assertNoActiveInstallmentPlanAfterInvoiceLockTx");
   });
+
+  it("يراقب معاينة التعديل برقم المسح ومعاينة المرتجع بمعرفه دون إعادة ضبط مسودة المرتجع", () => {
+    const workflow = readClient("pages/reception/ReceptionWorkflowPage.tsx");
+    expect(workflow).toContain("trpc.sales.lookupForCorrection.useQuery");
+    expect(workflow).toContain("invoiceNumber: editInvoiceNumber");
+    expect(workflow).toContain("setEditInvoiceNumber(invoiceNumber)");
+    expect(workflow).toContain("const editScanned = editPreview.data");
+    expect(workflow).toContain("trpc.returns.getInvoice.useQuery");
+    expect(workflow).toContain("invoiceId: returnScanned?.kind === \"invoice\" ? returnScanned.id : 0");
+    expect(workflow).toContain("invoiceStatusLabel(returnInvoice.status)");
+    expect(workflow).toContain("فاتورة بيع #{returnInvoice?.invoiceNumber}");
+    expect(workflow).toContain("invoiceId={returnScanned.id}");
+    expect(workflow).not.toContain("setEditScanned(invoice)");
+    expect(workflow).not.toContain("invoiceStatusLabel(returnScanned.status)");
+  });
 });
