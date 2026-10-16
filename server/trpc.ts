@@ -987,6 +987,10 @@ export function returnInvoiceScopeForUser(
 ): InvoiceScope | null {
   if (user.role === "admin" || user.isOwner) return "sales";
   if (hasOperationPolicy(user) && !canonicalOperationAllowed(user, path)) return null;
+  // Explicit branch-wide invoice access also applies when opening that invoice
+  // for an already granted return action; station channels must not re-hide it.
+  if (hasOperationPolicy(user) && canonicalOperationAllowed(user, "sales.get") &&
+    operationRecordScope(user, "sales.get") === "BRANCH") return "sales";
   const persistedHolder = user as {
     persistedPermissionsOverride?: Record<string, AccessLevel> | null;
     customRoleKey?: string | null;

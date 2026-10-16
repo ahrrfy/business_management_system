@@ -308,6 +308,7 @@ const EXACT_LABELS = {
   "sales.create": "إصدار فاتورة مبيعات",
   "sales.correct": "تصحيح فاتورة مبيعات",
   "sales.cancel": "إلغاء فاتورة مبيعات وعكس أثرها",
+  "sales.cancelUnpaidCod": "إلغاء فاتورة دفع عند الاستلام دون قبض أو صرف",
   "sales.pay": "تحصيل فاتورة مبيعات",
   "returns.create": "إنشاء طلب مرتجع مبيعات أو تنفيذ مرتجع مباشر",
   "returns.withdrawRequest": "سحب طلب مرتجع قديم قبل التنفيذ",
