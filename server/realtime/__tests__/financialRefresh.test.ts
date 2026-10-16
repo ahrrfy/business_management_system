@@ -17,7 +17,14 @@ vi.mock("../../services/reports/monthCloseGate", () => ({
   lockFinancialPostingGate: vi.fn(), lockCompanyMonthCloseGate: vi.fn(),
   ensureFinancialPostingGate: vi.fn(), isMonthCloseGateMissing: () => false,
 }));
+vi.mock("../../services/auditService", async importOriginal => ({
+  ...await importOriginal<typeof import("../../services/auditService")>(),
+  withMutationAuditScope: async <T>(work: () => Promise<T>) => ({ value: await work(), specializedAuditWritten: true }),
+  logAudit: vi.fn(),
+}));
 import { withTx } from "../../services/tx";
+import { publicProcedure, router } from "../../trpc";
+import type { TrpcContext } from "../../context";
 import { enqueueFinancialRefresh, scheduleFinancialRefresh } from "../financialRefresh";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import { isFinancialMutation } from "@shared/financialRealtime";
@@ -32,6 +39,75 @@ beforeEach(() => {
 afterEach(() => { vi.runOnlyPendingTimers(); vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 describe("financial refresh publication", () => {
+  it.each([false, true])("retains company-wide fallback for composite inventory mutations (ledger hint: %s)", async hinted => {
+    const api = router({ inventory: router({ transferReceive: publicProcedure.mutation(async () => {
+      if (hinted) await withTx(async tx => enqueueFinancialRefresh(tx, 1));
+      return { ok: true };
+    }) }) }).createCaller({ user: { id: 2, role: "cashier", isOwner: false, branchId: 2 },
+      req: { headers: {} }, res: {}, nativeClientId: null } as unknown as TrpcContext);
+    await api.inventory.transferReceive();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(state.publish).toHaveBeenCalledExactlyOnceWith(REALTIME_EVENT_TYPES.FINANCIAL_DATA_CHANGED,
+      { branchIds: null }, { companyId: null, branchId: null });
+  });
+  it("keeps concurrent mutation hints isolated and publishes nothing for a rolled back return", async () => {
+    let resume!: () => void;
+    const paused = new Promise<void>(resolve => { resume = resolve; });
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const routes = router({ returns: router({ create: publicProcedure.mutation(async ({ ctx }) => {
+      if (ctx.user!.id === 1) {
+        started();
+        await paused;
+      } else await withTx(async tx => enqueueFinancialRefresh(tx, 2));
+      return { mode: "EXECUTED" };
+    }), executeSalesReturnCart: publicProcedure.mutation(async () => {
+      await withTx(async tx => { enqueueFinancialRefresh(tx, 3); throw new Error("rollback"); });
+    }) }) });
+    const caller = (id: number, branchId: number) => routes.createCaller({
+      user: { id, role: "cashier", isOwner: false, branchId }, req: { headers: {} }, res: {}, nativeClientId: null,
+    } as unknown as TrpcContext);
+    const first = caller(1, 1).returns.create();
+    await ready;
+    await caller(2, 2).returns.create();
+    resume();
+    await first;
+    await expect(caller(3, 3).returns.executeSalesReturnCart()).rejects.toThrow("rollback");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(state.publish).toHaveBeenCalledExactlyOnceWith(REALTIME_EVENT_TYPES.FINANCIAL_DATA_CHANGED,
+      { branchIds: [2, 1] }, { companyId: null, branchId: null });
+  });
+  it("preserves the committed branch through a branch-bound return mutation's audit middleware", async () => {
+    const api = router({ returns: router({ create: publicProcedure.mutation(async () => {
+      await withTx(async tx => enqueueFinancialRefresh(tx, 2));
+      return { mode: "EXECUTED" };
+    }) }) }).createCaller({ user: { id: 2, role: "cashier", isOwner: false, branchId: 2 },
+      req: { headers: {} }, res: {}, nativeClientId: null } as unknown as TrpcContext);
+    await api.returns.create();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(state.publish).toHaveBeenCalledExactlyOnceWith(REALTIME_EVENT_TYPES.FINANCIAL_DATA_CHANGED,
+      { branchIds: [2] }, { companyId: null, branchId: 2 });
+  });
+  it("retains a company-wide fallback when an owner cart may affect invoice and stock in different branches", async () => {
+    const api = router({ returns: router({ executeSalesReturnCart: publicProcedure.mutation(async () => {
+      await withTx(async tx => enqueueFinancialRefresh(tx, 1));
+      return { ok: true };
+    }) }) }).createCaller({ user: { id: 1, role: "admin", isOwner: true, branchId: 1 },
+      req: { headers: {} }, res: {}, nativeClientId: null } as unknown as TrpcContext);
+    await api.returns.executeSalesReturnCart();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(state.publish).toHaveBeenCalledExactlyOnceWith(REALTIME_EVENT_TYPES.FINANCIAL_DATA_CHANGED,
+      { branchIds: null }, { companyId: null, branchId: null });
+  });
+  it("scopes a successful cashier lifecycle fallback to that cashier's branch", async () => {
+    const api = router({ returns: router({ create: publicProcedure.mutation(() => ({ mode: "EXECUTED" })) }) })
+      .createCaller({ user: { id: 2, role: "cashier", isOwner: false, branchId: 2 },
+        req: { headers: {} }, res: {}, nativeClientId: null } as unknown as TrpcContext);
+    await api.returns.create();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(state.publish).toHaveBeenCalledExactlyOnceWith(REALTIME_EVENT_TYPES.FINANCIAL_DATA_CHANGED,
+      { branchIds: [2] }, { companyId: null, branchId: 2 });
+  });
   it("publishes only after COMMIT and coalesces all entries/branches in a transaction", async () => {
     await withTx(async (tx) => {
       for (let i = 0; i < 100; i++) enqueueFinancialRefresh(tx, i % 2 + 1);

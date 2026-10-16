@@ -153,7 +153,7 @@ export default function SimpleProductEditForm({
   // صور المنتج العامّة تُحرَّر عبر حالة `images` أعلاه.
   const variantId = useRef<number | null>(null);
   const baseline = useRef<string | null>(null); // لقطة توقيع النموذج بعد التعبئة (لكشف التعديلات غير المحفوظة)
-  const [currentStock, setCurrentStock] = useState<Record<number, number>>({});
+  const currentStock = product.data?.variants[0]?.stockByBranch ?? {};
   const hasStock = useMemo(() => Object.values(currentStock).some((q) => Number(q) !== 0), [currentStock]);
   const isCostLocked = hasStock && !consignment.isConsignment;
 
@@ -180,7 +180,6 @@ export default function SimpleProductEditForm({
       setCostPrice(v.costPrice);
       setMinStock(String(v.minStock ?? 0));
       setReorderPoint(String(v.reorderPoint ?? 0));
-      setCurrentStock(v.stockByBranch ?? {});
     }
     const tmpl: EditUnit[] = d.unitTemplate.map((u, i) => ({
       id: i + 1,

@@ -18,8 +18,8 @@ let stop: () => void;
 let subscriptions: Array<() => void>;
 let hidden = false;
 const emit = (branchIds: number[] | null = null) => bus.get(E.FINANCIAL_DATA_CHANGED)?.(createRealtimeEvent(E.FINANCIAL_DATA_CHANGED, { branchIds }));
-function read(root: string, branchId?: number, active = true, procedure = "list") {
-  const queryKey = [[root, procedure], { input: branchId == null ? {} : { branchId }, type: "query" }];
+function read(root: string, branchId?: number, active = true, procedure: string | string[] = "list") {
+  const queryKey = [[root, ...(Array.isArray(procedure) ? procedure : [procedure])], { input: branchId == null ? {} : { branchId }, type: "query" }];
   const queryFn = vi.fn(async () => ({ balance: "2000.25" }));
   client.setQueryData(queryKey, { balance: "1000.25" });
   const observer = new QueryObserver(client, { queryKey, queryFn, staleTime: Infinity });
@@ -43,17 +43,19 @@ describe("event-driven financial queries", () => {
       read("sales", 2, true, "get"), read("returns", 2), read("customers", 2),
       read("delivery", 2), read("treasury", 2), read("inventory", 2, true, "onHand"),
       read("inventory", 2, true, "movementsRich"),
-      ...["posList", "stockByUnitIds", "byUnitIds", "byProductIds", "adminList", "byBarcode", "forPurchase"]
+      read("storeAdmin", undefined, true, ["catalog", "list"]),
+      ...["posList", "stockByUnitIds", "byUnitIds", "byProductIds", "adminList", "byBarcode", "forPurchase", "variantUnits", "getForVariantEdit"]
         .map(procedure => read("catalog", 2, true, procedure)),
     ];
     const inactiveStock = read("inventory", 2, false, "movements");
     const otherBranch = read("catalog", 3, true, "stockByUnitIds");
-    const referenceData = read("catalog", 2, true, "variantUnits");
+    const referenceData = read("catalog", 2, true, "productImages");
+    const storefrontBanners = read("storeAdmin", undefined, true, ["banners", "list"]);
     if (source === "local") await invalidateFinancialQueries(client, 2);
     else { emit([2]); await vi.advanceTimersByTimeAsync(750); }
     for (const query of dependent) expect(query.queryFn).toHaveBeenCalledOnce();
     expect(client.getQueryState(inactiveStock.queryKey)?.isInvalidated).toBe(true);
-    for (const query of [inactiveStock, otherBranch, referenceData]) expect(query.queryFn).not.toHaveBeenCalled();
+    for (const query of [inactiveStock, otherBranch, referenceData, storefrontBanners]) expect(query.queryFn).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(60_000);
     for (const query of dependent) expect(query.queryFn).toHaveBeenCalledOnce();
   });
