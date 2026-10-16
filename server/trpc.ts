@@ -30,7 +30,7 @@ import { assertDirectPrintBridgeAuthorized } from "./services/invoicePrintAuthor
 import { canCrossBranches } from "./lib/branchAuthority";
 import { logger } from "./logger";
 import { isFinancialMutation } from "@shared/financialRealtime";
-import { scheduleFinancialRefresh } from "./realtime/financialRefresh";
+import { scheduleFinancialRefresh, withFinancialRefreshScope } from "./realtime/financialRefresh";
 import {
   automaticActorForProcedure,
   buildAutomaticAuditData,
@@ -126,8 +126,15 @@ const auditMutationOperation = t.middleware(async ({ ctx, type, path, input, get
 
   // الجذر يسبق محلّل input في سلسلة tRPC؛ نقرأ الخام المخبّأ كي لا نفقد معرّف هدف update/delete.
   const auditInput = input === undefined ? await getRawInput() : input;
-  const { value: result, specializedAuditWritten } = await withMutationAuditScope(() => next());
-  if (result.ok && isFinancialMutation(path)) scheduleFinancialRefresh();
+  const refresh = await withFinancialRefreshScope(() => withMutationAuditScope(() => next()));
+  const { value: result, specializedAuditWritten } = refresh.value;
+  // Branch-bound returns cannot affect a foreign branch. Owners/admins and
+  // composite workflows (e.g. transfers) retain the company-wide fallback.
+  const scopedReturn = path.startsWith("returns.") && ctx.user != null && !canCrossBranches(ctx.user);
+  if (result.ok && isFinancialMutation(path) && (!scopedReturn || !refresh.scheduled)) {
+    scheduleFinancialRefresh(scopedReturn && ctx.user?.branchId != null
+      ? Number(ctx.user.branchId) : null);
+  }
   const isPublicAuthEntry = PUBLIC_AUTH_ENTRY_PATHS.has(path);
   // فشل المستخدم الموثّق يُسجّل دائماً: قد يكون logAuditTx قد عُلّم ثم تراجعت معاملته.
   // الفشل غير الموثّق لا يكتب سطراً عاماً كي لا يتحول رفض batch رخيص إلى تضخيم I/O عن بُعد.

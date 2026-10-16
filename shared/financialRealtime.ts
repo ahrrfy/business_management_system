@@ -9,7 +9,7 @@ export const FINANCIAL_QUERY_ROOTS = [
   "returns", "customers", "suppliers", "vouchers", "voucherCategories", "expenses", "expenseCategories", "installments",
   "commissions", "payroll", "employees", "hrEnterprise", "attendance", "assets", "exchange", "cardAccount",
   "digitalCards", "delivery", "courier", "consignments", "reception", "workOrders",
-  "printPos", "printAudit", "reservations", "yearEnd", "periodLock", "offline",
+  "printPos", "printAudit", "reservations", "yearEnd", "periodLock", "offline", "inventory",
 ] as const;
 
 const financialMutations: ReadonlySet<string> = new Set([

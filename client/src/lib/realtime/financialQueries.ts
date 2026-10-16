@@ -4,6 +4,10 @@ import { REALTIME_EVENT_TYPES, type RealtimeEvent } from "@shared/realtimeEvents
 import { realtimeManager } from "./realtimeManager";
 
 const financialRoots: ReadonlySet<string> = new Set(FINANCIAL_QUERY_ROOTS);
+// These catalog reads embed live stock; reference-only catalog data stays cached.
+const stockCatalogQueries: ReadonlySet<string> = new Set([
+  "posList", "stockByUnitIds", "byUnitIds", "byProductIds", "adminList", "byBarcode", "forPurchase", "variantUnits", "getForVariantEdit",
+]);
 const isHeavyAlerts = (query: Query) => {
   const path = query.queryKey[0];
   return Array.isArray(path) && path[0] === "reports" && path[1] === "managementAlerts";
@@ -15,7 +19,9 @@ const includesHeavyAlerts = (query: Query) => {
 
 export function isFinancialQuery(query: Query, branchIds: ReadonlySet<number> | null): boolean {
   const [path, options] = query.queryKey;
-  if (!Array.isArray(path) || !financialRoots.has(path[0])) return false;
+  if (!Array.isArray(path) || !(financialRoots.has(path[0]) ||
+    (path[0] === "catalog" && stockCatalogQueries.has(path[1])) ||
+    (path[0] === "storeAdmin" && path[1] === "catalog" && path[2] === "list"))) return false;
   if (branchIds == null) return true;
   const input = (options as { input?: { branchId?: unknown } } | undefined)?.input;
   // Unfiltered/company-wide reads depend on every branch. Server RBAC still gates each read.

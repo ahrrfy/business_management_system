@@ -5,16 +5,27 @@ import { publishRealtimeEvent } from "./index";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import type { FinancialDataChangedPayload } from "@shared/financialRealtime";
 import { logger } from "../logger";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 const pending = new Map<number | null, Set<number> | null>();
 const queuedTransactions = new WeakMap<Tx, Set<number> | null>();
 let timer: ReturnType<typeof setTimeout> | null = null;
+const mutationRefresh = new AsyncLocalStorage<{ scheduled: boolean }>();
+
+/** A generic RPC fallback must not broaden the current operation's committed branch hints. */
+export async function withFinancialRefreshScope<T>(work: () => Promise<T>): Promise<{ value: T; scheduled: boolean }> {
+  const scope = { scheduled: false };
+  const value = await mutationRefresh.run(scope, work);
+  return { value, scheduled: scope.scheduled };
+}
 
 /** No SQL, no monetary payload; bursts share a single message per company/worker. */
 export function scheduleFinancialRefresh(branchId: number | null = null): void {
   const companyId = getCurrentCompanyId();
   // A tenant-less background job must not broadcast into other tenant sessions.
   if (process.env.CONTROL_DATABASE_URL && companyId == null) return;
+  const scope = mutationRefresh.getStore();
+  if (scope) scope.scheduled = true;
   const previous = pending.get(companyId);
   if (branchId == null || previous === null) pending.set(companyId, null);
   else {

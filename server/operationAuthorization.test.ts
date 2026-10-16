@@ -9,7 +9,10 @@ vi.mock("./services/auditService", () => ({
   withMutationAuditScope: async (run: () => Promise<unknown>) => ({ value: await run(), specializedAuditWritten: true }),
   logAudit: vi.fn(), automaticActorForProcedure: vi.fn(), buildAutomaticAuditData: vi.fn(),
 }));
-vi.mock("./realtime/financialRefresh", () => ({ scheduleFinancialRefresh: vi.fn() }));
+vi.mock("./realtime/financialRefresh", () => ({
+  scheduleFinancialRefresh: vi.fn(),
+  withFinancialRefreshScope: async <T>(work: () => Promise<T>) => ({ value: await work(), scheduled: false }),
+}));
 import {
   router, salesCashierProcedure, salesManagerProcedure, deliveryCashierProcedure,
   returnsProcedure, adminProcedure, publicProcedure, salesReadProcedure,
