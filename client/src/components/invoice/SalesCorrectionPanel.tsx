@@ -215,7 +215,7 @@ export function SalesCorrectionPanel(p: SalesCorrectionPanelProps) {
             <p className="text-xs text-muted-foreground">
               {p.ownerExecutes
                 ? "يُصرف الاسترداد من الدرج المفتوح الآن."
-                : "يختار المراجع الدرج المفتوح لحظة الاعتماد؛ لا يخرج أي نقد عند إرسال الطلب."}
+                : "يُردّ المقبوض المتبقي من درج ورديتك المفتوحة ضمن سقفك ورصيد الدرج. عند الحاجة إلى مراجعة يبقى الطلب بلا صرف حتى اعتماده."}
             </p>
           )}
         </div>

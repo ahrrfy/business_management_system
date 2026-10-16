@@ -309,7 +309,7 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
     expect(inv?.branchId).toBe(1);
   });
 
-  it("F2: Same-Branch Peer Invoice Return — colleague invoice requires approval", async () => {
+  it("F2: Same-Branch Peer Invoice Return — colleague invoice uses the current cashier drawer", async () => {
     const shift1 = await openShift(CASHIER1_ID, 1);
     const { invoiceId, itemId } = await createSaleInvoice({ shiftId: shift1, actor: cashier1Actor, quantity: 2, paidAmount: "10000.00" });
 
@@ -336,12 +336,7 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
         },
         cashier2Actor,
       ),
-    ).rejects.toMatchObject({
-      decision: {
-        result: "APPROVAL_REQUIRED",
-        reason: "المستند أنشأه موظف آخر",
-      },
-    });
+    ).resolves.toMatchObject({ returnedTotal: "5000.00" });
   });
 
   it("F2b: locked user cap overrides a stale higher request-context cap", async () => {
@@ -1011,7 +1006,7 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
     expect(inv?.id).toBe(invoiceId);
   });
 
-  it("F18: Return Window — Old cashier invoices route to approval while the owner may execute directly", async () => {
+  it("F18: Return Window — old invoices execute within the current payout limits", async () => {
     const shift1 = await openShift(CASHIER1_ID, 1, "50000.00");
     // Sale made 60 days ago
     const { invoiceId, itemId } = await createSaleInvoice({
@@ -1027,7 +1022,7 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
     expect(ageDays).toBeGreaterThan(50);
 
     const cashier1Caller = createCaller({ id: CASHIER1_ID, branchId: 1, role: "cashier" });
-    // Cashier direct execution is limited to the current business day; old invoices route to approval.
+    // Document age does not prevent a proved refund from the current drawer.
     const reqRet = await cashier1Caller.returns.create({
       invoiceId,
       lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
@@ -1043,7 +1038,7 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
       reason: "إرجاع مباشر بدون شرط مهلة زمنية",
     });
     expect(reqRet).toBeDefined();
-    expect(reqRet.mode).toBe("REQUESTED");
+    expect(reqRet.mode).toBe("EXECUTED");
 
     // 2. Owner executes direct return on another 60-day-old invoice without time expiration barrier
     const { invoiceId: invoiceId2, itemId: itemId2 } = await createSaleInvoice({
@@ -1454,7 +1449,7 @@ describe("Tier 3: Cross-Feature Interactions", () => {
 // TIER 4: REAL-WORLD APPLICATION SCENARIOS (Scenarios 1 to 7)
 // ============================================================================
 describe("Tier 4: Real-World Application Scenarios (TEST_INFRA.md 1 to 7)", () => {
-  it("Scenario 1: Evening cashier requires approval for a morning colleague invoice", async () => {
+  it("Scenario 1: Evening cashier refunds a morning colleague invoice without changing the morning drawer", async () => {
     // 1. Morning shift: Cashier 1 sells 1 stationery item for 5000 cash
     const morningShift = await openShift(CASHIER1_ID, 1, "10000.00");
     const { invoiceId, itemId } = await createSaleInvoice({
@@ -1467,7 +1462,7 @@ describe("Tier 4: Real-World Application Scenarios (TEST_INFRA.md 1 to 7)", () =
     // 2. Evening shift: Cashier 2 opens shift with 25000.00
     const eveningShift = await openShift(CASHIER2_ID, 1, "25000.00");
 
-    // 3. Direct execution is routed to approval before any financial write.
+    // 3. Direct execution uses the current cashier's drawer.
     await expect(
       returnSaleDirect(
         {
@@ -1485,20 +1480,15 @@ describe("Tier 4: Real-World Application Scenarios (TEST_INFRA.md 1 to 7)", () =
         },
         cashier2Actor,
       ),
-    ).rejects.toMatchObject({
-      decision: {
-        result: "APPROVAL_REQUIRED",
-        reason: "المستند أنشأه موظف آخر",
-      },
-    });
+    ).resolves.toMatchObject({ returnedTotal: "5000.00" });
 
-    // 4. No cash leaves the evening drawer.
+    // 4. The actual refund leaves the evening drawer once.
     const eveningReport = await getShiftReport(eveningShift);
     const cashOut = (eveningReport?.payments ?? []).find((p) => p.method === "CASH" && p.direction === "OUT");
-    expect(cashOut).toBeUndefined();
+    expect(cashOut).toBeDefined();
 
     const expectedCash = await withTx((tx) => computeExpectedCash(tx, eveningShift, "25000.00"));
-    expect(Number(expectedCash)).toBe(25000);
+    expect(Number(expectedCash)).toBe(20000);
 
     // 5. Verify morning cashier drawer is completely unaffected
     const morningExpected = await withTx((tx) => computeExpectedCash(tx, morningShift, "10000.00"));
@@ -1577,7 +1567,7 @@ describe("Tier 4: Real-World Application Scenarios (TEST_INFRA.md 1 to 7)", () =
     expect(outReceipts).toHaveLength(0);
   });
 
-  it("Scenario 4: A 45-day-old cashier return routes to approval; the owner may execute it directly (F1, F15, F18)", async () => {
+  it("Scenario 4: A 45-day-old cashier return executes within the same financial limits (F1, F15, F18)", async () => {
     const shift1 = await openShift(CASHIER1_ID, 1, "50000.00");
     // Invoice 45 days old
     const { invoiceId, itemId } = await createSaleInvoice({
@@ -1590,7 +1580,7 @@ describe("Tier 4: Real-World Application Scenarios (TEST_INFRA.md 1 to 7)", () =
 
     const cashierCaller = createCaller({ id: CASHIER1_ID, branchId: 1, role: "cashier" });
 
-    // Cashier direct execution is limited to the current business day; this returns REQUESTED.
+    // The original day does not replace the current drawer and source-pool checks.
     const reqResult = await cashierCaller.returns.create({
       invoiceId,
       lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
@@ -1606,7 +1596,7 @@ describe("Tier 4: Real-World Application Scenarios (TEST_INFRA.md 1 to 7)", () =
       reason: "مرتجع مباشر بدون قيد زمني",
     });
     expect(reqResult).toBeDefined();
-    expect(reqResult.mode).toBe("REQUESTED");
+    expect(reqResult.mode).toBe("EXECUTED");
 
     // 2. Owner executes direct return on another 45-day-old invoice without time barrier
     const { invoiceId: invoiceId2, itemId: itemId2 } = await createSaleInvoice({

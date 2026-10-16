@@ -809,12 +809,6 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
       payment: { amount: "20.00", method: "CASH" },
     }, manager);
     const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
-    await expect(returnSaleDirect({
-      invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
-      restock: true, operatorReason: "رد بلا نقد على فاتورة مقبوضة",
-    }, { userId: 2, branchId: 1 })).rejects.toMatchObject({
-      decision: { result: "APPROVAL_REQUIRED", reason: "المستند أنشأه موظف آخر" },
-    });
     // A source that became paid after the unpaid-only preflight must be
     // rejected again under the core invoice lock before creating credit.
     await expect(withTx((tx) => returnSaleInTx(tx, {
@@ -824,5 +818,10 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
     });
     expect((await db().select().from(s.customers))[0].currentBalance).toBe("0.00");
     expect((await db().select().from(s.invoices))[0].returnedTotal).toBe("0.00");
+    await expect(returnSaleDirect({
+      invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      restock: true, operatorReason: "رصيد مستند إلى المقبوض المثبت دون صرف نقد",
+    }, { userId: 2, branchId: 1 })).resolves.toMatchObject({ returnedTotal: "10.00" });
+    expect((await db().select().from(s.customers))[0].currentBalance).toBe("-10.00");
   });
 });

@@ -2776,6 +2776,7 @@ export const returnRouter = router({
               sameBranch: true,
               ownsTransaction: true,
               sameOpenShift: walkInSameOpenShift,
+              cashSourceReady: walkInSameOpenShift,
               sameBusinessDay: true,
               accountingPeriodOpen: true,
               hasDownstreamEffects: false,
@@ -3233,6 +3234,7 @@ export const returnRouter = router({
                 sameBranch: Number(matchedInvoice.branchId) === actorBranchId,
                 ownsTransaction:
                   Number(matchedInvoice.createdBy) === Number(ctx.user.id),
+                cashSourceReady: input.settlement.method !== "CASH" || effectiveShiftId != null,
                 sameOpenShift:
                   input.settlement.method !== "CASH" ||
                   (effectiveShiftId != null &&

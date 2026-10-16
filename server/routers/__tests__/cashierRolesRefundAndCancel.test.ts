@@ -292,7 +292,7 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
     expect(refundReceipt.referenceNumber).toBe("POS-REF-987654");
   });
 
-  it("٢ب. الرد النقدي لا يختار وردية جديدة عند إغفال وردية الفاتورة الأصلية", async () => {
+  it("٢ب. الرد النقدي يستعمل وردية الكاشير الحالية بعد إغلاق الأصلية", async () => {
     const originalShiftId = await openShiftFor(12, "RETAIL");
     const sale = await createSale({
       branchId: 1,
@@ -304,7 +304,7 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
     }, { userId: 12, branchId: 1, role: "cashier" });
     await db().update(s.shifts).set({ status: "CLOSED", closedAt: new Date(), openGuard: null })
       .where(eq(s.shifts.id, originalShiftId));
-    await openShiftFor(12, "RETAIL");
+    const currentShiftId = await openShiftFor(12, "RETAIL");
 
     const caller = returnRouter.createCaller(createContextFor({ id: 12, name: "كاشير التجزئة", role: "cashier" }));
     await expect(caller.executeSalesReturnCart({
@@ -312,10 +312,12 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       customer: { customerId: 1 },
       items: [{ variantId: 1, productName: "كارت شخصي", quantity: 1, unitPrice: "25.00" }],
       settlement: { method: "CASH", totalAmount: "25.00" },
-    })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    })).resolves.toMatchObject({ ok: true });
+    const [refund] = await db().select().from(s.receipts).where(and(eq(s.receipts.invoiceId, sale.invoiceId), eq(s.receipts.direction, "OUT")));
+    expect(refund).toMatchObject({ shiftId: currentShiftId, amount: "25.00" });
   });
 
-  it("٢ج. المرتجع المباشر يرفض فاتورة يوم سابق قبل أي صرف أو حركة", async () => {
+  it("٢ج. المرتجع المباشر يقبل فاتورة يوم سابق من الدرج الحالي", async () => {
     const shiftId = await openShiftFor(12, "RETAIL");
     const sale = await createSale({
       branchId: 1,
@@ -335,9 +337,9 @@ describe("صلاحيات الكاشير والاسترداد المالي من �
       customer: { customerId: 1 },
       items: [{ variantId: 1, productName: "كارت شخصي", quantity: 1, unitPrice: "25.00" }],
       settlement: { method: "CASH", totalAmount: "25.00", shiftId },
-    })).rejects.toThrow(/ليس من يوم العمل الحالي/);
+    })).resolves.toMatchObject({ ok: true });
     expect(await db().select().from(s.returnRequests)).toHaveLength(0);
-    expect((await db().select().from(s.receipts).where(and(eq(s.receipts.invoiceId, sale.invoiceId), eq(s.receipts.direction, "OUT"))))).toHaveLength(0);
+    expect((await db().select().from(s.receipts).where(and(eq(s.receipts.invoiceId, sale.invoiceId), eq(s.receipts.direction, "OUT"))))).toHaveLength(1);
   });
 
   it("٢د. المرتجع المباشر يرفض تحويل دفعة البطاقة إلى نقد", async () => {
