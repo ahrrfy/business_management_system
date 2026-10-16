@@ -88,6 +88,7 @@ vi.mock("../../services/auditService", () => ({
 }));
 vi.mock("../../realtime/financialRefresh", () => ({
   scheduleFinancialRefresh: vi.fn(),
+  withFinancialRefreshScope: async <T>(work: () => Promise<T>) => ({ value: await work(), scheduled: false }),
 }));
 import { router } from "../../trpc";
 import { returnRouter } from "../returnRouter";
