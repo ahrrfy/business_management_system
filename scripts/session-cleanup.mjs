@@ -69,16 +69,13 @@ export function prepareSnapshot(repo, capturedApp) {
     state.unavailableSources.length
   )
     throw new Error("App activity is incomplete or stale; cleanup blocked");
+  // A chat can be resumed while idle or unloaded. Preserve every local link,
+  // independently of whether the user currently has an active turn in it.
   const active = [...state.threads, ...(state.pinnedThreads || [])].filter(
-    (t) =>
-      t.kind === "codex" &&
-      (!t.hostId || t.hostId === "local") &&
-      !["idle", "notLoaded"].includes(t.status),
+    (t) => t.kind === "codex" && (!t.hostId || t.hostId === "local"),
   );
   if (active.some((t) => typeof t.cwd !== "string" || !t.cwd))
-    throw new Error(
-      "An active local chat has no inspectable working directory",
-    );
+    throw new Error("A linked local chat has no inspectable working directory");
   const activePaths = active.map((t) => fs.realpathSync(t.cwd));
   const processPaths = captureProcessPaths(repo);
   return {
@@ -359,10 +356,16 @@ function preserve(repo, candidate, storage) {
   save(path.join(archive, "manifest.json"), manifest);
   return archive;
 }
-function removeWithoutLinks(root, project, subtree = root) {
+function removeWithoutLinks(root, project, subtree) {
   if (!allowed(root, project))
     throw new Error("Removal escaped allowed workspace roots");
-  if (!within(subtree, root)) throw new Error("Subtree escaped workspace");
+  if (
+    !subtree ||
+    norm(subtree) === norm(root) ||
+    !within(subtree, root) ||
+    !generated(path.relative(root, subtree))
+  )
+    throw new Error("Only generated subtrees may be deleted");
   const pending = [[subtree, false]];
   while (pending.length) {
     const [p, after] = pending.pop();
@@ -383,6 +386,38 @@ function removeWithoutLinks(root, project, subtree = root) {
     for (const child of fs.readdirSync(p))
       pending.push([path.join(p, child), false]);
   }
+}
+function retireWithoutDeletingSource(repo, candidate, project, archive) {
+  // Keep source AND Git administrative state. No removal command ever sees
+  // these files or their index/reflog; late writes remain recoverable.
+  const home = path.join(sessionHome(project), ".retired");
+  fs.mkdirSync(home, { recursive: true });
+  if (norm(fs.realpathSync(home)) !== norm(home))
+    throw new Error("Retirement archive must not be a link");
+  const container = fs.mkdtempSync(path.join(home, "session-"));
+  const sourceArchive = path.join(container, "files");
+  const operation = {
+    root: candidate.root,
+    head: candidate.head,
+    sourceArchive,
+  };
+  save(path.join(archive, "operation.json"), {
+    ...operation,
+    phase: "quarantining",
+  });
+  git(repo, ["worktree", "move", candidate.root, sourceArchive]);
+  git(repo, [
+    "worktree",
+    "lock",
+    "--reason",
+    "Retired session: source, local files and index retained",
+    sourceArchive,
+  ]);
+  save(path.join(archive, "operation.json"), {
+    ...operation,
+    phase: "retired",
+  });
+  return sourceArchive;
 }
 export function cleanup({
   repo,
@@ -423,7 +458,7 @@ export function cleanup({
           results.push({
             ...c,
             files: undefined,
-            action: c.eligible ? "would_remove" : "preserved",
+            action: c.eligible ? "would_retire" : "preserved",
           });
           continue;
         }
@@ -474,47 +509,23 @@ export function cleanup({
           JSON.stringify(finalCheck.files) !== JSON.stringify(c.files)
         )
           throw new Error("Candidate changed while clearing generated files");
-        let gitError;
-        try {
-          git(repo, [
-            "-c",
-            "core.longpaths=true",
-            "worktree",
-            "remove",
-            c.root,
-          ]);
-        } catch (e) {
-          gitError = String(e.message);
-        }
-        if (fs.existsSync(c.root)) {
-          if (
-            registeredWorktrees(repo).some(
-              (t) => norm(t.worktree) === norm(c.root),
-            ) ||
-            fs.existsSync(path.join(c.root, ".git"))
-          )
-            throw new Error(`Git removal refused: ${gitError}`);
-          // Git on Windows can unregister a worktree and leave files behind.
-          // Every remaining source must match the pre-removal hash, then remove
-          // only this exact root, without following dependency junctions.
-          const before = new Map(c.files.map((f) => [f.rel, f.sha256]));
-          for (const f of inventory(c.root).files)
-            if (before.get(f.rel) !== f.sha256)
-              throw new Error(`Residual changed: ${f.rel}`);
-          if (liveEvidence(project, c.root, snapshot, Date.now()))
-            throw new Error("Activity appeared during removal");
-          removeWithoutLinks(c.root, project);
-        }
-        if (fs.existsSync(c.root)) throw new Error("Removal incomplete");
-        save(path.join(archive, "operation.json"), {
-          phase: "removed",
-          root: c.root,
-          head: c.head,
-        });
+        const sourceArchive = retireWithoutDeletingSource(
+          repo,
+          c,
+          project,
+          archive,
+        );
+        // A concurrent writer can recreate the original public path. Keep it;
+        // no deletion command is ever sent to that path after quarantine.
+        if (fs.existsSync(c.root))
+          throw new Error(
+            `Original path reappeared; preserved alongside ${sourceArchive}`,
+          );
         results.push({
           root: c.root,
-          action: "removed",
+          action: "retired",
           archive,
+          sourceArchive,
           branch: c.branch,
         });
       } catch (e) {

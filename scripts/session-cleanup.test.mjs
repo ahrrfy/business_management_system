@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
+import { fileURLToPath } from "node:url";
 import {
   cleanup,
   sessionHome,
@@ -140,10 +141,10 @@ test("dry run preserves files; apply backs up local configuration, keeps branch 
     process.platform === "win32" ? "junction" : "dir",
   );
   f.age(f.root);
-  assert.equal(result(f, f.run()).action, "would_remove");
+  assert.equal(result(f, f.run()).action, "would_retire");
   assert.ok(fs.existsSync(f.root));
   const removed = result(f, f.run(true));
-  assert.equal(removed.action, "removed");
+  assert.equal(removed.action, "retired");
   assert.equal(fs.existsSync(f.root), false);
   assert.equal(
     fs.readFileSync(path.join(removed.archive, "files", ".env"), "utf8"),
@@ -155,7 +156,8 @@ test("dry run preserves files; apply backs up local configuration, keeps branch 
   );
   assert.equal(git(f.repo, "rev-parse", "session/finished"), f.head);
   assert.equal(git(f.repo, "rev-parse", "HEAD"), main);
-  assert.equal(registeredWorktrees(f.repo).length, 1);
+  assert.equal(registeredWorktrees(f.repo).length, 2);
+  assert.ok(registeredWorktrees(f.repo).some((w) => w.locked));
 });
 test("unmerged work is retained", (t) => {
   const f = fixture(t, { merge: false });
@@ -210,7 +212,7 @@ test("squash merge requires matching PR head and reachable merge commit", (t) =>
   ];
   assert.equal(result(f, f.run()).reason, "not_proven_merged");
   f.snapshot.mergedPullRequests[0].head = f.head;
-  assert.equal(result(f, f.run()).action, "would_remove");
+  assert.equal(result(f, f.run()).action, "would_retire");
 });
 test("new ignored important files during backup abort removal", (t) => {
   const f = fixture(t);
@@ -327,4 +329,189 @@ test("restricted fetch mappings cannot leave a stale merge proof", (t) => {
   assert.equal(result(f, f.run(true)).reason, "not_proven_merged");
   assert.equal(git(f.repo, "rev-parse", "origin/main"), initial);
   assert.ok(fs.existsSync(f.root));
+});
+
+test("idle and unloaded local chat links retain their working directories", (t) => {
+  const f = fixture(t);
+  for (const status of ["idle", "notLoaded"]) {
+    const snapshot = prepareSnapshot(f.repo, {
+      capturedAt: Date.now(),
+      state: {
+        threads: [{ kind: "codex", hostId: "local", status, cwd: f.root }],
+        pinnedThreads: [],
+        unavailableHosts: [],
+        unavailableSources: [],
+      },
+    });
+    const report = cleanup({
+      repo: f.repo,
+      snapshot,
+      storage: f.storage,
+      apply: true,
+    });
+    assert.equal(result(f, report).reason, "active_app_or_process");
+    assert.ok(fs.existsSync(f.root));
+  }
+});
+
+test("late ignored writes survive the retirement boundary", (t) => {
+  const f = fixture(t);
+  const original = fs.renameSync;
+  fs.renameSync = (from, to) => {
+    original(from, to);
+    if (path.basename(to) === "operation.json") {
+      const op = JSON.parse(fs.readFileSync(to, "utf8"));
+      if (op.phase === "quarantining") {
+        fs.writeFileSync(
+          path.join(f.root, ".env"),
+          "LATE_CONFIGURATION=keep\n",
+        );
+        fs.writeFileSync(
+          path.join(f.root, "late-important.key"),
+          "late important data",
+        );
+      }
+    }
+  };
+  try {
+    const retired = result(f, f.run(true));
+    assert.equal(retired.action, "retired", retired.reason);
+    assert.equal(
+      fs.readFileSync(path.join(retired.sourceArchive, ".env"), "utf8"),
+      "LATE_CONFIGURATION=keep\n",
+    );
+    assert.equal(
+      fs.readFileSync(
+        path.join(retired.sourceArchive, "late-important.key"),
+        "utf8",
+      ),
+      "late important data",
+    );
+    assert.ok(
+      registeredWorktrees(f.repo).some(
+        (w) => w.locked && path.resolve(w.worktree) === retired.sourceArchive,
+      ),
+    );
+  } finally {
+    fs.renameSync = original;
+  }
+});
+
+test("a held file remains writable and preserved even if Windows refuses retirement", (t) => {
+  const f = fixture(t);
+  const handle = fs.openSync(path.join(f.root, ".env"), "a");
+  try {
+    const outcome = result(f, f.run(true));
+    assert.ok(["retired", "preserved_or_error"].includes(outcome.action));
+    const root = outcome.sourceArchive || f.root;
+    assert.ok(fs.existsSync(root), outcome.reason);
+    fs.writeSync(handle, "OPEN_HANDLE=keep\n");
+    assert.ok(
+      fs
+        .readFileSync(path.join(root, ".env"), "utf8")
+        .endsWith("OPEN_HANDLE=keep\n"),
+    );
+  } finally {
+    fs.closeSync(handle);
+  }
+});
+
+test("index-only staged work arriving at retirement remains recoverable", (t) => {
+  const f = fixture(t);
+  const original = fs.renameSync;
+  const staged = "late index-only important content\n";
+  let blob;
+  fs.renameSync = (from, to) => {
+    original(from, to);
+    if (path.basename(to) === "operation.json") {
+      const op = JSON.parse(fs.readFileSync(to, "utf8"));
+      if (op.phase === "quarantining") {
+        blob = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+          cwd: f.root,
+          input: staged,
+          encoding: "utf8",
+        }).trim();
+        git(f.root, "update-index", "--cacheinfo", `100644,${blob},source.txt`);
+      }
+    }
+  };
+  try {
+    const retired = result(f, f.run(true));
+    assert.equal(retired.action, "retired", retired.reason);
+    assert.equal(
+      git(retired.sourceArchive, "show", ":source.txt"),
+      staged.trim(),
+    );
+    assert.equal(
+      git(retired.sourceArchive, "cat-file", "-p", blob),
+      staged.trim(),
+    );
+    assert.ok(
+      git(retired.sourceArchive, "status", "--porcelain=v1").includes(
+        "source.txt",
+      ),
+    );
+    assert.ok(
+      registeredWorktrees(f.repo).some(
+        (w) => w.locked && path.resolve(w.worktree) === retired.sourceArchive,
+      ),
+    );
+  } finally {
+    fs.renameSync = original;
+  }
+});
+
+test("a recreated original public directory is never recursively removed", (t) => {
+  const f = fixture(t);
+  const original = fs.renameSync;
+  let sourceArchive;
+  fs.renameSync = (from, to) => {
+    original(from, to);
+    if (path.basename(to) === "operation.json") {
+      const op = JSON.parse(fs.readFileSync(to, "utf8"));
+      if (op.phase === "retired") {
+        sourceArchive = op.sourceArchive;
+        fs.mkdirSync(f.root);
+        fs.writeFileSync(path.join(f.root, ".env"), "NEW_SESSION=keep\n");
+      }
+    }
+  };
+  try {
+    assert.equal(result(f, f.run(true)).action, "preserved_or_error");
+    assert.equal(
+      fs.readFileSync(path.join(f.root, ".env"), "utf8"),
+      "NEW_SESSION=keep\n",
+    );
+    assert.ok(fs.existsSync(path.join(sourceArchive, "source.txt")));
+  } finally {
+    fs.renameSync = original;
+  }
+});
+
+test("the real session command creates sibling sessions from inside another session", (t) => {
+  const f = fixture(t);
+  const script = fileURLToPath(new URL("./session.mjs", import.meta.url));
+  const mainBefore = git(f.repo, "rev-parse", "HEAD");
+  const statusBefore = git(f.repo, "status", "--porcelain=v1");
+  const first = path.join(sessionHome(f.repo), "smoke-first");
+  const second = path.join(sessionHome(f.repo), "smoke-second");
+  for (const [cwd, name] of [
+    [f.root, "smoke-first"],
+    [first, "smoke-second"],
+  ]) {
+    execFileSync(
+      process.execPath,
+      [script, "new", name, "--from", "main", "--no-install", "--no-db"],
+      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+  }
+  assert.ok(fs.existsSync(path.join(first, ".env")));
+  assert.ok(fs.existsSync(path.join(second, ".env")));
+  assert.equal(path.dirname(first), path.dirname(second));
+  assert.equal(registeredWorktrees(f.repo).length, 4);
+  assert.equal(git(f.repo, "rev-parse", "HEAD"), mainBefore);
+  assert.equal(git(f.repo, "status", "--porcelain=v1"), statusBefore);
+  const port = (root) =>
+    fs.readFileSync(path.join(root, ".env"), "utf8").match(/^PORT=(\d+)/m)[1];
+  assert.notEqual(port(first), port(second));
 });
