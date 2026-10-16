@@ -6,7 +6,7 @@ import { money } from "../money";
 import { truncateTables } from "./__testUtils__";
 
 beforeEach(async () => {
-  await truncateTables(["accountingEntries", "customers", "branches", "users"]);
+  await truncateTables(["invoiceItems", "invoices", "accountingEntries", "customers", "branches", "users"]);
   const db = getDb()!;
   await db.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await db.insert(s.users).values({ id: 1, openId: "statement-correction", name: "المدير", role: "admin", branchId: 1 });
@@ -20,6 +20,23 @@ beforeEach(async () => {
 });
 
 describe("أثر تصحيح الفاتورة في كشف العميل", () => {
+  it("يعرض الصافي والمتبقي الحاليين دون احتساب الأصل المستبدل ويحفظ مستنداته التاريخية", async () => {
+    const db = getDb()!;
+    await db.insert(s.invoices).values([
+      { id: 2, invoiceNumber: "CURRENT-31712", branchId: 1, customerId: 1, sourceType: "POS", status: "PARTIALLY_PAID", subtotal: "20000", total: "20000", paidAmount: "5000", returnedTotal: "4000", createdBy: 1 },
+      { id: 1, invoiceNumber: "OLD-30525", branchId: 1, customerId: 1, sourceType: "POS", status: "SUPERSEDED", subtotal: "40000", total: "40000", paidAmount: "0", returnedTotal: "0", correctedByInvoiceId: 2, createdBy: 1 },
+      { id: 3, invoiceNumber: "RETURNED", branchId: 1, customerId: 1, sourceType: "POS", status: "RETURNED", subtotal: "25000", total: "25000", paidAmount: "0", returnedTotal: "25000", createdBy: 1 },
+      { id: 4, invoiceNumber: "CANCELLED", branchId: 1, customerId: 1, sourceType: "POS", status: "CANCELLED", subtotal: "9000", total: "9000", paidAmount: "0", returnedTotal: "9000", createdBy: 1 },
+    ]);
+    const statement = (await getCustomerStatement(1))!;
+    expect(statement.summary.totalSales).toBe("16000.00");
+    expect(statement.summary.totalPaid).toBe("5000.00");
+    expect(statement.summary.unpaid).toBe("11000.00");
+    expect(statement.invoices.find(row => row.id === 1)).toMatchObject({ total: "40000.00", currentTotal: "0.00", remainingAmount: "0.00", status: "SUPERSEDED" });
+    expect(statement.invoices.find(row => row.id === 2)).toMatchObject({ total: "20000.00", currentTotal: "16000.00", remainingAmount: "11000.00" });
+    for (const id of [3, 4]) expect(statement.invoices.find(row => row.id === id)).toMatchObject({ currentTotal: "0.00", remainingAmount: "0.00" });
+  });
+
   it("يعرض تسوية الذمة وتحرير عهدة التصحيح كمستندات غير نقدية ويتزن مع الرصيد", async () => {
     const statement = (await getCustomerStatement(1))!;
     expect(statement.payments).toHaveLength(2);

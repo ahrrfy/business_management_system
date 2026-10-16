@@ -42,6 +42,10 @@ describe("event-driven financial queries", () => {
     const dependent = [
       read("sales", 2, true, "get"), read("returns", 2), read("customers", 2),
       read("delivery", 2), read("treasury", 2), read("inventory", 2, true, "onHand"),
+      read("reports", 2, true, "customerStatement"), read("delivery", 2, true, "partyStatement"),
+      read("delivery", 2, true, "partyFinancials"), read("delivery", 2, true, "openConsignments"),
+      read("delivery", 2, true, "obligations"), read("delivery", 2, true, "remittances"),
+      read("sales", 2, true, "lookupForCorrection"), read("returns", 2, true, "inspectInvoiceForReturn"),
       read("inventory", 2, true, "movementsRich"),
       read("storeAdmin", undefined, true, ["catalog", "list"]),
       ...["posList", "stockByUnitIds", "byUnitIds", "byProductIds", "adminList", "byBarcode", "forPurchase", "variantUnits", "getForVariantEdit"]
@@ -53,7 +57,10 @@ describe("event-driven financial queries", () => {
     const storefrontBanners = read("storeAdmin", undefined, true, ["banners", "list"]);
     if (source === "local") await invalidateFinancialQueries(client, 2);
     else { emit([2]); await vi.advanceTimersByTimeAsync(750); }
-    for (const query of dependent) expect(query.queryFn).toHaveBeenCalledOnce();
+    for (const query of dependent) {
+      expect(query.queryFn).toHaveBeenCalledOnce();
+      expect(query.observer.getCurrentResult().data).toEqual({ balance: "2000.25" });
+    }
     expect(client.getQueryState(inactiveStock.queryKey)?.isInvalidated).toBe(true);
     for (const query of [inactiveStock, otherBranch, referenceData, storefrontBanners]) expect(query.queryFn).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(60_000);
