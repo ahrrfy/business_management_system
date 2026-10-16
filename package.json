@@ -113,6 +113,7 @@
     "session:new": "node scripts/session.mjs new",
     "session:list": "node scripts/session.mjs list",
     "session:remove": "node scripts/session.mjs remove",
+    "session:cleanup": "node scripts/session-cleanup.mjs",
     "control:bootstrap": "node scripts/bootstrap-control-db.mjs",
     "company:new": "node scripts/company-new.mjs",
     "platform-admin:new": "node scripts/platform-admin-new.mjs",
