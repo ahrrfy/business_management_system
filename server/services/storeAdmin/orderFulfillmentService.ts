@@ -8,7 +8,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import {
   bundleComponents,
   couponPrograms,
@@ -560,17 +560,210 @@ export async function updateOnlineOrder(
       });
     }
 
-    // 4. Update customer details if provided and linked
+    // 4. Resolve or update customer details if provided (CF-05: never mutate shared CRM phone/phone2/phone3 across orders; rebind order to matching/new customer record when phone changes)
+    let heldCustLock: string | null = null;
+    try {
+    let targetCustomerId: number | undefined = order.customerId != null ? Number(order.customerId) : undefined;
     if (order.customerId != null && (input.customerName != null || input.customerPhone != null)) {
-      const custPatch: Record<string, unknown> = {};
-      if (input.customerName != null && input.customerName.trim()) {
-        custPatch.name = input.customerName.trim();
-      }
-      if (input.customerPhone != null && input.customerPhone.trim()) {
-        custPatch.phone = normalizeIraqPhoneE164(input.customerPhone.trim());
-      }
-      if (Object.keys(custPatch).length > 0) {
-        await tx.update(customers).set(custPatch).where(eq(customers.id, Number(order.customerId)));
+      const currentCustomerId = Number(order.customerId);
+      const [existingCustomer] = await tx
+        .select({
+          id: customers.id,
+          name: customers.name,
+          phone: customers.phone,
+          phone2: customers.phone2,
+          phone3: customers.phone3,
+          whatsapp: customers.whatsapp,
+          clientRequestId: customers.clientRequestId,
+        })
+        .from(customers)
+        .where(eq(customers.id, currentCustomerId))
+        .limit(1);
+
+      const normalizeOrderPhone = (raw: string): string =>
+        normalizeIraqPhoneE164(
+          raw
+            .replace(/[٠-٩]/g, (digit) => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
+            .replace(/[۰-۹]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit))),
+        );
+
+      const existingPhones = existingCustomer
+        ? [
+            existingCustomer.phone,
+            existingCustomer.phone2,
+            existingCustomer.phone3,
+            existingCustomer.whatsapp,
+          ]
+            .filter((p): p is string => Boolean(p && p.trim()))
+            .map((p) => {
+              try {
+                return normalizeOrderPhone(p.trim());
+              } catch {
+                return p.trim();
+              }
+            })
+        : [];
+
+      const trimmedNewName = input.customerName?.trim() || "";
+      const rawNewPhone = input.customerPhone?.trim() || "";
+      const normalizedPhone = rawNewPhone ? normalizeOrderPhone(rawNewPhone) : null;
+
+      if (normalizedPhone && !existingPhones.includes(normalizedPhone)) {
+        if (order.couponCode != null) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "لا يمكن تغيير رقم هاتف طلب مرتبط بكوبون خصم",
+              why: `الطلب مرتبط بالكوبون (${order.couponCode}) وتغيير رقم الهاتف ينقل الطلب إلى سجل زبون مختلف`,
+              doThis: "أبقِ رقم هاتف صاحب الطلب الأصلي أو ألغِ الطلب وأنشئ طلباً جديداً للزبون الآخر",
+            }),
+          });
+        }
+        const custLock = `online-customer:${normalizedPhone}`;
+        const lockResult = (await tx.execute(
+          sql`SELECT GET_LOCK(${custLock}, 5) AS locked`,
+        )) as unknown;
+        const lockRow = Array.isArray(lockResult)
+          ? (lockResult[0] as Array<{ locked?: number }> | undefined)?.[0]
+          : (lockResult as { rows?: Array<{ locked?: number }> })?.rows?.[0];
+        if (Number(lockRow?.locked) !== 1) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "تعذّر تأمين سجل الزبون",
+              why: "تزامن تعديل آخر على نفس رقم الهاتف حالياً",
+              doThis: "أعد المحاولة بعد لحظات",
+            }),
+          });
+        }
+        heldCustLock = custLock;
+        const phoneVariants = Array.from(
+          new Set(
+            [
+              normalizedPhone,
+              rawNewPhone,
+              ...(normalizedPhone.startsWith("+964")
+                ? [
+                    `0${normalizedPhone.slice(4)}`,
+                    `964${normalizedPhone.slice(4)}`,
+                    `00964${normalizedPhone.slice(4)}`,
+                    normalizedPhone.slice(4),
+                  ]
+                : []),
+            ].filter(Boolean),
+          ),
+        );
+        const normDigits = normalizedPhone.replace(/\D/g, "");
+        const digitVariants = Array.from(
+          new Set(
+            [
+              normDigits,
+              normDigits ? `00${normDigits}` : "",
+              ...(normalizedPhone.startsWith("+964")
+                ? [`0${normalizedPhone.slice(4)}`, normalizedPhone.slice(4)]
+                : []),
+            ].filter(Boolean),
+          ),
+        );
+        const digitPredicates =
+          digitVariants.length > 0
+            ? (() => {
+                const digitSqlList = sql.join(
+                  digitVariants.map((d) => sql`${d}`),
+                  sql`, `,
+                );
+                return [
+                  sql`REGEXP_REPLACE(COALESCE(${customers.phone}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                  sql`REGEXP_REPLACE(COALESCE(${customers.phone2}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                  sql`REGEXP_REPLACE(COALESCE(${customers.phone3}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                  sql`REGEXP_REPLACE(COALESCE(${customers.whatsapp}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                ];
+              })()
+            : [];
+        const candidateCustomers = await tx
+          .select({
+            id: customers.id,
+            isActive: customers.isActive,
+            phone: customers.phone,
+            phone2: customers.phone2,
+            phone3: customers.phone3,
+            whatsapp: customers.whatsapp,
+          })
+          .from(customers)
+          .where(
+            or(
+              inArray(customers.phone, phoneVariants),
+              inArray(customers.phone2, phoneVariants),
+              inArray(customers.phone3, phoneVariants),
+              inArray(customers.whatsapp, phoneVariants),
+              ...digitPredicates,
+            ),
+          )
+          .orderBy(desc(customers.isActive), desc(customers.id))
+          .for("update");
+        const matchedCustomer = candidateCustomers.find((c) =>
+          [c.phone, c.phone2, c.phone3, c.whatsapp].some((p) => {
+            if (!p || !p.trim()) return false;
+            try {
+              return normalizeOrderPhone(p.trim()) === normalizedPhone;
+            } catch {
+              return false;
+            }
+          }),
+        );
+        if (matchedCustomer) {
+          if (matchedCustomer.isActive === false) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: appErrorMessage({
+                what: "هذا الرقم مرتبط بعميل معطّل",
+                why: "سجل العميل المرتبط برقم الهاتف الجديد غير نشط حالياً",
+                doThis: "أعد تفعيل حساب العميل أولاً من شاشة العملاء أو تحقق من رقم الهاتف المدخل",
+              }),
+            });
+          }
+          targetCustomerId = Number(matchedCustomer.id);
+        } else {
+          const [inserted] = await tx.insert(customers).values({
+            name: trimmedNewName || existingCustomer?.name || "عميل متجر",
+            phone: normalizedPhone,
+            customerType: "فرد",
+            defaultPriceTier: "RETAIL",
+            creditLimit: "0",
+            currentBalance: "0",
+            isActive: true,
+          });
+          targetCustomerId = Number((inserted as { insertId?: number })?.insertId ?? currentCustomerId);
+        }
+      } else if (existingCustomer && trimmedNewName && trimmedNewName !== existingCustomer.name) {
+        const isVerifiedStorefrontAccount = Boolean(
+          existingCustomer.clientRequestId && existingCustomer.clientRequestId.startsWith("firebase-phone:"),
+        );
+        const [otherOrder] = await tx
+          .select({ id: onlineOrders.id })
+          .from(onlineOrders)
+          .where(and(eq(onlineOrders.customerId, currentCustomerId), ne(onlineOrders.id, order.id)))
+          .limit(1);
+        const [otherInvoice] = await tx
+          .select({ id: invoices.id })
+          .from(invoices)
+          .where(eq(invoices.customerId, currentCustomerId))
+          .limit(1);
+        if (!isVerifiedStorefrontAccount && !otherOrder && !otherInvoice) {
+          await tx
+            .update(customers)
+            .set({ name: trimmedNewName })
+            .where(eq(customers.id, currentCustomerId));
+        } else {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "لا يمكن تعديل اسم سجل عميل مشترك أو موثّق من شاشة الطلب",
+              why: "سجل العميل مرتبط بطلبات أو فواتير أخرى أو بحساب متجر موثّق، وتعديل اسمه هنا يغيّر اسم العميل في كافة السجلات",
+              doThis: "عدّل بيانات العميل من شاشة إدارة العملاء إن لزم، أو أضف اسم المستلم البديل في حقل ملاحظات التوصيل",
+            }),
+          });
+        }
       }
     }
 
@@ -897,6 +1090,7 @@ export async function updateOnlineOrder(
       await tx
         .update(onlineOrders)
         .set({
+          customerId: targetCustomerId,
           couponCode: targetCouponCode,
           subtotal: quoteTotals.subtotal,
           shippingCost: quoteTotals.deliveryFee,
@@ -911,6 +1105,9 @@ export async function updateOnlineOrder(
         })
         .where(eq(onlineOrders.id, order.id));
 
+      if (heldCustLock) {
+        await tx.execute(sql`COMMIT`);
+      }
       return {
         id: order.id,
         total: grandTotal.toFixed(2),
@@ -968,6 +1165,7 @@ export async function updateOnlineOrder(
       await tx
         .update(onlineOrders)
         .set({
+          customerId: targetCustomerId,
           couponCode: targetCouponCode,
           shippingCost: quoteTotals.deliveryFee,
           deliveryFree: quoteTotals.deliveryFree,
@@ -981,12 +1179,25 @@ export async function updateOnlineOrder(
         })
         .where(eq(onlineOrders.id, order.id));
 
+      if (heldCustLock) {
+        await tx.execute(sql`COMMIT`);
+      }
       return {
         id: order.id,
         total: grandTotal.toFixed(2),
         subtotal: String(order.subtotal),
         deliveryFee: quoteTotals.deliveryFee,
       };
+    }
+    } catch (err) {
+      if (heldCustLock) {
+        await tx.execute(sql`ROLLBACK`).catch(() => {});
+      }
+      throw err;
+    } finally {
+      if (heldCustLock) {
+        await tx.execute(sql`SELECT RELEASE_LOCK(${heldCustLock})`).catch(() => {});
+      }
     }
   });
 }

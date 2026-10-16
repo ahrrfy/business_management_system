@@ -48,29 +48,353 @@ const dbName = (String(url).match(/\/([^/?]+)(\?.*)?$/) || [])[1];
 const targetDb = dbName ? decodeURIComponent(dbName) : "";
 if (!/^[A-Za-z0-9_$-]+$/.test(targetDb)) fail("اسم القاعدة في DATABASE_URL غير صالح للاستعادة الآمنة.");
 
+const DANGEROUS_SQL_PATTERN = new RegExp(
+  [
+    String.raw`\bINTO\s+(?:OUTFILE|DUMPFILE)\b`,
+    String.raw`\bLOAD_FILE\s*\(`,
+    String.raw`\bLOAD\s+(?:DATA|XML|INDEX)\b`,
+    String.raw`\b(?:GRANT|REVOKE)\b`,
+    String.raw`\b(?:CREATE|ALTER|DROP|RENAME)\s+(?:DEFINER\s*=\s*[^\s]+(?:\s*@\s*[^\s]+)?\s+)?(?:IF\s+(?:NOT\s+)?EXISTS\s+)?(?:INSTANCE|USER|ROLE|SERVER|TABLESPACE|UNDO\s+TABLESPACE|LOGFILE\s+GROUP|RESOURCE\s+GROUP|SRS|SPATIAL\s+REFERENCE\s+SYSTEM)\b`,
+    String.raw`\bSET\s+(?:GLOBAL|PERSIST|PERSIST_ONLY|PASSWORD|DEFAULT\s+ROLE|ROLE|RESOURCE\s+GROUP)\b`,
+    String.raw`@@(?:GLOBAL|PERSIST|PERSIST_ONLY)\s*\.`,
+    String.raw`\b(?:INSTALL|UNINSTALL)\s+(?:PLUGIN|COMPONENT)\b`,
+    String.raw`\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:DEFINER\s*=\s*[^\s]+(?:\s*@\s*[^\s]+)?\s+)?(?:AGGREGATE\s+)?FUNCTION\b[\s\S]*?\bSONAME\b`,
+    String.raw`\b(?:PREPARE|EXECUTE|DEALLOCATE\s+PREPARE)\b`,
+    String.raw`\b(?:RESTART|SHUTDOWN|CLONE|KILL|FLUSH|RESET\s+(?:MASTER|SLAVE|REPLICA|PERSIST|QUERY\s+CACHE)|CHANGE\s+(?:MASTER|REPLICATION)|(?:START|STOP)\s+(?:SLAVE|REPLICA|GROUP_REPLICATION)|PURGE\s+BINARY\s+LOGS|BINLOG|CACHE\s+INDEX|HANDLER)\b`,
+    String.raw`\b(?:gbk|gb2312|gb18030|big5|sjis|cp932|cp936|cp950|euckr|eucjpms|ujis)\b`,
+  ].join("|"),
+  "i",
+);
+
 async function validateDumpTarget() {
   const marker = head.match(/^-- ALROYA_DB_NEUTRAL_BACKUP:([^\r\n]+)$/m);
   if (marker && decodeURIComponent(marker[1]) !== targetDb) {
     fail(`النسخة تخص قاعدة «${decodeURIComponent(marker[1])}» لا القاعدة الهدف «${targetDb}».`);
   }
   let sawTargetDirective = false;
-  const lines = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
-  for await (const line of lines) {
-    const use = line.match(/^\s*USE\s+`?([A-Za-z0-9_$-]+)`?\s*;/i);
-    const databaseCommand = line.match(/^\s*(?:CREATE|DROP)\s+DATABASE\b/i);
-    if (marker && (use || databaseCommand)) fail("نسخة database-neutral تحتوي أوامر تحويل قاعدة غير مسموحة.");
-    if (use) {
-      if (use[1] !== targetDb) fail(`النسخة تحاول التحويل إلى قاعدة أخرى: ${use[1]}`);
-      sawTargetDirective = true;
-    }
-    if (databaseCommand) {
-      const named = line.match(/`([^`]+)`/);
-      if (!named || named[1] !== targetDb) fail("النسخة تحتوي CREATE/DROP DATABASE لا يطابق القاعدة الهدف.");
-      sawTargetDirective = true;
-    }
-    if (/^\s*(?:CREATE|ALTER|DROP)\s+USER\b|^\s*(?:GRANT|REVOKE)\b|^\s*SET\s+GLOBAL\b|^\s*INSTALL\s+PLUGIN\b/i.test(line)) {
+
+  const SAFE_SQL_MODE_VALUE_RE =
+    /^(?:NO_AUTO_VALUE_ON_ZERO|ONLY_FULL_GROUP_BY|STRICT_TRANS_TABLES|STRICT_ALL_TABLES|NO_ZERO_IN_DATE|NO_ZERO_DATE|ERROR_FOR_DIVISION_BY_ZERO|NO_ENGINE_SUBSTITUTION|TRADITIONAL|\s|,)*$/i;
+  const SAFE_CHARSET_VALUE_RE = /^(?:utf8|utf8mb3|utf8mb4|binary|ascii|latin1)$/i;
+  const ALLOWED_TOP_LEVEL_STMT_RE =
+    /^(?:SET|USE|CREATE|DROP|ALTER|TRUNCATE|RENAME|LOCK|UNLOCK|INSERT|REPLACE|UPDATE|DELETE|START\s+TRANSACTION|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE\s+SAVEPOINT)\b/i;
+
+  function inspectStatement(rawStmt, stmtLiterals = [], literalsTruncated = false, isTopLevel = true) {
+    const stmt = rawStmt.replace(/\s+/g, " ").trim();
+    if (!stmt) return;
+
+    if (/^(?:DELIMITER|SYSTEM|CHARSET|SOURCE)\b|\b(?:DELIMITER)\b|\\[A-Za-z!?.]/i.test(stmt)) {
       fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
     }
+
+    if (isTopLevel && !ALLOWED_TOP_LEVEL_STMT_RE.test(stmt)) {
+      fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+    }
+
+    if (
+      /''\s*\.\s*(?:''|`[^`]+`|[A-Za-z0-9_$-]+)|(?:`[^`]+`|[A-Za-z0-9_$-]+)\s*\.\s*''/.test(
+        stmt,
+      )
+    ) {
+      fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+    }
+
+    if (/\bSQL_MODE\b|@OLD_SQL_MODE\b/i.test(stmt)) {
+      const isAllowedSqlModeSet =
+        /^SET\s+(?:SESSION\s+|LOCAL\s+)?(?:@OLD_SQL_MODE\s*:?=\s*@@(?:SESSION\.|LOCAL\.)?SQL_MODE\s*,\s*)?(?:@@(?:SESSION\.|LOCAL\.)?)?SQL_MODE\s*:?=\s*(?:''|@OLD_SQL_MODE|IFNULL\s*\(\s*@OLD_SQL_MODE\s*,\s*''\s*\))$/i.test(
+          stmt,
+        );
+      const allLiteralsSafe =
+        !literalsTruncated &&
+        stmtLiterals.every((lit) => SAFE_SQL_MODE_VALUE_RE.test(lit));
+      if (!isAllowedSqlModeSet || !allLiteralsSafe) {
+        fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+      }
+    }
+
+    if (
+      /^SET\b/i.test(stmt) &&
+      /\b(?:NAMES|CHARACTER\s+SET|CHARSET|character_set_client|character_set_connection|character_set_results|@OLD_CHARACTER_SET_CLIENT|@saved_cs_client)\b/i.test(
+        stmt,
+      )
+    ) {
+      const isAllowedCharsetSet =
+        /^SET\s+(?:SESSION\s+|LOCAL\s+)?(?:NAMES\s+(?:utf8|utf8mb3|utf8mb4|binary|ascii|latin1|'')|CHARACTER\s+SET\s+(?:utf8|utf8mb3|utf8mb4|binary|ascii|latin1|'')|CHARSET\s+(?:utf8|utf8mb3|utf8mb4|binary|ascii|latin1|'')|@(?:OLD_CHARACTER_SET_CLIENT|OLD_CHARACTER_SET_RESULTS|OLD_COLLATION_CONNECTION|saved_cs_client)\s*:?=\s*@@(?:SESSION\.|LOCAL\.)?(?:character_set_client|character_set_results|collation_connection)|(?:@@(?:SESSION\.|LOCAL\.)?)?(?:character_set_client|character_set_connection|character_set_results|collation_connection)\s*:?=\s*(?:utf8|utf8mb3|utf8mb4|binary|ascii|latin1|''|@(?:OLD_CHARACTER_SET_CLIENT|OLD_CHARACTER_SET_RESULTS|OLD_COLLATION_CONNECTION|saved_cs_client)))\s*$/i.test(
+          stmt,
+        );
+      const allCharsetLiteralsSafe =
+        !literalsTruncated &&
+        stmtLiterals.every((lit) => SAFE_CHARSET_VALUE_RE.test(lit));
+      if (!isAllowedCharsetSet || !allCharsetLiteralsSafe) {
+        fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+      }
+    }
+
+    if (/^USE\b/i.test(stmt)) {
+      if (marker) fail("نسخة database-neutral تحتوي أوامر تحويل قاعدة غير مسموحة.");
+      const use = stmt.match(/^USE\s+(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*$/i);
+      const useDb = use ? (use[1] ?? use[2]) : "";
+      if (!useDb || useDb !== targetDb) {
+        fail(`النسخة تحاول التحويل إلى قاعدة أخرى: ${useDb || stmt}`);
+      }
+      sawTargetDirective = true;
+    }
+
+    if (/\b(?:CREATE|DROP|ALTER)\s+(?:DATABASE|SCHEMA)\b/i.test(stmt)) {
+      if (marker) fail("نسخة database-neutral تحتوي أوامر تحويل قاعدة غير مسموحة.");
+      if (/\bALTER\s+(?:DATABASE|SCHEMA)\b/i.test(stmt)) {
+        fail("النسخة تحتوي CREATE/DROP DATABASE لا يطابق القاعدة الهدف.");
+      }
+      const dbMatch = stmt.match(
+        /^(?:CREATE|DROP)\s+(?:DATABASE|SCHEMA)(?:\s+IF\s+(?:NOT\s+)?EXISTS)?\s+(?:`([^`]+)`|([A-Za-z0-9_$-]+))\b/i,
+      );
+      const namedDb = dbMatch ? (dbMatch[1] ?? dbMatch[2]) : "";
+      if (!namedDb || namedDb !== targetDb) {
+        fail("النسخة تحتوي CREATE/DROP DATABASE لا يطابق القاعدة الهدف.");
+      }
+      sawTargetDirective = true;
+    }
+
+    const sanitizedTableClauseStmt = stmt.replace(
+      /(?:\bON|[A-Za-z0-9_$`])\s*\((?![^()]*\b(?:SELECT|FROM|JOIN|TABLE|TABLES)\b)[^()]*\)/gi,
+      "()",
+    );
+    const tableListClauses = [
+      ...sanitizedTableClauseStmt.matchAll(
+        /\b(?:FROM|USING|UPDATE|DELETE|TABLE|TABLES)\b[\s\S]*?(?=\b(?:SELECT|WHERE|GROUP|HAVING|ORDER|LIMIT|WINDOW|UNION|EXCEPT|INTERSECT|FOR|LOCK|INTO|SET|VALUES|VALUE)\b|$)/gi,
+      ),
+    ].map((m) => m[0]);
+
+    const crossDbMatches = [
+      ...stmt.matchAll(
+        /\b(?:INTO|INSERT|REPLACE|TRUNCATE|UPDATE|DELETE|FROM|JOIN|STRAIGHT_JOIN|TABLE|TABLES|RENAME(?:\s+(?:TO|AS))?|TO|USING|REFERENCES|LIKE|CALL|VIEW|TRIGGER|PROCEDURE|FUNCTION|EVENT|INDEX|DESCRIBE|DESC|EXPLAIN|SHOW|ANALYZE|CHECK|OPTIMIZE|REPAIR|HANDLER)\s+(?:(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY|IGNORE|QUICK|EXTENDED|LOCAL|TEMPORARY|NO_WRITE_TO_BINLOG)\s+)*(?:IF\s+(?:NOT\s+)?EXISTS\s+)?(?:(?:TABLE|TABLES)\s+)?(?![0-9]+\s*\.\s*[0-9]+\b)(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
+      ),
+      ...(
+        /\b(?:INDEX|TRIGGER)\b/i.test(stmt)
+          ? stmt.matchAll(
+              /\bON\s+(?![0-9]+\s*\.\s*[0-9]+\b)(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
+            )
+          : []
+      ),
+      ...(
+        /^(?:ALTER|DROP|RENAME|LOCK|TRUNCATE|ANALYZE|CHECK|OPTIMIZE|REPAIR)\b/i.test(stmt)
+          ? stmt.matchAll(
+              /(?![0-9]+\s*\.\s*[0-9]+\b)(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
+            )
+          : []
+      ),
+      ...stmt.matchAll(
+        /(?![0-9]+\s*\.\s*[0-9]+\b)(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)\s*\.\s*(?:\*|`[^`]+`|[A-Za-z0-9_$-]+)/gi,
+      ),
+      ...tableListClauses.flatMap((clause) => [
+        ...clause.matchAll(
+          /(?:^|,|\(|\b(?:FROM|USING|UPDATE|DELETE|TABLE|TABLES|JOIN|STRAIGHT_JOIN|TO)\b)\s*(?:(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY|IGNORE|QUICK|EXTENDED|LOCAL|TEMPORARY|NO_WRITE_TO_BINLOG)\s+)*(?:IF\s+(?:NOT\s+)?EXISTS\s+)?(?:(?:TABLE|TABLES)\s+)?(?![0-9]+\s*\.\s*[0-9]+\b)(?:`([^`]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$-]+)/gi,
+        ),
+      ]),
+    ];
+    for (const match of crossDbMatches) {
+      const refDb = match[1] ?? match[2] ?? "";
+      if (
+        refDb &&
+        refDb.toLowerCase() !== "new" &&
+        refDb.toLowerCase() !== "old" &&
+        refDb !== targetDb
+      ) {
+        fail(`النسخة تحاول التحويل إلى قاعدة أخرى: ${refDb}`);
+      }
+    }
+
+    if (DANGEROUS_SQL_PATTERN.test(stmt)) {
+      fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+    }
+  }
+
+  let inRegularComment = false;
+  let versionedCommentDepth = 0;
+  let quote = null;
+  let currentLiteralBuffer = "";
+  let statementLiterals = [];
+  let statementLiteralsTruncated = false;
+  let currentDelimiter = ";";
+  let statementBuffer = "";
+
+  const lines = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
+  for await (const line of lines) {
+    if (!inRegularComment && quote === null && versionedCommentDepth === 0) {
+      if (
+        /^\s*(?:\\.|(?:charset|source|system|connect|ego|go|edit|exit|quit|nopager|notee|pager|print|prompt|rehash|status|tee|warnings)(?:\s|;|$))/i.test(
+          line,
+        )
+      ) {
+        fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+      }
+      if (/^\s*DELIMITER(?:\s|$)/i.test(line)) {
+        if (statementBuffer.trim() !== "") {
+          fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+        }
+        const delimMatch = line.match(/^\s*DELIMITER\s+([;/$|!~^:]{1,16})\s*$/i);
+        if (!delimMatch) {
+          fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+        }
+        currentDelimiter = delimMatch[1];
+        continue;
+      }
+    }
+    let i = 0;
+    const len = line.length;
+    while (i < len) {
+      const ch = line[i];
+      const next = line[i + 1];
+
+      if (inRegularComment) {
+        if (ch === "*" && next === "/") {
+          inRegularComment = false;
+          statementBuffer += " ";
+          i += 2;
+        } else {
+          i += 1;
+        }
+        continue;
+      }
+
+      if (quote !== null) {
+        if (ch === "\\") {
+          if (quote !== "`") {
+            if (currentLiteralBuffer.length < 512) {
+              currentLiteralBuffer += next ?? "";
+            } else {
+              statementLiteralsTruncated = true;
+            }
+          }
+          i += 2;
+          continue;
+        }
+        if (ch === quote) {
+          if (next === quote) {
+            if (quote !== "`") {
+              if (currentLiteralBuffer.length < 512) {
+                currentLiteralBuffer += quote;
+              } else {
+                statementLiteralsTruncated = true;
+              }
+            }
+            i += 2;
+            continue;
+          }
+          if (quote === "`") {
+            statementBuffer += "`";
+          } else if (statementLiterals.length < 32) {
+            statementLiterals.push(currentLiteralBuffer);
+          } else {
+            statementLiteralsTruncated = true;
+          }
+          currentLiteralBuffer = "";
+          quote = null;
+          i += 1;
+          continue;
+        }
+        if (quote === "`") {
+          statementBuffer += ch;
+        } else if (currentLiteralBuffer.length < 512) {
+          currentLiteralBuffer += ch;
+        } else {
+          statementLiteralsTruncated = true;
+        }
+        i += 1;
+        continue;
+      }
+
+      if (versionedCommentDepth > 0 && ch === "*" && next === "/") {
+        versionedCommentDepth -= 1;
+        statementBuffer += " ";
+        i += 2;
+        continue;
+      }
+
+      if (ch === "/" && next === "*") {
+        const isMysqlConditional = line[i + 2] === "!";
+        const isMariaConditional =
+          (line[i + 2] === "M" || line[i + 2] === "m") && line[i + 3] === "!";
+        if (isMysqlConditional || isMariaConditional) {
+          versionedCommentDepth += 1;
+          i += isMariaConditional ? 4 : 3;
+          while (i < len && /[0-9]/.test(line[i])) i += 1;
+          statementBuffer += " ";
+          continue;
+        }
+        inRegularComment = true;
+        statementBuffer += " ";
+        i += 2;
+        continue;
+      }
+
+      if (
+        (ch === "-" &&
+          next === "-" &&
+          (line[i + 2] === undefined || line.charCodeAt(i + 2) <= 0x20)) ||
+        ch === "#"
+      ) {
+        break;
+      }
+
+      if (ch === "'" || ch === '"' || ch === "`") {
+        quote = ch;
+        currentLiteralBuffer = "";
+        if (ch === "`") statementBuffer += "`";
+        else statementBuffer += "''";
+        i += 1;
+        continue;
+      }
+
+      if (ch === "\\") {
+        fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+      }
+
+      if (line.startsWith(currentDelimiter, i)) {
+        inspectStatement(statementBuffer, statementLiterals, statementLiteralsTruncated, true);
+        if (currentDelimiter !== ";") {
+          for (const subStmt of statementBuffer.split(";")) {
+            inspectStatement(subStmt, statementLiterals, statementLiteralsTruncated, false);
+          }
+        }
+        statementBuffer = "";
+        statementLiterals = [];
+        statementLiteralsTruncated = false;
+        i += currentDelimiter.length;
+        continue;
+      }
+
+      if (ch.charCodeAt(0) <= 0x20) {
+        if (statementBuffer.length > 0 && !statementBuffer.endsWith(" ")) {
+          statementBuffer += " ";
+        }
+      } else {
+        statementBuffer += ch;
+      }
+      i += 1;
+    }
+
+    if (!inRegularComment && quote === null) {
+      if (statementBuffer.length > 0 && !statementBuffer.endsWith(" ")) {
+        statementBuffer += " ";
+      }
+      if (statementBuffer.length > 32 * 1024 * 1024) {
+        fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+      }
+    } else if (quote !== null && quote !== "`") {
+      if (currentLiteralBuffer.length < 512) {
+        currentLiteralBuffer += "\n";
+      } else {
+        statementLiteralsTruncated = true;
+      }
+    }
+  }
+
+  if (inRegularComment || versionedCommentDepth > 0 || quote !== null || currentDelimiter !== ";") {
+    fail("النسخة تحتوي أمراً واسع الصلاحية غير مسموح في استعادة التطبيق.");
+  }
+  if (statementBuffer.trim()) {
+    inspectStatement(statementBuffer, statementLiterals, statementLiteralsTruncated, true);
   }
   if (!marker && !sawTargetDirective) fail("نسخة قديمة بلا هوية قاعدة مؤكدة؛ أعد إنشاء النسخة بالأداة الحالية.");
 }
@@ -138,17 +462,19 @@ try {
     const [, user, pass, host, port] = m;
     // --binary-mode يعطّل أوامر عميل mysql الموجودة داخل ملفات الإدخال (مثل \! / system).
     // من دونها يستطيع ملف خبيث تنفيذ أوامر نظام بحساب خدمة التطبيق قبل أن يصل SQL للخادم.
-    const args = ["--binary-mode=1", "-h", host, "-P", port, "-u", user];
+    const args = ["--binary-mode=1", "--default-character-set=utf8mb4", "-h", host, "-P", port, "-u", user];
     // BC-04: كلمة المرور عبر MYSQL_PWD لا `-p` على سطر الأوامر (يُكشَف في `ps` على خادم مشترك).
     await streamInto("mysql", args, pass ? { ...process.env, MYSQL_PWD: pass } : process.env);
   } else {
-    // docker exec -i <container> mysql -uroot  (الناتج يحوي CREATE/USE DATABASE)
+    // docker exec -i <container> mysql -u<user> (يسحب هوية القاعدة من DATABASE_URL إن توفّرت)
     // BC-04: كلمة المرور عبر MYSQL_PWD (docker exec -e VAR بلا قيمة يسحبها من بيئة عميل docker) لا سطر الأوامر.
+    const parsedCreds = String(url).match(/^mysql:\/\/([^:]+):([^@]*)@/);
+    const dbUser = parsedCreds?.[1] ? decodeURIComponent(parsedCreds[1]) : (process.env.DB_USER ?? "root");
     const container = process.env.DB_CONTAINER ?? "erp-mysql";
-    const pw = process.env.DB_ROOT_PW ?? "erp_root_pw";
+    const pw = parsedCreds?.[2] ? decodeURIComponent(parsedCreds[2]) : (process.env.DB_ROOT_PW ?? "erp_root_pw");
     await streamInto(
       "docker",
-      ["exec", "-i", "-e", "MYSQL_PWD", container, "mysql", "--binary-mode=1", "-uroot"],
+      ["exec", "-i", "-e", "MYSQL_PWD", container, "mysql", "--binary-mode=1", "--default-character-set=utf8mb4", `-u${dbUser}`],
       { ...process.env, MYSQL_PWD: pw },
     );
   }

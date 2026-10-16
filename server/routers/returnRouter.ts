@@ -2358,11 +2358,11 @@ export const returnRouter = router({
         .optional(),
     )
     .query(async ({ input, ctx }) => {
-      if (
-        ctx.user.branchId == null &&
-        ctx.user.role !== "admin" &&
-        !input?.branchId
-      ) {
+      const canCross = canCrossBranches(ctx.user);
+      const userBranchId =
+        (ctx as { scopedBranchId?: number | null }).scopedBranchId ??
+        (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+      if (!canCross && userBranchId == null) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: appErrorMessage({
@@ -2373,9 +2373,10 @@ export const returnRouter = router({
         });
       }
       if (
-        !canCrossBranches(ctx.user) &&
+        !canCross &&
         input?.branchId != null &&
-        Number(input.branchId) !== Number(ctx.user.branchId)
+        userBranchId != null &&
+        Number(input.branchId) !== Number(userBranchId)
       ) {
         throw new TRPCError({
           code: "FORBIDDEN",
@@ -2386,17 +2387,16 @@ export const returnRouter = router({
           }),
         });
       }
-      const actorBranchId = canCrossBranches(ctx.user)
-        ? (input?.branchId ??
-            (ctx.user.branchId ? Number(ctx.user.branchId) : undefined))
-        : (ctx.user.branchId ? Number(ctx.user.branchId) : undefined);
-      if (!actorBranchId) {
+      const effectiveScopedBranchId = canCross
+        ? (input?.branchId ?? userBranchId ?? null)
+        : userBranchId;
+      if (!effectiveScopedBranchId) {
         return [];
       }
       const openShifts = await getOpenShifts(
-        { branchId: actorBranchId },
+        { branchId: effectiveScopedBranchId },
         {
-          scopedBranchId: actorBranchId,
+          scopedBranchId: effectiveScopedBranchId,
           role:
             ctx.user.role === "admin" || ctx.user.role === "manager"
               ? ctx.user.role

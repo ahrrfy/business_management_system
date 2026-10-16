@@ -1,4 +1,5 @@
 import { requireOptionalNativeModule } from "expo";
+import { Platform } from "react-native";
 import {
   parseMobileToday,
   parseMobileAttendanceHistory,
@@ -50,6 +51,18 @@ type NativeSecureTransport = Readonly<{
 
 const transport = requireOptionalNativeModule<NativeSecureTransport>("AlrueyaSecureTransport");
 
+export function isNativeSecureTransportAvailable(): boolean {
+  return transport != null;
+}
+
+function isWebTransportFallbackAllowed(): boolean {
+  return (
+    Platform.OS === "web" ||
+    process.env.NODE_ENV === "test" ||
+    process.env.EXPO_PUBLIC_ALLOW_WEB_TRANSPORT_FALLBACK === "1"
+  );
+}
+
 const getBackendUrl = (): string => {
   if (typeof window !== "undefined" && window.location) {
     if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
@@ -88,8 +101,9 @@ const webTransport: NativeSecureTransport = {
     if (typeof window !== "undefined") {
       window.sessionStorage?.setItem("alrueya_superapp_web_session", "active");
       window.localStorage?.setItem("alrueya_superapp_web_session", "active");
-      if (user) {
-        window.sessionStorage?.setItem("alrueya_superapp_web_user", JSON.stringify(user));
+      if (user && typeof user === "object") {
+        const { ticket: _ticket, ...safeUser } = user as Record<string, unknown>;
+        window.sessionStorage?.setItem("alrueya_superapp_web_user", JSON.stringify(safeUser));
       }
     }
     return JSON.stringify({
@@ -195,9 +209,15 @@ const webTransport: NativeSecureTransport = {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
       return crypto.randomUUID();
     }
-    return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
-      (+c ^ (Math.random() * 16 >> (+c / 4))).toString(16),
-    );
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+      bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+      const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+    }
+    throw new SecureTransportUnavailableError();
   },
 
   async requestMobileLeave(
@@ -347,7 +367,8 @@ export class SecureTransportUnavailableError extends Error {
 
 function nativeTransport(): NativeSecureTransport {
   if (transport) return transport;
-  return webTransport;
+  if (isWebTransportFallbackAllowed()) return webTransport;
+  throw new SecureTransportUnavailableError();
 }
 
 /** The native layer retains the cookie, device key, counter, nonce, and pins. */

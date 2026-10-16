@@ -255,6 +255,12 @@ export function sendTcp(
 
 let tmpCounter = 0;
 
+export const SAFE_PRINTER_NAME = /^[a-zA-Z0-9 _.,\-()/#$]+$/;
+
+export function validatePrinterName(name: string): boolean {
+  return Boolean(name) && SAFE_PRINTER_NAME.test(name);
+}
+
 /**
  * إرسال بايتات خام لأي طابعة Windows مثبتة محلياً عبر Windows Spooler API (winspool.drv بنوع RAW).
  * يعمل مع الطابعات المتصلة عبر USB/COM/LPT والشبكة دون اشتراط مشاركتها عبر الشبكة.
@@ -263,13 +269,13 @@ export async function sendWindowsSpooler(printerName: string, bytes: Buffer): Pr
   if (process.platform !== "win32") {
     throw new Error("الطباعة عبر Windows Spooler متاحة على نظام Windows فقط.");
   }
-  if (!/^[A-Za-z0-9 _.$,()#-]+$/.test(printerName)) {
+  if (!validatePrinterName(printerName)) {
     throw new Error(`اسم طابعة غير صالح: «${printerName}».`);
   }
   const tmp = path.join(tmpdir(), `escpos-spool-${process.pid}-${Date.now()}-${tmpCounter++}.bin`);
   await writeFile(tmp, bytes);
   try {
-    const script = `
+    const psScript = `
 Add-Type -TypeDefinition @"
 using System;
 using System.IO;
@@ -321,10 +327,20 @@ public class WinSpoolRaw {
   }
 }
 "@
-if (-not [WinSpoolRaw]::SendFileToPrinter("${printerName}", "${tmp.replace(/\\/g, "\\\\")}")) { exit 2 }
+if (-not [WinSpoolRaw]::SendFileToPrinter($env:ALROYA_PRINTER_NAME, $env:ALROYA_PRINT_FILE)) { exit 2 }
 `;
-    const b64 = Buffer.from(script, "utf16le").toString("base64");
-    await execFileP("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", b64], { windowsHide: true });
+    await execFileP(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", psScript],
+      {
+        windowsHide: true,
+        env: {
+          ...process.env,
+          ALROYA_PRINTER_NAME: printerName,
+          ALROYA_PRINT_FILE: tmp,
+        },
+      },
+    );
   } finally {
     await unlink(tmp).catch(() => {});
   }
@@ -336,9 +352,9 @@ export async function sendWindowsShare(shareName: string, bytes: Buffer): Promis
     throw new Error("الطباعة عبر مشاركة Windows متاحة على نظام Windows فقط — استعمل tcp:// لطابعة شبكية.");
   }
   // اسم المشاركة يُمرَّر إلى cmd الذي يعيد تحليل سطر الأوامر؛ نرفض أي اسم خارج القائمة البيضاء
-  // (أحرف/أرقام ومسافة و _ . - $) لإغلاق أي حقن أوامر — حتى وإن أتى من PRINT_TARGET الموثوق (دفاع عميق).
-  if (!/^[A-Za-z0-9 _.$,()#-]+$/.test(shareName)) {
-    throw new Error(`اسم مشاركة غير صالح: «${shareName}». يُسمح بالأحرف والأرقام والمسافة و _ . - $ فقط.`);
+  // (أحرف/أرقام ومسافة و _ . - بدون $) لإغلاق أي حقن أوامر — حتى وإن أتى من PRINT_TARGET الموثوق (دفاع عميق).
+  if (!validatePrinterName(shareName)) {
+    throw new Error(`اسم مشاركة غير صالح: «${shareName}». يُسمح بالأحرف والأرقام والمسافة و _ . - فقط.`);
   }
   const tmp = path.join(tmpdir(), `escpos-${process.pid}-${Date.now()}-${tmpCounter++}.bin`);
   await writeFile(tmp, bytes);

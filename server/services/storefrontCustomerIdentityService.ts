@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { createRemoteJWKSet, jwtVerify, SignJWT } from "jose";
 
 import {
@@ -71,7 +71,7 @@ async function verifyFirebasePhoneToken(idToken: string): Promise<FirebaseClaims
 
 async function resolveCustomer(phone: string, name: string, firebaseUid: string) {
   return withTx(async (tx) => {
-    const lockName = `storefront-firebase-customer:${phone}`;
+    const lockName = `online-customer:${phone}`;
     const lockResult = (await tx.execute(sql`SELECT GET_LOCK(${lockName}, 5) AS locked`)) as unknown;
     const row = Array.isArray(lockResult)
       ? (lockResult[0] as Array<{ locked?: number }> | undefined)?.[0]
@@ -80,24 +80,80 @@ async function resolveCustomer(phone: string, name: string, firebaseUid: string)
       throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذر تأمين ملف العميل، أعد المحاولة" });
     }
     try {
-      const existing = (
-        await tx
-          .select({ id: customers.id, name: customers.name, isActive: customers.isActive })
-          .from(customers)
-          .where(or(
-            eq(customers.phone, phone),
-            eq(customers.phone2, phone),
-            eq(customers.phone3, phone),
-            eq(customers.whatsapp, phone),
-          ))
-          .orderBy(desc(customers.isActive), desc(customers.id))
-          .for("update")
-          .limit(1)
-      )[0];
+      const phoneVariants = Array.from(
+        new Set(
+          [
+            phone,
+            ...(phone.startsWith("+964")
+              ? [
+                  `0${phone.slice(4)}`,
+                  `964${phone.slice(4)}`,
+                  `00964${phone.slice(4)}`,
+                  phone.slice(4),
+                ]
+              : []),
+          ].filter(Boolean),
+        ),
+      );
+      const normDigits = phone.replace(/\D/g, "");
+      const digitVariants = Array.from(
+        new Set(
+          [
+            normDigits,
+            normDigits ? `00${normDigits}` : "",
+            ...(phone.startsWith("+964")
+              ? [`0${phone.slice(4)}`, phone.slice(4)]
+              : []),
+          ].filter(Boolean),
+        ),
+      );
+      const digitPredicates =
+        digitVariants.length > 0
+          ? (() => {
+              const digitSqlList = sql.join(
+                digitVariants.map((d) => sql`${d}`),
+                sql`, `,
+              );
+              return [
+                sql`REGEXP_REPLACE(COALESCE(${customers.phone}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                sql`REGEXP_REPLACE(COALESCE(${customers.phone2}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                sql`REGEXP_REPLACE(COALESCE(${customers.phone3}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+                sql`REGEXP_REPLACE(COALESCE(${customers.whatsapp}, ''), '[^0-9]', '') IN (${digitSqlList})`,
+              ];
+            })()
+          : [];
+      const candidates = await tx
+        .select({
+          id: customers.id,
+          name: customers.name,
+          isActive: customers.isActive,
+          phone: customers.phone,
+          phone2: customers.phone2,
+          phone3: customers.phone3,
+          whatsapp: customers.whatsapp,
+        })
+        .from(customers)
+        .where(
+          or(
+            inArray(customers.phone, phoneVariants),
+            inArray(customers.phone2, phoneVariants),
+            inArray(customers.phone3, phoneVariants),
+            inArray(customers.whatsapp, phoneVariants),
+            ...digitPredicates,
+          ),
+        )
+        .orderBy(desc(customers.isActive), desc(customers.id))
+        .for("update");
+      const existing = candidates.find((c) =>
+        [c.phone, c.phone2, c.phone3, c.whatsapp].some(
+          (p) => Boolean(p && p.trim()) && canonicalIraqiMobile(p!.trim()) === phone,
+        ),
+      );
       if (existing) {
         if (existing.isActive === false) {
           throw new TRPCError({ code: "FORBIDDEN", message: "هذا الرقم مرتبط بعميل معطّل؛ تواصل مع المكتبة" });
         }
+        await tx.execute(sql`COMMIT`);
         return { id: Number(existing.id), name: existing.name, phone };
       }
 
@@ -111,9 +167,14 @@ async function resolveCustomer(phone: string, name: string, firebaseUid: string)
         isActive: true,
         clientRequestId: `firebase-phone:${firebaseUid}`,
       });
-      return { id: extractInsertId(inserted), name, phone };
+      const resolved = { id: extractInsertId(inserted), name, phone };
+      await tx.execute(sql`COMMIT`);
+      return resolved;
+    } catch (err) {
+      await tx.execute(sql`ROLLBACK`).catch(() => {});
+      throw err;
     } finally {
-      await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
+      await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`).catch(() => {});
     }
   });
 }
@@ -205,11 +266,24 @@ export async function storefrontCustomerBenefits(session: { customerId: number; 
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة بيانات المتجر غير متاحة" });
 
   const customer = (await db
-    .select({ id: customers.id, name: customers.name, phone: customers.phone, isActive: customers.isActive })
+    .select({
+      id: customers.id,
+      name: customers.name,
+      phone: customers.phone,
+      phone2: customers.phone2,
+      phone3: customers.phone3,
+      whatsapp: customers.whatsapp,
+      isActive: customers.isActive,
+    })
     .from(customers)
     .where(eq(customers.id, session.customerId))
     .limit(1))[0];
-  if (!customer || customer.isActive === false || canonicalIraqiMobile(customer.phone) !== session.phone) {
+  const phoneCandidates = customer
+    ? [customer.phone, customer.phone2, customer.phone3, customer.whatsapp]
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+        .map(canonicalIraqiMobile)
+    : [];
+  if (!customer || customer.isActive === false || !phoneCandidates.includes(session.phone)) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "لم تعد جلسة العميل صالحة؛ أعد تحقق الهاتف" });
   }
 

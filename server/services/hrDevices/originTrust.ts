@@ -59,6 +59,8 @@ const ORIGIN_CACHE_TTL_MS = 30_000;
 export interface OriginTrustConfig {
   /** الاعتماد التلقائي بالقرينة — مفتاح إيقاف: HR_DEVICE_ORIGIN_AUTOTRUST=0. */
   autoTrust: boolean;
+  /** السماح بتحديث عنوان جهاز مربوط مسبقاً — مفتاح إيقاف: HR_DEVICE_ALLOW_IP_ROAMING=0. */
+  allowIpRoaming?: boolean;
   windowHours: number;
   minWitnesses: number;
 }
@@ -67,11 +69,13 @@ export function resolveOriginTrustConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): OriginTrustConfig {
   const raw = env.HR_DEVICE_ORIGIN_AUTOTRUST?.trim();
+  const roamingRaw = env.HR_DEVICE_ALLOW_IP_ROAMING?.trim();
   const hours = Number(env.HR_DEVICE_ORIGIN_TRUST_WINDOW_HOURS);
   const witnesses = Number(env.HR_DEVICE_ORIGIN_MIN_WITNESSES);
   return {
     // مُفعَّل افتراضياً: الغرض كلّه إنهاء التدخّل اليدويّ. الإيقاف قرارٌ صريح.
     autoTrust: raw !== "0" && raw?.toLowerCase() !== "false",
+    allowIpRoaming: roamingRaw !== "0" && roamingRaw?.toLowerCase() !== "false",
     windowHours:
       Number.isFinite(hours) && hours >= 1 && hours <= 720
         ? hours
@@ -134,22 +138,40 @@ export async function loadLearnedOrigins(
   for (const row of deviceRows) add(row?.ip);
 
   // (٢) عناوين «شبكات عمل» مشتقّة من الجلسات: يلزمها **عدّة موظّفين متمايزين** من العنوان
-  // نفسه (لا موظّفٌ واحد من منزله)، والسقف يُطبَّق **بعد الترتيب بالأحدث** فلا يُقصى عنوانٌ
+  // نفسه (لا موظّفٌ واحد من منزله)، بأدوار فرعية ثابتة مخوَّلة (لا مندوب توصيل ميدانيّ ولا
+  // مدقّق خارجيّ ولا دورٌ عامّ/معطَّل)، والسقف يُطبَّق **بعد الترتيب بالأحدث** فلا يُقصى عنوانٌ
   // طازج لصالح آخر قديم.
   const sessionRows = unwrap<{ ip: string | null }>(
     await db.execute(sql`
       SELECT s.\`ipAddress\` AS \`ip\`, MAX(s.\`lastSeenAt\`) AS \`seenAt\`
         FROM \`userSessions\` s
         JOIN \`users\` u ON u.\`id\` = s.\`userId\`
+        LEFT JOIN \`roles\` cr ON cr.\`id\` = u.\`customRoleId\` AND cr.\`isActive\` = 1
        WHERE s.\`ipAddress\` IS NOT NULL AND s.\`ipAddress\` <> ''
          AND s.\`revokedAt\` IS NULL
          AND s.\`expiresAt\` > CURRENT_TIMESTAMP
          AND s.\`lastSeenAt\` > DATE_SUB(CURRENT_TIMESTAMP, INTERVAL ${windowHours} HOUR)
          AND u.\`isActive\` = 1
+         AND (u.\`accessExpiresAt\` IS NULL OR u.\`accessExpiresAt\` > CURRENT_TIMESTAMP)
+         AND (
+               u.\`isOwner\` = 1
+               OR (
+                 u.\`customRoleId\` IS NULL
+                 AND u.\`role\` IN ('admin', 'manager', 'cashier', 'accountant', 'warehouse', 'purchasing', 'print_operator', 'sales_rep')
+               )
+               OR (
+                 u.\`customRoleId\` IS NOT NULL
+                 AND cr.\`id\` IS NOT NULL
+                 AND cr.\`baseRole\` IN ('admin', 'manager', 'cashier', 'accountant', 'warehouse', 'purchasing', 'print_operator', 'sales_rep')
+               )
+             )
          AND EXISTS (
                SELECT 1 FROM \`hrFingerprintDevices\` hd
                 WHERE hd.\`enabled\` = 1
-                  AND (hd.\`branchId\` IS NULL OR hd.\`branchId\` = u.\`branchId\`)
+                  AND (
+                    (hd.\`branchId\` IS NOT NULL AND hd.\`branchId\` = u.\`branchId\`)
+                    OR (hd.\`branchId\` IS NULL AND (u.\`role\` = 'admin' OR u.\`isOwner\` = 1))
+                  )
              )
        GROUP BY s.\`ipAddress\`
       HAVING COUNT(DISTINCT s.\`userId\`) >= ${minWitnesses}
@@ -182,7 +204,7 @@ export function learnedOriginsAreStale(): boolean {
 
 /**
  * هل هذا العنوان **مُعزَّزٌ بجلسة موظّفٍ مُصادَقٍ حيّة**؟ إن كان للجهاز فرعٌ، يُشترط أن يكون
- * الموظّف من الفرع نفسه (أضيق وأصدق). الجهاز بلا فرع ⇒ يكفي موظّفٌ فعّالٌ من العنوان نفسه.
+ * الموظّف من الفرع نفسه وبصلاحية كادر فرعٍ ثابت. الجهاز بلا فرع ⇒ يُشترط مدير نظام أو مالك.
  */
 export async function isOriginCorroborated(
   branchId: number | null,
@@ -197,6 +219,7 @@ export async function isOriginCorroborated(
     SELECT COUNT(DISTINCT s.\`userId\`) AS n
       FROM \`userSessions\` s
       JOIN \`users\` u ON u.\`id\` = s.\`userId\`
+      LEFT JOIN \`roles\` cr ON cr.\`id\` = u.\`customRoleId\` AND cr.\`isActive\` = 1
        -- الجلسات قد تُخزَّن بصيغة IPv4 المُغلَّفة (::ffff:x) بينما الجسر يرى الصيغة المجرّدة؛
        -- المطابقة على الصيغتين تُبقي المقارنة على العمود نفسه (صديقة للفهرس) بلا دالّة.
      WHERE (s.\`ipAddress\` = ${clean} OR s.\`ipAddress\` = ${`::ffff:${clean}`})
@@ -204,7 +227,24 @@ export async function isOriginCorroborated(
        AND s.\`expiresAt\` > CURRENT_TIMESTAMP
        AND s.\`lastSeenAt\` > DATE_SUB(CURRENT_TIMESTAMP, INTERVAL ${windowHours} HOUR)
        AND u.\`isActive\` = 1
-       ${branchId != null ? sql`AND u.\`branchId\` = ${branchId}` : sql``}
+       AND (u.\`accessExpiresAt\` IS NULL OR u.\`accessExpiresAt\` > CURRENT_TIMESTAMP)
+       AND (
+             u.\`isOwner\` = 1
+             OR (
+               u.\`customRoleId\` IS NULL
+               AND u.\`role\` IN ('admin', 'manager', 'cashier', 'accountant', 'warehouse', 'purchasing', 'print_operator', 'sales_rep')
+             )
+             OR (
+               u.\`customRoleId\` IS NOT NULL
+               AND cr.\`id\` IS NOT NULL
+               AND cr.\`baseRole\` IN ('admin', 'manager', 'cashier', 'accountant', 'warehouse', 'purchasing', 'print_operator', 'sales_rep')
+             )
+           )
+       ${
+         branchId != null
+           ? sql`AND u.\`branchId\` = ${branchId}`
+           : sql`AND (u.\`role\` = 'admin' OR u.\`isOwner\` = 1)`
+       }
   `)) as unknown as Array<Array<{ n: number }>> | Array<{ n: number }>;
   const list = (Array.isArray(rows[0]) ? rows[0] : rows) as Array<{ n: number }>;
   // **موظّفون متمايزون** لا جلسات: عشر جلسات لموظّفٍ واحد من منزله تبقى شاهداً واحداً.
@@ -413,7 +453,12 @@ export async function getOriginAttempt(id: number): Promise<
  * لا يجوز أن يدهسها تعلُّمٌ تلقائيّ.
  */
 export async function tryAutoAdoptOrigin(input: {
-  device: { id: number; branchId: number | null };
+  device: {
+    id: number;
+    branchId: number | null;
+    ip?: string | null;
+    lastSeenAt?: Date | string | null;
+  };
   serialNumber: string;
   ip: string;
   decision: string;
@@ -430,6 +475,28 @@ export async function tryAutoAdoptOrigin(input: {
   if (!cfg.autoTrust) return { adopted: false, reason: "AUTOTRUST_DISABLED" };
   if (input.security.deviceIdentityBindings[input.serialNumber.trim()]) {
     return { adopted: false, reason: "EXPLICIT_BINDING_WINS" };
+  }
+  const allowRoaming =
+    cfg.allowIpRoaming ??
+    (process.env.HR_DEVICE_ALLOW_IP_ROAMING?.trim() !== "0" &&
+      process.env.HR_DEVICE_ALLOW_IP_ROAMING?.trim().toLowerCase() !== "false");
+  if (!allowRoaming) {
+    let boundIp = normalizeRemoteAddress(input.device.ip ?? undefined);
+    if (!boundIp) {
+      const db = requireDb();
+      const [existing] = await db
+        .select({
+          ip: hrFingerprintDevices.ip,
+          lastSeenAt: hrFingerprintDevices.lastSeenAt,
+        })
+        .from(hrFingerprintDevices)
+        .where(eq(hrFingerprintDevices.id, input.device.id))
+        .limit(1);
+      boundIp = normalizeRemoteAddress(existing?.ip ?? undefined);
+    }
+    if (boundIp) {
+      return { adopted: false, reason: "IP_ROAMING_DISABLED" };
+    }
   }
   const corroborated = await isOriginCorroborated(
     input.device.branchId,

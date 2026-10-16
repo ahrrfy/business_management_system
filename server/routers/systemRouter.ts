@@ -4,7 +4,7 @@
 import { count } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { adminProcedure, companyProfileReadProcedure, protectedProcedure, publicProcedure, router, settingsAdminProcedure } from "../trpc";
+import { adminProcedure, companyProfileReadProcedure, ownerProcedure, protectedProcedure, publicProcedure, router, settingsAdminProcedure } from "../trpc";
 import type { TrpcContext } from "../context";
 import { getDb, isMultiTenantModeActive } from "../db";
 import { branches, users, products, customers, invoices } from "../../drizzle/schema";
@@ -113,7 +113,7 @@ export const systemRouter = router({
   }),
 
   /** استعادة من نسخة خادم (مدمّر): كلمة مرور + رمز تأكيد + نسخة أمان تلقائية. */
-  restoreBackup: adminProcedure
+  restoreBackup: ownerProcedure
     .input(z.object({ name: z.string(), confirm: z.string(), password: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
       assertSingleTenantOnly("استعادة نسخة");
@@ -136,7 +136,7 @@ export const systemRouter = router({
    * يصرّح برفع استعادة لفترة قصيرة بعد إعادة التحقق. الملف نفسه لا يدخل JSON/tRPC؛
    * يُرسل كدفق خام إلى /api/backups/restore-upload كي لا يُحلَّل قبل المصادقة.
    */
-  restoreUpload: adminProcedure
+  restoreUpload: ownerProcedure
     .input(z.object({
       fileName: z.string(),
       fileSize: z.number().int().positive(),

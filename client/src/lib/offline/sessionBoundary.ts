@@ -8,6 +8,8 @@ import { sameStudioTenantScope, type StudioTenantScope } from "@/lib/productStud
 import { pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 import { clearNotificationBadge } from "@/lib/push";
 import { markReceptionWorkspaceBoundaryBlocked, purgeReceptionWorkspaceSnapshots } from "@/lib/receptionWorkspaceState";
+import { offlineDb } from "./db";
+import { lockOfflineSession } from "./pinLock";
 
 type SessionBoundaryDependencies = {
   loadStudioIdentity: () => Promise<StudioDraftIdentity | null>;
@@ -63,6 +65,24 @@ export async function resetSessionForLogin(
   }
 }
 
+function isMissingIndexedDbError(err: unknown): boolean {
+  const candidate = err as {
+    name?: string;
+    message?: string;
+    inner?: { name?: string; message?: string } | null;
+    cause?: { name?: string; message?: string } | null;
+  } | null;
+  return (
+    candidate?.name === "MissingAPIError" ||
+    candidate?.inner?.name === "MissingAPIError" ||
+    candidate?.cause?.name === "MissingAPIError" ||
+    Boolean(candidate?.message?.includes("MissingAPIError")) ||
+    Boolean(candidate?.message?.includes("IndexedDB API missing")) ||
+    Boolean(candidate?.inner?.message?.includes("IndexedDB API missing")) ||
+    Boolean(candidate?.cause?.message?.includes("IndexedDB API missing"))
+  );
+}
+
 /** تسجيل الخروج الصريح حد أمنيّ يمحو كل المسودات والهوية المحلية ويوقف الصوت. */
 export async function resetSessionForLogout(
   queryClient: QueryClient,
@@ -70,8 +90,47 @@ export async function resetSessionForLogout(
 ): Promise<void> {
   pauseGlobalQuranAudio();
   void clearNotificationBadge();
+  lockOfflineSession();
   purgeRecipeClipboard();
   await resetSessionQueryCache(queryClient);
   await Promise.resolve().then(() => dependencies.purgeReceptionSnapshots()).catch(() => undefined);
-  await dependencies.purgeStudioDrafts().catch(() => undefined);
+  try {
+    await dependencies.purgeStudioDrafts();
+  } catch (err) {
+    if (!isMissingIndexedDbError(err)) {
+      await dependencies.purgeStudioDrafts();
+    }
+  }
+  const PRESERVED_DEVICE_META_KEYS = [
+    "offlineSaleEnabled",
+    "storagePersisted",
+    "deviceCode",
+    "offlineReceiptSeq",
+  ];
+  const clearTasks: Array<() => Promise<unknown>> = [
+    () => offlineDb.profile.clear(),
+    () => offlineDb.catalog.clear(),
+    () => offlineDb.meta.where("key").noneOf(PRESERVED_DEVICE_META_KEYS).delete(),
+    () => offlineDb.customers.clear(),
+    () => offlineDb.stock.clear(),
+  ];
+  const firstPass = await Promise.allSettled(
+    clearTasks.map((fn) => Promise.resolve().then(fn)),
+  );
+  const failedTasks = clearTasks.filter((_, idx) => {
+    const res = firstPass[idx];
+    return res.status === "rejected" && !isMissingIndexedDbError(res.reason);
+  });
+  if (failedTasks.length > 0) {
+    const retryPass = await Promise.allSettled(
+      failedTasks.map((fn) => Promise.resolve().then(fn)),
+    );
+    const firstRetryFailure = retryPass.find(
+      (res): res is PromiseRejectedResult =>
+        res.status === "rejected" && !isMissingIndexedDbError(res.reason),
+    );
+    if (firstRetryFailure) {
+      throw firstRetryFailure.reason;
+    }
+  }
 }

@@ -42,6 +42,8 @@ const ICON_MAP = {
 
 export default function StoreThematicCollectionsPanel() {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const canManageThematic = Boolean(me.data?.isOwner || me.data?.role === "admin");
   const query = trpc.storeAdmin.thematicCollections.get.useQuery();
   const updateM = trpc.storeAdmin.thematicCollections.update.useMutation({
     onSuccess: () => {
@@ -75,6 +77,7 @@ export default function StoreThematicCollectionsPanel() {
   }
 
   function handleToggleMode() {
+    if (!canManageThematic) return;
     const nextMode = currentMode === "AUTO" ? "CUSTOM" : "AUTO";
     updateM.mutate({
       mode: nextMode,
@@ -124,20 +127,22 @@ export default function StoreThematicCollectionsPanel() {
                 إعادة تحليل الكتالوج الآن
               </Button>
 
-              <Button
-                variant={currentMode === "AUTO" ? "secondary" : "default"}
-                size="sm"
-                onClick={handleToggleMode}
-                disabled={updateM.isPending}
-                className="gap-1.5 text-xs font-bold"
-              >
-                {updateM.isPending ? (
-                  <Loader2 aria-hidden className="size-3.5 animate-spin" />
-                ) : (
-                  <Sliders aria-hidden className="size-3.5" />
-                )}
-                {currentMode === "AUTO" ? "التبديل إلى التحرير المخصص" : "العودة للوضع التلقائي الذكي"}
-              </Button>
+              {canManageThematic && (
+                <Button
+                  variant={currentMode === "AUTO" ? "secondary" : "default"}
+                  size="sm"
+                  onClick={handleToggleMode}
+                  disabled={updateM.isPending}
+                  className="gap-1.5 text-xs font-bold"
+                >
+                  {updateM.isPending ? (
+                    <Loader2 aria-hidden className="size-3.5 animate-spin" />
+                  ) : (
+                    <Sliders aria-hidden className="size-3.5" />
+                  )}
+                  {currentMode === "AUTO" ? "التبديل إلى التحرير المخصص" : "العودة للوضع التلقائي الذكي"}
+                </Button>
+              )}
             </div>
           </div>
         </CardHeader>

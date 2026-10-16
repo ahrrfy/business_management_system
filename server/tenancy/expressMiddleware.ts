@@ -44,12 +44,83 @@ function holdLeaseForResponse(req: Request, res: Response, release: () => void):
  * بلا `CONTROL_DATABASE_URL` (نشر أحادي الشركة): تمريرة شفّافة تماماً — سلوك المشروع
  * كما كان قبل تعدد الشركات، بلا أي تغيير.
  */
+const PUBLIC_TENANT_AUTH_PROCEDURES = new Set([
+  "auth.login",
+  "auth.twoFactorVerify",
+  "auth.resetPasswordWithToken",
+  "auth.requestPasswordReset",
+  "auth.forgotPassword",
+]);
+
+function isPublicTenantAuthEntryRequest(req: Request): boolean {
+  const rawPath =
+    typeof req.originalUrl === "string" && req.originalUrl
+      ? req.originalUrl
+      : typeof req.baseUrl === "string" || typeof req.path === "string"
+        ? `${req.baseUrl ?? ""}${req.path ?? ""}`
+        : typeof req.url === "string"
+          ? req.url
+          : "";
+  if (!rawPath) return false;
+  const pathname = rawPath.split("?")[0] ?? "";
+  const trpcPrefix = "/api/trpc/";
+  const idx = pathname.indexOf(trpcPrefix);
+  const procSegment =
+    idx >= 0
+      ? pathname.slice(idx + trpcPrefix.length)
+      : pathname.replace(/^\/+/, "");
+  if (!procSegment) return false;
+  const procedures = procSegment
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return (
+    procedures.length > 0 &&
+    procedures.every((p) => PUBLIC_TENANT_AUTH_PROCEDURES.has(p))
+  );
+}
+
+function explicitTenantSlugFromRequest(req: Request): string | null {
+  const headers = req.headers ?? {};
+  for (const key of ["x-company-slug", "x-tenant-slug", "x-company-code"]) {
+    const val = headers[key];
+    const raw = Array.isArray(val) ? val[0] : val;
+    if (typeof raw === "string" && raw.trim()) {
+      return raw.trim();
+    }
+  }
+  const query = (req as { query?: Record<string, unknown> }).query;
+  if (query && typeof query === "object") {
+    for (const key of ["companyCode", "tenantSlug", "companySlug"]) {
+      const val = query[key];
+      if (typeof val === "string" && val.trim()) {
+        return val.trim();
+      }
+    }
+  }
+  return null;
+}
+
 export function tenancyMiddleware() {
   return async (req: Request, res: Response, next: NextFunction) => {
     if (!isMultiTenantModeActive()) return next();
+    // CF-16: Public tenant-switching auth entrypoints resolve their own target tenant
+    // inside the procedure via withTenantDb; do not bind a stale session cookie from
+    // another tenant to the outer request context (which would populate ctx.user and
+    // pollute the previous tenant's auditLogs on failure).
+    if (isPublicTenantAuthEntryRequest(req)) return next();
     const cookies = parseCookie(req.headers.cookie ?? "");
     const session = await verifySession(cookies[COOKIE_NAME]).catch(() => null);
     if (!session?.companyId) return next();
+    const explicitSlug = explicitTenantSlugFromRequest(req);
+    if (explicitSlug) {
+      const explicitCompany = await resolveCompanyByCode(explicitSlug).catch(
+        () => null,
+      );
+      if (!explicitCompany || explicitCompany.id !== session.companyId) {
+        return next();
+      }
+    }
     try {
       // تدقيق ٣/٨: افحص أن الشركة ما زالت مفعّلة قبل توجيه الطلب لقاعدتها. كان تجمّع الاتصال
       // (_tenantPools) يُخزَّن لعمر العملية بلا إعادة فحص isActive عند إصابة الكاش ⇒ جلسة قائمة

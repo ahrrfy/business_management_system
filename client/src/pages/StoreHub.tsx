@@ -26,7 +26,7 @@ const TABS: HubTab[] = [
   { value: "categories", label: "الفئات", gate: { adminOnly: true }, Component: StoreCategories },
   { value: "catalog", label: "الكتالوج والعرض", gate: { managerOnly: true }, Component: StoreCatalog },
   { value: "promotions", label: "العروض والتوصيل المجاني", gate: { managerOnly: true }, Component: StorePromotionsManager },
-  { value: "thematic", label: "التشكيلات الذكية", gate: { managerOnly: true }, Component: StoreThematicCollectionsPanel },
+  { value: "thematic", label: "التشكيلات الذكية", gate: { adminOnly: true }, Component: StoreThematicCollectionsPanel },
   { value: "analytics", label: "التحليلات", gate: { managerOnly: true }, Component: StoreAnalytics },
   { value: "banners", label: "البنرات", gate: { adminOnly: true }, Component: BannerManager },
   { value: "loyalty", label: "الولاء", gate: { adminOnly: true }, Component: LoyaltyManager },

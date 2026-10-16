@@ -5,6 +5,8 @@
 //   POST /api/print/test    → يطبع تذكرة اختبار ASCII من الخادم مباشرة
 import { Router, type Request, type Response } from "express";
 import { createContext, type AuthUser } from "./context";
+import { twoFactorEnrollmentRequired } from "./trpc";
+import { hasOperationPolicy } from "../shared/operationPermissions";
 import {
   getConfiguredTarget,
   describeTarget,
@@ -20,32 +22,79 @@ import { logger } from "./logger";
 // متّسق مع حدّ /api/print/raw في server/index.ts ⇒ يُرفض كلاهما قبل تشكيل Buffer.
 const MAX_PRINT_B64_CHARS = 14_000_000;
 
-async function requireAuth(
+const ALLOWED_PRINT_ROLES = new Set([
+  "admin",
+  "manager",
+  "cashier",
+  "sales_rep",
+  "print_operator",
+  "warehouse",
+  "accountant",
+  "purchasing",
+]);
+
+// يسمح بالطباعة لكوادر النظام الفعلية المسجّلين (كاشير، محاسب، أمين مخزن، مسؤول مشتريات، فني، مندوب مبيعات، مدير)
+// بعد حلّ الأدوار المخصّصة وتطبيع المالك وفحص سياسة العمليات، مع حظر المندوب الميداني (courier) والمدقّق (auditor) والدور العامّ/المعطَّل (user).
+export async function resolveAuthorizedPrintUser(
   req: Request,
   res: Response,
 ): Promise<AuthUser | null> {
+  let rawUser: AuthUser | null = null;
   try {
-    const { user } = await createContext({ req, res } as Parameters<
+    const ctx = await createContext({ req, res } as Parameters<
       typeof createContext
     >[0]);
-    if (user) return user;
+    rawUser = ctx.user;
   } catch {
-    /* يسقط للرفض */
+    rawUser = null;
   }
-  res.status(401).json({ ok: false, error: "يلزم تسجيل الدخول." });
-  return null;
-}
+  if (!rawUser) {
+    res.status(401).json({ ok: false, error: "يلزم تسجيل الدخول." });
+    return null;
+  }
 
-// يسمح بالطباعة لجميع كوادر النظام المسجّلين (كاشير، محاسب، أمين مخزن، فني، مدير)
-// دون اشتراط وردية مفتوحة، لأن الطباعة تشمل إغلاق الوردية، وسندات التسليم، ومحاضر الشحن، والكشوف.
-async function requirePrintAuthorized(
-  user: AuthUser,
-  req: Request,
-  res: Response,
-): Promise<boolean> {
+  const user = rawUser;
+  const hadCustomRoleId = Boolean(user.customRoleId);
+  if (twoFactorEnrollmentRequired(user)) {
+    await logAudit(
+      { user, req },
+      {
+        action: "print.authorization",
+        entityType: "printer",
+        outcome: "FAILURE",
+        newValue: { operation: "invoicePrinting.authorizeBridge" },
+      },
+    );
+    res.status(403).json({
+      ok: false,
+      error: "يجب تفعيل المصادقة الثنائية (2FA) لحسابك قبل استخدام النظام.",
+    });
+    return null;
+  }
+
+  if (user.isOwner) {
+    return user;
+  }
+
+  if (
+    user.roleLockedByInactiveCustomRole ||
+    (hadCustomRoleId && !user.customRoleKey)
+  ) {
+    await logAudit(
+      { user, req },
+      {
+        action: "print.authorization",
+        entityType: "printer",
+        outcome: "FAILURE",
+        newValue: { operation: "invoicePrinting.authorizeBridge" },
+      },
+    );
+    res.status(403).json({ ok: false, error: "غير مخوّل بالطباعة المباشرة على طابعة المتجر." });
+    return null;
+  }
+
   try {
     assertDirectPrintBridgeAuthorized(user);
-    return true;
   } catch (error) {
     await logAudit(
       { user, req },
@@ -63,8 +112,30 @@ async function requirePrintAuthorized(
           ? error.message
           : "غير مخوّل بالطباعة المباشرة على طابعة المتجر.",
     });
-    return false;
+    return null;
   }
+
+  if (
+    !hasOperationPolicy(user) &&
+    (user.role === "courier" ||
+      user.role === "auditor" ||
+      user.role === "user" ||
+      !ALLOWED_PRINT_ROLES.has(user.role))
+  ) {
+    await logAudit(
+      { user, req },
+      {
+        action: "print.authorization",
+        entityType: "printer",
+        outcome: "FAILURE",
+        newValue: { operation: "invoicePrinting.authorizeBridge" },
+      },
+    );
+    res.status(403).json({ ok: false, error: "غير مخوّل بالطباعة المباشرة على طابعة المتجر." });
+    return null;
+  }
+
+  return user;
 }
 
 export function printRouter(): Router {
@@ -72,7 +143,8 @@ export function printRouter(): Router {
 
   // حالة الجسر — يستعملها العميل ليقرّر: جسر الخادم أم WebUSB أم حوار المتصفّح.
   r.get("/status", async (req, res) => {
-    if (!(await requireAuth(req, res))) return;
+    const user = await resolveAuthorizedPrintUser(req, res);
+    if (!user) return;
     const target = getConfiguredTarget();
     res.json({
       ok: true,
@@ -83,9 +155,8 @@ export function printRouter(): Router {
 
   // طباعة بايتات ESC/POS خام (base64). العميل يولّد النقطية (raster) فالعربية تُرسَّم على Canvas لديه.
   r.post("/raw", async (req, res) => {
-    const user = await requireAuth(req, res);
+    const user = await resolveAuthorizedPrintUser(req, res);
     if (!user) return;
-    if (!(await requirePrintAuthorized(user, req, res))) return;
     if (!isBridgeEnabled()) {
       return res.status(501).json({
         ok: false,
@@ -153,9 +224,8 @@ export function printRouter(): Router {
 
   // تذكرة اختبار (ASCII) — للتحقق من سلامة المسار والقاطع.
   r.post("/test", async (req, res) => {
-    const user = await requireAuth(req, res);
+    const user = await resolveAuthorizedPrintUser(req, res);
     if (!user) return;
-    if (!(await requirePrintAuthorized(user, req, res))) return;
     if (!isBridgeEnabled()) {
       return res.status(501).json({
         ok: false,

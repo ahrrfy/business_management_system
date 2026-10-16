@@ -231,7 +231,7 @@ for (const path of ["purchases.pay", "purchaseReturns.create"]) {
   assert.equal(entry.delegable, false);
 }
 const companyStoreSettings = entries.filter((entry) => entry.procedure === "storeGlobalAdminProcedure");
-assert.equal(companyStoreSettings.length, 25, "Review any change to the fixed company-store administration surface");
+assert.equal(companyStoreSettings.length, 26, "Review any change to the fixed company-store administration surface");
 assert.ok(companyStoreSettings.every((entry) => !entry.delegable && entry.reservedKind === "AUTHORITY" && entry.authority === "admin"), "Company-store governance must not advertise ineffective operational grants");
 assert.ok(entries.some((entry) => entry.path === "storeAdmin.catalog.setStock" && entry.delegable && entry.procedure === "storeFulfillmentManagerProcedure"), "Branch fulfillment remains independently delegable");
 if (

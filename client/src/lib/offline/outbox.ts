@@ -13,7 +13,7 @@
 // وسقف عمر للكاش المحلي (أسعار أقدم من ٤٨ ساعة ⇒ قراءة فقط بلا بيع).
 
 import { getLastSyncAt } from "./catalogSync";
-import { decryptJson, encryptJson, isEncryptedEnvelope } from "./crypto";
+import { decryptJson, encryptJson, isEncryptedEnvelope, isLegacyZeroIvEnvelope } from "./crypto";
 import { getMeta, offlineDb, setMeta, type OfflineOutboxItem, type OfflineOutboxKind } from "./db";
 import { getOfflineProfile } from "./pinLock";
 import { LEGACY_OUTBOX_REVIEW_MESSAGE, partitionOutboxByIdentity } from "./outboxIdentity";
@@ -254,7 +254,22 @@ export async function enqueueOfflineSale(args: {
 
 /** يقرأ حمولة العنصر: مغلّفة مشفَّرة (ش٥) تُفكّ؛ وعناصر ما قبل التشفير تُقرأ كما هي (توافق رجعي). */
 export async function readItemPayload(item: OfflineOutboxItem): Promise<OfflinePayload> {
-  if (isEncryptedEnvelope(item.payload)) return decryptJson<OfflinePayload>(item.payload);
+  if (isEncryptedEnvelope(item.payload)) {
+    const wasLegacyZeroIv = isLegacyZeroIvEnvelope(item.payload);
+    const decoded = await decryptJson<OfflinePayload>(item.payload);
+    if (wasLegacyZeroIv) {
+      try {
+        const migrated = await encryptJson(decoded);
+        if (!isLegacyZeroIvEnvelope(migrated)) {
+          await offlineDb.outbox.update(item.clientRequestId, { payload: migrated });
+          item.payload = migrated;
+        }
+      } catch {
+        // نبقي الحمولة المفكوكة قابلةً للإعادة حتى لو تعذّر تحديث السجلّ لحظياً.
+      }
+    }
+    return decoded;
+  }
   return item.payload as OfflinePayload;
 }
 
