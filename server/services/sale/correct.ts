@@ -285,9 +285,10 @@ export async function correctSaleInTx(
     //    تحتاج درجاً، والزبون العابر الذي لم يحدد المخرج يُرفض لاحقاً ذرّياً إن ظهر فائض.
     const invPreview = (
       await tx.select({ branchId: invoices.branchId, shiftId: invoices.shiftId,
-          customerId: invoices.customerId, paidAmount: invoices.paidAmount,
+          customerId: invoices.customerId, paidAmount: invoices.paidAmount, shiftType: shifts.shiftType,
         })
-        .from(invoices).where(eq(invoices.id, input.originalInvoiceId)).limit(1)
+        .from(invoices).leftJoin(shifts, eq(shifts.id, invoices.shiftId))
+        .where(eq(invoices.id, input.originalInvoiceId)).limit(1)
     )[0];
     if (!invPreview) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة",
       });
@@ -309,7 +310,7 @@ export async function correctSaleInTx(
     let prelockedOverpayAccount: Awaited<ReturnType<typeof lockCashSourceForUpdate>> | null = null;
     if (mayNeedCashRefund) {
       if (currentOperationalAuthority) {
-        const shiftId = await openShiftIdTx(tx, actor.userId, Number(invPreview.branchId));
+        const shiftId = await openShiftIdTx(tx, actor.userId, Number(invPreview.branchId), invPreview.shiftType ?? "RETAIL");
         if (shiftId != null) {
           const [ownShift] = await tx.select({ userId: shifts.userId, branchId: shifts.branchId, status: shifts.status })
             .from(shifts).where(eq(shifts.id, shiftId)).limit(1);
@@ -398,9 +399,7 @@ export async function correctSaleInTx(
               }),
             });
           }
-        } else if (originalShift.status === "OPEN" && (
-          !currentOperationalAuthority || Number(originalShift.userId) === Number(actor.userId)
-        )) {
+        } else if (originalShift.status === "OPEN" && !currentOperationalAuthority) {
           channelShiftId = Number(originalShift.id);
         } else {
           const currentSameChannel = (
@@ -417,15 +416,15 @@ export async function correctSaleInTx(
               .for("update")
               .limit(1)
           )[0];
-          if (!currentSameChannel && originalShift.shiftType === "RECEPTION") {
+          if (!currentSameChannel) {
             if (currentOperationalAuthority) {
               throw new OperationalApprovalRequiredError({
                 result: "APPROVAL_REQUIRED",
-                reason: "التعديل يحتاج وردية مفتوحة للقناة تخص منفذ العملية",
+                reason: "التعديل يحتاج وردية مفتوحة من قناة الأصل تخص منفذ العملية",
                 approvalOperation: "salesControl.requestReissue",
               });
             }
-            throw new TRPCError({
+            if (originalShift.shiftType === "RECEPTION") throw new TRPCError({
               code: "PRECONDITION_FAILED",
               message: appErrorMessage({
                 what: "تعذّر تنفيذ تعديل الفاتورة",
@@ -730,6 +729,20 @@ export async function correctSaleInTx(
         round2(Decimal.max(0, carriedSum.minus(newTotal))), actor,
         input.clientRequestId ?? `correct-${input.originalInvoiceId}`);
       carriedSum = round2(carriedSum.minus(reversedExcess));
+    }
+    if (currentOperationalAuthority && targetCustomerId != null && !deliveryAmendment) {
+      const originalOutstanding = Decimal.max(0, money(inv.total).minus(originalPaid));
+      const replacementOutstanding = Decimal.max(0, newTotal.minus(carriedSum).minus(money(input.additionalPayment?.amount ?? "0")));
+      const creditCap = currentOperationalAuthority.caps.maxCreditSaleLimitIqd;
+      // Reducing an existing debt is allowed. New credit must fit today's cashier
+      // authority even though the carried receipt used the preCollected path.
+      if (replacementOutstanding.gt(originalOutstanding) && creditCap != null && replacementOutstanding.gt(money(creditCap))) {
+        throw new OperationalApprovalRequiredError({
+          result: "APPROVAL_REQUIRED",
+          reason: `ذمة الفاتورة بعد التعديل ${replacementOutstanding.toFixed(2)} د.ع تتجاوز سقف البيع الآجل ${money(creditCap).toFixed(2)} د.ع`,
+          approvalOperation: "salesControl.requestReissue",
+        });
+      }
     }
     if (settlement && settlement.reRecorded.length) {
       await postReRecordedPaymentsTx(tx, {

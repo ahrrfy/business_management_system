@@ -445,7 +445,9 @@ export async function requestSalesControl(
       (input.requestType === "SALES_REISSUE" || input.requestType === "SALES_EXCHANGE") &&
       !(input.payload as SalesReissueControlPayload).additionalPayment;
     if (correctionCandidate && (input.payload as SalesReissueControlPayload).overpayHandling === "CASH_REFUND" && actor.branchId != null) {
-      const shiftId = await openShiftIdTx(tx, actor.userId, Number(actor.branchId));
+      const [sourceChannel] = await tx.select({ shiftType: shifts.shiftType }).from(invoices)
+        .leftJoin(shifts, eq(shifts.id, invoices.shiftId)).where(eq(invoices.id, input.invoiceId)).limit(1);
+      const shiftId = await openShiftIdTx(tx, actor.userId, Number(actor.branchId), sourceChannel?.shiftType ?? "RETAIL");
       if (shiftId != null) await lockCashSourceForUpdate(tx, {
         branchId: Number(actor.branchId), cashBucket: "DRAWER", shiftId,
       });
