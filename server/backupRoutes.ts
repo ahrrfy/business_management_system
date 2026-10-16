@@ -1,7 +1,8 @@
 // مسار تنزيل النسخ الاحتياطية إلى جهاز المدير (GET stream). محمي: مدير فقط + مسار آمن داخل backups.
 //   GET /api/backups/download?name=<file.sql>
 import { Router, type Request, type Response } from "express";
-import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import compression from "compression";
 import path from "node:path";
 import { getSessionContext, getUserFromRequest } from "./auth/session";
 import {
@@ -23,26 +24,63 @@ export function backupRouter(): Router {
   // فيجعل RESTORE-UPLOAD يتجاوز حد restore ثم يصل هنا.
   const r = Router({ caseSensitive: true, strict: true });
 
+  r.use(compression({
+    level: 1,
+    // application/sql is omitted by the default compression MIME filter.
+    // Keep byte ranges uncompressed so offsets refer to the stored SQL file.
+    filter: (req, res) => !req.headers.range && res.getHeader("Content-Type") === "application/sql",
+  }));
+
   r.get("/download", async (req: Request, res: Response) => {
     const user = await getUserFromRequest(req).catch(() => null);
     if (!user || (user.role !== "admin" && !user.isOwner)) {
       return res.status(403).json({ error: "تنزيل النسخ متاح للمدير فقط." });
     }
     const name = String(req.query.name ?? "");
-    const abs = await resolveBackupFile(name);
-    if (!abs) {
-      return res.status(400).json({ error: "اسم نسخة غير صالح أو غير موجود." });
-    }
-    res.setHeader("Content-Type", "application/sql");
-    res.setHeader("Content-Disposition", `attachment; filename="${path.basename(name)}"`);
-    res.setHeader("Cache-Control", "no-store");
-    const stream = createReadStream(abs);
-    stream.on("error", (e) => {
-      logger.error({ err: e }, "backup download stream failed");
-      if (!res.headersSent) res.status(500).json({ error: "تعذّر قراءة النسخة." });
+    try {
+      const abs = await resolveBackupFile(name);
+      if (!abs)
+        return res
+          .status(400)
+          .json({ error: "اسم نسخة غير صالح أو غير موجود." });
+      const file = await stat(abs);
+      if (file.size === 0)
+        return res
+          .status(500)
+          .json({
+            error: "النسخة على الخادم فارغة؛ أنشئ نسخة جديدة قبل التنزيل.",
+          });
+      res.setHeader("Content-Type", "application/sql");
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("X-Backup-Size", String(file.size));
+      res.setHeader("X-Accel-Buffering", "no");
+      // Express supplies the exact Content-Length, byte ranges and validators.
+      // The browser can detect a cut-off response and resume its native download.
+      res.download(
+        abs,
+        path.basename(name),
+        { cacheControl: false },
+        (error) => {
+          if (!error) return;
+          logger.error(
+            { err: error, backup: name },
+            "backup download stream failed",
+          );
+          if (res.headersSent) res.destroy();
+          else {
+            res.removeHeader("Content-Disposition");
+            res
+              .status(500)
+              .json({ error: "تعذّر إرسال النسخة كاملة؛ أعد محاولة التنزيل." });
+          }
+        },
+      );
+    } catch (error) {
+      logger.error({ err: error, backup: name }, "backup download failed");
+      if (!res.headersSent)
+        res.status(500).json({ error: "تعذّر قراءة النسخة؛ أعد المحاولة." });
       else res.destroy();
-    });
-    stream.pipe(res);
+    }
   });
 
   r.post("/restore-upload", async (req: Request, res: Response) => {
