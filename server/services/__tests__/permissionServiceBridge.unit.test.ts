@@ -12,7 +12,9 @@ import {
   type ServiceOperationAuthority,
 } from "../authorization/operationAuthority";
 import { resolvePermissions } from "@shared/permissions";
-import type { OperationPolicy } from "@shared/operationPermissions";
+import { OPERATION_PERMISSIONS, operationDecision, operationPolicySchema, type OperationPolicy } from "@shared/operationPermissions";
+import { resolveCustomRole, type AuthUser } from "../../context";
+import * as roleService from "../roleService";
 
 const paths = ["delivery.cancelAssignment", "salesControl.approve", "salesControl.reject", "returns.create", "supplierPayments.cashSources"];
 
@@ -36,6 +38,41 @@ function fakeTx(results: unknown[][]): Tx {
 }
 
 describe("transactional operation service bridge", () => {
+  it("loads a reclassified stored role in the session and locked recheck without adding authority", async () => {
+    const protectedKey = "operation.storeAdmin.thematicCollections.update";
+    const cleanPolicy: OperationPolicy = {
+      ...policy("sales.reissue", "returns.create", "returns.executeSalesReturnCart"),
+      grants: { ...policy("sales.reissue", "returns.create", "returns.executeSalesReturnCart").grants, "operation.sales.cancel": false },
+      recordScopes: { "operation.sales.reissue": "OWN" },
+      dataVisibility: { purchaseCost: false, profitMargin: false },
+    };
+    const savedPolicy: OperationPolicy = { ...cleanPolicy, grants: { ...cleanPolicy.grants, [protectedKey]: true } };
+    const role = { key: "custom_reception", baseRole: "cashier", isActive: true,
+      permissions: resolvePermissions("cashier", { workorders: "FULL", products: "READ" }),
+      operationPolicy: savedPolicy };
+    const user = { ...account(), role: "cashier", branchId: 1, customRoleId: 3 };
+    const baseline = storedOperationUser(user, { ...role, operationPolicy: cleanPolicy });
+    const mockRole = vi.spyOn(roleService, "loadActiveCustomRole").mockResolvedValue(role as Awaited<ReturnType<typeof roleService.loadActiveCustomRole>>);
+    try {
+      const session = { ...user } as unknown as AuthUser;
+      await resolveCustomRole(session);
+      const locked = storedOperationUser(user, role);
+      for (const operation of OPERATION_PERMISSIONS) {
+        expect(operationDecision(session, operation.path)).toMatchObject(operationDecision(baseline, operation.path));
+        expect(operationDecision(locked, operation.path)).toEqual(operationDecision(baseline, operation.path));
+      }
+      expect(locked.roleOperationPolicy).toEqual(cleanPolicy);
+      expect(operationDecision(locked, "sales.reissue")).toMatchObject({ allowed: true, scope: "OWN" });
+      expect(operationDecision(locked, "returns.create").allowed).toBe(true);
+      expect(operationDecision(locked, "sales.cancel").allowed).toBe(false);
+      expect(operationDecision(locked, "storeAdmin.thematicCollections.update").allowed).toBe(false);
+      await expect(assertOperationAuthorityTx(fakeTx([[{ customRoleId: 3 }], [role], [user]]),
+        { userId: user.id, branchId: 1 }, "sales.reissue", false)).resolves.toBe(true);
+      expect(operationPolicySchema.safeParse(savedPolicy).success).toBe(false);
+      expect(savedPolicy.grants[protectedKey]).toBe(true);
+    } finally { mockRole.mockRestore(); }
+  });
+
   it("preserves individual old revocations after role conversion and replaces them on explicit user conversion", async () => {
     const role = { baseRole: "warehouse", isActive: true, permissions: resolvePermissions("warehouse", null), operationPolicy: policy("sales.create", "sales.list", "returns.create") };
     const unrestricted = { ...account(), customRoleId: 9 };

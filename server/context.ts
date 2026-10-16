@@ -16,7 +16,7 @@ import { getPlatformAdminFromRequest } from "./tenancy/platformAuth";
 import type { PlatformAdmin } from "./tenancy/controlSchema";
 import {
   buildOperationPolicyFromLegacy,
-  operationPolicySchema,
+  storedOperationPolicySchema,
   resolveOperationPolicy,
   summarizeOperationModules,
   type OperationPolicy,
@@ -138,7 +138,7 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
       null,
       null,
     );
-    const individualPolicy = user.operationPolicy == null ? null : operationPolicySchema.parse(user.operationPolicy);
+    const individualPolicy = user.operationPolicy == null ? null : storedOperationPolicySchema.parse(user.operationPolicy);
     user.courierShellOnly = baseRole === "courier" && individualPolicy == null;
     const inherited = hasRoleOperationPreset(baseRole)
       ? buildDefaultRoleOperationPolicy(
@@ -254,8 +254,8 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
     ? (hasRoleOperationPreset(role.key)
         ? buildDefaultRoleOperationPolicy(role.key, baseRole, customPermissions)
         : null)
-    : operationPolicySchema.parse(role.operationPolicy);
-  const individualPolicy = user.operationPolicy == null ? null : operationPolicySchema.parse(user.operationPolicy);
+    : storedOperationPolicySchema.parse(role.operationPolicy);
+  const individualPolicy = user.operationPolicy == null ? null : storedOperationPolicySchema.parse(user.operationPolicy);
   user.courierShellOnly =
     baseRole === "courier" &&
     role.operationPolicy == null &&
