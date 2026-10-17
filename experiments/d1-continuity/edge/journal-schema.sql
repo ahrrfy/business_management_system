@@ -1,0 +1,3 @@
+CREATE TABLE edge_marker(id TEXT PRIMARY KEY CHECK(id='edge-actual-20261017'), role TEXT NOT NULL CHECK(role='journal')) STRICT;
+INSERT INTO edge_marker VALUES ('edge-actual-20261017','journal');
+CREATE TABLE edge_journal(seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, hash TEXT NOT NULL, plan TEXT NOT NULL CHECK(json_valid(plan)), result TEXT NOT NULL CHECK(json_valid(result)), state TEXT NOT NULL CHECK(state IN('PREPARED','COMMITTED')), snapshot TEXT CHECK(snapshot IS NULL OR json_valid(snapshot)), signature TEXT, preparedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, committedAt TEXT) STRICT;
