@@ -1,0 +1,12 @@
+CREATE TABLE cashJournalIdentity(id TEXT PRIMARY KEY, role TEXT NOT NULL CHECK(role='journal'));
+INSERT INTO cashJournalIdentity VALUES('actual-cash-20261017','journal');
+CREATE TABLE cashJournalAssert(ok INTEGER NOT NULL CHECK(ok=1));
+CREATE TABLE cashJournalRequests(requestId TEXT PRIMARY KEY, envelopeHash TEXT NOT NULL, envelopeJson TEXT NOT NULL);
+CREATE TABLE cashJournalAttempts(planHash TEXT PRIMARY KEY, requestId TEXT NOT NULL REFERENCES cashJournalRequests(requestId), epoch INTEGER NOT NULL, planJson TEXT NOT NULL);
+CREATE TABLE cashJournalCommitted(requestId TEXT PRIMARY KEY REFERENCES cashJournalRequests(requestId), planHash TEXT NOT NULL UNIQUE REFERENCES cashJournalAttempts(planHash), epoch INTEGER NOT NULL UNIQUE, recordJson TEXT NOT NULL, signature TEXT NOT NULL);
+CREATE TRIGGER cashJournalRequests_no_update BEFORE UPDATE ON cashJournalRequests BEGIN SELECT RAISE(ABORT,'IMMUTABLE_JOURNAL'); END;
+CREATE TRIGGER cashJournalRequests_no_delete BEFORE DELETE ON cashJournalRequests BEGIN SELECT RAISE(ABORT,'IMMUTABLE_JOURNAL'); END;
+CREATE TRIGGER cashJournalAttempts_no_update BEFORE UPDATE ON cashJournalAttempts BEGIN SELECT RAISE(ABORT,'IMMUTABLE_JOURNAL'); END;
+CREATE TRIGGER cashJournalAttempts_no_delete BEFORE DELETE ON cashJournalAttempts BEGIN SELECT RAISE(ABORT,'IMMUTABLE_JOURNAL'); END;
+CREATE TRIGGER cashJournalCommitted_no_update BEFORE UPDATE ON cashJournalCommitted BEGIN SELECT RAISE(ABORT,'IMMUTABLE_JOURNAL'); END;
+CREATE TRIGGER cashJournalCommitted_no_delete BEFORE DELETE ON cashJournalCommitted BEGIN SELECT RAISE(ABORT,'IMMUTABLE_JOURNAL'); END;

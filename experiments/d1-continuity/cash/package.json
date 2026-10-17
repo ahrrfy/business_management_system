@@ -1,0 +1,8 @@
+{
+  "name": "actual-cash-d1-isolated",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "sql.js": "1.13.0"
+  }
+}
