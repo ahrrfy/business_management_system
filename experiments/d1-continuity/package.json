@@ -1,0 +1,1 @@
+{"name":"d1-continuity-isolated-lab","version":"0.0.0","private":true,"type":"module","scripts":{"test":"node run.mjs --test","test:d1":"node run.mjs --test"},"dependencies":{"decimal.js":"10.6.0","esbuild":"0.28.2","miniflare":"4.20260730.0"}}
