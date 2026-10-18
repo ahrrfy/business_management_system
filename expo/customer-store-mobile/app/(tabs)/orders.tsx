@@ -1,8 +1,9 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { router, useLocalSearchParams } from "expo-router";
-import { useEffect, useState } from "react";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  AppState,
   Alert,
   Linking,
   ScrollView,
@@ -153,6 +154,34 @@ export default function OrdersScreen() {
       })
       .catch(() => undefined);
   }, [requestedQuoteRequestNumber]);
+
+  // Only the visible, selected open order refreshes; background tabs send no requests.
+  useFocusEffect(useCallback(() => {
+    const selectedOrderNumber = tracking?.orderNumber;
+    if (!selectedOrderNumber || tracking.status === "DELIVERED" || tracking.status === "CANCELLED") return;
+    let active = true;
+    let running = false;
+    const refresh = async () => {
+      if (!active || running || AppState.currentState !== "active") return;
+      running = true;
+      try {
+        const session = await loadVerifiedCustomerSession();
+        const recent = recentOrders.find(candidate => candidate.orderNumber === selectedOrderNumber);
+        const guestTrackingToken = recent?.guestTrackingToken &&
+          (!recent.guestTrackingExpiresAt || Date.parse(recent.guestTrackingExpiresAt) > Date.now())
+          ? recent.guestTrackingToken : null;
+        const result = await trackStorefrontOrder({ orderNumber: selectedOrderNumber, customerSessionToken: session?.token, guestTrackingToken });
+        if (active && result) setTracking(current => current?.orderNumber === selectedOrderNumber ? result : current);
+      } catch {
+        // Keep the last successful result during a transient connection failure.
+      } finally {
+        running = false;
+      }
+    };
+    const timer = setInterval(() => void refresh(), 30_000);
+    const appState = AppState.addEventListener("change", state => { if (state === "active") void refresh(); });
+    return () => { active = false; clearInterval(timer); appState.remove(); };
+  }, [tracking?.orderNumber, tracking?.status, recentOrders]));
 
   const track = async () => {
     if (trackingLoading) return;
@@ -503,7 +532,7 @@ export default function OrdersScreen() {
                 </Text>
               </View>
               <View style={styles.status}>
-                <Text style={styles.statusText}>{ORDER_STATUS_LABELS[tracking.status] ?? "قيد المتابعة"}</Text>
+                <Text style={styles.statusText}>{tracking.deliveryProgress?.label ?? ORDER_STATUS_LABELS[tracking.status] ?? "قيد المتابعة"}</Text>
               </View>
             </View>
             <View style={styles.liveDivider} />

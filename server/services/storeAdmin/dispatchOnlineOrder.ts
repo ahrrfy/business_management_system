@@ -138,11 +138,22 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
     }
     if (cur.status === "CANCELLED") return { cancelled: true as const, invoiceId: cur.invoiceId != null ? Number(cur.invoiceId) : null };
     if ((cur.status === "SHIPPED" || cur.status === "DELIVERED") && cur.invoiceId) {
+      // Read a candidate only: locking here would invert courier's parcel -> order lock order.
+      // dispatchInvoiceInTx locks and revalidates the parcel before any reactivation.
+      const previousAssignment = (await tx.select().from(deliveryConsignments)
+        .where(eq(deliveryConsignments.invoiceId, Number(cur.invoiceId))).limit(1))[0];
+      const cancelledAssignment = cur.status === "SHIPPED" && previousAssignment?.status === "CANCELLED"
+        && previousAssignment.parcelStatus === "CANCELLED" && previousAssignment.moneyStatus === "CANCELLED"
+        && money(previousAssignment.collectedAmount).isZero() && previousAssignment.remittanceId == null;
+      // Old cancellation paths left the header SHIPPED. A guarded re-dispatch must reactivate
+      // its actual cancelled parcel instead of falsely reporting alreadyDispatched forever.
+      if (!cancelledAssignment) {
       const inv = (await tx.select({ n: invoices.invoiceNumber, t: invoices.total }).from(invoices).where(eq(invoices.id, Number(cur.invoiceId))).limit(1))[0];
       return {
         cancelled: false as const,
         result: { orderId: Number(cur.id), invoiceId: Number(cur.invoiceId), invoiceNumber: inv?.n ?? "", partyId: Number(cur.deliveryPartyId), total: String(inv?.t ?? "0"), alreadyDispatched: true },
       };
+      }
     }
     if (!cur.invoiceId && cur.status !== "CONFIRMED" && cur.status !== "PROCESSING") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "ثبّت الطلب أولاً قبل الإرسال" });
@@ -265,7 +276,11 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       notifyResult = sale;
     }
 
-        const historicalDispatches = (await tx.select({ count: sql<number>`count(*)` }).from(deliveryConsignments).where(and(eq(deliveryConsignments.sourceType, "ONLINE_ORDER"), eq(deliveryConsignments.sourceId, cur.id))))[0]?.count ?? 0;
+    const historicalDispatches = (await tx.select({ count: sql<number>`count(*)` }).from(deliveryConsignments).where(and(eq(deliveryConsignments.sourceType, "ONLINE_ORDER"), eq(deliveryConsignments.sourceId, cur.id))))[0]?.count ?? 0;
+    const cancellationVersion = (await tx.select({ id: sql<number>`COALESCE((SELECT MAX(de.id) FROM deliveryEvents de
+      INNER JOIN deliveryConsignments dc ON dc.id = de.consignmentId
+      WHERE dc.invoiceId = ${invoiceId} AND de.eventType = 'ASSIGNMENT_CANCELLED'), 0)` }).from(onlineOrders)
+      .where(eq(onlineOrders.id, cur.id)).limit(1))[0]?.id ?? 0;
     const dispatchRes = await dispatchInvoiceInTx(tx, {
       invoiceId,
       partyId: input.partyId,
@@ -281,7 +296,7 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       latitude: cur.latitude ?? null,
       longitude: cur.longitude ?? null,
       onlineOrderId: Number(cur.id),
-      clientRequestId: `online-parcel:${cur.id}-v${historicalDispatches + 1}`,
+      clientRequestId: `online-parcel:${cur.id}-v${historicalDispatches + 1}${cancellationVersion ? `-c${cancellationVersion}` : ""}`,
       externalTrackingRef: input.externalTrackingRef ?? null,
     }, actor);
     await tx.update(onlineOrders).set({

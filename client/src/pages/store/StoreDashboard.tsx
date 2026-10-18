@@ -7,7 +7,7 @@ import { trpc } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
-import { orderStatusLabel } from "@shared/onlineOrderStatus";
+import { OrderLifecycleStatus } from "@/components/store/OrderLifecycleStatus";
 
 export default function StoreDashboard() {
   const countsQ = trpc.storeAdmin.orders.counts.useQuery();
@@ -46,7 +46,7 @@ export default function StoreDashboard() {
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="tabular-nums font-bold" dir="ltr">{fmtInt(o.total)} د.ع</span>
-                  <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">{orderStatusLabel(o.status)}</span>
+                  <OrderLifecycleStatus status={o.status} lifecycle={o.lifecycle} showLatestMovement />
                 </div>
               </div>
             ))}

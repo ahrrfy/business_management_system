@@ -50,6 +50,8 @@ import {
 import { normalizeIraqPhoneE164 } from "../../lib/phone";
 import { orderStatusLabel } from "@shared/onlineOrderStatus";
 import { governorateById } from "@shared/governorates";
+import type { OnlineOrderLifecycle } from "@shared/onlineOrderLifecycle";
+import { currentOnlineOrderStatus, loadOnlineOrderLifecycles } from "./onlineOrderTracking";
 
 export type OnlineOrderStatus = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
 
@@ -72,6 +74,7 @@ export interface OnlineOrderRow {
   id: number;
   orderNumber: string;
   status: string;
+  lifecycle?: OnlineOrderLifecycle | null;
   customerName: string | null;
   customerPhone: string | null;
   governorate: string | null;
@@ -120,7 +123,7 @@ export async function listOnlineOrders(opts: {
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 300);
   const conds = [];
   if (opts.scopedBranchId != null) conds.push(eq(onlineOrders.branchId, opts.scopedBranchId));
-  if (opts.status) conds.push(eq(onlineOrders.status, opts.status as OnlineOrderStatus));
+  if (opts.status) conds.push(eq(currentOnlineOrderStatus, opts.status));
   if (opts.claimedByUserId != null) conds.push(eq(onlineOrders.claimedByUserId, opts.claimedByUserId));
   if (opts.unclaimedOnly) conds.push(sql`${onlineOrders.claimedByUserId} IS NULL`);
   if (opts.from) {
@@ -145,7 +148,7 @@ export async function listOnlineOrders(opts: {
     .select({
       id: onlineOrders.id,
       orderNumber: onlineOrders.orderNumber,
-      status: onlineOrders.status,
+      status: currentOnlineOrderStatus,
       customerName: customers.name,
       customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
       governorate: onlineOrders.governorate,
@@ -180,10 +183,12 @@ export async function listOnlineOrders(opts: {
     .orderBy(desc(onlineOrders.id))
     .limit(limit);
 
+  const lifecycles = await loadOnlineOrderLifecycles(db, rows.map((r) => Number(r.id)));
   return rows.map((r) => ({
     id: Number(r.id),
     orderNumber: r.orderNumber,
     status: r.status,
+    lifecycle: lifecycles.get(Number(r.id)) ?? null,
     customerName: r.customerName ?? null,
     customerPhone: r.customerPhone ?? null,
     governorate: r.governorate ?? null,
@@ -214,11 +219,15 @@ export async function listOnlineOrders(opts: {
 export async function onlineOrderStatusCounts(scopedBranchId: number | null): Promise<Record<string, number>> {
   const db = getDb();
   if (!db) return {};
-  const rows = await db
-    .select({ status: onlineOrders.status, n: sql<number>`COUNT(*)` })
+  const currentOrders = db
+    .select({ status: currentOnlineOrderStatus.as("currentStatus") })
     .from(onlineOrders)
     .where(scopedBranchId != null ? eq(onlineOrders.branchId, scopedBranchId) : undefined)
-    .groupBy(onlineOrders.status);
+    .as("currentOrders");
+  const rows = await db
+    .select({ status: currentOrders.status, n: sql<number>`COUNT(*)` })
+    .from(currentOrders)
+    .groupBy(currentOrders.status);
   const out: Record<string, number> = {};
   for (const r of rows) out[r.status] = Number(r.n);
   return out;
@@ -260,7 +269,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
       .select({
         id: onlineOrders.id,
         orderNumber: onlineOrders.orderNumber,
-        status: onlineOrders.status,
+        status: currentOnlineOrderStatus,
         branchId: onlineOrders.branchId,
         customerName: customers.name,
         customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
@@ -302,6 +311,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
   if (scopedBranchId != null && Number(order.branchId) !== scopedBranchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "الطلب يخصّ فرعاً آخر" });
   }
+  const lifecycle = (await loadOnlineOrderLifecycles(db, [id])).get(id) ?? null;
   const items = await db
     .select({
       id: onlineOrderItems.id,
@@ -330,6 +340,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
     id: Number(order.id),
     orderNumber: order.orderNumber,
     status: order.status,
+    lifecycle,
     branchId: Number(order.branchId),
     customerName: order.customerName ?? null,
     customerPhone: order.customerPhone ?? null,

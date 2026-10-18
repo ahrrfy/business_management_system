@@ -43,6 +43,7 @@ const EditOnlineOrderDialog = lazy(() =>
 import { OrderSlaBadge } from "@/components/store/OrderSlaBadge";
 import { OrderContactCell, type ContactStatus } from "@/components/store/OrderContactCell";
 import { OrderQuickViewDrawer } from "@/components/store/OrderQuickViewDrawer";
+import { OrderLifecycleStatus } from "@/components/store/OrderLifecycleStatus";
 import { OrderLeaderboardModal } from "@/components/store/OrderLeaderboardModal";
 import {
   AUDIO_FEEDBACK_CHANGE_EVENT,
@@ -56,12 +57,12 @@ import { D, fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { buildOnlineOrderFollowupMessage } from "@/lib/whatsapp";
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { lifecycleActionAllowed } from "@/lib/lifecycleActionPermission";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   ONLINE_ORDER_STATUSES,
   ORDER_NEXT_STEP,
-  orderStatusChipClass,
   orderStatusLabel,
   orderStatusLabelForCustomer,
   type OnlineOrderStatus,
@@ -161,8 +162,7 @@ export default function OrderFulfillment() {
   useRealtimeEvent<StorefrontOrderPlacedPayload>(
     REALTIME_EVENT_TYPES.STOREFRONT_ORDER_PLACED,
     (event) => {
-      void utils.storeAdmin.orders.list.invalidate();
-      void utils.storeAdmin.orders.counts.invalidate();
+      void utils.storeAdmin.orders.invalidate();
       playAudioFeedback("notification");
       const p = event.payload as StorefrontOrderPlacedPayload;
       notify.info(`طلب متجر جديد: ${p?.orderNumber ?? ""} بمبلغ ${money(p?.totalAmount)} د.ع`);
@@ -174,6 +174,8 @@ export default function OrderFulfillment() {
   const canDispatch =
     !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL", ["manager"]);
+  const canReadDeliveryTimeline = lifecycleActionAllowed(me.data, "delivery.consignmentTimeline", !!me.data?.role
+    && hasModuleAccess(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "READ"));
   const canCheckDuplicates = !!me.data?.role && canCheckReceptionDuplicates(
     me.data.role,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
@@ -232,8 +234,7 @@ export default function OrderFulfillment() {
     onSuccess: (res) => {
       notify.ok(`تم تحديث الطلب إلى «${orderStatusLabel(res.to)}»`);
       setCancelTarget(null);
-      void utils.storeAdmin.orders.list.invalidate();
-      void utils.storeAdmin.orders.counts.invalidate();
+      void utils.storeAdmin.orders.invalidate();
     },
     onError: (e) => notify.err(e),
   });
@@ -241,41 +242,35 @@ export default function OrderFulfillment() {
     onSuccess: (res) => {
       notify.ok(`تم إنشاء الفاتورة ${res.invoiceNumber} وإسناد الطلب للمندوب`);
       setDispatchTarget(null);
-      void utils.storeAdmin.orders.list.invalidate();
-      void utils.storeAdmin.orders.counts.invalidate();
+      void utils.storeAdmin.orders.invalidate();
     },
     onError: (e) => notify.err(e),
   });
   const claimM = trpc.storeAdmin.orders.claim.useMutation({
     onSuccess: () => {
       notify.ok("تم استلام الطلب وتثبيت اسمك مسؤولاً عن تجهيزه");
-      void utils.storeAdmin.orders.list.invalidate();
-      void utils.storeAdmin.orders.counts.invalidate();
-      void utils.storeAdmin.orders.leaderboard.invalidate();
+      void utils.storeAdmin.orders.invalidate();
     },
     onError: (e) => notify.err(e),
   });
   const updateContactM = trpc.storeAdmin.orders.updateContact.useMutation({
     onSuccess: () => {
       notify.ok("تم تحديث حالة التواصل مع العميل");
-      void utils.storeAdmin.orders.list.invalidate();
+      void utils.storeAdmin.orders.invalidate();
     },
     onError: (e) => notify.err(e),
   });
   const markPreparedM = trpc.storeAdmin.orders.markPrepared.useMutation({
     onSuccess: () => {
       notify.ok("تم إتمام تجهيز الطلب واحتساب نقاط وسرعة الإنجاز");
-      void utils.storeAdmin.orders.list.invalidate();
-      void utils.storeAdmin.orders.counts.invalidate();
-      void utils.storeAdmin.orders.leaderboard.invalidate();
+      void utils.storeAdmin.orders.invalidate();
     },
     onError: (e) => notify.err(e),
   });
   const reactivateAndConfirmM = trpc.storeAdmin.orders.reactivateAndConfirm.useMutation({
     onSuccess: (res) => {
       notify.ok(`تم فحص التوفر وتأكيد الطلب #${res.orderNumber} بنجاح`);
-      void utils.storeAdmin.orders.list.invalidate();
-      void utils.storeAdmin.orders.counts.invalidate();
+      void utils.storeAdmin.orders.invalidate();
     },
     onError: (e) => notify.err(e),
   });
@@ -519,7 +514,7 @@ export default function OrderFulfillment() {
     {
       id: "status",
       header: "الحالة",
-      accessorFn: (o) => orderStatusLabel(normalizeOrderStatus(o.status)),
+      accessorFn: (o) => o.lifecycle?.label ?? orderStatusLabel(normalizeOrderStatus(o.status)),
       meta: { kind: "status", wrap: true },
       cell: ({ row }) => {
         const o = row.original;
@@ -534,7 +529,7 @@ export default function OrderFulfillment() {
                 حجز منتهي تلقائياً
               </span>
             ) : (
-              <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${orderStatusChipClass(st)}`}>{orderStatusLabel(st)}</span>
+              <OrderLifecycleStatus status={st} lifecycle={o.lifecycle} showLatestMovement />
             )}
             {isAutoExpired ? (
               <Button
@@ -882,7 +877,7 @@ export default function OrderFulfillment() {
           itemCount: String(o.itemCount),
           total: `${money(o.total)} د.ع`,
           // سبب الإلغاء يظهر تحت شارة الحالة على الشاشة — يبقى ملازماً لها على الورق.
-          status: `${orderStatusLabel(st)}${st === "CANCELLED" && o.cancelReason ? ` — ${o.cancelReason}` : ""}`,
+          status: `${[o.lifecycle?.label ?? orderStatusLabel(st), o.lifecycle?.collectionLabel, o.lifecycle?.remittanceLabel].filter(Boolean).join(" · ")}${st === "CANCELLED" && o.cancelReason ? ` — ${o.cancelReason}` : ""}`,
         };
       }),
       emptyText: "لا طلبات مطابقة.",
@@ -1002,7 +997,7 @@ export default function OrderFulfillment() {
             { key: "total", header: "الإجمالي", money: true },
             { key: "claimedByName", header: "المستلم" },
             { key: "preparedByName", header: "المجهّز" },
-            { key: "status", header: "الحالة", map: (r) => orderStatusLabel(r.status) },
+            { key: "status", header: "الحالة", map: (r) => [r.lifecycle?.label ?? orderStatusLabel(r.status), r.lifecycle?.collectionLabel, r.lifecycle?.remittanceLabel].filter(Boolean).join(" · ") },
           ],
         }}
         filters={
@@ -1120,6 +1115,7 @@ export default function OrderFulfillment() {
         onPrintThermal={(id) => void printThermal(id)}
         onPrintPreparationA4={(id) => void printPreparationA4(id)}
         canDispatch={canDispatch}
+        canReadDeliveryTimeline={canReadDeliveryTimeline}
       />
 
       <OrderLeaderboardModal

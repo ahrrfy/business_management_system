@@ -14,6 +14,7 @@
 import { and, desc, eq, gte, lt, ne, sql } from "drizzle-orm";
 import { onlineOrderItems, onlineOrders, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { currentOnlineOrderStatus } from "./onlineOrderTracking";
 import { money, toDbMoney } from "../money";
 import { getStoreConversionFunnel, getStoreRecommendationClickSummary, type StoreConversionFunnel, type RecommendationClickSummary } from "./storeConversionMetricsService";
 
@@ -97,10 +98,10 @@ export async function getStoreAnalytics(input: {
   const [k] = await db
     .select({
       totalOrders: sql<number>`COUNT(*)`,
-      cancelledOrders: sql<number>`COALESCE(SUM(${onlineOrders.status} = 'CANCELLED'), 0)`,
-      deliveredOrders: sql<number>`COALESCE(SUM(${onlineOrders.status} = 'DELIVERED'), 0)`,
-      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${onlineOrders.status} <> 'CANCELLED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
-      deliveredRevenue: sql<string>`COALESCE(SUM(CASE WHEN ${onlineOrders.status} = 'DELIVERED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
+      cancelledOrders: sql<number>`COALESCE(SUM(${currentOnlineOrderStatus} = 'CANCELLED'), 0)`,
+      deliveredOrders: sql<number>`COALESCE(SUM(${currentOnlineOrderStatus} = 'DELIVERED'), 0)`,
+      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${currentOnlineOrderStatus} <> 'CANCELLED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
+      deliveredRevenue: sql<string>`COALESCE(SUM(CASE WHEN ${currentOnlineOrderStatus} = 'DELIVERED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
     })
     .from(onlineOrders)
     .where(where);
@@ -114,11 +115,10 @@ export async function getStoreAnalytics(input: {
   const aov = activeOrders > 0 ? toDbMoney(money(revenue).dividedBy(activeOrders)) : "0.00";
 
   // 2) توزيع الحالات
-  const stRows = await db
-    .select({ status: onlineOrders.status, n: sql<number>`COUNT(*)` })
-    .from(onlineOrders)
-    .where(where)
-    .groupBy(onlineOrders.status);
+  const currentOrders = db.select({ status: currentOnlineOrderStatus.as("currentStatus") })
+    .from(onlineOrders).where(where).as("currentOrders");
+  const stRows = await db.select({ status: currentOrders.status, n: sql<number>`COUNT(*)` })
+    .from(currentOrders).groupBy(currentOrders.status);
   const statusBreakdown: Record<string, number> = {};
   for (const r of stRows) statusBreakdown[r.status] = Number(r.n);
 
@@ -128,7 +128,7 @@ export async function getStoreAnalytics(input: {
     .select({
       ymd: sql<string>`DATE(${onlineOrders.orderDate} + INTERVAL 3 HOUR)`,
       orders: sql<number>`COUNT(*)`,
-      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${onlineOrders.status} <> 'CANCELLED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
+      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${currentOnlineOrderStatus} <> 'CANCELLED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
     })
     .from(onlineOrders)
     .where(where)
@@ -154,7 +154,7 @@ export async function getStoreAnalytics(input: {
     .innerJoin(onlineOrders, eq(onlineOrderItems.onlineOrderId, onlineOrders.id))
     .innerJoin(productVariants, eq(onlineOrderItems.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
-    .where(and(where, ne(onlineOrders.status, "CANCELLED")))
+    .where(and(where, ne(currentOnlineOrderStatus, "CANCELLED")))
     .groupBy(products.id)
     .orderBy(desc(sql`SUM(${onlineOrderItems.total})`))
     .limit(8);
@@ -171,7 +171,7 @@ export async function getStoreAnalytics(input: {
     .select({
       governorate: sql<string>`COALESCE(NULLIF(${onlineOrders.governorate}, ''), 'غير محدَّد')`,
       orders: sql<number>`COUNT(*)`,
-      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${onlineOrders.status} <> 'CANCELLED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
+      revenue: sql<string>`COALESCE(SUM(CASE WHEN ${currentOnlineOrderStatus} <> 'CANCELLED' THEN ${onlineOrders.subtotal} ELSE 0 END), 0)`,
     })
     .from(onlineOrders)
     .where(where)

@@ -38,6 +38,22 @@ beforeEach(() => {
 afterEach(() => { stop(); subscriptions.forEach((off) => off()); client.clear(); bus.clear(); vi.useRealTimers(); });
 
 describe("event-driven financial queries", () => {
+  it.each(["local", "remote"])("refreshes every mounted order view after a %s delivery change without fetching unrelated store data", async source => {
+    const orders = [
+      ...["list", "counts", "detail", "myOrders"].map(procedure => read("storeAdmin", undefined, true, ["orders", procedure])),
+      read("storeAdmin", undefined, true, ["analytics", "summary"]),
+    ];
+    const inactive = read("storeAdmin", undefined, false, ["orders", "leaderboard"]);
+    const otherBranch = read("storeAdmin", 3, true, ["orders", "list"]);
+    const banners = read("storeAdmin", undefined, true, ["banners", "list"]);
+    if (source === "local") await invalidateFinancialQueries(client, 2);
+    else { emit([2]); await vi.advanceTimersByTimeAsync(750); }
+    for (const query of orders) expect(query.queryFn).toHaveBeenCalledOnce();
+    expect(client.getQueryState(inactive.queryKey)?.isInvalidated).toBe(true);
+    for (const query of [inactive, otherBranch, banners]) expect(query.queryFn).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60_000);
+    for (const query of orders) expect(query.queryFn).toHaveBeenCalledOnce();
+  });
   it.each(["local", "remote"])("refreshes return effects including branch stock and cashier quantities after a %s commit", async source => {
     const dependent = [
       read("sales", 2, true, "get"), read("returns", 2), read("customers", 2),

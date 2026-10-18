@@ -185,7 +185,9 @@ export async function listMyDeliveries(
       .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id));
   const legacyOnlineScope = and(
     eq(onlineOrders.deliveryPartyId, partyId),
-    sql`NOT EXISTS (SELECT 1 FROM deliveryConsignments dc WHERE dc.sourceType = 'ONLINE_ORDER' AND dc.sourceId = ${onlineOrders.id})`,
+    sql`NOT EXISTS (SELECT 1 FROM deliveryConsignments dc WHERE dc.branchId = ${onlineOrders.branchId}
+      AND (dc.invoiceId = ${onlineOrders.invoiceId}
+        OR (${onlineOrders.invoiceId} IS NULL AND dc.sourceType = 'ONLINE_ORDER' AND dc.sourceId = ${onlineOrders.id})))`,
   );
   // لا نقصّ العمل المفتوح أبداً؛ التاريخ وحده محدود حتى لا يكبر حساب الشركة
   // بلا سقف. الطلبات الجديدة تسلك deliveryConsignments، وهذه قراءة توافقية للإرث.
@@ -1180,7 +1182,7 @@ export async function confirmConsignmentDelivery(
         })
         .where(eq(workOrders.id, Number(cn.workOrderId)));
     }
-    if (cn.sourceType === "ONLINE_ORDER") {
+    if (cn.sourceType === "ONLINE_ORDER" || cn.sourceType === "INVOICE") {
       const prevOnline = (
         await tx
           .select({
@@ -1191,14 +1193,20 @@ export async function confirmConsignmentDelivery(
             status: onlineOrders.status,
           })
           .from(onlineOrders)
-          .where(eq(onlineOrders.id, Number(cn.sourceId)))
+          .where(and(
+            eq(onlineOrders.branchId, Number(cn.branchId)),
+            cn.sourceType === "ONLINE_ORDER"
+              ? eq(onlineOrders.id, Number(cn.sourceId))
+              : eq(onlineOrders.invoiceId, Number(cn.invoiceId)),
+            inArray(onlineOrders.status, ["SHIPPED", "DELIVERED"]),
+          ))
           .for("update")
           .limit(1)
       )[0];
-      await tx
-        .update(onlineOrders)
-        .set({ status: "DELIVERED" })
-        .where(eq(onlineOrders.id, Number(cn.sourceId)));
+      if (prevOnline) {
+        await tx.update(onlineOrders).set({ status: "DELIVERED" })
+          .where(eq(onlineOrders.id, Number(prevOnline.id)));
+      }
       if (prevOnline && prevOnline.status !== "DELIVERED") {
         if (prevOnline.customerId != null) {
           await awardDeliveredOnlineOrderPoints(tx, {
