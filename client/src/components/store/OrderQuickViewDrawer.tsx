@@ -1,3 +1,4 @@
+import { lazy, Suspense, useEffect, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
@@ -16,8 +17,11 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
-import { orderStatusLabel, orderStatusChipClass, type OnlineOrderStatus } from "@shared/onlineOrderStatus";
 import { ReceptionDuplicateAlert } from "@/components/reception/ReceptionDuplicateAlert";
+import { OrderLifecycleStatus } from "@/components/store/OrderLifecycleStatus";
+
+const ConsignmentTimelineDrawer = lazy(() => import("@/components/delivery/ConsignmentTimelineDrawer")
+  .then(module => ({ default: module.ConsignmentTimelineDrawer })));
 
 interface OrderQuickViewDrawerProps {
   orderId: number | null;
@@ -35,6 +39,7 @@ interface OrderQuickViewDrawerProps {
     deliveryWaivedAmount?: string;
   }) => void;
   canDispatch?: boolean;
+  canReadDeliveryTimeline?: boolean;
 }
 
 function money(v: string | number | null | undefined): string {
@@ -50,7 +55,10 @@ export function OrderQuickViewDrawer({
   onPrintPreparationA4,
   onDispatch,
   canDispatch,
+  canReadDeliveryTimeline = false,
 }: OrderQuickViewDrawerProps) {
+  const [timelineId, setTimelineId] = useState<number | null>(null);
+  useEffect(() => { setTimelineId(null); }, [orderId, open]);
   const detailQ = trpc.storeAdmin.orders.detail.useQuery(
     { id: orderId ?? 0 },
     { enabled: !!orderId && open }
@@ -59,6 +67,7 @@ export function OrderQuickViewDrawer({
   const order = detailQ.data;
 
   return (
+    <>
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="left" className="w-full sm:max-w-xl overflow-y-auto p-0 flex flex-col">
         {/* رأس المعاينة */}
@@ -71,13 +80,7 @@ export function OrderQuickViewDrawer({
               </SheetTitle>
             </div>
             {order && (
-              <span
-                className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${orderStatusChipClass(
-                  order.status as OnlineOrderStatus
-                )}`}
-              >
-                {orderStatusLabel(order.status as OnlineOrderStatus)}
-              </span>
+              <OrderLifecycleStatus status={order.status} lifecycle={order.lifecycle} showLatestMovement />
             )}
           </div>
         </SheetHeader>
@@ -96,6 +99,19 @@ export function OrderQuickViewDrawer({
             </div>
           ) : order ? (
             <>
+              {order.lifecycle?.consignmentId && (
+                <div className="rounded-lg border bg-muted/30 p-3 text-xs space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span>جهة التوصيل: <b>{order.lifecycle.deliveryPartyName ?? "—"}</b></span>
+                    <span dir="ltr" className="font-mono">{order.lifecycle.consignmentNumber}</span>
+                  </div>
+                  {canReadDeliveryTimeline && (
+                    <Button variant="outline" size="sm" className="w-full" onClick={() => setTimelineId(order.lifecycle!.consignmentId)}>
+                      <Truck aria-hidden className="size-3.5" /> سجل التوصيل والتحصيل والتوريد
+                    </Button>
+                  )}
+                </div>
+              )}
               <ReceptionDuplicateAlert input={{
                 branchId: Number(order.branchId),
                 reference: { kind: "ONLINE", id: order.id },
@@ -314,5 +330,11 @@ export function OrderQuickViewDrawer({
         </div>
       </SheetContent>
     </Sheet>
+    {open && canReadDeliveryTimeline && timelineId != null && order?.id === orderId && order.lifecycle?.consignmentId === timelineId && (
+      <Suspense fallback={null}>
+        <ConsignmentTimelineDrawer consignmentId={timelineId} onClose={() => setTimelineId(null)} />
+      </Suspense>
+    )}
+    </>
   );
 }

@@ -15,6 +15,7 @@ import { deliveryConsignments, deliveryLedgerEntries, deliveryParties, deliveryR
 import { getDb } from "../../db";
 import { localDayStart, localNextDayStart } from "../dateRange";
 import { money, round2, toDbMoney } from "../money";
+import { latestOnlineOrderConsignmentId } from "../storeAdmin/onlineOrderTracking";
 
 export interface CourierPerfRow {
   partyId: number;
@@ -176,7 +177,7 @@ export async function getCourierPerformance(
 
   // تجميع طلبات المتجر المُسنَدة لجهة توصيل ضمن الفترة (بتاريخ الطلب)، مع قيمة/تحصيل الفاتورة.
   const conds = [isNotNull(onlineOrders.deliveryPartyId)];
-  conds.push(sql`NOT EXISTS (SELECT 1 FROM deliveryConsignments dc WHERE dc.sourceType = 'ONLINE_ORDER' AND dc.sourceId = ${onlineOrders.id})`);
+  conds.push(sql`${latestOnlineOrderConsignmentId} IS NULL`);
   if (input.from) conds.push(sql`${onlineOrders.orderDate} >= ${localDayStart(input.from)}`);
   if (input.to) conds.push(sql`${onlineOrders.orderDate} < ${localNextDayStart(input.to)}`);
   if (input.branchId) conds.push(eq(onlineOrders.branchId, input.branchId));

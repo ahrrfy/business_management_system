@@ -99,6 +99,7 @@ import { StorefrontCustomizerStudio } from "@/components/storefront/StorefrontCu
 import { StorefrontHeuristicsBadges } from "@/components/storefront/StorefrontHeuristicsBadges";
 import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
 import { useStorefrontCoupon } from "@/hooks/useStorefrontCoupon";
+import { useOrderTrackingRefresh } from "@/hooks/useOrderTrackingRefresh";
 
 const STORE_NAME = "المكتبة العربية";
 const STORE_TAGLINE = "قرطاسية • طباعة • هدايا — يصلك أينما كنت في العراق";
@@ -1240,6 +1241,8 @@ function StorefrontContent() {
   const [trustedTrackingOrders, setTrustedTrackingOrders] = useState<GuestTrackingOrder[]>(loadGuestTrackingOrders);
   const [trackToken, setTrackToken] = useState("");
   const [trackResult, setTrackResult] = useState<TrackData | null>(null);
+  const [trackResultToken, setTrackResultToken] = useState<string | null>(null);
+  const trackRequestVersion = useRef(0);
   const [trackState, setTrackState] = useState<"idle" | "loading" | "notfound" | "error">("idle");
   const [trackError, setTrackError] = useState<string | null>(null);
   const labelParams = useMemo(() => {
@@ -1250,17 +1253,23 @@ function StorefrontContent() {
     return orderNumber && token ? { orderNumber, token } : null;
   }, []);
   const openTrack = (orderNumber = "") => {
+    trackRequestVersion.current++;
     const saved = loadGuestTrackingOrders();
     setTrustedTrackingOrders(saved);
     setTrackToken(saved.find((order) => order.orderNumber === orderNumber)?.trackingToken ?? "");
     setTrackResult(null);
+    setTrackResultToken(null);
     setTrackState("idle");
     setTrackError(null);
     setPanel("track");
   };
   const doTrack = async (savedToken?: string) => {
+    const requestVersion = ++trackRequestVersion.current;
     const trackingToken = (savedToken ?? trackToken).trim();
     setTrackToken(trackingToken);
+    setTrackResult(null);
+    setTrackResultToken(null);
+    setTrackState("idle");
     if (trackingToken.length < 60 || trackingToken.length > 160) {
       setTrackError("ألصق رمز التتبّع الكامل الصادر بعد إنشاء الطلب.");
       window.requestAnimationFrame(() => document.getElementById("storefront-track-token")?.focus());
@@ -1268,18 +1277,45 @@ function StorefrontContent() {
     }
     setTrackError(null);
     setTrackState("loading");
-    setTrackResult(null);
     try {
       const result = await trackOrderByToken.mutateAsync({ trackingToken });
+      if (requestVersion !== trackRequestVersion.current) return;
       setTrackResult(result);
+      setTrackResultToken(trackingToken);
       setTrackState("idle");
     } catch (error) {
+      if (requestVersion !== trackRequestVersion.current) return;
       const code = typeof error === "object" && error && "data" in error
         ? (error as { data?: { code?: string } }).data?.code
         : undefined;
       setTrackState(code === "NOT_FOUND" ? "notfound" : "error");
     }
   };
+  useOrderTrackingRefresh({
+    enabled: panel === "track" && trackToken.trim() === trackResultToken,
+    trackingToken: trackResultToken,
+    result: trackResult,
+    fetchLatest: async trackingToken => {
+      const requestVersion = trackRequestVersion.current;
+      try {
+        const result = await trackOrderByToken.mutateAsync({ trackingToken });
+        if (!result) throw Object.assign(new Error("Tracking unavailable"), { code: "NOT_FOUND" });
+        if (requestVersion !== trackRequestVersion.current) throw new Error("Tracking request superseded");
+        return result;
+      } catch (error) {
+        if (requestVersion !== trackRequestVersion.current) throw new Error("Tracking request superseded");
+        throw error;
+      }
+    },
+    onResult: setTrackResult,
+    onUnavailable: () => {
+      trackRequestVersion.current++;
+      setTrackResult(null);
+      setTrackResultToken(null);
+      setTrackState("idle");
+      setTrackError("لم يعد رمز التتبع متاحا. أعد إدخال الرمز الصحيح أو تواصل مع المتجر للحصول على رابط جديد.");
+    },
+  });
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(rawSearch.trim()), 220);
@@ -3265,7 +3301,7 @@ function StorefrontContent() {
                 <div className="flex items-center justify-between">
                   <span className="font-extrabold tracking-wider text-slate-900 dark:text-white" dir="ltr">{trackResult.orderNumber}</span>
                   <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${orderStatusChipClass(trackResult.status)}`}>
-                    {orderStatusLabelForCustomer(trackResult.status)}
+                    {trackResult.deliveryProgress?.label ?? orderStatusLabelForCustomer(trackResult.status)}
                   </span>
                 </div>
                 {trackResult.deliveryHandshakeOtp && (

@@ -10,6 +10,7 @@ import { customers, onlineOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
 import { money, toDbMoney } from "../money";
+import { currentOnlineOrderStatus } from "./onlineOrderTracking";
 
 /** Date → YYYY-MM-DD بحبيبة يوم بغداد (UTC+3). */
 function ymdBaghdad(v: unknown): string | null {
@@ -76,7 +77,7 @@ export async function getStoreCustomers(input: {
     ? sql`(${customers.name} LIKE ${like} ESCAPE '!' OR ${customers.searchNorm} LIKE ${like} ESCAPE '!' OR ${customers.phone} LIKE ${like} ESCAPE '!')`
     : undefined;
 
-  const spendExpr = sql`COALESCE(SUM(CASE WHEN ${onlineOrders.status} <> 'CANCELLED' THEN ${onlineOrders.total} ELSE 0 END), 0)`;
+  const spendExpr = sql`COALESCE(SUM(CASE WHEN ${currentOnlineOrderStatus} <> 'CANCELLED' THEN ${onlineOrders.total} ELSE 0 END), 0)`;
   // كاسر تعادلٍ ثابت (customers.id) على كل فرع فرزٍ ⇒ ترتيبٌ كليّ حتميّ فيثبُت الترقيم (limit/offset)
   // ولا يتكرّر/يُتخطّى عميلٌ عند تساوي قيم الفرز (شائع: إنفاق 0 لمن طلباته كلّها ملغاة — مراجعة ١٣/٧).
   const orderByExpr =
@@ -94,7 +95,7 @@ export async function getStoreCustomers(input: {
       name: customers.name,
       phone: customers.phone,
       orders: sql<number>`COUNT(${onlineOrders.id})`,
-      deliveredOrders: sql<number>`COALESCE(SUM(${onlineOrders.status} = 'DELIVERED'), 0)`,
+      deliveredOrders: sql<number>`COALESCE(SUM(${currentOnlineOrderStatus} = 'DELIVERED'), 0)`,
       spend: sql<string>`${spendExpr}`,
       lastOrderDate: sql<string>`MAX(${onlineOrders.orderDate})`,
       lastGovernorate: govSub,
