@@ -6,7 +6,7 @@
  * الطلبات المتزامنة لنفس المرشحات في loader واحد، بينما يبقى إنشاء الطلب هو حارس المخزون النهائي.
  */
 
-import { scoreStorefrontSearchRelevance, normalizeArabicSearch } from "../../shared/storefrontSearchNormalize";
+import { matchStorefrontSearch, normalizeArabicSearch } from "../../shared/storefrontSearchNormalize";
 
 export const STOREFRONT_DERIVED_RANKING_LIMITS = {
   ttlMs: 5_000,
@@ -234,7 +234,7 @@ export function chooseCandidateProductIds(
         storeTitle: row.storeTitle ?? null,
         brand: row.brand ?? null,
       };
-      const relevanceScore = searchTerm ? scoreStorefrontSearchRelevance(p, searchTerm) : 0;
+      const relevanceScore = searchTerm ? (matchStorefrontSearch(p, searchTerm)?.score ?? 0) : 0;
       productsById.set(id, {
         id,
         inStock,
@@ -252,15 +252,15 @@ export function chooseCandidateProductIds(
   return Array.from(productsById.values())
     .filter((product) => availabilityFilter === "ALL" || product.inStock)
     .sort((a, b) => {
-      // 1. المتوفر أولاً دائماً
-      const stockDiff = Number(b.inStock) - Number(a.inStock);
-      if (stockDiff !== 0) return stockDiff;
-
+      // Relevance precedes availability so a distant available item cannot bury an exact hit.
       // 2. إذا كان بحثاً: مطابقة الصلة بالبحث أولاً
       if (isSearch) {
         const scoreDiff = b.relevanceScore - a.relevanceScore;
         if (scoreDiff !== 0) return scoreDiff;
       }
+
+      const stockDiff = Number(b.inStock) - Number(a.inStock);
+      if (stockDiff !== 0) return stockDiff;
 
       // 3. المنتجات المميزة (featured) أولاً
       const featDiff = Number(b.featured) - Number(a.featured);

@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { storefrontSearchSuggestions } from "../storefrontSearchService";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { storefrontCatalog } from "../storefrontService";
@@ -12,13 +14,14 @@ function db() {
 
 beforeEach(async () => {
   await truncateTables([
-    "invoiceItems", "onlineOrderItems", "onlineOrders", "customers", "reservationStock",
+    "storeSettings", "invoiceItems", "onlineOrderItems", "onlineOrders", "customers", "reservationStock",
     "bundleComponents", "branchStock", "productImages", "productPrices", "productUnits",
     "productVariants", "products", "categories", "branches",
   ]);
 
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "Main Branch", code: "MAIN", type: "MAIN" });
+  await d.insert(s.storeSettings).values({ id: 1, fulfillmentBranchId: 1 });
   await d.insert(s.categories).values([
     { id: 1, name: "كتب مدرسية" },
     { id: 2, name: "قرطاسية ودفاتر" },
@@ -163,5 +166,96 @@ describe("Storefront live MySQL catalog search & normalization (R1, R2, R3, R4)"
 
     const r2 = await storefrontCatalog({ branchId: 1, search: "!@#$", availability: "ALL" });
     expect(r2.items).toHaveLength(0);
+  });
+});
+
+
+describe("full catalog public suggestions and recovery", () => {
+  async function product(id: number, name: string, options: { stock?: number; show?: boolean; active?: boolean; price?: string; categoryId?: number; brand?: string } = {}) {
+    const d = db();
+    await d.insert(s.products).values({ id, name, categoryId: options.categoryId ?? 1, showInStore: options.show ?? true, isActive: options.active ?? true, brand: options.brand ?? "دار المنهج" });
+    await d.insert(s.productVariants).values({ id, productId: id, sku: `SEARCH-${id}`, costPrice: "1.00" });
+    await d.insert(s.productUnits).values({ id, variantId: id, unitName: "قطعة", isBaseUnit: true, isStoreSaleUnit: true, barcode: `SEARCH-UNIT-${id}` });
+    await d.insert(s.productPrices).values({ productUnitId: id, priceTier: "RETAIL", price: options.price ?? "8000.00" });
+    await d.insert(s.branchStock).values({ variantId: id, branchId: 1, quantity: options.stock ?? 10 });
+  }
+  it("finds simple workbook keys across the full catalog, agrees with submitted results and returns only safe fields", async () => {
+    await product(70, "ملزمة ثالث بكر سامي انكليزي 2027");
+    for (const query of ["مل", "ملزمه", "انكليزي ثالث", "ملازم ثالث", "ثالث ٢٠٢٧"]) {
+      const suggestions = await storefrontSearchSuggestions({ query });
+      const catalog = await storefrontCatalog({ branchId: 1, search: query });
+      expect(suggestions.products.map((p) => p.productId), query).toContain(70);
+      expect(catalog.items.map((p) => p.productId), query).toContain(70);
+      expect(Object.keys(suggestions.products.find((p) => p.productId === 70)!)).toEqual(["productId", "productName", "brand", "categoryId", "category", "price", "salePrice", "inStock"]);
+    }
+    const first = await storefrontCatalog({ branchId: 1, limit: 1 });
+    expect(first.items.map((p) => p.productId)).not.toContain(70);
+  });
+  it("maps highlighter phrases to the published product without conflating generic markers", async () => {
+    await product(71, "باكيت هايلايت 4 لون CHOSCH H954");
+    for (const query of ["هايلايتر", "قلم تأشير"]) {
+      expect((await storefrontSearchSuggestions({ query })).products.map((p) => p.productId)).toContain(71);
+      expect((await storefrontCatalog({ branchId: 1, search: query })).items.map((p) => p.productId)).toContain(71);
+    }
+    expect((await storefrontSearchSuggestions({ query: "ماركر" })).products).toEqual([]);
+  });
+  it("offers explicit one-word correction and separates approximate products from direct matches", async () => {
+    await product(70, "ملزمة ثالث بكر سامي انكليزي 2027");
+    const suggestions = await storefrontSearchSuggestions({ query: "انكليوي ثالث" });
+    expect(suggestions.products).toEqual([]);
+    expect(suggestions.correction).toBe("انكليزي ثالث");
+    expect(suggestions.similar.map((p) => p.productId)).toEqual([70]);
+    expect((await storefrontCatalog({ branchId: 1, search: "انكليوي ثالث" })).items).toEqual([]);
+    for (const query of ["ملزمة 2028", "H955", "سيارة فضائية", "%_!"]) {
+      const response = await storefrontSearchSuggestions({ query });
+      expect(response.products, query).toEqual([]); expect(response.similar, query).toEqual([]); expect(response.correction, query).toBeNull();
+    }
+  });
+  it("obeys publication, active state, category, availability, brand and price scope", async () => {
+    await product(70, "ملزمة ثالث انكليزي", { categoryId: 1 });
+    await product(71, "ملزمة ثالث مخفية", { show: false });
+    await product(72, "ملزمة ثالث معطلة", { active: false });
+    await product(73, "ملزمة ثالث نافدة", { stock: 0 });
+    await product(74, "ملزمة ثالث غالية", { price: "20000.00", categoryId: 2, brand: "دار أخرى" });
+    const base = await storefrontSearchSuggestions({ query: "ملزمة ثالث" });
+    expect(base.products.map((p) => p.productId).sort((a, b) => a - b)).toEqual([70, 74]);
+    const all = await storefrontSearchSuggestions({ query: "ملزمة ثالث", availability: "ALL" });
+    expect(all.products.map((p) => p.productId)).toContain(73);
+    expect(all.products.map((p) => p.productId)).not.toContain(71); expect(all.products.map((p) => p.productId)).not.toContain(72);
+    expect((await storefrontSearchSuggestions({ query: "ملزمة", categoryId: 2 })).products.map((p) => p.productId)).toEqual([74]);
+    expect((await storefrontSearchSuggestions({ query: "ملزمة", brand: "دار أخرى" })).products.map((p) => p.productId)).toEqual([74]);
+    expect((await storefrontSearchSuggestions({ query: "ملزمة", priceFilter: "FROM_5000_TO_15000" })).products.map((p) => p.productId)).toEqual([70]);
+    expect((await storefrontSearchSuggestions({ query: "ملزمة", productIds: [] })).products).toEqual([]);
+    await db().update(s.categories).set({ showInStore: false }).where(eq(s.categories.id, 1));
+    expect((await storefrontSearchSuggestions({ query: "ملزمة", categoryId: 1 })).products).toEqual([]);
+  });
+  it("searches category terms even when absent from the product title", async () => {
+    await product(70, "صنف خاص", { categoryId: 2 });
+    const response = await storefrontSearchSuggestions({ query: "قرطاسية" });
+    expect(response.products.map((p) => p.productId)).toContain(70);
+    expect(response.categories).toContainEqual({ id: 2, name: "قرطاسية ودفاتر" });
+    expect((await storefrontCatalog({ branchId: 1, search: "قرطاسية" })).items.map((p) => p.productId)).toContain(70);
+  });
+  it("filters unavailable candidates before limiting even beyond 192 higher-ranked matches", async () => {
+    const d = db(); const ids = Array.from({ length: 200 }, (_, i) => i + 100);
+    await d.insert(s.products).values(ids.map((id) => ({ id, name: "ملزمة", categoryId: 1, showInStore: true })));
+    await d.insert(s.productVariants).values(ids.map((id) => ({ id, productId: id, sku: `MANY-${id}`, costPrice: "1.00" })));
+    await d.insert(s.productUnits).values(ids.map((id) => ({ id, variantId: id, unitName: "قطعة", isBaseUnit: true, isStoreSaleUnit: true })));
+    await d.insert(s.productPrices).values(ids.map((id) => ({ productUnitId: id, priceTier: "RETAIL" as const, price: "1000.00" })));
+    await product(500, "ملزمة ثالث بكر سامي انكليزي 2027");
+    expect((await storefrontSearchSuggestions({ query: "ملزمة" })).products.map((p) => p.productId)).toEqual([500]);
+  });
+  it("uses promotion-adjusted prices before applying a price refinement", async () => {
+    await product(71, "باكيت هايلايت 4 لون", { price: "6000.00" });
+    await db().insert(s.promotions).values({ name: "خصم الاختبار", type: "PERCENT", discountPercent: "25", scope: "ALL", effectiveFrom: "2020-01-01", effectiveTo: "2099-12-31", customerTier: "RETAIL", isActive: true });
+    const response = await storefrontSearchSuggestions({ query: "هايلايتر", priceFilter: "UNDER_5000" });
+    expect(response.products.map((p) => p.productId)).toEqual([71]); expect(response.products[0].salePrice).toBe("4500.00");
+  });
+  it("keeps exact hits before available synonym products with ALL availability", async () => {
+    await product(70, "هايلايتر", { stock: 0 }); await product(71, "هايلايت", { stock: 10 });
+    const response = await storefrontSearchSuggestions({ query: "هايلايتر", availability: "ALL" });
+    expect(response.products.map((p) => p.productId)).toEqual([70, 71]);
+    const catalog = await storefrontCatalog({ branchId: 1, search: "هايلايتر", availability: "ALL" });
+    expect(catalog.items.map((p) => p.productId)).toEqual([70, 71]);
   });
 });

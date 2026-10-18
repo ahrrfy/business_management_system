@@ -9,7 +9,7 @@
  * ويطبّق **قواعد محرّك العروض نفسها** عبر snapshot مجمّعة — فالسعر المعروض
  * = السعر المفروض (نقطة العرض = نقطة الفرض)، وطلب الزبون يُعاد تسعيره بنفس المحرّك خادمياً.
  */
-import { and, asc, desc, eq, inArray, isNull, or, sql, type AnyColumn, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import {
   bundleComponents,
   categories,
@@ -26,16 +26,10 @@ import {
   storefrontProductReviews,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { loadStorefrontSearchMatches } from "./storefrontSearchIndex";
 import { createTtlCache } from "../lib/ttlCache";
 import { getCurrentCompanyId } from "../tenancy/context";
-import { escLike } from "../lib/sqlLike";
-import {
-  ARABIC_NORMALIZATION_PAIRS,
-  normalizeArabicSearch,
-  tokenizeSearchTerms,
-  scoreStorefrontSearchRelevance,
-  MAX_STOREFRONT_SEARCH_TOKENS,
-} from "../../shared/storefrontSearchNormalize";
+import { normalizeArabicSearch } from "../../shared/storefrontSearchNormalize";
 import { decodeDataUrl, productImageUrl, withPublicProductImageWidth } from "../imageRoute";
 import type { PublicProductImageWidth } from "../lib/imageStore";
 import { withTx } from "./tx";
@@ -799,7 +793,7 @@ async function attachVariantColors(
  * ومنتج ومقترحاتٍ من كلّ زائرٍ مجهول — أي أضعافَ حركة التسعيرة التي عولجت أوّلاً. المعاملة
  * تبقى للقطةٍ متّسقة عبر استعلامات اللقطة، لا للذرّية.
  */
-async function applyStorefrontPromotions(list: StorefrontProduct[], branchId: number): Promise<void> {
+export async function applyStorefrontPromotions(list: Array<Pick<StorefrontProduct, "productId" | "variantId" | "categoryId" | "price" | "salePrice" | "promotionName">>, branchId: number): Promise<void> {
   const eligible = list.filter((p) => p.price != null);
   if (!eligible.length) return;
   const todayYmd = todayYmdBaghdad();
@@ -866,6 +860,7 @@ export async function storefrontCatalog(opts: {
     conds.push(inArray(products.id, opts.productIds));
   }
   const s = String(opts.search ?? "").trim();
+  let resolvedBarcodeUnitId: number | null = null;
   if (s) {
     // هوية الباركود تُحسم أولاً بالمساواة المفهرسة على الشكل الخام ومرشّحات UPC/EAN؛
     // لا نمرّرها عبر مطبّع بحث الأسماء الذي يطوي مسافتين داخليتين إلى واحدة.
@@ -874,52 +869,16 @@ export async function storefrontCatalog(opts: {
     if (barcodeResolution.status === "FOUND") {
       // البحث بالباركود عقدُ وحدة لا عقدُ منتج: اختيار أول وحدة للمنتج قد يبدّل كرتوناً
       // ممسوحاً إلى قطعة بسعر ومعامل مختلفين، فتصل حبيبة سلة خاطئة إلى createOrder.
+      resolvedBarcodeUnitId = barcodeResolution.owner.productUnitId;
       conds.push(eq(productUnits.id, barcodeResolution.owner.productUnitId));
     } else if (barcodeResolution.status === "AMBIGUOUS") {
       conds.push(sql`false`);
     } else {
-      // تطبيعٌ عربيّ مشتركٌ مع اقتراحات العميل ([`shared/storefrontSearchNormalize.ts`](../../shared/storefrontSearchNormalize.ts))
-      // — يوحّد الألفات (أ/إ/آ ⇒ ا) والتاء المربوطة (ة ⇒ ه) ويطوي الفراغات المتعدّدة. كان الاقتراح
-      // يظهر لحظياً لأنّ العميل يُطبّع محلياً، ثمّ يختفي حين يستبدل الخادم صفحات الكتالوج بنتائج LIKE
-      // خامّ ⇒ Codex P2 على #904. نطبّق نفس التطبيع على العمود ⇒ ما ظهر في القائمة يبقى في الصفحة.
-      //
-      // تصحيح Codex على #907 (٢ من ٢): (١) طيّ الفراغات SQL يجب أن يوازي طيّ الفراغات JS وإلّا
-      // `قلم  ازرق` المخزَّن لا يُطابق `قلم ازرق` المُبحَث — نطبّقه بـREGEXP_REPLACE. (٢) الباركود
-      // يبقى بنمطٍ خامّ (بلا تطبيع عربيّ) — الكتالوجُ يقبله سلسلةً حرّة، فباركودٌ فيه `أ` يُخفَق
-      // مع نمطٍ فيه `ا`؛ نُفصلُ نمطَه.
-      //
-      // الأزواج ثابتةٌ لا مدخلَ من المستخدم ⇒ لا حقن؛ القيمة المُطبَّعة مربوطةٌ بالوسائط.
-      // تدقيق ٣/٨: تهريب `%`/`_` (escLike + ESCAPE '!') كبقية مسارات البحث.
-      const tokens = tokenizeSearchTerms(s).slice(0, MAX_STOREFRONT_SEARCH_TOKENS);
-      if (tokens.length > 0) {
-        // بناءُ عبارة تطبيعٍ على العمود بنفس ترتيب `normalizeArabicSearch`:
-        //   REPLACE المُتَتَابع للأزواج → `REGEXP_REPLACE` لطيّ الفراغات → `TRIM` → `LOWER`
-        // MySQL 8 REGEXP_REPLACE + POSIX class `[[:space:]]` أوسع من `\\s` (يشمل U+00A0/NBSP وسواه).
-        // توسيعُ أزواج التطبيع مستقبلاً يمرّ من ملفٍ واحد ويسري تلقائياً هنا.
-        const arabicLike = (col: SQL | AnyColumn, pattern: string) => {
-          let expr: SQL = sql`${col}`;
-          for (const [from, to] of ARABIC_NORMALIZATION_PAIRS) {
-            expr = sql`REPLACE(${expr}, ${from}, ${to})`;
-          }
-          return sql`LOWER(TRIM(REGEXP_REPLACE(${expr}, '[[:space:]]+', ' '))) LIKE ${pattern} ESCAPE '!'`;
-        };
-
-        for (const token of tokens) {
-          const p = `%${escLike(token)}%`;
-          const barcodePattern = `%${escLike(token)}%`;
-          const tokenCond = or(
-            arabicLike(products.name, p),
-            arabicLike(products.storeTitle, p),
-            arabicLike(products.brand, p),
-            sql`${productUnits.barcode} LIKE ${barcodePattern} ESCAPE '!'`,
-          );
-          if (tokenCond) conds.push(tokenCond);
-        }
-      } else {
-        // نصّ بحث غير فارغ لم ينتج عنه أي رمز أو كلمة صالحة (رموز ترقيم أو فواصل مجردة):
-        // نعيد صفراً من النتائج ليتطابق الخادم مع قائمة الاقتراحات بدلاً من عرض الكتالوج كاملاً.
-        conds.push(sql`false`);
-      }
+      const matches = await loadStorefrontSearchMatches(s, opts);
+      // Per-unit candidates preserve partial barcode-unit selection, too.
+      const unitIds = Array.from(new Set(matches.map((row) => row.productUnitId)));
+      if (!unitIds.length) return { items: [], hasMore: false, nextCursor: null };
+      conds.push(inArray(productUnits.id, unitIds));
     }
   }
   // نرتّب على مستوى المنتج أولاً (بعد حساب ATP)، ثم نأخذ الصفحة. لا نطبّق limit على صفوف
@@ -944,7 +903,7 @@ export async function storefrontCatalog(opts: {
     false,
   );
   // النصّ يُطبَّع بالتطبيع المشترك كي تتقاسم الصيغ المتكافئة نفس الكاش
-  const searchKey = normalizeArabicSearch(s);
+  const searchKey = resolvedBarcodeUnitId == null ? normalizeArabicSearch(s) : `barcode-unit:${resolvedBarcodeUnitId}`;
   const productIdsKey = opts.productIds?.length ? [...opts.productIds].sort((a, b) => a - b).join(",") : "";
   const orderedIds = storefrontCacheDisabled()
     ? await loadOrderedIds()

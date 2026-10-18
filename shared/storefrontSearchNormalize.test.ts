@@ -5,6 +5,7 @@ import {
   tokenizeSearchTerms,
   scoreStorefrontSearchRelevance,
   getStorefrontSearchSuggestions,
+  matchStorefrontSearch,
 } from "./storefrontSearchNormalize";
 
 describe("normalizeArabicSearch", () => {
@@ -46,7 +47,9 @@ describe("normalizeArabicSearch", () => {
 
   it("is idempotent — normalizing an already-normalized value returns it unchanged", () => {
     const original = "دفتر احضار 100";
-    expect(normalizeArabicSearch(normalizeArabicSearch(original))).toBe(original);
+    expect(normalizeArabicSearch(normalizeArabicSearch(original))).toBe(
+      original,
+    );
   });
 
   it("preserves non-Arabic characters (Latin, digits, punctuation)", () => {
@@ -94,7 +97,12 @@ describe("normalizeArabicSearch", () => {
 describe("tokenizeSearchTerms", () => {
   it("splits search text into normalized tokens", () => {
     expect(tokenizeSearchTerms("احياء متميزين")).toEqual(["احياء", "متميزين"]);
-    expect(tokenizeSearchTerms("  كتاب   أحياء  اول   متوسط  ")).toEqual(["كتاب", "احياء", "اول", "متوسط"]);
+    expect(tokenizeSearchTerms("  كتاب   أحياء  اول   متوسط  ")).toEqual([
+      "كتاب",
+      "احياء",
+      "اول",
+      "متوسط",
+    ]);
   });
 
   it("normalizes digits within tokens", () => {
@@ -107,15 +115,26 @@ describe("tokenizeSearchTerms", () => {
   });
 
   it("handles punctuation and punctuation delimiters cleanly", () => {
-    expect(tokenizeSearchTerms("احياء - متميزين")).toEqual(["احياء", "متميزين"]);
-    expect(tokenizeSearchTerms("كتاب (أحياء)، متميزين!")).toEqual(["كتاب", "احياء", "متميزين"]);
+    expect(tokenizeSearchTerms("احياء - متميزين")).toEqual([
+      "احياء",
+      "متميزين",
+    ]);
+    expect(tokenizeSearchTerms("كتاب (أحياء)، متميزين!")).toEqual([
+      "كتاب",
+      "احياء",
+      "متميزين",
+    ]);
     expect(tokenizeSearchTerms("قلم 0.7 ملم")).toEqual(["قلم", "0.7", "ملم"]);
     expect(tokenizeSearchTerms("---")).toEqual([]);
   });
 });
 
 describe("scoreStorefrontSearchRelevance", () => {
-  const target = (productName: string, storeTitle: string | null = null, brand: string | null = null) => ({
+  const target = (
+    productName: string,
+    storeTitle: string | null = null,
+    brand: string | null = null,
+  ) => ({
     productName,
     storeTitle,
     brand,
@@ -158,7 +177,12 @@ describe("scoreStorefrontSearchRelevance", () => {
 });
 
 describe("getStorefrontSearchSuggestions shared implementation", () => {
-  const p = (productId: number, productName: string, brand: string | null = null, inStock = true) => ({
+  const p = (
+    productId: number,
+    productName: string,
+    brand: string | null = null,
+    inStock = true,
+  ) => ({
     productId,
     productName,
     brand,
@@ -172,48 +196,151 @@ describe("getStorefrontSearchSuggestions shared implementation", () => {
       p(3, "دفتر رسم متميزين"),
     ];
 
-    expect(getStorefrontSearchSuggestions(items, "احياء متميزين").map((it) => it.productId)).toEqual([1]);
-    expect(getStorefrontSearchSuggestions(items, "متميزين احياء").map((it) => it.productId)).toEqual([1]);
-    expect(getStorefrontSearchSuggestions(items, "متميزين اول").map((it) => it.productId)).toEqual([1]);
+    expect(
+      getStorefrontSearchSuggestions(items, "احياء متميزين").map(
+        (it) => it.productId,
+      ),
+    ).toEqual([1]);
+    expect(
+      getStorefrontSearchSuggestions(items, "متميزين احياء").map(
+        (it) => it.productId,
+      ),
+    ).toEqual([1]);
+    expect(
+      getStorefrontSearchSuggestions(items, "متميزين اول").map(
+        (it) => it.productId,
+      ),
+    ).toEqual([1]);
   });
 
   it("matches numbers seamlessly between Eastern Arabic and Western digits", () => {
-    const items = [
-      p(1, "دفتر 100 ورقة"),
-      p(2, "دفتر ٢٠٠ ورقة"),
-    ];
+    const items = [p(1, "دفتر 100 ورقة"), p(2, "دفتر ٢٠٠ ورقة")];
 
-    expect(getStorefrontSearchSuggestions(items, "دفتر ١٠٠").map((it) => it.productId)).toEqual([1]);
-    expect(getStorefrontSearchSuggestions(items, "دفتر 200").map((it) => it.productId)).toEqual([2]);
-    expect(getStorefrontSearchSuggestions(items, "100").map((it) => it.productId)).toEqual([1]);
-    expect(getStorefrontSearchSuggestions(items, "٢٠٠").map((it) => it.productId)).toEqual([2]);
+    expect(
+      getStorefrontSearchSuggestions(items, "دفتر ١٠٠").map(
+        (it) => it.productId,
+      ),
+    ).toEqual([1]);
+    expect(
+      getStorefrontSearchSuggestions(items, "دفتر 200").map(
+        (it) => it.productId,
+      ),
+    ).toEqual([2]);
+    expect(
+      getStorefrontSearchSuggestions(items, "100").map((it) => it.productId),
+    ).toEqual([1]);
+    expect(
+      getStorefrontSearchSuggestions(items, "٢٠٠").map((it) => it.productId),
+    ).toEqual([2]);
   });
 
   it("normalizes alif maqsura and yaa", () => {
-    const items = [
-      p(1, "مستشفى الأمل"),
-      p(2, "مكتبة الشرق"),
-    ];
+    const items = [p(1, "مستشفى الأمل"), p(2, "مكتبة الشرق")];
 
-    expect(getStorefrontSearchSuggestions(items, "مستشفي").map((it) => it.productId)).toEqual([1]);
+    expect(
+      getStorefrontSearchSuggestions(items, "مستشفي").map((it) => it.productId),
+    ).toEqual([1]);
   });
 
   it("prioritizes in-stock products over out-of-stock products", () => {
     const items = [
       p(1, "دفتر فاخر متميز", null, false), // out of stock
-      p(2, "دفتر عادي متميز", null, true),  // in stock
+      p(2, "دفتر عادي متميز", null, true), // in stock
     ];
 
-    expect(getStorefrontSearchSuggestions(items, "دفتر متميز").map((it) => it.productId)).toEqual([2, 1]);
+    expect(
+      getStorefrontSearchSuggestions(items, "دفتر متميز").map(
+        (it) => it.productId,
+      ),
+    ).toEqual([2, 1]);
   });
 
   it("caps tokens to MAX_STOREFRONT_SEARCH_TOKENS for suggestions consistency", () => {
-    const items = [
-      p(1, "ت1 ت2 ت3 ت4 ت5 ت6 ت7 ت8"),
-    ];
+    const items = [p(1, "ت1 ت2 ت3 ت4 ت5 ت6 ت7 ت8")];
     // بحث بـ 9 كلمات، أول 8 كلمات مطابقة بينما الكلمة 9 ليست في المنتج
     const query = "ت1 ت2 ت3 ت4 ت5 ت6 ت7 ت8 ت9_غير_موجودة";
     // لأن الاقتراحات مقيدة بـ 8 كلمات متطابقة مع الخادم، تطابق أول 8 كلمات
-    expect(getStorefrontSearchSuggestions(items, query).map((it) => it.productId)).toEqual([1]);
+    expect(
+      getStorefrontSearchSuggestions(items, query).map((it) => it.productId),
+    ).toEqual([1]);
+  });
+});
+
+describe("simple customer search keys", () => {
+  const workbook = { productName: "ملزمة ثالث بكر سامي انكليزي 2027" };
+  it("finds a two-letter prefix, casual Arabic spelling and reversed tokens", () => {
+    for (const query of [
+      "مل",
+      "ملزمه",
+      "انكليزي ثالث",
+      "ثالث انكليزي",
+      "ملازم ثالث",
+      "ملزمة ٢٠٢٧",
+    ]) {
+      expect(matchStorefrontSearch(workbook, query), query).not.toBeNull();
+    }
+  });
+  it("expands highlighter phrases without requiring the absent literal قلم", () => {
+    const target = { productName: "باكيت هايلايت 4 لون CHOSCH H954" };
+    for (const query of ["هايلايتر", "قلم تأشير", "قلم تاشير", "highlighter"])
+      expect(matchStorefrontSearch(target, query)?.kind).toBe("SYNONYM");
+    expect(matchStorefrontSearch(target, "ماركر")).toBeNull();
+  });
+  it("supports controlled singular and plural keys", () => {
+    expect(
+      matchStorefrontSearch({ productName: "دفتر سلك" }, "دفاتر")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "قلم جاف" }, "أقلام")?.kind,
+    ).toBe("SYNONYM");
+    expect(
+      matchStorefrontSearch({ productName: "كراس رسم" }, "كراريس")?.kind,
+    ).toBe("SYNONYM");
+  });
+  it("keeps one-edit corrections separate and never approximates years or model numbers", () => {
+    expect(matchStorefrontSearch(workbook, "انكليوي ثالث")).toBeNull();
+    expect(matchStorefrontSearch(workbook, "انكليوي ثالث", true)).toMatchObject(
+      { kind: "SIMILAR", correction: "انكليزي ثالث" },
+    );
+    expect(matchStorefrontSearch(workbook, "ملزمة 2028", true)).toBeNull();
+    expect(
+      matchStorefrontSearch({ productName: "قلم H954" }, "H955", true),
+    ).toBeNull();
+    expect(
+      matchStorefrontSearch({ productName: "قلم abcdef" }, "abcdeg", true)
+        ?.kind,
+    ).toBe("SIMILAR");
+  });
+  it("rejects unrelated queries, multiple typos and punctuation-only wildcard searches", () => {
+    for (const query of ["سيارة", "%_!", "---", "انكليوي ثالت", "ملزمة 2028"])
+      expect(matchStorefrontSearch(workbook, query, true), query).toBeNull();
+    expect(
+      matchStorefrontSearch(workbook, "ملزمة (ثالث)، ٢٠٢٧!"),
+    ).not.toBeNull();
+    expect(matchStorefrontSearch(workbook, "ملز%مة")).toBeNull();
+  });
+  it("ranks direct matches before synonyms and approximate alternatives irrespective of stock", () => {
+    const direct = matchStorefrontSearch(
+      { productName: "هايلايتر" },
+      "هايلايتر",
+      true,
+    )!;
+    const synonym = matchStorefrontSearch(
+      { productName: "هايلايت" },
+      "هايلايتر",
+      true,
+    )!;
+    const similar = matchStorefrontSearch(workbook, "انكليوي", true)!;
+    expect(direct.score).toBeGreaterThan(synonym.score);
+    expect(synonym.score).toBeGreaterThan(similar.score);
+    expect(
+      getStorefrontSearchSuggestions(
+        [
+          { productName: "دفتر فاخر", inStock: true },
+          { productName: "دفتر", inStock: false },
+        ],
+        "دفتر",
+      )[0].productName,
+    ).toBe("دفتر");
   });
 });
