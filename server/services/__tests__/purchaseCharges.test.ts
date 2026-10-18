@@ -8,9 +8,20 @@ import {
   requestPurchaseChargeControl,
 } from "../purchase/purchaseCharges";
 import { createPurchaseOrder } from "../purchaseService";
+import { reconcileSupplierBalances } from "../reconcileService";
+import { getAPAging, getSupplierStatement } from "../reports/apAging";
+import { getPurchasesReport } from "../reportsPurchasesService";
+import {
+  isSupplierApLedgerEntrySql,
+  supplierApEffectSql,
+} from "../ledger/supplierApEffect";
 
 const creator = { userId: 1, branchId: 1, role: "manager" as const };
-const independentApprover = { userId: 2, branchId: 1, role: "manager" as const };
+const independentApprover = {
+  userId: 2,
+  branchId: 1,
+  role: "manager" as const,
+};
 
 // يفحص هذا الملفّ فصل المهام تحت سياسة الاعتماد **القديمة** (OFF) — ثبّته صراحةً بدل
 // افتراض بيئة التشغيل، مطابقةً لنمط ownerGate.test.ts (مراجعة Codex).
@@ -133,6 +144,248 @@ beforeEach(async () => {
 });
 
 describe("purchaseCharges — إنشاء وترحيل وعكس مصروف شراء", () => {
+  async function seedSupplierDebt() {
+    await db()
+      .update(schema.suppliers)
+      .set({ currentBalance: "1000.00", currentBalanceUsd: "3.00" })
+      .where(eq(schema.suppliers.id, 1));
+    await db().insert(schema.suppliers).values({
+      id: 2,
+      name: "ناقل مستقل",
+      branchId: 1,
+      currentBalance: "200.00",
+      currentBalanceUsd: "2.00",
+    });
+    await db()
+      .insert(schema.accountingEntries)
+      .values([
+        {
+          entryType: "OPENING",
+          entryDate: "2026-10-18",
+          branchId: 1,
+          supplierId: 1,
+          amount: "1000.00",
+          createdBy: 1,
+        },
+        {
+          entryType: "OPENING",
+          entryDate: "2026-10-18",
+          branchId: 1,
+          supplierId: 2,
+          amount: "200.00",
+          createdBy: 1,
+        },
+      ]);
+  }
+
+  async function expectSupplierDebt(
+    supplierId: number,
+    amount: string,
+    usd: string,
+    paid = "0.00",
+  ) {
+    const [supplier] = await db()
+      .select()
+      .from(schema.suppliers)
+      .where(eq(schema.suppliers.id, supplierId));
+    expect.soft(supplier.currentBalance).toBe(amount);
+    expect.soft(supplier.currentBalanceUsd).toBe(usd);
+    const statement = await getSupplierStatement(supplierId, { branchId: 1 });
+    expect.soft(statement?.summary.currentBalance).toBe(amount);
+    expect.soft(statement?.summary.totalPaid).toBe(paid);
+    expect.soft(statement?.payments).toHaveLength(paid === "0.00" ? 0 : 1);
+    const aging = await getAPAging({ branchId: 1 });
+    expect
+      .soft(aging.find((row) => row.supplierId === supplierId)?.currentBalance)
+      .toBe(amount);
+    expect.soft(await reconcileSupplierBalances()).toEqual([]);
+    const report = await getPurchasesReport({
+      from: "2026-01-01",
+      to: "2099-12-31",
+      branchId: 1,
+    });
+    expect
+      .soft(
+        report.rows.find((row) => row.supplierId === supplierId)?.paid ??
+          "0.00",
+      )
+      .toBe(paid);
+  }
+
+  it.each([
+    ["SHIPPING", 1],
+    ["CUSTOMS", 1],
+    ["FREIGHT", 1],
+    ["SHIPPING", 2],
+    ["CUSTOMS", 2],
+    ["FREIGHT", 2],
+  ] as const)(
+    "isolates company %s from supplier AP on posting and reversal (recipient %s)",
+    async (chargeType, payeeSupplierId) => {
+      await seedSupplierDebt();
+      const po = await createDraft(
+        `ap-isolation-${chargeType}-${payeeSupplierId}`,
+      );
+      const charge = await createPurchaseCharge(
+        {
+          branchId: 1,
+          clientRequestId: "ap-charge",
+          expenseAccountId: 1,
+          chargeType,
+          settlement: "PAID",
+          paymentMethod: "CARD",
+          payeeSupplierId,
+          amount: "50.00",
+          expenseDate: "2026-10-18",
+          evidenceType: "CARRIER_INVOICE",
+          evidenceReference: "COMPANY-EXPENSE-PROOF",
+          allocations: [
+            { purchaseOrderId: po.purchaseOrderId, allocatedAmount: "50.00" },
+          ],
+        },
+        creator,
+      );
+      const post = await requestPurchaseChargeControl(
+        {
+          purchaseChargeId: charge.purchaseChargeId,
+          expectedChargeVersion: 1,
+          requestKey: "ap-post",
+          kind: "POST",
+          evidenceReference: "COMPANY-EXPENSE-PROOF",
+          reason: "إثبات مصروف الشركة خارج ذمة المورد",
+        },
+        creator,
+      );
+      await decidePurchaseChargeControl(
+        {
+          requestId: post.requestId,
+          decisionKey: "ap-post-decision",
+          action: "APPROVE",
+          reviewReason: "مطابقة فاتورة الناقل",
+        },
+        independentApprover,
+      );
+      const [posted] = await db()
+        .select()
+        .from(schema.purchaseCharges)
+        .where(eq(schema.purchaseCharges.id, charge.purchaseChargeId));
+      const [entry] = await db()
+        .select()
+        .from(schema.accountingEntries)
+        .where(eq(schema.accountingEntries.id, posted.postingEntryId!));
+      const [receipt] = await db()
+        .select()
+        .from(schema.receipts)
+        .where(eq(schema.receipts.id, posted.paymentReceiptId!));
+      expect.soft(entry.supplierId).toBeNull();
+      expect.soft(receipt.partyType).toBe("SUPPLIER");
+      expect.soft(receipt.partyId).toBe(payeeSupplierId);
+      await expectSupplierDebt(1, "1000.00", "3.00");
+      await expectSupplierDebt(2, "200.00", "2.00");
+
+      const reverse = await requestPurchaseChargeControl(
+        {
+          purchaseChargeId: charge.purchaseChargeId,
+          expectedChargeVersion: posted.version,
+          requestKey: "ap-reverse",
+          kind: "REVERSE",
+          evidenceReference: "ACTUAL-CARRIER-REFUND",
+          reason: "استرداد فعلي لمصروف الشركة دون ذمة المورد",
+        },
+        creator,
+      );
+      await decidePurchaseChargeControl(
+        {
+          requestId: reverse.requestId,
+          decisionKey: "ap-reverse-decision",
+          action: "APPROVE",
+          reviewReason: "تأكيد رجوع مبلغ الشركة",
+        },
+        independentApprover,
+      );
+      const [reversed] = await db()
+        .select()
+        .from(schema.purchaseCharges)
+        .where(eq(schema.purchaseCharges.id, charge.purchaseChargeId));
+      const [reversalEntry] = await db()
+        .select()
+        .from(schema.accountingEntries)
+        .where(eq(schema.accountingEntries.id, reversed.reversalEntryId!));
+      expect.soft(reversalEntry.supplierId).toBeNull();
+      await expectSupplierDebt(1, "1000.00", "3.00");
+      await expectSupplierDebt(2, "200.00", "2.00");
+    },
+  );
+
+  it("excludes historical company-charge attribution without hiding real supplier payments", async () => {
+    await seedSupplierDebt();
+    await db().insert(schema.accountingEntries).values({
+      entryType: "PAYMENT_OUT",
+      entryDate: "2026-10-18",
+      branchId: 1,
+      supplierId: 1,
+      amount: "50.00",
+      createdBy: 1,
+      dedupeKey: "PURCHASE_CHARGE_POST:91",
+    });
+    await expectSupplierDebt(1, "1000.00", "3.00");
+    await db().insert(schema.accountingEntries).values({
+      entryType: "PAYMENT_IN",
+      entryDate: "2026-10-18",
+      branchId: 1,
+      supplierId: 1,
+      amount: "50.00",
+      createdBy: 1,
+      dedupeKey: "PURCHASE_CHARGE_REVERSAL:91",
+    });
+    await expectSupplierDebt(1, "1000.00", "3.00");
+    await db().insert(schema.accountingEntries).values({
+      entryType: "PAYMENT_OUT",
+      entryDate: "2026-10-18",
+      branchId: 1,
+      supplierId: 1,
+      amount: "40.00",
+      createdBy: 1,
+      dedupeKey: null,
+    });
+    await db()
+      .update(schema.suppliers)
+      .set({ currentBalance: "960.00" })
+      .where(eq(schema.suppliers.id, 1));
+    await expectSupplierDebt(1, "960.00", "3.00", "40.00");
+  });
+
+  it("keeps AP classification exact without hiding unrelated supplier payments", async () => {
+    const cases = [
+      ["PAYMENT_OUT", "PURCHASE_CHARGE_POST:9", "0.00", 0],
+      ["PAYMENT_IN", "PURCHASE_CHARGE_REVERSAL:9", "0.00", 0],
+      ["PAYMENT_OUT", null, "-10.00", 1],
+      ["PAYMENT_OUT", "purchase_charge_post:9", "-10.00", 1],
+      ["PAYMENT_OUT", "PURCHASE_CHARGE_POST:09", "-10.00", 1],
+      ["PAYMENT_OUT", "PURCHASE_CHARGE_POST:9:OTHER", "-10.00", 1],
+      ["PAYMENT_IN", "PURCHASE_CHARGE_POST:9", "10.00", 1],
+    ] as const;
+    for (const [entryType, dedupeKey, expected, visible] of cases) {
+      const cols = {
+        entryType: sql`${entryType}`,
+        dedupeKey: sql`${dedupeKey}`,
+        amount: sql`10.00`,
+        liabilityAccount: sql`NULL`,
+      };
+      const [result] = await db()
+        .select({
+          effect: sql<string>`CAST(${supplierApEffectSql(cols)} AS DECIMAL(15,2))`,
+          visible: sql<number>`IF(${isSupplierApLedgerEntrySql(cols)},1,0)`,
+        })
+        .from(schema.branches)
+        .limit(1);
+      expect.soft(result.effect, `${entryType}/${dedupeKey}`).toBe(expected);
+      expect
+        .soft(Number(result.visible), `${entryType}/${dedupeKey}`)
+        .toBe(visible);
+    }
+  });
+
   it("ينشئ مصروف الشراء بمسودة حين تُساوي التوزيعات المبلغ بالضبط، ويحفظ سطر التوزيع", async () => {
     const po = await createDraft("pcharge-po-1");
     const created = await createPurchaseCharge(
@@ -185,7 +438,10 @@ describe("purchaseCharges — إنشاء وترحيل وعكس مصروف شرا
           evidenceType: "CARRIER_INVOICE",
           evidenceReference: "CARRIER-INV-1002",
           allocations: [
-            { purchaseOrderId: po.purchaseOrderId, allocatedAmount: "49999.00" },
+            {
+              purchaseOrderId: po.purchaseOrderId,
+              allocatedAmount: "49999.00",
+            },
           ],
         },
         creator,
