@@ -19,6 +19,8 @@ const financialMutations: ReadonlySet<string> = new Set([
 
 /** Includes pending/lifecycle changes which legitimately create no ledger entry. */
 export function isFinancialMutation(path: string): boolean {
+  // Tracking uses POST to keep private tokens out of URLs; these procedures only read.
+  if (path === "storefront.trackOrderByToken" || path === "storefront.trackOrderPrivate") return false;
   return financialMutations.has(path.split(".")[0]);
 }
 
