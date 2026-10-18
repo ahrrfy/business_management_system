@@ -25,6 +25,16 @@ export interface ApEntryCols {
   dedupeKey: ApOp;
 }
 
+/** Reserved company-expense payments retain recipient identity outside supplier AP. */
+function isCompanyPurchaseChargePaymentSql(
+  cols: Pick<ApEntryCols, "entryType" | "dedupeKey">,
+): SQL {
+  return sql`COALESCE((
+    (${cols.entryType} = 'PAYMENT_OUT' AND REGEXP_LIKE(${cols.dedupeKey}, ${"^PURCHASE_CHARGE_POST:[1-9][0-9]*$"}, 'c'))
+    OR (${cols.entryType} = 'PAYMENT_IN' AND REGEXP_LIKE(${cols.dedupeKey}, ${"^PURCHASE_CHARGE_REVERSAL:[1-9][0-9]*$"}, 'c'))
+  ), FALSE)`;
+}
+
 /**
  * CASH_CLEARING is an operational clearing liability, not supplier AP.
  * It must not change the supplier's balance or appear in AP aging.
@@ -36,6 +46,7 @@ export function supplierApEffectSql(
   const includeOpening = opts.includeOpening ?? true;
   const amt = sql`CAST(${cols.amount} AS DECIMAL(15,2))`;
   return sql`CASE
+    WHEN ${isCompanyPurchaseChargePaymentSql(cols)} THEN 0
     WHEN ${cols.liabilityAccount} = 'CASH_CLEARING' THEN 0
     WHEN ${cols.entryType} = 'PURCHASE'        THEN ${amt}
     WHEN ${cols.entryType} = 'PAYMENT_OUT'     THEN -${amt}
@@ -66,9 +77,9 @@ export function isSupplierApLedgerEntrySql(
   const legacyTypes = includeOpening
     ? sql`${cols.entryType} IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT','EXCHANGE_SETTLE','OPENING')`
     : sql`${cols.entryType} IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT','EXCHANGE_SETTLE')`;
-  return sql`(
+  return sql`(NOT ${isCompanyPurchaseChargePaymentSql(cols)} AND (
     ${legacyTypes}
     OR (${cols.entryType} = 'ADJUST' AND ${cols.dedupeKey} REGEXP ${GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP})
     OR (${cols.entryType} = 'ADJUST' AND ${cols.dedupeKey} REGEXP ${GRNI_SUPPLIER_INVOICE_REVERSAL_REGEXP})
-  )`;
+  ))`;
 }
