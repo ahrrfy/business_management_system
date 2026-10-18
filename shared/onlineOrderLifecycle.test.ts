@@ -89,6 +89,16 @@ describe("online order delivery facts", () => {
     expect(
       deriveOnlineOrderLifecycle({
         ...delivered,
+        returnDeclaredAt: new Date(),
+      }),
+    ).toMatchObject({
+      label: "بانتظار استلام المرتجع",
+      tone: "warning",
+      collectionLabel: "تم التحصيل",
+    });
+    expect(
+      deriveOnlineOrderLifecycle({
+        ...delivered,
         parcelStatus: "RETURNED",
         returnDeclaredAt: new Date(),
       }).label,

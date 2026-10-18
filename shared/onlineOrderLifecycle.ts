@@ -59,11 +59,11 @@ export function deriveOnlineOrderLifecycle(
           ? "muted"
           : "info";
   const live = facts.status === "DISPATCHED" || facts.status === "PARTIAL";
-  if (
+  const returnPending =
     live &&
     facts.returnDeclaredAt != null &&
-    !["RETURNED", "CANCELLED"].includes(facts.parcelStatus)
-  ) {
+    !["RETURNED", "CANCELLED"].includes(facts.parcelStatus);
+  if (returnPending) {
     label = "بانتظار استلام المرتجع";
     tone = "warning";
   }
@@ -94,7 +94,7 @@ export function deriveOnlineOrderLifecycle(
     : collected.gt(0)
       ? "تحصيل جزئي"
       : "لم يثبت التحصيل";
-  if (fullCollection) label = "تم التسليم والتحصيل";
+  if (fullCollection && !returnPending) label = "تم التسليم والتحصيل";
   const remittanceLabel =
     facts.moneyStatus === "WRITTEN_OFF"
       ? "شطب المتبقي"
