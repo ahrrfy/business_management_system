@@ -136,6 +136,7 @@ export async function loadOnlineOrderLifecycles(
                 : orderStatusLabel(r.orderStatus),
             collectionLabel: null,
             remittanceLabel: null,
+            trackingComplete: r.orderStatus === "CANCELLED",
           };
       let latestEvent: {
         label: string;
@@ -194,6 +195,8 @@ export async function loadOnlineOrderLifecycles(
         Number(r.orderId),
         {
           ...facts,
+          trackingComplete:
+            r.orderStatus === "CANCELLED" || facts.trackingComplete === true,
           consignmentId: r.consignmentId,
           consignmentNumber: r.consignmentNumber,
           deliveryPartyName: r.deliveryPartyName,

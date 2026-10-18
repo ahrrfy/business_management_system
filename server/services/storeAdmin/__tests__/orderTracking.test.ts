@@ -180,6 +180,10 @@ describe("online order current lifecycle", () => {
       .update(s.invoices)
       .set({ status: "PENDING", paidAmount: "0" })
       .where(eq(s.invoices.id, 1));
+    expect(await trackOnlineOrderForCustomer("ORD-TRACK", 1)).toMatchObject({
+      status: "PROCESSING",
+      deliveryProgress: { complete: false },
+    });
     const actor = { userId: 1, branchId: 1, role: "admin" };
     const result = await dispatchOnlineOrder(
       { onlineOrderId: 1, partyId: 1, externalTrackingRef: "TRACK-REASSIGN-1" },
@@ -202,6 +206,10 @@ describe("online order current lifecycle", () => {
       expect((await getOnlineOrder(1, 1))?.lifecycle?.latestEvent?.label).toBe(
         "ألغي الإسناد",
       );
+      expect(await trackOnlineOrderForCustomer("ORD-TRACK", 1)).toMatchObject({
+        status: "PROCESSING",
+        deliveryProgress: { complete: false },
+      });
       await dispatchOnlineOrder(
         {
           onlineOrderId: 1,
@@ -305,6 +313,7 @@ describe("online order current lifecycle", () => {
     });
     expect(await trackOnlineOrderForCustomer("ORD-TRACK", 1)).toMatchObject({
       status: "DELIVERED",
+      deliveryProgress: { complete: true },
     });
     // Display correction must not fabricate financial movements or rewrite history.
     expect((await db().select().from(s.onlineOrders))[0].status).toBe(

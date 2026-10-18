@@ -2273,7 +2273,7 @@ async function createOnlineOrderAttempt(
 export interface OnlineOrderTracking {
   orderNumber: string;
   status: string;
-  deliveryProgress?: { label: string; updatedAt: Date | string | null };
+  deliveryProgress?: { label: string; updatedAt: Date | string | null; complete?: boolean };
   subtotal: string;
   pricingBenefitType: StorefrontPricingBenefitType;
   pricingBenefitLabel: string | null;
@@ -2373,7 +2373,7 @@ async function buildOnlineOrderTracking(
   return {
     orderNumber: order.orderNumber,
     status: order.status,
-    deliveryProgress: lifecycle ? { label: lifecycle.label, updatedAt: lifecycle.latestEvent?.occurredAt ?? null } : undefined,
+    deliveryProgress: lifecycle ? { label: lifecycle.label, updatedAt: lifecycle.latestEvent?.occurredAt ?? null, complete: lifecycle.trackingComplete === true } : undefined,
     subtotal: String(order.subtotal),
     pricingBenefitType: order.pricingBenefitType,
     pricingBenefitLabel: order.pricingBenefitLabel ?? null,

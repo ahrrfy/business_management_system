@@ -17,6 +17,7 @@ describe("online order delivery facts", () => {
     expect(deriveOnlineOrderLifecycle(delivered)).toMatchObject({
       label: "تم التسليم والتحصيل",
       remittanceLabel: "بانتظار التوريد",
+      trackingComplete: true,
     });
     expect(
       deriveOnlineOrderLifecycle({
@@ -43,6 +44,7 @@ describe("online order delivery facts", () => {
     ).toMatchObject({
       label: "تم التسليم",
       collectionLabel: "تحصيل جزئي",
+      trackingComplete: false,
     });
     expect(
       deriveOnlineOrderLifecycle({
@@ -64,6 +66,7 @@ describe("online order delivery facts", () => {
       label: "تم التسليم",
       collectionLabel: "مدفوع مسبقا",
       remittanceLabel: null,
+      trackingComplete: true,
     });
   });
   it("shows physical movement, failure and return instead of frozen shipped text", () => {
@@ -78,6 +81,10 @@ describe("online order delivery facts", () => {
       expect(
         deriveOnlineOrderLifecycle({ ...delivered, parcelStatus }).label,
       ).toBe(label);
+      expect(
+        deriveOnlineOrderLifecycle({ ...delivered, parcelStatus })
+          .trackingComplete,
+      ).toBe(parcelStatus === "RETURNED");
     }
     expect(
       deriveOnlineOrderLifecycle({
@@ -95,6 +102,7 @@ describe("online order delivery facts", () => {
       label: "بانتظار استلام المرتجع",
       tone: "warning",
       collectionLabel: "تم التحصيل",
+      trackingComplete: false,
     });
     expect(
       deriveOnlineOrderLifecycle({

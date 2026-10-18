@@ -6,6 +6,8 @@ export interface OnlineOrderLifecycle {
   tone?: "info" | "positive" | "warning" | "negative" | "muted";
   collectionLabel: string | null;
   remittanceLabel: string | null;
+  /** Customer delivery/collection is complete; shop remittance remains an internal workflow. */
+  trackingComplete?: boolean;
   consignmentId: number | null;
   consignmentNumber: string | null;
   deliveryPartyName: string | null;
@@ -36,7 +38,7 @@ export function deriveOnlineOrderLifecycle(
   facts: OnlineOrderDeliveryFacts,
 ): Pick<
   OnlineOrderLifecycle,
-  "label" | "tone" | "collectionLabel" | "remittanceLabel"
+  "label" | "tone" | "collectionLabel" | "remittanceLabel" | "trackingComplete"
 > {
   const physicalLabels: Record<string, string> = {
     ASSIGNED: "مسند لجهة التوصيل",
@@ -68,7 +70,14 @@ export function deriveOnlineOrderLifecycle(
     tone = "warning";
   }
   if (facts.parcelStatus !== "DELIVERED")
-    return { label, tone, collectionLabel: null, remittanceLabel: null };
+    return {
+      label,
+      tone,
+      collectionLabel: null,
+      remittanceLabel: null,
+      // Cancelling an assignment can send an active order back to preparation.
+      trackingComplete: facts.parcelStatus === "RETURNED",
+    };
 
   const cod = new Decimal(facts.codAmount);
   if (cod.lte(0))
@@ -77,6 +86,7 @@ export function deriveOnlineOrderLifecycle(
       tone,
       collectionLabel: "مدفوع مسبقا",
       remittanceLabel: null,
+      trackingComplete: !returnPending,
     };
   const proved = Decimal.max(
     0,
@@ -105,7 +115,13 @@ export function deriveOnlineOrderLifecycle(
         : facts.moneyStatus === "PARTIAL"
           ? "توريد جزئي"
           : "بانتظار التوريد";
-  return { label, tone, collectionLabel, remittanceLabel };
+  return {
+    label,
+    tone,
+    collectionLabel,
+    remittanceLabel,
+    trackingComplete: fullCollection && !returnPending,
+  };
 }
 
 export function onlineOrderLifecycleChipClass(

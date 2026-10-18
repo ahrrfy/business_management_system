@@ -65,7 +65,7 @@ const ORDER_STATUS_GUIDANCE: Record<string, { description: string; step: number 
     step: 2,
   },
   DELIVERED: {
-    description: "اكتمل الطلب بعد تسجيل التسليم. نرجو التحقق من المنتجات عند الاستلام.",
+    description: "تم تسجيل تسليم الطلب. تظهر حالة استلام المبلغ بحسب الحركات المسجلة.",
     step: 3,
   },
   CANCELLED: {
@@ -158,7 +158,7 @@ export default function OrdersScreen() {
   // Only the visible, selected open order refreshes; background tabs send no requests.
   useFocusEffect(useCallback(() => {
     const selectedOrderNumber = tracking?.orderNumber;
-    if (!selectedOrderNumber || tracking.status === "DELIVERED" || tracking.status === "CANCELLED") return;
+    if (!selectedOrderNumber || tracking.deliveryProgress?.complete === true || tracking.status === "CANCELLED") return;
     let active = true;
     let running = false;
     const refresh = async () => {
@@ -181,7 +181,7 @@ export default function OrdersScreen() {
     const timer = setInterval(() => void refresh(), 30_000);
     const appState = AppState.addEventListener("change", state => { if (state === "active") void refresh(); });
     return () => { active = false; clearInterval(timer); appState.remove(); };
-  }, [tracking?.orderNumber, tracking?.status, recentOrders]));
+  }, [tracking?.orderNumber, tracking?.status, tracking?.deliveryProgress?.complete, recentOrders]));
 
   const track = async () => {
     if (trackingLoading) return;

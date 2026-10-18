@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 interface TrackedOrder {
   orderNumber: string;
   status: string;
+  deliveryProgress?: { complete?: boolean };
 }
 interface TrackingRefreshOptions<T extends TrackedOrder> {
   enabled: boolean;
@@ -27,13 +28,15 @@ export function useOrderTrackingRefresh<T extends TrackedOrder>({
   }, [fetchLatest, onResult]);
   const orderNumber = result?.orderNumber;
   const status = result?.status;
+  const complete = result?.deliveryProgress?.complete === true;
   useEffect(() => {
     if (
       !enabled ||
       !trackingToken ||
       !orderNumber ||
       !status ||
-      ["DELIVERED", "CANCELLED"].includes(status)
+      status === "CANCELLED" ||
+      complete
     )
       return;
     let disposed = false;
@@ -74,5 +77,5 @@ export function useOrderTrackingRefresh<T extends TrackedOrder>({
       window.removeEventListener("online", resume);
       window.removeEventListener("focus", resume);
     };
-  }, [enabled, trackingToken, orderNumber, status]);
+  }, [enabled, trackingToken, orderNumber, status, complete]);
 }

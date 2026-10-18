@@ -60,7 +60,7 @@ export type StorefrontSettings = {
 export type OnlineOrderTracking = {
   orderNumber: string;
   status: string;
-  deliveryProgress?: { label: string; updatedAt: string | null };
+  deliveryProgress?: { label: string; updatedAt: string | null; complete?: boolean };
   subtotal: string;
   pricingBenefitType: "NONE" | "WHOLESALE" | "OFFER" | "COUPON";
   pricingBenefitLabel: string | null;

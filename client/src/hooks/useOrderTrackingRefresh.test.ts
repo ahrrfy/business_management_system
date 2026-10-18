@@ -4,7 +4,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useOrderTrackingRefresh } from "./useOrderTrackingRefresh";
 
-type Order = { orderNumber: string; status: string };
+type Order = {
+  orderNumber: string;
+  status: string;
+  deliveryProgress?: { complete: boolean };
+};
 type Options = Parameters<typeof useOrderTrackingRefresh<Order>>[0];
 let root: Root;
 let container: HTMLDivElement;
@@ -46,6 +50,39 @@ afterEach(async () => {
 });
 
 describe("open customer order tracking refresh", () => {
+  it("keeps delivered orders live until customer collection is complete", async () => {
+    const pending: Order = {
+      ...order,
+      status: "DELIVERED",
+      deliveryProgress: { complete: false },
+    };
+    const complete = { ...pending, deliveryProgress: { complete: true } };
+    const fetchLatest = vi.fn(async () => complete);
+    const onResult = vi.fn();
+    await render({
+      enabled: true,
+      trackingToken: "bound-token",
+      result: pending,
+      fetchLatest,
+      onResult,
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(fetchLatest).toHaveBeenCalledOnce();
+    expect(onResult).toHaveBeenCalledWith(complete);
+    await render({
+      enabled: true,
+      trackingToken: "bound-token",
+      result: complete,
+      fetchLatest,
+      onResult,
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(fetchLatest).toHaveBeenCalledOnce();
+  });
   it("refreshes the bound token after 30 seconds without repeating the initial lookup", async () => {
     const fetchLatest = vi.fn(async () => ({ ...order, status: "DELIVERED" }));
     const onResult = vi.fn();
@@ -134,7 +171,11 @@ describe("open customer order tracking refresh", () => {
       await render({
         enabled: true,
         trackingToken: "bound-token",
-        result: { ...order, status },
+        result: {
+          ...order,
+          status,
+          deliveryProgress: { complete: status === "DELIVERED" },
+        },
         fetchLatest,
         onResult: vi.fn(),
       });
