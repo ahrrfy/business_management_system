@@ -16,6 +16,10 @@ import {
 import { getStoreAnalytics } from "../storeAnalyticsService";
 import { dispatchOnlineOrder } from "../dispatchOnlineOrder";
 import { cancelDeliveryAssignment } from "../../delivery/cancellation";
+import { getPartyStoreInTransit } from "../../delivery/queries";
+import { getCourierPerformance } from "../../reports/courierPerformance";
+import { getStoreCustomers } from "../storeCustomerService";
+import { workOrderRouter } from "../../../routers/workOrderRouter";
 
 const db = () => getDb()!;
 beforeEach(async () => {
@@ -113,6 +117,52 @@ beforeEach(async () => {
 });
 
 describe("online order current lifecycle", () => {
+  it("stops reception from offering a delivered invoice-linked order for assignment", async () => {
+    const [user] = await db().select().from(s.users).where(eq(s.users.id, 1));
+    const caller = workOrderRouter.createCaller({
+      req: { headers: {} },
+      res: {},
+      sessionId: null,
+      platformAdmin: null,
+      user: { ...user, isOwner: true, totpEnabledAt: new Date() },
+    } as never);
+    expect(
+      await caller.getByNumber({ orderNumber: "ORD-TRACK" }),
+    ).toMatchObject({
+      kind: "onlineOrder",
+      status: "DELIVERED",
+      activeConsignment: { id: 1, parcelStatus: "DELIVERED" },
+    });
+  });
+  it("keeps delivery exposure, courier reporting and customer totals consistent with invoice-linked parcels", async () => {
+    expect.soft(await getPartyStoreInTransit(1, 1)).toMatchObject({ count: 0 });
+    const performance = await getCourierPerformance({ branchId: 1 });
+    expect
+      .soft(performance.rows.find((row) => row.partyId === 1))
+      .toMatchObject({
+        assigned: 0,
+        inTransit: 0,
+        cnAssigned: 1,
+        cnDelivered: 1,
+      });
+    expect
+      .soft((await getStoreCustomers({ scopedBranchId: 1 })).rows[0])
+      .toMatchObject({
+        deliveredOrders: 1,
+        spend: "10000.00",
+      });
+    expect((await getStoreCustomers({ scopedBranchId: 2 })).rows).toEqual([]);
+    await db()
+      .update(s.deliveryConsignments)
+      .set({ parcelStatus: "RETURNED" })
+      .where(eq(s.deliveryConsignments.id, 1));
+    expect(
+      (await getStoreCustomers({ scopedBranchId: 1 })).rows[0],
+    ).toMatchObject({
+      deliveredOrders: 0,
+      spend: "0.00",
+    });
+  });
   it("reactivates an old cancelled assignment even when its header remained SHIPPED", async () => {
     await db().delete(s.deliveryEvents);
     await db().delete(s.deliveryLedgerEntries);
@@ -213,15 +263,13 @@ describe("online order current lifecycle", () => {
   });
   it("uses the linked consignment in lists, filters, counts, detail and authenticated customer tracking", async () => {
     const [deliveryEvent] = await db().select().from(s.deliveryEvents);
-    await db()
-      .insert(s.auditLogs)
-      .values({
-        userId: 1,
-        action: "store.order.dispatch",
-        entityType: "onlineOrder",
-        entityId: "1",
-        createdAt: deliveryEvent.occurredAt,
-      });
+    await db().insert(s.auditLogs).values({
+      userId: 1,
+      action: "store.order.dispatch",
+      entityType: "onlineOrder",
+      entityId: "1",
+      createdAt: deliveryEvent.occurredAt,
+    });
     const list = await listOnlineOrders({
       scopedBranchId: 1,
       status: "DELIVERED",

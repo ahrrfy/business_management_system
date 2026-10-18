@@ -32,6 +32,7 @@ import {
 // الجديدتان تُستوردان من وحدتيهما مباشرةً — تسجيلهما في البرميل/الراوتر شأن قائد الدمج.
 import { getConsignmentTimeline, listPartyObligations } from "../delivery/queries";
 import { payPartyDeliveryFees } from "../delivery/fees";
+import { getOnlineOrder } from "../storeAdmin/orderFulfillmentService";
 import {
   reconcileCustomerBalances,
   reconcileDeliveryFloat,
@@ -375,7 +376,7 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
     await allReconcileClean();
   });
 
-  it("ج٥: storeInTransit لا يعدّ طلباً له إرسالية حيّة — ويستعيده حين تموت الإرسالية", async () => {
+  it("ج٥: storeInTransit يستبعد الإرسالية، ويعيد الملغاة للتجهيز والمرتجعة للإلغاء", async () => {
     const { partyId } = await seed();
     await db().insert(s.invoices).values({
       id: 500, invoiceNumber: "INV-OT-1", sourceType: "ONLINE", branchId: 1,
@@ -385,6 +386,7 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
       id: 700, orderNumber: "ORD-700", customerId: 1, branchId: 1, invoiceId: 500,
       subtotal: "9000.00", total: "9000.00", status: "SHIPPED", deliveryPartyId: partyId,
     });
+    expect(await getPartyStoreInTransit(partyId)).toMatchObject({ count: 1, value: "9000.00" });
     await db().insert(s.deliveryConsignments).values({
       id: 900, consignmentNumber: "CN-T-900", branchId: 1, partyId, invoiceId: 500,
       sourceType: "ONLINE_ORDER", sourceId: 700, codAmount: "9000.00",
@@ -395,13 +397,15 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
     expect(whileLive.count).toBe(0);
     expect(Number(whileLive.value)).toBe(0);
 
-    // إرسالية ملغاة/مرتجعة = ميتة ⇒ يعود الطلب لعدسة المتجر كي لا يسقط من كل العدّادات.
-    await db().update(s.deliveryConsignments).set({ status: "CANCELLED" }).where(eq(s.deliveryConsignments.id, 900));
+    // إلغاء الإسناد يعيد الطلب للتجهيز؛ فلا يبقى محسوبا مالا مع المندوب.
+    await db().update(s.deliveryConsignments).set({ status: "CANCELLED", parcelStatus: "CANCELLED", moneyStatus: "CANCELLED" }).where(eq(s.deliveryConsignments.id, 900));
     const afterCancel = await getPartyStoreInTransit(partyId);
-    expect(afterCancel.count).toBe(1);
-    expect(Number(afterCancel.value)).toBe(9000);
-    await db().update(s.deliveryConsignments).set({ status: "RETURNED" }).where(eq(s.deliveryConsignments.id, 900));
-    expect((await getPartyStoreInTransit(partyId)).count).toBe(1);
+    expect(afterCancel.count).toBe(0);
+    expect(Number(afterCancel.value)).toBe(0);
+    expect((await getOnlineOrder(700, null))?.status).toBe("PROCESSING");
+    await db().update(s.deliveryConsignments).set({ status: "RETURNED", parcelStatus: "RETURNED" }).where(eq(s.deliveryConsignments.id, 900));
+    expect((await getPartyStoreInTransit(partyId)).count).toBe(0);
+    expect((await getOnlineOrder(700, null))?.status).toBe("CANCELLED");
   });
 
   it("ج٦: payPartyDeliveryFees يصرف كل المستحق بسند واحد وقيود لكل إرسالية — وidempotent", async () => {

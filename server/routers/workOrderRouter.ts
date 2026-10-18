@@ -88,7 +88,7 @@ import {
   rejectWorkOrderControlRequest,
   requestWorkOrderControl,
 } from "../services/workOrder/controlRequests";
-
+import { currentOnlineOrderStatus } from "../services/storeAdmin/onlineOrderTracking";
 const workOrderCreatorUser = alias(users, "workOrderCreatorUser");
 /** محرّر البنود الأخير (0199) — اسمٌ يُعرَض بجانب وسم «مُعدَّل» فيُعرَف من غيّر ماذا. */
 const materialsEditorUser = alias(users, "materialsEditorUser");
@@ -1467,7 +1467,7 @@ export const workOrderRouter = router({
           id: onlineOrders.id,
           orderNumber: onlineOrders.orderNumber,
           title: sql<string>`CONCAT('طلب متجر #', ${onlineOrders.orderNumber})`,
-          status: onlineOrders.status,
+          status: currentOnlineOrderStatus,
           salePrice: onlineOrders.total,
           deposit: sql<string>`'0.00'`,
           customerId: onlineOrders.customerId,

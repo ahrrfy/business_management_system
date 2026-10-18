@@ -42,6 +42,7 @@ describe("event-driven financial queries", () => {
     const orders = [
       ...["list", "counts", "detail", "myOrders"].map(procedure => read("storeAdmin", undefined, true, ["orders", procedure])),
       read("storeAdmin", undefined, true, ["analytics", "summary"]),
+      read("storeAdmin", undefined, true, ["customers", "list"]),
     ];
     const inactive = read("storeAdmin", undefined, false, ["orders", "leaderboard"]);
     const otherBranch = read("storeAdmin", 3, true, ["orders", "list"]);
