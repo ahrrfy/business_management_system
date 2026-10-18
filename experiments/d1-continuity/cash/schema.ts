@@ -2,12 +2,14 @@ import * as source from "../../../drizzle/schema";
 import { getTableConfig, MySqlDialect } from "drizzle-orm/mysql-core";
 import { getTableName } from "drizzle-orm";
 import Decimal from "decimal.js";
+import { cashReadIndexes } from './cash-indexes';
 
 // Finite experiment projection; every column/default and unique constraint comes
 // from the original schema. This is deliberately not a full ERP schema migration.
 export const tableNames = [
   "branches",
   "users",
+  "customers",
   "monthCloseSequence",
   "shifts",
   "products",
@@ -128,7 +130,10 @@ export const tables = tableNames.map((name) => {
     ...unique.map((cols) => "UNIQUE (" + cols.map(quote).join(",") + ")"),
     ...checks.map((s) => "CHECK (" + s + ")"),
     ...foreignKeys.map((f) =>
-      tableNames.includes(f.foreignTable)
+      tableNames.includes(f.foreignTable) &&
+      // Customer references admit read-only online holds. This cash slice still
+      // forbids customer-account effects in its financial/coupon tables.
+      (f.foreignTable !== 'customers' || ['onlineOrders','customers'].includes(name))
         ? "FOREIGN KEY (" +
           f.columns.map(quote).join(",") +
           ") REFERENCES " +
@@ -181,4 +186,5 @@ export const initializationSql = [
   "CREATE TABLE cashAssert (ok INTEGER NOT NULL CHECK(ok=1));",
   "CREATE TABLE cashCommands (requestId TEXT PRIMARY KEY, requestHash TEXT NOT NULL, requestJson TEXT NOT NULL, resultJson TEXT NOT NULL, planJson TEXT NOT NULL, planHash TEXT NOT NULL);",
   "CREATE TABLE cashOutbox (eventId TEXT PRIMARY KEY, requestId TEXT NOT NULL UNIQUE, payload TEXT NOT NULL, planHash TEXT NOT NULL);",
+  ...cashReadIndexes,
 ].join("\n");

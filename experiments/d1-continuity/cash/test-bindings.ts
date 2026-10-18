@@ -22,7 +22,7 @@ export function cashTestBindings(env: any, request: Request, state: any) {
     if (
       isLog &&
       fault === "old-primary-new-journal" &&
-      sql.some((s) => s.includes("COUNT(*) AS count"))
+      sql.some((s) => s.includes("FROM cashJournalHead WHERE id=1"))
     )
       await wait(() => state.preflightReleased, "TEST_PREFLIGHT_HOLD_TIMEOUT");
   };
@@ -42,7 +42,7 @@ export function cashTestBindings(env: any, request: Request, state: any) {
     if (
       isLog &&
       fault === "delay-prefix" &&
-      sql.some((s) => s.includes("COUNT(*) AS count"))
+      sql.some((s) => s.includes("FROM cashJournalHead WHERE id=1"))
     ) {
       state.prefixReaders++;
       await wait(() => state.prefixReaders >= 2, "TEST_PREFIX_BARRIER_TIMEOUT");

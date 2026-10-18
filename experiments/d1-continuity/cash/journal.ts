@@ -177,8 +177,9 @@ async function confirm(
   return { ...record, signature };
 }
 
-const prefixSql = "SELECT MAX(epoch) AS epoch,MIN(epoch) AS firstEpoch,COUNT(*) AS count FROM cashJournalCommitted";
-function checkedPrefix(row: any) {
+const prefixSql = "SELECT epoch,committedCount AS count,(SELECT MIN(epoch) FROM cashJournalCommitted) AS firstEpoch,COALESCE((SELECT MAX(epoch) FROM cashJournalCommitted),1) AS lastEpoch,(SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN('cashJournalCommitted_no_update','cashJournalCommitted_no_delete','cashJournalCommitted_contiguous','cashJournalCommitted_advance_head','cashJournalHead_guard','cashJournalHead_no_delete')) AS guards FROM cashJournalHead WHERE id=1";
+function checkedPrefix(row: any): number {
+  if(!row||row.guards!==6||row.lastEpoch!==row.epoch)throw failure('RECOVERY_PREFIX_INVALID');
   const epoch = row.epoch ?? CASH_BASELINE_EPOCH;
   if (
     !Number.isSafeInteger(epoch) ||
@@ -355,6 +356,20 @@ export async function committedRecords(logBinding: any) {
     signature: r.signature,
   }));
 }
+export async function committedRecordsPage(logBinding:any,after:number,through:number|undefined,limit:number,bound:(rows:any[])=>any[]) {
+  const log=primary(logBinding);await assertIdentity(log,'journal');
+  const current=await journalPrefix(log);through??=current;
+  if(!Number.isSafeInteger(after)||after<CASH_BASELINE_EPOCH||!Number.isSafeInteger(through)||through<after||through>current)throw failure('RECOVERY_PAGE_EPOCH_CONFLICT',409);
+  if(!Number.isSafeInteger(limit)||limit<1||limit>32)throw failure('INVALID_PAGE_LIMIT',400);
+  const fetched=await log.prepare('SELECT epoch,recordJson,signature FROM cashJournalCommitted WHERE epoch>? AND epoch<=? ORDER BY epoch LIMIT ?').bind(after,through,Math.min(limit,8)).all();
+  const records=bound(fetched.results.map((r:any,i:number)=>{
+    const record={...JSON.parse(r.recordJson),signature:r.signature};
+    if(r.epoch!==after+i+1||record.epoch!==r.epoch)throw failure('RECOVERY_SEQUENCE_GAP');return record;
+  }));
+  const nextEpoch=records.at(-1)?.epoch??after;
+  if(!records.length&&after<through)throw failure('RECOVERY_SEQUENCE_GAP');
+  return {labId:LAB_ID,schemaVersion:CASH_SCHEMA_VERSION,afterEpoch:after,throughEpoch:through,nextEpoch,complete:nextEpoch===through,records};
+}
 export async function restoreRecords(env: any, records: any[]) {
   const db = primary(env.DB);
   await assertIdentity(db, "restore");
@@ -381,7 +396,7 @@ export async function restoreRecords(env: any, records: any[]) {
       continue;
     }
     try {
-      await applyCashPlan(db, record.plan);
+      await applyCashPlan(db, record.plan,{historicalRestore:true});
       applied++;
     } catch {
       throw failure("RECOVERY_PREIMAGE_OR_EPOCH_CONFLICT", 409);

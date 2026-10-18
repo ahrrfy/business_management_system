@@ -33,6 +33,7 @@ export async function buildActualCashWorker(options = {}) {
     write: false,
     format: "esm",
     platform: "neutral",
+    loader: {'.sql':'text'},
     target: "es2022",
     mainFields: ["module", "main"],
     conditions: ["workerd", "worker", "import", "default"],

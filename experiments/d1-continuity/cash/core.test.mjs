@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { buildActualCashWorker, cashRoot } from "./build.mjs";
 const entry = String.raw`import {initializationSql,fixtureSql,fixtureActor,fixtureInput,prepareCashSale,applyCashPlan} from './actual';
 import {snapshotDatabase,snapshotResourceCounts} from './snapshot';
-export default {async fetch(request,env){try{const data=await request.json();if(data.action==='init'){for(const sql of (initializationSql+'\n'+fixtureSql).split(';').filter(s=>s.trim()))await env.DB.prepare(sql).run();return Response.json({ok:true});}if(data.action==='resources')return Response.json(snapshotResourceCounts());if(data.action==='snapshot-probe'){let query='';const binding={prepare(sql){query=sql;return {async first(){const snapshot=await env.DB.prepare(sql).first();if(data.invalid){const rows=JSON.parse(snapshot.productVariants);if(data.invalid==='decimal')rows[0].costPrice='NaN';if(data.invalid==='constraint')rows.push({...rows[0]});if(data.invalid==='cap')while(rows.length<1001)rows.push({...rows[0]});snapshot.productVariants=JSON.stringify(rows);}return snapshot;}};}};const before=snapshotResourceCounts();try{const snap=await snapshotDatabase(binding);snap.close();snap.close();return Response.json({before,after:snapshotResourceCounts(),query});}catch(error){return Response.json({before,after:snapshotResourceCounts(),error:error.message,query});}}if(data.action==='apply')return Response.json(await applyCashPlan(env.DB,data.plan,{fault:data.fault}));const prepared=await prepareCashSale(env.DB,data.input??fixtureInput,fixtureActor);if(data.action!=='prepare')await applyCashPlan(env.DB,prepared.plan,{fault:data.fault});return Response.json(prepared);}catch(error){return Response.json({error:error.message,cause:error.cause?.message,trace:error.cashTrace},{status:500})}}};`;
+export default {async fetch(request,env){try{const data=await request.json();if(data.action==='init'){for(const sql of (initializationSql+'\n'+fixtureSql).split(';').filter(s=>s.trim()))await env.DB.prepare(sql).run();return Response.json({ok:true});}if(data.action==='resources')return Response.json(snapshotResourceCounts());if(data.action==='snapshot-probe'){let query='';const binding={prepare(sql){query=sql;let bound=[];return {bind(...args){bound=args;return this;},async first(){const snapshot=await env.DB.prepare(sql).bind(...bound).first();if(data.invalid){const rows=JSON.parse(snapshot.productVariants);if(data.invalid==='decimal')rows[0].costPrice='NaN';if(data.invalid==='constraint')rows.push({...rows[0]});if(data.invalid==='sequence')snapshot.sequences=JSON.stringify({productVariants:-1});snapshot.productVariants=JSON.stringify(rows);}return snapshot;}};}};const before=snapshotResourceCounts();try{const snap=await snapshotDatabase(binding,fixtureInput,fixtureActor);snap.close();snap.close();return Response.json({before,after:snapshotResourceCounts(),query});}catch(error){return Response.json({before,after:snapshotResourceCounts(),error:error.message,query});}}if(data.action==='apply')return Response.json(await applyCashPlan(env.DB,data.plan,{fault:data.fault}));const prepared=await prepareCashSale(env.DB,data.input??fixtureInput,fixtureActor);if(data.action!=='prepare')await applyCashPlan(env.DB,prepared.plan,{fault:data.fault});return Response.json(prepared);}catch(error){return Response.json({error:error.message,cause:error.cause?.message,trace:error.cashTrace},{status:500})}}};`;
 await buildActualCashWorker({
   stdin: entry,
   outfile: cashRoot + "/build/core/worker.mjs",
@@ -52,15 +52,15 @@ try {
       db.prepare("UPDATE cashEpoch SET epoch=epoch+1 WHERE id=1"),
     ]);
   const resourceBefore = await call({ action: "resources" });
-  for (const invalid of ["decimal", "constraint", "cap"])
+  for (const invalid of ["decimal", "constraint", "sequence"])
     for (let i = 0; i < 4; i++) {
       const probe = await call({ action: "snapshot-probe", invalid });
       assert.match(
         probe.error,
         invalid === "decimal"
           ? /DECIMAL_RANGE/
-          : invalid === "cap"
-            ? /SNAPSHOT_LAB_LIMIT/
+          : invalid === "sequence"
+            ? /INVALID_SEQUENCE/
             : /UNIQUE constraint/,
       );
       assert.equal(probe.after.allocated - probe.before.allocated, 1);

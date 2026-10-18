@@ -10,3 +10,12 @@ CREATE TRIGGER cashJournalAttempts_no_update BEFORE UPDATE ON cashJournalAttempt
 CREATE TRIGGER cashJournalAttempts_no_delete BEFORE DELETE ON cashJournalAttempts BEGIN SELECT RAISE(ABORT,'IMMUTABLE_JOURNAL'); END;
 CREATE TRIGGER cashJournalCommitted_no_update BEFORE UPDATE ON cashJournalCommitted BEGIN SELECT RAISE(ABORT,'IMMUTABLE_JOURNAL'); END;
 CREATE TRIGGER cashJournalCommitted_no_delete BEFORE DELETE ON cashJournalCommitted BEGIN SELECT RAISE(ABORT,'IMMUTABLE_JOURNAL'); END;
+-- Constant-size prefix proof, bootstrapped once from the immutable journal.
+CREATE TABLE cashJournalHead(id INTEGER PRIMARY KEY CHECK(id=1),epoch INTEGER NOT NULL CHECK(epoch>=1),committedCount INTEGER NOT NULL CHECK(committedCount=epoch-1));
+INSERT INTO cashJournalAssert(ok) SELECT CASE WHEN COUNT(*)=COALESCE(MAX(epoch),1)-1 AND (COUNT(*)=0 OR MIN(epoch)=2) THEN 1 ELSE 0 END FROM cashJournalCommitted;
+INSERT INTO cashJournalHead SELECT 1,COALESCE(MAX(epoch),1),COUNT(*) FROM cashJournalCommitted;
+DELETE FROM cashJournalAssert;
+CREATE TRIGGER cashJournalCommitted_contiguous BEFORE INSERT ON cashJournalCommitted BEGIN SELECT CASE WHEN NEW.epoch=(SELECT epoch+1 FROM cashJournalHead WHERE id=1) THEN 1 ELSE RAISE(ABORT,'RECOVERY_SEQUENCE_GAP') END; END;
+CREATE TRIGGER cashJournalCommitted_advance_head AFTER INSERT ON cashJournalCommitted BEGIN UPDATE cashJournalHead SET epoch=NEW.epoch,committedCount=committedCount+1 WHERE id=1 AND epoch=NEW.epoch-1; SELECT CASE WHEN changes()=1 THEN 1 ELSE RAISE(ABORT,'RECOVERY_HEAD_MISMATCH') END; END;
+CREATE TRIGGER cashJournalHead_guard BEFORE UPDATE ON cashJournalHead WHEN NEW.id<>1 OR NEW.epoch<>OLD.epoch+1 OR NEW.committedCount<>OLD.committedCount+1 OR NOT EXISTS(SELECT 1 FROM cashJournalCommitted WHERE epoch=NEW.epoch) BEGIN SELECT RAISE(ABORT,'RECOVERY_HEAD_MISMATCH'); END;
+CREATE TRIGGER cashJournalHead_no_delete BEFORE DELETE ON cashJournalHead BEGIN SELECT RAISE(ABORT,'IMMUTABLE_JOURNAL'); END;

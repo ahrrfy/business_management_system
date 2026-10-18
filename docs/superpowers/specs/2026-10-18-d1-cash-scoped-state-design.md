@@ -1,0 +1,11 @@
+# Scoped cash-sale state in the isolated D1 lab
+
+The user approved replacing full-history staging with the data required for the current cash invoice and proving thousands of actual sales, concurrency, recovery and idempotency without production changes.
+
+The original financial services remain unchanged. One authoritative SQL snapshot returns the global epoch, SQLite AUTOINCREMENT high-water values, and explicitly selected rows: actor/branch/shift, singleton posting settings, latest period lock, today's cash-day guard, current request's original replay evidence, relevant catalog/prices/stock/reservations/online bundle holds, invoice counter and original eligible bounce-back candidates. Every projected table has an explicit selection policy; there is no implicit history fallback. Seed private SQLite sequences from the source sequence values, including gaps. Keep the original native D1 CAS, row preimages, constraints, unique keys and signed recovery acknowledgement.
+
+Capture UTC and Baghdad business dates for selection. A normal plan must be rejected with the same-request retry contract if either date changes before commit; verified historical restoration is exempt from this read-time guard. Unknown SQL and unsupported financial features continue failing closed. Relevant online allocations are not silently truncated.
+
+Add bounded keyset pages for recovery exports and diagnostic snapshots. Source pages pin an epoch and fail if it changes; immutable journal pages pin their upper epoch and check contiguous order. Bound rows and serialized bytes, preserving the cursor of the last returned row. Export/checkpoint files are fsynced before source disposal and restored one atomic sale at a time without source/journal bindings.
+
+Acceptance: unchanged original financial-source hashes; regression failure before implementation; correct sparse sequence/replay/branch/hold/date/period/coupon cases; 5,000 actual cash sales on local native Workers/D1 with bounded staging data, measured concurrency and exact money/stock/receipt/ledger invariants; complete signed export and independent recovery with no duplicated effect; bounded cloud smoke using existing retained lab stock; original ERP suite and normal commit gates. Cloud history and prior local evidence remain preserved. No paid upgrade, new VPS, production deployment, DNS or Hostinger action.

@@ -5,9 +5,13 @@ import { drizzle } from "drizzle-orm/mysql-proxy";
 import Decimal from "decimal.js";
 import { tables, quote } from "./schema";
 import { allowedQueries } from "./schema-queries";
+import { cashProjectionSql, cashReadBoundary, assertCashReadBoundary } from './cash-state';
 let engine: Promise<any> | undefined;
 // Lab resource evidence counts actual SQLite allocations and explicit closes.
 const resources = { allocated: 0, closed: 0 };
+// mysql2 decodes JSON columns before Drizzle sees them; the SQLite proxy must
+// provide the same values rather than silently hiding structured settings.
+const jsonColumns = new Set(tables.flatMap(t=>t.columns.filter(c=>c.sqlType==='json').map(c=>c.name)));
 export const snapshotResourceCounts = () => ({ ...resources });
 function sqlEngine() {
   return (engine ??= initSqlJs({
@@ -18,40 +22,16 @@ function sqlEngine() {
     },
   }));
 }
-export async function snapshotDatabase(binding: any) {
+export async function snapshotDatabase(binding: any, input: any, actor: any) {
   const session = binding.withSession
     ? binding.withSession("first-primary")
     : binding;
-  const object = (names: string[]) =>
-    "json_object(" +
-    names.flatMap((n) => ["'" + n + "'", quote(n)]).join(",") +
-    ")";
-  const pieces = tables.map((t) => {
-    let obj = object(t.columns.slice(0, 15).map((c) => c.name));
-    for (let i = 15; i < t.columns.length; i += 15)
-      obj =
-        "json_set(" +
-        obj +
-        "," +
-        t.columns
-          .slice(i, i + 15)
-          .flatMap((c) => ["'$.'||'" + c.name + "'", quote(c.name)])
-          .join(",") +
-        ")";
-    return (
-      "(SELECT json_group_array(json(rowJson)) FROM (SELECT " +
-      obj +
-      " AS rowJson FROM " +
-      quote(t.name) +
-      " ORDER BY " +
-      t.primary.map(quote).join(",") +
-      ")) AS " +
-      quote(t.name)
-    );
-  });
+  const boundary=cashReadBoundary();
   const snapshot = await session
-    .prepare("SELECT epoch," + pieces.join(",") + " FROM cashEpoch WHERE id=1")
+    .prepare(cashProjectionSql)
+    .bind(JSON.stringify({input,actor,...boundary}))
     .first();
+  assertCashReadBoundary(boundary);
   const expectedEpoch = snapshot.epoch;
   if (!Number.isSafeInteger(expectedEpoch) || expectedEpoch < 0)
     throw Error("INVALID_EPOCH");
@@ -74,7 +54,6 @@ export async function snapshotDatabase(binding: any) {
     for (let i = 0; i < tables.length; i++) {
       const t = tables[i];
       const rows = JSON.parse(snapshot[t.name]);
-      if (rows.length > 1000) throw Error("SNAPSHOT_LAB_LIMIT");
       before[t.name] = rows;
       if (!rows.length) continue;
       const names = t.columns.map((column) => column.name);
@@ -95,6 +74,15 @@ export async function snapshotDatabase(binding: any) {
       } finally {
         statement.free();
       }
+    }
+    const sequences=JSON.parse(snapshot.sequences);
+    for(const t of tables.filter(t=>t.columns.some(c=>c.auto))){
+      const seq=sequences[t.name]??0;
+      if(!Number.isSafeInteger(seq)||seq<0)throw Error('INVALID_SEQUENCE:'+t.name);
+      const localSeq=local.exec('SELECT seq FROM sqlite_sequence WHERE name='+"'"+t.name+"'")[0]?.values[0]?.[0]??0;
+      if(seq<localSeq)throw Error('INVALID_SEQUENCE:'+t.name);
+      local.run('UPDATE sqlite_sequence SET seq=? WHERE name=?',[seq,t.name]);
+      if(!local.getRowsModified())local.run('INSERT INTO sqlite_sequence(name,seq) VALUES(?,?)',[t.name,seq]);
     }
     local.run("COMMIT");
     let lastInsertId = 0;
@@ -218,8 +206,11 @@ export async function snapshotDatabase(binding: any) {
           try {
             stmt.bind(params);
             const rows = [];
-            while (stmt.step())
-              rows.push(method === "all" ? stmt.get() : stmt.getAsObject());
+            const names=stmt.getColumnNames();
+            while (stmt.step()) {
+              const values=stmt.get().map((value:any,i:number)=>jsonColumns.has(names[i])&&typeof value==='string'?JSON.parse(value):value);
+              rows.push(method === "all" ? values : Object.fromEntries(names.map((name:string,i:number)=>[name,values[i]])));
+            }
             return { rows: method === "all" ? rows : [rows] };
           } finally {
             stmt.free();
@@ -281,6 +272,8 @@ export async function snapshotDatabase(binding: any) {
       trace,
       expectedEpoch,
       before,
+      boundary,
+      metrics:{mode:'CASH_SCOPED',rows:Object.fromEntries(tables.map(t=>[t.name,before[t.name].length])),totalRows:Object.values(before).reduce((n,r)=>n+r.length,0),bytes:new TextEncoder().encode(JSON.stringify(snapshot)).byteLength},
       changes,
       close,
     };

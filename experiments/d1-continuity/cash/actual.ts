@@ -3,6 +3,7 @@ import { lockFinancialPostingGate } from "../../../server/services/reports/month
 import { idempotencyHash } from "../../../server/services/idempotency";
 import { snapshotDatabase } from "./snapshot";
 import { tables, quote, initializationSql } from "./schema";
+import { assertCashReadBoundary } from './cash-state';
 export { initializationSql } from "./schema";
 export { fixtureSql, fixtureActor, fixtureInput } from "./fixture";
 export const CASH_SCHEMA_VERSION = "actual-cash-v1";
@@ -94,7 +95,7 @@ function admit(input: any, actor: any) {
 }
 export async function prepareCashSale(binding: any, input: any, actor: any) {
   admit(input, actor);
-  const snap = await snapshotDatabase(binding);
+  const snap = await snapshotDatabase(binding,input,actor);
   try {
     for (const line of input.lines) {
       const v = snap.before.productVariants.find(
@@ -127,6 +128,7 @@ export async function prepareCashSale(binding: any, input: any, actor: any) {
       version: 1,
       schemaVersion: CASH_SCHEMA_VERSION,
       expectedEpoch: snap.expectedEpoch,
+      readBoundary: snap.boundary,
       requestId: input.clientRequestId,
       requestHash: idempotencyHash({ input, actor }),
       request: { input, actor },
@@ -148,6 +150,7 @@ export async function prepareCashSale(binding: any, input: any, actor: any) {
       snapshot: {
         epoch: snap.expectedEpoch,
         tables: tables.map((t) => t.name),
+        ...snap.metrics,
       },
     };
   } catch (error: any) {
@@ -178,7 +181,7 @@ export async function readCashCommand(binding: any, requestId: string) {
 export async function applyCashPlan(
   binding: any,
   plan: any,
-  options: { fault?: boolean; knownAbsent?: boolean } = {},
+  options: { fault?: boolean; knownAbsent?: boolean; historicalRestore?: boolean } = {},
 ) {
   if (
     plan.version !== 1 ||
@@ -198,6 +201,7 @@ export async function applyCashPlan(
       throw Error("REQUEST_CONFLICT");
     return { ...existing.result, idempotentReplay: true };
   }
+  if(plan.readBoundary&&!options.historicalRestore)assertCashReadBoundary(plan.readBoundary);
   const statements = [
     binding
       .prepare("UPDATE cashEpoch SET epoch=epoch+1 WHERE id=1 AND epoch=?")

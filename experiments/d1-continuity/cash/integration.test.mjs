@@ -390,10 +390,18 @@ test("original cash Worker: durable independent acknowledgement, lost responses 
       )
       .bind("cash-only-prepared")
       .first();
-    await journal
+    await assert.rejects(() => journal
       .prepare("INSERT INTO cashJournalCommitted VALUES(?,?,?,?,?)")
       .bind("cash-only-prepared", preparedOnly.planHash, 99, "{}", "x")
-      .run();
+      .run(), /RECOVERY_SEQUENCE_GAP/);
+    // Even an out-of-band owner disabling append triggers cannot make an
+    // invalid prefix exportable. Ordinary journal writes cannot create it.
+    await journal.batch([
+      journal.prepare('DROP TRIGGER cashJournalCommitted_contiguous'),
+      journal.prepare('DROP TRIGGER cashJournalCommitted_advance_head'),
+    ]);
+    await journal.prepare("INSERT INTO cashJournalCommitted VALUES(?,?,?,?,?)")
+      .bind("cash-only-prepared", preparedOnly.planHash, 99, "{}", "x").run();
     const corruptExport = await call(source, "/recovery-log");
     assert.equal(corruptExport.status, 503);
     assert.equal(corruptExport.body.code, "RECOVERY_PREFIX_INVALID");

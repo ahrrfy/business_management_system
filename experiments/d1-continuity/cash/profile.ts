@@ -3,6 +3,7 @@ export function cashProfiler(env: any) {
   const started = Date.now();
   const statements = new WeakMap<object, { raw: any; sql: string }>();
   const calls: any[] = [];
+  let stateRead: any = null;
   async function measure(
     role: string,
     method: string,
@@ -35,8 +36,14 @@ export function cashProfiler(env: any) {
         },
       };
       for (const method of ["first", "all", "run", "raw"])
-        wrapped[method] = (...args: any[]) =>
-          measure(role, method, 1, () => item[method](...args));
+        wrapped[method] = async (...args: any[]) => {
+          const result=await measure(role, method, 1, () => item[method](...args));
+          if(role==='primary'&&method==='first'&&sql.startsWith('WITH cashScope AS (')){
+            const rows=Object.fromEntries(Object.entries(result).filter(([name])=>!['epoch','sequences'].includes(name)).map(([name,value])=>[name,JSON.parse(value as string).length]));
+            stateRead={mode:'CASH_SCOPED',rows,totalRows:Object.values(rows).reduce((n,v)=>n+v,0),bytes:new TextEncoder().encode(JSON.stringify(result)).byteLength};
+          }
+          return result;
+        };
       statements.set(wrapped, { raw: item, sql });
       return wrapped;
     };
@@ -75,6 +82,7 @@ export function cashProfiler(env: any) {
         rpcCount: calls.length,
         sqlCount: calls.reduce((sum, call) => sum + call.statements, 0),
         calls,
+        stateRead,
       };
     },
   };
