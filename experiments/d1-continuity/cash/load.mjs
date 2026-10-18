@@ -4,6 +4,8 @@ import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { cashCloudContext, verifyResources } from "./cloud-run.mjs";
+import { cashRetryKind } from "./retry-policy.mjs";
+import { cashCloudClient } from "./cloud-client.mjs";
 if (
   process.argv.length !== 3 ||
   process.argv[2] !== "--confirm-isolated-cash-lab"
@@ -12,9 +14,11 @@ if (
 const c = await cashCloudContext();
 await verifyResources(c);
 let requests = 0,
-  retries = 0;
+  retries = 0,
+  transportRetries = 0;
 const measurements = [],
-  steps = [];
+  steps = [],
+  loadCommands = [];
 const canonical = (v) =>
   Array.isArray(v)
     ? "[" + v.map(canonical).join(",") + "]"
@@ -39,46 +43,36 @@ const sale = (id, quantity = "2") => ({
   lines: [{ variantId: 1, productUnitId: 1, quantity }],
   payment: { amount: quantity === "1" ? "100" : "200", method: "CASH" },
 });
+const send = cashCloudClient(c, () => assert.ok(++requests <= 160, "Cloud request budget exceeded"));
 async function call(target, route, input, fault = "") {
-  assert.ok(++requests <= 160, "Cloud request budget exceeded");
-  const start = performance.now();
-  const response = await fetch(target + route, {
-    method: input === undefined ? "GET" : "POST",
-    headers: {
-      authorization: "Bearer " + c.secret,
-      "content-type": "application/json",
-      ...(fault ? { "x-cash-fault": fault } : {}),
-    },
-    ...(input === undefined ? {} : { body: JSON.stringify(input) }),
-    signal: AbortSignal.timeout(30000),
-  });
-  const raw = await response.text();
-  let body;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    throw Error(
-      "Non-JSON test response " + response.status + ": " + raw.slice(0, 150),
-    );
-  }
-  return { status: response.status, body, ms: performance.now() - start };
+  const result = await send(target, route, input, fault);
+  transportRetries += result.transportAttempts.length - 1;
+  return result;
 }
 async function successful(input) {
   const start = performance.now();
+  const attempts = [];
+  const savedInput = canonical(input);
+  const savedDir = path.join(c.root, "results/saved-requests");
+  await mkdir(savedDir, {recursive: true});
+  const savedFile = path.join(savedDir, input.clientRequestId + ".json");
+  try { await writeFile(savedFile, savedInput, {flag: "wx"}); }
+  catch (error) { if (error.code !== "EEXIST") throw error; assert.equal(await readFile(savedFile, "utf8"), savedInput); }
   for (let i = 0; i < 12; i++) {
+    assert.equal(canonical(input), savedInput, "A replay must retain the exact saved request payload");
     const result = await call(c.source, "/sale", input);
+    attempts.push({status: result.status, code: result.body.code ?? null, ms: result.ms, profile: result.profile, transportAttempts: result.transportAttempts});
     if (result.status === 200) {
       assert.equal(result.body.recoveryAcknowledged, true);
-      return { ...result, ms: performance.now() - start };
+      return { ...result, ms: performance.now() - start, attempts };
     }
-    if (
-      result.status === 409 &&
-      [
-        "STALE_SNAPSHOT_RETRY_SAME_REQUEST",
-        "RECOVERY_PREFIX_PENDING_RETRY_SAME_REQUEST",
-      ].includes(result.body.code)
-    ) {
+    const retry = cashRetryKind(result.status, result.body.code);
+    if (retry) {
       retries++;
+      if (retry === "transport") {
+        const lookup = await call(c.source, "/operation/" + encodeURIComponent(input.clientRequestId));
+        attempts.at(-1).reconciliation = {status: lookup.status, state: lookup.body.state ?? null};
+      }
       continue;
     }
     assert.fail(JSON.stringify(result));
@@ -93,6 +87,12 @@ async function step(name, fn) {
 const before = await call(c.source, "/snapshot");
 assert.equal(before.status, 200, JSON.stringify(before));
 const initial = before.body.tables;
+await mkdir(path.join(c.root, "results"), {recursive: true});
+await writeFile(path.join(c.root, "results/cloud-start-" + prefix + ".json"), JSON.stringify({
+  prefix, at: new Date().toISOString(), initial,
+  plannedLoad: Array.from({length: 12}, (_, i) => sale("load-" + i, "1")),
+  sourceDeployment: JSON.parse(await readFile(path.join(c.root, "results/deploy.json"), "utf8")),
+}), {flag: "wx"});
 await step(
   "unavailable recovery log and final SQL failure leave all primary rows unchanged",
   async () => {
@@ -154,6 +154,7 @@ await step(
   async () => {
     const jobs = Array.from({ length: 12 }, (_, i) => sale("load-" + i, "1"));
     let index = 0;
+    const retriesBefore = retries, transportBefore = transportRetries;
     const start = performance.now();
     await Promise.all(
       Array.from({ length: 2 }, async () => {
@@ -161,6 +162,7 @@ await step(
           const job = jobs[index++],
             r = await successful(job);
           measurements.push(r.ms);
+          loadCommands.push({requestId: job.clientRequestId, logicalMs: r.ms, attempts: r.attempts});
         }
       }),
     );
@@ -170,10 +172,11 @@ await step(
       financialLoad: {
         commands: jobs.length,
         concurrency: 2,
-        retries,
+        retries: retries - retriesBefore,
+        transportRetries: transportRetries - transportBefore,
         seconds,
         rps: jobs.length / seconds,
-        p50: measurements[Math.floor(measurements.length * 0.5)],
+        p50: measurements[Math.ceil(measurements.length * 0.5) - 1],
         p95: measurements[
           Math.min(
             measurements.length - 1,
@@ -181,6 +184,9 @@ await step(
           )
         ],
         max: measurements.at(-1),
+        samples: measurements.length,
+        percentile: "nearest-rank; client logical latency includes retries",
+        commandsDetail: loadCommands,
       },
     });
   },
@@ -276,6 +282,7 @@ const result = {
   prefix,
   requests,
   retries,
+  transportRetries,
   steps,
   source: c.source,
   restore: c.restore,

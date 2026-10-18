@@ -12,23 +12,19 @@ test("original cash Worker: durable independent acknowledgement, lost responses 
     "../../../.superpowers/sdd/cash-integrated-build",
   );
   const testEntry = String.raw`import worker from './worker';
- let released=false,waiting=false,prefixReaders=0;
+ import {cashTestBindings} from './test-bindings';
+ const state={released:false,waiting:false,prefixReaders:0,preflightReleased:false,preflightWaiting:false};
  export default {async fetch(request,env){
   const url=new URL(request.url);
-  if(url.pathname==='/test-hold-state')return Response.json({waiting});
-  if(url.pathname==='/test-release-ack'){released=true;return Response.json({released:true});}
-  let queries=0;
-  const wrap=(raw,isLog=false)=>({
-   ...(raw.withSession?{withSession(mode){return wrap(raw.withSession(mode),isLog);}}:{}),
-   prepare(sql){queries++;const stmt=raw.prepare(sql);
-    if(isLog&&request.headers.get('x-cash-fault')==='delay-prefix'&&sql.includes('COUNT(*) AS count'))return {async first(){const row=await stmt.first();prefixReaders++;for(let i=0;prefixReaders<2;i++){if(i>=500)throw Error('TEST_PREFIX_BARRIER_TIMEOUT');await new Promise(resolve=>setTimeout(resolve,10));}return row;}};
-    if(isLog&&request.headers.get('x-cash-fault')==='hold-journal'&&sql.startsWith('INSERT INTO cashJournalCommitted'))return {bind(...args){const bound=stmt.bind(...args);return {async run(){waiting=true;for(let i=0;!released;i++){if(i>=500)throw Error('TEST_ACK_HOLD_TIMEOUT');await new Promise(resolve=>setTimeout(resolve,10));}return bound.run();}};}};
-    return stmt;
-   },
-   batch(statements){return raw.batch(statements);}
-  });
-  const response=await worker.fetch(request,{...env,DB:wrap(env.DB),...(env.RECOVERY_LOG?{RECOVERY_LOG:wrap(env.RECOVERY_LOG,true)}:{})});
-  const headers=new Headers(response.headers);headers.set('x-test-d1-queries',String(queries));
+  if(url.pathname==='/test-hold-state')return Response.json({waiting:state.waiting});
+  if(url.pathname==='/test-release-ack'){state.released=true;return Response.json({released:true});}
+  if(url.pathname==='/test-preflight-state')return Response.json({waiting:state.preflightWaiting});
+  if(url.pathname==='/test-release-preflight'){state.preflightReleased=true;return Response.json({released:true});}
+  const test=cashTestBindings(env,request,state);
+  const response=await worker.fetch(request,test.env);
+  const headers=new Headers(response.headers),counts=test.counts();
+  headers.set('x-test-d1-queries',String(counts.queries));
+  headers.set('x-test-primary-reply-lost',String(counts.droppedPrimaryReply));
   return new Response(response.body,{status:response.status,headers});
  }};`;
   await buildActualCashWorker({
@@ -62,6 +58,7 @@ test("original cash Worker: durable independent acknowledgement, lost responses 
     });
   let sourceDisposed = false,
     maxSaleQueries = 0;
+  const normalSaleRpcs = [];
   try {
     const db = await source.getD1Database("DB"),
       journal = await source.getD1Database("RECOVERY_LOG"),
@@ -110,6 +107,7 @@ test("original cash Worker: durable independent acknowledgement, lost responses 
           headers: {
             authorization: "Bearer " + secret,
             "content-type": "application/json",
+            "x-cash-profile": "1",
             ...(fault ? { "x-cash-fault": fault } : {}),
           },
           ...(input === undefined ? {} : { body: JSON.stringify(input) }),
@@ -132,7 +130,11 @@ test("original cash Worker: durable independent acknowledgement, lost responses 
       } catch {
         throw Error(route + ": " + raw);
       }
-      return { status: response.status, body, queries };
+      const profile = JSON.parse(response.headers.get("x-cash-profile") ?? "null");
+      if (route === "/sale" && response.status === 200 && body.idempotentReplay === false)
+        normalSaleRpcs.push(profile.rpcCount);
+      return { status: response.status, body, queries, profile,
+        primaryReplyLost: response.headers.get("x-test-primary-reply-lost") === "true" };
     };
     const input = (id) => ({
       branchId: 1,
@@ -260,17 +262,11 @@ test("original cash Worker: durable independent acknowledgement, lost responses 
     changed.lines[0].quantity = "1";
     changed.payment.amount = "100";
     assert.equal((await call(source, "/sale", changed)).status, 409);
-    assert.equal(
-      (
-        await call(
-          source,
-          "/sale",
-          input("cash-response-lost"),
-          "drop-response",
-        )
-      ).status,
-      503,
-    );
+    const dropped = await call(source, "/sale", input("cash-response-lost"), "drop-response");
+    assert.equal(dropped.status, 503);
+    assert.equal(dropped.primaryReplyLost, true);
+    assert.ok(dropped.profile.calls.some(call => call.role === "primary" && call.method === "batch" && !call.ok),
+      "An ambiguous successful primary commit must exercise actual winner readback");
     assert.equal(
       (await call(source, "/sale", input("cash-response-lost"))).status,
       200,
@@ -342,11 +338,32 @@ test("original cash Worker: durable independent acknowledgement, lost responses 
     assert.equal(worstReply.status, 200, JSON.stringify(worstReply));
     assert.equal(worstReply.body.total, "500.00");
     const worstSaleQueries = worstReply.queries;
+    const beforeRace = (await snapshot(source)).invoices.length;
+    const pausedInput = input("cash-preflight-old-primary");
+    const paused = call(source, "/sale", pausedInput, "old-primary-new-journal");
+    let pausedResult;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        if ((await (await source.dispatchFetch("http://cash.test/test-preflight-state")).json()).waiting) break;
+        assert.ok(attempt < 500, "Primary preflight barrier must be reached");
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      const newer = await call(source, "/sale", input("cash-preflight-newer-winner"));
+      assert.equal(newer.status, 200, JSON.stringify(newer));
+    } finally {
+      await source.dispatchFetch("http://cash.test/test-release-preflight");
+      pausedResult = await paused;
+    }
+    assert.equal(pausedResult.status, 409, JSON.stringify(pausedResult));
+    assert.equal(pausedResult.body.code, "STALE_SNAPSHOT_RETRY_SAME_REQUEST");
+    assert.equal((await snapshot(source)).invoices.length, beforeRace + 1,
+      "An old-primary/new-journal observation must not create an extra sale");
+    assert.equal((await call(source, "/sale", pausedInput)).status, 200);
     const records = (await call(source, "/recovery-log")).body.records;
-    assert.equal(records.length, 7);
+    assert.equal(records.length, 9);
     assert.deepEqual(
       records.map((r) => r.epoch),
-      [2, 3, 4, 5, 6, 7, 8],
+      Array.from({length: 9}, (_, i) => i + 2),
     );
     const sourceSnapshot = await snapshot(source);
     await assert.rejects(
@@ -431,24 +448,28 @@ test("original cash Worker: durable independent acknowledgement, lost responses 
     }
     assert.deepEqual(await snapshot(restore), sourceSnapshot);
     assert.deepEqual(outbound, []);
-    assert.equal(sourceSnapshot.invoices.length, 7);
-    assert.equal(sourceSnapshot.receipts.length, 7);
-    assert.equal(sourceSnapshot.inventoryMovements.length, 10);
-    assert.equal(sourceSnapshot.accountingEntries.length, 15);
+    assert.equal(sourceSnapshot.invoices.length, 9);
+    assert.equal(sourceSnapshot.receipts.length, 9);
+    assert.equal(sourceSnapshot.inventoryMovements.length, 12);
+    assert.equal(sourceSnapshot.accountingEntries.length, 19);
     assert.equal(
       sourceSnapshot.branchStock.find((r) => r.variantId === 1).quantity,
-      87,
+      83,
     );
+    assert.ok(normalSaleRpcs.length > 0);
+    assert.ok(Math.max(...normalSaleRpcs) <= 9,
+      "A successful new cash sale must use at most nine D1 binding calls; observed " + normalSaleRpcs.join(","));
     await mkdir(path.join(cashRoot, "results"), { recursive: true });
     await writeFile(
       path.join(cashRoot, "results/integration.json"),
       JSON.stringify(
         {
           passed: true,
-          committedSales: 7,
-          restoredSales: 7,
+          committedSales: 9,
+          restoredSales: 9,
           maxSaleQueries,
           worstSaleQueries,
+          normalSaleRpcs,
           sourceDisposedBeforeRestore: true,
           completeSnapshotEquality: true,
           networkAttempts: outbound.length,
@@ -459,6 +480,8 @@ test("original cash Worker: durable independent acknowledgement, lost responses 
             "primary-committed-copy-pending",
             "later-sale-prefix-repair",
             "concurrent-finalizer-reordering",
+            "primary-batch-response-lost",
+            "old-primary-new-journal-preflight",
             "saved-file-source-unavailable",
             "same-request-replay",
             "changed-payload",

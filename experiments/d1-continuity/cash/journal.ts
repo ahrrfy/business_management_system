@@ -4,6 +4,7 @@ import {
   readCashCommand,
   CASH_SCHEMA_VERSION,
   canonicalCashJson,
+  cashCommandFromRow,
 } from "./actual";
 
 export const LAB_ID = "actual-cash-20261017";
@@ -95,18 +96,17 @@ export async function verifyRecord(secret: string, r: any) {
 async function reserveRequest(log: any, id: string, envelope: any) {
   const hash = await digest(envelope),
     json = canonical(envelope);
-  await log
-    .prepare(
+  const results = await log.batch([
+    log.prepare(
       "INSERT INTO cashJournalRequests VALUES(?,?,?) ON CONFLICT(requestId) DO NOTHING",
     )
-    .bind(id, hash, json)
-    .run();
-  const row = await log
-    .prepare(
+    .bind(id, hash, json),
+    log.prepare(
       "SELECT envelopeHash,envelopeJson FROM cashJournalRequests WHERE requestId=?",
     )
-    .bind(id)
-    .first();
+    .bind(id),
+  ]);
+  const row = results[1].results[0];
   if (row?.envelopeHash !== hash || row.envelopeJson !== json)
     throw failure("IDEMPOTENCY_PAYLOAD_MISMATCH", 409);
   return hash;
@@ -114,28 +114,30 @@ async function reserveRequest(log: any, id: string, envelope: any) {
 async function prepareRecord(log: any, plan: any) {
   const hash = await digest(plan),
     json = canonical(plan);
-  await log
-    .prepare(
+  const results = await log.batch([
+    log.prepare(
       "INSERT INTO cashJournalAttempts VALUES(?,?,?,?) ON CONFLICT(planHash) DO NOTHING",
     )
-    .bind(hash, plan.requestId, plan.expectedEpoch + 1, json)
-    .run();
-  const row = await log
-    .prepare("SELECT planJson FROM cashJournalAttempts WHERE planHash=?")
-    .bind(hash)
-    .first();
+    .bind(hash, plan.requestId, plan.expectedEpoch + 1, json),
+    log.prepare("SELECT planJson FROM cashJournalAttempts WHERE planHash=?")
+    .bind(hash),
+  ]);
+  const row = results[1].results[0];
   if (row?.planJson !== json) throw failure("RECOVERY_PREPARE_MISMATCH");
-  return hash;
+  return Object.freeze({ hash, json });
 }
 async function confirm(
   log: any,
   secret: string,
   envelopeHash: string,
   plan: any,
+  preparedProof?: { hash: string; json: string },
 ) {
   // A winner may have committed in a competing request. Store its exact plan,
   // never the losing candidate. Successful responses require this durable ACK.
-  const planHash = await prepareRecord(log, plan);
+  const planHash = await digest(plan);
+  if (preparedProof?.hash !== planHash || preparedProof.json !== canonical(plan))
+    await prepareRecord(log, plan);
   const record = {
     version: 1,
     labId: LAB_ID,
@@ -150,8 +152,8 @@ async function confirm(
     signature = await sign(secret, record);
   // The next-epoch check and append are ONE SQLite statement. Concurrent
   // finalizers can copy the same winner, but cannot acknowledge a later gap.
-  await log
-    .prepare(
+  const results = await log.batch([
+    log.prepare(
       "INSERT INTO cashJournalCommitted SELECT ?,?,?,?,? WHERE ?=COALESCE((SELECT MAX(epoch) FROM cashJournalCommitted),?)+1 ON CONFLICT(requestId) DO NOTHING",
     )
     .bind(
@@ -162,26 +164,21 @@ async function confirm(
       signature,
       record.epoch,
       CASH_BASELINE_EPOCH,
-    )
-    .run();
-  const row = await log
-    .prepare(
+    ),
+    log.prepare(
       "SELECT recordJson,signature FROM cashJournalCommitted WHERE requestId=?",
     )
-    .bind(plan.requestId)
-    .first();
+    .bind(plan.requestId),
+  ]);
+  const row = results[1].results[0];
   if (!row) throw prefixPending();
   if (row.recordJson !== recordJson || row.signature !== signature)
     throw failure("RECOVERY_ACK_MISMATCH");
   return { ...record, signature };
 }
 
-async function journalPrefix(log: any) {
-  const row = await log
-    .prepare(
-      "SELECT MAX(epoch) AS epoch,MIN(epoch) AS firstEpoch,COUNT(*) AS count FROM cashJournalCommitted",
-    )
-    .first();
+const prefixSql = "SELECT MAX(epoch) AS epoch,MIN(epoch) AS firstEpoch,COUNT(*) AS count FROM cashJournalCommitted";
+function checkedPrefix(row: any) {
   const epoch = row.epoch ?? CASH_BASELINE_EPOCH;
   if (
     !Number.isSafeInteger(epoch) ||
@@ -191,6 +188,9 @@ async function journalPrefix(log: any) {
   )
     throw failure("RECOVERY_PREFIX_INVALID");
   return epoch;
+}
+async function journalPrefix(log: any) {
+  return checkedPrefix(await log.prepare(prefixSql).first());
 }
 async function repairNextWinner(
   db: any,
@@ -232,28 +232,51 @@ export async function createWithRecovery(
 ) {
   const db = primary(env.DB),
     log = primary(env.RECOVERY_LOG);
-  await assertIdentity(db, "primary");
-  if (fault === "log-unavailable") throw failure("RECOVERY_LOG_UNAVAILABLE");
-  await assertIdentity(log, "journal");
   const id = input?.clientRequestId;
   if (typeof id !== "string" || !/^\w[\w:-]{7,99}$/.test(id))
     throw failure("INVALID_REQUEST_ID", 400);
   const envelope = { input, actor };
+  // Both preflights are read-only. No financial or journal write is allowed
+  // until both identities have been checked; each DB batch is one snapshot.
+  const states = await Promise.allSettled([
+    db.batch([
+      db.prepare("SELECT role FROM cashSandboxIdentity WHERE id=?").bind(LAB_ID),
+      db.prepare("SELECT * FROM cashCommands WHERE requestId=?").bind(id),
+      db.prepare("SELECT epoch FROM cashEpoch WHERE id=1"),
+    ]),
+    fault === "log-unavailable" ? Promise.reject(failure("RECOVERY_LOG_UNAVAILABLE")) : log.batch([
+      log.prepare("SELECT role FROM cashJournalIdentity WHERE id=?").bind(LAB_ID),
+      log.prepare(prefixSql),
+    ]),
+  ]);
+  if (states[0].status === "rejected") throw states[0].reason;
+  const primaryState = states[0].value;
+  if (primaryState[0].results[0]?.role !== "primary") throw failure("SANDBOX_IDENTITY_MISMATCH");
+  if (states[1].status === "rejected") throw states[1].reason;
+  const journalState = states[1].value;
+  if (journalState[0].results[0]?.role !== "journal") throw failure("SANDBOX_IDENTITY_MISMATCH");
   const envelopeHash = await reserveRequest(log, id, envelope);
-  let winning = await readCashCommand(db, id),
+  let winning = cashCommandFromRow(primaryState[1].results[0]),
     replayed = !!winning,
-    record: any;
-  const prefix = await journalPrefix(log);
+    record: any,
+    preparedProof: { hash: string; json: string } | undefined;
+  const prefix = checkedPrefix(journalState[1].results[0]);
   const target = winning
     ? winning.plan.expectedEpoch + 1
-    : (await db.prepare("SELECT epoch FROM cashEpoch WHERE id=1").first())
-        ?.epoch;
+    : primaryState[2].results[0]?.epoch;
   if (
     !Number.isSafeInteger(target) ||
-    target < CASH_BASELINE_EPOCH ||
-    (prefix > target && !winning)
+    target < CASH_BASELINE_EPOCH
   )
     throw failure("RECOVERY_PRIMARY_EPOCH_INVALID");
+  if (!winning && prefix > target) {
+    // Independent preflight snapshots may straddle another complete commit.
+    // Distinguish that race from a journal genuinely ahead of the primary.
+    const fresh = await primary(env.DB).prepare("SELECT epoch FROM cashEpoch WHERE id=1").first();
+    if (Number.isSafeInteger(fresh?.epoch) && fresh.epoch >= prefix)
+      throw failure("STALE_SNAPSHOT_RETRY_SAME_REQUEST", 409);
+    throw failure("RECOVERY_PRIMARY_EPOCH_INVALID");
+  }
   if (prefix < target) {
     // Repair at most ONE missing winner, and never combine a repair with a new
     // financial sale in this invocation (D1 Free: 50 queries/invocation).
@@ -263,12 +286,24 @@ export async function createWithRecovery(
   }
   for (let attempt = 0; !winning && attempt < 1; attempt++) {
     const prepared = await prepareCashSale(db, input, actor);
-    await prepareRecord(log, prepared.plan);
+    preparedProof = await prepareRecord(log, prepared.plan);
     if (fault === "after-prepare") throw failure("PREPARED_PRIMARY_ABSENT");
     try {
       await applyCashPlan(db, prepared.plan, {
         fault: fault === "last-statement",
+        knownAbsent: true,
       });
+      // A successful native atomic batch committed these exact immutable
+      // command/plan bytes. An ambiguous/failed response follows the catch
+      // path and re-reads the actual primary winner instead.
+      winning = {
+        requestId: id,
+        requestHash: prepared.plan.requestHash,
+        request: prepared.plan.request,
+        result: prepared.plan.result,
+        plan: prepared.plan,
+        planHash: preparedProof.hash,
+      };
     } catch (error: any) {
       winning = await readCashCommand(db, id);
       if (winning) {
@@ -287,7 +322,6 @@ export async function createWithRecovery(
         throw error;
       throw failure("STALE_SNAPSHOT_RETRY_SAME_REQUEST", 409);
     }
-    winning = await readCashCommand(db, id);
     break;
   }
   if (!winning) throw failure("PRIMARY_COMMIT_UNCERTAIN");
@@ -295,7 +329,7 @@ export async function createWithRecovery(
     throw failure("PRIMARY_REQUEST_MISMATCH", 409);
   if (fault === "after-primary")
     throw failure("PRIMARY_COMMITTED_RECOVERY_PENDING");
-  record ??= await confirm(log, env.LAB_TOKEN, envelopeHash, winning.plan);
+  record ??= await confirm(log, env.LAB_TOKEN, envelopeHash, winning.plan, preparedProof);
   if (fault === "drop-response")
     throw failure("RESPONSE_LOST_AFTER_BOTH_COMMITS");
   return {

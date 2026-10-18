@@ -157,11 +157,7 @@ export async function prepareCashSale(binding: any, input: any, actor: any) {
     snap.close();
   }
 }
-export async function readCashCommand(binding: any, requestId: string) {
-  const row = await binding
-    .prepare("SELECT * FROM cashCommands WHERE requestId=?")
-    .bind(requestId)
-    .first();
+export function cashCommandFromRow(row: any) {
   return row
     ? {
         requestId: row.requestId,
@@ -173,10 +169,16 @@ export async function readCashCommand(binding: any, requestId: string) {
       }
     : null;
 }
+export async function readCashCommand(binding: any, requestId: string) {
+  return cashCommandFromRow(await binding
+    .prepare("SELECT * FROM cashCommands WHERE requestId=?")
+    .bind(requestId)
+    .first());
+}
 export async function applyCashPlan(
   binding: any,
   plan: any,
-  options: { fault?: boolean } = {},
+  options: { fault?: boolean; knownAbsent?: boolean } = {},
 ) {
   if (
     plan.version !== 1 ||
@@ -188,7 +190,9 @@ export async function applyCashPlan(
     plan.changes.length > 30
   )
     throw Error("INVALID_PLAN_VERSION");
-  const existing = await readCashCommand(binding, plan.requestId);
+  // The original epoch CAS and unique command key still arbitrate a race after
+  // the caller's authoritative preflight. Restore/default callers re-read.
+  const existing = options.knownAbsent ? null : await readCashCommand(binding, plan.requestId);
   if (existing) {
     if (existing.requestHash !== plan.requestHash)
       throw Error("REQUEST_CONFLICT");

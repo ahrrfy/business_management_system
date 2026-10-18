@@ -10,6 +10,28 @@ import {
 import { createRealtimeEvent, REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
 import net from "node:net";
 
+async function availableTestPort(): Promise<number> {
+  const probe = net.createServer();
+  return new Promise<number>((resolve, reject) => {
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const address = probe.address();
+      if (!address || typeof address === "string") {
+        probe.close();
+        reject(new Error("Expected an allocated loopback TCP port"));
+        return;
+      }
+      probe.close((error) => error ? reject(error) : resolve(address.port));
+    });
+  });
+}
+
+const waitForConnection = (socket: net.Socket) =>
+  new Promise<void>((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+
 describe("realtimeBridge — ناقل الحلقات الداخلي بين عمال PM2 والذاكرة", () => {
   afterEach(async () => {
     await stopRealtimeBridge();
@@ -45,7 +67,7 @@ describe("realtimeBridge — ناقل الحلقات الداخلي بين عم�
 
   it("يشغّل خادم Hub محلي فائق الخفة على 127.0.0.1 عندما يكون العامل 0 متعدد العمال", async () => {
     // منفذ اختبار عشوائي معزول
-    const testPort = 3109 + Math.floor(Math.random() * 200);
+    const testPort = await availableTestPort();
 
     const mode = await initRealtimeBridge({
       port: testPort,
@@ -123,7 +145,7 @@ describe("realtimeBridge — ناقل الحلقات الداخلي بين عم�
 
   it("يسقط تلقائياً إلى in_memory بسلاسة عند تعذر فتح المنفذ دون إسقاط الخادم", async () => {
     // حجز المنفذ مسبقاً بمقبس خارجي
-    const testPort = 3450 + Math.floor(Math.random() * 100);
+    const testPort = await availableTestPort();
     const blocker = net.createServer();
     await new Promise<void>((resolve) => blocker.listen(testPort, "127.0.0.1", () => resolve()));
 
@@ -144,7 +166,7 @@ describe("realtimeBridge — ناقل الحلقات الداخلي بين عم�
   });
 
   it("ينقل الأحداث بين عاملي PM2 (Hub وعامل Client) بالاتجاهين مع عزل معرّف العامل", async () => {
-    const testPort = 3600 + Math.floor(Math.random() * 200);
+    const testPort = await availableTestPort();
     const hub = new RealtimeBridgeManager();
     const worker1 = new RealtimeBridgeManager();
 
@@ -207,7 +229,7 @@ describe("realtimeBridge — ناقل الحلقات الداخلي بين عم�
   });
 
   it("requests one snapshot repair after hub recovery while the browser SSE can remain open", async () => {
-    const port = 4200 + Math.floor(Math.random() * 200);
+    const port = await availableTestPort();
     const hub = new RealtimeBridgeManager();
     const worker = new RealtimeBridgeManager();
     const received: any[] = [];
@@ -233,7 +255,7 @@ describe("realtimeBridge — ناقل الحلقات الداخلي بين عم�
   });
 
   it("يخزن الأحداث مؤقتاً في طابور عند نشرها وعامل الـ Client غير متصل بالـ Hub، ثم يفرغها فور الاتصال", async () => {
-    const testPort = 3800 + Math.floor(Math.random() * 200);
+    const testPort = await availableTestPort();
     const workerClient = new RealtimeBridgeManager();
 
     // تشغيل العامل في وضع client قبل إطلاق الـ Hub
@@ -301,7 +323,7 @@ describe("PWA release confirmation barrier", () => {
   };
   const cluster = async () => {
     const managers = [makeManager(), makeManager(), makeManager()];
-    const port = 46000 + Math.floor(Math.random() * 1000);
+    const port = await availableTestPort();
     await managers[0].init({
       port,
       isHub: true,
@@ -339,7 +361,7 @@ describe("PWA release confirmation barrier", () => {
     const handler = vi.fn(() => true);
     hub.setReleaseHandler(handler);
     source.setReleaseHandler(handler);
-    const port = 49000 + Math.floor(Math.random() * 500);
+    const port = await availableTestPort();
     try {
       await hub.init({
         port,
@@ -367,7 +389,7 @@ describe("PWA release confirmation barrier", () => {
     const hub = makeManager();
     const handler = vi.fn(() => true);
     hub.setReleaseHandler(handler);
-    const port = 49500 + Math.floor(Math.random() * 500);
+    const port = await availableTestPort();
     let socket: net.Socket | undefined;
     try {
       await hub.init({
@@ -377,7 +399,7 @@ describe("PWA release confirmation barrier", () => {
         expectedWorkerCount: 2,
       });
       socket = net.createConnection({ host: "127.0.0.1", port });
-      await new Promise<void>((resolve) => socket!.once("connect", resolve));
+      await waitForConnection(socket);
       const result = new Promise<boolean>((resolve) => {
         let buffer = "";
         socket!.on("data", (chunk) => {
@@ -440,7 +462,7 @@ describe("PWA release confirmation barrier", () => {
   });
 
   it("recovers hub mode automatically after EADDRINUSE when the old PM2 worker releases the port", async () => {
-    const port = 48500 + Math.floor(Math.random() * 400);
+    const port = await availableTestPort();
     const blocker = net.createServer();
     await new Promise<void>((resolve) =>
       blocker.listen(port, "127.0.0.1", () => resolve()),
@@ -516,7 +538,7 @@ describe("PWA release confirmation barrier", () => {
   it("rejects absent members and a disconnected source without queuing or replaying releases", async () => {
     const hub = makeManager();
     const source = makeManager();
-    const port = 47000 + Math.floor(Math.random() * 1000);
+    const port = await availableTestPort();
     const handler = vi.fn(() => true);
     source.setReleaseHandler(handler);
     try {
@@ -571,7 +593,7 @@ describe("PWA release confirmation barrier", () => {
     hub.setReleaseHandler(handler);
     peerA.setReleaseHandler(handler);
     peerB.setReleaseHandler(handler);
-    const port = 49100 + Math.floor(Math.random() * 300);
+    const port = await availableTestPort();
     try {
       await hub.init({
         port,

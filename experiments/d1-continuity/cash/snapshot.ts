@@ -67,27 +67,36 @@ export async function snapshotDatabase(binding: any) {
   };
   try {
     local.run(tables.map((t) => t.ddl).join("\n"));
+    // Hydration is private and discarded on failure. One local transaction
+    // and one prepared INSERT per table avoid reparsing every historical row.
+    local.run("BEGIN");
     const before: Record<string, any[]> = {};
     for (let i = 0; i < tables.length; i++) {
       const t = tables[i];
       const rows = JSON.parse(snapshot[t.name]);
       if (rows.length > 1000) throw Error("SNAPSHOT_LAB_LIMIT");
       before[t.name] = rows;
-      for (const row of rows) {
-        validateRow(t, row);
-        const names = Object.keys(row);
-        local.run(
-          "INSERT INTO " +
-            quote(t.name) +
-            " (" +
-            names.map(quote).join(",") +
-            ") VALUES (" +
-            names.map(() => "?").join(",") +
-            ")",
-          names.map((k) => row[k]),
-        );
+      if (!rows.length) continue;
+      const names = t.columns.map((column) => column.name);
+      const statement = local.prepare(
+        "INSERT INTO " +
+          quote(t.name) +
+          " (" +
+          names.map(quote).join(",") +
+          ") VALUES (" +
+          names.map(() => "?").join(",") +
+          ")",
+      );
+      try {
+        for (const row of rows) {
+          validateRow(t, row);
+          statement.run(names.map((name) => row[name]));
+        }
+      } finally {
+        statement.free();
       }
     }
+    local.run("COMMIT");
     let lastInsertId = 0;
     const trace: any[] = [];
     const callback = async (
