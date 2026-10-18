@@ -12,17 +12,18 @@ import {
 } from "../cash/paged-client.mjs";
 
 assert.equal(process.argv[2], "--confirm-isolated-credit-lab");
+assert.ok(process.argv[3] === undefined || process.argv[3] === "--subsecond");
+const resultBase =
+  process.argv[3] === "--subsecond"
+    ? "results/subsecond-20261018"
+    : "results/perf-20261018";
 const c = await creditCloudContext();
 await verifyCreditResources(c);
 const identity = {
   labId: "actual-credit-20261018",
   schemaVersion: "actual-credit-v1",
 };
-const dir = path.join(
-  creditRoot,
-  "results/perf-20261018",
-  "recovery-" + Date.now(),
-);
+const dir = path.join(creditRoot, resultBase, "recovery-" + Date.now());
 await mkdir(dir, { recursive: true });
 let requests = 0,
   sourceBlocked = false;
@@ -198,7 +199,7 @@ const result = {
 };
 await writeFile(path.join(dir, "result.json"), JSON.stringify(result, null, 2));
 await writeFile(
-  path.join(creditRoot, "results/perf-20261018/cloud-recovery.json"),
+  path.join(creditRoot, resultBase, "cloud-recovery.json"),
   JSON.stringify(result, null, 2),
 );
 console.log(

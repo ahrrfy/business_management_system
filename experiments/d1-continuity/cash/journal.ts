@@ -27,14 +27,19 @@ export function failure(code: string, status = 503) {
 }
 export const primary = (db: any) =>
   db.withSession ? db.withSession("first-primary") : db;
-const key = (secret: string) =>
-  crypto.subtle.importKey(
+let importedKey: { secret: string; value: Promise<CryptoKey> } | undefined;
+const key = (secret: string) => {
+  if (importedKey?.secret === secret) return importedKey.value;
+  const value = crypto.subtle.importKey(
     "raw",
     bytes(secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign", "verify"],
   );
+  importedKey = { secret, value };
+  return value;
+};
 export const identitySql = (role: "primary" | "restore") =>
   `CREATE TABLE cashSandboxIdentity(id TEXT PRIMARY KEY,role TEXT NOT NULL); INSERT INTO cashSandboxIdentity VALUES('${LAB_ID}','${role}');`;
 export async function assertIdentity(db: any, role: string) {
@@ -115,7 +120,12 @@ async function reserveRequest(log: any, id: string, envelope: any) {
     throw failure("IDEMPOTENCY_PAYLOAD_MISMATCH", 409);
   return hash;
 }
-async function prepareRecord(log: any, plan: any, envelope?: any) {
+async function prepareRecord(
+  log: any,
+  plan: any,
+  envelope?: any,
+  guarded = false,
+) {
   const hash = await digest(plan),
     json = canonical(plan);
   // Reject before PREPARED/primary writes if the future acknowledged record
@@ -157,14 +167,38 @@ async function prepareRecord(log: any, plan: any, envelope?: any) {
   const reservation = envelope
     ? { hash: await digest(envelope), json: canonical(envelope) }
     : null;
+  // A lookahead invocation has already read the primary. These conditions
+  // replace its separate journal preflight, without trusting cached identity
+  // or prefix. Gate BOTH inserts even when matching rows already exist.
+  const eligible =
+    "EXISTS(SELECT 1 FROM cashJournalIdentity WHERE id=? AND role='journal') AND EXISTS(SELECT 1 FROM (" +
+    prefixSql +
+    ") p WHERE p.epoch=? AND p.guards=6 AND p.lastEpoch=p.epoch AND p.count=p.epoch-1 AND (p.count=0 OR p.firstEpoch=2))";
   const results = await log.batch([
+    ...(guarded
+      ? [
+          log
+            .prepare("SELECT role FROM cashJournalIdentity WHERE id=?")
+            .bind(LAB_ID),
+          log.prepare(prefixSql),
+        ]
+      : []),
     ...(reservation
       ? [
           log
             .prepare(
-              "INSERT INTO cashJournalRequests VALUES(?,?,?) ON CONFLICT(requestId) DO NOTHING",
+              guarded
+                ? "INSERT INTO cashJournalRequests SELECT ?,?,? WHERE " +
+                    eligible +
+                    " ON CONFLICT(requestId) DO NOTHING"
+                : "INSERT INTO cashJournalRequests VALUES(?,?,?) ON CONFLICT(requestId) DO NOTHING",
             )
-            .bind(plan.requestId, reservation.hash, reservation.json),
+            .bind(
+              plan.requestId,
+              reservation.hash,
+              reservation.json,
+              ...(guarded ? [LAB_ID, plan.expectedEpoch] : []),
+            ),
           log
             .prepare(
               "SELECT envelopeHash,envelopeJson FROM cashJournalRequests WHERE requestId=?",
@@ -175,7 +209,9 @@ async function prepareRecord(log: any, plan: any, envelope?: any) {
     log
       .prepare(
         reservation
-          ? "INSERT INTO cashJournalAttempts SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM cashJournalRequests WHERE requestId=? AND envelopeHash=? AND envelopeJson=?) ON CONFLICT(planHash) DO NOTHING"
+          ? "INSERT INTO cashJournalAttempts SELECT ?,?,?,? WHERE " +
+              (guarded ? eligible + " AND " : "") +
+              "EXISTS(SELECT 1 FROM cashJournalRequests WHERE requestId=? AND envelopeHash=? AND envelopeJson=?) ON CONFLICT(planHash) DO NOTHING"
           : "INSERT INTO cashJournalAttempts VALUES(?,?,?,?) ON CONFLICT(planHash) DO NOTHING",
       )
       .bind(
@@ -183,6 +219,7 @@ async function prepareRecord(log: any, plan: any, envelope?: any) {
         plan.requestId,
         plan.expectedEpoch + 1,
         json,
+        ...(guarded ? [LAB_ID, plan.expectedEpoch] : []),
         ...(reservation
           ? [plan.requestId, reservation.hash, reservation.json]
           : []),
@@ -191,15 +228,28 @@ async function prepareRecord(log: any, plan: any, envelope?: any) {
       .prepare("SELECT planJson FROM cashJournalAttempts WHERE planHash=?")
       .bind(hash),
   ]);
+  if (guarded) {
+    try {
+      if (results[0].results[0]?.role !== "journal")
+        throw failure("SANDBOX_IDENTITY_MISMATCH");
+      if (checkedPrefix(results[1].results[0]) !== plan.expectedEpoch)
+        throw prefixPending();
+    } catch (error: any) {
+      // Invalid proofs cannot be converted into an unconditional reservation.
+      error.skipReservation = true;
+      throw error;
+    }
+  }
+  const offset = guarded ? 2 : 0;
   if (reservation) {
-    const row = results[1].results[0];
+    const row = results[offset + 1].results[0];
     if (
       row?.envelopeHash !== reservation.hash ||
       row.envelopeJson !== reservation.json
     )
       throw failure("IDEMPOTENCY_PAYLOAD_MISMATCH", 409);
   }
-  const row = results[reservation ? 3 : 1].results[0];
+  const row = results[offset + (reservation ? 3 : 1)].results[0];
   if (row?.planJson !== json) throw failure("RECOVERY_PREPARE_MISMATCH");
   return Object.freeze({ hash, json, envelopeHash: reservation?.hash });
 }
@@ -277,6 +327,36 @@ function checkedPrefix(row: any): number {
 async function journalPrefix(log: any) {
   return checkedPrefix(await log.prepare(prefixSql).first());
 }
+export async function recoveryReadiness(env: any) {
+  const db = primary(env.DB),
+    log = primary(env.RECOVERY_LOG);
+  const [source, journal] = await Promise.all([
+    db.batch([
+      db
+        .prepare("SELECT role FROM cashSandboxIdentity WHERE id=?")
+        .bind(LAB_ID),
+      db.prepare("SELECT epoch FROM cashEpoch WHERE id=1"),
+    ]),
+    log.batch([
+      log
+        .prepare("SELECT role FROM cashJournalIdentity WHERE id=?")
+        .bind(LAB_ID),
+      log.prepare(prefixSql),
+    ]),
+  ]);
+  if (
+    source[0].results[0]?.role !== "primary" ||
+    journal[0].results[0]?.role !== "journal"
+  )
+    throw failure("SANDBOX_IDENTITY_MISMATCH");
+  const epoch = source[1].results[0]?.epoch;
+  if (
+    !Number.isSafeInteger(epoch) ||
+    epoch !== checkedPrefix(journal[1].results[0])
+  )
+    throw prefixPending();
+  return { epoch };
+}
 async function repairNextWinner(
   db: any,
   log: any,
@@ -325,26 +405,38 @@ export async function createWithRecovery(
   if (typeof id !== "string" || !/^\w[\w:-]{7,99}$/.test(id))
     throw failure("INVALID_REQUEST_ID", 400);
   const envelope = { input, actor };
-  // Both preflights are read-only. No financial or journal write is allowed
-  // until both identities have been checked; each DB batch is one snapshot.
+  const ahead = strategy ? env.CREDIT_READAHEAD : undefined;
+  if (
+    ahead &&
+    (ahead.envelope !== canonical(envelope) ||
+      ahead.generation !== env.CREDIT_HANDOFF?.generation)
+  )
+    throw failure("LOOKAHEAD_ENVELOPE_OR_GENERATION_MISMATCH");
+  const guarded = !!ahead && !ahead.state.state[1].results[0];
+  // Default callers check both read-only preflights first. The credit
+  // lookahead path checks journal proofs in its conditionally writable batch.
   const states = await Promise.allSettled([
-    strategy
-      ? strategy.primaryPreflight(db, input, actor)
-      : db.batch([
-          db
-            .prepare("SELECT role FROM cashSandboxIdentity WHERE id=?")
-            .bind(LAB_ID),
-          db.prepare("SELECT * FROM cashCommands WHERE requestId=?").bind(id),
-          db.prepare("SELECT epoch FROM cashEpoch WHERE id=1"),
-        ]),
+    ahead
+      ? Promise.resolve(ahead.state)
+      : strategy
+        ? strategy.primaryPreflight(db, input, actor)
+        : db.batch([
+            db
+              .prepare("SELECT role FROM cashSandboxIdentity WHERE id=?")
+              .bind(LAB_ID),
+            db.prepare("SELECT * FROM cashCommands WHERE requestId=?").bind(id),
+            db.prepare("SELECT epoch FROM cashEpoch WHERE id=1"),
+          ]),
     fault === "log-unavailable"
       ? Promise.reject(failure("RECOVERY_LOG_UNAVAILABLE"))
-      : log.batch([
-          log
-            .prepare("SELECT role FROM cashJournalIdentity WHERE id=?")
-            .bind(LAB_ID),
-          log.prepare(prefixSql),
-        ]),
+      : guarded
+        ? Promise.resolve(null)
+        : log.batch([
+            log
+              .prepare("SELECT role FROM cashJournalIdentity WHERE id=?")
+              .bind(LAB_ID),
+            log.prepare(prefixSql),
+          ]),
   ]);
   if (states[0].status === "rejected") throw states[0].reason;
   const primaryState = strategy ? states[0].value.state : states[0].value;
@@ -352,17 +444,18 @@ export async function createWithRecovery(
     throw failure("SANDBOX_IDENTITY_MISMATCH");
   if (states[1].status === "rejected") throw states[1].reason;
   const journalState = states[1].value;
-  if (journalState[0].results[0]?.role !== "journal")
+  if (!guarded && journalState![0].results[0]?.role !== "journal")
     throw failure("SANDBOX_IDENTITY_MISMATCH");
   let envelopeHash: string;
   let winning = cashCommandFromRow(primaryState[1].results[0]),
     replayed = !!winning,
     record: any,
-    preparedProof: { hash: string; json: string } | undefined;
-  const prefix = checkedPrefix(journalState[1].results[0]);
+    preparedProof: { hash: string; json: string } | undefined,
+    provenNewCommit = false;
   const target = winning
     ? winning.plan.expectedEpoch + 1
     : primaryState[2].results[0]?.epoch;
+  const prefix = guarded ? target : checkedPrefix(journalState![1].results[0]);
   const merged = !!strategy && !winning && prefix === target;
   if (!merged) envelopeHash = await reserveRequest(log, id, envelope);
   if (!Number.isSafeInteger(target) || target < CASH_BASELINE_EPOCH)
@@ -394,11 +487,28 @@ export async function createWithRecovery(
           actor,
           states[0].value.snapshot,
         );
-        const proof = await prepareRecord(log, prepared.plan, envelope);
+        const proof = await prepareRecord(
+          log,
+          prepared.plan,
+          envelope,
+          guarded,
+        );
         preparedProof = proof;
         envelopeHash = proof.envelopeHash!;
-      } catch (error) {
+      } catch (error: any) {
         // Business/byte-limit failures retain the original immutable key contract.
+        if (guarded) {
+          if (error.skipReservation) throw error;
+          const checked = await log.batch([
+            log
+              .prepare("SELECT role FROM cashJournalIdentity WHERE id=?")
+              .bind(LAB_ID),
+            log.prepare(prefixSql),
+          ]);
+          if (checked[0].results[0]?.role !== "journal")
+            throw failure("SANDBOX_IDENTITY_MISMATCH");
+          checkedPrefix(checked[1].results[0]);
+        }
         await reserveRequest(log, id, envelope);
         throw error;
       }
@@ -423,6 +533,7 @@ export async function createWithRecovery(
         plan: prepared.plan,
         planHash: preparedProof.hash,
       };
+      provenNewCommit = true;
     } catch (error: any) {
       winning = await readCashCommand(db, id);
       if (winning) {
@@ -446,6 +557,8 @@ export async function createWithRecovery(
   if (!winning) throw failure("PRIMARY_COMMIT_UNCERTAIN");
   if (canonical(winning.request) !== canonical(envelope))
     throw failure("PRIMARY_REQUEST_MISMATCH", 409);
+  if (provenNewCommit)
+    env.CREDIT_HANDOFF?.committed(winning.plan.expectedEpoch + 1);
   if (fault === "after-primary")
     throw failure("PRIMARY_COMMITTED_RECOVERY_PENDING");
   record ??= await confirm(
@@ -457,6 +570,7 @@ export async function createWithRecovery(
   );
   if (fault === "drop-response")
     throw failure("RESPONSE_LOST_AFTER_BOTH_COMMITS");
+  env.CREDIT_HANDOFF?.acknowledged(record.epoch);
   return {
     ...winning.result,
     idempotentReplay: replayed,

@@ -1,8 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
-import core from "./worker";
+import core, { creditReadAhead } from "./worker";
 import { creditHttpInput } from "./http-input";
 import { LAB_ID } from "./identity";
-import { CashWriterQueue } from "../cash/writer-queue";
+import { CreditPipelineQueue } from "./pipeline";
+import { creditActor } from "./fixture";
 export const CREDIT_WRITER_NAME = LAB_ID + ":primary:writer-v1";
 const error = (code: string, status: number) =>
   Response.json(
@@ -16,11 +17,20 @@ async function validate(request: Request, env: any) {
   )
     return error("UNAUTHORIZED", 401);
   const route = new URL(request.url).pathname;
+  if (request.method === "GET" && route === "/ready") {
+    try {
+      creditActor(request, env);
+      return "";
+    } catch {
+      return error("INVALID_LAB_TERMINAL", 400);
+    }
+  }
   if (request.method !== "POST" || !["/sale", "/payment"].includes(route))
     return error("UNSUPPORTED_TEST_ROUTE", 404);
   const raw = await request.text();
   if (raw.length > 20000) return error("INVALID_REQUEST_SIZE", 400);
   try {
+    creditActor(request, env);
     const parsed = creditHttpInput.safeParse(JSON.parse(raw));
     if (
       !parsed.success ||
@@ -33,23 +43,37 @@ async function validate(request: Request, env: any) {
   return raw;
 }
 export class CreditWriter extends DurableObject<any> {
-  protected readonly queue = new CashWriterQueue();
+  protected readonly queue = new CreditPipelineQueue();
   protected readonly instance = crypto.randomUUID();
-  protected execute(request: Request) {
-    return core.fetch(request, this.env);
+  protected environment(_request: Request) {
+    return this.env;
+  }
+  protected execute(request: Request, env: any) {
+    return core.fetch(request, env);
   }
   async fetch(request: Request) {
+    if (request.method === "GET" && new URL(request.url).pathname === "/ready")
+      return core.fetch(request, this.environment(request));
     const raw = await validate(request, this.env);
     if (raw instanceof Response) return raw;
     try {
-      const run = await this.queue.run(() =>
-        this.execute(
-          new Request(request.url, {
-            method: "POST",
-            headers: request.headers,
-            body: raw,
+      const execution = new Request(request.url, {
+        method: "POST",
+        headers: request.headers,
+        body: raw,
+      });
+      const env = this.environment(execution);
+      const run = await this.queue.run(
+        (hooks) =>
+          this.execute(execution, {
+            ...env,
+            CREDIT_READAHEAD: hooks.prefetched,
+            CREDIT_HANDOFF: hooks,
           }),
-        ),
+        env.CREDIT_PIPELINE === "0"
+          ? undefined
+          : (_epoch, generation) =>
+              creditReadAhead(execution.clone(), env, generation),
       );
       const headers = new Headers(run.value.headers);
       headers.set(
@@ -60,6 +84,7 @@ export class CreditWriter extends DurableObject<any> {
           queuedAhead: run.queuedAhead,
           waitMs: run.waitMs,
           executionMs: run.executionMs,
+          lookahead: run.lookahead,
           maxActive: this.queue.stats().maxActive,
         }),
       );
@@ -69,9 +94,11 @@ export class CreditWriter extends DurableObject<any> {
       });
     } catch (e: any) {
       return error(
-        e.message === "CASH_WRITER_QUEUE_FULL"
-          ? "CASH_WRITER_QUEUE_FULL"
-          : "CASH_WRITER_EXECUTION_UNCERTAIN",
+        e.message.startsWith("LOOKAHEAD_")
+          ? e.message
+          : e.message === "CASH_WRITER_QUEUE_FULL"
+            ? "CASH_WRITER_QUEUE_FULL"
+            : "CASH_WRITER_EXECUTION_UNCERTAIN",
         503,
       );
     }
@@ -79,9 +106,12 @@ export class CreditWriter extends DurableObject<any> {
 }
 export default {
   async fetch(request: Request, env: any) {
+    const ready =
+      request.method === "GET" && new URL(request.url).pathname === "/ready";
     if (
-      request.method !== "POST" ||
-      !["/sale", "/payment"].includes(new URL(request.url).pathname)
+      !ready &&
+      (request.method !== "POST" ||
+        !["/sale", "/payment"].includes(new URL(request.url).pathname))
     )
       return core.fetch(request, env);
     const raw = await validate(request, env);
@@ -92,9 +122,9 @@ export default {
         env.CREDIT_WRITER.idFromName(CREDIT_WRITER_NAME),
       ).fetch(
         new Request(request.url, {
-          method: "POST",
+          method: ready ? "GET" : "POST",
           headers: request.headers,
-          body: raw,
+          ...(ready ? {} : { body: raw }),
         }),
       );
     } catch {

@@ -1,4 +1,4 @@
-import { fixtureActor } from "./fixture";
+import { creditActor } from "./fixture";
 import {
   CASH_SCHEMA_VERSION,
   readCashCommand,
@@ -12,6 +12,7 @@ import {
   LAB_ID,
   primary,
   assertIdentity,
+  recoveryReadiness,
 } from "../cash/journal";
 import {
   snapshotManifest,
@@ -22,6 +23,35 @@ import {
 import { cashProfiler } from "../cash/profile";
 import { creditPage } from "./ui";
 import { creditEvidence } from "./evidence";
+import { canonicalCashJson } from "../cash/plan-runtime";
+import { warmSnapshotEngine } from "../cash/snapshot";
+import { tables as creditTables } from "./schema";
+export async function creditReadAhead(
+  request: Request,
+  env: any,
+  generation: string,
+) {
+  const input = creditHttpInput.parse(await request.json());
+  const actor = creditActor(request, env);
+  const profile =
+    request.headers.get("x-cash-profile") === "1"
+      ? cashProfiler(env, "CREDIT_SCOPED")
+      : null;
+  const profiled = profile?.env ?? env;
+  const state = await creditRecoveryStrategy.primaryPreflight(
+    primary(profiled.DB),
+    input,
+    actor,
+  );
+  return {
+    state,
+    epoch: state.state[2].results[0]?.epoch,
+    generation,
+    envelope: canonicalCashJson({ input, actor }),
+    profile,
+    env: profiled,
+  };
+}
 export default {
   async fetch(request: Request, env: any) {
     const u = new URL(request.url);
@@ -37,11 +67,19 @@ export default {
       request.headers.get("authorization") !== "Bearer " + env.LAB_TOKEN
     )
       return Response.json({ code: "UNAUTHORIZED" }, { status: 401 });
-    const profile =
-      request.headers.get("x-cash-profile") === "1"
+    const ahead = env.CREDIT_READAHEAD;
+    const profile = ahead
+      ? ahead.profile
+      : request.headers.get("x-cash-profile") === "1"
         ? cashProfiler(env, "CREDIT_SCOPED")
         : null;
-    if (profile) env = profile.env;
+    if (ahead)
+      env = {
+        ...ahead.env,
+        CREDIT_READAHEAD: ahead,
+        CREDIT_HANDOFF: env.CREDIT_HANDOFF,
+      };
+    else if (profile) env = profile.env;
     const json = (body: any, status = 200) =>
       Response.json(body, {
         status,
@@ -70,10 +108,22 @@ export default {
         value = await createWithRecovery(
           env,
           input.data,
-          env.TEST_ACTOR ?? fixtureActor,
+          creditActor(request, env),
           request.headers.get("x-cash-fault") ?? "",
           creditRecoveryStrategy,
         );
+      } else if (request.method === "GET" && u.pathname === "/ready") {
+        creditActor(request, env);
+        const [state] = await Promise.all([
+          recoveryReadiness(env),
+          warmSnapshotEngine(creditTables),
+        ]);
+        value = {
+          ready: true,
+          epoch: state.epoch,
+          cachedFinancialRows: false,
+          productionAuthentication: false,
+        };
       } else if (request.method === "GET" && u.pathname === "/status")
         value = {
           labId: LAB_ID,

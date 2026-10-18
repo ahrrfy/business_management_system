@@ -70,6 +70,7 @@ export async function prepareCashSale(
     mode: "CREDIT_SCOPED",
     exactCustomerBalance: true,
     rejectDeliveryHistory: true,
+    schemaTemplate: true,
     ...(preloaded ? { preloaded } : {}),
   });
   try {

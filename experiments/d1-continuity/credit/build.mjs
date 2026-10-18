@@ -50,7 +50,7 @@ export async function buildCreditWorker(options = {}) {
   await build({
     stdin: {
       contents:
-        "export{initializationSql,tables}from'./schema';export{fixtureSql}from'./fixture';",
+        "export{initializationSql,tables}from'./schema';export{fixtureSql,multiCashierFixtureSql}from'./fixture';",
       resolveDir: creditRoot,
       loader: "ts",
     },
@@ -66,6 +66,7 @@ export async function buildCreditWorker(options = {}) {
   for (const [name, value] of Object.entries({
     "schema.sql": meta.initializationSql,
     "fixture.sql": meta.fixtureSql,
+    "multi-cashier.sql": meta.multiCashierFixtureSql,
     "tables.json": JSON.stringify(meta.tables, null, 2),
   }))
     await writeFile(path.join(dir, name), value);

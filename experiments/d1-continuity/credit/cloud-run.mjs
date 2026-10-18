@@ -374,6 +374,12 @@ async function deploy(c) {
         workers_dev: true,
         preview_urls: false,
         observability: { enabled: false },
+        vars: {
+          ...(c.runtime.multiCashierFixtureAt
+            ? { CREDIT_MULTI_CASHIER_LAB: "1" }
+            : {}),
+          CREDIT_PIPELINE: c.runtime.creditPipeline === false ? "0" : "1",
+        },
         find_additional_modules: true,
         rules: [
           { type: "CompiledWasm", globs: ["**/*.wasm"], fallthrough: true },

@@ -19,6 +19,41 @@ export const fixtureSql =
 // MySQL has a STORED generated search column. Native D1 uses the same known
 // synthetic fixture values; this lab exposes no customer-edit operation.
 export const fixtureActor = { userId: 1, branchId: 1, role: "cashier" };
+// Additive isolated baseline extension, installed identically on source and
+// restore. It never resets stock, balances, commands or journal history.
+export const multiCashierFixtureSql =
+  [11, 12, 13, 14]
+    .map(
+      (id) =>
+        `INSERT INTO users(id,openId,name,role,loginMethod,branchId) VALUES(${id},'credit-lab-${id}','Synthetic Credit Cashier ${id}','cashier','local',1);` +
+        `INSERT INTO shifts(id,userId,branchId,shiftStatus,shiftType,openingBalance,openGuard) VALUES(${id},${id},1,'OPEN','RETAIL','0.00','1:${id}:RETAIL');`,
+    )
+    .join("\n") +
+  tables
+    .filter((t) => ["users", "shifts"].includes(t.name))
+    .map((t) => {
+      const columns = t.columns.filter(
+        (c) => c.defaultSql === "CURRENT_TIMESTAMP",
+      );
+      return columns.length
+        ? "\nUPDATE " +
+            quote(t.name) +
+            " SET " +
+            columns
+              .map((c) => quote(c.name) + "='2026-10-18 00:00:00'")
+              .join(",") +
+            " WHERE id IN(11,12,13,14);"
+        : "";
+    })
+    .join("");
+export function creditActor(request: Request, env: any) {
+  if (env.TEST_ACTOR) return env.TEST_ACTOR;
+  const terminal = request.headers.get("x-credit-lab-terminal");
+  if (!terminal) return fixtureActor;
+  if (env.CREDIT_MULTI_CASHIER_LAB !== "1" || !/^(11|12|13|14)$/.test(terminal))
+    throw Object.assign(Error("INVALID_LAB_TERMINAL"), { status: 400 });
+  return { userId: Number(terminal), branchId: 1, role: "cashier" };
+}
 export const fixtureInput = {
   commandType: "SALE",
   branchId: 1,

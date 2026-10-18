@@ -13,6 +13,10 @@ import {
 let engine: Promise<any> | undefined;
 // Lab resource evidence counts actual SQLite allocations and explicit closes.
 const resources = { allocated: 0, closed: 0 };
+const schemaTemplates = new WeakMap<
+  object,
+  { ddl: string; bytes: Uint8Array }
+>();
 // mysql2 decodes JSON columns before Drizzle sees them; the SQLite proxy must
 // provide the same values rather than silently hiding structured settings.
 type SnapshotOptions = {
@@ -22,6 +26,7 @@ type SnapshotOptions = {
   mode?: string;
   exactCustomerBalance?: boolean;
   rejectDeliveryHistory?: boolean;
+  schemaTemplate?: boolean;
   preloaded?: {
     row: any;
     envelope: string;
@@ -37,6 +42,27 @@ function sqlEngine() {
       return instance.exports;
     },
   }));
+}
+// Compile immutable code at cashier connection time; no rows or balances are cached.
+function emptySchemaTemplate(SQL: any, tables: typeof defaultTables) {
+  const ddl = tables.map((t) => t.ddl).join("\n");
+  const prior = schemaTemplates.get(tables);
+  if (prior?.ddl === ddl) return prior.bytes;
+  const template = new SQL.Database();
+  resources.allocated++;
+  try {
+    template.run(ddl);
+    const bytes = template.export();
+    schemaTemplates.set(tables, { ddl, bytes });
+    return bytes;
+  } finally {
+    template.close();
+    resources.closed++;
+  }
+}
+export async function warmSnapshotEngine(tables?: typeof defaultTables) {
+  const SQL = await sqlEngine();
+  if (tables) emptySchemaTemplate(SQL, tables);
 }
 export async function snapshotDatabase(
   binding: any,
@@ -78,7 +104,11 @@ export async function snapshotDatabase(
   if (!Number.isSafeInteger(expectedEpoch) || expectedEpoch < 0)
     throw Error("INVALID_EPOCH");
   const SQL = await sqlEngine();
-  const local = new SQL.Database();
+  // SQL.js may own/mutate its input buffer. Each invocation receives a COPY
+  // of a schema-only database; the retained template never receives any rows.
+  const local = options.schemaTemplate
+    ? new SQL.Database(new Uint8Array(emptySchemaTemplate(SQL, tables)))
+    : new SQL.Database();
   resources.allocated++;
   let closed = false;
   const close = () => {
@@ -88,7 +118,7 @@ export async function snapshotDatabase(
     resources.closed++;
   };
   try {
-    local.run(tables.map((t) => t.ddl).join("\n"));
+    if (!options.schemaTemplate) local.run(tables.map((t) => t.ddl).join("\n"));
     // Hydration is private and discarded on failure. One local transaction
     // and one prepared INSERT per table avoid reparsing every historical row.
     local.run("BEGIN");

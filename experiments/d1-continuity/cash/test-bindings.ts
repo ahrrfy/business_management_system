@@ -13,11 +13,13 @@ export function cashTestBindings(env: any, request: Request, state: any) {
   const before = async (sql: string[], isLog: boolean) => {
     if (
       isLog &&
-      fault === "hold-journal" &&
+      ["hold-journal", "hold-then-fail-ack"].includes(fault ?? "") &&
       sql.some((s) => s.startsWith("INSERT INTO cashJournalCommitted"))
     ) {
       state.waiting = true;
       await wait(() => state.released, "TEST_ACK_HOLD_TIMEOUT");
+      if (fault === "hold-then-fail-ack")
+        throw Error("SIMULATED_ACK_UNCERTAIN");
     }
     if (
       isLog &&
@@ -39,6 +41,8 @@ export function cashTestBindings(env: any, request: Request, state: any) {
       );
       state.abort(); // Native DurableObjectState.abort; test module only.
     }
+    if (!isLog && sql.some((s) => s.startsWith("WITH cashScope AS (")))
+      state.primaryReads = (state.primaryReads ?? 0) + 1;
     if (
       isLog &&
       fault === "delay-prefix" &&

@@ -27,11 +27,21 @@ test("credit single writer, contention, native restart, ambiguous replies, load 
       loadSales <= 1000 &&
       loadSales % 4 === 0,
   );
-  if (process.env.CREDIT_LOAD_SALES)
-    await mkdir(path.join(creditRoot, "results/perf-20261018"), {
-      recursive: true,
-    });
-  const l = await nativeLab({ name: "recovery", coordinated: true });
+  const resultFile =
+    process.env.CREDIT_SUBSECOND === "1"
+      ? "results/subsecond-20261018/native-recovery.json"
+      : process.env.CREDIT_LOAD_SALES
+        ? "results/perf-20261018/native-recovery.json"
+        : "results/recovery.json";
+  await mkdir(path.dirname(path.join(creditRoot, resultFile)), {
+    recursive: true,
+  });
+  const multipleCashiers = process.env.CREDIT_SUBSECOND === "1";
+  const l = await nativeLab({
+    name: "recovery",
+    coordinated: true,
+    multipleCashiers,
+  });
   let sourceOff = false;
   try {
     // Synthetic baseline is identical on source and independent restore.
@@ -179,12 +189,11 @@ test("credit single writer, contention, native restart, ambiguous replies, load 
       await Promise.all(
         Array.from({ length: 4 }, async (_, j) => {
           const i = start + j,
-            target = i % 2 ? l.source : l.second;
-          const s = await l.ok(
-            target,
-            "/sale",
-            saleInput("credit-load-" + i, { customerId: 5 }),
-          );
+            target = i % 2 ? l.source : l.second,
+            shiftId = multipleCashiers ? 11 + j : 1,
+            terminal = multipleCashiers ? String(shiftId) : "",
+            input = saleInput("credit-load-" + i, { customerId: 5, shiftId });
+          const s = await l.ok(target, "/sale", input, "", "", terminal);
           latencies.push(s.ms);
           profiles.push(s.profile);
           for (const [k, amount] of [
@@ -194,16 +203,18 @@ test("credit single writer, contention, native restart, ambiguous replies, load 
             const r = await l.ok(
               target,
               "/payment",
-              pay(s.body.invoiceId, "credit-load-" + i + "-" + k, amount),
+              {
+                ...pay(s.body.invoiceId, "credit-load-" + i + "-" + k, amount),
+                shiftId,
+              },
+              "",
+              "",
+              terminal,
             );
             latencies.push(r.ms);
             profiles.push(r.profile);
           }
-          const replay = await l.ok(
-            target,
-            "/sale",
-            saleInput("credit-load-" + i, { customerId: 5 }),
-          );
+          const replay = await l.ok(target, "/sale", input, "", "", terminal);
           assert.equal(replay.body.invoiceId, s.body.invoiceId);
         }),
       );
@@ -263,16 +274,12 @@ test("credit single writer, contention, native restart, ambiguous replies, load 
     assert.equal(l.outbound.length, 0);
     latencies.sort((a, b) => a - b);
     await writeFile(
-      path.join(
-        creditRoot,
-        process.env.CREDIT_LOAD_SALES
-          ? "results/perf-20261018/native-recovery.json"
-          : "results/recovery.json",
-      ),
+      path.join(creditRoot, resultFile),
       JSON.stringify(
         {
           passed: true,
           loadSales,
+          cashierActors: multipleCashiers ? [11, 12, 13, 14] : [1],
           loadCollections: loadSales * 2,
           concurrency: 4,
           measuredMs: performance.now() - begin,
