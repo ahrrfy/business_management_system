@@ -13,6 +13,9 @@ if (
   throw Error("EXPLICIT_CASH_CLOUD_TEST_REQUIRED");
 const c = await cashCloudContext();
 await verifyResources(c);
+const deployment = JSON.parse(await readFile(path.join(c.root, "results/deploy.json"), "utf8"));
+assert.equal(deployment.workers.primary.writerBinding, true, "Deploy the coordinated lab entry first");
+assert.equal(deployment.workers.restore.writerBinding, false);
 let requests = 0,
   retries = 0,
   transportRetries = 0;
@@ -40,8 +43,8 @@ const sale = (id, quantity = "2") => ({
   shiftId: 1,
   sourceType: "POS",
   clientRequestId: prefix + "-" + id,
-  lines: [{ variantId: 1, productUnitId: 1, quantity }],
-  payment: { amount: quantity === "1" ? "100" : "200", method: "CASH" },
+  lines: [{ variantId: 2, productUnitId: 2, quantity }],
+  payment: { amount: quantity === "1" ? "80" : "160", method: "CASH" },
 });
 const send = cashCloudClient(c, () => assert.ok(++requests <= 160, "Cloud request budget exceeded"));
 async function call(target, route, input, fault = "") {
@@ -61,9 +64,10 @@ async function successful(input) {
   for (let i = 0; i < 12; i++) {
     assert.equal(canonical(input), savedInput, "A replay must retain the exact saved request payload");
     const result = await call(c.source, "/sale", input);
-    attempts.push({status: result.status, code: result.body.code ?? null, ms: result.ms, profile: result.profile, transportAttempts: result.transportAttempts});
+    attempts.push({status: result.status, code: result.body.code ?? null, ms: result.ms, profile: result.profile, writer: result.writer, transportAttempts: result.transportAttempts});
     if (result.status === 200) {
       assert.equal(result.body.recoveryAcknowledged, true);
+      assert.equal(result.writer?.maxActive, 1, "All live sales must pass the singleton writer");
       return { ...result, ms: performance.now() - start, attempts };
     }
     const retry = cashRetryKind(result.status, result.body.code);
@@ -87,6 +91,8 @@ async function step(name, fn) {
 const before = await call(c.source, "/snapshot");
 assert.equal(before.status, 200, JSON.stringify(before));
 const initial = before.body.tables;
+assert.ok(initial.branchStock.find(row => row.variantId === 2 && row.branchId === 1)?.quantity >= 20,
+  "The retained synthetic SKU must cover the complete test without replenishment");
 await mkdir(path.join(c.root, "results"), {recursive: true});
 await writeFile(path.join(c.root, "results/cloud-start-" + prefix + ".json"), JSON.stringify({
   prefix, at: new Date().toISOString(), initial,
@@ -126,7 +132,7 @@ await step(
     assert.equal(first.body.invoiceId, replay.body.invoiceId);
     const changed = structuredClone(input);
     changed.lines[0].quantity = "1";
-    changed.payment.amount = "100";
+    changed.payment.amount = "80";
     assert.equal((await call(c.source, "/sale", changed)).status, 409);
   },
 );
@@ -162,12 +168,17 @@ await step(
           const job = jobs[index++],
             r = await successful(job);
           measurements.push(r.ms);
-          loadCommands.push({requestId: job.clientRequestId, logicalMs: r.ms, attempts: r.attempts});
+          loadCommands.push({requestId: job.clientRequestId, invoiceId: r.body.invoiceId, logicalMs: r.ms, attempts: r.attempts});
         }
       }),
     );
     const seconds = (performance.now() - start) / 1000;
     measurements.sort((a, b) => a - b);
+    const writers = loadCommands.map(c => c.attempts.at(-1).writer);
+    assert.equal(new Set(writers.map(w => w.instance)).size, 1, "One shared cloud writer instance");
+    assert.equal(new Set(writers.map(w => w.admissionSequence)).size, jobs.length);
+    const admitted = [...loadCommands].sort((a,b) => a.attempts.at(-1).writer.admissionSequence - b.attempts.at(-1).writer.admissionSequence);
+    assert.ok(admitted.every((c,i) => i === 0 || c.invoiceId > admitted[i-1].invoiceId), "Financial commits follow admission order");
     steps.push({
       financialLoad: {
         commands: jobs.length,
@@ -187,6 +198,9 @@ await step(
         samples: measurements.length,
         percentile: "nearest-rank; client logical latency includes retries",
         commandsDetail: loadCommands,
+        writerInstances: [...new Set(writers.map(w => w.instance))],
+        maxQueueWaitMs: Math.max(...writers.map(w => w.waitMs)),
+        maxExecutionMs: Math.max(...writers.map(w => w.executionMs)),
       },
     });
   },
@@ -243,6 +257,7 @@ await step(
     const external = JSON.parse(await readFile(externalFile, "utf8"));
     const status = await call(c.restore, "/status");
     assert.equal(status.body.journalBindingPresent, false);
+    assert.equal(status.body.writerBindingPresent, false);
     const tamper = structuredClone(external.records[0]);
     tamper.plan.result.total = "0.01";
     const prior = await call(c.restore, "/snapshot");
@@ -290,6 +305,7 @@ const result = {
   externalFileSha256: exportHash,
   snapshotSha256: hash(finalSnapshot),
   totalSales: finalSnapshot.invoices.length,
+  syntheticDataset: { variantId: 2, productUnitId: 2, unitPrice: "80.00", openingStock: initial.branchStock.find(row => row.variantId === 2).quantity },
   dateProof,
   sourceDeployment: JSON.parse(
     await readFile(path.join(c.root, "results/deploy.json"), "utf8"),

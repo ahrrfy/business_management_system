@@ -27,7 +27,12 @@ export async function cashCloudContext(){
  Object.assign(env,{CLOUDFLARE_ACCOUNT_ID:approved.accountId,WRANGLER_WRITE_LOGS:'false',WRANGLER_SEND_METRICS:'false'});
  const invoke=async(args,json=false)=>{
   let result;try{result=await exec(process.execPath,[runtime.cli,...args],{cwd:runtime.cwd,env,windowsHide:true,timeout:120000,maxBuffer:4194304});return json?cliJson(result.stdout):result.stdout;}
-  catch(error){throw Error(`CASH_CLI_${args[0]}_${args[1]}_FAILED_PRIVATE_OUTPUT`,{cause:{code:error.code??'PARSE_OR_CLI'}});}finally{result=undefined;}
+  catch(error){
+   // Deployment diagnostics stay in ignored local evidence; never log secret commands.
+   if(['deploy','d1','deployments','whoami'].includes(args[0]))
+    await writeFile(path.join(repo,'.superpowers/sdd/cash-cli-last-error.json'),JSON.stringify({at:new Date().toISOString(),command:args[0],code:error.code??null,stdout:error.stdout??'',stderr:error.stderr??''},null,2));
+   throw Error(`CASH_CLI_${args[0]}_${args[1]}_FAILED_PRIVATE_OUTPUT`,{cause:{code:error.code??'PARSE_OR_CLI'}});
+  }finally{result=undefined;}
  };
  const secret=JSON.parse(await readFile(path.join(repo,'.superpowers/sdd/cash-test-secret.json'),'utf8')).token;
  if(typeof secret!=='string'||secret.length<40)throw Error('MISSING_TEST_SECRET');
@@ -77,11 +82,17 @@ async function deploy(context){
  try { for(const role of ['primary','restore']){
   const name=role==='primary'?'erp-cash-poc-20261017-c6fa3d':'erp-cash-poc-20261017-c6fa3d-restore';
   const db=runtime.databases[role],log=runtime.databases.journal;
-  const config={name,account_id:runtime.accountId,main:path.join(root,'build/worker.mjs'),compatibility_date:'2026-08-01',compatibility_flags:['nodejs_compat'],workers_dev:true,preview_urls:false,observability:{enabled:false},find_additional_modules:true,rules:[{type:'CompiledWasm',globs:['**/*.wasm'],fallthrough:true}],d1_databases:[{binding:'DB',database_name:db.name,database_id:db.databaseId},...(role==='primary'?[{binding:'RECOVERY_LOG',database_name:log.name,database_id:log.databaseId}]:[])]};
+  const main=path.join(root,role==='primary'?'build/worker.mjs':'build/restore/worker.mjs');
+  const config={name,account_id:runtime.accountId,main,compatibility_date:'2026-08-01',compatibility_flags:['nodejs_compat'],workers_dev:true,preview_urls:false,observability:{enabled:false},find_additional_modules:true,rules:[{type:'CompiledWasm',globs:['**/*.wasm'],fallthrough:true}],d1_databases:[{binding:'DB',database_name:db.name,database_id:db.databaseId},...(role==='primary'?[{binding:'RECOVERY_LOG',database_name:log.name,database_id:log.databaseId}]:[])],...(role==='primary'?{durable_objects:{bindings:[{name:'CASH_WRITER',class_name:'CashWriter'}]},migrations:[{tag:'cash-writer-sqlite-v1',new_sqlite_classes:['CashWriter']}]}:{})};
   const file=path.join(runtime.cwd,`cash-${role}.json`);await writeFile(file,JSON.stringify(config,null,2));
   const output=await invoke(['deploy','--config',file,'--no-bundle']);
   await invoke(['secret','bulk',secrets,'--config',file]);
-  evidence.workers[role]={name,url:context[role==='primary'?'source':'restore'],deploymentVersion:output.match(/Current Version ID:\s*([a-f0-9-]{36})/i)?.[1]??null,journalBinding:role==='primary'};
+  // Updating secrets creates another version. Capture the active deployment
+  // after that update, rather than labelling the preceding upload as active.
+  const deployments=await invoke(['deployments','list','--name',name,'--json'],true);
+  const active=[...deployments].sort((a,b)=>Date.parse(a.created_on)-Date.parse(b.created_on)).at(-1);
+  if(active?.versions?.length!==1||active.versions[0].percentage!==100||!active.versions[0].version_id)throw Error('CASH_ACTIVE_DEPLOYMENT_UNCONFIRMED');
+  evidence.workers[role]={name,url:context[role==='primary'?'source':'restore'],uploadVersion:output.match(/Current Version ID:\s*([a-f0-9-]{36})/i)?.[1]??null,deploymentVersion:active.versions[0].version_id,deploymentId:active.id,journalBinding:role==='primary',writerBinding:role==='primary',bundleSha256:hash(await readFile(main))};
   console.log(JSON.stringify({deployed:role,...evidence.workers[role]}));
  } } finally {await unlink(secrets);}
  await mkdir(path.join(root,'results'),{recursive:true});await writeFile(path.join(root,'results/deploy.json'),JSON.stringify(evidence,null,2));

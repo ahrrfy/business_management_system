@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import {cashCloudClient} from './cloud-client.mjs';
 const context={source:'https://cash.test',restore:'https://restore.test',secret:'synthetic-test-only'};
 
-for(const failure of ['lost-response','edge-html']) test('saved command survives '+failure+' with exact replay and reconciliation',async()=>{
+for(const failure of ['lost-response','edge-html','writer-restart']) test('saved command survives '+failure+' with exact replay and reconciliation',async()=>{
  const sent=[];let count=0;
  const input={clientRequestId:'original-request-1',payment:{amount:'100.00',method:'CASH'}};
  const call=cashCloudClient(context,()=>count++,{pause:()=>{},fetch:async(url,request)=>{
   sent.push({url,request});
-  if(sent.length===1){if(failure==='lost-response')throw TypeError('connection lost after commit');return new Response('<html>edge unavailable</html>',{status:503});}
+  if(sent.length===1){if(failure==='lost-response')throw TypeError('connection lost after commit');if(failure==='writer-restart')return Response.json({code:'CASH_WRITER_UNAVAILABLE'},{status:503});return new Response('<html>edge unavailable</html>',{status:503});}
   if(url.includes('/operation/'))return Response.json({state:'CONFIRMED'});
   return Response.json({invoiceId:7,idempotentReplay:true});
  }});
@@ -23,6 +23,11 @@ test('business rejection and invalid target never become financial retries',asyn
  let count=0;const call=cashCloudClient(context,()=>count++,{pause:()=>{},fetch:async()=>Response.json({code:'INSUFFICIENT_STOCK'},{status:503})});
  assert.equal((await call(context.source,'/sale',{clientRequestId:'saved-key'})).status,503);assert.equal(count,1);
  await assert.rejects(call('https://unapproved.test','/sale',{}),/UNAPPROVED/);assert.equal(count,1);
+});
+
+test('queue overflow is explicit and never becomes a tight financial retry loop',async()=>{
+ let count=0;const call=cashCloudClient(context,()=>count++,{pause:()=>{},fetch:async()=>Response.json({code:'CASH_WRITER_QUEUE_FULL'},{status:503})});
+ assert.equal((await call(context.source,'/sale',{clientRequestId:'saved-key'})).status,503);assert.equal(count,1);
 });
 
 test('persistent transport failure stops at the bounded budget',async()=>{

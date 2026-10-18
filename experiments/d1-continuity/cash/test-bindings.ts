@@ -28,6 +28,18 @@ export function cashTestBindings(env: any, request: Request, state: any) {
   };
   const after = async (sql: string[], isLog: boolean) => {
     if (
+      !isLog &&
+      fault === "writer-reset-after-primary" &&
+      sql.some((s) => s.startsWith("INSERT INTO cashCommands"))
+    ) {
+      state.restartWaiting = true;
+      await wait(
+        () => state.restartReleased,
+        "TEST_WRITER_RESTART_HOLD_TIMEOUT",
+      );
+      state.abort(); // Native DurableObjectState.abort; test module only.
+    }
+    if (
       isLog &&
       fault === "delay-prefix" &&
       sql.some((s) => s.includes("COUNT(*) AS count"))

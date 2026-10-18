@@ -27,7 +27,7 @@ export async function buildActualCashWorker(options = {}) {
             loader: "ts",
           },
         }
-      : { entryPoints: [options.entry ?? path.join(cashRoot, "worker.ts")] }),
+      : { entryPoints: [options.entry ?? path.join(cashRoot, "coordinated-worker.ts")] }),
     outfile,
     bundle: true,
     write: false,
@@ -36,7 +36,7 @@ export async function buildActualCashWorker(options = {}) {
     target: "es2022",
     mainFields: ["module", "main"],
     conditions: ["workerd", "worker", "import", "default"],
-    external: ["node:*", "./sql-wasm.wasm"],
+    external: ["node:*", "cloudflare:workers", "./sql-wasm.wasm"],
     minifyWhitespace: true,
     legalComments: "none",
     metafile: true,
@@ -200,5 +200,11 @@ export async function buildActualCashWorker(options = {}) {
 if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
-)
+) {
   await buildActualCashWorker();
+  // Restore exposes no Durable Object class or namespace of its own.
+  await buildActualCashWorker({
+    stdin: "export {default} from './coordinated-worker';",
+    outfile: path.join(cashRoot, "build/restore/worker.mjs"),
+  });
+}

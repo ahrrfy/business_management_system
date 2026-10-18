@@ -28,14 +28,15 @@ export function cashCloudClient(context, countRequest, options = {}) {
         ? 'WORKER_RESOURCE_LIMIT' : 'EDGE_TRANSPORT_UNCERTAIN',transportStatus:response.status};
     }
     return {status:response.status,body,ms:performance.now()-started,
-      profile:JSON.parse(response.headers.get('x-cash-profile') ?? 'null')};
+      profile:JSON.parse(response.headers.get('x-cash-profile') ?? 'null'),
+      writer:JSON.parse(response.headers.get('x-cash-writer') ?? 'null')};
   }
   return async (target,route,input,fault='') => {
     if (![context.source,context.restore].includes(target)) throw Error('UNAPPROVED_CASH_TEST_TARGET');
     const payload=input===undefined?undefined:JSON.stringify(input), requestId=input?.clientRequestId, started=performance.now(), transportAttempts=[];
     for(let i=0;i<5;i++) {
       const result=await attempt(target,route,payload,fault);
-      transportAttempts.push({status:result.status,code:result.body.code??null,ms:result.ms,profile:result.profile});
+      transportAttempts.push({status:result.status,code:result.body.code??null,ms:result.ms,profile:result.profile,writer:result.writer??null});
       if (cashRetryKind(result.status,result.body.code)!=='transport')
         return {...result,ms:performance.now()-started,transportAttempts};
       if (route==='/sale' && requestId) {

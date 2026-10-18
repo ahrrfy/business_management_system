@@ -6,7 +6,7 @@ import {nonNegMoneyString,percentString,positiveMoneyString,positiveQtyString} f
 const id=z.number().int().positive();
 export const cashHttpInput=z.object({
   branchId:id,shiftId:id.optional(),sourceType:z.literal('POS'),
-  clientRequestId:z.string().min(8).max(100),
+  clientRequestId:z.string().min(8).max(50), // Original invoices.sourceId varchar(50).
   lines:z.array(z.object({
     variantId:id,productUnitId:id,
     quantity:positiveQtyString.refine(s=>Number(s)<=1_000_000),
