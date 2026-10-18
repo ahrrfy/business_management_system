@@ -30,6 +30,7 @@ import {
 } from "./requisitions";
 import { appendPurchaseOrderEventTx } from "./revisions";
 import { postApprovedPurchaseInvoiceInTx, recognizeShippingAndCustomsInTx } from "./automaticInvoicePosting";
+import { recordedPurchaseShippingPaymentTx } from "./shippingPayment";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 
 export type PurchaseOrderControlKind =
@@ -472,7 +473,12 @@ export async function decidePurchaseOrderControl(
     if (input.approve && preview.status === "PENDING" && (preview.kind === "CANCEL_ORDER" || (preview.kind === "APPROVE_REVISION" && !options.legacyConfirmOnly))) {
       const [sourcePo] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, preview.purchaseOrderId)).limit(1);
       if (sourcePo?.shippingFundingSource === "DRAWER" && sourcePo.shippingFundingShiftId != null && Number(sourcePo.currentRevisionId) === Number(preview.revisionId) && Number(sourcePo.version) === Number(preview.baseOrderVersion)) {
-        await lockCashSourceForUpdate(tx, {
+        const recordedReceiptId = await recordedPurchaseShippingPaymentTx(tx, {
+          purchaseOrderId: Number(sourcePo.id), branchId: Number(sourcePo.branchId), creatorId: Number(sourcePo.createdBy),
+          amount: money(sourcePo.shippingCost ?? "0").plus(money(sourcePo.customsCost ?? "0")).toFixed(2),
+          shiftId: sourcePo.shippingFundingShiftId,
+        });
+        if (recordedReceiptId == null) await lockCashSourceForUpdate(tx, {
           branchId: Number(sourcePo.branchId), cashBucket: "DRAWER", shiftId: Number(sourcePo.shippingFundingShiftId),
         });
       }

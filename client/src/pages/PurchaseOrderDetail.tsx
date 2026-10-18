@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { purchaseShippingAdjustmentLabel } from "@/components/purchases/purchaseGovernanceUiPolicy";
+import { PurchaseShippingRefund } from "@/components/purchases/PurchaseShippingRefund";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -476,7 +478,7 @@ export default function PurchaseOrderDetail() {
                         ) : (
                           <Badge variant="outline" className="border-[var(--sem-danger)]/40 bg-[var(--sem-danger-bg)] text-[var(--sem-danger)] gap-1.5 py-1">
                             <AlertTriangle className="size-3.5" aria-hidden />
-                            مستحق غير مسدد
+                            {purchaseShippingAdjustmentLabel(d.shippingPayment?.obligationStatus) ?? "مستحق غير مسدد"}
                           </Badge>
                         )}
                       </div>
@@ -508,6 +510,7 @@ export default function PurchaseOrderDetail() {
                       )}
                     </div>
 
+                    <PurchaseShippingRefund refund={d.shippingPayment?.refund} />
                     {d.shippingPayment?.payee ? (
                       <div className="text-xs text-muted-foreground flex items-center gap-1 pt-1">
                         <span>الجهة المستفيدة / الناقل:</span>
@@ -520,7 +523,7 @@ export default function PurchaseOrderDetail() {
                         تصريح الدفع من درج المنشئ ينتظر اعتماد سند الشحن المرتبط أعلاه، مستقلاً عن اعتماد الفاتورة. لا تغلق الوردية قبل توثيقه.
                       </p>
                     ) : null}
-                    {canSettleShipping && d.shippingFundingSource !== "DRAWER" && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
+                    {canSettleShipping && d.shippingFundingSource !== "DRAWER" && !d.shippingPayment?.hasRecordedPayment && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
                       <div className="pt-2 flex items-center justify-between border-t gap-2 flex-wrap">
                         <p className="text-xs text-muted-foreground">
                           يمكن صرف أجور الشحن مباشرةً من درج الوردية النقدية النشطة لتُسجل كنفقات وردية وتُخصم من رصيد الكاشير.

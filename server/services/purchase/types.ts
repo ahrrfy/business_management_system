@@ -43,11 +43,11 @@ export interface PurchaseDocumentInput {
    * لقرار المالك «تكلفة الصنف = سعر المورّد وحده» (وخصمُه جزءٌ من سعره لا إيرادٌ مستقلّ).
    */
   invoiceDiscount?: string | null;
-  /** landed-cost: تكلفة الشحن الكلّية على أمر الشراء (مصروف نقلٍ لحظة الاستلام — لا ذمّة مورّد ولا تكلفة صنف). */
+  /** Shipping is a company expense at payment, or approval if unpaid; outside supplier AP and inventory cost. */
   shippingCost?: string | null;
   /** landed-cost: تكلفة الكمرك الكلّية على أمر الشراء (تُعامَل مثل الشحن تماماً). */
   customsCost?: string | null;
-  /** Explicit shipping payment declaration; absence records an unpaid accrual, not cash. */
+  /** DRAWER records actual paid petty cash immediately; omitted legacy callers remain unpaid. */
   shippingFundingSource?: "ACCRUAL" | "DRAWER";
   shippingShiftId?: number | null;
 }
@@ -57,7 +57,7 @@ export interface CreatePurchaseOrderInput extends PurchaseDocumentInput {
   branchId: number;
   /** Planned terms only; neither CASH nor CREDIT proves physical supplier payment. */
   settlementType?: PurchaseSettlementType;
-  /** الإنشاء يحفظ مسودة فقط؛ الاعتماد انتقال مستقل بفصل مهام. */
+  /** Goods remain a draft pending review; explicitly paid shipping is recorded immediately. */
   status?: "DRAFT";
   notes?: string | null;
   clientRequestId?: string;

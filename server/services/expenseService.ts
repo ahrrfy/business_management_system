@@ -2701,6 +2701,42 @@ const recognizedUnsettledCancellationSql = sql`COALESCE((
   )
 ), FALSE)`;
 
+/** Keep row warnings and aggregate counters on the same immutable refund proof. */
+const recognizedRefundedCancellationSql = sql`COALESCE((
+  ${expenses.status} = 'CANCELLED' AND ${receipts.status} = 'COMPLETED'
+  AND EXISTS (
+    SELECT 1 FROM accrualObligations AS refundedObligation
+    INNER JOIN accrualObligationEvents AS refundEvent
+      ON refundEvent.obligationId = refundedObligation.id AND refundEvent.eventType = 'SETTLEMENT_REVERSED'
+    INNER JOIN receipts AS refundReceipt ON refundReceipt.id = refundEvent.receiptId
+    INNER JOIN accountingEntries AS refundEntry ON refundEntry.id = refundEvent.accountingEntryId
+    WHERE refundedObligation.expenseId = ${expenses.id}
+      AND refundedObligation.status = 'RECOGNITION_REVERSED'
+      AND refundedObligation.branchId = ${expenses.branchId}
+      AND refundedObligation.recognizedAmount = ${expenses.amount}
+      AND refundReceipt.id <> ${receipts.id} AND refundReceipt.direction = 'IN'
+      AND refundReceipt.receiptStatus = 'COMPLETED' AND refundReceipt.receiptApprovalStatus = 'APPROVED'
+      AND refundReceipt.branchId = ${expenses.branchId} AND refundReceipt.amount = ${expenses.amount}
+      AND refundEntry.entryType = 'PAYMENT_OUT' AND refundEntry.amount = -${expenses.amount}
+      AND refundEntry.receiptId = refundReceipt.id AND refundEntry.branchId = ${expenses.branchId}
+      AND EXISTS (
+        SELECT 1 FROM accrualObligationEvents AS originalPayment
+        INNER JOIN accountingEntries AS originalPaymentEntry ON originalPaymentEntry.id = originalPayment.accountingEntryId
+        WHERE originalPayment.obligationId = refundedObligation.id AND originalPayment.eventType = 'PAYMENT_SETTLED'
+          AND originalPayment.receiptId = ${receipts.id} AND originalPaymentEntry.receiptId = ${receipts.id}
+          AND originalPaymentEntry.entryType = 'PAYMENT_OUT' AND originalPaymentEntry.amount = ${expenses.amount}
+          AND originalPaymentEntry.branchId = ${expenses.branchId}
+      )
+      AND EXISTS (
+        SELECT 1 FROM accrualObligationEvents AS recognitionReversal
+        INNER JOIN accountingEntries AS recognitionReversalEntry ON recognitionReversalEntry.id = recognitionReversal.accountingEntryId
+        WHERE recognitionReversal.obligationId = refundedObligation.id AND recognitionReversal.eventType = 'RECOGNITION_REVERSED'
+          AND recognitionReversalEntry.entryType = 'ADJUST' AND recognitionReversalEntry.receiptId IS NULL
+          AND recognitionReversalEntry.amount = -${expenses.amount} AND recognitionReversalEntry.branchId = ${expenses.branchId}
+      )
+  )
+), FALSE)`;
+
 const missingPayeeSql = sql`(
   TRIM(COALESCE(${expenses.payee}, '')) = ''
   AND NOT (
@@ -2802,6 +2838,7 @@ function expenseDetailedSelect(db: NonNullable<ReturnType<typeof getDb>>) {
         ORDER BY aoe.id DESC LIMIT 1
       )`,
       recognizedUnsettledCancellation: sql<number>`CASE WHEN ${recognizedUnsettledCancellationSql} THEN 1 ELSE 0 END`,
+      recognizedRefundedCancellation: sql<number>`CASE WHEN ${recognizedRefundedCancellationSql} THEN 1 ELSE 0 END`,
     })
     .from(expenses)
     .leftJoin(branches, eq(expenses.branchId, branches.id))
@@ -2929,7 +2966,10 @@ function integrityWarningsOf(row: any): string[] {
     } else {
       if (row.status === "ACTIVE" && row.receiptStatus !== "COMPLETED")
         warnings.push("RECEIPT_STATUS_MISMATCH");
-      if (row.status === "CANCELLED" && row.receiptStatus !== "REVERSED")
+      // Governed refunds preserve the original completed OUT. Their separate
+      // settlement reversal and recognition reversal cancel the expense.
+      const refundedAccrual = Number(row.recognizedRefundedCancellation ?? 0) === 1;
+      if (row.status === "CANCELLED" && row.receiptStatus !== "REVERSED" && !refundedAccrual)
         warnings.push("RECEIPT_STATUS_MISMATCH");
       if (row.receiptApprovalStatus !== "APPROVED")
         warnings.push("RECEIPT_NOT_APPROVED");
@@ -3117,7 +3157,7 @@ const financialIntegritySql = sql`(
       OR (${expenses.paymentMethod} = 'CASH' AND ${expenses.cashBucket} IS NULL)
     ))
     OR (${expenses.status} = 'CANCELLED' AND (
-      ${receipts.status} <> 'REVERSED'
+      (${receipts.status} <> 'REVERSED' AND NOT ${recognizedRefundedCancellationSql})
       OR ${receipts.approvalStatus} <> 'APPROVED'
     ))
     OR (${expenses.cashBucket} = 'DRAWER' AND ${expenses.shiftId} IS NULL)

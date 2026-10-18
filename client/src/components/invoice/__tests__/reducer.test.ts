@@ -42,10 +42,10 @@ function digitalLine(token: string, studentName?: string): InvoiceLine {
 }
 
 describe("invoiceReducer tier repricing", () => {
-  it("starting a new purchase discards the previous drawer-payment declaration", () => {
-    const state = { ...createInitialState("PURCHASE", 7), shippingFundingSource: "DRAWER" as const };
+  it("starting a new purchase defaults to paid shipping without carrying the previous invoice", () => {
+    const state = { ...createInitialState("PURCHASE", 7), shippingFundingSource: "ACCRUAL" as const };
     const next = invoiceReducer(state, { type: "RESET", invoiceType: "PURCHASE" });
-    expect(next.shippingFundingSource).toBe("ACCRUAL");
+    expect(next.shippingFundingSource).toBe("DRAWER");
     expect(next.branchId).toBe(7);
     expect(next.items).toEqual([]);
   });
