@@ -22,6 +22,11 @@ type SnapshotOptions = {
   mode?: string;
   exactCustomerBalance?: boolean;
   rejectDeliveryHistory?: boolean;
+  preloaded?: {
+    row: any;
+    envelope: string;
+    boundary: ReturnType<typeof cashReadBoundary>;
+  };
 };
 export const snapshotResourceCounts = () => ({ ...resources });
 function sqlEngine() {
@@ -49,11 +54,18 @@ export async function snapshotDatabase(
   const session = binding.withSession
     ? binding.withSession("first-primary")
     : binding;
-  const boundary = cashReadBoundary();
-  const snapshot = await session
-    .prepare(options.projectionSql ?? cashProjectionSql)
-    .bind(JSON.stringify({ input, actor, ...boundary }))
-    .first();
+  const boundary = options.preloaded?.boundary ?? cashReadBoundary();
+  const envelope = JSON.stringify({ input, actor, ...boundary });
+  if (options.preloaded && options.preloaded.envelope !== envelope)
+    throw Error("SNAPSHOT_ENVELOPE_MISMATCH");
+  if (options.preloaded && !options.preloaded.row)
+    throw Error("SNAPSHOT_ROW_MISSING");
+  const snapshot =
+    options.preloaded?.row ??
+    (await session
+      .prepare(options.projectionSql ?? cashProjectionSql)
+      .bind(envelope)
+      .first());
   assertCashReadBoundary(boundary);
   if (options.rejectDeliveryHistory) {
     const flags = JSON.parse(snapshot.scopeFlags);

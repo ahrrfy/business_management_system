@@ -12,10 +12,14 @@ Every command keeps the full saved payload, actor and request key (8–50 charac
 
 The successful protocol reserves12 SQL statements outside the atomic financial batch and5 inside it, plus1 per insert/2 per update. Admission rejects more than48 estimated statements or30 changed rows before PREPARED/primary commit, rather than splitting FIFO allocation. The future signed record and exact escaped command/outbox rows must each fit a128KiB recovery page. Oversized closures return422 without financial changes. These safeguards preserve the current low-cost invocation bounds; they are not an unlimited-history performance claim.
 
+The ordinary credit path uses5 database RPCs in4 sequential network stages: parallel read-only identity/preflight batches, one conditional reservation/PREPARED batch, the atomic financial batch, and the independent journal acknowledgement. The primary preflight captures the required projection in its native batch; the snapshot is bound to the exact envelope, epoch and date boundaries for that invocation only. Existing-command replay skips the mutable projection. Financial preimages and epoch CAS still reject a superseded snapshot. Cash callers retain their original default protocol.
+
+Staging has no financial or external effects. A caught business/admission error reserves the immutable request before returning its error; a process killed before that reservation leaves no durable reservation or financial effects. Clients must preserve and retry their original envelope/key in either case. A lost merged-batch response never permits a primary commit in that invocation. Success still waits for independent signed journal acknowledgement while holding the shared writer queue.
+
 Run from the repository root with the existing dependencies:
 
 ```powershell
-node --test --test-concurrency=1 experiments/d1-continuity/credit/core.test.mjs experiments/d1-continuity/credit/policy.test.mjs experiments/d1-continuity/credit/admission.test.mjs experiments/d1-continuity/credit/recovery.integration.test.mjs
+node --test --test-concurrency=1 experiments/d1-continuity/credit/core.test.mjs experiments/d1-continuity/credit/policy.test.mjs experiments/d1-continuity/credit/admission.test.mjs experiments/d1-continuity/credit/performance.test.mjs experiments/d1-continuity/credit/recovery.integration.test.mjs
 node experiments/d1-continuity/credit/cloud-run.mjs --build
 ```
 
@@ -24,5 +28,7 @@ node experiments/d1-continuity/credit/cloud-run.mjs --build
 Cloud operations require an existing authenticated CLI4.151.1 and private local lab runtime/secret files. No credentials belong in this folder. `cloud-run.mjs --preflight|--initialize|--deploy|--verify-legacy --confirm-isolated-credit-lab` pins the exact account, reused database UUIDs, creation identities and additive table boundaries. Initialization refuses an unknown previous import result; inspect and verify it before any continuation. No production routes, DNS, new D1 database or subscription upgrade is configured.
 
 `cloud-proof.mjs --confirm-isolated-credit-lab` saves full envelopes before submission, runs a small financial/fault/replay load, exports a pinned signed checkpoint, blocks source access in its driver, restores without a journal binding and compares every row. Native recovery additionally disposes the actual source runtime and aborts a real Durable Object after a collection commit. Do not rerun cloud trials just to refresh documentation; retain their evidence under ignored `results/`.
+
+For the performance qualification, `performance.mjs baseline|after|single --confirm-isolated-credit-lab` saves commands before submission and records separate end-to-end, writer, queue and database measurements. Baseline/after use16 sales and32 collections at concurrency4; single uses8/16 at concurrency1 after a status request. These are bounded cloud samples, not a sustained capacity guarantee. The load driver does not automatically retry financial transport failures. Native `CREDIT_LOAD_SALES=1000` runs1000 sales and2000 collections plus fault scenarios. `performance-recovery.mjs --confirm-isolated-credit-lab` retains and verifies the existing cloud restore prefix, replays the complete signed journal and compares every financial row without resetting either database. Its source outage is enforced by the test driver; it does not physically stop Hostinger or the cloud Worker.
 
 See the dated design, execution plan and results report in `docs/superpowers/`. Production readiness requires the remaining broader cash register functions, real authentication, operational fencing, notification delivery, larger customer-history/performance qualification and explicit production authorization.

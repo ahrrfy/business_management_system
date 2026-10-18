@@ -9,6 +9,8 @@ import { creditProjectionSql } from "./state";
 import { allowedQueries } from "./queries";
 import { inStaging } from "./transaction";
 import { readOpeningWindowState } from "../../../server/services/openingModeService";
+import { cashReadBoundary } from "../cash/cash-state";
+import { LAB_ID } from "./identity";
 export {
   canonicalCashJson,
   cashCommandFromRow,
@@ -28,7 +30,38 @@ const mutableTables = new Set([
   "invoiceAttributions",
   "auditLogs",
 ]);
-export async function prepareCashSale(binding: any, input: any, actor: any) {
+export const creditRecoveryStrategy = {
+  async primaryPreflight(db: any, input: any, actor: any) {
+    const boundary = cashReadBoundary(),
+      envelope = JSON.stringify({ input, actor, ...boundary });
+    const state = await db.batch([
+      db
+        .prepare("SELECT role FROM cashSandboxIdentity WHERE id=?")
+        .bind(LAB_ID),
+      db
+        .prepare("SELECT * FROM cashCommands WHERE requestId=?")
+        .bind(input.clientRequestId),
+      db.prepare("SELECT epoch FROM cashEpoch WHERE id=1"),
+      db
+        .prepare(
+          creditProjectionSql +
+            " AND NOT EXISTS(SELECT 1 FROM cashCommands WHERE requestId=(SELECT requestId FROM cashScope))",
+        )
+        .bind(envelope),
+    ]);
+    const row = state[3].results[0];
+    if (row && row.epoch !== state[2].results[0]?.epoch)
+      throw Error("CREDIT_PREFLIGHT_EPOCH_MISMATCH");
+    return { state, snapshot: { row, envelope, boundary } };
+  },
+  prepare: prepareCashSale,
+};
+export async function prepareCashSale(
+  binding: any,
+  input: any,
+  actor: any,
+  preloaded?: any,
+) {
   if (input.branchId !== actor.branchId) throw Error("INVALID_ACTOR");
   const snap = await snapshotDatabase(binding, input, actor, {
     tables,
@@ -37,6 +70,7 @@ export async function prepareCashSale(binding: any, input: any, actor: any) {
     mode: "CREDIT_SCOPED",
     exactCustomerBalance: true,
     rejectDeliveryHistory: true,
+    ...(preloaded ? { preloaded } : {}),
   });
   try {
     for (const line of input.lines ?? []) {

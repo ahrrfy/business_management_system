@@ -114,7 +114,31 @@ export function cashTestBindings(env: any, request: Request, state: any) {
         });
         const sql = found.map((item) => item.sql);
         await before(sql, isLog);
-        const result = await raw.batch(found.map((item) => item.raw));
+        const merged =
+          isLog &&
+          sql.some((s) =>
+            s.startsWith("INSERT INTO cashJournalAttempts SELECT"),
+          );
+        const result = await raw.batch([
+          ...found.map((item) => item.raw),
+          ...(merged && fault === "merged-last-statement"
+            ? [raw.prepare("INSERT INTO cashJournalAssert(ok) VALUES(0)")]
+            : []),
+        ]);
+        if (merged && fault === "drop-merged-response")
+          throw Error("SIMULATED_MERGED_REPLY_LOST");
+        if (
+          !isLog &&
+          fault === "stale-preloaded" &&
+          sql.some((s) => s.startsWith("WITH cashScope AS ("))
+        ) {
+          await raw.batch([
+            raw.prepare("UPDATE cashEpoch SET epoch=epoch+1 WHERE id=1"),
+            raw.prepare(
+              "UPDATE customers SET currentBalance='80.00' WHERE id=5",
+            ),
+          ]);
+        }
         const epochIndex = sql.indexOf(
           "SELECT epoch FROM cashEpoch WHERE id=1",
         );

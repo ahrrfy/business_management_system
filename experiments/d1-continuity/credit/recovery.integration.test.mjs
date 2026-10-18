@@ -20,12 +20,26 @@ const pay = (invoiceId, key, amount = "100") => ({
   amount,
 });
 test("credit single writer, contention, native restart, ambiguous replies, load and source-offline signed restore", async () => {
+  const loadSales = Number(process.env.CREDIT_LOAD_SALES ?? 120);
+  assert.ok(
+    Number.isSafeInteger(loadSales) &&
+      loadSales >= 4 &&
+      loadSales <= 1000 &&
+      loadSales % 4 === 0,
+  );
+  if (process.env.CREDIT_LOAD_SALES)
+    await mkdir(path.join(creditRoot, "results/perf-20261018"), {
+      recursive: true,
+    });
   const l = await nativeLab({ name: "recovery", coordinated: true });
   let sourceOff = false;
   try {
     // Synthetic baseline is identical on source and independent restore.
     for (const db of [l.db, l.rd])
-      await db.prepare("UPDATE branchStock SET quantity=1000 WHERE id=1").run();
+      await db
+        .prepare("UPDATE branchStock SET quantity=? WHERE id=1")
+        .bind(loadSales + 100)
+        .run();
     const attempts = await Promise.all([
       l.call(
         l.source,
@@ -161,7 +175,7 @@ test("credit single writer, contention, native restart, ambiguous replies, load 
     const latencies = [],
       profiles = [],
       begin = performance.now();
-    for (let start = 0; start < 120; start += 4)
+    for (let start = 0; start < loadSales; start += 4)
       await Promise.all(
         Array.from({ length: 4 }, async (_, j) => {
           const i = start + j,
@@ -249,12 +263,17 @@ test("credit single writer, contention, native restart, ambiguous replies, load 
     assert.equal(l.outbound.length, 0);
     latencies.sort((a, b) => a - b);
     await writeFile(
-      path.join(creditRoot, "results/recovery.json"),
+      path.join(
+        creditRoot,
+        process.env.CREDIT_LOAD_SALES
+          ? "results/perf-20261018/native-recovery.json"
+          : "results/recovery.json",
+      ),
       JSON.stringify(
         {
           passed: true,
-          loadSales: 120,
-          loadCollections: 240,
+          loadSales,
+          loadCollections: loadSales * 2,
           concurrency: 4,
           measuredMs: performance.now() - begin,
           p50Ms: latencies[Math.floor(latencies.length * 0.5)],

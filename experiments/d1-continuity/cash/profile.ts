@@ -4,6 +4,23 @@ export function cashProfiler(env: any, stateMode = "CASH_SCOPED") {
   const statements = new WeakMap<object, { raw: any; sql: string }>();
   const calls: any[] = [];
   let stateRead: any = null;
+  function captureState(role: string, sql: string, result: any) {
+    if (role !== "primary" || !sql.startsWith("WITH cashScope AS (") || !result)
+      return;
+    const rows = Object.fromEntries(
+      Object.entries(result)
+        .filter(
+          ([name]) => !["epoch", "sequences", "scopeFlags"].includes(name),
+        )
+        .map(([name, value]) => [name, JSON.parse(value as string).length]),
+    );
+    stateRead = {
+      mode: stateMode,
+      rows,
+      totalRows: Object.values(rows).reduce((n, v) => n + v, 0),
+      bytes: new TextEncoder().encode(JSON.stringify(result)).byteLength,
+    };
+  }
   async function measure(
     role: string,
     method: string,
@@ -40,30 +57,7 @@ export function cashProfiler(env: any, stateMode = "CASH_SCOPED") {
           const result = await measure(role, method, 1, () =>
             item[method](...args),
           );
-          if (
-            role === "primary" &&
-            method === "first" &&
-            sql.startsWith("WITH cashScope AS (")
-          ) {
-            const rows = Object.fromEntries(
-              Object.entries(result)
-                .filter(
-                  ([name]) =>
-                    !["epoch", "sequences", "scopeFlags"].includes(name),
-                )
-                .map(([name, value]) => [
-                  name,
-                  JSON.parse(value as string).length,
-                ]),
-            );
-            stateRead = {
-              mode: stateMode,
-              rows,
-              totalRows: Object.values(rows).reduce((n, v) => n + v, 0),
-              bytes: new TextEncoder().encode(JSON.stringify(result))
-                .byteLength,
-            };
-          }
+          if (method === "first") captureState(role, sql, result);
           return result;
         };
       statements.set(wrapped, { raw: item, sql });
@@ -80,13 +74,23 @@ export function cashProfiler(env: any, stateMode = "CASH_SCOPED") {
       prepare(sql: string) {
         return statement(raw.prepare(sql), sql);
       },
-      batch(items: any[]) {
+      async batch(items: any[]) {
         const native = items.map((item) => {
           const found = statements.get(item);
           if (!found) throw Error("PROFILE_UNKNOWN_STATEMENT");
           return found.raw;
         });
-        return measure(role, "batch", items.length, () => raw.batch(native));
+        const result = await measure(role, "batch", items.length, () =>
+          raw.batch(native),
+        );
+        items.forEach((item, i) =>
+          captureState(
+            role,
+            statements.get(item)!.sql,
+            result[i]?.results?.[0],
+          ),
+        );
+        return result;
       },
     };
   }

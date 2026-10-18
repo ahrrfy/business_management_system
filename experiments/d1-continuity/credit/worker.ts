@@ -1,5 +1,9 @@
 import { fixtureActor } from "./fixture";
-import { CASH_SCHEMA_VERSION, readCashCommand } from "./actual";
+import {
+  CASH_SCHEMA_VERSION,
+  readCashCommand,
+  creditRecoveryStrategy,
+} from "./actual";
 import { creditHttpInput } from "./http-input";
 import {
   createWithRecovery,
@@ -68,6 +72,7 @@ export default {
           input.data,
           env.TEST_ACTOR ?? fixtureActor,
           request.headers.get("x-cash-fault") ?? "",
+          creditRecoveryStrategy,
         );
       } else if (request.method === "GET" && u.pathname === "/status")
         value = {

@@ -115,7 +115,7 @@ async function reserveRequest(log: any, id: string, envelope: any) {
     throw failure("IDEMPOTENCY_PAYLOAD_MISMATCH", 409);
   return hash;
 }
-async function prepareRecord(log: any, plan: any) {
+async function prepareRecord(log: any, plan: any, envelope?: any) {
   const hash = await digest(plan),
     json = canonical(plan);
   // Reject before PREPARED/primary writes if the future acknowledged record
@@ -154,19 +154,54 @@ async function prepareRecord(log: any, plan: any) {
     )
   )
     throw failure("RECOVERY_RECORD_TOO_LARGE", 422);
+  const reservation = envelope
+    ? { hash: await digest(envelope), json: canonical(envelope) }
+    : null;
   const results = await log.batch([
+    ...(reservation
+      ? [
+          log
+            .prepare(
+              "INSERT INTO cashJournalRequests VALUES(?,?,?) ON CONFLICT(requestId) DO NOTHING",
+            )
+            .bind(plan.requestId, reservation.hash, reservation.json),
+          log
+            .prepare(
+              "SELECT envelopeHash,envelopeJson FROM cashJournalRequests WHERE requestId=?",
+            )
+            .bind(plan.requestId),
+        ]
+      : []),
     log
       .prepare(
-        "INSERT INTO cashJournalAttempts VALUES(?,?,?,?) ON CONFLICT(planHash) DO NOTHING",
+        reservation
+          ? "INSERT INTO cashJournalAttempts SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM cashJournalRequests WHERE requestId=? AND envelopeHash=? AND envelopeJson=?) ON CONFLICT(planHash) DO NOTHING"
+          : "INSERT INTO cashJournalAttempts VALUES(?,?,?,?) ON CONFLICT(planHash) DO NOTHING",
       )
-      .bind(hash, plan.requestId, plan.expectedEpoch + 1, json),
+      .bind(
+        hash,
+        plan.requestId,
+        plan.expectedEpoch + 1,
+        json,
+        ...(reservation
+          ? [plan.requestId, reservation.hash, reservation.json]
+          : []),
+      ),
     log
       .prepare("SELECT planJson FROM cashJournalAttempts WHERE planHash=?")
       .bind(hash),
   ]);
-  const row = results[1].results[0];
+  if (reservation) {
+    const row = results[1].results[0];
+    if (
+      row?.envelopeHash !== reservation.hash ||
+      row.envelopeJson !== reservation.json
+    )
+      throw failure("IDEMPOTENCY_PAYLOAD_MISMATCH", 409);
+  }
+  const row = results[reservation ? 3 : 1].results[0];
   if (row?.planJson !== json) throw failure("RECOVERY_PREPARE_MISMATCH");
-  return Object.freeze({ hash, json });
+  return Object.freeze({ hash, json, envelopeHash: reservation?.hash });
 }
 async function confirm(
   log: any,
@@ -279,6 +314,10 @@ export async function createWithRecovery(
   input: any,
   actor: any,
   fault = "",
+  strategy?: {
+    primaryPreflight(db: any, input: any, actor: any): Promise<any>;
+    prepare(db: any, input: any, actor: any, snapshot: any): Promise<any>;
+  },
 ) {
   const db = primary(env.DB),
     log = primary(env.RECOVERY_LOG);
@@ -289,13 +328,15 @@ export async function createWithRecovery(
   // Both preflights are read-only. No financial or journal write is allowed
   // until both identities have been checked; each DB batch is one snapshot.
   const states = await Promise.allSettled([
-    db.batch([
-      db
-        .prepare("SELECT role FROM cashSandboxIdentity WHERE id=?")
-        .bind(LAB_ID),
-      db.prepare("SELECT * FROM cashCommands WHERE requestId=?").bind(id),
-      db.prepare("SELECT epoch FROM cashEpoch WHERE id=1"),
-    ]),
+    strategy
+      ? strategy.primaryPreflight(db, input, actor)
+      : db.batch([
+          db
+            .prepare("SELECT role FROM cashSandboxIdentity WHERE id=?")
+            .bind(LAB_ID),
+          db.prepare("SELECT * FROM cashCommands WHERE requestId=?").bind(id),
+          db.prepare("SELECT epoch FROM cashEpoch WHERE id=1"),
+        ]),
     fault === "log-unavailable"
       ? Promise.reject(failure("RECOVERY_LOG_UNAVAILABLE"))
       : log.batch([
@@ -306,14 +347,14 @@ export async function createWithRecovery(
         ]),
   ]);
   if (states[0].status === "rejected") throw states[0].reason;
-  const primaryState = states[0].value;
+  const primaryState = strategy ? states[0].value.state : states[0].value;
   if (primaryState[0].results[0]?.role !== "primary")
     throw failure("SANDBOX_IDENTITY_MISMATCH");
   if (states[1].status === "rejected") throw states[1].reason;
   const journalState = states[1].value;
   if (journalState[0].results[0]?.role !== "journal")
     throw failure("SANDBOX_IDENTITY_MISMATCH");
-  const envelopeHash = await reserveRequest(log, id, envelope);
+  let envelopeHash: string;
   let winning = cashCommandFromRow(primaryState[1].results[0]),
     replayed = !!winning,
     record: any,
@@ -322,6 +363,8 @@ export async function createWithRecovery(
   const target = winning
     ? winning.plan.expectedEpoch + 1
     : primaryState[2].results[0]?.epoch;
+  const merged = !!strategy && !winning && prefix === target;
+  if (!merged) envelopeHash = await reserveRequest(log, id, envelope);
   if (!Number.isSafeInteger(target) || target < CASH_BASELINE_EPOCH)
     throw failure("RECOVERY_PRIMARY_EPOCH_INVALID");
   if (!winning && prefix > target) {
@@ -342,8 +385,27 @@ export async function createWithRecovery(
       throw prefixPending();
   }
   for (let attempt = 0; !winning && attempt < 1; attempt++) {
-    const prepared = await prepareCashSale(db, input, actor);
-    preparedProof = await prepareRecord(log, prepared.plan);
+    let prepared: any;
+    if (merged) {
+      try {
+        prepared = await strategy!.prepare(
+          db,
+          input,
+          actor,
+          states[0].value.snapshot,
+        );
+        const proof = await prepareRecord(log, prepared.plan, envelope);
+        preparedProof = proof;
+        envelopeHash = proof.envelopeHash!;
+      } catch (error) {
+        // Business/byte-limit failures retain the original immutable key contract.
+        await reserveRequest(log, id, envelope);
+        throw error;
+      }
+    } else {
+      prepared = await prepareCashSale(db, input, actor);
+      preparedProof = await prepareRecord(log, prepared.plan);
+    }
     if (fault === "after-prepare") throw failure("PREPARED_PRIMARY_ABSENT");
     try {
       await applyCashPlan(db, prepared.plan, {
@@ -389,7 +451,7 @@ export async function createWithRecovery(
   record ??= await confirm(
     log,
     env.LAB_TOKEN,
-    envelopeHash,
+    envelopeHash!,
     winning.plan,
     preparedProof,
   );
