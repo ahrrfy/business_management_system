@@ -12,6 +12,8 @@
  * يقود إلى رفضٍ حتميّ بعد جهد إدخال.
  */
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { invalidateFinancialQueries } from "@/lib/realtime/financialQueries";
 import { Link, useLocation, useParams } from "wouter";
 import {
   PurchaseShippingCard,
@@ -198,6 +200,7 @@ export default function PurchaseEdit() {
   const purchaseOrderId = Number(params.id);
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
+  const queryClient = useQueryClient();
   const [pasteAvailable, setPasteAvailable] = useState(hasInvoiceTransfer);
 
   const po = trpc.purchases.get.useQuery(
@@ -211,7 +214,7 @@ export default function PurchaseEdit() {
   );
   const [shippingCost, setShippingCost] = useState("");
   const [customsCost, setCustomsCost] = useState("");
-  const [shippingFundingSource, setShippingFundingSource] = useState<"ACCRUAL" | "DRAWER">("ACCRUAL");
+  const [shippingFundingSource, setShippingFundingSource] = useState<"ACCRUAL" | "DRAWER">("DRAWER");
   const [revisionReason, setRevisionReason] = useState("");
   const [bulkOpen, setBulkOpen] = useState(false);
   /** بصمة اللقطة المحفوظة — مقارنتها بالبصمة الحالية تُعطي «هل تغيّر شيء؟» بلا أعلامٍ متسلسلة. */
@@ -305,7 +308,7 @@ export default function PurchaseEdit() {
       setBaseline(fingerprintRef.current);
       await Promise.all([
         utils.purchases.get.invalidate({ purchaseOrderId }),
-        utils.purchases.list.invalidate(),
+        invalidateFinancialQueries(queryClient, state.branchId),
       ]);
       notify.ok(`حُفظت تعديلات أمر الشراء ${r.poNumber}`);
       bypassUnsavedGuard();
@@ -752,6 +755,7 @@ export default function PurchaseEdit() {
             onCustomsCostChange={setCustomsCost}
             shippingFundingSource={shippingFundingSource}
             onShippingFundingSourceChange={setShippingFundingSource}
+            paymentRecorded={po.data?.shippingFundingSource === "DRAWER" && po.data.shippingPayment?.hasRecordedPayment === true}
             landed={landed}
             showOptionalBadge
           />

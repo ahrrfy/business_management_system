@@ -1,3 +1,12 @@
+/** Actual correction/refund states must not be displayed as an unpaid shipping bill. */
+export function purchaseShippingAdjustmentLabel(status?: string | null): string | null {
+  if (status === "CORRECTION_PENDING") return "تصحيح مصروف الشحن قيد المراجعة";
+  if (status === "REFUND_PENDING") return "استرداد أجور الشحن قيد المعالجة";
+  if (status === "REFUNDED") return "تم استرداد أجور الشحن فعلياً";
+  if (status === "RECOGNITION_REVERSED") return "مصروف الشحن معكوس بقيد تصحيح";
+  return null;
+}
+
 export type GovernanceRequestStatus =
   | "PENDING"
   | "APPROVED"

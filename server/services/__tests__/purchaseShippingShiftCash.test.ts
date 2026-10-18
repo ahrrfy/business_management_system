@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
@@ -14,11 +14,14 @@ import {
   submitPurchaseOrderForApproval,
 } from "../purchase/controls";
 import { postApprovedPurchaseInvoiceInTx } from "../purchase/automaticInvoicePosting";
+import { createPurchaseOrderRevisionTx } from "../purchase/revisions";
 import { settlePurchaseShippingFromShift } from "../purchase/pay";
 import { closeShift, getShiftReport, openShift } from "../shiftService";
 import { computeDrawerCashBalance } from "../cash/cashAvailability";
 import { withTx } from "../tx";
-import { cancelExpense } from "../expenseService";
+import { cancelExpense, getExpenseTrace, listExpenses } from "../expenseService";
+import { getDailyCashReconciliation } from "../cashDailyReconciliationService";
+import { decidePurchaseReturn, requestPurchaseReturn, requestPurchaseReturnReversal, decidePurchaseReturnReversal } from "../purchase/returnGovernance";
 import { purchaseOrderControlSource } from "../decisions/sources/purchasing";
 import { requestAccrualCorrection } from "../accounting/accrualCorrection";
 import { approveVoucher, cancelVoucher, getVoucher, rejectVoucher } from "../voucherService";
@@ -31,6 +34,14 @@ const cashierActor = { userId: 3, branchId: 1, role: "cashier" as const };
 
 const TABLES = [
   "idempotencyKeys",
+  "purchaseReturnReversalItems",
+  "purchaseReturnReversals",
+  "purchaseReturnReversalRequestItems",
+  "purchaseReturnReversalRequests",
+  "purchaseReturnItems",
+  "purchaseReturns",
+  "purchaseReturnRequestItems",
+  "purchaseReturnRequests",
   "auditLogs",
   "purchaseOrderEvents",
   "purchaseOrderControlRequests",
@@ -226,8 +237,217 @@ async function approveDeclaredShipping(purchaseOrderId: number) {
   return approveVoucher(Number(request.receiptId), ownerActor);
 }
 
+// Historical fixture: old releases saved an explicit paid declaration without
+// recording its cash. Keep that workflow covered without creating new such records.
+async function createLegacyDeferredPurchaseOrder(
+  input: Parameters<typeof createPurchaseOrder>[0], actor: Parameters<typeof createPurchaseOrder>[1],
+) {
+  if (input.shippingFundingSource !== "DRAWER") return createPurchaseOrder(input, actor);
+  const draft = await createPurchaseOrder({ ...input, shippingFundingSource: "ACCRUAL", shippingShiftId: undefined }, actor);
+  const [shift] = await db().select().from(s.shifts).where(and(
+    eq(s.shifts.userId, actor.userId), eq(s.shifts.branchId, input.branchId), eq(s.shifts.status, "OPEN"),
+  ));
+  const declaration = { shippingFundingSource: "DRAWER" as const, shippingFundingShiftId: input.shippingShiftId ?? Number(shift.id) };
+  await db().update(s.purchaseOrders).set(declaration).where(eq(s.purchaseOrders.id, draft.purchaseOrderId));
+  const revision = await withTx(tx => createPurchaseOrderRevisionTx(tx, {
+    purchaseOrderId: draft.purchaseOrderId, actorUserId: actor.userId, reason: "تصريح مؤجل من الإصدار السابق",
+  }));
+  await db().update(s.purchaseOrders).set({ currentRevisionId: revision.revisionId }).where(eq(s.purchaseOrders.id, draft.purchaseOrderId));
+  const [saved] = await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, draft.purchaseOrderId));
+  return { ...draft, version: Number(saved.version), revisionId: revision.revisionId, revisionNo: revision.revisionNo };
+}
+
 describe("حوكمة صرف مصاريف الشحن من درج نقدية الوردية (DRAWER Cash)", () => {
-  it("invoice approval only requests shipping payment; independent cash approval debits the frozen creator drawer", async () => {
+  it("records paid shipping immediately and reviews the invoice after the original shift closes without a second debit", async () => {
+    const creatorShift = await openShift({ branchId: 1, openingBalance: "100000.00" }, cashierActor);
+    const businessDate = new Date().toISOString().slice(0, 10);
+    const dailyBefore = await getDailyCashReconciliation({ branchId: 1, businessDate }, ownerActor);
+    const draftInput = {
+      supplierId: 1, branchId: 1, shippingCost: "2000.00", customsCost: "500.00",
+      shippingFundingSource: "DRAWER" as const, shippingShiftId: creatorShift.shiftId,
+      clientRequestId: randomUUID(),
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+    };
+    const draft = await createPurchaseOrder(draftInput, cashierActor);
+    const before = await getShiftReport(creatorShift.shiftId);
+    expect(before.expectedCash).toBe("97500.00");
+    expect(before.cashReconciliation.expenses).toBe("2500.00");
+    expect(before.cashReconciliation.expectedCash).toBe("97500.00");
+    const listed = await listExpenses({ shiftId: creatorShift.shiftId, branchId: 1, category: "TRANSPORT" });
+    expect(listed.totals.drawer).toBe("2500.00");
+    expect(listed.rows).toHaveLength(1);
+    expect(listed.rows[0]).toMatchObject({ fundingKind: "DRAWER", settlementStatus: "PAID", createdBy: cashierActor.userId, executedBy: cashierActor.userId });
+    expect(listed.rows[0].integrityWarnings).toEqual([]);
+    const trace = await getExpenseTrace(Number(listed.rows[0].id));
+    expect(trace!.obligationEvents).toContainEqual(expect.objectContaining({ eventType: "PAYMENT_SETTLED", amount: "2500.00" }));
+    const dailyAfter = await getDailyCashReconciliation({ branchId: 1, businessDate }, ownerActor);
+    expect(dailyAfter.expectedTreasuryCash).toBe(dailyBefore.expectedTreasuryCash);
+    expect(before.cashReconciliation.breakdown.expenses.some(item => item.amount === "2500.00")).toBe(true);
+    const [expense] = await db().select().from(s.expenses);
+    const [obligation] = await db().select().from(s.accrualObligations);
+    const [receipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, expense.receiptId!));
+    expect(expense).toMatchObject({ amount: "2500.00", source: "CASH", paymentMethod: "CASH", cashBucket: "DRAWER", shiftId: creatorShift.shiftId, createdBy: cashierActor.userId });
+    expect(obligation).toMatchObject({ status: "PAID", recognizedAmount: "2500.00" });
+    expect(receipt).toMatchObject({ amount: "2500.00", direction: "OUT", status: "COMPLETED", approvalStatus: "APPROVED", cashBucket: "DRAWER", shiftId: creatorShift.shiftId, createdBy: cashierActor.userId });
+    expect((await createPurchaseOrder(draftInput, cashierActor)).purchaseOrderId).toBe(draft.purchaseOrderId);
+    await closeShift({ shiftId: creatorShift.shiftId, countedCash: "97500.00", enforceCashGovernance: true }, cashierActor);
+    const [closedBefore] = await db().select().from(s.shifts).where(eq(s.shifts.id, creatorShift.shiftId));
+    const newerShift = await openShift({ branchId: 1, openingBalance: "70000.00" }, cashierActor);
+    const reviewerShift = await openShift({ branchId: 1, openingBalance: "80000.00" }, ownerActor);
+    const edited = await updatePurchaseOrder({
+      ...draftInput, purchaseOrderId: draft.purchaseOrderId, expectedVersion: draft.version,
+      revisionReason: "مراجعة البضاعة بعد إغلاق وردية دفع الشحن", notes: "مراجعة لاحقة",
+    }, cashierActor);
+    const submitted = await submitPurchaseOrderForApproval({
+      purchaseOrderId: draft.purchaseOrderId, expectedVersion: edited.version,
+      reason: "مراجعة الفاتورة بعد دفع الشحن وإغلاق ورديته", requestKey: randomUUID(),
+    }, cashierActor);
+    const decision = { requestId: submitted.requestId, decisionKey: randomUUID(), approve: true, reason: "اعتماد لاحق لا يحرك نقد الشحن", confirmedFullReceipt: true };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(Date.now() + 24 * 60 * 60 * 1000));
+    try {
+      await decidePurchaseOrderControl(decision, ownerActor);
+      await decidePurchaseOrderControl(decision, ownerActor);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect((await getShiftReport(creatorShift.shiftId)).expectedCash).toBe("97500.00");
+    expect((await getShiftReport(newerShift.shiftId)).expectedCash).toBe("70000.00");
+    expect((await getShiftReport(reviewerShift.shiftId)).expectedCash).toBe("80000.00");
+    expect((await db().select().from(s.shifts).where(eq(s.shifts.id, creatorShift.shiftId)))[0]).toEqual(closedBefore);
+    expect((await db().select().from(s.receipts).where(eq(s.receipts.id, receipt.id)))[0]).toEqual(receipt);
+    expect(await db().select().from(s.expenses)).toHaveLength(1);
+    expect(await db().select().from(s.accrualObligations)).toHaveLength(1);
+    const payments = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
+    expect(payments).toHaveLength(1);
+    expect(payments[0]).toMatchObject({ receiptId: receipt.id, purchaseOrderId: draft.purchaseOrderId, createdBy: cashierActor.userId, amount: "2500.00" });
+  });
+  it("rolls back the whole paid-shipping draft when the creator drawer lacks cash", async () => {
+    const shift = await openShift({ branchId: 1, openingBalance: "1000.00" }, cashierActor);
+    await expect(createPurchaseOrder({
+      supplierId: 1, branchId: 1, shippingCost: "2000.00", shippingFundingSource: "DRAWER",
+      shippingShiftId: shift.shiftId, clientRequestId: randomUUID(),
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+    }, cashierActor)).rejects.toThrow(/أقل من المطلوب/);
+    expect(await db().select().from(s.purchaseOrders)).toHaveLength(0);
+    expect(await db().select().from(s.expenses)).toHaveLength(0);
+    expect(await db().select().from(s.accrualObligations)).toHaveLength(0);
+    expect((await db().select().from(s.receipts)).filter(receipt => receipt.referenceNumber?.startsWith("SHIP-"))).toHaveLength(0);
+    expect((await getShiftReport(shift.shiftId)).expectedCash).toBe("1000.00");
+  });
+  it("locks recorded shipping amount and source while allowing goods edits", async () => {
+    const shift = await openShift({ branchId: 1, openingBalance: "100000.00" }, cashierActor);
+    const input = {
+      supplierId: 1, branchId: 1, shippingCost: "2000.00", shippingFundingSource: "DRAWER" as const,
+      shippingShiftId: shift.shiftId,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+    };
+    const draft = await createPurchaseOrder(input, cashierActor);
+    for (const change of [{ shippingCost: "3000.00" }, { shippingFundingSource: "ACCRUAL" as const, shippingShiftId: undefined }]) {
+      await expect(updatePurchaseOrder({
+        ...input, ...change, purchaseOrderId: draft.purchaseOrderId,
+        expectedVersion: draft.version, revisionReason: "محاولة تغيير شحن مدفوع",
+      }, cashierActor)).rejects.toThrow(/الشحن المدفوع/);
+    }
+    expect((await getShiftReport(shift.shiftId)).expectedCash).toBe("98000.00");
+    expect(await db().select().from(s.expenses)).toHaveLength(1);
+  });
+  it("concurrent retries of paid shipping return one draft and debit the last cash only once", async () => {
+    const shift = await openShift({ branchId: 1, openingBalance: "2000.00" }, cashierActor);
+    const input = { supplierId: 1, branchId: 1, shippingCost: "2000.00", shippingFundingSource: "DRAWER" as const,
+      shippingShiftId: shift.shiftId, clientRequestId: randomUUID(),
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }] };
+    const results = await Promise.all([createPurchaseOrder(input, cashierActor), createPurchaseOrder(input, cashierActor)]);
+    expect(results[0].purchaseOrderId).toBe(results[1].purchaseOrderId);
+    expect(await db().select().from(s.expenses)).toHaveLength(1);
+    expect((await getShiftReport(shift.shiftId)).expectedCash).toBe("0.00");
+  });
+  it("records a newly paid shipping declaration when editing an unpaid draft", async () => {
+    const shift = await openShift({ branchId: 1, openingBalance: "100000.00" }, cashierActor);
+    const input = { supplierId: 1, branchId: 1, shippingCost: "2000.00", shippingFundingSource: "ACCRUAL" as const,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }] };
+    const draft = await createPurchaseOrder(input, cashierActor);
+    expect((await getShiftReport(shift.shiftId)).expectedCash).toBe("100000.00");
+    await updatePurchaseOrder({ ...input, shippingFundingSource: "DRAWER", shippingShiftId: shift.shiftId,
+      purchaseOrderId: draft.purchaseOrderId, expectedVersion: draft.version, revisionReason: "دفع الشحن من درج المنشئ" }, cashierActor);
+    expect((await getShiftReport(shift.shiftId)).expectedCash).toBe("98000.00");
+    expect((await closeShift({ shiftId: shift.shiftId, countedCash: "98000.00", enforceCashGovernance: true }, cashierActor)).variance).toBe("0.00");
+  });
+  it("serializes different creators' paid shipping without locking absent global request keys", async () => {
+    const first = await openShift({ branchId: 1, openingBalance: "10000.00" }, cashierActor);
+    const second = await openShift({ branchId: 1, openingBalance: "10000.00" }, ownerActor);
+    const input = { supplierId: 1, branchId: 1, shippingCost: "2000.00", shippingFundingSource: "DRAWER" as const,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }] };
+    const results = await Promise.all([
+      createPurchaseOrder({ ...input, shippingShiftId: first.shiftId, clientRequestId: randomUUID() }, cashierActor),
+      createPurchaseOrder({ ...input, shippingShiftId: second.shiftId, clientRequestId: randomUUID() }, ownerActor),
+    ]);
+    expect(results[0].purchaseOrderId).not.toBe(results[1].purchaseOrderId);
+    expect((await getShiftReport(first.shiftId)).expectedCash).toBe("8000.00");
+    expect((await getShiftReport(second.shiftId)).expectedCash).toBe("8000.00");
+    expect(await db().select().from(s.expenses)).toHaveLength(2);
+  });
+  it("cancels goods after the paid shipping shift closes while preserving the original cash evidence", async () => {
+    const shift = await openShift({ branchId: 1, openingBalance: "100000.00" }, cashierActor);
+    const draft = await createPurchaseOrder({ supplierId: 1, branchId: 1, shippingCost: "2000.00",
+      shippingFundingSource: "DRAWER", shippingShiftId: shift.shiftId,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }] }, cashierActor);
+    const [expense] = await db().select().from(s.expenses);
+    const [receipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, expense.receiptId!));
+    await closeShift({ shiftId: shift.shiftId, countedCash: "98000.00", enforceCashGovernance: true }, cashierActor);
+    const request = await requestPurchaseOrderControl({ purchaseOrderId: draft.purchaseOrderId, expectedVersion: draft.version,
+      kind: "CANCEL_ORDER", requestKey: randomUUID(), reason: "إلغاء البضاعة بعد دفع أجور نقلها" }, cashierActor);
+    await decidePurchaseOrderControl({ requestId: request.requestId, decisionKey: randomUUID(), approve: true,
+      reason: "الشحن المدفوع لا يعود بإلغاء البضاعة" }, ownerActor);
+    expect((await db().select().from(s.receipts).where(eq(s.receipts.id, receipt.id)))[0]).toEqual(receipt);
+    expect((await getShiftReport(shift.shiftId)).expectedCash).toBe("98000.00");
+    expect(await db().select().from(s.expenses)).toHaveLength(1);
+    expect(await db().select().from(s.goodsReceipts)).toHaveLength(0);
+    expect(await db().select().from(s.supplierInvoices)).toHaveLength(0);
+  });
+  it("partial and full goods returns and return reversal preserve paid shipping and its original drawer", async () => {
+    const shift = await openShift({ branchId: 1, openingBalance: "100000.00" }, cashierActor);
+    const draft = await createPurchaseOrder({ supplierId: 1, branchId: 1, shippingCost: "2000.00", customsCost: "500.00",
+      shippingFundingSource: "DRAWER", shippingShiftId: shift.shiftId,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }] }, cashierActor);
+    const submitted = await submitPurchaseOrderForApproval({ purchaseOrderId: draft.purchaseOrderId, expectedVersion: draft.version,
+      reason: "اعتماد فاتورة لاختبار المرتجع مع شحن مدفوع", requestKey: randomUUID() }, cashierActor);
+    await decidePurchaseOrderControl({ requestId: submitted.requestId, decisionKey: randomUUID(), approve: true,
+      reason: "استلام البضاعة كاملة", confirmedFullReceipt: true }, ownerActor);
+    const [expense] = await db().select().from(s.expenses);
+    const [receipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, expense.receiptId!));
+    const [allocation] = await db().select().from(s.supplierInvoiceMatchAllocations);
+    let lastReturnId = 0;
+    for (const quantity of [4, 6]) {
+      const [invoice] = await db().select().from(s.supplierInvoices);
+      const requested = await requestPurchaseReturn({ supplierInvoiceId: Number(invoice.id), matchRunId: Number(allocation.matchRunId),
+        expectedInvoiceVersion: Number(invoice.version), requestKey: randomUUID(), settlement: "CREDIT", paymentMethod: "TRANSFER",
+        evidenceType: "RETURN_NOTE", evidenceReference: `RETURN-${randomUUID()}`, reason: "إرجاع البضاعة دون أجور نقلها المدفوعة",
+        lines: [{ matchAllocationId: Number(allocation.id), baseQuantity: quantity }] }, cashierActor);
+      const returned = await decidePurchaseReturn({ requestId: Number(requested.requestId), decisionKey: randomUUID(),
+        action: "APPROVE", reviewReason: "اعتماد إرجاع البضاعة وحدها" }, ownerActor);
+      lastReturnId = Number(returned.purchaseReturnId);
+      expect((await getShiftReport(shift.shiftId)).expectedCash).toBe("97500.00");
+      expect((await db().select().from(s.receipts).where(eq(s.receipts.id, receipt.id)))[0]).toEqual(receipt);
+      expect((await db().select().from(s.expenses))[0]).toEqual(expense);
+      expect((await db().select().from(s.accrualObligations))[0].status).toBe("PAID");
+    }
+    expect((await db().select().from(s.suppliers))[0].currentBalance).toBe("0.00");
+    expect((await db().select().from(s.branchStock))[0].quantity).toBe(0);
+    const [returned] = await db().select().from(s.purchaseReturns).where(eq(s.purchaseReturns.id, lastReturnId));
+    const [returnedItem] = await db().select().from(s.purchaseReturnItems).where(eq(s.purchaseReturnItems.purchaseReturnId, lastReturnId));
+    const reversal = await requestPurchaseReturnReversal({ purchaseReturnId: lastReturnId, expectedReturnVersion: Number(returned.version),
+      requestKey: randomUUID(), evidenceType: "SIGNED_APPROVAL", evidenceReference: `REVERSE-${randomUUID()}`,
+      reason: "عكس مرتجع بضاعة دون تغيير الشحن", lines: [{ purchaseReturnItemId: Number(returnedItem.id), baseQuantity: 6 }] }, cashierActor);
+    await decidePurchaseReturnReversal({ requestId: Number(reversal.requestId), decisionKey: randomUUID(), action: "APPROVE",
+      reviewReason: "تأكيد عكس مرتجع البضاعة" }, ownerActor);
+    expect((await db().select().from(s.suppliers))[0].currentBalance).toBe("600.00");
+    expect((await db().select().from(s.branchStock))[0].quantity).toBe(6);
+    expect((await getShiftReport(shift.shiftId)).expectedCash).toBe("97500.00");
+    expect((await db().select().from(s.expenses))[0]).toEqual(expense);
+    expect((await closeShift({ shiftId: shift.shiftId, countedCash: "97500.00", enforceCashGovernance: true }, cashierActor)).variance).toBe("0.00");
+  });
+  it("historical deferred declaration: invoice approval requests payment from the frozen creator drawer", async () => {
     const creatorShift = await openShift(
       { branchId: 1, openingBalance: "100000.00" },
       cashierActor,
@@ -236,7 +456,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       { branchId: 1, openingBalance: "80000.00" },
       ownerActor,
     );
-    const draft = await createPurchaseOrder(
+    const draft = await createLegacyDeferredPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -313,7 +533,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
   it("manager reissue preserves the shipping payer, separate audit actor, and drawer replay after closure", async () => {
     const creatorShift = await openShift({ branchId: 1, openingBalance: "100000.00" }, cashierActor);
     const reviewerShift = await openShift({ branchId: 1, openingBalance: "80000.00" }, ownerActor);
-    const draft = await createPurchaseOrder({
+    const draft = await createLegacyDeferredPurchaseOrder({
       supplierId: 1, branchId: 1, shippingCost: "2000.00",
       shippingFundingSource: "DRAWER", shippingShiftId: creatorShift.shiftId,
       items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
@@ -370,7 +590,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       { branchId: 1, openingBalance: "80000.00" },
       ownerActor,
     );
-    const draft = await createPurchaseOrder(
+    const draft = await createLegacyDeferredPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -420,7 +640,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
   });
   it("independent shipping approval refuses a closed frozen drawer even after the creator opens a newer one", async () => {
     const original = await openShift({ branchId: 1, openingBalance: "100000.00" }, cashierActor);
-    const draft = await createPurchaseOrder({
+    const draft = await createLegacyDeferredPurchaseOrder({
       supplierId: 1, branchId: 1, shippingCost: "2000.00",
       shippingFundingSource: "DRAWER", shippingShiftId: original.shiftId,
       items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
@@ -480,7 +700,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       { branchId: 1, openingBalance: "100000.00" },
       cashierActor,
     );
-    const draft = await createPurchaseOrder(
+    const draft = await createLegacyDeferredPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -553,7 +773,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
         { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
       ],
     };
-    const draft = await createPurchaseOrder(
+    const draft = await createLegacyDeferredPurchaseOrder(
       { ...input, branchId: 1 },
       cashierActor,
     );
@@ -602,7 +822,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       { branchId: 1, openingBalance: "80000.00" },
       ownerActor,
     );
-    const draft = await createPurchaseOrder(
+    const draft = await createLegacyDeferredPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -677,7 +897,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       { branchId: 1, openingBalance: "100000.00" },
       cashierActor,
     );
-    const draft = await createPurchaseOrder(
+    const draft = await createLegacyDeferredPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -743,7 +963,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       { branchId: 1, openingBalance: "100000.00" },
       cashierActor,
     );
-    const draft = await createPurchaseOrder(
+    const draft = await createLegacyDeferredPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -856,6 +1076,8 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
       isOwner: true,
     });
     expect(await getVoucher(shippingPayment.receiptId)).toMatchObject({ status: "COMPLETED", approvalStatus: "APPROVED" });
+    const refundedView = await listExpenses({ shiftId: creatorShift.shiftId });
+    expect(refundedView.rows[0].integrityWarnings).toEqual([]);
     expect((await getShiftReport(creatorShift.shiftId)).expectedCash).toBe(
       "100000.00",
     );
@@ -1148,7 +1370,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     );
 
     // 2. الكاشير ينشئ أمر الشراء متضمناً شحن وكمرك
-    const draft = await createPurchaseOrder(
+    const draft = await createLegacyDeferredPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -1252,7 +1474,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
   it("(٦) اعتماد أمر بلا وردية مفتوحة لا يختار الخزينة تلقائياً ويبقي طلب الشحن معلقاً", async () => {
     // لا توجد وردية مفتوحة لأي مستخدم
     // 1. الكاشير ينشئ أمر الشراء
-    const draft = await createPurchaseOrder(
+    const draft = await createLegacyDeferredPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -1343,7 +1565,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
 
   it("(٧) فتح وردية بعد إنشاء الأمر لا يجعل الاعتماد يصرف الشحن من الدرج", async () => {
     // 1. الكاشير ينشئ أمر الشراء قبل فتح الوردية
-    const draft = await createPurchaseOrder(
+    const draft = await createLegacyDeferredPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -1422,7 +1644,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     );
 
     // 2. الكاشير ينشئ أمر شراء بشحن 500,000 د.ع (سقف النثرية)
-    const draft = await createPurchaseOrder(
+    const draft = await createLegacyDeferredPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -1511,7 +1733,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     );
 
     // 2. الكاشير ينشئ أمر شراء للفرع 1
-    const draft = await createPurchaseOrder(
+    const draft = await createLegacyDeferredPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -1590,7 +1812,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
 
   it("(١٠) اعتماد أمر شراء مع تمويل شحن مستحق (ACCRUAL): لا يُصرف نقداً من الدرج ولا الخزينة ويبقى السند والالتزام معلقين", async () => {
     // 1. الكاشير ينشئ أمر شراء بشحن
-    const draft = await createPurchaseOrder(
+    const draft = await createLegacyDeferredPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -1675,7 +1897,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     );
 
     // 2. الكاشير ينشئ أمر الشراء
-    const draft = await createPurchaseOrder(
+    const draft = await createLegacyDeferredPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -1778,7 +2000,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
 
   it("(١٢) استلام أمر الشراء (receivePurchase) بلا وردية مفتوحة للمنشئ: يسقط تلقائياً للخزينة وتُربط السجلات بالكامل", async () => {
     // 1. الكاشير ينشئ أمر الشراء بلا وردية مفتوحة
-    const draft = await createPurchaseOrder(
+    const draft = await createLegacyDeferredPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -1989,7 +2211,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
 
     try {
       // 2. الكاشير خارج الوردية ينشئ أمر الشراء
-      const draft = await createPurchaseOrder(
+      const draft = await createLegacyDeferredPurchaseOrder(
         {
           supplierId: 1,
           branchId: 1,

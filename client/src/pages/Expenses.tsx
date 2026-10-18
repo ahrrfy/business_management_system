@@ -763,7 +763,6 @@ export default function Expenses() {
         variant: "destructive" as const,
         hidden:
           r.status !== "ACTIVE" ||
-          r.source !== "ACCRUAL" ||
           r.accrualObligationId == null ||
           ![
             "ACCRUED_UNPAID",
@@ -788,7 +787,7 @@ export default function Expenses() {
         kind: "reverse" as const,
         label: "إلغاء",
         variant: "destructive" as const,
-        hidden: r.status !== "ACTIVE" || r.source === "ACCRUAL" || !canCancel,
+        hidden: r.status !== "ACTIVE" || r.source === "ACCRUAL" || r.accrualObligationId != null || !canCancel,
         disabled: cancel.isPending,
         disabledReason: "توجد عملية إلغاء قيد التنفيذ",
         onSelect: () =>

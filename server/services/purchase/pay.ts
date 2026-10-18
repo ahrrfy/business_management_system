@@ -39,7 +39,7 @@ import { money, round2, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
 import type { Tx } from "../../db";
 import { createSystemPaymentRequestTx } from "../voucher/create";
-import { nextVoucherNumber } from "../voucher/helpers";
+import { computeSignature, nextVoucherNumber } from "../voucher/helpers";
 import { PETTY_CASH_LIMIT_IQD } from "../expenseService";
 import { openShiftIdTx } from "../shiftService";
 import { expenseAccrualSettlement } from "../accounting/accrualPosting";
@@ -252,6 +252,7 @@ export async function settlePurchaseShippingFromShiftTx(
   tx: Tx,
   input: SettlePurchaseShippingFromShiftInput,
   actor: Actor,
+  options?: { recordPaidDeclaration: true },
 ): Promise<SettlePurchaseShippingFromShiftResult> {
   const po = (
     await tx
@@ -273,7 +274,14 @@ export async function settlePurchaseShippingFromShiftTx(
   }
   assertPurchaseBranch(po, actor);
 
-  if (po.shippingFundingSource === "DRAWER") {
+  if (options?.recordPaidDeclaration && (po.status !== "DRAFT" || Number(po.createdBy) !== actor.userId ||
+    po.shippingFundingSource !== "DRAWER" || po.shippingFundingShiftId == null || input.shiftId !== Number(po.shippingFundingShiftId))) {
+    throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تعذر تسجيل دفع الشحن", why: "التسجيل الفوري يخص منشئ المسودة ودرجه المثبت فقط",
+      doThis: "سجل الدفع من فاتورة الشراء الأصلية بدرج منشئها المفتوح",
+    }) });
+  }
+  if (po.shippingFundingSource === "DRAWER" && !options?.recordPaidDeclaration) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: appErrorMessage({
@@ -484,12 +492,14 @@ export async function settlePurchaseShippingFromShiftTx(
       .set({
         status: "COMPLETED",
         approvalStatus: "APPROVED",
-        approvedBy: actor.userId,
-        approvedAt: new Date(),
+        approvedBy: options?.recordPaidDeclaration ? null : actor.userId,
+        approvedAt: options?.recordPaidDeclaration ? null : new Date(),
         shiftId: resolvedCash.shiftId,
         cashBucket: "DRAWER",
         paymentMethod: "CASH",
         createdBy: creatorUserId,
+        executedBy: creatorUserId,
+        executedAt: new Date(),
       })
       .where(eq(receipts.id, finalReceiptId));
   } else {
@@ -514,11 +524,22 @@ export async function settlePurchaseShippingFromShiftTx(
       referenceNumber: `SHIP-${po.poNumber}-DRAWER`,
       status: "COMPLETED",
       approvalStatus: "APPROVED",
-      approvedBy: actor.userId,
+      approvedBy: options?.recordPaidDeclaration ? null : actor.userId,
       createdBy: creatorUserId,
+      executedBy: creatorUserId,
+      executedAt: new Date(),
     });
     finalReceiptId = extractInsertId(rRes);
   }
+
+  const [completedReceipt] = await tx.select().from(receipts).where(eq(receipts.id, finalReceiptId)).limit(1);
+  await tx.update(receipts).set({ signatureHash: computeSignature({
+    id: finalReceiptId, amount: toDbMoney(amount), partyType: completedReceipt.partyType ?? "OTHER",
+    partyId: completedReceipt.partyId, paymentMethod: "CASH",
+    voucherDate: String(completedReceipt.voucherDate).slice(0, 10), voucherNumber: finalVoucherNumber,
+    createdBy: creatorUserId, approvedBy: options?.recordPaidDeclaration ? null : actor.userId,
+    branchId: Number(po.branchId),
+  }) }).where(eq(receipts.id, finalReceiptId));
 
   // ترحيل قيد الصرف النقدي PAYMENT_OUT يخصم الصندوق (CASH) ويقفل المصروف المستحق (ACCRUED_EXPENSES)
   const posting = expenseAccrualSettlement("CASH", amount);
@@ -556,7 +577,7 @@ export async function settlePurchaseShippingFromShiftTx(
     nextStatus: "PAID",
     eventType: "PAYMENT_SETTLED",
     actorId: creatorUserId,
-    reviewerId: actor.userId,
+    reviewerId: options?.recordPaidDeclaration ? null : actor.userId,
     receiptId: finalReceiptId,
     accountingEntryId: Number(settlementEntry.id),
     evidenceReference: obligation.evidenceReference,

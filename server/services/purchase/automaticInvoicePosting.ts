@@ -39,6 +39,8 @@ import { postSupplierInvoiceGrniTx } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
 import { createSupplierInvoiceInTx } from "./supplierInvoices";
 import { runThreeWayMatchInTx } from "./threeWayMatch";
+import { recordedPurchaseShippingPaymentTx } from "./shippingPayment";
+import { settlePurchaseShippingFromShiftTx } from "./pay";
 
 function normalizeDeterministicKey(value: string): string {
   const key = value.trim();
@@ -81,7 +83,8 @@ export async function recognizeShippingAndCustomsInTx(
     creatorId?: number;
     deterministicKey: string;
     recognizedAt: Date;
-    evidencePrefix?: "AUTO-PO-APPROVAL" | "PO-CANCELLATION-SHIPPING";
+    evidencePrefix?: "AUTO-PO-APPROVAL" | "PO-CANCELLATION-SHIPPING" | "PO-CREATION-SHIPPING";
+    recordPaidDeclaration?: true;
     shippingFundingSource?: {
       mode: "DRAWER" | "TREASURY" | "ACCRUAL";
       shiftId?: number | null;
@@ -94,6 +97,13 @@ export async function recognizeShippingAndCustomsInTx(
   if (!amount.gt(0)) return null;
 
   const creatorUserId = input.creatorId ?? input.actor.userId;
+  if (input.shippingFundingSource?.mode === "DRAWER") {
+    const recordedReceiptId = await recordedPurchaseShippingPaymentTx(tx, {
+      purchaseOrderId: input.purchaseOrderId, branchId: input.branchId, creatorId: creatorUserId,
+      amount: toDbMoney(amount), shiftId: input.shippingFundingSource.shiftId ?? null,
+    });
+    if (recordedReceiptId != null) return recordedReceiptId;
+  }
   const [creatorUser] = await tx
     .select({
       id: users.id,
@@ -297,8 +307,13 @@ export async function recognizeShippingAndCustomsInTx(
     evidenceReference,
     dedupeKey: `ACCRUAL:PAYMENT_REQUESTED:${obligation.id}:${request.receiptId}`,
   });
-  // Inventory approval/cancellation is not payment authorization. The separate
-  // voucher decision retains the creator's frozen cash source in this request.
+  // An actual petty-cash payment is recorded at creation, before goods review.
+  // Historical deferred declarations retain their independent voucher workflow.
+  if (input.recordPaidDeclaration) {
+    await settlePurchaseShippingFromShiftTx(tx, {
+      purchaseOrderId: input.purchaseOrderId, shiftId: fundingShiftId,
+    }, input.actor, { recordPaidDeclaration: true });
+  }
   return request.receiptId;
 }
 

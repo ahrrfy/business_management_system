@@ -168,7 +168,7 @@ export function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
           value: `EXP#${expenseId}`,
           status: STATUS_LABEL[expense.status] ?? expense.status,
         },
-        ...(expense.source === "ACCRUAL"
+        ...(obligationEvents.length > 0
           ? obligationEvents.map((event) => ({
               id: `accrual-event-${event.id}`,
               kind: (event.accountingEntryId

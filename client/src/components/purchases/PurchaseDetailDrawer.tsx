@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { purchaseShippingAdjustmentLabel } from "./purchaseGovernanceUiPolicy";
 import { getPurchaseSettlement } from "@shared/purchaseSettlement";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -499,7 +500,7 @@ export function PurchaseDetailDrawer({
                         ) : (
                           <Badge variant="outline" className="border-[var(--sem-danger)]/40 bg-[var(--sem-danger-bg)] text-[var(--sem-danger)] gap-1 text-[11px] py-0.5">
                             <AlertTriangle className="size-3" aria-hidden />
-                            مستحق غير مسدد
+                            {purchaseShippingAdjustmentLabel(d.shippingPayment?.obligationStatus) ?? "مستحق غير مسدد"}
                           </Badge>
                         )}
                       </div>
@@ -537,7 +538,7 @@ export function PurchaseDetailDrawer({
                       </div>
                     </div>
 
-                    {canSettleShipping && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
+                    {canSettleShipping && d.shippingFundingSource !== "DRAWER" && !d.shippingPayment?.hasRecordedPayment && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
                       <div className="pt-2 border-t flex items-center justify-between gap-2 flex-wrap">
                         <span className="text-[11px] text-muted-foreground">صرف نقدي من الدرج المفتوح للوردية</span>
                         <Button

@@ -2929,7 +2929,13 @@ function integrityWarningsOf(row: any): string[] {
     } else {
       if (row.status === "ACTIVE" && row.receiptStatus !== "COMPLETED")
         warnings.push("RECEIPT_STATUS_MISMATCH");
-      if (row.status === "CANCELLED" && row.receiptStatus !== "REVERSED")
+      // Governed refunds preserve the original completed OUT. Their separate
+      // settlement reversal and recognition reversal cancel the expense.
+      const refundedAccrual = row.accrualObligationId != null &&
+        row.settlementStatus === "RECOGNITION_REVERSED" && row.receiptStatus === "COMPLETED" &&
+        row.recognitionAccountingEntryId != null && row.settlementAccountingEntryId != null &&
+        row.settlementReceiptId != null && nullableId(row.settlementReceiptId) !== nullableId(row.receiptId);
+      if (row.status === "CANCELLED" && row.receiptStatus !== "REVERSED" && !refundedAccrual)
         warnings.push("RECEIPT_STATUS_MISMATCH");
       if (row.receiptApprovalStatus !== "APPROVED")
         warnings.push("RECEIPT_NOT_APPROVED");

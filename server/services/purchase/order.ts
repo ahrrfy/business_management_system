@@ -22,6 +22,8 @@ import { replacePurchaseOrderRevisionAllocationsTx } from "./requisitions";
 import { appendPurchaseOrderEventTx, createPurchaseOrderRevisionTx } from "./revisions";
 import { openShiftIdTx } from "../shiftService";
 import { PETTY_CASH_LIMIT_IQD } from "../expenseService";
+import { recordedPurchaseShippingPaymentTx } from "./shippingPayment";
+import { recognizeShippingAndCustomsInTx } from "./automaticInvoicePosting";
 
 async function captureShippingSourceTx(
   tx: Tx, input: PurchaseDocumentInput, actor: Actor, branchId: number,
@@ -33,6 +35,20 @@ async function captureShippingSourceTx(
     && requestedShift === previous.shippingFundingShiftId
     && money(input.shippingCost ?? "0").eq(money(previous.shippingCost ?? "0"))
     && money(input.customsCost ?? "0").eq(money(previous.customsCost ?? "0"));
+  if (previous?.shippingFundingSource === "DRAWER") {
+    const recorded = await recordedPurchaseShippingPaymentTx(tx, {
+      purchaseOrderId: Number(previous.id), branchId, creatorId: Number(previous.createdBy),
+      amount: toDbMoney(money(previous.shippingCost ?? "0").plus(money(previous.customsCost ?? "0"))),
+      shiftId: previous.shippingFundingShiftId,
+    });
+    if (recorded != null) {
+      if (!sourceUnchanged) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تعذر تعديل الشحن المدفوع", why: "مبلغ الشحن ومصدره مثبتان بإيصال وقيد نقدي فعلي",
+        doThis: "اترك الشحن المدفوع كما هو؛ عالج أي استرداد من مسار تصحيح المصروف المرتبط",
+      }) });
+      return { shippingFundingSource: "DRAWER" as const, shippingFundingShiftId: previous.shippingFundingShiftId };
+    }
+  }
   if (previous && Number(previous.createdBy) !== actor.userId && !sourceUnchanged) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
     what: "تعذر تعديل تصريح دفع الشحن", why: "تصريح الدفع ومصدره ومبلغه تخص منشئ الفاتورة، لا المحرر أو المعتمد",
     doThis: "اترك تصريح المنشئ كما هو، أو اطلب منه مراجعة الدفع ومصدره",
@@ -350,6 +366,16 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
   return { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal, invoiceDiscountIqd, usdInvoiceDiscountVal };
 }
 
+async function purchaseCreationReplayTx(tx: Tx, key: string | undefined, hash: string) {
+  if (!key) return null;
+  const existing = await checkIdempotency(tx, "purchase.create", key, hash, { requireStoredHash: true });
+  if (existing == null) return null;
+  const [saved] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, existing)).for("share").limit(1);
+  if (!saved) throw new TRPCError({ code: "CONFLICT", message: "سجل إعادة الطلب يشير إلى أمر شراء غير موجود" });
+  return { purchaseOrderId: existing, poNumber: saved.poNumber, total: String(saved.total), status: saved.status,
+    version: Number(saved.version), revisionId: saved.currentRevisionId == null ? null : Number(saved.currentRevisionId), idempotent: true as const };
+}
+
 export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor: Actor) {
   // دفاع الخدمة نفسها: لا يستطيع مستدعٍ داخلي/قديم تجاوز maker-checker بإنشاء أمر معتمد.
   if (input.status != null && input.status !== "DRAFT") {
@@ -358,6 +384,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       message: "إنشاء أمر الشراء يحفظ مسودة فقط؛ أرسله ثم اعتمده مستخدم مستقل من قائمة المشتريات",
     });
   }
+  let requestHash: string | undefined;
   return withTx(async (tx) => {
     // IDEM-06: idempotency check — نفس clientRequestId يعيد نفس المعرّف بدل إنشاء أمر مزدوج.
     // المسار ج-٥ (١٧/٨): المفتاح وحده كان يُطابَق ⇒ طلبٌ بنفس المفتاح لكن **بمورّدٍ أو أسطرٍ أو
@@ -394,43 +421,9 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
         ),
     };
     const payloadHash = idempotencyHash(payloadFingerprint);
-    if (input.clientRequestId) {
-      const existing = await checkIdempotency(
-        tx,
-        "purchase.create",
-        input.clientRequestId,
-        payloadHash,
-        { requireStoredHash: true },
-      );
-      if (existing != null) {
-        const [saved] = await tx
-          .select({
-            poNumber: purchaseOrders.poNumber,
-            total: purchaseOrders.total,
-            status: purchaseOrders.status,
-            version: purchaseOrders.version,
-            revisionId: purchaseOrders.currentRevisionId,
-          })
-          .from(purchaseOrders)
-          .where(eq(purchaseOrders.id, existing))
-          .limit(1);
-        if (!saved) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "سجل إعادة الطلب يشير إلى أمر شراء غير موجود",
-          });
-        }
-        return {
-          purchaseOrderId: existing,
-          poNumber: saved.poNumber,
-          total: String(saved.total),
-          status: saved.status,
-          version: Number(saved.version),
-          revisionId: saved.revisionId == null ? null : Number(saved.revisionId),
-          idempotent: true as const,
-        };
-      }
-    }
+    requestHash = payloadHash;
+    const replay = await purchaseCreationReplayTx(tx, input.clientRequestId, payloadHash);
+    if (replay) return replay;
 
     // Cash source precedes branch/PO locks, matching payment and close lock order.
     const shippingSource = await captureShippingSourceTx(tx, input, actor, input.branchId);
@@ -545,6 +538,15 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       actorUserId: actor.userId,
       payload: { poNumber, version: governed.version, revisionNo: revision.revisionNo },
     });
+    if (shippingSource.shippingFundingSource === "DRAWER") {
+      await recognizeShippingAndCustomsInTx(tx, {
+        purchaseOrderId, poNumber, branchId: input.branchId,
+        shippingCost: shippingCost.toFixed(2), customsCost: customsCost.toFixed(2),
+        actor, creatorId: actor.userId, deterministicKey: `shipping-create:${purchaseOrderId}`,
+        recognizedAt: new Date(), evidencePrefix: "PO-CREATION-SHIPPING", recordPaidDeclaration: true,
+        shippingFundingSource: { mode: "DRAWER", shiftId: shippingSource.shippingFundingShiftId },
+      });
+    }
     // قائمة الشراء غير الملغاة تخرج الصنف فوراً من أي جرد افتتاحي نشط في الفرع، حتى لو بدأ العد.
     await removeVariantsFromActiveOpeningStocktakes(tx, input.branchId, uniqueVariantIds);
     // IDEM-06: سجّل مفتاح الـidempotency — طلب متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK).
@@ -559,6 +561,14 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       revisionId: revision.revisionId,
       revisionNo: revision.revisionNo,
     };
+  }).catch(async (error) => {
+    // A simultaneous retry may have committed after our first snapshot. Recover
+    // only after rollback using a fresh transaction; never gap-lock absent keys.
+    if (input.clientRequestId && requestHash) {
+      const replay = await withTx(tx => purchaseCreationReplayTx(tx, input.clientRequestId, requestHash!));
+      if (replay) return replay;
+    }
+    throw error;
   });
 }
 
@@ -747,6 +757,16 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
         version: governed.version,
       },
     });
+
+    if (shippingSource.shippingFundingSource === "DRAWER" && po.shippingFundingSource !== "DRAWER") {
+      await recognizeShippingAndCustomsInTx(tx, {
+        purchaseOrderId: input.purchaseOrderId, poNumber: po.poNumber, branchId: Number(po.branchId),
+        shippingCost: shippingCost.toFixed(2), customsCost: customsCost.toFixed(2),
+        actor, creatorId: Number(po.createdBy), deterministicKey: `shipping-save:${po.id}:${revision.revisionNo}`,
+        recognizedAt: new Date(), evidencePrefix: "PO-CREATION-SHIPPING", recordPaidDeclaration: true,
+        shippingFundingSource: { mode: "DRAWER", shiftId: shippingSource.shippingFundingShiftId },
+      });
+    }
 
     return {
       purchaseOrderId: input.purchaseOrderId,
