@@ -1,4 +1,5 @@
 import React from "react";
+import { Router } from "wouter";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
@@ -6,6 +7,7 @@ import {
   PurchaseShippingCard,
 } from "@/components/purchases/PurchaseShippingCard";
 import { purchaseShippingAdjustmentLabel } from "@/components/purchases/purchaseGovernanceUiPolicy";
+import { PurchaseShippingRefund } from "@/components/purchases/PurchaseShippingRefund";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
 
@@ -59,5 +61,12 @@ describe("purchase shipping declaration display contract", () => {
     expect(purchaseShippingAdjustmentLabel("REFUNDED")).toContain("تم استرداد");
     expect(purchaseShippingAdjustmentLabel("RECOGNITION_REVERSED")).toContain("معكوس");
     expect(purchaseShippingAdjustmentLabel("PAID")).toBeNull();
+  });
+  it("shows the refund as a separate inbound voucher and receiving drawer", () => {
+    const html = renderToStaticMarkup(<Router ssrPath="/purchases/1"><PurchaseShippingRefund refund={{ receiptId: 15, voucherNumber: "RV-15",
+      amount: "2000.00", cashBucket: "DRAWER", shiftId: 91, occurredAt: "2026-10-18T12:00:00Z" }} /></Router>);
+    expect(html).toContain("استرداد فعلي للشحن");
+    expect(html).toContain("إلى درج الوردية #91");
+    expect(html).toContain("سند قبض الاسترداد: RV-15");
   });
 });

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { purchaseShippingAdjustmentLabel } from "./purchaseGovernanceUiPolicy";
+import { PurchaseShippingRefund } from "./PurchaseShippingRefund";
 import { getPurchaseSettlement } from "@shared/purchaseSettlement";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -538,6 +539,7 @@ export function PurchaseDetailDrawer({
                       </div>
                     </div>
 
+                    <PurchaseShippingRefund refund={d.shippingPayment?.refund} />
                     {canSettleShipping && d.shippingFundingSource !== "DRAWER" && !d.shippingPayment?.hasRecordedPayment && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
                       <div className="pt-2 border-t flex items-center justify-between gap-2 flex-wrap">
                         <span className="text-[11px] text-muted-foreground">صرف نقدي من الدرج المفتوح للوردية</span>

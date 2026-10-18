@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { purchaseShippingAdjustmentLabel } from "@/components/purchases/purchaseGovernanceUiPolicy";
+import { PurchaseShippingRefund } from "@/components/purchases/PurchaseShippingRefund";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -509,6 +510,7 @@ export default function PurchaseOrderDetail() {
                       )}
                     </div>
 
+                    <PurchaseShippingRefund refund={d.shippingPayment?.refund} />
                     {d.shippingPayment?.payee ? (
                       <div className="text-xs text-muted-foreground flex items-center gap-1 pt-1">
                         <span>الجهة المستفيدة / الناقل:</span>

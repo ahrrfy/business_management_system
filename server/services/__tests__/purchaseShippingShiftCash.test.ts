@@ -27,6 +27,8 @@ import { requestAccrualCorrection } from "../accounting/accrualCorrection";
 import { approveVoucher, cancelVoucher, getVoucher, rejectVoucher } from "../voucherService";
 import { resubmitRejectedExpensePayment } from "../voucher/approval";
 import { truncateTables } from "./__testUtils__";
+import { purchaseRouter } from "../../routers/purchaseRouter";
+import type { TrpcContext } from "../../context";
 
 const adminActor = { userId: 1, branchId: 1, role: "admin" as const };
 const ownerActor = { userId: 2, branchId: 1, role: "manager" as const };
@@ -289,6 +291,7 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     expect(expense).toMatchObject({ amount: "2500.00", source: "CASH", paymentMethod: "CASH", cashBucket: "DRAWER", shiftId: creatorShift.shiftId, createdBy: cashierActor.userId });
     expect(obligation).toMatchObject({ status: "PAID", recognizedAmount: "2500.00" });
     expect(receipt).toMatchObject({ amount: "2500.00", direction: "OUT", status: "COMPLETED", approvalStatus: "APPROVED", cashBucket: "DRAWER", shiftId: creatorShift.shiftId, createdBy: cashierActor.userId });
+    expect(receipt).toMatchObject({ approvedBy: null, approvedAt: null, executedBy: cashierActor.userId, executedAt: expect.any(Date) });
     expect((await createPurchaseOrder(draftInput, cashierActor)).purchaseOrderId).toBe(draft.purchaseOrderId);
     await closeShift({ shiftId: creatorShift.shiftId, countedCash: "97500.00", enforceCashGovernance: true }, cashierActor);
     const [closedBefore] = await db().select().from(s.shifts).where(eq(s.shifts.id, creatorShift.shiftId));
@@ -1078,6 +1081,28 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
     expect(await getVoucher(shippingPayment.receiptId)).toMatchObject({ status: "COMPLETED", approvalStatus: "APPROVED" });
     const refundedView = await listExpenses({ shiftId: creatorShift.shiftId });
     expect(refundedView.rows[0].integrityWarnings).toEqual([]);
+    expect.soft(refundedView.totals.needsAudit).toBe(0);
+    expect.soft(refundedView.totals.sourceMismatch).toBe(0);
+    const caller = purchaseRouter.createCaller({
+      req: { headers: {} } as TrpcContext["req"], res: { cookie() {}, clearCookie() {} } as unknown as TrpcContext["res"],
+      user: { id: ownerActor.userId, role: "manager", branchId: 1, name: "مالك الاختبار", isActive: true, isOwner: true } as TrpcContext["user"],
+    });
+    const detail = await caller.get({ purchaseOrderId: draft.purchaseOrderId });
+    expect.soft(detail.shippingPayment?.voucherId).toBe(shippingPayment.receiptId);
+    expect.soft(detail.shippingPayment?.refund?.receiptId).toBe(Number(correction.refundRequestReceiptId));
+    expect(detail.shippingPayment).toMatchObject({ hasRecordedPayment: true, shiftId: creatorShift.shiftId });
+    const [refundEntry] = await db().select().from(s.accountingEntries).where(and(
+      eq(s.accountingEntries.receiptId, Number(correction.refundRequestReceiptId)), eq(s.accountingEntries.entryType, "PAYMENT_OUT"),
+    ));
+    await db().update(s.accountingEntries).set({ amount: "-1.00" }).where(eq(s.accountingEntries.id, refundEntry.id));
+    try {
+      const brokenProof = await listExpenses({ shiftId: creatorShift.shiftId });
+      expect(brokenProof.rows[0].integrityWarnings).toContain("RECEIPT_STATUS_MISMATCH");
+      expect(brokenProof.totals.needsAudit).toBe(1);
+      expect(brokenProof.totals.sourceMismatch).toBe(1);
+    } finally {
+      await db().update(s.accountingEntries).set({ amount: refundEntry.amount }).where(eq(s.accountingEntries.id, refundEntry.id));
+    }
     expect((await getShiftReport(creatorShift.shiftId)).expectedCash).toBe(
       "100000.00",
     );

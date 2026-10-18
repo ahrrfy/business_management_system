@@ -487,6 +487,9 @@ export async function settlePurchaseShippingFromShiftTx(
     }
     finalVoucherNumber = existingReceipt.voucherNumber ?? "";
 
+    // Same materialized-cash convention as immediate own-drawer petty expenses:
+    // executedBy/At identifies the payer; do not invent an owner approval.
+    // Later invoice review is retained in the purchase control event chain.
     await tx
       .update(receipts)
       .set({
