@@ -99,7 +99,7 @@ export async function loadOnlineOrderLifecycles(
       eq(
         auditLogs.id,
         sql<number>`(SELECT al.id FROM auditLogs al
-      WHERE al.entityType = 'onlineOrder' AND al.entityId = CAST(${onlineOrders.id} AS CHAR)
+      WHERE al.entityType = 'onlineOrder' AND CAST(al.entityId AS BINARY) = CAST(${onlineOrders.id} AS BINARY)
       AND al.action LIKE 'store.order.%' ORDER BY al.createdAt DESC, al.id DESC LIMIT 1)`,
       ),
     )
@@ -131,12 +131,20 @@ export async function loadOnlineOrderLifecycles(
           })
         : {
             label:
-              r.preparedAt && r.orderStatus === "PROCESSING"
-                ? "تم التجهيز"
-                : orderStatusLabel(r.orderStatus),
+              ["CONFIRMED", "PROCESSING"].includes(r.orderStatus) &&
+              r.parcelStatus === "CANCELLED"
+                ? "بانتظار إعادة الإسناد"
+                : r.preparedAt && r.orderStatus === "PROCESSING"
+                  ? "تم التجهيز"
+                  : orderStatusLabel(r.orderStatus),
             collectionLabel: null,
             remittanceLabel: null,
             trackingComplete: r.orderStatus === "CANCELLED",
+            customerPhase:
+              ["CONFIRMED", "PROCESSING"].includes(r.orderStatus) &&
+              r.parcelStatus === "CANCELLED"
+                ? ("AWAITING_REASSIGNMENT" as const)
+                : undefined,
           };
       let latestEvent: {
         label: string;
@@ -195,6 +203,14 @@ export async function loadOnlineOrderLifecycles(
         Number(r.orderId),
         {
           ...facts,
+          label:
+            r.orderStatus === "CANCELLED" && r.parcelStatus !== "RETURNED"
+              ? orderStatusLabel("CANCELLED")
+              : facts.label,
+          customerPhase:
+            r.orderStatus === "CANCELLED" && r.parcelStatus !== "RETURNED"
+              ? undefined
+              : facts.customerPhase,
           trackingComplete:
             r.orderStatus === "CANCELLED" || facts.trackingComplete === true,
           consignmentId: r.consignmentId,

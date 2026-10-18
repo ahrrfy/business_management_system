@@ -100,6 +100,7 @@ describe("online order delivery facts", () => {
       }),
     ).toMatchObject({
       label: "بانتظار استلام المرتجع",
+      customerPhase: "RETURN_REQUESTED",
       tone: "warning",
       collectionLabel: "تم التحصيل",
       trackingComplete: false,
@@ -111,6 +112,16 @@ describe("online order delivery facts", () => {
         returnDeclaredAt: new Date(),
       }).label,
     ).toBe("أعيد للمكتبة");
+  });
+  it("distinguishes a physical return from cancelling only an assignment", () => {
+    expect(
+      deriveOnlineOrderLifecycle({ ...delivered, parcelStatus: "RETURNED" })
+        .customerPhase,
+    ).toBe("RETURNED");
+    expect(
+      deriveOnlineOrderLifecycle({ ...delivered, parcelStatus: "CANCELLED" })
+        .customerPhase,
+    ).toBe("AWAITING_REASSIGNMENT");
   });
   it("never calls a write-off or counter settlement a cash remittance", () => {
     expect(

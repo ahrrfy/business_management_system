@@ -1297,11 +1297,24 @@ function StorefrontContent() {
     result: trackResult,
     fetchLatest: async trackingToken => {
       const requestVersion = trackRequestVersion.current;
-      const result = await trackOrderByToken.mutateAsync({ trackingToken });
-      if (requestVersion !== trackRequestVersion.current) throw new Error("Tracking request superseded");
-      return result;
+      try {
+        const result = await trackOrderByToken.mutateAsync({ trackingToken });
+        if (!result) throw Object.assign(new Error("Tracking unavailable"), { code: "NOT_FOUND" });
+        if (requestVersion !== trackRequestVersion.current) throw new Error("Tracking request superseded");
+        return result;
+      } catch (error) {
+        if (requestVersion !== trackRequestVersion.current) throw new Error("Tracking request superseded");
+        throw error;
+      }
     },
     onResult: setTrackResult,
+    onUnavailable: () => {
+      trackRequestVersion.current++;
+      setTrackResult(null);
+      setTrackResultToken(null);
+      setTrackState("idle");
+      setTrackError("لم يعد رمز التتبع متاحا. أعد إدخال الرمز الصحيح أو تواصل مع المتجر للحصول على رابط جديد.");
+    },
   });
 
   useEffect(() => {

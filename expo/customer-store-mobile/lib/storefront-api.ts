@@ -60,7 +60,12 @@ export type StorefrontSettings = {
 export type OnlineOrderTracking = {
   orderNumber: string;
   status: string;
-  deliveryProgress?: { label: string; updatedAt: string | null; complete?: boolean };
+  deliveryProgress?: {
+    label: string;
+    updatedAt: string | null;
+    complete?: boolean;
+    phase?: "RETURNED" | "AWAITING_REASSIGNMENT" | "RETURN_REQUESTED";
+  };
   subtotal: string;
   pricingBenefitType: "NONE" | "WHOLESALE" | "OFFER" | "COUPON";
   pricingBenefitLabel: string | null;
@@ -500,6 +505,16 @@ async function storefrontQuery<T>(
     : new Error("تعذر الاتصال بالمتجر");
 }
 
+/** Preserve classification data without exposing server payloads, ownership details or tokens. */
+function storefrontRequestError(message: string, httpStatus?: number, payload?: unknown): Error & { code?: string; httpStatus?: number } {
+  const envelope = payload as { error?: { json?: { data?: { code?: unknown } }; data?: { code?: unknown } } } | null;
+  const code = envelope?.error?.json?.data?.code ?? envelope?.error?.data?.code;
+  return Object.assign(new Error(message), {
+    ...(typeof code === "string" && /^[A-Z_]{2,50}$/.test(code) ? { code } : {}),
+    ...(httpStatus == null ? {} : { httpStatus }),
+  });
+}
+
 async function storefrontMutation<T>(
   procedure: string,
   input: unknown,
@@ -513,10 +528,16 @@ async function storefrontMutation<T>(
       body: JSON.stringify({ json: input }),
       signal: controller.signal,
     });
-    if (!response.ok) throw new Error(`تعذر إرسال الطلب (${response.status})`);
+    if (!response.ok) {
+      let errorPayload: unknown;
+      try { errorPayload = await response.json(); } catch { /* HTTP status remains usable for non-JSON responses. */ }
+      throw storefrontRequestError(`تعذر إرسال الطلب (${response.status})`, response.status, errorPayload);
+    }
     const payload = (await response.json()) as {
       result?: { data?: { json?: T } };
+      error?: unknown;
     };
+    if (payload.error) throw storefrontRequestError("استجابة الطلب غير صالحة", response.status, payload);
     const value = payload.result?.data?.json;
     if (value === undefined) throw new Error("استجابة الطلب غير صالحة");
     return value;
@@ -798,7 +819,7 @@ export function secureTrackingRequest(input: SecureTrackingInput) {
       input: { customerSessionToken: input.customerSessionToken, orderNumber },
     };
   }
-  throw new Error("لا توجد صلاحية محفوظة لتتبع هذا الطلب. تحقق من هاتفك أو استخدم الجهاز الذي أُنشئ منه الطلب.");
+  throw Object.assign(new Error("لا توجد صلاحية محفوظة لتتبع هذا الطلب. تحقق من هاتفك أو استخدم الجهاز الذي أُنشئ منه الطلب."), { code: "UNAUTHORIZED" });
 }
 
 export function trackStorefrontOrder(input: SecureTrackingInput) {

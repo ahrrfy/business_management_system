@@ -165,7 +165,7 @@ describe("open customer order tracking refresh", () => {
     },
   );
   it.each(["DELIVERED", "CANCELLED"])(
-    "stops periodic reads for terminal status %s",
+    "checks completed or cancelled orders slowly for later returns or reactivation (%s)",
     async (status) => {
       const fetchLatest = vi.fn(async () => order);
       await render({
@@ -183,6 +183,82 @@ describe("open customer order tracking refresh", () => {
         await vi.advanceTimersByTimeAsync(90_000);
       });
       expect(fetchLatest).not.toHaveBeenCalled();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(210_000);
+      });
+      expect(fetchLatest).toHaveBeenCalledOnce();
     },
   );
+  it.each(["NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"])(
+    "clears unavailable tracking and stops retrying (%s)",
+    async (code) => {
+      const fetchLatest = vi.fn().mockRejectedValue({ data: { code } });
+      const onUnavailable = vi.fn();
+      await render({
+        enabled: true,
+        trackingToken: "bound-token",
+        result: order,
+        fetchLatest,
+        onResult: vi.fn(),
+        onUnavailable,
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(90_000);
+      });
+      expect(onUnavailable).toHaveBeenCalledOnce();
+      expect(fetchLatest).toHaveBeenCalledOnce();
+    },
+  );
+  it("keeps the last verified response and retries temporary failures", async () => {
+    const fetchLatest = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Offline"))
+      .mockResolvedValue(order);
+    const onResult = vi.fn();
+    const onUnavailable = vi.fn();
+    await render({
+      enabled: true,
+      trackingToken: "bound-token",
+      result: order,
+      fetchLatest,
+      onResult,
+      onUnavailable,
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(onUnavailable).not.toHaveBeenCalled();
+    expect(onResult).toHaveBeenCalledWith(order);
+  });
+  it("ignores permanent errors from a previous order", async () => {
+    let reject!: (reason: unknown) => void;
+    const fetchLatest = vi.fn(
+      () =>
+        new Promise<Order>((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    const onUnavailable = vi.fn();
+    const options = {
+      enabled: true,
+      trackingToken: "bound-token",
+      result: order,
+      fetchLatest,
+      onResult: vi.fn(),
+      onUnavailable,
+    };
+    await render(options);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    await render({
+      ...options,
+      trackingToken: "other-token",
+      result: { ...order, orderNumber: "ORD-2" },
+    });
+    await act(async () => {
+      reject({ data: { code: "FORBIDDEN" } });
+    });
+    expect(onUnavailable).not.toHaveBeenCalled();
+  });
 });

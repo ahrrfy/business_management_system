@@ -1,6 +1,6 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   AppState,
@@ -18,6 +18,7 @@ import { ScreenContainer } from "@/components/screen-container";
 import { loadVerifiedCustomerSession } from "@/lib/customer-session";
 import { loadRecentOrders, type RecentStorefrontOrder } from "@/lib/recent-orders";
 import { loadRecentQuoteRequests, type RecentStorefrontQuoteRequest } from "@/lib/recent-quote-requests";
+import { orderTrackingGuidance, orderTrackingRefreshInterval, orderTrackingUnavailable, ORDER_TRACKING_UNAVAILABLE_MESSAGE } from "@/lib/order-tracking-refresh";
 import {
   acceptStorefrontOfficialQuotation,
   formatIqd,
@@ -46,33 +47,6 @@ const ORDER_TRACKING_STEPS = [
   "قيد التوصيل",
   "تم التسليم",
 ] as const;
-
-const ORDER_STATUS_GUIDANCE: Record<string, { description: string; step: number }> = {
-  PENDING: {
-    description: "وصل طلبك إلى المكتبة وهو بانتظار تأكيد الموظف للتوفر والعنوان قبل بدء التجهيز.",
-    step: 0,
-  },
-  CONFIRMED: {
-    description: "أكد الموظف طلبك. يبدأ تجهيز المنتجات الآن قبل تسليمها للتوصيل.",
-    step: 1,
-  },
-  PROCESSING: {
-    description: "يجري تجهيز طلبك الآن. ستظهر حالة التوصيل عند تسليمه للمندوب.",
-    step: 1,
-  },
-  SHIPPED: {
-    description: "طلبك في مرحلة التوصيل. سيكتمل عند استلامك المنتجات.",
-    step: 2,
-  },
-  DELIVERED: {
-    description: "تم تسجيل تسليم الطلب. تظهر حالة استلام المبلغ بحسب الحركات المسجلة.",
-    step: 3,
-  },
-  CANCELLED: {
-    description: "أُلغي الطلب ولن ينتقل إلى التجهيز أو التوصيل.",
-    step: -1,
-  },
-};
 
 const QUOTE_REQUEST_STATUS_LABELS: Record<string, string> = {
   PENDING: "بانتظار مراجعة فريق المبيعات",
@@ -115,6 +89,20 @@ export default function OrdersScreen() {
   const [cancelling, setCancelling] = useState(false);
   const [acceptingQuote, setAcceptingQuote] = useState(false);
   const [hasVerifiedCustomerSession, setHasVerifiedCustomerSession] = useState(false);
+  const selectedOrderNumber = orderNumber.trim().toUpperCase();
+  const selectedOrderRef = useRef(selectedOrderNumber);
+  const trackingRequestVersion = useRef(0);
+  const lastTrackingRead = useRef({ orderNumber: "", at: 0 });
+  const refreshInFlight = useRef(false);
+  const selectOrder = useCallback((value: string) => {
+    trackingRequestVersion.current++;
+    selectedOrderRef.current = value.trim().toUpperCase();
+    setOrderNumber(value);
+    setTracking(null);
+    setTrackingLoading(false);
+    setTrackingError(null);
+    setCancelPrompt(false);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -131,17 +119,16 @@ export default function OrdersScreen() {
   }, []);
 
   useEffect(() => {
+    let active = true;
+    if (requestedOrderNumber) selectOrder(requestedOrderNumber);
     void loadRecentOrders()
       .then((orders) => {
+        if (!active) return;
         setRecentOrders(orders);
-        if (!requestedOrderNumber) return;
-        setOrderNumber(requestedOrderNumber);
-        setTracking(null);
-        setTrackingError(null);
-        setCancelPrompt(false);
       })
       .catch(() => undefined);
-  }, [requestedOrderNumber]);
+    return () => { active = false; };
+  }, [requestedOrderNumber, selectOrder]);
 
   useEffect(() => {
     void loadRecentQuoteRequests()
@@ -155,33 +142,54 @@ export default function OrdersScreen() {
       .catch(() => undefined);
   }, [requestedQuoteRequestNumber]);
 
-  // Only the visible, selected open order refreshes; background tabs send no requests.
+  // Completion slows refresh because returns and reactivation can still change the order.
+  const refreshInterval = tracking ? orderTrackingRefreshInterval(tracking) : null;
   useFocusEffect(useCallback(() => {
-    const selectedOrderNumber = tracking?.orderNumber;
-    if (!selectedOrderNumber || tracking.deliveryProgress?.complete === true || tracking.status === "CANCELLED") return;
+    const trackedOrderNumber = tracking?.orderNumber;
+    if (!trackedOrderNumber || trackedOrderNumber !== selectedOrderNumber || refreshInterval == null || cancelling || trackingLoading) return;
     let active = true;
-    let running = false;
     const refresh = async () => {
-      if (!active || running || AppState.currentState !== "active") return;
-      running = true;
+      if (!active || refreshInFlight.current || AppState.currentState !== "active"
+        || selectedOrderRef.current !== trackedOrderNumber
+        || (lastTrackingRead.current.orderNumber === trackedOrderNumber && Date.now() - lastTrackingRead.current.at < 1_000)) return;
+      refreshInFlight.current = true;
+      const requestVersion = trackingRequestVersion.current;
+      const current = () => active && requestVersion === trackingRequestVersion.current && selectedOrderRef.current === trackedOrderNumber;
       try {
         const session = await loadVerifiedCustomerSession();
-        const recent = recentOrders.find(candidate => candidate.orderNumber === selectedOrderNumber);
+        if (!current()) return;
+        setHasVerifiedCustomerSession(Boolean(session?.token));
+        const recent = recentOrders.find(candidate => candidate.orderNumber === trackedOrderNumber);
         const guestTrackingToken = recent?.guestTrackingToken &&
           (!recent.guestTrackingExpiresAt || Date.parse(recent.guestTrackingExpiresAt) > Date.now())
           ? recent.guestTrackingToken : null;
-        const result = await trackStorefrontOrder({ orderNumber: selectedOrderNumber, customerSessionToken: session?.token, guestTrackingToken });
-        if (active && result) setTracking(current => current?.orderNumber === selectedOrderNumber ? result : current);
-      } catch {
-        // Keep the last successful result during a transient connection failure.
+        const result = await trackStorefrontOrder({ orderNumber: trackedOrderNumber, customerSessionToken: session?.token, guestTrackingToken });
+        if (!current()) return;
+        if (!result || result.orderNumber !== trackedOrderNumber) {
+          trackingRequestVersion.current++;
+          setTracking(null);
+          setTrackingError(ORDER_TRACKING_UNAVAILABLE_MESSAGE);
+        } else {
+          setTracking(previous => previous?.orderNumber === trackedOrderNumber ? result : previous);
+          setTrackingError(null);
+        }
+      } catch (error) {
+        if (current() && orderTrackingUnavailable(error)) {
+          trackingRequestVersion.current++;
+          setTracking(null);
+          setTrackingError(ORDER_TRACKING_UNAVAILABLE_MESSAGE);
+        }
+        // Connectivity, server and rate failures retain the last verified result.
       } finally {
-        running = false;
+        if (current()) lastTrackingRead.current = { orderNumber: trackedOrderNumber, at: Date.now() };
+        refreshInFlight.current = false;
       }
     };
-    const timer = setInterval(() => void refresh(), 30_000);
+    void refresh();
+    const timer = setInterval(() => void refresh(), refreshInterval);
     const appState = AppState.addEventListener("change", state => { if (state === "active") void refresh(); });
     return () => { active = false; clearInterval(timer); appState.remove(); };
-  }, [tracking?.orderNumber, tracking?.status, tracking?.deliveryProgress?.complete, recentOrders]));
+  }, [tracking?.orderNumber, selectedOrderNumber, refreshInterval, recentOrders, cancelling, trackingLoading]));
 
   const track = async () => {
     if (trackingLoading) return;
@@ -189,14 +197,17 @@ export default function OrdersScreen() {
       setTrackingError("أدخل رقم الطلب أو اختر طلباً محفوظاً على هذا الجهاز.");
       return;
     }
+    const requestVersion = ++trackingRequestVersion.current;
+    const normalizedOrderNumber = orderNumber.trim().toUpperCase();
+    const current = () => requestVersion === trackingRequestVersion.current && selectedOrderRef.current === normalizedOrderNumber;
     setTrackingLoading(true);
     setTracking(null);
     setTrackingError(null);
     setCancelPrompt(false);
     try {
-      const normalizedOrderNumber = orderNumber.trim().toUpperCase();
       const recent = recentOrders.find((candidate) => candidate.orderNumber === normalizedOrderNumber);
       const session = await loadVerifiedCustomerSession();
+      if (!current()) return;
       setHasVerifiedCustomerSession(Boolean(session?.token));
       const guestTrackingToken = recent?.guestTrackingToken &&
         (!recent.guestTrackingExpiresAt || Date.parse(recent.guestTrackingExpiresAt) > Date.now())
@@ -207,23 +218,30 @@ export default function OrdersScreen() {
         customerSessionToken: session?.token,
         guestTrackingToken,
       });
-      if (!result) setTrackingError("لم نعثر على طلب متاح لهذه الجلسة.");
-      else setTracking(result);
+      if (!current()) return;
+      if (!result || result.orderNumber !== normalizedOrderNumber) setTrackingError(ORDER_TRACKING_UNAVAILABLE_MESSAGE);
+      else {
+        lastTrackingRead.current = { orderNumber: normalizedOrderNumber, at: Date.now() };
+        setTracking(result);
+      }
     } catch (reason) {
-      setTrackingError(classifyNetworkError(reason).message);
+      if (current()) setTrackingError(orderTrackingUnavailable(reason) ? ORDER_TRACKING_UNAVAILABLE_MESSAGE : classifyNetworkError(reason).message);
     } finally {
-      setTrackingLoading(false);
+      if (current()) setTrackingLoading(false);
     }
   };
 
   const cancelPendingOrder = async () => {
     if (!tracking || tracking.status !== "PENDING" || cancelling) return;
+    const normalizedOrderNumber = tracking.orderNumber.trim().toUpperCase();
+    const requestVersion = ++trackingRequestVersion.current;
+    const current = () => requestVersion === trackingRequestVersion.current && selectedOrderRef.current === normalizedOrderNumber;
     setCancelling(true);
     setTrackingError(null);
     try {
-      const normalizedOrderNumber = tracking.orderNumber.trim().toUpperCase();
       const recent = recentOrders.find((candidate) => candidate.orderNumber === normalizedOrderNumber);
       const session = await loadVerifiedCustomerSession();
+      if (!current()) return;
       setHasVerifiedCustomerSession(Boolean(session?.token));
       const guestTrackingToken = recent?.guestTrackingToken &&
         (!recent.guestTrackingExpiresAt || Date.parse(recent.guestTrackingExpiresAt) > Date.now())
@@ -234,14 +252,19 @@ export default function OrdersScreen() {
         customerSessionToken: session?.token,
         guestTrackingToken,
       });
+      if (!current()) return;
+      lastTrackingRead.current = { orderNumber: normalizedOrderNumber, at: Date.now() };
       setTracking((current) =>
         current?.orderNumber === result.orderNumber
-          ? { ...current, status: result.status }
+          ? { ...current, status: result.status, deliveryProgress: undefined }
           : current,
       );
       setCancelPrompt(false);
     } catch (reason) {
-      setTrackingError(classifyNetworkError(reason).message);
+      if (current()) {
+        if (orderTrackingUnavailable(reason)) setTracking(null);
+        setTrackingError(orderTrackingUnavailable(reason) ? ORDER_TRACKING_UNAVAILABLE_MESSAGE : classifyNetworkError(reason).message);
+      }
     } finally {
       setCancelling(false);
     }
@@ -382,11 +405,7 @@ export default function OrdersScreen() {
                 accessibilityRole="button"
                 activeOpacity={0.82}
                 key={recent.orderNumber}
-                onPress={() => {
-                  setOrderNumber(recent.orderNumber);
-                  setTracking(null);
-                  setTrackingError(null);
-                }}
+                onPress={() => selectOrder(recent.orderNumber)}
                 style={styles.recentOrder}
               >
                 <View>
@@ -455,7 +474,7 @@ export default function OrdersScreen() {
             style={styles.input}
             textAlign="right"
             value={orderNumber}
-            onChangeText={setOrderNumber}
+            onChangeText={selectOrder}
           />
           <TouchableOpacity
             activeOpacity={0.85}
@@ -480,10 +499,7 @@ export default function OrdersScreen() {
         {tracking && (
           <View style={styles.liveOrder}>
             {(() => {
-              const guidance = ORDER_STATUS_GUIDANCE[tracking.status] ?? {
-                description: "تتم متابعة طلبك من فريق المكتبة. راجع الحالة لاحقاً أو تواصل معنا عند الحاجة.",
-                step: -1,
-              };
+              const guidance = orderTrackingGuidance(tracking);
               return (
                 <View style={styles.statusGuidance}>
                   <Text style={styles.statusGuidanceTitle}>مراحل الطلب</Text>
@@ -491,8 +507,8 @@ export default function OrdersScreen() {
                   {guidance.step >= 0 && (
                     <View style={styles.timeline}>
                       {ORDER_TRACKING_STEPS.map((step, index) => {
-                        const complete = index < guidance.step || tracking.status === "DELIVERED";
-                        const current = index === guidance.step && tracking.status !== "DELIVERED";
+                        const complete = index < guidance.step || guidance.delivered;
+                        const current = index === guidance.step && !guidance.delivered;
                         return (
                           <View key={step} style={styles.timelineRow}>
                             <View style={[

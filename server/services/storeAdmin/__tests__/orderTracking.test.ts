@@ -20,6 +20,9 @@ import { getPartyStoreInTransit } from "../../delivery/queries";
 import { getCourierPerformance } from "../../reports/courierPerformance";
 import { getStoreCustomers } from "../storeCustomerService";
 import { workOrderRouter } from "../../../routers/workOrderRouter";
+import mysql from "mysql2/promise";
+import { drizzle } from "drizzle-orm/mysql2";
+import { loadOnlineOrderLifecycles } from "../onlineOrderTracking";
 
 const db = () => getDb()!;
 beforeEach(async () => {
@@ -117,6 +120,38 @@ beforeEach(async () => {
 });
 
 describe("online order current lifecycle", () => {
+  it.each(["utf8mb4_0900_ai_ci", "utf8mb4_unicode_ci"])(
+    "loads audit evidence with connection collation %s",
+    async (charset) => {
+      const pool = mysql.createPool({
+        uri: process.env.DATABASE_URL!,
+        charset,
+        connectionLimit: 1,
+      });
+      try {
+        await db()
+          .insert(s.auditLogs)
+          .values({
+            userId: 1,
+            branchId: 1,
+            action: "store.order.updateContact",
+            entityType: "onlineOrder",
+            entityId: "1",
+            createdAt: new Date("2030-01-01T00:00:00Z"),
+          });
+        const lifecycles = await loadOnlineOrderLifecycles(
+          drizzle(pool, { schema: s, mode: "default" }),
+          [1],
+        );
+        expect(lifecycles.get(1)?.latestEvent).toMatchObject({
+          label: "تحديث التواصل",
+          actorName: "موظف التوصيل",
+        });
+      } finally {
+        await pool.end();
+      }
+    },
+  );
   it("stops reception from offering a delivered invoice-linked order for assignment", async () => {
     const [user] = await db().select().from(s.users).where(eq(s.users.id, 1));
     const caller = workOrderRouter.createCaller({
@@ -182,7 +217,7 @@ describe("online order current lifecycle", () => {
       .where(eq(s.invoices.id, 1));
     expect(await trackOnlineOrderForCustomer("ORD-TRACK", 1)).toMatchObject({
       status: "PROCESSING",
-      deliveryProgress: { complete: false },
+      deliveryProgress: { complete: false, phase: "AWAITING_REASSIGNMENT" },
     });
     const actor = { userId: 1, branchId: 1, role: "admin" };
     const result = await dispatchOnlineOrder(
@@ -208,7 +243,7 @@ describe("online order current lifecycle", () => {
       );
       expect(await trackOnlineOrderForCustomer("ORD-TRACK", 1)).toMatchObject({
         status: "PROCESSING",
-        deliveryProgress: { complete: false },
+        deliveryProgress: { complete: false, phase: "AWAITING_REASSIGNMENT" },
       });
       await dispatchOnlineOrder(
         {
@@ -349,6 +384,16 @@ describe("online order current lifecycle", () => {
       status: "CANCELLED",
       deliveryProgress: { label: "ملغى" },
     });
+    await db()
+      .update(s.deliveryConsignments)
+      .set({ parcelStatus: "CANCELLED", status: "CANCELLED" })
+      .where(eq(s.deliveryConsignments.id, 1));
+    const cancelled = await trackOnlineOrderForCustomer("ORD-TRACK", 1);
+    expect(cancelled).toMatchObject({
+      status: "CANCELLED",
+      deliveryProgress: { label: "ملغى", complete: true },
+    });
+    expect(cancelled?.deliveryProgress?.phase).toBeUndefined();
   });
   it("does not duplicate invoice-linked parcels in the courier's legacy open-order queue", async () => {
     await db()

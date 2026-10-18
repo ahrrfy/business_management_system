@@ -12,33 +12,27 @@ interface TrackingRefreshOptions<T extends TrackedOrder> {
   result: T | null;
   fetchLatest: (trackingToken: string) => Promise<T>;
   onResult: (result: T) => void;
+  onUnavailable?: () => void;
 }
 
-/** Only the open, unfinished customer order is refreshed; staff screens use the event bus. */
+/** Only the open customer order is refreshed; completed orders use a slower cadence. */
 export function useOrderTrackingRefresh<T extends TrackedOrder>({
   enabled,
   trackingToken,
   result,
   fetchLatest,
   onResult,
+  onUnavailable,
 }: TrackingRefreshOptions<T>): void {
-  const callbacks = useRef({ fetchLatest, onResult });
+  const callbacks = useRef({ fetchLatest, onResult, onUnavailable });
   useEffect(() => {
-    callbacks.current = { fetchLatest, onResult };
-  }, [fetchLatest, onResult]);
+    callbacks.current = { fetchLatest, onResult, onUnavailable };
+  }, [fetchLatest, onResult, onUnavailable]);
   const orderNumber = result?.orderNumber;
   const status = result?.status;
   const complete = result?.deliveryProgress?.complete === true;
   useEffect(() => {
-    if (
-      !enabled ||
-      !trackingToken ||
-      !orderNumber ||
-      !status ||
-      status === "CANCELLED" ||
-      complete
-    )
-      return;
+    if (!enabled || !trackingToken || !orderNumber || !status) return;
     let disposed = false;
     let pending = false;
     let lastRefresh = Date.now();
@@ -57,8 +51,21 @@ export function useOrderTrackingRefresh<T extends TrackedOrder>({
         const next = await callbacks.current.fetchLatest(trackingToken);
         if (!disposed && next.orderNumber === orderNumber)
           callbacks.current.onResult(next);
-      } catch {
-        // Keep the last verified response during connection failures; the next tick/resume retries.
+      } catch (error) {
+        const failure = error as {
+          data?: { code?: string };
+          code?: string;
+        } | null;
+        const code = failure?.data?.code ?? failure?.code;
+        if (
+          !disposed &&
+          code &&
+          ["NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"].includes(code)
+        ) {
+          disposed = true;
+          callbacks.current.onUnavailable?.();
+        }
+        // Temporary connection/server failures retain the last verified response and retry.
       } finally {
         pending = false;
       }
@@ -66,7 +73,10 @@ export function useOrderTrackingRefresh<T extends TrackedOrder>({
     const resume = () => {
       void refresh();
     };
-    const timer = window.setInterval(resume, 30_000);
+    const timer = window.setInterval(
+      resume,
+      complete || status === "CANCELLED" ? 300_000 : 30_000,
+    );
     document.addEventListener("visibilitychange", resume);
     window.addEventListener("online", resume);
     window.addEventListener("focus", resume);

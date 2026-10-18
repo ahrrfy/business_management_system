@@ -8,6 +8,8 @@ export interface OnlineOrderLifecycle {
   remittanceLabel: string | null;
   /** Customer delivery/collection is complete; shop remittance remains an internal workflow. */
   trackingComplete?: boolean;
+  /** Safe customer guidance; no staff identities or internal financial data. */
+  customerPhase?: "RETURNED" | "AWAITING_REASSIGNMENT" | "RETURN_REQUESTED";
   consignmentId: number | null;
   consignmentNumber: string | null;
   deliveryPartyName: string | null;
@@ -38,7 +40,12 @@ export function deriveOnlineOrderLifecycle(
   facts: OnlineOrderDeliveryFacts,
 ): Pick<
   OnlineOrderLifecycle,
-  "label" | "tone" | "collectionLabel" | "remittanceLabel" | "trackingComplete"
+  | "label"
+  | "tone"
+  | "collectionLabel"
+  | "remittanceLabel"
+  | "trackingComplete"
+  | "customerPhase"
 > {
   const physicalLabels: Record<string, string> = {
     ASSIGNED: "مسند لجهة التوصيل",
@@ -65,6 +72,13 @@ export function deriveOnlineOrderLifecycle(
     live &&
     facts.returnDeclaredAt != null &&
     !["RETURNED", "CANCELLED"].includes(facts.parcelStatus);
+  const customerPhase: OnlineOrderLifecycle["customerPhase"] = returnPending
+    ? "RETURN_REQUESTED"
+    : facts.parcelStatus === "RETURNED"
+      ? "RETURNED"
+      : facts.parcelStatus === "CANCELLED"
+        ? "AWAITING_REASSIGNMENT"
+        : undefined;
   if (returnPending) {
     label = "بانتظار استلام المرتجع";
     tone = "warning";
@@ -72,6 +86,7 @@ export function deriveOnlineOrderLifecycle(
   if (facts.parcelStatus !== "DELIVERED")
     return {
       label,
+      customerPhase,
       tone,
       collectionLabel: null,
       remittanceLabel: null,
@@ -83,6 +98,7 @@ export function deriveOnlineOrderLifecycle(
   if (cod.lte(0))
     return {
       label,
+      customerPhase,
       tone,
       collectionLabel: "مدفوع مسبقا",
       remittanceLabel: null,
@@ -117,6 +133,7 @@ export function deriveOnlineOrderLifecycle(
           : "بانتظار التوريد";
   return {
     label,
+    customerPhase,
     tone,
     collectionLabel,
     remittanceLabel,
