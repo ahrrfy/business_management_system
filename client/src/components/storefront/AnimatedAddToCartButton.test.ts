@@ -1,59 +1,82 @@
+// @vitest-environment jsdom
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-
-const source = readFileSync(new URL("./AnimatedAddToCartButton.tsx", import.meta.url), "utf8");
-const cssSource = readFileSync(new URL("./animated-add-to-cart.css", import.meta.url), "utf8");
-const storefrontSource = readFileSync(new URL("../../pages/Storefront.tsx", import.meta.url), "utf8");
-const curatedRowsSource = readFileSync(new URL("./StorefrontCuratedRows.tsx", import.meta.url), "utf8");
-const cardSource = readFileSync(new URL("./StorefrontProductCard.tsx", import.meta.url), "utf8");
-
-describe("AnimatedAddToCartButton Component Contract", () => {
-  it("includes dual-bag architecture (ink outside, white inside clipped pill)", () => {
-    expect(source).toContain('className="bag bag--out"');
-    expect(source).toContain('className="bag bag--in"');
-    expect(source).toContain('className="pill"');
-    expect(source).toContain('className="cart"');
-    expect(source).toContain('className="pill__label"');
+import { AnimatedAddToCartButton } from "./AnimatedAddToCartButton";
+let container: HTMLDivElement;
+let root: Root;
+beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.useFakeTimers();
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+});
+afterEach(() => {
+  act(() => root.unmount());
+  container.remove();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+function render(
+  onAdd: () => boolean,
+  disabled = false,
+  label = "أضف إلى السلة",
+) {
+  act(() =>
+    root.render(
+      createElement(AnimatedAddToCartButton, { onAdd, disabled, label }),
+    ),
+  );
+  return container.querySelector("button")!;
+}
+describe("immediate navy cart button", () => {
+  it("adds before any timer and allows an intended second addition during confirmation", () => {
+    const onAdd = vi.fn(() => true);
+    const button = render(onAdd);
+    act(() => button.click());
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    expect(button.textContent).toContain("تمت الإضافة");
+    act(() => button.click());
+    expect(onAdd).toHaveBeenCalledTimes(2);
+    act(() => vi.advanceTimersByTime(1000));
+    expect(button.textContent).toContain("أضف إلى السلة");
   });
-
-  it("handles state transitions and reduced motion preference", () => {
-    expect(source).toContain('prefers-reduced-motion: reduce');
-    expect(source).toContain('data-state={state}');
-    expect(source).toContain('handleCartAnimationEnd');
-    expect(source).toContain('cart-run');
+  it("does not confirm selection-only or stock-limit rejection and preserves the selection label", () => {
+    const onAdd = vi.fn(() => false);
+    const button = render(onAdd, false, "اختر اللون");
+    act(() => button.click());
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    expect(button.textContent).toContain("اختر اللون");
+    expect(button.textContent).not.toContain("تمت الإضافة");
   });
-
-  it("defines 60-frame synchronization keyframes and physics in CSS", () => {
-    expect(cssSource).toContain("@keyframes cart-run");
-    expect(cssSource).toContain("@keyframes cart-physics");
-    expect(cssSource).toContain("@keyframes bag-drop-out");
-    expect(cssSource).toContain("@keyframes bag-ride-in");
-    expect(cssSource).toContain("@keyframes label-hide-show");
-    expect(cssSource).toContain("--from-left");
-    expect(cssSource).toContain("--to-centre");
-    expect(cssSource).toContain("--to-exit");
-    expect(cssSource).toContain("--bag-drop-y");
-    expect(cssSource).toContain(".btn--xs");
-    expect(cssSource).toContain(".btn--sm");
+  it("does not invoke the mutation while disabled", () => {
+    const onAdd = vi.fn(() => true);
+    const button = render(onAdd, true);
+    act(() => button.click());
+    expect(onAdd).not.toHaveBeenCalled();
   });
-
-  it("verifies RelatedProductStrip in Storefront fixes pointer capture bug and integrates size xs", () => {
-    // Pointer down must not capture pointer immediately or intercept button clicks
-    expect(storefrontSource).toContain('(event.target as HTMLElement).closest("button, a, select, input, label")');
-    expect(storefrontSource).toContain("event.stopPropagation()");
-    expect(storefrontSource).toContain("AnimatedAddToCartButton");
-    expect(storefrontSource).toContain('size="xs"');
+  it("clears an earlier confirmation when a later addition is rejected", () => {
+    const onAdd = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
+    const button = render(onAdd);
+    act(() => button.click());
+    act(() => button.click());
+    expect(button.textContent).toContain("أضف إلى السلة");
   });
-
-  it("verifies StorefrontProductCard integrates AnimatedAddToCartButton size sm", () => {
-    expect(cardSource).toContain('import { AnimatedAddToCartButton } from "./AnimatedAddToCartButton";');
-    expect(cardSource).toContain('<AnimatedAddToCartButton');
-    expect(cardSource).toContain('size="sm"');
-  });
-
-  it("verifies StorefrontCuratedRows integrates AnimatedAddToCartButton", () => {
-    expect(curatedRowsSource).toContain('import { AnimatedAddToCartButton } from "./AnimatedAddToCartButton";');
-    expect(curatedRowsSource).toContain('<AnimatedAddToCartButton');
-    expect(curatedRowsSource).toContain('size="sm"');
+  it("uses brand tokens without geometry animation or resize work", () => {
+    const css = readFileSync(
+      "client/src/components/storefront/animated-add-to-cart.css",
+      "utf8",
+    );
+    const source = readFileSync(
+      "client/src/components/storefront/AnimatedAddToCartButton.tsx",
+      "utf8",
+    );
+    expect(css).toContain("var(--store-brand,");
+    expect(css).toContain("var(--store-brand-strong,");
+    expect(css).not.toContain("@keyframes");
+    expect(source).not.toContain("getBoundingClientRect");
+    expect(source).not.toContain('addEventListener("resize"');
   });
 });
