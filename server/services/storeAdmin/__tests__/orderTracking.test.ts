@@ -40,34 +40,30 @@ beforeEach(async () => {
       { id: 1, name: "MAIN", code: "MAIN", type: "MAIN" },
       { id: 2, name: "OTHER", code: "OTHER", type: "SALES" },
     ]);
-  await db()
-    .insert(s.users)
-    .values({
-      id: 1,
-      openId: "tracking",
-      name: "موظف التوصيل",
-      role: "admin",
-      branchId: 1,
-    });
+  await db().insert(s.users).values({
+    id: 1,
+    openId: "tracking",
+    name: "موظف التوصيل",
+    role: "admin",
+    branchId: 1,
+  });
   await db()
     .insert(s.customers)
     .values({ id: 1, name: "عميل", phone: "+9647701234567" });
   await db()
     .insert(s.deliveryParties)
     .values({ id: 1, name: "شركة التوصيل", partyType: "COMPANY" });
-  await db()
-    .insert(s.invoices)
-    .values({
-      id: 1,
-      invoiceNumber: "INV-TRACK",
-      branchId: 1,
-      customerId: 1,
-      total: "10000",
-      subtotal: "10000",
-      paidAmount: "10000",
-      status: "PAID",
-      sourceType: "ONLINE",
-    });
+  await db().insert(s.invoices).values({
+    id: 1,
+    invoiceNumber: "INV-TRACK",
+    branchId: 1,
+    customerId: 1,
+    total: "10000",
+    subtotal: "10000",
+    paidAmount: "10000",
+    status: "PAID",
+    sourceType: "ONLINE",
+  });
   await db()
     .insert(s.onlineOrders)
     .values({
@@ -81,43 +77,39 @@ beforeEach(async () => {
       status: "SHIPPED",
       invoiceId: 1,
       deliveryPartyId: 1,
+      orderDate: new Date("2026-10-18T12:00:00Z"),
+      createdAt: new Date("2026-10-18T12:00:00Z"),
     });
   // Historic invoice bridge: the delivery truth progressed while the order header remained SHIPPED.
-  await db()
-    .insert(s.deliveryConsignments)
-    .values({
-      id: 1,
-      consignmentNumber: "CN-TRACK",
-      branchId: 1,
-      partyId: 1,
-      invoiceId: 1,
-      sourceType: "INVOICE",
-      sourceId: 1,
-      codAmount: "10000",
-      parcelStatus: "DELIVERED",
-      moneyStatus: "UNSETTLED",
-      status: "DISPATCHED",
-      courierDeliveredAt: new Date(),
-      custodyRecognizedAt: new Date(),
-    });
-  await db()
-    .insert(s.deliveryLedgerEntries)
-    .values({
-      eventKey: "tracking-collected",
-      partyId: 1,
-      consignmentId: 1,
-      branchId: 1,
-      entryType: "COD_COLLECTED",
-      amount: "10000",
-    });
-  await db()
-    .insert(s.deliveryEvents)
-    .values({
-      eventKey: "tracking-delivered",
-      consignmentId: 1,
-      eventType: "DELIVERED",
-      actorUserId: 1,
-    });
+  await db().insert(s.deliveryConsignments).values({
+    id: 1,
+    consignmentNumber: "CN-TRACK",
+    branchId: 1,
+    partyId: 1,
+    invoiceId: 1,
+    sourceType: "INVOICE",
+    sourceId: 1,
+    codAmount: "10000",
+    parcelStatus: "DELIVERED",
+    moneyStatus: "UNSETTLED",
+    status: "DISPATCHED",
+    courierDeliveredAt: new Date(),
+    custodyRecognizedAt: new Date(),
+  });
+  await db().insert(s.deliveryLedgerEntries).values({
+    eventKey: "tracking-collected",
+    partyId: 1,
+    consignmentId: 1,
+    branchId: 1,
+    entryType: "COD_COLLECTED",
+    amount: "10000",
+  });
+  await db().insert(s.deliveryEvents).values({
+    eventKey: "tracking-delivered",
+    consignmentId: 1,
+    eventType: "DELIVERED",
+    actorUserId: 1,
+  });
 });
 
 describe("online order current lifecycle", () => {
@@ -220,6 +212,16 @@ describe("online order current lifecycle", () => {
     ).toHaveLength(1);
   });
   it("uses the linked consignment in lists, filters, counts, detail and authenticated customer tracking", async () => {
+    const [deliveryEvent] = await db().select().from(s.deliveryEvents);
+    await db()
+      .insert(s.auditLogs)
+      .values({
+        userId: 1,
+        action: "store.order.dispatch",
+        entityType: "onlineOrder",
+        entityId: "1",
+        createdAt: deliveryEvent.occurredAt,
+      });
     const list = await listOnlineOrders({
       scopedBranchId: 1,
       status: "DELIVERED",
@@ -231,14 +233,14 @@ describe("online order current lifecycle", () => {
         label: "تم التسليم والتحصيل",
         remittanceLabel: "بانتظار التوريد",
         consignmentId: 1,
-        latestEvent: { actorName: "موظف التوصيل" },
+        latestEvent: { label: "سلم", actorName: "موظف التوصيل" },
       },
     });
     expect(
       await listOnlineOrders({ scopedBranchId: 1, status: "SHIPPED" }),
     ).toEqual([]);
     expect(await onlineOrderStatusCounts(1)).toEqual({ DELIVERED: 1 });
-    const today = new Date().toISOString().slice(0, 10);
+    const today = "2026-10-18";
     expect(
       await getStoreAnalytics({
         scopedBranchId: 1,
@@ -304,15 +306,13 @@ describe("online order current lifecycle", () => {
       .update(s.onlineOrders)
       .set({ status: "PROCESSING" })
       .where(eq(s.onlineOrders.id, 1));
-    await db()
-      .insert(s.auditLogs)
-      .values({
-        userId: 1,
-        branchId: 1,
-        action: "store.order.markPrepared",
-        entityType: "onlineOrder",
-        entityId: "1",
-      });
+    await db().insert(s.auditLogs).values({
+      userId: 1,
+      branchId: 1,
+      action: "store.order.markPrepared",
+      entityType: "onlineOrder",
+      entityId: "1",
+    });
     expect((await getOnlineOrder(1, 1))?.lifecycle?.latestEvent).toMatchObject({
       label: "تم التجهيز",
       actorName: "موظف التوصيل",

@@ -160,10 +160,18 @@ export async function loadOnlineOrderLifecycles(
           actorName: r.actorName ?? null,
         };
       }
+      const actionValue = r.orderActionValue as { status?: string } | null;
+      // These legacy timestamps have second precision. A tied dispatch audit must not
+      // mask physical delivery evidence; terminal cancellation also keeps its priority.
+      const preferTiedOrderAction =
+        !useParcel &&
+        (r.orderStatus !== "CANCELLED" || actionValue?.status === "CANCELLED");
       if (
         r.orderAction &&
         r.orderActionAt &&
-        r.orderActionAt >= latestEvent.occurredAt
+        (r.orderActionAt > latestEvent.occurredAt ||
+          (preferTiedOrderAction &&
+            r.orderActionAt.getTime() === latestEvent.occurredAt.getTime()))
       ) {
         const actions: Record<string, string> = {
           "store.order.claim": "استلام الطلب للتجهيز",
@@ -174,7 +182,6 @@ export async function loadOnlineOrderLifecycles(
           "store.order.update": "تعديل بيانات الطلب",
           "store.order.dispatch": "إسناد لجهة التوصيل",
         };
-        const actionValue = r.orderActionValue as { status?: string } | null;
         latestEvent = {
           label:
             actions[r.orderAction] ??
