@@ -1,19 +1,15 @@
-// تطبيعُ البحث في المتجر — مصدرٌ واحدٌ يشترك فيه العميل (تصفيةٌ محلّية للاقتراحات) والخادم
-// (LIKE على أعمدة الكتالوج). الفصلُ بينهما كان جذر عطبٍ حقيقيٍّ أمسكه Codex على #904:
-// الاقتراحات تظهر لحظياً لأنّها تُصفّى محلياً بتطبيعٍ عربيّ + storeTitle، ثمّ تختفي حين
-// يستبدل الخادم صفحات الكتالوج بنتائج LIKE خامّ على `products.name`/brand/barcode بلا
-// تطبيعٍ ولا storeTitle.
-//
-// المفتاح: القاعدة الواحدة تعمل هنا (JS للعميل + للخادم) وتُبنى منها عبارة SQL موازية (REPLACE
-// متسلسل على العمود) بنفس التحويلات بالضبط — فإن تفوّق البحث على الاقتراح، تفوّق حقاً؛
-// وإن قصر، قصر معه بلا سراب.
+// Shared normalization and matching for the published catalog, full-catalog suggestions and UI helpers.
+// Keep name/brand/category text and customer input on the same Arabic/digit/token contract.
+// Barcode ownership is resolved separately before this text search.
 
 /** أزواج التطبيع العربيّ المُطبَّقة على القيمة والاستعلام معاً:
  *  - الألفات (أ/إ/آ/ٱ ← ا)
  *  - التاء المربوطة (ة ← ه)
  *  - الألف المقصورة (ى ← ي)
  *  - الأرقام المشرقية والمغربية (٠-٩ مع 0-9) بالإضافة للأرقام الفارسية/الأردية الشائعة. */
-export const ARABIC_NORMALIZATION_PAIRS: ReadonlyArray<readonly [string, string]> = [
+export const ARABIC_NORMALIZATION_PAIRS: ReadonlyArray<
+  readonly [string, string]
+> = [
   // الألفات
   ["أ", "ا"],
   ["إ", "ا"],
@@ -47,9 +43,7 @@ export const ARABIC_NORMALIZATION_PAIRS: ReadonlyArray<readonly [string, string]
   ["۹", "9"],
 ];
 
-/** يُطبّع نصّاً لبحث المتجر: أحرفٌ صغيرة (بحسب `ar`) + توحيدُ الألفات والتاء المربوطة والألف المقصورة والأرقام + طيّ
- *  فراغاتٍ متعدّدة. النتيجة قابلةٌ للنقلِ حرفياً إلى `LIKE`ٍ خادميٍّ حين يُطبَّق REPLACE
- *  المُتَتَابع نفسه على العمود. */
+/** Arabic letters/digits, lower case, diacritics and repeated whitespace share one normalization. */
 export function normalizeArabicSearch(value: string): string {
   if (!value) return "";
   let result = value.toLocaleLowerCase("ar");
@@ -66,7 +60,10 @@ export function normalizeArabicSearch(value: string): string {
  * يتجاهل الفراغات المكررة والرموز الفارغة.
  */
 const WORD_CHAR_REGEX = new RegExp("[\\p{L}\\p{N}]", "u");
-const TRIM_PUNCT_REGEX = new RegExp("^[^\\p{L}\\p{N}]+|[^\\p{L}\\p{N}]+$", "gu");
+const TRIM_PUNCT_REGEX = new RegExp(
+  "^[^\\p{L}\\p{N}]+|[^\\p{L}\\p{N}]+$",
+  "gu",
+);
 
 export const MAX_STOREFRONT_SEARCH_TOKENS = 8;
 
@@ -79,11 +76,15 @@ export function tokenizeSearchTerms(value: string): string[] {
     .filter((t) => t.length > 0 && WORD_CHAR_REGEX.test(t));
 }
 
-
 export interface SearchRelevanceTarget {
   productName: string;
   storeTitle?: string | null;
   brand?: string | null;
+  barcode?: string | null;
+  category?: string | null;
+  /** Precomputed only in the short-lived server index. */
+  searchText?: string;
+  searchWords?: string[];
 }
 
 /**
@@ -101,11 +102,16 @@ export function scoreStorefrontSearchRelevance(
 ): number {
   const normSearch = normalizeArabicSearch(rawSearch);
   if (!normSearch) return 0;
-  const tokens = tokenizeSearchTerms(rawSearch).slice(0, MAX_STOREFRONT_SEARCH_TOKENS);
+  const tokens = tokenizeSearchTerms(rawSearch).slice(
+    0,
+    MAX_STOREFRONT_SEARCH_TOKENS,
+  );
   if (tokens.length === 0) return 0;
 
   const normName = normalizeArabicSearch(target.productName);
-  const normStoreTitle = target.storeTitle ? normalizeArabicSearch(target.storeTitle) : "";
+  const normStoreTitle = target.storeTitle
+    ? normalizeArabicSearch(target.storeTitle)
+    : "";
   const normBrand = target.brand ? normalizeArabicSearch(target.brand) : "";
   const primaryTitle = normStoreTitle || normName;
 
@@ -142,9 +148,15 @@ export function scoreStorefrontSearchRelevance(
   const brandWords = normBrand ? tokenizeSearchTerms(normBrand) : [];
 
   for (const token of tokens) {
-    if (titleWords.some((w) => w === token) || nameWords.some((w) => w === token)) {
+    if (
+      titleWords.some((w) => w === token) ||
+      nameWords.some((w) => w === token)
+    ) {
       score += 60;
-    } else if (titleWords.some((w) => w.startsWith(token)) || nameWords.some((w) => w.startsWith(token))) {
+    } else if (
+      titleWords.some((w) => w.startsWith(token)) ||
+      nameWords.some((w) => w.startsWith(token))
+    ) {
       score += 40;
     } else if (primaryTitle.includes(token) || normName.includes(token)) {
       score += 20;
@@ -167,41 +179,148 @@ export function scoreStorefrontSearchRelevance(
   return score;
 }
 
-/**
- * اقتراحات البحث للمتجر:
- * تطابق متعدد الكلمات (Tokens) بأي ترتيب مع تطبيع الأرقام والحروف والبحث الجزئي.
- * ترتيب النتائج بحسب درجة الملاءمة مع إعطاء الأولوية للمنتجات المتوفرة.
- */
-export function getStorefrontSearchSuggestions<
-  T extends { productName: string; brand?: string | null; storeTitle?: string | null; inStock?: boolean }
->(products: T[], rawSearch: string): T[] {
-  const normSearch = normalizeArabicSearch(rawSearch);
-  if (normSearch.length < 2) return [];
-  const tokens = tokenizeSearchTerms(rawSearch).slice(0, MAX_STOREFRONT_SEARCH_TOKENS);
-  if (tokens.length === 0) return [];
+/** Small domain vocabulary: do not equate a generic marker with a highlighter. */
+const SEARCH_SYNONYMS = [
+  ["ملزمة", "ملازم"],
+  ["دفتر", "دفاتر"],
+  ["قلم", "أقلام"],
+  ["كراس", "كراريس", "كراسات"],
+  ["هايلايتر", "هايلايت", "قلم تأشير", "قلم تاشير", "highlighter"],
+  ["انكليزي", "انجليزي", "إنكليزي", "إنجليزي", "english"],
+  ["ستيكر", "ستيكرات", "ملصق", "ملصقات"],
+] as const;
+const APPROXIMATE_WORD_REGEX = new RegExp("^[\\p{L}]{4,}$", "u");
+const synonymGroups = SEARCH_SYNONYMS.map((group) =>
+  Array.from(new Set(group.map(normalizeArabicSearch))),
+);
 
-  const matched: Array<{ product: T; originalIndex: number; score: number; inStock: number }> = [];
+export type StorefrontSearchMatch = {
+  kind: "DIRECT" | "SYNONYM" | "SIMILAR";
+  score: number;
+  correction: string | null;
+};
 
-  for (let i = 0; i < products.length; i++) {
-    const product = products[i];
-    const text = normalizeArabicSearch(
-      `${product.productName} ${product.storeTitle ?? ""} ${product.brand ?? ""}`
-    );
-    if (tokens.every((token) => text.includes(token))) {
-      matched.push({
-        product,
-        originalIndex: i,
-        score: scoreStorefrontSearchRelevance(product, rawSearch),
-        inStock: product.inStock !== false ? 1 : 0,
-      });
+export function expandStorefrontSearch(raw: string): string[] {
+  const query = tokenizeSearchTerms(raw)
+    .slice(0, MAX_STOREFRONT_SEARCH_TOKENS)
+    .join(" ");
+  if (!query) return [];
+  const variants = new Set([query]);
+  for (const group of synonymGroups) {
+    for (const variant of Array.from(variants)) {
+      for (const phrase of group) {
+        const padded = ` ${variant} `;
+        if (!padded.includes(` ${phrase} `)) continue;
+        for (const replacement of group) {
+          if (variants.size >= 16) break;
+          variants.add(
+            padded.replace(` ${phrase} `, ` ${replacement} `).trim(),
+          );
+        }
+      }
     }
   }
+  return Array.from(variants);
+}
 
-  matched.sort((a, b) =>
-    b.inStock - a.inStock
-    || b.score - a.score
-    || a.originalIndex - b.originalIndex
-  );
+/** At most one insertion/deletion/substitution or adjacent transposition. */
+function oneEditApart(a: string, b: string): boolean {
+  if (Math.abs(a.length - b.length) > 1 || a === b) return false;
+  let i = 0;
+  while (i < Math.min(a.length, b.length) && a[i] === b[i]) i++;
+  if (a.length === b.length)
+    return (
+      a.slice(i + 1) === b.slice(i + 1) ||
+      (a[i] === b[i + 1] &&
+        a[i + 1] === b[i] &&
+        a.slice(i + 2) === b.slice(i + 2))
+    );
+  return a.length > b.length
+    ? a.slice(i + 1) === b.slice(i)
+    : a.slice(i) === b.slice(i + 1);
+}
 
-  return matched.slice(0, 6).map((item) => item.product);
+export function matchStorefrontSearch(
+  target: SearchRelevanceTarget,
+  raw: string,
+  allowSimilar = false,
+): StorefrontSearchMatch | null {
+  return createStorefrontSearchMatcher(raw, allowSimilar)(target);
+}
+
+export function createStorefrontSearchMatcher(
+  raw: string,
+  allowSimilar = false,
+) {
+  const variants = expandStorefrontSearch(raw).map((query) => ({
+    query,
+    terms: tokenizeSearchTerms(query),
+  }));
+  return (target: SearchRelevanceTarget): StorefrontSearchMatch | null => {
+    if (!variants.length) return null;
+    const text =
+      target.searchText ??
+      normalizeArabicSearch(
+        `${target.productName} ${target.storeTitle ?? ""} ${target.brand ?? ""} ${target.category ?? ""} ${target.barcode ?? ""}`,
+      );
+    for (let index = 0; index < variants.length; index++) {
+      const terms = variants[index].terms;
+      if (terms.every((term) => text.includes(term))) {
+        return {
+          kind: index === 0 ? "DIRECT" : "SYNONYM",
+          score:
+            (index === 0 ? 10_000 : 5_000) +
+            scoreStorefrontSearchRelevance(target, variants[index].query),
+          correction: null,
+        };
+      }
+    }
+    if (!allowSimilar) return null;
+    // Never approximate digits, model/barcode tokens, short words or more than one token.
+    const terms = variants[0].terms;
+    const missing = terms.filter((term) => !text.includes(term));
+    if (missing.length !== 1 || !APPROXIMATE_WORD_REGEX.test(missing[0]))
+      return null;
+    const words =
+      target.searchWords ??
+      tokenizeSearchTerms(
+        `${target.storeTitle ?? ""} ${target.productName} ${target.brand ?? ""} ${target.category ?? ""}`,
+      );
+    const corrected = words.find(
+      (word) =>
+        APPROXIMATE_WORD_REGEX.test(word) && oneEditApart(missing[0], word),
+    );
+    if (!corrected) return null;
+    const correction = terms
+      .map((term) => (term === missing[0] ? corrected : term))
+      .join(" ");
+    return {
+      kind: "SIMILAR",
+      score: 1_000 + scoreStorefrontSearchRelevance(target, correction),
+      correction,
+    };
+  };
+}
+
+/** Legacy consumers use the same strict/synonym match; approximate hits remain separate. */
+export function getStorefrontSearchSuggestions<
+  T extends SearchRelevanceTarget & { inStock?: boolean },
+>(products: T[], rawSearch: string): T[] {
+  if (normalizeArabicSearch(rawSearch).length < 2) return [];
+  return products
+    .map((product, index) => ({
+      product,
+      index,
+      match: matchStorefrontSearch(product, rawSearch),
+    }))
+    .filter((row) => row.match != null)
+    .sort(
+      (a, b) =>
+        b.match!.score - a.match!.score ||
+        Number(b.product.inStock !== false) -
+          Number(a.product.inStock !== false) ||
+        a.index - b.index,
+    )
+    .slice(0, 6)
+    .map((row) => row.product);
 }

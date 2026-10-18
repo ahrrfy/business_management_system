@@ -31,7 +31,7 @@ function priceLabel(price: string | null): string {
 interface CuratedCardProps {
   p: RowProduct;
   onSelect: () => void;
-  onAdd: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  onAdd: (event: React.MouseEvent<HTMLButtonElement>) => boolean;
   recentlyAdded?: boolean;
   canBeOrdered: (p: RowProduct) => boolean;
   cartQuantity?: number;
@@ -47,17 +47,11 @@ function CuratedProductCard({
   cartQuantity = 0,
   onUpdateQuantity,
 }: CuratedCardProps) {
-  const [localAdded, setLocalAdded] = useState(false);
   const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
   const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
   const isOrderable = canBeOrdered(p);
-  const showAdded = recentlyAdded || localAdded;
+  const showAdded = recentlyAdded;
 
-  const handleAddClick = (event: React.MouseEvent<HTMLButtonElement>) => {
-    setLocalAdded(true);
-    window.setTimeout(() => setLocalAdded(false), 1500);
-    onAdd(event);
-  };
 
   return (
     <div
@@ -153,7 +147,7 @@ function CuratedProductCard({
 
         {/* زر الإضافة السريع للسلة أو وحدة التحكم بالكمية المتحولة — متطابق أفقياً بارتفاع h-9 sm:h-10 */}
         {!p.isCustomizable && cartQuantity > 0 && onUpdateQuantity ? (
-          <div className="animate-spring-pop mt-auto flex h-9 sm:h-10 w-full items-center justify-between rounded-xl border border-emerald-600/30 bg-emerald-50 px-1.5 text-emerald-900 shadow-sm dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-200">
+          <div className="mt-auto flex h-10 w-full items-center justify-between rounded-xl border border-emerald-600/30 bg-emerald-50 px-1.5 text-emerald-900 shadow-sm dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-200">
             <button
               type="button"
               onClick={(e) => {
@@ -194,9 +188,7 @@ function CuratedProductCard({
               addedLabel="تمت الإضافة"
               icon={p.isCustomizable ? <AlertTriangle aria-hidden className="size-3.5" /> : undefined}
               onAdd={(btnEl) => {
-                setLocalAdded(true);
-                window.setTimeout(() => setLocalAdded(false), 1500);
-                onAdd({ currentTarget: btnEl, stopPropagation: () => {} } as unknown as React.MouseEvent<HTMLButtonElement>);
+                return onAdd({ currentTarget: btnEl, stopPropagation: () => {} } as unknown as React.MouseEvent<HTMLButtonElement>);
               }}
               cartCount={cartQuantity}
               showCartCount={false}
@@ -213,7 +205,7 @@ export interface CuratedRowProps {
   icon: React.ReactNode;
   products: RowProduct[];
   onSelect: (id: number) => void;
-  onAdd: (p: RowProduct, event: React.MouseEvent<HTMLButtonElement>) => void;
+  onAdd: (p: RowProduct, event: React.MouseEvent<HTMLButtonElement>) => boolean;
   recentlyAddedId?: number | null;
   canBeOrdered?: (p: RowProduct) => boolean;
   getCartQuantity?: (id: number) => number;
@@ -471,7 +463,7 @@ interface StorefrontCuratedRowsProps {
   dealProducts: RowProduct[];
   bestSellers: RowProduct[];
   onSelectProduct: (id: number) => void;
-  onAddToCart: (p: RowProduct, event: React.MouseEvent<HTMLButtonElement>) => void;
+  onAddToCart: (p: RowProduct, event: React.MouseEvent<HTMLButtonElement>) => boolean;
   recentlyAddedId?: number | null;
   canBeOrdered: (p: RowProduct) => boolean;
   getCartQuantity?: (id: number) => number;

@@ -5,6 +5,7 @@ vi.mock("@/lib/trpc", () => ({
     storefront: {
       catalog: { useInfiniteQuery: () => ({}) },
       product: { useQuery: () => ({}) },
+      searchSuggestions: { useQuery: () => ({}) },
       labelSummary: { useQuery: () => ({}) },
       related: { useQuery: () => ({}) },
       cartRecommendations: { useQuery: () => ({}) },
@@ -572,6 +573,19 @@ describe("getStorefrontSearchSuggestions", () => {
 
     const result = getStorefrontSearchSuggestions(items, "دفتر كشكول").map((it) => it.productId);
     expect(result).toEqual([2, 1]);
+  });
+});
+
+describe("storefront remote search and cart wiring", () => {
+  it("uses full-catalog suggestions and immediate success-aware cart actions", () => {
+    const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
+    expect(source).toContain("<StorefrontSearch value={rawSearch}");
+    expect(source).toContain("<StorefrontSearchAlternatives query={search}");
+    expect(source).not.toContain("getStorefrontSearchSuggestions(filteredItems");
+    expect(source).not.toContain("triggerCartFlight");
+    expect(source).not.toContain("setCartFlight");
+    expect(source).toContain("return commitCartSelections([selection])");
+    expect(source).toContain("cartRef.current = next");
   });
 });
 

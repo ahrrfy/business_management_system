@@ -24,7 +24,7 @@ describe("storefront candidate ranking (chooseCandidateProductIds)", () => {
     availableQty,
   });
 
-  it("prioritizes in-stock items before out-of-stock items, then ranks by relevance (R3)", () => {
+  it("prioritizes relevant results before unrelated available products", () => {
     const candidates = [
       row(1, "دفتر احياء مدرسي", 0), // out of stock, exact-ish match
       row(2, "دفتر احياء متوسط", 5), // in stock, match
@@ -32,11 +32,7 @@ describe("storefront candidate ranking (chooseCandidateProductIds)", () => {
     ];
 
     const ranked = chooseCandidateProductIds(candidates, 10, "ALL", "احياء");
-    // Product 2 is in-stock and relevant -> 1st
-    // Product 3 is in-stock but irrelevant -> 2nd
-    // Product 1 is out-of-stock -> 3rd
-    expect(ranked[0]).toBe(2);
-    expect(ranked[2]).toBe(1);
+    expect(ranked).toEqual([2, 1, 3]);
   });
 
   it("filters out out-of-stock items when availability is IN_STOCK (R4)", () => {

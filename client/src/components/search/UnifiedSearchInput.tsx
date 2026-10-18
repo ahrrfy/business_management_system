@@ -44,8 +44,12 @@ export interface UnifiedSearchInputProps {
   disabled?: boolean;
   className?: string;
   inputClassName?: string;
+  clearButtonLabel?: string;
   id?: string;
   "aria-label"?: string;
+  /** Accessible combobox semantics for callers that provide their own suggestion list. */
+  inputProps?: Pick<React.InputHTMLAttributes<HTMLInputElement>,
+    "role" | "maxLength" | "aria-autocomplete" | "aria-expanded" | "aria-controls" | "aria-activedescendant">;
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onFocus?: (e: React.FocusEvent<HTMLInputElement>) => void;
   onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void;
@@ -69,8 +73,10 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
       disabled = false,
       className,
       inputClassName,
+      clearButtonLabel = "مسح البحث (Esc)",
       id,
       "aria-label": ariaLabel,
+      inputProps,
       onKeyDown: externalOnKeyDown,
       onFocus,
       onBlur,
@@ -207,6 +213,7 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
         )}
 
         <input
+          {...inputProps}
           ref={internalRef}
           id={id}
           type="text"
@@ -250,8 +257,8 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
           <button
             type="button"
             onClick={handleClear}
-            aria-label="مسح البحث (Esc)"
-            title="مسح البحث (Esc)"
+            aria-label={clearButtonLabel}
+            title={clearButtonLabel}
             className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground rounded p-1 transition-colors z-10 focus:outline-none focus:ring-1 focus:ring-primary"
           >
             <X aria-hidden className={size === "compact" ? "size-3.5" : "size-4"} />

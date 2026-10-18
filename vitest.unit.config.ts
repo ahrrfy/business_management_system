@@ -12,6 +12,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "client/src/components/storefront/StorefrontSearch.test.tsx",
       "server/routers/__tests__/backupDownload.test.ts",
       "server/services/__tests__/backupDownloadService.test.ts",
       "client/src/lib/backupDownload.test.ts",

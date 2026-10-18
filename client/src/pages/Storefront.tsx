@@ -88,6 +88,7 @@ import { StorefrontColorSwatches } from "@/components/storefront/StorefrontColor
 import { StorefrontPanelShell } from "@/components/storefront/StorefrontPanelShell";
 import { StorefrontLocationPicker } from "@/components/storefront/StorefrontLocationPicker";
 import { AnimatedAddToCartButton } from "@/components/storefront/AnimatedAddToCartButton";
+import { StorefrontSearch, StorefrontSearchAlternatives } from "@/components/storefront/StorefrontSearch";
 import { StorefrontProductReviews } from "@/components/storefront/StorefrontProductReviews";
 import { StorefrontDispatchCountdown } from "@/components/storefront/StorefrontDispatchCountdown";
 import { StorefrontB2BQuoteButton } from "@/components/storefront/StorefrontB2BQuoteButton";
@@ -942,11 +943,10 @@ function RelatedProductStrip({
 }: {
   products: RelatedProduct[];
   onSelect: (id: number) => void;
-  onAdd: (product: RelatedProduct, event: React.MouseEvent<HTMLButtonElement>) => void;
+  onAdd: (product: RelatedProduct, event: React.MouseEvent<HTMLButtonElement>) => boolean;
   onRecommendationClick: (recommendedProductId: number) => void;
 }) {
   const [priceFilter, setPriceFilter] = useState<PriceFilter>("ALL");
-  const [addedId, setAddedId] = useState<number | null>(null);
   const filteredProducts = products.filter((product) => matchesPriceFilter(Number(product.salePrice ?? product.price ?? 0), priceFilter));
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef({ active: false, startX: 0, startScroll: 0, moved: false });
@@ -1040,11 +1040,7 @@ function RelatedProductStrip({
                   icon={rp.isCustomizable ? <AlertTriangle aria-hidden className="size-3" /> : undefined}
                   onAdd={(btnEl) => {
                     onRecommendationClick(rp.productId);
-                    if (!recommendationNeedsSelection(rp) && storefrontProductCanBeOrdered(rp)) {
-                      setAddedId(rp.productId);
-                      window.setTimeout(() => setAddedId((curr) => curr === rp.productId ? null : curr), 1500);
-                    }
-                    onAdd(rp, { currentTarget: btnEl, stopPropagation: () => {} } as unknown as React.MouseEvent<HTMLButtonElement>);
+                    return onAdd(rp, { currentTarget: btnEl, stopPropagation: () => {} } as unknown as React.MouseEvent<HTMLButtonElement>);
                   }}
                   showCartCount={false}
                 />
@@ -1155,8 +1151,6 @@ const SHARE_FEEDBACK_TONE_CLASS: Record<ShareFeedbackTone, string> = {
 function StorefrontContent() {
   const [rawSearch, setRawSearch] = useState("");
   const [search, setSearch] = useState("");
-  const [searchFocused, setSearchFocused] = useState(false);
-  const [searchSuggestionIndex, setSearchSuggestionIndex] = useState(0);
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [selectedThematicCollection, setSelectedThematicCollection] = useState<ThematicCollectionCard | null>(null);
   // البدء بالمتوفر يحمي نية الشراء: لا نُغرق العميل ببطاقات لا يمكن إضافتها للسلة.
@@ -1171,9 +1165,6 @@ function StorefrontContent() {
   const [heartPulseNonce, setHeartPulseNonce] = useState(0);
   const [sharePulseTarget, setSharePulseTarget] = useState<string | null>(null);
   const [sharePulseNonce, setSharePulseNonce] = useState(0);
-  const [cartFlight, setCartFlight] = useState<{ id: number; imageUrl: string | null; left: number; top: number; deltaX: number; deltaY: number } | null>(null);
-  const cartButtonRef = useRef<HTMLButtonElement | null>(null);
-  const cartFlightIdRef = useRef(0);
   const [selectedStoreUnitId, setSelectedStoreUnitId] = useState<number | null>(null);
   const [selectedVariantId, setSelectedVariantId] = useState<number | null>(null);
   // اختيار متعدد للمتغيرات في ورقة المنتج. المفتاح هو وحدة البيع، لا معرّف المتغير،
@@ -1291,7 +1282,7 @@ function StorefrontContent() {
   };
 
   useEffect(() => {
-    const t = setTimeout(() => setSearch(rawSearch.trim()), 350);
+    const t = setTimeout(() => setSearch(rawSearch.trim()), 220);
     return () => clearTimeout(t);
   }, [rawSearch]);
 
@@ -1768,17 +1759,17 @@ function StorefrontContent() {
     });
   }, [availability, brand, items, priceFilter, selectedThematicCollection, showWishlist, sort, wishlistIds]);
   const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist || selectedThematicCollection != null;
-  // اقتراحات البحث: مُصفَّرة من `filteredItems` (Codex #4) — لا يظهر اقتراحٌ ينتفي فور اختياره.
-  const searchSuggestions = useMemo(() => getStorefrontSearchSuggestions(filteredItems, rawSearch), [filteredItems, rawSearch]);
-  useEffect(() => { setSearchSuggestionIndex(0); }, [rawSearch]);
-  // اختيار اقتراحٍ يفتح مودال المنتج بمعرّفه (Codex #1) — لا نملأ حقل البحث بـ`productName`
-  // فقد يكون `storeTitle` مخصَّصاً للقناة يعجز `storefrontCatalog` عن إيجاده (يبحث في `products.name`
-  // والماركة والباركود فقط) فيرجع نتيجةً فارغة رغم أنّ المنتج موجود. الفتح بالـID جوابٌ مقاومٌ للانحراف
-  // بين حقل العرض وحقل البحث الخادميّ.
-  const chooseSearchSuggestion = (product: (typeof filteredItems)[number]) => {
-    setSearchFocused(false);
-    setSelectedId(product.productId);
-  };
+  const searchProductIds = useMemo(() => {
+    const thematicIds = selectedThematicCollection?.productIds;
+    if (showWishlist) return Array.from(wishlistIds).filter((id) => !thematicIds?.length || thematicIds.includes(id)).slice(0, 500);
+    return thematicIds?.length ? thematicIds.slice(0, 500) : undefined;
+  }, [showWishlist, wishlistIds, selectedThematicCollection]);
+  const searchScope = { categoryId, availability, brand, priceFilter, productIds: searchProductIds };
+  function submitStoreSearch(query: string, selectedCategory?: number) {
+    setRawSearch(query); setSearch(query.trim());
+    if (selectedCategory != null) setCategoryId(selectedCategory);
+    scrollToResults();
+  }
   // catalog يُرشّح البحث والفئة خادمياً، بينما السعر/الماركة عميلان. غياب العناصر من الصفحة الأولى
   // يعني كتالوجاً فارغاً حقاً؛ وأي غياب مع بحث/فئة/تنقيح يعني صفراً بسبب التصفية.
   const isEmptyCatalog = items.length === 0 && !search && categoryId == null && selectedThematicCollection == null;
@@ -1825,20 +1816,6 @@ function StorefrontContent() {
     setSharePulseTarget(target);
     setSharePulseNonce((value) => value + 1);
     window.setTimeout(() => setSharePulseTarget((current) => current === target ? null : current), 620);
-  }
-  function triggerCartFlight(sourceElement: HTMLElement | null | undefined, imageUrl: string | null) {
-    if (typeof window === "undefined" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const source = sourceElement?.getBoundingClientRect();
-    const target = cartButtonRef.current?.getBoundingClientRect();
-    if (!source || !target || source.width === 0 || target.width === 0) return;
-    const startX = source.left + source.width / 2 - 22;
-    const startY = source.top + Math.min(source.height / 2, 28) - 22;
-    const targetX = target.left + target.width / 2 - 22;
-    const targetY = target.top + target.height / 2 - 22;
-    const id = cartFlightIdRef.current + 1;
-    cartFlightIdRef.current = id;
-    setCartFlight({ id, imageUrl, left: startX, top: startY, deltaX: targetX - startX, deltaY: targetY - startY });
-    window.setTimeout(() => setCartFlight((current) => current?.id === id ? null : current), 700);
   }
   function toggleWishlist(productId: number, target = `product-${productId}`) {
     pulseHeart(target);
@@ -1973,75 +1950,44 @@ function StorefrontContent() {
     salePrice?: string | null; imageUrl: string | null; unitName: string; variantLabel?: string; inStock?: boolean; isCustomizable?: boolean; customization?: StorefrontCustomization; stockLimit?: number | null;
   }, sourceElement?: HTMLElement | null) {
     const eff = p.salePrice ?? p.price;
-    if (eff == null || !storefrontProductCanBeOrdered(p) || (p.isCustomizable && !p.customization)) return;
+    if (eff == null || !storefrontProductCanBeOrdered(p) || (p.isCustomizable && !p.customization)) return false;
     const cartKey = customizationCartKey(p.productUnitId, p.customization);
     const currentLine = cartRef.current.get(cartKey);
     if (p.stockLimit != null && (currentLine?.qty ?? 0) >= p.stockLimit) {
       setCartStatus(`بلغت الكمية المتوفرة من ${p.productName}: ${formatQuantity(p.stockLimit)}.`);
-      return;
+      return false;
     }
     if (hasStorefrontAnalyticsConsent()) trackConversion.mutate({ event: "ADD_TO_CART" });
     recordStorefrontCartChange();
-    setCart((prev) => addStorefrontCartLine(prev, p, eff));
+    const next = addStorefrontCartLine(cartRef.current, p, eff);
+    cartRef.current = next;
+    setCart(next);
     setCartStatus(`تمت إضافة ${p.productName} إلى السلة.`);
-    triggerCartFlight(sourceElement, p.imageUrl);
+    return true;
   }
   function addFeaturedToCart(p: RowProduct, event: React.MouseEvent<HTMLButtonElement>) {
-    if (!storefrontProductCanBeOrdered(p) || (p.salePrice == null && p.price == null)) return;
-    addCatalogProduct(p, event);
-    if (recommendationNeedsSelection(p)) return;
-    setRecentlyAddedProductId(p.productId);
-    window.setTimeout(() => setRecentlyAddedProductId((current) => current === p.productId ? null : current), 1600);
+    return addCatalogProduct(p, event);
   }
-  function addCatalogProduct(p: StorefrontProductForCartAction, event: React.MouseEvent<HTMLButtonElement>) {
-    if (!storefrontProductCanBeOrdered(p)) {
-      openProduct(p.productId);
-      return;
-    }
-    const availableUnits = [
-      ...(p.storeUnits ?? []),
-      ...(p.variants ?? []).flatMap((variant) => variant.units),
-    ].filter((unit) => unit.inStock);
-    const needsDetails = recommendationNeedsSelection(p);
-    if (needsDetails || (availableUnits.length !== 1 && availableUnits.length !== 0)) {
-      openProduct(p.productId);
-      return;
-    }
+  function addCatalogProduct(p: StorefrontProductForCartAction, event: React.MouseEvent<HTMLButtonElement>): boolean {
+    if (!storefrontProductCanBeOrdered(p)) { openProduct(p.productId); return false; }
+    const availableUnits = [...(p.storeUnits ?? []), ...(p.variants ?? []).flatMap((variant) => variant.units)].filter((unit) => unit.inStock);
+    if (recommendationNeedsSelection(p) || availableUnits.length > 1) { openProduct(p.productId); return false; }
     const unit = availableUnits[0];
-    if (unit) {
-      addToCart({
-        productUnitId: unit.productUnitId,
-        productId: p.productId,
-        productName: p.productName,
-        price: unit.price,
-        salePrice: unit.salePrice,
-        imageUrl: p.imageUrl,
-        unitName: unit.unitName,
-        variantLabel: p.variants?.find((variant) => variant.units.some((candidate) => candidate.productUnitId === unit.productUnitId))?.label,
-        inStock: unit.inStock,
-        stockLimit: unit.stockLeft,
-      }, event.currentTarget);
+    const added = unit ? addToCart({
+      productUnitId: unit.productUnitId, productId: p.productId, productName: p.productName,
+      price: unit.price, salePrice: unit.salePrice, imageUrl: p.imageUrl, unitName: unit.unitName,
+      variantLabel: p.variants?.find((variant) => variant.units.some((candidate) => candidate.productUnitId === unit.productUnitId))?.label,
+      inStock: unit.inStock, stockLimit: unit.stockLeft,
+    }, event.currentTarget) : p.productUnitId > 0 ? addToCart({
+      productUnitId: p.productUnitId, productId: p.productId, productName: p.productName,
+      price: p.price, salePrice: p.salePrice, imageUrl: p.imageUrl, unitName: p.unitName,
+      inStock: p.inStock, stockLimit: p.stockLeft,
+    }, event.currentTarget) : false;
+    if (added) {
       setRecentlyAddedProductId(p.productId);
-      window.setTimeout(() => setRecentlyAddedProductId((current) => current === p.productId ? null : current), 1600);
-      return;
+      window.setTimeout(() => setRecentlyAddedProductId((current) => current === p.productId ? null : current), 1000);
     }
-    if (p.productUnitId > 0 && (p.salePrice ?? p.price) != null && p.inStock !== false) {
-      addToCart({
-        productUnitId: p.productUnitId,
-        productId: p.productId,
-        productName: p.productName,
-        price: p.price,
-        salePrice: p.salePrice,
-        imageUrl: p.imageUrl,
-        unitName: p.unitName,
-        inStock: p.inStock,
-        stockLimit: p.stockLeft,
-      }, event.currentTarget);
-      setRecentlyAddedProductId(p.productId);
-      window.setTimeout(() => setRecentlyAddedProductId((current) => current === p.productId ? null : current), 1600);
-      return;
-    }
-    openProduct(p.productId);
+    return added;
   }
 
   function setVariantQuantity(productUnitId: number, quantity: number) {
@@ -2056,7 +2002,7 @@ function StorefrontContent() {
     });
   }
   function addSelectedVariants(sourceElement?: HTMLElement | null) {
-    if (!detailQ.data || !storefrontProductCanBeOrdered(detailQ.data) || customizationValidation || (detailQ.data.isCustomizable && !customizationConfig)) return;
+    if (!detailQ.data || !storefrontProductCanBeOrdered(detailQ.data) || customizationValidation || (detailQ.data.isCustomizable && !customizationConfig)) return false;
     const selections: StorefrontCartSelection[] = [];
     const customization = selectedCustomization();
     for (const variant of detailQ.data.variants ?? []) {
@@ -2081,17 +2027,12 @@ function StorefrontContent() {
         });
       }
     }
-    if (selections.length === 0) return;
-    if (hasStorefrontAnalyticsConsent()) trackConversion.mutate({ event: "ADD_TO_CART" });
-    recordStorefrontCartChange();
-    setCart((previous) => addStorefrontCartLines(previous, selections));
-    setCartStatus(`تمت إضافة ${selections.length} من اختيارات ${detailQ.data.productName} إلى السلة.`);
-    triggerCartFlight(sourceElement, detailMedia.fallbackUrl);
+    return commitCartSelections(selections);
   }
   function addSelectedUnit(sourceElement?: HTMLElement | null) {
-    if (!detailQ.data || !storefrontProductCanBeOrdered(detailQ.data) || !detailUnit || !detailUnit.inStock || customizationValidation || (detailQ.data.isCustomizable && !customizationConfig)) return;
+    if (!detailQ.data || !storefrontProductCanBeOrdered(detailQ.data) || !detailUnit || !detailUnit.inStock || customizationValidation || (detailQ.data.isCustomizable && !customizationConfig)) return false;
     const basePrice = detailUnit.salePrice ?? detailUnit.price;
-    if (!basePrice) return;
+    if (!basePrice) return false;
     const customization = selectedCustomization();
     const effectivePrice = (Number(basePrice) + Number(customization?.priceDelta ?? 0)).toFixed(2);
     const quantity = Math.max(1, variantQuantities.get(detailUnit.productUnitId) ?? 1);
@@ -2108,11 +2049,20 @@ function StorefrontContent() {
       quantity,
       stockLimit: detailUnit.stockLeft,
     };
+    return commitCartSelections([selection]);
+  }
+  function commitCartSelections(selections: StorefrontCartSelection[]): boolean {
+    if (!selections.length) return false;
+    const previous = cartRef.current;
+    const next = addStorefrontCartLines(previous, selections);
+    const changed = Array.from(next).some(([key, line]) => (previous.get(key)?.qty ?? 0) < line.qty);
+    if (!changed) { setCartStatus("بلغت الكمية المتوفرة من الاختيارات المحددة."); return false; }
     if (hasStorefrontAnalyticsConsent()) trackConversion.mutate({ event: "ADD_TO_CART" });
     recordStorefrontCartChange();
-    setCart((previous) => addStorefrontCartLines(previous, [selection]));
-    setCartStatus(`تمت إضافة ${detailQ.data.productName} إلى السلة.`);
-    triggerCartFlight(sourceElement, detailMedia.fallbackUrl);
+    cartRef.current = next;
+    setCart(next);
+    setCartStatus("تمت إضافة الاختيارات إلى السلة.");
+    return true;
   }
   function setQty(cartKey: string, qty: number) {
     const line = cartRef.current.get(cartKey);
@@ -2278,83 +2228,14 @@ function StorefrontContent() {
             <a href="#store-results" className="transition hover:text-emerald-700 dark:hover:text-emerald-400">المنتجات</a>
             <a href="#store-deals" className="transition hover:text-orange-600 dark:hover:text-orange-400">العروض</a>
           </nav>
-          <div className="relative order-4 w-full flex-none sm:order-none sm:min-w-0 sm:flex-1">
-            <Search aria-hidden className="pointer-events-none absolute right-3.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-            <input
-              type="search"
-              value={rawSearch}
-              onChange={(e) => {
-                setRawSearch(e.target.value);
-                setSearchFocused(true); // Codex #3: يُعيد فتح القائمة بعد Escape/Enter حين يغيّر الاستعلام
-              }}
-              onFocus={() => setSearchFocused(true)}
-              onBlur={() => window.setTimeout(() => setSearchFocused(false), 120)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") { setSearchFocused(false); return; }
-                if (event.key === "ArrowDown" && searchSuggestions.length > 0) {
-                  event.preventDefault();
-                  setSearchSuggestionIndex((index) => Math.min(index + 1, searchSuggestions.length - 1));
-                  return;
-                }
-                if (event.key === "ArrowUp" && searchSuggestions.length > 0) {
-                  event.preventDefault();
-                  setSearchSuggestionIndex((index) => Math.max(index - 1, 0));
-                  return;
-                }
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  const suggestion = searchSuggestions[searchSuggestionIndex];
-                  if (suggestion) chooseSearchSuggestion(suggestion);
-                  else { setSearch(rawSearch.trim()); setSearchFocused(false); scrollToResults(); }
-                }
-              }}
-              aria-label="البحث في منتجات مكتبة العربية"
-              placeholder="ما الذي تبحث عنه؟ (أقلام، دفاتر، طابعات...)"
-              className="w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2.5 pr-10 pl-11 text-sm font-semibold text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-              role="combobox"
-              aria-autocomplete="list"
-              aria-expanded={searchFocused && searchSuggestions.length > 0}
-              aria-controls="store-search-suggestions"
-              aria-activedescendant={searchFocused && searchSuggestions[searchSuggestionIndex] ? `store-search-suggestion-${searchSuggestions[searchSuggestionIndex].productId}` : undefined}
-            />
-            {rawSearch && (
-              <button type="button" onClick={() => { setRawSearch(""); setSearch(""); }} aria-label="مسح البحث" className="absolute left-2.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200">
-                <X aria-hidden className="size-4" />
-              </button>
-            )}
-            {searchFocused && searchSuggestions.length > 0 && (
-              <div
-                id="store-search-suggestions"
-                role="listbox"
-                aria-label="اقتراحات البحث"
-                className="absolute inset-x-0 top-[calc(100%+0.5rem)] z-50 overflow-hidden rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl dark:border-slate-700 dark:bg-slate-800"
-              >
-                {searchSuggestions.map((product, index) => (
-                  <button
-                    key={product.productId}
-                    id={`store-search-suggestion-${product.productId}`}
-                    type="button"
-                    role="option"
-                    aria-selected={index === searchSuggestionIndex}
-                    tabIndex={-1} // Codex #2: خارج تسلسل Tab — aria-activedescendant يُدير التركيز افتراضياً
-                    onMouseDown={(event) => event.preventDefault()}
-                    onMouseEnter={() => setSearchSuggestionIndex(index)}
-                    onClick={() => chooseSearchSuggestion(product)}
-                    className={`flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-right focus:outline-none transition ${index === searchSuggestionIndex ? "bg-slate-100 dark:bg-slate-700" : "hover:bg-slate-50 dark:hover:bg-slate-700/60"}`}
-                  >
-                    <span className="line-clamp-1 text-xs font-bold text-slate-800 dark:text-slate-100">{product.productName}</span>
-                    {product.brand && <span className="shrink-0 rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-600 dark:bg-slate-800 dark:text-slate-400">{product.brand}</span>}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          <StorefrontSearch value={rawSearch} onChange={setRawSearch} onSearch={submitStoreSearch}
+            onSelectProduct={openProduct} {...searchScope} />
           <button onClick={() => { pulseHeart("wishlist-header"); setShowWishlist((current) => !current); }} aria-label="قائمة أعجبتني" aria-pressed={showWishlist} className={`store-action-button order-2 relative flex size-11 shrink-0 items-center justify-center rounded-xl border bg-white transition hover:border-rose-400 sm:order-none dark:bg-slate-800 ${showWishlist ? "border-rose-500 text-rose-600 bg-rose-50/30" : "border-slate-200 text-slate-700 hover:text-rose-600 dark:border-slate-700 dark:text-slate-100"} ${heartPulseTarget === "wishlist-header" ? "store-action-button--active" : ""}`}>
             <Heart key={`wishlist-header-${heartPulseNonce}`} aria-hidden className={`size-5 ${showWishlist ? "fill-current" : ""} ${heartPulseTarget === "wishlist-header" ? "animate__animated animate__heartBeat animate__faster" : ""}`} />
             {wishlistIds.size > 0 && <span className="absolute -right-2 -top-2 flex min-w-5 items-center justify-center rounded-full bg-rose-600 px-1 text-[10px] font-black text-white shadow-sm">{wishlistIds.size}</span>}
           </button>
-          <button ref={cartButtonRef} onClick={() => setPanel("cart")} aria-label="السلة" className="order-3 relative flex size-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:border-blue-600 hover:text-blue-600 sm:order-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
-            <ShoppingCart aria-hidden className={`size-5 ${cartFlight ? "animate__animated animate__tada animate__faster" : ""}`} />
+          <button onClick={() => setPanel("cart")} aria-label="السلة" className="order-3 relative flex size-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:border-blue-600 hover:text-blue-600 sm:order-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
+            <ShoppingCart aria-hidden className="size-5" />
             {cartCount > 0 && <span className="absolute -right-2 -top-2 flex min-w-5 items-center justify-center rounded-full bg-[#0E806A] px-1 text-[10px] font-black text-white shadow-xs">{cartCount}</span>}
           </button>
           {!isPublicHost(typeof window !== "undefined" ? window.location.hostname : "") && (
@@ -2367,17 +2248,6 @@ function StorefrontContent() {
           </div>
         )}
       </header>
-
-      {cartFlight && (
-        <div
-          key={cartFlight.id}
-          aria-hidden="true"
-          className="store-cart-flight"
-          style={{ left: cartFlight.left, top: cartFlight.top, "--store-cart-flight-x": `${cartFlight.deltaX}px`, "--store-cart-flight-y": `${cartFlight.deltaY}px` } as React.CSSProperties}
-        >
-          {cartFlight.imageUrl ? <img src={cartFlight.imageUrl} alt="" className="size-full rounded-[.65rem] object-contain" /> : <span className="store-cart-flight-fallback size-full"><Package aria-hidden className="size-5" /></span>}
-        </div>
-      )}
 
       <main id="store-main" tabIndex={-1} className="mx-auto w-full max-w-[1500px] overflow-x-clip px-2.5 py-4 pb-28 outline-none sm:px-4 sm:py-6 lg:px-8">
         <h1 className="sr-only">مكتبة العربية للتسوق والتوصيل في العراق</h1>
@@ -2518,7 +2388,7 @@ function StorefrontContent() {
               )}
             </div>
           </div>
-          {catalogQ.isLoading ? <div className="flex flex-col items-center justify-center py-24 text-[#7a817f]"><Loader2 aria-hidden className="size-8 animate-spin text-[#1e4a63]" /><p className="mt-3 text-sm font-bold">جارٍ تحميل المنتجات…</p></div> : catalogInitialError ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center" role="alert"><AlertTriangle aria-hidden className="size-10 text-[#b87835]" /><p className="mt-3 text-sm font-black text-[#30383e]">تعذّر تحميل المنتجات</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة كمنتجات فارغة.</p><button type="button" onClick={() => void catalogQ.refetch()} className="store-primary-action mt-4 bg-[#e65f4a] px-5 py-2.5 text-xs font-black text-white">إعادة المحاولة</button></div> : filteredItems.length === 0 ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center"><Package aria-hidden className="size-10 text-[#7a817f]" /><p className="mt-3 text-sm font-black text-[#30383e]">{isEmptyCatalog ? "لا توجد منتجات معروضة حالياً" : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">{isEmptyCatalog ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر." : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}</p>{!isEmptyCatalog && <button type="button" onClick={clearCatalogFilters} className="mt-4 bg-[#1e4a63] px-5 py-2.5 text-xs font-black text-white">مسح البحث والفلاتر</button>}</div> : (
+          {catalogQ.isLoading ? <div className="flex flex-col items-center justify-center py-24 text-[#7a817f]"><Loader2 aria-hidden className="size-8 animate-spin text-[#1e4a63]" /><p className="mt-3 text-sm font-bold">جارٍ تحميل المنتجات…</p></div> : catalogInitialError ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center" role="alert"><AlertTriangle aria-hidden className="size-10 text-[#b87835]" /><p className="mt-3 text-sm font-black text-[#30383e]">تعذّر تحميل المنتجات</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة كمنتجات فارغة.</p><button type="button" onClick={() => void catalogQ.refetch()} className="store-primary-action mt-4 bg-[#e65f4a] px-5 py-2.5 text-xs font-black text-white">إعادة المحاولة</button></div> : filteredItems.length === 0 ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center"><Package aria-hidden className="size-10 text-[#7a817f]" /><p className="mt-3 text-sm font-black text-[#30383e]">{isEmptyCatalog ? "لا توجد منتجات معروضة حالياً" : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">{isEmptyCatalog ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر." : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}</p>{search && <StorefrontSearchAlternatives query={search} onSearch={submitStoreSearch} onSelectProduct={openProduct} {...searchScope} />}{!isEmptyCatalog && <button type="button" onClick={clearCatalogFilters} className="mt-4 bg-[#1e4a63] px-5 py-2.5 text-xs font-black text-white">مسح البحث والفلاتر</button>}</div> : (
             <div className="grid grid-cols-2 gap-2.5 sm:gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
               {filteredItems.flatMap((p, idx) => {
                 const card = (
@@ -2891,8 +2761,7 @@ function StorefrontContent() {
                 <div className="sticky bottom-0 mt-2 border-t border-slate-100 bg-white/95 pt-2 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/95">
                   <AnimatedAddToCartButton
                     onAdd={(btnEl) => {
-                      if ((detailQ.data?.variants?.length ?? 0) > 1) addSelectedVariants(btnEl);
-                      else addSelectedUnit(btnEl);
+                      return (detailQ.data?.variants?.length ?? 0) > 1 ? addSelectedVariants(btnEl) : addSelectedUnit(btnEl);
                     }}
                     disabled={(detailQ.data.isCustomizable && !customizationConfig) || !!customizationValidation || ((detailQ.data?.variants?.length ?? 0) > 1
                       ? !Array.from(variantQuantities.values()).some((quantity) => quantity > 0)
