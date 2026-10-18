@@ -3,15 +3,26 @@ import initSqlJs from "./node_modules/sql.js/dist/sql-wasm.js";
 import wasm from "./sql-wasm.wasm";
 import { drizzle } from "drizzle-orm/mysql-proxy";
 import Decimal from "decimal.js";
-import { tables, quote } from "./schema";
-import { allowedQueries } from "./schema-queries";
-import { cashProjectionSql, cashReadBoundary, assertCashReadBoundary } from './cash-state';
+import { tables as defaultTables, quote } from "./schema";
+import { allowedQueries as defaultAllowedQueries } from "./schema-queries";
+import {
+  cashProjectionSql,
+  cashReadBoundary,
+  assertCashReadBoundary,
+} from "./cash-state";
 let engine: Promise<any> | undefined;
 // Lab resource evidence counts actual SQLite allocations and explicit closes.
 const resources = { allocated: 0, closed: 0 };
 // mysql2 decodes JSON columns before Drizzle sees them; the SQLite proxy must
 // provide the same values rather than silently hiding structured settings.
-const jsonColumns = new Set(tables.flatMap(t=>t.columns.filter(c=>c.sqlType==='json').map(c=>c.name)));
+type SnapshotOptions = {
+  tables?: typeof defaultTables;
+  allowedQueries?: Set<string>;
+  projectionSql?: string;
+  mode?: string;
+  exactCustomerBalance?: boolean;
+  rejectDeliveryHistory?: boolean;
+};
 export const snapshotResourceCounts = () => ({ ...resources });
 function sqlEngine() {
   return (engine ??= initSqlJs({
@@ -22,16 +33,35 @@ function sqlEngine() {
     },
   }));
 }
-export async function snapshotDatabase(binding: any, input: any, actor: any) {
+export async function snapshotDatabase(
+  binding: any,
+  input: any,
+  actor: any,
+  options: SnapshotOptions = {},
+) {
+  const tables = options.tables ?? defaultTables,
+    allowedQueries = options.allowedQueries ?? defaultAllowedQueries;
+  const jsonColumns = new Set(
+    tables.flatMap((t) =>
+      t.columns.filter((c) => c.sqlType === "json").map((c) => c.name),
+    ),
+  );
   const session = binding.withSession
     ? binding.withSession("first-primary")
     : binding;
-  const boundary=cashReadBoundary();
+  const boundary = cashReadBoundary();
   const snapshot = await session
-    .prepare(cashProjectionSql)
-    .bind(JSON.stringify({input,actor,...boundary}))
+    .prepare(options.projectionSql ?? cashProjectionSql)
+    .bind(JSON.stringify({ input, actor, ...boundary }))
     .first();
   assertCashReadBoundary(boundary);
+  if (options.rejectDeliveryHistory) {
+    const flags = JSON.parse(snapshot.scopeFlags);
+    if (flags.deliveryHistory)
+      throw Error("UNSUPPORTED_CUSTOMER_DELIVERY_HISTORY");
+    if (flags.unsupportedCollection)
+      throw Error("UNSUPPORTED_CREDIT_COLLECTION_INVOICE");
+  }
   const expectedEpoch = snapshot.epoch;
   if (!Number.isSafeInteger(expectedEpoch) || expectedEpoch < 0)
     throw Error("INVALID_EPOCH");
@@ -75,14 +105,22 @@ export async function snapshotDatabase(binding: any, input: any, actor: any) {
         statement.free();
       }
     }
-    const sequences=JSON.parse(snapshot.sequences);
-    for(const t of tables.filter(t=>t.columns.some(c=>c.auto))){
-      const seq=sequences[t.name]??0;
-      if(!Number.isSafeInteger(seq)||seq<0)throw Error('INVALID_SEQUENCE:'+t.name);
-      const localSeq=local.exec('SELECT seq FROM sqlite_sequence WHERE name='+"'"+t.name+"'")[0]?.values[0]?.[0]??0;
-      if(seq<localSeq)throw Error('INVALID_SEQUENCE:'+t.name);
-      local.run('UPDATE sqlite_sequence SET seq=? WHERE name=?',[seq,t.name]);
-      if(!local.getRowsModified())local.run('INSERT INTO sqlite_sequence(name,seq) VALUES(?,?)',[t.name,seq]);
+    const sequences = JSON.parse(snapshot.sequences);
+    for (const t of tables.filter((t) => t.columns.some((c) => c.auto))) {
+      const seq = sequences[t.name] ?? 0;
+      if (!Number.isSafeInteger(seq) || seq < 0)
+        throw Error("INVALID_SEQUENCE:" + t.name);
+      const localSeq =
+        local.exec(
+          "SELECT seq FROM sqlite_sequence WHERE name=" + "'" + t.name + "'",
+        )[0]?.values[0]?.[0] ?? 0;
+      if (seq < localSeq) throw Error("INVALID_SEQUENCE:" + t.name);
+      local.run("UPDATE sqlite_sequence SET seq=? WHERE name=?", [seq, t.name]);
+      if (!local.getRowsModified())
+        local.run("INSERT INTO sqlite_sequence(name,seq) VALUES(?,?)", [
+          t.name,
+          seq,
+        ]);
     }
     local.run("COMMIT");
     let lastInsertId = 0;
@@ -103,6 +141,25 @@ export async function snapshotDatabase(binding: any, input: any, actor: any) {
       if (!allowedQueries.has(shape))
         throw Error("UNSUPPORTED_SQL_SHAPE: " + shape);
       let sql = original.trim();
+      let changedCustomerId: number | null = null;
+      if (
+        options.exactCustomerBalance &&
+        /^update `customers` set `currentBalance` = `customers`\.`currentBalance` \+ \?/i.test(
+          sql,
+        )
+      ) {
+        const row = local.exec(
+          "SELECT currentBalance FROM customers WHERE id=" +
+            Number(params.at(-1)),
+        )[0]?.values[0];
+        if (!row) throw Error("CUSTOMER_BALANCE_ROW_MISSING");
+        const oldBalance = new Decimal(row[0] as string),
+          newBalance = oldBalance.plus(new Decimal(params[0]));
+        if (!oldBalance.eq(newBalance))
+          changedCustomerId = Number(params.at(-1));
+        params = [newBalance.toFixed(2), ...params.slice(1)];
+        sql = sql.replace("`customers`.`currentBalance` + ?", "?");
+      }
       if (/^SELECT LAST_INSERT_ID\(\) AS v$/i.test(sql))
         return { rows: [[{ v: lastInsertId }]] };
       if (
@@ -190,7 +247,13 @@ export async function snapshotDatabase(binding: any, input: any, actor: any) {
         }
       }
       // SQL arithmetic is allowed only for integer stock and document sequences.
-      if (/\b(?:SUM|AVG|CAST|ROUND)\s*\(/i.test(sql))
+      const emptyDeliveryRead =
+        options.rejectDeliveryHistory &&
+        /^select /i.test(sql) &&
+        /from `deliveryConsignments`/.test(sql) &&
+        before.deliveryConsignments.length === 0 &&
+        !/\b(?:SUM|AVG|ROUND)\s*\(/i.test(sql);
+      if (/\b(?:SUM|AVG|CAST|ROUND)\s*\(/i.test(sql) && !emptyDeliveryRead)
         throw Error("Unsupported numeric SQL: " + sql);
       if (
         /^update /i.test(sql) &&
@@ -206,10 +269,22 @@ export async function snapshotDatabase(binding: any, input: any, actor: any) {
           try {
             stmt.bind(params);
             const rows = [];
-            const names=stmt.getColumnNames();
+            const names = stmt.getColumnNames();
             while (stmt.step()) {
-              const values=stmt.get().map((value:any,i:number)=>jsonColumns.has(names[i])&&typeof value==='string'?JSON.parse(value):value);
-              rows.push(method === "all" ? values : Object.fromEntries(names.map((name:string,i:number)=>[name,values[i]])));
+              const values = stmt
+                .get()
+                .map((value: any, i: number) =>
+                  jsonColumns.has(names[i]) && typeof value === "string"
+                    ? JSON.parse(value)
+                    : value,
+                );
+              rows.push(
+                method === "all"
+                  ? values
+                  : Object.fromEntries(
+                      names.map((name: string, i: number) => [name, values[i]]),
+                    ),
+              );
             }
             return { rows: method === "all" ? rows : [rows] };
           } finally {
@@ -218,6 +293,11 @@ export async function snapshotDatabase(binding: any, input: any, actor: any) {
         }
         local.run(sql, params);
         const affectedRows = local.getRowsModified();
+        if (changedCustomerId !== null && affectedRows)
+          local.run(
+            "UPDATE customers SET updatedAt=CURRENT_TIMESTAMP WHERE id=?",
+            [changedCustomerId],
+          );
         if (/^update `branchStock` /i.test(sql) && affectedRows)
           local.run(
             "UPDATE branchStock SET updatedAt=CURRENT_TIMESTAMP WHERE variantId=? AND branchId=?",
@@ -273,7 +353,14 @@ export async function snapshotDatabase(binding: any, input: any, actor: any) {
       expectedEpoch,
       before,
       boundary,
-      metrics:{mode:'CASH_SCOPED',rows:Object.fromEntries(tables.map(t=>[t.name,before[t.name].length])),totalRows:Object.values(before).reduce((n,r)=>n+r.length,0),bytes:new TextEncoder().encode(JSON.stringify(snapshot)).byteLength},
+      metrics: {
+        mode: options.mode ?? "CASH_SCOPED",
+        rows: Object.fromEntries(
+          tables.map((t) => [t.name, before[t.name].length]),
+        ),
+        totalRows: Object.values(before).reduce((n, r) => n + r.length, 0),
+        bytes: new TextEncoder().encode(JSON.stringify(snapshot)).byteLength,
+      },
       changes,
       close,
     };

@@ -22,18 +22,22 @@ export async function buildActualCashWorker(options = {}) {
       ? {
           stdin: {
             contents: options.stdin,
-            resolveDir: cashRoot,
+            resolveDir: options.resolveDir ?? cashRoot,
             sourcefile: "cash-entry.ts",
             loader: "ts",
           },
         }
-      : { entryPoints: [options.entry ?? path.join(cashRoot, "coordinated-worker.ts")] }),
+      : {
+          entryPoints: [
+            options.entry ?? path.join(cashRoot, "coordinated-worker.ts"),
+          ],
+        }),
     outfile,
     bundle: true,
     write: false,
     format: "esm",
     platform: "neutral",
-    loader: {'.sql':'text'},
+    loader: { ".sql": "text" },
     target: "es2022",
     mainFields: ["module", "main"],
     conditions: ["workerd", "worker", "import", "default"],
@@ -70,6 +74,11 @@ export async function buildActualCashWorker(options = {}) {
               .resolve(args.resolveDir, args.path)
               .replace(/\.ts$/, "")
               .replaceAll("\\", "/");
+            const override =
+              options.moduleAliases?.[
+                target + "|" + args.importer.replaceAll("\\", "/")
+              ] ?? options.moduleAliases?.[target];
+            if (override) return { path: override };
             for (const [source, shim] of Object.entries(substitutions)) {
               if (target === path.join(root, source).replaceAll("\\", "/"))
                 return shim.endsWith(".ts")
@@ -132,6 +141,9 @@ export async function buildActualCashWorker(options = {}) {
   const evidence = {
     originalSourceSha256: sourceHashes,
     substitutions,
+    ...(options.moduleAliases
+      ? { experimentModuleAliases: options.moduleAliases }
+      : {}),
     forbiddenDependencies: forbidden,
     sqlJs: {
       version: "1.13.0",
@@ -159,7 +171,7 @@ export async function buildActualCashWorker(options = {}) {
       JSON.stringify(evidence, null, 2),
     );
   }
-  if (options.write !== false) {
+  if (options.write !== false && options.metadata !== false) {
     const metadataPath = path.join(
       path.dirname(outfile),
       "schema-metadata.mjs",

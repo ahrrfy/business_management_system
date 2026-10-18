@@ -2,24 +2,16 @@ import { createConfirmedPosSaleInTx } from "../../../server/services/posExternal
 import { lockFinancialPostingGate } from "../../../server/services/reports/monthCloseGate";
 import { idempotencyHash } from "../../../server/services/idempotency";
 import { snapshotDatabase } from "./snapshot";
-import { tables, quote, initializationSql } from "./schema";
-import { assertCashReadBoundary } from './cash-state';
+import { tables, initializationSql } from "./schema";
 export { initializationSql } from "./schema";
 export { fixtureSql, fixtureActor, fixtureInput } from "./fixture";
 export const CASH_SCHEMA_VERSION = "actual-cash-v1";
-export function canonicalCashJson(value: any): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value))
-    return "[" + value.map(canonicalCashJson).join(",") + "]";
-  return (
-    "{" +
-    Object.keys(value)
-      .sort()
-      .map((key) => JSON.stringify(key) + ":" + canonicalCashJson(value[key]))
-      .join(",") +
-    "}"
-  );
-}
+import { canonicalCashJson, applyPlan } from "./plan-runtime";
+export {
+  canonicalCashJson,
+  cashCommandFromRow,
+  readCashCommand,
+} from "./plan-runtime";
 const mutableTables = new Set([
   "branchStock",
   "invoices",
@@ -95,7 +87,7 @@ function admit(input: any, actor: any) {
 }
 export async function prepareCashSale(binding: any, input: any, actor: any) {
   admit(input, actor);
-  const snap = await snapshotDatabase(binding,input,actor);
+  const snap = await snapshotDatabase(binding, input, actor);
   try {
     for (const line of input.lines) {
       const v = snap.before.productVariants.find(
@@ -160,133 +152,19 @@ export async function prepareCashSale(binding: any, input: any, actor: any) {
     snap.close();
   }
 }
-export function cashCommandFromRow(row: any) {
-  return row
-    ? {
-        requestId: row.requestId,
-        requestHash: row.requestHash,
-        result: JSON.parse(row.resultJson),
-        request: JSON.parse(row.requestJson),
-        plan: JSON.parse(row.planJson),
-        planHash: row.planHash,
-      }
-    : null;
-}
-export async function readCashCommand(binding: any, requestId: string) {
-  return cashCommandFromRow(await binding
-    .prepare("SELECT * FROM cashCommands WHERE requestId=?")
-    .bind(requestId)
-    .first());
-}
-export async function applyCashPlan(
+export function applyCashPlan(
   binding: any,
   plan: any,
-  options: { fault?: boolean; knownAbsent?: boolean; historicalRestore?: boolean } = {},
+  options: {
+    fault?: boolean;
+    knownAbsent?: boolean;
+    historicalRestore?: boolean;
+  } = {},
 ) {
-  if (
-    plan.version !== 1 ||
-    plan.schemaVersion !== CASH_SCHEMA_VERSION ||
-    !Number.isSafeInteger(plan.expectedEpoch) ||
-    plan.requestId !== plan.request?.input?.clientRequestId ||
-    plan.requestHash !== idempotencyHash(plan.request) ||
-    !Array.isArray(plan.changes) ||
-    plan.changes.length > 30
-  )
-    throw Error("INVALID_PLAN_VERSION");
-  // The original epoch CAS and unique command key still arbitrate a race after
-  // the caller's authoritative preflight. Restore/default callers re-read.
-  const existing = options.knownAbsent ? null : await readCashCommand(binding, plan.requestId);
-  if (existing) {
-    if (existing.requestHash !== plan.requestHash)
-      throw Error("REQUEST_CONFLICT");
-    return { ...existing.result, idempotentReplay: true };
-  }
-  if(plan.readBoundary&&!options.historicalRestore)assertCashReadBoundary(plan.readBoundary);
-  const statements = [
-    binding
-      .prepare("UPDATE cashEpoch SET epoch=epoch+1 WHERE id=1 AND epoch=?")
-      .bind(plan.expectedEpoch),
-    binding.prepare("INSERT INTO cashAssert(ok) VALUES(changes())"),
-  ];
-  for (const change of plan.changes) {
-    const table = tables.find((t) => t.name === change.table);
-    if (!table || !mutableTables.has(change.table))
-      throw Error("INVALID_PLAN_TABLE");
-    const keys = table.primary;
-    const row = change.after;
-    const names = Object.keys(row);
-    if (
-      names.length !== table.columns.length ||
-      names.some((k) => !table.columns.some((c) => c.name === k)) ||
-      keys.some((k) => row[k] !== change.key[k])
-    )
-      throw Error("INVALID_PLAN_COLUMN");
-    if (change.before) {
-      const columns = Object.keys(change.before);
-      if (
-        columns.length !== table.columns.length ||
-        columns.some((k) => !table.columns.some((c) => c.name === k)) ||
-        keys.some((k) => change.before[k] !== change.key[k])
-      )
-        throw Error("INVALID_PLAN_PREIMAGE");
-      statements.push(
-        binding
-          .prepare(
-            "INSERT INTO cashAssert(ok) SELECT CASE WHEN EXISTS(SELECT 1 FROM " +
-              quote(table.name) +
-              " WHERE " +
-              columns.map((k) => quote(k) + " IS ?").join(" AND ") +
-              ") THEN 1 ELSE 0 END",
-          )
-          .bind(...columns.map((k) => change.before[k])),
-      );
-      statements.push(
-        binding
-          .prepare(
-            "UPDATE " +
-              quote(table.name) +
-              " SET " +
-              names.map((k) => quote(k) + "=?").join(",") +
-              " WHERE " +
-              keys.map((k) => quote(k) + "=?").join(" AND "),
-          )
-          .bind(...names.map((k) => row[k]), ...keys.map((k) => change.key[k])),
-      );
-    } else
-      statements.push(
-        binding
-          .prepare(
-            "INSERT INTO " +
-              quote(table.name) +
-              " (" +
-              names.map(quote).join(",") +
-              ") VALUES (" +
-              names.map(() => "?").join(",") +
-              ")",
-          )
-          .bind(...names.map((k) => row[k])),
-      );
-  }
-  const planJson = canonicalCashJson(plan),
-    planHash = idempotencyHash(plan);
-  statements.push(
-    binding
-      .prepare("INSERT INTO cashCommands VALUES(?,?,?,?,?,?)")
-      .bind(
-        plan.requestId,
-        plan.requestHash,
-        canonicalCashJson(plan.request),
-        canonicalCashJson(plan.result),
-        planJson,
-        planHash,
-      ),
-    binding
-      .prepare("INSERT INTO cashOutbox VALUES(?,?,?,?)")
-      .bind(plan.outbox.eventId, plan.requestId, planJson, planHash),
+  return applyPlan(
+    binding,
+    plan,
+    { tables, mutableTables, schemaVersion: CASH_SCHEMA_VERSION },
+    options,
   );
-  statements.push(binding.prepare("DELETE FROM cashAssert"));
-  if (options.fault)
-    statements.push(binding.prepare("INSERT INTO cashAssert(ok) VALUES(0)"));
-  await binding.batch(statements);
-  return plan.result;
 }

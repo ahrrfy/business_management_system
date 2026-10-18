@@ -7,7 +7,9 @@ import {
   cashCommandFromRow,
 } from "./actual";
 
-export const LAB_ID = "actual-cash-20261017";
+import { LAB_ID } from "./identity";
+import { MAX_PAGE_BYTES, RECOVERY_PAGE_OVERHEAD } from "./recovery-limits";
+export { LAB_ID } from "./identity";
 // fixtureSql advances the empty lab epoch once; every later writer is a cash plan.
 export const CASH_BASELINE_EPOCH = 1;
 const prefixPending = () =>
@@ -97,14 +99,16 @@ async function reserveRequest(log: any, id: string, envelope: any) {
   const hash = await digest(envelope),
     json = canonical(envelope);
   const results = await log.batch([
-    log.prepare(
-      "INSERT INTO cashJournalRequests VALUES(?,?,?) ON CONFLICT(requestId) DO NOTHING",
-    )
-    .bind(id, hash, json),
-    log.prepare(
-      "SELECT envelopeHash,envelopeJson FROM cashJournalRequests WHERE requestId=?",
-    )
-    .bind(id),
+    log
+      .prepare(
+        "INSERT INTO cashJournalRequests VALUES(?,?,?) ON CONFLICT(requestId) DO NOTHING",
+      )
+      .bind(id, hash, json),
+    log
+      .prepare(
+        "SELECT envelopeHash,envelopeJson FROM cashJournalRequests WHERE requestId=?",
+      )
+      .bind(id),
   ]);
   const row = results[1].results[0];
   if (row?.envelopeHash !== hash || row.envelopeJson !== json)
@@ -114,13 +118,51 @@ async function reserveRequest(log: any, id: string, envelope: any) {
 async function prepareRecord(log: any, plan: any) {
   const hash = await digest(plan),
     json = canonical(plan);
-  const results = await log.batch([
-    log.prepare(
-      "INSERT INTO cashJournalAttempts VALUES(?,?,?,?) ON CONFLICT(planHash) DO NOTHING",
+  // Reject before PREPARED/primary writes if the future acknowledged record
+  // could not be exported intact by the independent recovery page protocol.
+  const future = {
+    version: 1,
+    labId: LAB_ID,
+    schemaVersion: CASH_SCHEMA_VERSION,
+    requestId: plan.requestId,
+    envelopeHash: await digest(plan.request),
+    planHash: hash,
+    epoch: plan.expectedEpoch + 1,
+    plan,
+    signature: "0".repeat(64),
+  };
+  const command = {
+    requestId: plan.requestId,
+    requestHash: plan.requestHash,
+    requestJson: canonical(plan.request),
+    resultJson: canonical(plan.result),
+    planJson: json,
+    planHash: hash,
+  };
+  const outbox = {
+    eventId: plan.outbox.eventId,
+    requestId: plan.requestId,
+    payload: json,
+    planHash: hash,
+  };
+  if (
+    [future, command, outbox].some(
+      (row) =>
+        new TextEncoder().encode(JSON.stringify(row)).byteLength +
+          RECOVERY_PAGE_OVERHEAD >
+        MAX_PAGE_BYTES,
     )
-    .bind(hash, plan.requestId, plan.expectedEpoch + 1, json),
-    log.prepare("SELECT planJson FROM cashJournalAttempts WHERE planHash=?")
-    .bind(hash),
+  )
+    throw failure("RECOVERY_RECORD_TOO_LARGE", 422);
+  const results = await log.batch([
+    log
+      .prepare(
+        "INSERT INTO cashJournalAttempts VALUES(?,?,?,?) ON CONFLICT(planHash) DO NOTHING",
+      )
+      .bind(hash, plan.requestId, plan.expectedEpoch + 1, json),
+    log
+      .prepare("SELECT planJson FROM cashJournalAttempts WHERE planHash=?")
+      .bind(hash),
   ]);
   const row = results[1].results[0];
   if (row?.planJson !== json) throw failure("RECOVERY_PREPARE_MISMATCH");
@@ -136,7 +178,10 @@ async function confirm(
   // A winner may have committed in a competing request. Store its exact plan,
   // never the losing candidate. Successful responses require this durable ACK.
   const planHash = await digest(plan);
-  if (preparedProof?.hash !== planHash || preparedProof.json !== canonical(plan))
+  if (
+    preparedProof?.hash !== planHash ||
+    preparedProof.json !== canonical(plan)
+  )
     await prepareRecord(log, plan);
   const record = {
     version: 1,
@@ -153,22 +198,24 @@ async function confirm(
   // The next-epoch check and append are ONE SQLite statement. Concurrent
   // finalizers can copy the same winner, but cannot acknowledge a later gap.
   const results = await log.batch([
-    log.prepare(
-      "INSERT INTO cashJournalCommitted SELECT ?,?,?,?,? WHERE ?=COALESCE((SELECT MAX(epoch) FROM cashJournalCommitted),?)+1 ON CONFLICT(requestId) DO NOTHING",
-    )
-    .bind(
-      plan.requestId,
-      planHash,
-      record.epoch,
-      recordJson,
-      signature,
-      record.epoch,
-      CASH_BASELINE_EPOCH,
-    ),
-    log.prepare(
-      "SELECT recordJson,signature FROM cashJournalCommitted WHERE requestId=?",
-    )
-    .bind(plan.requestId),
+    log
+      .prepare(
+        "INSERT INTO cashJournalCommitted SELECT ?,?,?,?,? WHERE ?=COALESCE((SELECT MAX(epoch) FROM cashJournalCommitted),?)+1 ON CONFLICT(requestId) DO NOTHING",
+      )
+      .bind(
+        plan.requestId,
+        planHash,
+        record.epoch,
+        recordJson,
+        signature,
+        record.epoch,
+        CASH_BASELINE_EPOCH,
+      ),
+    log
+      .prepare(
+        "SELECT recordJson,signature FROM cashJournalCommitted WHERE requestId=?",
+      )
+      .bind(plan.requestId),
   ]);
   const row = results[1].results[0];
   if (!row) throw prefixPending();
@@ -177,9 +224,11 @@ async function confirm(
   return { ...record, signature };
 }
 
-const prefixSql = "SELECT epoch,committedCount AS count,(SELECT MIN(epoch) FROM cashJournalCommitted) AS firstEpoch,COALESCE((SELECT MAX(epoch) FROM cashJournalCommitted),1) AS lastEpoch,(SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN('cashJournalCommitted_no_update','cashJournalCommitted_no_delete','cashJournalCommitted_contiguous','cashJournalCommitted_advance_head','cashJournalHead_guard','cashJournalHead_no_delete')) AS guards FROM cashJournalHead WHERE id=1";
+const prefixSql =
+  "SELECT epoch,committedCount AS count,(SELECT MIN(epoch) FROM cashJournalCommitted) AS firstEpoch,COALESCE((SELECT MAX(epoch) FROM cashJournalCommitted),1) AS lastEpoch,(SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN('cashJournalCommitted_no_update','cashJournalCommitted_no_delete','cashJournalCommitted_contiguous','cashJournalCommitted_advance_head','cashJournalHead_guard','cashJournalHead_no_delete')) AS guards FROM cashJournalHead WHERE id=1";
 function checkedPrefix(row: any): number {
-  if(!row||row.guards!==6||row.lastEpoch!==row.epoch)throw failure('RECOVERY_PREFIX_INVALID');
+  if (!row || row.guards !== 6 || row.lastEpoch !== row.epoch)
+    throw failure("RECOVERY_PREFIX_INVALID");
   const epoch = row.epoch ?? CASH_BASELINE_EPOCH;
   if (
     !Number.isSafeInteger(epoch) ||
@@ -241,21 +290,29 @@ export async function createWithRecovery(
   // until both identities have been checked; each DB batch is one snapshot.
   const states = await Promise.allSettled([
     db.batch([
-      db.prepare("SELECT role FROM cashSandboxIdentity WHERE id=?").bind(LAB_ID),
+      db
+        .prepare("SELECT role FROM cashSandboxIdentity WHERE id=?")
+        .bind(LAB_ID),
       db.prepare("SELECT * FROM cashCommands WHERE requestId=?").bind(id),
       db.prepare("SELECT epoch FROM cashEpoch WHERE id=1"),
     ]),
-    fault === "log-unavailable" ? Promise.reject(failure("RECOVERY_LOG_UNAVAILABLE")) : log.batch([
-      log.prepare("SELECT role FROM cashJournalIdentity WHERE id=?").bind(LAB_ID),
-      log.prepare(prefixSql),
-    ]),
+    fault === "log-unavailable"
+      ? Promise.reject(failure("RECOVERY_LOG_UNAVAILABLE"))
+      : log.batch([
+          log
+            .prepare("SELECT role FROM cashJournalIdentity WHERE id=?")
+            .bind(LAB_ID),
+          log.prepare(prefixSql),
+        ]),
   ]);
   if (states[0].status === "rejected") throw states[0].reason;
   const primaryState = states[0].value;
-  if (primaryState[0].results[0]?.role !== "primary") throw failure("SANDBOX_IDENTITY_MISMATCH");
+  if (primaryState[0].results[0]?.role !== "primary")
+    throw failure("SANDBOX_IDENTITY_MISMATCH");
   if (states[1].status === "rejected") throw states[1].reason;
   const journalState = states[1].value;
-  if (journalState[0].results[0]?.role !== "journal") throw failure("SANDBOX_IDENTITY_MISMATCH");
+  if (journalState[0].results[0]?.role !== "journal")
+    throw failure("SANDBOX_IDENTITY_MISMATCH");
   const envelopeHash = await reserveRequest(log, id, envelope);
   let winning = cashCommandFromRow(primaryState[1].results[0]),
     replayed = !!winning,
@@ -265,15 +322,14 @@ export async function createWithRecovery(
   const target = winning
     ? winning.plan.expectedEpoch + 1
     : primaryState[2].results[0]?.epoch;
-  if (
-    !Number.isSafeInteger(target) ||
-    target < CASH_BASELINE_EPOCH
-  )
+  if (!Number.isSafeInteger(target) || target < CASH_BASELINE_EPOCH)
     throw failure("RECOVERY_PRIMARY_EPOCH_INVALID");
   if (!winning && prefix > target) {
     // Independent preflight snapshots may straddle another complete commit.
     // Distinguish that race from a journal genuinely ahead of the primary.
-    const fresh = await primary(env.DB).prepare("SELECT epoch FROM cashEpoch WHERE id=1").first();
+    const fresh = await primary(env.DB)
+      .prepare("SELECT epoch FROM cashEpoch WHERE id=1")
+      .first();
     if (Number.isSafeInteger(fresh?.epoch) && fresh.epoch >= prefix)
       throw failure("STALE_SNAPSHOT_RETRY_SAME_REQUEST", 409);
     throw failure("RECOVERY_PRIMARY_EPOCH_INVALID");
@@ -330,7 +386,13 @@ export async function createWithRecovery(
     throw failure("PRIMARY_REQUEST_MISMATCH", 409);
   if (fault === "after-primary")
     throw failure("PRIMARY_COMMITTED_RECOVERY_PENDING");
-  record ??= await confirm(log, env.LAB_TOKEN, envelopeHash, winning.plan, preparedProof);
+  record ??= await confirm(
+    log,
+    env.LAB_TOKEN,
+    envelopeHash,
+    winning.plan,
+    preparedProof,
+  );
   if (fault === "drop-response")
     throw failure("RESPONSE_LOST_AFTER_BOTH_COMMITS");
   return {
@@ -356,19 +418,53 @@ export async function committedRecords(logBinding: any) {
     signature: r.signature,
   }));
 }
-export async function committedRecordsPage(logBinding:any,after:number,through:number|undefined,limit:number,bound:(rows:any[])=>any[]) {
-  const log=primary(logBinding);await assertIdentity(log,'journal');
-  const current=await journalPrefix(log);through??=current;
-  if(!Number.isSafeInteger(after)||after<CASH_BASELINE_EPOCH||!Number.isSafeInteger(through)||through<after||through>current)throw failure('RECOVERY_PAGE_EPOCH_CONFLICT',409);
-  if(!Number.isSafeInteger(limit)||limit<1||limit>32)throw failure('INVALID_PAGE_LIMIT',400);
-  const fetched=await log.prepare('SELECT epoch,recordJson,signature FROM cashJournalCommitted WHERE epoch>? AND epoch<=? ORDER BY epoch LIMIT ?').bind(after,through,Math.min(limit,8)).all();
-  const records=bound(fetched.results.map((r:any,i:number)=>{
-    const record={...JSON.parse(r.recordJson),signature:r.signature};
-    if(r.epoch!==after+i+1||record.epoch!==r.epoch)throw failure('RECOVERY_SEQUENCE_GAP');return record;
-  }));
-  const nextEpoch=records.at(-1)?.epoch??after;
-  if(!records.length&&after<through)throw failure('RECOVERY_SEQUENCE_GAP');
-  return {labId:LAB_ID,schemaVersion:CASH_SCHEMA_VERSION,afterEpoch:after,throughEpoch:through,nextEpoch,complete:nextEpoch===through,records};
+export async function committedRecordsPage(
+  logBinding: any,
+  after: number,
+  through: number | undefined,
+  limit: number,
+  bound: (rows: any[]) => any[],
+) {
+  const log = primary(logBinding);
+  await assertIdentity(log, "journal");
+  const current = await journalPrefix(log);
+  through ??= current;
+  if (
+    !Number.isSafeInteger(after) ||
+    after < CASH_BASELINE_EPOCH ||
+    !Number.isSafeInteger(through) ||
+    through < after ||
+    through > current
+  )
+    throw failure("RECOVERY_PAGE_EPOCH_CONFLICT", 409);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 32)
+    throw failure("INVALID_PAGE_LIMIT", 400);
+  const fetched = await log
+    .prepare(
+      "SELECT epoch,recordJson,signature FROM cashJournalCommitted WHERE epoch>? AND epoch<=? ORDER BY epoch LIMIT ?",
+    )
+    .bind(after, through, Math.min(limit, 8))
+    .all();
+  const records = bound(
+    fetched.results.map((r: any, i: number) => {
+      const record = { ...JSON.parse(r.recordJson), signature: r.signature };
+      if (r.epoch !== after + i + 1 || record.epoch !== r.epoch)
+        throw failure("RECOVERY_SEQUENCE_GAP");
+      return record;
+    }),
+  );
+  const nextEpoch = records.at(-1)?.epoch ?? after;
+  if (!records.length && after < through)
+    throw failure("RECOVERY_SEQUENCE_GAP");
+  return {
+    labId: LAB_ID,
+    schemaVersion: CASH_SCHEMA_VERSION,
+    afterEpoch: after,
+    throughEpoch: through,
+    nextEpoch,
+    complete: nextEpoch === through,
+    records,
+  };
 }
 export async function restoreRecords(env: any, records: any[]) {
   const db = primary(env.DB);
@@ -396,7 +492,7 @@ export async function restoreRecords(env: any, records: any[]) {
       continue;
     }
     try {
-      await applyCashPlan(db, record.plan,{historicalRestore:true});
+      await applyCashPlan(db, record.plan, { historicalRestore: true });
       applied++;
     } catch {
       throw failure("RECOVERY_PREIMAGE_OR_EPOCH_CONFLICT", 409);

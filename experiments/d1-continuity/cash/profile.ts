@@ -1,5 +1,5 @@
 // Authenticated lab-only binding measurements; never changes SQL or results.
-export function cashProfiler(env: any) {
+export function cashProfiler(env: any, stateMode = "CASH_SCOPED") {
   const started = Date.now();
   const statements = new WeakMap<object, { raw: any; sql: string }>();
   const calls: any[] = [];
@@ -37,10 +37,32 @@ export function cashProfiler(env: any) {
       };
       for (const method of ["first", "all", "run", "raw"])
         wrapped[method] = async (...args: any[]) => {
-          const result=await measure(role, method, 1, () => item[method](...args));
-          if(role==='primary'&&method==='first'&&sql.startsWith('WITH cashScope AS (')){
-            const rows=Object.fromEntries(Object.entries(result).filter(([name])=>!['epoch','sequences'].includes(name)).map(([name,value])=>[name,JSON.parse(value as string).length]));
-            stateRead={mode:'CASH_SCOPED',rows,totalRows:Object.values(rows).reduce((n,v)=>n+v,0),bytes:new TextEncoder().encode(JSON.stringify(result)).byteLength};
+          const result = await measure(role, method, 1, () =>
+            item[method](...args),
+          );
+          if (
+            role === "primary" &&
+            method === "first" &&
+            sql.startsWith("WITH cashScope AS (")
+          ) {
+            const rows = Object.fromEntries(
+              Object.entries(result)
+                .filter(
+                  ([name]) =>
+                    !["epoch", "sequences", "scopeFlags"].includes(name),
+                )
+                .map(([name, value]) => [
+                  name,
+                  JSON.parse(value as string).length,
+                ]),
+            );
+            stateRead = {
+              mode: stateMode,
+              rows,
+              totalRows: Object.values(rows).reduce((n, v) => n + v, 0),
+              bytes: new TextEncoder().encode(JSON.stringify(result))
+                .byteLength,
+            };
           }
           return result;
         };
