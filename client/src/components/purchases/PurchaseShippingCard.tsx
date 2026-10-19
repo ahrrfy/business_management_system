@@ -102,6 +102,7 @@ export interface PurchaseShippingCardProps {
   currency?: string;
   showOptionalBadge?: boolean;
   showDetailedDistribution?: boolean;
+  paymentRecorded?: boolean;
   shippingFundingSource?: "ACCRUAL" | "DRAWER";
   onShippingFundingSourceChange?: (v: "ACCRUAL" | "DRAWER") => void;
 }
@@ -117,7 +118,8 @@ export function PurchaseShippingCard({
   currency = "IQD",
   showOptionalBadge = false,
   showDetailedDistribution = false,
-  shippingFundingSource = "ACCRUAL",
+  paymentRecorded = false,
+  shippingFundingSource = "DRAWER",
   onShippingFundingSourceChange,
 }: PurchaseShippingCardProps) {
   return (
@@ -140,6 +142,7 @@ export function PurchaseShippingCard({
             value={shippingCost}
             onChange={onShippingCostChange}
             ariaLabel="تكلفة الشحن"
+            disabled={paymentRecorded}
             className="h-8 w-32 text-center text-sm font-bold"
           />
         </label>
@@ -151,6 +154,7 @@ export function PurchaseShippingCard({
             value={customsCost}
             onChange={onCustomsCostChange}
             ariaLabel="تكلفة الكمرك"
+            disabled={paymentRecorded}
             className="h-8 w-32 text-center text-sm font-bold"
           />
         </label>
@@ -161,14 +165,17 @@ export function PurchaseShippingCard({
             <AppSelect
               id="shipping-funding-source"
               value={shippingFundingSource}
+              disabled={paymentRecorded}
               onValueChange={v => onShippingFundingSourceChange(v as "ACCRUAL" | "DRAWER")}
             >
               <option value="ACCRUAL">غير مدفوع — استحقاق فقط</option>
-              <option value="DRAWER">أؤكد دفعه نقداً من درجي</option>
+              <option value="DRAWER">مدفوع نقداً من درج ورديتي</option>
             </AppSelect>
             <p className="text-xs text-muted-foreground">
-              {shippingFundingSource === "DRAWER"
-                ? "تصريح دفع صريح: تثبت ورديتك عند الحفظ. اعتماد الفاتورة أو إلغاؤها ينشئ طلب صرف معلّقاً؛ يوثق المصروف في درجك عند اعتماد سند الشحن مستقلاً. لا يخصم من وردية المعتمد ولا من الخزينة. لا تغلق الوردية قبل توثيق المصروف."
+              {paymentRecorded
+                ? "الشحن مدفوع ومسجل في درج المنشئ. مبلغ الدفع ومصدره ثابتان؛ أي استرداد يحتاج تصحيحاً مالياً موثقاً من المصروف المرتبط."
+                : shippingFundingSource === "DRAWER"
+                ? "يُسجل الدفع ويُخصم الشحن والكمرك فور حفظ الفاتورة من درج ورديتك المفتوحة، بإيصال وقيد مصروف. اعتماد الفاتورة لاحقاً لا يكرر الخصم، حتى بعد إغلاق الوردية. يبقى الشحن المدفوع مثبتاً عند إلغاء البضاعة؛ الاسترداد يُسجل بعملية مستقلة."
                 : "إدخال تكلفة الشحن لا يعني دفعها. لا يخصم أي نقد حتى توثيق سداد فعلي."}
             </p>
           </div>
@@ -213,7 +220,7 @@ export function PurchaseShippingCard({
             )}
             <div className={showDetailedDistribution ? "mt-1.5 border-t pt-1.5 text-[11px] text-muted-foreground" : "text-[11px] text-muted-foreground"}>
               <strong>لا تُضاف إلى ذمّة المورّد ولا إلى تكلفة الصنف.</strong>{" "}
-              تُسجَّل مصروف نقلٍ على الشركة لحظة الاستلام (يظهر في المصروفات والدفتر)، وتكلفة الصنف تبقى سعر المورّد وحده.
+              تُسجَّل مصروف نقلٍ على الشركة عند الدفع، أو عند اعتماد الفاتورة للشحن غير المدفوع (يظهر في المصروفات والدفتر)، وتكلفة الصنف تبقى سعر المورّد وحده.
             </div>
           </div>
         )}

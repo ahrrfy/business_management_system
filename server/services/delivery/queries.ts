@@ -17,6 +17,7 @@ import { getDeliveryFinancialSummary } from "./lifecycle";
 import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
 import { deliverySearchSql } from "./readSearch";
 import { deliveryReportDates } from "./reportDates";
+import { currentOnlineOrderStatus, latestOnlineOrderConsignmentId } from "../storeAdmin/onlineOrderTracking";
 import {
   matchesDeliverySearch,
 } from "@shared/deliverySearch";
@@ -646,20 +647,13 @@ export async function getPartyStoreInTransit(partyId: number,
       .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id))
       .where(and(
         eq(onlineOrders.deliveryPartyId, partyId),
-        eq(onlineOrders.status, "SHIPPED"),
+        eq(currentOnlineOrderStatus, "SHIPPED"),
           scopedBranchId == null
             ? undefined
             : eq(onlineOrders.branchId, scopedBranchId),
-          // ازدواجُ التعرّض (٢٢/٨): طلبُ متجرٍ أُسندت فاتورتُه إرساليةً **حيّة** يُعرَض تعرّضُه
-        // في قوائم الإرساليات نفسها — فعدُّه هنا ثانيةً يضخّم «مع المندوب» بضعف القيمة.
-        // مرآةُ `legacyOnlineScope` في courier.ts مع تقييد الحياة (نمط listReadyForDispatch):
-        // الإرسالية الملغاة/المرتجعة تُعيد الطلبَ لهذه العدسة كي لا يسقط من العدّادات كلّها.
-        sql`NOT EXISTS (
-          SELECT 1 FROM deliveryConsignments dc
-          WHERE dc.sourceType = 'ONLINE_ORDER'
-            AND dc.sourceId = ${onlineOrders.id}
-            AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
-        )`,
+        // Instrumented parcels are counted by the consignment path, including invoice-linked history.
+        // A cancelled assignment projects back to preparation rather than remaining with the courier.
+        sql`${latestOnlineOrderConsignmentId} IS NULL`,
       ))
   )[0];
   return { count: Number(row?.count ?? 0), value: String(row?.value ?? "0.00") };

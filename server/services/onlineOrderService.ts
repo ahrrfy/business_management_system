@@ -64,6 +64,7 @@ import {
 import { retryOnDup } from "../lib/retryDup";
 import { publishRealtimeEvent } from "../realtime";
 import { REALTIME_EVENT_TYPES } from "@shared/realtimeEvents";
+import { currentOnlineOrderStatus, loadOnlineOrderLifecycles } from "./storeAdmin/onlineOrderTracking";
 
 const RETAIL = "RETAIL" as const;
 const WHOLESALE = "WHOLESALE" as const;
@@ -2270,6 +2271,7 @@ async function createOnlineOrderAttempt(
 export interface OnlineOrderTracking {
   orderNumber: string;
   status: string;
+  deliveryProgress?: { label: string; updatedAt: Date | string | null; complete?: boolean; phase?: "RETURNED" | "AWAITING_REASSIGNMENT" | "RETURN_REQUESTED" };
   subtotal: string;
   pricingBenefitType: StorefrontPricingBenefitType;
   pricingBenefitLabel: string | null;
@@ -2365,9 +2367,11 @@ async function buildOnlineOrderTracking(
     .leftJoin(productUnits, eq(onlineOrderItems.productUnitId, productUnits.id))
     .where(eq(onlineOrderItems.onlineOrderId, Number(order.id)));
 
+  const lifecycle = (await loadOnlineOrderLifecycles(db, [Number(order.id)])).get(Number(order.id));
   return {
     orderNumber: order.orderNumber,
     status: order.status,
+    deliveryProgress: lifecycle ? { label: lifecycle.label, updatedAt: lifecycle.latestEvent?.occurredAt ?? null, complete: lifecycle.trackingComplete === true, phase: lifecycle.customerPhase } : undefined,
     subtotal: String(order.subtotal),
     pricingBenefitType: order.pricingBenefitType,
     pricingBenefitLabel: order.pricingBenefitLabel ?? null,
@@ -2394,7 +2398,7 @@ function trackingHeaderSelection() {
   return {
     id: onlineOrders.id,
     orderNumber: onlineOrders.orderNumber,
-    status: onlineOrders.status,
+    status: currentOnlineOrderStatus,
     subtotal: onlineOrders.subtotal,
     pricingBenefitType: onlineOrders.pricingBenefitType,
     pricingBenefitLabel: onlineOrders.pricingBenefitLabel,
@@ -2689,7 +2693,7 @@ export async function readOnlineOrderLabel(
       .select({
         id: onlineOrders.id,
         orderNumber: onlineOrders.orderNumber,
-        status: onlineOrders.status,
+        status: currentOnlineOrderStatus,
         subtotal: onlineOrders.subtotal,
         pricingBenefitType: onlineOrders.pricingBenefitType,
         pricingBenefitLabel: onlineOrders.pricingBenefitLabel,

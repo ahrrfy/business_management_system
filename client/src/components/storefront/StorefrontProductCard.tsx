@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React from "react";
 import { Heart, Share2, Plus, Minus, AlertTriangle, Flame, Package, TrendingUp, Check, Eye, Star } from "lucide-react";
 import { fmtInt } from "@/lib/money";
 import { formatQuantity } from "@shared/quantityFormat";
@@ -32,7 +32,7 @@ interface StorefrontProductCardProps {
   sharePulseTarget?: string | null;
   sharePulseNonce?: number;
   onOpen: (productId: number, options?: { openReview?: boolean; orderNumber?: string | null }) => void;
-  onAdd: (product: any, event: React.MouseEvent<HTMLButtonElement>) => void;
+  onAdd: (product: any, event: React.MouseEvent<HTMLButtonElement>) => boolean;
   onToggleWishlist: (productId: number) => void;
   onShare: (productId: number, productName: string) => void;
   canBeOrdered: (product: any) => boolean;
@@ -61,20 +61,14 @@ export function StorefrontProductCard({
   cartQuantity = 0,
   onUpdateQuantity,
 }: StorefrontProductCardProps) {
-  const [localAdded, setLocalAdded] = useState(false);
   const productTitle = p.productName ?? p.name ?? "منتج بدون اسم";
   const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
   const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
   const savings = onSale ? Number(p.price) - Number(p.salePrice) : 0;
   const currentPrice = p.salePrice ?? p.price;
   const orderable = canBeOrdered(p);
-  const showAdded = isRecentlyAdded || localAdded;
+  const showAdded = isRecentlyAdded;
 
-  const handleAddClick = (event: React.MouseEvent<HTMLButtonElement>) => {
-    setLocalAdded(true);
-    window.setTimeout(() => setLocalAdded(false), 1500);
-    onAdd(p, event);
-  };
 
   const cardButtonLabel = (actionLabel ?? "أضف إلى السلة").length > 20
     ? "غير متاح إلكترونياً"
@@ -299,7 +293,7 @@ export function StorefrontProductCard({
 
         {/* زر الإضافة السريع للسلة أو وحدة التحكم بالكمية المتحولة — متطابق أفقياً ومرن للهواتف */}
         {!p.isCustomizable && cartQuantity > 0 && onUpdateQuantity ? (
-          <div className="animate-spring-pop mt-auto flex h-9 sm:h-11 w-full items-center justify-between rounded-xl border border-emerald-600/30 bg-emerald-50 px-1.5 sm:px-2 text-emerald-900 shadow-sm dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-200">
+          <div className="mt-auto flex h-10 w-full items-center justify-between rounded-xl border border-emerald-600/30 bg-emerald-50 px-1.5 sm:px-2 text-emerald-900 shadow-sm dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-200">
             <button
               type="button"
               onClick={(e) => {
@@ -341,7 +335,7 @@ export function StorefrontProductCard({
               addedLabel="تمت الإضافة"
               icon={p.isCustomizable ? <AlertTriangle aria-hidden className="size-3.5" /> : undefined}
               onAdd={(btnEl) => {
-                onAdd(p, { currentTarget: btnEl, stopPropagation: () => {} } as unknown as React.MouseEvent<HTMLButtonElement>);
+                return onAdd(p, { currentTarget: btnEl, stopPropagation: () => {} } as unknown as React.MouseEvent<HTMLButtonElement>);
               }}
               cartCount={cartQuantity}
               showCartCount={false}

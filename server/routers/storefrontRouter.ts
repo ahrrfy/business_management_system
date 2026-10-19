@@ -20,6 +20,7 @@ import {
   storefrontPublicWriteProcedure,
 } from "../trpc";
 import { getStorefrontThematicCollections } from "../services/storefrontThematicService";
+import { storefrontSearchSuggestions } from "../services/storefrontSearchService";
 import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated, storefrontCartRecommendations } from "../services/storefrontService";
 import {
   createOnlineOrder,
@@ -223,6 +224,18 @@ export const storefrontRouter = router({
         seed: input.seed,
       })
     ),
+
+  /** Compact full-catalog search; service owns matching, eligibility and bounded hydration. */
+  searchSuggestions: storefrontPublicReadProcedure
+    .input(z.object({
+      query: z.string().max(64),
+      categoryId: z.number().int().positive().nullish(),
+      productIds: z.array(z.number().int().positive()).max(500).nullish(),
+      availability: z.enum(["IN_STOCK", "ALL"]).default("IN_STOCK"),
+      brand: z.string().max(120).optional(),
+      priceFilter: z.enum(["ALL", "UNDER_5000", "FROM_5000_TO_15000", "OVER_15000"]).default("ALL"),
+    }))
+    .query(({ input }) => storefrontSearchSuggestions(input)),
 
   /** صفحة منتج واحد (تشمل محتويات البكج إن كان بكجاً). */
   product: publicProcedure

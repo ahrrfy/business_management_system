@@ -287,8 +287,8 @@ export const purchaseRouter = router({
           supplierInvoiceTotal: nonNegMoneyString.optional(),
           // خصم فاتورة المورّد بعملة الأمر (0204) — يُوزَّع بنسبة القيمة فتُخزَّن الأعمدة صافيةً.
           invoiceDiscount: nonNegMoneyString.optional(),
-          // landed-cost: تكلفة الشحن/الكمرك (nonNegMoneyString يرفض السالب/الصيغ التالفة). تُرسمَل
-          // في تكلفة المخزون عند الاستلام (WAVG) وتُضاف إلى AP — لا مصروف P&L (تُحتسَب في COGS عند البيع).
+          // Shipping/customs are company expenses, outside supplier AP and inventory cost.
+          // An explicit paid declaration records the creator's drawer cash immediately.
           shippingCost: nonNegMoneyString.optional(),
           customsCost: nonNegMoneyString.optional(),
           shippingFundingSource: z.enum(["ACCRUAL", "DRAWER"]).optional(),
@@ -1254,6 +1254,8 @@ export const purchaseRouter = router({
       let shippingPayment: {
         hasShipping: boolean;
         obligationId: number | null;
+        hasRecordedPayment: boolean;
+        refund: { receiptId: number; voucherNumber: string | null; amount: string; cashBucket: string | null; shiftId: number | null; occurredAt: Date } | null;
         totalLanded: string;
         obligationStatus: string;
         beneficiaryName: string | null;
@@ -1282,6 +1284,9 @@ export const purchaseRouter = router({
           .orderBy(desc(accrualObligations.id))
           .limit(1);
 
+        const [recordedPayment] = shippingObligation ? await db.select({ id: accrualObligationEvents.id, receiptId: accrualObligationEvents.receiptId })
+          .from(accrualObligationEvents).where(and(eq(accrualObligationEvents.obligationId, shippingObligation.id),
+            eq(accrualObligationEvents.eventType, "PAYMENT_SETTLED"))).limit(1) : [];
         let linkedReceipt: {
           id: number;
           referenceNumber: string | null;
@@ -1293,6 +1298,7 @@ export const purchaseRouter = router({
           counterpartyName: string | null;
           createdAt: Date;
           approvedAt: Date | null;
+          executedAt: Date | null;
           amount: string;
         } | null = null;
 
@@ -1311,7 +1317,7 @@ export const purchaseRouter = router({
             .orderBy(desc(accrualObligationEvents.id))
             .limit(1);
 
-          let receiptId = latestEvent?.receiptId ?? null;
+          let receiptId = recordedPayment?.receiptId ?? latestEvent?.receiptId ?? null;
           if (!receiptId && shippingObligation.expenseId != null) {
             const [exp] = await db
               .select({ receiptId: expenses.receiptId })
@@ -1336,6 +1342,7 @@ export const purchaseRouter = router({
                 counterpartyName: receipts.counterpartyName,
                 createdAt: receipts.createdAt,
                 approvedAt: receipts.approvedAt,
+                executedAt: receipts.executedAt,
                 amount: receipts.amount,
               })
               .from(receipts)
@@ -1351,9 +1358,18 @@ export const purchaseRouter = router({
           }
         }
 
+        const [refundEvent] = shippingObligation ? await db.select({ receiptId: accrualObligationEvents.receiptId })
+          .from(accrualObligationEvents).where(and(eq(accrualObligationEvents.obligationId, shippingObligation.id),
+            eq(accrualObligationEvents.eventType, "SETTLEMENT_REVERSED"))).orderBy(desc(accrualObligationEvents.id)).limit(1) : [];
+        const [refundReceipt] = refundEvent?.receiptId ? await db.select().from(receipts)
+          .where(eq(receipts.id, refundEvent.receiptId)).limit(1) : [];
         shippingPayment = {
           hasShipping: true,
           obligationId: shippingObligation ? Number(shippingObligation.id) : null,
+          hasRecordedPayment: recordedPayment != null,
+          refund: refundReceipt ? { receiptId: Number(refundReceipt.id), voucherNumber: refundReceipt.voucherNumber,
+            amount: refundReceipt.amount, cashBucket: refundReceipt.cashBucket, shiftId: refundReceipt.shiftId,
+            occurredAt: refundReceipt.executedAt ?? refundReceipt.approvedAt ?? refundReceipt.createdAt } : null,
           totalLanded: toDbMoney(shippingTotal),
           obligationStatus: shippingObligation?.status ?? "NONE",
           beneficiaryName: shippingObligation?.beneficiaryName ?? null,
@@ -1365,7 +1381,7 @@ export const purchaseRouter = router({
           cashBucket: linkedReceipt?.cashBucket ?? null,
           shiftId: linkedReceipt?.shiftId ? Number(linkedReceipt.shiftId) : null,
           payee: linkedReceipt?.counterpartyName ?? shippingObligation?.beneficiaryName ?? null,
-          paidAt: linkedReceipt?.approvedAt ?? linkedReceipt?.createdAt ?? null,
+          paidAt: linkedReceipt?.executedAt ?? linkedReceipt?.approvedAt ?? linkedReceipt?.createdAt ?? null,
           settledAmount: linkedReceipt?.amount ?? null,
         };
       }

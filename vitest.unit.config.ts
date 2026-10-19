@@ -12,6 +12,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "client/src/components/storefront/StorefrontSearch.test.tsx",
       "server/routers/__tests__/backupDownload.test.ts",
       "server/services/__tests__/backupDownloadService.test.ts",
       "client/src/lib/backupDownload.test.ts",
@@ -506,6 +507,7 @@ export default defineConfig({
       "server/services/__tests__/storefrontSeoMeta.test.ts",
       // محرك المطابقة الرمزية والتراكيب الذكية للتشكيلات التحريرية بالمتجر (منطق نقي بلا قاعدة)
       "server/services/__tests__/storefrontThematicService.test.ts",
+      "server/services/__tests__/storefrontThematicResponsiveness.test.ts",
       "server/services/__tests__/customerReadAccess.test.ts",
       "server/services/__tests__/customerReceptionCreateAccess.test.ts",
       "client/src/components/pos/__tests__/posTotalsCredit.test.ts",

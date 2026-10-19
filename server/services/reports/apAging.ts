@@ -538,6 +538,7 @@ export async function getSupplierStatement(
   const grniOrphanMove = sql`(${accountingEntries.entryType} = 'ADJUST' AND ${accountingEntries.purchaseOrderId} IS NULL AND (${accountingEntries.dedupeKey} REGEXP ${GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP} OR ${accountingEntries.dedupeKey} REGEXP ${GRNI_SUPPLIER_INVOICE_REVERSAL_REGEXP}))`;
   const payConds = [
     sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN','EXCHANGE_SETTLE') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL) OR ${grniOrphanMove}${openingMoveSql})`,
+    isSupplierApLedgerEntrySql(ACCT),
     eq(accountingEntries.supplierId, supplierId),
   ];
   if (branchId) payConds.push(eq(accountingEntries.branchId, branchId));

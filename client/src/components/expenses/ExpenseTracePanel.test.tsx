@@ -106,4 +106,14 @@ describe("ExpenseTracePanel — فصل المنشئ عن منفذ الحركة",
     expect(mocks.traceDetails).not.toHaveBeenCalled();
     expect(host.textContent).toBe("");
   });
+
+  it("يعرض دليل تسوية الشحن النقدي بعد انتقال المصروف من الاستحقاق إلى الدفع", async () => {
+    const current = mocks.traceUseQuery.getMockImplementation()!();
+    current.data.obligationEvents = [{ id: 9, eventType: "PAYMENT_SETTLED", accountingEntryId: 42,
+      receiptId: 701, amount: "75000.00", createdAt: "2026-10-03T11:00:00.000Z" }];
+    mocks.traceUseQuery.mockReturnValue(current);
+    await act(async () => root.render(<ExpenseTracePanel expenseId={91} />));
+    const props = mocks.traceDetails.mock.calls.at(-1)?.[0] as { linkChain: { label: string; value: string }[] };
+    expect(props.linkChain).toContainEqual(expect.objectContaining({ label: "التسوية الفعلية", value: "JE#42" }));
+  });
 });

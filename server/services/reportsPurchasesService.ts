@@ -15,6 +15,7 @@ import { money, toDbMoney } from "./money";
 import {
   GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP,
   GRNI_SUPPLIER_INVOICE_REVERSAL_REGEXP,
+  isSupplierApLedgerEntrySql,
 } from "./ledger/supplierApEffect";
 
 // أثر «حجم الشراء» الموقَّع لقيود GRNI/ADJUST الحديثة (فاتورة المورّد تدائن AP، وعكسها يَدينها).
@@ -80,6 +81,7 @@ export async function getPurchasesReport(opts: {
       JOIN suppliers s ON s.id = ae.supplierId
       WHERE ae.supplierId IS NOT NULL
         AND (ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT') OR ${GRNI_LEDGER_ENTRY_COND})
+        AND ${isSupplierApLedgerEntrySql({ entryType: sql`ae.entryType`, dedupeKey: sql`ae.dedupeKey` })}
         AND ae.entryDate >= ${opts.from} AND ae.entryDate <= ${opts.to}
         ${branchPo}
       GROUP BY ae.supplierId, s.name

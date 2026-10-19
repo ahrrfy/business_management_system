@@ -16,6 +16,8 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { ClipboardList } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { invalidateFinancialQueries } from "@/lib/realtime/financialQueries";
 import {
   PurchaseShippingCard,
   calcPurchaseLandedCost,
@@ -71,6 +73,7 @@ const NEW_ACTIONS = ["save", "print", "duplicate", "paste"] as const;
 export default function PurchaseNew() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
+  const queryClient = useQueryClient();
   const [pasteAvailable, setPasteAvailable] = useState(hasInvoiceTransfer);
   const searchParams = useMemo(
     () => new URLSearchParams(window.location.search),
@@ -475,7 +478,7 @@ export default function PurchaseNew() {
   /* ─── mutation ─────────────────────────────────────────────────── */
   const create = trpc.purchases.createOrder.useMutation({
     onSuccess: async () => {
-      await utils.purchases.list.invalidate();
+      await invalidateFinancialQueries(queryClient, state.branchId);
       notify.ok("حُفظ أمر الشراء مسودة — راجعه ثم أرسله للاعتماد من قائمة المشتريات");
       bypassUnsavedGuard();
       navigate("/purchases");

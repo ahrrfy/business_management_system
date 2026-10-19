@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import "./storefront-pwa-contract.test.mjs";
 import {
+  STOREFRONT_SHELL_CHUNK_GLOB,
   storefrontPublicImageCacheMatcher,
   storefrontPrivateImageNetworkMatcher,
 } from "./storefront-pwa-contract.mjs";
@@ -48,13 +49,15 @@ const manifest = {
   "src/pages/Storefront.tsx": {
     file: "assets/Storefront-bbb.js",
     isDynamicEntry: true,
-    imports: ["_date.js"],
+    imports: ["_date.js", "_UnifiedSearchInput.js"],
   },
   "src/pages/Admin.tsx": {
     file: "assets/Admin-ccc.js",
     isDynamicEntry: true,
   },
   "_framework.js": { file: "assets/framework-ddd.js" },
+  "_UnifiedSearchInput.js": { file: "assets/UnifiedSearchInput-search.js", imports: ["_BarcodeSearchCue.js"] },
+  "_BarcodeSearchCue.js": { file: "assets/BarcodeSearchCue-cue.js", imports: ["_framework.js"] },
   "_date.js": {
     file: "assets/date-eee.js",
     imports: ["_number-normalize.js"],
@@ -68,17 +71,37 @@ const completeSw = `self.__WB_MANIFEST = [
   {"url":"assets/framework-ddd.js","revision":null},
   {"url":"assets/Storefront-bbb.js","revision":null},
   {"url":"assets/date-eee.js","revision":null},
-  {"url":"assets/numberNormalize-fff.js","revision":null}
+  {"url":"assets/numberNormalize-fff.js","revision":null},
+  {"url":"assets/UnifiedSearchInput-search.js","revision":null},
+  {"url":"assets/BarcodeSearchCue-cue.js","revision":null}
 ];`;
 
 const result = assertStorefrontPrecacheClosure({ manifest, swSource: completeSw });
 assert.deepEqual(result.requiredFiles, [
+  "assets/BarcodeSearchCue-cue.js",
   "assets/Storefront-bbb.js",
+  "assets/UnifiedSearchInput-search.js",
   "assets/app-aaa.js",
   "assets/date-eee.js",
   "assets/framework-ddd.js",
   "assets/numberNormalize-fff.js",
 ]);
+
+// The canonical allowlist must cover the storefront's real shared search-input graph
+// without admitting unrelated ERP pages. This fails when either new dependency is omitted.
+const shellChunkNames = STOREFRONT_SHELL_CHUNK_GLOB.match(/^assets\/\{([^}]+)\}-\*\.js$/)?.[1].split(",");
+assert.ok(shellChunkNames, "storefront shell glob has explicit chunk names");
+for (const file of result.requiredFiles.filter((file) => !file.startsWith("assets/app-"))) {
+  const chunkName = file.replace(/^assets\//, "").replace(/-[^-]+\.js$/, "");
+  assert.ok(shellChunkNames.includes(chunkName), `${chunkName} must be included in storefront shell precache`);
+}
+for (const adminChunk of ["Admin", "POS", "ProductNew", "Treasury"]) assert.equal(shellChunkNames.includes(adminChunk), false, adminChunk);
+for (const missingChunk of ["UnifiedSearchInput-search", "BarcodeSearchCue-cue"]) {
+  assert.throws(() => assertStorefrontPrecacheClosure({
+    manifest,
+    swSource: completeSw.replace(`{"url":"assets/${missingChunk}.js","revision":null}`, ""),
+  }), /STOREFRONT_PRECACHE_STATIC_IMPORT_MISSING/);
+}
 
 assert.throws(
   () => assertStorefrontPrecacheClosure({

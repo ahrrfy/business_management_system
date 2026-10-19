@@ -493,6 +493,7 @@ export const catalogRouter = router({
         showInPrintPos: z.boolean().optional(),
         showInQuotations: z.boolean().optional(),
         showInAdvancedSales: z.boolean().optional(),
+        imageFilter: z.enum(["HAS_IMAGE", "NO_IMAGE", "VARIANT_NO_IMAGE"]).optional(),
         limit: z.number().int().positive().max(500).default(50),
         offset: z.number().int().min(0).default(0),
       }),
@@ -503,8 +504,7 @@ export const catalogRouter = router({
         // قرار المالك: هذان الحقلان لهذه القائمة حصراً للمالك (admin) ومدير الفرع.
         // لا نعتمد على إخفاء الواجهة؛ الخدمة تعيد null لكل دور آخر.
         {
-          includeSensitivePrices:
-            ctx.user.role === "admin" || ctx.user.role === "manager",
+          includeSensitivePrices: ctx.user.role === "admin" || ctx.user.role === "manager",
         },
       ),
     ),

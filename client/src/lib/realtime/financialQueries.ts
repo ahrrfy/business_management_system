@@ -21,7 +21,7 @@ export function isFinancialQuery(query: Query, branchIds: ReadonlySet<number> | 
   const [path, options] = query.queryKey;
   if (!Array.isArray(path) || !(financialRoots.has(path[0]) ||
     (path[0] === "catalog" && stockCatalogQueries.has(path[1])) ||
-    (path[0] === "storeAdmin" && path[1] === "catalog" && path[2] === "list"))) return false;
+    (path[0] === "storeAdmin" && (path[1] === "orders" || (path[1] === "analytics" && path[2] === "summary") || (path[1] === "customers" && path[2] === "list") || (path[1] === "catalog" && path[2] === "list"))))) return false;
   if (branchIds == null) return true;
   const input = (options as { input?: { branchId?: unknown } } | undefined)?.input;
   // Unfiltered/company-wide reads depend on every branch. Server RBAC still gates each read.
