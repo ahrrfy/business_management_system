@@ -308,6 +308,9 @@ export async function listProductsAdmin(
           productId: productImages.productId,
           variantId: productImages.variantId,
           thumbDataUrl: productImages.thumbDataUrl,
+          objectKey: productImages.objectKey,
+          contentHash: productImages.contentHash,
+          origin: productImages.origin,
           isPrimary: productImages.isPrimary,
           sortOrder: productImages.sortOrder,
         })
@@ -352,8 +355,16 @@ export async function listProductsAdmin(
       const parentImgs = prodImgs.filter((img) => img.variantId == null);
       const varImgs = vid != null ? prodImgs.filter((img) => Number(img.variantId) === vid) : [];
       const bestImg = (vid != null ? (varImgs[0] ?? parentImgs[0]) : prodImgs[0]) ?? null;
+      const versionSuffix =
+        bestImg?.contentHash && /^[0-9a-f]{64}$/i.test(bestImg.contentHash)
+          ? `?v=${bestImg.contentHash.toLowerCase().slice(0, 16)}`
+          : "";
+      const usableThumb =
+        bestImg && !(bestImg.origin === "ORIGINAL" && bestImg.objectKey != null)
+          ? bestImg.thumbDataUrl
+          : null;
       const primaryImageThumb = bestImg
-        ? (bestImg.thumbDataUrl || `/api/img/inventory-product/${bestImg.id}`)
+        ? (usableThumb || `/api/img/inventory-product/${bestImg.id}${versionSuffix}`)
         : null;
       const imageCount = prodImgs.length;
       const variantImageCount = vid != null ? varImgs.length : prodImgs.length;

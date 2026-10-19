@@ -6,6 +6,7 @@ import { AlertTriangle, Camera, CheckCircle2, Image as ImageIcon, ImageOff, Spar
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { OPERATION_PERMISSIONS, hasOperationPolicy, operationDecision, type OperationUser } from "@shared/operationPermissions";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 import { CopyInline } from "@/components/CopyButton";
@@ -118,15 +119,25 @@ export default function Products() {
   ));
   const canQuickStudio = useOperationPermission("productStudio.quickBarcodeLookup").allowed;
   const canQuickSaveStudio = useOperationPermission("productStudio.quickSaveBarcodeProductImage").allowed;
-  const canStudioApprove = useOperationPermission("productStudio.approve").allowed;
-  const canStudioAssign = useOperationPermission("productStudio.assign").allowed;
-  const canStudioManagerImages = useOperationPermission("productStudio.managerImages").allowed;
-  const isStudioManager =
-    me.data?.role === "admin" ||
-    me.data?.role === "manager" ||
-    canStudioApprove ||
-    canStudioAssign ||
-    canStudioManagerImages;
+  const studioUser = me.data as OperationUser | undefined;
+  const isStudioManager = Boolean(
+    me.data?.isOwner === true ||
+      (studioUser && hasOperationPolicy(studioUser)
+        ? OPERATION_PERMISSIONS.some(
+            (operation) =>
+              operation.domain === "productStudio" &&
+              operation.delegable &&
+              ((operation.roles.length === 1 && operation.roles[0] === "manager") ||
+                [
+                  "productStudio.campaigns",
+                  "productStudio.campaignBoard",
+                  "productStudio.campaignAnalytics",
+                  "productStudio.productImages",
+                ].includes(operation.path)) &&
+              operationDecision(studioUser, operation.path).allowed,
+          )
+        : me.data?.role === "admin" || me.data?.role === "manager"),
+  );
   // سياسة العزل الحديثة: الأدمن وحده يعبر الفروع؛ المدير مثبت على فرعه كالكاشير.
   const canPickBranch = me.data?.role === "admin";
 

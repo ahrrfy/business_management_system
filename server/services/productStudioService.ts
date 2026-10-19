@@ -6118,6 +6118,7 @@ export async function revertStudioTask(actor: ProductStudioActor, taskId: number
         url: await publishedImageUrl(Number(image.id), task.sourceContentHash),
         objectKey: publishedOriginalKey,
         contentHash: task.sourceContentHash,
+        thumbDataUrl: null,
         mime: task.originalMime,
         width: originalDimensions?.width ?? null,
         height: originalDimensions?.height ?? null,
