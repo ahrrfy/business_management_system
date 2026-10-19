@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import { setImmediate as yieldToRequests } from "node:timers/promises";
 import {
   categories,
   products,
@@ -50,15 +51,25 @@ async function readCandidates() {
       ),
     )
     .where(storefrontPublishableCondition());
-  return rows.map((row) => ({
-    ...row,
-    searchText: normalizeArabicSearch(
-      `${row.productName} ${row.storeTitle ?? ""} ${row.brand ?? ""} ${row.category ?? ""} ${row.barcode ?? ""}`,
-    ),
-    searchWords: tokenizeSearchTerms(
-      `${row.storeTitle ?? ""} ${row.productName} ${row.brand ?? ""} ${row.category ?? ""}`,
-    ),
-  }));
+  const indexedRows = [];
+  let deadline = performance.now() + 8;
+  for (const row of rows) {
+    indexedRows.push({
+      ...row,
+      searchText: normalizeArabicSearch(
+        `${row.productName} ${row.storeTitle ?? ""} ${row.brand ?? ""} ${row.category ?? ""} ${row.barcode ?? ""}`,
+      ),
+      searchWords: tokenizeSearchTerms(
+        `${row.storeTitle ?? ""} ${row.productName} ${row.brand ?? ""} ${row.category ?? ""}`,
+      ),
+    });
+    // A cold full index must share its worker with image requests and cashier reads.
+    if (performance.now() >= deadline) {
+      await yieldToRequests();
+      deadline = performance.now() + 8;
+    }
+  }
+  return indexedRows;
 }
 export interface StorefrontSearchScope {
   categoryId?: number | null;
@@ -78,20 +89,25 @@ export async function loadStorefrontSearchMatches(
         );
   const ids = scope.productIds == null ? null : new Set(scope.productIds);
   const match = createStorefrontSearchMatcher(search, allowSimilar);
-  return rows
-    .filter(
-      (row) =>
-        (scope.categoryId == null || row.categoryId === scope.categoryId) &&
-        (ids == null || ids.has(row.productId)),
-    )
-    .flatMap((row) => {
+  const matches = [];
+  let deadline = performance.now() + 8;
+  for (const row of rows) {
+    if (
+      (scope.categoryId == null || row.categoryId === scope.categoryId) &&
+      (ids == null || ids.has(row.productId))
+    ) {
       const result = match(row);
-      return result ? [{ ...row, match: result }] : [];
-    })
-    .sort(
-      (a, b) =>
-        b.match.score - a.match.score ||
-        a.productId - b.productId ||
-        a.productUnitId - b.productUnitId,
-    );
+      if (result) matches.push({ ...row, match: result });
+    }
+    if (performance.now() >= deadline) {
+      await yieldToRequests();
+      deadline = performance.now() + 8;
+    }
+  }
+  return matches.sort(
+    (a, b) =>
+      b.match.score - a.match.score ||
+      a.productId - b.productId ||
+      a.productUnitId - b.productUnitId,
+  );
 }

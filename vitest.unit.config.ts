@@ -90,6 +90,8 @@ export default defineConfig({
       "shared/storefrontSearchNormalize.test.ts",
       "client/src/pages/Storefront.test.ts",
       "server/services/__tests__/storefrontRanking.test.ts",
+      "server/services/__tests__/storefrontSearchResponsiveness.test.ts",
+      "server/services/__tests__/storefrontDerivedCache.test.ts",
       "shared/expenseLabels.test.ts",
       "client/src/components/expenses/expenseView.test.ts",
       "shared/digitalSale.test.ts",

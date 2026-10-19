@@ -6,7 +6,8 @@
  * الطلبات المتزامنة لنفس المرشحات في loader واحد، بينما يبقى إنشاء الطلب هو حارس المخزون النهائي.
  */
 
-import { matchStorefrontSearch, normalizeArabicSearch } from "../../shared/storefrontSearchNormalize";
+import { createStorefrontSearchMatcher, normalizeArabicSearch } from "../../shared/storefrontSearchNormalize";
+import { setImmediate as yieldToRequests } from "node:timers/promises";
 
 export const STOREFRONT_DERIVED_RANKING_LIMITS = {
   ttlMs: 5_000,
@@ -195,7 +196,7 @@ export function buildStorefrontRankingCacheKey(input: {
   return `${input.branchId}|${input.availability}|${categoryIds.join(",") || "*"}|${search}|${seed}`;
 }
 
-export function chooseCandidateProductIds(
+function* rankCandidateProductIds(
   rows: Array<{
     productId: number;
     conversionFactor: string;
@@ -210,7 +211,8 @@ export function chooseCandidateProductIds(
   availabilityFilter: "IN_STOCK" | "ALL",
   searchTerm?: string | null,
   seed?: string | null,
-): number[] {
+): Generator<void, number[], void> {
+  const match = searchTerm ? createStorefrontSearchMatcher(searchTerm) : null;
   const productsById = new Map<number, {
     id: number;
     inStock: boolean;
@@ -221,6 +223,7 @@ export function chooseCandidateProductIds(
     brand: string | null;
     relevanceScore: number;
   }>();
+  let deadline = performance.now() + 8;
   for (const row of rows) {
     const id = Number(row.productId);
     const inStock = row.availableQty >= Number(row.conversionFactor);
@@ -234,7 +237,7 @@ export function chooseCandidateProductIds(
         storeTitle: row.storeTitle ?? null,
         brand: row.brand ?? null,
       };
-      const relevanceScore = searchTerm ? (matchStorefrontSearch(p, searchTerm)?.score ?? 0) : 0;
+      const relevanceScore = match?.(p)?.score ?? 0;
       productsById.set(id, {
         id,
         inStock,
@@ -245,6 +248,10 @@ export function chooseCandidateProductIds(
         brand: row.brand ?? null,
         relevanceScore,
       });
+    }
+    if (performance.now() >= deadline) {
+      yield;
+      deadline = performance.now() + 8;
     }
   }
   const isSearch = Boolean(searchTerm && searchTerm.trim());
@@ -285,5 +292,28 @@ export function chooseCandidateProductIds(
     })
     .slice(0, cap)
     .map((product) => product.id);
+}
+
+/** Preserve the pure synchronous contract for existing consumers and ordering tests. */
+export function chooseCandidateProductIds(
+  ...args: Parameters<typeof rankCandidateProductIds>
+): number[] {
+  const iterator = rankCandidateProductIds(...args);
+  let step = iterator.next();
+  while (!step.done) step = iterator.next();
+  return step.value;
+}
+
+/** Server request paths must admit image/cashier I/O during full-catalog scoring. */
+export async function chooseCandidateProductIdsAsync(
+  ...args: Parameters<typeof rankCandidateProductIds>
+): Promise<number[]> {
+  const iterator = rankCandidateProductIds(...args);
+  let step = iterator.next();
+  while (!step.done) {
+    await yieldToRequests();
+    step = iterator.next();
+  }
+  return step.value;
 }
 

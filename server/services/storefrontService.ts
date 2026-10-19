@@ -49,6 +49,7 @@ import {
   StorefrontDerivedRankingCache,
   buildStorefrontRankingCacheKey,
   chooseCandidateProductIds,
+  chooseCandidateProductIdsAsync,
 } from "./storefrontDerivedCache";
 
 const RETAIL = "RETAIL" as const;
@@ -408,7 +409,7 @@ async function loadRankedStorefrontProductIds(
   const load = async () => {
     const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
     const hydratedCandidates = await attachAvailability(db, branchId, candidateRows);
-    return chooseCandidateProductIds(hydratedCandidates, candidateRows.length, input.availability, input.search, input.seed);
+    return chooseCandidateProductIdsAsync(hydratedCandidates, candidateRows.length, input.availability, input.search, input.seed);
   };
   if (!cacheResult || storefrontCacheDisabled()) return load();
   const key = `${companyScope()}:${buildStorefrontRankingCacheKey({ branchId, ...input })}`;
@@ -1193,7 +1194,7 @@ export async function storefrontCartRecommendations(
   if (manualIds.length) {
     const conds = [storefrontPublishableCondition(), inArray(products.id, manualIds)];
     const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
-    const availableIds = chooseCandidateProductIds(await attachAvailability(db, branchId, candidateRows), cap, "IN_STOCK");
+    const availableIds = await chooseCandidateProductIdsAsync(await attachAvailability(db, branchId, candidateRows), cap, "IN_STOCK");
     const selectedOrder = new Map(manualIds.map((id, index) => [id, index]));
     const rawRows = await safeSelect(db).where(and(...conds, inArray(products.id, availableIds)));
     const rows = (await attachAvailability(db, branchId, rawRows))
