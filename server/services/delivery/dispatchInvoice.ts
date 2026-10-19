@@ -25,6 +25,7 @@ import { assertFloatLimitTx, assertNoStaleOpenParcelsTx } from "./parties";
 import type { DeliveryTxActor } from "./types";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import { assertSiblingsReady } from "../workOrder/siblings";
+import { resolveConsignmentNumber } from "../workOrder/helpers";
 import {
   assertExternalTrackingRefAvailable,
   normalizeExternalTrackingRef,
@@ -315,7 +316,7 @@ export async function dispatchInvoiceInTx(
         returnedAt: null,
       }).where(eq(deliveryConsignments.id, consignmentId));
     } else {
-      consignmentNumber = await nextConsignmentNumber(tx, Number(inv.branchId));
+      consignmentNumber = await resolveConsignmentNumber(tx, inv.invoiceNumber, Number(inv.branchId));
       const cnRes = await tx.insert(deliveryConsignments).values({
         consignmentNumber,
         branchId: Number(inv.branchId),

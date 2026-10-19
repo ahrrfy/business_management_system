@@ -23,6 +23,7 @@ import {
   lockProductUnitsForOnlineAllocation,
 } from "../catalog/variantAvailability";
 import { money } from "../money";
+import { stripDocPrefix } from "@shared/documentNumber";
 import { consumeReservedCoupon, lockCouponForSale, prelockCouponForOnlineDispatch } from "../couponService";
 import { enqueueStorefrontOrderStatusPush } from "./storefrontPushCampaignService";
 
@@ -196,6 +197,7 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
         customerId: Number(cur.customerId),
         sourceType: "ONLINE" as const,
         priceTier: "RETAIL" as const,
+        trackingNumber: stripDocPrefix(cur.orderNumber),
         lines: items.map((it) => ({
           variantId: Number(it.variantId),
           productUnitId: Number(it.productUnitId),

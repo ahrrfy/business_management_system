@@ -134,6 +134,7 @@ export interface ApplyMovementArgs {
   movementType: DirectionalType; // ADJUST goes through setStock only
   referenceType?: string;
   referenceId?: number;
+  documentNumber?: string | null;
   relatedBranchId?: number;
   notes?: string;
   createdBy?: number;
@@ -196,6 +197,7 @@ export interface ApplyValuedInboundMovementArgs {
   movementType?: "IN" | "RETURN";
   referenceType?: string;
   referenceId?: number;
+  documentNumber?: string | null;
   notes?: string;
   createdBy?: number;
 }
@@ -449,6 +451,7 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
     signedDelta: signedDelta,
     referenceType: a.referenceType,
     referenceId: a.referenceId,
+    documentNumber: a.documentNumber ? a.documentNumber.trim().slice(0, 100) : null,
     relatedBranchId: a.relatedBranchId,
     notes,
     createdBy: a.createdBy,
@@ -591,6 +594,7 @@ export async function applyValuedInboundMovement(
     movementType: a.movementType ?? "IN",
     referenceType: a.referenceType,
     referenceId: a.referenceId,
+    documentNumber: a.documentNumber,
     notes: a.notes,
     createdBy: a.createdBy,
   });
@@ -707,6 +711,7 @@ export interface SetStockArgs {
   targetQuantity: number;
   referenceType?: string;
   referenceId?: number;
+  documentNumber?: string | null;
   notes?: string;
   createdBy?: number;
   /**
@@ -777,6 +782,7 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
     signedDelta: delta,
     referenceType: a.referenceType ?? "ADJUST",
     referenceId: a.referenceId,
+    documentNumber: a.documentNumber ? a.documentNumber.trim().slice(0, 100) : null,
     notes: a.notes
       ? `${a.notes} — ${signMarker}`
       : `تسوية: من ${currentQty} إلى ${a.targetQuantity} ${signMarker}`,
@@ -809,6 +815,7 @@ export interface TransferArgs {
   baseQuantity: number;
   referenceType?: string;
   referenceId?: number;
+  documentNumber?: string | null;
   notes?: string;
   createdBy?: number;
 }
@@ -849,6 +856,7 @@ export async function transferBetweenBranches(tx: Tx, a: TransferArgs) {
     relatedBranchId: a.toBranchId,
     referenceType: a.referenceType ?? "TRANSFER",
     referenceId: a.referenceId,
+    documentNumber: a.documentNumber,
     notes: a.notes,
     createdBy: a.createdBy,
   });
@@ -866,6 +874,7 @@ export async function transferBetweenBranches(tx: Tx, a: TransferArgs) {
     relatedBranchId: a.fromBranchId,
     referenceType: a.referenceType ?? "TRANSFER",
     referenceId: a.referenceId,
+    documentNumber: a.documentNumber,
     notes: a.notes,
     createdBy: a.createdBy,
     stampOpened: !!cf?.isConsign,

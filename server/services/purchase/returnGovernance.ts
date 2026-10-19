@@ -876,7 +876,7 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
           }),
         });
       const quantity = money(poItem.quantity).times(Number(item.requestedBaseQuantity)).dividedBy(Number(poItem.baseQuantity));
-      const movement = await applyMovement(tx, { variantId: Number(item.variantId), branchId: Number(request.branchId), baseQuantity: Number(item.requestedBaseQuantity), movementType: "OUT", referenceType: "PURCHASE_RETURN", referenceId: purchaseReturnId, createdBy: actor.userId });
+      const movement = await applyMovement(tx, { variantId: Number(item.variantId), branchId: Number(request.branchId), baseQuantity: Number(item.requestedBaseQuantity), movementType: "OUT", referenceType: "PURCHASE_RETURN", referenceId: purchaseReturnId, documentNumber: returnNumber, createdBy: actor.userId });
       if (movement.movementId <= 0)
         throw new TRPCError({
           code: "CONFLICT",
@@ -1262,7 +1262,7 @@ export async function decidePurchaseReturnReversal(input: DecidePurchaseReturnRe
       const lineTax = index === reqItems.length - 1 ? round2(tax.minus(assignedTax)) : (total.gt(0) ? round2(tax.times(lineTotal).dividedBy(total)) : money(0));
       assignedTax = assignedTax.plus(lineTax);
       const lineNet = round2(lineTotal.minus(lineTax));
-      const movement = await applyMovement(tx, { variantId: Number(item.variantId), branchId: Number(purchaseReturn.branchId), baseQuantity: Number(row.baseQuantity), movementType: "IN", referenceType: "PURCHASE_RETURN_REVERSAL", referenceId: reversalId, createdBy: actor.userId });
+      const movement = await applyMovement(tx, { variantId: Number(item.variantId), branchId: Number(purchaseReturn.branchId), baseQuantity: Number(row.baseQuantity), movementType: "IN", referenceType: "PURCHASE_RETURN_REVERSAL", referenceId: reversalId, documentNumber: reversalNumber, createdBy: actor.userId });
       await tx.insert(purchaseReturnReversalItems).values({ reversalId, purchaseReturnItemId: Number(item.id), baseQuantity: Number(row.baseQuantity), netAmount: toDbMoney(lineNet), taxAmount: toDbMoney(lineTax), totalAmount: toDbMoney(lineTotal), inventoryMovementId: movement.movementId });
       await tx.update(purchaseOrderItems).set({ returnedBaseQuantity: sql`${purchaseOrderItems.returnedBaseQuantity} - ${row.baseQuantity}` }).where(and(eq(purchaseOrderItems.id, Number(item.purchaseOrderItemId)), sql`${purchaseOrderItems.returnedBaseQuantity} >= ${row.baseQuantity}`));
       if (item.goodsReceiptItemId != null) await tx.update(goodsReceiptItems).set({ returnedBaseQuantity: sql`${goodsReceiptItems.returnedBaseQuantity} - ${row.baseQuantity}` }).where(and(eq(goodsReceiptItems.id, Number(item.goodsReceiptItemId)), sql`${goodsReceiptItems.returnedBaseQuantity} >= ${row.baseQuantity}`));

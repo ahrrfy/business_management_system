@@ -528,23 +528,106 @@ export async function getAnomalyWatch(opts: {
 
       UNION ALL
 
-      -- ٢٠/٨ (تصويب مراجعة Codex): الترقيمُ الجديد **عدّادٌ عالميّ** لا يُعاد لكلّ فرعٍ
-      -- ويوم. فتجزئتُه بـ(فرع×يوم) تُعلن فجواتٍ كاذبةً من التداخل الطبيعيّ: الفرع ١ يأخذ
-      -- 10001 والفرع ٢ يأخذ 10002 والفرع ١ يأخذ 10003 ⇒ مجموعةُ الفرع ١ تُبلّغ عن «10002
-      -- مفقود» وهو فاتورةٌ صحيحةٌ في فرعٍ آخر. وحدُّ اليوم يفعل الشيء نفسه عند منتصف الليل.
-      -- ⇒ يُفحَص المدى **عالمياً** بلا تجميع. ويُسكَت الفحصُ كلّياً حين يكون النطاق مقيَّداً
-      -- بفرع، إذ لا معنى لاتّصال عدّادٍ عالميّ داخل شريحةِ فرعٍ واحد.
+      -- الفواتير الرقمية العالمية قبل قطع العدّاد الموحّد (< 100000)
       SELECT NULL AS branchId, NULL AS branchName, NULL AS ymd,
         COUNT(*) AS actualCount, MAX(t.seq) AS maxSeq, MIN(t.seq) AS minSeq
       FROM (
         SELECT CAST(i.invoiceNumber AS UNSIGNED) AS seq
         FROM invoices i
         WHERE i.invoiceNumber REGEXP '^[0-9]+$'
+          AND CAST(i.invoiceNumber AS UNSIGNED) > 0
+          AND CAST(i.invoiceNumber AS UNSIGNED) < 100000
           AND i.invoiceDate >= ${fromTs} AND i.invoiceDate < ${toTs}
       ) t
-      -- ولا يُقيَّد بفرع **إطلاقاً**: الفجوةُ في عدّادٍ عالميّ حقيقةٌ عالميّة، وتصفيتُها
-      -- بفرعٍ هي بعينها ما كان يُنتج الكذب. الصفُّ يُعنوَن «كل الفروع» كي لا يُنسَب لفرع.
       HAVING COUNT(*) > 0 AND MAX(t.seq) - MIN(t.seq) + 1 <> COUNT(*)
+
+      UNION ALL
+
+      -- ٢٠/٨ (تصويب مراجعة Codex + M4 الترقيم الموحّد): الترقيمُ الجديد **عدّادٌ عالميّ موحّد** (>= 100000)
+      -- يولد تسلسلاً عبر جميع أنواع المعاملات (فواتير، أوامر شغل، مسودات استقبال، أوامر شراء، طلبات متجر، سندات).
+      -- تُستخرج أرقام التسلسل الأساسية بإسقاط البادئة (مثل ORD-) واللواحق الفرعية (-1, -2).
+      -- وتُحسب بداية المعاملة الأصلية لمنع الفجوات الكاذبة من دورات الحياة متعددة الأيام، وتُستبعد التكرارات
+      -- الناتجة عن المستندات المتفرعة من نفس المعاملة (COUNT(DISTINCT baseSeq)).
+      -- وتُقاس سلامة الاتصال على المدى: MAX(baseSeq) - MIN(baseSeq) + 1 = COUNT(DISTINCT baseSeq).
+      SELECT NULL AS branchId, NULL AS branchName, NULL AS ymd,
+        COUNT(DISTINCT t.baseSeq) AS actualCount, MAX(t.baseSeq) AS maxSeq, MIN(t.baseSeq) AS minSeq
+      FROM (
+        SELECT orig.baseSeq
+        FROM (
+          SELECT doc.baseSeq, MIN(doc.docDate) AS origDate
+          FROM (
+            SELECT CAST(SUBSTRING_INDEX(i.invoiceNumber, '-', 1) AS UNSIGNED) AS baseSeq, i.invoiceDate AS docDate
+            FROM invoices i
+            WHERE SUBSTRING_INDEX(i.invoiceNumber, '-', 1) REGEXP '^[0-9]+$'
+              AND CAST(SUBSTRING_INDEX(i.invoiceNumber, '-', 1) AS UNSIGNED) > COALESCE((SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor'), 100000)
+              AND i.invoiceDate < ${toTs}
+
+            UNION ALL
+
+            SELECT CAST(SUBSTRING_INDEX(wo.orderNumber, '-', 1) AS UNSIGNED) AS baseSeq, wo.createdAt AS docDate
+            FROM workOrders wo
+            WHERE SUBSTRING_INDEX(wo.orderNumber, '-', 1) REGEXP '^[0-9]+$'
+              AND CAST(SUBSTRING_INDEX(wo.orderNumber, '-', 1) AS UNSIGNED) > COALESCE((SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor'), 100000)
+              AND wo.createdAt < ${toTs}
+
+            UNION ALL
+
+            SELECT CAST(SUBSTRING_INDEX(rd.draftNumber, '-', 1) AS UNSIGNED) AS baseSeq, rd.createdAt AS docDate
+            FROM receptionDrafts rd
+            WHERE SUBSTRING_INDEX(rd.draftNumber, '-', 1) REGEXP '^[0-9]+$'
+              AND CAST(SUBSTRING_INDEX(rd.draftNumber, '-', 1) AS UNSIGNED) > COALESCE((SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor'), 100000)
+              AND rd.createdAt < ${toTs}
+
+            UNION ALL
+
+            SELECT CAST(SUBSTRING_INDEX(po.poNumber, '-', 1) AS UNSIGNED) AS baseSeq, po.createdAt AS docDate
+            FROM purchaseOrders po
+            WHERE SUBSTRING_INDEX(po.poNumber, '-', 1) REGEXP '^[0-9]+$'
+              AND CAST(SUBSTRING_INDEX(po.poNumber, '-', 1) AS UNSIGNED) > COALESCE((SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor'), 100000)
+              AND po.createdAt < ${toTs}
+
+            UNION ALL
+
+            SELECT
+              CAST(
+                SUBSTRING_INDEX(
+                  CASE WHEN oo.orderNumber LIKE 'ORD-%' THEN SUBSTRING(oo.orderNumber, 5) ELSE oo.orderNumber END,
+                  '-',
+                  1
+                ) AS UNSIGNED
+              ) AS baseSeq,
+              oo.createdAt AS docDate
+            FROM onlineOrders oo
+            WHERE SUBSTRING_INDEX(
+                CASE WHEN oo.orderNumber LIKE 'ORD-%' THEN SUBSTRING(oo.orderNumber, 5) ELSE oo.orderNumber END,
+                '-',
+                1
+              ) REGEXP '^[0-9]+$'
+              AND CAST(
+                SUBSTRING_INDEX(
+                  CASE WHEN oo.orderNumber LIKE 'ORD-%' THEN SUBSTRING(oo.orderNumber, 5) ELSE oo.orderNumber END,
+                  '-',
+                  1
+                ) AS UNSIGNED
+              ) > COALESCE((SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor'), 100000 + oo.id)
+              AND oo.createdAt < ${toTs}
+
+            UNION ALL
+
+            SELECT CAST(SUBSTRING_INDEX(r.voucherNumber, '-', 1) AS UNSIGNED) AS baseSeq, r.createdAt AS docDate
+            FROM receipts r
+            WHERE r.voucherNumber IS NOT NULL
+              AND SUBSTRING_INDEX(r.voucherNumber, '-', 1) REGEXP '^[0-9]+$'
+              AND CAST(SUBSTRING_INDEX(r.voucherNumber, '-', 1) AS UNSIGNED) > COALESCE((SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor'), 100000)
+              AND r.createdAt < ${toTs}
+          ) doc
+          GROUP BY doc.baseSeq
+        ) orig
+        WHERE orig.origDate >= ${fromTs} AND orig.origDate < ${toTs}
+      ) t
+      -- ولا يُقيَّد بفرع **إطلاقاً**: الفجوةُ في عدّادٍ عالميّ حقيقةٌ عالميّة، وتصفيتُها
+      -- بفرعٍ هي بعينها ما كان يُنتج الكذب. الصفُّ يُعنوَن «كل الفروع (تسلسل عامّ موحد)» كي لا يُنسَب لفرع.
+      HAVING COUNT(DISTINCT t.baseSeq) > 0 AND MAX(t.baseSeq) - MIN(t.baseSeq) + 1 <> COUNT(DISTINCT t.baseSeq)
       ORDER BY ymd DESC
     `),
     null,
@@ -879,7 +962,7 @@ export async function getAnomalyWatch(opts: {
     const isGlobal = r.branchId == null;
     return {
       branchId: isGlobal ? 0 : Number(r.branchId),
-      branchName: isGlobal ? "كل الفروع (تسلسل عامّ)" : (r.branchName ?? String(r.branchId)),
+      branchName: isGlobal ? "كل الفروع (تسلسل عامّ موحد)" : (r.branchName ?? String(r.branchId)),
       day: String(r.ymd ?? ""),
       actualCount: actual,
       maxSeq,

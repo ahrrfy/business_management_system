@@ -425,6 +425,7 @@ export async function approveStockAdjustment(
       branchId,
       targetQuantity: r.targetQuantity,
       referenceType: openingEstablish ? "OPENING" : undefined,
+      documentNumber: `ADJ-${id}`,
       notes: openingEstablish ? "تسوية رصيد افتتاحيّ معتمَدة" : undefined,
       createdBy: actor.userId,
     });

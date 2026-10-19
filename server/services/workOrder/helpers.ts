@@ -1,22 +1,19 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq, notInArray } from "drizzle-orm";
-import { deliveryConsignments, workOrders } from "../../../drizzle/schema";
-import { nextCounterValue } from "../numbering";
+import { and, eq, like, notInArray, or } from "drizzle-orm";
+import { deliveryConsignments, invoices, workOrders } from "../../../drizzle/schema";
+import { nextCounterValue, nextInvoiceNumber, nextTransactionTrackingNumber } from "../numbering";
+import { formatDocumentNumber, stripDocPrefix } from "@shared/documentNumber";
+import { nextConsignmentNumber } from "../delivery/numbering";
 import type { Actor } from "../tx";
 import type { Tx } from "../../db";
 import { operationDecision, operationRecordScope, type OperationRecordScope } from "@shared/operationPermissions";
 import { assertOperationAuthorityTx, loadOperationUserTx } from "../authorization/operationAuthority";
 
 /**
- * رقم أمر الشغل — **عددٌ تسلسليّ قصير** يبدأ من 5001 (طلب المالك ١٨/٨؛ نطاقٌ متباعدٌ عن
- * الفواتير 10001+ كي يُميَّز نوع المستند بالنظر). التفصيل والمقايضة في `services/numbering.ts`.
- *
- * الصيغة القديمة `WO-{فرع}-{YYYYMMDD}-{تسلسل}` كانت تُولَّد بمسح `LIKE` + `MAX+1` **بلا
- * GET_LOCK إطلاقاً** — أحدُ سبعة مولّدات على النمط الذي وُصف صراحةً بأنه غير كافٍ ضدّ السباق.
- * العدّاد الذرّيّ يُنهي ذلك بنيوياً (القيد الفريد يبقى الحارس الأخير).
+ * رقم أمر الشغل — يُحجز من عدّاد المعاملة الموحّد (R1).
  */
-async function nextWorkOrderNumber(tx: any, _branchId: number): Promise<string> {
-  return String(await nextCounterValue(tx, "workOrder"));
+async function nextWorkOrderNumber(tx: any, _branchId?: number): Promise<string> {
+  return await nextTransactionTrackingNumber(tx);
 }
 
 async function loadWorkOrder(tx: any, workOrderId: number) {
@@ -147,4 +144,117 @@ async function assertNoBlockingTask(
   // no-op: tasks unit eradicated
 }
 
-export { nextWorkOrderNumber, loadWorkOrder, workOrderInvoiceSourceId, assertWorkOrderBranch, assertOperatorOwns, workOrderOperationScopeTx, assertNoLiveConsignment, assertNoBlockingTask };
+/**
+ * حلّ رقم فاتورة تسليم أمر الشغل بصورة تمنع التصادم وترث رقم التتبع الموحّد:
+ * يستخرج الرقم الأساسي T من wo.orderNumber.
+ * إذا كان رقماً >= 100000:
+ *   يفحص ما إذا كان T مجرداً غير موجود في invoices، فإن لم يوجد يستعمله.
+ *   وإن وجد، يبحث عن أول لاحقة غير مستخدمة T-k (k >= 1) باستخدام formatDocumentNumber(T, k)
+ *   بحيث لا يحدث ER_DUP_ENTRY على invoices.invoiceNumber.
+ * إذا كان T تاريخياً أو غير مطابق، يعود للعدّاد المعتاد nextInvoiceNumber.
+ */
+async function resolveDeliveryInvoiceNumber(
+  tx: Tx,
+  woOrderNumber: string,
+  branchId: number,
+): Promise<string> {
+  const clean = stripDocPrefix(woOrderNumber);
+  const parts = clean.split("-");
+  const base = parts[0];
+  const num = Number(base);
+  if (Number.isFinite(num) && num >= 100000) {
+    const rawSibling = parts.length > 1 ? Number(parts[1]) : undefined;
+    const siblingIndex =
+      rawSibling !== undefined && Number.isInteger(rawSibling) && rawSibling > 0
+        ? rawSibling
+        : undefined;
+
+    const existing = await tx
+      .select({ invoiceNumber: invoices.invoiceNumber })
+      .from(invoices)
+      .where(
+        or(
+          eq(invoices.invoiceNumber, base),
+          like(invoices.invoiceNumber, `${base}-%`),
+        ),
+      )
+      .for("update");
+
+    const used = new Set(existing.map((r) => r.invoiceNumber));
+    const preferred =
+      siblingIndex !== undefined
+        ? formatDocumentNumber(base, siblingIndex)
+        : base;
+    if (!used.has(preferred)) {
+      return preferred;
+    }
+
+    let k = 1;
+    while (used.has(formatDocumentNumber(base, k))) {
+      k++;
+    }
+    return formatDocumentNumber(base, k);
+  }
+  return await nextInvoiceNumber(tx, branchId);
+}
+
+/**
+ * توريث رقم التتبع الموحّد للإرساليات مع حلّ لواحق الإخوة T-k عند تعدّد الإرساليات لنفس المعاملة:
+ */
+async function resolveConsignmentNumber(
+  tx: Tx,
+  sourceDocNumber: string,
+  branchId: number,
+): Promise<string> {
+  const clean = stripDocPrefix(sourceDocNumber);
+  const parts = clean.split("-");
+  const base = parts[0];
+  const num = Number(base);
+  if (Number.isFinite(num) && num >= 100000) {
+    const rawSibling = parts.length > 1 ? Number(parts[1]) : undefined;
+    const siblingIndex =
+      rawSibling !== undefined && Number.isInteger(rawSibling) && rawSibling > 0
+        ? rawSibling
+        : undefined;
+
+    const existing = await tx
+      .select({ consignmentNumber: deliveryConsignments.consignmentNumber })
+      .from(deliveryConsignments)
+      .where(
+        or(
+          eq(deliveryConsignments.consignmentNumber, base),
+          like(deliveryConsignments.consignmentNumber, `${base}-%`),
+        ),
+      )
+      .for("update");
+
+    const used = new Set(existing.map((r) => r.consignmentNumber));
+    const preferred =
+      siblingIndex !== undefined
+        ? formatDocumentNumber(base, siblingIndex)
+        : base;
+    if (!used.has(preferred)) {
+      return preferred;
+    }
+
+    let k = 1;
+    while (used.has(formatDocumentNumber(base, k))) {
+      k++;
+    }
+    return formatDocumentNumber(base, k);
+  }
+  return await nextConsignmentNumber(tx, branchId);
+}
+
+export {
+  nextWorkOrderNumber,
+  loadWorkOrder,
+  workOrderInvoiceSourceId,
+  assertWorkOrderBranch,
+  assertOperatorOwns,
+  workOrderOperationScopeTx,
+  assertNoLiveConsignment,
+  assertNoBlockingTask,
+  resolveDeliveryInvoiceNumber,
+  resolveConsignmentNumber,
+};

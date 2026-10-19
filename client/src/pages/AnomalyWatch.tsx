@@ -313,11 +313,15 @@ export default function AnomalyWatch() {
                 /* كل صفٍّ هنا حرجٌ بذاته — لا علمَ يميّز، فالوجودُ هو الإشارة. */
                 getRowClassName={() => "bg-destructive/5"}
                 columns={[
-                  txtCol("branch", "الفرع", (r) => r.branchName),
-                  numCol("day", "اليوم", (r) => r.day),
+                  txtCol("branch", "الفرع", (r) => r.branchName || "كل الفروع (تسلسل عامّ موحد)"),
+                  numCol("day", "اليوم", (r) => r.day || "—"),
                   numCol("actual", "الموجود", (r) => r.actualCount),
                   numCol("maxSeq", "أعلى تسلسل", (r) => r.maxSeq),
-                  numCol("missing", "المفقود", (r) => <span className="font-bold text-destructive">{r.missing}</span>),
+                  numCol("missing", "المفقود", (r) => (
+                    <span className="font-bold text-destructive">
+                      {Number.isFinite(r.missing) ? r.missing : 0}
+                    </span>
+                  )),
                 ]}
               />
             </SectionCard>

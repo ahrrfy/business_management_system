@@ -5,6 +5,7 @@
 // إعادة التشغيل (ملاحظة ٢.١٠): النتيجة **تُعاد بناؤها من مفاتيح idempotency** لا من أعمدة
 // الرأس — نفس منطق isCompleteReplay القائم، فلا تعود workOrderIds فارغةً أبداً.
 import { toWorkOrderChannel } from "@shared/receptionChannel";
+import { formatDocumentNumber } from "@shared/documentNumber";
 import { linkConversationToWorkOrderTx } from "../conversationService";
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
@@ -146,7 +147,7 @@ async function loadDraftLineMeta(
 }
 
 /** تجسيد أسطر المسوّدة إلى مدخل حدّ الالتزام القائم — كل الحرّاس القائمة تعمل كما هي. */
-function materialize(
+export function materialize(
   draft: typeof receptionDrafts.$inferSelect,
   lines: Array<typeof receptionDraftLines.$inferSelect>,
   input: CommitDraftInput,
@@ -211,8 +212,9 @@ function materialize(
     ...(money(l.discountAmount).gt(0) ? { discountAmount: money(l.discountAmount).toFixed(2) } : {}),
   });
 
+  const customCount = customs.length;
   /** CUSTOM: المواصفة الكاملة من printSpec (CustomizationData عدا الصور) + الصور من عمودها. */
-  const workOrderOf = (l: (typeof lines)[number]) => {
+  const workOrderOf = (l: (typeof lines)[number], index: number) => {
     let spec: Record<string, unknown> = {};
     try { spec = l.printSpec ? JSON.parse(l.printSpec) : {}; } catch { /* مواصفة تالفة ⇒ الحدّ الأدنى */ }
     let images: Array<{ url: string; caption?: string | null; sortOrder?: number | null }> = [];
@@ -228,7 +230,15 @@ function materialize(
     const variantId = l.variantId != null ? Number(l.variantId) : null;
     const isServiceVariant = variantId != null && meta.serviceByVariant.get(variantId) === true;
     const factor = l.productUnitId != null ? (meta.factorByUnit.get(Number(l.productUnitId)) ?? 1) : 1;
+    const hasUnifiedDraftNumber = /^\d+$/.test(draft.draftNumber.trim());
+    const hasRetail = goods.length > 0 || prints.length > 0;
+    const orderNumber = hasUnifiedDraftNumber
+      ? (customCount === 1 && !hasRetail)
+        ? formatDocumentNumber(draft.draftNumber, 0)
+        : formatDocumentNumber(draft.draftNumber, index + 1)
+      : undefined;
     return {
+      orderNumber,
       baseVariantId: variantId,
       baseProductUnitId: l.productUnitId != null ? Number(l.productUnitId) : null,
       title: l.title ?? "خدمة / أمر شغل",
@@ -265,6 +275,7 @@ function materialize(
 
   return {
     branchId: Number(draft.branchId),
+    trackingNumber: /^\d+$/.test(draft.draftNumber.trim()) ? draft.draftNumber : null,
     shiftId: input.shiftId,
     customerId: draft.customerId != null ? Number(draft.customerId) : null,
     contactName: draft.customerId == null ? draft.contactName : null,
@@ -290,7 +301,7 @@ function materialize(
     priceApprovedBy: input.priceApprovedBy ?? null,
     regularSale: goods.length ? { lines: goods.map(saleLine), amount: goodsAmount.toFixed(2) } : null,
     printSale: prints.length ? { lines: prints.map(saleLine), amount: printAmount.toFixed(2) } : null,
-    workOrders: customs.map(workOrderOf),
+    workOrders: customs.map((l, i) => workOrderOf(l, i)),
     priceOverrideApproved: input.priceOverrideApproved === true,
   };
 }

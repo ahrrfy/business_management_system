@@ -702,6 +702,7 @@ async function receivePurchaseInTx(
       movementType: "IN",
       referenceType: "PURCHASE_ORDER",
       referenceId: input.purchaseOrderId,
+      documentNumber: po.poNumber,
       createdBy: actor.userId,
       stampOpened: true,
     });

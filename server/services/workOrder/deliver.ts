@@ -13,7 +13,7 @@ import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { readOpeningWindowState } from "../openingModeService";
 import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } from "../deposits";
 import { type Actor, withTx } from "../tx";
-import { assertWorkOrderBranch, loadWorkOrder, workOrderInvoiceSourceId } from "./helpers";
+import { assertWorkOrderBranch, loadWorkOrder, workOrderInvoiceSourceId, resolveDeliveryInvoiceNumber } from "./helpers";
 import { assertSiblingsReady } from "./siblings";
 import type { PaymentMethod } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
@@ -341,9 +341,8 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         .limit(1);
     }
 
-    // Invoice number — reuse the invoice numbering (per-branch daily seq).
-    const { nextInvoiceNumber } = await import("../numbering");
-    const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
+    // Invoice number — collision-safe delivery invoice number inheriting unified tracking number
+    const invoiceNumber = await resolveDeliveryInvoiceNumber(tx, wo.orderNumber, Number(wo.branchId));
     const status = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(totalPaid));
     const sourceId = workOrderInvoiceSourceId(wo);
     /**

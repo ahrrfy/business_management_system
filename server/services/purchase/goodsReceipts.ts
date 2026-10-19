@@ -29,6 +29,7 @@ import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { applyMovement, ensureBranchStockRows } from "../inventoryService";
 import { lockInventoryVariants } from "../inventory/stockLock";
 import { money, round2, toDateStr, toDbMoney } from "../money";
+import { nextCounterValue } from "../numbering";
 import { assertPeriodOpen } from "../periodLockService";
 import { withTx, type Actor } from "../tx";
 import {
@@ -164,8 +165,8 @@ function uniquePositiveIds(values: number[], label: string): void {
 
 async function nextDocumentNumber(
   tx: Tx,
-  table: typeof goodsReceipts | typeof goodsReceiptReversals,
-  column:
+  _table: typeof goodsReceipts | typeof goodsReceiptReversals,
+  _column:
     | typeof goodsReceipts.receiptNumber
     | typeof goodsReceiptReversals.reversalNumber,
   prefixName: "GRN" | "GRR",
@@ -173,31 +174,9 @@ async function nextDocumentNumber(
 ): Promise<string> {
   const ymd = toDateStr().replaceAll("-", "");
   const prefix = `${prefixName}-${branchId}-${ymd}-`;
-  const lockName = `numbering:${prefixName.toLowerCase()}:${branchId}:${ymd}`;
-  const lockResult: any = await tx.execute(
-    sql`SELECT GET_LOCK(${lockName}, 5) AS locked`,
-  );
-  const locked = Array.isArray(lockResult)
-    ? lockResult[0]?.[0]
-    : lockResult?.rows?.[0];
-  if (Number(locked?.locked) !== 1)
-    throw new Error(`numbering lock timeout for ${lockName}`);
-  try {
-    const rows = await tx
-      .select({ value: column })
-      .from(table as any)
-      .where(like(column as any, `${prefix}%`))
-      .orderBy(asc((table as any).id))
-      .for("update");
-    let max = 0;
-    for (const row of rows) {
-      const suffix = String(row.value ?? "").slice(prefix.length);
-      if (/^[0-9]+$/.test(suffix)) max = Math.max(max, Number(suffix));
-    }
-    return `${prefix}${String(max + 1).padStart(5, "0")}`;
-  } finally {
-    await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
-  }
+  const counterKey = `${prefixName.toLowerCase()}_${branchId}_${ymd}`;
+  const seq = await nextCounterValue(tx, counterKey);
+  return `${prefix}${String(seq).padStart(5, "0")}`;
 }
 
 async function lockOrderAndRevision(
@@ -799,6 +778,7 @@ export async function createGoodsReceiptInTx(
           movementType: "IN",
           referenceType: "GOODS_RECEIPT",
           referenceId: goodsReceiptId,
+          documentNumber: receiptNumber,
           notes: `إذن استلام ${receiptNumber}`,
           createdBy: actor.userId,
           stampOpened: true,
@@ -1399,6 +1379,7 @@ export async function decideGoodsReceiptReversal(
         movementType: "OUT",
         referenceType: "GOODS_RECEIPT_REVERSAL",
         referenceId: reversalId,
+        documentNumber: reversalNumber,
         notes: `عكس ${reversalNumber}`,
         createdBy: actor.userId,
       });

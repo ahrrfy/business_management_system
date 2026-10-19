@@ -841,6 +841,7 @@ async function persistProductsInTx(
           branchId: actor.branchId,
           targetQuantity: v.openingStock,
           referenceType: "OPENING",
+          documentNumber: `OPEN-${variantId}`,
           notes: "رصيد افتتاحي (استيراد)",
           createdBy: actor.userId,
         });

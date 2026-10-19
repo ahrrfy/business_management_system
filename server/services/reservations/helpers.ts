@@ -4,6 +4,7 @@ import { desc, eq, like } from "drizzle-orm";
 import { reservations } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { toDateStr } from "../money";
+import { nextCounterValue } from "../numbering";
 import type { Actor } from "../tx";
 
 /** مدة الحجز الافتراضية (قرار المالك ٢٧/٧: ٢٤ ساعة، تمديد حتى ٧٢ بموافقة مدير). */
@@ -15,19 +16,12 @@ export const CLOSEABLE_STATUSES = ["ACTIVE", "PARTIALLY_FULFILLED"] as const;
 export type ReservationStatus =
   | "ACTIVE" | "PARTIALLY_FULFILLED" | "FULFILLED" | "EXPIRED" | "CANCELLED" | "RELEASED";
 
-/** رقم حجز تسلسليّ لكل (فرع×يوم): RES-{branchId}-{YYYYMMDD}-{5} — قفل FOR UPDATE يمنع التصادم. */
+/** رقم حجز تسلسليّ لكل (فرع×يوم): RES-{branchId}-{YYYYMMDD}-{5} عبر عدّاد documentCounters الذرّي لمنع التصادم. */
 export async function nextReservationNumber(tx: Tx, branchId: number): Promise<string> {
   const ymd = toDateStr().replace(/-/g, "");
   const prefix = `RES-${branchId}-${ymd}-`;
-  const rows = await tx
-    .select({ n: reservations.reservationNumber })
-    .from(reservations)
-    .where(like(reservations.reservationNumber, `${prefix}%`))
-    .orderBy(desc(reservations.id))
-    .for("update")
-    .limit(1);
-  const last = rows[0]?.n;
-  const seq = last ? parseInt(last.slice(prefix.length), 10) + 1 : 1;
+  const counterKey = `reservation_${branchId}_${ymd}`;
+  const seq = await nextCounterValue(tx, counterKey);
   return prefix + String(seq).padStart(5, "0");
 }
 

@@ -9,6 +9,10 @@ export interface WorkOrderMaterialInput {
 
 export interface CreateWorkOrderInput {
   branchId: number;
+  /** رقم أمر الشغل الموحّد أو المورّث من مسوّدة الاستقبال/المعاملة */
+  orderNumber?: string | null;
+  /** لاحقة الفهرس عند تعدد مستندات المعاملة الواحدة (e.g. 1, 2) */
+  siblingIndex?: number | null;
   /** ش٥ (0238) — المسوّدة الجامعة: أوامرُ السلّة الواحدة تصير إخوة. */
   draftId?: number | null;
   customerId?: number | null;
