@@ -1,5 +1,6 @@
 import { like, sql } from "drizzle-orm";
 import {
+  cashTransfers,
   consignmentNotes,
   deliveryConsignments,
   deliveryRemittances,
@@ -53,6 +54,8 @@ const DAILY_BRANCH_COUNTER_SPECS: ReadonlyArray<{
   { keyPrefix: "voucher_payment", docPrefix: "PV", table: receipts, column: receipts.voucherNumber },
   { keyPrefix: "cash_drop", docPrefix: "CD", table: receipts, column: receipts.referenceNumber },
   { keyPrefix: "treasury_funding", docPrefix: "TF", table: receipts, column: receipts.referenceNumber },
+  { keyPrefix: "cash_transfer", docPrefix: "CT", table: cashTransfers, column: cashTransfers.transferNumber },
+  { keyPrefix: "cash_handover", docPrefix: "CH", table: receipts, column: receipts.referenceNumber },
   { keyPrefix: "exchange", docPrefix: "EX", table: exchangeTransactions, column: exchangeTransactions.txnNumber },
   { keyPrefix: "gift", docPrefix: "GFT", table: giftVouchers, column: giftVouchers.giftNumber },
   { keyPrefix: "production_order", docPrefix: "PRD", table: productionOrders, column: productionOrders.docNumber },
@@ -61,7 +64,7 @@ const DAILY_BRANCH_COUNTER_SPECS: ReadonlyArray<{
 
 function resolvePrefixFloorSpec(counterKey: string): PrefixFloorSpec | null {
   for (const spec of DAILY_BRANCH_COUNTER_SPECS) {
-    const match = new RegExp(`^${spec.keyPrefix}_(\\d+)_(\\d{8})$`).exec(counterKey);
+    const match = new RegExp(`^${spec.keyPrefix}[_:](\\d+)[_:](\\d{8})$`).exec(counterKey);
     if (match) {
       return {
         table: spec.table,
@@ -70,7 +73,15 @@ function resolvePrefixFloorSpec(counterKey: string): PrefixFloorSpec | null {
       };
     }
   }
-  const transferMatch = /^stock_transfer_(\d{4})$/.exec(counterKey);
+  const voucherColonMatch = /^voucher:(RV|PV):(\d+):(\d{8})$/.exec(counterKey);
+  if (voucherColonMatch) {
+    return {
+      table: receipts,
+      column: receipts.voucherNumber,
+      prefix: `${voucherColonMatch[1]}-${voucherColonMatch[2]}-${voucherColonMatch[3]}-`,
+    };
+  }
+  const transferMatch = /^stock_transfer[_:](\d{4})$/.exec(counterKey);
   if (transferMatch) {
     return {
       table: stockTransfers,
@@ -96,8 +107,9 @@ async function resolveExistingCounterFloor(tx: Tx, counterKey: string): Promise<
   let maxSeq = 0;
   for (const row of rows) {
     const suffix = String(row.n ?? "").slice(spec.prefix.length);
-    if (!/^\d+$/.test(suffix)) continue;
-    const seq = Number.parseInt(suffix, 10);
+    const seqMatch = /^(\d+)(?:-|$)/.exec(suffix);
+    if (!seqMatch) continue;
+    const seq = Number.parseInt(seqMatch[1], 10);
     if (Number.isSafeInteger(seq) && seq > maxSeq) maxSeq = seq;
   }
   return maxSeq;
@@ -179,7 +191,10 @@ export async function nextTransactionTrackingNumber(tx: Tx): Promise<string> {
       INSERT INTO documentCounters (counterKey, lastValue)
       SELECT 'unified_transaction_floor', GREATEST(
         100000 + COALESCE(MAX(id), 0),
-        COALESCE(MAX(CASE WHEN orderNumber REGEXP '^ORD-[0-9]+$' THEN CAST(SUBSTRING(orderNumber, 5) AS UNSIGNED) ELSE 0 END), 0)
+        COALESCE(MAX(CASE WHEN orderNumber REGEXP '^ORD-[0-9]+$' THEN CAST(SUBSTRING(orderNumber, 5) AS UNSIGNED) ELSE 0 END), 0),
+        COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(invoiceNumber, '-', 1) AS UNSIGNED)) FROM invoices WHERE invoiceNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0),
+        COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(orderNumber, '-', 1) AS UNSIGNED)) FROM workOrders WHERE orderNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0),
+        COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(draftNumber, '-', 1) AS UNSIGNED)) FROM receptionDrafts WHERE draftNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0)
       )
       FROM onlineOrders
       ON DUPLICATE KEY UPDATE lastValue = lastValue
@@ -188,7 +203,10 @@ export async function nextTransactionTrackingNumber(tx: Tx): Promise<string> {
       INSERT INTO documentCounters (counterKey, lastValue)
       SELECT 'unified_transaction', GREATEST(
         100000 + COALESCE(MAX(id), 0),
-        COALESCE(MAX(CASE WHEN orderNumber REGEXP '^ORD-[0-9]+$' THEN CAST(SUBSTRING(orderNumber, 5) AS UNSIGNED) ELSE 0 END), 0)
+        COALESCE(MAX(CASE WHEN orderNumber REGEXP '^ORD-[0-9]+$' THEN CAST(SUBSTRING(orderNumber, 5) AS UNSIGNED) ELSE 0 END), 0),
+        COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(invoiceNumber, '-', 1) AS UNSIGNED)) FROM invoices WHERE invoiceNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0),
+        COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(orderNumber, '-', 1) AS UNSIGNED)) FROM workOrders WHERE orderNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0),
+        COALESCE((SELECT MAX(CAST(SUBSTRING_INDEX(draftNumber, '-', 1) AS UNSIGNED)) FROM receptionDrafts WHERE draftNumber REGEXP '^[0-9]{6,}(-[0-9]+)?$'), 0)
       )
       FROM onlineOrders
       ON DUPLICATE KEY UPDATE lastValue = GREATEST(lastValue, VALUES(lastValue))
