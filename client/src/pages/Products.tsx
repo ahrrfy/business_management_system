@@ -2,16 +2,18 @@ import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAcc
 // شاشة إدارة المنتجات — قائمة خادمية كاملة (بحث ذكي + تقسيم صفحات + إظهار المعطّل)
 // على نمط Customers.tsx. تستبدل posList (INNER JOIN يخفي الناقص + حدّ 500) بـadminList
 // التي تعرض كل منتجات المالك (~9413) حتى الناقصة بلا متغيّرات/وحدات.
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Camera, CheckCircle2, Image as ImageIcon, ImageOff, Sparkles } from "lucide-react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { OPERATION_PERMISSIONS, hasOperationPolicy, operationDecision, type OperationUser } from "@shared/operationPermissions";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 import { CopyInline } from "@/components/CopyButton";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
+import { StudioQuickBarcodeSearch, type QuickStudioTarget } from "@/components/product-studio/StudioQuickBarcodeSearch";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { UsagePanel } from "@/components/UsagePanel";
 import { Button } from "@/components/ui/button";
@@ -26,6 +28,7 @@ import {
 } from "@/components/ui/dialog";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useClipboard } from "@/hooks/useClipboard";
+import { useOperationPermission } from "@/hooks/useOperationPermission";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { confirm } from "@/lib/confirm";
 import { formatTableAsTSV } from "@/lib/copy/formatters";
@@ -114,28 +117,52 @@ export default function Products() {
     "FULL",
     ["admin", "manager"],
   ));
+  const canQuickStudio = useOperationPermission("productStudio.quickBarcodeLookup").allowed;
+  const canQuickSaveStudio = useOperationPermission("productStudio.quickSaveBarcodeProductImage").allowed;
+  const studioUser = me.data as OperationUser | undefined;
+  const isStudioManager = Boolean(
+    me.data?.isOwner === true ||
+      (studioUser && hasOperationPolicy(studioUser)
+        ? OPERATION_PERMISSIONS.some(
+            (operation) =>
+              operation.domain === "productStudio" &&
+              operation.delegable &&
+              ((operation.roles.length === 1 && operation.roles[0] === "manager") ||
+                [
+                  "productStudio.campaigns",
+                  "productStudio.campaignBoard",
+                  "productStudio.campaignAnalytics",
+                  "productStudio.productImages",
+                ].includes(operation.path)) &&
+              operationDecision(studioUser, operation.path).allowed,
+          )
+        : me.data?.role === "admin" || me.data?.role === "manager"),
+  );
   // سياسة العزل الحديثة: الأدمن وحده يعبر الفروع؛ المدير مثبت على فرعه كالكاشير.
   const canPickBranch = me.data?.role === "admin";
 
   // الفلاتر تعيش في querystring (تُشارَك رابطاً وتنجو من التنقّل). "" = افتراضي كل حقل.
-  const [f, setF] = useUrlFilters({ q: "", category: "", inactive: "", page: "0", branch: "", printPos: "" });
+  const [f, setF] = useUrlFilters({ q: "", category: "", inactive: "", page: "0", branch: "", printPos: "", image: "" });
   const q = f.q;
   const includeInactive = f.inactive === "1";
   const categoryFilter = f.category;
   // فلتر رؤية شبكة كاشير الطباعة: "" ⇒ الكل · "1" ⇒ ما يظهر · "0" ⇒ ما لا يظهر.
   const printPosFilter: "" | "1" | "0" = f.printPos === "1" || f.printPos === "0" ? f.printPos : "";
+  const imageFilter: "" | "HAS_IMAGE" | "NO_IMAGE" | "VARIANT_NO_IMAGE" =
+    f.image === "HAS_IMAGE" || f.image === "NO_IMAGE" || f.image === "VARIANT_NO_IMAGE" ? f.image : "";
   const page = Number(f.page) || 0;
   const setQ = (v: string) => setF({ q: v, page: "0" });
   const setIncludeInactive = (v: boolean) => setF({ inactive: v ? "1" : "", page: "0" });
   const setCategoryFilter = (v: string) => setF({ category: v, page: "0" });
   const setPrintPosFilter = (v: "" | "1" | "0") => setF({ printPos: v, page: "0" });
+  const setImageFilter = (v: "" | "HAS_IMAGE" | "NO_IMAGE" | "VARIANT_NO_IMAGE") => setF({ image: v, page: "0" });
   const setPage = (updater: number | ((p: number) => number)) =>
     setF({ page: String(typeof updater === "function" ? updater(page) : updater) });
 
   // اتساق ListToolbar: شارة الفلاتر النشطة + زرّ المسح.
   // الفرع مُستثنى (منتقي منفصل هو مصدر بيانات الشاشة، ليس فلتراً ثانوياً — إعادة ضبطه تكسر الاستعلام).
-  const activeFilterCount = [categoryFilter, includeInactive ? "1" : "", printPosFilter].filter(Boolean).length;
-  const resetFilters = () => setF({ q: "", category: "", inactive: "", page: "0", printPos: "" });
+  const activeFilterCount = [categoryFilter, includeInactive ? "1" : "", printPosFilter, imageFilter].filter(Boolean).length;
+  const resetFilters = () => setF({ q: "", category: "", inactive: "", page: "0", printPos: "", image: "" });
 
   // منتقي فرع صريح (نمط PR #288): افتراضي فرع المستخدم إن مُسنَد؛ وإلا يلزم اختياراً صريحاً
   // (لا `?? 1` صامت) — أثره هنا على عمود «المخزون» المعروض فقط (المنتجات/الأسعار عابرة للفروع).
@@ -150,15 +177,33 @@ export default function Products() {
   const [deleteFor, setDeleteFor] = useState<{ productId: number; name: string } | null>(null);
   // توزيع مخزون البدائل: التفصيل المفتوح في الحوار (يُملأ من إجراء الصفّ).
   const [breakdownProduct, setBreakdownProduct] = useState<AltBreakdown | null>(null);
+  // التصوير والرفع السريع بالذكاء لصفّ محدّد أو عبر كاميرا الهاتف.
+  const [studioTarget, setStudioTarget] = useState<QuickStudioTarget | null>(null);
+  const [studioScannerOpen, setStudioScannerOpen] = useState(false);
   const importMut = trpc.imports.products.useMutation();
   const categoriesQ = trpc.catalog.categories.useQuery(undefined, { enabled: can("catalog.categories") });
   const dq = useDebouncedValue(q, 200);
   const sel = useRowSelection<string>();
   const { copy } = useClipboard({ successMessage: null });
 
+  function canRowOpenQuickStudio(r: Row): boolean {
+    if (!canQuickStudio || r.isService) return false;
+    const rowActive = Boolean(r.productIsActive) && r.variantIsActive !== false && r.unitIsActive !== false;
+    return rowActive || isStudioManager;
+  }
+
+  function openQuickStudioForRow(r: Row) {
+    if (!canRowOpenQuickStudio(r)) return;
+    setStudioTarget({
+      productId: r.productId,
+      variantId: r.variantId ?? null,
+      barcode: r.barcode ?? r.barcodeAliases?.[0] ?? null,
+    });
+  }
+
   useEffect(() => {
     sel.clear();
-  }, [dq, includeInactive, categoryFilter, printPosFilter, page, branchId, sel.clear]);
+  }, [dq, includeInactive, categoryFilter, printPosFilter, imageFilter, page, branchId, sel.clear]);
 
   // الميل الأخير للبحث الشامل: عند الوصول بـ?q=&focus= نبذر البحث (يُحمِّل الصنف) ثمّ نُبرز صفّه.
   const { seedQuery, rowProps } = useFocusHighlight();
@@ -174,6 +219,7 @@ export default function Products() {
       includeInactive,
       categoryId: categoryFilter === "" ? undefined : Number(categoryFilter),
       showInPrintPos: printPosFilter === "" ? undefined : printPosFilter === "1",
+      imageFilter: imageFilter === "" ? undefined : imageFilter,
       limit,
       offset: page * limit,
     },
@@ -309,7 +355,24 @@ export default function Products() {
     <div className="space-y-4">
       <PageHeader
         title="المنتجات"
-        description="عرض المنتجات بوحداتها وأسعارها ومخزونها — مع بحث فوري وتصدير."
+        description="عرض المنتجات بوحداتها وأسعارها ومخزونها وحالة صورها — مع رفع سريع بالكاميرا والذكاء."
+        actions={
+          canQuickStudio ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-1.5 border-primary/40 bg-primary/5 text-primary hover:bg-primary/10"
+              onClick={() => setStudioScannerOpen(true)}
+              data-testid="products-quick-camera-scan-btn"
+              title="مسح باركود المنتج بكاميرا الهاتف لفتح نافذة التصوير والمعالجة بالذكاء فوراً"
+            >
+              <Camera className="w-4 h-4" />
+              <span>مسح وتصوير بالذكاء</span>
+              <Sparkles className="w-3.5 h-3.5" />
+            </Button>
+          ) : undefined
+        }
       />
 
       <ImportDialog<ProductImportRow>
@@ -408,6 +471,19 @@ export default function Products() {
                     <option value="0">مخفيّ</option>
                   </AppSelect>
                 </FilterField>
+                <FilterField label="حالة الصورة">
+                  <AppSelect
+                    value={imageFilter}
+                    onValueChange={(v) => setImageFilter(v as "" | "HAS_IMAGE" | "NO_IMAGE" | "VARIANT_NO_IMAGE")}
+                    className="h-8"
+                    aria-label="فلتر حالة الصورة"
+                  >
+                    <option value="">الكل</option>
+                    <option value="HAS_IMAGE">يحتوي على صورة</option>
+                    <option value="NO_IMAGE">بلا صورة</option>
+                    <option value="VARIANT_NO_IMAGE">صفّ بلا صورة خاصّة</option>
+                  </AppSelect>
+                </FilterField>
                 <label className="flex items-center gap-2 h-8 text-sm self-end">
                   <input
                     type="checkbox"
@@ -435,6 +511,7 @@ export default function Products() {
                         includeInactive,
                         categoryId: categoryFilter === "" ? undefined : Number(categoryFilter),
                         showInPrintPos: printPosFilter === "" ? undefined : printPosFilter === "1",
+                        imageFilter: imageFilter === "" ? undefined : imageFilter,
                         limit: fetchLimit,
                         offset,
                       })
@@ -446,6 +523,9 @@ export default function Products() {
               columns: [
                 { key: "productId", header: "معرّف المنتج" },
                 { key: "productName", header: "المنتج" },
+                { key: "hasVariantImage", header: "يحتوي الصف على صورة", map: (r) => yesNo(r.hasVariantImage) },
+                { key: "hasImage", header: "يحتوي المنتج على صورة", map: (r) => yesNo(r.hasImage) },
+                { key: "imageCount", header: "عدد الصور المعتمدة", map: (r) => Number(r.imageCount ?? 0) },
                 { key: "productType", header: "نوع المنتج" },
                 { key: "brand", header: "الماركة" },
                 { key: "modelName", header: "الموديل" },
@@ -535,6 +615,112 @@ export default function Products() {
             }}
             emptyText="لا منتجات مطابقة. غيّر البحث أو أضف منتجاً."
             columns={[
+              {
+                id: "image",
+                header: "الصورة والرفع السريع",
+                accessorFn: (r) => (r.hasVariantImage ? "تحتوي صورة" : r.hasImage ? "صورة بمتغير آخر" : "بلا صورة"),
+                enableSorting: false,
+                cell: ({ row }) => {
+                  const r = row.original;
+                  const hasOwnOrShared = Boolean(r.hasVariantImage);
+                  const hasOtherVariantOnly = Boolean(r.hasImage && !r.hasVariantImage);
+                  const hasDedicatedVariantImg = Number(r.variantImageCount ?? 0) > 0;
+                  const rowStudioAllowed = canRowOpenQuickStudio(r);
+                  return (
+                    <div
+                      className="flex items-center gap-2 py-0.5"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => openQuickStudioForRow(r)}
+                        disabled={!rowStudioAllowed}
+                        data-testid={`product-row-image-btn-${r.productId}-${r.variantId ?? 0}`}
+                        title={
+                          hasOwnOrShared
+                            ? `${hasDedicatedVariantImg ? "يحتوي هذا الصف على صورة خاصة" : "يعتمد على الصورة المشتركة للمنتج الأب"} (${r.imageCount ?? 1} صورة معتمدة) — اضغط للعرض أو التقاط/رفع صورة جديدة بالذكاء`
+                            : hasOtherVariantOnly
+                            ? "المنتج الأب يحتوي على صور لمتغيرات أخرى لكن هذا الصف بلا صورة — اضغط لرفع أو تصوير صورة لهذا الصف"
+                            : "هذا المنتج لا يحتوي على صورة بعد — اضغط لالتقاط صورة بالكاميرا أو رفعها ومعالجتها بالذكاء"
+                        }
+                        className={`group relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border transition-all ${
+                          hasOwnOrShared
+                            ? "border-primary/40 bg-primary/5 hover:ring-2 hover:ring-primary/40"
+                            : hasOtherVariantOnly
+                            ? "border-dashed border-primary/40 bg-muted/30 hover:bg-muted/50"
+                            : "border-dashed border-muted-foreground/35 bg-muted/20 hover:border-primary/60 hover:bg-primary/5"
+                        }`}
+                      >
+                        {r.primaryImageThumb ? (
+                          <img
+                            src={r.primaryImageThumb}
+                            alt={r.productName}
+                            loading="lazy"
+                            className="h-full w-full object-cover"
+                          />
+                        ) : hasOwnOrShared ? (
+                          <ImageIcon className="h-4 w-4 text-primary" />
+                        ) : (
+                          <ImageOff className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
+                        )}
+                        {rowStudioAllowed && (
+                          <span className="absolute inset-0 flex items-center justify-center bg-black/55 opacity-0 transition-opacity group-hover:opacity-100">
+                            <Camera className="h-4 w-4 text-white" />
+                          </span>
+                        )}
+                        {(r.imageCount ?? 0) > 1 && (
+                          <span className="absolute bottom-0 start-0 rounded-se bg-black/75 px-1 text-[9px] font-bold text-white tabular-nums">
+                            {r.imageCount}
+                          </span>
+                        )}
+                      </button>
+
+                      <div className="flex flex-col items-start gap-0.5 min-w-[82px]">
+                        {hasOwnOrShared ? (
+                          <span
+                            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-bold badge-status-active"
+                            title={hasDedicatedVariantImg ? "صورة مخصّصة لهذا المتغيّر/الصف" : "صورة مشتركة من المنتج الأب"}
+                          >
+                            <CheckCircle2 className="h-2.5 w-2.5 shrink-0" />
+                            {hasDedicatedVariantImg ? "تحتوي صورة" : "صورة الأب"}
+                          </span>
+                        ) : hasOtherVariantOnly ? (
+                          <span
+                            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-bold badge-stock-low"
+                            title="توجد صورة لمتغيّر آخر في نفس المنتج لكن هذا الصف بلا صورة"
+                          >
+                            <ImageIcon className="h-2.5 w-2.5 shrink-0" />
+                            صف بلا صورة
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium badge-stock-out">
+                            <ImageOff className="h-2.5 w-2.5 shrink-0" />
+                            بلا صورة
+                          </span>
+                        )}
+
+                        {rowStudioAllowed && (
+                          <button
+                            type="button"
+                            onClick={() => openQuickStudioForRow(r)}
+                            data-testid={`product-row-quick-upload-${r.productId}-${r.variantId ?? 0}`}
+                            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-semibold text-primary hover:bg-primary/10 active:scale-95 transition-all"
+                          >
+                            <Camera className="h-3 w-3 shrink-0" />
+                            <span>
+                              {!canQuickSaveStudio
+                                ? "معاينة الصور"
+                                : hasOwnOrShared
+                                ? "تحديث/ذكاء"
+                                : "رفع / تصوير"}
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                },
+              },
               {
                 id: "product",
                 header: "المنتج",
@@ -717,6 +903,18 @@ export default function Products() {
                     <RowActions
                       actions={[
                         {
+                          key: "quickStudio",
+                          kind: "edit",
+                          label: !canQuickSaveStudio
+                            ? "معاينة الصور"
+                            : r.hasVariantImage
+                            ? "تحديث صورة / ذكاء اصطناعي"
+                            : "رفع / التقاط صورة بالذكاء",
+                          hidden: !canRowOpenQuickStudio(r),
+                          onSelect: () => openQuickStudioForRow(r),
+                          gate: { operations: ["productStudio.quickBarcodeLookup"], module: "productStudio", level: "READ" },
+                        },
+                        {
                           key: "edit",
                           kind: "edit",
                           label: "تعديل",
@@ -845,6 +1043,17 @@ export default function Products() {
         onClose={() => setDeleteFor(null)}
         onDone={() => { utils.catalog.adminList.invalidate(); utils.catalog.posList.invalidate(); }}
       />
+
+      {/* نافذة الرفع السريع والتقاط الكاميرا والمعالجة بالذكاء لصفّ المنتج المختار أو الممسوح بالباركود */}
+      {canQuickStudio && (
+        <StudioQuickBarcodeSearch
+          hideSearchBar
+          externalTarget={studioTarget}
+          onExternalTargetClose={() => setStudioTarget(null)}
+          externalScannerOpen={studioScannerOpen}
+          onExternalScannerOpenChange={setStudioScannerOpen}
+        />
+      )}
     </div>
   );
 }
