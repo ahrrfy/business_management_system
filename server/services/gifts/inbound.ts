@@ -144,6 +144,7 @@ export async function receiveInboundGift(input: ReceiveInboundGiftInput, actor: 
           movementType: "IN",
           referenceType: "GIFT_IN",
           referenceId: giftVoucherId,
+          documentNumber: giftNumber,
           createdBy: actor.userId,
         });
         await tx.update(productVariants).set({ costPrice: newCost.toFixed(2) }).where(eq(productVariants.id, variantId));

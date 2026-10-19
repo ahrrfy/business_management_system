@@ -399,6 +399,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
         movementType: "OUT",
         referenceType: "PURCHASE_RETURN",
         referenceId: purchaseReturnId,
+        documentNumber: returnNumber,
         createdBy: actor.userId,
       });
     }

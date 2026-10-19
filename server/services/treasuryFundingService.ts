@@ -19,6 +19,7 @@ import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { createPostingIntent, creditLine, debitLine } from "./accounting/postingEngine";
 import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
+import { nextCounterValue } from "./numbering";
 import { withTx, type Actor } from "./tx";
 import { lockCashSourceForUpdate } from "./cash/cashAvailability";
 import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
@@ -37,38 +38,13 @@ export interface FundTreasuryResult {
   treasuryBalanceAfter: string;
 }
 
-/** رقم إيداع خزينة TF-<فرع>-YYYYMMDD-NNNN (idempotent على مستوى الفرع/اليوم عبر GET_LOCK). */
+/** رقم إيداع خزينة TF-<فرع>-YYYYMMDD-NNNN عبر عدّاد documentCounters الذرّي. */
 async function nextFundingNumber(tx: Tx, branchId: number): Promise<string> {
   const ymd = toDateStr().replace(/-/g, "");
   const prefix = `TF-${branchId}-${ymd}-`;
-  const lockName = `treasury_funding:${branchId}:${ymd}`;
-  const lockRes: any = await tx.execute(sql`SELECT GET_LOCK(${lockName}, 5) AS locked`);
-  const lockedRow = Array.isArray(lockRes) ? lockRes[0]?.[0] : lockRes?.rows?.[0];
-  if (!lockedRow || Number(lockedRow.locked) !== 1) {
-    throw new Error(`treasury funding numbering lock timeout for ${lockName}`);
-  }
-  try {
-    // أعلى لاحقة رقمية بحتة لا أعلى id (مرجعٌ حرّ يطابق البادئة بلاحقةٍ غير رقمية يسمّم parseInt ⇒
-    // «TF-…-NaN» وتصادم dedupe). نمط nextDropNumber المُصلَح.
-    const rows = await tx
-      .select({ n: receipts.referenceNumber })
-      .from(receipts)
-      .where(like(receipts.referenceNumber, `${prefix}%`))
-      // current read بعد انتظار قفل الفرع؛ القراءة العادية تعيد snapshot أقدم أُنشئ
-      // عند فحص idempotency وقد لا ترى تمويلاً التزم أثناء الانتظار.
-      .for("update");
-    let maxSeq = 0;
-    for (const r of rows) {
-      const suffix = String(r.n ?? "").slice(prefix.length);
-      if (/^\d+$/.test(suffix)) {
-        const n = parseInt(suffix, 10);
-        if (n > maxSeq) maxSeq = n;
-      }
-    }
-    return prefix + String(maxSeq + 1).padStart(4, "0");
-  } finally {
-    await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
-  }
+  const counterKey = `treasury_funding_${branchId}_${ymd}`;
+  const seq = await nextCounterValue(tx, counterKey);
+  return prefix + String(seq).padStart(4, "0");
 }
 
 /** يضخّ نقداً خارجياً في خزينة فرعٍ (TREASURY IN مكتمل + قيد TREASURY_FUNDING). */

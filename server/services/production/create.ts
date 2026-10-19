@@ -111,6 +111,7 @@ export async function createProductionInTx(
       tx,
       input.branchId,
       productionOrderId,
+      docNumber,
       inLines,
       lockedVariantCosts,
       actor,
@@ -136,6 +137,7 @@ export async function createProductionInTx(
       tx,
       input.branchId,
       productionOrderId,
+      docNumber,
       outLines,
       allocPool,
       lockedVariantCosts,
@@ -704,6 +706,7 @@ async function consumeInputs(
   tx: Tx,
   branchId: number,
   productionOrderId: number,
+  docNumber: string,
   inLines: ResolvedLine[],
   lockedVariantCosts: ReadonlyMap<number, string>,
   actor: Actor,
@@ -735,6 +738,7 @@ async function consumeInputs(
       respectProductBackorder: false,
       referenceType: "PRODUCTION",
       referenceId: productionOrderId,
+      documentNumber: docNumber,
       createdBy: actor.userId,
     });
   }
@@ -749,6 +753,7 @@ async function produceOutputs(
   tx: Tx,
   branchId: number,
   productionOrderId: number,
+  docNumber: string,
   outLines: ResolvedLine[],
   allocPool: Decimal,
   lockedVariantCosts: ReadonlyMap<number, string>,
@@ -880,6 +885,7 @@ async function produceOutputs(
       movementType: "IN",
       referenceType: "PRODUCTION",
       referenceId: productionOrderId,
+      documentNumber: docNumber,
       createdBy: actor.userId,
     });
     await tx.update(productVariants).set({ costPrice: newCost.toFixed(2) }).where(eq(productVariants.id, l.variantId));

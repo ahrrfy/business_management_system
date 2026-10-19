@@ -19,6 +19,7 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idemp
 import { adjustSupplierBalance, postEntry } from "./ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "./accounting/postingEngine";
 import { money } from "./money";
+import { nextCounterValue } from "./numbering";
 import { extractInsertId } from "../lib/insertId";
 import { classifyVariants, getBundleDefinitions, type BundleComponentRow } from "./bundleService";
 
@@ -234,10 +235,13 @@ export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
     return { transferId: existing, transferNumber: doc?.transferNumber ?? "", lines: a.items.length, idempotentReplay: true as const };
   }
 
+  const d = new Date();
+  const yymm = `${String(d.getFullYear()).slice(-2)}${String(d.getMonth() + 1).padStart(2, "0")}`;
+  const seq = await nextCounterValue(tx, `stock_transfer_${yymm}`);
+  const transferNumber = `TRF-${yymm}-${seq}`;
   const totalSentBase = a.items.reduce((s, it) => s + it.baseQuantity, 0);
   const res = await tx.insert(stockTransfers).values({
-    // placeholder فريد ثم يُستبدل برقمٍ مبنيّ على id (حتمي، بلا سباق عدّادات).
-    transferNumber: `PENDING-${crypto.randomUUID().slice(0, 16)}`,
+    transferNumber,
     fromBranchId: a.fromBranchId,
     toBranchId: a.toBranchId,
     reason: a.reason ?? null,
@@ -246,9 +250,6 @@ export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
     createdBy: a.createdBy,
   });
   const transferId = extractInsertId(res);
-  const d = new Date();
-  const transferNumber = `TRF-${String(d.getFullYear()).slice(-2)}${String(d.getMonth() + 1).padStart(2, "0")}-${transferId}`;
-  await tx.update(stockTransfers).set({ transferNumber }).where(eq(stockTransfers.id, transferId));
 
   // البكج يبقى سطراً تشغيلياً واحداً في السند، لكن الرصيد الفعلي لمكوّناته. نقرأ الوصفة أولاً
   // لبناء إغلاق المتغيّرات دفعةً واحدة، ثم نعيد قراءتها بعد القفل. إن تغيّرت في نافذة السباق
@@ -443,6 +444,7 @@ export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
       relatedBranchId: a.toBranchId,
       referenceType: "TRANSFER",
       referenceId: transferId,
+      documentNumber: transferNumber,
       notes: `سند تحويل ${transferNumber} — بالطريق إلى الفرع الوجهة [COST_SNAPSHOT:${costSnapshot}]`,
       createdBy: a.createdBy,
     });
@@ -601,6 +603,7 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
       relatedBranchId: Number(doc.fromBranchId),
       referenceType: "TRANSFER",
       referenceId: a.transferId,
+      documentNumber: doc.transferNumber,
       notes:
         operationalDiscrepancy === 0
           ? `استلام سند ${doc.transferNumber} — مطابق`
@@ -827,6 +830,7 @@ export async function cancelStockTransfer(tx: Tx, a: { transferId: number; actor
       relatedBranchId: Number(doc.toBranchId),
       referenceType: "TRANSFER",
       referenceId: a.transferId,
+      documentNumber: doc.transferNumber,
       notes: `إلغاء سند ${doc.transferNumber} — إعادة الكمية لرصيد الفرع المرسل`,
       createdBy: a.actor.userId,
     });

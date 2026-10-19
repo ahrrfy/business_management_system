@@ -66,7 +66,15 @@ export default function Transfers() {
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
   const branches = trpc.branches.list.useQuery();
-  const [tab, setTab] = useState<"new" | "log">("new");
+  const initialFocusId = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const raw = new URLSearchParams(window.location.search).get("focus");
+    const n = raw ? Number(raw) : NaN;
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }, []);
+  const [tab, setTab] = useState<"new" | "log">(() =>
+    initialFocusId != null ? "log" : "new",
+  );
   const pending = trpc.inventory.transfersPendingIncoming.useQuery(undefined, { refetchInterval: 60_000 });
 
   // المصدرُ استنتاجٌ خادميّ عبر `<InferredBranchField>` (م٤ ق١) — تبدأ `null` عمداً: كان يسقط
@@ -213,7 +221,7 @@ export default function Transfers() {
         </button>
       </div>
 
-      {tab === "log" && <TransfersLog />}
+      {tab === "log" && <TransfersLog initialFocusId={initialFocusId} />}
 
       {tab === "new" && (
       <>

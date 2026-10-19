@@ -14,6 +14,7 @@ import { escLike } from "../../lib/sqlLike";
 import { phoneSuffix10 } from "../../lib/phone";
 import type { SearchKind, SearchResult } from "./types";
 import { formatDate } from "./helpers";
+import { stripDocPrefix } from "@shared/documentNumber";
 
 // ────────────────────────────── فواتير البيع ──────────────────────────────
 
@@ -36,6 +37,7 @@ async function searchInvoices(
       ),
     );
 
+  const stripped = stripDocPrefix(query.trim());
   const sfx = phoneSuffix10(query);
   const like_ = `%${escLike(query)}%`;
 
@@ -57,12 +59,18 @@ async function searchInvoices(
     }
     conds.push(or(...phoneConds));
   } else if (kind === "BARCODE" || kind === "DOC_NUMBER") {
-    conds.push(
-      or(
-        eq(invoices.invoiceNumber, query),
-        sql`${invoices.invoiceNumber} LIKE ${like_} ESCAPE '!'`,
-      ),
-    );
+    const docConds = [
+      eq(invoices.invoiceNumber, query),
+      sql`${invoices.invoiceNumber} LIKE ${like_} ESCAPE '!'`,
+    ];
+    if (stripped !== query) {
+      const strippedLike = `%${escLike(stripped)}%`;
+      docConds.push(
+        eq(invoices.invoiceNumber, stripped),
+        sql`${invoices.invoiceNumber} LIKE ${strippedLike} ESCAPE '!'`,
+      );
+    }
+    conds.push(or(...docConds));
   } else {
     // نص ⇒ نطابق رقم الفاتورة أو ملاحظة أو هاتف
     const textConds = [
@@ -107,6 +115,9 @@ async function searchInvoices(
   return rows.map((r) => {
     const cust = r.customerName || r.contactName || "عميل نقدي";
     const sub = [cust, r.customerPhone].filter(Boolean).join(" · ");
+    const isExact =
+      r.invoiceNumber === query ||
+      (stripped !== query && r.invoiceNumber === stripped);
     return {
       type: "INVOICE" as const,
       id: r.id,
@@ -114,7 +125,7 @@ async function searchInvoices(
       subtitle: sub,
       meta: `${r.total} د.ع · ${formatDate(r.invoiceDate)}${STATUS_LABEL[r.status ?? ""] ?? ""}`,
       route: `/invoices/${r.id}`,
-      rank: r.invoiceNumber === query ? 0 : kind === "PHONE" ? 1 : 2,
+      rank: isExact ? 0 : kind === "PHONE" ? 1 : 2,
     };
   });
 }
@@ -132,6 +143,7 @@ async function searchQuotations(
   if (scopedBranchId !== null)
     conds.push(eq(quotations.branchId, scopedBranchId));
 
+  const stripped = stripDocPrefix(query.trim());
   const sfx = phoneSuffix10(query);
   const like_ = `%${escLike(query)}%`;
 
@@ -151,12 +163,18 @@ async function searchQuotations(
     }
     conds.push(or(...phoneConds));
   } else if (kind === "BARCODE" || kind === "DOC_NUMBER") {
-    conds.push(
-      or(
-        eq(quotations.quoteNumber, query),
-        sql`${quotations.quoteNumber} LIKE ${like_} ESCAPE '!'`,
-      ),
-    );
+    const docConds = [
+      eq(quotations.quoteNumber, query),
+      sql`${quotations.quoteNumber} LIKE ${like_} ESCAPE '!'`,
+    ];
+    if (stripped !== query) {
+      const strippedLike = `%${escLike(stripped)}%`;
+      docConds.push(
+        eq(quotations.quoteNumber, stripped),
+        sql`${quotations.quoteNumber} LIKE ${strippedLike} ESCAPE '!'`,
+      );
+    }
+    conds.push(or(...docConds));
   } else {
     const textConds = [
       sql`${quotations.quoteNumber} LIKE ${like_} ESCAPE '!'`,
@@ -193,6 +211,9 @@ async function searchQuotations(
     const sub = [r.customerName ?? "عميل نقدي", r.customerPhone]
       .filter(Boolean)
       .join(" · ");
+    const isExact =
+      r.quoteNumber === query ||
+      (stripped !== query && r.quoteNumber === stripped);
     return {
       type: "QUOTATION" as const,
       id: r.id,
@@ -200,7 +221,7 @@ async function searchQuotations(
       subtitle: sub,
       meta: `${r.total} د.ع · ${formatDate(r.quoteDate)}`,
       route: `/quotations/${r.id}`,
-      rank: r.quoteNumber === query ? 0 : kind === "PHONE" ? 1 : 2,
+      rank: isExact ? 0 : kind === "PHONE" ? 1 : 2,
     };
   });
 }
@@ -218,6 +239,7 @@ async function searchWorkOrders(
   if (scopedBranchId !== null)
     conds.push(eq(workOrders.branchId, scopedBranchId));
 
+  const stripped = stripDocPrefix(query.trim());
   const sfx = phoneSuffix10(query);
   const like_ = `%${escLike(query)}%`;
 
@@ -241,12 +263,18 @@ async function searchWorkOrders(
     }
     conds.push(or(...phoneConds));
   } else if (kind === "BARCODE" || kind === "DOC_NUMBER") {
-    conds.push(
-      or(
-        eq(workOrders.orderNumber, query),
-        sql`${workOrders.orderNumber} LIKE ${like_} ESCAPE '!'`,
-      ),
-    );
+    const docConds = [
+      eq(workOrders.orderNumber, query),
+      sql`${workOrders.orderNumber} LIKE ${like_} ESCAPE '!'`,
+    ];
+    if (stripped !== query) {
+      const strippedLike = `%${escLike(stripped)}%`;
+      docConds.push(
+        eq(workOrders.orderNumber, stripped),
+        sql`${workOrders.orderNumber} LIKE ${strippedLike} ESCAPE '!'`,
+      );
+    }
+    conds.push(or(...docConds));
   } else {
     const textConds = [
       sql`${workOrders.orderNumber} LIKE ${like_} ESCAPE '!'`,
@@ -291,6 +319,9 @@ async function searchWorkOrders(
     ]
       .filter(Boolean)
       .join(" · ");
+    const isExact =
+      r.orderNumber === query ||
+      (stripped !== query && r.orderNumber === stripped);
     return {
       type: "WORK_ORDER" as const,
       id: r.id,
@@ -298,7 +329,7 @@ async function searchWorkOrders(
       subtitle: sub,
       meta: `${r.status} · ${formatDate(r.createdAt)}`,
       route: `/work-orders/${r.id}`,
-      rank: r.orderNumber === query ? 0 : kind === "PHONE" ? 1 : 2,
+      rank: isExact ? 0 : kind === "PHONE" ? 1 : 2,
     };
   });
 }
@@ -318,14 +349,21 @@ async function searchPurchaseOrders(
   if (scopedBranchId !== null)
     conds.push(eq(purchaseOrders.branchId, scopedBranchId));
 
+  const stripped = stripDocPrefix(query.trim());
   const like_ = `%${escLike(query)}%`;
   if (kind === "BARCODE" || kind === "DOC_NUMBER") {
-    conds.push(
-      or(
-        eq(purchaseOrders.poNumber, query),
-        sql`${purchaseOrders.poNumber} LIKE ${like_} ESCAPE '!'`,
-      ),
-    );
+    const docConds = [
+      eq(purchaseOrders.poNumber, query),
+      sql`${purchaseOrders.poNumber} LIKE ${like_} ESCAPE '!'`,
+    ];
+    if (stripped !== query) {
+      const strippedLike = `%${escLike(stripped)}%`;
+      docConds.push(
+        eq(purchaseOrders.poNumber, stripped),
+        sql`${purchaseOrders.poNumber} LIKE ${strippedLike} ESCAPE '!'`,
+      );
+    }
+    conds.push(or(...docConds));
   } else {
     conds.push(
       or(
@@ -350,16 +388,21 @@ async function searchPurchaseOrders(
     .orderBy(desc(purchaseOrders.orderDate), desc(purchaseOrders.id))
     .limit(limit);
 
-  return rows.map((r) => ({
-    type: "PURCHASE_ORDER" as const,
-    id: r.id,
-    title: r.poNumber,
-    subtitle: r.supplierName ?? "—",
-    meta: `${r.total} د.ع · ${r.status}`,
-    // لا صفحة تفاصيل مستقلّة بعد ⇒ القائمة مع q=رقم الأمر (يُصفّيها إليه) + focus (يُبرزه).
-    route: `/purchases?tab=orders&q=${encodeURIComponent(r.poNumber)}&focus=${r.id}`,
-    rank: r.poNumber === query ? 0 : 1,
-  }));
+  return rows.map((r) => {
+    const isExact =
+      r.poNumber === query ||
+      (stripped !== query && r.poNumber === stripped);
+    return {
+      type: "PURCHASE_ORDER" as const,
+      id: r.id,
+      title: r.poNumber,
+      subtitle: r.supplierName ?? "—",
+      meta: `${r.total} د.ع · ${r.status}`,
+      // لا صفحة تفاصيل مستقلّة بعد ⇒ القائمة مع q=رقم الأمر (يُصفّيها إليه) + focus (يُبرزه).
+      route: `/purchases?tab=orders&q=${encodeURIComponent(r.poNumber)}&focus=${r.id}`,
+      rank: isExact ? 0 : 1,
+    };
+  });
 }
 
 // ────────────────────────────── المصاريف ──────────────────────────────

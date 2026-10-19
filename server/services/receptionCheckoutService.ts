@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { formatDocumentNumber, stripDocPrefix } from "@shared/documentNumber";
 import { eq } from "drizzle-orm";
 import {
   auditLogs,
@@ -40,6 +41,8 @@ import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
 
 export interface ReceptionCheckoutInput {
   branchId: number;
+  /** رقم التتبع الموحّد للمعاملة (R1). */
+  trackingNumber?: string | null;
   shiftId: number;
   customerId?: number | null;
   /** إسناد المبيعات لسلة الاستقبال (R2). */
@@ -603,111 +606,127 @@ export async function checkoutReceptionInTx(
     // منذ قبضه — I5). موجبٌ ⇒ دفعةٌ بطريقةٍ حقيقية؛ صفرٌ ⇒ لا دفعة ولا طريقة.
     const saleNewCashD = round2(saleApplied.minus(money(preSplit.sale)));
     const printNewCashD = round2(printApplied.minus(money(preSplit.print)));
-    const buildSale = async (basketOthers: string | null) =>
-      input.regularSale
-        ? await createSaleInTx(
-            tx,
-            {
-              branchId: input.branchId,
-              shiftId: input.shiftId,
-              customerId: input.customerId ?? null,
-              contactName: input.contactName ?? null,
-              contactPhone: input.contactPhone ?? null,
-              sourceType: "POS",
-              priceTier: input.priceTier ?? null,
-              couponCode: input.couponCode?.trim() || null,
-              lines: input.regularSale.lines,
-              // ٢٣/٨ — خصمُ رأس الفاتورة على البيع المباشر (مرآة POS.tsx buildSaleLine): يمرَّر مبلغاً
-              // مطلقاً فيدخل computeInvoiceTotals ويحرسه invoiceDiscountExceedsThreshold على الإجماليّ.
-              // صفر/غياب ⇒ فرعُ NULL في sale/create.ts (بلا خصمٍ رأس، صفر تغيير سلوكيّ).
-              invoiceDiscount: input.regularSale.invoiceDiscount ?? undefined,
-              cashRoundIQD: roundDirectCash,
-              cashRoundingBasketOthers:
-                overrideTarget === "SALE" ? basketOthers : null,
-              // ش٤: حصة البيع المباشر من المقبوض سلفاً — تدخل paidAmount بلا إيصالٍ ثانٍ (I5)،
-              // والدفعة الجديدة payment.amount تُقلَّص بها (الفاتورة تستلم P + N = أمانها الكامل).
-              preCollected: money(preSplit.sale).gt(0)
-                ? { amount: preSplit.sale, receiptIds: [] }
-                : null,
-              // صدق طريقة الدفع (١٨/٨): الدفعة تُبنى **فقط حين يُقبض نقدٌ جديد الآن**. كان الكائن
-              // يُبنى دائماً ولو بصفر، فيموت فرع `?? null` في sale/create.ts ويُختَم «نقدي» على
-              // فاتورةٍ لم يدخلها دينار. صفر ⇒ null ⇒ paymentMethod NULL = «آجل» بالاشتقاق.
-              payment: saleNewCashD.gt(0)
-                ? {
-                    // ش٧: المدفوع = **المخصَّص فعلاً** لا مبلغ الفاتورة — مع COD يبقى الفرق عهدةَ مندوب.
-                    amount: saleNewCashD.toFixed(2),
-                    method: input.paymentMethod!,
-                    reference: input.paymentReference?.trim() || null,
-                  }
-                : null,
-              codDispatchPending: input.delivery != null,
-              // م١ (PR-1) — الجذر: `credit.ts` يعبر COD حين يصله `paymentMode` فقط، ولم يكن يُمرَّر من هنا.
-              paymentMode: resolvedPaymentMode,
-              // الاستقبال (٨/٨): يفتح السالب لطلب COD في وضع الافتتاح بتأكيد الموظّف — رِيلات الأمان في createSaleInTx.
-              openingSellUnavailableConfirmed:
-                input.openingSellUnavailableConfirmed === true,
-              clientRequestId: `${input.clientRequestId}-sale`,
-              offlineCapture: input.offlineCapture ?? null,
-              // البضاعة خرجت فعلاً أثناء الانقطاع والنقد قُبض؛ رفض التسجيل يجعل الدفاتر تكذب
-              // (قرار المالك ١٨/٧: تسجيل بوسم مراجعة لا تعليق). الوسم = originatedOffline.
-              allowNegativeStock: input.offlineCapture != null,
-              creditApproved: false,
-              receptionDeferredAuthorized,
-              priceOverrideApproved: input.priceOverrideApproved === true,
-              attribution:
-                input.attribution ??
-                (input.receptionistUserId
-                  ? {
-                      repId: input.receptionistUserId,
-                      role: "RECEPTIONIST",
-                      mode: "SPLIT",
-                      splitRatio: "0.70",
-                    }
-                  : undefined),
-              salesRepId: input.salesRepId ?? input.receptionistUserId,
-            },
-            actor,
-          )
-        : null;
+    let sharedTrackingNumber: string | null = input.trackingNumber?.trim()
+      ? stripDocPrefix(input.trackingNumber.trim())
+      : null;
+    const hasBothSaleInvoices = Boolean(input.regularSale && input.printSale);
+    const buildSale = async (basketOthers: string | null) => {
+      if (!input.regularSale) return null;
+      const res = await createSaleInTx(
+        tx,
+        {
+          branchId: input.branchId,
+          trackingNumber: sharedTrackingNumber,
+          siblingIndex: hasBothSaleInvoices ? 1 : null,
+          shiftId: input.shiftId,
+          customerId: input.customerId ?? null,
+          contactName: input.contactName ?? null,
+          contactPhone: input.contactPhone ?? null,
+          sourceType: "POS",
+          priceTier: input.priceTier ?? null,
+          couponCode: input.couponCode?.trim() || null,
+          lines: input.regularSale.lines,
+          // ٢٣/٨ — خصمُ رأس الفاتورة على البيع المباشر (مرآة POS.tsx buildSaleLine): يمرَّر مبلغاً
+          // مطلقاً فيدخل computeInvoiceTotals ويحرسه invoiceDiscountExceedsThreshold على الإجماليّ.
+          // صفر/غياب ⇒ فرعُ NULL في sale/create.ts (بلا خصمٍ رأس، صفر تغيير سلوكيّ).
+          invoiceDiscount: input.regularSale.invoiceDiscount ?? undefined,
+          cashRoundIQD: roundDirectCash,
+          cashRoundingBasketOthers:
+            overrideTarget === "SALE" ? basketOthers : null,
+          // ش٤: حصة البيع المباشر من المقبوض سلفاً — تدخل paidAmount بلا إيصالٍ ثانٍ (I5)،
+          // والدفعة الجديدة payment.amount تُقلَّص بها (الفاتورة تستلم P + N = أمانها الكامل).
+          preCollected: money(preSplit.sale).gt(0)
+            ? { amount: preSplit.sale, receiptIds: [] }
+            : null,
+          // صدق طريقة الدفع (١٨/٨): الدفعة تُبنى **فقط حين يُقبض نقدٌ جديد الآن**. كان الكائن
+          // يُبنى دائماً ولو بصفر، فيموت فرع `?? null` في sale/create.ts ويُختَم «نقدي» على
+          // فاتورةٍ لم يدخلها دينار. صفر ⇒ null ⇒ paymentMethod NULL = «آجل» بالاشتقاق.
+          payment: saleNewCashD.gt(0)
+            ? {
+                // ش٧: المدفوع = **المخصَّص فعلاً** لا مبلغ الفاتورة — مع COD يبقى الفرق عهدةَ مندوب.
+                amount: saleNewCashD.toFixed(2),
+                method: input.paymentMethod!,
+                reference: input.paymentReference?.trim() || null,
+              }
+            : null,
+          codDispatchPending: input.delivery != null,
+          // م١ (PR-1) — الجذر: `credit.ts` يعبر COD حين يصله `paymentMode` فقط، ولم يكن يُمرَّر من هنا.
+          paymentMode: resolvedPaymentMode,
+          // الاستقبال (٨/٨): يفتح السالب لطلب COD في وضع الافتتاح بتأكيد الموظّف — رِيلات الأمان في createSaleInTx.
+          openingSellUnavailableConfirmed:
+            input.openingSellUnavailableConfirmed === true,
+          clientRequestId: `${input.clientRequestId}-sale`,
+          offlineCapture: input.offlineCapture ?? null,
+          // البضاعة خرجت فعلاً أثناء الانقطاع والنقد قُبض؛ رفض التسجيل يجعل الدفاتر تكذب
+          // (قرار المالك ١٨/٧: تسجيل بوسم مراجعة لا تعليق). الوسم = originatedOffline.
+          allowNegativeStock: input.offlineCapture != null,
+          creditApproved: false,
+          receptionDeferredAuthorized,
+          priceOverrideApproved: input.priceOverrideApproved === true,
+          attribution:
+            input.attribution ??
+            (input.receptionistUserId
+              ? {
+                  repId: input.receptionistUserId,
+                  role: "RECEPTIONIST",
+                  mode: "SPLIT",
+                  splitRatio: "0.70",
+                }
+              : undefined),
+          salesRepId: input.salesRepId ?? input.receptionistUserId,
+        },
+        actor,
+      );
+      if (!sharedTrackingNumber && res?.invoiceNumber) {
+        sharedTrackingNumber = stripDocPrefix(res.invoiceNumber).split("-")[0];
+      }
+      return res;
+    };
 
-    const buildPrint = async (basketOthers: string | null) =>
-      input.printSale
-        ? await createPrintSaleInTx(
-            tx,
-            {
-              branchId: input.branchId,
-              shiftId: input.shiftId,
-              customerId: input.customerId ?? null,
-              contactName: input.contactName ?? null,
-              contactPhone: input.contactPhone ?? null,
-              priceTier: input.priceTier ?? null,
-              lines: input.printSale.lines,
-              cashRoundingBasketOthers:
-                overrideTarget === "PRINT" ? basketOthers : null,
-              preCollected: money(preSplit.print).gt(0)
-                ? { amount: preSplit.print, receiptIds: [] }
-                : null,
-              // صدق طريقة الدفع (١٨/٨) — انظر التعليق في buildSale.
-              payment: printNewCashD.gt(0)
-                ? {
-                    // ش٧: المخصَّص فعلاً (الطباعة تُسدَّد كاملةً عند التوصيل بحاملٍ SALE — حارسٌ أعلاه).
-                    amount: printNewCashD.toFixed(2),
-                    method: input.paymentMethod!,
-                    reference: input.paymentReference?.trim() || null,
-                  }
-                : null,
-              codDispatchPending: input.delivery != null,
-              // م١ (PR-1) — نفس الجذر على قناة الطباعة (كانت تفحص الحدّ inline بلا فرع COD).
-              paymentMode: resolvedPaymentMode,
-              clientRequestId: `${input.clientRequestId}-print`,
-              offlineCapture: input.offlineCapture ?? null,
-              creditApproved: false,
-              receptionDeferredAuthorized,
-              priceOverrideApproved: input.priceOverrideApproved === true,
-            },
-            actor,
-          )
-        : null;
+    const buildPrint = async (basketOthers: string | null) => {
+      if (!input.printSale) return null;
+      const res = await createPrintSaleInTx(
+        tx,
+        {
+          branchId: input.branchId,
+          trackingNumber: sharedTrackingNumber,
+          siblingIndex: hasBothSaleInvoices ? 2 : null,
+          shiftId: input.shiftId,
+          customerId: input.customerId ?? null,
+          contactName: input.contactName ?? null,
+          contactPhone: input.contactPhone ?? null,
+          priceTier: input.priceTier ?? null,
+          lines: input.printSale.lines,
+          cashRoundingBasketOthers:
+            overrideTarget === "PRINT" ? basketOthers : null,
+          preCollected: money(preSplit.print).gt(0)
+            ? { amount: preSplit.print, receiptIds: [] }
+            : null,
+          // صدق طريقة الدفع (١٨/٨) — انظر التعليق في buildSale.
+          payment: printNewCashD.gt(0)
+            ? {
+                // ش٧: المخصَّص فعلاً (الطباعة تُسدَّد كاملةً عند التوصيل بحاملٍ SALE — حارسٌ أعلاه).
+                amount: printNewCashD.toFixed(2),
+                method: input.paymentMethod!,
+                reference: input.paymentReference?.trim() || null,
+              }
+            : null,
+          codDispatchPending: input.delivery != null,
+          // م١ (PR-1) — نفس الجذر على قناة الطباعة (كانت تفحص الحدّ inline بلا فرع COD).
+          paymentMode: resolvedPaymentMode,
+          clientRequestId: `${input.clientRequestId}-print`,
+          offlineCapture: input.offlineCapture ?? null,
+          creditApproved: false,
+          receptionDeferredAuthorized,
+          priceOverrideApproved: input.priceOverrideApproved === true,
+        },
+        actor,
+      );
+      if (!sharedTrackingNumber && res?.invoiceNumber) {
+        sharedTrackingNumber = stripDocPrefix(res.invoiceNumber).split("-")[0];
+      }
+      return res;
+    };
 
     // ترتيب الإنشاء: غير الحاملة أوّلاً (كي يُعرَف إجماليُّها الخادميّ) ثم الحاملة بأساسها.
     // بلا تقريبٍ مختلط يبقى الترتيب الأصليّ حرفياً (بيع ⇐ طباعة) — صفر تغيير سلوكيّ.
@@ -994,12 +1013,26 @@ export async function checkoutReceptionInTx(
     const workOrders = [] as Array<
       Awaited<ReturnType<typeof createWorkOrderInTx>> & { deposit: string }
     >;
+    const hasAnySaleInvoice = Boolean(input.regularSale || input.printSale);
+    const woNeedsSibling =
+      normalizedWorkOrders.length > 1 || hasAnySaleInvoice;
     for (let index = 0; index < normalizedWorkOrders.length; index += 1) {
       const order = normalizedWorkOrders[index];
+      const derivedOrderNumber =
+        order.orderNumber?.trim() ||
+        (sharedTrackingNumber
+          ? formatDocumentNumber(
+              sharedTrackingNumber,
+              woNeedsSibling ? index + 1 : 0,
+            )
+          : null);
       const created = await createWorkOrderInTx(
         tx,
         {
           ...order,
+          orderNumber: derivedOrderNumber,
+          siblingIndex:
+            order.siblingIndex ?? (woNeedsSibling ? index + 1 : null),
           branchId: input.branchId,
           customerId: input.customerId ?? null,
           contactName: order.contactName ?? input.contactName ?? null,
@@ -1012,6 +1045,9 @@ export async function checkoutReceptionInTx(
         },
         actor,
       );
+      if (!sharedTrackingNumber && created?.orderNumber) {
+        sharedTrackingNumber = stripDocPrefix(created.orderNumber).split("-")[0];
+      }
       // ش٤: العربون الموزَّع يرافق النتيجة — تطبعه تذكرة الأمر («مدفوع مقدماً/المتبقّي») بلا
       // إعادة حسابٍ واجهيّ قد ينحرف عن الجشع الخادميّ.
       workOrders.push({

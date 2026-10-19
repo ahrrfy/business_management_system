@@ -19,6 +19,7 @@ import { computeInvoiceTotals, computeLineTotal } from "./billing";
 import { localDayStart, localNextDayStart } from "./dateRange";
 import { convertToBaseQuantity } from "./inventoryService";
 import { money, round2, toDateStr } from "./money";
+import { nextCounterValue } from "./numbering";
 import {
   getUnitPrice,
   resolveEffectivePriceReference,
@@ -115,18 +116,12 @@ async function resolveQuotationLinePrice(
   };
 }
 
+/** QUO-{فرع}-{YYYYMMDD}-{NNNNN} ترقيم ذرّي عبر عدّاد documentCounters لمنع سباقات التزامن. */
 async function nextQuoteNumber(tx: Tx, branchId: number): Promise<string> {
   const ymd = toDateStr().replace(/-/g, "");
   const prefix = `QUO-${branchId}-${ymd}-`;
-  const rows = await tx
-    .select({ n: quotations.quoteNumber })
-    .from(quotations)
-    .where(like(quotations.quoteNumber, `${prefix}%`))
-    .orderBy(desc(quotations.id))
-    .for("update")
-    .limit(1);
-  const last = rows[0]?.n;
-  const seq = last ? parseInt(last.slice(prefix.length), 10) + 1 : 1;
+  const counterKey = `quotation_${branchId}_${ymd}`;
+  const seq = await nextCounterValue(tx, counterKey);
   return prefix + String(seq).padStart(5, "0");
 }
 

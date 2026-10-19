@@ -378,6 +378,7 @@ export async function approveStocktake(
           // يلزم لاستبعاد تسويات الجلسة نفسها من netAfter ولإعادة بناء «من فتتح» من السجلات.
           referenceType: isOpening ? "OPENING" : "STOCKTAKE",
           referenceId: sessionId,
+          documentNumber: s.code,
           notes: s.code,
           createdBy: actor.userId,
           allowNegativeTarget: true,

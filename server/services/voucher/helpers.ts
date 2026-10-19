@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { desc, eq, like, sql } from "drizzle-orm";
 import { receipts, voucherCategories } from "../../../drizzle/schema";
 import { toDateStr } from "../money";
+import { nextCounterValue } from "../numbering";
 import { resolveActorRoleTx } from "../shiftService";
 import { type Actor, withTx } from "../tx";
 import type { PartyType, PaymentMethod } from "./types";
@@ -45,6 +46,9 @@ function computeSignature(parts: {
  * مستوى الفرع/النوع/اليوم. الفهرس الفريد على voucherNumber يبقى الحارس الأخير
  * (راوتر يُعيد المحاولة على ER_DUP_ENTRY).
  */
+/** يولّد رقم سند تسلسلي يومي للفرع: RV-1-20260609-00001 أو PV-1-20260609-00001
+ * عبر عدّاد documentCounters الذرّي.
+ */
 async function nextVoucherNumber(
   tx: Parameters<Parameters<typeof withTx>[0]>[0],
   voucherType: "RECEIPT" | "PAYMENT",
@@ -52,26 +56,9 @@ async function nextVoucherNumber(
 ): Promise<string> {
   const ymd = toDateStr().replace(/-/g, "");
   const prefix = `${voucherType === "RECEIPT" ? "RV" : "PV"}-${branchId}-${ymd}-`;
-  const lockName = `voucher:${voucherType}:${branchId}:${ymd}`;
-  const lockRes: any = await tx.execute(sql`SELECT GET_LOCK(${lockName}, 5) AS locked`);
-  const lockedRow = Array.isArray(lockRes) ? lockRes[0]?.[0] : lockRes?.rows?.[0];
-  if (!lockedRow || Number(lockedRow.locked) !== 1) {
-    throw new Error(`voucher numbering lock timeout for ${lockName}`);
-  }
-  try {
-    const rows = await tx
-      .select({ n: receipts.voucherNumber })
-      .from(receipts)
-      .where(like(receipts.voucherNumber, `${prefix}%`))
-      .orderBy(desc(receipts.id))
-      .for("update")
-      .limit(1);
-    const last = rows[0]?.n;
-    const seq = last ? parseInt(String(last).slice(prefix.length), 10) + 1 : 1;
-    return prefix + String(seq).padStart(5, "0");
-  } finally {
-    await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
-  }
+  const counterKey = `voucher_${voucherType.toLowerCase()}_${branchId}_${ymd}`;
+  const seq = await nextCounterValue(tx as any, counterKey);
+  return prefix + String(seq).padStart(5, "0");
 }
 
 /** يحلّ دور الفاعل: من actor.role إن مرّره الموجّه، وإلا يقرأه من قاعدة البيانات (مرّة واحدة).

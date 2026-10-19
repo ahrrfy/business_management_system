@@ -2271,6 +2271,7 @@ export const returnRouter = router({
                   input.mode === "DIRECT_EXCHANGE"
                     ? "EXCHANGE_RETURN"
                     : "NO_RECEIPT_RETURN",
+                documentNumber: voucherCode,
                 notes: `${input.mode === "DIRECT_EXCHANGE" ? "استبدال بضاعة" : "مرتجع استثنائي بدون وصل"} [${voucherCode}] — ${returnReason} (${customerName})`,
                 createdBy: ctx.user.id,
               });
@@ -2292,6 +2293,7 @@ export const returnRouter = router({
                 baseQuantity: effectiveBaseQty,
                 movementType: "OUT",
                 referenceType: "EXCHANGE_ISSUE",
+                documentNumber: voucherCode,
                 notes: `صرف بضاعة بديلة مقابل استبدال [${voucherCode}] — ${returnReason} (${customerName})`,
                 createdBy: ctx.user.id,
               });
@@ -3889,6 +3891,7 @@ export const returnRouter = router({
                   baseQuantity: compBaseQty,
                   movementType: "RETURN",
                   referenceType: "SALES_RETURN",
+                  documentNumber: returnNumber,
                   notes: `إرجاع مكوّن بكج للرف [${returnNumber}] — مكوّن من «${itm.productName}» (${customerName})`,
                   createdBy: ctx.user.id,
                 });
@@ -3900,6 +3903,7 @@ export const returnRouter = router({
                 baseQuantity: effectiveBaseQty,
                 movementType: "RETURN",
                 referenceType: "SALES_RETURN",
+                documentNumber: returnNumber,
                 notes: `إرجاع للرف [${returnNumber}] — ${itm.productName} (${customerName})`,
                 createdBy: ctx.user.id,
               });
@@ -4803,6 +4807,7 @@ export const returnRouter = router({
               baseQuantity: effectiveBaseQty,
               movementType: "OUT",
               referenceType: "PURCHASE_RETURN",
+              documentNumber: returnNumber,
               notes: `مرتجع مشتريات للمورد [${returnNumber}] — ${itm.productName} للمورد (${supplier.name})`,
               createdBy: ctx.user.id,
             });

@@ -679,8 +679,19 @@ export async function correctSaleInTx(
 
     // ── ٧) إعادة الترحيل بالبيانات المصحّحة (المدفوع مُرحَّلٌ سلفاً؛ الفائض يُقصَر بـallowPreCollectedOverpay) ──
     const correctionReqId = input.clientRequestId ? `${input.clientRequestId}:corr` : null;
+    const originalBaseCandidate = inv.invoiceNumber
+      ? String(inv.invoiceNumber)
+          .trim()
+          .replace(/^(INV|WO|PO|ORD|DRF|RET|PAY|REC|CSN|CN|QT|EXP|ADJ|SHF|TRF|GFT|PRD)-/i, "")
+          .split("-")[0]
+      : "";
+    const inheritedTrackingNumber =
+      /^\d+$/.test(originalBaseCandidate) && Number(originalBaseCandidate) >= 100000
+        ? originalBaseCandidate
+        : undefined;
     const repost = await createSaleInTx(tx, {
       branchId: Number(inv.branchId),
+      trackingNumber: inheritedTrackingNumber,
       shiftId: addPayShiftId ?? channelShiftId,
       sourceType: inv.sourceType as "POS" | "ONLINE" | "ORDER",
       customerId: input.customerId === undefined ? originalCustomerId : input.customerId,

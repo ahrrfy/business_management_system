@@ -1,7 +1,7 @@
 // إنشاء فاتورة بيع ذرّياً: idempotency + تسعير/تحويل الأسطر + بوّابة أقل-من-التكلفة +
 // تقريب نقدي IQD + حدّ الائتمان + خصم المخزون + قيد SALE + الدفعة/الذمم.
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, like, or, sql } from "drizzle-orm";
 import {
   couponRedemptions,
   coupons,
@@ -77,7 +77,8 @@ import {
 } from "../accounting/postingEngine";
 import { logger } from "../../logger";
 import { money, round2, roundCashIQD, toDbMoney } from "../money";
-import { nextInvoiceNumber } from "../numbering";
+import { nextInvoiceNumber, nextTransactionTrackingNumber } from "../numbering";
+import { formatDocumentNumber, stripDocPrefix } from "@shared/documentNumber";
 import {
   getUnitPrice,
   tryGetUnitPrice,
@@ -1489,8 +1490,47 @@ export async function createSaleInTx(
     }
   }
 
-  // 8. Invoice header.
-  const invoiceNumber = await nextInvoiceNumber(tx, input.branchId);
+  // 8. Invoice header with unified transaction tracking number
+  let invoiceNumber: string;
+  if (input.trackingNumber?.trim()) {
+    const cleanTracking = stripDocPrefix(input.trackingNumber.trim());
+    const baseTrackingNumber = /^\d+-\d+$/.test(cleanTracking)
+      ? cleanTracking.split("-")[0]
+      : cleanTracking;
+    const preferred = formatDocumentNumber(
+      baseTrackingNumber,
+      input.siblingIndex ?? undefined,
+    );
+    const existingNums = await tx
+      .select({ invoiceNumber: invoices.invoiceNumber })
+      .from(invoices)
+      .where(
+        or(
+          eq(invoices.invoiceNumber, baseTrackingNumber),
+          like(invoices.invoiceNumber, `${baseTrackingNumber}-%`),
+        ),
+      )
+      .for("update");
+    const used = new Set(existingNums.map((r) => r.invoiceNumber));
+    const needsSiblingSuffix =
+      used.has(preferred) ||
+      (input.siblingIndex == null && used.size > 0);
+    if (!needsSiblingSuffix) {
+      invoiceNumber = preferred;
+    } else {
+      let k = 1;
+      while (used.has(formatDocumentNumber(baseTrackingNumber, k))) {
+        k += 1;
+      }
+      invoiceNumber = formatDocumentNumber(baseTrackingNumber, k);
+    }
+  } else {
+    const baseTrackingNumber = await nextTransactionTrackingNumber(tx);
+    invoiceNumber = formatDocumentNumber(
+      baseTrackingNumber,
+      input.siblingIndex ?? undefined,
+    );
+  }
   const status = computeInvoiceStatus(
     toDbMoney(effectiveTotalD),
     toDbMoney(paidNow),
@@ -1788,6 +1828,7 @@ export async function createSaleInTx(
         movementType: "OUT",
         referenceType: "INVOICE",
         referenceId: invoiceId,
+        documentNumber: invoiceNumber,
         createdBy: actor.userId,
         notes: openingAllow
           ? "وضع الافتتاح — بيع/طلب لقناة استقبال مسموح بالسالب لصنف غير مُفتتَح"
@@ -1852,6 +1893,7 @@ export async function createSaleInTx(
         movementType: "OUT",
         referenceType: "INVOICE",
         referenceId: invoiceId,
+        documentNumber: invoiceNumber,
         createdBy: actor.userId,
         // البيع الحي صارم حتى إن كانت المادة «تُباع بالطلب». إعادة تشغيل الأوفلاين وحدها
         // تسجّل العجز لأن الواقعة حدثت فعلاً أثناء الانقطاع.

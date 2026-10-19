@@ -1765,6 +1765,7 @@ export async function returnSaleInTx(
           movementType: "RETURN",
           referenceType: "RETURN",
           referenceId: input.invoiceId,
+          documentNumber: inv.invoiceNumber,
           createdBy: actor.userId,
         });
       }
@@ -1777,6 +1778,7 @@ export async function returnSaleInTx(
           movementType: "RETURN",
           referenceType: "RETURN",
           referenceId: input.invoiceId,
+          documentNumber: inv.invoiceNumber,
           createdBy: actor.userId,
         });
       }

@@ -385,6 +385,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
             branchId: ob.branchId,
             targetQuantity: qty,
             referenceType: "OPENING",
+            documentNumber: `OPEN-${variantId}`,
             notes: "رصيد افتتاحي",
             createdBy: actor.userId,
           });
