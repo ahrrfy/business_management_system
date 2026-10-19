@@ -186,7 +186,7 @@ export default function Products() {
     setStudioTarget({
       productId: r.productId,
       variantId: r.variantId ?? null,
-      barcode: r.barcode ?? null,
+      barcode: r.barcode ?? r.barcodeAliases?.[0] ?? null,
     });
   }
 

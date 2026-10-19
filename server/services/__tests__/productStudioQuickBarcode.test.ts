@@ -657,6 +657,31 @@ describe("quickBarcodeLookup & quickSaveBarcodeProductImage", () => {
     });
     expect(managerLookup.product.unitId).toBe(807);
     expect(managerLookup.product.unitName).toBe("علبة");
+
+    // وحدة بلا باركود أساسي ولكن لها باركود بديل في productUnitBarcodes
+    await db().insert(s.productUnits).values({
+      id: 808,
+      variantId: 801,
+      unitName: "كرتونة",
+      barcode: null,
+      conversionFactor: "24",
+      isBaseUnit: false,
+      isActive: true,
+    });
+    await db().insert(s.productUnitBarcodes).values({
+      productUnitId: 808,
+      barcode: "ALIAS-BOX-808",
+      normalizedBarcode: "ALIAS-BOX-808",
+    });
+
+    const aliasOnlyLookup = await quickBarcodeLookup(photographer, {
+      productId: 801,
+      variantId: 801,
+      barcode: "ALIAS-BOX-808",
+    });
+    expect(aliasOnlyLookup.product.unitId).toBe(808);
+    expect(aliasOnlyLookup.product.unitName).toBe("كرتونة");
+    expect(aliasOnlyLookup.product.barcode).toBe("ALIAS-BOX-808");
   });
 });
 

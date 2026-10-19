@@ -259,7 +259,7 @@ describe("listProductsAdmin — حالة الصورة وفلتر الصور (ima
     expect(noDedicatedVariantImg.rows.map((r) => r.variantId)).toEqual(expect.arrayContaining([2, 10]));
 
     // عند إضافة صورة معتمدة للمنتج الناقص (بلا متغيّرات variantId = null) يصبح variantImageCount = 1 وhasVariantImage = true
-    // وحين تكون thumbDataUrl = null (الصور القديمة)، يعود المسار الخفيف /api/img/product/:id بدلاً من قراءة عمود url الضخم.
+    // وحين تكون thumbDataUrl = null (الصور القديمة)، يعود المسار الخفيف المحمي /api/img/inventory-product/:id بدلاً من المسار العلني.
     const [insertedLegacyImg] = await d.insert(s.productImages).values([
       {
         productId: 3,
@@ -278,7 +278,7 @@ describe("listProductsAdmin — حالة الصورة وفلتر الصور (ima
       hasVariantImage: true,
       imageCount: 1,
       variantImageCount: 1,
-      primaryImageThumb: `/api/img/product/${insertedLegacyImg.id}`,
+      primaryImageThumb: `/api/img/inventory-product/${insertedLegacyImg.id}`,
     });
   });
 });
