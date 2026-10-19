@@ -241,4 +241,38 @@ describe("ش٢ — مسوّدة المحطة", () => {
     expect(committed.printSale?.invoiceNumber).toBe(`${p.draftNumber}-2`);
     expect(committed.workOrders[0]?.orderNumber).toBe(`${p.draftNumber}-1`);
   });
+
+  it("C3: تثبيت مسوّدة قديمة (DRF-...) يخصّص رقماً موحّداً جديداً للمستندات المولّدة دون تمرير DRF-...", async () => {
+    await db().insert(s.shifts).values({
+      id: 1,
+      branchId: 1,
+      userId: 2,
+      shiftType: "RECEPTION",
+      status: "OPEN",
+      openingCash: "0.00",
+    });
+    const p = await promoteDraft(
+      { branchId: 1, header: { customerId: 1 }, lines: [LINES[0], LINES[2]] },
+      CASHIER,
+    );
+    await db()
+      .update(s.receptionDrafts)
+      .set({ draftNumber: "DRF-1-20261001-0001" })
+      .where(eq(s.receptionDrafts.id, p.draftId));
+
+    const committed = await commitDraft(
+      {
+        draftId: p.draftId,
+        version: p.version,
+        expectedTotal: p.total,
+        shiftId: 1,
+        collectNow: { amount: p.total, method: "CASH" },
+      },
+      CASHIER,
+    );
+    expect(committed.draftNumber).toBe("DRF-1-20261001-0001");
+    expect(committed.regularSale?.invoiceNumber).toMatch(/^\d+$/);
+    expect(Number(committed.regularSale?.invoiceNumber)).toBeGreaterThanOrEqual(100001);
+    expect(committed.workOrders[0]?.orderNumber).toBe(`${committed.regularSale?.invoiceNumber}-1`);
+  });
 });

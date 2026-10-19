@@ -559,7 +559,7 @@ export async function getAnomalyWatch(opts: {
             SELECT CAST(SUBSTRING_INDEX(i.invoiceNumber, '-', 1) AS UNSIGNED) AS baseSeq, i.invoiceDate AS docDate
             FROM invoices i
             WHERE SUBSTRING_INDEX(i.invoiceNumber, '-', 1) REGEXP '^[0-9]+$'
-              AND CAST(SUBSTRING_INDEX(i.invoiceNumber, '-', 1) AS UNSIGNED) >= 100000
+              AND CAST(SUBSTRING_INDEX(i.invoiceNumber, '-', 1) AS UNSIGNED) > COALESCE((SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor'), 100000)
               AND i.invoiceDate < ${toTs}
 
             UNION ALL
@@ -567,7 +567,7 @@ export async function getAnomalyWatch(opts: {
             SELECT CAST(SUBSTRING_INDEX(wo.orderNumber, '-', 1) AS UNSIGNED) AS baseSeq, wo.createdAt AS docDate
             FROM workOrders wo
             WHERE SUBSTRING_INDEX(wo.orderNumber, '-', 1) REGEXP '^[0-9]+$'
-              AND CAST(SUBSTRING_INDEX(wo.orderNumber, '-', 1) AS UNSIGNED) >= 100000
+              AND CAST(SUBSTRING_INDEX(wo.orderNumber, '-', 1) AS UNSIGNED) > COALESCE((SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor'), 100000)
               AND wo.createdAt < ${toTs}
 
             UNION ALL
@@ -575,7 +575,7 @@ export async function getAnomalyWatch(opts: {
             SELECT CAST(SUBSTRING_INDEX(rd.draftNumber, '-', 1) AS UNSIGNED) AS baseSeq, rd.createdAt AS docDate
             FROM receptionDrafts rd
             WHERE SUBSTRING_INDEX(rd.draftNumber, '-', 1) REGEXP '^[0-9]+$'
-              AND CAST(SUBSTRING_INDEX(rd.draftNumber, '-', 1) AS UNSIGNED) >= 100000
+              AND CAST(SUBSTRING_INDEX(rd.draftNumber, '-', 1) AS UNSIGNED) > COALESCE((SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor'), 100000)
               AND rd.createdAt < ${toTs}
 
             UNION ALL
@@ -583,7 +583,7 @@ export async function getAnomalyWatch(opts: {
             SELECT CAST(SUBSTRING_INDEX(po.poNumber, '-', 1) AS UNSIGNED) AS baseSeq, po.createdAt AS docDate
             FROM purchaseOrders po
             WHERE SUBSTRING_INDEX(po.poNumber, '-', 1) REGEXP '^[0-9]+$'
-              AND CAST(SUBSTRING_INDEX(po.poNumber, '-', 1) AS UNSIGNED) >= 100000
+              AND CAST(SUBSTRING_INDEX(po.poNumber, '-', 1) AS UNSIGNED) > COALESCE((SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor'), 100000)
               AND po.createdAt < ${toTs}
 
             UNION ALL
@@ -609,7 +609,7 @@ export async function getAnomalyWatch(opts: {
                   '-',
                   1
                 ) AS UNSIGNED
-              ) >= 100000
+              ) > COALESCE((SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor'), 100000 + oo.id)
               AND oo.createdAt < ${toTs}
 
             UNION ALL
@@ -618,7 +618,7 @@ export async function getAnomalyWatch(opts: {
             FROM receipts r
             WHERE r.voucherNumber IS NOT NULL
               AND SUBSTRING_INDEX(r.voucherNumber, '-', 1) REGEXP '^[0-9]+$'
-              AND CAST(SUBSTRING_INDEX(r.voucherNumber, '-', 1) AS UNSIGNED) >= 100000
+              AND CAST(SUBSTRING_INDEX(r.voucherNumber, '-', 1) AS UNSIGNED) > COALESCE((SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor'), 100000)
               AND r.createdAt < ${toTs}
           ) doc
           GROUP BY doc.baseSeq

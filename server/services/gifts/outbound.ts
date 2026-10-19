@@ -167,6 +167,7 @@ async function lockCosts(tx: Tx, variantIds: number[]): Promise<Map<number, stri
 async function applyOutboundEffect(
   tx: Tx,
   giftVoucherId: number,
+  giftNumber: string,
   branchId: number,
   customerId: number | null,
   qtyByVariant: Map<number, number>,
@@ -182,6 +183,7 @@ async function applyOutboundEffect(
       movementType: "OUT",
       referenceType: "GIFT_OUT",
       referenceId: giftVoucherId,
+      documentNumber: giftNumber,
       createdBy: actor.userId,
     });
   }
@@ -329,7 +331,7 @@ export async function createOutboundGift(input: CreateOutboundGiftInput, actor: 
 
     // أثرٌ فوريّ فقط للمُنجَز (auto-post). المعلَّق: صفر أثر حتى الاعتماد.
     if (!needsApproval) {
-      await applyOutboundEffect(tx, giftVoucherId, input.branchId, input.customerId ?? null, qtyByVariant, totalCost.toFixed(2), actor);
+      await applyOutboundEffect(tx, giftVoucherId, giftNumber, input.branchId, input.customerId ?? null, qtyByVariant, totalCost.toFixed(2), actor);
     }
 
     return {
@@ -467,6 +469,7 @@ export async function approveGift(giftId: number, actor: Actor): Promise<Approve
     await applyOutboundEffect(
       tx,
       giftId,
+      gift.giftNumber,
       Number(gift.branchId),
       gift.customerId != null ? Number(gift.customerId) : null,
       qtyByVariant,

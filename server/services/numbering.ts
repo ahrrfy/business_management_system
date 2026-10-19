@@ -82,6 +82,24 @@ export async function nextInvoiceNumber(tx: Tx, _branchId: number): Promise<stri
  * يُورَّث الرقم الأساسي تلقائياً لجميع المستندات والحركات الناتجة عنها.
  */
 export async function nextTransactionTrackingNumber(tx: Tx): Promise<string> {
+  const floorCheck: any = await tx.execute(sql`
+    SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor' LIMIT 1
+  `);
+  const floorRow = Array.isArray(floorCheck) ? floorCheck[0]?.[0] : floorCheck?.rows?.[0];
+  if (!floorRow) {
+    await tx.execute(sql`
+      INSERT INTO documentCounters (counterKey, lastValue)
+      SELECT 'unified_transaction_floor', 100000 + COALESCE(MAX(id), 0)
+      FROM onlineOrders
+      ON DUPLICATE KEY UPDATE lastValue = lastValue
+    `);
+    await tx.execute(sql`
+      INSERT INTO documentCounters (counterKey, lastValue)
+      SELECT 'unified_transaction', 100000 + COALESCE(MAX(id), 0)
+      FROM onlineOrders
+      ON DUPLICATE KEY UPDATE lastValue = GREATEST(lastValue, VALUES(lastValue))
+    `);
+  }
   return String(await nextCounterValue(tx, "unified_transaction"));
 }
 

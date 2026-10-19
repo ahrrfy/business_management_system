@@ -856,5 +856,60 @@ describe("EMPIRICAL CHALLENGER: UI Query Projections & Human Reference Integrity
       expect(pay?.invoiceId).toBeNull();
       expect(pay?.voucherNumber).toBe("VOUCH-ADVANCE-01");
     });
+
+    it("EMP-CST-05: Synthetic statement payments (COD, RETURN) include invoiceNumber from invoices table", async () => {
+      const d = db();
+      const now = new Date();
+
+      await d.insert(s.invoices).values({
+        id: 83,
+        invoiceNumber: "100043",
+        sourceType: "POS",
+        branchId: 1,
+        shiftId: 1,
+        customerId: 10,
+        subtotal: "80000.00",
+        total: "80000.00",
+        paidAmount: "50000.00",
+        returnedTotal: "30000.00",
+        status: "PAID",
+      });
+
+      await d.insert(s.accountingEntries).values([
+        {
+          id: 9001,
+          entryDate: now,
+          entryType: "PAYMENT_IN",
+          branchId: 1,
+          customerId: 10,
+          invoiceId: 83,
+          receiptId: null,
+          amount: "50000.00",
+          notes: "تحصيل مندوب التوصيل",
+          createdBy: 1,
+        },
+        {
+          id: 9002,
+          entryDate: now,
+          entryType: "RETURN",
+          branchId: 1,
+          customerId: 10,
+          invoiceId: 83,
+          receiptId: null,
+          amount: "-30000.00",
+          notes: "مرتجع مبيعات آجلة",
+          createdBy: 1,
+        },
+      ]);
+
+      const statement = await getCustomerStatement(10);
+      const codPay = statement?.payments.find((p) => p.paymentMethod === "COD" && p.invoiceId === 83);
+      const retPay = statement?.payments.find((p) => p.paymentMethod === "RETURN" && p.invoiceId === 83);
+
+      expect(codPay?.invoiceNumber).toBe("100043");
+      expect(codPay?.provenance?.docRefs?.find((r) => r.docType === "invoice")?.docNumber).toBe("INV-100043");
+      expect(retPay?.invoiceNumber).toBe("100043");
+      expect(retPay?.provenance?.docRefs?.find((r) => r.docType === "invoice")?.docNumber).toBe("INV-100043");
+    });
   });
 });

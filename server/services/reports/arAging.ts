@@ -507,9 +507,19 @@ export async function getCustomerStatement(
   if (from) codPayConds.push(sql`${accountingEntries.entryDate} >= ${`${from} 00:00:00`}`);
   if (to) codPayConds.push(sql`${accountingEntries.entryDate} < ${`${nextDayStr(to)} 00:00:00`}`);
   const codPayments = await db
-    .select({ id: accountingEntries.id, invoiceId: accountingEntries.invoiceId, amount: accountingEntries.amount, createdAt: accountingEntries.entryDate, notes: accountingEntries.notes, createdBy: accountingEntries.createdBy, createdByName: accountingEntries.createdByNameSnapshot })
+    .select({
+      id: accountingEntries.id,
+      invoiceId: accountingEntries.invoiceId,
+      invoiceNumber: invoices.invoiceNumber,
+      amount: accountingEntries.amount,
+      createdAt: accountingEntries.entryDate,
+      notes: accountingEntries.notes,
+      createdBy: accountingEntries.createdBy,
+      createdByName: accountingEntries.createdByNameSnapshot,
+    })
     .from(accountingEntries)
     .leftJoin(codStmtReceipts, eq(accountingEntries.receiptId, codStmtReceipts.id))
+    .leftJoin(invoices, eq(accountingEntries.invoiceId, invoices.id))
     .where(and(...codPayConds));
 
   // مرتجع البيع الائتماني يخفض ذمة العميل بلا receipt. نعرض قيد RETURN نفسه
@@ -526,6 +536,7 @@ export async function getCustomerStatement(
     .select({
       id: accountingEntries.id,
       invoiceId: accountingEntries.invoiceId,
+      invoiceNumber: invoices.invoiceNumber,
       amount: accountingEntries.amount,
       createdAt: accountingEntries.entryDate,
       notes: accountingEntries.notes,
@@ -533,17 +544,27 @@ export async function getCustomerStatement(
       createdByName: accountingEntries.createdByNameSnapshot,
     })
     .from(accountingEntries)
+    .leftJoin(invoices, eq(accountingEntries.invoiceId, invoices.id))
     .where(and(...returnConds));
 
   const correctionConds = [eq(accountingEntries.customerId, customerId), invoiceCorrectionArMovement()];
   if (from) correctionConds.push(sql`${accountingEntries.entryDate} >= ${`${from} 00:00:00`}`);
   if (to) correctionConds.push(sql`${accountingEntries.entryDate} < ${`${nextDayStr(to)} 00:00:00`}`);
   if (branchId) correctionConds.push(eq(accountingEntries.branchId, branchId));
-  const correctionMovements = await db.select({
-    id: accountingEntries.id, invoiceId: accountingEntries.invoiceId, amount: accountingEntries.amount,
-    createdAt: accountingEntries.entryDate, notes: accountingEntries.notes,
-    createdBy: accountingEntries.createdBy, createdByName: accountingEntries.createdByNameSnapshot,
-  }).from(accountingEntries).where(and(...correctionConds));
+  const correctionMovements = await db
+    .select({
+      id: accountingEntries.id,
+      invoiceId: accountingEntries.invoiceId,
+      invoiceNumber: invoices.invoiceNumber,
+      amount: accountingEntries.amount,
+      createdAt: accountingEntries.entryDate,
+      notes: accountingEntries.notes,
+      createdBy: accountingEntries.createdBy,
+      createdByName: accountingEntries.createdByNameSnapshot,
+    })
+    .from(accountingEntries)
+    .leftJoin(invoices, eq(accountingEntries.invoiceId, invoices.id))
+    .where(and(...correctionConds));
 
   // ب-١ (١٦/٨): قيود تصحيح الرصيد الافتتاحيّ **الواقعة داخل الفترة** حركةٌ في الكشف لا رصيدٌ
   // مُرحَّل (المُرحَّل صار مقصوراً على ما قبل `from`). بدون هذا السطر يفقد الكشف اتزانه:
@@ -853,12 +874,19 @@ export async function getCustomerStatement(
     payments: [
       ...correctionMovements.map((e) => {
         const item = {
-          id: -3_000_000_000 - Number(e.id), invoiceId: e.invoiceId == null ? null : Number(e.invoiceId),
+          id: -3_000_000_000 - Number(e.id),
+          invoiceId: e.invoiceId == null ? null : Number(e.invoiceId),
+          invoiceNumber: e.invoiceNumber ? String(e.invoiceNumber) : null,
           direction: (money(e.amount).isNegative() ? "IN" : "OUT") as "IN" | "OUT",
-          amount: money(e.amount).abs().toFixed(2), paymentMethod: "INVOICE_ADJUSTMENT",
-          status: "COMPLETED", createdAt: e.createdAt, isStandalone: false, voucherNumber: null,
+          amount: money(e.amount).abs().toFixed(2),
+          paymentMethod: "INVOICE_ADJUSTMENT",
+          status: "COMPLETED",
+          createdAt: e.createdAt,
+          isStandalone: false,
+          voucherNumber: null,
           description: e.notes ?? "تسوية ذمة الفاتورة دون حركة نقدية",
-          createdBy: e.createdBy == null ? null : Number(e.createdBy), createdByName: e.createdByName,
+          createdBy: e.createdBy == null ? null : Number(e.createdBy),
+          createdByName: e.createdByName,
         };
         return { ...item, provenance: buildPaymentProvenance(item) };
       }),
@@ -887,6 +915,7 @@ export async function getCustomerStatement(
         const item = {
           id: -Number(e.id),
           invoiceId: e.invoiceId ? Number(e.invoiceId) : null,
+          invoiceNumber: e.invoiceNumber ? String(e.invoiceNumber) : null,
           direction: "IN" as const,
           amount: String(e.amount),
           paymentMethod: "COD",
@@ -907,6 +936,7 @@ export async function getCustomerStatement(
         const item = {
           id: -1_000_000_000 - Number(e.id),
           invoiceId: e.invoiceId ? Number(e.invoiceId) : null,
+          invoiceNumber: e.invoiceNumber ? String(e.invoiceNumber) : null,
           direction: "IN" as const,
           amount: money(e.amount).abs().toFixed(2),
           paymentMethod: "RETURN",
@@ -927,6 +957,7 @@ export async function getCustomerStatement(
         const item = {
           id: -2_000_000_000 - Number(e.id),
           invoiceId: null as number | null,
+          invoiceNumber: null as string | null,
           direction: (money(e.amount).isNegative() ? "IN" : "OUT") as "IN" | "OUT",
           amount: money(e.amount).abs().toFixed(2),
           paymentMethod: "OPENING_ADJ",

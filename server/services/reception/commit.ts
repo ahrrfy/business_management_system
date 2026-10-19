@@ -230,10 +230,13 @@ export function materialize(
     const variantId = l.variantId != null ? Number(l.variantId) : null;
     const isServiceVariant = variantId != null && meta.serviceByVariant.get(variantId) === true;
     const factor = l.productUnitId != null ? (meta.factorByUnit.get(Number(l.productUnitId)) ?? 1) : 1;
+    const hasUnifiedDraftNumber = /^\d+$/.test(draft.draftNumber.trim());
     const hasRetail = goods.length > 0 || prints.length > 0;
-    const orderNumber = (customCount === 1 && !hasRetail)
-      ? formatDocumentNumber(draft.draftNumber, 0)
-      : formatDocumentNumber(draft.draftNumber, index + 1);
+    const orderNumber = hasUnifiedDraftNumber
+      ? (customCount === 1 && !hasRetail)
+        ? formatDocumentNumber(draft.draftNumber, 0)
+        : formatDocumentNumber(draft.draftNumber, index + 1)
+      : undefined;
     return {
       orderNumber,
       baseVariantId: variantId,
@@ -272,7 +275,7 @@ export function materialize(
 
   return {
     branchId: Number(draft.branchId),
-    trackingNumber: draft.draftNumber,
+    trackingNumber: /^\d+$/.test(draft.draftNumber.trim()) ? draft.draftNumber : null,
     shiftId: input.shiftId,
     customerId: draft.customerId != null ? Number(draft.customerId) : null,
     contactName: draft.customerId == null ? draft.contactName : null,

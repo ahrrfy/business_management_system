@@ -581,6 +581,7 @@ async function createStockExpenseTx(
       movementType: "OUT",
       referenceType: "EXPENSE",
       referenceId: expenseId,
+      documentNumber: input.referenceNumber?.trim() || `EXP-${expenseId}`,
       createdBy: actor.userId,
     });
   }
@@ -2183,6 +2184,7 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
           movementType: "IN",
           referenceType: "EXPENSE_CANCEL",
           referenceId: expenseId,
+          documentNumber: exp.referenceNumber?.trim() || `EXP-${expenseId}`,
           createdBy: actor.userId,
         });
       }

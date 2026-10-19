@@ -203,14 +203,14 @@ async function createConsignmentNoteTx(input: CreateConsignmentNoteInput, client
         // إيداع: حركة IN + ختم openedAt (الإيداع افتتاحٌ للرصيد بكمية موثَّقة).
         await applyMovement(tx, {
           variantId: l.variantId, branchId: input.branchId, baseQuantity, movementType: "IN",
-          referenceType: "CONSIGN_IN", referenceId: noteId, notes: `إيداع أمانة ${noteNumber}`,
+          referenceType: "CONSIGN_IN", referenceId: noteId, documentNumber: noteNumber, notes: `إيداع أمانة ${noteNumber}`,
           createdBy: actor.userId, stampOpened: true,
         });
       } else {
         // سحب: حركة OUT — فحص كفاية الرصيد تحت القفل مجاناً (لا سحب أكثر من المتبقي).
         await applyMovement(tx, {
           variantId: l.variantId, branchId: input.branchId, baseQuantity, movementType: "OUT",
-          referenceType: "CONSIGN_OUT", referenceId: noteId, notes: `سحب أمانة ${noteNumber}`,
+          referenceType: "CONSIGN_OUT", referenceId: noteId, documentNumber: noteNumber, notes: `سحب أمانة ${noteNumber}`,
           createdBy: actor.userId,
         });
       }

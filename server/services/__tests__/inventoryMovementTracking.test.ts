@@ -884,4 +884,86 @@ describe("Empirical Challenger — Milestone 2 Inventory Movement Tracking & Ato
       expect(res3.newQuantity).toBe(250);
     });
   });
+
+  it("DOCNUM-08: createSale with inherited trackingNumber (correction reissue) preserves base tracking number with -1, -2 sibling suffixes", async () => {
+    const initialSale = await createSale(
+      {
+        branchId: 1,
+        shiftId: 1,
+        customerId: 1,
+        sourceType: "POS",
+        lines: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "2",
+            unitPrice: "1000.00",
+          },
+        ],
+        payment: {
+          method: "CASH",
+          amount: "2000.00",
+        },
+        clientRequestId: `sale-base-${Date.now()}`,
+      },
+      cashierActor,
+    );
+
+    expect(initialSale.invoiceNumber).toMatch(/^\d+$/);
+
+    // First correction reissue inheriting the base trackingNumber
+    const corrSale1 = await createSale(
+      {
+        branchId: 1,
+        shiftId: 1,
+        customerId: 1,
+        sourceType: "POS",
+        trackingNumber: initialSale.invoiceNumber,
+        lines: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "3",
+            unitPrice: "1000.00",
+          },
+        ],
+        payment: {
+          method: "CASH",
+          amount: "3000.00",
+        },
+        clientRequestId: `sale-corr1-${Date.now()}`,
+      },
+      cashierActor,
+    );
+
+    expect(corrSale1.invoiceNumber).toBe(`${initialSale.invoiceNumber}-1`);
+
+    // Second correction reissue inheriting from the -1 invoice
+    const corrSale2 = await createSale(
+      {
+        branchId: 1,
+        shiftId: 1,
+        customerId: 1,
+        sourceType: "POS",
+        trackingNumber: corrSale1.invoiceNumber,
+        lines: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "4",
+            unitPrice: "1000.00",
+          },
+        ],
+        payment: {
+          method: "CASH",
+          amount: "4000.00",
+        },
+        clientRequestId: `sale-corr2-${Date.now()}`,
+      },
+      cashierActor,
+    );
+
+    expect(corrSale2.invoiceNumber).toBe(`${initialSale.invoiceNumber}-2`);
+  });
 });
+

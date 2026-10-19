@@ -1,7 +1,7 @@
 // إنشاء فاتورة بيع ذرّياً: idempotency + تسعير/تحويل الأسطر + بوّابة أقل-من-التكلفة +
 // تقريب نقدي IQD + حدّ الائتمان + خصم المخزون + قيد SALE + الدفعة/الذمم.
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, like, or, sql } from "drizzle-orm";
 import {
   couponRedemptions,
   coupons,
@@ -1491,10 +1491,46 @@ export async function createSaleInTx(
   }
 
   // 8. Invoice header with unified transaction tracking number
-  const baseTrackingNumber = input.trackingNumber?.trim()
-    ? stripDocPrefix(input.trackingNumber.trim())
-    : await nextTransactionTrackingNumber(tx);
-  const invoiceNumber = formatDocumentNumber(baseTrackingNumber, input.siblingIndex ?? undefined);
+  let invoiceNumber: string;
+  if (input.trackingNumber?.trim()) {
+    const cleanTracking = stripDocPrefix(input.trackingNumber.trim());
+    const baseTrackingNumber = /^\d+-\d+$/.test(cleanTracking)
+      ? cleanTracking.split("-")[0]
+      : cleanTracking;
+    const preferred = formatDocumentNumber(
+      baseTrackingNumber,
+      input.siblingIndex ?? undefined,
+    );
+    const existingNums = await tx
+      .select({ invoiceNumber: invoices.invoiceNumber })
+      .from(invoices)
+      .where(
+        or(
+          eq(invoices.invoiceNumber, baseTrackingNumber),
+          like(invoices.invoiceNumber, `${baseTrackingNumber}-%`),
+        ),
+      )
+      .for("update");
+    const used = new Set(existingNums.map((r) => r.invoiceNumber));
+    const needsSiblingSuffix =
+      used.has(preferred) ||
+      (input.siblingIndex == null && used.size > 0);
+    if (!needsSiblingSuffix) {
+      invoiceNumber = preferred;
+    } else {
+      let k = 1;
+      while (used.has(formatDocumentNumber(baseTrackingNumber, k))) {
+        k += 1;
+      }
+      invoiceNumber = formatDocumentNumber(baseTrackingNumber, k);
+    }
+  } else {
+    const baseTrackingNumber = await nextTransactionTrackingNumber(tx);
+    invoiceNumber = formatDocumentNumber(
+      baseTrackingNumber,
+      input.siblingIndex ?? undefined,
+    );
+  }
   const status = computeInvoiceStatus(
     toDbMoney(effectiveTotalD),
     toDbMoney(paidNow),

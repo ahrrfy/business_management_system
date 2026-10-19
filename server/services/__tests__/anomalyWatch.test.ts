@@ -429,6 +429,47 @@ describe("D6 — سلامة تسلسل الترقيم (كاشف عبث)", () => 
     expect(res.sequenceGaps.rows).toHaveLength(0);
     expect(res.kpis.sequenceGapDays).toBe(0);
   });
+
+  it("طلبات المتجر السابقة للقطع (ORD-100001..ORD-100005 بفجوة معرفات) لا تُطلق إنذار فجوة كاذب والعدّاد الموحّد يبدأ بعدها", async () => {
+    const d = db();
+    const now = new Date();
+    await d.insert(s.onlineOrders).values([
+      {
+        id: 1,
+        orderNumber: "ORD-100001",
+        branchId: 1,
+        customerId: 1,
+        contactName: "عميل 1",
+        contactPhone: "07700000001",
+        subtotal: "10.00",
+        total: "10.00",
+        status: "PENDING",
+        createdAt: now,
+      },
+      {
+        id: 5,
+        orderNumber: "ORD-100005",
+        branchId: 1,
+        customerId: 1,
+        contactName: "عميل 5",
+        contactPhone: "07700000005",
+        subtotal: "20.00",
+        total: "20.00",
+        status: "PENDING",
+        createdAt: now,
+      },
+    ]);
+
+    await setStock(1, 1, 100);
+    const s1 = await creditSale(actor1, { productUnitId: 1, quantity: "1" });
+    const s2 = await creditSale(actor1, { productUnitId: 1, quantity: "1" });
+    expect(s1.invoiceNumber).toBe("100006");
+    expect(s2.invoiceNumber).toBe("100007");
+
+    const res = await getAnomalyWatch({ from: TODAY(), to: TODAY() });
+    expect(res.sequenceGaps.rows).toHaveLength(0);
+    expect(res.kpis.sequenceGapDays).toBe(0);
+  });
 });
 
 describe("عزل الفرع + RBAC", () => {
