@@ -27,7 +27,7 @@ import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/ui/card";
-import { parseScan } from "@/lib/scanRouter";
+import { resolveOrderLookupBarcode } from "@/lib/scanRouter";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { getDeviceCode } from "@/lib/offline/outbox";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
@@ -86,8 +86,7 @@ export default function ReceptionHandoverPage() {
 
   const lookupOrder = useCallback(
     async (raw: string) => {
-      const r = parseScan(raw);
-      const orderNumber = r.type === "workOrder" || r.type === "invoice" || r.type === "consignment" ? r.number : raw.trim();
+      const orderNumber = resolveOrderLookupBarcode(raw);
       if (!orderNumber) return;
       try {
         const wo = await utils.workOrders.getByNumber.fetch({ orderNumber });

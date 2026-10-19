@@ -31,17 +31,23 @@ describe("stripDocPrefix — نزعٌ مشروطٌ بأن يكون الباقي 
     expect(stripDocPrefix("WO-1-20260811-00003")).toBe("WO-1-20260811-00003");
   });
 
-  it("يدعم البادئات الموسعة الجديدة للسندات والتحويلات والطلبات", () => {
+  it("يدعم البادئات الموسعة الجديدة للسندات والتحويلات والطلبات والإرساليات", () => {
     expect(docBarcode("VCH", "3001")).toBe("VCH-3001");
     expect(docBarcode("TRN", "4002")).toBe("TRN-4002");
     expect(docBarcode("EXC", "5003")).toBe("EXC-5003");
     expect(docBarcode("GIFT", "6004")).toBe("GIFT-6004");
     expect(docBarcode("ORD", "7005")).toBe("ORD-7005");
+    expect(docBarcode("CN", "100034")).toBe("CN-100034");
+    expect(docBarcode("CN", "CN-1-20261019-00001")).toBe("CN-1-20261019-00001");
+    expect(docBarcode("CN", "CNS-001")).toBe("CNS-001");
     expect(stripDocPrefix("VCH-3001")).toBe("3001");
     expect(stripDocPrefix("TRN-4002")).toBe("4002");
     expect(stripDocPrefix("EXC-5003")).toBe("5003");
     expect(stripDocPrefix("GIFT-6004")).toBe("6004");
     expect(stripDocPrefix("ORD-7005")).toBe("7005");
+    expect(stripDocPrefix("CN-100034")).toBe("100034");
+    expect(stripDocPrefix("CNS-100034")).toBe("100034");
+    expect(stripDocPrefix("CN-1-20261019-00001")).toBe("CN-1-20261019-00001");
   });
 
   it("يدعم نزع البادئة مع اللاحقة الفرعية للأشقاء واللواحق المتعددة (multi-hyphen suffixes)", () => {
@@ -49,6 +55,7 @@ describe("stripDocPrefix — نزعٌ مشروطٌ بأن يكون الباقي 
     expect(stripDocPrefix("WO-100001-2")).toBe("100001-2");
     expect(stripDocPrefix("PO-100001-3")).toBe("100001-3");
     expect(stripDocPrefix("ORD-100001-1")).toBe("100001-1");
+    expect(stripDocPrefix("CN-100001-1")).toBe("100001-1");
     expect(stripDocPrefix("WO-100001-1-1")).toBe("100001-1-1");
     expect(stripDocPrefix("INV-100001-2-1")).toBe("100001-2-1");
     expect(stripDocPrefix("RET-100001")).toBe("100001");

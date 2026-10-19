@@ -14,7 +14,7 @@
  *  7. باركود منتج (EAN-13 / ALR* / أي نص آخر)
  */
 import type { ScanResult } from "@shared/barcodeTypes";
-import { stripDocPrefix } from "@shared/documentNumber";
+import { docBarcode, stripDocPrefix } from "@shared/documentNumber";
 import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 
 const PIPE_PREFIX = /^(INV|WO|PO|QUO|CUST|EMP|USER)\|/;
@@ -58,3 +58,17 @@ export function parseScan(raw: string): ScanResult {
   // أي شيء آخر = باركود منتج (EAN-13، ALR0000001، باركود مصنّعي)
   return { type: "product", barcode: s };
 }
+
+/**
+ * يستخرج رمز البحث المُرسَل إلى `workOrders.getByNumber` مع الحفاظ على بادئة نوع المستند
+ * (`WO-` / `INV-` / `CN-`) عند مسح باركود 1D أو رمز QR موقَّع، ليتمكّن الخادم من تضييق نطاق البحث
+ * دون غموض مع الإبقاء على الأرقام الموحّدة العارية أو أرقام المتجر (`ORD-`) كما هي.
+ */
+export function resolveOrderLookupBarcode(raw: string): string {
+  const r = parseScan(raw);
+  if (r.type === "workOrder") return docBarcode("WO", r.number);
+  if (r.type === "invoice") return docBarcode("INV", r.number);
+  if (r.type === "consignment") return docBarcode("CN", r.number);
+  return normalizeKnownSystemBarcode(raw).trim();
+}
+

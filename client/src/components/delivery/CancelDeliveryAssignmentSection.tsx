@@ -7,7 +7,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ScanLine } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
-import { parseScan } from "@/lib/scanRouter";
+import { resolveOrderLookupBarcode } from "@/lib/scanRouter";
 import { storefrontUrl } from "@/lib/siteHosts";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -127,11 +127,7 @@ export function CancelDeliveryAssignmentSection({
   const lookupOrder = useCallback(
     async (raw: string) => {
       if (cancelAssignmentMut.isPending || reassignMut.isPending) return;
-      const r = parseScan(raw);
-      const orderNumber =
-        r.type === "workOrder" || r.type === "invoice" || r.type === "consignment"
-          ? r.number
-          : raw.trim();
+      const orderNumber = resolveOrderLookupBarcode(raw);
       if (!orderNumber) return;
 
       setIsSearching(true);

@@ -19,6 +19,7 @@ export const DOC_PREFIXES = [
   "EXC",
   "GIFT",
   "ORD",
+  "CN",
   "CNS",
   "DRF",
   "RET",
@@ -32,7 +33,9 @@ export function docBarcode(prefix: DocPrefix | string, documentNumber: string): 
   const n = documentNumber.trim();
   if (!n) return n;
   const p = prefix.toUpperCase();
-  return n.toUpperCase().startsWith(`${p}-`) ? n : `${p}-${n}`;
+  if (n.toUpperCase().startsWith(`${p}-`)) return n;
+  if ((p === "CN" || p === "CNS") && /^CNS?-/i.test(n)) return n;
+  return `${p}-${n}`;
 }
 
 /**
@@ -46,10 +49,10 @@ export function stripDocPrefix(raw: string): string {
   const s = String(raw ?? "").trim();
   if (!s) return "";
   // الصيغة التاريخية (مثل INV-1-20260818-00073) تبقى كما هي للبحث والمسح
-  if (/^(?:INV|WO|PO|QUO|VCH|TRN|EXC|GIFT|ORD|CNS|DRF|RET|PAY|REC)-\d+-\d{8}-\d+$/i.test(s)) {
+  if (/^(?:INV|WO|PO|QUO|VCH|TRN|EXC|GIFT|ORD|CNS?|DRF|RET|PAY|REC)-\d+-\d{8}-\d+$/i.test(s)) {
     return s;
   }
-  const m = /^(?:INV|WO|PO|QUO|VCH|TRN|EXC|GIFT|ORD|CNS|DRF|RET|PAY|REC)-(\d+(?:-\d+)*)$/i.exec(s);
+  const m = /^(?:INV|WO|PO|QUO|VCH|TRN|EXC|GIFT|ORD|CNS?|DRF|RET|PAY|REC)-(\d+(?:-\d+)*)$/i.exec(s);
   return m ? m[1] : s;
 }
 

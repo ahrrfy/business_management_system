@@ -19,6 +19,7 @@ import { getDb } from "../../db";
 import { appErrorMessage } from "@shared/errors";
 import { dispatchOnlineOrder } from "../storeAdmin/dispatchOnlineOrder";
 import {
+  collapseLinkedDeliveryBarcodeCandidates,
   namespaceAllowsTarget,
   prepareDeliveryBarcodeLookup,
   resolveUniqueDeliveryBarcodeTarget,
@@ -117,6 +118,7 @@ export async function dispatchByBarcode(
       ? db
           .select({
             id: onlineOrders.id,
+            invoiceId: onlineOrders.invoiceId,
             matchRank: sql<number>`CASE WHEN ${onlineOrders.orderNumber} IN (${cleanCode}, ${documentCode}, ${`ORD-${cleanCode}`}) THEN 100 ELSE 10 END`,
           })
           .from(onlineOrders)
@@ -138,6 +140,7 @@ export async function dispatchByBarcode(
       ? db
           .select({
             id: workOrders.id,
+            invoiceId: workOrders.invoiceId,
             matchRank: sql<number>`CASE WHEN ${workOrders.orderNumber} IN (${cleanCode}, ${documentCode}, ${`WO-${cleanCode}`}) THEN 100 ELSE 10 END`,
           })
           .from(workOrders)
@@ -159,6 +162,8 @@ export async function dispatchByBarcode(
       ? db
           .select({
             id: invoices.id,
+            sourceType: invoices.sourceType,
+            sourceId: invoices.sourceId,
             matchRank: sql<number>`CASE WHEN ${invoices.invoiceNumber} IN (${cleanCode}, ${documentCode}, ${`INV-${cleanCode}`}) THEN 100 ELSE 10 END`,
           })
           .from(invoices)
@@ -180,8 +185,12 @@ export async function dispatchByBarcode(
       ? db
           .select({
             id: deliveryConsignments.id,
+            workOrderId: deliveryConsignments.workOrderId,
+            invoiceId: deliveryConsignments.invoiceId,
+            sourceType: deliveryConsignments.sourceType,
+            sourceId: deliveryConsignments.sourceId,
             matchRank: sql<number>`CASE
-              WHEN ${deliveryConsignments.consignmentNumber} IN (${cleanCode}, ${systemCode}) THEN 100
+              WHEN ${deliveryConsignments.consignmentNumber} IN (${cleanCode}, ${systemCode}, ${documentCode}) THEN 100
               WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN 50
               WHEN ${strippedTrackingCode != null} AND TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode ?? ""} THEN 40
               ELSE 10 END`,
@@ -189,7 +198,10 @@ export async function dispatchByBarcode(
           .from(deliveryConsignments)
           .where(and(
             namespace === "CONSIGNMENT"
-              ? eq(deliveryConsignments.consignmentNumber, systemCode)
+              ? or(
+                  eq(deliveryConsignments.consignmentNumber, systemCode),
+                  eq(deliveryConsignments.consignmentNumber, documentCode),
+                )
               : namespace === "NUMERIC"
                 ? or(
                     numericId != null ? eq(deliveryConsignments.id, numericId) : sql`0=1`,
@@ -226,12 +238,22 @@ export async function dispatchByBarcode(
       : Promise.resolve([]),
   ]);
 
-  const selectedTarget = resolveUniqueDeliveryBarcodeTarget(cleanCode, [
-    ...onlineCandidates.map((row) => ({ kind: "ONLINE_ORDER" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
-    ...workOrderCandidates.map((row) => ({ kind: "WORK_ORDER" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
-    ...invoiceCandidates.map((row) => ({ kind: "INVOICE" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
-    ...consignmentCandidates.map((row) => ({ kind: "CONSIGNMENT" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
-  ]);
+  resolveUniqueDeliveryBarcodeTarget(
+    cleanCode,
+    consignmentCandidates.map((row) => ({ kind: "CONSIGNMENT" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
+  );
+
+  const selectedTarget = resolveUniqueDeliveryBarcodeTarget(
+    cleanCode,
+    collapseLinkedDeliveryBarcodeCandidates({
+      namespace,
+      onlineOrders: onlineCandidates,
+      workOrders: workOrderCandidates,
+      invoices: invoiceCandidates,
+      consignments: consignmentCandidates,
+      mapConsignmentToSource: false,
+    }),
+  );
 
   // ١. فحص طلبات المتجر (Online Orders)
   const [onlineOrder] = await db
