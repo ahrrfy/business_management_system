@@ -30,6 +30,8 @@ export interface UnifiedSearchInputProps {
   placeholder?: string;
   /** هل يقبل الماسح الضوئي للباركود ويعرض شارة الباركود؟ (الافتراضي: true) */
   barcode?: boolean;
+  /** الحد الأدنى لطول الباركود الممسوح (الافتراضي: 3؛ يُخفّض إلى 2 في وضع المسح الإلزامي) */
+  scanMinLength?: number;
   /** دالة مخصصة تُستدعى عند التقاط مسحة باركود كاملة. الافتراضي: يمرر الكود لـ onChange */
   onScan?: (code: string) => void;
   /** دالة تُستدعى عند ضغط Enter لكتابة بشرية صريحة */
@@ -80,6 +82,7 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
       onImmediateChange,
       placeholder,
       barcode = true,
+      scanMinLength,
       onScan,
       onSubmit,
       onClear,
@@ -175,7 +178,10 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
       [onScan, triggerChange],
     );
 
-    const barcodeInput = useBarcodeInput(handleScan, { enabled: barcode });
+    const barcodeInput = useBarcodeInput(handleScan, {
+      enabled: barcode,
+      minLength: scanMinLength,
+    });
 
     // مسح الحقل فوراً واستعادة التركيز
     const handleClear = React.useCallback(() => {
@@ -186,6 +192,10 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
 
     // معالجة ضغطات المفاتيح (Enter, Escape, والماسح الذكي)
     const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (barcode && e.key === "Escape") {
+        barcodeInput.reset();
+      }
+
       if (barcode && onScan) {
         barcodeInput.handleKeyDown(e, (scannedVal) => {
           if (debounceTimerRef.current) {

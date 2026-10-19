@@ -12,7 +12,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { Image as ImageIcon, ScanLine } from "lucide-react";
@@ -56,12 +55,6 @@ export function StudioStandaloneImageManagerCard() {
     }
   }
 
-  // استهلاك دفقة HID وتطبيع محارف الماسح على لوحة عربية قبل استدعاء حلّ الباركود.
-  const barcodeInput = useBarcodeInput((barcode) => {
-    setQuery(barcode);
-    void openByQuery(barcode);
-  });
-
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -83,13 +76,12 @@ export function StudioStandaloneImageManagerCard() {
                 onChange={setQuery}
                 debounceMs={0}
                 placeholder="امسح الباركود أو اكتب # ثم المعرّف"
-                onKeyDown={(e) => {
-                  barcodeInput.handleKeyDown(e, setQuery);
-                  if (e.defaultPrevented) return;
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    void openByQuery();
-                  }
+                onScan={(barcode) => {
+                  setQuery(barcode);
+                  void openByQuery(barcode);
+                }}
+                onSubmit={() => {
+                  void openByQuery();
                 }}
               />
             </div>
