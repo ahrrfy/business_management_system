@@ -1401,6 +1401,7 @@ export const inventoryMovements = mysqlTable(
     signedDelta: int("signedDelta"),
     referenceType: varchar("referenceType", { length: 24 }),
     referenceId: bigint("referenceId", { mode: "number" }),
+    documentNumber: varchar("documentNumber", { length: 100 }),
     relatedBranchId: bigint("relatedBranchId", { mode: "number" }),
     notes: text("notes"),
     createdBy: int("createdBy").references(() => users.id),
@@ -1411,6 +1412,7 @@ export const inventoryMovements = mysqlTable(
     branchIdx: index("idx_move_branch").on(table.branchId),
     typeIdx: index("idx_move_type").on(table.movementType),
     refIdx: index("idx_move_ref").on(table.referenceType, table.referenceId),
+    docNumIdx: index("idx_move_doc_number").on(table.documentNumber),
     dateIdx: index("idx_move_date").on(table.createdAt),
     // S1 (٢٩/٦/٢٦): حركات الفرع بالتاريخ (كاردكس/إعادة طلب) + تسوية الجرد لكل صنف. هجرة 0031.
     branchDateIdx: index("idx_move_branch_date").on(

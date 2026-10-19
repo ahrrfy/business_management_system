@@ -5,6 +5,7 @@ import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import { cancelDeliveryAssignment } from "../delivery/cancellation";
 import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
+import { returnByBarcode } from "../delivery/barcodeReturnService";
 import { listConsignmentsForParty } from "../delivery/queries";
 import { moduleAccessAllowed } from "@shared/permissions";
 
@@ -26,6 +27,7 @@ const TABLES = [
   "invoices",
   "onlineOrderItems",
   "onlineOrders",
+  "workOrders",
   "branchStock",
   "productUnits",
   "productVariants",
@@ -1077,6 +1079,296 @@ describe("إلغاء إسناد إرسالية مرتبطة بطلب متجر إ
     expect(updatedOrder.deliveryPartyId).toBeNull();
     expect(new Date(updatedOrder.reservationExpiresAt!).getTime()).toBeGreaterThan(now);
   });
+
+  it("يحلّ البحث بالباركود للمعاملة الموحدة (100034 / ORD-100034 / CN-100034 / INV-100034) دون خطأ غموض عندما تشترك الفاتورة والإرسالية وطلب المتجر بالرقم الأساسي", async () => {
+    const d = db();
+    await d.insert(s.invoices).values({
+      id: 303,
+      invoiceNumber: "100034",
+      sourceType: "ONLINE",
+      sourceId: "online-dispatch:303",
+      branchId: 1,
+      customerId: 1,
+      priceTier: "RETAIL",
+      subtotal: "40000.00",
+      taxAmount: "0.00",
+      discountAmount: "0.00",
+      total: "45000.00",
+      costTotal: "20000.00",
+      paidAmount: "0.00",
+      returnedTotal: "0.00",
+      status: "PENDING",
+      createdBy: 6,
+    });
+
+    await d.insert(s.onlineOrders).values({
+      id: 303,
+      orderNumber: "ORD-100034",
+      customerId: 1,
+      branchId: 1,
+      invoiceId: 303,
+      subtotal: "40000.00",
+      shippingCost: "5000.00",
+      taxAmount: "0.00",
+      total: "45000.00",
+      status: "SHIPPED",
+      deliveryPartyId: 1,
+    });
+
+    await d.insert(s.deliveryConsignments).values({
+      id: 303,
+      consignmentNumber: "100034",
+      branchId: 1,
+      partyId: 1,
+      invoiceId: 303,
+      sourceType: "ONLINE_ORDER",
+      sourceId: 303,
+      codAmount: "45000.00",
+      collectedAmount: "0.00",
+      parcelStatus: "ASSIGNED",
+      status: "DISPATCHED",
+      dispatchedBy: 6,
+    });
+
+    const api = caller("cashier", null, 6);
+
+    const byBare = await api.workOrders.getByNumber({ orderNumber: "100034" });
+    expect(byBare).toMatchObject({
+      kind: "onlineOrder",
+      id: 303,
+      orderNumber: "ORD-100034",
+      activeConsignment: expect.objectContaining({
+        id: 303,
+        consignmentNumber: "100034",
+      }),
+    });
+
+    const byOrd = await api.workOrders.getByNumber({ orderNumber: "ORD-100034" });
+    expect(byOrd).toMatchObject({
+      kind: "onlineOrder",
+      id: 303,
+      orderNumber: "ORD-100034",
+    });
+
+    const byCn = await api.workOrders.getByNumber({ orderNumber: "CN-100034" });
+    expect(byCn).toMatchObject({
+      kind: "onlineOrder",
+      id: 303,
+      orderNumber: "ORD-100034",
+      activeConsignment: expect.objectContaining({
+        id: 303,
+        consignmentNumber: "100034",
+      }),
+    });
+
+    const byInv = await api.workOrders.getByNumber({ orderNumber: "INV-100034" });
+    expect(byInv).toMatchObject({
+      kind: "invoice",
+      id: 303,
+      orderNumber: "100034",
+      activeConsignment: expect.objectContaining({
+        id: 303,
+        consignmentNumber: "100034",
+      }),
+    });
+  });
+
+  it("يتتبّع الفاتورة المستبدلة بالتصحيح (SUPERSEDED) ويطويها مع الإرسالية المعاد ربطها عند المسح بالرقم الأساسي أو INV-", async () => {
+    const d = db();
+    await d.insert(s.invoices).values({
+      id: 304,
+      invoiceNumber: "100040",
+      sourceType: "POS",
+      branchId: 1,
+      customerId: 1,
+      priceTier: "RETAIL",
+      subtotal: "25000.00",
+      taxAmount: "0.00",
+      discountAmount: "0.00",
+      total: "25000.00",
+      costTotal: "10000.00",
+      paidAmount: "0.00",
+      returnedTotal: "0.00",
+      status: "SUPERSEDED",
+      createdBy: 6,
+    });
+    await d.insert(s.invoices).values({
+      id: 305,
+      invoiceNumber: "100040-1",
+      sourceType: "POS",
+      branchId: 1,
+      customerId: 1,
+      priceTier: "RETAIL",
+      subtotal: "30000.00",
+      taxAmount: "0.00",
+      discountAmount: "0.00",
+      total: "30000.00",
+      costTotal: "12000.00",
+      paidAmount: "0.00",
+      returnedTotal: "0.00",
+      status: "PENDING",
+      correctionOfInvoiceId: 304,
+      createdBy: 6,
+    });
+    await d
+      .update(s.invoices)
+      .set({ correctedByInvoiceId: 305 })
+      .where(eq(s.invoices.id, 304));
+
+    await d.insert(s.deliveryConsignments).values({
+      id: 304,
+      consignmentNumber: "100040",
+      branchId: 1,
+      partyId: 1,
+      invoiceId: 305,
+      sourceType: "INVOICE",
+      sourceId: 305,
+      codAmount: "30000.00",
+      collectedAmount: "0.00",
+      parcelStatus: "ASSIGNED",
+      status: "DISPATCHED",
+      dispatchedBy: 6,
+    });
+
+    const api = caller("cashier", null, 6);
+
+    const byBare = await api.workOrders.getByNumber({ orderNumber: "100040" });
+    expect(byBare).toMatchObject({
+      kind: "invoice",
+      id: 305,
+      orderNumber: "100040-1",
+      activeConsignment: expect.objectContaining({
+        id: 304,
+        consignmentNumber: "100040",
+      }),
+    });
+
+    const byInv = await api.workOrders.getByNumber({ orderNumber: "INV-100040" });
+    expect(byInv).toMatchObject({
+      kind: "invoice",
+      id: 305,
+      orderNumber: "100040-1",
+      activeConsignment: expect.objectContaining({
+        id: 304,
+        consignmentNumber: "100040",
+      }),
+    });
+  });
+
+  it("يفضّل الإرسالية النشطة (100041-1) على الإرسالية السابقة المنتهية (100041) عند استلام المرتجع بالباركود دون تضارب", async () => {
+    const d = db();
+    await d.insert(s.invoices).values([
+      {
+        id: 306,
+        invoiceNumber: "100041",
+        sourceType: "WORKORDER",
+        sourceId: "WO-306",
+        branchId: 1,
+        customerId: 1,
+        priceTier: "RETAIL",
+        subtotal: "15000.00",
+        taxAmount: "0.00",
+        discountAmount: "0.00",
+        total: "15000.00",
+        costTotal: "8000.00",
+        paidAmount: "0.00",
+        returnedTotal: "15000.00",
+        status: "RETURNED",
+        createdBy: 6,
+      },
+      {
+        id: 307,
+        invoiceNumber: "100041-1",
+        sourceType: "WORKORDER",
+        sourceId: "WO-306:R1",
+        branchId: 1,
+        customerId: 1,
+        priceTier: "RETAIL",
+        subtotal: "15000.00",
+        taxAmount: "0.00",
+        discountAmount: "0.00",
+        total: "15000.00",
+        costTotal: "8000.00",
+        paidAmount: "0.00",
+        returnedTotal: "0.00",
+        status: "PENDING",
+        createdBy: 6,
+      },
+    ]);
+
+    await d.insert(s.workOrders).values({
+      id: 306,
+      orderNumber: "100041",
+      branchId: 1,
+      customerId: 1,
+      title: "مطبوعات تجارية",
+      quantity: 1,
+      salePrice: "15000.00",
+      deposit: "0.00",
+      status: "READY",
+      invoiceId: 307,
+      reopenSeq: 1,
+      createdBy: 6,
+    });
+
+    await d.insert(s.deliveryConsignments).values([
+      {
+        id: 306,
+        consignmentNumber: "100041",
+        branchId: 1,
+        partyId: 1,
+        invoiceId: 306,
+        workOrderId: 306,
+        sourceType: "WORK_ORDER",
+        sourceId: 306,
+        codAmount: "15000.00",
+        collectedAmount: "0.00",
+        parcelStatus: "RETURNED",
+        status: "RETURNED",
+        dispatchedBy: 6,
+      },
+      {
+        id: 307,
+        consignmentNumber: "100041-1",
+        branchId: 1,
+        partyId: 2,
+        invoiceId: 307,
+        workOrderId: 306,
+        sourceType: "WORK_ORDER",
+        sourceId: 1000000306,
+        codAmount: "15000.00",
+        collectedAmount: "0.00",
+        parcelStatus: "OUT_FOR_DELIVERY",
+        status: "DISPATCHED",
+        dispatchedBy: 6,
+      },
+    ]);
+
+    await d.insert(s.deliveryLedgerEntries).values({
+      consignmentId: 307,
+      partyId: 2,
+      branchId: 1,
+      entryType: "COD_ASSIGNED",
+      amount: "15000.00",
+      eventKey: "CN:307:COD_ASSIGNED",
+      actorUserId: 6,
+    });
+    await d
+      .update(s.deliveryParties)
+      .set({ currentBalance: "15000.00" })
+      .where(eq(s.deliveryParties.id, 2));
+
+    const returned = await returnByBarcode(
+      { barcode: "100041", returnReason: "رفض الاستلام" },
+      CASHIER,
+    );
+    expect(returned).toMatchObject({
+      consignmentId: 307,
+      consignmentNumber: "100041-1",
+      invoiceId: 307,
+    });
+  });
 });
+
 
 

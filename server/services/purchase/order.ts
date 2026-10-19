@@ -22,6 +22,7 @@ import { replacePurchaseOrderRevisionAllocationsTx } from "./requisitions";
 import { appendPurchaseOrderEventTx, createPurchaseOrderRevisionTx } from "./revisions";
 import { openShiftIdTx } from "../shiftService";
 import { PETTY_CASH_LIMIT_IQD } from "../expenseService";
+import { nextCounterValue } from "../numbering";
 import { recordedPurchaseShippingPaymentTx } from "./shippingPayment";
 import { recognizeShippingAndCustomsInTx } from "./automaticInvoicePosting";
 
@@ -469,14 +470,8 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
 
     const ymd = toDateStr().replace(/-/g, "");
     const prefix = `PO-${input.branchId}-${ymd}-`;
-    const lastRows = await tx
-      .select({ n: purchaseOrders.poNumber })
-      .from(purchaseOrders)
-      .where(like(purchaseOrders.poNumber, `${prefix}%`))
-      .orderBy(desc(purchaseOrders.id))
-      .for("update")
-      .limit(1);
-    const seq = lastRows[0]?.n ? parseInt(lastRows[0].n.slice(prefix.length), 10) + 1 : 1;
+    const counterKey = `purchase_order_${input.branchId}_${ymd}`;
+    const seq = await nextCounterValue(tx, counterKey);
     const poNumber = prefix + String(seq).padStart(5, "0");
 
     const insRes = await tx.insert(purchaseOrders).values({

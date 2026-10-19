@@ -283,6 +283,7 @@ export async function setWorkOrderMaterialsInTx(
             movementType: "OUT",
             referenceType: "WORK_ORDER",
             referenceId: input.workOrderId,
+            documentNumber: wo.orderNumber,
             createdBy: actor.userId,
             // allowBackorder يخص البيع؛ زيادة مواد أمر بدأ يجب أن تحترم الرصيد
             // والحجوزات دائماً.
@@ -302,6 +303,7 @@ export async function setWorkOrderMaterialsInTx(
               historicalValue: lineCostDelta.abs(),
               referenceType: "WORK_ORDER",
               referenceId: input.workOrderId,
+              documentNumber: wo.orderNumber,
               createdBy: actor.userId,
               notes: `تعديل بنود أمر الشغل ${wo.orderNumber}`,
             });

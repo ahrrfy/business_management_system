@@ -4,38 +4,20 @@ import { giftVouchers } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { ensureAndLockBranchStockRows } from "../inventory/stockLock";
 import { toDateStr } from "../money";
+import { nextCounterValue } from "../numbering";
 
 export type GiftDirection = "OUT" | "IN";
 export type GiftStatus = "DRAFT" | "PENDING_APPROVAL" | "APPROVED" | "DELIVERED" | "CANCELLED" | "REVERSED";
 
 /**
- * رقم سند الهدية: `GFT-<branchId>-<YYYYMMDD>-<seq5>`. قفل تسمية (GET_LOCK) + مسح البادئة تحت `.for("update")`
- * لاشتقاق التسلسل، والقيد الفريد `uq_gift_number` حارسٌ أخير (التصادم اللحظيّ يُعاد في الراوتر عبر isDupEntry).
- * نمط `nextConsignmentNumber` حرفياً.
+ * رقم سند الهدية: `GFT-<branchId>-<YYYYMMDD>-<seq5>` عبر عدّاد documentCounters الذرّي لمنع سباقات التزامن.
  */
 export async function nextGiftNumber(tx: Tx, branchId: number): Promise<string> {
   const ymd = toDateStr().replace(/-/g, "");
   const prefix = `GFT-${branchId}-${ymd}-`;
-  const lockName = `numbering:gift:${branchId}:${ymd}`;
-  const lockRes: any = await tx.execute(sql`SELECT GET_LOCK(${lockName}, 5) AS locked`);
-  const lockedRow = Array.isArray(lockRes) ? lockRes[0]?.[0] : lockRes?.rows?.[0];
-  if (!lockedRow || Number(lockedRow.locked) !== 1) {
-    throw new Error(`numbering lock timeout for ${lockName}`);
-  }
-  try {
-    const rows = await tx
-      .select({ n: giftVouchers.giftNumber })
-      .from(giftVouchers)
-      .where(like(giftVouchers.giftNumber, `${prefix}%`))
-      .orderBy(desc(giftVouchers.id))
-      .for("update")
-      .limit(1);
-    const last = rows[0]?.n;
-    const seq = last ? parseInt(last.slice(prefix.length), 10) + 1 : 1;
-    return prefix + String(seq).padStart(5, "0");
-  } finally {
-    await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
-  }
+  const counterKey = `gift_${branchId}_${ymd}`;
+  const seq = await nextCounterValue(tx, counterKey);
+  return prefix + String(seq).padStart(5, "0");
 }
 
 /**

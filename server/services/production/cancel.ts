@@ -115,6 +115,7 @@ export async function cancelProduction(productionOrderId: number, actor: Actor &
         respectProductBackorder: false,
         referenceType: "PRODUCTION_CANCEL",
         referenceId: productionOrderId,
+        documentNumber: po.docNumber,
         createdBy: actor.userId,
       });
     }
@@ -139,6 +140,7 @@ export async function cancelProduction(productionOrderId: number, actor: Actor &
         historicalValue: returned.value,
         referenceType: "PRODUCTION_CANCEL",
         referenceId: productionOrderId,
+        documentNumber: po.docNumber,
         createdBy: actor.userId,
       });
     }

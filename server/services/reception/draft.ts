@@ -28,6 +28,7 @@ import { type Actor, withTx } from "../tx";
 import { isBackgroundOperationActive, runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
 import { heldNetOfDraft } from "../deposits";
 import { checkIdempotency, findIdempotentRefId, idempotencyHash, withIdempotency } from "../idempotency";
+import { nextCounterValue, nextTransactionTrackingNumber } from "../numbering";
 import { logAuditTx, type AuditMetadata } from "../auditService";
 
 export interface DraftLineInput {
@@ -65,20 +66,9 @@ export interface DraftHeaderInput {
 
 const DRAFT_TTL_MS = 24 * 60 * 60 * 1000; // ق٤ — مُعتمَد افتراضياً
 
-/** DRF-{فرع}-{YYYYMMDD}-{NNNNN} تحت قفل (نمط nextWorkOrderNumber حرفياً). */
-async function nextDraftNumber(tx: Tx, branchId: number): Promise<string> {
-  const ymd = toDateStr().replace(/-/g, "");
-  const prefix = `DRF-${branchId}-${ymd}-`;
-  const rows = await tx
-    .select({ n: receptionDrafts.draftNumber })
-    .from(receptionDrafts)
-    .where(like(receptionDrafts.draftNumber, `${prefix}%`))
-    .orderBy(desc(receptionDrafts.id))
-    .for("update")
-    .limit(1);
-  const last = rows[0]?.n;
-  const seq = last ? parseInt(last.slice(prefix.length), 10) + 1 : 1;
-  return prefix + String(seq).padStart(5, "0");
+/** ترقيم ذرّي عبر عدّاد المعاملة الموحّد لمنع سباقات التزامن وتوريث الرقم لكافة المستندات المتفرّعة (R1). */
+async function nextDraftNumber(tx: Tx, _branchId?: number): Promise<string> {
+  return await nextTransactionTrackingNumber(tx);
 }
 
 /** إعادة الحساب الخادمية — الإجماليات المخزَّنة ذاكرةُ عرضٍ لا مصدرُ قرار (§٥.١). */

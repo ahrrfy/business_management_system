@@ -22,15 +22,18 @@ const actor2b2 = { userId: 2, branchId: 2 };
 const actor4 = { userId: 4, branchId: 1 };
 
 const TABLES = [
-  "voucherCategories",
-  "idempotencyKeys",
   "consignmentNoteLines",
   "consignmentNotes",
+  "invoiceItems",
   "accountingEntries",
   "receipts",
   "inventoryMovements",
-  "invoiceItems",
   "invoices",
+  "workOrders",
+  "receptionDrafts",
+  "purchaseOrders",
+  "onlineOrders",
+  "reservationStock",
   "branchStock",
   "productPrices",
   "productUnits",
@@ -38,11 +41,13 @@ const TABLES = [
   "products",
   "categories",
   "shifts",
+  "idempotencyKeys",
+  "voucherCategories",
   "customers",
   "suppliers",
-  "branches",
-  "users",
   "auditLogs",
+  "users",
+  "branches",
 ];
 
 function db() {
@@ -54,7 +59,7 @@ function db() {
 async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
+  for (const t of TABLES) await d.execute(sql.raw(`DELETE FROM \`${t}\``));
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
 }
 
@@ -82,6 +87,7 @@ async function seedBase() {
     { productUnitId: 2, priceTier: "RETAIL", price: "120.00" },
   ]);
   await d.insert(s.customers).values({ id: 1, name: "عميل آجل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+  await d.insert(s.suppliers).values({ id: 1, name: "مورد عينة", currentBalance: "0" });
 }
 
 async function setStock(variantId: number, branchId: number, qty: number) {
@@ -300,6 +306,169 @@ describe("D6 — سلامة تسلسل الترقيم (كاشف عبث)", () => 
     expect(after.sequenceGaps.rows[0].maxSeq - after.sequenceGaps.rows[0].minSeq).toBe(2);
     expect(after.sequenceGaps.rows[0].missing).toBe(1);
     expect(after.kpis.sequenceGapDays).toBe(1);
+  });
+
+  it("المعاملات المزيجة (أمر شغل، فاتورة، أمر شراء، فاتورة تسليم لاحقة) لا تُطلق فجوات كاذبة وتكشف الحذف الفعلي", async () => {
+    const d = db();
+    // إدراج مستندات متتالية من أنواع مختلفة تشترك في نفس العدّاد العالمي الموحد:
+    // 100001: أمر شغل
+    await d.insert(s.workOrders).values({
+      orderNumber: "100001",
+      branchId: 1,
+      title: "أمر شغل لوحات",
+      status: "IN_PROGRESS",
+      createdBy: 1,
+      createdAt: new Date(),
+    });
+
+    // 100002: فاتورة مبيعات
+    await d.insert(s.invoices).values({
+      invoiceNumber: "100002",
+      sourceType: "POS",
+      branchId: 1,
+      subtotal: "50.00",
+      total: "50.00",
+      status: "PAID",
+      createdBy: 1,
+      invoiceDate: new Date(),
+    });
+
+    // 100003: أمر شراء
+    await d.insert(s.purchaseOrders).values({
+      poNumber: "100003",
+      supplierId: 1,
+      branchId: 1,
+      subtotal: "120.00",
+      total: "120.00",
+      status: "DRAFT",
+      createdBy: 1,
+      createdAt: new Date(),
+    });
+
+    // 100001-1: فاتورة تسليم متفرعة من أمر الشغل 100001 (لاحقة فرعية)
+    await d.insert(s.invoices).values({
+      invoiceNumber: "100001-1",
+      sourceType: "WORKORDER",
+      branchId: 1,
+      subtotal: "80.00",
+      total: "80.00",
+      status: "PAID",
+      createdBy: 1,
+      invoiceDate: new Date(),
+    });
+
+    const res = await getAnomalyWatch({ from: TODAY(), to: TODAY() });
+    // صفر فجوات كاذبة
+    expect(res.sequenceGaps.rows).toHaveLength(0);
+    expect(res.kpis.sequenceGapDays).toBe(0);
+
+    // عبث حقيقي: حذف الفاتورة الوسطى 100002 مباشرة من القاعدة
+    await d.execute(sql`DELETE FROM invoices WHERE invoiceNumber = '100002'`);
+
+    const afterDelete = await getAnomalyWatch({ from: TODAY(), to: TODAY() });
+    expect(afterDelete.sequenceGaps.rows).toHaveLength(1);
+    expect(afterDelete.sequenceGaps.rows[0].branchId).toBe(0);
+    expect(afterDelete.sequenceGaps.rows[0].branchName).toBe("كل الفروع (تسلسل عامّ موحد)");
+    // المستند 100001 ممثل بأمر الشغل وفاتورة التسليم ويُعدّ مرة واحدة، والمستند 100003 بأمر الشراء
+    expect(afterDelete.sequenceGaps.rows[0].actualCount).toBe(2);
+    expect(afterDelete.sequenceGaps.rows[0].minSeq).toBe(100001);
+    expect(afterDelete.sequenceGaps.rows[0].maxSeq).toBe(100003);
+    expect(afterDelete.sequenceGaps.rows[0].missing).toBe(1);
+    expect(afterDelete.kpis.sequenceGapDays).toBe(1);
+  });
+
+  it("دورات الحياة متعددة الأيام لا تسبب فجوات كاذبة في أيام التسليم اللاحقة", async () => {
+    const d = db();
+    // اليوم الأول (قبل 3 أيام): إنشاء أمر شغل 100010
+    const day1 = new Date(Date.now() - 3 * 86400 * 1000);
+    await d.insert(s.workOrders).values({
+      orderNumber: "100010",
+      branchId: 1,
+      title: "أمر شغل قديم",
+      status: "DELIVERED",
+      createdBy: 1,
+      createdAt: day1,
+    });
+
+    // اليوم الحالي: تسليم أمر الشغل بفاتورة 100010-1 وإنشاء معاملتين جديدتين 100020 و 100021
+    await d.insert(s.invoices).values({
+      invoiceNumber: "100010-1",
+      sourceType: "WORKORDER",
+      branchId: 1,
+      subtotal: "90.00",
+      total: "90.00",
+      status: "PAID",
+      createdBy: 1,
+      invoiceDate: new Date(),
+    });
+
+    await d.insert(s.invoices).values({
+      invoiceNumber: "100020",
+      sourceType: "POS",
+      branchId: 1,
+      subtotal: "30.00",
+      total: "30.00",
+      status: "PAID",
+      createdBy: 1,
+      invoiceDate: new Date(),
+    });
+
+    await d.insert(s.invoices).values({
+      invoiceNumber: "100021",
+      sourceType: "POS",
+      branchId: 1,
+      subtotal: "40.00",
+      total: "40.00",
+      status: "PAID",
+      createdBy: 1,
+      invoiceDate: new Date(),
+    });
+
+    const res = await getAnomalyWatch({ from: TODAY(), to: TODAY() });
+    // الفحص لليوم الحالي لا يعتبر 100010 قد بدأت اليوم، فلا يقيس مدى كاذباً بين 100010 و 100020
+    expect(res.sequenceGaps.rows).toHaveLength(0);
+    expect(res.kpis.sequenceGapDays).toBe(0);
+  });
+
+  it("طلبات المتجر السابقة للقطع (ORD-100001..ORD-100005 بفجوة معرفات) لا تُطلق إنذار فجوة كاذب والعدّاد الموحّد يبدأ بعدها", async () => {
+    const d = db();
+    const now = new Date();
+    await d.insert(s.onlineOrders).values([
+      {
+        id: 1,
+        orderNumber: "ORD-100001",
+        branchId: 1,
+        customerId: 1,
+        contactName: "عميل 1",
+        contactPhone: "07700000001",
+        subtotal: "10.00",
+        total: "10.00",
+        status: "PENDING",
+        createdAt: now,
+      },
+      {
+        id: 5,
+        orderNumber: "ORD-100005",
+        branchId: 1,
+        customerId: 1,
+        contactName: "عميل 5",
+        contactPhone: "07700000005",
+        subtotal: "20.00",
+        total: "20.00",
+        status: "PENDING",
+        createdAt: now,
+      },
+    ]);
+
+    await setStock(1, 1, 100);
+    const s1 = await creditSale(actor1, { productUnitId: 1, quantity: "1" });
+    const s2 = await creditSale(actor1, { productUnitId: 1, quantity: "1" });
+    expect(s1.invoiceNumber).toBe("100006");
+    expect(s2.invoiceNumber).toBe("100007");
+
+    const res = await getAnomalyWatch({ from: TODAY(), to: TODAY() });
+    expect(res.sequenceGaps.rows).toHaveLength(0);
+    expect(res.kpis.sequenceGapDays).toBe(0);
   });
 });
 

@@ -1,6 +1,7 @@
 // إنشاء أمر شغل (RECEIVED) — لا يُستهلَك المخزون بعد؛ عربون مقبوض عند الإنشاء إن وُجد.
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { formatDocumentNumber } from "@shared/documentNumber";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import {
   productionRecipeLines,
@@ -527,7 +528,12 @@ export async function createWorkOrderInTx(
     });
   }
 
-  const orderNumber = await nextWorkOrderNumber(tx, input.branchId);
+  const rawOrderNumber =
+    input.orderNumber?.trim() || (await nextWorkOrderNumber(tx, input.branchId));
+  const orderNumber =
+    !input.orderNumber?.trim() && input.siblingIndex != null
+      ? formatDocumentNumber(rawOrderNumber, input.siblingIndex)
+      : rawOrderNumber;
   const customizationSnapshot = input.customizationText?.trim() || null;
   const insRes = await tx.insert(workOrders).values({
     orderNumber,

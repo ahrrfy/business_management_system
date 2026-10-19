@@ -248,6 +248,7 @@ export const invoiceInventoryExecutor: EffectExecutor = async (tx, effects, run)
         movementType: "RETURN",
         referenceType: "RETURN",
         referenceId: run.documentId,
+        documentNumber: ctx.invoice.invoiceNumber,
         createdBy: run.actor.userId,
         notes: flavor === "CANCEL" ? "إلغاء فاتورة بيع — إرجاع كامل البضاعة للمخزون" : undefined,
       });
@@ -263,6 +264,7 @@ export const invoiceInventoryExecutor: EffectExecutor = async (tx, effects, run)
         movementType: "RETURN",
         referenceType: "RETURN",
         referenceId: run.documentId,
+        documentNumber: ctx.invoice.invoiceNumber,
         createdBy: run.actor.userId,
         notes: flavor === "CANCEL" ? "إلغاء فاتورة بيع — إعادة مواد الخدمة بقيمتها التاريخية" : undefined,
       });

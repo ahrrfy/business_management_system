@@ -107,7 +107,9 @@ interface MovementRow {
   approvedByName: string | null;
   referenceNumber: string | null;
   invoiceId: number | null;
+  invoiceNumber?: string | null;
   workOrderId: number | null;
+  workOrderNumber?: string | null;
   reservationId: number | null;
   expenseId: number | null;
   expensePayee: string | null;
@@ -291,11 +293,23 @@ export default function Treasury({ operationalOnly = false }: { operationalOnly?
               {row.original.expenseId && (
                 <span>EXP#{row.original.expenseId}</span>
               )}
-              {row.original.invoiceId && (
-                <span>INV#{row.original.invoiceId}</span>
+              {(row.original.invoiceNumber || row.original.invoiceId) && (
+                <span>
+                  {row.original.invoiceNumber
+                    ? row.original.invoiceNumber.startsWith("INV-")
+                      ? row.original.invoiceNumber
+                      : `INV-${row.original.invoiceNumber}`
+                    : `INV#${row.original.invoiceId}`}
+                </span>
               )}
-              {row.original.workOrderId && (
-                <span>WO#{row.original.workOrderId}</span>
+              {(row.original.workOrderNumber || row.original.workOrderId) && (
+                <span>
+                  {row.original.workOrderNumber
+                    ? row.original.workOrderNumber.startsWith("WO-")
+                      ? row.original.workOrderNumber
+                      : `WO-${row.original.workOrderNumber}`
+                    : `WO#${row.original.workOrderId}`}
+                </span>
               )}
               {row.original.reservationId && (
                 <span>RSV#{row.original.reservationId}</span>
@@ -308,8 +322,17 @@ export default function Treasury({ operationalOnly = false }: { operationalOnly?
               <div
                 className="max-w-44 truncate text-muted-foreground"
                 title={row.original.referenceNumber}
+                dir="rtl"
               >
-                مرجع: {row.original.referenceNumber}
+                {(row.original.paymentMethod === "CARD" ||
+                  row.original.paymentMethod === "TRANSFER" ||
+                  row.original.paymentMethod === "WALLET" ||
+                  row.original.paymentMethod === "CHECK") &&
+                !/^(CD|TF|CH|DLV-FEE|CANCEL)-/i.test(
+                  row.original.referenceNumber.trim(),
+                )
+                  ? `مرجع بنكي / بطاقة: ${row.original.referenceNumber}`
+                  : `مرجع: ${row.original.referenceNumber}`}
               </div>
             )}
           </div>

@@ -32,7 +32,7 @@ import { userNameSnapshot } from "../userSnapshot";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import { deliveryWorkOrderSaleIntent } from "./posting";
 import { titleForChannel } from "@shared/productChannelTitles";
-import { workOrderInvoiceSourceId } from "../workOrder/helpers";
+import { workOrderInvoiceSourceId, resolveDeliveryInvoiceNumber, resolveConsignmentNumber } from "../workOrder/helpers";
 import {
   assertExternalTrackingRefAvailable,
   normalizeExternalTrackingRef,
@@ -335,7 +335,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     // هي حائز النقد/الطرد، وليست بديلاً عن هوية العميل على المستند التجاري.
     const invoiceNumber = reusingInvoice
       ? priorInvoice!.invoiceNumber
-      : await nextInvoiceNumber(tx, Number(wo.branchId));
+      : await resolveDeliveryInvoiceNumber(tx, wo.orderNumber, Number(wo.branchId));
     const invStatus = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(depositPaid));
     // نسبة البيع لمنشئ الطلب لا للمُرسِل (نفس قاعدة deliver.ts — العمولة تتبع البائع الأصليّ).
     const sellerUserId = wo.createdBy != null ? Number(wo.createdBy) : actor.userId;
@@ -466,7 +466,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
 
     const consignmentNumber = reusableCn
       ? reusableCn.consignmentNumber
-      : await nextConsignmentNumber(tx, Number(wo.branchId));
+      : await resolveConsignmentNumber(tx, wo.orderNumber, Number(wo.branchId));
     const codPositive = codAmount.gt(0);
     // الأجرة تُسوَّى لحظة الإرسال متى كان النقد بأيدينا أو لا توريدَ يُنتظَر:
     //   COUNTER ⇒ قبضناها أمانةً في الاستقبال والمندوب واقفٌ الآن ⇒ تُدفَع له نقداً من الدرج.

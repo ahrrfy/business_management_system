@@ -475,6 +475,7 @@ export async function cancelWorkOrderInTx(
           historicalValue: returned.value,
           referenceType: "WORK_ORDER_CANCEL",
           referenceId: workOrderId,
+          documentNumber: wo.orderNumber,
           createdBy: actor.userId,
         });
       }

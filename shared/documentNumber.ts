@@ -9,7 +9,23 @@
  */
 
 /** بادئات المستندات المعروفة للنظام (نفس مجموعة `scanRouter`). */
-export const DOC_PREFIXES = ["INV", "WO", "PO", "QUO", "VCH", "TRN", "EXC", "GIFT", "ORD", "CNS"] as const;
+export const DOC_PREFIXES = [
+  "INV",
+  "WO",
+  "PO",
+  "QUO",
+  "VCH",
+  "TRN",
+  "EXC",
+  "GIFT",
+  "ORD",
+  "CN",
+  "CNS",
+  "DRF",
+  "RET",
+  "PAY",
+  "REC",
+] as const;
 export type DocPrefix = (typeof DOC_PREFIXES)[number];
 
 /** يبني رمز الآلة: `INV-10023`. الرقم التاريخيّ المُبدوء ببادئته يُعاد كما هو بلا تكرارها. */
@@ -17,7 +33,9 @@ export function docBarcode(prefix: DocPrefix | string, documentNumber: string): 
   const n = documentNumber.trim();
   if (!n) return n;
   const p = prefix.toUpperCase();
-  return n.toUpperCase().startsWith(`${p}-`) ? n : `${p}-${n}`;
+  if (n.toUpperCase().startsWith(`${p}-`)) return n;
+  if ((p === "CN" || p === "CNS") && /^CNS?-/i.test(n)) return n;
+  return `${p}-${n}`;
 }
 
 /**
@@ -28,7 +46,32 @@ export function docBarcode(prefix: DocPrefix | string, documentNumber: string): 
  * نفسه. بلا هذا الشرط كان المسح على مستندٍ قديم يبحث عن «1-20260818-00073» فلا يجد شيئاً.
  */
 export function stripDocPrefix(raw: string): string {
-  const s = raw.trim();
-  const m = /^(INV|WO|PO|QUO|VCH|TRN|EXC|GIFT|ORD|CNS)-(\d+)$/i.exec(s);
-  return m ? m[2] : s;
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  // الصيغة التاريخية (مثل INV-1-20260818-00073) تبقى كما هي للبحث والمسح
+  if (/^(?:INV|WO|PO|QUO|VCH|TRN|EXC|GIFT|ORD|CNS?|DRF|RET|PAY|REC)-\d+-\d{8}-\d+$/i.test(s)) {
+    return s;
+  }
+  const m = /^(?:INV|WO|PO|QUO|VCH|TRN|EXC|GIFT|ORD|CNS?|DRF|RET|PAY|REC)-(\d+(?:-\d+)*)$/i.exec(s);
+  return m ? m[1] : s;
 }
+
+/**
+ * ينسّق رقم المستند المشتقّ من رقم التتبع الأساسي للمعاملة (R1).
+ *
+ * - المستند الوحيد (أو siblingIndex = 0/undefined): يحمل رقم التتبع الأساسي مباشرةً (`100001`).
+ * - عند تعدد المستندات من نفس النوع في المعاملة (أكثر من أمر شغل في سلة واحدة، أو أكثر من إرسالية):
+ *   يحمل كل مستند لاحقة فرعية (`100001-1`, `100001-2`) لمنع تصادم القيود الفريدة (`UNIQUE`)
+ *   مع بقاء الرقم الأساسي هو مرجع التتبع والعرض.
+ */
+export function formatDocumentNumber(baseTrackingNumber: string, siblingIndex?: number): string {
+  const base = String(baseTrackingNumber ?? "").trim();
+  if (!base) {
+    return "";
+  }
+  if (typeof siblingIndex === "number" && Number.isInteger(siblingIndex) && siblingIndex > 0) {
+    return `${base}-${siblingIndex}`;
+  }
+  return base;
+}
+

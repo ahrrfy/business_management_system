@@ -2507,6 +2507,13 @@
 			"when": 1788148853000,
 			"tag": "0395_lifecycle_operation_permissions",
 			"breakpoints": true
+		},
+		{
+			"idx": 397,
+			"version": "5",
+			"when": 1788148855000,
+			"tag": "0397_inventory_movements_document_number",
+			"breakpoints": true
 		}
 	]
 }

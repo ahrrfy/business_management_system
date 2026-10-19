@@ -73,7 +73,7 @@ function transaction(rows: unknown[][], permitReceipts = false) {
     };
     return query;
   });
-  const execute = vi.fn(async () => [[{ locked: 1 }]]);
+  const execute = vi.fn(async () => [[{ locked: 1, v: 1 }]]);
   state.tx = { select, insert, update, execute } as unknown as Tx;
   return { select, insert, update, execute, writes };
 }

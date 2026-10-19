@@ -1,5 +1,20 @@
-import { desc, like, sql } from "drizzle-orm";
-import { consignmentNotes, invoices } from "../../drizzle/schema";
+import { like, sql } from "drizzle-orm";
+import {
+  consignmentNotes,
+  deliveryConsignments,
+  deliveryRemittances,
+  exchangeTransactions,
+  giftVouchers,
+  goodsReceiptReversals,
+  goodsReceipts,
+  productionOrders,
+  purchaseOrders,
+  quotations,
+  receipts,
+  reservations,
+  stockTransfers,
+  supplierInvoices,
+} from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { toDateStr } from "./money";
 
@@ -10,28 +25,102 @@ import { toDateStr } from "./money";
 const COUNTER_FLOORS: Record<string, number> = {
   invoice: 10000,
   workOrder: 5000,
+  unified_transaction: 100000,
+  online_order: 100000,
 };
+
+interface PrefixFloorSpec {
+  table: any;
+  column: any;
+  prefix: string;
+}
+
+const DAILY_BRANCH_COUNTER_SPECS: ReadonlyArray<{
+  keyPrefix: string;
+  docPrefix: string;
+  table: any;
+  column: any;
+}> = [
+  { keyPrefix: "consignment", docPrefix: "CN", table: deliveryConsignments, column: deliveryConsignments.consignmentNumber },
+  { keyPrefix: "remittance", docPrefix: "DR", table: deliveryRemittances, column: deliveryRemittances.remittanceNumber },
+  { keyPrefix: "purchase_order", docPrefix: "PO", table: purchaseOrders, column: purchaseOrders.poNumber },
+  { keyPrefix: "grn", docPrefix: "GRN", table: goodsReceipts, column: goodsReceipts.receiptNumber },
+  { keyPrefix: "grr", docPrefix: "GRR", table: goodsReceiptReversals, column: goodsReceiptReversals.reversalNumber },
+  { keyPrefix: "supplier_invoice", docPrefix: "SIN", table: supplierInvoices, column: supplierInvoices.invoiceNumber },
+  { keyPrefix: "quotation", docPrefix: "QUO", table: quotations, column: quotations.quoteNumber },
+  { keyPrefix: "reservation", docPrefix: "RES", table: reservations, column: reservations.reservationNumber },
+  { keyPrefix: "voucher_receipt", docPrefix: "RV", table: receipts, column: receipts.voucherNumber },
+  { keyPrefix: "voucher_payment", docPrefix: "PV", table: receipts, column: receipts.voucherNumber },
+  { keyPrefix: "cash_drop", docPrefix: "CD", table: receipts, column: receipts.referenceNumber },
+  { keyPrefix: "treasury_funding", docPrefix: "TF", table: receipts, column: receipts.referenceNumber },
+  { keyPrefix: "exchange", docPrefix: "EX", table: exchangeTransactions, column: exchangeTransactions.txnNumber },
+  { keyPrefix: "gift", docPrefix: "GFT", table: giftVouchers, column: giftVouchers.giftNumber },
+  { keyPrefix: "production_order", docPrefix: "PRD", table: productionOrders, column: productionOrders.docNumber },
+  { keyPrefix: "consign_note", docPrefix: "CSN", table: consignmentNotes, column: consignmentNotes.noteNumber },
+];
+
+function resolvePrefixFloorSpec(counterKey: string): PrefixFloorSpec | null {
+  for (const spec of DAILY_BRANCH_COUNTER_SPECS) {
+    const match = new RegExp(`^${spec.keyPrefix}_(\\d+)_(\\d{8})$`).exec(counterKey);
+    if (match) {
+      return {
+        table: spec.table,
+        column: spec.column,
+        prefix: `${spec.docPrefix}-${match[1]}-${match[2]}-`,
+      };
+    }
+  }
+  const transferMatch = /^stock_transfer_(\d{4})$/.exec(counterKey);
+  if (transferMatch) {
+    return {
+      table: stockTransfers,
+      column: stockTransfers.transferNumber,
+      prefix: `TRF-${transferMatch[1]}-`,
+    };
+  }
+  return null;
+}
+
+/**
+ * يستخرج أعلى لاحقة رقمية قائمة فعلياً في جدول المستندات لنفس البادئة (بلا قفل FOR UPDATE
+ * لمنع أقفال الفجوات والجمود المتبادل)، على غرار cashTransferService وcashHandoverService.
+ * يضمن هذا عدم تصادم العدّاد مع مستندات أُنشئت قبل ترحيل العدّادات أو تراجعت معاملتها.
+ */
+async function resolveExistingCounterFloor(tx: Tx, counterKey: string): Promise<number> {
+  const spec = resolvePrefixFloorSpec(counterKey);
+  if (!spec || typeof (tx as any).select !== "function") return 0;
+  const rows: Array<{ n: string | null }> = await (tx as any)
+    .select({ n: spec.column })
+    .from(spec.table)
+    .where(like(spec.column, `${spec.prefix}%`));
+  let maxSeq = 0;
+  for (const row of rows) {
+    const suffix = String(row.n ?? "").slice(spec.prefix.length);
+    if (!/^\d+$/.test(suffix)) continue;
+    const seq = Number.parseInt(suffix, 10);
+    if (Number.isSafeInteger(seq) && seq > maxSeq) maxSeq = seq;
+  }
+  return maxSeq;
+}
 
 /**
  * حجزٌ ذرّيّ لرقمٍ تسلسليّ من عدّاد المستندات (هجرة 0211).
  *
- * عمليةٌ واحدة: `INSERT … ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(lastValue + 1)`
- * — MySQL يضبط `LAST_INSERT_ID` للجلسة بالقيمة الجديدة، فنقرؤها بلا مسحٍ ولا قفلٍ صريح.
- * ⚠️ الرقم مُستهلَكٌ فور الحجز: تراجعُ المعاملة **لا** يعيده (سلوك العدّادات المتعارف عليه في
- * MySQL وPostgres معاً). أثرُه ثغرةٌ في التسلسل عند فشلٍ نادر — وهو مقبولٌ ومقصود: البديل
- * (إعادة استعمال الأرقام) يخلق رقمَين لمستندَين مختلفين عبر الزمن وهو أخطر بكثير محاسبياً.
+ * عمليةٌ واحدة: `INSERT … ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(GREATEST(lastValue + 1, floor + 1))`
+ * — MySQL يضبط `LAST_INSERT_ID` للجلسة بالقيمة الجديدة، فنقرؤها بلا مسحٍ ولا قفلٍ صريح على جدول المستندات.
  */
 export async function nextCounterValue(tx: Tx, counterKey: string): Promise<number> {
-  // أرضيّة البدء تعيش في الكود لا في الهجرة وحدها: قاعدةٌ تُبنى بـ`db:push` (الاختبارات وأيّ
-  // بيئةٍ جديدة) لا تمرّ بسطور البذر في SQL، فكانت تبدأ من ١ بينما الإنتاج من ١٠٠٠١ — سلوكان
-  // مختلفان لنفس الشيفرة. الآن الأرضيّة تُطبَّق في مسار الإدراج نفسه فيتطابق كل البيئات.
-  const floor = COUNTER_FLOORS[counterKey] ?? 0;
+  // أرضيّة البدء تعيش في الكود + أعلى رقم قائم فعلياً في جدول المستندات لنفس البادئة:
+  // يمنع ER_DUP_ENTRY عندما تكون هناك مستندات سابقة في نفس اليوم/الشهر قبل بدء العدّاد أو بعد تراجع معاملة.
+  const staticFloor = COUNTER_FLOORS[counterKey] ?? 0;
+  const dynamicFloor = await resolveExistingCounterFloor(tx, counterKey);
+  const floor = Math.max(staticFloor, dynamicFloor);
   // `LAST_INSERT_ID(expr)` تضبط قيمة الجلسة **وتُعيدها** — فالفرعان (إدراجٌ أوّل / زيادةٌ على
-  // قائم) يضبطانها معاً في عبارةٍ ذرّيّةٍ واحدة، بلا قراءةٍ سابقة ولا قفلٍ صريح.
+  // قائم) يضبطانها معاً في عبارةٍ ذرّيّةٍ واحدة، بلا قفلٍ على جدول الهدف.
   await tx.execute(sql`
     INSERT INTO documentCounters (counterKey, lastValue)
     VALUES (${counterKey}, LAST_INSERT_ID(${floor + 1}))
-    ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(lastValue + 1)
+    ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(GREATEST(lastValue + 1, ${floor + 1}))
   `);
   const res: any = await tx.execute(sql`SELECT LAST_INSERT_ID() AS v`);
   const row = Array.isArray(res) ? res[0]?.[0] : res?.rows?.[0];
@@ -76,30 +165,48 @@ export async function nextInvoiceNumber(tx: Tx, _branchId: number): Promise<stri
 }
 
 /**
+ * حجزٌ ذرّيّ لرقم المعاملة الموحّد (R1).
+ * يبدأ من 100001 (أرضية 100000) من عدّاد `unified_transaction` العالمي في `documentCounters`.
+ * يُورَّث الرقم الأساسي تلقائياً لجميع المستندات والحركات الناتجة عنها.
+ */
+export async function nextTransactionTrackingNumber(tx: Tx): Promise<string> {
+  const floorCheck: any = await tx.execute(sql`
+    SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor' LIMIT 1
+  `);
+  const floorRow = Array.isArray(floorCheck) ? floorCheck[0]?.[0] : floorCheck?.rows?.[0];
+  if (!floorRow) {
+    await tx.execute(sql`
+      INSERT INTO documentCounters (counterKey, lastValue)
+      SELECT 'unified_transaction_floor', GREATEST(
+        100000 + COALESCE(MAX(id), 0),
+        COALESCE(MAX(CASE WHEN orderNumber REGEXP '^ORD-[0-9]+$' THEN CAST(SUBSTRING(orderNumber, 5) AS UNSIGNED) ELSE 0 END), 0)
+      )
+      FROM onlineOrders
+      ON DUPLICATE KEY UPDATE lastValue = lastValue
+    `);
+    await tx.execute(sql`
+      INSERT INTO documentCounters (counterKey, lastValue)
+      SELECT 'unified_transaction', GREATEST(
+        100000 + COALESCE(MAX(id), 0),
+        COALESCE(MAX(CASE WHEN orderNumber REGEXP '^ORD-[0-9]+$' THEN CAST(SUBSTRING(orderNumber, 5) AS UNSIGNED) ELSE 0 END), 0)
+      )
+      FROM onlineOrders
+      ON DUPLICATE KEY UPDATE lastValue = GREATEST(lastValue, VALUES(lastValue))
+    `);
+  }
+  return String(await nextCounterValue(tx, "unified_transaction"));
+}
+
+export { formatDocumentNumber } from "../../shared/documentNumber";
+
+/**
  * بضاعة الأمانة (ش٢): رقم سند حركة أمانة يوميّ لكل فرع — CSN-{branchId}-{YYYYMMDD}-{seq}.
- * نفس حماية السباق (GET_LOCK + قيد فريد uq_consign_note_number يبقى الحارس الأخير + إعادة محاولة الراوتر).
+ * حجز ذرّي عبر عدّاد documentCounters لمنع سباقات التزامن.
  */
 export async function nextConsignmentNumber(tx: Tx, branchId: number): Promise<string> {
   const ymd = toDateStr().replace(/-/g, "");
   const prefix = `CSN-${branchId}-${ymd}-`;
-  const lockName = `numbering:consign:${branchId}:${ymd}`;
-  const lockRes: any = await tx.execute(sql`SELECT GET_LOCK(${lockName}, 5) AS locked`);
-  const lockedRow = Array.isArray(lockRes) ? lockRes[0]?.[0] : lockRes?.rows?.[0];
-  if (!lockedRow || Number(lockedRow.locked) !== 1) {
-    throw new Error(`numbering lock timeout for ${lockName}`);
-  }
-  try {
-    const rows = await tx
-      .select({ n: consignmentNotes.noteNumber })
-      .from(consignmentNotes)
-      .where(like(consignmentNotes.noteNumber, `${prefix}%`))
-      .orderBy(desc(consignmentNotes.id))
-      .for("update")
-      .limit(1);
-    const last = rows[0]?.n;
-    const seq = last ? parseInt(last.slice(prefix.length), 10) + 1 : 1;
-    return prefix + String(seq).padStart(5, "0");
-  } finally {
-    await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
-  }
+  const counterKey = `consign_note_${branchId}_${ymd}`;
+  const seq = await nextCounterValue(tx, counterKey);
+  return prefix + String(seq).padStart(5, "0");
 }

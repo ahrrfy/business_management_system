@@ -31,6 +31,7 @@ import {
 } from "./accounting/postingEngine";
 import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
+import { nextCounterValue } from "./numbering";
 import {
   assertCashTransferAvailable,
   assertTreasuryOutException,
@@ -60,39 +61,13 @@ export interface CashDropResult {
   idempotent?: boolean;
 }
 
-/** ترقيم سند السحب CD-فرع-تاريخ-تسلسل (idempotent على مستوى الفرع/اليوم عبر GET_LOCK + آخر رقم). */
+/** ترقيم سند السحب CD-فرع-تاريخ-تسلسل عبر عدّاد documentCounters الذرّي. */
 async function nextDropNumber(tx: Tx, branchId: number): Promise<string> {
   const ymd = toDateStr().replace(/-/g, "");
   const prefix = `CD-${branchId}-${ymd}-`;
-  const lockName = `cash_drop:${branchId}:${ymd}`;
-  const lockRes: any = await tx.execute(
-    sql`SELECT GET_LOCK(${lockName}, 5) AS locked`,
-  );
-  const lockedRow = Array.isArray(lockRes)
-    ? lockRes[0]?.[0]
-    : lockRes?.rows?.[0];
-  if (!lockedRow || Number(lockedRow.locked) !== 1) {
-    throw new Error(`cash drop numbering lock timeout for ${lockName}`);
-  }
-  try {
-    // نأخذ أعلى **لاحقة رقمية بحتة** لا أعلى id: مرجعٌ حرّ (سند/بطاقة) أُدخِل كـ«CD-فرع-تاريخ-ABC»
-    // قد يحمل id أعلى ولاحقةً غير رقمية ⇒ parseInt=NaN ⇒ «CD-…-NaN» وتصادم dedupe. نتجاهل غير الرقميّ.
-    const rows = await tx
-      .select({ n: receipts.referenceNumber })
-      .from(receipts)
-      .where(like(receipts.referenceNumber, `${prefix}%`));
-    let maxSeq = 0;
-    for (const r of rows) {
-      const suffix = String(r.n ?? "").slice(prefix.length);
-      if (/^\d+$/.test(suffix)) {
-        const n = parseInt(suffix, 10);
-        if (n > maxSeq) maxSeq = n;
-      }
-    }
-    return prefix + String(maxSeq + 1).padStart(4, "0");
-  } finally {
-    await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
-  }
+  const counterKey = `cash_drop_${branchId}_${ymd}`;
+  const seq = await nextCounterValue(tx, counterKey);
+  return prefix + String(seq).padStart(4, "0");
 }
 
 /**

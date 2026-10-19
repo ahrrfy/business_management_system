@@ -25,6 +25,7 @@ import { PredictiveConsignmentSearchInput, type PredictiveItem } from "@/compone
 import { filterOperationalRows, mergeDisplayedSelection } from "@/lib/deliveryOperations";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { CompanyStatementImport } from "@/components/delivery/CompanyStatementImport";
+import { resolveOrderLookupBarcode } from "@/lib/scanRouter";
 
 export type PartyObligation = RouterOutputs["delivery"]["obligations"][number];
 
@@ -313,7 +314,7 @@ export function ReceptionCollectSection({
 
   const handleCollectBarcode = useCallback(async (raw: string) => {
     if (draftBusyRef.current) return;
-    const code = raw.trim();
+    const code = resolveOrderLookupBarcode(raw);
     if (!code) return;
     setIsSearchingCollect(true);
     try {

@@ -224,7 +224,8 @@ export async function returnConsignment(
       if (qty <= 0) continue;
       await applyMovement(tx, {
         variantId: vid, branchId: Number(cn.branchId), baseQuantity: qty,
-        movementType: "RETURN", referenceType: "DELIVERY_RETURN", referenceId: consignmentId, createdBy: actor.userId,
+        movementType: "RETURN", referenceType: "DELIVERY_RETURN", referenceId: consignmentId,
+        documentNumber: cn.consignmentNumber, createdBy: actor.userId,
       });
     }
 
