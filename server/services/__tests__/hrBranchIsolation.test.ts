@@ -510,11 +510,99 @@ describe("recruitment branch isolation", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     await expect(
       anonymous.recruitment.submit({
-        name: "Email is not collected publicly",
+        name: "Malformed email",
         phone: "+9647701234567",
-        email: "applicant@example.com",
-      } as never),
+        email: "not-an-email",
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const submitted = await anonymous.recruitment.submit({
+      name: "علي حسين كاظم العبيدي",
+      phone: "+9647701234567",
+      whatsappPhone: "+9647801234567",
+      email: "applicant@example.com",
+      birthDate: "1998-05-14",
+      gender: "ذكر",
+      maritalStatus: "أعزب",
+      governorate: "بغداد",
+      district: "الكرادة",
+      degree: "بكالوريوس",
+      major: "تصميم كرافيك",
+      availabilityStatus: "available",
+      experience: "٣ – ٥ سنوات",
+      previousEmployer: "مطبعة النهرين",
+      education: "جامعة بغداد — ٢٠٢٠",
+      skills: "Photoshop, Illustrator, InDesign",
+      residentialAddress: "الكرادة داخل",
+      department: "التصميم الجرافيكي",
+      preferredBranch: "الفرع الرئيسي - الكرادة",
+      employmentType: "full_time",
+      shiftPreference: "morning",
+      expectedSalary: "750000",
+      availableFrom: "2026-11-01",
+    });
+    expect(submitted).toMatchObject({
+      name: "علي حسين كاظم العبيدي",
+      branchId: null,
+      email: "applicant@example.com",
+      whatsappPhone: "+9647801234567",
+      governorate: "بغداد",
+      district: "الكرادة",
+      degree: "بكالوريوس",
+      major: "تصميم كرافيك",
+      availabilityStatus: "available",
+      previousEmployer: "مطبعة النهرين",
+      skills: "Photoshop, Illustrator, InDesign",
+      department: "التصميم الجرافيكي",
+      preferredBranch: "الفرع الرئيسي - الكرادة",
+      employmentType: "full_time",
+      shiftPreference: "morning",
+      expectedSalary: "750000.00",
+      availableFrom: "2026-11-01",
+    });
+
+    await expect(
+      anonymous.recruitment.submit({
+        name: "Overflow salary",
+        phone: "+9647701234567",
+        expectedSalary: "999999999999",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    // البحث النصي (q) يجب أن يطابق المهارات والمحافظة والقضاء وليس الاسم والهاتف فقط
+    const bySkill = await admin.recruitment.list({ q: "InDesign" });
+    expect(bySkill.map((r) => r.id)).toContain(submitted!.id);
+    const byDistrict = await admin.recruitment.list({ q: "الكرادة" });
+    expect(byDistrict.map((r) => r.id)).toContain(submitted!.id);
+
+    // عند إدخال استمارة ورقية مربوطة بشاغر عام للشركة (branchId = null) مع تحديد فرع المتابعة، يُحفظ الفرع ولا يُطمس
+    const paperOnCompanyVacancy = await admin.recruitment.create({
+      name: "حيدر جاسم محمد",
+      vacancyId: 53,
+      branchId: 1,
+      source: "paper",
+    });
+    expect(paperOnCompanyVacancy).toMatchObject({
+      vacancyId: 53,
+      branchId: 1,
+      jobTitle: "HQ role",
+    });
+
+    // حفظ المراجعة الإدارية مع تغيير المرحلة وموعد المقابلة وسبب الرفض
+    const reviewed = await admin.recruitment.setRating({
+      id: submitted!.id,
+      rating: 4,
+      stage: "interview",
+      interviewDate: "2026-11-05",
+      notes: "مرشح متمكن من التصميم الطباعي",
+    });
+    expect(reviewed).toMatchObject({
+      id: submitted!.id,
+      rating: 4,
+      stage: "interview",
+      interviewDate: "2026-11-05",
+      notes: "مرشح متمكن من التصميم الطباعي",
+    });
   });
 
   it("never returns CV bytes to a manager outside the vacancy branch", async () => {

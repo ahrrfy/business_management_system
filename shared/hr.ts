@@ -39,6 +39,27 @@ export const GENDERS = ["ذكر", "أنثى"] as const;
 export const MARITAL_STATUSES = ["أعزب", "متزوج", "مطلّق", "أرمل"] as const;
 export const DEGREES = ["ابتدائية", "متوسطة", "إعدادية", "دبلوم", "بكالوريوس", "ماجستير", "دكتوراه"] as const;
 
+export const IRAQ_GOVERNORATES = [
+  "بغداد",
+  "البصرة",
+  "نينوى",
+  "أربيل",
+  "النجف",
+  "كربلاء",
+  "السليمانية",
+  "دهوك",
+  "كركوك",
+  "ديالى",
+  "الأنبار",
+  "بابل",
+  "واسط",
+  "صلاح الدين",
+  "القادسية",
+  "ذي قار",
+  "ميسان",
+  "المثنى",
+] as const;
+
 export const payTypeLabel = (k: string): string => PAY_TYPES.find((p) => p.key === k)?.label ?? k;
 export const employmentStatusLabel = (k: string): string => EMPLOYMENT_STATUSES.find((s) => s.key === k)?.label ?? k;
 
@@ -65,6 +86,88 @@ export function fullEmployeeName(e: {
     .filter(Boolean)
     .join(" ");
 }
+
+const COMPOUND_NAME_PREFIXES = new Set([
+  "عبد",
+  "أبو",
+  "ابو",
+  "أبي",
+  "ابي",
+  "أم",
+  "ام",
+  "ذو",
+  "ذي",
+  "آل",
+  "بيت",
+]);
+
+const COMPOUND_NAME_SUFFIXES = new Set([
+  "الدين",
+  "الله",
+  "العابدين",
+  "الإسلام",
+  "الاسلام",
+  "الهدى",
+  "الزمان",
+  "الدار",
+  "المطلب",
+]);
+
+/** تفكيك الاسم الكامل للمتقدّم إلى الحقول الرباعية للموظف عند التعيين (مع صون الأسماء المركّبة مثل عبد الرحمن وسعد الدين وأبو بكر). */
+export function splitFullArabicName(fullName?: string | null): {
+  firstName: string;
+  fatherName: string;
+  grandfatherName: string;
+  lastName: string;
+} {
+  const rawParts = (fullName ?? "").trim().split(/\s+/).filter(Boolean);
+  const parts: string[] = [];
+  for (let i = 0; i < rawParts.length; i++) {
+    const current = rawParts[i];
+    const next = rawParts[i + 1];
+    if (
+      next &&
+      (COMPOUND_NAME_PREFIXES.has(current) || COMPOUND_NAME_SUFFIXES.has(next))
+    ) {
+      parts.push(`${current} ${next}`);
+      i += 1;
+    } else {
+      parts.push(current);
+    }
+  }
+  if (parts.length === 0) {
+    return { firstName: "", fatherName: "", grandfatherName: "", lastName: "" };
+  }
+  if (parts.length === 1) {
+    return { firstName: parts[0], fatherName: "", grandfatherName: "", lastName: "" };
+  }
+  if (parts.length === 2) {
+    return { firstName: parts[0], fatherName: parts[1], grandfatherName: "", lastName: "" };
+  }
+  if (parts.length === 3) {
+    return { firstName: parts[0], fatherName: parts[1], grandfatherName: parts[2], lastName: "" };
+  }
+  return {
+    firstName: parts[0],
+    fatherName: parts[1],
+    grandfatherName: parts[2],
+    lastName: parts.slice(3).join(" "),
+  };
+}
+
+/** تطبيع رقم الهاتف العراقي الجوّال (مع تحويل الأرقام العربية/الفارسية وإزالة البادئات المتكررة 0 / 964 / 00964). */
+export function normalizeIraqiPhone(raw: string, allowEmpty = false): string {
+  const ascii = raw
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
+  const digits = ascii
+    .replace(/\D/g, "")
+    .replace(/^(?:00964|964|0)+/, "")
+    .slice(0, 10);
+  if (!digits && allowEmpty) return "";
+  return `+964${digits}`;
+}
+
 
 /* ===== الرواتب ===== */
 export const PAYROLL_STATUSES = [
@@ -123,6 +226,48 @@ export type ApplicantStage = (typeof APPLICANT_STAGES)[number]["key"];
 export const applicantStageLabel = (k: string): string => APPLICANT_STAGES.find((s) => s.key === k)?.label ?? k;
 export const applicantSourceLabel = (k: string): string => APPLICANT_SOURCES.find((s) => s.key === k)?.label ?? k;
 export const APPLICANT_STAGE_KEYS = APPLICANT_STAGES.map((s) => s.key) as [ApplicantStage, ...ApplicantStage[]];
+
+export const APPLICANT_AVAILABILITY_STATUSES = [
+  { key: "available", label: "متفرّغ للعمل" },
+  { key: "employed", label: "على رأس عمل حالياً" },
+  { key: "student", label: "طالب" },
+  { key: "fresh_graduate", label: "خريج جديد" },
+] as const;
+export type ApplicantAvailabilityStatus = (typeof APPLICANT_AVAILABILITY_STATUSES)[number]["key"];
+export const applicantAvailabilityLabel = (k: string): string =>
+  APPLICANT_AVAILABILITY_STATUSES.find((s) => s.key === k)?.label ?? k;
+export const APPLICANT_AVAILABILITY_KEYS = APPLICANT_AVAILABILITY_STATUSES.map((s) => s.key) as [
+  ApplicantAvailabilityStatus,
+  ...ApplicantAvailabilityStatus[],
+];
+
+export const APPLICANT_SHIFT_PREFERENCES = [
+  { key: "morning", label: "صباحي" },
+  { key: "evening", label: "مسائي" },
+  { key: "both", label: "صباحي أو مسائي" },
+] as const;
+export type ApplicantShiftPreference = (typeof APPLICANT_SHIFT_PREFERENCES)[number]["key"];
+export const applicantShiftLabel = (k: string): string =>
+  APPLICANT_SHIFT_PREFERENCES.find((s) => s.key === k)?.label ?? k;
+export const APPLICANT_SHIFT_KEYS = APPLICANT_SHIFT_PREFERENCES.map((s) => s.key) as [
+  ApplicantShiftPreference,
+  ...ApplicantShiftPreference[],
+];
+
+export const APPLICANT_PREFERRED_BRANCHES = [
+  "مطبعة الرؤية - الدوره",
+  "الفرع الرئيسي - الكرادة",
+  "فرع المنصور",
+  "أي فرع متاح",
+] as const;
+
+export const APPLICANT_EXPERIENCE_LEVELS = [
+  "بدون خبرة (مبتدئ / خريج جديد)",
+  "أقل من سنة",
+  "١ – ٢ سنة",
+  "٣ – ٥ سنوات",
+  "أكثر من ٥ سنوات",
+] as const;
 
 /* ===== الوظائف الشاغرة (معرض التوظيف العام /apply) ===== */
 /** أنواع التعاقد المعروضة في بطاقة الوظيفة. */

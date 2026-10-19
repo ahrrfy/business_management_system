@@ -13,7 +13,7 @@ import {
 } from "../../drizzle/schema";
 import { requireDb, withTx } from "./tx";
 import { escapeLike } from "../lib/sqlLike";
-import { toDateStr } from "./money";
+import { toDateStr, toDbMoney } from "./money";
 import { extractInsertId } from "../lib/insertId";
 import {
   resolveTargetBranch,
@@ -28,6 +28,15 @@ import {
 import { appErrorMessage } from "@shared/errors";
 
 const COMPANY_SCOPE: CompanyBranchScope = { branchId: null };
+
+function normalizeOptionalMoney(
+  val?: string | number | null,
+): string | null {
+  if (val == null) return null;
+  const s = String(val).trim();
+  if (!s) return null;
+  return toDbMoney(s);
+}
 
 function vacancyScopeCondition(scope: CompanyBranchScope) {
   return scope.branchId == null
@@ -106,7 +115,13 @@ export async function listApplicants(
         like(jobApplicants.name, t),
         like(jobApplicants.jobTitle, t),
         like(jobApplicants.phone, t),
+        like(jobApplicants.whatsappPhone, t),
         like(jobApplicants.email, t),
+        like(jobApplicants.major, t),
+        like(jobApplicants.skills, t),
+        like(jobApplicants.governorate, t),
+        like(jobApplicants.district, t),
+        like(jobApplicants.department, t),
       ),
     );
   }
@@ -158,15 +173,41 @@ export interface ApplicantInput {
   source?: string | null;
   stage?: string | null;
   phone?: string | null;
+  whatsappPhone?: string | null;
   email?: string | null;
+  birthDate?: string | null;
+  gender?: string | null;
+  maritalStatus?: string | null;
+  governorate?: string | null;
+  district?: string | null;
+  degree?: string | null;
+  major?: string | null;
+  availabilityStatus?: string | null;
   experience?: string | null;
+  previousEmployer?: string | null;
   education?: string | null;
+  skills?: string | null;
   residentialAddress?: string | null;
+  department?: string | null;
+  preferredBranch?: string | null;
+  employmentType?: string | null;
+  shiftPreference?: string | null;
+  expectedSalary?: string | number | null;
+  availableFrom?: string | null;
   portfolioUrl?: string | null;
   appliedDate?: string | null;
   rating?: number | null;
+  interviewDate?: string | null;
+  rejectionReason?: string | null;
   notes?: string | null;
   cv?: JobApplicantCvUploadInput | null;
+}
+
+export interface ApplicantReviewPatch {
+  stage?: "new" | "review" | "interview" | "accepted" | "rejected" | "archived";
+  notes?: string | null;
+  interviewDate?: string | null;
+  rejectionReason?: string | null;
 }
 
 /**
@@ -184,19 +225,25 @@ export async function createApplicant(
   // ربط الوظيفة الشاغرة: عنوان الوظيفة يُؤخذ من سجلّها (مصدر موثوق) لا من المتقدّم — يمنع التزييف عبر الاستمارة العامّة.
   let vacancyId: number | null = null;
   let jobTitle: string | null = input.jobTitle?.trim() || null;
-  let branchId: number | null = null;
+  let branchId: number | null = scope
+    ? resolveTargetBranch(scope, input.branchId, { required: false })
+    : null;
+  let vacancyDepartment: string | null = null;
+  let vacancyEmploymentType: string | null = null;
   if (input.vacancyId != null) {
     const v = await getVacancy(input.vacancyId, scope ?? COMPANY_SCOPE);
     if (v && (scope || (v.isPublished && hasPublicVacancyDetails(v)))) {
       vacancyId = v.id;
-      branchId = v.branchId;
+      branchId = v.branchId ?? branchId;
       jobTitle = v.title; // العنوان الموثوق من سجلّ الوظيفة
+      vacancyDepartment = v.department ?? null;
+      vacancyEmploymentType = v.employmentType ?? null;
     } else {
       throw new TRPCError({ code: "NOT_FOUND", message: "الوظيفة غير موجودة" });
     }
-  } else if (scope) {
-    branchId = resolveTargetBranch(scope, input.branchId, { required: false });
   }
+
+  const expectedSalary = normalizeOptionalMoney(input.expectedSalary);
 
   // Strictly validate attacker-controlled bytes before opening the transaction.
   const preparedCv = input.cv ? prepareJobApplicantCv(input.cv) : null;
@@ -209,16 +256,35 @@ export async function createApplicant(
       source: input.source?.trim() || "external",
       stage: (input.stage?.trim() || "new") as never,
       phone: input.phone?.trim() || null,
+      whatsappPhone: input.whatsappPhone?.trim() || null,
       email: input.email?.trim() || null,
+      birthDate: input.birthDate?.trim() || null,
+      gender: input.gender?.trim() || null,
+      maritalStatus: input.maritalStatus?.trim() || null,
+      governorate: input.governorate?.trim() || null,
+      district: input.district?.trim() || null,
+      degree: input.degree?.trim() || null,
+      major: input.major?.trim() || null,
+      availabilityStatus: input.availabilityStatus?.trim() || null,
       experience: input.experience?.trim() || null,
+      previousEmployer: input.previousEmployer?.trim() || null,
       education: input.education?.trim() || null,
+      skills: input.skills?.trim() || null,
       residentialAddress: input.residentialAddress?.trim() || null,
+      department: input.department?.trim() || vacancyDepartment,
+      preferredBranch: input.preferredBranch?.trim() || null,
+      employmentType: input.employmentType?.trim() || vacancyEmploymentType,
+      shiftPreference: input.shiftPreference?.trim() || null,
+      expectedSalary,
+      availableFrom: input.availableFrom?.trim() || null,
       portfolioUrl: input.portfolioUrl?.trim() || null,
       appliedDate: input.appliedDate?.trim() || toDateStr(),
       rating:
         input.rating != null
           ? Math.max(0, Math.min(5, Math.trunc(input.rating)))
           : 0,
+      interviewDate: input.interviewDate?.trim() || null,
+      rejectionReason: input.rejectionReason?.trim() || null,
       notes: input.notes?.trim() || null,
       // Public keys are generated only by the server; client-selected keys are ignored.
       cvFileKey: preparedCv?.publicKey ?? null,
@@ -235,30 +301,49 @@ export async function updateStage(
   id: number,
   stage: "new" | "review" | "interview" | "accepted" | "rejected" | "archived",
   scope: CompanyBranchScope = COMPANY_SCOPE,
+  extras?: ApplicantReviewPatch,
 ) {
   await withTx(async (tx) => {
     await lockApplicantInScope(tx, id, scope);
+    const patch: Record<string, unknown> = { stage };
+    if (extras?.notes !== undefined) patch.notes = extras.notes?.trim() || null;
+    if (extras?.interviewDate !== undefined)
+      patch.interviewDate = extras.interviewDate?.trim() || null;
+    if (extras?.rejectionReason !== undefined)
+      patch.rejectionReason = extras.rejectionReason?.trim() || null;
     await tx
       .update(jobApplicants)
-      .set({ stage })
+      .set(patch as never)
       .where(eq(jobApplicants.id, id));
   });
   return getApplicant(id, scope);
 }
 
-/** ضبط التقييم المبدئي (٠–٥ نجوم). */
+/** ضبط التقييم المبدئي (٠–٥ نجوم) وتحديث بيانات المراجعة الإدارية (ملاحظات/موعد مقابلة/سبب رفض). */
 export async function setRating(
   id: number,
-  rating: number,
+  rating: number | undefined,
   scope: CompanyBranchScope = COMPANY_SCOPE,
+  extras?: ApplicantReviewPatch,
 ) {
-  const r = Math.max(0, Math.min(5, Math.trunc(rating)));
   await withTx(async (tx) => {
     await lockApplicantInScope(tx, id, scope);
-    await tx
-      .update(jobApplicants)
-      .set({ rating: r })
-      .where(eq(jobApplicants.id, id));
+    const patch: Record<string, unknown> = {};
+    if (rating !== undefined) {
+      patch.rating = Math.max(0, Math.min(5, Math.trunc(rating)));
+    }
+    if (extras?.stage !== undefined) patch.stage = extras.stage;
+    if (extras?.notes !== undefined) patch.notes = extras.notes?.trim() || null;
+    if (extras?.interviewDate !== undefined)
+      patch.interviewDate = extras.interviewDate?.trim() || null;
+    if (extras?.rejectionReason !== undefined)
+      patch.rejectionReason = extras.rejectionReason?.trim() || null;
+    if (Object.keys(patch).length > 0) {
+      await tx
+        .update(jobApplicants)
+        .set(patch as never)
+        .where(eq(jobApplicants.id, id));
+    }
   });
   return getApplicant(id, scope);
 }

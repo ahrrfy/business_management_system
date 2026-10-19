@@ -22,11 +22,11 @@ import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   DAY_RATES_DEFAULT, DEGREES, GENDERS, HR_DEPARTMENTS, MARITAL_STATUSES, PAY_TYPES,
-  type EmployeeEducation,
+  splitFullArabicName, type EmployeeEducation,
 } from "@shared/hr";
-import { AlertCircle, X } from "lucide-react";
+import { AlertCircle, UserCheck, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useParams } from "wouter";
+import { Link, useLocation, useParams, useSearch } from "wouter";
 import { ROLE_OPTIONS } from "@/lib/roles";
 
 type AccountMode = "none" | "new" | "link";
@@ -43,11 +43,23 @@ export default function EmployeeNew() {
   const editId = params.id ? Number(params.id) : null;
   const isEdit = Number.isFinite(editId);
   const [, navigate] = useLocation();
+  const search = useSearch();
   const utils = trpc.useUtils();
+  const applicantId = useMemo(() => {
+    if (isEdit) return null;
+    const raw = new URLSearchParams(search || (typeof window !== "undefined" ? window.location.search : "")).get("applicantId");
+    const n = raw ? Number(raw) : NaN;
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }, [isEdit, search]);
   const opts = trpc.employees.formOptions.useQuery(undefined, { enabled: can("employees.formOptions") });
   const existing = trpc.employees.get.useQuery({ id: editId! }, { enabled: can("employees.get") && (isEdit) });
+  const applicantQ = trpc.recruitment.get.useQuery(
+    { id: applicantId! },
+    { enabled: applicantId != null && can("recruitment.get") },
+  );
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const prefilledApplicantIdRef = useRef<number | null>(null);
 
   const [form, setForm] = useState({
     firstName: "", fatherName: "", grandfatherName: "", lastName: "",
@@ -130,14 +142,89 @@ export default function EmployeeNew() {
     setLoaded(true);
   }
 
+  useEffect(() => {
+    if (isEdit || !applicantQ.data) return;
+    const a = applicantQ.data;
+    if (prefilledApplicantIdRef.current === a.id) return;
+    prefilledApplicantIdRef.current = a.id;
+    const names = splitFullArabicName(a.name);
+    const matchedBranchId =
+      a.branchId != null
+        ? String(a.branchId)
+        : a.preferredBranch && opts.data?.branches
+          ? String(
+              opts.data.branches.find(
+                (b) =>
+                  b.name === a.preferredBranch ||
+                  a.preferredBranch?.includes(b.name) ||
+                  b.name.includes(a.preferredBranch ?? ""),
+              )?.id ?? "",
+            )
+          : "";
+    const expectedSalaryClean =
+      a.expectedSalary != null ? String(a.expectedSalary).replace(/\.00$/, "") : "";
+    setForm((f) => ({
+      ...f,
+      firstName: names.firstName || f.firstName,
+      fatherName: names.fatherName || f.fatherName,
+      grandfatherName: names.grandfatherName || f.grandfatherName,
+      lastName: names.lastName || f.lastName,
+      gender: a.gender || f.gender,
+      birthDate: a.birthDate || f.birthDate,
+      maritalStatus: a.maritalStatus || f.maritalStatus,
+      phone: a.phone || f.phone,
+      email: a.email || f.email,
+      governorate: a.governorate || f.governorate,
+      district: a.district || f.district,
+      addressLandmark: a.residentialAddress || f.addressLandmark,
+      emergencyContactPhone: a.whatsappPhone || f.emergencyContactPhone,
+      department: a.department || f.department,
+      position: a.jobTitle || f.position,
+      branchId: matchedBranchId || f.branchId,
+      hireDate: a.availableFrom || f.hireDate,
+      salary: expectedSalaryClean || f.salary,
+    }));
+    if (a.degree || a.major || a.education) {
+      setEdu([
+        {
+          key: 1,
+          degree: a.degree || "بكالوريوس",
+          major: a.major || undefined,
+          school: a.education || undefined,
+        },
+      ]);
+    }
+  }, [isEdit, applicantQ.data, opts.data?.branches]);
+
+  useEffect(() => {
+    if (isEdit || !applicantQ.data || form.branchId || applicantQ.data.branchId != null || !applicantQ.data.preferredBranch || !opts.data?.branches) return;
+    const pref = applicantQ.data.preferredBranch;
+    const matched = opts.data.branches.find((b) => b.name === pref || pref.includes(b.name) || b.name.includes(pref));
+    if (matched) set({ branchId: String(matched.id) });
+  }, [isEdit, applicantQ.data, opts.data?.branches, form.branchId]);
+
   const photoUrl = useMemo(() => photo[0]?.dataUrl || photo[0]?.url || null, [photo]);
 
   const addEdu = () => setEdu((r) => [...r, { key: (r.at(-1)?.key ?? 0) + 1, degree: "بكالوريوس" }]);
   const patchEdu = (key: number, p: Partial<EduRow>) => setEdu((r) => r.map((x) => (x.key === key ? { ...x, ...p } : x)));
   const removeEdu = (key: number) => setEdu((r) => r.filter((x) => x.key !== key));
 
+  const acceptApplicantM = trpc.recruitment.updateStage.useMutation({
+    onSuccess: () => {
+      void utils.recruitment.list.invalidate();
+      void utils.recruitment.get.invalidate();
+    },
+  });
+
+  function markApplicantAcceptedIfNeeded() {
+    if (applicantId && applicantQ.data && applicantQ.data.stage !== "accepted" && can("recruitment.updateStage")) {
+      acceptApplicantM.mutate({ id: applicantId, stage: "accepted" });
+    }
+  }
+
   const mutationOpts = {
     onSuccess: (e: { id: number; fullName?: string } | null | undefined) => {
+      markApplicantAcceptedIfNeeded();
       notify.ok(isEdit ? "تم حفظ التعديلات" : `أُضيف الموظف ${e?.fullName ?? ""}`);
       utils.employees.list.invalidate();
       navigate(e?.id ? `/hr/employees/${e.id}` : "/hr/employees");
@@ -170,6 +257,7 @@ export default function EmployeeNew() {
 
   const createWithAccount = trpc.employees.createWithAccount.useMutation({
     onSuccess: (res) => {
+      markApplicantAcceptedIfNeeded();
       utils.employees.list.invalidate();
       notify.ok(`أُضيف الموظف ${res.employee?.fullName ?? ""}`);
       if (res.credentials) showCredentials(res.credentials, res.employee?.id ?? null);
@@ -333,6 +421,15 @@ export default function EmployeeNew() {
           <Link href="/hr/employees"><Button variant="outline">إلغاء</Button></Link>
         </div>
       </div>
+
+      {applicantQ.data && (
+        <div className="flex items-center gap-2.5 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 text-sm">
+          <UserCheck className="size-4 shrink-0 text-primary" />
+          <span>
+            تعيين المتقدّم <b>«{applicantQ.data.name}»</b> من مسار التوظيف — عُبِّئت الحقول الأساسية تلقائياً من استمارة التقديم، يرجى مراجعتها واستكمال بيانات الأجر والهوية.
+          </span>
+        </div>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-2 items-start">
       <Card className="lg:col-span-2">

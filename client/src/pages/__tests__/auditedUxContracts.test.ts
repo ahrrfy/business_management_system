@@ -262,3 +262,111 @@ describe("سلة البطاقات والمنتجات الموحّدة في POS",
     expect(source).toContain("digitalCheckoutReceiptLines(r.receiptLines)");
   });
 });
+
+describe("حزمة استمارة التوظيف والتعيين الكاملة", () => {
+  it("تقسم الاسم العربي الكامل إلى الأول والأب والجد واللقب بدقة لجميع الحالات", async () => {
+    const { splitFullArabicName } = await import("../../../../shared/hr");
+
+    expect(splitFullArabicName("")).toEqual({
+      firstName: "",
+      fatherName: "",
+      grandfatherName: "",
+      lastName: "",
+    });
+    expect(splitFullArabicName("   ")).toEqual({
+      firstName: "",
+      fatherName: "",
+      grandfatherName: "",
+      lastName: "",
+    });
+    expect(splitFullArabicName("أحمد")).toEqual({
+      firstName: "أحمد",
+      fatherName: "",
+      grandfatherName: "",
+      lastName: "",
+    });
+    expect(splitFullArabicName("أحمد علي")).toEqual({
+      firstName: "أحمد",
+      fatherName: "علي",
+      grandfatherName: "",
+      lastName: "",
+    });
+    expect(splitFullArabicName("أحمد علي حسن")).toEqual({
+      firstName: "أحمد",
+      fatherName: "علي",
+      grandfatherName: "حسن",
+      lastName: "",
+    });
+    expect(splitFullArabicName("أحمد علي حسن الشمري")).toEqual({
+      firstName: "أحمد",
+      fatherName: "علي",
+      grandfatherName: "حسن",
+      lastName: "الشمري",
+    });
+    expect(splitFullArabicName("أحمد   علي   حسن   جاسم   الشمري")).toEqual({
+      firstName: "أحمد",
+      fatherName: "علي",
+      grandfatherName: "حسن",
+      lastName: "جاسم الشمري",
+    });
+    expect(splitFullArabicName("عبد الرحمن سعد الدين محمد العبيدي")).toEqual({
+      firstName: "عبد الرحمن",
+      fatherName: "سعد الدين",
+      grandfatherName: "محمد",
+      lastName: "العبيدي",
+    });
+    expect(splitFullArabicName("أبو بكر عبد الله جاسم آل ياسين")).toEqual({
+      firstName: "أبو بكر",
+      fatherName: "عبد الله",
+      grandfatherName: "جاسم",
+      lastName: "آل ياسين",
+    });
+  });
+
+  it("يطبع رقم الهاتف العراقي مع دعم الأرقام العربية المشرقية واللصق واللواصق الدولية", async () => {
+    const { normalizeIraqiPhone } = await import("../../../../shared/hr");
+
+    expect(normalizeIraqiPhone("", true)).toBe("");
+    expect(normalizeIraqiPhone("+964", true)).toBe("");
+    expect(normalizeIraqiPhone("+964")).toBe("+964");
+    expect(normalizeIraqiPhone("٠٧٧٠١٢٣٤٥٦٧")).toBe("+9647701234567");
+    expect(normalizeIraqiPhone("+96407701234567")).toBe("+9647701234567");
+    expect(normalizeIraqiPhone("00964 780 123 4567")).toBe("+9647801234567");
+  });
+
+  it("يعرض البريد الإلكتروني والحقول الكاملة في استمارة التقديم العامة والورقية وربط التعيين", () => {
+    const jobApply = readPage("JobApply.tsx");
+    const recruitment = readPage("Recruitment.tsx");
+    const dialogs = readComponent("hr/RecruitmentApplicantDialogs.tsx");
+    const employeeNew = readPage("EmployeeNew.tsx");
+
+    // استمارة التقديم العامة (/apply)
+    expect(jobApply).toContain("email: email.trim() || undefined");
+    expect(jobApply).toContain("whatsappPhone: whatsappPhone.trim() || undefined");
+    expect(jobApply).toContain("governorate: governorate.trim() || undefined");
+    expect(jobApply).toContain("degree: (degree || undefined) as never");
+    expect(jobApply).toContain("availabilityStatus: (availabilityStatus || undefined) as never");
+    expect(jobApply).toContain("preferredBranch: preferredBranch.trim() || undefined");
+    expect(jobApply).toContain("shiftPreference: (shiftPreference || undefined) as never");
+    expect(jobApply).toContain("expectedSalary:");
+
+    // لوحة التوظيف وحوارات المتقدمين
+    expect(recruitment).toContain("exportApplicants");
+    expect(recruitment).toContain("تعيين كموظف");
+    expect(dialogs).toContain("trpc.recruitment.setRating.useMutation");
+    expect(dialogs).toContain("vacancyId: vacancyId ? Number(vacancyId) : undefined");
+    expect(dialogs).toContain("branchId: branchId ? Number(branchId) : undefined");
+    expect(dialogs).toContain("appliedDate: appliedDate.trim() || undefined");
+
+    // صفحة إضافة موظف جديد مع التعبئة التلقائية من طلب التوظيف
+    expect(employeeNew).toContain("applicantId");
+    expect(employeeNew).toContain("useSearch");
+    expect(employeeNew).toContain("prefilledApplicantIdRef");
+    expect(employeeNew).toContain("markApplicantAcceptedIfNeeded");
+    expect(employeeNew).not.toContain("Number(a.expectedSalary)");
+    expect(employeeNew).toContain("trpc.recruitment.get.useQuery");
+    expect(employeeNew).toContain("splitFullArabicName");
+  });
+});
+
+
