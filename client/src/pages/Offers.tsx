@@ -592,7 +592,7 @@ export default function Offers() {
                 )}
                 {scope === "PRODUCTS" && (
                   <Field label="ابحث عن منتج (≥ حرفَين)" className="md:col-span-3">
-                    <UnifiedSearchInput value={productPicker} onChange={setProductPicker} placeholder="اسم أو SKU" />
+                    <UnifiedSearchInput debounceMs={0} value={productPicker} onChange={setProductPicker} placeholder="اسم أو SKU" />
                     {productPicker.trim().length >= 2 && (productSearchQ.data?.items ?? []).length > 0 && (
                       <div className="mt-1 max-h-48 overflow-auto rounded-md border">
                         {(productSearchQ.data?.items ?? []).map((r) => (
@@ -637,7 +637,7 @@ export default function Offers() {
         <CardHeader className="flex items-center justify-between flex-row">
           <CardTitle className="text-base">العروض ({list.length})</CardTitle>
           <div className="flex flex-wrap items-center gap-2">
-            <UnifiedSearchInput className="w-48" inputClassName="h-8" value={searchQuery} onChange={setSearchQuery} placeholder="بحث بالاسم…" barcode={false} />
+            <UnifiedSearchInput debounceMs={0} className="w-48" inputClassName="h-8" value={searchQuery} onChange={setSearchQuery} placeholder="بحث بالاسم…" barcode={false} />
             <AppSelect value={channelFilter} onValueChange={(v) => setChannelFilter(v as ChannelFilter)} className="h-8 w-36" size="sm">
               <option value="ALL">كل القنوات</option>
               <option value="POS">نقطة البيع</option>

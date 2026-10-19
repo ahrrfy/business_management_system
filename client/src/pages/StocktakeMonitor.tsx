@@ -864,6 +864,7 @@ export default function StocktakeMonitor() {
                   </p>
                 </div>
                 <UnifiedSearchInput
+                  debounceMs={0}
                   value={countSearch}
                   onChange={setCountSearch}
                   placeholder="بحث في العدّات: اسم / SKU…"

@@ -155,6 +155,8 @@ export default function CreditApprovalsPage() {
                 <div className="grid gap-2 md:col-span-2">
                   <label className="text-sm font-medium">العميل</label>
                   <UnifiedSearchInput
+                    barcode={false}
+                    debounceMs={0}
                     value={customerSearch}
                     onChange={setCustomerSearch}
                     placeholder="ابحث بالاسم أو الهاتف…"
@@ -426,6 +428,8 @@ function ApprovalsLog() {
           </AppSelect>
           <div className="min-w-56 flex-1 max-w-xs">
             <UnifiedSearchInput
+              barcode={false}
+              debounceMs={0}
               value={customerSearch}
               onChange={(val) => { setCustomerSearch(val); setCustomerId(null); setOffset(0); }}
               placeholder="فلترة بعميل — ابحث بالاسم…"

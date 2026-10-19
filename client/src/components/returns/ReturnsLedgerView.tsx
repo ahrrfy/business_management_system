@@ -173,6 +173,7 @@ export function ReturnsLedgerView() {
           {/* أشرطة التصفية والبحث */}
           <div className="flex flex-col sm:flex-row gap-2">
             <UnifiedSearchInput
+              debounceMs={0}
               value={search}
               onChange={(val) => {
                 setSearch(val);

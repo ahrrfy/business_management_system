@@ -246,7 +246,7 @@ export default function Recruitment() {
                 <Users className="size-4" /> المتقدّمون
                 <span className="tabular-nums">({rows.length})</span>
               </div>
-              <UnifiedSearchInput value={q} onChange={setQ} placeholder="بحث (اسم/وظيفة/هاتف/بريد)" className="w-56" inputClassName="h-9 text-xs" aria-label="بحث" />
+              <UnifiedSearchInput barcode={false} debounceMs={0} value={q} onChange={setQ} placeholder="بحث (اسم/وظيفة/هاتف/بريد)" className="w-56" inputClassName="h-9 text-xs" aria-label="بحث" />
               <AppSelect className="h-9" value={stage} onValueChange={(next) => setStage(next)} aria-label="المرحلة">
                 <option value="">كل المراحل</option>
                 {APPLICANT_STAGES.map((s) => (

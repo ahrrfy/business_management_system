@@ -170,6 +170,7 @@ export default function MonthlyAttendanceReport() {
               </AppSelect>
             )}
             <UnifiedSearchInput
+              debounceMs={0}
               className="w-56"
               value={search}
               onChange={setSearch}

@@ -165,6 +165,7 @@ export function QuranStationDrawer() {
             {/* محرك البحث واختصارات السور الشائعة */}
             <div className="p-3 bg-card space-y-2 shrink-0">
               <UnifiedSearchInput
+                debounceMs={0}
                 placeholder="ابحث باسم السورة أو رقمها (مثال: الكهف، 18)..."
                 value={searchQuery}
                 onChange={setSearchQuery}

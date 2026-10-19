@@ -1392,7 +1392,7 @@ export default function StocktakeReview() {
               الزائفة)
             </span>
           </label>
-          <UnifiedSearchInput value={q} onChange={(v) => { setQ(v); setVisible(PAGE); }} placeholder="بحث: اسم / SKU…" className="w-44" inputClassName="h-8 text-xs" />
+          <UnifiedSearchInput debounceMs={0} value={q} onChange={(v) => { setQ(v); setVisible(PAGE); }} placeholder="بحث: اسم / SKU…" className="w-44" inputClassName="h-8 text-xs" />
           <span className="me-auto text-xs text-muted-foreground">
             {nf(filtered.length)} منتجاً{review.isFetching ? " · يُحدَّث…" : ""}
           </span>

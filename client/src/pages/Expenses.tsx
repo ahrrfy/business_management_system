@@ -988,6 +988,7 @@ export default function Expenses() {
                 بحث شامل
               </Label>
               <UnifiedSearchInput
+                debounceMs={0}
                 id="expense-search"
                 value={query}
                 onChange={setQuery}

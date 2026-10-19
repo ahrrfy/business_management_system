@@ -461,6 +461,7 @@ export default function ProductionRecipes() {
         <>
           <div className="flex flex-wrap items-center gap-3">
             <UnifiedSearchInput
+              debounceMs={0}
               className="max-w-xs w-full"
               value={q}
               onChange={setQ}

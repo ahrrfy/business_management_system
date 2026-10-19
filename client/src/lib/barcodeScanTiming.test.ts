@@ -335,21 +335,19 @@ describe("قبولُ الومضة وبوّابةُ الثقة (نواةُ خطّ
     expect(code).toBe("6281");
   });
 
-  it("⭐ باركودُ مورّدٍ أبجديّ سريع «MLZ6A» — accepted بالتوقيت لكن غيرُ واثق: يُصدَر عبر مسار Enter النشط لا التسوية (مراجعة Codex P1)", () => {
+  it("⭐ باركودُ مورّدٍ أبجديّ سريع «MLZ6A» — accepted بالتوقيت ويُصدَر عبر التسوية ومسار Enter معاً (مراجعة Codex P1)", () => {
     const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
     feedSequence(det, [letter("M"), letter("L"), letter("Z"), digit("6"), letter("A")], [10, 10, 10, 10]);
-    // نلتقط النشاطَ قبل الإفراغ — نظيرُ `wasActive` في مسار Enter بالخطّاف التمريريّ.
     expect(det.isActive).toBe(true);
     const result = det.flush();
-    expect(result.accepted).toBe(true); // ومضةٌ مؤكَّدة توقيتاً ⇒ Enter النشط يُصدرها
-    expect(result.code).toBe("mlz6a"); // الفكّ يُصغّر الحالة (المطابقةُ لا-حسّاسةٌ للحالة)
-    // لكنّها غيرُ واثقة ⇒ مسارُ التسوية (بلا Enter) لا يُصدرها فلا يُختطَف اسمٌ عربيّ سريع.
+    expect(result.accepted).toBe(true);
+    expect(result.code).toBe("mlz6a");
     expect(isConfidentScanCode(result.code, 3)).toBe(false);
-    expect(resolveScanSettle(result, "", 3, { onEnter: false })).toEqual({ scan: null, fieldValue: "MLZ6A" });
+    expect(resolveScanSettle(result, "", 3, { onEnter: false })).toEqual({ scan: "mlz6a", fieldValue: "" });
     expect(resolveScanSettle(result, "", 3, { onEnter: true })).toEqual({ scan: "mlz6a", fieldValue: "" });
   });
 
-  it("⭐ الكتابة العربية السريعة يدوياً («عمار»، «دفتر») والبحث المختلط القصير («م10») لا تُقلب إلى إنجليزيّ، مع قبول رموز المورّدين والترقيم عند Enter", () => {
+  it("⭐ الكتابة العربية السريعة يدوياً («عمار»، «دفتر») والبحث المختلط القصير («م10») لا تُقلب إلى إنجليزيّ، مع قبول رموز المورّدين والترقيم بالمؤقّت وعند Enter", () => {
     // ١. موظّف يكتب «عمار» بسرعة عالية تحت تخطيط عربي:
     const ammarEvents: ScannerKeyEvent[] = [
       { code: "KeyU", key: "ع", shiftKey: false },
@@ -369,7 +367,7 @@ describe("قبولُ الومضة وبوّابةُ الثقة (نواةُ خطّ
       fieldValue: "عمار",
     });
 
-    // ٢. كتابة «م10» بسرعة عالية (مراجعة Codex P1): لا تُقلَب إلى «l10» بعد مهلة السكون
+    // ٢. كتابة «م10» بسرعة عالية (مراجعة Codex P1): لا تُقلَب إلى «l10» بعد مهلة السكون أو Enter
     const m10Events: ScannerKeyEvent[] = [
       { code: "KeyL", key: "م", shiftKey: false },
       { code: "Digit1", key: "1", shiftKey: false },
@@ -377,7 +375,12 @@ describe("قبولُ الومضة وبوّابةُ الثقة (نواةُ خطّ
     ];
     const detM10 = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
     feedSequence(detM10, m10Events, [50, 50]);
-    expect(resolveScanSettle(detM10.flush(), "", 3, { onEnter: false })).toEqual({
+    const flushedM10 = detM10.flush();
+    expect(resolveScanSettle(flushedM10, "", 3, { onEnter: false })).toEqual({
+      scan: null,
+      fieldValue: "م10",
+    });
+    expect(resolveScanSettle(flushedM10, "", 3, { onEnter: true })).toEqual({
       scan: null,
       fieldValue: "م10",
     });
@@ -393,17 +396,22 @@ describe("قبولُ الومضة وبوّابةُ الثقة (نواةُ خطّ
     const detMlz = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
     feedSequence(detMlz, mlzArabicEvents, [70, 10, 10, 10]);
     expect(detMlz.isActive).toBe(true);
-    expect(resolveScanSettle(detMlz.flush(), "", 3, { onEnter: true })).toEqual({
+    const flushedMlz = detMlz.flush();
+    expect(resolveScanSettle(flushedMlz, "", 3, { onEnter: false })).toEqual({
+      scan: "mlz6a",
+      fieldValue: "",
+    });
+    expect(resolveScanSettle(flushedMlz, "", 3, { onEnter: true })).toEqual({
       scan: "mlz6a",
       fieldValue: "",
     });
 
-    // ٤. باركود أبجدي بلا أرقام «ALIAS-A» ورموز ترقيم Code128 «AB=12» تُقبَل عند الإنهاء بـEnter (مراجعة Codex P2):
+    // ٤. باركود أبجدي بلا أرقام «ALIAS-A» ورموز ترقيم Code128 «AB=12» تُقبَل عند السكون وعند Enter (مراجعة Codex P1/P2):
     expect(
-      resolveScanSettle({ accepted: true, code: "ALIAS-A", text: "ALIAS-A" }, "", 3, { onEnter: true }),
+      resolveScanSettle({ accepted: true, code: "ALIAS-A", text: "ALIAS-A" }, "", 3, { onEnter: false }),
     ).toEqual({ scan: "ALIAS-A", fieldValue: "" });
     expect(
-      resolveScanSettle({ accepted: true, code: "AB=12", text: "AB=12" }, "", 3, { onEnter: true }),
+      resolveScanSettle({ accepted: true, code: "AB=12", text: "AB=12" }, "", 3, { onEnter: false }),
     ).toEqual({ scan: "AB=12", fieldValue: "" });
   });
 });

@@ -759,6 +759,8 @@ export default function WorkOrderStation() {
         <PageHeader variant="workspace" title="محطة التنفيذ" backHref="/work-orders" backLabel="اللوحة" />
 
         <UnifiedSearchInput
+          dir="auto"
+          debounceMs={0}
           value={search}
           onChange={setSearch}
           placeholder="ابحث برقم الأمر/العنوان/العميل…"

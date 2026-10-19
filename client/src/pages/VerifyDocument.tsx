@@ -151,6 +151,8 @@ export default function VerifyDocument(props?: { params?: { id?: string } }) {
               {/* نموذج إدخال يدوي للتحقق المباشر */}
               <form onSubmit={handleManualSearch} className="flex gap-2 pt-2">
                 <UnifiedSearchInput
+                  dir="ltr"
+                  debounceMs={0}
                   placeholder="مثال: ORD-100009 أو INV-..."
                   value={manualCode}
                   onChange={setManualCode}
@@ -302,6 +304,8 @@ export default function VerifyDocument(props?: { params?: { id?: string } }) {
               {/* إمكانية البحث عن مستند آخر */}
               <form onSubmit={handleManualSearch} className="flex gap-2 pt-2">
                 <UnifiedSearchInput
+                  dir="ltr"
+                  debounceMs={0}
                   placeholder="جرب رقماً آخر (مثال: ORD-100009)..."
                   value={manualCode}
                   onChange={setManualCode}

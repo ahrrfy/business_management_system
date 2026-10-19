@@ -281,6 +281,7 @@ export default function ItemLedger() {
             <label className="text-[11px] text-muted-foreground">المنتج (اسم/SKU/باركود)</label>
             <div className="relative">
               <UnifiedSearchInput
+                debounceMs={0}
                 value={search}
                 onChange={setSearch}
                 placeholder="اكتب للبحث…"

@@ -150,6 +150,7 @@ export function SmartCustomerInput({ value, onChange, placeholder, className, na
   return (
     <div ref={wrapRef} className={cn("relative", className)}>
       <UnifiedSearchInput
+        barcode={false}
         value={q}
         debounceMs={0}
         onChange={(v) => {

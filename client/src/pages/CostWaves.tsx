@@ -494,6 +494,7 @@ function CreateCostWave({
                 </Field>
                 <Field label="بحث المنتج / SKU / الباركود">
                   <UnifiedSearchInput
+                    debounceMs={0}
                     value={productSearch}
                     onChange={setProductSearch}
                     placeholder="مثال: أقلام أزرق أو SKU"
@@ -563,6 +564,7 @@ function CreateCostWave({
                 hint={`الاختيار على مستوى المتغيّر/SKU، حتى ${COST_WAVE_MAX_SELECTED_ITEMS} صنف`}
               >
                 <UnifiedSearchInput
+                  debounceMs={0}
                   value={pickerSearch}
                   onChange={setPickerSearch}
                   placeholder="اسم المنتج أو SKU أو الباركود"

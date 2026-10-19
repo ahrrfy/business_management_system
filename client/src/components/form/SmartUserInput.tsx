@@ -77,6 +77,7 @@ export function SmartUserInput({ value, onChange, employeeId, placeholder, class
   return (
     <div ref={wrapRef} className={cn("relative", className)}>
       <UnifiedSearchInput
+        barcode={false}
         value={q}
         debounceMs={0}
         onChange={(v) => {

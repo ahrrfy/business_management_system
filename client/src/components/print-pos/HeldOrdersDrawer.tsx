@@ -324,6 +324,7 @@ export function HeldOrdersDrawer({
           {/* حقل البحث السريع */}
           <div className="p-4 border-b border-border bg-card">
             <UnifiedSearchInput
+              debounceMs={0}
               placeholder="ابحث برقم الفاتورة، اسم الزبون، أو رقم الهاتف…"
               value={search}
               onChange={setSearch}

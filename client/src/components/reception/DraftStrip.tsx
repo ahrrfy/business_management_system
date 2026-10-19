@@ -162,6 +162,7 @@ export function DraftStrip({
         </button>
       </div>
       <UnifiedSearchInput
+        debounceMs={0}
         value={search}
         onChange={setSearch}
         placeholder="بحث برقم الطلب أو الاسم أو الهاتف"

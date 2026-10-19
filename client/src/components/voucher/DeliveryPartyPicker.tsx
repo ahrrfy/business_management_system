@@ -110,6 +110,8 @@ export default function DeliveryPartyPicker({
       ) : (
         <div className="relative">
           <UnifiedSearchInput
+            barcode={false}
+            debounceMs={0}
             value={q}
             onChange={(val) => {
               setQ(val);

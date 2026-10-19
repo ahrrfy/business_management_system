@@ -354,7 +354,7 @@ export default function StudioCampaignsManager() {
           <div className={`grid gap-2 ${showBranchFilter ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
             <div className="space-y-1.5">
               <Label htmlFor="campaigns-search">بحث باسم الحملة</Label>
-              <UnifiedSearchInput id="campaigns-search" value={search} onChange={setSearch} placeholder="اكتب جزءاً من الاسم" />
+              <UnifiedSearchInput barcode={false} debounceMs={0} id="campaigns-search" value={search} onChange={setSearch} placeholder="اكتب جزءاً من الاسم" />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="campaigns-status">الحالة</Label>

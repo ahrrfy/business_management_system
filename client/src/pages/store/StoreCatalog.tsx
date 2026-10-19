@@ -86,7 +86,7 @@ export default function StoreCatalog() {
       {/* شريط الفلترة */}
       <div className="space-y-2 rounded-2xl border border-border bg-card p-3">
         <div className="flex flex-col gap-2 sm:flex-row">
-          <UnifiedSearchInput value={q} onChange={(v) => { setQ(v); setLimit(PAGE); }} placeholder="ابحث عن منتج بالاسم…" className="flex-1" />
+          <UnifiedSearchInput debounceMs={0} value={q} onChange={(v) => { setQ(v); setLimit(PAGE); }} placeholder="ابحث عن منتج بالاسم…" className="flex-1" />
           <AppSelect value={String(categoryId)} onValueChange={(value) => { setCategoryId(value === "" ? "" : Number(value)); setLimit(PAGE); }} className="sm:w-52">
             <option value="">كل الأقسام</option>
             <option value="0">بلا قسم</option>

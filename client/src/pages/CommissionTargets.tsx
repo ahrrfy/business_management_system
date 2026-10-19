@@ -159,7 +159,7 @@ export default function CommissionTargets() {
             {grid.isLoading ? "" : `${filteredRows.length} موظفاً — ${totalTargets} منهم له هدف محدَّد لشهر ${period}`}
           </span>
           <div className="flex flex-wrap items-center gap-2">
-            <UnifiedSearchInput value={f.q} onChange={(val) => setF({ q: val })} placeholder="بحث بالموظف…" aria-label="بحث بالموظف" className="h-8 w-full sm:w-44" wrapperClassName="min-w-40" />
+            <UnifiedSearchInput barcode={false} debounceMs={0} value={f.q} onChange={(val) => setF({ q: val })} placeholder="بحث بالموظف…" aria-label="بحث بالموظف" className="h-8 w-full sm:w-44" wrapperClassName="min-w-40" />
             <AppSelect value={f.branch} onValueChange={(v) => setF({ branch: v })} className="h-8 w-36" size="sm" placeholder="كل الفروع">
               <option value="">كل الفروع</option>
               {branchOptions.map((name) => <option key={name} value={name}>{name}</option>)}

@@ -281,6 +281,7 @@ export default function ReportsCenter() {
         description="كل تقارير النظام في مكان واحد — عرض وتصدير Excel وطباعة A4."
         actions={
           <UnifiedSearchInput
+            debounceMs={0}
             value={q}
             onChange={setQ}
             placeholder="ابحث في التقارير…"

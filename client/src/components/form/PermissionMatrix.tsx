@@ -260,6 +260,8 @@ export function PermissionMatrix({
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <UnifiedSearchInput
+              barcode={false}
+              debounceMs={0}
               value={query}
               onChange={setQuery}
               placeholder="ابحث عن وحدة…"

@@ -173,6 +173,8 @@ function CustomerFilter({ customerId, onChange }: { customerId: number | null; o
   return (
     <div ref={wrapRef} className="relative">
       <UnifiedSearchInput
+        barcode={false}
+        debounceMs={0}
         value={q}
         onChange={(val) => {
           setQ(val);

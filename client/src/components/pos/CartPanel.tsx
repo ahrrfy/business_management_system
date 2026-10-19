@@ -153,6 +153,8 @@ export function CartSalesRepButton({
 
           <div className="space-y-3 py-2">
             <UnifiedSearchInput
+              barcode={false}
+              debounceMs={0}
               value={query}
               onChange={setQuery}
               placeholder="بحث باسم بائع الصالة أو المسمى…"

@@ -575,6 +575,7 @@ export default function ProductionNew() {
                       ) : (
                         <div className="relative">
                           <UnifiedSearchInput
+                            debounceMs={0}
                             dir="auto"
                             value={woQuery}
                             onChange={setWoQuery}

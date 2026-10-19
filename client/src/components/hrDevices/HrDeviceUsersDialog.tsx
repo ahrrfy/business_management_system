@@ -59,6 +59,8 @@ export function HrDeviceUsersDialog({
           المستخدمين من الجهاز بزر «المستخدمون».
         </p>
         <UnifiedSearchInput
+          barcode={false}
+          debounceMs={0}
           value={deviceUserQuery}
           onChange={setDeviceUserQuery}
           placeholder="بحث بالرقم أو الاسم في الجهاز…"

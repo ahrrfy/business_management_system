@@ -959,6 +959,7 @@ pnpm prod:deploy
             <CardContent className="p-4">
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(240px,1fr)_180px_180px_180px_auto]">
                 <UnifiedSearchInput
+                  debounceMs={0}
                   value={query}
                   onChange={setQuery}
                   placeholder="ابحث بالاسم أو الفرع"

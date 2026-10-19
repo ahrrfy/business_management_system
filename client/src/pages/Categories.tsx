@@ -333,6 +333,7 @@ export default function Categories() {
             {list.isLoading ? "" : query ? `${num(filtered.length)} / ${num(rows.length)} فئة` : `${num(rows.length)} فئة`}
           </div>
           <UnifiedSearchInput
+            debounceMs={0}
             value={query}
             onChange={setQuery}
             placeholder="بحث بالاسم أو الوصف…"

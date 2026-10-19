@@ -86,6 +86,7 @@ export function QuranReciterModal({ open, onOpenChange }: QuranReciterModalProps
         {/* حقل البحث والفلاتر */}
         <div className="p-3 border-b bg-card space-y-2.5">
           <UnifiedSearchInput
+            debounceMs={0}
             placeholder="ابحث باسم القارئ (مثال: عبد الباسط، المعيقلي، العفاسي)..."
             value={search}
             onChange={setSearch}

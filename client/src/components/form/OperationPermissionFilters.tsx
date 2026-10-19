@@ -39,6 +39,7 @@ export function OperationPermissionFilters({
       <div className="space-y-1">
         <Label htmlFor={`${id}-query`}>بحث عن عملية أو مورد</Label>
         <UnifiedSearchInput
+          barcode={false}
           id={`${id}-query`}
           value={query}
           onChange={setQuery}

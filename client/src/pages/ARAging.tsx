@@ -441,6 +441,8 @@ export default function ARAging() {
           )}
           <FilterField label="بحث (العميل / الهاتف)" className="w-56">
             <UnifiedSearchInput
+              barcode={false}
+              debounceMs={0}
               value={f.q}
               onChange={(val) => setF({ q: val })}
               placeholder="اسم العميل أو رقم الهاتف…"

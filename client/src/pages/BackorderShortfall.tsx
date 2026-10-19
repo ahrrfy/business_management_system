@@ -231,6 +231,8 @@ export default function BackorderShortfall() {
               </AppSelect>
             )}
             <UnifiedSearchInput
+              dir="auto"
+              debounceMs={0}
               value={search}
               onChange={setSearch}
               placeholder="ابحث بالاسم أو SKU…"

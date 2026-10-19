@@ -983,6 +983,8 @@ export default function WaBroadcasts() {
       <Card>
         <CardContent className="p-3 flex flex-wrap items-center gap-2">
           <UnifiedSearchInput
+            barcode={false}
+            debounceMs={0}
             value={search}
             onChange={setSearch}
             placeholder="ابحث باسم الحملة…"

@@ -73,6 +73,7 @@ export const PermissionMatrixFilters = memo(function PermissionMatrixFilters({
       <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[240px]">
         {/* Search Input */}
         <UnifiedSearchInput
+          barcode={false}
           disabled={disabled}
           value={localSearch}
           debounceMs={0}

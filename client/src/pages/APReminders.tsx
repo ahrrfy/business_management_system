@@ -485,6 +485,8 @@ function QueueTab({
       <CardContent className="p-0">
         <div className="flex flex-wrap items-center gap-2 border-b p-3">
           <UnifiedSearchInput
+            barcode={false}
+            debounceMs={0}
             value={search}
             onChange={setSearch}
             placeholder="ابحث بالاسم أو الهاتف…"
@@ -658,7 +660,7 @@ function HistoryTab({
     <Card>
       <CardContent className="p-0">
         <div className="flex flex-wrap items-center gap-2 border-b p-3">
-          <UnifiedSearchInput value={search} onChange={setSearch} placeholder="ابحث بالاسم…" className="h-9" wrapperClassName="flex-1 max-w-xs" />
+          <UnifiedSearchInput barcode={false} debounceMs={0} value={search} onChange={setSearch} placeholder="ابحث بالاسم…" className="h-9" wrapperClassName="flex-1 max-w-xs" />
           <AppSelect
             value={status}
             onValueChange={(v) => setStatus(v as typeof status)}

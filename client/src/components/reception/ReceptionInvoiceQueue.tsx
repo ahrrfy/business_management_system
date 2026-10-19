@@ -234,6 +234,7 @@ export function ReceptionInvoiceQueue({
           بالبطاقة
         </button>
         <UnifiedSearchInput
+          debounceMs={0}
           value={search}
           onChange={(val) => { setSearch(val); resetPaging(); }}
           placeholder="رقم الفاتورة أو اسم/هاتف الزبون"

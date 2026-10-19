@@ -256,6 +256,7 @@ export default function InstallmentPlans() {
         <div className="min-w-48 space-y-1">
           <Label className="text-xs">بحث (رقم خطة/رقم صك)</Label>
           <UnifiedSearchInput
+            debounceMs={0}
             value={q}
             onChange={(val) => { setQ(val); setOffset(0); }}
             placeholder="مثال: 42 أو رقم الصك…"

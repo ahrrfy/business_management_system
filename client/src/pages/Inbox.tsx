@@ -833,6 +833,7 @@ export default function Inbox({ onStartOrder }: { onStartOrder?: (v: StartOrderF
         </div>
 
         <UnifiedSearchInput
+          debounceMs={0}
           value={search}
           onChange={setSearch}
           placeholder="بحث بالاسم أو الهاتف…"

@@ -759,6 +759,7 @@ export function QuickRecipeCopyDialog({
             {/* شريط البحث لإضافة مادة خام إضافية */}
             <div ref={searchContainerRef} className="relative">
               <UnifiedSearchInput
+                debounceMs={0}
                 aria-label="البحث عن مادة خام لإضافتها"
                 value={searchMaterial}
                 onChange={(val) => {

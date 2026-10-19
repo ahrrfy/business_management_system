@@ -97,6 +97,7 @@ export function PrintCustomerCombo({ C, customerId, setCustomerId }: PrintCustom
         >
           <div style={{ padding: 7 }}>
             <UnifiedSearchInput
+              barcode={false}
               autoFocus
               value={q}
               debounceMs={0}

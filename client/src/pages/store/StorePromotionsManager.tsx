@@ -725,6 +725,7 @@ export default function StorePromotionsManager() {
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-3">
           <div className="flex flex-wrap items-center gap-2">
             <UnifiedSearchInput
+              debounceMs={0}
               value={searchQuery}
               onChange={setSearchQuery}
               placeholder="بحث في اسم أو وصف العرض..."
@@ -949,6 +950,7 @@ export default function StorePromotionsManager() {
               <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
                 <span className="block font-semibold text-foreground">ابحث واختر المنتجات المشمولة:</span>
                 <UnifiedSearchInput
+                  debounceMs={0}
                   value={productSearchInput}
                   onChange={setProductSearchInput}
                   placeholder="اكتب حرفين أو أكثر للبحث في الكتالوج..."

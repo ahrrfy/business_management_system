@@ -246,10 +246,10 @@ export function ListToolbar<T>({
               onChange={search.onChange}
               placeholder={search.placeholder ?? "بحث…"}
               aria-label={search.ariaLabel ?? search.placeholder ?? "بحث في القائمة"}
-              barcode={search.barcode ?? true}
+              barcode={Boolean(search.barcode)}
               autoFocus={search.autoFocus}
               size="compact"
-              className={cn("min-w-0 flex-1 sm:min-w-40", (search.barcode ?? true) && "sm:min-w-64")}
+              className={cn("min-w-0 flex-1 sm:min-w-40", search.barcode && "sm:min-w-64")}
             />
           )}
           {quickFilters && <div className="hidden min-w-0 overflow-x-auto sm:block [&>div]:!flex-nowrap">{quickFilters}</div>}

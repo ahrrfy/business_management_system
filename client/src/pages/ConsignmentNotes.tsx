@@ -413,7 +413,7 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
               </div>
             ) : (
               <div className="relative">
-                <UnifiedSearchInput value={q} onChange={setQ} placeholder="ابحث عن مودِع…" barcode={false} />
+                <UnifiedSearchInput debounceMs={0} value={q} onChange={setQ} placeholder="ابحث عن مودِع…" barcode={false} />
                 {(consignorSearch.data?.rows.length ?? 0) > 0 && (
                   <div className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-md border bg-popover shadow-md">
                     {consignorSearch.data!.rows.map((r) => (

@@ -209,7 +209,7 @@ export default function HrChangesReport() {
       <Card>
         <CardContent className="p-3 flex flex-wrap items-end gap-2">
           <FilterField label="بحث" className="min-w-48">
-            <UnifiedSearchInput value={query} onChange={setQuery} placeholder="اسم الموظف أو المسمّى/النوع…" className="h-8" aria-label="بحث" barcode={false} />
+            <UnifiedSearchInput debounceMs={0} value={query} onChange={setQuery} placeholder="اسم الموظف أو المسمّى/النوع…" className="h-8" aria-label="بحث" barcode={false} />
           </FilterField>
           <FilterField label="من تاريخ">
             <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 w-36" aria-label="من تاريخ" />

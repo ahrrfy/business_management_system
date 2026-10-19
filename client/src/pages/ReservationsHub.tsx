@@ -482,6 +482,8 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
           <Input id="res-filter-to" type="date" className={selectCls} value={to} onChange={(e) => setTo(e.target.value)} />
         </div>
         <UnifiedSearchInput
+          barcode={false}
+          debounceMs={0}
           value={q}
           onChange={setQ}
           placeholder="بحث برقم الحجز أو اسم/هاتف العميل…"

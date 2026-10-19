@@ -294,6 +294,8 @@ export default function ContactsBank() {
       <Card>
         <CardContent className="p-3 space-y-3">
           <UnifiedSearchInput
+            barcode={false}
+            debounceMs={0}
             value={rawQ}
             onChange={setRawQ}
             placeholder="ابحث بالاسم أو الهاتف أو مسؤول المشتريات أو الرقم القديم (حرفان فأكثر)…"

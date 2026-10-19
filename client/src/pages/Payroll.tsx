@@ -770,6 +770,7 @@ export default function Payroll() {
           </CardTitle>
           <div className="flex flex-wrap items-center gap-2">
             <UnifiedSearchInput
+              debounceMs={0}
               value={itemQ}
               onChange={setItemQ}
               placeholder="بحث باسم الموظف…"

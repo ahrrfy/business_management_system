@@ -45,7 +45,7 @@ export function SearchField({
   value,
   onChange,
   placeholder,
-  barcode = true,
+  barcode = false,
   onScan,
   onSubmit,
   id,

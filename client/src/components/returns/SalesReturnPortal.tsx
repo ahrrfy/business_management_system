@@ -1226,6 +1226,8 @@ export function SalesReturnPortal({
                 </div>
                 <div className="relative">
                   <UnifiedSearchInput
+                    barcode={false}
+                    debounceMs={0}
                     value={salesCustomerSearch || salesCustomerName}
                     onChange={(val) => {
                       setSalesCustomerSearch(val);

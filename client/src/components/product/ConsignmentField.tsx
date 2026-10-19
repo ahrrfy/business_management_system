@@ -104,6 +104,7 @@ export function ConsignmentField({
             ) : (
               <div className="relative">
                 <UnifiedSearchInput
+                  debounceMs={0}
                   value={q}
                   disabled={disabled}
                   onChange={(val) => { setQ(val); setOpen(true); }}

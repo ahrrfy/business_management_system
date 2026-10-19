@@ -469,6 +469,7 @@ export default function PriceWaves() {
                       hint="يعمل بالتطبيع العربي — «ازرق» تجد «أزرق»"
                     >
                       <UnifiedSearchInput
+                        debounceMs={0}
                         value={productSearch}
                         onChange={setProductSearch}
                         placeholder="اسم منتج أو SKU أو امسح باركوداً"
@@ -494,6 +495,7 @@ export default function PriceWaves() {
                 <div className="space-y-2 rounded-md border p-3">
                   <Field label="ابحث وأضِف منتجات" hint="حتى 500 منتج">
                     <UnifiedSearchInput
+                      debounceMs={0}
                       value={pickQuery}
                       onChange={setPickQuery}
                       placeholder="اكتب اسماً أو SKU ثم اختر من النتائج"

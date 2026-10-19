@@ -308,6 +308,8 @@ export default function APAging() {
           </FilterField>
           <FilterField label="بحث (المورد / الهاتف)" className="w-56">
             <UnifiedSearchInput
+              barcode={false}
+              debounceMs={0}
               value={f.q}
               onChange={(val) => setF({ q: val })}
               placeholder="اسم المورد أو رقم الهاتف…"

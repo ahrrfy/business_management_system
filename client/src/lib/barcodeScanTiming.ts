@@ -158,16 +158,15 @@ export interface SettleDecision {
 
 /**
  * هل يقبل الرمز المفكوك من ومضةٍ نشطة كباركودٍ صالح؟
- * - عند التسوية بالمؤقّت (`onEnter = false`): يشترط باركوداً واثقاً (`isConfidentScanCode`) أو رقمياً محضاً،
- *   فلا تُقلَب الكتابةُ العربية السريعة («عمار» ⇐ `ujhv`) أو المختلطة القصيرة («م10» ⇐ `l10`) إلى إنجليزيّ.
- * - عند الإنهاء الصريح بـ`Enter` (`onEnter = true`): يقبل كافّة رموز الباركود القياسية (بما فيها الأبجدية
- *   مثل `ALIAS-A` وترقيم Code39/Code128 مثل `AB=12` و`MLZ6A`)، ويستثني فقط الكلمات العربية الصرفة غير المُزاحة
- *   التي فُكّت إلى مفاتيح الحروف العربية غير المُزاحة بلا أرقامٍ ولا حروفٍ كبيرة ولا ترقيم باركود («عمار» ⇐ `ujhv`).
+ * يقبل رموز الباركود القياسية عند التسوية بالمؤقّت (`onEnter = false`) وعند الإنهاء الصريح بـ`Enter`
+ * (`onEnter = true`) — بما فيها الرموز الأبجدية (`ALIAS-A`) والمختلطة (`MLZ6A`) وترقيم Code39/Code128
+ * (`AB=12`) — ويستثني فقط الكتابة البشرية العربية السريعة غير المُزاحة («عمار» ⇐ `ujhv`) أو المختلطة
+ * القصيرة المنتهية برقمٍ أو رقمَين («م10» ⇐ `l10`) كي لا تُقلَب إلى حروفٍ إنجليزية.
  */
 export function isAcceptedBurstScanCode(
   resultOrCode: FlushResult | string,
   minLength: number,
-  onEnter = false,
+  _onEnter = false,
 ): boolean {
   const code = typeof resultOrCode === "string" ? resultOrCode : resultOrCode.code;
   const text = typeof resultOrCode === "string" ? "" : resultOrCode.text;
@@ -176,8 +175,10 @@ export function isAcceptedBurstScanCode(
   if (isConfidentScanCode(code, minLength)) return true;
   const digitsOnly = code.replace(/\s+/g, "");
   if (/^\d+$/.test(digitsOnly)) return true;
-  if (!onEnter) return false;
   if (text && /^[\u0621-\u064A\u0671-\u06D3\s]+$/.test(text) && /^[a-z[\];'`,./\s]+$/.test(code)) {
+    return false;
+  }
+  if (text && /^[\u0621-\u064A\u0671-\u06D3]+\d{1,2}$/.test(text) && /^[a-z]+\d{1,2}$/.test(code)) {
     return false;
   }
   return true;

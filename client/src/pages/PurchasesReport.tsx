@@ -146,6 +146,7 @@ export default function PurchasesReport() {
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">بحث مورّد</label>
             <UnifiedSearchInput
+              debounceMs={0}
               value={search}
               onChange={setSearch}
               placeholder="اسم المورّد…"

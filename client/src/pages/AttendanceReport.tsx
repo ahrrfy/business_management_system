@@ -189,6 +189,8 @@ export default function AttendanceReport() {
               </div>
             ) : (
               <UnifiedSearchInput
+                barcode={false}
+                debounceMs={0}
                 className="h-9"
                 wrapperClassName="w-56"
                 value={empQuery}

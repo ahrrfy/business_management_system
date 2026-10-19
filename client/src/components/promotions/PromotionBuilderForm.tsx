@@ -779,6 +779,7 @@ export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionB
 
               <div className="relative">
                 <UnifiedSearchInput
+                  debounceMs={0}
                   value={productPicker}
                   onChange={setProductPicker}
                   placeholder="ابحث عن منتج بالاسم أو الباركود أو SKU (حرفان على الأقل)..."

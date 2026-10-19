@@ -117,17 +117,21 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
     // حالة محلية تضمن استجابة بصرية فورية وسلسة 60fps بدون تجميد أو تقطيع
     const [localValue, setLocalValue] = React.useState(value);
 
+    // مؤقت الترحيل المؤجل (Debounce)
+    const debounceTimerRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
     // مزامنة الحالة المحلية إذا تغيّرت القيمة من الخارج (مثل إعادة تعيين الفلاتر أو التنقل)
     React.useEffect(() => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = undefined;
+      }
       setLocalValue(value);
     }, [value]);
 
     // مرجع مستقر لـ onChange لمنع إعادة بناء المؤقتات
     const onChangeRef = React.useRef(onChange);
     onChangeRef.current = onChange;
-
-    // مؤقت الترحيل المؤجل (Debounce)
-    const debounceTimerRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
     const triggerChange = React.useCallback(
       (newVal: string, immediate = false) => {
@@ -310,7 +314,7 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
             type="button"
             onClick={handleClear}
             aria-label={clearButtonLabel}
-            title={clearButtonLabel === "مسح البحث" ? "مسح البحث (Esc)" : clearButtonLabel}
+            title={clearButtonLabel}
             className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground rounded p-1 transition-colors z-10 focus:outline-none focus:ring-1 focus:ring-primary"
           >
             <X aria-hidden className={size === "compact" ? "size-3.5" : "size-4"} />

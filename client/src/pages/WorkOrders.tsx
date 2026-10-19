@@ -747,7 +747,7 @@ export default function WorkOrders() {
         <button type="button" aria-pressed={f.deliv === "1"} onClick={() => setF({ deliv: f.deliv === "1" ? "" : "1" })} className={`wob-qf${f.deliv === "1" ? " wob-qf-on wob-qf-deliv" : ""}`} title="أوامرُ مسندة للتوصيل أو قيد التوصيل">
           <Truck aria-hidden className="size-3.5" /> قيد التوصيل
         </button>
-        <UnifiedSearchInput value={f.q} onChange={(q) => setF({ q })} placeholder="بحث (رقم / عنوان / عميل)" className="flex-1 min-w-[200px] max-w-[360px]" />
+        <UnifiedSearchInput debounceMs={0} value={f.q} onChange={(q) => setF({ q })} placeholder="بحث (رقم / عنوان / عميل)" className="flex-1 min-w-[200px] max-w-[360px]" />
         {/* الموجة ٢ — Group By (نمط Odoo): يبدّل تجميع الأعمدة بلا تغيير الفلاتر.
             «حسب المرحلة» هو الافتراضُ ويُفعِّل السحب والإفلات. البقيّة للقراءة الآن. */}
         {view === "board" && (

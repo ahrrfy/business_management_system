@@ -757,6 +757,7 @@ export default function HrDevices() {
               </div>
 
               <UnifiedSearchInput
+                debounceMs={0}
                 value={query}
                 onChange={setQuery}
                 placeholder="ابحث عن جهاز…"

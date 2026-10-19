@@ -470,7 +470,7 @@ export default function ContractPrices() {
 
             {/* ── جدول الأسعار التعاقدية ── */}
             {rows.length > 0 && (
-              <UnifiedSearchInput wrapperClassName="max-w-xs" value={q} onChange={setQ} placeholder="ابحث بالمنتج/SKU/ملاحظة…" />
+              <UnifiedSearchInput dir="auto" debounceMs={0} wrapperClassName="max-w-xs" value={q} onChange={setQ} placeholder="ابحث بالمنتج/SKU/ملاحظة…" />
             )}
             <DataTable
               columns={columns}

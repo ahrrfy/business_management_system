@@ -643,6 +643,7 @@ export default function Announcements() {
         <CardContent className="p-4">
           <div className="flex flex-col md:flex-row items-center gap-3">
             <UnifiedSearchInput
+              debounceMs={0}
               placeholder="البحث في عناوين ونصوص الإعلانات…"
               value={searchQuery}
               onChange={setSearchQuery}

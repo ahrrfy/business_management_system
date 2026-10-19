@@ -358,6 +358,7 @@ export default function CardAccount() {
             </h2>
             <div className="flex flex-wrap items-center gap-2">
               <UnifiedSearchInput
+                debounceMs={0}
                 aria-label="بحث بالمرجع أو رقم السند أو اسم الطرف"
                 placeholder="بحث بالمرجع/السند/الطرف…"
                 className="h-9"

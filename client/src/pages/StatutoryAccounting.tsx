@@ -354,7 +354,7 @@ function SetupTab({ canAdmin }: { canAdmin: boolean }) {
             <div className="flex flex-wrap items-center gap-2 px-6">
               <div className="min-w-64 flex-1">
                 <Label className="sr-only" htmlFor="statutory-mapping-search">بحث في ربط الحسابات</Label>
-                <UnifiedSearchInput id="statutory-mapping-search" value={mappingSearch} onChange={setMappingSearch} placeholder="بحث بالرمز أو الاسم أو الدور" />
+                <UnifiedSearchInput barcode={false} debounceMs={0} id="statutory-mapping-search" value={mappingSearch} onChange={setMappingSearch} placeholder="بحث بالرمز أو الاسم أو الدور" />
               </div>
               <label className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
                 <input type="checkbox" checked={onlyUnmapped} onChange={(event) => setOnlyUnmapped(event.target.checked)} />غير المربوط فقط
