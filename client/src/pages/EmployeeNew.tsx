@@ -188,13 +188,16 @@ export default function EmployeeNew() {
       position: rawPosition || f.position,
       branchId: matchedBranchId || f.branchId,
     }));
-    if (a.degree) {
+    const legacyDegree = !a.degree && a.education ? DEGREES.find((d) => a.education?.trim().startsWith(d)) : undefined;
+    const resolvedDegree = a.degree || legacyDegree;
+    if (resolvedDegree) {
+      const legacyRemainder = legacyDegree ? a.education?.trim().slice(legacyDegree.length).trim() : "";
       setEdu([
         {
           key: 1,
-          degree: a.degree,
-          major: a.major || undefined,
-          school: a.education || undefined,
+          degree: resolvedDegree,
+          major: a.major || legacyRemainder || undefined,
+          school: legacyDegree ? undefined : (a.education || undefined),
         },
       ]);
     }
@@ -283,7 +286,7 @@ export default function EmployeeNew() {
   const pending = create.isPending || update.isPending || createWithAccount.isPending;
 
   function submit() {
-    if (!can(isEdit ? "employees.update" : "employees.create")) { setError("العملية غير مفوضة لحسابك"); return; }
+    if (!can(isEdit ? "employees.update" : "employees.create") || (!isEdit && applicantId && !can("recruitment.updateStage"))) { setError("العملية غير مفوضة لحسابك"); return; }
     setError("");
     if (alreadyConvertedEmployeeId != null) { setError("تم تعيين هذا المتقدّم مسبقاً كموظف."); return; }
     if (!form.firstName.trim()) { setError("الاسم الأول مطلوب."); return; }

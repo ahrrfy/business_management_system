@@ -22,3 +22,32 @@ ALTER TABLE `jobApplicants`
   ADD COLUMN `rejectionReason` varchar(500) NULL AFTER `interviewDate`,
   ADD COLUMN `convertedEmployeeId` int DEFAULT NULL,
   ADD COLUMN `hrNotes` text NULL AFTER `notes`;
+
+UPDATE `jobApplicants`
+SET `hrNotes` = `notes`, `notes` = NULL
+WHERE `source` IN ('paper', 'archive') AND `notes` IS NOT NULL AND `hrNotes` IS NULL;
+
+UPDATE `jobApplicants`
+SET
+  `degree` = CASE
+    WHEN TRIM(`education`) LIKE 'دكتوراه%' THEN 'دكتوراه'
+    WHEN TRIM(`education`) LIKE 'ماجستير%' THEN 'ماجستير'
+    WHEN TRIM(`education`) LIKE 'بكالوريوس%' THEN 'بكالوريوس'
+    WHEN TRIM(`education`) LIKE 'دبلوم%' THEN 'دبلوم'
+    WHEN TRIM(`education`) LIKE 'إعدادية%' OR TRIM(`education`) LIKE 'اعدادية%' THEN 'إعدادية'
+    WHEN TRIM(`education`) LIKE 'متوسطة%' THEN 'متوسطة'
+    WHEN TRIM(`education`) LIKE 'ابتدائية%' THEN 'ابتدائية'
+    ELSE NULL
+  END,
+  `major` = CASE
+    WHEN TRIM(`education`) REGEXP '^(دكتوراه|ماجستير|بكالوريوس|دبلوم|إعدادية|اعدادية|متوسطة|ابتدائية)[[:space:]]+.+'
+      THEN SUBSTRING(TRIM(REGEXP_REPLACE(TRIM(`education`), '^(دكتوراه|ماجستير|بكالوريوس|دبلوم|إعدادية|اعدادية|متوسطة|ابتدائية)[[:space:]]+', '')), 1, 160)
+    ELSE `major`
+  END,
+  `education` = CASE
+    WHEN TRIM(`education`) REGEXP '^(دكتوراه|ماجستير|بكالوريوس|دبلوم|إعدادية|اعدادية|متوسطة|ابتدائية)([[:space:]]+.*)?$'
+      THEN NULL
+    ELSE `education`
+  END
+WHERE `degree` IS NULL AND `education` IS NOT NULL;
+

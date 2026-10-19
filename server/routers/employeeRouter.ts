@@ -20,7 +20,7 @@ import type { CreateUserInput } from "../services/userService";
 import { getEmployeeUsage } from "../services/entityUsage";
 import { adminProcedure, protectedProcedure, requireModule, router } from "../trpc";
 import { isDupEntry, toArabicMessage } from "@shared/errorMap.ar";
-import { companyBranchScope, resolveTargetBranch } from "../services/companyBranchScope";
+import { companyBranchScope, resolveTargetBranch } from "../services/companyBranchScope"; import { assertOperationAuthorized } from "../operationAuthorization";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
@@ -153,7 +153,7 @@ export const employeeRouter = router({
 
   create: hrWrite.input(employeeInput).mutation(async ({ input, ctx }) => {
     try {
-      const scope = companyBranchScope(ctx.user);
+      if (input.applicantId != null) assertOperationAuthorized(ctx.user, "recruitment.updateStage"); const scope = companyBranchScope(ctx.user);
       const branchId = resolveTargetBranch(scope, input.branchId, { required: false });
       const e = await svc.createEmployee({ ...input, branchId } as svc.EmployeeInput, scope);
       await logAudit(ctx, { action: "employee.create", entityType: "employee", entityId: e?.id, newValue: { name: e?.fullName, department: input.department ?? null } });
@@ -178,7 +178,7 @@ export const employeeRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
       }
       try {
-        const scope = companyBranchScope(ctx.user);
+        if (emp.applicantId != null) assertOperationAuthorized(ctx.user, "recruitment.updateStage"); const scope = companyBranchScope(ctx.user);
         const branchId = resolveTargetBranch(scope, emp.branchId, { required: false });
         if (emp.managerId != null) await svc.assertEmployeeInScope(emp.managerId, scope);
         let spec: svc.AccountSpec;
