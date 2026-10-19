@@ -16,7 +16,7 @@ function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set
 async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of ["inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants", "products", "branches"]) {
+  for (const t of ["productImages", "inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants", "products", "branches"]) {
     await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
   }
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -172,6 +172,113 @@ describe("listProductsAdmin — تقسيم صفحات حتمي", () => {
     expect(full.total).toBe(full.rows.length);
     expect(p1.total).toBe(full.total);
     expect(keys1.length + keys2.length).toBeLessThanOrEqual(full.total);
+  });
+});
+
+describe("listProductsAdmin — حالة الصورة وفلتر الصور (imageFilter)", () => {
+  it("يحسب hasImage وhasVariantImage وprimaryImageThumb بدقّة ويفلتر بـHAS_IMAGE/NO_IMAGE/VARIANT_NO_IMAGE", async () => {
+    const d = db();
+    // نضيف متغيّراً ثانياً للمنتج 1 (أحمر) وصورة معتمدة خاصّة بالمتغيّر 1 فقط (أزرق)
+    await d.insert(s.productVariants).values([
+      { id: 10, productId: 1, sku: "PEN-RED", color: "أحمر", costPrice: "125.00" },
+    ]);
+    await d.insert(s.productUnits).values([
+      { id: 10, variantId: 10, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "6291041500992" },
+    ]);
+    await d.insert(s.productImages).values([
+      {
+        productId: 1,
+        variantId: 1,
+        url: "/img/pen-blue.webp",
+        thumbDataUrl: "/img/pen-blue-thumb.webp",
+        isPrimary: true,
+        sortOrder: 0,
+        reviewStatus: "APPROVED",
+      },
+      {
+        productId: 2,
+        variantId: null,
+        url: "/img/shelf-parent.webp",
+        thumbDataUrl: "/img/shelf-parent-thumb.webp",
+        isPrimary: true,
+        sortOrder: 0,
+        reviewStatus: "APPROVED",
+      },
+    ]);
+
+    const all = await listProductsAdmin({ branchId: 1 });
+    const blueRow = all.rows.find((r) => r.variantId === 1);
+    const redRow = all.rows.find((r) => r.variantId === 10);
+    const shelfRow = all.rows.find((r) => r.productId === 2);
+    const incompleteRow = all.rows.find((r) => r.productId === 3);
+
+    expect(blueRow).toMatchObject({
+      hasImage: true,
+      hasVariantImage: true,
+      imageCount: 1,
+      variantImageCount: 1,
+      primaryImageThumb: "/img/pen-blue-thumb.webp",
+    });
+    // المتغيّر الأحمر لنفس المنتج 1 لا يملك صورة خاصّة ولا توجد صورة عامّة للأب (variantId IS NULL) فلا يرث مصغّرة أخيه الأزرق
+    expect(redRow).toMatchObject({
+      hasImage: true,
+      hasVariantImage: false,
+      imageCount: 1,
+      variantImageCount: 0,
+      primaryImageThumb: null,
+    });
+    // المنتج 2 يملك صورة عامّة للأب (variantId IS NULL) فتغطّي الصفّ، لكن variantImageCount = 0
+    expect(shelfRow).toMatchObject({
+      hasImage: true,
+      hasVariantImage: true,
+      imageCount: 1,
+      variantImageCount: 0,
+      primaryImageThumb: "/img/shelf-parent-thumb.webp",
+    });
+    expect(incompleteRow).toMatchObject({
+      hasImage: false,
+      hasVariantImage: false,
+      imageCount: 0,
+      variantImageCount: 0,
+      primaryImageThumb: null,
+    });
+
+    const withImg = await listProductsAdmin({ branchId: 1, imageFilter: "HAS_IMAGE" });
+    expect(withImg.rows.map((r) => r.variantId)).toEqual(expect.arrayContaining([1, 2]));
+    expect(withImg.rows.map((r) => r.variantId)).not.toContain(10);
+    expect(withImg.rows.map((r) => r.productId)).not.toContain(3);
+
+    const noImg = await listProductsAdmin({ branchId: 1, imageFilter: "NO_IMAGE" });
+    expect(noImg.rows.map((r) => r.variantId)).toContain(10);
+    expect(noImg.rows.map((r) => r.productId)).toContain(3);
+    expect(noImg.rows.map((r) => r.variantId)).not.toContain(1);
+    expect(noImg.rows.map((r) => r.variantId)).not.toContain(2);
+
+    const noDedicatedVariantImg = await listProductsAdmin({ branchId: 1, imageFilter: "VARIANT_NO_IMAGE" });
+    expect(noDedicatedVariantImg.rows.map((r) => r.variantId)).not.toContain(1);
+    expect(noDedicatedVariantImg.rows.map((r) => r.variantId)).toEqual(expect.arrayContaining([2, 10]));
+
+    // عند إضافة صورة معتمدة للمنتج الناقص (بلا متغيّرات variantId = null) يصبح variantImageCount = 1 وhasVariantImage = true
+    await d.insert(s.productImages).values([
+      {
+        productId: 3,
+        variantId: null,
+        url: "/img/incomplete.webp",
+        thumbDataUrl: "/img/incomplete-thumb.webp",
+        isPrimary: true,
+        sortOrder: 0,
+        reviewStatus: "APPROVED",
+      },
+    ]);
+    const afterIncompleteImg = await listProductsAdmin({ branchId: 1 });
+    const updatedIncomplete = afterIncompleteImg.rows.find((r) => r.productId === 3);
+    expect(updatedIncomplete).toMatchObject({
+      hasImage: true,
+      hasVariantImage: true,
+      imageCount: 1,
+      variantImageCount: 1,
+      primaryImageThumb: "/img/incomplete-thumb.webp",
+    });
   });
 });
 

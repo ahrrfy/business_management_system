@@ -6431,14 +6431,93 @@ export async function getStudioProductVariantMatrix(actor: ProductStudioActor, p
  */
 export async function quickBarcodeLookup(
   actor: ProductStudioActor,
-  barcodeInput: string | { barcode: string },
+  barcodeInput:
+    | string
+    | {
+        barcode?: string | null;
+        productId?: number | null;
+        variantId?: number | null;
+      },
 ) {
   assertStudioOperationBinding(actor, "productStudio.quickBarcodeLookup");
-  const barcode = typeof barcodeInput === "string" ? barcodeInput : barcodeInput.barcode;
+  const rawBarcode = typeof barcodeInput === "string" ? barcodeInput : (barcodeInput.barcode ?? "");
+  const inputProductId = typeof barcodeInput === "string" ? null : (barcodeInput.productId ?? null);
+  const inputVariantId = typeof barcodeInput === "string" ? null : (barcodeInput.variantId ?? null);
   const db = requireDb();
-  const resolved = await resolveStudioBarcode(actor, barcode);
-  const productId = Number(resolved.productId);
-  const variantId = resolved.variantId == null ? null : Number(resolved.variantId);
+
+  let productId: number;
+  let variantId: number | null = null;
+  let variantName: string | null = null;
+  let unitId: number | null = null;
+  let unitName: string | null = null;
+  let barcode = rawBarcode.trim();
+
+  if (inputProductId != null && Number.isFinite(Number(inputProductId)) && Number(inputProductId) > 0) {
+    productId = Number(inputProductId);
+    variantId = inputVariantId != null && Number(inputVariantId) > 0 ? Number(inputVariantId) : null;
+    if (variantId != null) {
+      const variantRow = (
+        await db
+          .select({
+            id: productVariants.id,
+            variantName: productVariants.variantName,
+            color: productVariants.color,
+            size: productVariants.size,
+            sku: productVariants.sku,
+          })
+          .from(productVariants)
+          .where(and(eq(productVariants.id, variantId), eq(productVariants.productId, productId)))
+          .limit(1)
+      )[0];
+      if (!variantRow) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "المتغيّر غير موجود",
+            why: "المتغيّر المحدد غير موجود أو لا ينتمي لهذا المنتج",
+            doThis: "حدّث قائمة المنتجات وأعد المحاولة",
+          }),
+        });
+      }
+      variantName = variantRow.variantName || variantRow.color || variantRow.size || variantRow.sku || null;
+      const unitRows = await db
+        .select({
+          id: productUnits.id,
+          unitName: productUnits.unitName,
+          barcode: productUnits.barcode,
+          isBaseUnit: productUnits.isBaseUnit,
+        })
+        .from(productUnits)
+        .where(eq(productUnits.variantId, variantId))
+        .orderBy(desc(productUnits.isBaseUnit), asc(productUnits.id));
+      const matchedUnit =
+        (barcode ? unitRows.find((u) => (u.barcode ?? "").trim() === barcode) : undefined) ?? unitRows[0];
+      if (matchedUnit) {
+        unitId = Number(matchedUnit.id);
+        unitName = matchedUnit.unitName ?? null;
+        if (!barcode && matchedUnit.barcode) {
+          barcode = matchedUnit.barcode.trim();
+        }
+      }
+    }
+  } else {
+    if (!barcode) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "الباركود أو المنتج مطلوب",
+          why: "لم يتم تمرير باركود أو معرّف منتج صالح للاستعلام",
+          doThis: "امسح الباركود أو اختر المنتج من القائمة",
+        }),
+      });
+    }
+    const resolved = await resolveStudioBarcode(actor, barcode);
+    productId = Number(resolved.productId);
+    variantId = resolved.variantId == null ? null : Number(resolved.variantId);
+    variantName = resolved.variantName ?? null;
+    unitId = resolved.unitId;
+    unitName = resolved.unitName;
+  }
 
   const productRows = await db
     .select({
@@ -6467,7 +6546,7 @@ export async function quickBarcodeLookup(
     });
   }
 
-  // جلب الصور المعتمدة للمنتج
+  // جلب الصور المعتمدة للمنتج (مع تقديم صور المتغيّر المستهدَف على الصور العامّة للأب)
   const imageRows = await db
     .select({
       id: productImages.id,
@@ -6489,9 +6568,14 @@ export async function quickBarcodeLookup(
         eq(productImages.reviewStatus, "APPROVED"),
       ),
     )
-    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), desc(productImages.id));
+    .orderBy(
+      ...(variantId != null ? [sql`CASE WHEN ${productImages.variantId} = ${variantId} THEN 0 ELSE 1 END`] : []),
+      desc(productImages.isPrimary),
+      asc(productImages.sortOrder),
+      desc(productImages.id),
+    );
 
-  // جلب أي مهمة نشطة لهذا المنتج
+  // جلب أي مهمة نشطة لهذا المنتج/المتغيّر
   const activeJob = (
     await db
       .select({
@@ -6505,10 +6589,16 @@ export async function quickBarcodeLookup(
       .where(
         and(
           eq(productImageJobs.productId, productId),
+          variantId != null
+            ? or(isNull(productImageJobs.variantId), eq(productImageJobs.variantId, variantId))
+            : sql`1=1`,
           inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW"]),
         ),
       )
-      .orderBy(desc(productImageJobs.id))
+      .orderBy(
+        ...(variantId != null ? [sql`CASE WHEN ${productImageJobs.variantId} = ${variantId} THEN 0 ELSE 1 END`] : []),
+        desc(productImageJobs.id),
+      )
       .limit(1)
   )[0];
 
@@ -6523,14 +6613,15 @@ export async function quickBarcodeLookup(
       modelName: product.modelName ?? null,
       categoryName: product.categoryName ?? null,
       variantId,
-      variantName: resolved.variantName ?? null,
-      unitId: resolved.unitId,
-      unitName: resolved.unitName,
+      variantName,
+      unitId,
+      unitName,
       barcode,
       isActive: Boolean(product.isActive),
     },
     images: imageRows.map((img) => ({
       id: Number(img.id),
+      variantId: img.variantId == null ? null : Number(img.variantId),
       url: img.url,
       thumbDataUrl: img.thumbDataUrl,
       isPrimary: Boolean(img.isPrimary),
@@ -6564,7 +6655,7 @@ export async function quickSaveBarcodeProductImage(
   input: {
     productId: number;
     variantId?: number | null;
-    barcode?: string;
+    barcode?: string | null;
     originalDataUrl?: string | null;
     processedDataUrl: string;
     thumbnailDataUrl: string;
@@ -6596,6 +6687,26 @@ export async function quickSaveBarcodeProductImage(
     });
   }
 
+  if (input.variantId != null) {
+    const variantRow = (
+      await db
+        .select({ id: productVariants.id })
+        .from(productVariants)
+        .where(and(eq(productVariants.id, input.variantId), eq(productVariants.productId, input.productId)))
+        .limit(1)
+    )[0];
+    if (!variantRow) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "المتغيّر غير موجود",
+          why: "المتغيّر المحدد لا ينتمي لهذا المنتج أو تم حذفه",
+          doThis: "حدّث قائمة المنتجات وأعد المحاولة",
+        }),
+      });
+    }
+  }
+
   // فك ترميز وتخزين الصور
   const processed = decodeStudioImage(input.processedDataUrl);
   const thumbnail = decodeStudioThumbnail(input.thumbnailDataUrl, processed);
@@ -6604,6 +6715,7 @@ export async function quickSaveBarcodeProductImage(
   const store = getImageStore();
   const originalKey = original ? objectKeyFor(original.hash, original.mime, studioObjectPrefix("original")) : null;
   const processedKey = objectKeyFor(processed.hash, processed.mime, studioObjectPrefix("candidate"));
+  const stagedObjectKeys = originalKey ? [originalKey, processedKey] : [processedKey];
 
   if (original && originalKey) {
     await stageStudioObject(originalKey);
@@ -6619,7 +6731,7 @@ export async function quickSaveBarcodeProductImage(
     // مسار المدير: اعتماد فوري ومباشر دون روتين (Direct Manager Approval)
     // -------------------------------------------------------------
     return await withStudioTx(async (tx) => {
-    await assertStudioOperationTx(tx, actor, "productStudio.quickSaveBarcodeProductImage");
+      await assertStudioOperationTx(tx, actor, "productStudio.quickSaveBarcodeProductImage");
       if (managerActor && !(await canAutoApproveStudioTx(tx, actor))) throw new TRPCError({ code: "FORBIDDEN" });
       const existingImages = await tx
         .select({
@@ -6739,6 +6851,11 @@ export async function quickSaveBarcodeProductImage(
         .set({ sourceImageId: imageId })
         .where(eq(productImageJobs.id, jobId));
 
+      await tx
+        .update(productImageObjectStaging)
+        .set({ state: "REFERENCED", referencedAt: new Date() })
+        .where(inArray(productImageObjectStaging.objectKey, stagedObjectKeys));
+
       await tx.insert(auditLogs).values(
         auditValues(actor, "productStudio.quickCapture.managerApproved", imageId, {
           productId: input.productId,
@@ -6765,7 +6882,7 @@ export async function quickSaveBarcodeProductImage(
     // مسار المصور / الموظف: إرسال للمراجعة والاعتماد من قبل المدير
     // -------------------------------------------------------------
     return await withStudioTx(async (tx) => {
-    await assertStudioOperationTx(tx, actor, "productStudio.quickSaveBarcodeProductImage");
+      await assertStudioOperationTx(tx, actor, "productStudio.quickSaveBarcodeProductImage");
       if (managerActor && !(await canAutoApproveStudioTx(tx, actor))) throw new TRPCError({ code: "FORBIDDEN" });
       const jobMode: "FLATTEN" | "CUT" | "PRO" | "AI" =
         input.mode === "ORIGINAL"
@@ -6773,6 +6890,30 @@ export async function quickSaveBarcodeProductImage(
           : input.mode === "CUT"
             ? "PRO"
             : input.mode;
+
+      // فحص الفتحات النشطة الحالية لنفس (المنتج، المتغيّر) لتفادي تصادم المفتاح الفريد uq_pijob_product_variant_active
+      const existingActiveJobs = await tx
+        .select({
+          id: productImageJobs.id,
+          activeSlot: productImageJobs.activeSlot,
+          assignedTo: productImageJobs.assignedTo,
+          revision: productImageJobs.revision,
+        })
+        .from(productImageJobs)
+        .where(
+          and(
+            eq(productImageJobs.productId, input.productId),
+            input.variantId == null ? isNull(productImageJobs.variantId) : eq(productImageJobs.variantId, input.variantId),
+            isNotNull(productImageJobs.activeSlot),
+          ),
+        )
+        .for("update");
+
+      const maxActiveSlot = existingActiveJobs.reduce(
+        (max, j) => Math.max(max, Number(j.activeSlot ?? 0)),
+        0,
+      );
+      const nextActiveSlot = maxActiveSlot + 1;
 
       const [job] = await tx
         .insert(productImageJobs)
@@ -6800,11 +6941,16 @@ export async function quickSaveBarcodeProductImage(
           submittedAt: new Date(),
           barcodeVerifiedBy: actor.userId,
           barcodeVerifiedAt: new Date(),
-          activeSlot: 1,
+          activeSlot: nextActiveSlot,
         })
         .$returningId();
 
       const jobId = Number(job.id);
+
+      await tx
+        .update(productImageObjectStaging)
+        .set({ state: "REFERENCED", referencedAt: new Date() })
+        .where(inArray(productImageObjectStaging.objectKey, stagedObjectKeys));
 
       await tx.insert(auditLogs).values(
         auditValues(actor, "productStudio.quickCapture.submittedForReview", jobId, {
@@ -6839,7 +6985,7 @@ export async function quickAiTransform(
     imageDataUrl: string;
     mode?: "AI" | "REMOVEBG";
     productId?: number;
-    barcode?: string;
+    barcode?: string | null;
     adminOverrideReason?: string | null;
   },
 ): Promise<{

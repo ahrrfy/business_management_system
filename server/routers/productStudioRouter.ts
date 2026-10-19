@@ -4,7 +4,7 @@ import { STUDIO_REVIEW_READ_OPERATIONS, STUDIO_TASK_MANAGEMENT_OPERATIONS } from
 import { routeOperationAuthority } from "../services/authorization/operationAuthority";
 import { reserveStudioImageTasks } from "../services/productStudioService";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, requireRole, router } from "../trpc";
-import { barcodeString, barcodeStorageString } from "../lib/schemas";
+import { barcodeString, barcodeStorageString, optionalBarcodeString } from "../lib/schemas";
 import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, drainStudioCampaignBacklog, distributeCampaignTasks, getNextPhotographerTask, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioTaskPreviousImages, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, getStudioProductUnits, getStudioProductVariantMatrix, linkStudioBarcode, quickBarcodeLookup, quickSaveBarcodeProductImage, quickAiTransform, type ProductStudioActor } from "../services/productStudioService";
 import { logAudit } from "../services/auditService";
 import { deleteProductImage, listProductImagesForManager, reorderProductImages, setPrimaryProductImage } from "../services/productStudioImageManager";
@@ -386,15 +386,15 @@ export const productStudioRouter = router({
     .mutation(({ ctx, input }) => bulkCancelStudioBacklog(actor(ctx, "productStudio.cancelCampaignBacklog"), input)),
   // البحث السريع بالباركود للمنتجات وصورها — متاح لكل من يملك الوصول للاستوديو بلا حملات
   quickBarcodeLookup: productStudioReadProcedure
-    .input(z.object({ barcode: barcodeString }))
-    .query(({ ctx, input }) => quickBarcodeLookup(actor(ctx, "productStudio.quickBarcodeLookup"), input.barcode)),
+    .input(z.object({ barcode: optionalBarcodeString, productId: z.number().int().positive().optional(), variantId: z.number().int().positive().nullable().optional() }))
+    .query(({ ctx, input }) => quickBarcodeLookup(actor(ctx, "productStudio.quickBarcodeLookup"), input)),
   // الحفظ الفوري والمعالجة: اعتماد مباشر وتلقائي للمدير بلا روتين، وإرسال للاعتماد لغير المدير
   quickSaveBarcodeProductImage: productStudioWriteProcedure
     .input(
       z.object({
         productId: z.number().int().positive(),
         variantId: z.number().int().positive().nullable().optional(),
-        barcode: barcodeString.optional(),
+        barcode: optionalBarcodeString,
         originalDataUrl: z.string().max(1_300_000).nullable().optional(),
         processedDataUrl: z.string().max(1_300_000),
         thumbnailDataUrl: z.string().max(180_000),
@@ -411,7 +411,7 @@ export const productStudioRouter = router({
         imageDataUrl: z.string().min(1).max(6_000_000),
         mode: z.enum(["AI", "REMOVEBG"]).default("AI"),
         productId: z.number().int().positive().optional(),
-        barcode: barcodeString.optional(),
+        barcode: optionalBarcodeString,
         adminOverrideReason,
       }),
     )

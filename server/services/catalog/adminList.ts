@@ -3,7 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import Decimal from "decimal.js";
-import { branchStock, categories, productPrices, productUnitBarcodes, productUnits, productVariants, products, suppliers } from "../../../drizzle/schema";
+import { branchStock, categories, productImages, productPrices, productUnitBarcodes, productUnits, productVariants, products, suppliers } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { getProductUsage, isFkBlocked, usageBlockMessage } from "../entityUsage";
 import { type Actor, withTx } from "../tx";
@@ -88,6 +88,16 @@ export interface AdminProductRow {
   barcodeAliases: string[];
   /** للبكج وحده: تفسير طاقته (من يحدّها وهل يمنع البيع). `null` لغير البكج. */
   bundleCapacity: BundleCapacity | null;
+  /** هل للمنتج (`productId`) أيّ صورة معتمَدة (على المنتج الأب أو أيٍّ من متغيّراته)؟ */
+  hasImage: boolean;
+  /** هل هذا الصفّ مُغطّى بصورة معتمَدة (خاصّة بالمتغيّر أو مشتركة على مستوى المنتج الأب)؟ */
+  hasVariantImage: boolean;
+  /** إجمالي الصور المعتمَدة للمنتج (شاملاً العامّة وصور المتغيّرات). */
+  imageCount: number;
+  /** عدد الصور المعتمَدة الخاصّة بهذا المتغيّر (`variantId = r.variantId`)، أو الصور العامّة إن كان الصفّ بلا متغيّر. */
+  variantImageCount: number;
+  /** مصغّرة الصورة المعتمَدة الأفضل لهذا الصفّ (تُفضَّل صورة المتغيّر ثمّ صورة المنتج العامّة؛ لا تُسرَّب صورة متغيّر شقيق). */
+  primaryImageThumb: string | null;
 }
 
 export interface ListProductsAdminInput {
@@ -105,6 +115,8 @@ export interface ListProductsAdminInput {
   showInPrintPos?: boolean;
   showInQuotations?: boolean;
   showInAdvancedSales?: boolean;
+  /** فلترة بحالة الصورة: HAS_IMAGE = يحتوي صورة، NO_IMAGE = بلا صورة إطلاقاً، VARIANT_NO_IMAGE = متغيّر يفتقر لصورة خاصّة به. */
+  imageFilter?: "HAS_IMAGE" | "NO_IMAGE" | "VARIANT_NO_IMAGE";
   limit?: number;
   offset?: number;
 }
@@ -154,6 +166,17 @@ export async function listProductsAdmin(
   }
   if (input.showInAdvancedSales != null) {
     conds.push(eq(products.showInAdvancedSales, input.showInAdvancedSales));
+  }
+  if (input.imageFilter) {
+    const rowImageScope = sql`from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED' and (${productImages.variantId} is null or ${productImages.variantId} = ${productVariants.id} or ${productVariants.id} is null)`;
+    const ownVariantImageScope = sql`from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.variantId} = ${productVariants.id} and ${productImages.reviewStatus} = 'APPROVED'`;
+    if (input.imageFilter === "HAS_IMAGE") {
+      conds.push(sql`exists (select 1 ${rowImageScope})`);
+    } else if (input.imageFilter === "NO_IMAGE") {
+      conds.push(sql`not exists (select 1 ${rowImageScope})`);
+    } else if (input.imageFilter === "VARIANT_NO_IMAGE") {
+      conds.push(sql`${productVariants.id} is not null and not exists (select 1 ${ownVariantImageScope})`);
+    }
   }
   const where = conds.length ? and(...conds) : undefined;
 
@@ -274,6 +297,38 @@ export async function listProductsAdmin(
     rows.flatMap((row) => row.isBundle && row.variantId != null ? [Number(row.variantId)] : []),
   );
 
+  // الصور المعتمَدة لمنتجات الصفحة المرئية فقط (≤500) — استعلام دفعي واحد دون مضاعفة صفوف الـJOIN.
+  const pageProductIds = Array.from(
+    new Set(rows.map((r) => Number(r.productId))),
+  );
+  const pageImageRows = pageProductIds.length
+    ? await db
+        .select({
+          id: productImages.id,
+          productId: productImages.productId,
+          variantId: productImages.variantId,
+          url: productImages.url,
+          thumbDataUrl: productImages.thumbDataUrl,
+          isPrimary: productImages.isPrimary,
+          sortOrder: productImages.sortOrder,
+        })
+        .from(productImages)
+        .where(
+          and(
+            inArray(productImages.productId, pageProductIds),
+            eq(productImages.reviewStatus, "APPROVED"),
+          ),
+        )
+        .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), desc(productImages.id))
+    : [];
+  const imagesByProduct = new Map<number, typeof pageImageRows>();
+  for (const img of pageImageRows) {
+    const pid = Number(img.productId);
+    const list = imagesByProduct.get(pid);
+    if (list) list.push(img);
+    else imagesByProduct.set(pid, [img]);
+  }
+
   // العدّ الإجمالي بنفس FROM/WHERE لكن بلا جوينات الأسعار/المخزون (كلاهما 1:0..1 لا يغيّر عدد الصفوف).
   const totalRow = (
     await db
@@ -291,76 +346,97 @@ export async function listProductsAdmin(
       : (r.baseCostPrice == null ? null : String(r.baseCostPrice));
 
   return {
-    rows: rows.map((r) => ({
-      branchId: input.branchId,
-      productId: Number(r.productId),
-      productName: r.productName,
-      productType: r.productType ?? null,
-      brand: r.brand ?? null,
-      modelName: r.modelName ?? null,
-      description: r.description ?? null,
-      productIsActive: !!r.productIsActive,
-      categoryId: r.categoryId != null ? Number(r.categoryId) : null,
-      categoryName: r.categoryName ?? null,
-      parentProductId: r.parentProductId != null ? Number(r.parentProductId) : null,
-      parentProductName: r.parentProductName ?? null,
-      isCustomizable: !!r.isCustomizable,
-      isService: !!r.isService,
-      showInReception: !!r.showInReception,
-      showInPrintPos: !!r.showInPrintPos,
-      showInQuotations: !!r.showInQuotations,
-      showInAdvancedSales: !!r.showInAdvancedSales,
-      isBundle: !!r.isBundle,
-      isConsignment: !!r.isConsignment,
-      consignorId: includeSensitivePrices && r.consignorId != null ? Number(r.consignorId) : null,
-      consignorName: includeSensitivePrices ? (r.consignorName ?? null) : null,
-      isFeatured: !!r.isFeatured,
-      showInStore: !!r.showInStore,
-      productCreatedAt: r.productCreatedAt,
-      productUpdatedAt: r.productUpdatedAt,
-      variantId: r.variantId != null ? Number(r.variantId) : null,
-      variantName: r.variantName ?? null,
-      variantKind: r.variantKind ?? null,
-      color: r.color ?? null,
-      colorHex: r.colorHex ?? null,
-      size: r.size ?? null,
-      sku: r.sku ?? null,
-      minStock: r.minStock ?? null,
-      reorderPoint: r.reorderPoint ?? null,
-      seasonTarget: r.seasonTarget ?? null,
-      variantIsActive: r.variantIsActive != null ? !!r.variantIsActive : null,
-      variantCreatedAt: r.variantCreatedAt ?? null,
-      variantUpdatedAt: r.variantUpdatedAt ?? null,
-      productUnitId: r.productUnitId != null ? Number(r.productUnitId) : null,
-      unitName: r.unitName ?? null,
-      conversionFactor: r.conversionFactor ?? null,
-      barcode: r.barcode ?? null,
-      isBaseUnit: r.isBaseUnit != null ? !!r.isBaseUnit : null,
-      isStoreSaleUnit: r.isStoreSaleUnit != null ? !!r.isStoreSaleUnit : null,
-      unitIsActive: r.unitIsActive != null ? !!r.unitIsActive : null,
-      unitCreatedAt: r.unitCreatedAt ?? null,
-      price: r.price ?? null,
-      baseCostPrice: includeSensitivePrices ? (effectiveBaseCost(r) ?? null) : null,
-      costPrice:
-        includeSensitivePrices && effectiveBaseCost(r) != null && r.conversionFactor != null
-          ? new Decimal(effectiveBaseCost(r)!).times(new Decimal(r.conversionFactor)).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2)
+    rows: rows.map((r) => {
+      const pid = Number(r.productId);
+      const vid = r.variantId != null ? Number(r.variantId) : null;
+      const prodImgs = imagesByProduct.get(pid) ?? [];
+      const parentImgs = prodImgs.filter((img) => img.variantId == null);
+      const varImgs = vid != null ? prodImgs.filter((img) => Number(img.variantId) === vid) : [];
+      const bestImg = (vid != null ? (varImgs[0] ?? parentImgs[0]) : prodImgs[0]) ?? null;
+      const primaryImageThumb = bestImg
+        ? (bestImg.thumbDataUrl || bestImg.url || `/api/img/product/${bestImg.id}`)
+        : null;
+      const imageCount = prodImgs.length;
+      const variantImageCount = vid != null ? varImgs.length : prodImgs.length;
+      const hasVariantImage = vid != null ? (varImgs.length > 0 || parentImgs.length > 0) : prodImgs.length > 0;
+      const hasImage = prodImgs.length > 0;
+
+      return {
+        branchId: input.branchId,
+        productId: pid,
+        productName: r.productName,
+        productType: r.productType ?? null,
+        brand: r.brand ?? null,
+        modelName: r.modelName ?? null,
+        description: r.description ?? null,
+        productIsActive: !!r.productIsActive,
+        categoryId: r.categoryId != null ? Number(r.categoryId) : null,
+        categoryName: r.categoryName ?? null,
+        parentProductId: r.parentProductId != null ? Number(r.parentProductId) : null,
+        parentProductName: r.parentProductName ?? null,
+        isCustomizable: !!r.isCustomizable,
+        isService: !!r.isService,
+        showInReception: !!r.showInReception,
+        showInPrintPos: !!r.showInPrintPos,
+        showInQuotations: !!r.showInQuotations,
+        showInAdvancedSales: !!r.showInAdvancedSales,
+        isBundle: !!r.isBundle,
+        isConsignment: !!r.isConsignment,
+        consignorId: includeSensitivePrices && r.consignorId != null ? Number(r.consignorId) : null,
+        consignorName: includeSensitivePrices ? (r.consignorName ?? null) : null,
+        isFeatured: !!r.isFeatured,
+        showInStore: !!r.showInStore,
+        productCreatedAt: r.productCreatedAt,
+        productUpdatedAt: r.productUpdatedAt,
+        variantId: vid,
+        variantName: r.variantName ?? null,
+        variantKind: r.variantKind ?? null,
+        color: r.color ?? null,
+        colorHex: r.colorHex ?? null,
+        size: r.size ?? null,
+        sku: r.sku ?? null,
+        minStock: r.minStock ?? null,
+        reorderPoint: r.reorderPoint ?? null,
+        seasonTarget: r.seasonTarget ?? null,
+        variantIsActive: r.variantIsActive != null ? !!r.variantIsActive : null,
+        variantCreatedAt: r.variantCreatedAt ?? null,
+        variantUpdatedAt: r.variantUpdatedAt ?? null,
+        productUnitId: r.productUnitId != null ? Number(r.productUnitId) : null,
+        unitName: r.unitName ?? null,
+        conversionFactor: r.conversionFactor ?? null,
+        barcode: r.barcode ?? null,
+        isBaseUnit: r.isBaseUnit != null ? !!r.isBaseUnit : null,
+        isStoreSaleUnit: r.isStoreSaleUnit != null ? !!r.isStoreSaleUnit : null,
+        unitIsActive: r.unitIsActive != null ? !!r.unitIsActive : null,
+        unitCreatedAt: r.unitCreatedAt ?? null,
+        price: r.price ?? null,
+        baseCostPrice: includeSensitivePrices ? (effectiveBaseCost(r) ?? null) : null,
+        costPrice:
+          includeSensitivePrices && effectiveBaseCost(r) != null && r.conversionFactor != null
+            ? new Decimal(effectiveBaseCost(r)!).times(new Decimal(r.conversionFactor)).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2)
+            : null,
+        wholesalePrice: includeSensitivePrices ? (r.wholesalePrice ?? null) : null,
+        governmentPrice: includeSensitivePrices ? (r.governmentPrice ?? null) : null,
+        stockBase: vid != null
+          ? (availability.get(vid)?.onHandBase ?? 0)
+          : 0,
+        reservedBase: vid != null
+          ? (availability.get(vid)?.reservedBase ?? 0)
+          : 0,
+        availableBase: vid != null
+          ? (availability.get(vid)?.availableBase ?? 0)
+          : 0,
+        barcodeAliases: r.productUnitId != null ? (aliasesByUnit.get(Number(r.productUnitId)) ?? []) : [],
+        bundleCapacity: r.isBundle && vid != null
+          ? (availability.get(vid)?.bundleCapacity ?? null)
           : null,
-      wholesalePrice: includeSensitivePrices ? (r.wholesalePrice ?? null) : null,
-      governmentPrice: includeSensitivePrices ? (r.governmentPrice ?? null) : null,
-      stockBase: r.variantId != null
-        ? (availability.get(Number(r.variantId))?.onHandBase ?? 0)
-        : 0,
-      reservedBase: r.variantId != null
-        ? (availability.get(Number(r.variantId))?.reservedBase ?? 0)
-        : 0,
-      availableBase: r.variantId != null
-        ? (availability.get(Number(r.variantId))?.availableBase ?? 0)
-        : 0,
-      barcodeAliases: r.productUnitId != null ? (aliasesByUnit.get(Number(r.productUnitId)) ?? []) : [],
-      bundleCapacity: r.isBundle && r.variantId != null
-        ? (availability.get(Number(r.variantId))?.bundleCapacity ?? null)
-        : null,
-    })),
+        hasImage,
+        hasVariantImage,
+        imageCount,
+        variantImageCount,
+        primaryImageThumb,
+      };
+    }),
     total: Number(totalRow?.n ?? 0),
     branchId: input.branchId,
   };

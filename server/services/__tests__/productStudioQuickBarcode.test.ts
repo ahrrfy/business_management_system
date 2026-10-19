@@ -142,6 +142,22 @@ describe("quickBarcodeLookup & quickSaveBarcodeProductImage", () => {
     });
   });
 
+  it("looks up product and row directly by productId and variantId even without barcode", async () => {
+    const result = await quickBarcodeLookup(photographer, { productId: 801, variantId: 801 });
+    expect(result.product).toMatchObject({
+      id: 801,
+      name: "سماعة لاسلكية برو",
+      brand: "سوني",
+      modelName: "WH-1000XM5",
+      categoryName: "إلكترونيات",
+      variantId: 801,
+      variantName: "أسود ملكي",
+      unitName: "قطعة",
+      barcode: "6291100223344",
+    });
+    expect(result.images).toEqual([]);
+  });
+
   it("manager path: auto-approves and publishes image directly without review queue", async () => {
     const saveResult = await quickSaveBarcodeProductImage(manager, {
       productId: 801,
@@ -285,6 +301,99 @@ describe("quickBarcodeLookup & quickSaveBarcodeProductImage", () => {
       .where(eq(s.productImageJobs.id, saveResult.jobId));
     expect(jobs[0].mode).toBe("PRO");
     expect(jobs[0].status).toBe("APPROVED");
+  });
+
+  it("saves image for a product without barcode (barcode: null/undefined) and marks staging objects REFERENCED", async () => {
+    await db().insert(s.products).values([
+      {
+        id: 802,
+        name: "منتج بدون باركود",
+        categoryId: 50,
+        isActive: true,
+        isService: false,
+      },
+    ]);
+
+    const lookup = await quickBarcodeLookup(manager, { productId: 802, variantId: null });
+    expect(lookup.product).toMatchObject({
+      id: 802,
+      name: "منتج بدون باركود",
+      variantId: null,
+      barcode: "",
+    });
+
+    const saveResult = await quickSaveBarcodeProductImage(manager, {
+      productId: 802,
+      variantId: null,
+      barcode: undefined,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1,
+      thumbnailDataUrl: WEBP_1X1,
+      mode: "FLATTEN",
+      setAsPrimary: true,
+    });
+
+    expect(saveResult.success).toBe(true);
+    expect(saveResult.autoApproved).toBe(true);
+    expect(saveResult.imageId).toBeGreaterThan(0);
+
+    const [job] = await db()
+      .select()
+      .from(s.productImageJobs)
+      .where(eq(s.productImageJobs.id, saveResult.jobId));
+    expect(job.processedObjectKey).toBeTruthy();
+
+    const stagingRows = await db()
+      .select()
+      .from(s.productImageObjectStaging)
+      .where(eq(s.productImageObjectStaging.objectKey, job.processedObjectKey!));
+    expect(stagingRows).toHaveLength(1);
+    expect(stagingRows[0].state).toBe("REFERENCED");
+    expect(stagingRows[0].referencedAt).toBeTruthy();
+  });
+
+  it("allows photographer to submit multiple quick captures for the same product/variant without activeSlot collision", async () => {
+    const first = await quickSaveBarcodeProductImage(photographer, {
+      productId: 801,
+      variantId: 801,
+      barcode: null,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1,
+      thumbnailDataUrl: WEBP_1X1,
+      mode: "FLATTEN",
+    });
+    const second = await quickSaveBarcodeProductImage(photographer, {
+      productId: 801,
+      variantId: 801,
+      barcode: null,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1,
+      thumbnailDataUrl: WEBP_1X1,
+      mode: "FLATTEN",
+    });
+
+    expect(first.jobId).toBeGreaterThan(0);
+    expect(second.jobId).toBeGreaterThan(first.jobId);
+
+    const [job1] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, first.jobId));
+    const [job2] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, second.jobId));
+    expect(job1.activeSlot).toBe(1);
+    expect(job2.activeSlot).toBe(2);
+  });
+
+  it("rejects mismatched or nonexistent variantId in quickBarcodeLookup and quickSaveBarcodeProductImage", async () => {
+    await expect(
+      quickBarcodeLookup(photographer, { productId: 801, variantId: 999999 }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    await expect(
+      quickSaveBarcodeProductImage(manager, {
+        productId: 801,
+        variantId: 999999,
+        processedDataUrl: PNG_1X1,
+        mode: "FLATTEN",
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });
 
