@@ -414,14 +414,14 @@ describe("قبولُ الومضة وبوّابةُ الثقة (نواةُ خطّ
       resolveScanSettle({ accepted: true, code: "AB=12", text: "AB=12" }, "", 3, { onEnter: false }),
     ).toEqual({ scan: "AB=12", fieldValue: "" });
 
-    // ٥. باركود أبجدي صرف «BOX» يُمسَح بسرعة القارئ تحت تخطيط عربي (لاخء ⇐ box) فيُقبَل (مراجعة Codex P1):
+    // ٥. باركود أبجدي صرف «BOX» يُمسَح بسرعة القارئ تحت تخطيط عربي (لاخء ⇐ box) فيُقبَل حتّى مع تذبذب الفاصل اللاحق [10, 50] (مراجعة Codex P1):
     const boxArabicEvents: ScannerKeyEvent[] = [
       { code: "KeyB", key: "لا", shiftKey: false },
       { code: "KeyO", key: "خ", shiftKey: false },
       { code: "KeyX", key: "ء", shiftKey: false },
     ];
     const detBox = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
-    feedSequence(detBox, boxArabicEvents, [10, 10]);
+    feedSequence(detBox, boxArabicEvents, [10, 50]);
     const flushedBox = detBox.flush();
     expect(resolveScanSettle(flushedBox, "", 3, { onEnter: false })).toEqual({
       scan: "box",
