@@ -14,6 +14,7 @@ import {
   quickSaveBarcodeProductImage,
   type ProductStudioActor,
 } from "../productStudioService";
+import { routeOperationAuthority } from "../authorization/operationAuthority";
 import {
   getAiStudioConfig,
   updateAiImageStudioSettings,
@@ -458,6 +459,204 @@ describe("quickBarcodeLookup & quickSaveBarcodeProductImage", () => {
         mode: "FLATTEN",
       }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("recognizes operation-authorized managers on inactive products/variants/units in both barcode and direct-ID flows", async () => {
+    await db().insert(s.products).values({
+      id: 806,
+      name: "منتج موقوف لاختبار صلاحية العملية",
+      categoryId: 50,
+      isActive: false,
+      isService: false,
+    });
+    await db().insert(s.productVariants).values({
+      id: 806,
+      productId: 806,
+      variantName: "موقوف",
+      sku: "INACT-806",
+      costPrice: "50",
+      isActive: false,
+    });
+    await db().insert(s.productUnits).values({
+      id: 806,
+      variantId: 806,
+      unitName: "قطعة",
+      barcode: "6299999888777",
+      conversionFactor: "1",
+      isBaseUnit: true,
+      isActive: false,
+    });
+
+    const opPolicy = {
+      version: 1 as const,
+      grants: {
+        "operation.productStudio.quickBarcodeLookup": true,
+        "operation.productStudio.quickSaveBarcodeProductImage": true,
+        "operation.productStudio.approve": true,
+      },
+    };
+    await db()
+      .update(s.users)
+      .set({ operationPolicy: opPolicy })
+      .where(eq(s.users.id, 101));
+
+    const lookupActor: ProductStudioActor = {
+      userId: 101,
+      branchId: 1,
+      role: "manager",
+      operationAuthority: routeOperationAuthority(
+        { id: 101, role: "manager", operationPolicy: opPolicy },
+        "productStudio.quickBarcodeLookup",
+      ),
+    };
+    const saveActor: ProductStudioActor = {
+      userId: 101,
+      branchId: 1,
+      role: "manager",
+      operationAuthority: routeOperationAuthority(
+        { id: 101, role: "manager", operationPolicy: opPolicy },
+        "productStudio.quickSaveBarcodeProductImage",
+      ),
+    };
+
+    const byBarcode = await quickBarcodeLookup(lookupActor, { barcode: "6299999888777" });
+    expect(byBarcode.product.id).toBe(806);
+    expect(byBarcode.product.isActive).toBe(false);
+
+    const byDirectId = await quickBarcodeLookup(lookupActor, {
+      productId: 806,
+      variantId: 806,
+      barcode: "6299999888777",
+    });
+    expect(byDirectId.product.id).toBe(806);
+    expect(byDirectId.product.unitId).toBe(806);
+
+    const saved = await quickSaveBarcodeProductImage(saveActor, {
+      productId: 806,
+      variantId: 806,
+      barcode: "6299999888777",
+      processedDataUrl: PNG_1X1,
+      thumbnailDataUrl: WEBP_1X1,
+      mode: "FLATTEN",
+    });
+    expect(saved.success).toBe(true);
+    expect(saved.jobId).toBeGreaterThan(0);
+  });
+
+  it("keeps campaign jobs out of quick-capture cohorts and never reuses already-approved quick cohort slots", async () => {
+    await db().insert(s.productStudioCampaigns).values({
+      id: 901,
+      name: "حملة تصوير موسمية",
+      scope: "CUSTOM",
+      requiredImages: 2,
+      status: "ACTIVE",
+      branchId: 1,
+      createdBy: 101,
+    });
+    await db().insert(s.productImageJobs).values({
+      id: 9001,
+      productId: 801,
+      variantId: 801,
+      unitId: 801,
+      barcode: "6291100223344",
+      campaignId: 901,
+      branchId: 1,
+      assignedTo: 102,
+      assignedBy: 101,
+      status: "ASSIGNED",
+      priority: "NORMAL",
+      activeSlot: 1,
+      templateVersion: 1,
+    });
+
+    const firstQuick = await quickSaveBarcodeProductImage(photographer, {
+      productId: 801,
+      variantId: 801,
+      barcode: "6291100223344",
+      processedDataUrl: PNG_1X1,
+      thumbnailDataUrl: WEBP_1X1,
+      mode: "FLATTEN",
+    });
+    const secondQuick = await quickSaveBarcodeProductImage(photographer, {
+      productId: 801,
+      variantId: 801,
+      barcode: "6291100223344",
+      processedDataUrl: PNG_1X1,
+      thumbnailDataUrl: WEBP_1X1,
+      mode: "FLATTEN",
+    });
+
+    // مهمة الحملة يجب أن تبقى خارج مجموعة الالتقاط السريع (`templateVersion = 1`)
+    const [campaignJobAfter] = await db()
+      .select()
+      .from(s.productImageJobs)
+      .where(eq(s.productImageJobs.id, 9001));
+    expect(campaignJobAfter.templateVersion).toBe(1);
+
+    // نعتمد الالتقاط السريع الأوّل ثمّ نرسل التقاطاً سريعاً ثالثاً قبل اعتماد الثاني
+    const approvedFirst = await approveStudioTask(manager, firstQuick.jobId);
+    const thirdQuick = await quickSaveBarcodeProductImage(photographer, {
+      productId: 801,
+      variantId: 801,
+      barcode: "6291100223344",
+      processedDataUrl: PNG_1X1,
+      thumbnailDataUrl: WEBP_1X1,
+      mode: "FLATTEN",
+    });
+    const approvedThird = await approveStudioTask(manager, thirdQuick.jobId);
+    const approvedSecond = await approveStudioTask(manager, secondQuick.jobId);
+
+    const [img1] = await db().select().from(s.productImages).where(eq(s.productImages.id, approvedFirst.imageId));
+    const [img2] = await db().select().from(s.productImages).where(eq(s.productImages.id, approvedSecond.imageId));
+    const [img3] = await db().select().from(s.productImages).where(eq(s.productImages.id, approvedThird.imageId));
+
+    expect(img1.isPrimary).toBe(true);
+    expect(img1.sortOrder).toBe(0);
+    expect(img2.isPrimary).toBe(false);
+    expect(img2.sortOrder).toBe(1);
+    expect(img3.isPrimary).toBe(false);
+    expect(img3.sortOrder).toBe(2);
+  });
+
+  it("uses normalized barcode matching when resolving direct-ID units with internal spaces or aliases", async () => {
+    await db().insert(s.productUnits).values({
+      id: 807,
+      variantId: 801,
+      unitName: "علبة",
+      barcode: "1  0172",
+      conversionFactor: "6",
+      isBaseUnit: false,
+      isActive: false,
+    });
+
+    // المصوّر يُرفض لأنّ الوحدة المطابقة للباركود المطبَّع ("10172" ≡ "1  0172") موقوفة
+    await expect(
+      quickBarcodeLookup(photographer, {
+        productId: 801,
+        variantId: 801,
+        barcode: "10172",
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    await expect(
+      quickSaveBarcodeProductImage(photographer, {
+        productId: 801,
+        variantId: 801,
+        barcode: "10172",
+        processedDataUrl: PNG_1X1,
+        thumbnailDataUrl: WEBP_1X1,
+        mode: "FLATTEN",
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    // المدير يرى الوحدة المطابقة بالمعرّف 807 رغم اختلاف المسافات الداخلية
+    const managerLookup = await quickBarcodeLookup(manager, {
+      productId: 801,
+      variantId: 801,
+      barcode: "10172",
+    });
+    expect(managerLookup.product.unitId).toBe(807);
+    expect(managerLookup.product.unitName).toBe("علبة");
   });
 });
 

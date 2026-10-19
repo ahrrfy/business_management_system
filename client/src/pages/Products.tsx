@@ -118,7 +118,15 @@ export default function Products() {
   ));
   const canQuickStudio = useOperationPermission("productStudio.quickBarcodeLookup").allowed;
   const canQuickSaveStudio = useOperationPermission("productStudio.quickSaveBarcodeProductImage").allowed;
-  const isStudioManager = me.data?.role === "admin" || me.data?.role === "manager";
+  const canStudioApprove = useOperationPermission("productStudio.approve").allowed;
+  const canStudioAssign = useOperationPermission("productStudio.assign").allowed;
+  const canStudioManagerImages = useOperationPermission("productStudio.managerImages").allowed;
+  const isStudioManager =
+    me.data?.role === "admin" ||
+    me.data?.role === "manager" ||
+    canStudioApprove ||
+    canStudioAssign ||
+    canStudioManagerImages;
   // سياسة العزل الحديثة: الأدمن وحده يعبر الفروع؛ المدير مثبت على فرعه كالكاشير.
   const canPickBranch = me.data?.role === "admin";
 

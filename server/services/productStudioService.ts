@@ -1233,8 +1233,11 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
   });
 }
 
-export async function resolveStudioBarcode(actor: ProductStudioActor, barcode: string) {
-  assertStudioOperationBinding(actor, "productStudio.resolveBarcode");
+async function resolveStudioBarcodeInternal(
+  actor: ProductStudioActor,
+  barcode: string,
+  options?: { checkDelegatedManager?: boolean },
+) {
   // مسح الباركود له محلّل واحد في النظام كلّه. استعمال بحث الاستوديو النصي هنا كان يضغط
   // المسافات الداخلية، يفسّر الرقم القصير كمعرّف منتج، ولا يعرف تكافؤ UPC-A/EAN-13.
   const resolution = await resolveBarcodeOwnerResult(requireDb(), barcode);
@@ -1251,7 +1254,10 @@ export async function resolveStudioBarcode(actor: ProductStudioActor, barcode: s
   const owner = resolution.status === "FOUND" ? resolution.owner : null;
   if (owner && !owner.isService) {
     const isActive = owner.productActive && owner.variantActive && owner.unitActive;
-    if (!isActive && !isManager(actor)) {
+    const canManage = options?.checkDelegatedManager
+      ? isManager(actor) || (await withTx((tx) => hasStudioManagementOperationsTx(tx, actor), { gate: "NONE" }))
+      : isManager(actor);
+    if (!isActive && !canManage) {
       throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: `«${owner.productName}» لا يُفتح له عمل تصوير`, why: "المنتج أو بديله أو وحدته معطّل في الكتالوج، والمعطّل لا تُنشأ له مهمّة تصوير", doThis: "اطلب من المدير تفعيل المنتج ووحدته من صفحة المنتجات، ثمّ أعد مسح الباركود" }) });
     }
     return {
@@ -1267,6 +1273,11 @@ export async function resolveStudioBarcode(actor: ProductStudioActor, barcode: s
     };
   }
   throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر فتح عملٍ بهذا الباركود", why: "الرمز الممسوح لا يطابق باركود أيّ منتجٍ أو بديلٍ في الكتالوج", doThis: "ابحث عن المنتج بالاسم من حقل البحث في الاستوديو، أو اطلب من المدير إضافة هذا الباركود إلى المنتج" }) });
+}
+
+export async function resolveStudioBarcode(actor: ProductStudioActor, barcode: string) {
+  assertStudioOperationBinding(actor, "productStudio.resolveBarcode");
+  return resolveStudioBarcodeInternal(actor, barcode);
 }
 
 export async function listStudioAssignees(actor: ProductStudioActor) {
@@ -5584,7 +5595,25 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
       const outsideCampaign = existingImages.filter((image) => !sameCampaign.some((own) => Number(own.id) === Number(image.id)));
       const outsidePrimary = outsideCampaign.some((image) => image.isPrimary);
       const sameCampaignPrimaryIds = sameCampaign.filter((image) => image.isPrimary).map((image) => Number(image.id));
-      const activeSlot = Math.max(1, Number(task.activeSlot ?? 1));
+      let activeSlot = Math.max(1, Number(task.activeSlot ?? 1));
+      if (quickCohortId != null) {
+        const cohortJobs = await tx
+          .select({ id: productImageJobs.id })
+          .from(productImageJobs)
+          .where(
+            and(
+              eq(productImageJobs.productId, task.productId),
+              task.variantId == null ? isNull(productImageJobs.variantId) : eq(productImageJobs.variantId, task.variantId),
+              isNull(productImageJobs.campaignId),
+              eq(productImageJobs.templateVersion, quickCohortId),
+            ),
+          )
+          .orderBy(asc(productImageJobs.id));
+        const cohortIdx = cohortJobs.findIndex((j) => Number(j.id) === Number(task.id));
+        if (cohortIdx >= 0) {
+          activeSlot = cohortIdx + 1;
+        }
+      }
       // موضعُ دفعة الحملة ثابت بالـslot لا بترتيب مراجعة المدير. الصور السابقة تبقى
       // كما هي؛ الدفعة تبدأ بعد أعلى ترتيب خارج حملتها ثم تحتل slots متجاورة.
       const baseSortOrder = outsideCampaign.reduce(
@@ -6447,6 +6476,123 @@ export async function getStudioProductVariantMatrix(actor: ProductStudioActor, p
   };
 }
 
+async function matchVariantUnitByBarcode<
+  T extends { id: number; barcode: string | null; isActive: boolean | null },
+>(
+  dbOrTx: Pick<StudioTx, "select">,
+  unitRows: T[],
+  rawBarcode: string | null | undefined,
+): Promise<T | undefined> {
+  const trimmed = (rawBarcode ?? "").trim();
+  if (!trimmed || unitRows.length === 0) return undefined;
+  const primaryMatch = unitRows.find(
+    (u) => u.barcode != null && u.barcode.trim() !== "" && barcodesEquivalent(u.barcode, trimmed),
+  );
+  if (primaryMatch) return primaryMatch;
+  const unitIds = unitRows.map((u) => Number(u.id));
+  const aliasRows = await dbOrTx
+    .select({
+      productUnitId: productUnitBarcodes.productUnitId,
+      barcode: productUnitBarcodes.barcode,
+    })
+    .from(productUnitBarcodes)
+    .where(inArray(productUnitBarcodes.productUnitId, unitIds));
+  const matchedAlias = aliasRows.find(
+    (a) => a.barcode != null && a.barcode.trim() !== "" && barcodesEquivalent(a.barcode, trimmed),
+  );
+  if (!matchedAlias) return undefined;
+  return unitRows.find((u) => Number(u.id) === Number(matchedAlias.productUnitId));
+}
+
+async function assertQuickStudioTargetEligibleTx(
+  tx: StudioTx,
+  actor: ProductStudioActor,
+  input: {
+    productId: number;
+    variantId?: number | null;
+    barcode?: string | null;
+  },
+  options?: { lockProduct?: boolean },
+): Promise<void> {
+  const productQuery = tx
+    .select({
+      id: products.id,
+      name: products.name,
+      isActive: products.isActive,
+      isService: products.isService,
+    })
+    .from(products)
+    .where(eq(products.id, input.productId))
+    .limit(1);
+  const product = (options?.lockProduct ? await productQuery.for("update") : await productQuery)[0];
+
+  if (!product) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المنتج غير موجود",
+        why: "لم نتمكن من العثور على المنتج المطلوب لتخزين صورته",
+        doThis: "تأكد من صحة معرّف المنتج وأعد المحاولة",
+      }),
+    });
+  }
+  if (product.isService) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: `«${product.name}» خدمةٌ لا منتجٌ سلعي`,
+        why: "الخدمات غير المخزنية لا تُحفظ لها صور في استوديو المنتجات",
+        doThis: "اختر منتجاً سلعياً من الكتالوج",
+      }),
+    });
+  }
+
+  let variantActive = true;
+  let unitActive = true;
+  if (input.variantId != null) {
+    const variantQuery = tx
+      .select({ id: productVariants.id, isActive: productVariants.isActive })
+      .from(productVariants)
+      .where(and(eq(productVariants.id, input.variantId), eq(productVariants.productId, input.productId)))
+      .limit(1);
+    const variantRow = (options?.lockProduct ? await variantQuery.for("share") : await variantQuery)[0];
+    if (!variantRow) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "المتغيّر غير موجود",
+          why: "المتغيّر المحدد لا ينتمي لهذا المنتج أو تم حذفه",
+          doThis: "حدّث قائمة المنتجات وأعد المحاولة",
+        }),
+      });
+    }
+    variantActive = Boolean(variantRow.isActive);
+    const unitsQuery = tx
+      .select({ id: productUnits.id, barcode: productUnits.barcode, isActive: productUnits.isActive })
+      .from(productUnits)
+      .where(eq(productUnits.variantId, input.variantId));
+    const unitRows = options?.lockProduct ? await unitsQuery.for("share") : await unitsQuery;
+    if (unitRows.length > 0) {
+      const matchedUnit = await matchVariantUnitByBarcode(tx, unitRows, input.barcode);
+      unitActive = matchedUnit ? Boolean(matchedUnit.isActive) : unitRows.some((u) => Boolean(u.isActive));
+    }
+  }
+  const isTargetActive = Boolean(product.isActive) && variantActive && unitActive;
+  if (!isTargetActive) {
+    const canManage = isManager(actor) || (await hasStudioManagementOperationsTx(tx, actor));
+    if (!canManage) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: `«${product.name}» لا يُفتح له عمل تصوير`,
+          why: "المنتج أو بديله أو وحدته معطّل في الكتالوج، والمعطّل لا تُنشأ له مهمّة تصوير",
+          doThis: "اطلب من المدير تفعيل المنتج ووحدته من صفحة المنتجات، ثمّ أعد المحاولة",
+        }),
+      });
+    }
+  }
+}
+
 /**
  * استعلام سريع للمنتج وصوره عبر الباركود — متاح لكل من يملك حق قراءة الاستوديو.
  * لا يشترط وجود حملة تصوير أو مهمة مسبقة لتمكين الوصول المباشر والفوري.
@@ -6517,15 +6663,16 @@ export async function quickBarcodeLookup(
         .from(productUnits)
         .where(eq(productUnits.variantId, variantId))
         .orderBy(desc(productUnits.isBaseUnit), asc(productUnits.id));
+      const matchedByBarcode = await matchVariantUnitByBarcode(db, unitRows, barcode);
       const matchedUnit =
-        (barcode ? unitRows.find((u) => (u.barcode ?? "").trim() === barcode) : undefined) ??
+        matchedByBarcode ??
         unitRows.find((u) => Boolean(u.isActive)) ??
         unitRows[0];
       if (matchedUnit) {
         unitId = Number(matchedUnit.id);
         unitName = matchedUnit.unitName ?? null;
         unitActive = Boolean(matchedUnit.isActive);
-        if (!barcode && matchedUnit.barcode) {
+        if (matchedUnit.barcode && (!barcode || matchedByBarcode)) {
           barcode = matchedUnit.barcode.trim();
         }
       }
@@ -6541,7 +6688,7 @@ export async function quickBarcodeLookup(
         }),
       });
     }
-    const resolved = await resolveStudioBarcode(actor, barcode);
+    const resolved = await resolveStudioBarcodeInternal(actor, barcode, { checkDelegatedManager: true });
     productId = Number(resolved.productId);
     variantId = resolved.variantId == null ? null : Number(resolved.variantId);
     variantName = resolved.variantName ?? null;
@@ -6589,15 +6736,20 @@ export async function quickBarcodeLookup(
     });
   }
   const isTargetActive = Boolean(product.isActive) && variantActive && unitActive;
-  if (!isTargetActive && !isManager(actor)) {
-    throw new TRPCError({
-      code: "NOT_FOUND",
-      message: appErrorMessage({
-        what: `«${product.name}» لا يُفتح له عمل تصوير`,
-        why: "المنتج أو بديله أو وحدته معطّل في الكتالوج، والمعطّل لا تُنشأ له مهمّة تصوير",
-        doThis: "اطلب من المدير تفعيل المنتج ووحدته من صفحة المنتجات، ثمّ أعد المحاولة",
-      }),
-    });
+  if (!isTargetActive) {
+    const canManage =
+      isManager(actor) ||
+      (await withTx((tx) => hasStudioManagementOperationsTx(tx, actor), { gate: "NONE" }));
+    if (!canManage) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: `«${product.name}» لا يُفتح له عمل تصوير`,
+          why: "المنتج أو بديله أو وحدته معطّل في الكتالوج، والمعطّل لا تُنشأ له مهمّة تصوير",
+          doThis: "اطلب من المدير تفعيل المنتج ووحدته من صفحة المنتجات، ثمّ أعد المحاولة",
+        }),
+      });
+    }
   }
 
   // جلب الصور المعتمدة للمنتج (مع تقديم صور المتغيّر المستهدَف على الصور العامّة للأب)
@@ -6720,86 +6872,9 @@ export async function quickSaveBarcodeProductImage(
 ) {
   assertStudioOperationBinding(actor, "productStudio.quickSaveBarcodeProductImage");
   assertStoragePolicy();
-  const db = requireDb();
-
-  const product = (
-    await db
-      .select({
-        id: products.id,
-        name: products.name,
-        description: products.description,
-        isActive: products.isActive,
-        isService: products.isService,
-      })
-      .from(products)
-      .where(eq(products.id, input.productId))
-      .limit(1)
-  )[0];
-
-  if (!product) {
-    throw new TRPCError({
-      code: "NOT_FOUND",
-      message: appErrorMessage({
-        what: "المنتج غير موجود",
-        why: "لم نتمكن من العثور على المنتج المطلوب لتخزين صورته",
-        doThis: "تأكد من صحة معرّف المنتج وأعد المحاولة",
-      }),
-    });
-  }
-  if (product.isService) {
-    throw new TRPCError({
-      code: "NOT_FOUND",
-      message: appErrorMessage({
-        what: `«${product.name}» خدمةٌ لا منتجٌ سلعي`,
-        why: "الخدمات غير المخزنية لا تُحفظ لها صور في استوديو المنتجات",
-        doThis: "اختر منتجاً سلعياً من الكتالوج",
-      }),
-    });
-  }
-
-  let variantActive = true;
-  let unitActive = true;
-  if (input.variantId != null) {
-    const variantRow = (
-      await db
-        .select({ id: productVariants.id, isActive: productVariants.isActive })
-        .from(productVariants)
-        .where(and(eq(productVariants.id, input.variantId), eq(productVariants.productId, input.productId)))
-        .limit(1)
-    )[0];
-    if (!variantRow) {
-      throw new TRPCError({
-        code: "NOT_FOUND",
-        message: appErrorMessage({
-          what: "المتغيّر غير موجود",
-          why: "المتغيّر المحدد لا ينتمي لهذا المنتج أو تم حذفه",
-          doThis: "حدّث قائمة المنتجات وأعد المحاولة",
-        }),
-      });
-    }
-    variantActive = Boolean(variantRow.isActive);
-    const unitRows = await db
-      .select({ barcode: productUnits.barcode, isActive: productUnits.isActive })
-      .from(productUnits)
-      .where(eq(productUnits.variantId, input.variantId));
-    if (unitRows.length > 0) {
-      const trimmedBarcode = (input.barcode ?? "").trim();
-      const matchedUnit = trimmedBarcode
-        ? unitRows.find((u) => (u.barcode ?? "").trim() === trimmedBarcode)
-        : undefined;
-      unitActive = matchedUnit ? Boolean(matchedUnit.isActive) : unitRows.some((u) => Boolean(u.isActive));
-    }
-  }
-  if ((!product.isActive || !variantActive || !unitActive) && !isManager(actor)) {
-    throw new TRPCError({
-      code: "NOT_FOUND",
-      message: appErrorMessage({
-        what: `«${product.name}» لا يُفتح له عمل تصوير`,
-        why: "المنتج أو بديله أو وحدته معطّل في الكتالوج، والمعطّل لا تُنشأ له مهمّة تصوير",
-        doThis: "اطلب من المدير تفعيل المنتج ووحدته من صفحة المنتجات، ثمّ أعد المحاولة",
-      }),
-    });
-  }
+  await withTx((tx) => assertQuickStudioTargetEligibleTx(tx, actor, input, { lockProduct: false }), {
+    gate: "NONE",
+  });
 
   // فك ترميز وتخزين الصور
   const processed = decodeStudioImage(input.processedDataUrl);
@@ -6827,6 +6902,7 @@ export async function quickSaveBarcodeProductImage(
     return await withStudioTx(async (tx) => {
       await assertStudioOperationTx(tx, actor, "productStudio.quickSaveBarcodeProductImage");
       if (managerActor && !(await canAutoApproveStudioTx(tx, actor))) throw new TRPCError({ code: "FORBIDDEN" });
+      await assertQuickStudioTargetEligibleTx(tx, actor, input, { lockProduct: true });
       const existingImages = await tx
         .select({
           id: productImages.id,
@@ -6985,21 +7061,15 @@ export async function quickSaveBarcodeProductImage(
             ? "PRO"
             : input.mode;
 
-      // قفل صفّ المنتج الأب أولاً لتسلسل حجز الفتحات حتى حين لا توجد مهمّة نشطة بعد (slot 1).
-      await tx
-        .select({ id: products.id })
-        .from(products)
-        .where(eq(products.id, input.productId))
-        .limit(1)
-        .for("update");
+      // قفل صفّ المنتج الأب أولاً وإعادة التحقّق من الأهلية لتسلسل حجز الفتحات حتى حين لا توجد مهمّة نشطة بعد (slot 1).
+      await assertQuickStudioTargetEligibleTx(tx, actor, input, { lockProduct: true });
 
       // فحص الفتحات النشطة الحالية لنفس (المنتج، المتغيّر) لتفادي تصادم المفتاح الفريد uq_pijob_product_variant_active
       const existingActiveJobs = await tx
         .select({
           id: productImageJobs.id,
           activeSlot: productImageJobs.activeSlot,
-          assignedTo: productImageJobs.assignedTo,
-          revision: productImageJobs.revision,
+          campaignId: productImageJobs.campaignId,
           templateVersion: productImageJobs.templateVersion,
         })
         .from(productImageJobs)
@@ -7017,13 +7087,33 @@ export async function quickSaveBarcodeProductImage(
         (max, j) => Math.max(max, Number(j.activeSlot ?? 0)),
         0,
       );
-      const nextActiveSlot = maxActiveSlot + 1;
-      const existingCohortId = existingActiveJobs.length > 0
-        ? Number(
-            existingActiveJobs.find((j) => j.templateVersion != null && Number(j.templateVersion) < 0)?.templateVersion ??
-              -Number(existingActiveJobs[0].id),
+      const existingQuickCohortJobs = existingActiveJobs.filter(
+        (j) => j.campaignId == null && j.templateVersion != null && Number(j.templateVersion) < 0,
+      );
+      const existingCohortId =
+        existingQuickCohortJobs.length > 0 ? Number(existingQuickCohortJobs[0].templateVersion) : null;
+      let maxCohortSlot = 0;
+      if (existingCohortId != null) {
+        const cohortJobs = await tx
+          .select({
+            id: productImageJobs.id,
+            activeSlot: productImageJobs.activeSlot,
+          })
+          .from(productImageJobs)
+          .where(
+            and(
+              eq(productImageJobs.productId, input.productId),
+              input.variantId == null ? isNull(productImageJobs.variantId) : eq(productImageJobs.variantId, input.variantId),
+              isNull(productImageJobs.campaignId),
+              eq(productImageJobs.templateVersion, existingCohortId),
+            ),
           )
-        : null;
+          .orderBy(asc(productImageJobs.id));
+        for (const j of cohortJobs) {
+          maxCohortSlot = Math.max(maxCohortSlot + 1, Number(j.activeSlot ?? 0));
+        }
+      }
+      const nextActiveSlot = Math.max(maxActiveSlot, maxCohortSlot) + 1;
 
       const [job] = await tx
         .insert(productImageJobs)
@@ -7057,22 +7147,11 @@ export async function quickSaveBarcodeProductImage(
         .$returningId();
 
       const jobId = Number(job.id);
-      const cohortId = existingCohortId ?? -jobId;
       if (existingCohortId == null) {
         await tx
           .update(productImageJobs)
-          .set({ templateVersion: cohortId })
+          .set({ templateVersion: -jobId })
           .where(eq(productImageJobs.id, jobId));
-      } else {
-        const unlinkedSiblingIds = existingActiveJobs
-          .filter((j) => Number(j.templateVersion) !== cohortId)
-          .map((j) => Number(j.id));
-        if (unlinkedSiblingIds.length > 0) {
-          await tx
-            .update(productImageJobs)
-            .set({ templateVersion: cohortId })
-            .where(inArray(productImageJobs.id, unlinkedSiblingIds));
-        }
       }
 
       await tx
