@@ -319,6 +319,15 @@ export function PredictiveConsignmentSearchInput({
         placeholder={placeholder}
         aria-label={placeholder}
         onChange={(val) => setSearchTerm(val)}
+        onScan={(code) => {
+          if (onBarcodeEnter) {
+            setIsOpen(false);
+            setHighlightedIndex(-1);
+            onBarcodeEnter(code);
+          } else {
+            setSearchTerm(code);
+          }
+        }}
         onFocus={() => {
           if (searchTerm.trim().length >= 2) setIsOpen(true);
         }}

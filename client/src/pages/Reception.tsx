@@ -2412,6 +2412,7 @@ export default function Reception() {
             autoFocus
             id="reception-search"
             value={search}
+            debounceMs={0}
             onChange={(v) => { setSearch(v); setShowDrop(true); }}
             onScan={handleSearchScan}
             onFocus={() => { if (search) setShowDrop(true); }}

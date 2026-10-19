@@ -965,6 +965,8 @@ function CustomerSearchPicker({
       <UnifiedSearchInput
         ref={inputRef}
         value={display}
+        debounceMs={0}
+        barcode={false}
         onChange={(val) => { setQ(val); setOpen(true); }}
         onClear={() => { onChange(0); setQ(""); }}
         onFocus={() => setOpen(true)}

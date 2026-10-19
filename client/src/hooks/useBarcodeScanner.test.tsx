@@ -144,6 +144,17 @@ describe("useBarcodeScanner — حقل React متحكم به", () => {
 
     expect(input.value).toBe("عمار الس");
     expect(host.querySelector("[data-testid='unified-val']")?.textContent).toBe("عمار الس");
+
+    // كتابة بحث مختلط قصير «م10» بسرعة عالية لا تقلب الحرف العربي إلى «l10» بعد السكون
+    press(input, "Escape", "Escape", 50);
+    expect(input.value).toBe("");
+    press(input, "م", "KeyL", 0);
+    press(input, "1", "Digit1", 50);
+    press(input, "0", "Digit0", 50);
+    act(() => vi.advanceTimersByTime(600));
+
+    expect(input.value).toBe("م10");
+    expect(host.querySelector("[data-testid='unified-val']")?.textContent).toBe("م10");
   });
 });
 

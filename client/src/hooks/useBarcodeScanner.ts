@@ -74,15 +74,15 @@ export function useBarcodeScanner(
 
     const finish = (onEnter = false) => {
       clearTimeout(timer);
-      const { accepted, code, text } = detector.flush();
-      if (accepted && isAcceptedBurstScanCode(code, minLength, onEnter)) {
+      const flushed = detector.flush();
+      if (flushed.accepted && isAcceptedBurstScanCode(flushed, minLength, onEnter)) {
         // أزال startBurst مرشّح المسح من الحقل؛ أبقِ النصّ اليدوي السابق كما هو.
         clearField();
         if (soundEnabled) playAudioFeedback("scan");
-        onScanRef.current(code);
+        onScanRef.current(flushed.code);
       } else {
         // كتابةٌ بشرية سريعة/قصيرة صُنّفت بالخطأ: أعِد الحروف الخام للحقل بلا ابتلاع ولا قلبٍ إلى إنجليزيّ.
-        if (text) setFieldValueAndNotify(valBefore + text);
+        if (flushed.text) setFieldValueAndNotify(valBefore + flushed.text);
         clearField();
       }
     };

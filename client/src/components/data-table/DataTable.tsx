@@ -309,7 +309,7 @@ export function DataTable<T, K = string>({
   searchable = true,
   searchPlaceholder = "بحث…",
   autoFocusSearch = false,
-  barcodeSearch = true,
+  barcodeSearch = false,
   emptyText = "لا بيانات",
   resourceKey,
   emptyState,

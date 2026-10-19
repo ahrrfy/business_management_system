@@ -349,24 +349,17 @@ describe("قبولُ الومضة وبوّابةُ الثقة (نواةُ خطّ
     expect(resolveScanSettle(result, "", 3, { onEnter: true })).toEqual({ scan: "mlz6a", fieldValue: "" });
   });
 
-  it("⭐ الكتابة العربية السريعة يدوياً («عمار»، «السلامي»، «دفتر») لا تبدأ ومضةً ولا تُقلب إلى إنجليزيّ أبداً", () => {
-    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
-    // موظّف يكتب «عمار» بسرعة يدوية عالية (55مي بين الحروف) تحت تخطيط عربي:
+  it("⭐ الكتابة العربية السريعة يدوياً («عمار»، «دفتر») والبحث المختلط القصير («م10») لا تُقلب إلى إنجليزيّ، مع قبول رموز المورّدين والترقيم عند Enter", () => {
+    // ١. موظّف يكتب «عمار» بسرعة عالية تحت تخطيط عربي:
     const ammarEvents: ScannerKeyEvent[] = [
       { code: "KeyU", key: "ع", shiftKey: false },
       { code: "KeyL", key: "م", shiftKey: false },
       { code: "KeyH", key: "ا", shiftKey: false },
       { code: "KeyV", key: "ر", shiftKey: false },
     ];
-    const actions = feedSequence(det, ammarEvents, [55, 50, 60]);
-    expect(actions).toEqual(["pass", "pass", "pass", "pass"]);
-    expect(det.isActive).toBe(false);
-
-    // حتى لو ضغط مفتاحين عربيين معاً بسرعة استثنائية (15مي) ثم أكمل أو ضغط Enter،
-    // فإنّ resolveScanSettle يرفض الكلمة المحضة الخالية من الأرقام ويستعيد النصّ العربيّ الأصليّ.
-    const det2 = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
-    feedSequence(det2, ammarEvents, [15, 15, 15]);
-    const flushed = det2.flush();
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    feedSequence(det, ammarEvents, [55, 50, 60]);
+    const flushed = det.flush();
     expect(resolveScanSettle(flushed, "", 3, { onEnter: false })).toEqual({
       scan: null,
       fieldValue: "عمار",
@@ -375,5 +368,42 @@ describe("قبولُ الومضة وبوّابةُ الثقة (نواةُ خطّ
       scan: null,
       fieldValue: "عمار",
     });
+
+    // ٢. كتابة «م10» بسرعة عالية (مراجعة Codex P1): لا تُقلَب إلى «l10» بعد مهلة السكون
+    const m10Events: ScannerKeyEvent[] = [
+      { code: "KeyL", key: "م", shiftKey: false },
+      { code: "Digit1", key: "1", shiftKey: false },
+      { code: "Digit0", key: "0", shiftKey: false },
+    ];
+    const detM10 = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    feedSequence(detM10, m10Events, [50, 50]);
+    expect(resolveScanSettle(detM10.flush(), "", 3, { onEnter: false })).toEqual({
+      scan: null,
+      fieldValue: "م10",
+    });
+
+    // ٣. مسح «MLZ6A» تحت تخطيط عربي مع تذبذب USB (70مي بين أول حرفين، مراجعة Codex P1):
+    const mlzArabicEvents: ScannerKeyEvent[] = [
+      { code: "KeyM", key: "ة", shiftKey: false },
+      { code: "KeyL", key: "م", shiftKey: false },
+      { code: "KeyZ", key: "ئ", shiftKey: false },
+      { code: "Digit6", key: "٦", shiftKey: false },
+      { code: "KeyA", key: "ش", shiftKey: false },
+    ];
+    const detMlz = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    feedSequence(detMlz, mlzArabicEvents, [70, 10, 10, 10]);
+    expect(detMlz.isActive).toBe(true);
+    expect(resolveScanSettle(detMlz.flush(), "", 3, { onEnter: true })).toEqual({
+      scan: "mlz6a",
+      fieldValue: "",
+    });
+
+    // ٤. باركود أبجدي بلا أرقام «ALIAS-A» ورموز ترقيم Code128 «AB=12» تُقبَل عند الإنهاء بـEnter (مراجعة Codex P2):
+    expect(
+      resolveScanSettle({ accepted: true, code: "ALIAS-A", text: "ALIAS-A" }, "", 3, { onEnter: true }),
+    ).toEqual({ scan: "ALIAS-A", fieldValue: "" });
+    expect(
+      resolveScanSettle({ accepted: true, code: "AB=12", text: "AB=12" }, "", 3, { onEnter: true }),
+    ).toEqual({ scan: "AB=12", fieldValue: "" });
   });
 });

@@ -88,10 +88,10 @@ export class ScanBurstDetector {
     const gap = this.lastMs > 0 ? now - this.lastMs : Number.POSITIVE_INFINITY;
     this.lastMs = now;
 
-    // داخل ومضةٍ مؤكَّدة: التقط كلّ حرفٍ بلا فحص فاصلٍ إضافيّ لمناعة التذبذب، إلا إذا ظهر فاصلُ كلماتٍ
-    // بشريّ أو نقراتٌ عربيةٌ يدوية بسرعة الإنسان فنَسمُ الومضة بالالتباس كي تُستعاد كاملةً عند الإفراغ.
+    // داخل ومضةٍ مؤكَّدة: التقط كلّ حرفٍ بلا فحص فاصلٍ إضافيّ (مناعةٌ تامّة للتذبذب حتى الإفراغ)،
+    // إلا إذا ظهر فاصلُ كلماتٍ بشريّ (مسافة بفاصل > 40مي) فنَسمُ الومضة بالالتباس كي تُستعاد كاملةً عند الإفراغ.
     if (this.active) {
-      if ((input.key === " " && gap > 40) || (isUnshiftedArabicWordKey(input) && gap > 30)) {
+      if (input.key === " " && gap > 40) {
         this.ambiguousStart = true;
       }
       this.keys.push(input);
@@ -109,14 +109,7 @@ export class ScanBurstDetector {
     }
 
     // الحرف الثاني وصل بسرعة القارئ بعد المرشّح الأوّل ⇒ ومضةٌ مؤكَّدة.
-    // للحروف العربية غير المُزاحة (كتابة كلمات عربية مثل «عمار» أو «السلامي»)، تتقارب مخارج الحروف
-    // المتجاورة عند الموظّف السريع (30–110مي) بينما القارئ الفيزيائيّ يبثّ بـ ≤25مي؛ فنقصر بدء الومضة
-    // بين حرفين عربيين غير مُزاحين على سرعة القارئ الفيزيائيّ لكي تبقى الكتابة العربية حيّةً في الحقل.
-    const effectiveIntraGapMs =
-      this.keys.length === 1 && isUnshiftedArabicWordKey(this.keys[0]) && isUnshiftedArabicWordKey(input)
-        ? Math.min(this.intraGapMs, 25)
-        : this.intraGapMs;
-    if (this.keys.length === 1 && gap <= effectiveIntraGapMs) {
+    if (this.keys.length === 1 && gap <= this.intraGapMs) {
       this.active = true;
       this.keys.push(input);
       return "startBurst";
@@ -155,13 +148,6 @@ export class ScanBurstDetector {
   }
 }
 
-/**
- * هل ضغطة المفتاح حرفٌ عربيّ غير مُزاح (كتابةٌ نصّية عادية لا أرقام ولا رموز Shift كـ«÷آ{» لـINV)؟
- */
-function isUnshiftedArabicWordKey(input: ScannerKeyEvent): boolean {
-  return !input.shiftKey && /^[\u0621-\u064A\u0671-\u06D3]+$/.test(input.key);
-}
-
 /** قرار تسوية ومضةٍ على حقلٍ نصّيّ: باركودٌ يُصدَر (إن قُبِل)، وقيمةُ الحقل النهائية. */
 export interface SettleDecision {
   /** الباركود المُصدَر عند القبول، وإلّا `null`. */
@@ -172,22 +158,29 @@ export interface SettleDecision {
 
 /**
  * هل يقبل الرمز المفكوك من ومضةٍ نشطة كباركودٍ صالح؟
- * - عند التسوية بالمؤقّت (`onEnter = false`): يشترط باركوداً واثقاً (أو رقمياً/بادئة حرفٍ قصيرة مع أرقام).
- * - عند الإنهاء الصريح بـ`Enter` (`onEnter = true`): يقبل أيضاً باركودات المورّدين الأبجدية-الرقمية التي
- *   تحتوي رقماً واحداً على الأقلّ (مثل `MLZ6A` أو `NASR-6A` أو `B518`)، ويرفض الكلمات المحضة الخالية من
- *   الأرقام («عمار» ⇐ `ujhv`، «دفتر» ⇐ `]tjv`، `abcd`) فلا تُقلَب الكتابةُ العربية السريعة إلى إنجليزيّ.
+ * - عند التسوية بالمؤقّت (`onEnter = false`): يشترط باركوداً واثقاً (`isConfidentScanCode`) أو رقمياً محضاً،
+ *   فلا تُقلَب الكتابةُ العربية السريعة («عمار» ⇐ `ujhv`) أو المختلطة القصيرة («م10» ⇐ `l10`) إلى إنجليزيّ.
+ * - عند الإنهاء الصريح بـ`Enter` (`onEnter = true`): يقبل كافّة رموز الباركود القياسية (بما فيها الأبجدية
+ *   مثل `ALIAS-A` وترقيم Code39/Code128 مثل `AB=12` و`MLZ6A`)، ويستثني فقط الكلمات العربية الصرفة غير المُزاحة
+ *   التي فُكّت إلى مفاتيح الحروف العربية غير المُزاحة بلا أرقامٍ ولا حروفٍ كبيرة ولا ترقيم باركود («عمار» ⇐ `ujhv`).
  */
-export function isAcceptedBurstScanCode(code: string, minLength: number, onEnter = false): boolean {
+export function isAcceptedBurstScanCode(
+  resultOrCode: FlushResult | string,
+  minLength: number,
+  onEnter = false,
+): boolean {
+  const code = typeof resultOrCode === "string" ? resultOrCode : resultOrCode.code;
+  const text = typeof resultOrCode === "string" ? "" : resultOrCode.text;
   if (code.length < minLength) return false;
   if (hasUnsupportedBarcodeCharacters(code)) return false;
   if (isConfidentScanCode(code, minLength)) return true;
   const digitsOnly = code.replace(/\s+/g, "");
   if (/^\d+$/.test(digitsOnly)) return true;
-  if (/^[A-Za-z]{1,2}\s*\d+$/.test(code)) return true;
-  if (onEnter) {
-    return /\d/.test(code) && /^[A-Za-z0-9\-_./+ ]+$/.test(code);
+  if (!onEnter) return false;
+  if (text && /^[\u0621-\u064A\u0671-\u06D3\s]+$/.test(text) && /^[a-z[\];'`,./\s]+$/.test(code)) {
+    return false;
   }
-  return false;
+  return true;
 }
 
 /**
@@ -204,7 +197,7 @@ export function resolveScanSettle(
   minLength: number,
   opts?: { onEnter?: boolean },
 ): SettleDecision {
-  if (result.accepted && isAcceptedBurstScanCode(result.code, minLength, Boolean(opts?.onEnter))) {
+  if (result.accepted && isAcceptedBurstScanCode(result, minLength, Boolean(opts?.onEnter))) {
     return { scan: result.code, fieldValue: "" };
   }
   return { scan: null, fieldValue: prefix + result.text };
