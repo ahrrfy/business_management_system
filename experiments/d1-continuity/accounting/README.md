@@ -47,3 +47,19 @@ Financial parity compares all21 projected tables in the Q1A23-table row graph, i
 Default native admission keeps30 changed rows and the conservative48-statement limit, with adjacent same-table inserts grouped below100 binds. The larger original invoice's final return needs33 rows, so the default rejects atomically. `candidate.ts` is an explicit native-only64-row configuration with a distinct schema version; it completes that case at36 actual SQL statements and passes signed cold restore. It does not change existing OFF/cloud identity, writer name, row limits or production behavior.
 
 All generated row graphs, measurements, signed journals and source hashes remain ignored under `results/` and `build/`. This qualification does not authorize real ACTIVE activation or qualify cashier/storefront completeness, accountant governance, provider delivery, cloud D1 CPU/latency or production limits.
+
+## Local Q1C namespace proof
+
+`buildAccountingWorker({ namespace: true })` explicitly selects the fixed `q1gl_` object namespace and `actual-accounting-q1-namespace` signed lab identity. The default build keeps its prior identity and30-row admission. The optional candidate still has a separate64-row schema identity. A namespace wrapper covers both front-end confirmed replay and the sole writer's D1 environment; it preserves native sessions, bookmarks, batches, statement results and bind values. Signed plans and snapshot graphs retain logical table names. The stable writer name remains `<LAB_ID>:primary:writer-v1`.
+
+Only known table/index/trigger identifiers are mapped. Business strings/comments remain byte-for-byte intact. The six journal guard names inside the exact `sqlite_master` predicate and the scoped `sqlite_sequence` name predicates are explicitly qualified; unsupported metadata/PRAGMA/DDL and malformed lexical forms fail closed. This is a bounded adapter for the existing experiment SQL, not a general SQLite rewriter. Accounting initialization now preserves the inherited14 read indexes and adds its four accounting indexes.
+
+```powershell
+$env:ACCOUNTING_NAMESPACE='1'
+node --import tsx --test --test-concurrency=1 experiments/d1-continuity/accounting/native.test.mjs experiments/d1-continuity/accounting/recovery.test.mjs experiments/d1-continuity/accounting/budget.test.mjs experiments/d1-continuity/accounting/admission.test.mjs experiments/d1-continuity/accounting/namespace-guard.test.mjs
+node --import tsx --test experiments/d1-continuity/accounting/namespace.test.mjs experiments/d1-continuity/accounting/indexes.test.mjs
+```
+
+Each namespaced native lab first creates a complete bare Q1B schema, executes a genuine old cash sale and replays its signed record into the bare restore schema. New objects initialize additively beside that history. Full bare DDL and every row (including bare sequence values) are hashed before and after initialization, commands, faults and cold restore. The guard test drops exactly one new journal trigger while retaining all six legacy guards, proves inert refusal, and rejects the genuine old signed record in the new restore lab. Primary, journal and restore remain three separate physical native D1 databases.
+
+Evidence is isolated in ignored `results/namespace/` and `build/namespace-*/`. Optional default regression evidence uses `ACCOUNTING_RESULTS_SCOPE=namespace-default` to avoid overwriting Q1A/B artifacts. Native page measurements enforce131072 bytes, statements keep the48/Free50 gate, and the namespace binding refuses more than100 binds. No cloud script/resource, real activation, provider transaction or production setting changes here. Native timing cannot establish cloud P95/CPU acceptance; growing history still needs measured cloud row-read/page budgets.

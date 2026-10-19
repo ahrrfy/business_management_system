@@ -10,12 +10,17 @@ export async function buildAccountingWorker(options = {}) {
   for (const from of ["cash/actual", "credit/actual"])
     aliases[key("experiments/d1-continuity/" + from)] = path.join(
       accountingRoot,
-      options.candidate ? "candidate.ts" : "actual.ts",
+      (options.namespace ? "namespace-" : "") +
+        (options.candidate ? "candidate.ts" : "actual.ts"),
     );
-  for (const from of ["cash/identity", "credit/identity"])
+  for (const from of [
+    "cash/identity",
+    "credit/identity",
+    "accounting/identity",
+  ])
     aliases[key("experiments/d1-continuity/" + from)] = path.join(
       accountingRoot,
-      "identity.ts",
+      options.namespace ? "namespace-identity.ts" : "identity.ts",
     );
   aliases[key("experiments/d1-continuity/credit/schema")] = path.join(
     accountingRoot,
@@ -30,9 +35,17 @@ export async function buildAccountingWorker(options = {}) {
   ] = path.join(accountingRoot, "schema.ts");
   return buildReturnsWorker({
     ...options,
+    ...(options.namespace && !options.stdin
+      ? {
+          stdin:
+            "export{default,CreditWriter}from'../accounting/namespace-worker'",
+        }
+      : {}),
     moduleAliases: aliases,
     metadataRoot: accountingRoot,
-    labId: "actual-accounting-q1-native",
+    labId: options.namespace
+      ? "actual-accounting-q1-namespace"
+      : "actual-accounting-q1-native",
     outfile: options.outfile ?? path.join(accountingRoot, "build/worker.mjs"),
   });
 }
