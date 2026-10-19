@@ -118,6 +118,7 @@ export default function Products() {
   ));
   const canQuickStudio = useOperationPermission("productStudio.quickBarcodeLookup").allowed;
   const canQuickSaveStudio = useOperationPermission("productStudio.quickSaveBarcodeProductImage").allowed;
+  const isStudioManager = me.data?.role === "admin" || me.data?.role === "manager";
   // سياسة العزل الحديثة: الأدمن وحده يعبر الفروع؛ المدير مثبت على فرعه كالكاشير.
   const canPickBranch = me.data?.role === "admin";
 
@@ -166,7 +167,14 @@ export default function Products() {
   const sel = useRowSelection<string>();
   const { copy } = useClipboard({ successMessage: null });
 
+  function canRowOpenQuickStudio(r: Row): boolean {
+    if (!canQuickStudio || r.isService) return false;
+    const rowActive = Boolean(r.productIsActive) && r.variantIsActive !== false && r.unitIsActive !== false;
+    return rowActive || isStudioManager;
+  }
+
   function openQuickStudioForRow(r: Row) {
+    if (!canRowOpenQuickStudio(r)) return;
     setStudioTarget({
       productId: r.productId,
       variantId: r.variantId ?? null,
@@ -598,6 +606,7 @@ export default function Products() {
                   const hasOwnOrShared = Boolean(r.hasVariantImage);
                   const hasOtherVariantOnly = Boolean(r.hasImage && !r.hasVariantImage);
                   const hasDedicatedVariantImg = Number(r.variantImageCount ?? 0) > 0;
+                  const rowStudioAllowed = canRowOpenQuickStudio(r);
                   return (
                     <div
                       className="flex items-center gap-2 py-0.5"
@@ -606,7 +615,7 @@ export default function Products() {
                       <button
                         type="button"
                         onClick={() => openQuickStudioForRow(r)}
-                        disabled={!canQuickStudio}
+                        disabled={!rowStudioAllowed}
                         data-testid={`product-row-image-btn-${r.productId}-${r.variantId ?? 0}`}
                         title={
                           hasOwnOrShared
@@ -635,7 +644,7 @@ export default function Products() {
                         ) : (
                           <ImageOff className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
                         )}
-                        {canQuickStudio && (
+                        {rowStudioAllowed && (
                           <span className="absolute inset-0 flex items-center justify-center bg-black/55 opacity-0 transition-opacity group-hover:opacity-100">
                             <Camera className="h-4 w-4 text-white" />
                           </span>
@@ -671,7 +680,7 @@ export default function Products() {
                           </span>
                         )}
 
-                        {canQuickStudio && (
+                        {rowStudioAllowed && (
                           <button
                             type="button"
                             onClick={() => openQuickStudioForRow(r)}
@@ -882,7 +891,7 @@ export default function Products() {
                             : r.hasVariantImage
                             ? "تحديث صورة / ذكاء اصطناعي"
                             : "رفع / التقاط صورة بالذكاء",
-                          hidden: !canQuickStudio,
+                          hidden: !canRowOpenQuickStudio(r),
                           onSelect: () => openQuickStudioForRow(r),
                           gate: { operations: ["productStudio.quickBarcodeLookup"], module: "productStudio", level: "READ" },
                         },

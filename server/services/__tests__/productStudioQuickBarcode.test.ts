@@ -352,33 +352,96 @@ describe("quickBarcodeLookup & quickSaveBarcodeProductImage", () => {
     expect(stagingRows[0].referencedAt).toBeTruthy();
   });
 
-  it("allows photographer to submit multiple quick captures for the same product/variant without activeSlot collision", async () => {
-    const first = await quickSaveBarcodeProductImage(photographer, {
-      productId: 801,
-      variantId: 801,
-      barcode: null,
-      originalDataUrl: PNG_1X1,
-      processedDataUrl: PNG_1X1,
-      thumbnailDataUrl: WEBP_1X1,
-      mode: "FLATTEN",
-    });
-    const second = await quickSaveBarcodeProductImage(photographer, {
-      productId: 801,
-      variantId: 801,
-      barcode: null,
-      originalDataUrl: PNG_1X1,
-      processedDataUrl: PNG_1X1,
-      thumbnailDataUrl: WEBP_1X1,
-      mode: "FLATTEN",
-    });
+  it("allows photographer to submit multiple quick captures for the same product/variant without activeSlot collision and preserves slot order on out-of-order approval", async () => {
+    const [first, second] = await Promise.all([
+      quickSaveBarcodeProductImage(photographer, {
+        productId: 801,
+        variantId: 801,
+        barcode: null,
+        originalDataUrl: PNG_1X1,
+        processedDataUrl: PNG_1X1,
+        thumbnailDataUrl: WEBP_1X1,
+        mode: "FLATTEN",
+      }),
+      quickSaveBarcodeProductImage(photographer, {
+        productId: 801,
+        variantId: 801,
+        barcode: null,
+        originalDataUrl: PNG_1X1,
+        processedDataUrl: PNG_1X1,
+        thumbnailDataUrl: WEBP_1X1,
+        mode: "FLATTEN",
+      }),
+    ]);
 
     expect(first.jobId).toBeGreaterThan(0);
-    expect(second.jobId).toBeGreaterThan(first.jobId);
+    expect(second.jobId).toBeGreaterThan(0);
 
-    const [job1] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, first.jobId));
-    const [job2] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, second.jobId));
-    expect(job1.activeSlot).toBe(1);
-    expect(job2.activeSlot).toBe(2);
+    const [jobA] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, first.jobId));
+    const [jobB] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, second.jobId));
+    const slots = [jobA.activeSlot, jobB.activeSlot].sort((a, b) => Number(a) - Number(b));
+    expect(slots).toEqual([1, 2]);
+
+    const slot1Job = Number(jobA.activeSlot) === 1 ? jobA : jobB;
+    const slot2Job = Number(jobA.activeSlot) === 2 ? jobA : jobB;
+
+    // اعتماد الفتحة الثانية أولاً ثمّ الأولى — يجب أن تصحّح الفتحة 1 الصورة الرئيسية والترتيب.
+    const approvedSlot2 = await approveStudioTask(manager, Number(slot2Job.id));
+    const approvedSlot1 = await approveStudioTask(manager, Number(slot1Job.id));
+
+    const [img1] = await db().select().from(s.productImages).where(eq(s.productImages.id, approvedSlot1.imageId));
+    const [img2] = await db().select().from(s.productImages).where(eq(s.productImages.id, approvedSlot2.imageId));
+    expect(img1.isPrimary).toBe(true);
+    expect(img1.sortOrder).toBe(0);
+    expect(img2.isPrimary).toBe(false);
+    expect(img2.sortOrder).toBe(1);
+  });
+
+  it("rejects service products and inactive products/variants/units for non-managers in direct-ID lookup and save", async () => {
+    await db().insert(s.products).values([
+      {
+        id: 804,
+        name: "خدمة صيانة فورية",
+        categoryId: 50,
+        isActive: true,
+        isService: true,
+      },
+      {
+        id: 805,
+        name: "منتج موقوف مؤقتاً",
+        categoryId: 50,
+        isActive: false,
+        isService: false,
+      },
+    ]);
+
+    await expect(
+      quickBarcodeLookup(manager, { productId: 804 }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(
+      quickSaveBarcodeProductImage(manager, {
+        productId: 804,
+        processedDataUrl: PNG_1X1,
+        thumbnailDataUrl: WEBP_1X1,
+        mode: "FLATTEN",
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    await expect(
+      quickBarcodeLookup(photographer, { productId: 805 }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(
+      quickSaveBarcodeProductImage(photographer, {
+        productId: 805,
+        processedDataUrl: PNG_1X1,
+        thumbnailDataUrl: WEBP_1X1,
+        mode: "FLATTEN",
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    const managerInactiveLookup = await quickBarcodeLookup(manager, { productId: 805 });
+    expect(managerInactiveLookup.product.id).toBe(805);
+    expect(managerInactiveLookup.product.isActive).toBe(false);
   });
 
   it("rejects mismatched or nonexistent variantId in quickBarcodeLookup and quickSaveBarcodeProductImage", async () => {
@@ -391,6 +454,7 @@ describe("quickBarcodeLookup & quickSaveBarcodeProductImage", () => {
         productId: 801,
         variantId: 999999,
         processedDataUrl: PNG_1X1,
+        thumbnailDataUrl: WEBP_1X1,
         mode: "FLATTEN",
       }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });

@@ -259,17 +259,18 @@ describe("listProductsAdmin — حالة الصورة وفلتر الصور (ima
     expect(noDedicatedVariantImg.rows.map((r) => r.variantId)).toEqual(expect.arrayContaining([2, 10]));
 
     // عند إضافة صورة معتمدة للمنتج الناقص (بلا متغيّرات variantId = null) يصبح variantImageCount = 1 وhasVariantImage = true
-    await d.insert(s.productImages).values([
+    // وحين تكون thumbDataUrl = null (الصور القديمة)، يعود المسار الخفيف /api/img/product/:id بدلاً من قراءة عمود url الضخم.
+    const [insertedLegacyImg] = await d.insert(s.productImages).values([
       {
         productId: 3,
         variantId: null,
-        url: "/img/incomplete.webp",
-        thumbDataUrl: "/img/incomplete-thumb.webp",
+        url: "data:image/png;base64,LEGACY_LARGE_BLOB",
+        thumbDataUrl: null,
         isPrimary: true,
         sortOrder: 0,
         reviewStatus: "APPROVED",
       },
-    ]);
+    ]).$returningId();
     const afterIncompleteImg = await listProductsAdmin({ branchId: 1 });
     const updatedIncomplete = afterIncompleteImg.rows.find((r) => r.productId === 3);
     expect(updatedIncomplete).toMatchObject({
@@ -277,7 +278,7 @@ describe("listProductsAdmin — حالة الصورة وفلتر الصور (ima
       hasVariantImage: true,
       imageCount: 1,
       variantImageCount: 1,
-      primaryImageThumb: "/img/incomplete-thumb.webp",
+      primaryImageThumb: `/api/img/product/${insertedLegacyImg.id}`,
     });
   });
 });

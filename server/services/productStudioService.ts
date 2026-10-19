@@ -5549,16 +5549,38 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
         .filter((id): id is number => id != null);
       const publishedJobs = publishedJobIds.length
         ? await tx
-            .select({ id: productImageJobs.id, campaignId: productImageJobs.campaignId })
+            .select({
+              id: productImageJobs.id,
+              campaignId: productImageJobs.campaignId,
+              templateVersion: productImageJobs.templateVersion,
+            })
             .from(productImageJobs)
             .where(inArray(productImageJobs.id, publishedJobIds))
         : [];
-      const campaignByJob = new Map(publishedJobs.map((job) => [Number(job.id), job.campaignId]));
-      const sameCampaign = task.campaignId == null
-        ? []
-        : existingImages.filter(
-            (image) => image.publishedStudioJobId != null && campaignByJob.get(Number(image.publishedStudioJobId)) === task.campaignId,
-          );
+      const jobMetaById = new Map(
+        publishedJobs.map((job) => [
+          Number(job.id),
+          { campaignId: job.campaignId, templateVersion: job.templateVersion },
+        ]),
+      );
+      const quickCohortId =
+        task.campaignId == null && task.templateVersion != null && Number(task.templateVersion) < 0
+          ? Number(task.templateVersion)
+          : null;
+      const sameCampaign = task.campaignId != null
+        ? existingImages.filter(
+            (image) =>
+              image.publishedStudioJobId != null &&
+              jobMetaById.get(Number(image.publishedStudioJobId))?.campaignId === task.campaignId,
+          )
+        : quickCohortId != null
+          ? existingImages.filter(
+              (image) =>
+                image.publishedStudioJobId != null &&
+                jobMetaById.get(Number(image.publishedStudioJobId))?.campaignId == null &&
+                Number(jobMetaById.get(Number(image.publishedStudioJobId))?.templateVersion) === quickCohortId,
+            )
+          : [];
       const outsideCampaign = existingImages.filter((image) => !sameCampaign.some((own) => Number(own.id) === Number(image.id)));
       const outsidePrimary = outsideCampaign.some((image) => image.isPrimary);
       const sameCampaignPrimaryIds = sameCampaign.filter((image) => image.isPrimary).map((image) => Number(image.id));
@@ -6450,6 +6472,8 @@ export async function quickBarcodeLookup(
   let variantName: string | null = null;
   let unitId: number | null = null;
   let unitName: string | null = null;
+  let variantActive = true;
+  let unitActive = true;
   let barcode = rawBarcode.trim();
 
   if (inputProductId != null && Number.isFinite(Number(inputProductId)) && Number(inputProductId) > 0) {
@@ -6464,6 +6488,7 @@ export async function quickBarcodeLookup(
             color: productVariants.color,
             size: productVariants.size,
             sku: productVariants.sku,
+            isActive: productVariants.isActive,
           })
           .from(productVariants)
           .where(and(eq(productVariants.id, variantId), eq(productVariants.productId, productId)))
@@ -6479,6 +6504,7 @@ export async function quickBarcodeLookup(
           }),
         });
       }
+      variantActive = Boolean(variantRow.isActive);
       variantName = variantRow.variantName || variantRow.color || variantRow.size || variantRow.sku || null;
       const unitRows = await db
         .select({
@@ -6486,15 +6512,19 @@ export async function quickBarcodeLookup(
           unitName: productUnits.unitName,
           barcode: productUnits.barcode,
           isBaseUnit: productUnits.isBaseUnit,
+          isActive: productUnits.isActive,
         })
         .from(productUnits)
         .where(eq(productUnits.variantId, variantId))
         .orderBy(desc(productUnits.isBaseUnit), asc(productUnits.id));
       const matchedUnit =
-        (barcode ? unitRows.find((u) => (u.barcode ?? "").trim() === barcode) : undefined) ?? unitRows[0];
+        (barcode ? unitRows.find((u) => (u.barcode ?? "").trim() === barcode) : undefined) ??
+        unitRows.find((u) => Boolean(u.isActive)) ??
+        unitRows[0];
       if (matchedUnit) {
         unitId = Number(matchedUnit.id);
         unitName = matchedUnit.unitName ?? null;
+        unitActive = Boolean(matchedUnit.isActive);
         if (!barcode && matchedUnit.barcode) {
           barcode = matchedUnit.barcode.trim();
         }
@@ -6517,6 +6547,8 @@ export async function quickBarcodeLookup(
     variantName = resolved.variantName ?? null;
     unitId = resolved.unitId;
     unitName = resolved.unitName;
+    variantActive = Boolean(resolved.isActive);
+    unitActive = Boolean(resolved.isActive);
   }
 
   const productRows = await db
@@ -6528,6 +6560,7 @@ export async function quickBarcodeLookup(
       modelName: products.modelName,
       categoryName: categories.name,
       isActive: products.isActive,
+      isService: products.isService,
     })
     .from(products)
     .leftJoin(categories, eq(categories.id, products.categoryId))
@@ -6542,6 +6575,27 @@ export async function quickBarcodeLookup(
         what: "المنتج غير موجود",
         why: "لم نتمكن من العثور على سجل المنتج في قاعدة البيانات",
         doThis: "تأكد من صحة الباركود أو ابحث عن المنتج بالاسم في الاستوديو",
+      }),
+    });
+  }
+  if (product.isService) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: `«${product.name}» خدمةٌ لا منتجٌ سلعي`,
+        why: "الخدمات غير المخزنية لا تُفتح لها مهامّ تصوير في الاستوديو",
+        doThis: "اختر منتجاً سلعياً من الكتالوج",
+      }),
+    });
+  }
+  const isTargetActive = Boolean(product.isActive) && variantActive && unitActive;
+  if (!isTargetActive && !isManager(actor)) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: `«${product.name}» لا يُفتح له عمل تصوير`,
+        why: "المنتج أو بديله أو وحدته معطّل في الكتالوج، والمعطّل لا تُنشأ له مهمّة تصوير",
+        doThis: "اطلب من المدير تفعيل المنتج ووحدته من صفحة المنتجات، ثمّ أعد المحاولة",
       }),
     });
   }
@@ -6617,7 +6671,7 @@ export async function quickBarcodeLookup(
       unitId,
       unitName,
       barcode,
-      isActive: Boolean(product.isActive),
+      isActive: isTargetActive,
     },
     images: imageRows.map((img) => ({
       id: Number(img.id),
@@ -6670,7 +6724,13 @@ export async function quickSaveBarcodeProductImage(
 
   const product = (
     await db
-      .select({ id: products.id, name: products.name, description: products.description })
+      .select({
+        id: products.id,
+        name: products.name,
+        description: products.description,
+        isActive: products.isActive,
+        isService: products.isService,
+      })
       .from(products)
       .where(eq(products.id, input.productId))
       .limit(1)
@@ -6686,11 +6746,23 @@ export async function quickSaveBarcodeProductImage(
       }),
     });
   }
+  if (product.isService) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: `«${product.name}» خدمةٌ لا منتجٌ سلعي`,
+        why: "الخدمات غير المخزنية لا تُحفظ لها صور في استوديو المنتجات",
+        doThis: "اختر منتجاً سلعياً من الكتالوج",
+      }),
+    });
+  }
 
+  let variantActive = true;
+  let unitActive = true;
   if (input.variantId != null) {
     const variantRow = (
       await db
-        .select({ id: productVariants.id })
+        .select({ id: productVariants.id, isActive: productVariants.isActive })
         .from(productVariants)
         .where(and(eq(productVariants.id, input.variantId), eq(productVariants.productId, input.productId)))
         .limit(1)
@@ -6705,6 +6777,28 @@ export async function quickSaveBarcodeProductImage(
         }),
       });
     }
+    variantActive = Boolean(variantRow.isActive);
+    const unitRows = await db
+      .select({ barcode: productUnits.barcode, isActive: productUnits.isActive })
+      .from(productUnits)
+      .where(eq(productUnits.variantId, input.variantId));
+    if (unitRows.length > 0) {
+      const trimmedBarcode = (input.barcode ?? "").trim();
+      const matchedUnit = trimmedBarcode
+        ? unitRows.find((u) => (u.barcode ?? "").trim() === trimmedBarcode)
+        : undefined;
+      unitActive = matchedUnit ? Boolean(matchedUnit.isActive) : unitRows.some((u) => Boolean(u.isActive));
+    }
+  }
+  if ((!product.isActive || !variantActive || !unitActive) && !isManager(actor)) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: `«${product.name}» لا يُفتح له عمل تصوير`,
+        why: "المنتج أو بديله أو وحدته معطّل في الكتالوج، والمعطّل لا تُنشأ له مهمّة تصوير",
+        doThis: "اطلب من المدير تفعيل المنتج ووحدته من صفحة المنتجات، ثمّ أعد المحاولة",
+      }),
+    });
   }
 
   // فك ترميز وتخزين الصور
@@ -6891,6 +6985,14 @@ export async function quickSaveBarcodeProductImage(
             ? "PRO"
             : input.mode;
 
+      // قفل صفّ المنتج الأب أولاً لتسلسل حجز الفتحات حتى حين لا توجد مهمّة نشطة بعد (slot 1).
+      await tx
+        .select({ id: products.id })
+        .from(products)
+        .where(eq(products.id, input.productId))
+        .limit(1)
+        .for("update");
+
       // فحص الفتحات النشطة الحالية لنفس (المنتج، المتغيّر) لتفادي تصادم المفتاح الفريد uq_pijob_product_variant_active
       const existingActiveJobs = await tx
         .select({
@@ -6898,6 +7000,7 @@ export async function quickSaveBarcodeProductImage(
           activeSlot: productImageJobs.activeSlot,
           assignedTo: productImageJobs.assignedTo,
           revision: productImageJobs.revision,
+          templateVersion: productImageJobs.templateVersion,
         })
         .from(productImageJobs)
         .where(
@@ -6907,6 +7010,7 @@ export async function quickSaveBarcodeProductImage(
             isNotNull(productImageJobs.activeSlot),
           ),
         )
+        .orderBy(asc(productImageJobs.id))
         .for("update");
 
       const maxActiveSlot = existingActiveJobs.reduce(
@@ -6914,6 +7018,12 @@ export async function quickSaveBarcodeProductImage(
         0,
       );
       const nextActiveSlot = maxActiveSlot + 1;
+      const existingCohortId = existingActiveJobs.length > 0
+        ? Number(
+            existingActiveJobs.find((j) => j.templateVersion != null && Number(j.templateVersion) < 0)?.templateVersion ??
+              -Number(existingActiveJobs[0].id),
+          )
+        : null;
 
       const [job] = await tx
         .insert(productImageJobs)
@@ -6942,10 +7052,28 @@ export async function quickSaveBarcodeProductImage(
           barcodeVerifiedBy: actor.userId,
           barcodeVerifiedAt: new Date(),
           activeSlot: nextActiveSlot,
+          templateVersion: existingCohortId,
         })
         .$returningId();
 
       const jobId = Number(job.id);
+      const cohortId = existingCohortId ?? -jobId;
+      if (existingCohortId == null) {
+        await tx
+          .update(productImageJobs)
+          .set({ templateVersion: cohortId })
+          .where(eq(productImageJobs.id, jobId));
+      } else {
+        const unlinkedSiblingIds = existingActiveJobs
+          .filter((j) => Number(j.templateVersion) !== cohortId)
+          .map((j) => Number(j.id));
+        if (unlinkedSiblingIds.length > 0) {
+          await tx
+            .update(productImageJobs)
+            .set({ templateVersion: cohortId })
+            .where(inArray(productImageJobs.id, unlinkedSiblingIds));
+        }
+      }
 
       await tx
         .update(productImageObjectStaging)

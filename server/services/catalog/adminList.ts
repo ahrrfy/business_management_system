@@ -307,7 +307,6 @@ export async function listProductsAdmin(
           id: productImages.id,
           productId: productImages.productId,
           variantId: productImages.variantId,
-          url: productImages.url,
           thumbDataUrl: productImages.thumbDataUrl,
           isPrimary: productImages.isPrimary,
           sortOrder: productImages.sortOrder,
@@ -354,7 +353,7 @@ export async function listProductsAdmin(
       const varImgs = vid != null ? prodImgs.filter((img) => Number(img.variantId) === vid) : [];
       const bestImg = (vid != null ? (varImgs[0] ?? parentImgs[0]) : prodImgs[0]) ?? null;
       const primaryImageThumb = bestImg
-        ? (bestImg.thumbDataUrl || bestImg.url || `/api/img/product/${bestImg.id}`)
+        ? (bestImg.thumbDataUrl || `/api/img/product/${bestImg.id}`)
         : null;
       const imageCount = prodImgs.length;
       const variantImageCount = vid != null ? varImgs.length : prodImgs.length;
