@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as s from "../../../../drizzle/schema";
 import { getDb } from "../../../db";
 import { truncateTables } from "../../__tests__/__testUtils__";
@@ -404,6 +404,12 @@ describe("online order current lifecycle", () => {
     expect(result.delivered).toHaveLength(1);
   });
   it("uses the actual last preparation/contact audit and actor before dispatch", async () => {
+    // The historic orderDate is intentional. Establish a live reservation before
+    // reactivation: the database guard checks OLD values against its own clock.
+    await db()
+      .update(s.onlineOrders)
+      .set({ reservationExpiresAt: sql`DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 1 DAY)` })
+      .where(eq(s.onlineOrders.id, 1));
     await db()
       .update(s.onlineOrders)
       .set({ status: "PROCESSING" })
