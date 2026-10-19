@@ -22,7 +22,6 @@ import {
   Phone,
   Printer,
   Receipt as ReceiptIcon,
-  Search,
   ShoppingCart,
   Store,
   Truck,
@@ -37,8 +36,7 @@ import { CustomizationDialog, type CustomizationData, composeCustomizationText, 
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useInvoiceReceiptPrinter } from "@/hooks/useInvoiceReceiptPrinter";
 import { receptionOperationAllowed, receptionCheckoutPaths, receptionDeliveryAuthorityRequired } from "@/lib/receptionOperationAccess";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
-import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
@@ -903,15 +901,19 @@ export default function Reception() {
   // مطابقة الماسح داخل حقل البحث المركَّز عبر hook مخصّص (PR #501): توقيتُ الحرف نفسه + تطبيع
   // مسح لوحة المفاتيح العربية (normalizeBarcodeScannerInput) — يحلّ خطأ «الباركود لا يُضاف
   // تلقائياً» بلا الاعتماد على استقرار البحث المؤجَّل، ويصحّح المسح حين تكون اللوحة عربيةً.
-  const barcodeInput = useBarcodeInput((code) => {
-    setSearch("");
-    const r = parseScan(code);
-    if (r.type === "workOrder") {
-      void handleWorkOrderScan(r.number);
-    } else {
-      void lookupBarcode(code);
-    }
-  });
+  const handleSearchScan = useCallback(
+    (code: string) => {
+      setSearch("");
+      setShowDrop(false);
+      const r = parseScan(code);
+      if (r.type === "workOrder") {
+        void handleWorkOrderScan(r.number);
+      } else {
+        void lookupBarcode(code);
+      }
+    },
+    [handleWorkOrderScan, lookupBarcode],
+  );
 
   // إصلاح (٧/٨، طلب مالك): أزرار الفواتير/الطلبات/الحجوزات/الوردية… تنتقل إلى الشريط العلوي
   // المشترك بين الأوضاع الثلاثة (بجانب زرّ «الفواتير» الأصلي، الذي تستبدله محطة الاستقبال بنسخةٍ
@@ -2405,24 +2407,23 @@ export default function Reception() {
         <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-3">
         <span className="shrink-0 text-xs font-extrabold">٢. أضف ما يريده العميل</span>
         <div ref={searchWrapRef} className="relative w-full flex-1 sm:max-w-[640px] sm:min-w-72">
-          <Search aria-hidden className="pointer-events-none absolute inset-y-0 end-3 my-auto size-4 text-muted-foreground" />
-          <input
+          <UnifiedSearchInput
             ref={searchRef}
             autoFocus
             id="reception-search"
             value={search}
-            onChange={(e) => { setSearch(e.target.value); setShowDrop(true); }}
+            debounceMs={0}
+            onChange={(v) => { setSearch(v); setShowDrop(true); }}
+            onScan={handleSearchScan}
             onFocus={() => { if (search) setShowDrop(true); }}
             onKeyDown={(e) => {
-              barcodeInput.handleKeyDown(e, setSearch);
               if (e.defaultPrevented) return;
               if (e.key === "Enter" && searchSettled && results[0]) { e.preventDefault(); addRow(results[0]); }
-              if (e.key === "Escape") { setSearch(""); setShowDrop(false); }
+              if (e.key === "Escape") { e.preventDefault(); setSearch(""); setShowDrop(false); }
             }}
             placeholder="امسح الباركود أو ابحث بالاسم / SKU…  (F2)"
-            className={cn("h-11 w-full rounded-xl border-[1.5px] px-4 pl-11 text-sm font-semibold outline-none focus:border-primary", barcodeSearchInputClass)}
+            inputClassName="h-11 rounded-xl border-[1.5px] text-sm font-semibold focus:border-primary"
           />
-          <BarcodeSearchCue />
           {showDrop && debounced.trim().length >= 2 && (
             <div className="absolute inset-x-0 top-[calc(100%+6px)] z-40 max-h-[340px] overflow-y-auto rounded-xl border bg-card p-1.5 shadow-xl">
               {resultsEmpty && (

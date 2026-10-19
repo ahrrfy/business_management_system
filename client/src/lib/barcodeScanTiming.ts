@@ -51,10 +51,13 @@ export interface FlushResult {
   code: string;
   /** الحروف الخام كما بُثّت — تُستعاد للحقل عند رفض الومضة (صون الكتابة البشرية). */
   text: string;
+  /** هل إيقاع الفواصل الزمنية بشريّ (متوسط الفواصل المستقرّة > 35مي)؟ يُميّز كتابة «عمار» البشرية عن مسح «BOX» الآلي تحت التخطيط العربي. */
+  humanLikeTiming?: boolean;
 }
 
 export class ScanBurstDetector {
   private keys: ScannerKeyEvent[] = [];
+  private gaps: number[] = [];
   private lastMs = 0;
   private active = false;
   // وجود مرشّحٍ سابق ضمن نافذة الاستعادة البرمجية المقترحة يجعل الومضة التالية ملتبسة: قد يكون
@@ -90,6 +93,7 @@ export class ScanBurstDetector {
 
     // داخل ومضةٍ مؤكَّدة: التقط كلّ حرفٍ بلا فحص فاصلٍ إضافيّ (مناعةٌ تامّة للتذبذب حتى الإفراغ).
     if (this.active) {
+      this.gaps.push(gap);
       this.keys.push(input);
       return "capture";
     }
@@ -101,12 +105,14 @@ export class ScanBurstDetector {
     if (input.key === " " && gap > 40) {
       this.ambiguousStart = false;
       this.keys = [];
+      this.gaps = [];
       return "pass";
     }
 
     // الحرف الثاني وصل بسرعة القارئ بعد المرشّح الأوّل ⇒ ومضةٌ مؤكَّدة.
     if (this.keys.length === 1 && gap <= this.intraGapMs) {
       this.active = true;
+      this.gaps = [gap];
       this.keys.push(input);
       return "startBurst";
     }
@@ -117,6 +123,7 @@ export class ScanBurstDetector {
     // سبقت مسحاً سريعاً، واستعادته قد تغيّر هوية الباركود إلى صنفٍ آخر.
     this.ambiguousStart = this.keys.length > 0 && gap <= this.ambiguousStartMs;
     this.keys = [input];
+    this.gaps = [];
     return "pass";
   }
 
@@ -128,16 +135,25 @@ export class ScanBurstDetector {
   /** يفرّغ الحالة ويعيد القرار النهائيّ (ومضةٌ مقبولة أم كتابةٌ تُستعاد). */
   flush(): FlushResult {
     const keys = this.keys;
+    const sortedGaps = [...this.gaps].sort((a, b) => a - b);
+    const steadyGaps = sortedGaps.length > 1 ? sortedGaps.slice(0, -1) : sortedGaps;
+    const avgSteadyGap =
+      steadyGaps.length > 0
+        ? steadyGaps.reduce((sum, g) => sum + g, 0) / steadyGaps.length
+        : Number.POSITIVE_INFINITY;
+    const minGap = sortedGaps.length > 0 ? sortedGaps[0] : Number.POSITIVE_INFINITY;
+    const humanLikeTiming = steadyGaps.length > 0 && avgSteadyGap > 35 && minGap > 20;
     const accepted = this.active && !this.ambiguousStart && keys.length >= this.minLength;
     const text = keys.map((k) => k.key).join("");
     const code = normalizeBarcodeScannerInput(keys.map((k) => scannerCharFromEvent(k)).join(""));
     this.reset();
-    return { accepted, code, text };
+    return { accepted, code, text, humanLikeTiming };
   }
 
   /** يُلغي الحالة الجارية بلا إصدار (تركيزٌ جديد/Escape/مغادرة). */
   reset(): void {
     this.keys = [];
+    this.gaps = [];
     this.lastMs = 0;
     this.active = false;
     this.ambiguousStart = false;
@@ -153,15 +169,44 @@ export interface SettleDecision {
 }
 
 /**
+ * هل يقبل الرمز المفكوك من ومضةٍ نشطة كباركودٍ صالح؟
+ * يقبل رموز الباركود القياسية عند التسوية بالمؤقّت (`onEnter = false`) وعند الإنهاء الصريح بـ`Enter`
+ * (`onEnter = true`) — بما فيها الرموز الأبجدية الصرفة (`BOX`, `ALIAS-A`) والمختلطة (`MLZ6A`) وترقيم
+ * Code39/Code128 (`AB=12`) عندما تُمسَح بإيقاع القارئ الآلي — ويستثني الكتابة البشرية غير الواثقة
+ * ذات الإيقاع البشري (`humanLikeTiming`) سواء كانت عربية («عمار»، «م10»، «زين 10») أو لاتينية («book»)
+ * كي تبقى بحثاً نصّياً ولا تُختطَف كمسحة باركود.
+ */
+export function isAcceptedBurstScanCode(
+  resultOrCode: FlushResult | string,
+  minLength: number,
+  _onEnter = false,
+): boolean {
+  const code = typeof resultOrCode === "string" ? resultOrCode : resultOrCode.code;
+  const humanLikeTiming = typeof resultOrCode === "string" ? false : Boolean(resultOrCode.humanLikeTiming);
+  if (code.length < minLength) return false;
+  if (hasUnsupportedBarcodeCharacters(code)) return false;
+  if (isConfidentScanCode(code, minLength)) return true;
+  const digitsOnly = code.replace(/\s+/g, "");
+  if (/^\d+$/.test(digitsOnly)) return true;
+  if (humanLikeTiming) return false;
+  return true;
+}
+
+/**
  * يقرّر تسوية الومضة على حقلٍ نصّيّ بحسب نتيجة الإفراغ والبادئة (قيمة الحقل قبل الومضة):
- * - **مقبولة** (ومضةٌ نشطة بلغت الحدّ الأدنى وطولُ الرمز كافٍ): امسح الحقل ثم استعلم بالباركود.
- * - **مرفوضة** (كتابةٌ بشرية قصيرة صُنّفت خطأً كمسح): أعِد **البادئة + الحروف الخام** — فلا يضيع
- *   البحث القائم في الحقل ولا ما كتبه المستخدم (يعالج ملاحظتَي مراجعة #1107).
+ * - **مقبولة** (ومضةٌ نشطة بلغت الحدّ الأدنى واجتازت فحص بنية الباركود): امسح الحقل ثم استعلم بالباركود.
+ * - **مرفوضة** (كتابةٌ بشرية سريعة/قصيرة صُنّفت خطأً كمسح): أعِد **البادئة + الحروف الخام** — فلا يضيع
+ *   البحث القائم في الحقل ولا يُقلَب النصّ العربيّ إلى حروفٍ إنجليزية.
  *
  * نقيّة كي تُختبَر بلا DOM/React — الخطّافات تترجم القرار إلى `setValue`/`onScan`.
  */
-export function resolveScanSettle(result: FlushResult, prefix: string, minLength: number): SettleDecision {
-  if (result.accepted && result.code.length >= minLength) {
+export function resolveScanSettle(
+  result: FlushResult,
+  prefix: string,
+  minLength: number,
+  opts?: { onEnter?: boolean },
+): SettleDecision {
+  if (result.accepted && isAcceptedBurstScanCode(result, minLength, Boolean(opts?.onEnter))) {
     return { scan: result.code, fieldValue: "" };
   }
   return { scan: null, fieldValue: prefix + result.text };

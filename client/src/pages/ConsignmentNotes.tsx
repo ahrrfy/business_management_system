@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -412,7 +413,7 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
               </div>
             ) : (
               <div className="relative">
-                <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="ابحث عن مودِع…" />
+                <UnifiedSearchInput debounceMs={0} value={q} onChange={setQ} placeholder="ابحث عن مودِع…" barcode={false} />
                 {(consignorSearch.data?.rows.length ?? 0) > 0 && (
                   <div className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-md border bg-popover shadow-md">
                     {consignorSearch.data!.rows.map((r) => (

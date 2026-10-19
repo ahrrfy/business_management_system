@@ -1,7 +1,6 @@
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { Search } from "lucide-react";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { moduleLabel, stageLabel } from "./operationPermissionMatrixHelpers";
 
 interface OperationPermissionFiltersProps {
@@ -39,19 +38,15 @@ export function OperationPermissionFilters({
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
       <div className="space-y-1">
         <Label htmlFor={`${id}-query`}>بحث عن عملية أو مورد</Label>
-        <div className="relative">
-          <Search
-            className="absolute end-2.5 top-2.5 size-4 text-muted-foreground"
-            aria-hidden
-          />
-          <Input
-            id={`${id}-query`}
-            className="pe-9"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="مثال: إسناد التوصيل، مرتجع"
-          />
-        </div>
+        <UnifiedSearchInput
+          barcode={false}
+          id={`${id}-query`}
+          value={query}
+          onChange={setQuery}
+          debounceMs={0}
+          placeholder="مثال: إسناد التوصيل، مرتجع"
+          className="w-full"
+        />
       </div>
       <div className="space-y-1">
         <Label htmlFor={`${id}-domain`}>مجال العمل</Label>

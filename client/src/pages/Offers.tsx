@@ -1,11 +1,12 @@
 // Offers.tsx (٨/٧/٢٦): إدارة العروض والخصومات على المبيعات (بعد gstack-review PR #163).
 // RBAC: مدير+ فقط (productsManagerProcedure).
-import { AlertCircle, Download, FileEdit, Plus, RotateCcw, Search, TriangleAlert, X } from "lucide-react";
+import { AlertCircle, Download, FileEdit, Plus, RotateCcw, TriangleAlert, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Field } from "@/components/product/variantBits";
@@ -591,7 +592,7 @@ export default function Offers() {
                 )}
                 {scope === "PRODUCTS" && (
                   <Field label="ابحث عن منتج (≥ حرفَين)" className="md:col-span-3">
-                    <Input value={productPicker} onChange={(e) => setProductPicker(e.target.value)} placeholder="اسم أو SKU" />
+                    <UnifiedSearchInput barcode={false} debounceMs={0} value={productPicker} onChange={setProductPicker} placeholder="اسم أو SKU" />
                     {productPicker.trim().length >= 2 && (productSearchQ.data?.items ?? []).length > 0 && (
                       <div className="mt-1 max-h-48 overflow-auto rounded-md border">
                         {(productSearchQ.data?.items ?? []).map((r) => (
@@ -636,10 +637,7 @@ export default function Offers() {
         <CardHeader className="flex items-center justify-between flex-row">
           <CardTitle className="text-base">العروض ({list.length})</CardTitle>
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative">
-              <Search className="pointer-events-none absolute right-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input className="h-8 w-48 pr-8" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="بحث بالاسم…" />
-            </div>
+            <UnifiedSearchInput debounceMs={0} className="w-48" inputClassName="h-8" value={searchQuery} onChange={setSearchQuery} placeholder="بحث بالاسم…" barcode={false} />
             <AppSelect value={channelFilter} onValueChange={(v) => setChannelFilter(v as ChannelFilter)} className="h-8 w-36" size="sm">
               <option value="ALL">كل القنوات</option>
               <option value="POS">نقطة البيع</option>

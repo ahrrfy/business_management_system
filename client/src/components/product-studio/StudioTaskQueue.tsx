@@ -5,6 +5,7 @@ import { notify } from "@/lib/notify";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -324,7 +325,7 @@ export function StudioTaskQueue({
           )}
           <div className="min-w-52 flex-1 space-y-1">
             <Label htmlFor="studio-task-search">بحث باسم المنتج</Label>
-            <Input id="studio-task-search" value={taskSearch} onChange={(event) => setTaskSearch(event.target.value)} placeholder="اكتب جزءاً من اسم المنتج" maxLength={80} />
+            <UnifiedSearchInput barcode={false} debounceMs={0} id="studio-task-search" value={taskSearch} onChange={setTaskSearch} placeholder="اكتب جزءاً من اسم المنتج" maxLength={80} />
           </div>
           <div className="min-w-40 space-y-1">
             <Label htmlFor="studio-task-priority-filter">تصفية الأولوية</Label>

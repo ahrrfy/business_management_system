@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -29,7 +30,7 @@ import { categoryOptionElements } from "@/lib/categoryTree";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { CornerDownLeft, Plus, Search } from "lucide-react";
+import { CornerDownLeft, Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 
 type CategoryRow = RouterOutputs["catalog"]["categoriesAdmin"][number];
@@ -331,17 +332,17 @@ export default function Categories() {
           <div className="text-sm text-muted-foreground">
             {list.isLoading ? "" : query ? `${num(filtered.length)} / ${num(rows.length)} فئة` : `${num(rows.length)} فئة`}
           </div>
-          <div className="relative">
-            <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="بحث بالاسم أو الوصف…"
-              className="h-8 w-56 pr-8"
-              // ٢٤/٨ (Codex P2 على PR #760): لا `autoFocus` — الصفحةُ تبويبٌ داخل InventoryHub.
-              aria-label="بحث في الفئات"
-            />
-          </div>
+          <UnifiedSearchInput
+            debounceMs={0}
+            value={query}
+            onChange={setQuery}
+            placeholder="بحث بالاسم أو الوصف…"
+            className="h-8"
+            wrapperClassName="w-56"
+            // ٢٤/٨ (Codex P2 على PR #760): لا `autoFocus` — الصفحةُ تبويبٌ داخل InventoryHub.
+            aria-label="بحث في الفئات"
+            barcode={false}
+          />
         </CardHeader>
         <CardContent className="p-0">
           {/* البحث في ترويسة البطاقة أعلاه (يغذّي `filtered`) ⇒ `searchable={false}` وإلّا ظهر

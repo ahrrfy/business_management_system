@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -27,7 +28,6 @@ import { ROLES, hasModuleAccess, type PermissionMap } from "@shared/permissions"
 import {
   BellRing,
   Plus,
-  Search,
   Radio,
   Eye,
   CheckCircle2,
@@ -642,16 +642,14 @@ export default function Announcements() {
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-col md:flex-row items-center gap-3">
-            <div className="relative flex-1 w-full">
-              <Search className="absolute start-3 top-2.5 size-4 text-muted-foreground pointer-events-none" aria-hidden />
-              <Input
-                type="text"
-                placeholder="البحث في عناوين ونصوص الإعلانات…"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="ps-9"
-              />
-            </div>
+            <UnifiedSearchInput
+              debounceMs={0}
+              placeholder="البحث في عناوين ونصوص الإعلانات…"
+              value={searchQuery}
+              onChange={setSearchQuery}
+              wrapperClassName="flex-1 w-full"
+              barcode={false}
+            />
 
             <div className="flex items-center gap-2 w-full md:w-auto">
               <div className="w-40">

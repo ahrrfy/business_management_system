@@ -1,4 +1,5 @@
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Badge } from "@/components/ui/badge";
 import { BalanceBadge } from "@/components/BalanceBadge";
 import { trpc } from "@/lib/trpc";
@@ -148,42 +149,32 @@ export function SmartCustomerInput({ value, onChange, placeholder, className, na
 
   return (
     <div ref={wrapRef} className={cn("relative", className)}>
-      <div className="relative">
-        <Input
-          value={q}
-          onChange={(e) => {
-            const v = e.target.value;
-            setQ(v);
-            setOpen(true);
-            // أي تعديل يصبح مسوّدة فعلية للحفظ. الرقم يُحفظ كهاتف لا كاسم صامت.
-            // nameOnly (قناة): الهاتف مُدار خارجياً (حقل ١١ خانة) ⇒ لا نلتقطه من هذا الحقل بل نُبقيه؛
-            // ويبقى **البحث الذكيّ فعّالاً** فالكتابة تجد العملاء السابقين وتربطهم (يمنع ازدواج العميل).
-            const typed = v.trim();
-            const extPhone = value.phone;
-            const phone = nameOnly ? extPhone : looksLikePhone(typed) ? typed : null;
-            onChange({
-              customerId: null,
-              name: v,
-              phone,
-              isNew: typed.length > 0 || (nameOnly === true && !!extPhone),
-            });
-          }}
-          onFocus={() => setOpen(true)}
-          placeholder={placeholder || "ابحث بالاسم أو الرقم — يتعرّف على العملاء السابقين"}
-          aria-autocomplete="list"
-          aria-expanded={open}
-        />
-        {value.customerId && (
-          <button
-            type="button"
-            onClick={clear}
-            className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground hover:text-destructive"
-            aria-label="مسح اختيار العميل"
-          >
-            <X aria-hidden className="size-3.5" />
-          </button>
-        )}
-      </div>
+      <UnifiedSearchInput
+        barcode={false}
+        value={q}
+        debounceMs={0}
+        onChange={(v) => {
+          setQ(v);
+          setOpen(true);
+          // أي تعديل يصبح مسوّدة فعلية للحفظ. الرقم يُحفظ كهاتف لا كاسم صامت.
+          // nameOnly (قناة): الهاتف مُدار خارجياً (حقل ١١ خانة) ⇒ لا نلتقطه من هذا الحقل بل نُبقيه؛
+          // ويبقى **البحث الذكيّ فعّالاً** فالكتابة تجد العملاء السابقين وتربطهم (يمنع ازدواج العميل).
+          const typed = v.trim();
+          const extPhone = value.phone;
+          const phone = nameOnly ? extPhone : looksLikePhone(typed) ? typed : null;
+          onChange({
+            customerId: null,
+            name: v,
+            phone,
+            isNew: typed.length > 0 || (nameOnly === true && !!extPhone),
+          });
+        }}
+        onFocus={() => setOpen(true)}
+        placeholder={placeholder || "ابحث بالاسم أو الرقم — يتعرّف على العملاء السابقين"}
+        aria-autocomplete="list"
+        aria-expanded={open}
+        className="w-full"
+      />
 
       {open && enabled && (
         <div className="absolute z-20 top-full mt-1 w-full rounded-md border bg-popover shadow-md max-h-72 overflow-auto">

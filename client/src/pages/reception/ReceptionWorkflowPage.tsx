@@ -23,7 +23,8 @@ import { trpc } from "@/lib/trpc";
 import { confirm } from "@/lib/confirm";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
-import { parseScan } from "@/lib/scanRouter";
+import { parseScan, resolveOrderLookupBarcode } from "@/lib/scanRouter";
+import { docBarcode } from "@shared/documentNumber";
 import { printDeliveryDispatchSlip, type DispatchSlipData } from "@/lib/printing/printDeliveryDispatchSlip";
 import { printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { storefrontUrl } from "@/lib/siteHosts";
@@ -122,8 +123,7 @@ export default function DeliveryWorkflowPage() {
   }, [allParties, selectedPartyId]);
 
   const lookupWorkOrder = useCallback(async (raw: string, target: "dispatch" | "return") => {
-    const r = parseScan(raw);
-    const orderNumber = r.type === "workOrder" || r.type === "invoice" || r.type === "consignment" ? r.number : raw.trim();
+    const orderNumber = resolveOrderLookupBarcode(raw);
     if (!orderNumber) return;
     try {
       const wo = await utils.workOrders.getByNumber.fetch({ orderNumber });
@@ -132,8 +132,8 @@ export default function DeliveryWorkflowPage() {
         if (wo.kind === "workOrder") {
           if (wo.status === "DELIVERED") { notify.info(`الطلب ${wo.orderNumber} مُسلَّم`); return; }
           if (wo.status !== "READY") { notify.warn(`الطلب غير جاهز (حالته: ${wo.status})`); return; }
-        } else if (wo.kind === "invoice" && (wo.status === "CANCELLED" || wo.status === "RETURNED")) {
-          notify.warn("الفاتورة ملغاة أو مرتجعة"); return;
+        } else if (wo.kind === "invoice" && (wo.status === "CANCELLED" || wo.status === "RETURNED" || wo.status === "SUPERSEDED")) {
+          notify.warn(wo.status === "SUPERSEDED" ? "الفاتورة تم استبدالها بتصحيح" : "الفاتورة ملغاة أو مرتجعة"); return;
         } else if (wo.kind === "onlineOrder") {
           if (wo.status === "CANCELLED") { notify.warn(`طلب المتجر ${wo.orderNumber} ملغى مسبقاً`); return; }
           if (wo.status === "DELIVERED") { notify.info(`طلب المتجر ${wo.orderNumber} تم تسليمه للعميل مسبقاً`); return; }
@@ -408,7 +408,7 @@ export default function DeliveryWorkflowPage() {
     if (isOnline) {
       if (returnScanned.activeConsignment) {
         returnBarcodeMut.mutate({
-          barcode: returnScanned.orderNumber,
+          barcode: docBarcode("CN", returnScanned.activeConsignment.consignmentNumber),
           returnReason: returnReason.trim(),
           refundShiftId: shift?.id,
           clientRequestId: crypto.randomUUID(),
@@ -426,7 +426,7 @@ export default function DeliveryWorkflowPage() {
     if (returnScanned.kind === "invoice") {
       if (returnScanned.activeConsignment) {
         returnBarcodeMut.mutate({
-          barcode: returnScanned.orderNumber,
+          barcode: docBarcode("CN", returnScanned.activeConsignment.consignmentNumber),
           returnReason: returnReason.trim(),
           refundShiftId: shift?.id,
           clientRequestId: crypto.randomUUID(),
@@ -434,6 +434,16 @@ export default function DeliveryWorkflowPage() {
       } else {
         notify.info("مرتجع بنود الفاتورة يتم عبر منتقي البنود وقنوات الاسترداد في نموذج المرتجع أدناه");
       }
+      return;
+    }
+
+    if (returnScanned.activeConsignment) {
+      returnBarcodeMut.mutate({
+        barcode: docBarcode("CN", returnScanned.activeConsignment.consignmentNumber),
+        returnReason: returnReason.trim(),
+        refundShiftId: shift?.id,
+        clientRequestId: crypto.randomUUID(),
+      });
       return;
     }
 

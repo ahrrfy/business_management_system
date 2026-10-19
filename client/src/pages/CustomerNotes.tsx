@@ -13,6 +13,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
 import { CustomerNotesList, type CustomerNoteRow } from "@/components/customers/CustomerNotesList";
 import { CustomerNoteForm, type CustomerNoteFormValue } from "@/components/customers/CustomerNoteForm";
@@ -380,11 +381,14 @@ export default function CustomerNotes() {
             <CardHeader className="space-y-2">
               <CardTitle className="text-base">سجلّ الملاحظات {notesTotal > 0 && <span className="text-muted-foreground font-normal">({notesTotal})</span>}</CardTitle>
               <div className="flex flex-wrap items-center gap-2">
-                <input
+                <UnifiedSearchInput
                   value={noteQuery}
-                  onChange={(e) => { setNoteQuery(e.target.value); setOffset(0); }}
+                  onChange={(v) => { setNoteQuery(v); setOffset(0); }}
+                  barcode={false}
+                  debounceMs={0}
+                  size="compact"
                   placeholder="بحث في نص الملاحظات…"
-                  className="h-8 min-w-48 flex-1 rounded-md border border-input bg-transparent px-2 text-sm"
+                  className="min-w-48 flex-1"
                 />
                 <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <input

@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { branches, documentCounters, quotations } from "../../../drizzle/schema";
 import { withTx } from "../tx";
 import {
   formatDocumentNumber,
@@ -43,4 +45,47 @@ describe("Core Numbering & Atomic Counter (Milestone 1)", () => {
     const ord = await withTx(async (tx) => nextCounterValue(tx, "online_order"));
     expect(Number(ord)).toBeGreaterThanOrEqual(100001);
   });
+
+  it("nextCounterValue يرمّم العدّادات اليومية تلقائياً فوق أعلى تسلسل موجود في الجدول حتى لو كان documentCounters غائباً أو متأخراً", async () => {
+    await withTx(async (tx) => {
+      await tx
+        .insert(branches)
+        .values({ name: "فرع اختبار الترقيم", code: "NUM-TEST-BR", type: "MAIN" })
+        .onDuplicateKeyUpdate({ set: { name: "فرع اختبار الترقيم" } });
+      const [branchRow] = await tx
+        .select({ id: branches.id })
+        .from(branches)
+        .where(eq(branches.code, "NUM-TEST-BR"))
+        .limit(1);
+      const branchId = branchRow.id;
+      const counterKey = `quotation_${branchId}_20991231`;
+      const existingQuoteNumber = `QUO-${branchId}-20991231-00007`;
+
+      await tx.delete(quotations).where(eq(quotations.quoteNumber, existingQuoteNumber));
+      await tx.delete(documentCounters).where(eq(documentCounters.counterKey, counterKey));
+
+      await tx.insert(quotations).values({
+        quoteNumber: existingQuoteNumber,
+        branchId,
+        subtotal: "100.00",
+        total: "100.00",
+      });
+
+      // حتى لو كان سجل العداد مفقوداً، يجب أن يقفز فوراً إلى 8 بدل البدء من 1
+      const seqAfterMissing = await nextCounterValue(tx, counterKey);
+      expect(seqAfterMissing).toBe(8);
+
+      // وحتى لو تأخر سجل العداد (مثلاً = 2)، يجب أن يقفز فوق 7 ويعيد 8
+      await tx
+        .update(documentCounters)
+        .set({ lastValue: 2 })
+        .where(eq(documentCounters.counterKey, counterKey));
+      const seqAfterLagging = await nextCounterValue(tx, counterKey);
+      expect(seqAfterLagging).toBe(8);
+
+      await tx.delete(quotations).where(eq(quotations.quoteNumber, existingQuoteNumber));
+      await tx.delete(documentCounters).where(eq(documentCounters.counterKey, counterKey));
+    });
+  });
 });
+

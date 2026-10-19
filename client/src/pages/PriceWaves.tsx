@@ -21,7 +21,6 @@ import {
   Info,
   Play,
   RefreshCw,
-  Search,
   X,
 } from "lucide-react";
 import { keepPreviousData } from "@tanstack/react-query";
@@ -41,6 +40,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Textarea } from "@/components/ui/textarea";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -468,18 +468,12 @@ export default function PriceWaves() {
                       label="بحث في الاسم/SKU/الباركود"
                       hint="يعمل بالتطبيع العربي — «ازرق» تجد «أزرق»"
                     >
-                      <div className="relative">
-                        <Search
-                          aria-hidden
-                          className="pointer-events-none absolute inset-y-0 right-2 my-auto size-4 text-muted-foreground"
-                        />
-                        <Input
-                          value={productSearch}
-                          onChange={(e) => setProductSearch(e.target.value)}
-                          placeholder="اسم منتج أو SKU أو امسح باركوداً"
-                          className="pr-8"
-                        />
-                      </div>
+                      <UnifiedSearchInput
+                        debounceMs={0}
+                        value={productSearch}
+                        onChange={setProductSearch}
+                        placeholder="اسم منتج أو SKU أو امسح باركوداً"
+                      />
                     </Field>
                   </>
                 )}
@@ -500,9 +494,11 @@ export default function PriceWaves() {
               {scope === "SELECTED" && (
                 <div className="space-y-2 rounded-md border p-3">
                   <Field label="ابحث وأضِف منتجات" hint="حتى 500 منتج">
-                    <Input
+                    <UnifiedSearchInput
+                      barcode={false}
+                      debounceMs={0}
                       value={pickQuery}
-                      onChange={(e) => setPickQuery(e.target.value)}
+                      onChange={setPickQuery}
                       placeholder="اكتب اسماً أو SKU ثم اختر من النتائج"
                     />
                   </Field>

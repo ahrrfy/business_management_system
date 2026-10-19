@@ -40,6 +40,7 @@ import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { selectClsSm } from "@/lib/ui/formStyles";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import {
   ApplicantDetailDialog,
   PaperDialog,
@@ -253,7 +254,7 @@ export default function Recruitment() {
                 <Users className="size-4" /> المتقدّمون
                 <span className="tabular-nums">({rows.length})</span>
               </div>
-              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="بحث (اسم/وظيفة/هاتف/بريد/تخصص)" className={selectClsSm + " w-56"} aria-label="بحث" />
+              <UnifiedSearchInput barcode={false} debounceMs={0} value={q} onChange={setQ} placeholder="بحث (اسم/وظيفة/هاتف/بريد/تخصص)" className="w-56" inputClassName="h-9 text-xs" aria-label="بحث" />
               <AppSelect className="h-9" value={stage} onValueChange={(next) => setStage(next)} aria-label="المرحلة">
                 <option value="">كل المراحل</option>
                 {APPLICANT_STAGES.map((s) => (

@@ -25,7 +25,6 @@ import {
   Power,
   RotateCcw,
   Save,
-  Search,
   Tag,
   Truck,
   X,
@@ -37,6 +36,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Textarea } from "@/components/ui/textarea";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -724,15 +724,15 @@ export default function StorePromotionsManager() {
       <Card>
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-3">
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative w-64">
-              <Search aria-hidden className="absolute right-3 top-2.5 size-4 text-muted-foreground" />
-              <Input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="بحث في اسم أو وصف العرض..."
-                className="pr-9 text-xs"
-              />
-            </div>
+            <UnifiedSearchInput
+              barcode={false}
+              debounceMs={0}
+              value={searchQuery}
+              onChange={setSearchQuery}
+              placeholder="بحث في اسم أو وصف العرض..."
+              className="w-64"
+              inputClassName="text-xs"
+            />
 
             <div className="flex rounded-lg bg-muted p-1 text-xs">
               <button
@@ -950,15 +950,14 @@ export default function StorePromotionsManager() {
             {form.scope === "PRODUCTS" && (
               <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
                 <span className="block font-semibold text-foreground">ابحث واختر المنتجات المشمولة:</span>
-                <div className="relative">
-                  <Search aria-hidden className="absolute right-3 top-2.5 size-4 text-muted-foreground" />
-                  <Input
-                    value={productSearchInput}
-                    onChange={(e) => setProductSearchInput(e.target.value)}
-                    placeholder="اكتب حرفين أو أكثر للبحث في الكتالوج..."
-                    className="pr-9 text-xs"
-                  />
-                </div>
+                <UnifiedSearchInput
+                  barcode={false}
+                  debounceMs={0}
+                  value={productSearchInput}
+                  onChange={setProductSearchInput}
+                  placeholder="اكتب حرفين أو أكثر للبحث في الكتالوج..."
+                  inputClassName="text-xs"
+                />
 
                 {catalogSearchQ.data && catalogSearchQ.data.rows.length > 0 && (
                   <div className="max-h-32 overflow-y-auto rounded-md border border-border bg-card p-1">

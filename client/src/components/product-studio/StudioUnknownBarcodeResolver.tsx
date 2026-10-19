@@ -9,13 +9,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import type { PermissionMap } from "@shared/permissions";
-import { Link2, Loader2, Search } from "lucide-react";
+import { Link2, Loader2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { canManageStudioBarcodeAliases, linkStudioBarcodeAlias } from "./studioUnknownBarcode";
 
@@ -175,19 +175,17 @@ export function StudioUnknownBarcodeResolver({ barcode, error, linkAllowed, acti
 
             <div className="space-y-1.5">
               <Label htmlFor="studio-unknown-product-search">ابحث باسم المنتج أو SKU</Label>
-              <div className="relative">
-                <Input
-                  id="studio-unknown-product-search"
-                  value={search}
-                  onChange={(event) => {
-                    setSearch(event.target.value);
-                    setActionError("");
-                  }}
-                  autoComplete="off"
-                  placeholder="اكتب اسم المنتج لتحديده"
-                />
-                <Search aria-hidden className="pointer-events-none absolute end-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              </div>
+              <UnifiedSearchInput
+                barcode={false}
+                debounceMs={0}
+                id="studio-unknown-product-search"
+                value={search}
+                onChange={(val) => {
+                  setSearch(val);
+                  setActionError("");
+                }}
+                placeholder="اكتب اسم المنتج لتحديده"
+              />
               {debouncedSearch.length >= 2 && (
                 <div className="max-h-44 overflow-auto rounded-md border" role="listbox" aria-label="نتائج المنتجات">
                   {productSearch.isFetching && (

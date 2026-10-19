@@ -6,7 +6,7 @@
  * الجاهزة للطباعة المباشرة.
  */
 import { TRPCError } from "@trpc/server";
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
   customers,
   deliveryConsignments,
@@ -19,8 +19,10 @@ import { getDb } from "../../db";
 import { appErrorMessage } from "@shared/errors";
 import { dispatchOnlineOrder } from "../storeAdmin/dispatchOnlineOrder";
 import {
+  collapseLinkedDeliveryBarcodeCandidates,
   namespaceAllowsTarget,
   prepareDeliveryBarcodeLookup,
+  resolveActiveInvoiceCandidates,
   resolveUniqueDeliveryBarcodeTarget,
 } from "./barcodeLookupPolicy";
 import { dispatchToDelivery } from "./dispatch";
@@ -112,11 +114,14 @@ export async function dispatchByBarcode(
     });
   }
 
-  const [onlineCandidates, workOrderCandidates, invoiceCandidates, consignmentCandidates] = await Promise.all([
+  const isActiveCnSql = sql`(${deliveryConsignments.status} NOT IN ('CANCELLED', 'RETURNED') AND ${deliveryConsignments.parcelStatus} NOT IN ('CANCELLED', 'RETURNED'))`;
+
+  const [onlineCandidates, workOrderCandidates, rawInvoiceCandidates, consignmentCandidates] = await Promise.all([
     namespaceAllowsTarget(namespace, "ONLINE_ORDER")
       ? db
           .select({
             id: onlineOrders.id,
+            invoiceId: onlineOrders.invoiceId,
             matchRank: sql<number>`CASE WHEN ${onlineOrders.orderNumber} IN (${cleanCode}, ${documentCode}, ${`ORD-${cleanCode}`}) THEN 100 ELSE 10 END`,
           })
           .from(onlineOrders)
@@ -132,12 +137,14 @@ export async function dispatchByBarcode(
                 : eq(onlineOrders.orderNumber, cleanCode),
             scopedBranch != null ? eq(onlineOrders.branchId, scopedBranch) : sql`1=1`,
           ))
-          .limit(2)
+          .orderBy(desc(onlineOrders.id))
+          .limit(5)
       : Promise.resolve([]),
     namespaceAllowsTarget(namespace, "WORK_ORDER")
       ? db
           .select({
             id: workOrders.id,
+            invoiceId: workOrders.invoiceId,
             matchRank: sql<number>`CASE WHEN ${workOrders.orderNumber} IN (${cleanCode}, ${documentCode}, ${`WO-${cleanCode}`}) THEN 100 ELSE 10 END`,
           })
           .from(workOrders)
@@ -153,12 +160,16 @@ export async function dispatchByBarcode(
                 : eq(workOrders.orderNumber, cleanCode),
             scopedBranch != null ? eq(workOrders.branchId, scopedBranch) : sql`1=1`,
           ))
-          .limit(2)
+          .orderBy(desc(workOrders.id))
+          .limit(5)
       : Promise.resolve([]),
     namespaceAllowsTarget(namespace, "INVOICE")
       ? db
           .select({
             id: invoices.id,
+            sourceType: invoices.sourceType,
+            sourceId: invoices.sourceId,
+            correctedByInvoiceId: invoices.correctedByInvoiceId,
             matchRank: sql<number>`CASE WHEN ${invoices.invoiceNumber} IN (${cleanCode}, ${documentCode}, ${`INV-${cleanCode}`}) THEN 100 ELSE 10 END`,
           })
           .from(invoices)
@@ -174,22 +185,30 @@ export async function dispatchByBarcode(
                 : eq(invoices.invoiceNumber, cleanCode),
             scopedBranch != null ? eq(invoices.branchId, scopedBranch) : sql`1=1`,
           ))
-          .limit(2)
+          .orderBy(desc(invoices.id))
+          .limit(5)
       : Promise.resolve([]),
     namespaceAllowsTarget(namespace, "CONSIGNMENT")
       ? db
           .select({
             id: deliveryConsignments.id,
+            workOrderId: deliveryConsignments.workOrderId,
+            invoiceId: deliveryConsignments.invoiceId,
+            sourceType: deliveryConsignments.sourceType,
+            sourceId: deliveryConsignments.sourceId,
             matchRank: sql<number>`CASE
-              WHEN ${deliveryConsignments.consignmentNumber} IN (${cleanCode}, ${systemCode}) THEN 100
-              WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN 50
-              WHEN ${strippedTrackingCode != null} AND TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode ?? ""} THEN 40
-              ELSE 10 END`,
+              WHEN ${deliveryConsignments.consignmentNumber} IN (${cleanCode}, ${systemCode}, ${documentCode}) THEN CASE WHEN ${isActiveCnSql} THEN 100 ELSE 80 END
+              WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN CASE WHEN ${isActiveCnSql} THEN 50 ELSE 35 END
+              WHEN ${strippedTrackingCode != null} AND TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode ?? ""} THEN CASE WHEN ${isActiveCnSql} THEN 40 ELSE 25 END
+              ELSE CASE WHEN ${isActiveCnSql} THEN 10 ELSE 5 END END`,
           })
           .from(deliveryConsignments)
           .where(and(
             namespace === "CONSIGNMENT"
-              ? eq(deliveryConsignments.consignmentNumber, systemCode)
+              ? or(
+                  eq(deliveryConsignments.consignmentNumber, systemCode),
+                  eq(deliveryConsignments.consignmentNumber, documentCode),
+                )
               : namespace === "NUMERIC"
                 ? or(
                     numericId != null ? eq(deliveryConsignments.id, numericId) : sql`0=1`,
@@ -222,16 +241,42 @@ export async function dispatchByBarcode(
                   ),
             scopedBranch != null ? eq(deliveryConsignments.branchId, scopedBranch) : sql`1=1`,
           ))
-          .limit(2)
+          .orderBy(desc(deliveryConsignments.id))
+          .limit(5)
       : Promise.resolve([]),
   ]);
 
-  const selectedTarget = resolveUniqueDeliveryBarcodeTarget(cleanCode, [
-    ...onlineCandidates.map((row) => ({ kind: "ONLINE_ORDER" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
-    ...workOrderCandidates.map((row) => ({ kind: "WORK_ORDER" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
-    ...invoiceCandidates.map((row) => ({ kind: "INVOICE" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
-    ...consignmentCandidates.map((row) => ({ kind: "CONSIGNMENT" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
-  ]);
+  const invoiceCandidates = await resolveActiveInvoiceCandidates(
+    rawInvoiceCandidates,
+    async (nextId) => {
+      const [next] = await db
+        .select({
+          id: invoices.id,
+          sourceType: invoices.sourceType,
+          sourceId: invoices.sourceId,
+          correctedByInvoiceId: invoices.correctedByInvoiceId,
+        })
+        .from(invoices)
+        .where(and(
+          eq(invoices.id, nextId),
+          scopedBranch != null ? eq(invoices.branchId, scopedBranch) : sql`1=1`,
+        ))
+        .limit(1);
+      return next ?? null;
+    },
+  );
+
+  const selectedTarget = resolveUniqueDeliveryBarcodeTarget(
+    cleanCode,
+    collapseLinkedDeliveryBarcodeCandidates({
+      namespace,
+      onlineOrders: onlineCandidates,
+      workOrders: workOrderCandidates,
+      invoices: invoiceCandidates,
+      consignments: consignmentCandidates,
+      mapConsignmentToSource: false,
+    }),
+  );
 
   // ١. فحص طلبات المتجر (Online Orders)
   const [onlineOrder] = await db
@@ -452,6 +497,7 @@ export async function dispatchByBarcode(
       branchId: invoices.branchId,
       status: invoices.status,
       sourceType: invoices.sourceType,
+      correctionOfInvoiceId: invoices.correctionOfInvoiceId,
       contactName: invoices.contactName,
       contactPhone: invoices.contactPhone,
       deliveryFee: invoices.deliveryFee,
@@ -473,19 +519,21 @@ export async function dispatchByBarcode(
     .limit(1);
 
   if (invoice) {
-    if (invoice.status === "CANCELLED" || invoice.status === "RETURNED") {
+    if (invoice.status === "CANCELLED" || invoice.status === "RETURNED" || invoice.status === "SUPERSEDED") {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
           what: "تعذر إسناد الفاتورة للتوصيل",
-          why: `الفاتورة ${invoice.invoiceNumber} ملغاة أو مرتجعة مسبقاً`,
+          why: invoice.status === "SUPERSEDED"
+            ? `الفاتورة ${invoice.invoiceNumber} تم استبدالها بتصحيح`
+            : `الفاتورة ${invoice.invoiceNumber} ملغاة أو مرتجعة مسبقاً`,
           doThis: "تأكد من رقم الفاتورة أو أنشئ فاتورة جديدة",
         }),
       });
     }
 
     // إذا كانت الفاتورة مرتبطة بطلب متجر، نستدعي مسار طلب المتجر لضمان الربط السليم
-    if (invoice.sourceType === "ONLINE") {
+    if (invoice.sourceType === "ONLINE" || invoice.correctionOfInvoiceId != null) {
       const [linkedOrder] = await db
         .select({ id: onlineOrders.id, orderNumber: onlineOrders.orderNumber })
         .from(onlineOrders)

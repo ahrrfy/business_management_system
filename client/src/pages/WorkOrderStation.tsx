@@ -8,7 +8,7 @@ import { ErrorState, LoadingState } from "@/components/PageState";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Banknote, CalendarDays, Check, Undo2, CheckCircle2, ChevronRight, ClipboardList, CornerDownLeft, Layers, MapPin, Phone, Ruler, Truck, Timer as TimerIcon, UserRound } from "lucide-react";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
@@ -758,12 +758,14 @@ export default function WorkOrderStation() {
             داخل PrintHub، فالرجوع إلى تبويب اللوحة). */}
         <PageHeader variant="workspace" title="محطة التنفيذ" backHref="/work-orders" backLabel="اللوحة" />
 
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="ابحث برقم الأمر/العنوان/العميل…"
+        <UnifiedSearchInput
+          barcode={false}
           dir="auto"
-          className="h-9"
+          debounceMs={0}
+          value={search}
+          onChange={setSearch}
+          placeholder="ابحث برقم الأمر/العنوان/العميل…"
+          inputClassName="h-9"
         />
 
         <div>

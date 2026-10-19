@@ -32,12 +32,7 @@ import { trpc } from "@/lib/trpc";
 import { treasuryOperationAllowed } from "@/lib/treasuryOperationAccess";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
-import {
-  BarcodeSearchCue,
-  barcodeSearchInputClass,
-} from "@/components/scan/BarcodeSearchCue";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { cn } from "@/lib/utils";
 import { DataTable } from "@/components/data-table/DataTable";

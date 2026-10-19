@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { normalizeBarcodeScannerInput, normalizeKnownSystemBarcode } from "./barcodeScannerInput";
-import { parseScan } from "./scanRouter";
+import { parseScan, resolveOrderLookupBarcode } from "./scanRouter";
 import { resolveShippingLabelQrTarget } from "./printing/shippingLabel";
 
 describe("normalizeBarcodeScannerInput", () => {
@@ -43,6 +43,21 @@ describe("parseScan", () => {
       type: "consignment",
       number: "CN-1-20260917-00275",
     });
+  });
+
+  it("resolveOrderLookupBarcode يحفظ بادئات WO وINV وCN ورموز QR الموقّعة والأرقام الموحدة العارية", () => {
+    expect(resolveOrderLookupBarcode("INV-100034")).toBe("INV-100034");
+    expect(resolveOrderLookupBarcode("INV|100034|100|sig")).toBe("INV-100034");
+    expect(resolveOrderLookupBarcode("INV|INV-100034|100|sig")).toBe("INV-100034");
+    expect(resolveOrderLookupBarcode("WO-100035")).toBe("WO-100035");
+    expect(resolveOrderLookupBarcode("WO|100035|100|sig")).toBe("WO-100035");
+    expect(resolveOrderLookupBarcode("CN-100034")).toBe("CN-100034");
+    expect(resolveOrderLookupBarcode("CN|100034|2026-10-19|0|1|sig")).toBe("CN-100034");
+    expect(resolveOrderLookupBarcode("CNS-001")).toBe("CNS-001");
+    expect(resolveOrderLookupBarcode("ؤآس-100034")).toBe("CNS-100034");
+    expect(resolveOrderLookupBarcode("ORD-100034")).toBe("ORD-100034");
+    expect(resolveOrderLookupBarcode("ORD|ORD-100034|2026-10-19|45000|1|sig")).toBe("ORD-100034");
+    expect(resolveOrderLookupBarcode("100034")).toBe("100034");
   });
 });
 
