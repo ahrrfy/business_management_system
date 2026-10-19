@@ -14,6 +14,7 @@ import { validateEvidence } from "./validate.mjs";
 
 if (process.argv[2] !== "--verify-isolated-mysql")
   throw Error("EXPLICIT_ORACLE_MODE_REQUIRED");
+const largerOnly = process.argv[3] === "--larger-only";
 const followupsOnly = process.argv[3] === "--failure-followups";
 assert.equal(
   path.resolve("."),
@@ -28,7 +29,9 @@ globalThis.fetch = async () => {
   throw Error("ORACLE_EXTERNAL_IO_BLOCKED");
 };
 const { connection: c, server } = await connectAccountingOracle();
-const out = "experiments/d1-continuity/accounting/results";
+const out =
+  "experiments/d1-continuity/accounting/results" +
+  (largerOnly ? "/larger" : "");
 await mkdir(out, { recursive: true });
 const { createConfirmedPosSale } =
   await import("../../../server/services/posExternalPayment.ts");
@@ -351,7 +354,7 @@ try {
     { port: 13326, db: oracleDatabase, utcOffset: 0 },
   );
   // RED first: policy and mapping failures must roll back the entire real sale.
-  if (!followupsOnly)
+  if (!followupsOnly && !largerOnly)
     for (const fault of ["policy-hash", "cycle", "opening", "missing-map"]) {
       await reset("ACTIVE", fault);
       const scenario = {
@@ -364,7 +367,7 @@ try {
       scenarios.push(scenario);
     }
   // SHADOW preserves operational source and the actual unmapped journal gap.
-  if (!followupsOnly) {
+  if (!followupsOnly && !largerOnly) {
     await reset("SHADOW", "missing-map");
     const gap = { name: "SHADOW-missing-map", mode: "SHADOW", commands: [] };
     await run(gap, saleInput("q1-shadow-gap"));
@@ -373,7 +376,7 @@ try {
     );
     scenarios.push(gap);
   }
-  if (!followupsOnly)
+  if (!followupsOnly && !largerOnly)
     for (const mode of ["SHADOW", "ACTIVE"])
       for (const kind of [
         "cash-partial-full",
@@ -436,7 +439,7 @@ try {
         assert.equal(final.waOutbox.length, 0);
         scenarios.push(scenario);
       }
-  for (const fault of ["policy-hash", "missing-map"]) {
+  for (const fault of largerOnly ? [] : ["policy-hash", "missing-map"]) {
     await reset("ACTIVE");
     const scenario = {
         name: "ACTIVE-followup-reject-" + fault,
@@ -480,6 +483,48 @@ try {
       ),
       "reject",
     );
+    scenarios.push(scenario);
+  }
+  if (largerOnly) {
+    await reset("ACTIVE");
+    const scenario = {
+      name: "ACTIVE-larger-four-lines",
+      mode: "ACTIVE",
+      commands: [],
+    };
+    const input = {
+      ...saleInput("q1-larger-four-lines"),
+      lines: Array.from({ length: 4 }, () => ({
+        variantId: 1,
+        productUnitId: 1,
+        quantity: "1",
+      })),
+      payment: { method: "CASH", amount: "333.48" },
+    };
+    const sale = await run(scenario, input);
+    const items = scenario.commands[0].after.invoiceItems;
+    assert.equal(items.length, 4);
+    for (let offset = 0; offset < 4; offset += 2) {
+      const ret = {
+        ...returnInput(
+          "q1-larger-return-" + offset,
+          sale.invoiceId,
+          items[offset].id,
+          1,
+          "166.74",
+        ),
+        lines: items
+          .slice(offset, offset + 2)
+          .map((i) => ({ invoiceItemId: i.id, baseQuantity: 1 })),
+      };
+      await run(scenario, ret);
+    }
+    const final = scenario.commands.at(-1).after;
+    assert.equal(final.invoices[0].returnedTotal, "333.48");
+    assert.equal(final.invoices[0].invoiceStatus, "RETURNED");
+    assert.equal(final.branchStock.find((s) => s.id === 1).quantity, 100);
+    assert.equal(sum(final.journalLines, "debit"), "1667.36");
+    assert.equal(sum(final.journalLines, "credit"), "1667.36");
     scenarios.push(scenario);
   }
   const normalize = (q) =>
@@ -526,7 +571,7 @@ try {
     summary,
     scenarios,
   };
-  if (!followupsOnly) validateEvidence(evidence);
+  if (!followupsOnly && !largerOnly) validateEvidence(evidence);
   const suffix = followupsOnly ? "-followups" : "";
   await writeFile(
     out + "/mysql-oracle" + suffix + ".json",

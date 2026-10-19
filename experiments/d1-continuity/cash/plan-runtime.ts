@@ -34,6 +34,36 @@ export async function readCashCommand(binding: any, requestId: string) {
       .first(),
   );
 }
+// Native-only candidate: combine adjacent inserts of the SAME table/columns.
+// Each group stays within D1's100 bound parameters; update preimages remain exact.
+export function planChangeGroups(
+  changes: any[],
+  groupInserts = false,
+): any[][] {
+  const groups: any[][] = [];
+  for (const change of changes) {
+    const previous = groups.at(-1);
+    if (
+      groupInserts &&
+      !change.before &&
+      previous &&
+      !previous[0].before &&
+      previous[0].table === change.table &&
+      JSON.stringify(Object.keys(previous[0].after)) ===
+        JSON.stringify(Object.keys(change.after)) &&
+      (previous.length + 1) * Object.keys(change.after).length <= 100
+    )
+      previous.push(change);
+    else groups.push([change]);
+  }
+  return groups;
+}
+export function planMutationStatements(changes: any[], groupInserts = false) {
+  return planChangeGroups(changes, groupInserts).reduce(
+    (n, g) => n + (g[0].before ? 2 : 1),
+    0,
+  );
+}
 export async function applyPlan(
   binding: any,
   plan: any,
@@ -46,6 +76,7 @@ export async function applyPlan(
     mutableTables: Set<string>;
     schemaVersion: string;
     maxChanges?: number;
+    groupInserts?: boolean;
   },
   options: {
     fault?: boolean;
@@ -81,7 +112,8 @@ export async function applyPlan(
       .bind(plan.expectedEpoch),
     binding.prepare("INSERT INTO cashAssert(ok) VALUES(changes())"),
   ];
-  for (const change of plan.changes) {
+  for (const group of planChangeGroups(plan.changes, config.groupInserts)) {
+    const change = group[0];
     const table = config.tables.find((t) => t.name === change.table);
     if (!table || !config.mutableTables.has(change.table))
       throw Error("INVALID_PLAN_TABLE");
@@ -90,8 +122,14 @@ export async function applyPlan(
     const names = Object.keys(row);
     if (
       names.length !== table.columns.length ||
-      names.some((k) => !table.columns.some((c) => c.name === k)) ||
-      keys.some((k) => row[k] !== change.key[k])
+      group.some(
+        (c) =>
+          Object.keys(c.after).length !== table.columns.length ||
+          Object.keys(c.after).some(
+            (k) => !table.columns.some((col) => col.name === k),
+          ) ||
+          keys.some((k) => c.after[k] !== c.key[k]),
+      )
     )
       throw Error("INVALID_PLAN_COLUMN");
     if (change.before) {
@@ -133,11 +171,12 @@ export async function applyPlan(
               quote(table.name) +
               " (" +
               names.map(quote).join(",") +
-              ") VALUES (" +
-              names.map(() => "?").join(",") +
-              ")",
+              ") VALUES " +
+              group
+                .map(() => "(" + names.map(() => "?").join(",") + ")")
+                .join(","),
           )
-          .bind(...names.map((k) => row[k])),
+          .bind(...group.flatMap((c) => names.map((k) => c.after[k]))),
       );
   }
   const planJson = canonicalCashJson(plan),
