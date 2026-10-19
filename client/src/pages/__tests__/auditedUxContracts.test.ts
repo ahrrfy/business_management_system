@@ -362,7 +362,7 @@ describe("حزمة استمارة التوظيف والتعيين الكاملة
     // لوحة التوظيف وحوارات المتقدمين
     expect(recruitment).toContain("exportApplicants");
     expect(recruitment).toContain("تعيين كموظف");
-    expect(recruitment).toContain("trpc.employees.formOptions.useQuery");
+    expect(recruitment).toContain("trpc.recruitment.formOptions.useQuery");
     expect(recruitment).toContain("canChooseCompanyWide");
     expect(dialogs).toContain("trpc.recruitment.setRating.useMutation");
     expect(dialogs).toContain("saveReview.mutate({ id: a.id, rating: r })");

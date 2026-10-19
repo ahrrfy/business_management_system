@@ -588,20 +588,20 @@ describe("recruitment branch isolation", () => {
       jobTitle: "HQ role",
     });
 
-    // حفظ المراجعة الإدارية مع تغيير المرحلة وموعد المقابلة وسبب الرفض
+    // حفظ المراجعة الإدارية مع تغيير المرحلة وموعد المقابلة وسبب الرفض دون المساس برسالة المتقدّم
     const reviewed = await admin.recruitment.setRating({
       id: submitted!.id,
       rating: 4,
       stage: "interview",
       interviewDate: "2026-11-05",
-      notes: "مرشح متمكن من التصميم الطباعي",
+      hrNotes: "مرشح متمكن من التصميم الطباعي",
     });
     expect(reviewed).toMatchObject({
       id: submitted!.id,
       rating: 4,
       stage: "interview",
       interviewDate: "2026-11-05",
-      notes: "مرشح متمكن من التصميم الطباعي",
+      hrNotes: "مرشح متمكن من التصميم الطباعي",
     });
 
     // التقييم السريع (نجوم فقط) لا يطمس الملاحظات ولا المرحلة ولا موعد المقابلة
@@ -614,8 +614,12 @@ describe("recruitment branch isolation", () => {
       rating: 5,
       stage: "interview",
       interviewDate: "2026-11-05",
-      notes: "مرشح متمكن من التصميم الطباعي",
+      hrNotes: "مرشح متمكن من التصميم الطباعي",
     });
+
+    // خيارات نماذج التوظيف (الفروع) متاحة مباشرة ضمن صلاحية التوظيف ومقيّدة بنطاق الفرع
+    const recOptsAll = await admin.recruitment.formOptions();
+    expect(recOptsAll.branches.map((b) => b.id)).toEqual([1, 2]);
 
     // حدّ ١٠٠ حرف للمسمى الوظيفي في التقديم والتعيين (تطابق employees.position varchar(100))
     await expect(

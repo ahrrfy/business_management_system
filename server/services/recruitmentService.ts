@@ -7,6 +7,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, getTableColumns, like, or } from "drizzle-orm";
 import {
+  branches,
   jobApplicants,
   jobApplicantCvFiles,
   jobVacancies,
@@ -213,10 +214,20 @@ export interface ApplicantInput {
 
 export interface ApplicantReviewPatch {
   stage?: "new" | "review" | "interview" | "accepted" | "rejected" | "archived";
-  notes?: string | null;
   hrNotes?: string | null;
   interviewDate?: string | null;
   rejectionReason?: string | null;
+}
+
+/** خيارات نماذج التوظيف: الفروع المتاحة ضمن نطاق المستخدم. */
+export async function formOptions(scope: CompanyBranchScope = COMPANY_SCOPE) {
+  const db = requireDb();
+  const rows = await db
+    .select({ id: branches.id, name: branches.name })
+    .from(branches)
+    .where(scope.branchId == null ? undefined : eq(branches.id, scope.branchId))
+    .orderBy(branches.name);
+  return { branches: rows };
 }
 
 /**
@@ -326,7 +337,6 @@ export async function updateStage(
       });
     }
     const patch: Record<string, unknown> = { stage };
-    if (extras?.notes !== undefined) patch.notes = extras.notes?.trim() || null;
     if (extras?.hrNotes !== undefined) patch.hrNotes = extras.hrNotes?.trim() || null;
     if (extras?.interviewDate !== undefined)
       patch.interviewDate = extras.interviewDate?.trim() || null;
@@ -368,7 +378,6 @@ export async function setRating(
       patch.rating = Math.max(0, Math.min(5, Math.trunc(rating)));
     }
     if (extras?.stage !== undefined) patch.stage = extras.stage;
-    if (extras?.notes !== undefined) patch.notes = extras.notes?.trim() || null;
     if (extras?.hrNotes !== undefined) patch.hrNotes = extras.hrNotes?.trim() || null;
     if (extras?.interviewDate !== undefined)
       patch.interviewDate = extras.interviewDate?.trim() || null;

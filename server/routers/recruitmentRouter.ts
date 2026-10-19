@@ -256,6 +256,10 @@ export const recruitmentRouter = router({
       return a;
     }),
 
+  formOptions: hrRead.query(({ ctx }) =>
+    svc.formOptions(companyBranchScope(ctx.user)),
+  ),
+
   /** إدخال متقدّم من الموظف (استمارة ورقية/أرشيف، أو يدوياً برابط خارجي). */
   create: hrWrite
     .input(
@@ -266,7 +270,8 @@ export const recruitmentRouter = router({
         appliedDate: optionalDateStr,
         rating: z.number().int().min(0).max(5).optional(),
         interviewDate: optionalDateStr,
-        rejectionReason: z.string().trim().max(500).optional(), hrNotes: z.string().trim().max(2000).optional(),
+        rejectionReason: z.string().trim().max(500).optional(),
+        hrNotes: z.string().trim().max(2000).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -293,7 +298,7 @@ export const recruitmentRouter = router({
       z.object({
         id: z.number().int().positive(),
         stage: z.enum(APPLICANT_STAGE_KEYS),
-        notes: z.string().trim().max(2000).nullable().optional(), hrNotes: z.string().trim().max(2000).nullable().optional(),
+        hrNotes: z.string().trim().max(2000).nullable().optional(),
         interviewDate: optionalNullableDateStr,
         rejectionReason: z.string().trim().max(500).nullable().optional(),
       }),
@@ -304,7 +309,7 @@ export const recruitmentRouter = router({
         input.stage,
         companyBranchScope(ctx.user),
         {
-          notes: input.notes, hrNotes: input.hrNotes,
+          hrNotes: input.hrNotes,
           interviewDate: input.interviewDate,
           rejectionReason: input.rejectionReason,
         },
@@ -333,7 +338,7 @@ export const recruitmentRouter = router({
         id: z.number().int().positive(),
         rating: z.number().int().min(0).max(5).optional(),
         stage: z.enum(APPLICANT_STAGE_KEYS).optional(),
-        notes: z.string().trim().max(2000).nullable().optional(), hrNotes: z.string().trim().max(2000).nullable().optional(),
+        hrNotes: z.string().trim().max(2000).nullable().optional(),
         interviewDate: optionalNullableDateStr,
         rejectionReason: z.string().trim().max(500).nullable().optional(),
       }),
@@ -345,7 +350,7 @@ export const recruitmentRouter = router({
         companyBranchScope(ctx.user),
         {
           stage: input.stage,
-          notes: input.notes, hrNotes: input.hrNotes,
+          hrNotes: input.hrNotes,
           interviewDate: input.interviewDate,
           rejectionReason: input.rejectionReason,
         },

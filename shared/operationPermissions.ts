@@ -366,6 +366,22 @@ export function resolveOperationPolicy(
       (userPolicy?.grants[withdrawal.key] !== true && rolePolicy?.grants[withdrawal.key] === false);
     grants[withdrawal.key] = grants["operation.returns.create"] === true && !explicitlyDenied;
   }
+  const recruitmentFormOptions = getOperationPermission("recruitment.formOptions");
+  if (recruitmentFormOptions?.delegable) {
+    const explicitlyDenied =
+      userPolicy?.grants[recruitmentFormOptions.key] === false ||
+      (userPolicy?.grants[recruitmentFormOptions.key] !== true &&
+        rolePolicy?.grants[recruitmentFormOptions.key] === false);
+    if (
+      !explicitlyDenied &&
+      (grants["operation.recruitment.create"] === true ||
+        grants["operation.recruitment.list"] === true ||
+        grants["operation.recruitment.vacancyList"] === true ||
+        grants["operation.recruitment.vacancyCreate"] === true)
+    ) {
+      grants[recruitmentFormOptions.key] = true;
+    }
+  }
   return {
     version: 1,
     grants,

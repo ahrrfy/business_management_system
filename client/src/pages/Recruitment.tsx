@@ -81,7 +81,7 @@ export default function Recruitment() {
   const [dropStage, setDropStage] = useState<ApplicantStage | null>(null);
 
   const vacancyOptsQ = trpc.recruitment.vacancyList.useQuery();
-  const empOptsQ = trpc.employees.formOptions.useQuery();
+  const recOptsQ = trpc.recruitment.formOptions.useQuery();
   const me = trpc.auth.me.useQuery();
   const canChooseCompanyWide = me.data?.role === "admin" || Boolean((me.data as { isOwner?: boolean } | null)?.isOwner);
 
@@ -438,7 +438,7 @@ export default function Recruitment() {
             onClose={() => setPaperOpen(false)}
             onSaved={() => void utils.recruitment.list.invalidate()}
             vacancies={vacancyOptsQ.data ?? []}
-            branches={empOptsQ.data?.branches ?? []}
+            branches={recOptsQ.data?.branches ?? []}
             canChooseCompanyWide={canChooseCompanyWide}
           />
           <ApplicantDetailDialog
