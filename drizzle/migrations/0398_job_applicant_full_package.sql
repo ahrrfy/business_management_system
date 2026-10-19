@@ -1,5 +1,6 @@
 -- 0398: حزمة استمارة التقديم للتوظيف الكاملة — بيانات شخصية ومؤهلات وتفضيلات عمل ومراجعة HR
 ALTER TABLE `jobApplicants`
+  MODIFY COLUMN `jobTitle` varchar(200) NULL,
   ADD COLUMN `whatsappPhone` varchar(20) NULL AFTER `phone`,
   ADD COLUMN `birthDate` date NULL AFTER `email`,
   ADD COLUMN `gender` varchar(16) NULL AFTER `birthDate`,
@@ -11,7 +12,7 @@ ALTER TABLE `jobApplicants`
   ADD COLUMN `availabilityStatus` varchar(30) NULL AFTER `major`,
   ADD COLUMN `previousEmployer` varchar(200) NULL AFTER `experience`,
   ADD COLUMN `skills` varchar(500) NULL AFTER `education`,
-  ADD COLUMN `department` varchar(100) NULL AFTER `residentialAddress`,
+  ADD COLUMN `department` varchar(120) NULL AFTER `residentialAddress`,
   ADD COLUMN `preferredBranch` varchar(120) NULL AFTER `department`,
   ADD COLUMN `employmentType` varchar(30) NULL AFTER `preferredBranch`,
   ADD COLUMN `shiftPreference` varchar(30) NULL AFTER `employmentType`,

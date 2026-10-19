@@ -11312,7 +11312,7 @@ export const jobApplicants = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     name: varchar("name", { length: 200 }).notNull(),
-    jobTitle: varchar("jobTitle", { length: 150 }),
+    jobTitle: varchar("jobTitle", { length: 200 }),
     // ملكية مستقرة للمتقدّم حتى عند التقديم العام أو حذف الوظيفة لاحقاً؛
     // لا تُشتق الصلاحية من vacancyId الاختياري لأنه قد يصبح NULL.
     branchId: bigint("branchId", { mode: "number" }).references(
@@ -11351,7 +11351,7 @@ export const jobApplicants = mysqlTable(
     education: varchar("education", { length: 200 }),
     skills: varchar("skills", { length: 500 }),
     residentialAddress: varchar("residentialAddress", { length: 300 }),
-    department: varchar("department", { length: 100 }),
+    department: varchar("department", { length: 120 }),
     preferredBranch: varchar("preferredBranch", { length: 120 }),
     employmentType: varchar("employmentType", { length: 30 }),
     shiftPreference: varchar("shiftPreference", { length: 30 }),

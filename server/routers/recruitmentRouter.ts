@@ -146,7 +146,7 @@ const portfolioUrl = z.preprocess(
 /** حقول الوظيفة الشاغرة المشتركة (إنشاء/تعديل). */
 const vacancyFields = {
   title: z.string().trim().min(1, "عنوان الوظيفة مطلوب").max(200),
-  department: z.string().trim().max(100).optional(),
+  department: z.string().trim().max(120).optional(),
   employmentType: z.enum(EMPLOYMENT_TYPE_KEYS).default("full_time"),
   location: z.string().trim().max(200).optional(),
   branchId: z.number().int().positive().nullable().optional(),
@@ -188,7 +188,7 @@ const applicantFields = {
   education: z.string().trim().max(200).optional(),
   skills: z.string().trim().max(500).optional(),
   residentialAddress: z.string().trim().max(255).optional(),
-  department: z.string().trim().max(100).optional(),
+  department: z.string().trim().max(120).optional(),
   preferredBranch: z.string().trim().max(120).optional(),
   employmentType: optionalEnum(EMPLOYMENT_TYPE_KEYS),
   shiftPreference: optionalEnum(APPLICANT_SHIFT_KEYS),

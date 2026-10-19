@@ -245,7 +245,7 @@ export async function createApplicant(
       vacancyId = v.id;
       branchId = v.branchId ?? branchId;
       jobTitle = v.title; // العنوان الموثوق من سجلّ الوظيفة
-      vacancyDepartment = v.department ? v.department.slice(0, 100) : null;
+      vacancyDepartment = v.department || null;
       vacancyEmploymentType = v.employmentType ?? null;
     } else {
       throw new TRPCError({ code: "NOT_FOUND", message: "الوظيفة غير موجودة" });
@@ -280,7 +280,7 @@ export async function createApplicant(
       education: input.education?.trim() || null,
       skills: input.skills?.trim() || null,
       residentialAddress: input.residentialAddress?.trim() || null,
-      department: (vacancyDepartment || input.department?.trim())?.slice(0, 100) || null,
+      department: vacancyDepartment || input.department?.trim() || null,
       preferredBranch: input.preferredBranch?.trim() || null,
       employmentType: input.employmentType?.trim() || vacancyEmploymentType,
       shiftPreference: input.shiftPreference?.trim() || null,
