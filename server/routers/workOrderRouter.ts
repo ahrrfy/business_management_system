@@ -52,10 +52,10 @@ import { reassignWorkOrder, releaseWorkOrder } from "../services/workOrder/lifec
 import { setWorkOrderKanbanState } from "../services/workOrder/kanbanState";
 import { dispatchToDelivery } from "../services/deliveryService";
 import {
+  collapseLinkedDeliveryBarcodeCandidates,
   namespaceAllowsTarget,
   prepareDeliveryBarcodeLookup,
   resolveUniqueDeliveryBarcodeTarget,
-  type DeliveryBarcodeTarget,
 } from "../services/delivery/barcodeLookupPolicy";
 import { WO_KANBAN_STATES } from "@shared/workOrderKanban";
 import { nextActionTerminalReason } from "@shared/nextAction";
@@ -1125,7 +1125,11 @@ export const workOrderRouter = router({
       const [workOrderCandidates, invoiceCandidates, onlineOrderCandidates, consignmentSources] = await Promise.all([
         namespaceAllowsTarget(namespace, "WORK_ORDER")
           ? db
-              .select({ id: workOrders.id, matchRank: sql<number>`CASE WHEN ${workOrders.orderNumber} IN (${code}, ${documentCode}, ${`WO-${code}`}) THEN 100 ELSE 10 END` })
+              .select({
+                id: workOrders.id,
+                invoiceId: workOrders.invoiceId,
+                matchRank: sql<number>`CASE WHEN ${workOrders.orderNumber} IN (${code}, ${documentCode}, ${`WO-${code}`}) THEN 100 ELSE 10 END`,
+              })
               .from(workOrders)
               .where(and(
                 namespace === "WORK_ORDER"
@@ -1143,7 +1147,12 @@ export const workOrderRouter = router({
           : Promise.resolve([]),
         namespaceAllowsTarget(namespace, "INVOICE")
           ? db
-              .select({ id: invoices.id, matchRank: sql<number>`CASE WHEN ${invoices.invoiceNumber} IN (${code}, ${documentCode}, ${`INV-${code}`}) THEN 100 ELSE 10 END` })
+              .select({
+                id: invoices.id,
+                sourceType: invoices.sourceType,
+                sourceId: invoices.sourceId,
+                matchRank: sql<number>`CASE WHEN ${invoices.invoiceNumber} IN (${code}, ${documentCode}, ${`INV-${code}`}) THEN 100 ELSE 10 END`,
+              })
               .from(invoices)
               .where(and(
                 namespace === "INVOICE"
@@ -1161,7 +1170,11 @@ export const workOrderRouter = router({
           : Promise.resolve([]),
         namespaceAllowsTarget(namespace, "ONLINE_ORDER")
           ? db
-              .select({ id: onlineOrders.id, matchRank: sql<number>`CASE WHEN ${onlineOrders.orderNumber} IN (${code}, ${documentCode}, ${`ORD-${code}`}) THEN 100 ELSE 10 END` })
+              .select({
+                id: onlineOrders.id,
+                invoiceId: onlineOrders.invoiceId,
+                matchRank: sql<number>`CASE WHEN ${onlineOrders.orderNumber} IN (${code}, ${documentCode}, ${`ORD-${code}`}) THEN 100 ELSE 10 END`,
+              })
               .from(onlineOrders)
               .where(and(
                 namespace === "ONLINE_ORDER"
@@ -1187,7 +1200,7 @@ export const workOrderRouter = router({
                 sourceId: deliveryConsignments.sourceId,
                 linkedOnlineOrderId: onlineOrders.id,
                 matchRank: sql<number>`CASE
-                  WHEN ${deliveryConsignments.consignmentNumber} IN (${code}, ${systemCode}) THEN 100
+                  WHEN ${deliveryConsignments.consignmentNumber} IN (${code}, ${systemCode}, ${documentCode}) THEN 100
                   WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN 50
                   WHEN TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode} THEN 40
                   ELSE 10 END`,
@@ -1196,7 +1209,10 @@ export const workOrderRouter = router({
               .leftJoin(onlineOrders, eq(deliveryConsignments.invoiceId, onlineOrders.invoiceId))
               .where(and(
                 namespace === "CONSIGNMENT"
-                  ? eq(deliveryConsignments.consignmentNumber, systemCode)
+                  ? or(
+                      eq(deliveryConsignments.consignmentNumber, systemCode),
+                      eq(deliveryConsignments.consignmentNumber, documentCode),
+                    )
                   : namespace === "NUMERIC"
                     ? or(
                         numericId != null ? eq(deliveryConsignments.id, numericId) : sql`0=1`,
@@ -1237,34 +1253,18 @@ export const workOrderRouter = router({
         code,
         consignmentSources.map((row) => ({ kind: "CONSIGNMENT" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
       );
-      const consignmentTargets = consignmentSources.flatMap<DeliveryBarcodeTarget>((row) => {
-        if (row.workOrderId != null) {
-          return [{ kind: "WORK_ORDER", id: Number(row.workOrderId), matchRank: Number(row.matchRank) }];
-        }
-        if (row.sourceType === "WORK_ORDER" && row.sourceId != null) {
-          return [{ kind: "WORK_ORDER", id: Number(row.sourceId), matchRank: Number(row.matchRank) }];
-        }
-        if (row.sourceType === "ONLINE_ORDER" && row.sourceId != null) {
-          return [{ kind: "ONLINE_ORDER", id: Number(row.sourceId), matchRank: Number(row.matchRank) }];
-        }
-        if (row.linkedOnlineOrderId != null) {
-          return [{ kind: "ONLINE_ORDER", id: Number(row.linkedOnlineOrderId), matchRank: Number(row.matchRank) }];
-        }
-        if (row.invoiceId != null) {
-          return [{ kind: "INVOICE", id: Number(row.invoiceId), matchRank: Number(row.matchRank) }];
-        }
-        if (row.sourceType === "INVOICE" && row.sourceId != null) {
-          return [{ kind: "INVOICE", id: Number(row.sourceId), matchRank: Number(row.matchRank) }];
-        }
-        return [];
-      });
 
-      const selectedTarget = resolveUniqueDeliveryBarcodeTarget(code, [
-        ...workOrderCandidates.map((row) => ({ kind: "WORK_ORDER" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
-        ...invoiceCandidates.map((row) => ({ kind: "INVOICE" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
-        ...onlineOrderCandidates.map((row) => ({ kind: "ONLINE_ORDER" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
-        ...consignmentTargets,
-      ]);
+      const selectedTarget = resolveUniqueDeliveryBarcodeTarget(
+        code,
+        collapseLinkedDeliveryBarcodeCandidates({
+          namespace,
+          workOrders: workOrderCandidates,
+          invoices: invoiceCandidates,
+          onlineOrders: onlineOrderCandidates,
+          consignments: consignmentSources,
+          mapConsignmentToSource: true,
+        }),
+      );
 
       const [row] = await db
         .select({

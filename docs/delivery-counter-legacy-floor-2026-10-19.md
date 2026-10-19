@@ -21,8 +21,12 @@ and existing delivery effects still share the original transaction. No migration
 renumbering of old records, financial posting change or direct production SQL is
 introduced.
 
-The prefix uses the number index and returns one aggregate, not document rows.
-It scans the matching day's suffixes; it is not a constant-time row-read claim.
+The delivery-specific query uses the number index and returns one aggregate.
+After integration with main `128817a`, the shared counter also retains main's
+historical floor reader, which fetches matching document numbers into JavaScript.
+CN/DR therefore execute that reader in addition to the delivery aggregate. Both
+scan the matching day's suffixes; this is not a constant-time row-read or memory
+claim. The isolated tests establish correctness, not full ERP performance.
 The counter lock serializes current allocators even with an older read snapshot.
 Coexistence with the pre-PR1510 GET_LOCK allocator is not qualified here; all
 currently deployed workers had already moved to the counter allocator.

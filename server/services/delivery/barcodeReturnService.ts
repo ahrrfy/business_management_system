@@ -60,19 +60,19 @@ export async function returnByBarcode(
     });
   }
   const lookup = prepareDeliveryBarcodeLookup(rawCode);
-  const { code: cleanCode, systemCode, trackingCode, strippedTrackingCode, namespace, numericId } = lookup;
+  const { code: cleanCode, systemCode, trackingCode, strippedTrackingCode, documentCode, namespace, numericId } = lookup;
   const scopedBranch = actor.role === "admin"
     ? null
     : (actor.branchId == null ? -1 : Number(actor.branchId));
 
   const candidateCondition = namespace === "CONSIGNMENT"
-    ? eq(deliveryConsignments.consignmentNumber, systemCode)
+    ? or(eq(deliveryConsignments.consignmentNumber, systemCode), eq(deliveryConsignments.consignmentNumber, documentCode))
     : namespace === "INVOICE"
-      ? eq(invoices.invoiceNumber, systemCode)
+      ? or(eq(invoices.invoiceNumber, systemCode), eq(invoices.invoiceNumber, documentCode))
       : namespace === "WORK_ORDER"
-        ? eq(workOrders.orderNumber, systemCode)
+        ? or(eq(workOrders.orderNumber, systemCode), eq(workOrders.orderNumber, documentCode))
         : namespace === "ONLINE_ORDER"
-          ? eq(onlineOrders.orderNumber, systemCode)
+          ? or(eq(onlineOrders.orderNumber, systemCode), eq(onlineOrders.orderNumber, documentCode))
           : namespace === "NUMERIC"
             ? or(
                 numericId != null ? eq(deliveryConsignments.id, numericId) : sql`0=1`,
@@ -111,7 +111,17 @@ export async function returnByBarcode(
               );
 
   const candidateRows = await db
-    .select({ id: deliveryConsignments.id })
+    .select({
+      id: deliveryConsignments.id,
+      matchRank: sql<number>`MAX(CASE
+        WHEN ${deliveryConsignments.consignmentNumber} IN (${cleanCode}, ${systemCode}, ${documentCode})
+          OR ${invoices.invoiceNumber} IN (${cleanCode}, ${systemCode}, ${documentCode}, ${`INV-${cleanCode}`})
+          OR ${workOrders.orderNumber} IN (${cleanCode}, ${systemCode}, ${documentCode}, ${`WO-${cleanCode}`})
+          OR ${onlineOrders.orderNumber} IN (${cleanCode}, ${systemCode}, ${documentCode}, ${`ORD-${cleanCode}`}) THEN 100
+        WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN 50
+        WHEN ${strippedTrackingCode != null} AND TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode ?? ""} THEN 40
+        ELSE 10 END)`,
+    })
     .from(deliveryConsignments)
     .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
     .leftJoin(workOrders, eq(deliveryConsignments.workOrderId, workOrders.id))
@@ -131,7 +141,7 @@ export async function returnByBarcode(
 
   const selectedTarget = resolveUniqueDeliveryBarcodeTarget(
     cleanCode,
-    candidateRows.map((row) => ({ kind: "CONSIGNMENT" as const, id: Number(row.id) })),
+    candidateRows.map((row) => ({ kind: "CONSIGNMENT" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
   );
 
   const [matchedCn] = await db

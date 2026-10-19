@@ -70,9 +70,7 @@ export function prepareDeliveryBarcodeLookup(raw: string): PreparedDeliveryBarco
   const lookup = systemLookup.namespace === "REFERENCE"
     ? classifyDeliveryBarcode(trackingCode)
     : systemLookup;
-  const documentCode = lookup.namespace === "ONLINE_ORDER"
-    ? systemCode.replace(/^ORD-(\d+)$/i, "$1")
-    : stripDocPrefix(systemCode);
+  const documentCode = stripDocPrefix(systemCode);
   return { ...lookup, systemCode, trackingCode, strippedTrackingCode, documentCode };
 }
 
@@ -94,6 +92,216 @@ export function namespaceAllowsTarget(
     case "REFERENCE":
       return true;
   }
+}
+
+export interface LinkedDeliveryCandidateSet {
+  namespace: DeliveryBarcodeNamespace;
+  onlineOrders?: ReadonlyArray<{
+    id: number;
+    invoiceId?: number | null;
+    matchRank?: number;
+  }>;
+  workOrders?: ReadonlyArray<{
+    id: number;
+    invoiceId?: number | null;
+    matchRank?: number;
+  }>;
+  invoices?: ReadonlyArray<{
+    id: number;
+    sourceType?: string | null;
+    sourceId?: string | null;
+    linkedOnlineOrderId?: number | null;
+    linkedWorkOrderId?: number | null;
+    matchRank?: number;
+  }>;
+  consignments?: ReadonlyArray<{
+    id: number;
+    workOrderId?: number | null;
+    invoiceId?: number | null;
+    sourceType?: string | null;
+    sourceId?: number | null;
+    linkedOnlineOrderId?: number | null;
+    matchRank?: number;
+  }>;
+  /**
+   * When true (e.g. `workOrders.getByNumber`), a matched consignment always resolves to
+   * its parent source record (WORK_ORDER / ONLINE_ORDER / INVOICE).
+   * When false (e.g. `dispatchByBarcode`), a matched consignment collapses into its parent
+   * only when `namespace !== "CONSIGNMENT"` and that parent also matched in the same lookup.
+   */
+  mapConsignmentToSource?: boolean;
+}
+
+function parseWorkOrderSourceId(sourceType?: string | null, sourceId?: string | null): number | null {
+  if (sourceType !== "WORKORDER" || !sourceId) return null;
+  const m = /^WO-(\d+)(?::R\d+)?$/i.exec(sourceId.trim());
+  if (!m) return null;
+  const id = Number(m[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function parseOnlineOrderSourceId(sourceType?: string | null, sourceId?: string | null): number | null {
+  if (sourceType !== "ONLINE" || !sourceId) return null;
+  const m = /^online-dispatch:(\d+)$/i.exec(sourceId.trim());
+  if (!m) return null;
+  const id = Number(m[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+/**
+ * Under Unified Transaction Tracking (R1), a single transaction shares the same base tracking
+ * number across its lifecycle stages:
+ *   - ONLINE_ORDER (`ORD-100034`) -> INVOICE (`100034`) -> CONSIGNMENT (`100034`)
+ *   - WORK_ORDER (`100035`) -> INVOICE (`100035`) -> CONSIGNMENT (`100035`)
+ *   - INVOICE (`100036`) -> CONSIGNMENT (`100036`)
+ *
+ * When a bare/numeric code is scanned, those linked child records are stages of the same
+ * parent transaction rather than conflicting unrelated records. This helper collapses linked
+ * child candidates into their parent candidate while keeping genuinely unrelated records distinct.
+ */
+export function collapseLinkedDeliveryBarcodeCandidates(
+  input: LinkedDeliveryCandidateSet,
+): DeliveryBarcodeTarget[] {
+  const onlineList = input.onlineOrders ?? [];
+  const workOrderList = input.workOrders ?? [];
+  const invoiceList = input.invoices ?? [];
+  const consignmentList = input.consignments ?? [];
+
+  const matchedOnlineOrderIds = new Set<number>();
+  const onlineOrderByInvoiceId = new Map<number, number>();
+  for (const ord of onlineList) {
+    const id = Number(ord.id);
+    if (Number.isSafeInteger(id) && id > 0) {
+      matchedOnlineOrderIds.add(id);
+      if (ord.invoiceId != null && Number(ord.invoiceId) > 0) {
+        onlineOrderByInvoiceId.set(Number(ord.invoiceId), id);
+      }
+    }
+  }
+
+  const matchedWorkOrderIds = new Set<number>();
+  const workOrderByInvoiceId = new Map<number, number>();
+  for (const wo of workOrderList) {
+    const id = Number(wo.id);
+    if (Number.isSafeInteger(id) && id > 0) {
+      matchedWorkOrderIds.add(id);
+      if (wo.invoiceId != null && Number(wo.invoiceId) > 0) {
+        workOrderByInvoiceId.set(Number(wo.invoiceId), id);
+      }
+    }
+  }
+
+  const matchedInvoiceIds = new Set<number>();
+  const invoiceParentTarget = new Map<number, { kind: "WORK_ORDER" | "ONLINE_ORDER"; id: number }>();
+
+  const targets: DeliveryBarcodeTarget[] = [
+    ...onlineList.map((row) => ({
+      kind: "ONLINE_ORDER" as const,
+      id: Number(row.id),
+      matchRank: Number(row.matchRank ?? 0),
+    })),
+    ...workOrderList.map((row) => ({
+      kind: "WORK_ORDER" as const,
+      id: Number(row.id),
+      matchRank: Number(row.matchRank ?? 0),
+    })),
+  ];
+
+  for (const inv of invoiceList) {
+    const invId = Number(inv.id);
+    const rank = Number(inv.matchRank ?? 0);
+    if (Number.isSafeInteger(invId) && invId > 0) {
+      matchedInvoiceIds.add(invId);
+    }
+
+    if (input.namespace !== "INVOICE") {
+      const woId =
+        workOrderByInvoiceId.get(invId) ??
+        (inv.linkedWorkOrderId != null ? Number(inv.linkedWorkOrderId) : null) ??
+        parseWorkOrderSourceId(inv.sourceType, inv.sourceId);
+      if (woId != null && matchedWorkOrderIds.has(woId)) {
+        invoiceParentTarget.set(invId, { kind: "WORK_ORDER", id: woId });
+        targets.push({ kind: "WORK_ORDER", id: woId, matchRank: rank });
+        continue;
+      }
+
+      const ordId =
+        onlineOrderByInvoiceId.get(invId) ??
+        (inv.linkedOnlineOrderId != null ? Number(inv.linkedOnlineOrderId) : null) ??
+        parseOnlineOrderSourceId(inv.sourceType, inv.sourceId);
+      if (ordId != null && matchedOnlineOrderIds.has(ordId)) {
+        invoiceParentTarget.set(invId, { kind: "ONLINE_ORDER", id: ordId });
+        targets.push({ kind: "ONLINE_ORDER", id: ordId, matchRank: rank });
+        continue;
+      }
+    }
+
+    targets.push({ kind: "INVOICE", id: invId, matchRank: rank });
+  }
+
+  for (const cn of consignmentList) {
+    const rank = Number(cn.matchRank ?? 0);
+    const cnWoId =
+      cn.workOrderId != null
+        ? Number(cn.workOrderId)
+        : cn.sourceType === "WORK_ORDER" && cn.sourceId != null
+          ? Number(cn.sourceId)
+          : null;
+    const cnOrdId =
+      cn.sourceType === "ONLINE_ORDER" && cn.sourceId != null
+        ? Number(cn.sourceId)
+        : cn.linkedOnlineOrderId != null
+          ? Number(cn.linkedOnlineOrderId)
+          : cn.invoiceId != null
+            ? (onlineOrderByInvoiceId.get(Number(cn.invoiceId)) ?? null)
+            : null;
+    const cnInvId =
+      cn.invoiceId != null
+        ? Number(cn.invoiceId)
+        : cn.sourceType === "INVOICE" && cn.sourceId != null
+          ? Number(cn.sourceId)
+          : null;
+
+    if (input.mapConsignmentToSource) {
+      if (cnWoId != null && cnWoId > 0) {
+        targets.push({ kind: "WORK_ORDER", id: cnWoId, matchRank: rank });
+      } else if (cnOrdId != null && cnOrdId > 0) {
+        targets.push({ kind: "ONLINE_ORDER", id: cnOrdId, matchRank: rank });
+      } else if (cnInvId != null && cnInvId > 0) {
+        const parent = invoiceParentTarget.get(cnInvId);
+        if (parent) {
+          targets.push({ kind: parent.kind, id: parent.id, matchRank: rank });
+        } else {
+          targets.push({ kind: "INVOICE", id: cnInvId, matchRank: rank });
+        }
+      }
+      continue;
+    }
+
+    if (input.namespace !== "CONSIGNMENT") {
+      if (cnWoId != null && matchedWorkOrderIds.has(cnWoId)) {
+        targets.push({ kind: "WORK_ORDER", id: cnWoId, matchRank: rank });
+        continue;
+      }
+      if (cnOrdId != null && matchedOnlineOrderIds.has(cnOrdId)) {
+        targets.push({ kind: "ONLINE_ORDER", id: cnOrdId, matchRank: rank });
+        continue;
+      }
+      if (cnInvId != null && matchedInvoiceIds.has(cnInvId)) {
+        const parent = invoiceParentTarget.get(cnInvId);
+        if (parent) {
+          targets.push({ kind: parent.kind, id: parent.id, matchRank: rank });
+        } else {
+          targets.push({ kind: "INVOICE", id: cnInvId, matchRank: rank });
+        }
+        continue;
+      }
+    }
+
+    targets.push({ kind: "CONSIGNMENT", id: Number(cn.id), matchRank: rank });
+  }
+
+  return targets;
 }
 
 /**

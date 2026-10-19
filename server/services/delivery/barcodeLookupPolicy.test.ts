@@ -1,12 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { prepareDeliveryBarcodeLookup, resolveUniqueDeliveryBarcodeTarget } from "./barcodeLookupPolicy";
+import {
+  collapseLinkedDeliveryBarcodeCandidates,
+  prepareDeliveryBarcodeLookup,
+  resolveUniqueDeliveryBarcodeTarget,
+} from "./barcodeLookupPolicy";
 
 describe("resolveUniqueDeliveryBarcodeTarget", () => {
-  it("يفك رمز الآلة WO إلى رقم العرض القصير مع إبقاء البادئة للسجلات القديمة", () => {
+  it("يفك رمز الآلة WO وINV وCN إلى رقم العرض القصير مع إبقاء البادئة للسجلات القديمة", () => {
     expect(prepareDeliveryBarcodeLookup("WO-5285")).toMatchObject({
       namespace: "WORK_ORDER",
       systemCode: "WO-5285",
       documentCode: "5285",
+    });
+    expect(prepareDeliveryBarcodeLookup("CN-100034")).toMatchObject({
+      namespace: "CONSIGNMENT",
+      systemCode: "CN-100034",
+      documentCode: "100034",
+    });
+    expect(prepareDeliveryBarcodeLookup("CN-1-20261019-00001")).toMatchObject({
+      namespace: "CONSIGNMENT",
+      systemCode: "CN-1-20261019-00001",
+      documentCode: "CN-1-20261019-00001",
     });
   });
 
@@ -23,6 +37,53 @@ describe("resolveUniqueDeliveryBarcodeTarget", () => {
       { kind: "WORK_ORDER", id: 91, matchRank: 100 },
       { kind: "INVOICE", id: 77, matchRank: 100 },
     ])).toThrow(/يطابق أكثر من سجل/);
+  });
+
+  it("يطوي المستندات المترابطة لنفس المعاملة الموحدة (طلب متجر + فاتورة + إرسالية) دون خطأ غموض زائف", () => {
+    const collapsedOnline = collapseLinkedDeliveryBarcodeCandidates({
+      namespace: "NUMERIC",
+      onlineOrders: [{ id: 15, matchRank: 100, invoiceId: 80 }],
+      invoices: [{ id: 80, matchRank: 100, sourceType: "ONLINE", sourceId: "online-dispatch:15" }],
+      consignments: [{ id: 200, matchRank: 100, invoiceId: 80, workOrderId: null }],
+      mapConsignmentToSource: true,
+    });
+    expect(resolveUniqueDeliveryBarcodeTarget("100034", collapsedOnline)).toMatchObject({
+      kind: "ONLINE_ORDER",
+      id: 15,
+    });
+
+    const collapsedWorkOrder = collapseLinkedDeliveryBarcodeCandidates({
+      namespace: "NUMERIC",
+      workOrders: [{ id: 50, matchRank: 100, invoiceId: 90 }],
+      invoices: [{ id: 90, matchRank: 100, sourceType: "WORKORDER", sourceId: "WO-50" }],
+      consignments: [{ id: 201, matchRank: 100, workOrderId: 50, invoiceId: 90 }],
+      mapConsignmentToSource: true,
+    });
+    expect(resolveUniqueDeliveryBarcodeTarget("100035", collapsedWorkOrder)).toMatchObject({
+      kind: "WORK_ORDER",
+      id: 50,
+    });
+
+    const collapsedInvoiceConsignment = collapseLinkedDeliveryBarcodeCandidates({
+      namespace: "NUMERIC",
+      invoices: [{ id: 95, matchRank: 100, sourceType: "POS", sourceId: null }],
+      consignments: [{ id: 202, matchRank: 100, invoiceId: 95, workOrderId: null }],
+      mapConsignmentToSource: false,
+    });
+    expect(resolveUniqueDeliveryBarcodeTarget("100036", collapsedInvoiceConsignment)).toMatchObject({
+      kind: "INVOICE",
+      id: 95,
+    });
+  });
+
+  it("يرفض السجلات غير المترابطة حتى لو حملا نفس الرقم العاري", () => {
+    const unrelated = collapseLinkedDeliveryBarcodeCandidates({
+      namespace: "NUMERIC",
+      workOrders: [{ id: 50, matchRank: 100, invoiceId: 90 }],
+      invoices: [{ id: 99, matchRank: 100, sourceType: "POS", sourceId: null }],
+      mapConsignmentToSource: true,
+    });
+    expect(() => resolveUniqueDeliveryBarcodeTarget("100035", unrelated)).toThrow(/يطابق أكثر من سجل/);
   });
 
   it("يجهّز كود التتبع مع نواته بعد إسقاط الأصفار البادئة (0, 00, 000)", () => {
@@ -43,4 +104,5 @@ describe("resolveUniqueDeliveryBarcodeTarget", () => {
     });
   });
 });
+
 

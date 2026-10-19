@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { branches, documentCounters, quotations } from "../../../drizzle/schema";
 import { withTx } from "../tx";
 import {
   formatDocumentNumber,
@@ -8,6 +10,39 @@ import {
 } from "../numbering";
 
 describe("Core Numbering & Atomic Counter (Milestone 1)", () => {
+  beforeEach(async () => {
+    await withTx(async tx => {
+      await tx.insert(branches).values({
+        id: 1,
+        code: "NUMBERING_TEST",
+        name: "Isolated numbering fixture",
+      });
+    });
+  });
+
+  it("combines a supplied legacy floor with main's history floor and an advanced counter", async () => {
+    const counterKey = "quotation_1_20991230";
+    await withTx(async (tx) => {
+      await tx.insert(quotations).values({
+        quoteNumber: "QUO-1-20991230-00007",
+        branchId: 1,
+        subtotal: "0.00",
+        total: "0.00",
+      });
+      expect(await nextCounterValue(tx, counterKey, 12)).toBe(13);
+      await tx
+        .update(documentCounters)
+        .set({ lastValue: 2 })
+        .where(eq(documentCounters.counterKey, counterKey));
+      expect(await nextCounterValue(tx, counterKey, 3)).toBe(8);
+      await tx
+        .update(documentCounters)
+        .set({ lastValue: 90 })
+        .where(eq(documentCounters.counterKey, counterKey));
+      expect(await nextCounterValue(tx, counterKey, 3)).toBe(91);
+    });
+  });
+
   it("nextTransactionTrackingNumber يبدأ من أرضية 100000 ويعطي 100001 وما يليها بتسلسل ذري", async () => {
     const num1 = await withTx(async (tx) => nextTransactionTrackingNumber(tx));
     const num2 = await withTx(async (tx) => nextTransactionTrackingNumber(tx));
@@ -43,4 +78,37 @@ describe("Core Numbering & Atomic Counter (Milestone 1)", () => {
     const ord = await withTx(async (tx) => nextCounterValue(tx, "online_order"));
     expect(Number(ord)).toBeGreaterThanOrEqual(100001);
   });
+
+  it("nextCounterValue يرمّم العدّادات اليومية تلقائياً فوق أعلى تسلسل موجود في الجدول حتى لو كان documentCounters غائباً أو متأخراً", async () => {
+    const counterKey = "quotation_1_20991231";
+    const existingQuoteNumber = "QUO-1-20991231-00007";
+
+    await withTx(async (tx) => {
+      await tx.delete(quotations).where(eq(quotations.quoteNumber, existingQuoteNumber));
+      await tx.delete(documentCounters).where(eq(documentCounters.counterKey, counterKey));
+
+      await tx.insert(quotations).values({
+        quoteNumber: existingQuoteNumber,
+        branchId: 1,
+        subtotal: "100.00",
+        total: "100.00",
+      });
+
+      // حتى لو كان سجل العداد مفقوداً، يجب أن يقفز فوراً إلى 8 بدل البدء من 1
+      const seqAfterMissing = await nextCounterValue(tx, counterKey);
+      expect(seqAfterMissing).toBe(8);
+
+      // وحتى لو تأخر سجل العداد (مثلاً = 2)، يجب أن يقفز فوق 7 ويعيد 8
+      await tx
+        .update(documentCounters)
+        .set({ lastValue: 2 })
+        .where(eq(documentCounters.counterKey, counterKey));
+      const seqAfterLagging = await nextCounterValue(tx, counterKey);
+      expect(seqAfterLagging).toBe(8);
+
+      await tx.delete(quotations).where(eq(quotations.quoteNumber, existingQuoteNumber));
+      await tx.delete(documentCounters).where(eq(documentCounters.counterKey, counterKey));
+    });
+  });
 });
+
