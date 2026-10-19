@@ -427,5 +427,14 @@ describe("قبولُ الومضة وبوّابةُ الثقة (نواةُ خطّ
       scan: "box",
       fieldValue: "",
     });
+
+    // ٦. كتابة لاتينية بإيقاع بشري («book» بفواصل 60مي) تبقى بحثاً نصّياً ولا تُختطَف كمسحة (مراجعة Codex P1):
+    const detBook = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    feedSequence(detBook, ["b", "o", "o", "k"].map(letter), [60, 65, 55]);
+    const flushedBook = detBook.flush();
+    expect(resolveScanSettle(flushedBook, "", 3, { onEnter: false })).toEqual({
+      scan: null,
+      fieldValue: "book",
+    });
   });
 });

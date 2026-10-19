@@ -170,8 +170,9 @@ export interface SettleDecision {
  * هل يقبل الرمز المفكوك من ومضةٍ نشطة كباركودٍ صالح؟
  * يقبل رموز الباركود القياسية عند التسوية بالمؤقّت (`onEnter = false`) وعند الإنهاء الصريح بـ`Enter`
  * (`onEnter = true`) — بما فيها الرموز الأبجدية الصرفة (`BOX`, `ALIAS-A`) والمختلطة (`MLZ6A`) وترقيم
- * Code39/Code128 (`AB=12`) — ويستثني فقط الكتابة البشرية العربية ذات الإيقاع البشري (`humanLikeTiming`)
- * سواء كانت كلماتٍ عربية صرفة («عمار» ⇐ `ujhv`) أو متبوعةً برقمٍ قصير («م10»، «زين 10») كي لا تُقلَب إلى إنجليزيّ.
+ * Code39/Code128 (`AB=12`) عندما تُمسَح بإيقاع القارئ الآلي — ويستثني الكتابة البشرية غير الواثقة
+ * ذات الإيقاع البشري (`humanLikeTiming`) سواء كانت عربية («عمار»، «م10»، «زين 10») أو لاتينية («book»)
+ * كي تبقى بحثاً نصّياً ولا تُختطَف كمسحة باركود.
  */
 export function isAcceptedBurstScanCode(
   resultOrCode: FlushResult | string,
@@ -179,24 +180,13 @@ export function isAcceptedBurstScanCode(
   _onEnter = false,
 ): boolean {
   const code = typeof resultOrCode === "string" ? resultOrCode : resultOrCode.code;
-  const text = typeof resultOrCode === "string" ? "" : resultOrCode.text;
   const humanLikeTiming = typeof resultOrCode === "string" ? false : Boolean(resultOrCode.humanLikeTiming);
   if (code.length < minLength) return false;
   if (hasUnsupportedBarcodeCharacters(code)) return false;
   if (isConfidentScanCode(code, minLength)) return true;
   const digitsOnly = code.replace(/\s+/g, "");
   if (/^\d+$/.test(digitsOnly)) return true;
-  if (humanLikeTiming && text && /^[\u0621-\u064A\u0671-\u06D3\s]+$/.test(text) && /^[a-z[\];'`,./\s]+$/.test(code)) {
-    return false;
-  }
-  if (
-    humanLikeTiming &&
-    text &&
-    /^[\u0621-\u064A\u0671-\u06D3\s]+\d{1,2}$/.test(text) &&
-    /^[a-z[\];'`,./\s]+\d{1,2}$/.test(code)
-  ) {
-    return false;
-  }
+  if (humanLikeTiming) return false;
   return true;
 }
 
