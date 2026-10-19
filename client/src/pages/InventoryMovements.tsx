@@ -255,7 +255,11 @@ const movementColumns: ColumnDef<RichRow, unknown>[] = [
                   ? { module: "purchases", level: "READ" }
                   : r.referenceType === "WORK_ORDER"
                   ? { module: "workorders", level: "READ" }
-                  : { module: "inventory", level: "READ" },
+                  : {
+                      roles: ["warehouse", "manager"],
+                      module: "inventory",
+                      level: "FULL",
+                    },
             },
           ]}
         />

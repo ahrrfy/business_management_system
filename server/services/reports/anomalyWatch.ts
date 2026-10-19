@@ -323,10 +323,6 @@ export async function getAnomalyWatch(opts: {
   // حدود timestamp: ‎[بداية from محلياً، بداية اليوم التالي لـto) — نمط dateRange المعتمد.
   const fromTs = localDayStart(opts.from);
   const toTs = localNextDayStart(opts.to);
-  // نافذة استرجاع تاريخية آمنة لكاشف D6 (٩٠ يوماً كافية لأطول دورة حياة مسودة/أمر شغل حتى التسليم)
-  // لمنع المسح التاريخي غير المحدود (Full-Table Scan) لسنوات النظام السابقة في الجداول الستة
-  const D6_LOOKBACK_DAYS = 90;
-  const d6LookbackTs = new Date(fromTs.getTime() - D6_LOOKBACK_DAYS * 86400 * 1000);
   const branchId = opts.branchId;
   const branchInv = branchId ? sql`AND i.branchId = ${branchId}` : sql``;
   const branchShift = branchId ? sql`AND s.branchId = ${branchId}` : sql``;
@@ -532,9 +528,24 @@ export async function getAnomalyWatch(opts: {
 
       UNION ALL
 
-      -- ٢٠/٨ (تصويب مراجعة Codex + M4 الترقيم الموحّد): الترقيمُ الجديد **عدّادٌ عالميّ موحّد**
+      -- الفواتير الرقمية العالمية قبل قطع العدّاد الموحّد (< 100000)
+      SELECT NULL AS branchId, NULL AS branchName, NULL AS ymd,
+        COUNT(*) AS actualCount, MAX(t.seq) AS maxSeq, MIN(t.seq) AS minSeq
+      FROM (
+        SELECT CAST(i.invoiceNumber AS UNSIGNED) AS seq
+        FROM invoices i
+        WHERE i.invoiceNumber REGEXP '^[0-9]+$'
+          AND CAST(i.invoiceNumber AS UNSIGNED) > 0
+          AND CAST(i.invoiceNumber AS UNSIGNED) < 100000
+          AND i.invoiceDate >= ${fromTs} AND i.invoiceDate < ${toTs}
+      ) t
+      HAVING COUNT(*) > 0 AND MAX(t.seq) - MIN(t.seq) + 1 <> COUNT(*)
+
+      UNION ALL
+
+      -- ٢٠/٨ (تصويب مراجعة Codex + M4 الترقيم الموحّد): الترقيمُ الجديد **عدّادٌ عالميّ موحّد** (>= 100000)
       -- يولد تسلسلاً عبر جميع أنواع المعاملات (فواتير، أوامر شغل، مسودات استقبال، أوامر شراء، طلبات متجر، سندات).
-      -- تُستخرج أرقام التسلسل الأساسية بإسقاط اللواحق الفرعية (-1, -2): CAST(SUBSTRING_INDEX(docNumber, '-', 1) AS UNSIGNED).
+      -- تُستخرج أرقام التسلسل الأساسية بإسقاط البادئة (مثل ORD-) واللواحق الفرعية (-1, -2).
       -- وتُحسب بداية المعاملة الأصلية لمنع الفجوات الكاذبة من دورات الحياة متعددة الأيام، وتُستبعد التكرارات
       -- الناتجة عن المستندات المتفرعة من نفس المعاملة (COUNT(DISTINCT baseSeq)).
       -- وتُقاس سلامة الاتصال على المدى: MAX(baseSeq) - MIN(baseSeq) + 1 = COUNT(DISTINCT baseSeq).
@@ -548,40 +559,58 @@ export async function getAnomalyWatch(opts: {
             SELECT CAST(SUBSTRING_INDEX(i.invoiceNumber, '-', 1) AS UNSIGNED) AS baseSeq, i.invoiceDate AS docDate
             FROM invoices i
             WHERE SUBSTRING_INDEX(i.invoiceNumber, '-', 1) REGEXP '^[0-9]+$'
-              AND CAST(SUBSTRING_INDEX(i.invoiceNumber, '-', 1) AS UNSIGNED) > 0
-              AND i.invoiceDate >= ${d6LookbackTs} AND i.invoiceDate < ${toTs}
+              AND CAST(SUBSTRING_INDEX(i.invoiceNumber, '-', 1) AS UNSIGNED) >= 100000
+              AND i.invoiceDate < ${toTs}
 
             UNION ALL
 
             SELECT CAST(SUBSTRING_INDEX(wo.orderNumber, '-', 1) AS UNSIGNED) AS baseSeq, wo.createdAt AS docDate
             FROM workOrders wo
             WHERE SUBSTRING_INDEX(wo.orderNumber, '-', 1) REGEXP '^[0-9]+$'
-              AND CAST(SUBSTRING_INDEX(wo.orderNumber, '-', 1) AS UNSIGNED) > 0
-              AND wo.createdAt >= ${d6LookbackTs} AND wo.createdAt < ${toTs}
+              AND CAST(SUBSTRING_INDEX(wo.orderNumber, '-', 1) AS UNSIGNED) >= 100000
+              AND wo.createdAt < ${toTs}
 
             UNION ALL
 
             SELECT CAST(SUBSTRING_INDEX(rd.draftNumber, '-', 1) AS UNSIGNED) AS baseSeq, rd.createdAt AS docDate
             FROM receptionDrafts rd
             WHERE SUBSTRING_INDEX(rd.draftNumber, '-', 1) REGEXP '^[0-9]+$'
-              AND CAST(SUBSTRING_INDEX(rd.draftNumber, '-', 1) AS UNSIGNED) > 0
-              AND rd.createdAt >= ${d6LookbackTs} AND rd.createdAt < ${toTs}
+              AND CAST(SUBSTRING_INDEX(rd.draftNumber, '-', 1) AS UNSIGNED) >= 100000
+              AND rd.createdAt < ${toTs}
 
             UNION ALL
 
             SELECT CAST(SUBSTRING_INDEX(po.poNumber, '-', 1) AS UNSIGNED) AS baseSeq, po.createdAt AS docDate
             FROM purchaseOrders po
             WHERE SUBSTRING_INDEX(po.poNumber, '-', 1) REGEXP '^[0-9]+$'
-              AND CAST(SUBSTRING_INDEX(po.poNumber, '-', 1) AS UNSIGNED) > 0
-              AND po.createdAt >= ${d6LookbackTs} AND po.createdAt < ${toTs}
+              AND CAST(SUBSTRING_INDEX(po.poNumber, '-', 1) AS UNSIGNED) >= 100000
+              AND po.createdAt < ${toTs}
 
             UNION ALL
 
-            SELECT CAST(SUBSTRING_INDEX(oo.orderNumber, '-', 1) AS UNSIGNED) AS baseSeq, oo.createdAt AS docDate
+            SELECT
+              CAST(
+                SUBSTRING_INDEX(
+                  CASE WHEN oo.orderNumber LIKE 'ORD-%' THEN SUBSTRING(oo.orderNumber, 5) ELSE oo.orderNumber END,
+                  '-',
+                  1
+                ) AS UNSIGNED
+              ) AS baseSeq,
+              oo.createdAt AS docDate
             FROM onlineOrders oo
-            WHERE SUBSTRING_INDEX(oo.orderNumber, '-', 1) REGEXP '^[0-9]+$'
-              AND CAST(SUBSTRING_INDEX(oo.orderNumber, '-', 1) AS UNSIGNED) > 0
-              AND oo.createdAt >= ${d6LookbackTs} AND oo.createdAt < ${toTs}
+            WHERE SUBSTRING_INDEX(
+                CASE WHEN oo.orderNumber LIKE 'ORD-%' THEN SUBSTRING(oo.orderNumber, 5) ELSE oo.orderNumber END,
+                '-',
+                1
+              ) REGEXP '^[0-9]+$'
+              AND CAST(
+                SUBSTRING_INDEX(
+                  CASE WHEN oo.orderNumber LIKE 'ORD-%' THEN SUBSTRING(oo.orderNumber, 5) ELSE oo.orderNumber END,
+                  '-',
+                  1
+                ) AS UNSIGNED
+              ) >= 100000
+              AND oo.createdAt < ${toTs}
 
             UNION ALL
 
@@ -589,8 +618,8 @@ export async function getAnomalyWatch(opts: {
             FROM receipts r
             WHERE r.voucherNumber IS NOT NULL
               AND SUBSTRING_INDEX(r.voucherNumber, '-', 1) REGEXP '^[0-9]+$'
-              AND CAST(SUBSTRING_INDEX(r.voucherNumber, '-', 1) AS UNSIGNED) > 0
-              AND r.createdAt >= ${d6LookbackTs} AND r.createdAt < ${toTs}
+              AND CAST(SUBSTRING_INDEX(r.voucherNumber, '-', 1) AS UNSIGNED) >= 100000
+              AND r.createdAt < ${toTs}
           ) doc
           GROUP BY doc.baseSeq
         ) orig

@@ -520,6 +520,77 @@ describe("Tier 5 Challenger Hardening: Suffixes, Malformed Inputs & Search Isola
       expect(consignSet).toContain(`${COLLISION_BASE}-3`);
       expect(consignSet).toContain(`${COLLISION_BASE}-4`);
     });
+
+    it("ADV-COL-05: Re-delivering a suffixed sibling work order (WO-771000-1) after reverseDelivery allocates next free suffix", async () => {
+      const d = getActiveDb();
+      await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+
+      await d.insert(invoices).values([
+        {
+          invoiceNumber: `${COLLISION_BASE}-1`,
+          branchId: BRANCH_MAIN,
+          customerId: TEST_CUST_ID,
+          invoiceDate: new Date("2026-10-19"),
+          subtotal: "5000.00",
+          total: "5000.00",
+          invoiceStatus: "RETURNED",
+          createdBy: TEST_USER_ID,
+        },
+        {
+          invoiceNumber: `${COLLISION_BASE}-2`,
+          branchId: BRANCH_MAIN,
+          customerId: TEST_CUST_ID,
+          invoiceDate: new Date("2026-10-19"),
+          subtotal: "5000.00",
+          total: "5000.00",
+          invoiceStatus: "PAID",
+          createdBy: TEST_USER_ID,
+        },
+      ]);
+      await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+
+      let redeliveredInvoiceNum = "";
+      await d.transaction(async (tx) => {
+        redeliveredInvoiceNum = await resolveDeliveryInvoiceNumber(
+          tx,
+          `WO-${COLLISION_BASE}-1`,
+          BRANCH_MAIN,
+        );
+      });
+
+      expect(redeliveredInvoiceNum).toBe(`${COLLISION_BASE}-3`);
+    });
+
+    it("ADV-COL-06: Immutable consignment revision for a suffixed source (771000-1) allocates next free suffix", async () => {
+      const d = getActiveDb();
+      await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+
+      await d.insert(deliveryConsignments).values([
+        {
+          consignmentNumber: `${COLLISION_BASE}-1`,
+          branchId: BRANCH_MAIN,
+          partyId: 1,
+          invoiceId: 201,
+          sourceType: "WORK_ORDER",
+          sourceId: 201,
+          codAmount: "1000.00",
+          deliveryFee: "500.00",
+          consignmentStatus: "RETURNED",
+        },
+      ]);
+      await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+
+      let revisionConsignmentNum = "";
+      await d.transaction(async (tx) => {
+        revisionConsignmentNum = await resolveConsignmentNumber(
+          tx,
+          `WO-${COLLISION_BASE}-1`,
+          BRANCH_MAIN,
+        );
+      });
+
+      expect(revisionConsignmentNum).toBe(`${COLLISION_BASE}-2`);
+    });
   });
 
   // =========================================================================
@@ -785,9 +856,9 @@ describe("Tier 5 Challenger Hardening: Suffixes, Malformed Inputs & Search Isola
         createdAt: testDate,
       });
 
-      // 880005: Online Order
+      // 880005: Online Order with ORD- prefix
       await d.insert(onlineOrders).values({
-        orderNumber: String(BASE_START + 4),
+        orderNumber: `ORD-${BASE_START + 4}`,
         branchId: BRANCH_MAIN,
         customerId: TEST_CUST_ID,
         orderDate: testDate,
@@ -811,7 +882,7 @@ describe("Tier 5 Challenger Hardening: Suffixes, Malformed Inputs & Search Isola
       const testDate = new Date(`${AUDIT_DATE_STR}T10:00:00.000Z`);
 
       await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-      // Continuous 5 transactions: 880001, 880002, 880003, 880004, 880005
+      // Continuous 5 transactions: 880001, 880002, 880003, 880004, ORD-880005
       await d.insert(receptionDrafts).values({
         draftNumber: String(BASE_START),
         branchId: BRANCH_MAIN,
@@ -852,7 +923,7 @@ describe("Tier 5 Challenger Hardening: Suffixes, Malformed Inputs & Search Isola
         createdAt: testDate,
       });
       await d.insert(onlineOrders).values({
-        orderNumber: String(BASE_START + 4),
+        orderNumber: `ORD-${BASE_START + 4}`,
         branchId: BRANCH_MAIN,
         customerId: TEST_CUST_ID,
         orderDate: testDate,
@@ -880,16 +951,16 @@ describe("Tier 5 Challenger Hardening: Suffixes, Malformed Inputs & Search Isola
       expect(report.kpis.sequenceGapDays).toBeGreaterThanOrEqual(1);
     });
 
-    it("ADV-D6-03: Delayed lifecycle delivery originating 89 days ago causes ZERO false alarms today", async () => {
+    it("ADV-D6-03: Delayed lifecycle delivery originating >90 days (120 days) ago causes ZERO false alarms today", async () => {
       const d = getActiveDb();
       const todayDate = new Date(`${AUDIT_DATE_STR}T10:00:00.000Z`);
-      // 89 days ago (safe lookback boundary < 90 days)
-      const historicalDate = new Date(todayDate.getTime() - 89 * 86400 * 1000);
+      // 120 days ago (> 90 days)
+      const historicalDate = new Date(todayDate.getTime() - 120 * 86400 * 1000);
 
       const HISTORICAL_TRACKING = 870001;
 
       await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-      // 1. Transaction started 89 days ago: Reception Draft 870001
+      // 1. Transaction started 120 days ago: Reception Draft 870001
       await d.insert(receptionDrafts).values({
         draftNumber: String(HISTORICAL_TRACKING),
         branchId: BRANCH_MAIN,
@@ -932,7 +1003,7 @@ describe("Tier 5 Challenger Hardening: Suffixes, Malformed Inputs & Search Isola
         createdAt: todayDate,
       });
 
-      // 3. The 89-day-old order is delivered TODAY, creating an invoice with number 870001 (or 870001-1)
+      // 3. The 120-day-old order is delivered TODAY, creating an invoice with number 870001-1
       await d.insert(invoices).values({
         invoiceNumber: `${HISTORICAL_TRACKING}-1`,
         branchId: BRANCH_MAIN,
@@ -948,11 +1019,80 @@ describe("Tier 5 Challenger Hardening: Suffixes, Malformed Inputs & Search Isola
       // Run AnomalyWatch for TODAY
       const report = await getAnomalyWatch({ from: AUDIT_DATE_STR, to: AUDIT_DATE_STR });
 
-      // Because the 89-day-old transaction's origDate was in July (outside [fromTs, toTs)),
-      // D6 must NOT include 870001 in today's sequence range, preventing a massive false gap alarm!
       const unifiedGaps = report.sequenceGaps.rows.filter((r) => r.branchName.includes("موحد"));
       expect(unifiedGaps).toHaveLength(0);
       expect(report.kpis.sequenceGapDays).toBe(0);
+    });
+
+    it("ADV-D6-04: Legacy <100000 work orders (5001) and invoices (10001, 10002) do not pollute the >=100000 unified pool", async () => {
+      const d = getActiveDb();
+      const todayDate = new Date(`${AUDIT_DATE_STR}T10:00:00.000Z`);
+
+      await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      await d.execute(sql`DELETE FROM invoices WHERE invoiceNumber IN ('10001', '10002')`);
+      await d.execute(sql`DELETE FROM workOrders WHERE orderNumber = '5001'`);
+
+      // Legacy work order (5001) and contiguous legacy invoices (10001, 10002)
+      await d.insert(workOrders).values({
+        orderNumber: "5001",
+        branchId: BRANCH_MAIN,
+        customerId: TEST_CUST_ID,
+        title: "Legacy Work Order",
+        status: "READY",
+        createdBy: TEST_USER_ID,
+        createdAt: todayDate,
+      });
+      await d.insert(invoices).values([
+        {
+          invoiceNumber: "10001",
+          branchId: BRANCH_MAIN,
+          customerId: TEST_CUST_ID,
+          invoiceDate: todayDate,
+          subtotal: "1000.00",
+          total: "1000.00",
+          invoiceStatus: "PAID",
+          createdBy: TEST_USER_ID,
+        },
+        {
+          invoiceNumber: "10002",
+          branchId: BRANCH_MAIN,
+          customerId: TEST_CUST_ID,
+          invoiceDate: todayDate,
+          subtotal: "1000.00",
+          total: "1000.00",
+          invoiceStatus: "PAID",
+          createdBy: TEST_USER_ID,
+        },
+        // Contiguous unified transactions (880001, 880002)
+        {
+          invoiceNumber: String(BASE_START),
+          branchId: BRANCH_MAIN,
+          customerId: TEST_CUST_ID,
+          invoiceDate: todayDate,
+          subtotal: "1000.00",
+          total: "1000.00",
+          invoiceStatus: "PAID",
+          createdBy: TEST_USER_ID,
+        },
+        {
+          invoiceNumber: String(BASE_START + 1),
+          branchId: BRANCH_MAIN,
+          customerId: TEST_CUST_ID,
+          invoiceDate: todayDate,
+          subtotal: "1000.00",
+          total: "1000.00",
+          invoiceStatus: "PAID",
+          createdBy: TEST_USER_ID,
+        },
+      ]);
+      await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+
+      const report = await getAnomalyWatch({ from: AUDIT_DATE_STR, to: AUDIT_DATE_STR });
+      expect(report.sequenceGaps.rows).toHaveLength(0);
+      expect(report.kpis.sequenceGapDays).toBe(0);
+
+      await d.execute(sql`DELETE FROM invoices WHERE invoiceNumber IN ('10001', '10002')`);
+      await d.execute(sql`DELETE FROM workOrders WHERE orderNumber = '5001'`);
     });
   });
 });

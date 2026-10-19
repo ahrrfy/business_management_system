@@ -116,7 +116,11 @@ const transferColumns: ColumnDef<TransferRow, unknown>[] = [
   },
 ];
 
-export default function TransfersLog() {
+export default function TransfersLog({
+  initialFocusId = null,
+}: {
+  initialFocusId?: number | null;
+} = {}) {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const elevated = me.data?.role === "admin";
@@ -140,7 +144,7 @@ export default function TransfersLog() {
   };
   const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: elevated });
   const dq = useDebouncedValue(q, 250);
-  const [openId, setOpenId] = useState<number | null>(null);
+  const [openId, setOpenId] = useState<number | null>(() => initialFocusId ?? null);
   const [exporting, setExporting] = useState(false);
 
   const filterInput = {

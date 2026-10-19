@@ -163,17 +163,11 @@ async function resolveDeliveryInvoiceNumber(
   const base = parts[0];
   const num = Number(base);
   if (Number.isFinite(num) && num >= 100000) {
-    // إذا كان لأمر الشغل لاحقة شقيقة (e.g. WO-100005-1, WO-100005-2)
-    // يُورّث نفس اللاحقة حتمياً لفاتورة التسليم (100005-1, 100005-2) دون تنازع أقفال
     const rawSibling = parts.length > 1 ? Number(parts[1]) : undefined;
     const siblingIndex =
       rawSibling !== undefined && Number.isInteger(rawSibling) && rawSibling > 0
         ? rawSibling
         : undefined;
-
-    if (siblingIndex !== undefined) {
-      return formatDocumentNumber(base, siblingIndex);
-    }
 
     const existing = await tx
       .select({ invoiceNumber: invoices.invoiceNumber })
@@ -187,8 +181,12 @@ async function resolveDeliveryInvoiceNumber(
       .for("update");
 
     const used = new Set(existing.map((r) => r.invoiceNumber));
-    if (!used.has(base)) {
-      return base;
+    const preferred =
+      siblingIndex !== undefined
+        ? formatDocumentNumber(base, siblingIndex)
+        : base;
+    if (!used.has(preferred)) {
+      return preferred;
     }
 
     let k = 1;
@@ -219,10 +217,6 @@ async function resolveConsignmentNumber(
         ? rawSibling
         : undefined;
 
-    if (siblingIndex !== undefined) {
-      return formatDocumentNumber(base, siblingIndex);
-    }
-
     const existing = await tx
       .select({ consignmentNumber: deliveryConsignments.consignmentNumber })
       .from(deliveryConsignments)
@@ -235,8 +229,12 @@ async function resolveConsignmentNumber(
       .for("update");
 
     const used = new Set(existing.map((r) => r.consignmentNumber));
-    if (!used.has(base)) {
-      return base;
+    const preferred =
+      siblingIndex !== undefined
+        ? formatDocumentNumber(base, siblingIndex)
+        : base;
+    if (!used.has(preferred)) {
+      return preferred;
     }
 
     let k = 1;

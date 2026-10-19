@@ -324,7 +324,15 @@ export default function Treasury({ operationalOnly = false }: { operationalOnly?
                 title={row.original.referenceNumber}
                 dir="rtl"
               >
-                مرجع بنكي / بطاقة: {row.original.referenceNumber}
+                {(row.original.paymentMethod === "CARD" ||
+                  row.original.paymentMethod === "TRANSFER" ||
+                  row.original.paymentMethod === "WALLET" ||
+                  row.original.paymentMethod === "CHECK") &&
+                !/^(CD|TF|CH|DLV-FEE|CANCEL)-/i.test(
+                  row.original.referenceNumber.trim(),
+                )
+                  ? `مرجع بنكي / بطاقة: ${row.original.referenceNumber}`
+                  : `مرجع: ${row.original.referenceNumber}`}
               </div>
             )}
           </div>

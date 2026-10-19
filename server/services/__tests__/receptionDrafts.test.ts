@@ -19,6 +19,7 @@ import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import {
   cancelDraft,
+  commitDraft,
   listDrafts,
   promoteDraft,
   resolvePromotedDraft,
@@ -203,5 +204,41 @@ describe("ش٢ — مسوّدة المحطة", () => {
     const gen = appRouter.createCaller({ req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user: await userRow(9) } as never);
     await expect(gen.reception.draftPromote({ clientRequestId: "promote-general-user-1", header: {}, lines: [LINES[2]] })).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(gen.customers.receptionResolveById({ customerId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("C2: تثبيت مسوّدة مختلطة (بضاعة + طباعة + أمر شغل) يمنح الفاتورتين وأمر الشغل لواحق شقيقة مميّزة دون تصادم", async () => {
+    await db().insert(s.products).values([{ id: 2, name: "استنساخ", productType: "PRINT_SERVICE", isService: true }]);
+    await db().insert(s.productVariants).values([{ id: 2, productId: 2, sku: "PR-1", costPrice: "0.00" }]);
+    await db().insert(s.productUnits).values([{ id: 2, variantId: 2, unitName: "ورقة", conversionFactor: 1, isBaseUnit: true }]);
+    await db().insert(s.shifts).values({
+      id: 1,
+      branchId: 1,
+      userId: 2,
+      shiftType: "RECEPTION",
+      status: "OPEN",
+      openingCash: "0.00",
+    });
+    const mixedLines = [
+      LINES[0],
+      { ...LINES[1], variantId: 2, productUnitId: 2 },
+      LINES[2],
+    ];
+    const p = await promoteDraft(
+      { branchId: 1, header: { customerId: 1 }, lines: mixedLines },
+      CASHIER,
+    );
+    const committed = await commitDraft(
+      {
+        draftId: p.draftId,
+        version: p.version,
+        expectedTotal: p.total,
+        shiftId: 1,
+        collectNow: { amount: p.total, method: "CASH" },
+      },
+      CASHIER,
+    );
+    expect(committed.regularSale?.invoiceNumber).toBe(`${p.draftNumber}-1`);
+    expect(committed.printSale?.invoiceNumber).toBe(`${p.draftNumber}-2`);
+    expect(committed.workOrders[0]?.orderNumber).toBe(`${p.draftNumber}-1`);
   });
 });
