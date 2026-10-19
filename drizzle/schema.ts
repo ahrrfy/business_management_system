@@ -11360,6 +11360,7 @@ export const jobApplicants = mysqlTable(
     rating: int("rating").default(0),
     interviewDate: date("interviewDate", { mode: "string" }),
     rejectionReason: varchar("rejectionReason", { length: 500 }),
+    convertedEmployeeId: int("convertedEmployeeId"),
     notes: text("notes"),
     cvFileKey: varchar("cvFileKey", { length: 512 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),

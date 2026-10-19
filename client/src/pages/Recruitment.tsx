@@ -80,7 +80,9 @@ export default function Recruitment() {
   const [dropStage, setDropStage] = useState<ApplicantStage | null>(null);
 
   const vacancyOptsQ = trpc.recruitment.vacancyList.useQuery();
-  const branchesQ = trpc.branches.list.useQuery();
+  const empOptsQ = trpc.employees.formOptions.useQuery();
+  const me = trpc.auth.me.useQuery();
+  const canChooseCompanyWide = me.data?.role === "admin" || Boolean((me.data as { isOwner?: boolean } | null)?.isOwner);
 
   const input = useMemo(
     () => ({
@@ -369,7 +371,18 @@ export default function Recruitment() {
                                   <span className="tabular-nums">{a.phone}</span>
                                 </a>
                               )}
-                              {a.stage === "accepted" && (
+                              {a.convertedEmployeeId != null ? (
+                                <div className="mt-2">
+                                  <Button
+                                    size="sm"
+                                    variant="secondary"
+                                    className="h-8 w-full text-xs"
+                                    onClick={() => setLocation(`/hr/employees/${a.convertedEmployeeId}`)}
+                                  >
+                                    <UserPlus className="size-3.5" /> عُيِّن كموظف (#{a.convertedEmployeeId})
+                                  </Button>
+                                </div>
+                              ) : a.stage === "accepted" ? (
                                 <div className="mt-2">
                                   <Button
                                     size="sm"
@@ -380,7 +393,7 @@ export default function Recruitment() {
                                     <UserPlus className="size-3.5" /> تعيين كموظف
                                   </Button>
                                 </div>
-                              )}
+                              ) : null}
                               {(previous || next) && (
                                 <div className="mt-3 flex gap-2">
                                   {previous && (
@@ -423,7 +436,8 @@ export default function Recruitment() {
             onClose={() => setPaperOpen(false)}
             onSaved={() => void utils.recruitment.list.invalidate()}
             vacancies={vacancyOptsQ.data ?? []}
-            branches={branchesQ.data ?? []}
+            branches={empOptsQ.data?.branches ?? []}
+            canChooseCompanyWide={canChooseCompanyWide}
           />
           <ApplicantDetailDialog
             id={detailId}
@@ -432,6 +446,10 @@ export default function Recruitment() {
             onConvertToEmployee={(applicantId) => {
               setDetailId(null);
               setLocation(`/hr/employees/new?applicantId=${applicantId}`);
+            }}
+            onOpenEmployee={(employeeId) => {
+              setDetailId(null);
+              setLocation(`/hr/employees/${employeeId}`);
             }}
           />
         </TabsContent>

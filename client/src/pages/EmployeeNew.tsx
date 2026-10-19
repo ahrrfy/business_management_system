@@ -163,6 +163,7 @@ export default function EmployeeNew() {
           : "";
     const expectedSalaryClean =
       a.expectedSalary != null ? String(a.expectedSalary).replace(/\.00$/, "") : "";
+    const rawPosition = (a.jobTitle ?? "").trim().slice(0, 100);
     setForm((f) => ({
       ...f,
       firstName: names.firstName || f.firstName,
@@ -177,18 +178,17 @@ export default function EmployeeNew() {
       governorate: a.governorate || f.governorate,
       district: a.district || f.district,
       addressLandmark: a.residentialAddress || f.addressLandmark,
-      emergencyContactPhone: a.whatsappPhone || f.emergencyContactPhone,
       department: a.department || f.department,
-      position: a.jobTitle || f.position,
+      position: rawPosition || f.position,
       branchId: matchedBranchId || f.branchId,
       hireDate: a.availableFrom || f.hireDate,
       salary: expectedSalaryClean || f.salary,
     }));
-    if (a.degree || a.major || a.education) {
+    if (a.degree) {
       setEdu([
         {
           key: 1,
-          degree: a.degree || "بكالوريوس",
+          degree: a.degree,
           major: a.major || undefined,
           school: a.education || undefined,
         },
@@ -209,24 +209,16 @@ export default function EmployeeNew() {
   const patchEdu = (key: number, p: Partial<EduRow>) => setEdu((r) => r.map((x) => (x.key === key ? { ...x, ...p } : x)));
   const removeEdu = (key: number) => setEdu((r) => r.filter((x) => x.key !== key));
 
-  const acceptApplicantM = trpc.recruitment.updateStage.useMutation({
-    onSuccess: () => {
-      void utils.recruitment.list.invalidate();
-      void utils.recruitment.get.invalidate();
-    },
-  });
-
-  function markApplicantAcceptedIfNeeded() {
-    if (applicantId && applicantQ.data && applicantQ.data.stage !== "accepted" && can("recruitment.updateStage")) {
-      acceptApplicantM.mutate({ id: applicantId, stage: "accepted" });
-    }
-  }
+  const alreadyConvertedEmployeeId = !isEdit ? (applicantQ.data?.convertedEmployeeId ?? null) : null;
 
   const mutationOpts = {
     onSuccess: (e: { id: number; fullName?: string } | null | undefined) => {
-      markApplicantAcceptedIfNeeded();
       notify.ok(isEdit ? "تم حفظ التعديلات" : `أُضيف الموظف ${e?.fullName ?? ""}`);
       utils.employees.list.invalidate();
+      if (!isEdit && applicantId) {
+        void utils.recruitment.list.invalidate();
+        void utils.recruitment.get.invalidate({ id: applicantId });
+      }
       navigate(e?.id ? `/hr/employees/${e.id}` : "/hr/employees");
     },
     onError: (err: { message: string }) => { setError(err.message); notify.err(err); },
@@ -257,8 +249,11 @@ export default function EmployeeNew() {
 
   const createWithAccount = trpc.employees.createWithAccount.useMutation({
     onSuccess: (res) => {
-      markApplicantAcceptedIfNeeded();
       utils.employees.list.invalidate();
+      if (!isEdit && applicantId) {
+        void utils.recruitment.list.invalidate();
+        void utils.recruitment.get.invalidate({ id: applicantId });
+      }
       notify.ok(`أُضيف الموظف ${res.employee?.fullName ?? ""}`);
       if (res.credentials) showCredentials(res.credentials, res.employee?.id ?? null);
       else navigate(res.employee?.id ? `/hr/employees/${res.employee.id}` : "/hr/employees");
@@ -284,6 +279,7 @@ export default function EmployeeNew() {
   function submit() {
     if (!can(isEdit ? "employees.update" : "employees.create")) { setError("العملية غير مفوضة لحسابك"); return; }
     setError("");
+    if (alreadyConvertedEmployeeId != null) { setError("تم تعيين هذا المتقدّم مسبقاً كموظف."); return; }
     if (!form.firstName.trim()) { setError("الاسم الأول مطلوب."); return; }
     if (!form.lastName.trim()) { setError("اللقب مطلوب."); return; }
     if (form.payType === "monthly" && !form.salary.trim()) { setError("الراتب الأساس مطلوب لذوي الراتب الشهري."); return; }
@@ -307,6 +303,7 @@ export default function EmployeeNew() {
       colorTag: form.colorTag || undefined, photoUrl: photoUrl || undefined,
       education: edu.length ? edu.map(({ key, ...e }) => ({ ...e, degree: e.degree, year: e.year ? Number(e.year) : undefined })) : undefined,
       annualLeaveBalance: Number(form.annualLeaveBalance || 0), sickLeaveBalance: Number(form.sickLeaveBalance || 0),
+      applicantId: !isEdit && applicantId ? applicantId : undefined,
     };
     if (isEdit) { update.mutate({ id: editId!, ...payload }); return; }
 
@@ -341,7 +338,7 @@ export default function EmployeeNew() {
   useUnsavedGuard(isDirty && !createdInfo);
 
   // اختصار: Ctrl+S حفظ — بلا Esc (النموذج مكتظّ بقوائم منسدلة، راجع تحذير الهوك).
-  useSaveShortcuts({ onSave: submit, enabled: can(isEdit ? "employees.update" : "employees.create") && !pending });
+  useSaveShortcuts({ onSave: submit, enabled: can(isEdit ? "employees.update" : "employees.create") && !pending && alreadyConvertedEmployeeId == null });
 
   /** يبني حقول الحساب الجديد للإرسال (الاسم من الموظف؛ الفرع/الهاتف/المسمّى تُؤخذ من الموظف خادمياً). */
   function accountNewPayload() {
@@ -417,18 +414,32 @@ export default function EmployeeNew() {
       <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <div className="text-lg font-semibold text-muted-foreground">{isEdit ? "تعديل موظف" : "إضافة موظف"}</div>
         <div className="flex items-center gap-2">
-          <Button onClick={submit} disabled={!can(isEdit ? "employees.update" : "employees.create") || pending} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
+          <Button onClick={submit} disabled={!can(isEdit ? "employees.update" : "employees.create") || pending || alreadyConvertedEmployeeId != null} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
           <Link href="/hr/employees"><Button variant="outline">إلغاء</Button></Link>
         </div>
       </div>
 
       {applicantQ.data && (
-        <div className="flex items-center gap-2.5 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 text-sm">
-          <UserCheck className="size-4 shrink-0 text-primary" />
-          <span>
-            تعيين المتقدّم <b>«{applicantQ.data.name}»</b> من مسار التوظيف — عُبِّئت الحقول الأساسية تلقائياً من استمارة التقديم، يرجى مراجعتها واستكمال بيانات الأجر والهوية.
-          </span>
-        </div>
+        alreadyConvertedEmployeeId != null ? (
+          <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive" role="alert">
+            <span className="flex items-center gap-2">
+              <AlertCircle className="size-4 shrink-0" />
+              <span>
+                تم تعيين المتقدّم <b>«{applicantQ.data.name}»</b> مسبقاً كموظف (#{alreadyConvertedEmployeeId}) — لا يمكن إنشاء سجل موظف مكرّر لنفس المتقدّم.
+              </span>
+            </span>
+            <Link href={`/hr/employees/${alreadyConvertedEmployeeId}`}>
+              <Button size="sm" variant="outline">عرض ملف الموظف #{alreadyConvertedEmployeeId}</Button>
+            </Link>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2.5 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 text-sm">
+            <UserCheck className="size-4 shrink-0 text-primary" />
+            <span>
+              تعيين المتقدّم <b>«{applicantQ.data.name}»</b> من مسار التوظيف — عُبِّئت الحقول الأساسية تلقائياً من استمارة التقديم، يرجى مراجعتها واستكمال بيانات الأجر والهوية.
+            </span>
+          </div>
+        )
       )}
 
       <div className="grid gap-4 lg:grid-cols-2 items-start">
@@ -491,7 +502,7 @@ export default function EmployeeNew() {
           <div className="space-y-1"><Label htmlFor="dept">القسم</Label>
             <AppSelect id="dept" value={form.department} onValueChange={(next) => set({ department: next })}>{HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}</AppSelect>
           </div>
-          <div className="space-y-1"><Label htmlFor="pos">المسمى الوظيفي</Label><Input id="pos" value={form.position} onChange={(e) => set({ position: e.target.value })} placeholder="مدير المبيعات" /></div>
+          <div className="space-y-1"><Label htmlFor="pos">المسمى الوظيفي</Label><Input id="pos" maxLength={100} value={form.position} onChange={(e) => set({ position: e.target.value })} placeholder="مدير المبيعات" /></div>
           <div className="space-y-1"><Label htmlFor="br">الفرع</Label>
             <AppSelect id="br" value={form.branchId} onValueChange={(next) => set({ branchId: next })}><option value="">—</option>{(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}</AppSelect>
           </div>
@@ -655,7 +666,7 @@ export default function EmployeeNew() {
         </div>
       )}
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-        <Button onClick={submit} disabled={!can(isEdit ? "employees.update" : "employees.create") || pending} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
+        <Button onClick={submit} disabled={!can(isEdit ? "employees.update" : "employees.create") || pending || alreadyConvertedEmployeeId != null} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
         <Link href="/hr/employees"><Button variant="outline">إلغاء</Button></Link>
       </div>
     </div>

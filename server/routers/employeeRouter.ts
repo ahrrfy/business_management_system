@@ -69,10 +69,10 @@ const employeeInput = z.object({
   fatherName: z.string().trim().optional(),
   grandfatherName: z.string().trim().optional(),
   lastName: z.string().trim().min(1, "اللقب مطلوب"),
-  position: z.string().trim().optional(),
+  position: z.string().trim().max(100).optional(),
   department: z.string().trim().optional(),
   branchId: z.number().int().positive().nullish(),
-  managerId: z.number().int().positive().nullish(),
+  managerId: z.number().int().positive().nullish(), applicantId: z.number().int().positive().nullish(),
   payType: z.enum(PAY_TYPE_KEYS).default("monthly"),
   salary: moneyStrOpt,
   allowances: moneyStrOpt,
@@ -188,7 +188,7 @@ export const employeeRouter = router({
         } else {
           spec = account;
         }
-        const { employeeId, userId } = await svc.createEmployeeWithAccount({ ...emp, branchId } as svc.EmployeeInput, spec, toActor(ctx));
+        const { employeeId, userId } = await svc.createEmployeeWithAccount({ ...emp, branchId } as svc.EmployeeInput, spec, toActor(ctx), scope);
         const e = await svc.getEmployee(employeeId, scope);
         if (account.mode === "new") {
           await logAudit(ctx, { action: "user.create", entityType: "user", entityId: userId, newValue: { email: account.email ?? null, username: account.username ?? null, role: account.role } });

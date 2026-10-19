@@ -162,7 +162,7 @@ const vacancyFields = {
 /** حقول استمارة التقديم/الإدخال الورقي المشتركة. */
 const applicantFields = {
   name: z.string().trim().min(1, "اسم المتقدّم مطلوب").max(200),
-  jobTitle: z.string().trim().max(150).optional(),
+  jobTitle: z.string().trim().max(100).optional(),
   branchId: z.number().int().positive().optional(),
   vacancyId: z.number().int().positive().optional(),
   phone: z.string().trim().max(20).optional(),

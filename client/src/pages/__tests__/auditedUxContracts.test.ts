@@ -347,22 +347,34 @@ describe("حزمة استمارة التوظيف والتعيين الكاملة
     expect(jobApply).toContain("degree: (degree || undefined) as never");
     expect(jobApply).toContain("availabilityStatus: (availabilityStatus || undefined) as never");
     expect(jobApply).toContain("preferredBranch: preferredBranch.trim() || undefined");
+    expect(jobApply).toContain("(APPLICANT_PREFERRED_BRANCHES as readonly string[]).includes(vacancy.location)");
     expect(jobApply).toContain("shiftPreference: (shiftPreference || undefined) as never");
     expect(jobApply).toContain("expectedSalary:");
 
     // لوحة التوظيف وحوارات المتقدمين
     expect(recruitment).toContain("exportApplicants");
     expect(recruitment).toContain("تعيين كموظف");
+    expect(recruitment).toContain("trpc.employees.formOptions.useQuery");
+    expect(recruitment).toContain("canChooseCompanyWide");
     expect(dialogs).toContain("trpc.recruitment.setRating.useMutation");
+    expect(dialogs).toContain("saveReview.mutate({ id: a.id, rating: r })");
+    expect(dialogs).toContain("convertedEmployeeId");
+    expect(dialogs).toContain("canChooseCompanyWide");
     expect(dialogs).toContain("vacancyId: vacancyId ? Number(vacancyId) : undefined");
     expect(dialogs).toContain("branchId: branchId ? Number(branchId) : undefined");
     expect(dialogs).toContain("appliedDate: appliedDate.trim() || undefined");
+    expect(dialogs.split(/\r?\n/).length).toBeLessThanOrEqual(400);
 
-    // صفحة إضافة موظف جديد مع التعبئة التلقائية من طلب التوظيف
+    // صفحة إضافة موظف جديد مع التعبئة التلقائية من طلب التوظيف والتحويل الذرّي
     expect(employeeNew).toContain("applicantId");
     expect(employeeNew).toContain("useSearch");
     expect(employeeNew).toContain("prefilledApplicantIdRef");
-    expect(employeeNew).toContain("markApplicantAcceptedIfNeeded");
+    expect(employeeNew).toContain("applicantId: !isEdit && applicantId ? applicantId : undefined");
+    expect(employeeNew).toContain("utils.recruitment.get.invalidate({ id: applicantId })");
+    expect(employeeNew).toContain("alreadyConvertedEmployeeId");
+    expect(employeeNew).not.toContain("markApplicantAcceptedIfNeeded");
+    expect(employeeNew).not.toContain("emergencyContactPhone: a.whatsappPhone");
+    expect(employeeNew).not.toContain('degree: a.degree || "بكالوريوس"');
     expect(employeeNew).not.toContain("Number(a.expectedSalary)");
     expect(employeeNew).toContain("trpc.recruitment.get.useQuery");
     expect(employeeNew).toContain("splitFullArabicName");

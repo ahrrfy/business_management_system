@@ -535,7 +535,11 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
   const [experience, setExperience] = useState("");
   const [previousEmployer, setPreviousEmployer] = useState("");
   const [skills, setSkills] = useState("");
-  const [preferredBranch, setPreferredBranch] = useState(vacancy?.location ?? "");
+  const [preferredBranch, setPreferredBranch] = useState(
+    vacancy?.location && (APPLICANT_PREFERRED_BRANCHES as readonly string[]).includes(vacancy.location)
+      ? vacancy.location
+      : "",
+  );
   const [employmentType, setEmploymentType] = useState(vacancy?.employmentType ?? "full_time");
   const [shiftPreference, setShiftPreference] = useState("both");
   const [expectedSalary, setExpectedSalary] = useState("");
@@ -789,7 +793,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
                 <>
                   <div className="cj-field">
                     <label htmlFor="cj-job">الوظيفة المطلوبة</label>
-                    <input id="cj-job" className="cj-input" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="مثال: مصمم جرافيك أو كاشير" maxLength={150} />
+                    <input id="cj-job" className="cj-input" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="مثال: مصمم جرافيك أو كاشير" maxLength={100} />
                   </div>
                   <div className="cj-field">
                     <label htmlFor="cj-dept">القسم المفضّل</label>

@@ -18,4 +18,5 @@ ALTER TABLE `jobApplicants`
   ADD COLUMN `expectedSalary` decimal(15,2) NULL AFTER `shiftPreference`,
   ADD COLUMN `availableFrom` date NULL AFTER `expectedSalary`,
   ADD COLUMN `interviewDate` date NULL AFTER `rating`,
-  ADD COLUMN `rejectionReason` varchar(500) NULL AFTER `interviewDate`;
+  ADD COLUMN `rejectionReason` varchar(500) NULL AFTER `interviewDate`,
+  ADD COLUMN `convertedEmployeeId` int DEFAULT NULL;
