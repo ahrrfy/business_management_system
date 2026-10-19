@@ -25,7 +25,10 @@ async function validate(request: Request, env: any) {
       return error("INVALID_LAB_TERMINAL", 400);
     }
   }
-  if (request.method !== "POST" || !["/sale", "/payment"].includes(route))
+  if (
+    request.method !== "POST" ||
+    !["/sale", "/payment", "/return"].includes(route)
+  )
     return error("UNSUPPORTED_TEST_ROUTE", 404);
   const raw = await request.text();
   if (raw.length > 20000) return error("INVALID_REQUEST_SIZE", 400);
@@ -34,7 +37,13 @@ async function validate(request: Request, env: any) {
     const parsed = creditHttpInput.safeParse(JSON.parse(raw));
     if (
       !parsed.success ||
-      parsed.data.commandType !== (route === "/sale" ? "SALE" : "COLLECT")
+      !(
+        route === "/sale"
+          ? ["SALE", "CASH_SALE"]
+          : route === "/return"
+            ? ["RETURN"]
+            : ["COLLECT"]
+      ).includes(parsed.data.commandType)
     )
       return error("INVALID_CREDIT_INPUT", 400);
   } catch {
@@ -111,7 +120,9 @@ export default {
     if (
       !ready &&
       (request.method !== "POST" ||
-        !["/sale", "/payment"].includes(new URL(request.url).pathname))
+        !["/sale", "/payment", "/return"].includes(
+          new URL(request.url).pathname,
+        ))
     )
       return core.fetch(request, env);
     const raw = await validate(request, env);

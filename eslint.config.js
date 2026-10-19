@@ -28,6 +28,8 @@ export default tseslint.config(
       ".runtime/**",
       "_legacy/**",
       "client/public/**",
+      // Generated Worker bundles contain vendored dependency comments.
+      "experiments/d1-continuity/**/build/**",
       // سكربتات الورشة تُنفَّذ في سياقٍ يسمح بـ على المستوى الأعلى.
       ".claude/**",
       "**/*.test.ts",

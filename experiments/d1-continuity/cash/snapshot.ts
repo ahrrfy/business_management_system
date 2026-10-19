@@ -26,7 +26,14 @@ type SnapshotOptions = {
   mode?: string;
   exactCustomerBalance?: boolean;
   rejectDeliveryHistory?: boolean;
+  rejectUnsupportedReturnHistory?: boolean;
   schemaTemplate?: boolean;
+  exactSelect?: (
+    local: any,
+    sql: string,
+    params: any[],
+    method: string,
+  ) => { rows: any[] } | undefined;
   preloaded?: {
     row: any;
     envelope: string;
@@ -96,9 +103,19 @@ export async function snapshotDatabase(
   if (options.rejectDeliveryHistory) {
     const flags = JSON.parse(snapshot.scopeFlags);
     if (flags.deliveryHistory)
-      throw Error("UNSUPPORTED_CUSTOMER_DELIVERY_HISTORY");
+      throw Object.assign(
+        Error("UNSUPPORTED_CUSTOMER_DELIVERY_HISTORY"),
+        options.rejectUnsupportedReturnHistory ? { status: 422 } : {},
+      );
     if (flags.unsupportedCollection)
-      throw Error("UNSUPPORTED_CREDIT_COLLECTION_INVOICE");
+      throw Object.assign(
+        Error("UNSUPPORTED_CREDIT_COLLECTION_INVOICE"),
+        options.rejectUnsupportedReturnHistory ? { status: 422 } : {},
+      );
+    if (options.rejectUnsupportedReturnHistory && flags.unsupportedReturn)
+      throw Object.assign(Error("UNSUPPORTED_RETURN_DEPENDENCY"), {
+        status: 422,
+      });
   }
   const expectedEpoch = snapshot.epoch;
   if (!Number.isSafeInteger(expectedEpoch) || expectedEpoch < 0)
@@ -182,6 +199,8 @@ export async function snapshotDatabase(
         .replace(/\(\?(, \?)+\)/g, "(?)");
       if (!allowedQueries.has(shape))
         throw Error("UNSUPPORTED_SQL_SHAPE: " + shape);
+      const exact = options.exactSelect?.(local, original, params, method);
+      if (exact) return exact;
       let sql = original.trim();
       let changedCustomerId: number | null = null;
       if (

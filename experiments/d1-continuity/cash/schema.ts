@@ -55,6 +55,7 @@ const literal = (v: any): string =>
 export function createProjectionTables(
   names: string[],
   customerAccounts = false,
+  readOnlyGenerated: string[] = [],
 ) {
   return names.map((name) => {
     const config = getTableConfig((source as any)[name]);
@@ -78,6 +79,7 @@ export function createProjectionTables(
         defaultSql = undefined;
       if (
         c.generated &&
+        !readOnlyGenerated.includes(name + "." + c.name) &&
         !(name === "productUnits" && c.name === "barcodeNormalized")
       )
         throw Error("Unsupported generated column " + name + "." + c.name);

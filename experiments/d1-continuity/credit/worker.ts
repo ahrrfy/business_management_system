@@ -94,15 +94,20 @@ export default {
       let value: any;
       if (
         request.method === "POST" &&
-        ["/sale", "/payment"].includes(u.pathname)
+        ["/sale", "/payment", "/return"].includes(u.pathname)
       ) {
         const text = await request.text();
         if (text.length > 20000) throw Error("INVALID_REQUEST_SIZE");
         const input = creditHttpInput.safeParse(JSON.parse(text));
         if (
           !input.success ||
-          input.data.commandType !==
-            (u.pathname === "/sale" ? "SALE" : "COLLECT")
+          !(
+            u.pathname === "/sale"
+              ? ["SALE", "CASH_SALE"]
+              : u.pathname === "/return"
+                ? ["RETURN"]
+                : ["COLLECT"]
+          ).includes(input.data.commandType)
         )
           return json({ code: "INVALID_CREDIT_INPUT" }, 400);
         value = await createWithRecovery(
@@ -128,7 +133,9 @@ export default {
         value = {
           labId: LAB_ID,
           schemaVersion: CASH_SCHEMA_VERSION,
-          scope: "ORIGINAL_STOCKED_CREDIT_AND_CASH_COLLECTION",
+          scope:
+            env.CONTINUITY_SCOPE ??
+            "ORIGINAL_STOCKED_CREDIT_AND_CASH_COLLECTION",
           productionAuthentication: false,
         };
       else if (request.method === "GET" && u.pathname === "/evidence")
