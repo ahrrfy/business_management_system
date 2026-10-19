@@ -1,6 +1,6 @@
 import { useCatalogPeopleOperationAccess } from "@/lib/catalogPeopleOperationAccess";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { trpc } from "@/lib/trpc";
@@ -103,13 +103,15 @@ export function ConsignmentField({
               </div>
             ) : (
               <div className="relative">
-                <Input
+                <UnifiedSearchInput
+                  debounceMs={0}
                   value={q}
                   disabled={disabled}
-                  onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+                  onChange={(val) => { setQ(val); setOpen(true); }}
                   onFocus={() => setOpen(true)}
                   placeholder="ابحث باسم المودِع أو هاتفه…"
                   aria-label="بحث عن مودِع"
+                  barcode={false}
                 />
                 {open && results.length > 0 && (
                   <div className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-md border bg-popover shadow-md">

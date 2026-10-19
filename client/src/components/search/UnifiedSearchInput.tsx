@@ -30,10 +30,14 @@ export interface UnifiedSearchInputProps {
   placeholder?: string;
   /** هل يقبل الماسح الضوئي للباركود ويعرض شارة الباركود؟ (الافتراضي: true) */
   barcode?: boolean;
+  /** الحد الأدنى لطول الباركود الممسوح (الافتراضي: 3؛ يُخفّض إلى 2 في وضع المسح الإلزامي) */
+  scanMinLength?: number;
   /** دالة مخصصة تُستدعى عند التقاط مسحة باركود كاملة. الافتراضي: يمرر الكود لـ onChange */
   onScan?: (code: string) => void;
   /** دالة تُستدعى عند ضغط Enter لكتابة بشرية صريحة */
   onSubmit?: (val: string) => void;
+  /** دالة اختيارية تُستدعى عند مسح الحقل (زر X أو Escape) */
+  onClear?: () => void;
   /** مهلة التأخير بالمللي ثانية لتحديث onChange (الافتراضي: 180ms كالكاشير؛ 0 للتحديث الفوري) */
   debounceMs?: number;
   /** الحجم: default (42px)، compact (34px)، lg (50px كالكاشير الرئيسي) */
@@ -43,17 +47,31 @@ export interface UnifiedSearchInputProps {
   autoFocus?: boolean;
   disabled?: boolean;
   className?: string;
+  wrapperClassName?: string;
   inputClassName?: string;
   clearButtonLabel?: string;
   id?: string;
+  maxLength?: number;
+  role?: React.AriaRole;
   "aria-label"?: string;
+  "aria-expanded"?: boolean;
+  "aria-haspopup"?: React.AriaAttributes["aria-haspopup"];
+  "aria-autocomplete"?: React.AriaAttributes["aria-autocomplete"];
+  "aria-controls"?: string;
+  "aria-activedescendant"?: string;
+  "aria-describedby"?: string;
+  "aria-invalid"?: boolean;
   /** Accessible combobox semantics for callers that provide their own suggestion list. */
-  inputProps?: Pick<React.InputHTMLAttributes<HTMLInputElement>,
-    "role" | "maxLength" | "aria-autocomplete" | "aria-expanded" | "aria-controls" | "aria-activedescendant">;
+  inputProps?: Pick<
+    React.InputHTMLAttributes<HTMLInputElement>,
+    "role" | "maxLength" | "aria-autocomplete" | "aria-expanded" | "aria-controls" | "aria-activedescendant"
+  >;
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onFocus?: (e: React.FocusEvent<HTMLInputElement>) => void;
   onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void;
   dir?: "rtl" | "ltr" | "auto";
+  /** تفعيل اختصار F2 العالمي للتركيز على هذا الحقل (الافتراضي: يتبع ظهور F2 في التلميح النصّي لمنع تزاحم الحقول الثانوية) */
+  f2Shortcut?: boolean;
 }
 
 export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSearchInputProps>(
@@ -64,23 +82,36 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
       onImmediateChange,
       placeholder,
       barcode = true,
+      scanMinLength,
       onScan,
       onSubmit,
+      onClear,
       debounceMs = 180,
       size = "default",
-      variant = "default",
+      variant = "pos",
       autoFocus = false,
       disabled = false,
       className,
+      wrapperClassName,
       inputClassName,
-      clearButtonLabel = "مسح البحث (Esc)",
+      clearButtonLabel = "مسح البحث",
       id,
+      maxLength,
+      role,
       "aria-label": ariaLabel,
+      "aria-expanded": ariaExpanded,
+      "aria-haspopup": ariaHasPopup,
+      "aria-autocomplete": ariaAutoComplete,
+      "aria-controls": ariaControls,
+      "aria-activedescendant": ariaActiveDescendant,
+      "aria-describedby": ariaDescribedBy,
+      "aria-invalid": ariaInvalid,
       inputProps,
       onKeyDown: externalOnKeyDown,
       onFocus,
       onBlur,
       dir,
+      f2Shortcut,
     },
     forwardedRef,
   ) {
@@ -92,17 +123,21 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
     // حالة محلية تضمن استجابة بصرية فورية وسلسة 60fps بدون تجميد أو تقطيع
     const [localValue, setLocalValue] = React.useState(value);
 
+    // مؤقت الترحيل المؤجل (Debounce)
+    const debounceTimerRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
     // مزامنة الحالة المحلية إذا تغيّرت القيمة من الخارج (مثل إعادة تعيين الفلاتر أو التنقل)
     React.useEffect(() => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = undefined;
+      }
       setLocalValue(value);
     }, [value]);
 
     // مرجع مستقر لـ onChange لمنع إعادة بناء المؤقتات
     const onChangeRef = React.useRef(onChange);
     onChangeRef.current = onChange;
-
-    // مؤقت الترحيل المؤجل (Debounce)
-    const debounceTimerRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
     const triggerChange = React.useCallback(
       (newVal: string, immediate = false) => {
@@ -143,26 +178,50 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
       [onScan, triggerChange],
     );
 
-    const barcodeInput = useBarcodeInput(handleScan, { enabled: barcode });
+    const barcodeInput = useBarcodeInput(handleScan, {
+      enabled: barcode,
+      minLength: scanMinLength,
+    });
 
     // مسح الحقل فوراً واستعادة التركيز
     const handleClear = React.useCallback(() => {
       triggerChange("", true);
+      onClear?.();
       internalRef.current?.focus();
-    }, [triggerChange]);
+    }, [triggerChange, onClear]);
 
     // معالجة ضغطات المفاتيح (Enter, Escape, والماسح الذكي)
     const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (barcode && e.key === "Escape") {
+        barcodeInput.reset();
+      }
+
+      if (barcode && onScan) {
+        barcodeInput.handleKeyDown(e, (scannedVal) => {
+          if (debounceTimerRef.current) {
+            clearTimeout(debounceTimerRef.current);
+          }
+          setLocalValue(scannedVal);
+          triggerChange(scannedVal, true);
+        });
+        if (e.defaultPrevented) return;
+      }
+
       externalOnKeyDown?.(e);
       if (e.defaultPrevented) return;
 
-      if (barcode) {
+      if (barcode && !onScan) {
         barcodeInput.handleKeyDown(e, (scannedVal) => {
-          triggerChange(scannedVal, true);
+          if (debounceTimerRef.current) {
+            clearTimeout(debounceTimerRef.current);
+          }
+          setLocalValue(scannedVal);
+          if (scannedVal) {
+            triggerChange(scannedVal, true);
+          }
         });
+        if (e.defaultPrevented) return;
       }
-
-      if (e.defaultPrevented) return;
 
       if (e.key === "Escape") {
         e.preventDefault();
@@ -178,10 +237,18 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
       }
     };
 
-    // دعم اختصار F2 للتركيز السريع على حقل البحث
+    const effectivePlaceholder =
+      placeholder ??
+      (barcode
+        ? "ابحث بالاسم أو SKU أو امسح الباركود… (F2)"
+        : "ابحث بالاسم أو التفاصيل… (F2)");
+    const enableF2 = f2Shortcut ?? effectivePlaceholder.includes("F2");
+
+    // دعم اختصار F2 للتركيز السريع على حقل البحث الرئيسي دون تزاحم الحقول الثانوية
     React.useEffect(() => {
+      if (!enableF2 || disabled) return;
       const handleGlobalKeyDown = (e: KeyboardEvent) => {
-        if (e.key === "F2" && !disabled && internalRef.current) {
+        if (e.key === "F2" && !e.defaultPrevented && internalRef.current) {
           e.preventDefault();
           internalRef.current.focus();
           internalRef.current.select();
@@ -189,7 +256,7 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
       };
       window.addEventListener("keydown", handleGlobalKeyDown);
       return () => window.removeEventListener("keydown", handleGlobalKeyDown);
-    }, [disabled]);
+    }, [enableF2, disabled]);
 
     // تحديد الارتفاع والأبعاد حسب الحجم
     const sizeClasses = {
@@ -201,7 +268,7 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
     const isPosVariant = variant === "pos";
 
     return (
-      <div className={cn("relative flex items-center min-w-48", className)}>
+      <div className={cn("relative flex items-center min-w-48", wrapperClassName ?? className)}>
         {/* أيقونة البحث في جانب البداية (اليمين في RTL) عند عدم تفعيل شارة الباركود */}
         {!barcode && (
           <span
@@ -217,12 +284,21 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
           ref={internalRef}
           id={id}
           type="text"
+          role={role ?? inputProps?.role}
           dir={dir}
+          maxLength={maxLength ?? inputProps?.maxLength}
           value={localValue}
           disabled={disabled}
           autoFocus={autoFocus}
           autoComplete="off"
           enterKeyHint="search"
+          aria-expanded={ariaExpanded ?? inputProps?.["aria-expanded"]}
+          aria-haspopup={ariaHasPopup}
+          aria-autocomplete={ariaAutoComplete ?? inputProps?.["aria-autocomplete"]}
+          aria-controls={ariaControls ?? inputProps?.["aria-controls"]}
+          aria-activedescendant={ariaActiveDescendant ?? inputProps?.["aria-activedescendant"]}
+          aria-describedby={ariaDescribedBy}
+          aria-invalid={ariaInvalid}
           onChange={(e) => {
             // لا استدعاء لـ normalizeKnownSystemBarcode هنا: المسافات تُحفظ وتُعرض طبيعياً
             triggerChange(e.target.value, false);
@@ -245,6 +321,7 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
             sizeClasses,
             barcode ? barcodeSearchInputClass : "pr-8",
             localValue ? "pl-8" : "pl-3",
+            wrapperClassName !== undefined ? className : undefined,
             inputClassName,
           )}
         />

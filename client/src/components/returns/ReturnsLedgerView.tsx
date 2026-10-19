@@ -3,7 +3,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -14,7 +14,6 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 import {
   Receipt,
   Printer,
-  Search,
   BookOpen,
 } from "lucide-react";
 
@@ -173,18 +172,17 @@ export function ReturnsLedgerView() {
         <CardContent className="p-4 space-y-3">
           {/* أشرطة التصفية والبحث */}
           <div className="flex flex-col sm:flex-row gap-2">
-            <div className="relative flex-1">
-              <Search className="absolute right-3 top-3 size-4 text-muted-foreground" aria-hidden />
-              <Input
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value);
-                  setPage(0);
-                }}
-                placeholder="ابحث برقم الفاتورة..."
-                className="pr-9"
-              />
-            </div>
+            <UnifiedSearchInput
+              barcode={false}
+              debounceMs={0}
+              value={search}
+              onChange={(val) => {
+                setSearch(val);
+                setPage(0);
+              }}
+              placeholder="ابحث برقم الفاتورة..."
+              wrapperClassName="flex-1"
+            />
 
             <div className="w-full sm:w-60">
               <AppSelect

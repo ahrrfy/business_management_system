@@ -5,11 +5,12 @@
  * كلّها تنعكس فوراً في المتجر العلني `/store`.
  */
 import { useState } from "react";
-import { AlertTriangle, Boxes, Eye, EyeOff, ImagePlus, Images, Loader2, PackageSearch, Save, Search, Star, Trash2, X } from "lucide-react";
+import { AlertTriangle, Boxes, Eye, EyeOff, ImagePlus, Images, Loader2, PackageSearch, Save, Star, Trash2, X } from "lucide-react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { fmt, fmtInt, formatQuantity } from "@/lib/money";
 
 type Filter = "all" | "featured" | "hidden" | "noImage";
@@ -85,10 +86,7 @@ export default function StoreCatalog() {
       {/* شريط الفلترة */}
       <div className="space-y-2 rounded-2xl border border-border bg-card p-3">
         <div className="flex flex-col gap-2 sm:flex-row">
-          <div className="relative flex-1">
-            <Search aria-hidden className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <input value={q} onChange={(e) => { setQ(e.target.value); setLimit(PAGE); }} placeholder="ابحث عن منتج بالاسم…" className="w-full rounded-lg border border-border bg-background py-2 pr-10 pl-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" />
-          </div>
+          <UnifiedSearchInput barcode={false} debounceMs={0} value={q} onChange={(v) => { setQ(v); setLimit(PAGE); }} placeholder="ابحث عن منتج بالاسم…" className="flex-1" />
           <AppSelect value={String(categoryId)} onValueChange={(value) => { setCategoryId(value === "" ? "" : Number(value)); setLimit(PAGE); }} className="sm:w-52">
             <option value="">كل الأقسام</option>
             <option value="0">بلا قسم</option>

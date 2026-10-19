@@ -4,7 +4,8 @@ import { useDeferredValue, useEffect, useState } from "react";
 import { FilterField } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Link, useParams } from "wouter";
-import { Download, Printer, RefreshCw, Search } from "lucide-react";
+import { Download, Printer, RefreshCw } from "lucide-react";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
@@ -257,15 +258,15 @@ export default function StocktakeRemaining() {
 
       <Card className="gap-0 py-0">
         <div className="flex flex-wrap items-center gap-3 border-b p-3">
-          <label className="relative min-w-64 flex-1 sm:max-w-md">
-            <Search aria-hidden className="absolute start-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="بحث: اسم المنتج / SKU / العامل / المنطقة…"
-              className="h-9 w-full rounded-md border bg-card pe-3 ps-9 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-            />
-          </label>
+          <UnifiedSearchInput
+            barcode={false}
+            debounceMs={0}
+            value={q}
+            onChange={setQ}
+            placeholder="بحث: اسم المنتج / SKU / العامل / المنطقة…"
+            className="min-w-64 flex-1 sm:max-w-md"
+            inputClassName="h-9 text-sm"
+          />
           <FilterField label="العامل / المنطقة" className="min-w-52">
             <AppSelect
               value={assignmentId}

@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { ErrorState, LoadingState } from "@/components/PageState";
 import CustomerPicker from "@/components/CustomerPicker";
 import {
@@ -19,7 +20,6 @@ import {
   Loader2,
   MessageSquare,
   Phone,
-  Search,
   Send,
   ShoppingBag,
   Store,
@@ -832,18 +832,15 @@ export default function Inbox({ onStartOrder }: { onStartOrder?: (v: StartOrderF
           ))}
         </div>
 
-        <div className="relative">
-          <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-            <Search className="size-4" />
-          </span>
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="بحث بالاسم أو الهاتف…"
-            aria-label="بحث في المحادثات"
-            className="w-full h-9 rounded-md border border-input bg-background ps-3 pe-9 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
-        </div>
+        <UnifiedSearchInput
+          debounceMs={0}
+          value={search}
+          onChange={setSearch}
+          placeholder="بحث بالاسم أو الهاتف…"
+          aria-label="بحث في المحادثات"
+          className="h-9 text-sm"
+          barcode={false}
+        />
 
         <div className="flex gap-2">
           <AppSelect

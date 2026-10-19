@@ -35,9 +35,9 @@ export function useSmartScanInput(
   }, [detector]);
 
   const fire = useCallback(
-    (setValue: (s: string) => void) => {
+    (setValue: (s: string) => void, onEnter = false) => {
       clearTimeout(timerRef.current);
-      const decision = resolveScanSettle(detector.flush(), prefixRef.current, minLength);
+      const decision = resolveScanSettle(detector.flush(), prefixRef.current, minLength, { onEnter });
       prefixRef.current = "";
       setValue(decision.fieldValue);
       if (decision.scan) {
@@ -52,9 +52,9 @@ export function useSmartScanInput(
     (e: React.KeyboardEvent<HTMLInputElement>, curVal: string, setValue: (s: string) => void) => {
       if (e.key === "Enter") {
         if (detector.isActive) {
-          // ومضةٌ نشطة: أصدِر الباركود أو استعِد النصّ القصير بلا فقد.
+          // ومضةٌ نشطة: أصدِر الباركود أو استعِد النصّ العربي/القصير بلا فقد.
           e.preventDefault();
-          fire(setValue);
+          fire(setValue, true);
           return;
         }
         // قارئٌ بطيء تسرّب حرفاً حرفاً: استردّ باركوداً واثقاً من قيمة الحقل بدل بحثٍ نصّيّ.
@@ -75,6 +75,25 @@ export function useSmartScanInput(
         prefixRef.current = "";
         return;
       }
+      if (e.key === "Backspace" || e.key === "Delete") {
+        clearTimeout(timerRef.current);
+        if (detector.isActive) {
+          const { text } = detector.flush();
+          if (text) {
+            e.preventDefault();
+            const restored = prefixRef.current + text;
+            const nextVal =
+              e.key === "Backspace"
+                ? Array.from(restored).slice(0, -1).join("")
+                : restored;
+            setValue(nextVal);
+          }
+        } else {
+          detector.reset();
+        }
+        prefixRef.current = "";
+        return;
+      }
       // طول 1 أو 2 (لِـ«لا/لأ/لآ» في العربي 101)؛ الفكّ الفيزيائيّ يعيدها ASCII.
       if (e.ctrlKey || e.altKey || e.metaKey || e.key.length < 1 || e.key.length > 2) return;
 
@@ -88,9 +107,9 @@ export function useSmartScanInput(
       if (action === "startBurst") setValue(prefixRef.current); // أزل الحرف المرشّح المتسرّب، أبقِ البادئة
       clearTimeout(timerRef.current);
       // مهلة سكونٍ سخيّة كي لا يقطع تذبذبُ التوقيت الومضةَ فيُصدِر بادئةً جزئيّة (مراجعة #1108).
-      timerRef.current = setTimeout(() => fire(setValue), Math.max(400, gapMs * 4));
+      timerRef.current = setTimeout(() => fire(setValue, false), Math.max(400, gapMs * 4));
     },
-    [fire, detector],
+    [fire, detector, gapMs, minLength, onBarcode],
   );
 
   return { handleKeyDown, reset };

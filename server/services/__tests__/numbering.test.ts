@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { documentCounters, quotations } from "../../../drizzle/schema";
+import { branches, documentCounters, quotations } from "../../../drizzle/schema";
 import { withTx } from "../tx";
 import {
   formatDocumentNumber,
@@ -47,16 +47,26 @@ describe("Core Numbering & Atomic Counter (Milestone 1)", () => {
   });
 
   it("nextCounterValue يرمّم العدّادات اليومية تلقائياً فوق أعلى تسلسل موجود في الجدول حتى لو كان documentCounters غائباً أو متأخراً", async () => {
-    const counterKey = "quotation_1_20991231";
-    const existingQuoteNumber = "QUO-1-20991231-00007";
-
     await withTx(async (tx) => {
+      await tx
+        .insert(branches)
+        .values({ name: "فرع اختبار الترقيم", code: "NUM-TEST-BR", type: "MAIN" })
+        .onDuplicateKeyUpdate({ set: { name: "فرع اختبار الترقيم" } });
+      const [branchRow] = await tx
+        .select({ id: branches.id })
+        .from(branches)
+        .where(eq(branches.code, "NUM-TEST-BR"))
+        .limit(1);
+      const branchId = branchRow.id;
+      const counterKey = `quotation_${branchId}_20991231`;
+      const existingQuoteNumber = `QUO-${branchId}-20991231-00007`;
+
       await tx.delete(quotations).where(eq(quotations.quoteNumber, existingQuoteNumber));
       await tx.delete(documentCounters).where(eq(documentCounters.counterKey, counterKey));
 
       await tx.insert(quotations).values({
         quoteNumber: existingQuoteNumber,
-        branchId: 1,
+        branchId,
         subtotal: "100.00",
         total: "100.00",
       });

@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
@@ -573,10 +574,12 @@ export default function ProductionNew() {
                         </div>
                       ) : (
                         <div className="relative">
-                          <Input
+                          <UnifiedSearchInput
+                            barcode={false}
+                            debounceMs={0}
                             dir="auto"
                             value={woQuery}
-                            onChange={(e) => setWoQuery(e.target.value)}
+                            onChange={setWoQuery}
                             placeholder="ابحث برقم الأمر/العنوان/العميل…"
                           />
                           {woQuery.trim() && (

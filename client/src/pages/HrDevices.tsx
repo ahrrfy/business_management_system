@@ -9,6 +9,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import {
   PROTOCOL_LABELS,
   emptyForm,
@@ -54,7 +55,6 @@ import {
   Plus,
   RefreshCcw,
   ScanFace,
-  Search,
   Settings2,
   ShieldQuestion,
   Trash2,
@@ -756,19 +756,16 @@ export default function HrDevices() {
                 </span>
               </div>
 
-              <div className="relative min-w-36 flex-1">
-                <Search
-                  aria-hidden
-                  className="pointer-events-none absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
-                />
-                <Input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="ابحث عن جهاز…"
-                  aria-label="البحث في الأجهزة"
-                  className="h-8 ps-8 text-xs"
-                />
-              </div>
+              <UnifiedSearchInput
+                debounceMs={0}
+                value={query}
+                onChange={setQuery}
+                placeholder="ابحث عن جهاز…"
+                aria-label="البحث في الأجهزة"
+                className="h-8 text-xs"
+                wrapperClassName="min-w-36 flex-1"
+                barcode={false}
+              />
 
               <AppSelect
                 aria-label="حالة الجهاز"

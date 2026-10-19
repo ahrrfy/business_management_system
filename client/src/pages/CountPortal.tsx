@@ -21,7 +21,6 @@ import { fmtInt, formatQuantity } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
 import { usePulsedCountState, getServerClockOffsetMs } from "@/hooks/usePulsedCountState";
@@ -477,12 +476,6 @@ export default function CountPortal() {
     },
     [items, openCard, canCount, code, utils, tallyMode, openVariantId],
   );
-
-  const barcodeInput = useBarcodeInput((code) => {
-    setQ("");
-    handleBarcode(code, "SCAN_HID");
-  }, { minLength: scanRequired ? 2 : 3 });
-
 
   useBarcodeScanner((raw) => handleBarcode(raw, "SCAN_HID"), {
     // في وضع التجميع يبقى القارئ حيّاً والبطاقة مفتوحة (كل مسحة +١)؛ وإلا يُعطَّل أثناء الفتح.
@@ -968,7 +961,7 @@ export default function CountPortal() {
             ref={searchRef}
             value={q}
             onChange={setQ}
-            onKeyDown={(e) => barcodeInput.handleKeyDown(e, setQ)}
+            scanMinLength={scanRequired ? 2 : 3}
             onScan={(code: string) => {
               setQ("");
               handleBarcode(code, "SCAN_HID");

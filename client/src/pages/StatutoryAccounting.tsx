@@ -5,7 +5,6 @@ import {
   Download,
   FileCheck2,
   FileSpreadsheet,
-  Search,
   ShieldCheck,
   Upload,
 } from "lucide-react";
@@ -18,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -352,10 +352,9 @@ function SetupTab({ canAdmin }: { canAdmin: boolean }) {
           <CardContent className="space-y-3 p-0 pb-4">
             <div className="px-6 text-sm text-muted-foreground">التغطية الحالية: {detail.data.mappedAccounts}/{detail.data.totalInternalAccounts}. يمنع النظام اختلاف نوع الحساب ويقبل حسابات الترحيل فقط.</div>
             <div className="flex flex-wrap items-center gap-2 px-6">
-              <div className="relative min-w-64 flex-1">
+              <div className="min-w-64 flex-1">
                 <Label className="sr-only" htmlFor="statutory-mapping-search">بحث في ربط الحسابات</Label>
-                <Search className="absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-                <Input id="statutory-mapping-search" className="pr-9" value={mappingSearch} onChange={(event) => setMappingSearch(event.target.value)} placeholder="بحث بالرمز أو الاسم أو الدور" />
+                <UnifiedSearchInput barcode={false} debounceMs={0} id="statutory-mapping-search" value={mappingSearch} onChange={setMappingSearch} placeholder="بحث بالرمز أو الاسم أو الدور" />
               </div>
               <label className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
                 <input type="checkbox" checked={onlyUnmapped} onChange={(event) => setOnlyUnmapped(event.target.checked)} />غير المربوط فقط

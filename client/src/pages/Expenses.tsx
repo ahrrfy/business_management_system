@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
@@ -33,7 +34,6 @@ import {
   Layers3,
   Loader2,
   Printer,
-  Search,
   ShieldAlert,
   SlidersHorizontal,
   UserRound,
@@ -987,19 +987,14 @@ export default function Expenses() {
               <Label htmlFor="expense-search" className="text-xs">
                 بحث شامل
               </Label>
-              <div className="relative">
-                <Search
-                  aria-hidden
-                  className="pointer-events-none absolute right-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-                />
-                <Input
-                  id="expense-search"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="البيان، المستفيد، المرجع، رقم المصروف أو السند…"
-                  className="pr-8"
-                />
-              </div>
+              <UnifiedSearchInput
+                barcode={false}
+                debounceMs={0}
+                id="expense-search"
+                value={query}
+                onChange={setQuery}
+                placeholder="البيان، المستفيد، المرجع، رقم المصروف أو السند…"
+              />
             </div>
             <div className="space-y-1">
               <Label htmlFor="expense-branch" className="text-xs">

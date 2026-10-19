@@ -5,11 +5,10 @@
 import { useMemo, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Link, useLocation } from "wouter";
-import { Search } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { DataTable } from "@/components/data-table/DataTable";
 import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -243,15 +242,15 @@ export default function ArApAgingDetail() {
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">بحث</label>
-            <div className="relative">
-              <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder={isAR ? "العميل أو رقم الفاتورة…" : "المورد أو رقم الأمر…"}
-                className="h-9 w-56 pr-8"
-              />
-            </div>
+            <UnifiedSearchInput
+              barcode={false}
+              debounceMs={0}
+              value={query}
+              onChange={setQuery}
+              placeholder={isAR ? "العميل أو رقم الفاتورة…" : "المورد أو رقم الأمر…"}
+              className="h-9"
+              wrapperClassName="w-56"
+            />
           </div>
         </div>
       }

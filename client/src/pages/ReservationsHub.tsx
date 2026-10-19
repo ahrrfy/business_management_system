@@ -5,7 +5,7 @@ import { receptionChannelLabel } from "@shared/receptionChannel";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { variantDescriptor } from "@shared/variantDisplay";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Download, Eye, FilterX, Plus, Printer, Search, ShoppingCart, Trash2, TriangleAlert, X } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Download, Eye, FilterX, Plus, Printer, ShoppingCart, Trash2, TriangleAlert, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useRealtimeEvent } from "@/lib/realtime";
 import { REALTIME_EVENT_TYPES, type HeldOrderUpdatedPayload } from "@shared/realtimeEvents";
@@ -22,6 +22,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
@@ -480,10 +481,14 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
           <label htmlFor="res-filter-to" className="text-xs text-muted-foreground">إلى</label>
           <Input id="res-filter-to" type="date" className={selectCls} value={to} onChange={(e) => setTo(e.target.value)} />
         </div>
-        <div className="relative flex-1 min-w-52">
-          <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground"><Search className="size-4" /></span>
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="بحث برقم الحجز أو اسم/هاتف العميل…" className="pe-9" />
-        </div>
+        <UnifiedSearchInput
+          barcode={false}
+          debounceMs={0}
+          value={q}
+          onChange={setQ}
+          placeholder="بحث برقم الحجز أو اسم/هاتف العميل…"
+          className="flex-1 min-w-52"
+        />
         <Button size="sm" variant="outline" onClick={clearFilters} disabled={!hasFilters}>
           <FilterX aria-hidden className="size-4 me-1" /> {FILTER_LABELS.reset}
         </Button>
