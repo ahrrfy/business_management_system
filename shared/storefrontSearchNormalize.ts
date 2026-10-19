@@ -43,13 +43,21 @@ export const ARABIC_NORMALIZATION_PAIRS: ReadonlyArray<
   ["۹", "9"],
 ];
 
+const NORMALIZATION_MAP = new Map(ARABIC_NORMALIZATION_PAIRS);
+const NORMALIZATION_REGEX = new RegExp(
+  `[${ARABIC_NORMALIZATION_PAIRS.map(([from]) => from).join("")}]`,
+  "g",
+);
+
 /** Arabic letters/digits, lower case, diacritics and repeated whitespace share one normalization. */
 export function normalizeArabicSearch(value: string): string {
   if (!value) return "";
-  let result = value.toLocaleLowerCase("ar");
-  for (const [from, to] of ARABIC_NORMALIZATION_PAIRS) {
-    result = result.split(from).join(to);
-  }
+  let result = value
+    .toLocaleLowerCase("ar")
+    .replace(
+      NORMALIZATION_REGEX,
+      (character) => NORMALIZATION_MAP.get(character)!,
+    );
   // إزالة حركات التشكيل (الفتحة، الضمة، الكسرة، التنوين، الشدة، السكون) إن وجدت في المدخلات
   result = result.replace(/[\u064B-\u065F\u0670]/g, "");
   return result.replace(/\s+/g, " ").trim();
@@ -68,7 +76,10 @@ const TRIM_PUNCT_REGEX = new RegExp(
 export const MAX_STOREFRONT_SEARCH_TOKENS = 8;
 
 export function tokenizeSearchTerms(value: string): string[] {
-  const normalized = normalizeArabicSearch(value);
+  return tokenizeNormalizedSearchTerms(normalizeArabicSearch(value));
+}
+
+function tokenizeNormalizedSearchTerms(normalized: string): string[] {
   if (!normalized) return [];
   return normalized
     .split(/[\s،,;؛:!؟?()\[\]{}"'«»]+/)
@@ -102,12 +113,19 @@ export function scoreStorefrontSearchRelevance(
 ): number {
   const normSearch = normalizeArabicSearch(rawSearch);
   if (!normSearch) return 0;
-  const tokens = tokenizeSearchTerms(rawSearch).slice(
+  const tokens = tokenizeNormalizedSearchTerms(normSearch).slice(
     0,
     MAX_STOREFRONT_SEARCH_TOKENS,
   );
   if (tokens.length === 0) return 0;
+  return scorePreparedSearchRelevance(target, normSearch, tokens);
+}
 
+function scorePreparedSearchRelevance(
+  target: SearchRelevanceTarget,
+  normSearch: string,
+  tokens: readonly string[],
+): number {
   const normName = normalizeArabicSearch(target.productName);
   const normStoreTitle = target.storeTitle
     ? normalizeArabicSearch(target.storeTitle)
@@ -143,9 +161,9 @@ export function scoreStorefrontSearchRelevance(
   }
 
   // 4. مطابقة الكلمات المفردة (Tokens) — استخدام tokenizeSearchTerms يجرّد علامات الترقيم من الكلمات
-  const titleWords = tokenizeSearchTerms(primaryTitle);
-  const nameWords = normName ? tokenizeSearchTerms(normName) : [];
-  const brandWords = normBrand ? tokenizeSearchTerms(normBrand) : [];
+  const titleWords = tokenizeNormalizedSearchTerms(primaryTitle);
+  const nameWords = normName ? tokenizeNormalizedSearchTerms(normName) : [];
+  const brandWords = normBrand ? tokenizeNormalizedSearchTerms(normBrand) : [];
 
   for (const token of tokens) {
     if (
@@ -252,10 +270,14 @@ export function createStorefrontSearchMatcher(
   raw: string,
   allowSimilar = false,
 ) {
-  const variants = expandStorefrontSearch(raw).map((query) => ({
-    query,
-    terms: tokenizeSearchTerms(query),
-  }));
+  const variants = expandStorefrontSearch(raw).map((query) => {
+    const terms = tokenizeSearchTerms(query);
+    return {
+      terms,
+      normalized: normalizeArabicSearch(query),
+      scoreTerms: terms.slice(0, MAX_STOREFRONT_SEARCH_TOKENS),
+    };
+  });
   return (target: SearchRelevanceTarget): StorefrontSearchMatch | null => {
     if (!variants.length) return null;
     const text =
@@ -270,7 +292,11 @@ export function createStorefrontSearchMatcher(
           kind: index === 0 ? "DIRECT" : "SYNONYM",
           score:
             (index === 0 ? 10_000 : 5_000) +
-            scoreStorefrontSearchRelevance(target, variants[index].query),
+            scorePreparedSearchRelevance(
+              target,
+              variants[index].normalized,
+              variants[index].scoreTerms,
+            ),
           correction: null,
         };
       }
@@ -307,11 +333,12 @@ export function getStorefrontSearchSuggestions<
   T extends SearchRelevanceTarget & { inStock?: boolean },
 >(products: T[], rawSearch: string): T[] {
   if (normalizeArabicSearch(rawSearch).length < 2) return [];
+  const match = createStorefrontSearchMatcher(rawSearch);
   return products
     .map((product, index) => ({
       product,
       index,
-      match: matchStorefrontSearch(product, rawSearch),
+      match: match(product),
     }))
     .filter((row) => row.match != null)
     .sort(

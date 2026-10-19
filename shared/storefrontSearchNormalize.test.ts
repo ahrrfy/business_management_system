@@ -6,6 +6,7 @@ import {
   scoreStorefrontSearchRelevance,
   getStorefrontSearchSuggestions,
   matchStorefrontSearch,
+  createStorefrontSearchMatcher,
 } from "./storefrontSearchNormalize";
 
 describe("normalizeArabicSearch", () => {
@@ -50,6 +51,32 @@ describe("normalizeArabicSearch", () => {
     expect(normalizeArabicSearch(normalizeArabicSearch(original))).toBe(
       original,
     );
+  });
+
+  it("preserves the legacy normalization contract for mixed Unicode and every mapped character", () => {
+    // Independent pre-optimization oracle: the order and Unicode case folding are public search semantics.
+    const legacy = (value: string) => {
+      let normalized = value.toLocaleLowerCase("ar");
+      for (const [from, to] of ARABIC_NORMALIZATION_PAIRS) {
+        normalized = normalized.split(from).join(to);
+      }
+      return normalized
+        .replace(/[\u064B-\u065F\u0670]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    };
+    const alphabet = Array.from(
+      "أإآٱةى٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹ دَفْتَرٌ A5 İΣẞ𐐀\u00a0\n\t،;!()🙂",
+    );
+    let seed = 739;
+    for (let sample = 0; sample < 200; sample++) {
+      let value = "";
+      for (let index = 0; index < 80; index++) {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        value += alphabet[seed % alphabet.length];
+      }
+      expect(normalizeArabicSearch(value)).toBe(legacy(value));
+    }
   });
 
   it("preserves non-Arabic characters (Latin, digits, punctuation)", () => {
@@ -130,6 +157,19 @@ describe("tokenizeSearchTerms", () => {
 });
 
 describe("scoreStorefrontSearchRelevance", () => {
+  it("caps relevance at eight tokens while matching every term of an expanded synonym", () => {
+    const raw = "هايلايتر احمر فاخر مدرسي جميل جديد صغير قوي";
+    const expanded = "قلم تاشير احمر فاخر مدرسي جميل جديد صغير قوي";
+    const target = { productName: expanded };
+    const match = createStorefrontSearchMatcher(raw);
+    expect(match(target)).toEqual({
+      kind: "SYNONYM",
+      score: 5_000 + scoreStorefrontSearchRelevance(target, expanded),
+      correction: null,
+    });
+    expect(match({ productName: expanded.replace(" قوي", "") })).toBeNull();
+  });
+
   const target = (
     productName: string,
     storeTitle: string | null = null,

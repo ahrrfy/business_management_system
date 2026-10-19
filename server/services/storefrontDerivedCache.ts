@@ -6,7 +6,7 @@
  * الطلبات المتزامنة لنفس المرشحات في loader واحد، بينما يبقى إنشاء الطلب هو حارس المخزون النهائي.
  */
 
-import { matchStorefrontSearch, normalizeArabicSearch } from "../../shared/storefrontSearchNormalize";
+import { createStorefrontSearchMatcher, normalizeArabicSearch } from "../../shared/storefrontSearchNormalize";
 
 export const STOREFRONT_DERIVED_RANKING_LIMITS = {
   ttlMs: 5_000,
@@ -211,6 +211,7 @@ export function chooseCandidateProductIds(
   searchTerm?: string | null,
   seed?: string | null,
 ): number[] {
+  const match = searchTerm ? createStorefrontSearchMatcher(searchTerm) : null;
   const productsById = new Map<number, {
     id: number;
     inStock: boolean;
@@ -234,7 +235,7 @@ export function chooseCandidateProductIds(
         storeTitle: row.storeTitle ?? null,
         brand: row.brand ?? null,
       };
-      const relevanceScore = searchTerm ? (matchStorefrontSearch(p, searchTerm)?.score ?? 0) : 0;
+      const relevanceScore = match?.(p)?.score ?? 0;
       productsById.set(id, {
         id,
         inStock,
