@@ -169,9 +169,9 @@ describe("Adversarial QR Code Verification Suite", () => {
     expect(resNum.docType).toBe("ORD");
     expect(resNum.number).toBe("ORD-100009");
 
-    // 1.5 Primary key ID 9
+    // 1.5 Raw database primary key ID 9 must NOT match (strict documentNumber isolation)
     const resPk = await verifyPayload("9");
-    expect(resPk.valid).toBe(true);
+    expect(resPk.valid).toBe(false);
 
     // 1.6 Invoices (canonical and lowercase)
     const resInvUpper = await verifyPayload("INV-1-20260806-00068");
