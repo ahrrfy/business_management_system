@@ -553,6 +553,8 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
   const nameRef = useRef<HTMLInputElement>(null);
   const phoneRef = useRef<HTMLInputElement>(null);
   const doneCloseRef = useRef<HTMLButtonElement>(null);
+  const unmountedRef = useRef(false);
+  useEffect(() => () => { unmountedRef.current = true; }, []);
 
   // بعد تبديل النموذج برسالة النجاح، انقل التركيز إلى الإجراء المتاح داخل الحوار.
   useEffect(() => {
@@ -615,6 +617,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
       } finally {
         setEncodingCv(false);
       }
+      if (unmountedRef.current) return;
     }
     apply.mutate({
       name: name.trim(),
@@ -649,7 +652,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
   }
 
   return (
-    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+    <Dialog open onOpenChange={(open) => { if (!open && !apply.isPending && !encodingCv) onClose(); }}>
       <DialogContent
         className="cj-modal z-[81] gap-0 border-0 p-0 sm:max-w-[720px]"
         dir="rtl"
@@ -661,7 +664,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
       >
         <div className="cj-mhead">
           <DialogClose asChild>
-            <button className="cj-mclose" aria-label="إغلاق">×</button>
+            <button className="cj-mclose" aria-label="إغلاق" disabled={apply.isPending || encodingCv}>×</button>
           </DialogClose>
           <div className="k">التقديم على وظيفة</div>
           <DialogTitle className="t">{vacancy ? vacancy.title : "تقديم عام"}</DialogTitle>

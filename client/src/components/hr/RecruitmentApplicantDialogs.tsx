@@ -23,7 +23,7 @@ import {
   applicantShiftLabel, applicantSourceLabel, applicantStageLabel, employmentTypeLabel, type ApplicantStage,
 } from "@shared/hr";
 import { Briefcase, Download, ExternalLink, GraduationCap, MapPin, Phone, Star, UserPlus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { selectClsSm } from "@/lib/ui/formStyles";
 import { ACTION_LABELS } from "@shared/actionLabels";
 
@@ -87,8 +87,11 @@ export function ApplicantDetailDialog({
   const [rejectionReason, setRejectionReason] = useState("");
   const [hrNotes, setHrNotes] = useState("");
 
+  const syncedIdRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!a) return;
+    if (id == null) { syncedIdRef.current = null; return; }
+    if (!a || syncedIdRef.current === a.id) return;
+    syncedIdRef.current = a.id;
     setStage(a.stage); setInterviewDate(a.interviewDate ?? "");
     setRejectionReason(a.rejectionReason ?? ""); setHrNotes(a.hrNotes ?? "");
   }, [id, a]);
@@ -260,7 +263,7 @@ export function PaperDialog({
   const [source, setSource] = useState<"paper" | "archive">("paper"); const [stage, setStage] = useState<string>("new");
   const [rating, setRating] = useState(0); const [interviewDate, setInterviewDate] = useState("");
   const [notes, setNotes] = useState(""); const [cvFile, setCvFile] = useState<File | null>(null);
-  const [encodingCv, setEncodingCv] = useState(false);
+  const [encodingCv, setEncodingCv] = useState(false); const submitSeqRef = useRef(0);
 
   useEffect(() => {
     if (!canChooseCompanyWide) {
@@ -277,6 +280,7 @@ export function PaperDialog({
   });
 
   function reset() {
+    submitSeqRef.current += 1;
     setName(""); setVacancyId(""); setBranchId(defaultBranchId); setJobTitle(""); setDepartment("");
     setAppliedDate(todayIso()); setPhone(""); setWhatsappPhone(""); setEmail(""); setBirthDate("");
     setGender(""); setMaritalStatus(""); setGovernorate("بغداد"); setDistrict(""); setResidentialAddress("");
@@ -300,6 +304,7 @@ export function PaperDialog({
 
   async function submit() {
     if (!name.trim()) return notify.err("اسم المتقدّم مطلوب");
+    const seq = ++submitSeqRef.current;
     let cv: { fileName: string; mimeType: typeof PDF_MIME | typeof DOCX_MIME; base64: string } | undefined;
     if (cvFile) {
       setEncodingCv(true);
@@ -311,6 +316,7 @@ export function PaperDialog({
       } finally {
         setEncodingCv(false);
       }
+      if (submitSeqRef.current !== seq) return;
     }
     create.mutate({
       name: name.trim(), vacancyId: vacancyId ? Number(vacancyId) : undefined,
@@ -333,7 +339,7 @@ export function PaperDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) { reset(); onClose(); } }}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o && !create.isPending && !encodingCv) { reset(); onClose(); } }}>
       <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-y-auto" dir="rtl">
         <DialogHeader><DialogTitle>إدخال استمارة ورقية إلى النظام</DialogTitle></DialogHeader>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
@@ -356,7 +362,7 @@ export function PaperDialog({
           <div className="space-y-1.5 sm:col-span-2 lg:col-span-3"><Label>المهارات والبرامج المتقنة</Label><Input value={skills} onChange={(e) => setSkills(e.target.value)} placeholder="مثال: Photoshop, Illustrator, Excel، مبيعات، كاشير" /></div>
           <div className="space-y-1.5"><Label>ربط بوظيفة شاغرة (اختياري)</Label><AppSelect className={selectClsSm + " w-full"} value={vacancyId} onValueChange={(next) => { setVacancyId(next); const found = vacancies.find((v) => String(v.id) === next); setJobTitle(found ? found.title.slice(0, 100) : ""); setDepartment(found?.department ? found.department.slice(0, 100) : ""); setEmploymentType(found?.employmentType || "full_time"); if (canChooseCompanyWide) setBranchId(found?.branchId != null ? String(found.branchId) : ""); }}><option value="">— تقديم عام (بدون شاغر محدد) —</option>{vacancies.map((v) => <option key={v.id} value={String(v.id)}>{v.title}</option>)}</AppSelect></div>
           <div className="space-y-1.5"><Label>الوظيفة المتقدّم لها</Label><Input value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} maxLength={100} placeholder="مثال: مصمم جرافيك" list="rec-jobs" /><datalist id="rec-jobs">{HR_DEPARTMENTS.map((d) => <option key={d} value={d} />)}</datalist></div>
-          <div className="space-y-1.5"><Label>القسم المفضّل</Label><AppSelect className={selectClsSm + " w-full"} value={department} onValueChange={setDepartment}><option value="">— اختر القسم —</option>{HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}</AppSelect></div>
+          <div className="space-y-1.5"><Label>القسم المفضّل</Label><AppSelect className={selectClsSm + " w-full"} value={department} onValueChange={setDepartment} disabled={Boolean(vacancyId && vacancies.find((v) => String(v.id) === vacancyId)?.department)}><option value="">— اختر القسم —</option>{department && !(HR_DEPARTMENTS as readonly string[]).includes(department) && <option value={department}>{department}</option>}{HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}</AppSelect></div>
           <div className="space-y-1.5"><Label>فرع المتابعة الإدارية</Label><AppSelect className={selectClsSm + " w-full"} value={branchId} onValueChange={setBranchId} disabled={!canChooseCompanyWide}>{canChooseCompanyWide && <option value="">— عام للشركة —</option>}{branches.map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}</AppSelect></div>
           <div className="space-y-1.5"><Label>الفرع المفضّل للمتقدّم</Label><AppSelect className={selectClsSm + " w-full"} value={preferredBranch} onValueChange={setPreferredBranch}><option value="">— أي فرع متاح —</option>{APPLICANT_PREFERRED_BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}</AppSelect></div>
           <div className="space-y-1.5"><Label>نوع الدوام</Label><AppSelect className={selectClsSm + " w-full"} value={employmentType} onValueChange={setEmploymentType}>{EMPLOYMENT_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}</AppSelect></div>
@@ -383,7 +389,7 @@ export function PaperDialog({
           <div className="space-y-1.5 sm:col-span-2 lg:col-span-3"><Label>ملاحظات الموظف المختص</Label><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} placeholder="خبرات سابقة، مهارات، انطباع أولي…" /></div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => { reset(); onClose(); }}>إلغاء</Button>
+          <Button variant="outline" onClick={() => { reset(); onClose(); }} disabled={create.isPending || encodingCv}>إلغاء</Button>
           <Button onClick={() => void submit()} disabled={create.isPending || encodingCv}>{create.isPending || encodingCv ? ACTION_LABELS.saving : "حفظ في مسار التوظيف"}</Button>
         </DialogFooter>
       </DialogContent>

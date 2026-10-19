@@ -380,7 +380,8 @@ describe("حزمة استمارة التوظيف والتعيين الكاملة
     expect(employeeNew).not.toContain("Number(a.expectedSalary)");
     expect(employeeNew).not.toContain("hireDate: a.availableFrom");
     expect(employeeNew).toContain("(HR_DEPARTMENTS as readonly string[]).includes(a.department)");
-    expect(dialogs).toContain("}, [id, a]);");
+    expect(dialogs).toContain("syncedIdRef");
+    expect(dialogs).toContain("submitSeqRef");
     expect(dialogs).toContain("onClick={() => { reset(); onClose(); }}");
     expect(employeeNew).toContain("trpc.recruitment.get.useQuery");
     expect(employeeNew).toContain("splitFullArabicName");
