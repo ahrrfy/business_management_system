@@ -6,7 +6,7 @@
  * ليتم استلام المرتجع وعكس المبيعات والمخزون وتحرير عهدة المندوب فورياً.
  */
 import { TRPCError } from "@trpc/server";
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryParties,
@@ -17,7 +17,9 @@ import {
 import { getDb } from "../../db";
 import { appErrorMessage } from "@shared/errors";
 import {
+  namespaceAllowsTarget,
   prepareDeliveryBarcodeLookup,
+  resolveActiveInvoiceCandidates,
   resolveUniqueDeliveryBarcodeTarget,
 } from "./barcodeLookupPolicy";
 import { returnConsignment } from "./returns";
@@ -65,10 +67,61 @@ export async function returnByBarcode(
     ? null
     : (actor.branchId == null ? -1 : Number(actor.branchId));
 
+  const rawInvoiceCandidates = namespaceAllowsTarget(namespace, "INVOICE")
+    ? await db
+        .select({
+          id: invoices.id,
+          correctedByInvoiceId: invoices.correctedByInvoiceId,
+          matchRank: sql<number>`CASE WHEN ${invoices.invoiceNumber} IN (${cleanCode}, ${systemCode}, ${documentCode}, ${`INV-${cleanCode}`}) THEN 100 ELSE 10 END`,
+        })
+        .from(invoices)
+        .where(and(
+          namespace === "INVOICE"
+            ? or(eq(invoices.invoiceNumber, systemCode), eq(invoices.invoiceNumber, documentCode))
+            : namespace === "NUMERIC"
+              ? or(
+                  eq(invoices.invoiceNumber, cleanCode),
+                  eq(invoices.invoiceNumber, `INV-${cleanCode}`),
+                  numericId != null ? eq(invoices.id, numericId) : sql`0=1`,
+                )
+              : eq(invoices.invoiceNumber, cleanCode),
+          scopedBranch != null ? eq(invoices.branchId, scopedBranch) : sql`1=1`,
+        ))
+        .orderBy(desc(invoices.id))
+        .limit(5)
+    : [];
+
+  const resolvedInvoices = await resolveActiveInvoiceCandidates(
+    rawInvoiceCandidates,
+    async (nextId) => {
+      const [next] = await db
+        .select({
+          id: invoices.id,
+          correctedByInvoiceId: invoices.correctedByInvoiceId,
+        })
+        .from(invoices)
+        .where(and(
+          eq(invoices.id, nextId),
+          scopedBranch != null ? eq(invoices.branchId, scopedBranch) : sql`1=1`,
+        ))
+        .limit(1);
+      return next ?? null;
+    },
+  );
+  const allMatchedInvoiceIds = resolvedInvoices.map((r) => Number(r.id)).filter((id) => id > 0);
+  const docMatchedInvoiceIds = resolvedInvoices
+    .filter((r) => Number(r.matchRank ?? 0) >= 100)
+    .map((r) => Number(r.id))
+    .filter((id) => id > 0);
+
   const candidateCondition = namespace === "CONSIGNMENT"
     ? or(eq(deliveryConsignments.consignmentNumber, systemCode), eq(deliveryConsignments.consignmentNumber, documentCode))
     : namespace === "INVOICE"
-      ? or(eq(invoices.invoiceNumber, systemCode), eq(invoices.invoiceNumber, documentCode))
+      ? or(
+          eq(invoices.invoiceNumber, systemCode),
+          eq(invoices.invoiceNumber, documentCode),
+          allMatchedInvoiceIds.length ? inArray(deliveryConsignments.invoiceId, allMatchedInvoiceIds) : sql`0=1`,
+        )
       : namespace === "WORK_ORDER"
         ? or(eq(workOrders.orderNumber, systemCode), eq(workOrders.orderNumber, documentCode))
         : namespace === "ONLINE_ORDER"
@@ -88,6 +141,7 @@ export async function returnByBarcode(
                 numericId != null ? eq(invoices.id, numericId) : sql`0=1`,
                 eq(invoices.invoiceNumber, cleanCode),
                 eq(invoices.invoiceNumber, `INV-${cleanCode}`),
+                allMatchedInvoiceIds.length ? inArray(deliveryConsignments.invoiceId, allMatchedInvoiceIds) : sql`0=1`,
                 numericId != null ? eq(workOrders.id, numericId) : sql`0=1`,
                 eq(workOrders.orderNumber, cleanCode),
                 eq(workOrders.orderNumber, `WO-${cleanCode}`),
@@ -106,21 +160,26 @@ export async function returnByBarcode(
                     )
                   : sql`0=1`,
                 eq(invoices.invoiceNumber, cleanCode),
+                allMatchedInvoiceIds.length ? inArray(deliveryConsignments.invoiceId, allMatchedInvoiceIds) : sql`0=1`,
                 eq(workOrders.orderNumber, cleanCode),
                 eq(onlineOrders.orderNumber, cleanCode),
               );
+
+  const isActiveCnSql = sql`(${deliveryConsignments.status} NOT IN ('CANCELLED', 'RETURNED') AND ${deliveryConsignments.parcelStatus} NOT IN ('CANCELLED', 'RETURNED'))`;
+  const docMatchSql = sql`(${deliveryConsignments.consignmentNumber} IN (${cleanCode}, ${systemCode}, ${documentCode})
+    OR ${invoices.invoiceNumber} IN (${cleanCode}, ${systemCode}, ${documentCode}, ${`INV-${cleanCode}`})
+    OR ${docMatchedInvoiceIds.length ? inArray(deliveryConsignments.invoiceId, docMatchedInvoiceIds) : sql`0=1`}
+    OR ${workOrders.orderNumber} IN (${cleanCode}, ${systemCode}, ${documentCode}, ${`WO-${cleanCode}`})
+    OR ${onlineOrders.orderNumber} IN (${cleanCode}, ${systemCode}, ${documentCode}, ${`ORD-${cleanCode}`}))`;
 
   const candidateRows = await db
     .select({
       id: deliveryConsignments.id,
       matchRank: sql<number>`MAX(CASE
-        WHEN ${deliveryConsignments.consignmentNumber} IN (${cleanCode}, ${systemCode}, ${documentCode})
-          OR ${invoices.invoiceNumber} IN (${cleanCode}, ${systemCode}, ${documentCode}, ${`INV-${cleanCode}`})
-          OR ${workOrders.orderNumber} IN (${cleanCode}, ${systemCode}, ${documentCode}, ${`WO-${cleanCode}`})
-          OR ${onlineOrders.orderNumber} IN (${cleanCode}, ${systemCode}, ${documentCode}, ${`ORD-${cleanCode}`}) THEN 100
-        WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN 50
-        WHEN ${strippedTrackingCode != null} AND TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode ?? ""} THEN 40
-        ELSE 10 END)`,
+        WHEN ${docMatchSql} THEN CASE WHEN ${isActiveCnSql} THEN 100 ELSE 80 END
+        WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN CASE WHEN ${isActiveCnSql} THEN 50 ELSE 35 END
+        WHEN ${strippedTrackingCode != null} AND TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode ?? ""} THEN CASE WHEN ${isActiveCnSql} THEN 40 ELSE 25 END
+        ELSE CASE WHEN ${isActiveCnSql} THEN 10 ELSE 5 END END)`,
     })
     .from(deliveryConsignments)
     .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
@@ -137,7 +196,8 @@ export async function returnByBarcode(
       scopedBranch != null ? eq(deliveryConsignments.branchId, scopedBranch) : sql`1=1`,
     ))
     .groupBy(deliveryConsignments.id)
-    .limit(2);
+    .orderBy(desc(deliveryConsignments.id))
+    .limit(5);
 
   const selectedTarget = resolveUniqueDeliveryBarcodeTarget(
     cleanCode,

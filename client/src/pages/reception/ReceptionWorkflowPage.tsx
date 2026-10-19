@@ -132,8 +132,8 @@ export default function DeliveryWorkflowPage() {
         if (wo.kind === "workOrder") {
           if (wo.status === "DELIVERED") { notify.info(`الطلب ${wo.orderNumber} مُسلَّم`); return; }
           if (wo.status !== "READY") { notify.warn(`الطلب غير جاهز (حالته: ${wo.status})`); return; }
-        } else if (wo.kind === "invoice" && (wo.status === "CANCELLED" || wo.status === "RETURNED")) {
-          notify.warn("الفاتورة ملغاة أو مرتجعة"); return;
+        } else if (wo.kind === "invoice" && (wo.status === "CANCELLED" || wo.status === "RETURNED" || wo.status === "SUPERSEDED")) {
+          notify.warn(wo.status === "SUPERSEDED" ? "الفاتورة تم استبدالها بتصحيح" : "الفاتورة ملغاة أو مرتجعة"); return;
         } else if (wo.kind === "onlineOrder") {
           if (wo.status === "CANCELLED") { notify.warn(`طلب المتجر ${wo.orderNumber} ملغى مسبقاً`); return; }
           if (wo.status === "DELIVERED") { notify.info(`طلب المتجر ${wo.orderNumber} تم تسليمه للعميل مسبقاً`); return; }

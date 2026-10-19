@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   collapseLinkedDeliveryBarcodeCandidates,
   prepareDeliveryBarcodeLookup,
+  resolveActiveInvoiceCandidates,
   resolveUniqueDeliveryBarcodeTarget,
 } from "./barcodeLookupPolicy";
 
@@ -84,6 +85,33 @@ describe("resolveUniqueDeliveryBarcodeTarget", () => {
       mapConsignmentToSource: true,
     });
     expect(() => resolveUniqueDeliveryBarcodeTarget("100035", unrelated)).toThrow(/يطابق أكثر من سجل/);
+  });
+
+  it("يتتبّع سلسلة الفواتير المستبدلة بالتصحيح (SUPERSEDED) ويطويها مع الإرسالية المعاد ربطها", async () => {
+    const chain = new Map([
+      [500, { id: 500, sourceType: "POS", sourceId: null, correctedByInvoiceId: 501 }],
+      [501, { id: 501, sourceType: "POS", sourceId: null, correctedByInvoiceId: 502 }],
+      [502, { id: 502, sourceType: "POS", sourceId: null, correctedByInvoiceId: null }],
+    ]);
+    const resolvedInvoices = await resolveActiveInvoiceCandidates(
+      [{ id: 500, sourceType: "POS", sourceId: null, correctedByInvoiceId: 501, matchRank: 100 }],
+      async (id) => chain.get(id) ?? null,
+    );
+    expect(resolvedInvoices).toEqual([
+      { id: 502, sourceType: "POS", sourceId: null, correctedByInvoiceId: null, matchRank: 100 },
+    ]);
+
+    const collapsed = collapseLinkedDeliveryBarcodeCandidates({
+      namespace: "NUMERIC",
+      invoices: resolvedInvoices,
+      consignments: [{ id: 88, invoiceId: 502, sourceType: "INVOICE", sourceId: 502, matchRank: 100 }],
+      mapConsignmentToSource: false,
+    });
+    expect(resolveUniqueDeliveryBarcodeTarget("100034", collapsed)).toEqual({
+      kind: "INVOICE",
+      id: 502,
+      matchRank: 100,
+    });
   });
 
   it("يجهّز كود التتبع مع نواته بعد إسقاط الأصفار البادئة (0, 00, 000)", () => {
