@@ -135,7 +135,14 @@ export class ScanBurstDetector {
   /** يفرّغ الحالة ويعيد القرار النهائيّ (ومضةٌ مقبولة أم كتابةٌ تُستعاد). */
   flush(): FlushResult {
     const keys = this.keys;
-    const humanLikeTiming = this.gaps.length > 0 && this.gaps.every((gap) => gap > 35);
+    const sortedGaps = [...this.gaps].sort((a, b) => a - b);
+    const steadyGaps = sortedGaps.length > 1 ? sortedGaps.slice(0, -1) : sortedGaps;
+    const avgSteadyGap =
+      steadyGaps.length > 0
+        ? steadyGaps.reduce((sum, g) => sum + g, 0) / steadyGaps.length
+        : Number.POSITIVE_INFINITY;
+    const minGap = sortedGaps.length > 0 ? sortedGaps[0] : Number.POSITIVE_INFINITY;
+    const humanLikeTiming = steadyGaps.length > 0 && avgSteadyGap > 35 && minGap > 20;
     const accepted = this.active && !this.ambiguousStart && keys.length >= this.minLength;
     const text = keys.map((k) => k.key).join("");
     const code = normalizeBarcodeScannerInput(keys.map((k) => scannerCharFromEvent(k)).join(""));
