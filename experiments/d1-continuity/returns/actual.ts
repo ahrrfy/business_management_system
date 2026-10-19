@@ -38,6 +38,8 @@ const mutableTables = new Set([
   "productVariants",
 ]);
 export const creditRecoveryStrategy = {
+  confirmedReplayRead: true,
+  eagerPrepare: "RETURN",
   async primaryPreflight(db: any, input: any, actor: any) {
     const boundary = cashReadBoundary(),
       envelope = JSON.stringify({ input, actor, ...boundary });
@@ -176,11 +178,11 @@ export async function prepareCashSale(
       )
     )
       throw Error("UNSUPPORTED_TABLE_WRITE");
-    // Successful recovery protocol costs12 statements outside the primary batch;
+    // The non-lookahead recovery protocol costs13 statements outside the primary batch;
     // epoch/assert/command/outbox/cleanup cost5, plus one insert or two update statements.
     // Leave two queries of headroom within the Free invocation limit of50.
     const invocationSql =
-      17 + changes.reduce((n, c) => n + (c.before ? 2 : 1), 0);
+      18 + changes.reduce((n, c) => n + (c.before ? 2 : 1), 0);
     if (changes.length > 30 || invocationSql > 48)
       throw Object.assign(Error("CREDIT_INVOCATION_BUDGET_EXCEEDED"), {
         code: "CREDIT_INVOCATION_BUDGET_EXCEEDED",
@@ -211,6 +213,16 @@ export async function prepareCashSale(
       plan,
       trace: snap.trace,
       snapshot: { epoch: snap.expectedEpoch, ...snap.metrics },
+      preparationValidUntil: (() => {
+        const expiry = snap.before.users.find(
+          (u) => u.id === actor.userId,
+        )?.accessExpiresAt;
+        if (expiry == null) return null;
+        const text = String(expiry);
+        return Date.parse(
+          text.includes("T") ? text : text.replace(" ", "T") + "Z",
+        );
+      })(),
     };
   } catch (error: any) {
     if (error.name === "OperationalApprovalRequiredError") {

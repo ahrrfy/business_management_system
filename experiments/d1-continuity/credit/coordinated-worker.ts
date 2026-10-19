@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import core, { creditReadAhead } from "./worker";
+import core, { creditReadAhead, creditConfirmedReplay } from "./worker";
 import { creditHttpInput } from "./http-input";
 import { LAB_ID } from "./identity";
 import { CreditPipelineQueue } from "./pipeline";
@@ -128,6 +128,17 @@ export default {
     const raw = await validate(request, env);
     if (raw instanceof Response) return raw;
     if (!env.CREDIT_WRITER) return error("CASH_WRITER_UNAVAILABLE", 503);
+    if (!ready && request.headers.get("x-cash-retry") === "1") {
+      const replay = await creditConfirmedReplay(
+        new Request(request.url, {
+          method: "POST",
+          headers: request.headers,
+          body: raw,
+        }),
+        env,
+      );
+      if (replay) return replay;
+    }
     try {
       return await env.CREDIT_WRITER.get(
         env.CREDIT_WRITER.idFromName(CREDIT_WRITER_NAME),

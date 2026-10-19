@@ -158,7 +158,9 @@ export async function creditCloudContext({ create = false } = {}) {
         if (
           !readOnly ||
           attempt >= 2 ||
-          !String(e.stderr).includes("fetch failed")
+          ![e.stderr, e.stdout].some((output) =>
+            String(output).includes("fetch failed"),
+          )
         )
           throw Error("CREDIT_CLI_FAILED_SEE_PRIVATE_EVIDENCE_" + args[0]);
         await new Promise((r) => setTimeout(r, 1000));

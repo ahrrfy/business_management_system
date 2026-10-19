@@ -28,7 +28,7 @@ export function cashProfiler(env: any, stateMode = "CASH_SCOPED") {
     fn: () => Promise<any>,
   ) {
     const begin = Date.now();
-    const call = {
+    const call: any = {
       role,
       method,
       statements: count,
@@ -40,6 +40,22 @@ export function cashProfiler(env: any, stateMode = "CASH_SCOPED") {
     try {
       const result = await fn();
       call.ok = true;
+      const meta = (Array.isArray(result) ? result : [result])
+        .map((item) => item?.meta)
+        .filter(Boolean);
+      if (meta.length)
+        call.d1 = {
+          sqlMs: meta.reduce(
+            (n, m) => n + (m.timings?.sql_duration_ms ?? 0),
+            0,
+          ),
+          rowsRead: meta.reduce((n, m) => n + (m.rows_read ?? 0), 0),
+          rowsWritten: meta.reduce((n, m) => n + (m.rows_written ?? 0), 0),
+          maxAttempts: Math.max(...meta.map((m) => m.total_attempts ?? 1)),
+          regions: [
+            ...new Set(meta.map((m) => m.served_by_region).filter(Boolean)),
+          ],
+        };
       return result;
     } finally {
       call.ms = Date.now() - begin;

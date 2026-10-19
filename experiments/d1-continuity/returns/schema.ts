@@ -43,5 +43,6 @@ export const initializationSql = projectionInitializationSql(tables, [
   "CREATE INDEX IF NOT EXISTS returns_invoice_receipts ON receipts(invoiceId);",
   "CREATE INDEX IF NOT EXISTS returns_drawer_receipts ON receipts(branchId,shiftId,cashBucket);",
   "CREATE INDEX IF NOT EXISTS returns_invoice_ledger ON accountingEntries(invoiceId);",
+  "CREATE INDEX IF NOT EXISTS returns_receipt_ledger ON accountingEntries(receiptId);",
   "CREATE INDEX IF NOT EXISTS returns_document_effects ON documentEffects(documentType,documentId);",
 ]);

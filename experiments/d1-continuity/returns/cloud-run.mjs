@@ -201,7 +201,7 @@ export async function extend() {
     }),
   );
 }
-export async function deploy() {
+export async function deploy({ outputDir = dir } = {}) {
   const c = await creditCloudContext();
   await verifyCreditResources(c);
   const extension = JSON.parse(
@@ -271,7 +271,7 @@ export async function deploy() {
     console.log(JSON.stringify(result.workers[role]));
   }
   await writeFile(
-    path.join(dir, "deploy.json"),
+    path.join(outputDir, "deploy.json"),
     JSON.stringify(result, null, 2),
   );
 }

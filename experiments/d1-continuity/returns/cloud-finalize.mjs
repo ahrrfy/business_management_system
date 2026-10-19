@@ -19,7 +19,8 @@ import { returnsRoot } from "./build.mjs";
 import { assertHistoricalRows } from "./history.mjs";
 assert.equal(process.argv[2], "--confirm-isolated-returns-lab");
 const run = process.argv[3];
-assert.match(run, /^qualification-\d{13}$/);
+assert.match(run, /^(?:perf-)?qualification-\d{13}$/);
+const incremental = run.startsWith("perf-");
 const dir = path.join(returnsRoot, "results/cloud-20261019", run);
 const baseline = JSON.parse(
   await readFile(path.join(dir, "baseline.json"), "utf8"),
@@ -59,14 +60,26 @@ const restoredIds = new Set(
 );
 assert.equal(
   restoredIds.size,
-  exported.count,
+  incremental
+    ? exported.throughEpoch - baseline.snapshot.epoch
+    : exported.count,
   "Original run did not finish restoring every signed record",
 );
 for await (const record of journalFileRecords(file, c.secret, identity))
-  assert.ok(restoredIds.has(record.requestId));
+  if (!incremental || record.epoch > baseline.snapshot.epoch)
+    assert.ok(restoredIds.has(record.requestId));
 const measured = requests.filter((a) => a.category === "measurement");
-assert.equal(measured.length, 39);
-assert.equal(new Set(measured.map((a) => a.input.clientRequestId)).size, 39);
+assert.ok(
+  incremental
+    ? measured.length >= 39 &&
+        measured.length <= 156 &&
+        measured.length % 13 === 0
+    : measured.length === 39,
+);
+assert.equal(
+  new Set(measured.map((a) => a.input.clientRequestId)).size,
+  measured.length,
+);
 const samples = measured.map((a) => {
   const r = responses.get(a.attempt);
   assert.equal(r?.status, 200);
@@ -76,6 +89,7 @@ const samples = measured.map((a) => {
     terminal: Number(a.terminal),
     ms: r.ms,
     sql: r.profile.sqlCount,
+    ...(incremental ? { profile: r.profile, writer: r.writer } : {}),
   };
 });
 const transport = cashCloudClient(c, () => {});
@@ -93,7 +107,7 @@ assert.equal(recovered.epoch, exported.throughEpoch);
 assert.equal(recovered.sha256, exported.header.snapshotSha256);
 assert.equal(
   recovered.counts.cashCommands,
-  baseline.snapshot.counts.cashCommands + 49,
+  baseline.snapshot.counts.cashCommands + measured.length + 10,
 );
 const meta = JSON.parse(
   await readFile(path.join(returnsRoot, "build/cloud/tables.json"), "utf8"),
@@ -105,7 +119,10 @@ const history = assertHistoricalRows({
   recovered,
   tableNames: meta.map((t) => t.name),
 });
-assert.equal(history.addedInvoices, 17);
+assert.equal(
+  history.addedInvoices,
+  samples.filter((s) => s.route === "/sale").length + 5,
+);
 const original = JSON.parse(
   await readFile(
     path.join(returnsRoot, "results/cloud-20261019/before.json"),
@@ -128,7 +145,9 @@ assert.equal(
 const p95 = (values) =>
   values.toSorted((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1];
 const summary = {
-  passed: true,
+  passed:
+    !incremental ||
+    p95(samples.filter((s) => s.route === "/return").map((s) => s.ms)) < 1000,
   at: new Date().toISOString(),
   samples: samples.length,
   measuredSales: samples.filter((s) => s.route === "/sale").length,
@@ -143,7 +162,13 @@ const summary = {
   maxSql: Math.max(...samples.map((s) => s.sql)),
   noHiddenMeasurementRetries: true,
   sourceDisabledForRestore: true,
-  restored: exported.count,
+  restored: restoredIds.size,
+  ...(incremental
+    ? {
+        preservedSignedPrefix: baseline.snapshot.epoch - 1,
+        totalSignedRecords: exported.count,
+      }
+    : {}),
   exported,
   before: baseline.snapshot,
   snapshot: recovered,
@@ -154,16 +179,22 @@ const summary = {
   readOnlyVerificationContinuation: true,
   financialCommandsRepeated: 0,
   correctedAssertion:
-    "Invoice counter advances by17 new invoices; protocol epoch advances to the signed checkpoint; all historical financial rows remain preserved",
+    "Invoice counter advances only by proven new invoices; protocol epoch advances to the signed checkpoint; all historical financial rows remain preserved",
   hostinger:
     "No Hostinger binding or request; production server was not stopped",
 };
 assert.ok(summary.maxSql <= 48);
-await writeFile(
-  path.join(dir, "samples.json"),
-  JSON.stringify(samples, null, 2),
-  { flag: "wx" },
-);
+if (incremental)
+  assert.deepEqual(
+    JSON.parse(await readFile(path.join(dir, "samples.json"), "utf8")).map(canonical).sort(),
+    samples.map(canonical).sort(),
+  );
+else
+  await writeFile(
+    path.join(dir, "samples.json"),
+    JSON.stringify(samples, null, 2),
+    { flag: "wx" },
+  );
 await writeFile(
   path.join(dir, "summary.json"),
   JSON.stringify(summary, null, 2),
@@ -171,7 +202,7 @@ await writeFile(
 );
 console.log(
   JSON.stringify({
-    passed: true,
+    passed: summary.passed,
     restored: summary.restored,
     epoch: recovered.epoch,
     p95Ms: summary.p95Ms,

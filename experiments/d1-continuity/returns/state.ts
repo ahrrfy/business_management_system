@@ -23,7 +23,7 @@ const selectors = {
     cashSelectors.users +
     " OR id IN(SELECT createdBy FROM invoices WHERE id IN(SELECT id FROM creditInvoiceSet))",
   receipts:
-    "id IN(SELECT id FROM creditReceiptReplay) OR invoiceId=(SELECT json_extract(j,'$.input.invoiceId') FROM cashScope) OR (branchId=(SELECT branchId FROM cashScope) AND shiftId=(SELECT shiftId FROM cashScope) AND cashBucket='DRAWER')",
+    "id IN(SELECT id FROM creditReceiptReplay UNION SELECT id FROM receipts WHERE (SELECT json_extract(j,'$.input.commandType') FROM cashScope)='RETURN' AND invoiceId=(SELECT json_extract(j,'$.input.invoiceId') FROM cashScope) UNION SELECT id FROM receipts WHERE (SELECT json_extract(j,'$.input.commandType') FROM cashScope)='RETURN' AND branchId=(SELECT branchId FROM cashScope) AND shiftId=(SELECT shiftId FROM cashScope) AND cashBucket='DRAWER')",
   idempotencyKeys:
     "operation IN('sale.create','sale.pay','sale.return','sale.return.amount') AND clientRequestId=(SELECT requestId FROM cashScope)",
   customerContractPrices:
@@ -32,7 +32,7 @@ const selectors = {
   invoiceItems:
     "invoiceId IN(SELECT id FROM cashReplay UNION SELECT json_extract(j,'$.input.invoiceId') FROM cashScope)",
   accountingEntries:
-    "invoiceId=(SELECT json_extract(j,'$.input.invoiceId') FROM cashScope) OR receiptId IN(SELECT id FROM receipts WHERE branchId=(SELECT branchId FROM cashScope) AND shiftId=(SELECT shiftId FROM cashScope))",
+    "id IN(SELECT id FROM accountingEntries WHERE (SELECT json_extract(j,'$.input.commandType') FROM cashScope)='RETURN' AND invoiceId=(SELECT json_extract(j,'$.input.invoiceId') FROM cashScope) UNION SELECT accountingEntries.id FROM receipts JOIN accountingEntries ON accountingEntries.receiptId=receipts.id WHERE (SELECT json_extract(j,'$.input.commandType') FROM cashScope)='RETURN' AND receipts.invoiceId=(SELECT json_extract(j,'$.input.invoiceId') FROM cashScope))",
   documentCounters: "counterKey IN('invoice','voucher')",
   roles:
     "id IN(SELECT customRoleId FROM users WHERE id=(SELECT userId FROM cashScope))",

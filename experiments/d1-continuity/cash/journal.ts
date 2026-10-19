@@ -389,12 +389,112 @@ async function repairNextWinner(
   return confirm(log, secret, envelopeHash, plan);
 }
 
+async function acknowledgedWinner(
+  secret: string,
+  winning: any,
+  envelope: any,
+  prefix: number,
+  ack: any,
+  fault: string,
+) {
+  if (canonical(winning.request) !== canonical(envelope))
+    throw failure("IDEMPOTENCY_PAYLOAD_MISMATCH", 409);
+  if (!ack) return null;
+  const target = winning.plan.expectedEpoch + 1,
+    id = envelope.input.clientRequestId;
+  let record: any;
+  try {
+    record = { ...JSON.parse(ack.recordJson), signature: ack.signature };
+    await verifyRecord(secret, record);
+    if (
+      prefix < target ||
+      record.epoch !== target ||
+      record.requestId !== id ||
+      record.planHash !== winning.planHash ||
+      record.plan.requestHash !== winning.requestHash ||
+      canonical(record.plan) !== canonical(winning.plan) ||
+      canonical(record.plan.request) !== canonical(winning.request) ||
+      canonical(record.plan.result) !== canonical(winning.result)
+    )
+      throw Error("ACK_PRIMARY_MISMATCH");
+  } catch {
+    throw failure("RECOVERY_ACK_INVALID_RETRY_SAME_REQUEST");
+  }
+  if (fault === "after-primary")
+    throw failure("PRIMARY_COMMITTED_RECOVERY_PENDING");
+  if (fault === "drop-response")
+    throw failure("RESPONSE_LOST_AFTER_BOTH_COMMITS");
+  return {
+    ...record.plan.result,
+    idempotentReplay: true,
+    recoveryAcknowledged: true,
+    recoveryEpoch: record.epoch,
+    clientRequestId: id,
+  };
+}
+
+// A retry hint may only select this read-only path. An absent primary winner or
+// ACK always returns to the single writer; this function cannot create or repair.
+export async function confirmedReplay(
+  env: any,
+  input: any,
+  actor: any,
+  fault = "",
+) {
+  const id = input?.clientRequestId;
+  if (typeof id !== "string" || !/^\w[\w:-]{7,99}$/.test(id))
+    throw failure("INVALID_REQUEST_ID", 400);
+  if (fault === "log-unavailable") throw failure("RECOVERY_LOG_UNAVAILABLE");
+  const db = primary(env.DB),
+    log = primary(env.RECOVERY_LOG);
+  const [state, journal] = await Promise.all([
+    db.batch([
+      db
+        .prepare("SELECT role FROM cashSandboxIdentity WHERE id=?")
+        .bind(LAB_ID),
+      db.prepare("SELECT * FROM cashCommands WHERE requestId=?").bind(id),
+      db.prepare("SELECT epoch FROM cashEpoch WHERE id=1"),
+    ]),
+    log.batch([
+      log
+        .prepare("SELECT role FROM cashJournalIdentity WHERE id=?")
+        .bind(LAB_ID),
+      log.prepare(prefixSql),
+      log
+        .prepare(
+          "SELECT recordJson,signature FROM cashJournalCommitted WHERE requestId=?",
+        )
+        .bind(id),
+    ]),
+  ]);
+  if (
+    state[0].results[0]?.role !== "primary" ||
+    journal[0].results[0]?.role !== "journal"
+  )
+    throw failure("SANDBOX_IDENTITY_MISMATCH");
+  const prefix = checkedPrefix(journal[1].results[0]),
+    winning = cashCommandFromRow(state[1].results[0]);
+  if (!winning) return null;
+  const epoch = state[2].results[0]?.epoch;
+  if (!Number.isSafeInteger(epoch) || epoch < winning.plan.expectedEpoch + 1)
+    throw failure("RECOVERY_PRIMARY_EPOCH_INVALID");
+  return acknowledgedWinner(
+    env.LAB_TOKEN,
+    winning,
+    { input, actor },
+    prefix,
+    journal[2].results[0],
+    fault,
+  );
+}
+
 export async function createWithRecovery(
   env: any,
   input: any,
   actor: any,
   fault = "",
   strategy?: {
+    confirmedReplayRead?: boolean;
     primaryPreflight(db: any, input: any, actor: any): Promise<any>;
     prepare(db: any, input: any, actor: any, snapshot: any): Promise<any>;
   },
@@ -436,6 +536,15 @@ export async function createWithRecovery(
               .prepare("SELECT role FROM cashJournalIdentity WHERE id=?")
               .bind(LAB_ID),
             log.prepare(prefixSql),
+            ...(strategy?.confirmedReplayRead
+              ? [
+                  log
+                    .prepare(
+                      "SELECT recordJson,signature FROM cashJournalCommitted WHERE requestId=?",
+                    )
+                    .bind(id),
+                ]
+              : []),
           ]),
   ]);
   if (states[0].status === "rejected") throw states[0].reason;
@@ -457,9 +566,23 @@ export async function createWithRecovery(
     : primaryState[2].results[0]?.epoch;
   const prefix = guarded ? target : checkedPrefix(journalState![1].results[0]);
   const merged = !!strategy && !winning && prefix === target;
-  if (!merged) envelopeHash = await reserveRequest(log, id, envelope);
   if (!Number.isSafeInteger(target) || target < CASH_BASELINE_EPOCH)
     throw failure("RECOVERY_PRIMARY_EPOCH_INVALID");
+  if (strategy?.confirmedReplayRead && winning) {
+    const reply = await acknowledgedWinner(
+      env.LAB_TOKEN,
+      winning,
+      envelope,
+      prefix,
+      journalState?.[2]?.results[0],
+      fault,
+    );
+    if (reply) {
+      env.CREDIT_HANDOFF?.acknowledged(reply.recoveryEpoch);
+      return reply;
+    }
+  }
+  if (!merged) envelopeHash = await reserveRequest(log, id, envelope);
   if (!winning && prefix > target) {
     // Independent preflight snapshots may straddle another complete commit.
     // Distinguish that race from a journal genuinely ahead of the primary.
@@ -481,12 +604,34 @@ export async function createWithRecovery(
     let prepared: any;
     if (merged) {
       try {
-        prepared = await strategy!.prepare(
-          db,
-          input,
-          actor,
-          states[0].value.snapshot,
-        );
+        if (ahead?.preparation) {
+          if (ahead.preparation.error) throw ahead.preparation.error;
+          prepared = ahead.preparation.value;
+          if (
+            prepared?.plan?.expectedEpoch !== target ||
+            canonical(prepared.plan.request) !== canonical(envelope) ||
+            canonical(prepared.plan.readBoundary) !==
+              canonical(states[0].value.snapshot.boundary)
+          )
+            throw failure("LOOKAHEAD_PREPARATION_MISMATCH");
+          if (
+            prepared.preparationValidUntil != null &&
+            (!Number.isFinite(prepared.preparationValidUntil) ||
+              Date.now() >= prepared.preparationValidUntil)
+          )
+            prepared = await strategy!.prepare(
+              db,
+              input,
+              actor,
+              states[0].value.snapshot,
+            );
+        } else
+          prepared = await strategy!.prepare(
+            db,
+            input,
+            actor,
+            states[0].value.snapshot,
+          );
         const proof = await prepareRecord(
           log,
           prepared.plan,

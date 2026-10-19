@@ -13,6 +13,7 @@ import {
   primary,
   assertIdentity,
   recoveryReadiness,
+  confirmedReplay,
 } from "../cash/journal";
 import {
   snapshotManifest,
@@ -26,6 +27,38 @@ import { creditEvidence } from "./evidence";
 import { canonicalCashJson } from "../cash/plan-runtime";
 import { warmSnapshotEngine } from "../cash/snapshot";
 import { tables as creditTables } from "./schema";
+export async function creditConfirmedReplay(request: Request, env: any) {
+  if (
+    !("confirmedReplayRead" in creditRecoveryStrategy) ||
+    !creditRecoveryStrategy.confirmedReplayRead ||
+    !env.DB ||
+    !env.RECOVERY_LOG
+  )
+    return null;
+  const profile =
+    request.headers.get("x-cash-profile") === "1" ? cashProfiler(env) : null;
+  const headers = () => ({
+    "cache-control": "no-store",
+    "x-cash-replay": "confirmed-read",
+    ...(profile ? { "x-cash-profile": JSON.stringify(profile.result()) } : {}),
+  });
+  try {
+    const input = creditHttpInput.parse(await request.json());
+    const value = await confirmedReplay(
+      profile?.env ?? env,
+      input,
+      creditActor(request, env),
+      request.headers.get("x-cash-fault") ?? "",
+    );
+    return value ? Response.json(value, { headers: headers() }) : null;
+  } catch (e: any) {
+    const status = e.status ?? 503;
+    return Response.json(
+      { code: e.code ?? e.message, retryWithOriginalRequest: true },
+      { status, headers: headers() },
+    );
+  }
+}
 export async function creditReadAhead(
   request: Request,
   env: any,
@@ -43,6 +76,27 @@ export async function creditReadAhead(
     input,
     actor,
   );
+  let preparation: any;
+  if (
+    "eagerPrepare" in creditRecoveryStrategy &&
+    creditRecoveryStrategy.eagerPrepare === input.commandType &&
+    !state.state[1].results[0]
+  ) {
+    try {
+      const value = await creditRecoveryStrategy.prepare(
+        primary(profiled.DB),
+        input,
+        actor,
+        state.snapshot,
+      );
+      if (typeof env.CREDIT_PREPARED === "function") env.CREDIT_PREPARED(value);
+      preparation = { value };
+    } catch (error) {
+      // Preserve business-error reservation and response semantics after the
+      // predecessor ACK. Speculative local calculation has no durable effect.
+      preparation = { error };
+    }
+  }
   return {
     state,
     epoch: state.state[2].results[0]?.epoch,
@@ -50,6 +104,7 @@ export async function creditReadAhead(
     envelope: canonicalCashJson({ input, actor }),
     profile,
     env: profiled,
+    preparation,
   };
 }
 export default {
