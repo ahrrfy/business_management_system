@@ -575,6 +575,7 @@ export default function ProductionNew() {
                       ) : (
                         <div className="relative">
                           <UnifiedSearchInput
+                            barcode={false}
                             debounceMs={0}
                             dir="auto"
                             value={woQuery}

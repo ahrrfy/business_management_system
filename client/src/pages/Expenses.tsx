@@ -988,6 +988,7 @@ export default function Expenses() {
                 بحث شامل
               </Label>
               <UnifiedSearchInput
+                barcode={false}
                 debounceMs={0}
                 id="expense-search"
                 value={query}

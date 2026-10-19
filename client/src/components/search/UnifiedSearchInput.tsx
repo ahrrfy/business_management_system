@@ -68,6 +68,8 @@ export interface UnifiedSearchInputProps {
   onFocus?: (e: React.FocusEvent<HTMLInputElement>) => void;
   onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void;
   dir?: "rtl" | "ltr" | "auto";
+  /** تفعيل اختصار F2 العالمي للتركيز على هذا الحقل (الافتراضي: يتبع ظهور F2 في التلميح النصّي لمنع تزاحم الحقول الثانوية) */
+  f2Shortcut?: boolean;
 }
 
 export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSearchInputProps>(
@@ -106,6 +108,7 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
       onFocus,
       onBlur,
       dir,
+      f2Shortcut,
     },
     forwardedRef,
   ) {
@@ -224,10 +227,18 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
       }
     };
 
-    // دعم اختصار F2 للتركيز السريع على حقل البحث
+    const effectivePlaceholder =
+      placeholder ??
+      (barcode
+        ? "ابحث بالاسم أو SKU أو امسح الباركود… (F2)"
+        : "ابحث بالاسم أو التفاصيل… (F2)");
+    const enableF2 = f2Shortcut ?? effectivePlaceholder.includes("F2");
+
+    // دعم اختصار F2 للتركيز السريع على حقل البحث الرئيسي دون تزاحم الحقول الثانوية
     React.useEffect(() => {
+      if (!enableF2 || disabled) return;
       const handleGlobalKeyDown = (e: KeyboardEvent) => {
-        if (e.key === "F2" && !disabled && internalRef.current) {
+        if (e.key === "F2" && !e.defaultPrevented && internalRef.current) {
           e.preventDefault();
           internalRef.current.focus();
           internalRef.current.select();
@@ -235,7 +246,7 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
       };
       window.addEventListener("keydown", handleGlobalKeyDown);
       return () => window.removeEventListener("keydown", handleGlobalKeyDown);
-    }, [disabled]);
+    }, [enableF2, disabled]);
 
     // تحديد الارتفاع والأبعاد حسب الحجم
     const sizeClasses = {

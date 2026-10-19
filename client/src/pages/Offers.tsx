@@ -592,7 +592,7 @@ export default function Offers() {
                 )}
                 {scope === "PRODUCTS" && (
                   <Field label="ابحث عن منتج (≥ حرفَين)" className="md:col-span-3">
-                    <UnifiedSearchInput debounceMs={0} value={productPicker} onChange={setProductPicker} placeholder="اسم أو SKU" />
+                    <UnifiedSearchInput barcode={false} debounceMs={0} value={productPicker} onChange={setProductPicker} placeholder="اسم أو SKU" />
                     {productPicker.trim().length >= 2 && (productSearchQ.data?.items ?? []).length > 0 && (
                       <div className="mt-1 max-h-48 overflow-auto rounded-md border">
                         {(productSearchQ.data?.items ?? []).map((r) => (

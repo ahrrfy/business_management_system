@@ -267,6 +267,7 @@ export default function SeasonPlanning() {
           <CardTitle className="text-base">المنتجات الموسمية</CardTitle>
           <div className="flex flex-wrap items-center gap-3">
             <UnifiedSearchInput
+              barcode={false}
               debounceMs={0}
               value={planSearch}
               onChange={setPlanSearch}
@@ -322,6 +323,7 @@ export default function SeasonPlanning() {
             <div className="space-y-1">
               <Label htmlFor="season-search">بحث المنتج</Label>
               <UnifiedSearchInput
+                barcode={false}
                 debounceMs={0}
                 id="season-search"
                 value={term}

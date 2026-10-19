@@ -176,6 +176,7 @@ export function StudioUnknownBarcodeResolver({ barcode, error, linkAllowed, acti
             <div className="space-y-1.5">
               <Label htmlFor="studio-unknown-product-search">ابحث باسم المنتج أو SKU</Label>
               <UnifiedSearchInput
+                barcode={false}
                 debounceMs={0}
                 id="studio-unknown-product-search"
                 value={search}

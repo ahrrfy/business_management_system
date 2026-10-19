@@ -259,6 +259,7 @@ export default function StocktakeRemaining() {
       <Card className="gap-0 py-0">
         <div className="flex flex-wrap items-center gap-3 border-b p-3">
           <UnifiedSearchInput
+            barcode={false}
             debounceMs={0}
             value={q}
             onChange={setQ}

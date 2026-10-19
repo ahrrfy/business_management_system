@@ -495,6 +495,7 @@ export default function PriceWaves() {
                 <div className="space-y-2 rounded-md border p-3">
                   <Field label="ابحث وأضِف منتجات" hint="حتى 500 منتج">
                     <UnifiedSearchInput
+                      barcode={false}
                       debounceMs={0}
                       value={pickQuery}
                       onChange={setPickQuery}

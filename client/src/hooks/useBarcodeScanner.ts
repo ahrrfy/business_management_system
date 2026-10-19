@@ -122,7 +122,16 @@ export function useBarcodeScanner(
         clearTimeout(timer);
         if (detector.isActive) {
           const { text } = detector.flush();
-          if (text) setFieldValueAndNotify(valBefore + text);
+          if (text) {
+            e.preventDefault();
+            e.stopPropagation();
+            const restored = valBefore + text;
+            const nextVal =
+              e.key === "Backspace"
+                ? Array.from(restored).slice(0, -1).join("")
+                : restored;
+            setFieldValueAndNotify(nextVal);
+          }
         } else {
           detector.reset();
         }

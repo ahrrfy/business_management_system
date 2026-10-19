@@ -864,6 +864,7 @@ export default function StocktakeMonitor() {
                   </p>
                 </div>
                 <UnifiedSearchInput
+                  barcode={false}
                   debounceMs={0}
                   value={countSearch}
                   onChange={setCountSearch}

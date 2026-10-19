@@ -79,7 +79,15 @@ export function useSmartScanInput(
         clearTimeout(timerRef.current);
         if (detector.isActive) {
           const { text } = detector.flush();
-          if (text) setValue(prefixRef.current + text);
+          if (text) {
+            e.preventDefault();
+            const restored = prefixRef.current + text;
+            const nextVal =
+              e.key === "Backspace"
+                ? Array.from(restored).slice(0, -1).join("")
+                : restored;
+            setValue(nextVal);
+          }
         } else {
           detector.reset();
         }

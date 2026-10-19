@@ -231,6 +231,7 @@ export default function BackorderShortfall() {
               </AppSelect>
             )}
             <UnifiedSearchInput
+              barcode={false}
               dir="auto"
               debounceMs={0}
               value={search}

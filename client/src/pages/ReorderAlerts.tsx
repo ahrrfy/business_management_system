@@ -305,7 +305,7 @@ export default function ReorderAlerts() {
           )}
           <div className="space-y-1">
             <Label>بحث (اسم/متغيّر/SKU) — في الصفحة المحمَّلة</Label>
-            <UnifiedSearchInput debounceMs={0} value={search} onChange={setSearch} placeholder="مثال: ورق A4" />
+            <UnifiedSearchInput barcode={false} debounceMs={0} value={search} onChange={setSearch} placeholder="مثال: ورق A4" />
           </div>
         </CardContent>
       </Card>

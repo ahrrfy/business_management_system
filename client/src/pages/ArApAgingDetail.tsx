@@ -243,6 +243,7 @@ export default function ArApAgingDetail() {
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">بحث</label>
             <UnifiedSearchInput
+              barcode={false}
               debounceMs={0}
               value={query}
               onChange={setQuery}

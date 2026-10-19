@@ -759,6 +759,7 @@ export default function WorkOrderStation() {
         <PageHeader variant="workspace" title="محطة التنفيذ" backHref="/work-orders" backLabel="اللوحة" />
 
         <UnifiedSearchInput
+          barcode={false}
           dir="auto"
           debounceMs={0}
           value={search}

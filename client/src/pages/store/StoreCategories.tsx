@@ -150,7 +150,7 @@ function AssignDialog({ category, onClose, onDone }: { category: { id: number; n
           <button onClick={onClose} aria-label="إغلاق" className="flex size-8 items-center justify-center rounded-full bg-muted text-muted-foreground hover:bg-accent"><X aria-hidden className="size-4" /></button>
         </div>
         <div className="space-y-2 border-b border-border p-3">
-          <UnifiedSearchInput debounceMs={0} value={q} onChange={setQ} placeholder="ابحث عن منتج…" />
+          <UnifiedSearchInput barcode={false} debounceMs={0} value={q} onChange={setQ} placeholder="ابحث عن منتج…" />
           <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
             <input type="checkbox" checked={onlyUnassigned} onChange={(e) => setOnlyUnassigned(e.target.checked)} className="size-4" />
             المنتجات بلا قسم فقط (الأنسب لأول تنظيم)

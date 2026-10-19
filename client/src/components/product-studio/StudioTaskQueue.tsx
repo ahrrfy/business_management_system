@@ -325,7 +325,7 @@ export function StudioTaskQueue({
           )}
           <div className="min-w-52 flex-1 space-y-1">
             <Label htmlFor="studio-task-search">بحث باسم المنتج</Label>
-            <UnifiedSearchInput debounceMs={0} id="studio-task-search" value={taskSearch} onChange={setTaskSearch} placeholder="اكتب جزءاً من اسم المنتج" maxLength={80} />
+            <UnifiedSearchInput barcode={false} debounceMs={0} id="studio-task-search" value={taskSearch} onChange={setTaskSearch} placeholder="اكتب جزءاً من اسم المنتج" maxLength={80} />
           </div>
           <div className="min-w-40 space-y-1">
             <Label htmlFor="studio-task-priority-filter">تصفية الأولوية</Label>

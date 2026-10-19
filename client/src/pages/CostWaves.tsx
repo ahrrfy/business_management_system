@@ -494,6 +494,7 @@ function CreateCostWave({
                 </Field>
                 <Field label="بحث المنتج / SKU / الباركود">
                   <UnifiedSearchInput
+                    barcode={false}
                     debounceMs={0}
                     value={productSearch}
                     onChange={setProductSearch}

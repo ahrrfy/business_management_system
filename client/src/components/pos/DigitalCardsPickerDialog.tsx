@@ -130,7 +130,7 @@ export function DigitalCardsPickerDialog({ open, branchId, offline, onClose, onP
           </AppSelect>
           {draft.length > 0 && <small style={{ color: C.mutedFg }}>كل سلة تخص مزوّداً واحداً. أضف هذه السلة ثم افتح سلة جديدة للمزوّد الآخر.</small>}
         </label>
-        <UnifiedSearchInput debounceMs={0} aria-label="بحث في الكروت" placeholder="ابحث باسم الكرت أو الاشتراك…" value={search} onChange={setSearch} className="w-full" />
+        <UnifiedSearchInput barcode={false} debounceMs={0} aria-label="بحث في الكروت" placeholder="ابحث باسم الكرت أو الاشتراك…" value={search} onChange={setSearch} className="w-full" />
         {list.isLoading && <p>{ACTION_LABELS.loading}</p>}
         {list.isError && <div role="alert">تعذّر تحميل البطاقات. تحقّق من الاتصال والصلاحية. <button style={button} onClick={() => void list.refetch()}>إعادة المحاولة</button></div>}
         {!list.isLoading && !list.isError && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 8, maxHeight: 260, overflowY: "auto" }}>

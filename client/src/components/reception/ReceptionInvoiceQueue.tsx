@@ -234,6 +234,7 @@ export function ReceptionInvoiceQueue({
           بالبطاقة
         </button>
         <UnifiedSearchInput
+          barcode={false}
           debounceMs={0}
           value={search}
           onChange={(val) => { setSearch(val); resetPaging(); }}

@@ -162,6 +162,7 @@ export function DraftStrip({
         </button>
       </div>
       <UnifiedSearchInput
+        barcode={false}
         debounceMs={0}
         value={search}
         onChange={setSearch}
