@@ -274,6 +274,8 @@ export function collapseLinkedDeliveryBarcodeCandidates(
         } else {
           targets.push({ kind: "INVOICE", id: cnInvId, matchRank: rank });
         }
+      } else {
+        targets.push({ kind: "CONSIGNMENT", id: Number(cn.id), matchRank: rank });
       }
       continue;
     }
@@ -333,3 +335,50 @@ export function resolveUniqueDeliveryBarcodeTarget(
 
   return unique.values().next().value ?? null;
 }
+
+export interface InvoiceBarcodeCandidateRow {
+  id: number;
+  sourceType?: string | null;
+  sourceId?: string | null;
+  correctedByInvoiceId?: number | null;
+  matchRank?: number;
+}
+
+/**
+ * يتتبّع سلسلة الفواتير المصحَّحة (`correctedByInvoiceId` حتى ١٦ خطوة مع الحماية من الحلقات)
+ * بحيث يحلّ مسح الفاتورة الأصلية المستبدَلة (`100034` أو `INV-100034`) إلى الفاتورة البديلة
+ * الفعّالة (`100034-1`) ويطويها مع الإرسالية أو طلب المتجر المُعاد ربطهما بها دون تضارب.
+ */
+export async function resolveActiveInvoiceCandidates<T extends InvoiceBarcodeCandidateRow>(
+  candidates: readonly T[],
+  loadById: (id: number) => Promise<Omit<T, "matchRank"> | null | undefined>,
+): Promise<T[]> {
+  if (candidates.length === 0) return [];
+  const byId = new Map<number, T>();
+  for (const candidate of candidates) {
+    let current: Omit<T, "matchRank"> = candidate;
+    const rank = Number(candidate.matchRank ?? 0);
+    const visited = new Set<number>();
+    while (current.correctedByInvoiceId != null && visited.size < 16) {
+      const currentId = Number(current.id);
+      const nextId = Number(current.correctedByInvoiceId);
+      if (!Number.isSafeInteger(nextId) || nextId <= 0 || visited.has(currentId) || nextId === currentId) {
+        break;
+      }
+      visited.add(currentId);
+      const next = await loadById(nextId);
+      if (!next) break;
+      current = next;
+    }
+    const resolvedId = Number(current.id);
+    const existing = byId.get(resolvedId);
+    if (!existing || rank > Number(existing.matchRank ?? 0)) {
+      byId.set(resolvedId, {
+        ...current,
+        matchRank: rank,
+      } as T);
+    }
+  }
+  return Array.from(byId.values());
+}
+

@@ -55,6 +55,7 @@ import {
   collapseLinkedDeliveryBarcodeCandidates,
   namespaceAllowsTarget,
   prepareDeliveryBarcodeLookup,
+  resolveActiveInvoiceCandidates,
   resolveUniqueDeliveryBarcodeTarget,
 } from "../services/delivery/barcodeLookupPolicy";
 import { WO_KANBAN_STATES } from "@shared/workOrderKanban";
@@ -1122,7 +1123,9 @@ export const workOrderRouter = router({
         ? scopedBranchId
         : null;
 
-      const [workOrderCandidates, invoiceCandidates, onlineOrderCandidates, consignmentSources] = await Promise.all([
+      const isActiveCnSql = sql`(${deliveryConsignments.status} NOT IN ('CANCELLED', 'RETURNED') AND ${deliveryConsignments.parcelStatus} NOT IN ('CANCELLED', 'RETURNED'))`;
+
+      const [workOrderCandidates, rawInvoiceCandidates, onlineOrderCandidates, consignmentSources] = await Promise.all([
         namespaceAllowsTarget(namespace, "WORK_ORDER")
           ? db
               .select({
@@ -1143,7 +1146,8 @@ export const workOrderRouter = router({
                     : eq(workOrders.orderNumber, code),
                 branchFilter != null ? eq(workOrders.branchId, branchFilter) : sql`1=1`,
               ))
-              .limit(2)
+              .orderBy(desc(workOrders.id))
+              .limit(5)
           : Promise.resolve([]),
         namespaceAllowsTarget(namespace, "INVOICE")
           ? db
@@ -1151,6 +1155,7 @@ export const workOrderRouter = router({
                 id: invoices.id,
                 sourceType: invoices.sourceType,
                 sourceId: invoices.sourceId,
+                correctedByInvoiceId: invoices.correctedByInvoiceId,
                 matchRank: sql<number>`CASE WHEN ${invoices.invoiceNumber} IN (${code}, ${documentCode}, ${`INV-${code}`}) THEN 100 ELSE 10 END`,
               })
               .from(invoices)
@@ -1166,7 +1171,8 @@ export const workOrderRouter = router({
                     : eq(invoices.invoiceNumber, code),
                 branchFilter != null ? eq(invoices.branchId, branchFilter) : sql`1=1`,
               ))
-              .limit(2)
+              .orderBy(desc(invoices.id))
+              .limit(5)
           : Promise.resolve([]),
         namespaceAllowsTarget(namespace, "ONLINE_ORDER")
           ? db
@@ -1188,7 +1194,8 @@ export const workOrderRouter = router({
                     : eq(onlineOrders.orderNumber, code),
                 branchFilter != null ? eq(onlineOrders.branchId, branchFilter) : sql`1=1`,
               ))
-              .limit(2)
+              .orderBy(desc(onlineOrders.id))
+              .limit(5)
           : Promise.resolve([]),
         namespaceAllowsTarget(namespace, "CONSIGNMENT")
           ? db
@@ -1199,11 +1206,11 @@ export const workOrderRouter = router({
                 sourceType: deliveryConsignments.sourceType,
                 sourceId: deliveryConsignments.sourceId,
                 linkedOnlineOrderId: onlineOrders.id,
-                matchRank: sql<number>`CASE
-                  WHEN ${deliveryConsignments.consignmentNumber} IN (${code}, ${systemCode}, ${documentCode}) THEN 100
-                  WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN 50
-                  WHEN TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode} THEN 40
-                  ELSE 10 END`,
+                matchRank: sql<number>`MAX(CASE
+                  WHEN ${deliveryConsignments.consignmentNumber} IN (${code}, ${systemCode}, ${documentCode}) THEN CASE WHEN ${isActiveCnSql} THEN 100 ELSE 80 END
+                  WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN CASE WHEN ${isActiveCnSql} THEN 50 ELSE 35 END
+                  WHEN TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode} THEN CASE WHEN ${isActiveCnSql} THEN 40 ELSE 25 END
+                  ELSE CASE WHEN ${isActiveCnSql} THEN 10 ELSE 5 END END)`,
               })
               .from(deliveryConsignments)
               .leftJoin(onlineOrders, eq(deliveryConsignments.invoiceId, onlineOrders.invoiceId))
@@ -1245,13 +1252,29 @@ export const workOrderRouter = router({
                 deliveryConsignments.consignmentNumber,
                 deliveryConsignments.externalTrackingRef,
               )
-              .limit(2)
+              .orderBy(desc(deliveryConsignments.id))
+              .limit(5)
           : Promise.resolve([]),
       ]);
 
-      resolveUniqueDeliveryBarcodeTarget(
-        code,
-        consignmentSources.map((row) => ({ kind: "CONSIGNMENT" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
+      const invoiceCandidates = await resolveActiveInvoiceCandidates(
+        rawInvoiceCandidates,
+        async (nextId) => {
+          const [next] = await db
+            .select({
+              id: invoices.id,
+              sourceType: invoices.sourceType,
+              sourceId: invoices.sourceId,
+              correctedByInvoiceId: invoices.correctedByInvoiceId,
+            })
+            .from(invoices)
+            .where(and(
+              eq(invoices.id, nextId),
+              branchFilter != null ? eq(invoices.branchId, branchFilter) : sql`1=1`,
+            ))
+            .limit(1);
+          return next ?? null;
+        },
       );
 
       const selectedTarget = resolveUniqueDeliveryBarcodeTarget(
