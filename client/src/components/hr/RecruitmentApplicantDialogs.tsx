@@ -255,10 +255,10 @@ export function PaperDialog({
   const [governorate, setGovernorate] = useState("بغداد"); const [district, setDistrict] = useState("");
   const [residentialAddress, setResidentialAddress] = useState(""); const [degree, setDegree] = useState("");
   const [major, setMajor] = useState(""); const [education, setEducation] = useState("");
-  const [availabilityStatus, setAvailabilityStatus] = useState("available"); const [experience, setExperience] = useState("");
+  const [availabilityStatus, setAvailabilityStatus] = useState(""); const [experience, setExperience] = useState("");
   const [previousEmployer, setPreviousEmployer] = useState(""); const [skills, setSkills] = useState("");
   const [preferredBranch, setPreferredBranch] = useState(""); const [employmentType, setEmploymentType] = useState("full_time");
-  const [shiftPreference, setShiftPreference] = useState("both"); const [expectedSalary, setExpectedSalary] = useState("");
+  const [shiftPreference, setShiftPreference] = useState(""); const [expectedSalary, setExpectedSalary] = useState("");
   const [availableFrom, setAvailableFrom] = useState(""); const [portfolioUrl, setPortfolioUrl] = useState("");
   const [source, setSource] = useState<"paper" | "archive">("paper"); const [stage, setStage] = useState<string>("new");
   const [rating, setRating] = useState(0); const [interviewDate, setInterviewDate] = useState("");
@@ -284,9 +284,9 @@ export function PaperDialog({
     setName(""); setVacancyId(""); setBranchId(defaultBranchId); setJobTitle(""); setDepartment("");
     setAppliedDate(todayIso()); setPhone(""); setWhatsappPhone(""); setEmail(""); setBirthDate("");
     setGender(""); setMaritalStatus(""); setGovernorate("بغداد"); setDistrict(""); setResidentialAddress("");
-    setDegree(""); setMajor(""); setEducation(""); setAvailabilityStatus("available"); setExperience("");
+    setDegree(""); setMajor(""); setEducation(""); setAvailabilityStatus(""); setExperience("");
     setPreviousEmployer(""); setSkills(""); setPreferredBranch(""); setEmploymentType("full_time");
-    setShiftPreference("both"); setExpectedSalary(""); setAvailableFrom(""); setPortfolioUrl("");
+    setShiftPreference(""); setExpectedSalary(""); setAvailableFrom(""); setPortfolioUrl("");
     setSource("paper"); setStage("new"); setRating(0); setInterviewDate(""); setNotes(""); setCvFile(null);
   }
 
@@ -356,7 +356,7 @@ export function PaperDialog({
           <div className="space-y-1.5"><Label>التحصيل الدراسي</Label><AppSelect className={selectClsSm + " w-full"} value={degree} onValueChange={setDegree}><option value="">— اختر المؤهل —</option>{DEGREES.map((d) => <option key={d} value={d}>{d}</option>)}</AppSelect></div>
           <div className="space-y-1.5"><Label>التخصص الدراسي</Label><Input value={major} onChange={(e) => setMajor(e.target.value)} placeholder="مثال: تصميم كرافيك، محاسبة" /></div>
           <div className="space-y-1.5"><Label>الجامعة / المعهد وسنة التخرج</Label><Input value={education} onChange={(e) => setEducation(e.target.value)} placeholder="مثال: جامعة بغداد — ٢٠٢٢" /></div>
-          <div className="space-y-1.5"><Label>حالة التفرّغ الحالية</Label><AppSelect className={selectClsSm + " w-full"} value={availabilityStatus} onValueChange={setAvailabilityStatus}>{APPLICANT_AVAILABILITY_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}</AppSelect></div>
+          <div className="space-y-1.5"><Label>حالة التفرّغ الحالية</Label><AppSelect className={selectClsSm + " w-full"} value={availabilityStatus} onValueChange={setAvailabilityStatus}><option value="">— اختر حالة التفرّغ —</option>{APPLICANT_AVAILABILITY_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}</AppSelect></div>
           <div className="space-y-1.5"><Label>سنوات الخبرة</Label><Input value={experience} onChange={(e) => setExperience(e.target.value)} list="rec-exp-levels" placeholder="مثال: ٣ – ٥ سنوات" /><datalist id="rec-exp-levels">{APPLICANT_EXPERIENCE_LEVELS.map((lvl) => <option key={lvl} value={lvl} />)}</datalist></div>
           <div className="space-y-1.5"><Label>آخر جهة عمل / مسمى سابق</Label><Input value={previousEmployer} onChange={(e) => setPreviousEmployer(e.target.value)} placeholder="اسم الشركة أو المطبعة السابقة" /></div>
           <div className="space-y-1.5 sm:col-span-2 lg:col-span-3"><Label>المهارات والبرامج المتقنة</Label><Input value={skills} onChange={(e) => setSkills(e.target.value)} placeholder="مثال: Photoshop, Illustrator, Excel، مبيعات، كاشير" /></div>
@@ -366,7 +366,7 @@ export function PaperDialog({
           <div className="space-y-1.5"><Label>فرع المتابعة الإدارية</Label><AppSelect className={selectClsSm + " w-full"} value={branchId} onValueChange={setBranchId} disabled={!canChooseCompanyWide || Boolean(vacancyId && vacancies.find((v) => String(v.id) === vacancyId)?.branchId != null)}>{canChooseCompanyWide && <option value="">— عام للشركة —</option>}{branches.map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}</AppSelect></div>
           <div className="space-y-1.5"><Label>الفرع المفضّل للمتقدّم</Label><AppSelect className={selectClsSm + " w-full"} value={preferredBranch} onValueChange={setPreferredBranch}><option value="">— أي فرع متاح —</option>{APPLICANT_PREFERRED_BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}</AppSelect></div>
           <div className="space-y-1.5"><Label>نوع الدوام</Label><AppSelect className={selectClsSm + " w-full"} value={employmentType} onValueChange={setEmploymentType}>{EMPLOYMENT_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}</AppSelect></div>
-          <div className="space-y-1.5"><Label>الشفت المفضّل</Label><AppSelect className={selectClsSm + " w-full"} value={shiftPreference} onValueChange={setShiftPreference}>{APPLICANT_SHIFT_PREFERENCES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}</AppSelect></div>
+          <div className="space-y-1.5"><Label>الشفت المفضّل</Label><AppSelect className={selectClsSm + " w-full"} value={shiftPreference} onValueChange={setShiftPreference}><option value="">— اختر الشفت —</option>{APPLICANT_SHIFT_PREFERENCES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}</AppSelect></div>
           <div className="space-y-1.5"><Label>الراتب الشهري المتوقع (د.ع)</Label><MoneyInput value={expectedSalary} onChange={setExpectedSalary} decimals={0} placeholder="مثال: 600,000" /></div>
           <div className="space-y-1.5"><Label>تاريخ الجاهزية للمباشرة</Label><Input type="date" value={availableFrom} onChange={(e) => setAvailableFrom(e.target.value)} /></div>
           <div className="space-y-1.5"><Label>تاريخ التقديم الورقي</Label><Input type="date" value={appliedDate} onChange={(e) => setAppliedDate(e.target.value)} /></div>

@@ -156,7 +156,7 @@ export const employeeRouter = router({
       if (input.applicantId != null) assertOperationAuthorized(ctx.user, "recruitment.updateStage"); const scope = companyBranchScope(ctx.user);
       const branchId = resolveTargetBranch(scope, input.branchId, { required: false });
       const e = await svc.createEmployee({ ...input, branchId } as svc.EmployeeInput, scope);
-      await logAudit(ctx, { action: "employee.create", entityType: "employee", entityId: e?.id, newValue: { name: e?.fullName, department: input.department ?? null } });
+      await logAudit(ctx, { action: "employee.create", entityType: "employee", entityId: e?.id, newValue: { name: e?.fullName, department: input.department ?? null, ...(input.applicantId != null ? { applicantId: input.applicantId } : {}) } }); if (input.applicantId != null) await logAudit(ctx, { action: "recruitment.updateStage", entityType: "jobApplicant", entityId: input.applicantId, newValue: { stage: "accepted", convertedEmployeeId: e?.id ?? null } });
       return e;
     } catch (err: any) {
       // كانت الرسالة تدّعي «البريد الإلكتروني مستخدم» لأي تكرار — حتى لو كان التصادم فعلياً
@@ -193,7 +193,7 @@ export const employeeRouter = router({
         if (account.mode === "new") {
           await logAudit(ctx, { action: "user.create", entityType: "user", entityId: userId, newValue: { email: account.email ?? null, username: account.username ?? null, role: account.role } });
         }
-        await logAudit(ctx, { action: "employee.create", entityType: "employee", entityId: employeeId, newValue: { name: e?.fullName, accountMode: account.mode, linkedUserId: userId } });
+        await logAudit(ctx, { action: "employee.create", entityType: "employee", entityId: employeeId, newValue: { name: e?.fullName, accountMode: account.mode, linkedUserId: userId, ...(emp.applicantId != null ? { applicantId: emp.applicantId } : {}) } }); if (emp.applicantId != null) await logAudit(ctx, { action: "recruitment.updateStage", entityType: "jobApplicant", entityId: emp.applicantId, newValue: { stage: "accepted", convertedEmployeeId: employeeId } });
         if (account.mode === "link") {
           await logAudit(ctx, { action: "employee.linkAccount", entityType: "employee", entityId: employeeId, newValue: { userId } });
         }
@@ -327,8 +327,8 @@ export const employeeRouter = router({
   delete: hrWrite
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await svc.deleteEmployee(input.id, companyBranchScope(ctx.user));
-      await logAudit(ctx, { action: "employee.delete", entityType: "employee", entityId: input.id });
+      const res = await svc.deleteEmployee(input.id, companyBranchScope(ctx.user), ctx.user);
+      await logAudit(ctx, { action: "employee.delete", entityType: "employee", entityId: input.id, ...(res.unlinkedApplicantIds?.length ? { newValue: { unlinkedApplicantIds: res.unlinkedApplicantIds } } : {}) }); for (const applicantId of res.unlinkedApplicantIds ?? []) await logAudit(ctx, { action: "recruitment.updateStage", entityType: "jobApplicant", entityId: applicantId, newValue: { convertedEmployeeId: null, deletedEmployeeId: input.id } });
       return res;
     }),
 });

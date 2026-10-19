@@ -23,6 +23,8 @@ import { WAGE_FIELD_LABELS, wageProfileDiff, wageProfileOf } from "./hr/wageProf
 import { appErrorMessage } from "@shared/errors";
 import { getEmployeeClearance } from "./hr/offboarding";
 import { companyBranchScope, resolveTargetBranch, type CompanyBranchScope } from "./companyBranchScope";
+import { assertOperationAuthorized } from "../operationAuthorization";
+import type { OperationUser } from "@shared/operationPermissions";
 import { revokeAllNativePushDevicesForUser } from "./nativePushService";
 import { revokeAllSuperAppExpoPushDevicesForUser } from "./superAppPushService";
 
@@ -376,7 +378,11 @@ export async function updateEmployee(
  * حذف موظف نهائياً — مسموح فقط للموظف «النظيف» (لا حضور/عُهد/رواتب/إجازات/ترقيات/إنهاءات).
  * غير النظيف يُمنع حذفه ويُعرض «إنهاء الخدمة» بديلاً. قيد FK حارس نهائي ضدّ التيتيم.
  */
-export async function deleteEmployee(id: number, scope: CompanyBranchScope = COMPANY_SCOPE) {
+export async function deleteEmployee(
+  id: number,
+  scope: CompanyBranchScope = COMPANY_SCOPE,
+  actor?: OperationUser | null,
+) {
   return withTx(async (tx) => {
     const [e] = await tx.select().from(employees).where(employeeByIdCondition(id, scope)).for("update").limit(1);
     if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
@@ -384,11 +390,37 @@ export async function deleteEmployee(id: number, scope: CompanyBranchScope = COM
     if (!usage.clean) {
       throw new TRPCError({ code: "BAD_REQUEST", message: usageBlockMessage("هذا الموظف", usage) });
     }
+    const linkedApplicants = await tx
+      .select({ id: jobApplicants.id, branchId: jobApplicants.branchId })
+      .from(jobApplicants)
+      .where(eq(jobApplicants.convertedEmployeeId, id))
+      .for("update");
+    if (linkedApplicants.length > 0) {
+      if (actor) assertOperationAuthorized(actor, "recruitment.updateStage");
+      if (scope.branchId != null && linkedApplicants.some((a) => a.branchId !== scope.branchId)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "لا يمكن حذف هذا الموظف",
+            why: "يرتبط هذا الموظف بطلب توظيف خارج نطاق فرعك الحالي",
+            doThis: "اطلب من مدير النظام أو مسؤول التوظيف المخوّل فكّ الارتباط أو حذف السجلّ",
+          }),
+        });
+      }
+    }
     try {
-      await tx
-        .update(jobApplicants)
-        .set({ convertedEmployeeId: null })
-        .where(eq(jobApplicants.convertedEmployeeId, id));
+      if (linkedApplicants.length > 0) {
+        const applicantBranchCond =
+          scope.branchId == null ? undefined : eq(jobApplicants.branchId, scope.branchId);
+        await tx
+          .update(jobApplicants)
+          .set({ convertedEmployeeId: null })
+          .where(
+            applicantBranchCond
+              ? and(eq(jobApplicants.convertedEmployeeId, id), applicantBranchCond)
+              : eq(jobApplicants.convertedEmployeeId, id),
+          );
+      }
       await tx.delete(employees).where(eq(employees.id, id));
     } catch (err) {
       if (isFkBlocked(err)) {
@@ -399,7 +431,7 @@ export async function deleteEmployee(id: number, scope: CompanyBranchScope = COM
       }
       throw err;
     }
-    return { id, deleted: true };
+    return { id, deleted: true, unlinkedApplicantIds: linkedApplicants.map((a) => a.id) };
   });
 }
 

@@ -531,7 +531,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
   const [degree, setDegree] = useState("");
   const [major, setMajor] = useState("");
   const [education, setEducation] = useState("");
-  const [availabilityStatus, setAvailabilityStatus] = useState("available");
+  const [availabilityStatus, setAvailabilityStatus] = useState("");
   const [experience, setExperience] = useState("");
   const [previousEmployer, setPreviousEmployer] = useState("");
   const [skills, setSkills] = useState("");
@@ -541,7 +541,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
       : "",
   );
   const [employmentType, setEmploymentType] = useState(vacancy?.employmentType ?? "full_time");
-  const [shiftPreference, setShiftPreference] = useState("both");
+  const [shiftPreference, setShiftPreference] = useState("");
   const [expectedSalary, setExpectedSalary] = useState("");
   const [availableFrom, setAvailableFrom] = useState("");
   const [portfolioUrl, setPortfolioUrl] = useState("");
@@ -772,6 +772,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
               <div className="cj-field">
                 <label htmlFor="cj-avail">حالة التفرّغ الحالية</label>
                 <AppSelect id="cj-avail" className="cj-input" value={availabilityStatus} onValueChange={setAvailabilityStatus}>
+                  <option value="">— اختر حالة التفرّغ —</option>
                   {APPLICANT_AVAILABILITY_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
                 </AppSelect>
               </div>
@@ -823,6 +824,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
               <div className="cj-field">
                 <label htmlFor="cj-shift">الشفت المفضّل</label>
                 <AppSelect id="cj-shift" className="cj-input" value={shiftPreference} onValueChange={setShiftPreference}>
+                  <option value="">— اختر الشفت —</option>
                   {APPLICANT_SHIFT_PREFERENCES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
                 </AppSelect>
               </div>
