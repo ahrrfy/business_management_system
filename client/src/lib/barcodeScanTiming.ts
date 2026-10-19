@@ -88,12 +88,8 @@ export class ScanBurstDetector {
     const gap = this.lastMs > 0 ? now - this.lastMs : Number.POSITIVE_INFINITY;
     this.lastMs = now;
 
-    // داخل ومضةٍ مؤكَّدة: التقط كلّ حرفٍ بلا فحص فاصلٍ إضافيّ (مناعةٌ تامّة للتذبذب حتى الإفراغ)،
-    // إلا إذا ظهر فاصلُ كلماتٍ بشريّ (مسافة بفاصل > 40مي) فنَسمُ الومضة بالالتباس كي تُستعاد كاملةً عند الإفراغ.
+    // داخل ومضةٍ مؤكَّدة: التقط كلّ حرفٍ بلا فحص فاصلٍ إضافيّ (مناعةٌ تامّة للتذبذب حتى الإفراغ).
     if (this.active) {
-      if (input.key === " " && gap > 40) {
-        this.ambiguousStart = true;
-      }
       this.keys.push(input);
       return "capture";
     }

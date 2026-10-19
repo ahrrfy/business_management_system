@@ -769,6 +769,7 @@ export function QuickRecipeCopyDialog({
                 onFocus={() => setShowSearchDropdown(true)}
                 onKeyDown={(e) => {
                   if (e.key === "Escape") {
+                    e.preventDefault();
                     setShowSearchDropdown(false);
                   }
                 }}

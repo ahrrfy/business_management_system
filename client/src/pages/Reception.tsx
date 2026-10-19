@@ -2419,7 +2419,7 @@ export default function Reception() {
             onKeyDown={(e) => {
               if (e.defaultPrevented) return;
               if (e.key === "Enter" && searchSettled && results[0]) { e.preventDefault(); addRow(results[0]); }
-              if (e.key === "Escape") { setSearch(""); setShowDrop(false); }
+              if (e.key === "Escape") { e.preventDefault(); setSearch(""); setShowDrop(false); }
             }}
             placeholder="امسح الباركود أو ابحث بالاسم / SKU…  (F2)"
             inputClassName="h-11 rounded-xl border-[1.5px] text-sm font-semibold focus:border-primary"

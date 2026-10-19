@@ -957,7 +957,7 @@ function CustomerSearchPicker({
     if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setHighlight((h) => Math.min(h + 1, filtered.length - 1)); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setHighlight((h) => Math.max(h - 1, 0)); }
     else if (e.key === "Enter" && open && filtered[highlight]) { e.preventDefault(); pick(filtered[highlight].id); }
-    else if (e.key === "Escape") { setOpen(false); setQ(""); }
+    else if (e.key === "Escape") { e.preventDefault(); setOpen(false); setQ(""); }
   }
 
   return (
