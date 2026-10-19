@@ -173,7 +173,7 @@ const applicantFields = {
   // البريد اختياري: الفراغ يُحوَّل إلى undefined، وإن وُجد يجب أن يكون صيغة بريد صالحة.
   email: z.preprocess(
     (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
-    z.string().trim().max(120).email("بريد إلكتروني غير صالح").optional(),
+    z.string().trim().max(100).email("بريد إلكتروني غير صالح").optional(),
   ),
   birthDate: optionalDateStr,
   gender: optionalEnum(GENDERS),
@@ -187,8 +187,8 @@ const applicantFields = {
   previousEmployer: z.string().trim().max(200).optional(),
   education: z.string().trim().max(200).optional(),
   skills: z.string().trim().max(500).optional(),
-  residentialAddress: z.string().trim().max(300).optional(),
-  department: z.string().trim().max(120).optional(),
+  residentialAddress: z.string().trim().max(255).optional(),
+  department: z.string().trim().max(100).optional(),
   preferredBranch: z.string().trim().max(120).optional(),
   employmentType: optionalEnum(EMPLOYMENT_TYPE_KEYS),
   shiftPreference: optionalEnum(APPLICANT_SHIFT_KEYS),

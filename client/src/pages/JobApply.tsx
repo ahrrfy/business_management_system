@@ -714,7 +714,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
               </div>
               <div className="cj-field">
                 <label htmlFor="cj-email">البريد الإلكتروني</label>
-                <input id="cj-email" className="cj-input" type="email" style={{ direction: "ltr", textAlign: "right" }} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" autoComplete="email" maxLength={120} />
+                <input id="cj-email" className="cj-input" type="email" style={{ direction: "ltr", textAlign: "right" }} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" autoComplete="email" maxLength={100} />
               </div>
               <div className="cj-field">
                 <label htmlFor="cj-birth">تاريخ الميلاد</label>
@@ -747,7 +747,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
               </div>
               <div className="cj-field full">
                 <label htmlFor="cj-address">عنوان السكن التفصيلي / أقرب نقطة دالة</label>
-                <input id="cj-address" className="cj-input" value={residentialAddress} onChange={(e) => setResidentialAddress(e.target.value)} maxLength={300} placeholder="مثال: حي الجامعة — قرب تقاطع الرواد (لا تكتب رقم البطاقة الوطنية)" autoComplete="street-address" />
+                <input id="cj-address" className="cj-input" value={residentialAddress} onChange={(e) => setResidentialAddress(e.target.value)} maxLength={255} placeholder="مثال: حي الجامعة — قرب تقاطع الرواد (لا تكتب رقم البطاقة الوطنية)" autoComplete="street-address" />
               </div>
 
               <div className="cj-fsec">المؤهل العلمي والخبرة والمهارات</div>

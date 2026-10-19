@@ -11351,7 +11351,7 @@ export const jobApplicants = mysqlTable(
     education: varchar("education", { length: 200 }),
     skills: varchar("skills", { length: 500 }),
     residentialAddress: varchar("residentialAddress", { length: 300 }),
-    department: varchar("department", { length: 120 }),
+    department: varchar("department", { length: 100 }),
     preferredBranch: varchar("preferredBranch", { length: 120 }),
     employmentType: varchar("employmentType", { length: 30 }),
     shiftPreference: varchar("shiftPreference", { length: 30 }),

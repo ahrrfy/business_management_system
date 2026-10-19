@@ -60,6 +60,7 @@ export default function EmployeeNew() {
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
   const prefilledApplicantIdRef = useRef<number | null>(null);
+  const prefilledBranchApplicantIdRef = useRef<number | null>(null);
 
   const [form, setForm] = useState({
     firstName: "", fatherName: "", grandfatherName: "", lastName: "",
@@ -161,24 +162,27 @@ export default function EmployeeNew() {
               )?.id ?? "",
             )
           : "";
+    if (a.branchId != null || !a.preferredBranch || opts.data?.branches) {
+      prefilledBranchApplicantIdRef.current = a.id;
+    }
     const expectedSalaryClean =
       a.expectedSalary != null ? String(a.expectedSalary).replace(/\.00$/, "") : "";
     const rawPosition = (a.jobTitle ?? "").trim().slice(0, 100);
     setForm((f) => ({
       ...f,
-      firstName: names.firstName || f.firstName,
-      fatherName: names.fatherName || f.fatherName,
-      grandfatherName: names.grandfatherName || f.grandfatherName,
-      lastName: names.lastName || f.lastName,
-      gender: a.gender || f.gender,
+      firstName: (names.firstName || f.firstName).slice(0, 100),
+      fatherName: (names.fatherName || f.fatherName).slice(0, 100),
+      grandfatherName: (names.grandfatherName || f.grandfatherName).slice(0, 100),
+      lastName: (names.lastName || f.lastName).slice(0, 100),
+      gender: (a.gender || f.gender).slice(0, 10),
       birthDate: a.birthDate || f.birthDate,
-      maritalStatus: a.maritalStatus || f.maritalStatus,
-      phone: a.phone || f.phone,
-      email: a.email || f.email,
-      governorate: a.governorate || f.governorate,
-      district: a.district || f.district,
-      addressLandmark: a.residentialAddress || f.addressLandmark,
-      department: a.department || f.department,
+      maritalStatus: (a.maritalStatus || f.maritalStatus).slice(0, 20),
+      phone: (a.phone || f.phone).slice(0, 20),
+      email: (a.email || f.email).slice(0, 100),
+      governorate: (a.governorate || f.governorate).slice(0, 80),
+      district: (a.district || f.district).slice(0, 120),
+      addressLandmark: (a.residentialAddress || f.addressLandmark).slice(0, 255),
+      department: (a.department || f.department).slice(0, 100),
       position: rawPosition || f.position,
       branchId: matchedBranchId || f.branchId,
       hireDate: a.availableFrom || f.hireDate,
@@ -197,11 +201,13 @@ export default function EmployeeNew() {
   }, [isEdit, applicantQ.data, opts.data?.branches]);
 
   useEffect(() => {
-    if (isEdit || !applicantQ.data || form.branchId || applicantQ.data.branchId != null || !applicantQ.data.preferredBranch || !opts.data?.branches) return;
+    if (isEdit || !applicantQ.data || prefilledBranchApplicantIdRef.current === applicantQ.data.id || !opts.data?.branches) return;
+    prefilledBranchApplicantIdRef.current = applicantQ.data.id;
+    if (applicantQ.data.branchId != null || !applicantQ.data.preferredBranch) return;
     const pref = applicantQ.data.preferredBranch;
     const matched = opts.data.branches.find((b) => b.name === pref || pref.includes(b.name) || b.name.includes(pref));
-    if (matched) set({ branchId: String(matched.id) });
-  }, [isEdit, applicantQ.data, opts.data?.branches, form.branchId]);
+    if (matched) setForm((f) => (f.branchId ? f : { ...f, branchId: String(matched.id) }));
+  }, [isEdit, applicantQ.data, opts.data?.branches]);
 
   const photoUrl = useMemo(() => photo[0]?.dataUrl || photo[0]?.url || null, [photo]);
 
