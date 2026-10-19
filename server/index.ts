@@ -24,6 +24,7 @@ import { pinoHttp } from "pino-http";
 import { nanoid } from "nanoid";
 import { createServer } from "http";
 import net from "net";
+import path from "node:path";
 import { createContext } from "./context";
 import {
   getDb,
@@ -34,6 +35,7 @@ import {
 import { logger } from "./logger";
 import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
+import { createRuntimeStaticAssets } from "./middleware/runtimeStaticAssets";
 import { registerWellKnown } from "./wellKnown";
 import { registerStorefrontWishlistFallback } from "./storefrontWishlistFallback";
 import { sitemapRouter } from "./routes/sitemap";
@@ -347,6 +349,12 @@ async function startServer() {
           !req.path.startsWith("/api")),
     }),
   );
+
+  if (process.env.NODE_ENV !== "development") {
+    app.use(
+      createRuntimeStaticAssets(path.resolve(import.meta.dirname, "public")),
+    );
+  }
 
   // ── حماية الحِمل الزائد (load shedding) بحارات أولوية ─────────────────────────────────
   // بعد حدّ المعدّل، قبل المعالجة الثقيلة: إن تشبّعت حلقة أحداث هذا العامل (تأخّرٌ > العتبة)

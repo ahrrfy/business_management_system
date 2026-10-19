@@ -18,27 +18,42 @@ const COUNTER_FLOORS: Record<string, number> = {
  *
  * عمليةٌ واحدة: `INSERT … ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(lastValue + 1)`
  * — MySQL يضبط `LAST_INSERT_ID` للجلسة بالقيمة الجديدة، فنقرؤها بلا مسحٍ ولا قفلٍ صريح.
- * ⚠️ الرقم مُستهلَكٌ فور الحجز: تراجعُ المعاملة **لا** يعيده (سلوك العدّادات المتعارف عليه في
- * MySQL وPostgres معاً). أثرُه ثغرةٌ في التسلسل عند فشلٍ نادر — وهو مقبولٌ ومقصود: البديل
- * (إعادة استعمال الأرقام) يخلق رقمَين لمستندَين مختلفين عبر الزمن وهو أخطر بكثير محاسبياً.
+ * صفّ العدّاد من InnoDB ويتغيّر ضمن معاملة المستند: التراجع يرجع التغيير معه، ولا يجوز
+ * نشر الرقم كهوية مكتملة قبل COMMIT. minimumPreviousValue يرفع الأرضية إلى تاريخ موثوق
+ * عند نقل مرقّم قديم؛ لا يُنقص عدّاداً متقدماً ولا يغيّر أرقام المستندات السابقة.
  */
-export async function nextCounterValue(tx: Tx, counterKey: string): Promise<number> {
+export async function nextCounterValue(
+  tx: Tx,
+  counterKey: string,
+  minimumPreviousValue = 0,
+): Promise<number> {
   // أرضيّة البدء تعيش في الكود لا في الهجرة وحدها: قاعدةٌ تُبنى بـ`db:push` (الاختبارات وأيّ
   // بيئةٍ جديدة) لا تمرّ بسطور البذر في SQL، فكانت تبدأ من ١ بينما الإنتاج من ١٠٠٠١ — سلوكان
   // مختلفان لنفس الشيفرة. الآن الأرضيّة تُطبَّق في مسار الإدراج نفسه فيتطابق كل البيئات.
-  const floor = COUNTER_FLOORS[counterKey] ?? 0;
+  if (
+    !Number.isSafeInteger(minimumPreviousValue) ||
+    minimumPreviousValue < 0 ||
+    minimumPreviousValue >= Number.MAX_SAFE_INTEGER
+  ) {
+    throw new Error(
+      `document counter "${counterKey}" received an invalid floor`,
+    );
+  }
+  const floor = Math.max(COUNTER_FLOORS[counterKey] ?? 0, minimumPreviousValue);
   // `LAST_INSERT_ID(expr)` تضبط قيمة الجلسة **وتُعيدها** — فالفرعان (إدراجٌ أوّل / زيادةٌ على
   // قائم) يضبطانها معاً في عبارةٍ ذرّيّةٍ واحدة، بلا قراءةٍ سابقة ولا قفلٍ صريح.
   await tx.execute(sql`
     INSERT INTO documentCounters (counterKey, lastValue)
     VALUES (${counterKey}, LAST_INSERT_ID(${floor + 1}))
-    ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(lastValue + 1)
+    ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(GREATEST(lastValue, ${floor}) + 1)
   `);
   const res: any = await tx.execute(sql`SELECT LAST_INSERT_ID() AS v`);
   const row = Array.isArray(res) ? res[0]?.[0] : res?.rows?.[0];
   const value = Number(row?.v ?? 0);
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`document counter "${counterKey}" returned an invalid value`);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(
+      `document counter "${counterKey}" returned an invalid value`,
+    );
   }
   return value;
 }
@@ -72,7 +87,10 @@ export async function nextCounterValue(tx: Tx, counterKey: string): Promise<numb
  * (أُعيد ترتيبه كاملاً)، وdelivery/dispatch.ts (قفل عميلٍ صريحٍ قبل الترقيم؛ ورديته تُقرأ
  * بلا قفل أصلاً فلا زوجَ {وردية،عميل} فيه).
  */
-export async function nextInvoiceNumber(tx: Tx, _branchId: number): Promise<string> {
+export async function nextInvoiceNumber(
+  tx: Tx,
+  _branchId: number,
+): Promise<string> {
   return String(await nextCounterValue(tx, "invoice"));
 }
 
@@ -85,7 +103,9 @@ export async function nextTransactionTrackingNumber(tx: Tx): Promise<string> {
   const floorCheck: any = await tx.execute(sql`
     SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor' LIMIT 1
   `);
-  const floorRow = Array.isArray(floorCheck) ? floorCheck[0]?.[0] : floorCheck?.rows?.[0];
+  const floorRow = Array.isArray(floorCheck)
+    ? floorCheck[0]?.[0]
+    : floorCheck?.rows?.[0];
   if (!floorRow) {
     await tx.execute(sql`
       INSERT INTO documentCounters (counterKey, lastValue)
@@ -109,7 +129,10 @@ export { formatDocumentNumber } from "../../shared/documentNumber";
  * بضاعة الأمانة (ش٢): رقم سند حركة أمانة يوميّ لكل فرع — CSN-{branchId}-{YYYYMMDD}-{seq}.
  * حجز ذرّي عبر عدّاد documentCounters لمنع سباقات التزامن.
  */
-export async function nextConsignmentNumber(tx: Tx, branchId: number): Promise<string> {
+export async function nextConsignmentNumber(
+  tx: Tx,
+  branchId: number,
+): Promise<string> {
   const ymd = toDateStr().replace(/-/g, "");
   const prefix = `CSN-${branchId}-${ymd}-`;
   const counterKey = `consign_note_${branchId}_${ymd}`;
