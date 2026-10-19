@@ -91,8 +91,7 @@ export function ApplicantDetailDialog({
     if (!a) return;
     setStage(a.stage); setInterviewDate(a.interviewDate ?? "");
     setRejectionReason(a.rejectionReason ?? ""); setHrNotes(a.hrNotes ?? "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [a?.id]);
+  }, [id, a]);
 
   useEffect(() => { if (a) setRating(a.rating ?? 0); }, [a?.id, a?.rating]);
 
@@ -334,7 +333,7 @@ export function PaperDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) { reset(); onClose(); } }}>
       <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-y-auto" dir="rtl">
         <DialogHeader><DialogTitle>إدخال استمارة ورقية إلى النظام</DialogTitle></DialogHeader>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
@@ -384,7 +383,7 @@ export function PaperDialog({
           <div className="space-y-1.5 sm:col-span-2 lg:col-span-3"><Label>ملاحظات الموظف المختص</Label><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} placeholder="خبرات سابقة، مهارات، انطباع أولي…" /></div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>إلغاء</Button>
+          <Button variant="outline" onClick={() => { reset(); onClose(); }}>إلغاء</Button>
           <Button onClick={() => void submit()} disabled={create.isPending || encodingCv}>{create.isPending || encodingCv ? ACTION_LABELS.saving : "حفظ في مسار التوظيف"}</Button>
         </DialogFooter>
       </DialogContent>

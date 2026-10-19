@@ -165,9 +165,11 @@ export default function EmployeeNew() {
     if (a.branchId != null || !a.preferredBranch || opts.data?.branches) {
       prefilledBranchApplicantIdRef.current = a.id;
     }
-    const expectedSalaryClean =
-      a.expectedSalary != null ? String(a.expectedSalary).replace(/\.00$/, "") : "";
     const rawPosition = (a.jobTitle ?? "").trim().slice(0, 100);
+    const matchedDepartment =
+      a.department && (HR_DEPARTMENTS as readonly string[]).includes(a.department)
+        ? a.department
+        : "";
     setForm((f) => ({
       ...f,
       firstName: (names.firstName || f.firstName).slice(0, 100),
@@ -182,11 +184,9 @@ export default function EmployeeNew() {
       governorate: (a.governorate || f.governorate).slice(0, 80),
       district: (a.district || f.district).slice(0, 120),
       addressLandmark: (a.residentialAddress || f.addressLandmark).slice(0, 255),
-      department: (a.department || f.department).slice(0, 100),
+      department: matchedDepartment || f.department,
       position: rawPosition || f.position,
       branchId: matchedBranchId || f.branchId,
-      hireDate: a.availableFrom || f.hireDate,
-      salary: expectedSalaryClean || f.salary,
     }));
     if (a.degree) {
       setEdu([
