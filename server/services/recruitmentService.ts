@@ -64,20 +64,26 @@ async function lockApplicantInScope(
 ) {
   if (scope.branchId == null) {
     const [applicant] = await tx
-      .select({ id: jobApplicants.id })
+      .select({
+        id: jobApplicants.id,
+        convertedEmployeeId: jobApplicants.convertedEmployeeId,
+      })
       .from(jobApplicants)
       .where(eq(jobApplicants.id, id))
       .for("update")
       .limit(1);
     if (!applicant)
       throw new TRPCError({ code: "NOT_FOUND", message: "المتقدّم غير موجود" });
-    return;
+    return applicant;
   }
 
   // Applicant ownership is persisted independently from the optional vacancy,
   // so deletion or movement of a vacancy cannot make the applicant disappear.
   const [applicant] = await tx
-    .select({ id: jobApplicants.id })
+    .select({
+      id: jobApplicants.id,
+      convertedEmployeeId: jobApplicants.convertedEmployeeId,
+    })
     .from(jobApplicants)
     .where(
       and(eq(jobApplicants.id, id), eq(jobApplicants.branchId, scope.branchId)),
@@ -86,6 +92,7 @@ async function lockApplicantInScope(
     .limit(1);
   if (!applicant)
     throw new TRPCError({ code: "NOT_FOUND", message: "المتقدّم غير موجود" });
+  return applicant;
 }
 
 export interface ApplicantFilters {
@@ -273,7 +280,7 @@ export async function createApplicant(
       education: input.education?.trim() || null,
       skills: input.skills?.trim() || null,
       residentialAddress: input.residentialAddress?.trim() || null,
-      department: (input.department?.trim() || vacancyDepartment)?.slice(0, 100) || null,
+      department: (vacancyDepartment || input.department?.trim())?.slice(0, 100) || null,
       preferredBranch: input.preferredBranch?.trim() || null,
       employmentType: input.employmentType?.trim() || vacancyEmploymentType,
       shiftPreference: input.shiftPreference?.trim() || null,
@@ -307,7 +314,17 @@ export async function updateStage(
   extras?: ApplicantReviewPatch,
 ) {
   await withTx(async (tx) => {
-    await lockApplicantInScope(tx, id, scope);
+    const locked = await lockApplicantInScope(tx, id, scope);
+    if (locked.convertedEmployeeId != null && stage !== "accepted") {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "لا يمكن تغيير مرحلة متقدّم تم تعيينه كموظف",
+          why: `هذا المتقدّم مرتبط فعلياً بسجل الموظف رقم #${locked.convertedEmployeeId}`,
+          doThis: "افتح ملف الموظف من قسم الموارد البشرية لإدارة حالته الوظيفية بدلاً من تغيير مرحلة الطلب.",
+        }),
+      });
+    }
     const patch: Record<string, unknown> = { stage };
     if (extras?.notes !== undefined) patch.notes = extras.notes?.trim() || null;
     if (extras?.hrNotes !== undefined) patch.hrNotes = extras.hrNotes?.trim() || null;
@@ -331,7 +348,21 @@ export async function setRating(
   extras?: ApplicantReviewPatch,
 ) {
   await withTx(async (tx) => {
-    await lockApplicantInScope(tx, id, scope);
+    const locked = await lockApplicantInScope(tx, id, scope);
+    if (
+      locked.convertedEmployeeId != null &&
+      extras?.stage !== undefined &&
+      extras.stage !== "accepted"
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "لا يمكن تغيير مرحلة متقدّم تم تعيينه كموظف",
+          why: `هذا المتقدّم مرتبط فعلياً بسجل الموظف رقم #${locked.convertedEmployeeId}`,
+          doThis: "افتح ملف الموظف من قسم الموارد البشرية لإدارة حالته الوظيفية بدلاً من تغيير مرحلة الطلب.",
+        }),
+      });
+    }
     const patch: Record<string, unknown> = {};
     if (rating !== undefined) {
       patch.rating = Math.max(0, Math.min(5, Math.trunc(rating)));

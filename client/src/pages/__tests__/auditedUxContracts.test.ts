@@ -324,7 +324,7 @@ describe("حزمة استمارة التوظيف والتعيين الكاملة
   });
 
   it("يطبع رقم الهاتف العراقي مع دعم الأرقام العربية المشرقية واللصق واللواصق الدولية", async () => {
-    const { normalizeIraqiPhone } = await import("../../../../shared/hr");
+    const { normalizeIraqiPhone, IRAQI_MOBILE_RE } = await import("../../../../shared/hr");
 
     expect(normalizeIraqiPhone("", true)).toBe("");
     expect(normalizeIraqiPhone("+964", true)).toBe("");
@@ -332,6 +332,8 @@ describe("حزمة استمارة التوظيف والتعيين الكاملة
     expect(normalizeIraqiPhone("٠٧٧٠١٢٣٤٥٦٧")).toBe("+9647701234567");
     expect(normalizeIraqiPhone("+96407701234567")).toBe("+9647701234567");
     expect(normalizeIraqiPhone("00964 780 123 4567")).toBe("+9647801234567");
+    expect(normalizeIraqiPhone("077012345678")).toBe("+96477012345678");
+    expect(IRAQI_MOBILE_RE.test(normalizeIraqiPhone("077012345678"))).toBe(false);
   });
 
   it("يعرض البريد الإلكتروني والحقول الكاملة في استمارة التقديم العامة والورقية وربط التعيين", () => {

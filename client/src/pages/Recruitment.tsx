@@ -152,7 +152,7 @@ export default function Recruitment() {
   });
 
   async function moveApplicantTo(applicant: Applicant, targetStage: ApplicantStage) {
-    if (applicant.stage === targetStage || move.isPending) return;
+    if (applicant.stage === targetStage || move.isPending || applicant.convertedEmployeeId != null) return;
     if (targetStage === "rejected" || targetStage === "archived") {
       const approved = await confirm({
         variant: "warning",
@@ -336,7 +336,7 @@ export default function Recruitment() {
                           return (
                             <article
                               key={a.id}
-                              draggable={!move.isPending}
+                              draggable={!move.isPending && a.convertedEmployeeId == null}
                               onDragStart={(event) => {
                                 event.dataTransfer.effectAllowed = "move";
                                 event.dataTransfer.setData("text/plain", String(a.id));
@@ -395,7 +395,7 @@ export default function Recruitment() {
                                   </Button>
                                 </div>
                               ) : null}
-                              {(previous || next) && (
+                              {a.convertedEmployeeId == null && (previous || next) && (
                                 <div className="mt-3 flex gap-2">
                                   {previous && (
                                     <Button size="sm" variant="outline" className="h-8 flex-1 px-2 text-xs" disabled={move.isPending} onClick={() => void moveApplicantTo(a, previous)} title={`نقل إلى ${applicantStageLabel(previous)}`}>
@@ -410,7 +410,7 @@ export default function Recruitment() {
                                   )}
                                 </div>
                               )}
-                              {a.stage !== "rejected" && a.stage !== "archived" && (
+                              {a.convertedEmployeeId == null && a.stage !== "rejected" && a.stage !== "archived" && (
                                 <div className="mt-2 flex gap-2 border-t pt-2">
                                   <Button size="sm" variant="ghost" className="h-7 flex-1 text-xs text-destructive" disabled={move.isPending} onClick={() => void moveApplicantTo(a, "rejected")}>رفض</Button>
                                   <Button size="sm" variant="ghost" className="h-7 flex-1 text-xs text-muted-foreground" disabled={move.isPending} onClick={() => void moveApplicantTo(a, "archived")}>أرشفة</Button>

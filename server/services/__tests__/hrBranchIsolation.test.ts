@@ -718,6 +718,19 @@ describe("recruitment branch isolation", () => {
       stage: "accepted",
       convertedEmployeeId: convertedWithAcc.employee!.id,
     });
+
+    await expect(
+      admin.recruitment.updateStage({ id: 64, stage: "rejected" }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringMatching(/لا يمكن تغيير مرحلة متقدّم تم تعيينه كموظف/),
+    });
+    await expect(
+      admin.recruitment.setRating({ id: 64, rating: 4, stage: "archived" }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringMatching(/لا يمكن تغيير مرحلة متقدّم تم تعيينه كموظف/),
+    });
   });
 
   it("never returns CV bytes to a manager outside the vacancy branch", async () => {

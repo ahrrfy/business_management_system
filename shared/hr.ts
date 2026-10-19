@@ -155,6 +155,9 @@ export function splitFullArabicName(fullName?: string | null): {
   };
 }
 
+/** نمط رقم الجوّال العراقي المطبَّع (+9647XXXXXXXXX). */
+export const IRAQI_MOBILE_RE = /^\+9647\d{9}$/;
+
 /** تطبيع رقم الهاتف العراقي الجوّال (مع تحويل الأرقام العربية/الفارسية وإزالة البادئات المتكررة 0 / 964 / 00964). */
 export function normalizeIraqiPhone(raw: string, allowEmpty = false): string {
   const ascii = raw
@@ -162,8 +165,7 @@ export function normalizeIraqiPhone(raw: string, allowEmpty = false): string {
     .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
   const digits = ascii
     .replace(/\D/g, "")
-    .replace(/^(?:00964|964|0)+/, "")
-    .slice(0, 10);
+    .replace(/^(?:00964|964|0)+/, "");
   if (!digits && allowEmpty) return "";
   return `+964${digits}`;
 }
