@@ -20,6 +20,7 @@ import { resolveStorefrontBranchId, storefrontCatalog, type StorefrontProduct } 
 import { createTtlCache } from "../lib/ttlCache";
 import { withTx } from "./tx";
 import { normalizeArabicSearch } from "../../shared/storefrontSearchNormalize";
+import { setImmediate as yieldEventLoop } from "node:timers/promises";
 
 export type ThematicFilterType = "category" | "keyword" | "deal";
 
@@ -372,7 +373,7 @@ export function extractWordTokens(normText: string): Set<string> {
 
 /** فحص وجود كلمة كاملة كرمز مستقل (Word Boundary Token Match) */
 export function hasWordToken(tokens: Set<string>, targetWord: string): boolean {
-  const normTarget = normalizeThematicText(targetWord);
+  const normTarget = compiledPhrase(targetWord).normalized;
   return tokens.has(normTarget);
 }
 
@@ -380,20 +381,41 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// هذه قواعد نصية خالصة، لا بيانات منتجات أو مخزون. سقف عددها وطول المفتاح يمنع نمو الذاكرة.
+const phraseMatchers = new Map<string, { normalized: string; pattern: RegExp | null }>();
+function compiledPhrase(phrase: string): { normalized: string; pattern: RegExp | null } {
+  const hit = phraseMatchers.get(phrase);
+  if (hit) {
+    phraseMatchers.delete(phrase);
+    phraseMatchers.set(phrase, hit);
+    return hit;
+  }
+  const normalized = normalizeThematicText(phrase);
+  const parts = normalized.split(/\s+/).filter(Boolean);
+  const entry = {
+    normalized,
+    pattern: parts.length && !(parts.length === 1 && normalized.length > 256)
+      ? new RegExp(`(^|\\s)${parts.map(escapeRegExp).join("\\s+")}($|\\s)`)
+      : null,
+  };
+  if (phrase.length <= 256) {
+    phraseMatchers.set(phrase, entry);
+    if (phraseMatchers.size > 256) {
+      const oldest = phraseMatchers.keys().next().value;
+      if (oldest !== undefined) phraseMatchers.delete(oldest);
+    }
+  }
+  return entry;
+}
+
 /**
  * فحص وجود عبارة أو تركيب مركب أو كلمة مفردة بحدود كلمات صريحة
  * لا يبتلع الكلمات المشابهة جزئياً (مثال: «باك» لا تطابق «باكيت» ولا «شباك»).
  */
 export function hasPhrase(normText: string, phrase: string): boolean {
-  const normPhrase = normalizeThematicText(phrase);
-  if (!normPhrase) return false;
-  const parts = normPhrase.split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return false;
-  if (parts.length === 1) {
-    return extractWordTokens(normText).has(parts[0]);
-  }
-  const pattern = new RegExp(`(^|\\s)${parts.map(escapeRegExp).join("\\s+")}($|\\s)`);
-  return pattern.test(normText);
+  const entry = compiledPhrase(phrase);
+  return entry.pattern?.test(normText)
+    ?? (entry.normalized ? extractWordTokens(normText).has(entry.normalized) : false);
 }
 
 const TOY_AND_GAME_TERMS = [
@@ -627,7 +649,7 @@ export async function computeAlgorithmicThematicCollections(
     const candidateMap = new Map<number, StorefrontProduct>();
 
     // استعلام الفئات المستهدفة والكلمات الدالة للأنماط بالتوازي المنظم
-    const queries: Array<Promise<{ items: StorefrontProduct[] }>> = [];
+    const queries: Array<() => Promise<{ items: StorefrontProduct[] }>> = [];
 
     // ١. استعلام الفئات المستهدفة لكل الأنماط
     const allCategoryIds = Array.from(
@@ -635,7 +657,7 @@ export async function computeAlgorithmicThematicCollections(
     );
     for (const catId of allCategoryIds) {
       queries.push(
-        storefrontCatalog({
+        () => storefrontCatalog({
           branchId: resolvedBranchId,
           categoryId: catId,
           limit: 80,
@@ -650,7 +672,7 @@ export async function computeAlgorithmicThematicCollections(
     );
     for (const q of allSearchQueries) {
       queries.push(
-        storefrontCatalog({
+        () => storefrontCatalog({
           branchId: resolvedBranchId,
           search: q,
           limit: 30,
@@ -661,13 +683,13 @@ export async function computeAlgorithmicThematicCollections(
 
     // ٣. استعلام البكجات والحزم الخاصة
     queries.push(
-      storefrontCatalog({
+      () => storefrontCatalog({
         branchId: resolvedBranchId,
         search: "بكج",
         limit: 50,
         availability: "IN_STOCK",
       }),
-      storefrontCatalog({
+      () => storefrontCatalog({
         branchId: resolvedBranchId,
         search: "سيت",
         limit: 50,
@@ -675,8 +697,27 @@ export async function computeAlgorithmicThematicCollections(
       })
     );
 
-    // تنفيذ الاستعلامات بالتوازي وتجميع المرشحين في خريطة فريدة
-    const pages = await Promise.all(queries);
+    // لا نطلق 56 كتالوجاً محملاً بالصور معاً. نحافظ على ترتيب الصفحات والتعادل كما كان.
+    const pages: Array<{ items: StorefrontProduct[] }> = new Array(queries.length);
+    let nextQuery = 0;
+    let failed = false;
+    let failure: unknown;
+    await Promise.all(Array.from({ length: Math.min(2, queries.length) }, async () => {
+      while (!failed) {
+        const index = nextQuery++;
+        if (index >= queries.length) return;
+        try {
+          pages[index] = await queries[index]();
+        } catch (error) {
+          if (!failed) failure = error;
+          failed = true;
+          return;
+        }
+        await yieldEventLoop();
+      }
+    }));
+    // تصريف الرحلة الجارية قبل تحرير single-flight؛ لا تبقى خلف المحاولة التالية حمولة يتيمة.
+    if (failed) throw failure;
     for (const page of pages) {
       for (const item of page.items) {
         if (item.inStock) {
@@ -695,12 +736,19 @@ export async function computeAlgorithmicThematicCollections(
 
     for (const arch of THEMATIC_ARCHETYPES) {
       // احتساب الصلة الحبيبية الدقيقة لكل منتج
-      const matchedWithScores = allItems
-        .map((item) => ({
-          item,
-          relevance: calculateProductRelevance(item, arch),
-        }))
-        .filter((entry) => entry.relevance >= arch.minRelevanceThreshold && entry.item.inStock);
+      const matchedWithScores: Array<{ item: StorefrontProduct; relevance: number }> = [];
+      let sliceStartedAt = performance.now();
+      for (const item of allItems) {
+        const relevance = calculateProductRelevance(item, arch);
+        if (relevance >= arch.minRelevanceThreshold && item.inStock) {
+          matchedWithScores.push({ item, relevance });
+        }
+        if (performance.now() - sliceStartedAt >= 8) {
+          await yieldEventLoop();
+          sliceStartedAt = performance.now();
+        }
+      }
+      await yieldEventLoop();
 
       // ترتيب المنتجات داخل التشكيلة تنازلياً حسب درجة الصلة الدلالية وجودة العرض
       matchedWithScores.sort((a, b) => {

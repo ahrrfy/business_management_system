@@ -16,6 +16,26 @@ describe("storefrontThematicService — محرك المطابقة الرمزية
   const academicArch = THEMATIC_ARCHETYPES.find((a) => a.id === "academic")!;
 
   describe("١. حدود الكلمات الصارمة (Word Boundary Matching)", () => {
+    it("يحفظ حدود الكلمات والفراغات Unicode بعد إعادة استعمال matcher", () => {
+      for (let i = 0; i < 3; i++) {
+        expect(hasPhrase("قلم\u00a0حبر\nباركر", "قلم حبر")).toBe(true);
+        expect(hasPhrase("قلم\tحبر", " حِبْر ")).toBe(true);
+        expect(hasPhrase("قلم محبرة", "حبر")).toBe(false);
+        expect(hasPhrase("", " ")).toBe(false);
+      }
+    });
+
+    it("يحفظ مطابقة الكلمات الطويلة والنتائج بعد طرد قواعد قديمة من الكاش", () => {
+      const longWord = "قلم".repeat(5000);
+      expect(hasPhrase(`قبل ${longWord} بعد`, longWord)).toBe(true);
+      expect(hasPhrase(`قبل س${longWord} بعد`, longWord)).toBe(false);
+      for (let i = 0; i < 600; i++) {
+        expect(hasPhrase(normalizeThematicText(`قاعدة ${i}`), `قاعدة ${i}`)).toBe(true);
+      }
+      expect(hasPhrase("قلم حبر", "حبر")).toBe(true);
+      expect(hasPhrase("قلم محبرة", "حبر")).toBe(false);
+    });
+
     it("لا تطابق «باك» كلمة «باكيت» ولا «شباك» ولا «باكستان»", () => {
       const tokens1 = extractWordTokens(normalizeThematicText("باكيت لعبة اونو"));
       expect(hasWordToken(tokens1, "باك")).toBe(false);
