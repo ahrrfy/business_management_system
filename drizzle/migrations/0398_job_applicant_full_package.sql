@@ -19,4 +19,5 @@ ALTER TABLE `jobApplicants`
   ADD COLUMN `availableFrom` date NULL AFTER `expectedSalary`,
   ADD COLUMN `interviewDate` date NULL AFTER `rating`,
   ADD COLUMN `rejectionReason` varchar(500) NULL AFTER `interviewDate`,
-  ADD COLUMN `convertedEmployeeId` int DEFAULT NULL;
+  ADD COLUMN `convertedEmployeeId` int DEFAULT NULL,
+  ADD COLUMN `hrNotes` text NULL AFTER `notes`;

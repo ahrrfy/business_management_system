@@ -518,7 +518,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
   const vacancy = target === "general" ? null : target;
   const [name, setName] = useState("");
   const [jobTitle, setJobTitle] = useState("");
-  const [department, setDepartment] = useState(vacancy?.department ?? "");
+  const [department, setDepartment] = useState(vacancy?.department?.slice(0, 100) ?? "");
   const [phone, setPhone] = useState("+964");
   const [whatsappPhone, setWhatsappPhone] = useState("");
   const [email, setEmail] = useState("");

@@ -200,12 +200,14 @@ export interface ApplicantInput {
   interviewDate?: string | null;
   rejectionReason?: string | null;
   notes?: string | null;
+  hrNotes?: string | null;
   cv?: JobApplicantCvUploadInput | null;
 }
 
 export interface ApplicantReviewPatch {
   stage?: "new" | "review" | "interview" | "accepted" | "rejected" | "archived";
   notes?: string | null;
+  hrNotes?: string | null;
   interviewDate?: string | null;
   rejectionReason?: string | null;
 }
@@ -236,7 +238,7 @@ export async function createApplicant(
       vacancyId = v.id;
       branchId = v.branchId ?? branchId;
       jobTitle = v.title; // العنوان الموثوق من سجلّ الوظيفة
-      vacancyDepartment = v.department ?? null;
+      vacancyDepartment = v.department ? v.department.slice(0, 100) : null;
       vacancyEmploymentType = v.employmentType ?? null;
     } else {
       throw new TRPCError({ code: "NOT_FOUND", message: "الوظيفة غير موجودة" });
@@ -271,7 +273,7 @@ export async function createApplicant(
       education: input.education?.trim() || null,
       skills: input.skills?.trim() || null,
       residentialAddress: input.residentialAddress?.trim() || null,
-      department: input.department?.trim() || vacancyDepartment,
+      department: (input.department?.trim() || vacancyDepartment)?.slice(0, 100) || null,
       preferredBranch: input.preferredBranch?.trim() || null,
       employmentType: input.employmentType?.trim() || vacancyEmploymentType,
       shiftPreference: input.shiftPreference?.trim() || null,
@@ -286,6 +288,7 @@ export async function createApplicant(
       interviewDate: input.interviewDate?.trim() || null,
       rejectionReason: input.rejectionReason?.trim() || null,
       notes: input.notes?.trim() || null,
+      hrNotes: input.hrNotes?.trim() || null,
       // Public keys are generated only by the server; client-selected keys are ignored.
       cvFileKey: preparedCv?.publicKey ?? null,
     });
@@ -307,6 +310,7 @@ export async function updateStage(
     await lockApplicantInScope(tx, id, scope);
     const patch: Record<string, unknown> = { stage };
     if (extras?.notes !== undefined) patch.notes = extras.notes?.trim() || null;
+    if (extras?.hrNotes !== undefined) patch.hrNotes = extras.hrNotes?.trim() || null;
     if (extras?.interviewDate !== undefined)
       patch.interviewDate = extras.interviewDate?.trim() || null;
     if (extras?.rejectionReason !== undefined)
@@ -334,6 +338,7 @@ export async function setRating(
     }
     if (extras?.stage !== undefined) patch.stage = extras.stage;
     if (extras?.notes !== undefined) patch.notes = extras.notes?.trim() || null;
+    if (extras?.hrNotes !== undefined) patch.hrNotes = extras.hrNotes?.trim() || null;
     if (extras?.interviewDate !== undefined)
       patch.interviewDate = extras.interviewDate?.trim() || null;
     if (extras?.rejectionReason !== undefined)

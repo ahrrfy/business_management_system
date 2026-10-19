@@ -11364,6 +11364,7 @@ export const jobApplicants = mysqlTable(
     rejectionReason: varchar("rejectionReason", { length: 500 }),
     convertedEmployeeId: int("convertedEmployeeId"),
     notes: text("notes"),
+    hrNotes: text("hrNotes"),
     cvFileKey: varchar("cvFileKey", { length: 512 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },

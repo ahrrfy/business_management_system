@@ -146,7 +146,7 @@ const portfolioUrl = z.preprocess(
 /** حقول الوظيفة الشاغرة المشتركة (إنشاء/تعديل). */
 const vacancyFields = {
   title: z.string().trim().min(1, "عنوان الوظيفة مطلوب").max(200),
-  department: z.string().trim().max(120).optional(),
+  department: z.string().trim().max(100).optional(),
   employmentType: z.enum(EMPLOYMENT_TYPE_KEYS).default("full_time"),
   location: z.string().trim().max(200).optional(),
   branchId: z.number().int().positive().nullable().optional(),
@@ -266,7 +266,7 @@ export const recruitmentRouter = router({
         appliedDate: optionalDateStr,
         rating: z.number().int().min(0).max(5).optional(),
         interviewDate: optionalDateStr,
-        rejectionReason: z.string().trim().max(500).optional(),
+        rejectionReason: z.string().trim().max(500).optional(), hrNotes: z.string().trim().max(2000).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -293,7 +293,7 @@ export const recruitmentRouter = router({
       z.object({
         id: z.number().int().positive(),
         stage: z.enum(APPLICANT_STAGE_KEYS),
-        notes: z.string().trim().max(2000).nullable().optional(),
+        notes: z.string().trim().max(2000).nullable().optional(), hrNotes: z.string().trim().max(2000).nullable().optional(),
         interviewDate: optionalNullableDateStr,
         rejectionReason: z.string().trim().max(500).nullable().optional(),
       }),
@@ -304,7 +304,7 @@ export const recruitmentRouter = router({
         input.stage,
         companyBranchScope(ctx.user),
         {
-          notes: input.notes,
+          notes: input.notes, hrNotes: input.hrNotes,
           interviewDate: input.interviewDate,
           rejectionReason: input.rejectionReason,
         },
@@ -333,7 +333,7 @@ export const recruitmentRouter = router({
         id: z.number().int().positive(),
         rating: z.number().int().min(0).max(5).optional(),
         stage: z.enum(APPLICANT_STAGE_KEYS).optional(),
-        notes: z.string().trim().max(2000).nullable().optional(),
+        notes: z.string().trim().max(2000).nullable().optional(), hrNotes: z.string().trim().max(2000).nullable().optional(),
         interviewDate: optionalNullableDateStr,
         rejectionReason: z.string().trim().max(500).nullable().optional(),
       }),
@@ -345,7 +345,7 @@ export const recruitmentRouter = router({
         companyBranchScope(ctx.user),
         {
           stage: input.stage,
-          notes: input.notes,
+          notes: input.notes, hrNotes: input.hrNotes,
           interviewDate: input.interviewDate,
           rejectionReason: input.rejectionReason,
         },

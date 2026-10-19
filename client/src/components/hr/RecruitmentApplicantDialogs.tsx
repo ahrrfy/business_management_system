@@ -56,7 +56,7 @@ export type Applicant = {
   residentialAddress: string | null; department: string | null; preferredBranch: string | null;
   employmentType: string | null; shiftPreference: string | null; expectedSalary: string | null;
   availableFrom: string | null; portfolioUrl: string | null; rating: number | null;
-  interviewDate: string | null; rejectionReason: string | null; notes: string | null; cvFileKey: string | null;
+  interviewDate: string | null; rejectionReason: string | null; notes: string | null; hrNotes: string | null; cvFileKey: string | null;
   convertedEmployeeId: number | null;
 };
 
@@ -85,12 +85,12 @@ export function ApplicantDetailDialog({
   const [stage, setStage] = useState<ApplicantStage>("new");
   const [interviewDate, setInterviewDate] = useState("");
   const [rejectionReason, setRejectionReason] = useState("");
-  const [notes, setNotes] = useState("");
+  const [hrNotes, setHrNotes] = useState("");
 
   useEffect(() => {
     if (!a) return;
     setStage(a.stage); setInterviewDate(a.interviewDate ?? "");
-    setRejectionReason(a.rejectionReason ?? ""); setNotes(a.notes ?? "");
+    setRejectionReason(a.rejectionReason ?? ""); setHrNotes(a.hrNotes ?? "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a?.id]);
 
@@ -142,22 +142,15 @@ export function ApplicantDetailDialog({
                 <div className="truncate text-lg font-bold">{a.name}</div>
                 <div className="mt-0.5 text-sm text-muted-foreground">{positionTitle}</div>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  <Badge variant="outline" className="gap-1.5">
-                    <span className="size-2 rounded-full" style={{ background: STAGE_COLOR[a.stage] }} />
-                    {applicantStageLabel(a.stage)}
-                  </Badge>
+                  <Badge variant="outline" className="gap-1.5"><span className="size-2 rounded-full" style={{ background: STAGE_COLOR[a.stage] }} />{applicantStageLabel(a.stage)}</Badge>
                   <Badge variant="secondary">{applicantSourceLabel(a.source)}</Badge>
                   {a.department && <Badge variant="outline">{a.department}</Badge>}
                 </div>
               </div>
               {a.convertedEmployeeId != null ? (
-                <Button size="sm" variant="secondary" onClick={() => onOpenEmployee?.(a.convertedEmployeeId!)}>
-                  <UserPlus className="size-4" /> عُيِّن كموظف (#{a.convertedEmployeeId})
-                </Button>
+                <Button size="sm" variant="secondary" onClick={() => onOpenEmployee?.(a.convertedEmployeeId!)}><UserPlus className="size-4" /> عُيِّن كموظف (#{a.convertedEmployeeId})</Button>
               ) : (
-                <Button size="sm" variant="default" onClick={() => onConvertToEmployee(a.id)}>
-                  <UserPlus className="size-4" /> تعيين كموظف
-                </Button>
+                <Button size="sm" variant="default" onClick={() => onConvertToEmployee(a.id)}><UserPlus className="size-4" /> تعيين كموظف</Button>
               )}
             </header>
             <section className="space-y-2">
@@ -198,6 +191,7 @@ export function ApplicantDetailDialog({
                 <InfoField label="الراتب الشهري المتوقع" value={a.expectedSalary ? formatIqd(a.expectedSalary) : "غير محدد"} />
                 <InfoField label="تاريخ الجاهزية للمباشرة" kind="date" value={a.availableFrom ? fmtDate(a.availableFrom) : "فوراً / غير محدد"} />
                 <InfoField label="تاريخ التقديم" value={a.appliedDate ? fmtDate(a.appliedDate) : "غير مسجل"} kind="date" />
+                <InfoField label="نبذة وملاحظات المتقدّم" value={a.notes || "غير مذكورة"} span={2} />
               </InfoGrid>
             </section>
             <section className="space-y-2">
@@ -218,9 +212,9 @@ export function ApplicantDetailDialog({
                   <div className="space-y-1"><Label className="text-xs">موعد المقابلة</Label><Input type="date" value={interviewDate} onChange={(e) => setInterviewDate(e.target.value)} /></div>
                   <div className="space-y-1"><Label className="text-xs">سبب الرفض / الاعتذار (عند الرفض)</Label><Input value={rejectionReason} onChange={(e) => setRejectionReason(e.target.value)} placeholder="اختياري — يُحفظ في سجل المتقدّم" maxLength={500} /></div>
                 </div>
-                <div className="space-y-1"><Label className="text-xs">ملاحظات المتقدّم والموارد البشرية</Label><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} placeholder="ملاحظات المقابلة، التقييم الفني، أو نبذة المتقدّم…" /></div>
+                <div className="space-y-1"><Label className="text-xs">ملاحظات الموارد البشرية والمقابلة</Label><Textarea value={hrNotes} onChange={(e) => setHrNotes(e.target.value)} rows={3} placeholder="ملاحظات المقابلة، التقييم الفني، أو توصيات التوظيف…" /></div>
                 <div className="flex justify-end">
-                  <Button size="sm" onClick={() => saveReview.mutate({ id: a.id, rating, stage, notes: notes.trim() || null, interviewDate: interviewDate.trim() || null, rejectionReason: rejectionReason.trim() || null })} disabled={saveReview.isPending}>
+                  <Button size="sm" onClick={() => saveReview.mutate({ id: a.id, rating, stage, hrNotes: hrNotes.trim() || null, interviewDate: interviewDate.trim() || null, rejectionReason: rejectionReason.trim() || null })} disabled={saveReview.isPending}>
                     {saveReview.isPending ? ACTION_LABELS.saving : "حفظ التقييم والملاحظات"}
                   </Button>
                 </div>
@@ -334,7 +328,7 @@ export function PaperDialog({
       preferredBranch: preferredBranch.trim() || undefined, employmentType: (employmentType || undefined) as never,
       shiftPreference: (shiftPreference || undefined) as never, expectedSalary: expectedSalary.trim() || undefined,
       availableFrom: availableFrom.trim() || undefined, portfolioUrl: portfolioUrl.trim() || undefined,
-      interviewDate: interviewDate.trim() || undefined, notes: notes.trim() || undefined,
+      interviewDate: interviewDate.trim() || undefined, hrNotes: notes.trim() || undefined,
       source, stage: stage as never, rating, cv,
     });
   }
@@ -361,7 +355,7 @@ export function PaperDialog({
           <div className="space-y-1.5"><Label>سنوات الخبرة</Label><Input value={experience} onChange={(e) => setExperience(e.target.value)} list="rec-exp-levels" placeholder="مثال: ٣ – ٥ سنوات" /><datalist id="rec-exp-levels">{APPLICANT_EXPERIENCE_LEVELS.map((lvl) => <option key={lvl} value={lvl} />)}</datalist></div>
           <div className="space-y-1.5"><Label>آخر جهة عمل / مسمى سابق</Label><Input value={previousEmployer} onChange={(e) => setPreviousEmployer(e.target.value)} placeholder="اسم الشركة أو المطبعة السابقة" /></div>
           <div className="space-y-1.5 sm:col-span-2 lg:col-span-3"><Label>المهارات والبرامج المتقنة</Label><Input value={skills} onChange={(e) => setSkills(e.target.value)} placeholder="مثال: Photoshop, Illustrator, Excel، مبيعات، كاشير" /></div>
-          <div className="space-y-1.5"><Label>ربط بوظيفة شاغرة (اختياري)</Label><AppSelect className={selectClsSm + " w-full"} value={vacancyId} onValueChange={(next) => { setVacancyId(next); const found = vacancies.find((v) => String(v.id) === next); if (found) { setJobTitle(found.title.slice(0, 100)); if (found.department) setDepartment(found.department); if (found.employmentType) setEmploymentType(found.employmentType); if (canChooseCompanyWide && found.branchId != null) setBranchId(String(found.branchId)); } }}><option value="">— تقديم عام (بدون شاغر محدد) —</option>{vacancies.map((v) => <option key={v.id} value={String(v.id)}>{v.title}</option>)}</AppSelect></div>
+          <div className="space-y-1.5"><Label>ربط بوظيفة شاغرة (اختياري)</Label><AppSelect className={selectClsSm + " w-full"} value={vacancyId} onValueChange={(next) => { setVacancyId(next); const found = vacancies.find((v) => String(v.id) === next); if (found) { setJobTitle(found.title.slice(0, 100)); if (found.department) setDepartment(found.department.slice(0, 100)); if (found.employmentType) setEmploymentType(found.employmentType); if (canChooseCompanyWide && found.branchId != null) setBranchId(String(found.branchId)); } }}><option value="">— تقديم عام (بدون شاغر محدد) —</option>{vacancies.map((v) => <option key={v.id} value={String(v.id)}>{v.title}</option>)}</AppSelect></div>
           <div className="space-y-1.5"><Label>الوظيفة المتقدّم لها</Label><Input value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} maxLength={100} placeholder="مثال: مصمم جرافيك" list="rec-jobs" /><datalist id="rec-jobs">{HR_DEPARTMENTS.map((d) => <option key={d} value={d} />)}</datalist></div>
           <div className="space-y-1.5"><Label>القسم المفضّل</Label><AppSelect className={selectClsSm + " w-full"} value={department} onValueChange={setDepartment}><option value="">— اختر القسم —</option>{HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}</AppSelect></div>
           <div className="space-y-1.5"><Label>فرع المتابعة الإدارية</Label><AppSelect className={selectClsSm + " w-full"} value={branchId} onValueChange={setBranchId} disabled={!canChooseCompanyWide}>{canChooseCompanyWide && <option value="">— عام للشركة —</option>}{branches.map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}</AppSelect></div>

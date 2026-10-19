@@ -131,7 +131,8 @@ export default function Recruitment() {
         { key: "rating", header: "التقييم", map: (r) => r.rating ?? 0 },
         { key: "interviewDate", header: "موعد المقابلة", map: (r) => r.interviewDate ?? "" },
         { key: "rejectionReason", header: "سبب الرفض", map: (r) => r.rejectionReason ?? "" },
-        { key: "notes", header: "ملاحظات", map: (r) => r.notes ?? "" },
+        { key: "notes", header: "نبذة المتقدّم", map: (r) => r.notes ?? "" },
+        { key: "hrNotes", header: "ملاحظات الموارد البشرية", map: (r) => r.hrNotes ?? "" },
       ],
     });
   }
