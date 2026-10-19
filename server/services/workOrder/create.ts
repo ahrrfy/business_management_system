@@ -531,13 +531,21 @@ export async function createWorkOrderInTx(
   let orderNumber: string;
   if (input.orderNumber?.trim()) {
     const cleanOrder = stripDocPrefix(input.orderNumber.trim());
-    if (/^\d+(?:-\d+)?$/.test(cleanOrder)) {
-      const baseOrderNumber = cleanOrder.split("-")[0];
+    const isUnifiedOrder = /^\d+(?:-\d+)?$/.test(cleanOrder);
+    const isLegacySuffixedOrder = /^WO-\d+-\d{8}-\d+(?:-\d+)?$/i.test(cleanOrder);
+    if (isUnifiedOrder || isLegacySuffixedOrder) {
+      const isExplicitlySuffixed =
+        /^\d+-\d+$/.test(cleanOrder) ||
+        /^WO-\d+-\d{8}-\d+-\d+$/i.test(cleanOrder);
+      const baseOrderNumber = isExplicitlySuffixed
+        ? cleanOrder.replace(/-\d+$/, "")
+        : cleanOrder;
       const hasExplicitSuffix =
-        cleanOrder.includes("-") || input.siblingIndex != null;
-      const preferred = cleanOrder.includes("-")
-        ? cleanOrder
-        : formatDocumentNumber(baseOrderNumber, input.siblingIndex ?? undefined);
+        isExplicitlySuffixed || input.siblingIndex != null;
+      const preferred =
+        isExplicitlySuffixed && input.siblingIndex == null
+          ? cleanOrder
+          : formatDocumentNumber(baseOrderNumber, input.siblingIndex ?? undefined);
       const existingNums = await tx
         .select({ orderNumber: workOrders.orderNumber })
         .from(workOrders)

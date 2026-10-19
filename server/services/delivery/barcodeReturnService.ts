@@ -151,6 +151,7 @@ export async function returnByBarcode(
               )
             : or(
                 eq(deliveryConsignments.consignmentNumber, systemCode),
+                eq(deliveryConsignments.consignmentNumber, cleanCode),
                 trackingCode
                   ? or(
                       eq(deliveryConsignments.externalTrackingRef, trackingCode),

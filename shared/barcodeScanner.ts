@@ -82,7 +82,7 @@ export function normalizeBarcodeScannerInput(raw: string): string {
  * - بطاقات وتراخيص: CUST-, EMP-, USER-, ALR-
  */
 export const KNOWN_SYSTEM_PREFIXES = [
-  "INV", "ORD", "WO", "CNS", "CN", "RES", "PO", "QUO", "CUST", "EMP", "USER", "ALR",
+  "INV", "ORD", "WO", "CNS", "CN", "RES", "PO", "QUO", "RV", "PV", "CUST", "EMP", "USER", "ALR",
 ] as const;
 
 export function looksLikeSystemBarcode(raw: string): boolean {

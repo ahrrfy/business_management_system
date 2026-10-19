@@ -1233,6 +1233,7 @@ export const workOrderRouter = router({
                       )
                     : or(
                         eq(deliveryConsignments.consignmentNumber, systemCode),
+                        eq(deliveryConsignments.consignmentNumber, code),
                         trackingCode
                           ? or(
                               eq(deliveryConsignments.externalTrackingRef, trackingCode),

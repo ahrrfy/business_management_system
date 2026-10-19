@@ -227,6 +227,7 @@ export async function dispatchByBarcode(
                   )
                 : or(
                     eq(deliveryConsignments.consignmentNumber, systemCode),
+                    eq(deliveryConsignments.consignmentNumber, cleanCode),
                     trackingCode
                       ? and(
                           eq(deliveryConsignments.partyId, Number(input.partyId)),

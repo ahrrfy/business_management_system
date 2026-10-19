@@ -121,10 +121,14 @@ async function resolveExistingCounterFloor(tx: Tx, counterKey: string): Promise<
  * عمليةٌ واحدة: `INSERT … ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(GREATEST(lastValue + 1, floor + 1))`
  * — MySQL يضبط `LAST_INSERT_ID` للجلسة بالقيمة الجديدة، فنقرؤها بلا مسحٍ ولا قفلٍ صريح على جدول المستندات.
  */
-export async function nextCounterValue(tx: Tx, counterKey: string): Promise<number> {
+export async function nextCounterValue(
+  tx: Tx,
+  counterKey: string,
+  explicitFloor?: number,
+): Promise<number> {
   // أرضيّة البدء تعيش في الكود + أعلى رقم قائم فعلياً في جدول المستندات لنفس البادئة:
   // يمنع ER_DUP_ENTRY عندما تكون هناك مستندات سابقة في نفس اليوم/الشهر قبل بدء العدّاد أو بعد تراجع معاملة.
-  const staticFloor = COUNTER_FLOORS[counterKey] ?? 0;
+  const staticFloor = Math.max(COUNTER_FLOORS[counterKey] ?? 0, explicitFloor ?? 0);
   const dynamicFloor = await resolveExistingCounterFloor(tx, counterKey);
   const floor = Math.max(staticFloor, dynamicFloor);
   // `LAST_INSERT_ID(expr)` تضبط قيمة الجلسة **وتُعيدها** — فالفرعان (إدراجٌ أوّل / زيادةٌ على
@@ -183,10 +187,18 @@ export async function nextInvoiceNumber(tx: Tx, _branchId: number): Promise<stri
  */
 export async function nextTransactionTrackingNumber(tx: Tx): Promise<string> {
   const floorCheck: any = await tx.execute(sql`
-    SELECT lastValue FROM documentCounters WHERE counterKey = 'unified_transaction_floor' LIMIT 1
+    SELECT counterKey, lastValue
+    FROM documentCounters
+    WHERE counterKey IN ('unified_transaction_floor', 'unified_transaction')
   `);
-  const floorRow = Array.isArray(floorCheck) ? floorCheck[0]?.[0] : floorCheck?.rows?.[0];
-  if (!floorRow) {
+  const rows: Array<{ counterKey?: string; lastValue?: number | string }> = Array.isArray(floorCheck)
+    ? (Array.isArray(floorCheck[0]) ? floorCheck[0] : floorCheck)
+    : (floorCheck?.rows ?? []);
+  const isMockRowWithoutKey = rows.length > 0 && rows[0]?.counterKey === undefined;
+  const hasFloorRow = isMockRowWithoutKey || rows.some((r) => r?.counterKey === "unified_transaction_floor");
+  const hasCounterRow = isMockRowWithoutKey || rows.some((r) => r?.counterKey === "unified_transaction");
+  const floorRow = rows.find((r) => r?.counterKey === "unified_transaction_floor") ?? rows[0];
+  if (!hasFloorRow || !hasCounterRow) {
     await tx.execute(sql`
       INSERT INTO documentCounters (counterKey, lastValue)
       SELECT 'unified_transaction_floor', GREATEST(
@@ -212,7 +224,14 @@ export async function nextTransactionTrackingNumber(tx: Tx): Promise<string> {
       ON DUPLICATE KEY UPDATE lastValue = GREATEST(lastValue, VALUES(lastValue))
     `);
   }
-  return String(await nextCounterValue(tx, "unified_transaction"));
+  const seededFloor = Number(floorRow?.lastValue ?? 100000);
+  return String(
+    await nextCounterValue(
+      tx,
+      "unified_transaction",
+      Number.isSafeInteger(seededFloor) && seededFloor > 100000 ? seededFloor : 100000,
+    ),
+  );
 }
 
 export { formatDocumentNumber } from "../../shared/documentNumber";

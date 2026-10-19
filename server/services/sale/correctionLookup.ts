@@ -1,4 +1,8 @@
 import { and, eq, or, sql, type SQL } from "drizzle-orm";
+import {
+  normalizeBarcodeScannerInput,
+  normalizeKnownSystemBarcode,
+} from "@shared/barcodeScanner";
 import { stripDocPrefix } from "@shared/documentNumber";
 import {
   customers,
@@ -126,7 +130,8 @@ export async function lookupInvoiceForCorrection(
   const db = getDb();
   if (!db) return null;
   const raw = rawNumber.trim();
-  const number = stripDocPrefix(raw);
+  const normalized = normalizeKnownSystemBarcode(normalizeBarcodeScannerInput(raw));
+  const number = stripDocPrefix(normalized);
   const load = (filter: SQL) =>
     db
       .select({
@@ -187,7 +192,9 @@ export async function lookupInvoiceForCorrection(
     await load(
       or(
         eq(invoices.invoiceNumber, number),
+        eq(invoices.invoiceNumber, normalized),
         eq(invoices.invoiceNumber, raw),
+        eq(invoices.offlineReceiptNumber, normalized),
         eq(invoices.offlineReceiptNumber, raw),
       )!,
     )

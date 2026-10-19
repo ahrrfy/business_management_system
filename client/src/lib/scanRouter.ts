@@ -19,10 +19,28 @@ import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 
 const PIPE_PREFIX = /^(INV|WO|PO|QUO|CUST|EMP|USER|ORD|CNS?)\|/i;
 
+function unwrapUrlScanPayload(raw: string): string {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) return "";
+  if (/^https?:\/\//i.test(trimmed) || trimmed.includes("?payload=") || trimmed.includes("?order=")) {
+    try {
+      const url = new URL(trimmed, "http://localhost");
+      const payload = url.searchParams.get("payload")?.trim();
+      const order = url.searchParams.get("order")?.trim();
+      if (payload) return payload;
+      if (order) return order;
+    } catch {
+      // Fall back to raw string when URL parsing fails
+    }
+  }
+  return trimmed;
+}
+
 export function parseScan(raw: string): ScanResult {
   // حارس إضافي لباركودات النظام: حتى لو وصل النص من مسار لا يستعمل useBarcodeScanner،
   // تُستعاد البادئة اللاتينية التي شوّهها تخطيط Windows العربي (÷آ{ ⇒ INV).
-  const s = normalizeKnownSystemBarcode(raw).trim();
+  const unwrapped = unwrapUrlScanPayload(raw);
+  const s = normalizeKnownSystemBarcode(unwrapped).trim();
   if (!s) return { type: "unknown", raw: s };
 
   // QR payload موقَّعة — pipe-delimited، يستخرج رقم المستند ويُفوَّض recursive

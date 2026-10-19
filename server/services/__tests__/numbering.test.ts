@@ -210,6 +210,11 @@ describe("Core Numbering & Atomic Counter (Milestone 1)", () => {
       const nextTracking = await nextTransactionTrackingNumber(tx);
       expect(Number(nextTracking)).toBeGreaterThanOrEqual(109877);
 
+      // حتّى لو بقي unified_transaction_floor موجوداً وحُذف unified_transaction وحده، يعيد البناء فوق أعلى فاتورة قائمة
+      await tx.delete(documentCounters).where(eq(documentCounters.counterKey, "unified_transaction"));
+      const afterCounterOnlyDelete = await nextTransactionTrackingNumber(tx);
+      expect(Number(afterCounterOnlyDelete)).toBeGreaterThanOrEqual(109877);
+
       await tx.delete(invoices).where(eq(invoices.invoiceNumber, highInvoiceNum));
     });
   });

@@ -1494,13 +1494,21 @@ export async function createSaleInTx(
   let invoiceNumber: string;
   if (input.trackingNumber?.trim()) {
     const cleanTracking = stripDocPrefix(input.trackingNumber.trim());
-    const baseTrackingNumber = /^\d+-\d+$/.test(cleanTracking)
-      ? cleanTracking.split("-")[0]
+    const isExplicitlySuffixed =
+      /^\d+-\d+$/.test(cleanTracking) ||
+      /^(?:INV|WO|ORD|CNS?|PO|QUO)-\d+-\d{8}-\d+-\d+$/i.test(cleanTracking);
+    const baseTrackingNumber = isExplicitlySuffixed
+      ? cleanTracking.replace(/-\d+$/, "")
       : cleanTracking;
-    const preferred = formatDocumentNumber(
-      baseTrackingNumber,
-      input.siblingIndex ?? undefined,
-    );
+    const hasExplicitSuffix =
+      isExplicitlySuffixed || input.siblingIndex != null;
+    const preferred =
+      isExplicitlySuffixed && input.siblingIndex == null
+        ? cleanTracking
+        : formatDocumentNumber(
+            baseTrackingNumber,
+            input.siblingIndex ?? undefined,
+          );
     const existingNums = await tx
       .select({ invoiceNumber: invoices.invoiceNumber })
       .from(invoices)
@@ -1513,8 +1521,7 @@ export async function createSaleInTx(
       .for("update");
     const used = new Set(existingNums.map((r) => r.invoiceNumber));
     const needsSiblingSuffix =
-      used.has(preferred) ||
-      (input.siblingIndex == null && used.size > 0);
+      used.has(preferred) || (!hasExplicitSuffix && used.size > 0);
     if (!needsSiblingSuffix) {
       invoiceNumber = preferred;
     } else {

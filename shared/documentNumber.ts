@@ -48,8 +48,8 @@ export function docBarcode(prefix: DocPrefix | string, documentNumber: string): 
 export function stripDocPrefix(raw: string): string {
   const s = String(raw ?? "").trim();
   if (!s) return "";
-  // الصيغة التاريخية (مثل INV-1-20260818-00073) تبقى كما هي للبحث والمسح
-  if (/^(?:INV|WO|PO|QUO|VCH|TRN|EXC|GIFT|ORD|CNS?|DRF|RET|PAY|REC)-\d+-\d{8}-\d+$/i.test(s)) {
+  // الصيغة التاريخية (مثل INV-1-20260818-00073 أو المصحَّحة INV-1-20260818-00073-1) تبقى كما هي للبحث والمسح
+  if (/^(?:INV|WO|PO|QUO|VCH|TRN|EXC|GIFT|ORD|CNS?|DRF|RET|PAY|REC)-\d+-\d{8}-\d+(?:-\d+)*$/i.test(s)) {
     return s;
   }
   const m = /^(?:INV|WO|PO|QUO|VCH|TRN|EXC|GIFT|ORD|CNS?|DRF|RET|PAY|REC)-(\d+(?:-\d+)*)$/i.exec(s);
