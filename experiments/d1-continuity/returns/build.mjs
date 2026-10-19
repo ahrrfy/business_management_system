@@ -50,7 +50,7 @@ export async function buildReturnsWorker(options = {}) {
           ),
         }),
     outfile,
-    moduleAliases: aliases,
+    moduleAliases: { ...aliases, ...options.moduleAliases },
     metadata: false,
   });
   for (const name of [
@@ -66,7 +66,7 @@ export async function buildReturnsWorker(options = {}) {
     stdin: {
       contents:
         "export{tables,initializationSql}from'./schema';export{fixtureSql,multiCashierFixtureSql}from'../credit/fixture'",
-      resolveDir: returnsRoot,
+      resolveDir: options.metadataRoot ?? returnsRoot,
       loader: "ts",
     },
     bundle: true,
@@ -89,7 +89,10 @@ export async function buildReturnsWorker(options = {}) {
     path.join(dir, "journal.sql"),
     (
       await readFile(path.join(cashRoot, "journal-schema.sql"), "utf8")
-    ).replaceAll("actual-cash-20261017", "actual-credit-20261018"),
+    ).replaceAll(
+      "actual-cash-20261017",
+      options.labId ?? "actual-credit-20261018",
+    ),
   );
   return result;
 }

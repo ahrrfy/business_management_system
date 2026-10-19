@@ -25,3 +25,25 @@ When a prior completed run is saved as `results/baseline-mysql-oracle.json`, `no
 For the later D1 adapter, the input boundary is the three original service payloads plus `Actor`; the output boundary is the original result/error and the persisted row graph. Preserve postingIntentJson/hash/cycle/profile, journal entry/line account and statutory snapshots, receipt direction/bucket, source links, counters, idempotency, inventory valuation and all documentEffects. Map MySQL transactions/locking to an atomic guarded D1 commit, and preserve rejection without residual effects. Compare clocks separately; generated timestamps are evidence, not stable business input. The ledger total for a fully returned unpaid credit sale is 750.30 on each side; cash or fully collected/refunded credit totals 1250.52 on each side.
 
 Limits: this does not authorize ACTIVE activation, implement a D1 port, or prove reporting/UI/router authorization. The runtime policy fixture follows the original `shadowHook.test.ts` contract, and the statutory profile is seeded/approved through original services. Synthetic approval is test setup, not evidence that the production activation governance gate was exercised. `returnSaleDirect` itself does not write the caller's user audit entry; the router/owner wrapper must retain that separate contract. No replacement audit is fabricated here. Customers have no phone, no WhatsApp integration or outbox is seeded, and fetch is blocked. No realtime listener/provider is started, and provider delivery is not qualified.
+
+## Native Q1B qualification
+
+The isolated native worker calls the same original services through the established private staged adapter. `accounting/actual.ts` supplies an immutable per-port schema, exact traced SQL allowlist, scoped source/journal projection, supported modes and mutable-table set to `createReturnsPort`. Existing OFF callers keep their defaults. Accounts and statutory policy are captured with the invoice financial history under one epoch; Decimal values stay text.
+
+```powershell
+node --import tsx --test experiments/d1-continuity/accounting/native.test.mjs
+node --import tsx --test experiments/d1-continuity/accounting/recovery.test.mjs
+node --import tsx experiments/d1-continuity/accounting/oracle.mjs --verify-isolated-mysql --larger-only
+node --import tsx --test experiments/d1-continuity/accounting/budget.test.mjs
+node --test experiments/d1-continuity/accounting/port.test.mjs
+```
+
+Native tests require the unchanged reviewed `accounting/results/mysql-oracle.json` and its existing experiment/cash dependencies; no install or cloud resource is needed. Larger evidence writes only `results/larger/`, preserving the canonical Q1A result. The four-line case needs no new SQL shapes. Tests create independent Miniflare/workerd D1 bindings and block/record outbound attempts.
+
+Wire translation is explicit in `native-support.mjs`: original PREPAID `SALE` becomes `CASH_SALE`, original CREDIT remains `SALE`, and collection/return receive the lab branch/drawer envelope. Only transport fields are removed/reintroduced by the existing caller wrapper; original service payload semantics remain unchanged. Responses add the existing recovery metadata. Confirmed replay returns the original acknowledged success (including its original optional result fields); the original MySQL service's sale replay has a smaller result shape. Payload/actor conflicts retain the recovery protocol's409 error rather than re-running the service.
+
+Financial parity compares all21 projected tables in the Q1A23-table row graph, including complete journals, statutory snapshots, IDs, amounts, source references and hashes. Only independent timestamp scalars are normalized; DATE columns are compared as exact ISO calendar dates after driver encoding conversion. JSON arrays retain order. `auditLogs` is verified separately by executing the original `logAuditTx` against a capturing transaction and comparing all written fields; a confirmed key writes it once. `waOutbox` is not projected: customers have no phone and the worker records zero external attempts. This is not a claim of identical audit/outbox tables or provider delivery.
+
+Default native admission keeps30 changed rows and the conservative48-statement limit, with adjacent same-table inserts grouped below100 binds. The larger original invoice's final return needs33 rows, so the default rejects atomically. `candidate.ts` is an explicit native-only64-row configuration with a distinct schema version; it completes that case at36 actual SQL statements and passes signed cold restore. It does not change existing OFF/cloud identity, writer name, row limits or production behavior.
+
+All generated row graphs, measurements, signed journals and source hashes remain ignored under `results/` and `build/`. This qualification does not authorize real ACTIVE activation or qualify cashier/storefront completeness, accountant governance, provider delivery, cloud D1 CPU/latency or production limits.
