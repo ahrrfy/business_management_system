@@ -104,7 +104,7 @@ export function ApplicantDetailDialog({
       void utils.recruitment.get.invalidate({ id: id ?? 0 });
       void utils.recruitment.list.invalidate();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => { setRating(a?.rating ?? 0); notify.err(e); },
   });
 
   const vacancyTitle = a?.vacancyId != null ? (vacancies.find((v) => v.id === a.vacancyId)?.title ?? null) : null;

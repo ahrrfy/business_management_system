@@ -139,13 +139,13 @@ export function splitFullArabicName(fullName?: string | null): {
     return { firstName: "", fatherName: "", grandfatherName: "", lastName: "" };
   }
   if (parts.length === 1) {
-    return { firstName: parts[0], fatherName: "", grandfatherName: "", lastName: "" };
+    return { firstName: parts[0], fatherName: "", grandfatherName: "", lastName: parts[0] };
   }
   if (parts.length === 2) {
-    return { firstName: parts[0], fatherName: parts[1], grandfatherName: "", lastName: "" };
+    return { firstName: parts[0], fatherName: "", grandfatherName: "", lastName: parts[1] };
   }
   if (parts.length === 3) {
-    return { firstName: parts[0], fatherName: parts[1], grandfatherName: parts[2], lastName: "" };
+    return { firstName: parts[0], fatherName: parts[1], grandfatherName: "", lastName: parts[2] };
   }
   return {
     firstName: parts[0],

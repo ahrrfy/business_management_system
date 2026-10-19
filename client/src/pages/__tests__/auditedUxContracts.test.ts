@@ -283,19 +283,25 @@ describe("حزمة استمارة التوظيف والتعيين الكاملة
       firstName: "أحمد",
       fatherName: "",
       grandfatherName: "",
-      lastName: "",
+      lastName: "أحمد",
     });
     expect(splitFullArabicName("أحمد علي")).toEqual({
       firstName: "أحمد",
-      fatherName: "علي",
+      fatherName: "",
       grandfatherName: "",
-      lastName: "",
+      lastName: "علي",
     });
     expect(splitFullArabicName("أحمد علي حسن")).toEqual({
       firstName: "أحمد",
       fatherName: "علي",
-      grandfatherName: "حسن",
-      lastName: "",
+      grandfatherName: "",
+      lastName: "حسن",
+    });
+    expect(splitFullArabicName("عبد الرحمن علي الشمري")).toEqual({
+      firstName: "عبد الرحمن",
+      fatherName: "علي",
+      grandfatherName: "",
+      lastName: "الشمري",
     });
     expect(splitFullArabicName("أحمد علي حسن الشمري")).toEqual({
       firstName: "أحمد",
