@@ -1,4 +1,4 @@
-ALTER TABLE `inventoryMovements` ADD COLUMN `documentNumber` varchar(50);
+ALTER TABLE `inventoryMovements` ADD COLUMN `documentNumber` varchar(100);
 --> statement-breakpoint
 CREATE INDEX `idx_move_doc_number` ON `inventoryMovements` (`documentNumber`);
 --> statement-breakpoint

@@ -1401,7 +1401,7 @@ export const inventoryMovements = mysqlTable(
     signedDelta: int("signedDelta"),
     referenceType: varchar("referenceType", { length: 24 }),
     referenceId: bigint("referenceId", { mode: "number" }),
-    documentNumber: varchar("documentNumber", { length: 50 }),
+    documentNumber: varchar("documentNumber", { length: 100 }),
     relatedBranchId: bigint("relatedBranchId", { mode: "number" }),
     notes: text("notes"),
     createdBy: int("createdBy").references(() => users.id),

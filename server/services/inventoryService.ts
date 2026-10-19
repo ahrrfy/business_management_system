@@ -451,7 +451,7 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
     signedDelta: signedDelta,
     referenceType: a.referenceType,
     referenceId: a.referenceId,
-    documentNumber: a.documentNumber ?? null,
+    documentNumber: a.documentNumber ? a.documentNumber.trim().slice(0, 100) : null,
     relatedBranchId: a.relatedBranchId,
     notes,
     createdBy: a.createdBy,
@@ -782,7 +782,7 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
     signedDelta: delta,
     referenceType: a.referenceType ?? "ADJUST",
     referenceId: a.referenceId,
-    documentNumber: a.documentNumber ?? null,
+    documentNumber: a.documentNumber ? a.documentNumber.trim().slice(0, 100) : null,
     notes: a.notes
       ? `${a.notes} — ${signMarker}`
       : `تسوية: من ${currentQty} إلى ${a.targetQuantity} ${signMarker}`,
