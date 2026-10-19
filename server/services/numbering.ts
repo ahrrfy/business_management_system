@@ -1,5 +1,4 @@
-import { desc, like, sql } from "drizzle-orm";
-import { consignmentNotes, invoices } from "../../drizzle/schema";
+import { sql } from "drizzle-orm";
 import type { Tx } from "../db";
 import { toDateStr } from "./money";
 
@@ -10,6 +9,8 @@ import { toDateStr } from "./money";
 const COUNTER_FLOORS: Record<string, number> = {
   invoice: 10000,
   workOrder: 5000,
+  unified_transaction: 100000,
+  online_order: 100000,
 };
 
 /**
@@ -76,30 +77,24 @@ export async function nextInvoiceNumber(tx: Tx, _branchId: number): Promise<stri
 }
 
 /**
+ * حجزٌ ذرّيّ لرقم المعاملة الموحّد (R1).
+ * يبدأ من 100001 (أرضية 100000) من عدّاد `unified_transaction` العالمي في `documentCounters`.
+ * يُورَّث الرقم الأساسي تلقائياً لجميع المستندات والحركات الناتجة عنها.
+ */
+export async function nextTransactionTrackingNumber(tx: Tx): Promise<string> {
+  return String(await nextCounterValue(tx, "unified_transaction"));
+}
+
+export { formatDocumentNumber } from "../../shared/documentNumber";
+
+/**
  * بضاعة الأمانة (ش٢): رقم سند حركة أمانة يوميّ لكل فرع — CSN-{branchId}-{YYYYMMDD}-{seq}.
- * نفس حماية السباق (GET_LOCK + قيد فريد uq_consign_note_number يبقى الحارس الأخير + إعادة محاولة الراوتر).
+ * حجز ذرّي عبر عدّاد documentCounters لمنع سباقات التزامن.
  */
 export async function nextConsignmentNumber(tx: Tx, branchId: number): Promise<string> {
   const ymd = toDateStr().replace(/-/g, "");
   const prefix = `CSN-${branchId}-${ymd}-`;
-  const lockName = `numbering:consign:${branchId}:${ymd}`;
-  const lockRes: any = await tx.execute(sql`SELECT GET_LOCK(${lockName}, 5) AS locked`);
-  const lockedRow = Array.isArray(lockRes) ? lockRes[0]?.[0] : lockRes?.rows?.[0];
-  if (!lockedRow || Number(lockedRow.locked) !== 1) {
-    throw new Error(`numbering lock timeout for ${lockName}`);
-  }
-  try {
-    const rows = await tx
-      .select({ n: consignmentNotes.noteNumber })
-      .from(consignmentNotes)
-      .where(like(consignmentNotes.noteNumber, `${prefix}%`))
-      .orderBy(desc(consignmentNotes.id))
-      .for("update")
-      .limit(1);
-    const last = rows[0]?.n;
-    const seq = last ? parseInt(last.slice(prefix.length), 10) + 1 : 1;
-    return prefix + String(seq).padStart(5, "0");
-  } finally {
-    await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
-  }
+  const counterKey = `consign_note_${branchId}_${ymd}`;
+  const seq = await nextCounterValue(tx, counterKey);
+  return prefix + String(seq).padStart(5, "0");
 }

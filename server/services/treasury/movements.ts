@@ -50,7 +50,9 @@ export interface MovementRow {
   approvedByName: string | null;
   referenceNumber: string | null;
   invoiceId: number | null;
+  invoiceNumber: string | null;
   workOrderId: number | null;
+  workOrderNumber: string | null;
   reservationId: number | null;
   expenseId: number | null;
   expensePayee: string | null;
@@ -247,7 +249,9 @@ export async function getRecentMovements(
           au.name AS approvedByName,
           COALESCE(ex.referenceNumber, r.referenceNumber) AS referenceNumber,
           r.invoiceId AS invoiceId,
+          inv.invoiceNumber AS invoiceNumber,
           r.workOrderId AS workOrderId,
+          wo.orderNumber AS workOrderNumber,
           r.reservationId AS reservationId,
           ex.id AS expenseId,
           ex.payee AS expensePayee,
@@ -262,6 +266,8 @@ export async function getRecentMovements(
         LEFT JOIN users cu ON cu.id = r.createdBy
         LEFT JOIN customers cust ON r.voucherPartyType = 'CUSTOMER' AND cust.id = r.partyId
         LEFT JOIN suppliers supp ON r.voucherPartyType = 'SUPPLIER' AND supp.id = r.partyId
+        LEFT JOIN invoices inv ON inv.id = r.invoiceId
+        LEFT JOIN workOrders wo ON wo.id = r.workOrderId
         LEFT JOIN users au ON au.id = r.approvedBy
         LEFT JOIN shifts s ON s.id = r.shiftId
         LEFT JOIN users su ON su.id = s.userId
@@ -303,7 +309,9 @@ export async function getRecentMovements(
           NULL AS approvedByName,
           e.referenceNumber AS referenceNumber,
           NULL AS invoiceId,
+          NULL AS invoiceNumber,
           NULL AS workOrderId,
+          NULL AS workOrderNumber,
           NULL AS reservationId,
           e.id AS expenseId,
           e.payee AS expensePayee,
@@ -465,12 +473,27 @@ export async function getRecentMovements(
       });
     }
     if (invoiceId != null) {
-      docRefs.push({
-        docType: "invoice",
-        docNumber: String(r.referenceNumber || invoiceId),
-        docId: invoiceId,
-        date: asIso(r.documentDate),
-      });
+      const invDocNumber = r.invoiceNumber ?? (invoiceId ? `INV#${invoiceId}` : null);
+      if (invDocNumber) {
+        docRefs.push({
+          docType: "invoice",
+          docNumber: invDocNumber,
+          docId: invoiceId,
+          date: asIso(r.documentDate),
+        });
+      }
+    }
+    if (r.workOrderId != null) {
+      const woId = Number(r.workOrderId);
+      const woDocNumber = r.workOrderNumber ?? (woId ? `WO#${woId}` : null);
+      if (woDocNumber) {
+        docRefs.push({
+          docType: "work_order",
+          docNumber: woDocNumber,
+          docId: woId,
+          date: asIso(r.documentDate),
+        });
+      }
     }
     if (r.referenceNumber && invoiceId == null) {
       docRefs.push({
@@ -499,7 +522,7 @@ export async function getRecentMovements(
         subItems = [
           {
             id: `alloc-${r.id}`,
-            label: `دفعة مقبوضة على الفاتورة #${r.referenceNumber || invoiceId}`,
+            label: `دفعة مقبوضة على الفاتورة ${r.invoiceNumber ? `#${r.invoiceNumber}` : (invoiceId ? `INV#${invoiceId}` : "")}`,
             amount: rowAmount,
             note: `إجمالي بنود الفاتورة (${invItems.length} صنف): ${toDbMoney(invSum)} د.ع`,
           },
@@ -607,7 +630,10 @@ export async function getRecentMovements(
       referenceNumber:
         r.referenceNumber == null ? null : String(r.referenceNumber),
       invoiceId,
+      invoiceNumber: r.invoiceNumber == null ? null : String(r.invoiceNumber),
       workOrderId: asId(r.workOrderId),
+      workOrderNumber:
+        r.workOrderNumber == null ? null : String(r.workOrderNumber),
       reservationId: asId(r.reservationId),
       expenseId,
       expensePayee: r.expensePayee == null ? null : String(r.expensePayee),

@@ -12,7 +12,7 @@
 
 import { createHmac } from "crypto";
 import Decimal from "decimal.js";
-import { docBarcode } from "@shared/documentNumber";
+import { docBarcode, stripDocPrefix } from "@shared/documentNumber";
 import { money, round2 } from "./money";
 import { getDb } from "../db";
 import { eq, or } from "drizzle-orm";
@@ -129,15 +129,14 @@ export function extractVerificationCode(input: string): string {
 type AppDatabase = NonNullable<ReturnType<typeof getDb>>;
 
 async function lookupOnlineOrderByCode(db: AppDatabase, cleanCode: string): Promise<VerifyResult | null> {
-  const isNumeric = /^\d+$/.test(cleanCode);
-  const numVal = isNumeric ? Number(cleanCode) : null;
-
+  const stripped = stripDocPrefix(cleanCode);
   const conditions = [
     eq(onlineOrders.orderNumber, cleanCode),
     eq(onlineOrders.orderNumber, `ORD-${cleanCode}`),
   ];
-  if (numVal !== null) {
-    conditions.push(eq(onlineOrders.id, numVal));
+  if (stripped !== cleanCode) {
+    conditions.push(eq(onlineOrders.orderNumber, stripped));
+    conditions.push(eq(onlineOrders.orderNumber, `ORD-${stripped}`));
   }
 
   const rows = await db
@@ -171,18 +170,17 @@ async function lookupOnlineOrderByCode(db: AppDatabase, cleanCode: string): Prom
 }
 
 async function lookupInvoiceByCode(db: AppDatabase, cleanCode: string): Promise<VerifyResult | null> {
-  const isNumeric = /^\d+$/.test(cleanCode);
-  const numVal = isNumeric ? Number(cleanCode) : null;
-
+  const stripped = stripDocPrefix(cleanCode);
   const conditions = [
     eq(invoices.invoiceNumber, cleanCode),
     eq(invoices.invoiceNumber, `INV-${cleanCode}`),
   ];
+  if (stripped !== cleanCode) {
+    conditions.push(eq(invoices.invoiceNumber, stripped));
+    conditions.push(eq(invoices.invoiceNumber, `INV-${stripped}`));
+  }
   if (cleanCode.startsWith("INV-")) {
     conditions.push(eq(invoices.invoiceNumber, cleanCode.slice(4)));
-  }
-  if (numVal !== null) {
-    conditions.push(eq(invoices.id, numVal));
   }
 
   const rows = await db
@@ -216,18 +214,17 @@ async function lookupInvoiceByCode(db: AppDatabase, cleanCode: string): Promise<
 }
 
 async function lookupWorkOrderByCode(db: AppDatabase, cleanCode: string): Promise<VerifyResult | null> {
-  const isNumeric = /^\d+$/.test(cleanCode);
-  const numVal = isNumeric ? Number(cleanCode) : null;
-
+  const stripped = stripDocPrefix(cleanCode);
   const conditions = [
     eq(workOrders.orderNumber, cleanCode),
     eq(workOrders.orderNumber, `WO-${cleanCode}`),
   ];
+  if (stripped !== cleanCode) {
+    conditions.push(eq(workOrders.orderNumber, stripped));
+    conditions.push(eq(workOrders.orderNumber, `WO-${stripped}`));
+  }
   if (cleanCode.startsWith("WO-")) {
     conditions.push(eq(workOrders.orderNumber, cleanCode.slice(3)));
-  }
-  if (numVal !== null) {
-    conditions.push(eq(workOrders.id, numVal));
   }
 
   const rows = await db
@@ -262,18 +259,17 @@ async function lookupWorkOrderByCode(db: AppDatabase, cleanCode: string): Promis
 }
 
 async function lookupPurchaseOrderByCode(db: AppDatabase, cleanCode: string): Promise<VerifyResult | null> {
-  const isNumeric = /^\d+$/.test(cleanCode);
-  const numVal = isNumeric ? Number(cleanCode) : null;
-
+  const stripped = stripDocPrefix(cleanCode);
   const conditions = [
     eq(purchaseOrders.poNumber, cleanCode),
     eq(purchaseOrders.poNumber, `PO-${cleanCode}`),
   ];
+  if (stripped !== cleanCode) {
+    conditions.push(eq(purchaseOrders.poNumber, stripped));
+    conditions.push(eq(purchaseOrders.poNumber, `PO-${stripped}`));
+  }
   if (cleanCode.startsWith("PO-")) {
     conditions.push(eq(purchaseOrders.poNumber, cleanCode.slice(3)));
-  }
-  if (numVal !== null) {
-    conditions.push(eq(purchaseOrders.id, numVal));
   }
 
   const rows = await db
@@ -370,14 +366,14 @@ export async function verifyPayload(qrPayload: string): Promise<VerifyResult> {
       }
 
       // هـ) معرّفات عددية أو نصوص بلا بادئة معروفة: فحص حسب الأولوية
-      const onlineRes = await lookupOnlineOrderByCode(db, cleanCode);
-      if (onlineRes) return onlineRes;
-
       const invRes = await lookupInvoiceByCode(db, cleanCode);
       if (invRes) return invRes;
 
       const woRes = await lookupWorkOrderByCode(db, cleanCode);
       if (woRes) return woRes;
+
+      const onlineRes = await lookupOnlineOrderByCode(db, cleanCode);
+      if (onlineRes) return onlineRes;
 
       const poRes = await lookupPurchaseOrderByCode(db, cleanCode);
       if (poRes) return poRes;

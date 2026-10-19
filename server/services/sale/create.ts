@@ -77,7 +77,8 @@ import {
 } from "../accounting/postingEngine";
 import { logger } from "../../logger";
 import { money, round2, roundCashIQD, toDbMoney } from "../money";
-import { nextInvoiceNumber } from "../numbering";
+import { nextInvoiceNumber, nextTransactionTrackingNumber } from "../numbering";
+import { formatDocumentNumber, stripDocPrefix } from "@shared/documentNumber";
 import {
   getUnitPrice,
   tryGetUnitPrice,
@@ -1489,8 +1490,11 @@ export async function createSaleInTx(
     }
   }
 
-  // 8. Invoice header.
-  const invoiceNumber = await nextInvoiceNumber(tx, input.branchId);
+  // 8. Invoice header with unified transaction tracking number
+  const baseTrackingNumber = input.trackingNumber?.trim()
+    ? stripDocPrefix(input.trackingNumber.trim())
+    : await nextTransactionTrackingNumber(tx);
+  const invoiceNumber = formatDocumentNumber(baseTrackingNumber, input.siblingIndex ?? undefined);
   const status = computeInvoiceStatus(
     toDbMoney(effectiveTotalD),
     toDbMoney(paidNow),
@@ -1788,6 +1792,7 @@ export async function createSaleInTx(
         movementType: "OUT",
         referenceType: "INVOICE",
         referenceId: invoiceId,
+        documentNumber: invoiceNumber,
         createdBy: actor.userId,
         notes: openingAllow
           ? "وضع الافتتاح — بيع/طلب لقناة استقبال مسموح بالسالب لصنف غير مُفتتَح"
@@ -1852,6 +1857,7 @@ export async function createSaleInTx(
         movementType: "OUT",
         referenceType: "INVOICE",
         referenceId: invoiceId,
+        documentNumber: invoiceNumber,
         createdBy: actor.userId,
         // البيع الحي صارم حتى إن كانت المادة «تُباع بالطلب». إعادة تشغيل الأوفلاين وحدها
         // تسجّل العجز لأن الواقعة حدثت فعلاً أثناء الانقطاع.

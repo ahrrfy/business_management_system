@@ -252,6 +252,7 @@ export interface CustomerStatementInvoice {
 export interface CustomerStatementPayment {
   id: number;
   invoiceId: number | null;
+  invoiceNumber?: string | null;
   direction: "IN" | "OUT";
   amount: string;
   paymentMethod: string;
@@ -475,6 +476,7 @@ export async function getCustomerStatement(
     .select({
       id: receipts.id,
       invoiceId: receipts.invoiceId,
+      invoiceNumber: invoices.invoiceNumber,
       direction: receipts.direction,
       amount: receipts.amount,
       paymentMethod: receipts.paymentMethod,
@@ -648,6 +650,7 @@ export async function getCustomerStatement(
   const buildPaymentProvenance = (p: {
     id: number;
     invoiceId: number | null;
+    invoiceNumber?: string | null;
     direction: "IN" | "OUT";
     amount: string;
     paymentMethod: string;
@@ -687,7 +690,11 @@ export async function getCustomerStatement(
     if (p.invoiceId) {
       docRefs.push({
         docType: "invoice",
-        docNumber: `INV-${p.invoiceId}`,
+        docNumber: p.invoiceNumber
+          ? p.invoiceNumber.startsWith("INV-")
+            ? p.invoiceNumber
+            : `INV-${p.invoiceNumber}`
+          : `INV-${p.invoiceId}`,
         docId: p.invoiceId,
         date: p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
       });
@@ -859,6 +866,7 @@ export async function getCustomerStatement(
         const item = {
           id: Number(p.id),
           invoiceId: p.invoiceId ? Number(p.invoiceId) : null,
+          invoiceNumber: p.invoiceNumber ? String(p.invoiceNumber) : null,
           direction: p.direction as "IN" | "OUT",
           amount: String(p.amount),
           paymentMethod: String(p.paymentMethod),

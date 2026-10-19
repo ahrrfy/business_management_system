@@ -1055,7 +1055,7 @@ export const inventoryRouter = router({
       if (search) {
         const pat = `%${escLike(search)}%`;
         conds.push(
-          sql`(${products.name} LIKE ${pat} ESCAPE '!' OR ${productVariants.sku} LIKE ${pat} ESCAPE '!' OR ${productVariants.variantName} LIKE ${pat} ESCAPE '!')`
+          sql`(${products.name} LIKE ${pat} ESCAPE '!' OR ${productVariants.sku} LIKE ${pat} ESCAPE '!' OR ${productVariants.variantName} LIKE ${pat} ESCAPE '!' OR ${inventoryMovements.documentNumber} LIKE ${pat} ESCAPE '!')`
         );
       }
       if (i.fromDate) {
@@ -1104,6 +1104,7 @@ export const inventoryRouter = router({
             relatedBranchName: relatedBranches.name,
             referenceType: inventoryMovements.referenceType,
             referenceId: inventoryMovements.referenceId,
+            documentNumber: inventoryMovements.documentNumber,
             notes: inventoryMovements.notes,
             signedDelta: inventoryMovements.signedDelta,
             createdBy: inventoryMovements.createdBy,

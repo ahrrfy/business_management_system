@@ -322,6 +322,7 @@ export async function startWorkOrder(
           movementType: "OUT",
           referenceType: "WORK_ORDER",
           referenceId: workOrderId,
+          documentNumber: wo.orderNumber,
           createdBy: actor.userId,
           // وسم البيع بالطلب لا يسمح لأمر الشغل باستهلاك مادة خام غير متاحة.
           // الاستثناء الوحيد هنا هو نافذة الافتتاح الصريحة أدناه.

@@ -174,7 +174,7 @@ const movementColumns: ColumnDef<RichRow, unknown>[] = [
     header: "المرجع",
     accessorFn: (r) =>
       r.referenceType
-        ? `${REFERENCE_TYPE_LABELS[r.referenceType] ?? r.referenceType}${r.referenceId ? ` #${r.referenceId}` : ""}`
+        ? `${REFERENCE_TYPE_LABELS[r.referenceType] ?? r.referenceType} ${r.documentNumber ?? (r.referenceId ? `#${r.referenceId}` : "")}`.trim()
         : "—",
     cell: ({ row }) => {
       const r = row.original;
@@ -182,11 +182,15 @@ const movementColumns: ColumnDef<RichRow, unknown>[] = [
       return (
         <span className="text-xs">
           <CopyInline
-            value={r.referenceId ? `${r.referenceType} #${r.referenceId}` : r.referenceType}
+            value={r.documentNumber ?? (r.referenceId ? `${r.referenceType} #${r.referenceId}` : r.referenceType)}
             display={
               <>
-                {REFERENCE_TYPE_LABELS[r.referenceType] ?? r.referenceType}
-                {r.referenceId ? <span className="text-muted-foreground"> #{r.referenceId}</span> : null}
+                {REFERENCE_TYPE_LABELS[r.referenceType] ?? r.referenceType}{" "}
+                {r.documentNumber ? (
+                  <span className="font-mono">{r.documentNumber}</span>
+                ) : r.referenceId ? (
+                  <span className="text-muted-foreground">#{r.referenceId}</span>
+                ) : null}
               </>
             }
             mono={false}
@@ -221,7 +225,8 @@ const movementColumns: ColumnDef<RichRow, unknown>[] = [
       const r = row.original;
       return (
         /* «فتح المرجع» الشرطي: قيم referenceType الفعلية من الخدمات —
-           البيع INVOICE (saleService) والشراء PURCHASE_ORDER (purchaseService).
+           البيع INVOICE (saleService)، الشراء PURCHASE_ORDER (purchaseService)،
+           أوامر الشغل WORK_ORDER، والتحويلات TRANSFER.
            غير ذلك ⇒ hidden فيُخفي RowActions نفسه (يعيد null). */
         <RowActions
           actions={[
@@ -229,9 +234,28 @@ const movementColumns: ColumnDef<RichRow, unknown>[] = [
               key: "ref",
               kind: "view",
               label: "فتح المرجع",
-              hidden: !r.referenceId || (r.referenceType !== "INVOICE" && r.referenceType !== "PURCHASE_ORDER"),
-              href: r.referenceType === "INVOICE" ? `/invoices/${r.referenceId}` : `/purchases/${r.referenceId}`,
-              gate: r.referenceType === "INVOICE" ? { module: "sales", level: "READ" } : { module: "purchases", level: "READ" },
+              hidden:
+                !r.referenceId ||
+                (r.referenceType !== "INVOICE" &&
+                  r.referenceType !== "PURCHASE_ORDER" &&
+                  r.referenceType !== "WORK_ORDER" &&
+                  r.referenceType !== "TRANSFER"),
+              href:
+                r.referenceType === "INVOICE"
+                  ? `/invoices/${r.referenceId}`
+                  : r.referenceType === "PURCHASE_ORDER"
+                  ? `/purchases/${r.referenceId}`
+                  : r.referenceType === "WORK_ORDER"
+                  ? `/work-orders/${r.referenceId}`
+                  : `/inventory?tab=transfers&focus=${r.referenceId}`,
+              gate:
+                r.referenceType === "INVOICE"
+                  ? { module: "sales", level: "READ" }
+                  : r.referenceType === "PURCHASE_ORDER"
+                  ? { module: "purchases", level: "READ" }
+                  : r.referenceType === "WORK_ORDER"
+                  ? { module: "workorders", level: "READ" }
+                  : { module: "inventory", level: "READ" },
             },
           ]}
         />
@@ -365,7 +389,9 @@ export default function InventoryMovements() {
           key: "referenceType",
           header: "المرجع",
           map: (r) =>
-            r.referenceType ? `${r.referenceType}${r.referenceId ? ` #${r.referenceId}` : ""}` : "",
+            r.referenceType
+              ? `${REFERENCE_TYPE_LABELS[r.referenceType] ?? r.referenceType} ${r.documentNumber ?? (r.referenceId ? `#${r.referenceId}` : "")}`.trim()
+              : "",
         },
         { key: "createdByName", header: ATTRIBUTION_LABELS.performedBy, map: (r) => r.createdByName ?? "" },
         { key: "notes", header: "الملاحظة", map: (r) => r.notes ?? "" },
@@ -537,7 +563,7 @@ export default function InventoryMovements() {
                         ? `${r.branchName} ← ${r.relatedBranchName}`
                         : r.branchName,
                       ref: r.referenceType
-                        ? `${r.referenceType}${r.referenceId ? ` #${r.referenceId}` : ""}`
+                        ? `${REFERENCE_TYPE_LABELS[r.referenceType] ?? r.referenceType} ${r.documentNumber ?? (r.referenceId ? `#${r.referenceId}` : "")}`.trim()
                         : "—",
                       user: r.createdByName ?? "—",
                     };

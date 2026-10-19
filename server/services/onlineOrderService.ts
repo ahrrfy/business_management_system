@@ -44,6 +44,7 @@ import { getDb, type Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { normalizeIraqPhoneE164 } from "../lib/phone";
 import { money, round2, sumMoney, toDbMoney, toDbQty } from "./money";
+import { nextCounterValue, nextTransactionTrackingNumber } from "./numbering";
 import { resolvePromotionForLine } from "./salesPromotionService";
 import { requireStorefrontContext } from "./storefrontContextService";
 import { withTx } from "./tx";
@@ -2172,8 +2173,10 @@ async function createOnlineOrderAttempt(
       guestTrackingPublicId,
       guestTrackingExpiresAt,
     );
+    const baseTracking = await nextTransactionTrackingNumber(tx);
+    const orderNumber = `ORD-${baseTracking}`;
     const insOrder = await tx.insert(onlineOrders).values({
-      orderNumber: `TMP-${randomUUID()}`,
+      orderNumber,
       customerId,
       branchId,
       subtotal: toDbMoney(subtotal),
@@ -2198,17 +2201,12 @@ async function createOnlineOrderAttempt(
       pricingBenefitDiscount: toDbMoney(currentPricing.benefit.discount),
     });
     const orderId = extractInsertId(insOrder);
-    const orderNumber = `ORD-${100000 + orderId}`;
     // تُثبَّت داخل معاملة الإنشاء بساعة MySQL؛ لا يظهر طلب جديد بلا مهلة.
     await tx.execute(sql`
       UPDATE onlineOrders
       SET reservationExpiresAt = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 24 HOUR)
       WHERE id = ${orderId}
     `);
-    await tx
-      .update(onlineOrders)
-      .set({ orderNumber })
-      .where(eq(onlineOrders.id, orderId));
     const persistedExpiry = (
       await tx
         .select({

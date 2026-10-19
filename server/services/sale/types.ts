@@ -73,6 +73,10 @@ export interface SaleDeliveryInput {
 
 export interface CreateSaleInput {
   branchId: number;
+  /** رقم التتبع الموحّد للمعاملة (R1). */
+  trackingNumber?: string | null;
+  /** لاحقة الفهرس عند تعدد فواتير المعاملة الواحدة (e.g. 1, 2) */
+  siblingIndex?: number | null;
   shiftId?: number | null;
   customerId?: number | null;
   /** ٥/٨ — زبونٌ عابر: اسمٌ/هاتفٌ مرجعيّان على الفاتورة بلا سجلّ عميل ولا ذمّة. */

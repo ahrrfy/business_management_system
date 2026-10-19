@@ -259,7 +259,12 @@ function getStmtPaymentColumns(onDrilldown: (target: DrilldownTarget) => void): 
     {
       id: "invoice",
       header: "المرجع / السند",
-      accessorFn: (p) => (p.isStandalone ? (p.voucherNumber ?? "سند مستقل") : String(p.invoiceId ?? "")),
+      accessorFn: (p) =>
+        p.isStandalone
+          ? (p.voucherNumber ?? "سند مستقل")
+          : p.invoiceNumber
+          ? (p.invoiceNumber.startsWith("INV-") ? p.invoiceNumber : `INV-${p.invoiceNumber}`)
+          : (p.invoiceId ? `#${p.invoiceId}` : `#${p.id}`),
       meta: { kind: "code" },
       cell: ({ row }) => {
         const p = row.original;
@@ -276,17 +281,23 @@ function getStmtPaymentColumns(onDrilldown: (target: DrilldownTarget) => void): 
             </button>
           );
         }
+        const invDisplay = p.invoiceNumber
+          ? (p.invoiceNumber.startsWith("INV-") ? p.invoiceNumber : `INV-${p.invoiceNumber}`)
+          : (p.invoiceId ? `#${p.invoiceId}` : `#${p.id}`);
         return (
-          <button
-            type="button"
-            onClick={() => {
-              if (p.invoiceId) onDrilldown({ type: "INVOICE", invoiceId: p.invoiceId });
-              else onDrilldown({ type: "VOUCHER", receiptId: p.id });
-            }}
-            className="font-mono text-primary underline text-xs"
-          >
-            {p.invoiceId ? `#${p.invoiceId}` : `#${p.id}`}
-          </button>
+          <div className="inline-flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                if (p.invoiceId) onDrilldown({ type: "INVOICE", invoiceId: p.invoiceId });
+                else onDrilldown({ type: "VOUCHER", receiptId: p.id });
+              }}
+              className="font-mono text-primary underline text-xs"
+            >
+              {invDisplay}
+            </button>
+            {p.invoiceNumber && <CopyInline value={p.invoiceNumber} />}
+          </div>
         );
       },
     },

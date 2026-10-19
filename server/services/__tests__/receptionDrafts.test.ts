@@ -79,7 +79,7 @@ beforeEach(async () => {
 describe("ش٢ — مسوّدة المحطة", () => {
   it("I1: صفرٌ ماليّ بنيوياً — promote+sync لا يكتبان في أيّ جدولٍ ماليّ/مخزنيّ", async () => {
     const p = await promoteDraft({ branchId: 1, header: { customerId: 1 }, lines: LINES }, CASHIER);
-    expect(p.draftNumber).toMatch(/^DRF-1-\d{8}-00001$/);
+    expect(Number(p.draftNumber)).toBeGreaterThanOrEqual(100000);
     expect(p.total).toBe("49500.00"); // 2000 + 2500 + 45000
 
     await syncDraft({ draftId: p.draftId, version: 0, header: { customerId: 1 }, lines: LINES.slice(0, 2) }, CASHIER);
@@ -94,8 +94,8 @@ describe("ش٢ — مسوّدة المحطة", () => {
   it("N1: الترقيم متسلسل داخل اليوم", async () => {
     const a = await promoteDraft({ branchId: 1, header: {}, lines: [LINES[0]] }, CASHIER);
     const b = await promoteDraft({ branchId: 1, header: {}, lines: [LINES[0]] }, CASHIER);
-    expect(a.draftNumber.endsWith("00001")).toBe(true);
-    expect(b.draftNumber.endsWith("00002")).toBe(true);
+    expect(Number(a.draftNumber)).toBeGreaterThanOrEqual(100000);
+    expect(Number(b.draftNumber)).toBe(Number(a.draftNumber) + 1);
   });
 
   it("P1: إعادة ترقيةٍ فُقد ردّها تعيد المسوّدة نفسها وترفض استعمال المفتاح بحمولة مختلفة", async () => {
@@ -197,7 +197,7 @@ describe("ش٢ — مسوّدة المحطة", () => {
 
     const po = appRouter.createCaller({ req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user: await userRow(8) } as never);
     const ok = await po.reception.draftPromote({ clientRequestId: "promote-print-operator-1", header: {}, lines: [LINES[2]] });
-    expect(ok.draftNumber).toMatch(/^DRF-1-/);
+    expect(Number(ok.draftNumber)).toBeGreaterThanOrEqual(100000);
     await expect(po.customers.receptionResolveById({ customerId: 1 })).resolves.toEqual({ status: "RESOLVED", customerId: 1, defaultPriceTier: "RETAIL" });
 
     const gen = appRouter.createCaller({ req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user: await userRow(9) } as never);

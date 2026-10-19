@@ -6,7 +6,7 @@
  * سيحوّل `INV-1-20260818-00073` إلى `1-20260818-00073` فلا يُطابَق شيءٌ في القاعدة.
  */
 import { describe, expect, it } from "vitest";
-import { docBarcode, stripDocPrefix } from "../documentNumber";
+import { docBarcode, formatDocumentNumber, stripDocPrefix } from "../documentNumber";
 
 describe("docBarcode — رمز الآلة بادئيّ دائماً", () => {
   it("الرقم القصير يُبَدَّأ بنوعه", () => {
@@ -43,4 +43,41 @@ describe("stripDocPrefix — نزعٌ مشروطٌ بأن يكون الباقي 
     expect(stripDocPrefix("GIFT-6004")).toBe("6004");
     expect(stripDocPrefix("ORD-7005")).toBe("7005");
   });
+
+  it("يدعم نزع البادئة مع اللاحقة الفرعية للأشقاء واللواحق المتعددة (multi-hyphen suffixes)", () => {
+    expect(stripDocPrefix("INV-100001-1")).toBe("100001-1");
+    expect(stripDocPrefix("WO-100001-2")).toBe("100001-2");
+    expect(stripDocPrefix("PO-100001-3")).toBe("100001-3");
+    expect(stripDocPrefix("ORD-100001-1")).toBe("100001-1");
+    expect(stripDocPrefix("WO-100001-1-1")).toBe("100001-1-1");
+    expect(stripDocPrefix("INV-100001-2-1")).toBe("100001-2-1");
+    expect(stripDocPrefix("RET-100001")).toBe("100001");
+    expect(stripDocPrefix("PAY-100001")).toBe("100001");
+    expect(stripDocPrefix("REC-100001")).toBe("100001");
+  });
 });
+
+describe("formatDocumentNumber — تنسيق رقم المستند وتوريث اللاحقة للأشقاء", () => {
+  it("المستند المنفرد أو الفهرس 0 يعيد رقم التتبع الأساسي مباشرة", () => {
+    expect(formatDocumentNumber("100001")).toBe("100001");
+    expect(formatDocumentNumber("100001", 0)).toBe("100001");
+    expect(formatDocumentNumber("100001", undefined)).toBe("100001");
+  });
+
+  it("المستندات الشقيقة تأخذ لاحقة تسلسلية -1 و -2", () => {
+    expect(formatDocumentNumber("100001", 1)).toBe("100001-1");
+    expect(formatDocumentNumber("100001", 2)).toBe("100001-2");
+    expect(formatDocumentNumber("100001", 3)).toBe("100001-3");
+  });
+
+  it("حالات الحدود: معالجة المدخلات الفارغة والكسور و NaN والأعداد السالبة بأمان", () => {
+    expect(formatDocumentNumber("100001", NaN)).toBe("100001");
+    expect(formatDocumentNumber("100001", 1.5)).toBe("100001");
+    expect(formatDocumentNumber("100001", 0)).toBe("100001");
+    expect(formatDocumentNumber("100001", -5)).toBe("100001");
+    expect(formatDocumentNumber("", 1)).toBe("");
+    expect(formatDocumentNumber("   ", 1)).toBe("");
+    expect(formatDocumentNumber("  100001  ", 2)).toBe("100001-2");
+  });
+});
+

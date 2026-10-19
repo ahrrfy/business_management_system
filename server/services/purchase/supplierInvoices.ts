@@ -26,6 +26,7 @@ import {
 } from "../ledgerService";
 import { logAuditTx } from "../auditService";
 import { money, round2, toDateStr, toDbMoney } from "../money";
+import { nextCounterValue } from "../numbering";
 import { assertPeriodOpen } from "../periodLockService";
 import { withTx, type Actor } from "../tx";
 import {
@@ -241,31 +242,9 @@ export async function lockSupplierInvoiceChainTx(
 async function nextInvoiceNumber(tx: Tx, branchId: number): Promise<string> {
   const ymd = toDateStr().replaceAll("-", "");
   const prefix = `SIN-${branchId}-${ymd}-`;
-  const lockName = `numbering:supplier_invoice:${branchId}:${ymd}`;
-  const lockResult: any = await tx.execute(
-    sql`SELECT GET_LOCK(${lockName}, 5) AS locked`,
-  );
-  const locked = Array.isArray(lockResult)
-    ? lockResult[0]?.[0]
-    : lockResult?.rows?.[0];
-  if (Number(locked?.locked) !== 1)
-    throw new Error(`numbering lock timeout for ${lockName}`);
-  try {
-    const rows = await tx
-      .select({ value: supplierInvoices.invoiceNumber })
-      .from(supplierInvoices)
-      .where(sql`${supplierInvoices.invoiceNumber} LIKE ${`${prefix}%`}`)
-      .orderBy(desc(supplierInvoices.id))
-      .for("update");
-    let max = 0;
-    for (const row of rows) {
-      const suffix = row.value.slice(prefix.length);
-      if (/^[0-9]+$/.test(suffix)) max = Math.max(max, Number(suffix));
-    }
-    return `${prefix}${String(max + 1).padStart(5, "0")}`;
-  } finally {
-    await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
-  }
+  const counterKey = `supplier_invoice_${branchId}_${ymd}`;
+  const seq = await nextCounterValue(tx, counterKey);
+  return `${prefix}${String(seq).padStart(5, "0")}`;
 }
 
 interface ApprovedRevisionExactAmount {

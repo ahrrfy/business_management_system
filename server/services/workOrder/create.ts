@@ -527,7 +527,7 @@ export async function createWorkOrderInTx(
     });
   }
 
-  const orderNumber = await nextWorkOrderNumber(tx, input.branchId);
+  const orderNumber = input.orderNumber?.trim() || (await nextWorkOrderNumber(tx, input.branchId));
   const customizationSnapshot = input.customizationText?.trim() || null;
   const insRes = await tx.insert(workOrders).values({
     orderNumber,

@@ -12,6 +12,7 @@ import {
 } from "../../../drizzle/schema";
 import { convertToBaseQuantity } from "../inventoryService";
 import { money, round2, toDateStr } from "../money";
+import { nextCounterValue } from "../numbering";
 import type { Actor } from "../tx";
 import type {
   CreateProductionInput,
@@ -48,19 +49,12 @@ async function resolveLine(tx: any, line: ProductionLineInput): Promise<Resolved
   };
 }
 
-/** رقم مستند إنتاج تسلسلي لكل فرع/يوم (مثل WO): PRD-<branch>-<YYYYMMDD>-<seq>. */
+/** رقم مستند إنتاج تسلسلي لكل فرع/يوم: PRD-<branch>-<YYYYMMDD>-<seq> عبر عدّاد documentCounters الذرّي. */
 async function nextProductionNumber(tx: any, branchId: number): Promise<string> {
   const ymd = toDateStr().replace(/-/g, "");
   const prefix = `PRD-${branchId}-${ymd}-`;
-  const rows = await tx
-    .select({ n: productionOrders.docNumber })
-    .from(productionOrders)
-    .where(like(productionOrders.docNumber, `${prefix}%`))
-    .orderBy(desc(productionOrders.id))
-    .for("update")
-    .limit(1);
-  const last = rows[0]?.n;
-  const seq = last ? parseInt(String(last).slice(prefix.length), 10) + 1 : 1;
+  const counterKey = `production_order_${branchId}_${ymd}`;
+  const seq = await nextCounterValue(tx, counterKey);
   return prefix + String(seq).padStart(5, "0");
 }
 

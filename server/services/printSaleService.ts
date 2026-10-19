@@ -39,7 +39,8 @@ import { assertStockedOwnedMaterials } from "./inventory/materialEligibility";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { createPostingIntent, creditLine, debitLine, signedPostingLines } from "./accounting/postingEngine";
 import { money, round2, roundCashIQD, toDbMoney } from "./money";
-import { nextInvoiceNumber } from "./numbering";
+import { nextInvoiceNumber, nextTransactionTrackingNumber } from "./numbering";
+import { formatDocumentNumber, stripDocPrefix } from "@shared/documentNumber";
 import { getUnitPrice, resolveTier, tryGetUnitPrice, type PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
 import { consumeApproval, validateApproval } from "./creditApprovalService";
@@ -92,6 +93,10 @@ export interface PrintSaleLineInput {
 
 export interface CreatePrintSaleInput {
   branchId: number;
+  /** رقم التتبع الموحّد للمعاملة (R1). */
+  trackingNumber?: string | null;
+  /** لاحقة الفهرس عند تعدد فواتير المعاملة الواحدة (e.g. 1, 2) */
+  siblingIndex?: number | null;
   shiftId?: number | null;
   customerId?: number | null;
   /** ٥/٨ — زبونٌ عابر: اسمٌ/هاتفٌ مرجعيّان على الفاتورة بلا سجلّ عميل ولا ذمّة. */
@@ -781,8 +786,11 @@ export async function createPrintSaleInTx(
       }
     }
 
-    // ٩. رأس الفاتورة.
-    const invoiceNumber = await nextInvoiceNumber(tx, input.branchId);
+    // ٩. رأس الفاتورة بالرقم الموحّد للمعاملة.
+    const baseTrackingNumber = input.trackingNumber?.trim()
+      ? stripDocPrefix(input.trackingNumber.trim())
+      : await nextTransactionTrackingNumber(tx);
+    const invoiceNumber = formatDocumentNumber(baseTrackingNumber, input.siblingIndex ?? undefined);
     const status = computeInvoiceStatus(toDbMoney(effectiveTotalD), toDbMoney(paidNow));
     const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
     const insRes = await tx.insert(invoices).values({
@@ -865,6 +873,7 @@ export async function createPrintSaleInTx(
         movementType: "OUT",
         referenceType: "PRINT_SALE",
         referenceId: invoiceId,
+        documentNumber: invoiceNumber,
         createdBy: actor.userId,
       });
     }
@@ -883,6 +892,7 @@ export async function createPrintSaleInTx(
         movementType: "OUT",
         referenceType: "PRINT_SALE",
         referenceId: invoiceId,
+        documentNumber: invoiceNumber,
         createdBy: actor.userId,
         notes: SERVICE_RECIPE_CONSUMPTION_NOTE,
         // مادة الخدمة الحيّة ليست «بيعاً بالطلب» حتى لو حمل منتجها ذلك الوسم؛ يلزم رصيد فعلي.

@@ -40,6 +40,8 @@ import { assertOperationAuthorityTx } from "./authorization/operationAuthority";
 
 export interface ReceptionCheckoutInput {
   branchId: number;
+  /** رقم التتبع الموحّد للمعاملة (R1). */
+  trackingNumber?: string | null;
   shiftId: number;
   customerId?: number | null;
   /** إسناد المبيعات لسلة الاستقبال (R2). */
@@ -609,6 +611,7 @@ export async function checkoutReceptionInTx(
             tx,
             {
               branchId: input.branchId,
+              trackingNumber: input.trackingNumber ?? null,
               shiftId: input.shiftId,
               customerId: input.customerId ?? null,
               contactName: input.contactName ?? null,
@@ -676,6 +679,7 @@ export async function checkoutReceptionInTx(
             tx,
             {
               branchId: input.branchId,
+              trackingNumber: input.trackingNumber ?? null,
               shiftId: input.shiftId,
               customerId: input.customerId ?? null,
               contactName: input.contactName ?? null,
