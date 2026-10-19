@@ -7,6 +7,7 @@ import {
   journalFileRecords,
 } from "../cash/paged-client.mjs";
 import { setupLab, wire, compareGraph } from "./native-support.mjs";
+import { resultRoot, creditIdentity, namespaceEnabled } from "./native.mjs";
 const larger = JSON.parse(
   await readFile(
     new URL("./results/larger/mysql-oracle.json", import.meta.url),
@@ -64,12 +65,12 @@ test("larger source invoice retains safe30-row gate and explicit native64 candid
       if (candidate) {
         const snapshot = await readPagedSnapshot(l.call, l.source);
         const file =
-          "experiments/d1-continuity/accounting/results/native-larger-signed-" +
-          Date.now() +
-          ".ndjson";
+          resultRoot + "/native-larger-signed-" + Date.now() + ".ndjson";
         const identity = {
-          labId: "actual-accounting-q1-native",
-          schemaVersion: "actual-accounting-q1-native-candidate64-v1",
+          labId: creditIdentity.labId,
+          schemaVersion: namespaceEnabled
+            ? "actual-accounting-q1-namespace-candidate64-v1"
+            : "actual-accounting-q1-native-candidate64-v1",
         };
         const exported = await exportPagedJournal(
           (target, route, input) =>
@@ -86,24 +87,30 @@ test("larger source invoice retains safe30-row gate and explicit native64 candid
         const records = [];
         for await (const record of journalFileRecords(file, l.secret, identity))
           records.push(record);
+        await l.freezeLegacySource();
         await l.source.dispose();
         sourceOff = true;
         for (const record of records)
           await l.ok(l.restore, "/restore", { records: [record] });
         assert.deepEqual(await readPagedSnapshot(l.call, l.restore), snapshot);
+        await l.verifyLegacy();
         evidence.push({
           candidate,
           signedColdRestore: true,
+          pageBytes: l.pageBytes,
           snapshot,
           exported,
         });
       }
       assert.equal(l.outbound.length, 0);
     } finally {
-      if (!sourceOff) await l.source.dispose();
+      if (!sourceOff) {
+        await l.verifyLegacy();
+        await l.source.dispose();
+      }
       await l.restore.dispose();
       await writeFile(
-        "experiments/d1-continuity/accounting/results/native-larger.json",
+        resultRoot + "/native-larger.json",
         JSON.stringify(evidence, null, 2),
       );
     }

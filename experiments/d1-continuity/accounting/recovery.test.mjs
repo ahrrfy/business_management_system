@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
-import { saleInput, creditIdentity } from "./native.mjs";
+import { saleInput, creditIdentity, resultRoot } from "./native.mjs";
 import { setupLab, oracle } from "./native-support.mjs";
 import {
   readPagedSnapshot,
@@ -9,7 +9,7 @@ import {
   journalFileRecords,
   validateJournalFile,
 } from "../cash/paged-client.mjs";
-const results = "experiments/d1-continuity/accounting/results";
+const results = resultRoot;
 const dir = results + "/recovery-" + Date.now();
 const ret = (invoiceId, itemId, key, patch = {}) => ({
   commandType: "RETURN",
@@ -124,7 +124,7 @@ test("actual returns: ambiguity, 4 cashiers, source restart, independent signed 
         "primary",
       ),
       writer = ns.get(
-        ns.idFromName("actual-accounting-q1-native:primary:writer-v1"),
+        ns.idFromName(creditIdentity.labId + ":primary:writer-v1"),
       );
     const startSale = (
       await l.ok(
@@ -378,6 +378,7 @@ test("actual returns: ambiguity, 4 cashiers, source restart, independent signed 
       (await l.call(l.restore, "/restore", { records: [records[1]] })).status,
       409,
     );
+    await l.freezeLegacySource();
     await l.source.dispose();
     sourceOff = true;
     for (const record of records)
@@ -387,6 +388,7 @@ test("actual returns: ambiguity, 4 cashiers, source restart, independent signed 
       await l.ok(l.restore, "/restore", { records: [record] });
     assert.deepEqual(await readPagedSnapshot(l.call, l.restore), snapshot);
     assert.equal(l.outbound.length, 0);
+    await l.verifyLegacy();
     times.sort((a, b) => a - b);
     const proof = {
       passed: true,
@@ -411,6 +413,8 @@ test("actual returns: ambiguity, 4 cashiers, source restart, independent signed 
       sameInvoiceCollectionContenders: 4,
       sameInvoiceReturnContenders: 4,
       hostingerOutboundAttempts: l.outbound.length,
+      pageBytes: l.pageBytes,
+      maxPageBytes: Math.max(...l.pageBytes.map((p) => p.bytes)),
       exported,
       snapshot,
       artifactDir: dir,

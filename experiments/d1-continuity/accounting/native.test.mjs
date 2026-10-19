@@ -5,6 +5,7 @@ import Decimal from "decimal.js";
 import { logAuditTx } from "../../../server/services/auditService.ts";
 import { RETURN_EXECUTED_AUDIT_ACTION } from "../../../server/services/returns/auditActions.ts";
 import { setupLab, oracle, wire, compareGraph } from "./native-support.mjs";
+import { resultRoot } from "./native.mjs";
 
 test("Q1A native accounting matrix has exact financial parity", async () => {
   const evidence = [];
@@ -141,7 +142,8 @@ test("Q1A native accounting matrix has exact financial parity", async () => {
     } finally {
       await lab.close();
       await writeFile(
-        "experiments/d1-continuity/accounting/results/native-matrix" +
+        resultRoot +
+          "/native-matrix" +
           (process.env.ACCOUNTING_SCENARIO ? "-focused" : "") +
           ".json",
         JSON.stringify(evidence, null, 2),
