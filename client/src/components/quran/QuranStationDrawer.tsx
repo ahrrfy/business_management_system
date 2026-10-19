@@ -3,11 +3,10 @@ import { useQuranAudio } from "./QuranAudioContext";
 import { QURAN_RECITERS, QURAN_SURAHS, type QuranReciter, type QuranSurah } from "./quranData";
 import { QuranReciterModal } from "./QuranReciterModal";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  Search,
   BookOpen,
   Play,
   Pause,
@@ -18,7 +17,6 @@ import {
   SkipBack,
   Volume2,
   VolumeX,
-  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -166,26 +164,13 @@ export function QuranStationDrawer() {
 
             {/* محرك البحث واختصارات السور الشائعة */}
             <div className="p-3 bg-card space-y-2 shrink-0">
-              <div className="relative">
-                <Search className="absolute right-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" aria-hidden />
-                <Input
-                  type="text"
-                  placeholder="ابحث باسم السورة أو رقمها (مثال: الكهف، 18)..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pe-9 ps-8 h-9 text-xs"
-                />
-                {searchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setSearchQuery("")}
-                    className="absolute left-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-muted-foreground hover:text-foreground"
-                    aria-label="مسح البحث"
-                  >
-                    <X className="size-3.5" />
-                  </button>
-                )}
-              </div>
+              <UnifiedSearchInput
+                placeholder="ابحث باسم السورة أو رقمها (مثال: الكهف، 18)..."
+                value={searchQuery}
+                onChange={setSearchQuery}
+                className="h-9 text-xs"
+                barcode={false}
+              />
 
               {/* السور الأكثر طلباً */}
               <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">

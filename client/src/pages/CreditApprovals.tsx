@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
@@ -153,12 +154,11 @@ export default function CreditApprovalsPage() {
                 )}
                 <div className="grid gap-2 md:col-span-2">
                   <label className="text-sm font-medium">العميل</label>
-                  <input
-                    type="text"
+                  <UnifiedSearchInput
                     value={customerSearch}
-                    onChange={(e) => setCustomerSearch(e.target.value)}
+                    onChange={setCustomerSearch}
                     placeholder="ابحث بالاسم أو الهاتف…"
-                    className="h-9 px-3 rounded-md border bg-transparent text-sm"
+                    className="h-9 text-sm"
                   />
                   <div className="border rounded max-h-48 overflow-auto">
                     {customers.data?.rows?.length ? customers.data.rows.map((c: any) => (
@@ -425,12 +425,11 @@ function ApprovalsLog() {
             <option value="CANCELLED">مُلغاة</option>
           </AppSelect>
           <div className="min-w-56 flex-1 max-w-xs">
-            <input
-              type="text"
+            <UnifiedSearchInput
               value={customerSearch}
-              onChange={(e) => { setCustomerSearch(e.target.value); setCustomerId(null); setOffset(0); }}
+              onChange={(val) => { setCustomerSearch(val); setCustomerId(null); setOffset(0); }}
               placeholder="فلترة بعميل — ابحث بالاسم…"
-              className="h-9 w-full px-3 rounded-md border bg-transparent text-sm"
+              className="h-9 text-sm"
             />
             {customerSearch.trim() && !customerId && (customers.data?.rows?.length ?? 0) > 0 && (
               <div className="border rounded mt-1 max-h-40 overflow-auto bg-popover shadow-md absolute z-10">

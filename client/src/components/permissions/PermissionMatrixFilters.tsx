@@ -9,6 +9,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -71,34 +72,19 @@ export const PermissionMatrixFilters = memo(function PermissionMatrixFilters({
     <div className="flex flex-wrap items-center justify-between gap-2.5 p-2 rounded-lg bg-card border border-border shadow-xs">
       <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[240px]">
         {/* Search Input */}
-        <div className="relative flex-1 min-w-[180px] max-w-sm">
-          <Search
-            aria-hidden="true"
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none"
-          />
-          <Input
-            type="text"
-            disabled={disabled}
-            value={localSearch}
-            onChange={(e) => setLocalSearch(e.target.value)}
-            placeholder="ابحث في الصلاحيات والمفاتيح والموارد…"
-            className="h-8 pr-8 pl-7 text-xs"
-            aria-label="البحث في شجرة الصلاحيات"
-          />
-          {localSearch && (
-            <button
-              type="button"
-              onClick={() => {
-                setLocalSearch("");
-                onSearchChange("");
-              }}
-              className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
-              aria-label="مسح البحث"
-            >
-              <X aria-hidden="true" className="size-3" />
-            </button>
-          )}
-        </div>
+        <UnifiedSearchInput
+          disabled={disabled}
+          value={localSearch}
+          debounceMs={0}
+          onChange={(v) => {
+            setLocalSearch(v);
+            if (!v) onSearchChange("");
+          }}
+          placeholder="ابحث في الصلاحيات والمفاتيح والموارد…"
+          aria-label="البحث في شجرة الصلاحيات"
+          size="compact"
+          className="flex-1 min-w-[180px] max-w-sm"
+        />
 
         {/* Domain Filter Select */}
         <div className="w-[160px]">

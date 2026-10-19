@@ -7,7 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Search } from "lucide-react";
 
@@ -58,17 +58,14 @@ export function HrDeviceUsersDialog({
           حضوراً تلقائياً (حتى السابقة منها). إن كانت القائمة فارغة اسحب
           المستخدمين من الجهاز بزر «المستخدمون».
         </p>
-        <div className="relative">
-          <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            type="search"
-            value={deviceUserQuery}
-            onChange={(e) => setDeviceUserQuery(e.target.value)}
-            placeholder="بحث بالرقم أو الاسم في الجهاز…"
-            aria-label="بحث في مستخدمي الجهاز"
-            className="h-8 w-full pr-8"
-          />
-        </div>
+        <UnifiedSearchInput
+          value={deviceUserQuery}
+          onChange={setDeviceUserQuery}
+          placeholder="بحث بالرقم أو الاسم في الجهاز…"
+          aria-label="بحث في مستخدمي الجهاز"
+          size="compact"
+          className="w-full"
+        />
         <ScrollTableShell maxHeightClass="max-h-[50vh]" showColumnVisibility={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">

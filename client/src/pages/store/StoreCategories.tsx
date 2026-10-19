@@ -4,10 +4,11 @@
  * الأقسام هي فئات المنتجات نفسها (categories) — تظهر بطاقاتها في المتجر عبر «تسوّق حسب القسم».
  */
 import { useState } from "react";
-import { ArrowDown, ArrowUp, Check, Eye, EyeOff, FolderPlus, Layers, Loader2, Pencil, Plus, Save, Search, Tag, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Eye, EyeOff, FolderPlus, Layers, Loader2, Pencil, Plus, Save, Tag, Trash2, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 
 interface FormState {
   id: number | null;
@@ -149,10 +150,7 @@ function AssignDialog({ category, onClose, onDone }: { category: { id: number; n
           <button onClick={onClose} aria-label="إغلاق" className="flex size-8 items-center justify-center rounded-full bg-muted text-muted-foreground hover:bg-accent"><X aria-hidden className="size-4" /></button>
         </div>
         <div className="space-y-2 border-b border-border p-3">
-          <div className="relative">
-            <Search aria-hidden className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="ابحث عن منتج…" className="w-full rounded-lg border border-border bg-background py-2 pr-10 pl-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" />
-          </div>
+          <UnifiedSearchInput value={q} onChange={setQ} placeholder="ابحث عن منتج…" />
           <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
             <input type="checkbox" checked={onlyUnassigned} onChange={(e) => setOnlyUnassigned(e.target.checked)} className="size-4" />
             المنتجات بلا قسم فقط (الأنسب لأول تنظيم)

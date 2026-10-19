@@ -8,7 +8,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Card, CardContent } from "@/components/ui/card";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
@@ -145,12 +145,13 @@ export default function PurchasesReport() {
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">بحث مورّد</label>
-            <Input
+            <UnifiedSearchInput
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={setSearch}
               placeholder="اسم المورّد…"
               aria-label="بحث مورّد"
-              className="h-9 w-48"
+              className="w-48"
+              barcode={false}
             />
           </div>
         </div>

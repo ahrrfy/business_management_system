@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Activity, AlertCircle, AlertTriangle, Cable, CheckCircle2, ChevronDown, Clock, Copy, KeyRound, LayoutTemplate, Loader2, Plus, Power, RefreshCw, Save, Scissors, Search, Settings2, ShoppingBag, Trash2, User, MessageSquare } from "lucide-react";
 import { SecretField } from "@/components/integrations/SecretField";
@@ -957,16 +958,13 @@ pnpm prod:deploy
           <Card className="gap-0 py-0 shadow-none">
             <CardContent className="p-4">
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(240px,1fr)_180px_180px_180px_auto]">
-                <div className="relative">
-                  <Search aria-hidden className="pointer-events-none absolute end-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    placeholder="ابحث بالاسم أو الفرع"
-                    className="pe-9"
-                    aria-label="البحث في الاتصالات"
-                  />
-                </div>
+                <UnifiedSearchInput
+                  value={query}
+                  onChange={setQuery}
+                  placeholder="ابحث بالاسم أو الفرع"
+                  aria-label="البحث في الاتصالات"
+                  barcode={false}
+                />
                 <AppSelect value={statusFilter} onValueChange={(value) => setStatusFilter(value as IntegrationStatusFilter)} aria-label="حالة الاتصال">
                   <option value="ALL">كل الحالات</option>
                   <option value="ACTIVE">فعّال</option>

@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { exportRows } from "@/lib/export";
 import { fmtInt, formatQuantity } from "@/lib/money";
@@ -304,7 +305,7 @@ export default function ReorderAlerts() {
           )}
           <div className="space-y-1">
             <Label>بحث (اسم/متغيّر/SKU) — في الصفحة المحمَّلة</Label>
-            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="مثال: ورق A4" />
+            <UnifiedSearchInput value={search} onChange={setSearch} placeholder="مثال: ورق A4" />
           </div>
         </CardContent>
       </Card>

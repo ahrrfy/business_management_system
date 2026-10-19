@@ -24,8 +24,9 @@ import { exportRows } from "@/lib/export";
 import { fmtInt, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
-import { FileEdit, Plus, Search } from "lucide-react";
+import { FileEdit, Plus } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 
 type VariantLike = { variantName: string | null; color: string | null; size: string | null; variantKind?: string | null; sku: string };
 function variantLabel(r: VariantLike): string {
@@ -265,16 +266,14 @@ export default function SeasonPlanning() {
         <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
           <CardTitle className="text-base">المنتجات الموسمية</CardTitle>
           <div className="flex flex-wrap items-center gap-3">
-            <div className="relative">
-              <Search aria-hidden className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={planSearch}
-                onChange={(e) => setPlanSearch(e.target.value)}
-                placeholder="بحث بالاسم أو SKU…"
-                aria-label="بحث في المنتجات الموسمية"
-                className="h-8 w-48 pr-8"
-              />
-            </div>
+            <UnifiedSearchInput
+              value={planSearch}
+              onChange={setPlanSearch}
+              placeholder="بحث بالاسم أو SKU…"
+              aria-label="بحث في المنتجات الموسمية"
+              className="w-48"
+              inputClassName="h-8 text-xs"
+            />
             <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -321,10 +320,10 @@ export default function SeasonPlanning() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="season-search">بحث المنتج</Label>
-              <Input
+              <UnifiedSearchInput
                 id="season-search"
                 value={term}
-                onChange={(e) => setTerm(e.target.value)}
+                onChange={setTerm}
                 placeholder="اسم المنتج أو SKU…"
                 autoFocus
               />

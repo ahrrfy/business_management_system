@@ -21,11 +21,12 @@ import { useOperationPermission } from "@/hooks/useOperationPermission";
  *    وبلا وردية مفتوحة يخرج من **الخزينة** للإداريّ (استثناءٌ مصنَّف خادمياً — الخادم يعلنه رافداً).
  *  · الردّ بالبطاقة يُنفَّذ على الجهاز ثمّ يُوثَّق بمرجعه (إثباتٌ لا إقفال).
  */
-import { AlertTriangle, CheckCircle2, Clock, Info, RotateCcw, ScanLine, Zap } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock, Info, RotateCcw, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { LoadingState } from "@/components/PageState";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -959,16 +960,17 @@ export function ReturnComposer({
               }}
               className="flex items-center gap-1.5"
             >
-              <div className="relative">
-                <ScanLine className="absolute right-2.5 top-2 size-3.5 text-muted-foreground" aria-hidden />
-                <Input
-                  value={fastBarcode}
-                  onChange={(e) => setFastBarcode(e.target.value)}
-                  placeholder="امسح باركود صنف..."
-                  className="h-8 w-44 pr-8 font-mono text-xs"
-                  disabled={isLocked || qtyLocked}
-                />
-              </div>
+              <UnifiedSearchInput
+                value={fastBarcode}
+                onChange={setFastBarcode}
+                onScan={(code) => handleFastItemScan(code)}
+                debounceMs={0}
+                size="compact"
+                placeholder="امسح باركود صنف..."
+                className="w-48"
+                inputClassName="font-mono text-xs"
+                disabled={isLocked || qtyLocked}
+              />
               <Button
                 type="submit"
                 size="sm"

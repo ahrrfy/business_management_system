@@ -8,10 +8,10 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Search, UserCheck, Check, Mic2, Sparkles, X } from "lucide-react";
+import { UserCheck, Check, Mic2, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface QuranReciterModalProps {
@@ -85,27 +85,14 @@ export function QuranReciterModal({ open, onOpenChange }: QuranReciterModalProps
 
         {/* حقل البحث والفلاتر */}
         <div className="p-3 border-b bg-card space-y-2.5">
-          <div className="relative">
-            <Search className="absolute right-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" aria-hidden />
-            <Input
-              type="text"
-              placeholder="ابحث باسم القارئ (مثال: عبد الباسط، المعيقلي، العفاسي)..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pe-9 ps-8 h-9 text-xs"
-              autoFocus
-            />
-            {search && (
-              <button
-                type="button"
-                onClick={() => setSearch("")}
-                className="absolute left-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-muted-foreground hover:text-foreground"
-                aria-label="مسح البحث"
-              >
-                <X className="size-3.5" />
-              </button>
-            )}
-          </div>
+          <UnifiedSearchInput
+            placeholder="ابحث باسم القارئ (مثال: عبد الباسط، المعيقلي، العفاسي)..."
+            value={search}
+            onChange={setSearch}
+            className="h-9 text-xs"
+            autoFocus
+            barcode={false}
+          />
 
           {/* فئات الفلترة */}
           <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">

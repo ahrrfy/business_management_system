@@ -2,6 +2,7 @@ import React, { useState, useMemo, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import {
   PERMISSION_MODULES,
   ROLE_TEMPLATES,
@@ -258,15 +259,13 @@ export function PermissionMatrix({
       ) : (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="relative flex-1 min-w-[180px] max-w-xs">
-              <Search aria-hidden="true" className="absolute right-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="ابحث عن وحدة…"
-                className="h-8 pr-7 text-xs"
-              />
-            </div>
+            <UnifiedSearchInput
+              value={query}
+              onChange={setQuery}
+              placeholder="ابحث عن وحدة…"
+              size="compact"
+              className="flex-1 min-w-[180px] max-w-xs"
+            />
             {customCount > 0 && (
               <Button type="button" variant="ghost" size="sm" onClick={onReset} className="text-xs">
                 إعادة لقالب الدور ({customCount} مخصّص)

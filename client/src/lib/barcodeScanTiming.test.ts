@@ -340,10 +340,40 @@ describe("قبولُ الومضة وبوّابةُ الثقة (نواةُ خطّ
     feedSequence(det, [letter("M"), letter("L"), letter("Z"), digit("6"), letter("A")], [10, 10, 10, 10]);
     // نلتقط النشاطَ قبل الإفراغ — نظيرُ `wasActive` في مسار Enter بالخطّاف التمريريّ.
     expect(det.isActive).toBe(true);
-    const { accepted, code } = det.flush();
-    expect(accepted).toBe(true); // ومضةٌ مؤكَّدة توقيتاً ⇒ Enter النشط يُصدرها
-    expect(code).toBe("mlz6a"); // الفكّ يُصغّر الحالة (المطابقةُ لا-حسّاسةٌ للحالة)
+    const result = det.flush();
+    expect(result.accepted).toBe(true); // ومضةٌ مؤكَّدة توقيتاً ⇒ Enter النشط يُصدرها
+    expect(result.code).toBe("mlz6a"); // الفكّ يُصغّر الحالة (المطابقةُ لا-حسّاسةٌ للحالة)
     // لكنّها غيرُ واثقة ⇒ مسارُ التسوية (بلا Enter) لا يُصدرها فلا يُختطَف اسمٌ عربيّ سريع.
-    expect(isConfidentScanCode(code, 3)).toBe(false);
+    expect(isConfidentScanCode(result.code, 3)).toBe(false);
+    expect(resolveScanSettle(result, "", 3, { onEnter: false })).toEqual({ scan: null, fieldValue: "MLZ6A" });
+    expect(resolveScanSettle(result, "", 3, { onEnter: true })).toEqual({ scan: "mlz6a", fieldValue: "" });
+  });
+
+  it("⭐ الكتابة العربية السريعة يدوياً («عمار»، «السلامي»، «دفتر») لا تبدأ ومضةً ولا تُقلب إلى إنجليزيّ أبداً", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    // موظّف يكتب «عمار» بسرعة يدوية عالية (55مي بين الحروف) تحت تخطيط عربي:
+    const ammarEvents: ScannerKeyEvent[] = [
+      { code: "KeyU", key: "ع", shiftKey: false },
+      { code: "KeyL", key: "م", shiftKey: false },
+      { code: "KeyH", key: "ا", shiftKey: false },
+      { code: "KeyV", key: "ر", shiftKey: false },
+    ];
+    const actions = feedSequence(det, ammarEvents, [55, 50, 60]);
+    expect(actions).toEqual(["pass", "pass", "pass", "pass"]);
+    expect(det.isActive).toBe(false);
+
+    // حتى لو ضغط مفتاحين عربيين معاً بسرعة استثنائية (15مي) ثم أكمل أو ضغط Enter،
+    // فإنّ resolveScanSettle يرفض الكلمة المحضة الخالية من الأرقام ويستعيد النصّ العربيّ الأصليّ.
+    const det2 = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    feedSequence(det2, ammarEvents, [15, 15, 15]);
+    const flushed = det2.flush();
+    expect(resolveScanSettle(flushed, "", 3, { onEnter: false })).toEqual({
+      scan: null,
+      fieldValue: "عمار",
+    });
+    expect(resolveScanSettle(flushed, "", 3, { onEnter: true })).toEqual({
+      scan: null,
+      fieldValue: "عمار",
+    });
   });
 });

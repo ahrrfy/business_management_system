@@ -17,6 +17,7 @@ import { trpc } from "@/lib/trpc";
 import { fmt, D } from "@/lib/money";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { docTypeLabel } from "@shared/barcodeTypes";
 import { invoiceStatusBadgeVariant, invoiceStatusLabel } from "@shared/invoiceStatus";
@@ -149,13 +150,16 @@ export default function VerifyDocument(props?: { params?: { id?: string } }) {
 
               {/* نموذج إدخال يدوي للتحقق المباشر */}
               <form onSubmit={handleManualSearch} className="flex gap-2 pt-2">
-                <input
-                  type="text"
+                <UnifiedSearchInput
                   placeholder="مثال: ORD-100009 أو INV-..."
                   value={manualCode}
-                  onChange={(e) => setManualCode(e.target.value)}
-                  className="flex-1 px-3 py-2 text-xs rounded-lg border bg-background font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"
-                  dir="ltr"
+                  onChange={setManualCode}
+                  onScan={(code) => {
+                    const clean = code.trim();
+                    if (clean) setLocation(`/verify/${encodeURIComponent(clean)}`);
+                  }}
+                  className="flex-1"
+                  inputClassName="text-xs font-mono"
                 />
                 <button
                   type="submit"
@@ -297,13 +301,16 @@ export default function VerifyDocument(props?: { params?: { id?: string } }) {
 
               {/* إمكانية البحث عن مستند آخر */}
               <form onSubmit={handleManualSearch} className="flex gap-2 pt-2">
-                <input
-                  type="text"
+                <UnifiedSearchInput
                   placeholder="جرب رقماً آخر (مثال: ORD-100009)..."
                   value={manualCode}
-                  onChange={(e) => setManualCode(e.target.value)}
-                  className="flex-1 px-3 py-2 text-xs rounded-lg border bg-background font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"
-                  dir="ltr"
+                  onChange={setManualCode}
+                  onScan={(code) => {
+                    const clean = code.trim();
+                    if (clean) setLocation(`/verify/${encodeURIComponent(clean)}`);
+                  }}
+                  className="flex-1"
+                  inputClassName="text-xs font-mono"
                 />
                 <button
                   type="submit"

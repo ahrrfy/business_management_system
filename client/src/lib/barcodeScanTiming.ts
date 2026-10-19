@@ -88,8 +88,12 @@ export class ScanBurstDetector {
     const gap = this.lastMs > 0 ? now - this.lastMs : Number.POSITIVE_INFINITY;
     this.lastMs = now;
 
-    // داخل ومضةٍ مؤكَّدة: التقط كلّ حرفٍ بلا فحص فاصلٍ إضافيّ (مناعةٌ تامّة للتذبذب حتى الإفراغ).
+    // داخل ومضةٍ مؤكَّدة: التقط كلّ حرفٍ بلا فحص فاصلٍ إضافيّ لمناعة التذبذب، إلا إذا ظهر فاصلُ كلماتٍ
+    // بشريّ أو نقراتٌ عربيةٌ يدوية بسرعة الإنسان فنَسمُ الومضة بالالتباس كي تُستعاد كاملةً عند الإفراغ.
     if (this.active) {
+      if ((input.key === " " && gap > 40) || (isUnshiftedArabicWordKey(input) && gap > 30)) {
+        this.ambiguousStart = true;
+      }
       this.keys.push(input);
       return "capture";
     }
@@ -105,7 +109,14 @@ export class ScanBurstDetector {
     }
 
     // الحرف الثاني وصل بسرعة القارئ بعد المرشّح الأوّل ⇒ ومضةٌ مؤكَّدة.
-    if (this.keys.length === 1 && gap <= this.intraGapMs) {
+    // للحروف العربية غير المُزاحة (كتابة كلمات عربية مثل «عمار» أو «السلامي»)، تتقارب مخارج الحروف
+    // المتجاورة عند الموظّف السريع (30–110مي) بينما القارئ الفيزيائيّ يبثّ بـ ≤25مي؛ فنقصر بدء الومضة
+    // بين حرفين عربيين غير مُزاحين على سرعة القارئ الفيزيائيّ لكي تبقى الكتابة العربية حيّةً في الحقل.
+    const effectiveIntraGapMs =
+      this.keys.length === 1 && isUnshiftedArabicWordKey(this.keys[0]) && isUnshiftedArabicWordKey(input)
+        ? Math.min(this.intraGapMs, 25)
+        : this.intraGapMs;
+    if (this.keys.length === 1 && gap <= effectiveIntraGapMs) {
       this.active = true;
       this.keys.push(input);
       return "startBurst";
@@ -144,6 +155,13 @@ export class ScanBurstDetector {
   }
 }
 
+/**
+ * هل ضغطة المفتاح حرفٌ عربيّ غير مُزاح (كتابةٌ نصّية عادية لا أرقام ولا رموز Shift كـ«÷آ{» لـINV)؟
+ */
+function isUnshiftedArabicWordKey(input: ScannerKeyEvent): boolean {
+  return !input.shiftKey && /^[\u0621-\u064A\u0671-\u06D3]+$/.test(input.key);
+}
+
 /** قرار تسوية ومضةٍ على حقلٍ نصّيّ: باركودٌ يُصدَر (إن قُبِل)، وقيمةُ الحقل النهائية. */
 export interface SettleDecision {
   /** الباركود المُصدَر عند القبول، وإلّا `null`. */
@@ -153,15 +171,40 @@ export interface SettleDecision {
 }
 
 /**
+ * هل يقبل الرمز المفكوك من ومضةٍ نشطة كباركودٍ صالح؟
+ * - عند التسوية بالمؤقّت (`onEnter = false`): يشترط باركوداً واثقاً (أو رقمياً/بادئة حرفٍ قصيرة مع أرقام).
+ * - عند الإنهاء الصريح بـ`Enter` (`onEnter = true`): يقبل أيضاً باركودات المورّدين الأبجدية-الرقمية التي
+ *   تحتوي رقماً واحداً على الأقلّ (مثل `MLZ6A` أو `NASR-6A` أو `B518`)، ويرفض الكلمات المحضة الخالية من
+ *   الأرقام («عمار» ⇐ `ujhv`، «دفتر» ⇐ `]tjv`، `abcd`) فلا تُقلَب الكتابةُ العربية السريعة إلى إنجليزيّ.
+ */
+export function isAcceptedBurstScanCode(code: string, minLength: number, onEnter = false): boolean {
+  if (code.length < minLength) return false;
+  if (hasUnsupportedBarcodeCharacters(code)) return false;
+  if (isConfidentScanCode(code, minLength)) return true;
+  const digitsOnly = code.replace(/\s+/g, "");
+  if (/^\d+$/.test(digitsOnly)) return true;
+  if (/^[A-Za-z]{1,2}\s*\d+$/.test(code)) return true;
+  if (onEnter) {
+    return /\d/.test(code) && /^[A-Za-z0-9\-_./+ ]+$/.test(code);
+  }
+  return false;
+}
+
+/**
  * يقرّر تسوية الومضة على حقلٍ نصّيّ بحسب نتيجة الإفراغ والبادئة (قيمة الحقل قبل الومضة):
- * - **مقبولة** (ومضةٌ نشطة بلغت الحدّ الأدنى وطولُ الرمز كافٍ): امسح الحقل ثم استعلم بالباركود.
- * - **مرفوضة** (كتابةٌ بشرية قصيرة صُنّفت خطأً كمسح): أعِد **البادئة + الحروف الخام** — فلا يضيع
- *   البحث القائم في الحقل ولا ما كتبه المستخدم (يعالج ملاحظتَي مراجعة #1107).
+ * - **مقبولة** (ومضةٌ نشطة بلغت الحدّ الأدنى واجتازت فحص بنية الباركود): امسح الحقل ثم استعلم بالباركود.
+ * - **مرفوضة** (كتابةٌ بشرية سريعة/قصيرة صُنّفت خطأً كمسح): أعِد **البادئة + الحروف الخام** — فلا يضيع
+ *   البحث القائم في الحقل ولا يُقلَب النصّ العربيّ إلى حروفٍ إنجليزية.
  *
  * نقيّة كي تُختبَر بلا DOM/React — الخطّافات تترجم القرار إلى `setValue`/`onScan`.
  */
-export function resolveScanSettle(result: FlushResult, prefix: string, minLength: number): SettleDecision {
-  if (result.accepted && result.code.length >= minLength) {
+export function resolveScanSettle(
+  result: FlushResult,
+  prefix: string,
+  minLength: number,
+  opts?: { onEnter?: boolean },
+): SettleDecision {
+  if (result.accepted && isAcceptedBurstScanCode(result.code, minLength, Boolean(opts?.onEnter))) {
     return { scan: result.code, fieldValue: "" };
   }
   return { scan: null, fieldValue: prefix + result.text };

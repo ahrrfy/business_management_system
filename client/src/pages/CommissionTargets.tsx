@@ -5,7 +5,7 @@ import { useDigitalGiftOperationAccess as useCommissionOperationAccess } from "@
 // مُنتقى، مع «فعليّ الشهر السابق» مرجعاً. الحفظ دفعة واحدة (upsert)، وتفريغ الحقل يحذف الهدف.
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { MonthPicker, thisMonth } from "@/components/form/MonthPicker";
@@ -22,7 +22,7 @@ import { trpc } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { CopyPlus, Save, Search, X } from "lucide-react";
+import { CopyPlus, Save, X } from "lucide-react";
 import { useMemo, useState } from "react";
 
 export default function CommissionTargets() {
@@ -159,10 +159,7 @@ export default function CommissionTargets() {
             {grid.isLoading ? "" : `${filteredRows.length} موظفاً — ${totalTargets} منهم له هدف محدَّد لشهر ${period}`}
           </span>
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative min-w-40">
-              <Search aria-hidden className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input value={f.q} onChange={(e) => setF({ q: e.target.value })} placeholder="بحث بالموظف…" aria-label="بحث بالموظف" className="h-8 w-full pr-8 sm:w-44" />
-            </div>
+            <UnifiedSearchInput value={f.q} onChange={(val) => setF({ q: val })} placeholder="بحث بالموظف…" aria-label="بحث بالموظف" className="h-8 w-full sm:w-44" wrapperClassName="min-w-40" />
             <AppSelect value={f.branch} onValueChange={(v) => setF({ branch: v })} className="h-8 w-36" size="sm" placeholder="كل الفروع">
               <option value="">كل الفروع</option>
               {branchOptions.map((name) => <option key={name} value={name}>{name}</option>)}

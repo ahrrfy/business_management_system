@@ -3,7 +3,7 @@
 // مع snapshots لحظية للتدقيق. تبريد ٧ أيام يمنع تكرار المورد. لا cron ولا أيّ مراسلة خارجية.
 import { useMemo, useState } from "react";
 import { FILTER_LABELS } from "@shared/uiContracts";
-import { CheckCircle2, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Info, Bot, Printer, Download } from "lucide-react";
+import { CheckCircle2, SkipForward, Clock, RotateCcw, History, CalendarClock, Info, Bot, Printer, Download } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { sum } from "@/lib/money";
@@ -12,6 +12,7 @@ import { LoadingState, ErrorState } from "@/components/PageState";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -483,17 +484,13 @@ function QueueTab({
     <Card>
       <CardContent className="p-0">
         <div className="flex flex-wrap items-center gap-2 border-b p-3">
-          <div className="relative flex-1 max-w-md">
-            <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-              <Search className="size-4" />
-            </span>
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="ابحث بالاسم أو الهاتف…"
-              className="h-9 pe-9"
-            />
-          </div>
+          <UnifiedSearchInput
+            value={search}
+            onChange={setSearch}
+            placeholder="ابحث بالاسم أو الهاتف…"
+            className="h-9"
+            wrapperClassName="flex-1 max-w-md"
+          />
           <AppSelect
             value={agingBracket}
             onValueChange={(v) => setAgingBracket(v as typeof agingBracket)}
@@ -661,12 +658,7 @@ function HistoryTab({
     <Card>
       <CardContent className="p-0">
         <div className="flex flex-wrap items-center gap-2 border-b p-3">
-          <div className="relative flex-1 max-w-xs">
-            <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-              <Search className="size-4" />
-            </span>
-            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث بالاسم…" className="h-9 pe-9" />
-          </div>
+          <UnifiedSearchInput value={search} onChange={setSearch} placeholder="ابحث بالاسم…" className="h-9" wrapperClassName="flex-1 max-w-xs" />
           <AppSelect
             value={status}
             onValueChange={(v) => setStatus(v as typeof status)}

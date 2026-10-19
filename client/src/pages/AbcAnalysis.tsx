@@ -7,7 +7,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { DataTable } from "@/components/data-table/DataTable";
 import { ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
@@ -185,12 +185,13 @@ export default function AbcAnalysis() {
           )}
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">بحث منتج</label>
-            <Input
+            <UnifiedSearchInput
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={setSearch}
               placeholder="اسم المنتج…"
               aria-label="بحث منتج"
-              className="h-9 w-44"
+              className="h-9"
+              wrapperClassName="w-44"
             />
           </div>
           <div className="flex flex-col gap-1">

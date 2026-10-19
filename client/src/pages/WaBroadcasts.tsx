@@ -43,6 +43,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -981,11 +982,12 @@ export default function WaBroadcasts() {
 
       <Card>
         <CardContent className="p-3 flex flex-wrap items-center gap-2">
-          <Input
+          <UnifiedSearchInput
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={setSearch}
             placeholder="ابحث باسم الحملة…"
-            className="h-9 w-60 text-sm"
+            className="w-60"
+            inputClassName="h-9 text-sm"
           />
           <AppSelect className="h-9" value={statusFilter} onValueChange={(next) => setStatusFilter(next)}>
             <option value="">كل الحالات</option>

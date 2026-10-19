@@ -19,6 +19,7 @@ import { BiometricReadinessBanner } from "@/components/payroll/BiometricReadines
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { confirm, confirmDelete } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
@@ -768,13 +769,14 @@ export default function Payroll() {
             )}
           </CardTitle>
           <div className="flex flex-wrap items-center gap-2">
-            <Input
-              type="search"
+            <UnifiedSearchInput
               value={itemQ}
-              onChange={(e) => setItemQ(e.target.value)}
+              onChange={setItemQ}
               placeholder="بحث باسم الموظف…"
               aria-label="بحث باسم الموظف"
-              className="h-8 w-44"
+              className="w-44"
+              inputClassName="h-8"
+              barcode={false}
             />
             <AppSelect
               value={payTypeF}

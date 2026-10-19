@@ -9,6 +9,7 @@ import { ListToolbar, RowActions, SelectionBar, useRowSelection } from "@/compon
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { PeriodFilter, type PeriodValue, type PresetKey } from "@/components/reports/PeriodFilter";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
@@ -171,10 +172,10 @@ function CustomerFilter({ customerId, onChange }: { customerId: number | null; o
 
   return (
     <div ref={wrapRef} className="relative">
-      <Input
+      <UnifiedSearchInput
         value={q}
-        onChange={(e) => {
-          setQ(e.target.value);
+        onChange={(val) => {
+          setQ(val);
           setOpen(true);
         }}
         onFocus={() => setOpen(true)}

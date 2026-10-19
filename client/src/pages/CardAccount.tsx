@@ -8,6 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -30,7 +31,6 @@ import {
   Printer,
   ScrollText,
   Scale,
-  Search,
   Smartphone,
   AlertTriangle,
   CheckCircle2,
@@ -357,16 +357,14 @@ export default function CardAccount() {
               حركات حساب {acctLabel}
             </h2>
             <div className="flex flex-wrap items-center gap-2">
-              <div className="relative">
-                <Search aria-hidden className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  aria-label="بحث بالمرجع أو رقم السند أو اسم الطرف"
-                  placeholder="بحث بالمرجع/السند/الطرف…"
-                  className="h-9 w-48 pr-8"
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                />
-              </div>
+              <UnifiedSearchInput
+                aria-label="بحث بالمرجع أو رقم السند أو اسم الطرف"
+                placeholder="بحث بالمرجع/السند/الطرف…"
+                className="h-9"
+                wrapperClassName="w-48"
+                value={q}
+                onChange={setQ}
+              />
               <Input
                 type="date"
                 aria-label="من تاريخ"

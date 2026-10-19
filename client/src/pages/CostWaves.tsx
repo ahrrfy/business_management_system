@@ -23,7 +23,6 @@ import {
   FileClock,
   History,
   PlusCircle,
-  Search,
   Send,
   ShieldCheck,
   UserRoundCheck,
@@ -34,13 +33,14 @@ import { useLocation, useSearch } from "wouter";
 import { CostWaveDetailDialog } from "@/components/costWave/CostWaveDetailDialog";
 import { DataTable } from "@/components/data-table/DataTable";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/PageHeader";
 import { Field } from "@/components/product/variantBits";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -493,18 +493,11 @@ function CreateCostWave({
                   </AppSelect>
                 </Field>
                 <Field label="بحث المنتج / SKU / الباركود">
-                  <div className="relative">
-                    <Search
-                      aria-hidden
-                      className="pointer-events-none absolute inset-y-0 right-2 my-auto size-4 text-muted-foreground"
-                    />
-                    <Input
-                      value={productSearch}
-                      onChange={(event) => setProductSearch(event.target.value)}
-                      className="pr-8"
-                      placeholder="مثال: أقلام أزرق أو SKU"
-                    />
-                  </div>
+                  <UnifiedSearchInput
+                    value={productSearch}
+                    onChange={setProductSearch}
+                    placeholder="مثال: أقلام أزرق أو SKU"
+                  />
                 </Field>
               </>
             )}
@@ -569,9 +562,9 @@ function CreateCostWave({
                 label="ابحث عن صنف وأضفه"
                 hint={`الاختيار على مستوى المتغيّر/SKU، حتى ${COST_WAVE_MAX_SELECTED_ITEMS} صنف`}
               >
-                <Input
+                <UnifiedSearchInput
                   value={pickerSearch}
-                  onChange={(event) => setPickerSearch(event.target.value)}
+                  onChange={setPickerSearch}
                   placeholder="اسم المنتج أو SKU أو الباركود"
                 />
               </Field>

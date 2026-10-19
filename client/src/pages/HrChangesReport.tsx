@@ -7,6 +7,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { FilterField } from "@/components/list";
@@ -208,7 +209,7 @@ export default function HrChangesReport() {
       <Card>
         <CardContent className="p-3 flex flex-wrap items-end gap-2">
           <FilterField label="بحث" className="min-w-48">
-            <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="اسم الموظف أو المسمّى/النوع…" className="h-8" aria-label="بحث" />
+            <UnifiedSearchInput value={query} onChange={setQuery} placeholder="اسم الموظف أو المسمّى/النوع…" className="h-8" aria-label="بحث" barcode={false} />
           </FilterField>
           <FilterField label="من تاريخ">
             <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 w-36" aria-label="من تاريخ" />

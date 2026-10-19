@@ -26,6 +26,7 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -322,15 +323,12 @@ export function HeldOrdersDrawer({
 
           {/* حقل البحث السريع */}
           <div className="p-4 border-b border-border bg-card">
-            <div className="relative">
-              <Search className="absolute right-3 top-2.5 size-4 text-muted-foreground" />
-              <Input
-                placeholder="ابحث برقم الفاتورة، اسم الزبون، أو رقم الهاتف…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pr-9 h-10 text-sm"
-              />
-            </div>
+            <UnifiedSearchInput
+              placeholder="ابحث برقم الفاتورة، اسم الزبون، أو رقم الهاتف…"
+              value={search}
+              onChange={setSearch}
+              className="w-full"
+            />
           </div>
 
           {/* قائمة الطلبات */}

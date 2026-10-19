@@ -4,6 +4,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { PageHeader } from "@/components/PageHeader";
@@ -25,7 +26,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
-import { Search, X as XIcon, CheckCircle2, AlertCircle, RefreshCw, Layers, Phone, UserCheck, FileText } from "lucide-react";
+import { X as XIcon, CheckCircle2, AlertCircle, RefreshCw, Layers, Phone, UserCheck, FileText } from "lucide-react";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
 import { priceTierLabel, sourceTypeLabel } from "@/lib/labels";
@@ -961,31 +962,18 @@ function CustomerSearchPicker({
 
   return (
     <div ref={wrapRef} className="relative">
-      <div className="relative">
-        <Search aria-hidden className="absolute right-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
-        <Input
-          ref={inputRef}
-          value={display}
-          onChange={(e) => { setQ(e.target.value); setOpen(true); }}
-          onFocus={() => setOpen(true)}
-          onKeyDown={onKey}
-          placeholder="ابحث بالاسم أو الهاتف…"
-          className="pr-9 pl-9"
-          role="combobox"
-          aria-expanded={open}
-          aria-autocomplete="list"
-        />
-        {(selected || q) && (
-          <button
-            type="button"
-            onClick={() => { onChange(0); setQ(""); inputRef.current?.focus(); }}
-            aria-label="مسح"
-            className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1"
-          >
-            <XIcon aria-hidden className="size-3.5" />
-          </button>
-        )}
-      </div>
+      <UnifiedSearchInput
+        ref={inputRef}
+        value={display}
+        onChange={(val) => { setQ(val); setOpen(true); }}
+        onClear={() => { onChange(0); setQ(""); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={onKey}
+        placeholder="ابحث بالاسم أو الهاتف…"
+        role="combobox"
+        aria-expanded={open}
+        aria-autocomplete="list"
+      />
       {open && (
         <div
           role="listbox"

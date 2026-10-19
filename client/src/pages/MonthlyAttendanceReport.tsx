@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { MonthPicker, thisMonth } from "@/components/form/MonthPicker";
 import { PageHeader } from "@/components/PageHeader";
@@ -169,12 +169,13 @@ export default function MonthlyAttendanceReport() {
                 {(branches.data ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
               </AppSelect>
             )}
-            <Input
-              className="h-9 w-56"
+            <UnifiedSearchInput
+              className="w-56"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={setSearch}
               placeholder="بحث بالاسم أو القسم أو الوظيفة…"
               aria-label="بحث في الجدول"
+              barcode={false}
             />
             {d && (
               <span className="text-xs text-muted-foreground">

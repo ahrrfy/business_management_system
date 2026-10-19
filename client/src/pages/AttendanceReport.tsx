@@ -8,7 +8,7 @@ import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { DataTable } from "@/components/data-table/DataTable";
 import { ErrorState } from "@/components/PageState";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { fmtAr } from "@/lib/money";
@@ -188,10 +188,11 @@ export default function AttendanceReport() {
                 </button>
               </div>
             ) : (
-              <Input
-                className="h-9 w-56"
+              <UnifiedSearchInput
+                className="h-9"
+                wrapperClassName="w-56"
                 value={empQuery}
-                onChange={(e) => { setEmpQuery(e.target.value); setEmpOpen(true); }}
+                onChange={(val) => { setEmpQuery(val); setEmpOpen(true); }}
                 onFocus={() => setEmpOpen(true)}
                 placeholder="الكلّ — أو ابحث بالاسم"
                 aria-autocomplete="list"

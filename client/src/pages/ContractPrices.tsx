@@ -4,7 +4,7 @@
 // يتقدّم على سعر الفئة في POS وفي فرض الخادم معاً (resolveContractPrices واحدة للنقطتين).
 import { useMemo, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { Download, FileSignature, FileSpreadsheet, Phone, Plus, Printer, Search, User, X } from "lucide-react";
+import { Download, FileSignature, FileSpreadsheet, Phone, Plus, Printer, User, X } from "lucide-react";
 import CustomerPicker from "@/components/CustomerPicker";
 import { PageHeader } from "@/components/PageHeader";
 import { EmptyState } from "@/components/PageState";
@@ -17,6 +17,7 @@ import type { InvoiceLine, PriceTier } from "@/components/invoice/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime, toDate, type DateInput } from "@/lib/date";
@@ -469,10 +470,7 @@ export default function ContractPrices() {
 
             {/* ── جدول الأسعار التعاقدية ── */}
             {rows.length > 0 && (
-              <div className="relative max-w-xs">
-                <Search aria-hidden className="size-4 absolute top-1/2 -translate-y-1/2 start-3 text-muted-foreground pointer-events-none" />
-                <Input className="ps-9" value={q} onChange={(e) => setQ(e.target.value)} placeholder="ابحث بالمنتج/SKU/ملاحظة…" dir="auto" />
-              </div>
+              <UnifiedSearchInput wrapperClassName="max-w-xs" value={q} onChange={setQ} placeholder="ابحث بالمنتج/SKU/ملاحظة…" />
             )}
             <DataTable
               columns={columns}

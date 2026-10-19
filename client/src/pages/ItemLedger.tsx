@@ -10,7 +10,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Button } from "@/components/ui/button";
 import { ArrowUpRight } from "lucide-react";
 import { exportRows } from "@/lib/export";
@@ -280,9 +280,9 @@ export default function ItemLedger() {
           <div className="flex flex-col gap-1 min-w-[260px]">
             <label className="text-[11px] text-muted-foreground">المنتج (اسم/SKU/باركود)</label>
             <div className="relative">
-              <Input
+              <UnifiedSearchInput
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={setSearch}
                 placeholder="اكتب للبحث…"
               />
               {search.trim() && (searchVariants.length > 0 || searchResults.isFetching) && (

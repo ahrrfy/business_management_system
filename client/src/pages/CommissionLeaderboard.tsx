@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { MonthPicker, thisMonth } from "@/components/form/MonthPicker";
 import { PageHeader } from "@/components/PageHeader";
@@ -17,7 +17,7 @@ import { exportRows } from "@/lib/export";
 import { iqd } from "@/lib/hr/ui";
 import { trpc } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
-import { Crown, FileDown, Search, Target, TrendingDown, Wallet, X } from "lucide-react";
+import { Crown, FileDown, Target, TrendingDown, Wallet, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { LeaderboardPodium } from "@/components/commission/LeaderboardPodium";
 
@@ -238,10 +238,7 @@ export default function CommissionLeaderboard() {
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
           <CardTitle>ترتيب شهر {period} — {filteredRows.length} بائعاً</CardTitle>
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative min-w-40">
-              <Search aria-hidden className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input value={f.q} onChange={(e) => setF({ q: e.target.value })} placeholder="بحث بالموظف…" aria-label="بحث بالموظف" className="h-8 w-full pr-8 sm:w-44" />
-            </div>
+            <UnifiedSearchInput value={f.q} onChange={(val) => setF({ q: val })} placeholder="بحث بالموظف…" aria-label="بحث بالموظف" className="h-8 w-full sm:w-44" wrapperClassName="min-w-40" />
             <AppSelect value={f.branch} onValueChange={(v) => setF({ branch: v })} className="h-8 w-36" size="sm" placeholder="كل الفروع">
               <option value="">كل الفروع</option>
               {branchOptions.map((name) => <option key={name} value={name}>{name}</option>)}

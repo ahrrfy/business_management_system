@@ -3,9 +3,9 @@
 // صريح («احفظ الطلب») أو سببٌ حقيقيّ. فتحُ مسوّدة زميلٍ يتطلّب تأكيداً يسمّيه، والمموّلة
 // (moneyLocked — ش٤) موسومةٌ ولا تُلغى إلا بمدير.
 import { useEffect, useState } from "react";
-import { Banknote, ChevronDown, Printer, Save, Search, X } from "lucide-react";
+import { Banknote, ChevronDown, Printer, Save, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { confirm } from "@/lib/confirm";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -161,16 +161,13 @@ export function DraftStrip({
           كل طلبات الفرع
         </button>
       </div>
-      <div className="relative">
-        <Search aria-hidden className="pointer-events-none absolute inset-y-0 start-2 my-auto size-3.5 text-muted-foreground" />
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="بحث برقم الطلب أو الاسم أو الهاتف"
-          className="h-8 ps-7 text-[11px]"
-          aria-label="بحث في الطلبات المحفوظة"
-        />
-      </div>
+      <UnifiedSearchInput
+        value={search}
+        onChange={setSearch}
+        placeholder="بحث برقم الطلب أو الاسم أو الهاتف"
+        className="h-8 text-[11px]"
+        aria-label="بحث في الطلبات المحفوظة"
+      />
       <div className="flex max-h-72 flex-col gap-1 overflow-y-auto">
         {browseQ.isLoading ? (
           <span className="p-2 text-center text-[11px] text-muted-foreground">جارٍ التحميل…</span>

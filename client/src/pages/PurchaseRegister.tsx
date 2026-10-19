@@ -4,12 +4,11 @@ import { useMemo, useState } from "react";
 import { ActorCell } from "@/components/data-table/ActorCell";
 import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
 import { Link, useLocation } from "wouter";
-import { Search } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { DataTable } from "@/components/data-table/DataTable";
 import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
@@ -244,15 +243,12 @@ export default function PurchaseRegister() {
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">بحث</label>
-            <div className="relative">
-              <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-              <Input
-                value={query}
-                onChange={(e) => { setQuery(e.target.value); setPage(0); }}
-                placeholder="رقم الأمر أو المورّد أو المنتج…"
-                className="h-9 w-56 pr-8"
-              />
-            </div>
+            <UnifiedSearchInput
+              value={query}
+              onChange={(val) => { setQuery(val); setPage(0); }}
+              placeholder="رقم الأمر أو المورّد أو المنتج…"
+              className="w-56"
+            />
           </div>
         </div>
       }

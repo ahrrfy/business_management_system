@@ -16,6 +16,7 @@ import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { playReadyBeep } from "@/lib/notifyBeep";
 import { cn } from "@/lib/utils";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { PredictiveItemRow, type PredictiveItem } from "./PredictiveItemRow";
 
 export type { PredictiveItem };
@@ -302,61 +303,29 @@ export function PredictiveConsignmentSearchInput({
 
   return (
     <div ref={containerRef} className={cn("relative w-full", className)} dir="rtl">
-      {/* حقل الإدخال الأساسي بتنسيق WAI-ARIA Combobox */}
-      <div className="relative flex items-center w-full">
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground flex items-center z-10"
-        >
-          {isSearching ? (
-            <Loader2 className="size-4 animate-spin text-primary" />
-          ) : (
-            <Search className="size-4" />
-          )}
-        </span>
-
-        <input
-          ref={inputRef}
-          role="combobox"
-          aria-expanded={isOpen}
-          aria-haspopup="listbox"
-          aria-autocomplete="list"
-          aria-controls="predictive-consignment-listbox"
-          aria-activedescendant={activeDescendantId}
-          type="text"
-          value={searchTerm}
-          disabled={disabled}
-          autoFocus={autoFocus}
-          autoComplete="off"
-          enterKeyHint="search"
-          placeholder={placeholder}
-          aria-label={placeholder}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          onFocus={() => {
-            if (searchTerm.trim().length >= 2) setIsOpen(true);
-          }}
-          onKeyDown={handleKeyDown}
-          className={cn(
-            "w-full h-10 rounded-xl border border-input bg-background pr-9 pl-9 text-sm font-medium",
-            "outline-none transition-all duration-150",
-            "focus:border-primary focus:ring-2 focus:ring-primary/20",
-            "disabled:cursor-not-allowed disabled:opacity-50",
-            inputClassName,
-          )}
-        />
-
-        {searchTerm.length > 0 && !disabled && (
-          <button
-            type="button"
-            onClick={handleClear}
-            aria-label="مسح البحث (Esc)"
-            title="مسح البحث (Esc)"
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground rounded p-1 transition-colors z-10 focus:outline-none focus:ring-1 focus:ring-primary"
-          >
-            <X aria-hidden="true" className="size-4" />
-          </button>
-        )}
-      </div>
+      {/* حقل الإدخال الأساسي الموحّد بتنسيق WAI-ARIA Combobox */}
+      <UnifiedSearchInput
+        ref={inputRef}
+        role="combobox"
+        aria-expanded={isOpen}
+        aria-haspopup="listbox"
+        aria-autocomplete="list"
+        aria-controls="predictive-consignment-listbox"
+        aria-activedescendant={activeDescendantId}
+        value={searchTerm}
+        debounceMs={0}
+        disabled={disabled}
+        autoFocus={autoFocus}
+        placeholder={placeholder}
+        aria-label={placeholder}
+        onChange={(val) => setSearchTerm(val)}
+        onFocus={() => {
+          if (searchTerm.trim().length >= 2) setIsOpen(true);
+        }}
+        onKeyDown={handleKeyDown}
+        className="w-full"
+        inputClassName={cn("h-10 font-medium", inputClassName)}
+      />
 
       {/* القائمة التنبؤية المنبثقة (Live Predictive Dropdown Listbox) */}
       {isOpen && (

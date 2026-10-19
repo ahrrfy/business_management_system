@@ -25,6 +25,7 @@ import { LoadingState, ErrorState } from "@/components/PageState";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -254,9 +255,9 @@ export default function InstallmentPlans() {
         </div>
         <div className="min-w-48 space-y-1">
           <Label className="text-xs">بحث (رقم خطة/رقم صك)</Label>
-          <Input
+          <UnifiedSearchInput
             value={q}
-            onChange={(e) => { setQ(e.target.value); setOffset(0); }}
+            onChange={(val) => { setQ(val); setOffset(0); }}
             placeholder="مثال: 42 أو رقم الصك…"
             className="h-9"
           />

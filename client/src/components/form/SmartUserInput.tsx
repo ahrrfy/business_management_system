@@ -1,4 +1,4 @@
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -76,30 +76,24 @@ export function SmartUserInput({ value, onChange, employeeId, placeholder, class
 
   return (
     <div ref={wrapRef} className={cn("relative", className)}>
-      <div className="relative">
-        <Input
-          value={q}
-          onChange={(e) => {
-            setQ(e.target.value);
-            setOpen(true);
-            if (value.userId) onChange({ userId: null, label: e.target.value });
-          }}
-          onFocus={() => setOpen(true)}
-          placeholder={placeholder || "ابحث باسم المستخدم أو البريد"}
-          aria-autocomplete="list"
-          aria-expanded={open}
-        />
-        {value.userId && (
-          <button
-            type="button"
-            onClick={clear}
-            className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground hover:text-destructive"
-            aria-label="مسح اختيار الحساب"
-          >
-            <X aria-hidden className="size-3.5" />
-          </button>
-        )}
-      </div>
+      <UnifiedSearchInput
+        value={q}
+        debounceMs={0}
+        onChange={(v) => {
+          setQ(v);
+          setOpen(true);
+          if (!v) {
+            onChange({ userId: null, label: "" });
+          } else if (value.userId) {
+            onChange({ userId: null, label: v });
+          }
+        }}
+        onFocus={() => setOpen(true)}
+        placeholder={placeholder || "ابحث باسم المستخدم أو البريد"}
+        aria-autocomplete="list"
+        aria-expanded={open}
+        className="w-full"
+      />
 
       {open && (
         <div className="absolute z-20 top-full mt-1 w-full rounded-md border bg-popover shadow-md max-h-72 overflow-auto">

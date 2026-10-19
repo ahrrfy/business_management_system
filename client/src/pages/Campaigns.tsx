@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { CalendarClock, Download, Plus, Search, X } from "lucide-react";
+import { CalendarClock, Download, Plus, X } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -109,10 +110,7 @@ export default function Campaigns() {
     {show&&<Card><CardHeader><CardTitle className="text-base">حملة جديدة</CardTitle></CardHeader><CardContent className="grid md:grid-cols-2 gap-4"><Field label="اسم الحملة" required className="md:col-span-2"><Input value={name} onChange={e=>setName(e.target.value)}/></Field><Field label="الهدف" className="md:col-span-2"><Textarea value={objective} onChange={e=>setObjective(e.target.value)} rows={3}/></Field><Field label="تبدأ" hint="نافذة تخطيط؛ لا تشغّل الحملة تلقائياً"><Input type="date" value={startsOn} onChange={e=>setStarts(e.target.value)}/></Field><Field label="تنتهي" hint="راجع قرار الإنهاء عند بلوغ التاريخ"><Input type="date" value={endsOn} onChange={e=>setEnds(e.target.value)}/></Field><div className="md:col-span-2 flex justify-end"><Button disabled={!name.trim()||create.isPending} onClick={()=>create.mutate({name,objective:objective||null,startsOn:startsOn||null,endsOn:endsOn||null})}>حفظ المسوّدة</Button></div></CardContent></Card>}
 
     <Card><CardContent className="p-3 flex flex-wrap items-center gap-2">
-      <div className="relative min-w-48 flex-1 sm:flex-none">
-        <Search aria-hidden className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input value={f.q} onChange={(e)=>setF({q:e.target.value})} placeholder="بحث بالاسم أو الهدف…" aria-label="بحث في الحملات" className="h-9 w-full pr-8 sm:w-64" />
-      </div>
+      <UnifiedSearchInput value={f.q} onChange={(val)=>setF({q:val})} placeholder="بحث بالاسم أو الهدف…" aria-label="بحث في الحملات" className="h-9 w-full sm:w-64" wrapperClassName="min-w-48 flex-1 sm:flex-none" barcode={false} />
       <AppSelect value={f.status} onValueChange={(v)=>setF({status:v})} className="h-9 w-40" placeholder="كل الحالات">
         <option value="">كل الحالات</option>
         {Object.entries(LABEL).map(([k,l])=><option key={k} value={k}>{l}</option>)}

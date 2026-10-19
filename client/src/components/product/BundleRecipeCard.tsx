@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { trpc } from "@/lib/trpc";
 import { D, formatIqd, formatQuantity, round2 } from "@/lib/money";
@@ -204,7 +205,7 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
           <div className="pt-2 border-t space-y-2">
             <div className="text-sm font-medium">إضافة مكوّن جديد</div>
             <div className="relative">
-              <Input value={picker} onChange={(e) => setPicker(e.target.value)} placeholder="ابحث عن منتج بضاعة مفرد (≥ حرفَين)" />
+              <UnifiedSearchInput value={picker} onChange={setPicker} placeholder="ابحث عن منتج بضاعة مفرد (≥ حرفَين)" />
               {picker.trim().length >= 2 && (searchQ.data?.items ?? []).length > 0 && (
                 <div className="absolute z-10 mt-1 w-full max-h-64 overflow-auto rounded-md border bg-popover shadow-md">
                   {(searchQ.data?.items ?? []).map((r) => (

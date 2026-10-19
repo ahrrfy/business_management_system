@@ -2,7 +2,7 @@
 // بحث موحّد عبر الزبائن والموردين ومسؤولي المشتريات والمندوبين وأطراف التوصيل ومرسلي واتساب.
 import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
-import { Download, Eye, FileSpreadsheet, Link2, Phone, Search, User } from "lucide-react";
+import { Download, Eye, FileSpreadsheet, Link2, Phone, User } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { hasModuleAccess, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -10,7 +10,7 @@ import { ACTION_LABELS } from "@shared/actionLabels";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/data-table/DataTable";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -293,18 +293,12 @@ export default function ContactsBank() {
 
       <Card>
         <CardContent className="p-3 space-y-3">
-          <div className="relative">
-            <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-              <Search className="size-4" />
-            </span>
-            <Input
-              value={rawQ}
-              onChange={(e) => setRawQ(e.target.value)}
-              placeholder="ابحث بالاسم أو الهاتف أو مسؤول المشتريات أو الرقم القديم (حرفان فأكثر)…"
-              className="h-9 pe-9"
-              autoComplete="off"
-            />
-          </div>
+          <UnifiedSearchInput
+            value={rawQ}
+            onChange={setRawQ}
+            placeholder="ابحث بالاسم أو الهاتف أو مسؤول المشتريات أو الرقم القديم (حرفان فأكثر)…"
+            className="h-9"
+          />
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap gap-1.5">
               {(Object.keys(KIND_META) as ContactKind[])

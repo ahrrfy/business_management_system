@@ -38,6 +38,7 @@ import { variantDisplayName, variantDescriptor } from "@shared/variantDisplay";
 import { ErrorState } from "@/components/PageState";
 import { STOCKTAKE_REASON_LABEL } from "@/lib/printing/stocktakeTemplates";
 import { useState, type ReactNode } from "react";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Link, useLocation, useParams } from "wouter";
 import { PageHeader } from "@/components/PageHeader";
 import {
@@ -1391,15 +1392,7 @@ export default function StocktakeReview() {
               الزائفة)
             </span>
           </label>
-          <input
-            value={q}
-            onChange={(e) => {
-              setQ(e.target.value);
-              setVisible(PAGE);
-            }}
-            placeholder="بحث: اسم / SKU…"
-            className="h-8 w-44 rounded-md border bg-card px-2.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-          />
+          <UnifiedSearchInput value={q} onChange={(v) => { setQ(v); setVisible(PAGE); }} placeholder="بحث: اسم / SKU…" className="w-44" inputClassName="h-8 text-xs" />
           <span className="me-auto text-xs text-muted-foreground">
             {nf(filtered.length)} منتجاً{review.isFetching ? " · يُحدَّث…" : ""}
           </span>

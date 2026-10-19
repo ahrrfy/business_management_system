@@ -34,6 +34,8 @@ export interface UnifiedSearchInputProps {
   onScan?: (code: string) => void;
   /** دالة تُستدعى عند ضغط Enter لكتابة بشرية صريحة */
   onSubmit?: (val: string) => void;
+  /** دالة اختيارية تُستدعى عند مسح الحقل (زر X أو Escape) */
+  onClear?: () => void;
   /** مهلة التأخير بالمللي ثانية لتحديث onChange (الافتراضي: 180ms كالكاشير؛ 0 للتحديث الفوري) */
   debounceMs?: number;
   /** الحجم: default (42px)، compact (34px)، lg (50px كالكاشير الرئيسي) */
@@ -43,13 +45,25 @@ export interface UnifiedSearchInputProps {
   autoFocus?: boolean;
   disabled?: boolean;
   className?: string;
+  wrapperClassName?: string;
   inputClassName?: string;
   clearButtonLabel?: string;
   id?: string;
+  maxLength?: number;
+  role?: React.AriaRole;
   "aria-label"?: string;
+  "aria-expanded"?: boolean;
+  "aria-haspopup"?: React.AriaAttributes["aria-haspopup"];
+  "aria-autocomplete"?: React.AriaAttributes["aria-autocomplete"];
+  "aria-controls"?: string;
+  "aria-activedescendant"?: string;
+  "aria-describedby"?: string;
+  "aria-invalid"?: boolean;
   /** Accessible combobox semantics for callers that provide their own suggestion list. */
-  inputProps?: Pick<React.InputHTMLAttributes<HTMLInputElement>,
-    "role" | "maxLength" | "aria-autocomplete" | "aria-expanded" | "aria-controls" | "aria-activedescendant">;
+  inputProps?: Pick<
+    React.InputHTMLAttributes<HTMLInputElement>,
+    "role" | "maxLength" | "aria-autocomplete" | "aria-expanded" | "aria-controls" | "aria-activedescendant"
+  >;
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onFocus?: (e: React.FocusEvent<HTMLInputElement>) => void;
   onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void;
@@ -66,16 +80,27 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
       barcode = true,
       onScan,
       onSubmit,
+      onClear,
       debounceMs = 180,
       size = "default",
-      variant = "default",
+      variant = "pos",
       autoFocus = false,
       disabled = false,
       className,
+      wrapperClassName,
       inputClassName,
-      clearButtonLabel = "مسح البحث (Esc)",
+      clearButtonLabel = "مسح البحث",
       id,
+      maxLength,
+      role,
       "aria-label": ariaLabel,
+      "aria-expanded": ariaExpanded,
+      "aria-haspopup": ariaHasPopup,
+      "aria-autocomplete": ariaAutoComplete,
+      "aria-controls": ariaControls,
+      "aria-activedescendant": ariaActiveDescendant,
+      "aria-describedby": ariaDescribedBy,
+      "aria-invalid": ariaInvalid,
       inputProps,
       onKeyDown: externalOnKeyDown,
       onFocus,
@@ -148,21 +173,38 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
     // مسح الحقل فوراً واستعادة التركيز
     const handleClear = React.useCallback(() => {
       triggerChange("", true);
+      onClear?.();
       internalRef.current?.focus();
-    }, [triggerChange]);
+    }, [triggerChange, onClear]);
 
     // معالجة ضغطات المفاتيح (Enter, Escape, والماسح الذكي)
     const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (barcode && onScan) {
+        barcodeInput.handleKeyDown(e, (scannedVal) => {
+          if (debounceTimerRef.current) {
+            clearTimeout(debounceTimerRef.current);
+          }
+          setLocalValue(scannedVal);
+          triggerChange(scannedVal, true);
+        });
+        if (e.defaultPrevented) return;
+      }
+
       externalOnKeyDown?.(e);
       if (e.defaultPrevented) return;
 
-      if (barcode) {
+      if (barcode && !onScan) {
         barcodeInput.handleKeyDown(e, (scannedVal) => {
-          triggerChange(scannedVal, true);
+          if (debounceTimerRef.current) {
+            clearTimeout(debounceTimerRef.current);
+          }
+          setLocalValue(scannedVal);
+          if (scannedVal) {
+            triggerChange(scannedVal, true);
+          }
         });
+        if (e.defaultPrevented) return;
       }
-
-      if (e.defaultPrevented) return;
 
       if (e.key === "Escape") {
         e.preventDefault();
@@ -201,7 +243,7 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
     const isPosVariant = variant === "pos";
 
     return (
-      <div className={cn("relative flex items-center min-w-48", className)}>
+      <div className={cn("relative flex items-center min-w-48", wrapperClassName ?? className)}>
         {/* أيقونة البحث في جانب البداية (اليمين في RTL) عند عدم تفعيل شارة الباركود */}
         {!barcode && (
           <span
@@ -217,12 +259,21 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
           ref={internalRef}
           id={id}
           type="text"
+          role={role ?? inputProps?.role}
           dir={dir}
+          maxLength={maxLength ?? inputProps?.maxLength}
           value={localValue}
           disabled={disabled}
           autoFocus={autoFocus}
           autoComplete="off"
           enterKeyHint="search"
+          aria-expanded={ariaExpanded ?? inputProps?.["aria-expanded"]}
+          aria-haspopup={ariaHasPopup}
+          aria-autocomplete={ariaAutoComplete ?? inputProps?.["aria-autocomplete"]}
+          aria-controls={ariaControls ?? inputProps?.["aria-controls"]}
+          aria-activedescendant={ariaActiveDescendant ?? inputProps?.["aria-activedescendant"]}
+          aria-describedby={ariaDescribedBy}
+          aria-invalid={ariaInvalid}
           onChange={(e) => {
             // لا استدعاء لـ normalizeKnownSystemBarcode هنا: المسافات تُحفظ وتُعرض طبيعياً
             triggerChange(e.target.value, false);
@@ -245,6 +296,7 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
             sizeClasses,
             barcode ? barcodeSearchInputClass : "pr-8",
             localValue ? "pl-8" : "pl-3",
+            wrapperClassName !== undefined ? className : undefined,
             inputClassName,
           )}
         />
@@ -258,7 +310,7 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
             type="button"
             onClick={handleClear}
             aria-label={clearButtonLabel}
-            title={clearButtonLabel}
+            title={clearButtonLabel === "مسح البحث" ? "مسح البحث (Esc)" : clearButtonLabel}
             className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground rounded p-1 transition-colors z-10 focus:outline-none focus:ring-1 focus:ring-primary"
           >
             <X aria-hidden className={size === "compact" ? "size-3.5" : "size-4"} />

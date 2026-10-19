@@ -5,9 +5,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
-import { AlertTriangle, ArrowRight, Calendar, CheckCircle2, ChevronRight, FileText, Home, LayoutGrid, Package, Pencil, Printer, Receipt, Rows3, Search, Timer, Truck, Wrench, X, Zap } from "lucide-react";
+import { AlertTriangle, ArrowRight, Calendar, CheckCircle2, ChevronRight, FileText, Home, LayoutGrid, Package, Pencil, Printer, Receipt, Rows3, Timer, Truck, Wrench, X, Zap } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -746,10 +747,7 @@ export default function WorkOrders() {
         <button type="button" aria-pressed={f.deliv === "1"} onClick={() => setF({ deliv: f.deliv === "1" ? "" : "1" })} className={`wob-qf${f.deliv === "1" ? " wob-qf-on wob-qf-deliv" : ""}`} title="أوامرُ مسندة للتوصيل أو قيد التوصيل">
           <Truck aria-hidden className="size-3.5" /> قيد التوصيل
         </button>
-        <div className="wob-search">
-          <span className="wob-si"><Search aria-hidden className="size-4" /></span>
-          <input value={f.q} onChange={(e) => setF({ q: e.target.value })} placeholder="بحث (رقم / عنوان / عميل)" />
-        </div>
+        <UnifiedSearchInput value={f.q} onChange={(q) => setF({ q })} placeholder="بحث (رقم / عنوان / عميل)" className="flex-1 min-w-[200px] max-w-[360px]" />
         {/* الموجة ٢ — Group By (نمط Odoo): يبدّل تجميع الأعمدة بلا تغيير الفلاتر.
             «حسب المرحلة» هو الافتراضُ ويُفعِّل السحب والإفلات. البقيّة للقراءة الآن. */}
         {view === "board" && (

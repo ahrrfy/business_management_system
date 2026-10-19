@@ -4,6 +4,7 @@ import { ProductSearchPicker, type PurchaseRow } from "@/components/production/P
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { confirm, confirmDelete } from "@/lib/confirm";
 import { D, fmt, pct, round2 } from "@/lib/money";
@@ -12,7 +13,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { coefficientBatchMultiple, requiredBatchMultiple } from "@shared/batchDivisibility";
 import { normalizeSearchText } from "@shared/searchNormalize";
-import { ArrowLeft, ArrowLeftRight, Boxes, Layers, Search } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, Boxes, Layers } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { selectClsFull } from "@/lib/ui/formStyles";
@@ -459,10 +460,14 @@ export default function ProductionRecipes() {
       {!showForm && (
         <>
           <div className="flex flex-wrap items-center gap-3">
-            <div className="relative max-w-xs w-full">
-              <Search aria-hidden className="size-4 absolute top-1/2 -translate-y-1/2 start-3 text-muted-foreground pointer-events-none" />
-              <Input className="ps-9" value={q} onChange={(e) => setQ(e.target.value)} placeholder="ابحث في الوصفات…" dir="auto" />
-            </div>
+            <UnifiedSearchInput
+              className="max-w-xs w-full"
+              value={q}
+              onChange={setQ}
+              placeholder="ابحث في الوصفات…"
+              dir="auto"
+              barcode={false}
+            />
             <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground cursor-pointer select-none">
               <input type="checkbox" checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} className="size-3.5" />
               فقط النشطة

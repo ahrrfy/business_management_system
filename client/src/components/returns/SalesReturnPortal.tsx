@@ -36,6 +36,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Badge } from "@/components/ui/badge";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { D, fmt, formatQuantity } from "@/lib/money";
@@ -1224,17 +1225,16 @@ export function SalesReturnPortal({
                   )}
                 </div>
                 <div className="relative">
-                  <Input
+                  <UnifiedSearchInput
                     value={salesCustomerSearch || salesCustomerName}
-                    onChange={(e) => {
-                      setSalesCustomerSearch(e.target.value);
-                      setSalesCustomerName(e.target.value);
+                    onChange={(val) => {
+                      setSalesCustomerSearch(val);
+                      setSalesCustomerName(val);
                       if (salesCustomerId) setSalesCustomerId(null);
                     }}
                     placeholder="اسم العميل أو ابحث في الـ CRM..."
-                    className="h-8.5 text-xs pr-7"
+                    className="h-8.5 text-xs"
                   />
-                  <UserCheck className="absolute right-2 top-2 size-3.5 text-muted-foreground pointer-events-none" />
                   {debouncedCustomerSearch.length >= 2 &&
                     customersQuery.data &&
                     customersQuery.data.length > 0 &&

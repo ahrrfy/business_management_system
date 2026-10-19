@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Field } from "@/components/product/variantBits";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -777,9 +778,9 @@ export function PromotionBuilderForm({ data, onChange, errors = {} }: PromotionB
               </div>
 
               <div className="relative">
-                <Input
+                <UnifiedSearchInput
                   value={productPicker}
-                  onChange={(e) => setProductPicker(e.target.value)}
+                  onChange={setProductPicker}
                   placeholder="ابحث عن منتج بالاسم أو الباركود أو SKU (حرفان على الأقل)..."
                   className="h-9"
                 />

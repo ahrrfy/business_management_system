@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { ChevronDown } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -95,23 +96,14 @@ export function PrintCustomerCombo({ C, customerId, setCustomerId }: PrintCustom
           }}
         >
           <div style={{ padding: 7 }}>
-            <input
+            <UnifiedSearchInput
               autoFocus
               value={q}
-              onChange={(e) => setQ(e.target.value)}
+              debounceMs={0}
+              onChange={setQ}
               placeholder="ابحث بالاسم أو الهاتف…"
-              style={{
-                width: "100%",
-                height: 32,
-                borderRadius: 7,
-                border: `1px solid ${C.border}`,
-                background: C.muted,
-                color: C.fg,
-                fontFamily: "inherit",
-                fontSize: 12.5,
-                padding: "0 8px",
-                outline: "none",
-              }}
+              size="compact"
+              className="w-full"
             />
           </div>
           <div style={{ maxHeight: 210, overflowY: "auto" }}>

@@ -26,6 +26,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Textarea } from "@/components/ui/textarea";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -757,40 +758,22 @@ export function QuickRecipeCopyDialog({
 
             {/* شريط البحث لإضافة مادة خام إضافية */}
             <div ref={searchContainerRef} className="relative">
-              <div className="relative">
-                <Search aria-hidden="true" className="size-3.5 absolute start-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  aria-label="البحث عن مادة خام لإضافتها"
-                  value={searchMaterial}
-                  onChange={(e) => {
-                    setSearchMaterial(e.target.value);
-                    setShowSearchDropdown(true);
-                  }}
-                  onFocus={() => setShowSearchDropdown(true)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") {
-                      setShowSearchDropdown(false);
-                    }
-                  }}
-                  placeholder="ابحث عن مادة خام لإضافتها إلى الوصفة (بالاسم أو الباركود)..."
-                  className="ps-8 h-8 text-xs"
-                />
-                {searchMaterial && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    aria-label="مسح البحث"
-                    onClick={() => {
-                      setSearchMaterial("");
-                      setShowSearchDropdown(false);
-                    }}
-                    className="absolute end-1 top-1/2 -translate-y-1/2 size-6 p-0"
-                  >
-                    <X aria-hidden="true" className="size-3" />
-                  </Button>
-                )}
-              </div>
+              <UnifiedSearchInput
+                aria-label="البحث عن مادة خام لإضافتها"
+                value={searchMaterial}
+                onChange={(val) => {
+                  setSearchMaterial(val);
+                  setShowSearchDropdown(true);
+                }}
+                onFocus={() => setShowSearchDropdown(true)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setShowSearchDropdown(false);
+                  }
+                }}
+                placeholder="ابحث عن مادة خام لإضافتها إلى الوصفة (بالاسم أو الباركود)..."
+                className="h-8 text-xs"
+              />
 
               {/* القائمة المنسدلة للبحث */}
               {showSearchDropdown && searchMaterial.trim().length >= 1 && (

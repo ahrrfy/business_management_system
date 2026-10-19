@@ -3,6 +3,7 @@ import React, { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useBarcodeScanner } from "./useBarcodeScanner";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -98,6 +99,51 @@ describe("useBarcodeScanner — حقل React متحكم به", () => {
     expect(onScan).not.toHaveBeenCalled();
     expect(input.value).toBe("ABC");
     expect(host.querySelector("output")?.textContent).toBe("ABC");
+  });
+
+  it("لا يقلب الكتابة العربية اليدوية السريعة إلى حروفٍ إنجليزية في حقل البحث", () => {
+    const onScan = vi.fn();
+    act(() => root.render(<ControlledScanField onScan={onScan} />));
+    const input = host.querySelector("input")!;
+    input.focus();
+
+    press(input, "ع", "KeyU", 0);
+    press(input, "م", "KeyL", 50);
+    press(input, "ا", "KeyH", 45);
+    press(input, "ر", "KeyV", 55);
+    act(() => vi.advanceTimersByTime(600));
+
+    expect(onScan).not.toHaveBeenCalled();
+    expect(input.value).toBe("عمار");
+    expect(host.querySelector("output")?.textContent).toBe("عمار");
+  });
+
+  it("UnifiedSearchInput يحفظ الكتابة العربية اليدوية السريعة مع المسافات ولا يقلبها إلى إنجليزيّ", () => {
+    function SearchHost() {
+      const [val, setVal] = useState("");
+      return (
+        <>
+          <UnifiedSearchInput value={val} onChange={setVal} debounceMs={0} />
+          <output data-testid="unified-val">{val}</output>
+        </>
+      );
+    }
+    act(() => root.render(<SearchHost />));
+    const input = host.querySelector("input")!;
+    input.focus();
+
+    press(input, "ع", "KeyU", 0);
+    press(input, "م", "KeyL", 45);
+    press(input, "ا", "KeyH", 40);
+    press(input, "ر", "KeyV", 50);
+    press(input, " ", "Space", 70);
+    press(input, "ا", "KeyH", 45);
+    press(input, "ل", "KeyG", 35);
+    press(input, "س", "KeyS", 50);
+    act(() => vi.advanceTimersByTime(600));
+
+    expect(input.value).toBe("عمار الس");
+    expect(host.querySelector("[data-testid='unified-val']")?.textContent).toBe("عمار الس");
   });
 });
 
