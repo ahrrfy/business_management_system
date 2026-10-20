@@ -4,7 +4,7 @@
  * --adopt --input PREVIEW_JSON --actor-id N --branch-id N
  * --record-attested --input OWNER_ATTESTATION_JSON --actor-id N --branch-id N
  * Adoption links already-posted money; attestation records explicitly confirmed
- * missing TODAY payments through the existing native disbursement engine.
+ * missing payments today through the native engine, preserving actual dates as evidence.
  */
 import "dotenv/config";
 import fs from "node:fs";
@@ -90,7 +90,7 @@ try {
   } else if (modes[0] === "--record-attested") {
     const input = readInput() as AttestedSupplierSettlementInput;
     emit({
-      mode: "RECORD_OWNER_ATTESTED_MISSING_TODAY_PAYMENT",
+      mode: "RECORD_OWNER_ATTESTED_MISSING_PAYMENT_CORRECTION",
       result: await recordAttestedSupplierSettlement(input, await owner()),
     });
   } else {

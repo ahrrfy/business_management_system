@@ -13,19 +13,21 @@ const input = () => ({
   attestationKey: "owner-confirmed-purchase-payment",
   evidenceText:
     "أقر المالك بدفع البضاعة نقداً من الخزينة الإدارية اليوم، والتسجيل مفقود.",
-  paymentDate: baghdadToday(),
+  recordingDate: baghdadToday(),
   payments: [
     {
       purchaseOrderId: 1,
       supplierInvoiceId: 1,
       invoiceVersion: 1,
       amount: "60.00",
+      actualPaymentDate: baghdadToday(),
     },
     {
       purchaseOrderId: 2,
       supplierInvoiceId: 2,
       invoiceVersion: 1,
       amount: "40.00",
+      actualPaymentDate: baghdadToday(),
     },
   ],
 });
@@ -308,7 +310,102 @@ describe("owner-attested missing treasury supplier payments", () => {
     ).rejects.toThrow();
     expect(await state()).toEqual(before);
   });
-  it("rejects stale invoices and historical dates instead of bypassing period controls", async () => {
+  it("records old attested payments today while preserving original dates and records", async () => {
+    const actualPaymentDate = "2026-01-01";
+    const invoiceRecognitionDate = "2026-01-03";
+    await db()
+      .update(s.purchaseOrders)
+      .set({ orderDate: new Date(`${actualPaymentDate}T10:00:00Z`) });
+    await db()
+      .update(s.supplierInvoices)
+      .set({ invoiceDate: invoiceRecognitionDate });
+    await db()
+      .update(s.accountingEntries)
+      .set({ entryDate: actualPaymentDate });
+    const before = await state();
+    const evidence = {
+      ...input(),
+      payments: input().payments.map((row) => ({
+        ...row,
+        actualPaymentDate,
+        invoiceVersion: before.invoices.find(
+          (invoice) => invoice.id === row.supplierInvoiceId,
+        )!.version,
+      })),
+    };
+    await recordAttestedSupplierSettlement(evidence, owner);
+    const after = await state();
+    expect(
+      after.entries
+        .filter((row) => row.entryType === "PAYMENT_OUT")
+        .map((row) => row.entryDate.toISOString().slice(0, 10)),
+    ).toEqual([baghdadToday(), baghdadToday()]);
+    expect(after.entries.filter((row) => row.entryType === "ADJUST")).toEqual(
+      before.entries,
+    );
+    expect(after.receipts.filter((row) => row.direction === "IN")).toEqual(
+      before.receipts,
+    );
+    expect(after.invoices.map((row) => row.invoiceDate)).toEqual([
+      invoiceRecognitionDate,
+      invoiceRecognitionDate,
+    ]);
+    const evidenceAudit = after.audits.find(
+      (row) => row.action === "supplier.attestedSettlement.record",
+    )!.newValue as typeof evidence & {
+      payments: Array<{
+        actualPaymentDate: string;
+        invoiceRecognitionDate: string;
+      }>;
+    };
+    expect(evidenceAudit.recordingDate).toBe(baghdadToday());
+    expect(evidenceAudit.payments.map((row) => row.actualPaymentDate)).toEqual([
+      actualPaymentDate,
+      actualPaymentDate,
+    ]);
+    expect(
+      evidenceAudit.payments.map((row) => row.invoiceRecognitionDate),
+    ).toEqual([invoiceRecognitionDate, invoiceRecognitionDate]);
+    expect(
+      (await recordAttestedSupplierSettlement(evidence, owner)).replayed,
+    ).toBe(true);
+    expect(await state()).toEqual(after);
+  });
+  it("rejects backdated recording and mismatched actual dates before money moves", async () => {
+    const before = await state();
+    await expect(
+      recordAttestedSupplierSettlement(
+        { ...input(), recordingDate: "2026-01-01" },
+        owner,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      recordAttestedSupplierSettlement(
+        {
+          ...input(),
+          payments: input().payments.map((row) => ({
+            ...row,
+            actualPaymentDate: "2026-01-01",
+          })),
+        },
+        owner,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      recordAttestedSupplierSettlement(
+        {
+          ...input(),
+          payments: input().payments.map((row) => ({
+            ...row,
+            actualPaymentDate: "2099-01-01",
+          })),
+        },
+        owner,
+      ),
+    ).rejects.toThrow();
+    expect(await state()).toEqual(before);
+  });
+  it("rejects stale invoices instead of bypassing version controls", async () => {
     await db()
       .update(s.supplierInvoices)
       .set({ version: 2 })
@@ -316,12 +413,6 @@ describe("owner-attested missing treasury supplier payments", () => {
     const before = await state();
     await expect(
       recordAttestedSupplierSettlement(input(), owner),
-    ).rejects.toThrow();
-    await expect(
-      recordAttestedSupplierSettlement(
-        { ...input(), paymentDate: "2026-01-01" },
-        owner,
-      ),
     ).rejects.toThrow();
     expect(await state()).toEqual(before);
   });

@@ -32,7 +32,7 @@ const schema = z
   .object({
     attestationKey: z.string().trim().min(8).max(80),
     evidenceText: z.string().trim().min(20).max(2000),
-    paymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    recordingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     payments: z
       .array(
         z
@@ -41,6 +41,7 @@ const schema = z
             supplierInvoiceId: z.number().int().positive(),
             invoiceVersion: z.number().int().positive(),
             amount: positiveMoneyString,
+            actualPaymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
           })
           .strict(),
       )
@@ -78,7 +79,7 @@ function fail(
   });
 }
 
-/** Records an explicitly attested, missing TODAY payment. CASH intent alone never calls this. */
+/** Posts an owner-attested missing payment today; original payment dates remain evidence. */
 export async function recordAttestedSupplierSettlement(
   raw: AttestedSupplierSettlementInput,
   caller: Actor,
@@ -144,9 +145,9 @@ export async function recordAttestedSupplierSettlement(
         fail("سجل الإقرار السابق غير مكتمل");
       return { ...saved, replayed: true };
     }
-    if (input.paymentDate !== baghdadToday())
+    if (input.recordingDate !== baghdadToday())
       fail(
-        "الإقرار الجديد محصور بدفع اليوم؛ التاريخ المقفل يحتاج مسار تصحيح موثق",
+        "يجب تسجيل التصحيح بتاريخ اليوم مع حفظ تاريخ الدفع الفعلي في الإقرار",
         "BAD_REQUEST",
       );
     const groups = new Map<
@@ -163,6 +164,12 @@ export async function recordAttestedSupplierSettlement(
         }>;
       }
     >();
+    const evidencePayments: Array<
+      (typeof input.payments)[number] & {
+        purchaseOrderDate: string;
+        invoiceRecognitionDate: string;
+      }
+    > = [];
     for (const row of input.payments) {
       const [invoice] = await tx
         .select()
@@ -196,7 +203,8 @@ export async function recordAttestedSupplierSettlement(
         po.agreedCurrency !== "IQD" ||
         po.status !== "RECEIVED" ||
         po.settlementType !== "CASH" ||
-        invoice.invoiceDate !== input.paymentDate ||
+        baghdadToday(po.orderDate) !== row.actualPaymentDate ||
+        row.actualPaymentDate > input.recordingDate ||
         posting.purchaseOrderId !== po.id ||
         posting.supplierId !== po.supplierId ||
         invoice.supplierId !== po.supplierId ||
@@ -206,7 +214,7 @@ export async function recordAttestedSupplierSettlement(
         !money(po.total).eq(row.amount)
       )
         fail(
-          "الفاتورة أو الأمر أو المبلغ أو النسخة لا يطابق إقرار الدفع الكامل لليوم",
+          "الفاتورة أو الأمر أو المبلغ أو النسخة أو التاريخ لا يطابق إقرار الدفع الكامل",
         );
       // A posted but unallocated payment could be the missing link itself. Never disburse it again.
       const laterPayments = await tx
@@ -230,6 +238,11 @@ export async function recordAttestedSupplierSettlement(
       // Conservatively stop if another payment followed this invoice. Its allocation must be reviewed first.
       if (laterPayments.length)
         fail("يوجد قيد سداد بعد الفاتورة؛ طابقه قبل تسجيل دفع نقدي إضافي");
+      evidencePayments.push({
+        ...row,
+        purchaseOrderDate: baghdadToday(po.orderDate),
+        invoiceRecognitionDate: invoice.invoiceDate,
+      });
       const key = `${po.supplierId}:${po.branchId}`;
       const group = groups.get(key) ?? {
         supplierId: po.supplierId,
@@ -388,8 +401,8 @@ export async function recordAttestedSupplierSettlement(
           attestationKey: input.attestationKey,
           payloadHash,
           evidenceText: input.evidenceText,
-          paymentDate: input.paymentDate,
-          payments: input.payments,
+          recordingDate: input.recordingDate,
+          payments: evidencePayments,
           correctionRecordedAt: new Date().toISOString(),
         },
       },
