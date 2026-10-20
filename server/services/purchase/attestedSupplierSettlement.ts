@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import {
   accountingEntries,
@@ -12,6 +12,7 @@ import {
   users,
 } from "../../../drizzle/schema";
 import { positiveMoneyString } from "../../lib/schemas";
+import type { Tx } from "../../db";
 import { enqueueFinancialRefresh } from "../../realtime/financialRefresh";
 import { logAuditTx } from "../auditService";
 import { baghdadToday } from "../businessDay";
@@ -29,6 +30,7 @@ import {
 } from "./supplierPayments";
 import { assertAttestedPaymentEvidenceTx } from "./attestedPaymentEvidence";
 import { resolvePurchaseIntegrityForOwnerInTx } from "./integrityCases";
+import { sha256 } from "./grniAccounting";
 
 const schema = z
   .object({
@@ -80,6 +82,212 @@ type Result = {
 };
 const OPERATION = "supplier.attestedSettlement";
 const ACTION = "supplier.attestedSettlement.record";
+const MANIFEST_ACTION = "supplier.attestedSettlement.manifest";
+const FRAGMENT_ACTION = "supplier.attestedSettlement.fragment";
+const FORMAT = "attestedSettlement.fragments.v1";
+const MAX_FRAGMENTS = 4096;
+const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+const manifestSchema = z
+  .object({
+    format: z.literal(FORMAT),
+    payloadHash: hashSchema,
+    digest: hashSchema,
+    count: z.number().int().min(1).max(MAX_FRAGMENTS),
+    encoding: z.literal("base64-json"),
+  })
+  .strict();
+const fragmentSchema = manifestSchema
+  .omit({ encoding: true })
+  .extend({
+    index: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_FRAGMENTS - 1),
+    data: z
+      .string()
+      .min(1)
+      .max(800)
+      .regex(/^[A-Za-z0-9+/]*={0,2}$/),
+  })
+  .strict();
+const idsSchema = z.array(z.number().int().positive()).max(50);
+const resultSchema = z.object({
+  paymentIds: idsSchema.min(1),
+  receiptIds: idsSchema.min(1),
+  requestIds: idsSchema.min(1),
+  replayed: z.boolean(),
+  resolvedEvidenceCaseIds: idsSchema,
+  verification: z
+    .array(
+      z.object({
+        kind: z.enum(["TREASURY", "SUPPLIER_AP"]),
+        id: z.number().int().positive(),
+        before: z.string(),
+        after: z.string(),
+        delta: z.string(),
+      }),
+    )
+    .min(1)
+    .max(100),
+});
+function checkedResult(value: unknown, referenceId: number): Result {
+  const parsed = resultSchema.safeParse(value);
+  if (!parsed.success) fail("سجل الإقرار السابق غير مكتمل");
+  const result = parsed.data;
+  if (
+    result.requestIds[0] !== referenceId ||
+    result.paymentIds.length !== result.requestIds.length ||
+    result.receiptIds.length !== result.requestIds.length ||
+    [
+      result.paymentIds,
+      result.requestIds,
+      result.receiptIds,
+      result.resolvedEvidenceCaseIds,
+    ].some((ids) => new Set(ids).size !== ids.length)
+  )
+    fail("هويات نتيجة الإقرار السابق غير متطابقة");
+  return result;
+}
+async function savedResult(
+  tx: Tx,
+  referenceId: number,
+  payloadHash: string,
+): Promise<Result> {
+  const rows = await tx
+    .select({ action: auditLogs.action, value: auditLogs.newValue })
+    .from(auditLogs)
+    .where(
+      and(
+        inArray(auditLogs.action, [ACTION, MANIFEST_ACTION, FRAGMENT_ACTION]),
+        eq(auditLogs.entityType, "supplierPaymentBatch"),
+        eq(auditLogs.entityId, String(referenceId)),
+      ),
+    )
+    .orderBy(asc(auditLogs.id))
+    .limit(MAX_FRAGMENTS + 3);
+  if (rows.length > MAX_FRAGMENTS + 2)
+    fail("سجل الإقرار تجاوز حد الأجزاء الآمن");
+  const manifests = rows.filter((row) => row.action === MANIFEST_ACTION);
+  const fragments = rows.filter((row) => row.action === FRAGMENT_ACTION);
+  if (!manifests.length && !fragments.length) {
+    const legacy = rows.filter((row) => row.action === ACTION);
+    const value = legacy[0]?.value as Record<string, unknown> | undefined;
+    if (legacy.length !== 1 || value?.payloadHash !== payloadHash)
+      fail("سجل الإقرار السابق غير مكتمل");
+    return checkedResult(value, referenceId);
+  }
+  const parsedManifest = manifestSchema.safeParse(manifests[0]?.value);
+  if (
+    manifests.length !== 1 ||
+    !parsedManifest.success ||
+    parsedManifest.data.payloadHash !== payloadHash ||
+    fragments.length !== parsedManifest.data.count
+  )
+    fail("أجزاء سجل الإقرار ناقصة أو غير صالحة");
+  const manifest = parsedManifest.data;
+  const parts = fragments
+    .map((row) => {
+      const part = fragmentSchema.safeParse(row.value);
+      if (
+        !part.success ||
+        part.data.payloadHash !== payloadHash ||
+        part.data.digest !== manifest.digest ||
+        part.data.count !== manifest.count
+      )
+        fail("جزء من سجل الإقرار لا يطابق بصمته");
+      return part.data;
+    })
+    .sort((a, b) => a.index - b.index);
+  if (parts.some((part, index) => part.index !== index))
+    fail("ترتيب أجزاء سجل الإقرار غير صالح");
+  const encoded = parts.map((part) => part.data).join("");
+  const bytes = Buffer.from(encoded, "base64");
+  if (
+    sha256(encoded) !== manifest.digest ||
+    bytes.toString("base64") !== encoded
+  )
+    fail("بصمة سجل الإقرار المجمع غير متطابقة");
+  let document: {
+    version?: number;
+    payloadHash?: string;
+    result?: unknown;
+    evidence?: unknown;
+  };
+  try {
+    document = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    fail("وثيقة الإقرار المجمع غير صالحة");
+  }
+  if (
+    !document ||
+    document.version !== 1 ||
+    document.payloadHash !== payloadHash ||
+    !document.evidence ||
+    typeof document.evidence !== "object" ||
+    Array.isArray(document.evidence)
+  )
+    fail("وثيقة الإقرار المجمع لا تطابق الطلب");
+  return checkedResult(document.result, referenceId);
+}
+
+async function recordResult(
+  tx: Tx,
+  actor: Actor,
+  payloadHash: string,
+  result: Result,
+  evidence: Record<string, unknown>,
+) {
+  const encoded = Buffer.from(
+    JSON.stringify({ version: 1, payloadHash, result, evidence }),
+    "utf8",
+  ).toString("base64");
+  const count = Math.ceil(encoded.length / 800);
+  if (count > MAX_FRAGMENTS) fail("حجم دليل الإقرار تجاوز حد الأجزاء الآمن");
+  const manifest = {
+    format: FORMAT,
+    payloadHash,
+    digest: sha256(encoded),
+    count,
+    encoding: "base64-json",
+  };
+  const source = {
+    userId: actor.userId,
+    actor: {
+      source: "user" as const,
+      label: "إقرار مالك بتسديد نقدي سابق غير مسجل",
+    },
+  };
+  const target = {
+    entityType: "supplierPaymentBatch",
+    entityId: result.requestIds[0],
+    screenPath: "/purchases",
+  };
+  // Base64 avoids UTF-8 byte inflation and data-URL redaction; every string is below the audit cap.
+  for (let index = 0; index < count; index++)
+    await logAuditTx(tx, source, {
+      ...target,
+      action: FRAGMENT_ACTION,
+      newValue: {
+        format: FORMAT,
+        payloadHash,
+        digest: manifest.digest,
+        count,
+        index,
+        data: encoded.slice(index * 800, (index + 1) * 800),
+      },
+    });
+  await logAuditTx(tx, source, {
+    ...target,
+    action: MANIFEST_ACTION,
+    newValue: manifest,
+  });
+  await logAuditTx(tx, source, {
+    ...target,
+    action: ACTION,
+    newValue: manifest,
+  });
+}
 function fail(
   why: string,
   code: "CONFLICT" | "FORBIDDEN" | "BAD_REQUEST" = "CONFLICT",
@@ -144,25 +352,7 @@ export async function recordAttestedSupplierSettlement(
       { requireStoredHash: true, forUpdate: true },
     );
     if (previous != null) {
-      const [audit] = await tx
-        .select({ value: auditLogs.newValue })
-        .from(auditLogs)
-        .where(
-          and(
-            eq(auditLogs.action, ACTION),
-            eq(auditLogs.entityType, "supplierPaymentBatch"),
-            eq(auditLogs.entityId, String(previous)),
-          ),
-        )
-        .orderBy(asc(auditLogs.id))
-        .limit(1);
-      const saved = audit?.value as Omit<Result, "replayed"> | undefined;
-      if (
-        !saved?.paymentIds?.length ||
-        !saved.requestIds?.length ||
-        !saved.receiptIds?.length
-      )
-        fail("سجل الإقرار السابق غير مكتمل");
+      const saved = await savedResult(tx, previous, payloadHash);
       return { ...saved, replayed: true };
     }
     if (input.recordingDate !== baghdadToday())
@@ -430,33 +620,15 @@ export async function recordAttestedSupplierSettlement(
         delta: toDbMoney(delta),
       });
     }
-    await logAuditTx(
-      tx,
-      {
-        userId: actor.userId,
-        actor: {
-          source: "user",
-          label: "إقرار مالك بتسديد نقدي سابق غير مسجل",
-        },
-      },
-      {
-        action: ACTION,
-        entityType: "supplierPaymentBatch",
-        entityId: result.requestIds[0],
-        screenPath: "/purchases",
-        newValue: {
-          ...result,
-          attestationKey: input.attestationKey,
-          payloadHash,
-          evidenceText: input.evidenceText,
-          recordingDate: input.recordingDate,
-          payments: evidencePayments,
-          priorPaymentEvidence,
-          evidenceCases: input.evidenceCases,
-          correctionRecordedAt: new Date().toISOString(),
-        },
-      },
-    );
+    await recordResult(tx, actor, payloadHash, result, {
+      attestationKey: input.attestationKey,
+      evidenceText: input.evidenceText,
+      recordingDate: input.recordingDate,
+      payments: evidencePayments,
+      priorPaymentEvidence,
+      evidenceCases: input.evidenceCases,
+      correctionRecordedAt: new Date().toISOString(),
+    });
     await recordIdempotencyKey(
       tx,
       OPERATION,
