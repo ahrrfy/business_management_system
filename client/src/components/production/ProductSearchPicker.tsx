@@ -127,7 +127,9 @@ export function ProductSearchPicker({
           onScan={(code) => {
             void handleBarcodeScan(code);
           }}
-          onSubmit={() => {
+          onSubmit={(submitted) => {
+            const trimmed = submitted.trim();
+            if (!trimmed || trimmed !== q.trim() || res.isFetching) return;
             if (variants.length > 0) {
               const target = selectedIndex >= 0 ? variants[selectedIndex] : variants[0];
               selectVariant(target);

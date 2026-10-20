@@ -482,23 +482,30 @@ function SearchableAppSelect({
     const stopFocusIn = (e: FocusEvent) => {
       e.stopPropagation();
     };
-    const stopFocusOutFromPopup = (e: FocusEvent) => {
+    const handleFocusOut = (e: FocusEvent) => {
+      const nextFocused = e.relatedTarget;
+      if (
+        nextFocused instanceof Node &&
+        (containerEl?.contains(nextFocused) || popupEl?.contains(nextFocused))
+      ) {
+        e.stopPropagation();
+        return;
+      }
+      if (nextFocused instanceof Node) {
+        handleOpenChange(false);
+        return;
+      }
       e.stopPropagation();
     };
-    const stopFocusOutToPopup = (e: FocusEvent) => {
-      if (popupEl && e.relatedTarget instanceof Node && popupEl.contains(e.relatedTarget)) {
-        e.stopPropagation();
-      }
-    };
     popupEl?.addEventListener("focusin", stopFocusIn);
-    popupEl?.addEventListener("focusout", stopFocusOutFromPopup);
-    containerEl?.addEventListener("focusout", stopFocusOutToPopup);
+    popupEl?.addEventListener("focusout", handleFocusOut);
+    containerEl?.addEventListener("focusout", handleFocusOut);
     return () => {
       popupEl?.removeEventListener("focusin", stopFocusIn);
-      popupEl?.removeEventListener("focusout", stopFocusOutFromPopup);
-      containerEl?.removeEventListener("focusout", stopFocusOutToPopup);
+      popupEl?.removeEventListener("focusout", handleFocusOut);
+      containerEl?.removeEventListener("focusout", handleFocusOut);
     };
-  }, [isOpen]);
+  }, [isOpen, handleOpenChange]);
 
   React.useEffect(() => {
     if (!isOpen) return;
@@ -564,6 +571,7 @@ function SearchableAppSelect({
       if (opt.disabled) return;
       onValueChange(opt.value);
       handleOpenChange(false);
+      triggerRef.current?.focus();
     },
     [onValueChange, handleOpenChange],
   );
@@ -644,6 +652,8 @@ function SearchableAppSelect({
                     e.stopPropagation();
                     handleOpenChange(false);
                     triggerRef.current?.focus();
+                  } else if (e.key === "Tab") {
+                    handleOpenChange(false);
                   }
                 }}
               />
@@ -653,6 +663,9 @@ function SearchableAppSelect({
               role="listbox"
               aria-label={ariaLabel ?? resolvedPlaceholder ?? "الخيارات"}
               style={{ maxHeight: menuPos.maxListboxHeight }}
+              onMouseDown={(e) => {
+                e.preventDefault();
+              }}
               className="max-h-64 overflow-y-auto p-1"
             >
               {matchedOptions.length === 0 ? (

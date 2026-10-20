@@ -74,7 +74,6 @@ describe("controlled select inside an account form", () => {
           onValueChange={setValue}
           searchable
           searchPlaceholder="ابحث عن وصفة..."
-          open
         >
           <option value="">اختر وصفة</option>
           <option value="1">دفتر ملاحظات أزرق</option>
@@ -87,6 +86,12 @@ describe("controlled select inside an account form", () => {
     }
 
     act(() => root.render(<SearchableForm />));
+    const trigger = container.querySelector('[data-slot="select-trigger"]') as HTMLButtonElement;
+    expect(trigger).toBeTruthy();
+    act(() => {
+      trigger.click();
+    });
+
     const searchInput = document.body.querySelector('input[placeholder="ابحث عن وصفة..."]') as HTMLInputElement;
     expect(searchInput).toBeTruthy();
     expect(searchInput.getAttribute("role")).toBe("combobox");
@@ -112,6 +117,14 @@ describe("controlled select inside an account form", () => {
     const visibleItems = Array.from(document.body.querySelectorAll('[role="listbox"] [role="option"]'));
     expect(visibleItems).toHaveLength(1);
     expect(visibleItems[0]?.textContent).toContain("حقيبة مدرسية كبيرة");
-    expect(container.querySelector('[data-slot="select-trigger"]')?.textContent).toContain("دفتر ملاحظات أزرق");
+    expect(trigger.textContent).toContain("دفتر ملاحظات أزرق");
+
+    // Enter commits the active option, closes the popup, and restores focus to the trigger
+    act(() => {
+      searchInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(document.body.querySelector('[role="listbox"]')).toBeNull();
+    expect(trigger.textContent).toContain("حقيبة مدرسية كبيرة");
+    expect(document.activeElement).toBe(trigger);
   });
 });
