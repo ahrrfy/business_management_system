@@ -81,10 +81,6 @@ export function ProductSearchPicker({
         selectVariant(exactSku, rows);
         return;
       }
-      if (matchedVariants.length === 1) {
-        selectVariant(matchedVariants[0], rows);
-        return;
-      }
       setQ(code);
       setIsOpen(true);
       setSelectedIndex(matchedVariants.length > 0 ? 0 : -1);

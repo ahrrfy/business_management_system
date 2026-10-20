@@ -33,9 +33,9 @@ import {
 } from "@/components/ui/select";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import {
-  normalizeArabicSearch,
-  tokenizeSearchTerms,
-} from "@shared/storefrontSearchNormalize";
+  normalizeSearchText,
+  tokenizeSearchQuery,
+} from "@shared/searchNormalize";
 
 interface AppSelectProps {
   /** القيمة الحاليّة (نصّ). حوّل الأرقام يدوياً بـString()/Number() عند الحدود. */
@@ -540,14 +540,14 @@ function SearchableAppSelect({
   );
 
   const searchTokens = React.useMemo(
-    () => tokenizeSearchTerms(searchQuery),
+    () => tokenizeSearchQuery(searchQuery),
     [searchQuery],
   );
 
   const matchedOptions = React.useMemo(() => {
     if (searchTokens.length === 0) return allOptions;
     return allOptions.filter((opt) => {
-      const haystack = normalizeArabicSearch(
+      const haystack = normalizeSearchText(
         `${opt.labelText} ${opt.value} ${opt.groupLabel ?? ""}`,
       );
       return searchTokens.every((tok) => haystack.includes(tok));
