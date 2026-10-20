@@ -386,7 +386,8 @@ describe("حزمة استمارة التوظيف والتعيين الكاملة
     expect(employeeNew).not.toContain('degree: a.degree || "بكالوريوس"');
     expect(employeeNew).not.toContain("Number(a.expectedSalary)");
     expect(employeeNew).not.toContain("hireDate: a.availableFrom");
-    expect(employeeNew).toContain("(HR_DEPARTMENTS as readonly string[]).includes(a.department)");
+    expect(employeeNew).toContain("!(HR_DEPARTMENTS as readonly string[]).includes(form.department)");
+    expect(employeeNew).toContain("applicantConversionReady");
     expect(dialogs).toContain("syncedIdRef");
     expect(dialogs).toContain("submitSeqRef");
     expect(dialogs).toContain("onClick={() => { reset(); onClose(); }}");

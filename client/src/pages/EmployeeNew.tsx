@@ -8,6 +8,7 @@ import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Label } from "@/components/ui/label";
 import { WagePackageFields, defaultWageSchedule, wageValueFromEmployee, type WageDayValue } from "@/components/form/WagePackageFields";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import { LoadingState } from "@/components/PageState";
 import { PageHeader } from "@/components/PageHeader";
 import {
   AccountFields, accountPermsPayload, emptyAccountValue, validateAccount, type AccountFieldsValue,
@@ -169,10 +170,7 @@ export default function EmployeeNew() {
       prefilledBranchApplicantIdRef.current = a.id;
     }
     const rawPosition = (a.jobTitle ?? "").trim().slice(0, 100);
-    const matchedDepartment =
-      a.department && (HR_DEPARTMENTS as readonly string[]).includes(a.department)
-        ? a.department
-        : "";
+    const matchedDepartment = (a.department ?? "").trim().slice(0, 100);
     initialSnapshotRef.current = "";
     setPrefilledApplicantStateId(a.id);
     setForm((f) => ({
@@ -232,6 +230,12 @@ export default function EmployeeNew() {
   const removeEdu = (key: number) => setEdu((r) => r.filter((x) => x.key !== key));
 
   const alreadyConvertedEmployeeId = !isEdit ? (applicantQ.data?.convertedEmployeeId ?? null) : null;
+  const applicantConversionUnauthorized =
+    !isEdit && applicantId != null && (!can("recruitment.get") || !can("recruitment.updateStage"));
+  const applicantConversionReady =
+    isEdit ||
+    applicantId == null ||
+    (!applicantConversionUnauthorized && Boolean(applicantQ.data) && prefilledApplicantStateId === applicantId);
 
   const mutationOpts = {
     onSuccess: (e: { id: number; fullName?: string } | null | undefined) => {
@@ -297,9 +301,15 @@ export default function EmployeeNew() {
   });
 
   const pending = create.isPending || update.isPending || createWithAccount.isPending;
+  const canSaveEmployee =
+    can(isEdit ? "employees.update" : "employees.create") &&
+    applicantConversionReady &&
+    !pending &&
+    alreadyConvertedEmployeeId == null;
 
   function submit() {
-    if (!can(isEdit ? "employees.update" : "employees.create") || (!isEdit && applicantId && !can("recruitment.updateStage"))) { setError("العملية غير مفوضة لحسابك"); return; }
+    if (!can(isEdit ? "employees.update" : "employees.create") || applicantConversionUnauthorized) { setError("العملية غير مفوضة لحسابك"); return; }
+    if (!applicantConversionReady) { setError("انتظر اكتمال تحميل بيانات المتقدّم قبل الحفظ."); return; }
     setError("");
     if (alreadyConvertedEmployeeId != null) { setError("تم تعيين هذا المتقدّم مسبقاً كموظف."); return; }
     if (!form.firstName.trim()) { setError("الاسم الأول مطلوب."); return; }
@@ -366,7 +376,7 @@ export default function EmployeeNew() {
   useUnsavedGuard(isDirty && !createdInfo);
 
   // اختصار: Ctrl+S حفظ — بلا Esc (النموذج مكتظّ بقوائم منسدلة، راجع تحذير الهوك).
-  useSaveShortcuts({ onSave: submit, enabled: can(isEdit ? "employees.update" : "employees.create") && !pending && alreadyConvertedEmployeeId == null });
+  useSaveShortcuts({ onSave: submit, enabled: canSaveEmployee });
 
   /** يبني حقول الحساب الجديد للإرسال (الاسم من الموظف؛ الفرع/الهاتف/المسمّى تُؤخذ من الموظف خادمياً). */
   function accountNewPayload() {
@@ -429,6 +439,38 @@ export default function EmployeeNew() {
     );
   }
 
+  if (!applicantConversionReady) {
+    return (
+      <div className="space-y-4">
+        <PageHeader title="إضافة موظف" backHref="/hr/employees" backLabel="رجوع للموظفين" />
+        {!applicantConversionUnauthorized && (applicantQ.isLoading || (applicantQ.data && prefilledApplicantStateId !== applicantId)) ? (
+          <LoadingState />
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive" role="alert">
+            <span className="flex items-center gap-2">
+              <AlertCircle className="size-4 shrink-0" />
+              <span>
+                {applicantConversionUnauthorized
+                  ? "العملية غير مفوضة لحسابك لتحويل طلبات التوظيف إلى موظفين."
+                  : "تعذّر تحميل بيانات المتقدّم المطلوب تحويله إلى موظف."}
+              </span>
+            </span>
+            <div className="flex items-center gap-2">
+              {!applicantConversionUnauthorized && (
+                <Button size="sm" variant="outline" onClick={() => void applicantQ.refetch()}>
+                  إعادة المحاولة
+                </Button>
+              )}
+              <Link href="/hr/employees">
+                <Button size="sm" variant="outline">رجوع للموظفين</Button>
+              </Link>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -442,7 +484,7 @@ export default function EmployeeNew() {
       <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <div className="text-lg font-semibold text-muted-foreground">{isEdit ? "تعديل موظف" : "إضافة موظف"}</div>
         <div className="flex items-center gap-2">
-          <Button onClick={submit} disabled={!can(isEdit ? "employees.update" : "employees.create") || pending || alreadyConvertedEmployeeId != null} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
+          <Button onClick={submit} disabled={!canSaveEmployee} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
           <Link href="/hr/employees"><Button variant="outline">إلغاء</Button></Link>
         </div>
       </div>
@@ -528,7 +570,13 @@ export default function EmployeeNew() {
         <CardHeader><CardTitle className="text-base">الوظيفة والأجر</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1"><Label htmlFor="dept">القسم</Label>
-            <AppSelect id="dept" value={form.department} onValueChange={(next) => set({ department: next })}>{HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}</AppSelect>
+            <AppSelect id="dept" value={form.department} onValueChange={(next) => set({ department: next })}>
+              {form.department && !(HR_DEPARTMENTS as readonly string[]).includes(form.department) && <option value={form.department}>{form.department}</option>}
+              {applicantQ.data?.department && applicantQ.data.department.trim().slice(0, 100) !== form.department && !(HR_DEPARTMENTS as readonly string[]).includes(applicantQ.data.department.trim().slice(0, 100)) && (
+                <option value={applicantQ.data.department.trim().slice(0, 100)}>{applicantQ.data.department.trim().slice(0, 100)}</option>
+              )}
+              {HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
+            </AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="pos">المسمى الوظيفي</Label><Input id="pos" maxLength={100} value={form.position} onChange={(e) => set({ position: e.target.value })} placeholder="مدير المبيعات" /></div>
           <div className="space-y-1"><Label htmlFor="br">الفرع</Label>
@@ -694,7 +742,7 @@ export default function EmployeeNew() {
         </div>
       )}
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-        <Button onClick={submit} disabled={!can(isEdit ? "employees.update" : "employees.create") || pending || alreadyConvertedEmployeeId != null} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
+        <Button onClick={submit} disabled={!canSaveEmployee} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
         <Link href="/hr/employees"><Button variant="outline">إلغاء</Button></Link>
       </div>
     </div>
