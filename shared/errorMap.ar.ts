@@ -168,6 +168,12 @@ const TABLE_AR: Record<string, string> = {
 type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: string };
 /** مُصدَّر للاختبار الحارس (errorMap.ar.test.ts) الذي يضمن تغطية كل قيود UNIQUE في الهجرات. */
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
+  uq_sbs_adoption_key: { msg: "طلب ربط تسديد المورد مسجل مسبقاً؛ حدّث نتيجة الطلب الحالي." },
+  uq_sbs_entry: { msg: "هذا القيد مرتبط بتسوية مورد مسبقاً؛ لا يمكن تخصيصه مرتين." },
+  uq_sbs_exchange: { msg: "حركة الصيرفة مرتبطة بتسوية مورد مسبقاً." },
+  uq_sbs_receipt: { msg: "سند الصرف مرتبط بتسوية مورد مسبقاً؛ افتح السند الحالي." },
+  uq_sbsa_invoice: { msg: "تخصيص هذا المصدر لفاتورة المورد مسجل مسبقاً." },
+  uq_sbsa_opening: { msg: "تخصيص هذا المصدر لرصيد المورد الافتتاحي مسجل مسبقاً." },
   uq_custom_template_product: { msg: "قالب التخصيص لهذا المنتج موجود مسبقاً." },
   uq_custom_field_template_key: { msg: "مفتاح حقل التخصيص مستخدم مسبقاً داخل هذا القالب." },
   uq_prod_related_pair: { msg: "هذا المنتج مرتبط مسبقاً بهذا المنتج المكمل — عدّل العلاقة الموجودة بدل تكرارها." },

@@ -1,3 +1,5 @@
+import { loadSupplierFormalCreditTotals, supplierFormalCreditTotalsSql } from "./supplierFormalCreditProjection";
+import { loadSupplierBookInvoiceTotals, supplierBookInvoiceTotalsSql } from "./supplierBookProjection";
 import { createHash } from "node:crypto";
 import { canonicalOperationAllowed, loadOperationUserTx } from "../authorization/operationAuthority";
 import { TRPCError } from "@trpc/server";
@@ -28,6 +30,7 @@ import {
   supplierPaymentRequests,
   supplierPayments,
   suppliers,
+  auditLogs,
   users,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
@@ -752,44 +755,26 @@ export async function invoiceReservations(tx: Tx, invoiceIds: number[], lockRows
     )
     .groupBy(supplierPaymentRequestAllocations.supplierInvoiceId);
   const pending = await (lockRows ? pendingQuery.for("update") : pendingQuery);
-  const credited = await tx
-    .select({
-      invoiceId: purchaseReturns.supplierInvoiceId,
-      amount: sql<string>`COALESCE(SUM(${purchaseReturns.creditOffsetAmount}),0)`,
-    })
-    .from(purchaseReturns)
-    .where(inArray(purchaseReturns.supplierInvoiceId, invoiceIds))
-    .groupBy(purchaseReturns.supplierInvoiceId);
-  const creditReversed = await tx
-    .select({
-      invoiceId: purchaseReturnReversals.supplierInvoiceId,
-      amount: sql<string>`COALESCE(SUM(${purchaseReturnReversals.totalAmount}),0)`,
-    })
-    .from(purchaseReturnReversals)
-    .innerJoin(
-      purchaseReturns,
-      eq(purchaseReturns.id, purchaseReturnReversals.purchaseReturnId),
-    )
-    .where(
-      and(
-        inArray(purchaseReturnReversals.supplierInvoiceId, invoiceIds),
-        eq(purchaseReturns.settlement, "CREDIT"),
-      ),
-    )
-    .groupBy(purchaseReturnReversals.supplierInvoiceId);
-  const reversedByInvoice = new Map(
-    creditReversed.map((row) => [Number(row.invoiceId), money(row.amount)]),
-  );
+  const formalCredits = await loadSupplierFormalCreditTotals(tx, invoiceIds, { currentRead: lockRows });
+  const book = await loadSupplierBookInvoiceTotals(tx, invoiceIds, { currentRead: lockRows });
+  const postedTotals = new Map(posted.map(row => [Number(row.invoiceId), { amount: money(row.amount), currencyAmount: money(row.currencyAmount) }]));
+  const creditTotals = new Map(Array.from(formalCredits, ([id, amount]) => [id, money(amount)]));
+  const creditCurrencyAmounts = new Map<number, ReturnType<typeof money>>();
+  const invoiceQuery = tx.select({ id: supplierInvoices.id, currency: supplierInvoices.currency, usdTotal: supplierInvoices.usdTotal, totalAmount: supplierInvoices.totalAmount }).from(supplierInvoices).where(inArray(supplierInvoices.id, invoiceIds));
+  const invoices = invoiceIds.length ? await (lockRows ? invoiceQuery.for("share") : invoiceQuery) : [];
+  for (const invoice of invoices) {
+    const credit = creditTotals.get(Number(invoice.id)) ?? money(0);
+    creditCurrencyAmounts.set(Number(invoice.id), invoice.currency === "USD" ? usdReturnAmountWithFinalResidual(invoice.usdTotal, invoice.totalAmount, credit, 0) : credit);
+  }
+  for (const [id, totals] of Array.from(book)) {
+    const native = postedTotals.get(id);
+    postedTotals.set(id, { amount: money(native?.amount).plus(totals.paidAmount), currencyAmount: money(native?.currencyAmount).plus(totals.paidCurrencyAmount) });
+    creditTotals.set(id, money(creditTotals.get(id)).plus(totals.creditedAmount));
+    creditCurrencyAmounts.set(id, money(creditCurrencyAmounts.get(id)).plus(totals.creditedCurrencyAmount));
+  }
   return {
-    posted: new Map(
-      posted.map((row) => [
-        Number(row.invoiceId),
-        {
-          amount: money(row.amount),
-          currencyAmount: money(row.currencyAmount),
-        },
-      ]),
-    ),
+    posted: postedTotals,
+    creditCurrencyAmounts,
     pending: new Map(
       pending.map((row) => [
         Number(row.invoiceId),
@@ -799,16 +784,7 @@ export async function invoiceReservations(tx: Tx, invoiceIds: number[], lockRows
         },
       ]),
     ),
-    creditReturns: new Map(
-      credited.map((row) => [
-        Number(row.invoiceId),
-        DecimalMaxZero(
-          money(row.amount).minus(
-            reversedByInvoice.get(Number(row.invoiceId)) ?? money(0),
-          ),
-        ),
-      ]),
-    ),
+    creditReturns: creditTotals,
   };
 }
 
@@ -828,6 +804,7 @@ function assertAllocationAvailable(
     currencyAmount: ReturnType<typeof money>;
   },
   netCreditReturns: ReturnType<typeof money>,
+  creditCurrencyAmount?: ReturnType<typeof money>,
 ): void {
   const effectiveTotal = effectiveInvoicePayable(
     invoice.totalAmount,
@@ -839,7 +816,7 @@ function assertAllocationAvailable(
   const sourceCurrencyTotal =
     invoice.currency === "USD"
       ? money(invoice.usdTotal).minus(
-          usdReturnAmountWithFinalResidual(invoice.usdTotal, invoice.totalAmount, netCreditReturns, 0),
+          creditCurrencyAmount ?? usdReturnAmountWithFinalResidual(invoice.usdTotal, invoice.totalAmount, netCreditReturns, 0),
         )
       : effectiveTotal;
   const remainingCurrency = round2(
@@ -916,11 +893,12 @@ export async function requestSupplierPaymentInTx(
   const priorCurrencyPayments = !replay && input.currency === "USD" ? await tx.select({ supplierInvoiceId: supplierPaymentAllocations.supplierInvoiceId, payloadCanonical: supplierPayments.payloadCanonical, payloadHash: supplierPayments.payloadHash })
     .from(supplierPaymentAllocations).innerJoin(supplierPayments, eq(supplierPayments.id, supplierPaymentAllocations.supplierPaymentId))
     .where(inArray(supplierPaymentAllocations.supplierInvoiceId, normalized.map((row) => row.supplierInvoiceId))) : [];
-  const continuedInvoiceIds: number[] = replay ? (JSON.parse(replay.payloadCanonical).continuedInvoiceIds ?? []) : Array.from(new Set(priorCurrencyPayments.filter((row) => {
+  const priorBookTotals = !replay && input.currency === "USD" ? await loadSupplierBookInvoiceTotals(tx, normalized.map(row => row.supplierInvoiceId), { currentRead: true }) : new Map();
+  const continuedInvoiceIds: number[] = replay ? (JSON.parse(replay.payloadCanonical).continuedInvoiceIds ?? []) : Array.from(new Set([...Array.from(priorBookTotals).filter(([, totals]) => money(totals.paidAmount).gt(0) || money(totals.creditedAmount).gt(0)).map(([id]) => id), ...priorCurrencyPayments.filter((row) => {
     if (!usesInvoiceCurrencySettlement(row)) return false;
     const original = JSON.parse(row.payloadCanonical);
     return original.currency === "IQD" || original.continuedInvoiceIds?.includes(Number(row.supplierInvoiceId));
-  }).map((row) => Number(row.supplierInvoiceId)))).sort((a, b) => a - b);
+  }).map((row) => Number(row.supplierInvoiceId))])).sort((a, b) => a - b);
   const invoiceCurrencySettlement = replay ? usesInvoiceCurrencySettlement(replay) : (deferredVoucher && input.currency === "IQD" || continuedInvoiceIds.length > 0);
   assertPaymentTotals(input.amount, input.currencyAmount, invoiceCurrencySettlement && input.currency === "IQD"
     ? normalized.map((row) => ({ ...row, currencyAmount: row.amount })) : normalized);
@@ -1021,6 +999,10 @@ export async function requestSupplierPaymentInTx(
       code: "BAD_REQUEST",
       message: "بعض فواتير المورد غير موجودة",
     });
+  const [pendingBookVoucher] = await tx.select({ id: receipts.id }).from(receipts).innerJoin(auditLogs, and(
+    eq(auditLogs.action, "supplier.bookVoucher.request"), eq(auditLogs.entityType, "receipt"), sql`BINARY ${auditLogs.entityId} = BINARY CAST(${receipts.id} AS CHAR)`
+  )).where(and(eq(receipts.partyType, "SUPPLIER"), eq(receipts.partyId, input.supplierId), eq(receipts.direction, "OUT"), eq(receipts.status, "PENDING"), eq(receipts.approvalStatus, "PENDING_APPROVAL"))).for("share").limit(1);
+  if (pendingBookVoucher) throw supplierVoucherConflict("يوجد سند تسوية دفترية معلق يحجز رصيد المورد؛ احسمه قبل طلب سداد جديد");
   await assertNativePurchaseSettlementEvidence(tx, aggregate);
   const invoiceById = new Map(invoices.map((row) => [Number(row.id), row]));
   const reservations = await invoiceReservations(tx, ids);
@@ -1072,7 +1054,7 @@ export async function requestSupplierPaymentInTx(
     if (invoiceCurrencySettlement && (input.currency === "IQD" || continuedInvoiceIds.includes(Number(invoice.id))) && !money(allocation.currencyAmount).eq(supplierVoucherCurrencyAmount(
       invoice, allocation.amount,
       { amount: toDbMoney(posted.amount.plus(pending.amount)), currencyAmount: toDbMoney(posted.currencyAmount.plus(pending.currencyAmount)) },
-      toDbMoney(creditReturns),
+      toDbMoney(creditReturns), toDbMoney(reservations.creditCurrencyAmounts.get(Number(invoice.id)) ?? 0),
     ))) throw supplierVoucherConflict("تغيّر رصيد عملة الفاتورة؛ أعد توزيع السند");
     assertAllocationAvailable(
       invoice,
@@ -1082,6 +1064,7 @@ export async function requestSupplierPaymentInTx(
         currencyAmount: posted.currencyAmount.plus(pending.currencyAmount),
       },
       creditReturns,
+      reservations.creditCurrencyAmounts.get(Number(invoice.id)),
     );
     const snapshot = stableCanonical({
       invoiceId: Number(invoice.id),
@@ -1409,7 +1392,7 @@ export async function decideSupplierPaymentInTx(
       const snapshot = JSON.parse(row.invoiceSnapshot);
       if (sha256(row.invoiceSnapshot) !== row.invoiceHash || snapshot.currency !== invoice.currency || snapshot.agreedRate !== invoice.agreedRate ||
         ((request.currency === "IQD" || continuedInvoiceIds.includes(Number(invoice.id))) && !money(row.requestedCurrencyAmount).eq(supplierVoucherCurrencyAmount(invoice, row.requestedAmount,
-          { amount: toDbMoney(posted.amount.plus(pendingOther.amount)), currencyAmount: toDbMoney(posted.currencyAmount.plus(pendingOther.currencyAmount)) }, toDbMoney(creditReturns)))))
+          { amount: toDbMoney(posted.amount.plus(pendingOther.amount)), currencyAmount: toDbMoney(posted.currencyAmount.plus(pendingOther.currencyAmount)) }, toDbMoney(creditReturns), toDbMoney(reservations.creditCurrencyAmounts.get(Number(invoice.id)) ?? 0)))))
         throw supplierVoucherConflict("تغيّرت عملة الفاتورة أو سعرها أو رصيدها بعد إنشاء السند");
     }
     if (request.currency === "USD" && !continuedInvoiceIds.includes(Number(invoice.id)))
@@ -1430,6 +1413,7 @@ export async function decideSupplierPaymentInTx(
         currencyAmount: posted.currencyAmount.plus(pendingOther.currencyAmount),
       },
       creditReturns,
+      reservations.creditCurrencyAmounts.get(Number(invoice.id)),
     );
   }
   if (request.currency === "USD" && !invoiceCurrencySettlement)
@@ -2476,12 +2460,13 @@ export async function listSupplierPaymentSources(
   assertPurchaseBranch({ branchId: input.branchId }, actor);
   return withTx(
     async (tx) => {
-      const postedAmount = sql<string>`COALESCE((
+      const book = supplierBookInvoiceTotalsSql(supplierInvoices.id);
+      const postedAmount = sql<string>`${book.paidAmount} + COALESCE((
         SELECT SUM(spa.allocatedAmount - spa.refundedAmount)
         FROM supplierPaymentAllocations spa
         WHERE spa.supplierInvoiceId = ${supplierInvoices.id}
       ), 0)`;
-      const postedCurrencyAmount = sql<string>`COALESCE((
+      const postedCurrencyAmount = sql<string>`${book.paidCurrencyAmount} + COALESCE((
         SELECT SUM(spa.allocatedCurrencyAmount - spa.refundedCurrencyAmount)
         FROM supplierPaymentAllocations spa
         WHERE spa.supplierInvoiceId = ${supplierInvoices.id}
@@ -2500,20 +2485,12 @@ export async function listSupplierPaymentSources(
         WHERE spra.supplierInvoiceId = ${supplierInvoices.id}
           AND spr.status = 'PENDING'
       ), 0)`;
-      const netCreditReturns = sql<string>`GREATEST(
-        COALESCE((SELECT SUM(pr.creditOffsetAmount) FROM purchaseReturns pr
-          WHERE pr.supplierInvoiceId = ${supplierInvoices.id}), 0)
-        - COALESCE((SELECT SUM(prr.totalAmount)
-          FROM purchaseReturnReversals prr
-          INNER JOIN purchaseReturns pr ON pr.id = prr.purchaseReturnId
-          WHERE prr.supplierInvoiceId = ${supplierInvoices.id}
-            AND pr.settlement = 'CREDIT'), 0),
-        0
-      )`;
+      const formalCredit = supplierFormalCreditTotalsSql(supplierInvoices.id);
+      const netCreditReturns = formalCredit.amount;
       const remainingAmount = sql<string>`GREATEST(
-        GREATEST(${supplierInvoices.totalAmount} - ${netCreditReturns}, 0)
+        GREATEST(${supplierInvoices.totalAmount} - ${netCreditReturns} - ${book.creditedAmount}, 0)
         - ${supplierInvoices.legacySettledAmount}
-        - ${postedAmount}
+        - (${postedAmount})
         - ${pendingAmount},
         0
       )`;
@@ -2523,13 +2500,15 @@ export async function listSupplierPaymentSources(
           ${supplierInvoices.usdTotal}
           - ROUND(${supplierInvoices.usdTotal} * LEAST(GREATEST(${netCreditReturns},0), ${supplierInvoices.totalAmount}) / ${supplierInvoices.totalAmount}, 2)
           - ROUND(${supplierInvoices.legacySettledAmount} / ${supplierInvoices.agreedRate}, 2)
-          - ${postedCurrencyAmount}
+          - ${book.creditedCurrencyAmount}
+          - (${postedCurrencyAmount})
           - ${pendingCurrencyAmount},
           0
         )
         ELSE 0
       END`;
       const eligibleWhere = and(
+        formalCredit.eligible,
         eq(supplierInvoices.branchId, input.branchId),
         input.supplierId == null
           ? undefined
@@ -2643,7 +2622,7 @@ export async function listSupplierPaymentSources(
           const sourceCurrency =
             invoice.currency === "USD"
               ? money(invoice.usdTotal).minus(
-                  usdReturnAmountWithFinalResidual(invoice.usdTotal, invoice.totalAmount, creditReturns, 0),
+                  reservations.creditCurrencyAmounts.get(Number(invoice.id)) ?? money(0),
                 )
               : effectiveTotal;
           return {

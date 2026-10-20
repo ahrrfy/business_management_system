@@ -51,6 +51,10 @@ import { money, round2, sumMoney, toDbMoney, toDbQty } from "../money";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { shiftIdForCashTx } from "../shiftService";
 import { withTx, type Actor } from "../tx";
+import { withSupplierBookReversalTx } from "./supplierBookReversalTx";
+import { unapplySupplierBookSettlementSourceTx } from "./supplierBookSettlement";
+import { loadSupplierBookInvoiceTotals } from "./supplierBookProjection";
+import { loadSupplierFormalCreditTotals } from "./supplierFormalCreditProjection";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
 import { purchaseReturnReversalTrigger, purchaseReturnTrigger } from "@shared/approvalTriggers";
@@ -320,12 +324,18 @@ async function netInvoiceCreditReturns(tx: Tx, invoiceId: number): Promise<Decim
 }
 
 async function refreshInvoiceCreditState(tx: Tx, invoice: typeof supplierInvoices.$inferSelect): Promise<void> {
-  const netCredit = await netInvoiceCreditReturns(tx, Number(invoice.id));
-  const paid = (await tx.select({ amount: sql<string>`COALESCE(SUM(${supplierPaymentAllocations.allocatedAmount} - ${supplierPaymentAllocations.refundedAmount}),0)` })
+  const invoiceId = Number(invoice.id);
+  const formalCredits = await loadSupplierFormalCreditTotals(tx, [invoiceId], { currentRead: true });
+  const book = (await loadSupplierBookInvoiceTotals(tx, [invoiceId], { currentRead: true })).get(invoiceId);
+  // Raw locking rows preserve a current read after earlier transaction snapshots.
+  const allocations = await tx.select({ amount: supplierPaymentAllocations.allocatedAmount, refundedAmount: supplierPaymentAllocations.refundedAmount })
     .from(supplierPaymentAllocations)
-    .where(eq(supplierPaymentAllocations.supplierInvoiceId, Number(invoice.id))))[0];
+    .where(eq(supplierPaymentAllocations.supplierInvoiceId, invoiceId))
+    .orderBy(asc(supplierPaymentAllocations.id)).for("share");
+  const paid = allocations.reduce((sum, row) => sum.plus(row.amount).minus(row.refundedAmount), money(book?.paidAmount ?? 0));
+  const netCredit = money(formalCredits.get(invoiceId) ?? 0).plus(book?.creditedAmount ?? 0);
   const effectiveTotal = Decimal.max(money(invoice.totalAmount).minus(netCredit), 0);
-  const settled = money(invoice.legacySettledAmount).plus(paid?.amount ?? 0).gte(effectiveTotal);
+  const settled = money(invoice.legacySettledAmount).plus(paid).gte(effectiveTotal);
   await tx.update(supplierInvoices).set({
     version: sql`${supplierInvoices.version} + 1`,
     paymentGate: settled ? "SETTLED" : "OPEN",
@@ -1099,7 +1109,13 @@ export async function decidePurchaseReturnReversal(input: DecidePurchaseReturnRe
   const key = required(input.decisionKey, "مفتاح القرار", 120);
   const reviewReason = required(input.reviewReason, "سبب القرار", 500);
   const hash = decisionHash(input.requestId, input.action, reviewReason);
-  return withTx(async (tx) => {
+  return withSupplierBookReversalTx(async (tx) => {
+    const [source] = await tx.select({ accountingEntryId: purchaseReturns.accountingEntryId })
+      .from(purchaseReturnReversalRequests)
+      .innerJoin(purchaseReturns, eq(purchaseReturns.id, purchaseReturnReversalRequests.purchaseReturnId))
+      .where(eq(purchaseReturnReversalRequests.id, input.requestId)).limit(1);
+    return source?.accountingEntryId == null ? null : { sourceAccountingEntryId: Number(source.accountingEntryId) };
+  }, async (tx) => {
     const preview = (await tx.select().from(purchaseReturnReversalRequests).where(eq(purchaseReturnReversalRequests.id, input.requestId)).limit(1))[0];
     if (!preview)
       throw new TRPCError({
@@ -1240,6 +1256,13 @@ export async function decidePurchaseReturnReversal(input: DecidePurchaseReturnRe
       } else {
         assertNonPhysicalOutReceipt({ classification: "NON_CASH_METHOD", paymentMethod: purchaseReturn.paymentMethod, cashBucket: null, approvalStatus: "APPROVED", operation: "إعادة استرداد مرتجع للمورد" });
       }
+    }
+    if (purchaseReturn.accountingEntryId != null) {
+      await unapplySupplierBookSettlementSourceTx(tx, {
+        sourceAccountingEntryId: Number(purchaseReturn.accountingEntryId),
+        amount: toDbMoney(total),
+        reversalKey: `PURCHASE_RETURN_REVERSAL_REQUEST:${input.requestId}`,
+      }, actor);
     }
     await postEntry(tx, { entryType: "RETURN", branchId: Number(purchaseReturn.branchId), purchaseOrderId: Number(purchaseReturn.purchaseOrderId), supplierId: Number(purchaseReturn.supplierId), purchaseLiabilityAccount: "AP", cost: inventory, taxAmount: tax, amount: total, profit: variance, createdBy: actor.userId, dedupeKey, notes: request.reason, postingIntent: createPostingIntent("RETURN_PURCHASE_INVENTORY", "RETURN", [debitLine("INVENTORY", inventory), ...(tax.gt(0) ? [debitLine("TAX_PAYABLE", tax)] : []), ...(variance.lt(0) ? [debitLine("PURCHASE_PRICE_VARIANCE", variance.abs())] : []), creditLine("AP", total), ...(variance.gt(0) ? [creditLine("PURCHASE_PRICE_VARIANCE", variance)] : [])], source), postingSourceComponents: source });
     const accountingEntryId = await entryId(tx, dedupeKey);

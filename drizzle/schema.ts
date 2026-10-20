@@ -7307,6 +7307,154 @@ export const legacySupplierInvoiceSettlements = mysqlTable(
   }),
 );
 
+/** Existing money/credit owned once; book allocations never create cash or AP. */
+export const supplierBookSettlementSources = mysqlTable(
+  "supplierBookSettlementSources",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    supplierId: bigint("supplierId", { mode: "number" }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    sourceAccountingEntryId: bigint("sourceAccountingEntryId", {
+      mode: "number",
+    })
+      .notNull()
+      .unique("uq_sbs_entry"),
+    sourceReceiptId: bigint("sourceReceiptId", { mode: "number" }).unique(
+      "uq_sbs_receipt",
+    ),
+    sourceExchangeTransactionId: bigint("sourceExchangeTransactionId", {
+      mode: "number",
+    }).unique("uq_sbs_exchange"),
+    kind: mysqlEnum("kind", ["PAYMENT", "CREDIT"]).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    reversedAmount: decimal("reversedAmount", { precision: 15, scale: 2 })
+      .notNull()
+      .default("0"),
+    status: mysqlEnum("status", ["APPLIED", "PARTIALLY_REVERSED", "REVERSED"])
+      .notNull()
+      .default("APPLIED"),
+    version: int("version").notNull().default(1),
+    sourceSnapshot: mediumtext("sourceSnapshot").notNull(),
+    sourceHash: char("sourceHash", { length: 64 }).notNull(),
+    planHash: char("planHash", { length: 64 }).notNull(),
+    adoptionKey: varchar("adoptionKey", { length: 120 })
+      .notNull()
+      .unique("uq_sbs_adoption_key"),
+    adoptedBy: int("adoptedBy").notNull(),
+    adoptedAt: timestamp("adoptedAt").notNull().defaultNow(),
+    reversalHistory: mediumtext("reversalHistory").notNull(),
+  },
+  (t) => ({
+    supplierFk: foreignKey({
+      name: "fk_sbs_supplier",
+      columns: [t.supplierId],
+      foreignColumns: [suppliers.id],
+    }),
+    branchFk: foreignKey({
+      name: "fk_sbs_branch",
+      columns: [t.branchId],
+      foreignColumns: [branches.id],
+    }),
+    entryFk: foreignKey({
+      name: "fk_sbs_entry",
+      columns: [t.sourceAccountingEntryId],
+      foreignColumns: [accountingEntries.id],
+    }),
+    receiptFk: foreignKey({
+      name: "fk_sbs_receipt",
+      columns: [t.sourceReceiptId],
+      foreignColumns: [receipts.id],
+    }),
+    exchangeFk: foreignKey({
+      name: "fk_sbs_exchange",
+      columns: [t.sourceExchangeTransactionId],
+      foreignColumns: [exchangeTransactions.id],
+    }),
+    ownerFk: foreignKey({
+      name: "fk_sbs_owner",
+      columns: [t.adoptedBy],
+      foreignColumns: [users.id],
+    }),
+    scopeIdx: index("idx_sbs_scope").on(t.supplierId, t.branchId, t.status),
+    amounts: check(
+      "chk_sbs_amounts",
+      sql`${t.amount}>0 AND ${t.reversedAmount}>=0 AND ${t.reversedAmount}<=${t.amount} AND ${t.version}>0`,
+    ),
+    lifecycle: check(
+      "chk_sbs_lifecycle",
+      sql`(${t.status}='APPLIED' AND ${t.reversedAmount}=0) OR (${t.status}='PARTIALLY_REVERSED' AND ${t.reversedAmount}>0 AND ${t.reversedAmount}<${t.amount}) OR (${t.status}='REVERSED' AND ${t.reversedAmount}=${t.amount})`,
+    ),
+    sourceShape: check(
+      "chk_sbs_source",
+      sql`(${t.kind}='PAYMENT' AND ${t.sourceReceiptId} IS NOT NULL) OR (${t.kind}='CREDIT' AND ${t.sourceReceiptId} IS NULL AND ${t.sourceExchangeTransactionId} IS NULL)`,
+    ),
+    jsonShape: check(
+      "chk_sbs_json",
+      sql`JSON_VALID(${t.sourceSnapshot}) AND JSON_VALID(${t.reversalHistory})`,
+    ),
+  }),
+);
+
+export const supplierBookSettlementAllocations = mysqlTable(
+  "supplierBookSettlementAllocations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    sourceId: bigint("sourceId", { mode: "number" }).notNull(),
+    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" }),
+    openingEntryId: bigint("openingEntryId", { mode: "number" }),
+    allocatedAmount: decimal("allocatedAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    allocatedCurrencyAmount: decimal("allocatedCurrencyAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    reversedAmount: decimal("reversedAmount", { precision: 15, scale: 2 })
+      .notNull()
+      .default("0"),
+    reversedCurrencyAmount: decimal("reversedCurrencyAmount", {
+      precision: 15,
+      scale: 2,
+    })
+      .notNull()
+      .default("0"),
+    targetSnapshot: mediumtext("targetSnapshot").notNull(),
+    targetHash: char("targetHash", { length: 64 }).notNull(),
+    createdAt: timestamp("createdAt").notNull().defaultNow(),
+  },
+  (t) => ({
+    sourceFk: foreignKey({
+      name: "fk_sbsa_source",
+      columns: [t.sourceId],
+      foreignColumns: [supplierBookSettlementSources.id],
+    }),
+    invoiceFk: foreignKey({
+      name: "fk_sbsa_invoice",
+      columns: [t.supplierInvoiceId],
+      foreignColumns: [supplierInvoices.id],
+    }),
+    openingFk: foreignKey({
+      name: "fk_sbsa_opening",
+      columns: [t.openingEntryId],
+      foreignColumns: [accountingEntries.id],
+    }),
+    invoiceUq: unique("uq_sbsa_invoice").on(t.sourceId, t.supplierInvoiceId),
+    openingUq: unique("uq_sbsa_opening").on(t.sourceId, t.openingEntryId),
+    invoiceIdx: index("idx_sbsa_invoice").on(t.supplierInvoiceId),
+    openingIdx: index("idx_sbsa_opening").on(t.openingEntryId),
+    targetShape: check(
+      "chk_sbsa_target",
+      sql`(${t.supplierInvoiceId} IS NOT NULL AND ${t.openingEntryId} IS NULL) OR (${t.supplierInvoiceId} IS NULL AND ${t.openingEntryId} IS NOT NULL)`,
+    ),
+    amounts: check(
+      "chk_sbsa_amounts",
+      sql`${t.allocatedAmount}>0 AND ${t.allocatedCurrencyAmount}>=0 AND ${t.reversedAmount}>=0 AND ${t.reversedAmount}<=${t.allocatedAmount} AND ${t.reversedCurrencyAmount}>=0 AND ${t.reversedCurrencyAmount}<=${t.allocatedCurrencyAmount}`,
+    ),
+    jsonShape: check("chk_sbsa_json", sql`JSON_VALID(${t.targetSnapshot})`),
+  }),
+);
+
 /** طلب صرف مورّد؛ تخصيصاته المطلوبة لا تحرّك AP حتى الاعتماد والتطبيق الذري. */
 export const supplierPaymentRequests = mysqlTable(
   "supplierPaymentRequests",

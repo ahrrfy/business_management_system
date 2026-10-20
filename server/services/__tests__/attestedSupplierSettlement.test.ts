@@ -5,7 +5,7 @@ import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import * as audit from "../auditService";
 import { recordAttestedSupplierSettlement } from "../purchase/attestedSupplierSettlement";
-import { baghdadToday } from "../businessDay";
+import { baghdadToday, todayUtcDate } from "../businessDay";
 import { openPurchaseIntegrityCase } from "../purchase/integrityCases";
 
 const owner = { userId: 9, branchId: 1, role: "manager", isOwner: true };
@@ -179,7 +179,10 @@ beforeEach(async () => {
     });
   }
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 async function state() {
   return {
@@ -759,6 +762,9 @@ describe("owner-attested missing treasury supplier payments", () => {
     expect(await state()).toEqual(before);
   });
   it("records old attested payments today while preserving original dates and records", async () => {
+    // Ledger DATE uses the ERP's UTC day; the attestation records Baghdad's date.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-20T21:30:00Z"));
     const actualPaymentDate = "2026-01-01";
     const invoiceRecognitionDate = "2026-01-03";
     await db()
@@ -787,7 +793,7 @@ describe("owner-attested missing treasury supplier payments", () => {
       after.entries
         .filter((row) => row.entryType === "PAYMENT_OUT")
         .map((row) => row.entryDate.toISOString().slice(0, 10)),
-    ).toEqual([baghdadToday(), baghdadToday()]);
+    ).toEqual([todayUtcDate(), todayUtcDate()]);
     expect(after.entries.filter((row) => row.entryType === "ADJUST")).toEqual(
       before.entries,
     );

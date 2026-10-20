@@ -1,3 +1,4 @@
+import { prepareSupplierBookVoucherTx, applySupplierBookVoucherTx, type LiveSupplierBookVoucherPlan } from "../purchase/supplierBookSettlement";
 // اعتماد/رفض سند مُعلَّق (Maker-Checker، SOD-04: مالك نشط والمُعتمِد ≠ المُنشئ بلا استثناء).
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
@@ -6,7 +7,7 @@ import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { assertNoNativeSupplierDebtForGenericPaymentTx } from "./supplierNativePaymentGuard";
 import { linkedSupplierVoucherRequest, supplierVoucherConflict } from "./supplierPaymentLink";
 import { assertBranchOwnership } from "./helpers";
-import { createSupplierVoucherSettlementTx, prepareSupplierVoucherSettlementTx } from "./supplierSettlement";
+import { createSupplierVoucherSettlementTx, prepareSupplierVoucherSettlementTx, withSupplierBookVoucherTx, receiptNeedsSupplierBookGateTx, loadSupplierBookVoucherMarkerTx, recordSupplierBookVoucherMarkerTx } from "./supplierSettlement";
 import { decideSupplierPaymentInTx, SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY } from "../purchase/supplierPayments";
 import {
   autoSettleCustomerAccountTx,
@@ -57,6 +58,7 @@ import {
   type ExternalTreasuryDisbursementApproval,
 } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
+import { unapplySupplierBookSettlementSourceTx } from "../purchase/supplierBookSettlement";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import {
   voucherApprovalRetainsLegacy,
@@ -514,7 +516,7 @@ export async function approveVoucher(
   actor: Actor,
   options?: ApproveVoucherOptions,
 ): Promise<ApproveVoucherResult> {
-  return withTx((tx) => approveVoucherTx(tx, receiptId, actor, options));
+  return withSupplierBookVoucherTx(tx => receiptNeedsSupplierBookGateTx(tx, receiptId), tx => approveVoucherTx(tx, receiptId, actor, options));
 }
 
 /**
@@ -552,6 +554,14 @@ export async function approveVoucherTx(
     role: approverPreview.role,
     isOwner: true,
   };
+  let supplierBookMarker = await loadSupplierBookVoucherMarkerTx(tx, receiptId);
+  if (supplierBookMarker?.cashSource) {
+    if (options?.cashSource && (options.cashSource.mode !== supplierBookMarker.cashSource.mode || (options.cashSource.shiftId ?? null) !== (supplierBookMarker.cashSource.shiftId ?? null))) throw supplierVoucherConflict("مصدر نقد السند الدفتري لا يطابق المصدر المحفوظ");
+    options = { ...options, cashSource: supplierBookMarker.cashSource };
+  }
+  if (supplierBookMarker && options?.cashSource && (preview.paymentMethod !== "CASH" || options.cashSource.mode !== "TREASURY" || options.cashSource.shiftId != null))
+    throw supplierVoucherConflict("تسوية السند الدفترية تدعم الخزينة الإدارية فقط ولا تقبل وردية أو مصدراً نقدياً لطريقة غير نقدية");
+  let supplierBookPlan: LiveSupplierBookVoucherPlan | null = null;
   let supplierRequest = await linkedSupplierVoucherRequest(tx, receiptId);
   if (!supplierRequest && preview.direction === "OUT" && preview.partyType === "SUPPLIER" && preview.status === "PENDING" &&
     ["CASH", "CARD", "TRANSFER", "WALLET"].includes(preview.paymentMethod) &&
@@ -563,7 +573,13 @@ export async function approveVoucherTx(
     const originalInput = { voucherType: "PAYMENT" as const, branchId: Number(preview.branchId), amount: preview.amount,
       paymentMethod: preview.paymentMethod as PaymentMethod, partyType: "SUPPLIER" as const, partyId: preview.partyId,
       description: preview.description ?? "سداد المورد", referenceNumber: preview.referenceNumber, clientRequestId: `VOUCHER-UPGRADE:${receiptId}` };
-    const allocations = await prepareSupplierVoucherSettlementTx(tx, originalInput, originalActor);
+    supplierBookPlan = await prepareSupplierBookVoucherTx(tx, { supplierId: Number(preview.partyId), branchId: Number(preview.branchId), amount: preview.amount, receiptId, voucherDate: toDateStr(preview.voucherDate ?? preview.createdAt), allocations: supplierBookMarker?.allocations }, previewApproverActor);
+    if (supplierBookPlan && !supplierBookMarker) {
+      await recordSupplierBookVoucherMarkerTx(tx, receiptId, originalInput, supplierBookPlan, originalActor);
+      supplierBookMarker = await loadSupplierBookVoucherMarkerTx(tx, receiptId);
+    }
+    if (supplierBookMarker && !supplierBookPlan) throw supplierVoucherConflict("لم يعد دليل رصيد السند الدفتري صالحاً للاعتماد");
+    const allocations = !supplierBookPlan ? await prepareSupplierVoucherSettlementTx(tx, originalInput, originalActor) : null;
     if (allocations) {
       await createSupplierVoucherSettlementTx(tx, preview, originalInput, allocations, originalActor);
       supplierRequest = await linkedSupplierVoucherRequest(tx, receiptId);
@@ -965,7 +981,7 @@ export async function approveVoucherTx(
     r.direction === "OUT" &&
     r.partyType === "SUPPLIER" &&
     r.partyId &&
-    !systemRequest
+    !systemRequest && !supplierBookPlan
   ) {
     await assertNoNativeSupplierDebtForGenericPaymentTx(tx, Number(r.partyId));
   }
@@ -2018,6 +2034,13 @@ export async function approveVoucherTx(
     });
   }
 
+  if (cancellationOriginal) {
+    await unapplySupplierBookSettlementSourceTx(tx, {
+      sourceReceiptId: Number(cancellationOriginal.id),
+      reversalKey: `VOUCHER_CANCELLATION:${receiptId}`,
+    }, actor);
+  }
+
   if (
     cancellationOriginal &&
     cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER_USD"
@@ -2373,7 +2396,7 @@ export async function approveVoucherTx(
       partyId,
       direction === "OUT" ? amount.neg() : amount,
     );
-    if (direction === "OUT") {
+    if (direction === "OUT" && !supplierBookPlan) {
       const [sRec] = await tx
         .select({ currentBalance: suppliers.currentBalance })
         .from(suppliers)
@@ -2439,6 +2462,12 @@ export async function approveVoucherTx(
       },
       systemRequest,
     );
+  }
+
+  if (supplierBookPlan) {
+    const entries = await tx.select({ id: accountingEntries.id }).from(accountingEntries).where(and(eq(accountingEntries.receiptId, receiptId), eq(accountingEntries.entryType, "PAYMENT_OUT"))).for("share").limit(2);
+    if (entries.length !== 1) throw supplierVoucherConflict("قيد صرف السند الدفتري غير وحيد");
+    await applySupplierBookVoucherTx(tx, { receiptId, accountingEntryId: Number(entries[0].id), plan: supplierBookPlan }, previewApproverActor);
   }
 
   // البَصمة بعد إكمال كل التَغييرات.

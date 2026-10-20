@@ -71,4 +71,61 @@ describe("saved supplier voucher settlement summary", () => {
       ),
     ).toBe("");
   });
+  it("shows BOOK invoice/opening targets and documentary credits without calling them native payments or tender", () => {
+    const html = renderToStaticMarkup(
+      <SupplierVoucherSettlementSummary
+        settlement={null}
+        bookSettlement={{
+          kind: "BOOK",
+          status: "PARTIALLY_REVERSED",
+          accountingEntryId: 55,
+          allocations: [
+            {
+              id: 1,
+              targetKind: "INVOICE",
+              openingEntryId: null,
+              invoiceNumber: "USD-OLD",
+              targetDate: "2026-01-01",
+              amount: "1200.25",
+              reversedAmount: "200.00",
+              currency: "USD",
+              currencyAmount: "0.80",
+            },
+            {
+              id: 2,
+              targetKind: "OPENING",
+              openingEntryId: 21,
+              invoiceNumber: null,
+              targetDate: "2025-01-01",
+              amount: "500.00",
+              reversedAmount: "0.00",
+              currency: null,
+              currencyAmount: "0.00",
+            },
+          ],
+          credits: [
+            {
+              id: 3,
+              accountingEntryId: 88,
+              invoiceNumber: "USD-OLD",
+              invoiceDate: "2026-01-01",
+              amount: "0.84",
+              reversedAmount: "0.00",
+              currency: "USD",
+              currencyAmount: "0.00",
+            },
+          ],
+        }}
+      />,
+    );
+    expect(html).toContain("USD-OLD");
+    expect(html).toContain("رصيد افتتاحي #21");
+    expect(html).toContain("1,200.25");
+    expect(html).toContain("200");
+    expect(html).toContain("عكس جزئي");
+    expect(html).toContain("تخفيضات دفترية مستقلة");
+    expect(html).toContain("0.84");
+    expect(html).not.toContain("معتمد ومصروف");
+    expect(html).not.toMatch(/<(input|button|select)\b/);
+  });
 });

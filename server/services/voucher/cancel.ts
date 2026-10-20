@@ -11,7 +11,8 @@ import {
 } from "../../../drizzle/schema";
 import { money, toDbMoney } from "../money";
 import { getActiveLock } from "../periodLockService";
-import { type Actor, withTx } from "../tx";
+import { type Actor } from "../tx";
+import { withSupplierBookReversalTx } from "../purchase/supplierBookReversalTx";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { assertBranchOwnership } from "./helpers";
 import {
@@ -54,7 +55,8 @@ export async function cancelVoucher(
   receiptId: number,
   actor: Actor,
 ): Promise<CancelVoucherResult> {
-  return withTx(async (tx) => {
+  // Owner auto-approval may reverse a BOOK source in this same transaction.
+  return withSupplierBookReversalTx(async () => ({ sourceReceiptId: receiptId }), async (tx) => {
     let [preview] = await tx
       .select()
       .from(receipts)

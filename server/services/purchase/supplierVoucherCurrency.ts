@@ -79,6 +79,7 @@ export function supplierVoucherCurrencyAmount(
   amount: string,
   used: { amount: string; currencyAmount: string },
   creditReturns: string,
+  creditCurrencyAmount?: string,
 ): string {
   if (invoice.currency === "IQD") return toDbMoney(amount);
   const rate = money(invoice.agreedRate);
@@ -94,7 +95,7 @@ export function supplierVoucherCurrencyAmount(
   return cumulativeCurrencyDelta(
     toDbMoney(money(invoice.totalAmount).minus(creditReturns)),
     toDbMoney(
-      money(invoice.usdTotal).minus(usdReturnAmountWithFinalResidual(invoice.usdTotal, invoice.totalAmount, creditReturns, 0)),
+      money(invoice.usdTotal).minus(creditCurrencyAmount ?? usdReturnAmountWithFinalResidual(invoice.usdTotal, invoice.totalAmount, creditReturns, 0)),
     ),
     toDbMoney(money(invoice.legacySettledAmount).plus(used.amount)),
     toDbMoney(
