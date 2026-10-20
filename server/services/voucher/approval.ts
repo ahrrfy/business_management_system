@@ -57,6 +57,8 @@ import {
   type ExternalTreasuryDisbursementApproval,
 } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
+import { withSupplierBookReversalTx } from "../purchase/supplierBookReversalTx";
+import { unapplySupplierBookSettlementSourceTx } from "../purchase/supplierBookSettlement";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import {
   voucherApprovalRetainsLegacy,
@@ -514,7 +516,12 @@ export async function approveVoucher(
   actor: Actor,
   options?: ApproveVoucherOptions,
 ): Promise<ApproveVoucherResult> {
-  return withTx((tx) => approveVoucherTx(tx, receiptId, actor, options));
+  return withSupplierBookReversalTx(async (tx) => {
+    const [receipt] = await tx.select({ referenceNumber: receipts.referenceNumber })
+      .from(receipts).where(eq(receipts.id, receiptId)).limit(1);
+    const originalId = /^CANCEL-VCH-(\d+)$/.exec(receipt?.referenceNumber ?? "")?.[1];
+    return originalId ? { sourceReceiptId: Number(originalId) } : null;
+  }, (tx) => approveVoucherTx(tx, receiptId, actor, options));
 }
 
 /**
@@ -2016,6 +2023,13 @@ export async function approveVoucherTx(
       request: systemRequest,
       approverUserId: actor.userId,
     });
+  }
+
+  if (cancellationOriginal) {
+    await unapplySupplierBookSettlementSourceTx(tx, {
+      sourceReceiptId: Number(cancellationOriginal.id),
+      reversalKey: `VOUCHER_CANCELLATION:${receiptId}`,
+    }, actor);
   }
 
   if (

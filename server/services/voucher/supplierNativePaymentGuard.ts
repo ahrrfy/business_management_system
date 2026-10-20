@@ -10,6 +10,7 @@ import {
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { money } from "../money";
+import { loadSupplierBookInvoiceTotals } from "../purchase/supplierBookProjection";
 
 /** Native AP is settled only through invoice allocations, never a generic voucher. */
 export async function assertNoNativeSupplierDebtForGenericPaymentTx(
@@ -48,6 +49,7 @@ export async function assertNoNativeSupplierDebtForGenericPaymentTx(
     : invoiceQuery);
   if (!invoices.length) return;
   const invoiceIds = invoices.map((invoice) => Number(invoice.id));
+  const bookTotals = await loadSupplierBookInvoiceTotals(tx, invoiceIds, options);
   // Raw locking reads avoid a pre-lock REPEATABLE READ snapshot in SQL sums/subqueries.
   const allocationQuery = tx
     .select()
@@ -117,6 +119,8 @@ export async function assertNoNativeSupplierDebtForGenericPaymentTx(
       )
       .minus(paid.get(Number(row.id)) ?? money(0))
       .minus(credited.get(Number(row.id)) ?? money(0))
+      .minus(bookTotals.get(Number(row.id))?.paidAmount ?? 0)
+      .minus(bookTotals.get(Number(row.id))?.creditedAmount ?? 0)
       .gt(0),
   );
   if (outstanding) {

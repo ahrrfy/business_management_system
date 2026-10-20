@@ -2521,6 +2521,13 @@
 			"when": 1788148856000,
 			"tag": "0398_job_applicant_full_package",
 			"breakpoints": true
+		},
+		{
+			"idx": 399,
+			"version": "5",
+			"when": 1788148857000,
+			"tag": "0399_supplier_book_settlement_sources",
+			"breakpoints": true
 		}
 	]
 }

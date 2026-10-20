@@ -51,6 +51,8 @@ import { money, round2, sumMoney, toDbMoney, toDbQty } from "../money";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { shiftIdForCashTx } from "../shiftService";
 import { withTx, type Actor } from "../tx";
+import { withSupplierBookReversalTx } from "./supplierBookReversalTx";
+import { unapplySupplierBookSettlementSourceTx } from "./supplierBookSettlement";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
 import { purchaseReturnReversalTrigger, purchaseReturnTrigger } from "@shared/approvalTriggers";
@@ -1099,7 +1101,13 @@ export async function decidePurchaseReturnReversal(input: DecidePurchaseReturnRe
   const key = required(input.decisionKey, "مفتاح القرار", 120);
   const reviewReason = required(input.reviewReason, "سبب القرار", 500);
   const hash = decisionHash(input.requestId, input.action, reviewReason);
-  return withTx(async (tx) => {
+  return withSupplierBookReversalTx(async (tx) => {
+    const [source] = await tx.select({ accountingEntryId: purchaseReturns.accountingEntryId })
+      .from(purchaseReturnReversalRequests)
+      .innerJoin(purchaseReturns, eq(purchaseReturns.id, purchaseReturnReversalRequests.purchaseReturnId))
+      .where(eq(purchaseReturnReversalRequests.id, input.requestId)).limit(1);
+    return source?.accountingEntryId == null ? null : { sourceAccountingEntryId: Number(source.accountingEntryId) };
+  }, async (tx) => {
     const preview = (await tx.select().from(purchaseReturnReversalRequests).where(eq(purchaseReturnReversalRequests.id, input.requestId)).limit(1))[0];
     if (!preview)
       throw new TRPCError({
@@ -1240,6 +1248,13 @@ export async function decidePurchaseReturnReversal(input: DecidePurchaseReturnRe
       } else {
         assertNonPhysicalOutReceipt({ classification: "NON_CASH_METHOD", paymentMethod: purchaseReturn.paymentMethod, cashBucket: null, approvalStatus: "APPROVED", operation: "إعادة استرداد مرتجع للمورد" });
       }
+    }
+    if (purchaseReturn.accountingEntryId != null) {
+      await unapplySupplierBookSettlementSourceTx(tx, {
+        sourceAccountingEntryId: Number(purchaseReturn.accountingEntryId),
+        amount: toDbMoney(total),
+        reversalKey: `PURCHASE_RETURN_REVERSAL_REQUEST:${input.requestId}`,
+      }, actor);
     }
     await postEntry(tx, { entryType: "RETURN", branchId: Number(purchaseReturn.branchId), purchaseOrderId: Number(purchaseReturn.purchaseOrderId), supplierId: Number(purchaseReturn.supplierId), purchaseLiabilityAccount: "AP", cost: inventory, taxAmount: tax, amount: total, profit: variance, createdBy: actor.userId, dedupeKey, notes: request.reason, postingIntent: createPostingIntent("RETURN_PURCHASE_INVENTORY", "RETURN", [debitLine("INVENTORY", inventory), ...(tax.gt(0) ? [debitLine("TAX_PAYABLE", tax)] : []), ...(variance.lt(0) ? [debitLine("PURCHASE_PRICE_VARIANCE", variance.abs())] : []), creditLine("AP", total), ...(variance.gt(0) ? [creditLine("PURCHASE_PRICE_VARIANCE", variance)] : [])], source), postingSourceComponents: source });
     const accountingEntryId = await entryId(tx, dedupeKey);

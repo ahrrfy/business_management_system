@@ -1,3 +1,4 @@
+import { loadSupplierBookSourceClaims, supplierBookSourceClaimedSql } from "../purchase/supplierBookProjection";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import Decimal from "decimal.js";
 import { alias } from "drizzle-orm/mysql-core";
@@ -12,6 +13,7 @@ import {
   purchaseOrders,
   receipts,
   suppliers,
+  supplierBookSettlementSources,
   users,
 } from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -145,6 +147,51 @@ export async function getAPAging(
   `);
   const data = (rows as any)[0] ?? rows;
   if (!Array.isArray(data)) return [];
+  // Explicit BOOK targets supersede the old supplier-wide FIFO age estimate.
+  // Ledger balances and movement totals remain unchanged; only invoice age attribution changes.
+  const bookSupplierRows = data.length ? await db.selectDistinct({ supplierId: supplierBookSettlementSources.supplierId })
+    .from(supplierBookSettlementSources).where(and(
+      inArray(supplierBookSettlementSources.supplierId, data.map((row: any) => Number(row.supplierId))),
+      opts.branchId == null ? undefined : eq(supplierBookSettlementSources.branchId, opts.branchId),
+    )) : [];
+  if (bookSupplierRows.length) {
+    const orders = await db.select().from(purchaseOrders).where(and(
+      inArray(purchaseOrders.supplierId, bookSupplierRows.map(row => Number(row.supplierId))),
+      inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]),
+      opts.branchId == null ? undefined : eq(purchaseOrders.branchId, opts.branchId),
+    )).limit(20_001);
+    if (orders.length > 20_000) throw new Error("BOOK aging order scope exceeds safe bound");
+    const projections = await loadPurchaseSettlements(db, orders);
+    const dates = orders.length ? await db.select({ poId: accountingEntries.purchaseOrderId,
+      recognitionDate: sql<string>`DATE_FORMAT(MIN(CASE WHEN ${isSupplierApRecognitionSql(ACCT)} THEN ${accountingEntries.entryDate} END), '%Y-%m-%d')`,
+      ageDays: sql<number>`DATEDIFF(UTC_DATE(), MIN(CASE WHEN ${isSupplierApRecognitionSql(ACCT)} THEN ${accountingEntries.entryDate} END))`,
+    }).from(accountingEntries).where(inArray(accountingEntries.purchaseOrderId, orders.map(row => Number(row.id)))).groupBy(accountingEntries.purchaseOrderId) : [];
+    const datesByPo = new Map(dates.map(row => [Number(row.poId), row]));
+    const bookSupplierIds = new Set(bookSupplierRows.map(row => Number(row.supplierId)));
+    const ordersBySupplier = new Map<number, typeof orders>();
+    for (const order of orders) {
+      const supplierOrders = ordersBySupplier.get(Number(order.supplierId)) ?? [];
+      supplierOrders.push(order);
+      ordersBySupplier.set(Number(order.supplierId), supplierOrders);
+    }
+    for (const row of data as any[]) {
+      if (!bookSupplierIds.has(Number(row.supplierId))) continue;
+      const totals = { d0_30: money(0), d31_60: money(0), d61_90: money(0), d91p: money(0) };
+      let oldest: string | null = null;
+      for (const order of ordersBySupplier.get(Number(row.supplierId)) ?? []) {
+        const date = datesByPo.get(Number(order.id));
+        if (!date?.recognitionDate) continue;
+        const remaining = money(projections.get(Number(order.id))?.remainingAmountIqd);
+        const key = Number(date.ageDays) <= 30 ? "d0_30" : Number(date.ageDays) <= 60 ? "d31_60" : Number(date.ageDays) <= 90 ? "d61_90" : "d91p";
+        totals[key] = totals[key].plus(remaining);
+        const day = String(date.recognitionDate).slice(0, 10);
+        if (remaining.gt(0) && (oldest == null || day < oldest)) oldest = day;
+      }
+      Object.assign(row, Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, toDbMoney(value)])), {
+        unpaidTotal: toDbMoney(sumMoney(Object.values(totals))), oldestPoDate: oldest,
+      });
+    }
+  }
   return (data as any[])
     .map((r) => {
       const scopedBalance = money(r.currentBalance);
@@ -465,8 +512,8 @@ export async function getSupplierStatement(
           periodTotal: sql<string>`COALESCE(SUM(CASE WHEN ${periodPurchasePredicate} THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
           balance: sql<string>`COALESCE(SUM(${supplierApEffectSql(ACCT, { includeOpening: false })}), 0)`,
           linkedPaid: sql<string>`COALESCE(SUM(CASE
-            WHEN ${accountingEntries.entryType} IN ('PAYMENT_OUT','EXCHANGE_SETTLE') AND COALESCE(${accountingEntries.dedupeKey},'') NOT LIKE 'PURCHASE_RETURN_REVERSAL_PAYMENT:%' THEN ${accountingEntries.amount}
-            WHEN ${accountingEntries.entryType} = 'PAYMENT_IN' AND COALESCE(${accountingEntries.dedupeKey},'') NOT LIKE 'PURCHASE_RETURN_REFUND:%' THEN -${accountingEntries.amount}
+            WHEN ${accountingEntries.entryType} IN ('PAYMENT_OUT','EXCHANGE_SETTLE') AND COALESCE(${accountingEntries.dedupeKey},'') NOT LIKE 'PURCHASE_RETURN_REVERSAL_PAYMENT:%' AND NOT ${supplierBookSourceClaimedSql(accountingEntries.id)} THEN ${accountingEntries.amount}
+            WHEN ${accountingEntries.entryType} = 'PAYMENT_IN' AND COALESCE(${accountingEntries.dedupeKey},'') NOT LIKE 'PURCHASE_RETURN_REFUND:%' AND NOT ${supplierBookSourceClaimedSql(accountingEntries.id)} THEN -${accountingEntries.amount}
             ELSE 0 END),0)`,
           recognitionDate: sql<Date | null>`MIN(CASE WHEN ${recognitionSql} THEN ${accountingEntries.entryDate} END)`,
         })
@@ -498,7 +545,7 @@ export async function getSupplierStatement(
     const validGlPaid = money(gl.linkedPaid).gt(0)
       ? money(gl.linkedPaid)
       : money(0);
-    const cappedEffectivePaid = Decimal.min(effectivePaid, total);
+    const cappedEffectivePaid = Decimal.min(nonNegativeStatementMoney(effectivePaid.minus(settlement.bookPaidAmountIqd ?? 0)), total);
     const settledBeyondGl = nonNegativeStatementMoney(
       cappedEffectivePaid.minus(validGlPaid),
     );
@@ -672,9 +719,10 @@ export async function getSupplierStatement(
   // دخل الحساب فعلاً وخفّض ما ندين به، لكن لم يُخصَّص بعد لفاتورةٍ محدَّدة فيبقى غامضاً في
   // الشاشة القديمة. يُحسَب ضمن نفس فلتر الفترة/الفرع المُطبَّق على `payments` أعلاه،
   // مع استبعاد ما تم تسويته فعلياً على الأوامر (كالتسوية التلقائية FIFO).
+  const bookSourceClaims = await loadSupplierBookSourceClaims(db, payments.map(row => Number(row.id)));
   const rawUnallocatedPayments = payments.reduce(
     (acc, p) =>
-      p.entryType === "PAYMENT_OUT" && p.purchaseOrderId == null
+      p.entryType === "PAYMENT_OUT" && p.purchaseOrderId == null && !bookSourceClaims.has(Number(p.id))
         ? acc.plus(money(p.amount))
         : acc,
     money(0),

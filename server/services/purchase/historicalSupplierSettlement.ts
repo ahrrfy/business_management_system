@@ -1,3 +1,4 @@
+import { supplierBookSettlementSources } from "../../../drizzle/schema";
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import {
@@ -643,7 +644,7 @@ async function scan(
         .limit(limit + 1)
     : [];
   bounded(sourceShifts, limit, "الأدراج الأصلية");
-  const legacySourceClaims = receiptIds.length
+  const legacyClaims = receiptIds.length
     ? bounded(
         await tx
           .select()
@@ -665,6 +666,13 @@ async function scan(
         "روابط الدفع الإرثية",
       )
     : [];
+  // Permanent ownership includes fully reversed sources; the original source cannot be adopted twice.
+  const bookSourceClaims = receiptIds.length ? bounded(await tx
+    .select({ sourceReceiptId: supplierBookSettlementSources.sourceReceiptId, sourceAccountingEntryId: supplierBookSettlementSources.sourceAccountingEntryId })
+    .from(supplierBookSettlementSources)
+    .where(or(inArray(supplierBookSettlementSources.sourceReceiptId, receiptIds), inArray(supplierBookSettlementSources.sourceAccountingEntryId, receiptEntries.map(row => row.id))))
+    .limit(limit + 1), limit, "BOOK source claims") : [];
+  const legacySourceClaims = [...legacyClaims, ...bookSourceClaims];
   for (const supplier of supplierRows) {
     const ledgerBalance = ledger
       .filter(({ row }) => row.supplierId === supplier.id)

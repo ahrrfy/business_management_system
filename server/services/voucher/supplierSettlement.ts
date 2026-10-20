@@ -165,6 +165,7 @@ export async function prepareSupplierVoucherSettlementTx(
           ),
         },
         toDbMoney(reservations?.creditReturns.get(row.supplierInvoiceId) ?? 0),
+        toDbMoney(reservations?.creditCurrencyAmounts.get(row.supplierInvoiceId) ?? 0),
       ),
     }));
   } catch (error) {

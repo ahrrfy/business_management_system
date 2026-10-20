@@ -1,3 +1,4 @@
+import { loadSupplierBookSourceClaims } from "./supplierBookProjection";
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
@@ -145,6 +146,8 @@ export async function assertAttestedPaymentEvidenceTx(
   )
     fail("يوجد قيد صرف أو صيرفة لاحق مجهول أو خارج ذمة المورد");
   if (later.length) {
+    if ((await loadSupplierBookSourceClaims(tx, later.map(row => Number(row.id)), { currentRead: true })).size)
+      fail("قيد سداد لاحق مملوك لتسوية BOOK؛ لا يجوز إعادة استخدام مصدر مثبت");
     const payments = bounded(
       await tx
         .select()
