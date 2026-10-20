@@ -23,6 +23,7 @@ import {
 import type { DB, Tx } from "../../db";
 import { money, round2, toDbMoney } from "../money";
 import { GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP } from "../ledger/supplierApEffect";
+import { usdReturnAmountWithFinalResidual } from "./returnGovernance";
 
 export type PurchaseSettlementProjection = PurchaseSettlementEvidence;
 
@@ -448,7 +449,12 @@ export async function loadPurchaseSettlements(
         currencyCredited = currencyCredited.plus(
           dollars
             ? rate.gt(0)
-              ? round2(netCredit.div(rate))
+              ? usdReturnAmountWithFinalResidual(
+                  invoice.usdTotal,
+                  invoice.totalAmount,
+                  toDbMoney(netCredit),
+                  0,
+                )
               : money(0)
             : netCredit,
         );
