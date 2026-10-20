@@ -34,6 +34,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { variantDisplayName } from "@shared/variantDisplay";
 import { estimatedPurchaseUnitPrice } from "@/components/invoice/purchasePrice";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
 type RequisitionRow = RouterOutputs["purchases"]["requisitions"][number];
 type RequisitionDetail = RouterOutputs["purchases"]["requisition"];
@@ -181,18 +182,45 @@ export default function PurchaseRequisitions() {
     setDraft(detailToDraft(detail.data));
   }, [editorId, detail.data]);
 
+  const [catalogSearch, setCatalogSearch] = useState("");
+  const debouncedCatalogSearch = useDebouncedValue(catalogSearch, 200);
   const catalog = trpc.catalog.forPurchase.useQuery(
-    { branchId: draft.branchId, query: "", limit: 500 },
+    { branchId: draft.branchId, query: debouncedCatalogSearch, limit: 500 },
     { enabled: editorId != null && draft.branchId > 0 },
   );
-  const catalogByUnit = useMemo(
-    () =>
-      new Map(
-        (catalog.data ?? []).map((row) => [Number(row.productUnitId), row]),
-      ),
-    [catalog.data],
-  );
+  const [cachedCatalogRows, setCachedCatalogRows] = useState<
+    Map<number, CatalogRow>
+  >(() => new Map());
+  useEffect(() => {
+    setCachedCatalogRows(new Map());
+    setCatalogSearch("");
+  }, [draft.branchId, editorId]);
+  useEffect(() => {
+    if (!catalog.data?.length) return;
+    setCachedCatalogRows((prev) => {
+      const next = new Map(prev);
+      for (const row of catalog.data) {
+        next.set(Number(row.productUnitId), row);
+      }
+      return next;
+    });
+  }, [catalog.data]);
+  const catalogByUnit = useMemo(() => {
+    const merged = new Map(cachedCatalogRows);
+    for (const row of catalog.data ?? []) {
+      merged.set(Number(row.productUnitId), row);
+    }
+    return merged;
+  }, [cachedCatalogRows, catalog.data]);
   const [productUnitId, setProductUnitId] = useState("");
+  const catalogOptions = useMemo(() => {
+    const rows = catalog.data ?? [];
+    if (!productUnitId) return rows;
+    const selectedId = Number(productUnitId);
+    if (rows.some((r) => Number(r.productUnitId) === selectedId)) return rows;
+    const cached = catalogByUnit.get(selectedId);
+    return cached ? [cached, ...rows] : rows;
+  }, [catalog.data, catalogByUnit, productUnitId]);
 
   const invalidate = async () => {
     await Promise.all([
@@ -671,12 +699,15 @@ export default function PurchaseRequisitions() {
                   <div className="min-w-64 flex-1 space-y-1">
                     <Label htmlFor="requisition-product">إضافة صنف ووحدة</Label>
                     <AppSelect
-                      id="requisition-product" searchable searchPlaceholder="ابحث عن صنف أو SKU..."
+                      id="requisition-product"
+                      searchable
+                      searchPlaceholder="ابحث عن صنف أو SKU..."
+                      onSearchChange={setCatalogSearch}
                       value={productUnitId}
                       onValueChange={setProductUnitId}
                     >
                       <option value="">اختر من كتالوج الفرع</option>
-                      {(catalog.data ?? []).map((row) => (
+                      {catalogOptions.map((row) => (
                         <option
                           key={row.productUnitId}
                           value={row.productUnitId}

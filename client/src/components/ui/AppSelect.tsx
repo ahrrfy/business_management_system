@@ -85,6 +85,8 @@ interface AppSelectProps {
   searchable?: boolean;
   /** نص تلميح حقل البحث الداخلي عند تفعيل `searchable`. */
   searchPlaceholder?: string;
+  /** استدعاء اختياري عند تغيّر نص البحث الداخلي (لمزامنة البحث الخادمي عند الحاجة). */
+  onSearchChange?: (query: string) => void;
   /** أطفال `<option>`/`<optgroup>` — يُحلَّلون بنيوياً إلى SelectItem/SelectGroup. */
   children: React.ReactNode;
 }
@@ -409,6 +411,7 @@ function SearchableAppSelect({
   required,
   "aria-describedby": ariaDescribedBy,
   searchPlaceholder,
+  onSearchChange,
   children,
 }: AppSelectProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = React.useState(false);
@@ -438,6 +441,8 @@ function SearchableAppSelect({
   valueRef.current = value;
   const onOpenChangeRef = React.useRef(onOpenChange);
   onOpenChangeRef.current = onOpenChange;
+  const onSearchChangeRef = React.useRef(onSearchChange);
+  onSearchChangeRef.current = onSearchChange;
 
   const [activeIndex, setActiveIndex] = React.useState(() =>
     resolveDefaultActiveIndex(allOptions, value),
@@ -450,6 +455,7 @@ function SearchableAppSelect({
     (nextOpen: boolean) => {
       if (!nextOpen) {
         setSearchQuery("");
+        onSearchChangeRef.current?.("");
       } else {
         setActiveIndex(resolveDefaultActiveIndex(allOptionsRef.current, valueRef.current));
       }
@@ -613,6 +619,7 @@ function SearchableAppSelect({
                 value={searchQuery}
                 onChange={(q) => {
                   setSearchQuery(q);
+                  onSearchChangeRef.current?.(q);
                   if (!q) {
                     setActiveIndex(resolveDefaultActiveIndex(allOptions, value));
                   } else {
@@ -652,8 +659,6 @@ function SearchableAppSelect({
                     e.stopPropagation();
                     handleOpenChange(false);
                     triggerRef.current?.focus();
-                  } else if (e.key === "Tab") {
-                    handleOpenChange(false);
                   }
                 }}
               />
