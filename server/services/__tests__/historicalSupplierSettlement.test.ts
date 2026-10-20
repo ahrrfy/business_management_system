@@ -6,6 +6,9 @@ import { extractInsertId } from "../../lib/insertId";
 import * as audit from "../auditService";
 import { computeTreasuryCashBalance } from "../cash/cashAvailability";
 import { withTx } from "../tx";
+import { baghdadToday } from "../businessDay";
+import * as businessDay from "../businessDay";
+import { sha256 } from "../purchase/grniAccounting";
 import { cancelVoucher } from "../voucherService";
 import {
   requestSupplierPayment,
@@ -16,6 +19,9 @@ import {
 import {
   previewHistoricalSupplierSettlements,
   adoptHistoricalSupplierSettlement,
+  previewHistoricalReceiptAssignment,
+  adoptHistoricalReceiptAssignment,
+  type HistoricalReceiptAssignment,
 } from "../purchase/historicalSupplierSettlement";
 const db = () => getDb()!;
 const owner = { userId: 9, branchId: 1, role: "manager" };
@@ -232,7 +238,408 @@ const adopt = (episode: { episodeId: string; evidenceHash: string }) =>
     owner,
   );
 
+async function seedKnownNativePair(invoiceSnapshot = "{}") {
+  // Same closed episode: invoice1=60, invoice2=40, known native out40,
+  // then the unallocated historical out60.
+  for (const [index, amount] of ["40.00", "60.00"].entries()) {
+    await db()
+      .update(s.receipts)
+      .set({ amount })
+      .where(eq(s.receipts.id, receiptIds[index]));
+    await db()
+      .update(s.accountingEntries)
+      .set({ amount })
+      .where(eq(s.accountingEntries.receiptId, receiptIds[index]));
+  }
+  const [entry] = await db()
+    .select()
+    .from(s.accountingEntries)
+    .where(eq(s.accountingEntries.receiptId, receiptIds[0]));
+  await db()
+    .insert(s.supplierPaymentRequests)
+    .values({
+      id: 100,
+      requestKey: "KNOWN-NATIVE",
+      supplierId: 1,
+      branchId: 1,
+      currency: "IQD",
+      requestedAmount: "40.00",
+      requestedCurrencyAmount: "40.00",
+      paymentMethod: "CASH",
+      payloadCanonical: "{}",
+      payloadHash: sha256("{}"),
+      evidenceType: "PAYMENT_ORDER",
+      evidenceReference: "known-native-evidence",
+      evidenceHash: "b".repeat(64),
+      reason: "known native payment",
+      status: "APPROVED",
+      requestedBy: 7,
+      reviewedBy: 9,
+      reviewedAt: originalDate,
+      decisionKey: "known-native-approved",
+      decisionHash: "c".repeat(64),
+      appliedAt: originalDate,
+    });
+  await db()
+    .insert(s.supplierPaymentRequestAllocations)
+    .values({
+      id: 100,
+      requestId: 100,
+      supplierInvoiceId: 2,
+      invoiceVersion: 1,
+      requestedAmount: "40.00",
+      requestedCurrencyAmount: "40.00",
+      invoiceSnapshot,
+      invoiceHash: sha256("{}"),
+    });
+  await db()
+    .insert(s.supplierPayments)
+    .values({
+      id: 100,
+      paymentNumber: "KNOWN-NATIVE",
+      requestId: 100,
+      supplierId: 1,
+      branchId: 1,
+      currency: "IQD",
+      amount: "40.00",
+      currencyAmount: "40.00",
+      paymentMethod: "CASH",
+      receiptId: receiptIds[0],
+      accountingEntryId: entry.id,
+      payloadCanonical: "{}",
+      payloadHash: sha256("{}"),
+      postedBy: 9,
+      postedAt: originalDate,
+    });
+  await db()
+    .insert(s.supplierPaymentAllocations)
+    .values({
+      id: 100,
+      supplierPaymentId: 100,
+      requestAllocationId: 100,
+      supplierInvoiceId: 2,
+      allocatedAmount: "40.00",
+      allocatedCurrencyAmount: "40.00",
+      invoiceHash: sha256("{}"),
+    });
+  await db()
+    .update(s.supplierPaymentRequestAllocations)
+    .set({ activeInvoiceGuard: null })
+    .where(eq(s.supplierPaymentRequestAllocations.id, 100));
+  await db()
+    .update(s.supplierInvoices)
+    .set({ paymentGate: "SETTLED", version: 2 })
+    .where(eq(s.supplierInvoices.id, 2));
+}
+
+async function seedLaterReturn(poId: number) {
+  const entryId = extractInsertId(
+    await db().insert(s.accountingEntries).values({
+      entryType: "RETURN",
+      amount: "-1.00",
+      entryDate: "2026-01-04",
+      purchaseOrderId: poId,
+      supplierId: 1,
+      branchId: 1,
+      createdBy: 7,
+    }),
+  );
+  await db().insert(s.purchaseReturns).values({
+    returnNumber: "LATER-RETURN",
+    clientRequestId: "LATER-RETURN",
+    origin: "LEGACY",
+    purchaseOrderId: poId,
+    supplierInvoiceId: poId,
+    supplierId: 1,
+    branchId: 1,
+    accountingEntryId: entryId,
+    netAmount: "1.00",
+    totalAmount: "1.00",
+    creditOffsetAmount: "1.00",
+    settlement: "CREDIT",
+    createdBy: 7,
+    createdByNameSnapshot: "original",
+    reason: "later unrelated return",
+  });
+  await db()
+    .update(s.suppliers)
+    .set({ currentBalance: "-1.00" })
+    .where(eq(s.suppliers.id, 1));
+}
+
 describe("historical supplier settlement evidence adoption", () => {
+  const assignmentInput = (): HistoricalReceiptAssignment => ({
+    version: 1,
+    assignmentKey: "OWNER-FULL-RECEIPT-TEST",
+    supplierId: 1,
+    branchId: 1,
+    receiptId: receiptIds[0],
+    assignmentDate: baghdadToday(),
+    ownerStatement:
+      "I explicitly accept this complete corrective assignment of the existing receipt; it does not claim the original split.",
+    allocations: [
+      { supplierInvoiceId: 1, invoiceVersion: 1, amount: "60.00" },
+      { supplierInvoiceId: 2, invoiceVersion: 1, amount: "10.00" },
+    ],
+  });
+  const assignmentPreview = (input = assignmentInput()) =>
+    previewHistoricalReceiptAssignment(input);
+  const applyAssignment = (
+    input: HistoricalReceiptAssignment,
+    evidenceHash: string,
+  ) =>
+    adoptHistoricalReceiptAssignment(
+      { assignment: input, evidenceHash, ownerAccepted: true },
+      owner,
+    );
+
+  it("assigns the entire existing treasury receipt explicitly, including a partial invoice, with unchanged money and exact replay", async () => {
+    const input = assignmentInput();
+    const before = await snapshot();
+    const cashBefore = await withTx((tx) => computeTreasuryCashBalance(tx, 1));
+    const report = await assignmentPreview(input);
+    expect(await snapshot()).toEqual(before);
+    expect(report.episodes).toHaveLength(1);
+    const episode = report.episodes[0];
+    expect(episode.total).toBe("70.00");
+    expect(episode.receiptIds).toEqual([receiptIds[0]]);
+    const result = await applyAssignment(input, episode.evidenceHash);
+    const after = await snapshot();
+    expect(after.entries).toEqual(before.entries);
+    expect(after.receipts).toEqual(before.receipts);
+    expect(after.suppliers).toEqual(before.suppliers);
+    expect(
+      (await withTx((tx) => computeTreasuryCashBalance(tx, 1))).eq(cashBefore),
+    ).toBe(true);
+    expect(after.payments).toHaveLength(1);
+    expect(after.payments[0].amount).toBe("70.00");
+    expect(after.orders.map((row) => row.paidAmount)).toEqual([
+      "60.00",
+      "10.00",
+    ]);
+    expect(after.invoices.map((row) => row.paymentGate)).toEqual([
+      "SETTLED",
+      "OPEN",
+    ]);
+    expect(result.assignment?.input).toEqual(input);
+    expect(result.assignment?.acceptedBy).toBe(9);
+    vi.spyOn(businessDay, "baghdadToday").mockReturnValue("2099-01-01");
+    expect((await applyAssignment(input, episode.evidenceHash)).replayed).toBe(
+      true,
+    );
+    expect(await snapshot()).toEqual(after);
+    await expect(
+      applyAssignment(
+        {
+          ...input,
+          ownerStatement: `${input.ownerStatement} Changed acceptance.`,
+        },
+        episode.evidenceHash,
+      ),
+    ).rejects.toThrow();
+    expect(await snapshot()).toEqual(after);
+  });
+
+  it("requires explicit acceptance and the active database owner for assignment", async () => {
+    const assignment = assignmentInput();
+    const evidenceHash = (await assignmentPreview()).episodes[0].evidenceHash;
+    const before = await snapshot();
+    await expect(
+      adoptHistoricalReceiptAssignment(
+        { assignment, evidenceHash, ownerAccepted: false as true },
+        owner,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      adoptHistoricalReceiptAssignment(
+        { assignment, evidenceHash, ownerAccepted: true },
+        maker,
+      ),
+    ).rejects.toThrow();
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("rejects backdated acceptance on a new assignment", async () => {
+    const input = { ...assignmentInput(), assignmentDate: "2026-01-04" };
+    const episode = (await assignmentPreview(input)).episodes[0];
+    const before = await snapshot();
+    await expect(
+      applyAssignment(input, episode.evidenceHash),
+    ).rejects.toThrow();
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it.each([
+    "PARTIAL_HEADER",
+    "OVERALLOCATED",
+    "STALE_VERSION",
+    "FUTURE_RECOGNITION",
+    "RETURN",
+    "LEGACY_SOURCE_CLAIM",
+    "NOT_TREASURY",
+  ])("rejects invalid explicit assignment evidence: %s", async (kind) => {
+    const input = assignmentInput();
+    if (kind === "PARTIAL_HEADER") input.allocations[1].amount = "9.00";
+    if (kind === "OVERALLOCATED") {
+      input.allocations[0].amount = "61.00";
+      input.allocations[1].amount = "9.00";
+    }
+    if (kind === "STALE_VERSION") input.allocations[0].invoiceVersion = 2;
+    if (kind === "FUTURE_RECOGNITION")
+      await db()
+        .update(s.accountingEntries)
+        .set({ createdAt: new Date("2026-01-04T00:00:00Z") })
+        .where(eq(s.accountingEntries.id, creditEntryIds[0]));
+    if (kind === "RETURN") await seedLaterReturn(1);
+    if (kind === "NOT_TREASURY")
+      await db()
+        .update(s.receipts)
+        .set({ cashBucket: null })
+        .where(eq(s.receipts.id, receiptIds[0]));
+    if (kind === "LEGACY_SOURCE_CLAIM") {
+      const [entry] = await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.receiptId, receiptIds[0]));
+      await db()
+        .insert(s.legacySupplierInvoiceSettlements)
+        .values({
+          supplierInvoiceId: 1,
+          sourceAccountingEntryId: entry.id,
+          sourceReceiptId: receiptIds[0],
+          direction: "PAYMENT_OUT",
+          amount: "70.00",
+          evidenceSnapshot: "{}",
+          evidenceHash: "a".repeat(64),
+        });
+    }
+    const before = await snapshot();
+    expect((await assignmentPreview(input)).episodes).toHaveLength(0);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("rejects stale source evidence and rolls back assignment on audit failure", async () => {
+    const input = assignmentInput();
+    const episode = (await assignmentPreview(input)).episodes[0];
+    await db()
+      .update(s.receipts)
+      .set({ description: "Changed source evidence" })
+      .where(eq(s.receipts.id, receiptIds[0]));
+    const before = await snapshot();
+    await expect(
+      applyAssignment(input, episode.evidenceHash),
+    ).rejects.toThrow();
+    expect(await snapshot()).toEqual(before);
+    const fresh = (await assignmentPreview(input)).episodes[0];
+    vi.spyOn(audit, "logAuditTx").mockRejectedValueOnce(
+      new Error("assignment audit failed"),
+    );
+    await expect(applyAssignment(input, fresh.evidenceHash)).rejects.toThrow(
+      "assignment audit failed",
+    );
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("adopts only residual evidence in a closed mixed episode, preserving known native pairs and later unrelated returns", async () => {
+    await seedKnownNativePair();
+    await seedLaterReturn(2);
+    const report = await preview();
+    expect(report.episodes).toHaveLength(1);
+    const episode = report.episodes[0];
+    expect(episode.invoiceIds).toEqual([1]);
+    expect(episode.receiptIds).toEqual([receiptIds[1]]);
+    expect(episode.total).toBe("60.00");
+    const before = await snapshot();
+    const cashBefore = await withTx((tx) => computeTreasuryCashBalance(tx, 1));
+    const result = await adopt(episode);
+    const after = await snapshot();
+    expect(result.paymentIds).toHaveLength(1);
+    expect(after.receipts).toEqual(before.receipts);
+    expect(after.entries).toEqual(before.entries);
+    expect(after.suppliers).toEqual(before.suppliers);
+    expect(after.payments.find((row) => row.id === 100)).toEqual(
+      before.payments[0],
+    );
+    expect(after.allocations.find((row) => row.id === 100)).toEqual(
+      before.allocations[0],
+    );
+    expect(after.requests.find((row) => row.id === 100)).toEqual(
+      before.requests[0],
+    );
+    expect(after.requestAllocations.find((row) => row.id === 100)).toEqual(
+      before.requestAllocations[0],
+    );
+    expect(after.invoices.find((row) => row.id === 2)).toEqual(
+      before.invoices.find((row) => row.id === 2),
+    );
+    expect(
+      (await withTx((tx) => computeTreasuryCashBalance(tx, 1))).eq(cashBefore),
+    ).toBe(true);
+    expect(
+      after.allocations.find((row) => row.supplierInvoiceId === 1)
+        ?.allocatedAmount,
+    ).toBe("60.00");
+  });
+
+  it.each([
+    "BAD_AMOUNT",
+    "REFUND",
+    "UNKNOWN_SOURCE",
+    "PAYLOAD_HASH",
+    "SNAPSHOT_HASH",
+    "ACTOR",
+  ])("retains rejection for an unproved known pair: %s", async (kind) => {
+    await seedKnownNativePair(
+      kind === "SNAPSHOT_HASH" ? '{"changed":true}' : "{}",
+    );
+    if (kind === "BAD_AMOUNT")
+      await db()
+        .update(s.supplierPayments)
+        .set({ amount: "41.00", currencyAmount: "41.00" })
+        .where(eq(s.supplierPayments.id, 100));
+    if (kind === "REFUND")
+      await db()
+        .update(s.supplierPaymentAllocations)
+        .set({ refundedAmount: "1.00", refundedCurrencyAmount: "1.00" })
+        .where(eq(s.supplierPaymentAllocations.id, 100));
+    if (kind === "UNKNOWN_SOURCE")
+      await db()
+        .update(s.receipts)
+        .set({ cashBucket: null })
+        .where(eq(s.receipts.id, receiptIds[0]));
+    if (kind === "PAYLOAD_HASH")
+      await db()
+        .update(s.supplierPayments)
+        .set({ payloadHash: "f".repeat(64) })
+        .where(eq(s.supplierPayments.id, 100));
+    if (kind === "ACTOR")
+      await db()
+        .update(s.supplierPayments)
+        .set({ postedBy: 7 })
+        .where(eq(s.supplierPayments.id, 100));
+    const before = await snapshot();
+    expect((await preview()).episodes).toHaveLength(0);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("still rejects a return against the residual invoice", async () => {
+    await seedKnownNativePair();
+    await seedLaterReturn(1);
+    expect((await preview()).episodes).toHaveLength(0);
+  });
+
+  it("invalidates the residual evidence hash when removed native proof changes", async () => {
+    await seedKnownNativePair();
+    const episode = (await preview()).episodes[0];
+    await db()
+      .update(s.supplierPaymentRequests)
+      .set({ reason: "changed original evidence" })
+      .where(eq(s.supplierPaymentRequests.id, 100));
+    const before = await snapshot();
+    await expect(adopt(episode)).rejects.toThrow();
+    expect(await snapshot()).toEqual(before);
+  });
+
   it("previews a closed episode read-only and allocates each historical payment FIFO", async () => {
     const before = await snapshot();
     const report = await preview();

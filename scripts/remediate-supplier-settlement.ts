@@ -3,6 +3,8 @@
  * --inspect [--supplier-id N] [--branch-id N] [--out NEW_JSON_PATH]
  * --adopt --input PREVIEW_JSON --actor-id N --branch-id N
  * --record-attested --input OWNER_ATTESTATION_JSON --actor-id N --branch-id N
+ * --preview-assignment --input FULL_RECEIPT_ASSIGNMENT_JSON
+ * --adopt-assignment --input ACCEPTED_ASSIGNMENT_WITH_HASH_JSON --actor-id N --branch-id N
  * Adoption links already-posted money; attestation records explicitly confirmed
  * missing payments today through the native engine, preserving actual dates as evidence.
  */
@@ -18,7 +20,10 @@ import {
 } from "../server/services/purchase/attestedSupplierSettlement";
 import {
   adoptHistoricalSupplierSettlement,
+  adoptHistoricalReceiptAssignment,
+  previewHistoricalReceiptAssignment,
   previewHistoricalSupplierSettlements,
+  type HistoricalReceiptAssignment,
 } from "../server/services/purchase/historicalSupplierSettlement";
 import type { Actor } from "../server/services/tx";
 
@@ -63,11 +68,40 @@ function emit(result: unknown): void {
 }
 try {
   if (!getDb()) throw new Error("DATABASE_URL is required");
-  const modes = ["--inspect", "--adopt", "--record-attested"].filter((flag) =>
-    args.includes(flag),
-  );
+  const modes = [
+    "--inspect",
+    "--adopt",
+    "--record-attested",
+    "--preview-assignment",
+    "--adopt-assignment",
+  ].filter((flag) => args.includes(flag));
   if (modes.length > 1) throw new Error("Select exactly one repair mode");
-  if (modes[0] === "--adopt") {
+  if (modes[0] === "--preview-assignment") {
+    emit(
+      await previewHistoricalReceiptAssignment(
+        readInput() as HistoricalReceiptAssignment,
+      ),
+    );
+  } else if (modes[0] === "--adopt-assignment") {
+    const input = z
+      .object({
+        assignment: z.unknown(),
+        evidenceHash: z.string().regex(/^[a-f0-9]{64}$/),
+        ownerAccepted: z.literal(true),
+      })
+      .strict()
+      .parse(readInput());
+    emit({
+      mode: "ADOPT_OWNER_ACCEPTED_FULL_RECEIPT_ASSIGNMENT",
+      result: await adoptHistoricalReceiptAssignment(
+        {
+          ...input,
+          assignment: input.assignment as HistoricalReceiptAssignment,
+        },
+        await owner(),
+      ),
+    });
+  } else if (modes[0] === "--adopt") {
     const input = z
       .object({
         version: z.literal(1),

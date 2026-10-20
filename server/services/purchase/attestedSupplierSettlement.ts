@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { and, asc, eq, gt, inArray } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import {
   accountingEntries,
@@ -27,6 +27,7 @@ import {
   requestSupplierPaymentInTx,
   decideSupplierPaymentInTx,
 } from "./supplierPayments";
+import { assertAttestedPaymentEvidenceTx } from "./attestedPaymentEvidence";
 
 const schema = z
   .object({
@@ -170,6 +171,10 @@ export async function recordAttestedSupplierSettlement(
         invoiceRecognitionDate: string;
       }
     > = [];
+    const priorPaymentEvidence: Array<{
+      supplierInvoiceId: number;
+      proof: Awaited<ReturnType<typeof assertAttestedPaymentEvidenceTx>>;
+    }> = [];
     for (const row of input.payments) {
       const [invoice] = await tx
         .select()
@@ -217,27 +222,14 @@ export async function recordAttestedSupplierSettlement(
           "الفاتورة أو الأمر أو المبلغ أو النسخة أو التاريخ لا يطابق إقرار الدفع الكامل",
         );
       // A posted but unallocated payment could be the missing link itself. Never disburse it again.
-      const laterPayments = await tx
-        .select({ id: accountingEntries.id })
-        .from(accountingEntries)
-        .where(
-          and(
-            eq(accountingEntries.supplierId, po.supplierId),
-            eq(accountingEntries.branchId, po.branchId),
-            gt(accountingEntries.id, posting.id),
-            inArray(accountingEntries.entryType, [
-              "PAYMENT_OUT",
-              "EXCHANGE_SETTLE",
-            ]),
-          ),
-        )
-        .orderBy(asc(accountingEntries.id))
-        .limit(1001);
-      if (laterPayments.length > 1000)
-        fail("حجم دليل الدفع يتجاوز حد الفحص الآمن");
-      // Conservatively stop if another payment followed this invoice. Its allocation must be reviewed first.
-      if (laterPayments.length)
-        fail("يوجد قيد سداد بعد الفاتورة؛ طابقه قبل تسجيل دفع نقدي إضافي");
+      const proof = await assertAttestedPaymentEvidenceTx(
+        tx,
+        po.supplierId,
+        po.branchId,
+        posting.id,
+        input.payments.map((target) => target.supplierInvoiceId),
+      );
+      priorPaymentEvidence.push({ supplierInvoiceId: invoice.id, proof });
       evidencePayments.push({
         ...row,
         purchaseOrderDate: baghdadToday(po.orderDate),
@@ -403,6 +395,7 @@ export async function recordAttestedSupplierSettlement(
           evidenceText: input.evidenceText,
           recordingDate: input.recordingDate,
           payments: evidencePayments,
+          priorPaymentEvidence,
           correctionRecordedAt: new Date().toISOString(),
         },
       },

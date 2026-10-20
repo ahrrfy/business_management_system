@@ -4,6 +4,7 @@ import {
   accountingEntries,
   auditLogs,
   goodsReceiptItems,
+  legacySupplierInvoiceSettlements,
   purchaseOrderItems,
   purchaseOrderControlRequests,
   purchaseOrderRevisionItems,
@@ -21,6 +22,8 @@ import {
   supplierPaymentRequestAllocations,
   supplierPaymentRequests,
   supplierPayments,
+  supplierPaymentRefunds,
+  supplierPaymentRefundRequests,
   suppliers,
   users,
 } from "../../../drizzle/schema";
@@ -30,6 +33,7 @@ import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { enqueueFinancialRefresh } from "../../realtime/financialRefresh";
 import { logAuditTx } from "../auditService";
+import { baghdadToday } from "../businessDay";
 import {
   computeDrawerCashBalance,
   computeTreasuryCashBalance,
@@ -104,6 +108,17 @@ export type HistoricalSupplierPreviewInput = {
   branchId?: number;
   maxEntries?: number;
 };
+/** An explicit present-day documentary assignment, never proof of the original split. */
+export type HistoricalReceiptAssignment = {
+  version: 1;
+  assignmentKey: string;
+  supplierId: number;
+  branchId: number;
+  receiptId: number;
+  assignmentDate: string;
+  ownerStatement: string;
+  allocations: SupplierVoucherAllocation[];
+};
 export type HistoricalSupplierPreview = {
   version: 1;
   episodes: HistoricalSupplierEpisode[];
@@ -127,7 +142,60 @@ type AdoptionResult = {
   replayed: boolean;
   paymentIds: number[];
   requestIds: number[];
+  assignment?: {
+    input: HistoricalReceiptAssignment;
+    inputHash: string;
+    acceptedBy: number;
+    acceptedAt: string;
+  };
 };
+function checkedAssignment(input: HistoricalReceiptAssignment) {
+  if (
+    !input ||
+    typeof input !== "object" ||
+    input.version !== 1 ||
+    typeof input.assignmentKey !== "string" ||
+    !/^[A-Za-z0-9:_-]{8,100}$/.test(input.assignmentKey) ||
+    ![input.supplierId, input.branchId, input.receiptId].every(
+      (id) => Number.isSafeInteger(id) && id > 0,
+    ) ||
+    typeof input.assignmentDate !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(input.assignmentDate) ||
+    !Number.isFinite(Date.parse(input.assignmentDate)) ||
+    new Date(input.assignmentDate).toISOString().slice(0, 10) !==
+      input.assignmentDate ||
+    input.assignmentDate > baghdadToday() ||
+    typeof input.ownerStatement !== "string" ||
+    input.ownerStatement.trim().length < 30 ||
+    input.ownerStatement.length > 10000 ||
+    !Array.isArray(input.allocations) ||
+    !input.allocations.length ||
+    input.allocations.length > 500 ||
+    input.allocations.some((row) => !row || typeof row !== "object") ||
+    new Set(input.allocations.map((row) => row.supplierInvoiceId)).size !==
+      input.allocations.length
+  )
+    fail("خطة التخصيص الصريحة أو إقرار المالك غير صالح", "BAD_REQUEST");
+  for (const row of input.allocations)
+    if (
+      ![row.supplierInvoiceId, row.invoiceVersion].every(
+        (id) => Number.isSafeInteger(id) && id > 0,
+      ) ||
+      typeof row.amount !== "string" ||
+      !/^\d{1,13}(\.\d{1,2})?$/.test(row.amount) ||
+      !money(row.amount).gt(0)
+    )
+      fail("مبلغ أو إصدار تخصيص غير صالح", "BAD_REQUEST");
+  return {
+    ...input,
+    ownerStatement: input.ownerStatement.trim(),
+    allocations: input.allocations
+      .map((row) => ({ ...row, amount: toDbMoney(row.amount) }))
+      .sort((a, b) => a.supplierInvoiceId - b.supplierInvoiceId),
+  };
+}
+const assignmentEpisodeId = (input: HistoricalReceiptAssignment) =>
+  `HSA:${input.supplierId.toString(36)}:${input.branchId.toString(36)}:${fingerprint(["OWNER_FULL_RECEIPT_ASSIGNMENT", input.assignmentKey]).slice(0, 22)}`;
 type Context = {
   episode: HistoricalSupplierEpisode;
   invoices: Invoice[];
@@ -174,7 +242,11 @@ function assertInput(input: HistoricalSupplierPreviewInput) {
 }
 
 /** A transaction-level snapshot: no gate bootstrap, row locks, cache correction, or writes. */
-async function scan(tx: Tx, input: HistoricalSupplierPreviewInput) {
+async function scan(
+  tx: Tx,
+  input: HistoricalSupplierPreviewInput,
+  assignment?: HistoricalReceiptAssignment,
+) {
   const limit = assertInput(input);
   const supplierRows = bounded(
     await tx
@@ -327,6 +399,69 @@ async function scan(tx: Tx, input: HistoricalSupplierPreviewInput) {
         )
         .groupBy(supplierPaymentAllocations.supplierInvoiceId)
     : [];
+  const claimedIds = claimedPayments.map((row) => row.id);
+  const knownAllocations = claimedIds.length
+    ? bounded(
+        await tx
+          .select()
+          .from(supplierPaymentAllocations)
+          .where(
+            or(
+              inArray(supplierPaymentAllocations.supplierPaymentId, claimedIds),
+              inArray(supplierPaymentAllocations.supplierInvoiceId, invoiceIds),
+            ),
+          )
+          .limit(limit + 1),
+        limit,
+        "دليل التخصيص الأصلي",
+      )
+    : [];
+  const knownRequests = claimedIds.length
+    ? bounded(
+        await tx
+          .select()
+          .from(supplierPaymentRequests)
+          .where(
+            inArray(
+              supplierPaymentRequests.id,
+              claimedPayments.map((row) => row.requestId),
+            ),
+          )
+          .limit(limit + 1),
+        limit,
+        "طلبات الدفع الأصلي",
+      )
+    : [];
+  const knownRefunds = claimedIds.length
+    ? bounded(
+        await tx
+          .select()
+          .from(supplierPaymentRefunds)
+          .where(inArray(supplierPaymentRefunds.supplierPaymentId, claimedIds))
+          .limit(limit + 1),
+        limit,
+        "استردادات الدفع الأصلي",
+      )
+    : [];
+  const pendingKnownRefunds = claimedIds.length
+    ? bounded(
+        await tx
+          .select()
+          .from(supplierPaymentRefundRequests)
+          .where(
+            and(
+              inArray(
+                supplierPaymentRefundRequests.supplierPaymentId,
+                claimedIds,
+              ),
+              eq(supplierPaymentRefundRequests.status, "PENDING"),
+            ),
+          )
+          .limit(limit + 1),
+        limit,
+        "طلبات استرداد الدفع الأصلي",
+      )
+    : [];
   const reservations = invoiceIds.length
     ? bounded(
         await tx
@@ -343,9 +478,15 @@ async function scan(tx: Tx, input: HistoricalSupplierPreviewInput) {
             ),
           )
           .where(
-            inArray(
-              supplierPaymentRequestAllocations.supplierInvoiceId,
-              invoiceIds,
+            or(
+              inArray(
+                supplierPaymentRequestAllocations.supplierInvoiceId,
+                invoiceIds,
+              ),
+              inArray(
+                supplierPaymentRequestAllocations.requestId,
+                claimedPayments.map((row) => row.requestId),
+              ),
             ),
           )
           .limit(limit + 1),
@@ -501,6 +642,28 @@ async function scan(tx: Tx, input: HistoricalSupplierPreviewInput) {
         .limit(limit + 1)
     : [];
   bounded(sourceShifts, limit, "الأدراج الأصلية");
+  const legacySourceClaims = receiptIds.length
+    ? bounded(
+        await tx
+          .select()
+          .from(legacySupplierInvoiceSettlements)
+          .where(
+            or(
+              inArray(
+                legacySupplierInvoiceSettlements.sourceReceiptId,
+                receiptIds,
+              ),
+              inArray(
+                legacySupplierInvoiceSettlements.sourceAccountingEntryId,
+                receiptEntries.map((row) => row.id),
+              ),
+            ),
+          )
+          .limit(limit + 1),
+        limit,
+        "روابط الدفع الإرثية",
+      )
+    : [];
   for (const supplier of supplierRows) {
     const ledgerBalance = ledger
       .filter(({ row }) => row.supplierId === supplier.id)
@@ -514,7 +677,29 @@ async function scan(tx: Tx, input: HistoricalSupplierPreviewInput) {
   }
 
   const branches = new Map<string, typeof ledger>();
-  for (const entry of ledger) {
+  let assignmentRows = ledger;
+  if (assignment) {
+    const source = ledger.filter(
+      ({ row }) => row.receiptId === assignment.receiptId,
+    );
+    const targets = assignment.allocations.map((allocation) =>
+      invoices.find((invoice) => invoice.id === allocation.supplierInvoiceId),
+    );
+    if (
+      source.length !== 1 ||
+      targets.some((invoice) => !invoice?.postingEntryId)
+    )
+      fail("مصدر الدفعة أو قيد الاعتراف المستهدف غير محدد");
+    const postingIds = targets.map((invoice) => invoice!.postingEntryId!);
+    if (new Set(postingIds).size !== postingIds.length)
+      fail("قيود الاعتراف في خطة التخصيص غير مستقلة");
+    assignmentRows = ledger.filter(
+      ({ row }) => row.id === source[0].row.id || postingIds.includes(row.id),
+    );
+    if (assignmentRows.length !== postingIds.length + 1)
+      fail("دليل قيد الاعتراف المستهدف مفقود");
+  }
+  for (const entry of assignmentRows) {
     if (
       money(entry.effect).isZero() ||
       (input.branchId != null && entry.row.branchId !== input.branchId)
@@ -533,9 +718,11 @@ async function scan(tx: Tx, input: HistoricalSupplierPreviewInput) {
       if (!episodeRows.length) return;
       const supplierId = episodeRows[0].row.supplierId!;
       const branchId = episodeRows[0].row.branchId;
-      const episodeId = `HSA:${supplierId.toString(36)}:${(branchId ?? 0).toString(36)}:${fingerprint([episodeRows[0].row.id, episodeRows.at(-1)!.row.id]).slice(0, 22)}`;
+      const episodeId = assignment
+        ? assignmentEpisodeId(assignment)
+        : `HSA:${supplierId.toString(36)}:${(branchId ?? 0).toString(36)}:${fingerprint([episodeRows[0].row.id, episodeRows.at(-1)!.row.id]).slice(0, 22)}`;
       const reasons = new Set<string>();
-      if (!closed) reasons.add("OPEN_EPISODE");
+      if (!closed && !assignment) reasons.add("OPEN_EPISODE");
       if (negative) reasons.add("NEGATIVE_AP_OR_PREPAYMENT");
       if (branchId == null) reasons.add("UNKNOWN_BRANCH");
       if (
@@ -547,7 +734,232 @@ async function scan(tx: Tx, input: HistoricalSupplierPreviewInput) {
       const paymentPlans: HistoricalPayment[] = [];
       const episodeReceipts: Receipt[] = [];
       const available = new Map<number, ReturnType<typeof money>>();
-      for (const { row: entry, effect, recognition } of episodeRows) {
+      // Remove only complete, independently evidenced native pairs. Partial
+      // settlements, cross-episode allocations, refunds and unknown sources
+      // remain in the ordinary rejection path below.
+      const removedIds = new Set<number>();
+      const removedInvoiceIds = new Set<number>();
+      const removedProof: unknown[] = [];
+      if (closed && !negative && branchId != null) {
+        for (const payment of claimedPayments) {
+          const paymentRow = episodeRows.find(
+            ({ row }) => row.id === payment.accountingEntryId,
+          );
+          const receipt = sourceReceipts.find(
+            (row) => row.id === payment.receiptId,
+          );
+          const request = knownRequests.find(
+            (row) => row.id === payment.requestId,
+          );
+          const allocations = knownAllocations.filter(
+            (row) => row.supplierPaymentId === payment.id,
+          );
+          const shift = sourceShifts.find((row) => row.id === receipt?.shiftId);
+          if (
+            !paymentRow ||
+            !receipt ||
+            !request ||
+            !allocations.length ||
+            payment.status !== "POSTED" ||
+            payment.currency !== "IQD" ||
+            payment.exchangeRate != null ||
+            payment.supplierId !== supplierId ||
+            payment.branchId !== branchId ||
+            paymentRow.row.entryType !== "PAYMENT_OUT" ||
+            paymentRow.row.receiptId !== receipt.id ||
+            !money(paymentRow.effect).eq(money(payment.amount).neg()) ||
+            !money(paymentRow.row.amount).eq(payment.amount) ||
+            !money(payment.currencyAmount).eq(payment.amount) ||
+            receipt.direction !== "OUT" ||
+            receipt.status !== "COMPLETED" ||
+            receipt.approvalStatus !== "APPROVED" ||
+            receipt.partyType !== "SUPPLIER" ||
+            receipt.partyId !== supplierId ||
+            receipt.branchId !== branchId ||
+            receipt.createdBy == null ||
+            receipt.invoiceId != null ||
+            receipt.workOrderId != null ||
+            receipt.reservationId != null ||
+            receipt.paymentMethod !== payment.paymentMethod ||
+            !money(receipt.amount).eq(payment.amount) ||
+            receiptEntries.filter((row) => row.receiptId === receipt.id)
+              .length !== 1 ||
+            request.status !== "APPROVED" ||
+            request.supplierId !== supplierId ||
+            request.branchId !== branchId ||
+            request.currency !== "IQD" ||
+            request.exchangeRate != null ||
+            request.paymentMethod !== payment.paymentMethod ||
+            request.externalReference !== payment.externalReference ||
+            request.requestedBy !== receipt.createdBy ||
+            request.reviewedBy !== payment.postedBy ||
+            receipt.approvedBy !== payment.postedBy ||
+            request.appliedAt == null ||
+            request.payloadCanonical !== payment.payloadCanonical ||
+            request.payloadHash !== payment.payloadHash ||
+            sha256(request.payloadCanonical) !== request.payloadHash ||
+            reservations.filter(({ row }) => row.requestId === request.id)
+              .length !== allocations.length ||
+            claimedPayments.filter(
+              (row) =>
+                row.receiptId === receipt.id ||
+                row.accountingEntryId === paymentRow.row.id,
+            ).length !== 1 ||
+            !money(request.requestedAmount).eq(payment.amount) ||
+            !money(request.requestedCurrencyAmount).eq(payment.amount) ||
+            knownRefunds.some((row) => row.supplierPaymentId === payment.id) ||
+            legacySourceClaims.some(
+              (row) =>
+                row.sourceReceiptId === receipt.id ||
+                row.sourceAccountingEntryId === paymentRow.row.id,
+            ) ||
+            pendingKnownRefunds.some(
+              (row) => row.supplierPaymentId === payment.id,
+            ) ||
+            cancellations.some(
+              (row) =>
+                row.referenceNumber === `CANCEL-VCH-${receipt.id}` &&
+                ["PENDING", "COMPLETED"].includes(row.status) &&
+                row.approvalStatus !== "REJECTED",
+            ) ||
+            (receipt.paymentMethod === "CASH" &&
+              !(
+                (receipt.cashBucket === "TREASURY" &&
+                  receipt.shiftId == null) ||
+                (receipt.cashBucket === "DRAWER" &&
+                  shift?.branchId === branchId &&
+                  shift.userId === receipt.createdBy)
+              )) ||
+            !allocations
+              .reduce((sum, row) => sum.plus(row.allocatedAmount), money(0))
+              .eq(payment.amount)
+          )
+            continue;
+          const pairs = allocations.map((allocation) => {
+            const invoice = invoices.find(
+              (row) => row.id === allocation.supplierInvoiceId,
+            );
+            const recognition = episodeRows.find(
+              ({ row }) => row.id === invoice?.postingEntryId,
+            );
+            const requestAllocation = reservations.find(
+              ({ row }) => row.id === allocation.requestAllocationId,
+            );
+            const poLinks = invoicePoMap.get(allocation.supplierInvoiceId);
+            const order =
+              poLinks?.size === 1
+                ? orders.find((row) => poLinks.has(row.id))
+                : undefined;
+            return {
+              allocation,
+              invoice,
+              recognition,
+              requestAllocation,
+              poLinks: poLinks ? Array.from(poLinks) : [],
+              order,
+            };
+          });
+          if (
+            pairs.some(
+              ({
+                allocation,
+                invoice,
+                recognition,
+                requestAllocation,
+                poLinks,
+                order,
+              }) =>
+                !invoice ||
+                !recognition ||
+                !requestAllocation ||
+                !order ||
+                poLinks.length !== 1 ||
+                invoice.origin !== "NATIVE" ||
+                invoice.liabilityClass !== "NATIVE_AP" ||
+                invoice.status !== "POSTED" ||
+                invoice.paymentGate !== "SETTLED" ||
+                invoice.currency !== "IQD" ||
+                invoice.supplierId !== supplierId ||
+                invoice.branchId !== branchId ||
+                order.supplierId !== supplierId ||
+                order.branchId !== branchId ||
+                order.agreedCurrency !== "IQD" ||
+                order.status === "CANCELLED" ||
+                pendingControls.some(
+                  (row) => row.purchaseOrderId === order.id,
+                ) ||
+                recognition.recognition !== 1 ||
+                recognition.row.id >= paymentRow.row.id ||
+                !money(recognition.effect).eq(invoice.totalAmount) ||
+                !money(allocation.allocatedAmount).eq(invoice.totalAmount) ||
+                !money(allocation.allocatedCurrencyAmount).eq(
+                  allocation.allocatedAmount,
+                ) ||
+                !money(allocation.refundedAmount).isZero() ||
+                !money(allocation.refundedCurrencyAmount).isZero() ||
+                !money(invoice.legacySettledAmount).isZero() ||
+                knownAllocations.filter(
+                  (row) => row.supplierInvoiceId === invoice.id,
+                ).length !== 1 ||
+                requestAllocation.status !== "APPROVED" ||
+                requestAllocation.row.requestId !== request.id ||
+                requestAllocation.row.supplierInvoiceId !== invoice.id ||
+                requestAllocation.row.activeInvoiceGuard != null ||
+                requestAllocation.row.invoiceHash !== allocation.invoiceHash ||
+                sha256(requestAllocation.row.invoiceSnapshot) !==
+                  requestAllocation.row.invoiceHash ||
+                !money(requestAllocation.row.requestedAmount).eq(
+                  allocation.allocatedAmount,
+                ) ||
+                !money(requestAllocation.row.requestedCurrencyAmount).eq(
+                  allocation.allocatedCurrencyAmount,
+                ) ||
+                reservations.some(
+                  ({ row, status }) =>
+                    row.supplierInvoiceId === invoice.id &&
+                    (row.activeInvoiceGuard != null || status === "PENDING"),
+                ) ||
+                // Never remove a known invoice sharing a PO with residual recognition.
+                episodeRows.some(
+                  ({ row, recognition: isRecognition }) =>
+                    isRecognition === 1 &&
+                    row.id !== recognition.row.id &&
+                    invoices.some(
+                      (other) =>
+                        other.postingEntryId === row.id &&
+                        invoicePoMap.get(other.id)?.has(order.id),
+                    ),
+                ),
+            )
+          )
+            continue;
+          removedIds.add(paymentRow.row.id);
+          for (const pair of pairs) {
+            removedIds.add(pair.recognition!.row.id);
+            removedInvoiceIds.add(pair.invoice!.id);
+          }
+          removedProof.push({
+            payment,
+            receipt,
+            request,
+            pairs,
+            shift: shift ?? null,
+          });
+        }
+      }
+      const residualRows = episodeRows.filter(
+        ({ row }) => !removedIds.has(row.id),
+      );
+      // Removing complete pairs must preserve the closed episode equation.
+      if (
+        removedIds.size &&
+        !episodeRows
+          .filter(({ row }) => removedIds.has(row.id))
+          .reduce((sum, row) => sum.plus(row.effect), money(0))
+          .isZero()
+      )
+        reasons.add("KNOWN_NATIVE_PAIRS_DO_NOT_CANCEL");
+      for (const { row: entry, effect, recognition } of residualRows) {
         if (
           money(effect).gt(0) &&
           recognition === 1 &&
@@ -574,6 +986,28 @@ async function scan(tx: Tx, input: HistoricalSupplierPreviewInput) {
           }
           episodeInvoices.push(invoice);
           available.set(invoice.id, money(invoice.totalAmount));
+          if (assignment) {
+            const selected = assignment.allocations.find(
+              (row) => row.supplierInvoiceId === invoice.id,
+            );
+            const source = episodeRows.find(
+              ({ row }) => row.receiptId === assignment.receiptId,
+            )?.row;
+            if (
+              !selected ||
+              selected.invoiceVersion !== invoice.version ||
+              invoice.origin !== "NATIVE" ||
+              invoice.liabilityClass !== "NATIVE_AP" ||
+              !source ||
+              entry.id >= source.id ||
+              entry.createdAt > source.createdAt ||
+              entry.entryDate > source.entryDate ||
+              invoice.invoiceDate >
+                source.entryDate.toISOString().slice(0, 10) ||
+              money(selected.amount).gt(invoice.totalAmount)
+            )
+              reasons.add("ASSIGNMENT_INVOICE_EVIDENCE_MISMATCH");
+          }
           if (
             invoice.supplierId !== supplierId ||
             invoice.branchId !== branchId ||
@@ -625,6 +1059,8 @@ async function scan(tx: Tx, input: HistoricalSupplierPreviewInput) {
           const net = netAllocations.find(
             (row) => row.invoiceId === invoice.id,
           );
+          if (assignment && net)
+            reasons.add("ASSIGNMENT_REQUIRES_UNALLOCATED_INVOICE");
           if (
             net &&
             (!money(net.amount).isZero() || !money(net.currencyAmount).isZero())
@@ -669,9 +1105,27 @@ async function scan(tx: Tx, input: HistoricalSupplierPreviewInput) {
             receipt.partyId !== supplierId ||
             receipt.branchId !== branchId ||
             receipt.createdBy == null ||
+            receipt.invoiceId != null ||
+            receipt.workOrderId != null ||
+            receipt.reservationId != null ||
             !money(receipt.amount).eq(entry.amount)
           )
             reasons.add("RECEIPT_SOURCE_MISMATCH");
+          if (
+            assignment &&
+            (receipt.id !== assignment.receiptId ||
+              receipt.paymentMethod !== "CASH" ||
+              receipt.cashBucket !== "TREASURY" ||
+              receipt.shiftId != null ||
+              receipt.approvedBy == null ||
+              receipt.approvedAt == null ||
+              assignment.supplierId !== supplierId ||
+              assignment.branchId !== branchId ||
+              !assignment.allocations
+                .reduce((sum, row) => sum.plus(row.amount), money(0))
+                .eq(entry.amount))
+          )
+            reasons.add("ASSIGNMENT_FULL_TREASURY_RECEIPT_REQUIRED");
           if (
             !["CASH", "CARD", "TRANSFER", "WALLET"].includes(
               receipt.paymentMethod,
@@ -693,6 +1147,11 @@ async function scan(tx: Tx, input: HistoricalSupplierPreviewInput) {
               (row) =>
                 row.receiptId === receipt.id ||
                 row.accountingEntryId === entry.id,
+            ) ||
+            legacySourceClaims.some(
+              (row) =>
+                row.sourceReceiptId === receipt.id ||
+                row.sourceAccountingEntryId === entry.id,
             ) ||
             requests.some(
               (row) => row.requestKey === supplierVoucherRequestKey(receipt.id),
@@ -730,7 +1189,19 @@ async function scan(tx: Tx, input: HistoricalSupplierPreviewInput) {
           )) {
             const open = available.get(invoice.id)!;
             if (open.lte(0) || remaining.isZero()) continue;
-            const applied = open.lt(remaining) ? open : remaining;
+            const selected = assignment?.allocations.find(
+              (row) => row.supplierInvoiceId === invoice.id,
+            );
+            const applied = assignment
+              ? money(selected?.amount ?? 0)
+              : open.lt(remaining)
+                ? open
+                : remaining;
+            if (applied.lte(0)) continue;
+            if (applied.gt(open) || applied.gt(remaining)) {
+              reasons.add("ASSIGNMENT_EXCEEDS_AVAILABLE_AMOUNT");
+              continue;
+            }
             allocations.push({
               supplierInvoiceId: invoice.id,
               invoiceVersion: invoice.version,
@@ -752,7 +1223,11 @@ async function scan(tx: Tx, input: HistoricalSupplierPreviewInput) {
       if (
         !episodeInvoices.length ||
         !paymentPlans.length ||
-        Array.from(available.values()).some((value) => !value.isZero())
+        (!assignment &&
+          Array.from(available.values()).some((value) => !value.isZero())) ||
+        (assignment &&
+          (episodeInvoices.length !== assignment.allocations.length ||
+            paymentPlans.length !== 1))
       )
         reasons.add("EPISODE_NOT_FULLY_ALLOCATABLE");
       const episodePoIds = Array.from(
@@ -773,7 +1248,13 @@ async function scan(tx: Tx, input: HistoricalSupplierPreviewInput) {
       else {
         const evidenceHash = fingerprint({
           version: 1,
+          assignment: assignment ?? null,
           episodeId,
+          originalBounds: [episodeRows[0].row.id, episodeRows.at(-1)!.row.id],
+          removedProof,
+          removedInvoiceIds: Array.from(removedInvoiceIds).sort(
+            (a, b) => a - b,
+          ),
           supplier: supplierRows.find((row) => row.id === supplierId),
           reconciliation: report.reconciliations.find(
             (row) => row.supplierId === supplierId,
@@ -821,11 +1302,33 @@ async function scan(tx: Tx, input: HistoricalSupplierPreviewInput) {
       episodeRows.push(row);
       balance = balance.plus(row.effect);
       if (balance.lt(0)) negative = true;
-      if (balance.isZero()) finish(true);
+      if (balance.isZero() && !assignment) finish(true);
     }
     finish(false);
   }
   return { report, contexts };
+}
+
+/** Draft only: no owner acceptance is implied by a successful preview. */
+export async function previewHistoricalReceiptAssignment(
+  input: HistoricalReceiptAssignment,
+): Promise<HistoricalSupplierPreview> {
+  const assignment = checkedAssignment(input);
+  return withTx(
+    async (tx) =>
+      (
+        await scan(
+          tx,
+          {
+            supplierId: assignment.supplierId,
+            branchId: assignment.branchId,
+            maxEntries: MAX_ROWS,
+          },
+          assignment,
+        )
+      ).report,
+    { gate: "NONE" },
+  );
 }
 
 export async function previewHistoricalSupplierSettlements(
@@ -904,6 +1407,36 @@ export async function adoptHistoricalSupplierSettlement(
   input: { episodeId: string; evidenceHash: string },
   actor: Actor,
 ): Promise<AdoptionResult> {
+  return adoptHistoricalContext(input, actor);
+}
+
+/** Internal tooling only; a human owner must accept the entire displayed assignment. */
+export async function adoptHistoricalReceiptAssignment(
+  input: {
+    assignment: HistoricalReceiptAssignment;
+    evidenceHash: string;
+    ownerAccepted: true;
+  },
+  actor: Actor,
+): Promise<AdoptionResult> {
+  if (input.ownerAccepted !== true)
+    fail("يلزم قبول المالك الصريح للخطة الكاملة", "FORBIDDEN");
+  const assignment = checkedAssignment(input.assignment);
+  return adoptHistoricalContext(
+    {
+      episodeId: assignmentEpisodeId(assignment),
+      evidenceHash: input.evidenceHash,
+    },
+    actor,
+    assignment,
+  );
+}
+
+async function adoptHistoricalContext(
+  input: { episodeId: string; evidenceHash: string },
+  actor: Actor,
+  assignment?: HistoricalReceiptAssignment,
+): Promise<AdoptionResult> {
   const identity = /^HSA:([0-9a-z]{1,11}):([0-9a-z]{1,11}):[a-f0-9]{22}$/.exec(
     input.episodeId,
   );
@@ -949,17 +1482,27 @@ export async function adoptHistoricalSupplierSettlement(
         saved.evidenceHash !== input.evidenceHash ||
         saved.episodeId !== input.episodeId ||
         !Array.isArray(saved.paymentIds) ||
-        !Array.isArray(saved.requestIds)
+        !Array.isArray(saved.requestIds) ||
+        (assignment && saved.assignment?.inputHash !== fingerprint(assignment))
       )
         fail("الحلقة معتمدة ببصمة دليل أخرى أو بسجل تدقيق غير صالح");
       return { ...saved, replayed: true };
     }
+    if (assignment && assignment.assignmentDate !== baghdadToday())
+      fail(
+        "تاريخ قبول التخصيص الجديد يجب أن يكون يوم بغداد الحالي",
+        "BAD_REQUEST",
+      );
     // Re-read inside the exclusive gate; pending cancellation and source changes invalidate the proposal.
-    const { contexts } = await scan(tx, {
-      supplierId,
-      branchId,
-      maxEntries: MAX_ROWS,
-    });
+    const { contexts } = await scan(
+      tx,
+      {
+        supplierId,
+        branchId,
+        maxEntries: MAX_ROWS,
+      },
+      assignment,
+    );
     const context = contexts.get(input.episodeId);
     if (!context || context.episode.evidenceHash !== input.evidenceHash)
       fail("تغيرت مصادر الحلقة أو لم تعد مؤهلة للاعتماد");
@@ -1015,6 +1558,9 @@ export async function adoptHistoricalSupplierSettlement(
         entryHash: fingerprint(entry),
         adoptedBy: owner.id,
         adoptedAt: now.toISOString(),
+        ...(assignment
+          ? { kind: "OWNER_ACCEPTED_FULL_RECEIPT_ASSIGNMENT", assignment }
+          : {}),
       };
       const externalReference =
         receipt.referenceNumber?.trim() ||
@@ -1071,8 +1617,9 @@ export async function adoptHistoricalSupplierSettlement(
           requestedAt: now,
           reviewedBy: owner.id,
           reviewedAt: now,
-          reviewReason:
-            "اعتماد تاريخي بدليل إيصال وقيد أصليين داخل حلقة ذمة مغلقة",
+          reviewReason: assignment
+            ? "تخصيص تصحيحي صريح قبله المالك لإيصال كامل قائم؛ ليس إثباتاً للتوزيع الأصلي"
+            : "اعتماد تاريخي بدليل إيصال وقيد أصليين داخل حلقة ذمة مغلقة",
           decisionKey: `HISTORICAL:${episode.evidenceHash.slice(0, 24)}:${receipt.id}`,
           decisionHash: payloadHash,
           appliedAt: now,
@@ -1213,6 +1760,16 @@ export async function adoptHistoricalSupplierSettlement(
       replayed: false,
       paymentIds,
       requestIds,
+      ...(assignment
+        ? {
+            assignment: {
+              input: assignment,
+              inputHash: fingerprint(assignment),
+              acceptedBy: owner.id,
+              acceptedAt: now.toISOString(),
+            },
+          }
+        : {}),
     };
     await logAuditTx(
       tx,
