@@ -118,19 +118,29 @@ async function resolveExistingCounterFloor(tx: Tx, counterKey: string): Promise<
 /**
  * حجزٌ ذرّيّ لرقمٍ تسلسليّ من عدّاد المستندات (هجرة 0211).
  *
- * عمليةٌ واحدة: `INSERT … ON DUPLICATE KEY UPDATE lastValue = LAST_INSERT_ID(GREATEST(lastValue + 1, floor + 1))`
- * — MySQL يضبط `LAST_INSERT_ID` للجلسة بالقيمة الجديدة، فنقرؤها بلا مسحٍ ولا قفلٍ صريح على جدول المستندات.
+ * عملية الزيادة ذرية عبر GREATEST مع أرضية الكود والتاريخ والحد الأدنى الممرر.
+ * قراءة التاريخ لا تقفل جدول المستندات؛ مرقّم التوصيل يقفل صف عداده قبل قراءة تاريخه.
+ * صفّ العدّاد من InnoDB ويتغيّر ضمن معاملة المستند: التراجع يرجع التغيير معه، ولا يجوز
+ * نشر الرقم كهوية مكتملة قبل COMMIT. minimumPreviousValue يرفع الأرضية إلى تاريخ موثوق
+ * عند نقل مرقّم قديم؛ لا يُنقص عدّاداً متقدماً ولا يغيّر أرقام المستندات السابقة.
  */
 export async function nextCounterValue(
   tx: Tx,
   counterKey: string,
-  explicitFloor?: number,
+  minimumPreviousValue = 0,
 ): Promise<number> {
-  // أرضيّة البدء تعيش في الكود + أعلى رقم قائم فعلياً في جدول المستندات لنفس البادئة:
-  // يمنع ER_DUP_ENTRY عندما تكون هناك مستندات سابقة في نفس اليوم/الشهر قبل بدء العدّاد أو بعد تراجع معاملة.
-  const staticFloor = Math.max(COUNTER_FLOORS[counterKey] ?? 0, explicitFloor ?? 0);
+  if (
+    !Number.isSafeInteger(minimumPreviousValue) ||
+    minimumPreviousValue < 0 ||
+    minimumPreviousValue >= Number.MAX_SAFE_INTEGER
+  ) {
+    throw new Error(
+      `document counter "${counterKey}" received an invalid floor`,
+    );
+  }
+  const staticFloor = COUNTER_FLOORS[counterKey] ?? 0;
   const dynamicFloor = await resolveExistingCounterFloor(tx, counterKey);
-  const floor = Math.max(staticFloor, dynamicFloor);
+  const floor = Math.max(staticFloor, dynamicFloor, minimumPreviousValue);
   // `LAST_INSERT_ID(expr)` تضبط قيمة الجلسة **وتُعيدها** — فالفرعان (إدراجٌ أوّل / زيادةٌ على
   // قائم) يضبطانها معاً في عبارةٍ ذرّيّةٍ واحدة، بلا قفلٍ على جدول الهدف.
   await tx.execute(sql`
@@ -141,8 +151,10 @@ export async function nextCounterValue(
   const res: any = await tx.execute(sql`SELECT LAST_INSERT_ID() AS v`);
   const row = Array.isArray(res) ? res[0]?.[0] : res?.rows?.[0];
   const value = Number(row?.v ?? 0);
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`document counter "${counterKey}" returned an invalid value`);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(
+      `document counter "${counterKey}" returned an invalid value`,
+    );
   }
   return value;
 }

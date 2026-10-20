@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import {
+  branches,
   deliveryConsignments,
   documentCounters,
   invoices,
@@ -17,6 +18,39 @@ import {
 } from "../numbering";
 
 describe("Core Numbering & Atomic Counter (Milestone 1)", () => {
+  beforeEach(async () => {
+    await withTx(async tx => {
+      await tx.insert(branches).values({
+        id: 1,
+        code: "NUMBERING_TEST",
+        name: "Isolated numbering fixture",
+      });
+    });
+  });
+
+  it("combines a supplied legacy floor with main's history floor and an advanced counter", async () => {
+    const counterKey = "quotation_1_20991230";
+    await withTx(async (tx) => {
+      await tx.insert(quotations).values({
+        quoteNumber: "QUO-1-20991230-00007",
+        branchId: 1,
+        subtotal: "0.00",
+        total: "0.00",
+      });
+      expect(await nextCounterValue(tx, counterKey, 12)).toBe(13);
+      await tx
+        .update(documentCounters)
+        .set({ lastValue: 2 })
+        .where(eq(documentCounters.counterKey, counterKey));
+      expect(await nextCounterValue(tx, counterKey, 3)).toBe(8);
+      await tx
+        .update(documentCounters)
+        .set({ lastValue: 90 })
+        .where(eq(documentCounters.counterKey, counterKey));
+      expect(await nextCounterValue(tx, counterKey, 3)).toBe(91);
+    });
+  });
+
   it("nextTransactionTrackingNumber يبدأ من أرضية 100000 ويعطي 100001 وما يليها بتسلسل ذري", async () => {
     const num1 = await withTx(async (tx) => nextTransactionTrackingNumber(tx));
     const num2 = await withTx(async (tx) => nextTransactionTrackingNumber(tx));
