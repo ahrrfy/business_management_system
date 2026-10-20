@@ -1041,3 +1041,44 @@ describe("historical supplier settlement evidence adoption", () => {
     await expect(cancelVoucher(receiptIds[0], owner)).rejects.toThrow();
   });
 });
+
+
+describe("company opening boundaries", () => {
+  async function prependOpening() {
+    const entries = await db().select().from(s.accountingEntries);
+    await db().update(s.supplierInvoices).set({ status: "MATCHED", postingEntryId: null, postedAt: null });
+    await db().delete(s.accountingEntries);
+    await db().insert(s.accountingEntries).values({ entryType: "OPENING", supplierId: 1, branchId: null, amount: "50.00", entryDate: "2025-12-01" });
+    await db().insert(s.accountingEntries).values({ entryType: "PAYMENT_OUT", supplierId: 1, branchId: 1, amount: "50.00", entryDate: "2025-12-02" });
+    for (const { id: oldId, ...entry } of entries) {
+      const newId = extractInsertId(await db().insert(s.accountingEntries).values(entry));
+      const invoiceId = creditEntryIds.indexOf(oldId) + 1;
+      if (invoiceId > 0) await db().update(s.supplierInvoices).set({ status: "POSTED", postingEntryId: newId, postedAt: originalDate, postedBy: 9 }).where(eq(s.supplierInvoices.id, invoiceId));
+    }
+  }
+  it("keeps an unsupported branchless opening prefix separate from a later proven closed episode", async () => {
+    await prependOpening();
+    const before = await snapshot();
+    const report = await previewHistoricalSupplierSettlements({ supplierId: 1, branchId: 1 });
+    expect(report.episodes).toHaveLength(1);
+    expect(report.episodes[0].invoiceIds).toEqual([1, 2]);
+    expect(report.excluded.some((row) => row.reasons.includes("UNSUPPORTED_AP_ENTRY:OPENING"))).toBe(true);
+    await adopt(report.episodes[0]);
+    const after = await snapshot();
+    expect(after.entries).toEqual(before.entries);
+    expect(after.receipts).toEqual(before.receipts);
+    expect(after.suppliers).toEqual(before.suppliers);
+    expect(after.allocations).toHaveLength(3);
+  });
+  it("never assigns an unscoped opening to a supplier with multiple AP branches", async () => {
+    await prependOpening();
+    await db().insert(s.branches).values({ id: 2, name: "OTHER", code: "OTHER", type: "SALES" });
+    await db().insert(s.accountingEntries).values([
+      { entryType: "OPENING", supplierId: 1, branchId: 2, amount: "10.00", entryDate: "2026-01-01" },
+      { entryType: "PAYMENT_OUT", supplierId: 1, branchId: 2, amount: "10.00", entryDate: "2026-01-01" },
+    ]);
+    const before = await snapshot();
+    expect((await previewHistoricalSupplierSettlements({ supplierId: 1, branchId: 1 })).episodes).toHaveLength(0);
+    expect(await snapshot()).toEqual(before);
+  });
+});

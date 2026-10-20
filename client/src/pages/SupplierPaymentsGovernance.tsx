@@ -98,6 +98,7 @@ export default function SupplierPaymentsGovernance() {
         supplierPaymentId: Number(row.id),
         paymentNumber: row.paymentNumber,
         paymentVersion: Number(row.version),
+        derivesInvoiceCurrency: row.derivesInvoiceCurrency,
         supplierId: Number(row.supplierId),
         supplierLabel:
           supplierNames.get(Number(row.supplierId)) ??

@@ -34,6 +34,11 @@ import {
   SUPPLIER_VOUCHER_REQUEST_CAPABILITY,
 } from "./supplierPaymentLink";
 import type { VoucherInput } from "./types";
+import { supplierVoucherCurrencyAmount } from "../purchase/supplierVoucherCurrency";
+
+type PreparedAllocation = SupplierVoucherAllocation & {
+  currencyAmount: string;
+};
 
 const INPUT_OPERATION = "voucher.supplierSettlementInput";
 function settlementInputHash(input: VoucherInput) {
@@ -63,7 +68,7 @@ export async function prepareSupplierVoucherSettlementTx(
   tx: Tx,
   input: VoucherInput,
   actor: Actor,
-): Promise<SupplierVoucherAllocation[] | null> {
+): Promise<PreparedAllocation[] | null> {
   if (
     input.voucherType !== "PAYMENT" ||
     input.partyType !== "SUPPLIER" ||
@@ -89,7 +94,6 @@ export async function prepareSupplierVoucherSettlementTx(
       and(
         eq(supplierInvoices.supplierId, input.partyId),
         eq(supplierInvoices.branchId, input.branchId),
-        eq(supplierInvoices.currency, "IQD"),
         eq(supplierInvoices.status, "POSTED"),
         eq(supplierInvoices.paymentGate, "OPEN"),
         or(
@@ -139,6 +143,29 @@ export async function prepareSupplierVoucherSettlementTx(
     return allocations.map((row) => ({
       ...row,
       amount: toDbMoney(row.amount),
+      currencyAmount: supplierVoucherCurrencyAmount(
+        invoices.find((invoice) => invoice.id === row.supplierInvoiceId)!,
+        row.amount,
+        {
+          amount: toDbMoney(
+            money(
+              reservations?.posted.get(row.supplierInvoiceId)?.amount ?? 0,
+            ).plus(
+              reservations?.pending.get(row.supplierInvoiceId)?.amount ?? 0,
+            ),
+          ),
+          currencyAmount: toDbMoney(
+            money(
+              reservations?.posted.get(row.supplierInvoiceId)?.currencyAmount ??
+                0,
+            ).plus(
+              reservations?.pending.get(row.supplierInvoiceId)
+                ?.currencyAmount ?? 0,
+            ),
+          ),
+        },
+        toDbMoney(reservations?.creditReturns.get(row.supplierInvoiceId) ?? 0),
+      ),
     }));
   } catch (error) {
     throw new TRPCError({
@@ -156,7 +183,7 @@ export async function createSupplierVoucherSettlementTx(
   tx: Tx,
   receipt: typeof receipts.$inferSelect,
   input: VoucherInput,
-  allocations: SupplierVoucherAllocation[],
+  allocations: PreparedAllocation[],
   actor: Actor,
 ) {
   if (input.paymentMethod === "CHECK" || input.paymentMethod === "EXCHANGE")
@@ -181,7 +208,7 @@ export async function createSupplierVoucherSettlementTx(
       reason: input.description.trim(),
       allocations: allocations.map((row) => ({
         ...row,
-        currencyAmount: row.amount,
+        currencyAmount: row.currencyAmount,
       })),
     },
     actor,
@@ -305,6 +332,8 @@ export async function supplierVoucherSettlementDetails(
       amount: supplierPaymentRequestAllocations.requestedAmount,
       invoiceNumber: supplierInvoices.invoiceNumber,
       invoiceDate: supplierInvoices.invoiceDate,
+      currency: supplierInvoices.currency,
+      currencyAmount: supplierPaymentRequestAllocations.requestedCurrencyAmount,
     })
     .from(supplierPaymentRequestAllocations)
     .innerJoin(

@@ -46,6 +46,7 @@ import { money, toDbMoney } from "../money";
 import { withGovernanceTx, withTx, type Actor } from "../tx";
 import { supplierVoucherRequestKey } from "../voucher/supplierPaymentLink";
 import { sha256, stableCanonical } from "./grniAccounting";
+import { usesInvoiceCurrencySettlement } from "./supplierVoucherCurrency";
 
 const ACTION = "supplier.historicalSettlement.adopt";
 const MAX_ROWS = 100_000;
@@ -699,13 +700,26 @@ async function scan(
     if (assignmentRows.length !== postingIds.length + 1)
       fail("دليل قيد الاعتراف المستهدف مفقود");
   }
+  // Company opening balances may predate branch attribution. Use a provable
+  // sole AP branch only to find zero boundaries; never rewrite/adopt that row.
+  // Otherwise its payment poisons every later, independently closed episode.
+  const supplierBranches = new Map<number, Set<number>>();
+  for (const { row, effect } of ledger) {
+    if (row.supplierId == null || row.branchId == null || money(effect).isZero()) continue;
+    const ids = supplierBranches.get(row.supplierId) ?? new Set<number>();
+    ids.add(row.branchId);
+    supplierBranches.set(row.supplierId, ids);
+  }
   for (const entry of assignmentRows) {
+    const knownBranches = supplierBranches.get(entry.row.supplierId!);
+    const segmentationBranch = !assignment && entry.row.branchId == null && entry.row.entryType === "OPENING" && knownBranches?.size === 1
+      ? Array.from(knownBranches)[0] : entry.row.branchId;
     if (
       money(entry.effect).isZero() ||
-      (input.branchId != null && entry.row.branchId !== input.branchId)
+      (input.branchId != null && segmentationBranch !== input.branchId)
     )
       continue;
-    const key = `${entry.row.supplierId}:${entry.row.branchId}`;
+    const key = `${entry.row.supplierId}:${segmentationBranch}`;
     const rows = branches.get(key) ?? [];
     rows.push(entry);
     branches.set(key, rows);
@@ -835,6 +849,7 @@ async function scan(
               .eq(payment.amount)
           )
             continue;
+          const invoiceCurrencySettlement = usesInvoiceCurrencySettlement(payment);
           const pairs = allocations.map((allocation) => {
             const invoice = invoices.find(
               (row) => row.id === allocation.supplierInvoiceId,
@@ -878,12 +893,12 @@ async function scan(
                 invoice.liabilityClass !== "NATIVE_AP" ||
                 invoice.status !== "POSTED" ||
                 invoice.paymentGate !== "SETTLED" ||
-                invoice.currency !== "IQD" ||
+                (!invoiceCurrencySettlement && invoice.currency !== "IQD") ||
                 invoice.supplierId !== supplierId ||
                 invoice.branchId !== branchId ||
                 order.supplierId !== supplierId ||
                 order.branchId !== branchId ||
-                order.agreedCurrency !== "IQD" ||
+                order.agreedCurrency !== invoice.currency ||
                 order.status === "CANCELLED" ||
                 pendingControls.some(
                   (row) => row.purchaseOrderId === order.id,
@@ -893,8 +908,9 @@ async function scan(
                 !money(recognition.effect).eq(invoice.totalAmount) ||
                 !money(allocation.allocatedAmount).eq(invoice.totalAmount) ||
                 !money(allocation.allocatedCurrencyAmount).eq(
-                  allocation.allocatedAmount,
+                  invoice.currency === "USD" ? (invoice.usdTotal ?? "0") : allocation.allocatedAmount,
                 ) ||
+                (invoiceCurrencySettlement && (JSON.parse(requestAllocation.row.invoiceSnapshot).currency !== invoice.currency || JSON.parse(requestAllocation.row.invoiceSnapshot).agreedRate !== invoice.agreedRate)) ||
                 !money(allocation.refundedAmount).isZero() ||
                 !money(allocation.refundedCurrencyAmount).isZero() ||
                 !money(invoice.legacySettledAmount).isZero() ||
