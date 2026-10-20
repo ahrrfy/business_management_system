@@ -65,6 +65,7 @@ import {
 import { withTx, type Actor } from "../tx";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
+import { lockLinkedSupplierVoucherTx, supplierVoucherConflict, supplierVoucherReceiptId, supplierVoucherSignature, SUPPLIER_VOUCHER_REQUEST_PREFIX, SUPPLIER_VOUCHER_REQUEST_CAPABILITY } from "../voucher/supplierPaymentLink";
 import {
   assertExpectedVersion,
   assertIndependentPurchaseReviewer,
@@ -551,6 +552,7 @@ async function captureCashSource(
   input: CashSourceInput | null | undefined,
   branchId: number,
   actor: Actor,
+  deferredVoucherTreasuryRequest = false,
 ): Promise<CashSource | null> {
   if (method !== "CASH") {
     if (input != null)
@@ -564,7 +566,7 @@ async function captureCashSource(
   if (mode === "TREASURY") {
     if (input?.shiftId != null)
       throw cashSourceError("مصدر الخزينة لا يقبل رقم وردية", "BAD_REQUEST");
-    if (!(await treasurySourceAllowed(tx, actor)))
+    if (!deferredVoucherTreasuryRequest && !(await treasurySourceAllowed(tx, actor)))
       throw cashSourceError(
         "اختيار الخزينة يتطلب صلاحية الخزينة الكاملة",
         "FORBIDDEN",
@@ -712,8 +714,8 @@ export async function listSupplierPaymentCashSources(
   );
 }
 
-async function invoiceReservations(tx: Tx, invoiceIds: number[]) {
-  const posted = await tx
+export async function invoiceReservations(tx: Tx, invoiceIds: number[], lockRows = true) {
+  const postedQuery = tx
     .select({
       invoiceId: supplierPaymentAllocations.supplierInvoiceId,
       amount: sql<string>`COALESCE(SUM(${supplierPaymentAllocations.allocatedAmount} - ${supplierPaymentAllocations.refundedAmount}),0)`,
@@ -721,9 +723,9 @@ async function invoiceReservations(tx: Tx, invoiceIds: number[]) {
     })
     .from(supplierPaymentAllocations)
     .where(inArray(supplierPaymentAllocations.supplierInvoiceId, invoiceIds))
-    .groupBy(supplierPaymentAllocations.supplierInvoiceId)
-    .for("update");
-  const pending = await tx
+    .groupBy(supplierPaymentAllocations.supplierInvoiceId);
+  const posted = await (lockRows ? postedQuery.for("update") : postedQuery);
+  const pendingQuery = tx
     .select({
       invoiceId: supplierPaymentRequestAllocations.supplierInvoiceId,
       amount: sql<string>`COALESCE(SUM(${supplierPaymentRequestAllocations.requestedAmount}),0)`,
@@ -746,8 +748,8 @@ async function invoiceReservations(tx: Tx, invoiceIds: number[]) {
         ),
       ),
     )
-    .groupBy(supplierPaymentRequestAllocations.supplierInvoiceId)
-    .for("update");
+    .groupBy(supplierPaymentRequestAllocations.supplierInvoiceId);
+  const pending = await (lockRows ? pendingQuery.for("update") : pendingQuery);
   const credited = await tx
     .select({
       invoiceId: purchaseReturns.supplierInvoiceId,
@@ -858,8 +860,19 @@ export async function requestSupplierPaymentInTx(
   tx: Tx,
   input: RequestSupplierPaymentInput,
   actor: Actor,
+  voucherCapability?: typeof SUPPLIER_VOUCHER_REQUEST_CAPABILITY,
 ) {
   const requestKey = required(input.requestKey, "مفتاح الطلب", 120);
+  const voucherReceiptId = supplierVoucherReceiptId(requestKey);
+  const deferredVoucher = voucherReceiptId != null && voucherCapability === SUPPLIER_VOUCHER_REQUEST_CAPABILITY;
+  if (voucherReceiptId != null && !deferredVoucher) throw supplierVoucherConflict("ربط تخصيص الفواتير بالسند يتطلب مسار سند الصرف الداخلي");
+  if (deferredVoucher) {
+    const [receipt] = await tx.select().from(receipts).where(eq(receipts.id, voucherReceiptId!)).limit(1);
+    if (!receipt || receipt.createdBy !== actor.userId || receipt.direction !== "OUT" || receipt.partyType !== "SUPPLIER" ||
+      receipt.partyId !== input.supplierId || receipt.branchId !== input.branchId || receipt.paymentMethod !== input.paymentMethod ||
+      !money(receipt.amount).eq(input.amount) || receipt.status !== "PENDING" || receipt.approvalStatus !== "PENDING_APPROVAL")
+      throw supplierVoucherConflict("طلب التخصيص الداخلي لا يطابق سند الصرف المعلق");
+  }
   const reason = required(input.reason, "سبب الدفع", 500);
   const evidenceReference = required(
     input.evidenceReference,
@@ -929,6 +942,7 @@ export async function requestSupplierPaymentInTx(
         input.cashSource,
         input.branchId,
         actor,
+        deferredVoucher,
       );
   if (input.paymentMethod !== "CASH" && input.cashSource != null)
     throw cashSourceError("الدفع غير النقدي لا يقبل مصدر نقد", "BAD_REQUEST");
@@ -1109,6 +1123,8 @@ export async function requestSupplierPayment(
   input: RequestSupplierPaymentInput,
   actor: Actor,
 ) {
+  if (input.requestKey.trim().startsWith(SUPPLIER_VOUCHER_REQUEST_PREFIX))
+    throw supplierVoucherConflict("بادئة ربط سند المورد محجوزة لمسار سند الصرف");
   const reason = required(input.reason, "سبب الدفع", 500);
   const result = await withTx((tx) =>
     requestSupplierPaymentInTx(tx, input, actor),
@@ -1179,17 +1195,28 @@ export async function decideSupplierPaymentInTx(
       .for("update")
       .limit(1)
   )[0]!;
+  const linkedVoucher = await lockLinkedSupplierVoucherTx(tx, request);
   // سدادُ المورّد **خروجُ مال**، وهذه البوّابة هي التفويض الوحيد له: إيصال OUT مكتمل
   // بـcashBucket + حارسُ توفّرٍ + قفلُ مصدر النقد. ⇒ المالك حصراً.
   // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — كما في السندات (voucher/approval.ts)
   // بلا انتظار علَم ownerOnlyApproval؛ التفصيل هناك.
-  const supplierPaymentApprover = await resolveApprovalActor(tx, actor);
   assertApprover({
-    actor: await resolveApprovalActor(tx, actor),
+    actor: await (async () => {
+      const resolved = await resolveApprovalActor(tx, actor);
+      if (linkedVoucher && !resolved.isOwner)
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر اعتماد أو رفض سند سداد المورد",
+            why: "القرار محصور بحساب مالك نشط",
+            doThis: "اطلب من مالك النظام مراجعة سند الصرف",
+          }),
+        });
+      return resolved;
+    })(),
     trigger: supplierPaymentTrigger(input.action),
     subject: `سداد مورّد (طلب ${input.requestId})`,
     legacy: () => {
-      if (supplierPaymentApprover.isOwner) return;
       assertIndependentPurchaseReviewer(
         Number(request.requestedBy),
         actor.userId,
@@ -1209,6 +1236,8 @@ export async function decideSupplierPaymentInTx(
       message: "حُسم طلب الدفع مسبقاً",
     });
   }
+  if (linkedVoucher && (linkedVoucher.status !== "PENDING" || linkedVoucher.approvalStatus !== "PENDING_APPROVAL"))
+    throw supplierVoucherConflict("سند الصرف المرتبط لم يعد طلباً معلقاً صالحاً للتنفيذ");
   if (input.action === "REJECT") {
     await tx
       .update(supplierPaymentRequestAllocations)
@@ -1226,6 +1255,7 @@ export async function decideSupplierPaymentInTx(
         decisionHash: hash,
       })
       .where(eq(supplierPaymentRequests.id, input.requestId));
+    if (linkedVoucher) await tx.update(receipts).set({ status: "FAILED", approvalStatus: "REJECTED", approvedBy: actor.userId, approvedAt: new Date() }).where(eq(receipts.id, linkedVoucher.id));
     return {
       requestId: input.requestId,
       status: "REJECTED" as const,
@@ -1247,6 +1277,21 @@ export async function decideSupplierPaymentInTx(
       code: "CONFLICT",
       message: "المورد غير صالح للدفع",
     });
+  // Linked live vouchers retain the generic voucher net-AP ceiling under the
+  // aggregate supplier lock. Native payments keep their invoice-based contract.
+  if (
+    linkedVoucher &&
+    supplier.supplierKind === "REGULAR" &&
+    money(request.requestedAmount).gt(supplier.currentBalance)
+  )
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذر اعتماد سند سداد المورد",
+        why: `الرصيد المستحق للمورد (${money(supplier.currentBalance).toFixed(2)}) أقلّ من مبلغ الصرف`,
+        doThis: "أعد الطلب بعد مراجعة كشف المورد",
+      }),
+    });
   const requested = await tx
     .select()
     .from(supplierPaymentRequestAllocations)
@@ -1267,6 +1312,7 @@ export async function decideSupplierPaymentInTx(
     );
   });
   if (staleInvoice) {
+    if (linkedVoucher) throw supplierVoucherConflict("تغيّرت فاتورة مخصصة بعد إنشاء السند؛ اسحب الطلب وأعد توزيع المبلغ");
     await tx
       .update(supplierPaymentRequestAllocations)
       .set({ activeInvoiceGuard: null })
@@ -1391,25 +1437,34 @@ export async function decideSupplierPaymentInTx(
       operation: "دفع مورد",
     });
   }
-  const receipt = await tx.insert(receipts).values({
+  const receiptValues = {
     branchId: Number(request.branchId),
     shiftId: instrument.shiftId,
     cashBucket: instrument.cashBucket,
-    direction: "OUT",
+    direction: "OUT" as const,
     amount: toDbMoney(amount),
     paymentMethod: request.paymentMethod,
     referenceNumber:
       request.externalReference ?? `SUPPLIER-PAY-REQ:${input.requestId}`,
-    partyType: "SUPPLIER",
+    partyType: "SUPPLIER" as const,
     partyId: Number(request.supplierId),
     description: request.reason,
-    status: "COMPLETED",
-    approvalStatus: "APPROVED",
+    status: "COMPLETED" as const,
+    approvalStatus: "APPROVED" as const,
     approvedBy: actor.userId,
     approvedAt: new Date(),
     createdBy: Number(request.requestedBy),
-  });
-  const receiptId = extractInsertId(receipt);
+  };
+  let receiptId: number;
+  if (linkedVoucher) {
+    receiptId = linkedVoucher.id;
+    await tx.update(receipts).set({
+      shiftId: instrument.shiftId, cashBucket: instrument.cashBucket, status: "COMPLETED", approvalStatus: "APPROVED",
+      approvedBy: actor.userId, approvedAt: new Date(), signatureHash: supplierVoucherSignature(linkedVoucher, actor.userId),
+    }).where(eq(receipts.id, receiptId));
+  } else {
+    receiptId = extractInsertId(await tx.insert(receipts).values(receiptValues));
+  }
   const asset = paymentAssetRole(
     request.paymentMethod,
     instrument.cashBucket,
@@ -1438,6 +1493,7 @@ export async function decideSupplierPaymentInTx(
     createdBy: Number(request.requestedBy),
     dedupeKey,
     notes: request.reason,
+    ...(linkedVoucher ? { entryDate: new Date(linkedVoucher.voucherDate ?? linkedVoucher.createdAt) } : {}),
     postingIntent: createPostingIntent(
       "PAYMENT_OUT_SUPPLIER",
       "PAYMENT_OUT",
@@ -2246,6 +2302,7 @@ export async function listPendingSupplierPaymentRequests(
           and(
             eq(supplierPaymentRequests.branchId, branchId),
             eq(supplierPaymentRequests.status, "PENDING"),
+            sql`${supplierPaymentRequests.requestKey} NOT LIKE ${`${SUPPLIER_VOUCHER_REQUEST_PREFIX}%`}`,
           ),
         )
         .orderBy(asc(supplierPaymentRequests.requestedAt));

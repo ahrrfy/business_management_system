@@ -4,6 +4,7 @@ import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { assertNoNativeSupplierDebtForGenericPaymentTx } from "./supplierNativePaymentGuard";
+import { assertSupplierVoucherReplayTx, createSupplierVoucherSettlementTx, prepareSupplierVoucherSettlementTx } from "./supplierSettlement";
 import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
 import { eq } from "drizzle-orm";
 import {
@@ -653,6 +654,7 @@ export async function createVoucherTx(
               "مفتاح idempotency مرتبط بسند منتهٍ أو معكوس؛ أعد الإصدار من المسار الصريح بمفتاح جديد",
           });
         }
+        await assertSupplierVoucherReplayTx(tx, input, existingRefId);
         return {
           receiptId: existingRefId,
           voucherNumber: r.voucherNumber ?? "",
@@ -663,6 +665,9 @@ export async function createVoucherTx(
       }
     }
   }
+  const supplierSettlement = !options?.systemRequest
+    ? await prepareSupplierVoucherSettlementTx(tx, input, actor)
+    : null;
   const amount = money(input.amount);
   if (amount.lte(0)) {
     throw new TRPCError({
@@ -869,7 +874,7 @@ export async function createVoucherTx(
         message: "لا يمكن إصدار سند لمورد مُعطَّل",
       });
     }
-    if (direction === "OUT" && !options?.systemRequest) {
+    if (direction === "OUT" && !options?.systemRequest && !supplierSettlement) {
       await assertNoNativeSupplierDebtForGenericPaymentTx(tx, input.partyId, {
         currentRead: false,
       });
@@ -1077,6 +1082,10 @@ export async function createVoucherTx(
     approvalStatus: needsApproval ? "PENDING_APPROVAL" : "APPROVED",
   });
   const receiptId = extractInsertId(rRes);
+  if (supplierSettlement) {
+    const [supplierReceipt] = await tx.select().from(receipts).where(eq(receipts.id, receiptId));
+    await createSupplierVoucherSettlementTx(tx, supplierReceipt!, input, supplierSettlement, actor);
+  }
 
   // الأثر المالي يُطبَّق فقط عند الاعتماد (PENDING_APPROVAL ⇒ صفّ معلَّق بلا أثَر).
   if (!needsApproval) {

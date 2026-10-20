@@ -326,6 +326,12 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       await Promise.all([
         utils.vouchers.list.invalidate(),
         utils.vouchers.aggregate.invalidate(),
+        ...(direction === "OUT" && partyType === "SUPPLIER" ? [
+          utils.suppliers.invalidate(),
+          utils.purchases.invalidate(),
+          utils.supplierPayments.invalidate(),
+          utils.reports.supplierStatement.invalidate(),
+        ] : []),
       ]);
       // OUT لا يطبع وثيقة رسمية عند إنشاء الطلب. IN يطبع بعد نجاحه الفوري فقط.
       if (isReceipt && pendingPrintRef && res.approvalStatus === "APPROVED") {

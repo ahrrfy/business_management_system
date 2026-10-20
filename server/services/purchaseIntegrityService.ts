@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -6,9 +7,14 @@ import {
   idempotencyKeys,
   purchaseOrders,
   receipts,
+  supplierInvoices,
+  supplierPaymentAllocations,
+  supplierPaymentRefundItems,
+  supplierPaymentRefunds,
+  supplierPayments,
   suppliers,
 } from "../../drizzle/schema";
-import { getDb } from "../db";
+import { getDb, type Tx } from "../db";
 import { money, toDbMoney } from "./money";
 import { parseSystemPaymentRequest } from "./voucher/create";
 
@@ -145,6 +151,8 @@ type EntryRow = {
   supplierId: number | null;
   receiptId: number | null;
   amount: string;
+  /** Full immutable GL amount when this read model attributes only a PO share. */
+  sourceAmount?: string;
   dedupeKey: string | null;
   postingProfile: string | null;
   notes: string | null;
@@ -194,6 +202,254 @@ type OrderAmounts = {
   bookBalance: Decimal;
   validPending: Decimal;
 };
+
+const entrySelection = {
+  id: accountingEntries.id,
+  purchaseOrderId: accountingEntries.purchaseOrderId,
+  entryType: accountingEntries.entryType,
+  branchId: accountingEntries.branchId,
+  supplierId: accountingEntries.supplierId,
+  receiptId: accountingEntries.receiptId,
+  amount: accountingEntries.amount,
+  dedupeKey: accountingEntries.dedupeKey,
+  postingProfile: accountingEntries.postingProfile,
+  notes: accountingEntries.notes,
+  receiptBranchId: receipts.branchId,
+  receiptDirection: receipts.direction,
+  receiptAmount: receipts.amount,
+  receiptPaymentMethod: receipts.paymentMethod,
+  receiptStatus: receipts.status,
+  receiptApprovalStatus: receipts.approvalStatus,
+  receiptPartyType: receipts.partyType,
+  receiptPartyId: receipts.partyId,
+  receiptReferenceNumber: receipts.referenceNumber,
+  receiptInternalNote: receipts.internalNote,
+};
+
+/**
+ * A native payment/refund has one real GL row even when it spans POs.
+ * Attribute that row through its immutable allocation evidence, never through
+ * paidAmount or the receipt reference. Validate the entire movement before
+ * filtering to this page, so pagination cannot turn a partial sum into proof.
+ */
+async function nativePaymentShares(
+  tx: Tx,
+  orderIds: number[],
+  rowLimit: number,
+): Promise<EntryRow[]> {
+  function bounded<T>(rows: T[]): T[] {
+    if (rows.length > rowLimit)
+      throw new TRPCError({
+        code: "PAYLOAD_TOO_LARGE",
+        message: appErrorMessage({
+          what: "تعذر تدقيق تخصيصات سداد المورد في هذه الصفحة",
+          why: `عدد السجلات المرتبطة يتجاوز حد التدقيق البالغ ${rowLimit}`,
+          doThis: "خفّض عدد أوامر الشراء في الصفحة ثم أعد فتح التقرير",
+        }),
+      });
+    return rows;
+  }
+  const candidates = bounded(
+    await tx
+      .selectDistinct({ id: supplierPaymentAllocations.supplierPaymentId })
+      .from(supplierPaymentAllocations)
+      .innerJoin(
+        supplierInvoices,
+        eq(supplierInvoices.id, supplierPaymentAllocations.supplierInvoiceId),
+      )
+      .innerJoin(
+        accountingEntries,
+        eq(accountingEntries.id, supplierInvoices.postingEntryId),
+      )
+      .where(inArray(accountingEntries.purchaseOrderId, orderIds))
+      .limit(rowLimit + 1),
+  );
+  if (!candidates.length) return [];
+  const paymentIds = candidates.map((row) => row.id);
+  const allocations = bounded(
+    await tx
+      .select({
+        allocation: {
+          id: supplierPaymentAllocations.id,
+          supplierPaymentId: supplierPaymentAllocations.supplierPaymentId,
+          allocatedAmount: supplierPaymentAllocations.allocatedAmount,
+        },
+        invoice: {
+          branchId: supplierInvoices.branchId,
+          supplierId: supplierInvoices.supplierId,
+        },
+        recognition: {
+          purchaseOrderId: accountingEntries.purchaseOrderId,
+          branchId: accountingEntries.branchId,
+          supplierId: accountingEntries.supplierId,
+          entryType: accountingEntries.entryType,
+          dedupeKey: accountingEntries.dedupeKey,
+        },
+      })
+      .from(supplierPaymentAllocations)
+      .innerJoin(
+        supplierInvoices,
+        eq(supplierInvoices.id, supplierPaymentAllocations.supplierInvoiceId),
+      )
+      .leftJoin(
+        accountingEntries,
+        eq(accountingEntries.id, supplierInvoices.postingEntryId),
+      )
+      .where(inArray(supplierPaymentAllocations.supplierPaymentId, paymentIds))
+      .limit(rowLimit + 1),
+  );
+  const payments = bounded(
+    await tx
+      .select({
+        id: supplierPayments.id,
+        amount: supplierPayments.amount,
+        branchId: supplierPayments.branchId,
+        supplierId: supplierPayments.supplierId,
+        receiptId: supplierPayments.receiptId,
+        accountingEntryId: supplierPayments.accountingEntryId,
+      })
+      .from(supplierPayments)
+      .where(inArray(supplierPayments.id, paymentIds))
+      .limit(rowLimit + 1),
+  );
+  const refunds = bounded(
+    await tx
+      .select({
+        id: supplierPaymentRefunds.id,
+        supplierPaymentId: supplierPaymentRefunds.supplierPaymentId,
+        amount: supplierPaymentRefunds.amount,
+        branchId: supplierPaymentRefunds.branchId,
+        supplierId: supplierPaymentRefunds.supplierId,
+        receiptId: supplierPaymentRefunds.receiptId,
+        accountingEntryId: supplierPaymentRefunds.accountingEntryId,
+      })
+      .from(supplierPaymentRefunds)
+      .where(inArray(supplierPaymentRefunds.supplierPaymentId, paymentIds))
+      .limit(rowLimit + 1),
+  );
+  const refundItems = refunds.length
+    ? bounded(
+        await tx
+          .select()
+          .from(supplierPaymentRefundItems)
+          .where(
+            inArray(
+              supplierPaymentRefundItems.refundId,
+              refunds.map((row) => row.id),
+            ),
+          )
+          .limit(rowLimit + 1),
+      )
+    : [];
+  const movements = [
+    ...payments.map((row) => ({ ...row, refund: false, paymentId: row.id })),
+    ...refunds.map((row) => ({
+      ...row,
+      refund: true,
+      paymentId: row.supplierPaymentId,
+    })),
+  ];
+  if (!movements.length) return [];
+  const sources = bounded(
+    await tx
+      .select(entrySelection)
+      .from(accountingEntries)
+      .leftJoin(receipts, eq(receipts.id, accountingEntries.receiptId))
+      .where(
+        inArray(
+          accountingEntries.id,
+          movements.map((row) => row.accountingEntryId),
+        ),
+      )
+      .limit(rowLimit + 1),
+  );
+  const sourceById = new Map(sources.map((row) => [row.id, row]));
+  const allocationById = new Map(
+    allocations.map((row) => [row.allocation.id, row]),
+  );
+  const allocationsByPayment = new Map<number, typeof allocations>();
+  for (const row of allocations) {
+    const group =
+      allocationsByPayment.get(row.allocation.supplierPaymentId) ?? [];
+    group.push(row);
+    allocationsByPayment.set(row.allocation.supplierPaymentId, group);
+  }
+  const itemsByRefund = new Map<number, typeof refundItems>();
+  for (const row of refundItems) {
+    const group = itemsByRefund.get(row.refundId) ?? [];
+    group.push(row);
+    itemsByRefund.set(row.refundId, group);
+  }
+  const result: EntryRow[] = [];
+  for (const movement of movements) {
+    const { refund, paymentId } = movement;
+    const source = sourceById.get(movement.accountingEntryId);
+    // Directly linked rows already belong to the ordinary GL read path.
+    if (
+      !source ||
+      source.purchaseOrderId != null ||
+      source.receiptId !== movement.receiptId ||
+      source.branchId !== movement.branchId ||
+      source.supplierId !== movement.supplierId ||
+      source.entryType !== (refund ? "PAYMENT_IN" : "PAYMENT_OUT") ||
+      !money(source.amount).eq(movement.amount)
+    )
+      continue;
+    const shares = refund
+      ? (itemsByRefund.get(movement.id) ?? []).map((row) => ({
+          evidence: allocationById.get(row.supplierPaymentAllocationId),
+          amount: row.amount,
+        }))
+      : (allocationsByPayment.get(paymentId) ?? []).map((row) => ({
+          evidence: row,
+          amount: row.allocation.allocatedAmount,
+        }));
+    if (
+      !shares.length ||
+      !shares
+        .reduce((sum, row) => sum.plus(row.amount), money("0"))
+        .eq(movement.amount)
+    )
+      continue;
+    const perOrder = new Map<number, Decimal>();
+    let valid = true;
+    for (const { evidence, amount } of shares) {
+      const recognition = evidence?.recognition;
+      const invoice = evidence?.invoice;
+      if (
+        !evidence ||
+        !invoice ||
+        !recognition?.purchaseOrderId ||
+        evidence.allocation.supplierPaymentId !== paymentId ||
+        invoice.branchId !== movement.branchId ||
+        invoice.supplierId !== movement.supplierId ||
+        recognition.branchId !== movement.branchId ||
+        recognition.supplierId !== movement.supplierId ||
+        !(
+          recognition.entryType === "PURCHASE" ||
+          (recognition.entryType === "ADJUST" &&
+            recognition.dedupeKey?.startsWith("GRNI:SUPPLIER_INVOICE:"))
+        )
+      ) {
+        valid = false;
+        break;
+      }
+      const poId = recognition.purchaseOrderId;
+      perOrder.set(poId, (perOrder.get(poId) ?? money("0")).plus(amount));
+    }
+    if (!valid) continue;
+    for (const [poId, amount] of Array.from(perOrder.entries())) {
+      if (orderIds.includes(poId))
+        result.push({
+          ...source,
+          purchaseOrderId: poId,
+          amount: toDbMoney(amount),
+          sourceAmount: source.amount,
+        });
+    }
+  }
+  return bounded(result);
+}
 
 function assertPositiveSafeInteger(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
@@ -408,33 +664,16 @@ export async function getPurchaseIntegrityReport(
 
       const relatedRowLimit = Math.min(10_000, Math.max(100, limit * 50));
       const entryRows = (await tx
-        .select({
-          id: accountingEntries.id,
-          purchaseOrderId: accountingEntries.purchaseOrderId,
-          entryType: accountingEntries.entryType,
-          branchId: accountingEntries.branchId,
-          supplierId: accountingEntries.supplierId,
-          receiptId: accountingEntries.receiptId,
-          amount: accountingEntries.amount,
-          dedupeKey: accountingEntries.dedupeKey,
-          postingProfile: accountingEntries.postingProfile,
-          notes: accountingEntries.notes,
-          receiptBranchId: receipts.branchId,
-          receiptDirection: receipts.direction,
-          receiptAmount: receipts.amount,
-          receiptPaymentMethod: receipts.paymentMethod,
-          receiptStatus: receipts.status,
-          receiptApprovalStatus: receipts.approvalStatus,
-          receiptPartyType: receipts.partyType,
-          receiptPartyId: receipts.partyId,
-          receiptReferenceNumber: receipts.referenceNumber,
-          receiptInternalNote: receipts.internalNote,
-        })
+        .select(entrySelection)
         .from(accountingEntries)
         .leftJoin(receipts, eq(receipts.id, accountingEntries.receiptId))
         .where(inArray(accountingEntries.purchaseOrderId, orderIds))
         .orderBy(desc(accountingEntries.id))
         .limit(relatedRowLimit + 1)) as EntryRow[];
+
+      entryRows.push(
+        ...(await nativePaymentShares(tx, orderIds, relatedRowLimit)),
+      );
 
       const requestRows = (await tx
         .select({
@@ -716,7 +955,7 @@ export async function getPurchaseIntegrityReport(
             if (
               receiptApproved &&
               entry.receiptDirection === "OUT" &&
-              safeMoney(entry.receiptAmount)?.eq(amount)
+              safeMoney(entry.receiptAmount)?.eq(entry.sourceAmount ?? amount)
             ) {
               amounts.approvedPaymentOut =
                 amounts.approvedPaymentOut.plus(amount);
@@ -733,6 +972,7 @@ export async function getPurchaseIntegrityReport(
                   accountingEntryId: Number(entry.id),
                   receiptId: entry.receiptId,
                   entryAmount: toDbMoney(amount),
+                  sourceEntryAmount: entry.sourceAmount ?? entry.amount,
                   receiptStatus: entry.receiptStatus,
                   approvalStatus: entry.receiptApprovalStatus,
                   receiptDirection: entry.receiptDirection,
@@ -746,7 +986,7 @@ export async function getPurchaseIntegrityReport(
             supplierScoped &&
             receiptApproved &&
             entry.receiptDirection === "IN" &&
-            safeMoney(entry.receiptAmount)?.eq(amount)
+            safeMoney(entry.receiptAmount)?.eq(entry.sourceAmount ?? amount)
           ) {
             amounts.approvedPaymentIn = amounts.approvedPaymentIn.plus(amount);
             const cancellation = parseSystemPaymentRequest(
