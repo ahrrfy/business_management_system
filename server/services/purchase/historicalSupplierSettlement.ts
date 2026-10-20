@@ -46,6 +46,7 @@ import { money, toDbMoney } from "../money";
 import { withGovernanceTx, withTx, type Actor } from "../tx";
 import { supplierVoucherRequestKey } from "../voucher/supplierPaymentLink";
 import { sha256, stableCanonical } from "./grniAccounting";
+import { usesInvoiceCurrencySettlement } from "./supplierVoucherCurrency";
 
 const ACTION = "supplier.historicalSettlement.adopt";
 const MAX_ROWS = 100_000;
@@ -848,6 +849,7 @@ async function scan(
               .eq(payment.amount)
           )
             continue;
+          const invoiceCurrencySettlement = usesInvoiceCurrencySettlement(payment);
           const pairs = allocations.map((allocation) => {
             const invoice = invoices.find(
               (row) => row.id === allocation.supplierInvoiceId,
@@ -891,12 +893,12 @@ async function scan(
                 invoice.liabilityClass !== "NATIVE_AP" ||
                 invoice.status !== "POSTED" ||
                 invoice.paymentGate !== "SETTLED" ||
-                invoice.currency !== "IQD" ||
+                (!invoiceCurrencySettlement && invoice.currency !== "IQD") ||
                 invoice.supplierId !== supplierId ||
                 invoice.branchId !== branchId ||
                 order.supplierId !== supplierId ||
                 order.branchId !== branchId ||
-                order.agreedCurrency !== "IQD" ||
+                order.agreedCurrency !== invoice.currency ||
                 order.status === "CANCELLED" ||
                 pendingControls.some(
                   (row) => row.purchaseOrderId === order.id,
@@ -906,8 +908,9 @@ async function scan(
                 !money(recognition.effect).eq(invoice.totalAmount) ||
                 !money(allocation.allocatedAmount).eq(invoice.totalAmount) ||
                 !money(allocation.allocatedCurrencyAmount).eq(
-                  allocation.allocatedAmount,
+                  invoice.currency === "USD" ? (invoice.usdTotal ?? "0") : allocation.allocatedAmount,
                 ) ||
+                (invoiceCurrencySettlement && (JSON.parse(requestAllocation.row.invoiceSnapshot).currency !== invoice.currency || JSON.parse(requestAllocation.row.invoiceSnapshot).agreedRate !== invoice.agreedRate)) ||
                 !money(allocation.refundedAmount).isZero() ||
                 !money(allocation.refundedCurrencyAmount).isZero() ||
                 !money(invoice.legacySettledAmount).isZero() ||

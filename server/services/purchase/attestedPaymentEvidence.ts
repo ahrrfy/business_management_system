@@ -15,6 +15,7 @@ import {
 import type { Tx } from "../../db";
 import { supplierApEffectSql } from "../ledger/supplierApEffect";
 import { money } from "../money";
+import { usesInvoiceCurrencySettlement } from "./supplierVoucherCurrency";
 import { sha256, stableCanonical } from "./grniAccounting";
 
 const LIMIT = 1000;
@@ -296,6 +297,8 @@ export async function assertAttestedPaymentEvidenceTx(
               branchId: supplierInvoices.branchId,
               invoiceNumber: supplierInvoices.invoiceNumber,
               currency: supplierInvoices.currency,
+              agreedRate: supplierInvoices.agreedRate,
+              usdTotal: supplierInvoices.usdTotal,
               liabilityClass: supplierInvoices.liabilityClass,
               status: supplierInvoices.status,
               paymentGate: supplierInvoices.paymentGate,
@@ -318,6 +321,7 @@ export async function assertAttestedPaymentEvidenceTx(
         (row) => row.id === payment.receiptId,
       );
       const request = requests.find((row) => row.id === payment.requestId);
+      const invoiceCurrencySettlement = usesInvoiceCurrencySettlement(payment);
       if (
         payment.status !== "POSTED" ||
         payment.currency !== "IQD" ||
@@ -389,9 +393,9 @@ export async function assertAttestedPaymentEvidenceTx(
         !paid
           .reduce((sum, row) => sum.plus(row.allocatedAmount), money(0))
           .eq(payment.amount) ||
-        !paid
+        (!invoiceCurrencySettlement && !paid
           .reduce((sum, row) => sum.plus(row.allocatedCurrencyAmount), money(0))
-          .eq(payment.currencyAmount)
+          .eq(payment.currencyAmount))
       )
         fail("الدفعة اللاحقة بلا تخصيص أصلي كامل يساوي مبلغ رأسها");
       let payload: {
@@ -436,9 +440,10 @@ export async function assertAttestedPaymentEvidenceTx(
         );
         if (
           !money(allocation.allocatedAmount).gt(0) ||
-          !money(allocation.allocatedCurrencyAmount).eq(
+          !money(allocation.allocatedCurrencyAmount).gt(0) ||
+          (!invoiceCurrencySettlement && !money(allocation.allocatedCurrencyAmount).eq(
             allocation.allocatedAmount,
-          ) ||
+          )) ||
           !money(allocation.refundedAmount).isZero() ||
           !money(allocation.refundedCurrencyAmount).isZero()
         )
@@ -448,7 +453,7 @@ export async function assertAttestedPaymentEvidenceTx(
           invoice.supplierId !== supplierId ||
           invoice.branchId !== branchId ||
           invoice.status !== "POSTED" ||
-          invoice.currency !== "IQD" ||
+          (!invoiceCurrencySettlement && invoice.currency !== "IQD") ||
           !["NATIVE_AP", "LEGACY_AP"].includes(invoice.liabilityClass)
         )
           fail("فاتورة التخصيص لا تطابق المورد أو الفرع أو الحالة أو العملة");
@@ -466,6 +471,13 @@ export async function assertAttestedPaymentEvidenceTx(
           sha256(original.invoiceSnapshot) !== original.invoiceHash
         )
           fail("تفصيل طلب التخصيص لا يطابق التخصيص الأصلي المثبت");
+        if (invoiceCurrencySettlement) {
+          const sourceInvoice = JSON.parse(original.invoiceSnapshot);
+          if (sourceInvoice.currency !== invoice.currency || sourceInvoice.agreedRate !== invoice.agreedRate ||
+            (invoice.currency === "IQD" && !money(allocation.allocatedCurrencyAmount).eq(allocation.allocatedAmount)) ||
+            (invoice.currency === "USD" && money(allocation.allocatedCurrencyAmount).gt(sourceInvoice.usdTotal)))
+            fail("عملة تخصيص الدفعة لا تطابق لقطة الفاتورة المثبتة");
+        }
         const originalPayload = payload.allocations.filter(
           (row) => row.supplierInvoiceId === invoice.id,
         );

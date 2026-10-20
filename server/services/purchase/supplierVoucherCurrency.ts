@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { money, round2, toDbMoney } from "../money";
+import { usdReturnAmountWithFinalResidual } from "./returnGovernance";
 
 export const INVOICE_CURRENCY_SETTLEMENT = "INVOICE_CURRENCY_V1";
 
@@ -93,7 +94,7 @@ export function supplierVoucherCurrencyAmount(
   return cumulativeCurrencyDelta(
     toDbMoney(money(invoice.totalAmount).minus(creditReturns)),
     toDbMoney(
-      money(invoice.usdTotal).minus(round2(money(creditReturns).div(rate))),
+      money(invoice.usdTotal).minus(usdReturnAmountWithFinalResidual(invoice.usdTotal, invoice.totalAmount, creditReturns, 0)),
     ),
     toDbMoney(money(invoice.legacySettledAmount).plus(used.amount)),
     toDbMoney(

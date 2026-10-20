@@ -21,11 +21,16 @@ import {
   requestSupplierPaymentRefund,
   decideSupplierPaymentRefund,
   listSupplierPaymentRefundSources,
+  listSupplierPaymentSources,
 } from "../purchase/supplierPayments";
 import { loadPurchaseSettlements } from "../purchase/settlementProjection";
 import { getSupplierStatement } from "../reports/apAging";
 import { computeTreasuryCashBalance } from "../cash/cashAvailability";
 import { withTx } from "../tx";
+import { assertAttestedPaymentEvidenceTx } from "../purchase/attestedPaymentEvidence";
+import { previewHistoricalSupplierSettlements } from "../purchase/historicalSupplierSettlement";
+import { usdReturnAmountWithFinalResidual } from "../purchase/returnGovernance";
+import { supplierVoucherCurrencyAmount } from "../purchase/supplierVoucherCurrency";
 import { cumulativeCurrencyDelta } from "../purchase/supplierVoucherCurrency";
 import { money, toDbMoney } from "../money";
 import type { VoucherInput } from "../voucher/types";
@@ -1041,4 +1046,42 @@ it("replays a strict native USD payment after later IQD allocations without chan
   const before = await state();
   expect((await requestSupplierPayment(original, maker)).requestId).toBe(request.requestId);
   expect(await state()).toEqual(before);
+});
+
+it("uses the credit-return currency contract at a rounding boundary", () => {
+  const invoice = { currency: "USD", totalAmount: "1450.12", usdTotal: "1.00", agreedRate: "1450.1234", legacySettledAmount: "0.00" };
+  const returned = usdReturnAmountWithFinalResidual("1.00", "1450.12", "239.27", 0);
+  const paid = supplierVoucherCurrencyAmount(invoice, "1210.85", { amount: "0.00", currencyAmount: "0.00" }, "239.27");
+  expect(toDbMoney(returned)).toBe("0.17");
+  expect(paid).toBe("0.83");
+  expect(toDbMoney(returned.plus(paid))).toBe("1.00");
+});
+
+it("preserves later cross-currency vouchers as proven evidence in both historical readers", async () => {
+  await dollarInvoices();
+  const anchor = extractInsertId(await db().insert(s.accountingEntries).values({ entryType: "PURCHASE", supplierId: 1, branchId: 1, amount: "1.00", entryDate: "2026-10-01" }));
+  const template = (await state()).invoices.find((r) => r.id === 1)!;
+  await db().insert(s.supplierInvoices).values({ ...template, id: 3, invoiceNumber: "UNPAID-ANCHOR", clientRequestId: randomUUID(), invoiceDate: "2027-01-01", currency: "IQD", agreedRate: null, usdTotal: null, subtotal: "1.00", totalAmount: "1.00", postingEntryId: anchor, externalInvoiceNumber: "ANCHOR", externalNumberNorm: "ANCHOR" });
+  await db().update(s.suppliers).set({ currentBalance: "467001.00" }).where(eq(s.suppliers.id, 1));
+  const voucher = await createVoucher(input("467000.00"), maker);
+  await approveVoucher(voucher.receiptId, owner);
+  const proof = await withTx(tx => assertAttestedPaymentEvidenceTx(tx, 1, 1, anchor, [3]), { gate: "GOVERNANCE" });
+  expect(proof.paymentIds).toHaveLength(1);
+  expect(proof.invoiceIds.sort((a,b)=>a-b)).toEqual([1,2]);
+  // The unallocated historical return remains excluded; only the fully proven
+  // native payment/invoice pair may be removed from the closed episode.
+  await db().insert(s.accountingEntries).values({ entryType: "RETURN", supplierId: 1, branchId: 1, amount: "-1.00", entryDate: "2026-10-20" });
+  await db().update(s.suppliers).set({ currentBalance: "0.00" }).where(eq(s.suppliers.id, 1));
+  const preview = await previewHistoricalSupplierSettlements({ supplierId: 1 });
+  expect(preview.excluded.flatMap(row => row.reasons)).not.toContain("PAYMENT_SOURCE_ALREADY_CLAIMED");
+  expect(preview.excluded.flatMap(row => row.reasons)).not.toContain("EXISTING_NET_ALLOCATION");
+});
+
+it("advertises the same USD remaining amount as returns and voucher settlement", async () => {
+  await dollarInvoices();
+  await db().update(s.supplierInvoices).set({ totalAmount: "1450.12", subtotal: "1450.12", usdTotal: "1.00", agreedRate: "1450.1234" }).where(eq(s.supplierInvoices.id, 1));
+  await db().insert(s.purchaseReturns).values({ returnNumber: "CREDIT-ROUNDING", clientRequestId: randomUUID(), origin: "LEGACY", supplierInvoiceId: 1, purchaseOrderId: 1, supplierId: 1, branchId: 1, settlement: "CREDIT", netAmount: "239.27", taxAmount: "0.00", totalAmount: "239.27", creditOffsetAmount: "239.27", cashRefundAmount: "0.00", createdByNameSnapshot: "اختبار المرتجع" });
+  const row = (await listSupplierPaymentSources({ branchId: 1, supplierId: 1 }, maker)).rows.find(r => r.id === 1)!;
+  expect(row.remainingAmount).toBe("1210.85");
+  expect(row.remainingCurrencyAmount).toBe("0.83");
 });

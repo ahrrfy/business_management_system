@@ -69,6 +69,7 @@ import { lockLinkedSupplierVoucherTx, supplierVoucherConflict, supplierVoucherRe
 import {
   assertExpectedVersion,
   assertIndependentPurchaseReviewer,
+  usdReturnAmountWithFinalResidual,
 } from "./returnGovernance";
 import {
   supplierPaymentRefundTrigger,
@@ -838,7 +839,7 @@ function assertAllocationAvailable(
   const sourceCurrencyTotal =
     invoice.currency === "USD"
       ? money(invoice.usdTotal).minus(
-          round2(netCreditReturns.dividedBy(money(invoice.agreedRate))),
+          usdReturnAmountWithFinalResidual(invoice.usdTotal, invoice.totalAmount, netCreditReturns, 0),
         )
       : effectiveTotal;
   const remainingCurrency = round2(
@@ -2520,7 +2521,7 @@ export async function listSupplierPaymentSources(
         WHEN ${supplierInvoices.currency} = 'IQD' THEN ${remainingAmount}
         WHEN ${supplierInvoices.agreedRate} > 0 THEN GREATEST(
           ${supplierInvoices.usdTotal}
-          - ROUND(${netCreditReturns} / ${supplierInvoices.agreedRate}, 2)
+          - ROUND(${supplierInvoices.usdTotal} * LEAST(GREATEST(${netCreditReturns},0), ${supplierInvoices.totalAmount}) / ${supplierInvoices.totalAmount}, 2)
           - ROUND(${supplierInvoices.legacySettledAmount} / ${supplierInvoices.agreedRate}, 2)
           - ${postedCurrencyAmount}
           - ${pendingCurrencyAmount},
@@ -2642,7 +2643,7 @@ export async function listSupplierPaymentSources(
           const sourceCurrency =
             invoice.currency === "USD"
               ? money(invoice.usdTotal).minus(
-                  round2(creditReturns.dividedBy(money(invoice.agreedRate))),
+                  usdReturnAmountWithFinalResidual(invoice.usdTotal, invoice.totalAmount, creditReturns, 0),
                 )
               : effectiveTotal;
           return {
