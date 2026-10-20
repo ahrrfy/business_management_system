@@ -223,7 +223,12 @@ describe("native supplier AP payment guards", () => {
       expect(after.receipts).toHaveLength(1);
       expect(after.balance).toBe(voucher.approvalStatus === "APPROVED" ? "90000.00" : "100000.00");
       expect(after.allocations).toHaveLength(voucher.approvalStatus === "APPROVED" ? 1 : 0);
-      expect(await d().select().from(s.idempotencyKeys)).toHaveLength(1);
+      const keys = await d().select().from(s.idempotencyKeys);
+      expect(keys.map((row) => row.operation).sort()).toEqual([
+        "voucher.create",
+        "voucher.supplierSettlementInput",
+      ]);
+      expect(keys.every((row) => Number(row.refId) === voucher.receiptId)).toBe(true);
     },
   );
 

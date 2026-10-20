@@ -1200,22 +1200,23 @@ export async function decideSupplierPaymentInTx(
   // بـcashBucket + حارسُ توفّرٍ + قفلُ مصدر النقد. ⇒ المالك حصراً.
   // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — كما في السندات (voucher/approval.ts)
   // بلا انتظار علَم ownerOnlyApproval؛ التفصيل هناك.
-  const supplierPaymentApprover = await resolveApprovalActor(tx, actor);
-  if (linkedVoucher && !supplierPaymentApprover.isOwner)
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: appErrorMessage({
-        what: "تعذر اعتماد أو رفض سند سداد المورد",
-        why: "القرار محصور بحساب مالك نشط",
-        doThis: "اطلب من مالك النظام مراجعة سند الصرف",
-      }),
-    });
   assertApprover({
-    actor: supplierPaymentApprover,
+    actor: await (async () => {
+      const resolved = await resolveApprovalActor(tx, actor);
+      if (linkedVoucher && !resolved.isOwner)
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر اعتماد أو رفض سند سداد المورد",
+            why: "القرار محصور بحساب مالك نشط",
+            doThis: "اطلب من مالك النظام مراجعة سند الصرف",
+          }),
+        });
+      return resolved;
+    })(),
     trigger: supplierPaymentTrigger(input.action),
     subject: `سداد مورّد (طلب ${input.requestId})`,
     legacy: () => {
-      if (supplierPaymentApprover.isOwner) return;
       assertIndependentPurchaseReviewer(
         Number(request.requestedBy),
         actor.userId,
