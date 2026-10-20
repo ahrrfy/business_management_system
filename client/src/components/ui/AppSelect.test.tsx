@@ -78,6 +78,9 @@ describe("controlled select inside an account form", () => {
         >
           <option value="">اختر وصفة</option>
           <option value="1">دفتر ملاحظات أزرق</option>
+          <option value="disabled-opt" disabled>
+            خيار معطل
+          </option>
           <option value="2">حقيبة مدرسية كبيرة</option>
         </AppSelect>
       );
@@ -89,8 +92,16 @@ describe("controlled select inside an account form", () => {
     expect(searchInput.getAttribute("role")).toBe("combobox");
     const listbox = document.body.querySelector('[role="listbox"]');
     expect(listbox).toBeTruthy();
+    expect(container.contains(listbox)).toBe(false);
+    expect(document.body.contains(listbox!)).toBe(true);
     expect(searchInput.getAttribute("aria-controls")).toBe(listbox?.getAttribute("id"));
     expect(listbox?.contains(searchInput)).toBe(false);
+
+    // ArrowDown from option "1" (index 1) should skip the disabled option (index 2) and land on option "2" (index 3)
+    act(() => {
+      searchInput.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    expect(searchInput.getAttribute("aria-activedescendant")).toBe(`${listbox?.getAttribute("id")}-opt-3`);
 
     act(() => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;

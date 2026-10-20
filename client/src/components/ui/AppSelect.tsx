@@ -20,6 +20,7 @@
  *    مستقلاً عبر `aria-controls` و`aria-activedescendant`) مع `UnifiedSearchInput` وتطبيع العربية.
  */
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import {
   Select,
@@ -229,8 +230,29 @@ function resolveDefaultActiveIndex(
     (opt) => opt.value !== "" && !opt.disabled,
   );
   if (firstNonEmptyIdx >= 0) return firstNonEmptyIdx;
-  const firstEnabledIdx = options.findIndex((opt) => !opt.disabled);
-  return firstEnabledIdx >= 0 ? firstEnabledIdx : 0;
+  return options.findIndex((opt) => !opt.disabled);
+}
+
+function findNextEnabledOptionIndex(
+  options: ParsedOptionItem[],
+  currentIndex: number,
+  direction: 1 | -1,
+): number {
+  const len = options.length;
+  if (len === 0) return -1;
+  for (let step = 1; step <= len; step++) {
+    const base =
+      currentIndex < 0
+        ? direction === 1
+          ? -1
+          : 0
+        : currentIndex;
+    const idx = ((base + direction * step) % len + len) % len;
+    if (!options[idx]?.disabled) {
+      return idx;
+    }
+  }
+  return -1;
 }
 
 export function AppSelect(props: AppSelectProps) {
@@ -301,6 +323,72 @@ function StandardAppSelect({
   );
 }
 
+interface FloatingMenuPosition {
+  side: "bottom" | "top";
+  top?: number;
+  bottom?: number;
+  left: number;
+  width: number;
+  maxListboxHeight: number;
+}
+
+function computeCollisionAwarePosition(
+  triggerEl: HTMLElement | null,
+): FloatingMenuPosition {
+  if (!triggerEl || typeof window === "undefined") {
+    return {
+      side: "bottom",
+      top: 0,
+      left: 0,
+      width: 220,
+      maxListboxHeight: 256,
+    };
+  }
+  const rect = triggerEl.getBoundingClientRect();
+  const vw = window.innerWidth || 1024;
+  const vh = window.innerHeight || 768;
+  const sideOffset = 4;
+  const viewportPad = 8;
+  const searchHeaderReserve = 48;
+  const desiredListboxHeight = 256;
+  const minListboxHeight = 96;
+
+  const spaceBelow = vh - rect.bottom - sideOffset - viewportPad;
+  const spaceAbove = rect.top - sideOffset - viewportPad;
+  const placeAbove =
+    spaceBelow < desiredListboxHeight + searchHeaderReserve &&
+    spaceAbove > spaceBelow;
+
+  const availableSpace = placeAbove ? spaceAbove : spaceBelow;
+  const maxListboxHeight = Math.max(
+    minListboxHeight,
+    Math.min(desiredListboxHeight, availableSpace - searchHeaderReserve),
+  );
+
+  const width = Math.max(rect.width, 192);
+  const left = Math.min(
+    Math.max(viewportPad, rect.left),
+    Math.max(viewportPad, vw - width - viewportPad),
+  );
+
+  if (placeAbove) {
+    return {
+      side: "top",
+      bottom: Math.max(viewportPad, vh - rect.top + sideOffset),
+      left,
+      width,
+      maxListboxHeight,
+    };
+  }
+  return {
+    side: "bottom",
+    top: Math.max(viewportPad, rect.bottom + sideOffset),
+    left,
+    width,
+    maxListboxHeight,
+  };
+}
+
 function SearchableAppSelect({
   value,
   onValueChange,
@@ -328,6 +416,7 @@ function SearchableAppSelect({
   const [searchQuery, setSearchQuery] = React.useState("");
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const triggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const popupRef = React.useRef<HTMLDivElement | null>(null);
   const searchInputRef = React.useRef<HTMLInputElement | null>(null);
   const activeOptionRef = React.useRef<HTMLDivElement | null>(null);
   const instanceId = React.useId();
@@ -343,8 +432,18 @@ function SearchableAppSelect({
     };
   }, [children, placeholder]);
 
+  const allOptionsRef = React.useRef(allOptions);
+  allOptionsRef.current = allOptions;
+  const valueRef = React.useRef(value);
+  valueRef.current = value;
+  const onOpenChangeRef = React.useRef(onOpenChange);
+  onOpenChangeRef.current = onOpenChange;
+
   const [activeIndex, setActiveIndex] = React.useState(() =>
     resolveDefaultActiveIndex(allOptions, value),
+  );
+  const [menuPos, setMenuPos] = React.useState<FloatingMenuPosition>(() =>
+    computeCollisionAwarePosition(null),
   );
 
   const handleOpenChange = React.useCallback(
@@ -352,33 +451,75 @@ function SearchableAppSelect({
       if (!nextOpen) {
         setSearchQuery("");
       } else {
-        setActiveIndex(resolveDefaultActiveIndex(allOptions, value));
+        setActiveIndex(resolveDefaultActiveIndex(allOptionsRef.current, valueRef.current));
       }
       if (controlledOpen === undefined) {
         setUncontrolledOpen(nextOpen);
       }
-      onOpenChange?.(nextOpen);
+      onOpenChangeRef.current?.(nextOpen);
     },
-    [allOptions, controlledOpen, onOpenChange, value],
+    [controlledOpen],
   );
+
+  React.useLayoutEffect(() => {
+    if (!isOpen) return;
+    const updatePosition = () => {
+      setMenuPos(computeCollisionAwarePosition(triggerRef.current));
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [isOpen]);
+
+  React.useLayoutEffect(() => {
+    if (!isOpen) return;
+    const popupEl = popupRef.current;
+    const containerEl = containerRef.current;
+    const stopFocusIn = (e: FocusEvent) => {
+      e.stopPropagation();
+    };
+    const stopFocusOutFromPopup = (e: FocusEvent) => {
+      e.stopPropagation();
+    };
+    const stopFocusOutToPopup = (e: FocusEvent) => {
+      if (popupEl && e.relatedTarget instanceof Node && popupEl.contains(e.relatedTarget)) {
+        e.stopPropagation();
+      }
+    };
+    popupEl?.addEventListener("focusin", stopFocusIn);
+    popupEl?.addEventListener("focusout", stopFocusOutFromPopup);
+    containerEl?.addEventListener("focusout", stopFocusOutToPopup);
+    return () => {
+      popupEl?.removeEventListener("focusin", stopFocusIn);
+      popupEl?.removeEventListener("focusout", stopFocusOutFromPopup);
+      containerEl?.removeEventListener("focusout", stopFocusOutToPopup);
+    };
+  }, [isOpen]);
 
   React.useEffect(() => {
     if (!isOpen) return;
-    setActiveIndex(resolveDefaultActiveIndex(allOptions, value));
+    setActiveIndex(resolveDefaultActiveIndex(allOptionsRef.current, valueRef.current));
     searchInputRef.current?.focus();
     const handlePointerDownOutside = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
       if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
+        containerRef.current?.contains(target) ||
+        popupRef.current?.contains(target)
       ) {
-        handleOpenChange(false);
+        return;
       }
+      handleOpenChange(false);
     };
     document.addEventListener("mousedown", handlePointerDownOutside);
     return () => {
       document.removeEventListener("mousedown", handlePointerDownOutside);
     };
-  }, [isOpen, allOptions, value, handleOpenChange]);
+  }, [isOpen, handleOpenChange]);
 
   const selectedOption = React.useMemo(
     () => allOptions.find((opt) => opt.value === value && (value !== "" || opt.labelText.trim() !== "")),
@@ -400,10 +541,14 @@ function SearchableAppSelect({
     });
   }, [allOptions, searchTokens]);
 
-  const safeActiveIndex =
-    matchedOptions.length === 0
-      ? -1
-      : Math.min(Math.max(activeIndex, 0), matchedOptions.length - 1);
+  const safeActiveIndex = React.useMemo(() => {
+    if (matchedOptions.length === 0) return -1;
+    const clamped = Math.min(Math.max(activeIndex, 0), matchedOptions.length - 1);
+    if (activeIndex >= 0 && !matchedOptions[clamped]?.disabled) {
+      return clamped;
+    }
+    return matchedOptions.findIndex((opt) => !opt.disabled);
+  }, [activeIndex, matchedOptions]);
   const activeOption = safeActiveIndex >= 0 ? matchedOptions[safeActiveIndex] : undefined;
   const activeOptionDomId =
     safeActiveIndex >= 0 ? `${listboxId}-opt-${safeActiveIndex}` : undefined;
@@ -424,6 +569,145 @@ function SearchableAppSelect({
   );
 
   const showPlaceholder = value === "" || !selectedOption;
+
+  const popupContent =
+    isOpen && typeof document !== "undefined"
+      ? createPortal(
+          <div
+            ref={popupRef}
+            data-slot="popover-content"
+            data-side={menuPos.side}
+            style={{
+              position: "fixed",
+              top: menuPos.top,
+              bottom: menuPos.bottom,
+              left: menuPos.left,
+              width: menuPos.width,
+              pointerEvents: "auto",
+            }}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+            }}
+            className={cn(
+              "bg-popover text-popover-foreground z-[150] min-w-[12rem] overflow-hidden rounded-md border p-0 shadow-md",
+              contentClassName,
+            )}
+          >
+            <div className="bg-popover p-1.5 pb-1 border-b border-border/60">
+              <UnifiedSearchInput
+                ref={searchInputRef}
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={isOpen}
+                aria-controls={listboxId}
+                aria-activedescendant={activeOptionDomId}
+                aria-label={searchPlaceholder ?? ariaLabel ?? resolvedPlaceholder ?? "ابحث في القائمة"}
+                value={searchQuery}
+                onChange={(q) => {
+                  setSearchQuery(q);
+                  if (!q) {
+                    setActiveIndex(resolveDefaultActiveIndex(allOptions, value));
+                  } else {
+                    setActiveIndex(0);
+                  }
+                }}
+                placeholder={searchPlaceholder ?? "ابحث في القائمة..."}
+                barcode={false}
+                debounceMs={0}
+                size="compact"
+                variant="pos"
+                f2Shortcut={false}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    const nextIdx = findNextEnabledOptionIndex(
+                      matchedOptions,
+                      safeActiveIndex,
+                      1,
+                    );
+                    if (nextIdx >= 0) setActiveIndex(nextIdx);
+                  } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    const prevIdx = findNextEnabledOptionIndex(
+                      matchedOptions,
+                      safeActiveIndex,
+                      -1,
+                    );
+                    if (prevIdx >= 0) setActiveIndex(prevIdx);
+                  } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (activeOption && !activeOption.disabled) {
+                      commitOption(activeOption);
+                    }
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleOpenChange(false);
+                    triggerRef.current?.focus();
+                  }
+                }}
+              />
+            </div>
+            <div
+              id={listboxId}
+              role="listbox"
+              aria-label={ariaLabel ?? resolvedPlaceholder ?? "الخيارات"}
+              style={{ maxHeight: menuPos.maxListboxHeight }}
+              className="max-h-64 overflow-y-auto p-1"
+            >
+              {matchedOptions.length === 0 ? (
+                <div className="py-4 text-center text-xs text-muted-foreground">
+                  لا توجد نتائج مطابقة
+                </div>
+              ) : (
+                matchedOptions.map((opt, idx) => {
+                  const isSelected = opt.value === value;
+                  const isActive = idx === safeActiveIndex && !opt.disabled;
+                  const prevGroup = idx > 0 ? matchedOptions[idx - 1]?.groupLabel : undefined;
+                  const showGroupHeader = opt.groupLabel && opt.groupLabel !== prevGroup;
+                  return (
+                    <React.Fragment key={`${opt.groupLabel ?? ""}:${opt.value}:${idx}`}>
+                      {showGroupHeader ? (
+                        <div
+                          data-slot="select-label"
+                          className="text-muted-foreground px-2 py-1.5 text-xs font-medium"
+                        >
+                          {opt.groupLabel}
+                        </div>
+                      ) : null}
+                      <div
+                        ref={isActive ? activeOptionRef : undefined}
+                        id={`${listboxId}-opt-${idx}`}
+                        role="option"
+                        data-slot="select-item"
+                        aria-selected={isSelected}
+                        aria-disabled={opt.disabled || undefined}
+                        data-disabled={opt.disabled ? "" : undefined}
+                        data-highlighted={isActive ? "" : undefined}
+                        onMouseEnter={() => {
+                          if (!opt.disabled) setActiveIndex(idx);
+                        }}
+                        onClick={() => commitOption(opt)}
+                        className={cn(
+                          "relative flex min-h-[var(--ui-control-sm)] w-full cursor-default items-center gap-2 rounded-md py-2 pr-8 pl-2 text-sm outline-hidden select-none",
+                          isActive && "bg-accent text-accent-foreground",
+                          opt.disabled && "pointer-events-none opacity-50",
+                        )}
+                      >
+                        <span className="absolute right-2 flex size-3.5 items-center justify-center">
+                          {isSelected ? <CheckIcon className="size-4" /> : null}
+                        </span>
+                        <span className="truncate">{opt.children}</span>
+                      </div>
+                    </React.Fragment>
+                  );
+                })
+              )}
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
 
   return (
     <div ref={containerRef} className="relative w-full">
@@ -456,6 +740,7 @@ function SearchableAppSelect({
             }
           } else if (e.key === "Escape" && isOpen) {
             e.preventDefault();
+            e.stopPropagation();
             handleOpenChange(false);
           }
         }}
@@ -472,119 +757,7 @@ function SearchableAppSelect({
         </span>
         <ChevronDownIcon className="size-4 opacity-50" />
       </button>
-      {isOpen ? (
-        <div
-          data-slot="popover-content"
-          className={cn(
-            "bg-popover text-popover-foreground absolute top-full right-0 left-0 z-[150] mt-1 min-w-[12rem] overflow-hidden rounded-md border p-0 shadow-md",
-            contentClassName,
-          )}
-        >
-          <div className="bg-popover p-1.5 pb-1 border-b border-border/60">
-            <UnifiedSearchInput
-              ref={searchInputRef}
-              role="combobox"
-              aria-autocomplete="list"
-              aria-expanded={isOpen}
-              aria-controls={listboxId}
-              aria-activedescendant={activeOptionDomId}
-              aria-label={searchPlaceholder ?? ariaLabel ?? resolvedPlaceholder ?? "ابحث في القائمة"}
-              value={searchQuery}
-              onChange={(q) => {
-                setSearchQuery(q);
-                if (!q) {
-                  setActiveIndex(resolveDefaultActiveIndex(allOptions, value));
-                } else {
-                  setActiveIndex(0);
-                }
-              }}
-              placeholder={searchPlaceholder ?? "ابحث في القائمة..."}
-              barcode={false}
-              debounceMs={0}
-              size="compact"
-              variant="pos"
-              f2Shortcut={false}
-              onKeyDown={(e) => {
-                if (e.key === "ArrowDown") {
-                  e.preventDefault();
-                  if (matchedOptions.length > 0) {
-                    setActiveIndex((prev) => (prev + 1) % matchedOptions.length);
-                  }
-                } else if (e.key === "ArrowUp") {
-                  e.preventDefault();
-                  if (matchedOptions.length > 0) {
-                    setActiveIndex((prev) =>
-                      prev <= 0 ? matchedOptions.length - 1 : prev - 1,
-                    );
-                  }
-                } else if (e.key === "Enter") {
-                  e.preventDefault();
-                  if (activeOption && !activeOption.disabled) {
-                    commitOption(activeOption);
-                  }
-                } else if (e.key === "Escape") {
-                  e.preventDefault();
-                  handleOpenChange(false);
-                  triggerRef.current?.focus();
-                }
-              }}
-            />
-          </div>
-          <div
-            id={listboxId}
-            role="listbox"
-            aria-label={ariaLabel ?? resolvedPlaceholder ?? "الخيارات"}
-            className="max-h-64 overflow-y-auto p-1"
-          >
-            {matchedOptions.length === 0 ? (
-              <div className="py-4 text-center text-xs text-muted-foreground">
-                لا توجد نتائج مطابقة
-              </div>
-            ) : (
-              matchedOptions.map((opt, idx) => {
-                const isSelected = opt.value === value;
-                const isActive = idx === safeActiveIndex;
-                const prevGroup = idx > 0 ? matchedOptions[idx - 1]?.groupLabel : undefined;
-                const showGroupHeader = opt.groupLabel && opt.groupLabel !== prevGroup;
-                return (
-                  <React.Fragment key={`${opt.groupLabel ?? ""}:${opt.value}:${idx}`}>
-                    {showGroupHeader ? (
-                      <div
-                        data-slot="select-label"
-                        className="text-muted-foreground px-2 py-1.5 text-xs font-medium"
-                      >
-                        {opt.groupLabel}
-                      </div>
-                    ) : null}
-                    <div
-                      ref={isActive ? activeOptionRef : undefined}
-                      id={`${listboxId}-opt-${idx}`}
-                      role="option"
-                      data-slot="select-item"
-                      aria-selected={isSelected}
-                      aria-disabled={opt.disabled || undefined}
-                      data-disabled={opt.disabled ? "" : undefined}
-                      data-highlighted={isActive ? "" : undefined}
-                      onMouseEnter={() => setActiveIndex(idx)}
-                      onClick={() => commitOption(opt)}
-                      className={cn(
-                        "relative flex min-h-[var(--ui-control-sm)] w-full cursor-default items-center gap-2 rounded-md py-2 pr-8 pl-2 text-sm outline-hidden select-none",
-                        isActive && "bg-accent text-accent-foreground",
-                        opt.disabled && "pointer-events-none opacity-50",
-                      )}
-                    >
-                      <span className="absolute right-2 flex size-3.5 items-center justify-center">
-                        {isSelected ? <CheckIcon className="size-4" /> : null}
-                      </span>
-                      <span className="truncate">{opt.children}</span>
-                    </div>
-                  </React.Fragment>
-                );
-              })
-            )}
-          </div>
-        </div>
-      ) : null}
+      {popupContent}
     </div>
   );
 }
