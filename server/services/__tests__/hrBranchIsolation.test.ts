@@ -510,11 +510,231 @@ describe("recruitment branch isolation", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     await expect(
       anonymous.recruitment.submit({
-        name: "Email is not collected publicly",
+        name: "Malformed email",
         phone: "+9647701234567",
-        email: "applicant@example.com",
-      } as never),
+        email: "not-an-email",
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const submitted = await anonymous.recruitment.submit({
+      name: "علي حسين كاظم العبيدي",
+      phone: "+9647701234567",
+      whatsappPhone: "+9647801234567",
+      email: "applicant@example.com",
+      birthDate: "1998-05-14",
+      gender: "ذكر",
+      maritalStatus: "أعزب",
+      governorate: "بغداد",
+      district: "الكرادة",
+      degree: "بكالوريوس",
+      major: "تصميم كرافيك",
+      availabilityStatus: "available",
+      experience: "٣ – ٥ سنوات",
+      previousEmployer: "مطبعة النهرين",
+      education: "جامعة بغداد — ٢٠٢٠",
+      skills: "Photoshop, Illustrator, InDesign",
+      residentialAddress: "الكرادة داخل",
+      department: "التصميم الجرافيكي",
+      preferredBranch: "الفرع الرئيسي - الكرادة",
+      employmentType: "full_time",
+      shiftPreference: "morning",
+      expectedSalary: "750000",
+      availableFrom: "2026-11-01",
+    });
+    expect(submitted).toMatchObject({
+      name: "علي حسين كاظم العبيدي",
+      branchId: null,
+      email: "applicant@example.com",
+      whatsappPhone: "+9647801234567",
+      governorate: "بغداد",
+      district: "الكرادة",
+      degree: "بكالوريوس",
+      major: "تصميم كرافيك",
+      availabilityStatus: "available",
+      previousEmployer: "مطبعة النهرين",
+      skills: "Photoshop, Illustrator, InDesign",
+      department: "التصميم الجرافيكي",
+      preferredBranch: "الفرع الرئيسي - الكرادة",
+      employmentType: "full_time",
+      shiftPreference: "morning",
+      expectedSalary: "750000.00",
+      availableFrom: "2026-11-01",
+    });
+
+    await expect(
+      anonymous.recruitment.submit({
+        name: "Overflow salary",
+        phone: "+9647701234567",
+        expectedSalary: "999999999999",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    // البحث النصي (q) يجب أن يطابق المهارات والمحافظة والقضاء وليس الاسم والهاتف فقط
+    const bySkill = await admin.recruitment.list({ q: "InDesign" });
+    expect(bySkill.map((r) => r.id)).toContain(submitted!.id);
+    const byDistrict = await admin.recruitment.list({ q: "الكرادة" });
+    expect(byDistrict.map((r) => r.id)).toContain(submitted!.id);
+
+    // عند إدخال استمارة ورقية مربوطة بشاغر عام للشركة (branchId = null) مع تحديد فرع المتابعة، يُحفظ الفرع ولا يُطمس
+    const paperOnCompanyVacancy = await admin.recruitment.create({
+      name: "حيدر جاسم محمد",
+      vacancyId: 53,
+      branchId: 1,
+      source: "paper",
+    });
+    expect(paperOnCompanyVacancy).toMatchObject({
+      vacancyId: 53,
+      branchId: 1,
+      jobTitle: "HQ role",
+    });
+
+    // حفظ المراجعة الإدارية مع تغيير المرحلة وموعد المقابلة وسبب الرفض دون المساس برسالة المتقدّم
+    const reviewed = await admin.recruitment.setRating({
+      id: submitted!.id,
+      rating: 4,
+      stage: "interview",
+      interviewDate: "2026-11-05",
+      hrNotes: "مرشح متمكن من التصميم الطباعي",
+    });
+    expect(reviewed).toMatchObject({
+      id: submitted!.id,
+      rating: 4,
+      stage: "interview",
+      interviewDate: "2026-11-05",
+      hrNotes: "مرشح متمكن من التصميم الطباعي",
+    });
+
+    // التقييم السريع (نجوم فقط) لا يطمس الملاحظات ولا المرحلة ولا موعد المقابلة
+    const quickRated = await admin.recruitment.setRating({
+      id: submitted!.id,
+      rating: 5,
+    });
+    expect(quickRated).toMatchObject({
+      id: submitted!.id,
+      rating: 5,
+      stage: "interview",
+      interviewDate: "2026-11-05",
+      hrNotes: "مرشح متمكن من التصميم الطباعي",
+    });
+
+    // خيارات نماذج التوظيف (الفروع) متاحة مباشرة ضمن صلاحية التوظيف ومقيّدة بنطاق الفرع
+    const recOptsAll = await admin.recruitment.formOptions();
+    expect(recOptsAll.branches.map((b) => b.id)).toEqual([1, 2]);
+
+    // حدّ ١٠٠ حرف للمسمى الوظيفي في التقديم والتعيين (تطابق employees.position varchar(100))
+    await expect(
+      anonymous.recruitment.submit({
+        name: "Too long job title",
+        phone: "+9647701234567",
+        jobTitle: "وظيفة".repeat(25),
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    // تحويل المتقدّم إلى موظف ذرّياً داخل نفس المعاملة ومنع التحويل المكرّر أو العابر للفروع
+    const scopedMgr1 = await caller(2);
+    const beforeEmpCount = (await scopedMgr1.employees.list({ includeInactive: true })).rows.length;
+    await expect(
+      scopedMgr1.employees.create({
+        firstName: "Cross",
+        lastName: "Applicant",
+        payType: "monthly",
+        salary: "600000",
+        applicantId: 62,
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect((await scopedMgr1.employees.list({ includeInactive: true })).rows).toHaveLength(beforeEmpCount);
+
+    const convertedEmp = await scopedMgr1.employees.create({
+      firstName: "Branch",
+      lastName: "Applicant",
+      payType: "monthly",
+      salary: "650000",
+      applicantId: 61,
+    });
+    expect(convertedEmp?.id).toBeGreaterThan(0);
+
+    const applicantAfterConvert = await scopedMgr1.recruitment.get({ id: 61 });
+    expect(applicantAfterConvert).toMatchObject({
+      id: 61,
+      stage: "accepted",
+      convertedEmployeeId: convertedEmp!.id,
+    });
+
+    await expect(
+      scopedMgr1.employees.create({
+        firstName: "Duplicate",
+        lastName: "Conversion",
+        payType: "monthly",
+        salary: "650000",
+        applicantId: 61,
+      }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringMatching(/تم تعيين هذا المتقدّم مسبقاً كموظف/),
+    });
+    expect((await scopedMgr1.employees.list({ includeInactive: true })).rows).toHaveLength(beforeEmpCount + 1);
+
+    await expect(
+      admin.employees.createWithAccount({
+        firstName: "DuplicateWithAccount",
+        lastName: "Conversion",
+        payType: "monthly",
+        salary: "650000",
+        applicantId: 61,
+        account: { mode: "none" },
+      }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringMatching(/تم تعيين هذا المتقدّم مسبقاً كموظف/),
+    });
+
+    // حذف الموظف المُعيَّن يفكّ ارتباط المتقدّم (convertedEmployeeId = null) فلا يبقى رابطٌ ميتٌ ولا يُحجب إعادة التعيين
+    await scopedMgr1.employees.delete({ id: convertedEmp!.id });
+    expect(await scopedMgr1.recruitment.get({ id: 61 })).toMatchObject({
+      id: 61,
+      stage: "accepted",
+      convertedEmployeeId: null,
+    });
+    const reconvertedEmp = await scopedMgr1.employees.create({
+      firstName: "Reconverted",
+      lastName: "Applicant",
+      payType: "monthly",
+      salary: "650000",
+      applicantId: 61,
+    });
+    expect(await scopedMgr1.recruitment.get({ id: 61 })).toMatchObject({
+      id: 61,
+      stage: "accepted",
+      convertedEmployeeId: reconvertedEmp!.id,
+    });
+
+    const convertedWithAcc = await admin.employees.createWithAccount({
+      firstName: "General",
+      lastName: "Converted",
+      payType: "monthly",
+      salary: "700000",
+      applicantId: 64,
+      account: { mode: "none" },
+    });
+    expect(convertedWithAcc.employee?.id).toBeGreaterThan(0);
+    expect(await admin.recruitment.get({ id: 64 })).toMatchObject({
+      id: 64,
+      stage: "accepted",
+      convertedEmployeeId: convertedWithAcc.employee!.id,
+    });
+
+    await expect(
+      admin.recruitment.updateStage({ id: 64, stage: "rejected" }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringMatching(/لا يمكن تغيير مرحلة متقدّم تم تعيينه كموظف/),
+    });
+    await expect(
+      admin.recruitment.setRating({ id: 64, rating: 4, stage: "archived" }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringMatching(/لا يمكن تغيير مرحلة متقدّم تم تعيينه كموظف/),
+    });
   });
 
   it("never returns CV bytes to a manager outside the vacancy branch", async () => {

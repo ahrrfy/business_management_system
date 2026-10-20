@@ -6,7 +6,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, getTableColumns, isNotNull, isNull, like, ne, or, sql } from "drizzle-orm";
 import { fullEmployeeName, type EmployeeEducation } from "@shared/hr";
-import { branches, employees, hrDeviceUsers, roles, users } from "../../drizzle/schema";
+import { branches, employees, hrDeviceUsers, jobApplicants, roles, users } from "../../drizzle/schema";
 // اليوم التجاريّ ببغداد لا UTC: عند الواحدة ليلاً يكون تاريخ UTC هو **أمس**، فيُحدّ الربط
 // بيومٍ سابقٍ ويضيع يومُ الإنهاء نفسه — وهو عين ما جاء هذا التغيير لينقذه.
 import { baghdadToday } from "./businessDay";
@@ -22,7 +22,9 @@ import { listEmployeeDeviceLinks } from "./hrDeviceService";
 import { WAGE_FIELD_LABELS, wageProfileDiff, wageProfileOf } from "./hr/wageProfile";
 import { appErrorMessage } from "@shared/errors";
 import { getEmployeeClearance } from "./hr/offboarding";
-import { resolveTargetBranch, type CompanyBranchScope } from "./companyBranchScope";
+import { companyBranchScope, resolveTargetBranch, type CompanyBranchScope } from "./companyBranchScope";
+import { assertOperationAuthorized } from "../operationAuthorization";
+import type { OperationUser } from "@shared/operationPermissions";
 import { revokeAllNativePushDevicesForUser } from "./nativePushService";
 import { revokeAllSuperAppExpoPushDevicesForUser } from "./superAppPushService";
 
@@ -174,6 +176,7 @@ export interface EmployeeInput {
   department?: string | null;
   branchId?: number | null;
   managerId?: number | null;
+  applicantId?: number | null;
   payType: "monthly" | "hourly";
   salary?: string | null;
   allowances?: string | null;
@@ -245,10 +248,70 @@ export async function createEmployeeTx(tx: Tx, input: EmployeeInput): Promise<nu
   return extractInsertId(res);
 }
 
+/** ربط المتقدّم بالموظف المُعيَّن ذرّياً داخل المعاملة ومنع تكرار التعيين لنفس المتقدّم. */
+async function linkApplicantConversionTx(
+  tx: Tx,
+  applicantId: number,
+  employeeId: number,
+  scope: CompanyBranchScope,
+): Promise<void> {
+  const branchCond =
+    scope.branchId == null ? undefined : eq(jobApplicants.branchId, scope.branchId);
+  const whereCond = branchCond
+    ? and(eq(jobApplicants.id, applicantId), branchCond)
+    : eq(jobApplicants.id, applicantId);
+  const [applicant] = await tx
+    .select({
+      id: jobApplicants.id,
+      convertedEmployeeId: jobApplicants.convertedEmployeeId,
+    })
+    .from(jobApplicants)
+    .where(whereCond)
+    .for("update")
+    .limit(1);
+  if (!applicant) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المتقدّم المطلوب تحويله إلى موظف غير موجود",
+        why: `لا يوجد سجلّ متقدّم بالمعرّف #${applicantId} ضمن نطاق فرعك الحالي`,
+        doThis: "عُد إلى شاشة التوظيف وتحقّق من بطاقة المتقدّم وفرع المتابعة قبل إعادة المحاولة",
+      }),
+    });
+  }
+  if (applicant.convertedEmployeeId != null) {
+    const [existingEmp] = await tx
+      .select({ id: employees.id })
+      .from(employees)
+      .where(eq(employees.id, applicant.convertedEmployeeId))
+      .limit(1);
+    if (existingEmp) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تم تعيين هذا المتقدّم مسبقاً كموظف",
+          why: `يرتبط طلب التوظيف #${applicantId} بسجلّ الموظف القائم #${applicant.convertedEmployeeId}`,
+          doThis: `افتح ملفّ الموظف #${applicant.convertedEmployeeId} لمراجعة بياناته وتعديله بدلاً من إنشاء سجلّ مكرّر`,
+        }),
+      });
+    }
+  }
+  await tx
+    .update(jobApplicants)
+    .set({ stage: "accepted", convertedEmployeeId: employeeId })
+    .where(eq(jobApplicants.id, applicantId));
+}
+
 export async function createEmployee(input: EmployeeInput, scope: CompanyBranchScope = COMPANY_SCOPE) {
   if (input.managerId != null) await assertEmployeeInScope(input.managerId, scope);
   const branchId = resolveTargetBranch(scope, input.branchId, { required: false });
-  const id = await withTx((tx) => createEmployeeTx(tx, { ...input, branchId }));
+  const id = await withTx(async (tx) => {
+    const empId = await createEmployeeTx(tx, { ...input, branchId });
+    if (input.applicantId != null) {
+      await linkApplicantConversionTx(tx, input.applicantId, empId, scope);
+    }
+    return empId;
+  });
   return getEmployee(id, scope);
 }
 
@@ -315,7 +378,11 @@ export async function updateEmployee(
  * حذف موظف نهائياً — مسموح فقط للموظف «النظيف» (لا حضور/عُهد/رواتب/إجازات/ترقيات/إنهاءات).
  * غير النظيف يُمنع حذفه ويُعرض «إنهاء الخدمة» بديلاً. قيد FK حارس نهائي ضدّ التيتيم.
  */
-export async function deleteEmployee(id: number, scope: CompanyBranchScope = COMPANY_SCOPE) {
+export async function deleteEmployee(
+  id: number,
+  scope: CompanyBranchScope = COMPANY_SCOPE,
+  actor?: OperationUser | null,
+) {
   return withTx(async (tx) => {
     const [e] = await tx.select().from(employees).where(employeeByIdCondition(id, scope)).for("update").limit(1);
     if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
@@ -323,7 +390,37 @@ export async function deleteEmployee(id: number, scope: CompanyBranchScope = COM
     if (!usage.clean) {
       throw new TRPCError({ code: "BAD_REQUEST", message: usageBlockMessage("هذا الموظف", usage) });
     }
+    const linkedApplicants = await tx
+      .select({ id: jobApplicants.id, branchId: jobApplicants.branchId })
+      .from(jobApplicants)
+      .where(eq(jobApplicants.convertedEmployeeId, id))
+      .for("update");
+    if (linkedApplicants.length > 0) {
+      if (actor) assertOperationAuthorized(actor, "recruitment.updateStage");
+      if (scope.branchId != null && linkedApplicants.some((a) => a.branchId !== scope.branchId)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "لا يمكن حذف هذا الموظف",
+            why: "يرتبط هذا الموظف بطلب توظيف خارج نطاق فرعك الحالي",
+            doThis: "اطلب من مدير النظام أو مسؤول التوظيف المخوّل فكّ الارتباط أو حذف السجلّ",
+          }),
+        });
+      }
+    }
     try {
+      if (linkedApplicants.length > 0) {
+        const applicantBranchCond =
+          scope.branchId == null ? undefined : eq(jobApplicants.branchId, scope.branchId);
+        await tx
+          .update(jobApplicants)
+          .set({ convertedEmployeeId: null })
+          .where(
+            applicantBranchCond
+              ? and(eq(jobApplicants.convertedEmployeeId, id), applicantBranchCond)
+              : eq(jobApplicants.convertedEmployeeId, id),
+          );
+      }
       await tx.delete(employees).where(eq(employees.id, id));
     } catch (err) {
       if (isFkBlocked(err)) {
@@ -334,7 +431,7 @@ export async function deleteEmployee(id: number, scope: CompanyBranchScope = COM
       }
       throw err;
     }
-    return { id, deleted: true };
+    return { id, deleted: true, unlinkedApplicantIds: linkedApplicants.map((a) => a.id) };
   });
 }
 
@@ -537,6 +634,7 @@ export async function createEmployeeWithAccount(
   input: EmployeeInput,
   account: AccountSpec,
   actor: MaybeScopedActor,
+  scope: CompanyBranchScope = companyBranchScope(actor),
 ): Promise<{ employeeId: number; userId: number | null }> {
   return withTx(async (tx) => {
     let userId: number | null = null;
@@ -555,6 +653,9 @@ export async function createEmployeeWithAccount(
         if (isDupUserId(e)) throw new TRPCError({ code: "CONFLICT", message: "هذا الحساب مرتبط بموظف آخر" });
         throw e;
       }
+    }
+    if (input.applicantId != null) {
+      await linkApplicantConversionTx(tx, input.applicantId, employeeId, scope);
     }
     return { employeeId, userId };
   });

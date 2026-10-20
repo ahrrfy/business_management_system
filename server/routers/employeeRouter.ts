@@ -20,7 +20,7 @@ import type { CreateUserInput } from "../services/userService";
 import { getEmployeeUsage } from "../services/entityUsage";
 import { adminProcedure, protectedProcedure, requireModule, router } from "../trpc";
 import { isDupEntry, toArabicMessage } from "@shared/errorMap.ar";
-import { companyBranchScope, resolveTargetBranch } from "../services/companyBranchScope";
+import { companyBranchScope, resolveTargetBranch } from "../services/companyBranchScope"; import { assertOperationAuthorized } from "../operationAuthorization";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
@@ -65,14 +65,14 @@ const educationItem = z.object({
 });
 
 const employeeInput = z.object({
-  firstName: z.string().trim().min(1, "الاسم الأول مطلوب"),
-  fatherName: z.string().trim().optional(),
-  grandfatherName: z.string().trim().optional(),
-  lastName: z.string().trim().min(1, "اللقب مطلوب"),
-  position: z.string().trim().optional(),
-  department: z.string().trim().optional(),
+  firstName: z.string().trim().min(1, "الاسم الأول مطلوب").max(100),
+  fatherName: z.string().trim().max(100).optional(),
+  grandfatherName: z.string().trim().max(100).optional(),
+  lastName: z.string().trim().min(1, "اللقب مطلوب").max(100),
+  position: z.string().trim().max(100).optional(),
+  department: z.string().trim().max(100).optional(),
   branchId: z.number().int().positive().nullish(),
-  managerId: z.number().int().positive().nullish(),
+  managerId: z.number().int().positive().nullish(), applicantId: z.number().int().positive().nullish(),
   payType: z.enum(PAY_TYPE_KEYS).default("monthly"),
   salary: moneyStrOpt,
   allowances: moneyStrOpt,
@@ -84,19 +84,19 @@ const employeeInput = z.object({
   /** إعفاءٌ من الحضور — راتبٌ ثابت (0141). للمُلّاك ولمن لا جهاز بصمة له. */
   attendanceExempt: z.boolean().optional(),
   hireDate: z.string().optional(),
-  gender: z.string().trim().optional(),
+  gender: z.string().trim().max(10).optional(),
   birthDate: z.string().optional(),
-  maritalStatus: z.string().trim().optional(),
-  nationality: z.string().trim().optional(),
-  phone: z.string().trim().optional(),
-  email: z.string().trim().optional(),
-  governorate: z.string().trim().optional(),
-  district: z.string().trim().optional(),
-  addressLandmark: z.string().trim().optional(),
-  nationalId: z.string().trim().optional(),
-  emergencyContactName: z.string().trim().optional(),
-  emergencyContactPhone: z.string().trim().optional(),
-  colorTag: z.string().trim().optional(),
+  maritalStatus: z.string().trim().max(20).optional(),
+  nationality: z.string().trim().max(50).optional(),
+  phone: z.string().trim().max(20).optional(),
+  email: z.string().trim().max(100).optional(),
+  governorate: z.string().trim().max(80).optional(),
+  district: z.string().trim().max(120).optional(),
+  addressLandmark: z.string().trim().max(255).optional(),
+  nationalId: z.string().trim().max(40).optional(),
+  emergencyContactName: z.string().trim().max(150).optional(),
+  emergencyContactPhone: z.string().trim().max(20).optional(),
+  colorTag: z.string().trim().max(20).optional(),
   photoUrl: z.string().optional(),
   education: z.array(educationItem).nullish(),
   annualLeaveBalance: z.number().int().min(0).nullish(),
@@ -153,10 +153,10 @@ export const employeeRouter = router({
 
   create: hrWrite.input(employeeInput).mutation(async ({ input, ctx }) => {
     try {
-      const scope = companyBranchScope(ctx.user);
+      if (input.applicantId != null) assertOperationAuthorized(ctx.user, "recruitment.updateStage"); const scope = companyBranchScope(ctx.user);
       const branchId = resolveTargetBranch(scope, input.branchId, { required: false });
       const e = await svc.createEmployee({ ...input, branchId } as svc.EmployeeInput, scope);
-      await logAudit(ctx, { action: "employee.create", entityType: "employee", entityId: e?.id, newValue: { name: e?.fullName, department: input.department ?? null } });
+      await logAudit(ctx, { action: "employee.create", entityType: "employee", entityId: e?.id, newValue: { name: e?.fullName, department: input.department ?? null, ...(input.applicantId != null ? { applicantId: input.applicantId } : {}) } }); if (input.applicantId != null) await logAudit(ctx, { action: "recruitment.updateStage", entityType: "jobApplicant", entityId: input.applicantId, newValue: { stage: "accepted", convertedEmployeeId: e?.id ?? null } });
       return e;
     } catch (err: any) {
       // كانت الرسالة تدّعي «البريد الإلكتروني مستخدم» لأي تكرار — حتى لو كان التصادم فعلياً
@@ -178,7 +178,7 @@ export const employeeRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
       }
       try {
-        const scope = companyBranchScope(ctx.user);
+        if (emp.applicantId != null) assertOperationAuthorized(ctx.user, "recruitment.updateStage"); const scope = companyBranchScope(ctx.user);
         const branchId = resolveTargetBranch(scope, emp.branchId, { required: false });
         if (emp.managerId != null) await svc.assertEmployeeInScope(emp.managerId, scope);
         let spec: svc.AccountSpec;
@@ -188,12 +188,12 @@ export const employeeRouter = router({
         } else {
           spec = account;
         }
-        const { employeeId, userId } = await svc.createEmployeeWithAccount({ ...emp, branchId } as svc.EmployeeInput, spec, toActor(ctx));
+        const { employeeId, userId } = await svc.createEmployeeWithAccount({ ...emp, branchId } as svc.EmployeeInput, spec, toActor(ctx), scope);
         const e = await svc.getEmployee(employeeId, scope);
         if (account.mode === "new") {
           await logAudit(ctx, { action: "user.create", entityType: "user", entityId: userId, newValue: { email: account.email ?? null, username: account.username ?? null, role: account.role } });
         }
-        await logAudit(ctx, { action: "employee.create", entityType: "employee", entityId: employeeId, newValue: { name: e?.fullName, accountMode: account.mode, linkedUserId: userId } });
+        await logAudit(ctx, { action: "employee.create", entityType: "employee", entityId: employeeId, newValue: { name: e?.fullName, accountMode: account.mode, linkedUserId: userId, ...(emp.applicantId != null ? { applicantId: emp.applicantId } : {}) } }); if (emp.applicantId != null) await logAudit(ctx, { action: "recruitment.updateStage", entityType: "jobApplicant", entityId: emp.applicantId, newValue: { stage: "accepted", convertedEmployeeId: employeeId } });
         if (account.mode === "link") {
           await logAudit(ctx, { action: "employee.linkAccount", entityType: "employee", entityId: employeeId, newValue: { userId } });
         }
@@ -327,8 +327,8 @@ export const employeeRouter = router({
   delete: hrWrite
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await svc.deleteEmployee(input.id, companyBranchScope(ctx.user));
-      await logAudit(ctx, { action: "employee.delete", entityType: "employee", entityId: input.id });
+      const res = await svc.deleteEmployee(input.id, companyBranchScope(ctx.user), ctx.user);
+      await logAudit(ctx, { action: "employee.delete", entityType: "employee", entityId: input.id, ...(res.unlinkedApplicantIds?.length ? { newValue: { unlinkedApplicantIds: res.unlinkedApplicantIds } } : {}) }); for (const applicantId of res.unlinkedApplicantIds ?? []) await logAudit(ctx, { action: "recruitment.updateStage", entityType: "jobApplicant", entityId: applicantId, newValue: { convertedEmployeeId: null, deletedEmployeeId: input.id } });
       return res;
     }),
 });

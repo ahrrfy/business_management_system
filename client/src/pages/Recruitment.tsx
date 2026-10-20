@@ -7,40 +7,47 @@ import { Badge } from "@/components/ui/badge";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { InfoField, InfoGrid } from "@/components/data-display/InfoGrid";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
-import { ErrorState, LoadingState } from "@/components/PageState";
+import { ErrorState } from "@/components/PageState";
 import { confirm, confirmDelete } from "@/lib/confirm";
 import { Input } from "@/components/ui/input";
-import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { EmpAvatar } from "@/lib/hr/ui";
 import { exportRows } from "@/lib/export";
-import { downloadApplicantCv } from "@/lib/applicantCvDownload";
-import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { careersUrl } from "@/lib/siteHosts";
 import { trpc } from "@/lib/trpc";
-import { APPLICANT_SOURCES, APPLICANT_STAGES, EMPLOYMENT_TYPES, HR_DEPARTMENTS, applicantSourceLabel, applicantStageLabel, employmentTypeLabel, vacancyAccent, type ApplicantStage } from "@shared/hr";
-import { Briefcase, ChevronLeft, ChevronRight, Copy, Download, Eye, ExternalLink, FileSpreadsheet, FileText, GraduationCap, GripVertical, Image as ImageIcon, Link as LinkIcon, Mail, MapPin, Pencil, Phone, Plus, Star, Trash2, Users } from "lucide-react";
+import {
+  APPLICANT_SOURCES,
+  APPLICANT_STAGES,
+  EMPLOYMENT_TYPES,
+  HR_DEPARTMENTS,
+  applicantAvailabilityLabel,
+  applicantShiftLabel,
+  applicantSourceLabel,
+  applicantStageLabel,
+  employmentTypeLabel,
+  vacancyAccent,
+  type ApplicantStage,
+} from "@shared/hr";
+import { Briefcase, ChevronLeft, ChevronRight, Copy, Eye, ExternalLink, FileSpreadsheet, FileText, GripVertical, Image as ImageIcon, Link as LinkIcon, MapPin, Pencil, Phone, Plus, Trash2, UserPlus, Users } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useLocation } from "wouter";
 import { selectClsSm } from "@/lib/ui/formStyles";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
-
-const STAGE_COLOR: Record<string, string> = {
-  new: "var(--status-pending)",
-  review: "var(--stock-low)",
-  interview: "var(--chart-check)",
-  accepted: "var(--money-positive)",
-  rejected: "var(--money-negative)",
-  archived: "var(--muted-foreground)",
-};
+import {
+  ApplicantDetailDialog,
+  PaperDialog,
+  STAGE_COLOR,
+  Stars,
+  type Applicant,
+} from "@/components/hr/RecruitmentApplicantDialogs";
 
 const PIPELINE_STAGES: ApplicantStage[] = ["new", "review", "interview", "accepted"];
 
@@ -53,29 +60,6 @@ function adjacentStage(stage: ApplicantStage, direction: "previous" | "next"): A
   return PIPELINE_STAGES[target] ?? null;
 }
 
-type Applicant = {
-  id: number;
-  name: string;
-  jobTitle: string | null;
-  source: string;
-  stage: ApplicantStage;
-  phone: string | null;
-  rating: number | null;
-  cvFileKey: string | null;
-};
-
-function Stars({ rating }: { rating: number | null }) {
-  const r = rating ?? 0;
-  if (r <= 0) return <span className="text-muted-foreground text-[11px]">—</span>;
-  return (
-    <span className="inline-flex items-center text-[var(--sem-warn)]" aria-label={`${r} نجوم`}>
-      {Array.from({ length: r }, (_, k) => (
-        <Star key={k} className="size-3" style={{ fill: "currentColor" }} />
-      ))}
-    </span>
-  );
-}
-
 /**
  * رابط معرض الوظائف الذي يُشارَك مع المتقدّمين — **الدومين العام** (alarabiya.online) لا دومين
  * الشركة: صفحة التقديم خدمة عامة للناس (سياسة الدومينَين). كان يُبنى من `window.location.origin`
@@ -84,6 +68,7 @@ function Stars({ rating }: { rating: number | null }) {
 const PUBLIC_PATH = "/apply";
 
 export default function Recruitment() {
+  const [, setLocation] = useLocation();
   const utils = trpc.useUtils();
   const [tab, setTab] = useState("vacancies");
   const [stage, setStage] = useState("");
@@ -96,6 +81,9 @@ export default function Recruitment() {
   const [dropStage, setDropStage] = useState<ApplicantStage | null>(null);
 
   const vacancyOptsQ = trpc.recruitment.vacancyList.useQuery();
+  const recOptsQ = trpc.recruitment.formOptions.useQuery();
+  const me = trpc.auth.me.useQuery();
+  const canChooseCompanyWide = me.data?.role === "admin" || Boolean((me.data as { isOwner?: boolean } | null)?.isOwner);
 
   const input = useMemo(
     () => ({
@@ -115,18 +103,37 @@ export default function Recruitment() {
       columns: [
         { key: "name", header: "الاسم" },
         { key: "jobTitle", header: "الوظيفة", map: (r) => r.jobTitle ?? "" },
-        {
-          key: "source",
-          header: "المصدر",
-          map: (r) => applicantSourceLabel(r.source),
-        },
-        {
-          key: "stage",
-          header: "المرحلة",
-          map: (r) => applicantStageLabel(r.stage),
-        },
-        { key: "phone", header: "الهاتف", map: (r) => r.phone ?? "" },
+        { key: "department", header: "القسم المفضّل", map: (r) => r.department ?? "" },
+        { key: "preferredBranch", header: "الفرع المفضّل", map: (r) => r.preferredBranch ?? "" },
+        { key: "employmentType", header: "نوع الدوام", map: (r) => (r.employmentType ? employmentTypeLabel(r.employmentType) : "") },
+        { key: "shiftPreference", header: "الشفت المفضّل", map: (r) => (r.shiftPreference ? applicantShiftLabel(r.shiftPreference) : "") },
+        { key: "source", header: "المصدر", map: (r) => applicantSourceLabel(r.source) },
+        { key: "stage", header: "المرحلة", map: (r) => applicantStageLabel(r.stage) },
+        { key: "appliedDate", header: "تاريخ التقديم", map: (r) => r.appliedDate ?? "" },
+        { key: "phone", header: "الهاتف الأساسي", map: (r) => r.phone ?? "" },
+        { key: "whatsappPhone", header: "واتساب / بديل", map: (r) => r.whatsappPhone ?? "" },
+        { key: "email", header: "البريد الإلكتروني", map: (r) => r.email ?? "" },
+        { key: "birthDate", header: "تاريخ الميلاد", map: (r) => r.birthDate ?? "" },
+        { key: "gender", header: "الجنس", map: (r) => r.gender ?? "" },
+        { key: "maritalStatus", header: "الحالة الاجتماعية", map: (r) => r.maritalStatus ?? "" },
+        { key: "governorate", header: "المحافظة", map: (r) => r.governorate ?? "" },
+        { key: "district", header: "القضاء / المنطقة", map: (r) => r.district ?? "" },
+        { key: "residentialAddress", header: "عنوان السكن", map: (r) => r.residentialAddress ?? "" },
+        { key: "degree", header: "التحصيل الدراسي", map: (r) => r.degree ?? "" },
+        { key: "major", header: "التخصص", map: (r) => r.major ?? "" },
+        { key: "education", header: "الجامعة / التخرج", map: (r) => r.education ?? "" },
+        { key: "availabilityStatus", header: "حالة التفرّغ", map: (r) => (r.availabilityStatus ? applicantAvailabilityLabel(r.availabilityStatus) : "") },
+        { key: "experience", header: "سنوات الخبرة", map: (r) => r.experience ?? "" },
+        { key: "previousEmployer", header: "آخر جهة عمل", map: (r) => r.previousEmployer ?? "" },
+        { key: "skills", header: "المهارات", map: (r) => r.skills ?? "" },
+        { key: "expectedSalary", header: "الراتب المتوقع (د.ع)", map: (r) => r.expectedSalary ?? "" },
+        { key: "availableFrom", header: "تاريخ الجاهزية", map: (r) => r.availableFrom ?? "" },
+        { key: "portfolioUrl", header: "رابط الأعمال", map: (r) => r.portfolioUrl ?? "" },
         { key: "rating", header: "التقييم", map: (r) => r.rating ?? 0 },
+        { key: "interviewDate", header: "موعد المقابلة", map: (r) => r.interviewDate ?? "" },
+        { key: "rejectionReason", header: "سبب الرفض", map: (r) => r.rejectionReason ?? "" },
+        { key: "notes", header: "نبذة المتقدّم", map: (r) => r.notes ?? "" },
+        { key: "hrNotes", header: "ملاحظات الموارد البشرية", map: (r) => r.hrNotes ?? "" },
       ],
     });
   }
@@ -140,12 +147,13 @@ export default function Recruitment() {
     onSuccess: () => {
       notify.ok("نُقل المتقدّم");
       void utils.recruitment.list.invalidate();
+      void utils.recruitment.get.invalidate();
     },
     onError: (e) => notify.err(e),
   });
 
   async function moveApplicantTo(applicant: Applicant, targetStage: ApplicantStage) {
-    if (applicant.stage === targetStage || move.isPending) return;
+    if (applicant.stage === targetStage || move.isPending || applicant.convertedEmployeeId != null) return;
     if (targetStage === "rejected" || targetStage === "archived") {
       const approved = await confirm({
         variant: "warning",
@@ -246,7 +254,7 @@ export default function Recruitment() {
                 <Users className="size-4" /> المتقدّمون
                 <span className="tabular-nums">({rows.length})</span>
               </div>
-              <UnifiedSearchInput barcode={false} debounceMs={0} value={q} onChange={setQ} placeholder="بحث (اسم/وظيفة/هاتف/بريد)" className="w-56" inputClassName="h-9 text-xs" aria-label="بحث" />
+              <UnifiedSearchInput barcode={false} debounceMs={0} value={q} onChange={setQ} placeholder="بحث (اسم/وظيفة/هاتف/بريد/تخصص)" className="w-56" inputClassName="h-9 text-xs" aria-label="بحث" />
               <AppSelect className="h-9" value={stage} onValueChange={(next) => setStage(next)} aria-label="المرحلة">
                 <option value="">كل المراحل</option>
                 {APPLICANT_STAGES.map((s) => (
@@ -329,7 +337,7 @@ export default function Recruitment() {
                           return (
                             <article
                               key={a.id}
-                              draggable={!move.isPending}
+                              draggable={!move.isPending && a.convertedEmployeeId == null}
                               onDragStart={(event) => {
                                 event.dataTransfer.effectAllowed = "move";
                                 event.dataTransfer.setData("text/plain", String(a.id));
@@ -365,7 +373,30 @@ export default function Recruitment() {
                                   <span className="tabular-nums">{a.phone}</span>
                                 </a>
                               )}
-                              {(previous || next) && (
+                              {a.convertedEmployeeId != null ? (
+                                <div className="mt-2">
+                                  <Button
+                                    size="sm"
+                                    variant="secondary"
+                                    className="h-8 w-full text-xs"
+                                    onClick={() => setLocation(`/hr/employees/${a.convertedEmployeeId}`)}
+                                  >
+                                    <UserPlus className="size-3.5" /> عُيِّن كموظف (#{a.convertedEmployeeId})
+                                  </Button>
+                                </div>
+                              ) : a.stage === "accepted" ? (
+                                <div className="mt-2">
+                                  <Button
+                                    size="sm"
+                                    variant="default"
+                                    className="h-8 w-full text-xs"
+                                    onClick={() => setLocation(`/hr/employees/new?applicantId=${a.id}`)}
+                                  >
+                                    <UserPlus className="size-3.5" /> تعيين كموظف
+                                  </Button>
+                                </div>
+                              ) : null}
+                              {a.convertedEmployeeId == null && (previous || next) && (
                                 <div className="mt-3 flex gap-2">
                                   {previous && (
                                     <Button size="sm" variant="outline" className="h-8 flex-1 px-2 text-xs" disabled={move.isPending} onClick={() => void moveApplicantTo(a, previous)} title={`نقل إلى ${applicantStageLabel(previous)}`}>
@@ -380,7 +411,7 @@ export default function Recruitment() {
                                   )}
                                 </div>
                               )}
-                              {a.stage !== "rejected" && a.stage !== "archived" && (
+                              {a.convertedEmployeeId == null && a.stage !== "rejected" && a.stage !== "archived" && (
                                 <div className="mt-2 flex gap-2 border-t pt-2">
                                   <Button size="sm" variant="ghost" className="h-7 flex-1 text-xs text-destructive" disabled={move.isPending} onClick={() => void moveApplicantTo(a, "rejected")}>رفض</Button>
                                   <Button size="sm" variant="ghost" className="h-7 flex-1 text-xs text-muted-foreground" disabled={move.isPending} onClick={() => void moveApplicantTo(a, "archived")}>أرشفة</Button>
@@ -402,281 +433,30 @@ export default function Recruitment() {
             </div>
           </div>
 
-          <PaperDialog open={paperOpen} onClose={() => setPaperOpen(false)} onSaved={() => void utils.recruitment.list.invalidate()} />
-          <ApplicantDetailDialog id={detailId} onClose={() => setDetailId(null)} vacancies={vacancyOptsQ.data ?? []} />
+          <PaperDialog
+            open={paperOpen}
+            onClose={() => setPaperOpen(false)}
+            onSaved={() => void utils.recruitment.list.invalidate()}
+            vacancies={vacancyOptsQ.data ?? []}
+            branches={recOptsQ.data?.branches ?? []}
+            canChooseCompanyWide={canChooseCompanyWide}
+          />
+          <ApplicantDetailDialog
+            id={detailId}
+            onClose={() => setDetailId(null)}
+            vacancies={vacancyOptsQ.data ?? []}
+            onConvertToEmployee={(applicantId) => {
+              setDetailId(null);
+              setLocation(`/hr/employees/new?applicantId=${applicantId}`);
+            }}
+            onOpenEmployee={(employeeId) => {
+              setDetailId(null);
+              setLocation(`/hr/employees/${employeeId}`);
+            }}
+          />
         </TabsContent>
       </Tabs>
     </div>
-  );
-}
-
-/* ====================== حوار تفاصيل المتقدّم ====================== */
-function ApplicantDetailDialog({ id, onClose, vacancies }: { id: number | null; onClose: () => void; vacancies: { id: number; title: string }[] }) {
-  const q = trpc.recruitment.get.useQuery({ id: id ?? 0 }, { enabled: id != null });
-  const [isDownloading, setIsDownloading] = useState(false);
-  const a = q.data;
-  const vacancyTitle = a?.vacancyId != null ? (vacancies.find((v) => v.id === a.vacancyId)?.title ?? null) : null;
-  const positionTitle = vacancyTitle || a?.jobTitle || "تقديم عام";
-
-  async function handleCvDownload() {
-    if (!a?.cvFileKey || isDownloading) return;
-    setIsDownloading(true);
-    try {
-      await downloadApplicantCv(a.cvFileKey, a.name);
-      notify.ok("بدأ تنزيل السيرة الذاتية");
-    } catch (error) {
-      notify.err(error);
-    } finally {
-      setIsDownloading(false);
-    }
-  }
-
-  return (
-    <Dialog
-      open={id != null}
-      onOpenChange={(o) => {
-        if (!o) onClose();
-      }}
-    >
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl" dir="rtl">
-        <DialogHeader>
-          <DialogTitle>تفاصيل المتقدّم</DialogTitle>
-        </DialogHeader>
-        {q.isLoading ? (
-          <LoadingState />
-        ) : !a ? (
-          <p className="text-sm text-muted-foreground py-4 text-center">تعذّر تحميل بيانات المتقدّم.</p>
-        ) : (
-          <div className="space-y-5">
-            <header className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-4 sm:flex-row sm:items-center">
-              <EmpAvatar name={a.name} sizePx={52} />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-lg font-bold">{a.name}</div>
-                <div className="mt-0.5 text-sm text-muted-foreground">{positionTitle}</div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <Badge variant="outline" className="gap-1.5">
-                    <span className="size-2 rounded-full" style={{ background: STAGE_COLOR[a.stage] }} />
-                    {applicantStageLabel(a.stage)}
-                  </Badge>
-                  <Badge variant="secondary">{applicantSourceLabel(a.source)}</Badge>
-                </div>
-              </div>
-            </header>
-
-            <section className="space-y-2">
-              <h3 className="flex items-center gap-2 text-sm font-semibold"><Phone aria-hidden className="size-4 text-muted-foreground" /> بيانات الاتصال</h3>
-              <InfoGrid density="wide">
-                <InfoField label="رقم الهاتف" kind="phone" value={a.phone ? <a href={`tel:${a.phone}`} className="hover:text-primary hover:underline">{a.phone}</a> : "غير مسجل"} />
-                <InfoField label="البريد الإلكتروني" value={a.email ? <a href={`mailto:${a.email}`} className="break-all hover:text-primary hover:underline" dir="ltr">{a.email}</a> : "غير مسجل"} />
-                <InfoField label={<span className="inline-flex items-center gap-1.5"><MapPin aria-hidden className="size-3.5" /> عنوان السكن / المنطقة</span>} value={a.residentialAddress || "غير مذكور"} span={2} />
-              </InfoGrid>
-            </section>
-
-            <section className="space-y-2">
-              <h3 className="flex items-center gap-2 text-sm font-semibold"><Briefcase aria-hidden className="size-4 text-muted-foreground" /> بيانات الطلب والمؤهلات</h3>
-              <InfoGrid density="wide">
-                <InfoField label="الوظيفة المتقدّم لها" value={positionTitle} />
-                <InfoField label="تاريخ التقديم" value={a.appliedDate ? fmtDate(a.appliedDate) : "غير مسجل"} kind="date" />
-                <InfoField label="سنوات الخبرة" value={a.experience || "غير مذكورة"} />
-                <InfoField label={<span className="inline-flex items-center gap-1.5"><GraduationCap aria-hidden className="size-3.5" /> المؤهل الدراسي</span>} value={a.education || "غير مذكور"} />
-                <InfoField
-                  label="الأعمال النموذجية"
-                  span={2}
-                  value={a.portfolioUrl ? <a href={a.portfolioUrl} target="_blank" rel="noopener noreferrer" className="inline-flex max-w-full items-center gap-1.5 text-primary hover:underline" dir="ltr"><span className="truncate">{a.portfolioUrl}</span><ExternalLink aria-hidden className="size-3.5 shrink-0" /></a> : "غير مرفقة"}
-                />
-              </InfoGrid>
-            </section>
-
-            <section className="space-y-2">
-              <h3 className="flex items-center gap-2 text-sm font-semibold"><Star aria-hidden className="size-4 text-muted-foreground" /> التقييم والملاحظات</h3>
-              <div className="rounded-lg border bg-muted/15 p-3">
-                <div className="flex items-center justify-between gap-3 border-b pb-3">
-                  <span className="text-xs font-medium text-muted-foreground">التقييم الأولي</span>
-                  <Stars rating={a.rating} />
-                </div>
-                <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-foreground">{a.notes || "لا توجد ملاحظات مسجلة."}</p>
-              </div>
-            </section>
-          </div>
-        )}
-        <DialogFooter className="gap-2 sm:justify-between">
-          {a?.cvFileKey ? (
-            <Button type="button" onClick={() => void handleCvDownload()} disabled={isDownloading}>
-              <Download aria-hidden className="size-4" /> {isDownloading ? ACTION_LABELS.downloading : "تنزيل السيرة الذاتية"}
-            </Button>
-          ) : <span />}
-          <Button variant="outline" onClick={onClose}>
-            إغلاق
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/* ====================== استمارة ورقية (إدخال الموظف) ====================== */
-function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: () => void }) {
-  const [name, setName] = useState("");
-  const [jobTitle, setJobTitle] = useState("");
-  const [phone, setPhone] = useState("");
-  const [email, setEmail] = useState("");
-  const [experience, setExperience] = useState("");
-  const [education, setEducation] = useState("");
-  const [residentialAddress, setResidentialAddress] = useState("");
-  const [portfolioUrl, setPortfolioUrl] = useState("");
-  const [source, setSource] = useState<"paper" | "archive">("paper");
-  const [stage, setStage] = useState<string>("new");
-  const [rating, setRating] = useState(0);
-  const [notes, setNotes] = useState("");
-
-  const create = trpc.recruitment.create.useMutation({
-    onSuccess: () => {
-      notify.ok("حُفظ المتقدّم في مسار التوظيف");
-      reset();
-      onSaved();
-      onClose();
-    },
-    onError: (e) => notify.err(e),
-  });
-
-  function reset() {
-    setName("");
-    setJobTitle("");
-    setPhone("");
-    setEmail("");
-    setExperience("");
-    setEducation("");
-    setResidentialAddress("");
-    setPortfolioUrl("");
-    setSource("paper");
-    setStage("new");
-    setRating(0);
-    setNotes("");
-  }
-
-  function submit() {
-    if (!name.trim()) return notify.err("اسم المتقدّم مطلوب");
-    create.mutate({
-      name: name.trim(),
-      jobTitle: jobTitle.trim() || undefined,
-      phone: phone.trim() || undefined,
-      email: email.trim() || undefined,
-      experience: experience.trim() || undefined,
-      education: education.trim() || undefined,
-      residentialAddress: residentialAddress.trim() || undefined,
-      portfolioUrl: portfolioUrl.trim() || undefined,
-      notes: notes.trim() || undefined,
-      source,
-      stage: stage as never,
-      rating,
-    });
-  }
-
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => {
-        if (!o) onClose();
-      }}
-    >
-      <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto" dir="rtl">
-        <DialogHeader>
-          <DialogTitle>إدخال استمارة ورقية إلى النظام</DialogTitle>
-        </DialogHeader>
-
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
-          <div className="space-y-1.5">
-            <Label>
-              اسم المتقدّم <span className="text-destructive">*</span>
-            </Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="الاسم الكامل" />
-          </div>
-          <div className="space-y-1.5">
-            <Label>الهاتف</Label>
-            <IntlPhoneInput value={phone} onChange={setPhone} ariaLabel="هاتف المرشح" />
-          </div>
-          <div className="space-y-1.5">
-            <Label>الوظيفة المتقدّم لها</Label>
-            <Input value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="مثال: مصمم جرافيك" list="rec-jobs" />
-            <datalist id="rec-jobs">
-              {HR_DEPARTMENTS.map((d) => (
-                <option key={d} value={d} />
-              ))}
-            </datalist>
-          </div>
-          <div className="space-y-1.5">
-            <Label>البريد الإلكتروني</Label>
-            <Input value={email} onChange={(e) => setEmail(e.target.value)} dir="ltr" type="email" placeholder="name@example.com" />
-          </div>
-          <div className="space-y-1.5">
-            <Label>الخبرة</Label>
-            <Input value={experience} onChange={(e) => setExperience(e.target.value)} placeholder="مثال: ٣ سنوات" />
-          </div>
-          <div className="space-y-1.5">
-            <Label>المؤهل الدراسي</Label>
-            <Input value={education} onChange={(e) => setEducation(e.target.value)} placeholder="مثال: بكالوريوس" />
-          </div>
-          <div className="space-y-1.5 sm:col-span-2">
-            <Label>عنوان السكن / المنطقة</Label>
-            <Input value={residentialAddress} onChange={(e) => setResidentialAddress(e.target.value)} maxLength={300} placeholder="مثال: بغداد — الكرادة" autoComplete="street-address" />
-          </div>
-          <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
-            <Label>الأعمال النموذجية</Label>
-            <Input value={portfolioUrl} onChange={(e) => setPortfolioUrl(e.target.value)} maxLength={500} type="url" dir="ltr" placeholder="https://portfolio.example.com" autoComplete="url" />
-          </div>
-          <div className="space-y-1.5">
-            <Label>المصدر</Label>
-            <AppSelect className={selectClsSm + " w-full"} value={source} onValueChange={(next) => setSource(next as "paper" | "archive")}>
-              <option value="paper">استمارة ورقية</option>
-              <option value="archive">أرشيف</option>
-            </AppSelect>
-          </div>
-          <div className="space-y-1.5">
-            <Label>المرحلة</Label>
-            <AppSelect className={selectClsSm + " w-full"} value={stage} onValueChange={(next) => setStage(next)}>
-              {APPLICANT_STAGES.map((s) => (
-                <option key={s.key} value={s.key}>
-                  {s.label}
-                </option>
-              ))}
-            </AppSelect>
-          </div>
-          <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
-            <Label>التقييم المبدئي</Label>
-            <div className="flex items-center gap-1">
-              {[1, 2, 3, 4, 5].map((n) => (
-                <button key={n} type="button" onClick={() => setRating(rating === n ? 0 : n)} className="p-0.5 text-[var(--sem-warn)]" aria-label={`${n} نجوم`}>
-                  <Star
-                    className="size-5"
-                    style={{
-                      fill: n <= rating ? "currentColor" : "transparent",
-                    }}
-                  />
-                </button>
-              ))}
-              {rating > 0 && (
-                <button type="button" className="text-xs text-muted-foreground ms-2" onClick={() => setRating(0)}>
-                  مسح
-                </button>
-              )}
-            </div>
-          </div>
-          <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
-            <Label>ملاحظات الموظف المختص</Label>
-            <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} placeholder="خبرات سابقة، مهارات…" />
-          </div>
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            إلغاء
-          </Button>
-          <Button onClick={submit} disabled={create.isPending}>
-            {create.isPending ? ACTION_LABELS.saving : "حفظ في مسار التوظيف"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }
 
