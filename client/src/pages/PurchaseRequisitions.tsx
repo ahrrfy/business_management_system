@@ -671,7 +671,7 @@ export default function PurchaseRequisitions() {
                   <div className="min-w-64 flex-1 space-y-1">
                     <Label htmlFor="requisition-product">إضافة صنف ووحدة</Label>
                     <AppSelect
-                      id="requisition-product"
+                      id="requisition-product" searchable searchPlaceholder="ابحث عن صنف أو SKU..."
                       value={productUnitId}
                       onValueChange={setProductUnitId}
                     >
@@ -779,6 +779,8 @@ export default function PurchaseRequisitions() {
                                 : ""
                             }
                             disabled={!editingAllowed}
+                            searchable
+                            searchPlaceholder="ابحث عن المورد..."
                             onValueChange={(value) =>
                               updateItem(index, {
                                 preferredSupplierId: value

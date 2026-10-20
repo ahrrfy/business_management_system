@@ -1,13 +1,21 @@
 import * as React from "react";
-import { AlertTriangle, Coins, FileText, Layers, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Coins, Layers, ShieldCheck, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { formatIqd } from "@/lib/money";
+import { digitsArabicToLatin } from "@shared/numberNormalize";
+import { normalizeSearchText } from "@shared/searchNormalize";
 import type { ComponentRequirementDto } from "@shared/bundleProductionTypes";
 import type { BundleKitComponentBatch } from "./BundleKitComponentsStep";
-import { digitsArabicToLatin } from "@shared/numberNormalize";
+
+export interface OpenWorkOrderOption {
+  id: number;
+  orderNumber: string;
+  title: string;
+  customerName?: string | null;
+}
 
 interface BundleKitReviewStepProps {
   bundleName: string;
@@ -19,6 +27,7 @@ interface BundleKitReviewStepProps {
   onNotesChange: (notes: string) => void;
   linkedWorkOrderId: number | null;
   onLinkedWorkOrderChange: (id: number | null) => void;
+  openWorkOrders?: OpenWorkOrderOption[];
   estimatedLaborCost: string;
   estimatedMaterialsCost: string;
   estimatedTotalCost: string;
@@ -38,11 +47,10 @@ export function BundleKitReviewStep({
   onNotesChange,
   linkedWorkOrderId,
   onLinkedWorkOrderChange,
+  openWorkOrders = [],
   estimatedLaborCost,
   estimatedMaterialsCost,
   estimatedTotalCost,
-  isSubmitting,
-  onSubmit,
   maxBundlesPossible,
   limitingFactorName,
 }: BundleKitReviewStepProps) {
@@ -51,6 +59,26 @@ export function BundleKitReviewStep({
   );
   const selectedBatches = batches.filter((b) => b.selected && b.batchQty > 0);
   const isConstrained = maxBundlesPossible != null && maxBundlesPossible < requestedBundleQty;
+
+  const [woQuery, setWoQuery] = React.useState(() =>
+    linkedWorkOrderId != null ? String(linkedWorkOrderId) : "",
+  );
+  const selectedWO = React.useMemo(
+    () =>
+      linkedWorkOrderId != null
+        ? (openWorkOrders.find((o) => Number(o.id) === linkedWorkOrderId) ?? null)
+        : null,
+    [openWorkOrders, linkedWorkOrderId],
+  );
+  const woMatches = React.useMemo(() => {
+    const nq = normalizeSearchText(woQuery.trim());
+    if (!nq || openWorkOrders.length === 0) return [];
+    return openWorkOrders
+      .filter((o) =>
+        normalizeSearchText(`${o.id} ${o.orderNumber} ${o.title} ${o.customerName ?? ""}`).includes(nq),
+      )
+      .slice(0, 30);
+  }, [openWorkOrders, woQuery]);
 
   return (
     <div className="space-y-4" dir="rtl">
@@ -193,21 +221,83 @@ export function BundleKitReviewStep({
 
         <div className="space-y-1">
           <Label htmlFor="linked-wo" className="text-xs">
-            رقم أمر الشغل المرتبط (اختياري)
+            ربط بطلب شغل مفتوح (اختياري)
           </Label>
-          <Input
-            id="linked-wo"
-            type="number"
-            dir="ltr"
-            lang="en-US"
-            value={linkedWorkOrderId ?? ""}
-            onChange={(e) => {
-              const val = parseInt(digitsArabicToLatin(e.target.value), 10);
-              onLinkedWorkOrderChange(Number.isFinite(val) && val > 0 ? val : null);
-            }}
-            placeholder="رقم التعريف لأمر الشغل linkedWorkOrderId"
-            className="text-xs h-9 font-mono tabular-nums"
-          />
+          {selectedWO ? (
+            <div className="flex h-9 items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 text-xs">
+              <span className="truncate" dir="ltr">
+                {selectedWO.orderNumber}{" "}
+                <span className="text-muted-foreground">— {selectedWO.title}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  onLinkedWorkOrderChange(null);
+                  setWoQuery("");
+                }}
+                className="shrink-0 text-muted-foreground hover:text-destructive"
+                aria-label="إلغاء الربط"
+              >
+                <X aria-hidden className="size-4" />
+              </button>
+            </div>
+          ) : (
+            <div className="relative">
+              <UnifiedSearchInput
+                id="linked-wo"
+                barcode={false}
+                debounceMs={0}
+                size="compact"
+                dir="auto"
+                value={woQuery}
+                onChange={(val) => {
+                  setWoQuery(val);
+                  const latin = digitsArabicToLatin(val).trim();
+                  if (/^\d+$/.test(latin)) {
+                    const num = parseInt(latin, 10);
+                    onLinkedWorkOrderChange(Number.isFinite(num) && num > 0 ? num : null);
+                  } else {
+                    onLinkedWorkOrderChange(null);
+                  }
+                }}
+                onSubmit={() => {
+                  if (woMatches.length > 0) {
+                    const chosen = woMatches[0];
+                    onLinkedWorkOrderChange(Number(chosen.id));
+                    setWoQuery(String(chosen.id));
+                  }
+                }}
+                placeholder="ابحث برقم الأمر/العنوان/العميل أو أدخل الرقم…"
+              />
+              {woQuery.trim() && openWorkOrders.length > 0 && (
+                <div className="absolute z-20 mt-1 w-full rounded-md border bg-popover shadow-md max-h-48 overflow-auto">
+                  {woMatches.length === 0 ? (
+                    <div className="px-3 py-2 text-xs text-muted-foreground">لا نتائج مطابقة.</div>
+                  ) : (
+                    woMatches.map((o) => (
+                      <button
+                        key={o.id}
+                        type="button"
+                        onClick={() => {
+                          onLinkedWorkOrderChange(Number(o.id));
+                          setWoQuery(String(o.id));
+                        }}
+                        className="w-full text-right px-3 py-1.5 hover:bg-accent text-xs border-b last:border-b-0"
+                      >
+                        <span className="font-mono text-xs" dir="ltr">
+                          {o.orderNumber}
+                        </span>{" "}
+                        — {o.title}
+                        <span className="block text-[11px] text-muted-foreground">
+                          {o.customerName ?? "عميل نقدي"}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

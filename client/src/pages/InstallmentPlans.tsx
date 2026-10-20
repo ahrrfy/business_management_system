@@ -654,7 +654,7 @@ function CreatePlanDialog({
             <div className="space-y-1 sm:col-span-2">
               <Label>الفاتورة المستحقّة *</Label>
               <AppSelect
-                value={invoiceId == null ? "" : String(invoiceId)}
+                searchable searchPlaceholder="ابحث برقم الفاتورة..." value={invoiceId == null ? "" : String(invoiceId)}
                 onValueChange={(value) => {
                   const nextId = value ? Number(value) : null;
                   setInvoiceId(nextId);

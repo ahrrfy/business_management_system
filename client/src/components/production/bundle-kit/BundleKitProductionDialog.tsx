@@ -126,6 +126,7 @@ export function BundleKitProductionDialog({
     }
   }, [open, initialBundleVariantId, bundlesListQ.data]);
 
+  const openWOs = trpc.workOrders.list.useQuery({ statuses: ["RECEIVED", "IN_PROGRESS", "READY"], branchId: effectiveBranchId ?? undefined, limit: 200 }, { enabled: open });
   const analysisQ = trpc.production.bundles.analyzeRequirements.useQuery(
     {
       bundleVariantId: selectedBundleId ?? 0,
@@ -449,7 +450,7 @@ export function BundleKitProductionDialog({
               batches={batches}
               notes={notes}
               onNotesChange={setNotes}
-              linkedWorkOrderId={linkedWorkOrderId}
+              linkedWorkOrderId={linkedWorkOrderId} openWorkOrders={openWOs.data ?? []}
               onLinkedWorkOrderChange={setLinkedWorkOrderId}
               estimatedLaborCost={analysis.estimatedTotalLaborCost}
               estimatedMaterialsCost={analysis.estimatedTotalMaterialsCost}

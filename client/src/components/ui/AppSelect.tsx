@@ -14,15 +14,10 @@
  *    كان يُسقَط فيتعذّر الرجوع إلى «الكل» بعد أوّل اختيار — أصلحته مراجعة Codex على PR #931.
  *  - ⛔ الأطفال يجب أن يكونوا `<option>`/`<optgroup>` **حرفياً**: المحوِّل لا يُصيّر المكوّنات
  *    المخصّصة، فمكوّنٌ يُرجع options يصل خامّاً إلى `SelectContent` ويصير غير قابل للاختيار.
- *    مرّر العناصر من دالّة بدلاً منه (مثال: `categoryOptionElements(list)`).
+ *    مرّر العناصر من دالّة بدلاً منه (مثال: categoryOptionElements(list)).
  *  - `disabled` على `<option>` مدعوم عبر `data-[disabled]` (Radix).
- *
- * لماذا `onValueChange` بدل `onChange` النمطيّ؟ Radix API يعطي القيمة مباشرةً بلا SyntheticEvent —
- * أنظف من `(e) => e.target.value`. الهجرة النموذجيّة: `onChange={(e) => setX(e.target.value)}` تصير
- * `onValueChange={setX}`. أوضح وأقلّ تفافاً.
- *
- * القيم رقميّة؟ Radix يتعامل بالنصوص. حوّل خارجياً (`value={String(id)}` + `Number(v)` عند التغيير)
- * — نفس اتّفاقيّة `<select>` الأصليّ التي تُرجع نصّاً في `e.target.value` دائماً.
+ *  - `searchable`: يفعّل شريط `UnifiedSearchInput` الموحّد أعلى القائمة لتصفية الخيارات الطويلة
+ *    عبر `normalizeSearchText` مع إبقاء العناصر المثبّتة في الشجرة لضمان عدم فقدان عنوان `SelectValue`.
  */
 import * as React from "react";
 import {
@@ -34,6 +29,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
+import { normalizeSearchText, tokenizeSearchQuery } from "@shared/searchNormalize";
 
 interface AppSelectProps {
   /** القيمة الحاليّة (نصّ). حوّل الأرقام يدوياً بـString()/Number() عند الحدود. */
@@ -79,36 +76,40 @@ interface AppSelectProps {
   required?: boolean;
   /** ربطُ الحقل بتلميحه/خطئه (§A11y) — تستعمله نماذج المتجر والتوظيف. */
   "aria-describedby"?: string;
+  /** تفعيل شريط بحث موحّد داخل القائمة المنسدلة لتصفية الخيارات الطويلة (العملاء، الموردون، الوصفات، الحسابات...). */
+  searchable?: boolean;
+  /** نص تلميح حقل البحث الداخلي عند تفعيل `searchable`. */
+  searchPlaceholder?: string;
   /** أطفال `<option>`/`<optgroup>` — يُحلَّلون بنيوياً إلى SelectItem/SelectGroup. */
   children: React.ReactNode;
 }
 
-/**
- * يفحص إن كان العنصر `<option>` أصليّاً أو `<optgroup>` — نقارن بالسلسلة النصّيّة كي لا نعتمد على
- * تصنيف React internal (الذي قد يتغيّر بين الإصدارات) وكي نتفادى false-positive على مكوّنات
- * مسمّاة "option" في مساحات أخرى.
- */
 function elementName(el: React.ReactElement): string | undefined {
   const t = el.type;
   return typeof t === "string" ? t : undefined;
 }
 
-/**
- * يحوّل شجرة `<option>` / `<optgroup>` إلى شجرة `<SelectItem>` / `<SelectGroup>+<SelectLabel>`.
- * يستخرج `<option value="">` كـplaceholder ويُبلّغ عنه للـcaller (كي يظهر على الـtrigger فارغاً).
- */
-/**
- * قيمةٌ بديلة للخيار الفارغ. Radix يرفض `value=""` على `SelectItem`، وكان الحلّ السابق
- * **إسقاط** الخيار الفارغ والاكتفاء به placeholder — فيتعذّر الرجوع إلى «الكل» بعد أوّل
- * اختيار (مراجعة Codex على PR #931، P1). الآن يُصيَّر عنصراً حقيقياً بهذه القيمة،
- * وتُترجَم عند الحدّين فيبقى العقد الخارجيّ `""` كما هو لكل المستدعين.
- */
+function extractText(node: React.ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join("");
+  if (React.isValidElement(node)) {
+    const p = node.props as { children?: React.ReactNode };
+    return extractText(p.children);
+  }
+  return "";
+}
+
 const EMPTY_VALUE = "__appselect_empty__";
 
 function convertChildren(
   children: React.ReactNode,
   extractedPlaceholder: { text: string | null },
+  searchTokens: string[],
+  stats: { matched: number },
+  groupTitle?: string,
 ): React.ReactNode {
+  const isFiltering = searchTokens.length > 0;
   return React.Children.map(children, (child) => {
     if (!React.isValidElement(child)) return null;
     const name = elementName(child);
@@ -116,10 +117,19 @@ function convertChildren(
     // <optgroup label="...">...</optgroup> → <SelectGroup><SelectLabel>...</SelectLabel>...</SelectGroup>
     if (name === "optgroup") {
       const props = child.props as { label?: string; children?: React.ReactNode };
+      const groupStats = { matched: 0 };
+      const groupItems = convertChildren(
+        props.children,
+        extractedPlaceholder,
+        searchTokens,
+        groupStats,
+        props.label,
+      );
+      stats.matched += groupStats.matched;
       return (
-        <SelectGroup>
+        <SelectGroup className={isFiltering && groupStats.matched === 0 ? "hidden" : undefined}>
           {props.label ? <SelectLabel>{props.label}</SelectLabel> : null}
-          {convertChildren(props.children, extractedPlaceholder)}
+          {groupItems}
         </SelectGroup>
       );
     }
@@ -133,21 +143,33 @@ function convertChildren(
       };
       const raw = props.value;
       const value = raw == null ? "" : String(raw);
+      const labelText = extractText(props.children);
+      let matches = true;
+      if (isFiltering) {
+        const haystack = normalizeSearchText(`${labelText} ${value} ${groupTitle ?? ""}`);
+        matches = searchTokens.every((tok) => haystack.includes(tok));
+      }
+      if (matches) stats.matched += 1;
 
-      // <option value=""> يخدم غرضين: نصُّ الـplaceholder، **وخيارُ إعادةٍ إلى «الكل»**.
-      // إسقاطه (السلوك السابق) كان يحبس المستخدم على أوّل اختيار.
       if (value === "") {
-        const t = typeof props.children === "string" ? props.children : String(props.children ?? "");
-        if (extractedPlaceholder.text == null) extractedPlaceholder.text = t.trim() || null;
+        if (extractedPlaceholder.text == null) extractedPlaceholder.text = labelText.trim() || null;
         return (
-          <SelectItem value={EMPTY_VALUE} disabled={props.disabled}>
+          <SelectItem
+            value={EMPTY_VALUE}
+            disabled={props.disabled || !matches}
+            className={!matches ? "hidden" : undefined}
+          >
             {props.children}
           </SelectItem>
         );
       }
 
       return (
-        <SelectItem value={value} disabled={props.disabled}>
+        <SelectItem
+          value={value}
+          disabled={props.disabled || !matches}
+          className={!matches ? "hidden" : undefined}
+        >
           {props.children}
         </SelectItem>
       );
@@ -156,13 +178,12 @@ function convertChildren(
     // عنصر آخر (Fragment/تكرار محتمل) — كرِّر التحويل على أطفاله؛ يُبقي البنى المرنة عاملةً.
     const props = child.props as { children?: React.ReactNode };
     if (props && "children" in props) {
-      return React.cloneElement(child, {}, convertChildren(props.children, extractedPlaceholder));
+      return React.cloneElement(
+        child,
+        {},
+        convertChildren(props.children, extractedPlaceholder, searchTokens, stats, groupTitle),
+      );
     }
-    /*
-     * وصلنا مكوّناً مخصّصاً بلا أطفال — لا يمكن تصييره هنا، وتمريره كما هو يضع `<option>`
-     * خامّة داخل `SelectContent` فتبدو القائمة سليمة **وهي غير قابلة للاختيار**. العطبُ
-     * صامتٌ تماماً في الإنتاج (لا خطأ، لا تحذير) ولذلك نصرخ في التطوير.
-     */
     if (import.meta.env?.DEV && typeof child.type !== "string") {
       const label = typeof child.type === "function" ? (child.type.name || "مكوّن") : String(child.type);
       console.error(
@@ -193,45 +214,44 @@ export function AppSelect({
   style,
   required,
   "aria-describedby": ariaDescribedBy,
+  searchable = false,
+  searchPlaceholder,
   children,
 }: AppSelectProps) {
-  // نستخرج placeholder من `<option value="">` إن وُجد ولم يُمرَّر placeholder صريحاً.
-  // useMemo كي لا نُعيد التحليل في كل رِندر (children تُبنى مجدّداً من الأب في العادة).
-  const { items, resolvedPlaceholder } = React.useMemo(() => {
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const searchInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  const searchTokens = React.useMemo(
+    () => (searchable ? tokenizeSearchQuery(searchQuery) : []),
+    [searchable, searchQuery],
+  );
+
+  const { items, resolvedPlaceholder, matchedCount } = React.useMemo(() => {
     const holder = { text: null as string | null };
-    const converted = convertChildren(children, holder);
+    const stats = { matched: 0 };
+    const converted = convertChildren(children, holder, searchTokens, stats);
     return {
       items: converted,
       resolvedPlaceholder: placeholder ?? holder.text ?? undefined,
+      matchedCount: stats.matched,
     };
-  }, [children, placeholder]);
+  }, [children, placeholder, searchTokens]);
 
   return (
     <Select
-      /*
-       * ⚠️ يُمرَّر `value` كما هو — بما فيه `""`.
-       *
-       * كان هنا `value === "" ? undefined : value`، و`undefined` يجعل Radix Select
-       * **غير مُتحكَّم به** فيحتفظ بآخر اختيارٍ داخليّ. الأثر: تصفيرُ الفلتر يمسح الحالة
-       * (يختفي العدّاد وزرّ «مسح الفلاتر») بينما الزرّ **يظلّ يعرض القيمة القديمة** —
-       * أي أنّ الشاشة تكذب على الموظّف: الجدول يعرض الكلّ والمنتقي يقول «تسوية».
-       * أمسكه تحقّقٌ حيّ على شاشة حركات المخزون (١/٩/٢٦).
-       *
-       * و`""` آمنٌ هنا: `SelectValue` في Radix يُظهر الـplaceholder حين تكون القيمة
-       * `""` أو `undefined` (shouldShowPlaceholder)، والقيدُ الحقيقيّ أن لا يحمل
-       * **عنصرٌ** قيمةً فارغة — وهذا مضمون: `convertChildren` يحوّل `<option value="">`
-       * إلى placeholder ولا يُنشئ له SelectItem.
-       */
       value={value === "" ? EMPTY_VALUE : value}
       onValueChange={(next) => {
-        // Radix's hidden form select can emit an empty synchronization event.
-        // Real empty choices use EMPTY_VALUE; never erase a controlled value on that event.
         if (next === "") return;
         onValueChange(next === EMPTY_VALUE ? "" : next);
       }}
       disabled={disabled}
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen && searchQuery) {
+          setSearchQuery("");
+        }
+        onOpenChange?.(nextOpen);
+      }}
       name={name}
       required={required}
     >
@@ -248,7 +268,54 @@ export function AppSelect({
       >
         <SelectValue placeholder={resolvedPlaceholder} />
       </SelectTrigger>
-      <SelectContent className={contentClassName}>{items}</SelectContent>
+      <SelectContent
+        className={contentClassName}
+        onCloseAutoFocus={searchable ? () => setSearchQuery("") : undefined}
+        onKeyDown={
+          searchable
+            ? (e) => {
+                if (
+                  document.activeElement !== searchInputRef.current &&
+                  (e.key === "Backspace" || (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey))
+                ) {
+                  searchInputRef.current?.focus();
+                }
+              }
+            : undefined
+        }
+      >
+        {searchable ? (
+          <div
+            className="sticky top-0 z-10 bg-popover p-1.5 pb-1 border-b border-border/60"
+            onKeyDown={(e) => {
+              if (e.key !== "Escape" && e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Enter") {
+                e.stopPropagation();
+              }
+            }}
+            onKeyUp={(e) => e.stopPropagation()}
+            onPointerMove={(e) => e.stopPropagation()}
+          >
+            <UnifiedSearchInput
+              ref={searchInputRef}
+              value={searchQuery}
+              onChange={setSearchQuery}
+              placeholder={searchPlaceholder ?? "ابحث في القائمة..."}
+              barcode={false}
+              debounceMs={0}
+              size="compact"
+              variant="pos"
+              f2Shortcut={false}
+              aria-label={searchPlaceholder ?? "ابحث في القائمة"}
+            />
+          </div>
+        ) : null}
+        {items}
+        {searchable && searchTokens.length > 0 && matchedCount === 0 ? (
+          <div className="py-4 text-center text-xs text-muted-foreground">
+            لا توجد نتائج مطابقة
+          </div>
+        ) : null}
+      </SelectContent>
     </Select>
   );
 }

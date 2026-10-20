@@ -184,7 +184,7 @@ export function LeadFormDialog({
           <div>
             <Label htmlFor="lead-customer">عميل مسجل (اختياري)</Label>
             <AppSelect
-              id="lead-customer"
+              id="lead-customer" searchable searchPlaceholder="ابحث عن العميل بالاسم أو الهاتف..."
               value={customerId}
               onValueChange={setCustomerId}
             >
@@ -390,7 +390,7 @@ export function OpportunityFormDialog({
           <div>
             <Label htmlFor="opp-owner">مالك الفرصة</Label>
             <AppSelect
-              id="opp-owner"
+              id="opp-owner" searchable searchPlaceholder="ابحث عن الموظف..."
               value={ownerId}
               onValueChange={setOwnerId}
             >
@@ -413,7 +413,7 @@ export function OpportunityFormDialog({
           <div>
             <Label htmlFor="opp-customer">العميل</Label>
             <AppSelect
-              id="opp-customer"
+              id="opp-customer" searchable searchPlaceholder="ابحث عن العميل..."
               value={customerId}
               disabled={mode === "CONVERT" && lead?.customerId != null}
               onValueChange={setCustomerId}
@@ -431,7 +431,7 @@ export function OpportunityFormDialog({
           <div>
             <Label htmlFor="opp-quote">عرض السعر (اختياري)</Label>
             <AppSelect
-              id="opp-quote"
+              id="opp-quote" searchable searchPlaceholder="ابحث برقم عرض السعر..."
               value={quotationId}
               onValueChange={setQuotationId}
             >
@@ -575,7 +575,7 @@ export function PipelineTransitionDialog({
             <div>
               <Label htmlFor="transition-invoice">فاتورة الفوز</Label>
               <AppSelect
-                id="transition-invoice"
+                id="transition-invoice" searchable searchPlaceholder="ابحث برقم الفاتورة..."
                 value={invoiceId}
                 onValueChange={setInvoiceId}
               >

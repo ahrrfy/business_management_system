@@ -27,6 +27,7 @@ import { CameraScanner } from "@/components/scan/CameraScanner";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { playReadyBeep } from "@/lib/notifyBeep";
+import { normalizeSearchText } from "@shared/searchNormalize";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 
@@ -196,6 +197,7 @@ export function CommandPalette() {
       setQ("");
       setImmediateTerm(null);
       setLastScannedBarcode(null);
+      barcodeInput.reset();
     }
   }, [open]);
 
@@ -220,7 +222,7 @@ export function CommandPalette() {
 
   const lc = term.toLowerCase();
   const matchedPages = PAGES.filter((p) =>
-    !term || p.label.includes(term) || (p.keywords ?? "").toLowerCase().includes(lc),
+    !term || normalizeSearchText(`${p.label} ${p.keywords ?? ""}`).includes(normalizeSearchText(term)),
   );
 
   const go = useCallback((href: string) => {
@@ -283,6 +285,7 @@ export function CommandPalette() {
                   setQ("");
                   setImmediateTerm(null);
                   setLastScannedBarcode(null);
+      barcodeInput.reset();
                   inputRef.current?.focus();
                 }}
                 className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"

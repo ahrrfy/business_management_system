@@ -9,6 +9,12 @@ let root: Root;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  if (!Element.prototype.hasPointerCapture) {
+    Element.prototype.hasPointerCapture = () => false;
+  }
+  if (!Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = () => {};
+  }
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -51,5 +57,43 @@ describe("controlled select inside an account form", () => {
     expect(changed).toHaveBeenLastCalledWith("warehouse");
     nativeChange("__appselect_empty__");
     expect(changed).toHaveBeenLastCalledWith("");
+  });
+});
+
+describe("searchable AppSelect", () => {
+  it("filters options with Arabic normalization while keeping the selected value label intact", () => {
+    function SearchableForm() {
+      const [value, setValue] = useState("1");
+      return (
+        <AppSelect
+          value={value}
+          onValueChange={setValue}
+          searchable
+          searchPlaceholder="ابحث عن وصفة..."
+          open
+        >
+          <option value="">اختر وصفة</option>
+          <option value="1">دفتر ملاحظات أزرق</option>
+          <option value="2">حقيبة مدرسية كبيرة</option>
+        </AppSelect>
+      );
+    }
+
+    act(() => root.render(<SearchableForm />));
+    const searchInput = document.body.querySelector('input[placeholder="ابحث عن وصفة..."]') as HTMLInputElement;
+    expect(searchInput).toBeTruthy();
+
+    // نبحث بـ «حقيبه» (بالتاء/الهاء المطبّعة) فلا يظهر سوى الخيار الثاني، مع بقاء عنوان الخيار المحدد على الزر
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(searchInput, "حقيبه");
+      searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const items = Array.from(document.body.querySelectorAll('[data-slot="select-item"]'));
+    const visibleItems = items.filter((el) => !el.classList.contains("hidden"));
+    expect(visibleItems).toHaveLength(1);
+    expect(visibleItems[0]?.textContent).toContain("حقيبة مدرسية كبيرة");
+    expect(container.querySelector('[role="combobox"]')?.textContent).toContain("دفتر ملاحظات أزرق");
   });
 });

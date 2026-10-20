@@ -1,9 +1,12 @@
+import { useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { normalizeSearchText } from "@shared/searchNormalize";
 
 /**
  * شجرة الحسابات (P0، الدفتر المزدوج) — عرضٌ للقراءة فقط في هذه المرحلة. الحسابات بياناتٌ مرجعية تُبذَر
@@ -51,8 +54,22 @@ const accountColumns: ColumnDef<AccountRow, unknown>[] = [
 ];
 
 export default function ChartOfAccounts() {
+  const [search, setSearch] = useState("");
   const tree = trpc.accounts.tree.useQuery();
   const groups = tree.data ?? [];
+
+  const filteredGroups = useMemo(() => {
+    const nq = normalizeSearchText(search);
+    if (!nq) return groups;
+    return groups
+      .map((g) => ({
+        ...g,
+        rows: g.rows.filter((r) =>
+          normalizeSearchText(`${r.code} ${r.name} ${r.systemRole ?? ""}`).includes(nq),
+        ),
+      }))
+      .filter((g) => g.rows.length > 0);
+  }, [groups, search]);
 
   return (
     <div className="space-y-4">
@@ -60,11 +77,24 @@ export default function ChartOfAccounts() {
         title="شجرة الحسابات"
         description="أساس الدفتر المزدوج — كل حساب مربوطٌ بالمفهوم القائم في النظام عبر «الدور النظاميّ». عرضٌ للقراءة (المرحلة الأولى)."
       />
+      <div className="max-w-md">
+        <UnifiedSearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="ابحث برمز الحساب أو الاسم أو الدور النظامي…"
+          barcode={false}
+          debounceMs={0}
+        />
+      </div>
       {tree.isLoading && <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>}
-      {!tree.isLoading && groups.length === 0 && (
-        <Card><CardContent className="py-8 text-center text-sm text-muted-foreground">لا حسابات بعد.</CardContent></Card>
+      {!tree.isLoading && filteredGroups.length === 0 && (
+        <Card>
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            {search.trim() ? "لا توجد حسابات مطابقة للبحث." : "لا حسابات بعد."}
+          </CardContent>
+        </Card>
       )}
-      {groups.map((g) => (
+      {filteredGroups.map((g) => (
         <Card key={g.type}>
           <CardHeader className="py-3">
             <CardTitle className={`text-base ${TYPE_TONE[g.type] ?? ""}`}>{g.label}</CardTitle>

@@ -375,7 +375,7 @@ export default function JournalEntryNew() {
                     </label>
                     <AppSelect
                       value={line.accountId}
-                      onValueChange={(val) => updateLine(idx, { accountId: val })}
+                      searchable searchPlaceholder="ابحث برمز الحساب أو اسمه..." onValueChange={(val) => updateLine(idx, { accountId: val })}
                       className="w-full text-right"
                     >
                       <option value="">-- اختر الحساب من الدليل --</option>
@@ -450,7 +450,7 @@ export default function JournalEntryNew() {
                         </label>
                         <AppSelect
                           value={line.customerId}
-                          onValueChange={(val) => updateLine(idx, { customerId: val })}
+                          searchable searchPlaceholder="ابحث عن العميل بالاسم أو الهاتف..." onValueChange={(val) => updateLine(idx, { customerId: val })}
                           className="w-full text-right text-xs"
                         >
                           <option value="">-- اختر العميل لإحكام المطابقة --</option>
@@ -470,7 +470,7 @@ export default function JournalEntryNew() {
                         </label>
                         <AppSelect
                           value={line.supplierId}
-                          onValueChange={(val) => updateLine(idx, { supplierId: val })}
+                          searchable searchPlaceholder="ابحث عن المورد..." onValueChange={(val) => updateLine(idx, { supplierId: val })}
                           className="w-full text-right text-xs"
                         >
                           <option value="">-- اختر المورد لإحكام المطابقة --</option>

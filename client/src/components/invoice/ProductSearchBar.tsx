@@ -483,7 +483,7 @@ export function ProductSearchBar({
           }
         }
       }
-    } else if (e.key === "Escape") {
+    } else if (e.key === "Escape") { barcodeInput.reset();
       setShowDrop(false);
       setQuery("");
     }
@@ -547,6 +547,7 @@ export function ProductSearchBar({
               type="button"
               aria-label="مسح"
               onClick={() => {
+                barcodeInput.reset();
                 setQuery("");
                 inputRef.current?.focus();
               }}

@@ -382,7 +382,7 @@ export function PurchaseReturnPortal({
                   onValueChange={(val) =>
                     setSelectedSupplierId(val ? Number(val) : null)
                   }
-                  placeholder="اختر المورد..."
+                  placeholder="اختر المورد..." searchable searchPlaceholder="ابحث عن المورد بالاسم أو الهاتف..."
                 >
                   <option value="">-- اختر المورد --</option>
                   {suppliers.map((s) => (

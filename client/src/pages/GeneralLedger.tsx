@@ -435,7 +435,7 @@ export default function GeneralLedger() {
             الحساب
             <AppSelect
               className="h-9"
-              value={String(accountId ?? "")}
+              searchable searchPlaceholder="ابحث برمز الحساب أو اسمه..." value={String(accountId ?? "")}
               onValueChange={(next) => {
                 setAccountId(
                   next ? Number(next) : null,
