@@ -1000,7 +1000,7 @@ export async function requestSupplierPaymentInTx(
       message: "بعض فواتير المورد غير موجودة",
     });
   const [pendingBookVoucher] = await tx.select({ id: receipts.id }).from(receipts).innerJoin(auditLogs, and(
-    eq(auditLogs.action, "supplier.bookVoucher.request"), eq(auditLogs.entityType, "receipt"), sql`${auditLogs.entityId} = CAST(${receipts.id} AS CHAR)`
+    eq(auditLogs.action, "supplier.bookVoucher.request"), eq(auditLogs.entityType, "receipt"), sql`BINARY ${auditLogs.entityId} = BINARY CAST(${receipts.id} AS CHAR)`
   )).where(and(eq(receipts.partyType, "SUPPLIER"), eq(receipts.partyId, input.supplierId), eq(receipts.direction, "OUT"), eq(receipts.status, "PENDING"), eq(receipts.approvalStatus, "PENDING_APPROVAL"))).for("share").limit(1);
   if (pendingBookVoucher) throw supplierVoucherConflict("يوجد سند تسوية دفترية معلق يحجز رصيد المورد؛ احسمه قبل طلب سداد جديد");
   await assertNativePurchaseSettlementEvidence(tx, aggregate);

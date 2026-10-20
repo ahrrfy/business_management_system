@@ -53,6 +53,8 @@ import { shiftIdForCashTx } from "../shiftService";
 import { withTx, type Actor } from "../tx";
 import { withSupplierBookReversalTx } from "./supplierBookReversalTx";
 import { unapplySupplierBookSettlementSourceTx } from "./supplierBookSettlement";
+import { loadSupplierBookInvoiceTotals } from "./supplierBookProjection";
+import { loadSupplierFormalCreditTotals } from "./supplierFormalCreditProjection";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
 import { purchaseReturnReversalTrigger, purchaseReturnTrigger } from "@shared/approvalTriggers";
@@ -322,12 +324,18 @@ async function netInvoiceCreditReturns(tx: Tx, invoiceId: number): Promise<Decim
 }
 
 async function refreshInvoiceCreditState(tx: Tx, invoice: typeof supplierInvoices.$inferSelect): Promise<void> {
-  const netCredit = await netInvoiceCreditReturns(tx, Number(invoice.id));
-  const paid = (await tx.select({ amount: sql<string>`COALESCE(SUM(${supplierPaymentAllocations.allocatedAmount} - ${supplierPaymentAllocations.refundedAmount}),0)` })
+  const invoiceId = Number(invoice.id);
+  const formalCredits = await loadSupplierFormalCreditTotals(tx, [invoiceId], { currentRead: true });
+  const book = (await loadSupplierBookInvoiceTotals(tx, [invoiceId], { currentRead: true })).get(invoiceId);
+  // Raw locking rows preserve a current read after earlier transaction snapshots.
+  const allocations = await tx.select({ amount: supplierPaymentAllocations.allocatedAmount, refundedAmount: supplierPaymentAllocations.refundedAmount })
     .from(supplierPaymentAllocations)
-    .where(eq(supplierPaymentAllocations.supplierInvoiceId, Number(invoice.id))))[0];
+    .where(eq(supplierPaymentAllocations.supplierInvoiceId, invoiceId))
+    .orderBy(asc(supplierPaymentAllocations.id)).for("share");
+  const paid = allocations.reduce((sum, row) => sum.plus(row.amount).minus(row.refundedAmount), money(book?.paidAmount ?? 0));
+  const netCredit = money(formalCredits.get(invoiceId) ?? 0).plus(book?.creditedAmount ?? 0);
   const effectiveTotal = Decimal.max(money(invoice.totalAmount).minus(netCredit), 0);
-  const settled = money(invoice.legacySettledAmount).plus(paid?.amount ?? 0).gte(effectiveTotal);
+  const settled = money(invoice.legacySettledAmount).plus(paid).gte(effectiveTotal);
   await tx.update(supplierInvoices).set({
     version: sql`${supplierInvoices.version} + 1`,
     paymentGate: settled ? "SETTLED" : "OPEN",

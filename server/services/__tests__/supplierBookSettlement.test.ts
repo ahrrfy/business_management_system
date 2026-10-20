@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
@@ -212,6 +212,109 @@ async function originals() {
 }
 
 describe("owned full-source supplier book settlement", () => {
+  it("replays maximum accepted scope request keys within the persisted audit width", async () => {
+    await fixture();
+    const p = await previewSupplierBookSettlement({
+      supplierId: 1,
+      branchId: 1,
+    });
+    const request = {
+      supplierId: 1,
+      branchId: 1,
+      requestKey: "K".repeat(80),
+      expectedPlanHash: p.planHash,
+    };
+    const applied = await adoptSupplierBookSettlement(request, actor);
+    expect((await adoptSupplierBookSettlement(request, actor)).replayed).toBe(
+      true,
+    );
+    expect(applied.sourceIds).toHaveLength(1);
+    const records = await db()
+      .select()
+      .from(s.auditLogs)
+      .where(eq(s.auditLogs.action, "supplier.bookSettlement.adopt"));
+    expect(records).toHaveLength(1);
+    expect(records[0].entityId!.length).toBeLessThanOrEqual(50);
+  });
+  it("bounds batch audit identifiers and case evidence for thirty real bigint source identities", async () => {
+    await fixture({ total: "100.00", opening: "0.00", payment: "1.00" });
+    await db()
+      .insert(s.receipts)
+      .values(
+        Array.from({ length: 29 }, (_, i) => ({
+          branchId: 1,
+          direction: "OUT" as const,
+          partyType: "SUPPLIER" as const,
+          partyId: 1,
+          amount: "1.00",
+          paymentMethod: "CARD" as const,
+          voucherNumber: `BOOK-LARGE-${i}`,
+          voucherDate: new Date("2026-01-03T00:00:00Z"),
+          status: "COMPLETED" as const,
+          approvalStatus: "APPROVED" as const,
+          createdBy: 7,
+          approvedBy: 9,
+        })),
+      );
+    const extra = (await db().select().from(s.receipts)).filter((r) =>
+      r.voucherNumber?.startsWith("BOOK-LARGE-"),
+    );
+    await db()
+      .insert(s.accountingEntries)
+      .values(
+        extra.map((r) => ({
+          entryType: "PAYMENT_OUT" as const,
+          supplierId: 1,
+          branchId: 1,
+          receiptId: r.id,
+          amount: "1.00",
+          entryDate: new Date("2026-01-03T00:00:00Z"),
+          createdBy: 7,
+        })),
+      );
+    await db()
+      .update(s.suppliers)
+      .set({ currentBalance: "70.00" })
+      .where(eq(s.suppliers.id, 1));
+    // Isolated test DB only: real bigint IDs exercise the external 500-character evidence contract.
+    await db().execute(
+      sql`ALTER TABLE supplierBookSettlementSources AUTO_INCREMENT = 1000000000000`,
+    );
+    const issue = await openPurchaseIntegrityCase(
+      {
+        caseKey: "BOOK-LARGE-CASE",
+        branchId: 1,
+        supplierId: 1,
+        purchaseOrderId: 1,
+        supplierInvoiceId: 1,
+        code: "LEGACY_AP_CLASSIFICATION",
+        severity: "HIGH",
+        title: "Legacy classification",
+        description: "Original purchase proof",
+        reason: "Source evidence",
+        evidence: { invoiceId: 1 },
+      },
+      actor,
+    );
+    const p = await previewSupplierBookSettlement({
+      supplierId: 1,
+      branchId: 1,
+    });
+    const request = {
+      requestKey: "B".repeat(60),
+      plans: [{ supplierId: 1, branchId: 1, expectedPlanHash: p.planHash }],
+    };
+    const result = await adoptSupplierBookSettlementBatch(request, actor);
+    expect(result.results[0].sourceIds).toHaveLength(30);
+    expect(result.results[0].resolvedCaseIds).toEqual([issue.caseId]);
+    expect(
+      (await adoptSupplierBookSettlementBatch(request, actor)).replayed,
+    ).toBe(true);
+    const [closed] = await db().select().from(s.purchaseIntegrityCases);
+    expect(closed.status).toBe("RESOLVED");
+    expect(closed.resolutionEvidenceReference!.length).toBeLessThanOrEqual(500);
+    expect(closed.resolutionEvidenceReference).toContain("SOURCES_SHA256:");
+  });
   it("automatically splits a real CARD source over opening and legacy invoice without a fabricated bank reference or cash/AP", async () => {
     await fixture();
     const issue = await openPurchaseIntegrityCase(

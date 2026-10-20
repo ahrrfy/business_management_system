@@ -55,6 +55,8 @@ const PREVIEW_SOURCE_ID = Number.MAX_SAFE_INTEGER;
 const canonical = (value: unknown) =>
   stableCanonical(JSON.parse(JSON.stringify(value)));
 const hash = (value: unknown) => sha256(canonical(value));
+const auditEntity = (value: string) =>
+  value.length <= 50 ? value : `BSA:${hash(value).slice(0, 40)}`;
 const day = (value: Date | string) =>
   (value instanceof Date ? value.toISOString() : value).slice(0, 10);
 function fail(why: string): never {
@@ -826,6 +828,11 @@ export async function prepareSupplierBookVoucherTx(
   actor: Actor,
 ): Promise<LiveSupplierBookVoucherPlan | null> {
   checkedScope(input);
+  const [supplier] = await tx
+    .select()
+    .from(suppliers)
+    .where(eq(suppliers.id, input.supplierId));
+  if (!supplier || supplier.supplierKind !== "REGULAR") return null;
   if (
     actor.branchId !== input.branchId &&
     !actor.isOwner &&
@@ -884,12 +891,7 @@ export async function prepareSupplierBookVoucherTx(
     )
     .limit(1);
   if (!opening && !legacyInvoice && !poCredit) return null;
-  const [supplier] = await tx
-    .select()
-    .from(suppliers)
-    .where(eq(suppliers.id, input.supplierId));
-  if (!supplier || !money(input.amount).gt(0))
-    fail("المورد أو مبلغ سند الصرف غير صالح");
+  if (!money(input.amount).gt(0)) fail("المورد أو مبلغ سند الصرف غير صالح");
   // Preserve the existing generic advance path for opening-only accounts.
   // Invoice-backed overpayments still require their explicit advance model.
   if (
@@ -1206,7 +1208,9 @@ async function adoptSupplierBookSettlementInTx(
         doThis: "نفذ القرار بحساب مالك مخول",
       }),
     });
-  const entityId = `${input.supplierId}:${input.branchId}:${input.requestKey}`;
+  const entityId = auditEntity(
+    `${input.supplierId}:${input.branchId}:${input.requestKey}`,
+  );
   const prior = await tx
     .select()
     .from(auditLogs)
@@ -1338,7 +1342,7 @@ async function adoptSupplierBookSettlementInTx(
         caseId: issue.id,
         requestKey: `BOOK-RESOLVE:${c.planHash.slice(0, 40)}:${issue.id}`,
         reason,
-        evidenceReference: `BOOK_FIFO_V1:${c.planHash}:INVOICE:${issue.supplierInvoiceId}:SOURCES:${sourceIds.join(",")}`,
+        evidenceReference: `BOOK_FIFO_V1:${c.planHash}:INVOICE:${issue.supplierInvoiceId}:SOURCES_SHA256:${hash(sourceIds)}`,
       },
       actor,
     );
@@ -1421,7 +1425,7 @@ export async function adoptSupplierBookSettlementBatch(
   );
   const inputHash = hash({ requestKey: input.requestKey, plans: sorted });
   return withGovernanceTx(async (tx) => {
-    const entityId = `BSA-BATCH:${input.requestKey}`;
+    const entityId = auditEntity(`BSA-BATCH:${input.requestKey}`);
     const prior = await tx
       .select()
       .from(auditLogs)
@@ -1445,7 +1449,7 @@ export async function adoptSupplierBookSettlementBatch(
           tx,
           {
             ...plan,
-            requestKey: `${input.requestKey}:${plan.supplierId}:${plan.branchId}`,
+            requestKey: `BATCH:${hash({ requestKey: input.requestKey, supplierId: plan.supplierId, branchId: plan.branchId })}`,
           },
           actor,
         )),
