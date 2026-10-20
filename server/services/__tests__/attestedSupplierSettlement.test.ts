@@ -6,6 +6,7 @@ import { extractInsertId } from "../../lib/insertId";
 import * as audit from "../auditService";
 import { recordAttestedSupplierSettlement } from "../purchase/attestedSupplierSettlement";
 import { baghdadToday } from "../businessDay";
+import { openPurchaseIntegrityCase } from "../purchase/integrityCases";
 
 const owner = { userId: 9, branchId: 1, role: "manager", isOwner: true };
 const db = () => getDb()!;
@@ -191,9 +192,78 @@ async function state() {
     payments: await db().select().from(s.supplierPayments),
     allocations: await db().select().from(s.supplierPaymentAllocations),
     audits: await db().select().from(s.auditLogs),
+    evidenceCases: await db().select().from(s.purchaseIntegrityCases),
+    caseEvents: await db().select().from(s.purchaseIntegrityCaseEvents),
+  };
+}
+async function evidenceCase() {
+  const row = await openPurchaseIntegrityCase(
+    {
+      caseKey: "ATTESTED-CASE-1",
+      branchId: 1,
+      supplierId: 1,
+      purchaseOrderId: 1,
+      supplierInvoiceId: 1,
+      code: "LEGACY_PAYMENT_EVIDENCE_INVALID",
+      severity: "HIGH",
+      title: "دفع نقدي غير محسوم",
+      description: "لم يتذكر المالك هل تم الدفع؛ يُحسم الآن بإقرار مباشر.",
+      evidence: { purchaseOrderId: 1, supplierInvoiceId: 1 },
+      reason: "مطابقة الدفع قبل الصرف",
+    },
+    owner,
+  );
+  return {
+    ...input(),
+    evidenceCases: [
+      { caseId: row.caseId, purchaseOrderId: 1, supplierInvoiceId: 1 },
+    ],
   };
 }
 describe("owner-attested missing treasury supplier payments", () => {
+  it("resolves only the explicitly attested evidence hold atomically with native payment", async () => {
+    const accepted = await evidenceCase();
+    const before = await state();
+    await expect(
+      recordAttestedSupplierSettlement(input(), owner),
+    ).rejects.toThrow();
+    expect(await state()).toEqual(before);
+    await recordAttestedSupplierSettlement(accepted, owner);
+    const after = await state();
+    expect(after.evidenceCases[0].status).toBe("RESOLVED");
+    expect(after.caseEvents.map((row) => row.eventType)).toEqual([
+      "OPENED",
+      "RESOLUTION_REQUESTED",
+      "RESOLUTION_APPROVED",
+    ]);
+    expect(after.suppliers.map((row) => row.currentBalance)).toEqual([
+      "0.00",
+      "0.00",
+    ]);
+    expect(
+      (await recordAttestedSupplierSettlement(accepted, owner)).replayed,
+    ).toBe(true);
+    expect(await state()).toEqual(after);
+  });
+  it("rolls evidence resolution back with every payment if a later supplier lacks funds", async () => {
+    const accepted = await evidenceCase();
+    await db().update(s.receipts).set({ amount: "70.00" });
+    const before = await state();
+    await expect(
+      recordAttestedSupplierSettlement(accepted, owner),
+    ).rejects.toThrow();
+    expect(await state()).toEqual(before);
+  });
+  it("rejects evidence cases outside the attested invoice identity", async () => {
+    const accepted = await evidenceCase();
+    accepted.evidenceCases[0].purchaseOrderId = 2;
+    accepted.evidenceCases[0].supplierInvoiceId = 2;
+    const before = await state();
+    await expect(
+      recordAttestedSupplierSettlement(accepted, owner),
+    ).rejects.toThrow();
+    expect(await state()).toEqual(before);
+  });
   it("records both suppliers atomically with one treasury deduction and stable replay", async () => {
     const result = await recordAttestedSupplierSettlement(input(), owner);
     const after = await state();

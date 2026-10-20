@@ -28,12 +28,25 @@ import {
   decideSupplierPaymentInTx,
 } from "./supplierPayments";
 import { assertAttestedPaymentEvidenceTx } from "./attestedPaymentEvidence";
+import { resolvePurchaseIntegrityForOwnerInTx } from "./integrityCases";
 
 const schema = z
   .object({
     attestationKey: z.string().trim().min(8).max(80),
     evidenceText: z.string().trim().min(20).max(2000),
     recordingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    evidenceCases: z
+      .array(
+        z
+          .object({
+            caseId: z.number().int().positive(),
+            purchaseOrderId: z.number().int().positive(),
+            supplierInvoiceId: z.number().int().positive(),
+          })
+          .strict(),
+      )
+      .max(50)
+      .default([]),
     payments: z
       .array(
         z
@@ -56,6 +69,7 @@ type Result = {
   receiptIds: number[];
   requestIds: number[];
   replayed: boolean;
+  resolvedEvidenceCaseIds: number[];
   verification: Array<{
     kind: "TREASURY" | "SUPPLIER_AP";
     id: number;
@@ -93,12 +107,17 @@ export async function recordAttestedSupplierSettlement(
     payments: [...parsed.data.payments]
       .map((row) => ({ ...row, amount: toDbMoney(row.amount) }))
       .sort((a, b) => a.purchaseOrderId - b.purchaseOrderId),
+    evidenceCases: [...parsed.data.evidenceCases].sort(
+      (a, b) => a.caseId - b.caseId,
+    ),
   };
   if (
     new Set(input.payments.map((row) => row.supplierInvoiceId)).size !==
       input.payments.length ||
     new Set(input.payments.map((row) => row.purchaseOrderId)).size !==
-      input.payments.length
+      input.payments.length ||
+    new Set(input.evidenceCases.map((row) => row.caseId)).size !==
+      input.evidenceCases.length
   )
     fail("تكرر أمر الشراء أو الفاتورة في الإقرار", "BAD_REQUEST");
   const payloadHash = idempotencyHash(input);
@@ -175,6 +194,10 @@ export async function recordAttestedSupplierSettlement(
       supplierInvoiceId: number;
       proof: Awaited<ReturnType<typeof assertAttestedPaymentEvidenceTx>>;
     }> = [];
+    const verifiedTargets = new Map<
+      number,
+      { purchaseOrderId: number; supplierId: number; branchId: number }
+    >();
     for (const row of input.payments) {
       const [invoice] = await tx
         .select()
@@ -235,6 +258,11 @@ export async function recordAttestedSupplierSettlement(
         purchaseOrderDate: baghdadToday(po.orderDate),
         invoiceRecognitionDate: invoice.invoiceDate,
       });
+      verifiedTargets.set(invoice.id, {
+        purchaseOrderId: po.id,
+        supplierId: po.supplierId,
+        branchId: po.branchId,
+      });
       const key = `${po.supplierId}:${po.branchId}`;
       const group = groups.get(key) ?? {
         supplierId: po.supplierId,
@@ -251,11 +279,39 @@ export async function recordAttestedSupplierSettlement(
       });
       groups.set(key, group);
     }
+    const resolvedEvidenceCaseIds: number[] = [];
+    for (const row of input.evidenceCases) {
+      const target = verifiedTargets.get(row.supplierInvoiceId);
+      if (!target || target.purchaseOrderId !== row.purchaseOrderId)
+        fail("قضية دليل السداد لا تخص الفواتير المثبتة في الإقرار");
+      const resolution = await resolvePurchaseIntegrityForOwnerInTx(
+        tx,
+        {
+          caseId: row.caseId,
+          requestKey: `ATTESTED-CASE:${idempotencyHash(input.attestationKey).slice(0, 32)}:${row.caseId}`,
+          reason:
+            `حسم المالك عدم تذكر دفع البضاعة بإقراره المباشر: ${input.evidenceText}`.slice(
+              0,
+              1000,
+            ),
+          evidenceReference: `OWNER-ATTESTATION:${payloadHash}:PO:${row.purchaseOrderId}:SI:${row.supplierInvoiceId}`,
+          expectedPurchaseOrderId: row.purchaseOrderId,
+          expectedSupplierInvoiceId: row.supplierInvoiceId,
+          expectedSupplierId: target.supplierId,
+          expectedBranchId: target.branchId,
+        },
+        actor,
+      );
+      if (resolution.status !== "RESOLVED")
+        fail("لم يكتمل حسم قضية دليل السداد");
+      resolvedEvidenceCaseIds.push(row.caseId);
+    }
     const result: Result = {
       paymentIds: [],
       receiptIds: [],
       requestIds: [],
       replayed: false,
+      resolvedEvidenceCaseIds,
       verification: [],
     };
     const groupRows = Array.from(groups.values()).sort(
@@ -396,6 +452,7 @@ export async function recordAttestedSupplierSettlement(
           recordingDate: input.recordingDate,
           payments: evidencePayments,
           priorPaymentEvidence,
+          evidenceCases: input.evidenceCases,
           correctionRecordedAt: new Date().toISOString(),
         },
       },
