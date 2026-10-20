@@ -1,7 +1,8 @@
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { money, toDbMoney } from "../money";
 import {
   MAX_PURCHASE_INTEGRITY_LIMIT,
   getPurchaseIntegrityReport,
@@ -12,11 +13,20 @@ import { truncateTables } from "./__testUtils__";
 const AS_OF = new Date("2026-08-21T12:00:00.000Z");
 const TABLES = [
   "idempotencyKeys",
+  "supplierPaymentRefundItems",
+  "supplierPaymentRefunds",
+  "supplierPaymentRefundRequests",
+  "supplierPaymentAllocations",
+  "supplierPaymentRequestAllocations",
+  "supplierPayments",
+  "supplierPaymentRequests",
+  "supplierInvoices",
   "accountingEntries",
   "receipts",
   "purchaseOrders",
   "suppliers",
   "branches",
+  "users",
 ] as const;
 
 function db() {
@@ -89,7 +99,7 @@ async function insertPo(args: {
 
 async function insertEntry(args: {
   id: number;
-  purchaseOrderId: number;
+  purchaseOrderId: number | null;
   branchId?: number;
   supplierId?: number;
   receiptId?: number;
@@ -110,6 +120,225 @@ async function insertEntry(args: {
       dedupeKey: args.dedupeKey,
       entryDate: "2026-08-20",
     });
+}
+
+/** Persist the same one-GL-row/native-allocation shape produced by approval. */
+async function seedNativePayment(singlePo = false, withRefund = false) {
+  await db().insert(s.users).values({
+    id: 9,
+    openId: "integrity-owner",
+    role: "manager",
+    name: "Owner",
+  });
+  const shares = singlePo ? ["50.00"] : ["10.00", "40.00"];
+  for (const [index, share] of shares.entries()) {
+    const id = index + 1;
+    await insertPo({
+      id,
+      total: "100.00",
+      paidAmount:
+        withRefund && id === shares.length
+          ? toDbMoney(money(share).minus("5.00"))
+          : share,
+    });
+    await insertEntry({
+      id,
+      purchaseOrderId: id,
+      type: "ADJUST",
+      amount: "100.00",
+      dedupeKey: `GRNI:SUPPLIER_INVOICE:${id}`,
+    });
+    await db()
+      .insert(s.supplierInvoices)
+      .values({
+        id,
+        invoiceNumber: `SI-${id}`,
+        clientRequestId: `invoice-${id}`,
+        supplierId: 1,
+        branchId: 1,
+        status: "POSTED",
+        liabilityClass: "NATIVE_AP",
+        paymentGate: "OPEN",
+        invoiceDate: "2026-08-20",
+        currency: "IQD",
+        subtotal: "100.00",
+        totalAmount: "100.00",
+        payloadCanonical: "{}",
+        payloadHash: String(id).repeat(64),
+        evidenceType: "OTHER",
+        externalInvoiceNumber: `EXT-${id}`,
+        externalNumberNorm: `EXT${id}`,
+        evidenceReference: "invoice-evidence",
+        createdBy: 9,
+        postingEntryId: id,
+        postedBy: 9,
+        postedAt: AS_OF,
+      });
+  }
+  await db()
+    .insert(s.supplierPaymentRequests)
+    .values({
+      id: 1,
+      requestKey: "integrity-native",
+      supplierId: 1,
+      branchId: 1,
+      currency: "IQD",
+      requestedAmount: "50.00",
+      requestedCurrencyAmount: "50.00",
+      paymentMethod: "CASH",
+      payloadCanonical: "{}",
+      payloadHash: "a".repeat(64),
+      evidenceType: "PAYMENT_ORDER",
+      evidenceReference: "native-payment-evidence",
+      evidenceHash: "b".repeat(64),
+      reason: "payment",
+      status: "APPROVED",
+      requestedBy: 9,
+      reviewedBy: 9,
+      reviewedAt: AS_OF,
+      decisionKey: "integrity-approved",
+      decisionHash: "c".repeat(64),
+      appliedAt: AS_OF,
+    });
+  await db().insert(s.receipts).values({
+    id: 10,
+    branchId: 1,
+    direction: "OUT",
+    amount: "50.00",
+    paymentMethod: "CASH",
+    partyType: "SUPPLIER",
+    partyId: 1,
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: "NATIVE-SUPPLIER-PAYMENT",
+  });
+  await insertEntry({
+    id: 10,
+    purchaseOrderId: singlePo ? 1 : null,
+    receiptId: 10,
+    type: "PAYMENT_OUT",
+    amount: "50.00",
+    dedupeKey: "SUPPLIER_PAYMENT_REQUEST:1",
+  });
+  await db()
+    .insert(s.supplierPayments)
+    .values({
+      id: 1,
+      paymentNumber: "SP-1",
+      requestId: 1,
+      supplierId: 1,
+      branchId: 1,
+      currency: "IQD",
+      amount: "50.00",
+      currencyAmount: "50.00",
+      paymentMethod: "CASH",
+      receiptId: 10,
+      accountingEntryId: 10,
+      payloadCanonical: "{}",
+      payloadHash: "d".repeat(64),
+      postedBy: 9,
+    });
+  for (const [index, share] of shares.entries()) {
+    const id = index + 1;
+    await db()
+      .insert(s.supplierPaymentRequestAllocations)
+      .values({
+        id,
+        requestId: 1,
+        supplierInvoiceId: id,
+        invoiceVersion: 1,
+        requestedAmount: share,
+        requestedCurrencyAmount: share,
+        invoiceSnapshot: "{}",
+        invoiceHash: "e".repeat(64),
+      });
+    await db()
+      .insert(s.supplierPaymentAllocations)
+      .values({
+        id,
+        supplierPaymentId: 1,
+        requestAllocationId: id,
+        supplierInvoiceId: id,
+        allocatedAmount: share,
+        allocatedCurrencyAmount: share,
+        invoiceHash: "e".repeat(64),
+      });
+  }
+  if (!withRefund) return;
+  await db()
+    .insert(s.supplierPaymentRefundRequests)
+    .values({
+      id: 1,
+      requestKey: "integrity-refund",
+      supplierPaymentId: 1,
+      branchId: 1,
+      basePaymentVersion: 1,
+      requestedAmount: "5.00",
+      requestedCurrencyAmount: "5.00",
+      refundMethod: "CASH",
+      payloadCanonical: "{}",
+      payloadHash: "f".repeat(64),
+      evidenceType: "CASH_RECEIPT",
+      evidenceReference: "refund-evidence",
+      reason: "refund",
+      status: "APPROVED",
+      requestedBy: 9,
+      reviewedBy: 9,
+      reviewedAt: AS_OF,
+      decisionKey: "refund-approved",
+      decisionHash: "f".repeat(64),
+      appliedAt: AS_OF,
+    });
+  await db().insert(s.receipts).values({
+    id: 11,
+    branchId: 1,
+    direction: "IN",
+    amount: "5.00",
+    paymentMethod: "CASH",
+    partyType: "SUPPLIER",
+    partyId: 1,
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+  });
+  await insertEntry({
+    id: 11,
+    purchaseOrderId: null,
+    receiptId: 11,
+    type: "PAYMENT_IN",
+    amount: "5.00",
+    dedupeKey: "SUPPLIER_PAYMENT_REFUND_REQUEST:1",
+  });
+  await db()
+    .insert(s.supplierPaymentRefunds)
+    .values({
+      id: 1,
+      refundNumber: "SR-1",
+      requestId: 1,
+      supplierPaymentId: 1,
+      supplierId: 1,
+      branchId: 1,
+      amount: "5.00",
+      currencyAmount: "5.00",
+      receiptId: 11,
+      accountingEntryId: 11,
+      payloadCanonical: "{}",
+      payloadHash: "f".repeat(64),
+      postedBy: 9,
+    });
+  await db().insert(s.supplierPaymentRefundItems).values({
+    refundId: 1,
+    supplierPaymentAllocationId: shares.length,
+    amount: "5.00",
+    currencyAmount: "5.00",
+  });
+  await db()
+    .update(s.supplierPaymentAllocations)
+    .set({ refundedAmount: "5.00", refundedCurrencyAmount: "5.00" })
+    .where(eq(s.supplierPaymentAllocations.id, shares.length));
+  await db()
+    .update(s.supplierPayments)
+    .set({ status: "PARTIALLY_REFUNDED", version: 2 })
+    .where(eq(s.supplierPayments.id, 1));
 }
 
 async function insertPoPayReceipt(args: {
@@ -183,6 +412,91 @@ beforeEach(async () => {
 });
 
 describe("getPurchaseIntegrityReport — GL forensic read model", () => {
+  it("attributes one native GL payment across two POs, including off-page allocations, without writes", async () => {
+    await seedNativePayment();
+    const before = await relevantCounts();
+    const report = await getPurchaseIntegrityReport({
+      branchId: 1,
+      asOf: AS_OF,
+    });
+    expect(report.findings).toEqual([]);
+    expect(report.orders).toMatchObject([
+      {
+        purchaseOrderId: 2,
+        approvedPaymentOutGl: "40.00",
+        linkedPaidAmountGl: "40.00",
+        bookBalance: "60.00",
+      },
+      {
+        purchaseOrderId: 1,
+        approvedPaymentOutGl: "10.00",
+        linkedPaidAmountGl: "10.00",
+        bookBalance: "90.00",
+      },
+    ]);
+    const page = await getPurchaseIntegrityReport({
+      branchId: 1,
+      limit: 1,
+      asOf: AS_OF,
+    });
+    expect(page.orders).toEqual([report.orders[0]]);
+    expect(page.findings).toEqual([]);
+    expect(await relevantCounts()).toEqual(before);
+  });
+
+  it.each([false, true])(
+    "attributes native refunds and does not double count directly linked single-PO payments (%s)",
+    async (singlePo) => {
+      await seedNativePayment(singlePo, true);
+      const before = await relevantCounts();
+      const report = await getPurchaseIntegrityReport({
+        branchId: 1,
+        asOf: AS_OF,
+      });
+      expect(report.findings).toEqual([]);
+      expect(report.orders[0]).toMatchObject({
+        approvedPaymentOutGl: singlePo ? "50.00" : "40.00",
+        approvedPaymentInGl: "5.00",
+        linkedPaidAmountGl: singlePo ? "45.00" : "35.00",
+        bookBalance: singlePo ? "55.00" : "65.00",
+      });
+      expect(await relevantCounts()).toEqual(before);
+    },
+  );
+
+  it("does not hide drift when the complete native allocation evidence does not match the GL amount", async () => {
+    await seedNativePayment();
+    await db()
+      .update(s.supplierPaymentAllocations)
+      .set({ allocatedAmount: "9.00", allocatedCurrencyAmount: "9.00" })
+      .where(eq(s.supplierPaymentAllocations.id, 1));
+    const report = await getPurchaseIntegrityReport({
+      branchId: 1,
+      limit: 1,
+      asOf: AS_OF,
+    });
+    expect(report.orders[0].approvedPaymentOutGl).toBe("0.00");
+    expect(report.orders[0].findingCodes).toContain("PAID_AMOUNT_GL_DRIFT");
+  });
+
+  it("validates the full original receipt amount before accepting a projected PO share", async () => {
+    await seedNativePayment();
+    await db()
+      .update(s.receipts)
+      .set({ amount: "40.00" })
+      .where(eq(s.receipts.id, 10));
+    const report = await getPurchaseIntegrityReport({
+      branchId: 1,
+      limit: 1,
+      asOf: AS_OF,
+    });
+    expect(report.orders[0].approvedPaymentOutGl).toBe("0.00");
+    expect(report.orders[0].findingCodes).toContain(
+      "UNAPPROVED_PAYMENT_OUT_LEDGER_ENTRY",
+    );
+    expect(report.orders[0].findingCodes).toContain("PAID_AMOUNT_GL_DRIFT");
+  });
+
   it("يشغّل المراقب اليومي على الفروع النشطة بلا أي كتابة", async () => {
     await insertPo({ id: 1, total: "100.00", paidAmount: "35.00" });
     await insertEntry({

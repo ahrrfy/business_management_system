@@ -1,0 +1,343 @@
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
+import { eq } from "drizzle-orm";
+import * as s from "../../../drizzle/schema";
+import { getDb } from "../../db";
+import { extractInsertId } from "../../lib/insertId";
+import * as audit from "../auditService";
+import { recordAttestedSupplierSettlement } from "../purchase/attestedSupplierSettlement";
+import { baghdadToday } from "../businessDay";
+
+const owner = { userId: 9, branchId: 1, role: "manager", isOwner: true };
+const db = () => getDb()!;
+const input = () => ({
+  attestationKey: "owner-confirmed-purchase-payment",
+  evidenceText:
+    "أقر المالك بدفع البضاعة نقداً من الخزينة الإدارية اليوم، والتسجيل مفقود.",
+  paymentDate: baghdadToday(),
+  payments: [
+    {
+      purchaseOrderId: 1,
+      supplierInvoiceId: 1,
+      invoiceVersion: 1,
+      amount: "60.00",
+    },
+    {
+      purchaseOrderId: 2,
+      supplierInvoiceId: 2,
+      invoiceVersion: 1,
+      amount: "40.00",
+    },
+  ],
+});
+beforeEach(async () => {
+  await db()
+    .insert(s.branches)
+    .values({ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" });
+  await db()
+    .insert(s.users)
+    .values([
+      {
+        id: 7,
+        openId: "attest-maker",
+        role: "accountant",
+        name: "منشئ الفاتورة",
+        branchId: 1,
+      },
+      {
+        id: 9,
+        openId: "attest-owner",
+        role: "manager",
+        name: "مالك",
+        branchId: 1,
+        isOwner: true,
+      },
+    ]);
+  await db().insert(s.receipts).values({
+    branchId: 1,
+    amount: "100.00",
+    paymentMethod: "CASH",
+    cashBucket: "TREASURY",
+    direction: "IN",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    createdBy: 9,
+  });
+  await db().insert(s.products).values({ id: 1, name: "صنف" });
+  await db().insert(s.productVariants).values({
+    id: 1,
+    productId: 1,
+    variantName: "افتراضي",
+    sku: "ATTESTED-ITEM",
+  });
+  for (const [id, total] of [
+    [1, "60.00"],
+    [2, "40.00"],
+  ] as const) {
+    await db()
+      .insert(s.suppliers)
+      .values({ id, name: `مورد ${id}`, currentBalance: total });
+    await db()
+      .insert(s.purchaseOrders)
+      .values({
+        id,
+        poNumber: `ATTEST-PO-${id}`,
+        supplierId: id,
+        branchId: 1,
+        subtotal: total,
+        total,
+        settlementType: "CASH",
+        status: "RECEIVED",
+        createdBy: 7,
+      });
+    await db()
+      .insert(s.purchaseOrderRevisions)
+      .values({
+        id,
+        purchaseOrderId: id,
+        revisionNo: 1,
+        origin: "NATIVE",
+        supplierId: id,
+        branchId: 1,
+        agreedCurrency: "IQD",
+        settlementType: "CASH",
+        subtotal: total,
+        total,
+        taxAmount: "0.00",
+        shippingCost: "0.00",
+        customsCost: "0.00",
+        invoiceDiscount: "0.00",
+        payloadCanonical: "{}",
+        payloadHash: "0".repeat(64),
+        revisionReason: "فاتورة أصلية",
+        createdBy: 7,
+      });
+    await db().insert(s.purchaseOrderRevisionItems).values({
+      id,
+      revisionId: id,
+      lineNo: 1,
+      variantId: 1,
+      quantity: "1.000",
+      baseQuantity: 1,
+      listUnitPrice: total,
+      unitPrice: total,
+      lineTotal: total,
+      productNameSnapshot: "صنف",
+    });
+    const entry = extractInsertId(
+      await db()
+        .insert(s.accountingEntries)
+        .values({
+          entryType: "ADJUST",
+          entryDate: baghdadToday(),
+          amount: total,
+          supplierId: id,
+          branchId: 1,
+          purchaseOrderId: id,
+          dedupeKey: `GRNI:SUPPLIER_INVOICE:${id}`,
+        }),
+    );
+    await db()
+      .insert(s.supplierInvoices)
+      .values({
+        id,
+        invoiceNumber: `ATTEST-SI-${id}`,
+        clientRequestId: `ATTEST-SI-${id}`,
+        origin: "NATIVE",
+        supplierId: id,
+        branchId: 1,
+        status: "POSTED",
+        liabilityClass: "NATIVE_AP",
+        paymentGate: "OPEN",
+        invoiceDate: baghdadToday(),
+        currency: "IQD",
+        subtotal: total,
+        totalAmount: total,
+        payloadCanonical: "{}",
+        payloadHash: "0".repeat(64),
+        evidenceType: "OTHER",
+        externalInvoiceNumber: `ATTEST-EXT-${id}`,
+        externalNumberNorm: `ATTESTEXT${id}`,
+        evidenceReference: "original-invoice",
+        createdBy: 7,
+        postingEntryId: entry,
+        postedBy: 9,
+        postedAt: new Date(),
+      });
+    await db().insert(s.supplierInvoiceLines).values({
+      supplierInvoiceId: id,
+      lineNo: 1,
+      purchaseOrderRevisionItemId: id,
+      variantId: 1,
+      description: "بند",
+      invoicedBaseQuantity: 1,
+      unitPriceIqd: total,
+      netAmount: total,
+      totalAmount: total,
+    });
+  }
+});
+afterEach(() => vi.restoreAllMocks());
+
+async function state() {
+  return {
+    suppliers: await db().select().from(s.suppliers),
+    receipts: await db().select().from(s.receipts),
+    entries: await db().select().from(s.accountingEntries),
+    invoices: await db().select().from(s.supplierInvoices),
+    orders: await db().select().from(s.purchaseOrders),
+    requests: await db().select().from(s.supplierPaymentRequests),
+    payments: await db().select().from(s.supplierPayments),
+    allocations: await db().select().from(s.supplierPaymentAllocations),
+    audits: await db().select().from(s.auditLogs),
+  };
+}
+describe("owner-attested missing treasury supplier payments", () => {
+  it("records both suppliers atomically with one treasury deduction and stable replay", async () => {
+    const result = await recordAttestedSupplierSettlement(input(), owner);
+    const after = await state();
+    expect(result.replayed).toBe(false);
+    expect(result.paymentIds).toHaveLength(2);
+    expect(result.verification).toEqual([
+      {
+        kind: "TREASURY",
+        id: 1,
+        before: "100.00",
+        after: "0.00",
+        delta: "-100.00",
+      },
+      {
+        kind: "SUPPLIER_AP",
+        id: 1,
+        before: "60.00",
+        after: "0.00",
+        delta: "-60.00",
+      },
+      {
+        kind: "SUPPLIER_AP",
+        id: 2,
+        before: "40.00",
+        after: "0.00",
+        delta: "-40.00",
+      },
+    ]);
+    expect(after.suppliers.map((row) => row.currentBalance)).toEqual([
+      "0.00",
+      "0.00",
+    ]);
+    expect(
+      after.receipts
+        .filter((row) => row.direction === "OUT")
+        .map((row) => [row.amount, row.cashBucket, row.partyId]),
+    ).toEqual([
+      ["60.00", "TREASURY", 1],
+      ["40.00", "TREASURY", 2],
+    ]);
+    expect(
+      after.entries.filter((row) => row.entryType === "PAYMENT_OUT"),
+    ).toHaveLength(2);
+    expect(after.invoices.every((row) => row.paymentGate === "SETTLED")).toBe(
+      true,
+    );
+    expect(after.orders.map((row) => row.paidAmount)).toEqual([
+      "60.00",
+      "40.00",
+    ]);
+    expect(
+      after.audits.some(
+        (row) => row.action === "supplier.attestedSettlement.record",
+      ),
+    ).toBe(true);
+    const replay = await recordAttestedSupplierSettlement(input(), owner);
+    expect(replay.replayed).toBe(true);
+    expect(replay.verification).toEqual(result.verification);
+    expect(await state()).toEqual(after);
+  });
+  it("rejects changed evidence under the same attestation key", async () => {
+    await recordAttestedSupplierSettlement(input(), owner);
+    const before = await state();
+    await expect(
+      recordAttestedSupplierSettlement(
+        { ...input(), evidenceText: "إقرار مختلف لا يطابق الدليل الأصلي" },
+        owner,
+      ),
+    ).rejects.toThrow();
+    expect(await state()).toEqual(before);
+  });
+  it("serializes concurrent retries without duplicate money", async () => {
+    const results = await Promise.all([
+      recordAttestedSupplierSettlement(input(), owner),
+      recordAttestedSupplierSettlement(input(), owner),
+    ]);
+    expect(results.map((row) => row.replayed).sort()).toEqual([false, true]);
+    const after = await state();
+    expect(after.payments).toHaveLength(2);
+    expect(
+      after.receipts.filter((row) => row.direction === "OUT"),
+    ).toHaveLength(2);
+    expect(after.suppliers.map((row) => row.currentBalance)).toEqual([
+      "0.00",
+      "0.00",
+    ]);
+  });
+  it("stops when an existing later payment could be the missing allocation", async () => {
+    await db().insert(s.accountingEntries).values({
+      entryType: "PAYMENT_OUT",
+      entryDate: baghdadToday(),
+      supplierId: 1,
+      branchId: 1,
+      amount: "60.00",
+    });
+    const before = await state();
+    await expect(
+      recordAttestedSupplierSettlement(input(), owner),
+    ).rejects.toThrow();
+    expect(await state()).toEqual(before);
+  });
+  it("rolls back the first supplier if the second payment lacks treasury funds", async () => {
+    await db().update(s.receipts).set({ amount: "70.00" });
+    const before = await state();
+    await expect(
+      recordAttestedSupplierSettlement(input(), owner),
+    ).rejects.toThrow();
+    expect(await state()).toEqual(before);
+  });
+  it("requires an active owner from the database and ignores a forged actor flag", async () => {
+    const before = await state();
+    await expect(
+      recordAttestedSupplierSettlement(input(), { ...owner, userId: 7 }),
+    ).rejects.toThrow();
+    expect(await state()).toEqual(before);
+  });
+  it("rejects stale invoices and historical dates instead of bypassing period controls", async () => {
+    await db()
+      .update(s.supplierInvoices)
+      .set({ version: 2 })
+      .where(eq(s.supplierInvoices.id, 2));
+    const before = await state();
+    await expect(
+      recordAttestedSupplierSettlement(input(), owner),
+    ).rejects.toThrow();
+    await expect(
+      recordAttestedSupplierSettlement(
+        { ...input(), paymentDate: "2026-01-01" },
+        owner,
+      ),
+    ).rejects.toThrow();
+    expect(await state()).toEqual(before);
+  });
+  it("rolls back all money if the mandatory attestation audit fails", async () => {
+    const before = await state();
+    const original = audit.logAuditTx;
+    vi.spyOn(audit, "logAuditTx").mockImplementation(
+      async (tx, source, data) => {
+        if (data.action === "supplier.attestedSettlement.record")
+          throw new Error("attestation audit unavailable");
+        return original(tx, source, data);
+      },
+    );
+    await expect(
+      recordAttestedSupplierSettlement(input(), owner),
+    ).rejects.toThrow("attestation audit unavailable");
+    expect(await state()).toEqual(before);
+  });
+});
