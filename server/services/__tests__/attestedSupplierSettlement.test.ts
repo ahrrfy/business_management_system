@@ -196,6 +196,129 @@ async function state() {
     caseEvents: await db().select().from(s.purchaseIntegrityCaseEvents),
   };
 }
+const manifestAction = "supplier.attestedSettlement.manifest";
+const fragmentAction = "supplier.attestedSettlement.fragment";
+function fragmentDocument(audits: Awaited<ReturnType<typeof state>>["audits"]) {
+  const pieces = audits
+    .filter((row) => row.action === fragmentAction)
+    .map((row) => row.newValue as { index: number; data: string })
+    .sort((a, b) => a.index - b.index);
+  return JSON.parse(
+    Buffer.from(pieces.map((row) => row.data).join(""), "base64").toString(
+      "utf8",
+    ),
+  );
+}
+async function largeInput(targetCount = 17) {
+  const [po] = await db()
+    .select()
+    .from(s.purchaseOrders)
+    .where(eq(s.purchaseOrders.id, 1));
+  const [revision] = await db()
+    .select()
+    .from(s.purchaseOrderRevisions)
+    .where(eq(s.purchaseOrderRevisions.id, 1));
+  const [revisionItem] = await db()
+    .select()
+    .from(s.purchaseOrderRevisionItems)
+    .where(eq(s.purchaseOrderRevisionItems.id, 1));
+  const [invoice] = await db()
+    .select()
+    .from(s.supplierInvoices)
+    .where(eq(s.supplierInvoices.id, 1));
+  const [line] = await db()
+    .select()
+    .from(s.supplierInvoiceLines)
+    .where(eq(s.supplierInvoiceLines.supplierInvoiceId, 1));
+  await db().update(s.receipts).set({ amount: "1000.00" });
+  const large = {
+    ...input(),
+    evidenceText: "دفع المالك نقداً من الخزينة الإدارية بالفعل. "
+      .repeat(40)
+      .trim(),
+  };
+  for (let id = 3; id <= targetCount; id++) {
+    await db()
+      .insert(s.suppliers)
+      .values({ id, name: `Large supplier ${id}`, currentBalance: "1.00" });
+    await db()
+      .insert(s.purchaseOrders)
+      .values({
+        ...po,
+        id,
+        supplierId: id,
+        poNumber: `LARGE-PO-${id}`,
+        subtotal: "1.00",
+        total: "1.00",
+      });
+    await db()
+      .insert(s.purchaseOrderRevisions)
+      .values({
+        ...revision,
+        id,
+        purchaseOrderId: id,
+        supplierId: id,
+        subtotal: "1.00",
+        total: "1.00",
+      });
+    await db()
+      .insert(s.purchaseOrderRevisionItems)
+      .values({
+        ...revisionItem,
+        id,
+        revisionId: id,
+        listUnitPrice: "1.00",
+        unitPrice: "1.00",
+        lineTotal: "1.00",
+      });
+    const postingEntryId = extractInsertId(
+      await db()
+        .insert(s.accountingEntries)
+        .values({
+          entryType: "ADJUST",
+          entryDate: baghdadToday(),
+          amount: "1.00",
+          supplierId: id,
+          branchId: 1,
+          purchaseOrderId: id,
+          dedupeKey: `GRNI:SUPPLIER_INVOICE:${id}`,
+        }),
+    );
+    await db()
+      .insert(s.supplierInvoices)
+      .values({
+        ...invoice,
+        id,
+        supplierId: id,
+        invoiceNumber: `LARGE-SI-${id}`,
+        clientRequestId: `LARGE-SI-${id}`,
+        externalInvoiceNumber: `LARGE-EXT-${id}`,
+        externalNumberNorm: `LARGEEXT${id}`,
+        subtotal: "1.00",
+        totalAmount: "1.00",
+        postingEntryId,
+      });
+    await db()
+      .insert(s.supplierInvoiceLines)
+      .values({
+        ...line,
+        id: undefined,
+        supplierInvoiceId: id,
+        purchaseOrderRevisionItemId: id,
+        unitPriceIqd: "1.00",
+        netAmount: "1.00",
+        totalAmount: "1.00",
+      });
+    large.payments.push({
+      purchaseOrderId: id,
+      supplierInvoiceId: id,
+      invoiceVersion: 1,
+      amount: "1.00",
+      actualPaymentDate: baghdadToday(),
+    });
+  }
+  return large;
+}
 async function evidenceCase() {
   const row = await openPurchaseIntegrityCase(
     {
@@ -221,6 +344,261 @@ async function evidenceCase() {
   };
 }
 describe("owner-attested missing treasury supplier payments", () => {
+  it("keeps small canonical audit records fully readable without changing fragments", async () => {
+    const accepted = input();
+    const result = await recordAttestedSupplierSettlement(accepted, owner);
+    const after = await state();
+    const readable = after.audits.find(
+      (row) => row.action === "supplier.attestedSettlement.record",
+    )!.newValue as Record<string, unknown>;
+    expect(readable.auditDetail).toBe("FULL");
+    expect(readable.evidenceText).toBe(accepted.evidenceText);
+    expect(readable.recordingDate).toBe(accepted.recordingDate);
+    expect(readable.paymentIds).toEqual(result.paymentIds);
+    expect(readable.verification).toEqual(result.verification);
+    expect(readable.payments).toEqual(
+      fragmentDocument(after.audits).evidence.payments,
+    );
+    expect(readable).not.toHaveProperty("_truncated");
+    expect(Buffer.byteLength(JSON.stringify(readable), "utf8")).toBeLessThan(
+      8192,
+    );
+  });
+
+  it("keeps a 50-row batch with 2000 Arabic evidence characters readable and bounded", async () => {
+    // Existing line IDs need not match invoice IDs after other test files run.
+    // Occupy IDs that the large fixture previously tried to assign explicitly.
+    const existingLines = await db().select().from(s.supplierInvoiceLines);
+    const nextLineId = Math.max(...existingLines.map((line) => line.id)) + 1;
+    for (const [index, line] of existingLines.entries()) {
+      await db()
+        .update(s.supplierInvoiceLines)
+        .set({ id: nextLineId + index })
+        .where(
+          eq(s.supplierInvoiceLines.supplierInvoiceId, line.supplierInvoiceId),
+        );
+    }
+    for (const [index, id] of [3, 7].entries()) {
+      await db()
+        .update(s.supplierInvoiceLines)
+        .set({ id })
+        .where(eq(s.supplierInvoiceLines.supplierInvoiceId, index + 1));
+    }
+    const accepted = await largeInput(50);
+    accepted.evidenceText = "أ".repeat(2000);
+    const result = await recordAttestedSupplierSettlement(accepted, owner);
+    const after = await state();
+    const readable = after.audits.find(
+      (row) => row.action === "supplier.attestedSettlement.record",
+    )!.newValue as Record<string, unknown>;
+    expect(readable.auditDetail).toBe("SUMMARY");
+    expect(readable.evidenceText).toBe(accepted.evidenceText.slice(0, 500));
+    expect(readable.omittedEvidenceCharacters).toBe(1500);
+    expect(readable.invoiceCount).toBe(50);
+    expect(readable.paymentCount).toBe(50);
+    expect(readable.totalAmount).toBe("148.00");
+    expect(readable.paymentIds).toEqual(result.paymentIds);
+    expect(readable.requestIds).toEqual(result.requestIds);
+    expect(readable.receiptIds).toEqual(result.receiptIds);
+    expect(readable.payments).toHaveLength(3);
+    expect(readable.omittedPaymentsCount).toBe(47);
+    expect(readable.omittedPriorPaymentEvidenceCount).toBe(50);
+    expect(readable.verification).toEqual(result.verification.slice(0, 3));
+    expect(readable.omittedVerificationCount).toBe(48);
+    expect(readable).not.toHaveProperty("_truncated");
+    expect(Buffer.byteLength(JSON.stringify(readable), "utf8")).toBeLessThan(
+      8192,
+    );
+    expect(audit.redactAuditValue(readable)).toEqual(readable);
+    expect(fragmentDocument(after.audits).evidence.evidenceText).toBe(
+      accepted.evidenceText,
+    );
+    expect(await recordAttestedSupplierSettlement(accepted, owner)).toEqual({
+      ...result,
+      replayed: true,
+    });
+    expect(await state()).toEqual(after);
+  });
+
+  it("does not use a readable new-format record as legacy fallback when every fragment is missing", async () => {
+    await recordAttestedSupplierSettlement(input(), owner);
+    const before = await state();
+    for (const row of before.audits.filter(
+      (item) =>
+        item.action === manifestAction || item.action === fragmentAction,
+    ))
+      await db().delete(s.auditLogs).where(eq(s.auditLogs.id, row.id));
+    const damaged = await state();
+    await expect(
+      recordAttestedSupplierSettlement(input(), owner),
+    ).rejects.toThrow();
+    expect(await state()).toEqual(damaged);
+  });
+  it("preserves a real large batch and full long evidence through bounded fragments and exact replay", async () => {
+    const accepted = await largeInput();
+    const result = await recordAttestedSupplierSettlement(accepted, owner);
+    const after = await state();
+    expect(result.paymentIds).toHaveLength(17);
+    const fragments = after.audits.filter(
+      (row) => row.action === fragmentAction,
+    );
+    expect(fragments.length).toBeGreaterThan(1);
+    for (const row of fragments) {
+      const value = row.newValue as { data: string };
+      expect(value.data.length).toBeLessThanOrEqual(800);
+      expect(Buffer.byteLength(JSON.stringify(value), "utf8")).toBeLessThan(
+        8192,
+      );
+    }
+    const document = fragmentDocument(after.audits);
+    expect(document.result).toEqual(result);
+    expect(document.evidence.evidenceText).toBe(accepted.evidenceText);
+    expect(document.evidence.payments).toHaveLength(17);
+    expect(
+      audit.redactAuditValue({
+        ...document.result,
+        ...document.evidence,
+        payloadHash: document.payloadHash,
+      }),
+    ).toHaveProperty("_truncated", true);
+    expect(await recordAttestedSupplierSettlement(accepted, owner)).toEqual({
+      ...result,
+      replayed: true,
+    });
+    expect(await state()).toEqual(after);
+  });
+
+  it.each([
+    "DATA",
+    "MISSING",
+    "DUPLICATE",
+    "TRUNCATED",
+    "PAYLOAD",
+    "INDEX",
+    "MANIFEST_TRUNCATED",
+  ] as const)("fails closed on damaged audit fragments: %s", async (kind) => {
+    await recordAttestedSupplierSettlement(input(), owner);
+    const before = await state();
+    const fragment = before.audits.find(
+      (row) => row.action === fragmentAction,
+    )!;
+    const value = fragment.newValue as Record<string, unknown>;
+    if (kind === "DATA")
+      await db()
+        .update(s.auditLogs)
+        .set({ newValue: { ...value, data: "AAAA" } })
+        .where(eq(s.auditLogs.id, fragment.id));
+    if (kind === "MISSING")
+      await db().delete(s.auditLogs).where(eq(s.auditLogs.id, fragment.id));
+    if (kind === "DUPLICATE")
+      await db()
+        .insert(s.auditLogs)
+        .values({ ...fragment, id: undefined });
+    if (kind === "TRUNCATED")
+      await db()
+        .update(s.auditLogs)
+        .set({ newValue: { _truncated: true, _preview: "lost" } })
+        .where(eq(s.auditLogs.id, fragment.id));
+    if (kind === "PAYLOAD")
+      await db()
+        .update(s.auditLogs)
+        .set({ newValue: { ...value, payloadHash: "f".repeat(64) } })
+        .where(eq(s.auditLogs.id, fragment.id));
+    if (kind === "INDEX")
+      await db()
+        .update(s.auditLogs)
+        .set({ newValue: { ...value, index: 999 } })
+        .where(eq(s.auditLogs.id, fragment.id));
+    if (kind === "MANIFEST_TRUNCATED") {
+      const manifest = before.audits.find(
+        (row) => row.action === manifestAction,
+      )!;
+      await db()
+        .update(s.auditLogs)
+        .set({ newValue: { _truncated: true } })
+        .where(eq(s.auditLogs.id, manifest.id));
+    }
+    const damaged = await state();
+    await expect(
+      recordAttestedSupplierSettlement(input(), owner),
+    ).rejects.toThrow();
+    expect(await state()).toEqual(damaged);
+  });
+
+  it("uses validated recovery fragments even when the original record is truncated", async () => {
+    const result = await recordAttestedSupplierSettlement(input(), owner);
+    const before = await state();
+    const record = before.audits.find(
+      (row) => row.action === "supplier.attestedSettlement.record",
+    )!;
+    await db()
+      .update(s.auditLogs)
+      .set({ newValue: { _truncated: true, _preview: "old truncated record" } })
+      .where(eq(s.auditLogs.id, record.id));
+    const recovered = await state();
+    expect(await recordAttestedSupplierSettlement(input(), owner)).toEqual({
+      ...result,
+      replayed: true,
+    });
+    expect(await state()).toEqual(recovered);
+  });
+
+  it("replays a legacy small unfragmented record without financial writes", async () => {
+    const fragments: Array<{ index: number; data: string }> = [];
+    const original = audit.logAuditTx;
+    vi.spyOn(audit, "logAuditTx").mockImplementation(
+      async (tx, source, data) => {
+        if (data.action === fragmentAction) {
+          fragments.push(data.newValue as { index: number; data: string });
+          return;
+        }
+        if (data.action === manifestAction) return;
+        if (data.action === "supplier.attestedSettlement.record") {
+          const document = JSON.parse(
+            Buffer.from(
+              fragments
+                .sort((a, b) => a.index - b.index)
+                .map((row) => row.data)
+                .join(""),
+              "base64",
+            ).toString("utf8"),
+          );
+          return original(tx, source, {
+            ...data,
+            newValue: {
+              ...document.result,
+              ...document.evidence,
+              payloadHash: document.payloadHash,
+            },
+          });
+        }
+        return original(tx, source, data);
+      },
+    );
+    const result = await recordAttestedSupplierSettlement(input(), owner);
+    const before = await state();
+    expect(await recordAttestedSupplierSettlement(input(), owner)).toEqual({
+      ...result,
+      replayed: true,
+    });
+    expect(await state()).toEqual(before);
+  });
+
+  it("rolls back all money when writing a fragment fails", async () => {
+    const before = await state();
+    const original = audit.logAuditTx;
+    vi.spyOn(audit, "logAuditTx").mockImplementation(
+      async (tx, source, data) => {
+        if (data.action === fragmentAction)
+          throw new Error("fragment audit unavailable");
+        return original(tx, source, data);
+      },
+    );
+    await expect(
+      recordAttestedSupplierSettlement(input(), owner),
+    ).rejects.toThrow("fragment audit unavailable");
+    expect(await state()).toEqual(before);
+  });
   it("resolves only the explicitly attested evidence hold atomically with native payment", async () => {
     const accepted = await evidenceCase();
     const before = await state();
@@ -420,9 +798,8 @@ describe("owner-attested missing treasury supplier payments", () => {
       invoiceRecognitionDate,
       invoiceRecognitionDate,
     ]);
-    const evidenceAudit = after.audits.find(
-      (row) => row.action === "supplier.attestedSettlement.record",
-    )!.newValue as typeof evidence & {
+    const evidenceAudit = fragmentDocument(after.audits)
+      .evidence as typeof evidence & {
       payments: Array<{
         actualPaymentDate: string;
         invoiceRecognitionDate: string;
