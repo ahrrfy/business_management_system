@@ -263,6 +263,7 @@ describe("closed cash-day writer inventory", () => {
       "exchange/reverse.ts",
       "expenseService.ts",
       "purchase/pay.ts",
+      "purchase/supplierPayments.ts",
       "shiftFundingService.ts",
       "treasury/pendingReceipts.ts",
       "voucher/approval.ts",
