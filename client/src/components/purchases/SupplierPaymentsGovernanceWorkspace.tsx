@@ -660,7 +660,7 @@ export function SupplierPaymentsGovernanceWorkspace({
                                 [id]: {
                                   amount,
                                   currencyAmount:
-                                    formCurrency === "IQD"
+                                    (formCurrency === "IQD" || derivesRefundCurrency)
                                       ? amount
                                       : (current[id]?.currencyAmount ?? ""),
                                 },
