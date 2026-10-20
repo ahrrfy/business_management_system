@@ -302,7 +302,7 @@ async function largeInput(targetCount = 17) {
       .insert(s.supplierInvoiceLines)
       .values({
         ...line,
-        id,
+        id: undefined,
         supplierInvoiceId: id,
         purchaseOrderRevisionItemId: id,
         unitPriceIqd: "1.00",
@@ -366,6 +366,24 @@ describe("owner-attested missing treasury supplier payments", () => {
   });
 
   it("keeps a 50-row batch with 2000 Arabic evidence characters readable and bounded", async () => {
+    // Existing line IDs need not match invoice IDs after other test files run.
+    // Occupy IDs that the large fixture previously tried to assign explicitly.
+    const existingLines = await db().select().from(s.supplierInvoiceLines);
+    const nextLineId = Math.max(...existingLines.map((line) => line.id)) + 1;
+    for (const [index, line] of existingLines.entries()) {
+      await db()
+        .update(s.supplierInvoiceLines)
+        .set({ id: nextLineId + index })
+        .where(
+          eq(s.supplierInvoiceLines.supplierInvoiceId, line.supplierInvoiceId),
+        );
+    }
+    for (const [index, id] of [3, 7].entries()) {
+      await db()
+        .update(s.supplierInvoiceLines)
+        .set({ id })
+        .where(eq(s.supplierInvoiceLines.supplierInvoiceId, index + 1));
+    }
     const accepted = await largeInput(50);
     accepted.evidenceText = "أ".repeat(2000);
     const result = await recordAttestedSupplierSettlement(accepted, owner);
