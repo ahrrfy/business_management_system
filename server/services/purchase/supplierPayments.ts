@@ -1201,8 +1201,17 @@ export async function decideSupplierPaymentInTx(
   // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — كما في السندات (voucher/approval.ts)
   // بلا انتظار علَم ownerOnlyApproval؛ التفصيل هناك.
   const supplierPaymentApprover = await resolveApprovalActor(tx, actor);
+  if (linkedVoucher && !supplierPaymentApprover.isOwner)
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذر اعتماد أو رفض سند سداد المورد",
+        why: "القرار محصور بحساب مالك نشط",
+        doThis: "اطلب من مالك النظام مراجعة سند الصرف",
+      }),
+    });
   assertApprover({
-    actor: await resolveApprovalActor(tx, actor),
+    actor: supplierPaymentApprover,
     trigger: supplierPaymentTrigger(input.action),
     subject: `سداد مورّد (طلب ${input.requestId})`,
     legacy: () => {
@@ -1266,6 +1275,21 @@ export async function decideSupplierPaymentInTx(
     throw new TRPCError({
       code: "CONFLICT",
       message: "المورد غير صالح للدفع",
+    });
+  // Linked live vouchers retain the generic voucher net-AP ceiling under the
+  // aggregate supplier lock. Native payments keep their invoice-based contract.
+  if (
+    linkedVoucher &&
+    supplier.supplierKind === "REGULAR" &&
+    money(request.requestedAmount).gt(supplier.currentBalance)
+  )
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذر اعتماد سند سداد المورد",
+        why: `الرصيد المستحق للمورد (${money(supplier.currentBalance).toFixed(2)}) أقلّ من مبلغ الصرف`,
+        doThis: "أعد الطلب بعد مراجعة كشف المورد",
+      }),
     });
   const requested = await tx
     .select()

@@ -554,6 +554,7 @@ export async function approveVoucherTx(
   };
   let supplierRequest = await linkedSupplierVoucherRequest(tx, receiptId);
   if (!supplierRequest && preview.direction === "OUT" && preview.partyType === "SUPPLIER" && preview.status === "PENDING" &&
+    ["CASH", "CARD", "TRANSFER", "WALLET"].includes(preview.paymentMethod) &&
     preview.approvalStatus === "PENDING_APPROVAL" && !hasSystemPaymentRequestEnvelope(preview.internalNote) && !isSystemPaymentReference(preview.referenceNumber)) {
     if (preview.paymentMethod === "CASH") await lockCashSourceForUpdate(tx, { branchId: Number(preview.branchId), cashBucket: "TREASURY", shiftId: null });
     const [creator] = await tx.select().from(users).where(eq(users.id, preview.createdBy!)).limit(1);

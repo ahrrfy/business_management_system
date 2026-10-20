@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as ledger from "../ledgerService";
@@ -313,6 +313,127 @@ describe("supplier voucher native settlement", () => {
           ...payload,
           supplierAllocations: [
             { supplierInvoiceId: 2, invoiceVersion: 1, amount: "20000.00" },
+          ],
+        },
+        maker,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await state()).toEqual(before);
+  });
+  it.each([false, true])(
+    "rejects switching allocation mode on replay after approval=%s",
+    async (approved) => {
+      const payload = {
+        ...input("20000.00"),
+        supplierAllocations: [
+          { supplierInvoiceId: 2, invoiceVersion: 1, amount: "20000.00" },
+        ],
+      };
+      const voucher = await createVoucher(payload, maker);
+      if (approved) await approveVoucher(voucher.receiptId, owner);
+      const before = await state();
+      const { supplierAllocations: _allocations, ...omitted } = payload;
+      await expect(createVoucher(omitted, maker)).rejects.toMatchObject({
+        code: "CONFLICT",
+      });
+      expect((await createVoucher(payload, maker)).receiptId).toBe(
+        voucher.receiptId,
+      );
+      expect(await state()).toEqual(before);
+    },
+  );
+  it("rejects automatic-to-manual replay even when the resulting allocation is identical", async () => {
+    const payload = input("20000.00");
+    await createVoucher(payload, maker);
+    const before = await state();
+    await expect(
+      createVoucher(
+        {
+          ...payload,
+          supplierAllocations: [
+            { supplierInvoiceId: 2, invoiceVersion: 1, amount: "20000.00" },
+          ],
+        },
+        maker,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await state()).toEqual(before);
+  });
+  it("accepts normalized manual rows in another order on replay", async () => {
+    const payload = {
+      ...input(),
+      supplierAllocations: [
+        { supplierInvoiceId: 1, invoiceVersion: 1, amount: "10000.00" },
+        { supplierInvoiceId: 2, invoiceVersion: 1, amount: "40000.00" },
+      ],
+    };
+    const voucher = await createVoucher(payload, maker);
+    expect(
+      (
+        await createVoucher(
+          {
+            ...payload,
+            supplierAllocations: [
+              { ...payload.supplierAllocations[1], amount: "40000" },
+              { ...payload.supplierAllocations[0], amount: "10000" },
+            ],
+          },
+          maker,
+        )
+      ).receiptId,
+    ).toBe(voucher.receiptId);
+  });
+  it("fails closed when a new linked request loses its original input proof", async () => {
+    const payload = input();
+    await createVoucher(payload, maker);
+    await db()
+      .delete(s.idempotencyKeys)
+      .where(
+        eq(s.idempotencyKeys.operation, "voucher.supplierSettlementInput"),
+      );
+    const before = await state();
+    await expect(createVoucher(payload, maker)).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+    expect(await state()).toEqual(before);
+  });
+  it.each([
+    "HISTORICAL_SUPPLIER_SETTLEMENT_ADOPTION",
+    "OWNER_ACCEPTED_FULL_RECEIPT_ASSIGNMENT",
+  ])("preserves original omitted-input replay after %s", async (kind) => {
+    const payload = input();
+    const voucher = await createVoucher(payload, maker);
+    await db()
+      .delete(s.idempotencyKeys)
+      .where(
+        eq(s.idempotencyKeys.operation, "voucher.supplierSettlementInput"),
+      );
+    const [request] = await db().select().from(s.supplierPaymentRequests);
+    const canonical = JSON.stringify({
+      ...JSON.parse(request.payloadCanonical),
+      historicalEvidence: {
+        kind,
+        originalReceiptId: voucher.receiptId,
+      },
+    });
+    await db()
+      .update(s.supplierPaymentRequests)
+      .set({
+        payloadCanonical: canonical,
+        payloadHash: createHash("sha256").update(canonical).digest("hex"),
+      })
+      .where(eq(s.supplierPaymentRequests.id, request.id));
+    const before = await state();
+    expect((await createVoucher(payload, maker)).receiptId).toBe(
+      voucher.receiptId,
+    );
+    await expect(
+      createVoucher(
+        {
+          ...payload,
+          supplierAllocations: [
+            { supplierInvoiceId: 2, invoiceVersion: 1, amount: "40000.00" },
+            { supplierInvoiceId: 1, invoiceVersion: 1, amount: "10000.00" },
           ],
         },
         maker,

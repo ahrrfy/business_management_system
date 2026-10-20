@@ -14,6 +14,11 @@ import {
   supplierPaymentRequests,
 } from "../../../drizzle/schema";
 import type { DB, Tx } from "../../db";
+import {
+  checkIdempotency,
+  idempotencyHash,
+  recordIdempotencyKey,
+} from "../idempotency";
 import { money, toDbMoney } from "../money";
 import { assertPurchaseBranch } from "../purchase/internal";
 import {
@@ -30,6 +35,30 @@ import {
 } from "./supplierPaymentLink";
 import type { VoucherInput } from "./types";
 
+const INPUT_OPERATION = "voucher.supplierSettlementInput";
+function settlementInputHash(input: VoucherInput) {
+  return idempotencyHash({
+    allocationMode: input.supplierAllocations == null ? "FIFO" : "MANUAL",
+    allocations:
+      input.supplierAllocations == null
+        ? null
+        : [...input.supplierAllocations]
+            .map((row) => ({
+              supplierInvoiceId: row.supplierInvoiceId,
+              invoiceVersion: row.invoiceVersion,
+              amount: toDbMoney(row.amount),
+            }))
+            .sort((a, b) => a.supplierInvoiceId - b.supplierInvoiceId),
+    cashSource:
+      input.paymentMethod !== "CASH"
+        ? null
+        : {
+            mode: input.supplierCashSource?.mode ?? "TREASURY",
+            shiftId: input.supplierCashSource?.shiftId ?? null,
+          },
+  });
+}
+
 export async function prepareSupplierVoucherSettlementTx(
   tx: Tx,
   input: VoucherInput,
@@ -45,6 +74,12 @@ export async function prepareSupplierVoucherSettlementTx(
         "توزيع فواتير المورد متاح لسند صرف المورد فقط",
       );
     return null;
+  }
+  if (input.paymentMethod === "CHECK" || input.paymentMethod === "EXCHANGE") {
+    if (input.supplierAllocations != null || input.supplierCashSource != null)
+      throw supplierVoucherConflict(
+        "طريقة الدفع غير مدعومة في تخصيص سند المورد",
+      );
   }
   assertPurchaseBranch({ branchId: input.branchId }, actor);
   const invoices = await tx
@@ -67,6 +102,14 @@ export async function prepareSupplierVoucherSettlementTx(
       ),
     )
     .orderBy(asc(supplierInvoices.invoiceDate), asc(supplierInvoices.id));
+  if (input.paymentMethod === "CHECK" || input.paymentMethod === "EXCHANGE") {
+    if (invoices.some((invoice) => invoice.liabilityClass === "LEGACY_AP"))
+      throw supplierVoucherConflict(
+        "طريقة الدفع غير مدعومة لتسوية فواتير المورد المؤهلة",
+      );
+    // The generic path retains its native-debt guard and unadopted legacy policy.
+    return null;
+  }
   if (!invoices.length && input.supplierAllocations == null) return null;
   const reservations = invoices.length
     ? await invoiceReservations(
@@ -118,7 +161,7 @@ export async function createSupplierVoucherSettlementTx(
 ) {
   if (input.paymentMethod === "CHECK" || input.paymentMethod === "EXCHANGE")
     throw supplierVoucherConflict("طريقة الدفع غير مدعومة في تخصيص سند المورد");
-  return requestSupplierPaymentInTx(
+  const result = await requestSupplierPaymentInTx(
     tx,
     {
       supplierId: input.partyId!,
@@ -144,6 +187,22 @@ export async function createSupplierVoucherSettlementTx(
     actor,
     SUPPLIER_VOUCHER_REQUEST_CAPABILITY,
   );
+  const existing = await checkIdempotency(
+    tx,
+    INPUT_OPERATION,
+    String(receipt.id),
+    settlementInputHash(input),
+    { requireStoredHash: true },
+  );
+  if (existing == null)
+    await recordIdempotencyKey(
+      tx,
+      INPUT_OPERATION,
+      String(receipt.id),
+      receipt.id,
+      settlementInputHash(input),
+    );
+  return result;
 }
 
 export async function assertSupplierVoucherReplayTx(
@@ -158,6 +217,36 @@ export async function assertSupplierVoucherReplayTx(
         "مفتاح إعادة المحاولة مرتبط بسند بلا تخصيص فواتير",
       );
     return;
+  }
+  const original = await checkIdempotency(
+    tx,
+    INPUT_OPERATION,
+    String(receiptId),
+    settlementInputHash(input),
+    { requireStoredHash: true },
+  );
+  if (original == null) {
+    // Adopted pre-adapter vouchers had no allocation/source input extension.
+    const payload = JSON.parse(request.payloadCanonical) as {
+      historicalEvidence?: { kind?: string; originalReceiptId?: number };
+    };
+    const proof = payload.historicalEvidence;
+    if (
+      input.supplierAllocations != null ||
+      input.supplierCashSource != null ||
+      proof?.originalReceiptId !== receiptId ||
+      ![
+        "HISTORICAL_SUPPLIER_SETTLEMENT_ADOPTION",
+        "OWNER_ACCEPTED_FULL_RECEIPT_ASSIGNMENT",
+      ].includes(proof.kind ?? "") ||
+      createHash("sha256").update(request.payloadCanonical).digest("hex") !==
+        request.payloadHash
+    )
+      throw supplierVoucherConflict(
+        "تعذر التحقق من مدخلات توزيع سند المورد الأصلية",
+      );
+  } else if (original !== receiptId) {
+    throw supplierVoucherConflict("بصمة مدخلات التوزيع مرتبطة بسند مختلف");
   }
   if (input.supplierAllocations != null) {
     const rows = await tx
