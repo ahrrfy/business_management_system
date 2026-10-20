@@ -7,6 +7,7 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { formatIqd } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import {
@@ -279,12 +280,13 @@ export default function ReportsCenter() {
         title="مركز التقارير والكشوفات"
         description="كل تقارير النظام في مكان واحد — عرض وتصدير Excel وطباعة A4."
         actions={
-          <input
-            type="search"
+          <UnifiedSearchInput
+            debounceMs={0}
             value={q}
-            onChange={(e) => setQ(e.target.value)}
+            onChange={setQ}
             placeholder="ابحث في التقارير…"
-            className="h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="w-full max-w-xs"
+            barcode={false}
           />
         }
       />

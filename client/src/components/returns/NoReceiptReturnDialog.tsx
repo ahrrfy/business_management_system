@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { notify } from "@/lib/notify";
 import { D, fmt, formatQuantity } from "@/lib/money";
@@ -203,9 +204,9 @@ export function NoReceiptReturnDialog({
   };
 
   // مسح باركود صنف المرتجع
-  const handleScanReturnItem = async (e?: React.FormEvent) => {
+  const handleScanReturnItem = async (e?: React.FormEvent, scannedCode?: string) => {
     e?.preventDefault();
-    const code = returnBarcode.trim();
+    const code = (scannedCode ?? returnBarcode).trim();
     if (!code) return;
 
     setIsScanningReturn(true);
@@ -252,9 +253,9 @@ export function NoReceiptReturnDialog({
   };
 
   // مسح باركود صنف الاستبدال (البديل الجديد)
-  const handleScanExchangeItem = async (e?: React.FormEvent) => {
+  const handleScanExchangeItem = async (e?: React.FormEvent, scannedCode?: string) => {
     e?.preventDefault();
-    const code = exchangeBarcode.trim();
+    const code = (scannedCode ?? exchangeBarcode).trim();
     if (!code) return;
 
     setIsScanningExchange(true);
@@ -566,17 +567,20 @@ export function NoReceiptReturnDialog({
 
                 {/* شريط مسح الباركود للمرتجع */}
                 <form onSubmit={handleScanReturnItem} className="flex gap-2">
-                  <div className="relative flex-1">
-                    <Input
-                      ref={returnInputRef}
-                      value={returnBarcode}
-                      onChange={(e) => setReturnBarcode(e.target.value)}
-                      placeholder="امسح باركود الصنف المرتجع أو أدخله..."
-                      className="h-9 pr-9 font-mono text-xs"
-                      disabled={isScanningReturn}
-                    />
-                    <Barcode className="size-4 text-muted-foreground absolute right-2.5 top-2.5" aria-hidden />
-                  </div>
+                  <UnifiedSearchInput
+                    ref={returnInputRef}
+                    value={returnBarcode}
+                    onChange={setReturnBarcode}
+                    onScan={(code) => {
+                      setReturnBarcode(code);
+                      void handleScanReturnItem(undefined, code);
+                    }}
+                    debounceMs={0}
+                    placeholder="امسح باركود الصنف المرتجع أو أدخله..."
+                    className="flex-1"
+                    inputClassName="font-mono text-xs"
+                    disabled={isScanningReturn}
+                  />
                   <Button type="submit" size="sm" variant="secondary" disabled={!returnBarcode.trim() || isScanningReturn}>
                     <Plus className="size-3.5 me-1" aria-hidden />
                     إضافة للسلة
@@ -701,17 +705,20 @@ export function NoReceiptReturnDialog({
 
                   {/* شريط مسح الباركود للبديل */}
                   <form onSubmit={handleScanExchangeItem} className="flex gap-2">
-                    <div className="relative flex-1">
-                      <Input
-                        ref={exchangeInputRef}
-                        value={exchangeBarcode}
-                        onChange={(e) => setExchangeBarcode(e.target.value)}
-                        placeholder="امسح باركود الصنف البديل الجديد..."
-                        className="h-9 pr-9 font-mono text-xs"
-                        disabled={isScanningExchange}
-                      />
-                      <Barcode className="size-4 text-muted-foreground absolute right-2.5 top-2.5" aria-hidden />
-                    </div>
+                    <UnifiedSearchInput
+                      ref={exchangeInputRef}
+                      value={exchangeBarcode}
+                      onChange={setExchangeBarcode}
+                      onScan={(code) => {
+                        setExchangeBarcode(code);
+                        void handleScanExchangeItem(undefined, code);
+                      }}
+                      debounceMs={0}
+                      placeholder="امسح باركود الصنف البديل الجديد..."
+                      className="flex-1"
+                      inputClassName="font-mono text-xs"
+                      disabled={isScanningExchange}
+                    />
                     <Button type="submit" size="sm" variant="secondary" disabled={!exchangeBarcode.trim() || isScanningExchange}>
                       <Plus className="size-3.5 me-1" aria-hidden />
                       إضافة للبديل

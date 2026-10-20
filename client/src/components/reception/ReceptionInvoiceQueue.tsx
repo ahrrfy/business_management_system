@@ -24,6 +24,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -232,16 +233,16 @@ export function ReceptionInvoiceQueue({
         <button type="button" className={chip(payChip === "CARD")} onClick={() => { setPayChip((p) => (p === "CARD" ? "ALL" : "CARD")); resetPaging(); }}>
           بالبطاقة
         </button>
-        <div className="relative ms-auto min-w-44 flex-1 sm:max-w-64">
-          <Search aria-hidden className="pointer-events-none absolute inset-y-0 end-2.5 my-auto size-3.5 text-muted-foreground" />
-          <Input
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); resetPaging(); }}
-            placeholder="رقم الفاتورة أو اسم/هاتف الزبون"
-            className="h-8 pe-8 text-xs"
-            aria-label="بحث في فواتير المحطة"
-          />
-        </div>
+        <UnifiedSearchInput
+          barcode={false}
+          debounceMs={0}
+          value={search}
+          onChange={(val) => { setSearch(val); resetPaging(); }}
+          placeholder="رقم الفاتورة أو اسم/هاتف الزبون"
+          className="h-8 text-xs"
+          wrapperClassName="ms-auto min-w-44 flex-1 sm:max-w-64"
+          aria-label="بحث في فواتير المحطة"
+        />
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">

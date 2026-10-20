@@ -154,7 +154,7 @@ export const voucherRouter = router({
           // (راجع voucher/create.ts + tx.ts). الراوترُ لا يستدعي الـnotifier يدوياً بعد اليوم.
           return res;
         } catch (e: any) {
-          if (isDupEntry(e) && attempt < 2) continue;
+          if (isDupEntry(e)) { if (attempt < 2) continue; break; }
           if (e instanceof TRPCError) throw e;
           failOpaque(e, {
             op: "vouchers.create",

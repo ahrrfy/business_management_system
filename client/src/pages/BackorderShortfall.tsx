@@ -22,6 +22,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import {
   Table,
@@ -229,12 +230,15 @@ export default function BackorderShortfall() {
                 ))}
               </AppSelect>
             )}
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="ابحث بالاسم أو SKU…"
-              className="h-9 w-52"
+            <UnifiedSearchInput
+              barcode={false}
               dir="auto"
+              debounceMs={0}
+              value={search}
+              onChange={setSearch}
+              placeholder="ابحث بالاسم أو SKU…"
+              className="h-9"
+              wrapperClassName="w-52"
             />
             <Button
               type="button"

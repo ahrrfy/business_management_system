@@ -8,9 +8,14 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
+  APPLICANT_AVAILABILITY_KEYS,
+  APPLICANT_SHIFT_KEYS,
   APPLICANT_SOURCES,
   APPLICANT_STAGE_KEYS,
+  DEGREES,
   EMPLOYMENT_TYPE_KEYS,
+  GENDERS,
+  MARITAL_STATUSES,
 } from "@shared/hr";
 import { logAudit } from "../services/auditService";
 import * as svc from "../services/recruitmentService";
@@ -33,6 +38,50 @@ const SOURCE_KEYS = APPLICANT_SOURCES.map((s) => s.key) as [
   ...string[],
 ];
 const IRAQI_MOBILE_RE = /^\+9647\d{9}$/;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+const optionalDateStr = z.preprocess(
+  (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+  z
+    .string()
+    .trim()
+    .regex(ISO_DATE_RE, "صيغة التاريخ يجب أن تكون YYYY-MM-DD")
+    .optional(),
+);
+
+const optionalNullableDateStr = z.preprocess(
+  (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+  z
+    .string()
+    .trim()
+    .regex(ISO_DATE_RE, "صيغة التاريخ يجب أن تكون YYYY-MM-DD")
+    .nullable()
+    .optional(),
+);
+
+function optionalEnum<T extends readonly [string, ...string[]]>(values: T) {
+  return z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.enum(values).optional(),
+  );
+}
+
+const optionalMoneyInput = z.preprocess(
+  (v) =>
+    v === "" || v === null || v === undefined
+      ? undefined
+      : typeof v === "string"
+        ? v.trim()
+        : v,
+  z
+    .union([
+      z.number().min(0, "المبلغ لا يمكن أن يكون سالباً").max(100_000_000),
+      z
+        .string()
+        .regex(/^(?:100000000(?:\.0{1,2})?|\d{1,8}(?:\.\d{1,2})?)$/, "الراتب المتوقع غير صالح"),
+    ])
+    .optional(),
+);
 
 const applicantCv = z
   .object({
@@ -113,37 +162,66 @@ const vacancyFields = {
 /** حقول استمارة التقديم/الإدخال الورقي المشتركة. */
 const applicantFields = {
   name: z.string().trim().min(1, "اسم المتقدّم مطلوب").max(200),
-  jobTitle: z.string().trim().max(150).optional(),
+  jobTitle: z.string().trim().max(100).optional(),
   branchId: z.number().int().positive().optional(),
   vacancyId: z.number().int().positive().optional(),
   phone: z.string().trim().max(20).optional(),
+  whatsappPhone: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().trim().max(20).optional(),
+  ),
   // البريد اختياري: الفراغ يُحوَّل إلى undefined، وإن وُجد يجب أن يكون صيغة بريد صالحة.
   email: z.preprocess(
     (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
-    z.string().trim().max(120).email("بريد إلكتروني غير صالح").optional(),
+    z.string().trim().max(100).email("بريد إلكتروني غير صالح").optional(),
   ),
+  birthDate: optionalDateStr,
+  gender: optionalEnum(GENDERS),
+  maritalStatus: optionalEnum(MARITAL_STATUSES),
+  governorate: z.string().trim().max(80).optional(),
+  district: z.string().trim().max(120).optional(),
+  degree: optionalEnum(DEGREES),
+  major: z.string().trim().max(160).optional(),
+  availabilityStatus: optionalEnum(APPLICANT_AVAILABILITY_KEYS),
   experience: z.string().trim().max(120).optional(),
+  previousEmployer: z.string().trim().max(200).optional(),
   education: z.string().trim().max(200).optional(),
-  residentialAddress: z.string().trim().max(300).optional(),
+  skills: z.string().trim().max(500).optional(),
+  residentialAddress: z.string().trim().max(255).optional(),
+  department: z.string().trim().max(120).optional(),
+  preferredBranch: z.string().trim().max(120).optional(),
+  employmentType: optionalEnum(EMPLOYMENT_TYPE_KEYS),
+  shiftPreference: optionalEnum(APPLICANT_SHIFT_KEYS),
+  expectedSalary: optionalMoneyInput,
+  availableFrom: optionalDateStr,
   portfolioUrl,
   // حدّ أقصى للملاحظات: يمنع تسرّب خطأ «Data too long» (عمود TEXT) وإساءة الحجم عبر الإجراء العام.
   notes: z.string().trim().max(2000).optional(),
   cv: applicantCv,
 };
 
-// التقديم العام لا ينتمي إلى فرع، ويلزم به هاتف عراقي صالح للتواصل مع المتقدّم.
+// التقديم العام لا ينتمي إلى فرع (branchId حقل ملكية إدارية يُشتق من الوظيفة أو يضبطه HR)،
+// ويلزم به هاتف عراقي صالح للتواصل مع المتقدّم.
 const {
   branchId: _branchId,
   phone: _phone,
-  email: _email,
-  ...publicApplicantFieldsWithoutPhone
+  whatsappPhone: _whatsappPhone,
+  ...publicApplicantFieldsBase
 } = applicantFields;
 const publicApplicantFields = {
-  ...publicApplicantFieldsWithoutPhone,
+  ...publicApplicantFieldsBase,
   phone: z
     .string()
     .trim()
     .regex(IRAQI_MOBILE_RE, "أدخل رقم هاتف عراقي بصيغة +9647XXXXXXXXX"),
+  whatsappPhone: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z
+      .string()
+      .trim()
+      .regex(IRAQI_MOBILE_RE, "أدخل رقم واتساب عراقي بصيغة +9647XXXXXXXXX")
+      .optional(),
+  ),
 };
 
 export const recruitmentRouter = router({
@@ -178,6 +256,10 @@ export const recruitmentRouter = router({
       return a;
     }),
 
+  formOptions: hrRead.query(({ ctx }) =>
+    svc.formOptions(companyBranchScope(ctx.user)),
+  ),
+
   /** إدخال متقدّم من الموظف (استمارة ورقية/أرشيف، أو يدوياً برابط خارجي). */
   create: hrWrite
     .input(
@@ -185,8 +267,11 @@ export const recruitmentRouter = router({
         ...applicantFields,
         source: z.enum(SOURCE_KEYS).default("paper"),
         stage: z.enum(APPLICANT_STAGE_KEYS).default("new"),
-        appliedDate: z.string().optional(),
+        appliedDate: optionalDateStr,
         rating: z.number().int().min(0).max(5).optional(),
+        interviewDate: optionalDateStr,
+        rejectionReason: z.string().trim().max(500).optional(),
+        hrNotes: z.string().trim().max(2000).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -201,18 +286,21 @@ export const recruitmentRouter = router({
         newValue: {
           name: a?.name,
           source: input.source,
-          jobTitle: input.jobTitle ?? null,
+          jobTitle: a?.jobTitle ?? input.jobTitle ?? null,
         },
       });
       return a;
     }),
 
-  /** نقل المتقدّم إلى مرحلة جديدة في المسار. */
+  /** نقل المتقدّم إلى مرحلة جديدة في المسار (مع إمكانية تحديث ملاحظات/تاريخ المقابلة/سبب الرفض). */
   updateStage: hrWrite
     .input(
       z.object({
         id: z.number().int().positive(),
         stage: z.enum(APPLICANT_STAGE_KEYS),
+        hrNotes: z.string().trim().max(2000).nullable().optional(),
+        interviewDate: optionalNullableDateStr,
+        rejectionReason: z.string().trim().max(500).nullable().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -220,22 +308,39 @@ export const recruitmentRouter = router({
         input.id,
         input.stage,
         companyBranchScope(ctx.user),
+        {
+          hrNotes: input.hrNotes,
+          interviewDate: input.interviewDate,
+          rejectionReason: input.rejectionReason,
+        },
       );
       await logAudit(ctx, {
         action: "recruitment.updateStage",
         entityType: "jobApplicant",
         entityId: input.id,
-        newValue: { stage: input.stage },
+        newValue: {
+          stage: input.stage,
+          ...(input.interviewDate !== undefined
+            ? { interviewDate: input.interviewDate }
+            : {}),
+          ...(input.rejectionReason !== undefined
+            ? { rejectionReason: input.rejectionReason }
+            : {}),
+        },
       });
       return a;
     }),
 
-  /** ضبط التقييم المبدئي (٠–٥). */
+  /** ضبط التقييم المبدئي (٠–٥) وتحديث المرحلة وملاحظات المراجعة/موعد المقابلة/سبب الرفض. */
   setRating: hrWrite
     .input(
       z.object({
         id: z.number().int().positive(),
-        rating: z.number().int().min(0).max(5),
+        rating: z.number().int().min(0).max(5).optional(),
+        stage: z.enum(APPLICANT_STAGE_KEYS).optional(),
+        hrNotes: z.string().trim().max(2000).nullable().optional(),
+        interviewDate: optionalNullableDateStr,
+        rejectionReason: z.string().trim().max(500).nullable().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -243,12 +348,27 @@ export const recruitmentRouter = router({
         input.id,
         input.rating,
         companyBranchScope(ctx.user),
+        {
+          stage: input.stage,
+          hrNotes: input.hrNotes,
+          interviewDate: input.interviewDate,
+          rejectionReason: input.rejectionReason,
+        },
       );
       await logAudit(ctx, {
         action: "recruitment.setRating",
         entityType: "applicant",
         entityId: input.id,
-        newValue: { rating: input.rating },
+        newValue: {
+          ...(input.rating !== undefined ? { rating: input.rating } : {}),
+          ...(input.stage !== undefined ? { stage: input.stage } : {}),
+          ...(input.interviewDate !== undefined
+            ? { interviewDate: input.interviewDate }
+            : {}),
+          ...(input.rejectionReason !== undefined
+            ? { rejectionReason: input.rejectionReason }
+            : {}),
+        },
       });
       return res;
     }),

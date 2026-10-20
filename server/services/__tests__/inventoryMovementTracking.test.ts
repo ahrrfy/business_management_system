@@ -965,5 +965,81 @@ describe("Empirical Challenger — Milestone 2 Inventory Movement Tracking & Ato
 
     expect(corrSale2.invoiceNumber).toBe(`${initialSale.invoiceNumber}-2`);
   });
+
+  it("DOCNUM-09: createPrintSale with inherited trackingNumber resolves sibling suffixes (-1, -2) without ER_DUP_ENTRY", async () => {
+    const baseSale = await createPrintSale(
+      {
+        branchId: 1,
+        shiftId: 2,
+        customerId: 1,
+        lines: [
+          {
+            variantId: 4,
+            productUnitId: 4,
+            quantity: "2",
+            unitPriceOverride: "50.00",
+          },
+        ],
+        payment: {
+          method: "CASH",
+          amount: "100.00",
+        },
+        clientRequestId: `print-base-${Date.now()}`,
+      },
+      cashierActor,
+    );
+
+    expect(baseSale.invoiceNumber).toMatch(/^\d+$/);
+
+    const siblingPrint1 = await createPrintSale(
+      {
+        branchId: 1,
+        shiftId: 2,
+        customerId: 1,
+        trackingNumber: baseSale.invoiceNumber,
+        lines: [
+          {
+            variantId: 4,
+            productUnitId: 4,
+            quantity: "2",
+            unitPriceOverride: "50.00",
+          },
+        ],
+        payment: {
+          method: "CASH",
+          amount: "100.00",
+        },
+        clientRequestId: `print-sib1-${Date.now()}`,
+      },
+      cashierActor,
+    );
+
+    expect(siblingPrint1.invoiceNumber).toBe(`${baseSale.invoiceNumber}-1`);
+
+    const siblingPrint2 = await createPrintSale(
+      {
+        branchId: 1,
+        shiftId: 2,
+        customerId: 1,
+        trackingNumber: siblingPrint1.invoiceNumber,
+        lines: [
+          {
+            variantId: 4,
+            productUnitId: 4,
+            quantity: "2",
+            unitPriceOverride: "50.00",
+          },
+        ],
+        payment: {
+          method: "CASH",
+          amount: "100.00",
+        },
+        clientRequestId: `print-sib2-${Date.now()}`,
+      },
+      cashierActor,
+    );
+
+    expect(siblingPrint2.invoiceNumber).toBe(`${baseSale.invoiceNumber}-2`);
+  });
 });
 

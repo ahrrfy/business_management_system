@@ -15,7 +15,7 @@
  * @param thresholdMs— أقصى فاصلٍ بين ضغطتين ضمن ومضةٍ واحدة (افتراضي 120؛ سخيٌّ ليتحمّل التذبذب).
  */
 import { useEffect, useRef } from "react";
-import { ScanBurstDetector } from "@/lib/barcodeScanTiming";
+import { ScanBurstDetector, isAcceptedBurstScanCode } from "@/lib/barcodeScanTiming";
 import { playAudioFeedback } from "@/lib/audioFeedback";
 
 const INPUT_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT"]);
@@ -72,24 +72,24 @@ export function useBarcodeScanner(
       fieldTarget.dispatchEvent(new Event("input", { bubbles: true }));
     };
 
-    const finish = () => {
+    const finish = (onEnter = false) => {
       clearTimeout(timer);
-      const { accepted, code, text } = detector.flush();
-      if (accepted && code.length >= minLength) {
+      const flushed = detector.flush();
+      if (flushed.accepted && isAcceptedBurstScanCode(flushed, minLength, onEnter)) {
         // أزال startBurst مرشّح المسح من الحقل؛ أبقِ النصّ اليدوي السابق كما هو.
         clearField();
         if (soundEnabled) playAudioFeedback("scan");
-        onScanRef.current(code);
+        onScanRef.current(flushed.code);
       } else {
-        // كتابةٌ بشرية قصيرة صُنّفت سريعاً بالخطأ: أعِد الحروف الخام للحقل بلا ابتلاع.
-        if (text) setFieldValueAndNotify(valBefore + text);
+        // كتابةٌ بشرية سريعة/قصيرة صُنّفت بالخطأ: أعِد الحروف الخام للحقل بلا ابتلاع ولا قلبٍ إلى إنجليزيّ.
+        if (flushed.text) setFieldValueAndNotify(valBefore + flushed.text);
         clearField();
       }
     };
 
     const armIdle = () => {
       clearTimeout(timer);
-      timer = setTimeout(finish, idleMs);
+      timer = setTimeout(() => finish(false), idleMs);
     };
 
     const handler = (e: KeyboardEvent) => {
@@ -106,7 +106,7 @@ export function useBarcodeScanner(
         if (detector.isActive) {
           e.preventDefault();
           e.stopPropagation();
-          finish();
+          finish(true);
         } else {
           // ⛔ لا استردادٌ لمسحٍ بطيء هنا: الخطّاف العالميّ يُطلَق على **أيّ** حقلٍ في الصفحة
           // (طور الالتقاط على document)، فتفسيرُ قيمةِ حقلٍ غير باركوديّ (مبلغ الدفع مثلاً) باركوداً
@@ -115,6 +115,27 @@ export function useBarcodeScanner(
           detector.reset();
           clearField();
         }
+        return;
+      }
+
+      if (e.key === "Backspace" || e.key === "Delete") {
+        clearTimeout(timer);
+        if (detector.isActive) {
+          const { text } = detector.flush();
+          if (text) {
+            e.preventDefault();
+            e.stopPropagation();
+            const restored = valBefore + text;
+            const nextVal =
+              e.key === "Backspace"
+                ? Array.from(restored).slice(0, -1).join("")
+                : restored;
+            setFieldValueAndNotify(nextVal);
+          }
+        } else {
+          detector.reset();
+        }
+        clearField();
         return;
       }
 

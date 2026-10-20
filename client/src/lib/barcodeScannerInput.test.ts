@@ -57,6 +57,10 @@ describe("parseScan", () => {
     expect(resolveOrderLookupBarcode("ؤآس-100034")).toBe("CNS-100034");
     expect(resolveOrderLookupBarcode("ORD-100034")).toBe("ORD-100034");
     expect(resolveOrderLookupBarcode("ORD|ORD-100034|2026-10-19|45000|1|sig")).toBe("ORD-100034");
+    expect(resolveOrderLookupBarcode("https://erp.alroya.com/verify?payload=WO%7C100035-1%7C2026-10-19%7C100%7C1%7Csig")).toBe("WO-100035-1");
+    expect(resolveOrderLookupBarcode("https://erp.alroya.com/verify?payload=INV%7C100034-1%7C2026-10-19%7C100%7C1%7Csig")).toBe("INV-100034-1");
+    expect(resolveOrderLookupBarcode("https://store.alroya.com/?order=ORD-100034&token=abc")).toBe("ORD-100034");
+    expect(resolveOrderLookupBarcode("INV-1-20260818-00073-1")).toBe("INV-1-20260818-00073-1");
     expect(resolveOrderLookupBarcode("100034")).toBe("100034");
   });
 });

@@ -17,7 +17,13 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { trpc } from "@/lib/trpc";
 import { errMsg } from "@/lib/notify";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
-import { employmentTypeLabel } from "@shared/hr";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { MoneyInput } from "@/components/form/MoneyInput";
+import {
+  APPLICANT_AVAILABILITY_STATUSES, APPLICANT_EXPERIENCE_LEVELS,
+  APPLICANT_SHIFT_PREFERENCES, DEGREES, EMPLOYMENT_TYPES, GENDERS, HR_DEPARTMENTS,
+  IRAQ_GOVERNORATES, MARITAL_STATUSES, employmentTypeLabel, normalizeIraqiPhone,
+} from "@shared/hr";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { Check } from "lucide-react";
 
@@ -40,6 +46,7 @@ type Vacancy = {
   title: string;
   department: string | null;
   employmentType: string;
+  branchId?: number | null;
   location: string | null;
   summary: string | null;
   description: string | null;
@@ -301,7 +308,8 @@ const CSS = `
 .cj-job-details h3{margin:0 0 6px;font-size:13.5px;font-weight:800;color:var(--ink)}
 .cj-job-details h3:not(:first-child){margin-top:14px}
 .cj-job-details p{margin:0;font-size:13px;line-height:1.9;color:var(--ink2);white-space:pre-wrap}
-.cj-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:15px}
+.cj-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.cj-fsec{grid-column:1/-1;font-size:13.5px;font-weight:800;color:var(--green-deep);padding:10px 0 4px;border-bottom:1px solid var(--line);margin-top:4px}
 .cj-field{display:flex;flex-direction:column;gap:6px}
 .cj-field.full{grid-column:1/-1}
 .cj-field label{font-size:13px;font-weight:700;color:var(--ink2)}
@@ -379,103 +387,38 @@ const VALUE_ICONS: Record<string, ReactNode> = {
   shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10zM9 12l2 2 4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />,
 };
 const VALUES = [
-  {
-    k: "env",
-    t: "بيئة عمل حديثة",
-    d: "مساحات منظّمة وأدوات وتقنيات حديثة في الطباعة والتصميم والمبيعات.",
-  },
-  {
-    k: "team",
-    t: "فريق متعاون",
-    d: "ثقافة احترام وتعاون، وزملاء يدعمونك من أوّل يوم لتنجز عملك بثقة.",
-  },
-  {
-    k: "growth",
-    t: "فرص نموّ",
-    d: "مسار تطوّر واضح وتدريب مستمر وترقيات تكافئ الجهد والإتقان.",
-  },
-  {
-    k: "shield",
-    t: "استقرار وأمان",
-    d: "شركة راسخة بفرعين ونشاط متنوّع — استقرار وظيفي ومستحقّات منتظمة.",
-  },
+  { k: "env", t: "بيئة عمل حديثة", d: "مساحات منظّمة وأدوات وتقنيات حديثة في الطباعة والتصميم والمبيعات." },
+  { k: "team", t: "فريق متعاون", d: "ثقافة احترام وتعاون، وزملاء يدعمونك من أوّل يوم لتنجز عملك بثقة." },
+  { k: "growth", t: "فرص نموّ", d: "مسار تطوّر واضح وتدريب مستمر وترقيات تكافئ الجهد والإتقان." },
+  { k: "shield", t: "استقرار وأمان", d: "شركة راسخة بفرعين ونشاط متنوّع — استقرار وظيفي ومستحقّات منتظمة." },
 ] as const;
 
 const STEPS = [
-  {
-    t: "اختر وظيفتك",
-    d: "تصفّح الشواغر المنشورة واختر ما يناسب خبرتك وتخصّصك، أو أرسل تقديماً عامّاً.",
-  },
-  {
-    t: "املأ الاستمارة",
-    d: "بيانات مختصرة وواضحة — اسمك ووسيلة تواصلك وخبرتك. دقائق معدودة لا أكثر.",
-  },
-  {
-    t: "نتواصل معك",
-    d: "يراجع فريق الموارد البشرية طلبك، ونتّصل بك لإكمال المقابلة إن كنت مناسباً.",
-  },
+  { t: "اختر وظيفتك", d: "تصفّح الشواغر المنشورة واختر ما يناسب خبرتك وتخصّصك، أو أرسل تقديماً عامّاً." },
+  { t: "املأ الاستمارة", d: "بيانات مختصرة وواضحة — اسمك ووسيلة تواصلك وخبرتك. دقائق معدودة لا أكثر." },
+  { t: "نتواصل معك", d: "يراجع فريق الموارد البشرية طلبك، ونتّصل بك لإكمال المقابلة إن كنت مناسباً." },
 ] as const;
 
 function ValueIcon({ k }: { k: string }) {
-  return (
-    <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden>
-      {VALUE_ICONS[k]}
-    </svg>
-  );
+  return <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden>{VALUE_ICONS[k]}</svg>;
 }
 
 /** الشعار الحقيقي — مكوَّن واحد يضمن نصّاً بديلاً وسقوطاً آمناً إن تعذّر تحميل الصورة. */
 function BrandLogo({ size = "md" }: { size?: "md" | "lg" }) {
   return (
     <span className={`cj-logo${size === "lg" ? " lg" : ""}`}>
-      <img
-        src={LOGO}
-        alt={`شعار ${SUBTITLE}`}
-        width={size === "lg" ? 64 : 48}
-        height={size === "lg" ? 64 : 48}
-        onError={(e) => {
-          (e.currentTarget as HTMLImageElement).style.display = "none";
-        }}
-      />
+      <img src={LOGO} alt={`شعار ${SUBTITLE}`} width={size === "lg" ? 64 : 48} height={size === "lg" ? 64 : 48} onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
     </span>
   );
 }
 
 /* أيقونات صغيرة */
-const PinIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden>
-    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" stroke="currentColor" strokeWidth="2" />
-    <circle cx="12" cy="10" r="3" stroke="currentColor" strokeWidth="2" />
-  </svg>
-);
-const ClockIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden>
-    <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" />
-    <path d="M12 7v5l3 2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-  </svg>
-);
-const BriefIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
-    <rect x="3" y="7" width="18" height="13" rx="2" stroke="currentColor" strokeWidth="1.8" />
-    <path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 12h18" stroke="currentColor" strokeWidth="1.8" />
-  </svg>
-);
-const SparkIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden>
-    <path d="M12 3v4M12 17v4M5 12H1M23 12h-4M6 6l2.5 2.5M15.5 15.5L18 18M18 6l-2.5 2.5M8.5 15.5L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-  </svg>
-);
-const BranchIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden>
-    <path d="M3 21h18M5 21V8l7-4 7 4v13M9 21v-5h6v5" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-const WalletIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden>
-    <rect x="3" y="6" width="18" height="13" rx="3" stroke="currentColor" strokeWidth="1.9" />
-    <path d="M16 12h3" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-  </svg>
-);
+const PinIcon = () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" stroke="currentColor" strokeWidth="2" /><circle cx="12" cy="10" r="3" stroke="currentColor" strokeWidth="2" /></svg>;
+const ClockIcon = () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden><circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" /><path d="M12 7v5l3 2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>;
+const BriefIcon = () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden><rect x="3" y="7" width="18" height="13" rx="2" stroke="currentColor" strokeWidth="1.8" /><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 12h18" stroke="currentColor" strokeWidth="1.8" /></svg>;
+const SparkIcon = () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden><path d="M12 3v4M12 17v4M5 12H1M23 12h-4M6 6l2.5 2.5M15.5 15.5L18 18M18 6l-2.5 2.5M8.5 15.5L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>;
+const BranchIcon = () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden><path d="M3 21h18M5 21V8l7-4 7 4v13M9 21v-5h6v5" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+const WalletIcon = () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden><rect x="3" y="6" width="18" height="13" rx="3" stroke="currentColor" strokeWidth="1.9" /><path d="M16 12h3" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /></svg>;
 
 /* عدّ تصاعدي عند الظهور (يحترم reduced-motion) */
 function useCountUp(end: number, run: boolean, dur = 1100) {
@@ -535,25 +478,10 @@ function StatsBand({ openNow }: { openNow: number }) {
   return (
     <section className="cj-stats" aria-label="أرقام الشركة" ref={ref}>
       <div className="cj-wrap cj-stats-in">
-        <div className="cj-stat">
-          <b>{ar(branches)}</b>
-          <span>فرعان في الخدمة</span>
-        </div>
-        <div className="cj-stat">
-          <b>{openNow ? ar(openCount) : "—"}</b>
-          <span>وظائف مفتوحة الآن</span>
-        </div>
-        <div className="cj-stat">
-          <b>
-            {ar(depts)}
-            <span className="a">+</span>
-          </b>
-          <span>أقسام وتخصّصات</span>
-        </div>
-        <div className="cj-stat">
-          <b className="a">IQD</b>
-          <span>رواتب منتظمة</span>
-        </div>
+        <div className="cj-stat"><b>{ar(branches)}</b><span>فرعان في الخدمة</span></div>
+        <div className="cj-stat"><b>{openNow ? ar(openCount) : "—"}</b><span>وظائف مفتوحة الآن</span></div>
+        <div className="cj-stat"><b>{ar(depts)}<span className="a">+</span></b><span>أقسام وتخصّصات</span></div>
+        <div className="cj-stat"><b className="a">IQD</b><span>رواتب منتظمة</span></div>
       </div>
     </section>
   );
@@ -570,44 +498,60 @@ function VacancyCard({ v, onApply, i }: { v: Vacancy; onApply: () => void; i: nu
         </div>
       )}
       <div className="cj-cbody">
-        {v.department && (
-          <span className="cj-dept">
-            <i />
-            {v.department}
-          </span>
-        )}
+        {v.department && <span className="cj-dept"><i />{v.department}</span>}
         <h3 className="cj-ctitle">{v.title}</h3>
         {v.summary && <p className="cj-csum">{v.summary}</p>}
         <div className="cj-meta">
-          <span className="cj-pill">
-            <ClockIcon /> {employmentTypeLabel(v.employmentType)}
-          </span>
-          {v.location && (
-            <span className="cj-pill">
-              <PinIcon /> {v.location}
-            </span>
-          )}
+          <span className="cj-pill"><ClockIcon /> {employmentTypeLabel(v.employmentType)}</span>
+          {v.location && <span className="cj-pill"><PinIcon /> {v.location}</span>}
         </div>
       </div>
       <div className="cj-cfoot">
         <span className="cj-openings">{v.openings > 1 ? `${ar(v.openings)} شواغر متاحة` : "شاغر واحد"}</span>
-        <button className="cj-btn cj-btn-primary cj-btn-sm" onClick={onApply}>
-          التفاصيل والتقديم
-        </button>
+        <button className="cj-btn cj-btn-primary cj-btn-sm" onClick={onApply}>التفاصيل والتقديم</button>
       </div>
     </article>
   );
 }
 
+function resolveVacancyPreferredBranch(vacancy: Vacancy | null, branches: { id: number; name: string }[]): string {
+  if (!vacancy) return "";
+  if (vacancy.branchId != null) {
+    const byId = branches.find((b) => b.id === vacancy.branchId);
+    if (byId) return byId.name;
+  }
+  const loc = vacancy.location?.trim();
+  if (!loc) return "";
+  return branches.find((b) => b.name === loc || loc.includes(b.name) || b.name.includes(loc))?.name ?? "";
+}
+
 /* ============================ نافذة التقديم ============================ */
-function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose: () => void }) {
+function ApplyModal({ target, branches, onClose }: { target: Vacancy | "general"; branches: { id: number; name: string }[]; onClose: () => void }) {
   const vacancy = target === "general" ? null : target;
   const [name, setName] = useState("");
   const [jobTitle, setJobTitle] = useState("");
+  const [department, setDepartment] = useState(vacancy?.department?.slice(0, 100) ?? "");
   const [phone, setPhone] = useState("+964");
-  const [experience, setExperience] = useState("");
-  const [education, setEducation] = useState("");
+  const [whatsappPhone, setWhatsappPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [birthDate, setBirthDate] = useState("");
+  const [gender, setGender] = useState("");
+  const [maritalStatus, setMaritalStatus] = useState("");
+  const [governorate, setGovernorate] = useState("");
+  const [district, setDistrict] = useState("");
   const [residentialAddress, setResidentialAddress] = useState("");
+  const [degree, setDegree] = useState("");
+  const [major, setMajor] = useState("");
+  const [education, setEducation] = useState("");
+  const [availabilityStatus, setAvailabilityStatus] = useState("");
+  const [experience, setExperience] = useState("");
+  const [previousEmployer, setPreviousEmployer] = useState("");
+  const [skills, setSkills] = useState("");
+  const [preferredBranch, setPreferredBranch] = useState(() => resolveVacancyPreferredBranch(vacancy, branches));
+  const [employmentType, setEmploymentType] = useState(vacancy?.employmentType ?? "");
+  const [shiftPreference, setShiftPreference] = useState("");
+  const [expectedSalary, setExpectedSalary] = useState("");
+  const [availableFrom, setAvailableFrom] = useState("");
   const [portfolioUrl, setPortfolioUrl] = useState("");
   const [notes, setNotes] = useState("");
   const [cvFile, setCvFile] = useState<File | null>(null);
@@ -617,6 +561,14 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
   const nameRef = useRef<HTMLInputElement>(null);
   const phoneRef = useRef<HTMLInputElement>(null);
   const doneCloseRef = useRef<HTMLButtonElement>(null);
+  const unmountedRef = useRef(false);
+  useEffect(() => () => { unmountedRef.current = true; }, []);
+  useEffect(() => {
+    if (!preferredBranch && vacancy && branches.length > 0) {
+      const resolved = resolveVacancyPreferredBranch(vacancy, branches);
+      if (resolved) setPreferredBranch(resolved);
+    }
+  }, [branches, preferredBranch, vacancy]);
 
   // بعد تبديل النموذج برسالة النجاح، انقل التركيز إلى الإجراء المتاح داخل الحوار.
   useEffect(() => {
@@ -663,37 +615,50 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
       phoneRef.current?.focus();
       return;
     }
-    let cv:
-      | {
-          fileName: string;
-          mimeType: typeof PDF_MIME | typeof DOCX_MIME;
-          base64: string;
-        }
-      | undefined;
+    if (whatsappPhone.trim() && !IRAQI_MOBILE_RE.test(whatsappPhone.trim())) {
+      setErr("أدخل رقم واتساب عراقي صحيحاً بصيغة +9647XXXXXXXXX أو اتركه فارغاً");
+      return;
+    }
+    let cv: { fileName: string; mimeType: typeof PDF_MIME | typeof DOCX_MIME; base64: string } | undefined;
     if (cvFile) {
       setEncodingCv(true);
       try {
         const isDocx = cvFile.name.toLowerCase().endsWith(".docx");
-        cv = {
-          fileName: cvFile.name,
-          mimeType: isDocx ? DOCX_MIME : PDF_MIME,
-          base64: await fileToBase64(cvFile),
-        };
+        cv = { fileName: cvFile.name, mimeType: isDocx ? DOCX_MIME : PDF_MIME, base64: await fileToBase64(cvFile) };
       } catch {
         setErr("تعذّرت قراءة ملف السيرة الذاتية");
         return;
       } finally {
         setEncodingCv(false);
       }
+      if (unmountedRef.current) return;
     }
     apply.mutate({
       name: name.trim(),
       vacancyId: vacancy?.id,
       jobTitle: vacancy ? undefined : jobTitle.trim() || undefined,
+      department: department.trim() || undefined,
       phone,
-      experience: experience.trim() || undefined,
-      education: education.trim() || undefined,
+      whatsappPhone: whatsappPhone.trim() || undefined,
+      email: email.trim() || undefined,
+      birthDate: birthDate.trim() || undefined,
+      gender: (gender || undefined) as never,
+      maritalStatus: (maritalStatus || undefined) as never,
+      governorate: governorate.trim() || undefined,
+      district: district.trim() || undefined,
       residentialAddress: residentialAddress.trim() || undefined,
+      degree: (degree || undefined) as never,
+      major: major.trim() || undefined,
+      education: education.trim() || undefined,
+      availabilityStatus: (availabilityStatus || undefined) as never,
+      experience: experience.trim() || undefined,
+      previousEmployer: previousEmployer.trim() || undefined,
+      skills: skills.trim() || undefined,
+      preferredBranch: preferredBranch.trim() || undefined,
+      employmentType: (employmentType || undefined) as never,
+      shiftPreference: (shiftPreference || undefined) as never,
+      expectedSalary: expectedSalary.trim() || undefined,
+      availableFrom: availableFrom.trim() || undefined,
       portfolioUrl: portfolioUrl.trim() || undefined,
       notes: notes.trim() || undefined,
       cv,
@@ -701,14 +666,9 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
   }
 
   return (
-    <Dialog
-      open
-      onOpenChange={(open) => {
-        if (!open) onClose();
-      }}
-    >
+    <Dialog open onOpenChange={(open) => { if (!open && !apply.isPending && !encodingCv) onClose(); }}>
       <DialogContent
-        className="cj-modal z-[81] gap-0 border-0 p-0 sm:max-w-[660px]"
+        className="cj-modal z-[81] gap-0 border-0 p-0 sm:max-w-[720px]"
         dir="rtl"
         showCloseButton={false}
         onOpenAutoFocus={(event) => {
@@ -718,9 +678,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
       >
         <div className="cj-mhead">
           <DialogClose asChild>
-            <button className="cj-mclose" aria-label="إغلاق">
-              ×
-            </button>
+            <button className="cj-mclose" aria-label="إغلاق" disabled={apply.isPending || encodingCv}>×</button>
           </DialogClose>
           <div className="k">التقديم على وظيفة</div>
           <DialogTitle className="t">{vacancy ? vacancy.title : "تقديم عام"}</DialogTitle>
@@ -729,17 +687,11 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
 
         {done ? (
           <div className="cj-done" role="status" aria-live="polite" aria-atomic="true">
-            <div className="ring">
-              <Check aria-hidden size={40} />
-            </div>
+            <div className="ring"><Check aria-hidden size={40} /></div>
             <h2>شكراً لتقديمك</h2>
-            <p>
-              وصلنا طلبك بنجاح{vacancy ? ` على وظيفة «${vacancy.title}»` : ""}. سيراجعه فريق الموارد البشرية في {COMPANY}، وسنتواصل معك إن كنت مناسباً.
-            </p>
+            <p>وصلنا طلبك بنجاح{vacancy ? ` على وظيفة «${vacancy.title}»` : ""}. سيراجعه فريق الموارد البشرية في {COMPANY}، وسنتواصل معك إن كنت مناسباً.</p>
             <DialogClose asChild>
-              <button ref={doneCloseRef} className="cj-btn cj-btn-out" style={{ marginTop: 22 }}>
-                إغلاق
-              </button>
+              <button ref={doneCloseRef} className="cj-btn cj-btn-out" style={{ marginTop: 22 }}>إغلاق</button>
             </DialogClose>
           </div>
         ) : (
@@ -747,15 +699,10 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
             {vacancy && (
               <>
                 <div className="cj-posbanner">
-                  <div className="ic">
-                    <BriefIcon />
-                  </div>
+                  <div className="ic"><BriefIcon /></div>
                   <div>
                     <div className="k">تتقدّم على</div>
-                    <div className="t">
-                      {vacancy.title}
-                      {vacancy.department ? ` — ${vacancy.department}` : ""}
-                    </div>
+                    <div className="t">{vacancy.title}{vacancy.department ? ` — ${vacancy.department}` : ""}</div>
                   </div>
                 </div>
                 <section className="cj-job-details" aria-label="تفاصيل الوظيفة">
@@ -766,49 +713,151 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
                 </section>
               </>
             )}
-            {err && (
-              <div className="cj-err" role="alert">
-                {err}
-              </div>
-            )}
+            {err && <div className="cj-err" role="alert">{err}</div>}
 
             <div className="cj-form-grid">
+              <div className="cj-fsec">البيانات الشخصية والتواصل</div>
               <div className="cj-field full">
-                <label htmlFor="cj-name">
-                  الاسم الثلاثي واللقب <i>*</i>
-                </label>
-                <input ref={nameRef} id="cj-name" className="cj-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="الاسم الكامل" autoComplete="name" />
+                <label htmlFor="cj-name">الاسم الرباعي واللقب <i>*</i></label>
+                <input ref={nameRef} id="cj-name" className="cj-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="الاسم الأول واسم الأب والجد واللقب" autoComplete="name" />
               </div>
+              <div className="cj-field">
+                <label htmlFor="cj-phone">رقم الهاتف الأساسي <i>*</i></label>
+                <input ref={phoneRef} id="cj-phone" className="cj-input" style={{ direction: "ltr", textAlign: "right" }} value={phone} onChange={(e) => setPhone(normalizeIraqiPhone(e.target.value))} placeholder="+9647XXXXXXXXX" inputMode="tel" autoComplete="tel" maxLength={20} required />
+              </div>
+              <div className="cj-field">
+                <label htmlFor="cj-whatsapp">رقم واتساب / هاتف بديل</label>
+                <input id="cj-whatsapp" className="cj-input" style={{ direction: "ltr", textAlign: "right" }} value={whatsappPhone} onChange={(e) => setWhatsappPhone(normalizeIraqiPhone(e.target.value, true))} placeholder="+9647XXXXXXXXX" inputMode="tel" maxLength={20} />
+              </div>
+              <div className="cj-field">
+                <label htmlFor="cj-email">البريد الإلكتروني</label>
+                <input id="cj-email" className="cj-input" type="email" style={{ direction: "ltr", textAlign: "right" }} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" autoComplete="email" maxLength={100} />
+              </div>
+              <div className="cj-field">
+                <label htmlFor="cj-birth">تاريخ الميلاد</label>
+                <input id="cj-birth" className="cj-input" type="date" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} />
+              </div>
+              <div className="cj-field">
+                <label htmlFor="cj-gender">الجنس</label>
+                <AppSelect id="cj-gender" className="cj-input" value={gender} onValueChange={setGender}>
+                  <option value="">— اختر —</option>
+                  {GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}
+                </AppSelect>
+              </div>
+              <div className="cj-field">
+                <label htmlFor="cj-marital">الحالة الاجتماعية</label>
+                <AppSelect id="cj-marital" className="cj-input" value={maritalStatus} onValueChange={setMaritalStatus}>
+                  <option value="">— اختر —</option>
+                  {MARITAL_STATUSES.map((m) => <option key={m} value={m}>{m}</option>)}
+                </AppSelect>
+              </div>
+              <div className="cj-field">
+                <label htmlFor="cj-gov">المحافظة</label>
+                <AppSelect id="cj-gov" className="cj-input" value={governorate} onValueChange={setGovernorate}>
+                  <option value="">— اختر المحافظة —</option>
+                  {IRAQ_GOVERNORATES.map((g) => <option key={g} value={g}>{g}</option>)}
+                </AppSelect>
+              </div>
+              <div className="cj-field">
+                <label htmlFor="cj-district">القضاء / المنطقة</label>
+                <input id="cj-district" className="cj-input" value={district} onChange={(e) => setDistrict(e.target.value)} placeholder="مثال: الكرادة، المنصور، الدورة" maxLength={120} />
+              </div>
+              <div className="cj-field full">
+                <label htmlFor="cj-address">عنوان السكن التفصيلي / أقرب نقطة دالة</label>
+                <input id="cj-address" className="cj-input" value={residentialAddress} onChange={(e) => setResidentialAddress(e.target.value)} maxLength={255} placeholder="مثال: حي الجامعة — قرب تقاطع الرواد (لا تكتب رقم البطاقة الوطنية)" autoComplete="street-address" />
+              </div>
+
+              <div className="cj-fsec">المؤهل العلمي والخبرة والمهارات</div>
+              <div className="cj-field">
+                <label htmlFor="cj-degree">التحصيل الدراسي</label>
+                <AppSelect id="cj-degree" className="cj-input" value={degree} onValueChange={setDegree}>
+                  <option value="">— اختر المؤهل —</option>
+                  {DEGREES.map((d) => <option key={d} value={d}>{d}</option>)}
+                </AppSelect>
+              </div>
+              <div className="cj-field">
+                <label htmlFor="cj-major">التخصص الدراسي</label>
+                <input id="cj-major" className="cj-input" value={major} onChange={(e) => setMajor(e.target.value)} placeholder="مثال: تصميم كرافيك، محاسبة، علوم حاسبات" maxLength={160} />
+              </div>
+              <div className="cj-field">
+                <label htmlFor="cj-edu">الجامعة / المعهد وسنة التخرج</label>
+                <input id="cj-edu" className="cj-input" value={education} onChange={(e) => setEducation(e.target.value)} placeholder="مثال: جامعة بغداد — ٢٠٢٣" maxLength={200} />
+              </div>
+              <div className="cj-field">
+                <label htmlFor="cj-avail">حالة التفرّغ الحالية</label>
+                <AppSelect id="cj-avail" className="cj-input" value={availabilityStatus} onValueChange={setAvailabilityStatus}>
+                  <option value="">— اختر حالة التفرّغ —</option>
+                  {APPLICANT_AVAILABILITY_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+                </AppSelect>
+              </div>
+              <div className="cj-field">
+                <label htmlFor="cj-exp">سنوات الخبرة العملية</label>
+                <input id="cj-exp" list="cj-exp-list" className="cj-input" value={experience} onChange={(e) => setExperience(e.target.value)} placeholder="مثال: ٣ – ٥ سنوات" maxLength={120} />
+                <datalist id="cj-exp-list">
+                  {APPLICANT_EXPERIENCE_LEVELS.map((lvl) => <option key={lvl} value={lvl} />)}
+                </datalist>
+              </div>
+              <div className="cj-field">
+                <label htmlFor="cj-prev-emp">آخر جهة عمل / المسمى السابق</label>
+                <input id="cj-prev-emp" className="cj-input" value={previousEmployer} onChange={(e) => setPreviousEmployer(e.target.value)} placeholder="مثال: مطبعة أو شركة سابقة" maxLength={200} />
+              </div>
+              <div className="cj-field full">
+                <label htmlFor="cj-skills">المهارات والبرامج المتقنة</label>
+                <input id="cj-skills" className="cj-input" value={skills} onChange={(e) => setSkills(e.target.value)} placeholder="مثال: Photoshop, Illustrator, Excel، مبيعات، إدارة مخزن، تشغيل مكائن طباعة" maxLength={500} />
+              </div>
+
+              <div className="cj-fsec">تفضيلات العمل والدوام والمرفقات</div>
               {!vacancy && (
-                <div className="cj-field full">
-                  <label htmlFor="cj-job">الوظيفة المطلوبة</label>
-                  <input id="cj-job" className="cj-input" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="مثال: مصمم جرافيك أو خدمة عملاء" />
-                </div>
+                <>
+                  <div className="cj-field">
+                    <label htmlFor="cj-job">الوظيفة المطلوبة</label>
+                    <input id="cj-job" className="cj-input" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="مثال: مصمم جرافيك أو كاشير" maxLength={100} />
+                  </div>
+                  <div className="cj-field">
+                    <label htmlFor="cj-dept">القسم المفضّل</label>
+                    <AppSelect id="cj-dept" className="cj-input" value={department} onValueChange={setDepartment}>
+                      <option value="">— اختر القسم —</option>
+                      {HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
+                    </AppSelect>
+                  </div>
+                </>
               )}
-              <div className="cj-field full">
-                <label htmlFor="cj-phone">رقم الهاتف العراقي <i>*</i></label>
-                <input ref={phoneRef} id="cj-phone" className="cj-input" style={{ direction: "ltr", textAlign: "right" }} value={phone} onChange={(e) => setPhone(`+964${e.target.value.replace(/\D/g, "").replace(/^964/, "").replace(/^0+/, "")}`)} placeholder="+9647XXXXXXXXX" inputMode="tel" autoComplete="tel" maxLength={14} required />
+              <div className="cj-field">
+                <label htmlFor="cj-pref-branch">الفرع المفضّل للعمل</label>
+                <AppSelect id="cj-pref-branch" className="cj-input" value={preferredBranch} onValueChange={setPreferredBranch}>
+                  <option value="">— أي فرع متاح —</option>
+                  {branches.map((b) => <option key={b.id} value={b.name}>{b.name}</option>)}
+                </AppSelect>
               </div>
               <div className="cj-field">
-                <label htmlFor="cj-exp">سنوات الخبرة</label>
-                <input id="cj-exp" className="cj-input" value={experience} onChange={(e) => setExperience(e.target.value)} placeholder="مثال: 3 سنوات" />
+                <label htmlFor="cj-emp-type">نوع الدوام</label>
+                <AppSelect id="cj-emp-type" className="cj-input" value={employmentType} onValueChange={setEmploymentType}>
+                  <option value="">— اختر نوع الدوام —</option>
+                  {EMPLOYMENT_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+                </AppSelect>
               </div>
               <div className="cj-field">
-                <label htmlFor="cj-edu">أعلى مؤهل دراسي</label>
-                <input id="cj-edu" className="cj-input" value={education} onChange={(e) => setEducation(e.target.value)} placeholder="مثال: بكالوريوس" />
+                <label htmlFor="cj-shift">الشفت المفضّل</label>
+                <AppSelect id="cj-shift" className="cj-input" value={shiftPreference} onValueChange={setShiftPreference}>
+                  <option value="">— اختر الشفت —</option>
+                  {APPLICANT_SHIFT_PREFERENCES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+                </AppSelect>
               </div>
-              <div className="cj-field full">
-                <label htmlFor="cj-address">عنوان السكن / المنطقة</label>
-                <input id="cj-address" className="cj-input" value={residentialAddress} onChange={(e) => setResidentialAddress(e.target.value)} maxLength={300} placeholder="مثال: بغداد — الكرادة. لا تكتب رقم البطاقة أو بيانات حساسة" autoComplete="street-address" />
+              <div className="cj-field">
+                <label htmlFor="cj-expected-salary">الراتب الشهري المتوقع (د.ع)</label>
+                <MoneyInput id="cj-expected-salary" className="cj-input" value={expectedSalary} onChange={setExpectedSalary} decimals={0} placeholder="مثال: 600,000" />
               </div>
-              <div className="cj-field full">
-                <label htmlFor="cj-portfolio">الأعمال النموذجية</label>
+              <div className="cj-field">
+                <label htmlFor="cj-avail-from">تاريخ الجاهزية للمباشرة</label>
+                <input id="cj-avail-from" className="cj-input" type="date" value={availableFrom} onChange={(e) => setAvailableFrom(e.target.value)} />
+              </div>
+              <div className="cj-field">
+                <label htmlFor="cj-portfolio">رابط الأعمال النموذجية (Portfolio)</label>
                 <input id="cj-portfolio" className="cj-input" value={portfolioUrl} onChange={(e) => setPortfolioUrl(e.target.value)} maxLength={500} type="url" style={{ direction: "ltr", textAlign: "right" }} placeholder="https://portfolio.example.com" autoComplete="url" />
-                <small style={{ color: "var(--muted)", lineHeight: 1.7 }}>رابط HTTPS أو HTTP فقط، اختياري. لا ترفع ملفات أعمال من هنا.</small>
               </div>
               <div className="cj-field full">
-                <label htmlFor="cj-notes">نبذة / ملاحظات</label>
-                <textarea id="cj-notes" className="cj-input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="خبرات سابقة، مهارات، أيّ معلومة تودّ إضافتها…" />
+                <label htmlFor="cj-notes">نبذة تعريفية / ملاحظات إضافية</label>
+                <textarea id="cj-notes" className="cj-input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="خبرات سابقة، إنجازات، أو أيّ معلومة تودّ إضافتها…" />
               </div>
               <div className="cj-field full">
                 <label htmlFor="cj-cv">السيرة الذاتية (اختياري)</label>
@@ -832,10 +881,10 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
 
 /* ============================ الصفحة ============================ */
 export default function JobApply() {
-  const q = trpc.recruitment.openVacancies.useQuery(undefined, {
-    staleTime: 60_000,
-  });
+  const q = trpc.recruitment.openVacancies.useQuery(undefined, { staleTime: 60_000 });
+  const branchesQ = trpc.kiosk.publicBranches.useQuery(undefined, { staleTime: 60_000 });
   const vacancies = (q.data ?? []) as Vacancy[];
+  const branches = (branchesQ.data ?? []) as { id: number; name: string }[];
   const [target, setTarget] = useState<Vacancy | "general" | null>(null);
 
   // عنوان تبويب المتصفّح (صفحة عامة تُشارَك في إعلانات التوظيف).
@@ -1127,7 +1176,7 @@ export default function JobApply() {
         </div>
       </footer>
 
-      {target && <ApplyModal target={target} onClose={() => setTarget(null)} />}
+      {target && <ApplyModal target={target} branches={branches} onClose={() => setTarget(null)} />}
     </div>
   );
 }

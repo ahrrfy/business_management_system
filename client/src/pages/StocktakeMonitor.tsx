@@ -37,6 +37,7 @@ import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { fmtInt } from "@/lib/money";
 import { useEffect, useRef, useState } from "react";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { useRealtimeEvent } from "@/lib/realtime";
 import { REALTIME_EVENT_TYPES, type StocktakeProgressPayload } from "@shared/realtimeEvents";
 import { Link, useLocation, useParams } from "wouter";
@@ -862,11 +863,14 @@ export default function StocktakeMonitor() {
                       : `بثّ حيّ (آخر ${nf(20)}) — اسم العامل ووقت الإدخال، دون كشف الفروقات قبل المراجعة.`}
                   </p>
                 </div>
-                <input
+                <UnifiedSearchInput
+                  barcode={false}
+                  debounceMs={0}
                   value={countSearch}
-                  onChange={(e) => setCountSearch(e.target.value)}
+                  onChange={setCountSearch}
                   placeholder="بحث في العدّات: اسم / SKU…"
-                  className="h-8 w-48 rounded-md border bg-card px-2.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                  className="w-48"
+                  inputClassName="h-8 text-xs"
                 />
               </div>
             </CardHeader>

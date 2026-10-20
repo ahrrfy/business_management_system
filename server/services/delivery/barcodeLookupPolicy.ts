@@ -5,7 +5,7 @@ import {
   normalizeKnownSystemBarcode,
   stripTrackingLeadingZeros,
 } from "@shared/barcodeScanner";
-import { stripDocPrefix } from "@shared/documentNumber";
+import { docBarcode, stripDocPrefix } from "@shared/documentNumber";
 
 export type DeliveryBarcodeNamespace =
   | "CONSIGNMENT"
@@ -41,6 +41,31 @@ export interface PreparedDeliveryBarcodeLookup extends DeliveryBarcodeLookup {
   documentCode: string;
 }
 
+function unwrapBarcodeEnvelope(raw: string): string {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) return "";
+  let candidate = trimmed;
+  if (/^https?:\/\//i.test(candidate) || candidate.includes("?payload=") || candidate.includes("?order=")) {
+    try {
+      const url = new URL(candidate, "http://localhost");
+      const payload = url.searchParams.get("payload")?.trim();
+      const order = url.searchParams.get("order")?.trim();
+      if (payload) candidate = payload;
+      else if (order) candidate = order;
+    } catch {
+      // Fall back to raw string when URL parsing fails
+    }
+  }
+  const normalizedCandidate = normalizeKnownSystemBarcode(candidate);
+  const pipeMatch = /^(INV|WO|ORD|CNS?|PO|QUO|RV|PV)\|([^|]+)/i.exec(normalizedCandidate);
+  if (pipeMatch) {
+    const prefix = pipeMatch[1].toUpperCase() === "CNS" ? "CN" : pipeMatch[1].toUpperCase();
+    const num = stripDocPrefix(pipeMatch[2].trim()).replace(/^CNS-/i, "CN-");
+    return docBarcode(prefix, num);
+  }
+  return candidate;
+}
+
 /**
  * Internal prefixes own their namespace. A carrier reference that happens to equal
  * INV-/WO-/ORD-/CN- must never shadow the corresponding internal document.
@@ -63,14 +88,17 @@ export function classifyDeliveryBarcode(code: string): DeliveryBarcodeLookup {
 
 /** Keep system-prefix normalization and carrier-reference canonicalization separate. */
 export function prepareDeliveryBarcodeLookup(raw: string): PreparedDeliveryBarcodeLookup {
-  const systemCode = normalizeKnownSystemBarcode(raw);
-  const trackingCode = normalizeBarcodeScannerInput(raw);
+  const unwrapped = unwrapBarcodeEnvelope(raw);
+  const systemCode = normalizeKnownSystemBarcode(unwrapped);
+  const trackingCode = normalizeBarcodeScannerInput(unwrapped);
   const strippedTrackingCode = stripTrackingLeadingZeros(trackingCode);
   const systemLookup = classifyDeliveryBarcode(systemCode);
   const lookup = systemLookup.namespace === "REFERENCE"
     ? classifyDeliveryBarcode(trackingCode)
     : systemLookup;
-  const documentCode = stripDocPrefix(systemCode);
+  const documentCode = stripDocPrefix(
+    systemLookup.namespace === "REFERENCE" ? lookup.code : systemCode,
+  ).replace(/^CNS-/i, "CN-");
   return { ...lookup, systemCode, trackingCode, strippedTrackingCode, documentCode };
 }
 

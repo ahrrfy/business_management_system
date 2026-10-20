@@ -20,7 +20,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { formatQuantity } from "@/lib/money";
@@ -140,10 +139,6 @@ export function WorkOrderMaterialsEditor({
     }
   }
 
-  const barcodeInput = useBarcodeInput((code) => {
-    void resolveBarcodeOrSettledSearch(code, false);
-  });
-
   function setQty(variantId: number, next: number) {
     // الحذف بإسقاط الصنف لا بصفر — مرآةٌ لعقد الخادم (يرفض الكمّية الصفرية صراحةً).
     if (next <= 0) return setRows((prev) => prev.filter((x) => x.variantId !== variantId));
@@ -214,7 +209,6 @@ export function WorkOrderMaterialsEditor({
             ref={searchRef}
             value={search}
             onChange={setSearch}
-            onKeyDown={(e) => barcodeInput.handleKeyDown(e, setSearch)}
             onScan={(code) => void resolveBarcodeOrSettledSearch(code, false)}
             onSubmit={(val) => void resolveBarcodeOrSettledSearch(val, true)}
             placeholder="امسح الباركود (Enter للإضافة) أو ابحث بالاسم/الـSKU"

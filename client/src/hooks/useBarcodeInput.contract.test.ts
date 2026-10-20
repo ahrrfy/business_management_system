@@ -14,6 +14,6 @@ describe("useBarcodeInput length contract", () => {
 
   it.each(["CountPortal", "MyStocktakeWorkspace"])("keeps focused short HID scans available in %s scan-required mode", (page) => {
     const source = readFileSync(new URL(`../pages/${page}.tsx`, import.meta.url), "utf8");
-    expect(/useBarcodeInput\([\s\S]*?minLength:\s*scanRequired\s*\?\s*2\s*:\s*3/.test(source)).toBe(true);
+    expect(/scanMinLength=\{scanRequired\s*\?\s*2\s*:\s*3\}/.test(source)).toBe(true);
   });
 });

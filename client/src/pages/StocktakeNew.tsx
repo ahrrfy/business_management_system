@@ -33,6 +33,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/PageHeader";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { InferredBranchField } from "@/components/form/InferredField";
 import { formatIqd } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -570,12 +571,10 @@ export default function StocktakeNew() {
               <div className="space-y-1.5">
                 <Label>اختيار المنتجات</Label>
                 <div className="flex flex-wrap items-center gap-2">
-                  <Input
+                  <UnifiedSearchInput
                     value={pickQ}
-                    onChange={(e) => {
-                      setPickQ(e.target.value);
-                      setPickPage(0);
-                    }}
+                    onChange={(v) => { setPickQ(v); setPickPage(0); }}
+                    debounceMs={0}
                     placeholder="بحث بالاسم أو SKU أو أي باركود…"
                     className="max-w-sm"
                   />

@@ -177,7 +177,12 @@ export default function DeliveryWorkflowPage() {
       notify.warn("امسح باركود فاتورة بيع (INV) أو أدخل رقم الفاتورة");
       return;
     }
-    const invoiceNumber = scanned.type === "invoice" ? scanned.number : raw.trim();
+    const invoiceNumber =
+      scanned.type === "invoice"
+        ? scanned.number
+        : scanned.type === "product"
+          ? scanned.barcode
+          : raw.trim();
     if (!invoiceNumber) return;
     try {
       const invoice = await utils.sales.lookupForCorrection.fetch({ invoiceNumber });

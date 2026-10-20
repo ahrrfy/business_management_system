@@ -23,6 +23,31 @@ describe("resolveUniqueDeliveryBarcodeTarget", () => {
       systemCode: "CN-1-20261019-00001",
       documentCode: "CN-1-20261019-00001",
     });
+    expect(prepareDeliveryBarcodeLookup("CNS-1-20261019-00001")).toMatchObject({
+      namespace: "CONSIGNMENT",
+      systemCode: "CNS-1-20261019-00001",
+      documentCode: "CN-1-20261019-00001",
+    });
+    expect(prepareDeliveryBarcodeLookup("WO|100035-1|2026-10-19|100.00|1|sig")).toMatchObject({
+      namespace: "WORK_ORDER",
+      systemCode: "WO-100035-1",
+      documentCode: "100035-1",
+    });
+    expect(prepareDeliveryBarcodeLookup("https://erp.alroya.com/verify?payload=INV%7C100034-1%7C2026-10-19%7C100.00%7C1%7Csig")).toMatchObject({
+      namespace: "INVOICE",
+      systemCode: "INV-100034-1",
+      documentCode: "100034-1",
+    });
+    expect(prepareDeliveryBarcodeLookup("https://store.alroya.com/?order=ORD-100034&token=abc")).toMatchObject({
+      namespace: "ONLINE_ORDER",
+      systemCode: "ORD-100034",
+      documentCode: "100034",
+    });
+    expect(prepareDeliveryBarcodeLookup("١٠٠٠٣٤-١")).toMatchObject({
+      namespace: "REFERENCE",
+      code: "100034-1",
+      documentCode: "100034-1",
+    });
   });
 
   it("يفضّل رقم المستند المطابق على مفاتيح السجلات الرقمية المتصادمة", () => {

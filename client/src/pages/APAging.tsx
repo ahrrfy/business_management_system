@@ -2,7 +2,7 @@ import { CopyButton, CopyInline } from "@/components/CopyButton";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
 import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
@@ -307,10 +307,11 @@ export default function APAging() {
             </AppSelect>
           </FilterField>
           <FilterField label="بحث (المورد / الهاتف)" className="w-56">
-            <Input
-              type="search"
+            <UnifiedSearchInput
+              barcode={false}
+              debounceMs={0}
               value={f.q}
-              onChange={(e) => setF({ q: e.target.value })}
+              onChange={(val) => setF({ q: val })}
               placeholder="اسم المورد أو رقم الهاتف…"
             />
           </FilterField>

@@ -17,9 +17,10 @@ describe("supplier barcode web closure", () => {
 
   it("يربط إدارة صور الاستوديو فعلياً بـHID ويمنع Enter مزدوجاً", () => {
     const code = source("client/src/components/product-studio/StudioStandaloneImageManagerCard.tsx");
-    expect(code).toContain("useBarcodeInput((barcode)");
-    expect(code).toContain("barcodeInput.handleKeyDown(e, setQuery)");
-    expect(code).toContain("if (e.defaultPrevented) return");
+    expect(code).toContain("<UnifiedSearchInput");
+    expect(code).toContain("onScan={(barcode) => {");
+    expect(code).toContain("void openByQuery(barcode)");
+    expect(code).toContain("onSubmit={() => {");
   });
 
   it("يمرّر كاميرا المخزون إلى نفس حلّ الماسح القاطع", () => {
@@ -63,7 +64,7 @@ describe("supplier barcode web closure", () => {
 
   it("لا يضيف محرر مواد أمر العمل نتيجة بحث قديمة عند Enter أو مسح HID", () => {
     const code = source("client/src/components/workOrders/WorkOrderMaterialsEditor.tsx");
-    expect(code).toContain("useBarcodeInput((code)");
+    expect(code).toContain("onScan={(code) => void resolveBarcodeOrSettledSearch(code, false)}");
     expect(code).toContain("utils.catalog.byBarcode.fetch");
     expect(code).toContain("!posList.isFetching");
     expect(code).toContain("searchRef.current?.value.trim() === code");

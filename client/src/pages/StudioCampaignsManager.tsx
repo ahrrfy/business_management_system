@@ -25,7 +25,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Textarea } from "@/components/ui/textarea";
@@ -48,7 +48,6 @@ import {
   PauseCircle,
   PlayCircle,
   Plus,
-  Search,
   Users,
   UserSquare,
   XCircle,
@@ -355,10 +354,7 @@ export default function StudioCampaignsManager() {
           <div className={`grid gap-2 ${showBranchFilter ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
             <div className="space-y-1.5">
               <Label htmlFor="campaigns-search">بحث باسم الحملة</Label>
-              <div className="relative">
-                <Search aria-hidden className="pointer-events-none absolute end-2 top-3 size-4 text-muted-foreground" />
-                <Input id="campaigns-search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="اكتب جزءاً من الاسم" />
-              </div>
+              <UnifiedSearchInput barcode={false} debounceMs={0} id="campaigns-search" value={search} onChange={setSearch} placeholder="اكتب جزءاً من الاسم" />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="campaigns-status">الحالة</Label>

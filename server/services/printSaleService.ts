@@ -14,7 +14,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, like, or, sql } from "drizzle-orm";
 import {
   customers,
   invoiceItemServiceMaterials,
@@ -787,10 +787,53 @@ export async function createPrintSaleInTx(
     }
 
     // ٩. رأس الفاتورة بالرقم الموحّد للمعاملة.
-    const baseTrackingNumber = input.trackingNumber?.trim()
-      ? stripDocPrefix(input.trackingNumber.trim())
-      : await nextTransactionTrackingNumber(tx);
-    const invoiceNumber = formatDocumentNumber(baseTrackingNumber, input.siblingIndex ?? undefined);
+    let invoiceNumber: string;
+    if (input.trackingNumber?.trim()) {
+      const cleanTracking = stripDocPrefix(input.trackingNumber.trim());
+      const isExplicitlySuffixed =
+        /^\d+-\d+$/.test(cleanTracking) ||
+        /^(?:INV|WO|ORD|CNS?|PO|QUO)-\d+-\d{8}-\d+-\d+$/i.test(cleanTracking);
+      const baseTrackingNumber = isExplicitlySuffixed
+        ? cleanTracking.replace(/-\d+$/, "")
+        : cleanTracking;
+      const hasExplicitSuffix =
+        isExplicitlySuffixed || input.siblingIndex != null;
+      const preferred =
+        isExplicitlySuffixed && input.siblingIndex == null
+          ? cleanTracking
+          : formatDocumentNumber(
+              baseTrackingNumber,
+              input.siblingIndex ?? undefined,
+            );
+      const existingNums = await tx
+        .select({ invoiceNumber: invoices.invoiceNumber })
+        .from(invoices)
+        .where(
+          or(
+            eq(invoices.invoiceNumber, baseTrackingNumber),
+            like(invoices.invoiceNumber, `${baseTrackingNumber}-%`),
+          ),
+        )
+        .for("update");
+      const used = new Set(existingNums.map((r) => r.invoiceNumber));
+      const needsSiblingSuffix =
+        used.has(preferred) || (!hasExplicitSuffix && used.size > 0);
+      if (!needsSiblingSuffix) {
+        invoiceNumber = preferred;
+      } else {
+        let k = 1;
+        while (used.has(formatDocumentNumber(baseTrackingNumber, k))) {
+          k += 1;
+        }
+        invoiceNumber = formatDocumentNumber(baseTrackingNumber, k);
+      }
+    } else {
+      const baseTrackingNumber = await nextTransactionTrackingNumber(tx);
+      invoiceNumber = formatDocumentNumber(
+        baseTrackingNumber,
+        input.siblingIndex ?? undefined,
+      );
+    }
     const status = computeInvoiceStatus(toDbMoney(effectiveTotalD), toDbMoney(paidNow));
     const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
     const insRes = await tx.insert(invoices).values({

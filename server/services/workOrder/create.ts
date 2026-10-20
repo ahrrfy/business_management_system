@@ -1,8 +1,8 @@
 // إنشاء أمر شغل (RECEIVED) — لا يُستهلَك المخزون بعد؛ عربون مقبوض عند الإنشاء إن وُجد.
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { formatDocumentNumber } from "@shared/documentNumber";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { formatDocumentNumber, stripDocPrefix } from "@shared/documentNumber";
+import { and, asc, desc, eq, inArray, like, or } from "drizzle-orm";
 import {
   productionRecipeLines,
   productionRecipes,
@@ -528,12 +528,56 @@ export async function createWorkOrderInTx(
     });
   }
 
-  const rawOrderNumber =
-    input.orderNumber?.trim() || (await nextWorkOrderNumber(tx, input.branchId));
-  const orderNumber =
-    !input.orderNumber?.trim() && input.siblingIndex != null
-      ? formatDocumentNumber(rawOrderNumber, input.siblingIndex)
-      : rawOrderNumber;
+  let orderNumber: string;
+  if (input.orderNumber?.trim()) {
+    const cleanOrder = stripDocPrefix(input.orderNumber.trim());
+    const isUnifiedOrder = /^\d+(?:-\d+)?$/.test(cleanOrder);
+    const isLegacySuffixedOrder = /^WO-\d+-\d{8}-\d+(?:-\d+)?$/i.test(cleanOrder);
+    if (isUnifiedOrder || isLegacySuffixedOrder) {
+      const isExplicitlySuffixed =
+        /^\d+-\d+$/.test(cleanOrder) ||
+        /^WO-\d+-\d{8}-\d+-\d+$/i.test(cleanOrder);
+      const baseOrderNumber = isExplicitlySuffixed
+        ? cleanOrder.replace(/-\d+$/, "")
+        : cleanOrder;
+      const hasExplicitSuffix =
+        isExplicitlySuffixed || input.siblingIndex != null;
+      const preferred =
+        isExplicitlySuffixed && input.siblingIndex == null
+          ? cleanOrder
+          : formatDocumentNumber(baseOrderNumber, input.siblingIndex ?? undefined);
+      const existingNums = await tx
+        .select({ orderNumber: workOrders.orderNumber })
+        .from(workOrders)
+        .where(
+          or(
+            eq(workOrders.orderNumber, baseOrderNumber),
+            like(workOrders.orderNumber, `${baseOrderNumber}-%`),
+          ),
+        )
+        .for("update");
+      const used = new Set(existingNums.map((r) => r.orderNumber));
+      const needsSiblingSuffix =
+        used.has(preferred) || (!hasExplicitSuffix && used.size > 0);
+      if (!needsSiblingSuffix) {
+        orderNumber = preferred;
+      } else {
+        let k = 1;
+        while (used.has(formatDocumentNumber(baseOrderNumber, k))) {
+          k += 1;
+        }
+        orderNumber = formatDocumentNumber(baseOrderNumber, k);
+      }
+    } else {
+      orderNumber = input.orderNumber.trim();
+    }
+  } else {
+    const rawOrderNumber = await nextWorkOrderNumber(tx, input.branchId);
+    orderNumber =
+      input.siblingIndex != null
+        ? formatDocumentNumber(rawOrderNumber, input.siblingIndex)
+        : rawOrderNumber;
+  }
   const customizationSnapshot = input.customizationText?.trim() || null;
   const insRes = await tx.insert(workOrders).values({
     orderNumber,

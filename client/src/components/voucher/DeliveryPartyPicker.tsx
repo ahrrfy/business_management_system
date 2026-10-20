@@ -1,7 +1,7 @@
 // DeliveryPartyPicker — منتقي جهات التوصيل (للسندات والتسويات).
 // يتيح اختيار جهة توصيل نشطة، وعرض عهدتها الحالية ورقم الهاتف، مع إمكانية البحث والمسح.
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
@@ -109,10 +109,12 @@ export default function DeliveryPartyPicker({
         </div>
       ) : (
         <div className="relative">
-          <Input
+          <UnifiedSearchInput
+            barcode={false}
+            debounceMs={0}
             value={q}
-            onChange={(e) => {
-              setQ(e.target.value);
+            onChange={(val) => {
+              setQ(val);
               setOpen(true);
             }}
             onFocus={() => setOpen(true)}
