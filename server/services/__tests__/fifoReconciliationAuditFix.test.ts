@@ -107,6 +107,18 @@ describe("FIFO Reconciliation Forensic Audit Fixes", () => {
       expect(settleResult.settledOrdersCount).toBe(1);
       expect(Number(settleResult.totalSettledAmount)).toBe(100000);
 
+      // A company shipping payment on the same PO belongs to its carrier,
+      // not to the supplier's settled invoice or unallocated supplier balance.
+      await d.insert(s.accountingEntries).values({
+        branchId: 1,
+        purchaseOrderId: 101,
+        supplierId: null,
+        entryType: "PAYMENT_OUT",
+        amount: "2000.00",
+        entryDate: new Date("2026-09-02"),
+        description: "مصروف شحن من الوردية لطرف النقل",
+      });
+
       // الآن استدعاء كشف الحساب
       const stmt = await getSupplierStatement(1, {});
       expect(stmt).not.toBeNull();

@@ -1084,4 +1084,8 @@ it("advertises the same USD remaining amount as returns and voucher settlement",
   const row = (await listSupplierPaymentSources({ branchId: 1, supplierId: 1 }, maker)).rows.find(r => r.id === 1)!;
   expect(row.remainingAmount).toBe("1210.85");
   expect(row.remainingCurrencyAmount).toBe("0.83");
+  const orders = await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, 1));
+  const projection = (await loadPurchaseSettlements(db(), orders)).get(1)!;
+  expect(projection.returnedAmountCurrency).toBe("0.17");
+  expect(projection.remainingAmountCurrency).toBe("0.83");
 });

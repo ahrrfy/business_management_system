@@ -473,6 +473,7 @@ export async function getSupplierStatement(
         .from(accountingEntries)
         .where(
           and(
+            eq(accountingEntries.supplierId, supplierId),
             isSupplierApLedgerEntrySql(ACCT, { includeOpening: false }),
             inArray(
               accountingEntries.purchaseOrderId,
