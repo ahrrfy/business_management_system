@@ -209,7 +209,7 @@ function fragmentDocument(audits: Awaited<ReturnType<typeof state>>["audits"]) {
     ),
   );
 }
-async function largeInput() {
+async function largeInput(targetCount = 17) {
   const [po] = await db()
     .select()
     .from(s.purchaseOrders)
@@ -237,7 +237,7 @@ async function largeInput() {
       .repeat(40)
       .trim(),
   };
-  for (let id = 3; id <= 17; id++) {
+  for (let id = 3; id <= targetCount; id++) {
     await db()
       .insert(s.suppliers)
       .values({ id, name: `Large supplier ${id}`, currentBalance: "1.00" });
@@ -344,6 +344,78 @@ async function evidenceCase() {
   };
 }
 describe("owner-attested missing treasury supplier payments", () => {
+  it("keeps small canonical audit records fully readable without changing fragments", async () => {
+    const accepted = input();
+    const result = await recordAttestedSupplierSettlement(accepted, owner);
+    const after = await state();
+    const readable = after.audits.find(
+      (row) => row.action === "supplier.attestedSettlement.record",
+    )!.newValue as Record<string, unknown>;
+    expect(readable.auditDetail).toBe("FULL");
+    expect(readable.evidenceText).toBe(accepted.evidenceText);
+    expect(readable.recordingDate).toBe(accepted.recordingDate);
+    expect(readable.paymentIds).toEqual(result.paymentIds);
+    expect(readable.verification).toEqual(result.verification);
+    expect(readable.payments).toEqual(
+      fragmentDocument(after.audits).evidence.payments,
+    );
+    expect(readable).not.toHaveProperty("_truncated");
+    expect(Buffer.byteLength(JSON.stringify(readable), "utf8")).toBeLessThan(
+      8192,
+    );
+  });
+
+  it("keeps a 50-row batch with 2000 Arabic evidence characters readable and bounded", async () => {
+    const accepted = await largeInput(50);
+    accepted.evidenceText = "أ".repeat(2000);
+    const result = await recordAttestedSupplierSettlement(accepted, owner);
+    const after = await state();
+    const readable = after.audits.find(
+      (row) => row.action === "supplier.attestedSettlement.record",
+    )!.newValue as Record<string, unknown>;
+    expect(readable.auditDetail).toBe("SUMMARY");
+    expect(readable.evidenceText).toBe(accepted.evidenceText.slice(0, 500));
+    expect(readable.omittedEvidenceCharacters).toBe(1500);
+    expect(readable.invoiceCount).toBe(50);
+    expect(readable.paymentCount).toBe(50);
+    expect(readable.totalAmount).toBe("148.00");
+    expect(readable.paymentIds).toEqual(result.paymentIds);
+    expect(readable.requestIds).toEqual(result.requestIds);
+    expect(readable.receiptIds).toEqual(result.receiptIds);
+    expect(readable.payments).toHaveLength(3);
+    expect(readable.omittedPaymentsCount).toBe(47);
+    expect(readable.omittedPriorPaymentEvidenceCount).toBe(50);
+    expect(readable.verification).toEqual(result.verification.slice(0, 3));
+    expect(readable.omittedVerificationCount).toBe(48);
+    expect(readable).not.toHaveProperty("_truncated");
+    expect(Buffer.byteLength(JSON.stringify(readable), "utf8")).toBeLessThan(
+      8192,
+    );
+    expect(audit.redactAuditValue(readable)).toEqual(readable);
+    expect(fragmentDocument(after.audits).evidence.evidenceText).toBe(
+      accepted.evidenceText,
+    );
+    expect(await recordAttestedSupplierSettlement(accepted, owner)).toEqual({
+      ...result,
+      replayed: true,
+    });
+    expect(await state()).toEqual(after);
+  });
+
+  it("does not use a readable new-format record as legacy fallback when every fragment is missing", async () => {
+    await recordAttestedSupplierSettlement(input(), owner);
+    const before = await state();
+    for (const row of before.audits.filter(
+      (item) =>
+        item.action === manifestAction || item.action === fragmentAction,
+    ))
+      await db().delete(s.auditLogs).where(eq(s.auditLogs.id, row.id));
+    const damaged = await state();
+    await expect(
+      recordAttestedSupplierSettlement(input(), owner),
+    ).rejects.toThrow();
+    expect(await state()).toEqual(damaged);
+  });
   it("preserves a real large batch and full long evidence through bounded fragments and exact replay", async () => {
     const accepted = await largeInput();
     const result = await recordAttestedSupplierSettlement(accepted, owner);

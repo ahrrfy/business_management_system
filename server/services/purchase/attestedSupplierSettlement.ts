@@ -14,7 +14,7 @@ import {
 import { positiveMoneyString } from "../../lib/schemas";
 import type { Tx } from "../../db";
 import { enqueueFinancialRefresh } from "../../realtime/financialRefresh";
-import { logAuditTx } from "../auditService";
+import { logAuditTx, redactAuditValue } from "../auditService";
 import { baghdadToday } from "../businessDay";
 import { computeTreasuryCashBalance } from "../cash/cashAvailability";
 import {
@@ -79,6 +79,19 @@ type Result = {
     after: string;
     delta: string;
   }>;
+};
+type Evidence = Pick<
+  z.output<typeof schema>,
+  "attestationKey" | "evidenceText" | "recordingDate" | "evidenceCases"
+> & {
+  payments: Array<
+    z.output<typeof schema>["payments"][number] & {
+      purchaseOrderDate: string;
+      invoiceRecognitionDate: string;
+    }
+  >;
+  priorPaymentEvidence: unknown[];
+  correctionRecordedAt: string;
 };
 const OPERATION = "supplier.attestedSettlement";
 const ACTION = "supplier.attestedSettlement.record";
@@ -173,7 +186,11 @@ async function savedResult(
   if (!manifests.length && !fragments.length) {
     const legacy = rows.filter((row) => row.action === ACTION);
     const value = legacy[0]?.value as Record<string, unknown> | undefined;
-    if (legacy.length !== 1 || value?.payloadHash !== payloadHash)
+    if (
+      legacy.length !== 1 ||
+      value?.payloadHash !== payloadHash ||
+      value.format === FORMAT
+    )
       fail("سجل الإقرار السابق غير مكتمل");
     return checkedResult(value, referenceId);
   }
@@ -236,7 +253,7 @@ async function recordResult(
   actor: Actor,
   payloadHash: string,
   result: Result,
-  evidence: Record<string, unknown>,
+  evidence: Evidence,
 ) {
   const encoded = Buffer.from(
     JSON.stringify({ version: 1, payloadHash, result, evidence }),
@@ -285,8 +302,67 @@ async function recordResult(
   await logAuditTx(tx, source, {
     ...target,
     action: ACTION,
-    newValue: manifest,
+    newValue: readableRecord(manifest, result, evidence),
   });
+}
+
+/** Audit UI displays each row independently; fragments retain the authoritative complete document. */
+function readableRecord(
+  manifest: Record<string, unknown>,
+  result: Result,
+  evidence: Evidence,
+) {
+  const full = { ...manifest, auditDetail: "FULL", ...result, ...evidence };
+  const serialized = JSON.stringify(full);
+  if (
+    Buffer.byteLength(serialized, "utf8") < 8000 &&
+    JSON.stringify(redactAuditValue(full)) === serialized
+  )
+    return full;
+  const summary = {
+    ...manifest,
+    auditDetail: "SUMMARY",
+    attestationKey: evidence.attestationKey,
+    evidenceText: evidence.evidenceText.slice(0, 500),
+    omittedEvidenceCharacters: Math.max(0, evidence.evidenceText.length - 500),
+    recordingDate: evidence.recordingDate,
+    correctionRecordedAt: evidence.correctionRecordedAt,
+    totalAmount: toDbMoney(
+      evidence.payments.reduce((sum, row) => sum.plus(row.amount), money(0)),
+    ),
+    invoiceCount: evidence.payments.length,
+    paymentCount: result.paymentIds.length,
+    paymentIds: result.paymentIds,
+    receiptIds: result.receiptIds,
+    requestIds: result.requestIds,
+    resolvedEvidenceCaseIds: result.resolvedEvidenceCaseIds,
+    payments: evidence.payments.slice(0, 3).map((row) => ({
+      purchaseOrderId: row.purchaseOrderId,
+      supplierInvoiceId: row.supplierInvoiceId,
+      amount: row.amount,
+      actualPaymentDate: row.actualPaymentDate,
+    })),
+    omittedPaymentsCount: Math.max(0, evidence.payments.length - 3),
+    omittedEvidenceCasesCount: evidence.evidenceCases.length,
+    omittedPriorPaymentEvidenceCount: evidence.priorPaymentEvidence.length,
+    verification: result.verification.slice(0, 3),
+    omittedVerificationCount: Math.max(0, result.verification.length - 3),
+    completeEvidenceLocation:
+      "supplier.attestedSettlement.manifest / supplier.attestedSettlement.fragment",
+  };
+  // Keep room even for escaped control characters and maximum-length numeric IDs.
+  if (Buffer.byteLength(JSON.stringify(summary), "utf8") >= 7600) {
+    summary.evidenceText = evidence.evidenceText.slice(0, 128);
+    summary.omittedEvidenceCharacters = Math.max(
+      0,
+      evidence.evidenceText.length - 128,
+    );
+    summary.payments = summary.payments.slice(0, 1);
+    summary.omittedPaymentsCount = Math.max(0, evidence.payments.length - 1);
+  }
+  if (Buffer.byteLength(JSON.stringify(summary), "utf8") >= 8000)
+    fail("ملخص الإقرار تجاوز حد سجل التدقيق الآمن");
+  return summary;
 }
 function fail(
   why: string,
