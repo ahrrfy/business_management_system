@@ -42,7 +42,7 @@ export function BundleKitParametersBar({
         ) : (
           <AppSelect
             value={selectedBundleId ? String(selectedBundleId) : ""}
-            onValueChange={(val) => onSelectBundleId(Number(val))}
+            onValueChange={(val) => onSelectBundleId(Number(val))} searchable searchPlaceholder="ابحث عن البكج بالاسم أو الكود..."
             className="h-9 text-xs"
           >
             {bundlesList.map((b) => (

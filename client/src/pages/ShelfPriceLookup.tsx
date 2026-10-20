@@ -29,6 +29,7 @@ import {
   X,
 } from "lucide-react";
 import { CameraScanner } from "@/components/scan/CameraScanner";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 import { fmtAr, formatIqd } from "@/lib/money";
 import { playScanNotFound, playScanSuccess } from "@/lib/audioFeedback";
@@ -651,16 +652,20 @@ export default function ShelfPriceLookup() {
                 >
                   رقم الباركود المطبوع على الملصق:
                 </label>
-                <input
+                <UnifiedSearchInput
                   id="manual-barcode-input"
                   dir="ltr"
-                  type="text"
-                  inputMode="text"
                   autoFocus
+                  barcode={true}
+                  debounceMs={0}
                   value={manualInputValue}
-                  onChange={(e) => setManualInputValue(e.target.value)}
+                  onChange={setManualInputValue}
+                  onScan={(code) => {
+                    setManualInputValue(code);
+                    setManualInputOpen(false);
+                    handleDetectBarcode(code);
+                  }}
                   placeholder="مثال: 6291041500213"
-                  className="w-full h-11 px-3.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white text-sm font-mono placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all"
                 />
               </div>
 

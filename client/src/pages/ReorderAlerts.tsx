@@ -577,7 +577,7 @@ export default function ReorderAlerts() {
               <AppSelect
                 className="h-9"
                 value={String(supplierId ?? "")}
-                onValueChange={(next) => setSupplierId(next === "" ? null : Number(next))}
+                searchable searchPlaceholder="ابحث عن المورّد..." onValueChange={(next) => setSupplierId(next === "" ? null : Number(next))}
               >
                 <option value="">— اختر المورّد —</option>
                 {(supplierList.data ?? []).map((s) => (

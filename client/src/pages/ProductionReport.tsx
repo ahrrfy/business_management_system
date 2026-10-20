@@ -1,27 +1,26 @@
 // تقرير الإنتاج — مستندات الإنتاج المؤكَّدة ضمن الفترة: كلفة المواد/العمالة/الهدر/إجمالي الكلفة.
 // المصدر: reports.productionReport. عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc).
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
-import { useMemo } from "react";
 import { FilterField } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
-
-
-import { fmtAr } from "@/lib/money";
+import { normalizeSearchText } from "@shared/searchNormalize";
+import { D, fmtAr, round2 } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
 type Row = RouterOutputs["reports"]["productionReport"]["rows"][number];
 
-
 export default function ProductionReport() {
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
+  const [search, setSearch] = useState("");
 
   const branches = trpc.branches.list.useQuery();
   const q = trpc.reports.productionReport.useQuery({
@@ -30,8 +29,28 @@ export default function ProductionReport() {
     branchId: branchId ? Number(branchId) : undefined,
   });
 
-  const rows = q.data?.rows ?? [];
-  const totals = q.data?.totals;
+  const allRows = q.data?.rows ?? [];
+  const rows = useMemo(() => {
+    const nq = normalizeSearchText(search);
+    if (!nq) return allRows;
+    return allRows.filter((r) =>
+      normalizeSearchText(`${r.docNumber ?? ""} ${r.branchName ?? ""} ${r.date ?? ""}`).includes(nq),
+    );
+  }, [allRows, search]);
+  const totals = useMemo(() => {
+    if (!q.data?.totals) return undefined;
+    if (!normalizeSearchText(search)) return q.data.totals;
+    const sumCol = (pick: (r: Row) => string | number) =>
+      round2(rows.reduce((acc, r) => acc.plus(D(pick(r) ?? 0)), D(0))).toFixed(2);
+    return {
+      count: rows.length,
+      inputsCost: sumCol((r) => r.inputsCost),
+      laborCost: sumCol((r) => r.laborCost),
+      wasteCost: sumCol((r) => r.wasteCost),
+      outputsCost: sumCol((r) => r.outputsCost),
+      totalCost: sumCol((r) => r.totalCost),
+    };
+  }, [q.data?.totals, rows, search]);
 
   const kpis: KpiItem[] = totals
     ? [
@@ -140,6 +159,16 @@ export default function ProductionReport() {
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
             </AppSelect>
+          </FilterField>
+          <FilterField label="بحث">
+            <UnifiedSearchInput
+              value={search}
+              onChange={setSearch}
+              placeholder="رقم المستند أو الفرع…"
+              barcode={false}
+              debounceMs={0}
+              className="w-56"
+            />
           </FilterField>
         </div>
       }

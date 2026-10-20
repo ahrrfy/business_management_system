@@ -7,6 +7,15 @@ import { variantDisplayName } from "@shared/variantDisplay";
 
 export type PurchaseRow = RouterOutputs["catalog"]["forPurchase"][number];
 
+function uniqueVariantsFromRows(rows: PurchaseRow[]): PurchaseRow[] {
+  const byVariant = new Map<number, PurchaseRow>();
+  for (const r of rows) {
+    const cur = byVariant.get(r.variantId);
+    if (!cur || (r.isBaseUnit && !cur.isBaseUnit)) byVariant.set(r.variantId, r);
+  }
+  return Array.from(byVariant.values());
+}
+
 /**
  * بيكر بحث منتجات مشترك (يستعمل catalog.forPurchase ⇒ يحمل **التكلفة** والمخزون والوحدات).
  * عند الاختيار يعيد المتغيّر المُختار + كل وحداته (لاختيار وحدة السطر لاحقاً). manager-gated خادمياً.
@@ -26,6 +35,7 @@ export function ProductSearchPicker({
   const [isOpen, setIsOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const containerRef = useRef<HTMLDivElement>(null);
+  const utils = trpc.useUtils();
 
   const res = trpc.catalog.forPurchase.useQuery(
     { branchId, query: q, limit: 16 },
@@ -33,17 +43,10 @@ export function ProductSearchPicker({
   );
 
   // صفّ واحد لكل متغيّر (نُفضّل وحدة الأساس للعرض).
-  const variants = useMemo(() => {
-    const byVariant = new Map<number, PurchaseRow>();
-    for (const r of res.data ?? []) {
-      const cur = byVariant.get(r.variantId);
-      if (!cur || (r.isBaseUnit && !cur.isBaseUnit)) byVariant.set(r.variantId, r);
-    }
-    return Array.from(byVariant.values());
-  }, [res.data]);
+  const variants = useMemo(() => uniqueVariantsFromRows(res.data ?? []), [res.data]);
 
-  function unitsFor(variantId: number): PurchaseRow[] {
-    const all = (res.data ?? []).filter((r) => r.variantId === variantId);
+  function unitsFor(variantId: number, sourceRows: PurchaseRow[] = res.data ?? []): PurchaseRow[] {
+    const all = sourceRows.filter((r) => r.variantId === variantId);
     return all.length ? all : [];
   }
 
@@ -58,15 +61,38 @@ export function ProductSearchPicker({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const selectVariant = (v: PurchaseRow) => {
-    onPick(v, unitsFor(v.variantId));
+  const selectVariant = (v: PurchaseRow, sourceRows?: PurchaseRow[]) => {
+    onPick(v, unitsFor(v.variantId, sourceRows));
     setQ("");
     setIsOpen(false);
     setSelectedIndex(-1);
   };
 
-  // التنقل بلوحة المفاتيح
+  const handleBarcodeScan = async (rawCode: string) => {
+    const code = rawCode.trim();
+    if (!code) return;
+    try {
+      const rows = await utils.catalog.forPurchase.fetch({ branchId, query: code, limit: 16 });
+      const matchedVariants = uniqueVariantsFromRows(rows);
+      const exactSku = matchedVariants.find(
+        (v) => v.sku?.toLowerCase() === code.toLowerCase()
+      );
+      if (exactSku) {
+        selectVariant(exactSku, rows);
+        return;
+      }
+      setQ(code);
+      setIsOpen(true);
+      setSelectedIndex(matchedVariants.length > 0 ? 0 : -1);
+    } catch {
+      setQ(code);
+      setIsOpen(true);
+    }
+  };
+
+  // التنقل بلوحة المفاتيح (يُدار Enter عبر onSubmit في UnifiedSearchInput لمنع الإضافة المزدوجة)
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.defaultPrevented) return;
     if (!isOpen || variants.length === 0) return;
 
     if (e.key === "ArrowDown") {
@@ -75,11 +101,6 @@ export function ProductSearchPicker({
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setSelectedIndex((prev) => (prev > 0 ? prev - 1 : variants.length - 1));
-    } else if (e.key === "Enter") {
-      if (selectedIndex >= 0 && selectedIndex < variants.length) {
-        e.preventDefault();
-        selectVariant(variants[selectedIndex]);
-      }
     } else if (e.key === "Escape") {
       setIsOpen(false);
     }
@@ -99,7 +120,12 @@ export function ProductSearchPicker({
           placeholder={placeholder ?? "ابحث بالاسم/SKU/الباركود…"}
           debounceMs={180}
           barcode={true}
-          onSubmit={() => {
+          onScan={(code) => {
+            void handleBarcodeScan(code);
+          }}
+          onSubmit={(submitted) => {
+            const trimmed = submitted.trim();
+            if (!trimmed || trimmed !== q.trim() || res.isFetching) return;
             if (variants.length > 0) {
               const target = selectedIndex >= 0 ? variants[selectedIndex] : variants[0];
               selectVariant(target);

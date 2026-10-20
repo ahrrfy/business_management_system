@@ -1,5 +1,6 @@
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -679,7 +680,7 @@ export default function AuditLogs() {
                     size="sm"
                     value={f.entityType || "ALL"}
                     onValueChange={(v) => { setF({ entityType: v === "ALL" ? "" : v }); setPage(0); }}
-                    aria-label="نوع الكيان"
+                    aria-label="نوع الكيان" searchable searchPlaceholder="ابحث عن كيان..."
                     className="h-8 w-auto min-w-32"
                   >
                     <option value="ALL">كل الكيانات</option>
@@ -689,21 +690,27 @@ export default function AuditLogs() {
                   </AppSelect>
                 </FilterField>
                 <FilterField label="معرّف الهدف">
-                  <Input
+                  <UnifiedSearchInput
                     value={f.entityId}
-                    onChange={(e) => { setF({ entityId: e.target.value }); setPage(0); }}
+                    onChange={(v) => { setF({ entityId: v }); setPage(0); }}
                     placeholder="رقم السجل"
-                    className="h-8 w-28"
+                    barcode={false}
+                    debounceMs={0}
+                    size="compact"
+                    className="w-32"
                     dir="ltr"
                     aria-label="معرّف الهدف"
                   />
                 </FilterField>
                 <FilterField label="الشاشة المبلّغ عنها">
-                  <Input
+                  <UnifiedSearchInput
                     value={f.screenPath}
-                    onChange={(e) => { setF({ screenPath: e.target.value }); setPage(0); }}
+                    onChange={(v) => { setF({ screenPath: v }); setPage(0); }}
                     placeholder="/مسار-الشاشة"
-                    className="h-8 w-36"
+                    barcode={false}
+                    debounceMs={0}
+                    size="compact"
+                    className="w-40"
                     dir="ltr"
                     aria-label="مسار الشاشة"
                   />
@@ -713,7 +720,7 @@ export default function AuditLogs() {
                     size="sm"
                     value={f.userId || "ALL"}
                     onValueChange={(v) => { setF({ userId: v === "ALL" ? "" : v }); setPage(0); }}
-                    aria-label="المستخدم"
+                    aria-label="المستخدم" searchable searchPlaceholder="ابحث عن مستخدم..."
                     className="h-8 w-auto min-w-32"
                   >
                     <option value="ALL">كل المستخدمين</option>

@@ -3,6 +3,7 @@ import { CopyInline } from "@/components/CopyButton";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BalanceCell } from "@/components/BalanceBadge";
@@ -793,11 +794,14 @@ export default function Customers() {
                     لوحة العمليات (operations) للمرتفعين لا تدعمه فنُخفيه عنهم بدل عرض فلتر معطَّل. */}
                 {!usesOperations && (
                   <FilterField label="المدينة">
-                    <Input
+                    <UnifiedSearchInput
                       value={city}
-                      onChange={(e) => { setCity(e.target.value); setPage(0); }}
+                      onChange={(v) => { setCity(v); setPage(0); }}
                       placeholder="اكتب اسم المدينة…"
-                      className="h-8 w-32"
+                      barcode={false}
+                      debounceMs={0}
+                      size="compact"
+                      className="w-36"
                     />
                   </FilterField>
                 )}

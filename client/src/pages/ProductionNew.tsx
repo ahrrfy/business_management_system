@@ -386,7 +386,7 @@ export default function ProductionNew() {
               <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <Label>الوصفة *</Label>
-                  <AppSelect className="h-9" value={recipeId === "" ? "" : String(recipeId)} onValueChange={(next) => {
+                  <AppSelect className="h-9" searchable searchPlaceholder="ابحث عن وصفة..." value={recipeId === "" ? "" : String(recipeId)} onValueChange={(next) => {
                     setRecipeId(next ? Number(next) : "");
                     setRecipeSelectionError("");
                   }}>

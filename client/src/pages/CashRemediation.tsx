@@ -4,6 +4,7 @@ import { AlertTriangle, FileDown, FlaskConical, Printer, Search } from "lucide-r
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { PageHeader } from "@/components/PageHeader";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { exportRows } from "@/lib/export";
@@ -313,9 +314,9 @@ export default function CashRemediation() {
         <CardContent className="grid gap-3 md:grid-cols-5">
           <label className="space-y-1 text-sm">من<Input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
           <label className="space-y-1 text-sm">إلى<Input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
-          <label className="space-y-1 text-sm">معرّف الفرع<Input inputMode="numeric" value={branchId} onChange={(event) => setBranchId(event.target.value)} placeholder="اختياري" /></label>
-          <label className="space-y-1 text-sm">معرّفات الورديات<Input value={shiftIds} onChange={(event) => setShiftIds(event.target.value)} placeholder="مثال: 12، 15" /></label>
-          <label className="space-y-1 text-sm">معرّفات الموظفين<Input value={userIds} onChange={(event) => setUserIds(event.target.value)} placeholder="مثال: 3، 7" /></label>
+          <label className="space-y-1 text-sm">معرّف الفرع<UnifiedSearchInput barcode={false} debounceMs={0} dir="ltr" value={branchId} onChange={setBranchId} placeholder="اختياري" /></label>
+          <label className="space-y-1 text-sm">معرّفات الورديات<UnifiedSearchInput barcode={false} debounceMs={0} dir="ltr" value={shiftIds} onChange={setShiftIds} placeholder="مثال: 12، 15" /></label>
+          <label className="space-y-1 text-sm">معرّفات الموظفين<UnifiedSearchInput barcode={false} debounceMs={0} dir="ltr" value={userIds} onChange={setUserIds} placeholder="مثال: 3، 7" /></label>
           <div className="md:col-span-5 flex flex-wrap gap-2">
             <Button onClick={() => run(false)} disabled={!from || !to || reportQuery.isFetching}>
               <Search aria-hidden /> تشغيل التقرير

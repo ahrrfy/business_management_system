@@ -205,7 +205,7 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
           <div className="pt-2 border-t space-y-2">
             <div className="text-sm font-medium">إضافة مكوّن جديد</div>
             <div className="relative">
-              <UnifiedSearchInput barcode={false} debounceMs={0} value={picker} onChange={setPicker} placeholder="ابحث عن منتج بضاعة مفرد (≥ حرفَين)" />
+              <UnifiedSearchInput barcode={true} debounceMs={0} value={picker} onChange={setPicker} onSubmit={(submitted) => { const trimmed = submitted.trim(); if (trimmed.length < 2 || pickerDeb.trim() !== trimmed || searchQ.isFetching) return; const first = (searchQ.data?.items ?? [])[0]; if (first) addRow(first.variantId, first.productName, first.sku ?? "", first.costPrice); }} placeholder="ابحث عن منتج بضاعة مفرد بالاسم أو الباركود (≥ حرفَين)" />
               {picker.trim().length >= 2 && (searchQ.data?.items ?? []).length > 0 && (
                 <div className="absolute z-10 mt-1 w-full max-h-64 overflow-auto rounded-md border bg-popover shadow-md">
                   {(searchQ.data?.items ?? []).map((r) => (

@@ -4,11 +4,26 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppSelect } from "./AppSelect";
 
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
+if (!globalThis.ResizeObserver) {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+}
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 let container: HTMLDivElement;
 let root: Root;
 beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -16,7 +31,6 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
-  vi.unstubAllGlobals();
 });
 
 describe("controlled select inside an account form", () => {
@@ -43,7 +57,7 @@ describe("controlled select inside an account form", () => {
     expect(changed).not.toHaveBeenCalled();
     expect(container.querySelector('[role="combobox"]')?.textContent).toContain("مندوب توصيل");
   });
-  it("still accepts an explicit empty choice and an ordinary role change", () => {
+  it("still accepts an explicit empty choice, an ordinary role change, and searchable combobox filtering", () => {
     const changed = vi.fn();
     act(() => root.render(<Form changed={changed} />));
     changed.mockClear();
@@ -51,5 +65,66 @@ describe("controlled select inside an account form", () => {
     expect(changed).toHaveBeenLastCalledWith("warehouse");
     nativeChange("__appselect_empty__");
     expect(changed).toHaveBeenLastCalledWith("");
+
+    function SearchableForm() {
+      const [value, setValue] = useState("1");
+      return (
+        <AppSelect
+          value={value}
+          onValueChange={setValue}
+          searchable
+          searchPlaceholder="ابحث عن وصفة..."
+        >
+          <option value="">اختر وصفة</option>
+          <option value="1">دفتر ملاحظات أزرق</option>
+          <option value="disabled-opt" disabled>
+            خيار معطل
+          </option>
+          <option value="2">حقيبة مدرسية كبيرة</option>
+        </AppSelect>
+      );
+    }
+
+    act(() => root.render(<SearchableForm />));
+    const trigger = container.querySelector('[data-slot="select-trigger"]') as HTMLButtonElement;
+    expect(trigger).toBeTruthy();
+    act(() => {
+      trigger.click();
+    });
+
+    const searchInput = document.body.querySelector('input[placeholder="ابحث عن وصفة..."]') as HTMLInputElement;
+    expect(searchInput).toBeTruthy();
+    expect(searchInput.getAttribute("role")).toBe("combobox");
+    const listbox = document.body.querySelector('[role="listbox"]');
+    expect(listbox).toBeTruthy();
+    expect(container.contains(listbox)).toBe(false);
+    expect(document.body.contains(listbox!)).toBe(true);
+    expect(searchInput.getAttribute("aria-controls")).toBe(listbox?.getAttribute("id"));
+    expect(listbox?.contains(searchInput)).toBe(false);
+
+    // ArrowDown from option "1" (index 1) should skip the disabled option (index 2) and land on option "2" (index 3)
+    act(() => {
+      searchInput.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    expect(searchInput.getAttribute("aria-activedescendant")).toBe(`${listbox?.getAttribute("id")}-opt-3`);
+
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(searchInput, "حقيبه");
+      searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const visibleItems = Array.from(document.body.querySelectorAll('[role="listbox"] [role="option"]'));
+    expect(visibleItems).toHaveLength(1);
+    expect(visibleItems[0]?.textContent).toContain("حقيبة مدرسية كبيرة");
+    expect(trigger.textContent).toContain("دفتر ملاحظات أزرق");
+
+    // Enter commits the active option, closes the popup, and restores focus to the trigger
+    act(() => {
+      searchInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(document.body.querySelector('[role="listbox"]')).toBeNull();
+    expect(trigger.textContent).toContain("حقيبة مدرسية كبيرة");
+    expect(document.activeElement).toBe(trigger);
   });
 });

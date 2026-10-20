@@ -603,7 +603,7 @@ export function QuickRecipeCopyDialog({
             {/* الأولوية 2: البحث في كتالوج الوصفات العام */}
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
                 <AppSelect
-                  aria-label="اختر وصفة من الكتالوج العام للنسخ منها"
+                  aria-label="اختر وصفة من الكتالوج العام للنسخ منها" searchable searchPlaceholder="ابحث عن وصفة بالاسم أو المنتج..."
                   value={selectedCatalogRecipeId}
                   disabled={isLoadingRecipe}
                   onValueChange={(val: string) => {
@@ -760,7 +760,7 @@ export function QuickRecipeCopyDialog({
             <div ref={searchContainerRef} className="relative">
               <UnifiedSearchInput
                 debounceMs={0}
-                aria-label="البحث عن مادة خام لإضافتها"
+                aria-label="البحث عن مادة خام لإضافتها" onSubmit={(submitted) => { if (isSearching || submitted.trim() !== trimmedSearchMaterial) return; const first = (materialsQ.data ?? [])[0]; if (first) handleAddMaterial(first); }}
                 value={searchMaterial}
                 onChange={(val) => {
                   setSearchMaterial(val);

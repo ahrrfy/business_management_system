@@ -393,7 +393,7 @@ export default function BackorderShortfall() {
               <Label>المورّد</Label>
               <AppSelect
                 value={supplierId == null ? "" : String(supplierId)}
-                onValueChange={(v) => setSupplierId(v === "" ? null : Number(v))}
+                searchable searchPlaceholder="ابحث عن المورّد..." onValueChange={(v) => setSupplierId(v === "" ? null : Number(v))}
               >
                 <option value="">— اختر المورّد —</option>
                 {(suppliers.data ?? []).map((s: { id: number; name: string }) => (

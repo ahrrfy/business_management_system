@@ -14,17 +14,14 @@
  *    كان يُسقَط فيتعذّر الرجوع إلى «الكل» بعد أوّل اختيار — أصلحته مراجعة Codex على PR #931.
  *  - ⛔ الأطفال يجب أن يكونوا `<option>`/`<optgroup>` **حرفياً**: المحوِّل لا يُصيّر المكوّنات
  *    المخصّصة، فمكوّنٌ يُرجع options يصل خامّاً إلى `SelectContent` ويصير غير قابل للاختيار.
- *    مرّر العناصر من دالّة بدلاً منه (مثال: `categoryOptionElements(list)`).
+ *    مرّر العناصر من دالّة بدلاً منه (مثال: categoryOptionElements(list)).
  *  - `disabled` على `<option>` مدعوم عبر `data-[disabled]` (Radix).
- *
- * لماذا `onValueChange` بدل `onChange` النمطيّ؟ Radix API يعطي القيمة مباشرةً بلا SyntheticEvent —
- * أنظف من `(e) => e.target.value`. الهجرة النموذجيّة: `onChange={(e) => setX(e.target.value)}` تصير
- * `onValueChange={setX}`. أوضح وأقلّ تفافاً.
- *
- * القيم رقميّة؟ Radix يتعامل بالنصوص. حوّل خارجياً (`value={String(id)}` + `Number(v)` عند التغيير)
- * — نفس اتّفاقيّة `<select>` الأصليّ التي تُرجع نصّاً في `e.target.value` دائماً.
+ *  - `searchable`: يعتمد نمط Popover + Editable Combobox (`role="combobox"` يملك `role="listbox"`
+ *    مستقلاً عبر `aria-controls` و`aria-activedescendant`) مع `UnifiedSearchInput` وتطبيع العربية.
  */
 import * as React from "react";
+import { createPortal } from "react-dom";
+import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -34,6 +31,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
+import {
+  normalizeSearchText,
+  tokenizeSearchQuery,
+} from "@shared/searchNormalize";
 
 interface AppSelectProps {
   /** القيمة الحاليّة (نصّ). حوّل الأرقام يدوياً بـString()/Number() عند الحدود. */
@@ -79,30 +81,32 @@ interface AppSelectProps {
   required?: boolean;
   /** ربطُ الحقل بتلميحه/خطئه (§A11y) — تستعمله نماذج المتجر والتوظيف. */
   "aria-describedby"?: string;
+  /** تفعيل نمط البحث الموحّد (Editable Combobox + Popover) لتصفية الخيارات الطويلة. */
+  searchable?: boolean;
+  /** نص تلميح حقل البحث الداخلي عند تفعيل `searchable`. */
+  searchPlaceholder?: string;
+  /** استدعاء اختياري عند تغيّر نص البحث الداخلي (لمزامنة البحث الخادمي عند الحاجة). */
+  onSearchChange?: (query: string) => void;
   /** أطفال `<option>`/`<optgroup>` — يُحلَّلون بنيوياً إلى SelectItem/SelectGroup. */
   children: React.ReactNode;
 }
 
-/**
- * يفحص إن كان العنصر `<option>` أصليّاً أو `<optgroup>` — نقارن بالسلسلة النصّيّة كي لا نعتمد على
- * تصنيف React internal (الذي قد يتغيّر بين الإصدارات) وكي نتفادى false-positive على مكوّنات
- * مسمّاة "option" في مساحات أخرى.
- */
 function elementName(el: React.ReactElement): string | undefined {
   const t = el.type;
   return typeof t === "string" ? t : undefined;
 }
 
-/**
- * يحوّل شجرة `<option>` / `<optgroup>` إلى شجرة `<SelectItem>` / `<SelectGroup>+<SelectLabel>`.
- * يستخرج `<option value="">` كـplaceholder ويُبلّغ عنه للـcaller (كي يظهر على الـtrigger فارغاً).
- */
-/**
- * قيمةٌ بديلة للخيار الفارغ. Radix يرفض `value=""` على `SelectItem`، وكان الحلّ السابق
- * **إسقاط** الخيار الفارغ والاكتفاء به placeholder — فيتعذّر الرجوع إلى «الكل» بعد أوّل
- * اختيار (مراجعة Codex على PR #931، P1). الآن يُصيَّر عنصراً حقيقياً بهذه القيمة،
- * وتُترجَم عند الحدّين فيبقى العقد الخارجيّ `""` كما هو لكل المستدعين.
- */
+function extractText(node: React.ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join("");
+  if (React.isValidElement(node)) {
+    const p = node.props as { children?: React.ReactNode };
+    return extractText(p.children);
+  }
+  return "";
+}
+
 const EMPTY_VALUE = "__appselect_empty__";
 
 function convertChildren(
@@ -133,19 +137,15 @@ function convertChildren(
       };
       const raw = props.value;
       const value = raw == null ? "" : String(raw);
-
-      // <option value=""> يخدم غرضين: نصُّ الـplaceholder، **وخيارُ إعادةٍ إلى «الكل»**.
-      // إسقاطه (السلوك السابق) كان يحبس المستخدم على أوّل اختيار.
       if (value === "") {
-        const t = typeof props.children === "string" ? props.children : String(props.children ?? "");
-        if (extractedPlaceholder.text == null) extractedPlaceholder.text = t.trim() || null;
+        const text = extractText(props.children).trim();
+        if (extractedPlaceholder.text == null) extractedPlaceholder.text = text || null;
         return (
           <SelectItem value={EMPTY_VALUE} disabled={props.disabled}>
             {props.children}
           </SelectItem>
         );
       }
-
       return (
         <SelectItem value={value} disabled={props.disabled}>
           {props.children}
@@ -158,11 +158,6 @@ function convertChildren(
     if (props && "children" in props) {
       return React.cloneElement(child, {}, convertChildren(props.children, extractedPlaceholder));
     }
-    /*
-     * وصلنا مكوّناً مخصّصاً بلا أطفال — لا يمكن تصييره هنا، وتمريره كما هو يضع `<option>`
-     * خامّة داخل `SelectContent` فتبدو القائمة سليمة **وهي غير قابلة للاختيار**. العطبُ
-     * صامتٌ تماماً في الإنتاج (لا خطأ، لا تحذير) ولذلك نصرخ في التطوير.
-     */
     if (import.meta.env?.DEV && typeof child.type !== "string") {
       const label = typeof child.type === "function" ? (child.type.name || "مكوّن") : String(child.type);
       console.error(
@@ -174,7 +169,102 @@ function convertChildren(
   });
 }
 
-export function AppSelect({
+interface ParsedOptionItem {
+  value: string;
+  labelText: string;
+  children: React.ReactNode;
+  disabled: boolean;
+  groupLabel?: string;
+}
+
+function parseOptionsTree(
+  children: React.ReactNode,
+  extractedPlaceholder: { text: string | null },
+  out: ParsedOptionItem[],
+  groupLabel?: string,
+): void {
+  React.Children.forEach(children, (child) => {
+    if (!React.isValidElement(child)) return;
+    const name = elementName(child);
+    if (name === "optgroup") {
+      const props = child.props as { label?: string; children?: React.ReactNode };
+      parseOptionsTree(props.children, extractedPlaceholder, out, props.label);
+      return;
+    }
+    if (name === "option") {
+      const props = child.props as {
+        value?: string | number;
+        disabled?: boolean;
+        children?: React.ReactNode;
+      };
+      const raw = props.value;
+      const value = raw == null ? "" : String(raw);
+      const labelText = extractText(props.children);
+      if (value === "" && extractedPlaceholder.text == null) {
+        extractedPlaceholder.text = labelText.trim() || null;
+      }
+      out.push({
+        value,
+        labelText,
+        children: props.children,
+        disabled: Boolean(props.disabled),
+        groupLabel,
+      });
+      return;
+    }
+    const props = child.props as { children?: React.ReactNode };
+    if (props && "children" in props) {
+      parseOptionsTree(props.children, extractedPlaceholder, out, groupLabel);
+    }
+  });
+}
+
+function resolveDefaultActiveIndex(
+  options: ParsedOptionItem[],
+  currentValue: string,
+): number {
+  if (options.length === 0) return -1;
+  const selectedIdx = options.findIndex(
+    (opt) => opt.value === currentValue && !opt.disabled,
+  );
+  if (selectedIdx >= 0) return selectedIdx;
+  const firstNonEmptyIdx = options.findIndex(
+    (opt) => opt.value !== "" && !opt.disabled,
+  );
+  if (firstNonEmptyIdx >= 0) return firstNonEmptyIdx;
+  return options.findIndex((opt) => !opt.disabled);
+}
+
+function findNextEnabledOptionIndex(
+  options: ParsedOptionItem[],
+  currentIndex: number,
+  direction: 1 | -1,
+): number {
+  const len = options.length;
+  if (len === 0) return -1;
+  for (let step = 1; step <= len; step++) {
+    const base =
+      currentIndex < 0
+        ? direction === 1
+          ? -1
+          : 0
+        : currentIndex;
+    const idx = ((base + direction * step) % len + len) % len;
+    if (!options[idx]?.disabled) {
+      return idx;
+    }
+  }
+  return -1;
+}
+
+export function AppSelect(props: AppSelectProps) {
+  if (props.searchable) {
+    return <SearchableAppSelect {...props} />;
+  }
+  return <StandardAppSelect {...props} />;
+}
+
+function StandardAppSelect({
   value,
   onValueChange,
   placeholder,
@@ -195,8 +285,6 @@ export function AppSelect({
   "aria-describedby": ariaDescribedBy,
   children,
 }: AppSelectProps) {
-  // نستخرج placeholder من `<option value="">` إن وُجد ولم يُمرَّر placeholder صريحاً.
-  // useMemo كي لا نُعيد التحليل في كل رِندر (children تُبنى مجدّداً من الأب في العادة).
   const { items, resolvedPlaceholder } = React.useMemo(() => {
     const holder = { text: null as string | null };
     const converted = convertChildren(children, holder);
@@ -208,24 +296,8 @@ export function AppSelect({
 
   return (
     <Select
-      /*
-       * ⚠️ يُمرَّر `value` كما هو — بما فيه `""`.
-       *
-       * كان هنا `value === "" ? undefined : value`، و`undefined` يجعل Radix Select
-       * **غير مُتحكَّم به** فيحتفظ بآخر اختيارٍ داخليّ. الأثر: تصفيرُ الفلتر يمسح الحالة
-       * (يختفي العدّاد وزرّ «مسح الفلاتر») بينما الزرّ **يظلّ يعرض القيمة القديمة** —
-       * أي أنّ الشاشة تكذب على الموظّف: الجدول يعرض الكلّ والمنتقي يقول «تسوية».
-       * أمسكه تحقّقٌ حيّ على شاشة حركات المخزون (١/٩/٢٦).
-       *
-       * و`""` آمنٌ هنا: `SelectValue` في Radix يُظهر الـplaceholder حين تكون القيمة
-       * `""` أو `undefined` (shouldShowPlaceholder)، والقيدُ الحقيقيّ أن لا يحمل
-       * **عنصرٌ** قيمةً فارغة — وهذا مضمون: `convertChildren` يحوّل `<option value="">`
-       * إلى placeholder ولا يُنشئ له SelectItem.
-       */
       value={value === "" ? EMPTY_VALUE : value}
       onValueChange={(next) => {
-        // Radix's hidden form select can emit an empty synchronization event.
-        // Real empty choices use EMPTY_VALUE; never erase a controlled value on that event.
         if (next === "") return;
         onValueChange(next === EMPTY_VALUE ? "" : next);
       }}
@@ -250,6 +322,461 @@ export function AppSelect({
       </SelectTrigger>
       <SelectContent className={contentClassName}>{items}</SelectContent>
     </Select>
+  );
+}
+
+interface FloatingMenuPosition {
+  side: "bottom" | "top";
+  top?: number;
+  bottom?: number;
+  left: number;
+  width: number;
+  maxListboxHeight: number;
+}
+
+function computeCollisionAwarePosition(
+  triggerEl: HTMLElement | null,
+): FloatingMenuPosition {
+  if (!triggerEl || typeof window === "undefined") {
+    return {
+      side: "bottom",
+      top: 0,
+      left: 0,
+      width: 220,
+      maxListboxHeight: 256,
+    };
+  }
+  const rect = triggerEl.getBoundingClientRect();
+  const vw = window.innerWidth || 1024;
+  const vh = window.innerHeight || 768;
+  const sideOffset = 4;
+  const viewportPad = 8;
+  const searchHeaderReserve = 48;
+  const desiredListboxHeight = 256;
+  const minListboxHeight = 96;
+
+  const spaceBelow = vh - rect.bottom - sideOffset - viewportPad;
+  const spaceAbove = rect.top - sideOffset - viewportPad;
+  const placeAbove =
+    spaceBelow < desiredListboxHeight + searchHeaderReserve &&
+    spaceAbove > spaceBelow;
+
+  const availableSpace = placeAbove ? spaceAbove : spaceBelow;
+  const maxListboxHeight = Math.max(
+    minListboxHeight,
+    Math.min(desiredListboxHeight, availableSpace - searchHeaderReserve),
+  );
+
+  const width = Math.max(rect.width, 192);
+  const left = Math.min(
+    Math.max(viewportPad, rect.left),
+    Math.max(viewportPad, vw - width - viewportPad),
+  );
+
+  if (placeAbove) {
+    return {
+      side: "top",
+      bottom: Math.max(viewportPad, vh - rect.top + sideOffset),
+      left,
+      width,
+      maxListboxHeight,
+    };
+  }
+  return {
+    side: "bottom",
+    top: Math.max(viewportPad, rect.bottom + sideOffset),
+    left,
+    width,
+    maxListboxHeight,
+  };
+}
+
+function SearchableAppSelect({
+  value,
+  onValueChange,
+  placeholder,
+  disabled,
+  className,
+  contentClassName,
+  size = "default",
+  open: controlledOpen,
+  onOpenChange,
+  name,
+  id,
+  "aria-label": ariaLabel,
+  "aria-invalid": ariaInvalid,
+  title,
+  dir,
+  style,
+  required,
+  "aria-describedby": ariaDescribedBy,
+  searchPlaceholder,
+  onSearchChange,
+  children,
+}: AppSelectProps) {
+  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(false);
+  const isOpen = disabled ? false : (controlledOpen !== undefined ? controlledOpen : uncontrolledOpen);
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const containerRef = React.useRef<HTMLDivElement | null>(null);
+  const triggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const popupRef = React.useRef<HTMLDivElement | null>(null);
+  const searchInputRef = React.useRef<HTMLInputElement | null>(null);
+  const activeOptionRef = React.useRef<HTMLDivElement | null>(null);
+  const instanceId = React.useId();
+  const listboxId = `${instanceId}-listbox`;
+
+  const { allOptions, resolvedPlaceholder } = React.useMemo(() => {
+    const holder = { text: null as string | null };
+    const parsed: ParsedOptionItem[] = [];
+    parseOptionsTree(children, holder, parsed);
+    return {
+      allOptions: parsed,
+      resolvedPlaceholder: placeholder ?? holder.text ?? undefined,
+    };
+  }, [children, placeholder]);
+
+  const allOptionsRef = React.useRef(allOptions);
+  allOptionsRef.current = allOptions;
+  const valueRef = React.useRef(value);
+  valueRef.current = value;
+  const onOpenChangeRef = React.useRef(onOpenChange);
+  onOpenChangeRef.current = onOpenChange;
+  const onSearchChangeRef = React.useRef(onSearchChange);
+  onSearchChangeRef.current = onSearchChange;
+
+  const [activeIndex, setActiveIndex] = React.useState(() =>
+    resolveDefaultActiveIndex(allOptions, value),
+  );
+  const [menuPos, setMenuPos] = React.useState<FloatingMenuPosition>(() =>
+    computeCollisionAwarePosition(null),
+  );
+
+  const handleOpenChange = React.useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen) {
+        setSearchQuery("");
+        onSearchChangeRef.current?.("");
+      } else {
+        setActiveIndex(resolveDefaultActiveIndex(allOptionsRef.current, valueRef.current));
+      }
+      if (controlledOpen === undefined) {
+        setUncontrolledOpen(nextOpen);
+      }
+      onOpenChangeRef.current?.(nextOpen);
+    },
+    [controlledOpen],
+  );
+
+  React.useLayoutEffect(() => {
+    if (!isOpen) return;
+    const updatePosition = () => {
+      setMenuPos(computeCollisionAwarePosition(triggerRef.current));
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [isOpen]);
+
+  React.useLayoutEffect(() => {
+    if (!isOpen) return;
+    const popupEl = popupRef.current;
+    const containerEl = containerRef.current;
+    const stopFocusIn = (e: FocusEvent) => {
+      e.stopPropagation();
+    };
+    const handleFocusOut = (e: FocusEvent) => {
+      const nextFocused = e.relatedTarget;
+      if (
+        nextFocused instanceof Node &&
+        (containerEl?.contains(nextFocused) || popupEl?.contains(nextFocused))
+      ) {
+        e.stopPropagation();
+        return;
+      }
+      if (nextFocused instanceof Node) {
+        handleOpenChange(false);
+        return;
+      }
+      e.stopPropagation();
+    };
+    popupEl?.addEventListener("focusin", stopFocusIn);
+    popupEl?.addEventListener("focusout", handleFocusOut);
+    containerEl?.addEventListener("focusout", handleFocusOut);
+    return () => {
+      popupEl?.removeEventListener("focusin", stopFocusIn);
+      popupEl?.removeEventListener("focusout", handleFocusOut);
+      containerEl?.removeEventListener("focusout", handleFocusOut);
+    };
+  }, [isOpen, handleOpenChange]);
+
+  React.useEffect(() => {
+    if (!isOpen) return;
+    setActiveIndex(resolveDefaultActiveIndex(allOptionsRef.current, valueRef.current));
+    searchInputRef.current?.focus();
+    const handlePointerDownOutside = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (
+        containerRef.current?.contains(target) ||
+        popupRef.current?.contains(target)
+      ) {
+        return;
+      }
+      handleOpenChange(false);
+    };
+    document.addEventListener("mousedown", handlePointerDownOutside);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDownOutside);
+    };
+  }, [isOpen, handleOpenChange]);
+
+  const selectedOption = React.useMemo(
+    () => allOptions.find((opt) => opt.value === value && (value !== "" || opt.labelText.trim() !== "")),
+    [allOptions, value],
+  );
+
+  const searchTokens = React.useMemo(
+    () => tokenizeSearchQuery(searchQuery),
+    [searchQuery],
+  );
+
+  const matchedOptions = React.useMemo(() => {
+    if (searchTokens.length === 0) return allOptions;
+    return allOptions.filter((opt) => {
+      const haystack = normalizeSearchText(
+        `${opt.labelText} ${opt.value} ${opt.groupLabel ?? ""}`,
+      );
+      return searchTokens.every((tok) => haystack.includes(tok));
+    });
+  }, [allOptions, searchTokens]);
+
+  const safeActiveIndex = React.useMemo(() => {
+    if (matchedOptions.length === 0) return -1;
+    const clamped = Math.min(Math.max(activeIndex, 0), matchedOptions.length - 1);
+    if (activeIndex >= 0 && !matchedOptions[clamped]?.disabled) {
+      return clamped;
+    }
+    return matchedOptions.findIndex((opt) => !opt.disabled);
+  }, [activeIndex, matchedOptions]);
+  const activeOption = safeActiveIndex >= 0 ? matchedOptions[safeActiveIndex] : undefined;
+  const activeOptionDomId =
+    safeActiveIndex >= 0 ? `${listboxId}-opt-${safeActiveIndex}` : undefined;
+
+  React.useEffect(() => {
+    if (isOpen && safeActiveIndex >= 0) {
+      activeOptionRef.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [isOpen, safeActiveIndex]);
+
+  const commitOption = React.useCallback(
+    (opt: ParsedOptionItem) => {
+      if (opt.disabled) return;
+      onValueChange(opt.value);
+      handleOpenChange(false);
+      triggerRef.current?.focus();
+    },
+    [onValueChange, handleOpenChange],
+  );
+
+  const showPlaceholder = value === "" || !selectedOption;
+
+  const popupContent =
+    isOpen && typeof document !== "undefined"
+      ? createPortal(
+          <div
+            ref={popupRef}
+            data-slot="popover-content"
+            data-side={menuPos.side}
+            style={{
+              position: "fixed",
+              top: menuPos.top,
+              bottom: menuPos.bottom,
+              left: menuPos.left,
+              width: menuPos.width,
+              pointerEvents: "auto",
+            }}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+            }}
+            className={cn(
+              "bg-popover text-popover-foreground z-[150] min-w-[12rem] overflow-hidden rounded-md border p-0 shadow-md",
+              contentClassName,
+            )}
+          >
+            <div className="bg-popover p-1.5 pb-1 border-b border-border/60">
+              <UnifiedSearchInput
+                ref={searchInputRef}
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={isOpen}
+                aria-controls={listboxId}
+                aria-activedescendant={activeOptionDomId}
+                aria-label={searchPlaceholder ?? ariaLabel ?? resolvedPlaceholder ?? "ابحث في القائمة"}
+                value={searchQuery}
+                onChange={(q) => {
+                  setSearchQuery(q);
+                  onSearchChangeRef.current?.(q);
+                  if (!q) {
+                    setActiveIndex(resolveDefaultActiveIndex(allOptions, value));
+                  } else {
+                    setActiveIndex(0);
+                  }
+                }}
+                placeholder={searchPlaceholder ?? "ابحث في القائمة..."}
+                barcode={false}
+                debounceMs={0}
+                size="compact"
+                variant="pos"
+                f2Shortcut={false}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    const nextIdx = findNextEnabledOptionIndex(
+                      matchedOptions,
+                      safeActiveIndex,
+                      1,
+                    );
+                    if (nextIdx >= 0) setActiveIndex(nextIdx);
+                  } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    const prevIdx = findNextEnabledOptionIndex(
+                      matchedOptions,
+                      safeActiveIndex,
+                      -1,
+                    );
+                    if (prevIdx >= 0) setActiveIndex(prevIdx);
+                  } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (activeOption && !activeOption.disabled) {
+                      commitOption(activeOption);
+                    }
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleOpenChange(false);
+                    triggerRef.current?.focus();
+                  }
+                }}
+              />
+            </div>
+            <div
+              id={listboxId}
+              role="listbox"
+              aria-label={ariaLabel ?? resolvedPlaceholder ?? "الخيارات"}
+              style={{ maxHeight: menuPos.maxListboxHeight }}
+              onMouseDown={(e) => {
+                e.preventDefault();
+              }}
+              className="max-h-64 overflow-y-auto p-1"
+            >
+              {matchedOptions.length === 0 ? (
+                <div className="py-4 text-center text-xs text-muted-foreground">
+                  لا توجد نتائج مطابقة
+                </div>
+              ) : (
+                matchedOptions.map((opt, idx) => {
+                  const isSelected = opt.value === value;
+                  const isActive = idx === safeActiveIndex && !opt.disabled;
+                  const prevGroup = idx > 0 ? matchedOptions[idx - 1]?.groupLabel : undefined;
+                  const showGroupHeader = opt.groupLabel && opt.groupLabel !== prevGroup;
+                  return (
+                    <React.Fragment key={`${opt.groupLabel ?? ""}:${opt.value}:${idx}`}>
+                      {showGroupHeader ? (
+                        <div
+                          data-slot="select-label"
+                          className="text-muted-foreground px-2 py-1.5 text-xs font-medium"
+                        >
+                          {opt.groupLabel}
+                        </div>
+                      ) : null}
+                      <div
+                        ref={isActive ? activeOptionRef : undefined}
+                        id={`${listboxId}-opt-${idx}`}
+                        role="option"
+                        data-slot="select-item"
+                        aria-selected={isSelected}
+                        aria-disabled={opt.disabled || undefined}
+                        data-disabled={opt.disabled ? "" : undefined}
+                        data-highlighted={isActive ? "" : undefined}
+                        onMouseEnter={() => {
+                          if (!opt.disabled) setActiveIndex(idx);
+                        }}
+                        onClick={() => commitOption(opt)}
+                        className={cn(
+                          "relative flex min-h-[var(--ui-control-sm)] w-full cursor-default items-center gap-2 rounded-md py-2 pr-8 pl-2 text-sm outline-hidden select-none",
+                          isActive && "bg-accent text-accent-foreground",
+                          opt.disabled && "pointer-events-none opacity-50",
+                        )}
+                      >
+                        <span className="absolute right-2 flex size-3.5 items-center justify-center">
+                          {isSelected ? <CheckIcon className="size-4" /> : null}
+                        </span>
+                        <span className="truncate">{opt.children}</span>
+                      </div>
+                    </React.Fragment>
+                  );
+                })
+              )}
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
+
+  return (
+    <div ref={containerRef} className="relative w-full">
+      {name ? <input type="hidden" name={name} value={value} required={required} /> : null}
+      <button
+        ref={triggerRef}
+        type="button"
+        id={id}
+        disabled={disabled}
+        data-slot="select-trigger"
+        data-size={size}
+        data-placeholder={showPlaceholder ? "" : undefined}
+        aria-label={ariaLabel}
+        aria-invalid={ariaInvalid}
+        aria-describedby={ariaDescribedBy}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        title={title}
+        dir={dir}
+        style={style}
+        onClick={() => {
+          if (!disabled) handleOpenChange(!isOpen);
+        }}
+        onKeyDown={(e) => {
+          if (disabled) return;
+          if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === " ") {
+            if (!isOpen) {
+              e.preventDefault();
+              handleOpenChange(true);
+            }
+          } else if (e.key === "Escape" && isOpen) {
+            e.preventDefault();
+            e.stopPropagation();
+            handleOpenChange(false);
+          }
+        }}
+        className={cn(
+          "border-input data-[placeholder]:text-muted-foreground [&_svg:not([class*='text-'])]:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:bg-input/30 dark:hover:bg-input/50 flex w-full items-center justify-between gap-2 rounded-[var(--ui-radius-control)] border bg-transparent px-3 py-2 text-sm whitespace-nowrap shadow-xs transition-[color,box-shadow] outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 data-[size=default]:h-[var(--ui-control)] data-[size=sm]:h-[var(--ui-control-sm)] [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+          className,
+        )}
+      >
+        <span
+          data-slot="select-value"
+          className="line-clamp-1 flex items-center gap-2 truncate"
+        >
+          {selectedOption ? selectedOption.children : resolvedPlaceholder}
+        </span>
+        <ChevronDownIcon className="size-4 opacity-50" />
+      </button>
+      {popupContent}
+    </div>
   );
 }
 
