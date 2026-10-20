@@ -11,7 +11,7 @@ import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
 import { normalizeSearchText } from "@shared/searchNormalize";
-import { fmtAr } from "@/lib/money";
+import { D, fmtAr, round2 } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
@@ -37,7 +37,20 @@ export default function ProductionReport() {
       normalizeSearchText(`${r.docNumber ?? ""} ${r.branchName ?? ""} ${r.date ?? ""}`).includes(nq),
     );
   }, [allRows, search]);
-  const totals = q.data?.totals;
+  const totals = useMemo(() => {
+    if (!q.data?.totals) return undefined;
+    if (!normalizeSearchText(search)) return q.data.totals;
+    const sumCol = (pick: (r: Row) => string | number) =>
+      round2(rows.reduce((acc, r) => acc.plus(D(pick(r) ?? 0)), D(0))).toFixed(2);
+    return {
+      count: rows.length,
+      inputsCost: sumCol((r) => r.inputsCost),
+      laborCost: sumCol((r) => r.laborCost),
+      wasteCost: sumCol((r) => r.wasteCost),
+      outputsCost: sumCol((r) => r.outputsCost),
+      totalCost: sumCol((r) => r.totalCost),
+    };
+  }, [q.data?.totals, rows, search]);
 
   const kpis: KpiItem[] = totals
     ? [

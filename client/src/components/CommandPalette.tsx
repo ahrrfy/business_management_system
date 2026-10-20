@@ -27,7 +27,7 @@ import { CameraScanner } from "@/components/scan/CameraScanner";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { playReadyBeep } from "@/lib/notifyBeep";
-import { normalizeSearchText } from "@shared/searchNormalize";
+import { normalizeArabicSearch } from "@shared/storefrontSearchNormalize";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 
@@ -222,7 +222,7 @@ export function CommandPalette() {
 
   const lc = term.toLowerCase();
   const matchedPages = PAGES.filter((p) =>
-    !term || normalizeSearchText(`${p.label} ${p.keywords ?? ""}`).includes(normalizeSearchText(term)),
+    !term || normalizeArabicSearch(`${p.label} ${p.keywords ?? ""}`).includes(normalizeArabicSearch(term)),
   );
 
   const go = useCallback((href: string) => {

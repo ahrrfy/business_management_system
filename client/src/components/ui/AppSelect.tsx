@@ -16,10 +16,11 @@
  *    المخصّصة، فمكوّنٌ يُرجع options يصل خامّاً إلى `SelectContent` ويصير غير قابل للاختيار.
  *    مرّر العناصر من دالّة بدلاً منه (مثال: categoryOptionElements(list)).
  *  - `disabled` على `<option>` مدعوم عبر `data-[disabled]` (Radix).
- *  - `searchable`: يفعّل شريط `UnifiedSearchInput` الموحّد أعلى القائمة لتصفية الخيارات الطويلة
- *    عبر `normalizeSearchText` مع إبقاء العناصر المثبّتة في الشجرة لضمان عدم فقدان عنوان `SelectValue`.
+ *  - `searchable`: يعتمد نمط Popover + Editable Combobox (`role="combobox"` يملك `role="listbox"`
+ *    مستقلاً عبر `aria-controls` و`aria-activedescendant`) مع `UnifiedSearchInput` وتطبيع العربية.
  */
 import * as React from "react";
+import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -29,8 +30,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
-import { normalizeSearchText, tokenizeSearchQuery } from "@shared/searchNormalize";
+import {
+  normalizeArabicSearch,
+  tokenizeSearchTerms,
+} from "@shared/storefrontSearchNormalize";
 
 interface AppSelectProps {
   /** القيمة الحاليّة (نصّ). حوّل الأرقام يدوياً بـString()/Number() عند الحدود. */
@@ -76,7 +85,7 @@ interface AppSelectProps {
   required?: boolean;
   /** ربطُ الحقل بتلميحه/خطئه (§A11y) — تستعمله نماذج المتجر والتوظيف. */
   "aria-describedby"?: string;
-  /** تفعيل شريط بحث موحّد داخل القائمة المنسدلة لتصفية الخيارات الطويلة (العملاء، الموردون، الوصفات، الحسابات...). */
+  /** تفعيل نمط البحث الموحّد (Editable Combobox + Popover) لتصفية الخيارات الطويلة. */
   searchable?: boolean;
   /** نص تلميح حقل البحث الداخلي عند تفعيل `searchable`. */
   searchPlaceholder?: string;
@@ -105,11 +114,7 @@ const EMPTY_VALUE = "__appselect_empty__";
 function convertChildren(
   children: React.ReactNode,
   extractedPlaceholder: { text: string | null },
-  searchTokens: string[],
-  stats: { matched: number },
-  groupTitle?: string,
 ): React.ReactNode {
-  const isFiltering = searchTokens.length > 0;
   return React.Children.map(children, (child) => {
     if (!React.isValidElement(child)) return null;
     const name = elementName(child);
@@ -117,19 +122,10 @@ function convertChildren(
     // <optgroup label="...">...</optgroup> → <SelectGroup><SelectLabel>...</SelectLabel>...</SelectGroup>
     if (name === "optgroup") {
       const props = child.props as { label?: string; children?: React.ReactNode };
-      const groupStats = { matched: 0 };
-      const groupItems = convertChildren(
-        props.children,
-        extractedPlaceholder,
-        searchTokens,
-        groupStats,
-        props.label,
-      );
-      stats.matched += groupStats.matched;
       return (
-        <SelectGroup className={isFiltering && groupStats.matched === 0 ? "hidden" : undefined}>
+        <SelectGroup>
           {props.label ? <SelectLabel>{props.label}</SelectLabel> : null}
-          {groupItems}
+          {convertChildren(props.children, extractedPlaceholder)}
         </SelectGroup>
       );
     }
@@ -143,33 +139,17 @@ function convertChildren(
       };
       const raw = props.value;
       const value = raw == null ? "" : String(raw);
-      const labelText = extractText(props.children);
-      let matches = true;
-      if (isFiltering) {
-        const haystack = normalizeSearchText(`${labelText} ${value} ${groupTitle ?? ""}`);
-        matches = searchTokens.every((tok) => haystack.includes(tok));
-      }
-      if (matches) stats.matched += 1;
-
       if (value === "") {
-        if (extractedPlaceholder.text == null) extractedPlaceholder.text = labelText.trim() || null;
+        const text = extractText(props.children).trim();
+        if (extractedPlaceholder.text == null) extractedPlaceholder.text = text || null;
         return (
-          <SelectItem
-            value={EMPTY_VALUE}
-            disabled={props.disabled || !matches}
-            className={!matches ? "hidden" : undefined}
-          >
+          <SelectItem value={EMPTY_VALUE} disabled={props.disabled}>
             {props.children}
           </SelectItem>
         );
       }
-
       return (
-        <SelectItem
-          value={value}
-          disabled={props.disabled || !matches}
-          className={!matches ? "hidden" : undefined}
-        >
+        <SelectItem value={value} disabled={props.disabled}>
           {props.children}
         </SelectItem>
       );
@@ -178,11 +158,7 @@ function convertChildren(
     // عنصر آخر (Fragment/تكرار محتمل) — كرِّر التحويل على أطفاله؛ يُبقي البنى المرنة عاملةً.
     const props = child.props as { children?: React.ReactNode };
     if (props && "children" in props) {
-      return React.cloneElement(
-        child,
-        {},
-        convertChildren(props.children, extractedPlaceholder, searchTokens, stats, groupTitle),
-      );
+      return React.cloneElement(child, {}, convertChildren(props.children, extractedPlaceholder));
     }
     if (import.meta.env?.DEV && typeof child.type !== "string") {
       const label = typeof child.type === "function" ? (child.type.name || "مكوّن") : String(child.type);
@@ -195,7 +171,64 @@ function convertChildren(
   });
 }
 
-export function AppSelect({
+interface ParsedOptionItem {
+  value: string;
+  labelText: string;
+  children: React.ReactNode;
+  disabled: boolean;
+  groupLabel?: string;
+}
+
+function parseOptionsTree(
+  children: React.ReactNode,
+  extractedPlaceholder: { text: string | null },
+  out: ParsedOptionItem[],
+  groupLabel?: string,
+): void {
+  React.Children.forEach(children, (child) => {
+    if (!React.isValidElement(child)) return;
+    const name = elementName(child);
+    if (name === "optgroup") {
+      const props = child.props as { label?: string; children?: React.ReactNode };
+      parseOptionsTree(props.children, extractedPlaceholder, out, props.label);
+      return;
+    }
+    if (name === "option") {
+      const props = child.props as {
+        value?: string | number;
+        disabled?: boolean;
+        children?: React.ReactNode;
+      };
+      const raw = props.value;
+      const value = raw == null ? "" : String(raw);
+      const labelText = extractText(props.children);
+      if (value === "" && extractedPlaceholder.text == null) {
+        extractedPlaceholder.text = labelText.trim() || null;
+      }
+      out.push({
+        value,
+        labelText,
+        children: props.children,
+        disabled: Boolean(props.disabled),
+        groupLabel,
+      });
+      return;
+    }
+    const props = child.props as { children?: React.ReactNode };
+    if (props && "children" in props) {
+      parseOptionsTree(props.children, extractedPlaceholder, out, groupLabel);
+    }
+  });
+}
+
+export function AppSelect(props: AppSelectProps) {
+  if (props.searchable) {
+    return <SearchableAppSelect {...props} />;
+  }
+  return <StandardAppSelect {...props} />;
+}
+
+function StandardAppSelect({
   value,
   onValueChange,
   placeholder,
@@ -214,28 +247,16 @@ export function AppSelect({
   style,
   required,
   "aria-describedby": ariaDescribedBy,
-  searchable = false,
-  searchPlaceholder,
   children,
 }: AppSelectProps) {
-  const [searchQuery, setSearchQuery] = React.useState("");
-  const searchInputRef = React.useRef<HTMLInputElement | null>(null);
-
-  const searchTokens = React.useMemo(
-    () => (searchable ? tokenizeSearchQuery(searchQuery) : []),
-    [searchable, searchQuery],
-  );
-
-  const { items, resolvedPlaceholder, matchedCount } = React.useMemo(() => {
+  const { items, resolvedPlaceholder } = React.useMemo(() => {
     const holder = { text: null as string | null };
-    const stats = { matched: 0 };
-    const converted = convertChildren(children, holder, searchTokens, stats);
+    const converted = convertChildren(children, holder);
     return {
       items: converted,
       resolvedPlaceholder: placeholder ?? holder.text ?? undefined,
-      matchedCount: stats.matched,
     };
-  }, [children, placeholder, searchTokens]);
+  }, [children, placeholder]);
 
   return (
     <Select
@@ -246,12 +267,7 @@ export function AppSelect({
       }}
       disabled={disabled}
       open={open}
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen && searchQuery) {
-          setSearchQuery("");
-        }
-        onOpenChange?.(nextOpen);
-      }}
+      onOpenChange={onOpenChange}
       name={name}
       required={required}
     >
@@ -268,55 +284,243 @@ export function AppSelect({
       >
         <SelectValue placeholder={resolvedPlaceholder} />
       </SelectTrigger>
-      <SelectContent
-        className={contentClassName}
-        onCloseAutoFocus={searchable ? () => setSearchQuery("") : undefined}
-        onKeyDown={
-          searchable
-            ? (e) => {
-                if (
-                  document.activeElement !== searchInputRef.current &&
-                  (e.key === "Backspace" || (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey))
-                ) {
-                  searchInputRef.current?.focus();
+      <SelectContent className={contentClassName}>{items}</SelectContent>
+    </Select>
+  );
+}
+
+function SearchableAppSelect({
+  value,
+  onValueChange,
+  placeholder,
+  disabled,
+  className,
+  contentClassName,
+  size = "default",
+  open: controlledOpen,
+  onOpenChange,
+  name,
+  id,
+  "aria-label": ariaLabel,
+  "aria-invalid": ariaInvalid,
+  title,
+  dir,
+  style,
+  required,
+  "aria-describedby": ariaDescribedBy,
+  searchPlaceholder,
+  children,
+}: AppSelectProps) {
+  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(false);
+  const isOpen = controlledOpen !== undefined ? controlledOpen : uncontrolledOpen;
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const [activeIndex, setActiveIndex] = React.useState(0);
+  const searchInputRef = React.useRef<HTMLInputElement | null>(null);
+  const instanceId = React.useId();
+  const listboxId = `${instanceId}-listbox`;
+
+  const handleOpenChange = React.useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen) {
+        setSearchQuery("");
+      }
+      if (controlledOpen === undefined) {
+        setUncontrolledOpen(nextOpen);
+      }
+      onOpenChange?.(nextOpen);
+    },
+    [controlledOpen, onOpenChange],
+  );
+
+  const { allOptions, resolvedPlaceholder } = React.useMemo(() => {
+    const holder = { text: null as string | null };
+    const parsed: ParsedOptionItem[] = [];
+    parseOptionsTree(children, holder, parsed);
+    return {
+      allOptions: parsed,
+      resolvedPlaceholder: placeholder ?? holder.text ?? undefined,
+    };
+  }, [children, placeholder]);
+
+  const selectedOption = React.useMemo(
+    () => allOptions.find((opt) => opt.value === value && (value !== "" || opt.labelText.trim() !== "")),
+    [allOptions, value],
+  );
+
+  const searchTokens = React.useMemo(
+    () => tokenizeSearchTerms(searchQuery),
+    [searchQuery],
+  );
+
+  const matchedOptions = React.useMemo(() => {
+    if (searchTokens.length === 0) return allOptions;
+    return allOptions.filter((opt) => {
+      const haystack = normalizeArabicSearch(
+        `${opt.labelText} ${opt.value} ${opt.groupLabel ?? ""}`,
+      );
+      return searchTokens.every((tok) => haystack.includes(tok));
+    });
+  }, [allOptions, searchTokens]);
+
+  const safeActiveIndex =
+    matchedOptions.length === 0
+      ? -1
+      : Math.min(Math.max(activeIndex, 0), matchedOptions.length - 1);
+  const activeOption = safeActiveIndex >= 0 ? matchedOptions[safeActiveIndex] : undefined;
+  const activeOptionDomId =
+    safeActiveIndex >= 0 ? `${listboxId}-opt-${safeActiveIndex}` : undefined;
+
+  const commitOption = React.useCallback(
+    (opt: ParsedOptionItem) => {
+      if (opt.disabled) return;
+      onValueChange(opt.value);
+      handleOpenChange(false);
+    },
+    [onValueChange, handleOpenChange],
+  );
+
+  const showPlaceholder = value === "" || !selectedOption;
+
+  return (
+    <Popover open={disabled ? false : isOpen} onOpenChange={handleOpenChange}>
+      {name ? <input type="hidden" name={name} value={value} required={required} /> : null}
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          id={id}
+          disabled={disabled}
+          data-slot="select-trigger"
+          data-size={size}
+          data-placeholder={showPlaceholder ? "" : undefined}
+          aria-label={ariaLabel}
+          aria-invalid={ariaInvalid}
+          aria-describedby={ariaDescribedBy}
+          aria-haspopup="listbox"
+          aria-expanded={isOpen}
+          title={title}
+          dir={dir}
+          style={style}
+          className={cn(
+            "border-input data-[placeholder]:text-muted-foreground [&_svg:not([class*='text-'])]:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:bg-input/30 dark:hover:bg-input/50 flex w-full items-center justify-between gap-2 rounded-[var(--ui-radius-control)] border bg-transparent px-3 py-2 text-sm whitespace-nowrap shadow-xs transition-[color,box-shadow] outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 data-[size=default]:h-[var(--ui-control)] data-[size=sm]:h-[var(--ui-control-sm)] [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+            className,
+          )}
+        >
+          <span
+            data-slot="select-value"
+            className="line-clamp-1 flex items-center gap-2 truncate"
+          >
+            {selectedOption ? selectedOption.children : resolvedPlaceholder}
+          </span>
+          <ChevronDownIcon className="size-4 opacity-50" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className={cn(
+          "w-[var(--radix-popover-trigger-width)] min-w-[12rem] p-0 overflow-hidden",
+          contentClassName,
+        )}
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          searchInputRef.current?.focus();
+        }}
+      >
+        <div className="bg-popover p-1.5 pb-1 border-b border-border/60">
+          <UnifiedSearchInput
+            ref={searchInputRef}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={isOpen}
+            aria-controls={listboxId}
+            aria-activedescendant={activeOptionDomId}
+            aria-label={searchPlaceholder ?? ariaLabel ?? resolvedPlaceholder ?? "ابحث في القائمة"}
+            value={searchQuery}
+            onChange={(q) => {
+              setSearchQuery(q);
+              setActiveIndex(0);
+            }}
+            placeholder={searchPlaceholder ?? "ابحث في القائمة..."}
+            barcode={false}
+            debounceMs={0}
+            size="compact"
+            variant="pos"
+            f2Shortcut={false}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                if (matchedOptions.length > 0) {
+                  setActiveIndex((prev) => (prev + 1) % matchedOptions.length);
+                }
+              } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                if (matchedOptions.length > 0) {
+                  setActiveIndex((prev) =>
+                    prev <= 0 ? matchedOptions.length - 1 : prev - 1,
+                  );
+                }
+              } else if (e.key === "Enter") {
+                e.preventDefault();
+                if (activeOption && !activeOption.disabled) {
+                  commitOption(activeOption);
                 }
               }
-            : undefined
-        }
-      >
-        {searchable ? (
-          <div
-            className="sticky top-0 z-10 bg-popover p-1.5 pb-1 border-b border-border/60"
-            onKeyDown={(e) => {
-              if (e.key !== "Escape" && e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Enter") {
-                e.stopPropagation();
-              }
             }}
-            onKeyUp={(e) => e.stopPropagation()}
-            onPointerMove={(e) => e.stopPropagation()}
-          >
-            <UnifiedSearchInput
-              ref={searchInputRef}
-              value={searchQuery}
-              onChange={setSearchQuery}
-              placeholder={searchPlaceholder ?? "ابحث في القائمة..."}
-              barcode={false}
-              debounceMs={0}
-              size="compact"
-              variant="pos"
-              f2Shortcut={false}
-              aria-label={searchPlaceholder ?? "ابحث في القائمة"}
-            />
-          </div>
-        ) : null}
-        {items}
-        {searchable && searchTokens.length > 0 && matchedCount === 0 ? (
-          <div className="py-4 text-center text-xs text-muted-foreground">
-            لا توجد نتائج مطابقة
-          </div>
-        ) : null}
-      </SelectContent>
-    </Select>
+          />
+        </div>
+        <div
+          id={listboxId}
+          role="listbox"
+          aria-label={ariaLabel ?? resolvedPlaceholder ?? "الخيارات"}
+          className="max-h-64 overflow-y-auto p-1"
+        >
+          {matchedOptions.length === 0 ? (
+            <div className="py-4 text-center text-xs text-muted-foreground">
+              لا توجد نتائج مطابقة
+            </div>
+          ) : (
+            matchedOptions.map((opt, idx) => {
+              const isSelected = opt.value === value;
+              const isActive = idx === safeActiveIndex;
+              const prevGroup = idx > 0 ? matchedOptions[idx - 1]?.groupLabel : undefined;
+              const showGroupHeader = opt.groupLabel && opt.groupLabel !== prevGroup;
+              return (
+                <React.Fragment key={`${opt.groupLabel ?? ""}:${opt.value}:${idx}`}>
+                  {showGroupHeader ? (
+                    <div
+                      data-slot="select-label"
+                      className="text-muted-foreground px-2 py-1.5 text-xs font-medium"
+                    >
+                      {opt.groupLabel}
+                    </div>
+                  ) : null}
+                  <div
+                    id={`${listboxId}-opt-${idx}`}
+                    role="option"
+                    data-slot="select-item"
+                    aria-selected={isSelected}
+                    aria-disabled={opt.disabled || undefined}
+                    data-disabled={opt.disabled ? "" : undefined}
+                    data-highlighted={isActive ? "" : undefined}
+                    onMouseEnter={() => setActiveIndex(idx)}
+                    onClick={() => commitOption(opt)}
+                    className={cn(
+                      "relative flex min-h-[var(--ui-control-sm)] w-full cursor-default items-center gap-2 rounded-md py-2 pr-8 pl-2 text-sm outline-hidden select-none",
+                      isActive && "bg-accent text-accent-foreground",
+                      opt.disabled && "pointer-events-none opacity-50",
+                    )}
+                  >
+                    <span className="absolute right-2 flex size-3.5 items-center justify-center">
+                      {isSelected ? <CheckIcon className="size-4" /> : null}
+                    </span>
+                    <span className="truncate">{opt.children}</span>
+                  </div>
+                </React.Fragment>
+              );
+            })
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

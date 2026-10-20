@@ -28,6 +28,7 @@ interface BundleKitReviewStepProps {
   linkedWorkOrderId: number | null;
   onLinkedWorkOrderChange: (id: number | null) => void;
   openWorkOrders?: OpenWorkOrderOption[];
+  onWorkOrderSearchChange?: (query: string) => void;
   estimatedLaborCost: string;
   estimatedMaterialsCost: string;
   estimatedTotalCost: string;
@@ -48,6 +49,7 @@ export function BundleKitReviewStep({
   linkedWorkOrderId,
   onLinkedWorkOrderChange,
   openWorkOrders = [],
+  onWorkOrderSearchChange,
   estimatedLaborCost,
   estimatedMaterialsCost,
   estimatedTotalCost,
@@ -60,16 +62,18 @@ export function BundleKitReviewStep({
   const selectedBatches = batches.filter((b) => b.selected && b.batchQty > 0);
   const isConstrained = maxBundlesPossible != null && maxBundlesPossible < requestedBundleQty;
 
+  const isPickerMode = openWorkOrders.length > 0 || Boolean(onWorkOrderSearchChange);
   const [woQuery, setWoQuery] = React.useState(() =>
     linkedWorkOrderId != null ? String(linkedWorkOrderId) : "",
   );
-  const selectedWO = React.useMemo(
-    () =>
-      linkedWorkOrderId != null
-        ? (openWorkOrders.find((o) => Number(o.id) === linkedWorkOrderId) ?? null)
-        : null,
-    [openWorkOrders, linkedWorkOrderId],
+  const [committedWO, setCommittedWO] = React.useState<OpenWorkOrderOption | null>(() =>
+    linkedWorkOrderId != null
+      ? (openWorkOrders.find((o) => Number(o.id) === linkedWorkOrderId) ?? null)
+      : null,
   );
+  const selectedWO =
+    committedWO && Number(committedWO.id) === linkedWorkOrderId ? committedWO : null;
+
   const woMatches = React.useMemo(() => {
     const nq = normalizeSearchText(woQuery.trim());
     if (!nq || openWorkOrders.length === 0) return [];
@@ -232,8 +236,10 @@ export function BundleKitReviewStep({
               <button
                 type="button"
                 onClick={() => {
+                  setCommittedWO(null);
                   onLinkedWorkOrderChange(null);
                   setWoQuery("");
+                  onWorkOrderSearchChange?.("");
                 }}
                 className="shrink-0 text-muted-foreground hover:text-destructive"
                 aria-label="إلغاء الربط"
@@ -252,7 +258,15 @@ export function BundleKitReviewStep({
                 value={woQuery}
                 onChange={(val) => {
                   setWoQuery(val);
+                  setCommittedWO(null);
                   const latin = digitsArabicToLatin(val).trim();
+                  onWorkOrderSearchChange?.(latin);
+                  if (isPickerMode) {
+                    if (linkedWorkOrderId != null) {
+                      onLinkedWorkOrderChange(null);
+                    }
+                    return;
+                  }
                   if (/^\d+$/.test(latin)) {
                     const num = parseInt(latin, 10);
                     onLinkedWorkOrderChange(Number.isFinite(num) && num > 0 ? num : null);
@@ -260,11 +274,22 @@ export function BundleKitReviewStep({
                     onLinkedWorkOrderChange(null);
                   }
                 }}
-                onSubmit={() => {
+                onSubmit={(submitted) => {
                   if (woMatches.length > 0) {
                     const chosen = woMatches[0];
+                    setCommittedWO(chosen);
                     onLinkedWorkOrderChange(Number(chosen.id));
                     setWoQuery(String(chosen.id));
+                    return;
+                  }
+                  const latin = digitsArabicToLatin(submitted).trim();
+                  if (/^\d+$/.test(latin)) {
+                    const num = parseInt(latin, 10);
+                    if (Number.isFinite(num) && num > 0) {
+                      const matched = openWorkOrders.find((o) => Number(o.id) === num) ?? null;
+                      setCommittedWO(matched);
+                      onLinkedWorkOrderChange(num);
+                    }
                   }
                 }}
                 placeholder="ابحث برقم الأمر/العنوان/العميل أو أدخل الرقم…"
@@ -279,6 +304,7 @@ export function BundleKitReviewStep({
                         key={o.id}
                         type="button"
                         onClick={() => {
+                          setCommittedWO(o);
                           onLinkedWorkOrderChange(Number(o.id));
                           setWoQuery(String(o.id));
                         }}

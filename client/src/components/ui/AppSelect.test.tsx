@@ -49,7 +49,7 @@ describe("controlled select inside an account form", () => {
     expect(changed).not.toHaveBeenCalled();
     expect(container.querySelector('[role="combobox"]')?.textContent).toContain("مندوب توصيل");
   });
-  it("still accepts an explicit empty choice and an ordinary role change", () => {
+  it("still accepts an explicit empty choice, an ordinary role change, and searchable combobox filtering", () => {
     const changed = vi.fn();
     act(() => root.render(<Form changed={changed} />));
     changed.mockClear();
@@ -57,11 +57,7 @@ describe("controlled select inside an account form", () => {
     expect(changed).toHaveBeenLastCalledWith("warehouse");
     nativeChange("__appselect_empty__");
     expect(changed).toHaveBeenLastCalledWith("");
-  });
-});
 
-describe("searchable AppSelect", () => {
-  it("filters options with Arabic normalization while keeping the selected value label intact", () => {
     function SearchableForm() {
       const [value, setValue] = useState("1");
       return (
@@ -82,18 +78,21 @@ describe("searchable AppSelect", () => {
     act(() => root.render(<SearchableForm />));
     const searchInput = document.body.querySelector('input[placeholder="ابحث عن وصفة..."]') as HTMLInputElement;
     expect(searchInput).toBeTruthy();
+    expect(searchInput.getAttribute("role")).toBe("combobox");
+    const listbox = document.body.querySelector('[role="listbox"]');
+    expect(listbox).toBeTruthy();
+    expect(searchInput.getAttribute("aria-controls")).toBe(listbox?.getAttribute("id"));
+    expect(listbox?.contains(searchInput)).toBe(false);
 
-    // نبحث بـ «حقيبه» (بالتاء/الهاء المطبّعة) فلا يظهر سوى الخيار الثاني، مع بقاء عنوان الخيار المحدد على الزر
     act(() => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
       setter?.call(searchInput, "حقيبه");
       searchInput.dispatchEvent(new Event("input", { bubbles: true }));
     });
 
-    const items = Array.from(document.body.querySelectorAll('[data-slot="select-item"]'));
-    const visibleItems = items.filter((el) => !el.classList.contains("hidden"));
+    const visibleItems = Array.from(document.body.querySelectorAll('[role="listbox"] [role="option"]'));
     expect(visibleItems).toHaveLength(1);
     expect(visibleItems[0]?.textContent).toContain("حقيبة مدرسية كبيرة");
-    expect(container.querySelector('[role="combobox"]')?.textContent).toContain("دفتر ملاحظات أزرق");
+    expect(container.querySelector('[data-slot="select-trigger"]')?.textContent).toContain("دفتر ملاحظات أزرق");
   });
 });

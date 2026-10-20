@@ -66,6 +66,8 @@ export function BundleKitProductionDialog({
   const [batches, setBatches] = useState<BundleKitComponentBatch[]>([]);
   const [notes, setNotes] = useState<string>("");
   const [linkedWorkOrderId, setLinkedWorkOrderId] = useState<number | null>(null);
+  const [woSearchQuery, setWoSearchQuery] = useState<string>("");
+  const debouncedWoSearch = useDebouncedValue(woSearchQuery, 250);
   const [successResult, setSuccessResult] = useState<ProduceBundleComponentsResult | null>(null);
   const [clientRequestId, setClientRequestId] = useState<string>("");
   const [materialSubstitutions, setMaterialSubstitutions] = useState<MaterialSubstitutionItem[]>([]);
@@ -126,7 +128,7 @@ export function BundleKitProductionDialog({
     }
   }, [open, initialBundleVariantId, bundlesListQ.data]);
 
-  const openWOs = trpc.workOrders.list.useQuery({ statuses: ["RECEIVED", "IN_PROGRESS", "READY"], branchId: effectiveBranchId ?? undefined, limit: 200 }, { enabled: open });
+  const openWOs = trpc.workOrders.list.useQuery({ statuses: ["RECEIVED", "IN_PROGRESS", "READY"], branchId: effectiveBranchId ?? undefined, q: debouncedWoSearch.trim() || undefined, limit: 200 }, { enabled: open });
   const analysisQ = trpc.production.bundles.analyzeRequirements.useQuery(
     {
       bundleVariantId: selectedBundleId ?? 0,
@@ -333,6 +335,7 @@ export function BundleKitProductionDialog({
     setSuccessResult(null);
     setNotes("");
     setLinkedWorkOrderId(null);
+    setWoSearchQuery("");
     setMaterialSubstitutions([]);
     setClientRequestId(`bnd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
     lastSyncedParamsRef.current = null;
@@ -450,7 +453,7 @@ export function BundleKitProductionDialog({
               batches={batches}
               notes={notes}
               onNotesChange={setNotes}
-              linkedWorkOrderId={linkedWorkOrderId} openWorkOrders={openWOs.data ?? []}
+              linkedWorkOrderId={linkedWorkOrderId} openWorkOrders={openWOs.data ?? []} onWorkOrderSearchChange={setWoSearchQuery}
               onLinkedWorkOrderChange={setLinkedWorkOrderId}
               estimatedLaborCost={analysis.estimatedTotalLaborCost}
               estimatedMaterialsCost={analysis.estimatedTotalMaterialsCost}

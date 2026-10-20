@@ -760,7 +760,7 @@ export function QuickRecipeCopyDialog({
             <div ref={searchContainerRef} className="relative">
               <UnifiedSearchInput
                 debounceMs={0}
-                aria-label="البحث عن مادة خام لإضافتها" onSubmit={() => { const first = (materialsQ.data ?? [])[0]; if (first) handleAddMaterial(first); }}
+                aria-label="البحث عن مادة خام لإضافتها" onSubmit={(submitted) => { if (isSearching || submitted.trim() !== trimmedSearchMaterial) return; const first = (materialsQ.data ?? [])[0]; if (first) handleAddMaterial(first); }}
                 value={searchMaterial}
                 onChange={(val) => {
                   setSearchMaterial(val);

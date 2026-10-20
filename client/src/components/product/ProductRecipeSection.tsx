@@ -1468,7 +1468,14 @@ export function ProductRecipeSection({
                         setSearchQuery(val);
                         setShowSearchDropdown(true);
                       }}
-                      onFocus={() => setShowSearchDropdown(true)} onClear={() => setShowSearchDropdown(false)} onSubmit={() => { const first = (materialsQ.data ?? [])[0]; if (first) handleAddMaterial(first); }}
+                      onFocus={() => setShowSearchDropdown(true)}
+                      onClear={() => setShowSearchDropdown(false)}
+                      onSubmit={(submitted) => {
+                        const q = submitted.trim();
+                        if (!q || q !== searchQuery.trim() || materialsQ.isFetching) return;
+                        const first = (materialsQ.data ?? [])[0];
+                        if (first) handleAddMaterial(first);
+                      }}
                       placeholder="ابحث عن مادة خام لإضافتها للوصفة (اسم الصنف أو SKU)..."
                       className="h-9 text-xs"
                     />
