@@ -537,7 +537,7 @@ function ApplyModal({ target, branches, onClose }: { target: Vacancy | "general"
   const [birthDate, setBirthDate] = useState("");
   const [gender, setGender] = useState("");
   const [maritalStatus, setMaritalStatus] = useState("");
-  const [governorate, setGovernorate] = useState("بغداد");
+  const [governorate, setGovernorate] = useState("");
   const [district, setDistrict] = useState("");
   const [residentialAddress, setResidentialAddress] = useState("");
   const [degree, setDegree] = useState("");

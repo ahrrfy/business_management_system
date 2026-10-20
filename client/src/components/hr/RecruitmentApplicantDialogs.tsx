@@ -252,7 +252,7 @@ export function PaperDialog({
   const [phone, setPhone] = useState(""); const [whatsappPhone, setWhatsappPhone] = useState("");
   const [email, setEmail] = useState(""); const [birthDate, setBirthDate] = useState("");
   const [gender, setGender] = useState(""); const [maritalStatus, setMaritalStatus] = useState("");
-  const [governorate, setGovernorate] = useState("بغداد"); const [district, setDistrict] = useState("");
+  const [governorate, setGovernorate] = useState(""); const [district, setDistrict] = useState("");
   const [residentialAddress, setResidentialAddress] = useState(""); const [degree, setDegree] = useState("");
   const [major, setMajor] = useState(""); const [education, setEducation] = useState("");
   const [availabilityStatus, setAvailabilityStatus] = useState(""); const [experience, setExperience] = useState("");
@@ -283,7 +283,7 @@ export function PaperDialog({
     submitSeqRef.current += 1;
     setName(""); setVacancyId(""); setBranchId(defaultBranchId); setJobTitle(""); setDepartment("");
     setAppliedDate(todayIso()); setPhone(""); setWhatsappPhone(""); setEmail(""); setBirthDate("");
-    setGender(""); setMaritalStatus(""); setGovernorate("بغداد"); setDistrict(""); setResidentialAddress("");
+    setGender(""); setMaritalStatus(""); setGovernorate(""); setDistrict(""); setResidentialAddress("");
     setDegree(""); setMajor(""); setEducation(""); setAvailabilityStatus(""); setExperience("");
     setPreviousEmployer(""); setSkills(""); setPreferredBranch(""); setEmploymentType("");
     setShiftPreference(""); setExpectedSalary(""); setAvailableFrom(""); setPortfolioUrl("");
