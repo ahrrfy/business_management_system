@@ -833,6 +833,24 @@ export async function prepareSupplierBookVoucherTx(
     .from(suppliers)
     .where(eq(suppliers.id, input.supplierId));
   if (!supplier || supplier.supplierKind !== "REGULAR") return null;
+  const [invoiceTarget] = await tx
+    .select({ id: supplierInvoices.id })
+    .from(supplierInvoices)
+    .where(
+      and(
+        eq(supplierInvoices.supplierId, input.supplierId),
+        eq(supplierInvoices.status, "POSTED"),
+        inArray(supplierInvoices.liabilityClass, [
+          "NATIVE_AP",
+          "LEGACY_AP",
+          "LEGACY_UNKNOWN",
+        ]),
+      ),
+    )
+    .limit(1);
+  // Without invoices there is nothing to allocate: the existing generic AP
+  // payment already settles the opening-only account and supports advances.
+  if (!invoiceTarget) return null;
   if (
     actor.branchId !== input.branchId &&
     !actor.isOwner &&
