@@ -30,11 +30,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import {
   normalizeArabicSearch,
@@ -329,8 +324,10 @@ function SearchableAppSelect({
   children,
 }: AppSelectProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = React.useState(false);
-  const isOpen = controlledOpen !== undefined ? controlledOpen : uncontrolledOpen;
+  const isOpen = disabled ? false : (controlledOpen !== undefined ? controlledOpen : uncontrolledOpen);
   const [searchQuery, setSearchQuery] = React.useState("");
+  const containerRef = React.useRef<HTMLDivElement | null>(null);
+  const triggerRef = React.useRef<HTMLButtonElement | null>(null);
   const searchInputRef = React.useRef<HTMLInputElement | null>(null);
   const activeOptionRef = React.useRef<HTMLDivElement | null>(null);
   const instanceId = React.useId();
@@ -366,10 +363,22 @@ function SearchableAppSelect({
   );
 
   React.useEffect(() => {
-    if (isOpen && !searchQuery) {
-      setActiveIndex(resolveDefaultActiveIndex(allOptions, value));
-    }
-  }, [isOpen, searchQuery, allOptions, value]);
+    if (!isOpen) return;
+    setActiveIndex(resolveDefaultActiveIndex(allOptions, value));
+    searchInputRef.current?.focus();
+    const handlePointerDownOutside = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        handleOpenChange(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDownOutside);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDownOutside);
+    };
+  }, [isOpen, allOptions, value, handleOpenChange]);
 
   const selectedOption = React.useMemo(
     () => allOptions.find((opt) => opt.value === value && (value !== "" || opt.labelText.trim() !== "")),
@@ -417,153 +426,166 @@ function SearchableAppSelect({
   const showPlaceholder = value === "" || !selectedOption;
 
   return (
-    <Popover open={disabled ? false : isOpen} onOpenChange={handleOpenChange}>
+    <div ref={containerRef} className="relative w-full">
       {name ? <input type="hidden" name={name} value={value} required={required} /> : null}
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          id={id}
-          disabled={disabled}
-          data-slot="select-trigger"
-          data-size={size}
-          data-placeholder={showPlaceholder ? "" : undefined}
-          aria-label={ariaLabel}
-          aria-invalid={ariaInvalid}
-          aria-describedby={ariaDescribedBy}
-          aria-haspopup="listbox"
-          aria-expanded={isOpen}
-          title={title}
-          dir={dir}
-          style={style}
-          className={cn(
-            "border-input data-[placeholder]:text-muted-foreground [&_svg:not([class*='text-'])]:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:bg-input/30 dark:hover:bg-input/50 flex w-full items-center justify-between gap-2 rounded-[var(--ui-radius-control)] border bg-transparent px-3 py-2 text-sm whitespace-nowrap shadow-xs transition-[color,box-shadow] outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 data-[size=default]:h-[var(--ui-control)] data-[size=sm]:h-[var(--ui-control-sm)] [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
-            className,
-          )}
-        >
-          <span
-            data-slot="select-value"
-            className="line-clamp-1 flex items-center gap-2 truncate"
-          >
-            {selectedOption ? selectedOption.children : resolvedPlaceholder}
-          </span>
-          <ChevronDownIcon className="size-4 opacity-50" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        className={cn(
-          "w-[var(--radix-popover-trigger-width)] min-w-[12rem] p-0 overflow-hidden",
-          contentClassName,
-        )}
-        onOpenAutoFocus={(e) => {
-          e.preventDefault();
-          searchInputRef.current?.focus();
+      <button
+        ref={triggerRef}
+        type="button"
+        id={id}
+        disabled={disabled}
+        data-slot="select-trigger"
+        data-size={size}
+        data-placeholder={showPlaceholder ? "" : undefined}
+        aria-label={ariaLabel}
+        aria-invalid={ariaInvalid}
+        aria-describedby={ariaDescribedBy}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        title={title}
+        dir={dir}
+        style={style}
+        onClick={() => {
+          if (!disabled) handleOpenChange(!isOpen);
         }}
+        onKeyDown={(e) => {
+          if (disabled) return;
+          if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === " ") {
+            if (!isOpen) {
+              e.preventDefault();
+              handleOpenChange(true);
+            }
+          } else if (e.key === "Escape" && isOpen) {
+            e.preventDefault();
+            handleOpenChange(false);
+          }
+        }}
+        className={cn(
+          "border-input data-[placeholder]:text-muted-foreground [&_svg:not([class*='text-'])]:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:bg-input/30 dark:hover:bg-input/50 flex w-full items-center justify-between gap-2 rounded-[var(--ui-radius-control)] border bg-transparent px-3 py-2 text-sm whitespace-nowrap shadow-xs transition-[color,box-shadow] outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 data-[size=default]:h-[var(--ui-control)] data-[size=sm]:h-[var(--ui-control-sm)] [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+          className,
+        )}
       >
-        <div className="bg-popover p-1.5 pb-1 border-b border-border/60">
-          <UnifiedSearchInput
-            ref={searchInputRef}
-            role="combobox"
-            aria-autocomplete="list"
-            aria-expanded={isOpen}
-            aria-controls={listboxId}
-            aria-activedescendant={activeOptionDomId}
-            aria-label={searchPlaceholder ?? ariaLabel ?? resolvedPlaceholder ?? "ابحث في القائمة"}
-            value={searchQuery}
-            onChange={(q) => {
-              setSearchQuery(q);
-              if (!q) {
-                setActiveIndex(resolveDefaultActiveIndex(allOptions, value));
-              } else {
-                setActiveIndex(0);
-              }
-            }}
-            placeholder={searchPlaceholder ?? "ابحث في القائمة..."}
-            barcode={false}
-            debounceMs={0}
-            size="compact"
-            variant="pos"
-            f2Shortcut={false}
-            onKeyDown={(e) => {
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                if (matchedOptions.length > 0) {
-                  setActiveIndex((prev) => (prev + 1) % matchedOptions.length);
-                }
-              } else if (e.key === "ArrowUp") {
-                e.preventDefault();
-                if (matchedOptions.length > 0) {
-                  setActiveIndex((prev) =>
-                    prev <= 0 ? matchedOptions.length - 1 : prev - 1,
-                  );
-                }
-              } else if (e.key === "Enter") {
-                e.preventDefault();
-                if (activeOption && !activeOption.disabled) {
-                  commitOption(activeOption);
-                }
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                handleOpenChange(false);
-              }
-            }}
-          />
-        </div>
-        <div
-          id={listboxId}
-          role="listbox"
-          aria-label={ariaLabel ?? resolvedPlaceholder ?? "الخيارات"}
-          className="max-h-64 overflow-y-auto p-1"
+        <span
+          data-slot="select-value"
+          className="line-clamp-1 flex items-center gap-2 truncate"
         >
-          {matchedOptions.length === 0 ? (
-            <div className="py-4 text-center text-xs text-muted-foreground">
-              لا توجد نتائج مطابقة
-            </div>
-          ) : (
-            matchedOptions.map((opt, idx) => {
-              const isSelected = opt.value === value;
-              const isActive = idx === safeActiveIndex;
-              const prevGroup = idx > 0 ? matchedOptions[idx - 1]?.groupLabel : undefined;
-              const showGroupHeader = opt.groupLabel && opt.groupLabel !== prevGroup;
-              return (
-                <React.Fragment key={`${opt.groupLabel ?? ""}:${opt.value}:${idx}`}>
-                  {showGroupHeader ? (
-                    <div
-                      data-slot="select-label"
-                      className="text-muted-foreground px-2 py-1.5 text-xs font-medium"
-                    >
-                      {opt.groupLabel}
-                    </div>
-                  ) : null}
-                  <div
-                    ref={isActive ? activeOptionRef : undefined}
-                    id={`${listboxId}-opt-${idx}`}
-                    role="option"
-                    data-slot="select-item"
-                    aria-selected={isSelected}
-                    aria-disabled={opt.disabled || undefined}
-                    data-disabled={opt.disabled ? "" : undefined}
-                    data-highlighted={isActive ? "" : undefined}
-                    onMouseEnter={() => setActiveIndex(idx)}
-                    onClick={() => commitOption(opt)}
-                    className={cn(
-                      "relative flex min-h-[var(--ui-control-sm)] w-full cursor-default items-center gap-2 rounded-md py-2 pr-8 pl-2 text-sm outline-hidden select-none",
-                      isActive && "bg-accent text-accent-foreground",
-                      opt.disabled && "pointer-events-none opacity-50",
-                    )}
-                  >
-                    <span className="absolute right-2 flex size-3.5 items-center justify-center">
-                      {isSelected ? <CheckIcon className="size-4" /> : null}
-                    </span>
-                    <span className="truncate">{opt.children}</span>
-                  </div>
-                </React.Fragment>
-              );
-            })
+          {selectedOption ? selectedOption.children : resolvedPlaceholder}
+        </span>
+        <ChevronDownIcon className="size-4 opacity-50" />
+      </button>
+      {isOpen ? (
+        <div
+          data-slot="popover-content"
+          className={cn(
+            "bg-popover text-popover-foreground absolute top-full right-0 left-0 z-[150] mt-1 min-w-[12rem] overflow-hidden rounded-md border p-0 shadow-md",
+            contentClassName,
           )}
+        >
+          <div className="bg-popover p-1.5 pb-1 border-b border-border/60">
+            <UnifiedSearchInput
+              ref={searchInputRef}
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={isOpen}
+              aria-controls={listboxId}
+              aria-activedescendant={activeOptionDomId}
+              aria-label={searchPlaceholder ?? ariaLabel ?? resolvedPlaceholder ?? "ابحث في القائمة"}
+              value={searchQuery}
+              onChange={(q) => {
+                setSearchQuery(q);
+                if (!q) {
+                  setActiveIndex(resolveDefaultActiveIndex(allOptions, value));
+                } else {
+                  setActiveIndex(0);
+                }
+              }}
+              placeholder={searchPlaceholder ?? "ابحث في القائمة..."}
+              barcode={false}
+              debounceMs={0}
+              size="compact"
+              variant="pos"
+              f2Shortcut={false}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  if (matchedOptions.length > 0) {
+                    setActiveIndex((prev) => (prev + 1) % matchedOptions.length);
+                  }
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  if (matchedOptions.length > 0) {
+                    setActiveIndex((prev) =>
+                      prev <= 0 ? matchedOptions.length - 1 : prev - 1,
+                    );
+                  }
+                } else if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (activeOption && !activeOption.disabled) {
+                    commitOption(activeOption);
+                  }
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  handleOpenChange(false);
+                  triggerRef.current?.focus();
+                }
+              }}
+            />
+          </div>
+          <div
+            id={listboxId}
+            role="listbox"
+            aria-label={ariaLabel ?? resolvedPlaceholder ?? "الخيارات"}
+            className="max-h-64 overflow-y-auto p-1"
+          >
+            {matchedOptions.length === 0 ? (
+              <div className="py-4 text-center text-xs text-muted-foreground">
+                لا توجد نتائج مطابقة
+              </div>
+            ) : (
+              matchedOptions.map((opt, idx) => {
+                const isSelected = opt.value === value;
+                const isActive = idx === safeActiveIndex;
+                const prevGroup = idx > 0 ? matchedOptions[idx - 1]?.groupLabel : undefined;
+                const showGroupHeader = opt.groupLabel && opt.groupLabel !== prevGroup;
+                return (
+                  <React.Fragment key={`${opt.groupLabel ?? ""}:${opt.value}:${idx}`}>
+                    {showGroupHeader ? (
+                      <div
+                        data-slot="select-label"
+                        className="text-muted-foreground px-2 py-1.5 text-xs font-medium"
+                      >
+                        {opt.groupLabel}
+                      </div>
+                    ) : null}
+                    <div
+                      ref={isActive ? activeOptionRef : undefined}
+                      id={`${listboxId}-opt-${idx}`}
+                      role="option"
+                      data-slot="select-item"
+                      aria-selected={isSelected}
+                      aria-disabled={opt.disabled || undefined}
+                      data-disabled={opt.disabled ? "" : undefined}
+                      data-highlighted={isActive ? "" : undefined}
+                      onMouseEnter={() => setActiveIndex(idx)}
+                      onClick={() => commitOption(opt)}
+                      className={cn(
+                        "relative flex min-h-[var(--ui-control-sm)] w-full cursor-default items-center gap-2 rounded-md py-2 pr-8 pl-2 text-sm outline-hidden select-none",
+                        isActive && "bg-accent text-accent-foreground",
+                        opt.disabled && "pointer-events-none opacity-50",
+                      )}
+                    >
+                      <span className="absolute right-2 flex size-3.5 items-center justify-center">
+                        {isSelected ? <CheckIcon className="size-4" /> : null}
+                      </span>
+                      <span className="truncate">{opt.children}</span>
+                    </div>
+                  </React.Fragment>
+                );
+              })
+            )}
+          </div>
         </div>
-      </PopoverContent>
-    </Popover>
+      ) : null}
+    </div>
   );
 }
 
