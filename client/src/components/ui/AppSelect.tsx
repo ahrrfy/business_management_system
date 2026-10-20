@@ -221,6 +221,23 @@ function parseOptionsTree(
   });
 }
 
+function resolveDefaultActiveIndex(
+  options: ParsedOptionItem[],
+  currentValue: string,
+): number {
+  if (options.length === 0) return -1;
+  const selectedIdx = options.findIndex(
+    (opt) => opt.value === currentValue && !opt.disabled,
+  );
+  if (selectedIdx >= 0) return selectedIdx;
+  const firstNonEmptyIdx = options.findIndex(
+    (opt) => opt.value !== "" && !opt.disabled,
+  );
+  if (firstNonEmptyIdx >= 0) return firstNonEmptyIdx;
+  const firstEnabledIdx = options.findIndex((opt) => !opt.disabled);
+  return firstEnabledIdx >= 0 ? firstEnabledIdx : 0;
+}
+
 export function AppSelect(props: AppSelectProps) {
   if (props.searchable) {
     return <SearchableAppSelect {...props} />;
@@ -314,23 +331,10 @@ function SearchableAppSelect({
   const [uncontrolledOpen, setUncontrolledOpen] = React.useState(false);
   const isOpen = controlledOpen !== undefined ? controlledOpen : uncontrolledOpen;
   const [searchQuery, setSearchQuery] = React.useState("");
-  const [activeIndex, setActiveIndex] = React.useState(0);
   const searchInputRef = React.useRef<HTMLInputElement | null>(null);
+  const activeOptionRef = React.useRef<HTMLDivElement | null>(null);
   const instanceId = React.useId();
   const listboxId = `${instanceId}-listbox`;
-
-  const handleOpenChange = React.useCallback(
-    (nextOpen: boolean) => {
-      if (!nextOpen) {
-        setSearchQuery("");
-      }
-      if (controlledOpen === undefined) {
-        setUncontrolledOpen(nextOpen);
-      }
-      onOpenChange?.(nextOpen);
-    },
-    [controlledOpen, onOpenChange],
-  );
 
   const { allOptions, resolvedPlaceholder } = React.useMemo(() => {
     const holder = { text: null as string | null };
@@ -341,6 +345,31 @@ function SearchableAppSelect({
       resolvedPlaceholder: placeholder ?? holder.text ?? undefined,
     };
   }, [children, placeholder]);
+
+  const [activeIndex, setActiveIndex] = React.useState(() =>
+    resolveDefaultActiveIndex(allOptions, value),
+  );
+
+  const handleOpenChange = React.useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen) {
+        setSearchQuery("");
+      } else {
+        setActiveIndex(resolveDefaultActiveIndex(allOptions, value));
+      }
+      if (controlledOpen === undefined) {
+        setUncontrolledOpen(nextOpen);
+      }
+      onOpenChange?.(nextOpen);
+    },
+    [allOptions, controlledOpen, onOpenChange, value],
+  );
+
+  React.useEffect(() => {
+    if (isOpen && !searchQuery) {
+      setActiveIndex(resolveDefaultActiveIndex(allOptions, value));
+    }
+  }, [isOpen, searchQuery, allOptions, value]);
 
   const selectedOption = React.useMemo(
     () => allOptions.find((opt) => opt.value === value && (value !== "" || opt.labelText.trim() !== "")),
@@ -369,6 +398,12 @@ function SearchableAppSelect({
   const activeOption = safeActiveIndex >= 0 ? matchedOptions[safeActiveIndex] : undefined;
   const activeOptionDomId =
     safeActiveIndex >= 0 ? `${listboxId}-opt-${safeActiveIndex}` : undefined;
+
+  React.useEffect(() => {
+    if (isOpen && safeActiveIndex >= 0) {
+      activeOptionRef.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [isOpen, safeActiveIndex]);
 
   const commitOption = React.useCallback(
     (opt: ParsedOptionItem) => {
@@ -437,7 +472,11 @@ function SearchableAppSelect({
             value={searchQuery}
             onChange={(q) => {
               setSearchQuery(q);
-              setActiveIndex(0);
+              if (!q) {
+                setActiveIndex(resolveDefaultActiveIndex(allOptions, value));
+              } else {
+                setActiveIndex(0);
+              }
             }}
             placeholder={searchPlaceholder ?? "ابحث في القائمة..."}
             barcode={false}
@@ -463,6 +502,9 @@ function SearchableAppSelect({
                 if (activeOption && !activeOption.disabled) {
                   commitOption(activeOption);
                 }
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                handleOpenChange(false);
               }
             }}
           />
@@ -494,6 +536,7 @@ function SearchableAppSelect({
                     </div>
                   ) : null}
                   <div
+                    ref={isActive ? activeOptionRef : undefined}
                     id={`${listboxId}-opt-${idx}`}
                     role="option"
                     data-slot="select-item"

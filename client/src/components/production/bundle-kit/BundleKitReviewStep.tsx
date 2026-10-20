@@ -275,13 +275,6 @@ export function BundleKitReviewStep({
                   }
                 }}
                 onSubmit={(submitted) => {
-                  if (woMatches.length > 0) {
-                    const chosen = woMatches[0];
-                    setCommittedWO(chosen);
-                    onLinkedWorkOrderChange(Number(chosen.id));
-                    setWoQuery(String(chosen.id));
-                    return;
-                  }
                   const latin = digitsArabicToLatin(submitted).trim();
                   if (/^\d+$/.test(latin)) {
                     const num = parseInt(latin, 10);
@@ -289,7 +282,15 @@ export function BundleKitReviewStep({
                       const matched = openWorkOrders.find((o) => Number(o.id) === num) ?? null;
                       setCommittedWO(matched);
                       onLinkedWorkOrderChange(num);
+                      setWoQuery(String(num));
+                      return;
                     }
+                  }
+                  if (woMatches.length > 0) {
+                    const chosen = woMatches[0];
+                    setCommittedWO(chosen);
+                    onLinkedWorkOrderChange(Number(chosen.id));
+                    setWoQuery(String(chosen.id));
                   }
                 }}
                 placeholder="ابحث برقم الأمر/العنوان/العميل أو أدخل الرقم…"
