@@ -12,6 +12,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "shared/supplierVoucherSettlement.test.ts",
+      "client/src/components/vouchers/SupplierVoucherSettlementSummary.test.tsx",
       "server/lib/__tests__/webMemoryBudget.test.ts",
       "client/src/components/storefront/StorefrontSearch.test.tsx",
       "server/routers/__tests__/backupDownload.test.ts",

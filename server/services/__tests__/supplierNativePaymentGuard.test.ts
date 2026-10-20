@@ -214,33 +214,34 @@ async function financialState() {
 
 describe("native supplier AP payment guards", () => {
   it.each([maker, owner])(
-    "rejects generic payment atomically for actor $userId, including the owner",
+    "routes supplier vouchers through native allocations for actor $userId",
     async (actor) => {
       await postedNativeInvoice();
-      const before = await financialState();
-      await expect(createVoucher(voucherInput(), actor)).rejects.toMatchObject({
-        code: "CONFLICT",
-      });
-      expect(await financialState()).toEqual(before);
-      expect(await d().select().from(s.idempotencyKeys)).toHaveLength(0);
+      const voucher = await createVoucher(voucherInput(), actor);
+      const after = await financialState();
+      expect(after.requests).toHaveLength(1);
+      expect(after.receipts).toHaveLength(1);
+      expect(after.balance).toBe(voucher.approvalStatus === "APPROVED" ? "90000.00" : "100000.00");
+      expect(after.allocations).toHaveLength(voucher.approvalStatus === "APPROVED" ? 1 : 0);
+      expect(await d().select().from(s.idempotencyKeys)).toHaveLength(1);
     },
   );
 
-  it("rechecks a pending generic voucher if native AP was posted after creation", async () => {
+  it("automatically allocates a pending voucher when native AP was posted after creation", async () => {
     const voucher = await createVoucher(voucherInput(), maker);
     await postedNativeInvoice();
-    const before = await financialState();
-    await expect(
-      approveVoucher(voucher.receiptId, owner),
-    ).rejects.toMatchObject({ code: "CONFLICT" });
-    expect(await financialState()).toEqual(before);
+    await approveVoucher(voucher.receiptId, owner);
+    const after = await financialState();
+    expect(after.balance).toBe("90000.00");
+    expect(after.allocations).toHaveLength(1);
+    expect(after.receipts).toHaveLength(1);
     const [receipt] = await d()
       .select()
       .from(s.receipts)
       .where(eq(s.receipts.id, voucher.receiptId));
     expect(receipt).toMatchObject({
-      status: "PENDING",
-      approvalStatus: "PENDING_APPROVAL",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
     });
   });
 
@@ -349,10 +350,11 @@ describe("native supplier AP payment guards", () => {
     expect(after.receipts).toHaveLength(1);
     expect(after.allocations).toHaveLength(1);
     expect(after.allocations[0].allocatedAmount).toBe("10000.00");
-    await expect(createVoucher(voucherInput(), maker)).rejects.toMatchObject({
-      code: "CONFLICT",
-    });
-    expect(await financialState()).toEqual(after);
+    await createVoucher(voucherInput(), maker);
+    const pending = await financialState();
+    expect(pending.balance).toBe(after.balance);
+    expect(pending.allocations).toEqual(after.allocations);
+    expect(pending.receipts).toHaveLength(2);
   });
 
   it("allows payment of a posted portion of a larger purchase order", async () => {
