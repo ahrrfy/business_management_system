@@ -34,6 +34,7 @@ import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { enqueueFinancialRefresh } from "../../realtime/financialRefresh";
 import { appErrorMessage } from "@shared/errors";
+import type { SupplierVoucherAllocation } from "@shared/supplierVoucherSettlement";
 import { logAuditTx } from "../auditService";
 import { supplierApEffectSql } from "../ledger/supplierApEffect";
 import { adjustSupplierBalanceUsd } from "../ledgerService";
@@ -42,6 +43,7 @@ import { withGovernanceTx, withTx, type Actor } from "../tx";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { loadPurchaseSettlements } from "./settlementProjection";
 import { loadSupplierBookInvoiceTotals } from "./supplierBookProjection";
+import { loadSupplierFormalCreditTotals } from "./supplierFormalCreditProjection";
 import {
   requestPurchaseIntegrityResolutionInTx,
   decidePurchaseIntegrityResolutionInTx,
@@ -49,6 +51,7 @@ import {
 
 const ACTION = "supplier.bookSettlement.adopt";
 const LIMIT = 100_000;
+const PREVIEW_SOURCE_ID = Number.MAX_SAFE_INTEGER;
 const canonical = (value: unknown) =>
   stableCanonical(JSON.parse(JSON.stringify(value)));
 const hash = (value: unknown) => sha256(canonical(value));
@@ -106,11 +109,23 @@ export type BookAllocation = {
   targetHash: string;
 };
 type PlannedSource = BookSource & { allocations: BookAllocation[] };
+type ContextOptions = {
+  futurePayment?: {
+    amount: string;
+    date: string;
+    allocations?: SupplierVoucherAllocation[];
+  };
+  manualSource?: { entryId: number; allocations: SupplierVoucherAllocation[] };
+};
 
 /** Present-day FIFO of carrying value; never a claim about historical tender or returned goods. */
 export function buildSupplierBookFifo(
   targets: BookTarget[],
   sourceRows: BookSource[],
+  manualSources: ReadonlyMap<
+    number,
+    readonly SupplierVoucherAllocation[]
+  > = new Map(),
 ) {
   const state = targets
     .map((t) => ({
@@ -131,10 +146,7 @@ export function buildSupplierBookFifo(
     let left = money(source.amount);
     const assigned: BookAllocation[] = [];
     if (!left.gt(0)) fail("مبلغ مصدر التسوية غير موجب");
-    for (const target of state) {
-      if (left.isZero()) break;
-      if (target.date > source.date || !target.remaining.gt(0)) continue;
-      const amount = Decimal.min(left, target.remaining);
+    const assign = (target: (typeof state)[number], amount: Decimal) => {
       // Cumulative original-book proportion assigns the exact final rounded residual.
       const usedBefore = money(target.total).minus(target.remaining);
       const after = usedBefore.plus(amount).eq(target.total)
@@ -159,7 +171,39 @@ export function buildSupplierBookFifo(
       target.remaining = target.remaining.minus(amount);
       target.used = after;
       left = left.minus(amount);
-    }
+    };
+    const manual = manualSources.get(source.entryId);
+    if (manual) {
+      if (!manual.length || manual.length > 500 || source.kind !== "PAYMENT")
+        fail("توزيع سند الصرف اليدوي غير صالح");
+      const seen = new Set<number>();
+      for (const row of manual) {
+        const target = state.find(
+          (t) => t.supplierInvoiceId === row.supplierInvoiceId,
+        );
+        const invoice = (
+          target?.snapshot as { invoice?: { version?: number } } | undefined
+        )?.invoice;
+        if (
+          !target ||
+          seen.has(row.supplierInvoiceId) ||
+          invoice?.version !== row.invoiceVersion ||
+          target.date > source.date ||
+          !/^\d+(?:\.\d{1,2})?$/.test(row.amount)
+        )
+          fail("تغيرت الفاتورة أو تكرر تخصيصها؛ حدّث التوزيع قبل الحفظ");
+        const amount = money(row.amount);
+        if (!amount.gt(0) || amount.gt(target.remaining) || amount.gt(left))
+          fail("تخصيص الفاتورة يتجاوز المتبقي المتاح");
+        seen.add(row.supplierInvoiceId);
+        assign(target, amount);
+      }
+    } else
+      for (const target of state) {
+        if (left.isZero()) break;
+        if (target.date > source.date || !target.remaining.gt(0)) continue;
+        assign(target, Decimal.min(left, target.remaining));
+      }
     if (!left.isZero())
       fail(
         `المصدر ${source.entryId} يضم رصيداً غير قابل للتخصيص بالكامل؛ لا يجوز اختلاق فاتورة له`,
@@ -234,6 +278,7 @@ async function invoiceOrders(tx: Tx, invoices: Invoice[]) {
 async function loadContext(
   tx: Tx,
   input: { supplierId: number; branchId: number },
+  options: ContextOptions = {},
 ) {
   checkedScope(input);
   const [supplier] = await tx
@@ -399,6 +444,7 @@ async function loadContext(
   if (branchIds.size !== 1 || !branchIds.has(input.branchId))
     fail("لا يمكن إسناد افتتاحي بلا فرع داخل مورد متعدد الفروع تلقائياً");
   const links = await invoiceOrders(tx, invoices);
+  const formalCredits = await loadSupplierFormalCreditTotals(tx, ids);
   const targets: BookTarget[] = [];
   const classify: Invoice[] = [];
   for (const invoice of invoices) {
@@ -452,19 +498,7 @@ async function loadContext(
           s.plus(a.allocatedCurrencyAmount).minus(a.refundedCurrencyAmount),
         money(0),
       );
-    let credit = money(0);
-    for (const row of formal.filter(
-      (r) =>
-        r.supplierInvoiceId === invoice.id ||
-        (r.supplierInvoiceId == null && r.purchaseOrderId === order.id),
-    )) {
-      const reverse = reversed
-        .filter((r) => r.purchaseReturnId === row.id)
-        .reduce((s, r) => s.plus(r.totalAmount), money(0));
-      credit = credit.plus(
-        Decimal.max(money(row.creditOffsetAmount).minus(reverse), 0),
-      );
-    }
+    const credit = money(formalCredits.get(invoice.id) ?? 0);
     const booked = book.get(invoice.id);
     const used = paidNative
       .plus(invoice.legacySettledAmount)
@@ -637,7 +671,25 @@ async function loadContext(
       snapshot: { entry, receipt, exchange: exchange[0] ?? null },
     });
   }
-  const plan = buildSupplierBookFifo(targets, candidate);
+  if (options.futurePayment)
+    candidate.push({
+      entryId: PREVIEW_SOURCE_ID,
+      receiptId: null,
+      exchangeId: null,
+      kind: "PAYMENT",
+      date: options.futurePayment.date,
+      amount: options.futurePayment.amount,
+      snapshot: { previewOnly: true },
+    });
+  const manualSources = new Map<number, SupplierVoucherAllocation[]>();
+  if (options.futurePayment?.allocations)
+    manualSources.set(PREVIEW_SOURCE_ID, options.futurePayment.allocations);
+  if (options.manualSource)
+    manualSources.set(
+      options.manualSource.entryId,
+      options.manualSource.allocations,
+    );
+  const plan = buildSupplierBookFifo(targets, candidate, manualSources);
   if (
     plan.sources.length > 100 ||
     plan.sources.reduce((n, s) => n + s.allocations.length, 0) > 2000 ||
@@ -650,7 +702,11 @@ async function loadContext(
     ).size > 200
   )
     fail("التوزيع أكبر من حد الاعتماد الذري؛ قسم نطاق المراجعة");
-  if (!money(plan.remaining).eq(supplier.currentBalance))
+  if (
+    !money(plan.remaining).eq(
+      money(supplier.currentBalance).minus(options.futurePayment?.amount ?? 0),
+    )
+  )
     fail(
       `تخصيص المصادر لا يطابق صافي AP: المتبقي ${plan.remaining} والدفتر ${supplier.currentBalance}`,
     );
@@ -737,6 +793,291 @@ export async function previewSupplierBookSettlement(input: {
   });
 }
 
+export type LiveSupplierBookVoucherPlan = {
+  mode: "BOOK";
+  supplierId: number;
+  branchId: number;
+  amount: string;
+  evidenceHash: string;
+  allocations?: SupplierVoucherAllocation[];
+};
+const liveVoucherPlans = new WeakMap<
+  LiveSupplierBookVoucherPlan,
+  {
+    tx: Tx;
+    receiptId?: number;
+    beforeBalance: string;
+    allocations?: SupplierVoucherAllocation[];
+    planHash: string;
+  }
+>();
+
+/** Read-only preflight. Callers acquire the exclusive governance gate before domain locks. */
+export async function prepareSupplierBookVoucherTx(
+  tx: Tx,
+  input: {
+    supplierId: number;
+    branchId: number;
+    amount: string;
+    receiptId?: number;
+    voucherDate?: string;
+    allocations?: SupplierVoucherAllocation[];
+  },
+  actor: Actor,
+): Promise<LiveSupplierBookVoucherPlan | null> {
+  checkedScope(input);
+  if (
+    actor.branchId !== input.branchId &&
+    !actor.isOwner &&
+    actor.role !== "admin"
+  )
+    fail("فرع سند الصرف خارج نطاق المستخدم");
+  // An explicitly reviewed legacy block is not an invitation to infer its old
+  // ownership again. Keep the existing eligible-invoice path for that scope.
+  const [reviewedBlock] = await tx
+    .select({ id: supplierInvoices.id })
+    .from(supplierInvoices)
+    .where(
+      and(
+        eq(supplierInvoices.supplierId, input.supplierId),
+        eq(supplierInvoices.status, "POSTED"),
+        eq(supplierInvoices.liabilityClass, "LEGACY_AP"),
+        eq(supplierInvoices.paymentGate, "BLOCKED_REVIEW"),
+      ),
+    )
+    .limit(1);
+  if (reviewedBlock) return null;
+  const [opening] = await tx
+    .select({ id: accountingEntries.id })
+    .from(accountingEntries)
+    .where(
+      and(
+        eq(accountingEntries.supplierId, input.supplierId),
+        eq(accountingEntries.entryType, "OPENING"),
+        sql`${accountingEntries.amount} > 0`,
+      ),
+    )
+    .limit(1);
+  const [legacyInvoice] = await tx
+    .select({ id: supplierInvoices.id })
+    .from(supplierInvoices)
+    .where(
+      and(
+        eq(supplierInvoices.supplierId, input.supplierId),
+        eq(supplierInvoices.status, "POSTED"),
+        inArray(supplierInvoices.liabilityClass, [
+          "LEGACY_AP",
+          "LEGACY_UNKNOWN",
+        ]),
+      ),
+    )
+    .limit(1);
+  const [poCredit] = await tx
+    .select({ id: purchaseReturns.id })
+    .from(purchaseReturns)
+    .where(
+      and(
+        eq(purchaseReturns.supplierId, input.supplierId),
+        sql`${purchaseReturns.supplierInvoiceId} IS NULL`,
+        sql`${purchaseReturns.creditOffsetAmount} > 0`,
+      ),
+    )
+    .limit(1);
+  if (!opening && !legacyInvoice && !poCredit) return null;
+  const [supplier] = await tx
+    .select()
+    .from(suppliers)
+    .where(eq(suppliers.id, input.supplierId));
+  if (!supplier || !money(input.amount).gt(0))
+    fail("المورد أو مبلغ سند الصرف غير صالح");
+  // Preserve the existing generic advance path for opening-only accounts.
+  // Invoice-backed overpayments still require their explicit advance model.
+  if (
+    !legacyInvoice &&
+    !poCredit &&
+    money(input.amount).gt(supplier.currentBalance)
+  ) {
+    const [nativeInvoice] = await tx
+      .select({ id: supplierInvoices.id })
+      .from(supplierInvoices)
+      .where(
+        and(
+          eq(supplierInvoices.supplierId, input.supplierId),
+          eq(supplierInvoices.status, "POSTED"),
+          eq(supplierInvoices.liabilityClass, "NATIVE_AP"),
+        ),
+      )
+      .limit(1);
+    if (!nativeInvoice) return null;
+  }
+  // A pending BOOK receipt reserves account capacity, without creating cash or a fictitious invoice.
+  const pendingReceipts = await tx
+    .select()
+    .from(receipts)
+    .where(
+      and(
+        eq(receipts.partyType, "SUPPLIER"),
+        eq(receipts.partyId, input.supplierId),
+        eq(receipts.direction, "OUT"),
+        eq(receipts.status, "PENDING"),
+        eq(receipts.approvalStatus, "PENDING_APPROVAL"),
+      ),
+    )
+    .for("share");
+  const markers = pendingReceipts.length
+    ? await tx
+        .select()
+        .from(auditLogs)
+        .where(
+          and(
+            eq(auditLogs.action, "supplier.bookVoucher.request"),
+            eq(auditLogs.entityType, "receipt"),
+            inArray(
+              auditLogs.entityId,
+              pendingReceipts.map((r) => String(r.id)),
+            ),
+          ),
+        )
+        .for("share")
+    : [];
+  let reserved = money(0);
+  for (const receipt of pendingReceipts) {
+    if (receipt.id === input.receiptId) continue;
+    const matching = markers.filter((m) => m.entityId === String(receipt.id));
+    if (!matching.length) continue;
+    const marker = matching[0]
+      .newValue as Partial<LiveSupplierBookVoucherPlan> & { version?: number };
+    if (
+      matching.length !== 1 ||
+      marker.version !== 1 ||
+      marker.mode !== "BOOK" ||
+      marker.supplierId !== input.supplierId ||
+      marker.branchId !== receipt.branchId ||
+      !money(marker.amount ?? 0).eq(receipt.amount)
+    )
+      fail("دليل حجز سند صرف المورد لا يطابق أصله");
+    reserved = reserved.plus(receipt.amount);
+  }
+  if (money(input.amount).gt(money(supplier.currentBalance).minus(reserved)))
+    fail("المبلغ يتجاوز صافي الذمة المتاح بعد حجوزات سندات الصرف المعلقة");
+  const c = await loadContext(
+    tx,
+    { supplierId: input.supplierId, branchId: input.branchId },
+    {
+      futurePayment: {
+        amount: toDbMoney(money(input.amount)),
+        date: input.voucherDate ?? new Date().toISOString().slice(0, 10),
+        allocations: input.allocations,
+      },
+    },
+  );
+  const plan: LiveSupplierBookVoucherPlan = {
+    mode: "BOOK",
+    supplierId: input.supplierId,
+    branchId: input.branchId,
+    amount: toDbMoney(money(input.amount)),
+    evidenceHash: c.planHash,
+    ...(input.allocations
+      ? { allocations: input.allocations.map((a) => ({ ...a })) }
+      : {}),
+  };
+  liveVoucherPlans.set(plan, {
+    tx,
+    receiptId: input.receiptId,
+    beforeBalance: supplier.currentBalance,
+    allocations: input.allocations?.map((a) => ({ ...a })),
+    planHash: hash(plan),
+  });
+  return plan;
+}
+
+/** Materialize the real posted source only; original voucher code owns cash and the AP entry. */
+export async function applySupplierBookVoucherTx(
+  tx: Tx,
+  input: {
+    receiptId: number;
+    accountingEntryId: number;
+    plan: LiveSupplierBookVoucherPlan;
+  },
+  actor: Actor,
+): Promise<{ sourceId: number }> {
+  const prepared = liveVoucherPlans.get(input.plan);
+  if (
+    !prepared ||
+    prepared.tx !== tx ||
+    prepared.planHash !== hash(input.plan) ||
+    (prepared.receiptId != null && prepared.receiptId !== input.receiptId)
+  )
+    fail("خطة سند الصرف لا تنتمي إلى المعاملة الحالية");
+  liveVoucherPlans.delete(input.plan);
+  const [entry] = await tx
+    .select()
+    .from(accountingEntries)
+    .where(eq(accountingEntries.id, input.accountingEntryId));
+  const [receipt] = await tx
+    .select()
+    .from(receipts)
+    .where(eq(receipts.id, input.receiptId));
+  const [supplier] = await tx
+    .select()
+    .from(suppliers)
+    .where(eq(suppliers.id, input.plan.supplierId));
+  if (
+    !entry ||
+    !receipt ||
+    !supplier ||
+    entry.receiptId !== receipt.id ||
+    entry.supplierId !== input.plan.supplierId ||
+    entry.branchId !== input.plan.branchId ||
+    entry.entryType !== "PAYMENT_OUT" ||
+    entry.purchaseOrderId != null ||
+    entry.purchaseLiabilityAccount === "CASH_CLEARING" ||
+    !money(entry.amount).eq(input.plan.amount) ||
+    receipt.partyType !== "SUPPLIER" ||
+    receipt.partyId !== input.plan.supplierId ||
+    receipt.direction !== "OUT" ||
+    receipt.status !== "COMPLETED" ||
+    receipt.approvalStatus !== "APPROVED" ||
+    !money(receipt.amount).eq(input.plan.amount) ||
+    !money(supplier.currentBalance).eq(
+      money(prepared.beforeBalance).minus(input.plan.amount),
+    )
+  )
+    fail("أصل سند الصرف أو أثر الذمة لا يطابق خطة التسوية");
+  const contextOptions: ContextOptions = prepared.allocations
+    ? { manualSource: { entryId: entry.id, allocations: prepared.allocations } }
+    : {};
+  const c = await loadContext(
+    tx,
+    {
+      supplierId: input.plan.supplierId,
+      branchId: input.plan.branchId,
+    },
+    contextOptions,
+  );
+  if (
+    !c.sources.some((s) => s.entryId === entry.id && s.receiptId === receipt.id)
+  )
+    fail("مصدر سند الصرف غير مؤهل أو مخصص سابقاً");
+  await adoptSupplierBookSettlementInTx(
+    tx,
+    {
+      supplierId: input.plan.supplierId,
+      branchId: input.plan.branchId,
+      requestKey: `BOOK-VOUCHER:${receipt.id}`,
+      expectedPlanHash: c.planHash,
+    },
+    actor,
+    contextOptions,
+  );
+  const [source] = await tx
+    .select({ id: sources.id })
+    .from(sources)
+    .where(eq(sources.sourceAccountingEntryId, entry.id));
+  if (!source) fail("لم يثبت ربط مصدر سند الصرف");
+  return { sourceId: source.id };
+}
+
 /** Rebuild derived invoice gates and PO caches; source money/AP is changed only by its original service. */
 async function refreshTargets(tx: Tx, invoiceIds: number[]) {
   if (!invoiceIds.length) return;
@@ -776,32 +1117,14 @@ async function refreshTargets(tx: Tx, invoiceIds: number[]) {
   const book = await loadSupplierBookInvoiceTotals(tx, invoiceIds, {
     currentRead: true,
   });
+  const formalCredits = await loadSupplierFormalCreditTotals(tx, invoiceIds, {
+    currentRead: true,
+  });
   const native = await tx
     .select()
     .from(supplierPaymentAllocations)
     .where(inArray(supplierPaymentAllocations.supplierInvoiceId, invoiceIds))
     .for("share");
-  const formal = await tx
-    .select()
-    .from(purchaseReturns)
-    .where(
-      and(
-        inArray(
-          purchaseReturns.supplierId,
-          Array.from(new Set(invoices.map((i) => i.supplierId))),
-        ),
-        sql`(${purchaseReturns.supplierInvoiceId} IN ${invoiceIds} OR ${purchaseReturns.purchaseOrderId} IN ${poIds.length ? poIds : [-1]})`,
-      ),
-    )
-    .for("share");
-  const returnIds = formal.map((r) => r.id);
-  const reversals = returnIds.length
-    ? await tx
-        .select()
-        .from(purchaseReturnReversals)
-        .where(inArray(purchaseReturnReversals.purchaseReturnId, returnIds))
-        .for("share")
-    : [];
   for (const invoice of invoices) {
     if (!["NATIVE_AP", "LEGACY_AP"].includes(invoice.liabilityClass))
       fail("تصنيف الفاتورة لا يسمح بتحديث بوابة التسوية");
@@ -814,28 +1137,9 @@ async function refreshTargets(tx: Tx, invoiceIds: number[]) {
         money(invoice.legacySettledAmount),
       )
       .plus(book.get(invoice.id)?.paidAmount ?? 0);
-    const ownCredit = formal
-      .filter(
-        (r) =>
-          r.supplierInvoiceId === invoice.id ||
-          (r.supplierInvoiceId == null &&
-            invoice.legacyPurchaseOrderId != null &&
-            r.purchaseOrderId === invoice.legacyPurchaseOrderId),
-      )
-      .reduce(
-        (sum, r) =>
-          sum.plus(
-            Decimal.max(
-              money(r.creditOffsetAmount).minus(
-                reversals
-                  .filter((v) => v.purchaseReturnId === r.id)
-                  .reduce((sub, v) => sub.plus(v.totalAmount), money(0)),
-              ),
-              0,
-            ),
-          ),
-        money(book.get(invoice.id)?.creditedAmount ?? 0),
-      );
+    const ownCredit = money(formalCredits.get(invoice.id) ?? 0).plus(
+      book.get(invoice.id)?.creditedAmount ?? 0,
+    );
     if (ownPaid.plus(ownCredit).gt(invoice.totalAmount))
       fail("تجاوزت التسوية قيمة فاتورة المورد");
     const settled = ownPaid.plus(ownCredit).eq(invoice.totalAmount);
@@ -880,6 +1184,7 @@ async function adoptSupplierBookSettlementInTx(
   tx: Tx,
   input: AdoptionInput,
   actor: Actor,
+  contextOptions: ContextOptions = {},
 ): Promise<AdoptionResult> {
   checkedScope(input);
   if (
@@ -923,10 +1228,14 @@ async function adoptSupplierBookSettlementInTx(
       fail("أعيد مفتاح الاعتماد بمضمون مختلف");
     return { ...saved, replayed: true };
   }
-  const c = await loadContext(tx, {
-    supplierId: input.supplierId,
-    branchId: input.branchId,
-  });
+  const c = await loadContext(
+    tx,
+    {
+      supplierId: input.supplierId,
+      branchId: input.branchId,
+    },
+    contextOptions,
+  );
   if (c.planHash !== input.expectedPlanHash)
     fail("تغير دليل المصدر أو التخصيص منذ المعاينة");
   if (!c.sources.length) fail("لا توجد مصادر جديدة كاملة قابلة للربط");

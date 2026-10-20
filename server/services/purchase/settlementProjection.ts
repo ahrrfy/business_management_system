@@ -1,3 +1,4 @@
+import { loadSupplierFormalCreditTotals } from "./supplierFormalCreditProjection";
 import { loadSupplierBookInvoiceTotals, supplierBookSourceClaimedSql } from "./supplierBookProjection";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import Decimal from "decimal.js";
@@ -147,6 +148,7 @@ export async function loadPurchaseSettlements(
     : invoiceQuery);
   const invoiceIds = invoices.map((invoice) => Number(invoice.id));
   const book = await loadSupplierBookInvoiceTotals(db, invoiceIds, options);
+  const formalCredits = await loadSupplierFormalCreditTotals(db, invoiceIds, options);
   const allocationQuery = db
     .select({
       invoiceId: supplierPaymentAllocations.supplierInvoiceId,
@@ -360,7 +362,7 @@ export async function loadPurchaseSettlements(
       Number(row.returnId),
       (reversedByReturn.get(Number(row.returnId)) ?? money(0)).plus(row.amount),
     );
-  const creditByInvoice = new Map<number, Decimal>();
+  const creditByInvoice = new Map(Array.from(formalCredits, ([id, amount]) => [id, money(amount)]));
   const creditByPo = new Map<number, Decimal>();
   for (const row of returns) {
     const credit = nonNegative(
@@ -370,11 +372,7 @@ export async function loadPurchaseSettlements(
       Number(row.poId),
       (creditByPo.get(Number(row.poId)) ?? money(0)).plus(credit),
     );
-    if (row.invoiceId != null)
-      creditByInvoice.set(
-        Number(row.invoiceId),
-        (creditByInvoice.get(Number(row.invoiceId)) ?? money(0)).plus(credit),
-      );
+
   }
   const ledgerByPo = new Map(ledger.map((row) => [Number(row.poId), row]));
   for (const refund of orphanRefunds) {

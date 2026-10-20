@@ -1,9 +1,8 @@
+import { loadSupplierFormalCreditTotals } from "../purchase/supplierFormalCreditProjection";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import {
-  purchaseReturnReversals,
-  purchaseReturns,
   supplierInvoices,
   supplierPaymentAllocations,
   suppliers,
@@ -58,35 +57,7 @@ export async function assertNoNativeSupplierDebtForGenericPaymentTx(
   const allocations = await (options.currentRead
     ? allocationQuery.for("share")
     : allocationQuery);
-  const returnQuery = tx
-    .select()
-    .from(purchaseReturns)
-    .where(inArray(purchaseReturns.supplierInvoiceId, invoiceIds));
-  const returns = await (options.currentRead
-    ? returnQuery.for("share")
-    : returnQuery);
-  const creditReturnIds = returns
-    .filter((row) => row.settlement === "CREDIT")
-    .map((row) => Number(row.id));
-  const reversalQuery = creditReturnIds.length
-    ? tx
-        .select()
-        .from(purchaseReturnReversals)
-        .where(
-          inArray(purchaseReturnReversals.purchaseReturnId, creditReturnIds),
-        )
-    : null;
-  const reversals = reversalQuery
-    ? await (options.currentRead ? reversalQuery.for("share") : reversalQuery)
-    : [];
-  const reversed = new Map<number, ReturnType<typeof money>>();
-  for (const row of reversals) {
-    const returnId = Number(row.purchaseReturnId);
-    reversed.set(
-      returnId,
-      (reversed.get(returnId) ?? money(0)).plus(row.totalAmount),
-    );
-  }
+  const formalCredits = await loadSupplierFormalCreditTotals(tx, invoiceIds, options);
   const paid = new Map<number, ReturnType<typeof money>>();
   for (const row of allocations) {
     const invoiceId = Number(row.supplierInvoiceId);
@@ -97,19 +68,7 @@ export async function assertNoNativeSupplierDebtForGenericPaymentTx(
       ),
     );
   }
-  const credited = new Map<number, ReturnType<typeof money>>();
-  for (const row of returns) {
-    const invoiceId = Number(row.supplierInvoiceId);
-    const credit = money(row.creditOffsetAmount).minus(
-      reversed.get(Number(row.id)) ?? money(0),
-    );
-    credited.set(
-      invoiceId,
-      (credited.get(invoiceId) ?? money(0)).plus(
-        credit.gt(0) ? credit : money(0),
-      ),
-    );
-  }
+  const credited = new Map(Array.from(formalCredits, ([id, amount]) => [id, money(amount)]));
   const outstanding = invoices.find((row) =>
     money(row.totalAmount)
       .minus(

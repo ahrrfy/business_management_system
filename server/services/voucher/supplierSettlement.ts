@@ -9,6 +9,10 @@ import {
 import { and, asc, eq, or, sql } from "drizzle-orm";
 import {
   receipts,
+  accountingEntries,
+  auditLogs,
+  supplierBookSettlementSources,
+  purchaseReturns,
   supplierInvoices,
   supplierPaymentRequestAllocations,
   supplierPaymentRequests,
@@ -25,7 +29,9 @@ import {
   invoiceReservations,
   requestSupplierPaymentInTx,
 } from "../purchase/supplierPayments";
-import type { Actor } from "../tx";
+import { type Actor, withGovernanceTx, withTx } from "../tx";
+import { logAuditTx } from "../auditService";
+import type { LiveSupplierBookVoucherPlan } from "../purchase/supplierBookSettlement";
 import { assertBranchOwnership } from "./helpers";
 import {
   linkedSupplierVoucherRequest,
@@ -41,6 +47,68 @@ type PreparedAllocation = SupplierVoucherAllocation & {
 };
 
 const INPUT_OPERATION = "voucher.supplierSettlementInput";
+export const SUPPLIER_BOOK_VOUCHER_REQUEST_ACTION = "supplier.bookVoucher.request";
+const exclusiveBookGate = Symbol("supplier-book-voucher-governance");
+
+/** Decide under the shared gate before domain locks, then restart; never upgrade a held gate. */
+export async function withSupplierBookVoucherTx<T>(needsGovernance: (tx: Tx) => Promise<boolean>, operation: (tx: Tx) => Promise<T>): Promise<T> {
+  try {
+    return await withTx(async tx => {
+      if (await needsGovernance(tx)) throw exclusiveBookGate;
+      return operation(tx);
+    });
+  } catch (error) {
+    if (error !== exclusiveBookGate) throw error;
+    return withGovernanceTx(operation);
+  }
+}
+
+export async function supplierScopeNeedsBookGateTx(tx: Tx, supplierId: number): Promise<boolean> {
+  const [legacy] = await tx.select({ id: supplierInvoices.id }).from(supplierInvoices)
+    .where(and(eq(supplierInvoices.supplierId, supplierId), eq(supplierInvoices.origin, "LEGACY"), eq(supplierInvoices.status, "POSTED"))).limit(1);
+  if (legacy) return true;
+  const [opening] = await tx.select({ id: accountingEntries.id }).from(accountingEntries)
+    .where(and(eq(accountingEntries.supplierId, supplierId), eq(accountingEntries.entryType, "OPENING"))).limit(1);
+  if (opening) return true;
+  const [poCredit] = await tx.select({ id: purchaseReturns.id }).from(purchaseReturns).where(and(eq(purchaseReturns.supplierId, supplierId), sql`${purchaseReturns.supplierInvoiceId} IS NULL`, sql`${purchaseReturns.creditOffsetAmount} > 0`)).limit(1);
+  return !!poCredit;
+}
+
+export async function loadSupplierBookVoucherMarkerTx(tx: DB | Tx, receiptId: number) {
+  const rows = await tx.select({ newValue: auditLogs.newValue }).from(auditLogs)
+    .where(and(eq(auditLogs.action, SUPPLIER_BOOK_VOUCHER_REQUEST_ACTION), eq(auditLogs.entityType, "receipt"), eq(auditLogs.entityId, String(receiptId)))).limit(2);
+  if (!rows.length) return null;
+  const marker = rows[0].newValue as (LiveSupplierBookVoucherPlan & { version: number; inputHash: string; allocations?: SupplierVoucherAllocation[]; cashSource?: VoucherInput["supplierCashSource"] | null }) | null;
+  if (rows.length !== 1 || marker?.version !== 1 || marker.mode !== "BOOK" || !/^[a-f0-9]{64}$/.test(marker.inputHash) || !/^[a-f0-9]{64}$/.test(marker.evidenceHash))
+    throw supplierVoucherConflict("دليل نمط تسوية السند الدفترية غير صالح");
+  const [receipt] = await tx.select({ amount: receipts.amount, branchId: receipts.branchId, partyId: receipts.partyId, partyType: receipts.partyType, direction: receipts.direction }).from(receipts).where(eq(receipts.id, receiptId)).limit(1);
+  if (!receipt || receipt.direction !== "OUT" || receipt.partyType !== "SUPPLIER" || receipt.partyId !== marker.supplierId || receipt.branchId !== marker.branchId || !money(receipt.amount).eq(marker.amount))
+    throw supplierVoucherConflict("دليل نمط التسوية لا يطابق السند الأصلي");
+  return marker;
+}
+
+export async function recordSupplierBookVoucherMarkerTx(tx: Tx, receiptId: number, input: VoucherInput, plan: LiveSupplierBookVoucherPlan, actor: Actor) {
+  if (await loadSupplierBookVoucherMarkerTx(tx, receiptId)) throw supplierVoucherConflict("دليل التسوية الدفترية محفوظ بالفعل");
+  const marker = {
+    version: 1, mode: "BOOK", supplierId: plan.supplierId, branchId: plan.branchId, amount: plan.amount, evidenceHash: plan.evidenceHash, inputHash: settlementInputHash(input), allocations: input.supplierAllocations, cashSource: input.supplierCashSource ?? null,
+  };
+  if (Buffer.byteLength(JSON.stringify(marker), "utf8") > 7500)
+    throw supplierVoucherConflict("دليل التوزيع اليدوي أكبر من الحد الآمن؛ استخدم التوزيع التلقائي أو قلل عدد الفواتير في السند");
+  await logAuditTx(tx, actor, { action: SUPPLIER_BOOK_VOUCHER_REQUEST_ACTION, entityType: "receipt", entityId: String(receiptId), newValue: marker });
+}
+
+export async function receiptNeedsSupplierBookGateTx(tx: Tx, receiptId: number): Promise<boolean> {
+  const [receipt] = await tx.select().from(receipts).where(eq(receipts.id, receiptId)).limit(1);
+  if (!receipt) return false;
+  const cancellation = /^CANCEL-VCH-(\d+)$/.exec(receipt.referenceNumber ?? "");
+  if (cancellation) {
+    const [source] = await tx.select({ id: supplierBookSettlementSources.id }).from(supplierBookSettlementSources)
+      .where(eq(supplierBookSettlementSources.sourceReceiptId, Number(cancellation[1]))).for("share").limit(1);
+    return !!source;
+  }
+  if (await loadSupplierBookVoucherMarkerTx(tx, receiptId)) return true;
+  return receipt.direction === "OUT" && receipt.partyType === "SUPPLIER" && !!receipt.partyId && await supplierScopeNeedsBookGateTx(tx, Number(receipt.partyId));
+}
 function settlementInputHash(input: VoucherInput) {
   return idempotencyHash({
     allocationMode: input.supplierAllocations == null ? "FIFO" : "MANUAL",
@@ -238,6 +306,11 @@ export async function assertSupplierVoucherReplayTx(
   input: VoucherInput,
   receiptId: number,
 ) {
+  const bookMarker = await loadSupplierBookVoucherMarkerTx(tx, receiptId);
+  if (bookMarker) {
+    if (bookMarker.inputHash !== settlementInputHash(input)) throw supplierVoucherConflict("مفتاح السند مستعمل بمدخلات تسوية دفترية مختلفة");
+    return;
+  }
   const request = await linkedSupplierVoucherRequest(tx, receiptId);
   if (!request) {
     if (input.supplierAllocations != null || input.supplierCashSource != null)

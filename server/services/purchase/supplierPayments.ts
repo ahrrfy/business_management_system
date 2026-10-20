@@ -1,3 +1,4 @@
+import { loadSupplierFormalCreditTotals, supplierFormalCreditTotalsSql } from "./supplierFormalCreditProjection";
 import { loadSupplierBookInvoiceTotals, supplierBookInvoiceTotalsSql } from "./supplierBookProjection";
 import { createHash } from "node:crypto";
 import { canonicalOperationAllowed, loadOperationUserTx } from "../authorization/operationAuthority";
@@ -29,6 +30,7 @@ import {
   supplierPaymentRequests,
   supplierPayments,
   suppliers,
+  auditLogs,
   users,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
@@ -753,37 +755,10 @@ export async function invoiceReservations(tx: Tx, invoiceIds: number[], lockRows
     )
     .groupBy(supplierPaymentRequestAllocations.supplierInvoiceId);
   const pending = await (lockRows ? pendingQuery.for("update") : pendingQuery);
-  const credited = await tx
-    .select({
-      invoiceId: purchaseReturns.supplierInvoiceId,
-      amount: sql<string>`COALESCE(SUM(${purchaseReturns.creditOffsetAmount}),0)`,
-    })
-    .from(purchaseReturns)
-    .where(inArray(purchaseReturns.supplierInvoiceId, invoiceIds))
-    .groupBy(purchaseReturns.supplierInvoiceId);
-  const creditReversed = await tx
-    .select({
-      invoiceId: purchaseReturnReversals.supplierInvoiceId,
-      amount: sql<string>`COALESCE(SUM(${purchaseReturnReversals.totalAmount}),0)`,
-    })
-    .from(purchaseReturnReversals)
-    .innerJoin(
-      purchaseReturns,
-      eq(purchaseReturns.id, purchaseReturnReversals.purchaseReturnId),
-    )
-    .where(
-      and(
-        inArray(purchaseReturnReversals.supplierInvoiceId, invoiceIds),
-        eq(purchaseReturns.settlement, "CREDIT"),
-      ),
-    )
-    .groupBy(purchaseReturnReversals.supplierInvoiceId);
-  const reversedByInvoice = new Map(
-    creditReversed.map((row) => [Number(row.invoiceId), money(row.amount)]),
-  );
+  const formalCredits = await loadSupplierFormalCreditTotals(tx, invoiceIds, { currentRead: lockRows });
   const book = await loadSupplierBookInvoiceTotals(tx, invoiceIds, { currentRead: lockRows });
   const postedTotals = new Map(posted.map(row => [Number(row.invoiceId), { amount: money(row.amount), currencyAmount: money(row.currencyAmount) }]));
-  const creditTotals = new Map(credited.map(row => [Number(row.invoiceId), DecimalMaxZero(money(row.amount).minus(reversedByInvoice.get(Number(row.invoiceId)) ?? 0))]));
+  const creditTotals = new Map(Array.from(formalCredits, ([id, amount]) => [id, money(amount)]));
   const creditCurrencyAmounts = new Map<number, ReturnType<typeof money>>();
   const invoiceQuery = tx.select({ id: supplierInvoices.id, currency: supplierInvoices.currency, usdTotal: supplierInvoices.usdTotal, totalAmount: supplierInvoices.totalAmount }).from(supplierInvoices).where(inArray(supplierInvoices.id, invoiceIds));
   const invoices = invoiceIds.length ? await (lockRows ? invoiceQuery.for("share") : invoiceQuery) : [];
@@ -1024,6 +999,10 @@ export async function requestSupplierPaymentInTx(
       code: "BAD_REQUEST",
       message: "بعض فواتير المورد غير موجودة",
     });
+  const [pendingBookVoucher] = await tx.select({ id: receipts.id }).from(receipts).innerJoin(auditLogs, and(
+    eq(auditLogs.action, "supplier.bookVoucher.request"), eq(auditLogs.entityType, "receipt"), sql`${auditLogs.entityId} = CAST(${receipts.id} AS CHAR)`
+  )).where(and(eq(receipts.partyType, "SUPPLIER"), eq(receipts.partyId, input.supplierId), eq(receipts.direction, "OUT"), eq(receipts.status, "PENDING"), eq(receipts.approvalStatus, "PENDING_APPROVAL"))).for("share").limit(1);
+  if (pendingBookVoucher) throw supplierVoucherConflict("يوجد سند تسوية دفترية معلق يحجز رصيد المورد؛ احسمه قبل طلب سداد جديد");
   await assertNativePurchaseSettlementEvidence(tx, aggregate);
   const invoiceById = new Map(invoices.map((row) => [Number(row.id), row]));
   const reservations = await invoiceReservations(tx, ids);
@@ -2506,16 +2485,8 @@ export async function listSupplierPaymentSources(
         WHERE spra.supplierInvoiceId = ${supplierInvoices.id}
           AND spr.status = 'PENDING'
       ), 0)`;
-      const netCreditReturns = sql<string>`GREATEST(
-        COALESCE((SELECT SUM(pr.creditOffsetAmount) FROM purchaseReturns pr
-          WHERE pr.supplierInvoiceId = ${supplierInvoices.id}), 0)
-        - COALESCE((SELECT SUM(prr.totalAmount)
-          FROM purchaseReturnReversals prr
-          INNER JOIN purchaseReturns pr ON pr.id = prr.purchaseReturnId
-          WHERE prr.supplierInvoiceId = ${supplierInvoices.id}
-            AND pr.settlement = 'CREDIT'), 0),
-        0
-      )`;
+      const formalCredit = supplierFormalCreditTotalsSql(supplierInvoices.id);
+      const netCreditReturns = formalCredit.amount;
       const remainingAmount = sql<string>`GREATEST(
         GREATEST(${supplierInvoices.totalAmount} - ${netCreditReturns} - ${book.creditedAmount}, 0)
         - ${supplierInvoices.legacySettledAmount}
@@ -2537,6 +2508,7 @@ export async function listSupplierPaymentSources(
         ELSE 0
       END`;
       const eligibleWhere = and(
+        formalCredit.eligible,
         eq(supplierInvoices.branchId, input.branchId),
         input.supplierId == null
           ? undefined
