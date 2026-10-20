@@ -59,13 +59,15 @@ export default function EmployeeNew() {
   );
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [prefilledApplicantStateId, setPrefilledApplicantStateId] = useState<number | null>(null);
   const prefilledApplicantIdRef = useRef<number | null>(null);
   const prefilledBranchApplicantIdRef = useRef<number | null>(null);
+  const initialSnapshotRef = useRef<string>("");
 
   const [form, setForm] = useState({
     firstName: "", fatherName: "", grandfatherName: "", lastName: "",
     gender: "ذكر", birthDate: "", maritalStatus: "", nationality: "عراقي", nationalId: "",
-    phone: "", email: "", governorate: "بغداد", district: "", addressLandmark: "",
+    phone: "", email: "", governorate: applicantId ? "" : "بغداد", district: "", addressLandmark: "",
     emergencyContactName: "", emergencyContactPhone: "",
     department: HR_DEPARTMENTS[0] as string, position: "", branchId: "", managerId: "", hireDate: "",
     payType: "monthly" as "monthly" | "hourly", salary: "", allowances: "0",
@@ -149,20 +151,21 @@ export default function EmployeeNew() {
     if (prefilledApplicantIdRef.current === a.id) return;
     prefilledApplicantIdRef.current = a.id;
     const names = splitFullArabicName(a.name);
-    const matchedBranchId =
-      a.branchId != null
+    const preferredBranchMatch =
+      a.preferredBranch && opts.data?.branches
+        ? opts.data.branches.find(
+            (b) =>
+              b.name === a.preferredBranch ||
+              a.preferredBranch?.includes(b.name) ||
+              b.name.includes(a.preferredBranch ?? ""),
+          )
+        : undefined;
+    const matchedBranchId = preferredBranchMatch
+      ? String(preferredBranchMatch.id)
+      : !a.preferredBranch && a.vacancyId != null && a.branchId != null
         ? String(a.branchId)
-        : a.preferredBranch && opts.data?.branches
-          ? String(
-              opts.data.branches.find(
-                (b) =>
-                  b.name === a.preferredBranch ||
-                  a.preferredBranch?.includes(b.name) ||
-                  b.name.includes(a.preferredBranch ?? ""),
-              )?.id ?? "",
-            )
-          : "";
-    if (a.branchId != null || !a.preferredBranch || opts.data?.branches) {
+        : "";
+    if (!a.preferredBranch || opts.data?.branches) {
       prefilledBranchApplicantIdRef.current = a.id;
     }
     const rawPosition = (a.jobTitle ?? "").trim().slice(0, 100);
@@ -170,6 +173,8 @@ export default function EmployeeNew() {
       a.department && (HR_DEPARTMENTS as readonly string[]).includes(a.department)
         ? a.department
         : "";
+    initialSnapshotRef.current = "";
+    setPrefilledApplicantStateId(a.id);
     setForm((f) => ({
       ...f,
       firstName: (names.firstName || f.firstName).slice(0, 100),
@@ -181,12 +186,12 @@ export default function EmployeeNew() {
       maritalStatus: (a.maritalStatus || f.maritalStatus).slice(0, 20),
       phone: (a.phone || f.phone).slice(0, 20),
       email: (a.email || f.email).slice(0, 100),
-      governorate: (a.governorate || f.governorate).slice(0, 80),
+      governorate: (a.governorate ?? "").slice(0, 80),
       district: (a.district || f.district).slice(0, 120),
       addressLandmark: (a.residentialAddress || f.addressLandmark).slice(0, 255),
       department: matchedDepartment || f.department,
       position: rawPosition || f.position,
-      branchId: matchedBranchId || f.branchId,
+      branchId: matchedBranchId,
     }));
     const legacyDegree = !a.degree && a.education ? DEGREES.find((d) => a.education?.trim().startsWith(d)) : undefined;
     const resolvedDegree = a.degree || legacyDegree;
@@ -206,10 +211,18 @@ export default function EmployeeNew() {
   useEffect(() => {
     if (isEdit || !applicantQ.data || prefilledBranchApplicantIdRef.current === applicantQ.data.id || !opts.data?.branches) return;
     prefilledBranchApplicantIdRef.current = applicantQ.data.id;
-    if (applicantQ.data.branchId != null || !applicantQ.data.preferredBranch) return;
     const pref = applicantQ.data.preferredBranch;
+    if (!pref) return;
     const matched = opts.data.branches.find((b) => b.name === pref || pref.includes(b.name) || b.name.includes(pref));
-    if (matched) setForm((f) => (f.branchId ? f : { ...f, branchId: String(matched.id) }));
+    if (matched) {
+      const wasClean = !initialSnapshotRef.current || dirtySnapshot() === initialSnapshotRef.current;
+      setForm((f) => {
+        if (f.branchId) return f;
+        if (wasClean) initialSnapshotRef.current = "";
+        return { ...f, branchId: String(matched.id) };
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEdit, applicantQ.data, opts.data?.branches]);
 
   const photoUrl = useMemo(() => photo[0]?.dataUrl || photo[0]?.url || null, [photo]);
@@ -336,13 +349,19 @@ export default function EmployeeNew() {
    * لقطةٍ للحالة الأولى بعد التحميل (`loaded`) ومقارنة الحالة الحالية بها فعلياً.
    */
   const dirtySnapshot = () => JSON.stringify({ form, dayRates, exempt, sched, photoUrl, edu: edu.map(({ key, ...e }) => e) });
-  const initialSnapshotRef = useRef<string>("");
+  const waitingForApplicantPrefill =
+    !isEdit &&
+    applicantId != null &&
+    can("recruitment.get") &&
+    prefilledApplicantStateId !== applicantId &&
+    !applicantQ.isError;
   useEffect(() => {
     if (isEdit && !loaded) return; // بيانات التعديل لم تصل بعد — لا لقطة سابقة لأوانها
+    if (waitingForApplicantPrefill) return; // بيانات المتقدّم لم تُعبّأ بعد — لا لقطة سابقة لأوانها
     if (initialSnapshotRef.current) return; // لقطة واحدة فقط عند أول استقرار
     initialSnapshotRef.current = dirtySnapshot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isEdit, loaded]);
+  }, [isEdit, loaded, waitingForApplicantPrefill, form.branchId]);
   const isDirty = !!initialSnapshotRef.current && dirtySnapshot() !== initialSnapshotRef.current;
   useUnsavedGuard(isDirty && !createdInfo);
 
