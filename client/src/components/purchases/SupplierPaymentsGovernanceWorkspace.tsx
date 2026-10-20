@@ -55,6 +55,7 @@ export type SupplierRefundSource = {
   supplierPaymentId: number;
   paymentNumber: string;
   paymentVersion: number;
+  derivesInvoiceCurrency?: boolean;
   supplierId: number;
   supplierLabel: string;
   currency: "IQD" | "USD";
@@ -283,6 +284,8 @@ export function SupplierPaymentsGovernanceWorkspace({
   const selectedRefund = refundSources.find(
     (row) => row.supplierPaymentId === Number(refundId),
   );
+  const derivesRefundCurrency =
+    mode === "REFUND" && selectedRefund?.derivesInvoiceCurrency === true;
   const selectedEntries = Object.entries(amounts)
     .map(([id, values]) => ({ id: Number(id), ...values }))
     .filter(
@@ -673,29 +676,37 @@ export function SupplierPaymentsGovernanceWorkspace({
                           >
                             مبلغ العملة
                           </Label>
-                          <MoneyInput
-                            id={`payment-currency-${id}`}
-                            value={amounts[id]?.currencyAmount ?? ""}
-                            onChange={(currencyAmount) =>
-                              setAmounts((current) => ({
-                                ...current,
-                                [id]: {
-                                  amount: current[id]?.amount ?? "",
-                                  currencyAmount,
-                                },
-                              }))
-                            }
-                            disabled={formCurrency === "IQD"}
-                            ariaLabel={`مبلغ ${number} بالعملة`}
-                          />
+                          {derivesRefundCurrency ? (
+                            <p className="py-2 text-sm text-muted-foreground">
+                              تُحسب تلقائياً من تخصيص الدفع الأصلي
+                            </p>
+                          ) : (
+                            <MoneyInput
+                              id={`payment-currency-${id}`}
+                              value={amounts[id]?.currencyAmount ?? ""}
+                              onChange={(currencyAmount) =>
+                                setAmounts((current) => ({
+                                  ...current,
+                                  [id]: {
+                                    amount: current[id]?.amount ?? "",
+                                    currencyAmount,
+                                  },
+                                }))
+                              }
+                              disabled={formCurrency === "IQD"}
+                              ariaLabel={`مبلغ ${number} بالعملة`}
+                            />
+                          )}
                         </div>
                       </div>
                     );
                   })}
                 </div>
                 <p className="text-sm font-semibold" dir="ltr">
-                  الإجمالي: {fmt(totalAmount)} د.ع · {fmt(totalCurrencyAmount)}{" "}
-                  بالعملة
+                  الإجمالي: {fmt(totalAmount)} د.ع
+                  {!derivesRefundCurrency && (
+                    <> · {fmt(totalCurrencyAmount)} بالعملة</>
+                  )}
                 </p>
               </div>
             ) : null}

@@ -699,13 +699,26 @@ async function scan(
     if (assignmentRows.length !== postingIds.length + 1)
       fail("دليل قيد الاعتراف المستهدف مفقود");
   }
+  // Company opening balances may predate branch attribution. Use a provable
+  // sole AP branch only to find zero boundaries; never rewrite/adopt that row.
+  // Otherwise its payment poisons every later, independently closed episode.
+  const supplierBranches = new Map<number, Set<number>>();
+  for (const { row, effect } of ledger) {
+    if (row.supplierId == null || row.branchId == null || money(effect).isZero()) continue;
+    const ids = supplierBranches.get(row.supplierId) ?? new Set<number>();
+    ids.add(row.branchId);
+    supplierBranches.set(row.supplierId, ids);
+  }
   for (const entry of assignmentRows) {
+    const knownBranches = supplierBranches.get(entry.row.supplierId!);
+    const segmentationBranch = !assignment && entry.row.branchId == null && entry.row.entryType === "OPENING" && knownBranches?.size === 1
+      ? Array.from(knownBranches)[0] : entry.row.branchId;
     if (
       money(entry.effect).isZero() ||
-      (input.branchId != null && entry.row.branchId !== input.branchId)
+      (input.branchId != null && segmentationBranch !== input.branchId)
     )
       continue;
-    const key = `${entry.row.supplierId}:${entry.row.branchId}`;
+    const key = `${entry.row.supplierId}:${segmentationBranch}`;
     const rows = branches.get(key) ?? [];
     rows.push(entry);
     branches.set(key, rows);

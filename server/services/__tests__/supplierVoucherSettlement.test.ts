@@ -18,11 +18,16 @@ import {
   decideSupplierPayment,
   requestSupplierPayment,
   SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
+  requestSupplierPaymentRefund,
+  decideSupplierPaymentRefund,
+  listSupplierPaymentRefundSources,
 } from "../purchase/supplierPayments";
 import { loadPurchaseSettlements } from "../purchase/settlementProjection";
 import { getSupplierStatement } from "../reports/apAging";
 import { computeTreasuryCashBalance } from "../cash/cashAvailability";
 import { withTx } from "../tx";
+import { cumulativeCurrencyDelta } from "../purchase/supplierVoucherCurrency";
+import { money, toDbMoney } from "../money";
 import type { VoucherInput } from "../voucher/types";
 
 const maker = { userId: 7, branchId: 1, role: "accountant" };
@@ -792,4 +797,220 @@ describe("supplier voucher native settlement", () => {
     );
     expect(await state()).toEqual(before);
   });
+});
+
+async function dollarInvoices() {
+  await db()
+    .update(s.suppliers)
+    .set({ currentBalance: "467000.00", currentBalanceUsd: "300.00" })
+    .where(eq(s.suppliers.id, 1));
+  for (const [id, total, usd, rate] of [
+    [1, "157000.00", "100.00", "1570.0000"],
+    [2, "310000.00", "200.00", "1550.0000"],
+  ] as const) {
+    await db()
+      .update(s.purchaseOrders)
+      .set({
+        total,
+        subtotal: total,
+        agreedCurrency: "USD",
+        usdTotal: usd,
+        agreedRate: rate,
+      })
+      .where(eq(s.purchaseOrders.id, id));
+    await db()
+      .update(s.purchaseOrderRevisions)
+      .set({
+        total,
+        subtotal: total,
+        agreedCurrency: "USD",
+        usdTotal: usd,
+        agreedRate: rate,
+      })
+      .where(eq(s.purchaseOrderRevisions.id, id));
+    await db()
+      .update(s.supplierInvoices)
+      .set({
+        currency: "USD",
+        totalAmount: total,
+        subtotal: total,
+        usdTotal: usd,
+        agreedRate: rate,
+      })
+      .where(eq(s.supplierInvoices.id, id));
+    await db()
+      .update(s.accountingEntries)
+      .set({ amount: total })
+      .where(eq(s.accountingEntries.purchaseOrderId, id));
+  }
+}
+
+describe("IQD voucher against invoice currencies", () => {
+  it("settles different USD rates FIFO and closes both currency balances exactly", async () => {
+    await dollarInvoices();
+    const payload = input("400000.00");
+    const voucher = await createVoucher(payload, maker);
+    await approveVoucher(voucher.receiptId, owner);
+    const after = await state();
+    expect(after.payments).toHaveLength(1);
+    expect(after.receipts).toHaveLength(1);
+    expect(
+      after.allocations.map((r) => [
+        r.supplierInvoiceId,
+        r.allocatedAmount,
+        r.allocatedCurrencyAmount,
+      ]),
+    ).toEqual([
+      [1, "90000.00", "57.32"],
+      [2, "310000.00", "200.00"],
+    ]);
+    expect(after.suppliers[0]).toMatchObject({
+      currentBalance: "67000.00",
+      currentBalanceUsd: "42.68",
+    });
+    expect(after.orders.find((r) => r.id === 1)?.paidUsd).toBe("57.32");
+    expect(after.orders.find((r) => r.id === 2)?.paidUsd).toBe("200.00");
+    expect(
+      (await getSupplierStatement(1, { branchId: 1 }))?.summary.unpaid,
+    ).toBe("67000.00");
+    expect((await createVoucher(payload, maker)).receiptId).toBe(
+      voucher.receiptId,
+    );
+    expect(await state()).toEqual(after);
+    const final = await createVoucher(input("67000.00"), maker);
+    await approveVoucher(final.receiptId, owner);
+    const closed = await state();
+    expect(closed.suppliers[0]).toMatchObject({
+      currentBalance: "0.00",
+      currentBalanceUsd: "0.00",
+    });
+    expect(closed.invoices.every((r) => r.paymentGate === "SETTLED")).toBe(
+      true,
+    );
+    expect(closed.orders.find((r) => r.id === 1)?.paidUsd).toBe("100.00");
+  });
+  it("refunds the exact original USD allocations cumulatively using a single IQD receipt", async () => {
+    await dollarInvoices();
+    const voucher = await createVoucher(input("400000.00"), maker);
+    await approveVoucher(voucher.receiptId, owner);
+    const paid = await state();
+    const allocation = paid.allocations.find((r) => r.supplierInvoiceId === 1)!;
+    async function refund(amount: string, version: number) {
+      const request = await requestSupplierPaymentRefund(
+        {
+          supplierPaymentId: paid.payments[0].id,
+          expectedPaymentVersion: version,
+          requestKey: randomUUID(),
+          refundMethod: "TRANSFER",
+          externalReference: randomUUID(),
+          evidenceType: "BANK_ADVICE",
+          evidenceReference: "BANK",
+          reason: "استرداد جزء من سداد الدولار بالدينار",
+          allocations: [
+            {
+              supplierPaymentAllocationId: allocation.id,
+              amount,
+              currencyAmount: amount,
+            },
+          ],
+        },
+        maker,
+      );
+      return decideSupplierPaymentRefund(
+        {
+          requestId: request.requestId,
+          decisionKey: randomUUID(),
+          action: "APPROVE",
+          reviewReason: "اعتماد الاسترداد",
+        },
+        owner,
+        SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
+      );
+    }
+    await refund("1000.00", 1);
+    expect((await state()).suppliers[0].currentBalanceUsd).toBe("43.32");
+    await refund("89000.00", 2);
+    const after = await state();
+    expect(after.suppliers[0]).toMatchObject({
+      currentBalance: "157000.00",
+      currentBalanceUsd: "100.00",
+    });
+    expect(after.orders.find((r) => r.id === 1)?.paidUsd).toBe("0.00");
+    expect(
+      after.allocations.find((r) => r.id === allocation.id)
+        ?.refundedCurrencyAmount,
+    ).toBe("57.32");
+    expect(
+      (await listSupplierPaymentRefundSources({ branchId: 1 }, maker)).rows,
+    ).toHaveLength(1);
+    expect(
+      after.entries.filter((r) => r.entryType === "PAYMENT_OUT"),
+    ).toHaveLength(1);
+    expect(
+      after.entries.filter((r) => r.entryType === "PAYMENT_IN"),
+    ).toHaveLength(2);
+  });
+  it("rejects rate changes even without a version bump and leaves every financial row unchanged", async () => {
+    await dollarInvoices();
+    const voucher = await createVoucher(input("400000.00"), maker);
+    await db()
+      .update(s.supplierInvoices)
+      .set({ agreedRate: "1600.0000" })
+      .where(eq(s.supplierInvoices.id, 1));
+    const before = await state();
+    await expect(approveVoucher(voucher.receiptId, owner)).rejects.toThrow();
+    expect(await state()).toEqual(before);
+  });
+  it("rolls IQD, USD, receipts, allocations and PO caches back together on failure", async () => {
+    await dollarInvoices();
+    const voucher = await createVoucher(input("400000.00"), maker);
+    const before = await state();
+    const spy = vi
+      .spyOn(ledger, "adjustSupplierBalanceUsd")
+      .mockRejectedValueOnce(new Error("USD ledger failure"));
+    try {
+      await expect(approveVoucher(voucher.receiptId, owner)).rejects.toThrow(
+        "USD ledger failure",
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await state()).toEqual(before);
+  });
+  it("settles mixed IQD and USD invoices in the same receipt", async () => {
+    await dollarInvoices();
+    await db()
+      .update(s.supplierInvoices)
+      .set({ currency: "IQD", usdTotal: null, agreedRate: null })
+      .where(eq(s.supplierInvoices.id, 1));
+    await db()
+      .update(s.purchaseOrders)
+      .set({ agreedCurrency: "IQD", usdTotal: null, agreedRate: null })
+      .where(eq(s.purchaseOrders.id, 1));
+    await db()
+      .update(s.suppliers)
+      .set({ currentBalanceUsd: "200.00" })
+      .where(eq(s.suppliers.id, 1));
+    const voucher = await createVoucher(input("400000.00"), maker);
+    await approveVoucher(voucher.receiptId, owner);
+    const after = await state();
+    expect(after.suppliers[0]).toMatchObject({
+      currentBalance: "67000.00",
+      currentBalanceUsd: "0.00",
+    });
+    expect(
+      after.allocations.find((r) => r.supplierInvoiceId === 1)
+        ?.allocatedCurrencyAmount,
+    ).toBe("90000.00");
+  });
+});
+
+it("prevents accumulated FX rounding across many partial settlements", () => {
+  let paid = money(0), usd = money(0);
+  for (let index = 0; index < 157; index++) {
+    usd = usd.plus(cumulativeCurrencyDelta("157000.00", "100.00", toDbMoney(paid), toDbMoney(usd), "1000.00"));
+    paid = paid.plus(1000);
+  }
+  expect(toDbMoney(usd)).toBe("100.00");
+  expect(() => cumulativeCurrencyDelta("157000.00", "100.00", "0.00", "0.00", "0.01")).toThrow(/دقة عملة/);
 });
