@@ -55,11 +55,13 @@
     "eslint-config-expo": "~10.0.0",
     "prettier": "^3.7.4",
     "typescript": "~5.9.3",
+    "vite": "7.3.7",
     "vitest": "^4.1.11"
   },
   "packageManager": "pnpm@9.15.9",
   "pnpm": {
     "overrides": {
+      "vite@>=7.0.0 <7.3.7": "7.3.7",
       "shell-quote": "^1.12.0",
       "compression": "1.8.2",
       "source-map-js": "1.2.2",
