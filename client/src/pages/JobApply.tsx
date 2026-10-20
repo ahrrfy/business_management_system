@@ -20,7 +20,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } fr
 import { AppSelect } from "@/components/ui/AppSelect";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import {
-  APPLICANT_AVAILABILITY_STATUSES, APPLICANT_EXPERIENCE_LEVELS, APPLICANT_PREFERRED_BRANCHES,
+  APPLICANT_AVAILABILITY_STATUSES, APPLICANT_EXPERIENCE_LEVELS,
   APPLICANT_SHIFT_PREFERENCES, DEGREES, EMPLOYMENT_TYPES, GENDERS, HR_DEPARTMENTS,
   IRAQ_GOVERNORATES, MARITAL_STATUSES, employmentTypeLabel, normalizeIraqiPhone,
 } from "@shared/hr";
@@ -46,6 +46,7 @@ type Vacancy = {
   title: string;
   department: string | null;
   employmentType: string;
+  branchId?: number | null;
   location: string | null;
   summary: string | null;
   description: string | null;
@@ -513,8 +514,19 @@ function VacancyCard({ v, onApply, i }: { v: Vacancy; onApply: () => void; i: nu
   );
 }
 
+function resolveVacancyPreferredBranch(vacancy: Vacancy | null, branches: { id: number; name: string }[]): string {
+  if (!vacancy) return "";
+  if (vacancy.branchId != null) {
+    const byId = branches.find((b) => b.id === vacancy.branchId);
+    if (byId) return byId.name;
+  }
+  const loc = vacancy.location?.trim();
+  if (!loc) return "";
+  return branches.find((b) => b.name === loc || loc.includes(b.name) || b.name.includes(loc))?.name ?? "";
+}
+
 /* ============================ نافذة التقديم ============================ */
-function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose: () => void }) {
+function ApplyModal({ target, branches, onClose }: { target: Vacancy | "general"; branches: { id: number; name: string }[]; onClose: () => void }) {
   const vacancy = target === "general" ? null : target;
   const [name, setName] = useState("");
   const [jobTitle, setJobTitle] = useState("");
@@ -535,12 +547,8 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
   const [experience, setExperience] = useState("");
   const [previousEmployer, setPreviousEmployer] = useState("");
   const [skills, setSkills] = useState("");
-  const [preferredBranch, setPreferredBranch] = useState(
-    vacancy?.location && (APPLICANT_PREFERRED_BRANCHES as readonly string[]).includes(vacancy.location)
-      ? vacancy.location
-      : "",
-  );
-  const [employmentType, setEmploymentType] = useState(vacancy?.employmentType ?? "full_time");
+  const [preferredBranch, setPreferredBranch] = useState(() => resolveVacancyPreferredBranch(vacancy, branches));
+  const [employmentType, setEmploymentType] = useState(vacancy?.employmentType ?? "");
   const [shiftPreference, setShiftPreference] = useState("");
   const [expectedSalary, setExpectedSalary] = useState("");
   const [availableFrom, setAvailableFrom] = useState("");
@@ -555,6 +563,12 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
   const doneCloseRef = useRef<HTMLButtonElement>(null);
   const unmountedRef = useRef(false);
   useEffect(() => () => { unmountedRef.current = true; }, []);
+  useEffect(() => {
+    if (!preferredBranch && vacancy && branches.length > 0) {
+      const resolved = resolveVacancyPreferredBranch(vacancy, branches);
+      if (resolved) setPreferredBranch(resolved);
+    }
+  }, [branches, preferredBranch, vacancy]);
 
   // بعد تبديل النموذج برسالة النجاح، انقل التركيز إلى الإجراء المتاح داخل الحوار.
   useEffect(() => {
@@ -812,12 +826,13 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
                 <label htmlFor="cj-pref-branch">الفرع المفضّل للعمل</label>
                 <AppSelect id="cj-pref-branch" className="cj-input" value={preferredBranch} onValueChange={setPreferredBranch}>
                   <option value="">— أي فرع متاح —</option>
-                  {APPLICANT_PREFERRED_BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
+                  {branches.map((b) => <option key={b.id} value={b.name}>{b.name}</option>)}
                 </AppSelect>
               </div>
               <div className="cj-field">
                 <label htmlFor="cj-emp-type">نوع الدوام</label>
                 <AppSelect id="cj-emp-type" className="cj-input" value={employmentType} onValueChange={setEmploymentType}>
+                  <option value="">— اختر نوع الدوام —</option>
                   {EMPLOYMENT_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
                 </AppSelect>
               </div>
@@ -866,10 +881,10 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
 
 /* ============================ الصفحة ============================ */
 export default function JobApply() {
-  const q = trpc.recruitment.openVacancies.useQuery(undefined, {
-    staleTime: 60_000,
-  });
+  const q = trpc.recruitment.openVacancies.useQuery(undefined, { staleTime: 60_000 });
+  const branchesQ = trpc.kiosk.publicBranches.useQuery(undefined, { staleTime: 60_000 });
   const vacancies = (q.data ?? []) as Vacancy[];
+  const branches = (branchesQ.data ?? []) as { id: number; name: string }[];
   const [target, setTarget] = useState<Vacancy | "general" | null>(null);
 
   // عنوان تبويب المتصفّح (صفحة عامة تُشارَك في إعلانات التوظيف).
@@ -1161,7 +1176,7 @@ export default function JobApply() {
         </div>
       </footer>
 
-      {target && <ApplyModal target={target} onClose={() => setTarget(null)} />}
+      {target && <ApplyModal target={target} branches={branches} onClose={() => setTarget(null)} />}
     </div>
   );
 }

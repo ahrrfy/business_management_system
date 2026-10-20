@@ -58,6 +58,7 @@ export const IRAQ_GOVERNORATES = [
   "ذي قار",
   "ميسان",
   "المثنى",
+  "حلبجة",
 ] as const;
 
 export const payTypeLabel = (k: string): string => PAY_TYPES.find((p) => p.key === k)?.label ?? k;
@@ -255,13 +256,6 @@ export const APPLICANT_SHIFT_KEYS = APPLICANT_SHIFT_PREFERENCES.map((s) => s.key
   ApplicantShiftPreference,
   ...ApplicantShiftPreference[],
 ];
-
-export const APPLICANT_PREFERRED_BRANCHES = [
-  "مطبعة الرؤية - الدوره",
-  "الفرع الرئيسي - الكرادة",
-  "فرع المنصور",
-  "أي فرع متاح",
-] as const;
 
 export const APPLICANT_EXPERIENCE_LEVELS = [
   "بدون خبرة (مبتدئ / خريج جديد)",

@@ -355,7 +355,8 @@ describe("حزمة استمارة التوظيف والتعيين الكاملة
     expect(jobApply).toContain("degree: (degree || undefined) as never");
     expect(jobApply).toContain("availabilityStatus: (availabilityStatus || undefined) as never");
     expect(jobApply).toContain("preferredBranch: preferredBranch.trim() || undefined");
-    expect(jobApply).toContain("(APPLICANT_PREFERRED_BRANCHES as readonly string[]).includes(vacancy.location)");
+    expect(jobApply).toContain("trpc.kiosk.publicBranches.useQuery");
+    expect(jobApply).toContain("resolveVacancyPreferredBranch");
     expect(jobApply).toContain("shiftPreference: (shiftPreference || undefined) as never");
     expect(jobApply).toContain("expectedSalary:");
 
