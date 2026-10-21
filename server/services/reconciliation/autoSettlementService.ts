@@ -1,3 +1,5 @@
+import { activeDeliveryInvoiceIdsTx } from "../delivery/guards";
+import { loadRefundCaps } from "../returns/refundCaps";
 import { applyCustomerReceiptCreditTx, customerReceiptCreditTotalTx } from "../customerReceiptSettlement";
 /**
  * خدمة التسوية التلقائية والمطابقة الذكية لذمم العملاء والموردين (FIFO Auto-Settlement).
@@ -159,10 +161,9 @@ export async function autoSettleCustomerAccountTx(
     const invoiceNeeded = Decimal.max(net.minus(currentPaid), 0);
     if (invoiceNeeded.lte(0)) continue;
 
-    const targetCollected =
-      cn.moneyStatus === "SETTLED" && money(cn.collectedAmount).isZero()
-        ? money(cn.codAmount)
-        : money(cn.collectedAmount);
+    // A status is not collection evidence. SETTLED may include a release or
+    // correction; never manufacture a courier receivable from codAmount alone.
+    const targetCollected = money(cn.collectedAmount);
 
     if (targetCollected.lte(0)) continue;
 
@@ -189,13 +190,16 @@ export async function autoSettleCustomerAccountTx(
 
     const alreadyCredited = round2(money(creditedRow?.v ?? "0"));
     const uncredited = Decimal.max(round2(targetCollected.minus(alreadyCredited)), 0);
+    const funding = await loadRefundCaps(tx, inv.id);
+    const targetPaid = Decimal.min(net, Decimal.max(0, targetCollected.plus(funding.nonCourierNet ?? money(0))));
+    const missingFundedAmount = Decimal.max(0, targetPaid.minus(currentPaid));
 
     if (uncredited.gt(0)) {
       // المبلغ حُصّل من العميل عبر التوصيل ولم يُقيّد دفترياً على حسابه:
       // ١) نثبت قيد PAYMENT_IN ذري بالدفتر
       // ٢) نخفض رصيد العميل بالدفتر
       // ٣) نخصص السداد للفاتورة
-      const allocToInvoice = Decimal.min(uncredited, invoiceNeeded);
+      const allocToInvoice = Decimal.min(missingFundedAmount, invoiceNeeded);
 
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
@@ -237,7 +241,7 @@ export async function autoSettleCustomerAccountTx(
       }
     } else {
       // المبلغ حُصّل وقُيّد في ذمة العميل سابقاً ولكن الفاتورة ظلت معلقة أو غير مكتملة الدفع
-      const missingOnInvoice = Decimal.max(Decimal.min(invoiceNeeded, targetCollected.minus(currentPaid)), 0);
+      const missingOnInvoice = Decimal.min(invoiceNeeded, missingFundedAmount);
       if (missingOnInvoice.gt(0)) {
         const newPaid = currentPaid.plus(missingOnInvoice);
         const newStatus = computeInvoiceStatus(inv.total, toDbMoney(newPaid), inv.returnedTotal ?? "0");
@@ -299,9 +303,10 @@ export async function autoSettleCustomerAccountTx(
   // Proven advances retain their branch and original receipt; only the legacy
   // remainder may use the historical balance-derived reconciliation.
   let legacyCredit = Decimal.max(0, availableCredit.minus(await customerReceiptCreditTotalTx(tx, customerId)));
+  const deliveryBlocked = await activeDeliveryInvoiceIdsTx(tx, openInvoices.map(inv => inv.id));
   if (availableCredit.gt(0)) {
     for (const inv of openInvoices) {
-      if (isDeadInvoice(inv)) continue;
+      if (isDeadInvoice(inv) || deliveryBlocked.has(inv.id)) continue;
 
       const net = money(inv.total).minus(money(inv.returnedTotal ?? "0"));
       const currentPaid = money(inv.paidAmount);

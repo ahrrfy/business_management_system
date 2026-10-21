@@ -1,3 +1,4 @@
+import { activeDeliveryInvoiceIdsTx } from "../delivery/guards";
 /** Locked single-invoice allocation kernel. Generic receipts use the persisted
  * FIFO portions in customerReceiptSettlement.ts; explicitly selected invoices
  * retain their strict remaining-amount guard. No cash, GL or AR is posted here.
@@ -38,7 +39,7 @@ export interface VoucherInvoiceAllocationResult {
   paidAmount: string;
   status: string;
   allocated: boolean;
-  unallocatedReason?: "DEAD_INVOICE" | "ALREADY_SETTLED" | "EXCEEDS_REMAINING" | "EXCEEDS_PAID";
+  unallocatedReason?: "DEAD_INVOICE" | "ALREADY_SETTLED" | "EXCEEDS_REMAINING" | "EXCEEDS_PAID" | "DELIVERY_ACTIVE";
 }
 
 /**
@@ -76,6 +77,14 @@ export async function allocateVoucherToInvoiceTx(
 
   // اتجاه الأثر: القبض يزيد المدفوع، والردّ/الإلغاء ينقصه.
   const isCredit = input.direction === "IN";
+  if ((await activeDeliveryInvoiceIdsTx(tx, [inv.id])).has(inv.id)) {
+    if (isCredit && input.gracefulSettledInvoice) return { paidAmount: inv.paidAmount, status: inv.status, allocated: false, unallocatedReason: "DELIVERY_ACTIVE" };
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "تعذر تخصيص سند عام لفاتورة توصيل نشطة",
+      why: "للإرسالية عهدة تحصيل وتوريد مستقلة، حتى عند ثبوت وصول الطرد",
+      doThis: "استخدم تحصيل الإرسالية أو أكمل إلغاء إسنادها من مسار التوصيل؛ السند العام يسدد الفواتير المؤهلة فقط",
+    }) });
+  }
   const paid = money(inv.paidAmount);
   const net = money(inv.total).minus(money(inv.returnedTotal ?? "0"));
 

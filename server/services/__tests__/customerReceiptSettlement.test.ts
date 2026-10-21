@@ -11,6 +11,7 @@ import {
 } from "../returns/refundCaps";
 import { loadCustomerReceiptInvoicePayments } from "../customerReceiptProjection";
 import { getCustomerStatement } from "../reports/arAging";
+import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
 import { withGovernanceTx } from "../tx";
 import { createVoucherTx } from "../voucher/create";
 import {
@@ -203,7 +204,245 @@ async function snapshot() {
   };
 }
 
+async function activeDelivery(
+  invoiceId: number,
+  status: "DISPATCHED" | "PARTIAL",
+  parcelStatus: "ASSIGNED" | "DELIVERED",
+) {
+  const inv = await invoice(invoiceId);
+  await db().insert(s.deliveryParties).values({
+    id: 1,
+    name: "COD carrier",
+    partyType: "COMPANY",
+    branchId: 1,
+    currentBalance: "0",
+    defaultFee: "0",
+  });
+  const [inserted] = await db()
+    .insert(s.deliveryConsignments)
+    .values({
+      consignmentNumber: `CN-RECEIPT-${invoiceId}`,
+      branchId: 1,
+      partyId: 1,
+      invoiceId,
+      sourceType: "INVOICE",
+      sourceId: invoiceId,
+      endCustomerId: 1,
+      codAmount: money(inv.total)
+        .minus(inv.returnedTotal)
+        .minus(inv.paidAmount)
+        .toFixed(2),
+      collectedAmount: "0.00",
+      counterSettledAmount: "0.00",
+      status,
+      parcelStatus,
+      moneyStatus: status === "PARTIAL" ? "PARTIAL" : "UNSETTLED",
+      dispatchedBy: 1,
+    });
+  return Number(inserted.insertId);
+}
+
+async function deliverySnapshot() {
+  return {
+    consignments: await db()
+      .select()
+      .from(s.deliveryConsignments)
+      .orderBy(s.deliveryConsignments.id),
+    parties: await db()
+      .select()
+      .from(s.deliveryParties)
+      .orderBy(s.deliveryParties.id),
+    events: await db()
+      .select()
+      .from(s.deliveryEvents)
+      .orderBy(s.deliveryEvents.id),
+    ledger: await db()
+      .select()
+      .from(s.deliveryLedgerEntries)
+      .orderBy(s.deliveryLedgerEntries.id),
+  };
+}
+
 describe("generic customer receipts allocate FIFO atomically", () => {
+  it("rejects cancelling a FIFO deposit after dispatch without changing the invoice or carrier COD snapshot", async () => {
+    const cod = await sale(2);
+    const deposit = await receive("1000.00", "fifo-deposit-before-dispatch");
+    await activeDelivery(cod, "DISPATCHED", "ASSIGNED");
+    expect((await invoice(cod)).paidAmount).toBe("1000.00");
+    expect((await deliverySnapshot()).consignments[0].codAmount).toBe(
+      "1000.00",
+    );
+    const cancellation = await cancelVoucher(deposit.receiptId, admin);
+    expect(cancellation.status).toBe("PENDING_APPROVAL");
+    const before = await snapshot();
+    const deliveryBefore = await deliverySnapshot();
+    await expect(
+      approveVoucher(Number(cancellation.approvalReceiptId), owner),
+    ).rejects.toThrow();
+    expect(await snapshot()).toEqual(before);
+    expect(await deliverySnapshot()).toEqual(deliveryBefore);
+    expect(await invoice(cod)).toMatchObject({
+      paidAmount: "1000.00",
+      status: "PARTIALLY_PAID",
+    });
+    expect(await balance()).toBe("1000.00");
+    expect(await cashNet()).toBe("1000.00");
+    expect(
+      (await settlement(deposit.receiptId)).header.reversalReceiptId,
+    ).toBeNull();
+  });
+
+  it.each([
+    ["DISPATCHED", "ASSIGNED"],
+    ["PARTIAL", "DELIVERED"],
+  ] as const)(
+    "skips active COD %s/%s without hiding its debt as account allocation or touching delivery",
+    async (status, parcel) => {
+      const cod = await sale();
+      await activeDelivery(cod, status, parcel);
+      const ordinary = await sale();
+      const deliveryBefore = await deliverySnapshot();
+      const receipt = await receive("1500.00", `cod-skip-${status}`);
+      expect((await invoice(cod)).paidAmount).toBe("0.00");
+      expect(await invoice(ordinary)).toMatchObject({
+        paidAmount: "1000.00",
+        status: "PAID",
+      });
+      const source = await settlement(receipt.receiptId);
+      expect(source.header).toMatchObject({
+        accountAmount: "0.00",
+        unallocatedAmount: "500.00",
+      });
+      expect(source.allocations.map((a) => [a.invoiceId, a.amount])).toEqual([
+        [ordinary, "1000.00"],
+      ]);
+      expect(await deliverySnapshot()).toEqual(deliveryBefore);
+      const cancellation = await cancelVoucher(receipt.receiptId, admin);
+      await approveVoucher(Number(cancellation.approvalReceiptId), owner);
+      expect((await invoice(cod)).paidAmount).toBe("0.00");
+      expect((await invoice(ordinary)).paidAmount).toBe("0.00");
+      expect(await balance()).toBe("2000.00");
+      expect(await cashNet()).toBe("0.00");
+      expect(await deliverySnapshot()).toEqual(deliveryBefore);
+    },
+  );
+
+  it("does not invent customer collection from SETTLED status when the courier collected amount is zero", async () => {
+    const id = await sale();
+    const cnId = await activeDelivery(id, "DISPATCHED", "DELIVERED");
+    await db()
+      .update(s.deliveryConsignments)
+      .set({ status: "DELIVERED", moneyStatus: "SETTLED" })
+      .where(eq(s.deliveryConsignments.id, cnId));
+    const before = await snapshot();
+    const deliveryBefore = await deliverySnapshot();
+    await withGovernanceTx((tx) => autoSettleCustomerAccountTx(tx, 1, admin));
+    expect(await snapshot()).toEqual(before);
+    expect(await deliverySnapshot()).toEqual(deliveryBefore);
+    expect(await invoice(id)).toMatchObject({
+      paidAmount: "0.00",
+      status: "PENDING",
+    });
+    expect(await balance()).toBe("1000.00");
+  });
+
+  it("keeps tracked credit away from active COD through legacy reconciliation, then applies it after the carrier obligation is finalized", async () => {
+    const cod = await sale();
+    const consignmentId = await activeDelivery(cod, "PARTIAL", "DELIVERED");
+    const receipt = await receive("1500.00", "cod-prepaid-credit");
+    const before = await snapshot();
+    const deliveryBefore = await deliverySnapshot();
+    await withGovernanceTx((tx) => autoSettleCustomerAccountTx(tx, 1, admin));
+    expect(await snapshot()).toEqual(before);
+    expect(await deliverySnapshot()).toEqual(deliveryBefore);
+    expect((await settlement(receipt.receiptId)).header).toMatchObject({
+      accountAmount: "0.00",
+      unallocatedAmount: "1500.00",
+    });
+    // Fixture for completed delivery with no remaining carrier obligation: the
+    // invoice's unpaid 1000 remains customer debt. No collection is fabricated.
+    await db()
+      .update(s.deliveryConsignments)
+      .set({
+        status: "DELIVERED",
+        parcelStatus: "DELIVERED",
+        moneyStatus: "SETTLED",
+        codAmount: "0.00",
+        settledAt: new Date(),
+      })
+      .where(eq(s.deliveryConsignments.id, consignmentId));
+    const deliveryFinal = await deliverySnapshot();
+    const receiptsBefore = await db()
+      .select()
+      .from(s.receipts)
+      .orderBy(s.receipts.id);
+    const entriesBefore = await db()
+      .select()
+      .from(s.accountingEntries)
+      .orderBy(s.accountingEntries.id);
+    await withGovernanceTx((tx) => autoSettleCustomerAccountTx(tx, 1, admin));
+    expect(await invoice(cod)).toMatchObject({
+      paidAmount: "1000.00",
+      status: "PAID",
+    });
+    expect((await settlement(receipt.receiptId)).header.unallocatedAmount).toBe(
+      "500.00",
+    );
+    expect(await db().select().from(s.receipts).orderBy(s.receipts.id)).toEqual(
+      receiptsBefore,
+    );
+    expect(
+      await db()
+        .select()
+        .from(s.accountingEntries)
+        .orderBy(s.accountingEntries.id),
+    ).toEqual(entriesBefore);
+    expect(await deliverySnapshot()).toEqual(deliveryFinal);
+    expect(await cashNet()).toBe("1500.00");
+    expect(await balance()).toBe("-500.00");
+  });
+
+  it("rejects linked IN and OUT while COD remains active, then permits the inverse after native unassignment", async () => {
+    const cod = await sale();
+    const original = await createVoucher(
+      { ...receiptInput("500.00", "linked-before-cod"), invoiceId: cod },
+      admin,
+    );
+    const consignmentId = await activeDelivery(cod, "PARTIAL", "DELIVERED");
+    const deliveryBefore = await deliverySnapshot();
+    const before = await snapshot();
+    await expect(
+      createVoucher(
+        { ...receiptInput("500.00", "linked-active-cod"), invoiceId: cod },
+        admin,
+      ),
+    ).rejects.toThrow();
+    expect(await snapshot()).toEqual(before);
+    const cancellation = await cancelVoucher(original.receiptId, admin);
+    const beforeRejectedApproval = await snapshot();
+    await expect(
+      approveVoucher(Number(cancellation.approvalReceiptId), owner),
+    ).rejects.toThrow();
+    expect(await snapshot()).toEqual(beforeRejectedApproval);
+    expect(await deliverySnapshot()).toEqual(deliveryBefore);
+    // Existing assignment released by its native workflow; this fixture change
+    // adds no collection, refund or accounting entry.
+    await db()
+      .update(s.deliveryConsignments)
+      .set({
+        status: "CANCELLED",
+        moneyStatus: "SETTLED",
+        parcelStatus: "CANCELLED",
+      })
+      .where(eq(s.deliveryConsignments.id, consignmentId));
+    const deliveryUnassigned = await deliverySnapshot();
+    await approveVoucher(Number(cancellation.approvalReceiptId), owner);
+    expect((await invoice(cod)).paidAmount).toBe("0.00");
+    expect(await balance()).toBe("1000.00");
+    expect(await cashNet()).toBe("0.00");
+    expect(await deliverySnapshot()).toEqual(deliveryUnassigned);
+  });
+
   it("serializes competing receipts without over-allocation and retains their exact excess as credit", async () => {
     const first = await sale();
     const second = await sale();

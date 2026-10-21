@@ -1,6 +1,6 @@
 import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
 import { customerReceiptAllocatedAmountTx, transferCustomerReceiptAllocationsTx } from "../customerReceiptSettlement";
-import { loadCustomerReceiptInvoicePayments } from "../customerReceiptProjection";
+import { loadCustomerReceiptInvoicePayments, loadCustomerReceiptAllocationSources } from "../customerReceiptProjection";
 import { withSupplierBookVoucherTx } from "../voucher/supplierSettlement";
 // تصحيح فاتورة بيع مُثبَّتة (0168) — «عكسٌ كامل + إعادة إصدار» ذرّياً.
 //
@@ -543,19 +543,9 @@ export async function correctSaleInTx(
       sql`NOT EXISTS (SELECT 1 FROM accountingEntries ae WHERE ae.receiptId = ${receipts.id} AND ae.entryType = 'DELIVERY_FEE_HELD')`,
     ),
       ).for("update");
-    const allocationPayments = (await loadCustomerReceiptInvoicePayments(tx, input.originalInvoiceId))
-      .filter(row => row.direction === "IN" && row.status === "COMPLETED");
     const allocatedAmount = await customerReceiptAllocatedAmountTx(tx, input.originalInvoiceId);
-    // Virtual portions are used only to reconcile the pool. The original multi-invoice
-    // receipt is never detached, re-stamped or re-recorded by this correction.
-    const allocatedSources = allocationPayments.length
-      ? await tx.select().from(receipts).where(inArray(receipts.id, allocationPayments.map(row => Number(row.id))))
-      : [];
-    const payRcpts = [...directPayRcpts, ...allocationPayments.map(row => {
-      const source = allocatedSources.find(r => r.id === Number(row.id));
-      if (!source) throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذر تصحيح الفاتورة", why: "مصدر تخصيص القبض مفقود", doThis: "راجع سند القبض وتوزيعه في كشف العميل قبل إعادة التصحيح" }) });
-      return { ...source, amount: row.amount, invoiceId: input.originalInvoiceId };
-    })];
+    const payRcpts = [...directPayRcpts, ...await loadCustomerReceiptAllocationSources(tx, input.originalInvoiceId)];
+    // Only native receipt IDs move. A generic source keeps all of its other targets.
     const detachedIds = directPayRcpts.map((r) => Number(r.id));
     const priorRefunds = await tx.select()
       .from(receipts).where(and(

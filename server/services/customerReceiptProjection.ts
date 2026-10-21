@@ -1,4 +1,5 @@
-import { sql, type SQL } from "drizzle-orm";
+import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
+import type { DB, Tx } from "../db";
 import { alias } from "drizzle-orm/mysql-core";
 import {
   customerReceiptAllocations,
@@ -78,6 +79,36 @@ export async function loadCustomerReceiptAllocationRows(
 }
 
 type Receipt = typeof receipts.$inferSelect;
+
+/** Actual sources with only this invoice's portion, for shared refund attribution.
+ * These projected rows must never be detached or re-recorded as physical receipts. */
+export async function loadCustomerReceiptAllocationSources(
+  exec: DB | Tx,
+  invoiceId: number,
+): Promise<Receipt[]> {
+  const rows = await exec
+    .select({ receipt: receipts, amount: customerReceiptAllocations.amount })
+    .from(customerReceiptAllocations)
+    .innerJoin(
+      customerReceiptSettlements,
+      eq(
+        customerReceiptSettlements.id,
+        customerReceiptAllocations.settlementId,
+      ),
+    )
+    .innerJoin(receipts, eq(receipts.id, customerReceiptSettlements.receiptId))
+    .where(
+      and(
+        eq(customerReceiptAllocations.invoiceId, invoiceId),
+        isNull(customerReceiptSettlements.reversalReceiptId),
+        eq(receipts.status, "COMPLETED"),
+        eq(receipts.approvalStatus, "APPROVED"),
+        sql`${customerReceiptAllocations.amount} > 0`,
+        sql`(${receipts.invoiceId} IS NULL OR ${receipts.invoiceId} <> ${invoiceId})`,
+      ),
+    );
+  return rows.map((row) => ({ ...row.receipt, amount: row.amount, invoiceId }));
+}
 
 export type CustomerReceiptInvoicePayment = Pick<
   Receipt,

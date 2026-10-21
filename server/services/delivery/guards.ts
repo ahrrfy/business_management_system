@@ -1,7 +1,7 @@
 // حُرّاس مشتركة لمسارات التوصيل — تُستدعى من داخل معاملات قائمة (Tx) حصراً.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { deliveryConsignments } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { money, round2 } from "../money";
@@ -46,6 +46,16 @@ export async function assertNoInTransitConsignment(tx: Tx, invoiceId: number) {
       message: `الفاتورة بالطريق مع المندوب (إرسالية ${cn.n}) — التحصيل عبر توريد المندوب، أو أعد الإرسالية أولاً`,
     });
   }
+}
+
+/** Generic account settlement cannot release courier exposure: its inverse owns
+ * only receipt portions. Native delivery collection owns active consignments,
+ * even when the parcel is delivered but money remains with the courier. */
+export async function activeDeliveryInvoiceIdsTx(tx: Tx, invoiceIds: number[]): Promise<Set<number>> {
+  if (!invoiceIds.length) return new Set();
+  const rows = await tx.select({ invoiceId: deliveryConsignments.invoiceId }).from(deliveryConsignments)
+    .where(and(inArray(deliveryConsignments.invoiceId, invoiceIds), inArray(deliveryConsignments.status, ["DISPATCHED", "PARTIAL"])));
+  return new Set(rows.map(row => Number(row.invoiceId)));
 }
 
 /**

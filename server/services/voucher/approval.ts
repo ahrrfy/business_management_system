@@ -2302,7 +2302,7 @@ export async function approveVoucherTx(
         direction,
         paymentMethod,
         voucherBranchId: Number(r.branchId),
-        gracefulSettledInvoice: true,
+        gracefulSettledInvoice: !cancellationOriginal,
         restoreReversedRefund: cancellationOriginal?.direction === "OUT",
       });
 
@@ -2311,7 +2311,9 @@ export async function approveVoucherTx(
         // منعاً لتعليق السند في DEADLOCK دائم، يتم فك ربط الفاتورة من السند وقيد المبلغ
         // بالكامل على رصيد حساب العميل مع توثيق ذلك في الملاحظات الداخلية وسجل التدقيق.
         const unallocatedNote =
-          allocation.unallocatedReason === "ALREADY_SETTLED"
+          allocation.unallocatedReason === "DELIVERY_ACTIVE"
+            ? `[تنبيه اعتماد: الفاتورة #${r.invoiceId} لها إرسالية نشطة — يبقى تحصيلها في مسار التوصيل ويُوزع السند العام على الفواتير المؤهلة]`
+            : allocation.unallocatedReason === "ALREADY_SETTLED"
             ? `[تنبيه اعتماد: الفاتورة #${r.invoiceId} مسددة مسبقاً بالكامل — فُكّ ربط السند بها وقُيّد المبلغ على رصيد العميل]`
             : allocation.unallocatedReason === "DEAD_INVOICE"
               ? `[تنبيه اعتماد: الفاتورة #${r.invoiceId} ملغاة أو مرتجعة أو مستبدلة — فُكّ ربط السند بها وقُيّد المبلغ على رصيد العميل]`

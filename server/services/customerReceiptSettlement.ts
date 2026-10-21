@@ -1,3 +1,4 @@
+import { activeDeliveryInvoiceIdsTx } from "./delivery/guards";
 /** Receipt provenance only. Cash, ledger and AR remain owned by the caller's transaction. */
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
@@ -185,6 +186,10 @@ export async function settleCustomerReceiptTx(
       new Date(a.invoiceDate).getTime() - new Date(b.invoiceDate).getTime() ||
       a.id - b.id,
   );
+  const deliveryBlocked = await activeDeliveryInvoiceIdsTx(
+    tx,
+    open.map((inv) => inv.id),
+  );
   const invoiceOpen = open.reduce(
     (sum, inv) =>
       sum.plus(
@@ -218,6 +223,7 @@ export async function settleCustomerReceiptTx(
   let available = money(r.amount);
   const plan: { invoiceId: number; amount: string }[] = [];
   for (const inv of open) {
+    if (deliveryBlocked.has(inv.id)) continue;
     const part = Decimal.min(
       available,
       Decimal.max(
@@ -283,6 +289,8 @@ export async function applyCustomerReceiptCreditTx(
     .where(eq(invoices.id, invoiceId))
     .for("update");
   if (!inv?.customerId || isDeadInvoice(inv)) return money(0);
+  if ((await activeDeliveryInvoiceIdsTx(tx, [invoiceId])).has(invoiceId))
+    return money(0);
   const sources = await tx
     .select()
     .from(settlements)
@@ -472,6 +480,14 @@ export async function reverseCustomerReceiptSettlementTx(
     .where(eq(allocations.settlementId, h.id))
     .orderBy(asc(allocations.invoiceId))
     .for("update");
+  const deliveryBlocked = await activeDeliveryInvoiceIdsTx(
+    tx,
+    portions.filter((a) => money(a.amount).gt(0)).map((a) => a.invoiceId),
+  );
+  if (deliveryBlocked.size)
+    conflict(
+      "بعض حصص القبض صارت عربوناً لإرسالية نشطة؛ ألغ إسناد التوصيل من مساره المعتمد أولاً ثم أعد اعتماد العكس",
+    );
   for (const a of portions) {
     if (money(a.amount).lte(0)) continue;
     // A native refund belongs to its original payment pool. Do not steal another source's paid balance.

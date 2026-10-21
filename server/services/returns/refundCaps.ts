@@ -106,6 +106,9 @@ function refundCapSnapshot(
     add(inByMethod, m, amount);
     if (m === "CASH") addCashShift(r, amount);
   }
+  // Signed on purpose: an actual refund may consume some courier funding too.
+  const nonCourierNet = Array.from(inByMethod.values()).reduce((sum, amount) => sum.plus(amount), money(0))
+    .minus(Array.from(outByMethod.values()).reduce((sum, amount) => sum.plus(amount), money(0)));
   // النقد المورّد فعلاً إلى الخزينة/الدرج عبر توريد معتمد (remittanceId IS NOT NULL)
   add(inByMethod, "CASH", money(String(remittedAmount ?? "0")));
   for (const r of remittanceRows) addCashShift(r, money(String(r.amount ?? "0")));
@@ -128,6 +131,7 @@ function refundCapSnapshot(
 
   return {
     pool,
+    nonCourierNet,
     grossIn: totalIn,
     grossOut: totalOut,
     netByMethod,
@@ -143,6 +147,8 @@ function refundCapSnapshot(
 }
 
 export interface RefundCapSnapshot {
+  /** Signed store/deposit/FIFO sources minus actual OUT, excluding courier remittance. */
+  nonCourierNet?: Decimal;
   /** الوعاء الحاكم: Σ(المقبوض بكل الطرق) − Σ(المسترَدّ بكل الطرق)، مقصوصاً عند الصفر. */
   pool: Decimal;
   /**
