@@ -937,10 +937,14 @@ export const supplierInvoiceApprovalSource: DecisionSource = {
       db.select().from(supplierInvoiceLines).where(inArray(supplierInvoiceLines.supplierInvoiceId, invoiceIds)),
     ]);
     const invoiceById = new Map(invoices.map((i) => [Number(i.id), i]));
-    const [look, variants] = await Promise.all([
+    const revItemIds = ids(lines.map((l) => l.purchaseOrderRevisionItemId));
+    const [look, revItems] = await Promise.all([
       lookups(db, { suppliers: invoices.map((i) => i.supplierId), users: rows.map((r) => r.requestedBy), branches: rows.map((r) => r.branchId) }),
-      variantLabels(db, ids(lines.map((l) => l.variantId))),
+      revItemIds.length
+        ? db.select().from(purchaseOrderRevisionItems).where(inArray(purchaseOrderRevisionItems.id, revItemIds))
+        : Promise.resolve([]),
     ]);
+    const revItemById = new Map(revItems.map((it) => [Number(it.id), it]));
     return rows
       .filter((r) => {
         const inv = invoiceById.get(Number(r.supplierInvoiceId));
@@ -949,6 +953,7 @@ export const supplierInvoiceApprovalSource: DecisionSource = {
       .map((r) => {
         const inv = invoiceById.get(Number(r.supplierInvoiceId));
         const usd = inv?.currency === "USD";
+        const hasNoDiscount = Number(inv?.discountAmount ?? 0) === 0;
         return buildRow(
           {
             ...GOVERNANCE_DEFAULTS,
@@ -968,17 +973,19 @@ export const supplierInvoiceApprovalSource: DecisionSource = {
               ...lines
                 .filter((l) => Number(l.supplierInvoiceId) === Number(r.supplierInvoiceId))
                 .map((l) => {
-                  const v = l.variantId != null ? variants.get(Number(l.variantId)) : undefined;
-                  const variantText = v?.descriptor || v?.variantName || null;
+                  const revItem = l.purchaseOrderRevisionItemId != null ? revItemById.get(Number(l.purchaseOrderRevisionItemId)) : undefined;
+                  const dashIdx = l.description ? l.description.indexOf(" — ") : -1;
+                  const descVariant = dashIdx > 0 ? l.description.slice(dashIdx + 3).trim() || null : null;
+                  const variantText = revItem?.variantNameSnapshot || descVariant || null;
+                  const canPairLineTotal = hasNoDiscount && Number(l.taxAmount ?? 0) === 0;
                   return {
-                    label: l.description || itemLabel([v?.productName, variantText]),
+                    label: l.description || itemLabel([revItem?.productNameSnapshot, variantText]),
                     variant: variantText,
-                    colorHex: v?.colorHex ?? null,
-                    sku: v?.sku ?? null,
+                    sku: revItem?.skuSnapshot ?? null,
                     qty: l.invoicedBaseQuantity,
                     unit: "بالوحدة الأساس",
                     unitPrice: usd ? l.usdUnitPrice : l.unitPriceIqd,
-                    lineTotal: usd ? (l.usdTotal ?? l.totalAmount) : l.totalAmount,
+                    lineTotal: canPairLineTotal ? (usd ? (l.usdTotal ?? l.totalAmount) : l.totalAmount) : null,
                   };
                 }),
               ...(r.evidenceReference ? [{ label: `الدليل: ${r.evidenceType ?? ""} — ${r.evidenceReference}` }] : []),

@@ -525,7 +525,7 @@ export const giftSource: DecisionSource = {
             qty: String(l.quantity),
             unit: `${units.get(Number(l.productUnitId)) ?? ""} (${l.baseQuantity} بالوحدة الأساس)`.trim(),
             unitPrice: l.unitCostSnapshot,
-            lineTotal: l.lineCost,
+            lineTotal: Number(l.quantity) === Number(l.baseQuantity) ? l.lineCost : null,
           };
         });
         return buildRow(

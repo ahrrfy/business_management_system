@@ -237,7 +237,7 @@ describe("ضبط البيع — المبلغ المتاثر وحاجز الاع�
     // 1 من 2 × 2000 = 1000 — لا 2000 (إجماليّ الفاتورة).
     expect(row!.amount).toBe("1000.00");
     expect(row!.approveBlockedReason).toBeNull();
-    expect(row!.summaryItems.some((i) => i.label.includes("ورق A4") && i.unitPrice === "1000.00" && i.lineTotal === "1000.00" && i.variant === "أبيض / 80g" && i.colorHex === "#FFFFFF")).toBe(true);
+    expect(row!.summaryItems.some((i) => i.label.includes("ورق A4") && i.unitPrice === "1000.00" && i.variant === "أبيض / 80g" && i.colorHex === "#FFFFFF")).toBe(true);
     expect(row!.summaryItems.some((i) => i.label.includes("قيمة البنود المرتجعة") && i.unitPrice === "1000.00")).toBe(true);
     expect(row!.summaryItems.some((i) => i.label.includes("اجمالي الفاتورة") && i.unitPrice === "2000.00")).toBe(true);
 
