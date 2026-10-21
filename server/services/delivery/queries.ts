@@ -3,6 +3,7 @@
 // عزل الفرع: الجهة المشتركة مرئية للفروع، لكن سند التوريد ونقد الدرج يخصان فرعاً واحداً حتماً؛
 // لذلك قائمة «المفتوح للتوريد» تقبل branchId وتعرض فقط طرود ذلك الفرع. أما السجل الإداري العام
 // للجهة فيبقى عابراً للفروع لمن يملك صلاحية رؤيتها، وتبقى كل حركة موسومة بفرعها.
+import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -221,6 +222,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       ELSE 0 END)
     FROM ${deliveryLedgerEntries}
     WHERE ${deliveryLedgerEntries.consignmentId} = ${deliveryConsignments.id}
+      AND ${effectiveDeliveryLedgerEntrySql()}
   ),0),0)`;
   const unpaidFee = and(
     eq(deliveryConsignments.parcelStatus, "DELIVERED"),
@@ -442,7 +444,7 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
   // Terminal closures retain original COD history without an open settlement obligation.
   const remainingDueSql = sql<string>`CASE WHEN ${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL') THEN GREATEST(${deliveryConsignments.codAmount} - ${deliveryConsignments.collectedAmount} - ${deliveryConsignments.counterSettledAmount} - ${consignmentShortfallAssignedSql}, 0) ELSE 0 END`;
   const live = inArray(deliveryConsignments.status, ["DISPATCHED", "PARTIAL"]);
-  const custody = sql<string>`(SELECT COALESCE(SUM(CASE WHEN dle.entryType = 'COD_COLLECTED' THEN dle.amount WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF') THEN -dle.amount ELSE 0 END), 0) FROM deliveryLedgerEntries dle WHERE dle.consignmentId = deliveryConsignments.id)`;
+  const custody = sql<string>`(SELECT COALESCE(SUM(CASE WHEN dle.entryType = 'COD_COLLECTED' THEN dle.amount WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF') THEN -dle.amount ELSE 0 END), 0) FROM deliveryLedgerEntries dle WHERE dle.consignmentId = deliveryConsignments.id AND ${effectiveDeliveryLedgerEntrySql("dle")})`;
   switch (page.state) {
     case "IN_TRANSIT":
       conds.push(
@@ -970,6 +972,7 @@ export async function listPartyObligations(branchId: number | null) {
           ELSE 0 END), 0)
         FROM deliveryLedgerEntries dle
         WHERE dle.consignmentId = dc.id
+          AND ${effectiveDeliveryLedgerEntrySql("dle")}
           AND dle.entryType IN ('COD_COLLECTED','COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF')
       ) > 0`;
   const rows = await db
@@ -1002,7 +1005,7 @@ export async function listPartyObligations(branchId: number | null) {
         ELSE GREATEST(CAST(dc.codAmount AS DECIMAL(15,2))
           - CAST(dc.collectedAmount AS DECIMAL(15,2))
           - CAST(dc.counterSettledAmount AS DECIMAL(15,2))
-          - (SELECT COALESCE(SUM(CASE WHEN dle.entryType = 'SHORTFALL_ASSIGNED' THEN dle.amount WHEN dle.entryType = 'SHORTFALL_SETTLED' THEN -dle.amount ELSE 0 END),0) FROM deliveryLedgerEntries dle WHERE dle.consignmentId = dc.id), 0) END), 0) ${openScope})`,
+          - (SELECT COALESCE(SUM(CASE WHEN dle.entryType = 'SHORTFALL_ASSIGNED' THEN dle.amount WHEN dle.entryType = 'SHORTFALL_SETTLED' THEN -dle.amount ELSE 0 END),0) FROM deliveryLedgerEntries dle WHERE dle.consignmentId = dc.id AND ${effectiveDeliveryLedgerEntrySql("dle")}), 0) END), 0) ${openScope})`,
       /** عمر أقدم إرسالية مفتوحة بالساعات — محور «الأقدم أولاً». NULL = لا مفتوح. */
       oldestOpenAgeHours: sql<number | null>`(SELECT TIMESTAMPDIFF(HOUR, MIN(dc.dispatchedAt), NOW()) ${openScope})`,
       /**
@@ -1016,7 +1019,7 @@ export async function listPartyObligations(branchId: number | null) {
             WHEN dle.entryType = 'FEE_REFUNDED' THEN -dle.amount
             WHEN dle.entryType IN ('FEE_PAID', 'FEE_OFFSET') THEN -dle.amount
             ELSE 0 END), 0)
-          FROM deliveryLedgerEntries dle WHERE dle.consignmentId = dc.id
+          FROM deliveryLedgerEntries dle WHERE dle.consignmentId = dc.id AND ${effectiveDeliveryLedgerEntrySql("dle")}
         ), 0)), 0)
         FROM deliveryConsignments dc
         WHERE dc.partyId = ${deliveryParties.id}

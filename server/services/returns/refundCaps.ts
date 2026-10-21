@@ -29,6 +29,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { receipts } from "../../../drizzle/schema";
 import { customerReceiptAllocationRowsSql, loadCustomerReceiptAllocationRows } from "../customerReceiptProjection";
 import { money } from "../money";
+import { effectiveDeliveryLedgerEntrySql } from "../delivery/legacyLedger";
 
 /** طرق الاسترداد التي يقبلها عقد الخادم (TELECOM ليست طريقة **ردٍّ** — تُطوى في النقد). */
 export const REFUND_METHODS = ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"] as const;
@@ -256,7 +257,7 @@ export async function loadRefundCaps(
             WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF','SHORTFALL_SETTLED') THEN -dle.amount
             ELSE 0 END), 0) AS custodyAmount
         FROM deliveryConsignments cn
-        LEFT JOIN deliveryLedgerEntries dle ON dle.consignmentId = cn.id
+        LEFT JOIN deliveryLedgerEntries dle ON dle.consignmentId = cn.id AND ${effectiveDeliveryLedgerEntrySql("dle")}
         WHERE cn.invoiceId = ${invoiceId}
         GROUP BY cn.id
       ) x
@@ -267,7 +268,7 @@ export async function loadRefundCaps(
       SELECT dr.shiftId AS shiftId,
              CAST(COALESCE(SUM(dle.amount), 0) AS CHAR) AS amount
       FROM deliveryConsignments cn
-      JOIN deliveryLedgerEntries dle ON dle.consignmentId = cn.id
+      JOIN deliveryLedgerEntries dle ON dle.consignmentId = cn.id AND ${effectiveDeliveryLedgerEntrySql("dle")}
       JOIN deliveryRemittances dr ON dr.id = dle.remittanceId
       WHERE cn.invoiceId = ${invoiceId}
         AND dle.entryType = 'COD_REMITTED'
@@ -354,7 +355,7 @@ export async function loadRefundCapsByInvoiceIds(
             WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF','SHORTFALL_SETTLED') THEN -dle.amount
             ELSE 0 END), 0) AS custodyAmount
         FROM deliveryConsignments cn
-        LEFT JOIN deliveryLedgerEntries dle ON dle.consignmentId = cn.id
+        LEFT JOIN deliveryLedgerEntries dle ON dle.consignmentId = cn.id AND ${effectiveDeliveryLedgerEntrySql("dle")}
         WHERE cn.invoiceId IN (${idList})
         GROUP BY cn.invoiceId, cn.id
       ) x
@@ -364,7 +365,7 @@ export async function loadRefundCapsByInvoiceIds(
       SELECT cn.invoiceId, dr.shiftId AS shiftId,
              CAST(COALESCE(SUM(dle.amount), 0) AS CHAR) AS amount
       FROM deliveryConsignments cn
-      JOIN deliveryLedgerEntries dle ON dle.consignmentId = cn.id
+      JOIN deliveryLedgerEntries dle ON dle.consignmentId = cn.id AND ${effectiveDeliveryLedgerEntrySql("dle")}
       JOIN deliveryRemittances dr ON dr.id = dle.remittanceId
       WHERE cn.invoiceId IN (${idList})
         AND dle.entryType = 'COD_REMITTED'

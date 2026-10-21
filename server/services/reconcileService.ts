@@ -22,6 +22,7 @@ import {
 import { getDb, type Tx } from "../db";
 import { deliveryLedgerEntries } from "../../drizzle/schema";
 import { deriveCashInHandFromLedger } from "@shared/partyExposure";
+import { effectiveDeliveryLedgerEntrySql } from "./delivery/legacyLedger";
 import {
   ACCOUNT_ROLES,
   ALL_POSTING_PROFILES,
@@ -826,6 +827,7 @@ export async function reconcileDeliveryFloat(): Promise<ReconcileResult[]> {
       total: sql<string>`COALESCE(SUM(${deliveryLedgerEntries.amount}), 0)`,
     })
     .from(deliveryLedgerEntries)
+    .where(effectiveDeliveryLedgerEntrySql())
     .groupBy(deliveryLedgerEntries.partyId, deliveryLedgerEntries.entryType);
   const ledgerByParty = new Map<number, { entryType: string; amount: string }[]>();
   for (const r of ledgerAgg) {

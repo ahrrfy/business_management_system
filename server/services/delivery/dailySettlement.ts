@@ -9,6 +9,7 @@
  * من التوريد تنجرف عن الأولى — وتُضيف قرار العجز بسببٍ مصنَّف (يُقيَّد ذمّةً على الجهة) أو
  * ترفض الزيادة (تحتاج مصدراً: سندُ قبضٍ مستقلّ).
  */
+import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
@@ -119,7 +120,7 @@ async function ledgerFeeDue(tx: Tx, partyId: number): Promise<string> {
       total: sql<string>`COALESCE(SUM(${deliveryLedgerEntries.amount}), 0)`,
     })
     .from(deliveryLedgerEntries)
-    .where(eq(deliveryLedgerEntries.partyId, partyId))
+    .where(and(eq(deliveryLedgerEntries.partyId, partyId), effectiveDeliveryLedgerEntrySql()))
     .groupBy(deliveryLedgerEntries.entryType);
   const ledger: PartyExposureLedgerEntry[] = agg.map((r) => ({ entryType: r.entryType, amount: String(r.total ?? "0") }));
   return computePartyExposure({ cashInHand: 0, parcels: [], ledger }).feesOwedToThem;

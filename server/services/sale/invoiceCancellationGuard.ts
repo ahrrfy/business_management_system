@@ -9,6 +9,7 @@ import {
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { money, round2 } from "../money";
+import { effectiveDeliveryLedgerEntrySql } from "../delivery/legacyLedger";
 
 export interface InvoiceCancellationGuardInput {
   invoiceId: number;
@@ -198,7 +199,7 @@ export async function assertInvoiceReversalDeliverySafeTx(
           feePaid: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_PAID','FEE_OFFSET') THEN ${deliveryLedgerEntries.amount} ELSE 0 END), 0)`,
         })
         .from(deliveryLedgerEntries)
-        .where(eq(deliveryLedgerEntries.consignmentId, Number(consignment.id)))
+        .where(and(eq(deliveryLedgerEntries.consignmentId, Number(consignment.id)), effectiveDeliveryLedgerEntrySql()))
     )[0];
     const assigned = round2(money(ledger?.assigned ?? "0"));
     const collected = round2(money(ledger?.collected ?? "0"));

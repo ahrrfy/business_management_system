@@ -1,3 +1,4 @@
+import { effectiveDeliveryLedgerEntrySql } from "./delivery/legacyLedger";
 import { TRPCError } from "@trpc/server";
 import {
   canonicalOperationAllowed,
@@ -262,7 +263,7 @@ export async function remainingUnremittedDeliveryCustody(
           ELSE 0 END), 0)`,
       })
       .from(deliveryLedgerEntries)
-      .where(eq(deliveryLedgerEntries.consignmentId, consignmentId))
+      .where(and(eq(deliveryLedgerEntries.consignmentId, consignmentId), effectiveDeliveryLedgerEntrySql()))
   )[0];
   const total = round2(Decimal.max(0, money(row?.amount ?? "0")));
   return {

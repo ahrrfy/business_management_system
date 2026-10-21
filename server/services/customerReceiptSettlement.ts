@@ -118,6 +118,100 @@ export async function assertCustomerReceiptConservationTx(
   if (!total.eq(h.amount))
     conflict("مجموع حصص السند لا يساوي مصدره؛ تراجعت المعاملة بالكامل");
 }
+
+/** Historical repair verifies the original source without posting money again. */
+export async function verifyCustomerReceiptSettlementTx(
+  tx: Tx,
+  receiptId: number,
+) {
+  const [header] = await tx
+    .select()
+    .from(settlements)
+    .where(eq(settlements.receiptId, receiptId));
+  if (!header) conflict("دليل التوزيع التاريخي مفقود");
+  await assertSourceTx(tx, header);
+  await assertCustomerReceiptConservationTx(tx, header.id);
+  return header;
+}
+
+/** Internal history importer: caller proves the entire customer funding snapshot under GOVERNANCE. */
+export async function adoptHistoricalCustomerReceiptTx(
+  tx: Tx,
+  receiptId: number,
+  plan: {
+    accountAmount: string;
+    unallocatedAmount: string;
+    allocations: { invoiceId: number; amount: string; applyAmount: string }[];
+  },
+  actor: Actor,
+) {
+  const r = await sourceTx(tx, receiptId);
+  if (
+    r.direction !== "IN" ||
+    r.invoiceId != null ||
+    r.workOrderId != null ||
+    r.reservationId != null ||
+    !r.voucherNumber
+  )
+    conflict("هذا المصدر ليس سند قبض تاريخياً عاماً");
+  const [existing] = await tx
+    .select({ id: settlements.id })
+    .from(settlements)
+    .where(eq(settlements.receiptId, receiptId));
+  if (existing)
+    conflict("السند التاريخي مرتبط مسبقاً؛ أعد تشغيل دفعة التصحيح الأصلية");
+  const total = plan.allocations.reduce(
+    (sum, p) => sum.plus(p.amount),
+    money(plan.accountAmount).plus(plan.unallocatedAmount),
+  );
+  if (
+    money(plan.accountAmount).lt(0) ||
+    money(plan.unallocatedAmount).lt(0) ||
+    !total.eq(r.amount)
+  )
+    conflict("خطة الربط التاريخي لا تحفظ قيمة مصدر القبض");
+  const id = extractInsertId(
+    await tx.insert(settlements).values({
+      receiptId,
+      customerId: r.partyId,
+      branchId: r.branchId,
+      amount: r.amount,
+      accountAmount: plan.accountAmount,
+      unallocatedAmount: plan.unallocatedAmount,
+      initialUnallocatedAmount: plan.unallocatedAmount,
+      sourceHash: sourceHash(r),
+      createdBy: actor.userId,
+    }),
+  );
+  for (const p of plan.allocations) {
+    const [inv] = await tx
+      .select()
+      .from(invoices)
+      .where(eq(invoices.id, p.invoiceId));
+    if (
+      !inv ||
+      inv.customerId !== r.partyId ||
+      inv.branchId !== r.branchId ||
+      isDeadInvoice(inv) ||
+      money(p.amount).lte(0) ||
+      money(p.applyAmount).lt(0) ||
+      money(p.applyAmount).gt(p.amount)
+    )
+      conflict("تخصيص تاريخي خارج نطاق الفاتورة أو المصدر");
+    if ((await activeDeliveryInvoiceIdsTx(tx, [inv.id])).has(inv.id))
+      conflict("لا يُعاد بناء تخصيص على إرسالية نشطة");
+    if (money(p.applyAmount).gt(0))
+      await allocateVoucherToInvoiceTx(tx, {
+        invoiceId: p.invoiceId,
+        amount: money(p.applyAmount),
+        direction: "IN",
+        paymentMethod: r.paymentMethod,
+        voucherBranchId: r.branchId,
+      });
+    await addAllocationTx(tx, id, p.invoiceId, money(p.amount));
+  }
+  await verifyCustomerReceiptSettlementTx(tx, receiptId);
+}
 async function addAllocationTx(
   tx: Tx,
   settlementId: number,
