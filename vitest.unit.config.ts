@@ -13,6 +13,7 @@ export default defineConfig({
     environment: "node",
     include: [
       "server/__tests__/staticAssets.test.ts",
+      "client/src/lib/lazyWithRetry.test.ts",
       "shared/supplierVoucherSettlement.test.ts",
       "client/src/components/vouchers/SupplierVoucherSettlementSummary.test.tsx",
       "server/lib/__tests__/webMemoryBudget.test.ts",

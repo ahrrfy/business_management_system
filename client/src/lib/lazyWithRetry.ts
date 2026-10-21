@@ -19,6 +19,47 @@
 import { lazy, type ComponentType } from "react";
 
 const RELOAD_GUARD_KEY = "alroya:chunk-reload-attempted";
+const RELOAD_GUARD_TTL_MS = 30_000;
+
+function getFactoryGuardValue(factory: () => unknown): string {
+  try {
+    const raw = factory.toString();
+    const importMatch = raw.match(/import\(\s*["']([^"']+)["']\s*\)/);
+    if (importMatch?.[1]) {
+      return importMatch[1].replace(/-[A-Za-z0-9_-]{8}(?=\.m?js$)/, "");
+    }
+    const normalized = raw
+      .replace(/-[A-Za-z0-9_-]{8}(?=\.m?js["'])/g, "")
+      .replace(/__vite__mapDeps\(\[[^\]]*\]\)/g, "__vite__mapDeps([])")
+      .trim()
+      .slice(0, 200);
+    return normalized || "1";
+  } catch {
+    return "1";
+  }
+}
+
+function parseReloadGuard(raw: string | null, now = Date.now()): {
+  active: boolean;
+  target: string | null;
+} {
+  if (!raw) return { active: false, target: null };
+  if (raw === "1") return { active: true, target: "1" };
+  const sepIndex = raw.lastIndexOf("\n");
+  if (sepIndex === -1) {
+    return { active: true, target: raw };
+  }
+  const target = raw.slice(0, sepIndex) || "1";
+  const ts = Number(raw.slice(sepIndex + 1));
+  if (!Number.isFinite(ts)) {
+    return { active: true, target };
+  }
+  const ageMs = now - ts;
+  return {
+    active: ageMs >= 0 && ageMs < RELOAD_GUARD_TTL_MS,
+    target,
+  };
+}
 
 function isChunkLoadError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
@@ -43,12 +84,24 @@ function isChunkLoadError(err: unknown): boolean {
 export function lazyWithRetry<T extends ComponentType<any>>(
   factory: () => Promise<{ default: T }>,
 ): ReturnType<typeof lazy<T>> {
+  const guardValue = getFactoryGuardValue(factory);
   return lazy(async () => {
     try {
       const mod = await factory();
-      // نَجَح ⇒ امسح الحَارس (مَحاولات سَابقة كانت عَابرة).
+      // نَجَح ⇒ امسح الحَارس فقط إن كان يَخصّ هَذا الـchunk نَفسه أو انتهت صَلاحيته
+      // (حَتى لا يَمسح chunk شَقيق مُخبّأ مثل QuranStationDrawer حَارسَ صَفحةٍ فاشلة مثل Dashboard فَيُسبّب حَلَقة reload لا نِهائية).
       try {
-        sessionStorage.removeItem(RELOAD_GUARD_KEY);
+        const rawGuard = sessionStorage.getItem(RELOAD_GUARD_KEY);
+        if (rawGuard !== null) {
+          const parsed = parseReloadGuard(rawGuard);
+          if (
+            !parsed.active ||
+            parsed.target === "1" ||
+            parsed.target === guardValue
+          ) {
+            sessionStorage.removeItem(RELOAD_GUARD_KEY);
+          }
+        }
       } catch {
         /* sessionStorage مَحجوب في وَضع خاصّ — تَجاهل */
       }
@@ -59,7 +112,8 @@ export function lazyWithRetry<T extends ComponentType<any>>(
       // فَشل chunk — جَرّب reload مَرّة واحدة، ثم اِنشر الخَطأ لِحَدّ الخَطأ.
       let alreadyReloaded = false;
       try {
-        alreadyReloaded = sessionStorage.getItem(RELOAD_GUARD_KEY) === "1";
+        const parsed = parseReloadGuard(sessionStorage.getItem(RELOAD_GUARD_KEY));
+        alreadyReloaded = parsed.active;
       } catch {
         /* تَجاهل */
       }
@@ -74,7 +128,10 @@ export function lazyWithRetry<T extends ComponentType<any>>(
       }
 
       try {
-        sessionStorage.setItem(RELOAD_GUARD_KEY, "1");
+        sessionStorage.setItem(
+          RELOAD_GUARD_KEY,
+          `${guardValue}\n${Date.now()}`,
+        );
       } catch {
         /* تَجاهل */
       }

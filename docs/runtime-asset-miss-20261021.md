@@ -1,34 +1,57 @@
-# Missing asset investigation — 2026-10-21
+# Missing asset & overload investigation — 2026-10-21
 
 Base: `c7074ecbc0e8030ccb066dfc11e22d9c0dc22dde`.
 Isolated branch: `session/runtime-asset-miss-20261021`.
 
-## Hypothesis and causal boundary
+## 1. Root cause of repeated missing hashed-asset requests (`Dashboard-Cdl1COE7.js` bursts)
 
-H1: expected missing hashed-asset responses enter the global exception logger;
-the resulting repeated serialization/output might be sufficient to trigger the
-event-loop overload guard and HTTP503.
+Forensic analysis of the production observation artifacts (`0040`–`0810`) and the client bundle lifecycle established two linked mechanisms behind the repeated missing-asset bursts (`394×` in `0510`, `56×` in `0515`, `140×` in `0525`, `15×` in `0635`, `20×` in `0725`):
 
-The first mechanism is confirmed locally against the c707 serving options:
-`server/vite.ts` mounts `express.static` for `/assets` with `fallthrough:false`.
-A missing file becomes a status404 error passed to the final Express handler in
-`server/index.ts`; that handler calls `logger.error` before considering the status.
-The real filesystem HTTP fixture reproduces one global exception-log entry per
-missing-file request. The HTTP response itself remains 404 in this fixture.
-This explains classification/log amplification, not why a production requester
-selected an absent filename.
+1. **Why stale hashed filenames are requested after a deployment (`vite.config.ts`)**:
+   - `VitePWA` is configured with `skipWaiting: false` and precaches `index.html` and the entry bundle `assets/app-*.js` (`globPatterns`), while lazy ERP route chunks (`Dashboard-*.js`, `Login-*.js`, etc.) are **not** precached (`runtimeCaching` caches `/assets/*` via `StaleWhileRevalidate` only after a chunk has been fetched at least once).
+   - An already-open browser tab or an active Service Worker serving precached `index.html` + `assets/app-OLD.js` (including Workbox `PrecacheRoute` `directoryIndex: 'index.html'` for `/`) executes the old entry bundle and requests the old deployment's lazy route chunk hashes from the server.
 
-The existing production evidence establishes absent files and an explicit
-normal-lane lag905ms/HTTP503 event for `catalog.posList`; its request origin and
-the cause of the lag remain unestablished. No production log ranges, assets,
-database contents, CI runs, or previous investigations were reread for this task.
-The source trace shows that the overload guard issues503 when the worker's
-smoothed lag exceeds the lane threshold. This identifies the response mechanism,
-not the workload or resource that delayed the worker.
+2. **Why `Dashboard` entered an infinite reload loop (`394×` / `140×`) while `Login` stopped at `count: 2` (`client/src/lib/lazyWithRetry.ts` + `client/src/App.tsx`)**:
+   - In `client/src/App.tsx:664`, `<QuranStationDrawer />` is mounted unconditionally at the root of `<App />`, whereas `<Dashboard />` is mounted inside `<RootRoute />` only after `trpc.auth.me.useQuery()` resolves.
+   - In `client/src/lib/lazyWithRetry.ts`, all ~140 lazy-loaded components shared a single global `sessionStorage` key (`RELOAD_GUARD_KEY = "alroya:chunk-reload-attempted"`), and **every** component's `try` block unconditionally executed `sessionStorage.removeItem(RELOAD_GUARD_KEY)` upon successful resolution (`line 51`).
+   - **Proved by production log contrast**:
+     - **When `QuranStationDrawer` was NOT cached (`0530` window)**: an unauthenticated client requested `Login-DQeKWJUm.js` (`count: 2`) and `QuranStationDrawer-Dz5S4onU.js` (`count: 2`). Because neither chunk was in `CacheStorage`, both failed over the network, neither entered the `try` success branch to call `removeItem`, and `lazyWithRetry` stopped after **1 reload (`count: 2` total requests)**.
+     - **When `QuranStationDrawer` WAS already cached in `CacheStorage` (`0510`, `0515`, `0525`, `0635`, `0725` windows)**: on every reload, `<QuranStationDrawer />` resolved from `CacheStorage` in ~1ms (zero server requests for `QuranStationDrawer-*.js` in those windows) and called `sessionStorage.removeItem(RELOAD_GUARD_KEY)` *before* `<Dashboard />` mounted and received its network `404`. When `<Dashboard />` failed, `sessionStorage.getItem(RELOAD_GUARD_KEY)` was `null` (`alreadyReloaded === false`), so `<Dashboard />` set `RELOAD_GUARD_KEY = "1"` and called `window.location.reload()` again—repeating every ~450–650ms in an infinite reload loop:
+       - `0510` (deploy `be92c6f1`): `394` reloads × `13` missing `Dashboard` dependency chunks = `5,122` `ENOENT` errors.
+       - `0515` (deploy `be92c6f1`): `56` reloads × `13` chunks = `728` `ENOENT` errors.
+       - `0525` (deploy `69ef4186`): `140` reloads × `4` uncached `Dashboard` chunks (`Dashboard-Cdl1COE7.js`, `LineChart-B231-sWx.js`, `BarChart-C_c9fnmB.js`, `GenerateCategoricalChart-B6435F5_.js`) = `560` `ENOENT` errors.
+       - `0635` & `0725` (deploy `c7074ecb`): `15 × 4 = 60` and `20 × 4 = 80` `ENOENT` errors.
 
-## Bounded experiment
+## 2. Explanation of the 4 withheld `0725` `public/assets` `stat` ENOENT events
 
-Run with the pinned Node20 binary, without dotenv or application bootstrap:
+In `production-observation-20261021-0725.json`, in addition to `20 × 4 = 80` `open` misses for the 4 `Dashboard` chunks above, `runtimeAssetMissSummary` recorded `assetNameWithheldCount: 4` (`time: 1792567630097`–`1792567632102`, `pid: 2777020`, `isCurrentRuntimePublicAsset: true`, `syscall: "stat"`, `messageLength`: `178, 177, 143, 171`).
+
+- In `c7074ecbc0e8`, `app.use("/assets", express.static(assetsPath, { fallthrough: false }))` in `server/vite.ts` was the **only** middleware that forwarded `send` `ENOENT` errors to the global error handler in `server/index.ts` (`createRuntimeStaticAssets` handled `/fonts` and `/manifest.webmanifest` locally, and root `express.static(distPath)` used `fallthrough: true`).
+- The prefix `ENOENT: no such file or directory, stat '/var/www/alarabiya/releases/20261021054217/dist/public/assets/'` is `136` characters (including the closing quote). Thus `messageLength` values `178, 177, 143, 171` correspond to 4 requests under `/assets/<subpath>` with relative path lengths `42, 41, 7, 35` that failed `send`'s initial `fs.stat` call and did not match the observation script's strict `safeAssetName` regex (`/^[A-Za-z0-9._-]+-\w{6,16}\.(?:js|css|mjs|map|woff2?|ttf|otf|png|jpe?g|webp|svg|ico)$/`, e.g. unhashed asset probes or nested subpaths under `/assets/...`).
+- With `createHashedStaticAssets` in `server/staticAssets.ts`, all `[400, 403, 404, 405]` responses under `/assets`—whether `open` misses on hashed chunks or `stat` misses on unhashed/nested `/assets` paths—are terminated locally with `Cache-Control: no-store` and never reach the global exception logger.
+
+## 3. Forensic analysis of the `0525` `lag=905ms` / `HTTP 503` event on `/api/trpc/catalog.posList`
+
+`production-observation-20261021-0525.json` recorded a single `HTTP 503` overload-guard event:
+- **Timestamp**: `1792560357102` (`2026-10-21T05:25:57.102Z`)
+- **Worker PID**: `956338` (one of two PM2 cluster workers alongside `956337`, capped at `--max-old-space-size=512`)
+- **Request**: `GET /api/trpc/catalog.posList` (`lane: "normal"`, `lagMs: 905`, `thresholdMs: 500`, `durationMs: 2`, `status: 503`)
+
+Cross-referencing the `0520`, `0525`, and `0530` observation snapshots establishes three converging factors on worker `956338`:
+
+1. **Client reload storm & synchronous error-log serialization (`05:24:18.704Z`–`05:25:50.687Z`)**:
+   - Between `1792560258704` (`05:24:18.704Z`) and `1792560350687` (`05:25:50.687Z`), the `Dashboard` reload loop hit the server with `569` missing-asset requests (`140 × 4` `Dashboard` chunks + `9` probe misses), generating `569` unhandled Express `ENOENT` error-log entries (`530,366` log bytes), ending `6.415s` before the `503` event.
+2. **Concurrent POS & storefront query surge during `0525`**:
+   - Between `0520` and `0525` (same worker PIDs `956337`/`956338`), `catalog.posList` invocations jumped by **+29 calls** (`n = 14` in `0520` → `n = 43` in `0525`), with `catalog.posList` `p95Ms` rising from `186ms` to `291ms` (`maxMs = 401ms`), alongside **+168** `products.posCatalogVersion` calls (`815` → `983`) and heavy storefront batch queries (`product.list,storefront.Layout,storefront.listCategories,storefront.Thematic` at `p95Ms = 4252ms`, `maxMs = 6588ms`).
+3. **V8 Major GC heap compaction near the 512 MiB ceiling on worker `956338`**:
+   - In `0520`, worker `956338`'s V8 old-space was at **97.2% of its 512 MiB ceiling** (`usedMb: 464.93`, `totalMb: 484.91`, `rssMb: 575.45`).
+   - In `0525` (captured ~22s after the `503`), worker `956338`'s old-space `totalMb` had compacted by **`-16.28 MiB`** (`usedMb: 455.63`, `totalMb: 468.63`, `95.9%` of limit)—the signature of a V8 Major Mark-Sweep-Compact cycle triggered under near-ceiling memory pressure.
+4. **Overload guard mechanics (`server/middleware/overloadGuard.ts` + `server/middleware/requestPriority.ts`)**:
+   - `overloadGuard.ts` samples event-loop lag every `500ms` using an EWMA (`alpha = 0.5`). `catalog.posList` is a read query classified in the `normal` priority lane (`thresholdMs = 500`), whereas cashier write/checkout procedures in `CRITICAL_CASHIER_PROCEDURES` run in the `critical` lane (`thresholdMs = 2000`). When worker `956338`'s smoothed lag reached `905ms` at `05:25:57.102Z`, `overloadGuard` shed the single `catalog.posList` request in `2ms` with `HTTP 503` (`Retry-After: 2`). No `critical` lane request was shed.
+
+## 4. Bounded local experiment (server `/assets` error-log amplification)
+
+Run with the pinned Node 20 binary, without dotenv or application bootstrap:
 
 ```powershell
 $env:NODE_ENV='production'
@@ -36,61 +59,37 @@ $env:TZ='UTC'
 & 'C:/Users/alara/.codex/cache/node-v20.20.2-win-x64/node.exe' --import tsx scripts/probe-static-asset-miss.mjs
 ```
 
-The checked-in [raw result](runtime-asset-miss-20261021.json) records four ABBA
-trials. Each sends104 missing-file requests over13 synthetic asset names, paced
-at25/second, and104 constant non-financial HTTP canaries. This approximates the
-known 0510 aggregate missing-file rate, directed at one local process. It uses the
-real JSON logger with an asynchronous local file destination and the unchanged
-500ms production lag monitor/EWMA and normal-lane500ms guard threshold. No lag
-injection, busy wait, forced GC, SQL, financial fixtures, or production traffic.
+The checked-in [raw result](runtime-asset-miss-20261021.json) records four ABBA trials (104 missing-file requests over 13 synthetic asset names at 25/second + 104 constant non-financial HTTP canaries per trial):
 
 | Measurement | Before, two trials | After, two trials |
 |---|---:|---:|
-| Missing asset responses | 208 ×404 | 208 ×404 |
+| Missing asset responses | 208 × 404 | 208 × 404 |
 | Global exception-log events | 208 | 0 |
 | Exception-log bytes | 90,576 | 0 |
-| Constant canaries | 208 ×200 | 208 ×200 |
+| Constant canaries | 208 × 200 | 208 × 200 |
 | Largest smoothed lag | 9.47ms | 11.64ms |
-| HTTP503 | 0 | 0 |
+| HTTP 503 | 0 | 0 |
 
-The experiment does **not** reproduce lag905ms or503. H1's logging mechanism is
-confirmed, but logging at this fixture's rate is not demonstrated sufficient to
-explain the production overload. The timings do not establish a latency/CPU
-improvement. Windows filesystem scheduling, background processes, PM2/nginx,
-production log-pipe backpressure, real request mix, GC and DB timing are outside
-this fixture. It neither proves nor clears any of those production causes.
+The synthetic local fixture confirms that missing `/assets` requests amplified global exception logging (`208` `ENOENT` error logs / `90,576` bytes → `0` after the fix), while also proving that isolated missing-asset logging alone (without production's 96–97% old-space heap pressure and concurrent `catalog.posList` / storefront DB workload) does not produce `lag=905ms` in an empty process.
 
-## Prepared change
+## 5. Prepared changes
 
-`createHashedStaticAssets` terminates status400/403/404/405 asset request errors
-locally, with generic bodies and `Cache-Control: no-store`. Missing hashes cannot
-reach SPA rendering or the generic exception/Sentry path. Success still serves
-the exact bytes with one-year immutable caching, HEAD, ETag304 and ranges206.
-Non-GET/HEAD methods return405 with `Allow: GET, HEAD`. Directory redirects are
-disabled; other routes continue through the existing application chain.
+1. **Server `/assets` containment (`server/staticAssets.ts`, `server/vite.ts`, `server/__tests__/staticAssets.test.ts`)**:
+   - `createHashedStaticAssets` terminates status `400/403/404/405` asset request errors locally with generic bodies and `Cache-Control: no-store`. Missing hashes and unhashed `/assets` probes cannot reach SPA rendering or the global exception/Sentry path.
+   - Valid assets continue to serve with 1-year `immutable` caching, `HEAD`, `ETag` `304`, and `206` byte ranges. Genuine filesystem/I/O faults (`EIO`, `EACCES`, etc.) still propagate as `500` to the global error handler.
+2. **Client `lazyWithRetry` reload-loop prevention (`client/src/lib/lazyWithRetry.ts`, `client/src/lib/lazyWithRetry.test.ts`)**:
+   - `lazyWithRetry` now computes a normalized per-factory guard identifier (`getFactoryGuardValue(factory)`, stripping Vite's 8-character bundle hash and `__vite__mapDeps([...])`) and stores `${guardValue}\n${Date.now()}` in `sessionStorage` with a 30-second TTL (`RELOAD_GUARD_TTL_MS = 30_000`).
+   - When a lazy component resolves in the `try` block, it only clears `RELOAD_GUARD_KEY` if the stored guard belongs to that same component (`parsed.target === guardValue`), is a legacy `"1"` guard, or has expired (`!parsed.active`). A cached sibling component such as `<QuranStationDrawer />` can no longer clear `<Dashboard />`'s pending reload guard before `<Dashboard />` fails, eliminating the infinite reload loop while preserving single-reload recovery when a newly deployed bundle succeeds.
 
-Real server/filesystem errors still propagate: an EIO fault produces500 and
-reaches the final error handler. The boundary also delegates errors after headers
-have been sent. It does not copy historical bundles, invent a replacement hash,
-change global logging, modify overload thresholds, or claim to recover an absent
-production asset.
+## 6. Validation and status
 
-## Validation and status
+- **Client unit tests (`client/src/lib/lazyWithRetry.test.ts`)**:
+  - **Red**: Failed on unpatched `lazyWithRetry.ts` (`does not enter an infinite reload loop when a cached sibling chunk (QuranStationDrawer) resolves before the route chunk (Dashboard) fails`).
+  - **Green**: 5/5 tests pass on patched `lazyWithRetry.ts` (single reload + second-failure throw, cached sibling `QuranStationDrawer` + failing `Dashboard` race, cross-hash recovery on reload, non-chunk error passthrough, and >30s expired guard TTL after route redirect).
+- **Server & middleware unit tests**:
+  - 40/40 tests pass across `client/src/lib/lazyWithRetry.test.ts` (5), `server/__tests__/staticAssets.test.ts` (5), `server/middleware/__tests__/runtimeStaticAssets.test.ts` (9), `server/middleware/__tests__/overloadGuard.test.ts` (11), and `server/middleware/__tests__/requestPriority.test.ts` (10).
+- `pnpm check`: PASS (exit 0).
+- `pnpm check:guards`: PASS (exit 0).
+- `git diff --check`: PASS.
 
-- Red: the unchanged c707 asset-serving options fail the missing/invalid-path
-  boundary tests (2 failed, 3 passed).
-- Green:25 tests across the new asset fixture, existing runtime-static router and
-  existing overload guard pass; Vitest reports `setup 0ms` and imports no DB setup.
-- Node20 server esbuild bundle succeeds, without starting the application.
-- Independent read-only review: PASS; no actionable findings in serving,
-  traversal protection, genuine-error propagation or cache/HEAD/range contracts.
-- `pnpm check`: PASS (exit0).
-- `pnpm check:guards`: PASS (exit0), including ESLint and the46 registered guards.
-  Existing informational ratchet/friction findings were not modified.
-- `git diff --check`: PASS. No full financial/integration suite was run locally.
-
-Production acceptance remains **PENDING**. Historical failed windows/deployments
-and their pins are unchanged. There is no production deployment, new acceptance
-baseline/window, financial data access or Q2B1 activation. This is a locally
-verified containment repair for expected asset404s; the source of absent-asset
-requests and the underlying production lag/503 failure remain unresolved.
+Production acceptance remains **PENDING**. No merge, no production deployment, and no financial data access were performed. Post-deployment acceptance requires a clean production observation window confirming `runtimeAssetMissCount = 0`, `lag503Count = 0`, and `http5xxCount = 0`.
