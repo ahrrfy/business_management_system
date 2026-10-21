@@ -159,8 +159,12 @@ export const purchaseOrderControlSource: DecisionSource = {
     const orderById = new Map(orders.map((o) => [Number(o.id), o]));
     const revisionById = new Map(revisions.map((r) => [Number(r.id), r]));
     const [look, variants, units] = await Promise.all([
-      lookups(db, { suppliers: orders.map((o) => o.supplierId), users: rows.map((r) => r.requestedBy), branches: rows.map((r) => r.branchId) }),
-      variantLabels(db, ids(orderItems.map((i) => i.variantId))),
+      lookups(db, {
+        suppliers: orders.map((o) => o.supplierId),
+        users: [...rows.map((r) => r.requestedBy), ...orders.map((o) => o.createdBy)],
+        branches: rows.map((r) => r.branchId),
+      }),
+      variantLabels(db, ids([...orderItems.map((i) => i.variantId), ...revisionItems.map((i) => i.variantId)])),
       unitNames(db, ids(orderItems.map((i) => i.productUnitId))),
     ]);
     return rows
@@ -180,31 +184,83 @@ export const purchaseOrderControlSource: DecisionSource = {
         const summaryItems: DecisionSummaryItem[] = revision
           ? revisionItems
               .filter((i) => Number(i.revisionId) === Number(revision.id))
-              .map((i) => ({
-                label: itemLabel([i.productNameSnapshot, i.variantNameSnapshot]),
-                qty: i.quantity,
-                unit: i.unitNameSnapshot,
-                unitPrice: usd ? i.usdUnitPrice : i.unitPrice,
-              }))
+              .map((i) => {
+                const v = variants.get(Number(i.variantId));
+                const variantText = i.variantNameSnapshot?.trim() || v?.descriptor || v?.variantName || null;
+                return {
+                  label: itemLabel([i.productNameSnapshot || v?.productName, variantText]),
+                  variant: variantText,
+                  colorHex: v?.colorHex ?? null,
+                  sku: i.skuSnapshot?.trim() || v?.sku || null,
+                  qty: i.quantity,
+                  unit: i.unitNameSnapshot,
+                  unitPrice: usd ? i.usdUnitPrice : i.unitPrice,
+                  lineTotal: usd ? i.usdLineTotal : i.lineTotal,
+                };
+              })
           : orderItems
               .filter((i) => Number(i.purchaseOrderId) === Number(r.purchaseOrderId))
               .map((i) => {
                 const v = variants.get(Number(i.variantId));
+                const variantText = v?.descriptor || v?.variantName || null;
                 return {
-                  label: itemLabel([v?.productName, v?.variantName]),
+                  label: itemLabel([v?.productName, variantText]),
+                  variant: variantText,
+                  colorHex: v?.colorHex ?? null,
+                  sku: v?.sku ?? null,
                   qty: i.quantity,
                   unit: i.productUnitId == null ? null : (units.get(Number(i.productUnitId)) ?? null),
                   unitPrice: usd ? i.usdUnitPrice : i.unitPrice,
+                  lineTotal: usd ? i.usdTotal : i.total,
                 };
               });
         const amount = usd ? (revision?.usdTotal ?? po?.usdTotal ?? null) : (revision?.total ?? po?.total ?? null);
         const shipping = revision ?? po;
         const shippingAmount = round2(money(shipping?.shippingCost ?? "0").plus(money(shipping?.customsCost ?? "0")));
-        if (shippingAmount.gt(0)) summaryItems.push({
-          label: shipping?.shippingFundingSource === "DRAWER"
-            ? `شحن/كمرك ${shippingAmount.toFixed(2)} د.ع — دفعه المنشئ #${po?.createdBy} من ورديته #${shipping.shippingFundingShiftId}؛ ليس من درج المعتمد. هذا القرار ينشئ طلب صرف معلّقاً فقط؛ يوثق الدفع عند اعتماد سند الشحن مستقلاً. ${r.kind === "CANCEL_ORDER" ? "إلغاء البضاعة يبقي الشحن المدفوع دون استلام بضاعة." : ""}`
-            : `شحن/كمرك ${shippingAmount.toFixed(2)} د.ع — غير مدفوع؛ لا خصم من درج أو خزينة`,
-        });
+        const creatorName = po?.createdBy != null ? (look.user(po.createdBy) ?? `#${po.createdBy}`) : "غير معروف";
+        const totalIqd = round2(money(shipping?.total ?? "0")).toFixed(2);
+        const totalWithShippingIqd = round2(money(shipping?.total ?? "0").plus(shippingAmount)).toFixed(2);
+        const shippingItems = shippingAmount.gt(0)
+          ? [
+              {
+                label:
+                  shipping?.shippingFundingSource === "DRAWER"
+                    ? `شحن/كمرك ${shippingAmount.toFixed(2)} د.ع: دفعه منشئ الأمر (${creatorName}) من ورديته #${shipping.shippingFundingShiftId} — يوثق بسند الصرف المستقل`
+                    : `شحن/كمرك ${shippingAmount.toFixed(2)} د.ع: غير مدفوع نقداً (لا خصم من درج أو خزينة)`,
+              },
+            ]
+          : [];
+        const operationalContext = shippingAmount.gt(0)
+          ? {
+              badgeLabel: "تفصيل الفاتورة والشحن",
+              fundingSource:
+                shipping?.shippingFundingSource === "DRAWER"
+                  ? {
+                      mode: "DRAWER" as const,
+                      label: `درج وردية منشئ الأمر (${creatorName})`,
+                      shiftId: shipping.shippingFundingShiftId != null ? Number(shipping.shippingFundingShiftId) : null,
+                    }
+                  : {
+                      mode: "CREDIT" as const,
+                      label: `شحن مستحق غير مدفوع نقداً — منشئ الأمر: ${creatorName} (لا خصم من درج أو خزينة)`,
+                    },
+              facts: [
+                { label: "قيمة البضاعة", value: `${totalIqd} د.ع` },
+                { label: "أجور الشحن والكمرك", value: `${shippingAmount.toFixed(2)} د.ع`, tone: "warn" as const },
+                { label: "الإجمالي مع الشحن", value: `${totalWithShippingIqd} د.ع`, tone: "info" as const },
+              ],
+              smartNotice:
+                shipping?.shippingFundingSource === "DRAWER"
+                  ? {
+                      tone: (r.kind === "CANCEL_ORDER" ? "warn" : "info") as "warn" | "info",
+                      text: `أجور الشحن/الكمرك (${shippingAmount.toFixed(2)} د.ع) دفعها منشئ الأمر (${creatorName}) من ورديته رقم #${shipping.shippingFundingShiftId}؛ وليست من درج المعتمد. هذا القرار ينشئ طلب صرف معلقاً فقط، ويوثق الدفع عند اعتماد سند الشحن مستقلاً.${r.kind === "CANCEL_ORDER" ? " تنبيه: إلغاء البضاعة يبقي الشحن المدفوع دون استلام بضاعة." : ""}`,
+                    }
+                  : {
+                      tone: "info" as const,
+                      text: `أجور الشحن/الكمرك (${shippingAmount.toFixed(2)} د.ع) غير مدفوعة نقداً؛ لا يترتب عليها خصم من درج أو خزينة عند الاعتماد.`,
+                    },
+            }
+          : null;
         return buildRow(
           {
             ...GOVERNANCE_DEFAULTS,
@@ -220,7 +276,8 @@ export const purchaseOrderControlSource: DecisionSource = {
             requestedBy: Number(r.requestedBy),
             requestedByName: r.requestedByName ?? look.user(r.requestedBy),
             requestedAt: r.requestedAt,
-            summaryItems,
+            summaryItems: [...summaryItems, ...shippingItems],
+            operationalContext,
             reason: r.reason,
             hrefId: Number(r.purchaseOrderId),
             expectedVersion: Number(r.baseOrderVersion),
@@ -282,7 +339,21 @@ export const purchaseRequisitionControlSource: DecisionSource = {
         const mine = items.filter((i) => Number(i.requisitionId) === Number(r.requisitionId));
         const summaryItems: DecisionSummaryItem[] = mine.map((i) => {
           const v = variants.get(Number(i.variantId));
-          return { label: itemLabel([v?.productName, v?.variantName]), qty: i.requestedBaseQuantity, unit: "بالوحدة الأساس", unitPrice: i.estimatedUnitPrice ?? null };
+          const variantText = v?.descriptor || v?.variantName || null;
+          const lineTotal =
+            i.estimatedUnitPrice != null
+              ? round2(money(i.estimatedUnitPrice).times(Number(i.requestedBaseQuantity))).toFixed(2)
+              : null;
+          return {
+            label: itemLabel([v?.productName, variantText]),
+            variant: variantText,
+            colorHex: v?.colorHex ?? null,
+            sku: v?.sku ?? null,
+            qty: i.requestedBaseQuantity,
+            unit: "بالوحدة الأساس",
+            unitPrice: i.estimatedUnitPrice ?? null,
+            lineTotal,
+          };
         });
         const estimated = mine.reduce((sum, i) => (i.estimatedUnitPrice ? sum + Number(i.estimatedUnitPrice) * Number(i.requestedBaseQuantity) : sum), 0);
         const preferred = mine.map((i) => look.supplier(i.preferredSupplierId)).find((s) => !!s) ?? null;
@@ -481,7 +552,17 @@ export const purchaseReturnSource: DecisionSource = {
                 .filter((i) => Number(i.requestId) === Number(r.id))
                 .map((i) => {
                   const v = variants.get(Number(i.variantId));
-                  return { label: itemLabel([v?.productName, v?.variantName]), qty: i.requestedBaseQuantity, unit: "بالوحدة الأساس", unitPrice: i.unitPriceIqd };
+                  const variantText = v?.descriptor || v?.variantName || null;
+                  return {
+                    label: itemLabel([v?.productName, variantText]),
+                    variant: variantText,
+                    colorHex: v?.colorHex ?? null,
+                    sku: v?.sku ?? null,
+                    qty: i.requestedBaseQuantity,
+                    unit: "بالوحدة الأساس",
+                    unitPrice: i.unitPriceIqd,
+                    lineTotal: round2(money(i.unitPriceIqd ?? "0").times(Number(i.requestedBaseQuantity))).toFixed(2),
+                  };
                 }),
               { label: `الدليل: ${r.evidenceType} — ${r.evidenceReference}` },
             ],
@@ -528,7 +609,10 @@ export const purchaseReturnReversalSource: DecisionSource = {
       : [];
     const returnById = new Map(returns.map((x) => [Number(x.id), x]));
     const returnItemById = new Map(returnItems.map((x) => [Number(x.id), x]));
-    const look = await lookups(db, { suppliers: returns.map((x) => x.supplierId), users: rows.map((r) => r.requestedBy), branches: rows.map((r) => r.branchId) });
+    const [look, variants] = await Promise.all([
+      lookups(db, { suppliers: returns.map((x) => x.supplierId), users: rows.map((r) => r.requestedBy), branches: rows.map((r) => r.branchId) }),
+      variantLabels(db, ids(returnItems.map((x) => x.variantId))),
+    ]);
     return rows
       .filter((r) => !sodHidden({ blocked: [r.requestedBy], actor, ownerExempt: true, trigger: purchaseReturnReversalTrigger("APPROVE") }))
       .map((r) => {
@@ -554,7 +638,22 @@ export const purchaseReturnReversalSource: DecisionSource = {
             summaryItems: [
               ...mine.map((i) => {
                 const src = returnItemById.get(Number(i.purchaseReturnItemId));
-                return { label: itemLabel([src?.productNameSnapshot, src?.variantNameSnapshot]), qty: i.baseQuantity, unit: "بالوحدة الأساس", unitPrice: src?.unitPrice ?? null };
+                const v = src ? variants.get(Number(src.variantId)) : undefined;
+                const variantText = src?.variantNameSnapshot?.trim() || v?.descriptor || v?.variantName || null;
+                const lineTotal =
+                  src?.unitPrice != null
+                    ? round2(money(src.unitPrice).times(Number(i.baseQuantity))).toFixed(2)
+                    : null;
+                return {
+                  label: itemLabel([src?.productNameSnapshot || v?.productName, variantText]),
+                  variant: variantText,
+                  colorHex: v?.colorHex ?? null,
+                  sku: v?.sku ?? null,
+                  qty: i.baseQuantity,
+                  unit: "بالوحدة الأساس",
+                  unitPrice: src?.unitPrice ?? null,
+                  lineTotal,
+                };
               }),
               { label: `الدليل: ${r.evidenceType} — ${r.evidenceReference}` },
             ],
@@ -597,11 +696,19 @@ export const supplierPaymentSource: DecisionSource = {
       ? await db.select({ id: supplierInvoices.id, invoiceNumber: supplierInvoices.invoiceNumber, externalInvoiceNumber: supplierInvoices.externalInvoiceNumber }).from(supplierInvoices).where(inArray(supplierInvoices.id, ids(allocations.map((a) => a.supplierInvoiceId))))
       : [];
     const invoiceById = new Map(invoices.map((i) => [Number(i.id), i]));
-    const look = await lookups(db, { suppliers: rows.map((r) => r.supplierId), users: rows.map((r) => r.requestedBy), branches: rows.map((r) => r.branchId) });
+    const look = await lookups(db, {
+      suppliers: rows.map((r) => r.supplierId),
+      users: [...rows.map((r) => r.requestedBy), ...rows.map((r) => r.cashSource?.payerUserId)],
+      branches: rows.map((r) => r.branchId),
+    });
     return rows
       .filter((r) => !sodHidden({ blocked: [r.requestedBy], actor, ownerExempt: true, trigger: supplierPaymentTrigger("APPROVE") }))
       .map((r) => {
         const usd = r.currency === "USD";
+        const payerName =
+          r.cashSource?.payerUserId != null
+            ? (look.user(r.cashSource.payerUserId) ?? `#${r.cashSource.payerUserId}`)
+            : null;
         return buildRow(
           {
             ...GOVERNANCE_DEFAULTS,
@@ -625,7 +732,7 @@ export const supplierPaymentSource: DecisionSource = {
                   return { label: `فاتورة ${inv?.externalInvoiceNumber ?? inv?.invoiceNumber ?? `#${a.supplierInvoiceId}`}`, unitPrice: usd ? a.requestedCurrencyAmount : a.requestedAmount };
                 }),
               { label: `الدليل: ${r.evidenceType} — ${r.evidenceReference}` },
-              ...(r.paymentMethod === "CASH" ? [{ label: r.cashSource ? r.cashSource.mode === "DRAWER" ? `مصدر السداد: درج الدافع #${r.cashSource.payerUserId}، وردية #${r.cashSource.shiftId}؛ ليس درج المعتمد` : "مصدر السداد: الخزينة المحددة صراحة في الطلب" : "طلب نقدي بلا مصدر موثق: يلزم رفضه وإعادة تقديمه" }] : []),
+              ...(r.paymentMethod === "CASH" ? [{ label: r.cashSource ? r.cashSource.mode === "DRAWER" ? `مصدر السداد: درج الدافع (${payerName})، وردية #${r.cashSource.shiftId}؛ ليس درج المعتمد` : "مصدر السداد: الخزينة المحددة صراحة في الطلب" : "طلب نقدي بلا مصدر موثق: يلزم رفضه وإعادة تقديمه" }] : []),
             ],
             reason: r.reason,
             trigger: supplierPaymentTrigger("APPROVE"),
@@ -662,12 +769,20 @@ export const supplierPaymentRefundSource: DecisionSource = {
     if (!pages.length) return [];
     const payments = await db.select().from(supplierPayments).where(inArray(supplierPayments.id, ids(pages.map((r) => r.supplierPaymentId))));
     const paymentById = new Map(payments.map((p) => [Number(p.id), p]));
-    const look = await lookups(db, { suppliers: payments.map((p) => p.supplierId), users: pages.map((r) => r.requestedBy), branches: pages.map((r) => r.branchId) });
+    const look = await lookups(db, {
+      suppliers: payments.map((p) => p.supplierId),
+      users: [...pages.map((r) => r.requestedBy), ...pages.map((r) => r.cashSource?.receiverUserId)],
+      branches: pages.map((r) => r.branchId),
+    });
     return pages
       .filter((r) => !sodHidden({ blocked: [r.requestedBy], actor, ownerExempt: true, trigger: supplierPaymentRefundTrigger("APPROVE") }))
       .map((r) => {
         const p = paymentById.get(Number(r.supplierPaymentId));
         const usd = p?.currency === "USD";
+        const receiverName =
+          r.cashSource?.receiverUserId != null
+            ? (look.user(r.cashSource.receiverUserId) ?? `#${r.cashSource.receiverUserId}`)
+            : null;
         return buildRow(
           {
             ...GOVERNANCE_DEFAULTS,
@@ -686,7 +801,7 @@ export const supplierPaymentRefundSource: DecisionSource = {
             summaryItems: [
               { label: `الدفعة الاصلية ${p?.paymentNumber ?? ""}`, unitPrice: p ? (usd ? p.currencyAmount : p.amount) : null },
               { label: `الدليل: ${r.evidenceType} — ${r.evidenceReference}` },
-              ...(r.refundMethod === "CASH" ? [{ label: r.cashSource ? r.cashSource.mode === "DRAWER" ? `وجهة القبض: درج المستلم #${r.cashSource.receiverUserId}، وردية #${r.cashSource.shiftId}؛ ليس درج المعتمد` : "وجهة القبض: الخزينة المحددة صراحة في الطلب" : "طلب استرداد نقدي بلا وجهة موثقة: يلزم رفضه وإعادة تقديمه" }] : []),
+              ...(r.refundMethod === "CASH" ? [{ label: r.cashSource ? r.cashSource.mode === "DRAWER" ? `وجهة القبض: درج المستلم (${receiverName})، وردية #${r.cashSource.shiftId}؛ ليس درج المعتمد` : "وجهة القبض: الخزينة المحددة صراحة في الطلب" : "طلب استرداد نقدي بلا وجهة موثقة: يلزم رفضه وإعادة تقديمه" }] : []),
             ],
             reason: r.reason,
             expectedVersion: Number(r.basePaymentVersion),
@@ -767,7 +882,21 @@ export const goodsReceiptReversalSource: DecisionSource = {
             summaryItems: mine.map((i) => {
               const src = receiptItemById.get(Number(i.goodsReceiptItemId));
               const v = src ? variants.get(Number(src.variantId)) : undefined;
-              return { label: itemLabel([v?.productName, v?.variantName]), qty: i.baseQuantity, unit: "بالوحدة الأساس", unitPrice: src?.unitCostIqd ?? null };
+              const variantText = v?.descriptor || v?.variantName || null;
+              const lineTotal =
+                src?.unitCostIqd != null
+                  ? round2(money(src.unitCostIqd).times(Number(i.baseQuantity))).toFixed(2)
+                  : null;
+              return {
+                label: itemLabel([v?.productName, variantText]),
+                variant: variantText,
+                colorHex: v?.colorHex ?? null,
+                sku: v?.sku ?? null,
+                qty: i.baseQuantity,
+                unit: "بالوحدة الأساس",
+                unitPrice: src?.unitCostIqd ?? null,
+                lineTotal,
+              };
             }),
             reason: r.reason,
             expectedVersion: Number(r.baseReceiptVersion),

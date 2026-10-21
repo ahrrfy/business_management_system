@@ -75,11 +75,22 @@ function poItemColumns(isUsd: boolean): ColumnDef<PoItemRow, unknown>[] {
           sku: it.sku,
         });
         return (
-          <div className="flex flex-col">
-            <span className="font-semibold text-foreground">
-              {it.productName ?? "—"}
-              {desc ? <span className="text-muted-foreground font-normal"> — {desc}</span> : null}
-            </span>
+          <div className="flex flex-col gap-0.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="font-semibold text-foreground">{it.productName ?? "—"}</span>
+              {desc ? (
+                <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground font-normal">
+                  {it.colorHex && /^#[0-9a-fA-F]{6}$/.test(it.colorHex) ? (
+                    <span
+                      aria-hidden="true"
+                      className="inline-block size-2.5 shrink-0 rounded-full border border-border/60"
+                      style={{ backgroundColor: it.colorHex }}
+                    />
+                  ) : null}
+                  <span>{desc}</span>
+                </span>
+              ) : null}
+            </div>
             {it.sku ? (
               <span className="text-[11px] text-muted-foreground font-mono" dir="ltr">
                 {it.sku}

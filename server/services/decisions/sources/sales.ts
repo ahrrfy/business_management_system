@@ -173,13 +173,30 @@ export const salesControlSource: DecisionSource = {
                 const line = asRecord(l);
                 const item = itemById.get(Number(line.invoiceItemId));
                 const v = item ? variants.get(Number(item.variantId)) : undefined;
-                return { label: itemLabel([v?.productName, v?.variantName]) || `بند #${String(line.invoiceItemId ?? "?")}`, qty: line.baseQuantity == null ? null : Number(line.baseQuantity), unit: "بالوحدة الأساس", unitPrice: item?.unitPrice ?? null };
+                const variantText = v?.descriptor || v?.variantName || null;
+                return {
+                  label: itemLabel([v?.productName, variantText]) || `بند #${String(line.invoiceItemId ?? "?")}`,
+                  variant: variantText,
+                  colorHex: v?.colorHex ?? null,
+                  sku: v?.sku ?? null,
+                  qty: line.baseQuantity == null ? null : Number(line.baseQuantity),
+                  unit: "بالوحدة الأساس",
+                  unitPrice: item?.unitPrice ?? null,
+                };
               })
             : type === "SALES_REISSUE" || type === "SALES_EXCHANGE"
               ? linesOf(r.payload).map((l) => {
                   const line = asRecord(l);
                   const v = variants.get(Number(line.variantId));
-                  return { label: itemLabel([v?.productName, v?.variantName]) || `صنف #${String(line.variantId ?? "?")}`, qty: line.quantity == null ? null : String(line.quantity), unitPrice: line.unitPriceOverride == null ? null : String(line.unitPriceOverride) };
+                  const variantText = v?.descriptor || v?.variantName || null;
+                  return {
+                    label: itemLabel([v?.productName, variantText]) || `صنف #${String(line.variantId ?? "?")}`,
+                    variant: variantText,
+                    colorHex: v?.colorHex ?? null,
+                    sku: v?.sku ?? null,
+                    qty: line.quantity == null ? null : String(line.quantity),
+                    unitPrice: line.unitPriceOverride == null ? null : String(line.unitPriceOverride),
+                  };
                 })
               : [];
         const facts = salesControlFacts(type as SalesControlFactsType, r.payload).map((f) => ({ label: `${f.label}: ${f.value}` }));
@@ -288,6 +305,10 @@ export const returnRequestSource: DecisionSource = {
           itemNameSnapshot: item.itemNameSnapshot,
           productName: variant?.productName ?? null,
           variantName: variant?.variantName ?? null,
+          color: variant?.color ?? null,
+          colorHex: variant?.colorHex ?? null,
+          size: variant?.size ?? null,
+          variantKind: variant?.variantKind ?? null,
           sku: variant?.sku ?? null,
           unitName: item.unitName,
           conversionFactor: Number(item.conversionFactor ?? 1),

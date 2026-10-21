@@ -27,7 +27,18 @@ describe("buildRow — الصف يعرض ما يقرر عليه", () => {
         party: " مورد الورق ",
         amount: 1250000,
         currency: "USD",
-        summaryItems: [{ label: "ورق A4", qty: "10.000", unit: "كرتون", unitPrice: "3.4566" }],
+        summaryItems: [
+          {
+            label: "ورق A4 · أبيض · 80g",
+            variant: "أبيض · 80g",
+            colorHex: "#FFFFFF",
+            sku: "PAP-A4",
+            qty: "10.000",
+            unit: "كرتون",
+            unitPrice: "3.4566",
+            lineTotal: "34.5660",
+          },
+        ],
         hrefId: 99,
         trigger: null,
       },
@@ -43,6 +54,10 @@ describe("buildRow — الصف يعرض ما يقرر عليه", () => {
     expect(row.rejectReason).toBe("REQUIRED");
     expect(row.approveReason).toBe("OPTIONAL");
     expect(row.summaryItems[0]?.unitPrice).toBe("3.4566");
+    expect(row.summaryItems[0]?.variant).toBe("أبيض · 80g");
+    expect(row.summaryItems[0]?.colorHex).toBe("#FFFFFF");
+    expect(row.summaryItems[0]?.sku).toBe("PAP-A4");
+    expect(row.summaryItems[0]?.lineTotal).toBe("34.5660");
   });
 
   it("خروج المال يقصر السقف الى 24 ساعة ويعلن التأخر", () => {

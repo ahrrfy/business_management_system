@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { appErrorMessage } from "@shared/errors";
+import { variantDescriptor } from "@shared/variantDisplay";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
@@ -853,7 +854,16 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
     await lockInventoryVariants(tx, variantIds);
     await ensureBranchStockRows(tx, variantIds, Number(request.branchId));
     await tx.select({ id: branchStock.id }).from(branchStock).where(and(eq(branchStock.branchId, Number(request.branchId)), inArray(branchStock.variantId, variantIds))).orderBy(asc(branchStock.variantId)).for("update");
-    const variants = await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice, productName: products.name, variantName: productVariants.variantName })
+    const variants = await tx.select({
+      id: productVariants.id,
+      costPrice: productVariants.costPrice,
+      productName: products.name,
+      variantName: productVariants.variantName,
+      color: productVariants.color,
+      size: productVariants.size,
+      variantKind: productVariants.variantKind,
+      sku: productVariants.sku,
+    })
       .from(productVariants).innerJoin(products, eq(products.id, productVariants.productId)).where(inArray(productVariants.id, variantIds)).orderBy(asc(productVariants.id)).for("update");
     const variantById = new Map(variants.map((row) => [Number(row.id), row]));
     const unitIds = Array.from(new Set(poItems.map((row) => Number(row.productUnitId)).filter(Boolean)));
@@ -935,7 +945,15 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
         unitPrice: item.unitPriceIqd, lineTotal: item.totalAmount,
         inventoryMovementId: movement.movementId,
         productNameSnapshot: variant.productName,
-        variantNameSnapshot: variant.variantName,
+        variantNameSnapshot:
+          variantDescriptor({
+            productName: variant.productName,
+            variantName: variant.variantName,
+            color: variant.color,
+            size: variant.size,
+            variantKind: variant.variantKind,
+            sku: variant.sku,
+          }) || variant.variantName,
         unitNameSnapshot: poItem.productUnitId == null ? null : unitById.get(Number(poItem.productUnitId)) ?? null,
       });
       const poUpdated = await tx.update(purchaseOrderItems).set({ returnedBaseQuantity: sql`${purchaseOrderItems.returnedBaseQuantity} + ${item.requestedBaseQuantity}` })
@@ -1393,13 +1411,43 @@ export async function listPurchaseReturnReversalSources(
     const returns = await tx.select().from(purchaseReturns).where(and(eq(purchaseReturns.branchId, input.branchId), eq(purchaseReturns.origin, "NATIVE"), sql`${purchaseReturns.status} <> 'REVERSED'`)).orderBy(desc(purchaseReturns.postedAt), desc(purchaseReturns.id)).limit(Math.min(input.limit ?? 100, 200));
     if (!returns.length) return [];
     const ids = returns.map((row) => Number(row.id));
-    const items = await tx.select().from(purchaseReturnItems).where(inArray(purchaseReturnItems.purchaseReturnId, ids)).orderBy(asc(purchaseReturnItems.purchaseReturnId), asc(purchaseReturnItems.id));
-    const itemIds = items.map((row) => Number(row.id));
+    const items = await tx
+      .select({
+        item: purchaseReturnItems,
+        liveVariantName: productVariants.variantName,
+        liveColor: productVariants.color,
+        liveSize: productVariants.size,
+        liveVariantKind: productVariants.variantKind,
+        liveSku: productVariants.sku,
+      })
+      .from(purchaseReturnItems)
+      .leftJoin(productVariants, eq(productVariants.id, purchaseReturnItems.variantId))
+      .where(inArray(purchaseReturnItems.purchaseReturnId, ids))
+      .orderBy(asc(purchaseReturnItems.purchaseReturnId), asc(purchaseReturnItems.id));
+    const itemIds = items.map((row) => Number(row.item.id));
     const reversed = itemIds.length ? await tx.select({ itemId: purchaseReturnReversalItems.purchaseReturnItemId, quantity: sql<string>`COALESCE(SUM(${purchaseReturnReversalItems.baseQuantity}),0)` }).from(purchaseReturnReversalItems).where(inArray(purchaseReturnReversalItems.purchaseReturnItemId, itemIds)).groupBy(purchaseReturnReversalItems.purchaseReturnItemId) : [];
     const pending = itemIds.length ? await tx.select({ itemId: purchaseReturnReversalRequestItems.purchaseReturnItemId, quantity: sql<string>`COALESCE(SUM(${purchaseReturnReversalRequestItems.baseQuantity}),0)` }).from(purchaseReturnReversalRequestItems).innerJoin(purchaseReturnReversalRequests, eq(purchaseReturnReversalRequests.id, purchaseReturnReversalRequestItems.requestId)).where(and(eq(purchaseReturnReversalRequests.status, "PENDING"), inArray(purchaseReturnReversalRequestItems.purchaseReturnItemId, itemIds))).groupBy(purchaseReturnReversalRequestItems.purchaseReturnItemId) : [];
     const reversedById = new Map(reversed.map((row) => [Number(row.itemId), Number(row.quantity)])); const pendingById = new Map(pending.map((row) => [Number(row.itemId), Number(row.quantity)]));
     const itemsByReturn = new Map<number, Array<{ id: number; productName: string; variantName: string | null; baseQuantity: number; remainingBaseQuantity: number; lineTotal: string }>>();
-    for (const item of items) { const remaining = Number(item.baseQuantity) - (reversedById.get(Number(item.id)) ?? 0) - (pendingById.get(Number(item.id)) ?? 0); if (remaining <= 0) continue; const list = itemsByReturn.get(Number(item.purchaseReturnId)) ?? []; list.push({ id: Number(item.id), productName: item.productNameSnapshot, variantName: item.variantNameSnapshot, baseQuantity: Number(item.baseQuantity), remainingBaseQuantity: remaining, lineTotal: item.lineTotal }); itemsByReturn.set(Number(item.purchaseReturnId), list); }
+    for (const row of items) {
+      const { item } = row;
+      const remaining = Number(item.baseQuantity) - (reversedById.get(Number(item.id)) ?? 0) - (pendingById.get(Number(item.id)) ?? 0);
+      if (remaining <= 0) continue;
+      const list = itemsByReturn.get(Number(item.purchaseReturnId)) ?? [];
+      const resolvedVariantName =
+        item.variantNameSnapshot?.trim() ||
+        variantDescriptor({
+          productName: item.productNameSnapshot,
+          variantName: row.liveVariantName,
+          color: row.liveColor,
+          size: row.liveSize,
+          variantKind: row.liveVariantKind,
+          sku: row.liveSku,
+        }) ||
+        null;
+      list.push({ id: Number(item.id), productName: item.productNameSnapshot, variantName: resolvedVariantName, baseQuantity: Number(item.baseQuantity), remainingBaseQuantity: remaining, lineTotal: item.lineTotal });
+      itemsByReturn.set(Number(item.purchaseReturnId), list);
+    }
     return returns.map((row) => ({ id: Number(row.id), returnNumber: row.returnNumber, version: Number(row.version), status: row.status, supplierId: Number(row.supplierId), supplierInvoiceId: Number(row.supplierInvoiceId), settlement: row.settlement, totalAmount: row.totalAmount, postedAt: row.postedAt, items: itemsByReturn.get(Number(row.id)) ?? [] })).filter((row) => row.items.length > 0);
   }, { gate: "NONE" });
 }

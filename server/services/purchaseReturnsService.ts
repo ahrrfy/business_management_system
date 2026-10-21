@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { variantDescriptor } from "@shared/variantDisplay";
 import Decimal from "decimal.js";
 import { and, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import {
@@ -256,6 +257,10 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
         costPrice: productVariants.costPrice,
         productName: products.name,
         variantName: productVariants.variantName,
+        color: productVariants.color,
+        size: productVariants.size,
+        variantKind: productVariants.variantKind,
+        sku: productVariants.sku,
       })
       .from(productVariants)
       .innerJoin(products, eq(products.id, productVariants.productId))
@@ -312,7 +317,15 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
         variantId,
         productUnitId,
         productName: variant.productName,
-        variantName: variant.variantName,
+        variantName:
+          variantDescriptor({
+            productName: variant.productName,
+            variantName: variant.variantName,
+            color: variant.color,
+            size: variant.size,
+            variantKind: variant.variantKind,
+            sku: variant.sku,
+          }) || variant.variantName,
         unitName: unitNameById.get(productUnitId) ?? null,
         baseQuantity,
         lineTotal,
@@ -767,12 +780,16 @@ export async function resolveReturnablePurchaseOrder(input: { branchId: number; 
   // الوحدة التاريخية لسطر الأمر هي baseQuantity / quantity. لا نقرأ معامل productUnits
   // الحي هنا: تعديله لاحقاً يجب ألا يغيّر الكمية القابلة للإرجاع في مستند شراء مثبت.
   const orderUnitConversionFactor = sql<string>`${purchaseOrderItems.baseQuantity} / NULLIF(${purchaseOrderItems.quantity}, 0)`;
-  const items = await db.select({
+  const rawItems = await db.select({
     purchaseOrderItemId: purchaseOrderItems.id,
     variantId: purchaseOrderItems.variantId,
     productUnitId: purchaseOrderItems.productUnitId,
     productName: products.name,
     variantName: productVariants.variantName,
+    color: productVariants.color,
+    colorHex: productVariants.colorHex,
+    size: productVariants.size,
+    variantKind: productVariants.variantKind,
     sku: productVariants.sku,
     unitName: productUnits.unitName,
     conversionFactor: orderUnitConversionFactor,
@@ -791,6 +808,18 @@ export async function resolveReturnablePurchaseOrder(input: { branchId: number; 
       sql`${purchaseOrderItems.receivedBaseQuantity} > ${purchaseOrderItems.returnedBaseQuantity}`,
     ))
     .orderBy(purchaseOrderItems.id);
+  const items = rawItems.map((item) => ({
+    ...item,
+    variantName:
+      variantDescriptor({
+        productName: item.productName,
+        variantName: item.variantName,
+        color: item.color,
+        size: item.size,
+        variantKind: item.variantKind,
+        sku: item.sku,
+      }) || item.variantName,
+  }));
   if (!items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "لا توجد كمية متبقية قابلة للإرجاع في هذا الأمر" });
   return { ...po, items };
 }
@@ -827,8 +856,35 @@ export async function getPurchaseReturn(id: number, branchId?: number) {
     .where(and(...where))
     .limit(1))[0];
   if (!header) throw new TRPCError({ code: "NOT_FOUND", message: "مستند مرتجع الشراء غير موجود" });
-  const items = await db.select().from(purchaseReturnItems)
+  const rawItems = await db
+    .select({
+      item: purchaseReturnItems,
+      liveVariantName: productVariants.variantName,
+      liveColor: productVariants.color,
+      liveColorHex: productVariants.colorHex,
+      liveSize: productVariants.size,
+      liveVariantKind: productVariants.variantKind,
+      liveSku: productVariants.sku,
+    })
+    .from(purchaseReturnItems)
+    .leftJoin(productVariants, eq(productVariants.id, purchaseReturnItems.variantId))
     .where(eq(purchaseReturnItems.purchaseReturnId, id))
     .orderBy(purchaseReturnItems.id);
+  const items = rawItems.map(({ item, liveVariantName, liveColor, liveColorHex, liveSize, liveVariantKind, liveSku }) => ({
+    ...item,
+    variantNameSnapshot:
+      item.variantNameSnapshot?.trim() ||
+      variantDescriptor({
+        productName: item.productNameSnapshot,
+        variantName: liveVariantName,
+        color: liveColor,
+        size: liveSize,
+        variantKind: liveVariantKind,
+        sku: liveSku,
+      }) ||
+      null,
+    colorHex: liveColorHex ?? null,
+    sku: liveSku ?? null,
+  }));
   return { ...header, items };
 }
