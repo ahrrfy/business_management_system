@@ -106,10 +106,10 @@ describe("Adversarial Empirical Stress-Testing: Milestone 3 Hub & Attribution", 
   // 4. Zero Draft Loss & Executive KPI Cockpit Invariants
   describe("4. Zero Draft Loss & Executive KPI Cockpit Invariants", () => {
     it("verifies UnifiedCommissionsHub keeps all 4 sub-views mounted via CSS hidden", () => {
-      expect(hubSource).toContain('activeView === "runs" ? "block space-y-4" : "hidden"');
-      expect(hubSource).toContain('activeView === "targets" ? "block space-y-4" : "hidden"');
-      expect(hubSource).toContain('activeView === "plans" ? "block space-y-4" : "hidden"');
-      expect(hubSource).toContain('activeView === "attribution" ? "block space-y-5" : "hidden"');
+      expect(hubSource).toContain('activeView === "runs" ? "block space-y-3" : "hidden"');
+      expect(hubSource).toContain('activeView === "targets" ? "block space-y-3" : "hidden"');
+      expect(hubSource).toContain('activeView === "plans" ? "block space-y-3" : "hidden"');
+      expect(hubSource).toContain('activeView === "attribution" ? "block space-y-3" : "hidden"');
       expect(hubSource).toContain("<CommissionRuns />");
       expect(hubSource).toContain("<CommissionTargets />");
       expect(hubSource).toContain("<CommissionPlans />");
