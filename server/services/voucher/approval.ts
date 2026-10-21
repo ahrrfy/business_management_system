@@ -11,6 +11,7 @@ import { assertBranchOwnership } from "./helpers";
 import { createSupplierVoucherSettlementTx, prepareSupplierVoucherSettlementTx, withSupplierBookVoucherTx, receiptNeedsSupplierBookGateTx, loadSupplierBookVoucherMarkerTx, recordSupplierBookVoucherMarkerTx } from "./supplierSettlement";
 import { decideSupplierPaymentInTx, SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY } from "../purchase/supplierPayments";
 import {
+  autoSettleCustomerAccountTx,
   autoSettleSupplierAccountTx,
 } from "../reconciliation/autoSettlementService";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
@@ -2366,6 +2367,11 @@ export async function approveVoucherTx(
       partyId,
       direction === "IN" ? amount.neg() : amount,
     );
+    if (direction === "IN" && cancellationOriginal?.direction === "OUT") {
+      // Restore the original source first, then use its proven credit FIFO. The
+      // counter receipt itself is never treated as a second source of collection.
+      await autoSettleCustomerAccountTx(tx, partyId, actor);
+    }
     // ردُّ بيعٍ مؤجَّل (تحويل/صك/محفظة) صار مصروفاً باعتماد سنده: أغلِق أثرَي السجلّ اللذين
     // تركهما المحرّك مفتوحَين بقصد — `PAID_AMOUNT` (نطاق البيع) والرصيد الدائن المعلَّق — كي لا
     // يبقى السجلُّ يبلّغ ردّاً غير مدفوعٍ وائتماناً بعد صرف المال (Codex P2). `direction === "OUT"`

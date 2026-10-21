@@ -296,15 +296,14 @@ export async function autoSettleCustomerAccountTx(
   // الرصيد المتاح للتسوية:
   // إذا كان رصيد العميل صفراً أو سالباً (دائناً): كل الفواتير المفتوحة مستحقة للإقفال التام
   // إذا كان موجباً: الفارق بين مجموع الفواتير المفتوحة والرصيد الحالي يمثل دفعات غير مخصصة
-  let availableCredit = currentCustBalance.lte(0)
-    ? totalOpenInvoiceRemaining
-    : Decimal.max(totalOpenInvoiceRemaining.minus(currentCustBalance), 0);
+  const accountCredit = Decimal.max(totalOpenInvoiceRemaining.minus(currentCustBalance), 0);
 
   // Proven advances retain their branch and original receipt; only the legacy
   // remainder may use the historical balance-derived reconciliation.
-  let legacyCredit = Decimal.max(0, availableCredit.minus(await customerReceiptCreditTotalTx(tx, customerId)));
+  const trackedCredit = await customerReceiptCreditTotalTx(tx, customerId);
+  let legacyCredit = Decimal.max(0, accountCredit.minus(trackedCredit));
   const deliveryBlocked = await activeDeliveryInvoiceIdsTx(tx, openInvoices.map(inv => inv.id));
-  if (availableCredit.gt(0)) {
+  if (accountCredit.gt(0) || trackedCredit.gt(0)) {
     for (const inv of openInvoices) {
       if (isDeadInvoice(inv) || deliveryBlocked.has(inv.id)) continue;
 
@@ -319,7 +318,6 @@ export async function autoSettleCustomerAccountTx(
       const allocate = tracked.plus(legacyPart);
       if (allocate.lte(0)) continue;
       const newPaid = currentPaid.plus(allocate);
-      availableCredit = availableCredit.minus(allocate);
       totalSettled = totalSettled.plus(allocate);
 
       const newStatus = computeInvoiceStatus(inv.total, toDbMoney(newPaid), inv.returnedTotal ?? "0");

@@ -264,6 +264,128 @@ async function deliverySnapshot() {
 }
 
 describe("generic customer receipts allocate FIFO atomically", () => {
+  it("uses genuine legacy credit across branches without consuming the separately tracked branch-A advance", async () => {
+    // Historical source predates allocation tracking: one real receipt and its
+    // existing PAYMENT_IN, with the corresponding customer balance.
+    const [legacy] = await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId: 1,
+      cashBucket: "DRAWER",
+      direction: "IN",
+      amount: "1000.00",
+      paymentMethod: "CASH",
+      partyType: "CUSTOMER",
+      partyId: 1,
+      invoiceId: null,
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      createdBy: 1,
+      referenceNumber: "LEGACY-CUSTOMER-CREDIT-A",
+    });
+    await db()
+      .insert(s.accountingEntries)
+      .values({
+        entryType: "PAYMENT_IN",
+        branchId: 1,
+        customerId: 1,
+        receiptId: Number(legacy.insertId),
+        amount: "1000.00",
+        entryDate: new Date(),
+        dedupeKey: "LEGACY-CUSTOMER-CREDIT-A",
+      });
+    await db()
+      .update(s.customers)
+      .set({ currentBalance: "-1000.00" })
+      .where(eq(s.customers.id, 1));
+    const tracked = await receive("1000.00", "tracked-credit-alongside-legacy");
+    const branchB = await sale(1, 2);
+    expect(await invoice(branchB)).toMatchObject({
+      paidAmount: "1000.00",
+      status: "PAID",
+      branchId: 2,
+    });
+    const source = await settlement(tracked.receiptId);
+    expect(source.header.unallocatedAmount).toBe("1000.00");
+    expect(source.allocations).toHaveLength(0);
+    expect(await balance()).toBe("-1000.00");
+    expect(await cashNet()).toBe("2000.00");
+    expect(await db().select().from(s.receipts)).toHaveLength(2);
+  });
+
+  it("does not treat branch-A tracked credit alone as legacy funding for a branch-B invoice", async () => {
+    const tracked = await receive("1000.00", "tracked-credit-branch-isolation");
+    const branchB = await sale(1, 2);
+    expect(await invoice(branchB)).toMatchObject({
+      paidAmount: "0.00",
+      status: "PENDING",
+      branchId: 2,
+    });
+    const source = await settlement(tracked.receiptId);
+    expect(source.header.unallocatedAmount).toBe("1000.00");
+    expect(source.allocations).toHaveLength(0);
+    expect(await balance()).toBe("0.00");
+    expect(await cashNet()).toBe("1000.00");
+    expect(await db().select().from(s.receipts)).toHaveLength(1);
+  });
+
+  it("automatically applies restored refund credit to debt incurred since the refund, without another cash or AR effect", async () => {
+    const advance = await receive("1000.00", "advance-restored-to-new-debt");
+    const refund = await createVoucher(
+      {
+        ...receiptInput("1000.00", "refund-before-new-debt"),
+        voucherType: "PAYMENT",
+      },
+      admin,
+    );
+    await approveVoucher(refund.receiptId, owner, {
+      cashSource: { mode: "DRAWER", shiftId: 1 },
+    });
+    expect((await settlement(advance.receiptId)).header).toMatchObject({
+      unallocatedAmount: "0.00",
+      refundedAmount: "1000.00",
+    });
+    const id = await sale();
+    expect((await invoice(id)).paidAmount).toBe("0.00");
+    expect(await balance()).toBe("1000.00");
+    const cancellation = await cancelVoucher(refund.receiptId, admin);
+    const counterId = Number(cancellation.approvalReceiptId);
+    await approveVoucher(counterId, owner);
+    expect(await invoice(id)).toMatchObject({
+      paidAmount: "1000.00",
+      status: "PAID",
+    });
+    const source = await settlement(advance.receiptId);
+    expect(source.header).toMatchObject({
+      unallocatedAmount: "0.00",
+      refundedAmount: "0.00",
+    });
+    expect(source.allocations.map((a) => [a.invoiceId, a.amount])).toEqual([
+      [id, "1000.00"],
+    ]);
+    expect(await balance()).toBe("0.00");
+    expect(await cashNet()).toBe("1000.00");
+    expect(await db().select().from(s.receipts)).toHaveLength(3);
+    const paymentEntries = (
+      await db().select().from(s.accountingEntries)
+    ).filter(
+      (e) => e.entryType === "PAYMENT_IN" || e.entryType === "PAYMENT_OUT",
+    );
+    expect(paymentEntries).toHaveLength(3);
+    expect(
+      paymentEntries
+        .map((e) => e.receiptId)
+        .sort((a, b) => Number(a) - Number(b)),
+    ).toEqual(
+      [advance.receiptId, refund.receiptId, counterId].sort((a, b) => a - b),
+    );
+    const after = await snapshot();
+    await approveVoucher(counterId, owner);
+    await expect(
+      nativePay(id, "1000.00", "duplicate-after-refund-reversal"),
+    ).rejects.toThrow(/مدفوعة بالكامل|لا يوجد مبلغ مستحق/);
+    expect(await snapshot()).toEqual(after);
+  });
+
   it("rejects cancelling a FIFO deposit after dispatch without changing the invoice or carrier COD snapshot", async () => {
     const cod = await sale(2);
     const deposit = await receive("1000.00", "fifo-deposit-before-dispatch");
@@ -525,6 +647,34 @@ describe("generic customer receipts allocate FIFO atomically", () => {
     expect(await balance()).toBe("-1000.00");
     expect(await cashNet()).toBe("1000.00");
     expect((await loadRefundCaps(db(), id)).pool.toFixed(2)).toBe("1000.00");
+  });
+
+  it("uses proven advance funding even when a later opening debt keeps the customer balance positive", async () => {
+    const advance = await receive("1000.00", "advance-before-opening");
+    await db()
+      .insert(s.accountingEntries)
+      .values({
+        entryType: "OPENING",
+        branchId: 1,
+        customerId: 1,
+        amount: "2000.00",
+        entryDate: new Date(),
+      });
+    await db()
+      .update(s.customers)
+      .set({ currentBalance: "1000.00" })
+      .where(eq(s.customers.id, 1));
+    const id = await sale();
+    expect(await invoice(id)).toMatchObject({
+      paidAmount: "1000.00",
+      status: "PAID",
+    });
+    expect((await settlement(advance.receiptId)).header.unallocatedAmount).toBe(
+      "0.00",
+    );
+    expect(await balance()).toBe("2000.00");
+    expect(await cashNet()).toBe("1000.00");
+    expect(await db().select().from(s.receipts)).toHaveLength(1);
   });
 
   it("uses a proven advance on a future invoice without creating another receipt or cash entry", async () => {
