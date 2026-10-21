@@ -9,6 +9,7 @@
     "build": "vite build && node scripts/verify-storefront-pwa-build.mjs && esbuild server/index.ts --platform=node --target=node20 --packages=external --bundle --format=esm --sourcemap --outfile=dist/index.js && esbuild server/hr-bridge-worker.ts --platform=node --target=node20 --packages=bundle --bundle --format=cjs --sourcemap --alias:bufferutil=./scripts/hr-bridge-optional-module-stub.cjs --alias:utf-8-validate=./scripts/hr-bridge-optional-module-stub.cjs --alias:supports-color=./scripts/hr-bridge-optional-module-stub.cjs --alias:cardinal=./scripts/hr-bridge-optional-module-stub.cjs --metafile=dist/hr-bridge-worker.meta.json --outfile=dist/hr-bridge-worker.cjs && node scripts/verify-hr-bridge-runtime.mjs --selftest && node scripts/verify-hr-bridge-artifact.mjs && node scripts/verify-hr-bridge-deployment.mjs",
     "start": "cross-env NODE_ENV=production TZ=UTC node dist/index.js",
     "check": "cross-env NODE_OPTIONS=--max-old-space-size=8192 tsc --noEmit",
+    "receipt:history": "cross-env TZ=UTC tsx scripts/customer-receipt-history.mjs",
     "check:emoji": "node scripts/check-no-emoji-ui.mjs",
     "check:tashkeel": "node scripts/check-tashkeel-in-small-text.mjs",
     "check:money-schemas": "node scripts/check-money-schemas.mjs",

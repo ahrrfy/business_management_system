@@ -226,19 +226,18 @@ async function evidence(tx: Tx, input: CustomerReceiptHistoryRequest) {
     );
   const funding = invoiceRows.map((i) => ({
     invoiceId: i.id,
+    // Keep refunds signed: the missing generic IN must reconstruct its gross
+    // funding, including money already returned by an invoice-linked OUT.
     amount: toDbMoney(
-      Decimal.max(
-        0,
-        (caps.get(i.id)?.nonCourierNet ?? money(0)).plus(
-          ledger
-            .filter(
-              (e) =>
-                e.invoiceId === i.id &&
-                e.entryType === "PAYMENT_IN" &&
-                e.deliveryPartyId != null,
-            )
-            .reduce((sum, e) => sum.plus(e.amount), money(0)),
-        ),
+      (caps.get(i.id)?.nonCourierNet ?? money(0)).plus(
+        ledger
+          .filter(
+            (e) =>
+              e.invoiceId === i.id &&
+              e.entryType === "PAYMENT_IN" &&
+              e.deliveryPartyId != null,
+          )
+          .reduce((sum, e) => sum.plus(e.amount), money(0)),
       ),
     ),
   }));
@@ -512,9 +511,6 @@ function planHistory(input: CustomerReceiptHistoryRequest, e: Evidence) {
     unallocatedTotal = unallocatedTotal.plus(available);
     for (const r of group) {
       let budget = money(r.amount);
-      const accountPart = Decimal.min(budget, account);
-      account = account.minus(accountPart);
-      budget = budget.minus(accountPart);
       const allocations: Portion[] = [];
       for (const t of targets) {
         const old = Decimal.min(budget, t.existing);
@@ -530,6 +526,10 @@ function planHistory(input: CustomerReceiptHistoryRequest, e: Evidence) {
             applyAmount: toDbMoney(fresh),
           });
       }
+      // Match live receipts: each original source funds oldest invoices first.
+      const accountPart = Decimal.min(budget, account);
+      account = account.minus(accountPart);
+      budget = budget.minus(accountPart);
       const unallocated = Decimal.min(budget, available);
       available = available.minus(unallocated);
       budget = budget.minus(unallocated);

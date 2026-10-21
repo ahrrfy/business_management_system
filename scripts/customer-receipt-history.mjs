@@ -1,4 +1,7 @@
-/** Owner maintenance: preview by default; --apply requires the exact preview hash. */
+/** Owner maintenance: pnpm receipt:history --input FILE (or - for stdin).
+ * Preview by default; --apply requires the exact preview hash and owner actor.
+ * TypeScript loader is provided by the package command on production Node 20.
+ */
 import "dotenv/config";
 import fs from "node:fs";
 import { closeDb } from "../server/db.ts";

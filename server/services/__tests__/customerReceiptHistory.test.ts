@@ -163,6 +163,17 @@ describe("historical customer receipt provenance", () => {
       ["30.00", "PARTIALLY_PAID"],
     ]);
     expect((await loadRefundCaps(db(), 1)).pool.toFixed(2)).toBe("100.00");
+    const dated = await db()
+      .select()
+      .from(s.invoices)
+      .where(eq(s.invoices.id, 2));
+    const [originalEntry] = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.receiptId, 1001));
+    expect(dated[0].paymentDate?.toISOString()).toBe(
+      originalEntry.entryDate.toISOString(),
+    );
     const after = await getCustomerStatement(1);
     expect(after?.summary.totalPaid).toBe("130.00");
     const paymentFaces = (rows: NonNullable<typeof after>["payments"]) =>
@@ -267,6 +278,66 @@ describe("historical customer receipt provenance", () => {
       0,
     );
     expect((await db().select().from(s.invoices))[0].paidAmount).toBe("0.00");
+  });
+  it("funds invoice portions before account debt for each historical source and reverses the exact portion", async () => {
+    await entry("OPENING", "50.00", { branchId: null });
+    await invoice(1, "100.00", "100.00");
+    await receive(1001, "50.00");
+    await receive(1002, "100.00");
+    await balance("0.00");
+    const { preview } = await apply([1001, 1002]);
+    expect(
+      preview.sources.map((r) => ({
+        id: r.receiptId,
+        account: r.accountAmount,
+        allocations: r.allocations,
+      })),
+    ).toEqual([
+      {
+        id: 1001,
+        account: "0.00",
+        allocations: [{ invoiceId: 1, amount: "50.00", applyAmount: "0.00" }],
+      },
+      {
+        id: 1002,
+        account: "50.00",
+        allocations: [{ invoiceId: 1, amount: "50.00", applyAmount: "0.00" }],
+      },
+    ]);
+    await cancelVoucher(1001, owner);
+    expect((await db().select().from(s.invoices))[0].paidAmount).toBe("50.00");
+    expect((await db().select().from(s.customers))[0].currentBalance).toBe(
+      "50.00",
+    );
+  });
+  it("keeps a later actual payment date when an older missing allocation is reconstructed", async () => {
+    await invoice(1, "200.00", "50.00");
+    const later = new Date("2026-10-10T12:00:00Z");
+    await db()
+      .update(s.invoices)
+      .set({ paymentDate: later })
+      .where(eq(s.invoices.id, 1));
+    await db().insert(s.receipts).values({
+      id: 2000,
+      invoiceId: 1,
+      branchId: 1,
+      direction: "IN",
+      amount: "50.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      approvalStatus: "APPROVED",
+    });
+    await entry("PAYMENT_IN", "50.00", {
+      receiptId: 2000,
+      invoiceId: 1,
+      entryDate: later,
+    });
+    await receive(1001, "100.00");
+    await balance("50.00");
+    await apply();
+    const [inv] = await db().select().from(s.invoices);
+    expect(inv.paidAmount).toBe("150.00");
+    expect(inv.paymentDate?.toISOString()).toBe(later.toISOString());
   });
   it("rejects unsupported account portions and owner spoofing", async () => {
     await invoice(1, "100.00", "0");

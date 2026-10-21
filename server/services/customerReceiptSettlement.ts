@@ -160,6 +160,15 @@ export async function adoptHistoricalCustomerReceiptTx(
     .where(eq(settlements.receiptId, receiptId));
   if (existing)
     conflict("السند التاريخي مرتبط مسبقاً؛ أعد تشغيل دفعة التصحيح الأصلية");
+  const [entry] = await tx
+    .select({ entryDate: accountingEntries.entryDate })
+    .from(accountingEntries)
+    .where(
+      and(
+        eq(accountingEntries.receiptId, receiptId),
+        eq(accountingEntries.entryType, "PAYMENT_IN"),
+      ),
+    );
   const total = plan.allocations.reduce(
     (sum, p) => sum.plus(p.amount),
     money(plan.accountAmount).plus(plan.unallocatedAmount),
@@ -200,7 +209,7 @@ export async function adoptHistoricalCustomerReceiptTx(
       conflict("تخصيص تاريخي خارج نطاق الفاتورة أو المصدر");
     if ((await activeDeliveryInvoiceIdsTx(tx, [inv.id])).has(inv.id))
       conflict("لا يُعاد بناء تخصيص على إرسالية نشطة");
-    if (money(p.applyAmount).gt(0))
+    if (money(p.applyAmount).gt(0)) {
       await allocateVoucherToInvoiceTx(tx, {
         invoiceId: p.invoiceId,
         amount: money(p.applyAmount),
@@ -208,6 +217,20 @@ export async function adoptHistoricalCustomerReceiptTx(
         paymentMethod: r.paymentMethod,
         voucherBranchId: r.branchId,
       });
+      // Adoption is not a new collection. Retain any later original payment;
+      // otherwise use the proven effective date of this receipt's ledger entry.
+      const effectiveDate = new Date(entry.entryDate);
+      await tx
+        .update(invoices)
+        .set({
+          paymentDate:
+            inv.paymentDate &&
+            new Date(inv.paymentDate).getTime() > effectiveDate.getTime()
+              ? inv.paymentDate
+              : effectiveDate,
+        })
+        .where(eq(invoices.id, inv.id));
+    }
     await addAllocationTx(tx, id, p.invoiceId, money(p.amount));
   }
   await verifyCustomerReceiptSettlementTx(tx, receiptId);
