@@ -1538,7 +1538,7 @@ export async function createSaleInTx(
       input.siblingIndex ?? undefined,
     );
   }
-  const status = computeInvoiceStatus(
+  let status = computeInvoiceStatus(
     toDbMoney(effectiveTotalD),
     toDbMoney(paidNow),
   );
@@ -2239,8 +2239,13 @@ export async function createSaleInTx(
       input.customerId,
       effectiveTotalD.minus(paidNow),
     );
-    if (effectiveTotalD.gt(paidNow)) {
-      await autoSettleCustomerAccountTx(tx, input.customerId, actor);
+    if (effectiveTotalD.gt(paidNow) && !input.deferCustomerSettlement) {
+      const settled = await autoSettleCustomerAccountTx(tx, input.customerId, actor);
+      if (money(settled.totalSettledAmount).gt(0)) {
+        const [current] = await tx.select({ total: invoices.total, paid: invoices.paidAmount, returned: invoices.returnedTotal })
+          .from(invoices).where(eq(invoices.id, invoiceId));
+        status = computeInvoiceStatus(current.total, current.paid, current.returned ?? "0");
+      }
     }
   }
   if (input.clientRequestId && requestFingerprint) {

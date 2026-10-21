@@ -32,7 +32,7 @@ import { money, round2 } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import type { ReturnSaleInput } from "../returnService";
 import { returnSaleInTx } from "../returnService";
-import { requireDb, type Actor, withTx } from "../tx";
+import { requireDb, type Actor, withTx, withGovernanceTx } from "../tx";
 import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { cancelSaleInTx, type CancelSaleInput } from "./cancel";
 import {
@@ -429,7 +429,7 @@ export async function requestSalesControl(
   const reason = normalizeReason(input.reason);
   const payloadHash = idempotencyHash(input.payload);
   let requestReview = input.requestReview === true;
-  const writeRequest = () => withTx(async (tx) => {
+  const writeRequest = () => withGovernanceTx(async (tx) => {
     const replay = await loadByKey(tx, requestKey);
     if (replay) {
       assertBranch(Number(replay.branchId), actor);
@@ -1178,7 +1178,7 @@ export async function approveSalesControlRequest(
     actor,
     cashRouting,
   );
-  const executeApproval = () => withTx(async (tx) => {
+  const executeApproval = () => withGovernanceTx(async (tx) => {
     await assertOperationAuthorityTx(tx, actor, "salesControl.approve", actor.role === "admin" || actor.role === "manager", actor.operationAuthority);
     const request = (
       await tx.select().from(salesControlRequests)

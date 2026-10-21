@@ -100,6 +100,9 @@ export async function recordSupplierBookVoucherMarkerTx(tx: Tx, receiptId: numbe
 export async function receiptNeedsSupplierBookGateTx(tx: Tx, receiptId: number): Promise<boolean> {
   const [receipt] = await tx.select().from(receipts).where(eq(receipts.id, receiptId)).limit(1);
   if (!receipt) return false;
+  if (receipt.partyType === "CUSTOMER") return true;
+  const [bookSource] = await tx.select({ id: supplierBookSettlementSources.id }).from(supplierBookSettlementSources).where(eq(supplierBookSettlementSources.sourceReceiptId, receiptId)).limit(1);
+  if (bookSource) return true;
   const cancellation = /^CANCEL-VCH-(\d+)$/.exec(receipt.referenceNumber ?? "");
   if (cancellation) {
     const [source] = await tx.select({ id: supplierBookSettlementSources.id }).from(supplierBookSettlementSources)

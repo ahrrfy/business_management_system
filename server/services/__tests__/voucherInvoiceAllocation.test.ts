@@ -139,11 +139,12 @@ describe("سند القبض المربوط بفاتورة — تخصيصٌ ما�
     expect((await customerBalance()).toFixed(2)).toBe("1000.00");
   });
 
-  it("السند غير المربوط يبقى على الحساب ولا يمسّ أيّ فاتورة (سلوكٌ محفوظ)", async () => {
+  it("السند غير المربوط يخصص تلقائياً للفاتورة المستحقة دون خصم الذمة مرتين", async () => {
     const sale = await creditSale(2);
     await receiptVoucher(null, "800.00", "vch-unlinked-1");
 
-    expect(money((await getInvoice(sale.invoiceId)).paidAmount).toFixed(2)).toBe("0.00");
+    expect(money((await getInvoice(sale.invoiceId)).paidAmount).toFixed(2)).toBe("800.00");
+    expect((await getInvoice(sale.invoiceId)).status).toBe("PARTIALLY_PAID");
     expect((await customerBalance()).toFixed(2)).toBe("1200.00"); // ٢٠٠٠ − ٨٠٠
   });
 

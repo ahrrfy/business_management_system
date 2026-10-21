@@ -27,6 +27,67 @@ import { barcodeIdentityColumn, barcodeIdentitySql } from "./barcodeIdentitySql"
 import type { DigitalCheckoutSnapshot } from "../shared/digitalSale";
 import type { OperationPolicy } from "../shared/operationPermissions";
 
+/** One real customer receipt; allocation never posts cash or AR a second time. */
+export const customerReceiptSettlements = mysqlTable("customerReceiptSettlements", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  receiptId: bigint("receiptId", { mode: "number" }).notNull(),
+  customerId: bigint("customerId", { mode: "number" }).notNull(),
+  branchId: bigint("branchId", { mode: "number" }).notNull(),
+  amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+  accountAmount: decimal("accountAmount", { precision: 15, scale: 2 }).notNull(),
+  unallocatedAmount: decimal("unallocatedAmount", { precision: 15, scale: 2 }).notNull(),
+  initialUnallocatedAmount: decimal("initialUnallocatedAmount", { precision: 15, scale: 2 }).notNull(),
+  refundedAmount: decimal("refundedAmount", { precision: 15, scale: 2 }).notNull().default("0"),
+  sourceHash: char("sourceHash", { length: 64 }).notNull(),
+  reversalReceiptId: bigint("reversalReceiptId", { mode: "number" }),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({
+  receiptUq: unique("uq_customer_receipt_settlement").on(t.receiptId),
+  reversalUq: unique("uq_customer_receipt_reversal").on(t.reversalReceiptId),
+  partyIdx: index("idx_customer_receipt_scope").on(t.customerId, t.branchId),
+  receiptFk: foreignKey({ name: "fk_crs_receipt", columns: [t.receiptId], foreignColumns: [receipts.id] }),
+  customerFk: foreignKey({ name: "fk_crs_customer", columns: [t.customerId], foreignColumns: [customers.id] }),
+  branchFk: foreignKey({ name: "fk_crs_branch", columns: [t.branchId], foreignColumns: [branches.id] }),
+  reversalFk: foreignKey({ name: "fk_crs_reversal", columns: [t.reversalReceiptId], foreignColumns: [receipts.id] }),
+  actorFk: foreignKey({ name: "fk_crs_actor", columns: [t.createdBy], foreignColumns: [users.id] }),
+  moneyCheck: check("chk_crs_money", sql`${t.amount} > 0 AND ${t.accountAmount} >= 0 AND ${t.unallocatedAmount} >= 0 AND ${t.refundedAmount} >= 0 AND ${t.accountAmount} + ${t.unallocatedAmount} + ${t.refundedAmount} <= ${t.amount}`),
+}));
+
+/** An actual OUT consumes advance credit; its actual IN cancellation restores it. */
+export const customerReceiptCreditUses = mysqlTable("customerReceiptCreditUses", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  settlementId: bigint("settlementId", { mode: "number" }).notNull(),
+  receiptId: bigint("receiptId", { mode: "number" }).notNull(),
+  amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+  reversalReceiptId: bigint("reversalReceiptId", { mode: "number" }),
+}, t => ({
+  sourceUq: unique("uq_customer_credit_use").on(t.settlementId, t.receiptId),
+  receiptIdx: index("idx_customer_credit_use_receipt").on(t.receiptId),
+  sourceFk: foreignKey({ name: "fk_ccu_source", columns: [t.settlementId], foreignColumns: [customerReceiptSettlements.id] }),
+  receiptFk: foreignKey({ name: "fk_ccu_receipt", columns: [t.receiptId], foreignColumns: [receipts.id] }),
+  reversalFk: foreignKey({ name: "fk_ccu_reversal", columns: [t.reversalReceiptId], foreignColumns: [receipts.id] }),
+  moneyCheck: check("chk_ccu_money", sql`${t.amount} > 0`),
+}));
+
+/** Current invoice target plus original target retained across corrections. */
+export const customerReceiptAllocations = mysqlTable("customerReceiptAllocations", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  settlementId: bigint("settlementId", { mode: "number" }).notNull(),
+  invoiceId: bigint("invoiceId", { mode: "number" }).notNull(),
+  originalInvoiceId: bigint("originalInvoiceId", { mode: "number" }).notNull(),
+  originalAmount: decimal("originalAmount", { precision: 15, scale: 2 }).notNull(),
+  amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({
+  targetUq: unique("uq_customer_receipt_invoice").on(t.settlementId, t.invoiceId),
+  invoiceIdx: index("idx_customer_receipt_invoice").on(t.invoiceId),
+  sourceFk: foreignKey({ name: "fk_cra_source", columns: [t.settlementId], foreignColumns: [customerReceiptSettlements.id] }),
+  invoiceFk: foreignKey({ name: "fk_cra_invoice", columns: [t.invoiceId], foreignColumns: [invoices.id] }),
+  originalFk: foreignKey({ name: "fk_cra_original", columns: [t.originalInvoiceId], foreignColumns: [invoices.id] }),
+  moneyCheck: check("chk_cra_money", sql`${t.amount} >= 0`),
+}));
+
 /** Raw binary storage for small, validated documents that must travel with DB backups. */
 const mediumblob = customType<{ data: Buffer; driverData: Buffer }>({
   dataType: () => "mediumblob",

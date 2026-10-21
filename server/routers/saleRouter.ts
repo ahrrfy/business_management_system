@@ -70,6 +70,7 @@ import {
 } from "../services/sale/controlRequests";
 import { cancelSale, isUnpaidCodCancellationSource } from "../services/sale/cancel";
 import { loadRefundCaps } from "../services/returns/refundCaps";
+import { loadCustomerReceiptInvoicePayments } from "../services/customerReceiptProjection";
 import { OperationalApprovalRequiredError } from "@shared/operationalDecision";
 import { RETURN_EXECUTED_AUDIT_ACTION } from "../services/returns/auditActions";
 import { assertNoInTransitConsignment } from "../services/delivery/guards";
@@ -2337,7 +2338,7 @@ export const saleRouter = router({
         .leftJoin(products, eq(productVariants.productId, products.id))
         .leftJoin(productUnits, eq(invoiceItems.productUnitId, productUnits.id))
         .where(eq(invoiceItems.invoiceId, input.invoiceId));
-      const payments = await db
+      const directPayments = await db
         .select({
           id: receipts.id,
           direction: receipts.direction,
@@ -2353,6 +2354,12 @@ export const saleRouter = router({
         .from(receipts)
         .where(eq(receipts.invoiceId, input.invoiceId))
         .orderBy(asc(receipts.id));
+      const allocatedPayments = await loadCustomerReceiptInvoicePayments(db, input.invoiceId);
+      const directPaymentIds = new Set(directPayments.map((payment) => Number(payment.id)));
+      const payments = [
+        ...directPayments,
+        ...allocatedPayments.filter((payment) => !directPaymentIds.has(payment.id)),
+      ].sort((left, right) => Number(left.id) - Number(right.id));
       const returnEntries = await db
         .select({
           id: accountingEntries.id,

@@ -27,6 +27,7 @@
 import Decimal from "decimal.js";
 import { sql, type SQL } from "drizzle-orm";
 import { receipts } from "../../../drizzle/schema";
+import { customerReceiptAllocationRowsSql, loadCustomerReceiptAllocationRows } from "../customerReceiptProjection";
 import { money } from "../money";
 
 /** طرق الاسترداد التي يقبلها عقد الخادم (TELECOM ليست طريقة **ردٍّ** — تُطوى في النقد). */
@@ -105,6 +106,9 @@ function refundCapSnapshot(
     add(inByMethod, m, amount);
     if (m === "CASH") addCashShift(r, amount);
   }
+  // Signed on purpose: an actual refund may consume some courier funding too.
+  const nonCourierNet = Array.from(inByMethod.values()).reduce((sum, amount) => sum.plus(amount), money(0))
+    .minus(Array.from(outByMethod.values()).reduce((sum, amount) => sum.plus(amount), money(0)));
   // النقد المورّد فعلاً إلى الخزينة/الدرج عبر توريد معتمد (remittanceId IS NOT NULL)
   add(inByMethod, "CASH", money(String(remittedAmount ?? "0")));
   for (const r of remittanceRows) addCashShift(r, money(String(r.amount ?? "0")));
@@ -127,6 +131,7 @@ function refundCapSnapshot(
 
   return {
     pool,
+    nonCourierNet,
     grossIn: totalIn,
     grossOut: totalOut,
     netByMethod,
@@ -142,6 +147,8 @@ function refundCapSnapshot(
 }
 
 export interface RefundCapSnapshot {
+  /** Signed store/deposit/FIFO sources minus actual OUT, excluding courier remittance. */
+  nonCourierNet?: Decimal;
   /** الوعاء الحاكم: Σ(المقبوض بكل الطرق) − Σ(المسترَدّ بكل الطرق)، مقصوصاً عند الصفر. */
   pool: Decimal;
   /**
@@ -206,6 +213,10 @@ export async function loadRefundCaps(
     `),
   );
 
+  // Generic customer receipts keep their original invoiceId NULL. Only the
+  // invoice's funded portion belongs to this pool, on its original cash rail.
+  const allocationRows = await loadCustomerReceiptAllocationRows(exec, [invoiceId], opts);
+
   // ② حصص العرابين المُطبَّقة على هذه الفاتورة (أو على أمر شغلها) التي **إيصال أمّها غير مختوم**
   //    بها — تدخل `paidAmount` ولا يراها ① ⇒ فاتورةٌ PAID كان مرتجعُها بلا مسار استرداد.
   //    نستبعد ما إيصال أمّه مختومٌ بهذه الفاتورة (محسوبٌ في ① سلفاً — لا ازدواج).
@@ -266,7 +277,7 @@ export async function loadRefundCaps(
   );
 
   return refundCapSnapshot(
-    receiptRows,
+    [...receiptRows, ...allocationRows],
     applicationRows,
     deliveryRows[0]?.remittedAmount,
     deliveryRows[0]?.unremittedAmount,
@@ -275,7 +286,7 @@ export async function loadRefundCaps(
 }
 
 /**
- * نسخة القراءة المجمّعة لصناديق القرارات والتقارير. تنفّذ ثلاث قراءات ثابتة مهما بلغ عدد
+ * نسخة القراءة المجمّعة لصناديق القرارات والتقارير. تنفّذ أربع قراءات ثابتة مهما بلغ عدد
  * الفواتير، ثم تبني لكل فاتورة اللقطة نفسها التي تبنيها `loadRefundCaps`. لا تُستعمل في
  * التنفيذ المالي؛ مسار الكتابة يحتاج قفل `FOR UPDATE` الخاص بالدالة المفردة أعلاه.
  */
@@ -303,6 +314,8 @@ export async function loadRefundCapsByInvoiceIds(
           WHERE ae.receiptId = ${receipts.id} AND ae.entryType = 'DELIVERY_FEE_HELD'
         )
       GROUP BY ${receipts.invoiceId}, ${receipts.paymentMethod}, ${receipts.direction}, ${receipts.shiftId}
+      UNION ALL
+      ${customerReceiptAllocationRowsSql(invoiceIds)}
     `),
     exec.execute(sql`
       SELECT CASE

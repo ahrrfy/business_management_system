@@ -1,3 +1,4 @@
+import { loadCustomerReceiptAllocationSources } from "../customerReceiptProjection";
 import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
@@ -97,7 +98,8 @@ export async function invoiceDeliveryAmendmentTx(tx: Tx, invoiceId: number) {
       ),
     )
     .for("update");
-  const allocation = allocateCorrectionRefunds(materializedReceipts.filter(row => row.direction === "IN"),
+  const fundedSources = [...materializedReceipts.filter(row => row.direction === "IN"), ...await loadCustomerReceiptAllocationSources(tx, invoiceId)];
+  const allocation = allocateCorrectionRefunds(fundedSources,
     materializedReceipts.filter(row => row.direction === "OUT"), grossSettled);
   return {
     cn,

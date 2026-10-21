@@ -1,3 +1,4 @@
+import { settleCustomerReceiptTx, consumeCustomerReceiptCreditTx, reverseCustomerReceiptSettlementTx } from "../customerReceiptSettlement";
 import { prepareSupplierBookVoucherTx, applySupplierBookVoucherTx, type LiveSupplierBookVoucherPlan } from "../purchase/supplierBookSettlement";
 // اعتماد/رفض سند مُعلَّق (Maker-Checker، SOD-04: مالك نشط والمُعتمِد ≠ المُنشئ بلا استثناء).
 import { TRPCError } from "@trpc/server";
@@ -18,7 +19,6 @@ import {
   accountingEntries,
   accrualObligationEvents,
   assetMaintenance,
-  customers,
   digitalWalletTransactions,
   digitalWallets,
   employees,
@@ -2293,14 +2293,18 @@ export async function approveVoucherTx(
     // يتحرّكا معاً**: تقويمُ أحدهما وحده يصنع ABBA بينهما — محاسبٌ يعتمد سنداً معلَّقاً على
     // فاتورة، وكاشيرٌ يسجّل سنداً مباشراً على نفس الفاتورة والعميل في اللحظة ذاتها. وخطرُه
     // غيرُ متكافئ: `createVoucher` محميّ بـ`withMysqlDeadlockRetry` بينما الاعتماد بلا غلاف.
-    if (r.invoiceId != null) {
+    const reversedCustomerAllocation = cancellationOriginal
+      ? await reverseCustomerReceiptSettlementTx(tx, Number(cancellationOriginal.id), receiptId, actor)
+      : false;
+    if (!reversedCustomerAllocation && r.invoiceId != null) {
       const allocation = await allocateVoucherToInvoiceTx(tx, {
         invoiceId: Number(r.invoiceId),
         amount,
         direction,
         paymentMethod,
         voucherBranchId: Number(r.branchId),
-        gracefulSettledInvoice: true,
+        gracefulSettledInvoice: !cancellationOriginal,
+        restoreReversedRefund: cancellationOriginal?.direction === "OUT",
       });
 
       if (!allocation.allocated) {
@@ -2308,7 +2312,9 @@ export async function approveVoucherTx(
         // منعاً لتعليق السند في DEADLOCK دائم، يتم فك ربط الفاتورة من السند وقيد المبلغ
         // بالكامل على رصيد حساب العميل مع توثيق ذلك في الملاحظات الداخلية وسجل التدقيق.
         const unallocatedNote =
-          allocation.unallocatedReason === "ALREADY_SETTLED"
+          allocation.unallocatedReason === "DELIVERY_ACTIVE"
+            ? `[تنبيه اعتماد: الفاتورة #${r.invoiceId} لها إرسالية نشطة — يبقى تحصيلها في مسار التوصيل ويُوزع السند العام على الفواتير المؤهلة]`
+            : allocation.unallocatedReason === "ALREADY_SETTLED"
             ? `[تنبيه اعتماد: الفاتورة #${r.invoiceId} مسددة مسبقاً بالكامل — فُكّ ربط السند بها وقُيّد المبلغ على رصيد العميل]`
             : allocation.unallocatedReason === "DEAD_INVOICE"
               ? `[تنبيه اعتماد: الفاتورة #${r.invoiceId} ملغاة أو مرتجعة أو مستبدلة — فُكّ ربط السند بها وقُيّد المبلغ على رصيد العميل]`
@@ -2349,19 +2355,22 @@ export async function approveVoucherTx(
         );
       }
     }
+    if (!cancellationOriginal) {
+      const [currentReceipt] = await tx.select({ invoiceId: receipts.invoiceId }).from(receipts).where(eq(receipts.id, receiptId));
+      if (currentReceipt?.invoiceId == null) {
+        if (direction === "IN") await settleCustomerReceiptTx(tx, receiptId, actor);
+        else await consumeCustomerReceiptCreditTx(tx, receiptId, actor);
+      }
+    }
     await adjustCustomerBalance(
       tx,
       partyId,
       direction === "IN" ? amount.neg() : amount,
     );
-    if (direction === "IN") {
-      const [c] = await tx
-        .select({ currentBalance: customers.currentBalance })
-        .from(customers)
-        .where(eq(customers.id, partyId));
-      if (c && money(c.currentBalance).lte(0)) {
-        await autoSettleCustomerAccountTx(tx, partyId, actor);
-      }
+    if (direction === "IN" && cancellationOriginal?.direction === "OUT") {
+      // Restore the original source first, then use its proven credit FIFO. The
+      // counter receipt itself is never treated as a second source of collection.
+      await autoSettleCustomerAccountTx(tx, partyId, actor);
     }
     // ردُّ بيعٍ مؤجَّل (تحويل/صك/محفظة) صار مصروفاً باعتماد سنده: أغلِق أثرَي السجلّ اللذين
     // تركهما المحرّك مفتوحَين بقصد — `PAID_AMOUNT` (نطاق البيع) والرصيد الدائن المعلَّق — كي لا

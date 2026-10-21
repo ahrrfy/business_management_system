@@ -18,7 +18,6 @@ import {
   workOrderControlRequests,
   workOrders,
 } from "../../../../drizzle/schema";
-import { MATERIALIZED_RECEIPT_STATUSES } from "../../cash/cashAvailability";
 import { money } from "../../money";
 import { listReturnRequests, rejectReturnRequest } from "../../returns/requests";
 import { loadRefundCapsByInvoiceIds } from "../../returns/refundCaps";
@@ -67,31 +66,16 @@ async function shiftStatuses(db: Db, payloads: unknown[]): Promise<Map<number, s
   return new Map(rows.map((s) => [Number(s.id), s.status ?? null]));
 }
 
-/**
- * المقبوضُ القابل للردّ لكلّ فاتورة = إيصالاتُ القبض المُتحقّقة − ما رُدّ منها — الأساسُ نفسه الذي
- * يحسب به `cancelSaleInTx` مبلغَ الاسترداد (لا `paidAmount` وحده: سندُ قبضٍ مربوطٌ بفاتورة يُنقص
- * ذمّة العميل ولا يرفع `paidAmount`).
- */
+/** Same proven pool used by cancellation/returns, including allocated receipts. */
 async function refundableByInvoice(db: Db, invoiceIds: number[]): Promise<Map<number, string>> {
-  if (!invoiceIds.length) return new Map();
-  const rows = await db
-    .select({ invoiceId: receipts.invoiceId, direction: receipts.direction, amount: receipts.amount })
-    .from(receipts)
-    .where(and(inArray(receipts.invoiceId, invoiceIds), inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]), eq(receipts.approvalStatus, "APPROVED")));
-  const sums = new Map<number, ReturnType<typeof money>>();
-  for (const r of rows) {
-    const key = Number(r.invoiceId);
-    const current = sums.get(key) ?? money(0);
-    sums.set(key, r.direction === "IN" ? current.plus(money(r.amount)) : current.minus(money(r.amount)));
-  }
-  return new Map(Array.from(sums, ([k, v]) => [k, v.toFixed(2)]));
+  const snapshots = await loadRefundCapsByInvoiceIds(db, invoiceIds);
+  return new Map(Array.from(snapshots, ([invoiceId, snapshot]) => [invoiceId, snapshot.pool.toFixed(2)]));
 }
 
 /**
  * الطلبات القديمة تحتاج **السقف الحاكم نفسه** الذي سيستعمله `returnSaleInTx`: الإيصالات
  * المباشرة + العربون المطبّق + تحصيل المندوب − الردود، مع استبعاد أمانة التوصيل. الاستعلام
- * المختصر أعلاه يكفي لعرض ضبط البيع الحديث، لكنه لا يجوز أن يصنّف طلباً قديماً «بلا خروج مال»
- * إذا كان قبضُه من تلك المسارات. نحدّ التوازي كي لا يحوّل صندوقاً كبيراً إلى عاصفة استعلامات.
+ * نفسه يُستعمل لضبط البيع الحديث كي لا تختلف المعاينة عن التنفيذ.
  */
 async function refundableReturnRequestsByInvoice(
   db: Db,

@@ -1,3 +1,4 @@
+import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 // نَموذج مُوحَّد لإنشاء سند قبض/صرف (vouchers-pro ٣٠/٦/٢٦).
 // يَشمل: تَصنيف + اسم طَرف للسندات «أخرى» + Maker-Checker + مُرفق + بَصمة + تَحذير الازدواج
 // + معاينة قَيد دفتر + اختصارات لوحة المفاتيح + حفظ+طباعة + استخدام CustomerPicker/SupplierPicker.
@@ -219,7 +220,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     {
       customerId: customerId ?? undefined,
       q: debouncedInvoiceQ || undefined,
-      balanceState: "OUTSTANDING",
+      balanceState: isReceipt ? "OUTSTANDING" : undefined,
       limit: 50,
     },
     {
@@ -228,7 +229,9 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       retry: false,
     },
   );
-  const outstandingInvoiceOptions = customerInvoices.data ?? [];
+  const outstandingInvoiceOptions = (customerInvoices.data ?? []).filter(inv =>
+    isReceipt || (!isDeadInvoiceStatus(inv.status) && D(inv.paidAmount ?? "0").gt(0)),
+  );
   // تثبيت الفاتورة المُختارة إن ضيّق البحث القائمة بعد اختيارها — كي لا يفرغ المُنتقي صامتاً.
   const [selectedInvoiceLabel, setSelectedInvoiceLabel] = useState("");
   const selectedInList =
@@ -708,7 +711,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
         title={isReceipt ? "سند قبض جديد" : "سند صرف جديد"}
         description={
           isReceipt
-            ? "إيرادات/تحصيلات مستقلّة بلا فاتورة (مثل: دفعة من عميل بلا تخصيص، إيرادات متفرّقة، استرداد من مورّد)."
+            ? "تحصيلات العملاء تسدد فواتيرهم تلقائياً من الأقدم، أو إيرادات متفرقة واسترداد من مورد."
             : "طلب صرف مستقلّ بلا أثر مالي عند الإرسال؛ ينفّذه مالك آخر لاحقاً عبر «اعتماد وصرف» بعد التحقق من الرصيد."
         }
         actions={
@@ -1030,7 +1033,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 />
                 {customerId != null && (
                   <div className="space-y-1">
-                    <Label>ربط بفاتورة (اختياري)</Label>
+                    <Label>{isReceipt ? "تخصيص فاتورة محددة (اختياري)" : "ربط الرد بفاتورة (اختياري)"}</Label>
                     <UnifiedSearchInput
                       value={invoiceQ}
                       onChange={setInvoiceQ}
@@ -1050,7 +1053,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                           );
                           if (inv) {
                             setSelectedInvoiceLabel(
-                              `فاتورة #${inv.invoiceNumber} — متبقٍّ ${fmt(invoiceRemaining(inv))} د.ع`,
+                              `فاتورة #${inv.invoiceNumber} — ${isReceipt ? "متبقٍّ" : "مدفوع"} ${fmt(isReceipt ? invoiceRemaining(inv) : inv.paidAmount)} د.ع`,
                             );
                           }
                         } else {
@@ -1069,15 +1072,17 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                       )}
                       {outstandingInvoiceOptions.map((inv) => (
                         <option key={Number(inv.id)} value={String(inv.id)}>
-                          فاتورة #{inv.invoiceNumber} — متبقٍّ{" "}
-                          {fmt(invoiceRemaining(inv))} د.ع
+                          فاتورة #{inv.invoiceNumber} — {isReceipt ? "متبقٍّ" : "مدفوع"}{" "}
+                          {fmt(isReceipt ? invoiceRemaining(inv) : inv.paidAmount)} د.ع
                         </option>
                       ))}
                     </AppSelect>
                     <p className="text-[11px] text-muted-foreground">
                       {customerInvoices.isFetching
-                        ? "جارٍ جلب الفواتير المستحقّة…"
-                        : "يَظهر هذا السند في سجلّ دفعات الفاتورة المُختارة (تتبّع تسديد دَين مُحدَّد). المتبقّي = الإجمالي − المدفوع − المُرتجَع."}
+                        ? "جارٍ جلب فواتير العميل…"
+                        : !isReceipt
+                          ? "هذا سند رد مبلغ للعميل: يسجل صرفاً فعلياً ويحدّث رصيده عند التنفيذ. اختيار فاتورة يخصم المبلغ من مدفوعها، وترك الاختيار فارغاً يرد المبلغ على حساب العميل."
+                          : "اترك الاختيار فارغاً ليوزع النظام القبض تلقائياً من أقدم فواتير العميل المؤهلة في هذا الفرع، ويخفض الذمة عند التنفيذ. فواتير التوصيل النشطة تُحصّل من مسار التوصيل. المبلغ الزائد يبقى رصيداً دائناً. اختيار فاتورة يخصص القبض لها وحدها."}
                     </p>
                   </div>
                 )}

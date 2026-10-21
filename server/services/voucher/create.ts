@@ -6,7 +6,7 @@ import { isDeadInvoice } from "@shared/predicates";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { assertNoNativeSupplierDebtForGenericPaymentTx } from "./supplierNativePaymentGuard";
 import { assertSupplierVoucherReplayTx, createSupplierVoucherSettlementTx, prepareSupplierVoucherSettlementTx, withSupplierBookVoucherTx, supplierScopeNeedsBookGateTx, recordSupplierBookVoucherMarkerTx } from "./supplierSettlement";
-import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
+import { settleCustomerReceiptTx, consumeCustomerReceiptCreditTx } from "../customerReceiptSettlement";
 import { eq } from "drizzle-orm";
 import {
   customers,
@@ -1153,20 +1153,16 @@ export async function createVoucherTx(
     }
 
     if (input.partyType === "CUSTOMER" && input.partyId) {
+      if (input.invoiceId == null) {
+        if (direction === "IN") await settleCustomerReceiptTx(tx, receiptId, actor);
+        else await consumeCustomerReceiptCreditTx(tx, receiptId, actor);
+      }
       await adjustCustomerBalance(
         tx,
         input.partyId,
         direction === "IN" ? amount.neg() : amount,
       );
-      if (direction === "IN") {
-        const [c] = await tx
-          .select({ currentBalance: customers.currentBalance })
-          .from(customers)
-          .where(eq(customers.id, Number(input.partyId)));
-        if (c && money(c.currentBalance).lte(0)) {
-          await autoSettleCustomerAccountTx(tx, Number(input.partyId), actor);
-        }
-      }
+
     } else if (input.partyType === "SUPPLIER" && input.partyId) {
       await adjustSupplierBalance(tx, input.partyId, amount);
     } else if (input.partyType === "DELIVERY_PARTY" && input.partyId) {
@@ -1376,7 +1372,7 @@ export async function createVoucher(
     assertInboundPaymentMethodEnabled(input.paymentMethod);
   }
   return withMysqlDeadlockRetry(() =>
-    withSupplierBookVoucherTx(async tx => input.voucherType === "PAYMENT" && input.partyType === "SUPPLIER" && !!input.partyId && !isSystemPaymentReference(input.referenceNumber) && await supplierScopeNeedsBookGateTx(tx, Number(input.partyId)), async (tx) => {
+    withSupplierBookVoucherTx(async tx => input.partyType === "CUSTOMER" || (input.voucherType === "PAYMENT" && input.partyType === "SUPPLIER" && !!input.partyId && !isSystemPaymentReference(input.referenceNumber) && await supplierScopeNeedsBookGateTx(tx, Number(input.partyId))), async (tx) => {
       const result = await createVoucherTx(tx, input, actor);
       // ن-٢-هـ (Codex ٢٩/٨): مسارُ الراوتر (`vouchers.create`) يمرّ هنا — إشعارٌ
       // مركزيٌّ يُغني عن حاجةِ الراوتر لاستدعاءِ notifier يدوياً.
