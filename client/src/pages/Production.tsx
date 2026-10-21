@@ -6,7 +6,6 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
 import { FilterField } from "@/components/list/FilterField";
 import { ListToolbar } from "@/components/list/ListToolbar";
-import { PageHeader } from "@/components/PageHeader";
 
 
 import { RowActions } from "@/components/list/RowActions";
@@ -310,22 +309,12 @@ export default function Production() {
 
   return (
     <div className="space-y-4" dir="rtl">
-      <PageHeader
-        title="الإنتاج والتحويل"
-        description="تحويل المخزون إلى منتجات (ملازم/كتب/أكياس). يُخصم المدخل ويُنتَج المخرَج بكلفته الحقيقية."
-        actions={
-          <Link href="/production/new">
-            <Button>
-              <Plus aria-hidden className="size-4 me-1" /> مستند إنتاج جديد
-            </Button>
-          </Link>
-        }
-      />
-
       <Card>
         <CardContent className="space-y-3 p-4">
           <ListToolbar<Row>
-            title="المستندات"
+            title="الإنتاج والتحويل"
+            pageTitle
+            add={{ href: "/production/new", label: "مستند إنتاج جديد" }}
             count={rows.length}
             loading={list.isLoading}
             search={{

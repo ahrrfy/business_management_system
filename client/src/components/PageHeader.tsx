@@ -1,7 +1,8 @@
 import * as React from "react";
 import { Link } from "wouter";
-import { ArrowRight, ChevronRight, Home } from "lucide-react";
+import { ArrowRight, ChevronRight, Home, Info } from "lucide-react";
 import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { WorkspaceBar } from "@/components/workspace/OperationalWorkspace";
 
@@ -88,9 +89,22 @@ export function PageHeader({ title, description, actions, actionsClassName, icon
             <span className="truncate">{title}</span>
           </h1>
           {description && (
-            <p className="sr-only min-w-0 truncate border-s ps-2 text-xs text-muted-foreground lg:not-sr-only" title={typeof description === "string" ? description : undefined}>
-              {description}
-            </p>
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  title={typeof description === "string" ? description : "معلومات الشاشة"}
+                  aria-label="معلومات الشاشة"
+                >
+                  <Info aria-hidden className="size-3.5" />
+                  <span className="sr-only">{description}</span>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-80 p-3 text-xs leading-relaxed text-muted-foreground">
+                {description}
+              </PopoverContent>
+            </Popover>
           )}
         </div>
         {actions && (
@@ -162,12 +176,22 @@ export function PageHeader({ title, description, actions, actionsClassName, icon
         </h1>
 
         {description && (
-          <p
-            className="hidden min-w-0 max-w-xl truncate border-s border-border/70 ps-2 text-xs text-muted-foreground xl:block"
-            title={typeof description === "string" ? description : undefined}
-          >
-            {description}
-          </p>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                title={typeof description === "string" ? description : "معلومات الشاشة"}
+                aria-label="معلومات الشاشة"
+              >
+                <Info aria-hidden className="size-3.5" />
+                <span className="sr-only">{description}</span>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-80 p-3 text-xs leading-relaxed text-muted-foreground">
+              {description}
+            </PopoverContent>
+          </Popover>
         )}
       </div>
 

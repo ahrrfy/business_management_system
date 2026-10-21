@@ -44,14 +44,14 @@ function StatusBadge({ status }: { status: string }) {
 
 function StatCard({ label, value, sub, accent, icon }: { label: string; value: string; sub?: string; accent?: string; icon: React.ReactNode }) {
   return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="flex items-center justify-between">
-          <div className="text-muted-foreground text-xs">{label}</div>
+    <Card className="py-1.5 gap-0.5">
+      <CardContent className="px-2.5 py-0">
+        <div className="flex items-center justify-between gap-1">
+          <div className="text-muted-foreground text-2xs font-semibold truncate">{label}</div>
           <span style={{ color: accent }}>{icon}</span>
         </div>
-        <div className="mt-1 text-2xl font-bold tabular-nums" dir="ltr" style={{ color: accent }}>{value}</div>
-        {sub && <div className="text-muted-foreground text-xs mt-0.5">{sub}</div>}
+        <div className="mt-0.5 text-base font-extrabold tabular-nums leading-tight" dir="ltr" style={{ color: accent }}>{value}</div>
+        {sub && <div className="text-muted-foreground text-[10px] mt-0.5 leading-tight">{sub}</div>}
       </CardContent>
     </Card>
   );

@@ -3,7 +3,6 @@ import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { PageHeader } from "@/components/PageHeader";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -355,11 +354,6 @@ export default function Users() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
-        title="المستخدمون"
-        description="إدارة مستخدمي النظام وأدوارهم وفروعهم: إضافة، تعديل، تعطيل/تفعيل، وإعادة تعيين كلمة المرور."
-      />
-
       {err && <p className="text-sm text-destructive">{err}</p>}
       {customRoleId != null && (
         <p className="text-xs text-muted-foreground">
@@ -377,7 +371,8 @@ export default function Users() {
       <Card>
         <CardHeader>
           <ListToolbar
-            title="القائمة"
+            title="المستخدمون"
+            pageTitle
             count={total}
             loading={list.isLoading}
             search={{

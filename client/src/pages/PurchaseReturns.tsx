@@ -5,7 +5,6 @@ import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { ListToolbar, RowActions } from "@/components/list";
-import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -215,22 +214,11 @@ export default function PurchaseReturns({ embedded = false }: { embedded?: boole
 
   return (
     <div className="space-y-4">
-      {!embedded && (
-        <PageHeader
-          title="سجلّ مرتجعات المشتريات"
-          description="البضاعة المُرتجَعة للموردين (قيود إرجاع ذات مورد). لإنشاء مرتجع جديد استعمل زرّ «مرتجع شراء جديد»."
-          actions={
-            <Link href="/returns">
-              <Button variant="outline" size="sm">مرتجعات البيع ←</Button>
-            </Link>
-          }
-        />
-      )}
-
       <Card>
         <CardHeader>
           <ListToolbar
-            title="المرتجعات"
+            title="سجلّ مرتجعات المشتريات"
+            pageTitle={!embedded}
             count={total}
             loading={list.isLoading}
             search={{ value: f.q, onChange: (v) => setF({ q: v }), placeholder: "بحث (مورد/رقم قيد/أمر شراء/ملاحظة)…" }}

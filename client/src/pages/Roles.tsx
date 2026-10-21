@@ -1,4 +1,3 @@
-import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { RowActions } from "@/components/list/RowActions";
@@ -203,17 +202,13 @@ export default function Roles() {
 
   return (
     <div className="space-y-4 max-w-5xl">
-      <PageHeader
-        title="الأدوار والصلاحيات"
-        description="أدوار النظام المبنية + أدوار مخصّصة تصنعها بنفسك بصلاحيات محفوظة."
-        actions={<Link href="/roles/new"><Button>+ إضافة دور مخصّص</Button></Link>}
-      />
-
       {/* الأدوار المخصّصة */}
       <Card>
         <CardHeader>
           <ListToolbar
-            title="الأدوار المخصّصة"
+            title="الأدوار والصلاحيات"
+            pageTitle
+            add={{ href: "/roles/new", label: "إضافة دور مخصّص" }}
             count={visibleCustom.length}
             loading={list.isLoading}
             search={{ value: query, onChange: (v) => setF({ q: v }), placeholder: "اسم الدور أو الفئة الأساسية…" }}

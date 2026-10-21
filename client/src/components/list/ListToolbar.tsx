@@ -164,7 +164,7 @@ export function ListToolbar<T>({
     <div className="flex flex-col gap-1.5" data-operational-toolbar>
       <WorkspaceBar variant="command" label="أوامر القائمة" className="flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 shrink-0 items-center gap-2">
-          {title != null && (pageTitle ? <h1 className="text-base font-semibold">{title}</h1> : <span className="text-base font-semibold">{title}</span>)}
+          {title != null && (pageTitle ? <h1 className="text-base font-semibold">{title}</h1> : (typeof title === "string" && ["القائمة", "السجلّات", "السندات", "المرتجعات", "الورديات", "الجهات"].includes(title) ? null : <span className="text-base font-semibold">{title}</span>))}
           {(count != null || loading) && <span className="shrink-0 text-xs text-muted-foreground">{loading ? "جارٍ التحميل…" : `${(count ?? 0).toLocaleString("ar-IQ-u-nu-latn")} صفّ`}</span>}
         </div>
 

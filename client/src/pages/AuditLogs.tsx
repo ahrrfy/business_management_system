@@ -2,7 +2,6 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { OperationActor } from "@/components/data-table/ActorCell";
 import { ListToolbar } from "@/components/list/ListToolbar";
@@ -648,15 +647,11 @@ export default function AuditLogs() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
-        title="سجلّ التدقيق"
-        description="كل عملية حسّاسة: من نفّذها، ماذا، متى، ومن أيّ جهاز (IP). للأدمن والمدقق المستقل."
-      />
-
       <Card>
         <CardHeader>
           <ListToolbar
-            title="السجلّات"
+            title="سجلّ التدقيق"
+            pageTitle
             count={total}
             loading={list.isLoading}
             filters={

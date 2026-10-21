@@ -4,7 +4,6 @@ import { DataTable } from "@/components/data-table/DataTable";
 import { ActorCell } from "@/components/data-table/ActorCell";
 import type { ColumnDef } from "@tanstack/react-table";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
-import { PageHeader } from "@/components/PageHeader";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle } from "lucide-react";
@@ -199,18 +198,6 @@ export default function SalesReturns({ embedded = false }: { embedded?: boolean 
 
   return (
     <div className="space-y-4">
-      {!embedded && (
-        <PageHeader
-          title="سجلّ مرتجعات البيع"
-          description="البضاعة المُرتجَعة من العملاء (قيود إرجاع مرتبطة بفواتير البيع). لإنشاء مرتجع جديد استعمل زرّ «مرتجع بيع جديد»."
-          actions={
-            <Link href="/returns?tab=purchases">
-              <Button variant="outline" size="sm">مرتجعات الشراء ←</Button>
-            </Link>
-          }
-        />
-      )}
-
       {pendingReturns.length > 0 && (
         <Card className="border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)]/30">
           <CardContent className="flex flex-wrap items-center gap-2 p-3 text-sm">
@@ -231,7 +218,8 @@ export default function SalesReturns({ embedded = false }: { embedded?: boolean 
       <Card>
         <CardHeader>
           <ListToolbar
-            title="المرتجعات"
+            title="سجلّ مرتجعات البيع"
+            pageTitle={!embedded}
             count={total}
             loading={list.isLoading}
             search={{
