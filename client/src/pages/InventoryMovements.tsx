@@ -19,6 +19,7 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMemo, useState } from "react";
+import { MovementSource, movementSourceText } from "@/components/inventory/MovementSource";
 
 /* ============================ Constants & helpers ============================ */
 
@@ -37,6 +38,7 @@ const MTYPE_LABEL: Record<MovementType, string> = {
 // تعريب referenceType (نصّ خام في DB يُكتَب من عشرات نقاط الخدمة) — القيم غير المدرَجة تُعرَض
 // كما هي (fallback في MovementRefBadge أدناه)، فلا تُخفي حركةً بمرجعٍ نادر عن الفلتر أو العرض.
 const REFERENCE_TYPE_LABELS: Record<string, string> = {
+  STOCKTAKE: "جرد مخزني",
   OPENING: "رصيد افتتاحي",
   INVOICE: "فاتورة بيع",
   PURCHASE_ORDER: "أمر شراء",
@@ -99,6 +101,19 @@ function fmtSignedQty(signed: number): string {
 /* ============================ Page ============================ */
 
 type RichRow = RouterOutputs["inventory"]["movementsRich"]["rows"][number];
+
+function movementReferenceText(r: RichRow): string {
+  if (r.stocktakeSource) return movementSourceText(r.stocktakeSource);
+  return r.referenceType
+    ? `${REFERENCE_TYPE_LABELS[r.referenceType] ?? r.referenceType} ${r.documentNumber ?? (r.referenceId ? `#${r.referenceId}` : "")}`.trim()
+    : "—";
+}
+
+function movementActorText(r: RichRow): string {
+  return r.stocktakeSource
+    ? `اعتماد نهائي: ${r.stocktakeSource.approvedByName ?? "غير مسجّل"}`
+    : r.createdByName ?? "—";
+}
 
 const PAGE_SIZE = 50;
 
@@ -172,12 +187,11 @@ const movementColumns: ColumnDef<RichRow, unknown>[] = [
   {
     id: "reference",
     header: "المرجع",
-    accessorFn: (r) =>
-      r.referenceType
-        ? `${REFERENCE_TYPE_LABELS[r.referenceType] ?? r.referenceType} ${r.documentNumber ?? (r.referenceId ? `#${r.referenceId}` : "")}`.trim()
-        : "—",
+    accessorFn: movementReferenceText,
+    meta: { wrap: true },
     cell: ({ row }) => {
       const r = row.original;
+      if (r.stocktakeSource) return <MovementSource source={r.stocktakeSource} />;
       if (!r.referenceType) return <span className="text-muted-foreground">—</span>;
       return (
         <span className="text-xs">
@@ -202,9 +216,9 @@ const movementColumns: ColumnDef<RichRow, unknown>[] = [
   {
     id: "createdByName",
     header: ATTRIBUTION_LABELS.performedBy,
-    accessorFn: (r) => r.createdByName ?? "—",
+    accessorFn: movementActorText,
     meta: { kind: "actor" },
-    cell: ({ row }) => <span className="text-xs">{row.original.createdByName ?? "—"}</span>,
+    cell: ({ row }) => <span className="text-xs">{movementActorText(row.original)}</span>,
   },
   {
     id: "notes",
@@ -392,12 +406,9 @@ export default function InventoryMovements() {
         {
           key: "referenceType",
           header: "المرجع",
-          map: (r) =>
-            r.referenceType
-              ? `${REFERENCE_TYPE_LABELS[r.referenceType] ?? r.referenceType} ${r.documentNumber ?? (r.referenceId ? `#${r.referenceId}` : "")}`.trim()
-              : "",
+          map: movementReferenceText,
         },
-        { key: "createdByName", header: ATTRIBUTION_LABELS.performedBy, map: (r) => r.createdByName ?? "" },
+        { key: "createdByName", header: ATTRIBUTION_LABELS.performedBy, map: movementActorText },
         { key: "notes", header: "الملاحظة", map: (r) => r.notes ?? "" },
       ],
       });
@@ -566,10 +577,8 @@ export default function InventoryMovements() {
                       branch: r.relatedBranchName
                         ? `${r.branchName} ← ${r.relatedBranchName}`
                         : r.branchName,
-                      ref: r.referenceType
-                        ? `${REFERENCE_TYPE_LABELS[r.referenceType] ?? r.referenceType} ${r.documentNumber ?? (r.referenceId ? `#${r.referenceId}` : "")}`.trim()
-                        : "—",
-                      user: r.createdByName ?? "—",
+                      ref: movementReferenceText(r),
+                      user: movementActorText(r),
                     };
                   }),
                 })

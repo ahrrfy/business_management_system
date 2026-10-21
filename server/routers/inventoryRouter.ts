@@ -74,6 +74,7 @@ import { retryOnDup } from "../lib/retryDup";
 import { resolveActorBranchId } from "../lib/branchAuthority";
 import { canSeeCostForUser, inventoryManagerProcedure, inventoryReadProcedure, inventoryWarehouseProcedure, protectedProcedure, router } from "../trpc";
 import { listBackorderShortfall } from "../services/inventory/backorderShortfall";
+import { loadMovementStocktakeSources } from "../services/inventory/movementSources";
 
 const MOVEMENT_TYPES = ["IN", "OUT", "ADJUST", "RETURN", "TRANSFER_IN", "TRANSFER_OUT"] as const;
 
@@ -1141,9 +1142,11 @@ export const inventoryRouter = router({
         { rowsLength: rows.length, limit: i.limit ?? 200, offset: i.offset },
       );
 
+      const stocktakeSources = await loadMovementStocktakeSources(db, rows);
       return {
         rows: rows.map((r) => ({
           ...r,
+          stocktakeSource: stocktakeSources.get(Number(r.id)) ?? null,
           variantId: Number(r.variantId),
           branchId: Number(r.branchId),
           relatedBranchId: r.relatedBranchId == null ? null : Number(r.relatedBranchId),

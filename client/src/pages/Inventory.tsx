@@ -41,6 +41,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { InventoryModals } from "@/components/inventory/InventoryModals";
 import { LowStockReorderBanner } from "@/components/inventory/LowStockReorderBanner";
+import { MovementSource, movementSourceText } from "@/components/inventory/MovementSource";
 
 const MTYPE: Record<string, string> = {
   IN: "وارد",
@@ -1091,7 +1092,9 @@ export default function Inventory() {
               {
                 id: "ref",
                 header: "المرجع",
-                cell: ({ row }) => (
+                accessorFn: (r) => r.stocktakeSource ? movementSourceText(r.stocktakeSource) : `${r.referenceType ?? "—"}${r.referenceId ? ` #${r.referenceId}` : ""}`,
+                meta: { wrap: true },
+                cell: ({ row }) => row.original.stocktakeSource ? <MovementSource source={row.original.stocktakeSource} /> : (
                   <span className="text-muted-foreground text-xs">
                     {row.original.referenceType ?? "—"}{row.original.referenceId ? ` #${row.original.referenceId}` : ""}
                   </span>

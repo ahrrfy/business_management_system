@@ -3,7 +3,7 @@
 // الجرد الشامل يلتقط لقطة عند الإنشاء لأجل تدقيق الرصيد/الكلفة، لكنه يبقى قيد العد أحياناً
 // بينما ينشئ فريق آخر أصنافاً أو متغيّرات جديدة. هذه المزامنة تُلحق الجديد فقط بالجلسات
 // FULL التي ما زالت COUNTING؛ لا تمس جلسة REVIEW أو APPROVED ولا تغيّر أي عنصر موجود.
-import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
 import {
   branchStock,
   products,
@@ -13,7 +13,11 @@ import {
   stocktakeSessions,
 } from "../../../drizzle/schema";
 import { toDbMoney } from "../money";
-import { withTx } from "../tx";
+import { requireDb, withTx } from "../tx";
+import {
+  loadActiveStocktakeOverlaps,
+  lockStocktakeBranch,
+} from "./overlapGuard";
 import { chunk } from "./internal";
 import { loadOpeningPurchaseLinkedVariantIds } from "./openingEligibility";
 
@@ -32,11 +36,22 @@ export interface LiveScopeSyncResult {
  * uq_stkitem_session_variant يبقى الحارس الأخير ضد أي مزامنة متزامنة.
  */
 export async function syncActiveFullStocktakeScopes(): Promise<LiveScopeSyncResult> {
+  const sessions = await requireDb()
+    .select({ id: stocktakeSessions.id, branchId: stocktakeSessions.branchId })
+    .from(stocktakeSessions)
+    .where(
+      and(
+        eq(stocktakeSessions.status, "COUNTING"),
+        eq(stocktakeSessions.scopeType, "FULL"),
+      ),
+    )
+    .orderBy(asc(stocktakeSessions.branchId), asc(stocktakeSessions.id));
   return withTx(async (tx) => {
-    const sessions = await tx
-      .select({ id: stocktakeSessions.id })
-      .from(stocktakeSessions)
-      .where(and(eq(stocktakeSessions.status, "COUNTING"), eq(stocktakeSessions.scopeType, "FULL")));
+    for (const branchId of Array.from(
+      new Set(sessions.map((s) => Number(s.branchId))),
+    )) {
+      await lockStocktakeBranch(tx, branchId);
+    }
 
     let itemsAdded = 0;
     for (const row of sessions) {
@@ -55,7 +70,12 @@ export async function syncActiveFullStocktakeScopes(): Promise<LiveScopeSyncResu
           .for("update")
           .limit(1)
       )[0];
-      if (!locked || locked.status !== "COUNTING" || locked.scopeType !== "FULL") continue;
+      if (
+        !locked ||
+        locked.status !== "COUNTING" ||
+        locked.scopeType !== "FULL"
+      )
+        continue;
 
       // assignmentId حقل تقني متبقٍ من بنية التكليف القديمة؛ قائمة العد مشتركة لجميع العمال.
       const assignment = (
@@ -78,16 +98,25 @@ export async function syncActiveFullStocktakeScopes(): Promise<LiveScopeSyncResu
         .innerJoin(products, eq(productVariants.productId, products.id))
         .leftJoin(
           branchStock,
-          and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, locked.branchId)),
+          and(
+            eq(branchStock.variantId, productVariants.id),
+            eq(branchStock.branchId, locked.branchId),
+          ),
         )
         .leftJoin(
           stocktakeItems,
-          and(eq(stocktakeItems.sessionId, sessionId), eq(stocktakeItems.variantId, productVariants.id)),
+          and(
+            eq(stocktakeItems.sessionId, sessionId),
+            eq(stocktakeItems.variantId, productVariants.id),
+          ),
         )
         .where(
           and(
             or(
-              and(eq(products.isActive, true), eq(productVariants.isActive, true)),
+              and(
+                eq(products.isActive, true),
+                eq(productVariants.isActive, true),
+              ),
               or(
                 sql`COALESCE(${branchStock.quantity}, 0) > 0`,
                 and(
@@ -99,7 +128,12 @@ export async function syncActiveFullStocktakeScopes(): Promise<LiveScopeSyncResu
             eq(products.isService, false),
             eq(products.isBundle, false),
             isNull(stocktakeItems.id),
-            ...(isOpening ? [eq(products.isConsignment, false), isNull(branchStock.openedAt)] : []),
+            ...(isOpening
+              ? [
+                  eq(products.isConsignment, false),
+                  isNull(branchStock.openedAt),
+                ]
+              : []),
           ),
         );
 
@@ -111,8 +145,17 @@ export async function syncActiveFullStocktakeScopes(): Promise<LiveScopeSyncResu
             candidates.map((candidate) => Number(candidate.variantId)),
           )
         : new Set<number>();
+      const overlaps = await loadActiveStocktakeOverlaps(
+        tx,
+        Number(locked.branchId),
+        candidates.map((c) => Number(c.variantId)),
+        sessionId,
+        true,
+      );
       const eligibleCandidates = candidates.filter(
-        (candidate) => !purchasedSet.has(Number(candidate.variantId)),
+        (candidate) =>
+          !purchasedSet.has(Number(candidate.variantId)) &&
+          !overlaps.has(Number(candidate.variantId)),
       );
       if (!eligibleCandidates.length) continue;
 
@@ -129,7 +172,9 @@ export async function syncActiveFullStocktakeScopes(): Promise<LiveScopeSyncResu
           .insert(stocktakeItems)
           .values(part)
           // الدفاع النهائي عن التكرار في سباق اتصالين؛ لا تُستبدل لقطة عنصر قائم أبداً.
-          .onDuplicateKeyUpdate({ set: { sessionId: sql`${stocktakeItems.sessionId}` } });
+          .onDuplicateKeyUpdate({
+            set: { sessionId: sql`${stocktakeItems.sessionId}` },
+          });
       }
       itemsAdded += items.length;
     }

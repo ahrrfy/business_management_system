@@ -262,7 +262,7 @@
     "typescript-eslint": "^8.69.0",
     "vite": "7.3.7",
     "vite-plugin-pwa": "^1.3.0",
-    "vitest": "^4.1.11",
+    "vitest": "^4.1.12",
     "workbox-window": "^7.4.1"
   },
   "pnpm": {
