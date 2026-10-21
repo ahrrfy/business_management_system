@@ -10,6 +10,7 @@
 // ما لا تفعله عمداً: لا تمسّ عهدة الجهة (`deliveryParties.currentBalance`) ولا تكتب
 // COD_COLLECTED — النقد دخل الدرج مباشرةً ولم يمرّ بيد الجهة، فالقيد الدفتريّ الصحيح هو
 // COD_RELEASED (تحرير تعرّضٍ متوقَّع، نفس اصطلاح الإلغاء والرجوع المُعلَن).
+import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import Decimal from "decimal.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { deliveryConsignments, deliveryEvents, deliveryLedgerEntries } from "../../../drizzle/schema";
@@ -143,7 +144,7 @@ export async function registerCounterCollectionTx(
           ELSE 0 END), 0)`,
       })
       .from(deliveryLedgerEntries)
-      .where(eq(deliveryLedgerEntries.consignmentId, Number(cn.id)))
+      .where(and(eq(deliveryLedgerEntries.consignmentId, Number(cn.id)), effectiveDeliveryLedgerEntrySql()))
   )[0];
   const pendingCustody = round2(money(custodyRow?.pending ?? "0"));
   const noPendingCustody = pendingCustody.lte(0);

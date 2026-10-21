@@ -17,6 +17,7 @@ import type { Actor } from "../tx";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 import { deliveryCustodyReturnIntent } from "./posting";
 import { allocateCorrectionRefunds } from "../sale/correctionReceiptSettlement";
+import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import {
   createPostingIntent,
   signedPostingLines,
@@ -39,7 +40,7 @@ export async function invoiceDeliveryAmendmentTx(tx: Tx, invoiceId: number) {
       amount: deliveryLedgerEntries.amount,
     })
     .from(deliveryLedgerEntries)
-    .where(eq(deliveryLedgerEntries.consignmentId, Number(cn.id)))
+    .where(and(eq(deliveryLedgerEntries.consignmentId, Number(cn.id)), effectiveDeliveryLedgerEntrySql()))
     .for("update");
   const sum = (...types: string[]) =>
     round2(

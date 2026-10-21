@@ -19,6 +19,7 @@ import {
 } from "@shared/partyExposure";
 import { deliveryConsignments, deliveryLedgerEntries } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 
 /**
  * عهدةُ النقد لكلّ طرد — `CASE` مبنيٌّ من الثابت الواحد `DELIVERY_CASH_CUSTODY_SIGN` (لا صيغةَ
@@ -74,7 +75,7 @@ export async function loadPartyExposureInputsTx(
     ? await tx
         .select({ consignmentId: deliveryLedgerEntries.consignmentId, custody: ledgerCustodySumSql })
         .from(deliveryLedgerEntries)
-        .where(and(isNotNull(deliveryLedgerEntries.consignmentId), inArray(deliveryLedgerEntries.consignmentId, liveIds)))
+        .where(and(isNotNull(deliveryLedgerEntries.consignmentId), inArray(deliveryLedgerEntries.consignmentId, liveIds), effectiveDeliveryLedgerEntrySql()))
         .groupBy(deliveryLedgerEntries.consignmentId)
     : [];
   const custodyByCn = new Map(custodyRows.map((r) => [Number(r.consignmentId), String(r.custody ?? "0")]));
@@ -86,7 +87,7 @@ export async function loadPartyExposureInputsTx(
       total: sql<string>`COALESCE(SUM(${deliveryLedgerEntries.amount}), 0)`,
     })
     .from(deliveryLedgerEntries)
-    .where(inArray(deliveryLedgerEntries.partyId, partyIds))
+    .where(and(inArray(deliveryLedgerEntries.partyId, partyIds), effectiveDeliveryLedgerEntrySql()))
     .groupBy(deliveryLedgerEntries.partyId, deliveryLedgerEntries.entryType);
 
   const ensure = (partyId: number): PartyExposureInputs => {

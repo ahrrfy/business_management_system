@@ -290,14 +290,58 @@ INSERT IGNORE INTO `deliveryLedgerEntries`
   (`eventKey`,`partyId`,`consignmentId`,`branchId`,`entryType`,`amount`,`notes`,`occurredAt`)
 SELECT CONCAT('BACKFILL:CN:',dc.id,':COD_ASSIGNED'), dc.partyId, dc.id, dc.branchId,
        'COD_ASSIGNED', dc.codAmount, 'Phase 2 legacy snapshot', dc.dispatchedAt
-FROM `deliveryConsignments` dc WHERE CAST(dc.codAmount AS DECIMAL(15,2)) > 0;
+FROM `deliveryConsignments` dc WHERE CAST(dc.codAmount AS DECIMAL(15,2)) > 0
+  AND NOT EXISTS (
+    SELECT 1 FROM deliveryLedgerEntries nativeLedger
+    WHERE nativeLedger.consignmentId = dc.id AND nativeLedger.partyId = dc.partyId
+      AND nativeLedger.branchId <=> dc.branchId
+      AND nativeLedger.entryType = 'COD_ASSIGNED' AND nativeLedger.amount = dc.codAmount
+      AND nativeLedger.eventKey NOT LIKE 'BACKFILL:%'
+      AND nativeLedger.createdAt <= CURRENT_TIMESTAMP
+  );
 --> statement-breakpoint
 
 INSERT IGNORE INTO `deliveryLedgerEntries`
   (`eventKey`,`partyId`,`consignmentId`,`remittanceId`,`branchId`,`entryType`,`amount`,`notes`,`occurredAt`)
 SELECT CONCAT('BACKFILL:CN:',dc.id,':COD_COLLECTED'), dc.partyId, dc.id, dc.remittanceId, dc.branchId,
        'COD_COLLECTED', dc.collectedAmount, 'Phase 2 legacy snapshot', COALESCE(dc.settledAt, dc.updatedAt)
-FROM `deliveryConsignments` dc WHERE CAST(dc.collectedAmount AS DECIMAL(15,2)) > 0;
+FROM `deliveryConsignments` dc WHERE CAST(dc.collectedAmount AS DECIMAL(15,2)) > 0
+  AND NOT EXISTS (
+    SELECT 1 FROM deliveryLedgerEntries nativeLedger
+    WHERE nativeLedger.consignmentId = dc.id AND nativeLedger.partyId = dc.partyId
+      AND nativeLedger.branchId <=> dc.branchId
+      AND nativeLedger.entryType = 'COD_COLLECTED' AND nativeLedger.amount = dc.collectedAmount
+      AND nativeLedger.eventKey NOT LIKE 'BACKFILL:%'
+      AND nativeLedger.createdAt <= CURRENT_TIMESTAMP
+  )
+  AND NOT (
+    dc.remittanceId IS NOT NULL
+    AND EXISTS (
+      SELECT 1 FROM deliveryLedgerEntries nativeRemitted
+      WHERE nativeRemitted.consignmentId = dc.id AND nativeRemitted.partyId = dc.partyId
+        AND nativeRemitted.branchId <=> dc.branchId
+        AND nativeRemitted.entryType = 'COD_REMITTED'
+        AND nativeRemitted.createdAt <= CURRENT_TIMESTAMP
+        AND nativeRemitted.eventKey = CONCAT('CN:', dc.id, ':REMIT:', nativeRemitted.remittanceId)
+        AND EXISTS (
+          SELECT 1 FROM deliveryRemittanceLines nativePart
+          JOIN deliveryRemittances nativeHeader ON nativeHeader.id = nativePart.remittanceId
+          WHERE nativePart.consignmentId = dc.id AND nativePart.remittanceId = nativeRemitted.remittanceId
+            AND nativePart.legacySnapshot = FALSE AND nativePart.grossApplied = nativeRemitted.amount
+            AND nativeHeader.partyId = dc.partyId AND nativeHeader.branchId <=> dc.branchId
+        )
+      GROUP BY nativeRemitted.consignmentId
+      HAVING SUM(nativeRemitted.amount) = dc.collectedAmount
+        AND SUM(CASE WHEN nativeRemitted.remittanceId = dc.remittanceId THEN 1 ELSE 0 END) > 0
+    )
+    AND (SELECT COALESCE(SUM(nativeCollected.amount), 0) FROM deliveryLedgerEntries nativeCollected
+      WHERE nativeCollected.consignmentId = dc.id AND nativeCollected.partyId = dc.partyId
+        AND nativeCollected.branchId <=> dc.branchId
+        AND nativeCollected.entryType = 'COD_COLLECTED' AND nativeCollected.createdAt <= CURRENT_TIMESTAMP
+        AND (nativeCollected.eventKey = CONCAT('CN:', dc.id, ':COD_COLLECTED')
+          OR LOCATE(CONCAT('CN:', dc.id, ':COD_COLLECTED_SUPP:'), nativeCollected.eventKey) = 1)
+    ) >= dc.collectedAmount
+  );
 --> statement-breakpoint
 
 -- Preserve any outstanding legacy/online-order cash custody that existed only
@@ -315,7 +359,40 @@ INSERT IGNORE INTO `deliveryLedgerEntries`
   (`eventKey`,`partyId`,`consignmentId`,`remittanceId`,`branchId`,`entryType`,`amount`,`notes`,`occurredAt`)
 SELECT CONCAT('BACKFILL:CN:',dc.id,':COD_REMITTED'), dc.partyId, dc.id, dc.remittanceId, dc.branchId,
        'COD_REMITTED', dc.collectedAmount, 'Phase 2 legacy snapshot', COALESCE(dc.settledAt, dc.updatedAt)
-FROM `deliveryConsignments` dc WHERE CAST(dc.collectedAmount AS DECIMAL(15,2)) > 0;
+FROM `deliveryConsignments` dc WHERE CAST(dc.collectedAmount AS DECIMAL(15,2)) > 0
+  AND NOT EXISTS (
+    SELECT 1 FROM deliveryLedgerEntries nativeLedger
+    JOIN deliveryRemittanceLines nativeLine
+      ON nativeLine.consignmentId = nativeLedger.consignmentId
+      AND nativeLine.remittanceId = nativeLedger.remittanceId
+    JOIN deliveryRemittances nativeRemittance ON nativeRemittance.id = nativeLine.remittanceId
+    WHERE nativeLedger.consignmentId = dc.id AND nativeLedger.partyId = dc.partyId
+      AND nativeLedger.branchId <=> dc.branchId
+      AND nativeLedger.entryType = 'COD_REMITTED' AND nativeLedger.amount = dc.collectedAmount
+      AND dc.remittanceId IS NOT NULL AND nativeLedger.remittanceId = dc.remittanceId
+      AND nativeLedger.eventKey = CONCAT('CN:', dc.id, ':REMIT:', dc.remittanceId)
+      AND nativeLedger.createdAt <= CURRENT_TIMESTAMP
+      AND nativeLine.legacySnapshot = FALSE AND nativeLine.grossApplied = nativeLedger.amount
+      AND nativeRemittance.partyId = dc.partyId AND nativeRemittance.branchId <=> dc.branchId
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM deliveryLedgerEntries nativeRemitted
+    WHERE nativeRemitted.consignmentId = dc.id AND nativeRemitted.partyId = dc.partyId
+      AND nativeRemitted.branchId <=> dc.branchId
+      AND dc.remittanceId IS NOT NULL
+      AND nativeRemitted.entryType = 'COD_REMITTED' AND nativeRemitted.createdAt <= CURRENT_TIMESTAMP
+      AND nativeRemitted.eventKey = CONCAT('CN:', dc.id, ':REMIT:', nativeRemitted.remittanceId)
+      AND EXISTS (
+        SELECT 1 FROM deliveryRemittanceLines nativePart
+        JOIN deliveryRemittances nativeHeader ON nativeHeader.id = nativePart.remittanceId
+        WHERE nativePart.consignmentId = dc.id AND nativePart.remittanceId = nativeRemitted.remittanceId
+          AND nativePart.legacySnapshot = FALSE AND nativePart.grossApplied = nativeRemitted.amount
+          AND nativeHeader.partyId = dc.partyId AND nativeHeader.branchId <=> dc.branchId
+      )
+    GROUP BY nativeRemitted.consignmentId
+    HAVING SUM(nativeRemitted.amount) = dc.collectedAmount
+      AND SUM(CASE WHEN nativeRemitted.remittanceId = dc.remittanceId THEN 1 ELSE 0 END) > 0
+  );
 --> statement-breakpoint
 
 INSERT IGNORE INTO `deliveryLedgerEntries`
@@ -323,7 +400,15 @@ INSERT IGNORE INTO `deliveryLedgerEntries`
 SELECT CONCAT('BACKFILL:CN:',dc.id,':FEE_EARNED'), dc.partyId, dc.id, dc.branchId,
        'FEE_EARNED', dc.deliveryFee, 'Phase 2 legacy snapshot', dc.courierDeliveredAt
 FROM `deliveryConsignments` dc
-WHERE dc.courierDeliveredAt IS NOT NULL AND CAST(dc.deliveryFee AS DECIMAL(15,2)) > 0;
+WHERE dc.courierDeliveredAt IS NOT NULL AND CAST(dc.deliveryFee AS DECIMAL(15,2)) > 0
+  AND NOT EXISTS (
+    SELECT 1 FROM deliveryLedgerEntries nativeLedger
+    WHERE nativeLedger.consignmentId = dc.id AND nativeLedger.partyId = dc.partyId
+      AND nativeLedger.branchId <=> dc.branchId
+      AND nativeLedger.entryType = 'FEE_EARNED' AND nativeLedger.amount = dc.deliveryFee
+      AND nativeLedger.eventKey NOT LIKE 'BACKFILL:%'
+      AND nativeLedger.createdAt <= CURRENT_TIMESTAMP
+  );
 --> statement-breakpoint
 
 INSERT IGNORE INTO `deliveryLedgerEntries`
@@ -332,7 +417,15 @@ SELECT CONCAT('BACKFILL:CN:',dc.id,':FEE_PAID'), dc.partyId, dc.id, dc.branchId,
        'FEE_PAID', dc.deliveryFee, 'Phase 2 legacy snapshot', COALESCE(dc.feeSettledAt,dc.courierDeliveredAt)
 FROM `deliveryConsignments` dc
 WHERE CAST(dc.deliveryFee AS DECIMAL(15,2)) > 0
-  AND (dc.feeSettledAt IS NOT NULL OR (dc.courierDeliveredAt IS NOT NULL AND dc.consignmentFeeCollection = 'COURIER'));
+  AND (dc.feeSettledAt IS NOT NULL OR (dc.courierDeliveredAt IS NOT NULL AND dc.consignmentFeeCollection = 'COURIER'))
+  AND NOT EXISTS (
+    SELECT 1 FROM deliveryLedgerEntries nativeLedger
+    WHERE nativeLedger.consignmentId = dc.id AND nativeLedger.partyId = dc.partyId
+      AND nativeLedger.branchId <=> dc.branchId
+      AND nativeLedger.entryType = 'FEE_PAID' AND nativeLedger.amount = dc.deliveryFee
+      AND nativeLedger.eventKey NOT LIKE 'BACKFILL:%'
+      AND nativeLedger.createdAt <= CURRENT_TIMESTAMP
+  );
 --> statement-breakpoint
 
 CREATE TABLE IF NOT EXISTS `deliveryEvents` (

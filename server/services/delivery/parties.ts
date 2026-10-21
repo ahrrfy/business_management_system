@@ -1,4 +1,5 @@
 // CRUD جهات التوصيل.
+import { effectiveDeliveryLedgerEntrySql } from "./legacyLedger";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
@@ -64,7 +65,7 @@ export async function assertFloatLimitTx(
       WHEN ${deliveryLedgerEntries.entryType} = 'COD_ASSIGNED' THEN ${deliveryLedgerEntries.amount}
       WHEN ${deliveryLedgerEntries.entryType} IN ('COD_REMITTED','COD_RETURNED','COD_RELEASED','COD_WRITTEN_OFF','SHORTFALL_SETTLED') THEN -${deliveryLedgerEntries.amount}
       ELSE 0 END),0)`,
-  }).from(deliveryLedgerEntries).where(eq(deliveryLedgerEntries.partyId, Number(party.id))))[0];
+  }).from(deliveryLedgerEntries).where(and(eq(deliveryLedgerEntries.partyId, Number(party.id)), effectiveDeliveryLedgerEntrySql())))[0];
   const committed = money(row?.exposure ?? "0");
   // م١ (PR-3): «النقد بيد الجهة» من المصدر الذي يقرّره العلَم (`cashSource.ts`) لا العمود مباشرةً.
   const legacyCash = (await partyCashInHandTx(tx, { id: party.id, currentBalance: party.currentBalance })).effective;
