@@ -30,8 +30,8 @@ import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmt, fmtInt } from "@/lib/money";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useMemo, useState } from "react";
-import { Link, useLocation } from "wouter";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useLocation, useSearch } from "wouter";
 import { Check, AlertTriangle } from "lucide-react";
 import { selectClsSm } from "@/lib/ui/formStyles";
 import { variantDescriptor } from "@shared/variantDisplay";
@@ -193,12 +193,17 @@ function Stat({ label, value, sub, tone }: { label: string; value: string; sub?:
 type ListRow = RouterOutputs["stocktakes"]["list"][number];
 
 export default function Stocktakes() {
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
+  const search = useSearch();
   const utils = trpc.useUtils();
   const [status, setStatus] = useState<"" | StStatus>("");
   const [branchId, setBranchId] = useState<number>(0);
   const [page, setPage] = useState(0);
   const [previewSessionId, setPreviewSessionId] = useState<number | null>(null);
+  useEffect(() => {
+    const focus = Number(new URLSearchParams(search).get("focus"));
+    setPreviewSessionId(Number.isSafeInteger(focus) && focus > 0 ? focus : null);
+  }, [search]);
   const limit = 50;
 
   const me = trpc.auth.me.useQuery();
@@ -413,6 +418,21 @@ export default function Stocktakes() {
     },
   ], [canReview, canReport, setPreviewSessionId, me.data]);
 
+  const previewDrawer = (
+    <StocktakeDetailDrawer
+      sessionId={previewSessionId}
+      onClose={() => {
+        setPreviewSessionId(null);
+        const params = new URLSearchParams(search);
+        if (params.has("focus")) {
+          params.delete("focus");
+          navigate(`${location}${params.size ? `?${params}` : ""}`, { replace: true });
+        }
+      }}
+      isManagerPlus={isManagerPlus}
+    />
+  );
+
   /* غير مخوَّل (كاشير/مستخدم عام): الخادم يرفض أصلاً — نعرض توجيهاً واضحاً بدل أخطاء. */
   if (me.data && !canReadList) {
     return (
@@ -423,6 +443,7 @@ export default function Stocktakes() {
             يتطلب عرض جلسات الجرد تفويض عرض قائمة الجرد.
           </CardContent>
         </Card>
+        {previewDrawer}
       </div>
     );
   }
@@ -652,11 +673,7 @@ export default function Stocktakes() {
         </CardContent>
       </Card>}
 
-      <StocktakeDetailDrawer
-        sessionId={previewSessionId}
-        onClose={() => setPreviewSessionId(null)}
-        isManagerPlus={isManagerPlus}
-      />
+      {previewDrawer}
     </div>
   );
 }
