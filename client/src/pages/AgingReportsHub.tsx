@@ -20,21 +20,21 @@ export default function AgingReportsHub() {
   // تفصيلي = ArApAgingDetail الذي يعرض المدينة والدائنة فاتورة-بفاتورة في صفحة واحدة.
   const [view, setView] = useState<"summary" | "detailed">("summary");
   return (
-    <div className="p-4 max-w-7xl space-y-4">
+    <div className="p-3 max-w-7xl space-y-2.5">
       <PageHeader
         title="أعمار الذمم"
         description="توزيع الذمم المستحقّة حسب الفترة الزمنية — مدينة (عملاء يدينون لك) أو دائنة (موردون تدين لهم)."
         actions={
-          <div className="flex gap-1 rounded-lg border p-1 bg-muted/30">
+          <div className="flex gap-1 rounded-lg border p-0.5 bg-muted/30">
             <button
               type="button"
               onClick={() => setView("summary")}
-              className={view === "summary" ? "px-3 py-1.5 text-sm font-bold rounded-md bg-background shadow-sm" : "px-3 py-1.5 text-sm text-muted-foreground"}
+              className={view === "summary" ? "px-2.5 py-1 text-xs font-bold rounded-md bg-background shadow-sm" : "px-2.5 py-1 text-xs text-muted-foreground"}
             >ملخّص</button>
             <button
               type="button"
               onClick={() => setView("detailed")}
-              className={view === "detailed" ? "px-3 py-1.5 text-sm font-bold rounded-md bg-background shadow-sm" : "px-3 py-1.5 text-sm text-muted-foreground"}
+              className={view === "detailed" ? "px-2.5 py-1 text-xs font-bold rounded-md bg-background shadow-sm" : "px-2.5 py-1 text-xs text-muted-foreground"}
             >تفصيلي</button>
           </div>
         }
@@ -46,17 +46,17 @@ export default function AgingReportsHub() {
             <TabsTrigger value="ar">مدينة (عملاء)</TabsTrigger>
             <TabsTrigger value="ap">دائنة (موردون)</TabsTrigger>
           </TabsList>
-          <TabsContent value="ar" className="mt-3">
+          <TabsContent value="ar" className="mt-2">
             <Suspense fallback={<TabFallback />}><ARAging /></Suspense>
           </TabsContent>
-          <TabsContent value="ap" className="mt-3">
+          <TabsContent value="ap" className="mt-2">
             <Suspense fallback={<TabFallback />}><APAging /></Suspense>
           </TabsContent>
         </Tabs>
       ) : (
         // التفصيل المتداخل (AR+AP في صفحة واحدة بنداً-بنداً) — يستعمل ArApAgingDetail
         // الذي لديه فلتر دور (مدينة/دائنة) داخلياً.
-        <div className="mt-3">
+        <div className="mt-2">
           <Suspense fallback={<TabFallback />}><ArApAgingDetail /></Suspense>
         </div>
       )}

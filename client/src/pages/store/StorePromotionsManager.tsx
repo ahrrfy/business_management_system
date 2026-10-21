@@ -572,40 +572,40 @@ export default function StorePromotionsManager() {
   );
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3">
       {/* بطاقة عتبة التوصيل المجاني */}
       <Card className="border-primary/20 bg-gradient-to-l from-primary/5 via-card to-card">
-        <CardHeader className="pb-3">
+        <CardHeader className="pb-2">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2">
-              <span className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                <Truck aria-hidden className="size-5" />
+              <span className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Truck aria-hidden className="size-4" />
               </span>
               <div>
-                <CardTitle className="text-base font-bold">عتبات التوصيل المجاني للطلبات الإلكترونية</CardTitle>
-                <p className="text-xs text-muted-foreground">
+                <CardTitle className="text-sm font-bold">عتبات التوصيل المجاني للطلبات الإلكترونية</CardTitle>
+                <p className="text-[11px] text-muted-foreground">
                   تحكم كامل ومستقل في حد الفاتورة الذي يعفي الطلب من أجور الشحن داخل بغداد ولكافة المحافظات.
                 </p>
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
               {currentThresholdBaghdad ? (
-                <Badge variant="outline" className="border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] text-xs font-semibold">
-                  <CheckCircle2 aria-hidden className="mr-1 size-3.5" />
+                <Badge variant="outline" className="border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] text-[11px] font-semibold">
+                  <CheckCircle2 aria-hidden className="mr-1 size-3" />
                   بغداد: فوق {formatIqd(Number(currentThresholdBaghdad))}
                 </Badge>
               ) : (
-                <Badge variant="outline" className="border-border text-muted-foreground text-xs">
+                <Badge variant="outline" className="border-border text-muted-foreground text-[11px]">
                   بغداد: معطّل
                 </Badge>
               )}
               {currentThresholdGov ? (
-                <Badge variant="outline" className="border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] text-xs font-semibold">
-                  <CheckCircle2 aria-hidden className="mr-1 size-3.5" />
+                <Badge variant="outline" className="border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] text-[11px] font-semibold">
+                  <CheckCircle2 aria-hidden className="mr-1 size-3" />
                   المحافظات: فوق {formatIqd(Number(currentThresholdGov))}
                 </Badge>
               ) : (
-                <Badge variant="outline" className="border-border text-muted-foreground text-xs">
+                <Badge variant="outline" className="border-border text-muted-foreground text-[11px]">
                   المحافظات: معطّل
                 </Badge>
               )}
@@ -613,10 +613,10 @@ export default function StorePromotionsManager() {
           </div>
         </CardHeader>
         <CardContent>
-          <div className="flex flex-col gap-4">
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="flex flex-col gap-2.5">
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+                <label className="block text-xs font-medium text-muted-foreground mb-1">
                   عتبة الشحن المجاني (داخل بغداد):
                 </label>
                 <MoneyInput
@@ -626,12 +626,12 @@ export default function StorePromotionsManager() {
                   placeholder="مثال: 35,000 (فارغ للتعطيل)"
                   ariaLabel="حد الشحن المجاني داخل بغداد"
                 />
-                <span className="mt-1 block text-[11px] text-muted-foreground">
+                <span className="mt-0.5 block text-[11px] text-muted-foreground">
                   يشمل بغداد المركز والعامرية وكافة أحياء العاصمة.
                 </span>
               </div>
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+                <label className="block text-xs font-medium text-muted-foreground mb-1">
                   عتبة الشحن المجاني (كافة المحافظات):
                 </label>
                 <MoneyInput
@@ -641,13 +641,14 @@ export default function StorePromotionsManager() {
                   placeholder="مثال: 60,000 (فارغ للتعطيل)"
                   ariaLabel="حد الشحن المجاني لكافة المحافظات"
                 />
-                <span className="mt-1 block text-[11px] text-muted-foreground">
+                <span className="mt-0.5 block text-[11px] text-muted-foreground">
                   يطبق على باقي المحافظات (البصرة، نينوى، أربيل، كركوك...).
                 </span>
               </div>
             </div>
-            <div className="flex items-center gap-2 pt-1">
+            <div className="flex items-center gap-2 pt-0.5">
               <Button
+                size="sm"
                 onClick={() =>
                   updateSettingsM.mutate({
                     freeShippingThreshold: activeThresholdBaghdad ? String(Number(activeThresholdBaghdad)) : null,
@@ -658,14 +659,15 @@ export default function StorePromotionsManager() {
                 className="gap-1.5"
               >
                 {updateSettingsM.isPending ? (
-                  <Loader2 aria-hidden className="size-4 animate-spin" />
+                  <Loader2 aria-hidden className="size-3.5 animate-spin" />
                 ) : (
-                  <Save aria-hidden className="size-4" />
+                  <Save aria-hidden className="size-3.5" />
                 )}
                 حفظ عتبات التوصيل المجاني
               </Button>
               {hasThresholdChanges && (
                 <Button
+                  size="sm"
                   variant="ghost"
                   onClick={() => {
                     setThresholdBaghdadInput(null);
@@ -682,39 +684,39 @@ export default function StorePromotionsManager() {
       </Card>
 
       {/* شريط الإحصائيات */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
         <Card>
-          <CardContent className="flex items-center justify-between p-4">
+          <CardContent className="flex items-center justify-between p-2.5">
             <div>
-              <p className="text-xs font-medium text-muted-foreground">إجمالي العروض</p>
-              <p className="mt-1 text-2xl font-bold tabular-nums">{totalCount}</p>
+              <p className="text-[11px] font-medium text-muted-foreground">إجمالي العروض</p>
+              <p className="mt-0.5 text-lg font-bold tabular-nums">{totalCount}</p>
             </div>
-            <div className="flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-              <Tag aria-hidden className="size-5" />
+            <div className="flex size-8 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+              <Tag aria-hidden className="size-4" />
             </div>
           </CardContent>
         </Card>
 
         <Card>
-          <CardContent className="flex items-center justify-between p-4">
+          <CardContent className="flex items-center justify-between p-2.5">
             <div>
-              <p className="text-xs font-medium text-muted-foreground">العروض السارية الآن</p>
-              <p className="mt-1 text-2xl font-bold tabular-nums text-[var(--sem-pos)]">{liveCount}</p>
+              <p className="text-[11px] font-medium text-muted-foreground">العروض السارية الآن</p>
+              <p className="mt-0.5 text-lg font-bold tabular-nums text-[var(--sem-pos)]">{liveCount}</p>
             </div>
-            <div className="flex size-10 items-center justify-center rounded-lg bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]">
-              <CheckCircle2 aria-hidden className="size-5" />
+            <div className="flex size-8 items-center justify-center rounded-lg bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]">
+              <CheckCircle2 aria-hidden className="size-4" />
             </div>
           </CardContent>
         </Card>
 
         <Card>
-          <CardContent className="flex items-center justify-between p-4">
+          <CardContent className="flex items-center justify-between p-2.5">
             <div>
-              <p className="text-xs font-medium text-muted-foreground">عروض غير نشطة / معطلة</p>
-              <p className="mt-1 text-2xl font-bold tabular-nums text-muted-foreground">{inactiveCount}</p>
+              <p className="text-[11px] font-medium text-muted-foreground">عروض غير نشطة / معطلة</p>
+              <p className="mt-0.5 text-lg font-bold tabular-nums text-muted-foreground">{inactiveCount}</p>
             </div>
-            <div className="flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-              <Ban aria-hidden className="size-5" />
+            <div className="flex size-8 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+              <Ban aria-hidden className="size-4" />
             </div>
           </CardContent>
         </Card>

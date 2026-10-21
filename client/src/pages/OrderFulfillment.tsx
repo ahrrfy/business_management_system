@@ -885,7 +885,7 @@ export default function OrderFulfillment() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="طلبات الموقع"
         description="راجع الطلبات الواردة، ثبّتها وجهّزها للتوصيل"
@@ -955,15 +955,15 @@ export default function OrderFulfillment() {
         </section>
       )}
 
-      <div role="note" className="flex gap-2 rounded-lg border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)] px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-        <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-info)]" />
+      <div role="note" className="flex gap-2 rounded-lg border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)] px-2.5 py-1.5 text-xs leading-snug text-muted-foreground">
+        <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0 text-[var(--sem-info)]" />
         <p>
           <span className="font-bold text-foreground">سير العمل:</span> ثبّت الطلب أولاً، ثم اطبع ورقة التجهيز وابدأ العمل. حدّث العميل عبر واتساب: «{orderStatusLabelForCustomer("CONFIRMED")}» بعد التثبيت و«{orderStatusLabelForCustomer("SHIPPED")}» عند إسناده لمندوب؛ ويؤكّد المندوب التسليم والتحصيل من «توصيلاتي».
         </p>
       </div>
 
       {/* بطاقات الحالة */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-5">
         <StatCard label="وارد" value={counts.PENDING ?? 0} icon={ClipboardList} tone="warning" onClick={() => setFilter("PENDING")} />
         <StatCard label="مثبَّت" value={counts.CONFIRMED ?? 0} icon={Check} tone="info" onClick={() => setFilter("CONFIRMED")} />
         <StatCard label="قيد التجهيز" value={counts.PROCESSING ?? 0} icon={Package} tone="info" onClick={() => setFilter("PROCESSING")} />
@@ -1007,7 +1007,7 @@ export default function OrderFulfillment() {
                 <button
                   key={opt.label}
                   onClick={() => setFilter(opt.value)}
-                  className={`rounded-full px-3 py-1.5 text-xs font-bold transition ${
+                  className={`rounded-full px-2.5 py-1 text-xs font-bold transition ${
                     filter === opt.value ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"
                   }`}
                 >
@@ -1017,12 +1017,12 @@ export default function OrderFulfillment() {
               <button
                 type="button"
                 onClick={() => setMyOrdersOnly((v) => !v)}
-                className={`rounded-full px-3 py-1.5 text-xs font-bold transition flex items-center gap-1.5 ${
+                className={`rounded-full px-2.5 py-1 text-xs font-bold transition flex items-center gap-1 ${
                   myOrdersOnly ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"
                 }`}
                 title="تصفية الطلبات التي استلمتها أو جهزتها بنفسك"
               >
-                <UserCheck className="size-3.5" />
+                <UserCheck className="size-3" />
                 طلباتي فقط
               </button>
             </div>

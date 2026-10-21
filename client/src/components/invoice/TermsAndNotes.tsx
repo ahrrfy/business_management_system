@@ -14,14 +14,14 @@ export interface TermsAndNotesProps {
 
 export function TermsAndNotes({ state, dispatch }: TermsAndNotesProps) {
   return (
-    <section className="rounded-xl border bg-card p-4">
-      <div className="mb-2 flex items-center gap-1.5 text-xs font-extrabold">
-        <Scroll aria-hidden className="size-4" /> الشروط والأحكام
+    <section className="rounded-lg border bg-card p-2.5">
+      <div className="mb-1.5 flex items-center gap-1.5 text-xs font-extrabold">
+        <Scroll aria-hidden className="size-3.5" /> الشروط والأحكام
       </div>
       <Textarea
         value={state.terms ?? ""}
         onChange={(e) => dispatch({ type: "SET_FIELD", field: "terms", value: e.target.value })}
-        rows={3}
+        rows={2}
         placeholder="أضف شروط وأحكام... (مثال: البضاعة المباعة لا ترد ولا تستبدل)"
         className="resize-y text-xs"
       />

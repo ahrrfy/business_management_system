@@ -315,28 +315,28 @@ export function WorkOrderKanbanCard({
       {!ghost && o.status === "READY" && (
         <>
           {onQuickDispatch && o.hasDelivery && (
-            <div className="mt-2 pt-2 border-t border-[var(--border)]" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+            <div className="mt-1.5 pt-1.5 border-t border-[var(--border)]" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
               <button
                 type="button"
-                className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-md text-xs font-bold bg-[var(--sem-warn)] text-background hover:bg-[var(--sem-warn-hover)] shadow-xs active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
+                className="w-full flex items-center justify-center gap-1 py-1 px-2 rounded-md text-2xs font-bold bg-[var(--sem-warn)] text-background hover:bg-[var(--sem-warn-hover)] shadow-xs active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
                 disabled={quickActionPending}
                 onClick={() => onQuickDispatch(o)}
                 title="إسناد وإرسال فوري إلى شركة/مندوب التوصيل"
               >
-                <Truck aria-hidden className="size-3.5" /> إرسال للتوصيل
+                <Truck aria-hidden className="size-3" /> إرسال للتوصيل
               </button>
             </div>
           )}
           {onQuickDeliver && !o.hasDelivery && Number(o.deposit ?? 0) >= Number(o.salePrice) && (
-            <div className="mt-2 pt-2 border-t border-[var(--border)]" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+            <div className="mt-1.5 pt-1.5 border-t border-[var(--border)]" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
               <button
                 type="button"
-                className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-md text-xs font-bold bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)] shadow-xs active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
+                className="w-full flex items-center justify-center gap-1 py-1 px-2 rounded-md text-2xs font-bold bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)] shadow-xs active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
                 disabled={quickActionPending}
                 onClick={() => onQuickDeliver(o)}
                 title="تسليم فوري للأمر وإصدار الفاتورة (مدفوع بالكامل)"
               >
-                <CheckCircle2 aria-hidden className="size-3.5" /> تسليم فوري (مدفوع)
+                <CheckCircle2 aria-hidden className="size-3" /> تسليم فوري (مدفوع)
               </button>
             </div>
           )}

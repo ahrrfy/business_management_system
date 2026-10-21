@@ -1084,7 +1084,7 @@ export default function SalesInvoice() {
       // قد يُحفَظ تصحيحٌ ظنّاً أنّه فاتورة جديدة (يُلغي الأصل!). حلقةٌ عنبريّة حول الجذر
       // تجعل الوضع لا يُخطئ للحظة.
       className={cn(
-        "flex h-full flex-col gap-3",
+        "flex h-full flex-col gap-2",
         isCorrection && "rounded-lg ring-2 ring-[var(--sem-warn)]/40",
       )}
     >
@@ -1101,7 +1101,7 @@ export default function SalesInvoice() {
             ? `تصحيح الفاتورة${original.data?.invoiceNumber ? ` ${original.data.invoiceNumber}` : ""}`
             : `${typeInfo.label} متقدّمة`
         }
-        icon={(() => { const TIcon = typeInfo.icon; return <TIcon aria-hidden className="size-6 text-primary" />; })()}
+        icon={(() => { const TIcon = typeInfo.icon; return <TIcon aria-hidden className="size-5 text-primary" />; })()}
         backHref="/invoices"
         backLabel="رجوع للفواتير"
         actions={
@@ -1134,7 +1134,7 @@ export default function SalesInvoice() {
       )}
 
       {/* البنية الأساسية: جدول البنود + لوحة الإجماليات والإجراءات */}
-      <div className="flex min-h-0 flex-1 flex-col gap-3 xl:flex-row">
+      <div className="flex min-h-0 flex-1 flex-col gap-2.5 xl:flex-row">
         <div className="flex min-w-0 flex-1 flex-col gap-2">
           <ProductTable
             items={state.items}
@@ -1172,7 +1172,7 @@ export default function SalesInvoice() {
           />
         </div>
 
-        <aside className="flex w-full shrink-0 flex-col gap-2 xl:w-80">
+        <aside className="flex w-full shrink-0 flex-col gap-1.5 xl:w-72">
           {/* أجرة التوصيل صارت مدعومة في sales.create (تُحفَظ في `invoices.deliveryFee` وتدخل
               قيد SALE إيراداً بلا تكلفة، ويعكسها المرتجع الكامل) ⇒ أُظهرت مع مفتاح «مجاني».
               «مصاريف أخرى» تبقى مخفيّة: الخادم لا يحفظها، وإظهارها يُضخّم الإجمالي المعروض

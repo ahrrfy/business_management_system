@@ -103,10 +103,31 @@ function SectionCard({
   count?: number;
   children: React.ReactNode;
 }) {
+  if (typeof count === "number" && count === 0) {
+    return (
+      <Card>
+        <details className="group">
+          <summary
+            className="flex cursor-pointer select-none items-center justify-between px-3.5 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground"
+            title={subtitle}
+          >
+            <span>{title}</span>
+            <span className="rounded-full bg-[var(--sem-pos-bg)] px-2 py-0.5 text-[11px] font-medium text-[var(--sem-pos)] tabular-nums">
+              سليم (0)
+            </span>
+          </summary>
+          <div className="border-t p-0 overflow-x-auto">
+            {subtitle && <p className="px-3.5 py-1.5 text-xs text-muted-foreground border-b bg-muted/20">{subtitle}</p>}
+            {children}
+          </div>
+        </details>
+      </Card>
+    );
+  }
   return (
     <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="flex items-center justify-between text-base">
+      <CardHeader className="py-2.5 px-3.5">
+        <CardTitle className="flex items-center justify-between text-sm">
           <span>{title}</span>
           {typeof count === "number" && count > 0 && (
             <span className="rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-semibold text-destructive tabular-nums">

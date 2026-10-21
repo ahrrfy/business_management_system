@@ -38,21 +38,21 @@ export function StatementReconcile({ entityName, entityType, phone, currentBalan
 
   return (
     <Card style={{ borderColor: "color-mix(in oklch, var(--brand-whatsapp) 40%, transparent)" }}>
-      <CardContent className="pt-6 space-y-4">
-        <div className="flex items-start justify-between flex-wrap gap-3">
+      <CardContent className="p-3 space-y-2.5">
+        <div className="flex items-start justify-between flex-wrap gap-2">
           <div>
-            <div className="font-semibold">طلب مطابقة الحساب</div>
+            <div className="font-semibold text-sm">طلب مطابقة الحساب</div>
             <div className="text-xs text-muted-foreground">
               أرسِل الرصيد الحالي لـ{isCustomer ? "العميل" : "المورد"} لتأكيد المطابقة، مع إرفاق كشف PDF تفصيلي.
             </div>
           </div>
-          <div className={`rounded-md px-3 py-1.5 text-sm tabular-nums ${num === 0 ? "bg-muted/40" : weHaveClaim ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"}`} dir="ltr">
+          <div className={`rounded-md px-2.5 py-1 text-xs tabular-nums ${num === 0 ? "bg-muted/40" : weHaveClaim ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"}`} dir="ltr">
             <span className="opacity-70 text-xs me-1">{dirLabel}:</span>
             <span className="font-bold">{fmt(Math.abs(num))}</span>
           </div>
         </div>
 
-        <ol className="space-y-2 text-sm">
+        <ol className="space-y-1.5 text-xs">
           <li className="flex items-center gap-2 flex-wrap">
             <span className="inline-flex size-5 items-center justify-center rounded-full bg-muted text-xs font-bold">١</span>
             <Button variant="outline" size="sm" onClick={onPdf}>كشف PDF للإرفاق</Button>
@@ -65,7 +65,7 @@ export function StatementReconcile({ entityName, entityType, phone, currentBalan
           </li>
         </ol>
 
-        <div className="flex items-center justify-between gap-2 border-t pt-3">
+        <div className="flex items-center justify-between gap-2 border-t pt-2">
           <p className="text-xs text-muted-foreground">واتساب لا يُرفِق الملف تلقائياً — أرفِقه يدوياً بعد فتح المحادثة.</p>
           <Button variant="ghost" size="sm" onClick={copy}>نسخ نص الرسالة</Button>
         </div>

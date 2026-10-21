@@ -138,24 +138,24 @@
   /* الأرضيّة العملية (١٩/٨): الشاشات تهرب من `--text-xs` **٦٣٣ مرّة** إلى أرقامٍ حرفية
      (416× 11px · 168× 10px · 20× 9px) — وCairo تحت 12px يفقد تمييز النقاط والهمزات على
      شاشة لمس. هذه الدرجة تُنهي الهروب بأرضيّةٍ مقروءة. */
-  --text-2xs: 0.75rem;
-  --text-2xs--line-height: 1.125rem;
-  --text-xs: 0.8125rem;
-  --text-xs--line-height: 1.25rem;
-  --text-sm: 0.9375rem;
-  --text-sm--line-height: 1.5rem;
-  --text-base: 1.0625rem;
-  --text-base--line-height: 1.75rem;
-  --text-lg: 1.1875rem;
-  --text-lg--line-height: 1.875rem;
-  --text-xl: 1.3125rem;
-  --text-xl--line-height: 2rem;
-  --text-2xl: 1.625rem;
-  --text-2xl--line-height: 2.25rem;
-  --text-3xl: 2rem;
-  --text-3xl--line-height: 2.5rem;
-  --text-4xl: 2.375rem;
-  --text-4xl--line-height: 2.75rem;
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.125rem;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg: 1rem;
+  --text-lg--line-height: 1.5rem;
+  --text-xl: 1.125rem;
+  --text-xl--line-height: 1.625rem;
+  --text-2xl: 1.375rem;
+  --text-2xl--line-height: 1.875rem;
+  --text-3xl: 1.75rem;
+  --text-3xl--line-height: 2.25rem;
+  --text-4xl: 2.125rem;
+  --text-4xl--line-height: 2.5rem;
   /* سلّم الأوزان (مُصلَح ١٩/٨) — كان **مكسوراً من جهتين**، وهو أحد جذرَي «التصميم غير المرتّب»:
      ① `medium` و`semibold` كانا **٧٠٠ حرفياً كلاهما** ⇒ `font-medium` و`font-semibold` لا
         يفترقان بصرياً، فتضيع رتبةُ هرمٍ كاملة ويستوي الثانويّ بالأساسيّ في كل شاشة.
@@ -272,8 +272,8 @@
     @apply bg-background text-foreground;
     font-family: "Cairo", system-ui, -apple-system, sans-serif;
     font-size: var(--text-base);
-    font-weight: 600;
-    line-height: 1.75;
+    font-weight: 500;
+    line-height: 1.5;
     direction: rtl;
     font-variant-numeric: tabular-nums;
   }

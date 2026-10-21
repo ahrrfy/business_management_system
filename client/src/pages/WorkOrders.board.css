@@ -25,14 +25,7 @@
 
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  /* الموجة ٥ (٣٠/٨/٢٦) + Codex #3 مراجعة الموجة ٥:
-     `height: 100%` يرث الطول المحسوب من `<main flex-1 overflow-auto p-3 md:p-6 pb-24 lg:pb-6>` —
-     يشغل بالضبط منطقة المحتوى (content-box) بلا حاجةٍ لحساب padding يدوياً.
-     الحسابات السابقة (`vh - 3rem` أو `dvh - 2.5rem`) كانت تفترض padding واحداً
-     بينما الفعليّ يختلف بين p-3/p-6 (1.5rem/3rem) وpb-24/pb-6 (6rem/1.5rem)
-     على mobile/desktop ⇒ تجاوزٌ للمحتوى وscrollbar خارجيّ لا مبرّرَ له. الآن
-     `100%` صحيحٌ بنيوياً على جميع نقاط الكسر بلا استثناء. */
+  gap: 8px;
   height: 100%;
   min-height: 520px;
 }
@@ -50,12 +43,12 @@
 }
 
 /* ─── الرأس ─── */
-.wob-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.wob-title { font-size: 23px; font-weight: 800; letter-spacing: -0.01em; }
-.wob-sub { font-size: 13.5px; color: var(--muted-fg); margin-top: 3px; }
-.wob-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wob-topbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.wob-title { font-size: 16px; font-weight: 800; letter-spacing: -0.01em; }
+.wob-sub { font-size: 11.5px; color: var(--muted-fg); margin-top: 1px; }
+.wob-head-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
-.wob-btn { display: inline-flex; align-items: center; gap: 7px; padding: 0 14px; height: 38px; border-radius: 9px; font-weight: 700; font-size: 13.5px; transition: transform 0.08s, box-shadow 0.15s, background 0.15s, filter 0.15s; white-space: nowrap; border: none; cursor: pointer; font-family: inherit; color: inherit; }
+.wob-btn { display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; height: 30px; border-radius: 7px; font-weight: 700; font-size: 11.5px; transition: transform 0.08s, box-shadow 0.15s, background 0.15s, filter 0.15s; white-space: nowrap; border: none; cursor: pointer; font-family: inherit; color: inherit; }
 .wob-btn:active { transform: translateY(1px); }
 .wob-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .wob-btn-primary { background: var(--primary); color: var(--primary-fg); box-shadow: 0 1px 2px oklch(0.3 0.1 264 / 0.25); }
@@ -66,49 +59,42 @@
 .wob-btn-danger:hover:not(:disabled) { background: oklch(0.577 0.245 27.325 / 0.16); }
 
 /* ─── مبدّل العرض (لوحة/قائمة) — زوجٌ مدمَج بحدٍّ واحد، لا تراكب حدود .wob-btn-ghost ─── */
-.wob-view-toggle { display: inline-flex; height: 38px; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
-.wob-view-toggle button { display: inline-flex; align-items: center; gap: 6px; padding: 0 13px; height: 100%; border: none; border-inline-start: 1px solid var(--border); background: var(--card); color: var(--fg); font-weight: 700; font-size: 13.5px; font-family: inherit; cursor: pointer; transition: background 0.15s, color 0.15s; }
+.wob-view-toggle { display: inline-flex; height: 30px; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.wob-view-toggle button { display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; height: 100%; border: none; border-inline-start: 1px solid var(--border); background: var(--card); color: var(--fg); font-weight: 700; font-size: 11.5px; font-family: inherit; cursor: pointer; transition: background 0.15s, color 0.15s; }
 .wob-view-toggle button:first-child { border-inline-start: none; }
 .wob-view-toggle button[aria-pressed="true"] { background: var(--primary); color: var(--primary-fg); }
 .wob-view-toggle button:not([aria-pressed="true"]):hover { background: var(--muted); }
 
 /* ─── الإحصاءات ─── */
-.wob-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
-.wob-stat { background: var(--card); border: 1px solid var(--border); border-radius: var(--wob-radius); padding: 9px 13px; box-shadow: var(--shadow-card); position: relative; overflow: hidden; }
-.wob-stat::before { content: ""; position: absolute; inset-block: 0; inset-inline-start: 0; width: 4px; background: var(--stat-c, var(--primary)); }
-.wob-stat-label { font-size: 12px; color: var(--muted-fg); font-weight: 600; display: flex; align-items: center; gap: 6px; }
-.wob-stat-val { font-size: 22px; font-weight: 800; margin-top: 2px; line-height: 1; font-variant-numeric: tabular-nums; }
-.wob-stat-sub { font-size: 11px; color: var(--muted-fg); margin-top: 3px; }
+.wob-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.wob-stat { background: var(--card); border: 1px solid var(--border); border-radius: var(--wob-radius); padding: 6px 10px; box-shadow: var(--shadow-card); position: relative; overflow: hidden; }
+.wob-stat::before { content: ""; position: absolute; inset-block: 0; inset-inline-start: 0; width: 3px; background: var(--stat-c, var(--primary)); }
+.wob-stat-label { font-size: 11px; color: var(--muted-fg); font-weight: 600; display: flex; align-items: center; gap: 5px; }
+.wob-stat-val { font-size: 17px; font-weight: 800; margin-top: 1px; line-height: 1; font-variant-numeric: tabular-nums; }
+.wob-stat-sub { font-size: 10px; color: var(--muted-fg); margin-top: 2px; }
 
 /* ─── شريط الأدوات ─── */
-.wob-toolbar { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-.wob-search { position: relative; flex: 1; min-width: 200px; max-width: 360px; }
-.wob-search input { width: 100%; height: 38px; border-radius: 9px; border: 1px solid var(--border); background: var(--card); padding: 0 38px 0 12px; font-size: 13.5px; color: var(--fg); transition: border 0.15s, box-shadow 0.15s; font-family: inherit; }
+.wob-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; box-shadow: var(--shadow-card); }
+.wob-search { position: relative; flex: 1; min-width: 180px; max-width: 300px; }
+.wob-search input { width: 100%; height: 30px; border-radius: 7px; border: 1px solid var(--border); background: var(--card); padding: 0 32px 0 10px; font-size: 12px; color: var(--fg); transition: border 0.15s, box-shadow 0.15s; font-family: inherit; }
 .wob-search input:focus { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px oklch(0.488 0.243 264 / 0.14); }
-.wob-search .wob-si { position: absolute; inset-inline-end: 12px; top: 50%; transform: translateY(-50%); color: var(--muted-fg); font-size: 15px; pointer-events: none; }
-.wob-sel { height: 38px; border-radius: 9px; border: 1px solid var(--border); background: var(--card); padding: 0 30px 0 12px; font-size: 13px; color: var(--fg); font-weight: 600; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: left 11px center; appearance: none; font-family: inherit; }
+.wob-search .wob-si { position: absolute; inset-inline-end: 10px; top: 50%; transform: translateY(-50%); color: var(--muted-fg); font-size: 13.5px; pointer-events: none; }
+.wob-sel { height: 30px; border-radius: 7px; border: 1px solid var(--border); background: var(--card); padding: 0 26px 0 10px; font-size: 11.5px; color: var(--fg); font-weight: 600; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: left 9px center; appearance: none; font-family: inherit; }
 .wob-sel:focus { outline: none; border-color: var(--ring); }
-.wob-date-range { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; color: var(--muted-fg); font-size: 12px; font-weight: 700; }
-.wob-date { width: 148px; padding-inline: 10px; background-image: none; appearance: auto; }
-.wob-chip-clear { font-size: 12.5px; color: var(--primary); font-weight: 700; padding: 6px 8px; background: none; border: none; cursor: pointer; font-family: inherit; }
+.wob-date-range { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; color: var(--muted-fg); font-size: 11px; font-weight: 700; }
+.wob-date { width: 132px; padding-inline: 8px; background-image: none; appearance: auto; }
+.wob-chip-clear { font-size: 11.5px; color: var(--primary); font-weight: 700; padding: 4px 6px; background: none; border: none; cursor: pointer; font-family: inherit; }
 
-/* رقاقة النطاق (١٩/٨): «كل طلبات الفرع» افتراضياً · «طلباتي» تضييق. مجموعةٌ واحدة بحدٍّ
-   واحد — لا زرّان منفصلان — كي يُقرأ الخياران على أنّهما وجهان لسؤالٍ واحد. */
-.wob-scope { display: inline-flex; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; background: var(--muted); }
-.wob-scope-btn { font-family: inherit; font-size: 12.5px; font-weight: 700; padding: 7px 12px; background: none; border: none; color: var(--muted-fg); cursor: pointer; white-space: nowrap; }
+/* رقاقة النطاق (١٩/٨): «كل طلبات الفرع» افتراضياً · «طلباتي» تضييق. */
+.wob-scope { display: inline-flex; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; background: var(--muted); }
+.wob-scope-btn { font-family: inherit; font-size: 11px; font-weight: 700; padding: 5px 9px; background: none; border: none; color: var(--muted-fg); cursor: pointer; white-space: nowrap; }
 .wob-scope-btn + .wob-scope-btn { border-inline-start: 1px solid var(--border); }
 .wob-scope-btn.is-on { background: var(--background); color: var(--foreground); }
 .wob-scope-btn:hover:not(.is-on) { color: var(--foreground); }
 
 /* ─── اللوحة ─── */
-/* ١٩/٨ (طلب المالك: «بلا تمرير جانبيّ») — كانت الأعمدة **ثابتةً** 320px×٥ + الفجوات =
-   ١٦٦٤px، أي أوسع من أيّ شاشةٍ عمليّة ⇒ شريطُ تمريرٍ أفقيّ **دائماً** وعمودٌ مخفيٌّ أبداً.
-   صارت تتقاسم العرض المتاح (`flex: 1 1 0`) بحدٍّ أدنى مقروء — فتظهر الخمسة معاً على أيّ
-   شاشةٍ من ١١٠٠px فصاعداً، ويبقى التمرير مخرجاً للشاشات الأضيق وحدها. */
-.wob-board-wrap { flex: 1; overflow-x: auto; overflow-y: hidden; min-height: 0; margin: 0 -4px; padding: 0 4px; }
-.wob-board { display: flex; gap: 12px; height: 100%; min-width: 0; }
-/* الموجة ٥: خلفيّة العمود صارت مُتدرّجةً من c-soft (٧-٨٪) إلى var(--muted) ⇒
-   يبرز لون العمود دون أن يستهلك تباين النصّ. حدّه أيضاً بلون العمود بشفّافيّة. */
+.wob-board-wrap { flex: 1; overflow-x: auto; overflow-y: hidden; min-height: 0; margin: 0 -2px; padding: 0 2px; }
+.wob-board { display: flex; gap: 8px; height: 100%; min-width: 0; }
 .wob-col {
   flex: 1 1 0;
   min-width: var(--wob-col-min);
@@ -119,66 +105,52 @@
     color-mix(in oklch, var(--c-soft, transparent) 55%, var(--muted)) 0%,
     var(--muted) 90%);
   border: 1px solid color-mix(in oklch, var(--c-solid, var(--border)) 22%, var(--border));
-  border-radius: var(--wob-radius);
+  border-radius: 10px;
   padding: 6px;
 }
-.wob-col-head { display: flex; align-items: center; gap: 9px; padding: 4px 4px 10px; }
-.wob-col-pip { flex: 0 0 auto; width: 11px; height: 11px; border-radius: 4px; background: var(--c-solid); box-shadow: 0 0 0 4px var(--c-soft); }
-.wob-col-head-txt { flex: 1; min-width: 0; }
-.wob-col-title { font-weight: 800; font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wob-col-hint { font-size: 11.5px; color: var(--muted-fg); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wob-col-count { flex: 0 0 auto; background: var(--c-soft); color: var(--c-text); font-weight: 800; font-size: 12.5px; min-width: 24px; height: 22px; padding: 0 7px; border-radius: 7px; display: grid; place-items: center; }
-/* الموجة ٥: body العمود يتقلّص بحرّية داخل wrapper (Codex #2 في مراجعة الموجة ٥):
-   `min-height: 200px` السابقة كانت تدفع العمود خارج `.wob-board-wrap` عند شاشاتٍ
-   قصيرة (موبايل landscape · شريط فلاتر مُلتفٌّ) حيث الـwrapper يُخفي overflow-y،
-   فيُقصّ أسفل العمود ولا يعود scrollbar قابلاً للوصول. الآن `flex:1` وحدها ⇒ يشغل
-   ما تبقّى من ارتفاع الـwrapper مهما ضاق، ويُظهر scrollbar داخلياً بلا تجاوز. */
-.wob-col-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 2px 10px; border-radius: var(--wob-radius); transition: background 0.15s, box-shadow 0.15s; border: 1.5px dashed transparent; scroll-behavior: smooth; scrollbar-width: thin; overscroll-behavior: contain; }
-/* scrollbar أظهرُ قليلاً (كان thin شبه شفّاف على WebKit) ⇒ الفنّيّ يعرف أن ثمّة تمريراً. */
-.wob-col-body::-webkit-scrollbar { width: 8px; }
+.wob-col-head { display: flex; align-items: center; gap: 6px; padding: 3px 4px 6px; border-bottom: 1px solid color-mix(in oklch, var(--border) 65%, transparent); margin-bottom: 4px; }
+.wob-col-pip { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 3px; background: var(--c-solid); box-shadow: 0 0 0 3px var(--c-soft); }
+.wob-col-head-txt { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.wob-col-title { font-weight: 800; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wob-col-hint { display: none; }
+.wob-col-count { flex: 0 0 auto; background: var(--c-soft); color: var(--c-text); font-weight: 800; font-size: 11px; min-width: 22px; height: 20px; padding: 0 6px; border-radius: 6px; display: grid; place-items: center; }
+.wob-col-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 2px 1px 6px; border-radius: var(--wob-radius); transition: background 0.15s, box-shadow 0.15s; border: 1.5px dashed transparent; scroll-behavior: smooth; scrollbar-width: thin; overscroll-behavior: contain; }
+.wob-col-body::-webkit-scrollbar { width: 6px; }
 .wob-col-body::-webkit-scrollbar-thumb { background: color-mix(in oklch, var(--c-solid, var(--border-strong)) 35%, transparent); border-radius: 4px; }
 .wob-col-body::-webkit-scrollbar-thumb:hover { background: color-mix(in oklch, var(--c-solid, var(--border-strong)) 60%, transparent); }
 .wob-col-body.wob-drop-on { background: var(--c-soft); border-color: var(--c-solid); }
-.wob-col-empty { text-align: center; color: var(--muted-fg); font-size: 12.5px; padding: 26px 12px; border: 1.5px dashed var(--border); border-radius: var(--wob-radius); }
+.wob-col-empty { text-align: center; color: var(--muted-fg); font-size: 11.5px; padding: 18px 10px; border: 1.5px dashed var(--border); border-radius: var(--wob-radius); }
 
-/* ─── البطاقة (الموجة ٥ — نمط Odoo/SAP بتلوين مشتقٍّ من العمود) ─── */
-/* المصدرُ الحاكم للألوان `--c-solid`/`--c-soft`/`--c-text` مُعرَّفٌ على `.wob-col` (colVars)
-   ⇒ يتوارث إلى `.wob-card` بلا prop إضافيّ ⇒ كل بطاقةٍ تلبس لون عمودها تلقائياً.
-   طبقات التلوين ثلاث: خلفيّةٌ لينةٌ للبطاقة (soft) + شريط علويّ بلون العمود + هامش
-   يُسار عريض. الأثر بصريٌّ ظاهرٌ بلا مبالغة (contrast ratio مقبول لجميع النصوص). */
+/* ─── البطاقة ─── */
 .wob-card {
-  /* خلفيّةٌ بتدرّجٍ لطيف: c-soft في الأعلى → var(--card) في الأسفل — يُشعر باللون
-     دون أن يطغى على النصّ (color-mix للتحكّم بالشفافيّة). */
   background:
     linear-gradient(180deg,
       color-mix(in oklch, var(--c-soft, transparent) 45%, var(--card)) 0%,
       var(--card) 60%);
   border: 1px solid var(--border);
-  border-radius: var(--wob-radius);
+  border-radius: 8px;
   box-shadow: var(--shadow-card);
-  padding: 12px 12px 10px;
+  padding: 8px 9px 7px;
   cursor: grab;
   position: relative;
   transition: box-shadow 0.18s, transform 0.12s, border-color 0.15s, opacity 0.15s;
-  border-inline-start: 4px solid var(--c-solid, var(--accent, var(--border)));
+  border-inline-start: 3px solid var(--c-solid, var(--accent, var(--border)));
   user-select: none;
-  overflow: hidden; /* لكي يقصّ الشريط العلويّ حسب زوايا radius */
+  overflow: hidden;
 }
-/* الشريط العلويّ — خطٌّ ملوّن بارتفاع 3px يمتدّ عرض البطاقة (فوق border-inline-start).
-   يُبرز هويّة العمود بلا استهلاك مساحة، وهو النمط الحاكم في Odoo Kanban. */
 .wob-card::before {
   content: "";
   position: absolute;
   top: 0;
   inset-inline: 0;
-  height: 3px;
+  height: 2px;
   background: var(--c-solid, transparent);
   opacity: 0.85;
 }
 .wob-card:hover {
-  box-shadow: 0 10px 25px color-mix(in oklch, var(--c-solid, oklch(0.2 0 0)) 22%, transparent),
-              0 3px 8px color-mix(in oklch, var(--c-solid, oklch(0.2 0 0)) 10%, transparent);
-  transform: translateY(-2px);
+  box-shadow: 0 8px 18px color-mix(in oklch, var(--c-solid, oklch(0.2 0 0)) 18%, transparent),
+              0 2px 6px color-mix(in oklch, var(--c-solid, oklch(0.2 0 0)) 8%, transparent);
+  transform: translateY(-1px);
   border-color: color-mix(in oklch, var(--c-solid, var(--border-strong)) 30%, var(--border));
 }
 .wob-card:active { cursor: grabbing; }
@@ -186,66 +158,65 @@
 .wob-card.wob-late::before { background: var(--s-late); opacity: 0.9; }
 .wob-card.wob-dragging { opacity: 0.35; }
 .wob-card.wob-ghost { width: calc(var(--wob-col-w) - 8px); pointer-events: none; box-shadow: var(--shadow-pop); transform: rotate(2.5deg) scale(1.02); cursor: grabbing; margin: 0; }
-.wob-card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
-.wob-num { font-family: ui-monospace, "SF Mono", monospace; font-size: 11px; color: var(--muted-fg); direction: ltr; letter-spacing: -0.02em; }
-.wob-pri { font-size: 10.5px; font-weight: 800; padding: 2px 8px; border-radius: 99px; margin-inline-start: auto; display: inline-flex; align-items: center; gap: 4px; }
+.wob-card-top { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
+.wob-num { font-family: ui-monospace, "SF Mono", monospace; font-size: 10.5px; color: var(--muted-fg); direction: ltr; letter-spacing: -0.02em; }
+.wob-pri { font-size: 10px; font-weight: 800; padding: 1px 6px; border-radius: 99px; margin-inline-start: auto; display: inline-flex; align-items: center; gap: 3px; }
 .wob-pri.wob-urgent { background: oklch(0.577 0.245 27 / 0.12); color: var(--s-late); }
 .dark .wob-pri.wob-urgent { color: oklch(0.76 0.2 27); }
 .wob-pri.wob-normal { background: oklch(0.6 0.16 255 / 0.12); color: oklch(0.5 0.18 255); }
 .dark .wob-pri.wob-normal { color: oklch(0.72 0.15 255); }
 .wob-pri.wob-low { background: oklch(0.6 0.13 155 / 0.12); color: oklch(0.48 0.13 155); }
 .dark .wob-pri.wob-low { color: oklch(0.72 0.12 155); }
-.wob-pri-dot { width: 5px; height: 5px; border-radius: 99px; background: currentColor; }
+.wob-pri-dot { width: 4px; height: 4px; border-radius: 99px; background: currentColor; }
 .wob-urgent .wob-pri-dot { animation: wob-pulse 1.4s infinite; }
 @keyframes wob-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(1.5); } }
 
-/* شارة قَناة المَصدر (واتساب/انستغرام/...) — مَوضوعة في رَأس البطاقة بَين رَقم WO وشارة الأَولوية.
-   تُبرز جانب المبيعات per README §5.2. على الشاشات الصَغيرة يَختفي النَص ويَبقى الأَيقون فَقط. */
-.wob-ch-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 99px; background: var(--muted); border: 1px solid var(--border); font-size: 11px; font-weight: 700; color: var(--muted-fg); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-.wob-ch-chip > :first-child { font-size: 12.5px; line-height: 1; }
-.wob-ch-chip-l { max-width: 80px; overflow: hidden; text-overflow: ellipsis; }
+.wob-ch-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border-radius: 99px; background: var(--muted); border: 1px solid var(--border); font-size: 10px; font-weight: 700; color: var(--muted-fg); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.wob-ch-chip > :first-child { font-size: 11px; line-height: 1; }
+.wob-ch-chip-l { max-width: 72px; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 1100px) { .wob-ch-chip-l { display: none; } }
 
-.wob-card-body { display: flex; gap: 9px; }
-.wob-thumb { flex: 0 0 44px; width: 44px; height: 44px; border-radius: 9px; overflow: hidden; position: relative; display: grid; place-items: center; }
+.wob-card-body { display: flex; gap: 7px; }
+.wob-thumb { flex: 0 0 32px; width: 32px; height: 32px; border-radius: 6px; overflow: hidden; position: relative; display: grid; place-items: center; }
 .wob-thumb img { width: 100%; height: 100%; object-fit: cover; }
-.wob-thumb-abbr { font-family: ui-monospace, monospace; font-size: 12px; font-weight: 800; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); letter-spacing: 0.04em; }
+.wob-thumb-abbr { font-family: ui-monospace, monospace; font-size: 10.5px; font-weight: 800; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); letter-spacing: 0.04em; }
 .wob-info { min-width: 0; flex: 1; }
-.wob-card-title { font-weight: 700; font-size: 14px; line-height: 1.35; margin-bottom: 4px; text-wrap: pretty; }
-.wob-cust { font-size: 12.5px; color: var(--muted-fg); display: flex; align-items: center; gap: 5px; }
-.wob-cust-phone { margin-top: 2px; font-size: 11px; color: var(--muted-fg); text-align: right; }
-.wob-cust .wob-ch { font-size: 13px; }
-.wob-card-specs { margin-top: 9px; padding: 7px 8px; border-radius: 8px; background: var(--muted); color: var(--muted-fg); font-size: 11.5px; line-height: 1.45; white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.wob-card-delivery { display: flex; align-items: center; gap: 5px; margin-top: 7px; color: var(--s-amber); font-size: 11.5px; font-weight: 700; }
+.wob-card-title { font-weight: 700; font-size: 12.5px; line-height: 1.3; margin-bottom: 2px; text-wrap: pretty; }
+.wob-cust { font-size: 11px; color: var(--muted-fg); display: flex; align-items: center; gap: 4px; }
+.wob-cust-phone { margin-top: 1px; font-size: 10.5px; color: var(--muted-fg); text-align: right; }
+.wob-cust .wob-ch { font-size: 11.5px; }
+.wob-card-specs { margin-top: 5px; padding: 4px 6px; border-radius: 6px; background: var(--muted); color: var(--muted-fg); font-size: 10.5px; line-height: 1.35; white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.wob-card-delivery { display: flex; align-items: center; gap: 4px; margin-top: 4px; color: var(--s-amber); font-size: 10.5px; font-weight: 700; }
 
-.wob-meta { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 12px; flex-wrap: wrap; }
-.wob-meta-pill { background: var(--muted); border-radius: 7px; padding: 3px 8px; font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; }
-.wob-meta-pill .wob-ml { color: var(--muted-fg); font-weight: 500; font-size: 11px; }
-/* شارة التوصيل — تُبرز أنّ الأمر للتوصيل (لا استلام مباشر) بلون كهرمانيّ مميّز. */
-.wob-deliv { display: inline-flex; align-items: center; gap: 4px; border-radius: 7px; padding: 3px 8px; font-weight: 700; font-size: 11.5px; background: oklch(0.72 0.16 72 / 0.14); color: oklch(0.5 0.13 72); border: 1px solid oklch(0.72 0.16 72 / 0.3); font-variant-numeric: tabular-nums; }
+.wob-meta { display: flex; align-items: center; gap: 4px; margin-top: 5px; font-size: 10.5px; flex-wrap: wrap; }
+.wob-meta-pill { background: var(--muted); border-radius: 5px; padding: 1.5px 6px; font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; }
+.wob-meta-pill .wob-ml { color: var(--muted-fg); font-weight: 500; font-size: 10px; }
+.wob-deliv { display: inline-flex; align-items: center; gap: 3px; border-radius: 5px; padding: 1.5px 6px; font-weight: 700; font-size: 10.5px; background: oklch(0.72 0.16 72 / 0.14); color: oklch(0.5 0.13 72); border: 1px solid oklch(0.72 0.16 72 / 0.3); font-variant-numeric: tabular-nums; }
 .dark .wob-deliv { color: oklch(0.82 0.15 75); }
 
-.wob-due { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 700; padding: 3px 8px; border-radius: 7px; }
+.wob-due { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 700; padding: 1.5px 6px; border-radius: 5px; }
 .wob-due.wob-ok { background: var(--muted); color: var(--muted-fg); }
 .wob-due.wob-soon { background: oklch(0.75 0.15 70 / 0.16); color: oklch(0.52 0.13 70); }
 .dark .wob-due.wob-soon { color: oklch(0.8 0.14 75); }
 .wob-due.wob-late { background: oklch(0.577 0.245 27 / 0.13); color: var(--s-late); }
 .dark .wob-due.wob-late { color: oklch(0.76 0.2 27); }
 
-.wob-prog { margin-top: 7px; }
-.wob-prog-bar { height: 6px; border-radius: 99px; background: var(--muted); overflow: hidden; }
+/* العمود يمثّل المرحلة بالفعل — نخفي شريط التقدم المكرّر افتراضياً ونظهره في الكثافة المفصّلة فقط */
+.wob-prog { display: none; margin-top: 5px; }
+.wob-board.wob-d-detailed .wob-prog { display: block; }
+.wob-prog-bar { height: 5px; border-radius: 99px; background: var(--muted); overflow: hidden; }
 .wob-prog-fill { height: 100%; border-radius: 99px; background: var(--accent, var(--primary)); transition: width 0.4s cubic-bezier(0.2, 0.8, 0.2, 1); }
-.wob-prog-row { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 11px; color: var(--muted-fg); }
+.wob-prog-row { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; font-size: 10.5px; color: var(--muted-fg); }
 
-.wob-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
-.wob-avatar { width: 26px; height: 26px; border-radius: 99px; display: grid; place-items: center; font-size: 11px; font-weight: 800; color: #fff; flex: 0 0 auto; }
+.wob-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--border); }
+.wob-avatar { width: 20px; height: 20px; border-radius: 99px; display: grid; place-items: center; font-size: 10px; font-weight: 800; color: #fff; flex: 0 0 auto; }
 .wob-avatar.wob-unassigned { background: var(--muted); color: var(--muted-fg); border: 1px dashed var(--border-strong); }
-.wob-who { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.wob-who-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wob-wa { display: inline-flex; align-items: center; justify-content: center; width: auto; min-width: 78px; height: 30px; padding-inline: 9px; gap: 5px; border-radius: 8px; background: var(--brand-whatsapp); color: #fff; font-size: 11.5px; font-weight: 800; text-decoration: none; flex-shrink: 0; box-shadow: 0 1px 4px color-mix(in oklch, var(--brand-whatsapp) 50%, transparent); }
-.wob-wa svg { width: 17px; height: 17px; color: #fff; }
+.wob-who { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.wob-who-name { font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wob-wa { display: inline-flex; align-items: center; justify-content: center; width: auto; min-width: 64px; height: 24px; padding-inline: 7px; gap: 4px; border-radius: 6px; background: var(--brand-whatsapp); color: #fff; font-size: 10.5px; font-weight: 800; text-decoration: none; flex-shrink: 0; box-shadow: 0 1px 3px color-mix(in oklch, var(--brand-whatsapp) 40%, transparent); }
+.wob-wa svg { width: 14px; height: 14px; color: #fff; }
 .wob-wa:hover { filter: brightness(1.06); }
-.wob-wa-lg { display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 18px; border-radius: 10px; font-weight: 700; font-size: 14px; background: var(--brand-whatsapp); color: #fff; text-decoration: none; box-shadow: 0 2px 8px color-mix(in oklch, var(--brand-whatsapp) 40%, transparent); }
+.wob-wa-lg { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 16px; border-radius: 9px; font-weight: 700; font-size: 13px; background: var(--brand-whatsapp); color: #fff; text-decoration: none; box-shadow: 0 2px 8px color-mix(in oklch, var(--brand-whatsapp) 40%, transparent); }
 .wob-wa-lg svg { color: #fff; }
 .wob-wa-lg:hover { filter: brightness(1.08); }
 
@@ -254,57 +225,52 @@
 @keyframes wob-fade { from { opacity: 0; } }
 .wob-drawer { position: fixed; inset-block: 0; inset-inline-start: 0; width: 460px; max-width: 94vw; z-index: 51; background: var(--bg); box-shadow: var(--shadow-pop); display: flex; flex-direction: column; animation: wob-slidein 0.28s cubic-bezier(0.2, 0.85, 0.25, 1); }
 @keyframes wob-slidein { from { transform: translateX(100%); } }
-.wob-dr-head { padding: 18px 20px 14px; border-bottom: 1px solid var(--border); position: relative; }
-.wob-dr-close { position: absolute; top: 16px; inset-inline-start: 16px; width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; background: var(--muted); font-size: 18px; border: none; cursor: pointer; color: inherit; }
+.wob-dr-head { padding: 14px 16px 12px; border-bottom: 1px solid var(--border); position: relative; }
+.wob-dr-close { position: absolute; top: 12px; inset-inline-start: 12px; width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center; background: var(--muted); font-size: 16px; border: none; cursor: pointer; color: inherit; }
 .wob-dr-close:hover { background: var(--border-strong); }
-.wob-dr-body { flex: 1; overflow-y: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 18px; }
-.wob-dr-sec-t { font-size: 12px; font-weight: 800; color: var(--muted-fg); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 10px; }
-.wob-kv { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.wob-kv .wob-k { font-size: 11.5px; color: var(--muted-fg); }
-.wob-kv .wob-v { font-size: 14px; font-weight: 700; margin-top: 2px; }
+.wob-dr-body { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
+.wob-dr-sec-t { font-size: 11px; font-weight: 800; color: var(--muted-fg); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }
+.wob-kv { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.wob-kv .wob-k { font-size: 11px; color: var(--muted-fg); }
+.wob-kv .wob-v { font-size: 13px; font-weight: 700; margin-top: 1px; }
 
-.wob-stage-row { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: 9px; background: var(--card); border: 1px solid var(--border); margin-bottom: 7px; }
-.wob-stage-box { width: 20px; height: 20px; border-radius: 6px; border: 2px solid var(--border-strong); display: grid; place-items: center; flex: 0 0 auto; font-size: 12px; color: #fff; }
+.wob-stage-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: var(--card); border: 1px solid var(--border); margin-bottom: 5px; }
+.wob-stage-box { width: 18px; height: 18px; border-radius: 5px; border: 2px solid var(--border-strong); display: grid; place-items: center; flex: 0 0 auto; font-size: 11px; color: #fff; }
 .wob-stage-box.wob-on { background: var(--primary); border-color: var(--primary); }
 .wob-stage-box.wob-cur { border-color: var(--primary); box-shadow: 0 0 0 3px oklch(0.488 0.243 264 / 0.14); }
-.wob-stage-label { font-size: 13.5px; font-weight: 600; }
+.wob-stage-label { font-size: 12.5px; font-weight: 600; }
 .wob-stage-row.wob-on .wob-stage-label { color: var(--muted-fg); }
 
-.wob-timeline { position: relative; padding-inline-start: 22px; }
-.wob-timeline::before { content: ""; position: absolute; inset-inline-start: 6px; top: 6px; bottom: 6px; width: 2px; background: var(--border); }
-.wob-tl-item { position: relative; padding-bottom: 16px; }
+.wob-timeline { position: relative; padding-inline-start: 20px; }
+.wob-timeline::before { content: ""; position: absolute; inset-inline-start: 5px; top: 5px; bottom: 5px; width: 2px; background: var(--border); }
+.wob-tl-item { position: relative; padding-bottom: 12px; }
 .wob-tl-item:last-child { padding-bottom: 0; }
-.wob-tl-dot { position: absolute; inset-inline-start: -22px; top: 2px; width: 14px; height: 14px; border-radius: 99px; background: var(--primary); border: 3px solid var(--bg); }
-.wob-tl-ev { font-size: 13.5px; font-weight: 700; }
-.wob-tl-meta { font-size: 11.5px; color: var(--muted-fg); margin-top: 2px; }
-.wob-dr-foot { padding: 14px 20px; border-top: 1px solid var(--border); display: flex; gap: 9px; background: var(--card); flex-wrap: wrap; }
-.wob-dr-foot .wob-btn { flex: 1; justify-content: center; height: 42px; }
+.wob-tl-dot { position: absolute; inset-inline-start: -20px; top: 2px; width: 12px; height: 12px; border-radius: 99px; background: var(--primary); border: 2.5px solid var(--bg); }
+.wob-tl-ev { font-size: 12.5px; font-weight: 700; }
+.wob-tl-meta { font-size: 11px; color: var(--muted-fg); margin-top: 1px; }
+.wob-dr-foot { padding: 10px 16px; border-top: 1px solid var(--border); display: flex; gap: 7px; background: var(--card); flex-wrap: wrap; }
+.wob-dr-foot .wob-btn { flex: 1; justify-content: center; height: 34px; }
 
-/* شَريط إسناد inline لِبطاقات «طابور وارد» — مَدير فَقط. يَفصِله border-top خَفيف عن باقي البطاقة،
-   والـpointer/click عليه لا يَنتشر للبطاقة (لا يَفتح Drawer ولا يَبدأ سَحب). */
-.wob-inbox-assign { display: flex; align-items: center; gap: 7px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
-.wob-inbox-sel { flex: 1; min-width: 0; height: 32px; padding: 0 26px 0 10px; font-size: 12.5px; }
-.wob-inbox-btn { height: 32px; padding: 0 12px; font-size: 12.5px; flex-shrink: 0; }
+/* شَريط إسناد inline لِبطاقات «طابور وارد» — مَدير فَقط. */
+.wob-inbox-assign { display: flex; align-items: center; gap: 5px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); }
+.wob-inbox-sel { flex: 1; min-width: 0; height: 26px; padding: 0 22px 0 8px; font-size: 11px; }
+.wob-inbox-btn { height: 26px; padding: 0 9px; font-size: 11px; flex-shrink: 0; }
 .wob-inbox-btn:disabled { background: var(--muted); color: var(--muted-fg); box-shadow: none; }
 
-.wob-empty-board { flex: 1; display: grid; place-items: center; color: var(--muted-fg); font-size: 14px; }
-.wob-note { margin-top: 14px; background: var(--muted); border-radius: 10px; padding: 10px 12px; font-size: 13px; line-height: 1.6; }
+.wob-empty-board { flex: 1; display: grid; place-items: center; color: var(--muted-fg); font-size: 13px; }
+.wob-note { margin-top: 10px; background: var(--muted); border-radius: 8px; padding: 8px 10px; font-size: 12px; line-height: 1.5; }
 
 /* ─── الموجة ١ (٣٠/٨/٢٦) — KPIs العمود ونقطةُ إشارة الفنّيّ ─── */
-
-/* KPIs الرأس — سطرٌ مضغوطٌ بحبَّاتٍ صغيرة تحت العنوان/التلميح. تُعرض حين لا فلترَ عميلي
-   يخالف الأرقام الخادميّة (مطابقٌ لسلوك عدّاد «مُسلَّم»). */
-.wob-col-kpis { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-.wob-col-kpi { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 700; padding: 2px 6px; border-radius: 6px; background: var(--card); border: 1px solid var(--border); color: var(--muted-fg); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wob-col-kpis { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 0; }
+.wob-col-kpi { display: inline-flex; align-items: center; gap: 2.5px; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 5px; background: var(--card); border: 1px solid var(--border); color: var(--muted-fg); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .wob-col-kpi-value { color: var(--fg); }
 .wob-col-kpi-late { background: var(--sem-neg-bg); color: var(--sem-neg); border-color: color-mix(in oklch, var(--sem-neg) 20%, transparent); }
 .wob-col-kpi-blocked { background: var(--sem-warn-bg); color: var(--sem-warn); border-color: color-mix(in oklch, var(--sem-warn) 20%, transparent); }
-.wob-curr { color: var(--muted-fg); font-weight: 500; font-size: 10.5px; margin-inline-start: 2px; }
+.wob-curr { color: var(--muted-fg); font-weight: 500; font-size: 10px; margin-inline-start: 2px; }
 .wob-col-kpi bdi { font-variant-numeric: tabular-nums; direction: ltr; unicode-bidi: isolate; }
 
-/* نقطةُ إشارة الفنّيّ (kanban_state) — زرٌّ صغيرٌ في رأس البطاقة بجانب رقم الأمر.
-   التوكنز `sem-*` تحرسها من `check:colors` وتتكيّف مع الوضع الداكن تلقائياً. */
-.wob-kanban-dot { flex: 0 0 auto; width: 12px; height: 12px; border-radius: 99px; border: none; padding: 0; cursor: pointer; background: var(--muted); box-shadow: inset 0 0 0 1px var(--border-strong); transition: transform 0.12s, box-shadow 0.12s; }
+/* نقطةُ إشارة الفنّيّ (kanban_state) */
+.wob-kanban-dot { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 99px; border: none; padding: 0; cursor: pointer; background: var(--muted); box-shadow: inset 0 0 0 1px var(--border-strong); transition: transform 0.12s, box-shadow 0.12s; }
 .wob-kanban-dot:hover:not(:disabled) { transform: scale(1.25); }
 .wob-kanban-dot:disabled { cursor: wait; opacity: 0.5; }
 .wob-kanban-dot-normal { background: var(--muted); box-shadow: inset 0 0 0 1px var(--border-strong); }

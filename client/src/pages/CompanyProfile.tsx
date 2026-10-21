@@ -192,7 +192,7 @@ export default function CompanyProfile() {
   }
 
   return (
-    <div dir="rtl" className="space-y-6 pb-12">
+    <div dir="rtl" className="space-y-4 pb-8">
       <PageHeader
         title="بيانات المنشأة والهوية المؤسسية"
         description="إدارة الاسم الرسمي، التراخيص القانونية، العناوين، هواتف الأقسام، وشعار المنشأة المعتمد لمستندات الطباعة الرسمية"
@@ -202,6 +202,7 @@ export default function CompanyProfile() {
               onClick={handleSubmit}
               disabled={updateMutation.isPending}
               className="gap-2"
+              title="حفظ التغييرات (Ctrl+S)"
             >
               <Save aria-hidden className="size-4" />
               {updateMutation.isPending ? ACTION_LABELS.saving : "حفظ التغييرات"}
@@ -211,8 +212,8 @@ export default function CompanyProfile() {
       />
 
       {!isAdmin && (
-        <div className="rounded-lg border border-border bg-muted/40 p-4 text-sm text-muted-foreground flex items-center gap-3">
-          <ShieldAlert aria-hidden className="size-5 text-[var(--sem-warn)] shrink-0" />
+        <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground flex items-center gap-2.5">
+          <ShieldAlert aria-hidden className="size-4 text-[var(--sem-warn)] shrink-0" />
           <span>
             أنت تستعرض بيانات المنشأة بصفة «مدير» (عرض فقط). تعديل الأرقام القانونية وهوية المنشأة يتطلب صلاحية مدير النظام الكاملة (Admin).
           </span>
@@ -225,23 +226,23 @@ export default function CompanyProfile() {
           e.preventDefault();
           handleSubmit();
         }}
-        className="space-y-6"
+        className="space-y-4"
       >
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           {/* العمود الأيمن والأوسط: استمارات البيانات */}
-          <div className="lg:col-span-2 space-y-6">
+          <div className="lg:col-span-2 space-y-4">
             {/* بطاقة الهوية الرسمية والتجارية */}
             <Card>
-              <CardHeader>
+              <CardHeader className="pb-2">
                 <div className="flex items-center gap-2 text-foreground font-semibold">
-                  <Building2 aria-hidden className="size-5 text-primary" />
-                  <CardTitle className="text-base">الهوية الرسمية والتجارية</CardTitle>
+                  <Building2 aria-hidden className="size-4 text-primary" />
+                  <CardTitle className="text-sm">الهوية الرسمية والتجارية</CardTitle>
                 </div>
-                <CardDescription>
+                <CardDescription className="text-xs">
                   الاسم المعتمد في السجلات الحكومية واسم الشهرة المتداول للمتجر والمطبوعات
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-3">
                 <div className="space-y-1.5">
                   <Label htmlFor="company-name" className="text-sm font-medium">
                     الاسم القانوني الرسمي <span className="text-destructive">*</span>
@@ -256,7 +257,7 @@ export default function CompanyProfile() {
                   />
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div className="space-y-1.5">
                     <Label htmlFor="company-trade-name" className="text-sm font-medium">
                       اسم الشهرة / العلامة التجارية
@@ -301,17 +302,17 @@ export default function CompanyProfile() {
 
             {/* بطاقة التراخيص والبيانات القانونية */}
             <Card>
-              <CardHeader>
+              <CardHeader className="pb-2">
                 <div className="flex items-center gap-2 text-foreground font-semibold">
-                  <FileText aria-hidden className="size-5 text-primary" />
-                  <CardTitle className="text-base">الأرقام القانونية والتراخيص</CardTitle>
+                  <FileText aria-hidden className="size-4 text-primary" />
+                  <CardTitle className="text-sm">الأرقام القانونية والتراخيص</CardTitle>
                 </div>
-                <CardDescription>
+                <CardDescription className="text-xs">
                   تظهر هذه الأرقام في ترويسات الفواتير الضريبية وسندات الصرف والقبض الرسمية
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <CardContent className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div className="space-y-1.5">
                     <Label htmlFor="company-cr" className="text-sm font-medium">
                       رقم السجل التجاري
@@ -359,16 +360,16 @@ export default function CompanyProfile() {
 
             {/* بطاقة المقر والفروع */}
             <Card>
-              <CardHeader>
+              <CardHeader className="pb-2">
                 <div className="flex items-center gap-2 text-foreground font-semibold">
-                  <MapPin aria-hidden className="size-5 text-primary" />
-                  <CardTitle className="text-base">المقر الرئيسي والفروع التشغيلية</CardTitle>
+                  <MapPin aria-hidden className="size-4 text-primary" />
+                  <CardTitle className="text-sm">المقر الرئيسي والفروع التشغيلية</CardTitle>
                 </div>
-                <CardDescription>
+                <CardDescription className="text-xs">
                   عنوان الإدارة المركزية المسجل مع ملخص الفروع المرتبطة بالنظام
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-3">
                 <div className="space-y-1.5">
                   <Label htmlFor="company-address" className="text-sm font-medium">
                     عنوان المقر الرئيسي
@@ -382,22 +383,22 @@ export default function CompanyProfile() {
                   />
                 </div>
 
-                <div className="space-y-2 pt-2">
+                <div className="space-y-1.5 pt-1">
                   <Label className="text-xs font-semibold text-muted-foreground flex items-center gap-1">
                     <GitBranch aria-hidden className="size-3.5" /> الفروع التشغيلية المعرفة في النظام:
                   </Label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {branchesQuery.data?.map((b) => (
                       <div
                         key={b.id}
-                        className="flex items-center justify-between p-3 rounded-md border border-border bg-card text-sm"
+                        className="flex items-center justify-between px-3 py-2 rounded-md border border-border bg-card text-xs"
                       >
                         <div className="space-y-0.5">
                           <span className="font-medium text-foreground">{b.name}</span>
-                          <p className="text-xs text-muted-foreground">رمز الفرع: {b.code}</p>
+                          <p className="text-[11px] text-muted-foreground">رمز الفرع: {b.code}</p>
                         </div>
                         <span
-                          className={`text-xs px-2 py-0.5 rounded-full ${
+                          className={`text-[11px] px-2 py-0.5 rounded-full ${
                             b.isActive
                               ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border border-[var(--sem-pos)]/30"
                               : "bg-muted text-muted-foreground"
@@ -417,13 +418,13 @@ export default function CompanyProfile() {
 
             {/* بطاقة أرقام هواتف الأقسام والتواصل */}
             <Card>
-              <CardHeader className="flex flex-row items-center justify-between">
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <div>
                   <div className="flex items-center gap-2 text-foreground font-semibold">
-                    <Phone aria-hidden className="size-5 text-primary" />
-                    <CardTitle className="text-base">أرقام أقسام التواصل</CardTitle>
+                    <Phone aria-hidden className="size-4 text-primary" />
+                    <CardTitle className="text-sm">أرقام أقسام التواصل</CardTitle>
                   </div>
-                  <CardDescription>
+                  <CardDescription className="text-xs">
                     أرقام الهواتف والواتساب المعتمدة لطباعتها على إيصالات وفواتير الزبائن
                   </CardDescription>
                 </div>
@@ -439,16 +440,16 @@ export default function CompanyProfile() {
                   </Button>
                 )}
               </CardHeader>
-              <CardContent className="space-y-3">
+              <CardContent className="space-y-2">
                 {phones.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-4">
+                  <p className="text-xs text-muted-foreground text-center py-3">
                     لا أرقام هواتف مضافة بعد.
                   </p>
                 ) : (
                   phones.map((p, idx) => (
                     <div
                       key={p.id}
-                      className="flex items-center gap-3 p-2.5 rounded-md border border-border bg-muted/20"
+                      className="flex items-center gap-2 p-2 rounded-md border border-border bg-muted/20"
                     >
                       <div className="w-1/3">
                         <Label htmlFor={`dept-lbl-${idx}`} className="sr-only">
@@ -460,7 +461,7 @@ export default function CompanyProfile() {
                           onChange={(e) => updatePhone(p.id, "label", e.target.value)}
                           disabled={!isAdmin}
                           placeholder="القسم (مثال: الحسابات)"
-                          className="h-9 text-xs"
+                          className="h-8 text-xs"
                         />
                       </div>
                       <div className="flex-1">
@@ -473,7 +474,7 @@ export default function CompanyProfile() {
                           onChange={(val) => updatePhone(p.id, "number", val)}
                           disabled={!isAdmin}
                           ariaLabel={`هاتف ${p.label || "القسم"}`}
-                          className="h-9 text-xs font-mono"
+                          className="h-8 text-xs font-mono"
                         />
                       </div>
                       {isAdmin && (
@@ -482,10 +483,10 @@ export default function CompanyProfile() {
                           variant="ghost"
                           size="icon"
                           onClick={() => removePhone(p.id)}
-                          className="size-9 text-destructive hover:bg-destructive/10 shrink-0"
+                          className="size-8 text-destructive hover:bg-destructive/10 shrink-0"
                           aria-label={`حذف هاتف ${p.label}`}
                         >
-                          <Trash2 aria-hidden className="size-4" />
+                          <Trash2 aria-hidden className="size-3.5" />
                         </Button>
                       )}
                     </div>
@@ -496,19 +497,19 @@ export default function CompanyProfile() {
           </div>
 
           {/* العمود الأيسر: الشعار والمعاينة الحية */}
-          <div className="space-y-6">
+          <div className="space-y-4">
             {/* بطاقة الشعار والفوتر */}
             <Card>
-              <CardHeader>
+              <CardHeader className="pb-2">
                 <div className="flex items-center gap-2 text-foreground font-semibold">
-                  <ImageIcon aria-hidden className="size-5 text-primary" />
-                  <CardTitle className="text-base">شعار المنشأة والتذييل</CardTitle>
+                  <ImageIcon aria-hidden className="size-4 text-primary" />
+                  <CardTitle className="text-sm">شعار المنشأة والتذييل</CardTitle>
                 </div>
-                <CardDescription>
+                <CardDescription className="text-xs">
                   رابط الشعار المعتمد ونصوص الشكر أسفل الفواتير
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-3">
                 <div className="space-y-1.5">
                   <Label htmlFor="company-logo-url" className="text-sm font-medium">
                     رابط الشعار (Logo URL)
@@ -543,20 +544,20 @@ export default function CompanyProfile() {
 
             {/* بطاقة المعاينة البصرية الحية لترويسة المستندات */}
             <Card>
-              <CardHeader>
+              <CardHeader className="pb-2">
                 <div className="flex items-center gap-2 text-foreground font-semibold">
-                  <ShieldCheck aria-hidden className="size-5 text-[var(--sem-pos)]" />
-                  <CardTitle className="text-base">معاينة ترويسة الطباعة الرسمية</CardTitle>
+                  <ShieldCheck aria-hidden className="size-4 text-[var(--sem-pos)]" />
+                  <CardTitle className="text-sm">معاينة ترويسة الطباعة الرسمية</CardTitle>
                 </div>
-                <CardDescription>
+                <CardDescription className="text-xs">
                   كيف ستظهر هوية المنشأة في أعلى الفواتير والتقارير الرسمية (A4)
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="rounded-lg border-2 border-border p-4 bg-white text-black space-y-3 font-sans shadow-sm select-none">
+                <div className="rounded-lg border-2 border-border p-3.5 bg-white text-black space-y-2.5 font-sans shadow-sm select-none">
                   {/* الرأس: شعار + معلومات منشأة */}
-                  <div className="flex items-start justify-between border-b-2 border-black pb-3">
-                    <div className="space-y-1 text-right">
+                  <div className="flex items-start justify-between border-b-2 border-black pb-2.5">
+                    <div className="space-y-0.5 text-right">
                       <p className="font-extrabold text-xs text-black leading-tight">
                         {name || "شركة الرؤية العربية للتجارة العامة"}
                       </p>
@@ -571,7 +572,7 @@ export default function CompanyProfile() {
                     </div>
 
                     <div className="flex flex-col items-center">
-                      <div className="size-16 rounded border border-gray-300 p-1 flex items-center justify-center bg-gray-50 overflow-hidden">
+                      <div className="size-14 rounded border border-gray-300 p-1 flex items-center justify-center bg-gray-50 overflow-hidden">
                         <img
                           src={logoUrl.trim() || "/logo.png"}
                           alt="معاينة شعار المنشأة"
@@ -586,7 +587,7 @@ export default function CompanyProfile() {
                   </div>
 
                   {/* المقر والهواتف المصغرة */}
-                  <div className="text-[9px] text-[#4E5148] flex items-center justify-between pt-1">
+                  <div className="text-[9px] text-[#4E5148] flex items-center justify-between pt-0.5">
                     <span>{address || "بغداد — العامرية / شارع العمل الشعبي"}</span>
                     <span dir="ltr" className="font-mono">
                       {phones[0]?.number || "07883000017"}
@@ -598,31 +599,12 @@ export default function CompanyProfile() {
                   </div>
                 </div>
 
-                <div className="mt-4 flex items-center gap-2 text-xs text-[var(--sem-pos)] font-medium">
+                <div className="mt-3 flex items-center gap-2 text-xs text-[var(--sem-pos)] font-medium">
                   <CheckCircle2 aria-hidden className="size-4 shrink-0" />
                   <span>تنعكس هذه الهوية فوراً على كافة قوالب فواتير A4 وإيصالات الكاشير الحرارية.</span>
                 </div>
               </CardContent>
             </Card>
-
-            {/* إجراءات الحفظ السفلية */}
-            {isAdmin && (
-              <Card>
-                <CardContent className="p-4 flex items-center justify-between">
-                  <span className="text-xs text-muted-foreground">
-                    اختصار لوحة المفاتيح: <kbd className="px-1.5 py-0.5 bg-muted rounded border text-[11px]">Ctrl+S</kbd>
-                  </span>
-                  <Button
-                    onClick={handleSubmit}
-                    disabled={updateMutation.isPending}
-                    className="gap-2"
-                  >
-                    <Save aria-hidden className="size-4" />
-                    {updateMutation.isPending ? ACTION_LABELS.saving : "حفظ التغييرات"}
-                  </Button>
-                </CardContent>
-              </Card>
-            )}
           </div>
         </div>
       </form>

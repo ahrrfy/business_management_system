@@ -154,40 +154,38 @@ export function PushNotificationPrompt({ className }: { className?: string }) {
       role="region"
       aria-label="تفعيل إشعارات الهاتف"
       className={cn(
-        "relative flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-primary/30 bg-card p-3.5 shadow-sm transition",
+        "relative flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/30 bg-card px-3 py-1.5 shadow-2xs transition",
         className,
       )}
     >
-      <div className="flex items-start sm:items-center gap-3 min-w-0">
-        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-          <Bell className="size-5 animate-pulse" aria-hidden />
+      <div className="flex items-center gap-2 min-w-0 flex-1">
+        <div className="flex size-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+          <Bell className="size-3.5 animate-pulse" aria-hidden />
         </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 font-semibold text-sm">
-            <span>تفعيل إشعارات الهاتف الفورية</span>
-            {isStandalonePwa() && (
-              <span className="inline-flex items-center gap-0.5 rounded-full bg-primary/10 px-1.5 py-0.2 text-[10px] text-primary">
-                <Smartphone className="size-2.5" aria-hidden />
-                تطبيق مثبت
-              </span>
-            )}
-          </div>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            تلقّ تنبيهات أوامر الشغل، والموافقات المستعجلة، ومستجدات الحضور والرواتب فوراً على شاشة هاتفك.
-          </p>
+        <div className="min-w-0 flex-1 flex items-center gap-2 text-xs">
+          <span className="font-bold text-foreground shrink-0">تفعيل إشعارات الهاتف الفورية</span>
+          {isStandalonePwa() && (
+            <span className="inline-flex items-center gap-0.5 rounded-full bg-primary/10 px-1.5 py-0.2 text-[10px] text-primary shrink-0">
+              <Smartphone className="size-2.5" aria-hidden />
+              تطبيق مثبت
+            </span>
+          )}
+          <span className="text-muted-foreground truncate hidden md:inline">
+            — تلقّ تنبيهات أوامر الشغل والموافقات المستعجلة فوراً.
+          </span>
         </div>
       </div>
 
-      <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+      <div className="flex items-center gap-1.5 shrink-0">
         <Button
           type="button"
           size="sm"
           onClick={handleEnablePush}
           disabled={busy}
-          className="gap-1.5 font-medium"
+          className="h-7 px-2.5 text-xs gap-1 font-semibold"
         >
-          <Check className="size-3.5" aria-hidden />
-          <span>{busy ? "جارٍ التفعيل…" : "تفعيل الإشعارات الآن"}</span>
+          <Check className="size-3" aria-hidden />
+          <span>{busy ? "جارٍ التفعيل…" : "تفعيل الآن"}</span>
         </Button>
         <Button
           type="button"
@@ -195,7 +193,7 @@ export function PushNotificationPrompt({ className }: { className?: string }) {
           size="sm"
           onClick={handleDismiss}
           disabled={busy}
-          className="text-xs text-muted-foreground hover:text-foreground"
+          className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
         >
           لاحقاً
         </Button>

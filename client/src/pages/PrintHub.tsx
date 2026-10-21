@@ -3,8 +3,8 @@
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { ClipboardPenLine, FileCheck2, PackageCheck } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { CircleHelp, ClipboardPenLine, FileCheck2, PackageCheck, Plus, Printer } from "lucide-react";
 import { Link } from "wouter";
 
 const WorkOrders = lazy(() => import("@/pages/WorkOrders"));
@@ -33,74 +33,76 @@ const TABS: HubTab[] = [
 
 export default function PrintHub() {
   return (
-    <div className="space-y-4">
-      <Card
-        aria-labelledby="print-journey-title"
-      >
-        <CardContent className="p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 id="print-journey-title" className="text-base font-bold">
-              مسار الطلب المخصّص
-            </h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              ثبّت الطلب أولاً، اعتمد نسخة التصميم الحالية، ثم نفّذ وسلّم أو
-              أسند للتوصيل.
-            </p>
-          </div>
-          <Button asChild size="sm">
+    <PageTabs
+      tabs={TABS}
+      ariaLabel="أقسام المطبعة والإنتاج"
+      header={
+        <div className="flex items-center gap-2 ps-1">
+          <Printer aria-hidden className="size-4 text-primary shrink-0" />
+          <span className="text-sm font-extrabold tracking-tight text-foreground">
+            المطبعة والإنتاج
+          </span>
+        </div>
+      }
+      actions={
+        <>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-1.5 text-xs font-bold">
+                <CircleHelp aria-hidden className="size-3.5 text-muted-foreground" />
+                مسار الطلب
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-80 p-3.5 text-start" dir="rtl">
+              <div className="space-y-2.5">
+                <div>
+                  <h2 id="print-journey-title" className="text-xs font-extrabold">
+                    مسار الطلب المخصّص
+                  </h2>
+                  <p className="mt-0.5 text-2xs text-muted-foreground">
+                    ثبّت الطلب أولاً، اعتمد نسخة التصميم الحالية، ثم نفّذ وسلّم أو أسند للتوصيل.
+                  </p>
+                </div>
+                <ol className="space-y-2 border-t pt-2 text-xs">
+                  <li className="flex gap-2.5">
+                    <ClipboardPenLine aria-hidden className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                    <div>
+                      <p className="font-bold">١. الطلب والعرض</p>
+                      <p className="text-2xs leading-relaxed text-muted-foreground">
+                        سجّل مواصفات العميل والسعر المتفق عليه في الاستقبال؛ عرض السعر الرسمي يُتابَع من قسم الفرص وعروض الأسعار.
+                      </p>
+                    </div>
+                  </li>
+                  <li className="flex gap-2.5">
+                    <FileCheck2 aria-hidden className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                    <div>
+                      <p className="font-bold">٢. اعتماد التصميم</p>
+                      <p className="text-2xs leading-relaxed text-muted-foreground">
+                        احفظ النسخة واطلب اعتمادها بالدليل من المهمة المرتبطة. لا تبدأ الإنتاج قبل اعتماد النسخة الحالية.
+                      </p>
+                    </div>
+                  </li>
+                  <li className="flex gap-2.5">
+                    <PackageCheck aria-hidden className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                    <div>
+                      <p className="font-bold">٣. التنفيذ والتسليم</p>
+                      <p className="text-2xs leading-relaxed text-muted-foreground">
+                        نفّذ من محطة التنفيذ ثم علّم الطلب جاهزاً؛ سلّمه مع الفوترة أو أسنده للتوصيل لمتابعة الوصول والتحصيل.
+                      </p>
+                    </div>
+                  </li>
+                </ol>
+              </div>
+            </PopoverContent>
+          </Popover>
+          <Button asChild size="sm" className="gap-1.5 text-xs font-bold">
             <Link href="/pos?mode=RECEPTION">
-              <ClipboardPenLine aria-hidden className="size-4" /> استقبال طلب /
-              عرض
+              <Plus aria-hidden className="size-3.5" />
+              استقبال طلب / عرض
             </Link>
           </Button>
-        </div>
-
-          <ol className="mt-4 grid gap-3 border-t pt-4 md:grid-cols-3">
-          <li className="flex gap-3">
-            <ClipboardPenLine
-              aria-hidden
-              className="mt-0.5 size-4 shrink-0 text-primary"
-            />
-            <div>
-              <p className="text-sm font-bold">١. الطلب والعرض</p>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                سجّل مواصفات العميل والسعر المتفق عليه في الاستقبال؛ عرض السعر
-                الرسمي يُتابَع من قسم الفرص وعروض الأسعار.
-              </p>
-            </div>
-          </li>
-          <li className="flex gap-3">
-            <FileCheck2
-              aria-hidden
-              className="mt-0.5 size-4 shrink-0 text-primary"
-            />
-            <div>
-              <p className="text-sm font-bold">٢. اعتماد التصميم</p>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                احفظ النسخة واطلب اعتمادها بالدليل من المهمة المرتبطة. لا تبدأ
-                الإنتاج قبل اعتماد النسخة الحالية.
-              </p>
-            </div>
-          </li>
-          <li className="flex gap-3">
-            <PackageCheck
-              aria-hidden
-              className="mt-0.5 size-4 shrink-0 text-primary"
-            />
-            <div>
-              <p className="text-sm font-bold">٣. التنفيذ والتسليم</p>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                نفّذ من محطة التنفيذ ثم علّم الطلب جاهزاً؛ سلّمه مع الفوترة أو
-                أسنده للتوصيل لمتابعة الوصول والتحصيل.
-              </p>
-            </div>
-          </li>
-          </ol>
-        </CardContent>
-      </Card>
-
-      <PageTabs tabs={TABS} ariaLabel="أقسام المطبعة والإنتاج" />
-    </div>
+        </>
+      }
+    />
   );
 }

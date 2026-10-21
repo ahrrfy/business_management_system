@@ -100,7 +100,7 @@ function TableCell({ className, ...props }: React.ComponentProps<"td">) {
     <td
       data-slot="table-cell"
       className={cn(
-        "h-[var(--ui-table-row)] border-b border-border/55 px-[var(--ui-table-cell-inline)] py-3 text-start align-middle whitespace-nowrap data-[align=center]:text-center data-[align=end]:text-end data-[kind=number]:tabular-nums data-[kind=money]:tabular-nums data-[wrap=true]:whitespace-normal data-[wrap=true]:[overflow-wrap:anywhere] [&:has([role=checkbox])]:pe-0 [&>[role=checkbox]]:translate-y-[2px]",
+        "h-[var(--ui-table-row)] border-b border-border/55 px-[var(--ui-table-cell-inline)] py-1.5 text-start align-middle whitespace-nowrap data-[align=center]:text-center data-[align=end]:text-end data-[kind=number]:tabular-nums data-[kind=money]:tabular-nums data-[wrap=true]:whitespace-normal data-[wrap=true]:[overflow-wrap:anywhere] [&:has([role=checkbox])]:pe-0 [&>[role=checkbox]]:translate-y-[2px]",
         className
       )}
       {...props}

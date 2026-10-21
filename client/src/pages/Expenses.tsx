@@ -106,7 +106,7 @@ export default function Expenses() {
   const [correctionTarget, setCorrectionTarget] = useState<ExpenseRow | null>(
     null,
   );
-  const [advancedOpen, setAdvancedOpen] = useState(true);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [auditOnly, setAuditOnly] = useState(false);
   const [auditFocus, setAuditFocus] = useState<AuditFocus | null>(null);
   const [expandedDescriptions, setExpandedDescriptions] = useState<Set<number>>(
@@ -822,34 +822,36 @@ export default function Expenses() {
 
   // أموال العرض عبر fmt من @/lib/money (فواصل آلاف + منزلتان) — بديل الدالة المحلية السابقة.
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <PageHeader
         title="المصروفات اليومية"
         description="النقدي الصغير الممول يُنفذ من درج المنشئ؛ سائر الطلبات تبقى بلا أثر حتى اعتماد مالك آخر، والنقدي المعتمد وحده يُصرف من الخزينة."
         actions={
-          <div className="flex gap-2">
+          <div className="flex gap-1.5">
             <Button
+              size="sm"
               variant="outline"
               disabled={printing || (list.data?.totals.count ?? 0) === 0}
               onClick={() => void printAll()}
             >
               {printing ? (
-                <Loader2 className="size-4 animate-spin" />
+                <Loader2 className="size-3.5 animate-spin" />
               ) : (
-                <Printer className="size-4" />
+                <Printer className="size-3.5" />
               )}
               {printing ? "جارٍ التحضير…" : "طباعة قائمة"}
             </Button>
             <Button
+              size="sm"
               variant="outline"
               disabled={exporting || (list.data?.totals.count ?? 0) === 0}
               onClick={() => void exportAll()}
             >
-              {exporting ? <Loader2 className="size-4 animate-spin" /> : null}
+              {exporting ? <Loader2 className="size-3.5 animate-spin" /> : null}
               {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
             </Button>
             <Link href="/expenses/new">
-              <Button disabled={!treasuryOperationAllowed(me.data, "expenses.create", true)}>+ مصروف جديد</Button>
+              <Button size="sm" disabled={!treasuryOperationAllowed(me.data, "expenses.create", true)}>+ مصروف جديد</Button>
             </Link>
           </div>
         }
@@ -860,72 +862,64 @@ export default function Expenses() {
         className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4"
       >
         <Card className="gap-0 overflow-hidden py-0">
-          <CardContent className="flex items-start justify-between gap-3 p-3">
+          <CardContent className="flex items-start justify-between gap-2 px-3 py-2">
             <div>
-              <p className="text-xs text-muted-foreground">إجمالي النافذ</p>
-              <p className="mt-0.5 text-xl font-bold tabular-nums" dir="ltr">
+              <p className="text-[11px] text-muted-foreground">إجمالي النافذ</p>
+              <p className="text-lg font-bold tabular-nums" dir="ltr">
                 {metric(totals.active ?? 0)}
               </p>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">
+              <p className="text-[11px] text-muted-foreground">
                 {Number(totals.count ?? 0).toLocaleString("ar-IQ-u-nu-latn")}{" "}
                 عملية ضمن الفلتر
               </p>
             </div>
-            <span className="rounded-lg bg-primary/10 p-1.5 text-primary">
-              <CircleDollarSign aria-hidden className="size-4" />
+            <span className="rounded-md bg-primary/10 p-1.5 text-primary">
+              <CircleDollarSign aria-hidden className="size-3.5" />
             </span>
           </CardContent>
         </Card>
         <Card className="gap-0 overflow-hidden py-0">
-          <CardContent className="flex items-start justify-between gap-3 p-3">
+          <CardContent className="flex items-start justify-between gap-2 px-3 py-2">
             <div>
-              <p className="text-xs text-muted-foreground">من الأدراج</p>
-              <p className="mt-0.5 text-xl font-bold tabular-nums" dir="ltr">
+              <p className="text-[11px] text-muted-foreground">من الأدراج</p>
+              <p className="text-lg font-bold tabular-nums" dir="ltr">
                 {metric(totals.drawer)}
               </p>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">
-                غير نقدي: <span dir="ltr">{metric(totals.nonCash)}</span>
-              </p>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">
-                مستحق غير مدفوع:{" "}
-                <span dir="ltr">{metric(totals.accruedUnpaid)}</span>
+              <p className="text-[11px] text-muted-foreground">
+                غير نقدي: <span dir="ltr">{metric(totals.nonCash)}</span> · مستحق غير مدفوع: <span dir="ltr">{metric(totals.accruedUnpaid)}</span>
               </p>
             </div>
-            <span className="rounded-lg bg-[var(--sem-pos-bg)] p-1.5 text-[var(--sem-pos)]">
-              <WalletCards aria-hidden className="size-4" />
+            <span className="rounded-md bg-[var(--sem-pos-bg)] p-1.5 text-[var(--sem-pos)]">
+              <WalletCards aria-hidden className="size-3.5" />
             </span>
           </CardContent>
         </Card>
         <Card className="gap-0 overflow-hidden py-0">
-          <CardContent className="flex items-start justify-between gap-3 p-3">
+          <CardContent className="flex items-start justify-between gap-2 px-3 py-2">
             <div>
-              <p className="text-xs text-muted-foreground">من الخزينة</p>
-              <p className="mt-0.5 text-xl font-bold tabular-nums" dir="ltr">
+              <p className="text-[11px] text-muted-foreground">من الخزينة</p>
+              <p className="text-lg font-bold tabular-nums" dir="ltr">
                 {metric(totals.treasury)}
               </p>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">
-                من المخزون: <span dir="ltr">{metric(totals.stock)}</span>
-              </p>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">
-                استحقاق مسوّى:{" "}
-                <span dir="ltr">{metric(totals.accruedPaid)}</span>
+              <p className="text-[11px] text-muted-foreground">
+                من المخزون: <span dir="ltr">{metric(totals.stock)}</span> · استحقاق مسوّى: <span dir="ltr">{metric(totals.accruedPaid)}</span>
               </p>
             </div>
-            <span className="rounded-lg bg-[var(--sem-info-bg)] p-1.5 text-[var(--sem-info)]">
-              <Landmark aria-hidden className="size-4" />
+            <span className="rounded-md bg-[var(--sem-info-bg)] p-1.5 text-[var(--sem-info)]">
+              <Landmark aria-hidden className="size-3.5" />
             </span>
           </CardContent>
         </Card>
         <Card className="gap-0 overflow-hidden py-0">
-          <CardContent className="flex items-start justify-between gap-3 p-3">
+          <CardContent className="flex items-start justify-between gap-2 px-3 py-2">
             <div>
-              <p className="text-xs text-muted-foreground">يحتاج تدقيقاً</p>
-              <p className="mt-0.5 text-xl font-bold tabular-nums" dir="ltr">
+              <p className="text-[11px] text-muted-foreground">يحتاج تدقيقاً</p>
+              <p className="text-lg font-bold tabular-nums" dir="ltr">
                 {Number(totals.needsAudit ?? pageNeedsAudit).toLocaleString(
                   "ar-IQ-u-nu-latn",
                 )}
               </p>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">
+              <p className="text-[11px] text-muted-foreground">
                 بانتظار الاعتماد:{" "}
                 <span dir="ltr">{metric(totals.pendingApproval)}</span>
                 {" · "}مرفوض: <span dir="ltr">{metric(totals.rejected)}</span>
@@ -933,24 +927,24 @@ export default function Expenses() {
                 {totals.needsAudit == null ? " · المحسوب من الصفحة" : ""}
               </p>
             </div>
-            <span className="rounded-lg bg-[var(--sem-warn-bg)] p-1.5 text-[var(--sem-warn)]">
-              <ShieldAlert aria-hidden className="size-4" />
+            <span className="rounded-md bg-[var(--sem-warn-bg)] p-1.5 text-[var(--sem-warn)]">
+              <ShieldAlert aria-hidden className="size-3.5" />
             </span>
           </CardContent>
         </Card>
       </section>
 
       <Card className="gap-0 py-0">
-        <CardContent className="space-y-2 p-3">
+        <CardContent className="space-y-2 p-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <SlidersHorizontal
                 aria-hidden
-                className="size-4 text-muted-foreground"
+                className="size-3.5 text-muted-foreground"
               />
-              <h2 className="text-sm font-semibold">بحث وفلاتر المصروفات</h2>
+              <h2 className="text-xs font-semibold">بحث وفلاتر المصروفات</h2>
               {activeChips.length > 0 && (
-                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
                   {activeChips.length}
                 </span>
               )}
@@ -960,24 +954,25 @@ export default function Expenses() {
                 type="button"
                 variant="ghost"
                 size="sm"
+                className="h-7 text-xs"
                 onClick={() => setAdvancedOpen((open) => !open)}
               >
                 فلاتر متقدمة
                 {advancedOpen ? (
-                  <ChevronUp aria-hidden className="size-4" />
+                  <ChevronUp aria-hidden className="size-3.5" />
                 ) : (
-                  <ChevronDown aria-hidden className="size-4" />
+                  <ChevronDown aria-hidden className="size-3.5" />
                 )}
               </Button>
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="text-muted-foreground"
+                className="h-7 text-xs text-muted-foreground"
                 disabled={activeChips.length === 0}
                 onClick={resetFilters}
               >
-                <X aria-hidden className="size-3.5" /> إعادة ضبط
+                <X aria-hidden className="size-3" /> إعادة ضبط
               </Button>
             </div>
           </div>

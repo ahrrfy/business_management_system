@@ -798,13 +798,13 @@ export function ReturnComposer({
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       {approvingRequestId &&
       requestDetail.data && (
         <Card className="border-[var(--sem-info)]/45 bg-[var(--sem-info-bg)]/35">
-          <CardContent className="flex items-start gap-2 p-4 text-sm">
+          <CardContent className="flex items-start gap-2 p-3 text-xs">
             <Info aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-info)]" />
-            <div className="space-y-1">
+            <div className="space-y-0.5">
               <p className="font-bold text-[var(--sem-info)]">
                 مراجعة طلب الإرجاع #{requestDetail.data.id} — البنود والكميات والسبب مقفلة من الطلب الأصلي.
               </p>
@@ -820,7 +820,7 @@ export function ReturnComposer({
       {/* الطلب المعلق إن وجد */}
       {pending && !approvingRequestId && (
         <Card className="border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)]/30">
-          <CardContent className="flex items-start gap-2 p-4 text-sm">
+          <CardContent className="flex items-start gap-2 p-3 text-xs">
             <Clock aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-warn)]" />
             <div className="space-y-1">
               <p className="font-bold text-[var(--sem-warn)]">
@@ -834,7 +834,7 @@ export function ReturnComposer({
               <p className="text-muted-foreground">{pending.isMine
                 ? "اسحب طلبك السابق صراحةً لإعادة إعداد المرتجع. السحب لا ينفّذ المرتجع ولا يصرف مالاً."
                 : "يبقى الطلب محفوظاً لصاحبه ومراجعه؛ لا يُستبدل تلقائياً بمرتجع آخر."}</p>
-              <div className="flex flex-wrap gap-2 pt-1">
+              <div className="flex flex-wrap gap-1.5 pt-0.5">
                 {canWithdrawPending && <Button type="button" size="sm" variant="outline" onClick={() => void withdrawPending()} disabled={withdrawing || create.isPending || approve.isPending}>
                   {withdrawing ? ACTION_LABELS.sending : "سحب طلبي وإعادة إعداد المرتجع"}
                 </Button>}
@@ -848,9 +848,9 @@ export function ReturnComposer({
 
       {isLocked && (
         <Card className="border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)]/30">
-          <CardContent className="flex items-start gap-2.5 p-4 text-sm">
-            <AlertTriangle aria-hidden className="mt-0.5 size-5 shrink-0 text-[var(--sem-warn)]" />
-            <div className="space-y-1">
+          <CardContent className="flex items-start gap-2 p-3 text-xs">
+            <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-warn)]" />
+            <div className="space-y-0.5">
               <p className="font-bold text-[var(--sem-warn)]">
                 {inv.status === "RETURNED"
                   ? "هذه الفاتورة تم استرجاعها بالكامل مسبقاً — لا يمكن تسجيل أي مرتجع جديد عليها."
@@ -867,17 +867,17 @@ export function ReturnComposer({
 
       {/* ① ملخص الفاتورة والمبالغ — شريط مكثف ومباشر */}
       <Card>
-        <CardContent className="grid grid-cols-2 gap-3 p-4 text-xs sm:text-sm md:grid-cols-3 xl:grid-cols-6">
-          <div><div className="text-xs text-muted-foreground">رقم الفاتورة</div><div className="font-mono font-bold" dir="ltr">{inv.invoiceNumber}</div></div>
-          <div><div className="text-xs text-muted-foreground">العميل</div><div className="font-semibold">{inv.customerName ?? "عميل نقدي"}</div></div>
-          <div><div className="text-xs text-muted-foreground">الإجمالي</div><div className="tabular-nums font-bold" dir="ltr">{fmt(inv.total)}</div></div>
-          <div><div className="text-xs text-muted-foreground">المقبوض</div><div className="tabular-nums" dir="ltr">{fmt(inv.paidAmount)}</div></div>
+        <CardContent className="grid grid-cols-2 gap-2.5 p-2.5 text-xs md:grid-cols-3 xl:grid-cols-6">
+          <div><div className="text-[11px] text-muted-foreground">رقم الفاتورة</div><div className="font-mono font-bold" dir="ltr">{inv.invoiceNumber}</div></div>
+          <div><div className="text-[11px] text-muted-foreground">العميل</div><div className="font-semibold">{inv.customerName ?? "عميل نقدي"}</div></div>
+          <div><div className="text-[11px] text-muted-foreground">الإجمالي</div><div className="tabular-nums font-bold" dir="ltr">{fmt(inv.total)}</div></div>
+          <div><div className="text-[11px] text-muted-foreground">المقبوض</div><div className="tabular-nums" dir="ltr">{fmt(inv.paidAmount)}</div></div>
           <div>
-            <div className="text-xs text-muted-foreground">المتاح للاسترداد</div>
+            <div className="text-[11px] text-muted-foreground">المتاح للاسترداد</div>
             <div className="font-bold tabular-nums text-money-positive" dir="ltr">{fmt(inv.refundPool)}</div>
           </div>
           <div>
-            <div className="text-xs text-muted-foreground">المتبقّي على العميل بعد المرتجع</div>
+            <div className="text-[11px] text-muted-foreground">المتبقّي على العميل بعد المرتجع</div>
             <div
               className={`font-bold tabular-nums ${customerStillOwes.gt(0) ? "text-money-negative" : "text-muted-foreground"}`}
               dir="ltr"
@@ -890,7 +890,7 @@ export function ReturnComposer({
 
       {/* شريط وضع المرتجع: كامل مقابل جزئي */}
       {!approvingRequestId && !isLocked && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-xl border bg-muted/30 p-1.5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 rounded-lg border bg-muted/30 p-1">
           <button
             type="button"
             disabled={qtyLocked || items.every((it) => it.remaining <= 0)}
@@ -899,7 +899,7 @@ export function ReturnComposer({
               setReason((prev) => prev.trim() || "إرجاع كامل الفاتورة");
             }}
             className={cn(
-              "flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs sm:text-sm font-bold transition-all cursor-pointer",
+              "flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-bold transition-all cursor-pointer",
               items.some((it) => it.remaining > 0) &&
                 items
                   .filter((it) => it.remaining > 0)
@@ -908,7 +908,7 @@ export function ReturnComposer({
                 : "bg-background hover:bg-muted text-foreground border",
             )}
           >
-            <Zap className="size-4" aria-hidden />
+            <Zap className="size-3.5" aria-hidden />
             <span>مرتجع كامل للفاتورة (تحديد كافة البنود)</span>
           </button>
           <button
@@ -925,7 +925,7 @@ export function ReturnComposer({
               }
             }}
             className={cn(
-              "flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs sm:text-sm font-bold transition-all cursor-pointer",
+              "flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-bold transition-all cursor-pointer",
               !(
                 items.some((it) => it.remaining > 0) &&
                 items
@@ -936,7 +936,7 @@ export function ReturnComposer({
                 : "bg-background hover:bg-muted text-foreground border",
             )}
           >
-            <RotateCcw className="size-4" aria-hidden />
+            <RotateCcw className="size-3.5" aria-hidden />
             <span>مرتجع جزئي (تحديد الأصناف والكميات)</span>
           </button>
         </div>

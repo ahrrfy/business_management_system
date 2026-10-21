@@ -34,8 +34,10 @@ type PageHeaderProps = {
   backLabel?: React.ReactNode;
   /** وجهةُ «الرئيسية» — الافتراضي `/`. مرّر `null` لإخفائها (شاشةٌ هي الرئيسية نفسها). */
   homeHref?: string | null;
-  /** رأس مدمج لشاشات البيانات والتقارير؛ يبقي العنوان والإجراءات في شريط 44px واحد. */
+  /** رأس مدمج لشاشات البيانات والتقارير؛ يبقي العنوان والإجراءات في شريط 40px واحد. */
   variant?: "default" | "workspace";
+  /** عند تضمين الصفحة داخل مركز موحّد (Hub) يملك ترويسة وتبويبات: يكتم العنوان المكرر ويبقي الإجراءات فقط إن وُجدت. */
+  embedded?: boolean;
   className?: string;
 };
 
@@ -43,16 +45,18 @@ type PageHeaderProps = {
  * رأس صفحة قانوني موحّد — مسار تنقّل اختياري + العنوان (h1) + وصف + منطقة إجراءات.
  *
  * يوحّد ما كان متفاوتاً عبر الشاشات: عناوين h1 بأنماط مختلفة، أو صفحات بلا h1،
- * أو padding/تباعد متباين. ضعه أعلى كل صفحة قائمة/لوحة داخل حاوية `space-y-4`.
- *
- * @example
- * <PageHeader title="العملاء" description="إدارة العملاء وأرصدتهم"
- *   actions={<Button size="sm">+ عميل جديد</Button>} />
- *
- * @example شاشة تفصيلية بمسار تنقّل:
- * <PageHeader title="كشف حساب — أحمد" breadcrumbs={[{label:"العملاء", href:"/customers"}, {label:"كشف حساب"}]} />
+ * أو padding/تباعد متباين. ضعه أعلى كل صفحة قائمة/لوحة داخل حاوية `space-y-3`.
  */
-export function PageHeader({ title, description, actions, actionsClassName, icon, breadcrumbs, backHref, backLabel, homeHref, variant = "default", className }: PageHeaderProps) {
+export function PageHeader({ title, description, actions, actionsClassName, icon, breadcrumbs, backHref, backLabel, homeHref, variant = "default", embedded = false, className }: PageHeaderProps) {
+  if (embedded) {
+    if (!actions) return null;
+    return (
+      <div data-page-header-actions className={cn("flex min-w-0 flex-wrap items-center justify-end gap-1.5", actionsClassName, className)}>
+        {actions}
+      </div>
+    );
+  }
+
   if (variant === "workspace") {
     return (
       <WorkspaceBar variant="command" label="أوامر الصفحة" className={cn("justify-between overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden", className)}>
@@ -61,25 +65,25 @@ export function PageHeader({ title, description, actions, actionsClassName, icon
             {backHref && (
               <Link
                 href={backHref}
-                className="grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 title={String(backLabel ?? "رجوع")}
                 aria-label={String(backLabel ?? "رجوع")}
               >
-                <ArrowRight aria-hidden className="size-4" />
+                <ArrowRight aria-hidden className="size-3.5" />
               </Link>
             )}
             {homeHref !== null && (
               <Link
                 href={homeHref ?? "/"}
-                className="grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 title="الصفحة الرئيسية"
                 aria-label="الصفحة الرئيسية"
               >
-                <Home aria-hidden className="size-4" />
+                <Home aria-hidden className="size-3.5" />
               </Link>
             )}
           </div>
-          <h1 className="flex min-w-0 shrink-0 items-center gap-2 text-lg font-bold leading-none">
+          <h1 className="flex min-w-0 shrink-0 items-center gap-1.5 text-base font-extrabold leading-none">
             {icon}
             <span className="truncate">{title}</span>
           </h1>
@@ -98,76 +102,80 @@ export function PageHeader({ title, description, actions, actionsClassName, icon
     );
   }
 
-  const headerRow = (
-    <div className={cn("flex items-start justify-between gap-3 flex-wrap", className)}>
-      <div className="min-w-0 space-y-1">
-        {/* ١٩/٨ (طلب المالك): **رجوعٌ ورئيسيّة في كل شاشة**. الرئيسيّة تظهر دائماً — محطّة
-            الاستقبال تُركَّب بلا شريطٍ جانبيّ، وموظّفُها كان بلا مخرجٍ إلّا كتابة العنوان
-            يدوياً. والرجوعُ يظهر حين يكون للشاشة أصلٌ معروف. */}
-        <div className="flex items-center gap-2">
+  return (
+    <div className={cn("flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-2", className)}>
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1">
           {backHref && (
-            <Link href={backHref} className="inline-flex items-center gap-0.5 text-2xs text-muted-foreground transition-colors hover:text-foreground hover:underline">
-              {/* ١٩/٨: كان محرفًا خامّاً `←` — وهو يشير **إلى الأمام** في RTL لا إلى الخلف. */}
-              <ArrowRight aria-hidden className="size-3.5" />
-              {backLabel ?? "رجوع"}
+            <Link
+              href={backHref}
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-border/60 bg-card px-2 text-2xs font-semibold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              title={typeof backLabel === "string" ? backLabel : "رجوع"}
+            >
+              <ArrowRight aria-hidden className="size-3" />
+              <span>{backLabel ?? "رجوع"}</span>
             </Link>
           )}
           {homeHref !== null && (
-            <Link href={homeHref ?? "/"} className="inline-flex items-center gap-1 text-2xs text-muted-foreground transition-colors hover:text-foreground hover:underline" title="الصفحة الرئيسية">
+            <Link
+              href={homeHref ?? "/"}
+              className="inline-flex size-7 items-center justify-center rounded-md border border-border/60 bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              title="الصفحة الرئيسية"
+              aria-label="الصفحة الرئيسية"
+            >
               <Home aria-hidden className="size-3.5" />
-              الرئيسية
             </Link>
           )}
         </div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold leading-tight">
+
+        {breadcrumbs && breadcrumbs.length > 0 && (
+          <Breadcrumb className="hidden sm:block">
+            <BreadcrumbList className="text-2xs">
+              {breadcrumbs.map((c, i) => {
+                const isLast = i === breadcrumbs.length - 1;
+                return (
+                  <React.Fragment key={i}>
+                    <BreadcrumbItem>
+                      {isLast || !c.href ? (
+                        <BreadcrumbPage className="text-2xs font-semibold">{c.label}</BreadcrumbPage>
+                      ) : (
+                        <BreadcrumbLink asChild>
+                          <Link href={c.href}>{c.label}</Link>
+                        </BreadcrumbLink>
+                      )}
+                    </BreadcrumbItem>
+                    {!isLast && (
+                      <BreadcrumbSeparator>
+                        <ChevronRight className="size-3" />
+                      </BreadcrumbSeparator>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </BreadcrumbList>
+          </Breadcrumb>
+        )}
+
+        <h1 className="flex min-w-0 items-center gap-1.5 text-lg font-extrabold leading-tight">
           {icon}
           <span className="truncate">{title}</span>
         </h1>
-        {description && <p className="max-w-2xl text-sm text-muted-foreground">{description}</p>}
+
+        {description && (
+          <p
+            className="hidden min-w-0 max-w-xl truncate border-s border-border/70 ps-2 text-xs text-muted-foreground xl:block"
+            title={typeof description === "string" ? description : undefined}
+          >
+            {description}
+          </p>
+        )}
       </div>
+
       {actions && (
-        // data-page-header-actions يُخفى أثناء الطباعة عبر `@media print` في index.css.
-        // أزرار «تصدير/طباعة/إضافة» لا معنى لظهورها على الورق ⇒ إخفاؤها مركزياً بدل تعليقٍ
-        // بصريٍّ يدويٍّ في كل شاشة.
-        <div data-page-header-actions className={cn("flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto sm:shrink-0", actionsClassName)}>
+        <div data-page-header-actions className={cn("flex w-full min-w-0 flex-wrap items-center gap-1.5 sm:w-auto sm:shrink-0", actionsClassName)}>
           {actions}
         </div>
       )}
-    </div>
-  );
-
-  if (!breadcrumbs || breadcrumbs.length === 0) return headerRow;
-
-  return (
-    <div className="space-y-1.5">
-      <Breadcrumb>
-        <BreadcrumbList>
-          {breadcrumbs.map((c, i) => {
-            const isLast = i === breadcrumbs.length - 1;
-            return (
-              <React.Fragment key={i}>
-                <BreadcrumbItem>
-                  {isLast || !c.href ? (
-                    <BreadcrumbPage>{c.label}</BreadcrumbPage>
-                  ) : (
-                    <BreadcrumbLink asChild>
-                      <Link href={c.href}>{c.label}</Link>
-                    </BreadcrumbLink>
-                  )}
-                </BreadcrumbItem>
-                {!isLast && (
-                  <BreadcrumbSeparator>
-                    {/* ١٩/٨: `ChevronLeft` مع `rtl:rotate-180` في `breadcrumb.tsx:75` = قلبان
-                        يتعاندان ⤇ الفاصل يشير عكس تدفّق القراءة العربيّ. */}
-                    <ChevronRight className="size-3.5" />
-                  </BreadcrumbSeparator>
-                )}
-              </React.Fragment>
-            );
-          })}
-        </BreadcrumbList>
-      </Breadcrumb>
-      {headerRow}
     </div>
   );
 }

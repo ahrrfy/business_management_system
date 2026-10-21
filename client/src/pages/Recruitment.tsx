@@ -191,61 +191,33 @@ export default function Recruitment() {
           <VacanciesTab publicUrl={publicUrl} />
         </TabsContent>
 
-        <TabsContent value="applicants" className="mt-4 space-y-4">
-          <div className="flex justify-end">
-            <Button onClick={() => setPaperOpen(true)}>
-              <Plus className="size-4" /> متقدّم (استمارة ورقية)
-            </Button>
-          </div>
-
-          {/* المساران: الرابط الخارجي + الاستمارة الورقية */}
-          <div className="grid md:grid-cols-2 gap-4">
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center gap-2">
-                  <span className="text-primary">
-                    <LinkIcon className="size-5" />
-                  </span>
-                  <h3 className="font-semibold">التقديم عبر الرابط الخارجي</h3>
-                </div>
-                <p className="text-xs text-muted-foreground mt-1.5 leading-6">شارك الرابط العام مع المتقدّمين. يملأ المتقدّم استمارة كاملة، فيصل طلبه مباشرة إلى مسار التوظيف (مرحلة «جديد») للمراجعة والمقابلة أو الأرشفة.</p>
-                <div className="flex items-center gap-2 mt-3">
-                  <input readOnly value={publicUrl} dir="ltr" className="flex-1 h-8 rounded-md border border-input bg-muted px-2.5 text-xs tabular-nums font-mono" aria-label="رابط التقديم العام" />
-                  <Button size="sm" variant="outline" onClick={copyLink}>
-                    <Copy className="size-3.5" /> نسخ
-                  </Button>
-                  <Button size="sm" variant="outline" asChild>
-                    <a href={publicUrl} target="_blank" rel="noopener noreferrer">
-                      <ExternalLink className="size-3.5" /> فتح
-                    </a>
-                  </Button>
-                </div>
-                <div className="text-[11px] text-muted-foreground mt-2 tabular-nums" dir="rtl">
-                  {externalCount} طلب وصل عبر الرابط
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center gap-2">
-                  <span className="text-primary">
-                    <FileText className="size-5" />
-                  </span>
-                  <h3 className="font-semibold">الاستمارة الورقية</h3>
-                </div>
-                <p className="text-xs text-muted-foreground mt-1.5 leading-6">يملأ المتقدّم استمارة ورقية يدوياً، ويُدخلها الموظف المختص لاحقاً إلى النظام، أو تُحفظ في الأرشيف للرجوع إليها عند الحاجة.</p>
-                <div className="flex gap-2 mt-3">
-                  <Button size="sm" onClick={() => setPaperOpen(true)}>
-                    <Plus className="size-3.5" /> إدخال استمارة ورقية
-                  </Button>
-                </div>
-                <div className="text-[11px] text-muted-foreground mt-3 tabular-nums" dir="rtl">
-                  {paperCount} استمارة ورقية/مؤرشفة
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+        <TabsContent value="applicants" className="mt-3 space-y-3">
+          {/* شريط المسارين المدمج: الرابط الخارجي + الاستمارة الورقية */}
+          <Card>
+            <CardContent className="py-2.5 px-3.5 flex flex-wrap items-center justify-between gap-2.5">
+              <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
+                <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground shrink-0" title="شارك الرابط العام مع المتقدّمين ليصل طلبهم مباشرة إلى مرحلة «جديد»">
+                  <LinkIcon className="size-3.5 text-primary" />
+                  رابط التقديم العام:
+                </span>
+                <input readOnly value={publicUrl} dir="ltr" className="w-64 max-w-full h-8 rounded-md border border-input bg-muted px-2.5 text-xs tabular-nums font-mono" aria-label="رابط التقديم العام" />
+                <Button size="sm" variant="outline" className="h-8 text-xs" onClick={copyLink}>
+                  <Copy className="size-3.5" /> نسخ
+                </Button>
+                <Button size="sm" variant="outline" className="h-8 text-xs" asChild>
+                  <a href={publicUrl} target="_blank" rel="noopener noreferrer">
+                    <ExternalLink className="size-3.5" /> فتح
+                  </a>
+                </Button>
+                <span className="text-[11px] text-muted-foreground tabular-nums" dir="rtl">
+                  ({externalCount} عبر الرابط · {paperCount} ورقية/مؤرشفة)
+                </span>
+              </div>
+              <Button size="sm" className="h-8 text-xs" onClick={() => setPaperOpen(true)} title="إدخال استمارة ورقية يدوياً للمتقدّم">
+                <Plus className="size-3.5" /> إدخال استمارة ورقية
+              </Button>
+            </CardContent>
+          </Card>
 
           {/* الفلاتر */}
           <Card>
@@ -513,38 +485,31 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* شريط الرابط العام + زر إضافة */}
       <Card>
-        <CardContent className="pt-6">
-          <div className="flex items-start justify-between gap-3 flex-wrap">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-primary">
-                  <Briefcase className="size-5" />
-                </span>
-                <h3 className="font-semibold">معرض الوظائف العام</h3>
-              </div>
-              <p className="text-xs text-muted-foreground mt-1.5 leading-6 max-w-xl">الوظائف المنشورة تظهر للزوّار في صفحة المعرض العام، فيتصفّحونها ويقدّمون عليها مباشرة — ويصل طلب كل متقدّم مربوطاً بالوظيفة إلى مسار «المتقدّمين».</p>
-            </div>
-            <Button onClick={() => setEditing("new")}>
-              <Plus className="size-4" /> وظيفة جديدة
-            </Button>
-          </div>
-          <div className="flex items-center gap-2 mt-3">
-            <input readOnly value={publicUrl} dir="ltr" className="flex-1 h-8 rounded-md border border-input bg-muted px-2.5 text-xs tabular-nums font-mono" aria-label="رابط المعرض العام" />
-            <Button size="sm" variant="outline" onClick={copyLink}>
+        <CardContent className="py-2.5 px-3.5 flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground shrink-0" title="الوظائف المنشورة تظهر للزوّار في صفحة المعرض العام ويتقدّمون عليها مباشرة">
+              <Briefcase className="size-3.5 text-primary" />
+              معرض الوظائف العام:
+            </span>
+            <input readOnly value={publicUrl} dir="ltr" className="w-64 max-w-full h-8 rounded-md border border-input bg-muted px-2.5 text-xs tabular-nums font-mono" aria-label="رابط المعرض العام" />
+            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={copyLink}>
               <Copy className="size-3.5" /> نسخ
             </Button>
-            <Button size="sm" variant="outline" asChild>
+            <Button size="sm" variant="outline" className="h-8 text-xs" asChild>
               <a href={PUBLIC_PATH} target="_blank" rel="noopener noreferrer">
                 <ExternalLink className="size-3.5" /> فتح المعرض
               </a>
             </Button>
+            <span className="text-[11px] text-muted-foreground tabular-nums" dir="rtl">
+              ({rows.length} وظيفة · {publishedCount} منشورة)
+            </span>
           </div>
-          <div className="text-[11px] text-muted-foreground mt-2 tabular-nums" dir="rtl">
-            {rows.length} وظيفة · {publishedCount} منشورة
-          </div>
+          <Button size="sm" className="h-8 text-xs" onClick={() => setEditing("new")}>
+            <Plus className="size-3.5" /> وظيفة جديدة
+          </Button>
         </CardContent>
       </Card>
 

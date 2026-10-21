@@ -36,48 +36,37 @@ function moneyCell(value: string) {
   return D(value).isZero() ? "—" : fmtAr(value);
 }
 
-function LedgerModeNotice({ report }: { report: Report }) {
-  if (report.mode === "SHADOW") {
-    return (
-      <div className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2 text-sm text-[var(--sem-warn)]">
-        <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
-        <div>
-          <p className="font-semibold">
-            للمطابقة فقط — الدفتر المُعتمَد ما زال المبسّط.
-          </p>
-          <p className="text-xs opacity-80">
-            القيود المزدوجة تُكتب في وضع الظل منذ{" "}
-            {report.shadowStartedAt ?? "تاريخ غير مسجّل"}، ولا تصبح مصدراً
-            معتمداً قبل اجتياز بوابة ACTIVE.
-          </p>
-        </div>
-      </div>
-    );
-  }
-  if (report.mode === "OFF") {
-    return (
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm text-foreground">
-        <div className="flex items-start gap-2">
-          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-          <div>
-            <p className="font-semibold">الدفتر المزدوج متوقف.</p>
-            <p className="text-xs opacity-80">
-              لن تظهر عمليات جديدة هنا ما دام الوضع OFF؛ قم بتهيئة الدليل المحاسبي وتفعيل وضع الظل SHADOW.
-            </p>
-          </div>
-        </div>
-        <Link href="/statutory-accounting">
-          <span className="font-medium text-primary underline underline-offset-4 hover:opacity-80">
-            إعداد النظام المحاسبي الموحد
-          </span>
-        </Link>
-      </div>
-    );
-  }
+function LedgerModeNotice({ report, availableFrom }: { report: Report; availableFrom: string | null }) {
   return (
-    <div className="flex items-center gap-2 rounded-md border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] px-3 py-2 text-sm text-[var(--sem-pos)]">
-      <CheckCircle2 aria-hidden className="size-4 shrink-0" />
-      الدفتر المزدوج في وضع ACTIVE.
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-1.5 text-xs">
+      <div className="flex items-center gap-2">
+        {report.mode === "SHADOW" ? (
+          <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--sem-warn)]" title="القيود المزدوجة تُكتب في وضع الظل ولا تصبح مصدراً معتمداً قبل اجتياز بوابة ACTIVE.">
+            <Info aria-hidden className="size-3.5 shrink-0" />
+            للمطابقة فقط (وضع الظل منذ {report.shadowStartedAt ?? "غير مسجّل"}) — الدفتر المعتمد ما زال المبسّط.
+          </span>
+        ) : report.mode === "OFF" ? (
+          <span className="inline-flex items-center gap-2 font-semibold text-foreground">
+            <AlertTriangle aria-hidden className="size-3.5 shrink-0 text-[var(--sem-warn)]" />
+            <span>الدفتر المزدوج متوقف.</span>
+            <Link href="/statutory-accounting">
+              <span className="font-medium text-primary underline underline-offset-4 hover:opacity-80">
+                إعداد النظام المحاسبي الموحد
+              </span>
+            </Link>
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--sem-pos)]">
+            <CheckCircle2 aria-hidden className="size-3.5 shrink-0" />
+            الدفتر المزدوج في وضع ACTIVE.
+          </span>
+        )}
+      </div>
+      {availableFrom && (
+        <span className="text-muted-foreground" title="لا يتضمن هذا الميزان أرباحاً أو خسائر سبقت لقطة القطع؛ ضُبطت بداية الفترة تلقائياً لحماية دقة التقرير.">
+          بداية تغطية الدورة: <strong className="font-mono text-foreground" dir="ltr">{availableFrom}</strong>
+        </span>
+      )}
     </div>
   );
 }
@@ -341,28 +330,13 @@ export default function TrialBalance() {
           onRetry={() => void q.refetch()}
         />
       ) : (
-        <div className="space-y-3">
-          {report && <LedgerModeNotice report={report} />}
-
-          {availableFrom && (
-            <div className="flex items-start gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm text-foreground">
-              <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
-              <div>
-                <p className="font-medium">
-                  بداية تغطية دورة الدفتر: {availableFrom}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  لا يتضمن هذا الميزان أرباحاً أو خسائر سبقت لقطة القطع؛ ضُبطت
-                  بداية الفترة تلقائياً لحماية دقة التقرير.
-                </p>
-              </div>
-            </div>
-          )}
+        <div className="space-y-2.5">
+          {report && <LedgerModeNotice report={report} availableFrom={availableFrom} />}
           {report &&
             (report.unmappedCount > 0 ||
               report.unmappedAccountRoles.length > 0) && (
-              <div className="flex items-start gap-2 rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] px-3 py-2 text-sm text-[var(--sem-neg)]">
-                <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+              <div className="flex items-start gap-2 rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] px-3 py-1.5 text-xs text-[var(--sem-neg)]">
+                <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
                 <p>
                   التقرير غير مكتمل للاعتماد: {report.openingUnmappedCount} فجوة
                   قبل الفترة تؤثر في موثوقية الافتتاح، و

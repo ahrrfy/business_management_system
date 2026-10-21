@@ -655,7 +655,7 @@ export default function BarcodeLabels() {
   return (
     // عرض كامل ديناميكي (بلا max-w): الإعدادات والمعاينة جنباً إلى جنب على الشاشات الواسعة،
     // وقائمة الطباعة بعرض كامل ⇒ توزيع أفقيّ يقلّل الطول والتمرير. يتراصف عمودياً على الموبايل.
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="طباعة ملصقات الباركود"
         description="ابحث عن منتج وأضفه. للمنتجات بلا باركود مصنّعي يُولَّد باركود داخلي (ALR…) — احفظه ليصبح قابلاً للمسح في الكاشير، ثم اطبع الملصقات."
@@ -677,26 +677,26 @@ export default function BarcodeLabels() {
                 </AppSelect>
               </FilterField>
             )}
-            <Link href="/products" className="text-sm text-muted-foreground">المنتجات ←</Link>
+            <Link href="/products" className="text-xs text-muted-foreground">المنتجات ←</Link>
           </div>
         }
       />
 
       {branchId == null && (
-        <div role="alert" className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2 text-sm text-[var(--sem-warn)]">
+        <div role="alert" className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-xs text-[var(--sem-warn)]">
           {canPickBranch ? "اختر الفرع أعلاه أولاً — يحدّد مخزون «= المخزون» ونتائج البحث." : "لا فرع مُسنَد لحسابك — تواصل مع الإدارة."}
         </div>
       )}
 
       {/* الإعدادات | المعاينة — عمودان على ≥lg */}
-      <div className="grid gap-4 lg:grid-cols-2 items-start">
+      <div className="grid gap-3 lg:grid-cols-2 items-start">
         {/* مقاس الملصق + خيارات المحتوى + الطابعة */}
         <Card>
-          <CardHeader><CardTitle className="text-base">مقاس الملصق والطابعة</CardTitle></CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label className="text-sm">المقاس (عرض الطابعة الأقصى 58مم)</Label>
-              <div className="flex flex-wrap gap-2">
+          <CardHeader><CardTitle className="text-sm font-bold">مقاس الملصق والطابعة</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs">المقاس (عرض الطابعة الأقصى 58مم)</Label>
+              <div className="flex flex-wrap gap-1.5">
                 {LABEL_PRESETS.map((p) => (
                   <Button
                     key={p.id}
@@ -712,23 +712,23 @@ export default function BarcodeLabels() {
                   مخصّص:
                 </span>
                 <div className="flex items-center gap-1" dir="ltr">
-                  <Input className="h-8 w-16 text-center" inputMode="numeric" value={wStr}
+                  <Input className="h-7 w-14 text-center text-xs" inputMode="numeric" value={wStr}
                     onChange={(e) => setWStr(e.target.value)} onBlur={commitCustom}
                     onKeyDown={(e) => { if (e.key === "Enter") commitCustom(); }} aria-label="العرض مم" />
-                  <span className="text-muted-foreground text-sm">×</span>
-                  <Input className="h-8 w-16 text-center" inputMode="numeric" value={hStr}
+                  <span className="text-muted-foreground text-xs">×</span>
+                  <Input className="h-7 w-14 text-center text-xs" inputMode="numeric" value={hStr}
                     onChange={(e) => setHStr(e.target.value)} onBlur={commitCustom}
                     onKeyDown={(e) => { if (e.key === "Enter") commitCustom(); }} aria-label="الارتفاع مم" />
-                  <span className="text-muted-foreground text-sm">مم</span>
+                  <span className="text-muted-foreground text-xs">مم</span>
                 </div>
               </div>
-              <p className="text-xs text-muted-foreground">المقاس الحالي: {size.widthMm} × {size.heightMm} مم (يُطبَّق في كل شاشات الطباعة).</p>
+              <p className="text-[11px] text-muted-foreground">المقاس الحالي: {size.widthMm} × {size.heightMm} مم (يُطبَّق في كل شاشات الطباعة).</p>
             </div>
 
             {/* فئة السعر المطبوع — تُعيد تسعير قائمة الطباعة كاملةً فوراً */}
-            <div className="space-y-2 border-t pt-3">
-              <Label className="text-sm">فئة السعر المطبوع</Label>
-              <div className="flex flex-wrap gap-2">
+            <div className="space-y-1.5 border-t pt-2.5">
+              <Label className="text-xs">فئة السعر المطبوع</Label>
+              <div className="flex flex-wrap gap-1.5">
                 {(["RETAIL", "WHOLESALE", "GOVERNMENT"] as const).map((t) => (
                   <Button
                     key={t}
@@ -741,36 +741,36 @@ export default function BarcodeLabels() {
                   </Button>
                 ))}
               </div>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-[11px] text-muted-foreground">
                 يُطبع سعر هذه الفئة لكلّ وحدة. تبديلها يُعيد تسعير القائمة كاملةً، وتُوسَم ملصقات الجملة/الحكومي بشارة الفئة كي لا تُخلَط بملصق الرفّ.
               </p>
             </div>
 
             {/* خيارات محتوى الملصق (تتفاعل مع المعاينة) */}
-            <div className="flex flex-wrap gap-4 border-t pt-3 text-sm">
+            <div className="flex flex-wrap gap-4 border-t pt-2.5 text-xs">
               <label className="flex items-center gap-1"><input type="checkbox" checked={showName} onChange={(e) => setShowName(e.target.checked)} /> اسم المنتج</label>
               <label className="flex items-center gap-1"><input type="checkbox" checked={showPrice} onChange={(e) => setShowPrice(e.target.checked)} /> السعر</label>
             </div>
 
             {/* طابعة الملصقات */}
-            <div className="border-t pt-3 space-y-2">
-              <div className="flex items-center gap-3 flex-wrap">
+            <div className="border-t pt-2.5 space-y-1.5">
+              <div className="flex items-center gap-2 flex-wrap">
                 {!usbSupported ? (
                   <span className="text-xs text-muted-foreground">المتصفّح لا يدعم الطباعة المباشرة (WebUSB) — ستُفتح نافذة الطباعة. استخدم Chrome/Edge للطباعة الصامتة.</span>
                 ) : labelPrinterReady ? (
                   <>
-                    <span className="text-sm text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-4" />طابعة الملصقات مربوطة</span>
+                    <span className="text-xs text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />طابعة الملصقات مربوطة</span>
                     <Button type="button" variant="outline" size="sm" onClick={pairLabelPrinter}>تغيير الطابعة</Button>
                   </>
                 ) : (
                   <>
-                    <span className="text-sm text-muted-foreground">طابعة الملصقات غير مربوطة (ستُفتح نافذة الطباعة عبر تعريف Windows).</span>
+                    <span className="text-xs text-muted-foreground">طابعة الملصقات غير مربوطة (ستُفتح نافذة الطباعة عبر تعريف Windows).</span>
                     <Button type="button" variant="outline" size="sm" onClick={pairLabelPrinter}>ربط طابعة الملصقات</Button>
                   </>
                 )}
                 <Button type="button" variant="ghost" size="sm" onClick={testPrint}>طباعة ملصق تجريبي</Button>
               </div>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-[11px] text-muted-foreground">
                 للملصقات المقصوصة (die-cut): الأفضل تركها <span className="font-medium">غير مربوطة</span> لتُطبع عبر تعريف Windows الذي يحاذي فجوات الملصقات تلقائياً. اربط الطابعة (WebUSB) للورق المتّصل (continuous) أو للطباعة الصامتة السريعة.
               </p>
             </div>
@@ -780,11 +780,11 @@ export default function BarcodeLabels() {
         {/* معاينة حيّة بنفس تصميم الطباعة تماماً (HTML/SVG مباشر بلا تحويل لصورة) */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
-            <CardTitle className="text-base">معاينة حيّة</CardTitle>
+            <CardTitle className="text-sm font-bold">معاينة حيّة</CardTitle>
             <PreviewBarcodePdfButton item={previewItem} size={size} />
           </CardHeader>
           <CardContent>
-            <div className="flex items-start gap-4 flex-wrap">
+            <div className="flex items-start gap-3 flex-wrap">
               {/* dir="ltr" + position:relative ⇒ يُثبَّت iframe في الزاوية العليا اليسرى للحاوية حتى داخل
                   مستندٍ RTL؛ بدونه كان iframe (block أضيق) يُحاذى لليمين فيُسرّب التكبير محتواه خارج
                   الحدّ الأيمن وتُقَصّ المعاينة بصرياً. overflow:hidden احترازي على الحوافّ الكسرية. */}
@@ -817,7 +817,7 @@ export default function BarcodeLabels() {
             {previewFit.overflow ? (
               <div
                 role="alert"
-                className="mt-3 flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-3 py-2 text-xs text-[var(--sem-warn)]"
+                className="mt-2.5 flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-2.5 py-1.5 text-xs text-[var(--sem-warn)]"
               >
                 <TriangleAlert aria-hidden className="size-4 shrink-0 mt-0.5" />
                 <p>
@@ -830,7 +830,7 @@ export default function BarcodeLabels() {
                 <div
                   role="status"
                   aria-live="polite"
-                  className="mt-3 flex items-start gap-2 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+                  className="mt-2.5 flex items-start gap-2 rounded-md border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground"
                 >
                   <Info aria-hidden className="size-4 shrink-0 mt-0.5" />
                   <div className="space-y-0.5">
@@ -857,8 +857,8 @@ export default function BarcodeLabels() {
 
       {/* منطقة العمل: بحث + قائمة الطباعة — بعرض كامل */}
       <Card>
-        <CardHeader><CardTitle className="text-base">قائمة الطباعة ({totalLabels} ملصق)</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
+        <CardHeader><CardTitle className="text-sm font-bold">قائمة الطباعة ({totalLabels} ملصق)</CardTitle></CardHeader>
+        <CardContent className="space-y-2.5">
           <div className="relative">
             <UnifiedSearchInput
               ref={searchRef}

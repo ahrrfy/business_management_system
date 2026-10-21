@@ -69,6 +69,19 @@ export function ReportShell({
         variant="workspace"
         actions={
           <>
+            {note && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs text-[var(--sem-warn)] hover:bg-[var(--sem-warn-bg)] print:hidden">
+                    <Info aria-hidden className="size-3.5" />
+                    ملاحظة التقرير
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-80 text-start text-xs leading-5 border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]">
+                  {note}
+                </PopoverContent>
+              </Popover>
+            )}
             {actions}
             {(onExportCsv || onExport || onPrint) && (
               <DropdownMenu>
@@ -113,8 +126,8 @@ export function ReportShell({
         </WorkspaceBar>
       )}
 
-      {/* تنويه */}
-      {note && <div className="rounded-md border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] px-3 py-2 text-xs text-[var(--sem-warn)]">{note}</div>}
+      {/* تنويه يظهر عند الطباعة فقط؛ على الشاشة يُعرض عبر زر Popover في الرأس */}
+      {note && <div className="hidden print:block rounded-md border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] px-3 py-2 text-xs text-[var(--sem-warn)]">{note}</div>}
 
       {/* المحتوى */}
       {children}

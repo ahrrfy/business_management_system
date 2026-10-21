@@ -30,7 +30,7 @@ import { usePrinterConnection } from "@/hooks/usePrinterConnection";
 import { setDynamicCompanyProfile } from "@/lib/printing/brand";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  Menu, Search, Printer, UserCircle2, ChevronLeft, LogOut, Check,
+  Menu, Search, Printer, UserCircle2, ChevronLeft, LogOut, Check, PanelRightClose, PanelRightOpen,
 } from "lucide-react";
 import { Link, useLocation, useSearch } from "wouter";
 import { hasModuleAccess } from "@shared/permissions";
@@ -256,6 +256,24 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
 
   // درج التنقّل للأجهزة اللوحية/الأصغر (<lg) — يُغلق تلقائياً عند تغيّر المسار.
   const [navOpen, setNavOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem("erp.sidebar.collapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleSidebarCollapsed = () => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("erp.sidebar.collapsed", next ? "1" : "0");
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
   const [navWorkspace, setNavWorkspace] = useState<NavWorkspace>({ favorites: [], recent: [] });
   const mainRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -361,25 +379,25 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
     <>
         {/* شريط البحث — يفتح CommandPalette */}
         {shellCapabilities.mountGlobalSearch && (
-          <div className="px-2 pt-2 pb-1">
+          <div className="px-2 pt-1.5 pb-1">
             <button
               type="button"
               onClick={openSearch}
-              className="sb-search flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-xs transition-colors"
+              className="sb-search flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-xs transition-colors"
             >
               <Search className="size-3.5 shrink-0" />
-              <span className="flex-1 text-start">بحث…</span>
+              <span className="flex-1 text-start">بحث سريع…</span>
               <kbd className="rounded px-1 font-mono text-[10px]">Ctrl+K</kbd>
             </button>
           </div>
         )}
 
-        {/* إذاعة القرآن الكريم — بطاقة بارزة في القائمة الجانبية */}
+        {/* إذاعة القرآن الكريم — شريط مدمج افتراضياً في القائمة الجانبية */}
         <Suspense fallback={null}>
           <QuranSidebarCard />
         </Suspense>
 
-        <Suspense fallback={<nav className="sb-scroll flex-1 overflow-y-auto py-2" aria-label="جار تحميل التنقل" />}>
+        <Suspense fallback={<nav className="sb-scroll flex-1 overflow-y-auto py-1" aria-label="جار تحميل التنقل" />}>
           <HybridSidebarNav
             currentPath={loc}
             currentSearch={search}
@@ -395,46 +413,45 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
           />
         </Suspense>
 
-        {/* معلومات المستخدم والخروج — كارت واضح النقر (مدخل «حسابي») + زرّ الخروج.
-            كان الرابط سابقاً نصّاً خافتاً بلا أيقونة ⇒ المالك لم يجد كيف يفتح /account (٦/٧).
-            الآن: أيقونة مُلوَّنة + الاسم/الدور بوضوح + شارة nav-item + hover واضح + aria-current. */}
-        <div className="sb-footer p-2 space-y-1">
+        {/* معلومات المستخدم والخروج — صف أفقي مدمج واحد يجمع الحساب وزر الخروج الأيقوني */}
+        <div className="sb-footer p-1.5 flex items-center gap-1.5">
           <Link
             href={coldStudio ? "/catalog/image-studio" : "/account"}
             aria-label="حسابي"
             aria-current={loc === "/account" ? "page" : undefined}
             className={cn(
-              "flex items-center gap-2 rounded-md px-2 py-2 text-sm transition",
+              "flex flex-1 min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-xs transition",
               loc === "/account" ? "sb-account-active font-semibold" : "sb-account",
             )}
           >
             <div className={cn(
-              "flex size-9 shrink-0 items-center justify-center rounded-full",
+              "flex size-7 shrink-0 items-center justify-center rounded-full",
               loc === "/account" ? "bg-primary/10 text-primary" : "sb-avatar",
             )}>
-              <UserCircle2 className="size-5" aria-hidden />
+              <UserCircle2 className="size-4" aria-hidden />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="truncate font-medium leading-tight">{displayName}</div>
+              <div className="truncate font-bold leading-tight text-xs">{displayName}</div>
               <div className={cn(
-                "truncate text-[11px] leading-tight",
+                "truncate text-[10px] leading-tight",
                 loc === "/account" ? "opacity-80" : "sb-sub",
               )}>
-                {/* تسمية الدور الحقيقية بالعربية (الدور المخصّص أولاً) — كان يعرض المفتاح الخام «cashier». */}
                 حسابي{displayRole ? ` · ${me.data?.isOwner ? "مالك النظام" : (me.data?.customRoleLabel ?? ROLE_LABEL[displayRole] ?? displayRole)}` : ""}
               </div>
             </div>
-            <ChevronLeft className="size-4 shrink-0 opacity-60" aria-hidden />
+            <ChevronLeft className="size-3.5 shrink-0 opacity-60" aria-hidden />
           </Link>
           <Button
+            type="button"
             variant="ghost"
-            size="sm"
-            className="sb-logout w-full justify-start gap-2"
+            size="icon"
+            className="sb-logout size-8 shrink-0 rounded-md"
             onClick={() => logout.mutate()}
             disabled={coldStudio || logout.isPending}
+            title="تسجيل الخروج"
+            aria-label="تسجيل الخروج"
           >
             <LogOut className="size-4" aria-hidden />
-            تسجيل الخروج
           </Button>
         </div>
     </>
@@ -443,29 +460,92 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   return (
     <div className="app-shell min-h-screen flex flex-col lg:flex-row bg-muted/30" dir="rtl">
       {/* الشريط الجانبي — سطح المكتب (≥lg) */}
-      <aside className="hidden lg:flex w-64 shrink-0 flex-col app-sidebar">
-        <div className="sb-header px-4 py-4 flex items-center justify-between gap-1">
-          <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
-          <div className="flex items-center gap-1">
-            <NotificationBell enabled={!coldStudio && Boolean(me.data)} identity={String(me.data?.id ?? "")} />
-            <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
-            <DisplayScaleControl />
-            <ThemeToggle />
+      {sidebarCollapsed ? (
+        <aside className="hidden lg:flex w-12 shrink-0 flex-col items-center py-2.5 gap-2 app-sidebar">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={toggleSidebarCollapsed}
+            className="size-8 text-[color:var(--sidebar-on-strong)] hover:bg-[color:var(--sidebar-soft)]"
+            title="توسيع القائمة الجانبية"
+            aria-label="توسيع القائمة الجانبية"
+          >
+            <PanelRightOpen className="size-4" aria-hidden />
+          </Button>
+          {shellCapabilities.mountGlobalSearch && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={openSearch}
+              className="size-8 text-[color:var(--sidebar-on)] hover:bg-[color:var(--sidebar-soft)]"
+              title="بحث سريع (Ctrl+K)"
+              aria-label="بحث سريع"
+            >
+              <Search className="size-4" aria-hidden />
+            </Button>
+          )}
+          <div className="flex-1" />
+          <NotificationBell enabled={!coldStudio && Boolean(me.data)} identity={String(me.data?.id ?? "")} />
+          <ThemeToggle />
+          <Link
+            href={coldStudio ? "/catalog/image-studio" : "/account"}
+            aria-label="حسابي"
+            title={displayName}
+            className="flex size-8 items-center justify-center rounded-full sb-avatar"
+          >
+            <UserCircle2 className="size-4" aria-hidden />
+          </Link>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="sb-logout size-8 rounded-md"
+            onClick={() => logout.mutate()}
+            disabled={coldStudio || logout.isPending}
+            title="تسجيل الخروج"
+            aria-label="تسجيل الخروج"
+          >
+            <LogOut className="size-4" aria-hidden />
+          </Button>
+        </aside>
+      ) : (
+        <aside className="hidden lg:flex w-60 shrink-0 flex-col app-sidebar">
+          <div className="sb-header px-3 py-2.5 flex items-center justify-between gap-1">
+            <div className="flex items-center gap-1 min-w-0">
+              <button
+                type="button"
+                onClick={toggleSidebarCollapsed}
+                className="flex size-6 shrink-0 items-center justify-center rounded text-[color:var(--sidebar-on)] hover:bg-[color:var(--sidebar-soft)] hover:text-[color:var(--sidebar-on-strong)] transition-colors"
+                title="طي القائمة الجانبية"
+                aria-label="طي القائمة الجانبية"
+              >
+                <PanelRightClose className="size-3.5" aria-hidden />
+              </button>
+              <span className="font-extrabold text-sm leading-tight truncate">الرؤية العربية</span>
+            </div>
+            <div className="flex items-center gap-0.5 shrink-0">
+              <NotificationBell enabled={!coldStudio && Boolean(me.data)} identity={String(me.data?.id ?? "")} />
+              <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
+              <DisplayScaleControl />
+              <ThemeToggle />
+            </div>
           </div>
-        </div>
-        {shellCapabilities.allowRemoteNavigation ? sidebarInner : coldStudioSidebar}
-      </aside>
+          {shellCapabilities.allowRemoteNavigation ? sidebarInner : coldStudioSidebar}
+        </aside>
+      )}
 
       {/* الشريط العلوي + درج التنقّل — اللوحي/الأصغر (<lg). Sheet جذرٌ بلا DOM فيبقى
           الـheader طفلاً مباشراً للحاوية، وSheetTrigger يُنسّق الفتح/الإغلاق (يتجنّب
           مشكلة نقرة الفتح التي تصل لطبقة الإغلاق في النمط المُتحكَّم به يدوياً). */}
       <Sheet open={navOpen} onOpenChange={setNavOpen}>
-        <header className="lg:hidden flex items-center justify-between gap-2 border-b bg-card px-3 py-2">
+        <header className="lg:hidden flex items-center justify-between gap-2 border-b bg-card px-3 py-1.5">
           <SheetTrigger asChild>
             <button
               type="button"
               aria-label="فتح القائمة"
-              className="flex size-11 items-center justify-center rounded-md border border-border/60 text-foreground transition-colors hover:bg-accent"
+              className="flex size-10 items-center justify-center rounded-md border border-border/60 text-foreground transition-colors hover:bg-accent"
             >
               <Menu className="size-5" />
             </button>
@@ -481,7 +561,7 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
         </header>
 
         <SheetContent side="right" dir="rtl" className="app-sidebar w-72 p-0">
-          <SheetHeader className="sb-header px-4 py-4 text-start">
+          <SheetHeader className="sb-header px-3 py-2.5 text-start">
             <SheetTitle className="text-[color:var(--sidebar-on-strong)]">الرؤية العربية</SheetTitle>
           </SheetHeader>
           {shellCapabilities.allowRemoteNavigation ? sidebarInner : coldStudioSidebar}
@@ -490,10 +570,10 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
 
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <BroadcastTicker />
-        <div className="px-3 pt-3 md:px-6 md:pt-4 empty:hidden">
+        <div className="px-2.5 pt-1.5 md:px-3.5 md:pt-2 empty:hidden">
           <PushNotificationPrompt />
         </div>
-        <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 pb-24 md:pb-24 lg:pb-6 overflow-auto outline-none">{children}</main>
+        <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-2.5 md:p-3.5 pb-24 lg:pb-6 overflow-auto outline-none">{children}</main>
       </div>
 
       {/* شريط التنقل السريع للهاتف أسفل الشاشة (<lg) */}

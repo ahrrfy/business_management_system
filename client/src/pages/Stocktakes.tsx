@@ -178,10 +178,10 @@ function Stat({ label, value, sub, tone }: { label: string; value: string; sub?:
   const toneCls = tone === "blue" ? "text-[var(--status-pending)]" : tone === "amber" ? "text-[var(--stock-low)]" : "";
   return (
     <Card>
-      <CardContent className="p-4">
-        <p className="text-xs text-muted-foreground">{label}</p>
-        <p className={`mt-1 text-xl font-bold tabular-nums ${toneCls}`}>{value}</p>
-        {sub ? <p className="mt-0.5 truncate text-xs text-muted-foreground">{sub}</p> : null}
+      <CardContent className="p-2.5">
+        <p className="text-[11px] text-muted-foreground">{label}</p>
+        <p className={`mt-0.5 text-lg font-bold tabular-nums ${toneCls}`}>{value}</p>
+        {sub ? <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{sub}</p> : null}
       </CardContent>
     </Card>
   );
@@ -428,23 +428,23 @@ export default function Stocktakes() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       {/* الترويسة */}
       <PageHeader
         title="الجرد والتسوية"
         description="جلسات جرد مُوثّقة بخطوات واضحة: تحديد النطاق ← عدّ أعمى ← مراجعة وتدقيق ← اعتماد التسوية ← تقرير نهائي."
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <Button asChild variant="outline">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button asChild size="sm" variant="outline">
               <Link href="/my-stocktake">فضاء عملي (العد الميداني)</Link>
             </Button>
             {isAdmin && (
-              <Button asChild variant="outline">
+              <Button asChild size="sm" variant="outline">
                 <Link href="/reconcile">مطابقة الأرصدة</Link>
               </Button>
             )}
             {canCreate ? (
-              <Button asChild size="lg">
+              <Button asChild size="sm">
                 <Link href="/stocktakes/new">+ جلسة جرد جديدة</Link>
               </Button>
             ) : null}
@@ -454,8 +454,8 @@ export default function Stocktakes() {
 
       {/* شريط خطوات الدورة */}
       <Card>
-        <CardContent className="p-4">
-          <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
+        <CardContent className="px-3 py-2">
+          <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold">
             {[
               "1 إنشاء الجلسة وتحديد النطاق",
               "2 العدّ الميداني (أعمى)",
@@ -463,9 +463,9 @@ export default function Stocktakes() {
               "4 الاعتماد والتسوية",
               "5 التقرير النهائي",
             ].map((s, i) => (
-              <span key={s} className="flex items-center gap-2">
+              <span key={s} className="flex items-center gap-1.5">
                 {i > 0 && <span className="text-border">←</span>}
-                <span className="rounded-full border border-border bg-muted px-3 py-1.5">{s}</span>
+                <span className="rounded-full border border-border bg-muted px-2.5 py-1">{s}</span>
               </span>
             ))}
             <span className="me-auto font-normal text-muted-foreground">
@@ -476,7 +476,7 @@ export default function Stocktakes() {
       </Card>
 
       {/* المؤشرات */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
         <Stat label="جلسات قيد العدّ الآن" value={!canReadStats ? "—" : statsQ.isLoading ? "…" : fmtInt(stats.counting)} tone="blue" />
         <Stat label="بانتظار المراجعة والاعتماد" value={!canReadStats ? "—" : statsQ.isLoading ? "…" : fmtInt(stats.review)} tone="amber" />
         <Stat
@@ -601,7 +601,7 @@ export default function Stocktakes() {
       </Card>
 
       {/* الجرد الدوري + الدقة + ربط التدقيق المالي */}
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid gap-3 xl:grid-cols-2">
         <CyclePlanCard
           due={due}
           loading={cycleQ.isLoading}
@@ -613,7 +613,7 @@ export default function Stocktakes() {
             navigate(buildNewSessionUrl(ids, name));
           }}
         />
-        <div className="space-y-4">
+        <div className="space-y-3">
           {canReadIra && <IraCard data={(iraQData ?? null) as IraData | null} loading={iraQ.isLoading} />}
           {canReadQuality && <CounterQualityCard data={cqQData ?? null} loading={cqQ.isLoading} />}
           {isManagerPlus && (

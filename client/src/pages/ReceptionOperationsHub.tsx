@@ -50,13 +50,22 @@ export default function ReceptionOperationsHub() {
   if (me.isPending || !me.data) return null;
   if (me.data.branchId == null) return <NoBranchNotice />;
 
-  return <PageTabs tabs={TABS} ariaLabel="عمليات محطة الاستقبال" />;
+  return (
+    <PageTabs tabs={TABS}
+      ariaLabel="عمليات محطة الاستقبال"
+      header={
+        <span className="ps-1 text-sm font-extrabold tracking-tight text-foreground">
+          عمليات محطة الاستقبال
+        </span>
+      }
+    />
+  );
 }
 
 function NoBranchNotice() {
   return (
-    <div className="mx-auto w-full max-w-[1180px] px-4 py-5">
-      <div className="rounded-xl border border-dashed p-8 text-center">
+    <div className="mx-auto w-full max-w-[1180px] px-3 py-3">
+      <div className="rounded-xl border border-dashed p-5 text-center">
         <p className="text-sm font-bold">لا فرع مُسنَد لحسابك</p>
         <p className="mt-1 text-xs text-muted-foreground">
           مركز الاستقبال يعمل على فرع محدد — راجع المدير لإسناد فرعك قبل فتح

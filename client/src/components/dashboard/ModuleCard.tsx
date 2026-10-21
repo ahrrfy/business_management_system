@@ -78,9 +78,9 @@ export function ModuleCard({
         alignItems: "center",
         justifyContent: "center",
         textAlign: "center",
-        padding: "10px 8px 8px",
-        minHeight: 110,
-        borderRadius: 14,
+        padding: "8px 6px 6px",
+        minHeight: 92,
+        borderRadius: 12,
         background: isHovered
           ? `linear-gradient(180deg, color-mix(in oklch, ${accent} 18%, var(--dash-card-bg)) 0%, color-mix(in oklch, ${accent} 6%, var(--dash-card-bg)) 100%)`
           : `linear-gradient(180deg, color-mix(in oklch, ${accent} 6%, var(--dash-card-bg)) 0%, var(--dash-card-bg) 65%)`,

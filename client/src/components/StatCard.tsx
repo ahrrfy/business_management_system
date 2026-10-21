@@ -29,7 +29,7 @@ export function StatCard({ label, value, sub, icon: Icon, tone = "default", onCl
   const interactive = typeof onClick === "function";
   return (
     <Card
-      className={cn(interactive && "cursor-pointer transition-colors hover:bg-accent/50", className)}
+      className={cn("py-2.5 gap-1", interactive && "cursor-pointer transition-colors hover:bg-accent/50", className)}
       onClick={onClick}
       {...(interactive
         ? {
@@ -45,15 +45,15 @@ export function StatCard({ label, value, sub, icon: Icon, tone = "default", onCl
           }
         : {})}
     >
-      <CardContent className="p-4">
-        <div className="mb-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
-          {Icon && <Icon className="size-4 shrink-0" aria-hidden="true" />}
+      <CardContent className="px-3.5 py-0">
+        <div className="mb-0.5 flex items-center gap-1.5 text-2xs font-semibold text-muted-foreground">
+          {Icon && <Icon className="size-3.5 shrink-0" aria-hidden="true" />}
           <span className="truncate">{label}</span>
         </div>
-        <div className={cn("text-xl font-bold tabular-nums", TONE_TEXT_CLASS[tone])} dir="auto">
+        <div className={cn("text-lg font-extrabold tabular-nums leading-tight", TONE_TEXT_CLASS[tone])} dir="auto">
           {typeof value === "string" || typeof value === "number" ? <LiveValue value={value} /> : value}
         </div>
-        {sub && <div className="mt-0.5 text-[11px] text-muted-foreground">{sub}</div>}
+        {sub && <div className="mt-0.5 text-[10px] text-muted-foreground leading-tight">{sub}</div>}
       </CardContent>
     </Card>
   );

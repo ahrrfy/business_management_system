@@ -316,12 +316,12 @@ export default function Reconcile() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="تدقيق التوافق المالي"
         description="يكشف الانجراف الصامت في ذمم العملاء والموردين، عهدة تحصيلات التوصيل، المخزون والدفتر. الأخضر = متوازن، الأحمر = انحراف يستوجب المراجعة. لا يصحّح النظام أي فرق بصمت."
         actions={
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             {data && (
               <span className="text-xs text-muted-foreground" dir="ltr">
                 آخر فحص:{" "}
@@ -337,7 +337,7 @@ export default function Reconcile() {
               onClick={exportAll}
               className="inline-flex items-center gap-1.5"
             >
-              <FileDown aria-hidden className="size-4" />
+              <FileDown aria-hidden className="size-3.5" />
               تصدير Excel
             </Button>
             <Button
@@ -353,7 +353,7 @@ export default function Reconcile() {
       />
 
       <Card>
-        <CardContent className="flex flex-wrap items-end gap-3 p-4">
+        <CardContent className="flex flex-wrap items-end gap-2.5 p-2.5">
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">
               شهر المطابقة
@@ -367,7 +367,7 @@ export default function Reconcile() {
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
             <AppSelect
-              className="h-9"
+              className="h-8 text-xs"
               value={String(branchId)}
               onValueChange={(next) =>
                 setBranchId(
@@ -383,7 +383,7 @@ export default function Reconcile() {
               ))}
             </AppSelect>
           </div>
-          <p className="max-w-xl text-xs text-muted-foreground">
+          <p className="max-w-xl text-[11px] text-muted-foreground">
             نطاق التقرير يتبع تاريخ القيد داخل الشهر والفرع المختارين. بوابة
             ACTIVE مستقلة وتفحص كل الأحداث منذ بدء الظل على جميع الفروع.
           </p>
@@ -432,23 +432,20 @@ export default function Reconcile() {
             onStop={requestStop}
           />
 
-          {/* لونُ الانحراف دلاليّ لا مخزنيّ: كان `badge-stock-out` — توكن «نفد المخزون» —
-              في شاشة مطابقةٍ نقديّة لا مخزون فيها. الدلالة هنا خطرٌ يستوجب المراجعة، فصار
-              `--sem-neg` (نفس الأحمر الطوبيّ قيمةً، والصنف صار يصف ما يعنيه). */}
           <Card>
             <CardContent
-              className={`p-6 text-center text-lg font-bold inline-flex items-center justify-center gap-2 w-full ${
+              className={`px-3 py-2 text-center text-xs font-bold inline-flex items-center justify-center gap-1.5 w-full ${
                 total === 0 ? "badge-status-active" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"
               }`}
             >
               {total === 0 ? (
                 <>
-                  <Check aria-hidden className="size-5" />
+                  <Check aria-hidden className="size-4" />
                   كل المحاور متوازنة — لا انحراف
                 </>
               ) : (
                 <>
-                  <AlertTriangle aria-hidden className="size-5" />
+                  <AlertTriangle aria-hidden className="size-4" />
                   {`${total} انحراف يستوجب المراجعة`}
                 </>
               )}

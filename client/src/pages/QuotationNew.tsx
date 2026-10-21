@@ -527,7 +527,7 @@ export default function QuotationNew() {
   }
 
   return (
-    <div className="flex h-full flex-col gap-3">
+    <div className="flex h-full flex-col gap-2">
       {/* شريط العنوان */}
       <PageHeader
         icon={(() => { const TIcon = typeInfo.icon; return <TIcon aria-hidden className="size-5 text-primary" />; })()}
@@ -537,7 +537,7 @@ export default function QuotationNew() {
       />
 
       {!isEdit && sourceQuoteRequest.data && (
-        <div className="rounded-md border border-primary/25 bg-primary/5 px-3 py-2 text-sm leading-6 text-foreground">
+        <div className="rounded-md border border-primary/25 bg-primary/5 px-3 py-1.5 text-xs leading-5 text-foreground">
           <span className="font-semibold">عرض رسمي من الطلب {sourceQuoteRequest.data.requestNumber}.</span>{" "}
           راجع الأسعار والكميات والتوفر قبل الحفظ؛ لا يحجز هذا العرض مخزوناً ولا يصدر فاتورة.
         </div>
@@ -560,7 +560,7 @@ export default function QuotationNew() {
       )}
 
       {/* البنية الأساسية: جدول البنود يساراً + لوحة الإجماليات والإجراءات يميناً */}
-      <div className="flex min-h-0 flex-1 gap-3">
+      <div className="flex min-h-0 flex-1 gap-2.5">
         <div className="flex min-w-0 flex-1 flex-col gap-2">
           <ProductTable
             items={state.items}
@@ -586,7 +586,7 @@ export default function QuotationNew() {
           />
         </div>
 
-        <aside className="flex w-80 shrink-0 flex-col gap-2">
+        <aside className="flex w-72 shrink-0 flex-col gap-1.5">
           <TotalsPanel items={state.items} state={state} dispatch={dispatch} showTaxToggle />
           <ActionButtons
             invoiceType={INVOICE_TYPE}

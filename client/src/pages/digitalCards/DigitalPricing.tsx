@@ -527,16 +527,16 @@ export default function DigitalPricing() {
       : undefined;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title="أسعار الكروت اليوم"
         description="أدخِل تكلفة الشراء وسعر البيع لكل بطاقة بشكل مباشر وواضح. الربح يُحسب ويُرحّل تلقائياً، ولا تصل الأسعار إلى الكاشير إلا بعد «نشر»."
       />
 
       <Card>
-        <CardContent className="grid gap-3 p-4 sm:grid-cols-4">
-          <div className="space-y-1">
-            <label className="text-sm font-medium" htmlFor="dp-branch">
+        <CardContent className="grid gap-2.5 p-3 sm:grid-cols-4">
+          <div className="space-y-0.5">
+            <label className="text-xs font-medium" htmlFor="dp-branch">
               الفرع
             </label>
             <AppSelect
@@ -551,8 +551,8 @@ export default function DigitalPricing() {
               ))}
             </AppSelect>
           </div>
-          <div className="space-y-1">
-            <label className="text-sm font-medium" htmlFor="dp-provider">
+          <div className="space-y-0.5">
+            <label className="text-xs font-medium" htmlFor="dp-provider">
               المزوّد
             </label>
             <AppSelect
@@ -567,8 +567,8 @@ export default function DigitalPricing() {
               ))}
             </AppSelect>
           </div>
-          <div className="space-y-1">
-            <label className="text-sm font-medium" htmlFor="dp-date">
+          <div className="space-y-0.5">
+            <label className="text-xs font-medium" htmlFor="dp-date">
               تاريخ يوم العمل
             </label>
             <Input
@@ -596,19 +596,19 @@ export default function DigitalPricing() {
               <CopyPlus className="size-4" /> نسخ آخر أسعار منشورة
             </Button>
           </div>
-          <div className="space-y-1 sm:col-span-4">
-            <label className="text-sm font-medium" htmlFor="dp-change-reason">
+          <div className="space-y-0.5 sm:col-span-4">
+            <label className="text-xs font-medium" htmlFor="dp-change-reason">
               سبب تغيير سعر اليوم (اختياري)
             </label>
             <textarea
               id="dp-change-reason"
-              className="min-h-16 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm"
+              className="min-h-10 w-full rounded-md border border-input bg-transparent px-2.5 py-1.5 text-xs shadow-xs"
               value={changeReason}
               onChange={(e) => setChangeReason(e.target.value)}
               maxLength={300}
               placeholder="مثال: تغيّر سعر جهاز المزوّد أو عرض منافس"
             />
-            <p className="text-xs text-muted-foreground">
+            <p className="text-[11px] text-muted-foreground">
               يُحفظ السبب مع قرار السعر المنشور لسهولة المراجعة والتدقيق.
             </p>
           </div>

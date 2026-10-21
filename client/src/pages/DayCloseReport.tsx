@@ -681,9 +681,9 @@ function CashPositionBox({
   negative?: boolean;
 }) {
   return (
-    <div className={`flex min-h-16 flex-col justify-center rounded border px-3 py-2 text-center ${emphasized ? "border-money-positive/40 bg-money-positive/5" : negative ? "border-money-negative/40 bg-money-negative/5" : "bg-muted/10"}`}>
+    <div className={`flex min-h-12 flex-col justify-center rounded border px-2.5 py-1.5 text-center ${emphasized ? "border-money-positive/40 bg-money-positive/5" : negative ? "border-money-negative/40 bg-money-negative/5" : "bg-muted/10"}`}>
       <span className="text-[11px] text-muted-foreground">{label}</span>
-      <strong className={`mt-1 tabular-nums ${emphasized ? "text-money-positive" : negative ? "text-money-negative" : "text-foreground"}`} dir="ltr">
+      <strong className={`mt-0.5 text-sm tabular-nums ${emphasized ? "text-money-positive" : negative ? "text-money-negative" : "text-foreground"}`} dir="ltr">
         {value == null ? "—" : `${fmtAr(value)} د.ع`}
       </strong>
     </div>
@@ -691,7 +691,7 @@ function CashPositionBox({
 }
 
 function CashEquationSign({ children }: { children: string }) {
-  return <span className="self-center text-center text-lg font-bold text-muted-foreground" aria-hidden>{children}</span>;
+  return <span className="self-center text-center text-base font-bold text-muted-foreground" aria-hidden>{children}</span>;
 }
 
 /** لوحة «المتوقَّع مقابل المعدود مقابل الفرق» — بلونٍ دلاليّ واضح على مجموع اليوم. */
@@ -725,20 +725,26 @@ function ReconciliationHero({ dc, daily }: { dc: DC; daily?: RouterOutputs["trea
 
   return (
     <Card className={reconciliationBorderClass}>
-      <CardContent className="p-4 space-y-3">
+      <CardContent className="p-3 space-y-2.5">
         {position && (
-          <section className="space-y-3 rounded-md border bg-card p-3" aria-label={positionTitle}>
-            <div className="flex flex-wrap items-start justify-between gap-2 border-b pb-2">
-              <div>
-                <h2 className="text-sm font-bold">{positionTitle}</h2>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">هذا هو الرقم الوحيد الذي يُقارن بالجرد النهائي؛ الأرقام أدناه لا تُجمع عليه مرة أخرى.</p>
+          <section className="space-y-2 rounded-md border bg-card p-2.5" aria-label={positionTitle}>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-xs font-bold">{positionTitle}</h2>
+                <span className="text-[11px] text-muted-foreground">
+                  ({position.isReadyForFinalCount
+                    ? reconciliationStale
+                      ? "تغيّرت الحركات بعد آخر جرد؛ أعد عدّ الخزينة"
+                      : "الورديات والعهد الوسيطة مصفّاة"
+                    : "يلزم إغلاق الورديات وتصفية العهد قبل اعتماد الجرد النهائي"})
+                </span>
               </div>
-              <span className={`rounded border px-2 py-1 text-[11px] font-bold ${position.isReadyForFinalCount ? "border-money-positive/40 text-money-positive" : "border-[var(--sem-warn)]/50 text-[var(--sem-warn)]"}`}>
+              <span className={`rounded border px-2 py-0.5 text-[11px] font-bold ${position.isReadyForFinalCount ? "border-money-positive/40 text-money-positive" : "border-[var(--sem-warn)]/50 text-[var(--sem-warn)]"}`}>
                 {position.isReadyForFinalCount ? "مواقع النقد جاهزة للجرد" : "غير جاهز للإقفال النهائي"}
               </span>
             </div>
 
-            <div className="grid grid-cols-1 items-stretch gap-2 sm:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1.2fr]">
+            <div className="grid grid-cols-2 items-stretch gap-1.5 sm:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1.1fr_1fr_1fr]">
               <CashPositionBox label="رصيد الخزينة التراكمي" value={position.expectedTreasuryCash} />
               <CashEquationSign>+</CashEquationSign>
               <CashPositionBox label="النقد في الأدراج" value={position.expectedDrawersCash} />
@@ -746,27 +752,15 @@ function ReconciliationHero({ dc, daily }: { dc: DC; daily?: RouterOutputs["trea
               <CashPositionBox label="النقد بالطريق" value={position.cashInTransit} />
               <CashEquationSign>=</CashEquationSign>
               <CashPositionBox label="الرقم النهائي المتوقع" value={position.expectedCashOnHand} emphasized />
-            </div>
-
-            <div className="grid grid-cols-1 gap-2 border-t pt-3 sm:grid-cols-3">
-              <CashPositionBox label="الرقم النهائي المتوقع" value={position.expectedCashOnHand} />
               <CashPositionBox label="النقد المعدود فعلياً" value={finalCountUsable ? saved!.countedTreasuryCash : null} />
               <CashPositionBox label="فرق المطابقة النهائي" value={finalVariance} emphasized={finalMatched} negative={finalVariance != null && !finalMatched} />
             </div>
-
-            <p className="text-[11px] text-muted-foreground">
-              {position.isReadyForFinalCount
-                ? reconciliationStale
-                  ? "تغيّرت الحركات بعد آخر جرد؛ أعد عدّ الخزينة قبل اعتماد المطابقة النهائية."
-                  : "كل الورديات والعهد الوسيطة مصفّاة؛ يمكن اعتماد مقارنة الجرد النهائي الآن."
-                : "يلزم إغلاق كل الورديات وتصفية النقد المتبقي في الأدراج وتسوية العهد بالطريق قبل اعتماد الجرد النهائي."}
-            </p>
           </section>
         )}
 
         {/* الورديات المغلقة: معادلة المطابقة الصريحة الدقيقة */}
         <div>
-          <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center justify-between mb-1.5">
             <span className="text-xs font-bold text-muted-foreground">
               {hasOpen ? "مطابقة الورديات المغلقة (المكتملة)" : "مطابقة نقد الأدراج"}
             </span>
@@ -774,37 +768,34 @@ function ReconciliationHero({ dc, daily }: { dc: DC; daily?: RouterOutputs["trea
               {dc.totals.closedCount} وردية مغلقة من أصل {dc.totals.shiftCount}
             </span>
           </div>
-          <div className="grid grid-cols-1 items-center gap-3 sm:grid-cols-[1fr_auto_1fr_auto_1fr] rounded-lg bg-muted/20 p-3">
+          <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[1fr_auto_1fr_auto_1fr] rounded-lg bg-muted/20 p-2.5">
             {/* المتوقَّع المغلق */}
             <div className="text-center">
-              <p className="text-xs text-muted-foreground">المتوقَّع بالدفتر (الورديات المغلقة)</p>
-              <p className="text-2xl font-bold tabular-nums text-[var(--sem-info)]" dir="ltr">
+              <p className="text-[11px] text-muted-foreground" title="الافتتاحي + المقبوضات − المصروفات">المتوقَّع بالدفتر (الورديات المغلقة)</p>
+              <p className="text-xl font-bold tabular-nums text-[var(--sem-info)]" dir="ltr">
                 {fmtAr(dc.totals.closedExpected)}
               </p>
-              <p className="text-[10px] text-muted-foreground mt-0.5">الافتتاحي + المقبوضات − المصروفات</p>
             </div>
             <div className="hidden text-muted-foreground sm:block" aria-hidden>
-              <ArrowLeftRight className="size-5" />
+              <ArrowLeftRight className="size-4" />
             </div>
             {/* المعدود */}
             <div className="text-center">
-              <p className="text-xs text-muted-foreground">المعدود عند الإغلاق</p>
-              <p className="text-2xl font-bold tabular-nums" dir="ltr">{fmtAr(dc.totals.counted)}</p>
-              <p className="text-[10px] text-muted-foreground mt-0.5">النقد الفعلي المسلّم من الكاشير</p>
+              <p className="text-[11px] text-muted-foreground" title="النقد الفعلي المسلّم من الكاشير">المعدود عند الإغلاق</p>
+              <p className="text-xl font-bold tabular-nums" dir="ltr">{fmtAr(dc.totals.counted)}</p>
             </div>
             <div className="hidden text-muted-foreground sm:block" aria-hidden>=</div>
             {/* الفرق */}
             <div className="text-center">
-              <p className="text-xs text-muted-foreground">فرق المطابقة</p>
-              <p className={`inline-flex items-center justify-center gap-1 text-2xl font-bold tabular-nums ${driftCls}`} dir="ltr">
+              <p className="text-[11px] text-muted-foreground">فرق المطابقة ({driftLabel})</p>
+              <p className={`inline-flex items-center justify-center gap-1 text-xl font-bold tabular-nums ${driftCls}`} dir="ltr">
                 {drift === 0 ? (
-                  <CheckCircle2 aria-hidden className="size-5" />
+                  <CheckCircle2 aria-hidden className="size-4" />
                 ) : (
-                  <AlertTriangle aria-hidden className="size-5" />
+                  <AlertTriangle aria-hidden className="size-4" />
                 )}
                 {fmtAr(dc.totals.drift)}
               </p>
-              <p className={`mt-0.5 text-[11px] font-bold ${driftCls}`}>{driftLabel}</p>
             </div>
           </div>
         </div>

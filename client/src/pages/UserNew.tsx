@@ -146,7 +146,7 @@ export default function UserNew() {
       {/* عنصر نموذج حقيقي يلفّ حقول الحفظ الفعلية (كان غائباً — يمنع حفظ متصفح/تعبئة تلقائية ويكسر
           دلالة Enter-to-submit، نمط UserEdit.tsx). AccountFields مكوّن مشترك خارج ملكيتي (يُستعمله
           أيضاً EmployeeNew) فيُلَفّ من هنا لا يُعدَّل هو نفسه. */}
-      <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); buildAndSubmit(); }}>
+      <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); buildAndSubmit(); }}>
         <AccountFields
           value={account}
           onChange={patch}
@@ -155,56 +155,39 @@ export default function UserNew() {
           operationEditor
         />
 
-        {/* ما تملكه شاشة التعديل ولا تملكه هذه — يُسمّى بدل أن يغيب صامتاً.
-            الغياب الصامت هو ما يجعل المُنشئ يظنّ الشاشة ناقصة، فيبحث عن الحقل حيث لا وجود له. */}
-        <Card>
-          <CardHeader><CardTitle className="text-base">ما يتاح بعد الإنشاء</CardTitle></CardHeader>
-          <CardContent className="space-y-2 text-sm text-muted-foreground">
-            <p>
-              الحقول أعلاه هي كل ما يقبله النظام عند الإنشاء. وما يلي لا مقابل له قبل وجود الحساب،
-              فيُدار من «تعديل المستخدم» بعد الحفظ:
-            </p>
-            <ul className="list-disc ps-5 space-y-1">
-              <li>
-                <span className="text-foreground">صفة «مالك النظام»:</span> لا تُمنح عند الإنشاء —
-                يمنحها مالكٌ قائم وحده من شاشة التعديل، فلا يستطيع مديرٌ أن يصنع مالكاً جديداً بنموذجٍ واحد.
-              </li>
-              <li>
-                <span className="text-foreground">إصدار رمز استعادة كلمة المرور:</span>{" "}
-                كلمة المرور هنا
-                تُسلَّم مباشرةً في بطاقة المشاركة بعد الحفظ؛ الرمز لاحقاً لمن نسيها.
-              </li>
-              <li>
-                <span className="text-foreground">إبطال الجلسات وتصفير المصادقة الثنائية:</span>{" "}
-                لا جلسات
-                ولا مصادقة ثنائية لحسابٍ لم يدخل بعد.
-              </li>
-              <li>
-                <span className="text-foreground">تعطيل الحساب أو حذفه نهائياً:</span>{" "}
-                يُنشأ الحساب مفعّلاً،
-                والحذف مشروطٌ بخلوّه من أي نشاط.
-              </li>
-              <li>
-                <span className="text-foreground">لوحة «الأثر الفعليّ» لهذا الحساب:</span>{" "}
-                تُقرأ من الحساب
-                المحفوظ. وقبل الحفظ تكفي معاينة «سيرى هذا الحساب» في بطاقة الدور أعلاه.
-              </li>
-            </ul>
-          </CardContent>
-        </Card>
-
         {error && <p className="text-sm text-destructive">{error}</p>}
 
-        <div className="flex flex-wrap gap-2">
-          {/* type="submit" وبلا onClick مباشر — onSubmit في <form> وحده مصدر الإرسال. */}
-          <Button type="submit" disabled={create.isPending}>
-            {create.isPending ? ACTION_LABELS.saving : "حفظ المستخدم"}
-          </Button>
-          <Link href="/users"><Button type="button" variant="ghost">إلغاء</Button></Link>
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* type="submit" وبلا onClick مباشر — onSubmit في <form> وحده مصدر الإرسال. */}
+            <Button type="submit" disabled={create.isPending}>
+              {create.isPending ? ACTION_LABELS.saving : "حفظ المستخدم"}
+            </Button>
+            <Link href="/users"><Button type="button" variant="ghost">إلغاء</Button></Link>
+            <span className="text-xs text-muted-foreground">
+              بعد الحفظ تظهر بطاقة لمشاركة بيانات الدخول عبر واتساب أو نسخها.
+            </span>
+          </div>
+
+          {/* ما تملكه شاشة التعديل ولا تملكه هذه — يُسمّى في درج مدمج بدل بطاقة ضخمة دائمة. */}
+          <details className="text-xs text-muted-foreground">
+            <summary className="cursor-pointer select-none rounded-md border border-border bg-muted/30 px-2.5 py-1 font-medium text-foreground hover:bg-muted/60">
+              ⓘ ما يتاح بعد الإنشاء (من شاشة التعديل)
+            </summary>
+            <Card className="mt-2 max-w-xl">
+              <CardContent className="p-3 space-y-1.5 text-xs text-muted-foreground">
+                <p>الحقول أعلاه هي كل ما يقبله النظام عند الإنشاء، ويُدار ما يلي من «تعديل المستخدم» بعد الحفظ:</p>
+                <ul className="list-disc ps-4 space-y-1">
+                  <li><span className="text-foreground font-medium">صفة «مالك النظام»:</span> يمنحها مالكٌ قائم وحده من شاشة التعديل.</li>
+                  <li><span className="text-foreground font-medium">إصدار رمز استعادة كلمة المرور:</span> كلمة المرور هنا تُسلَّم مباشرةً في بطاقة المشاركة بعد الحفظ؛ الرمز لاحقاً لمن نسيها.</li>
+                  <li><span className="text-foreground font-medium">إبطال الجلسات وتصفير المصادقة الثنائية:</span> بعد أول دخول للحساب.</li>
+                  <li><span className="text-foreground font-medium">تعطيل الحساب أو حذفه نهائياً:</span> يُنشأ الحساب مفعّلاً، والحذف مشروطٌ بخلوّه من أي نشاط.</li>
+                  <li><span className="text-foreground font-medium">لوحة «الأثر الفعليّ» لهذا الحساب:</span> تُقرأ من الحساب المحفوظ.</li>
+                </ul>
+              </CardContent>
+            </Card>
+          </details>
         </div>
-        <p className="text-xs text-muted-foreground">
-          بعد الحفظ تظهر بطاقة لمشاركة بيانات الدخول عبر واتساب أو نسخها — ومنها يمكنك إضافة مستخدم آخر.
-        </p>
       </form>
     </div>
   );

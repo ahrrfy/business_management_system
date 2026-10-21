@@ -68,7 +68,7 @@ export function FilterShell({
     <>
       <div className={FILTER_GRID_CLASS[columns]}>{children}</div>
       {toggles && (
-        <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 border-t pt-3">
+        <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t pt-2">
           {toggles}
         </div>
       )}
@@ -83,38 +83,42 @@ export function FilterShell({
     );
   }
 
+  const showHeader = hasActive || Boolean(headerActions);
+
   return (
-    <Card role="search" aria-label={title} className={cn("min-w-0", className)}>
-      <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
-        <CardTitle className="flex items-center gap-2 text-base">
-          {title}
-          {hasActive && (
-            <span
-              className="rounded bg-primary px-1.5 py-0.5 text-2xs font-bold text-primary-foreground"
-              aria-label={`${activeCount.toLocaleString("ar-IQ-u-nu-latn")} ${FILTER_LABELS.activeCountLabel}`}
-            >
-              {activeCount.toLocaleString("ar-IQ-u-nu-latn")}
-            </span>
-          )}
-        </CardTitle>
-        <div className="flex items-center gap-2">
-          {headerActions}
-          {/* يظهر عند وجود فلتر فقط — لا زرّ بلا أثر (§Forms disabled-states). */}
-          {hasActive && onReset && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={onReset}
-              className="text-muted-foreground"
-            >
-              <X aria-hidden className="size-4" />
-              {FILTER_LABELS.reset}
-            </Button>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent>{body}</CardContent>
+    <Card role="search" aria-label={title} className={cn("min-w-0 py-2.5 gap-2", className)}>
+      {showHeader && (
+        <CardHeader className="flex-row items-center justify-between gap-2 space-y-0 px-3.5 py-0">
+          <CardTitle className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground">
+            {title}
+            {hasActive && (
+              <span
+                className="rounded bg-primary px-1.5 py-0.5 text-2xs font-bold text-primary-foreground"
+                aria-label={`${activeCount.toLocaleString("ar-IQ-u-nu-latn")} ${FILTER_LABELS.activeCountLabel}`}
+              >
+                {activeCount.toLocaleString("ar-IQ-u-nu-latn")}
+              </span>
+            )}
+          </CardTitle>
+          <div className="flex items-center gap-1.5">
+            {headerActions}
+            {/* يظهر عند وجود فلتر فقط — لا زرّ بلا أثر (§Forms disabled-states). */}
+            {hasActive && onReset && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={onReset}
+                className="h-6 px-2 text-2xs text-muted-foreground"
+              >
+                <X aria-hidden className="size-3.5" />
+                {FILTER_LABELS.reset}
+              </Button>
+            )}
+          </div>
+        </CardHeader>
+      )}
+      <CardContent className="px-3.5">{body}</CardContent>
     </Card>
   );
 }

@@ -706,7 +706,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   ]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       <PageHeader
         title={isReceipt ? "سند قبض جديد" : "سند صرف جديد"}
         description={
@@ -725,14 +725,13 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
         }
       />
 
-      <div className="grid gap-4 lg:grid-cols-2 items-start">
+      <div className="grid gap-3 lg:grid-cols-2 items-start">
         {/* البَيانات الرئيسية */}
         <Card>
-          <CardHeader>
-            <CardTitle className="text-base">البيانات الرئيسية</CardTitle>
+          <CardHeader className="py-2.5 px-3.5">
+            <CardTitle className="text-sm">البيانات الرئيسية</CardTitle>
           </CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {/* الفرعُ استنتاجٌ خادميّ لا سؤالٌ للشاشة (م٤ ق١): «فرعك المسند» + «تغيير» للأدمن/المالك فقط. */}
+          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-2.5 px-3.5 pb-3.5 pt-0">
             <InferredBranchField
               label="الفرع *"
               value={branchId}
@@ -749,17 +748,21 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 className="text-right"
               />
               {awaitsOwnerDisbursement && (
-                <div className="text-[11px] space-y-0.5 mt-1">
-                  <p className="text-[var(--sem-warn)] flex items-center gap-1">
-                    <ShieldQuestion aria-hidden className="size-3" />
-                    سيبقى طلباً بلا أثر حتى يعتمد ويصرفه حساب مالك آخر.
-                  </p>
-                </div>
+                <p className="text-[11px] text-[var(--sem-warn)] flex items-center gap-1 mt-0.5">
+                  <ShieldQuestion aria-hidden className="size-3" />
+                  سيبقى طلباً بلا أثر حتى يعتمد ويصرفه حساب مالك آخر.
+                </p>
               )}
             </div>
 
             <div className="space-y-1">
-              <Label>تاريخ السند *</Label>
+              <Label
+                className="flex items-center gap-1"
+                title={`${businessDay ? `افتراضه اليوم التشغيلي بتوقيت بغداد (${businessDay}). ` : ""}التاريخ الفعلي للمُعاملة (قد يَختلف عن تاريخ الإدخال).`}
+              >
+                تاريخ السند *
+                <Info aria-hidden className="size-3 text-muted-foreground" />
+              </Label>
               <Input
                 type="date"
                 dir="ltr"
@@ -769,11 +772,6 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                   setVoucherDate(e.target.value);
                 }}
               />
-              <p className="text-[11px] text-muted-foreground">
-                {businessDay ? `افتراضه اليوم التشغيلي بتوقيت بغداد (${businessDay}) كما حسبه الخادم. ` : ""}
-                التاريخ الفعلي للمُعاملة (قد يَختلف عن تاريخ الإدخال — مَثلاً
-                دَفع إيجار مايو في ٥ يونيو).
-              </p>
             </div>
             <div className="space-y-1">
               <Label>طريقة الدفع *</Label>
@@ -818,21 +816,38 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             )}
             <div className="space-y-1 md:col-span-2">
               <div className="flex items-center justify-between gap-2">
-                <Label>
+                <Label
+                  className="flex items-center gap-1"
+                  title={
+                    partyType === "OTHER"
+                      ? `توجيه محاسبي للطرف (أخرى) — تحدد الحساب المقابل الذي سيظهر في دفتر الأستاذ. ${
+                          isReceipt
+                            ? "سند القبض يثبت المقبوضات النقدية والبنكية والإيرادات التشغيلية والخدمية والتمويلية المباشرة. لمبيعات الأصناف ذات الخصم المخزني الآلي يُنصح باستخدام فواتير المبيعات أو نقاط البيع."
+                            : "سند الصرف يثبت المصروفات التشغيلية المباشرة والمسحوبات وسداد الالتزامات. لسداد فواتير الموردين المعتمدة يُفضل اختيار الطرف (مورد)."
+                        }`
+                      : "تحدد الحساب المقابل الذي سيظهر في دفتر الأستاذ"
+                  }
+                >
                   فئة السند {direction === "OUT" ? "(مصروف)" : "(إيراد)"}
                   {partyType === "OTHER" ? " *" : ""}
+                  {partyType === "OTHER" && <Info aria-hidden className="size-3 text-muted-foreground" />}
                 </Label>
-                {canManageCategories && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    onClick={() => setShowCategoryDialog(true)}
-                  >
-                    <Plus aria-hidden className="size-3.5 ms-1" /> فئة جديدة
-                  </Button>
-                )}
+                <div className="flex items-center gap-2">
+                  <Link href="/voucher-categories" className="text-[11px] text-muted-foreground underline">
+                    إدارة الفئات
+                  </Link>
+                  {canManageCategories && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-6 px-2 text-[11px]"
+                      onClick={() => setShowCategoryDialog(true)}
+                    >
+                      <Plus aria-hidden className="size-3 ms-1" /> فئة جديدة
+                    </Button>
+                  )}
+                </div>
               </div>
               <AppSelect
                 className="h-9"
@@ -872,42 +887,30 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 ))}
               </AppSelect>
               {selectedCategory && (
-                <div className="rounded-md border border-border/70 bg-muted/40 p-2.5 text-xs space-y-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-foreground flex items-center gap-1.5">
-                      <Info aria-hidden className="size-3.5 text-primary shrink-0" />
-                      {selectedCategory.name}
-                    </span>
-                    <span
-                      className={cn(
-                        "text-[11px] font-medium px-2 py-0.5 rounded",
-                        selectedCategoryReady
-                          ? "text-primary bg-primary/10"
-                          : "text-[var(--sem-warn)] bg-[var(--sem-warn-bg)] border border-[var(--sem-warn)]/30",
-                      )}
-                    >
-                      {selectedCategoryReady
-                        ? `مهيأة محاسبياً: ${voucherCategoryRoleLabel(selectedCategory.postingRole)}`
-                        : "غير مهيأة محاسبياً"}
-                    </span>
-                  </div>
-                  {selectedCategory.description && (
-                    <p className="text-[11px] text-muted-foreground leading-relaxed">
-                      {selectedCategory.description}
-                    </p>
-                  )}
-                  {selectedCategoryReady && (
-                    <div className="pt-1 text-[11px] text-muted-foreground border-t border-border/40 flex flex-wrap items-baseline gap-1.5">
-                      <span className="font-medium text-foreground">التوجيه المحاسبي:</span>
-                      <span>
-                        {voucherCategoryAccountingGuidance(direction, selectedCategory)}
+                <div className="rounded-md border border-border/70 bg-muted/40 px-2.5 py-1.5 text-xs flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-semibold text-foreground flex items-center gap-1.5" title={selectedCategory.description ?? undefined}>
+                    <Info aria-hidden className="size-3.5 text-primary shrink-0" />
+                    {selectedCategory.name}
+                    {selectedCategoryReady && (
+                      <span className="font-normal text-[11px] text-muted-foreground">
+                        ({voucherCategoryAccountingGuidance(direction, selectedCategory)})
                       </span>
-                    </div>
-                  )}
+                    )}
+                  </span>
+                  <span
+                    className={cn(
+                      "text-[11px] font-medium px-2 py-0.5 rounded",
+                      selectedCategoryReady
+                        ? "text-primary bg-primary/10"
+                        : "text-[var(--sem-warn)] bg-[var(--sem-warn-bg)] border border-[var(--sem-warn)]/30",
+                    )}
+                  >
+                    {selectedCategoryReady
+                      ? `مهيأة: ${voucherCategoryRoleLabel(selectedCategory.postingRole)}`
+                      : "غير مهيأة محاسبياً"}
+                  </span>
                 </div>
               )}
-              {/* حقلٌ إلزاميّ بقائمةٍ فارغة = طريقٌ مسدود. حين لا توجد ولا فئةٌ جاهزة لهذا الاتجاه
-                  نقول ذلك صراحةً ونعرض المخرجين: إنشاء فئة الآن، أو استعادة الكتالوج الافتراضي. */}
               {partyType === "OTHER" && readyCategoryCount === 0 && !categories.isLoading && (
                 <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-[11px] text-[var(--sem-warn)] space-y-1.5">
                   <p className="flex items-start gap-1.5 font-medium">
@@ -942,46 +945,26 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                   )}
                 </div>
               )}
-              <p
-                className={cn(
-                  "text-[11px]",
-                  partyType === "OTHER" && !selectedCategoryReady
-                    ? "text-[var(--sem-warn)] font-medium"
-                    : "text-muted-foreground",
-                )}
-              >
-                {partyType === "OTHER"
-                  ? "إلزامية: تحدد الحساب المقابل الذي سيظهر في دفتر الأستاذ. "
-                  : "اختيارية للتقارير؛ الذمة هي الحساب المقابل محاسبياً. "}
-                <Link href="/voucher-categories" className="underline">
-                  إدارة الفئات
-                </Link>
-              </p>
-              {partyType === "OTHER" && (
-                <div className="rounded-md border border-border/60 bg-muted/40 p-2.5 text-[11px] text-muted-foreground space-y-1">
-                  <p className="font-medium text-foreground flex items-center gap-1.5">
-                    <Info aria-hidden className="size-3.5 text-primary shrink-0" />
-                    توجيه محاسبي للطرف (أخرى):
-                  </p>
-                  <p>
-                    {isReceipt
-                      ? "سند القبض يثبت المقبوضات النقدية والبنكية والإيرادات التشغيلية والخدمية والتمويلية المباشرة (مثل إيرادات الطباعة، القرطاسية، الفلكس، التوصيل، الهدايا، الإيرادات المتفرقة، وإيداعات المالك والقروض). لمبيعات الأصناف ذات الخصم المخزني الآلي من الرفوف، يُنصح باستخدام فواتير المبيعات أو نقاط البيع."
-                      : "سند الصرف يثبت المصروفات التشغيلية المباشرة والمسحوبات وسداد الالتزامات. لسداد فواتير الموردين المعتمدة، يُفضل اختيار الطرف (مورد) لتسوية الذمم آلياً."}
-                  </p>
-                </div>
-              )}
             </div>
           </CardContent>
         </Card>
 
         {/* الطرف المُقابل */}
         <Card>
-          <CardHeader>
-            <CardTitle className="text-base">الطرف المقابل</CardTitle>
+          <CardHeader className="py-2.5 px-3.5">
+            <CardTitle className="text-sm">الطرف المقابل</CardTitle>
           </CardHeader>
-          <CardContent className="grid grid-cols-1 gap-3">
+          <CardContent className="grid grid-cols-1 gap-2.5 px-3.5 pb-3.5 pt-0">
             <div className="space-y-1">
-              <Label>نوع الطرف *</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label>نوع الطرف *</Label>
+                <span className="text-[11px] text-muted-foreground">
+                  {partyType === "OTHER" && "تأثير على الصندوق/الدفتر فقط"}
+                  {partyType === "CUSTOMER" && (isReceipt ? "AR ينقص بقيمة السند" : "AR يَزيد (استرداد)")}
+                  {partyType === "SUPPLIER" && (isReceipt ? "AP يَزيد (استلام نقد)" : "AP يَنقص (دفعة للمورّد)")}
+                  {partyType === "DELIVERY_PARTY" && (isReceipt ? "تحصيل عهدة COD" : "صرف مستحقات توصيل")}
+                </span>
+              </div>
               <AppSelect
                 className="h-9"
                 value={partyType}
@@ -1001,22 +984,6 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 <option value="SUPPLIER">مورّد</option>
                 <option value="DELIVERY_PARTY">جهة توصيل (COD / مستحقات)</option>
               </AppSelect>
-              <p className="text-xs text-muted-foreground">
-                {partyType === "OTHER" &&
-                  "لا تأثير على الذمم — تأثير على الصندوق/الدفتر فقط."}
-                {partyType === "CUSTOMER" &&
-                  (isReceipt
-                    ? "AR (ما يدين به العميل) ينقص بقيمة السند."
-                    : "AR يَزيد (المتجر يَدفع للعميل، مثل استرداد).")}
-                {partyType === "SUPPLIER" &&
-                  (isReceipt
-                    ? "AP (ما ندين به للمورّد) يَزيد (استلام نقد من المورّد)."
-                    : "AP يَنقص (دفعة للمورّد).")}
-                {partyType === "DELIVERY_PARTY" &&
-                  (isReceipt
-                    ? "توريد وتحصيل عهدة COD من جهة التوصيل لحساب الصندوق."
-                    : "صرف مستحقات أو أجور لجهة التوصيل.")}
-              </p>
             </div>
 
             {partyType === "CUSTOMER" && (
@@ -1033,57 +1000,61 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 />
                 {customerId != null && (
                   <div className="space-y-1">
-                    <Label>{isReceipt ? "تخصيص فاتورة محددة (اختياري)" : "ربط الرد بفاتورة (اختياري)"}</Label>
-                    <UnifiedSearchInput
-                      value={invoiceQ}
-                      onChange={setInvoiceQ}
-                      placeholder="ابحث برقم الفاتورة أو امسح الباركود… (F2)"
-                      barcode={true}
-                      debounceMs={200}
-                      size="default"
-                    />
-                    <AppSelect
-                      value={invoiceId != null ? String(invoiceId) : "0"}
-                      onValueChange={(v) => {
-                        const id = v === "0" ? null : Number(v);
-                        setInvoiceId(id);
-                        if (id != null) {
-                          const inv = outstandingInvoiceOptions.find(
-                            (o) => Number(o.id) === id,
-                          );
-                          if (inv) {
-                            setSelectedInvoiceLabel(
-                              `فاتورة #${inv.invoiceNumber} — ${isReceipt ? "متبقٍّ" : "مدفوع"} ${fmt(isReceipt ? invoiceRemaining(inv) : inv.paidAmount)} د.ع`,
-                            );
-                          }
-                        } else {
-                          setSelectedInvoiceLabel("");
-                        }
-                      }}
-                      aria-label="ربط السند بفاتورة"
-                    >
-                      <option value="0">— بلا ربط —</option>
-                      {/* الفاتورة المُختارة تبقى ظاهرة حتى لو ضيّق البحث القائمة عنها. */}
-                      {invoiceId != null && !selectedInList && (
-                        <option value={String(invoiceId)}>
-                          {selectedInvoiceLabel ||
-                            `فاتورة مُختارة #${invoiceId}`}
-                        </option>
-                      )}
-                      {outstandingInvoiceOptions.map((inv) => (
-                        <option key={Number(inv.id)} value={String(inv.id)}>
-                          فاتورة #{inv.invoiceNumber} — {isReceipt ? "متبقٍّ" : "مدفوع"}{" "}
-                          {fmt(isReceipt ? invoiceRemaining(inv) : inv.paidAmount)} د.ع
-                        </option>
-                      ))}
-                    </AppSelect>
-                    <p className="text-[11px] text-muted-foreground">
-                      {customerInvoices.isFetching
-                        ? "جارٍ جلب فواتير العميل…"
-                        : !isReceipt
+                    <Label
+                      className="flex items-center gap-1"
+                      title={
+                        !isReceipt
                           ? "هذا سند رد مبلغ للعميل: يسجل صرفاً فعلياً ويحدّث رصيده عند التنفيذ. اختيار فاتورة يخصم المبلغ من مدفوعها، وترك الاختيار فارغاً يرد المبلغ على حساب العميل."
-                          : "اترك الاختيار فارغاً ليوزع النظام القبض تلقائياً من أقدم فواتير العميل المؤهلة في هذا الفرع، ويخفض الذمة عند التنفيذ. فواتير التوصيل النشطة تُحصّل من مسار التوصيل. المبلغ الزائد يبقى رصيداً دائناً. اختيار فاتورة يخصص القبض لها وحدها."}
-                    </p>
+                          : "اترك الاختيار فارغاً ليوزع النظام القبض تلقائياً من أقدم فواتير العميل المؤهلة في هذا الفرع. اختيار فاتورة يخصص القبض لها وحدها."
+                      }
+                    >
+                      {isReceipt ? "تخصيص فاتورة محددة (اختياري)" : "ربط الرد بفاتورة (اختياري)"}
+                      <Info aria-hidden className="size-3 text-muted-foreground" />
+                    </Label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <UnifiedSearchInput
+                        value={invoiceQ}
+                        onChange={setInvoiceQ}
+                        placeholder="ابحث برقم الفاتورة… (F2)"
+                        barcode={true}
+                        debounceMs={200}
+                        size="default"
+                      />
+                      <AppSelect
+                        value={invoiceId != null ? String(invoiceId) : "0"}
+                        onValueChange={(v) => {
+                          const id = v === "0" ? null : Number(v);
+                          setInvoiceId(id);
+                          if (id != null) {
+                            const inv = outstandingInvoiceOptions.find(
+                              (o) => Number(o.id) === id,
+                            );
+                            if (inv) {
+                              setSelectedInvoiceLabel(
+                                `فاتورة #${inv.invoiceNumber} — ${isReceipt ? "متبقٍّ" : "مدفوع"} ${fmt(isReceipt ? invoiceRemaining(inv) : inv.paidAmount)} د.ع`,
+                              );
+                            }
+                          } else {
+                            setSelectedInvoiceLabel("");
+                          }
+                        }}
+                        aria-label="ربط السند بفاتورة"
+                      >
+                        <option value="0">— بلا ربط (توزيع تلقائي) —</option>
+                        {invoiceId != null && !selectedInList && (
+                          <option value={String(invoiceId)}>
+                            {selectedInvoiceLabel ||
+                              `فاتورة مُختارة #${invoiceId}`}
+                          </option>
+                        )}
+                        {outstandingInvoiceOptions.map((inv) => (
+                          <option key={Number(inv.id)} value={String(inv.id)}>
+                            فاتورة #{inv.invoiceNumber} — {isReceipt ? "متبقٍّ" : "مدفوع"}{" "}
+                            {fmt(isReceipt ? invoiceRemaining(inv) : inv.paidAmount)} د.ع
+                          </option>
+                        ))}
+                      </AppSelect>
+                    </div>
                   </div>
                 )}
               </>
@@ -1103,7 +1074,9 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             )}
             {partyType === "OTHER" && (
               <div className="space-y-1">
-                <Label>اسم المُستفيد / الدافع</Label>
+                <Label title="مَوصى به — يُمكّن تَقرير «كل ما دُفع/قُبض من فلان» (مفيد للرواتب والإيجارات المُكرَّرة).">
+                  اسم المُستفيد / الدافع
+                </Label>
                 <Input
                   value={counterpartyName}
                   onChange={(e) => setCounterpartyName(e.target.value)}
@@ -1113,10 +1086,6 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                       : "مَثلاً: المستثمر (مثل: سلمى أحمد) / الموظف أحمد محمد"
                   }
                 />
-                <p className="text-[11px] text-muted-foreground">
-                  مَوصى به — يُمكّن تَقرير «كل ما دُفع/قُبض من فلان» (مفيد
-                  للرواتب والإيجارات المُكرَّرة).
-                </p>
               </div>
             )}
 
@@ -1127,7 +1096,6 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
               </div>
             )}
 
-            {/* تَحذير الازدواج */}
             {(recent.data ?? []).length > 0 && (
               <div className="rounded-md border bg-muted/30 p-2 text-[12px] space-y-1">
                 <div className="font-bold text-foreground flex items-center gap-1">
@@ -1155,12 +1123,9 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           </CardContent>
         </Card>
 
-        {/* الوَصف + مَعاينة القَيد */}
+        {/* الوَصف + مَعاينة القَيد + المرفقات في بطاقة مدمجة واحدة */}
         <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle className="text-base">الوصف والقَيد</CardTitle>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 p-3.5">
             <div className="space-y-1">
               <Label>وَصف السند *</Label>
               <Textarea
@@ -1171,13 +1136,29 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                     ? "مثال: تحصيل مبلغ من تاجر بدون فاتورة محدّدة"
                     : "مثال: راتب الموظف أحمد لشهر يونيو"
                 }
-                rows={3}
+                rows={2}
+              />
+              <Label className="pt-1 block text-xs">مُلاحظة داخلية (لا تُطبع)</Label>
+              <Input
+                value={internalNote}
+                onChange={(e) => setInternalNote(e.target.value)}
+                placeholder="مَثلاً: الإيصال الأصلي بحوزة المُحاسب"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>مُرفَق السند (اختياري)</Label>
+              <ImageUploader
+                value={attachmentImages}
+                onChange={setAttachmentImages}
+                maxItems={1}
+                maxSizeMB={2}
+                singlePrimary={false}
+                hint="صورة الإيصال الأصلي / كَشف البنك."
               />
             </div>
             {ledgerPreview && (
               <div className="space-y-1">
                 <Label>مَعاينة قَيد الدفتر</Label>
-                {/* مَعاينةٌ ساكنة داخل حقلٍ في نموذج: مُضمَّنة بلا بحثٍ ولا ترقيمٍ ولا فرز. */}
                 <div className="rounded-md border bg-muted/20 overflow-hidden text-xs">
                   <DataTable<LedgerPreviewRow>
                     embedded
@@ -1189,44 +1170,8 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                     emptyText="لا قَيد للمعاينة."
                   />
                 </div>
-                <p className="text-[11px] text-muted-foreground">
-                  {isReceipt
-                    ? "هذا تَوضيح للقَيد المالي الذي سيُسجَّل تلقائياً عند الحفظ."
-                    : "هذه معاينة فقط؛ لا يُسجَّل القيد إلا عند تنفيذ «اعتماد وصرف» بنجاح."}
-                </p>
               </div>
             )}
-          </CardContent>
-        </Card>
-
-        {/* المُرفق + المُلاحظة الداخلية */}
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle className="text-base">
-              المُرفقات والمُلاحظات الداخلية
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label>مُرفَق السند (اختياري)</Label>
-              <ImageUploader
-                value={attachmentImages}
-                onChange={setAttachmentImages}
-                maxItems={1}
-                maxSizeMB={2}
-                singlePrimary={false}
-                hint="صورة الإيصال الأصلي / فاتورة الإيجار / كَشف البنك — تُضغط تلقائياً قبل الحفظ."
-              />
-            </div>
-            <div className="space-y-1">
-              <Label>مُلاحظة داخلية (لا تُطبع)</Label>
-              <Textarea
-                value={internalNote}
-                onChange={(e) => setInternalNote(e.target.value)}
-                placeholder="مَثلاً: الإيصال الأصلي بحوزة المُحاسب"
-                rows={2}
-              />
-            </div>
           </CardContent>
         </Card>
       </div>

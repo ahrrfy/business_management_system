@@ -84,14 +84,14 @@ function DashboardHeader({
   const dateLabel = new Intl.DateTimeFormat("ar-IQ-u-nu-latn", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date());
 
   return (
-    <header style={{ background: T.cardBg, borderBottom: `1px solid ${T.cardBord}`, padding: "22px 24px 18px" }}>
-      <div style={{ maxWidth: 1600, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 18, flexWrap: "wrap" }}>
+    <header style={{ background: T.cardBg, borderBottom: `1px solid ${T.cardBord}`, padding: "12px 20px 10px" }}>
+      <div style={{ maxWidth: 1600, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: "0.75rem", fontWeight: 700, color: T.secLabel, marginBottom: 5 }}>الشاشة الرئيسية</div>
-          <h1 style={{ margin: 0, fontSize: "1.5rem", lineHeight: 1.35, fontWeight: 900, color: T.text }}>أهلاً {me.data?.name ?? "بك"}</h1>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 9, color: T.sub, fontSize: "0.75rem" }}>
+          <div style={{ fontSize: "0.6875rem", fontWeight: 700, color: T.secLabel, marginBottom: 2 }}>الشاشة الرئيسية</div>
+          <h1 style={{ margin: 0, fontSize: "1.25rem", lineHeight: 1.25, fontWeight: 900, color: T.text }}>أهلاً {me.data?.name ?? "بك"}</h1>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 4, color: T.sub, fontSize: "0.75rem" }}>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-              <CalendarDays aria-hidden size={14} />
+              <CalendarDays aria-hidden size={13} />
               {dateLabel}
             </span>
             <span aria-hidden style={{ color: T.cardBord }}>
@@ -102,7 +102,7 @@ function DashboardHeader({
               •
             </span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-              <MapPin aria-hidden size={13} />
+              <MapPin aria-hidden size={12} />
               {branchLabel}
             </span>
           </div>
@@ -112,7 +112,7 @@ function DashboardHeader({
           <div className="w-full sm:w-44">
             <AppSelect
               aria-label="نطاق فرع الشاشة الرئيسية"
-              className="h-[42px] bg-background text-xs font-bold"
+              className="h-8 bg-background text-xs font-bold"
               value={branchScope == null ? "all" : String(branchScope)}
               onValueChange={(value) => onBranchScopeChange(value === "all" ? undefined : Number(value))}
             >
@@ -169,7 +169,7 @@ function SystemModulesPanel({
   return (
     <section
       aria-label="وحدات النظام"
-      style={{ maxWidth: 1648, margin: "0 auto", padding: "18px 24px 6px" }}
+      style={{ maxWidth: 1648, margin: "0 auto", padding: "12px 20px 4px" }}
     >
       <SystemModulesGrid modules={visibleModules} telemetrySource={telemetrySource} />
     </section>
@@ -402,21 +402,21 @@ function MetricsBar({
     (canSeeStocktakes && stk.isError);
 
   return (
-    <section aria-label="مؤشرات اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "16px 24px 4px" }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, marginBottom: 9 }}>
-        <h2 style={{ margin: 0, color: T.text, fontSize: "0.875rem", fontWeight: 900 }}>مؤشرات اليوم</h2>
+    <section aria-label="مؤشرات اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "10px 20px 4px" }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
+        <h2 style={{ margin: 0, color: T.text, fontSize: "0.8125rem", fontWeight: 900 }}>مؤشرات اليوم</h2>
         <span style={{ color: T.muted, fontSize: "0.6875rem" }}>تتحدث تلقائياً حسب صلاحياتك ونطاق فرعك</span>
       </div>
       {hasRefreshIssue && (
-        <div role="status" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 10, padding: "9px 11px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: "0.75rem" }}>
+        <div role="status" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 8, padding: "7px 10px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: "0.75rem" }}>
           <span>تعذّر تحديث بعض المؤشرات؛ القيم المتاحة ما زالت معروضة.</span>
-          <button type="button" onClick={() => { if (canViewReports || canViewInventory) void metrics.refetch(); if (canViewTreasury && branchScope !== undefined) void shift.refetch(); if (canSeeStocktakes) void stk.refetch(); }} style={{ display: "inline-flex", alignItems: "center", gap: 5, border: `1px solid ${T.cardBord}`, borderRadius: 7, background: T.cardBg, color: T.text, padding: "6px 9px", font: "inherit", fontWeight: 800, cursor: "pointer" }}>
+          <button type="button" onClick={() => { if (canViewReports || canViewInventory) void metrics.refetch(); if (canViewTreasury && branchScope !== undefined) void shift.refetch(); if (canSeeStocktakes) void stk.refetch(); }} style={{ display: "inline-flex", alignItems: "center", gap: 5, border: `1px solid ${T.cardBord}`, borderRadius: 7, background: T.cardBg, color: T.text, padding: "5px 8px", font: "inherit", fontWeight: 800, cursor: "pointer" }}>
             <RefreshCw aria-hidden size={13} />
             إعادة المحاولة
           </button>
         </div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: `repeat(${metricCols}, minmax(0, 1fr))`, gap: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${metricCols}, minmax(0, 1fr))`, gap: 8 }}>
         {stats.map((s, i) => {
           // بطاقة تنبيه في «صَفا»: تِنت خفيف بلون حالتها (كل تنبيه بلونه لا أحمر موحّد) + حدّ ملوّن رقيق.
           const abg = s.isAlert ? `color-mix(in oklch, ${s.iBg} 62%, var(--dash-card-bg))` : T.statBg;
@@ -429,12 +429,12 @@ function MetricsBar({
               transition={{ delay: i * 0.04, duration: 0.3, ease: "easeOut" }}
               whileHover={{ y: -2, boxShadow: "0 4px 12px oklch(0 0 0 / 0.08)" }}
               className="group"
-              style={{ minWidth: 0, minHeight: 74, borderRadius: 11, padding: "11px 12px", display: "flex", alignItems: "center", gap: 10, background: abg, border: `1px solid ${abd}`, boxShadow: "0 1px 4px oklch(0 0 0 / 0.04)", cursor: s.href ? "pointer" : "default", textDecoration: "none" }}
+              style={{ minWidth: 0, minHeight: 62, borderRadius: 10, padding: "8px 10px", display: "flex", alignItems: "center", gap: 8, background: abg, border: `1px solid ${abd}`, boxShadow: "0 1px 4px oklch(0 0 0 / 0.04)", cursor: s.href ? "pointer" : "default", textDecoration: "none" }}
             >
-              <div style={{ width: 34, height: 34, borderRadius: 8, flexShrink: 0, background: s.iBg, display: "flex", alignItems: "center", justifyContent: "center" }}>{s.ico}</div>
+              <div style={{ width: 30, height: 30, borderRadius: 7, flexShrink: 0, background: s.iBg, display: "flex", alignItems: "center", justifyContent: "center" }}>{s.ico}</div>
               <div>
-                <div style={{ fontSize: "1.0625rem", fontWeight: 800, lineHeight: 1.25, color: s.isAlert ? s.alertC : T.text }}>{s.value}</div>
-                <div style={{ fontSize: "0.6875rem", color: T.muted, lineHeight: 1.3, marginTop: 2 }}>{s.label}</div>
+                <div style={{ fontSize: "0.9375rem", fontWeight: 800, lineHeight: 1.2, color: s.isAlert ? s.alertC : T.text }}>{s.value}</div>
+                <div style={{ fontSize: "0.6875rem", color: T.muted, lineHeight: 1.25, marginTop: 1 }}>{s.label}</div>
               </div>
               {s.unit && <div style={{ marginRight: "auto", fontSize: "0.6875rem", color: T.muted, textAlign: "left" }}>{s.unit}</div>}
               {/* زِرّ نَسخ يَظهَر عِند الـhover — يَنسَخ «التَسمية: القيمة الوحدة»
@@ -488,8 +488,8 @@ function BriefCard({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 12,
-        padding: "12px 14px",
+        gap: 10,
+        padding: "9px 12px",
         borderRadius: 10,
         background: T.cardBg,
         border: `1px solid ${T.cardBord}`,
@@ -511,9 +511,9 @@ function BriefCard({
     >
       <div
         style={{
-          width: 40,
-          height: 40,
-          borderRadius: 10,
+          width: 34,
+          height: 34,
+          borderRadius: 8,
           background: iconBg,
           display: "flex",
           alignItems: "center",
@@ -525,11 +525,11 @@ function BriefCard({
         {icon}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: "0.75rem", color: T.sub, marginBottom: 2 }}>{label}</div>
-        <div style={{ fontSize: "1.375rem", fontWeight: 900, color: accent, lineHeight: 1, marginBottom: 2 }}>
+        <div style={{ fontSize: "0.6875rem", color: T.sub, marginBottom: 1 }}>{label}</div>
+        <div style={{ fontSize: "1.1875rem", fontWeight: 900, color: accent, lineHeight: 1, marginBottom: 1 }}>
           <span dir="ltr" style={{ fontVariantNumeric: "tabular-nums" }}>{fmtAr(count)}</span>
         </div>
-        <div style={{ fontSize: "0.75rem", color: T.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sub}</div>
+        <div style={{ fontSize: "0.6875rem", color: T.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sub}</div>
       </div>
     </Link>
   );

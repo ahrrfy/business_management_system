@@ -104,7 +104,7 @@ export function OperationTimeCell({ at }: { at: OperationAttribution["at"] }) {
   );
 }
 
-/** عرض مدمج للجداول التشغيلية العريضة؛ يحافظ على ترابط المعلومات داخل خلية واحدة. */
+/** عرض مدمج للجداول التشغيلية العريضة؛ يحافظ على ترابط المعلومات داخل خلية واحدة بسطرين مضغوطين. */
 export function OperationAttributionCell({
   operation,
   className,
@@ -118,20 +118,22 @@ export function OperationAttributionCell({
   const title = `من قام: ${actorLabel(operation.actor)}\nماذا فعل: ${action}\nعلى ماذا: ${subject}\nمتى: ${time}`;
   return (
     <div
-      className={cn("min-w-56 space-y-1 text-start", className)}
+      className={cn("min-w-44 space-y-0.5 text-start", className)}
       title={title}
       aria-label={title.replaceAll("\n", "، ")}
     >
-      <ActorCell actor={operation.actor} className="max-w-56 font-medium" />
-      <div className="flex min-w-0 items-center gap-1.5 text-sm leading-5 text-muted-foreground">
-        <FilePenLine aria-hidden className="size-3.5 shrink-0" />
+      <div className="flex min-w-0 items-center justify-between gap-1.5">
+        <ActorCell actor={operation.actor} className="max-w-40 font-semibold text-xs" />
+        <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+          <Clock3 aria-hidden className="size-3 shrink-0" />
+          <bdi dir="ltr">{time}</bdi>
+        </span>
+      </div>
+      <div className="flex min-w-0 items-center gap-1 text-xs leading-tight text-muted-foreground">
+        <FilePenLine aria-hidden className="size-3 shrink-0" />
         <span className="truncate">{action}</span>
         <span aria-hidden>·</span>
         <span className="truncate">{subject}</span>
-      </div>
-      <div className="flex items-center gap-1.5 text-sm leading-5 text-muted-foreground">
-        <Clock3 aria-hidden className="size-3.5 shrink-0" />
-        <bdi dir="ltr">{time}</bdi>
       </div>
     </div>
   );
