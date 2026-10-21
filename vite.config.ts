@@ -106,6 +106,9 @@ export default defineConfig(({ mode }) => {
         skipWaiting: false,
         clientsClaim: false,
         cleanupOutdatedCaches: true,
+        // عطّل directoryIndex الافتراضي ("index.html") في PrecacheRoute: كان يلتقط طلب الجذر "/"
+        // (لوحة التحكم/الدخول في ERP) ويُعيد index.html القديم من precache متجاوزاً navigateFallbackAllowlist.
+        directoryIndex: null,
         navigateFallback: "/index.html",
         // قشرة Storefront وحدها قابلة للفتح من precache. كل مسار آخر يحتاج الخادم.
         navigateFallbackAllowlist: [/^\/store(?:\/|$)/],

@@ -131,12 +131,19 @@ export function assertStorefrontImageRuntimePolicy(swSource) {
   }
 }
 
+export function assertStorefrontPrecacheNavigationPolicy(swSource) {
+  if (!/(?:directoryIndex|["']directoryIndex["'])\s*:\s*null\b/.test(swSource)) {
+    throw new Error("STOREFRONT_SW_DIRECTORY_INDEX_MUST_BE_NULL");
+  }
+}
+
 export function verifyStorefrontPwaBuild(buildDirectory) {
   const manifestPath = path.join(buildDirectory, ".vite", "manifest.json");
   const serviceWorkerPath = path.join(buildDirectory, "sw.js");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   const swSource = fs.readFileSync(serviceWorkerPath, "utf8");
   const result = assertStorefrontPrecacheClosure({ manifest, swSource });
+  assertStorefrontPrecacheNavigationPolicy(swSource);
   assertStorefrontImageRuntimePolicy(swSource);
   return result;
 }

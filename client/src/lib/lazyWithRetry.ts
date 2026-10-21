@@ -17,16 +17,119 @@
 //  • نُغطّيها جَميعاً للسَلامة عَبر المَتصفّحات.
 
 import { lazy, type ComponentType } from "react";
+import { flushAutosaves } from "./autosave";
+import { saveInteractionDraft } from "./interactionDraft";
+import {
+  activateRegistrationUpdate,
+  requestStorefrontPersistence,
+} from "./pwaUpdateLifecycle";
 
 const RELOAD_GUARD_KEY = "alroya:chunk-reload-attempted";
 const RELOAD_GUARD_TTL_MS = 30_000;
+const SW_UPDATE_TIMEOUT_MS = 4_000;
+const SW_INSTALL_TIMEOUT_MS = 8_000;
+const SW_ACTIVATE_TIMEOUT_MS = 6_000;
+let reloadEpoch = 0;
+
+function preserveDraftsBeforeReload(): void {
+  try {
+    if (typeof document !== "undefined") {
+      saveInteractionDraft();
+    }
+  } catch {
+    /* تَجاهل */
+  }
+  try {
+    flushAutosaves();
+  } catch {
+    /* تَجاهل */
+  }
+  try {
+    if (
+      typeof window !== "undefined" &&
+      typeof window.dispatchEvent === "function"
+    ) {
+      requestStorefrontPersistence();
+    }
+  } catch {
+    /* تَجاهل */
+  }
+}
+
+function waitForInstallingWorkerToSettle(
+  worker: ServiceWorker,
+  timeoutMs = SW_INSTALL_TIMEOUT_MS,
+): Promise<void> {
+  if (worker.state !== "installing") return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      worker.removeEventListener("statechange", onStateChange);
+      resolve();
+    };
+    const onStateChange = () => {
+      if (worker.state !== "installing") finish();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    worker.addEventListener("statechange", onStateChange);
+    onStateChange();
+  });
+}
+
+async function prepareServiceWorkerBeforeReload(): Promise<void> {
+  if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+    return;
+  }
+  const sw = navigator.serviceWorker;
+  if (!sw?.controller || typeof sw.getRegistration !== "function") {
+    return;
+  }
+  try {
+    const registration = await sw.getRegistration();
+    if (!registration) return;
+
+    if (
+      !registration.waiting &&
+      !registration.installing &&
+      typeof registration.update === "function"
+    ) {
+      await Promise.race([
+        registration.update().catch(() => undefined),
+        new Promise<void>((resolve) =>
+          setTimeout(resolve, SW_UPDATE_TIMEOUT_MS),
+        ),
+      ]);
+    }
+
+    const refreshed = (await sw.getRegistration()) ?? registration;
+    if (refreshed.installing) {
+      await waitForInstallingWorkerToSettle(refreshed.installing);
+    }
+
+    const latest = (await sw.getRegistration()) ?? refreshed;
+    if (latest.waiting || latest.active?.state === "activating") {
+      await activateRegistrationUpdate({
+        getRegistration: () => sw.getRegistration(),
+        timeoutMs: SW_ACTIVATE_TIMEOUT_MS,
+        pollIntervalMs: 25,
+      });
+    }
+  } catch {
+    /* فشل تحديث/تفعيل Service Worker لا يمنع محاولة reload الاحتياطية */
+  }
+}
 
 function getFactoryGuardValue(factory: () => unknown): string {
   try {
     const raw = factory.toString();
     const importMatch = raw.match(/import\(\s*["']([^"']+)["']\s*\)/);
     if (importMatch?.[1]) {
-      return importMatch[1].replace(/-[A-Za-z0-9_-]{8}(?=\.m?js$)/, "");
+      return importMatch[1]
+        .replace(/\?.*$/, "")
+        .replace(/-[A-Za-z0-9_-]{8}(?=\.m?js$)/, "");
     }
     const normalized = raw
       .replace(/-[A-Za-z0-9_-]{8}(?=\.m?js["'])/g, "")
@@ -69,7 +172,8 @@ function isChunkLoadError(err: unknown): boolean {
   return (
     msg.includes("Failed to fetch dynamically imported module") ||
     msg.includes("Importing a module script failed") ||
-    /Loading chunk \S+ failed/.test(msg) ||
+    msg.includes("Unable to preload CSS for") ||
+    /Loading (?:CSS )?chunk \S+ failed/i.test(msg) ||
     /error loading dynamically imported module/i.test(msg)
   );
 }
@@ -85,6 +189,7 @@ export function lazyWithRetry<T extends ComponentType<any>>(
   factory: () => Promise<{ default: T }>,
 ): ReturnType<typeof lazy<T>> {
   const guardValue = getFactoryGuardValue(factory);
+  const createdEpoch = reloadEpoch;
   return lazy(async () => {
     try {
       const mod = await factory();
@@ -109,6 +214,12 @@ export function lazyWithRetry<T extends ComponentType<any>>(
     } catch (err) {
       if (!isChunkLoadError(err)) throw err;
 
+      // إن كان chunk شَقيق في نَفس التَّحميل الجَاري قَد طَلَب reload بالفعل،
+      // ابقَ في وَضع Suspense حَتى يَكتمل خروج الصَّفحة دون مَسح الحَارس أو وَميض ErrorBoundary.
+      if (createdEpoch !== reloadEpoch) {
+        return new Promise<{ default: T }>(() => {});
+      }
+
       // فَشل chunk — جَرّب reload مَرّة واحدة، ثم اِنشر الخَطأ لِحَدّ الخَطأ.
       let alreadyReloaded = false;
       try {
@@ -119,23 +230,39 @@ export function lazyWithRetry<T extends ComponentType<any>>(
       }
 
       if (alreadyReloaded) {
-        try {
-          sessionStorage.removeItem(RELOAD_GUARD_KEY);
-        } catch {
-          /* تَجاهل */
-        }
+        // لا نَمسح الحَارس عِند الفَشل الثَّاني: قد يَفشل chunk شَقيق آخر (مِثل QuranStationDrawer مع Login)
+        // بَعد بِضعِ ملّي ثانية في نَفس التَّحميل الثَّاني، فَمَسحُ الحَارس هُنا يَجعله يَظنّ أنّه لم يُعِد التَّحميل
+        // ويُسبّب حَلَقة reload لا نِهائية. يَنتهي الحَارس تلقائياً بـTTL (30 ثانية) أو عِند نَجاح الـchunk.
         throw err;
       }
 
+      let guardStored = false;
       try {
         sessionStorage.setItem(
           RELOAD_GUARD_KEY,
           `${guardValue}\n${Date.now()}`,
         );
+        guardStored = true;
       } catch {
         /* تَجاهل */
       }
-      window.location.reload();
+      if (!guardStored) {
+        throw err;
+      }
+
+      reloadEpoch += 1;
+      preserveDraftsBeforeReload();
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.serviceWorker?.controller &&
+        typeof navigator.serviceWorker.getRegistration === "function"
+      ) {
+        void prepareServiceWorkerBeforeReload().finally(() => {
+          window.location.reload();
+        });
+      } else {
+        window.location.reload();
+      }
       // promise لا يَحلّ أبَداً ⇒ Suspense fallback يَبقى ظَاهراً حَتى يَنتهي reload
       // بدلَ وَميض حَدّ الخَطأ قَبل خُروج الصَّفحة.
       return new Promise<{ default: T }>(() => {});
